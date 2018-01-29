@@ -36,10 +36,12 @@ struct F32Vec2 {
 
     F32Vec2& operator += (float32 v) {
         x += v; y += v;
+        return *this;
     }
 
     F32Vec2& operator -= (float32 v) {
         x -= v; y -= v;
+        return *this;
     }
 
     F32Vec2& operator *= (float32 v) {
@@ -52,7 +54,7 @@ struct F32Vec2 {
         return *this;
     }
 
-    float32& operator[](int i) { return (&x) + i; }
+    float32& operator[](int i) { return (&x)[i]; }
 };
 
 struct F32Vec3 {
@@ -61,16 +63,18 @@ struct F32Vec3 {
         struct { float32 r,g,b; };
         struct { float32 s,t,u; };
 #ifdef VIAMD_USE_SIMD
-        __m128 simd;
+        __m128 m128;
 #endif
     };
 
     F32Vec3& operator += (float32 v) {
         x += v; y += v; z += v;
+        return *this;
     }
 
     F32Vec3& operator -= (float32 v) {
         x -= v; y -= v; z -= v;
+        return *this;
     }
 
     F32Vec3& operator *= (float32 v) {
@@ -82,6 +86,8 @@ struct F32Vec3 {
         x /= v; y /= v; z /= v;
         return *this;
     }
+
+    float32& operator[](int i) { return (&x)[i]; }
 };
 
 struct F32Vec4 {
@@ -90,16 +96,18 @@ struct F32Vec4 {
         struct { float32 r,g,b,a; };
         struct { float32 s,t,u,v; };
 #ifdef VIAMD_USE_SIMD
-        __m128 simd;
+        __m128 m128;
 #endif
     };
 
     F32Vec4& operator += (float32 v) {
         x += v; y += v; z += v; w += v;
+        return *this;
     }
 
     F32Vec4& operator -= (float32 v) {
         x -= v; y -= v; z -= v; w -= v;
+        return *this;
     }
 
     F32Vec4& operator *= (float32 v) {
@@ -110,6 +118,8 @@ struct F32Vec4 {
         x /= v; y /= v; z /= v; w *= v;
         return *this;
     }
+
+    float32& operator[](int i) { return (&x)[i]; }
 };
 
 struct I32Vec2 {
@@ -146,7 +156,7 @@ struct I32Vec3 {
         struct { int32 r,g,b; };
         struct { int32 s,t,u; };
 #ifdef VIAMD_USE_SIMD
-        __m128i simd;
+        __m128i m128i;
 #endif
     };
 
@@ -177,7 +187,7 @@ struct I32Vec4 {
         struct { int32 r,g,b,a; };
         struct { int32 s,t,u,v; };
 #ifdef VIAMD_USE_SIMD
-        __m128i simd;
+        __m128i m128i;
 #endif
     };
 
