@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.0)
 
-project(VIAMD)
+project(viamd)
 
 find_package(OpenGL REQUIRED)
 
 if(MSVC)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W3")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4 /wd4201")
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types")
 endif()
@@ -18,6 +18,7 @@ option(GLFW_INSTALL OFF)
 
 add_subdirectory(ext/glfw)
 add_subdirectory(ext/gl3w)
+add_subdirectory(ext/imgui)
 
 include_directories(src
                     ext
@@ -25,7 +26,7 @@ include_directories(src
                     ext/gl3w/include
                     ext/imgui)
 
-file(GLOB PROJECT_SOURCES src/*.h src/*.cpp ext/imgui/*.cpp)
+file(GLOB PROJECT_SOURCES src/*.h src/*.cpp)
 
 file(GLOB PROJECT_CONFIGS CMakeLists.txt
                           Readme.md
@@ -41,6 +42,7 @@ add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
 target_link_libraries(${PROJECT_NAME}
                       glfw
                       gl3w
+                      imgui
                       ${GLFW_LIBRARIES}
                       ${OPENGL_LIBRARY})
 

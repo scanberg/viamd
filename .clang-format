@@ -1,0 +1,9 @@
+#viamd clang-format configuration
+
+BasedOnStyle: Google
+IndentWidth: 4
+ColumnLimit: 150
+BreakConstructorInitializersBeforeComma: true
+AccessModifierOffset: -4
+KeepEmptyLinesAtTheStartOfBlocks: true
+SortIncludes: false
