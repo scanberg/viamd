@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.0)
+
 project(VIAMD)
 
 find_package(OpenGL REQUIRED)
@@ -16,14 +17,15 @@ option(GLFW_BUILD_TESTS OFF)
 option(GLFW_INSTALL OFF)
 
 add_subdirectory(ext/glfw)
+add_subdirectory(ext/gl3w)
 
 include_directories(src
                     ext
                     ext/glfw/include
-                    ext/imgui
-                    ext/gl3w)
+                    ext/gl3w/include
+                    ext/imgui)
 
-file(GLOB PROJECT_SOURCES src/*.h src/*.cpp ext/imgui/*.cpp ext/gl3w/GL/gl3w.c)
+file(GLOB PROJECT_SOURCES src/*.h src/*.cpp ext/imgui/*.cpp)
 
 file(GLOB PROJECT_CONFIGS CMakeLists.txt
                           Readme.md
@@ -38,6 +40,7 @@ add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
 
 target_link_libraries(${PROJECT_NAME}
                       glfw
+                      gl3w
                       ${GLFW_LIBRARIES}
                       ${OPENGL_LIBRARY})
 
