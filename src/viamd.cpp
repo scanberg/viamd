@@ -7,18 +7,6 @@
 
 int main(int, char**)
 {
-	f32vec3 v1{ 1,2,3 };
-	f32vec3 v2{ 3,2,1 };
-
-	f32vec2 v0{ 1,2 };
-	f32mat2 m{ 1,2,3,4 };
-
-	v0 = m * v0;
-
-	printf("v0 %g %g\n", v0.x, v0.y);
-
-	printf("dot: %g\n", math::dot(v1, v2));
-
     platform::initialize();
     platform::Window* window = platform::create_window(640, 480, "VIAMD");
 

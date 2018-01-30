@@ -164,7 +164,7 @@ void ImGui_ImplGlfwGL3_ScrollCallback(GLFWwindow*, double xoffset, double yoffse
     ImGuiIO& io = ImGui::GetIO();
     io.MouseWheelH += (float)xoffset;
     io.MouseWheel += (float)yoffset;
-    g_input_state.mouse_scroll_y = (int)yoffset;
+    g_input_state.mouse_scroll.y = (int)yoffset;
 }
 
 void ImGui_ImplGlfwGL3_KeyCallback(GLFWwindow*, int key, int, int action, int mods)
@@ -470,10 +470,9 @@ void update() {
     glfwPollEvents();
     double x, y;
     glfwGetCursorPos(g_window.glfw_window, &x, &y);
-    g_input_state.mouse_vel_x = (int)x - g_input_state.mouse_coord_x;
-    g_input_state.mouse_vel_y = (int)y - g_input_state.mouse_coord_y;
-    g_input_state.mouse_coord_x = (int)x;
-    g_input_state.mouse_coord_y = (int)y;
+	ivec2 new_coord{ x,y };
+	g_input_state.mouse_velocity = new_coord - g_input_state.mouse_coord;
+	g_input_state.mouse_coord = new_coord;
     ImGui_ImplGlfwGL3_NewFrame();
 }
 

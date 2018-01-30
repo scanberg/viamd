@@ -1,4 +1,5 @@
 #include "keys.h"
+#include "types.h"
 #include <GL/gl3w.h>
 
 namespace platform {
@@ -14,11 +15,9 @@ struct InputState {
     bool mouse_hit[8];
     bool mouse_release[8];
 
-    int mouse_coord_x;
-    int mouse_coord_y;
-    int mouse_vel_x;
-    int mouse_vel_y;
-    int mouse_scroll_y;
+    ivec2 mouse_coord;
+	ivec2 mouse_velocity;
+    ivec2 mouse_scroll;
 };
 
 void        initialize();

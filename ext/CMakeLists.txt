@@ -1,3 +1,18 @@
+### GLFW ###
+
+option(GLFW_BUILD_DOCS OFF)
+option(GLFW_BUILD_EXAMPLES OFF)
+option(GLFW_BUILD_TESTS OFF)
+option(GLFW_INSTALL OFF)
+
+add_subdirectory(glfw)
+
+
+
+
+
+### GL3W ###
+
 project(gl3w)
 enable_language (C)
 
@@ -19,6 +34,12 @@ add_library(gl3w STATIC ${HEADERS} ${SOURCES})
 target_link_libraries(gl3w
                       ${OPENGL_LIBRARY})
 
+
+
+
+
+### IMGUI ###
+
 project(imgui)
 
 set(HEADERS
@@ -31,6 +52,24 @@ set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui/imgui_demo.cpp
 )
 
-#include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include/)
-
 add_library(imgui STATIC ${HEADERS} ${SOURCES})
+
+
+
+
+
+### PPK ASSERT ###
+
+project(ppk_assert)
+
+set(HEADERS
+    ${CMAKE_CURRENT_SOURCE_DIR}/ppk_assert/ppk_assert.h
+)
+                   
+set(SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/ppk_assert/ppk_assert.cpp
+)
+
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/ppk_assert)
+
+add_library(ppk_assert STATIC ${HEADERS} ${SOURCES})

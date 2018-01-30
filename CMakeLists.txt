@@ -11,20 +11,14 @@ else()
 endif()
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
 
-option(GLFW_BUILD_DOCS OFF)
-option(GLFW_BUILD_EXAMPLES OFF)
-option(GLFW_BUILD_TESTS OFF)
-option(GLFW_INSTALL OFF)
-
-add_subdirectory(ext/glfw)
-#add_subdirectory(ext/gl3w)
 add_subdirectory(ext)
 
 include_directories(src
-                    ext
                     ext/glfw/include
                     ext/gl3w/include
-                    ext/imgui)
+                    ext/glm
+                    ext/imgui
+                    ext/ppk_assert)
 
 file(GLOB PROJECT_SOURCES src/*.h src/*.cpp)
 
@@ -43,6 +37,7 @@ target_link_libraries(${PROJECT_NAME}
                       glfw
                       gl3w
                       imgui
+                      ppk_assert
                       ${GLFW_LIBRARIES}
                       ${OPENGL_LIBRARY})
 
