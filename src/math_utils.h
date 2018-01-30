@@ -490,7 +490,9 @@ inline f32mat4 operator*(f32mat4 a, f32mat4 b) {
 }
 
 inline f32vec2 operator*(f32mat2 m, f32vec2 v) {
-	return { m[0][0] * v[0] + m[1][0] * v[1], m[0][1] * v[0] + m[1][1] * v[1] };
+	return {
+		m[0][0] * v.x + m[1][0] * v.y,
+		m[0][1] * v.x + m[1][1] * v.y };
 }
 
 // OPERATORS INT

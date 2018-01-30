@@ -17,8 +17,8 @@ option(GLFW_BUILD_TESTS OFF)
 option(GLFW_INSTALL OFF)
 
 add_subdirectory(ext/glfw)
-add_subdirectory(ext/gl3w)
-add_subdirectory(ext/imgui)
+#add_subdirectory(ext/gl3w)
+add_subdirectory(ext)
 
 include_directories(src
                     ext
