@@ -1,14 +1,21 @@
 #include <imgui.h>
-#include "platform.h"
-#include "types.h"
-#include "math_utils.h"
+#include <core/platform.h>
+#include <core/types.h>
+#include <core/math_utils.h>
+#include <mol/molecule.h>
 
 #include <stdio.h>
 
+void draw_main_menu(platform::Window* window);
+
+
+
 int main(int, char**)
 {
+
+
     platform::initialize();
-    platform::Window* window = platform::create_window(640, 480, "VIAMD");
+    platform::Window* window = platform::create_window(1024, 768, "VIAMD");
 
     // Setup style
     ImGui::StyleColorsClassic();
@@ -20,6 +27,10 @@ int main(int, char**)
     // Main loop
     while (!(platform::window_should_close(window) && !platform::get_input_state()->key_hit[Key::KEY_ESCAPE])) {
         platform::update();
+
+
+		// MAIN MENU BAR
+		draw_main_menu(window);
 
         // 1. Show a simple window.
         // Tip: if we don't call ImGui::Begin()/ImGui::End() the widgets automatically appears in a window called "Debug".
@@ -63,4 +74,72 @@ int main(int, char**)
     platform::shutdown();
 
     return 0;
+}
+
+
+
+
+
+
+void draw_main_menu(platform::Window* window) {
+	if (ImGui::BeginMainMenuBar())
+	{
+		if (ImGui::BeginMenu("File"))
+		{
+			if (ImGui::MenuItem("New")) {
+				ImGui::OpenPopup("Are you sure?");
+			}
+
+			bool open;
+			if (ImGui::BeginPopupModal("Are you sure?", &open))
+			{
+				ImGui::Text("Hello from Stacked The First\nUsing style.Colors[ImGuiCol_ModalWindowDarkening] for darkening.");
+				static int item = 1;
+				ImGui::Combo("Combo", &item, "aaaa\0bbbb\0cccc\0dddd\0eeee\0\0");
+				static float color[4] = { 0.4f,0.7f,0.0f,0.5f };
+				ImGui::ColorEdit4("color", color);  // This is to test behavior of stacked regular popups over a modal
+
+				if (ImGui::Button("Add another modal.."))
+					ImGui::OpenPopup("Stacked 2");
+				if (ImGui::BeginPopupModal("Stacked 2"))
+				{
+					ImGui::Text("Hello from Stacked The Second!");
+					if (ImGui::Button("Close"))
+						ImGui::CloseCurrentPopup();
+					ImGui::EndPopup();
+				}
+
+				if (ImGui::Button("Close"))
+					ImGui::CloseCurrentPopup();
+				ImGui::EndPopup();
+			}
+
+			if (ImGui::MenuItem("Open", "Ctrl+O")) {}
+			if (ImGui::BeginMenu("Open Recent"))
+			{
+				ImGui::MenuItem("fish_hat.c");
+				ImGui::MenuItem("fish_hat.inl");
+				ImGui::MenuItem("fish_hat.h");
+				ImGui::EndMenu();
+			}
+			if (ImGui::MenuItem("Save", "Ctrl+S")) {}
+			if (ImGui::MenuItem("Save As..")) {}
+			ImGui::Separator();
+			if (ImGui::MenuItem("Quit", "Alt+F4")) {
+				platform::set_window_should_close(window, true);
+			}
+			ImGui::EndMenu();
+		}
+		if (ImGui::BeginMenu("Edit"))
+		{
+			if (ImGui::MenuItem("Undo", "CTRL+Z")) {}
+			if (ImGui::MenuItem("Redo", "CTRL+Y", false, false)) {}  // Disabled item
+			ImGui::Separator();
+			if (ImGui::MenuItem("Cut", "CTRL+X")) {}
+			if (ImGui::MenuItem("Copy", "CTRL+C")) {}
+			if (ImGui::MenuItem("Paste", "CTRL+V")) {}
+			ImGui::EndMenu();
+		}
+		ImGui::EndMainMenuBar();
+	}
 }

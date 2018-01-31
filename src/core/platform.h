@@ -1,5 +1,5 @@
-#include "keys.h"
-#include "types.h"
+#include <core/keys.h>
+#include <core/types.h>
 #include <GL/gl3w.h>
 
 namespace platform {
@@ -23,6 +23,7 @@ struct InputState {
 void        initialize();
 Window*     create_window(int width, int height, const char* window_title);
 void        destroy_window(Window* window);
+void		set_window_should_close(Window* window, bool value);
 void        shutdown();
 void        update();
 bool        window_in_focus(Window* window);

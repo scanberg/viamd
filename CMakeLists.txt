@@ -20,7 +20,8 @@ include_directories(src
                     ext/imgui
                     ext/ppk_assert)
 
-file(GLOB PROJECT_SOURCES src/*.h src/*.cpp)
+file(GLOB_RECURSE PROJECT_HEADERS src/*.h)
+file(GLOB_RECURSE PROJECT_SOURCES src/*.cpp)
 
 file(GLOB PROJECT_CONFIGS CMakeLists.txt
                           Readme.md
@@ -28,10 +29,13 @@ file(GLOB PROJECT_CONFIGS CMakeLists.txt
                          .gitignore
                          .gitmodules)
 
+source_group("Headers" FILES ${PROJECT_HEADERS})
+source_group("Sources" FILES ${PROJECT_SOURCES})
+
 add_definitions(-DGLFW_INCLUDE_NONE
                 -DPROJECT_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\")
 
-add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
+add_executable(${PROJECT_NAME} ${PROJECT_HEADERS} ${PROJECT_SOURCES})
 
 target_link_libraries(${PROJECT_NAME}
                       glfw

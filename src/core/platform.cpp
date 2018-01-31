@@ -1,4 +1,4 @@
-#include "platform.h"
+#include <core/platform.h>
 #include <GLFW/glfw3.h>
 #ifdef _WIN32
 #undef APIENTRY
@@ -456,6 +456,10 @@ Window* create_window(int width, int height, const char* window_title) {
 
 void destroy_window(Window* window) {
     glfwDestroyWindow(window->glfw_window);
+}
+
+void set_window_should_close(Window* window, bool value) {
+	glfwSetWindowShouldClose(window->glfw_window, 1);
 }
 
 void shutdown() {
