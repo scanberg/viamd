@@ -459,7 +459,7 @@ void destroy_window(Window* window) {
 }
 
 void set_window_should_close(Window* window, bool value) {
-	glfwSetWindowShouldClose(window->glfw_window, 1);
+	glfwSetWindowShouldClose(window->glfw_window, (int)value);
 }
 
 void shutdown() {
@@ -469,8 +469,8 @@ void shutdown() {
 
 void update() {
     // Reset hit states
-    memset(g_input_state.key_hit, 0, 512);
-    memset(g_input_state.mouse_hit, 0, 8);
+    memset(g_input_state.key_hit, 0, MaxKeys);
+    memset(g_input_state.mouse_hit, 0, MaxMouseButtons);
     glfwPollEvents();
     double x, y;
     glfwGetCursorPos(g_window.glfw_window, &x, &y);

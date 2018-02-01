@@ -25,9 +25,8 @@ int main(int, char**)
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
     // Main loop
-    while (!(platform::window_should_close(window) && !platform::get_input_state()->key_hit[Key::KEY_ESCAPE])) {
+    while (!(platform::window_should_close(window))) {
         platform::update();
-
 
 		// MAIN MENU BAR
 		draw_main_menu(window);
@@ -81,38 +80,15 @@ int main(int, char**)
 
 
 
-void draw_main_menu(platform::Window* window) {
+void draw_main_menu(platform::Window* main_window) {
+
+    bool new_clicked = false;
 	if (ImGui::BeginMainMenuBar())
 	{
 		if (ImGui::BeginMenu("File"))
 		{
-			if (ImGui::MenuItem("New")) {
-				ImGui::OpenPopup("Are you sure?");
-			}
-
-			bool open;
-			if (ImGui::BeginPopupModal("Are you sure?", &open))
-			{
-				ImGui::Text("Hello from Stacked The First\nUsing style.Colors[ImGuiCol_ModalWindowDarkening] for darkening.");
-				static int item = 1;
-				ImGui::Combo("Combo", &item, "aaaa\0bbbb\0cccc\0dddd\0eeee\0\0");
-				static float color[4] = { 0.4f,0.7f,0.0f,0.5f };
-				ImGui::ColorEdit4("color", color);  // This is to test behavior of stacked regular popups over a modal
-
-				if (ImGui::Button("Add another modal.."))
-					ImGui::OpenPopup("Stacked 2");
-				if (ImGui::BeginPopupModal("Stacked 2"))
-				{
-					ImGui::Text("Hello from Stacked The Second!");
-					if (ImGui::Button("Close"))
-						ImGui::CloseCurrentPopup();
-					ImGui::EndPopup();
-				}
-
-				if (ImGui::Button("Close"))
-					ImGui::CloseCurrentPopup();
-				ImGui::EndPopup();
-			}
+			if (ImGui::MenuItem("New", "Ctrl+N"))
+				new_clicked = true;
 
 			if (ImGui::MenuItem("Open", "Ctrl+O")) {}
 			if (ImGui::BeginMenu("Open Recent"))
@@ -126,7 +102,7 @@ void draw_main_menu(platform::Window* window) {
 			if (ImGui::MenuItem("Save As..")) {}
 			ImGui::Separator();
 			if (ImGui::MenuItem("Quit", "Alt+F4")) {
-				platform::set_window_should_close(window, true);
+				platform::set_window_should_close(main_window, true);
 			}
 			ImGui::EndMenu();
 		}
@@ -142,4 +118,16 @@ void draw_main_menu(platform::Window* window) {
 		}
 		ImGui::EndMainMenuBar();
 	}
+
+    if (new_clicked)
+        ImGui::OpenPopup("Warning New");
+    if (ImGui::BeginPopupModal("Warning New")) {
+        ImGui::Text("By creating a new workspace you will loose any unsaved progress.");
+        ImGui::Text("Are you sure?");
+        ImGui::Separator();
+        if (ImGui::Button("OK", ImVec2(120,0))) { ImGui::CloseCurrentPopup(); }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120,0))) { ImGui::CloseCurrentPopup(); }
+        ImGui::EndPopup();
+    }
 }

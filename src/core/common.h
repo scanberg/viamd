@@ -18,4 +18,6 @@
 #define KILOBYTES(x) (x << 10)
 #define MEGABYTES(x) (KILOBYTES(x) << 10)
 #define GIGABYTES(x) (MEGABYTES(x) << 10)
+
+#define BIT(x) (1 << x)
 #define UNUSED(x) (void)(x)

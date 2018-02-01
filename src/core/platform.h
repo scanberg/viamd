@@ -4,16 +4,19 @@
 
 namespace platform {
 
+constexpr int MaxKeys = 512;
+constexpr int MaxMouseButtons = 8;
+
 struct Window;
 
 struct InputState {
-    bool key_down[512];
-    bool key_hit[512];
-    bool key_release[512];
+    bool key_down[MaxKeys];
+    bool key_hit[MaxKeys];
+    bool key_release[MaxKeys];
 
-    bool mouse_down[8];
-    bool mouse_hit[8];
-    bool mouse_release[8];
+    bool mouse_down[MaxMouseButtons];
+    bool mouse_hit[MaxMouseButtons];
+    bool mouse_release[MaxMouseButtons];
 
     ivec2 mouse_coord;
 	ivec2 mouse_velocity;

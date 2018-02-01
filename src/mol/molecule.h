@@ -6,18 +6,43 @@
 
 using Element = char;
 
+struct Bond {
+	int32 atom_idx_a;
+	int32 atom_idx_b;
+};
+
 struct Label {
 	static constexpr int MaxLength = 8;
 	Label() = default;
 
 	template<int32 N>
 	Label(const char (&cstr)[N]) {
-		int32 len = N < MaxLength ? N, MaxLength - 1;
-		strncpy_s(data, other.data, len);
+		int32 len = N < MaxLength ? N : MaxLength - 1;
+		strncpy(data, cstr.data, len);
 	}
 
 	Label(const Label& other) {
-		strncpy_s(data, other.data, other.length);
+		ASSERT(other.length < MaxLength);
+		strncpy(data, other.data, other.length);
+		length = other.length;
+	}
+
+	Label& operator =(const Label& other) {
+		if (this != &other) {
+			ASSERT(other.length < MaxLength);
+			strncpy(data, other.data, other.length);
+			length = other.length;
+		}
+		return *this;
+	}
+
+	template<int32 N>
+	Label& operator =(const char (&cstr)[N]) {
+		if (data != cstr) {
+			int32 len = N < MaxLength ? N : MaxLength - 1;
+			strncpy(data, cstr.data, len);
+		}
+		return *this;
 	}
 
 	char data[MaxLength] = {};
@@ -37,10 +62,11 @@ struct Chain {
 };
 
 struct MoleculeStructure {
-	Array<vec3>		atom_position;
-	Array<Element>	atom_element;
-	Array<Label>	atom_label;
-	Array<int32>	atom_residue_index;
+	Array<vec3>		atom_positions;
+	Array<Element>	atom_elements;
+	Array<Label>	atom_labels;
+	Array<Bond>		atom_bonds;
+	Array<int32>	atom_residue_indices;
 
 	Array<Residue>	residues;
 	Array<Chain>	chains;

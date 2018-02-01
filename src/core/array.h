@@ -11,7 +11,7 @@ struct Array {
     template <size_t N>
     Array(const T (&c_arr)[N]) : data(c_arr), count(N) {}
 
-    Array SubArray(int64 _offset, int64 _count = -1) {
+    Array sub_array(int64 _offset, int64 _count = -1) {
         ASSERT(0 <= _offset);
 		ASSERT(_count > 0 || _count == -1);
         if (_count == -1) {
@@ -55,7 +55,7 @@ struct DynamicArray : Array<T> {
         }
     }
 
-    void PushBack(const T& item) {
+    void push_back(const T& item) {
         if (this->count >= capacity) {
             // GROW
             Reserve(capacity * 2);
@@ -64,7 +64,7 @@ struct DynamicArray : Array<T> {
         this->count++;
     }
 
-    void Reserve(int64 new_capacity) {
+    void reserve(int64 new_capacity) {
         if (new_capacity < capacity) return;
         T* new_data = (T*)allocator.Alloc(new_capacity * sizeof(T));
         if (this->data) {
@@ -76,7 +76,7 @@ struct DynamicArray : Array<T> {
     }
 
     // Resizes the array to a new size and zeros eventual new slots
-    void Resize(int64 new_count) {
+    void resize(int64 new_count) {
         ASSERT(new_count > 0);
         if (new_count == this->count)
             return;
@@ -85,7 +85,7 @@ struct DynamicArray : Array<T> {
             return;
         } else {
             if (capacity < new_count) {
-                Reserve(new_count);
+                reserve(new_count);
                 this->count = new_count;
             }
         }
@@ -113,7 +113,7 @@ struct CString : Array<const char> {
     }
 
     CString substr(int64 _offset, int64 _count = -1) {
-        auto array = SubArray(_offset, _count);
+        auto array = sub_array(_offset, _count);
         return {array.data, array.count};
     }
 
@@ -141,7 +141,7 @@ struct String : Array<char> {
     }
 
     String substr(int64 _offset, int64 _count = -1) {
-        auto array = SubArray(_offset, _count);
+        auto array = sub_array(_offset, _count);
         return {array.data, array.count};
     }
 
@@ -151,14 +151,15 @@ struct String : Array<char> {
 };
 
 template <typename T>
-Array<T> AllocateArray(int64 count, Allocator& alloc = default_alloc) noexcept {
+Array<T> allocate_array(int64 count, Allocator& alloc = default_alloc) noexcept {
     ASSERT(count > 0);
     return {(T*)alloc.Alloc(sizeof(T) * count), count};
 }
 
 template <typename T>
-Array<T> AllocateArrayAndZero(int64 count, Allocator& alloc = default_alloc) noexcept {
-    Array<T> array = AllocateArray<T>(count, alloc);
+Array<T> allocate_array_and_zero(int64 count, Allocator& alloc = default_alloc) noexcept {
+    ASSERT(count > 0);
+    Array<T> array = allocate_array<T>(count, alloc);
     memset(array.data, 0, array.count * sizeof(T));
     return array;
 }

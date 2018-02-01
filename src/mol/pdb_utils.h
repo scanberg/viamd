@@ -1,47 +1,16 @@
 #pragma once
 
-#include <core/types.h>
-#include <core/array.h>
-#include <string.h>
+#include <mol/pdb.h>
+#include <core/common.h>
 
-using Element = char;
+struct PdbResult {
+	bool success = false;
+	PdbStructure pdb = {};
+}
 
-struct Label {
-	static constexpr int MaxLength = 16;
-	Label() = default;
+enum PdbLoadParams {
+	PDB_IGNORE_HETATM = BIT(1);
+	PDB_DEFAULT = PDB_IGNORE_HETATM;
+}
 
-	template<int32 N>
-	Label(const char (&cstr)[N]) {
-		int32 len = N < MaxLength ? N, MaxLength - 1;
-		strncpy_s(data, other.data, len);
-	}
-
-	Label(const Label& other) {
-		strncpy_s(data, other.data, other.length);
-	}
-
-	char data[MaxLength] = {};
-	int32 length = 0;
-};
-
-struct Residue {
-	Label id;
-	int32 beg_atom_idx;
-	int32 end_atom_idx;
-};
-
-struct Chain {
-	Label id;
-	int32 beg_res_idx;
-	int32 end_res_idx;
-};
-
-struct Molecule {
-	Array<vec3>		atom_position;
-	Array<Element>	atom_element;
-	Array<Label>	atom_label;
-	Array<int32>	atom_residue_index;
-
-	Array<Residue>	residues;
-	Array<Chain>	chains;
-};
+void load_pdb_from_file(const char* filename, PdbLoadParams params = PDB_IGNORE_HETATM);
