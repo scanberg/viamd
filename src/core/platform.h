@@ -1,22 +1,21 @@
 #include <core/keys.h>
 #include <core/types.h>
-#include <GL/gl3w.h>
 
 namespace platform {
 
-constexpr int MaxKeys = 512;
-constexpr int MaxMouseButtons = 8;
+constexpr int MAX_KEYS = 512;
+constexpr int MAX_MOUSE_BUTTONS = 8;
 
 struct Window;
 
 struct InputState {
-    bool key_down[MaxKeys];
-    bool key_hit[MaxKeys];
-    bool key_release[MaxKeys];
+    bool key_down[MAX_KEYS];
+    bool key_hit[MAX_KEYS];
+    bool key_release[MAX_KEYS];
 
-    bool mouse_down[MaxMouseButtons];
-    bool mouse_hit[MaxMouseButtons];
-    bool mouse_release[MaxMouseButtons];
+    bool mouse_down[MAX_MOUSE_BUTTONS];
+    bool mouse_hit[MAX_MOUSE_BUTTONS];
+    bool mouse_release[MAX_MOUSE_BUTTONS];
 
     ivec2 mouse_coord;
 	ivec2 mouse_velocity;

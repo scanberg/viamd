@@ -1,4 +1,5 @@
 #include <core/platform.h>
+#include <core/gl.h>
 #include <GLFW/glfw3.h>
 #ifdef _WIN32
 #undef APIENTRY
@@ -32,10 +33,55 @@ static void error_callback(int error, const char* description) {
     fprintf(stderr, "Error %d: %s\n", error, description);
 }
 
+static void mouse_button_callback(GLFWwindow*, int button, int action, int /*mods*/) {
+    if (action == GLFW_PRESS) {
+        g_input_state.mouse_down[button] = true;
+        g_input_state.mouse_hit[button] = true;
+    } else if (action == GLFW_RELEASE) {
+        g_input_state.mouse_down[button] = false;
+    }
+}
+
+static void mouse_scroll_callback(GLFWwindow*, double xoffset, double yoffset) {
+    ImGuiIO& io = ImGui::GetIO();
+
+    g_input_state.mouse_scroll.y = (int)yoffset;
+    io.MouseWheelH += (float)xoffset;
+    io.MouseWheel += (float)yoffset;
+}
+
+static void key_callback(GLFWwindow*, int key, int, int action, int mods) {
+    ImGuiIO& io = ImGui::GetIO();
+
+    if (action == GLFW_PRESS) {
+        io.KeysDown[key] = true;
+        g_input_state.key_down[key] = true;
+        g_input_state.key_hit[key] = true;
+    }
+    if (action == GLFW_RELEASE) {
+        io.KeysDown[key] = false;
+        g_input_state.key_down[key] = false;
+    }
+
+    // IMGUI
+    (void)mods; // Modifiers are not reliable across systems
+    io.KeyCtrl = io.KeysDown[GLFW_KEY_LEFT_CONTROL] || io.KeysDown[GLFW_KEY_RIGHT_CONTROL];
+    io.KeyShift = io.KeysDown[GLFW_KEY_LEFT_SHIFT] || io.KeysDown[GLFW_KEY_RIGHT_SHIFT];
+    io.KeyAlt = io.KeysDown[GLFW_KEY_LEFT_ALT] || io.KeysDown[GLFW_KEY_RIGHT_ALT];
+    io.KeySuper = io.KeysDown[GLFW_KEY_LEFT_SUPER] || io.KeysDown[GLFW_KEY_RIGHT_SUPER];
+}
+
+static void char_callback(GLFWwindow*, unsigned int c) {
+    ImGuiIO& io = ImGui::GetIO();
+    if (c > 0 && c < 0x10000)
+        io.AddInputCharacter((unsigned short)c);
+}
+
+
 // This is the main rendering function that you have to implement and provide to ImGui (via setting up 'RenderDrawListsFn' in the ImGuiIO structure)
 // Note that this implementation is little overcomplicated because we are saving/setting up/restoring every OpenGL state explicitly, in order to be able to run within any OpenGL engine that doesn't do so. 
 // If text or lines are blurry when integrating ImGui in your engine: in your Render function, try translating your projection matrix by (0.5f,0.5f) or (0.375f,0.375f)
-void ImGui_ImplGlfwGL3_RenderDrawLists(ImDrawData* draw_data)
+static void imgui_render_draw_lists(ImDrawData* draw_data)
 {
     // Avoid rendering when minimized, scale coordinates for retina displays (screen coordinates != framebuffer coordinates)
     ImGuiIO& io = ImGui::GetIO();
@@ -139,63 +185,15 @@ void ImGui_ImplGlfwGL3_RenderDrawLists(ImDrawData* draw_data)
     glScissor(last_scissor_box[0], last_scissor_box[1], (GLsizei)last_scissor_box[2], (GLsizei)last_scissor_box[3]);
 }
 
-static const char* ImGui_ImplGlfwGL3_GetClipboardText(void* user_data)
-{
+static const char* imgui_get_clipboard_text(void* user_data) {
     return glfwGetClipboardString((GLFWwindow*)user_data);
 }
 
-static void ImGui_ImplGlfwGL3_SetClipboardText(void* user_data, const char* text)
-{
+static void imgui_set_clipboard_text(void* user_data, const char* text) {
     glfwSetClipboardString((GLFWwindow*)user_data, text);
 }
 
-void ImGui_ImplGlfwGL3_MouseButtonCallback(GLFWwindow*, int button, int action, int /*mods*/)
-{
-    if (action == GLFW_PRESS) {
-        g_input_state.mouse_down[button] = true;
-        g_input_state.mouse_hit[button] = true;
-    } else if (action == GLFW_RELEASE) {
-        g_input_state.mouse_down[button] = false;
-    }
-}
-
-void ImGui_ImplGlfwGL3_ScrollCallback(GLFWwindow*, double xoffset, double yoffset)
-{
-    ImGuiIO& io = ImGui::GetIO();
-    io.MouseWheelH += (float)xoffset;
-    io.MouseWheel += (float)yoffset;
-    g_input_state.mouse_scroll.y = (int)yoffset;
-}
-
-void ImGui_ImplGlfwGL3_KeyCallback(GLFWwindow*, int key, int, int action, int mods)
-{
-    ImGuiIO& io = ImGui::GetIO();
-    if (action == GLFW_PRESS) {
-        io.KeysDown[key] = true;
-        g_input_state.key_down[key] = true;
-        g_input_state.key_hit[key] = true;
-    }
-    if (action == GLFW_RELEASE) {
-        io.KeysDown[key] = false;
-        g_input_state.key_down[key] = false;
-    }
-
-    (void)mods; // Modifiers are not reliable across systems
-    io.KeyCtrl = io.KeysDown[GLFW_KEY_LEFT_CONTROL] || io.KeysDown[GLFW_KEY_RIGHT_CONTROL];
-    io.KeyShift = io.KeysDown[GLFW_KEY_LEFT_SHIFT] || io.KeysDown[GLFW_KEY_RIGHT_SHIFT];
-    io.KeyAlt = io.KeysDown[GLFW_KEY_LEFT_ALT] || io.KeysDown[GLFW_KEY_RIGHT_ALT];
-    io.KeySuper = io.KeysDown[GLFW_KEY_LEFT_SUPER] || io.KeysDown[GLFW_KEY_RIGHT_SUPER];
-}
-
-void ImGui_ImplGlfwGL3_CharCallback(GLFWwindow*, unsigned int c)
-{
-    ImGuiIO& io = ImGui::GetIO();
-    if (c > 0 && c < 0x10000)
-        io.AddInputCharacter((unsigned short)c);
-}
-
-bool ImGui_ImplGlfwGL3_CreateFontsTexture()
-{
+static bool imgui_create_fonts_texture() {
     // Build texture atlas
     ImGuiIO& io = ImGui::GetIO();
     unsigned char* pixels;
@@ -220,8 +218,7 @@ bool ImGui_ImplGlfwGL3_CreateFontsTexture()
     return true;
 }
 
-bool ImGui_ImplGlfwGL3_CreateDeviceObjects()
-{
+bool imgui_create_device_objects() {
     // Backup GL state
     GLint last_texture, last_array_buffer, last_vertex_array;
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &last_texture);
@@ -285,7 +282,7 @@ bool ImGui_ImplGlfwGL3_CreateDeviceObjects()
     glVertexAttribPointer(g_attrib_location_uv, 2, GL_FLOAT, GL_FALSE, sizeof(ImDrawVert), (GLvoid*)IM_OFFSETOF(ImDrawVert, uv));
     glVertexAttribPointer(g_attrib_location_color, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(ImDrawVert), (GLvoid*)IM_OFFSETOF(ImDrawVert, col));
 
-    ImGui_ImplGlfwGL3_CreateFontsTexture();
+    imgui_create_fonts_texture();
 
     // Restore modified GL state
     glBindTexture(GL_TEXTURE_2D, last_texture);
@@ -295,8 +292,7 @@ bool ImGui_ImplGlfwGL3_CreateDeviceObjects()
     return true;
 }
 
-void    ImGui_ImplGlfwGL3_InvalidateDeviceObjects()
-{
+static void imgui_invalidate_device_objects() {
     if (g_vao_handle) glDeleteVertexArrays(1, &g_vao_handle);
     if (g_vbo_handle) glDeleteBuffers(1, &g_vbo_handle);
     if (g_elements_handle) glDeleteBuffers(1, &g_elements_handle);
@@ -321,8 +317,7 @@ void    ImGui_ImplGlfwGL3_InvalidateDeviceObjects()
     }
 }
 
-bool    ImGui_ImplGlfwGL3_Init(GLFWwindow* window, bool install_callbacks)
-{
+bool imgui_init(GLFWwindow* window, bool install_callbacks) {
     g_window.glfw_window = window;
 
     ImGuiIO& io = ImGui::GetIO();
@@ -347,9 +342,9 @@ bool    ImGui_ImplGlfwGL3_Init(GLFWwindow* window, bool install_callbacks)
     io.KeyMap[ImGuiKey_Y] = Key::KEY_Y;
     io.KeyMap[ImGuiKey_Z] = Key::KEY_Z;
 
-    io.RenderDrawListsFn = ImGui_ImplGlfwGL3_RenderDrawLists;       // Alternatively you can set this to NULL and call ImGui::GetDrawData() after ImGui::Render() to get the same ImDrawData pointer.
-    io.SetClipboardTextFn = ImGui_ImplGlfwGL3_SetClipboardText;
-    io.GetClipboardTextFn = ImGui_ImplGlfwGL3_GetClipboardText;
+    io.RenderDrawListsFn = imgui_render_draw_lists;       // Alternatively you can set this to NULL and call ImGui::GetDrawData() after ImGui::Render() to get the same ImDrawData pointer.
+    io.SetClipboardTextFn = imgui_set_clipboard_text;
+    io.GetClipboardTextFn = imgui_get_clipboard_text;
     io.ClipboardUserData = g_window.glfw_window;
 #ifdef _WIN32
     io.ImeWindowHandle = glfwGetWin32Window(g_window.glfw_window);
@@ -357,25 +352,25 @@ bool    ImGui_ImplGlfwGL3_Init(GLFWwindow* window, bool install_callbacks)
 
     if (install_callbacks)
     {
-        glfwSetMouseButtonCallback(window, ImGui_ImplGlfwGL3_MouseButtonCallback);
-        glfwSetScrollCallback(window, ImGui_ImplGlfwGL3_ScrollCallback);
-        glfwSetKeyCallback(window, ImGui_ImplGlfwGL3_KeyCallback);
-        glfwSetCharCallback(window, ImGui_ImplGlfwGL3_CharCallback);
+        glfwSetMouseButtonCallback(window, mouse_button_callback);
+        glfwSetScrollCallback(window, mouse_scroll_callback);
+        glfwSetKeyCallback(window, key_callback);
+        glfwSetCharCallback(window, char_callback);
     }
 
     return true;
 }
 
-void ImGui_ImplGlfwGL3_Shutdown()
+static void imgui_shutdown()
 {
-    ImGui_ImplGlfwGL3_InvalidateDeviceObjects();
+    imgui_invalidate_device_objects();
     ImGui::Shutdown();
 }
 
-void ImGui_ImplGlfwGL3_NewFrame()
+static void imgui_new_frame()
 {
     if (!g_font_texture)
-        ImGui_ImplGlfwGL3_CreateDeviceObjects();
+        imgui_create_device_objects();
 
     ImGuiIO& io = ImGui::GetIO();
 
@@ -448,7 +443,7 @@ Window* create_window(int width, int height, const char* window_title) {
     glfwSwapInterval(1);
     gl3wInit();
 
-    ImGui_ImplGlfwGL3_Init(window, true);
+    imgui_init(window, true);
 
     g_window.glfw_window = window;
     return &g_window; 
@@ -463,21 +458,21 @@ void set_window_should_close(Window* window, bool value) {
 }
 
 void shutdown() {
-    ImGui_ImplGlfwGL3_Shutdown();
+    imgui_shutdown();
     glfwTerminate();
 }
 
 void update() {
     // Reset hit states
-    memset(g_input_state.key_hit, 0, MaxKeys);
-    memset(g_input_state.mouse_hit, 0, MaxMouseButtons);
+    memset(g_input_state.key_hit, 0, MAX_KEYS);
+    memset(g_input_state.mouse_hit, 0, MAX_MOUSE_BUTTONS);
     glfwPollEvents();
     double x, y;
     glfwGetCursorPos(g_window.glfw_window, &x, &y);
 	ivec2 new_coord{ x,y };
 	g_input_state.mouse_velocity = new_coord - g_input_state.mouse_coord;
 	g_input_state.mouse_coord = new_coord;
-    ImGui_ImplGlfwGL3_NewFrame();
+    imgui_new_frame();
 }
 
 bool window_in_focus(Window* window) {

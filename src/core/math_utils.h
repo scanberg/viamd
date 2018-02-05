@@ -3,8 +3,13 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <float.h>
 
 namespace math {
+	constexpr float PI = glm::pi<float>();
+	constexpr float EPSILON = glm::epsilon<float>();
+	constexpr float FLOAT_MAX = FLT_MAX;
+
 	using glm::dot;
 	using glm::cross;
 	using glm::abs;

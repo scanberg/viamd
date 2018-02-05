@@ -21,9 +21,18 @@ struct Array {
         return {data + _offset, _count};
     }
 
+    const T* begin() const { return data; }
+    const T* beg() const { return data; }
+    const T* end() const { return data + count; }
+
     T* begin() { return data; }
     T* beg() { return data; }
     T* end() { return data + count; }
+
+    const T& front() const { return data[0]; }
+    const T& back() const { return data[count - 1]; }
+    T& front() { return data[0]; }
+    T& back() { return data[count - 1]; }
 
     operator bool() const { return data != nullptr && count > 0; }
     const T& operator[](int64 i) const { return data[i]; }
@@ -36,7 +45,7 @@ struct Array {
 template <typename T>
 struct DynamicArray : Array<T> {
     DynamicArray(Allocator& alloc = default_alloc) : capacity(32), allocator(alloc) {
-        this->data = (T*)allocator.Alloc(capacity * sizeof(T));
+        this->data = (T*)allocator.alloc(capacity * sizeof(T));
         this->count = 0;
     }
 
@@ -44,21 +53,21 @@ struct DynamicArray : Array<T> {
         capacity = clone_source.count;
         this->count = capacity;
         if (this->count > 0) {
-            this->data = (T*)allocator.Alloc(capacity * sizeof(T));
+            this->data = (T*)allocator.alloc(capacity * sizeof(T));
             memcpy(this->data, clone_source.data, this->count * sizeof(T));
         }
     }
 
     ~DynamicArray() {
         if (this->data) {
-            allocator.Free(this->data);
+            allocator.free(this->data);
         }
     }
 
     void push_back(const T& item) {
         if (this->count >= capacity) {
             // GROW
-            Reserve(capacity * 2);
+            reserve(capacity * 2);
         }
         this->data[this->count] = item;
         this->count++;
@@ -66,10 +75,10 @@ struct DynamicArray : Array<T> {
 
     void reserve(int64 new_capacity) {
         if (new_capacity < capacity) return;
-        T* new_data = (T*)allocator.Alloc(new_capacity * sizeof(T));
+        T* new_data = (T*)allocator.alloc(new_capacity * sizeof(T));
         if (this->data) {
             memcpy(new_data, this->data, this->count * sizeof(T));
-            allocator.Free(this->data);
+            allocator.free(this->data);
         }
         this->data = new_data;
         capacity = new_capacity;
@@ -89,6 +98,10 @@ struct DynamicArray : Array<T> {
                 this->count = new_count;
             }
         }
+    }
+
+    void clear() {
+        this->count = 0;
     }
 
     int64 capacity;
@@ -153,7 +166,7 @@ struct String : Array<char> {
 template <typename T>
 Array<T> allocate_array(int64 count, Allocator& alloc = default_alloc) noexcept {
     ASSERT(count > 0);
-    return {(T*)alloc.Alloc(sizeof(T) * count), count};
+    return {(T*)alloc.alloc(sizeof(T) * count), count};
 }
 
 template <typename T>

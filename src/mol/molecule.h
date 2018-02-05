@@ -45,6 +45,11 @@ struct Label {
 		return *this;
 	}
 
+	operator const char*() const { return data; }
+	char* begin() { return data; }
+	char* beg() { return data; }
+	char* end() { return data + length; }
+
 	char data[MaxLength] = {};
 	int32 length = 0;
 };
@@ -59,6 +64,12 @@ struct Chain {
 	Label id;
 	int32 beg_res_idx;
 	int32 end_res_idx;
+};
+
+struct Backbone {
+	Array<int32> atom_ca_idx;
+	// TODO: SHOULD ONE USE HA FOR ANCHOR DIRECTION VECTOR???
+	Array<int32> atom_ha_idx;
 };
 
 struct MoleculeStructure {

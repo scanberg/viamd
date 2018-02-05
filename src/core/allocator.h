@@ -8,8 +8,8 @@
 // TODO: Encode size in stack-allocator and assert comparison with prev on free
 
 struct Allocator {
-    virtual void* Alloc(int64) = 0;
-    virtual void Free(void*) = 0;
+    virtual void* alloc(int64) = 0;
+    virtual void free(void*) = 0;
 };
 
 struct StackAllocator : Allocator {
@@ -24,14 +24,14 @@ struct StackAllocator : Allocator {
 		ASSERT(max_size > 0);
     }
 
-    virtual void* Alloc(int64 size) override {
+    virtual void* alloc(int64 size) override {
 		ASSERT(curr_ptr + size < base_ptr + max_size);
         prev_ptr = curr_ptr;
         curr_ptr += size;
         return prev_ptr;
     }
 
-    virtual void Free(void* ptr) override {
+    virtual void free(void* ptr) override {
 		ASSERT(curr_ptr <= ptr && ptr < curr_ptr + max_size);
         //assert(ptr == prev_ptr);
         curr_ptr = (uint8*)ptr;
@@ -42,20 +42,20 @@ struct FrameAllocator : StackAllocator {
     FrameAllocator(void* memory, int64 size) :
         StackAllocator(memory, size) {};
 	
-    void Reset() {
+    void reset() {
         curr_ptr = base_ptr;
     }
 
-    virtual void Free(void*) override {}
+    virtual void free(void*) override {}
 };
 
 struct DefaultAllocator : Allocator {
-    virtual void* Alloc(int64 size) override {
-        return malloc(size);
+    virtual void* alloc(int64 size) override {
+        return std::malloc(size);
     }
 
-    virtual void Free(void* ptr) override {
-        return free(ptr);
+    virtual void free(void* ptr) override {
+        return std::free(ptr);
     }
 };
 

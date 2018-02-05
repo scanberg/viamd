@@ -4,7 +4,7 @@ namespace immediate {
 
 void initialize();
 void shutdown();
-void flush();
+void flush(float mvp_matrix[16]);
 
 void draw_sphere(float pos[3], float radius, unsigned char color[4]);
 void draw_point(float pos[3], unsigned char color[4]);

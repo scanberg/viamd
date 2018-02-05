@@ -1,57 +1,48 @@
 #include <imgui.h>
 #include <core/platform.h>
+#include <core/gl.h>
 #include <core/types.h>
 #include <core/math_utils.h>
+#include <core/camera.h>
+#include <core/camera_utils.h>
 #include <mol/molecule.h>
+#include <mol/trajectory.h>
+#include <immediate_draw_utils.h>
 
 #include <stdio.h>
 
+struct ApplicationData {
+    platform::Window*   main_window;
+    Camera              camera;
+    MoleculeStructure*  mol_struct;
+    Trajectory*         trajectory;
+};
+
 void draw_main_menu(platform::Window* window);
-
-
 
 int main(int, char**)
 {
+    ApplicationData data;
 
+    data.camera.position = vec3(0,0,3);
 
     platform::initialize();
-    platform::Window* window = platform::create_window(1024, 768, "VIAMD");
+    data.main_window = platform::create_window(1024, 768, "VIAMD");
+
+    immediate::initialize();
 
     // Setup style
     ImGui::StyleColorsClassic();
 
     bool show_demo_window = true;
-    bool show_another_window = false;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
     // Main loop
-    while (!(platform::window_should_close(window))) {
+    while (!(platform::window_should_close(data.main_window))) {
         platform::update();
 
 		// MAIN MENU BAR
-		draw_main_menu(window);
-
-        // 1. Show a simple window.
-        // Tip: if we don't call ImGui::Begin()/ImGui::End() the widgets automatically appears in a window called "Debug".
-        {
-            static float f = 0.0f;
-            ImGui::Text("Hello, world!");                           // Some text (you can use a format string too)
-            ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float as a slider from 0.0f to 1.0f
-            ImGui::ColorEdit3("clear color", (float*)&clear_color); // Edit 3 floats as a color
-            if (ImGui::Button("Demo Window"))                       // Use buttons to toggle our bools. We could use Checkbox() as well.
-                show_demo_window ^= 1;
-            if (ImGui::Button("Another Window")) 
-                show_another_window ^= 1;
-            ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
-        }
-
-        // 2. Show another simple window. In most cases you will use an explicit Begin/End pair to name the window.
-        if (show_another_window)
-        {
-            ImGui::Begin("Another Window", &show_another_window);
-            ImGui::Text("Hello from another window!");
-            ImGui::End();
-        }
+		draw_main_menu(data.main_window);
 
         // 3. Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
         if (show_demo_window)
@@ -62,12 +53,25 @@ int main(int, char**)
 
         // Rendering
         int display_w, display_h;
-        platform::get_framebuffer_size(window, &display_w, &display_h);
+        platform::get_framebuffer_size(data.main_window, &display_w, &display_h);
         glViewport(0, 0, display_w, display_h);
         glClearColor(clear_color.x, clear_color.y, clear_color.z, clear_color.w);
-        glClear(GL_COLOR_BUFFER_BIT);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        mat4 view_mat = glm::translate(mat4(), -data.camera.position);
+        mat4 proj_mat = compute_perspective_projection_matrix(data.camera, display_w, display_h);
+        mat4 mvp = proj_mat * view_mat;
+
+        float p0[3] = {0,0,0};
+        float p1[3] = {1,0,0};
+        float p2[3] = {0.5,1,0};
+
+        unsigned char c[4] = {255,255,255,255};
+        immediate::draw_triangle(p0, p1, p2, c);
+        immediate::flush(&mvp[0][0]);
+
         ImGui::Render();
-        platform::swap_buffers(window);
+        platform::swap_buffers(data.main_window);
     }
 
     platform::shutdown();
@@ -76,21 +80,16 @@ int main(int, char**)
 }
 
 
-
-
-
-
 void draw_main_menu(platform::Window* main_window) {
-
     bool new_clicked = false;
 	if (ImGui::BeginMainMenuBar())
 	{
 		if (ImGui::BeginMenu("File"))
 		{
-			if (ImGui::MenuItem("New", "Ctrl+N"))
+			if (ImGui::MenuItem("New", "CTRL+N"))
 				new_clicked = true;
 
-			if (ImGui::MenuItem("Open", "Ctrl+O")) {}
+			if (ImGui::MenuItem("Open", "CTRL+O")) {}
 			if (ImGui::BeginMenu("Open Recent"))
 			{
 				ImGui::MenuItem("fish_hat.c");
@@ -98,10 +97,11 @@ void draw_main_menu(platform::Window* main_window) {
 				ImGui::MenuItem("fish_hat.h");
 				ImGui::EndMenu();
 			}
-			if (ImGui::MenuItem("Save", "Ctrl+S")) {}
+			if (ImGui::MenuItem("Save", "CTRL+S")) {}
 			if (ImGui::MenuItem("Save As..")) {}
+            if (ImGui::MenuItem("Export", "CTRL+E")) {}
 			ImGui::Separator();
-			if (ImGui::MenuItem("Quit", "Alt+F4")) {
+			if (ImGui::MenuItem("Quit", "ALT+F4")) {
 				platform::set_window_should_close(main_window, true);
 			}
 			ImGui::EndMenu();
