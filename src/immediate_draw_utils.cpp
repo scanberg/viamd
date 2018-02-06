@@ -1,5 +1,6 @@
 #include <immediate_draw_utils.h>
 #include <core/gl.h>
+#include <core/gl_utils.h>
 #include <core/array.h>
 
 namespace immediate {
@@ -21,9 +22,6 @@ struct DrawCommand {
 static DynamicArray<DrawCommand> commands;
 static DynamicArray<Vertex> vertices;
 static DynamicArray<Index> indices;
-// static DynamicArray<Index> point_indices;
-// static DynamicArray<Index> line_indices;
-// static DynamicArray<Index> triangle_indices;
 
 static GLuint vbo = 0;
 static GLuint ibo = 0;
@@ -38,82 +36,72 @@ static GLint attrib_loc_tc = -1;
 static GLint attrib_loc_col = -1;
 static GLint uniform_loc_mvp = -1;
 
-static const char* v_shader_src =
-    "#version 150\n"
-    "uniform mat4 u_mvp;\n"
-    "in vec3 in_pos;\n"
-    "in vec2 in_tc;\n"
-    "in vec4 in_col;\n"
-    "out vec2 tc;\n"
-    "out vec4 col;\n"
-    "void main(){\n"
-    "gl_Position = u_mvp * vec4(in_pos, 1);\n"
-    "tc = in_tc;\n"
-    "col = in_col;\n"
-    "}";
+static const char* v_shader_src = R"(
+#version 150 core
+uniform mat4 u_mvp;
 
-static const char* f_shader_src =
-    "#version 150\n"
-    "in vec2 tc;\n"
-    "in vec4 col;\n"
-    "out vec4 out_frag;\n"
-    "void main(){\n"
-    "out_frag = col;\n"
-    "}";
+in vec3 in_pos;
+in vec2 in_tc;
+in vec4 in_col;
 
-static void log_shader_compile_error(GLuint shader) {
-    constexpr int MAX_BUFFER_LENGTH = 1024;
-    char buffer[MAX_BUFFER_LENGTH];
+out vec2 tc;
+out vec4 col;
 
-    GLint success = 0;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-    if (success == GL_FALSE) {
-        int length;
-        glGetShaderInfoLog(shader, MAX_BUFFER_LENGTH, &length, buffer);
-        printf("%s\n", buffer);
-    }
+void main() {
+	gl_Position = u_mvp * vec4(in_pos, 1);
+	tc = in_tc;
+	col = in_col;
 }
+)";
 
-static void log_program_link_error(GLuint program) {
-    constexpr int MAX_BUFFER_LENGTH = 1024;
-    char buffer[MAX_BUFFER_LENGTH];
+static const char* f_shader_src = R"(
+#version 150 core
 
-    GLint success = 0;
-    glGetProgramiv(program, GL_LINK_STATUS, &success);
-    if (success == GL_FALSE) {
-        int length;
-        glGetProgramInfoLog(program, MAX_BUFFER_LENGTH, &length, buffer);
-        printf("%s\n", buffer);
-    }
+in vec2 tc;
+in vec4 col;
+
+out vec4 out_frag;
+
+void main() {
+	out_frag = col;
 }
+)";
 
-static inline void append_draw_command(GLenum primitive_type) {
-    Index count = primitive_type == GL_POINTS ? 1 : (primitive_type == GL_LINES ? 2 : 3);
+static inline void append_draw_command(Index offset, Index count, GLenum primitive_type) {
     if (commands.count > 0) {
         if (commands.back().primitive_type == primitive_type) {
             commands.back().count += count;
         }
     } else {
-        DrawCommand cmd{(Index)indices.count, count, primitive_type};
+        DrawCommand cmd{offset, count, primitive_type};
         commands.push_back(cmd);
     }
 }
 
 void initialize() {
+	constexpr int BUFFER_SIZE = 1024;
+	char buffer[BUFFER_SIZE];
+
     v_shader = glCreateShader(GL_VERTEX_SHADER);
     f_shader = glCreateShader(GL_FRAGMENT_SHADER);
     glShaderSource(v_shader, 1, &v_shader_src, 0);
     glShaderSource(f_shader, 1, &f_shader_src, 0);
     glCompileShader(v_shader);
-    log_shader_compile_error(v_shader);
+	if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
+		printf("Error while compiling immediate vertex shader:\n%s\n", buffer);
+	}
     glCompileShader(f_shader);
-    log_shader_compile_error(f_shader);
+	if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
+		printf("Error while compiling immediate fragment shader:\n%s\n", buffer);
+	}
 
     program = glCreateProgram();
     glAttachShader(program, v_shader);
     glAttachShader(program, f_shader);
     glLinkProgram(program);
-    log_program_link_error(program);
+	if (gl::get_program_link_error(buffer, BUFFER_SIZE, program)) {
+		printf("Error while linking immediate program:\n%s\n", buffer);
+	}
 
     glDetachShader(program, v_shader);
     glDetachShader(program, f_shader);
@@ -149,11 +137,14 @@ void initialize() {
 
 void shutdown() {
     if (vbo) glDeleteBuffers(1, &vbo);
+	if (ibo) glDeleteBuffers(1, &ibo);
     if (vao) glDeleteVertexArrays(1, &vao);
     if (program) glDeleteProgram(program);
 }
 
 void flush(float mvp_matrix[16]) {
+    glBindVertexArray(vao);
+
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBufferData(GL_ARRAY_BUFFER, vertices.count * sizeof(Vertex), vertices.data, GL_STREAM_DRAW);
 
@@ -162,10 +153,10 @@ void flush(float mvp_matrix[16]) {
 
     glUseProgram(program);
     glUniformMatrix4fv(uniform_loc_mvp, 1, GL_FALSE, mvp_matrix);
-    glBindVertexArray(vao);
 
     for (const auto& cmd : commands) {
-        glDrawElements(cmd.primitive_type, cmd.count, sizeof(Index) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT, reinterpret_cast<const void*>(cmd.offset));
+        glDrawElements(cmd.primitive_type, cmd.count, sizeof(Index) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT,
+                       reinterpret_cast<const void*>(cmd.offset));
     }
 
     glBindVertexArray(0);
@@ -178,29 +169,55 @@ void flush(float mvp_matrix[16]) {
     commands.clear();
 }
 
-void draw_point(float pos[3], unsigned char color[4]) {
+// PRIMITIVES
+void draw_point(const float pos[3], const unsigned char color[4]) {
     Index idx = (Index)vertices.count;
     Vertex vert = {{pos[0], pos[1], pos[2]}, {0, 0}, {color[0], color[1], color[2], color[3]}};
+
     vertices.push_back(vert);
     indices.push_back(idx);
-    append_draw_command(GL_POINTS);
+
+    append_draw_command(idx, 1, GL_POINTS);
 }
 
-void draw_triangle(float v0[3], float v1[3], float v2[3], unsigned char color[4]) {
+void draw_line(const float from[3], const float to[3], const unsigned char color[4]) {
     Index idx = (Index)vertices.count;
-    Vertex vert0 = {{v0[0], v0[1], v0[2]}, {0, 0}, {color[0], color[1], color[2], color[3]}};
-    Vertex vert1 = {{v1[0], v1[1], v1[2]}, {0, 0}, {color[0], color[1], color[2], color[3]}};
-    Vertex vert2 = {{v2[0], v2[1], v2[2]}, {0, 0}, {color[0], color[1], color[2], color[3]}};
+    Vertex v0 = {{from[0], from[1], from[2]}, {0, 0}, {color[0], color[1], color[2], color[3]}};
+    Vertex v1 = {{to[0], to[1], to[2]}, {0, 0}, {color[0], color[1], color[2], color[3]}};
 
-    vertices.push_back(vert0);
-    vertices.push_back(vert1);
-    vertices.push_back(vert2);
+    vertices.push_back(v0);
+    vertices.push_back(v1);
+
+    indices.push_back(idx);
+    indices.push_back(idx + 1);
+
+    append_draw_command(idx, 2, GL_LINES);
+}
+
+void draw_triangle(const float p0[3], const float p1[3], const float p2[3], const unsigned char color[4]) {
+    Index idx = (Index)vertices.count;
+    Vertex v0 = {{p0[0], p0[1], p0[2]}, {0, 0}, {color[0], color[1], color[2], color[3]}};
+    Vertex v1 = {{p1[0], p1[1], p1[2]}, {0, 0}, {color[0], color[1], color[2], color[3]}};
+    Vertex v2 = {{p2[0], p2[1], p2[2]}, {0, 0}, {color[0], color[1], color[2], color[3]}};
+
+    vertices.push_back(v0);
+    vertices.push_back(v1);
+    vertices.push_back(v2);
 
     indices.push_back(idx);
     indices.push_back(idx + 1);
     indices.push_back(idx + 2);
 
-    append_draw_command(GL_TRIANGLES);
+    append_draw_command(idx, 3, GL_TRIANGLES);
 }
 
-}
+/*
+void draw_quad(const float v0[3], const float v1[3], const float v2[3], const float v3[3], const unsigned char color[4]) {}
+
+// COMPOSITS
+void draw_sphere(const float pos[3], const float radius, const unsigned char color[4]) {}
+
+void draw_axis_aligned_box(const float min_box[3], const float max_box[3], const unsigned char color[4]) {}
+*/
+
+}  // namespace immediate

@@ -16,10 +16,10 @@ struct InputState {
     bool mouse_down[MAX_MOUSE_BUTTONS];
     bool mouse_hit[MAX_MOUSE_BUTTONS];
     bool mouse_release[MAX_MOUSE_BUTTONS];
-
-    ivec2 mouse_coord;
-	ivec2 mouse_velocity;
-    ivec2 mouse_scroll;
+    
+	vec2 mouse_coordinates;
+	vec2 mouse_velocity;
+    vec2 mouse_scroll;
 };
 
 void        initialize();
@@ -32,7 +32,9 @@ bool        window_in_focus(Window* window);
 bool        window_should_close(Window* window);
 void        get_framebuffer_size(Window* window, int* width, int* height);
 InputState* get_input_state();
+double		get_delta_time();
 void        swap_buffers(Window* window);
+void		set_vsync(bool value);
 
 }
 

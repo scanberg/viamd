@@ -3,8 +3,8 @@
 #include <core/types.h>
 
 struct Camera {
-    vec3 position;
-    quat orientation;
+	vec3 position {};
+	quat orientation {};
 
     float near_plane = 0.1f;
     float far_plane = 1000.f;

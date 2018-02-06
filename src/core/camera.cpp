@@ -3,15 +3,15 @@
 #include <core/math_utils.h>
 
 mat4 compute_view_to_world_matrix(const Camera& camera) {
-    auto m = glm::mat4_cast(camera.orientation);
-    m[3] = vec4(camera.position, 1);
-    return m;
+    auto r = glm::mat4_cast(camera.orientation);
+	auto t = glm::translate(mat4(1), camera.position);
+    return  t * r;
 }
 
 mat4 compute_world_to_view_matrix(const Camera& camera) {
-    auto m = glm::mat4_cast(glm::conjugate(camera.orientation));
-    m[3] = vec4(-camera.position, 1);
-    return m;
+	auto r = glm::mat4_cast(glm::conjugate(camera.orientation));
+	auto t = glm::translate(mat4(1), -camera.position);
+	return r * t;
 }
 
 mat4 compute_perspective_projection_matrix(const Camera& camera, int width, int height) {

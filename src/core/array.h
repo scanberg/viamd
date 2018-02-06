@@ -42,31 +42,75 @@ struct Array {
     int64 count;
 };
 
+// Light-weight std::vector alternative
 template <typename T>
 struct DynamicArray : Array<T> {
-    DynamicArray(Allocator& alloc = default_alloc) : capacity(32), allocator(alloc) {
+	static constexpr int64 INIT_CAPACITY = 32;
+    DynamicArray(Allocator& alloc = default_alloc) : capacity(INIT_CAPACITY), allocator(alloc) {
         this->data = (T*)allocator.alloc(capacity * sizeof(T));
         this->count = 0;
     }
 
-    DynamicArray(const Array<T>& clone_source, Allocator& alloc = default_alloc) : allocator(alloc) {
-        capacity = clone_source.count;
+	DynamicArray(int64 count, T value = 0, Allocator& alloc = default_alloc) : capacity(count > INIT_CAPACITY ? count : INIT_CAPACITY), allocator(alloc) {
+		this->data = (T*)allocator.alloc(capacity * sizeof(T));
+		this->count = count;
+		memset(data, value, count);
+	}
+
+    DynamicArray(const Array<T>& clone_source, Allocator& alloc = default_alloc) : capacity(clone_source.count), allocator(alloc) {
         this->count = capacity;
         if (this->count > 0) {
             this->data = (T*)allocator.alloc(capacity * sizeof(T));
-            memcpy(this->data, clone_source.data, this->count * sizeof(T));
+            memcpy(this->data, clone_source.data, count * sizeof(T));
         }
     }
+
+	DynamicArray(const DynamicArray& other) : capacity(other.capacity), allocator(other.allocator) {
+		this->data = (T*)allocator.alloc(capacity);
+		this->count = other.count;
+		memcpy(data, other.data, count * sizeof(T));
+	}
+
+	DynamicArray(DynamicArray&& other) : capacity(other.capacity), allocator(other.allocator) {
+		this->data = other.data;
+		other.data = nullptr;
+		this->count = other.count;
+		other.count = 0;
+	}
 
     ~DynamicArray() {
         if (this->data) {
             allocator.free(this->data);
         }
+		count = 0;
     }
+
+	DynamicArray& operator =(const DynamicArray& other) {
+		capacity = other.capacity;
+		allocator = other.allocator;
+		data = (T*)allocator.alloc(capacity);
+		count = other.count;
+		memcpy(data, other.data, count * sizeof(T));
+		return *this;
+	}
+
+	DynamicArray& operator =(DynamicArray&& other) {
+		capacity = other.capacity;
+		other.capacity = 0;
+		allocator = other.allocator;
+		data = other.data;
+		other.data = nullptr;
+		count = other.count;
+		other.count = 0;
+		return *this;
+	}
+
+	int64 size() const { return count; }
 
     void push_back(const T& item) {
         if (this->count >= capacity) {
             // GROW
+			capacity = capacity < INIT_CAPACITY ? INIT_CAPACITY : capacity;
             reserve(capacity * 2);
         }
         this->data[this->count] = item;
@@ -109,29 +153,31 @@ struct DynamicArray : Array<T> {
 };
 
 struct CString : Array<const char> {
-    CString() {
-        data = 0;
-        count = 0;
-    }
+	CString() {
+		data = 0;
+		count = 0;
+	}
 
-    CString(const char* cstr, int64 length) {
-        data = cstr;
-        count = length;
-    }
+	CString(const char* cstr, int64 length = -1) {
+		data = cstr;
+		if (length == -1)
+			length = strlen(cstr);
+		count = length;
+	}
 
-    template <int64 length>
-    CString(const char (&cstr)[length]) {
-        data = cstr;
-        count = length;
-    }
+	template <int64 length>
+	CString(const char(&cstr)[length]) {
+		data = cstr;
+		count = length;
+	}
 
-    CString substr(int64 _offset, int64 _count = -1) {
-        auto array = sub_array(_offset, _count);
-        return {array.data, array.count};
-    }
+	CString substr(int64 _offset, int64 _count = -1) {
+		auto array = sub_array(_offset, _count);
+		return { array.data, array.count };
+	}
 
-    operator const char*() { return data; }
-    operator bool() { return (data != 0 && count != 0); }
+	operator const char*() { return data; }
+	operator bool() { return (data != 0 && count != 0); }
 };
 
 struct String : Array<char> {

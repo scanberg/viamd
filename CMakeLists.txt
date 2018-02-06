@@ -37,6 +37,8 @@ add_definitions(-DGLFW_INCLUDE_NONE
 
 add_executable(${PROJECT_NAME} ${PROJECT_HEADERS} ${PROJECT_SOURCES})
 
+
+
 target_link_libraries(${PROJECT_NAME}
                       glfw
                       gl3w

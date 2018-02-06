@@ -33,6 +33,25 @@ static void error_callback(int error, const char* description) {
     fprintf(stderr, "Error %d: %s\n", error, description);
 }
 
+static void gl_callback(
+	GLenum source,
+	GLenum type,
+	GLuint id,
+	GLenum severity,
+	GLsizei length,
+	const GLchar* message,
+	const void* userParam ) {
+	(void)source; (void)type; (void)id;
+	(void)severity; (void)length; (void)userParam;
+
+	if (severity >= GL_DEBUG_SEVERITY_LOW)
+		fprintf(stderr, "%s\n\n", message);
+	if (severity == GL_DEBUG_SEVERITY_HIGH) {
+		fprintf(stderr, "Aborting...\n");
+		abort();
+	}
+}
+
 static void mouse_button_callback(GLFWwindow*, int button, int action, int /*mods*/) {
     if (action == GLFW_PRESS) {
         g_input_state.mouse_down[button] = true;
@@ -443,7 +462,20 @@ Window* create_window(int width, int height, const char* window_title) {
     glfwSwapInterval(1);
     gl3wInit();
 
+	if (glDebugMessageCallback) {
+		glEnable(GL_DEBUG_OUTPUT);
+		glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+		glDebugMessageCallback(gl_callback, nullptr);
+		glDebugMessageControl(
+			GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, NULL, true
+		);
+	}
+
     imgui_init(window, true);
+
+	double x, y;
+	glfwGetCursorPos(window, &x, &y);
+	g_input_state.mouse_coordinates = { x,y };
 
     g_window.glfw_window = window;
     return &g_window; 
@@ -466,12 +498,18 @@ void update() {
     // Reset hit states
     memset(g_input_state.key_hit, 0, MAX_KEYS);
     memset(g_input_state.mouse_hit, 0, MAX_MOUSE_BUTTONS);
+	g_input_state.mouse_scroll = { 0,0 };
+
     glfwPollEvents();
     double x, y;
     glfwGetCursorPos(g_window.glfw_window, &x, &y);
-	ivec2 new_coord{ x,y };
-	g_input_state.mouse_velocity = new_coord - g_input_state.mouse_coord;
-	g_input_state.mouse_coord = new_coord;
+	int w, h;
+	glfwGetFramebufferSize(g_window.glfw_window, &w, &h);
+
+	vec2 new_coord{ x,y };
+	g_input_state.mouse_velocity = new_coord - g_input_state.mouse_coordinates;
+	g_input_state.mouse_coordinates = new_coord;
+
     imgui_new_frame();
 }
 
@@ -491,8 +529,16 @@ InputState* get_input_state() {
     return &g_input_state;
 }
 
+double get_delta_time() {
+	return ImGui::GetIO().DeltaTime;
+}
+
 void swap_buffers(Window* window) {
     glfwSwapBuffers(window->glfw_window);
+}
+
+void set_vsync(bool value) {
+	glfwSwapInterval((int)value);
 }
 
 }

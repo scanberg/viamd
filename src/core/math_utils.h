@@ -3,6 +3,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/random.hpp>
 #include <float.h>
 
 namespace math {
@@ -36,4 +37,10 @@ namespace math {
 
 	using glm::transpose;
 	using glm::inverse;
+
+	using glm::linearRand;
+	using glm::sphericalRand;
+	using glm::ballRand;
+	inline float rnd() { return glm::linearRand(0.f, 1.f); }
+
 }
