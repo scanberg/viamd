@@ -4,7 +4,7 @@
 
 struct Camera {
 	vec3 position {};
-	quat orientation {};
+	quat orientation = quat(0,0,0,1);
 
     float near_plane = 0.1f;
     float far_plane = 1000.f;

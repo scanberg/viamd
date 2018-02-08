@@ -17,7 +17,10 @@ struct InputState {
     bool mouse_hit[MAX_MOUSE_BUTTONS];
     bool mouse_release[MAX_MOUSE_BUTTONS];
     
-	vec2 mouse_coordinates;
+	vec2 mouse_screen_coords;
+	vec2 prev_mouse_screen_coords;
+	vec2 mouse_ndc_coords;
+	vec2 prev_mouse_ndc_coords;
 	vec2 mouse_velocity;
     vec2 mouse_scroll;
 };

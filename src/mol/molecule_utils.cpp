@@ -1,6 +1,7 @@
 #include "molecule_utils.h"
-#include <core/gl_utils.h>
+#include <gfx/gl_utils.h>
 #include <core/common.h>
+#include <imgui.h>
 
 namespace molecule {
 
@@ -226,6 +227,7 @@ void main()
 
 static const char* f_shader_src = R"(
 #version 150 core
+#extension GL_ARB_conservative_depth: enable
 
 uniform mat4 u_proj_mat;
 
@@ -235,6 +237,9 @@ in Fragment {
     smooth vec4 view_pos;
 } in_frag;
 
+#ifdef GL_EXT_conservative_depth
+layout (depth_greater) out float gl_FragDepth;
+#endif
 out vec4 out_color;
 
 void main() {
@@ -253,18 +258,14 @@ void main() {
 
     vec3 view_hit = d * t;
     vec3 view_normal = (view_hit - center) / radius;
-
-    const vec3 light_dir = normalize(vec3(-1, -1, -10));
-    vec3 diffuse = 0.9 * max(vec3(0), dot(-light_dir, view_normal));
-    vec3 ambient = vec3(0.1);
     vec4 color = in_frag.color;
 
     vec4 coord = vec4(0, 0, view_hit.z, 1);
     coord = u_proj_mat * coord;
     coord = coord / coord.w;
 
-    gl_FragDepth = -coord.z * 0.5 + 0.5;
-    out_color = vec4(ambient + color.rgb * diffuse, color.a);
+    gl_FragDepth = coord.z * 0.5 + 0.5;
+    out_color = vec4(color.rgb, color.a);
 }
 )";
 
@@ -309,9 +310,9 @@ static void initialize() {
     glDeleteShader(g_shader);
     glDeleteShader(f_shader);
 
-    attrib_loc_pos = glGetAttribLocation(program, "in_pos");
-    attrib_loc_rad = glGetAttribLocation(program, "in_rad");
-    attrib_loc_col = glGetAttribLocation(program, "in_col");
+    attrib_loc_pos = glGetAttribLocation(program, "v_position");
+    attrib_loc_rad = glGetAttribLocation(program, "v_radius");
+    attrib_loc_col = glGetAttribLocation(program, "v_color");
     uniform_loc_model_mat = glGetUniformLocation(program, "u_model_mat");
     uniform_loc_view_mat = glGetUniformLocation(program, "u_view_mat");
     uniform_loc_proj_mat = glGetUniformLocation(program, "u_proj_mat");
@@ -321,14 +322,14 @@ static void initialize() {
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
 
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const GLvoid*)0);
+    glEnableVertexAttribArray(attrib_loc_pos);
+    glVertexAttribPointer(attrib_loc_pos, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const GLvoid*)0);
 
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const GLvoid*)12);
+    glEnableVertexAttribArray(attrib_loc_rad);
+    glVertexAttribPointer(attrib_loc_rad, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const GLvoid*)12);
 
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (const GLvoid*)16);
+    glEnableVertexAttribArray(attrib_loc_col);
+    glVertexAttribPointer(attrib_loc_col, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (const GLvoid*)16);
 
     glBindVertexArray(0);
 }

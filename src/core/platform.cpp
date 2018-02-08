@@ -475,7 +475,14 @@ Window* create_window(int width, int height, const char* window_title) {
 
 	double x, y;
 	glfwGetCursorPos(window, &x, &y);
-	g_input_state.mouse_coordinates = { x,y };
+	g_input_state.prev_mouse_screen_coords = { x,y };
+	g_input_state.mouse_screen_coords = { x,y };
+
+	int w, h;
+	glfwGetFramebufferSize(window, &w, &h);
+	vec2 half_res = vec2(w, h) * 0.5f;
+	g_input_state.mouse_ndc_coords = (vec2(x, h-y) - half_res) / half_res;
+	g_input_state.prev_mouse_ndc_coords = g_input_state.mouse_ndc_coords;
 
     g_window.glfw_window = window;
     return &g_window; 
@@ -507,8 +514,13 @@ void update() {
 	glfwGetFramebufferSize(g_window.glfw_window, &w, &h);
 
 	vec2 new_coord{ x,y };
-	g_input_state.mouse_velocity = new_coord - g_input_state.mouse_coordinates;
-	g_input_state.mouse_coordinates = new_coord;
+	g_input_state.mouse_velocity = new_coord - g_input_state.mouse_screen_coords;
+	g_input_state.prev_mouse_screen_coords = g_input_state.mouse_screen_coords;
+	g_input_state.mouse_screen_coords = new_coord;
+
+	vec2 half_res = vec2(w, h) * 0.5f;
+	g_input_state.prev_mouse_ndc_coords = g_input_state.mouse_ndc_coords;
+	g_input_state.mouse_ndc_coords = (vec2(x, h-y) - half_res) / half_res;
 
     imgui_new_frame();
 }

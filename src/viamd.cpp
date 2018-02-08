@@ -9,12 +9,22 @@
 #include <mol/trajectory.h>
 #include <mol/molecule_utils.h>
 #include <mol/pdb_utils.h>
-#include <immediate_draw_utils.h>
+#include <gfx/immediate_draw_utils.h>
 
 #include <stdio.h>
 
+struct MainFramebuffer {
+	GLuint id = 0;
+	GLuint tex_depth = 0;
+	GLuint tex_color = 0;
+	GLuint tex_picking = 0;
+	int width = 0;
+	int height = 0;
+};
+
 struct ApplicationData {
     platform::Window* main_window;
+
     Camera camera;
 
     // Perhaps move these into a struct
@@ -22,21 +32,28 @@ struct ApplicationData {
     DynamicArray<float> atom_radii;
     DynamicArray<uint32> atom_colors;
     Trajectory* trajectory;
+
+	// Framebuffer
+	MainFramebuffer fbo;
 };
 
 void draw_main_menu(platform::Window* window);
+void init_main_framebuffer(MainFramebuffer* fbo, int width, int height);
+void destroy_main_framebuffer(MainFramebuffer* fbo);
 
 int main(int, char**) {
-    ApplicationData data;
+	ApplicationData data;
 
-	Trackball trackball;
+	camera::TrackballController controller;
 
     data.camera.position = vec3(0, 0, 30);
+	int display_w = 1920;
+	int display_h = 1080;
 
     platform::initialize();
-    data.main_window = platform::create_window(1920, 1080, "VIAMD");
+    data.main_window = platform::create_window(display_w, display_h, "VIAMD");
 
-    platform::set_vsync(true);
+    platform::set_vsync(false);
 
     CString str(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
     auto pdb_res = load_pdb_from_file(str);
@@ -46,6 +63,7 @@ int main(int, char**) {
 
     immediate::initialize();
     molecule::draw::initialize();
+	init_main_framebuffer(&data.fbo, display_w, display_h);
 
     // Setup style
     ImGui::StyleColorsClassic();
@@ -57,24 +75,30 @@ int main(int, char**) {
     while (!(platform::window_should_close(data.main_window))) {
         platform::update();
         platform::InputState* input = platform::get_input_state();
-        float dt = platform::get_delta_time();
-		int display_w, display_h;
 		platform::get_framebuffer_size(data.main_window, &display_w, &display_h);
+		float dt = (float)platform::get_delta_time();
+
+		if (data.fbo.width != display_w || data.fbo.height != display_h) {
+			init_main_framebuffer(&data.fbo, display_w, display_h);
+		}
 
 		ImGui::Begin("Input");
 		ImGui::Text("MouseVel: %g, %g", input->mouse_velocity.x, input->mouse_velocity.y);
-		ImGui::Text("Look at: %g, %g, %g", trackball.target.x, trackball.target.y, trackball.target.z);
 		ImGui::Text("Camera Pos: %g, %g, %g", data.camera.position.x, data.camera.position.y, data.camera.position.z);
-
 		ImGui::Text("MOUSE_BUTTONS [%i, %i, %i, %i, %i]", input->mouse_down[0], input->mouse_down[1], input->mouse_down[2], input->mouse_down[3], input->mouse_down[4]);
-
 		ImGui::End();
 
-		if (!ImGui::GetIO().WantCaptureKeyboard) {
-			//camera_controller_trackball(&data.camera, input->mouse_down[0], input->mouse_down[1], input->key_down[2],
-			//	input->mouse_velocity, display_w, display_h);
-			trackball.update(&data.camera, input->mouse_down[0], input->mouse_down[2], input->mouse_down[1],
-				input->mouse_velocity, input->mouse_scroll.y, display_w, display_h);
+		controller.input.rotate_button = input->mouse_down[0];
+		controller.input.pan_button = input->mouse_down[1];
+		controller.input.dolly_button = input->mouse_down[2];
+		controller.input.prev_mouse_ndc = input->prev_mouse_ndc_coords;
+		controller.input.curr_mouse_ndc = input->mouse_ndc_coords;
+		controller.input.dolly_delta = input->mouse_scroll.y;
+
+		if (!ImGui::GetIO().WantCaptureMouse) {
+			controller.update();
+			data.camera.position = controller.position;
+			data.camera.orientation = controller.orientation;
 		}
 
         // MAIN MENU BAR
@@ -92,14 +116,15 @@ int main(int, char**) {
         glViewport(0, 0, display_w, display_h);
         glClearColor(clear_color.x, clear_color.y, clear_color.z, clear_color.w);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        glDepthMask(GL_TRUE);
-		glDepthFunc(GL_LESS);
+		glEnable(GL_DEPTH_TEST);
+		//glDepthFunc(GL_GREATER);
 
         mat4 model_mat = mat4(1);
         mat4 view_mat = compute_world_to_view_matrix(data.camera);
         mat4 proj_mat = compute_perspective_projection_matrix(data.camera, display_w, display_h);
         mat4 mvp = proj_mat * view_mat;
 
+		/*
 		srand(0);
 		for (int i = 0; i < 500; i++) {
 			vec3 c = math::ballRand(100.f);
@@ -119,8 +144,9 @@ int main(int, char**) {
 		//immediate::draw_point(p2, c);
         immediate::draw_triangle(p0, p1, p2, c);
         immediate::flush(&mvp[0][0]);
+		*/
 
-        //molecule::draw::draw_vdw(data.mol_struct->atom_positions, data.atom_radii, data.atom_colors, model_mat, view_mat, proj_mat);
+        molecule::draw::draw_vdw(data.mol_struct->atom_positions, data.atom_radii, data.atom_colors, model_mat, view_mat, proj_mat);
 
         ImGui::Render();
         platform::swap_buffers(data.main_window);
@@ -188,4 +214,50 @@ void draw_main_menu(platform::Window* main_window) {
         }
         ImGui::EndPopup();
     }
+}
+
+void init_main_framebuffer(MainFramebuffer* fbo, int width, int height) {
+	ASSERT(fbo);
+
+	bool attach_textures = false;
+	if (!fbo->id) {
+		glGenFramebuffers(1, &fbo->id);
+		attach_textures = true;
+	}
+	if (!fbo->tex_depth)
+		glGenTextures(1, &fbo->tex_depth);
+	if (!fbo->tex_color)
+		glGenTextures(1, &fbo->tex_color);
+	if (!fbo->tex_picking)
+		glGenTextures(1, &fbo->tex_picking);
+
+	glBindTexture(GL_TEXTURE_2D, fbo->tex_depth);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+
+	glBindTexture(GL_TEXTURE_2D, fbo->tex_color);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
+
+	glBindTexture(GL_TEXTURE_2D, fbo->tex_picking);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+
+	glBindTexture(GL_TEXTURE_2D, 0);
+
+	fbo->width = width;
+	fbo->height = height;
+
+	if (attach_textures) {
+		glBindFramebuffer(GL_FRAMEBUFFER, fbo->id);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, fbo->tex_depth, 0);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->tex_color, 0);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, fbo->tex_picking, 0);
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	}
+}
+
+void destroy_main_framebuffer(MainFramebuffer* fbo) {
+	ASSERT(fbo);
+	if (fbo->id) glDeleteFramebuffers(1, &fbo->id);
+	if (fbo->tex_depth) glDeleteTextures(1, &fbo->tex_depth);
+	if (fbo->tex_color) glDeleteTextures(1, &fbo->tex_color);
+	if (fbo->tex_picking) glDeleteTextures(1, &fbo->tex_picking);
 }

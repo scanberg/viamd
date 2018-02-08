@@ -1,6 +1,6 @@
-#include <immediate_draw_utils.h>
+#include "immediate_draw_utils.h"
 #include <core/gl.h>
-#include <core/gl_utils.h>
+#include <gfx/gl_utils.h>
 #include <core/array.h>
 
 namespace immediate {

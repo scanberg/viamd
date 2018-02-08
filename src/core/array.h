@@ -54,7 +54,7 @@ struct DynamicArray : Array<T> {
 	DynamicArray(int64 count, T value = 0, Allocator& alloc = default_alloc) : capacity(count > INIT_CAPACITY ? count : INIT_CAPACITY), allocator(alloc) {
 		this->data = (T*)allocator.alloc(capacity * sizeof(T));
 		this->count = count;
-		memset(data, value, count);
+		memset(data, (int)value, count);
 	}
 
     DynamicArray(const Array<T>& clone_source, Allocator& alloc = default_alloc) : capacity(clone_source.count), allocator(alloc) {

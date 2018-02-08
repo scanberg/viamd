@@ -11,6 +11,10 @@ namespace math {
 	constexpr float EPSILON = glm::epsilon<float>();
 	constexpr float FLOAT_MAX = FLT_MAX;
 
+	using glm::min;
+	using glm::max;
+	using glm::clamp;
+
 	using glm::dot;
 	using glm::cross;
 	using glm::abs;
@@ -34,6 +38,13 @@ namespace math {
 	using glm::distance;
 	using glm::sqrt;
 	using glm::inversesqrt;
+	using glm::length;
+	using glm::distance;
+	template <typename T>
+	inline float distance2(const T& a, const T& b) {
+		T c = a - b;
+		return dot(c, c);
+	}
 
 	using glm::transpose;
 	using glm::inverse;
