@@ -1,5 +1,3 @@
-#pragma once
-
 #include "gl_utils.h"
 
 bool gl::get_shader_compile_error(char * buffer, int max_length, GLuint shader) {

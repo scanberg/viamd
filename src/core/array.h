@@ -54,21 +54,21 @@ struct DynamicArray : Array<T> {
 	DynamicArray(int64 count, T value = 0, Allocator& alloc = default_alloc) : capacity(count > INIT_CAPACITY ? count : INIT_CAPACITY), allocator(alloc) {
 		this->data = (T*)allocator.alloc(capacity * sizeof(T));
 		this->count = count;
-		memset(data, (int)value, count);
+		memset(this->data, (int)value, this->count);
 	}
 
     DynamicArray(const Array<T>& clone_source, Allocator& alloc = default_alloc) : capacity(clone_source.count), allocator(alloc) {
         this->count = capacity;
         if (this->count > 0) {
             this->data = (T*)allocator.alloc(capacity * sizeof(T));
-            memcpy(this->data, clone_source.data, count * sizeof(T));
+            memcpy(this->data, clone_source.data, this->count * sizeof(T));
         }
     }
 
 	DynamicArray(const DynamicArray& other) : capacity(other.capacity), allocator(other.allocator) {
 		this->data = (T*)allocator.alloc(capacity);
 		this->count = other.count;
-		memcpy(data, other.data, count * sizeof(T));
+		memcpy(this->data, other.data, this->count * sizeof(T));
 	}
 
 	DynamicArray(DynamicArray&& other) : capacity(other.capacity), allocator(other.allocator) {
@@ -82,15 +82,15 @@ struct DynamicArray : Array<T> {
         if (this->data) {
             allocator.free(this->data);
         }
-		count = 0;
+		this->count = 0;
     }
 
 	DynamicArray& operator =(const DynamicArray& other) {
 		capacity = other.capacity;
 		allocator = other.allocator;
-		data = (T*)allocator.alloc(capacity);
-		count = other.count;
-		memcpy(data, other.data, count * sizeof(T));
+		this->data = (T*)allocator.alloc(capacity);
+		this->count = other.count;
+		memcpy(this->data, other.data, this->count * sizeof(T));
 		return *this;
 	}
 
@@ -98,14 +98,14 @@ struct DynamicArray : Array<T> {
 		capacity = other.capacity;
 		other.capacity = 0;
 		allocator = other.allocator;
-		data = other.data;
+		this->data = other.data;
 		other.data = nullptr;
-		count = other.count;
+		this->count = other.count;
 		other.count = 0;
 		return *this;
 	}
 
-	int64 size() const { return count; }
+	int64 size() const { return this->count; }
 
     void push_back(const T& item) {
         if (this->count >= capacity) {

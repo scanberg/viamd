@@ -117,6 +117,12 @@ void shutdown() {
 
 }  // namespace ssao
 
-void ssao(GLuint depth_tex, float strength);
+void apply_ssao(GLuint depth_tex, float strength) {
+
+}
+
+void apply_tonemapping(GLuint color_tex) {
+    
+}
 
 }  // namespace postprocessing
