@@ -43,7 +43,7 @@ void copy(String dst, CString src) {
 	memcpy(dst.data, src.data, src.count);
 }
 
-bool get_line(String& line, CString& str) {
+bool extract_line(CString& line, CString& str) {
 	const char* str_beg = str.data;
 	const char* str_end = str.data + str.count;
 
@@ -55,17 +55,15 @@ bool get_line(String& line, CString& str) {
 	const char* line_beg = str_beg;
 	const char* line_end = line_beg;
 
-	while (line_end < str_end && *line_end != '\n') ++line_end;
+	// Find return or new line character
+	while (line_end < str_end && *line_end != '\r' && *line_end != '\n') ++line_end;
 
+	// Step over return or new line characters
 	str_beg = MIN(line_end + 1, str_end);
-
-	// If we have a preceding '\r' we need to remove that as well
-	if (line_end > line_beg && *(line_end - 1) == '\r') {
-		--line_end;
-	}
+	while (str_beg < str_end && (*str_beg == '\r' || *str_beg == '\n')) ++str_beg;
 
 	line.count = line_end - line_beg;
-	line.data = (char*)memcpy(line.data, line_beg, line.count);
+	line.data = line_beg;
 
 	str.data = str_beg;
 	str.count = str_end - str_beg;
@@ -73,18 +71,62 @@ bool get_line(String& line, CString& str) {
 	return true;
 }
 
-float to_float(CString str) {
+bool copy_line(String& line, CString& str) {
+	const char* str_beg = str.data;
+	const char* str_end = str.data + str.count;
+
+	if (str_beg == str_end) {
+		line = {};
+		return false;
+	}
+
+	const char* line_beg = str_beg;
+	const char* line_end = line_beg;
+
+	// Find return or new line character
+	while (line_end < str_end && *line_end != '\r' && *line_end != '\n') ++line_end;
+
+	// Step over return or new line characters
+	str_beg = MIN(line_end + 1, str_end);
+	while (str_beg < str_end && (*str_beg == '\r' || *str_beg == '\n')) ++str_beg;
+
+	// @NOTE: Do not modify line.count, its value referes to whatever buffer its pointing to 
+	auto count = MIN(line_end - line_beg, line.count - 1);
+	line.data = (char*)memcpy(line.data, line_beg, count);
+	line.data[count] = '\0';
+
+	str.data = str_beg;
+	str.count = str_end - str_beg;
+
+	return true;
+}
+
+float32 to_float32(CString str) {
 	// Make sure that the string passed into atof is zero-terminated
-	char buffer[64] = {};
-	memcpy(buffer, str.data, MIN(63, str.count));
+	char buffer[32] = {};
+	memcpy(buffer, str.data, MIN(31, str.count));
 	return (float)atof(buffer);
 }
 
-int to_int(CString str) {
+float64 to_float64(CString str) {
+	// Make sure that the string passed into atof is zero-terminated
+	char buffer[32] = {};
+	memcpy(buffer, str.data, MIN(31, str.count));
+	return atof(buffer);
+}
+
+int32 to_int32(CString str) {
 	// Make sure that the string passed into atoi is zero-terminated
-	char buffer[64] = {};
-	memcpy(buffer, str.data, MIN(63, str.count));
+	char buffer[32] = {};
+	memcpy(buffer, str.data, MIN(31, str.count));
 	return atoi(buffer);
+}
+
+int64 to_int64(CString str) {
+	// Make sure that the string passed into atoi is zero-terminated
+	char buffer[32] = {};
+	memcpy(buffer, str.data, MIN(31, str.count));
+	return atoll(buffer);
 }
 
 CString trim(CString str) {
@@ -112,13 +154,14 @@ String read_textfile(CString filename, Allocator& alloc) {
 	if (!file) return {};
 
 	file.seekg(0, std::ios::end);
-	int64 size = file.tellg();
+	int64 file_size = file.tellg();
 	file.seekg(0, std::ios::beg);
 
-	char* data = (char*)alloc.alloc(size);
-	file.read(data, size);
+	char* data = (char*)alloc.alloc(file_size + 1);
+	file.read(data, file_size);
+	data[file_size] = '\0';
 
-	return {data, size};
+	return {data, file_size + 1};
 }
 
 CString get_directory(CString url) {

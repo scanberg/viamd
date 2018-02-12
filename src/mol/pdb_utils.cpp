@@ -16,8 +16,7 @@ PdbResult load_pdb_from_file(const char* filename, PdbLoadParams params, Allocat
 }
 
 PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params, Allocator& alloc) {
-	char line_buffer[256] = {};
-	String line(line_buffer);
+	CString line;
 
 	int current_res_id = -1;
 	char current_chain_id = -1;
@@ -36,7 +35,7 @@ PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params, Alloca
 	DynamicArray<Chain> chains;
 	DynamicArray<Bond> bonds;
 
-	while (get_line(line, pdb_string)) {
+	while (extract_line(line, pdb_string)) {
 		// printf("%s\n", line.data);
 		if (valid_line(line, params)) {
 			PdbAtom atom;
