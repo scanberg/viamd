@@ -3,8 +3,10 @@
 #include <core/camera.h>
 #include <core/math_utils.h>
 
+/*
 void camera_controller_fps(Camera* camera, bool key_fwd, bool key_bwd, bool key_lft, bool key_rht, vec2 mouse_vel,
                            float delta_time, float move_speed = 1.f, float rot_speed = 1.f);
+						   */
 
 void camera_trackball(Camera* camera, vec2 prev_ndc, vec2 curr_ndc);
 void camera_move(Camera* camera, vec3 vec);

@@ -121,14 +121,20 @@ void initialize() {
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
 
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const GLvoid*)0);
+	if (attrib_loc_pos != -1) {
+		glEnableVertexAttribArray(attrib_loc_pos);
+		glVertexAttribPointer(attrib_loc_pos, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const GLvoid*)0);
+	}
 
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 2, GL_UNSIGNED_SHORT, GL_TRUE, sizeof(Vertex), (const GLvoid*)12);
+	if (attrib_loc_tc != -1) {
+		glEnableVertexAttribArray(attrib_loc_tc);
+		glVertexAttribPointer(attrib_loc_tc, 2, GL_UNSIGNED_SHORT, GL_TRUE, sizeof(Vertex), (const GLvoid*)12);
+	}
 
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (const GLvoid*)16);
+	if (attrib_loc_col != -1) {
+		glEnableVertexAttribArray(attrib_loc_col);
+		glVertexAttribPointer(attrib_loc_col, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (const GLvoid*)16);
+	}
 
     glBindVertexArray(0);
 

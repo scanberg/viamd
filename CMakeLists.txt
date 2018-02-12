@@ -18,7 +18,8 @@ include_directories(src
                     ext/gl3w/include
                     ext/glm
                     ext/imgui
-                    ext/ppk_assert)
+                    ext/ppk_assert
+                    ext/libxdrfile/src)
 
 file(GLOB_RECURSE PROJECT_HEADERS src/*.h)
 file(GLOB_RECURSE PROJECT_SOURCES src/*.cpp)
@@ -44,6 +45,7 @@ target_link_libraries(${PROJECT_NAME}
                       gl3w
                       imgui
                       ppk_assert
+                      libxdrfile
                       ${GLFW_LIBRARIES}
                       ${OPENGL_LIBRARY})
 

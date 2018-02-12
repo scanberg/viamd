@@ -6,10 +6,15 @@
 
 // Comparison of Strings
 bool compare(CString str_a, CString str_b, bool ignore_case = false);
-bool compare_n(CString str_a, CString str_b, int64 N, bool ignore_case = false);
+bool compare_n(CString str_a, CString str_b, int64 num_chars, bool ignore_case = false);
 
-// Copy String data
+// Copy String
+// Note: will zero terminate the dst String
 void copy(String dst, CString src);
+
+// Copy N first characters of src String
+// Note: will zero terminate the dst String
+void copy_n(String dst, CString src, int64 num_chars);
 
 // Reads the next line from a CString
 // Note: Line holds the extracted line, str gets modified

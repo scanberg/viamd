@@ -1,9 +1,10 @@
 #pragma once
 
 #include <core/types.h>
+#include <core/array.h>
 #include <core/common.h>
 
-struct TrajectoryFileHandle;
+constexpr int MAX_TRAJECTORY_FRAME_BUFFER_SIZE = GIGABYTES(2);
 
 enum class SimulationType { NVT, NPT };
 
@@ -14,14 +15,12 @@ struct TrajectoryFrame {
 };
 
 struct Trajectory {
-    SimulationType type;
+    SimulationType type = SimulationType::NVT;
 
     // This is optionally used since the data may fit into memory.
-    TrajectoryFileHandle* file;
+    void* file_handle = nullptr;
 
-    // Note that frame_buffer may not contain all frames in trajectory.
+    // @NOTE: The frame_buffer may not contain all frames in trajectory.
     // If the trajectory is large, frame_buffer will be used as a cache towards the trajectory streamed from disk.
-    Array<TrajectoryFrame> frame_buffer;
+	Array<TrajectoryFrame> frame_buffer{};
 };
-
-constexpr int MAX_TRAJECTORY_FRAME_BUFFER_SIZE = GIGABYTES(2);

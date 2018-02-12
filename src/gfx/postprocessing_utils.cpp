@@ -6,7 +6,7 @@
   are met:
    * Redistributions of source code must retain the above copyright
      notice, this list of conditions and the following disclaimer.
-   * Neither the name of its contributors may be used to endorse 
+   * Neither the name of its contributors may be used to endorse
      or promote products derived from this software without specific
      prior written permission.
 
@@ -55,6 +55,40 @@ void main() {
 }
 )";
 
+void setup_program(GLuint* program, const char* defines, const char* f_shader_src, const char* name) {
+	ASSERT(program);
+	constexpr int BUFFER_SIZE = 1024;
+	char buffer[BUFFER_SIZE];
+
+	const char* sources[2] = { defines, f_shader_src };
+	auto f_shader = glCreateShader(GL_FRAGMENT_SHADER);
+	glShaderSource(f_shader, 2, sources, 0);
+	glCompileShader(f_shader);
+	if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
+		printf("Error while compiling %s shader:\n%s\n", name, buffer);
+	}
+
+	if (!*program) {
+		*program = glCreateProgram();
+	}
+	else {
+		// TODO: DETATCH ANY SHADERS?
+	}
+
+	glAttachShader(*program, v_shader_fs_quad);
+	glAttachShader(*program, f_shader);
+	glLinkProgram(*program);
+	if (gl::get_program_link_error(buffer, BUFFER_SIZE, *program)) {
+		printf("Error while linking %s program:\n%s\n", name, buffer);
+	}
+
+	glDetachShader(*program, v_shader_fs_quad);
+	glDetachShader(*program, f_shader);
+	glDeleteShader(f_shader);
+}
+
+static bool is_orthographic_proj_matrix(const mat4& proj_mat) { return math::length2(vec3(proj_mat[3])) > 0.f; }
+
 namespace ssao {
 #ifndef AO_RANDOM_TEX_SIZE
 #define AO_RANDOM_TEX_SIZE 4
@@ -62,6 +96,18 @@ namespace ssao {
 
 #ifndef AO_MAX_SAMPLES
 #define AO_MAX_SAMPLES 1
+#endif
+
+#ifndef AO_DIRS
+#define AO_DIRS 8
+#endif
+
+#ifndef AO_SAMPLES
+#define AO_SAMPLES 4
+#endif
+
+#ifndef AO_BLUR
+#define AO_BLUR 1
 #endif
 
 static GLuint fbo_linear_depth = 0;
@@ -77,28 +123,29 @@ static GLuint prog_blur_vert = 0;
 static GLuint prog_blur_horiz = 0;
 
 static GLuint ubo_hbao_data = 0;
-static vec4 hbao_random[AO_RANDOM_TEX_SIZE * AO_RANDOM_TEX_SIZE * AO_MAX_SAMPLES];
+// static vec4 hbao_random[AO_RANDOM_TEX_SIZE * AO_RANDOM_TEX_SIZE * AO_MAX_SAMPLES];
 
 struct HBAOData {
-  float   radius_to_screen;
-  float   r2;
-  float   neg_inv_r2;
-  float   n_dot_v_bias;
- 
-  vec2    inv_full_res;
-  vec2    inv_quarter_res;
-  
-  float   ao_multiplier;
-  float   pow_exponent;
-  vec2    _pad0;
-  
-  vec4    proj_info;
-  vec2    proj_scale;
-  int     proj_ortho;
-  int     _pad1;
-  
-//  vec4    offsets[AO_RANDOM_TEX_SIZE * AO_RANDOM_TEX_SIZE];
-//  vec4    jitters[AO_RANDOM_TEX_SIZE * AO_RANDOM_TEX_SIZE];
+    float radius_to_screen;
+    float r2;
+    float neg_inv_r2;
+    float n_dot_v_bias;
+
+    vec2 inv_full_res;
+    vec2 inv_quarter_res;
+
+    float ao_multiplier;
+    float pow_exponent;
+    vec2 _pad0;
+
+    vec4 proj_info;
+
+    vec2 proj_scale;
+    int proj_ortho;
+    int _pad1;
+
+    //  vec4    offsets[AO_RANDOM_TEX_SIZE * AO_RANDOM_TEX_SIZE];
+    //  vec4    jitters[AO_RANDOM_TEX_SIZE * AO_RANDOM_TEX_SIZE];
 };
 
 static const char* f_shader_src_linearize_depth = R"(
@@ -161,12 +208,13 @@ struct HBAOData {
   vec2    _pad0;
   
   vec4    proj_info;
+
   vec2    proj_scale;
   int     proj_ortho;
   int     _pad1;
   
-  vec4    offsets[AO_RANDOM_TEX_SIZE*AO_RANDOM_TEX_SIZE];
-  vec4    jitters[AO_RANDOM_TEX_SIZE*AO_RANDOM_TEX_SIZE];
+  //vec4    offsets[AO_RANDOM_TEX_SIZE*AO_RANDOM_TEX_SIZE];
+  //vec4    jitters[AO_RANDOM_TEX_SIZE*AO_RANDOM_TEX_SIZE];
 };
 
 // tweakables
@@ -367,69 +415,72 @@ void main()
 }
 )";
 
-void setup_program(GLuint* program, const char* defines, const char* f_shader_src, const char* name) {
-    ASSERT(program);
-    constexpr int BUFFER_SIZE = 1024;
-    char buffer[BUFFER_SIZE];
+void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4& proj_mat, float fovy, bool persp_proj, float radius, float intensity,
+                         float bias) {
+    constexpr float METERS_TO_VIEWSPACE = 1.f;
+    const float* proj_data = &proj_mat[0][0];
 
-    const char* sources[2] = {
-        defines,
-        f_shader_src
-    };
-    auto f_shader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(f_shader, 2, sources, 0);
-    glCompileShader(f_shader);
-    if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
-        printf("Error while compiling %s shader:\n%s\n", name, buffer);
-    }
-
-    if (!*program) {
-        *program = glCreateProgram();
+    vec4 proj_info;
+    float proj_scl;
+    if (persp_proj) {
+        proj_info = vec4(2.0f / (proj_data[4 * 0 + 0]),                          // (x) * (R - L)/N
+                         2.0f / (proj_data[4 * 1 + 1]),                          // (y) * (T - B)/N
+                         -(1.0f - proj_data[4 * 2 + 0]) / proj_data[4 * 0 + 0],  // L/N
+                         -(1.0f + proj_data[4 * 2 + 1]) / proj_data[4 * 1 + 1]   // B/N
+        );
+        proj_scl = float(height) / (math::tan(fovy * 0.5f) * 2.0f);
     } else {
-        // TODO: DETATCH ANY SHADERS?
+        proj_info = vec4(2.0f / (proj_data[4 * 0 + 0]),                          // ((x) * R - L)
+                         2.0f / (proj_data[4 * 1 + 1]),                          // ((y) * T - B)
+                         -(1.0f + proj_data[4 * 3 + 0]) / proj_data[4 * 0 + 0],  // L
+                         -(1.0f - proj_data[4 * 3 + 1]) / proj_data[4 * 1 + 1]   // B
+        );
+        proj_scl = float(height) / proj_info[1];
     }
 
-    glAttachShader(*program, v_shader_fs_quad);
-    glAttachShader(*program, f_shader);
-    glLinkProgram(*program);
-    if (gl::get_program_link_error(buffer, BUFFER_SIZE, *program)) {
-        printf("Error while linking %s program:\n%s\n", name, buffer);
-    }
+    float r = radius * METERS_TO_VIEWSPACE;
 
-    glDetachShader(*program, v_shader_fs_quad);
-    glDetachShader(*program, f_shader);
-    glDeleteShader(f_shader);
+    HBAOData d;
+    d.radius_to_screen = r * 0.5f * proj_scl;
+    d.r2 = r * r;
+    d.neg_inv_r2 = -1.f / (r * r);
+    d.n_dot_v_bias = math::clamp(bias, 0.f, 1.f);
+
+    d.inv_full_res = vec2(1.f / float(width), 1.f / float(height));
+    d.inv_quarter_res = vec2(1.f / float((width + 3) / 4), 1.f / float((height + 3) / 4));
+
+    d.ao_multiplier = 1.f / (1.f - d.n_dot_v_bias);
+    d.pow_exponent = math::max(intensity, 0.f);
+
+    d.proj_info = proj_info;
+    // @NOTE: Is one needed?
+    d.proj_scale = vec2(proj_scl);
+    d.proj_ortho = !persp_proj;
 }
 
-void initialize_rnd_data(vec4* rnd_data, int num_directions) {
-    for (int i = 0; i < AO_RANDOM_TEX_SIZE * AO_RANDOM_TEX_SIZE * AO_MAX_SAMPLES; i++) {
+void initialize_rnd_tex(GLuint rnd_tex, int num_direction) {
+    ASSERT(AO_MAX_SAMPLES == 1);
+    constexpr int BUFFER_SIZE = AO_RANDOM_TEX_SIZE * AO_RANDOM_TEX_SIZE * AO_MAX_SAMPLES;
+    signed short buffer[BUFFER_SIZE * 4];
+
+    for (int i = 0; i < BUFFER_SIZE; i++) {
+#define SCALE ((1 << 15))
         float rand1 = math::rnd();
         float rand2 = math::rnd();
+        float angle = 2.f * math::PI * rand1 / (float)num_direction;
 
-        // Use random rotation angles in [0,2PI/NUM_DIRECTIONS)
-        float angle = 2.f * math::PI * rand1 / (float)num_directions;
-        rnd_data[i].x = math::cos(angle);
-        rnd_data[i].y = math::sin(angle);
-        rnd_data[i].z = rand2;
-        rnd_data[i].w = 0;
-    }
-}
-
-void initialize_rnd_tex(GLuint rnd_tex, vec4* rnd_data) {
-    signed short buffer[AO_RANDOM_TEX_SIZE * AO_RANDOM_TEX_SIZE * AO_MAX_SAMPLES];
-
-    for (int i = 0; i < AO_RANDOM_TEX_SIZE * AO_RANDOM_TEX_SIZE * AO_MAX_SAMPLES; i++) {
-#define SCALE ((1<<15))
-        buffer[i * 4 + 0] = (signed short)(SCALE * rnd_data[i].x);
-        buffer[i * 4 + 1] = (signed short)(SCALE * rnd_data[i].y);
-        buffer[i * 4 + 2] = (signed short)(SCALE * rnd_data[i].z);
-        buffer[i * 4 + 3] = (signed short)(SCALE * rnd_data[i].w);
+        buffer[i * 4 + 0] = (signed short)(SCALE * math::cos(angle));
+        buffer[i * 4 + 1] = (signed short)(SCALE * math::sin(angle));
+        buffer[i * 4 + 2] = (signed short)(SCALE * rand2);
+        buffer[i * 4 + 3] = (signed short)(SCALE * 0);
 #undef SCALE
     }
 
     // @TODO: If MSAA and AO_MAX_SAMPLES > 1, then this probably has to go into a texture array
     glBindTexture(GL_TEXTURE_2D, rnd_tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16_SNORM, AO_RANDOM_TEX_SIZE, AO_RANDOM_TEX_SIZE, 0, GL_RGBA, GL_SHORT, buffer);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
@@ -467,12 +518,7 @@ void initialize(int width, int height) {
     if (!tex_linear_depth) glGenTextures(1, &tex_linear_depth);
     if (!tex_blur) glGenTextures(1, &tex_blur);
 
-    short rnd_buffer[16];
-
-    glBindTexture(GL_TEXTURE_2D, tex_random);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16_SNORM, width, height, 0, GL_RGBA, GL_SHORT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    initialize_rnd_tex(tex_random, AO_DIRS);
 
     glBindTexture(GL_TEXTURE_2D, tex_linear_depth);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, width, height, 0, GL_RED, GL_FLOAT, nullptr);
@@ -498,21 +544,56 @@ void initialize(int width, int height) {
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    glGenBuffers(1, &ubo_hbao_data);
+    if (!ubo_hbao_data) glGenBuffers(1, &ubo_hbao_data);
     glBindBuffer(GL_UNIFORM_BUFFER, ubo_hbao_data);
     glBufferData(GL_UNIFORM_BUFFER, sizeof(HBAOData), nullptr, GL_DYNAMIC_DRAW);
 }
 
 void shutdown() {
-	/*
-    if (vbo) glDeleteBuffers(1, &vbo);
-    if (ibo) glDeleteBuffers(1, &ibo);
-    if (vao) glDeleteVertexArrays(1, &vao);
-    if (program) glDeleteProgram(program);
-	*/
+    if (fbo_linear_depth) glDeleteFramebuffers(1, &fbo_linear_depth);
+    if (fbo_hbao) glDeleteFramebuffers(1, &fbo_hbao);
+
+    if (tex_random) glDeleteTextures(1, &tex_random);
+    if (tex_linear_depth) glDeleteTextures(1, &tex_linear_depth);
+    if (tex_blur) glDeleteTextures(1, &tex_blur);
+
+    if (ubo_hbao_data) glDeleteBuffers(1, &ubo_hbao_data);
+
+    if (prog_linearize_depth) glDeleteProgram(prog_linearize_depth);
+    if (prog_hbao) glDeleteProgram(prog_hbao);
+    if (prog_blur_horiz) glDeleteProgram(prog_blur_horiz);
+    if (prog_blur_vert) glDeleteProgram(prog_blur_vert);
 }
 
 }  // namespace ssao
+
+namespace tonemapping {
+static GLuint prog_tonemap = 0;
+static const char* f_shader_src_tonemap = R"(
+#version 150 core
+
+uniform sampler2D u_texture;
+out vec4 out_frag;
+
+vec3 reinhard(vec3 c) {
+	return c / (c + 1.0);
+}
+
+void main() {
+	vec4 color = texelFetch(u_texture, ivec2(gl_FragCoord.xy), 0);
+	out_frag = vec4(reinhard(color.rgb), color.a);
+}
+)";
+
+void initialize() {
+	if (!prog_tonemap) setup_program(&prog_tonemap, nullptr, f_shader_src_tonemap, "tonemap");
+}
+
+void shutdown() {
+	if (prog_tonemap) glDeleteProgram(prog_tonemap);
+}
+
+}  // namespace tonemapping
 
 void initialize(int width, int height) {
     constexpr int BUFFER_SIZE = 1024;
@@ -541,18 +622,14 @@ void initialize(int width, int height) {
 
 void shutdown() {
     ssao::shutdown();
-    
+
     if (vao) glDeleteVertexArrays(1, &vao);
     if (vbo) glDeleteBuffers(1, &vbo);
     if (v_shader_fs_quad) glDeleteShader(v_shader_fs_quad);
 }
 
-void apply_ssao(GLuint depth_tex, float strength) {
+void apply_ssao(GLuint depth_tex, const mat4& proj_matrix, float radius, float strength, float bias) {}
 
-}
-
-void apply_tonemapping(GLuint color_tex) {
-
-}
+void apply_tonemapping(GLuint color_tex) {}
 
 }  // namespace postprocessing

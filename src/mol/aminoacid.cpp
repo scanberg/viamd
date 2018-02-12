@@ -69,7 +69,7 @@ constexpr const char* symbol(AminoAcid amino) { return symbols[static_cast<int>(
 
 AminoAcid getFromString(const char* cstr, int length) {
     if (length == -1)
-        length = strlen(cstr);
+        length = (int)strlen(cstr);
 
     if (length >= 3) {
         char seq[3] = {(char)toupper(cstr[0]), (char)toupper(cstr[1]), (char)toupper(cstr[2])};

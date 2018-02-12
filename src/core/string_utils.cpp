@@ -10,7 +10,7 @@
 #define MIN(x,y) ((x < y) ? (x) : (y))
 #define MAX(x,y) ((x > y) ? (x) : (y))
 
-static bool internal_compare(const char* str_a, const char* str_b, int64 len, bool ignore_case) {
+static inline bool internal_compare(const char* str_a, const char* str_b, int64 len, bool ignore_case) {
 	if (ignore_case) {
 		for (int64 i = 0; i < len; i++) {
 			if (tolower(str_a[i]) != tolower(str_b[i])) return false;
@@ -29,18 +29,26 @@ bool compare(CString str_a, CString str_b, bool ignore_case) {
 	return internal_compare(str_a, str_b, len, ignore_case);
 }
 
-bool compare_n(CString str_a, CString str_b, int64 n, bool ignore_case) {
-	int64 len = MIN(str_a.count, MIN(str_b.count, n));
+bool compare_n(CString str_a, CString str_b, int64 num_chars, bool ignore_case) {
+	int64 len = MIN(str_a.count, MIN(str_b.count, num_chars));
 	return internal_compare(str_a, str_b, len, ignore_case);
 }
 
 void copy(String dst, CString src) {
 	ASSERT(dst.data != 0);
 	ASSERT(src.data != 0);
-	ASSERT(dst.count >= src.count);
-	// Should one use strncpy or memcpy?
-	//strncpy(dst.data, src.data, src.count);
+	ASSERT(dst.count > src.count);
 	memcpy(dst.data, src.data, src.count);
+	dst.data[src.count] = '\0';
+}
+
+void copy_n(String dst, CString src, int64 num_chars) {
+	ASSERT(dst.data != 0);
+	ASSERT(src.data != 0);
+	ASSERT(dst.count > num_chars);
+	ASSERT(src.count >= num_chars);
+	memcpy(dst.data, src.data, num_chars);
+	dst.data[num_chars] = '\0';
 }
 
 bool extract_line(CString& line, CString& str) {

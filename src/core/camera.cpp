@@ -19,6 +19,13 @@ mat4 compute_perspective_projection_matrix(const Camera& camera, int width, int 
     return glm::perspective(camera.fov_y, aspect, camera.near_plane, camera.far_plane);
 }
 
+// @ TODO: This is messed up... what values should one use to control the zoomlevel?
+mat4 compute_orthographic_projection_matrix(const Camera & camera, int width, int height) {
+	float h_w = width * 0.05f;
+	float h_h = height * 0.05f;
+	return glm::ortho(-h_w, h_w, -h_h, h_h, camera.near_plane, camera.far_plane);
+}
+
 void camera_look_at(Camera* camera, vec3 look_at, vec3 look_up) {
     ASSERT(camera);
     vec3 look = camera->position - look_at;

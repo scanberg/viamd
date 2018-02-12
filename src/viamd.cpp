@@ -47,7 +47,7 @@ int main(int, char**) {
 
 	camera::TrackballController controller;
 
-    data.camera.position = vec3(0, 0, 30);
+    data.camera.position = vec3(0, 0, 100);
 	int display_w = 1920;
 	int display_h = 1080;
 
@@ -124,7 +124,8 @@ int main(int, char**) {
         mat4 model_mat = mat4(1);
         mat4 view_mat = compute_world_to_view_matrix(data.camera);
         mat4 proj_mat = compute_perspective_projection_matrix(data.camera, display_w, display_h);
-        mat4 mvp = proj_mat * view_mat;
+		//mat4 proj_mat = compute_orthographic_projection_matrix(data.camera, display_w, display_h);
+
 
 		/*
 		srand(0);
@@ -145,7 +146,7 @@ int main(int, char**) {
 		//immediate::draw_point(p1, c);
 		//immediate::draw_point(p2, c);
         immediate::draw_triangle(p0, p1, p2, c);
-        immediate::flush(&mvp[0][0]);
+        immediate::flush(&(proj_mat * view_mat)[0][0]);
 		*/
 
         molecule::draw::draw_vdw(data.mol_struct->atom_positions, data.atom_radii, data.atom_colors, model_mat, view_mat, proj_mat);
