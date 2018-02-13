@@ -4,7 +4,7 @@ namespace immediate {
 
 void initialize();
 void shutdown();
-void flush(float mvp_matrix[16]);
+void flush(const float mvp_matrix[16]);
 
 constexpr unsigned char COLOR_WHITE[4] = { 255,255,255,255 };
 constexpr unsigned char COLOR_BLACK[4] = { 0,0,0,255 };

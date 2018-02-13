@@ -148,7 +148,7 @@ void shutdown() {
     if (program) glDeleteProgram(program);
 }
 
-void flush(float mvp_matrix[16]) {
+void flush(const float mvp_matrix[16]) {
     glBindVertexArray(vao);
 
     glBindBuffer(GL_ARRAY_BUFFER, vbo);

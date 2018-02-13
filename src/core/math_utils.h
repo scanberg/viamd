@@ -5,6 +5,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/random.hpp>
 #include <float.h>
+#include <stdlib.h>
 
 namespace math {
 	constexpr float PI = glm::pi<float>();
@@ -66,6 +67,7 @@ namespace math {
 	glm::tquat<T, Q> angle_axis(T const& angle, glm::vec<3, T, Q> const& v) { return glm::angleAxis(angle, v); }
 
 	// Random
-	inline float rnd() { return glm::linearRand(0.f, 1.f); }
+	inline float rnd() { return rand() / (float)RAND_MAX; }
+	inline void set_rnd_seed(unsigned int seed) { srand(seed); }
 
 }

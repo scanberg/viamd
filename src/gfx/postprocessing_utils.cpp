@@ -34,8 +34,11 @@
 
 namespace postprocessing {
 
+// @TODO: Use half-res render targets for SSAO
+// @TODO: Use shared textures for all postprocessing operations
+
 // This is for the fullscreen quad
-// TODO: Check how much is needed to trigger drawcall?
+// @TODO: Check how much is needed to trigger drawcall?
 GLuint vao;
 GLuint vbo;
 GLuint v_shader_fs_quad;
@@ -91,7 +94,7 @@ void setup_program(GLuint* program, const char* name, const char* f_shader_src, 
     glDeleteShader(f_shader);
 }
 
-static bool is_orthographic_proj_matrix(const mat4& proj_mat) { return math::length2(vec3(proj_mat[3])) > 0.f; }
+static bool is_orthographic_proj_matrix(const mat4& proj_mat) { return math::length2(vec2(proj_mat[3])) > 0.f; }
 
 static float compute_fovy(const mat4& proj_mat) {
     // x is 1.f / tan(fovy * 0.5f);
@@ -122,15 +125,28 @@ namespace ssao {
 
 static GLuint fbo_linear_depth = 0;
 static GLuint fbo_hbao = 0;
+static GLuint fbo_blur = 0;
 
 static GLuint tex_random = 0;
 static GLuint tex_linear_depth = 0;
+static GLuint tex_hbao = 0;
 static GLuint tex_blur = 0;
 
 static GLuint prog_linearize_depth = 0;
 static GLuint prog_hbao = 0;
-static GLuint prog_blur_vert = 0;
-static GLuint prog_blur_horiz = 0;
+static GLuint prog_blur_first = 0;
+static GLuint prog_blur_second = 0;
+
+static GLint uniform_loc_linearize_depth_clip_info = -1;
+static GLint uniform_loc_linearize_depth_tex_depth = -1;
+
+static GLint uniform_block_index_hbao_control_buffer = -1;
+static GLint uniform_loc_hbao_tex_linear_depth = -1;
+static GLint uniform_loc_hbao_tex_random = -1;
+
+static GLint uniform_loc_blur_sharpness = -1;
+static GLint uniform_loc_blur_inv_res_dir = -1;
+static GLint uniform_loc_blur_texture = -1;
 
 static GLuint ubo_hbao_data = 0;
 
@@ -166,19 +182,23 @@ static const char* f_shader_src_linearize_depth = R"(
 #define AO_PERSP 1
 #endif
 
-// z_n * z_f,  z_n - z_f,  z_f
-uniform vec3 u_clip_info;
-uniform sampler2D u_texture;
+// z_n * z_f,  z_n - z_f,  z_f, *not used*
+uniform vec4 u_clip_info;
+uniform sampler2D u_tex_depth;
+
+float ReconstructCSZ(float d, vec4 clip_info) {
+#ifdef AO_PERSP
+    return (clip_info[0] / (clip_info[1] * d + clip_info[2]));
+#else
+    return (clipInfo[1]+clipInfo[2] - d * clipInfo[1]);
+#endif
+}
 
 out vec4 out_frag;
 
 void main() {
-  float d = texelFetch(u_texture, ivec2(gl_FragCoord.xy), 0).x;
-#ifdef AO_PERSP
-  out_frag = vec4(u_clip_info[0] / (u_clip_info[1] * d + u_clip_info[2]));
-#else
-  out_frag = vec4(u_clip_info[1]+u_clip_info[2] - d * u_clip_info[1]);
-#endif
+  float d = texelFetch(u_tex_depth, ivec2(gl_FragCoord.xy), 0).x;
+  out_frag = vec4(ReconstructCSZ(d, u_clip_info));
 }
 )";
 
@@ -238,8 +258,8 @@ layout(std140) uniform u_control_buffer {
   HBAOData control;
 };
 
-uniform sampler2D tex_linear_depth;
-uniform sampler2D tex_random;
+uniform sampler2D u_tex_linear_depth;
+uniform sampler2D u_tex_random;
 
 in vec2 tc;
 out vec4 out_frag;
@@ -255,7 +275,7 @@ vec3 UVToView(vec2 uv, float eye_z) {
 }
 
 vec3 FetchViewPos(vec2 UV) {
-  float ViewDepth = textureLod(tex_linear_depth,UV,0).x;
+  float ViewDepth = textureLod(u_tex_linear_depth,UV,0).x;
   return UVToView(UV, ViewDepth);
 }
 
@@ -302,7 +322,7 @@ vec2 RotateDirection(vec2 Dir, vec2 CosSin) {
 //----------------------------------------------------------------------------------
 vec4 GetJitter() {
   // (cos(Alpha),sin(Alpha),rand1,rand2)
-  return textureLod( tex_random, (gl_FragCoord.xy / AO_RANDOM_TEX_SIZE), 0);
+  return textureLod(u_tex_random, (gl_FragCoord.xy / AO_RANDOM_TEX_SIZE), 0);
 }
 
 //----------------------------------------------------------------------------------
@@ -368,6 +388,8 @@ void main() {
 )";
 
 static const char* f_shader_src_hbao_blur = R"(
+#pragma optionNV(unroll all)
+
 const float KERNEL_RADIUS = 3;
   
 uniform float u_sharpness;
@@ -429,6 +451,7 @@ void main()
 )";
 
 void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4& proj_mat, float intensity, float radius, float bias) {
+	ASSERT(ubo);
     constexpr float METERS_TO_VIEWSPACE = 1.f;
     const float* proj_data = &proj_mat[0][0];
 
@@ -442,8 +465,10 @@ void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4& proj_mat
                          -(1.0f - proj_data[4 * 2 + 0]) / proj_data[4 * 0 + 0],  // L/N
                          -(1.0f + proj_data[4 * 2 + 1]) / proj_data[4 * 1 + 1]   // B/N
                          );
+
         //proj_scl = float(height) / (math::tan(fovy * 0.5f) * 2.0f);
         proj_scl = float(height) * proj_data[4 * 1 + 1] * 0.5f;
+		proj_scl = float(height) / (math::tan(math::PI / 8.f) * 2.0f);
     } else {
         proj_info = vec4(2.0f / (proj_data[4 * 0 + 0]),                          // ((x) * R - L)
                          2.0f / (proj_data[4 * 1 + 1]),                          // ((y) * T - B)
@@ -455,22 +480,26 @@ void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4& proj_mat
 
     float r = radius * METERS_TO_VIEWSPACE;
 
-    HBAOData d;
-    d.radius_to_screen = r * 0.5f * proj_scl;
-    d.r2 = r * r;
-    d.neg_inv_r2 = -1.f / (r * r);
-    d.n_dot_v_bias = math::clamp(bias, 0.f, 1.f);
+    HBAOData data;
+    data.radius_to_screen = r * 0.5f * proj_scl;
+    data.r2 = r * r;
+    data.neg_inv_r2 = -1.f / (r * r);
+    data.n_dot_v_bias = math::clamp(bias, 0.f, 1.f);
 
-    d.inv_full_res = vec2(1.f / float(width), 1.f / float(height));
-    d.inv_quarter_res = vec2(1.f / float((width + 3) / 4), 1.f / float((height + 3) / 4));
+    data.inv_full_res = vec2(1.f / float(width), 1.f / float(height));
+    data.inv_quarter_res = vec2(1.f / float((width + 3) / 4), 1.f / float((height + 3) / 4));
 
-    d.ao_multiplier = 1.f / (1.f - d.n_dot_v_bias);
-    d.pow_exponent = math::max(intensity, 0.f);
+    data.ao_multiplier = 1.f / (1.f - data.n_dot_v_bias);
+    data.pow_exponent = math::max(intensity, 0.f);
 
-    d.proj_info = proj_info;
+    data.proj_info = proj_info;
     // @NOTE: Is one needed?
-    d.proj_scale = vec2(proj_scl);
-    d.proj_ortho = is_ortho ? 1 : 0;
+    data.proj_scale = vec2(proj_scl);
+    data.proj_ortho = is_ortho ? 1 : 0;
+
+	glBindBuffer(GL_UNIFORM_BUFFER, ubo);
+	glBufferData(GL_UNIFORM_BUFFER, sizeof(HBAOData), &data, GL_DYNAMIC_DRAW);
+	glBindBuffer(GL_UNIFORM_BUFFER, 0);
 }
 
 void initialize_rnd_tex(GLuint rnd_tex, int num_direction) {
@@ -499,8 +528,12 @@ void initialize_rnd_tex(GLuint rnd_tex, int num_direction) {
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
+float compute_sharpness(float radius) {
+	return 30.f / radius;
+}
+
 void initialize(int width, int height) {
-    // TODO: dynamically create this
+    // @TODO: dynamically generate this
     const char* defines = R"(
         #version 150 core
         #define AO_RANDOM_TEX_SIZE 4
@@ -511,27 +544,51 @@ void initialize(int width, int height) {
         #define AO_USE_NORMAL 1
     )";
 
-    const char* define_horiz = R"(
+    const char* define_blur_first = R"(
         #version 150 core
         #define AO_BLUR_PRESENT 0
     )";
 
-    const char* define_vert = R"(
+    const char* define_blur_second = R"(
         #version 150 core
         #define AO_BLUR_PRESENT 1
     )";
 
     setup_program(&prog_linearize_depth, "linearize depth", f_shader_src_linearize_depth, defines);
     setup_program(&prog_hbao, "hbao", f_shader_src_hbao, defines);
-    setup_program(&prog_blur_horiz, "hbao horizontal blur", f_shader_src_hbao_blur, define_horiz);
-    setup_program(&prog_blur_vert, "hbao vertical blur", f_shader_src_hbao_blur, define_vert);
+    setup_program(&prog_blur_first, "hbao first blur", f_shader_src_hbao_blur, define_blur_first);
+    setup_program(&prog_blur_second, "hbao second blur", f_shader_src_hbao_blur, define_blur_second);
+
+	uniform_loc_linearize_depth_clip_info = glGetUniformLocation(prog_linearize_depth, "u_clip_info");
+	uniform_loc_linearize_depth_tex_depth = glGetUniformLocation(prog_linearize_depth, "u_tex_depth");
+
+	//ASSERT(uniform_loc_linearize_depth_clip_info != -1);
+	//ASSERT(uniform_loc_linearize_depth_tex_depth != -1);
+
+	uniform_block_index_hbao_control_buffer = glGetUniformBlockIndex(prog_hbao, "u_control_buffer");
+	uniform_loc_hbao_tex_linear_depth = glGetUniformLocation(prog_hbao, "u_tex_linear_depth");
+	uniform_loc_hbao_tex_random = glGetUniformLocation(prog_hbao, "u_tex_random");
+
+	ASSERT(uniform_block_index_hbao_control_buffer != -1);
+	ASSERT(uniform_loc_hbao_tex_linear_depth != -1);
+	ASSERT(uniform_loc_hbao_tex_random != -1);
+
+	uniform_loc_blur_sharpness = glGetUniformLocation(prog_blur_second, "u_sharpness");
+	uniform_loc_blur_inv_res_dir = glGetUniformLocation(prog_blur_second, "u_inv_res_dir");
+	uniform_loc_blur_texture = glGetUniformLocation(prog_blur_second, "u_texture");
+
+	ASSERT(uniform_loc_blur_sharpness != -1);
+	ASSERT(uniform_loc_blur_inv_res_dir != -1);
+	ASSERT(uniform_loc_blur_texture != -1);
 
     if (!fbo_linear_depth) glGenFramebuffers(1, &fbo_linear_depth);
     if (!fbo_hbao) glGenFramebuffers(1, &fbo_hbao);
+	if (!fbo_blur) glGenFramebuffers(1, &fbo_blur);
 
     if (!tex_random) glGenTextures(1, &tex_random);
     if (!tex_linear_depth) glGenTextures(1, &tex_linear_depth);
-    if (!tex_blur) glGenTextures(1, &tex_blur);
+    if (!tex_hbao) glGenTextures(1, &tex_hbao);
+	if (!tex_blur) glGenTextures(1, &tex_blur);
 
     initialize_rnd_tex(tex_random, AO_DIRS);
 
@@ -542,12 +599,19 @@ void initialize(int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glBindTexture(GL_TEXTURE_2D, tex_blur);
+    glBindTexture(GL_TEXTURE_2D, tex_hbao);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, width, height, 0, GL_RG, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+	glBindTexture(GL_TEXTURE_2D, tex_blur);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, width, height, 0, GL_RG, GL_FLOAT, nullptr);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glBindTexture(GL_TEXTURE_2D, 0);
 
@@ -555,7 +619,10 @@ void initialize(int width, int height) {
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex_linear_depth, 0);
 
     glBindFramebuffer(GL_FRAMEBUFFER, fbo_hbao);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex_blur, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex_hbao, 0);
+
+	glBindFramebuffer(GL_FRAMEBUFFER, fbo_blur);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex_blur, 0);
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
@@ -579,8 +646,8 @@ void shutdown() {
 
     if (prog_linearize_depth) glDeleteProgram(prog_linearize_depth);
     if (prog_hbao) glDeleteProgram(prog_hbao);
-    if (prog_blur_horiz) glDeleteProgram(prog_blur_horiz);
-    if (prog_blur_vert) glDeleteProgram(prog_blur_vert);
+    if (prog_blur_second) glDeleteProgram(prog_blur_second);
+    if (prog_blur_first) glDeleteProgram(prog_blur_first);
 }
 
 }  // namespace ssao
@@ -656,22 +723,96 @@ void shutdown() {
 }
 
 void apply_ssao(GLuint depth_tex, const mat4& proj_matrix, float intensity, float radius, float bias) {
-    ssao::setup_ubo_hbao_data(ssao::ubo_hbao_data, ssao::tex_width, ssao::tex_height, proj_matrix, intensity, radius, bias);
+	ASSERT(glIsTexture(depth_tex));
+	ssao::setup_ubo_hbao_data(ssao::ubo_hbao_data, ssao::tex_width, ssao::tex_height, proj_matrix, intensity, radius, bias);
 
+	float m22 = proj_matrix[2][2];
+	float m32 = proj_matrix[3][2];
+	float n = m32 / (m22 - 1.f);
+	float f = (m22 - 1.f) * n / (m22 + 1.f);
 
+	// z_n * z_f,  z_n - z_f,  z_f
+	vec4 clip_info(n * f, n - f, f, 0);
+	vec2 inv_res = vec2(1.f) / vec2(ssao::tex_width, ssao::tex_height);
+	float sharpness = ssao::compute_sharpness(radius);
+	
+	glBindVertexArray(vao);
+	
+	GLint last_fbo; glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fbo);
+	GLint last_viewport[4]; glGetIntegerv(GL_VIEWPORT, last_viewport);
+
+	glViewport(0, 0, ssao::tex_width, ssao::tex_height);
+
+	// LINEARIZE DEPTH
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ssao::fbo_linear_depth);
+	glUseProgram(ssao::prog_linearize_depth);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, depth_tex);
+	if (ssao::uniform_loc_linearize_depth_tex_depth != -1)
+		glUniform1i(ssao::uniform_loc_linearize_depth_tex_depth, 0);
+	if (ssao::uniform_loc_linearize_depth_clip_info != -1)
+		glUniform4fv(ssao::uniform_loc_linearize_depth_clip_info, 1, &clip_info[0]);
+	glDrawArrays(GL_TRIANGLES, 0, 3);
+
+	// RENDER HBAO
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ssao::fbo_hbao);
+	glUseProgram(ssao::prog_hbao);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, ssao::tex_linear_depth);
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, ssao::tex_random);
+
+	glBindBufferBase(GL_UNIFORM_BUFFER, 0, ssao::ubo_hbao_data);
+	glUniformBlockBinding(ssao::prog_hbao, ssao::uniform_block_index_hbao_control_buffer, 0);
+	glUniform1i(ssao::uniform_loc_hbao_tex_linear_depth, 0);
+	glUniform1i(ssao::uniform_loc_hbao_tex_random, 1);
+
+	glDrawArrays(GL_TRIANGLES, 0, 3);
+
+	// BLUR FIRST
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ssao::fbo_blur);
+	glUseProgram(ssao::prog_blur_first);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, ssao::tex_hbao);
+	glUniform1i(ssao::uniform_loc_blur_texture, 0);
+	glUniform1f(ssao::uniform_loc_blur_sharpness, sharpness);
+	glUniform2f(ssao::uniform_loc_blur_inv_res_dir, inv_res.x, 0);
+
+	glDrawArrays(GL_TRIANGLES, 0, 3);
+
+	// BLEND RESULTS WITH PREVIOUSLY BOUND FBO AND ITS COLOR TEXTURE
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_ZERO, GL_SRC_COLOR);
+	glColorMask(1, 1, 1, 0);
+
+	// BLUR SECOND
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, last_fbo);
+	glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
+	glUseProgram(ssao::prog_blur_second);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, ssao::tex_blur);
+	glUniform1i(ssao::uniform_loc_blur_texture, 0);
+	glUniform1f(ssao::uniform_loc_blur_sharpness, sharpness);
+	glUniform2f(ssao::uniform_loc_blur_inv_res_dir, 0, inv_res.y);
+
+	glDrawArrays(GL_TRIANGLES, 0, 3);
+
+	glDisable(GL_BLEND);
+	glBlendFunc(GL_ONE, GL_ZERO);
+	glColorMask(1, 1, 1, 1);
+
+	glBindVertexArray(0);
 }
 
 void apply_tonemapping(GLuint color_tex) {
-    ASSERT(color_tex);
+    ASSERT(glIsTexture(color_tex));
     glUseProgram(tonemapping::prog_tonemap);
-    //glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, color_tex);
     glUniform1i(tonemapping::uniform_loc_texture, 0);
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
-    //glBindBuffer(GL_ARRAY_BUFFER, 0);
     glUseProgram(0);
 }
 

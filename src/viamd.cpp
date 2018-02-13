@@ -7,6 +7,7 @@
 #include <core/camera_utils.h>
 #include <mol/molecule.h>
 #include <mol/trajectory.h>
+#include <mol/trajectory_utils.h>
 #include <mol/molecule_utils.h>
 #include <mol/pdb_utils.h>
 #include <gfx/immediate_draw_utils.h>
@@ -47,6 +48,8 @@ int main(int, char**) {
 
 	camera::TrackballController controller;
 
+	Trajectory traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
+
     data.camera.position = vec3(0, 0, 100);
 	int display_w = 1920;
 	int display_h = 1080;
@@ -71,7 +74,7 @@ int main(int, char**) {
     ImGui::StyleColorsClassic();
 
     bool show_demo_window = true;
-    ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+    vec4 clear_color = vec4(1, 1, 1, 1);
 
     // Main loop
     while (!(platform::window_should_close(data.main_window))) {
@@ -82,6 +85,7 @@ int main(int, char**) {
 
 		if (data.fbo.width != display_w || data.fbo.height != display_h) {
 			init_main_framebuffer(&data.fbo, display_w, display_h);
+			postprocessing::initialize(display_w, display_h);
 		}
 
 		ImGui::Begin("Input");
@@ -114,52 +118,30 @@ int main(int, char**) {
             ImGui::ShowDemoWindow(&show_demo_window);
         }
 
+		mat4 model_mat = mat4(1);
+		mat4 view_mat = compute_world_to_view_matrix(data.camera);
+		mat4 proj_mat = compute_perspective_projection_matrix(data.camera, display_w, display_h);
+
         // Rendering
         glViewport(0, 0, display_w, display_h);
         glClearColor(clear_color.x, clear_color.y, clear_color.z, clear_color.w);
 
-        glBindFramebuffer(GL_FRAMEBUFFER, data.fbo.id);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.id);
         glDrawBuffer(GL_COLOR_ATTACHMENT0);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-		//glDepthFunc(GL_GREATER);
-
-
-        mat4 model_mat = mat4(1);
-        mat4 view_mat = compute_world_to_view_matrix(data.camera);
-        mat4 proj_mat = compute_perspective_projection_matrix(data.camera, display_w, display_h);
-		//mat4 proj_mat = compute_orthographic_projection_matrix(data.camera, display_w, display_h);
-
-
-		/*
-		srand(0);
-		for (int i = 0; i < 500; i++) {
-			vec3 c = math::ballRand(100.f);
-			vec3 v0 = c + mat3(view_mat) * vec3(-1, 0, 0);
-			vec3 v1 = c + mat3(view_mat) * vec3(1, 0, 0);
-			vec3 v2 = c + mat3(view_mat) * vec3(0.5f, 1, 0);
-			unsigned char color[4] = { 255, 255, 255, 255 };
-			immediate::draw_triangle(&v0[0], &v1[0], &v2[0], color);
-		}
-        float p0[3] = {-1, 0, 0};
-        float p1[3] = {1, 0, 0};
-        float p2[3] = {0, 2, 0};
-
-        unsigned char c[4] = {255, 0, 0, 255};
-		//immediate::draw_point(p0, c);
-		//immediate::draw_point(p1, c);
-		//immediate::draw_point(p2, c);
-        immediate::draw_triangle(p0, p1, p2, c);
-        immediate::flush(&(proj_mat * view_mat)[0][0]);
-		*/
+		glEnable(GL_DEPTH_TEST);
+		glDepthFunc(GL_LESS);
 
         molecule::draw::draw_vdw(data.mol_struct->atom_positions, data.atom_radii, data.atom_colors, model_mat, view_mat, proj_mat);
+		postprocessing::apply_ssao(data.fbo.tex_depth, proj_mat, 1.5f, 5.f);
 
         // Activate backbuffer
         glDisable(GL_DEPTH_TEST);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+		glDepthFunc(GL_ALWAYS);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
 
-        // Apply post processing
+        // Apply tone mapping
         postprocessing::apply_tonemapping(data.fbo.tex_color);
 
         // Render Imgui
@@ -172,6 +154,17 @@ int main(int, char**) {
     platform::shutdown();
 
     return 0;
+}
+
+void draw_random_triangles(const mat4& mvp) {
+	math::set_rnd_seed(0);
+	for (int i = 0; i < 500; i++) {
+		vec3 v0 = vec3(math::rnd(), math::rnd(), math::rnd()) * 50.f - 50.f;
+		vec3 v1 = vec3(math::rnd(), math::rnd(), math::rnd()) * 50.f - 50.f;
+		vec3 v2 = vec3(math::rnd(), math::rnd(), math::rnd()) * 50.f - 50.f;
+		immediate::draw_triangle(&v0[0], &v1[0], &v2[0], immediate::COLOR_RED);
+	}
+	immediate::flush(&mvp[0][0]);
 }
 
 void draw_main_menu(platform::Window* main_window) {

@@ -1,34 +1,33 @@
-#include "trajectory_utils.h"
+#include "trajectory_utils.h"'
 #include <core/string_utils.h>
 
 #include <stdio.h>
 #include <xdrfile_xtc.h>
+#include <string>
 
+// @TODO: Remove dependency of string
 
-Trajectory read_trajectory(const char* file) {
-	CString url(file);
-	char file_buffer[256];
-	char dir_buffer[256];
-	String file_str(file_buffer, 256);
-	String dir_str(dir_buffer, 256);
+Trajectory read_and_allocate_trajectory(const char* path, Allocator& alloc) {
+	std::string url(path);
 
-	copy(dir_str, get_directory(url));
-	copy(file_str, get_file_without_extension(url));
+	auto pos = url.find_last_of("\\/");
+	std::string dir = url.substr(0, pos);
+	std::string file = url.substr(pos + 1);
+	
+	printf("'%s' '%s'", dir.c_str(), file.c_str());
 
-	char trajectory_cache[256];
-	String cache_str(trajectory_cache, 256);
-
-	XDRFILE* file_handle = xdrfile_open(file, "r");
+	XDRFILE* file_handle = xdrfile_open(path, "r");
 	int num_atoms, step;
 	float time;
 	read_xtc_header(file_handle, &num_atoms, &step, &time);
 
-	return {};
+	return { num_atoms, step, time, Trajectory::NVT, file_handle, {} };
 }
 
-void destroy_trajectory(Trajectory* traj) {
+void free_trajectory(Trajectory* traj) {
 	ASSERT(traj);
 	if (traj->file_handle) xdrfile_close((XDRFILE*)traj->file_handle);
+	traj->file_handle = nullptr;
 }
 
 TrajectoryFrame copy_trajectory_frame(Trajectory traj, int frame_index, Allocator& alloc) {
