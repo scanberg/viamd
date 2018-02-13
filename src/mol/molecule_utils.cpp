@@ -377,6 +377,8 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
 		glUnmapBuffer(GL_ARRAY_BUFFER);
 	}
 
+    glEnable(GL_DEPTH_TEST);
+
     glBindVertexArray(vdw::vao);
     glUseProgram(vdw::program);
     glUniformMatrix4fv(vdw::uniform_loc_model_mat, 1, GL_FALSE, &model_mat[0][0]);
@@ -387,6 +389,8 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
     glUseProgram(0);
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    glDisable(GL_DEPTH_TEST);
 }
 
 }  // namespace draw

@@ -55,39 +55,49 @@ void main() {
 }
 )";
 
-void setup_program(GLuint* program, const char* defines, const char* f_shader_src, const char* name) {
-	ASSERT(program);
-	constexpr int BUFFER_SIZE = 1024;
-	char buffer[BUFFER_SIZE];
+void setup_program(GLuint* program, const char* name, const char* f_shader_src, const char* defines = nullptr) {
+    ASSERT(program);
+    constexpr int BUFFER_SIZE = 1024;
+    char buffer[BUFFER_SIZE];
 
-	const char* sources[2] = { defines, f_shader_src };
-	auto f_shader = glCreateShader(GL_FRAGMENT_SHADER);
-	glShaderSource(f_shader, 2, sources, 0);
-	glCompileShader(f_shader);
-	if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
-		printf("Error while compiling %s shader:\n%s\n", name, buffer);
-	}
+    auto f_shader = glCreateShader(GL_FRAGMENT_SHADER);
+    if (defines) {
+        const char* sources[2] = {defines, f_shader_src};
+        glShaderSource(f_shader, 2, sources, 0);
+    } else {
+        glShaderSource(f_shader, 1, &f_shader_src, 0);
+    }
 
-	if (!*program) {
-		*program = glCreateProgram();
-	}
-	else {
-		// TODO: DETATCH ANY SHADERS?
-	}
+    glCompileShader(f_shader);
+    if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
+        printf("Error while compiling %s shader:\n%s\n", name, buffer);
+    }
 
-	glAttachShader(*program, v_shader_fs_quad);
-	glAttachShader(*program, f_shader);
-	glLinkProgram(*program);
-	if (gl::get_program_link_error(buffer, BUFFER_SIZE, *program)) {
-		printf("Error while linking %s program:\n%s\n", name, buffer);
-	}
+    if (!*program) {
+        *program = glCreateProgram();
+    } else {
+        // TODO: DETATCH ANY SHADERS?
+    }
 
-	glDetachShader(*program, v_shader_fs_quad);
-	glDetachShader(*program, f_shader);
-	glDeleteShader(f_shader);
+    glAttachShader(*program, v_shader_fs_quad);
+    glAttachShader(*program, f_shader);
+    glLinkProgram(*program);
+    if (gl::get_program_link_error(buffer, BUFFER_SIZE, *program)) {
+        printf("Error while linking %s program:\n%s\n", name, buffer);
+    }
+
+    glDetachShader(*program, v_shader_fs_quad);
+    glDetachShader(*program, f_shader);
+    glDeleteShader(f_shader);
 }
 
 static bool is_orthographic_proj_matrix(const mat4& proj_mat) { return math::length2(vec3(proj_mat[3])) > 0.f; }
+
+static float compute_fovy(const mat4& proj_mat) {
+    // x is 1.f / tan(fovy * 0.5f);
+    float x = proj_mat[1][1];
+    return math::atan(1.f / x) * 2.f;
+}
 
 namespace ssao {
 #ifndef AO_RANDOM_TEX_SIZE
@@ -123,6 +133,9 @@ static GLuint prog_blur_vert = 0;
 static GLuint prog_blur_horiz = 0;
 
 static GLuint ubo_hbao_data = 0;
+
+static GLuint tex_width;
+static GLuint tex_height;
 // static vec4 hbao_random[AO_RANDOM_TEX_SIZE * AO_RANDOM_TEX_SIZE * AO_MAX_SAMPLES];
 
 struct HBAOData {
@@ -415,26 +428,28 @@ void main()
 }
 )";
 
-void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4& proj_mat, float fovy, bool persp_proj, float radius, float intensity,
-                         float bias) {
+void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4& proj_mat, float intensity, float radius, float bias) {
     constexpr float METERS_TO_VIEWSPACE = 1.f;
     const float* proj_data = &proj_mat[0][0];
 
+    bool is_ortho = is_orthographic_proj_matrix(proj_mat);
+
     vec4 proj_info;
     float proj_scl;
-    if (persp_proj) {
+    if (!is_ortho) {
         proj_info = vec4(2.0f / (proj_data[4 * 0 + 0]),                          // (x) * (R - L)/N
                          2.0f / (proj_data[4 * 1 + 1]),                          // (y) * (T - B)/N
                          -(1.0f - proj_data[4 * 2 + 0]) / proj_data[4 * 0 + 0],  // L/N
                          -(1.0f + proj_data[4 * 2 + 1]) / proj_data[4 * 1 + 1]   // B/N
-        );
-        proj_scl = float(height) / (math::tan(fovy * 0.5f) * 2.0f);
+                         );
+        //proj_scl = float(height) / (math::tan(fovy * 0.5f) * 2.0f);
+        proj_scl = float(height) * proj_data[4 * 1 + 1] * 0.5f;
     } else {
         proj_info = vec4(2.0f / (proj_data[4 * 0 + 0]),                          // ((x) * R - L)
                          2.0f / (proj_data[4 * 1 + 1]),                          // ((y) * T - B)
                          -(1.0f + proj_data[4 * 3 + 0]) / proj_data[4 * 0 + 0],  // L
                          -(1.0f - proj_data[4 * 3 + 1]) / proj_data[4 * 1 + 1]   // B
-        );
+                         );
         proj_scl = float(height) / proj_info[1];
     }
 
@@ -455,7 +470,7 @@ void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4& proj_mat
     d.proj_info = proj_info;
     // @NOTE: Is one needed?
     d.proj_scale = vec2(proj_scl);
-    d.proj_ortho = !persp_proj;
+    d.proj_ortho = is_ortho ? 1 : 0;
 }
 
 void initialize_rnd_tex(GLuint rnd_tex, int num_direction) {
@@ -506,10 +521,10 @@ void initialize(int width, int height) {
         #define AO_BLUR_PRESENT 1
     )";
 
-    setup_program(&prog_linearize_depth, defines, f_shader_src_linearize_depth, "linearize depth");
-    setup_program(&prog_hbao, defines, f_shader_src_hbao, "hbao");
-    setup_program(&prog_blur_horiz, define_horiz, f_shader_src_hbao_blur, "hbao horizontal blur");
-    setup_program(&prog_blur_vert, define_vert, f_shader_src_hbao_blur, "hbao vertical blur");
+    setup_program(&prog_linearize_depth, "linearize depth", f_shader_src_linearize_depth, defines);
+    setup_program(&prog_hbao, "hbao", f_shader_src_hbao, defines);
+    setup_program(&prog_blur_horiz, "hbao horizontal blur", f_shader_src_hbao_blur, define_horiz);
+    setup_program(&prog_blur_vert, "hbao vertical blur", f_shader_src_hbao_blur, define_vert);
 
     if (!fbo_linear_depth) glGenFramebuffers(1, &fbo_linear_depth);
     if (!fbo_hbao) glGenFramebuffers(1, &fbo_hbao);
@@ -547,6 +562,9 @@ void initialize(int width, int height) {
     if (!ubo_hbao_data) glGenBuffers(1, &ubo_hbao_data);
     glBindBuffer(GL_UNIFORM_BUFFER, ubo_hbao_data);
     glBufferData(GL_UNIFORM_BUFFER, sizeof(HBAOData), nullptr, GL_DYNAMIC_DRAW);
+
+    tex_width = width;
+    tex_height = height;
 }
 
 void shutdown() {
@@ -569,11 +587,16 @@ void shutdown() {
 
 namespace tonemapping {
 static GLuint prog_tonemap = 0;
+static GLint uniform_loc_texture = -1;
 static const char* f_shader_src_tonemap = R"(
 #version 150 core
 
 uniform sampler2D u_texture;
 out vec4 out_frag;
+
+vec3 passthrough(vec3 c) {
+    return c;
+}
 
 vec3 reinhard(vec3 c) {
 	return c / (c + 1.0);
@@ -581,16 +604,17 @@ vec3 reinhard(vec3 c) {
 
 void main() {
 	vec4 color = texelFetch(u_texture, ivec2(gl_FragCoord.xy), 0);
-	out_frag = vec4(reinhard(color.rgb), color.a);
+	out_frag = vec4(passthrough(color.rgb), color.a);
 }
 )";
 
 void initialize() {
-	if (!prog_tonemap) setup_program(&prog_tonemap, nullptr, f_shader_src_tonemap, "tonemap");
+    if (!prog_tonemap) setup_program(&prog_tonemap, "tonemap", f_shader_src_tonemap);
+    uniform_loc_texture = glGetUniformLocation(prog_tonemap, "u_texture");
 }
 
 void shutdown() {
-	if (prog_tonemap) glDeleteProgram(prog_tonemap);
+    if (prog_tonemap) glDeleteProgram(prog_tonemap);
 }
 
 }  // namespace tonemapping
@@ -604,6 +628,7 @@ void initialize(int width, int height) {
 
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, 12, nullptr, GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (const GLvoid*)0);
     glBindVertexArray(0);
@@ -618,18 +643,36 @@ void initialize(int width, int height) {
     }
 
     ssao::initialize(width, height);
+    tonemapping::initialize();
 }
 
 void shutdown() {
     ssao::shutdown();
+    tonemapping::shutdown();
 
     if (vao) glDeleteVertexArrays(1, &vao);
     if (vbo) glDeleteBuffers(1, &vbo);
     if (v_shader_fs_quad) glDeleteShader(v_shader_fs_quad);
 }
 
-void apply_ssao(GLuint depth_tex, const mat4& proj_matrix, float radius, float strength, float bias) {}
+void apply_ssao(GLuint depth_tex, const mat4& proj_matrix, float intensity, float radius, float bias) {
+    ssao::setup_ubo_hbao_data(ssao::ubo_hbao_data, ssao::tex_width, ssao::tex_height, proj_matrix, intensity, radius, bias);
 
-void apply_tonemapping(GLuint color_tex) {}
+
+}
+
+void apply_tonemapping(GLuint color_tex) {
+    ASSERT(color_tex);
+    glUseProgram(tonemapping::prog_tonemap);
+    //glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, color_tex);
+    glUniform1i(tonemapping::uniform_loc_texture, 0);
+    glBindVertexArray(vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    //glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glUseProgram(0);
+}
 
 }  // namespace postprocessing

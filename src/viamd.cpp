@@ -117,9 +117,12 @@ int main(int, char**) {
         // Rendering
         glViewport(0, 0, display_w, display_h);
         glClearColor(clear_color.x, clear_color.y, clear_color.z, clear_color.w);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, data.fbo.id);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-		glEnable(GL_DEPTH_TEST);
 		//glDepthFunc(GL_GREATER);
+
 
         mat4 model_mat = mat4(1);
         mat4 view_mat = compute_world_to_view_matrix(data.camera);
@@ -151,7 +154,18 @@ int main(int, char**) {
 
         molecule::draw::draw_vdw(data.mol_struct->atom_positions, data.atom_radii, data.atom_colors, model_mat, view_mat, proj_mat);
 
+        // Activate backbuffer
+        glDisable(GL_DEPTH_TEST);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        // Apply post processing
+        postprocessing::apply_tonemapping(data.fbo.tex_color);
+
+        // Render Imgui
         ImGui::Render();
+
+        // Swap buffers
         platform::swap_buffers(data.main_window);
     }
 
@@ -262,7 +276,7 @@ void init_main_framebuffer(MainFramebuffer* fbo, int width, int height) {
 
 	if (attach_textures) {
 		glBindFramebuffer(GL_FRAMEBUFFER, fbo->id);
-		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, fbo->tex_depth, 0);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, fbo->tex_depth, 0);
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->tex_color, 0);
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, fbo->tex_picking, 0);
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
