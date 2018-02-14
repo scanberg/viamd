@@ -9,6 +9,7 @@ enum class ColorMapping { STATIC_COLOR, CPK, RES_ID, RES_INDEX, CHAIN_ID, CHAIN_
 namespace molecule {
 
 void transform_positions(Array<vec3> positions, const mat4& transformation);
+void compute_bounding_box(vec3* min_box, vec3* max_box, const Array<vec3> positions);
 
 DynamicArray<Bond>		compute_bonds(const Array<vec3> atom_pos, const Array<Element> atom_elem, const Array<Residue> residues = {}, Allocator& alloc = default_alloc);
 

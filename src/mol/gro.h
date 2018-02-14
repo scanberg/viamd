@@ -3,7 +3,7 @@
 #include <mol/molecule.h>
 
 struct GroStructure : MoleculeStructure {
-    vec3 box_vectors[3];
+    mat3 box;
 };
 
 // This is only valid for NVT types

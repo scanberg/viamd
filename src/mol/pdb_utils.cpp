@@ -89,10 +89,10 @@ PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params, Alloca
 
 	PdbStructure pdb;
 	MoleculeStructure& mol = pdb;
-	mol = allocate_molecule_structure(atoms.count, bonds.count, residues.count, chains.count, MOL_ALL, alloc);
+	mol = allocate_molecule_structure(atoms.size(), bonds.size(), residues.size(), chains.size(), MOL_ALL, alloc);
 
 	// Copy data into molecule
-	memcpy(mol.residues.data, residues.data, residues.count * sizeof(Residue));
+	memcpy(mol.residues.data, residues.data, residues.size() * sizeof(Residue));
 	memcpy(mol.chains.data, chains.data, chains.size() * sizeof(Chain));
 	memcpy(mol.bonds.data, bonds.data, bonds.size() * sizeof(Bond));
 

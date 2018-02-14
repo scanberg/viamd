@@ -1,6 +1,7 @@
 #include "molecule_utils.h"
 #include <gfx/gl_utils.h>
 #include <core/common.h>
+#include <core/math_utils.h>
 #include <imgui.h>
 
 namespace molecule {
@@ -8,6 +9,21 @@ namespace molecule {
 void transform_positions(Array<vec3> positions, const mat4& transformation) {
     for (auto& p : positions) {
         p = vec3(transformation * vec4(p, 1));
+    }
+}
+
+void compute_bounding_box(vec3* min_box, vec3* max_box, const Array<vec3> positions) {
+    ASSERT(min_box);
+    ASSERT(max_box);
+
+    if (positions.count == 0) {
+        *min_box = *max_box = vec3(0);
+    }
+
+    *min_box = *max_box = positions.data[0];
+    for (int64 i = 0; i < positions.count; i++) {
+        *min_box = math::min(*min_box, positions.data[i]);
+        *max_box = math::max(*max_box, positions.data[i]);
     }
 }
 

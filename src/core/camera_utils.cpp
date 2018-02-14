@@ -72,7 +72,7 @@ static inline vec3 transform_vec(quat q, vec3 v) {
 	return q * v;
 }
 
-void camera::TrackballController::update() {
+void TrackballController::update() {
 	constexpr float PAN_SCL = 10.f;
 	constexpr float DOLLY_DRAG_SCL = 50.f;
 	constexpr float DOLLY_DELTA_SCL = 0.8f;

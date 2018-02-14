@@ -7,9 +7,10 @@
 constexpr int MAX_TRAJECTORY_FRAME_BUFFER_SIZE = GIGABYTES(2);
 
 struct TrajectoryFrame {
-    int frame_index;
+    int index;
+    float time;
+    mat3 box;
     Array<vec3> atom_positions;
-    vec3 box_vectors[3];
 };
 
 struct Trajectory {
@@ -26,4 +27,10 @@ struct Trajectory {
     // @NOTE: The frame_buffer may not contain all frames in trajectory.
     // If the trajectory is large, frame_buffer will be used as a cache towards the trajectory streamed from disk.
 	DynamicArray<TrajectoryFrame> frame_buffer{};
+
+    // This is the position data of the trajectories
+    DynamicArray<vec3> position_data{};
+
+    // These are the offsets for each frame within the compressed blob of XTC data
+    DynamicArray<int64> frame_offsets{};
 };

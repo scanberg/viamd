@@ -10,6 +10,7 @@
 #include <mol/trajectory_utils.h>
 #include <mol/molecule_utils.h>
 #include <mol/pdb_utils.h>
+#include <mol/gro_utils.h>
 #include <gfx/immediate_draw_utils.h>
 #include <gfx/postprocessing_utils.h>
 
@@ -28,6 +29,7 @@ struct ApplicationData {
     platform::Window* main_window;
 
     Camera camera;
+    TrackballController controller;
 
     // Perhaps move these into a struct
     MoleculeStructure* mol_struct;
@@ -37,17 +39,21 @@ struct ApplicationData {
 
 	// Framebuffer
 	MainFramebuffer fbo;
+
+    bool use_ssao = true;
 };
 
-void draw_main_menu(platform::Window* window);
+void draw_main_menu(ApplicationData* data);
 void init_main_framebuffer(MainFramebuffer* fbo, int width, int height);
 void destroy_main_framebuffer(MainFramebuffer* fbo);
+
+void reset_view(ApplicationData* data);
 
 int main(int, char**) {
 	ApplicationData data;
 
-	camera::TrackballController controller;
-
+    auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
+    data.mol_struct = &gro_res.gro;
 	Trajectory traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
 
     data.camera.position = vec3(0, 0, 100);
@@ -59,9 +65,8 @@ int main(int, char**) {
 
     platform::set_vsync(false);
 
-    CString str(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
-    auto pdb_res = load_pdb_from_file(str);
-    data.mol_struct = &pdb_res.pdb;
+    //auto pdb_res = load_pdb_from_file(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
+    //data.mol_struct = &pdb_res.pdb;
     data.atom_radii = molecule::compute_atom_radii(data.mol_struct->atom_elements);
     data.atom_colors = molecule::compute_atom_colors(*data.mol_struct, ColorMapping::CPK);
 
@@ -73,8 +78,8 @@ int main(int, char**) {
     // Setup style
     ImGui::StyleColorsClassic();
 
-    bool show_demo_window = true;
-    vec4 clear_color = vec4(1, 1, 1, 1);
+    bool show_demo_window = false;
+    vec4 clear_color = vec4(0.2, 0.2, 0.4, 1);
 
     // Main loop
     while (!(platform::window_should_close(data.main_window))) {
@@ -92,23 +97,25 @@ int main(int, char**) {
 		ImGui::Text("MouseVel: %g, %g", input->mouse_velocity.x, input->mouse_velocity.y);
 		ImGui::Text("Camera Pos: %g, %g, %g", data.camera.position.x, data.camera.position.y, data.camera.position.z);
 		ImGui::Text("MOUSE_BUTTONS [%i, %i, %i, %i, %i]", input->mouse_down[0], input->mouse_down[1], input->mouse_down[2], input->mouse_down[3], input->mouse_down[4]);
+        if (ImGui::Button("Reset View")) {
+            reset_view(&data);
+        }
 		ImGui::End();
 
-		controller.input.rotate_button = input->mouse_down[0];
-		controller.input.pan_button = input->mouse_down[1];
-		controller.input.dolly_button = input->mouse_down[2];
-		controller.input.prev_mouse_ndc = input->prev_mouse_ndc_coords;
-		controller.input.curr_mouse_ndc = input->mouse_ndc_coords;
-		controller.input.dolly_delta = input->mouse_scroll.y;
-
 		if (!ImGui::GetIO().WantCaptureMouse) {
-			controller.update();
-			data.camera.position = controller.position;
-			data.camera.orientation = controller.orientation;
+            data.controller.input.rotate_button = input->mouse_down[0];
+            data.controller.input.pan_button = input->mouse_down[1];
+            data.controller.input.dolly_button = input->mouse_down[2];
+            data.controller.input.prev_mouse_ndc = input->prev_mouse_ndc_coords;
+            data.controller.input.curr_mouse_ndc = input->mouse_ndc_coords;
+            data.controller.input.dolly_delta = input->mouse_scroll.y;
+			data.controller.update();
+			data.camera.position = data.controller.position;
+			data.camera.orientation = data.controller.orientation;
 		}
 
         // MAIN MENU BAR
-        draw_main_menu(data.main_window);
+        draw_main_menu(&data);
 
         // 3. Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
         if (show_demo_window) {
@@ -133,7 +140,10 @@ int main(int, char**) {
 		glDepthFunc(GL_LESS);
 
         molecule::draw::draw_vdw(data.mol_struct->atom_positions, data.atom_radii, data.atom_colors, model_mat, view_mat, proj_mat);
-		postprocessing::apply_ssao(data.fbo.tex_depth, proj_mat, 1.5f, 5.f);
+		
+        if (data.use_ssao) {
+            postprocessing::apply_ssao(data.fbo.tex_depth, proj_mat, 1.5f, 3.f);
+        }
 
         // Activate backbuffer
         glDisable(GL_DEPTH_TEST);
@@ -167,7 +177,8 @@ void draw_random_triangles(const mat4& mvp) {
 	immediate::flush(&mvp[0][0]);
 }
 
-void draw_main_menu(platform::Window* main_window) {
+void draw_main_menu(ApplicationData* data) {
+    ASSERT(data);
     bool new_clicked = false;
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
@@ -189,7 +200,7 @@ void draw_main_menu(platform::Window* main_window) {
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Quit", "ALT+F4")) {
-                platform::set_window_should_close(main_window, true);
+                platform::set_window_should_close(data->main_window, true);
             }
             ImGui::EndMenu();
         }
@@ -205,6 +216,10 @@ void draw_main_menu(platform::Window* main_window) {
             }
             if (ImGui::MenuItem("Paste", "CTRL+V")) {
             }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Visuals")) {
+            ImGui::Checkbox("SSAO", &data->use_ssao);
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
@@ -224,6 +239,22 @@ void draw_main_menu(platform::Window* main_window) {
         }
         ImGui::EndPopup();
     }
+}
+
+void reset_view(ApplicationData* data) {
+    ASSERT(data);
+    ASSERT(data->mol_struct);
+
+    vec3 min_box, max_box;
+    molecule::compute_bounding_box(&min_box, &max_box, data->mol_struct->atom_positions);
+    vec3 size = max_box - min_box;
+    vec3 cent = (min_box + max_box) * 0.5f;
+    printf("min_box: %g %g %g\n", min_box.x, min_box.y, min_box.z);
+    printf("max_box: %g %g %g\n", max_box.x, max_box.y, max_box.z);
+
+    data->controller.look_at(cent, cent + size * 2.f);
+    data->camera.position = data->controller.position;
+    data->camera.orientation = data->controller.orientation;
 }
 
 void init_main_framebuffer(MainFramebuffer* fbo, int width, int height) {

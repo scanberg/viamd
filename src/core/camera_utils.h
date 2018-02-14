@@ -11,30 +11,51 @@ void camera_controller_fps(Camera* camera, bool key_fwd, bool key_bwd, bool key_
 void camera_trackball(Camera* camera, vec2 prev_ndc, vec2 curr_ndc);
 void camera_move(Camera* camera, vec3 vec);
 
-namespace camera {
-	struct InputState {
-		bool rotate_button = false;
-		bool pan_button = false;
-		bool dolly_button = false;
-		vec2 prev_mouse_ndc = vec2(0,0);
-		vec2 curr_mouse_ndc = vec2(0,0);
-		float dolly_delta = 0;
-	};
+struct TrackballController {
+    struct InputState {
+        bool rotate_button = false;
+        bool pan_button = false;
+        bool dolly_button = false;
+        vec2 prev_mouse_ndc = vec2(0,0);
+        vec2 curr_mouse_ndc = vec2(0,0);
+        float dolly_delta = 0;
+    };
+	InputState input;
+	
+	vec3 position = vec3(0,10,10);
+	float distance = glm::length(position);
+	quat orientation = quat(1,0,0,0);
 
-	struct TrackballController {
-		InputState input;
-		
-		vec3 position = vec3(0,10,10);
-		float distance = glm::length(position);
-		quat orientation = quat(1,0,0,0);
+	float min_distance = 1.f;
+	float max_distance = 1000.f;
 
-		float min_distance = 1.f;
-		float max_distance = 1000.f;
+	vec3 compute_look_at() const {
+		return position - glm::mat3_cast(orientation) * vec3(0, 0, distance);
+	}
 
-		vec3 compute_look_at() const {
-			return position - glm::mat3_cast(orientation) * vec3(0, 0, distance);
-		}
+    void look_at(const vec3& dst, const vec3& src) {
+        const vec3 FORWARD = vec3(0,0,-1);
+        const vec3 UP = vec3(0,1,0);
 
-		void update();
-	};
-}
+        position = src;
+        distance = math::distance(dst, src);
+
+        vec3 fwd = math::normalize(dst - src);
+        float dot = math::dot(FORWARD, fwd);
+
+        if (math::abs(dot - (-1.0f)) < 0.000001f) {
+            orientation = quat(math::PI, UP.x, UP.y, UP.z);
+            return;
+        }
+        if (math::abs(dot - (1.0f)) < 0.000001f) {
+            orientation = quat(1,0,0,0);
+            return;
+        }
+
+        float angle = math::acos(dot);
+        vec3 axis = math::normalize(math::cross(FORWARD, fwd));
+        orientation = math::angle_axis(angle, axis);
+    }
+
+	void update();
+};

@@ -21,7 +21,7 @@ struct Label {
 	template<int32 N>
 	Label(const char (&cstr)[N]) {
 		int32 len = N < MAX_LENGTH ? N : MAX_LENGTH - 1;
-		strncpy(data, cstr.data, len);
+		strncpy(data, cstr, len);
 		length = len;
 		data[length] = '\0';
 	}
