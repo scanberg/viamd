@@ -378,20 +378,16 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
     ASSERT(count == atom_radii.count && count == atom_colors.count);
     ASSERT(count * sizeof(vdw::Vertex) < VERTEX_BUFFER_SIZE);
 
-	static bool init = false;
-	if (!init) {
-		init = true;
-		glBindBuffer(GL_ARRAY_BUFFER, vbo);
-		vdw::Vertex* data = (vdw::Vertex*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-		for (int64_t i = 0; i < count; i++) {
-			data[i].position[0] = atom_positions[i][0];
-			data[i].position[1] = atom_positions[i][1];
-			data[i].position[2] = atom_positions[i][2];
-			data[i].radius = atom_radii[i];
-			data[i].color = atom_colors[i];
-		}
-		glUnmapBuffer(GL_ARRAY_BUFFER);
+	glBindBuffer(GL_ARRAY_BUFFER, vbo);
+	vdw::Vertex* data = (vdw::Vertex*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+	for (int64_t i = 0; i < count; i++) {
+		data[i].position[0] = atom_positions[i][0];
+		data[i].position[1] = atom_positions[i][1];
+		data[i].position[2] = atom_positions[i][2];
+		data[i].radius = atom_radii[i];
+		data[i].color = atom_colors[i];
 	}
+	glUnmapBuffer(GL_ARRAY_BUFFER);
 
     glEnable(GL_DEPTH_TEST);
 

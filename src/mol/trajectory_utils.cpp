@@ -15,12 +15,19 @@ Trajectory read_and_allocate_trajectory(const char* path, Allocator& alloc) {
     std::string cache_file = file_without_ext + ".cache";
 
     XDRFILE* file_handle = xdrfile_open(path, "r");
+	if (!file_handle) {
+		ASSERT(false, "Failed to open xdrfile");
+	}
 
     int num_atoms;
     int num_frames;
     int64* offsets;
-    read_xtc_natoms(path, &num_atoms);
-    read_xtc_frame_offsets(path, &num_frames, &offsets);
+	if (read_xtc_natoms(path, &num_atoms) != exdrOK) {
+		ASSERT(false, "Failed to extract num atoms");
+	}
+	if (read_xtc_frame_offsets(path, &num_frames, &offsets) != exdrOK) {
+		ASSERT(false, "Failed to extract frames and offsets");
+	}
 
     Trajectory traj{num_atoms, num_frames, 0.f, Trajectory::NVT, file_handle};
     traj.frame_offsets.resize(num_frames);
@@ -38,8 +45,13 @@ Trajectory read_and_allocate_trajectory(const char* path, Allocator& alloc) {
         TrajectoryFrame* frame = traj.frame_buffer.data + i;
         frame->atom_positions.data = pos_data;
         frame->atom_positions.count = num_atoms;
+		frame->index = i;
+		int step;
         float precision;
-        read_xtc(file_handle, num_atoms, &frame->index, &frame->time, (float(*)[3])&frame->box, (float(*)[3])pos_data, &precision);
+        read_xtc(file_handle, num_atoms, &step, &frame->time, (float(*)[3])&frame->box, (float(*)[3])pos_data, &precision);
+		for (int j = 0; j < num_atoms; j++) {
+			pos_data[j] *= 10.f;
+		}
     }
 
     return traj;
@@ -51,8 +63,13 @@ void free_trajectory(Trajectory* traj) {
     traj->file_handle = nullptr;
 }
 
-TrajectoryFrame copy_trajectory_frame(Trajectory traj, int frame_index, Allocator& alloc) { return {}; }
+TrajectoryFrame copy_trajectory_frame(const Trajectory& traj, int frame_index, Allocator& alloc) { return {}; }
 
-void read_trajectory_positions(Array<vec3> atom_positions, Trajectory traj, int frame_index) {}
+void copy_trajectory_positions(Array<vec3> dst_array, const Trajectory& traj, int frame_index) {
+	ASSERT(dst_array);
+	ASSERT(dst_array.count >= traj.num_atoms);
+	ASSERT(frame_index < traj.num_frames);
+	memcpy(dst_array.data, traj.frame_buffer.data[frame_index].atom_positions.data, traj.num_atoms * sizeof(vec3));
+}
 
-void read_trajectory_box_vectors(vec3 box_vectors[3], Trajectory traj, int frame_index) {}
+void read_trajectory_box_vectors(vec3 box_vectors[3], const Trajectory& traj, int frame_index) {}

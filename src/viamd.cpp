@@ -36,6 +36,7 @@ struct ApplicationData {
     DynamicArray<float> atom_radii;
     DynamicArray<uint32> atom_colors;
     Trajectory* trajectory;
+	int current_frame = 0;
 
 	// Framebuffer
 	MainFramebuffer fbo;
@@ -54,7 +55,9 @@ int main(int, char**) {
 
     auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
     data.mol_struct = &gro_res.gro;
+
 	Trajectory traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
+	data.trajectory = &traj;
 
     data.camera.position = vec3(0, 0, 100);
 	int display_w = 1920;
@@ -93,13 +96,16 @@ int main(int, char**) {
 			postprocessing::initialize(display_w, display_h);
 		}
 
-		ImGui::Begin("Input");
+		ImGui::Begin("Misc");
 		ImGui::Text("MouseVel: %g, %g", input->mouse_velocity.x, input->mouse_velocity.y);
 		ImGui::Text("Camera Pos: %g, %g, %g", data.camera.position.x, data.camera.position.y, data.camera.position.z);
-		ImGui::Text("MOUSE_BUTTONS [%i, %i, %i, %i, %i]", input->mouse_down[0], input->mouse_down[1], input->mouse_down[2], input->mouse_down[3], input->mouse_down[4]);
+		ImGui::Text("Mouse Buttons: [%i, %i, %i, %i, %i]", input->mouse_down[0], input->mouse_down[1], input->mouse_down[2], input->mouse_down[3], input->mouse_down[4]);
         if (ImGui::Button("Reset View")) {
             reset_view(&data);
         }
+		if (ImGui::SliderInt("Frame", &data.current_frame, 0, data.trajectory->num_frames - 1)) {
+			copy_trajectory_positions(data.mol_struct->atom_positions, *data.trajectory, data.current_frame);
+		}
 		ImGui::End();
 
 		if (!ImGui::GetIO().WantCaptureMouse) {
