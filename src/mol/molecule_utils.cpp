@@ -276,6 +276,14 @@ void main() {
     vec3 view_normal = (view_hit - center) / radius;
     vec4 color = in_frag.color;
 
+    vec3 light_dir = normalize(vec3(1, 1, 1));
+    vec3 light_str = vec3(2,2,2);
+    vec3 ambient = vec3(0.4, 0.4, 0.4);
+    vec3 diffuse = max(0, dot(light_dir, view_normal)) * color.rgb * light_str;
+    vec3 h = normalize(-view_dir + light_dir);
+    vec3 specular = vec3(0.3) * pow(dot(h, view_normal), 10.0);
+    color.rgb = ambient + diffuse + specular;
+
     vec4 coord = vec4(0, 0, view_hit.z, 1);
     coord = u_proj_mat * coord;
     coord = coord / coord.w;

@@ -38,6 +38,8 @@ struct ApplicationData {
     Trajectory* trajectory;
 	int current_frame = 0;
 
+    bool is_playing = false;
+
 	// Framebuffer
 	MainFramebuffer fbo;
 
@@ -53,15 +55,16 @@ void reset_view(ApplicationData* data);
 int main(int, char**) {
 	ApplicationData data;
 
+    int display_w = 1920;
+    int display_h = 1080;
+
     auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
     data.mol_struct = &gro_res.gro;
 
 	Trajectory traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
 	data.trajectory = &traj;
 
-    data.camera.position = vec3(0, 0, 100);
-	int display_w = 1920;
-	int display_h = 1080;
+    reset_view(&data);
 
     platform::initialize();
     data.main_window = platform::create_window(display_w, display_h, "VIAMD");
@@ -82,7 +85,7 @@ int main(int, char**) {
     ImGui::StyleColorsClassic();
 
     bool show_demo_window = false;
-    vec4 clear_color = vec4(0.2, 0.2, 0.4, 1);
+    vec4 clear_color = vec4(0.5, 0.5, 0.5, 1);
 
     // Main loop
     while (!(platform::window_should_close(data.main_window))) {
@@ -96,6 +99,8 @@ int main(int, char**) {
 			postprocessing::initialize(display_w, display_h);
 		}
 
+        bool frame_changed = false;
+
 		ImGui::Begin("Misc");
 		ImGui::Text("MouseVel: %g, %g", input->mouse_velocity.x, input->mouse_velocity.y);
 		ImGui::Text("Camera Pos: %g, %g, %g", data.camera.position.x, data.camera.position.y, data.camera.position.z);
@@ -104,9 +109,30 @@ int main(int, char**) {
             reset_view(&data);
         }
 		if (ImGui::SliderInt("Frame", &data.current_frame, 0, data.trajectory->num_frames - 1)) {
-			copy_trajectory_positions(data.mol_struct->atom_positions, *data.trajectory, data.current_frame);
+            frame_changed = true;
 		}
+        if (data.is_playing) {
+            if (ImGui::Button("Pause")) data.is_playing = false;
+        } else {
+            if (ImGui::Button("Play")) data.is_playing = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Stop")) {
+            data.is_playing = false;
+            data.current_frame = 0;
+            frame_changed = true;
+        }
 		ImGui::End();
+
+        if (data.is_playing) {
+            data.current_frame++;
+            frame_changed = true;
+        }
+
+        if (frame_changed) {
+            data.current_frame = math::clamp(data.current_frame, 0, data.trajectory->num_frames - 1);
+            copy_trajectory_positions(data.mol_struct->atom_positions, *data.trajectory, data.current_frame);
+        }
 
 		if (!ImGui::GetIO().WantCaptureMouse) {
             data.controller.input.rotate_button = input->mouse_down[0];
@@ -148,7 +174,7 @@ int main(int, char**) {
         molecule::draw::draw_vdw(data.mol_struct->atom_positions, data.atom_radii, data.atom_colors, model_mat, view_mat, proj_mat);
 		
         if (data.use_ssao) {
-            postprocessing::apply_ssao(data.fbo.tex_depth, proj_mat, 1.5f, 3.f);
+            postprocessing::apply_ssao(data.fbo.tex_depth, proj_mat, 2.0f, 6.f);
         }
 
         // Activate backbuffer

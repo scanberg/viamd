@@ -666,12 +666,43 @@ vec3 passthrough(vec3 c) {
 }
 
 vec3 reinhard(vec3 c) {
-	return c / (c + 1.0);
+    c *= 1;  // Hardcoded Exposure Adjustment
+    c = c / (c + vec3(1.0));
+    return pow(c, vec3(1.0 / 2.2));
+}
+
+vec3 uncharted2_tonemap(vec3 x) {
+    const float A = 0.15;
+    const float B = 0.50;
+    const float C = 0.10;
+    const float D = 0.20;
+    const float E = 0.02;
+    const float F = 0.30;
+    return ((x*(A*x+C*B)+D*E)/(x*(A*x+B)+D*F))-E/F;
+}
+
+vec3 uncharted2(vec3 c) {
+    const float W = 11.2;
+    c *= 2;  // Hardcoded Exposure Adjustment
+
+    float exp_bias = 2.0;
+    vec3 curr = uncharted2_tonemap(exp_bias * c);
+
+    vec3 white_scale = vec3(1.0) / uncharted2_tonemap(vec3(W));
+    vec3 color = curr * white_scale;
+      
+    return pow(color, vec3(1.0/0.8));
+}
+
+vec3 hejl_dawsson(vec3 c) {
+   c *= 1;  // Hardcoded Exposure Adjustment
+   vec3 x = max(vec3(0), c-vec3(0.004));
+   return (x*(6.2*x+.5))/(x*(6.2*x+1.7)+0.06);
 }
 
 void main() {
 	vec4 color = texelFetch(u_texture, ivec2(gl_FragCoord.xy), 0);
-	out_frag = vec4(passthrough(color.rgb), color.a);
+	out_frag = vec4(uncharted2(color.rgb), color.a);
 }
 )";
 
