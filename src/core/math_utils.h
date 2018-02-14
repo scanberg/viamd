@@ -4,6 +4,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/random.hpp>
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/spline.hpp>
 #include <float.h>
 #include <stdlib.h>
 
@@ -19,6 +21,9 @@ namespace math {
 	using glm::abs;
 	using glm::floor;
 	using glm::ceil;
+	using glm::fract;
+	using glm::sign;
+	using glm::step;
 	using glm::exp;
 	using glm::pow;
 	using glm::sqrt;
@@ -37,7 +42,7 @@ namespace math {
 	using glm::atanh;
 	using glm::radians;
 
-	// Vector algebra
+	// Vector
 	using glm::dot;
 	using glm::cross;
 	using glm::distance;
@@ -59,12 +64,28 @@ namespace math {
 	using glm::inverse;
 	using glm::determinant;
 
+	// Casts
 	using glm::mat3_cast;
 	using glm::mat4_cast;
 	using glm::quat_cast;
 
+	// Interpolation
+	using glm::mix;
+	template<typename T, typename V>
+	T lerp(T const& a, T const& b, V t) { return glm::mix(a,b,t); }
+
+	template<typename T, typename V>
+	T catmull_rom(T const& v1, T const& v2, T const& v3, T const& v4, V s) { return glm::catmullRom(v1, v2, v3, v4, s); }
+
+	template<typename T, typename V>
+	T cubic(T const& v1, T const& v2, T const& v3, T const& v4, V s) { return glm::cubic(v1, v2, v3, v4, s); }
+
+	template<typename T, typename V>
+	T hermite(T const& v1, T const& t1, T const& v2, T const& t2, V s) { return glm::cubic(v1, v2, v3, v4, s); }
+
+	// Quaternion
 	template<typename T, glm::qualifier Q>
-	glm::tquat<T, Q> angle_axis(T const& angle, glm::vec<3, T, Q> const& v) { return glm::angleAxis(angle, v); }
+	glm::tquat<T, Q> angle_axis(T const& angle, glm::vec<3, T, Q> const& axis) { return glm::angleAxis(angle, axis); }
 
 	// Random
 	inline float rnd() { return rand() / (float)RAND_MAX; }

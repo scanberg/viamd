@@ -4,8 +4,6 @@
 #include <core/math_utils.h>
 #include <imgui.h>
 
-namespace molecule {
-
 void transform_positions(Array<vec3> positions, const mat4& transformation) {
     for (auto& p : positions) {
         p = vec3(transformation * vec4(p, 1));
@@ -25,6 +23,34 @@ void compute_bounding_box(vec3* min_box, vec3* max_box, const Array<vec3> positi
         *min_box = math::min(*min_box, positions.data[i]);
         *max_box = math::max(*max_box, positions.data[i]);
     }
+}
+
+void periodic_position_interpolation(Array<vec3> positions, const Array<vec3> prev_pos, const Array<vec3> next_pos, float t, mat3 sim_box) {
+	ASSERT(prev_pos.count == positions.count);
+	ASSERT(next_pos.count == positions.count);
+
+	vec3 full_box_ext = sim_box * vec3(1);
+	vec3 half_box_ext = full_box_ext * 0.5f;
+
+	for (int i = 0; i < positions.count; i++) {
+		vec3 next = next_pos[i];
+		vec3 prev = prev_pos[i];
+
+		vec3 delta = next - prev;
+		vec3 sign = math::sign(delta);
+
+		vec3 abs_delta = math::abs(delta);
+		if (abs_delta.x > half_box_ext.x)
+			next.x -= full_box_ext.x * sign.x;
+		if (abs_delta.y > half_box_ext.y)
+			next.y -= full_box_ext.y * sign.y;
+		if (abs_delta.z > half_box_ext.z)
+			next.z -= full_box_ext.z * sign.z;
+
+		//next -= math::step(half_box_ext, math::abs(delta)) * delta;
+
+		positions[i] = math::mix(prev, next, t);
+	}
 }
 
 DynamicArray<Bond> compute_bonds(const Array<vec3> atom_pos, const Array<Element> atom_elem, const Array<Residue> residues, Allocator& alloc) {
@@ -87,6 +113,33 @@ DynamicArray<Bond> compute_bonds(const Array<vec3> atom_pos, const Array<Element
 
 	return bonds;
 }
+
+static inline bool idx_in_residue(int idx, const Residue& res) { return res.beg_atom_idx <= idx && idx < res.end_atom_idx; }
+
+static bool residues_are_connected(Residue res_a, Residue res_b, const Array<Bond> bonds) {
+	for (const auto& bond : bonds) {
+		if (idx_in_residue(bond.atom_idx_a, res_a) && idx_in_residue(bond.atom_idx_b, res_b)) return true;
+		if (idx_in_residue(bond.atom_idx_b, res_a) && idx_in_residue(bond.atom_idx_a, res_b)) return true;
+	}
+	return false;
+}
+
+DynamicArray<Chain> compute_chains(const Array<Residue> residues, const Array<Bond> bonds) {
+	char curr_chain = 'A';
+	DynamicArray<char> residue_chains(residues.count, -1);
+
+	for (int i = 0; i < residues.count - 1; i++) {
+		residue_chains[i] = curr_chain;
+		for (int j = i + 1; j < residues.count; j++) {
+			if (residues_are_connected(residues[i], residues[j], bonds)) {
+				residue_chains[j] = residue_chains[i];
+			}
+		}
+	}
+
+	return {};
+}
+
 
 /*
 DynamicArray<Backbone> compute_backbones(const Array<Residue> residues, const Array<Bond> bonds, Allocator& alloc) {
@@ -261,10 +314,10 @@ out vec4 out_color;
 void main() {
     vec3 center = in_frag.view_sphere.xyz;
     float radius = in_frag.view_sphere.w;
-    vec3 view_dir = normalize(in_frag.view_pos.xyz);
+    vec3 view_dir = -normalize(in_frag.view_pos.xyz);
 
     vec3 m = -center;
-    vec3 d = view_dir;
+    vec3 d = -view_dir;
     float r = radius;
     float b = dot(m, d);
     float c = dot(m, m) - r*r;
@@ -278,10 +331,10 @@ void main() {
 
     vec3 light_dir = normalize(vec3(1, 1, 1));
     vec3 light_str = vec3(2,2,2);
-    vec3 ambient = vec3(0.4, 0.4, 0.4);
+    vec3 ambient = vec3(0.2, 0.2, 0.2);
     vec3 diffuse = max(0, dot(light_dir, view_normal)) * color.rgb * light_str;
-    vec3 h = normalize(-view_dir + light_dir);
-    vec3 specular = vec3(0.3) * pow(dot(h, view_normal), 10.0);
+    vec3 h = normalize(view_dir + light_dir);
+    vec3 specular = max(0, pow(dot(h, view_normal), 10.0)) * vec3(0.3);
     color.rgb = ambient + diffuse + specular;
 
     vec4 coord = vec4(0, 0, view_hit.z, 1);
@@ -414,5 +467,3 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
 }
 
 }  // namespace draw
-
-}  // namespace molecule

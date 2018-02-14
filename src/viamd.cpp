@@ -36,8 +36,9 @@ struct ApplicationData {
     DynamicArray<float> atom_radii;
     DynamicArray<uint32> atom_colors;
     Trajectory* trajectory;
-	int current_frame = 0;
 
+	float64 time = 0.f; 	// needs to be double precision
+	float frames_per_second = 10.f;
     bool is_playing = false;
 
 	// Framebuffer
@@ -58,10 +59,10 @@ int main(int, char**) {
     int display_w = 1920;
     int display_h = 1080;
 
-    auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
+    auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
     data.mol_struct = &gro_res.gro;
 
-	Trajectory traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
+	Trajectory traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
 	data.trajectory = &traj;
 
     reset_view(&data);
@@ -73,19 +74,19 @@ int main(int, char**) {
 
     //auto pdb_res = load_pdb_from_file(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
     //data.mol_struct = &pdb_res.pdb;
-    data.atom_radii = molecule::compute_atom_radii(data.mol_struct->atom_elements);
-    data.atom_colors = molecule::compute_atom_colors(*data.mol_struct, ColorMapping::CPK);
+    data.atom_radii = compute_atom_radii(data.mol_struct->atom_elements);
+    data.atom_colors = compute_atom_colors(*data.mol_struct, ColorMapping::CPK);
 
     immediate::initialize();
     postprocessing::initialize(display_w, display_h);
-    molecule::draw::initialize();
+    draw::initialize();
 	init_main_framebuffer(&data.fbo, display_w, display_h);
 
     // Setup style
     ImGui::StyleColorsClassic();
 
     bool show_demo_window = false;
-    vec4 clear_color = vec4(0.5, 0.5, 0.5, 1);
+    vec4 clear_color = vec4(0.6, 0.6, 0.6, 1);
 
     // Main loop
     while (!(platform::window_should_close(data.main_window))) {
@@ -99,7 +100,7 @@ int main(int, char**) {
 			postprocessing::initialize(display_w, display_h);
 		}
 
-        bool frame_changed = false;
+        bool time_changed = false;
 
 		ImGui::Begin("Misc");
 		ImGui::Text("MouseVel: %g, %g", input->mouse_velocity.x, input->mouse_velocity.y);
@@ -108,9 +109,14 @@ int main(int, char**) {
         if (ImGui::Button("Reset View")) {
             reset_view(&data);
         }
-		if (ImGui::SliderInt("Frame", &data.current_frame, 0, data.trajectory->num_frames - 1)) {
-            frame_changed = true;
+		{
+			float t = (float)data.time;
+			if (ImGui::SliderFloat("Time", &t, 0, (float)(data.trajectory->num_frames - 1))) {
+				time_changed = true;
+				data.time = t;
+			}
 		}
+		ImGui::SliderFloat("Frames Per Second", &data.frames_per_second, 0.1f, 100.f);
         if (data.is_playing) {
             if (ImGui::Button("Pause")) data.is_playing = false;
         } else {
@@ -119,19 +125,44 @@ int main(int, char**) {
         ImGui::SameLine();
         if (ImGui::Button("Stop")) {
             data.is_playing = false;
-            data.current_frame = 0;
-            frame_changed = true;
+            data.time = 0.0;
+			time_changed = true;
         }
 		ImGui::End();
 
         if (data.is_playing) {
-            data.current_frame++;
-            frame_changed = true;
+            data.time += dt * data.frames_per_second;
+			time_changed = true;
         }
 
-        if (frame_changed) {
-            data.current_frame = math::clamp(data.current_frame, 0, data.trajectory->num_frames - 1);
-            copy_trajectory_positions(data.mol_struct->atom_positions, *data.trajectory, data.current_frame);
+        if (time_changed) {
+            data.time = math::clamp(data.time, 0.0, float64(data.trajectory->num_frames - 1));
+			if (data.time == float64(data.trajectory->num_frames - 1)) data.is_playing = false;
+
+			int prev_frame_idx = math::max(0, (int)data.time);
+			int next_frame_idx = math::min(prev_frame_idx + 1, data.trajectory->num_frames - 1);
+			if (prev_frame_idx == next_frame_idx) {
+				copy_trajectory_positions(data.mol_struct->atom_positions, *data.trajectory, prev_frame_idx);
+			}
+			else {
+				// INTERPOLATE
+				auto prev_frame = get_trajectory_frame(*data.trajectory, prev_frame_idx);
+				auto next_frame = get_trajectory_frame(*data.trajectory, next_frame_idx);
+
+				float t = (float)math::fract(data.time);
+				periodic_position_interpolation(data.mol_struct->atom_positions, prev_frame.atom_positions, next_frame.atom_positions, t, prev_frame.box);
+				
+				//memcpy(data.mol_struct->atom_positions.data, prev_frame.atom_positions.data, data.mol_struct->atom_positions.count * sizeof(vec3));
+
+				/*
+				ASSERT(prv_pos.count == data.mol_struct->atom_positions.count);
+				ASSERT(nxt_pos.count == data.mol_struct->atom_positions.count);
+
+				for (int i = 0; i < data.mol_struct->atom_positions.count; i++) {
+					data.mol_struct->atom_positions[i] = math::mix(prv_pos[i], nxt_pos[i], t);
+				}
+				*/
+			}
         }
 
 		if (!ImGui::GetIO().WantCaptureMouse) {
@@ -171,7 +202,7 @@ int main(int, char**) {
 		glEnable(GL_DEPTH_TEST);
 		glDepthFunc(GL_LESS);
 
-        molecule::draw::draw_vdw(data.mol_struct->atom_positions, data.atom_radii, data.atom_colors, model_mat, view_mat, proj_mat);
+        draw::draw_vdw(data.mol_struct->atom_positions, data.atom_radii, data.atom_colors, model_mat, view_mat, proj_mat);
 		
         if (data.use_ssao) {
             postprocessing::apply_ssao(data.fbo.tex_depth, proj_mat, 2.0f, 6.f);
@@ -278,7 +309,7 @@ void reset_view(ApplicationData* data) {
     ASSERT(data->mol_struct);
 
     vec3 min_box, max_box;
-    molecule::compute_bounding_box(&min_box, &max_box, data->mol_struct->atom_positions);
+    compute_bounding_box(&min_box, &max_box, data->mol_struct->atom_positions);
     vec3 size = max_box - min_box;
     vec3 cent = (min_box + max_box) * 0.5f;
     printf("min_box: %g %g %g\n", min_box.x, min_box.y, min_box.z);

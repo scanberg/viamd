@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <xdrfile_xtc.h>
 #include <string>
+#include <fstream>
 
 // @TODO: Remove dependency of string
 
@@ -19,17 +20,34 @@ Trajectory read_and_allocate_trajectory(const char* path, Allocator& alloc) {
 		ASSERT(false, "Failed to open xdrfile");
 	}
 
-    int num_atoms;
-    int num_frames;
-    int64* offsets;
+    int num_atoms = 0;
+    int num_frames = 0;
+    int64* offsets = nullptr;
 	if (read_xtc_natoms(path, &num_atoms) != exdrOK) {
 		ASSERT(false, "Failed to extract num atoms");
 	}
-	if (read_xtc_frame_offsets(path, &num_frames, &offsets) != exdrOK) {
-		ASSERT(false, "Failed to extract frames and offsets");
+
+	std::ifstream offset_cache_stream(cache_file, std::ios::binary);
+	if (offset_cache_stream) {
+		offset_cache_stream.seekg(0, std::ios::end);
+		int64 byte_size = offset_cache_stream.tellg();
+		offset_cache_stream.seekg(0, std::ios::beg);
+		offsets = (int64*)malloc(byte_size);
+		offset_cache_stream.read((char*)offsets, byte_size);
+		num_frames = byte_size / sizeof(int64);
+	}
+	else {
+		if (read_xtc_frame_offsets(path, &num_frames, &offsets) != exdrOK) {
+			ASSERT(false, "Failed to extract frames and offsets");
+		}
+		std::ofstream write_offset_cache_stream(cache_file, std::ios::binary);
+		if (write_offset_cache_stream) {
+			write_offset_cache_stream.write((char*)offsets, num_frames * sizeof(int64));
+		}
 	}
 
-    Trajectory traj{num_atoms, num_frames, 0.f, Trajectory::NVT, file_handle};
+	ASSERT(offsets, "Failed to read offsets");
+	Trajectory traj{ num_atoms, num_frames, 0.f, Trajectory::NVT, file_handle };
     traj.frame_offsets.resize(num_frames);
     memcpy(traj.frame_offsets.data, offsets, num_frames * sizeof(int64));
     free(offsets);
@@ -52,6 +70,7 @@ Trajectory read_and_allocate_trajectory(const char* path, Allocator& alloc) {
 		for (int j = 0; j < num_atoms; j++) {
 			pos_data[j] *= 10.f;
 		}
+		frame->box *= 10.f;
     }
 
     return traj;
@@ -73,3 +92,13 @@ void copy_trajectory_positions(Array<vec3> dst_array, const Trajectory& traj, in
 }
 
 void read_trajectory_box_vectors(vec3 box_vectors[3], const Trajectory& traj, int frame_index) {}
+
+TrajectoryFrame get_trajectory_frame(const Trajectory& traj, int frame_index) {
+	ASSERT(frame_index < traj.num_frames);
+	return traj.frame_buffer.data[frame_index];
+}
+
+Array<vec3> get_trajectory_positions(const Trajectory& traj, int frame_index) {
+	ASSERT(frame_index < traj.num_frames);
+	return traj.frame_buffer.data[frame_index].atom_positions;
+}
