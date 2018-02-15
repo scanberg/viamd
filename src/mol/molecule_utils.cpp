@@ -41,11 +41,11 @@ void periodic_position_interpolation(Array<vec3> positions, const Array<vec3> pr
 
 		vec3 abs_delta = math::abs(delta);
 		if (abs_delta.x > half_box_ext.x)
-			next.x -= full_box_ext.x * sign.x;
+			prev.x += full_box_ext.x * sign.x;
 		if (abs_delta.y > half_box_ext.y)
-			next.y -= full_box_ext.y * sign.y;
+			prev.y += full_box_ext.y * sign.y;
 		if (abs_delta.z > half_box_ext.z)
-			next.z -= full_box_ext.z * sign.z;
+			prev.z += full_box_ext.z * sign.z;
 
 		//next -= math::step(half_box_ext, math::abs(delta)) * delta;
 

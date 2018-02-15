@@ -64,7 +64,7 @@ namespace math {
 	using glm::inverse;
 	using glm::determinant;
 
-	// Casts
+	// Cast
 	using glm::mat3_cast;
 	using glm::mat4_cast;
 	using glm::quat_cast;
@@ -81,7 +81,7 @@ namespace math {
 	T cubic(T const& v1, T const& v2, T const& v3, T const& v4, V s) { return glm::cubic(v1, v2, v3, v4, s); }
 
 	template<typename T, typename V>
-	T hermite(T const& v1, T const& t1, T const& v2, T const& t2, V s) { return glm::cubic(v1, v2, v3, v4, s); }
+	T hermite(T const& v1, T const& t1, T const& v2, T const& t2, V s) { return glm::cubic(v1, t1, v2, t2, s); }
 
 	// Quaternion
 	template<typename T, glm::qualifier Q>

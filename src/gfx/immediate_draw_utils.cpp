@@ -1,7 +1,8 @@
 #include "immediate_draw_utils.h"
+#include <core/types.h>
+#include <core/array.h>
 #include <core/gl.h>
 #include <gfx/gl_utils.h>
-#include <core/array.h>
 
 namespace immediate {
 
@@ -17,7 +18,14 @@ struct DrawCommand {
     Index offset;
     Index count;
     GLenum primitive_type;
+    GLuint program;
+    GLuint texture = 0;
+    int view_matrix_idx = -1;
+    int proj_matrix_idx = -1;
+    int _pad0 = 0;
 };
+
+static DynamicArray<mat4> matrix_stack;
 
 static DynamicArray<DrawCommand> commands;
 static DynamicArray<Vertex> vertices;
@@ -35,6 +43,9 @@ static GLint attrib_loc_pos = -1;
 static GLint attrib_loc_tc = -1;
 static GLint attrib_loc_col = -1;
 static GLint uniform_loc_mvp = -1;
+
+static int curr_model_view_matrix_idx = -1;
+static int curr_proj_matrix = -1;
 
 static const char* v_shader_src = R"(
 #version 150 core
@@ -73,7 +84,7 @@ static inline void append_draw_command(Index offset, Index count, GLenum primiti
             commands.back().count += count;
         }
     } else {
-        DrawCommand cmd{offset, count, primitive_type};
+        DrawCommand cmd{offset, count, primitive_type, program, 0, curr_model_view_matrix_idx, curr_proj_matrix};
         commands.push_back(cmd);
     }
 }
@@ -148,7 +159,17 @@ void shutdown() {
     if (program) glDeleteProgram(program);
 }
 
-void flush(const float mvp_matrix[16]) {
+void set_model_view_matrix(const mat4& model_view_matrix) {
+    curr_model_view_matrix_idx = matrix_stack.count;
+    matrix_stack.push_back(model_view_matrix);
+}
+
+void set_proj_matrix(const mat4& proj_matrix) {
+    curr_proj_matrix = matrix_stack.count;
+    matrix_stack.push_back(proj_matrix);
+}
+
+void flush() {
     glBindVertexArray(vao);
 
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
@@ -158,7 +179,9 @@ void flush(const float mvp_matrix[16]) {
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.count * sizeof(Index), indices.data, GL_STREAM_DRAW);
 
     glUseProgram(program);
-    glUniformMatrix4fv(uniform_loc_mvp, 1, GL_FALSE, mvp_matrix);
+
+    mat4 mvp_matrix = mat4(1);
+    glUniformMatrix4fv(uniform_loc_mvp, 1, GL_FALSE, &mvp_matrix[0][0]);
 
     for (const auto& cmd : commands) {
         glDrawElements(cmd.primitive_type, cmd.count, sizeof(Index) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT,
@@ -173,6 +196,7 @@ void flush(const float mvp_matrix[16]) {
     vertices.clear();
     indices.clear();
     commands.clear();
+    matrix_stack.clear();
 }
 
 // PRIMITIVES
