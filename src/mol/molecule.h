@@ -118,11 +118,6 @@ struct MoleculeStructure {
 	Array<Chain>	chains;
 };
 
-// This is the actual owner of the data which is exposed through MoleculeStructure Interface.
-struct MoleculeData : MoleculeStructure {
-	void* data_block = nullptr;
-};
-
 enum MoleculeStructureAllocationFlags {
 	MOL_POSITIONS = BIT(0),
 	MOL_ELEMENTS = BIT(1),

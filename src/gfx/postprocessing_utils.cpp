@@ -771,8 +771,11 @@ void apply_ssao(GLuint depth_tex, const mat4& proj_matrix, float intensity, floa
 	
 	GLint last_fbo; glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fbo);
 	GLint last_viewport[4]; glGetIntegerv(GL_VIEWPORT, last_viewport);
+	//GLint draw_buffers[8];
+	//for (int i = 0; i < 8; i++) glGetIntegerv(GL_DRAW_BUFFER0 + i, draw_buffers + i);
 
 	glViewport(0, 0, ssao::tex_width, ssao::tex_height);
+	glDrawBuffer(GL_COLOR_ATTACHMENT0);
 
 	// LINEARIZE DEPTH
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ssao::fbo_linear_depth);
@@ -818,6 +821,7 @@ void apply_ssao(GLuint depth_tex, const mat4& proj_matrix, float intensity, floa
 
 	// BLUR SECOND
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, last_fbo);
+	//glDrawBuffers(8, (GLenum*)draw_buffers);
 	glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
 	glUseProgram(ssao::prog_blur_second);
 	glActiveTexture(GL_TEXTURE0);

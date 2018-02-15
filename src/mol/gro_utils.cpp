@@ -27,6 +27,7 @@ GroResult parse_gro_from_string(CString gro_string, Allocator& alloc) {
     int atom_idx, res_idx;
     int cur_res = -1;
 
+	/*
     struct GroAtom {
 		vec3 position;
 		vec3 velocity;
@@ -34,8 +35,14 @@ GroResult parse_gro_from_string(CString gro_string, Allocator& alloc) {
 		Element element;
 		int32 residue_idx;
 	};
+	*/
 
-	DynamicArray<GroAtom> atoms;
+	DynamicArray<vec3> positions;
+	DynamicArray<vec3> velocities;
+	DynamicArray<Label> labels;
+	DynamicArray<Element> elements;
+	DynamicArray<int32> residue_indices;
+	//DynamicArray<GroAtom> atoms;
 	DynamicArray<Residue> residues;
 	DynamicArray<Chain> chains;
 	DynamicArray<Bond> bonds;
@@ -60,10 +67,15 @@ GroResult parse_gro_from_string(CString gro_string, Allocator& alloc) {
                 residues.push_back(res);
             }
             residues.back().end_atom_idx++;
-
 			auto elem = element::get_from_string(trim(CString(atom_name)));
 
-			atoms.push_back({pos, vel, atom_name, elem, res_idx});
+			positions.push_back(pos);
+			velocities.push_back(vel);
+			labels.push_back(trim(CString(atom_name)));
+			elements.push_back(elem);
+			residue_indices.push_back(res_idx);
+
+			//atoms.push_back({pos, vel, atom_name, elem, res_idx});
 
 			//gro.atom_labels.push_back(trim(CString(atom_name)));
 			//gro.atom_elements.push_back(elem);
@@ -77,26 +89,36 @@ GroResult parse_gro_from_string(CString gro_string, Allocator& alloc) {
     sscanf(line, "%8f %8f %8f", &box.x, &box.y, &box.z);
 
     // Convert from nm to ångström
-    for (auto& atom : atoms) {
-        atom.position *= 10.f;
+    for (auto& p : positions) {
+        p *= 10.f;
     }
+	for (auto& v : velocities) {
+		v *= 10.f;
+	}
     box *= 10.f;
 
 	GroStructure gro;
 	MoleculeStructure& mol = gro;
-	mol = allocate_molecule_structure(atoms.size(), bonds.size(), residues.size(), chains.size(), MOL_ALL, alloc);
+	mol = allocate_molecule_structure(count, bonds.size(), residues.size(), chains.size(), MOL_ALL, alloc);
 
 	// Copy data into molecule
+	memcpy(mol.atom_positions.data, positions.data, positions.size() * sizeof(vec3));
+	memcpy(mol.atom_elements.data, elements.data, elements.size() * sizeof(Element));
+	memcpy(mol.atom_labels.data, labels.data, labels.size() * sizeof(Label));
+	memcpy(mol.atom_residue_indices.data, residue_indices.data, residue_indices.size() * sizeof(int32));
+
 	memcpy(mol.residues.data, residues.data, residues.size() * sizeof(Residue));
 	memcpy(mol.chains.data, chains.data, chains.size() * sizeof(Chain));
 	memcpy(mol.bonds.data, bonds.data, bonds.size() * sizeof(Bond));
 
+	/*
 	// Atom data
 	for (int i = 0; i < atoms.size(); i++) {
 		mol.atom_positions[i] = atoms[i].position;
 		mol.atom_elements[i] = atoms[i].element;
 		mol.atom_labels[i] = atoms[i].label;
 	}
+	*/
 
     //computeBonds(mol);
 	//computeBackbones(mol);

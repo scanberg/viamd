@@ -49,7 +49,7 @@ struct ApplicationData {
 };
 
 static void draw_main_menu(ApplicationData* data);
-static void draw_console(ApplicationData* data, int width, int height);
+static void draw_console(ApplicationData* data, int width, int height, float dt);
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height);
 static void destroy_main_framebuffer(MainFramebuffer* fbo);
 static void reset_view(ApplicationData* data);
@@ -61,11 +61,14 @@ int main(int, char**) {
     int display_h = 1080;
 
     //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
-    auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
+    //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
+	auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
+
     data.mol_struct = &gro_res.gro;
 
     //Trajectory traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
-	Trajectory traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
+	//Trajectory traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
+	Trajectory traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
 	data.trajectory = &traj;
 
     copy_trajectory_positions(data.mol_struct->atom_positions, *data.trajectory, 0);
@@ -103,6 +106,8 @@ int main(int, char**) {
 			init_main_framebuffer(&data.fbo, display_w, display_h);
 			postprocessing::initialize(display_w, display_h);
 		}
+
+		if (input->key_hit[Key::KEY_GRAVE_ACCENT]) data.show_console = !data.show_console;
 
         bool time_changed = false;
 
@@ -170,6 +175,18 @@ int main(int, char**) {
         }
 
 		if (!ImGui::GetIO().WantCaptureMouse) {
+			if (input->mouse_down[0]) {
+				int x = input->mouse_screen_coords.x;
+				int y = input->mouse_screen_coords.y;
+				unsigned char color[4];
+				glBindFramebuffer(GL_READ_FRAMEBUFFER, data.fbo.id);
+				glReadBuffer(GL_COLOR_ATTACHMENT1);
+				glReadPixels(x, display_h - y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, color);
+				glReadBuffer(GL_NONE);
+				glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+				printf("picked color: %u %u %u %u\n", color[0], color[1], color[2], color[3]);
+			}
+
             data.controller.input.rotate_button = input->mouse_down[0];
             data.controller.input.pan_button = input->mouse_down[1];
             data.controller.input.dolly_button = input->mouse_down[2];
@@ -182,8 +199,8 @@ int main(int, char**) {
 		}
 
         // GUI ELEMENTS
+		draw_console(&data, display_w, display_h, dt);
         draw_main_menu(&data);
-        draw_console(&data, display_w, display_h);
 
         // 3. Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
         if (show_demo_window) {
@@ -199,17 +216,30 @@ int main(int, char**) {
 
         // Rendering
         glViewport(0, 0, display_w, display_h);
-        glClearColor(clear_color.x, clear_color.y, clear_color.z, clear_color.w);
 
+
+		const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.id);
-        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+
+		// Clear picking buffer
+		glDrawBuffer(GL_COLOR_ATTACHMENT1);
+		glClearColor(0, 0, 0, 0);
+		glClear(GL_COLOR_BUFFER_BIT);
+
+		// Clear color buffer
+		glClearColor(clear_color.x, clear_color.y, clear_color.z, clear_color.w);
+		glDrawBuffer(GL_COLOR_ATTACHMENT0);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+		// Enable both color and picking
+		glDrawBuffers(2, draw_buffers);
 		glEnable(GL_DEPTH_TEST);
 		glDepthFunc(GL_LESS);
 
         draw::draw_vdw(data.mol_struct->atom_positions, data.atom_radii, data.atom_colors, model_mat, view_mat, proj_mat);
-		
+
         if (data.use_ssao) {
+			glDrawBuffer(GL_COLOR_ATTACHMENT0);
             postprocessing::apply_ssao(data.fbo.tex_depth, proj_mat, 2.0f, 6.f);
         }
 
@@ -321,6 +351,7 @@ struct Console
     ImVector<char*>       History;
     int                   HistoryPos;    // -1: new line, 0..History.Size-1 browsing history.
     ImVector<const char*> Commands;
+	float				  YPos = -10000;
 
     Console()
     {
@@ -366,19 +397,37 @@ struct Console
         ScrollToBottom = true;
     }
 
-    void Draw(const char* title, ApplicationData* data, int width, int height)
+    void Draw(const char* title, ApplicationData* data, int width, int height, float dt)
     {
-        int window_flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar |
-            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse;
+		constexpr int WINDOW_FLAGS = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar |
+			ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal;
+		
+		float console_width = width;
+		float console_height = height * 0.75f;
 
-        constexpr int MAIN_MENU_HEIGHT = 19;
-        ImGui::SetNextWindowSize(ImVec2(width, height * 0.75f));
-        ImGui::SetNextWindowPos(ImVec2(0, MAIN_MENU_HEIGHT));
-        if (!ImGui::Begin(title, &data->show_console, window_flags))
-        {
-            ImGui::End();
-            return;
-        }
+		// Quarter of a second to hide/show
+		float speed = console_height * dt * 4.f;
+
+		float target_hide_y = -console_height;
+		float target_show_y = 0;
+
+		int target_y = data->show_console ? target_show_y : target_hide_y;
+		if (YPos != target_y) {
+			float delta = target_y < YPos ? -speed : speed;
+			YPos = math::clamp(YPos + delta, target_hide_y, target_show_y);
+		}
+
+		bool console_fully_shown = (YPos == target_show_y);
+		bool console_fully_hidden = (YPos == target_hide_y);
+
+		if (console_fully_hidden) return;
+
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.f);
+
+		ImGui::SetNextWindowSize(ImVec2(console_width, console_height));
+        ImGui::SetNextWindowPos(ImVec2(0.f, YPos));
+		ImGui::Begin(title, &data->show_console, WINDOW_FLAGS);
+
 
         // As a specific feature guaranteed by the library, after calling Begin() the last Item represent the title bar. So e.g. IsItemHovered() will return true when hovering the title bar.
         // Here we create a context menu only available from the title bar.
@@ -403,19 +452,19 @@ struct Console
 
         //ImGui::Separator();
 
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0,0));
-        static ImGuiTextFilter filter;
-        filter.Draw("Filter (\"incl,-excl\") (\"error\")", 180);
-        ImGui::PopStyleVar();
-        ImGui::Separator();
+        //ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0,0));
+        //static ImGuiTextFilter filter;
+        //filter.Draw("Filter (\"incl,-excl\") (\"error\")", 180);
+        //ImGui::PopStyleVar();
+        //ImGui::Separator();
 
         const float footer_height_to_reserve = ImGui::GetStyle().ItemSpacing.y + ImGui::GetFrameHeightWithSpacing(); // 1 separator, 1 input text
         ImGui::BeginChild("ScrollingRegion", ImVec2(0, -footer_height_to_reserve), false, ImGuiWindowFlags_HorizontalScrollbar); // Leave room for 1 separator + 1 InputText
-        if (ImGui::BeginPopupContextWindow())
-        {
-            if (ImGui::Selectable("Clear")) ClearLog();
-            ImGui::EndPopup();
-        }
+        //if (ImGui::BeginPopupContextWindow())
+        //{
+        //    if (ImGui::Selectable("Clear")) ClearLog();
+        //    ImGui::EndPopup();
+        //}
 
         // Display every line as a separate entry so we can change their color or add custom widgets. If you only want raw text you can use ImGui::TextUnformatted(log.begin(), log.end());
         // NB- if you have thousands of entries this approach may be too inefficient and may require user-side clipping to only process visible items.
@@ -432,11 +481,10 @@ struct Console
         //if (copy_to_clipboard)
         //    ImGui::LogToClipboard();
         ImVec4 col_default_text = ImGui::GetStyleColorVec4(ImGuiCol_Text);
-        for (int i = 0; i < Items.Size; i++)
-        {
+        for (int i = 0; i < Items.Size; i++) {
             const char* item = Items[i];
-            if (!filter.PassFilter(item))
-                continue;
+            //if (!filter.PassFilter(item))
+            //    continue;
             ImVec4 col = col_default_text;
             if (strstr(item, "[error]")) col = ImColor(1.0f,0.4f,0.4f,1.0f);
             else if (strncmp(item, "# ", 2) == 0) col = ImColor(1.0f,0.78f,0.58f,1.0f);
@@ -453,21 +501,23 @@ struct Console
         ImGui::EndChild();
         ImGui::Separator();
 
-        // Command-line
-        if (ImGui::InputText("Input", InputBuf, IM_ARRAYSIZE(InputBuf), ImGuiInputTextFlags_EnterReturnsTrue|ImGuiInputTextFlags_CallbackCompletion|ImGuiInputTextFlags_CallbackHistory, &TextEditCallbackStub, (void*)this))
-        {
-            char* input_end = InputBuf+strlen(InputBuf);
-            while (input_end > InputBuf && input_end[-1] == ' ') { input_end--; } *input_end = 0;
-            if (InputBuf[0])
-                ExecCommand(InputBuf);
-            strcpy(InputBuf, "");
-        }
-
-        // Demonstrate keeping auto focus on the input box
-        if (ImGui::IsItemHovered() || (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::IsAnyItemActive() && !ImGui::IsMouseClicked(0)))
-            ImGui::SetKeyboardFocusHere(-1); // Auto focus previous widget
+		if (console_fully_shown) {
+			// Command-line
+			ImGui::PushItemWidth(-1);
+			if (ImGui::InputText("##Input", InputBuf, IM_ARRAYSIZE(InputBuf), ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackCompletion | ImGuiInputTextFlags_CallbackHistory, &TextEditCallbackStub, (void*)this))
+			{
+				char* input_end = InputBuf + strlen(InputBuf);
+				while (input_end > InputBuf && input_end[-1] == ' ') { input_end--; } *input_end = 0;
+				if (InputBuf[0])
+					ExecCommand(InputBuf);
+				strcpy(InputBuf, "");
+			}
+			ImGui::PopItemWidth();
+			ImGui::SetKeyboardFocusHere(-1);
+		}
 
         ImGui::End();
+		ImGui::PopStyleVar();
     }
 
     void ExecCommand(const char* command_line)
@@ -614,10 +664,10 @@ struct Console
     }
 };
 
-static void draw_console(ApplicationData* data, int width, int height)
+static void draw_console(ApplicationData* data, int width, int height, float dt)
 {
     static Console console;
-    console.Draw("Console", data, width, height);
+    console.Draw("Console", data, width, height, dt);
 }
 
 static void reset_view(ApplicationData* data) {
@@ -644,6 +694,7 @@ static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height) {
 		glGenFramebuffers(1, &fbo->id);
 		attach_textures = true;
 	}
+
 	if (!fbo->tex_depth)
 		glGenTextures(1, &fbo->tex_depth);
 	if (!fbo->tex_color)
@@ -682,6 +733,7 @@ static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height) {
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, fbo->tex_depth, 0);
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->tex_color, 0);
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, fbo->tex_picking, 0);
+
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	}
 }

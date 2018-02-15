@@ -41,11 +41,11 @@ void periodic_position_interpolation(Array<vec3> positions, const Array<vec3> pr
 
 		vec3 abs_delta = math::abs(delta);
 		if (abs_delta.x > half_box_ext.x)
-			prev.x += full_box_ext.x * sign.x;
+			next.x -= full_box_ext.x * sign.x;
 		if (abs_delta.y > half_box_ext.y)
-			prev.y += full_box_ext.y * sign.y;
+			next.y -= full_box_ext.y * sign.y;
 		if (abs_delta.z > half_box_ext.z)
-			prev.z += full_box_ext.z * sign.z;
+			next.z -= full_box_ext.z * sign.z;
 
 		//next -= math::step(half_box_ext, math::abs(delta)) * delta;
 
@@ -124,12 +124,14 @@ static bool residues_are_connected(Residue res_a, Residue res_b, const Array<Bon
 	return false;
 }
 
+// @NOTE this method is sub-optimal and can surely be improved...
+// Residues should have no more than 2 potential connections to other residues.
 DynamicArray<Chain> compute_chains(const Array<Residue> residues, const Array<Bond> bonds) {
 	char curr_chain = 'A';
 	DynamicArray<char> residue_chains(residues.count, -1);
 
 	for (int i = 0; i < residues.count - 1; i++) {
-		residue_chains[i] = curr_chain;
+		if (residue_chains[i] == -1) residue_chains[i] = curr_chain;
 		for (int j = i + 1; j < residues.count; j++) {
 			if (residues_are_connected(residues[i], residues[j], bonds)) {
 				residue_chains[j] = residue_chains[i];
@@ -137,7 +139,17 @@ DynamicArray<Chain> compute_chains(const Array<Residue> residues, const Array<Bo
 		}
 	}
 
-	return {};
+	DynamicArray<Chain> chains;
+	curr_chain = -1;
+	for (int i = 0; i < residue_chains.count; i++) {
+		if (residue_chains[i] != curr_chain) {
+			curr_chain = residue_chains[i];
+			chains.push_back({ curr_chain, i, 0 });
+		}
+		chains.back().end_res_idx++;
+	}
+
+	return chains;
 }
 
 
@@ -220,12 +232,14 @@ in vec4  v_color;
 out Vertex {
     vec4 color;
     float radius;
+	int picking_id;
 } out_vert;
 
 void main() {
     gl_Position = u_model_mat * vec4(v_position, 1.0);
     out_vert.color = v_color;
     out_vert.radius = v_radius * u_radius_scl;
+	out_vert.picking_id = gl_VertexID;
 }
 )";
 
@@ -241,12 +255,14 @@ layout (triangle_strip, max_vertices = 4) out;
 in Vertex {
     vec4 color;
     float radius;
+	int picking_id;
 } in_vert[];
 
 out Fragment {
     flat vec4 color;
     flat vec4 view_sphere;
     smooth vec4 view_pos;
+	flat int picking_id;
 } out_frag;
 
 void main()
@@ -263,6 +279,7 @@ void main()
 
     out_frag.color = color;
     out_frag.view_sphere = vec4(view_pos.xyz, radius);
+	out_frag.picking_id = in_vert[0].picking_id;
 
     view_pos.xyz -= view_dir * radius;
     vec2 uv;
@@ -296,7 +313,8 @@ void main()
 
 static const char* f_shader_src = R"(
 #version 150 core
-#extension GL_ARB_conservative_depth: enable
+#extension GL_ARB_conservative_depth : enable
+#extension GL_ARB_explicit_attrib_location : enable
 
 uniform mat4 u_proj_mat;
 
@@ -304,12 +322,22 @@ in Fragment {
     flat vec4 color;
     flat vec4 view_sphere;
     smooth vec4 view_pos;
+	flat int picking_id;
 } in_frag;
 
 #ifdef GL_EXT_conservative_depth
 layout (depth_greater) out float gl_FragDepth;
 #endif
-out vec4 out_color;
+layout(location = 0) out vec4 out_color;
+layout(location = 1) out vec4 out_picking_id;
+
+vec4 pack_u32(unsigned int data) {
+	return vec4(
+        (data & uint(0x000000FF)) >> 0,
+        (data & uint(0x0000FF00)) >> 8,
+        (data & uint(0x00FF0000)) >> 16,
+        (data & uint(0xFF000000)) >> 24) / 255.0;
+}
 
 void main() {
     vec3 center = in_frag.view_sphere.xyz;
@@ -343,6 +371,7 @@ void main() {
 
     gl_FragDepth = coord.z * 0.5 + 0.5;
     out_color = vec4(color.rgb, color.a);
+	out_picking_id = pack_u32( unsigned int(in_frag.picking_id) );
 }
 )";
 

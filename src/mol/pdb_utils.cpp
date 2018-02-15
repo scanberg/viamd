@@ -1,5 +1,6 @@
 #include "pdb_utils.h"
 #include <mol/element.h>
+#include <mol/molecule_utils.h>
 #include <core/string_utils.h>
 
 static inline bool valid_line(CString line, uint32 options) {
@@ -21,36 +22,47 @@ PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params, Alloca
 	int current_res_id = -1;
 	char current_chain_id = -1;
 
-	struct PdbAtom {
+	/*struct PdbAtom {
 		vec3 position;
 		Label label {};
 		Element element;
 		int32 residue_idx;
 		float occupancy = 0;
 		float temp_factor = 0;
-	};
+	};*/
 
-	DynamicArray<PdbAtom> atoms;
+	DynamicArray<vec3> positions;
+	DynamicArray<Label> labels;
+	DynamicArray<Element> elements;
+	DynamicArray<int32> residue_indices;
+	DynamicArray<float> occupancies;
+	DynamicArray<float> temp_factors;
+	//DynamicArray<PdbAtom> atoms;
 	DynamicArray<Residue> residues;
 	DynamicArray<Chain> chains;
 	DynamicArray<Bond> bonds;
 
+	int num_atoms = 0;
 	while (extract_line(line, pdb_string)) {
-		// printf("%s\n", line.data);
 		if (valid_line(line, params)) {
-			PdbAtom atom;
-			atom.position.x = to_float(line.substr(30, 8));
-			atom.position.y = to_float(line.substr(38, 8));
-			atom.position.z = to_float(line.substr(46, 8));
-			if (line.count > 60) atom.occupancy = to_float(line.substr(54, 6));
-			if (line.count > 66) atom.temp_factor = to_float(line.substr(60, 6));
-			atom.label = trim(line.substr(12, 4));
+			labels.push_back(trim(line.substr(12, 4)));
+
+			positions.push_back(vec3(to_float(line.substr(30, 8)), to_float(line.substr(38, 8)), to_float(line.substr(46, 8))));
+
+			if (line.count > 60) {
+				occupancies.push_back(to_float(line.substr(54, 6)));
+			}
+
+			if (line.count > 66) {
+				temp_factors.push_back(to_float(line.substr(60, 6)));
+			}
 
 			// Try to determine element from optional element column first, then name
-			atom.element = element::get_from_string(line.substr(76, 2));
-			if (atom.element == Element::Unknown) {
-				atom.element = element::get_from_string(atom.label);
-			}
+			Element elem = element::get_from_string(line.substr(76, 2));
+			if (elem == Element::Unknown) elem = element::get_from_string(labels.back());
+			elements.push_back(elem);
+
+			residue_indices.push_back(residues.size());
 
 			auto res_id = to_int(line.substr(22, 4));
 			auto chain_id = line[21];
@@ -70,7 +82,7 @@ PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params, Alloca
 				current_res_id = res_id;
 
 				Residue residue;
-				residue.beg_atom_idx = static_cast<int>(atoms.count);
+				residue.beg_atom_idx = static_cast<int>(num_atoms);
 				residue.end_atom_idx = residue.beg_atom_idx;
 				copy(String(residue.id.data, Label::MAX_LENGTH-1), trim(line.substr(17, 3)));
 				residues.push_back(residue);
@@ -80,28 +92,34 @@ PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params, Alloca
 			residues.back().end_atom_idx++;
 
 			// Add Atom
-			atoms.push_back(atom);
+			num_atoms++;
 		}
 	}
 
-	// TODO: Compute bonds?
-
+	bonds = compute_bonds(positions, elements, residues);
 
 	PdbStructure pdb;
 	MoleculeStructure& mol = pdb;
-	mol = allocate_molecule_structure(atoms.size(), bonds.size(), residues.size(), chains.size(), MOL_ALL, alloc);
+	mol = allocate_molecule_structure(num_atoms, bonds.size(), residues.size(), chains.size(), MOL_ALL, alloc);
 
 	// Copy data into molecule
+	memcpy(mol.atom_positions.data, positions.data, positions.size() * sizeof(vec3));
+	memcpy(mol.atom_elements.data, elements.data, elements.size() * sizeof(Element));
+	memcpy(mol.atom_labels.data, labels.data, labels.size() * sizeof(Label));
+	memcpy(mol.atom_residue_indices.data, residue_indices.data, residue_indices.size() * sizeof(int32));
+
 	memcpy(mol.residues.data, residues.data, residues.size() * sizeof(Residue));
 	memcpy(mol.chains.data, chains.data, chains.size() * sizeof(Chain));
 	memcpy(mol.bonds.data, bonds.data, bonds.size() * sizeof(Bond));
 
 	// Atom data
+	/*
 	for (int i = 0; i < atoms.size(); i++) {
 		mol.atom_positions[i] = atoms[i].position;
 		mol.atom_elements[i] = atoms[i].element;
 		mol.atom_labels[i] = atoms[i].label;
 	}
+	*/
 
 	return { true, pdb };
 }
