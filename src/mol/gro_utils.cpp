@@ -1,6 +1,7 @@
 #include "gro_utils.h"
-#include <mol/element.h>
 #include <core/string_utils.h>
+#include <mol/element.h>
+#include <mol/molecule_utils.h>
 
 GroResult load_gro_from_file(const char* filename, Allocator& alloc) {
 	return parse_gro_from_string(read_textfile(filename), alloc);
@@ -14,9 +15,9 @@ GroResult parse_gro_from_string(CString gro_string, Allocator& alloc) {
 	extract_line(header, gro_string);
 	extract_line(length, gro_string);
 
-	int count = to_int(length);
+	int num_atoms = to_int(length);
 
-    if (count == 0) {
+    if (num_atoms == 0) {
         return {false};
     }
 
@@ -44,31 +45,29 @@ GroResult parse_gro_from_string(CString gro_string, Allocator& alloc) {
 	DynamicArray<int32> residue_indices;
 	//DynamicArray<GroAtom> atoms;
 	DynamicArray<Residue> residues;
-	DynamicArray<Chain> chains;
-	DynamicArray<Bond> bonds;
 
 	char buffer[256] = {};
 	String line(buffer, 256);
-    for (int i = 0; i < count; ++i) {
+    for (int i = 0; i < num_atoms; ++i) {
         // Get line first and then scanf the line to avoid bug when velocities are not present in data
 		copy_line(line, gro_string);
         auto result =
             sscanf(line, "%5d%5c%5c%5d%8f%8f%8f%8f%8f%8f", &res_idx, res_name, atom_name,
                     &atom_idx, &pos.x, &pos.y, &pos.z, &vel.x, &vel.y, &vel.z);
-
         if (result > 0) {
-            if (cur_res != res_idx) {
+        	res_idx = res_idx - 1; // We use residue indices begining with zero
+			if (cur_res != res_idx) {
                 cur_res = res_idx;
 				//auto amino = aminoacid::getFromString(res_name_trim);
 				//if (amino != AminoAcid::Unknown) {
 				//	mol.pushStructure<structure::AminoAcid>(static_cast<int>(residues.size()), amino);
 				//}
-				Residue res {res_name, i, 0};
+				Residue res {res_name, i, i};
                 residues.push_back(res);
             }
             residues.back().end_atom_idx++;
-			auto elem = element::get_from_string(trim(CString(atom_name)));
 
+            auto elem = element::get_from_string(trim(CString(atom_name)));
 			positions.push_back(pos);
 			velocities.push_back(vel);
 			labels.push_back(trim(CString(atom_name)));
@@ -97,9 +96,18 @@ GroResult parse_gro_from_string(CString gro_string, Allocator& alloc) {
 	}
     box *= 10.f;
 
+	DynamicArray<Bond> bonds = compute_bonds(positions, elements, residues);
+   	DynamicArray<Chain> chains = compute_chains(residues, bonds);
+
+   	for (int c = 0; c < chains.count; c++) {
+	   	for (int i = chains[c].beg_res_idx; i < chains[c].end_res_idx; i++) {
+	   		residues[i].chain_idx = c;
+	   	}
+	}
+
 	GroStructure gro;
 	MoleculeStructure& mol = gro;
-	mol = allocate_molecule_structure(count, bonds.size(), residues.size(), chains.size(), MOL_ALL, alloc);
+	mol = allocate_molecule_structure(num_atoms, bonds.size(), residues.size(), chains.size(), MOL_ALL, alloc);
 
 	// Copy data into molecule
 	memcpy(mol.atom_positions.data, positions.data, positions.size() * sizeof(vec3));
@@ -120,8 +128,6 @@ GroResult parse_gro_from_string(CString gro_string, Allocator& alloc) {
 	}
 	*/
 
-    //computeBonds(mol);
-	//computeBackbones(mol);
     gro.box = mat3(vec3(box.x, 0, 0), vec3(0, box.y, 0), vec3(0, 0, box.z));
 
 	return { true, gro };

@@ -4,18 +4,18 @@
 #include <core/common.h>
 #include <stdlib.h>
 
-// TODO: Support aligned allocations
-// TODO: Encode size in stack-allocator and assert comparison with prev on free
+// @TODO: Support aligned allocations
 
 struct Allocator {
     virtual void* alloc(int64) = 0;
     virtual void free(void*) = 0;
 };
 
+// @TODO: Encode size in stack-allocator and assert comparison with prev on free
+// @TODO: Maybe not, let user free a larger chunk of the stack at once.
 struct StackAllocator : Allocator {
     uint8* base_ptr;
     uint8* curr_ptr;
-    uint8* prev_ptr;
     int64 max_size;
 
     StackAllocator(void* memory, int64 size)
@@ -26,14 +26,13 @@ struct StackAllocator : Allocator {
 
     virtual void* alloc(int64 size) override {
 		ASSERT(curr_ptr + size < base_ptr + max_size);
-        prev_ptr = curr_ptr;
+        auto ptr = curr_ptr;
         curr_ptr += size;
-        return prev_ptr;
+        return ptr;
     }
 
     virtual void free(void* ptr) override {
-		ASSERT(curr_ptr <= ptr && ptr < curr_ptr + max_size);
-        //assert(ptr == prev_ptr);
+		ASSERT(base_ptr <= ptr && ptr < base_ptr + max_size);
         curr_ptr = (uint8*)ptr;
     }
 };

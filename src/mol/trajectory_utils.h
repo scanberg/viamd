@@ -3,7 +3,7 @@
 #include <mol/trajectory.h>
 #include <core/allocator.h>
 
-Trajectory read_and_allocate_trajectory(const char* file, Allocator& alloc = default_alloc);
+Trajectory* read_and_allocate_trajectory(const char* file, Allocator& alloc = default_alloc);
 void free_trajectory(Trajectory* traj);
 
 TrajectoryFrame allocate_trajectory_frame(int num_atoms, Allocator& alloc = default_alloc);

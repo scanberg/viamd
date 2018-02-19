@@ -7,17 +7,18 @@ Design principles:
     No STL, it is bulky and not really needed.
     Maintain interactivity!
     Keep low compile times!
+    Move most functionality into stand alone header files like nothings stb libs
 
 Target Platforms:
     Win32
-    OSX 10.9+ (OpenGL 3.3 / 4.1)
+    OSX 10.9+ (OpenGL 3.2? 3.3 / 4.1)
     Linux
 
 License:
     MIT? Very permissive Open source
 
 General:
-    Small Math lib (SIMD)
+    Small Math lib (SIMD) <- This should be realized, but for now use glm
         vec2
         vec3
         vec4
@@ -41,15 +42,15 @@ Platform layer:
     ReadCompressed
     LoadImg
     StoreImg
+    Provide IMGUI with optional define to enable disable
 
 VIAMD:
-    IMGUI here?
     MENU BAR
     Load/Store Scene?
 
 Molecule:
     Molecule structure
-        Extra RenderingData ptr
+        Extra RenderingData ptr??? Not needed as a first step
     PDB (PDB Molecule struct?)
     GRO (GRO Molecule struct?)
     Multiframe PDB
@@ -60,8 +61,9 @@ Molecule:
 Trajectory:
     Trajectory structure
     'Stream trajectory'
-        Have one thread that reads frames from disk
+        Have one thread that 'copies' binary-frame data from disk
         Another thread decompresses frames into trajectory
+    Load trejectory in different thread but make the results immediately visible.
 
 Representations:
     Port VDW

@@ -91,6 +91,7 @@ struct Residue {
 	Label id;
 	int32 beg_atom_idx;
 	int32 end_atom_idx;
+	int32 chain_idx = -1;
 };
 
 struct Chain {

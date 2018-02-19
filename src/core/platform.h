@@ -1,5 +1,6 @@
 #include <core/keys.h>
 #include <core/types.h>
+#include <core/array.h>
 
 namespace platform {
 
@@ -39,6 +40,26 @@ double		get_delta_time();
 void        swap_buffers(Window* window);
 void		set_vsync(bool value);
 
+/*
+struct KeyboardEvent {
+    InputState* state;
+    Key::Key_t key;
+
+};
+
+struct MouseEvent {
+
+};
+*/
+
+struct FileEvent {
+    CString path;
+};
+
+typedef void (*FileCallback)(const FileEvent& event);
+
+void register_file_event_callback(FileCallback callback);
+    
 }
 
 

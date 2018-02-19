@@ -25,6 +25,17 @@ struct MainFramebuffer {
 	int height = 0;
 };
 
+#ifdef _WIN32
+constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
+#elif __APPLE__
+constexpr Key::Key_t CONSOLE_KEY = Key::KEY_WORLD_1;
+#else
+// @TODO: Make sure this is right?
+constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
+#endif
+
+constexpr unsigned int NO_PICKING_IDX = 0xffffffff;
+
 struct ApplicationData {
     platform::Window* main_window;
 
@@ -37,6 +48,8 @@ struct ApplicationData {
     DynamicArray<uint32> atom_colors;
     Trajectory* trajectory;
 
+    unsigned int picking_idx = NO_PICKING_IDX;
+
 	float64 time = 0.f; 	// needs to be double precision
 	float frames_per_second = 10.f;
     bool is_playing = false;
@@ -44,12 +57,13 @@ struct ApplicationData {
 	// Framebuffer
 	MainFramebuffer fbo;
 
-    bool use_ssao = true;
+    bool use_ssao = false;
     bool show_console = false;
 };
 
 static void draw_main_menu(ApplicationData* data);
 static void draw_console(ApplicationData* data, int width, int height, float dt);
+static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y);
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height);
 static void destroy_main_framebuffer(MainFramebuffer* fbo);
 static void reset_view(ApplicationData* data);
@@ -60,18 +74,30 @@ int main(int, char**) {
     int display_w = 1920;
     int display_h = 1080;
 
-    //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
+    vec3 rgb(1,1,1);
+
+    //vec3 xyz = math::rgb_to_xyz(rgb);
+    vec3 res = math::rgb_to_xyz(rgb);
+
+    printf("XYZ: %g %g %g\n", res.x, res.y, res.z);
+
+    res = math::xyz_to_rgb(res);
+
+    printf("RGB: %g %g %g\n", res.x, res.y, res.z);
+
+    auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
     //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
-	auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
+	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
 
-    data.mol_struct = &gro_res.gro;
-
-    //Trajectory traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
+    Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
 	//Trajectory traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
-	Trajectory traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
-	data.trajectory = &traj;
+	//Trajectory traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
+	
+    data.mol_struct = &gro_res.gro;
+    data.trajectory = traj;
 
-    copy_trajectory_positions(data.mol_struct->atom_positions, *data.trajectory, 0);
+    if (data.trajectory)
+        copy_trajectory_positions(data.mol_struct->atom_positions, *data.trajectory, 0);
     reset_view(&data);
 
     platform::initialize();
@@ -94,6 +120,7 @@ int main(int, char**) {
 
     bool show_demo_window = true;
     vec4 clear_color = vec4(0.6, 0.6, 0.6, 1);
+    vec4 clear_index = vec4(1, 1, 1, 1);
 
     // Main loop
     while (!(platform::window_should_close(data.main_window))) {
@@ -107,7 +134,19 @@ int main(int, char**) {
 			postprocessing::initialize(display_w, display_h);
 		}
 
-		if (input->key_hit[Key::KEY_GRAVE_ACCENT]) data.show_console = !data.show_console;
+        {
+            int x = input->mouse_screen_coords.x;
+            int y = input->mouse_screen_coords.y;
+            unsigned char color[4];
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, data.fbo.id);
+            glReadBuffer(GL_COLOR_ATTACHMENT1);
+            glReadPixels(x, display_h - y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, color);
+            glReadBuffer(GL_NONE);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+            data.picking_idx = color[0] + (color[1] << 8) + (color[2] << 16) + (color[3] << 24);
+        }
+
+		if (input->key_hit[CONSOLE_KEY]) data.show_console = !data.show_console;
 
         bool time_changed = false;
 
@@ -118,25 +157,25 @@ int main(int, char**) {
         if (ImGui::Button("Reset View")) {
             reset_view(&data);
         }
-		{
+		if (data.trajectory) {
 			float t = (float)data.time;
 			if (ImGui::SliderFloat("Time", &t, 0, (float)(data.trajectory->num_frames - 1))) {
 				time_changed = true;
 				data.time = t;
 			}
+            ImGui::SliderFloat("Frames Per Second", &data.frames_per_second, 0.1f, 100.f);
+            if (data.is_playing) {
+                if (ImGui::Button("Pause")) data.is_playing = false;
+            } else {
+                if (ImGui::Button("Play")) data.is_playing = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Stop")) {
+                data.is_playing = false;
+                data.time = 0.0;
+                time_changed = true;
+            }
 		}
-		ImGui::SliderFloat("Frames Per Second", &data.frames_per_second, 0.1f, 100.f);
-        if (data.is_playing) {
-            if (ImGui::Button("Pause")) data.is_playing = false;
-        } else {
-            if (ImGui::Button("Play")) data.is_playing = true;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Stop")) {
-            data.is_playing = false;
-            data.time = 0.0;
-			time_changed = true;
-        }
 		ImGui::End();
 
         if (data.is_playing) {
@@ -144,7 +183,7 @@ int main(int, char**) {
 			time_changed = true;
         }
 
-        if (time_changed) {
+        if (data.trajectory && time_changed) {
             data.time = math::clamp(data.time, 0.0, float64(data.trajectory->num_frames - 1));
 			if (data.time == float64(data.trajectory->num_frames - 1)) data.is_playing = false;
 
@@ -175,18 +214,6 @@ int main(int, char**) {
         }
 
 		if (!ImGui::GetIO().WantCaptureMouse) {
-			if (input->mouse_down[0]) {
-				int x = input->mouse_screen_coords.x;
-				int y = input->mouse_screen_coords.y;
-				unsigned char color[4];
-				glBindFramebuffer(GL_READ_FRAMEBUFFER, data.fbo.id);
-				glReadBuffer(GL_COLOR_ATTACHMENT1);
-				glReadPixels(x, display_h - y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, color);
-				glReadBuffer(GL_NONE);
-				glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-				printf("picked color: %u %u %u %u\n", color[0], color[1], color[2], color[3]);
-			}
-
             data.controller.input.rotate_button = input->mouse_down[0];
             data.controller.input.pan_button = input->mouse_down[1];
             data.controller.input.dolly_button = input->mouse_down[2];
@@ -196,6 +223,11 @@ int main(int, char**) {
 			data.controller.update();
 			data.camera.position = data.controller.position;
 			data.camera.orientation = data.controller.orientation;
+
+            if (data.picking_idx != NO_PICKING_IDX) {
+                ivec2 pos = input->mouse_screen_coords;
+                draw_atom_info(*data.mol_struct, data.picking_idx, pos.x, pos.y);
+            }
 		}
 
         // GUI ELEMENTS
@@ -223,7 +255,7 @@ int main(int, char**) {
 
 		// Clear picking buffer
 		glDrawBuffer(GL_COLOR_ATTACHMENT1);
-		glClearColor(0, 0, 0, 0);
+		glClearColor(clear_index.x, clear_index.y, clear_index.z, clear_index.w);
 		glClear(GL_COLOR_BUFFER_BIT);
 
 		// Clear color buffer
@@ -240,7 +272,7 @@ int main(int, char**) {
 
         if (data.use_ssao) {
 			glDrawBuffer(GL_COLOR_ATTACHMENT0);
-            postprocessing::apply_ssao(data.fbo.tex_depth, proj_mat, 2.0f, 6.f);
+            postprocessing::apply_ssao(data.fbo.tex_depth, proj_mat, 3.0f, 6.f);
         }
 
         // Activate backbuffer
@@ -410,8 +442,8 @@ struct Console
 
 		float target_hide_y = -console_height;
 		float target_show_y = 0;
+		float target_y = data->show_console ? target_show_y : target_hide_y;
 
-		int target_y = data->show_console ? target_show_y : target_hide_y;
 		if (YPos != target_y) {
 			float delta = target_y < YPos ? -speed : speed;
 			YPos = math::clamp(YPos + delta, target_hide_y, target_show_y);
@@ -664,11 +696,53 @@ struct Console
     }
 };
 
-static void draw_console(ApplicationData* data, int width, int height, float dt)
-{
+static void draw_console(ApplicationData* data, int width, int height, float dt) {
     static Console console;
     console.Draw("Console", data, width, height, dt);
 }
+
+static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y) {
+    
+    // @TODO: Assert things and make this failproof
+    int res_idx = mol.atom_residue_indices[atom_idx];
+    const Residue& res = mol.residues[res_idx];
+    const char* res_id = res.id;
+    int local_idx = atom_idx - res.beg_atom_idx;
+    const char* label = mol.atom_labels[atom_idx];
+    const char* elem = element::name(mol.atom_elements[atom_idx]);
+    const char* symbol = element::symbol(mol.atom_elements[atom_idx]);
+
+    char chain_id = 0;
+    if (res.chain_idx != -1) {
+        const Chain& chain = mol.chains[res.chain_idx];
+        chain_id = chain.id;
+    }
+
+    // External indices begin with 1 not 0
+    res_idx += 1;
+    atom_idx += 1;
+    local_idx += 1;
+
+    char buff[256];
+    int len = snprintf(buff, 256, "atom[%i][%i]: %s %s %s\nres[%i]: %s", atom_idx, local_idx, label, elem, symbol, res_idx, res_id);
+    if (chain_id) {
+        snprintf(buff + len, 256 - len, "\nchain[%c]\n", chain_id);
+    }
+
+    ImVec2 text_size = ImGui::CalcTextSize(buff);
+    ImGui::SetNextWindowPos(ImVec2(x + 10, y + 10));
+    ImGui::SetNextWindowSize(ImVec2(text_size.x + 20, text_size.y + 15));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
+    ImGui::Begin("##Atom Info", 0,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs |
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::Text("%s", buff);
+    ImGui::End();
+    ImGui::PopStyleColor();
+}
+
 
 static void reset_view(ApplicationData* data) {
     ASSERT(data);

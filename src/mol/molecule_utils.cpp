@@ -25,6 +25,7 @@ void compute_bounding_box(vec3* min_box, vec3* max_box, const Array<vec3> positi
     }
 }
 
+// @TODO: Fix this, is it possible in theory to get a good interpolation between frames with periodicity without modifying source data?
 void periodic_position_interpolation(Array<vec3> positions, const Array<vec3> prev_pos, const Array<vec3> next_pos, float t, mat3 sim_box) {
 	ASSERT(prev_pos.count == positions.count);
 	ASSERT(next_pos.count == positions.count);
@@ -127,17 +128,22 @@ static bool residues_are_connected(Residue res_a, Residue res_b, const Array<Bon
 // @NOTE this method is sub-optimal and can surely be improved...
 // Residues should have no more than 2 potential connections to other residues.
 DynamicArray<Chain> compute_chains(const Array<Residue> residues, const Array<Bond> bonds) {
-	char curr_chain = 'A';
-	DynamicArray<char> residue_chains(residues.count, -1);
+	char curr_chain;
+	DynamicArray<char> residue_chains(residues.count, -1); 
 
-	for (int i = 0; i < residues.count - 1; i++) {
-		if (residue_chains[i] == -1) residue_chains[i] = curr_chain;
+    curr_chain = 'A';
+	for (int i = 0; i < residues.count; i++) {
+		if (residue_chains[i] == -1) residue_chains[i] = curr_chain++;
 		for (int j = i + 1; j < residues.count; j++) {
 			if (residues_are_connected(residues[i], residues[j], bonds)) {
 				residue_chains[j] = residue_chains[i];
 			}
 		}
 	}
+
+    for (int i = 0; i < residues.count; i++) {
+        printf ("%i\n", residue_chains[i]);
+    }
 
 	DynamicArray<Chain> chains;
 	curr_chain = -1;
@@ -317,6 +323,7 @@ static const char* f_shader_src = R"(
 #extension GL_ARB_explicit_attrib_location : enable
 
 uniform mat4 u_proj_mat;
+uniform float u_exposure = 1.0;
 
 in Fragment {
     flat vec4 color;
@@ -331,12 +338,24 @@ layout (depth_greater) out float gl_FragDepth;
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec4 out_picking_id;
 
-vec4 pack_u32(unsigned int data) {
+vec4 pack_u32(uint data) {
 	return vec4(
         (data & uint(0x000000FF)) >> 0,
         (data & uint(0x0000FF00)) >> 8,
         (data & uint(0x00FF0000)) >> 16,
         (data & uint(0xFF000000)) >> 24) / 255.0;
+}
+
+float fresnel(float H_dot_V) {   
+    const float n1 = 1.0;
+    const float n2 = 1.5;
+    const float R0 = pow((n1-n2)/(n1+n2), 2);
+
+    return R0 + (1.0 - R0)*pow(1.0 - H_dot_V, 5);
+}
+
+vec3 srgb_to_rgb_approx(vec3 srgb) {
+    return pow(srgb, vec3(2.2));
 }
 
 void main() {
@@ -357,13 +376,32 @@ void main() {
     vec3 view_normal = (view_hit - center) / radius;
     vec4 color = in_frag.color;
 
-    vec3 light_dir = normalize(vec3(1, 1, 1));
-    vec3 light_str = vec3(2,2,2);
-    vec3 ambient = vec3(0.2, 0.2, 0.2);
-    vec3 diffuse = max(0, dot(light_dir, view_normal)) * color.rgb * light_str;
-    vec3 h = normalize(view_dir + light_dir);
-    vec3 specular = max(0, pow(dot(h, view_normal), 10.0)) * vec3(0.3);
-    color.rgb = ambient + diffuse + specular;
+    // Compute Color
+    const vec3 env_radiance = vec3(1.0);
+    const vec3 dir_radiance = vec3(10.0);
+    const vec3 L = normalize(vec3(1));
+    const float spec_exp = 50.0;
+
+    vec3 N = view_normal;
+    vec3 V = view_dir;
+    vec3 H = normalize(L + V);
+    float H_dot_V = max(0.0, dot(H, V));
+    float N_dot_H = max(0.0, dot(N, H));
+    float N_dot_L = max(0.0, dot(N, L));
+    float fr = fresnel(H_dot_V);
+
+    vec3 diffuse = srgb_to_rgb_approx(color.rgb) * (env_radiance + N_dot_L * dir_radiance);
+    vec3 specular = dir_radiance * pow(N_dot_H, spec_exp);
+
+    color.rgb = mix(diffuse, specular, fr);
+
+    //vec3 light_dir = normalize(vec3(1, 1, 1));
+    //vec3 light_str = vec3(2,2,2);
+    //vec3 ambient = vec3(0.2, 0.2, 0.2);
+    //vec3 diffuse = max(0, dot(light_dir, view_normal)) * color.rgb * light_str;
+    //vec3 h = normalize(view_dir + light_dir);
+    //vec3 specular = max(0, pow(dot(h, view_normal), 10.0)) * vec3(0.3);
+    //color.rgb = ambient + diffuse + specular;
 
     vec4 coord = vec4(0, 0, view_hit.z, 1);
     coord = u_proj_mat * coord;
@@ -371,7 +409,7 @@ void main() {
 
     gl_FragDepth = coord.z * 0.5 + 0.5;
     out_color = vec4(color.rgb, color.a);
-	out_picking_id = pack_u32( unsigned int(in_frag.picking_id) );
+	out_picking_id = pack_u32( uint(in_frag.picking_id) );
 }
 )";
 

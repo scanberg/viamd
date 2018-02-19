@@ -98,7 +98,7 @@ bool copy_line(String& line, CString& str) {
 	str_beg = MIN(line_end + 1, str_end);
 	while (str_beg < str_end && (*str_beg == '\r' || *str_beg == '\n')) ++str_beg;
 
-	// @NOTE: Do not modify line.count, its value referes to whatever buffer its pointing to 
+	// @NOTE: Do not modify line.count, its value contains the length of the buffer its pointing to 
 	auto count = MIN(line_end - line_beg, line.count - 1);
 	line.data = (char*)memcpy(line.data, line_beg, count);
 	line.data[count] = '\0';

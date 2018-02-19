@@ -209,6 +209,8 @@ struct String : Array<char> {
     operator bool() { return (data != 0 && count != 0); }
 };
 
+
+
 template <typename T>
 Array<T> allocate_array(int64 count, Allocator& alloc = default_alloc) noexcept {
     ASSERT(count > 0);

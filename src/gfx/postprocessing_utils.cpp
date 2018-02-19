@@ -683,15 +683,15 @@ vec3 uncharted2_tonemap(vec3 x) {
 
 vec3 uncharted2(vec3 c) {
     const float W = 11.2;
-    c *= 2;  // Hardcoded Exposure Adjustment
+    //c *= 2;  // Hardcoded Exposure Adjustment
 
-    float exp_bias = 2.0;
+    float exp_bias = 0.5;
     vec3 curr = uncharted2_tonemap(exp_bias * c);
 
     vec3 white_scale = vec3(1.0) / uncharted2_tonemap(vec3(W));
     vec3 color = curr * white_scale;
       
-    return pow(color, vec3(1.0/0.8));
+    return pow(color, vec3(1.0/2.2));
 }
 
 vec3 hejl_dawsson(vec3 c) {
