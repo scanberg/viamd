@@ -12,5 +12,5 @@ struct GroResult {
 	operator bool() { return success; }
 };
 
-GroResult load_gro_from_file(const char* filename, Allocator& alloc = default_alloc);
-GroResult parse_gro_from_string(CString string, Allocator& alloc = default_alloc);
+GroResult load_gro_from_file(const char* filename, Allocator* alloc = nullptr);
+GroResult parse_gro_from_string(CString string, Allocator* alloc = nullptr);

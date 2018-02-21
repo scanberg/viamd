@@ -18,5 +18,5 @@ enum PdbLoadParams {
 	PDB_DEFAULT = PDB_READ_ATOM
 };
 
-PdbResult load_pdb_from_file(const char* filename, PdbLoadParams params = PDB_DEFAULT, Allocator& alloc = default_alloc);
-PdbResult parse_pdb_from_string(CString string, PdbLoadParams params = PDB_DEFAULT, Allocator& alloc = default_alloc);
+PdbResult load_pdb_from_file(const char* filename, PdbLoadParams params = PDB_DEFAULT, Allocator* alloc = &default_alloc);
+PdbResult parse_pdb_from_string(CString string, PdbLoadParams params = PDB_DEFAULT, Allocator* alloc = &default_alloc);

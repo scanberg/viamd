@@ -12,11 +12,11 @@ static inline bool valid_line(CString line, uint32 options) {
 	return false;
 }
 
-PdbResult load_pdb_from_file(const char* filename, PdbLoadParams params, Allocator& alloc) {
+PdbResult load_pdb_from_file(const char* filename, PdbLoadParams params, Allocator* alloc) {
 	return parse_pdb_from_string(read_textfile(filename), params, alloc);
 }
 
-PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params, Allocator& alloc) {
+PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params, Allocator* alloc) {
 	CString line;
 
 	int current_res_id = -1;
@@ -62,16 +62,16 @@ PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params, Alloca
 			if (elem == Element::Unknown) elem = element::get_from_string(labels.back());
 			elements.push_back(elem);
 
-			residue_indices.push_back(residues.size());
+			residue_indices.push_back((int)residues.size());
 
 			auto res_id = to_int(line.substr(22, 4));
-			auto chain_id = line[21];
+			char chain_id = line[21];
 
 			// New Chain
 			if (current_chain_id != chain_id) {
 				current_chain_id = chain_id;
 				Chain chain;
-				chain.beg_res_idx = static_cast<int>(residues.count);
+				chain.beg_res_idx = (int)residues.count;
 				chain.end_res_idx = chain.beg_res_idx;
 				chain.id = chain_id;
 				chains.push_back(chain);
@@ -82,7 +82,7 @@ PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params, Alloca
 				current_res_id = res_id;
 
 				Residue residue;
-				residue.beg_atom_idx = static_cast<int>(num_atoms);
+				residue.beg_atom_idx = num_atoms;
 				residue.end_atom_idx = residue.beg_atom_idx;
 				copy(String(residue.id.data, Label::MAX_LENGTH-1), trim(line.substr(17, 3)));
 				residues.push_back(residue);
@@ -96,7 +96,7 @@ PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params, Alloca
 		}
 	}
 
-	bonds = compute_bonds(positions, elements, residues);
+	bonds = compute_atomic_bonds(positions, elements, residues);
 
 	PdbStructure pdb;
 	MoleculeStructure& mol = pdb;

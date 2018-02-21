@@ -1,8 +1,13 @@
 #pragma once
 
+#pragma optimize("", off)
+
 #include <core/types.h>
 #include <core/common.h>
 #include <core/allocator.h>
+
+#define MALLOC(x) malloc(x)
+#define FREE(x) free(x)
 
 template <typename T>
 struct Array {
@@ -46,32 +51,32 @@ struct Array {
 template <typename T>
 struct DynamicArray : Array<T> {
 	static constexpr int64 INIT_CAPACITY = 32;
-    DynamicArray(Allocator& alloc = default_alloc) : capacity(INIT_CAPACITY), allocator(alloc) {
-        this->data = (T*)allocator.alloc(capacity * sizeof(T));
+    DynamicArray() : capacity(INIT_CAPACITY) {
+		this->data = (T*)MALLOC(capacity * sizeof(T));
         this->count = 0;
     }
 
-	DynamicArray(int64 count, T value = 0, Allocator& alloc = default_alloc) : capacity(count > INIT_CAPACITY ? count : INIT_CAPACITY), allocator(alloc) {
-		this->data = (T*)allocator.alloc(capacity * sizeof(T));
+	DynamicArray(int64 count, T value = 0) : capacity(count > INIT_CAPACITY ? count : INIT_CAPACITY) {
+		this->data = (T*)MALLOC(capacity * sizeof(T));
 		this->count = count;
-		memset(this->data, (int)value, this->count);
+		memset(this->data, (int)value, this->count * sizeof(T));
 	}
 
-    DynamicArray(const Array<T>& clone_source, Allocator& alloc = default_alloc) : capacity(clone_source.count), allocator(alloc) {
+    DynamicArray(const Array<T>& clone_source) : capacity(clone_source.count) {
         this->count = capacity;
         if (this->count > 0) {
-            this->data = (T*)allocator.alloc(capacity * sizeof(T));
+            this->data = (T*)MALLOC(capacity * sizeof(T));
             memcpy(this->data, clone_source.data, this->count * sizeof(T));
         }
     }
 
-	DynamicArray(const DynamicArray& other) : capacity(other.capacity), allocator(other.allocator) {
-		this->data = (T*)allocator.alloc(capacity);
+	DynamicArray(const DynamicArray& other) : capacity(other.capacity) {
+		this->data = (T*)MALLOC(capacity * sizeof(T));
 		this->count = other.count;
 		memcpy(this->data, other.data, this->count * sizeof(T));
 	}
 
-	DynamicArray(DynamicArray&& other) : capacity(other.capacity), allocator(other.allocator) {
+	DynamicArray(DynamicArray&& other) : capacity(other.capacity) {
 		this->data = other.data;
 		other.data = nullptr;
 		this->count = other.count;
@@ -80,28 +85,35 @@ struct DynamicArray : Array<T> {
 
     ~DynamicArray() {
         if (this->data) {
-            allocator.free(this->data);
+			FREE(this->data);
         }
 		this->count = 0;
     }
 
 	DynamicArray& operator =(const DynamicArray& other) {
-		capacity = other.capacity;
-		allocator = other.allocator;
-		this->data = (T*)allocator.alloc(capacity);
-		this->count = other.count;
-		memcpy(this->data, other.data, this->count * sizeof(T));
+		if (&other != this) {
+			if (other.count > capacity) {
+				reserve(other.count);
+			}
+			this->count = other.count;
+			memcpy(this->data, other.data, this->count * sizeof(T));
+		}
 		return *this;
 	}
 
 	DynamicArray& operator =(DynamicArray&& other) {
-		capacity = other.capacity;
-		other.capacity = 0;
-		allocator = other.allocator;
-		this->data = other.data;
-		other.data = nullptr;
-		this->count = other.count;
-		other.count = 0;
+		// Is this check needed?
+		if (&other != this) {
+			if (this->data) {
+				FREE(this->data);
+			}
+			capacity = other.capacity;
+			other.capacity = 0;
+			this->data = other.data;
+			other.data = nullptr;
+			this->count = other.count;
+			other.count = 0;
+		}
 		return *this;
 	}
 
@@ -110,8 +122,8 @@ struct DynamicArray : Array<T> {
     void push_back(const T& item) {
         if (this->count >= capacity) {
             // GROW
-			capacity = capacity < INIT_CAPACITY ? INIT_CAPACITY : capacity;
-            reserve(capacity * 2);
+			auto new_capacity = capacity < INIT_CAPACITY ? INIT_CAPACITY : capacity * 2;
+            reserve(new_capacity);
         }
         this->data[this->count] = item;
         this->count++;
@@ -119,11 +131,11 @@ struct DynamicArray : Array<T> {
 
     void reserve(int64 new_capacity) {
         if (new_capacity < capacity) return;
-        T* new_data = (T*)allocator.alloc(new_capacity * sizeof(T));
+		T* new_data = (T*)MALLOC(new_capacity * sizeof(T));
         if (this->data) {
             memcpy(new_data, this->data, this->count * sizeof(T));
-            allocator.free(this->data);
         }
+		FREE(this->data);
         this->data = new_data;
         capacity = new_capacity;
     }
@@ -148,8 +160,30 @@ struct DynamicArray : Array<T> {
         this->count = 0;
     }
 
+private:
+	/*
+	T* internal_alloc(size_t size) {
+		if (allocator)
+			return (T*)allocator->alloc(size * sizeof(T));
+		else {
+			T* ptr = (T*)MALLOC(size * sizeof(T));
+			printf("Allocating %u into ptr %p at [%s][%i]\n", size * sizeof(T), ptr, __FUNCTION__, __LINE__);
+			return ptr;
+		}
+	}
+
+	void internal_free(T* mem) {
+		if (allocator)
+			allocator->free(mem);
+		else {
+			printf("Freeing ptr %p at [%s][%i]\n", mem, __FUNCTION__, __LINE__);
+			FREE(mem);
+		}
+	}
+	*/
+
     int64 capacity;
-    Allocator& allocator;
+    //Allocator* allocator = nullptr;
 };
 
 struct CString : Array<const char> {
@@ -224,3 +258,5 @@ Array<T> allocate_array_and_zero(int64 count, Allocator& alloc = default_alloc) 
     memset(array.data, 0, array.count * sizeof(T));
     return array;
 }
+
+#pragma optimize("", on)

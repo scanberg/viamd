@@ -36,28 +36,44 @@ constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
 
 constexpr unsigned int NO_PICKING_IDX = 0xffffffff;
 
+enum struct PlaybackInterpolationMode {
+	NEAREST_FRAME,
+	LINEAR,
+	LINEAR_PERIODIC,
+	CUBIC,
+	CUBIC_PERIODIC
+};
+
 struct ApplicationData {
+	// --- PLATFORM ---
     platform::Window* main_window;
 
+	// --- CAMERA ---
     Camera camera;
     TrackballController controller;
 
-    // Perhaps move these into a struct
+    // --- MOL DATA ---
     MoleculeStructure* mol_struct;
     DynamicArray<float> atom_radii;
     DynamicArray<uint32> atom_colors;
     Trajectory* trajectory;
 
+	// Framebuffer
+	MainFramebuffer fbo;
     unsigned int picking_idx = NO_PICKING_IDX;
 
+	// --- PLAYBACK ---
 	float64 time = 0.f; 	// needs to be double precision
 	float frames_per_second = 10.f;
     bool is_playing = false;
+	PlaybackInterpolationMode interpolation = PlaybackInterpolationMode::LINEAR_PERIODIC;
 
-	// Framebuffer
-	MainFramebuffer fbo;
-
+	// --- VISUALS ---
+	// SSAO
     bool use_ssao = false;
+	float ssao_intensity = 1.5f;
+	float ssao_radius = 6.f;
+
     bool show_console = false;
 };
 
@@ -74,29 +90,24 @@ int main(int, char**) {
     int display_w = 1920;
     int display_h = 1080;
 
+	float radii_scale = 1.0f;
+
     vec3 rgb(1,1,1);
 
-    //vec3 xyz = math::rgb_to_xyz(rgb);
-    vec3 res = math::rgb_to_xyz(rgb);
-
-    printf("XYZ: %g %g %g\n", res.x, res.y, res.z);
-
-    res = math::xyz_to_rgb(res);
-
-    printf("RGB: %g %g %g\n", res.x, res.y, res.z);
-
-    auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
+    //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
     //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
 	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
+	auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
 
-    Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
+    //Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
 	//Trajectory traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
-	//Trajectory traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
+	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
+	Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
 	
     data.mol_struct = &gro_res.gro;
     data.trajectory = traj;
 
-    if (data.trajectory)
+    if (data.trajectory && data.trajectory->num_frames > 0)
         copy_trajectory_positions(data.mol_struct->atom_positions, *data.trajectory, 0);
     reset_view(&data);
 
@@ -118,7 +129,7 @@ int main(int, char**) {
     // Setup style
     ImGui::StyleColorsClassic();
 
-    bool show_demo_window = true;
+    bool show_demo_window = false;
     vec4 clear_color = vec4(0.6, 0.6, 0.6, 1);
     vec4 clear_index = vec4(1, 1, 1, 1);
 
@@ -154,10 +165,12 @@ int main(int, char**) {
 		ImGui::Text("MouseVel: %g, %g", input->mouse_velocity.x, input->mouse_velocity.y);
 		ImGui::Text("Camera Pos: %g, %g, %g", data.camera.position.x, data.camera.position.y, data.camera.position.z);
 		ImGui::Text("Mouse Buttons: [%i, %i, %i, %i, %i]", input->mouse_down[0], input->mouse_down[1], input->mouse_down[2], input->mouse_down[3], input->mouse_down[4]);
+		ImGui::SliderFloat("Radius Scale", &radii_scale, 0.1f, 2.f);
         if (ImGui::Button("Reset View")) {
             reset_view(&data);
         }
 		if (data.trajectory) {
+			ImGui::Text("Num Frames: %i", data.trajectory->num_frames);
 			float t = (float)data.time;
 			if (ImGui::SliderFloat("Time", &t, 0, (float)(data.trajectory->num_frames - 1))) {
 				time_changed = true;
@@ -198,7 +211,8 @@ int main(int, char**) {
 				auto next_frame = get_trajectory_frame(*data.trajectory, next_frame_idx);
 
 				float t = (float)math::fract(data.time);
-				periodic_position_interpolation(data.mol_struct->atom_positions, prev_frame.atom_positions, next_frame.atom_positions, t, prev_frame.box);
+				linear_interpolation_periodic(data.mol_struct->atom_positions, prev_frame.atom_positions, next_frame.atom_positions, t, prev_frame.box);
+				//linear_interpolation(data.mol_struct->atom_positions, prev_frame.atom_positions, next_frame.atom_positions, t);
 				
 				//memcpy(data.mol_struct->atom_positions.data, prev_frame.atom_positions.data, data.mol_struct->atom_positions.count * sizeof(vec3));
 
@@ -249,7 +263,6 @@ int main(int, char**) {
         // Rendering
         glViewport(0, 0, display_w, display_h);
 
-
 		const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.id);
 
@@ -268,21 +281,22 @@ int main(int, char**) {
 		glEnable(GL_DEPTH_TEST);
 		glDepthFunc(GL_LESS);
 
-        draw::draw_vdw(data.mol_struct->atom_positions, data.atom_radii, data.atom_colors, model_mat, view_mat, proj_mat);
-
-        if (data.use_ssao) {
-			glDrawBuffer(GL_COLOR_ATTACHMENT0);
-            postprocessing::apply_ssao(data.fbo.tex_depth, proj_mat, 3.0f, 6.f);
-        }
+        draw::draw_vdw(data.mol_struct->atom_positions, data.atom_radii, data.atom_colors, view_mat, proj_mat, radii_scale);
+		//draw::draw_licorice(data.mol_struct->atom_positions, data.mol_struct->bonds, data.atom_colors, view_mat, proj_mat, radii_scale);
 
         // Activate backbuffer
         glDisable(GL_DEPTH_TEST);
 		glDepthFunc(GL_ALWAYS);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+		glDrawBuffer(GL_BACK);
         glClear(GL_COLOR_BUFFER_BIT);
 
         // Apply tone mapping
         postprocessing::apply_tonemapping(data.fbo.tex_color);
+
+		if (data.use_ssao) {
+			postprocessing::apply_ssao(data.fbo.tex_depth, proj_mat, data.ssao_intensity, data.ssao_radius);
+		}
 
         // Render Imgui
         ImGui::Render();
@@ -352,6 +366,8 @@ static void draw_main_menu(ApplicationData* data) {
         }
         if (ImGui::BeginMenu("Visuals")) {
             ImGui::Checkbox("SSAO", &data->use_ssao);
+			ImGui::SliderFloat("Intensity", &data->ssao_intensity, 0.5f, 6.f);
+			ImGui::SliderFloat("Radius", &data->ssao_radius, 1.f, 30.f);
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
@@ -704,6 +720,8 @@ static void draw_console(ApplicationData* data, int width, int height, float dt)
 static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y) {
     
     // @TODO: Assert things and make this failproof
+	if (atom_idx >= mol.atom_positions.count) return;
+
     int res_idx = mol.atom_residue_indices[atom_idx];
     const Residue& res = mol.residues[res_idx];
     const char* res_id = res.id;
@@ -712,26 +730,29 @@ static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, in
     const char* elem = element::name(mol.atom_elements[atom_idx]);
     const char* symbol = element::symbol(mol.atom_elements[atom_idx]);
 
-    char chain_id = 0;
-    if (res.chain_idx != -1) {
-        const Chain& chain = mol.chains[res.chain_idx];
+	int chain_idx = res.chain_idx;
+    const char* chain_id = 0;
+    if (chain_idx != -1) {
+        const Chain& chain = mol.chains[chain_idx];
         chain_id = chain.id;
+		chain_idx = res.chain_idx;
     }
 
     // External indices begin with 1 not 0
     res_idx += 1;
+	chain_idx += 1;
     atom_idx += 1;
     local_idx += 1;
 
     char buff[256];
     int len = snprintf(buff, 256, "atom[%i][%i]: %s %s %s\nres[%i]: %s", atom_idx, local_idx, label, elem, symbol, res_idx, res_id);
-    if (chain_id) {
-        snprintf(buff + len, 256 - len, "\nchain[%c]\n", chain_id);
+    if (chain_idx) {
+        snprintf(buff + len, 256 - len, "\nchain[%i]: %s\n", chain_idx, chain_id);
     }
 
     ImVec2 text_size = ImGui::CalcTextSize(buff);
-    ImGui::SetNextWindowPos(ImVec2(x + 10, y + 10));
-    ImGui::SetNextWindowSize(ImVec2(text_size.x + 20, text_size.y + 15));
+    ImGui::SetNextWindowPos(ImVec2(x + 10.f, y + 10.f));
+    ImGui::SetNextWindowSize(ImVec2(text_size.x + 20.f, text_size.y + 15.f));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
     ImGui::Begin("##Atom Info", 0,
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
@@ -752,12 +773,12 @@ static void reset_view(ApplicationData* data) {
     compute_bounding_box(&min_box, &max_box, data->mol_struct->atom_positions);
     vec3 size = max_box - min_box;
     vec3 cent = (min_box + max_box) * 0.5f;
-    printf("min_box: %g %g %g\n", min_box.x, min_box.y, min_box.z);
-    printf("max_box: %g %g %g\n", max_box.x, max_box.y, max_box.z);
 
-    data->controller.look_at(cent, cent + size * 2.f);
+	data->controller.look_at(cent, cent + size * 2.f);
     data->camera.position = data->controller.position;
     data->camera.orientation = data->controller.orientation;
+	data->camera.near_plane = 1.f;
+	data->camera.far_plane = math::length(size) * 3.f;
 }
 
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height) {

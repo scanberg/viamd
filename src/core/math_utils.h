@@ -106,160 +106,96 @@ glm::tquat<T, Q> angle_axis(T const& angle, glm::vec<3, T, Q> const& axis) {
 inline float rnd() { return rand() / (float)RAND_MAX; }
 inline void set_rnd_seed(unsigned int seed) { srand(seed); }
 
-// Source from here
-// https://github.com/gegaryfa/Color-conversions
+// Color
 
-inline vec3 rgb_to_xyz(vec3 rgb) {
-    float r = rgb[0];
-    float g = rgb[1];
-    float b = rgb[2];
+// http://lolengine.net/blog/2013/07/27/rgb-to-hsv-in-glsl
 
-    if (r > 0.04045f)
-        r = pow(((r + 0.055f) / 1.055f), 2.4f);
-    else
-        r = r / 12.92f;
+inline vec3 rgb_to_hsv(vec3 c) {
+	vec4 K = vec4(0.0f, -1.0f / 3.0f, 2.0f / 3.0f, -1.0f);
+	vec4 p = mix(vec4(c.b, c.g, K.w, K.z), vec4(c.g, c.b, K.x, K.y), step(c.b, c.g));
+	vec4 q = mix(vec4(p.x, p.y, p.w, c.r), vec4(c.r, p.y, p.z, p.x), step(p.x, c.r));
 
-    if (g > 0.04045f)
-        g = pow(((g + 0.055f) / 1.055f), 2.4f);
-    else
-        g = g / 12.92f;
-
-    if (b > 0.04045f)
-        b = pow(((b + 0.055f) / 1.055f), 2.4f);
-    else
-        b = b / 12.92f;
-
-    // Scale or don't scale with 100?
-    r = r * 100;
-    g = g * 100;
-    b = b * 100;
-
-    // Observer. = 2°, Illuminant = D65
-    float x = r * 0.4124f + g * 0.3576f + b * 0.1805f;
-    float y = r * 0.2126f + g * 0.7152f + b * 0.0722f;
-    float z = r * 0.0193f + g * 0.1192f + b * 0.9505f;
-
-    return {x, y, z};
+	float d = q.x - min(q.w, q.y);
+	float e = 1.0e-10f;
+	return vec3(abs(q.z + (q.w - q.y) / (6.0f * d + e)), d / (q.x + e), q.x);
 }
 
-inline vec3 xyz_to_rgb(vec3 xyz) {
-    float x = xyz[0] / 100.f;
-    float y = xyz[1] / 100.f;
-    float z = xyz[2] / 100.f;
-
-    float r = x * 3.2406f + (y * -1.5372f) + z * (-0.4986f);
-    float g = x * (-0.9689f) + y * 1.8758f + z * 0.0415f;
-    float b = x * 0.0557f + y * (-0.2040f) + z * 1.0570f;
-
-    if (r > 0.0031308f)
-        r = 1.055f * powf(r, (1.0f / 2.4f)) - 0.055f;
-    else
-        r = 12.92f * r;
-
-    if (g > 0.0031308f)
-        g = 1.055f * powf(g, (1.0f / 2.4f)) - 0.055f;
-    else
-        g = 12.92f * g;
-
-    if (b > 0.0031308f)
-        b = 1.055f * powf(b, (1.0f / 2.4f)) - 0.055f;
-    else
-        b = 12.92f * b;
-
-    return {r, g, b};
+inline vec3 hsv_to_rgb(vec3 c) {
+	vec4 K = vec4(1.0f, 2.0f / 3.0f, 1.0f / 3.0f, 3.0f);
+	vec3 p = abs(fract(vec3(c.x) + vec3(K)) * 6.0f - vec3(K.w));
+	return c.z * mix(vec3(K.x), clamp(p - vec3(K.x), 0.0f, 1.0f), c.y);
 }
 
-// D65 Reference white point in CIEXYZ
-constexpr float ref_X = 95.047f;
-constexpr float ref_Y = 100.0f;
-constexpr float ref_Z = 108.883f;
+constexpr float HCLgamma = 3;
+constexpr float HCLy0 = 100;
+constexpr float HCLmaxL = 0.530454533953517f; // == exp(HCLgamma / HCLy0) - 0.5
 
-inline vec3 xyz_to_lab(vec3 xyz) {
-    float x = (xyz[0] / ref_X);  // ref_X = 95.047
-    float y = (xyz[1] / ref_Y);  // ref_Y = 100.0
-    float z = (xyz[2] / ref_Z);  // ref_Z = 108.883
-
-    if (x > 0.008856f)
-        x = pow(x, (1.f / 3.f));
-    else
-        x = (7.787f * x) + (16.f / 116.f);
-
-    if (y > 0.008856f)
-        y = pow(y, (1.f / 3.f));
-    else
-        y = (7.787f * y) + (16.f / 116.f);
-
-    if (z > 0.008856f)
-        z = pow(z, (1.f / 3.f));
-    else
-        z = (7.787f * z) + (16.f / 116.f);
-
-    float L = (116.f * y) - 16.f;
-    float a = 500.f * (x - y);
-    float b = 200.f * (y - z);
-
-    return {L, a, b};
+inline vec3 hcl_to_rgb(vec3 HCL)
+{
+	vec3 RGB = vec3(0);
+	if (HCL.z != 0)
+	{
+		float H = HCL.x;
+		float C = HCL.y;
+		float L = HCL.z * HCLmaxL;
+		float Q = exp((1 - C / (2 * L)) * (HCLgamma / HCLy0));
+		float U = (2 * L - C) / (2 * Q - 1);
+		float V = C / Q;
+		float T = tan((H + min(fract(2 * H) / 4.f, fract(-2 * H) / 8.f)) * PI * 2);
+		H *= 6;
+		if (H <= 1)
+		{
+			RGB.r = 1;
+			RGB.g = T / (1 + T);
+		}
+		else if (H <= 2)
+		{
+			RGB.r = (1 + T) / T;
+			RGB.g = 1;
+		}
+		else if (H <= 3)
+		{
+			RGB.g = 1;
+			RGB.b = 1 + T;
+		}
+		else if (H <= 4)
+		{
+			RGB.g = 1 / (1 + T);
+			RGB.b = 1;
+		}
+		else if (H <= 5)
+		{
+			RGB.r = -1 / T;
+			RGB.b = 1;
+		}
+		else
+		{
+			RGB.r = 1;
+			RGB.b = -T;
+		}
+		RGB = RGB * V + U;
+	}
+	return RGB;
 }
 
-inline vec3 lab_to_xyz(vec3 Lab) {
-    float y = (Lab[0] + 16.f) / 116.f;
-    float x = (Lab[1] / 500.f) + y;
-    float z = y - (Lab[2] / 200.f);
-
-    if (powf(y, 3.f) > 0.008856f)
-        y = powf(y, 3.f);
-    else
-        y = (y - (16.f / 116.f)) / 7.787f;
-
-    if (powf(x, 3.f) > 0.008856f)
-        x = powf(x, 3.f);
-    else
-        x = (x - (16.f / 116.f)) / 7.787f;
-
-    if (powf(z, 3.f) > 0.008856f)
-        z = powf(z, 3.f);
-    else
-        z = (z - (16.f / 116.f)) / 7.787f;
-
-    x = ref_X * x;  // ref_X =  95.047     Observer= 2°, Illuminant= D65
-    y = ref_Y * x;  // ref_Y = 100.000
-    z = ref_Z * x;  // ref_Z = 108.883
-
-    return {x, y, z};
-}
-
-inline vec3 rgb_to_lab(vec3 rgb) {
-	return xyz_to_lab(rgb_to_xyz(rgb));
-}
-
-inline vec3 lab_to_rgb(vec3 lab) {
-	return xyz_to_rgb(lab_to_xyz(lab));
-}
-
-inline vec3 lab_to_lch(vec3 lab) {
-	float l = lab[0];
-	float a = lab[1];
-	float b = lab[2];
-    float c = sqrt(a * a + b * b);
-    float h = mod(atan(b, a) + 2.f * PI, 2.f * PI);
-    return {l, c, h};
-};
-
-inline vec3 lch_to_lab(vec3 lch) {
-	float l = lch[0];
-	float c = lch[1];
-	float h = lch[2];
-	float a = c * cos(h);
-	float b = c * sin(h);
-	return {l, a, b};
-}
-
-inline float lab_color_difference(vec3 lab1, vec3 lab2) {
-    return distance(lab1, lab2);
-}
-
-inline float rgb_color_lab_difference(vec3 rgb1, vec3 rgb2) {
-	return lab_color_difference(rgb_to_lab(rgb1), rgb_to_lab(rgb2));
+inline vec3 rgb_to_hcl(vec3 rgb)
+{
+	vec3 HCL;
+	float H = 0;
+	float U = min(rgb.r, min(rgb.g, rgb.b));
+	float V = max(rgb.r, max(rgb.g, rgb.b));
+	float Q = HCLgamma / HCLy0;
+	HCL.y = V - U;
+	if (HCL.y != 0)
+	{
+		H = atan(rgb.g - rgb.b, rgb.r - rgb.g) / PI;
+		Q *= U / V;
+	}
+	Q = exp(Q);
+	HCL.x = fract(H / 2.f - min(fract(H), fract(-H)) / 6.f);
+	HCL.y *= Q;
+	HCL.z = lerp(-U, V, Q) / (HCLmaxL * 2);
+	return HCL;
 }
 
 }
