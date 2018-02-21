@@ -4,6 +4,12 @@
 #include "array.h"
 #include "allocator.h"
 
+template<int64 Size>
+struct StringBuffer : String {
+    StringBuffer() : String(buffer, Size) {};
+    char buffer[Size];
+};
+
 // Comparison of Strings
 bool compare(CString str_a, CString str_b, bool ignore_case = false);
 bool compare_n(CString str_a, CString str_b, int64 num_chars, bool ignore_case = false);
