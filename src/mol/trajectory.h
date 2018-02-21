@@ -3,6 +3,7 @@
 #include <core/types.h>
 #include <core/array.h>
 #include <core/common.h>
+#include <atomic>
 
 constexpr int MAX_TRAJECTORY_FRAME_BUFFER_SIZE = GIGABYTES(2);
 
@@ -26,11 +27,14 @@ struct Trajectory {
 
     // @NOTE: The frame_buffer may not contain all frames in trajectory.
     // If the trajectory is large, frame_buffer will be used as a cache towards the trajectory streamed from disk.
-	DynamicArray<TrajectoryFrame> frame_buffer{};
+	DynamicArray<TrajectoryFrame> frame_buffer;
 
     // This is the position data of the trajectories
-    DynamicArray<vec3> position_data{};
+	DynamicArray<vec3> position_data;
 
     // These are the offsets for each frame within the compressed blob of XTC data
-    DynamicArray<int64> frame_offsets{};
+	DynamicArray<int64> frame_offsets;
+
+	// @TODO: Add mutex to signal deletion of this to threads that may be operating on internal data in other threads
+	std::atomic_flag stop_threads;
 };

@@ -10,8 +10,8 @@
 #endif
 
 struct Bond {
-	int32 atom_idx_a;
-	int32 atom_idx_b;
+	int32 idx_a;
+	int32 idx_b;
 };
 
 struct Label {
@@ -31,6 +31,12 @@ struct Label {
 		int32 len = (int)strnlen(cstr, MAX_LENGTH - 1);
 		strncpy(data, cstr, len);
 		length = len;
+		data[length] = '\0';
+	}
+
+	Label(char c) {
+		data[0] = c;
+		length = 1;
 		data[length] = '\0';
 	}
 
@@ -65,6 +71,13 @@ struct Label {
 		return *this;
 	}
 
+	Label& operator =(char c) {
+		data[0] = c;
+		length = 1;
+		data[length] = '\0';
+		return *this;
+	}
+
 	template<int32 N>
 	Label& operator =(const char (&cstr)[N]) {
 		if (data != cstr) {
@@ -95,7 +108,7 @@ struct Residue {
 };
 
 struct Chain {
-	char id;
+	Label id;
 	int32 beg_res_idx;
 	int32 end_res_idx;
 };
@@ -127,7 +140,7 @@ enum MoleculeStructureAllocationFlags {
 	MOL_ALL = 0xffffffff
 };
 
-MoleculeStructure allocate_molecule_structure(int atom_count, int bond_count, int residue_count, int chain_count, MoleculeStructureAllocationFlags alloc_flags = MOL_ALL, Allocator& allocator = default_alloc);
+MoleculeStructure allocate_molecule_structure(int atom_count, int bond_count, int residue_count, int chain_count, MoleculeStructureAllocationFlags alloc_flags = MOL_ALL, Allocator* allocator = &default_alloc);
 
 // This is a bit risky
-void free_molecule_structure(MoleculeStructure& mol, Allocator& allocator = default_alloc);
+void free_molecule_structure(MoleculeStructure& mol, Allocator* allocator = &default_alloc);

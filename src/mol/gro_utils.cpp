@@ -3,11 +3,11 @@
 #include <mol/element.h>
 #include <mol/molecule_utils.h>
 
-GroResult load_gro_from_file(const char* filename, Allocator& alloc) {
+GroResult load_gro_from_file(const char* filename, Allocator* alloc) {
 	return parse_gro_from_string(read_textfile(filename), alloc);
 }
 
-GroResult parse_gro_from_string(CString gro_string, Allocator& alloc) {
+GroResult parse_gro_from_string(CString gro_string, Allocator* alloc) {
 
 	CString header;
 	CString length;
@@ -26,6 +26,7 @@ GroResult parse_gro_from_string(CString gro_string, Allocator& alloc) {
 	atom_name[5] = '\0';
 	res_name[5] = '\0';
     int atom_idx, res_idx;
+	int res_count = 0;
     int cur_res = -1;
 
 	/*
@@ -55,24 +56,26 @@ GroResult parse_gro_from_string(CString gro_string, Allocator& alloc) {
             sscanf(line, "%5d%5c%5c%5d%8f%8f%8f%8f%8f%8f", &res_idx, res_name, atom_name,
                     &atom_idx, &pos.x, &pos.y, &pos.z, &vel.x, &vel.y, &vel.z);
         if (result > 0) {
-        	res_idx = res_idx - 1; // We use residue indices begining with zero
 			if (cur_res != res_idx) {
-                cur_res = res_idx;
+				cur_res = res_idx;
+				res_count = (int)residues.count;
 				//auto amino = aminoacid::getFromString(res_name_trim);
 				//if (amino != AminoAcid::Unknown) {
 				//	mol.pushStructure<structure::AminoAcid>(static_cast<int>(residues.size()), amino);
 				//}
-				Residue res {res_name, i, i};
-                residues.push_back(res);
-            }
-            residues.back().end_atom_idx++;
+				Residue res{ res_name, i, i };
+				residues.push_back(res);
+			}
+			residues.back().end_atom_idx++;
 
             auto elem = element::get_from_string(trim(CString(atom_name)));
 			positions.push_back(pos);
 			velocities.push_back(vel);
 			labels.push_back(trim(CString(atom_name)));
 			elements.push_back(elem);
-			residue_indices.push_back(res_idx);
+			residue_indices.push_back(res_count);
+
+
 
 			//atoms.push_back({pos, vel, atom_name, elem, res_idx});
 
@@ -96,8 +99,8 @@ GroResult parse_gro_from_string(CString gro_string, Allocator& alloc) {
 	}
     box *= 10.f;
 
-	DynamicArray<Bond> bonds = compute_bonds(positions, elements, residues);
-   	DynamicArray<Chain> chains = compute_chains(residues, bonds);
+	DynamicArray<Bond> bonds = compute_atomic_bonds(positions, elements, residues);
+	DynamicArray<Chain> chains = compute_chains(residues, bonds, residue_indices);
 
    	for (int c = 0; c < chains.count; c++) {
 	   	for (int i = chains[c].beg_res_idx; i < chains[c].end_res_idx; i++) {

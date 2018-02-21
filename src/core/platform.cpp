@@ -64,12 +64,12 @@ static void mouse_button_callback(GLFWwindow*, int button, int action, int /*mod
 static void mouse_scroll_callback(GLFWwindow*, double xoffset, double yoffset) {
     ImGuiIO& io = ImGui::GetIO();
 
-    g_input_state.mouse_scroll.y = (int)yoffset;
+    g_input_state.mouse_scroll.y = (float)yoffset;
     io.MouseWheelH += (float)xoffset;
     io.MouseWheel += (float)yoffset;
 }
 
-static void key_callback(GLFWwindow*, int key, int scancode, int action, int mods) {
+static void key_callback(GLFWwindow*, int key, int, int action, int mods) {
     ImGuiIO& io = ImGui::GetIO();
 
     if (action == GLFW_PRESS) {

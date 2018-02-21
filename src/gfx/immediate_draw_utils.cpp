@@ -160,12 +160,12 @@ void shutdown() {
 }
 
 void set_model_view_matrix(const mat4& model_view_matrix) {
-    curr_model_view_matrix_idx = matrix_stack.count;
+    curr_model_view_matrix_idx = (int)matrix_stack.count;
     matrix_stack.push_back(model_view_matrix);
 }
 
 void set_proj_matrix(const mat4& proj_matrix) {
-    curr_proj_matrix = matrix_stack.count;
+    curr_proj_matrix = (int)matrix_stack.count;
     matrix_stack.push_back(proj_matrix);
 }
 

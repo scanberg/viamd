@@ -775,10 +775,10 @@ void apply_ssao(GLuint depth_tex, const mat4& proj_matrix, float intensity, floa
 	//for (int i = 0; i < 8; i++) glGetIntegerv(GL_DRAW_BUFFER0 + i, draw_buffers + i);
 
 	glViewport(0, 0, ssao::tex_width, ssao::tex_height);
-	glDrawBuffer(GL_COLOR_ATTACHMENT0);
 
 	// LINEARIZE DEPTH
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ssao::fbo_linear_depth);
+	glDrawBuffer(GL_COLOR_ATTACHMENT0);
 	glUseProgram(ssao::prog_linearize_depth);
 	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, depth_tex);

@@ -1,6 +1,6 @@
 #include "molecule.h"
 
-MoleculeStructure allocate_molecule_structure(int atom_count, int bond_count, int residue_count, int chain_count, MoleculeStructureAllocationFlags alloc_flags, Allocator& allocator)
+MoleculeStructure allocate_molecule_structure(int atom_count, int bond_count, int residue_count, int chain_count, MoleculeStructureAllocationFlags alloc_flags, Allocator* allocator)
 {
 	MoleculeStructure mol;
 	int64 alloc_size = 0;
@@ -21,7 +21,11 @@ MoleculeStructure allocate_molecule_structure(int atom_count, int bond_count, in
 		alloc_size += chain_count * sizeof(Chain);
 	}
 
-	void* data = allocator.alloc(alloc_size);
+	void* data;
+	if (allocator)
+		data = allocator->alloc(alloc_size);
+	else
+		data = MALLOC(alloc_size);
 
 	mol.atom_positions =		{ (vec3*)data, alloc_flags & MOL_POSITIONS ? atom_count : 0 };
 	mol.atom_elements =			{ (Element*)(mol.atom_positions.end()), alloc_flags & MOL_ELEMENTS ? atom_count : 0 };
@@ -35,6 +39,6 @@ MoleculeStructure allocate_molecule_structure(int atom_count, int bond_count, in
 	return mol;
 }
 
-void free_molecule_structure(MoleculeStructure& mol, Allocator& alloc) {
-	alloc.free(mol.atom_positions.data);
+void free_molecule_structure(MoleculeStructure& mol, Allocator* alloc) {
+	alloc->free(mol.atom_positions.data);
 }

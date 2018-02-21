@@ -5,11 +5,11 @@
 #include <xdrfile_xtc.h>
 #include <string>
 #include <fstream>
-#include <future>
+#include <thread>
 
 // @TODO: Remove dependency of string
 
-Trajectory* read_and_allocate_trajectory(const char* path, Allocator& alloc) {
+Trajectory* read_and_allocate_trajectory(const char* path, Allocator* alloc) {
     std::string url(path);
 
     auto dot_pos = url.find_last_of(".");
@@ -35,7 +35,7 @@ Trajectory* read_and_allocate_trajectory(const char* path, Allocator& alloc) {
         offset_cache_stream.seekg(0, std::ios::beg);
         offsets = (int64*)malloc(byte_size);
         offset_cache_stream.read((char*)offsets, byte_size);
-        num_frames = byte_size / sizeof(int64);
+        num_frames = (int)(byte_size / sizeof(int64));
     } else {
         if (read_xtc_frame_offsets(path, &num_frames, &offsets) != exdrOK) {
             ASSERT(false, "Failed to extract frames and offsets");
@@ -47,17 +47,16 @@ Trajectory* read_and_allocate_trajectory(const char* path, Allocator& alloc) {
     }
 
     ASSERT(offsets, "Failed to read offsets");
-    Trajectory* traj = (Trajectory*)alloc.alloc(sizeof(Trajectory));
-    traj->num_atoms = num_atoms;
-    traj->num_frames = 0;
-    traj->total_simulation_time = 0;
-    traj->simulation_type = Trajectory::NVT;
-    traj->file_handle = file_handle;
-    traj->frame_buffer = {};
-    traj->position_data = {};
-    traj->frame_offsets = {};
+	if (!alloc)
+		alloc = &default_alloc;
+    Trajectory* traj = (Trajectory*)alloc->alloc(sizeof(Trajectory));
+	new (traj) Trajectory();
+	traj->num_atoms = num_atoms;
+	traj->num_frames = 0;
+	traj->total_simulation_time = 0;
+	traj->simulation_type = Trajectory::NVT;
+	traj->file_handle = file_handle;
 
-    // Trajectory traj{ num_atoms, num_frames, 0.f, Trajectory::NVT, file_handle };
     traj->frame_offsets.resize(num_frames);
     memcpy(traj->frame_offsets.data, offsets, num_frames * sizeof(int64));
     free(offsets);
@@ -68,7 +67,7 @@ Trajectory* read_and_allocate_trajectory(const char* path, Allocator& alloc) {
     traj->position_data.resize(num_frames * num_atoms);
     traj->frame_buffer.resize(num_frames);
 
-    //auto handle = std::async(std::launch::async, [traj, num_frames]() {
+    std::thread([traj, num_frames]() {
         // Do this in separate thread
         for (int i = 0; i < num_frames; i++) {
             vec3* pos_data = traj->position_data.data + (i * traj->num_atoms);
@@ -85,7 +84,7 @@ Trajectory* read_and_allocate_trajectory(const char* path, Allocator& alloc) {
             frame->box *= 10.f;
             traj->num_frames++;
         }
-    //});
+    }).detach();
 
     return traj;
 }
@@ -96,7 +95,7 @@ void free_trajectory(Trajectory* traj) {
     traj->file_handle = nullptr;
 }
 
-TrajectoryFrame copy_trajectory_frame(const Trajectory& traj, int frame_index, Allocator& alloc) { return {}; }
+TrajectoryFrame copy_trajectory_frame(const Trajectory& traj, int frame_index, Allocator* alloc) { return {}; }
 
 void copy_trajectory_positions(Array<vec3> dst_array, const Trajectory& traj, int frame_index) {
     ASSERT(dst_array);

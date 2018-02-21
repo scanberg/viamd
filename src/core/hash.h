@@ -10,4 +10,10 @@ template <typename T>
 uint32 crc32(Array<T> arr) {
     return crc32(arr.data, arr.count * sizeof(T));
 }
+
+template <typename T>
+uint32 crc32(const T& data) {
+	return crc32((const char*)&data, sizeof(T));
+}
+
 }  // namespace hash
