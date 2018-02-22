@@ -297,18 +297,26 @@ static GLuint v_shader = 0;
 static GLuint f_shader = 0;
 static GLuint program = 0;
 
+static GLuint vao = 0;
 static GLuint ibo = 0;
+static GLuint buf_position_radius = 0;
+static GLuint buf_color = 0;
+static GLuint tex_position_radius = 0;
+static GLuint tex_color = 0;
 
 static GLint uniform_loc_view_mat = -1;
 static GLint uniform_loc_proj_mat = -1;
+static GLint uniform_loc_inv_proj_mat = -1;
 static GLint uniform_loc_fov = -1;
+static GLint uniform_loc_tex_pos_rad = -1;
+static GLint uniform_loc_tex_color = -1;
 
 static const char* v_shader_src = R"(
 #version 150 core
 
 uniform mat4 u_view_mat;
 uniform mat4 u_proj_mat;
-uniform float u_fov;
+uniform mat4 u_inv_proj_mat;
 
 uniform samplerBuffer u_tex_pos_rad;
 uniform samplerBuffer u_tex_color;
@@ -316,8 +324,8 @@ uniform samplerBuffer u_tex_color;
 out Fragment {
     flat vec4 color;
     flat vec4 view_sphere;
-    smooth vec4 view_coord;
 	flat vec4 picking_color;
+    smooth vec4 view_coord;
 } out_frag;
 
 vec4 pack_u32(uint data) {
@@ -330,7 +338,7 @@ vec4 pack_u32(uint data) {
 
 // From Inigo Quilez!
 void proj_sphere(in vec4 sphere, 
-				 in float fov,
+				 in float fle,
 				 out vec2 axis_a,
 				 out vec2 axis_b,
 				 out vec2 center) {
@@ -340,9 +348,9 @@ void proj_sphere(in vec4 sphere,
 	float l2 = dot(o,o);
 	
 	// axis
-	axis_a = fov*sqrt(-r2*(r2-l2)/((l2-z2)*(r2-z2)*(r2-z2)))*vec2( o.x,o.y);
-	axis_b = fov*sqrt(-r2*(r2-l2)/((l2-z2)*(r2-z2)*(r2-l2)))*vec2(-o.y,o.x);
-	center = -fov*o.z*o.xy/(z2-r2);
+	axis_a = fle*sqrt(-r2*(r2-l2)/((l2-z2)*(r2-z2)*(r2-z2)))*vec2( o.x,o.y);
+	axis_b = fle*sqrt(-r2*(r2-l2)/((l2-z2)*(r2-z2)*(r2-l2)))*vec2(-o.y,o.x);
+	center = -fle*o.z*o.xy/(z2-r2);
 }
 
 void main() {
@@ -364,29 +372,28 @@ void main() {
     out_frag.view_sphere = vec4(view_coord.xyz, rad);
 	out_frag.picking_color = pack_u32(uint(IID));
 
+	// Focal length
+	float fle = u_proj_mat[1][1];
+	// 1.0 / aspect_ratio
+	float inv_ar = u_proj_mat[0][0] / u_proj_mat[1][1];
+
 	vec2 axis_a;
 	vec2 axis_b;
 	vec2 center;
-	proj_sphere(vec4(view_coord.xyz, rad), u_fov, axis_a, axis_b, center);
+	proj_sphere(out_frag.view_sphere, fle, axis_a, axis_b, center);
 
-    const float sqrt_two = sqrt(2.0);
-	float scl = sqrt_two * rad;
+	// Bias depth with radius of sphere to make sure we only write depth values greater than this
+	view_coord.z += rad;
 
-    view_coord.xyz -= view_dir * rad;
-	//view_coord.xy += axis_a * uv.x + axis_b * uv.y;
-	view_coord.xy += uv * scl;
-
+	vec2 xy = (center + axis_a * uv.x + axis_b * uv.y) * vec2(inv_ar, 1.0);
 	float z = -u_proj_mat[2][2] - u_proj_mat[3][2] / view_coord.z;
-	vec2 xy = center + axis_a * uv.x + axis_b * uv.y;
-	vec4 proj_coord = vec4(xy, z, 1);
+	vec4 pc = vec4(xy, z, 1);
 
-	//out_frag.view_coord = view_coord;
-	//out_frag.view_coord = u_view_mat * vec4(proj_coord.xy, u_fov, 0);
-
-	out_frag.view_coord = inverse(u_proj_mat) * proj_coord;
+	// Compute view_coordinate which is used for ray-sphere intersection in fragment shader
+	out_frag.view_coord = u_inv_proj_mat * pc;
 	out_frag.view_coord = out_frag.view_coord / out_frag.view_coord.w;
 
-    gl_Position = proj_coord;
+    gl_Position = pc;
 }
 )";
 
@@ -401,8 +408,8 @@ uniform float u_exposure = 1.0;
 in Fragment {
     flat vec4 color;
     flat vec4 view_sphere;
-    smooth vec4 view_coord;
 	flat vec4 picking_color;
+    smooth vec4 view_coord;
 } in_frag;
 
 #ifdef GL_EXT_conservative_depth
@@ -434,7 +441,7 @@ void main() {
     float b = dot(m, d);
     float c = dot(m, m) - r*r;
     float discr = b*b - c;
-    //if (discr < 0.0) discard;
+    if (discr < 0.0) discard;
     float t = -b -sqrt(discr);
 
     vec3 view_hit = d * t;
@@ -460,11 +467,7 @@ void main() {
 
     color.rgb = mix(diffuse, specular, fr);
 
-    vec4 coord = vec4(0, 0, view_hit.z, 1);
-    coord = u_proj_mat * coord;
-    coord = coord / coord.w;
-
-    gl_FragDepth = coord.z * 0.5 + 0.5;
+    gl_FragDepth = (-u_proj_mat[2][2] - u_proj_mat[3][2] / view_hit.z) * 0.5 + 0.5;
     out_color = vec4(color.rgb, color.a);
 	out_picking_id = in_frag.picking_color;
 }
@@ -504,9 +507,47 @@ static void initialize() {
     glDeleteShader(v_shader);
     glDeleteShader(f_shader);
 
+	if (!vao)
+		glGenVertexArrays(1, &vao);
+
+	if (!ibo) {
+		const unsigned char data[4] = { 0, 1, 2, 3 };
+		glGenBuffers(1, &ibo);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+		glBufferData(GL_ELEMENT_ARRAY_BUFFER, 4, data, GL_STATIC_DRAW);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+	}
+
+	if (!buf_position_radius) {
+		glGenBuffers(1, &buf_position_radius);
+		glBindBuffer(GL_ARRAY_BUFFER, buf_position_radius);
+		glBufferData(GL_ARRAY_BUFFER, MEGABYTES(4), 0, GL_STREAM_DRAW);
+		glBindBuffer(GL_ARRAY_BUFFER, 0);
+	}
+
+	if (!buf_color) {
+		glGenBuffers(1, &buf_color);
+		glBindBuffer(GL_ARRAY_BUFFER, buf_color);
+		glBufferData(GL_ARRAY_BUFFER, MEGABYTES(4), 0, GL_STREAM_DRAW);
+		glBindBuffer(GL_ARRAY_BUFFER, 0);
+	}
+
+	if (!tex_position_radius)
+		glGenTextures(1, &tex_position_radius);
+
+	if (!tex_color)
+		glGenTextures(1, &tex_color);
+
+	glBindVertexArray(vao);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+	glBindVertexArray(0);
+
     uniform_loc_view_mat = glGetUniformLocation(program, "u_view_mat");
     uniform_loc_proj_mat = glGetUniformLocation(program, "u_proj_mat");
+	uniform_loc_inv_proj_mat = glGetUniformLocation(program, "u_inv_proj_mat");
     uniform_loc_fov = glGetUniformLocation(program, "u_fov");
+	uniform_loc_tex_pos_rad = glGetUniformLocation(vdw::program, "u_tex_pos_rad");
+	uniform_loc_tex_color = glGetUniformLocation(vdw::program, "u_tex_color");
 }
 
 static void shutdown() {
@@ -891,54 +932,14 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
     int64_t count = atom_positions.count;
     ASSERT(count == atom_radii.count && count == atom_colors.count);
 
-	static GLuint ibo = 0;
-	static GLuint buf_position_radius = 0;
-	static GLuint buf_color = 0;
-	static GLuint tex_position_radius = 0;
-	static GLuint tex_color = 0;
-	static GLint uniform_loc_tex_pos_rad = -1;
-	static GLint uniform_loc_tex_color = -1;
-
-	if (!ibo) {
-		const unsigned char data[4] = { 0, 1, 2, 3 };
-		glGenBuffers(1, &ibo);
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-		glBufferData(GL_ELEMENT_ARRAY_BUFFER, 4, data, GL_STATIC_DRAW);
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-	}
-
-	if (!buf_position_radius) {
-		glGenBuffers(1, &buf_position_radius);
-		glBindBuffer(GL_ARRAY_BUFFER, buf_position_radius);
-		glBufferData(GL_ARRAY_BUFFER, MEGABYTES(4), 0, GL_STREAM_DRAW);
-		glBindBuffer(GL_ARRAY_BUFFER, 0);
-	}
-
-	if (!buf_color) {
-		glGenBuffers(1, &buf_color);
-		glBindBuffer(GL_ARRAY_BUFFER, buf_color);
-		glBufferData(GL_ARRAY_BUFFER, MEGABYTES(4), 0, GL_STREAM_DRAW);
-		glBindBuffer(GL_ARRAY_BUFFER, 0);
-	}
-
-	if (!tex_position_radius)
-		glGenTextures(1, &tex_position_radius);
-
-	if (!tex_color)
-		glGenTextures(1, &tex_color);
-
-	if (uniform_loc_tex_pos_rad == -1)
-		uniform_loc_tex_pos_rad = glGetUniformLocation(vdw::program, "u_tex_pos_rad");
-
-	if (uniform_loc_tex_color == -1)
-		uniform_loc_tex_color = glGetUniformLocation(vdw::program, "u_tex_color");
+	mat4 inv_proj_mat = math::inverse(proj_mat);
 
 	unsigned int draw_count = 0;
 
 	{
-		glBindBuffer(GL_ARRAY_BUFFER, buf_position_radius);
+		glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_position_radius);
 		vec4* gpu_pos_rad = (vec4*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-		glBindBuffer(GL_ARRAY_BUFFER, buf_color);
+		glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_color);
 		uint32*	gpu_color = (uint32*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
 
 		// @ TODO: DISCARD ANY ZERO RADII OR ZERO COLOR ALPHA ATOMS HERE
@@ -951,33 +952,35 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
 		}
 
 		glUnmapBuffer(GL_ARRAY_BUFFER);
-		glBindBuffer(GL_ARRAY_BUFFER, buf_position_radius);
+		glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_position_radius);
 		glUnmapBuffer(GL_ARRAY_BUFFER);
 	}
 
     glEnable(GL_DEPTH_TEST);
 
-    glBindVertexArray(empty_vao);
+    glBindVertexArray(vdw::vao);
     glUseProgram(vdw::program);
 
+	// Texture 0
 	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_BUFFER, tex_position_radius);
-	glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, buf_position_radius);
-	glUniform1i(uniform_loc_tex_pos_rad, 0);
+	glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_position_radius);
+	glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, vdw::buf_position_radius);
 
+	// Texture 1
 	glActiveTexture(GL_TEXTURE1);
-	glBindTexture(GL_TEXTURE_BUFFER, tex_color);
-	glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, buf_color);
-	glUniform1i(uniform_loc_tex_color, 1);
+	glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_color);
+	glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, vdw::buf_color);
 
+	// Uniforms
+	glUniform1i(vdw::uniform_loc_tex_pos_rad, 0);
+	glUniform1i(vdw::uniform_loc_tex_color, 1);
     glUniformMatrix4fv(vdw::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
     glUniformMatrix4fv(vdw::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
-	glUniform1f(vdw::uniform_loc_fov, compute_fovy(proj_mat));
-    //glUniform1f(vdw::uniform_loc_radius_scl, radii_scale);
-    //glDrawArrays(GL_POINTS, 0, (GLsizei)count);
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+	glUniformMatrix4fv(vdw::uniform_loc_inv_proj_mat, 1, GL_FALSE, &inv_proj_mat[0][0]);
+
+	// Draw call
 	glDrawElementsInstanced(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_BYTE, 0, draw_count);
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
     glUseProgram(0);
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
