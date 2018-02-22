@@ -945,7 +945,7 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
 		// @ TODO: DISCARD ANY ZERO RADII OR ZERO COLOR ALPHA ATOMS HERE
 		for (int64_t i = 0; i < count; i++) {
 			if (atom_radii[i] <= 0.f) continue;
-			if (atom_colors[i] & 0xff000000 == 0) continue;
+			if ((atom_colors[i] & 0xff000000) == 0) continue;
 			gpu_pos_rad[i] = vec4(atom_positions[i], atom_radii[i] * radii_scale);
 			gpu_color[i] = atom_colors[i];
 			draw_count++;

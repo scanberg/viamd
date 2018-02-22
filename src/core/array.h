@@ -1,7 +1,5 @@
 #pragma once
 
-#pragma optimize("", off)
-
 #include <core/types.h>
 #include <core/common.h>
 #include <core/allocator.h>
@@ -259,4 +257,3 @@ Array<T> allocate_array_and_zero(int64 count, Allocator& alloc = default_alloc) 
     return array;
 }
 
-#pragma optimize("", on)

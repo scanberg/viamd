@@ -95,14 +95,14 @@ int main(int, char**) {
     vec3 rgb(1,1,1);
 
     //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
-    //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
+    auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
 	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
-	auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
+	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
 
     //Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
-	//Trajectory traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
+	Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
 	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
-	Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
+	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
 	
     data.mol_struct = &gro_res.gro;
     data.trajectory = traj;
