@@ -4,10 +4,123 @@
 #include "array.h"
 #include "allocator.h"
 
+#ifdef _MSC_VER
+#pragma warning(disable:4996)
+#endif
+
+// A buffer string for wrapping a char buffer[N]
 template<int64 Size>
-struct StringBuffer : String {
-    StringBuffer() : String(buffer, Size) {};
-    char buffer[Size];
+struct StringBuffer {
+	static constexpr int64 MAX_LENGTH = Size;
+	STATIC_ASSERT(MAX_LENGTH > 1, "Size of StringBuffer must be more than 1");
+	char buffer[MAX_LENGTH] = {};
+	//int32 length = 0;
+
+	StringBuffer() = default;
+
+	template <int64 N>
+	StringBuffer(const char(&cstr)[N]) {
+		constepxr auto len = N < MAX_LENGTH ? N : MAX_LENGTH;
+		strncpy(buffer, cstr, len);
+		buffer[len - 1] = '\0';
+	}
+
+	StringBuffer(const char* cstr) {
+		int64 len = (int64)strnlen(cstr, MAX_LENGTH);
+		strncpy(buffer, cstr, len);
+		buffer[len - 1] = '\0';
+	}
+
+	StringBuffer(char c) {
+		buffer[0] = c;
+		buffer[1] = '\0';
+	}
+
+	StringBuffer(const StringBuffer& other) {
+		memcpy(buffer, other.buffer, MAX_LENGTH);
+		buffer[MAX_LENGTH - 1] = '\0';
+	}
+
+	template <int64 N>
+	StringBuffer(const StringBuffer<N>& other) {
+		constexpr len = N < MAX_LENGTH ? N : MAX_LENGTH;
+		memcpy(buffer, other.buffer, len);
+		buffer[len - 1] = '\0';
+	}
+
+	StringBuffer(StringBuffer&& other) {
+		memcpy(buffer, other.buffer, MAX_LENGTH);
+		buffer[MAX_LENGTH - 1] = '\0';
+	}
+
+	template <int64 N>
+	StringBuffer(StringBuffer<N>&& other) {
+		constexpr len = N < MAX_LENGTH ? N : MAX_LENGTH;
+		memcpy(buffer, other.buffer, len);
+		buffer[len - 1] = '\0';
+	}
+
+	StringBuffer(const CString& cstr) {
+		// @NOTE: MAX_LENGTH - 1 here because we copy from cstring which excludes \0
+		auto len = cstr.count < MAX_LENGTH - 1 ? cstr.count : MAX_LENGTH - 1;
+		strncpy(buffer, cstr.data, len);
+		buffer[len] = '\0';
+	}
+
+	StringBuffer& operator =(const StringBuffer& other) {
+		if (this != &other) {
+			memcpy(buffer, other.buffer, MAX_LENGTH);
+			buffer[MAX_LENGTH - 1] = '\0';
+		}
+		return *this;
+	}
+
+	template <int64 N>
+	StringBuffer& operator =(const StringBuffer<N>& other) {
+		if (this != &other) {
+			auto len = cstr.count < MAX_LENGTH ? cstr.count : MAX_LENGTH;
+			memcpy(buffer, other.buffer, len);
+			buffer[len - 1] = '\0';
+		}
+		return *this;
+	}
+
+	StringBuffer& operator =(const CString& cstr) {
+		auto len = cstr.count < MAX_LENGTH ? cstr.count : MAX_LENGTH;
+		strncpy(buffer, cstr.data, len);
+		buffer[len - 1] = '\0';
+		return *this;
+	}
+
+	StringBuffer& operator =(char c) {
+		buffer[0] = c;
+		buffer[1] = '\0';
+		return *this;
+	}
+
+	template<int64 N>
+	StringBuffer& operator =(const char(&cstr)[N]) {
+		if (buffer != cstr) {
+			constexpr len = N < MAX_LENGTH ? N : MAX_LENGTH;
+			strncpy(buffer, cstr, len);
+			buffer[len - 1] = '\0';
+		}
+		return *this;
+	}
+
+	operator String() { return String(buffer, length); }
+	operator CString() const { return CString(buffer, length); }
+	operator const char*() const { return buffer; }
+
+	const int64 size() { return length; }
+
+	const char* begin() const { return buffer; }
+	const char* beg() const { return buffer; }
+	const char* end() const { return buffer + length; }
+
+	char* begin() { return buffer; }
+	char* beg() { return buffer; }
+	char* end() { return buffer + length; }
 };
 
 // Comparison of Strings

@@ -2,6 +2,7 @@
 
 #include <core/types.h>
 #include <core/array.h>
+#include <core/string_utils.h>
 #include <mol/element.h>
 #include <string.h>
 
@@ -14,91 +15,7 @@ struct Bond {
 	int32 idx_b;
 };
 
-struct Label {
-	static constexpr int MAX_LENGTH = 8;
-	Label() = default;
-
-	template<int32 N>
-	Label(const char (&cstr)[N]) {
-		int32 len = N < MAX_LENGTH ? N : MAX_LENGTH - 1;
-		strncpy(data, cstr, len);
-		length = len;
-		data[length] = '\0';
-	}
-
-	Label(const char* cstr) {
-		// TODO: IS THIS ENOUGH?
-		int32 len = (int)strnlen(cstr, MAX_LENGTH - 1);
-		strncpy(data, cstr, len);
-		length = len;
-		data[length] = '\0';
-	}
-
-	Label(char c) {
-		data[0] = c;
-		length = 1;
-		data[length] = '\0';
-	}
-
-	Label(const Label& other) {
-		ASSERT(other.length < MAX_LENGTH);
-		memcpy(data, other.data, MAX_LENGTH);
-		length = other.length;
-		data[length] = '\0';
-	}
-
-	Label(const CString& cstr) {
-		int32 len = cstr.count < MAX_LENGTH ? (int)cstr.count : MAX_LENGTH - 1;
-		strncpy(data, cstr.data, len);
-		length = len;
-		data[length] = '\0';
-	}
-
-	Label& operator =(const Label& other) {
-		if (this != &other) {
-			ASSERT(other.length < MAX_LENGTH);
-			memcpy(data, other.data, MAX_LENGTH);
-			length = other.length;
-		}
-		return *this;
-	}
-
-	Label& operator =(const CString& cstr) {
-		int32 len = cstr.count < MAX_LENGTH ? (int)cstr.count : MAX_LENGTH - 1;
-		strncpy(data, cstr.data, len);
-		length = len;
-		data[length] = '\0';
-		return *this;
-	}
-
-	Label& operator =(char c) {
-		data[0] = c;
-		length = 1;
-		data[length] = '\0';
-		return *this;
-	}
-
-	template<int32 N>
-	Label& operator =(const char (&cstr)[N]) {
-		if (data != cstr) {
-			int32 len = N < MAX_LENGTH ? N : MAX_LENGTH - 1;
-			strncpy(data, cstr.data, len);
-			length = len;
-			data[length] = '\0';
-		}
-		return *this;
-	}
-
-	operator String() { return String(data, length); }
-	operator CString() const { return CString(data, length); }
-	operator const char*() const { return data; }
-	char* begin() { return data; }
-	char* beg() { return data; }
-	char* end() { return data + length; }
-
-	char data[MAX_LENGTH] = {};
-	int32 length = 0;
-};
+using Label = StringBuffer<8>;
 
 struct Residue {
 	Label id;
@@ -113,11 +30,12 @@ struct Chain {
 	int32 end_res_idx;
 };
 
-struct Backbone {
-	Array<int32> atom_ca_idx;
-	// Use C -> O vector as orientation vector for ribbons
-	Array<int32> atom_o_idx;
-	Array<int32> atom_c_idx;
+struct BackboneSegment {
+	int32 ca_idx;
+	int32 ha_idx;
+	int32 cb_idx;
+	int32 c_idx;
+	int32 o_idx;
 };
 
 // Interface to access molecular data

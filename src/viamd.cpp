@@ -5,6 +5,7 @@
 #include <core/math_utils.h>
 #include <core/camera.h>
 #include <core/camera_utils.h>
+#include <core/string_utils.h>
 #include <mol/molecule.h>
 #include <mol/trajectory.h>
 #include <mol/trajectory_utils.h>
@@ -16,15 +17,6 @@
 
 #include <stdio.h>
 
-struct MainFramebuffer {
-	GLuint id = 0;
-	GLuint tex_depth = 0;
-	GLuint tex_color = 0;
-	GLuint tex_picking = 0;
-	int width = 0;
-	int height = 0;
-};
-
 #ifdef _WIN32
 constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
 #elif __APPLE__
@@ -33,6 +25,15 @@ constexpr Key::Key_t CONSOLE_KEY = Key::KEY_WORLD_1;
 // @TODO: Make sure this is right?
 constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
 #endif
+
+struct MainFramebuffer {
+	GLuint id = 0;
+	GLuint tex_depth = 0;
+	GLuint tex_color = 0;
+	GLuint tex_picking = 0;
+	int width = 0;
+	int height = 0;
+};
 
 constexpr unsigned int NO_PICKING_IDX = 0xffffffff;
 
@@ -92,20 +93,28 @@ int main(int, char**) {
 
 	float radii_scale = 1.0f;
 
+	StringBuffer<256> buff("Hej alla idioter");
+
     vec3 rgb(1,1,1);
 
     //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
-    auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
+    //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
 	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
 	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
+	auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/water/water.gro");
 
     //Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
-	Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
+	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
 	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
 	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
 	
     data.mol_struct = &gro_res.gro;
-    data.trajectory = traj;
+    data.trajectory = nullptr;
+
+	DynamicArray<BackboneSegment> backbone;
+
+	if (data.mol_struct->chains.count > 0)
+		backbone = compute_backbone(data.mol_struct->chains[0], data.mol_struct->residues, data.mol_struct->atom_labels);
 
     if (data.trajectory && data.trajectory->num_frames > 0)
         copy_trajectory_positions(data.mol_struct->atom_positions, *data.trajectory, 0);
@@ -294,6 +303,8 @@ int main(int, char**) {
         // Apply tone mapping
         postprocessing::apply_tonemapping(data.fbo.tex_color);
 
+		draw::draw_backbone(backbone, data.mol_struct->atom_positions, view_mat, proj_mat);
+
 		if (data.use_ssao) {
 			postprocessing::apply_ssao(data.fbo.tex_depth, proj_mat, data.ssao_intensity, data.ssao_radius);
 		}
@@ -311,7 +322,7 @@ int main(int, char**) {
 }
 
 void draw_random_triangles(const mat4& mvp) {
-    immediate::set_model_view_matrix(mvp);
+    immediate::set_view_matrix(mvp);
     immediate::set_proj_matrix(mat4(1));
 	math::set_rnd_seed(0);
 	for (int i = 0; i < 500; i++) {
@@ -720,7 +731,7 @@ static void draw_console(ApplicationData* data, int width, int height, float dt)
 static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y) {
     
     // @TODO: Assert things and make this failproof
-	if (atom_idx >= mol.atom_positions.count) return;
+	if (atom_idx < 0 || atom_idx >= mol.atom_positions.count) return;
 
     int res_idx = mol.atom_residue_indices[atom_idx];
     const Residue& res = mol.residues[res_idx];

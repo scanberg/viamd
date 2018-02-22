@@ -22,7 +22,7 @@ struct DrawCommand {
     GLuint texture = 0;
     int view_matrix_idx = -1;
     int proj_matrix_idx = -1;
-    int _pad0 = 0;
+    int _pad0;
 };
 
 static DynamicArray<mat4> matrix_stack;
@@ -44,8 +44,8 @@ static GLint attrib_loc_tc = -1;
 static GLint attrib_loc_col = -1;
 static GLint uniform_loc_mvp = -1;
 
-static int curr_model_view_matrix_idx = -1;
-static int curr_proj_matrix = -1;
+static int curr_view_matrix_idx = -1;
+static int curr_proj_matrix_idx = -1;
 
 static const char* v_shader_src = R"(
 #version 150 core
@@ -79,12 +79,13 @@ void main() {
 )";
 
 static inline void append_draw_command(Index offset, Index count, GLenum primitive_type) {
-    if (commands.count > 0) {
-        if (commands.back().primitive_type == primitive_type) {
-            commands.back().count += count;
-        }
+    if (commands.count > 0 && commands.back().primitive_type == primitive_type) {
+		commands.back().count += count;
     } else {
-        DrawCommand cmd{offset, count, primitive_type, program, 0, curr_model_view_matrix_idx, curr_proj_matrix};
+		ASSERT(curr_view_matrix_idx > -1, "Immediate Mode View Matrix not set!");
+		ASSERT(curr_proj_matrix_idx > -1, "Immediate Mode Proj Matrix not set!");
+
+        DrawCommand cmd{offset, count, primitive_type, program, 0, curr_view_matrix_idx, curr_proj_matrix_idx};
         commands.push_back(cmd);
     }
 }
@@ -159,13 +160,13 @@ void shutdown() {
     if (program) glDeleteProgram(program);
 }
 
-void set_model_view_matrix(const mat4& model_view_matrix) {
-    curr_model_view_matrix_idx = (int)matrix_stack.count;
+void set_view_matrix(const mat4& model_view_matrix) {
+    curr_view_matrix_idx = (int)matrix_stack.count;
     matrix_stack.push_back(model_view_matrix);
 }
 
 void set_proj_matrix(const mat4& proj_matrix) {
-    curr_proj_matrix = (int)matrix_stack.count;
+    curr_proj_matrix_idx = (int)matrix_stack.count;
     matrix_stack.push_back(proj_matrix);
 }
 
@@ -179,13 +180,15 @@ void flush() {
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.count * sizeof(Index), indices.data, GL_STREAM_DRAW);
 
     glUseProgram(program);
-
-    mat4 mvp_matrix = mat4(1);
-    glUniformMatrix4fv(uniform_loc_mvp, 1, GL_FALSE, &mvp_matrix[0][0]);
+	glPointSize(25.f);
+	glLineWidth(2.f);
 
     for (const auto& cmd : commands) {
+		mat4 mvp_matrix = matrix_stack[cmd.proj_matrix_idx] * matrix_stack[cmd.view_matrix_idx];
+		glUniformMatrix4fv(uniform_loc_mvp, 1, GL_FALSE, &mvp_matrix[0][0]);
+
         glDrawElements(cmd.primitive_type, cmd.count, sizeof(Index) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT,
-                       reinterpret_cast<const void*>(cmd.offset));
+                       reinterpret_cast<const void*>(cmd.offset * sizeof(Index)));
     }
 
     glBindVertexArray(0);
@@ -197,6 +200,8 @@ void flush() {
     indices.clear();
     commands.clear();
     matrix_stack.clear();
+	curr_view_matrix_idx = -1;
+	curr_proj_matrix_idx = -1;
 }
 
 // PRIMITIVES

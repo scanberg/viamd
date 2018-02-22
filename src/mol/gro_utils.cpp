@@ -68,10 +68,12 @@ GroResult parse_gro_from_string(CString gro_string, Allocator* alloc) {
 			}
 			residues.back().end_atom_idx++;
 
-            auto elem = element::get_from_string(trim(CString(atom_name)));
+			CString atom_name_trim = trim(CString(atom_name));
+
+            auto elem = element::get_from_string(atom_name_trim);
 			positions.push_back(pos);
 			velocities.push_back(vel);
-			labels.push_back(trim(CString(atom_name)));
+			labels.push_back(atom_name_trim);
 			elements.push_back(elem);
 			residue_indices.push_back(res_count);
 
@@ -99,7 +101,7 @@ GroResult parse_gro_from_string(CString gro_string, Allocator* alloc) {
 	}
     box *= 10.f;
 
-	DynamicArray<Bond> bonds = compute_atomic_bonds(positions, elements, residues);
+	DynamicArray<Bond> bonds = compute_covalent_bonds(positions, elements, residues);
 	DynamicArray<Chain> chains = compute_chains(residues, bonds, residue_indices);
 
    	for (int c = 0; c < chains.count; c++) {

@@ -96,12 +96,6 @@ void setup_program(GLuint* program, const char* name, const char* f_shader_src, 
 
 static bool is_orthographic_proj_matrix(const mat4& proj_mat) { return math::length2(vec2(proj_mat[3])) > 0.f; }
 
-static float compute_fovy(const mat4& proj_mat) {
-    // x is 1.f / tan(fovy * 0.5f);
-    float x = proj_mat[1][1];
-    return math::atan(1.f / x) * 2.f;
-}
-
 namespace ssao {
 #ifndef AO_RANDOM_TEX_SIZE
 #define AO_RANDOM_TEX_SIZE 4

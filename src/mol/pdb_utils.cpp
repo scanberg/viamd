@@ -84,7 +84,7 @@ PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params, Alloca
 				Residue residue;
 				residue.beg_atom_idx = num_atoms;
 				residue.end_atom_idx = residue.beg_atom_idx;
-				copy(String(residue.id.data, Label::MAX_LENGTH-1), trim(line.substr(17, 3)));
+				copy(String(residue.id.beg(), Label::MAX_LENGTH-1), trim(line.substr(17, 3)));
 				residues.push_back(residue);
 
 				// TODO: Match against Amino Acid?
@@ -96,7 +96,7 @@ PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params, Alloca
 		}
 	}
 
-	bonds = compute_atomic_bonds(positions, elements, residues);
+	bonds = compute_covalent_bonds(positions, elements, residues);
 
 	PdbStructure pdb;
 	MoleculeStructure& mol = pdb;

@@ -1,9 +1,11 @@
 #include "molecule_utils.h"
 #include <gfx/gl_utils.h>
+#include <gfx/immediate_draw_utils.h>
+#include <core/hash.h>
 #include <core/common.h>
 #include <core/math_utils.h>
-#include <core/hash.h>
 #include <imgui.h>
+#include <ctype.h>
 
 void transform_positions(Array<vec3> positions, const mat4& transformation) {
     for (auto& p : positions) {
@@ -61,7 +63,7 @@ void linear_interpolation(Array<vec3> positions, const Array<vec3> prev_pos, con
 	}
 }
 
-DynamicArray<Bond> compute_atomic_bonds(const Array<vec3> atom_pos, const Array<Element> atom_elem, const Array<Residue> residues, Allocator* alloc) {
+DynamicArray<Bond> compute_covalent_bonds(const Array<vec3> atom_pos, const Array<Element> atom_elem, const Array<Residue> residues) {
     ASSERT(atom_pos.count == atom_elem.count);
 
     DynamicArray<Bond> bonds;
@@ -134,14 +136,9 @@ static bool residues_are_connected(Residue res_a, Residue res_b, const Array<Bon
 }
 */
 
-// DynamicArray<Bond> compute_residue_bonds(const Array<Residue> residues, const Array<Bond> bonds, Allocator* alloc) {
-//	return {};
-//}
-
 // @NOTE this method is sub-optimal and can surely be improved...
 // Residues should have no more than 2 potential connections to other residues.
-DynamicArray<Chain> compute_chains(const Array<Residue> residues, const Array<Bond> bonds, const Array<int32> atom_residue_indices,
-                                   Allocator* alloc) {
+DynamicArray<Chain> compute_chains(const Array<Residue> residues, const Array<Bond> bonds, const Array<int32> atom_residue_indices) {
     DynamicArray<Bond> residue_bonds;
 
     if (atom_residue_indices) {
@@ -175,7 +172,7 @@ DynamicArray<Chain> compute_chains(const Array<Residue> residues, const Array<Bo
         if (residue_chains[i] != curr_chain_idx) {
             curr_chain_idx = residue_chains[i];
             Label lbl;
-            lbl.length = snprintf(lbl.data, Label::MAX_LENGTH, "C%i", curr_chain_idx);
+            snprintf(lbl.beg(), Label::MAX_LENGTH, "C%i", curr_chain_idx);
             chains.push_back({lbl, i, i});
         }
         chains.back().end_res_idx++;
@@ -184,17 +181,69 @@ DynamicArray<Chain> compute_chains(const Array<Residue> residues, const Array<Bo
     return chains;
 }
 
-/*
-DynamicArray<Backbone> compute_backbones(const Array<Residue> residues, const Array<Bond> bonds, Allocator& alloc) {
+DynamicArray<BackboneSegment> compute_backbone(const Chain& chain, const Array<Residue> residues, const Array<Label> atom_labels) {
+	auto is_ca = [](const Label& lbl) -> bool {
+		return tolower(lbl[0]) == 'c' && tolower(lbl[1]) == 'a' && lbl[3] == '\0';
+	};
 
+	auto is_ha = [](const Label& lbl) -> bool {
+		return tolower(lbl[0]) == 'h' && tolower(lbl[1]) == 'a' && lbl[3] == '\0';
+	};
+
+	auto is_cb = [](const Label& lbl) -> bool {
+		return tolower(lbl[0]) == 'c' && tolower(lbl[1]) == 'b' && lbl[3] == '\0';
+	};
+
+	auto is_c = [](const Label& lbl) -> bool {
+		return tolower(lbl[0]) == 'c' && lbl[1] == '\0';
+	};
+
+	auto is_o = [](const Label& lbl) -> bool {
+		return tolower(lbl[0]) == 'o' && lbl[1] == '\0';
+	};
+
+	DynamicArray<BackboneSegment> backbones;
+	for (int32 res_idx = chain.beg_res_idx; res_idx < chain.end_res_idx; res_idx++) {
+		const auto& residue = residues[res_idx];
+		// find atoms
+		auto ca_idx = -1;
+		auto ha_idx = -1;
+		auto cb_idx = -1;
+		auto c_idx = -1;
+		auto o_idx = -1;
+		for (int32 i = residue.beg_atom_idx; i < residue.end_atom_idx; i++) {
+			const auto& lbl = atom_labels[i];
+			if (ca_idx == -1 && is_ca(lbl)) ca_idx = i;
+			if (ha_idx == -1 && is_ha(lbl)) ha_idx = i;
+			if (cb_idx == -1 && is_cb(lbl)) cb_idx = i;
+			if (c_idx == -1 && is_c(lbl)) c_idx = i;
+			if (o_idx == -1 && is_o(lbl)) o_idx = i;
+		}
+		/*
+		if (ca_idx == -1) {
+			printf("No CA label found for residue[%i]: %s.", res_idx, residues[res_idx].id);
+		}
+		if (ha_idx == -1) {
+			printf("No HA label found for residue[%i]: %s.", res_idx, residues[res_idx].id);
+		}
+		if (cb_idx == -1) {
+			printf("No CB label found for residue[%i]: %s.", res_idx, residues[res_idx].id);
+		}
+		if (c_idx == -1) {
+			printf("No C label found for residue[%i]: %s.", res_idx, residues[res_idx].id);
+		}
+		if (o_idx == -1) {
+			printf("No O label found for residue[%i]: %s.", res_idx, residues[res_idx].id);
+		}
+		*/
+
+		backbones.push_back({ca_idx, ha_idx, cb_idx, c_idx, o_idx});
+	}
+
+	return backbones;
 }
 
-void compute_backbones(Array<Backbone> backbone_dst, const Array<Residue> residues, const Array<Bond> bonds) {
-
-}
-*/
-
-DynamicArray<float> compute_atom_radii(const Array<Element> elements, Allocator* alloc) {
+DynamicArray<float> compute_atom_radii(const Array<Element> elements, Allocator*) {
     DynamicArray<float> radii(elements.count, 0);
     compute_atom_radii(radii, elements);
     return radii;
@@ -207,7 +256,7 @@ void compute_atom_radii(Array<float> radii_dst, const Array<Element> elements) {
     }
 }
 
-DynamicArray<uint32> compute_atom_colors(const MoleculeStructure& mol, ColorMapping mapping, Allocator* alloc) {
+DynamicArray<uint32> compute_atom_colors(const MoleculeStructure& mol, ColorMapping mapping, Allocator*) {
     DynamicArray<uint32> colors(mol.atom_elements.count, 0xFFFFFFFF);
     compute_atom_colors(colors, mol, mapping);
     return colors;
@@ -234,11 +283,10 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
                     float hue = (h % 32) / 32.f;
                     vec3 c = math::hcl_to_rgb(vec3(hue, 0.8f, 0.8f));
                     unsigned char color[4];
-                    color[0] = (uint8)(c.x * 255);
-                    color[1] = (uint8)(c.y * 255);
-                    color[2] = (uint8)(c.z * 255);
-                    color[3] = 255;
-
+                    color[0] = (unsigned char)(c.x * 255);
+                    color[1] = (unsigned char)(c.y * 255);
+                    color[2] = (unsigned char)(c.z * 255);
+                    color[3] = (unsigned char)255;
                     color_dst[i] = *(uint32*)(color);
                 }
             }
@@ -250,10 +298,10 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
                     float hue = (h % 15) / 15.f;
                     vec3 c = math::hcl_to_rgb(vec3(hue, 0.8f, 0.8f));
                     unsigned char color[4];
-                    color[0] = c.x * 255;
-                    color[1] = c.y * 255;
-                    color[2] = c.z * 255;
-                    color[3] = 255;
+                    color[0] = (unsigned char)(c.x * 255);
+                    color[1] = (unsigned char)(c.y * 255);
+                    color[2] = (unsigned char)(c.z * 255);
+                    color[3] = (unsigned char)(255);
                     color_dst[i] = *(uint32*)(color);
                 }
             }
@@ -267,10 +315,10 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
                         float hue = (h % 32) / 32.f;
                         vec3 c = math::hcl_to_rgb(vec3(hue, 0.8f, 0.8f));
                         unsigned char color[4];
-                        color[0] = c.x * 255;
-                        color[1] = c.y * 255;
-                        color[2] = c.z * 255;
-                        color[3] = 255;
+                        color[0] = (unsigned char)(c.x * 255);
+                        color[1] = (unsigned char)(c.y * 255);
+                        color[2] = (unsigned char)(c.z * 255);
+                        color[3] = (unsigned char)(255);
                         color_dst[i] = *(uint32*)(color);
                     }
                 }
@@ -281,12 +329,6 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
 }
 
 namespace draw {
-
-static float compute_fovy(const mat4& proj_mat) {
-	// x is 1.f / tan(fovy * 0.5f);
-	float x = proj_mat[1][1];
-	return math::atan(1.f / x) * 2.f;
-}
 
 static constexpr int VERTEX_BUFFER_SIZE = MEGABYTES(4);
 static GLuint empty_vao = 0;
@@ -521,14 +563,14 @@ static void initialize() {
 	if (!buf_position_radius) {
 		glGenBuffers(1, &buf_position_radius);
 		glBindBuffer(GL_ARRAY_BUFFER, buf_position_radius);
-		glBufferData(GL_ARRAY_BUFFER, MEGABYTES(4), 0, GL_STREAM_DRAW);
+		glBufferData(GL_ARRAY_BUFFER, MEGABYTES(20), 0, GL_STREAM_DRAW);
 		glBindBuffer(GL_ARRAY_BUFFER, 0);
 	}
 
 	if (!buf_color) {
 		glGenBuffers(1, &buf_color);
 		glBindBuffer(GL_ARRAY_BUFFER, buf_color);
-		glBufferData(GL_ARRAY_BUFFER, MEGABYTES(4), 0, GL_STREAM_DRAW);
+		glBufferData(GL_ARRAY_BUFFER, MEGABYTES(5), 0, GL_STREAM_DRAW);
 		glBindBuffer(GL_ARRAY_BUFFER, 0);
 	}
 
@@ -935,8 +977,9 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
 	mat4 inv_proj_mat = math::inverse(proj_mat);
 
 	unsigned int draw_count = 0;
+	static bool initialized = false;
 
-	{
+	//if (!initialized) {
 		glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_position_radius);
 		vec4* gpu_pos_rad = (vec4*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
 		glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_color);
@@ -954,7 +997,10 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
 		glUnmapBuffer(GL_ARRAY_BUFFER);
 		glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_position_radius);
 		glUnmapBuffer(GL_ARRAY_BUFFER);
-	}
+		glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+		initialized = true;
+	//}
 
     glEnable(GL_DEPTH_TEST);
 
@@ -1023,5 +1069,27 @@ void draw_licorice(const Array<vec3> atom_positions, const Array<Bond> atom_bond
 
 	glDisable(GL_DEPTH_TEST);
 }
+
+void draw_backbone(const Array<BackboneSegment> backbone, const Array<vec3> atom_positions, const mat4& view_mat, const mat4& proj_mat) {
+	immediate::set_view_matrix(view_mat);
+	immediate::set_proj_matrix(proj_mat);
+
+	for (const auto& seg : backbone) {
+		if (seg.ca_idx > -1)
+			immediate::draw_point(atom_positions[seg.ca_idx], immediate::COLOR_BLACK);
+		if (seg.c_idx > -1)
+			immediate::draw_point(atom_positions[seg.c_idx], immediate::COLOR_GREEN);
+		if (seg.o_idx > -1)
+			immediate::draw_point(atom_positions[seg.o_idx], immediate::COLOR_RED);
+	}
+
+	for (int i = 1; i < backbone.count; i++) {
+		if (backbone[i].ca_idx > -1 && backbone[i-1].ca_idx > -1)
+			immediate::draw_line(atom_positions[backbone[i-1].ca_idx], atom_positions[backbone[i].ca_idx], immediate::COLOR_WHITE);
+	}
+
+	immediate::flush();
+}
+
 
 }  // namespace draw
