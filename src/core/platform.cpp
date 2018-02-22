@@ -383,7 +383,6 @@ bool imgui_init(GLFWwindow* window, bool install_callbacks) {
 static void imgui_shutdown()
 {
     imgui_invalidate_device_objects();
-    ImGui::Shutdown();
 }
 
 static void imgui_new_frame()
@@ -471,6 +470,7 @@ Window* create_window(int width, int height, const char* window_title) {
 		);
 	}
 
+	ImGui::CreateContext();
     imgui_init(window, true);
 
 	double x, y;
@@ -498,6 +498,7 @@ void set_window_should_close(Window* window, bool value) {
 
 void shutdown() {
     imgui_shutdown();
+	ImGui::DestroyContext();
     glfwTerminate();
 }
 
