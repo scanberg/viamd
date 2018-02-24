@@ -34,6 +34,7 @@ struct BackboneSegment {
 	int32 ca_idx;
 	int32 ha_idx;
 	int32 cb_idx;
+	int32 n_idx;
 	int32 c_idx;
 	int32 o_idx;
 };

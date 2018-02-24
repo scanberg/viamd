@@ -20,7 +20,7 @@ struct StringBuffer {
 
 	template <int64 N>
 	StringBuffer(const char(&cstr)[N]) {
-		constepxr auto len = N < MAX_LENGTH ? N : MAX_LENGTH;
+		constexpr auto len = N < MAX_LENGTH ? N : MAX_LENGTH;
 		strncpy(buffer, cstr, len);
 		buffer[len - 1] = '\0';
 	}
@@ -43,7 +43,7 @@ struct StringBuffer {
 
 	template <int64 N>
 	StringBuffer(const StringBuffer<N>& other) {
-		constexpr len = N < MAX_LENGTH ? N : MAX_LENGTH;
+		constexpr auto len = N < MAX_LENGTH ? N : MAX_LENGTH;
 		memcpy(buffer, other.buffer, len);
 		buffer[len - 1] = '\0';
 	}
@@ -55,7 +55,7 @@ struct StringBuffer {
 
 	template <int64 N>
 	StringBuffer(StringBuffer<N>&& other) {
-		constexpr len = N < MAX_LENGTH ? N : MAX_LENGTH;
+		constexpr auto len = N < MAX_LENGTH ? N : MAX_LENGTH;
 		memcpy(buffer, other.buffer, len);
 		buffer[len - 1] = '\0';
 	}
@@ -78,7 +78,7 @@ struct StringBuffer {
 	template <int64 N>
 	StringBuffer& operator =(const StringBuffer<N>& other) {
 		if (this != &other) {
-			auto len = cstr.count < MAX_LENGTH ? cstr.count : MAX_LENGTH;
+			auto len = other.count < MAX_LENGTH ? other.count : MAX_LENGTH;
 			memcpy(buffer, other.buffer, len);
 			buffer[len - 1] = '\0';
 		}
@@ -101,26 +101,42 @@ struct StringBuffer {
 	template<int64 N>
 	StringBuffer& operator =(const char(&cstr)[N]) {
 		if (buffer != cstr) {
-			constexpr len = N < MAX_LENGTH ? N : MAX_LENGTH;
+			constexpr auto len = N < MAX_LENGTH ? N : MAX_LENGTH;
 			strncpy(buffer, cstr, len);
 			buffer[len - 1] = '\0';
 		}
 		return *this;
 	}
 
-	operator String() { return String(buffer, length); }
-	operator CString() const { return CString(buffer, length); }
+    StringBuffer& operator =(const char* cstr) {
+        int64 len = (int64)strnlen(cstr, MAX_LENGTH);
+        strncpy(buffer, cstr, len);
+        buffer[len - 1] = '\0';
+    }
+
+    char operator[](int64 i) const {
+        ASSERT(i < MAX_LENGTH);
+        return buffer[i];
+    }
+
+    char& operator[](int64 i) {
+        ASSERT(i < MAX_LENGTH);
+        return buffer[i];
+    }
+
+	operator String() { return String(buffer, MAX_LENGTH); }
+	operator CString() const { return CString(buffer, MAX_LENGTH); }
 	operator const char*() const { return buffer; }
 
-	const int64 size() { return length; }
+	int64 size() const { return MAX_LENGTH; }
 
 	const char* begin() const { return buffer; }
 	const char* beg() const { return buffer; }
-	const char* end() const { return buffer + length; }
+	const char* end() const { return buffer + MAX_LENGTH; }
 
 	char* begin() { return buffer; }
 	char* beg() { return buffer; }
-	char* end() { return buffer + length; }
+	char* end() { return buffer + MAX_LENGTH; }
 };
 
 // Comparison of Strings

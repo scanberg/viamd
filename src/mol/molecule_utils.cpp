@@ -181,27 +181,16 @@ DynamicArray<Chain> compute_chains(const Array<Residue> residues, const Array<Bo
     return chains;
 }
 
+template <int64 N>
+bool match(const Label& lbl, const char (&cstr)[N]) {
+    printf("Size is %i, lbl = '%s' cstr = '%s'\n", N, lbl.beg(), cstr);
+    for (int64 i = 0; i < N; i++) {
+        if (tolower(lbl[i]) != tolower(cstr[i])) return false;
+    }
+    return true;
+}
+
 DynamicArray<BackboneSegment> compute_backbone(const Chain& chain, const Array<Residue> residues, const Array<Label> atom_labels) {
-	auto is_ca = [](const Label& lbl) -> bool {
-		return tolower(lbl[0]) == 'c' && tolower(lbl[1]) == 'a' && lbl[3] == '\0';
-	};
-
-	auto is_ha = [](const Label& lbl) -> bool {
-		return tolower(lbl[0]) == 'h' && tolower(lbl[1]) == 'a' && lbl[3] == '\0';
-	};
-
-	auto is_cb = [](const Label& lbl) -> bool {
-		return tolower(lbl[0]) == 'c' && tolower(lbl[1]) == 'b' && lbl[3] == '\0';
-	};
-
-	auto is_c = [](const Label& lbl) -> bool {
-		return tolower(lbl[0]) == 'c' && lbl[1] == '\0';
-	};
-
-	auto is_o = [](const Label& lbl) -> bool {
-		return tolower(lbl[0]) == 'o' && lbl[1] == '\0';
-	};
-
 	DynamicArray<BackboneSegment> backbones;
 	for (int32 res_idx = chain.beg_res_idx; res_idx < chain.end_res_idx; res_idx++) {
 		const auto& residue = residues[res_idx];
@@ -213,11 +202,11 @@ DynamicArray<BackboneSegment> compute_backbone(const Chain& chain, const Array<R
 		auto o_idx = -1;
 		for (int32 i = residue.beg_atom_idx; i < residue.end_atom_idx; i++) {
 			const auto& lbl = atom_labels[i];
-			if (ca_idx == -1 && is_ca(lbl)) ca_idx = i;
-			if (ha_idx == -1 && is_ha(lbl)) ha_idx = i;
-			if (cb_idx == -1 && is_cb(lbl)) cb_idx = i;
-			if (c_idx == -1 && is_c(lbl)) c_idx = i;
-			if (o_idx == -1 && is_o(lbl)) o_idx = i;
+			if (ca_idx == -1 && match(lbl, "CA")) ca_idx = i;
+			if (ha_idx == -1 && match(lbl, "HA")) ha_idx = i;
+			if (cb_idx == -1 && match(lbl, "CB")) cb_idx = i;
+			if (c_idx == -1 && match(lbl, "C")) c_idx = i;
+			if (o_idx == -1 && match(lbl, "O")) o_idx = i;
 		}
 		/*
 		if (ca_idx == -1) {
@@ -243,7 +232,7 @@ DynamicArray<BackboneSegment> compute_backbone(const Chain& chain, const Array<R
 	return backbones;
 }
 
-DynamicArray<float> compute_atom_radii(const Array<Element> elements, Allocator*) {
+DynamicArray<float> compute_atom_radii(const Array<Element> elements) {
     DynamicArray<float> radii(elements.count, 0);
     compute_atom_radii(radii, elements);
     return radii;
@@ -256,7 +245,7 @@ void compute_atom_radii(Array<float> radii_dst, const Array<Element> elements) {
     }
 }
 
-DynamicArray<uint32> compute_atom_colors(const MoleculeStructure& mol, ColorMapping mapping, Allocator*) {
+DynamicArray<uint32> compute_atom_colors(const MoleculeStructure& mol, ColorMapping mapping) {
     DynamicArray<uint32> colors(mol.atom_elements.count, 0xFFFFFFFF);
     compute_atom_colors(colors, mol, mapping);
     return colors;

@@ -22,7 +22,7 @@ constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
 #elif __APPLE__
 constexpr Key::Key_t CONSOLE_KEY = Key::KEY_WORLD_1;
 #else
-// @TODO: Make sure this is right?
+// @TODO: Make sure this is right for Linux?
 constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
 #endif
 
@@ -55,9 +55,9 @@ struct ApplicationData {
 
     // --- MOL DATA ---
     MoleculeStructure* mol_struct;
+    Trajectory* trajectory;
     DynamicArray<float> atom_radii;
     DynamicArray<uint32> atom_colors;
-    Trajectory* trajectory;
 
 	// Framebuffer
 	MainFramebuffer fbo;
@@ -101,24 +101,25 @@ int main(int, char**) {
     //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
 	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
 	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
-	auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/water/water.gro");
+	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/water/water.gro");
+    auto pdb_res = load_pdb_from_file(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
 
     //Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
 	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
 	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
 	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
 	
-    data.mol_struct = &gro_res.gro;
+    data.mol_struct = &pdb_res.pdb;
     data.trajectory = nullptr;
 
 	DynamicArray<BackboneSegment> backbone;
 
-	if (data.mol_struct->chains.count > 0)
-		backbone = compute_backbone(data.mol_struct->chains[0], data.mol_struct->residues, data.mol_struct->atom_labels);
-
     if (data.trajectory && data.trajectory->num_frames > 0)
         copy_trajectory_positions(data.mol_struct->atom_positions, *data.trajectory, 0);
     reset_view(&data);
+
+	if (data.mol_struct->chains.count > 0)
+		backbone = compute_backbone(data.mol_struct->chains[0], data.mol_struct->residues, data.mol_struct->atom_labels);
 
     platform::initialize();
     data.main_window = platform::create_window(display_w, display_h, "VIAMD");

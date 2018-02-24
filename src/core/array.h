@@ -190,16 +190,16 @@ struct CString : Array<const char> {
 		count = 0;
 	}
 
+    template <int64 length>
+    CString(const char(&cstr)[length]) {
+        data = cstr;
+        count = length;
+    }
+
 	CString(const char* cstr, int64 length = -1) {
 		data = cstr;
 		if (length == -1)
 			length = strlen(cstr);
-		count = length;
-	}
-
-	template <int64 length>
-	CString(const char(&cstr)[length]) {
-		data = cstr;
 		count = length;
 	}
 
