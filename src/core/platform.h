@@ -1,6 +1,6 @@
 #include <core/keys.h>
 #include <core/types.h>
-#include <core/array.h>
+#include <core/string_utils.h>
 
 namespace platform {
 

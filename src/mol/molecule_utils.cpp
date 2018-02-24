@@ -268,7 +268,7 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
             for (int64 i = 0; i < color_dst.count; i++) {
                 if (i < mol.atom_residue_indices.count) {
                     const auto& res = mol.residues[mol.atom_residue_indices[i]];
-                    unsigned int h = hash::crc32(res.id);
+                    unsigned int h = hash::crc32(res.id.beg(), Label::MAX_LENGTH);
                     float hue = (h % 32) / 32.f;
                     vec3 c = math::hcl_to_rgb(vec3(hue, 0.8f, 0.8f));
                     unsigned char color[4];

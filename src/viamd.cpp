@@ -102,12 +102,14 @@ int main(int, char**) {
 	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
 	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
 	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/water/water.gro");
+	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid-6T/conf-60-6T.gro");
     auto pdb_res = load_pdb_from_file(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
 
     //Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
 	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
 	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
 	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
+	Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid-6T/prod-centered.xtc");
 	
     data.mol_struct = &pdb_res.pdb;
     data.trajectory = nullptr;
@@ -126,8 +128,6 @@ int main(int, char**) {
 
     platform::set_vsync(false);
 
-    //auto pdb_res = load_pdb_from_file(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
-    //data.mol_struct = &pdb_res.pdb;
     data.atom_radii = compute_atom_radii(data.mol_struct->atom_elements);
     data.atom_colors = compute_atom_colors(*data.mol_struct, ColorMapping::CPK);
 
@@ -222,18 +222,6 @@ int main(int, char**) {
 
 				float t = (float)math::fract(data.time);
 				linear_interpolation_periodic(data.mol_struct->atom_positions, prev_frame.atom_positions, next_frame.atom_positions, t, prev_frame.box);
-				//linear_interpolation(data.mol_struct->atom_positions, prev_frame.atom_positions, next_frame.atom_positions, t);
-				
-				//memcpy(data.mol_struct->atom_positions.data, prev_frame.atom_positions.data, data.mol_struct->atom_positions.count * sizeof(vec3));
-
-				/*
-				ASSERT(prv_pos.count == data.mol_struct->atom_positions.count);
-				ASSERT(nxt_pos.count == data.mol_struct->atom_positions.count);
-
-				for (int i = 0; i < data.mol_struct->atom_positions.count; i++) {
-					data.mol_struct->atom_positions[i] = math::mix(prv_pos[i], nxt_pos[i], t);
-				}
-				*/
 			}
         }
 

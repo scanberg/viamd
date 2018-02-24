@@ -117,11 +117,14 @@ struct DynamicArray : Array<T> {
 
 	int64 size() const { return this->count; }
 
+	inline int64 _grow_capacity(int64 sz) const {
+		int64 new_capacity = capacity ? (capacity + capacity / 2) : INIT_CAPACITY;
+		return new_capacity > sz ? new_capacity : sz;
+	}
+
     void push_back(const T& item) {
-        if (this->count >= capacity) {
-            // GROW
-			auto new_capacity = capacity < INIT_CAPACITY ? INIT_CAPACITY : capacity * 2;
-            reserve(new_capacity);
+        if (this->count == capacity) {
+            reserve(_grow_capacity(this->count + 1));
         }
         this->data[this->count] = item;
         this->count++;
@@ -148,11 +151,24 @@ struct DynamicArray : Array<T> {
             return;
         } else {
             if (capacity < new_count) {
-                reserve(new_count);
+                reserve(_grow_capacity(new_count));
+				memset(this->data + count, 0, new_count - count);
                 this->count = new_count;
             }
         }
     }
+
+	T* insert(T* it, const T& v) {
+		ASSERT(beg() <= it && it <= end());
+		const ptrdiff_t off = it - beg();
+		if (this->count == capacity)
+			reserve(_grow_capacity(this->count + 1));
+		if (off < (int64)this->count)
+			memmove(beg() + off + 1, beg() + off, ((size_t)this->count - (size_t)off) * sizeof(T));
+		this->data[off] = v;
+		this->count++;
+		return beg() + off;
+	}
 
     void clear() {
         this->count = 0;
@@ -240,8 +256,6 @@ struct String : Array<char> {
     operator const char*() { return data; }
     operator bool() { return (data != 0 && count != 0); }
 };
-
-
 
 template <typename T>
 Array<T> allocate_array(int64 count, Allocator& alloc = default_alloc) noexcept {

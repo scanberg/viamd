@@ -146,7 +146,6 @@ static GLuint ubo_hbao_data = 0;
 
 static GLuint tex_width;
 static GLuint tex_height;
-// static vec4 hbao_random[AO_RANDOM_TEX_SIZE * AO_RANDOM_TEX_SIZE * AO_MAX_SAMPLES];
 
 struct HBAOData {
     float radius_to_screen;
@@ -166,9 +165,6 @@ struct HBAOData {
     vec2 proj_scale;
     int proj_ortho;
     int _pad1;
-
-    //  vec4    offsets[AO_RANDOM_TEX_SIZE * AO_RANDOM_TEX_SIZE];
-    //  vec4    jitters[AO_RANDOM_TEX_SIZE * AO_RANDOM_TEX_SIZE];
 };
 
 static const char* f_shader_src_linearize_depth = R"(
