@@ -4,6 +4,7 @@
 #include <core/hash.h>
 #include <core/common.h>
 #include <core/math_utils.h>
+#include <mol/aminoacid.h>
 #include <imgui.h>
 #include <ctype.h>
 
@@ -183,7 +184,6 @@ DynamicArray<Chain> compute_chains(const Array<Residue> residues, const Array<Bo
 
 template <int64 N>
 bool match(const Label& lbl, const char (&cstr)[N]) {
-    printf("Size is %i, lbl = '%s' cstr = '%s'\n", N, lbl.beg(), cstr);
     for (int64 i = 0; i < N; i++) {
         if (tolower(lbl[i]) != tolower(cstr[i])) return false;
     }
@@ -194,10 +194,12 @@ DynamicArray<BackboneSegment> compute_backbone(const Chain& chain, const Array<R
 	DynamicArray<BackboneSegment> backbones;
 	for (int32 res_idx = chain.beg_res_idx; res_idx < chain.end_res_idx; res_idx++) {
 		const auto& residue = residues[res_idx];
+		if (is_amino_acid(residue) == false) continue;
 		// find atoms
 		auto ca_idx = -1;
 		auto ha_idx = -1;
 		auto cb_idx = -1;
+		auto n_idx = -1;
 		auto c_idx = -1;
 		auto o_idx = -1;
 		for (int32 i = residue.beg_atom_idx; i < residue.end_atom_idx; i++) {
@@ -205,32 +207,150 @@ DynamicArray<BackboneSegment> compute_backbone(const Chain& chain, const Array<R
 			if (ca_idx == -1 && match(lbl, "CA")) ca_idx = i;
 			if (ha_idx == -1 && match(lbl, "HA")) ha_idx = i;
 			if (cb_idx == -1 && match(lbl, "CB")) cb_idx = i;
+			if (n_idx == -1 && match(lbl, "N")) n_idx = i;
 			if (c_idx == -1 && match(lbl, "C")) c_idx = i;
 			if (o_idx == -1 && match(lbl, "O")) o_idx = i;
 		}
-		/*
 		if (ca_idx == -1) {
-			printf("No CA label found for residue[%i]: %s.", res_idx, residues[res_idx].id);
+			printf("No CA label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
 		}
 		if (ha_idx == -1) {
-			printf("No HA label found for residue[%i]: %s.", res_idx, residues[res_idx].id);
+			printf("No HA label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
 		}
 		if (cb_idx == -1) {
-			printf("No CB label found for residue[%i]: %s.", res_idx, residues[res_idx].id);
+			printf("No CB label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
+		}
+		if (n_idx == -1) {
+			printf("No N label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
 		}
 		if (c_idx == -1) {
-			printf("No C label found for residue[%i]: %s.", res_idx, residues[res_idx].id);
+			printf("No C label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
 		}
 		if (o_idx == -1) {
-			printf("No O label found for residue[%i]: %s.", res_idx, residues[res_idx].id);
+			printf("No O label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
 		}
-		*/
 
-		backbones.push_back({ca_idx, ha_idx, cb_idx, c_idx, o_idx});
+		backbones.push_back({ca_idx, ha_idx, cb_idx, n_idx, c_idx, o_idx});
 	}
 
 	return backbones;
 }
+
+DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Array<BackboneSegment>& backbone, int num_subdivisions) {
+	if (backbone.count < 4) return {};
+
+	// @TODO: Use C -> O vector for orientation
+
+	DynamicArray<vec3> p_tmp;
+	DynamicArray<vec3> o_tmp;
+	DynamicArray<vec3> h_tmp;
+	DynamicArray<int> ca_idx;
+
+	auto d_p0 = atom_pos[backbone[1].ca_idx] - atom_pos[backbone[0].ca_idx];
+	p_tmp.push_back(atom_pos[backbone[0].ca_idx] - d_p0);
+
+	auto d_o0 = atom_pos[backbone[1].o_idx] - atom_pos[backbone[0].o_idx];
+	o_tmp.push_back(atom_pos[backbone[0].o_idx] - d_o0);
+
+	if (backbone[0].ha_idx > -1 && backbone[1].ha_idx > -1) {
+		auto d_h0 = atom_pos[backbone[1].ha_idx] - atom_pos[backbone[0].ha_idx];
+		h_tmp.push_back(atom_pos[backbone[0].ha_idx] - d_h0);
+	}
+	else {
+		h_tmp.push_back(atom_pos[backbone[0].ca_idx] - d_p0);
+	}
+
+	ca_idx.push_back(backbone[0].ca_idx);
+
+	const int size = (int)(backbone.count);
+	for (auto i = 0; i < size; i++) {
+		p_tmp.push_back(atom_pos[backbone[i].ca_idx]);
+		o_tmp.push_back(atom_pos[backbone[i].o_idx]);
+		if (backbone[i].ha_idx > -1) {
+			h_tmp.push_back(atom_pos[backbone[i].ha_idx]);
+		}
+		else {
+			h_tmp.push_back(atom_pos[backbone[i].ca_idx]);
+		}
+		ca_idx.push_back(backbone[i].ca_idx);
+	}
+
+	auto d_pn = atom_pos[backbone[size - 1].ca_idx] - atom_pos[backbone[size - 2].ca_idx];
+	p_tmp.push_back(atom_pos[backbone[size - 1].ca_idx] + d_pn);
+	p_tmp.push_back(p_tmp.back() + d_pn);
+
+	auto d_on = atom_pos[backbone[size - 1].o_idx] - atom_pos[backbone[size - 2].o_idx];
+	o_tmp.push_back(atom_pos[backbone[size - 1].o_idx] + d_on);
+	o_tmp.push_back(o_tmp.back() + d_on);
+
+	if (backbone[size - 1].ha_idx > -1 && backbone[size - 2].ha_idx > -1) {
+		auto d_hn = atom_pos[backbone[size - 1].ha_idx] - atom_pos[backbone[size - 2].ha_idx];
+		h_tmp.push_back(atom_pos[backbone[size - 1].ha_idx] + d_hn);
+		h_tmp.push_back(h_tmp.back() + d_hn);
+	}
+	else {
+		auto d_hn = atom_pos[backbone[size - 1].ca_idx] - atom_pos[backbone[size - 2].ca_idx];
+		h_tmp.push_back(atom_pos[backbone[size - 1].ca_idx] + d_hn);
+		h_tmp.push_back(h_tmp.back() + d_hn);
+	}
+
+	ca_idx.push_back(backbone[size - 1].ca_idx);
+	ca_idx.push_back(backbone[size - 1].ca_idx);
+
+	// NEEDED?
+	for (int64 i = 1; i < o_tmp.size(); i++) {
+		vec3 v0 = o_tmp[i - 1] - h_tmp[i - 1];
+		vec3 v1 = o_tmp[i] - h_tmp[i];
+
+		if (glm::dot(v0, v1) < 0) {
+			h_tmp[i] = o_tmp[i] - v1;
+		}
+	}
+
+	const float tension = 0.5f;
+
+	DynamicArray<SplineSegment> segments;
+
+	for (int64 i = 1; i < p_tmp.size() - 2; i++) {
+		auto p0 = p_tmp[i - 1];
+		auto p1 = p_tmp[i];
+		auto p2 = p_tmp[i + 1];
+		auto p3 = p_tmp[i + 2];
+
+		auto o0 = o_tmp[i - 1];
+		auto o1 = o_tmp[i];
+		auto o2 = o_tmp[i + 1];
+		auto o3 = o_tmp[i + 2];
+
+		auto h0 = h_tmp[i - 1];
+		auto h1 = h_tmp[i];
+		auto h2 = h_tmp[i + 1];
+		auto h3 = h_tmp[i + 2];
+
+		for (int n = 0; n < num_subdivisions; n++) {
+			auto t = n / (float)(num_subdivisions);
+
+			vec3 p = math::spline(p0, p1, p2, p3, t, tension);
+			vec3 o = math::spline(o0, o1, o2, o3, t, tension);
+			vec3 h = math::spline(h0, h1, h2, h3, t, tension);
+
+			vec3 v_dir = math::normalize(o - h);
+
+			const float eps = 0.0001f;
+			float d0 = math::max(0.f, t - eps);
+			float d1 = math::min(t + eps, 1.f);
+
+			vec3 tangent = math::normalize(math::spline(p0, p1, p2, p3, d1, tension) - math::spline(p0, p1, p2, p3, d0, tension));
+			vec3 binormal = math::normalize(math::cross(v_dir, tangent));
+			vec3 normal = math::normalize(math::cross(tangent, binormal));
+
+			segments.push_back({ p, tangent, normal, binormal });
+		}
+	}
+
+	return segments;
+}
+
 
 DynamicArray<float> compute_atom_radii(const Array<Element> elements) {
     DynamicArray<float> radii(elements.count, 0);
@@ -315,6 +435,10 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
         default:
             break;
     }
+}
+
+bool is_amino_acid(Residue res) {
+	return aminoacid::get_from_string(res.id) != AminoAcid::Unknown;
 }
 
 namespace draw {
@@ -1075,6 +1199,23 @@ void draw_backbone(const Array<BackboneSegment> backbone, const Array<vec3> atom
 	for (int i = 1; i < backbone.count; i++) {
 		if (backbone[i].ca_idx > -1 && backbone[i-1].ca_idx > -1)
 			immediate::draw_line(atom_positions[backbone[i-1].ca_idx], atom_positions[backbone[i].ca_idx], immediate::COLOR_WHITE);
+	}
+
+	immediate::flush();
+}
+
+void draw_spline(const Array<SplineSegment> spline, const mat4 & view_mat, const mat4 & proj_mat) {
+	immediate::set_view_matrix(view_mat);
+	immediate::set_proj_matrix(proj_mat);
+
+	for (const auto& seg : spline) {
+		immediate::draw_line(seg.position, seg.position + seg.tangent, immediate::COLOR_BLUE);
+		immediate::draw_line(seg.position, seg.position + seg.normal, immediate::COLOR_GREEN);
+		immediate::draw_line(seg.position, seg.position + seg.binormal, immediate::COLOR_RED);
+	}
+
+	for (int64 i = 1; i < spline.count; i++) {
+		immediate::draw_line(spline[i - 1].position, spline[i].position, immediate::COLOR_WHITE);
 	}
 
 	immediate::flush();

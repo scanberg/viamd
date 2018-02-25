@@ -200,63 +200,6 @@ private:
     //Allocator* allocator = nullptr;
 };
 
-struct CString : Array<const char> {
-	CString() {
-		data = 0;
-		count = 0;
-	}
-
-    template <int64 length>
-    CString(const char(&cstr)[length]) {
-        data = cstr;
-        count = length;
-    }
-
-	CString(const char* cstr, int64 length = -1) {
-		data = cstr;
-		if (length == -1)
-			length = strlen(cstr);
-		count = length;
-	}
-
-	CString substr(int64 _offset, int64 _count = -1) {
-		auto array = sub_array(_offset, _count);
-		return { array.data, array.count };
-	}
-
-	operator const char*() { return data; }
-	operator bool() { return (data != 0 && count != 0); }
-};
-
-struct String : Array<char> {
-    String() {
-        data = 0;
-        count = 0;
-    }
-
-    String(const String& other) : Array(other.data, other.count) {}
-
-    String(char* cstr, int64 length) {
-        data = cstr;
-        count = length;
-    }
-
-    template <int64 length>
-    String(char (&cstr)[length]) {
-        data = cstr;
-        count = length;
-    }
-
-    String substr(int64 _offset, int64 _count = -1) {
-        auto array = sub_array(_offset, _count);
-        return {array.data, array.count};
-    }
-
-    operator CString() { return CString(data, count); }
-    operator const char*() { return data; }
-    operator bool() { return (data != 0 && count != 0); }
-};
-
 template <typename T>
 Array<T> allocate_array(int64 count, Allocator& alloc = default_alloc) noexcept {
     ASSERT(count > 0);

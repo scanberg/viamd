@@ -96,6 +96,15 @@ T hermite(T const& v1, T const& t1, T const& v2, T const& t2, V s) {
     return glm::cubic(v1, t1, v2, t2, s);
 }
 
+template <typename T, typename V>
+static T spline(const T& p0, const T& p1, const T& p2, const T& p3, V s, V tension = (V)0.5) {
+	T v0 = (p2 - p0) * tension;
+	T v1 = (p3 - p1) * tension;
+	V s2 = s * s;
+	V s3 = s * s2;
+	return ((V)2.0 * p1 - (V)2.0 * p2 + v0 + v1) * s3 + (-(V)3.0 * p1 + (V)3.0 * p2 - (V)2.0 * v0 - v1) * s2 + v0 * s + p1;
+}
+
 // Quaternion
 template <typename T, glm::qualifier Q>
 glm::tquat<T, Q> angle_axis(T const& angle, glm::vec<3, T, Q> const& axis) {

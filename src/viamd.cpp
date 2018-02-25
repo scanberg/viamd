@@ -109,19 +109,22 @@ int main(int, char**) {
 	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
 	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
 	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
-	Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid-6T/prod-centered.xtc");
+	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid-6T/prod-centered.xtc");
 	
     data.mol_struct = &pdb_res.pdb;
     data.trajectory = nullptr;
 
 	DynamicArray<BackboneSegment> backbone;
+	DynamicArray<SplineSegment> spline;
 
     if (data.trajectory && data.trajectory->num_frames > 0)
         copy_trajectory_positions(data.mol_struct->atom_positions, *data.trajectory, 0);
     reset_view(&data);
 
-	if (data.mol_struct->chains.count > 0)
+	if (data.mol_struct->chains.count > 0) {
 		backbone = compute_backbone(data.mol_struct->chains[0], data.mol_struct->residues, data.mol_struct->atom_labels);
+		spline = compute_spline(data.mol_struct->atom_positions, backbone, 8);
+	}
 
     platform::initialize();
     data.main_window = platform::create_window(display_w, display_h, "VIAMD");
@@ -172,6 +175,7 @@ int main(int, char**) {
         bool time_changed = false;
 
 		ImGui::Begin("Misc");
+		ImGui::Text("FPS: %.1f", 1.f / dt);
 		ImGui::Text("MouseVel: %g, %g", input->mouse_velocity.x, input->mouse_velocity.y);
 		ImGui::Text("Camera Pos: %g, %g, %g", data.camera.position.x, data.camera.position.y, data.camera.position.z);
 		ImGui::Text("Mouse Buttons: [%i, %i, %i, %i, %i]", input->mouse_down[0], input->mouse_down[1], input->mouse_down[2], input->mouse_down[3], input->mouse_down[4]);
@@ -279,7 +283,7 @@ int main(int, char**) {
 		glEnable(GL_DEPTH_TEST);
 		glDepthFunc(GL_LESS);
 
-        draw::draw_vdw(data.mol_struct->atom_positions, data.atom_radii, data.atom_colors, view_mat, proj_mat, radii_scale);
+        //draw::draw_vdw(data.mol_struct->atom_positions, data.atom_radii, data.atom_colors, view_mat, proj_mat, radii_scale);
 		//draw::draw_licorice(data.mol_struct->atom_positions, data.mol_struct->bonds, data.atom_colors, view_mat, proj_mat, radii_scale);
 
         // Activate backbuffer
@@ -292,7 +296,8 @@ int main(int, char**) {
         // Apply tone mapping
         postprocessing::apply_tonemapping(data.fbo.tex_color);
 
-		draw::draw_backbone(backbone, data.mol_struct->atom_positions, view_mat, proj_mat);
+		//draw::draw_backbone(backbone, data.mol_struct->atom_positions, view_mat, proj_mat);
+		draw::draw_spline(spline, view_mat, proj_mat);
 
 		if (data.use_ssao) {
 			postprocessing::apply_ssao(data.fbo.tex_depth, proj_mat, data.ssao_intensity, data.ssao_radius);

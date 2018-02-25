@@ -73,6 +73,7 @@ PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params, Alloca
 				residue.end_atom_idx = residue.beg_atom_idx;
 				copy(String(residue.id.beg(), Label::MAX_LENGTH-1), trim(line.substr(17, 3)));
 				residues.push_back(residue);
+				chains.back().end_res_idx++;
 			}
 			residues.back().end_atom_idx++;
 
