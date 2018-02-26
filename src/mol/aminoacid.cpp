@@ -41,7 +41,7 @@ constexpr const char* symbol(AminoAcid amino) { return symbols[static_cast<int>(
 AminoAcid get_from_string(const char* cstr) {
 
     if (!cstr[0] || !cstr[1] || !cstr[2]) return AminoAcid::Unknown;
-    const char seq[3] = {toupper(cstr[0]), toupper(cstr[1]), toupper(cstr[2])};
+    const char seq[3] = {(char)toupper(cstr[0]), (char)toupper(cstr[1]), (char)toupper(cstr[2])};
 
     for (size_t i = 0; i < symbols.size(); i++) {
         if (symbols[i][0] == seq[0] &&

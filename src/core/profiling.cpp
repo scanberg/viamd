@@ -45,7 +45,7 @@ static void sort_map(Array<Entry>& map) {
 static Entry* get_or_insert_entry(DynamicArray<Entry>& map, uint32 key) {
 	auto ptr = lower_bound(map, key);
 	if (ptr == map.end() || ptr->key != key) {
-		return map.insert(ptr, { key });
+		return map.insert(ptr, { key, 0 });
 	}
 	return ptr;
 }

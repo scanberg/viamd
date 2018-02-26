@@ -40,6 +40,9 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
               const mat4& proj_mat, float radii_scale = 1.f);
 void draw_licorice(const Array<vec3> atom_positions, const Array<Bond> atom_bonds, const Array<uint32> atom_colors, const mat4& view_mat,
                    const mat4& proj_mat, float radii_scale = 1.f);
+void draw_ribbons(const Array<SplineSegment> spline, const mat4& view_mat, const mat4& proj_mat);
+
+// DEBUG
 void draw_backbone(const Array<BackboneSegment> backbone, const Array<vec3> atom_positions, const mat4& view_mat, const mat4& proj_mat);
 void draw_spline(const Array<SplineSegment> spline, const mat4& view_mat, const mat4& proj_mat);
 }  // namespace draw

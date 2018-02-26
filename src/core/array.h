@@ -152,22 +152,22 @@ struct DynamicArray : Array<T> {
         } else {
             if (capacity < new_count) {
                 reserve(_grow_capacity(new_count));
-				memset(this->data + count, 0, new_count - count);
+				memset(this->data + this->count, 0, new_count - this->count);
                 this->count = new_count;
             }
         }
     }
 
 	T* insert(T* it, const T& v) {
-		ASSERT(beg() <= it && it <= end());
-		const ptrdiff_t off = it - beg();
+		ASSERT(this->beg() <= it && it <= this->end());
+		const ptrdiff_t off = it - this->beg();
 		if (this->count == capacity)
 			reserve(_grow_capacity(this->count + 1));
 		if (off < (int64)this->count)
-			memmove(beg() + off + 1, beg() + off, ((size_t)this->count - (size_t)off) * sizeof(T));
+			memmove(this->beg() + off + 1, this->beg() + off, ((size_t)this->count - (size_t)off) * sizeof(T));
 		this->data[off] = v;
 		this->count++;
-		return beg() + off;
+		return this->beg() + off;
 	}
 
     void clear() {

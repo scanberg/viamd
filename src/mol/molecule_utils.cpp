@@ -56,12 +56,12 @@ void linear_interpolation_periodic(Array<vec3> positions, const Array<vec3> prev
 }
 
 void linear_interpolation(Array<vec3> positions, const Array<vec3> prev_pos, const Array<vec3> next_pos, float t) {
-	ASSERT(prev_pos.count == positions.count);
-	ASSERT(next_pos.count == positions.count);
+    ASSERT(prev_pos.count == positions.count);
+    ASSERT(next_pos.count == positions.count);
 
-	for (int i = 0; i < positions.count; i++) {
-		positions[i] = math::mix(prev_pos[i], next_pos[i], t);
-	}
+    for (int i = 0; i < positions.count; i++) {
+        positions[i] = math::mix(prev_pos[i], next_pos[i], t);
+    }
 }
 
 DynamicArray<Bond> compute_covalent_bonds(const Array<vec3> atom_pos, const Array<Element> atom_elem, const Array<Residue> residues) {
@@ -69,7 +69,7 @@ DynamicArray<Bond> compute_covalent_bonds(const Array<vec3> atom_pos, const Arra
 
     DynamicArray<Bond> bonds;
 
-    auto try_and_create_atom_bond = [& pos = atom_pos, &elem = atom_elem, &bonds = bonds](int i, int j) -> bool {
+    auto try_and_create_atom_bond = [& pos = atom_pos, &elem = atom_elem, &bonds = bonds ](int i, int j)->bool {
         auto d = element::covalent_radius(elem[i]) + element::covalent_radius(elem[j]);
         auto d1 = d + 0.3f;
         auto d2 = d - 0.5f;
@@ -191,166 +191,155 @@ bool match(const Label& lbl, const char (&cstr)[N]) {
 }
 
 DynamicArray<BackboneSegment> compute_backbone(const Chain& chain, const Array<Residue> residues, const Array<Label> atom_labels) {
-	DynamicArray<BackboneSegment> backbones;
-	for (int32 res_idx = chain.beg_res_idx; res_idx < chain.end_res_idx; res_idx++) {
-		const auto& residue = residues[res_idx];
-		if (is_amino_acid(residue) == false) continue;
-		// find atoms
-		auto ca_idx = -1;
-		auto ha_idx = -1;
-		auto cb_idx = -1;
-		auto n_idx = -1;
-		auto c_idx = -1;
-		auto o_idx = -1;
-		for (int32 i = residue.beg_atom_idx; i < residue.end_atom_idx; i++) {
-			const auto& lbl = atom_labels[i];
-			if (ca_idx == -1 && match(lbl, "CA")) ca_idx = i;
-			if (ha_idx == -1 && match(lbl, "HA")) ha_idx = i;
-			if (cb_idx == -1 && match(lbl, "CB")) cb_idx = i;
-			if (n_idx == -1 && match(lbl, "N")) n_idx = i;
-			if (c_idx == -1 && match(lbl, "C")) c_idx = i;
-			if (o_idx == -1 && match(lbl, "O")) o_idx = i;
-		}
-		if (ca_idx == -1) {
-			printf("No CA label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
-		}
-		if (ha_idx == -1) {
-			printf("No HA label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
-		}
-		if (cb_idx == -1) {
-			printf("No CB label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
-		}
-		if (n_idx == -1) {
-			printf("No N label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
-		}
-		if (c_idx == -1) {
-			printf("No C label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
-		}
-		if (o_idx == -1) {
-			printf("No O label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
-		}
+    DynamicArray<BackboneSegment> backbones;
+    for (int32 res_idx = chain.beg_res_idx; res_idx < chain.end_res_idx; res_idx++) {
+        const auto& residue = residues[res_idx];
+        if (is_amino_acid(residue) == false) continue;
+        // find atoms
+        auto ca_idx = -1;
+        auto ha_idx = -1;
+        auto cb_idx = -1;
+        auto n_idx = -1;
+        auto c_idx = -1;
+        auto o_idx = -1;
+        for (int32 i = residue.beg_atom_idx; i < residue.end_atom_idx; i++) {
+            const auto& lbl = atom_labels[i];
+            if (ca_idx == -1 && match(lbl, "CA")) ca_idx = i;
+            if (ha_idx == -1 && match(lbl, "HA")) ha_idx = i;
+            if (cb_idx == -1 && match(lbl, "CB")) cb_idx = i;
+            if (n_idx == -1 && match(lbl, "N")) n_idx = i;
+            if (c_idx == -1 && match(lbl, "C")) c_idx = i;
+            if (o_idx == -1 && match(lbl, "O")) o_idx = i;
+        }
+        if (ca_idx == -1) {
+            printf("No CA label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
+        }
+        if (ha_idx == -1) {
+            printf("No HA label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
+        }
+        if (cb_idx == -1) {
+            printf("No CB label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
+        }
+        if (n_idx == -1) {
+            printf("No N label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
+        }
+        if (c_idx == -1) {
+            printf("No C label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
+        }
+        if (o_idx == -1) {
+            printf("No O label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
+        }
 
-		backbones.push_back({ca_idx, ha_idx, cb_idx, n_idx, c_idx, o_idx});
-	}
+        backbones.push_back({ca_idx, ha_idx, cb_idx, n_idx, c_idx, o_idx});
+    }
 
-	return backbones;
+    return backbones;
 }
 
 DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Array<BackboneSegment>& backbone, int num_subdivisions) {
-	if (backbone.count < 4) return {};
+    if (backbone.count < 4) return {};
 
-	// @TODO: Use C -> O vector for orientation
+    // @TODO: Use C -> O vector for orientation
 
-	DynamicArray<vec3> p_tmp;
-	DynamicArray<vec3> o_tmp;
-	DynamicArray<vec3> h_tmp;
-	DynamicArray<int> ca_idx;
+    DynamicArray<vec3> p_tmp;
+    DynamicArray<vec3> o_tmp;
+    DynamicArray<vec3> c_tmp;
+    DynamicArray<int> ca_idx;
 
-	auto d_p0 = atom_pos[backbone[1].ca_idx] - atom_pos[backbone[0].ca_idx];
-	p_tmp.push_back(atom_pos[backbone[0].ca_idx] - d_p0);
+    auto d_p0 = atom_pos[backbone[1].ca_idx] - atom_pos[backbone[0].ca_idx];
+    p_tmp.push_back(atom_pos[backbone[0].ca_idx] - d_p0);
 
-	auto d_o0 = atom_pos[backbone[1].o_idx] - atom_pos[backbone[0].o_idx];
-	o_tmp.push_back(atom_pos[backbone[0].o_idx] - d_o0);
+    auto d_o0 = atom_pos[backbone[1].o_idx] - atom_pos[backbone[0].o_idx];
+    o_tmp.push_back(atom_pos[backbone[0].o_idx] - d_o0);
 
-	if (backbone[0].ha_idx > -1 && backbone[1].ha_idx > -1) {
-		auto d_h0 = atom_pos[backbone[1].ha_idx] - atom_pos[backbone[0].ha_idx];
-		h_tmp.push_back(atom_pos[backbone[0].ha_idx] - d_h0);
-	}
-	else {
-		h_tmp.push_back(atom_pos[backbone[0].ca_idx] - d_p0);
-	}
+    if (backbone[0].c_idx > -1 && backbone[1].c_idx > -1) {
+        auto d_c0 = atom_pos[backbone[1].c_idx] - atom_pos[backbone[0].c_idx];
+        c_tmp.push_back(atom_pos[backbone[0].c_idx] - d_c0);
+    } else {
+        // This should never happen
+        c_tmp.push_back(atom_pos[backbone[0].ca_idx] - d_p0);
+    }
 
-	ca_idx.push_back(backbone[0].ca_idx);
+    ca_idx.push_back(backbone[0].ca_idx);
 
-	const int size = (int)(backbone.count);
-	for (auto i = 0; i < size; i++) {
-		p_tmp.push_back(atom_pos[backbone[i].ca_idx]);
-		o_tmp.push_back(atom_pos[backbone[i].o_idx]);
-		if (backbone[i].ha_idx > -1) {
-			h_tmp.push_back(atom_pos[backbone[i].ha_idx]);
-		}
-		else {
-			h_tmp.push_back(atom_pos[backbone[i].ca_idx]);
-		}
-		ca_idx.push_back(backbone[i].ca_idx);
-	}
+    const int size = (int)(backbone.count);
+    for (auto i = 0; i < size; i++) {
+        p_tmp.push_back(atom_pos[backbone[i].ca_idx]);
+        o_tmp.push_back(atom_pos[backbone[i].o_idx]);
+        c_tmp.push_back(atom_pos[backbone[i].c_idx]);
+        ca_idx.push_back(backbone[i].ca_idx);
+    }
 
-	auto d_pn = atom_pos[backbone[size - 1].ca_idx] - atom_pos[backbone[size - 2].ca_idx];
-	p_tmp.push_back(atom_pos[backbone[size - 1].ca_idx] + d_pn);
-	p_tmp.push_back(p_tmp.back() + d_pn);
+    auto d_pn = atom_pos[backbone[size - 1].ca_idx] - atom_pos[backbone[size - 2].ca_idx];
+    p_tmp.push_back(atom_pos[backbone[size - 1].ca_idx] + d_pn);
+    p_tmp.push_back(p_tmp.back() + d_pn);
 
-	auto d_on = atom_pos[backbone[size - 1].o_idx] - atom_pos[backbone[size - 2].o_idx];
-	o_tmp.push_back(atom_pos[backbone[size - 1].o_idx] + d_on);
-	o_tmp.push_back(o_tmp.back() + d_on);
+    auto d_on = atom_pos[backbone[size - 1].o_idx] - atom_pos[backbone[size - 2].o_idx];
+    o_tmp.push_back(atom_pos[backbone[size - 1].o_idx] + d_on);
+    o_tmp.push_back(o_tmp.back() + d_on);
 
-	if (backbone[size - 1].ha_idx > -1 && backbone[size - 2].ha_idx > -1) {
-		auto d_hn = atom_pos[backbone[size - 1].ha_idx] - atom_pos[backbone[size - 2].ha_idx];
-		h_tmp.push_back(atom_pos[backbone[size - 1].ha_idx] + d_hn);
-		h_tmp.push_back(h_tmp.back() + d_hn);
-	}
-	else {
-		auto d_hn = atom_pos[backbone[size - 1].ca_idx] - atom_pos[backbone[size - 2].ca_idx];
-		h_tmp.push_back(atom_pos[backbone[size - 1].ca_idx] + d_hn);
-		h_tmp.push_back(h_tmp.back() + d_hn);
-	}
+    auto d_cn = atom_pos[backbone[size - 1].c_idx] - atom_pos[backbone[size - 2].c_idx];
+    c_tmp.push_back(atom_pos[backbone[size - 1].c_idx] + d_cn);
+    c_tmp.push_back(c_tmp.back() + d_cn);
 
-	ca_idx.push_back(backbone[size - 1].ca_idx);
-	ca_idx.push_back(backbone[size - 1].ca_idx);
+    ca_idx.push_back(backbone[size - 1].ca_idx);
+    ca_idx.push_back(backbone[size - 1].ca_idx);
 
-	// NEEDED?
-	for (int64 i = 1; i < o_tmp.size(); i++) {
-		vec3 v0 = o_tmp[i - 1] - h_tmp[i - 1];
-		vec3 v1 = o_tmp[i] - h_tmp[i];
+    // NEEDED?
+    for (int64 i = 1; i < o_tmp.size(); i++) {
+        vec3 v0 = o_tmp[i - 1] - c_tmp[i - 1];
+        vec3 v1 = o_tmp[i] - c_tmp[i];
 
-		if (glm::dot(v0, v1) < 0) {
-			h_tmp[i] = o_tmp[i] - v1;
-		}
-	}
+        if (glm::dot(v0, v1) < 0) {
+            o_tmp[i] = c_tmp[i] - v1;
+        }
+    }
 
-	const float tension = 0.5f;
+    const float tension = 0.5f;
 
-	DynamicArray<SplineSegment> segments;
+    DynamicArray<SplineSegment> segments;
 
-	for (int64 i = 1; i < p_tmp.size() - 2; i++) {
-		auto p0 = p_tmp[i - 1];
-		auto p1 = p_tmp[i];
-		auto p2 = p_tmp[i + 1];
-		auto p3 = p_tmp[i + 2];
+    for (int64 i = 1; i < p_tmp.size() - 2; i++) {
+        auto p0 = p_tmp[i - 1];
+        auto p1 = p_tmp[i];
+        auto p2 = p_tmp[i + 1];
+        auto p3 = p_tmp[i + 2];
 
-		auto o0 = o_tmp[i - 1];
-		auto o1 = o_tmp[i];
-		auto o2 = o_tmp[i + 1];
-		auto o3 = o_tmp[i + 2];
+        auto o0 = o_tmp[i - 1];
+        auto o1 = o_tmp[i];
+        auto o2 = o_tmp[i + 1];
+        auto o3 = o_tmp[i + 2];
 
-		auto h0 = h_tmp[i - 1];
-		auto h1 = h_tmp[i];
-		auto h2 = h_tmp[i + 1];
-		auto h3 = h_tmp[i + 2];
+        auto c0 = c_tmp[i - 1];
+        auto c1 = c_tmp[i];
+        auto c2 = c_tmp[i + 1];
+        auto c3 = c_tmp[i + 2];
 
-		for (int n = 0; n < num_subdivisions; n++) {
-			auto t = n / (float)(num_subdivisions);
+        for (int n = 0; n < num_subdivisions; n++) {
+            auto t = n / (float)(num_subdivisions);
 
-			vec3 p = math::spline(p0, p1, p2, p3, t, tension);
-			vec3 o = math::spline(o0, o1, o2, o3, t, tension);
-			vec3 h = math::spline(h0, h1, h2, h3, t, tension);
+            vec3 p = math::spline(p0, p1, p2, p3, t, tension);
+            vec3 o = math::spline(o0, o1, o2, o3, t, tension);
+            vec3 c = math::spline(c0, c1, c2, c3, t, tension);
 
-			vec3 v_dir = math::normalize(o - h);
+            vec3 v_dir = math::normalize(o - c);
 
-			const float eps = 0.0001f;
-			float d0 = math::max(0.f, t - eps);
-			float d1 = math::min(t + eps, 1.f);
+            const float eps = 0.0001f;
+            float d0 = math::max(0.f, t - eps);
+            float d1 = math::min(t + eps, 1.f);
 
-			vec3 tangent = math::normalize(math::spline(p0, p1, p2, p3, d1, tension) - math::spline(p0, p1, p2, p3, d0, tension));
-			vec3 binormal = math::normalize(math::cross(v_dir, tangent));
-			vec3 normal = math::normalize(math::cross(tangent, binormal));
+            vec3 tangent = math::normalize(math::spline(p0, p1, p2, p3, d1, tension) - math::spline(p0, p1, p2, p3, d0, tension));
+            // vec3 binormal = math::normalize(math::cross(v_dir, tangent));
+            // vec3 normal = math::normalize(math::cross(tangent, binormal));
+            vec3 normal = math::normalize(v_dir);
+            vec3 binormal = math::normalize(math::cross(tangent, normal));
 
-			segments.push_back({ p, tangent, normal, binormal });
-		}
-	}
+            segments.push_back({p, tangent, normal, binormal});
+        }
+    }
 
-	return segments;
+    return segments;
 }
-
 
 DynamicArray<float> compute_atom_radii(const Array<Element> elements) {
     DynamicArray<float> radii(elements.count, 0);
@@ -437,9 +426,7 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
     }
 }
 
-bool is_amino_acid(Residue res) {
-	return aminoacid::get_from_string(res.id) != AminoAcid::Unknown;
-}
+bool is_amino_acid(Residue res) { return aminoacid::get_from_string(res.id) != AminoAcid::Unknown; }
 
 namespace draw {
 
@@ -662,47 +649,44 @@ static void initialize() {
     glDeleteShader(v_shader);
     glDeleteShader(f_shader);
 
-	if (!vao)
-		glGenVertexArrays(1, &vao);
+    if (!vao) glGenVertexArrays(1, &vao);
 
-	if (!ibo) {
-		const unsigned char data[4] = { 0, 1, 2, 3 };
-		glGenBuffers(1, &ibo);
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-		glBufferData(GL_ELEMENT_ARRAY_BUFFER, 4, data, GL_STATIC_DRAW);
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-	}
+    if (!ibo) {
+        const unsigned char data[4] = {0, 1, 2, 3};
+        glGenBuffers(1, &ibo);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, 4, data, GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    }
 
-	if (!buf_position_radius) {
-		glGenBuffers(1, &buf_position_radius);
-		glBindBuffer(GL_ARRAY_BUFFER, buf_position_radius);
-		glBufferData(GL_ARRAY_BUFFER, MEGABYTES(20), 0, GL_STREAM_DRAW);
-		glBindBuffer(GL_ARRAY_BUFFER, 0);
-	}
+    if (!buf_position_radius) {
+        glGenBuffers(1, &buf_position_radius);
+        glBindBuffer(GL_ARRAY_BUFFER, buf_position_radius);
+        glBufferData(GL_ARRAY_BUFFER, MEGABYTES(20), 0, GL_STREAM_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
 
-	if (!buf_color) {
-		glGenBuffers(1, &buf_color);
-		glBindBuffer(GL_ARRAY_BUFFER, buf_color);
-		glBufferData(GL_ARRAY_BUFFER, MEGABYTES(5), 0, GL_STREAM_DRAW);
-		glBindBuffer(GL_ARRAY_BUFFER, 0);
-	}
+    if (!buf_color) {
+        glGenBuffers(1, &buf_color);
+        glBindBuffer(GL_ARRAY_BUFFER, buf_color);
+        glBufferData(GL_ARRAY_BUFFER, MEGABYTES(5), 0, GL_STREAM_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
 
-	if (!tex_position_radius)
-		glGenTextures(1, &tex_position_radius);
+    if (!tex_position_radius) glGenTextures(1, &tex_position_radius);
 
-	if (!tex_color)
-		glGenTextures(1, &tex_color);
+    if (!tex_color) glGenTextures(1, &tex_color);
 
-	glBindVertexArray(vao);
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-	glBindVertexArray(0);
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+    glBindVertexArray(0);
 
     uniform_loc_view_mat = glGetUniformLocation(program, "u_view_mat");
     uniform_loc_proj_mat = glGetUniformLocation(program, "u_proj_mat");
-	uniform_loc_inv_proj_mat = glGetUniformLocation(program, "u_inv_proj_mat");
+    uniform_loc_inv_proj_mat = glGetUniformLocation(program, "u_inv_proj_mat");
     uniform_loc_fov = glGetUniformLocation(program, "u_fov");
-	uniform_loc_tex_pos_rad = glGetUniformLocation(vdw::program, "u_tex_pos_rad");
-	uniform_loc_tex_color = glGetUniformLocation(vdw::program, "u_tex_color");
+    uniform_loc_tex_pos_rad = glGetUniformLocation(vdw::program, "u_tex_pos_rad");
+    uniform_loc_tex_color = glGetUniformLocation(vdw::program, "u_tex_color");
 }
 
 static void shutdown() {
@@ -1049,96 +1033,317 @@ static void initialize() {
 
     glBindVertexArray(0);
 
-	glGenBuffers(1, &ibo);
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-	glBufferData(GL_ELEMENT_ARRAY_BUFFER, VERTEX_BUFFER_SIZE, nullptr, GL_STREAM_DRAW);
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    glGenBuffers(1, &ibo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, VERTEX_BUFFER_SIZE, nullptr, GL_STREAM_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 }
 
 static void shutdown() {
     if (vao) glDeleteVertexArrays(1, &vao);
     if (program) glDeleteProgram(program);
-	if (ibo) glDeleteBuffers(1, &ibo);
+    if (ibo) glDeleteBuffers(1, &ibo);
 }
 
 }  // namespace licorice
 
+namespace ribbons {
+
+struct Vertex {
+    vec3 position;
+    vec3 tangent;
+    vec3 normal;
+    unsigned int color = 0xffffffff;
+    unsigned int picking_id = 0xffffffff;
+}
+
+static GLuint vao = 0;
+static GLuint program = 0;
+
+static GLint attrib_loc_position = -1;
+static GLint attrib_loc_tangent = -1;
+static GLint attrib_loc_normal = -1;
+static GLint attrib_loc_color = -1;
+static GLint attrib_loc_picking = -1;
+
+static GLint uniform_loc_view_mat = -1;
+static GLint uniform_loc_proj_mat = -1;
+static GLint uniform_loc_scale_x = -1;
+static GLint uniform_loc_scale_y = -1;
+
+static const char* v_shader_src = R"(
+#version 150 core
+in vec3 v_position;
+in vec3 v_tangent;
+in vec3 v_normal;
+in vec4 v_color;
+in uint v_picking_id;
+
+out Vertex {
+    flat vec3 tangent;
+    flat vec3 normal;
+    flat vec4 color;
+    flat vec4 picking_color;
+} Output;
+
+vec4 pack_u32(uint data) {
+    return vec4(
+        (data & uint(0x000000FF)) >> 0,
+        (data & uint(0x0000FF00)) >> 8,
+        (data & uint(0x00FF0000)) >> 16,
+        (data & uint(0xFF000000)) >> 24) / 255.0;
+}
+ 
+void main() {
+    Output.tangent = v_tangent;
+    Output.normal = v_normal;
+    Output.color = v_color;
+    Output.picking_color = pack_u32(in_picking_id);
+    gl_Position = vec4(in_position, 1);
+} 
+)";
+
+static const char* g_shader_src = R"(
+#ifndef GLSL_VERSION_150
+#extension GL_EXT_gpu_shader4 : enable
+#extension GL_EXT_geometry_shader4 : enable
+#endif
+
+#define CIRCLE_RES 32
+
+layout(lines) in;
+layout(triangle_strip, max_vertices = 256) out;
+
+uniform mat4 u_view_mat;
+uniform mat4 u_proj_mat;
+uniform float scale_x = 1.0;
+uniform float scale_y = 0.1;
+
+in Vertex {
+    flat vec3 tangent;
+    flat vec3 normal;
+    flat vec4 color;
+    flat vec4 picking_color;
+} Input[];
+
+out Fragment {
+    vec3 view_position;
+    vec3 view_normal;
+    vec3 color;
+    vec4 picking_color;
+} Output;
+
+void emit(mat4 mat, int input_idx, vec4 v) {
+    vec4 view_coord = u_view_mat * mat * v;
+    mat3 norm_mat = inverse(transpose(mat3(u_view_mat) * mat3(mat)));
+    Output.view_position = view_coord.xyz;
+    Output.view_normal = normalize(norm_mat * v.xyz);
+    Output.color = Input[input_idx].color.xyz;
+    Output.pick_color = Input[input_idx].picking_color;
+    gl_Position = u_proj_mat * view_coord;
+    EmitVertex();
+}
+
+mat4 compute_mat(vec3 tangent, vec3 normal, vec3 translation) {
+    vec3 binormal = normalize(cross(tangent, normal));
+    return mat4(vec4(tangent, 0), vec4(binormal, 0), vec4(normal, 0), vec4(translation, 1));
+}
+
+void main() {
+    if (Input[0].color.a == 0) {
+        EndPrimitive();
+        return;
+    }
+
+    vec3 pos[2];
+    pos[0] = gl_in[0].gl_Position.xyz;
+    pos[1] = gl_in[1].gl_Position.xyz;
+
+    vec3 t[2];
+    t[0] = normalize(Input[0].tangent);
+    t[1] = normalize(Input[1].tangent);
+
+    vec3 n[2];
+    n[0] = normalize(Input[0].normal);
+    n[1] = normalize(Input[1].normal);
+
+    mat4 mat[2];
+    mat[0] = compute_mat(t[0], n[0], pos[0]);
+    mat[1] = compute_mat(t[1], n[1], pos[1]);
+
+    const float delta_angle = 6.28318530718 / float(CIRCLE_RES);
+    for (int u = 0; u <= CIRCLE_RES; u++) {
+        float angle = delta_angle * u;
+        vec4 v = vec4(scale_x * cos(angle), scale_y * sin(angle), 0, 1);
+        // disc 0
+        // FIX THIS COLOR INTERPOLATION
+        emit(mat[0], 0, v);
+        // disc 1
+        emit(mat[1], 1, v);
+    }
+    EndPrimitive();
+}
+)";
+
+static const char* f_shader_src = R"(
+
+)";
+
+void intitialize() {
+    constexpr int BUFFER_SIZE = 1024;
+    char buffer[BUFFER_SIZE];
+
+    v_shader = glCreateShader(GL_VERTEX_SHADER);
+    g_shader = glCreateShader(GL_GEOMETRY_SHADER);
+    f_shader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(v_shader, 1, &v_shader_src, 0);
+    glShaderSource(g_shader, 1, &g_shader_src, 0);
+    glShaderSource(f_shader, 1, &f_shader_src, 0);
+
+    glCompileShader(v_shader);
+    if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
+        printf("Error while compiling ribbons vertex shader:\n%s\n", buffer);
+    }
+    glCompileShader(g_shader);
+    if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, g_shader)) {
+        printf("Error while compiling ribbons geometry shader:\n%s\n", buffer);
+    }
+    glCompileShader(f_shader);
+    if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
+        printf("Error while compiling ribbons fragment shader:\n%s\n", buffer);
+    }
+
+    program = glCreateProgram();
+    glAttachShader(program, v_shader);
+    glAttachShader(program, g_shader);
+    glAttachShader(program, f_shader);
+    glLinkProgram(program);
+    if (gl::get_program_link_error(buffer, BUFFER_SIZE, program)) {
+        printf("Error while linking ribbons program:\n%s\n", buffer);
+    }
+
+    glDetachShader(program, v_shader);
+    glDetachShader(program, g_shader);
+    glDetachShader(program, f_shader);
+
+    glDeleteShader(v_shader);
+    glDeleteShader(g_shader);
+    glDeleteShader(f_shader);
+
+    attrib_loc_pos = glGetAttribLocation(program, "v_position");
+    attrib_loc_tang = glGetAttribLocation(program, "v_tangent");
+    attrib_loc_norm = glGetAttribLocation(program, "v_normal");
+    uniform_loc_view_mat = glGetUniformLocation(program, "u_view_mat");
+    uniform_loc_proj_mat = glGetUniformLocation(program, "u_proj_mat");
+    uniform_loc_x_scl = glGetUniformLocation(program, "u_x_scl");
+    uniform_loc_y_scl = glGetUniformLocation(program, "u_y_scl");
+
+    if (!vao) {
+        glGenVertexArrays(1, &vao);
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+
+        glEnableVertexAttribArray(attrib_loc_position);
+        glVertexAttribPointer(attrib_loc_position, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const GLvoid*)0);
+
+        glEnableVertexAttribArray(attrib_loc_tangent);
+        glVertexAttribPointer(attrib_loc_tangent, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const GLvoid*)12);
+
+        glEnableVertexAttribArray(attrib_loc_normal);
+        glVertexAttribPointer(attrib_loc_normal, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const GLvoid*)24);
+
+        glEnableVertexAttribArray(attrib_loc_color);
+        glVertexAttribPointer(attrib_loc_color, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (const GLvoid*)36);
+
+        glEnableVertexAttribArray(attrib_loc_picking);
+        glVertexAttribIPointer(attrib_loc_picking, 1, GL_UNSIGNED_INT, sizeof(Vertex), (const GLvoid*)40);
+
+        glBindVertexArray(0);
+    }
+}
+
+void shutdown() {
+    if (vao) glDeleteVertexArrays(1, &vao);
+}
+
+}
+
 void initialize() {
-	glGenVertexArrays(1, &empty_vao);
+    glGenVertexArrays(1, &empty_vao);
     glGenBuffers(1, &vbo);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBufferData(GL_ARRAY_BUFFER, VERTEX_BUFFER_SIZE, nullptr, GL_STREAM_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     vdw::initialize();
-	licorice::initialize();
+    licorice::initialize();
 }
 
 void shutdown() {
-	if (empty_vao) glDeleteVertexArrays(1, &empty_vao);
+    if (empty_vao) glDeleteVertexArrays(1, &empty_vao);
     if (vbo) glDeleteBuffers(1, &vbo);
 
     vdw::shutdown();
-	licorice::shutdown();
+    licorice::shutdown();
 }
 
-void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, const Array<uint32> atom_colors,
-              const mat4& view_mat, const mat4& proj_mat, float radii_scale) {
+void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, const Array<uint32> atom_colors, const mat4& view_mat,
+              const mat4& proj_mat, float radii_scale) {
     int64_t count = atom_positions.count;
     ASSERT(count == atom_radii.count && count == atom_colors.count);
 
-	mat4 inv_proj_mat = math::inverse(proj_mat);
+    mat4 inv_proj_mat = math::inverse(proj_mat);
 
-	unsigned int draw_count = 0;
-	static bool initialized = false;
+    unsigned int draw_count = 0;
+    static bool initialized = false;
 
-	//if (!initialized) {
-		glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_position_radius);
-		vec4* gpu_pos_rad = (vec4*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-		glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_color);
-		uint32*	gpu_color = (uint32*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+    // if (!initialized) {
+    glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_position_radius);
+    vec4* gpu_pos_rad = (vec4*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+    glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_color);
+    uint32* gpu_color = (uint32*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
 
-		// @ TODO: DISCARD ANY ZERO RADII OR ZERO COLOR ALPHA ATOMS HERE
-		for (int64_t i = 0; i < count; i++) {
-			if (atom_radii[i] <= 0.f) continue;
-			if ((atom_colors[i] & 0xff000000) == 0) continue;
-			gpu_pos_rad[i] = vec4(atom_positions[i], atom_radii[i] * radii_scale);
-			gpu_color[i] = atom_colors[i];
-			draw_count++;
-		}
+    // @ TODO: DISCARD ANY ZERO RADII OR ZERO COLOR ALPHA ATOMS HERE
+    for (int64_t i = 0; i < count; i++) {
+        if (atom_radii[i] <= 0.f) continue;
+        if ((atom_colors[i] & 0xff000000) == 0) continue;
+        gpu_pos_rad[i] = vec4(atom_positions[i], atom_radii[i] * radii_scale);
+        gpu_color[i] = atom_colors[i];
+        draw_count++;
+    }
 
-		glUnmapBuffer(GL_ARRAY_BUFFER);
-		glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_position_radius);
-		glUnmapBuffer(GL_ARRAY_BUFFER);
-		glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glUnmapBuffer(GL_ARRAY_BUFFER);
+    glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_position_radius);
+    glUnmapBuffer(GL_ARRAY_BUFFER);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-		initialized = true;
-	//}
+    initialized = true;
+    //}
 
     glEnable(GL_DEPTH_TEST);
 
     glBindVertexArray(vdw::vao);
     glUseProgram(vdw::program);
 
-	// Texture 0
-	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_position_radius);
-	glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, vdw::buf_position_radius);
+    // Texture 0
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_position_radius);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, vdw::buf_position_radius);
 
-	// Texture 1
-	glActiveTexture(GL_TEXTURE1);
-	glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_color);
-	glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, vdw::buf_color);
+    // Texture 1
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_color);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, vdw::buf_color);
 
-	// Uniforms
-	glUniform1i(vdw::uniform_loc_tex_pos_rad, 0);
-	glUniform1i(vdw::uniform_loc_tex_color, 1);
+    // Uniforms
+    glUniform1i(vdw::uniform_loc_tex_pos_rad, 0);
+    glUniform1i(vdw::uniform_loc_tex_color, 1);
     glUniformMatrix4fv(vdw::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
     glUniformMatrix4fv(vdw::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
-	glUniformMatrix4fv(vdw::uniform_loc_inv_proj_mat, 1, GL_FALSE, &inv_proj_mat[0][0]);
+    glUniformMatrix4fv(vdw::uniform_loc_inv_proj_mat, 1, GL_FALSE, &inv_proj_mat[0][0]);
 
-	// Draw call
-	glDrawElementsInstanced(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_BYTE, 0, draw_count);
+    // Draw call
+    glDrawElementsInstanced(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_BYTE, 0, draw_count);
 
     glUseProgram(0);
     glBindVertexArray(0);
@@ -1147,79 +1352,75 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
     glDisable(GL_DEPTH_TEST);
 }
 
-void draw_licorice(const Array<vec3> atom_positions, const Array<Bond> atom_bonds, const Array<uint32> atom_colors,
-                   const mat4& view_mat, const mat4& proj_mat, float radii_scale) {
-	int64_t count = atom_positions.count;
-	ASSERT(count == atom_colors.count);
-	ASSERT(count * sizeof(licorice::Vertex) < VERTEX_BUFFER_SIZE);
+void draw_licorice(const Array<vec3> atom_positions, const Array<Bond> atom_bonds, const Array<uint32> atom_colors, const mat4& view_mat,
+                   const mat4& proj_mat, float radii_scale) {
+    int64_t count = atom_positions.count;
+    ASSERT(count == atom_colors.count);
+    ASSERT(count * sizeof(licorice::Vertex) < VERTEX_BUFFER_SIZE);
 
-	glBindBuffer(GL_ARRAY_BUFFER, vbo);
-	licorice::Vertex* data = (licorice::Vertex*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-	for (int64_t i = 0; i < count; i++) {
-		data[i].position[0] = atom_positions[i][0];
-		data[i].position[1] = atom_positions[i][1];
-		data[i].position[2] = atom_positions[i][2];
-		data[i].color = atom_colors[i];
-	}
-	glUnmapBuffer(GL_ARRAY_BUFFER);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    licorice::Vertex* data = (licorice::Vertex*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+    for (int64_t i = 0; i < count; i++) {
+        data[i].position[0] = atom_positions[i][0];
+        data[i].position[1] = atom_positions[i][1];
+        data[i].position[2] = atom_positions[i][2];
+        data[i].color = atom_colors[i];
+    }
+    glUnmapBuffer(GL_ARRAY_BUFFER);
 
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, licorice::ibo);
-	glBufferData(GL_ELEMENT_ARRAY_BUFFER, atom_bonds.count * sizeof(Bond), atom_bonds.data, GL_STREAM_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, licorice::ibo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, atom_bonds.count * sizeof(Bond), atom_bonds.data, GL_STREAM_DRAW);
 
-	glEnable(GL_DEPTH_TEST);
+    glEnable(GL_DEPTH_TEST);
 
-	glBindVertexArray(licorice::vao);
-	glUseProgram(licorice::program);
-	glUniformMatrix4fv(licorice::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
-	glUniformMatrix4fv(licorice::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
-	glUniform1f(licorice::uniform_loc_radius_scl, radii_scale);
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, licorice::ibo);
-	glDrawElements(GL_LINES, (GLsizei)atom_bonds.count * 2, GL_UNSIGNED_INT, (const void*)0);
-	glUseProgram(0);
-	glBindVertexArray(0);
-	glBindBuffer(GL_ARRAY_BUFFER, 0);
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    glBindVertexArray(licorice::vao);
+    glUseProgram(licorice::program);
+    glUniformMatrix4fv(licorice::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
+    glUniformMatrix4fv(licorice::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
+    glUniform1f(licorice::uniform_loc_radius_scl, radii_scale);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, licorice::ibo);
+    glDrawElements(GL_LINES, (GLsizei)atom_bonds.count * 2, GL_UNSIGNED_INT, (const void*)0);
+    glUseProgram(0);
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
-	glDisable(GL_DEPTH_TEST);
+    glDisable(GL_DEPTH_TEST);
 }
 
 void draw_backbone(const Array<BackboneSegment> backbone, const Array<vec3> atom_positions, const mat4& view_mat, const mat4& proj_mat) {
-	immediate::set_view_matrix(view_mat);
-	immediate::set_proj_matrix(proj_mat);
+    immediate::set_view_matrix(view_mat);
+    immediate::set_proj_matrix(proj_mat);
 
-	for (const auto& seg : backbone) {
-		if (seg.ca_idx > -1)
-			immediate::draw_point(atom_positions[seg.ca_idx], immediate::COLOR_BLACK);
-		if (seg.c_idx > -1)
-			immediate::draw_point(atom_positions[seg.c_idx], immediate::COLOR_GREEN);
-		if (seg.o_idx > -1)
-			immediate::draw_point(atom_positions[seg.o_idx], immediate::COLOR_RED);
-	}
+    for (const auto& seg : backbone) {
+        if (seg.ca_idx > -1) immediate::draw_point(atom_positions[seg.ca_idx], immediate::COLOR_BLACK);
+        if (seg.c_idx > -1) immediate::draw_point(atom_positions[seg.c_idx], immediate::COLOR_GREEN);
+        if (seg.o_idx > -1) immediate::draw_point(atom_positions[seg.o_idx], immediate::COLOR_RED);
+    }
 
-	for (int i = 1; i < backbone.count; i++) {
-		if (backbone[i].ca_idx > -1 && backbone[i-1].ca_idx > -1)
-			immediate::draw_line(atom_positions[backbone[i-1].ca_idx], atom_positions[backbone[i].ca_idx], immediate::COLOR_WHITE);
-	}
+    for (int i = 1; i < backbone.count; i++) {
+        if (backbone[i].ca_idx > -1 && backbone[i - 1].ca_idx > -1)
+            immediate::draw_line(atom_positions[backbone[i - 1].ca_idx], atom_positions[backbone[i].ca_idx], immediate::COLOR_WHITE);
+    }
 
-	immediate::flush();
+    immediate::flush();
 }
 
-void draw_spline(const Array<SplineSegment> spline, const mat4 & view_mat, const mat4 & proj_mat) {
-	immediate::set_view_matrix(view_mat);
-	immediate::set_proj_matrix(proj_mat);
+void draw_spline(const Array<SplineSegment> spline, const mat4& view_mat, const mat4& proj_mat) {
+    immediate::set_view_matrix(view_mat);
+    immediate::set_proj_matrix(proj_mat);
 
-	for (const auto& seg : spline) {
-		immediate::draw_line(seg.position, seg.position + seg.tangent, immediate::COLOR_BLUE);
-		immediate::draw_line(seg.position, seg.position + seg.normal, immediate::COLOR_GREEN);
-		immediate::draw_line(seg.position, seg.position + seg.binormal, immediate::COLOR_RED);
-	}
+    for (const auto& seg : spline) {
+        immediate::draw_line(seg.position, seg.position + seg.tangent, immediate::COLOR_BLUE);
+        immediate::draw_line(seg.position, seg.position + seg.normal, immediate::COLOR_GREEN);
+        immediate::draw_line(seg.position, seg.position + seg.binormal, immediate::COLOR_RED);
+    }
 
-	for (int64 i = 1; i < spline.count; i++) {
-		immediate::draw_line(spline[i - 1].position, spline[i].position, immediate::COLOR_WHITE);
-	}
+    for (int64 i = 1; i < spline.count; i++) {
+        immediate::draw_line(spline[i - 1].position, spline[i].position, immediate::COLOR_WHITE);
+    }
 
-	immediate::flush();
+    immediate::flush();
 }
-
 
 }  // namespace draw
