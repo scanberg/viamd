@@ -5,6 +5,7 @@
 #include <core/common.h>
 #include <core/math_utils.h>
 #include <mol/aminoacid.h>
+#include <mol/trajectory_utils.h>
 #include <imgui.h>
 #include <ctype.h>
 
@@ -341,6 +342,52 @@ DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Arr
     return segments;
 }
 
+DynamicArray<BackboneAngles> compute_backbone_angles(const Array<vec3> pos, const Array<BackboneSegment> backbone) {
+	if (backbone.count == 0) return {};
+	DynamicArray<BackboneAngles> angles(backbone.count);
+	compute_backbone_angles(angles, pos, backbone);
+	return angles;
+}
+
+void compute_backbone_angles(Array<BackboneAngles> dst, const Array<vec3> pos, const Array<BackboneSegment> backbone) {
+	ASSERT(dst.count >= backbone.count);
+	float omega, phi, psi;
+
+	omega = 0;
+	phi = 0;
+	psi = compute_dihedral_angle(pos[backbone[0].n_idx], pos[backbone[0].ca_idx], pos[backbone[0].c_idx], pos[backbone[1].n_idx]);
+	dst[0] = { omega, phi, psi };
+
+	for (int64 i = 1; i < backbone.count - 1; i++) {
+		omega = compute_dihedral_angle(pos[backbone[i - 1].ca_idx], pos[backbone[i - 1].c_idx], pos[backbone[i].n_idx], pos[backbone[i].ca_idx]);
+		phi = compute_dihedral_angle(pos[backbone[i - 1].c_idx], pos[backbone[i].n_idx], pos[backbone[i].ca_idx], pos[backbone[i].c_idx]);
+		psi = compute_dihedral_angle(pos[backbone[i].n_idx], pos[backbone[i].ca_idx], pos[backbone[i].c_idx], pos[backbone[i + 1].n_idx]);
+		dst[i] = { omega, phi, psi };
+	}
+
+	auto N = backbone.count - 1;
+	omega = compute_dihedral_angle(pos[backbone[N - 1].ca_idx], pos[backbone[N - 1].c_idx], pos[backbone[N].n_idx], pos[backbone[N].ca_idx]);
+	phi = compute_dihedral_angle(pos[backbone[N - 1].c_idx], pos[backbone[N].n_idx], pos[backbone[N].ca_idx], pos[backbone[N].c_idx]);
+	psi = 0;
+	dst[N] = { omega, phi, psi };
+}
+
+BackboneAnglesTrajectory compute_backbone_angles_trajectory(const Trajectory& trajectory, const Array<BackboneSegment> backbone) {
+	if (trajectory.num_frames == 0 || backbone.count == 0) return {};
+
+	BackboneAnglesTrajectory bat;
+	bat.num_frames = trajectory.num_frames;
+	bat.num_segments = backbone.count;
+	bat.angle_data = DynamicArray<BackboneAngles>(bat.num_frames * bat.num_segments);
+
+	// @TODO: parallelize?
+	for (int f_idx = 0; f_idx < trajectory.num_frames; f_idx++) {
+		auto pos = get_trajectory_positions(trajectory, f_idx);
+		auto& b_angles = get_backbone_angles(bat, f_idx);
+		compute_backbone_angles(b_angles, pos, backbone);
+	}
+}
+
 DynamicArray<float> compute_atom_radii(const Array<Element> elements) {
     DynamicArray<float> radii(elements.count, 0);
     compute_atom_radii(radii, elements);
@@ -361,8 +408,7 @@ DynamicArray<uint32> compute_atom_colors(const MoleculeStructure& mol, ColorMapp
 }
 
 void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, ColorMapping mapping) {
-    // @TODO: Implement different mappings
-    (void)mapping;
+    // @TODO: Implement more mappings
 
     // CPK
     switch (mapping) {
@@ -697,7 +743,7 @@ static void shutdown() {
 
 namespace licorice {
 struct Vertex {
-    float32 position[3];
+    vec3 position;
     uint32 color;
 };
 
@@ -1055,7 +1101,7 @@ struct Vertex {
     vec3 normal;
     unsigned int color = 0xffffffff;
     unsigned int picking_id = 0xffffffff;
-}
+};
 
 static GLuint vao = 0;
 static GLuint program = 0;
@@ -1080,11 +1126,11 @@ in vec4 v_color;
 in uint v_picking_id;
 
 out Vertex {
-    flat vec3 tangent;
-    flat vec3 normal;
-    flat vec4 color;
-    flat vec4 picking_color;
-} Output;
+    vec3 tangent;
+    vec3 normal;
+    vec4 color;
+    vec4 picking_color;
+} out_vert;
 
 vec4 pack_u32(uint data) {
     return vec4(
@@ -1095,19 +1141,16 @@ vec4 pack_u32(uint data) {
 }
  
 void main() {
-    Output.tangent = v_tangent;
-    Output.normal = v_normal;
-    Output.color = v_color;
-    Output.picking_color = pack_u32(in_picking_id);
-    gl_Position = vec4(in_position, 1);
+    out_vert.tangent = v_tangent;
+    out_vert.normal = v_normal;
+    out_vert.color = v_color;
+    out_vert.picking_color = pack_u32(v_picking_id);
+    gl_Position = vec4(v_position, 1);
 } 
 )";
 
 static const char* g_shader_src = R"(
-#ifndef GLSL_VERSION_150
-#extension GL_EXT_gpu_shader4 : enable
-#extension GL_EXT_geometry_shader4 : enable
-#endif
+#version 150 core
 
 #define CIRCLE_RES 32
 
@@ -1120,37 +1163,37 @@ uniform float scale_x = 1.0;
 uniform float scale_y = 0.1;
 
 in Vertex {
-    flat vec3 tangent;
-    flat vec3 normal;
-    flat vec4 color;
-    flat vec4 picking_color;
-} Input[];
+    vec3 tangent;
+    vec3 normal;
+    vec4 color;
+    vec4 picking_color;
+} in_vert[];
 
 out Fragment {
-    vec3 view_position;
-    vec3 view_normal;
-    vec3 color;
-    vec4 picking_color;
-} Output;
+    smooth vec3 view_position;
+    smooth vec3 view_normal;
+    smooth vec4 color;
+    flat vec4 picking_color;
+} out_frag;
 
 void emit(mat4 mat, int input_idx, vec4 v) {
     vec4 view_coord = u_view_mat * mat * v;
     mat3 norm_mat = inverse(transpose(mat3(u_view_mat) * mat3(mat)));
-    Output.view_position = view_coord.xyz;
-    Output.view_normal = normalize(norm_mat * v.xyz);
-    Output.color = Input[input_idx].color.xyz;
-    Output.pick_color = Input[input_idx].picking_color;
+    out_frag.view_position = view_coord.xyz;
+    out_frag.view_normal = normalize(norm_mat * v.xyz);
+    out_frag.color = in_vert[input_idx].color;
+    out_frag.picking_color = in_vert[input_idx].picking_color;
     gl_Position = u_proj_mat * view_coord;
     EmitVertex();
 }
 
 mat4 compute_mat(vec3 tangent, vec3 normal, vec3 translation) {
     vec3 binormal = normalize(cross(tangent, normal));
-    return mat4(vec4(tangent, 0), vec4(binormal, 0), vec4(normal, 0), vec4(translation, 1));
+    return mat4(vec4(binormal, 0), vec4(normal, 0), vec4(tangent, 0), vec4(translation, 1));
 }
 
 void main() {
-    if (Input[0].color.a == 0) {
+    if (in_vert[0].color.a == 0) {
         EndPrimitive();
         return;
     }
@@ -1160,12 +1203,12 @@ void main() {
     pos[1] = gl_in[1].gl_Position.xyz;
 
     vec3 t[2];
-    t[0] = normalize(Input[0].tangent);
-    t[1] = normalize(Input[1].tangent);
+    t[0] = normalize(in_vert[0].tangent);
+    t[1] = normalize(in_vert[1].tangent);
 
     vec3 n[2];
-    n[0] = normalize(Input[0].normal);
-    n[1] = normalize(Input[1].normal);
+    n[0] = normalize(in_vert[0].normal);
+    n[1] = normalize(in_vert[1].normal);
 
     mat4 mat[2];
     mat[0] = compute_mat(t[0], n[0], pos[0]);
@@ -1186,16 +1229,39 @@ void main() {
 )";
 
 static const char* f_shader_src = R"(
+#version 150 core
+#extension GL_ARB_explicit_attrib_location : enable
 
+in Fragment {
+	smooth vec3 view_position;
+    smooth vec3 view_normal;
+    smooth vec4 color;
+	flat vec4 picking_color;
+} in_frag;
+
+layout(location = 0) out vec4 out_color;
+layout(location = 1) out vec4 out_picking_id;
+
+void main() {
+    vec4 color = in_frag.color;
+    vec3 V = -normalize(in_frag.view_position);
+	vec3 N = normalize(in_frag.view_normal);
+	vec3 L = normalize(vec3(1,1,1));
+
+    color.rgb = color.rgb * max(0.0, dot(N, L));
+
+    out_color = vec4(color.rgb, color.a);
+    out_picking_id = in_frag.picking_color;
+}
 )";
 
 void intitialize() {
     constexpr int BUFFER_SIZE = 1024;
     char buffer[BUFFER_SIZE];
 
-    v_shader = glCreateShader(GL_VERTEX_SHADER);
-    g_shader = glCreateShader(GL_GEOMETRY_SHADER);
-    f_shader = glCreateShader(GL_FRAGMENT_SHADER);
+    GLuint v_shader = glCreateShader(GL_VERTEX_SHADER);
+    GLuint g_shader = glCreateShader(GL_GEOMETRY_SHADER);
+    GLuint f_shader = glCreateShader(GL_FRAGMENT_SHADER);
     glShaderSource(v_shader, 1, &v_shader_src, 0);
     glShaderSource(g_shader, 1, &g_shader_src, 0);
     glShaderSource(f_shader, 1, &f_shader_src, 0);
@@ -1230,13 +1296,16 @@ void intitialize() {
     glDeleteShader(g_shader);
     glDeleteShader(f_shader);
 
-    attrib_loc_pos = glGetAttribLocation(program, "v_position");
-    attrib_loc_tang = glGetAttribLocation(program, "v_tangent");
-    attrib_loc_norm = glGetAttribLocation(program, "v_normal");
+    attrib_loc_position = glGetAttribLocation(program, "v_position");
+    attrib_loc_tangent = glGetAttribLocation(program, "v_tangent");
+    attrib_loc_normal = glGetAttribLocation(program, "v_normal");
+	attrib_loc_color = glGetAttribLocation(program, "v_color");
+	attrib_loc_picking = glGetAttribLocation(program, "v_picking_id");
+
     uniform_loc_view_mat = glGetUniformLocation(program, "u_view_mat");
     uniform_loc_proj_mat = glGetUniformLocation(program, "u_proj_mat");
-    uniform_loc_x_scl = glGetUniformLocation(program, "u_x_scl");
-    uniform_loc_y_scl = glGetUniformLocation(program, "u_y_scl");
+    uniform_loc_scale_x = glGetUniformLocation(program, "u_scale_x");
+    uniform_loc_scale_y = glGetUniformLocation(program, "u_scale_y");
 
     if (!vao) {
         glGenVertexArrays(1, &vao);
@@ -1277,6 +1346,7 @@ void initialize() {
 
     vdw::initialize();
     licorice::initialize();
+	ribbons::intitialize();
 }
 
 void shutdown() {
@@ -1285,6 +1355,7 @@ void shutdown() {
 
     vdw::shutdown();
     licorice::shutdown();
+	ribbons::shutdown();
 }
 
 void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, const Array<uint32> atom_colors, const mat4& view_mat,
@@ -1361,9 +1432,7 @@ void draw_licorice(const Array<vec3> atom_positions, const Array<Bond> atom_bond
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     licorice::Vertex* data = (licorice::Vertex*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
     for (int64_t i = 0; i < count; i++) {
-        data[i].position[0] = atom_positions[i][0];
-        data[i].position[1] = atom_positions[i][1];
-        data[i].position[2] = atom_positions[i][2];
+        data[i].position = atom_positions[i];
         data[i].color = atom_colors[i];
     }
     glUnmapBuffer(GL_ARRAY_BUFFER);
@@ -1386,6 +1455,36 @@ void draw_licorice(const Array<vec3> atom_positions, const Array<Bond> atom_bond
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
     glDisable(GL_DEPTH_TEST);
+}
+
+void draw_ribbons(const Array<SplineSegment> spline, const mat4& view_mat, const mat4& proj_mat) {
+	ASSERT(spline.count * sizeof(ribbons::Vertex) < VERTEX_BUFFER_SIZE);
+
+	glBindBuffer(GL_ARRAY_BUFFER, vbo);
+	ribbons::Vertex* data = (ribbons::Vertex*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+	for (int64_t i = 0; i < spline.count; i++) {
+		data[i].position = spline[i].position;
+		data[i].tangent = spline[i].tangent;
+		data[i].normal = spline[i].normal;
+		data[i].color = *((uint32*)immediate::COLOR_WHITE);
+		data[i].picking_id = 0xffffffff;
+	}
+	glUnmapBuffer(GL_ARRAY_BUFFER);
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+	glEnable(GL_DEPTH_TEST);
+
+	glBindVertexArray(ribbons::vao);
+	glUseProgram(ribbons::program);
+	glUniformMatrix4fv(ribbons::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
+	glUniformMatrix4fv(ribbons::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
+	glUniform1f(ribbons::uniform_loc_scale_x, 2.0f);
+	glUniform1f(ribbons::uniform_loc_scale_y, 0.5f);
+	glDrawArrays(GL_LINE_STRIP, 0, spline.count);
+	glUseProgram(0);
+	glBindVertexArray(0);
+
+	glDisable(GL_DEPTH_TEST);
 }
 
 void draw_backbone(const Array<BackboneSegment> backbone, const Array<vec3> atom_positions, const mat4& view_mat, const mat4& proj_mat) {

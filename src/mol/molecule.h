@@ -30,15 +30,6 @@ struct Chain {
 	int32 end_res_idx;
 };
 
-struct BackboneSegment {
-	int32 ca_idx;
-	int32 ha_idx;
-	int32 cb_idx;
-	int32 n_idx;
-	int32 c_idx;
-	int32 o_idx;
-};
-
 // Interface to access molecular data
 struct MoleculeStructure {
 	Array<vec3>		atom_positions;

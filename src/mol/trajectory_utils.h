@@ -3,8 +3,12 @@
 #include <mol/trajectory.h>
 #include <core/allocator.h>
 
-Trajectory* read_and_allocate_trajectory(const char* file, Allocator* alloc = nullptr);
+// Reads the header info of a trajectory and allocates space for it
+Trajectory* allocate_trajectory(const char* file);
 void free_trajectory(Trajectory* traj);
+
+// Reads the actual trajectory position information
+void read_trajectory_async(Trajectory* traj, void(*on_finish) = nullptr);
 
 TrajectoryFrame allocate_trajectory_frame(int num_atoms, Allocator* alloc = nullptr);
 void free_trajectory_frame(TrajectoryFrame* frame);

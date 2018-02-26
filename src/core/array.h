@@ -54,9 +54,16 @@ struct DynamicArray : Array<T> {
         this->count = 0;
     }
 
-	DynamicArray(int64 count, T value = 0) : capacity(count > INIT_CAPACITY ? count : INIT_CAPACITY) {
+	DynamicArray(int64 count) : capacity(count) {
+		ASSERT(capacity > 0);
+		this->data = (T*)MALLOC(capacity * sizeof(T));
+		this->count = capacity;
+	}
+
+	DynamicArray(int64 count, T value) : capacity(count > INIT_CAPACITY ? count : INIT_CAPACITY) {
 		this->data = (T*)MALLOC(capacity * sizeof(T));
 		this->count = count;
+		// Is this decent?
 		memset(this->data, (int)value, this->count * sizeof(T));
 	}
 

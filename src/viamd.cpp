@@ -78,6 +78,7 @@ struct ApplicationData {
     bool show_console = false;
 };
 
+static float compute_avg_ms(float dt);
 static void draw_main_menu(ApplicationData* data);
 static void draw_console(ApplicationData* data, int width, int height, float dt);
 static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y);
@@ -93,10 +94,6 @@ int main(int, char**) {
 
 	float radii_scale = 1.0f;
 
-	StringBuffer<256> buff("Hej alla idioter");
-
-    vec3 rgb(1,1,1);
-
     //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
     //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
 	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
@@ -109,10 +106,10 @@ int main(int, char**) {
 	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
 	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
 	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
-	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid-6T/prod-centered.xtc");
+	Trajectory* traj = allocate_and_read_trajectory_async(PROJECT_SOURCE_DIR "/data/amyloid-6T/prod-centered.xtc");
 	
     data.mol_struct = &pdb_res.pdb;
-    data.trajectory = nullptr;
+    data.trajectory = traj;
 
 	DynamicArray<BackboneSegment> backbone;
 	DynamicArray<SplineSegment> spline;
@@ -124,6 +121,11 @@ int main(int, char**) {
 	if (data.mol_struct->chains.count > 0) {
 		backbone = compute_backbone(data.mol_struct->chains[0], data.mol_struct->residues, data.mol_struct->atom_labels);
 		spline = compute_spline(data.mol_struct->atom_positions, backbone, 8);
+		auto backbone_angles = compute_backbone_angles(data.mol_struct->atom_positions, backbone);
+		printf("omega  phi   psi\n");
+		for (const auto& ba : backbone_angles) {
+			printf("% 6.1f % 6.1f % 6.1f\n", ba.omega * math::RAD_TO_DEG, ba.phi * math::RAD_TO_DEG, ba.psi * math::RAD_TO_DEG);
+		}
 	}
 
     platform::initialize();
@@ -174,8 +176,10 @@ int main(int, char**) {
 
         bool time_changed = false;
 
+		float ms = compute_avg_ms(dt);
+
 		ImGui::Begin("Misc");
-		ImGui::Text("FPS: %.1f", 1.f / dt);
+		ImGui::Text("%.2f ms (%.1f fps)", ms, 1000.f / (ms));
 		ImGui::Text("MouseVel: %g, %g", input->mouse_velocity.x, input->mouse_velocity.y);
 		ImGui::Text("Camera Pos: %g, %g, %g", data.camera.position.x, data.camera.position.y, data.camera.position.z);
 		ImGui::Text("Mouse Buttons: [%i, %i, %i, %i, %i]", input->mouse_down[0], input->mouse_down[1], input->mouse_down[2], input->mouse_down[3], input->mouse_down[4]);
@@ -283,8 +287,9 @@ int main(int, char**) {
 		glEnable(GL_DEPTH_TEST);
 		glDepthFunc(GL_LESS);
 
-        //draw::draw_vdw(data.mol_struct->atom_positions, data.atom_radii, data.atom_colors, view_mat, proj_mat, radii_scale);
+        draw::draw_vdw(data.mol_struct->atom_positions, data.atom_radii, data.atom_colors, view_mat, proj_mat, radii_scale);
 		//draw::draw_licorice(data.mol_struct->atom_positions, data.mol_struct->bonds, data.atom_colors, view_mat, proj_mat, radii_scale);
+		//draw::draw_ribbons(spline, view_mat, proj_mat);
 
         // Activate backbuffer
         glDisable(GL_DEPTH_TEST);
@@ -296,8 +301,8 @@ int main(int, char**) {
         // Apply tone mapping
         postprocessing::apply_tonemapping(data.fbo.tex_color);
 
-		//draw::draw_backbone(backbone, data.mol_struct->atom_positions, view_mat, proj_mat);
-		draw::draw_spline(spline, view_mat, proj_mat);
+		draw::draw_backbone(backbone, data.mol_struct->atom_positions, view_mat, proj_mat);
+		//draw::draw_spline(spline, view_mat, proj_mat);
 
 		if (data.use_ssao) {
 			postprocessing::apply_ssao(data.fbo.tex_depth, proj_mat, data.ssao_intensity, data.ssao_radius);
@@ -326,6 +331,21 @@ void draw_random_triangles(const mat4& mvp) {
 		immediate::draw_triangle(&v0[0], &v1[0], &v2[0], immediate::COLOR_RED);
 	}
 	immediate::flush();
+}
+
+// @NOTE: Perhaps this can be done with a simple running mean?
+static float compute_avg_ms(float dt) {
+	constexpr int num_frames = 100;
+	static float ms_buffer[num_frames] = {};
+	static int next_idx = 0;
+	next_idx = (next_idx + 1) % num_frames;
+	ms_buffer[next_idx] = dt * 1000.f; // seconds to milliseconds
+
+	float avg = 0.f;
+	for (int i = 0; i < num_frames; i++) {
+		avg += ms_buffer[i];
+	}
+	return avg / (float)num_frames;
 }
 
 static void draw_main_menu(ApplicationData* data) {
