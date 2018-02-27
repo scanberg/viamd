@@ -41,6 +41,8 @@ inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backb
 	return Array<BackboneAngles>(&backbone_angle_traj.angle_data[frame_index * backbone_angle_traj.num_segments], backbone_angle_traj.num_segments);
 }
 
+void plot_ramachandran(const Array<BackboneAngles> angles = {}, const Array<BackboneAngles> highlighted_angles = {});
+
 void transform_positions(Array<vec3> positions, const mat4& transformation);
 void compute_bounding_box(vec3* min_box, vec3* max_box, const Array<vec3> positions);
 

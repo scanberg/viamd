@@ -4,7 +4,6 @@
 #include <core/array.h>
 #include <core/string_utils.h>
 #include <core/common.h>
-#include <atomic>
 
 constexpr int MAX_TRAJECTORY_FRAME_BUFFER_SIZE = GIGABYTES(2);
 

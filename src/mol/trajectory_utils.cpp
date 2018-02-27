@@ -5,7 +5,6 @@
 #include <xdrfile_xtc.h>
 #include <string>
 #include <fstream>
-#include <thread>
 
 // @TODO: Remove dependency of string
 
@@ -59,6 +58,11 @@ Trajectory* allocate_trajectory(const char* path) {
     memcpy(traj->frame_offsets.data, offsets, num_frames * sizeof(int64));
     free(offsets);
 
+	// @TODO: Only read in data if it fits into memory
+	// Allocate the data needed for the frames
+	traj->position_data.resize(num_frames * traj->num_atoms);
+	traj->frame_buffer.resize(num_frames);
+
     return traj;
 }
 
@@ -66,44 +70,30 @@ void free_trajectory(Trajectory* traj) {
     free(traj);
 }
 
-void read_trajectory_async(Trajectory* traj, void(*on_finish(void))) {
+void read_trajectory(Trajectory* traj) {
 	ASSERT(traj);
-
-	// @TODO: Only read in data if it fits into memory
 	auto num_frames = traj->frame_offsets.count;
-	traj->position_data.resize(num_frames * traj->num_atoms);
-	traj->frame_buffer.resize(num_frames);
-
-	std::thread([traj, on_finish]() {
-		// Do this in separate thread
-		auto num_frames = traj->frame_offsets.count;
-		XDRFILE* file = xdrfile_open(traj->path_to_file, "r");
-		if (!file) {
-			printf("Error, could not open file %s\n", traj->path_to_file.data);
-			return;
+	XDRFILE* file = xdrfile_open(traj->path_to_file, "r");
+	if (!file) {
+		printf("Error, could not open file %s\n", traj->path_to_file.data);
+		return;
+	}
+	for (int i = 0; i < num_frames; i++) {
+		vec3* pos_data = traj->position_data.data + (i * traj->num_atoms);
+		TrajectoryFrame* frame = traj->frame_buffer.data + i;
+		frame->atom_positions.data = pos_data;
+		frame->atom_positions.count = traj->num_atoms;
+		frame->index = i;
+		int step;
+		float precision;
+		read_xtc(file, traj->num_atoms, &step, &frame->time, (float(*)[3]) & frame->box, (float(*)[3])pos_data, &precision);
+		for (int j = 0; j < traj->num_atoms; j++) {
+			pos_data[j] *= 10.f;
 		}
-		for (int i = 0; i < num_frames; i++) {
-			vec3* pos_data = traj->position_data.data + (i * traj->num_atoms);
-			TrajectoryFrame* frame = traj->frame_buffer.data + i;
-			frame->atom_positions.data = pos_data;
-			frame->atom_positions.count = traj->num_atoms;
-			frame->index = i;
-			int step;
-			float precision;
-			read_xtc(file, traj->num_atoms, &step, &frame->time, (float(*)[3]) & frame->box, (float(*)[3])pos_data, &precision);
-			for (int j = 0; j < traj->num_atoms; j++) {
-				pos_data[j] *= 10.f;
-			}
-			frame->box *= 10.f;
-			traj->num_frames++;
-		}
-		if (on_finish) {
-			on_finish();
-		}
-	}).detach();
+		frame->box *= 10.f;
+		traj->num_frames++;
+	}
 }
-
-
 
 TrajectoryFrame copy_trajectory_frame(const Trajectory& traj, int frame_index, Allocator* alloc) {
 	(void)traj;

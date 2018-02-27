@@ -9,6 +9,120 @@
 #include <imgui.h>
 #include <ctype.h>
 
+constexpr int ramachandran_width = 36;
+constexpr int ramachandran_height = 36;
+constexpr GLenum ramachandran_format = GL_BGR;
+constexpr unsigned char ramachandran_data[] =
+    "  –  –  –  –  –  –  –  –  –  –  –  –  –  P  P                   PP PP PP PP PP PP                    P  P  –  P  –  –  –  –  –  –  –  –  –  –  "
+    "–  –  P  P                   PP PP –– –– PP PP                    P  P  P  P  –  –  –  –  –  –  –  –  –  –  P  P  P  P                   PP PP "
+    "–– PP PP PP                    P  P  P  P  –  –  –  P  –  –  –  –  –  P  P  P  P  P                   PP PP –– PP PP PP                         "
+    "    P  P  P  P  P  P  –  –  –  –  P  P  P  P                      PP PP PP PP PP                                P  P  P  P  P  –  –  P  P  P  P "
+    " P  P  P                      PP PP PP PP PP                                P  P  P  P  P  P  P  –  –  P P  P  P  P  P  P  P                    "
+    "                                        P  P  P P  P  P   P  P  P  P P  –  P  P  P  P  P  P  P  P                                               "
+    "    P P  P  P  P  –  –  –  –  –  –  –  –  –  –  P  P  P  P  P  P                                               P  P  P  P  P  –  –  –  –  –  –  "
+    "–  –  –  –  –  –  –  P  P  P                                      P  P  P  P  P  P  –  –  –  –  –  –  –  –  –  –  –  –  –  –  –  –  P  P        "
+    "                              P  P  P  –  –  P  –  –  –  –  –  –  –  –  ÿ  ÿ  ÿ  ÿ  –  –  –  P  P  P                                      P  P  "
+    "P  P  –  –  –  –  –  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  –  P  P  P                                      P  P  P  P  P  P  –  –  –  –  –  ÿ  ÿ  ÿ  "
+    "ÿ  ÿ  ÿ  ÿ  –  –  P  P  P                                         P  P  P  P  P  –  –  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  –  P  P  P           "
+    "                              P  P  P  P  P  –  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  P  P  P    P  P  P  P  P  P  P  P  P               P  P  "
+    "P  P  –  –  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  P  P  P  P    P  P  P  P  P  P  P  P  P               P  P  P  P  –  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  "
+    "ÿ  –  –  –  P  P  P       P  P  P  –  P  –  –  P  P               P  P  P  P  –  –  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  –  P  P  P          P  P  P  "
+    "P  –  –  –  P  P               P  P  P  P  –  –  –  –  –  ÿ  ÿ  ÿ  ÿ  –  –  –  P  P  P  P          P  P  P  –  –  –  P  P  P               P  P "
+    " P  P  –  –  –  –  –  –  ÿ  –  –  –  –  –  P  P  P          P  P  P  –  –  –  –  –  P  P               P  P  P  P  –  –  –  –  –  –  –  –  –  – "
+    " –  P  P  P             P  P  P  –  ÿ  ÿ  –  P  P  P               P  P  P  P  P  –  –  –  –  –  –  –  –  –  –  P  P  P             P  P  –  –  "
+    "ÿ  –  –  P  P  P               P  P  P   P  P  –  –  –  –  –  –  –  –  –  –  –  P  P            P  P  –  –  –  –  –  –  P  P                P  "
+    "P  P  P  –  –  –  –  –  –  –  –  –  –  –  –  P  P            P  P  P  –  –  –  P  P  P  P                P  P  P  –  –  –  –  –  –  –  –  –  –  "
+    "–  –  P  P  P  P  P  P  PP  P  –  –  –  –  P  P  P                   P  P  P  –  –  –  –  –  –  –  –  –  –  –  –  –  –  P  P  P  P  PP  P  –  – "
+    " –  –  P  P  P                   P  P  P  –  –  –  –  –  ÿ  –  –  ÿ  –  –  –  –  –  –  –  –  P  PP  P  P  P  P  –  –  P  P                   P  "
+    "P  –  –  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  –  –  –  –  P  PP  P  P  P  P  P  P  P  P                   P  P  –  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  "
+    "ÿ  ÿ  –  –  –  –  P  P  P         P  P  P  P  P  P                   P  P  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  –  P  P  P           "
+    "                              P  P  P  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  P  P  P                                      P  P  P  "
+    "P  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  –  –  P  P                                      P  P  P  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  "
+    "ÿ  ÿ  –  –  –  P  P  P  P                                      P  P  –  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  –  P  P                 "
+    "                           P  P  P  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  –  P  P                PP PP PP PP PP                 P  P  P  "
+    "P  –";
+
+enum class RamachandranConformationClassification : uint8 {
+    None,
+    BetaHigh,
+    BetaMid,
+    BetaLow,
+    AlphaHigh,
+    AlphaMid,
+    AlphaLow,
+    LeftAlphaHigh,
+    LeftAlphaMid,
+    LeftAlphaLow,
+    PMid,
+    PLow
+};
+
+void plot_ramachandran(const Array<BackboneAngles> angles, const Array<BackboneAngles> highlighted_angles) {
+    static GLuint ramachandran_tex = 0;
+    if (!ramachandran_tex) {
+
+        // @TODO: FLIP THE GOD DAMN DATA FROM THE BEGINNING!!!
+        unsigned char data[ramachandran_width * ramachandran_height * 3];
+        for (int y = 0; y < ramachandran_height; y++) {
+            for (int x = 0; x < ramachandran_width; x++) {
+                int dst_idx = y * ramachandran_width + x;
+                int src_idx = (ramachandran_height - 1 - y) * ramachandran_width + x;
+                data[dst_idx * 3 + 0] = ramachandran_data[src_idx * 3 + 0];
+                data[dst_idx * 3 + 1] = ramachandran_data[src_idx * 3 + 1];
+                data[dst_idx * 3 + 2] = ramachandran_data[src_idx * 3 + 2];
+            }
+        }
+
+        glGenTextures(1, &ramachandran_tex);
+        glBindTexture(GL_TEXTURE_2D, ramachandran_tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, ramachandran_width, ramachandran_height, 0, ramachandran_format, GL_UNSIGNED_BYTE, data);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    constexpr vec2 res(512, 512);
+    ImGui::SetNextWindowContentSize(ImVec2(res.x, res.y));
+    ImGui::Begin("Ramachandran");
+
+    ImVec2 win_pos = ImGui::GetCursorScreenPos();
+    ImVec2 max_region = ImGui::GetWindowContentRegionMax();
+    ImVec2 min_region = ImGui::GetWindowContentRegionMin();
+    ImVec2 canvas_size(max_region.x - min_region.x, max_region.y - min_region.y);
+	ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    ImGui::Image((ImTextureID)ramachandran_tex, canvas_size);
+
+    constexpr float radius = 10.f;
+    if (angles.count > 0) {
+        int64 count = math::min(angles.count, 3000LL);
+
+        for (int64 i = 0; i < count; i++) {
+			if (angles[i].phi == 0.f || angles[i].psi == 0.f) continue;
+            vec2 coord = vec2(angles[i].phi, angles[i].psi) / (2.f * math::PI) + 0.5f;
+			// @NOTE: Y-Axis is flipped because of the coordinate system which ImGui uses.
+            ImVec2 win_pos(coord.x * canvas_size.x + win_pos.x, -coord.y * canvas_size.y + win_pos.y);
+            dl->AddQuadFilled(ImVec2(win_pos.x - radius, win_pos.y - radius), ImVec2(win_pos.x - radius, win_pos.y + radius), ImVec2(win_pos.x + radius, win_pos.y + radius),
+                              ImVec2(win_pos.x + radius, win_pos.y - radius), IM_COL32(255, 255, 255, 40));
+        }
+    }
+
+	if (highlighted_angles.count > 0) {
+		for (const auto& angle : highlighted_angles) {
+			if (angle.phi == 0.f || angle.psi == 0.f) continue;
+			vec2 coord = vec2(angle.phi, angle.psi) / (2.f * math::PI) + 0.5f;
+			// @NOTE: Y-Axis is flipped because of the coordinate system which ImGui uses.
+			ImVec2 win_pos(coord.x * canvas_size.x + win_pos.x, -coord.y * canvas_size.y + win_pos.y);
+			dl->AddQuadFilled(ImVec2(win_pos.x - radius, win_pos.y - radius), ImVec2(win_pos.x - radius, win_pos.y + radius), ImVec2(win_pos.x + radius, win_pos.y + radius),
+				ImVec2(win_pos.x + radius, win_pos.y - radius), IM_COL32(255, 255, 0, 255));
+		}
+	}
+
+    ImGui::End();
+}
+
 void transform_positions(Array<vec3> positions, const mat4& transformation) {
     for (auto& p : positions) {
         p = vec3(transformation * vec4(p, 1));
@@ -70,7 +184,7 @@ DynamicArray<Bond> compute_covalent_bonds(const Array<vec3> atom_pos, const Arra
 
     DynamicArray<Bond> bonds;
 
-    auto try_and_create_atom_bond = [& pos = atom_pos, &elem = atom_elem, &bonds = bonds ](int i, int j)->bool {
+    auto try_and_create_atom_bond = [& pos = atom_pos, &elem = atom_elem, &bonds = bonds](int i, int j) -> bool {
         auto d = element::covalent_radius(elem[i]) + element::covalent_radius(elem[j]);
         auto d1 = d + 0.3f;
         auto d2 = d - 0.5f;
@@ -343,49 +457,51 @@ DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Arr
 }
 
 DynamicArray<BackboneAngles> compute_backbone_angles(const Array<vec3> pos, const Array<BackboneSegment> backbone) {
-	if (backbone.count == 0) return {};
-	DynamicArray<BackboneAngles> angles(backbone.count);
-	compute_backbone_angles(angles, pos, backbone);
-	return angles;
+    if (backbone.count == 0) return {};
+    DynamicArray<BackboneAngles> angles(backbone.count);
+    compute_backbone_angles(angles, pos, backbone);
+    return angles;
 }
 
 void compute_backbone_angles(Array<BackboneAngles> dst, const Array<vec3> pos, const Array<BackboneSegment> backbone) {
-	ASSERT(dst.count >= backbone.count);
-	float omega, phi, psi;
+    ASSERT(dst.count >= backbone.count);
+    float omega, phi, psi;
 
-	omega = 0;
-	phi = 0;
-	psi = compute_dihedral_angle(pos[backbone[0].n_idx], pos[backbone[0].ca_idx], pos[backbone[0].c_idx], pos[backbone[1].n_idx]);
-	dst[0] = { omega, phi, psi };
+    omega = 0;
+    phi = 0;
+    psi = compute_dihedral_angle(pos[backbone[0].n_idx], pos[backbone[0].ca_idx], pos[backbone[0].c_idx], pos[backbone[1].n_idx]);
+    dst[0] = {omega, phi, psi};
 
-	for (int64 i = 1; i < backbone.count - 1; i++) {
-		omega = compute_dihedral_angle(pos[backbone[i - 1].ca_idx], pos[backbone[i - 1].c_idx], pos[backbone[i].n_idx], pos[backbone[i].ca_idx]);
-		phi = compute_dihedral_angle(pos[backbone[i - 1].c_idx], pos[backbone[i].n_idx], pos[backbone[i].ca_idx], pos[backbone[i].c_idx]);
-		psi = compute_dihedral_angle(pos[backbone[i].n_idx], pos[backbone[i].ca_idx], pos[backbone[i].c_idx], pos[backbone[i + 1].n_idx]);
-		dst[i] = { omega, phi, psi };
-	}
+    for (int64 i = 1; i < backbone.count - 1; i++) {
+        omega = compute_dihedral_angle(pos[backbone[i - 1].ca_idx], pos[backbone[i - 1].c_idx], pos[backbone[i].n_idx], pos[backbone[i].ca_idx]);
+        phi = compute_dihedral_angle(pos[backbone[i - 1].c_idx], pos[backbone[i].n_idx], pos[backbone[i].ca_idx], pos[backbone[i].c_idx]);
+        psi = compute_dihedral_angle(pos[backbone[i].n_idx], pos[backbone[i].ca_idx], pos[backbone[i].c_idx], pos[backbone[i + 1].n_idx]);
+        dst[i] = {omega, phi, psi};
+    }
 
-	auto N = backbone.count - 1;
-	omega = compute_dihedral_angle(pos[backbone[N - 1].ca_idx], pos[backbone[N - 1].c_idx], pos[backbone[N].n_idx], pos[backbone[N].ca_idx]);
-	phi = compute_dihedral_angle(pos[backbone[N - 1].c_idx], pos[backbone[N].n_idx], pos[backbone[N].ca_idx], pos[backbone[N].c_idx]);
-	psi = 0;
-	dst[N] = { omega, phi, psi };
+    auto N = backbone.count - 1;
+    omega = compute_dihedral_angle(pos[backbone[N - 1].ca_idx], pos[backbone[N - 1].c_idx], pos[backbone[N].n_idx], pos[backbone[N].ca_idx]);
+    phi = compute_dihedral_angle(pos[backbone[N - 1].c_idx], pos[backbone[N].n_idx], pos[backbone[N].ca_idx], pos[backbone[N].c_idx]);
+    psi = 0;
+    dst[N] = {omega, phi, psi};
 }
 
 BackboneAnglesTrajectory compute_backbone_angles_trajectory(const Trajectory& trajectory, const Array<BackboneSegment> backbone) {
-	if (trajectory.num_frames == 0 || backbone.count == 0) return {};
+    if (trajectory.num_frames == 0 || backbone.count == 0) return {};
 
-	BackboneAnglesTrajectory bat;
-	bat.num_frames = trajectory.num_frames;
-	bat.num_segments = backbone.count;
-	bat.angle_data = DynamicArray<BackboneAngles>(bat.num_frames * bat.num_segments);
+    BackboneAnglesTrajectory bat;
+    bat.num_frames = (int)trajectory.num_frames;
+    bat.num_segments = (int)backbone.count;
+    bat.angle_data = DynamicArray<BackboneAngles>(bat.num_frames * bat.num_segments);
 
-	// @TODO: parallelize?
-	for (int f_idx = 0; f_idx < trajectory.num_frames; f_idx++) {
-		auto pos = get_trajectory_positions(trajectory, f_idx);
-		auto b_angles = get_backbone_angles(bat, f_idx);
-		compute_backbone_angles(b_angles, pos, backbone);
-	}
+    // @TODO: parallelize?
+    for (int f_idx = 0; f_idx < trajectory.num_frames; f_idx++) {
+        auto pos = get_trajectory_positions(trajectory, f_idx);
+        auto b_angles = get_backbone_angles(bat, f_idx);
+        compute_backbone_angles(b_angles, pos, backbone);
+    }
+
+    return bat;
 }
 
 DynamicArray<float> compute_atom_radii(const Array<Element> elements) {
@@ -1299,8 +1415,8 @@ void intitialize() {
     attrib_loc_position = glGetAttribLocation(program, "v_position");
     attrib_loc_tangent = glGetAttribLocation(program, "v_tangent");
     attrib_loc_normal = glGetAttribLocation(program, "v_normal");
-	attrib_loc_color = glGetAttribLocation(program, "v_color");
-	attrib_loc_picking = glGetAttribLocation(program, "v_picking_id");
+    attrib_loc_color = glGetAttribLocation(program, "v_color");
+    attrib_loc_picking = glGetAttribLocation(program, "v_picking_id");
 
     uniform_loc_view_mat = glGetUniformLocation(program, "u_view_mat");
     uniform_loc_proj_mat = glGetUniformLocation(program, "u_proj_mat");
@@ -1335,7 +1451,7 @@ void shutdown() {
     if (vao) glDeleteVertexArrays(1, &vao);
 }
 
-}
+}  // namespace ribbons
 
 void initialize() {
     glGenVertexArrays(1, &empty_vao);
@@ -1346,7 +1462,7 @@ void initialize() {
 
     vdw::initialize();
     licorice::initialize();
-	ribbons::intitialize();
+    ribbons::intitialize();
 }
 
 void shutdown() {
@@ -1355,7 +1471,7 @@ void shutdown() {
 
     vdw::shutdown();
     licorice::shutdown();
-	ribbons::shutdown();
+    ribbons::shutdown();
 }
 
 void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, const Array<uint32> atom_colors, const mat4& view_mat,
@@ -1458,33 +1574,33 @@ void draw_licorice(const Array<vec3> atom_positions, const Array<Bond> atom_bond
 }
 
 void draw_ribbons(const Array<SplineSegment> spline, const mat4& view_mat, const mat4& proj_mat) {
-	ASSERT(spline.count * sizeof(ribbons::Vertex) < VERTEX_BUFFER_SIZE);
+    ASSERT(spline.count * sizeof(ribbons::Vertex) < VERTEX_BUFFER_SIZE);
 
-	glBindBuffer(GL_ARRAY_BUFFER, vbo);
-	ribbons::Vertex* data = (ribbons::Vertex*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-	for (int64_t i = 0; i < spline.count; i++) {
-		data[i].position = spline[i].position;
-		data[i].tangent = spline[i].tangent;
-		data[i].normal = spline[i].normal;
-		data[i].color = *((uint32*)immediate::COLOR_WHITE);
-		data[i].picking_id = 0xffffffff;
-	}
-	glUnmapBuffer(GL_ARRAY_BUFFER);
-	glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    ribbons::Vertex* data = (ribbons::Vertex*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+    for (int64_t i = 0; i < spline.count; i++) {
+        data[i].position = spline[i].position;
+        data[i].tangent = spline[i].tangent;
+        data[i].normal = spline[i].normal;
+        data[i].color = *((uint32*)immediate::COLOR_WHITE);
+        data[i].picking_id = 0xffffffff;
+    }
+    glUnmapBuffer(GL_ARRAY_BUFFER);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-	glEnable(GL_DEPTH_TEST);
+    glEnable(GL_DEPTH_TEST);
 
-	glBindVertexArray(ribbons::vao);
-	glUseProgram(ribbons::program);
-	glUniformMatrix4fv(ribbons::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
-	glUniformMatrix4fv(ribbons::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
-	glUniform1f(ribbons::uniform_loc_scale_x, 2.0f);
-	glUniform1f(ribbons::uniform_loc_scale_y, 0.5f);
-	glDrawArrays(GL_LINE_STRIP, 0, spline.count);
-	glUseProgram(0);
-	glBindVertexArray(0);
+    glBindVertexArray(ribbons::vao);
+    glUseProgram(ribbons::program);
+    glUniformMatrix4fv(ribbons::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
+    glUniformMatrix4fv(ribbons::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
+    glUniform1f(ribbons::uniform_loc_scale_x, 2.0f);
+    glUniform1f(ribbons::uniform_loc_scale_y, 0.5f);
+    glDrawArrays(GL_LINE_STRIP, 0, (GLsizei)spline.count);
+    glUseProgram(0);
+    glBindVertexArray(0);
 
-	glDisable(GL_DEPTH_TEST);
+    glDisable(GL_DEPTH_TEST);
 }
 
 void draw_backbone(const Array<BackboneSegment> backbone, const Array<vec3> atom_positions, const mat4& view_mat, const mat4& proj_mat) {

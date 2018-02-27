@@ -59,6 +59,14 @@ struct ApplicationData {
     DynamicArray<float> atom_radii;
     DynamicArray<uint32> atom_colors;
 
+	int32 hovered_atom_idx = -1;
+	int32 hovered_residue_idx = -1;
+	int32 hovered_chain_idx = -1;
+
+	int32 selected_atom_idx = -1;
+	int32 selected_residue_idx = -1;
+	int32 selected_chain_idx = -1;
+
 	// Framebuffer
 	MainFramebuffer fbo;
     unsigned int picking_idx = NO_PICKING_IDX;
@@ -110,40 +118,44 @@ int main(int, char**) {
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
 	Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid-6T/prod-centered.xtc");
 
-    if (traj) {
-        MoleculeStructure* mol = &gro_res.gro;
-        read_trajectory_async(traj, [traj, mol]() {
-            auto backbone = compute_backbone(mol->chains[0], mol->residues, mol->atom_labels);
-            auto traj_angles = compute_backbone_angles_trajectory(*traj, backbone);
-            for (int i = 0; i < traj_angles.num_frames; i++) {
-                auto angles = get_backbone_angles(traj_angles, i);
-                printf("omega  phi   psi\n");
-                for (const auto& ba : angles) {
-                    printf("% 6.1f % 6.1f % 6.1f\n", ba.omega * math::RAD_TO_DEG, ba.phi * math::RAD_TO_DEG, ba.psi * math::RAD_TO_DEG);
-                }
-            }
-        });
-    }
-	
-    data.mol_struct = &gro_res.gro;
-    data.trajectory = traj;
+	data.mol_struct = &gro_res.gro;
+	data.trajectory = traj;
 
-	DynamicArray<BackboneSegment> backbone;
-	DynamicArray<SplineSegment> spline;
+	DynamicArray<BackboneSegment> active_backbone = compute_backbone(data.mol_struct->chains[0], data.mol_struct->residues, data.mol_struct->atom_labels);
+	DynamicArray<BackboneAngles> active_backbone_angles = compute_backbone_angles(data.mol_struct->atom_positions, active_backbone);
+
+	BackboneAnglesTrajectory traj_angles;
+	DynamicArray<BackboneAngles> active_angles = {};
+
+	if (traj) {
+		printf("READING FRAME DATA...\n");
+		read_trajectory_async(traj);
+		/*, [traj, &backbone, &traj_angles]() {
+			printf("DONE!\n");
+			printf("COMPUTING ANGLES...\n");
+			//traj_angles = compute_backbone_angles_trajectory(*traj, backbone);
+			printf("DONE!\n");
+			for (int i = 0; i < traj_angles.num_frames; i++) {
+				auto angles = get_backbone_angles(traj_angles, i);
+				printf("omega  phi   psi\n");
+				for (const auto& ba : angles) {
+					printf("% 6.1f % 6.1f % 6.1f\n", ba.omega * math::RAD_TO_DEG, ba.phi * math::RAD_TO_DEG, ba.psi * math::RAD_TO_DEG);
+				}
+			}
+			*/
+		//});
+	}
+	
+	//DynamicArray<SplineSegment> spline;
 
     if (data.trajectory && data.trajectory->num_frames > 0)
         copy_trajectory_positions(data.mol_struct->atom_positions, *data.trajectory, 0);
     reset_view(&data);
 
-	if (data.mol_struct->chains.count > 0) {
-		backbone = compute_backbone(data.mol_struct->chains[0], data.mol_struct->residues, data.mol_struct->atom_labels);
-		spline = compute_spline(data.mol_struct->atom_positions, backbone, 8);
-		//auto backbone_angles = compute_backbone_angles(data.mol_struct->atom_positions, backbone);
-		//printf("omega  phi   psi\n");
-		//for (const auto& ba : backbone_angles) {
-		//	printf("% 6.1f % 6.1f % 6.1f\n", ba.omega * math::RAD_TO_DEG, ba.phi * math::RAD_TO_DEG, ba.psi * math::RAD_TO_DEG);
-		//}
-	}
+	//if (data.mol_struct->chains.count > 0) {
+	//	backbone = compute_backbone(data.mol_struct->chains[0], data.mol_struct->residues, data.mol_struct->atom_labels);
+	//	spline = compute_spline(data.mol_struct->atom_positions, backbone, 8);
+	//}
 
     platform::initialize();
     data.main_window = platform::create_window(display_w, display_h, "VIAMD");
@@ -151,7 +163,7 @@ int main(int, char**) {
     platform::set_vsync(false);
 
     data.atom_radii = compute_atom_radii(data.mol_struct->atom_elements);
-    data.atom_colors = compute_atom_colors(*data.mol_struct, ColorMapping::CPK);
+    data.atom_colors = compute_atom_colors(*data.mol_struct, ColorMapping::RES_ID);
 
     immediate::initialize();
     postprocessing::initialize(display_w, display_h);
@@ -178,8 +190,8 @@ int main(int, char**) {
 		}
 
         {
-            int x = input->mouse_screen_coords.x;
-            int y = input->mouse_screen_coords.y;
+            int x = (int)input->mouse_screen_coords.x;
+            int y = (int)input->mouse_screen_coords.y;
             unsigned char color[4];
             glBindFramebuffer(GL_READ_FRAMEBUFFER, data.fbo.id);
             glReadBuffer(GL_COLOR_ATTACHMENT1);
@@ -187,6 +199,20 @@ int main(int, char**) {
             glReadBuffer(GL_NONE);
             glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
             data.picking_idx = color[0] + (color[1] << 8) + (color[2] << 16) + (color[3] << 24);
+
+			data.hovered_atom_idx = -1;
+			data.hovered_residue_idx = -1;
+			data.hovered_chain_idx = -1;
+
+			if (data.picking_idx != NO_PICKING_IDX) {
+				data.hovered_atom_idx = data.picking_idx;
+				if (-1 < data.hovered_atom_idx && data.hovered_atom_idx < data.mol_struct->atom_residue_indices.count) {
+					data.hovered_residue_idx = data.mol_struct->atom_residue_indices[data.hovered_atom_idx];
+				}
+				if (-1 < data.hovered_residue_idx && data.hovered_residue_idx < data.mol_struct->residues.count) {
+					data.hovered_chain_idx = data.mol_struct->residues[data.hovered_residue_idx].chain_idx;
+				}
+			}
         }
 
 		if (input->key_hit[CONSOLE_KEY]) data.show_console = !data.show_console;
@@ -261,6 +287,23 @@ int main(int, char**) {
 			data.camera.position = data.controller.position;
 			data.camera.orientation = data.controller.orientation;
 
+			static vec2 hit_coords(-1, -1);
+			if (input->mouse_hit[0]) {
+				hit_coords = input->mouse_screen_coords;
+			}
+			else if (input->mouse_hit[1]) {
+				if (input->mouse_screen_coords == hit_coords) {
+					data.selected_atom_idx = data.hovered_atom_idx;
+					data.selected_residue_idx = data.hovered_residue_idx;
+					data.selected_chain_idx = data.hovered_chain_idx;
+
+					if (data.selected_chain_idx != -1) {
+						active_backbone = compute_backbone(data.mol_struct->chains[data.selected_chain_idx], data.mol_struct->residues, data.mol_struct->atom_labels);
+						active_backbone_angles = compute_backbone_angles(data.mol_struct->atom_positions, active_backbone);
+					}
+				}
+			}
+
             if (data.picking_idx != NO_PICKING_IDX) {
                 ivec2 pos = input->mouse_screen_coords;
                 draw_atom_info(*data.mol_struct, data.picking_idx, pos.x, pos.y);
@@ -268,6 +311,7 @@ int main(int, char**) {
 		}
 
         // GUI ELEMENTS
+		plot_ramachandran(traj_angles.angle_data, active_backbone_angles);
 		draw_console(&data, display_w, display_h, dt);
         draw_main_menu(&data);
 
@@ -318,7 +362,7 @@ int main(int, char**) {
         // Apply tone mapping
         postprocessing::apply_tonemapping(data.fbo.tex_color);
 
-		draw::draw_backbone(backbone, data.mol_struct->atom_positions, view_mat, proj_mat);
+		draw::draw_backbone(active_backbone, data.mol_struct->atom_positions, view_mat, proj_mat);
 		//draw::draw_spline(spline, view_mat, proj_mat);
 
 		if (data.use_ssao) {
@@ -492,8 +536,8 @@ struct Console
 		constexpr int WINDOW_FLAGS = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar |
 			ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal;
 		
-		float console_width = width;
-		float console_height = height * 0.75f;
+		float console_width = (float)width;
+		float console_height = (float)height * 0.75f;
 
 		// Quarter of a second to hide/show
 		float speed = console_height * dt * 4.f;

@@ -2,13 +2,26 @@
 
 #include <mol/trajectory.h>
 #include <core/allocator.h>
+#include <thread>
 
 // Reads the header info of a trajectory and allocates space for it
 Trajectory* allocate_trajectory(const char* file);
 void free_trajectory(Trajectory* traj);
 
 // Reads the actual trajectory position information
-void read_trajectory_async(Trajectory* traj, void(*on_finish(void)) = nullptr);
+
+void read_trajectory(Trajectory* traj);
+
+struct TrajOnFinishFunctor {
+	void operator()() const {};
+};
+template<typename Functor = TrajOnFinishFunctor>
+void read_trajectory_async(Trajectory* traj, Functor on_finish = TrajOnFinishFunctor()) {
+	std::thread([traj, on_finish]() {
+		read_trajectory(traj);
+		on_finish();
+	}).detach();
+}
 
 TrajectoryFrame allocate_trajectory_frame(int num_atoms, Allocator* alloc = nullptr);
 void free_trajectory_frame(TrajectoryFrame* frame);
