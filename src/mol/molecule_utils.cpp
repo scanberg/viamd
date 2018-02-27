@@ -383,7 +383,7 @@ BackboneAnglesTrajectory compute_backbone_angles_trajectory(const Trajectory& tr
 	// @TODO: parallelize?
 	for (int f_idx = 0; f_idx < trajectory.num_frames; f_idx++) {
 		auto pos = get_trajectory_positions(trajectory, f_idx);
-		auto& b_angles = get_backbone_angles(bat, f_idx);
+		auto b_angles = get_backbone_angles(bat, f_idx);
 		compute_backbone_angles(b_angles, pos, backbone);
 	}
 }

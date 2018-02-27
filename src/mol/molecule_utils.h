@@ -71,6 +71,7 @@ DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Arr
 // psi   = dihedral( N[i],  CA[i],   C[i],  N[i+1])
 // As seen here https://en.wikipedia.org/wiki/Ramachandran_plot.
 DynamicArray<BackboneAngles> compute_backbone_angles(const Array<vec3> atom_pos, const Array<BackboneSegment> backbone);
+void compute_backbone_angles(Array<BackboneAngles> dst, const Array<vec3> atom_pos, const Array<BackboneSegment> backbone);
 BackboneAnglesTrajectory compute_backbone_angles_trajectory(const Trajectory& trajectory, const Array<BackboneSegment> backbone);
 
 DynamicArray<float> compute_atom_radii(const Array<Element> elements);

@@ -95,20 +95,37 @@ int main(int, char**) {
 	float radii_scale = 1.0f;
 
     //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
+    //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
     //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
 	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
 	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
 	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/water/water.gro");
-	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid-6T/conf-60-6T.gro");
-    auto pdb_res = load_pdb_from_file(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
+	auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid-6T/conf-60-6T.gro");
+    //auto pdb_res = load_pdb_from_file(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
 
-    //Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
-	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
-	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
-	//Trajectory* traj = read_and_allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
-	Trajectory* traj = allocate_and_read_trajectory_async(PROJECT_SOURCE_DIR "/data/amyloid-6T/prod-centered.xtc");
+    //Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
+    //Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
+	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
+	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
+	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
+	Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid-6T/prod-centered.xtc");
+
+    if (traj) {
+        MoleculeStructure* mol = &gro_res.gro;
+        read_trajectory_async(traj, [traj, mol]() {
+            auto backbone = compute_backbone(mol->chains[0], mol->residues, mol->atom_labels);
+            auto traj_angles = compute_backbone_angles_trajectory(*traj, backbone);
+            for (int i = 0; i < traj_angles.num_frames; i++) {
+                auto angles = get_backbone_angles(traj_angles, i);
+                printf("omega  phi   psi\n");
+                for (const auto& ba : angles) {
+                    printf("% 6.1f % 6.1f % 6.1f\n", ba.omega * math::RAD_TO_DEG, ba.phi * math::RAD_TO_DEG, ba.psi * math::RAD_TO_DEG);
+                }
+            }
+        });
+    }
 	
-    data.mol_struct = &pdb_res.pdb;
+    data.mol_struct = &gro_res.gro;
     data.trajectory = traj;
 
 	DynamicArray<BackboneSegment> backbone;
@@ -121,11 +138,11 @@ int main(int, char**) {
 	if (data.mol_struct->chains.count > 0) {
 		backbone = compute_backbone(data.mol_struct->chains[0], data.mol_struct->residues, data.mol_struct->atom_labels);
 		spline = compute_spline(data.mol_struct->atom_positions, backbone, 8);
-		auto backbone_angles = compute_backbone_angles(data.mol_struct->atom_positions, backbone);
-		printf("omega  phi   psi\n");
-		for (const auto& ba : backbone_angles) {
-			printf("% 6.1f % 6.1f % 6.1f\n", ba.omega * math::RAD_TO_DEG, ba.phi * math::RAD_TO_DEG, ba.psi * math::RAD_TO_DEG);
-		}
+		//auto backbone_angles = compute_backbone_angles(data.mol_struct->atom_positions, backbone);
+		//printf("omega  phi   psi\n");
+		//for (const auto& ba : backbone_angles) {
+		//	printf("% 6.1f % 6.1f % 6.1f\n", ba.omega * math::RAD_TO_DEG, ba.phi * math::RAD_TO_DEG, ba.psi * math::RAD_TO_DEG);
+		//}
 	}
 
     platform::initialize();

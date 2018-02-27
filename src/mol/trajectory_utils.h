@@ -8,7 +8,7 @@ Trajectory* allocate_trajectory(const char* file);
 void free_trajectory(Trajectory* traj);
 
 // Reads the actual trajectory position information
-void read_trajectory_async(Trajectory* traj, void(*on_finish) = nullptr);
+void read_trajectory_async(Trajectory* traj, void(*on_finish(void)) = nullptr);
 
 TrajectoryFrame allocate_trajectory_frame(int num_atoms, Allocator* alloc = nullptr);
 void free_trajectory_frame(TrajectoryFrame* frame);

@@ -66,7 +66,7 @@ void free_trajectory(Trajectory* traj) {
     free(traj);
 }
 
-void read_trajectory_async(Trajectory* traj, void(*on_finish)) {
+void read_trajectory_async(Trajectory* traj, void(*on_finish(void))) {
 	ASSERT(traj);
 
 	// @TODO: Only read in data if it fits into memory
@@ -74,7 +74,7 @@ void read_trajectory_async(Trajectory* traj, void(*on_finish)) {
 	traj->position_data.resize(num_frames * traj->num_atoms);
 	traj->frame_buffer.resize(num_frames);
 
-	std::thread([traj]() {
+	std::thread([traj, on_finish]() {
 		// Do this in separate thread
 		auto num_frames = traj->frame_offsets.count;
 		XDRFILE* file = xdrfile_open(traj->path_to_file, "r");
@@ -96,6 +96,9 @@ void read_trajectory_async(Trajectory* traj, void(*on_finish)) {
 			}
 			frame->box *= 10.f;
 			traj->num_frames++;
+		}
+		if (on_finish) {
+			on_finish();
 		}
 	}).detach();
 }
