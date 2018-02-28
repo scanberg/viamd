@@ -2,10 +2,6 @@
 
 #include <core/types.h>
 #include <core/common.h>
-#include <core/allocator.h>
-
-#define MALLOC(x) malloc(x)
-#define FREE(x) free(x)
 
 template <typename T>
 struct Array {
@@ -129,6 +125,14 @@ struct DynamicArray : Array<T> {
 		return new_capacity > sz ? new_capacity : sz;
 	}
 
+	void append(Array<T> arr) {
+		if (this->count + arr.count >= capacity) {
+			reserve(_grow_capacity(this->count + arr.count));
+		}
+		memcpy(this->data + this->count, arr.data, arr.count);
+		this->count += arr.count;
+	}
+
     void push_back(const T& item) {
         if (this->count == capacity) {
             reserve(_grow_capacity(this->count + 1));
@@ -206,18 +210,3 @@ private:
     int64 capacity;
     //Allocator* allocator = nullptr;
 };
-
-template <typename T>
-Array<T> allocate_array(int64 count, Allocator& alloc = default_alloc) noexcept {
-    ASSERT(count > 0);
-    return {(T*)alloc.alloc(sizeof(T) * count), count};
-}
-
-template <typename T>
-Array<T> allocate_array_and_zero(int64 count, Allocator& alloc = default_alloc) noexcept {
-    ASSERT(count > 0);
-    Array<T> array = allocate_array<T>(count, alloc);
-    memset(array.data, 0, array.count * sizeof(T));
-    return array;
-}
-

@@ -4,14 +4,11 @@
 
 namespace element {
 
-Element get_from_string(const char* cstr, int length) {
-    if (length == -1) length = (int)strlen(cstr);
+Element get_from_string(CString cstr) {
+    if (cstr.count == 0) return Element::Unknown;
 
-    if (length == 0) return Element::Unknown;
-    // length = length < 3 ? length : 3;
-
-    const char* beg = cstr;
-    const char* end = cstr + length;
+    const char* beg = cstr.beg();
+    const char* end = cstr.end();
     while (!isupper(*beg) && beg != end) beg++;
     if (beg == end) return Element::Unknown;
     const char* tmp = beg + 1;

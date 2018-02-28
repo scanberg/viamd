@@ -5,7 +5,22 @@
 #include <mol/molecule.h>
 #include <mol/trajectory.h>
 
-enum class ColorMapping { STATIC_COLOR, CPK, RES_ID, RES_INDEX, CHAIN_ID, CHAIN_INDEX };
+enum class ColorMapping : uint8 { STATIC_COLOR, CPK, RES_ID, RES_INDEX, CHAIN_ID, CHAIN_INDEX };
+
+enum class RamachandranConformationClassification : uint8 {
+	None,
+	BetaHigh,
+	BetaMid,
+	BetaLow,
+	AlphaHigh,
+	AlphaMid,
+	AlphaLow,
+	LeftAlphaHigh,
+	LeftAlphaMid,
+	LeftAlphaLow,
+	PMid,
+	PLow
+};
 
 struct BackboneSegment {
 	int32 ca_idx;
@@ -40,8 +55,6 @@ inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backb
 	ASSERT(frame_index < backbone_angle_traj.num_frames);
 	return Array<BackboneAngles>(&backbone_angle_traj.angle_data[frame_index * backbone_angle_traj.num_segments], backbone_angle_traj.num_segments);
 }
-
-void plot_ramachandran(const Array<BackboneAngles> angles = {}, const Array<BackboneAngles> highlighted_angles = {});
 
 void transform_positions(Array<vec3> positions, const mat4& transformation);
 void compute_bounding_box(vec3* min_box, vec3* max_box, const Array<vec3> positions);
@@ -79,8 +92,8 @@ BackboneAnglesTrajectory compute_backbone_angles_trajectory(const Trajectory& tr
 DynamicArray<float> compute_atom_radii(const Array<Element> elements);
 void compute_atom_radii(Array<float> radii_dst, const Array<Element> elements);
 
-DynamicArray<uint32> compute_atom_colors(const MoleculeStructure& mol, ColorMapping mapping);
-void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, ColorMapping mapping);
+DynamicArray<uint32> compute_atom_colors(const MoleculeInterface& mol, ColorMapping mapping);
+void compute_atom_colors(Array<uint32> color_dst, const MoleculeInterface& mol, ColorMapping mapping);
 
 bool is_amino_acid(Residue res);
 
@@ -96,4 +109,8 @@ void draw_ribbons(const Array<SplineSegment> spline, const mat4& view_mat, const
 // DEBUG
 void draw_backbone(const Array<BackboneSegment> backbone, const Array<vec3> atom_positions, const mat4& view_mat, const mat4& proj_mat);
 void draw_spline(const Array<SplineSegment> spline, const mat4& view_mat, const mat4& proj_mat);
+
+// Radius is given as percentage of normalized texture space coordinates (1.0 = 1% of texture width and height)
+void plot_ramachandran(const Array<BackboneAngles> angles = {}, const Array<BackboneAngles> highlighted_angles = {}, float radius = 2.f);
+
 }  // namespace draw

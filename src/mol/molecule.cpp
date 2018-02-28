@@ -1,8 +1,8 @@
 #include "molecule.h"
 
-MoleculeStructure allocate_molecule_structure(int atom_count, int bond_count, int residue_count, int chain_count, MoleculeStructureAllocationFlags alloc_flags, Allocator* allocator)
+MoleculeInterface allocate_molecule_structure(int atom_count, int bond_count, int residue_count, int chain_count, MoleculeStructureAllocationFlags alloc_flags, Allocator* allocator)
 {
-	MoleculeStructure mol;
+	MoleculeInterface mol;
 	int64 alloc_size = 0;
 
 	if (atom_count > 0) {
@@ -39,6 +39,6 @@ MoleculeStructure allocate_molecule_structure(int atom_count, int bond_count, in
 	return mol;
 }
 
-void free_molecule_structure(MoleculeStructure& mol, Allocator* alloc) {
+void free_molecule_structure(MoleculeInterface& mol, Allocator* alloc) {
 	alloc->free(mol.atom_positions.data);
 }

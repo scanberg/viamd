@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <core/string_utils.h>
 
 #ifdef WIN32
 #pragma warning(disable : 4305)  // double to float
@@ -190,6 +191,6 @@ constexpr unsigned int color(Element symbol) { return detail::colors[static_cast
 constexpr float vdw_radius(Element symbol) { return detail::vdw_radii[static_cast<int>(symbol)]; }
 constexpr float covalent_radius(Element symbol) { return detail::covalent_radii[static_cast<int>(symbol)]; }
 
-Element get_from_string(const char* cstr, int length = -1);
+Element get_from_string(CString cstr);
 
 }  // namespace element

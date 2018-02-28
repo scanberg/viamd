@@ -12,11 +12,11 @@ static inline bool valid_line(CString line, uint32 options) {
 	return false;
 }
 
-PdbResult load_pdb_from_file(const char* filename, PdbLoadParams params, Allocator* alloc) {
-	return parse_pdb_from_string(read_textfile(filename), params, alloc);
+PdbResult load_pdb_from_file(const char* filename, PdbLoadParams params) {
+	return parse_pdb_from_string(read_textfile(filename), params);
 }
 
-PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params, Allocator* alloc) {
+PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params) {
 	DynamicArray<vec3> positions;
 	DynamicArray<Label> labels;
 	DynamicArray<Element> elements;
@@ -25,14 +25,61 @@ PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params, Alloca
 	DynamicArray<float> temp_factors;
 	DynamicArray<Residue> residues;
 	DynamicArray<Chain> chains;
-	DynamicArray<Bond> bonds;
 
+	PdbData* pdb = nullptr;
+	Trajectory* traj = nullptr;
+		
 	int current_res_id = -1;
 	char current_chain_id = -1;
 	int num_atoms = 0;
+	int num_models = 0;
 	CString line;
 	while (extract_line(line, pdb_string)) {
-		if (valid_line(line, params)) {
+		if (compare_n(line, "MODEL", 5)) {
+
+		}
+		else if (compare_n(line, "ENDMDL", 6)) {
+			if (params & PDB_TREAT_MODELS_AS_FRAMES) {
+				if (!pdb) {
+					pdb = (PdbData*)MALLOC(sizeof(PdbData));
+					new(pdb) PdbData();
+
+					pdb->atom_position_data = positions;
+					pdb->atom_element_data = elements;
+					pdb->atom_label_data = labels;
+					pdb->atom_residue_index_data = residue_indices;
+					pdb->bond_data = compute_covalent_bonds(positions, elements, residues);
+					pdb->residue_data = residues;
+					pdb->chain_data = chains;
+				}
+				if (!traj) {
+					traj = (Trajectory*)MALLOC(sizeof(Trajectory));
+					new(traj) Trajectory();
+
+					traj->position_data.append(positions);
+					traj->num_atoms = positions.count;
+					traj->num_frames++;
+				}
+				traj->position_data.append(positions);
+			}
+			else {
+				ASSERT(false);
+			}
+			num_models++;
+			num_atoms = 0;
+			current_res_id = -1;
+			current_chain_id = -1;
+
+			positions.clear();
+			labels.clear();
+			elements.clear();
+			residue_indices.clear();
+			occupancies.clear();
+			temp_factors.clear();
+			residues.clear();
+			chains.clear();
+		}
+		else if (valid_line(line, params)) {
 			labels.push_back(trim(line.substr(12, 4)));
 
 			positions.push_back(vec3(to_float(line.substr(30, 8)), to_float(line.substr(38, 8)), to_float(line.substr(46, 8))));
@@ -82,13 +129,20 @@ PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params, Alloca
 		}
 	}
 
-	bonds = compute_covalent_bonds(positions, elements, residues);
+	if (traj) {
+		for (int i = 0; i < traj->num_frames; i++) {
+			int index = i;
+			float time = 0;
+			mat3 box = mat3(1);
+			Array<vec3> atom_positions{ traj->position_data.beg() + i * traj->num_atoms, traj->num_atoms };
+			traj->frame_buffer.push_back({ index, time, box, atom_positions });
+		}
+	}
 
-	PdbStructure pdb;
-	MoleculeStructure& mol = pdb;
-	mol = allocate_molecule_structure(num_atoms, bonds.size(), residues.size(), chains.size(), MOL_ALL, alloc);
+	//mol = allocate_molecule_structure(num_atoms, bonds.size(), residues.size(), chains.size(), MOL_ALL);
 
 	// Copy data into molecule
+	/*
 	memcpy(mol.atom_positions.data, positions.data, positions.size() * sizeof(vec3));
 	memcpy(mol.atom_elements.data, elements.data, elements.size() * sizeof(Element));
 	memcpy(mol.atom_labels.data, labels.data, labels.size() * sizeof(Label));
@@ -97,6 +151,7 @@ PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params, Alloca
 	memcpy(mol.residues.data, residues.data, residues.size() * sizeof(Residue));
 	memcpy(mol.chains.data, chains.data, chains.size() * sizeof(Chain));
 	memcpy(mol.bonds.data, bonds.data, bonds.size() * sizeof(Bond));
+	*/
 
-	return { true, pdb };
+	return { pdb, traj, num_models };
 }

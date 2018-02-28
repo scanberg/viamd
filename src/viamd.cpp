@@ -54,7 +54,7 @@ struct ApplicationData {
     TrackballController controller;
 
     // --- MOL DATA ---
-    MoleculeStructure* mol_struct;
+    MoleculeInterface* mol_struct;
     Trajectory* trajectory;
     DynamicArray<float> atom_radii;
     DynamicArray<uint32> atom_colors;
@@ -89,7 +89,7 @@ struct ApplicationData {
 static float compute_avg_ms(float dt);
 static void draw_main_menu(ApplicationData* data);
 static void draw_console(ApplicationData* data, int width, int height, float dt);
-static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y);
+static void draw_atom_info(const MoleculeInterface& mol, int atom_idx, int x, int y);
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height);
 static void destroy_main_framebuffer(MainFramebuffer* fbo);
 static void reset_view(ApplicationData* data);
@@ -102,29 +102,35 @@ int main(int, char**) {
 
 	float radii_scale = 1.0f;
 
-    //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
-    //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
-    //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
-	auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
-	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
-	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/water/water.gro");
-	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid-6T/conf-60-6T.gro");
-    //auto pdb_res = load_pdb_from_file(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
+    //auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
+    //auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
+    //auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
+	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
+	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
+	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/water/water.gro");
+	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid-6T/conf-60-6T.gro");
+	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/yuya/nowat_npt.gro");
+	//auto res = load_pdb_from_file(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
+	auto res = load_pdb_from_file(PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
 
     //Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
-    Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
+    //Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid-6T/prod-centered.xtc");
+	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/yuya/traj-centered.xtc");
+	Trajectory* traj = nullptr;
 
-	data.mol_struct = &gro_res.gro;
-	data.trajectory = traj;
+	MoleculeInterface mol_i = *res.mol;
+
+	data.mol_struct = &mol_i;
+	data.trajectory = res.traj;
 
 	DynamicArray<BackboneSegment> active_backbone = compute_backbone(data.mol_struct->chains[0], data.mol_struct->residues, data.mol_struct->atom_labels);
 	DynamicArray<BackboneAngles> active_backbone_angles = compute_backbone_angles(data.mol_struct->atom_positions, active_backbone);
 
-	BackboneAnglesTrajectory traj_angles;
+	BackboneAnglesTrajectory traj_angles = {};
 	DynamicArray<BackboneAngles> active_angles = {};
 
 	if (traj) {
@@ -289,32 +295,20 @@ int main(int, char**) {
 
 			static vec2 hit_coords(-1, -1);
 			if (input->mouse_hit[0]) {
-                printf("MOUSE HIT\n");
 				hit_coords = input->mouse_screen_coords;
 			}
 			else if (input->mouse_release[0]) {
-                printf("MOUSE RELEASE\n");
 				if (input->mouse_screen_coords == hit_coords) {
 					data.selected_atom_idx = data.hovered_atom_idx;
 					data.selected_residue_idx = data.hovered_residue_idx;
 					data.selected_chain_idx = data.hovered_chain_idx;
 
-                    printf("SAME COORDS\n");
-
 					if (data.selected_chain_idx != -1) {
 						active_backbone = compute_backbone(data.mol_struct->chains[data.selected_chain_idx], data.mol_struct->residues, data.mol_struct->atom_labels);
-						active_backbone_angles = compute_backbone_angles(data.mol_struct->atom_positions, active_backbone);
-                        traj_angles = compute_backbone_angles_trajectory(*data.trajectory, active_backbone);
-
-                        for (const auto& a : active_backbone_angles) {
-                            printf("%.3f %.3f\n", a.phi, a.psi);
-                        }
 					}
-                    else {
-                        active_backbone = {};
-                        active_backbone_angles = {};
-                        traj_angles = {};
-                    }
+					else {
+						active_backbone = {};
+					}
 				}
 			}
 
@@ -324,8 +318,17 @@ int main(int, char**) {
             }
 		}
 
-        // GUI ELEMENTS
-		plot_ramachandran(traj_angles.angle_data, active_backbone_angles);
+		if (data.selected_chain_idx != -1) {
+			active_backbone_angles = compute_backbone_angles(data.mol_struct->atom_positions, active_backbone);
+			traj_angles = compute_backbone_angles_trajectory(*data.trajectory, active_backbone);
+		}
+		else {
+			active_backbone_angles = {};
+			traj_angles = {};
+		}
+        
+		// GUI ELEMENTS
+		draw::plot_ramachandran(traj_angles.angle_data, active_backbone_angles);
 		draw_console(&data, display_w, display_h, dt);
         draw_main_menu(&data);
 
@@ -817,7 +820,7 @@ static void draw_console(ApplicationData* data, int width, int height, float dt)
     console.Draw("Console", data, width, height, dt);
 }
 
-static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y) {
+static void draw_atom_info(const MoleculeInterface& mol, int atom_idx, int x, int y) {
     
     // @TODO: Assert things and make this failproof
 	if (atom_idx < 0 || atom_idx >= mol.atom_positions.count) return;

@@ -2,8 +2,11 @@
 
 #include <mol/molecule.h>
 
-struct GroStructure : MoleculeStructure {
+struct GroStructure : MoleculeInterface {
     mat3 box;
+};
+
+struct GroData : MoleculeData {
 };
 
 // This is only valid for NVT types

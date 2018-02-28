@@ -3,11 +3,11 @@
 #include <mol/element.h>
 #include <mol/molecule_utils.h>
 
-GroResult load_gro_from_file(const char* filename, Allocator* alloc) {
-	return parse_gro_from_string(read_textfile(filename), alloc);
+GroResult load_gro_from_file(const char* filename) {
+	return parse_gro_from_string(read_textfile(filename));
 }
 
-GroResult parse_gro_from_string(CString gro_string, Allocator* alloc) {
+GroResult parse_gro_from_string(CString gro_string) {
 
 	CString header;
 	CString length;
@@ -39,6 +39,7 @@ GroResult parse_gro_from_string(CString gro_string, Allocator* alloc) {
 	};
 	*/
 
+	MoleculeData mol_data;
 	DynamicArray<vec3> positions;
 	DynamicArray<vec3> velocities;
 	DynamicArray<Label> labels;
@@ -111,8 +112,8 @@ GroResult parse_gro_from_string(CString gro_string, Allocator* alloc) {
 	}
 
 	GroStructure gro;
-	MoleculeStructure& mol = gro;
-	mol = allocate_molecule_structure(num_atoms, bonds.size(), residues.size(), chains.size(), MOL_ALL, alloc);
+	MoleculeInterface& mol = gro;
+	mol = allocate_molecule_structure(num_atoms, bonds.size(), residues.size(), chains.size(), MOL_ALL);
 
 	// Copy data into molecule
 	memcpy(mol.atom_positions.data, positions.data, positions.size() * sizeof(vec3));

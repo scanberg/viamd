@@ -10,86 +10,6 @@
 #include <ctype.h>
 #include <fstream>
 
-constexpr int ramachandran_width = 36;
-constexpr int ramachandran_height = 36;
-constexpr GLenum ramachandran_format = GL_BGR;
-constexpr unsigned char ramachandran_data[] =
-    R"(  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                PP PP PP PP PP                 P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                            P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P                                      P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                      P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                         P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P         P  P  P  P  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  PP  P  P  P  P  P  P  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  PP  P  P  P  P  ?  ?  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  PP  P  ?  ?  ?  ?  P  P  P                   P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  P  P  PP  P  ?  ?  ?  ?  P  P  P                   P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P            P  P  P  ?  ?  ?  P  P  P  P                P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P            P  P  ?  ?  ?  ?  ?  ?  P  P                P  P  P P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P             P  P  ?  ?  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P             P  P  P  ?  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P          P  P  P  ?  ?  ?  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P          P  P  P  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P          P  P  P  P  ?  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P       P  P  P  ?  P  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P    P  P  P  P  P  P  P  P  P               P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P    P  P  P  P  P  P  P  P  P               P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                         P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                         P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P  ?  ?  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                      P  P  P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P   P P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  P  P                                                P  P  P P  P  P   P  P  P  P P  ?  P  P  P  P  P  P  P  P                                                   P  P  P  P  P  P  P  ?  ?  P P  P  P  P  P  P  P                                                            P  P  P  P  P  ?  ?  P  P  P  P  P  P  P                      PP PP PP PP PP                                P  P  P  P  P  P  ?  ?  ?  ?  P  P  P  P                      PP PP PP PP PP                                P  ?  ?  ?  P  ?  ?  ?  ?  ?  P  P  P  P  P                   PP PP ?? PP PP PP                             P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P                   PP PP ?? PP PP PP                    P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                   PP PP ?? ?? PP PP                    P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                   PP PP PP PP PP PP                    P  P  ?)";
-
-enum class RamachandranConformationClassification : uint8 {
-    None,
-    BetaHigh,
-    BetaMid,
-    BetaLow,
-    AlphaHigh,
-    AlphaMid,
-    AlphaLow,
-    LeftAlphaHigh,
-    LeftAlphaMid,
-    LeftAlphaLow,
-    PMid,
-    PLow
-};
-
-void plot_ramachandran(const Array<BackboneAngles> angles, const Array<BackboneAngles> highlighted_angles) {
-    static GLuint ramachandran_tex = 0;
-    if (!ramachandran_tex) {
-        glGenTextures(1, &ramachandran_tex);
-        glBindTexture(GL_TEXTURE_2D, ramachandran_tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, ramachandran_width, ramachandran_height, 0, ramachandran_format, GL_UNSIGNED_BYTE, ramachandran_data);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }
-
-    constexpr vec2 res(512, 512);
-    ImGui::SetNextWindowContentSize(ImVec2(res.x, res.y));
-    ImGui::Begin("Ramachandran");
-
-    ImVec2 win_pos = ImGui::GetCursorScreenPos();
-    ImVec2 max_region = ImGui::GetWindowContentRegionMax();
-    ImVec2 min_region = ImGui::GetWindowContentRegionMin();
-    ImVec2 canvas_size(max_region.x - min_region.x, max_region.y - min_region.y);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-
-    printf("%.2f %.2f\n", win_pos.x, win_pos.y);
-
-
-    ImGui::Image((ImTextureID)ramachandran_tex, canvas_size);
-
-    constexpr float radius = 10.f;
-    if (angles.count > 0) {
-        int64 count = math::min(angles.count, 3000LL);
-
-        for (int64 i = 0; i < count; i++) {
-
-            if (angles[i].phi == 0.f || angles[i].psi == 0.f) continue;
-            vec2 coord = vec2(angles[i].phi, angles[i].psi) / (2.f * math::PI) + 0.5f;
-            // @NOTE: Y-Axis is flipped because of the coordinate system which ImGui uses.
-            ImVec2 screen_coord(coord.x * canvas_size.x + screen_coord.x, coord.y * canvas_size.y + screen_coord.y);
-            dl->AddQuadFilled(ImVec2(screen_coord.x - radius, screen_coord.y - radius), ImVec2(screen_coord.x - radius, screen_coord.y + radius),
-                              ImVec2(screen_coord.x + radius, screen_coord.y + radius), ImVec2(screen_coord.x + radius, screen_coord.y - radius),
-                              IM_COL32(255, 255, 255, 40));
-        }
-    }
-
-    if (highlighted_angles.count > 0) {
-        for (const auto& angle : highlighted_angles) {
-            if (angle.phi == 0.f || angle.psi == 0.f) continue;
-            vec2 coord = vec2(angle.phi, angle.psi) / (2.f * math::PI) + 0.5f;
-            // @NOTE: Y-Axis is flipped because of the coordinate system which ImGui uses.
-            ImVec2 screen_coord(coord.x * canvas_size.x + win_pos.x, coord.y * canvas_size.y + win_pos.y);
-            dl->AddQuadFilled(ImVec2(screen_coord.x - radius, screen_coord.y - radius), ImVec2(screen_coord.x - radius, screen_coord.y + radius),
-                              ImVec2(screen_coord.x + radius, screen_coord.y + radius), ImVec2(screen_coord.x + radius, screen_coord.y - radius),
-                              IM_COL32(255, 255, 0, 200));
-        }
-    }
-
-    ImGui::End();
-}
-
 void transform_positions(Array<vec3> positions, const mat4& transformation) {
     for (auto& p : positions) {
         p = vec3(transformation * vec4(p, 1));
@@ -151,7 +71,7 @@ DynamicArray<Bond> compute_covalent_bonds(const Array<vec3> atom_pos, const Arra
 
     DynamicArray<Bond> bonds;
 
-    auto try_and_create_atom_bond = [& pos = atom_pos, &elem = atom_elem, &bonds = bonds ](int i, int j)->bool {
+    auto try_and_create_atom_bond = [& pos = atom_pos, &elem = atom_elem, &bonds = bonds](int i, int j) -> bool {
         auto d = element::covalent_radius(elem[i]) + element::covalent_radius(elem[j]);
         auto d1 = d + 0.3f;
         auto d2 = d - 0.5f;
@@ -456,13 +376,16 @@ void compute_backbone_angles(Array<BackboneAngles> dst, const Array<vec3> pos, c
 BackboneAnglesTrajectory compute_backbone_angles_trajectory(const Trajectory& trajectory, const Array<BackboneSegment> backbone) {
     if (trajectory.num_frames == 0 || backbone.count == 0) return {};
 
+    //@NOTE: Trajectory may be loading while this is taking place, therefore read num_frames once and stick to that
+    auto num_frames = trajectory.num_frames;
+
     BackboneAnglesTrajectory bat;
-    bat.num_frames = (int)trajectory.num_frames;
+    bat.num_frames = num_frames;
     bat.num_segments = (int)backbone.count;
     bat.angle_data = DynamicArray<BackboneAngles>(bat.num_frames * bat.num_segments);
 
     // @TODO: parallelize?
-    for (int f_idx = 0; f_idx < trajectory.num_frames; f_idx++) {
+    for (int f_idx = 0; f_idx < num_frames; f_idx++) {
         auto pos = get_trajectory_positions(trajectory, f_idx);
         auto b_angles = get_backbone_angles(bat, f_idx);
         compute_backbone_angles(b_angles, pos, backbone);
@@ -484,13 +407,13 @@ void compute_atom_radii(Array<float> radii_dst, const Array<Element> elements) {
     }
 }
 
-DynamicArray<uint32> compute_atom_colors(const MoleculeStructure& mol, ColorMapping mapping) {
+DynamicArray<uint32> compute_atom_colors(const MoleculeInterface& mol, ColorMapping mapping) {
     DynamicArray<uint32> colors(mol.atom_elements.count, 0xFFFFFFFF);
     compute_atom_colors(colors, mol, mapping);
     return colors;
 }
 
-void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, ColorMapping mapping) {
+void compute_atom_colors(Array<uint32> color_dst, const MoleculeInterface& mol, ColorMapping mapping) {
     // @TODO: Implement more mappings
 
     // CPK
@@ -560,7 +483,9 @@ bool is_amino_acid(Residue res) { return aminoacid::get_from_string(res.id) != A
 namespace draw {
 
 static constexpr int VERTEX_BUFFER_SIZE = MEGABYTES(4);
-static GLuint empty_vao = 0;
+static GLuint instanced_quad_vao = 0;
+static GLuint instanced_quad_ibo = 0;
+
 static GLuint vbo = 0;
 
 namespace vdw {
@@ -1235,10 +1160,10 @@ void main() {
 static const char* g_shader_src = R"(
 #version 150 core
 
-#define CIRCLE_RES 32
+#define CIRCLE_RES 8
 
 layout(lines) in;
-layout(triangle_strip, max_vertices = 256) out;
+layout(triangle_strip, max_vertices = 56) out;
 
 uniform mat4 u_view_mat;
 uniform mat4 u_proj_mat;
@@ -1420,8 +1345,166 @@ void shutdown() {
 
 }  // namespace ribbons
 
+namespace ramachandran {
+
+// Segmentation texture data
+constexpr int seg_width = 36;
+constexpr int seg_height = 36;
+constexpr GLenum seg_data_format = GL_BGR;
+constexpr unsigned char seg_data[] =
+    R"(  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                PP PP PP PP PP                 P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                            P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P                                      P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                      P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                         P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P         P  P  P  P  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  PP  P  P  P  P  P  P  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  PP  P  P  P  P  ?  ?  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  PP  P  ?  ?  ?  ?  P  P  P                   P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  P  P  PP  P  ?  ?  ?  ?  P  P  P                   P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P            P  P  P  ?  ?  ?  P  P  P  P                P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P            P  P  ?  ?  ?  ?  ?  ?  P  P                P  P  P P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P             P  P  ?  ?  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P             P  P  P  ?  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P          P  P  P  ?  ?  ?  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P          P  P  P  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P          P  P  P  P  ?  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P       P  P  P  ?  P  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P    P  P  P  P  P  P  P  P  P               P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P    P  P  P  P  P  P  P  P  P               P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                         P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                         P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P  ?  ?  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                      P  P  P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P   P P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  P  P                                                P  P  P P  P  P   P  P  P  P P  ?  P  P  P  P  P  P  P  P                                                   P  P  P  P  P  P  P  ?  ?  P P  P  P  P  P  P  P                                                            P  P  P  P  P  ?  ?  P  P  P  P  P  P  P                      PP PP PP PP PP                                P  P  P  P  P  P  ?  ?  ?  ?  P  P  P  P                      PP PP PP PP PP                                P  ?  ?  ?  P  ?  ?  ?  ?  ?  P  P  P  P  P                   PP PP ?? PP PP PP                             P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P                   PP PP ?? PP PP PP                    P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                   PP PP ?? ?? PP PP                    P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                   PP PP PP PP PP PP                    P  P  ?)";
+
+// Accumulation texture data
+constexpr int acc_width = 512;
+constexpr int acc_height = 512;
+
+static GLuint segmentation_tex = 0;
+static GLuint accumulation_tex = 0;
+static GLuint coord_tex = 0;
+static GLuint coord_buf = 0;
+static GLuint fbo = 0;
+static GLuint program = 0;
+
+static GLint uniform_loc_coord_tex = -1;
+static GLint uniform_loc_instance_offset = -1;
+static GLint uniform_loc_radius = -1;
+static GLint uniform_loc_color = -1;
+
+// @NOTE: This should generate a quad with a certain size in texture coordinates
+constexpr const char* v_shader_src = R"(
+#version 150 core
+
+uniform int u_instance_offset = 0;
+uniform samplerBuffer u_tex_coord;
+uniform float u_radius;
+out vec2 uv;
+
+void main() {
+	int VID = gl_VertexID;
+	int IID = gl_InstanceID + u_instance_offset;
+
+	vec2 coord = texelFetch(u_tex_coord, IID).xy;
+	uv = vec2(VID / 2, VID % 2) * 2.0 - 1.0; 
+
+	gl_Position = vec4(coord * 2.0 - 1.0 + uv * u_radius, 0, 1);
+}
+)";
+
+// @NOTE: Do some radial falloff based on uv coordinate
+constexpr const char* f_shader_src = R"(
+#version 150 core
+
+uniform vec4 u_color;
+in vec2 uv;
+out vec4 out_frag;
+
+void main() {
+	float falloff = 1.0 - dot(uv, uv);
+	out_frag = vec4(u_color.rgb, u_color.a * falloff);	
+}
+)";
+
 void initialize() {
-    glGenVertexArrays(1, &empty_vao);
+	constexpr int BUFFER_SIZE = 1024;
+	char buffer[BUFFER_SIZE];
+
+	GLuint v_shader = glCreateShader(GL_VERTEX_SHADER);
+	GLuint f_shader = glCreateShader(GL_FRAGMENT_SHADER);
+	glShaderSource(v_shader, 1, &v_shader_src, 0);
+	glShaderSource(f_shader, 1, &f_shader_src, 0);
+
+	glCompileShader(v_shader);
+	if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
+		printf("Error while compiling ramachandran vertex shader:\n%s\n", buffer);
+	}
+	glCompileShader(f_shader);
+	if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
+		printf("Error while compiling ramachandran fragment shader:\n%s\n", buffer);
+	}
+
+	program = glCreateProgram();
+	glAttachShader(program, v_shader);
+	glAttachShader(program, f_shader);
+	glLinkProgram(program);
+	if (gl::get_program_link_error(buffer, BUFFER_SIZE, program)) {
+		printf("Error while linking ramachandran program:\n%s\n", buffer);
+	}
+
+	glDetachShader(program, v_shader);
+	glDetachShader(program, f_shader);
+
+	glDeleteShader(v_shader);
+	glDeleteShader(f_shader);
+
+	uniform_loc_coord_tex = glGetUniformLocation(program, "u_coord_tex");
+	uniform_loc_instance_offset = glGetUniformLocation(program, "u_instance_offset");
+	uniform_loc_radius = glGetUniformLocation(program, "u_radius");
+	uniform_loc_color = glGetUniformLocation(program, "u_color");
+
+	if (!segmentation_tex) {
+		glGenTextures(1, &segmentation_tex);
+		glBindTexture(GL_TEXTURE_2D, segmentation_tex);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, seg_width, seg_height, 0, seg_data_format, GL_UNSIGNED_BYTE, seg_data);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glBindTexture(GL_TEXTURE_2D, 0);
+	}
+
+	if (!accumulation_tex) {
+		glGenTextures(1, &accumulation_tex);
+		glBindTexture(GL_TEXTURE_2D, accumulation_tex);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, acc_width, acc_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glBindTexture(GL_TEXTURE_2D, 0);
+	}
+
+	if (!coord_buf) {
+		glGenBuffers(1, &coord_buf);
+	}
+
+	if (!coord_tex) {
+		glGenTextures(1, &coord_tex);
+	}
+
+	if (!fbo) {
+		glGenFramebuffers(1, &fbo);
+		glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, accumulation_tex, 0);
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	}
+}
+
+void shutdown() {
+	if (segmentation_tex) glDeleteTextures(1, &segmentation_tex);
+	if (accumulation_tex) glDeleteTextures(1, &accumulation_tex);
+	if (coord_buf) glDeleteBuffers(1, &coord_buf);
+	if (coord_tex) glDeleteTextures(1, &coord_tex);
+	if (fbo) glDeleteFramebuffers(1, &fbo);
+}
+
+}  // namespace ramachandran
+
+void initialize() {
+	if (!instanced_quad_ibo) {
+		const unsigned char data[4] = { 0, 1, 2, 3 };
+		glGenBuffers(1, &instanced_quad_ibo);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, instanced_quad_ibo);
+		glBufferData(GL_ELEMENT_ARRAY_BUFFER, 4, data, GL_STATIC_DRAW);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+	}
+
+	if (!instanced_quad_vao) {
+		glGenVertexArrays(1, &instanced_quad_vao);
+		glBindVertexArray(instanced_quad_vao);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, instanced_quad_ibo);
+		glBindVertexArray(0);
+	}
+
     glGenBuffers(1, &vbo);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBufferData(GL_ARRAY_BUFFER, VERTEX_BUFFER_SIZE, nullptr, GL_STREAM_DRAW);
@@ -1430,15 +1513,24 @@ void initialize() {
     vdw::initialize();
     licorice::initialize();
     ribbons::intitialize();
+	ramachandran::initialize();
 }
 
 void shutdown() {
-    if (empty_vao) glDeleteVertexArrays(1, &empty_vao);
+    if (instanced_quad_vao) glDeleteVertexArrays(1, &instanced_quad_vao);
+	if (instanced_quad_ibo) glDeleteBuffers(1, &instanced_quad_ibo);
     if (vbo) glDeleteBuffers(1, &vbo);
 
     vdw::shutdown();
     licorice::shutdown();
     ribbons::shutdown();
+	ramachandran::shutdown();
+}
+
+void draw_instanced_quads(int num_instances) {
+	glBindVertexArray(instanced_quad_vao);
+	glDrawElementsInstanced(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_BYTE, 0, num_instances);
+	glBindVertexArray(0);
 }
 
 void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, const Array<uint32> atom_colors, const mat4& view_mat,
@@ -1496,8 +1588,8 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
     glUniformMatrix4fv(vdw::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
     glUniformMatrix4fv(vdw::uniform_loc_inv_proj_mat, 1, GL_FALSE, &inv_proj_mat[0][0]);
 
-    // Draw call
-    glDrawElementsInstanced(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_BYTE, 0, draw_count);
+    // Draw
+	draw_instanced_quads(draw_count);
 
     glUseProgram(0);
     glBindVertexArray(0);
@@ -1603,6 +1695,166 @@ void draw_spline(const Array<SplineSegment> spline, const mat4& view_mat, const 
     }
 
     immediate::flush();
+}
+
+void plot_ramachandran(const Array<BackboneAngles> angles, const Array<BackboneAngles> highlighted_angles, float radius) {
+	// Upload data to textures
+	const vec4 ORDINARY_COLOR  = vec4(1.f, 1.f, 1.f, 0.1f);
+	const vec4 HIGHLIGHT_COLOR = vec4(1.f, 0.0f, 0.0f, 1.f);
+
+	struct Coord {
+		unsigned short x, y;
+	};
+
+	// @TODO: Use fast scratch memory here
+	Coord* coords = (Coord*)MALLOC((angles.count + highlighted_angles.count) * sizeof(Coord));
+
+	int32 tot_count = 0;
+	for (const auto& angle : angles) {
+		if (angle.phi == 0 || angle.psi == 0) continue;
+		// [-PI, PI] -> [0, 1]
+		vec2 coord = vec2(angle.phi, angle.psi) / (2.f * math::PI) + 0.5f;
+		coord = vec2(coord.x, 1.f - coord.y);
+		coords[tot_count].x = (unsigned short)(coord.x * 0xffff);
+		coords[tot_count].y = (unsigned short)(coord.y * 0xffff);
+		tot_count++;
+	}
+
+	int32 ordinary_count = tot_count;
+	for (const auto& angle : highlighted_angles) {
+		if (angle.phi == 0 || angle.psi == 0) continue;
+		// [-PI, PI] -> [0, 1]
+		vec2 coord = vec2(angle.phi, angle.psi) / (2.f * math::PI) + 0.5f;
+		coord = vec2(coord.x, 1.f - coord.y);
+		coords[tot_count].x = (unsigned short)(coord.x * 0xffff);
+		coords[tot_count].y = (unsigned short)(coord.y * 0xffff);
+		tot_count++;
+	}
+	int32 highlight_count = tot_count - ordinary_count;
+
+	glBindBuffer(GL_ARRAY_BUFFER, ramachandran::coord_buf);
+	glBufferData(GL_ARRAY_BUFFER, tot_count * 2 * sizeof(unsigned short), coords, GL_STREAM_DRAW);
+
+	FREE(coords);
+
+	// Backup GL state
+	GLint last_polygon_mode[2]; glGetIntegerv(GL_POLYGON_MODE, last_polygon_mode);
+	GLint last_viewport[4]; glGetIntegerv(GL_VIEWPORT, last_viewport);
+	GLenum last_blend_src_rgb; glGetIntegerv(GL_BLEND_SRC_RGB, (GLint*)&last_blend_src_rgb);
+	GLenum last_blend_dst_rgb; glGetIntegerv(GL_BLEND_DST_RGB, (GLint*)&last_blend_dst_rgb);
+	GLenum last_blend_src_alpha; glGetIntegerv(GL_BLEND_SRC_ALPHA, (GLint*)&last_blend_src_alpha);
+	GLenum last_blend_dst_alpha; glGetIntegerv(GL_BLEND_DST_ALPHA, (GLint*)&last_blend_dst_alpha);
+	GLenum last_blend_equation_rgb; glGetIntegerv(GL_BLEND_EQUATION_RGB, (GLint*)&last_blend_equation_rgb);
+	GLenum last_blend_equation_alpha; glGetIntegerv(GL_BLEND_EQUATION_ALPHA, (GLint*)&last_blend_equation_alpha);
+	GLboolean last_enable_blend = glIsEnabled(GL_BLEND);
+	GLboolean last_enable_cull_face = glIsEnabled(GL_CULL_FACE);
+	GLboolean last_enable_depth_test = glIsEnabled(GL_DEPTH_TEST);
+	GLboolean last_enable_scissor_test = glIsEnabled(GL_SCISSOR_TEST);
+
+	// RENDER TO ACCUMULATION TEXTURE
+
+	glViewport(0, 0, ramachandran::acc_width, ramachandran::acc_height);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ramachandran::fbo);
+	glDrawBuffer(GL_COLOR_ATTACHMENT0);
+
+	glDisable(GL_BLEND);
+	glClearColor(0, 0, 0, 0);
+	glClear(GL_COLOR_BUFFER_BIT);
+
+	glEnable(GL_BLEND);
+	glBlendEquation(GL_FUNC_ADD);
+	glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+	glDisable(GL_CULL_FACE);
+	glDisable(GL_DEPTH_TEST);
+	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+	// Texture 0
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_BUFFER, ramachandran::coord_tex);
+	glTexBuffer(GL_TEXTURE_BUFFER, GL_RG16, ramachandran::coord_buf);
+
+	glUseProgram(ramachandran::program);
+	glUniform1i(ramachandran::uniform_loc_coord_tex, 0);
+
+	// Draw ordinary
+	glUniform1f(ramachandran::uniform_loc_radius, radius * 0.01f);
+	glUniform1i(ramachandran::uniform_loc_instance_offset, 0);
+	glUniform4fv(ramachandran::uniform_loc_color, 1, &ORDINARY_COLOR[0]);
+	draw_instanced_quads(ordinary_count);
+
+	// Draw highlighted
+	glUniform1f(ramachandran::uniform_loc_radius, radius * 0.02f);
+	glUniform1i(ramachandran::uniform_loc_instance_offset, ordinary_count);
+	glUniform4fv(ramachandran::uniform_loc_color, 1, &HIGHLIGHT_COLOR[0]);
+	draw_instanced_quads(highlight_count);
+
+	glUseProgram(0);
+
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+	// Restore modified GL state
+	glBlendEquationSeparate(last_blend_equation_rgb, last_blend_equation_alpha);
+	glBlendFuncSeparate(last_blend_src_rgb, last_blend_dst_rgb, last_blend_src_alpha, last_blend_dst_alpha);
+	if (last_enable_blend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+	if (last_enable_cull_face) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
+	if (last_enable_depth_test) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+	if (last_enable_scissor_test) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+	glPolygonMode(GL_FRONT_AND_BACK, last_polygon_mode[0]);
+	glViewport(last_viewport[0], last_viewport[1], (GLsizei)last_viewport[2], (GLsizei)last_viewport[3]);
+
+    constexpr vec2 res(512, 512);
+    ImGui::SetNextWindowContentSize(ImVec2(res.x, res.y));
+    ImGui::Begin("Ramachandran");
+
+    ImVec2 win_pos = ImGui::GetCursorScreenPos();
+    ImVec2 max_region = ImGui::GetWindowContentRegionMax();
+    ImVec2 min_region = ImGui::GetWindowContentRegionMin();
+    ImVec2 canvas_size(max_region.x - min_region.x, max_region.y - min_region.y);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+	ImVec2 x0 = win_pos;
+	ImVec2 x1(win_pos.x + canvas_size.x, win_pos.y + canvas_size.y);
+
+	dl->ChannelsSplit(2);
+	dl->ChannelsSetCurrent(0);
+    //ImGui::Image((ImTextureID)ramachandran::segmentation_tex, canvas_size);
+	dl->AddImage((ImTextureID)ramachandran::segmentation_tex, x0, x1);
+	dl->ChannelsSetCurrent(1);
+	//ImGui::Image((ImTextureID)ramachandran::accumulation_tex, canvas_size);
+	dl->AddImage((ImTextureID)ramachandran::accumulation_tex, x0, x1);
+	dl->ChannelsMerge();
+
+	/*
+    constexpr float radius = 10.f;
+    if (angles.count > 0) {
+        int64 count = math::min(angles.count, 3000LL);
+
+        for (int64 i = 0; i < count; i++) {
+
+            if (angles[i].phi == 0.f || angles[i].psi == 0.f) continue;
+            vec2 coord = vec2(angles[i].phi, angles[i].psi) / (2.f * math::PI) + 0.5f;
+            // @NOTE: Y-Axis is flipped because of the coordinate system which ImGui uses.
+            ImVec2 screen_coord(coord.x * canvas_size.x + win_pos.x, (1.f - coord.y) * canvas_size.y + win_pos.y);
+            dl->AddQuadFilled(ImVec2(screen_coord.x - radius, screen_coord.y - radius), ImVec2(screen_coord.x - radius, screen_coord.y + radius),
+                              ImVec2(screen_coord.x + radius, screen_coord.y + radius), ImVec2(screen_coord.x + radius, screen_coord.y - radius),
+                              IM_COL32(255, 255, 255, 40));
+        }
+    }
+
+    if (highlighted_angles.count > 0) {
+        for (const auto& angle : highlighted_angles) {
+            if (angle.phi == 0.f || angle.psi == 0.f) continue;
+            vec2 coord = vec2(angle.phi, angle.psi) / (2.f * math::PI) + 0.5f;
+            // @NOTE: Y-Axis is flipped because of the coordinate system which ImGui uses.
+            ImVec2 screen_coord(coord.x * canvas_size.x + win_pos.x, (1.f - coord.y) * canvas_size.y + win_pos.y);
+            dl->AddQuadFilled(ImVec2(screen_coord.x - radius, screen_coord.y - radius), ImVec2(screen_coord.x - radius, screen_coord.y + radius),
+                              ImVec2(screen_coord.x + radius, screen_coord.y + radius), ImVec2(screen_coord.x + radius, screen_coord.y - radius),
+                              IM_COL32(255, 255, 0, 200));
+        }
+    }
+	*/
+
+    ImGui::End();
 }
 
 }  // namespace draw
