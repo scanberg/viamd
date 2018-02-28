@@ -58,6 +58,7 @@ static void mouse_button_callback(GLFWwindow*, int button, int action, int /*mod
         g_input_state.mouse_hit[button] = true;
     } else if (action == GLFW_RELEASE) {
         g_input_state.mouse_down[button] = false;
+        g_input_state.mouse_release[button] = true;
     }
 }
 
@@ -424,7 +425,7 @@ static void imgui_new_frame()
     for (int i = 0; i < 3; i++) {
         // If a mouse press event came, always pass it as "mouse held this frame", so we don't miss click-release events that are shorter than 1 frame.
         io.MouseDown[i] = g_input_state.mouse_hit[i] || glfwGetMouseButton(g_window.glfw_window, i) != 0;
-        g_input_state.mouse_hit[i] = false;
+        //g_input_state.mouse_hit[i] = false;
     }
 
     // Hide OS mouse cursor if ImGui is drawing it
@@ -505,7 +506,9 @@ void shutdown() {
 void update() {
     // Reset hit states
     memset(g_input_state.key_hit, 0, MAX_KEYS);
+    memset(g_input_state.key_release, 0, MAX_KEYS);
     memset(g_input_state.mouse_hit, 0, MAX_MOUSE_BUTTONS);
+    memset(g_input_state.mouse_release, 0, MAX_MOUSE_BUTTONS);
 	g_input_state.mouse_scroll = { 0,0 };
 
     glfwPollEvents();

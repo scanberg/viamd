@@ -8,39 +8,13 @@
 #include <mol/trajectory_utils.h>
 #include <imgui.h>
 #include <ctype.h>
+#include <fstream>
 
 constexpr int ramachandran_width = 36;
 constexpr int ramachandran_height = 36;
 constexpr GLenum ramachandran_format = GL_BGR;
 constexpr unsigned char ramachandran_data[] =
-    "  –  –  –  –  –  –  –  –  –  –  –  –  –  P  P                   PP PP PP PP PP PP                    P  P  –  P  –  –  –  –  –  –  –  –  –  –  "
-    "–  –  P  P                   PP PP –– –– PP PP                    P  P  P  P  –  –  –  –  –  –  –  –  –  –  P  P  P  P                   PP PP "
-    "–– PP PP PP                    P  P  P  P  –  –  –  P  –  –  –  –  –  P  P  P  P  P                   PP PP –– PP PP PP                         "
-    "    P  P  P  P  P  P  –  –  –  –  P  P  P  P                      PP PP PP PP PP                                P  P  P  P  P  –  –  P  P  P  P "
-    " P  P  P                      PP PP PP PP PP                                P  P  P  P  P  P  P  –  –  P P  P  P  P  P  P  P                    "
-    "                                        P  P  P P  P  P   P  P  P  P P  –  P  P  P  P  P  P  P  P                                               "
-    "    P P  P  P  P  –  –  –  –  –  –  –  –  –  –  P  P  P  P  P  P                                               P  P  P  P  P  –  –  –  –  –  –  "
-    "–  –  –  –  –  –  –  P  P  P                                      P  P  P  P  P  P  –  –  –  –  –  –  –  –  –  –  –  –  –  –  –  –  P  P        "
-    "                              P  P  P  –  –  P  –  –  –  –  –  –  –  –  ÿ  ÿ  ÿ  ÿ  –  –  –  P  P  P                                      P  P  "
-    "P  P  –  –  –  –  –  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  –  P  P  P                                      P  P  P  P  P  P  –  –  –  –  –  ÿ  ÿ  ÿ  "
-    "ÿ  ÿ  ÿ  ÿ  –  –  P  P  P                                         P  P  P  P  P  –  –  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  –  P  P  P           "
-    "                              P  P  P  P  P  –  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  P  P  P    P  P  P  P  P  P  P  P  P               P  P  "
-    "P  P  –  –  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  P  P  P  P    P  P  P  P  P  P  P  P  P               P  P  P  P  –  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  "
-    "ÿ  –  –  –  P  P  P       P  P  P  –  P  –  –  P  P               P  P  P  P  –  –  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  –  P  P  P          P  P  P  "
-    "P  –  –  –  P  P               P  P  P  P  –  –  –  –  –  ÿ  ÿ  ÿ  ÿ  –  –  –  P  P  P  P          P  P  P  –  –  –  P  P  P               P  P "
-    " P  P  –  –  –  –  –  –  ÿ  –  –  –  –  –  P  P  P          P  P  P  –  –  –  –  –  P  P               P  P  P  P  –  –  –  –  –  –  –  –  –  – "
-    " –  P  P  P             P  P  P  –  ÿ  ÿ  –  P  P  P               P  P  P  P  P  –  –  –  –  –  –  –  –  –  –  P  P  P             P  P  –  –  "
-    "ÿ  –  –  P  P  P               P  P  P   P  P  –  –  –  –  –  –  –  –  –  –  –  P  P            P  P  –  –  –  –  –  –  P  P                P  "
-    "P  P  P  –  –  –  –  –  –  –  –  –  –  –  –  P  P            P  P  P  –  –  –  P  P  P  P                P  P  P  –  –  –  –  –  –  –  –  –  –  "
-    "–  –  P  P  P  P  P  P  PP  P  –  –  –  –  P  P  P                   P  P  P  –  –  –  –  –  –  –  –  –  –  –  –  –  –  P  P  P  P  PP  P  –  – "
-    " –  –  P  P  P                   P  P  P  –  –  –  –  –  ÿ  –  –  ÿ  –  –  –  –  –  –  –  –  P  PP  P  P  P  P  –  –  P  P                   P  "
-    "P  –  –  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  –  –  –  –  P  PP  P  P  P  P  P  P  P  P                   P  P  –  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  "
-    "ÿ  ÿ  –  –  –  –  P  P  P         P  P  P  P  P  P                   P  P  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  –  P  P  P           "
-    "                              P  P  P  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  P  P  P                                      P  P  P  "
-    "P  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  –  –  P  P                                      P  P  P  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  "
-    "ÿ  ÿ  –  –  –  P  P  P  P                                      P  P  –  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  –  P  P                 "
-    "                           P  P  P  –  –  –  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  ÿ  –  –  –  P  P                PP PP PP PP PP                 P  P  P  "
-    "P  –";
+    R"(  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                PP PP PP PP PP                 P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                            P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P                                      P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                      P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                         P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P         P  P  P  P  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  PP  P  P  P  P  P  P  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  PP  P  P  P  P  ?  ?  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  PP  P  ?  ?  ?  ?  P  P  P                   P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  P  P  PP  P  ?  ?  ?  ?  P  P  P                   P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P            P  P  P  ?  ?  ?  P  P  P  P                P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P            P  P  ?  ?  ?  ?  ?  ?  P  P                P  P  P P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P             P  P  ?  ?  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P             P  P  P  ?  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P          P  P  P  ?  ?  ?  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P          P  P  P  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P          P  P  P  P  ?  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P       P  P  P  ?  P  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P    P  P  P  P  P  P  P  P  P               P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P    P  P  P  P  P  P  P  P  P               P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                         P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                         P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P  ?  ?  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                      P  P  P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P   P P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  P  P                                                P  P  P P  P  P   P  P  P  P P  ?  P  P  P  P  P  P  P  P                                                   P  P  P  P  P  P  P  ?  ?  P P  P  P  P  P  P  P                                                            P  P  P  P  P  ?  ?  P  P  P  P  P  P  P                      PP PP PP PP PP                                P  P  P  P  P  P  ?  ?  ?  ?  P  P  P  P                      PP PP PP PP PP                                P  ?  ?  ?  P  ?  ?  ?  ?  ?  P  P  P  P  P                   PP PP ?? PP PP PP                             P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P                   PP PP ?? PP PP PP                    P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                   PP PP ?? ?? PP PP                    P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                   PP PP PP PP PP PP                    P  P  ?)";
 
 enum class RamachandranConformationClassification : uint8 {
     None,
@@ -60,22 +34,9 @@ enum class RamachandranConformationClassification : uint8 {
 void plot_ramachandran(const Array<BackboneAngles> angles, const Array<BackboneAngles> highlighted_angles) {
     static GLuint ramachandran_tex = 0;
     if (!ramachandran_tex) {
-
-        // @TODO: FLIP THE GOD DAMN DATA FROM THE BEGINNING!!!
-        unsigned char data[ramachandran_width * ramachandran_height * 3];
-        for (int y = 0; y < ramachandran_height; y++) {
-            for (int x = 0; x < ramachandran_width; x++) {
-                int dst_idx = y * ramachandran_width + x;
-                int src_idx = (ramachandran_height - 1 - y) * ramachandran_width + x;
-                data[dst_idx * 3 + 0] = ramachandran_data[src_idx * 3 + 0];
-                data[dst_idx * 3 + 1] = ramachandran_data[src_idx * 3 + 1];
-                data[dst_idx * 3 + 2] = ramachandran_data[src_idx * 3 + 2];
-            }
-        }
-
         glGenTextures(1, &ramachandran_tex);
         glBindTexture(GL_TEXTURE_2D, ramachandran_tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, ramachandran_width, ramachandran_height, 0, ramachandran_format, GL_UNSIGNED_BYTE, data);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, ramachandran_width, ramachandran_height, 0, ramachandran_format, GL_UNSIGNED_BYTE, ramachandran_data);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -91,7 +52,10 @@ void plot_ramachandran(const Array<BackboneAngles> angles, const Array<BackboneA
     ImVec2 max_region = ImGui::GetWindowContentRegionMax();
     ImVec2 min_region = ImGui::GetWindowContentRegionMin();
     ImVec2 canvas_size(max_region.x - min_region.x, max_region.y - min_region.y);
-	ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    printf("%.2f %.2f\n", win_pos.x, win_pos.y);
+
 
     ImGui::Image((ImTextureID)ramachandran_tex, canvas_size);
 
@@ -100,25 +64,28 @@ void plot_ramachandran(const Array<BackboneAngles> angles, const Array<BackboneA
         int64 count = math::min(angles.count, 3000LL);
 
         for (int64 i = 0; i < count; i++) {
-			if (angles[i].phi == 0.f || angles[i].psi == 0.f) continue;
+
+            if (angles[i].phi == 0.f || angles[i].psi == 0.f) continue;
             vec2 coord = vec2(angles[i].phi, angles[i].psi) / (2.f * math::PI) + 0.5f;
-			// @NOTE: Y-Axis is flipped because of the coordinate system which ImGui uses.
-            ImVec2 win_pos(coord.x * canvas_size.x + win_pos.x, -coord.y * canvas_size.y + win_pos.y);
-            dl->AddQuadFilled(ImVec2(win_pos.x - radius, win_pos.y - radius), ImVec2(win_pos.x - radius, win_pos.y + radius), ImVec2(win_pos.x + radius, win_pos.y + radius),
-                              ImVec2(win_pos.x + radius, win_pos.y - radius), IM_COL32(255, 255, 255, 40));
+            // @NOTE: Y-Axis is flipped because of the coordinate system which ImGui uses.
+            ImVec2 screen_coord(coord.x * canvas_size.x + screen_coord.x, coord.y * canvas_size.y + screen_coord.y);
+            dl->AddQuadFilled(ImVec2(screen_coord.x - radius, screen_coord.y - radius), ImVec2(screen_coord.x - radius, screen_coord.y + radius),
+                              ImVec2(screen_coord.x + radius, screen_coord.y + radius), ImVec2(screen_coord.x + radius, screen_coord.y - radius),
+                              IM_COL32(255, 255, 255, 40));
         }
     }
 
-	if (highlighted_angles.count > 0) {
-		for (const auto& angle : highlighted_angles) {
-			if (angle.phi == 0.f || angle.psi == 0.f) continue;
-			vec2 coord = vec2(angle.phi, angle.psi) / (2.f * math::PI) + 0.5f;
-			// @NOTE: Y-Axis is flipped because of the coordinate system which ImGui uses.
-			ImVec2 win_pos(coord.x * canvas_size.x + win_pos.x, -coord.y * canvas_size.y + win_pos.y);
-			dl->AddQuadFilled(ImVec2(win_pos.x - radius, win_pos.y - radius), ImVec2(win_pos.x - radius, win_pos.y + radius), ImVec2(win_pos.x + radius, win_pos.y + radius),
-				ImVec2(win_pos.x + radius, win_pos.y - radius), IM_COL32(255, 255, 0, 255));
-		}
-	}
+    if (highlighted_angles.count > 0) {
+        for (const auto& angle : highlighted_angles) {
+            if (angle.phi == 0.f || angle.psi == 0.f) continue;
+            vec2 coord = vec2(angle.phi, angle.psi) / (2.f * math::PI) + 0.5f;
+            // @NOTE: Y-Axis is flipped because of the coordinate system which ImGui uses.
+            ImVec2 screen_coord(coord.x * canvas_size.x + win_pos.x, coord.y * canvas_size.y + win_pos.y);
+            dl->AddQuadFilled(ImVec2(screen_coord.x - radius, screen_coord.y - radius), ImVec2(screen_coord.x - radius, screen_coord.y + radius),
+                              ImVec2(screen_coord.x + radius, screen_coord.y + radius), ImVec2(screen_coord.x + radius, screen_coord.y - radius),
+                              IM_COL32(255, 255, 0, 200));
+        }
+    }
 
     ImGui::End();
 }
@@ -184,7 +151,7 @@ DynamicArray<Bond> compute_covalent_bonds(const Array<vec3> atom_pos, const Arra
 
     DynamicArray<Bond> bonds;
 
-    auto try_and_create_atom_bond = [& pos = atom_pos, &elem = atom_elem, &bonds = bonds](int i, int j) -> bool {
+    auto try_and_create_atom_bond = [& pos = atom_pos, &elem = atom_elem, &bonds = bonds ](int i, int j)->bool {
         auto d = element::covalent_radius(elem[i]) + element::covalent_radius(elem[j]);
         auto d1 = d + 0.3f;
         auto d2 = d - 0.5f;

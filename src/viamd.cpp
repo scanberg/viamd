@@ -105,18 +105,18 @@ int main(int, char**) {
     //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
     //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
     //auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
-	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
+	auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
 	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
 	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/water/water.gro");
-	auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid-6T/conf-60-6T.gro");
+	//auto gro_res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid-6T/conf-60-6T.gro");
     //auto pdb_res = load_pdb_from_file(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
 
     //Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
-    //Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
+    Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
-	Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid-6T/prod-centered.xtc");
+	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid-6T/prod-centered.xtc");
 
 	data.mol_struct = &gro_res.gro;
 	data.trajectory = traj;
@@ -289,18 +289,32 @@ int main(int, char**) {
 
 			static vec2 hit_coords(-1, -1);
 			if (input->mouse_hit[0]) {
+                printf("MOUSE HIT\n");
 				hit_coords = input->mouse_screen_coords;
 			}
-			else if (input->mouse_hit[1]) {
+			else if (input->mouse_release[0]) {
+                printf("MOUSE RELEASE\n");
 				if (input->mouse_screen_coords == hit_coords) {
 					data.selected_atom_idx = data.hovered_atom_idx;
 					data.selected_residue_idx = data.hovered_residue_idx;
 					data.selected_chain_idx = data.hovered_chain_idx;
 
+                    printf("SAME COORDS\n");
+
 					if (data.selected_chain_idx != -1) {
 						active_backbone = compute_backbone(data.mol_struct->chains[data.selected_chain_idx], data.mol_struct->residues, data.mol_struct->atom_labels);
 						active_backbone_angles = compute_backbone_angles(data.mol_struct->atom_positions, active_backbone);
+                        traj_angles = compute_backbone_angles_trajectory(*data.trajectory, active_backbone);
+
+                        for (const auto& a : active_backbone_angles) {
+                            printf("%.3f %.3f\n", a.phi, a.psi);
+                        }
 					}
+                    else {
+                        active_backbone = {};
+                        active_backbone_angles = {};
+                        traj_angles = {};
+                    }
 				}
 			}
 
