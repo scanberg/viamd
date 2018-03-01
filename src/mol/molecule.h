@@ -15,57 +15,47 @@ struct Bond {
 	int32 idx_b;
 };
 
-using Label = StringBuffer<8>;
+using Label    = StringBuffer<8>;
+using AtomIdx  = int32;
+using ResIdx   = int16;
+using ChainIdx = int16;
 
 struct Residue {
 	Label id;
-	int32 beg_atom_idx;
-	int32 end_atom_idx;
-	int32 chain_idx = -1;
+	AtomIdx beg_atom_idx = 0;
+	AtomIdx end_atom_idx = 0;
+	ChainIdx chain_idx = -1;
+	ResIdx backbone_segment_idx = -1;
 };
 
 struct Chain {
 	Label id;
-	int32 beg_res_idx;
-	int32 end_res_idx;
+	ResIdx beg_res_idx;
+	ResIdx end_res_idx;
 };
 
+struct BackboneSegment {
+	int32 ca_idx;
+	//int32 ha_idx;
+	//int32 cb_idx;
+	int32 n_idx;
+	int32 c_idx;
+	int32 o_idx;
+};
+
+
 // Interface to access molecular data
-struct MoleculeInterface {
+struct MoleculeStructure {
 	Array<vec3>		atom_positions;
 	Array<Element>	atom_elements;
 	Array<Label>	atom_labels;
-	Array<int32>	atom_residue_indices;
+	Array<ResIdx>	atom_residue_indices;
 
 	Array<Bond>		bonds;
 	Array<Residue>	residues;
 	Array<Chain>	chains;
+	Array<BackboneSegment> backbone_segments;
 };
 
-struct MoleculeData {
-	DynamicArray<vec3>		atom_position_data;
-	DynamicArray<Element>	atom_element_data;
-	DynamicArray<Label>		atom_label_data;
-	DynamicArray<int32>		atom_residue_index_data;
-
-	DynamicArray<Bond>		bond_data;
-	DynamicArray<Residue>	residue_data;
-	DynamicArray<Chain>		chain_data;
-
-	operator MoleculeInterface() {
-		return { atom_position_data, atom_element_data, atom_label_data, atom_residue_index_data, bond_data, residue_data, chain_data };
-	}
-};
-
-enum MoleculeStructureAllocationFlags {
-	MOL_POSITIONS = BIT(0),
-	MOL_ELEMENTS = BIT(1),
-	MOL_LABELS = BIT(2),
-	MOL_RESIDUE_INDICES = BIT(3),
-	MOL_ALL = 0xffffffff
-};
-
-MoleculeInterface allocate_molecule_structure(int atom_count, int bond_count, int residue_count, int chain_count, MoleculeStructureAllocationFlags alloc_flags = MOL_ALL, Allocator* allocator = &default_alloc);
-
-// This is a bit risky
-void free_molecule_structure(MoleculeInterface& mol, Allocator* allocator = &default_alloc);
+MoleculeStructure* allocate_molecule_structure(int num_atoms, int num_bonds, int num_residues, int num_chains, int num_backbone_segments);
+void free_molecule_structure(MoleculeStructure* mol);

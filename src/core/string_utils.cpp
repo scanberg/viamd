@@ -157,7 +157,7 @@ String trim(String str) {
 	return String(beg, end - beg);
 }
 
-String read_textfile(CString filename, Allocator& alloc) {
+String allocate_and_read_textfile(CString filename) {
 	std::ifstream file(filename);
 	if (!file) return {};
 
@@ -165,7 +165,7 @@ String read_textfile(CString filename, Allocator& alloc) {
 	int64 file_size = file.tellg();
 	file.seekg(0, std::ios::beg);
 
-	char* data = (char*)alloc.alloc(file_size + 1);
+	char* data = (char*)MALLOC(file_size + 1);
 	file.read(data, file_size);
 	data[file_size] = '\0';
 

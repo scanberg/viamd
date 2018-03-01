@@ -61,7 +61,7 @@ struct String : Array<char> {
 	}
 
 	operator CString() { return CString(data, count); }
-	operator const char*() { return data; }
+	operator char*() { return data; }
 	operator bool() { return (data != 0 && count != 0); }
 };
 
@@ -232,8 +232,8 @@ inline int to_int(CString str) { return to_int32(str); }
 CString trim(CString str);
 String trim(String str);
 
-// Reads text file and copies into zero terminated String allocated using supplied allocator
-String read_textfile(CString filename, Allocator& alloc = default_alloc);
+// Reads text file and copies into allocated zero terminated String
+String allocate_and_read_textfile(CString filename);
 
 // Returns directory part from url, ex: func("C:/folder/file.ext") should return "C:/folder/"
 CString get_directory(CString url);

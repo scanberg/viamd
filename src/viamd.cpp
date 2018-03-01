@@ -54,7 +54,7 @@ struct ApplicationData {
     TrackballController controller;
 
     // --- MOL DATA ---
-    MoleculeInterface* mol_struct;
+    MoleculeStructure* mol_struct;
     Trajectory* trajectory;
     DynamicArray<float> atom_radii;
     DynamicArray<uint32> atom_colors;
@@ -89,7 +89,7 @@ struct ApplicationData {
 static float compute_avg_ms(float dt);
 static void draw_main_menu(ApplicationData* data);
 static void draw_console(ApplicationData* data, int width, int height, float dt);
-static void draw_atom_info(const MoleculeInterface& mol, int atom_idx, int x, int y);
+static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y);
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height);
 static void destroy_main_framebuffer(MainFramebuffer* fbo);
 static void reset_view(ApplicationData* data);
@@ -111,7 +111,7 @@ int main(int, char**) {
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid-6T/conf-60-6T.gro");
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/yuya/nowat_npt.gro");
 	//auto res = load_pdb_from_file(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
-	auto res = load_pdb_from_file(PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
+	auto res = allocate_and_load_pdb_from_file(PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
 
     //Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
     //Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
@@ -122,10 +122,8 @@ int main(int, char**) {
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/yuya/traj-centered.xtc");
 	Trajectory* traj = nullptr;
 
-	MoleculeInterface mol_i = *res.mol;
-
-	data.mol_struct = &mol_i;
-	data.trajectory = res.traj;
+	data.mol_struct = res.molecule;
+	data.trajectory = res.trajectory;
 
 	DynamicArray<BackboneSegment> active_backbone = compute_backbone(data.mol_struct->chains[0], data.mol_struct->residues, data.mol_struct->atom_labels);
 	DynamicArray<BackboneAngles> active_backbone_angles = compute_backbone_angles(data.mol_struct->atom_positions, active_backbone);
@@ -820,7 +818,7 @@ static void draw_console(ApplicationData* data, int width, int height, float dt)
     console.Draw("Console", data, width, height, dt);
 }
 
-static void draw_atom_info(const MoleculeInterface& mol, int atom_idx, int x, int y) {
+static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y) {
     
     // @TODO: Assert things and make this failproof
 	if (atom_idx < 0 || atom_idx >= mol.atom_positions.count) return;

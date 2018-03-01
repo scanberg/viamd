@@ -12,11 +12,13 @@ static inline bool valid_line(CString line, uint32 options) {
 	return false;
 }
 
-PdbResult load_pdb_from_file(const char* filename, PdbLoadParams params) {
-	return parse_pdb_from_string(read_textfile(filename), params);
+MoleculeDynamic allocate_and_load_pdb_from_file(const char* filename, PdbLoadParams params) {
+	String txt = allocate_and_read_textfile(filename);
+	return allocate_and_parse_pdb_from_string(txt, params);
+	FREE(txt);
 }
 
-PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params) {
+MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadParams params) {
 	DynamicArray<vec3> positions;
 	DynamicArray<Label> labels;
 	DynamicArray<Element> elements;
@@ -25,42 +27,56 @@ PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params) {
 	DynamicArray<float> temp_factors;
 	DynamicArray<Residue> residues;
 	DynamicArray<Chain> chains;
+	DynamicArray<Bond> bonds;
+	DynamicArray<BackboneSegment> backbone_segments;
 
-	PdbData* pdb = nullptr;
-	Trajectory* traj = nullptr;
+	MoleculeDynamic md{ nullptr, nullptr };
 		
 	int current_res_id = -1;
 	char current_chain_id = -1;
 	int num_atoms = 0;
 	int num_models = 0;
+	mat3 box(0);
 	CString line;
 	while (extract_line(line, pdb_string)) {
-		if (compare_n(line, "MODEL", 5)) {
+		if (compare_n(line, "CRYST1", 6)) {
+			vec3 dim(to_float(line.substr(6, 9)), to_float(line.substr(15, 9)), to_float(line.substr(24, 9)));
+			vec3 angles(to_float(line.substr(33, 7)), to_float(line.substr(40, 7)), to_float(line.substr(47, 7)));
+			box[0].x = dim.x;
+			box[1].y = dim.y;
+			box[2].z = dim.z;
+		}
+		else if (compare_n(line, "MODEL", 5)) {
 
 		}
 		else if (compare_n(line, "ENDMDL", 6)) {
 			if (params & PDB_TREAT_MODELS_AS_FRAMES) {
-				if (!pdb) {
-					pdb = (PdbData*)MALLOC(sizeof(PdbData));
-					new(pdb) PdbData();
+				if (!md.molecule) {
+					bonds = compute_covalent_bonds(positions, elements, residues);
+					for (int i = 0; i < chains.count; i++) {
+						backbone_segments.append(compute_backbone(chains[i], residues, labels));
+					}
+					md.molecule = allocate_molecule_structure(num_atoms, bonds.count, residues.count, chains.count, 0);
+					// Copy data into molecule
 
-					pdb->atom_position_data = positions;
-					pdb->atom_element_data = elements;
-					pdb->atom_label_data = labels;
-					pdb->atom_residue_index_data = residue_indices;
-					pdb->bond_data = compute_covalent_bonds(positions, elements, residues);
-					pdb->residue_data = residues;
-					pdb->chain_data = chains;
-				}
-				if (!traj) {
-					traj = (Trajectory*)MALLOC(sizeof(Trajectory));
-					new(traj) Trajectory();
+					memcpy(md.molecule->atom_positions.data, positions.data, positions.size() * sizeof(vec3));
+					memcpy(md.molecule->atom_elements.data, elements.data, elements.size() * sizeof(Element));
+					memcpy(md.molecule->atom_labels.data, labels.data, labels.size() * sizeof(Label));
+					memcpy(md.molecule->atom_residue_indices.data, residue_indices.data, residue_indices.size() * sizeof(int32));
 
-					traj->position_data.append(positions);
-					traj->num_atoms = positions.count;
-					traj->num_frames++;
+					memcpy(md.molecule->residues.data, residues.data, residues.size() * sizeof(Residue));
+					memcpy(md.molecule->chains.data, chains.data, chains.size() * sizeof(Chain));
+					memcpy(md.molecule->bonds.data, bonds.data, bonds.size() * sizeof(Bond));
 				}
-				traj->position_data.append(positions);
+				if (!md.trajectory) {
+					md.trajectory = (Trajectory*)MALLOC(sizeof(Trajectory));
+					new(md.trajectory) Trajectory();
+				}
+
+				//@TODO: ASSERT that things are matching up in terms of size and such.
+				md.trajectory->num_atoms = positions.count;
+				md.trajectory->num_frames++;
+				md.trajectory->position_data.append(positions);
 			}
 			else {
 				ASSERT(false);
@@ -106,7 +122,7 @@ PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params) {
 			if (current_chain_id != chain_id) {
 				current_chain_id = chain_id;
 				Chain chain;
-				chain.beg_res_idx = (int)residues.count;
+				chain.beg_res_idx = (ResIdx)residues.count;
 				chain.end_res_idx = chain.beg_res_idx;
 				chain.id = chain_id;
 				chains.push_back(chain);
@@ -118,6 +134,7 @@ PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params) {
 				Residue residue;
 				residue.beg_atom_idx = num_atoms;
 				residue.end_atom_idx = residue.beg_atom_idx;
+				residue.chain_idx = chains.count - 1;
 				copy(String(residue.id.beg(), Label::MAX_LENGTH-1), trim(line.substr(17, 3)));
 				residues.push_back(residue);
 				chains.back().end_res_idx++;
@@ -129,29 +146,14 @@ PdbResult parse_pdb_from_string(CString pdb_string, PdbLoadParams params) {
 		}
 	}
 
-	if (traj) {
-		for (int i = 0; i < traj->num_frames; i++) {
+	if (md.trajectory) {
+		for (int i = 0; i < md.trajectory->num_frames; i++) {
 			int index = i;
 			float time = 0;
-			mat3 box = mat3(1);
-			Array<vec3> atom_positions{ traj->position_data.beg() + i * traj->num_atoms, traj->num_atoms };
-			traj->frame_buffer.push_back({ index, time, box, atom_positions });
+			Array<vec3> atom_positions{ md.trajectory->position_data.beg() + i * md.trajectory->num_atoms, md.trajectory->num_atoms };
+			md.trajectory->frame_buffer.push_back({ index, time, box, atom_positions });
 		}
 	}
 
-	//mol = allocate_molecule_structure(num_atoms, bonds.size(), residues.size(), chains.size(), MOL_ALL);
-
-	// Copy data into molecule
-	/*
-	memcpy(mol.atom_positions.data, positions.data, positions.size() * sizeof(vec3));
-	memcpy(mol.atom_elements.data, elements.data, elements.size() * sizeof(Element));
-	memcpy(mol.atom_labels.data, labels.data, labels.size() * sizeof(Label));
-	memcpy(mol.atom_residue_indices.data, residue_indices.data, residue_indices.size() * sizeof(int32));
-
-	memcpy(mol.residues.data, residues.data, residues.size() * sizeof(Residue));
-	memcpy(mol.chains.data, chains.data, chains.size() * sizeof(Chain));
-	memcpy(mol.bonds.data, bonds.data, bonds.size() * sizeof(Bond));
-	*/
-
-	return { pdb, traj, num_models };
+	return md;
 }

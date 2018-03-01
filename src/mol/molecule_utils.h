@@ -22,15 +22,6 @@ enum class RamachandranConformationClassification : uint8 {
 	PLow
 };
 
-struct BackboneSegment {
-	int32 ca_idx;
-	int32 ha_idx;
-	int32 cb_idx;
-	int32 n_idx;
-	int32 c_idx;
-	int32 o_idx;
-};
-
 // Tangent and binormal is perhaps redundant
 struct SplineSegment {
 	vec3 position;
@@ -92,8 +83,8 @@ BackboneAnglesTrajectory compute_backbone_angles_trajectory(const Trajectory& tr
 DynamicArray<float> compute_atom_radii(const Array<Element> elements);
 void compute_atom_radii(Array<float> radii_dst, const Array<Element> elements);
 
-DynamicArray<uint32> compute_atom_colors(const MoleculeInterface& mol, ColorMapping mapping);
-void compute_atom_colors(Array<uint32> color_dst, const MoleculeInterface& mol, ColorMapping mapping);
+DynamicArray<uint32> compute_atom_colors(const MoleculeStructure& mol, ColorMapping mapping);
+void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, ColorMapping mapping);
 
 bool is_amino_acid(Residue res);
 

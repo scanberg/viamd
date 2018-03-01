@@ -129,7 +129,7 @@ struct DynamicArray : Array<T> {
 		if (this->count + arr.count >= capacity) {
 			reserve(_grow_capacity(this->count + arr.count));
 		}
-		memcpy(this->data + this->count, arr.data, arr.count);
+		memcpy(this->end(), arr.data, arr.count * sizeof(T));
 		this->count += arr.count;
 	}
 

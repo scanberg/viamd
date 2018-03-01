@@ -3,11 +3,13 @@
 #include <mol/element.h>
 #include <mol/molecule_utils.h>
 
-GroResult load_gro_from_file(const char* filename) {
-	return parse_gro_from_string(read_textfile(filename));
+MoleculeStructure* allocate_and_load_gro_from_file(const char* filename) {
+	String txt = allocate_and_read_textfile(filename);
+	return allocate_and_parse_gro_from_string(txt);
+	FREE(txt);
 }
 
-GroResult parse_gro_from_string(CString gro_string) {
+MoleculeStructure* allocate_and_parse_gro_from_string(CString gro_string) {
 
 	CString header;
 	CString length;
@@ -18,7 +20,7 @@ GroResult parse_gro_from_string(CString gro_string) {
 	int num_atoms = to_int(length);
 
     if (num_atoms == 0) {
-        return {false};
+        return nullptr;
     }
 
     vec3 pos, vel, box;
@@ -39,7 +41,6 @@ GroResult parse_gro_from_string(CString gro_string) {
 	};
 	*/
 
-	MoleculeData mol_data;
 	DynamicArray<vec3> positions;
 	DynamicArray<vec3> velocities;
 	DynamicArray<Label> labels;
@@ -111,30 +112,19 @@ GroResult parse_gro_from_string(CString gro_string) {
 	   	}
 	}
 
-	GroStructure gro;
-	MoleculeInterface& mol = gro;
-	mol = allocate_molecule_structure(num_atoms, bonds.size(), residues.size(), chains.size(), MOL_ALL);
+	MoleculeStructure* mol = allocate_molecule_structure(num_atoms, bonds.size(), residues.size(), chains.size(), 0);
 
 	// Copy data into molecule
-	memcpy(mol.atom_positions.data, positions.data, positions.size() * sizeof(vec3));
-	memcpy(mol.atom_elements.data, elements.data, elements.size() * sizeof(Element));
-	memcpy(mol.atom_labels.data, labels.data, labels.size() * sizeof(Label));
-	memcpy(mol.atom_residue_indices.data, residue_indices.data, residue_indices.size() * sizeof(int32));
+	memcpy(mol->atom_positions.data, positions.data, positions.size() * sizeof(vec3));
+	memcpy(mol->atom_elements.data, elements.data, elements.size() * sizeof(Element));
+	memcpy(mol->atom_labels.data, labels.data, labels.size() * sizeof(Label));
+	memcpy(mol->atom_residue_indices.data, residue_indices.data, residue_indices.size() * sizeof(int32));
 
-	memcpy(mol.residues.data, residues.data, residues.size() * sizeof(Residue));
-	memcpy(mol.chains.data, chains.data, chains.size() * sizeof(Chain));
-	memcpy(mol.bonds.data, bonds.data, bonds.size() * sizeof(Bond));
+	memcpy(mol->residues.data, residues.data, residues.size() * sizeof(Residue));
+	memcpy(mol->chains.data, chains.data, chains.size() * sizeof(Chain));
+	memcpy(mol->bonds.data, bonds.data, bonds.size() * sizeof(Bond));
 
-	/*
-	// Atom data
-	for (int i = 0; i < atoms.size(); i++) {
-		mol.atom_positions[i] = atoms[i].position;
-		mol.atom_elements[i] = atoms[i].element;
-		mol.atom_labels[i] = atoms[i].label;
-	}
-	*/
+    //gro.box = mat3(vec3(box.x, 0, 0), vec3(0, box.y, 0), vec3(0, 0, box.z));
 
-    gro.box = mat3(vec3(box.x, 0, 0), vec3(0, box.y, 0), vec3(0, 0, box.z));
-
-	return { true, gro };
+	return mol;
 }

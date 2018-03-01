@@ -1,15 +1,8 @@
 #pragma once
 
-#include <mol/pdb.h>
-#include <mol/trajectory.h>
+#include <mol/molecule_dynamic.h>
 #include <core/common.h>
 #include <core/string_utils.h>
-
-struct PdbResult {
-	PdbData* mol;
-	Trajectory* traj;
-	int num_models;
-};
 
 enum PdbLoadParams {
 	PDB_READ_ATOM = BIT(0),
@@ -18,5 +11,5 @@ enum PdbLoadParams {
 	PDB_DEFAULT = 0xFFFFFFFF
 };
 
-PdbResult load_pdb_from_file(const char* filename, PdbLoadParams params = PDB_DEFAULT);
-PdbResult parse_pdb_from_string(CString string, PdbLoadParams params = PDB_DEFAULT);
+MoleculeDynamic allocate_and_load_pdb_from_file(const char* filename, PdbLoadParams params = PDB_DEFAULT);
+MoleculeDynamic allocate_and_parse_pdb_from_string(CString string, PdbLoadParams params = PDB_DEFAULT);

@@ -176,7 +176,7 @@ DynamicArray<Chain> compute_chains(const Array<Residue> residues, const Array<Bo
             curr_chain_idx = residue_chains[i];
             Label lbl;
             snprintf(lbl.beg(), Label::MAX_LENGTH, "C%i", curr_chain_idx);
-            chains.push_back({lbl, i, i});
+            chains.push_back({lbl, (ResIdx)i, (ResIdx)i});
         }
         chains.back().end_res_idx++;
     }
@@ -199,16 +199,16 @@ DynamicArray<BackboneSegment> compute_backbone(const Chain& chain, const Array<R
         if (is_amino_acid(residue) == false) continue;
         // find atoms
         auto ca_idx = -1;
-        auto ha_idx = -1;
-        auto cb_idx = -1;
+        //auto ha_idx = -1;
+        //auto cb_idx = -1;
         auto n_idx = -1;
         auto c_idx = -1;
         auto o_idx = -1;
         for (int32 i = residue.beg_atom_idx; i < residue.end_atom_idx; i++) {
             const auto& lbl = atom_labels[i];
             if (ca_idx == -1 && match(lbl, "CA")) ca_idx = i;
-            if (ha_idx == -1 && match(lbl, "HA")) ha_idx = i;
-            if (cb_idx == -1 && match(lbl, "CB")) cb_idx = i;
+            //if (ha_idx == -1 && match(lbl, "HA")) ha_idx = i;
+            //if (cb_idx == -1 && match(lbl, "CB")) cb_idx = i;
             if (n_idx == -1 && match(lbl, "N")) n_idx = i;
             if (c_idx == -1 && match(lbl, "C")) c_idx = i;
             if (o_idx == -1 && match(lbl, "O")) o_idx = i;
@@ -216,12 +216,14 @@ DynamicArray<BackboneSegment> compute_backbone(const Chain& chain, const Array<R
         if (ca_idx == -1) {
             printf("No CA label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
         }
+		/*
         if (ha_idx == -1) {
             printf("No HA label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
         }
         if (cb_idx == -1) {
             printf("No CB label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
         }
+		*/
         if (n_idx == -1) {
             printf("No N label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
         }
@@ -232,7 +234,7 @@ DynamicArray<BackboneSegment> compute_backbone(const Chain& chain, const Array<R
             printf("No O label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
         }
 
-        backbones.push_back({ca_idx, ha_idx, cb_idx, n_idx, c_idx, o_idx});
+        backbones.push_back({ca_idx, n_idx, c_idx, o_idx});
     }
 
     return backbones;
@@ -407,13 +409,13 @@ void compute_atom_radii(Array<float> radii_dst, const Array<Element> elements) {
     }
 }
 
-DynamicArray<uint32> compute_atom_colors(const MoleculeInterface& mol, ColorMapping mapping) {
+DynamicArray<uint32> compute_atom_colors(const MoleculeStructure& mol, ColorMapping mapping) {
     DynamicArray<uint32> colors(mol.atom_elements.count, 0xFFFFFFFF);
     compute_atom_colors(colors, mol, mapping);
     return colors;
 }
 
-void compute_atom_colors(Array<uint32> color_dst, const MoleculeInterface& mol, ColorMapping mapping) {
+void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, ColorMapping mapping) {
     // @TODO: Implement more mappings
 
     // CPK

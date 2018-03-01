@@ -1,44 +1,32 @@
 #include "molecule.h"
 
-MoleculeInterface allocate_molecule_structure(int atom_count, int bond_count, int residue_count, int chain_count, MoleculeStructureAllocationFlags alloc_flags, Allocator* allocator)
-{
-	MoleculeInterface mol;
+MoleculeStructure* allocate_molecule_structure(int num_atoms, int num_bonds, int num_residues, int num_chains, int num_backbone_segments) {
+	MoleculeStructure* mol = (MoleculeStructure*)MALLOC(sizeof(MoleculeStructure));
 	int64 alloc_size = 0;
 
-	if (atom_count > 0) {
-		if (alloc_flags & MOL_POSITIONS) alloc_size += atom_count * sizeof(vec3);
-		if (alloc_flags & MOL_ELEMENTS) alloc_size += atom_count * sizeof(Element);
-		if (alloc_flags & MOL_LABELS) alloc_size += atom_count * sizeof(Label);
-		if (alloc_flags & MOL_RESIDUE_INDICES) alloc_size += atom_count * sizeof(int32);
-	}
-	if (bond_count > 0) {
-		alloc_size += bond_count * sizeof(Bond);
-	}
-	if (residue_count > 0) {
-		alloc_size += residue_count * sizeof(Residue);
-	}
-	if (chain_count > 0) {
-		alloc_size += chain_count * sizeof(Chain);
-	}
+	alloc_size += num_atoms * (sizeof(vec3) + sizeof(Element) + sizeof(Label) + sizeof(ResIdx));
+	alloc_size += num_bonds * sizeof(Bond);
+	alloc_size += num_residues * sizeof(Residue);
+	alloc_size += num_chains * sizeof(Chain);
+	alloc_size += num_backbone_segments * sizeof(BackboneSegment);
 
-	void* data;
-	if (allocator)
-		data = allocator->alloc(alloc_size);
-	else
-		data = MALLOC(alloc_size);
+	void* data = MALLOC(alloc_size);
 
-	mol.atom_positions =		{ (vec3*)data, alloc_flags & MOL_POSITIONS ? atom_count : 0 };
-	mol.atom_elements =			{ (Element*)(mol.atom_positions.end()), alloc_flags & MOL_ELEMENTS ? atom_count : 0 };
-	mol.atom_labels =			{ (Label*)(mol.atom_elements.end()), alloc_flags & MOL_LABELS ? atom_count : 0 };
-	mol.atom_residue_indices =	{ (int32*)(mol.atom_labels.end()), alloc_flags & MOL_RESIDUE_INDICES ? atom_count : 0 };
+	mol->atom_positions =		{ (vec3*)data, num_atoms };
+	mol->atom_elements =		{ (Element*)(mol->atom_positions.end()), num_atoms };
+	mol->atom_labels =			{ (Label*)(mol->atom_elements.end()), num_atoms };
+	mol->atom_residue_indices =	{ (ResIdx*)(mol->atom_labels.end()), num_atoms };
 	
-	mol.bonds =		{ (Bond*)(mol.atom_residue_indices.end()), bond_count };
-	mol.residues =	{ (Residue*)(mol.bonds.end()), residue_count };
-	mol.chains =	{ (Chain*)(mol.residues.end()), chain_count };
+	mol->bonds =			 { (Bond*)(mol->atom_residue_indices.end()), num_bonds };
+	mol->residues =			 { (Residue*)(mol->bonds.end()), num_residues };
+	mol->chains =			 { (Chain*)(mol->residues.end()), num_chains };
+	mol->backbone_segments = { (BackboneSegment*)(mol->chains.end()), num_backbone_segments };
 
 	return mol;
 }
 
-void free_molecule_structure(MoleculeInterface& mol, Allocator* alloc) {
-	alloc->free(mol.atom_positions.data);
+void free_molecule_structure(MoleculeStructure* mol) {
+	ASSERT(mol);
+	FREE(mol->atom_positions.beg());
+	FREE(mol);
 }

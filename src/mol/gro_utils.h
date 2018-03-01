@@ -1,16 +1,7 @@
 #pragma once
 
-#include <mol/gro.h>
-#include <core/common.h>
-#include <core/allocator.h>
-#include <core/array.h>
+#include <mol/molecule.h>
+#include <core/string_utils.h>
 
-struct GroResult {
-	bool success = false;
-	GroStructure gro = {};
-
-	operator bool() { return success; }
-};
-
-GroResult load_gro_from_file(const char* filename);
-GroResult parse_gro_from_string(CString string);
+MoleculeStructure* allocate_and_load_gro_from_file(const char* filename);
+MoleculeStructure* allocate_and_parse_gro_from_string(CString string);
