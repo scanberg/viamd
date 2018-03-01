@@ -141,7 +141,7 @@ static bool residues_are_connected(Residue res_a, Residue res_b, const Array<Bon
 
 // @NOTE this method is sub-optimal and can surely be improved...
 // Residues should have no more than 2 potential connections to other residues.
-DynamicArray<Chain> compute_chains(const Array<Residue> residues, const Array<Bond> bonds, const Array<int32> atom_residue_indices) {
+DynamicArray<Chain> compute_chains(const Array<Residue> residues, const Array<Bond> bonds, const Array<ResIdx> atom_residue_indices) {
     DynamicArray<Bond> residue_bonds;
 
     if (atom_residue_indices) {
@@ -190,6 +190,29 @@ bool match(const Label& lbl, const char (&cstr)[N]) {
         if (tolower(lbl[i]) != tolower(cstr[i])) return false;
     }
     return true;
+}
+
+DynamicArray<BackboneSegment> compute_backbone_segments(const Array<Residue> residues, const Array<Label> atom_labels) {
+	DynamicArray<BackboneSegment> segments;
+	for (auto& res : residues) {
+		auto ca_idx = -1;
+		auto n_idx = -1;
+		auto c_idx = -1;
+		auto o_idx = -1;
+		if (is_amino_acid(res)) {
+			// find atoms
+			for (int32 i = res.beg_atom_idx; i < res.end_atom_idx; i++) {
+				const auto& lbl = atom_labels[i];
+				if (ca_idx == -1 && match(lbl, "CA")) ca_idx = i;
+				if (n_idx == -1 && match(lbl, "N")) n_idx = i;
+				if (c_idx == -1 && match(lbl, "C")) c_idx = i;
+				if (o_idx == -1 && match(lbl, "O")) o_idx = i;
+			}
+		}
+		segments.push_back({ ca_idx, n_idx, c_idx, o_idx });
+	}
+
+	return segments;
 }
 
 DynamicArray<BackboneSegment> compute_backbone(const Chain& chain, const Array<Residue> residues, const Array<Label> atom_labels) {
@@ -375,22 +398,22 @@ void compute_backbone_angles(Array<BackboneAngles> dst, const Array<vec3> pos, c
     dst[N] = {omega, phi, psi};
 }
 
-BackboneAnglesTrajectory compute_backbone_angles_trajectory(const Trajectory& trajectory, const Array<BackboneSegment> backbone) {
-    if (trajectory.num_frames == 0 || backbone.count == 0) return {};
+BackboneAnglesTrajectory compute_backbone_angles_trajectory(const Trajectory& trajectory, const Array<BackboneSegment> backbone_segments) {
+    if (trajectory.num_frames == 0 || backbone_segments.count == 0) return {};
 
     //@NOTE: Trajectory may be loading while this is taking place, therefore read num_frames once and stick to that
     auto num_frames = trajectory.num_frames;
 
     BackboneAnglesTrajectory bat;
     bat.num_frames = num_frames;
-    bat.num_segments = (int)backbone.count;
+    bat.num_segments = (int)backbone_segments.count;
     bat.angle_data = DynamicArray<BackboneAngles>(bat.num_frames * bat.num_segments);
 
     // @TODO: parallelize?
     for (int f_idx = 0; f_idx < num_frames; f_idx++) {
         auto pos = get_trajectory_positions(trajectory, f_idx);
-        auto b_angles = get_backbone_angles(bat, f_idx);
-        compute_backbone_angles(b_angles, pos, backbone);
+        auto b_angles = get_backbone_segment_angles(bat, f_idx);
+        compute_backbone_angles(b_angles, pos, backbone_segments);
     }
 
     return bat;
@@ -1664,19 +1687,19 @@ void draw_ribbons(const Array<SplineSegment> spline, const mat4& view_mat, const
     glDisable(GL_DEPTH_TEST);
 }
 
-void draw_backbone(const Array<BackboneSegment> backbone, const Array<vec3> atom_positions, const mat4& view_mat, const mat4& proj_mat) {
+void draw_backbone(const Array<BackboneSegment> backbone_segments, const Array<vec3> atom_positions, const mat4& view_mat, const mat4& proj_mat) {
     immediate::set_view_matrix(view_mat);
     immediate::set_proj_matrix(proj_mat);
 
-    for (const auto& seg : backbone) {
+    for (const auto& seg : backbone_segments) {
         if (seg.ca_idx > -1) immediate::draw_point(atom_positions[seg.ca_idx], immediate::COLOR_BLACK);
         if (seg.c_idx > -1) immediate::draw_point(atom_positions[seg.c_idx], immediate::COLOR_GREEN);
         if (seg.o_idx > -1) immediate::draw_point(atom_positions[seg.o_idx], immediate::COLOR_RED);
     }
 
-    for (int i = 1; i < backbone.count; i++) {
-        if (backbone[i].ca_idx > -1 && backbone[i - 1].ca_idx > -1)
-            immediate::draw_line(atom_positions[backbone[i - 1].ca_idx], atom_positions[backbone[i].ca_idx], immediate::COLOR_WHITE);
+    for (int i = 1; i < backbone_segments.count; i++) {
+        if (backbone_segments[i].ca_idx > -1 && backbone_segments[i - 1].ca_idx > -1)
+            immediate::draw_line(atom_positions[backbone_segments[i - 1].ca_idx], atom_positions[backbone[i].ca_idx], immediate::COLOR_WHITE);
     }
 
     immediate::flush();

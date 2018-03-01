@@ -45,7 +45,7 @@ MoleculeStructure* allocate_and_parse_gro_from_string(CString gro_string) {
 	DynamicArray<vec3> velocities;
 	DynamicArray<Label> labels;
 	DynamicArray<Element> elements;
-	DynamicArray<int32> residue_indices;
+	DynamicArray<ResIdx> residue_indices;
 	//DynamicArray<GroAtom> atoms;
 	DynamicArray<Residue> residues;
 

@@ -42,9 +42,9 @@ struct BackboneAnglesTrajectory {
 	DynamicArray<BackboneAngles> angle_data;
 };
 
-inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backbone_angle_traj, int frame_index) {
-	ASSERT(frame_index < backbone_angle_traj.num_frames);
-	return Array<BackboneAngles>(&backbone_angle_traj.angle_data[frame_index * backbone_angle_traj.num_segments], backbone_angle_traj.num_segments);
+inline Array<BackboneAngles> get_backbone_segment_angles(BackboneAnglesTrajectory& backbone_segment_angle_traj, int frame_index) {
+	ASSERT(frame_index < backbone_segment_angle_traj.num_frames);
+	return Array<BackboneAngles>(&backbone_segment_angle_traj.angle_data[frame_index * backbone_segment_angle_traj.num_segments], backbone_segment_angle_traj.num_segments);
 }
 
 void transform_positions(Array<vec3> positions, const mat4& transformation);
@@ -67,7 +67,8 @@ inline float compute_dihedral_angle(const vec3 p[4]) {
 }
 
 DynamicArray<Bond> compute_covalent_bonds(const Array<vec3> atom_pos, const Array<Element> atom_elem, const Array<Residue> residues = {});
-DynamicArray<Chain> compute_chains(const Array<Residue> residue, const Array<Bond> bonds, const Array<int32> atom_residue_indices = {});
+DynamicArray<Chain> compute_chains(const Array<Residue> residue, const Array<Bond> bonds, const Array<ResIdx> atom_residue_indices = {});
+DynamicArray<BackboneSegment> compute_backbone_segments(const Array<Residue> residues, const Array<Label> atom_labels);
 DynamicArray<BackboneSegment> compute_backbone(const Chain& chain, const Array<Residue> residues, const Array<Label> atom_labels);
 DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Array<BackboneSegment>& backbone, int num_subdivisions = 1);
 

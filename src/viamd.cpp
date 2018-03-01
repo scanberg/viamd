@@ -168,6 +168,7 @@ int main(int, char**) {
 
     data.atom_radii = compute_atom_radii(data.mol_struct->atom_elements);
     data.atom_colors = compute_atom_colors(*data.mol_struct, ColorMapping::RES_ID);
+	BackboneAnglesTrajectory backbone_angles = compute_backbone_angles_trajectory(*data.trajectory, data.mol_struct->backbone_segments);
 
     immediate::initialize();
     postprocessing::initialize(display_w, display_h);
@@ -300,13 +301,6 @@ int main(int, char**) {
 					data.selected_atom_idx = data.hovered_atom_idx;
 					data.selected_residue_idx = data.hovered_residue_idx;
 					data.selected_chain_idx = data.hovered_chain_idx;
-
-					if (data.selected_chain_idx != -1) {
-						active_backbone = compute_backbone(data.mol_struct->chains[data.selected_chain_idx], data.mol_struct->residues, data.mol_struct->atom_labels);
-					}
-					else {
-						active_backbone = {};
-					}
 				}
 			}
 
@@ -314,15 +308,6 @@ int main(int, char**) {
                 ivec2 pos = input->mouse_screen_coords;
                 draw_atom_info(*data.mol_struct, data.picking_idx, pos.x, pos.y);
             }
-		}
-
-		if (data.selected_chain_idx != -1) {
-			active_backbone_angles = compute_backbone_angles(data.mol_struct->atom_positions, active_backbone);
-			traj_angles = compute_backbone_angles_trajectory(*data.trajectory, active_backbone);
-		}
-		else {
-			active_backbone_angles = {};
-			traj_angles = {};
 		}
         
 		// GUI ELEMENTS

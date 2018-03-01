@@ -22,7 +22,7 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 	DynamicArray<vec3> positions;
 	DynamicArray<Label> labels;
 	DynamicArray<Element> elements;
-	DynamicArray<int32> residue_indices;
+	DynamicArray<ResIdx> residue_indices;
 	DynamicArray<float> occupancies;
 	DynamicArray<float> temp_factors;
 	DynamicArray<Residue> residues;
@@ -53,20 +53,20 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 			if (params & PDB_TREAT_MODELS_AS_FRAMES) {
 				if (!md.molecule) {
 					bonds = compute_covalent_bonds(positions, elements, residues);
-					for (int i = 0; i < chains.count; i++) {
-						backbone_segments.append(compute_backbone(chains[i], residues, labels));
-					}
-					md.molecule = allocate_molecule_structure(num_atoms, bonds.count, residues.count, chains.count, 0);
-					// Copy data into molecule
+					backbone_segments = compute_backbone_segments(residues, labels);
 
+					md.molecule = allocate_molecule_structure(num_atoms, bonds.count, residues.count, chains.count, backbone_segments.count);
+
+					// Copy data into molecule
 					memcpy(md.molecule->atom_positions.data, positions.data, positions.size() * sizeof(vec3));
 					memcpy(md.molecule->atom_elements.data, elements.data, elements.size() * sizeof(Element));
 					memcpy(md.molecule->atom_labels.data, labels.data, labels.size() * sizeof(Label));
-					memcpy(md.molecule->atom_residue_indices.data, residue_indices.data, residue_indices.size() * sizeof(int32));
+					memcpy(md.molecule->atom_residue_indices.data, residue_indices.data, residue_indices.size() * sizeof(ResIdx));
 
 					memcpy(md.molecule->residues.data, residues.data, residues.size() * sizeof(Residue));
 					memcpy(md.molecule->chains.data, chains.data, chains.size() * sizeof(Chain));
 					memcpy(md.molecule->bonds.data, bonds.data, bonds.size() * sizeof(Bond));
+					memcpy(md.molecule->backbone_segments.data, backbone_segments.data, backbone_segments.size() * sizeof(BackboneSegment));
 				}
 				if (!md.trajectory) {
 					md.trajectory = (Trajectory*)MALLOC(sizeof(Trajectory));
@@ -97,13 +97,10 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 		}
 		else if (valid_line(line, params)) {
 			labels.push_back(trim(line.substr(12, 4)));
-
 			positions.push_back(vec3(to_float(line.substr(30, 8)), to_float(line.substr(38, 8)), to_float(line.substr(46, 8))));
-
 			if (line.count > 60) {
 				occupancies.push_back(to_float(line.substr(54, 6)));
 			}
-
 			if (line.count > 66) {
 				temp_factors.push_back(to_float(line.substr(60, 6)));
 			}
@@ -113,8 +110,6 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 			if (elem == Element::Unknown) elem = element::get_from_string(labels.back());
 			elements.push_back(elem);
 
-			residue_indices.push_back((int)residues.size());
-
 			auto res_id = to_int(line.substr(22, 4));
 			char chain_id = line[21];
 
@@ -122,7 +117,7 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 			if (current_chain_id != chain_id) {
 				current_chain_id = chain_id;
 				Chain chain;
-				chain.beg_res_idx = (ResIdx)residues.count;
+				chain.beg_res_idx = (ResIdx)residues.size();
 				chain.end_res_idx = chain.beg_res_idx;
 				chain.id = chain_id;
 				chains.push_back(chain);
@@ -134,12 +129,14 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 				Residue residue;
 				residue.beg_atom_idx = num_atoms;
 				residue.end_atom_idx = residue.beg_atom_idx;
-				residue.chain_idx = chains.count - 1;
+				residue.chain_idx = chains.size() - 1;
 				copy(String(residue.id.beg(), Label::MAX_LENGTH-1), trim(line.substr(17, 3)));
 				residues.push_back(residue);
 				chains.back().end_res_idx++;
 			}
 			residues.back().end_atom_idx++;
+
+			residue_indices.push_back((ResIdx)(residues.size() - 1));
 
 			// Add Atom
 			num_atoms++;

@@ -25,7 +25,6 @@ struct Residue {
 	AtomIdx beg_atom_idx = 0;
 	AtomIdx end_atom_idx = 0;
 	ChainIdx chain_idx = -1;
-	ResIdx backbone_segment_idx = -1;
 };
 
 struct Chain {
@@ -54,6 +53,8 @@ struct MoleculeStructure {
 	Array<Bond>		bonds;
 	Array<Residue>	residues;
 	Array<Chain>	chains;
+
+	// If this is not zero in length it shall have the same length as residues
 	Array<BackboneSegment> backbone_segments;
 };
 
