@@ -37,17 +37,17 @@ bool compare_n(CString str_a, CString str_b, int64 num_chars, bool ignore_case) 
 void copy(String dst, CString src) {
 	ASSERT(dst.data != 0);
 	ASSERT(src.data != 0);
-	ASSERT(dst.count > src.count);
-	memcpy(dst.data, src.data, src.count);
+	auto len = MIN(dst.count, src.count);
+	memcpy(dst.data, src.data, len);
 	dst.data[src.count] = '\0';
 }
 
 void copy_n(String dst, CString src, int64 num_chars) {
 	ASSERT(dst.data != 0);
 	ASSERT(src.data != 0);
-	ASSERT(dst.count > num_chars);
-	ASSERT(src.count >= num_chars);
-	memcpy(dst.data, src.data, num_chars);
+	auto len = MIN(dst.count, src.count);
+	len = MIN(len, num_chars);
+	memcpy(dst.data, src.data, len);
 	dst.data[num_chars] = '\0';
 }
 
@@ -239,4 +239,38 @@ CString get_file_extension(CString url) {
     }
     
     return CString(beg, end - beg);
+}
+
+DynamicArray<String> tokenize(String str, char delimiter) {
+	DynamicArray<String> tokens;
+
+	char* beg = str.beg();
+	char* end = str.beg();
+
+	while (end != str.end()) {
+		while (end != str.end() && *end != delimiter) end++;
+		tokens.push_back(String(beg, end));
+		beg = end;
+		while (beg != str.end() && *beg == delimiter) beg++;
+		end = beg;
+	}
+
+	return tokens;
+}
+
+DynamicArray<CString> ctokenize(CString str, char delimiter) {
+	DynamicArray<CString> tokens;
+
+	const char* beg = str.beg();
+	const char* end = str.beg();
+
+	while (end != str.end() && *end != '\0') {
+		while (end != str.end() && *end != '\0' && *end != delimiter) end++;
+		tokens.push_back(CString(beg, end));
+		beg = end;
+		while (beg != str.end() && *end != '\0' && *beg == delimiter) beg++;
+		end = beg;
+	}
+
+	return tokens;
 }

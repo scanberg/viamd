@@ -2,11 +2,7 @@
 
 #include <core/keys.h>
 #include <core/types.h>
-#include <core/allocator.h>
 //#include <core/string_utils.h>
-
-struct DefaultAllocator;
-struct FrameAllocator;
 
 namespace platform {
 
@@ -45,9 +41,6 @@ InputState* get_input_state();
 double get_delta_time();
 void swap_buffers(Window* window);
 void set_vsync(bool value);
-
-DefaultAllocator* default_allocator();
-FrameAllocator* frame_allocator();
 
 }  // namespace platform
 

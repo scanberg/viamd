@@ -2,6 +2,7 @@
 #include <core/platform.h>
 #include <core/gl.h>
 #include <core/types.h>
+#include <core/hash.h>
 #include <core/math_utils.h>
 #include <core/camera.h>
 #include <core/camera_utils.h>
@@ -12,6 +13,7 @@
 #include <mol/molecule_utils.h>
 #include <mol/pdb_utils.h>
 #include <mol/gro_utils.h>
+#include <stats/stats.h>
 #include <gfx/immediate_draw_utils.h>
 #include <gfx/postprocessing_utils.h>
 
@@ -25,16 +27,6 @@ constexpr Key::Key_t CONSOLE_KEY = Key::KEY_WORLD_1;
 // @TODO: Make sure this is right for Linux?
 constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
 #endif
-
-struct MainFramebuffer {
-	GLuint id = 0;
-	GLuint tex_depth = 0;
-	GLuint tex_color = 0;
-	GLuint tex_picking = 0;
-	int width = 0;
-	int height = 0;
-};
-
 constexpr unsigned int NO_PICKING_IDX = 0xffffffff;
 
 enum struct PlaybackInterpolationMode {
@@ -43,6 +35,15 @@ enum struct PlaybackInterpolationMode {
 	LINEAR_PERIODIC,
 	CUBIC,
 	CUBIC_PERIODIC
+};
+
+struct MainFramebuffer {
+	GLuint id = 0;
+	GLuint tex_depth = 0;
+	GLuint tex_color = 0;
+	GLuint tex_picking = 0;
+	int width = 0;
+	int height = 0;
 };
 
 struct ApplicationData {
@@ -54,11 +55,13 @@ struct ApplicationData {
     TrackballController controller;
 
     // --- MOL DATA ---
-    MoleculeStructure* mol_struct;
-    Trajectory* trajectory;
+	MoleculeDynamic dynamic;
+
+	// --- MOL VISUALS ---
     DynamicArray<float> atom_radii;
     DynamicArray<uint32> atom_colors;
 
+	// --- HOVER FEEDBACK ---
 	int32 hovered_atom_idx = -1;
 	int32 hovered_residue_idx = -1;
 	int32 hovered_chain_idx = -1;
@@ -66,6 +69,9 @@ struct ApplicationData {
 	int32 selected_atom_idx = -1;
 	int32 selected_residue_idx = -1;
 	int32 selected_chain_idx = -1;
+
+	// --- STATISTICAL DATA ---
+	stats::Statistics stats;
 
 	// Framebuffer
 	MainFramebuffer fbo;
@@ -79,17 +85,23 @@ struct ApplicationData {
 
 	// --- VISUALS ---
 	// SSAO
-    bool use_ssao = false;
-	float ssao_intensity = 1.5f;
-	float ssao_radius = 6.f;
+	struct {
+		bool enabled = false;
+		float intensity = 1.5;
+		float radius = 6.0f;
+	} ssao;
 
-    bool show_console = false;
+	// --- CONSOLE ---
+	struct {
+		bool show = false;
+	} console;
 };
 
 static float compute_avg_ms(float dt);
 static void draw_main_menu(ApplicationData* data);
 static void draw_console(ApplicationData* data, int width, int height, float dt);
 static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y);
+static void draw_statistics(stats::Statistics* stats);
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height);
 static void destroy_main_framebuffer(MainFramebuffer* fbo);
 static void reset_view(ApplicationData* data);
@@ -97,10 +109,29 @@ static void reset_view(ApplicationData* data);
 int main(int, char**) {
 	ApplicationData data;
 
+	// Init platform
+	platform::initialize();
+
     int display_w = 1920;
     int display_h = 1080;
-
 	float radii_scale = 1.0f;
+
+	data.main_window = platform::create_window(display_w, display_h, "VIAMD");
+	init_main_framebuffer(&data.fbo, display_w, display_h);
+	platform::set_vsync(false);
+
+	// Init subsystems
+	immediate::initialize();
+	draw::initialize();
+	stats::initialize();
+	postprocessing::initialize(display_w, display_h);
+
+	// Setup style
+	ImGui::StyleColorsClassic();
+
+	bool show_demo_window = false;
+	vec4 clear_color = vec4(0.6, 0.6, 0.6, 1);
+	vec4 clear_index = vec4(1, 1, 1, 1);
 
     //auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
     //auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
@@ -122,11 +153,36 @@ int main(int, char**) {
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/yuya/traj-centered.xtc");
 	Trajectory* traj = nullptr;
 
-	data.mol_struct = res.molecule;
-	data.trajectory = res.trajectory;
+	data.dynamic = res;
 
-	DynamicArray<BackboneSegment> active_backbone = compute_backbone(data.mol_struct->chains[0], data.mol_struct->residues, data.mol_struct->atom_labels);
-	DynamicArray<BackboneAngles> active_backbone_angles = compute_backbone_angles(data.mol_struct->atom_positions, active_backbone);
+	DynamicArray<stats::GroupRecipe> group_recipes;
+	DynamicArray<stats::PropertyRecipe> prop_recipes;
+
+	StringBuffer<128> prop1 = "b1 dist 1 2";
+	auto prop_tokens = ctokenize(prop1);
+
+	stats::PropertyRecipe prp;
+	prp.name = prop_tokens[0];
+	prp.cmd  = prop_tokens[1];
+	prp.args = prop_tokens.sub_array(2);
+
+	StringBuffer<128> group1 = "group1 resid ALA";
+	auto group_tokens = ctokenize(group1);
+
+	prop_recipes.push_back(prp);
+
+	stats::GroupRecipe grp;
+	grp.name = group_tokens[0];
+	grp.cmd  = group_tokens[1];
+	grp.args = group_tokens.sub_array(2);
+	grp.properties = prop_recipes;
+
+	group_recipes.push_back(grp);
+
+	compute_stats(&data.stats, &data.dynamic, group_recipes);
+
+	DynamicArray<BackboneSegment> active_backbone = compute_backbone(data.dynamic.molecule->chains[0], data.dynamic.molecule->residues, data.dynamic.molecule->atom_labels);
+	DynamicArray<BackboneAngles> active_backbone_angles = compute_backbone_angles(data.dynamic.molecule->atom_positions, active_backbone);
 
 	BackboneAnglesTrajectory traj_angles = {};
 	DynamicArray<BackboneAngles> active_angles = {};
@@ -152,8 +208,8 @@ int main(int, char**) {
 	
 	//DynamicArray<SplineSegment> spline;
 
-    if (data.trajectory && data.trajectory->num_frames > 0)
-        copy_trajectory_positions(data.mol_struct->atom_positions, *data.trajectory, 0);
+    if (data.dynamic.trajectory && data.dynamic.trajectory->num_frames > 0)
+        copy_trajectory_positions(data.dynamic.molecule->atom_positions, *data.dynamic.trajectory, 0);
     reset_view(&data);
 
 	//if (data.mol_struct->chains.count > 0) {
@@ -161,26 +217,9 @@ int main(int, char**) {
 	//	spline = compute_spline(data.mol_struct->atom_positions, backbone, 8);
 	//}
 
-    platform::initialize();
-    data.main_window = platform::create_window(display_w, display_h, "VIAMD");
-
-    platform::set_vsync(false);
-
-    data.atom_radii = compute_atom_radii(data.mol_struct->atom_elements);
-    data.atom_colors = compute_atom_colors(*data.mol_struct, ColorMapping::RES_ID);
-	BackboneAnglesTrajectory backbone_angles = compute_backbone_angles_trajectory(*data.trajectory, data.mol_struct->backbone_segments);
-
-    immediate::initialize();
-    postprocessing::initialize(display_w, display_h);
-    draw::initialize();
-	init_main_framebuffer(&data.fbo, display_w, display_h);
-
-    // Setup style
-    ImGui::StyleColorsClassic();
-
-    bool show_demo_window = false;
-    vec4 clear_color = vec4(0.6, 0.6, 0.6, 1);
-    vec4 clear_index = vec4(1, 1, 1, 1);
+    data.atom_radii = compute_atom_radii(data.dynamic.molecule->atom_elements);
+    data.atom_colors = compute_atom_colors(*data.dynamic.molecule, ColorMapping::RES_ID);
+	BackboneAnglesTrajectory backbone_angles = compute_backbone_angles_trajectory(*data.dynamic.trajectory, data.dynamic.molecule->backbone_segments);
 
     // Main loop
     while (!(platform::window_should_close(data.main_window))) {
@@ -211,16 +250,16 @@ int main(int, char**) {
 
 			if (data.picking_idx != NO_PICKING_IDX) {
 				data.hovered_atom_idx = data.picking_idx;
-				if (-1 < data.hovered_atom_idx && data.hovered_atom_idx < data.mol_struct->atom_residue_indices.count) {
-					data.hovered_residue_idx = data.mol_struct->atom_residue_indices[data.hovered_atom_idx];
+				if (-1 < data.hovered_atom_idx && data.hovered_atom_idx < data.dynamic.molecule->atom_residue_indices.count) {
+					data.hovered_residue_idx = data.dynamic.molecule->atom_residue_indices[data.hovered_atom_idx];
 				}
-				if (-1 < data.hovered_residue_idx && data.hovered_residue_idx < data.mol_struct->residues.count) {
-					data.hovered_chain_idx = data.mol_struct->residues[data.hovered_residue_idx].chain_idx;
+				if (-1 < data.hovered_residue_idx && data.hovered_residue_idx < data.dynamic.molecule->residues.count) {
+					data.hovered_chain_idx = data.dynamic.molecule->residues[data.hovered_residue_idx].chain_idx;
 				}
 			}
         }
 
-		if (input->key_hit[CONSOLE_KEY]) data.show_console = !data.show_console;
+		if (input->key_hit[CONSOLE_KEY]) data.console.show = !data.console.show;
 
         bool time_changed = false;
 
@@ -235,10 +274,10 @@ int main(int, char**) {
         if (ImGui::Button("Reset View")) {
             reset_view(&data);
         }
-		if (data.trajectory) {
-			ImGui::Text("Num Frames: %i", data.trajectory->num_frames);
+		if (data.dynamic.trajectory) {
+			ImGui::Text("Num Frames: %i", data.dynamic.trajectory->num_frames);
 			float t = (float)data.time;
-			if (ImGui::SliderFloat("Time", &t, 0, (float)(data.trajectory->num_frames - 1))) {
+			if (ImGui::SliderFloat("Time", &t, 0, (float)(data.dynamic.trajectory->num_frames - 1))) {
 				time_changed = true;
 				data.time = t;
 			}
@@ -262,22 +301,22 @@ int main(int, char**) {
 			time_changed = true;
         }
 
-        if (data.trajectory && time_changed) {
-            data.time = math::clamp(data.time, 0.0, float64(data.trajectory->num_frames - 1));
-			if (data.time == float64(data.trajectory->num_frames - 1)) data.is_playing = false;
+        if (data.dynamic.trajectory&& time_changed) {
+            data.time = math::clamp(data.time, 0.0, float64(data.dynamic.trajectory->num_frames - 1));
+			if (data.time == float64(data.dynamic.trajectory->num_frames - 1)) data.is_playing = false;
 
 			int prev_frame_idx = math::max(0, (int)data.time);
-			int next_frame_idx = math::min(prev_frame_idx + 1, data.trajectory->num_frames - 1);
+			int next_frame_idx = math::min(prev_frame_idx + 1, data.dynamic.trajectory->num_frames - 1);
 			if (prev_frame_idx == next_frame_idx) {
-				copy_trajectory_positions(data.mol_struct->atom_positions, *data.trajectory, prev_frame_idx);
+				copy_trajectory_positions(data.dynamic.molecule->atom_positions, *data.dynamic.trajectory, prev_frame_idx);
 			}
 			else {
 				// INTERPOLATE
-				auto prev_frame = get_trajectory_frame(*data.trajectory, prev_frame_idx);
-				auto next_frame = get_trajectory_frame(*data.trajectory, next_frame_idx);
+				auto prev_frame = get_trajectory_frame(*data.dynamic.trajectory, prev_frame_idx);
+				auto next_frame = get_trajectory_frame(*data.dynamic.trajectory, next_frame_idx);
 
 				float t = (float)math::fract(data.time);
-				linear_interpolation_periodic(data.mol_struct->atom_positions, prev_frame.atom_positions, next_frame.atom_positions, t, prev_frame.box);
+				linear_interpolation_periodic(data.dynamic.molecule->atom_positions, prev_frame.atom_positions, next_frame.atom_positions, t, prev_frame.box);
 			}
         }
 
@@ -306,7 +345,7 @@ int main(int, char**) {
 
             if (data.picking_idx != NO_PICKING_IDX) {
                 ivec2 pos = input->mouse_screen_coords;
-                draw_atom_info(*data.mol_struct, data.picking_idx, pos.x, pos.y);
+                draw_atom_info(*data.dynamic.molecule, data.picking_idx, pos.x, pos.y);
             }
 		}
         
@@ -314,6 +353,7 @@ int main(int, char**) {
 		draw::plot_ramachandran(traj_angles.angle_data, active_backbone_angles);
 		draw_console(&data, display_w, display_h, dt);
         draw_main_menu(&data);
+		draw_statistics(&data.stats);
 
         // 3. Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
         if (show_demo_window) {
@@ -348,7 +388,7 @@ int main(int, char**) {
 		glEnable(GL_DEPTH_TEST);
 		glDepthFunc(GL_LESS);
 
-        draw::draw_vdw(data.mol_struct->atom_positions, data.atom_radii, data.atom_colors, view_mat, proj_mat, radii_scale);
+        draw::draw_vdw(data.dynamic.molecule->atom_positions, data.atom_radii, data.atom_colors, view_mat, proj_mat, radii_scale);
 		//draw::draw_licorice(data.mol_struct->atom_positions, data.mol_struct->bonds, data.atom_colors, view_mat, proj_mat, radii_scale);
 		//draw::draw_ribbons(spline, view_mat, proj_mat);
 
@@ -362,11 +402,11 @@ int main(int, char**) {
         // Apply tone mapping
         postprocessing::apply_tonemapping(data.fbo.tex_color);
 
-		draw::draw_backbone(active_backbone, data.mol_struct->atom_positions, view_mat, proj_mat);
+		draw::draw_backbone(active_backbone, data.dynamic.molecule->atom_positions, view_mat, proj_mat);
 		//draw::draw_spline(spline, view_mat, proj_mat);
 
-		if (data.use_ssao) {
-			postprocessing::apply_ssao(data.fbo.tex_depth, proj_mat, data.ssao_intensity, data.ssao_radius);
+		if (data.ssao.enabled) {
+			postprocessing::apply_ssao(data.fbo.tex_depth, proj_mat, data.ssao.intensity, data.ssao.radius);
 		}
 
         // Render Imgui
@@ -451,9 +491,9 @@ static void draw_main_menu(ApplicationData* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Visuals")) {
-            ImGui::Checkbox("SSAO", &data->use_ssao);
-			ImGui::SliderFloat("Intensity", &data->ssao_intensity, 0.5f, 6.f);
-			ImGui::SliderFloat("Radius", &data->ssao_radius, 1.f, 30.f);
+            ImGui::Checkbox("SSAO", &data->ssao.enabled);
+			ImGui::SliderFloat("Intensity", &data->ssao.intensity, 0.5f, 6.f);
+			ImGui::SliderFloat("Radius", &data->ssao.radius, 1.f, 30.f);
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
@@ -544,7 +584,7 @@ struct Console
 
 		float target_hide_y = -console_height;
 		float target_show_y = 0;
-		float target_y = data->show_console ? target_show_y : target_hide_y;
+		float target_y = data->console.show ? target_show_y : target_hide_y;
 
 		if (YPos != target_y) {
 			float delta = target_y < YPos ? -speed : speed;
@@ -560,7 +600,7 @@ struct Console
 
 		ImGui::SetNextWindowSize(ImVec2(console_width, console_height));
         ImGui::SetNextWindowPos(ImVec2(0.f, YPos));
-		ImGui::Begin(title, &data->show_console, WINDOW_FLAGS);
+		ImGui::Begin(title, &data->console.show, WINDOW_FLAGS);
 
 
         // As a specific feature guaranteed by the library, after calling Begin() the last Item represent the title bar. So e.g. IsItemHovered() will return true when hovering the title bar.
@@ -850,13 +890,27 @@ static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, in
     ImGui::PopStyleColor();
 }
 
+static void draw_statistics(stats::Statistics* stats) {
+	if (!stats) return;
+
+	ImGui::Begin("Timelines");
+	if (stats->properties.size() > 0) {
+		const auto& g = stats->groups.front();
+		const auto& i = stats->instances[g.instance_avg_idx];
+		const auto& p = stats->properties[i.property_beg_idx];
+		auto frame = ImGui::BeginPlotFrame("Prop0", ImVec2(0, 100), 0, p.count, -2.f, 2.f);
+		ImGui::PlotFrameLine(frame, "najs", (float*)p.data);
+		ImGui::EndPlotFrame(frame);
+	}
+	ImGui::End();
+}
 
 static void reset_view(ApplicationData* data) {
     ASSERT(data);
-    ASSERT(data->mol_struct);
+    ASSERT(data->dynamic.molecule);
 
     vec3 min_box, max_box;
-    compute_bounding_box(&min_box, &max_box, data->mol_struct->atom_positions);
+    compute_bounding_box(&min_box, &max_box, data->dynamic.molecule->atom_positions);
     vec3 size = max_box - min_box;
     vec3 cent = (min_box + max_box) * 0.5f;
 
@@ -864,7 +918,7 @@ static void reset_view(ApplicationData* data) {
     data->camera.position = data->controller.position;
     data->camera.orientation = data->controller.orientation;
 	data->camera.near_plane = 1.f;
-	data->camera.far_plane = math::length(size) * 3.f;
+	data->camera.far_plane = math::length(size) * 10.f;
 }
 
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height) {

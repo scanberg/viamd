@@ -1,5 +1,4 @@
 #include <core/platform.h>
-#include <core/allocator.h>
 #include <core/gl.h>
 #include <GLFW/glfw3.h>
 #ifdef _WIN32
@@ -22,21 +21,13 @@ struct Window {
 static Window		g_window;
 static InputState	g_input_state;
 
-constexpr int64 FRAME_MEMORY_SIZE = MEGABYTES(200);
-static char FRAME_MEMORY[FRAME_MEMORY_SIZE];
-
 // Data
-static DefaultAllocator g_default_alloc;
-static FrameAllocator   g_frame_alloc(FRAME_MEMORY, FRAME_MEMORY_SIZE);
 static double       g_time = 0.0f;
 static GLuint       g_font_texture = 0;
 static int          g_shader_handle = 0, g_vert_handle = 0, g_frag_handle = 0;
 static int          g_attrib_location_tex = 0, g_attrib_location_proj_mat = 0;
 static int          g_attrib_location_position = 0, g_attrib_location_uv = 0, g_attrib_location_color = 0;
 static unsigned int g_vbo_handle = 0, g_vao_handle = 0, g_elements_handle = 0;
-
-DefaultAllocator* default_allocator() { return &g_default_alloc; }
-FrameAllocator* frame_allocator() { return &g_frame_alloc; }
 
 static void error_callback(int error, const char* description) {
     fprintf(stderr, "Error %d: %s\n", error, description);

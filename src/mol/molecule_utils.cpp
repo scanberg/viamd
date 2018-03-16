@@ -1699,7 +1699,7 @@ void draw_backbone(const Array<BackboneSegment> backbone_segments, const Array<v
 
     for (int i = 1; i < backbone_segments.count; i++) {
         if (backbone_segments[i].ca_idx > -1 && backbone_segments[i - 1].ca_idx > -1)
-            immediate::draw_line(atom_positions[backbone_segments[i - 1].ca_idx], atom_positions[backbone[i].ca_idx], immediate::COLOR_WHITE);
+            immediate::draw_line(atom_positions[backbone_segments[i - 1].ca_idx], atom_positions[backbone_segments[i].ca_idx], immediate::COLOR_WHITE);
     }
 
     immediate::flush();

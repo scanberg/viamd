@@ -2,7 +2,6 @@
 
 #include "types.h"
 #include "array.h"
-#include "allocator.h"
 
 #ifdef _MSC_VER
 #pragma warning(disable:4996)
@@ -19,6 +18,12 @@ struct CString : Array<const char> {
 		if (length == -1)
 			length = strlen(cstr);
 		count = length;
+	}
+
+	CString(const char* beg, const char* end) {
+		data = beg;
+		count = end - beg;
+		ASSERT(count >= 0);
 	}
 
 	template <int64 length>
@@ -49,6 +54,12 @@ struct String : Array<char> {
 		count = length;
 	}
 
+	String(char* beg, char* end) {
+		data = beg;
+		count = end - beg;
+		ASSERT(count >= 0);
+	}
+
 	template <int64 length>
 	String(char(&cstr)[length]) {
 		data = cstr;
@@ -65,6 +76,41 @@ struct String : Array<char> {
 	operator bool() { return (data != 0 && count != 0); }
 };
 
+struct DynamicString : DynamicArray<char> {
+	DynamicString() = default;
+
+	DynamicString(CString other) : DynamicArray(other) {}
+
+	DynamicString(DynamicString&& other) : DynamicArray(std::forward<DynamicArray<char>>(other)) {};
+
+	DynamicString(char* cstr, int64 length) {
+		this->resize(length + 1);
+		strncpy(data, cstr, length);
+	}
+
+	template <int64 length>
+	DynamicString(char(&cstr)[length]) {
+		this->resize(length + 1);
+		strncpy(data, cstr, length);
+	}
+
+	String substr(int64 _offset, int64 _count = -1) {
+		auto arr = sub_array(_offset, _count);
+		return { arr.data, arr.count };
+	}
+
+	operator String() { return String(data, count); }
+	operator CString() { return CString(data, count); }
+	operator char*() { return data; }
+	operator bool() { return (data != 0 && count != 0); }
+
+	DynamicString& operator += (CString other) {
+		this->resize(count + other.count + 1);
+		strncpy(end(), other.data, other.count);
+		return *this;
+	}
+};
+
 // A buffer string for wrapping a char buffer[N]
 template<int64 Size>
 struct StringBuffer {
@@ -79,13 +125,13 @@ struct StringBuffer {
 	StringBuffer(const char(&cstr)[N]) {
 		constexpr auto len = N < MAX_LENGTH ? N : MAX_LENGTH;
 		strncpy(buffer, cstr, len);
-		buffer[len - 1] = '\0';
+		buffer[len] = '\0';
 	}
 
 	StringBuffer(const char* cstr) {
 		int64 len = (int64)strnlen(cstr, MAX_LENGTH);
 		strncpy(buffer, cstr, len);
-		buffer[len - 1] = '\0';
+		buffer[len] = '\0';
 	}
 
 	StringBuffer(char c) {
@@ -246,3 +292,8 @@ CString get_file_without_extension(CString url);
 
 // Returns file extension part of url, ex: func("C:/folder/file.ext") should return "ext"
 CString get_file_extension(CString url);
+
+// Tokenizes a string into shorter strings based on some delimiter 
+// @TODO: Implement a CString instead of a char
+DynamicArray<String> tokenize(String str, char delimiter = ' ');
+DynamicArray<CString> ctokenize(CString str, char delimiter = ' ');

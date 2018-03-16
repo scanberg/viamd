@@ -1,3 +1,5 @@
+#pragma once
+
 #include <core/types.h>
 #include <core/array.h>
 /*
@@ -134,7 +136,8 @@ constexpr uint64 crc64(Array<T> arr) {
 
 template <size_t N>
 constexpr uint64 crc64(const char(&cstr)[N]) {
-	return crc64(cstr, N);
+	STATIC_ASSERT(N > 0);
+	return crc64(cstr, N - 1);
 }
 
 

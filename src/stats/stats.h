@@ -1,0 +1,55 @@
+#pragma once
+
+#include <core/types.h>
+#include <core/string_utils.h>
+
+struct MoleculeDynamic;
+struct MoleculeStructure;
+
+namespace stats {
+
+typedef uint64 ID;
+constexpr ID INVALID_ID = 0;
+
+typedef bool (*PropertyComputeFunc)(void* data, const Array<CString> args, MoleculeDynamic* dynamic, int res_idx);
+typedef bool (*ResidueMatchFunc)(const Array<CString> args, MoleculeStructure* mol, Residue* res);
+
+enum struct PropertyType { FLOAT32 };
+
+inline int32 get_stride(PropertyType type) {
+	switch (type) {
+	case PropertyType::FLOAT32:
+		return 4;
+	default:
+		return 4;
+	}
+}
+
+bool compute_stats(MoleculeDynamic* dynamic);
+void clear_stats();
+void store_stats(CString filename);
+void load_stats(CString filename);
+
+ID		  create_group(CString name, CString cmd, CString args);
+void	  remove_group(ID group_id);
+ID		  find_group(CString name);
+
+Array<ID> get_groups();
+Array<ID> get_group_properties(ID group_id);
+Array<ID> get_group_instances(ID group_id);
+
+ID		  create_property(ID group_id, CString name, CString cmd, CString args);
+void	  remove_property(ID prop_id);
+
+void*	  get_property_data(ID prop_id);
+int32	  get_property_count(ID prop_id);
+PropertyType get_property_type(ID prop_id);
+CString	  get_property_name(ID prop_id);
+
+void	  register_property_command(CString command, PropertyType type, PropertyComputeFunc func);
+void	  register_group_command(CString command, ResidueMatchFunc func);
+
+void initialize();
+void shutdown();
+
+}  // namespace stats

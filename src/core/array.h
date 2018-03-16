@@ -44,6 +44,8 @@ struct Array {
 // Light-weight std::vector alternative
 template <typename T>
 struct DynamicArray : Array<T> {
+	static_assert(std::is_trivially_destructible<T>::value, "DynamicArray only supports trivially destructable data types");
+
 	static constexpr int64 INIT_CAPACITY = 32;
     DynamicArray() : capacity(INIT_CAPACITY) {
 		this->data = (T*)MALLOC(capacity * sizeof(T));
@@ -71,15 +73,18 @@ struct DynamicArray : Array<T> {
         }
     }
 
-	DynamicArray(const DynamicArray& other) : capacity(other.capacity) {
-		this->data = (T*)MALLOC(capacity * sizeof(T));
-		this->count = other.count;
-		memcpy(this->data, other.data, this->count * sizeof(T));
+	DynamicArray(const DynamicArray& other) : capacity(other.count) {
+		this->count = capacity;
+		if (this->count > 0) {
+			this->data = (T*)MALLOC(capacity * sizeof(T));
+			memcpy(this->data, other.data, this->count * sizeof(T));
+		}
 	}
 
 	DynamicArray(DynamicArray&& other) : capacity(other.capacity) {
 		this->data = other.data;
 		other.data = nullptr;
+		other.capacity = 0;
 		this->count = other.count;
 		other.count = 0;
 	}
@@ -90,6 +95,17 @@ struct DynamicArray : Array<T> {
         }
 		this->count = 0;
     }
+
+	DynamicArray& operator =(const Array& other) {
+		if (&other != this) {
+			if (other.count > capacity) {
+				reserve(other.count);
+			}
+			this->count = other.count;
+			memcpy(this->data, other.data, this->count * sizeof(T));
+		}
+		return *this;
+	}
 
 	DynamicArray& operator =(const DynamicArray& other) {
 		if (&other != this) {

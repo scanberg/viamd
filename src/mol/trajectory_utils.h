@@ -1,7 +1,6 @@
 #pragma once
 
 #include <mol/trajectory.h>
-#include <core/allocator.h>
 #include <thread>
 
 // Reads the header info of a trajectory and allocates space for it
@@ -23,7 +22,7 @@ void read_trajectory_async(Trajectory* traj, Functor on_finish = TrajOnFinishFun
 	}).detach();
 }
 
-TrajectoryFrame allocate_trajectory_frame(int num_atoms, Allocator* alloc = nullptr);
+TrajectoryFrame allocate_trajectory_frame(int num_atoms);
 void free_trajectory_frame(TrajectoryFrame* frame);
 
 void copy_trajectory_frame(TrajectoryFrame* dst, const Trajectory& src_traj, int frame_index);

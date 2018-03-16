@@ -41,14 +41,21 @@ target_link_libraries(gl3w
 
 project(imgui)
 
+file(GLOB_RECURSE WIDGET_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/imgui/widgets/*.h)
+file(GLOB_RECURSE WIDGET_INLINES ${CMAKE_CURRENT_SOURCE_DIR}/imgui/widgets/*.inl)
+
 set(HEADERS
+    ${CMAKE_CURRENT_SOURCE_DIR}/imgui/imconfig.h
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui/imgui.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/imgui/imgui_internal.h
+    ${WIDGET_HEADERS}
 )
                    
 set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui/imgui.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui/imgui_draw.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui/imgui_demo.cpp
+    ${WIDGET_INLINES}
 )
 
 add_library(imgui STATIC ${HEADERS} ${SOURCES})

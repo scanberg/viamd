@@ -95,10 +95,9 @@ void read_trajectory(Trajectory* traj) {
 	}
 }
 
-TrajectoryFrame copy_trajectory_frame(const Trajectory& traj, int frame_index, Allocator* alloc) {
+TrajectoryFrame copy_trajectory_frame(const Trajectory& traj, int frame_index) {
 	(void)traj;
 	(void)frame_index;
-	(void)alloc;
 	return {};
 }
 

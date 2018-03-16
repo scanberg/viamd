@@ -23,25 +23,23 @@
 #define BIT(x) (1 << x)
 #define UNUSED(x) (void)(x)
 
-// @TODO: This has to be changed so that the platform version is only used when neither malloc or free is defined
+// @TODO: This has to be changed so that the default version is only used when neither malloc or free is defined
 #ifndef MALLOC
-#define USE_PLATFORM_MALLOC_AND_FREE
+#define USE_DEFAULT_MALLOC_AND_FREE
 #endif
 
 #ifndef TMP_MALLOC
-#define USE_PLATFORM_TMP_MALLOC_AND_FREE
+#define USE_DEFAULT_TMP_MALLOC_AND_FREE
 #endif
 
-#if defined (USE_PLATFORM_MALLOC_AND_FREE) || defined (USE_PLATFORM_TMP_MALLOC_AND_FREE)
-#include <core/platform.h>
+#ifdef USE_DEFAULT_MALLOC_AND_FREE
+#define MALLOC(x) malloc(x)
+#define REALLOC(x, y) realloc(x, y)
+#define FREE(x) free(x)
 #endif
 
-#ifdef USE_PLATFORM_MALLOC_AND_FREE
-#define MALLOC(x) platform::default_allocator()->alloc(x)
-#define FREE(x) platform::default_allocator()->free(x)
-#endif
-
-#ifdef USE_PLATFORM_TMP_MALLOC_AND_FREE
-#define TMP_MALLOC(x) platform::frame_allocator()->alloc(x)
-#define TMP_FREE(x) platform::frame_allocator()->free(x)
+#ifdef USE_DEFAULT_TMP_MALLOC_AND_FREE
+#define TMP_MALLOC(x) alloc(x)
+#define TMP_REALLOC(x, y) realloc(x, y)
+#define TMP_FREE(x) free(x)
 #endif

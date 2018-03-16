@@ -1,6 +1,5 @@
 #pragma once
 
-#include <core/allocator.h>
 #include <core/array.h>
 #include <mol/molecule.h>
 #include <mol/trajectory.h>
