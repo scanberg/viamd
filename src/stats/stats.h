@@ -3,8 +3,10 @@
 #include <core/types.h>
 #include <core/string_utils.h>
 
+
 struct MoleculeDynamic;
 struct MoleculeStructure;
+struct Residue;
 
 namespace stats {
 

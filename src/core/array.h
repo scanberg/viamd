@@ -197,6 +197,14 @@ struct DynamicArray : Array<T> {
 		return this->beg() + off;
 	}
 
+	void remove(T* it, int64 num_items = 1) {
+		ASSERT(this->beg() <= it && it <= this->end());
+		const ptrdiff_t off = it - this->beg();
+		ASSERT(this->count - off < num_items);
+		memmove(this->beg() + off, this->beg() + off + count, ((size_t)this->count - (size_t)(off + count)) * sizeof(T));
+		this->count--;
+	}
+
     void clear() {
         this->count = 0;
     }

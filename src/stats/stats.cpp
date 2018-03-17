@@ -24,28 +24,32 @@ struct PropertyRecipe {
 	StringBuffer<64> args {};
 };
 
-struct GroupRecipe {
-
+struct Recipe {
+	StringBuffer<32> name{};
+	StringBuffer<64> args{};
+	ID cmd_id;
 };
 
 struct Property {
-    ID id = 0;
-    int32 instance_idx = 0;
-    int32 group_idx = 0;
+    ID id = INVALID_ID;
+    ID instance_id = INVALID_ID;
+    ID group_id = INVALID_ID;
 
     void* data = nullptr;
     int32 count = 0;
     PropertyType type = PropertyType::FLOAT32;
-    CString name{};
+
+	// Recipe for computing property values
+	Recipe recipe;
 };
 
 struct Instance {
-    ID id = 0;
-    int32 group_idx = 0;
+    ID id = INVALID_ID;
+    ID group_id = INVALID_ID;
+    ID property_beg_id = INVALID_ID;
+    int32 property_count = 0;
 
     int32 mol_res_idx = -1;
-    int32 property_beg_idx = -1;
-    int32 property_end_idx = -1;
 };
 
 struct Group {
@@ -55,9 +59,7 @@ struct Group {
     int32 instance_count = 0;
 
 	// Recipe for matching residues
-	StringBuffer<32> name{};
-	StringBuffer<64> args{};
-	ID cmd_id;
+	Recipe recipe;
 };
 
 struct StatisticsContext {
@@ -112,6 +114,7 @@ static T* find_id(Array<T> data, ID id) {
     return nullptr;
 }
 
+/*
 bool compute_stats(StatisticsContext* dst, MoleculeDynamic* dynamic, Array<GroupRecipe> group_recipes) {
     ASSERT(dst);
     ASSERT(dynamic);
@@ -238,6 +241,7 @@ bool compute_stats(StatisticsContext* dst, MoleculeDynamic* dynamic, Array<Group
 
     return true;
 }
+*/
 
 void register_property_command(CString command, PropertyType type, PropertyComputeFunc func) {
     ID id = COMPUTE_ID(command);
@@ -279,13 +283,13 @@ ID create_group(CString name, CString cmd, CString args) {
 	}
 
 	Group group;
-	copy(group.name, name);
-	copy(group.args, args);
 	group.id = grp_id;
-	group.cmd_id = grp_cmd_id;
 	group.instance_avg_id = INVALID_ID;
 	group.instance_beg_id = INVALID_ID;
 	group.instance_count = 0;
+	copy(group.recipe.name, name);
+	copy(group.recipe.args, args);
+	group.recipe.cmd_id = grp_cmd_id;
 
 	ctx.groups.push_back(group);
 
@@ -293,10 +297,46 @@ ID create_group(CString name, CString cmd, CString args) {
 }
 
 void remove_group(ID group_id) {
+	Group* group = find_id(ctx.groups, group_id);
+	if (!group) {
+		printf("ERROR: COULD NOT FIND GROUP!\n");
+		return;
+	}
 	
+	/*
+	if (group->instance_avg_id != INVALID_ID) {
+		Instance* inst = find_id(ctx.instances, group->instance_avg_id);
+		if (inst) {
+			Property* prop = find_id(ctx.properties, inst->property_beg_id);
+			if (prop) {
+				ctx.properties.remove(prop, inst->property_count);
+			}
+			ctx.instances.remove(inst);
+		}
+	}
+
+	if (group->instance_beg_id != INVALID_ID) {
+		Instance* inst = find_id(ctx.instances, group->instance_beg_id);
+		if (inst) {
+			ctx.instances.remove(inst, group->instance_count);
+		}
+	}
+	*/
+
+	for (Instance* i = ctx.instances.beg(); i != ctx.instances.end(); i++) {
+		if (i->group_id == group_id) ctx.instances.remove(i);
+	}
+
+	for (Property* p = ctx.properties.beg(); p != ctx.properties.end(); p++) {
+		if (p->group_id == group_id) ctx.properties.remove(p);
+	}
 }
 
 ID create_property(ID group_id, CString name, CString args) {
+	return INVALID_ID;
+}
+
+void remove_property(ID prop_id) {
 
 }
 

@@ -71,7 +71,7 @@ struct ApplicationData {
 	int32 selected_chain_idx = -1;
 
 	// --- STATISTICAL DATA ---
-	stats::Statistics stats;
+	//stats::StatisticsContext stats;
 
 	// Framebuffer
 	MainFramebuffer fbo;
@@ -101,7 +101,7 @@ static float compute_avg_ms(float dt);
 static void draw_main_menu(ApplicationData* data);
 static void draw_console(ApplicationData* data, int width, int height, float dt);
 static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y);
-static void draw_statistics(stats::Statistics* stats);
+//static void draw_statistics(stats::StatisticsContext* stats);
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height);
 static void destroy_main_framebuffer(MainFramebuffer* fbo);
 static void reset_view(ApplicationData* data);
@@ -155,12 +155,13 @@ int main(int, char**) {
 
 	data.dynamic = res;
 
-	DynamicArray<stats::GroupRecipe> group_recipes;
-	DynamicArray<stats::PropertyRecipe> prop_recipes;
+	//DynamicArray<stats::GroupRecipe> group_recipes;
+	//DynamicArray<stats::PropertyRecipe> prop_recipes;
 
 	StringBuffer<128> prop1 = "b1 dist 1 2";
 	auto prop_tokens = ctokenize(prop1);
 
+	/*
 	stats::PropertyRecipe prp;
 	prp.name = prop_tokens[0];
 	prp.cmd  = prop_tokens[1];
@@ -180,6 +181,7 @@ int main(int, char**) {
 	group_recipes.push_back(grp);
 
 	compute_stats(&data.stats, &data.dynamic, group_recipes);
+	*/
 
 	DynamicArray<BackboneSegment> active_backbone = compute_backbone(data.dynamic.molecule->chains[0], data.dynamic.molecule->residues, data.dynamic.molecule->atom_labels);
 	DynamicArray<BackboneAngles> active_backbone_angles = compute_backbone_angles(data.dynamic.molecule->atom_positions, active_backbone);
@@ -353,7 +355,7 @@ int main(int, char**) {
 		draw::plot_ramachandran(traj_angles.angle_data, active_backbone_angles);
 		draw_console(&data, display_w, display_h, dt);
         draw_main_menu(&data);
-		draw_statistics(&data.stats);
+		//draw_statistics(&data.stats);
 
         // 3. Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
         if (show_demo_window) {
@@ -890,7 +892,8 @@ static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, in
     ImGui::PopStyleColor();
 }
 
-static void draw_statistics(stats::Statistics* stats) {
+/*
+static void draw_statistics(stats::StatisticsContext* stats) {
 	if (!stats) return;
 
 	ImGui::Begin("Timelines");
@@ -904,6 +907,7 @@ static void draw_statistics(stats::Statistics* stats) {
 	}
 	ImGui::End();
 }
+*/
 
 static void reset_view(ApplicationData* data) {
     ASSERT(data);
