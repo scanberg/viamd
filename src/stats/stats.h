@@ -16,7 +16,7 @@ constexpr ID INVALID_ID = 0;
 typedef bool (*PropertyComputeFunc)(void* data, const Array<CString> args, const MoleculeDynamic* dynamic, int res_idx);
 typedef bool (*ResidueMatchFunc)(const Array<CString> args, const MoleculeStructure* mol, int res_idx);
 
-enum struct PropertyType { FLOAT32 };
+enum struct PropertyType { FLOAT32, UNKNOWN };
 
 inline int32 get_stride(PropertyType type) {
 	switch (type) {

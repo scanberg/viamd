@@ -56,7 +56,7 @@ struct Group {
 };
 
 struct StatisticsContext {
-    DynamicArray<CString> string_buffer {};
+    DynamicArray<String> string_buffer {};
 
     DynamicArray<Property> properties{};
     DynamicArray<PropertyData> property_data{};
@@ -126,8 +126,9 @@ static T* find_id(Array<T> data, ID id) {
 }
 
 static CString alloc_string(CString str) {
-    const char* data = (const char*)MALLOC(str.count);
+    char* data = (char*)MALLOC(str.count);
     ctx.string_buffer.push_back({data, str.count});
+	copy(ctx.string_buffer.back(), str);
     return ctx.string_buffer.back();
 }
 
@@ -185,6 +186,7 @@ bool compute_stats(MoleculeDynamic* dynamic) {
             memset(prop_avg_data.data, 0, byte_size);
 
             prop.data_avg_id = prop_avg_data.id;
+			ctx.property_data.push_back(prop_avg_data);
 
             // DATA
             for (int32 i = 0; i < group->residue_count; i++) {
@@ -358,6 +360,52 @@ void remove_property(ID prop_id) {
     }
 
     ctx.properties.remove(prop);
+}
+
+void* get_property_data(ID prop_id, int32 residue_idx) {
+	if (prop_id != INVALID_ID) {
+		for (const auto& prop_data : ctx.property_data) {
+			if (prop_data.property_id == prop_id && prop_data.residue_idx == residue_idx)
+				return prop_data.data;
+		}
+	}
+	return nullptr;
+}
+
+void* get_property_avg_data(ID prop_id) {
+	if (prop_id != INVALID_ID) {
+		for (const auto& prop_data : ctx.property_data) {
+			if (prop_data.property_id == prop_id && prop_data.residue_idx == -1)
+				return prop_data.data;
+		}
+	}
+	return nullptr;
+}
+
+int32 get_property_data_count(ID prop_id) {
+	if (prop_id != INVALID_ID) {
+		for (const auto& prop_data : ctx.property_data) {
+			if (prop_data.property_id == prop_id)
+				return prop_data.count;
+		}
+	}
+	return 0;
+}
+
+PropertyType get_property_type(ID prop_id) {
+	auto prop = find_id(ctx.properties, prop_id);
+	if (prop) {
+		return prop->type;
+	}
+	return PropertyType::UNKNOWN;
+}
+
+CString	get_property_name(ID prop_id) {
+	auto prop = find_id(ctx.properties, prop_id);
+	if (prop) {
+		return prop->name;
+	}
+	return {};
 }
 
 }  // namespace stats

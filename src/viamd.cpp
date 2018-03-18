@@ -101,7 +101,7 @@ static float compute_avg_ms(float dt);
 static void draw_main_menu(ApplicationData* data);
 static void draw_console(ApplicationData* data, int width, int height, float dt);
 static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y);
-//static void draw_statistics(stats::StatisticsContext* stats);
+static void draw_statistics();
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height);
 static void destroy_main_framebuffer(MainFramebuffer* fbo);
 static void reset_view(ApplicationData* data);
@@ -870,11 +870,13 @@ static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, in
     ImGui::PopStyleColor();
 }
 
-/*
-static void draw_statistics(stats::StatisticsContext* stats) {
-	if (!stats) return;
+static void draw_statistics() {
+	//if (!stats) return;
 
 	ImGui::Begin("Timelines");
+	//stats::get_groups();
+	//stats::get_group_properties();
+	/*
 	if (stats->properties.size() > 0) {
 		const auto& g = stats->groups.front();
 		const auto& i = stats->instances[g.instance_avg_idx];
@@ -883,9 +885,9 @@ static void draw_statistics(stats::StatisticsContext* stats) {
 		ImGui::PlotFrameLine(frame, "najs", (float*)p.data);
 		ImGui::EndPlotFrame(frame);
 	}
+	*/
 	ImGui::End();
 }
-*/
 
 static void reset_view(ApplicationData* data) {
     ASSERT(data);
