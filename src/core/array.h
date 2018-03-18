@@ -96,7 +96,7 @@ struct DynamicArray : Array<T> {
 		this->count = 0;
     }
 
-	DynamicArray& operator =(const Array& other) {
+	DynamicArray& operator =(const Array<T>& other) {
 		if (&other != this) {
 			if (other.count > capacity) {
 				reserve(other.count);
@@ -201,7 +201,7 @@ struct DynamicArray : Array<T> {
 		ASSERT(this->beg() <= it && it <= this->end());
 		const ptrdiff_t off = it - this->beg();
 		ASSERT(this->count - off < num_items);
-		memmove(this->beg() + off, this->beg() + off + count, ((size_t)this->count - (size_t)(off + count)) * sizeof(T));
+		memmove(this->beg() + off, this->beg() + off + this->count, ((size_t)this->count - (size_t)(off + this->count)) * sizeof(T));
 		this->count--;
 	}
 

@@ -155,33 +155,11 @@ int main(int, char**) {
 
 	data.dynamic = res;
 
-	//DynamicArray<stats::GroupRecipe> group_recipes;
-	//DynamicArray<stats::PropertyRecipe> prop_recipes;
 
-	StringBuffer<128> prop1 = "b1 dist 1 2";
-	auto prop_tokens = ctokenize(prop1);
+	auto g1 = stats::create_group("group1", "resid", "ALA");
+    auto d1 = stats::create_property(g1, "d1", "dist", "1 2");
 
-	/*
-	stats::PropertyRecipe prp;
-	prp.name = prop_tokens[0];
-	prp.cmd  = prop_tokens[1];
-	prp.args = prop_tokens.sub_array(2);
-
-	StringBuffer<128> group1 = "group1 resid ALA";
-	auto group_tokens = ctokenize(group1);
-
-	prop_recipes.push_back(prp);
-
-	stats::GroupRecipe grp;
-	grp.name = group_tokens[0];
-	grp.cmd  = group_tokens[1];
-	grp.args = group_tokens.sub_array(2);
-	grp.properties = prop_recipes;
-
-	group_recipes.push_back(grp);
-
-	compute_stats(&data.stats, &data.dynamic, group_recipes);
-	*/
+	stats::compute_stats(&data.dynamic);
 
 	DynamicArray<BackboneSegment> active_backbone = compute_backbone(data.dynamic.molecule->chains[0], data.dynamic.molecule->residues, data.dynamic.molecule->atom_labels);
 	DynamicArray<BackboneAngles> active_backbone_angles = compute_backbone_angles(data.dynamic.molecule->atom_positions, active_backbone);
