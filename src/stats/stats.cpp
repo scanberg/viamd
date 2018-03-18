@@ -51,8 +51,7 @@ struct Group {
     CString name;
     CString args;
 
-    int32* residue_indices = nullptr;
-    int32 residue_count = 0;
+    Array<int32> residues {};
 };
 
 struct StatisticsContext {
@@ -147,7 +146,7 @@ bool compute_stats(MoleculeDynamic* dynamic) {
     ASSERT(dynamic->trajectory);
 
     for (auto& group : ctx.groups) {
-        if (group.residue_indices == nullptr) {
+        if (!group.residues) {
             // MATCH RESIDUE INDICES
             GroupCommand* group_cmd = find_id(ctx.group_commands, group.cmd_id);
             DynamicArray<CString> args = ctokenize(group.args);
@@ -157,9 +156,9 @@ bool compute_stats(MoleculeDynamic* dynamic) {
                     residue_indices.push_back(res_idx);
                 }
             }
-            group.residue_indices = (int32*)MALLOC(residue_indices.count * sizeof(int32));
-            group.residue_count = residue_indices.count;
-            memcpy(group.residue_indices, residue_indices.data, residue_indices.count * sizeof(int32));
+            group.residues.data = (int32*)MALLOC(residue_indices.count * sizeof(int32));
+            group.residues.count = residue_indices.count;
+            memcpy(group.residues.data, residue_indices.data, residue_indices.count * sizeof(int32));
         }
     }
 
@@ -189,15 +188,15 @@ bool compute_stats(MoleculeDynamic* dynamic) {
 			ctx.property_data.push_back(prop_avg_data);
 
             // DATA
-            for (int32 i = 0; i < group->residue_count; i++) {
-                int32 res_idx = group->residue_indices[i];
+            for (int32 i = 0; i < (int32)group->residues.count; i++) {
+                int32 res_idx = group->residues[i];
                 void* data = MALLOC(byte_size);
                 prop_cmd->func(data, args, dynamic, res_idx);
 
                 for (int32 j = 0; j < count; j++) {
                     switch(prop.type) {
                         case PropertyType::FLOAT32:
-                        ((float*)prop_avg_data.data)[j] += ((float*)data)[j] / (float)group->residue_count;
+                        ((float*)prop_avg_data.data)[j] += ((float*)data)[j] / (float)group->residues.count;
                     }
                 }
 
@@ -272,8 +271,9 @@ ID create_group(CString name, CString cmd, CString args) {
 	group.name = alloc_string(name);
     group.args = alloc_string(args);
 	group.cmd_id = grp_cmd_id;
-    group.residue_indices = nullptr;
-    group.residue_count = 0;
+    group.residues = {};
+    //group.residue_indices = nullptr;
+    //group.residue_count = 0;
 
 	ctx.groups.push_back(group);
 
@@ -296,6 +296,48 @@ void remove_group(ID group_id) {
 	}
 
     ctx.groups.remove(group);
+}
+
+ID get_group(CString name) {
+    for (const auto& g : ctx.groups) {
+        if (compare(name, g.name)) return g.id;
+    }
+    return INVALID_ID;
+}
+
+ID get_group(int32 idx) {
+    if (idx < ctx.groups.count) {
+        return ctx.groups[idx].id;
+    }
+    return INVALID_ID;
+}
+
+int32 get_group_count() {
+    return ctx.groups.count;
+}
+
+ID get_property(ID group_id, CString name) {
+    for (const auto &p : ctx.properties) {
+        if (p.group_id == group_id && compare(p.name, name)) return p.id;
+    }
+    return INVALID_ID;
+}
+
+ID get_property(ID group_id, int32 idx) {
+    // @TODO: Perhaps do this in another way...
+    int32 counter = 0;
+    for (const auto& p : ctx.properties) {
+        if (p.group_id == group_id && counter++ == idx) return p.id;
+    }
+    return INVALID_ID;
+}
+
+int32 get_property_count(ID group_id) {
+    auto group = find_id(ctx.groups, group_id);
+    if (group) {
+        return group->property_count;
+    }
+    return 0;
 }
 
 ID create_property(ID group_id, CString name, CString cmd, CString args) {

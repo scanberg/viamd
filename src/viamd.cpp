@@ -333,7 +333,7 @@ int main(int, char**) {
 		draw::plot_ramachandran(traj_angles.angle_data, active_backbone_angles);
 		draw_console(&data, display_w, display_h, dt);
         draw_main_menu(&data);
-		//draw_statistics(&data.stats);
+		draw_statistics();
 
         // 3. Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
         if (show_demo_window) {
@@ -874,7 +874,14 @@ static void draw_statistics() {
 	//if (!stats) return;
 
 	ImGui::Begin("Timelines");
-	//stats::get_groups();
+	auto group_id = stats::get_group("group1");
+    auto prop_id = stats::get_property(group_id, "d1");
+    auto avg_data = stats::get_property_data(prop_id, 0);
+    auto count = stats::get_property_data_count(prop_id);
+
+    auto frame = ImGui::BeginPlotFrame("d1", ImVec2(0, 100), 0, count, -2.f, 2.f);
+    ImGui::PlotFrameLine(frame, "najs", (float*)avg_data);
+    ImGui::EndPlotFrame(frame);
 	//stats::get_group_properties();
 	/*
 	if (stats->properties.size() > 0) {
