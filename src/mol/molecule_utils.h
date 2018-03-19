@@ -4,9 +4,9 @@
 #include <mol/molecule.h>
 #include <mol/trajectory.h>
 
-enum class ColorMapping : uint8 { STATIC_COLOR, CPK, RES_ID, RES_INDEX, CHAIN_ID, CHAIN_INDEX };
+enum class ColorMapping { STATIC_COLOR, CPK, RES_ID, RES_INDEX, CHAIN_ID, CHAIN_INDEX };
 
-enum class RamachandranConformationClassification : uint8 {
+enum class RamachandranConformationClassification {
 	None,
 	BetaHigh,
 	BetaMid,
@@ -23,27 +23,28 @@ enum class RamachandranConformationClassification : uint8 {
 
 // Tangent and binormal is perhaps redundant
 struct SplineSegment {
-	vec3 position;
-	vec3 tangent;
-	vec3 normal;
-	vec3 binormal;
+    vec3 position;
+    vec3 tangent;
+    vec3 normal;
+    vec3 binormal;
 };
 
 struct BackboneAngles {
-	float omega;
-	float phi;
-	float psi;
+    float omega;
+    float phi;
+    float psi;
 };
 
 struct BackboneAnglesTrajectory {
-	int num_segments = 0;
-	int num_frames = 0;
-	DynamicArray<BackboneAngles> angle_data;
+    int num_segments = 0;
+    int num_frames = 0;
+    DynamicArray<BackboneAngles> angle_data;
 };
 
 inline Array<BackboneAngles> get_backbone_segment_angles(BackboneAnglesTrajectory& backbone_segment_angle_traj, int frame_index) {
-	ASSERT(frame_index < backbone_segment_angle_traj.num_frames);
-	return Array<BackboneAngles>(&backbone_segment_angle_traj.angle_data[frame_index * backbone_segment_angle_traj.num_segments], backbone_segment_angle_traj.num_segments);
+    ASSERT(frame_index < backbone_segment_angle_traj.num_frames);
+    return Array<BackboneAngles>(&backbone_segment_angle_traj.angle_data[frame_index * backbone_segment_angle_traj.num_segments],
+                                 backbone_segment_angle_traj.num_segments);
 }
 
 void transform_positions(Array<vec3> positions, const mat4& transformation);
@@ -53,17 +54,15 @@ void linear_interpolation_periodic(Array<vec3> positions, const Array<vec3> prev
 void linear_interpolation(Array<vec3> positions, const Array<vec3> prev_pos, const Array<vec3> next_pos, float t);
 
 inline float compute_dihedral_angle(const vec3& p0, const vec3& p1, const vec3& p2, const vec3& p3) {
-	vec3 b1 = p1 - p0;
-	vec3 b2 = p2 - p1;
-	vec3 b3 = p3 - p2;
-	vec3 c1 = glm::cross(b1, b2);
-	vec3 c2 = glm::cross(b2, b3);
-	return glm::atan(glm::dot(glm::cross(c1, c2), glm::normalize(b2)), glm::dot(c1, c2));
+    vec3 b1 = p1 - p0;
+    vec3 b2 = p2 - p1;
+    vec3 b3 = p3 - p2;
+    vec3 c1 = glm::cross(b1, b2);
+    vec3 c2 = glm::cross(b2, b3);
+    return glm::atan(glm::dot(glm::cross(c1, c2), glm::normalize(b2)), glm::dot(c1, c2));
 }
 
-inline float compute_dihedral_angle(const vec3 p[4]) {
-	return compute_dihedral_angle(p[0], p[1], p[2], p[3]);
-}
+inline float compute_dihedral_angle(const vec3 p[4]) { return compute_dihedral_angle(p[0], p[1], p[2], p[3]); }
 
 DynamicArray<Bond> compute_covalent_bonds(const Array<vec3> atom_pos, const Array<Element> atom_elem, const Array<Residue> residues = {});
 DynamicArray<Chain> compute_chains(const Array<Residue> residue, const Array<Bond> bonds, const Array<ResIdx> atom_residue_indices = {});

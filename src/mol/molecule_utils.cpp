@@ -266,8 +266,6 @@ DynamicArray<BackboneSegment> compute_backbone(const Chain& chain, const Array<R
 DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Array<BackboneSegment>& backbone, int num_subdivisions) {
     if (backbone.count < 4) return {};
 
-    // @TODO: Use C -> O vector for orientation
-
     DynamicArray<vec3> p_tmp;
     DynamicArray<vec3> o_tmp;
     DynamicArray<vec3> c_tmp;
@@ -279,13 +277,8 @@ DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Arr
     auto d_o0 = atom_pos[backbone[1].o_idx] - atom_pos[backbone[0].o_idx];
     o_tmp.push_back(atom_pos[backbone[0].o_idx] - d_o0);
 
-    if (backbone[0].c_idx > -1 && backbone[1].c_idx > -1) {
-        auto d_c0 = atom_pos[backbone[1].c_idx] - atom_pos[backbone[0].c_idx];
-        c_tmp.push_back(atom_pos[backbone[0].c_idx] - d_c0);
-    } else {
-        // This should never happen
-        c_tmp.push_back(atom_pos[backbone[0].ca_idx] - d_p0);
-    }
+    auto d_c0 = atom_pos[backbone[1].c_idx] - atom_pos[backbone[0].c_idx];
+    c_tmp.push_back(atom_pos[backbone[0].c_idx] - d_c0);
 
     ca_idx.push_back(backbone[0].ca_idx);
 
@@ -323,7 +316,6 @@ DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Arr
     }
 
     const float tension = 0.5f;
-
     DynamicArray<SplineSegment> segments;
 
     for (int64 i = 1; i < p_tmp.size() - 2; i++) {
@@ -342,7 +334,8 @@ DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Arr
         auto c2 = c_tmp[i + 1];
         auto c3 = c_tmp[i + 2];
 
-        for (int n = 0; n < num_subdivisions; n++) {
+		auto count = (i < (p_tmp.size() - 3)) ? num_subdivisions : num_subdivisions + 1;
+        for (int n = 0; n < count; n++) {
             auto t = n / (float)(num_subdivisions);
 
             vec3 p = math::spline(p0, p1, p2, p3, t, tension);
@@ -356,10 +349,10 @@ DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Arr
             float d1 = math::min(t + eps, 1.f);
 
             vec3 tangent = math::normalize(math::spline(p0, p1, p2, p3, d1, tension) - math::spline(p0, p1, p2, p3, d0, tension));
-            // vec3 binormal = math::normalize(math::cross(v_dir, tangent));
-            // vec3 normal = math::normalize(math::cross(tangent, binormal));
-            vec3 normal = math::normalize(v_dir);
-            vec3 binormal = math::normalize(math::cross(tangent, normal));
+			vec3 binormal = math::normalize(math::cross(v_dir, tangent));
+            vec3 normal = math::normalize(math::cross(tangent, binormal));
+			//vec3 normal = v_dir;
+            //vec3 binormal = math::normalize(math::cross(tangent, normal));
 
             segments.push_back({p, tangent, normal, binormal});
         }
@@ -1192,8 +1185,8 @@ layout(triangle_strip, max_vertices = 56) out;
 
 uniform mat4 u_view_mat;
 uniform mat4 u_proj_mat;
-uniform float scale_x = 1.0;
-uniform float scale_y = 0.1;
+uniform float u_scale_x = 1.0;
+uniform float u_scale_y = 0.1;
 
 in Vertex {
     vec3 tangent;
@@ -1209,11 +1202,11 @@ out Fragment {
     flat vec4 picking_color;
 } out_frag;
 
-void emit(mat4 mat, int input_idx, vec4 v) {
+void emit(mat4 mat, int input_idx, vec4 v, vec3 n) {
     vec4 view_coord = u_view_mat * mat * v;
     mat3 norm_mat = inverse(transpose(mat3(u_view_mat) * mat3(mat)));
     out_frag.view_position = view_coord.xyz;
-    out_frag.view_normal = normalize(norm_mat * v.xyz);
+    out_frag.view_normal = normalize(norm_mat * n);
     out_frag.color = in_vert[input_idx].color;
     out_frag.picking_color = in_vert[input_idx].picking_color;
     gl_Position = u_proj_mat * view_coord;
@@ -1247,16 +1240,43 @@ void main() {
     mat[0] = compute_mat(t[0], n[0], pos[0]);
     mat[1] = compute_mat(t[1], n[1], pos[1]);
 
-    const float delta_angle = 6.28318530718 / float(CIRCLE_RES);
-    for (int u = 0; u <= CIRCLE_RES; u++) {
-        float angle = delta_angle * u;
-        vec4 v = vec4(scale_x * cos(angle), scale_y * sin(angle), 0, 1);
+    //const float delta_angle = 6.28318530718 / float(CIRCLE_RES);
+    //for (int u = 0; u <= CIRCLE_RES; u++) {
+    //    float angle = delta_angle * u;
+    //    vec4 v = vec4(u_scale_x * cos(angle), u_scale_y * sin(angle), 0, 1);
         // disc 0
         // FIX THIS COLOR INTERPOLATION
-        emit(mat[0], 0, v);
+    //    emit(mat[0], 0, v);
         // disc 1
-        emit(mat[1], 1, v);
-    }
+    //    emit(mat[1], 1, v);
+    //}
+
+	// BOTTOM
+	emit(mat[0], 0, vec4(1 * u_scale_x, -1 * u_scale_y, 0, 1), vec3(0,-1,0));
+	emit(mat[0], 0, vec4(-1 * u_scale_x, -1 * u_scale_y, 0, 1), vec3(0,-1,0));
+	emit(mat[1], 1, vec4(1 * u_scale_x, -1 * u_scale_y, 0, 1), vec3(0,-1,0));
+	emit(mat[1], 1, vec4(-1 * u_scale_x, -1 * u_scale_y, 0, 1), vec3(0,-1,0));
+	EndPrimitive();
+
+	// TOP
+	emit(mat[0], 0, vec4(-1 * u_scale_x, 1 * u_scale_y, 0, 1), vec3(0,1,0));
+	emit(mat[0], 0, vec4(1 * u_scale_x, 1 * u_scale_y, 0, 1), vec3(0,1,0));
+	emit(mat[1], 1, vec4(-1 * u_scale_x, 1 * u_scale_y, 0, 1), vec3(0,1,0));
+	emit(mat[1], 1, vec4(1 * u_scale_x, 1 * u_scale_y, 0, 1), vec3(0,1,0));
+	EndPrimitive();
+
+	// LEFT
+	emit(mat[0], 0, vec4(-1 * u_scale_x, -1 * u_scale_y, 0, 1), vec3(-1,0,0));
+	emit(mat[0], 0, vec4(-1 * u_scale_x, 1 * u_scale_y, 0, 1), vec3(-1,0,0));
+	emit(mat[1], 1, vec4(-1 * u_scale_x, -1 * u_scale_y, 0, 1), vec3(-1,0,0));
+	emit(mat[1], 1, vec4(-1 * u_scale_x, 1 * u_scale_y, 0, 1), vec3(-1,0,0));
+	EndPrimitive();
+
+	// RIGHT
+	emit(mat[0], 0, vec4(1 * u_scale_x, 1 * u_scale_y, 0, 1), vec3(1,0,0));
+	emit(mat[0], 0, vec4(1 * u_scale_x, -1 * u_scale_y, 0, 1), vec3(1,0,0));
+	emit(mat[1], 1, vec4(1 * u_scale_x, 1 * u_scale_y, 0, 1), vec3(1,0,0));
+	emit(mat[1], 1, vec4(1 * u_scale_x, -1 * u_scale_y, 0, 1), vec3(1,0,0));
     EndPrimitive();
 }
 )";
@@ -1678,8 +1698,8 @@ void draw_ribbons(const Array<SplineSegment> spline, const mat4& view_mat, const
     glUseProgram(ribbons::program);
     glUniformMatrix4fv(ribbons::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
     glUniformMatrix4fv(ribbons::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
-    glUniform1f(ribbons::uniform_loc_scale_x, 2.0f);
-    glUniform1f(ribbons::uniform_loc_scale_y, 0.5f);
+    glUniform1f(ribbons::uniform_loc_scale_x, 0.5f);
+    glUniform1f(ribbons::uniform_loc_scale_y, 0.1f);
     glDrawArrays(GL_LINE_STRIP, 0, (GLsizei)spline.count);
     glUseProgram(0);
     glBindVertexArray(0);
@@ -1829,7 +1849,7 @@ void plot_ramachandran(const Array<BackboneAngles> angles, const Array<BackboneA
 
     constexpr vec2 res(512, 512);
     ImGui::SetNextWindowContentSize(ImVec2(res.x, res.y));
-    ImGui::Begin("Ramachandran");
+    ImGui::Begin("Ramachandran", 0, ImGuiWindowFlags_NoFocusOnAppearing);
 
     ImVec2 win_pos = ImGui::GetCursorScreenPos();
     ImVec2 max_region = ImGui::GetWindowContentRegionMax();

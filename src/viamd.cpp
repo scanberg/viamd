@@ -46,6 +46,19 @@ struct MainFramebuffer {
 	int height = 0;
 };
 
+enum struct RepresentationType { VDW, LICORICE, RIBBONS };
+
+struct Representation {
+	StringBuffer<128> name = "rep";
+	StringBuffer<128> filter = "all";
+	RepresentationType type = RepresentationType::VDW;
+	ColorMapping color_mapping = ColorMapping::CPK;
+	uint32 static_color = 0xffffffff;
+
+	// @TODO Fill in options heres
+	float radii_scale = 1.f;
+};
+
 struct ApplicationData {
 	// --- PLATFORM ---
     platform::Window* main_window;
@@ -60,6 +73,11 @@ struct ApplicationData {
 	// --- MOL VISUALS ---
     DynamicArray<float> atom_radii;
     DynamicArray<uint32> atom_colors;
+
+	struct {
+		bool show_window;
+		DynamicArray<Representation> data;
+	} representations;
 
 	// --- HOVER FEEDBACK ---
 	int32 hovered_atom_idx = -1;
@@ -87,9 +105,23 @@ struct ApplicationData {
 	// SSAO
 	struct {
 		bool enabled = false;
-		float intensity = 1.5;
+		float intensity = 1.5f;
 		float radius = 6.0f;
 	} ssao;
+
+	struct {
+		bool enabled = false;
+	} ramachandran;
+
+	struct {
+		struct {
+			bool enabled = false;
+		} spline;
+
+		struct {
+			bool enabled = false;
+		} backbone;
+	} debug_draw;
 
 	// --- CONSOLE ---
 	struct {
@@ -99,6 +131,7 @@ struct ApplicationData {
 
 static float compute_avg_ms(float dt);
 static void draw_main_menu(ApplicationData* data);
+static void draw_representations_window(ApplicationData* data);
 static void draw_console(ApplicationData* data, int width, int height, float dt);
 static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y);
 static void draw_statistics();
@@ -142,7 +175,7 @@ int main(int, char**) {
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid-6T/conf-60-6T.gro");
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/yuya/nowat_npt.gro");
 	//auto res = load_pdb_from_file(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
-	auto res = allocate_and_load_pdb_from_file(PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
+	auto res = allocate_and_load_pdb_from_file(PROJECT_SOURCE_DIR "/data/1ALA-560ns.pdb");
 
     //Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
     //Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
@@ -155,17 +188,15 @@ int main(int, char**) {
 
 	data.dynamic = res;
 
-
 	auto g1 = stats::create_group("group1", "resid", "ALA");
     auto d1 = stats::create_property(g1, "d1", "dist", "1 2");
 
 	stats::compute_stats(&data.dynamic);
 
-	DynamicArray<BackboneSegment> active_backbone = compute_backbone(data.dynamic.molecule->chains[0], data.dynamic.molecule->residues, data.dynamic.molecule->atom_labels);
-	DynamicArray<BackboneAngles> active_backbone_angles = compute_backbone_angles(data.dynamic.molecule->atom_positions, active_backbone);
-
-	BackboneAnglesTrajectory traj_angles = {};
-	DynamicArray<BackboneAngles> active_angles = {};
+	DynamicArray<BackboneSegment> backbone = compute_backbone(data.dynamic.molecule->chains[0], data.dynamic.molecule->residues, data.dynamic.molecule->atom_labels);
+	BackboneAnglesTrajectory backbone_angles = compute_backbone_angles_trajectory(*data.dynamic.trajectory, data.dynamic.molecule->backbone_segments);
+	DynamicArray<BackboneAngles> current_backbone_angles = compute_backbone_angles(data.dynamic.molecule->atom_positions, backbone);
+	DynamicArray<SplineSegment> current_spline = compute_spline(data.dynamic.molecule->atom_positions, backbone, 8);
 
 	if (traj) {
 		printf("READING FRAME DATA...\n");
@@ -185,21 +216,15 @@ int main(int, char**) {
 			*/
 		//});
 	}
-	
-	//DynamicArray<SplineSegment> spline;
 
     if (data.dynamic.trajectory && data.dynamic.trajectory->num_frames > 0)
         copy_trajectory_positions(data.dynamic.molecule->atom_positions, *data.dynamic.trajectory, 0);
     reset_view(&data);
 
-	//if (data.mol_struct->chains.count > 0) {
-	//	backbone = compute_backbone(data.mol_struct->chains[0], data.mol_struct->residues, data.mol_struct->atom_labels);
-	//	spline = compute_spline(data.mol_struct->atom_positions, backbone, 8);
-	//}
-
     data.atom_radii = compute_atom_radii(data.dynamic.molecule->atom_elements);
     data.atom_colors = compute_atom_colors(*data.dynamic.molecule, ColorMapping::RES_ID);
-	BackboneAnglesTrajectory backbone_angles = compute_backbone_angles_trajectory(*data.dynamic.trajectory, data.dynamic.molecule->backbone_segments);
+
+	data.representations.data.push_back({});
 
     // Main loop
     while (!(platform::window_should_close(data.main_window))) {
@@ -281,7 +306,7 @@ int main(int, char**) {
 			time_changed = true;
         }
 
-        if (data.dynamic.trajectory&& time_changed) {
+        if (data.dynamic.trajectory && time_changed) {
             data.time = math::clamp(data.time, 0.0, float64(data.dynamic.trajectory->num_frames - 1));
 			if (data.time == float64(data.dynamic.trajectory->num_frames - 1)) data.is_playing = false;
 
@@ -298,6 +323,8 @@ int main(int, char**) {
 				float t = (float)math::fract(data.time);
 				linear_interpolation_periodic(data.dynamic.molecule->atom_positions, prev_frame.atom_positions, next_frame.atom_positions, t, prev_frame.box);
 			}
+
+			current_spline = compute_spline(data.dynamic.molecule->atom_positions, backbone, 8);
         }
 
 		if (!ImGui::GetIO().WantCaptureMouse) {
@@ -330,9 +357,15 @@ int main(int, char**) {
 		}
         
 		// GUI ELEMENTS
-		draw::plot_ramachandran(traj_angles.angle_data, active_backbone_angles);
+		if (data.ramachandran.enabled) {
+			current_backbone_angles = compute_backbone_angles(data.dynamic.molecule->atom_positions, backbone);
+			draw::plot_ramachandran(backbone_angles.angle_data, current_backbone_angles);
+		}
 		draw_console(&data, display_w, display_h, dt);
         draw_main_menu(&data);
+		if (data.representations.show_window) {
+			draw_representations_window(&data);
+		}
 		draw_statistics();
 
         // 3. Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
@@ -368,9 +401,22 @@ int main(int, char**) {
 		glEnable(GL_DEPTH_TEST);
 		glDepthFunc(GL_LESS);
 
-        draw::draw_vdw(data.dynamic.molecule->atom_positions, data.atom_radii, data.atom_colors, view_mat, proj_mat, radii_scale);
+		for (const auto& rep : data.representations.data) {
+			switch (rep.type) {
+			case RepresentationType::VDW:
+				draw::draw_vdw(data.dynamic.molecule->atom_positions, data.atom_radii, data.atom_colors, view_mat, proj_mat, radii_scale);
+				break;
+			case RepresentationType::LICORICE:
+				draw::draw_licorice(data.dynamic.molecule->atom_positions, data.dynamic.molecule->bonds, data.atom_colors, view_mat, proj_mat, radii_scale);
+				break;
+			case RepresentationType::RIBBONS:
+				draw::draw_ribbons(current_spline, view_mat, proj_mat);
+				break;
+			}
+		}
+        //draw::draw_vdw(data.dynamic.molecule->atom_positions, data.atom_radii, data.atom_colors, view_mat, proj_mat, radii_scale);
 		//draw::draw_licorice(data.mol_struct->atom_positions, data.mol_struct->bonds, data.atom_colors, view_mat, proj_mat, radii_scale);
-		//draw::draw_ribbons(spline, view_mat, proj_mat);
+		//draw::draw_ribbons(current_spline, view_mat, proj_mat);
 
         // Activate backbuffer
         glDisable(GL_DEPTH_TEST);
@@ -382,8 +428,12 @@ int main(int, char**) {
         // Apply tone mapping
         postprocessing::apply_tonemapping(data.fbo.tex_color);
 
-		draw::draw_backbone(active_backbone, data.dynamic.molecule->atom_positions, view_mat, proj_mat);
-		//draw::draw_spline(spline, view_mat, proj_mat);
+		if (data.debug_draw.backbone.enabled) {
+			draw::draw_backbone(backbone, data.dynamic.molecule->atom_positions, view_mat, proj_mat);
+		}
+		if (data.debug_draw.spline.enabled) {
+			draw::draw_spline(current_spline, view_mat, proj_mat);
+		}
 
 		if (data.ssao.enabled) {
 			postprocessing::apply_ssao(data.fbo.tex_depth, proj_mat, data.ssao.intensity, data.ssao.radius);
@@ -471,11 +521,29 @@ static void draw_main_menu(ApplicationData* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Visuals")) {
+
+			// SSAO
+			ImGui::BeginGroup();
             ImGui::Checkbox("SSAO", &data->ssao.enabled);
-			ImGui::SliderFloat("Intensity", &data->ssao.intensity, 0.5f, 6.f);
-			ImGui::SliderFloat("Radius", &data->ssao.radius, 1.f, 30.f);
-            ImGui::EndMenu();
+			if (data->ssao.enabled) {
+				ImGui::SliderFloat("Intensity", &data->ssao.intensity, 0.5f, 6.f);
+				ImGui::SliderFloat("Radius", &data->ssao.radius, 1.f, 30.f);
+			}
+			ImGui::EndGroup();
+			ImGui::Separator();
+
+			// DEBUG DRAW
+			ImGui::BeginGroup();
+			ImGui::Checkbox("Spline", &data->debug_draw.spline.enabled);
+			ImGui::Checkbox("Backbone", &data->debug_draw.backbone.enabled);
+			ImGui::EndGroup();
+
+			ImGui::EndMenu();
         }
+		if (ImGui::BeginMenu("Windows")) {
+			ImGui::Checkbox("Representations", &data->representations.show_window);
+			ImGui::Checkbox("Ramachandran", &data->ramachandran.enabled);
+		}
         ImGui::EndMainMenuBar();
     }
 
@@ -493,6 +561,36 @@ static void draw_main_menu(ApplicationData* data) {
         }
         ImGui::EndPopup();
     }
+}
+
+static void draw_representations_window(ApplicationData* data) {
+	ImGui::Begin("Representations", &data->representations.show_window);
+	
+	if (ImGui::Button("Create New Representation")) {
+		data->representations.data.push_back({});
+	}
+
+	for (int i = 0; i < data->representations.data.count; i++) {
+		auto& rep = data->representations.data[i];
+		ImGui::Separator();
+		ImGui::BeginGroup();
+
+		ImGui::PushID(i);
+		ImGui::InputText("name", rep.name.buffer, rep.name.MAX_LENGTH);
+		ImGui::InputText("filter", rep.filter.buffer, rep.filter.MAX_LENGTH, 0);
+		ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0\0");
+		ImGui::Combo("color mapping", (int*)(&rep.color_mapping), "Static Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0\0");
+		if (rep.color_mapping == ColorMapping::STATIC_COLOR) {
+			ImVec4 color = ImGui::ColorConvertU32ToFloat4(rep.static_color);
+			ImGui::ColorButton("color", color);
+			rep.static_color = ImGui::ColorConvertFloat4ToU32(color);
+		}
+		ImGui::PopID();
+		ImGui::EndGroup();
+		ImGui::Spacing();
+	}
+
+	ImGui::End();
 }
 
 // Demonstrating creating a simple console window, with scrolling, filtering, completion and history.

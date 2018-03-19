@@ -97,7 +97,7 @@ T hermite(T const& v1, T const& t1, T const& v2, T const& t2, V s) {
 }
 
 template <typename T, typename V>
-static T spline(const T& p0, const T& p1, const T& p2, const T& p3, V s, V tension = (V)0.5) {
+static T spline(const T& p0, const T& p1, const T& p2, const T& p3, V s, V tension = (V)0.25) {
 	T v0 = (p2 - p0) * tension;
 	T v1 = (p3 - p1) * tension;
 	V s2 = s * s;
