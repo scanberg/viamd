@@ -3,8 +3,17 @@
 #include <core/array.h>
 #include <mol/molecule.h>
 #include <mol/trajectory.h>
+#include <mol/molecule_dynamic.h>
+#include <mol/aminoacid.h>
 
 enum class ColorMapping { STATIC_COLOR, CPK, RES_ID, RES_INDEX, CHAIN_ID, CHAIN_INDEX };
+
+typedef void(*FilterCommandFunc)(Array<bool> mask, const MoleculeDynamic* dynamic, const Array<CString> args);
+
+struct FilterCommand {
+	StringBuffer<16> keyword {};
+	FilterCommandFunc func = nullptr;
+};
 
 enum class RamachandranConformationClassification {
 	None,
@@ -85,7 +94,10 @@ void compute_atom_radii(Array<float> radii_dst, const Array<Element> elements);
 DynamicArray<uint32> compute_atom_colors(const MoleculeStructure& mol, ColorMapping mapping);
 void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, ColorMapping mapping);
 
-bool is_amino_acid(Residue res);
+bool filter_valid(CString filter);
+bool filter_colors(Array<uint32> color_dst, const MoleculeStructure& mol, CString filter);
+
+inline bool is_amino_acid(Residue res) { return aminoacid::get_from_string(res.id) != AminoAcid::Unknown; }
 
 namespace draw {
 void initialize();

@@ -241,17 +241,41 @@ CString get_file_extension(CString url) {
     return CString(beg, end - beg);
 }
 
+inline static bool char_in_string(char c, CString str) {
+	for (int64 i = 0; i < str.count; i++) {
+		if (c == str[i]) return true;
+	}
+	return false;
+}
+
 DynamicArray<String> tokenize(String str, char delimiter) {
 	DynamicArray<String> tokens;
 
 	char* beg = str.beg();
 	char* end = str.beg();
 
-	while (end != str.end()) {
-		while (end != str.end() && *end != delimiter) end++;
+	while (end != str.end() && *end != '\0') {
+		while (end != str.end() && *end != '\0' && *end != delimiter) end++;
 		tokens.push_back(String(beg, end));
 		beg = end;
-		while (beg != str.end() && *beg == delimiter) beg++;
+		while (beg != str.end() && *end != '\0' && *beg == delimiter) beg++;
+		end = beg;
+	}
+
+	return tokens;
+}
+
+DynamicArray<String> tokenize(String str, CString delimiter) {
+	DynamicArray<String> tokens;
+
+	char* beg = str.beg();
+	char* end = str.beg();
+
+	while (end != str.end() && *end != '\0') {
+		while (end != str.end() && *end != '\0' && !char_in_string(*end, delimiter)) end++;
+		tokens.push_back(String(beg, end));
+		beg = end;
+		while (beg != str.end() && *end != '\0' && char_in_string(*beg, delimiter)) beg++;
 		end = beg;
 	}
 
@@ -269,6 +293,23 @@ DynamicArray<CString> ctokenize(CString str, char delimiter) {
 		tokens.push_back(CString(beg, end));
 		beg = end;
 		while (beg != str.end() && *end != '\0' && *beg == delimiter) beg++;
+		end = beg;
+	}
+
+	return tokens;
+}
+
+DynamicArray<CString> ctokenize(CString str, CString delimiter) {
+	DynamicArray<CString> tokens;
+
+	const char* beg = str.beg();
+	const char* end = str.beg();
+
+	while (end != str.end() && *end != '\0') {
+		while (end != str.end() && *end != '\0' && !char_in_string(*end, delimiter)) end++;
+		tokens.push_back(CString(beg, end));
+		beg = end;
+		while (beg != str.end() && *end != '\0' && char_in_string(*beg, delimiter)) beg++;
 		end = beg;
 	}
 

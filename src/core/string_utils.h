@@ -296,4 +296,7 @@ CString get_file_extension(CString url);
 // Tokenizes a string into shorter strings based on some delimiter 
 // @TODO: Implement a CString instead of a char
 DynamicArray<String> tokenize(String str, char delimiter = ' ');
+DynamicArray<String> tokenize(String str, CString delimiter);
 DynamicArray<CString> ctokenize(CString str, char delimiter = ' ');
+DynamicArray<CString> ctokenize(CString str, CString delimiter);
+

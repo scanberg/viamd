@@ -16,10 +16,12 @@ struct TrajOnFinishFunctor {
 };
 template<typename Functor = TrajOnFinishFunctor>
 void read_trajectory_async(Trajectory* traj, Functor on_finish = TrajOnFinishFunctor()) {
-	std::thread([traj, on_finish]() {
-		read_trajectory(traj);
-		on_finish();
-	}).detach();
+	if (traj->path_to_file) {
+		std::thread([traj, on_finish]() {
+			read_trajectory(traj);
+			on_finish();
+		}).detach();
+	}
 }
 
 TrajectoryFrame allocate_trajectory_frame(int num_atoms);

@@ -46,17 +46,18 @@ struct MainFramebuffer {
 	int height = 0;
 };
 
-enum struct RepresentationType { VDW, LICORICE, RIBBONS };
-
 struct Representation {
+	enum Type { VDW, LICORICE, RIBBONS };
+
 	StringBuffer<128> name = "rep";
 	StringBuffer<128> filter = "all";
-	RepresentationType type = RepresentationType::VDW;
+	Type type = VDW;
 	ColorMapping color_mapping = ColorMapping::CPK;
 	uint32 static_color = 0xffffffff;
 
 	// @TODO Fill in options heres
 	float radii_scale = 1.f;
+	Array<uint32> colors;
 };
 
 struct ApplicationData {
@@ -139,6 +140,9 @@ static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height);
 static void destroy_main_framebuffer(MainFramebuffer* fbo);
 static void reset_view(ApplicationData* data);
 
+static void create_representation(ApplicationData* data);
+static void remove_representation(ApplicationData* data, int idx);
+
 int main(int, char**) {
 	ApplicationData data;
 
@@ -168,24 +172,24 @@ int main(int, char**) {
 
 	
     //data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
-    //auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
-	data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
+    //data.dynamic.molecule= allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
+	//data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/water/water.gro");
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid-6T/conf-60-6T.gro");
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/yuya/nowat_npt.gro");
 	//auto res = load_pdb_from_file(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
-	//data.dynamic = allocate_and_load_pdb_from_file(PROJECT_SOURCE_DIR "/data/1ALA-560ns.pdb");
+	data.dynamic = allocate_and_load_pdb_from_file(PROJECT_SOURCE_DIR "/data/1ALA-560ns.pdb");
 
     //data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
-    //Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
-	data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
-	read_trajectory_async(data.dynamic.trajectory);
+    //data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
+	//data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid-6T/prod-centered.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/yuya/traj-centered.xtc");
+	read_trajectory_async(data.dynamic.trajectory);
 	Trajectory* traj = nullptr;
 
 	auto g1 = stats::create_group("group1", "resid", "ALA");
@@ -193,7 +197,7 @@ int main(int, char**) {
 
 	stats::compute_stats(&data.dynamic);
 
-	DynamicArray<BackboneSegment> backbone = compute_backbone(data.dynamic.molecule->chains[0], data.dynamic.molecule->residues, data.dynamic.molecule->atom_labels);
+	DynamicArray<BackboneSegment> backbone = compute_backbone_segments(get_residues(*data.dynamic.molecule, get_chain(*data.dynamic.molecule, 0)), data.dynamic.molecule->atom_labels);
 	BackboneAnglesTrajectory backbone_angles = compute_backbone_angles_trajectory(*data.dynamic.trajectory, data.dynamic.molecule->backbone_segments);
 	DynamicArray<BackboneAngles> current_backbone_angles = compute_backbone_angles(data.dynamic.molecule->atom_positions, backbone);
 	DynamicArray<SplineSegment> current_spline = compute_spline(data.dynamic.molecule->atom_positions, backbone, 8);
@@ -403,13 +407,13 @@ int main(int, char**) {
 
 		for (const auto& rep : data.representations.data) {
 			switch (rep.type) {
-			case RepresentationType::VDW:
+			case Representation::VDW:
 				draw::draw_vdw(data.dynamic.molecule->atom_positions, data.atom_radii, data.atom_colors, view_mat, proj_mat, radii_scale);
 				break;
-			case RepresentationType::LICORICE:
+			case Representation::LICORICE:
 				draw::draw_licorice(data.dynamic.molecule->atom_positions, data.dynamic.molecule->bonds, data.atom_colors, view_mat, proj_mat, radii_scale);
 				break;
-			case RepresentationType::RIBBONS:
+			case Representation::RIBBONS:
 				draw::draw_ribbons(current_spline, view_mat, proj_mat);
 				break;
 			}
@@ -570,7 +574,7 @@ static void draw_representations_window(ApplicationData* data) {
 	ImGui::Begin("Representations", &data->representations.show_window);
 	
 	if (ImGui::Button("Create New Representation")) {
-		data->representations.data.push_back({});
+		create_representation(data);
 	}
 
 	for (int i = 0; i < data->representations.data.count; i++) {
@@ -580,6 +584,10 @@ static void draw_representations_window(ApplicationData* data) {
 
 		ImGui::PushID(i);
 		ImGui::InputText("name", rep.name.buffer, rep.name.MAX_LENGTH);
+		ImGui::SameLine();
+		if (ImGui::Button("-")) {
+			remove_representation(data, i);
+		}
 		ImGui::InputText("filter", rep.filter.buffer, rep.filter.MAX_LENGTH, 0);
 		ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0\0");
 		ImGui::Combo("color mapping", (int*)(&rep.color_mapping), "Static Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0\0");
@@ -596,8 +604,6 @@ static void draw_representations_window(ApplicationData* data) {
 	ImGui::End();
 }
 
-// Demonstrating creating a simple console window, with scrolling, filtering, completion and history.
-// For the console example, here we are using a more C++ like approach of declaring a class to hold the data and the functions.
 struct Console
 {
     char                  InputBuf[256];
@@ -1071,4 +1077,19 @@ static void destroy_main_framebuffer(MainFramebuffer* fbo) {
 	if (fbo->tex_depth) glDeleteTextures(1, &fbo->tex_depth);
 	if (fbo->tex_color) glDeleteTextures(1, &fbo->tex_color);
 	if (fbo->tex_picking) glDeleteTextures(1, &fbo->tex_picking);
+}
+
+static void create_representation(ApplicationData* data) {
+	auto& rep = data->representations.data.push_back({});
+	rep.colors.count = data->dynamic.molecule->atom_positions.count;
+	rep.colors.data = (uint32*)MALLOC(rep.colors.count * sizeof(uint32));
+}
+
+static void remove_representation(ApplicationData* data, int idx) {
+	ASSERT(idx < data->representations.data.count);
+	auto& rep = data->representations.data[idx];
+	if (rep.colors) {
+		FREE(rep.colors.data);
+	}
+	data->representations.data.remove(&rep);
 }

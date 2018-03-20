@@ -32,6 +32,10 @@
 #define USE_DEFAULT_TMP_MALLOC_AND_FREE
 #endif
 
+#if defined USE_DEFAULT_MALLOC_AND_FREE || defined USE_DEFAULT_TMP_MALLOC_AND_FREE
+#include <stdlib.h>
+#endif
+
 #ifdef USE_DEFAULT_MALLOC_AND_FREE
 #define MALLOC(x) malloc(x)
 #define REALLOC(x, y) realloc(x, y)
@@ -39,7 +43,7 @@
 #endif
 
 #ifdef USE_DEFAULT_TMP_MALLOC_AND_FREE
-#define TMP_MALLOC(x) alloc(x)
+#define TMP_MALLOC(x) malloc(x)
 #define TMP_REALLOC(x, y) realloc(x, y)
 #define TMP_FREE(x) free(x)
 #endif

@@ -5,8 +5,9 @@
 
 MoleculeStructure* allocate_and_load_gro_from_file(const char* filename) {
 	String txt = allocate_and_read_textfile(filename);
-	return allocate_and_parse_gro_from_string(txt);
+	auto mol = allocate_and_parse_gro_from_string(txt);
 	FREE(txt);
+	return mol;
 }
 
 MoleculeStructure* allocate_and_parse_gro_from_string(CString gro_string) {
@@ -77,7 +78,7 @@ MoleculeStructure* allocate_and_parse_gro_from_string(CString gro_string) {
 			velocities.push_back(vel);
 			labels.push_back(atom_name_trim);
 			elements.push_back(elem);
-			residue_indices.push_back(res_count);
+			residue_indices.push_back((ResIdx)res_count);
 
 
 
@@ -108,11 +109,11 @@ MoleculeStructure* allocate_and_parse_gro_from_string(CString gro_string) {
 
    	for (int c = 0; c < chains.count; c++) {
 	   	for (int i = chains[c].beg_res_idx; i < chains[c].end_res_idx; i++) {
-	   		residues[i].chain_idx = c;
+	   		residues[i].chain_idx = (ChainIdx)c;
 	   	}
 	}
 
-	MoleculeStructure* mol = allocate_molecule_structure(num_atoms, bonds.size(), residues.size(), chains.size(), 0);
+	MoleculeStructure* mol = allocate_molecule_structure(num_atoms, (int)bonds.size(), (int)residues.size(), (int)chains.size(), 0);
 
 	// Copy data into molecule
 	memcpy(mol->atom_positions.data, positions.data, positions.size() * sizeof(vec3));

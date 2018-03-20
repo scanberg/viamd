@@ -13,13 +13,11 @@
 
 namespace platform {
 
-struct Window {
-    GLFWwindow* glfw_window = NULL;
-};
+static Context internal_ctx;
 
 // @NOTE: Perhaps extend this to array of windows
-static Window		g_window;
-static InputState	g_input_state;
+//static Window		g_window;
+//static InputState	g_input_state;
 
 // Data
 static double       g_time = 0.0f;
@@ -54,18 +52,18 @@ static void gl_callback(
 
 static void mouse_button_callback(GLFWwindow*, int button, int action, int /*mods*/) {
     if (action == GLFW_PRESS) {
-        g_input_state.mouse_down[button] = true;
-        g_input_state.mouse_hit[button] = true;
+        internal_ctx.input.mouse.down[button] = true;
+		internal_ctx.input.mouse.hit[button] = true;
     } else if (action == GLFW_RELEASE) {
-        g_input_state.mouse_down[button] = false;
-        g_input_state.mouse_release[button] = true;
+		internal_ctx.input.mouse.down[button] = false;
+		internal_ctx.input.mouse.release[button] = true;
     }
 }
 
 static void mouse_scroll_callback(GLFWwindow*, double xoffset, double yoffset) {
     ImGuiIO& io = ImGui::GetIO();
 
-    g_input_state.mouse_scroll.y = (float)yoffset;
+	internal_ctx.input.mouse.scroll.y = (float)yoffset;
     io.MouseWheelH += (float)xoffset;
     io.MouseWheel += (float)yoffset;
 }
@@ -75,12 +73,12 @@ static void key_callback(GLFWwindow*, int key, int, int action, int mods) {
 
     if (action == GLFW_PRESS) {
         io.KeysDown[key] = true;
-        g_input_state.key_down[key] = true;
-        g_input_state.key_hit[key] = true;
+		internal_ctx.input.key.down[key] = true;
+		internal_ctx.input.key.hit[key] = true;
     }
     if (action == GLFW_RELEASE) {
         io.KeysDown[key] = false;
-        g_input_state.key_down[key] = false;
+		internal_ctx.input.key.down[key] = false;
     }
 
     // IMGUI
@@ -436,26 +434,24 @@ static void imgui_new_frame()
 }
 
 
-void initialize() {
+void initialize(Context* ctx, int width, int height, const char* title) {
     if (!glfwInit()) {
         // TODO Throw critical error
         error_callback(1, "Error while initializing. Terminating.");
         exit(1);
     }
     glfwSetErrorCallback(error_callback);
-}
 
-Window* create_window(int width, int height, const char* window_title) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 #if __APPLE__
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
-    GLFWwindow* window = glfwCreateWindow(width, height, window_title, NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(width, height, title, NULL, NULL);
     if (!window) {
         error_callback(2, "Could not create window. Terminating.");
-        return nullptr;
+		return;
     }
 
     glfwMakeContextCurrent(window);
@@ -476,28 +472,26 @@ Window* create_window(int width, int height, const char* window_title) {
 
 	double x, y;
 	glfwGetCursorPos(window, &x, &y);
-	g_input_state.prev_mouse_screen_coords = { x,y };
-	g_input_state.mouse_screen_coords = { x,y };
+	internal_ctx.input.mouse.coords_prev = { x,y };
+	internal_ctx.input.mouse.coords_curr = { x,y };
 
 	int w, h;
 	glfwGetFramebufferSize(window, &w, &h);
 	vec2 half_res = vec2(w, h) * 0.5f;
-	g_input_state.mouse_ndc_coords = (vec2(x, h-y) - half_res) / half_res;
-	g_input_state.prev_mouse_ndc_coords = g_input_state.mouse_ndc_coords;
+	internal_ctx.input.mouse.ndc_prev = (vec2(x, h-y) - half_res) / half_res;
+	internal_ctx.input.mouse.ndc_curr = internal_ctx.input.mouse.ndc_prev;
 
-    g_window.glfw_window = window;
-    return &g_window; 
+    internal_ctx.window.ptr = window;
 }
 
-void destroy_window(Window* window) {
-    glfwDestroyWindow(window->glfw_window);
-}
-
+/*
 void set_window_should_close(Window* window, bool value) {
 	glfwSetWindowShouldClose(window->glfw_window, (int)value);
 }
+*/
 
 void shutdown() {
+	glfwDestroyWindow(window->glfw_window);
     imgui_shutdown();
 	ImGui::DestroyContext();
     glfwTerminate();
@@ -556,5 +550,13 @@ void swap_buffers(Window* window) {
 void set_vsync(bool value) {
 	glfwSwapInterval((int)value);
 }
+
+void* malloc(size_t size) {
+	return malloc
+}
+void free(void*);
+
+void* tmp_malloc(size_t);
+void tmp_free(void*);
 
 }

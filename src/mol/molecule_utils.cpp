@@ -4,7 +4,6 @@
 #include <core/hash.h>
 #include <core/common.h>
 #include <core/math_utils.h>
-#include <mol/aminoacid.h>
 #include <mol/trajectory_utils.h>
 #include <imgui.h>
 #include <ctype.h>
@@ -47,13 +46,22 @@ void linear_interpolation_periodic(Array<vec3> positions, const Array<vec3> prev
         vec3 sign = math::sign(delta);
 
         vec3 abs_delta = math::abs(delta);
-        if (abs_delta.x > half_box_ext.x) next.x -= full_box_ext.x * sign.x;
-        if (abs_delta.y > half_box_ext.y) next.y -= full_box_ext.y * sign.y;
-        if (abs_delta.z > half_box_ext.z) next.z -= full_box_ext.z * sign.z;
 
-        // next -= math::step(half_box_ext, math::abs(delta)) * delta;
+        if (abs_delta.x > half_box_ext.x || abs_delta.y > half_box_ext.y || abs_delta.z > half_box_ext.z) {
+            // Atom moved across periodic boundry we cannot apply linearly interpolate directly
+            positions[i] = t < 0.5f ? prev : next;
 
-        positions[i] = math::mix(prev, next, t);
+        } else {
+            positions[i] = math::mix(prev, next, t);
+        }
+        /*
+if (abs_delta.y > half_box_ext.y) next.y -= full_box_ext.y * sign.y;
+if (abs_delta.z > half_box_ext.z) next.z -= full_box_ext.z * sign.z;
+
+// next -= math::step(half_box_ext, math::abs(delta)) * delta;
+
+positions[i] = math::mix(prev, next, t);
+        */
     }
 }
 
@@ -193,28 +201,39 @@ bool match(const Label& lbl, const char (&cstr)[N]) {
 }
 
 DynamicArray<BackboneSegment> compute_backbone_segments(const Array<Residue> residues, const Array<Label> atom_labels) {
-	DynamicArray<BackboneSegment> segments;
-	for (auto& res : residues) {
-		auto ca_idx = -1;
-		auto n_idx = -1;
-		auto c_idx = -1;
-		auto o_idx = -1;
-		if (is_amino_acid(res)) {
-			// find atoms
-			for (int32 i = res.beg_atom_idx; i < res.end_atom_idx; i++) {
-				const auto& lbl = atom_labels[i];
-				if (ca_idx == -1 && match(lbl, "CA")) ca_idx = i;
-				if (n_idx == -1 && match(lbl, "N")) n_idx = i;
-				if (c_idx == -1 && match(lbl, "C")) c_idx = i;
-				if (o_idx == -1 && match(lbl, "O")) o_idx = i;
-			}
-		}
-		segments.push_back({ ca_idx, n_idx, c_idx, o_idx });
-	}
+    DynamicArray<BackboneSegment> segments;
+    for (auto& res : residues) {
+        auto ca_idx = -1;
+        auto n_idx = -1;
+        auto c_idx = -1;
+        auto o_idx = -1;
+        if (is_amino_acid(res)) {
+            // find atoms
+            for (int32 i = res.beg_atom_idx; i < res.end_atom_idx; i++) {
+                const auto& lbl = atom_labels[i];
+                if (ca_idx == -1 && match(lbl, "CA")) ca_idx = i;
+                if (n_idx == -1 && match(lbl, "N")) n_idx = i;
+                if (c_idx == -1 && match(lbl, "C")) c_idx = i;
+                if (o_idx == -1 && match(lbl, "O")) o_idx = i;
+            }
 
-	return segments;
+            // Could not match "O"
+            if (o_idx == -1) {
+                ASSERT(c_idx);
+                // Pick first atom containing O after C atom
+                for (int32 i = c_idx; i < res.end_atom_idx; i++) {
+                    const auto& lbl = atom_labels[i];
+                    if (lbl[0] == 'o' || lbl[0] == 'O') o_idx = i;
+                }
+            }
+        }
+        segments.push_back({ca_idx, n_idx, c_idx, o_idx});
+    }
+
+    return segments;
 }
 
+// @TODO: Is this in use???
 DynamicArray<BackboneSegment> compute_backbone(const Chain& chain, const Array<Residue> residues, const Array<Label> atom_labels) {
     DynamicArray<BackboneSegment> backbones;
     for (int32 res_idx = chain.beg_res_idx; res_idx < chain.end_res_idx; res_idx++) {
@@ -222,16 +241,16 @@ DynamicArray<BackboneSegment> compute_backbone(const Chain& chain, const Array<R
         if (is_amino_acid(residue) == false) continue;
         // find atoms
         auto ca_idx = -1;
-        //auto ha_idx = -1;
-        //auto cb_idx = -1;
+        // auto ha_idx = -1;
+        // auto cb_idx = -1;
         auto n_idx = -1;
         auto c_idx = -1;
         auto o_idx = -1;
         for (int32 i = residue.beg_atom_idx; i < residue.end_atom_idx; i++) {
             const auto& lbl = atom_labels[i];
             if (ca_idx == -1 && match(lbl, "CA")) ca_idx = i;
-            //if (ha_idx == -1 && match(lbl, "HA")) ha_idx = i;
-            //if (cb_idx == -1 && match(lbl, "CB")) cb_idx = i;
+            // if (ha_idx == -1 && match(lbl, "HA")) ha_idx = i;
+            // if (cb_idx == -1 && match(lbl, "CB")) cb_idx = i;
             if (n_idx == -1 && match(lbl, "N")) n_idx = i;
             if (c_idx == -1 && match(lbl, "C")) c_idx = i;
             if (o_idx == -1 && match(lbl, "O")) o_idx = i;
@@ -239,14 +258,14 @@ DynamicArray<BackboneSegment> compute_backbone(const Chain& chain, const Array<R
         if (ca_idx == -1) {
             printf("No CA label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
         }
-		/*
-        if (ha_idx == -1) {
-            printf("No HA label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
-        }
-        if (cb_idx == -1) {
-            printf("No CB label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
-        }
-		*/
+        /*
+if (ha_idx == -1) {
+    printf("No HA label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
+}
+if (cb_idx == -1) {
+    printf("No CB label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
+}
+        */
         if (n_idx == -1) {
             printf("No N label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
         }
@@ -334,7 +353,7 @@ DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Arr
         auto c2 = c_tmp[i + 1];
         auto c3 = c_tmp[i + 2];
 
-		auto count = (i < (p_tmp.size() - 3)) ? num_subdivisions : num_subdivisions + 1;
+        auto count = (i < (p_tmp.size() - 3)) ? num_subdivisions : num_subdivisions + 1;
         for (int n = 0; n < count; n++) {
             auto t = n / (float)(num_subdivisions);
 
@@ -349,10 +368,10 @@ DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Arr
             float d1 = math::min(t + eps, 1.f);
 
             vec3 tangent = math::normalize(math::spline(p0, p1, p2, p3, d1, tension) - math::spline(p0, p1, p2, p3, d0, tension));
-			vec3 binormal = math::normalize(math::cross(v_dir, tangent));
+            vec3 binormal = math::normalize(math::cross(v_dir, tangent));
             vec3 normal = math::normalize(math::cross(tangent, binormal));
-			//vec3 normal = v_dir;
-            //vec3 binormal = math::normalize(math::cross(tangent, normal));
+            // vec3 normal = v_dir;
+            // vec3 binormal = math::normalize(math::cross(tangent, normal));
 
             segments.push_back({p, tangent, normal, binormal});
         }
@@ -496,7 +515,118 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
     }
 }
 
-bool is_amino_acid(Residue res) { return aminoacid::get_from_string(res.id) != AminoAcid::Unknown; }
+namespace filter {
+static DynamicArray<FilterCommand> filter_commands;
+
+static bool is_modifier(CString str) {
+    if (compare(str, "and")) return true;
+    if (compare(str, "AND")) return true;
+    if (compare(str, "or")) return true;
+    if (compare(str, "OR")) return true;
+    if (compare(str, "not")) return true;
+    if (compare(str, "NOT")) return true;
+}
+
+bool filter_valid(CString filter) {
+    int beg_parentheses_count = 0;
+    int end_parentheses_count = 0;
+
+    for (int64 i = 0; i < filter.count; i++) {
+        if (filter[i] == '(') beg_parentheses_count++;
+        if (filter[i] == ')') end_parentheses_count++;
+    }
+
+    if (beg_parentheses_count != end_parentheses_count) {
+        printf("ERROR: Parantheses in filter does not match!");
+        return false;
+    }
+
+    return true;
+}
+
+bool filter_colors(Array<uint32> color_dst, const MoleculeStructure& mol, CString filter) { DynamicArray<CString> tokens = ctokenize(filter); }
+
+void initialize() {
+
+/*
+	all
+	water
+	aminoacid
+	backbone?
+
+	name
+	element
+	atomicnumber
+	atom
+	residue
+	resname
+	resid
+	chain
+	chainid
+*/
+
+	filter_commands.push_back({ "all", [](Array<bool> mask, const MoleculeDynamic*, const Array<CString>) { memset(mask.data, 1, mask.count * mask.count * sizeof(bool)); } });
+	filter_commands.push_back({ "water", [](Array<bool> mask, const MoleculeDynamic*, const Array<CString>) {} }); // NOT DONE
+	filter_commands.push_back({ "aminoacid", [](Array<bool> mask, const MoleculeDynamic* dyn, const Array<CString>) {
+		memset(mask.data, 0, mask.count);
+		for (const auto& res : dyn->molecule->residues) {
+			if (is_amino_acid(res)) {
+				memset(mask.data + res.beg_atom_idx, 1, (res.end_atom_idx - res.beg_atom_idx));
+			}
+		}
+	} });
+	filter_commands.push_back({ "backbone", [](Array<bool> mask, const MoleculeDynamic*, const Array<CString>) {} }); // NOT DONE
+
+	filter_commands.push_back({ "name", [](Array<bool> mask, const MoleculeDynamic* dyn, const Array<CString> args) {
+		for (int i = 0; i < dyn->molecule->atom_labels.count; i++) {
+			mask[i] = false;
+			for (const auto& arg : args) {
+				if (compare(dyn->molecule->atom_labels[i], arg)) {
+					mask[i] = true;
+					break;
+				}
+			}
+		}
+	} });
+
+	filter_commands.push_back({ "element", [](Array<bool> mask, const MoleculeDynamic* dyn, const Array<CString> args) {
+		Array<Element> elements = {(Element*)(TMP_MALLOC(args.count * sizeof(Element))), args.count};
+		for (int i = 0; i < elements.count; i++) {
+			elements[i] = element::get_from_string(args[i]);
+		}
+
+		for (int i = 0; i < dyn->molecule->atom_elements.count; i++) {
+			mask[i] = false;
+			for (const auto& ele : elements) {
+				if (dyn->molecule->atom_elements[i] == ele) {
+					mask[i] = true;
+					break;
+				}
+			}
+		}
+		TMP_FREE(elements.data);
+	} });
+
+	filter_commands.push_back({ "atomicnumber", [](Array<bool> mask, const MoleculeDynamic* dyn, const Array<CString> args) {
+		Array<int> numbers = { (int*)(TMP_MALLOC(args.count * sizeof(int))), args.count };
+		for (int i = 0; i < dyn->molecule->atom_elements.count; i++) {
+			mask[i] = false;
+			for (int number : numbers) {
+				if ((int)dyn->molecule->atom_elements[i] == number) {
+					mask[i] = true;
+					break;
+				}
+			}
+		}
+		TMP_FREE(numbers.data);
+	} });
+}
+
+void shutdown() {
+
+}
+
+}  // namespace filter
 
 namespace draw {
 
@@ -1450,105 +1580,105 @@ void main() {
 )";
 
 void initialize() {
-	constexpr int BUFFER_SIZE = 1024;
-	char buffer[BUFFER_SIZE];
+    constexpr int BUFFER_SIZE = 1024;
+    char buffer[BUFFER_SIZE];
 
-	GLuint v_shader = glCreateShader(GL_VERTEX_SHADER);
-	GLuint f_shader = glCreateShader(GL_FRAGMENT_SHADER);
-	glShaderSource(v_shader, 1, &v_shader_src, 0);
-	glShaderSource(f_shader, 1, &f_shader_src, 0);
+    GLuint v_shader = glCreateShader(GL_VERTEX_SHADER);
+    GLuint f_shader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(v_shader, 1, &v_shader_src, 0);
+    glShaderSource(f_shader, 1, &f_shader_src, 0);
 
-	glCompileShader(v_shader);
-	if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
-		printf("Error while compiling ramachandran vertex shader:\n%s\n", buffer);
-	}
-	glCompileShader(f_shader);
-	if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
-		printf("Error while compiling ramachandran fragment shader:\n%s\n", buffer);
-	}
+    glCompileShader(v_shader);
+    if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
+        printf("Error while compiling ramachandran vertex shader:\n%s\n", buffer);
+    }
+    glCompileShader(f_shader);
+    if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
+        printf("Error while compiling ramachandran fragment shader:\n%s\n", buffer);
+    }
 
-	program = glCreateProgram();
-	glAttachShader(program, v_shader);
-	glAttachShader(program, f_shader);
-	glLinkProgram(program);
-	if (gl::get_program_link_error(buffer, BUFFER_SIZE, program)) {
-		printf("Error while linking ramachandran program:\n%s\n", buffer);
-	}
+    program = glCreateProgram();
+    glAttachShader(program, v_shader);
+    glAttachShader(program, f_shader);
+    glLinkProgram(program);
+    if (gl::get_program_link_error(buffer, BUFFER_SIZE, program)) {
+        printf("Error while linking ramachandran program:\n%s\n", buffer);
+    }
 
-	glDetachShader(program, v_shader);
-	glDetachShader(program, f_shader);
+    glDetachShader(program, v_shader);
+    glDetachShader(program, f_shader);
 
-	glDeleteShader(v_shader);
-	glDeleteShader(f_shader);
+    glDeleteShader(v_shader);
+    glDeleteShader(f_shader);
 
-	uniform_loc_coord_tex = glGetUniformLocation(program, "u_coord_tex");
-	uniform_loc_instance_offset = glGetUniformLocation(program, "u_instance_offset");
-	uniform_loc_radius = glGetUniformLocation(program, "u_radius");
-	uniform_loc_color = glGetUniformLocation(program, "u_color");
+    uniform_loc_coord_tex = glGetUniformLocation(program, "u_coord_tex");
+    uniform_loc_instance_offset = glGetUniformLocation(program, "u_instance_offset");
+    uniform_loc_radius = glGetUniformLocation(program, "u_radius");
+    uniform_loc_color = glGetUniformLocation(program, "u_color");
 
-	if (!segmentation_tex) {
-		glGenTextures(1, &segmentation_tex);
-		glBindTexture(GL_TEXTURE_2D, segmentation_tex);
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, seg_width, seg_height, 0, seg_data_format, GL_UNSIGNED_BYTE, seg_data);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-		glBindTexture(GL_TEXTURE_2D, 0);
-	}
+    if (!segmentation_tex) {
+        glGenTextures(1, &segmentation_tex);
+        glBindTexture(GL_TEXTURE_2D, segmentation_tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, seg_width, seg_height, 0, seg_data_format, GL_UNSIGNED_BYTE, seg_data);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
 
-	if (!accumulation_tex) {
-		glGenTextures(1, &accumulation_tex);
-		glBindTexture(GL_TEXTURE_2D, accumulation_tex);
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, acc_width, acc_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-		glBindTexture(GL_TEXTURE_2D, 0);
-	}
+    if (!accumulation_tex) {
+        glGenTextures(1, &accumulation_tex);
+        glBindTexture(GL_TEXTURE_2D, accumulation_tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, acc_width, acc_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
 
-	if (!coord_buf) {
-		glGenBuffers(1, &coord_buf);
-	}
+    if (!coord_buf) {
+        glGenBuffers(1, &coord_buf);
+    }
 
-	if (!coord_tex) {
-		glGenTextures(1, &coord_tex);
-	}
+    if (!coord_tex) {
+        glGenTextures(1, &coord_tex);
+    }
 
-	if (!fbo) {
-		glGenFramebuffers(1, &fbo);
-		glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, accumulation_tex, 0);
-		glBindFramebuffer(GL_FRAMEBUFFER, 0);
-	}
+    if (!fbo) {
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, accumulation_tex, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
 }
 
 void shutdown() {
-	if (segmentation_tex) glDeleteTextures(1, &segmentation_tex);
-	if (accumulation_tex) glDeleteTextures(1, &accumulation_tex);
-	if (coord_buf) glDeleteBuffers(1, &coord_buf);
-	if (coord_tex) glDeleteTextures(1, &coord_tex);
-	if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (segmentation_tex) glDeleteTextures(1, &segmentation_tex);
+    if (accumulation_tex) glDeleteTextures(1, &accumulation_tex);
+    if (coord_buf) glDeleteBuffers(1, &coord_buf);
+    if (coord_tex) glDeleteTextures(1, &coord_tex);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
 }
 
 }  // namespace ramachandran
 
 void initialize() {
-	if (!instanced_quad_ibo) {
-		const unsigned char data[4] = { 0, 1, 2, 3 };
-		glGenBuffers(1, &instanced_quad_ibo);
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, instanced_quad_ibo);
-		glBufferData(GL_ELEMENT_ARRAY_BUFFER, 4, data, GL_STATIC_DRAW);
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-	}
+    if (!instanced_quad_ibo) {
+        const unsigned char data[4] = {0, 1, 2, 3};
+        glGenBuffers(1, &instanced_quad_ibo);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, instanced_quad_ibo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, 4, data, GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    }
 
-	if (!instanced_quad_vao) {
-		glGenVertexArrays(1, &instanced_quad_vao);
-		glBindVertexArray(instanced_quad_vao);
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, instanced_quad_ibo);
-		glBindVertexArray(0);
-	}
+    if (!instanced_quad_vao) {
+        glGenVertexArrays(1, &instanced_quad_vao);
+        glBindVertexArray(instanced_quad_vao);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, instanced_quad_ibo);
+        glBindVertexArray(0);
+    }
 
     glGenBuffers(1, &vbo);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
@@ -1558,24 +1688,24 @@ void initialize() {
     vdw::initialize();
     licorice::initialize();
     ribbons::intitialize();
-	ramachandran::initialize();
+    ramachandran::initialize();
 }
 
 void shutdown() {
     if (instanced_quad_vao) glDeleteVertexArrays(1, &instanced_quad_vao);
-	if (instanced_quad_ibo) glDeleteBuffers(1, &instanced_quad_ibo);
+    if (instanced_quad_ibo) glDeleteBuffers(1, &instanced_quad_ibo);
     if (vbo) glDeleteBuffers(1, &vbo);
 
     vdw::shutdown();
     licorice::shutdown();
     ribbons::shutdown();
-	ramachandran::shutdown();
+    ramachandran::shutdown();
 }
 
 void draw_instanced_quads(int num_instances) {
-	glBindVertexArray(instanced_quad_vao);
-	glDrawElementsInstanced(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_BYTE, 0, num_instances);
-	glBindVertexArray(0);
+    glBindVertexArray(instanced_quad_vao);
+    glDrawElementsInstanced(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_BYTE, 0, num_instances);
+    glBindVertexArray(0);
 }
 
 void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, const Array<uint32> atom_colors, const mat4& view_mat,
@@ -1634,7 +1764,7 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
     glUniformMatrix4fv(vdw::uniform_loc_inv_proj_mat, 1, GL_FALSE, &inv_proj_mat[0][0]);
 
     // Draw
-	draw_instanced_quads(draw_count);
+    draw_instanced_quads(draw_count);
 
     glUseProgram(0);
     glBindVertexArray(0);
@@ -1719,7 +1849,8 @@ void draw_backbone(const Array<BackboneSegment> backbone_segments, const Array<v
 
     for (int i = 1; i < backbone_segments.count; i++) {
         if (backbone_segments[i].ca_idx > -1 && backbone_segments[i - 1].ca_idx > -1)
-            immediate::draw_line(atom_positions[backbone_segments[i - 1].ca_idx], atom_positions[backbone_segments[i].ca_idx], immediate::COLOR_WHITE);
+            immediate::draw_line(atom_positions[backbone_segments[i - 1].ca_idx], atom_positions[backbone_segments[i].ca_idx],
+                                 immediate::COLOR_WHITE);
     }
 
     immediate::flush();
@@ -1743,109 +1874,129 @@ void draw_spline(const Array<SplineSegment> spline, const mat4& view_mat, const 
 }
 
 void plot_ramachandran(const Array<BackboneAngles> angles, const Array<BackboneAngles> highlighted_angles, float radius) {
-	// Upload data to textures
-	const vec4 ORDINARY_COLOR  = vec4(1.f, 1.f, 1.f, 0.1f);
-	const vec4 HIGHLIGHT_COLOR = vec4(1.f, 0.0f, 0.0f, 1.f);
+    // Upload data to textures
+    const vec4 ORDINARY_COLOR = vec4(1.f, 1.f, 1.f, 0.1f);
+    const vec4 HIGHLIGHT_COLOR = vec4(1.f, 0.0f, 0.0f, 1.f);
 
-	struct Coord {
-		unsigned short x, y;
-	};
+    struct Coord {
+        unsigned short x, y;
+    };
 
-	// @TODO: Use fast scratch memory here
-	Coord* coords = (Coord*)MALLOC((angles.count + highlighted_angles.count) * sizeof(Coord));
+    // @TODO: Use fast scratch memory here
+    Coord* coords = (Coord*)MALLOC((angles.count + highlighted_angles.count) * sizeof(Coord));
 
-	int32 tot_count = 0;
-	for (const auto& angle : angles) {
-		if (angle.phi == 0 || angle.psi == 0) continue;
-		// [-PI, PI] -> [0, 1]
-		vec2 coord = vec2(angle.phi, angle.psi) / (2.f * math::PI) + 0.5f;
-		coord = vec2(coord.x, 1.f - coord.y);
-		coords[tot_count].x = (unsigned short)(coord.x * 0xffff);
-		coords[tot_count].y = (unsigned short)(coord.y * 0xffff);
-		tot_count++;
-	}
+    int32 tot_count = 0;
+    for (const auto& angle : angles) {
+        if (angle.phi == 0 || angle.psi == 0) continue;
+        // [-PI, PI] -> [0, 1]
+        vec2 coord = vec2(angle.phi, angle.psi) / (2.f * math::PI) + 0.5f;
+        coord = vec2(coord.x, 1.f - coord.y);
+        coords[tot_count].x = (unsigned short)(coord.x * 0xffff);
+        coords[tot_count].y = (unsigned short)(coord.y * 0xffff);
+        tot_count++;
+    }
 
-	int32 ordinary_count = tot_count;
-	for (const auto& angle : highlighted_angles) {
-		if (angle.phi == 0 || angle.psi == 0) continue;
-		// [-PI, PI] -> [0, 1]
-		vec2 coord = vec2(angle.phi, angle.psi) / (2.f * math::PI) + 0.5f;
-		coord = vec2(coord.x, 1.f - coord.y);
-		coords[tot_count].x = (unsigned short)(coord.x * 0xffff);
-		coords[tot_count].y = (unsigned short)(coord.y * 0xffff);
-		tot_count++;
-	}
-	int32 highlight_count = tot_count - ordinary_count;
+    int32 ordinary_count = tot_count;
+    for (const auto& angle : highlighted_angles) {
+        if (angle.phi == 0 || angle.psi == 0) continue;
+        // [-PI, PI] -> [0, 1]
+        vec2 coord = vec2(angle.phi, angle.psi) / (2.f * math::PI) + 0.5f;
+        coord = vec2(coord.x, 1.f - coord.y);
+        coords[tot_count].x = (unsigned short)(coord.x * 0xffff);
+        coords[tot_count].y = (unsigned short)(coord.y * 0xffff);
+        tot_count++;
+    }
+    int32 highlight_count = tot_count - ordinary_count;
 
-	glBindBuffer(GL_ARRAY_BUFFER, ramachandran::coord_buf);
-	glBufferData(GL_ARRAY_BUFFER, tot_count * 2 * sizeof(unsigned short), coords, GL_STREAM_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, ramachandran::coord_buf);
+    glBufferData(GL_ARRAY_BUFFER, tot_count * 2 * sizeof(unsigned short), coords, GL_STREAM_DRAW);
 
-	FREE(coords);
+    FREE(coords);
 
-	// Backup GL state
-	GLint last_polygon_mode[2]; glGetIntegerv(GL_POLYGON_MODE, last_polygon_mode);
-	GLint last_viewport[4]; glGetIntegerv(GL_VIEWPORT, last_viewport);
-	GLenum last_blend_src_rgb; glGetIntegerv(GL_BLEND_SRC_RGB, (GLint*)&last_blend_src_rgb);
-	GLenum last_blend_dst_rgb; glGetIntegerv(GL_BLEND_DST_RGB, (GLint*)&last_blend_dst_rgb);
-	GLenum last_blend_src_alpha; glGetIntegerv(GL_BLEND_SRC_ALPHA, (GLint*)&last_blend_src_alpha);
-	GLenum last_blend_dst_alpha; glGetIntegerv(GL_BLEND_DST_ALPHA, (GLint*)&last_blend_dst_alpha);
-	GLenum last_blend_equation_rgb; glGetIntegerv(GL_BLEND_EQUATION_RGB, (GLint*)&last_blend_equation_rgb);
-	GLenum last_blend_equation_alpha; glGetIntegerv(GL_BLEND_EQUATION_ALPHA, (GLint*)&last_blend_equation_alpha);
-	GLboolean last_enable_blend = glIsEnabled(GL_BLEND);
-	GLboolean last_enable_cull_face = glIsEnabled(GL_CULL_FACE);
-	GLboolean last_enable_depth_test = glIsEnabled(GL_DEPTH_TEST);
-	GLboolean last_enable_scissor_test = glIsEnabled(GL_SCISSOR_TEST);
+    // Backup GL state
+    GLint last_polygon_mode[2];
+    glGetIntegerv(GL_POLYGON_MODE, last_polygon_mode);
+    GLint last_viewport[4];
+    glGetIntegerv(GL_VIEWPORT, last_viewport);
+    GLenum last_blend_src_rgb;
+    glGetIntegerv(GL_BLEND_SRC_RGB, (GLint*)&last_blend_src_rgb);
+    GLenum last_blend_dst_rgb;
+    glGetIntegerv(GL_BLEND_DST_RGB, (GLint*)&last_blend_dst_rgb);
+    GLenum last_blend_src_alpha;
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, (GLint*)&last_blend_src_alpha);
+    GLenum last_blend_dst_alpha;
+    glGetIntegerv(GL_BLEND_DST_ALPHA, (GLint*)&last_blend_dst_alpha);
+    GLenum last_blend_equation_rgb;
+    glGetIntegerv(GL_BLEND_EQUATION_RGB, (GLint*)&last_blend_equation_rgb);
+    GLenum last_blend_equation_alpha;
+    glGetIntegerv(GL_BLEND_EQUATION_ALPHA, (GLint*)&last_blend_equation_alpha);
+    GLboolean last_enable_blend = glIsEnabled(GL_BLEND);
+    GLboolean last_enable_cull_face = glIsEnabled(GL_CULL_FACE);
+    GLboolean last_enable_depth_test = glIsEnabled(GL_DEPTH_TEST);
+    GLboolean last_enable_scissor_test = glIsEnabled(GL_SCISSOR_TEST);
 
-	// RENDER TO ACCUMULATION TEXTURE
+    // RENDER TO ACCUMULATION TEXTURE
 
-	glViewport(0, 0, ramachandran::acc_width, ramachandran::acc_height);
-	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ramachandran::fbo);
-	glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    glViewport(0, 0, ramachandran::acc_width, ramachandran::acc_height);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ramachandran::fbo);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
 
-	glDisable(GL_BLEND);
-	glClearColor(0, 0, 0, 0);
-	glClear(GL_COLOR_BUFFER_BIT);
+    glDisable(GL_BLEND);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
 
-	glEnable(GL_BLEND);
-	glBlendEquation(GL_FUNC_ADD);
-	glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-	glDisable(GL_CULL_FACE);
-	glDisable(GL_DEPTH_TEST);
-	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glEnable(GL_BLEND);
+    glBlendEquation(GL_FUNC_ADD);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_DEPTH_TEST);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
-	// Texture 0
-	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_BUFFER, ramachandran::coord_tex);
-	glTexBuffer(GL_TEXTURE_BUFFER, GL_RG16, ramachandran::coord_buf);
+    // Texture 0
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_BUFFER, ramachandran::coord_tex);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RG16, ramachandran::coord_buf);
 
-	glUseProgram(ramachandran::program);
-	glUniform1i(ramachandran::uniform_loc_coord_tex, 0);
+    glUseProgram(ramachandran::program);
+    glUniform1i(ramachandran::uniform_loc_coord_tex, 0);
 
-	// Draw ordinary
-	glUniform1f(ramachandran::uniform_loc_radius, radius * 0.01f);
-	glUniform1i(ramachandran::uniform_loc_instance_offset, 0);
-	glUniform4fv(ramachandran::uniform_loc_color, 1, &ORDINARY_COLOR[0]);
-	draw_instanced_quads(ordinary_count);
+    // Draw ordinary
+    glUniform1f(ramachandran::uniform_loc_radius, radius * 0.01f);
+    glUniform1i(ramachandran::uniform_loc_instance_offset, 0);
+    glUniform4fv(ramachandran::uniform_loc_color, 1, &ORDINARY_COLOR[0]);
+    draw_instanced_quads(ordinary_count);
 
-	// Draw highlighted
-	glUniform1f(ramachandran::uniform_loc_radius, radius * 0.02f);
-	glUniform1i(ramachandran::uniform_loc_instance_offset, ordinary_count);
-	glUniform4fv(ramachandran::uniform_loc_color, 1, &HIGHLIGHT_COLOR[0]);
-	draw_instanced_quads(highlight_count);
+    // Draw highlighted
+    glUniform1f(ramachandran::uniform_loc_radius, radius * 0.02f);
+    glUniform1i(ramachandran::uniform_loc_instance_offset, ordinary_count);
+    glUniform4fv(ramachandran::uniform_loc_color, 1, &HIGHLIGHT_COLOR[0]);
+    draw_instanced_quads(highlight_count);
 
-	glUseProgram(0);
+    glUseProgram(0);
 
-	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 
-	// Restore modified GL state
-	glBlendEquationSeparate(last_blend_equation_rgb, last_blend_equation_alpha);
-	glBlendFuncSeparate(last_blend_src_rgb, last_blend_dst_rgb, last_blend_src_alpha, last_blend_dst_alpha);
-	if (last_enable_blend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
-	if (last_enable_cull_face) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
-	if (last_enable_depth_test) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
-	if (last_enable_scissor_test) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
-	glPolygonMode(GL_FRONT_AND_BACK, last_polygon_mode[0]);
-	glViewport(last_viewport[0], last_viewport[1], (GLsizei)last_viewport[2], (GLsizei)last_viewport[3]);
+    // Restore modified GL state
+    glBlendEquationSeparate(last_blend_equation_rgb, last_blend_equation_alpha);
+    glBlendFuncSeparate(last_blend_src_rgb, last_blend_dst_rgb, last_blend_src_alpha, last_blend_dst_alpha);
+    if (last_enable_blend)
+        glEnable(GL_BLEND);
+    else
+        glDisable(GL_BLEND);
+    if (last_enable_cull_face)
+        glEnable(GL_CULL_FACE);
+    else
+        glDisable(GL_CULL_FACE);
+    if (last_enable_depth_test)
+        glEnable(GL_DEPTH_TEST);
+    else
+        glDisable(GL_DEPTH_TEST);
+    if (last_enable_scissor_test)
+        glEnable(GL_SCISSOR_TEST);
+    else
+        glDisable(GL_SCISSOR_TEST);
+    glPolygonMode(GL_FRONT_AND_BACK, last_polygon_mode[0]);
+    glViewport(last_viewport[0], last_viewport[1], (GLsizei)last_viewport[2], (GLsizei)last_viewport[3]);
 
     constexpr vec2 res(512, 512);
     ImGui::SetNextWindowContentSize(ImVec2(res.x, res.y));
@@ -1857,47 +2008,47 @@ void plot_ramachandran(const Array<BackboneAngles> angles, const Array<BackboneA
     ImVec2 canvas_size(max_region.x - min_region.x, max_region.y - min_region.y);
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
-	ImVec2 x0 = win_pos;
-	ImVec2 x1(win_pos.x + canvas_size.x, win_pos.y + canvas_size.y);
+    ImVec2 x0 = win_pos;
+    ImVec2 x1(win_pos.x + canvas_size.x, win_pos.y + canvas_size.y);
 
-	dl->ChannelsSplit(2);
-	dl->ChannelsSetCurrent(0);
-    //ImGui::Image((ImTextureID)ramachandran::segmentation_tex, canvas_size);
-	dl->AddImage((ImTextureID)ramachandran::segmentation_tex, x0, x1);
-	dl->ChannelsSetCurrent(1);
-	//ImGui::Image((ImTextureID)ramachandran::accumulation_tex, canvas_size);
-	dl->AddImage((ImTextureID)ramachandran::accumulation_tex, x0, x1);
-	dl->ChannelsMerge();
+    dl->ChannelsSplit(2);
+    dl->ChannelsSetCurrent(0);
+    // ImGui::Image((ImTextureID)ramachandran::segmentation_tex, canvas_size);
+    dl->AddImage((ImTextureID)(intptr_t)ramachandran::segmentation_tex, x0, x1);
+    dl->ChannelsSetCurrent(1);
+    // ImGui::Image((ImTextureID)ramachandran::accumulation_tex, canvas_size);
+    dl->AddImage((ImTextureID)(intptr_t)ramachandran::accumulation_tex, x0, x1);
+    dl->ChannelsMerge();
 
-	/*
-    constexpr float radius = 10.f;
-    if (angles.count > 0) {
-        int64 count = math::min(angles.count, 3000LL);
+    /*
+constexpr float radius = 10.f;
+if (angles.count > 0) {
+    int64 count = math::min(angles.count, 3000LL);
 
-        for (int64 i = 0; i < count; i++) {
+    for (int64 i = 0; i < count; i++) {
 
-            if (angles[i].phi == 0.f || angles[i].psi == 0.f) continue;
-            vec2 coord = vec2(angles[i].phi, angles[i].psi) / (2.f * math::PI) + 0.5f;
-            // @NOTE: Y-Axis is flipped because of the coordinate system which ImGui uses.
-            ImVec2 screen_coord(coord.x * canvas_size.x + win_pos.x, (1.f - coord.y) * canvas_size.y + win_pos.y);
-            dl->AddQuadFilled(ImVec2(screen_coord.x - radius, screen_coord.y - radius), ImVec2(screen_coord.x - radius, screen_coord.y + radius),
-                              ImVec2(screen_coord.x + radius, screen_coord.y + radius), ImVec2(screen_coord.x + radius, screen_coord.y - radius),
-                              IM_COL32(255, 255, 255, 40));
-        }
+        if (angles[i].phi == 0.f || angles[i].psi == 0.f) continue;
+        vec2 coord = vec2(angles[i].phi, angles[i].psi) / (2.f * math::PI) + 0.5f;
+        // @NOTE: Y-Axis is flipped because of the coordinate system which ImGui uses.
+        ImVec2 screen_coord(coord.x * canvas_size.x + win_pos.x, (1.f - coord.y) * canvas_size.y + win_pos.y);
+        dl->AddQuadFilled(ImVec2(screen_coord.x - radius, screen_coord.y - radius), ImVec2(screen_coord.x - radius, screen_coord.y + radius),
+                          ImVec2(screen_coord.x + radius, screen_coord.y + radius), ImVec2(screen_coord.x + radius, screen_coord.y - radius),
+                          IM_COL32(255, 255, 255, 40));
     }
+}
 
-    if (highlighted_angles.count > 0) {
-        for (const auto& angle : highlighted_angles) {
-            if (angle.phi == 0.f || angle.psi == 0.f) continue;
-            vec2 coord = vec2(angle.phi, angle.psi) / (2.f * math::PI) + 0.5f;
-            // @NOTE: Y-Axis is flipped because of the coordinate system which ImGui uses.
-            ImVec2 screen_coord(coord.x * canvas_size.x + win_pos.x, (1.f - coord.y) * canvas_size.y + win_pos.y);
-            dl->AddQuadFilled(ImVec2(screen_coord.x - radius, screen_coord.y - radius), ImVec2(screen_coord.x - radius, screen_coord.y + radius),
-                              ImVec2(screen_coord.x + radius, screen_coord.y + radius), ImVec2(screen_coord.x + radius, screen_coord.y - radius),
-                              IM_COL32(255, 255, 0, 200));
-        }
+if (highlighted_angles.count > 0) {
+    for (const auto& angle : highlighted_angles) {
+        if (angle.phi == 0.f || angle.psi == 0.f) continue;
+        vec2 coord = vec2(angle.phi, angle.psi) / (2.f * math::PI) + 0.5f;
+        // @NOTE: Y-Axis is flipped because of the coordinate system which ImGui uses.
+        ImVec2 screen_coord(coord.x * canvas_size.x + win_pos.x, (1.f - coord.y) * canvas_size.y + win_pos.y);
+        dl->AddQuadFilled(ImVec2(screen_coord.x - radius, screen_coord.y - radius), ImVec2(screen_coord.x - radius, screen_coord.y + radius),
+                          ImVec2(screen_coord.x + radius, screen_coord.y + radius), ImVec2(screen_coord.x + radius, screen_coord.y - radius),
+                          IM_COL32(255, 255, 0, 200));
     }
-	*/
+}
+    */
 
     ImGui::End();
 }

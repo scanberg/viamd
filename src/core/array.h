@@ -149,12 +149,13 @@ struct DynamicArray : Array<T> {
 		this->count += arr.count;
 	}
 
-    void push_back(const T& item) {
+    T& push_back(const T& item) {
         if (this->count == capacity) {
             reserve(_grow_capacity(this->count + 1));
         }
         this->data[this->count] = item;
         this->count++;
+		return back();
     }
 
     void reserve(int64 new_capacity) {
