@@ -13,13 +13,8 @@
 
 namespace platform {
 
-static Context internal_ctx;
-
-// @NOTE: Perhaps extend this to array of windows
-//static Window		g_window;
-//static InputState	g_input_state;
-
 // Data
+static Context      internal_ctx;
 static double       g_time = 0.0f;
 static GLuint       g_font_texture = 0;
 static int          g_shader_handle = 0, g_vert_handle = 0, g_frag_handle = 0;
@@ -335,9 +330,7 @@ static void imgui_invalidate_device_objects() {
     }
 }
 
-bool imgui_init(GLFWwindow* window, bool install_callbacks) {
-    g_window.glfw_window = window;
-
+static bool imgui_init(GLFWwindow* window) {
     ImGuiIO& io = ImGui::GetIO();
     io.KeyMap[ImGuiKey_Tab] = Key::KEY_TAB;                         // Keyboard mapping. ImGui will use those indices to peek into the io.KeyDown[] array.
     io.KeyMap[ImGuiKey_LeftArrow] = Key::KEY_LEFT;
@@ -363,18 +356,10 @@ bool imgui_init(GLFWwindow* window, bool install_callbacks) {
     io.RenderDrawListsFn = imgui_render_draw_lists;       // Alternatively you can set this to NULL and call ImGui::GetDrawData() after ImGui::Render() to get the same ImDrawData pointer.
     io.SetClipboardTextFn = imgui_set_clipboard_text;
     io.GetClipboardTextFn = imgui_get_clipboard_text;
-    io.ClipboardUserData = g_window.glfw_window;
+    io.ClipboardUserData = window;
 #ifdef _WIN32
-    io.ImeWindowHandle = glfwGetWin32Window(g_window.glfw_window);
+    io.ImeWindowHandle = glfwGetWin32Window(window);
 #endif
-
-    if (install_callbacks)
-    {
-        glfwSetMouseButtonCallback(window, mouse_button_callback);
-        glfwSetScrollCallback(window, mouse_scroll_callback);
-        glfwSetKeyCallback(window, key_callback);
-        glfwSetCharCallback(window, char_callback);
-    }
 
     return true;
 }
@@ -468,20 +453,28 @@ void initialize(Context* ctx, int width, int height, const char* title) {
 	}
 
 	ImGui::CreateContext();
-    imgui_init(window, true);
-
-	double x, y;
-	glfwGetCursorPos(window, &x, &y);
-	internal_ctx.input.mouse.coords_prev = { x,y };
-	internal_ctx.input.mouse.coords_curr = { x,y };
-
-	int w, h;
-	glfwGetFramebufferSize(window, &w, &h);
-	vec2 half_res = vec2(w, h) * 0.5f;
-	internal_ctx.input.mouse.ndc_prev = (vec2(x, h-y) - half_res) / half_res;
-	internal_ctx.input.mouse.ndc_curr = internal_ctx.input.mouse.ndc_prev;
+    imgui_init(window);
 
     internal_ctx.window.ptr = window;
+    internal_ctx.window.title = title;
+    internal_ctx.window.width = width;
+    internal_ctx.window.height = height;
+
+    double x, y;
+    glfwGetCursorPos(window, &x, &y);
+    internal_ctx.input.mouse.coords_prev = { x,y };
+    internal_ctx.input.mouse.coords_curr = { x,y };
+
+    vec2 half_res = vec2(width, height) * 0.5f;
+    internal_ctx.input.mouse.ndc_prev = (vec2(x, height-y) - half_res) / half_res;
+    internal_ctx.input.mouse.ndc_curr = internal_ctx.input.mouse.ndc_prev;
+
+    glfwSetMouseButtonCallback(window, mouse_button_callback);
+    glfwSetScrollCallback(window, mouse_scroll_callback);
+    glfwSetKeyCallback(window, key_callback);
+    glfwSetCharCallback(window, char_callback);
+
+    memcpy(ctx, internal_ctx, sizeof(platform::Context));
 }
 
 /*
@@ -490,39 +483,59 @@ void set_window_should_close(Window* window, bool value) {
 }
 */
 
-void shutdown() {
-	glfwDestroyWindow(window->glfw_window);
+void shutdown(Context* ctx) {
+	glfwDestroyWindow(internal_ctx.window.ptr);
     imgui_shutdown();
 	ImGui::DestroyContext();
     glfwTerminate();
+
+    ctx->window.ptr = nullptr;
+    ctx->window.title = "";
+    ctx->window.width = 0;
+    ctx->window.height = 0;
 }
 
-void update() {
+void update(Context* ctx) {
     // Reset hit states
-    memset(g_input_state.key_hit, 0, MAX_KEYS);
-    memset(g_input_state.key_release, 0, MAX_KEYS);
-    memset(g_input_state.mouse_hit, 0, MAX_MOUSE_BUTTONS);
-    memset(g_input_state.mouse_release, 0, MAX_MOUSE_BUTTONS);
-	g_input_state.mouse_scroll = { 0,0 };
+    memset(internal_ctx.input.key.hit, 0, MAX_KEYS);
+    memset(internal_ctx.input.key.release, 0, MAX_KEYS);
+    memset(internal_ctx.input.mouse.hit, 0, MAX_MOUSE_BUTTONS);
+    memset(internal_ctx.input.mouse.release, 0, MAX_MOUSE_BUTTONS);
+	internal_ctx.mouse.scroll = { 0, 0 };
 
     glfwPollEvents();
     double x, y;
-    glfwGetCursorPos(g_window.glfw_window, &x, &y);
+    glfwGetCursorPos(internal_ctx.window.ptr, &x, &y);
+
+    if (ctx->window.width != internal_ctx.window.width ||
+        ctx->window.height != internal_ctx.window.height) {
+        // @TODO: Do something
+    }
 	int w, h;
-	glfwGetFramebufferSize(g_window.glfw_window, &w, &h);
+	glfwGetFramebufferSize(internal_ctx.window.ptr, &w, &h);
+    internal_ctx.window.width = w;
+    internal_ctx.window.height = h;
+    ctx->window.width = w;
+    ctx->window.height = h;
+
+    if (ctx->window.vsync != internal_ctx.window.vsync) {
+        internal_ctx.vsync = ctx->window.vsync;
+        glfwSwapInterval((int)ctx->window.vsync);
+    }
 
 	vec2 new_coord{ x,y };
-	g_input_state.mouse_velocity = new_coord - g_input_state.mouse_screen_coords;
-	g_input_state.prev_mouse_screen_coords = g_input_state.mouse_screen_coords;
-	g_input_state.mouse_screen_coords = new_coord;
+	internal_ctx.input.mouse.velocity = new_coord - internal_ctx.input.mouse.coord_prev;
+	internal_ctx.input.mouse.coord_prev = internal_ctx.input.mouse.coord_curr;
+	internal_ctx.input.mouse.coord_curr = new_coord;
 
 	vec2 half_res = vec2(w, h) * 0.5f;
-	g_input_state.prev_mouse_ndc_coords = g_input_state.mouse_ndc_coords;
-	g_input_state.mouse_ndc_coords = (vec2(x, h-y) - half_res) / half_res;
+	internal_ctx.input.mouse.ndc_prev = internal_ctx.input.mouse.ndc_curr;
+	internal_ctx.input.mouse.ndc_curr = (vec2(x, h-y) - half_res) / half_res;
 
     imgui_new_frame();
 }
 
+/*
 bool window_in_focus(Window* window) {
     return glfwGetWindowAttrib(window->glfw_window, GLFW_FOCUSED);
 }
@@ -542,19 +555,18 @@ InputState* get_input_state() {
 double get_delta_time() {
 	return ImGui::GetIO().DeltaTime;
 }
+*/
 
-void swap_buffers(Window* window) {
-    glfwSwapBuffers(window->glfw_window);
-}
-
-void set_vsync(bool value) {
-	glfwSwapInterval((int)value);
+void swap_buffers(Context* ctx) {
+    glfwSwapBuffers(internal_ctx.window.ptr);
 }
 
 void* malloc(size_t size) {
-	return malloc
+	return malloc(size);
 }
-void free(void*);
+void free(void* ptr) {
+    free(ptr);
+}
 
 void* tmp_malloc(size_t);
 void tmp_free(void*);

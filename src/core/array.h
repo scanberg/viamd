@@ -155,7 +155,7 @@ struct DynamicArray : Array<T> {
         }
         this->data[this->count] = item;
         this->count++;
-		return back();
+		return this->back();
     }
 
     void reserve(int64 new_capacity) {

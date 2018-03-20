@@ -8,25 +8,6 @@ namespace platform {
 constexpr int MAX_KEYS = 512;
 constexpr int MAX_MOUSE_BUTTONS = 8;
 
-/*
-struct InputState {
-    bool key_down[MAX_KEYS];
-    bool key_hit[MAX_KEYS];
-    bool key_release[MAX_KEYS];
-
-    bool mouse_down[MAX_MOUSE_BUTTONS];
-    bool mouse_hit[MAX_MOUSE_BUTTONS];
-    bool mouse_release[MAX_MOUSE_BUTTONS];
-
-    vec2 mouse_screen_coords;
-    vec2 prev_mouse_screen_coords;
-    vec2 mouse_ndc_coords;
-    vec2 prev_mouse_ndc_coords;
-    vec2 mouse_velocity;
-    vec2 mouse_scroll;
-};
-*/
-
 struct Context {
 	struct {
 		void* ptr;
@@ -48,8 +29,8 @@ struct Context {
 			bool hit[MAX_MOUSE_BUTTONS];
 			bool release[MAX_MOUSE_BUTTONS];
 
-			vec2 coords_curr;
-			vec2 coords_prev;
+			vec2 coord_curr;
+			vec2 coord_prev;
 
 			vec2 ndc_curr;
 			vec2 ndc_prev;
@@ -71,6 +52,7 @@ void initialize(Context* ctx, int width, int height, const char* title);
 void shutdown(Context* ctx);
 void update(Context* ctx);
 void swap_buffers(Context* ctx);
+//CString open_file_dialog();
 
 /*
 Window* create_window(int width, int height, const char* window_title);
