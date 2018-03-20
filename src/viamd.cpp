@@ -166,27 +166,27 @@ int main(int, char**) {
 	vec4 clear_color = vec4(0.6, 0.6, 0.6, 1);
 	vec4 clear_index = vec4(1, 1, 1, 1);
 
-    //auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
+	
+    //data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
     //auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
-    //auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
+	data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/water/water.gro");
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid-6T/conf-60-6T.gro");
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/yuya/nowat_npt.gro");
 	//auto res = load_pdb_from_file(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
-	auto res = allocate_and_load_pdb_from_file(PROJECT_SOURCE_DIR "/data/1ALA-560ns.pdb");
+	//data.dynamic = allocate_and_load_pdb_from_file(PROJECT_SOURCE_DIR "/data/1ALA-560ns.pdb");
 
-    //Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
+    //data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
     //Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
-	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
+	data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
+	read_trajectory_async(data.dynamic.trajectory);
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid-6T/prod-centered.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/yuya/traj-centered.xtc");
 	Trajectory* traj = nullptr;
-
-	data.dynamic = res;
 
 	auto g1 = stats::create_group("group1", "resid", "ALA");
     auto d1 = stats::create_property(g1, "d1", "dist", "1 2");
@@ -543,6 +543,9 @@ static void draw_main_menu(ApplicationData* data) {
 		if (ImGui::BeginMenu("Windows")) {
 			ImGui::Checkbox("Representations", &data->representations.show_window);
 			ImGui::Checkbox("Ramachandran", &data->ramachandran.enabled);
+
+			ImGui::EndMenu();
+
 		}
         ImGui::EndMainMenuBar();
     }
