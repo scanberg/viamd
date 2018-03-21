@@ -9,50 +9,58 @@ constexpr int MAX_KEYS = 512;
 constexpr int MAX_MOUSE_BUTTONS = 8;
 
 struct Context {
-	struct {
-		void* ptr;
-		bool should_close;
-		const char* title;
-		bool vsync;
-		int width, height;
-	} window;
+    struct {
+        void* ptr;
+        bool should_close;
+        const char* title;
+        bool vsync;
+        int width, height;
+    } window;
 
 	struct {
-		struct {
-			bool down[MAX_KEYS];
-			bool hit[MAX_KEYS];
-			bool release[MAX_KEYS];
-		} key;
+		int width;
+		int height;
+	} framebuffer;
 
-		struct {
-			bool down[MAX_MOUSE_BUTTONS];
-			bool hit[MAX_MOUSE_BUTTONS];
-			bool release[MAX_MOUSE_BUTTONS];
+    struct {
+        struct {
+            bool down[MAX_KEYS];
+            bool hit[MAX_KEYS];
+            bool release[MAX_KEYS];
+        } key;
 
-			vec2 coord_curr;
-			vec2 coord_prev;
+        struct {
+            bool down[MAX_MOUSE_BUTTONS];
+            bool hit[MAX_MOUSE_BUTTONS];
+            bool release[MAX_MOUSE_BUTTONS];
 
-			vec2 ndc_curr;
-			vec2 ndc_prev;
+            vec2 coord_curr;
+            vec2 coord_prev;
 
-			vec2 velocity;
-			vec2 scroll;
-		} mouse;
-	} input;
+            vec2 ndc_curr;
+            vec2 ndc_prev;
 
-	struct {
-		float dt;
-		uint64 delta_ns;
-		uint64 total_ns;
-	} timing;
+            vec2 velocity;
+            vec2 scroll;
+        } mouse;
+    } input;
+
+    struct {
+        float dt;
+        uint64 delta_ns;
+        uint64 total_ns;
+
+		double total_s;
+    } timing;
 };
-
 
 void initialize(Context* ctx, int width, int height, const char* title);
 void shutdown(Context* ctx);
 void update(Context* ctx);
 void swap_buffers(Context* ctx);
-//CString open_file_dialog();
+// CString open_file_dialog();
+
+}  // namespace platform
 
 /*
 Window* create_window(int width, int height, const char* window_title);
@@ -97,6 +105,7 @@ typedef void (*FileCallback)(const FileEvent& event);
 
 void register_file_event_callback(FileCallback callback);
     
+
 
 }
 */

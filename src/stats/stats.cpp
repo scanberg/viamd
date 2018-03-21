@@ -2,6 +2,7 @@
 #include <core/math_utils.h>
 #include <core/hash.h>
 #include <mol/molecule_dynamic.h>
+#include <mol/molecule_utils.h>
 
 #define COMPUTE_ID(x) (hash::crc64(x))
 
@@ -68,11 +69,15 @@ struct StatisticsContext {
 static StatisticsContext ctx;
 
 static bool compute_atomic_distance(void* data, const Array<CString> args, const MoleculeDynamic* dynamic, int res_idx) {
-    ASSERT(args.count == 2);
+	if (args != 2) return false;
 
     auto res = dynamic->molecule->residues[res_idx];
-    int32 atom_a = res.beg_atom_idx + to_int32(args[0]);
-    int32 atom_b = res.beg_atom_idx + to_int32(args[1]);
+	auto int_a = to_int32(args[0]);
+	auto int_b = to_int32(args[1]);
+
+	if (!int_a.success || !int_b.success) return false;
+	int32 atom_a = res.beg_atom_idx + int_a;
+	int32 atom_b = res.beg_atom_idx + int_b;
 
     int32 count = dynamic->trajectory->num_frames;
     float* f_data = (float*)data;
@@ -85,16 +90,73 @@ static bool compute_atomic_distance(void* data, const Array<CString> args, const
     return true;
 }
 
+static bool compute_atomic_angle(void* data, const Array<CString> args, const MoleculeDynamic* dynamic, int res_idx) {
+	if (args != 3) return false;
+
+	auto res = dynamic->molecule->residues[res_idx];
+	auto int_a = to_int32(args[0]);
+	auto int_b = to_int32(args[1]);
+	auto int_c = to_int32(args[2]);
+
+	if (!int_a.success || !int_b.success || !int_c.success) return false;
+	int32 atom_a = res.beg_atom_idx + int_a;
+	int32 atom_b = res.beg_atom_idx + int_b;
+	int32 atom_c = res.beg_atom_idx + int_c;
+
+	int32 count = dynamic->trajectory->num_frames;
+	float* f_data = (float*)data;
+	for (int32 i = 0; i < count; i++) {
+		vec3 pos_a = dynamic->trajectory->frame_buffer[i].atom_positions[atom_a];
+		vec3 pos_b = dynamic->trajectory->frame_buffer[i].atom_positions[atom_b];
+		vec3 pos_c = dynamic->trajectory->frame_buffer[i].atom_positions[atom_c];
+
+		f_data[i] = math::angle(pos_a - pos_b, pos_c - pos_b);
+	}
+
+	return true;
+}
+
+static bool compute_atomic_dihedral(void* data, const Array<CString> args, const MoleculeDynamic* dynamic, int res_idx) {
+	if (args != 4) return false;
+
+	auto res = dynamic->molecule->residues[res_idx];
+	auto int_a = to_int32(args[0]);
+	auto int_b = to_int32(args[1]);
+	auto int_c = to_int32(args[2]);
+	auto int_d = to_int32(args[2]);
+
+	if (!int_a.success || !int_b.success || !int_c.success, !int_d.success) return false;
+	int32 atom_a = res.beg_atom_idx + int_a;
+	int32 atom_b = res.beg_atom_idx + int_b;
+	int32 atom_c = res.beg_atom_idx + int_c;
+	int32 atom_d = res.beg_atom_idx + int_d;
+
+	int32 count = dynamic->trajectory->num_frames;
+	float* f_data = (float*)data;
+	for (int32 i = 0; i < count; i++) {
+		vec3 pos_a = dynamic->trajectory->frame_buffer[i].atom_positions[atom_a];
+		vec3 pos_b = dynamic->trajectory->frame_buffer[i].atom_positions[atom_b];
+		vec3 pos_c = dynamic->trajectory->frame_buffer[i].atom_positions[atom_c];
+		vec3 pos_d = dynamic->trajectory->frame_buffer[i].atom_positions[atom_d];
+
+		f_data[i] = dihedral_angle(pos_a, pos_b, pos_c, pos_d);
+	}
+
+	return true;
+}
+
 static bool match_by_resid(const Array<CString> args, const MoleculeStructure* mol, int32 res_idx) {
     const auto& res = mol->residues[res_idx];
     for (const auto& arg : args) {
-        if (compare(res.id, arg)) return true;
+        if (compare(res.name, arg)) return true;
     }
     return false;
 }
 
 void initialize() {
     ctx.property_commands.push_back({ COMPUTE_ID("dist"), PropertyType::FLOAT32, compute_atomic_distance});
+	ctx.property_commands.push_back({ COMPUTE_ID("angle"), PropertyType::FLOAT32, compute_atomic_angle });
+	ctx.property_commands.push_back({ COMPUTE_ID("dihedral"), PropertyType::FLOAT32, compute_atomic_dihedral });
 
     ctx.group_commands.push_back({ COMPUTE_ID("resid"), match_by_resid});
 }

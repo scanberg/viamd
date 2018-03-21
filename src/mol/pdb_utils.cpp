@@ -130,7 +130,7 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 				residue.beg_atom_idx = num_atoms;
 				residue.end_atom_idx = residue.beg_atom_idx;
 				residue.chain_idx = chains.size() - 1;
-				copy(String(residue.id.beg(), Label::MAX_LENGTH-1), trim(line.substr(17, 3)));
+				copy(String(residue.name.beg(), Label::MAX_LENGTH-1), trim(line.substr(17, 3)));
 				residues.push_back(residue);
 				chains.back().end_res_idx++;
 			}

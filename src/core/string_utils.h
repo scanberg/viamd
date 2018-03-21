@@ -264,15 +264,25 @@ bool extract_line(CString& line, CString& str);
 // Note: Guaranteed that the line will be zero terminated.
 bool copy_line(String& line, CString& str);
 
-// Wrappers around atof
-float32 to_float32(CString str);
-float64 to_float64(CString str);
-inline float to_float(CString str) { return to_float32(str); }
+template<typename T>
+struct ConversionResult {
+	T value;
+	bool success;
 
-// Wrappers around atoi
-int32 to_int32(CString str);
-int64 to_int64(CString str);
-inline int to_int(CString str) { return to_int32(str); }
+	operator T() {
+		return value;
+	}
+};
+
+// Wrappers around strtof
+ConversionResult<float32> to_float32(CString str);
+ConversionResult<float64> to_float64(CString str);
+inline ConversionResult<float> to_float(CString str) { return to_float32(str); }
+
+// Wrappers around strtol
+ConversionResult<int32> to_int32(CString str);
+ConversionResult<int64> to_int64(CString str);
+inline ConversionResult<int> to_int(CString str) { return to_int32(str); }
 
 // Removes whitespace from begining and end of String
 CString trim(CString str);

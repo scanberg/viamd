@@ -126,6 +126,7 @@ constexpr uint32 crc32(const char (&cstr)[N]) {
 
 template <typename T>
 constexpr uint32 crc32(const T& data) {
+	static_assert(std::is_pointer<T>::value == false, "Pointers are not supported");
 	return crc32((const char*)(&data), sizeof(T));
 }
 

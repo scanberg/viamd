@@ -379,8 +379,8 @@ static void imgui_new_frame()
     // Setup display size (every frame to accommodate for window resizing)
     int w, h;
     int display_w, display_h;
-    glfwGetWindowSize(g_window.glfw_window, &w, &h);
-    glfwGetFramebufferSize(g_window.glfw_window, &display_w, &display_h);
+    glfwGetWindowSize((GLFWwindow*)internal_ctx.window.ptr, &w, &h);
+    glfwGetFramebufferSize((GLFWwindow*)internal_ctx.window.ptr, &display_w, &display_h);
     io.DisplaySize = ImVec2((float)w, (float)h);
     io.DisplayFramebufferScale = ImVec2(w > 0 ? ((float)display_w / w) : 0, h > 0 ? ((float)display_h / h) : 0);
 
@@ -391,13 +391,13 @@ static void imgui_new_frame()
 
     // Setup inputs
     // (we already got mouse wheel, keyboard keys & characters from glfw callbacks polled in glfwPollEvents())
-    if (glfwGetWindowAttrib(g_window.glfw_window, GLFW_FOCUSED)) {
+    if (glfwGetWindowAttrib((GLFWwindow*)internal_ctx.window.ptr, GLFW_FOCUSED)) {
         if (io.WantMoveMouse) {
-            glfwSetCursorPos(g_window.glfw_window, (double)io.MousePos.x, (double)io.MousePos.y);   // Set mouse position if requested by io.WantMoveMouse flag (used when io.NavMovesTrue is enabled by user and using directional navigation)
+            glfwSetCursorPos((GLFWwindow*)internal_ctx.window.ptr, (double)io.MousePos.x, (double)io.MousePos.y);   // Set mouse position if requested by io.WantMoveMouse flag (used when io.NavMovesTrue is enabled by user and using directional navigation)
         }
         else {
             double mouse_x, mouse_y;
-            glfwGetCursorPos(g_window.glfw_window, &mouse_x, &mouse_y);
+            glfwGetCursorPos((GLFWwindow*)internal_ctx.window.ptr, &mouse_x, &mouse_y);
             io.MousePos = ImVec2((float)mouse_x, (float)mouse_y);
         }
     }
@@ -407,12 +407,12 @@ static void imgui_new_frame()
 
     for (int i = 0; i < 3; i++) {
         // If a mouse press event came, always pass it as "mouse held this frame", so we don't miss click-release events that are shorter than 1 frame.
-        io.MouseDown[i] = g_input_state.mouse_hit[i] || glfwGetMouseButton(g_window.glfw_window, i) != 0;
+        io.MouseDown[i] = internal_ctx.input.mouse.hit[i] || glfwGetMouseButton((GLFWwindow*)internal_ctx.window.ptr, i) != 0;
         //g_input_state.mouse_hit[i] = false;
     }
 
     // Hide OS mouse cursor if ImGui is drawing it
-    glfwSetInputMode(g_window.glfw_window, GLFW_CURSOR, io.MouseDrawCursor ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL);
+    glfwSetInputMode((GLFWwindow*)internal_ctx.window.ptr, GLFW_CURSOR, io.MouseDrawCursor ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL);
 
     // Start the frame. This call will update the io.WantCaptureMouse, io.WantCaptureKeyboard flag that you can use to dispatch inputs (or not) to your application.
     ImGui::NewFrame();
@@ -460,10 +460,15 @@ void initialize(Context* ctx, int width, int height, const char* title) {
     internal_ctx.window.width = width;
     internal_ctx.window.height = height;
 
+	int w, h;
+	glfwGetFramebufferSize(window, &w, &h);
+	internal_ctx.framebuffer.width = w;
+	internal_ctx.framebuffer.height = h;
+
     double x, y;
     glfwGetCursorPos(window, &x, &y);
-    internal_ctx.input.mouse.coords_prev = { x,y };
-    internal_ctx.input.mouse.coords_curr = { x,y };
+    internal_ctx.input.mouse.coord_prev = { x,y };
+    internal_ctx.input.mouse.coord_curr = { x,y };
 
     vec2 half_res = vec2(width, height) * 0.5f;
     internal_ctx.input.mouse.ndc_prev = (vec2(x, height-y) - half_res) / half_res;
@@ -474,7 +479,7 @@ void initialize(Context* ctx, int width, int height, const char* title) {
     glfwSetKeyCallback(window, key_callback);
     glfwSetCharCallback(window, char_callback);
 
-    memcpy(ctx, internal_ctx, sizeof(platform::Context));
+    memcpy(ctx, &internal_ctx, sizeof(Context));
 }
 
 /*
@@ -484,7 +489,7 @@ void set_window_should_close(Window* window, bool value) {
 */
 
 void shutdown(Context* ctx) {
-	glfwDestroyWindow(internal_ctx.window.ptr);
+	glfwDestroyWindow((GLFWwindow*)internal_ctx.window.ptr);
     imgui_shutdown();
 	ImGui::DestroyContext();
     glfwTerminate();
@@ -501,38 +506,49 @@ void update(Context* ctx) {
     memset(internal_ctx.input.key.release, 0, MAX_KEYS);
     memset(internal_ctx.input.mouse.hit, 0, MAX_MOUSE_BUTTONS);
     memset(internal_ctx.input.mouse.release, 0, MAX_MOUSE_BUTTONS);
-	internal_ctx.mouse.scroll = { 0, 0 };
+	internal_ctx.input.mouse.scroll = { 0, 0 };
 
     glfwPollEvents();
-    double x, y;
-    glfwGetCursorPos(internal_ctx.window.ptr, &x, &y);
 
     if (ctx->window.width != internal_ctx.window.width ||
         ctx->window.height != internal_ctx.window.height) {
-        // @TODO: Do something
+		glfwSetWindowSize((GLFWwindow*)ctx->window.ptr, ctx->window.width, ctx->window.height);
+		internal_ctx.window.width = ctx->window.width;
+		internal_ctx.window.height = ctx->window.height;
     }
 	int w, h;
-	glfwGetFramebufferSize(internal_ctx.window.ptr, &w, &h);
-    internal_ctx.window.width = w;
-    internal_ctx.window.height = h;
-    ctx->window.width = w;
-    ctx->window.height = h;
+	glfwGetFramebufferSize((GLFWwindow*)internal_ctx.window.ptr, &w, &h);
+    internal_ctx.framebuffer.width = w;
+    internal_ctx.framebuffer.height = h;
 
     if (ctx->window.vsync != internal_ctx.window.vsync) {
-        internal_ctx.vsync = ctx->window.vsync;
+        internal_ctx.window.vsync = ctx->window.vsync;
         glfwSwapInterval((int)ctx->window.vsync);
     }
 
+	double x, y;
+	glfwGetCursorPos((GLFWwindow*)internal_ctx.window.ptr, &x, &y);
 	vec2 new_coord{ x,y };
+
+	if (ctx->input.mouse.coord_curr != internal_ctx.input.mouse.coord_curr) {
+		new_coord = ctx->input.mouse.coord_curr;
+	}
+
 	internal_ctx.input.mouse.velocity = new_coord - internal_ctx.input.mouse.coord_prev;
 	internal_ctx.input.mouse.coord_prev = internal_ctx.input.mouse.coord_curr;
 	internal_ctx.input.mouse.coord_curr = new_coord;
 
-	vec2 half_res = vec2(w, h) * 0.5f;
+	const vec2 half_res = vec2(w, h) * 0.5f;
 	internal_ctx.input.mouse.ndc_prev = internal_ctx.input.mouse.ndc_curr;
-	internal_ctx.input.mouse.ndc_curr = (vec2(x, h-y) - half_res) / half_res;
+	internal_ctx.input.mouse.ndc_curr = (vec2(new_coord.x, h - new_coord.y) - half_res) / half_res;
 
     imgui_new_frame();
+
+	double t = glfwGetTime();
+	internal_ctx.timing.dt = t - internal_ctx.timing.total_s;
+	internal_ctx.timing.total_s = t;
+
+	memcpy(ctx, &internal_ctx, sizeof(Context));
 }
 
 /*
@@ -558,7 +574,7 @@ double get_delta_time() {
 */
 
 void swap_buffers(Context* ctx) {
-    glfwSwapBuffers(internal_ctx.window.ptr);
+    glfwSwapBuffers((GLFWwindow*)internal_ctx.window.ptr);
 }
 
 void* malloc(size_t size) {

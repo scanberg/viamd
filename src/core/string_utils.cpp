@@ -109,32 +109,36 @@ bool copy_line(String& line, CString& str) {
 	return true;
 }
 
-float32 to_float32(CString str) {
+ConversionResult<float32> to_float32(CString str) {
 	// Make sure that the string passed into atof is zero-terminated
-	char buffer[32] = {};
-	memcpy(buffer, str.data, MIN(31, str.count));
-	return (float)atof(buffer);
+	StringBuffer<32> buf = str;
+	char* end = nullptr;
+	float32 val = strtof(buf, &end);
+	return { val, end != buf.beg() };
 }
 
-float64 to_float64(CString str) {
+ConversionResult<float64> to_float64(CString str) {
 	// Make sure that the string passed into atof is zero-terminated
-	char buffer[32] = {};
-	memcpy(buffer, str.data, MIN(31, str.count));
-	return atof(buffer);
+	StringBuffer<32> buf = str;
+	char* end = nullptr;
+	float64 val = strtod(buf, &end);
+	return { val, end != buf.beg() };
 }
 
-int32 to_int32(CString str) {
-	// Make sure that the string passed into atoi is zero-terminated
-	char buffer[32] = {};
-	memcpy(buffer, str.data, MIN(31, str.count));
-	return atoi(buffer);
+ConversionResult<int32> to_int32(CString str) {
+	// Make sure that the string passed into atof is zero-terminated
+	StringBuffer<32> buf = str;
+	char* end = nullptr;
+	int32 val = strtol(buf, &end, 10);
+	return { val, end != buf.beg() };
 }
 
-int64 to_int64(CString str) {
-	// Make sure that the string passed into atoi is zero-terminated
-	char buffer[32] = {};
-	memcpy(buffer, str.data, MIN(31, str.count));
-	return atoll(buffer);
+ConversionResult<int64> to_int64(CString str) {
+	// Make sure that the string passed into atof is zero-terminated
+	StringBuffer<32> buf = str;
+	char* end = nullptr;
+	int64 val = strtoll(buf, &end, 10);
+	return { val, end != buf.beg() };
 }
 
 CString trim(CString str) {

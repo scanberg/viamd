@@ -21,7 +21,7 @@ using ResIdx   = int16;
 using ChainIdx = int16;
 
 struct Residue {
-	Label id;
+	Label name;
 	AtomIdx beg_atom_idx = 0;
 	AtomIdx end_atom_idx = 0;
 	ChainIdx chain_idx = -1;
@@ -59,7 +59,18 @@ struct MoleculeStructure {
 
 // Chain func
 
+inline AtomIdx get_atom_beg_idx(MoleculeStructure& mol, Chain chain) {
+	ASSERT(0 <= chain.beg_res_idx && chain.beg_res_idx < mol.residues.count);
+	return mol.residues[chain.beg_res_idx].beg_atom_idx;
+}
+
+inline AtomIdx get_atom_end_idx(MoleculeStructure& mol, Chain chain) {
+	ASSERT(0 < chain.end_res_idx && chain.end_res_idx <= mol.residues.count);
+	return mol.residues[chain.end_res_idx - 1].end_atom_idx;
+}
+
 inline Chain get_chain(MoleculeStructure& mol, ChainIdx idx) {
+	ASSERT(0 <= idx && idx < mol.chains.count);
 	return mol.chains[idx];
 }
 
@@ -68,8 +79,8 @@ inline Array<Residue> get_residues(MoleculeStructure& mol, Chain chain) {
 }
 
 inline Array<vec3> get_positions(MoleculeStructure& mol, Chain chain) {
-	auto beg_atom_idx = mol.residues[chain.beg_res_idx].beg_atom_idx;
-	auto end_atom_idx = mol.residues[chain.end_res_idx - 1].end_atom_idx;
+	auto beg_atom_idx = get_atom_beg_idx(mol, chain);
+	auto end_atom_idx = get_atom_end_idx(mol, chain);
 	return mol.atom_positions.sub_array(beg_atom_idx, end_atom_idx - beg_atom_idx);
 }
 

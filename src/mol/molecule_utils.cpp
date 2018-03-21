@@ -256,7 +256,7 @@ DynamicArray<BackboneSegment> compute_backbone(const Chain& chain, const Array<R
             if (o_idx == -1 && match(lbl, "O")) o_idx = i;
         }
         if (ca_idx == -1) {
-            printf("No CA label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
+            printf("No CA label found for residue[%i]: %s.\n", res_idx, residues[res_idx].name.beg());
         }
         /*
 if (ha_idx == -1) {
@@ -267,13 +267,13 @@ if (cb_idx == -1) {
 }
         */
         if (n_idx == -1) {
-            printf("No N label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
+            printf("No N label found for residue[%i]: %s.\n", res_idx, residues[res_idx].name.beg());
         }
         if (c_idx == -1) {
-            printf("No C label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
+            printf("No C label found for residue[%i]: %s.\n", res_idx, residues[res_idx].name.beg());
         }
         if (o_idx == -1) {
-            printf("No O label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
+            printf("No O label found for residue[%i]: %s.\n", res_idx, residues[res_idx].name.beg());
         }
 
         backbones.push_back({ca_idx, n_idx, c_idx, o_idx});
@@ -393,19 +393,19 @@ void compute_backbone_angles(Array<BackboneAngles> dst, const Array<vec3> pos, c
 
     omega = 0;
     phi = 0;
-    psi = compute_dihedral_angle(pos[backbone[0].n_idx], pos[backbone[0].ca_idx], pos[backbone[0].c_idx], pos[backbone[1].n_idx]);
+    psi = dihedral_angle(pos[backbone[0].n_idx], pos[backbone[0].ca_idx], pos[backbone[0].c_idx], pos[backbone[1].n_idx]);
     dst[0] = {omega, phi, psi};
 
     for (int64 i = 1; i < backbone.count - 1; i++) {
-        omega = compute_dihedral_angle(pos[backbone[i - 1].ca_idx], pos[backbone[i - 1].c_idx], pos[backbone[i].n_idx], pos[backbone[i].ca_idx]);
-        phi = compute_dihedral_angle(pos[backbone[i - 1].c_idx], pos[backbone[i].n_idx], pos[backbone[i].ca_idx], pos[backbone[i].c_idx]);
-        psi = compute_dihedral_angle(pos[backbone[i].n_idx], pos[backbone[i].ca_idx], pos[backbone[i].c_idx], pos[backbone[i + 1].n_idx]);
+        omega = dihedral_angle(pos[backbone[i - 1].ca_idx], pos[backbone[i - 1].c_idx], pos[backbone[i].n_idx], pos[backbone[i].ca_idx]);
+        phi = dihedral_angle(pos[backbone[i - 1].c_idx], pos[backbone[i].n_idx], pos[backbone[i].ca_idx], pos[backbone[i].c_idx]);
+        psi = dihedral_angle(pos[backbone[i].n_idx], pos[backbone[i].ca_idx], pos[backbone[i].c_idx], pos[backbone[i + 1].n_idx]);
         dst[i] = {omega, phi, psi};
     }
 
     auto N = backbone.count - 1;
-    omega = compute_dihedral_angle(pos[backbone[N - 1].ca_idx], pos[backbone[N - 1].c_idx], pos[backbone[N].n_idx], pos[backbone[N].ca_idx]);
-    phi = compute_dihedral_angle(pos[backbone[N - 1].c_idx], pos[backbone[N].n_idx], pos[backbone[N].ca_idx], pos[backbone[N].c_idx]);
+    omega = dihedral_angle(pos[backbone[N - 1].ca_idx], pos[backbone[N - 1].c_idx], pos[backbone[N].n_idx], pos[backbone[N].ca_idx]);
+    phi = dihedral_angle(pos[backbone[N - 1].c_idx], pos[backbone[N].n_idx], pos[backbone[N].ca_idx], pos[backbone[N].c_idx]);
     psi = 0;
     dst[N] = {omega, phi, psi};
 }
@@ -444,17 +444,22 @@ void compute_atom_radii(Array<float> radii_dst, const Array<Element> elements) {
     }
 }
 
-DynamicArray<uint32> compute_atom_colors(const MoleculeStructure& mol, ColorMapping mapping) {
+DynamicArray<uint32> compute_atom_colors(const MoleculeStructure& mol, ColorMapping mapping, uint32 static_color) {
     DynamicArray<uint32> colors(mol.atom_elements.count, 0xFFFFFFFF);
     compute_atom_colors(colors, mol, mapping);
     return colors;
 }
 
-void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, ColorMapping mapping) {
+void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, ColorMapping mapping, uint32 static_color) {
     // @TODO: Implement more mappings
 
     // CPK
     switch (mapping) {
+        case ColorMapping::STATIC_COLOR:
+			for (int64 i = 0; i < color_dst.count; i++) {
+				color_dst[i] = static_color;
+			}
+            break;
         case ColorMapping::CPK:
             for (int64 i = 0; i < color_dst.count; i++) {
                 color_dst[i] = element::color(mol.atom_elements[i]);
@@ -466,7 +471,7 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
             for (int64 i = 0; i < color_dst.count; i++) {
                 if (i < mol.atom_residue_indices.count) {
                     const auto& res = mol.residues[mol.atom_residue_indices[i]];
-                    unsigned int h = hash::crc32(res.id.beg(), Label::MAX_LENGTH);
+                    unsigned int h = hash::crc32(res.name.beg(), res.name.MAX_LENGTH);
                     float hue = (h % 32) / 32.f;
                     vec3 c = math::hcl_to_rgb(vec3(hue, 0.8f, 0.8f));
                     unsigned char color[4];
@@ -493,6 +498,23 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
                 }
             }
             break;
+		case ColorMapping::CHAIN_ID:
+			for (int64 i = 0; i < color_dst.count; i++) {
+				if (i < mol.atom_residue_indices.count) {
+					const auto& res = mol.residues[mol.atom_residue_indices[i]];
+					if (res.chain_idx < mol.chains.count) {
+						unsigned int h = hash::crc32(res.name.operator CString());
+						float hue = (h % 32) / 32.f;
+						vec3 c = math::hcl_to_rgb(vec3(hue, 0.8f, 0.8f));
+						unsigned char color[4];
+						color[0] = (unsigned char)(c.x * 255);
+						color[1] = (unsigned char)(c.y * 255);
+						color[2] = (unsigned char)(c.z * 255);
+						color[3] = (unsigned char)(255);
+						color_dst[i] = *(uint32*)(color);
+					}
+				}
+			}
         case ColorMapping::CHAIN_INDEX:
             for (int64 i = 0; i < color_dst.count; i++) {
                 if (i < mol.atom_residue_indices.count) {
@@ -544,87 +566,206 @@ bool filter_valid(CString filter) {
     return true;
 }
 
-bool filter_colors(Array<uint32> color_dst, const MoleculeStructure& mol, CString filter) { DynamicArray<CString> tokens = ctokenize(filter); }
+bool filter_colors(Array<uint32> color_dst, const MoleculeStructure& mol, CString filter) {
+    DynamicArray<CString> tokens = ctokenize(filter);
+    return false;
+}
+
+FilterCommand* find_filter_command(CString command) {
+    for (auto& f : filter_commands) {
+        if (compare(command, f.keyword)) return &f;
+    }
+    return nullptr;
+}
 
 void initialize() {
 
-/*
-	all
-	water
-	aminoacid
-	backbone?
+    /*
+            all
+            water
+            aminoacid
+            backbone?
 
-	name
-	element
-	atomicnumber
-	atom
-	residue
-	resname
-	resid
-	chain
-	chainid
-*/
+            name
+            element
+            atomicnumber
+            atom
+            residue
+            resname
+            resid
+            chain
+            chainid
+    */
 
-	filter_commands.push_back({ "all", [](Array<bool> mask, const MoleculeDynamic*, const Array<CString>) { memset(mask.data, 1, mask.count * mask.count * sizeof(bool)); } });
-	filter_commands.push_back({ "water", [](Array<bool> mask, const MoleculeDynamic*, const Array<CString>) {} }); // NOT DONE
-	filter_commands.push_back({ "aminoacid", [](Array<bool> mask, const MoleculeDynamic* dyn, const Array<CString>) {
-		memset(mask.data, 0, mask.count);
-		for (const auto& res : dyn->molecule->residues) {
-			if (is_amino_acid(res)) {
-				memset(mask.data + res.beg_atom_idx, 1, (res.end_atom_idx - res.beg_atom_idx));
-			}
-		}
-	} });
-	filter_commands.push_back({ "backbone", [](Array<bool> mask, const MoleculeDynamic*, const Array<CString>) {} }); // NOT DONE
+    filter_commands.push_back({"all", [](Array<bool> mask, const MoleculeDynamic*, const Array<CString>) {
+                                   memset(mask.data, 1, mask.count * mask.count * sizeof(bool));
+                                   return true;
+                               }});
+    filter_commands.push_back({"water", [](Array<bool>, const MoleculeDynamic*, const Array<CString>) { return true; }});  // NOT DONE
+    filter_commands.push_back({"aminoacid", [](Array<bool> mask, const MoleculeDynamic* dyn, const Array<CString>) {
+                                   memset(mask.data, 0, mask.count);
+                                   for (const auto& res : dyn->molecule->residues) {
+                                       if (is_amino_acid(res)) {
+                                           memset(mask.data + res.beg_atom_idx, 1, (res.end_atom_idx - res.beg_atom_idx));
+                                       }
+                                   }
+                                   return true;
+                               }});
+    filter_commands.push_back({"backbone", [](Array<bool>, const MoleculeDynamic*, const Array<CString>) { return true; }});  // NOT DONE
 
-	filter_commands.push_back({ "name", [](Array<bool> mask, const MoleculeDynamic* dyn, const Array<CString> args) {
-		for (int i = 0; i < dyn->molecule->atom_labels.count; i++) {
-			mask[i] = false;
-			for (const auto& arg : args) {
-				if (compare(dyn->molecule->atom_labels[i], arg)) {
-					mask[i] = true;
-					break;
-				}
-			}
-		}
-	} });
+    filter_commands.push_back({"name", [](Array<bool> mask, const MoleculeDynamic* dyn, const Array<CString> args) {
+                                   if (args.count == 0) return false;
 
-	filter_commands.push_back({ "element", [](Array<bool> mask, const MoleculeDynamic* dyn, const Array<CString> args) {
-		Array<Element> elements = {(Element*)(TMP_MALLOC(args.count * sizeof(Element))), args.count};
-		for (int i = 0; i < elements.count; i++) {
-			elements[i] = element::get_from_string(args[i]);
-		}
+                                   for (int i = 0; i < dyn->molecule->atom_labels.count; i++) {
+                                       mask[i] = false;
+                                       for (const auto& arg : args) {
+                                           if (compare(dyn->molecule->atom_labels[i], arg)) {
+                                               mask[i] = true;
+                                               break;
+                                           }
+                                       }
+                                   }
 
-		for (int i = 0; i < dyn->molecule->atom_elements.count; i++) {
-			mask[i] = false;
-			for (const auto& ele : elements) {
-				if (dyn->molecule->atom_elements[i] == ele) {
-					mask[i] = true;
-					break;
-				}
-			}
-		}
-		TMP_FREE(elements.data);
-	} });
+                                   return true;
+                               }});
 
-	filter_commands.push_back({ "atomicnumber", [](Array<bool> mask, const MoleculeDynamic* dyn, const Array<CString> args) {
-		Array<int> numbers = { (int*)(TMP_MALLOC(args.count * sizeof(int))), args.count };
-		for (int i = 0; i < dyn->molecule->atom_elements.count; i++) {
-			mask[i] = false;
-			for (int number : numbers) {
-				if ((int)dyn->molecule->atom_elements[i] == number) {
-					mask[i] = true;
-					break;
-				}
-			}
-		}
-		TMP_FREE(numbers.data);
-	} });
+    filter_commands.push_back({"label", [](Array<bool> mask, const MoleculeDynamic* dyn, const Array<CString> args) {
+                                   return find_filter_command("label")->func(mask, dyn, args);
+                               }});
+
+    filter_commands.push_back({"element", [](Array<bool> mask, const MoleculeDynamic* dyn, const Array<CString> args) {
+                                   Array<Element> elements = {(Element*)(TMP_MALLOC(args.count * sizeof(Element))), args.count};
+                                   for (int i = 0; i < elements.count; i++) {
+                                       elements[i] = element::get_from_string(args[i]);
+                                       if (elements[i] == Element::Unknown) return false;
+                                   }
+
+                                   for (int i = 0; i < dyn->molecule->atom_elements.count; i++) {
+                                       mask[i] = false;
+                                       for (const auto& ele : elements) {
+                                           if (dyn->molecule->atom_elements[i] == ele) {
+                                               mask[i] = true;
+                                               break;
+                                           }
+                                       }
+                                   }
+                                   TMP_FREE(elements.data);
+                                   return true;
+                               }});
+
+    filter_commands.push_back({"atomicnumber", [](Array<bool> mask, const MoleculeDynamic* dyn, const Array<CString> args) {
+                                   Array<int> numbers = {(int*)(TMP_MALLOC(args.count * sizeof(int))), args.count};
+                                   for (int i = 0; i < numbers.count; i++) {
+                                       auto res = to_int(args[i]);
+                                       if (!res.success) return false;
+                                       numbers[i] = res.value;
+                                   }
+                                   for (int i = 0; i < dyn->molecule->atom_elements.count; i++) {
+                                       mask[i] = false;
+                                       for (int number : numbers) {
+                                           if ((int)dyn->molecule->atom_elements[i] == number) {
+                                               mask[i] = true;
+                                               break;
+                                           }
+                                       }
+                                   }
+                                   TMP_FREE(numbers.data);
+                                   return true;
+                               }});
+
+    filter_commands.push_back({"atom", [](Array<bool> mask, const MoleculeDynamic* dyn, const Array<CString> args) {
+                                   Array<int> indices = {(int*)(TMP_MALLOC(args.count * sizeof(int))), args.count};
+                                   for (int i = 0; i < indices.count; i++) {
+                                       auto res = to_int(args[i]);
+                                       if (!res.success) return false;
+                                       indices[i] = res.value;
+                                   }
+                                   for (int i = 0; i < dyn->molecule->atom_positions.count; i++) {
+                                       mask[i] = false;
+                                       for (int idx : indices) {
+                                           if (i == idx) {
+                                               mask[i] = true;
+                                               break;
+                                           }
+                                       }
+                                   }
+                                   TMP_FREE(indices.data);
+                                   return true;
+                               }});
+
+    filter_commands.push_back({"residue", [](Array<bool> mask, const MoleculeDynamic* dyn, const Array<CString> args) {
+                                   memset(mask.data, 0, mask.count);
+                                   for (int i = 0; i < args.count; i++) {
+                                       auto res = to_int(args[i]);
+                                       if (!res.success) return false;
+                                       int res_idx = res.value;
+                                       if (res_idx < 0 || dyn->molecule->residues.count <= res_idx) return false;
+                                       int beg = dyn->molecule->residues[res_idx].beg_atom_idx;
+                                       int end = dyn->molecule->residues[res_idx].end_atom_idx;
+                                       memset(mask.data, 1, end - beg);
+                                   }
+                                   return true;
+                               }});
+
+    filter_commands.push_back({"resname", [](Array<bool> mask, const MoleculeDynamic* dyn, const Array<CString> args) {
+                                   memset(mask.data, 0, mask.count);
+                                   for (int i = 0; i < args.count; i++) {
+                                       for (const auto& res : dyn->molecule->residues) {
+                                           if (compare(args[i], res.name)) {
+                                               int beg = res.beg_atom_idx;
+                                               int end = res.end_atom_idx;
+                                               memset(mask.data + beg, 1, end - beg);
+                                           }
+                                       }
+                                   }
+                                   return true;
+                               }});
+
+    filter_commands.push_back({"resid", [](Array<bool> mask, const MoleculeDynamic* dyn, const Array<CString> args) {
+                                   memset(mask.data, 0, mask.count);
+                                   for (int i = 0; i < args.count; i++) {
+                                       auto res = to_int(args[i]);
+                                       if (!res.success) return false;
+                                       int res_idx = res.value - 1;
+                                       if (res_idx < 0 || dyn->molecule->residues.count <= res_idx) return false;
+                                       int beg = dyn->molecule->residues[res_idx].beg_atom_idx;
+                                       int end = dyn->molecule->residues[res_idx].end_atom_idx;
+                                       memset(mask.data, 1, end - beg);
+                                   }
+                                   return true;
+                               }});
+
+    filter_commands.push_back({"chain", [](Array<bool> mask, const MoleculeDynamic* dyn, const Array<CString> args) {
+                                   memset(mask.data, 0, mask.count);
+                                   for (int i = 0; i < args.count; i++) {
+                                       auto res = to_int(args[i]);
+                                       if (!res.success) return false;
+                                       int chain_idx = res.value - 1;
+                                       if (chain_idx < 0 || dyn->molecule->chains.count <= chain_idx) return false;
+                                       Chain chain = get_chain(*dyn->molecule, chain_idx);
+                                       int beg = get_atom_beg_idx(*dyn->molecule, chain);
+                                       int end = get_atom_end_idx(*dyn->molecule, chain);
+                                       memset(mask.data + beg, 1, end - beg);
+                                   }
+                                   return true;
+                               }});
+
+    filter_commands.push_back({"chainid", [](Array<bool> mask, const MoleculeDynamic* dyn, const Array<CString> args) {
+                                   memset(mask.data, 0, mask.count);
+                                   for (int i = 0; i < args.count; i++) {
+                                       for (const auto& chain : dyn->molecule->chains) {
+                                           if (compare(args[i], chain.id)) {
+                                               int beg = get_atom_beg_idx(*dyn->molecule, chain);
+                                               int end = get_atom_end_idx(*dyn->molecule, chain);
+                                               memset(mask.data + beg, 1, end - beg);
+                                           }
+                                       }
+                                   }
+                                   return true;
+                               }});
 }
 
-void shutdown() {
-
-}
+void shutdown() {}
 
 }  // namespace filter
 
@@ -915,7 +1056,7 @@ static GLint attrib_loc_pos = -1;
 static GLint attrib_loc_col = -1;
 static GLint uniform_loc_view_mat = -1;
 static GLint uniform_loc_proj_mat = -1;
-static GLint uniform_loc_radius_scl = -1;
+static GLint uniform_loc_radius = -1;
 
 static const char* v_shader_src = R"(
 #version 150 core
@@ -941,7 +1082,7 @@ static const char* g_shader_src = R"(
 #version 150 core
 
 uniform mat4 u_proj_mat;
-uniform float u_radius_scl = 1.0;
+uniform float u_radius = 1.0;
 
 layout (lines) in;
 layout (triangle_strip, max_vertices = 24) out;
@@ -1003,7 +1144,7 @@ void main()
     // Compute orientation vectors for the two connecting faces:
     vec3 p0 = gl_in[0].gl_Position.xyz;
     vec3 p1 = gl_in[1].gl_Position.xyz;
-	float r = 1.0 * u_radius_scl;
+	float r = u_radius;
 	float l = distance(p0, p1);
 	vec3 a = (p1 - p0) / l;
 	vec3 c = (p0 + p1) * 0.5;
@@ -1053,7 +1194,7 @@ static const char* f_shader_src = R"(
 
 uniform mat4 u_proj_mat;
 uniform float u_exposure = 1.0;
-uniform float u_radius_scl = 1.0;
+uniform float u_radius = 1.0;
 
 in Fragment {
     flat vec4 color[2];
@@ -1221,7 +1362,7 @@ static void initialize() {
     attrib_loc_col = glGetAttribLocation(program, "v_color");
     uniform_loc_view_mat = glGetUniformLocation(program, "u_view_mat");
     uniform_loc_proj_mat = glGetUniformLocation(program, "u_proj_mat");
-    uniform_loc_radius_scl = glGetUniformLocation(program, "u_radius_scl");
+    uniform_loc_radius = glGetUniformLocation(program, "u_radius");
 
     glGenVertexArrays(1, &vao);
     glBindVertexArray(vao);
@@ -1796,7 +1937,7 @@ void draw_licorice(const Array<vec3> atom_positions, const Array<Bond> atom_bond
     glUseProgram(licorice::program);
     glUniformMatrix4fv(licorice::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
     glUniformMatrix4fv(licorice::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
-    glUniform1f(licorice::uniform_loc_radius_scl, radii_scale);
+    glUniform1f(licorice::uniform_loc_radius, 0.5f * radii_scale);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, licorice::ibo);
     glDrawElements(GL_LINES, (GLsizei)atom_bonds.count * 2, GL_UNSIGNED_INT, (const void*)0);
     glUseProgram(0);
@@ -1883,7 +2024,7 @@ void plot_ramachandran(const Array<BackboneAngles> angles, const Array<BackboneA
     };
 
     // @TODO: Use fast scratch memory here
-    Coord* coords = (Coord*)MALLOC((angles.count + highlighted_angles.count) * sizeof(Coord));
+    Coord* coords = (Coord*)TMP_MALLOC((angles.count + highlighted_angles.count) * sizeof(Coord));
 
     int32 tot_count = 0;
     for (const auto& angle : angles) {
@@ -1911,7 +2052,7 @@ void plot_ramachandran(const Array<BackboneAngles> angles, const Array<BackboneA
     glBindBuffer(GL_ARRAY_BUFFER, ramachandran::coord_buf);
     glBufferData(GL_ARRAY_BUFFER, tot_count * 2 * sizeof(unsigned short), coords, GL_STREAM_DRAW);
 
-    FREE(coords);
+    TMP_FREE(coords);
 
     // Backup GL state
     GLint last_polygon_mode[2];

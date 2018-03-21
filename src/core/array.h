@@ -199,10 +199,11 @@ struct DynamicArray : Array<T> {
 	}
 
 	void remove(T* it, int64 num_items = 1) {
-		ASSERT(this->beg() <= it && it <= this->end());
-		const ptrdiff_t off = it - this->beg();
-		ASSERT(this->count - off < num_items);
-		memmove(this->beg() + off, this->beg() + off + this->count, ((size_t)this->count - (size_t)(off + this->count)) * sizeof(T));
+		ASSERT(this->beg() <= it && it < this->end());
+		ASSERT(it + num_items <= this->end());
+		auto dst = it;
+		auto src = it + num_items;
+		memmove(dst, src, (this->end() - src) * sizeof(T));
 		this->count--;
 	}
 
