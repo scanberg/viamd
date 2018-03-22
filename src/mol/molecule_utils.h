@@ -8,7 +8,7 @@
 
 enum class ColorMapping { STATIC_COLOR, CPK, RES_ID, RES_INDEX, CHAIN_ID, CHAIN_INDEX };
 
-typedef bool(*FilterCommandFunc)(Array<bool> mask, const MoleculeDynamic* dynamic, const Array<CString> args);
+typedef bool(*FilterCommandFunc)(Array<bool> mask, const MoleculeDynamic& dynamic, const Array<CString> args);
 
 struct FilterCommand {
 	StringBuffer<16> keyword {};
@@ -94,8 +94,15 @@ void compute_atom_radii(Array<float> radii_dst, const Array<Element> elements);
 DynamicArray<uint32> compute_atom_colors(const MoleculeStructure& mol, ColorMapping mapping, uint32 static_color = 0xffffffff);
 void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, ColorMapping mapping, uint32 static_color = 0xffffffff);
 
-bool filter_valid(CString filter);
-bool filter_colors(Array<uint32> color_dst, const MoleculeStructure& mol, CString filter);
+//bool filter_valid(CString filter);
+//bool filter_colors(Array<uint32> color_dst, const MoleculeStructure& mol, CString filter);
+
+namespace filter {
+	void initialize();
+	void shutdown();
+	bool compute_filter_mask(Array<bool> mask, const MoleculeDynamic& mol, CString filter);
+	void filter_colors(Array<uint32> colors, Array<bool> mask);
+}
 
 inline bool is_amino_acid(Residue res) { return aminoacid::get_from_string(res.name) != AminoAcid::Unknown; }
 

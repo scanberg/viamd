@@ -2,6 +2,8 @@
 
 #include <core/types.h>
 #include <core/array.h>
+#include <core/string_utils.h>
+
 /*
 https://github.com/LordJZ/consthash
 The MIT License(MIT)
@@ -119,6 +121,10 @@ constexpr uint32 crc32(Array<T> arr) {
     return crc32(arr.data, arr.count * sizeof(T));
 }
 
+inline uint32 crc32(CString str) {
+	return crc32(str.data, str.count);
+}
+
 template <size_t N>
 constexpr uint32 crc32(const char (&cstr)[N]) {
 	return crc32(cstr, N);
@@ -133,6 +139,10 @@ constexpr uint32 crc32(const T& data) {
 template <typename T>
 constexpr uint64 crc64(Array<T> arr) {
 	return crc64(arr.data, arr.count * sizeof(T));
+}
+
+inline uint64 crc64(CString str) {
+	return crc64(str.data, str.count);
 }
 
 template <size_t N>

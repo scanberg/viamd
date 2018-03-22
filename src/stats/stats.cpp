@@ -69,7 +69,7 @@ struct StatisticsContext {
 static StatisticsContext ctx;
 
 static bool compute_atomic_distance(void* data, const Array<CString> args, const MoleculeDynamic* dynamic, int res_idx) {
-	if (args != 2) return false;
+	if (args.count != 2) return false;
 
     auto res = dynamic->molecule->residues[res_idx];
 	auto int_a = to_int32(args[0]);
@@ -91,7 +91,7 @@ static bool compute_atomic_distance(void* data, const Array<CString> args, const
 }
 
 static bool compute_atomic_angle(void* data, const Array<CString> args, const MoleculeDynamic* dynamic, int res_idx) {
-	if (args != 3) return false;
+	if (args.count != 3) return false;
 
 	auto res = dynamic->molecule->residues[res_idx];
 	auto int_a = to_int32(args[0]);
@@ -117,7 +117,7 @@ static bool compute_atomic_angle(void* data, const Array<CString> args, const Mo
 }
 
 static bool compute_atomic_dihedral(void* data, const Array<CString> args, const MoleculeDynamic* dynamic, int res_idx) {
-	if (args != 4) return false;
+	if (args.count != 4) return false;
 
 	auto res = dynamic->molecule->residues[res_idx];
 	auto int_a = to_int32(args[0]);
@@ -154,8 +154,9 @@ static bool match_by_resid(const Array<CString> args, const MoleculeStructure* m
 }
 
 void initialize() {
-    ctx.property_commands.push_back({ COMPUTE_ID("dist"), PropertyType::FLOAT32, compute_atomic_distance});
-	ctx.property_commands.push_back({ COMPUTE_ID("angle"), PropertyType::FLOAT32, compute_atomic_angle });
+    ctx.property_commands.push_back({ COMPUTE_ID("dist"),	  PropertyType::FLOAT32, compute_atomic_distance});
+	ctx.property_commands.push_back({ COMPUTE_ID("bond"),	  PropertyType::FLOAT32, compute_atomic_distance });
+	ctx.property_commands.push_back({ COMPUTE_ID("angle"),	  PropertyType::FLOAT32, compute_atomic_angle });
 	ctx.property_commands.push_back({ COMPUTE_ID("dihedral"), PropertyType::FLOAT32, compute_atomic_dihedral });
 
     ctx.group_commands.push_back({ COMPUTE_ID("resid"), match_by_resid});
@@ -262,11 +263,10 @@ bool compute_stats(MoleculeDynamic* dynamic) {
                     }
                 }
 
-                StringBuffer<64> prop_data_name;
-                snprintf(prop_data_name.beg(), 64, "%s.%s.%i", group->name.beg(), prop.name.beg(), i);
+                int32 len = snprintf(prop_data_name.beg(), 64, "%s.%s.%i", group->name.beg(), prop.name.beg(), i);
 
                 PropertyData prop_data;
-                prop_data.id = COMPUTE_ID(prop_data_name.operator CString());
+                prop_data.id = COMPUTE_ID(prop_data_name.beg(), len);
                 prop_data.group_id = group->id;
                 prop_data.property_id = prop.id;
                 prop_data.residue_idx = res_idx;
@@ -375,7 +375,7 @@ ID get_group(int32 idx) {
 }
 
 int32 get_group_count() {
-    return ctx.groups.count;
+    return (int32)ctx.groups.count;
 }
 
 ID get_property(ID group_id, CString name) {
@@ -397,7 +397,7 @@ ID get_property(ID group_id, int32 idx) {
 int32 get_property_count(ID group_id) {
     auto group = find_id(ctx.groups, group_id);
     if (group) {
-        return group->property_count;
+        return (int32)group->property_count;
     }
     return 0;
 }

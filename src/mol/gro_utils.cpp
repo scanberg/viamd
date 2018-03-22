@@ -25,9 +25,8 @@ MoleculeStructure* allocate_and_parse_gro_from_string(CString gro_string) {
     }
 
     vec3 pos, vel, box;
-    char atom_name[6], res_name[6];
-	atom_name[5] = '\0';
-	res_name[5] = '\0';
+	char atom_name[8];
+	char res_name[8];
     int atom_idx, res_idx;
 	int res_count = 0;
     int cur_res = -1;
@@ -66,7 +65,8 @@ MoleculeStructure* allocate_and_parse_gro_from_string(CString gro_string) {
 				//if (amino != AminoAcid::Unknown) {
 				//	mol.pushStructure<structure::AminoAcid>(static_cast<int>(residues.size()), amino);
 				//}
-				Residue res{ res_name, i, i };
+				CString res_name_trim = trim(CString(res_name));
+				Residue res{ res_name_trim, i, i };
 				residues.push_back(res);
 			}
 			residues.back().end_atom_idx++;
@@ -119,7 +119,7 @@ MoleculeStructure* allocate_and_parse_gro_from_string(CString gro_string) {
 	memcpy(mol->atom_positions.data, positions.data, positions.size() * sizeof(vec3));
 	memcpy(mol->atom_elements.data, elements.data, elements.size() * sizeof(Element));
 	memcpy(mol->atom_labels.data, labels.data, labels.size() * sizeof(Label));
-	memcpy(mol->atom_residue_indices.data, residue_indices.data, residue_indices.size() * sizeof(int32));
+	memcpy(mol->atom_residue_indices.data, residue_indices.data, residue_indices.size() * sizeof(ResIdx));
 
 	memcpy(mol->residues.data, residues.data, residues.size() * sizeof(Residue));
 	memcpy(mol->chains.data, chains.data, chains.size() * sizeof(Chain));

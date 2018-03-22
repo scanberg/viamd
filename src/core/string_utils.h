@@ -228,7 +228,7 @@ struct StringBuffer {
     }
 
 	operator String() { return String(buffer, MAX_LENGTH); }
-	operator CString() const { return CString(buffer, MAX_LENGTH); }
+	operator CString() const { return CString(buffer, strnlen(buffer, MAX_LENGTH)); }
 	operator const char*() const { return buffer; }
 
 	int64 size() const { return MAX_LENGTH; }

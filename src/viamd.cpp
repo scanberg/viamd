@@ -165,6 +165,7 @@ int main(int, char**) {
 	immediate::initialize();
 	draw::initialize();
 	stats::initialize();
+	filter::initialize();
 	postprocessing::initialize(data.fbo.width, data.fbo.height);
 
 	// Setup style
@@ -181,20 +182,19 @@ int main(int, char**) {
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/water/water.gro");
-	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid-6T/conf-60-6T.gro");
+	data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid-6T/conf-60-6T.gro");
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/yuya/nowat_npt.gro");
 	//auto res = load_pdb_from_file(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
-	data.dynamic = allocate_and_load_pdb_from_file(PROJECT_SOURCE_DIR "/data/1ALA-560ns.pdb");
+	//data.dynamic = allocate_and_load_pdb_from_file(PROJECT_SOURCE_DIR "/data/1ALA-560ns.pdb");
 
     //data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
     //data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
 	//data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
-	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid-6T/prod-centered.xtc");
+	data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid-6T/prod-centered.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/yuya/traj-centered.xtc");
 	read_trajectory_async(data.dynamic.trajectory);
-	Trajectory* traj = nullptr;
 
 	auto g1 = stats::create_group("group1", "resid", "ALA");
     auto b1 = stats::create_property(g1, "b1", "dist", "1 2");
@@ -207,25 +207,6 @@ int main(int, char**) {
 	BackboneAnglesTrajectory backbone_angles = compute_backbone_angles_trajectory(*data.dynamic.trajectory, data.dynamic.molecule->backbone_segments);
 	DynamicArray<BackboneAngles> current_backbone_angles = compute_backbone_angles(data.dynamic.molecule->atom_positions, backbone);
 	DynamicArray<SplineSegment> current_spline = compute_spline(data.dynamic.molecule->atom_positions, backbone, 8);
-
-	if (traj) {
-		printf("READING FRAME DATA...\n");
-		read_trajectory_async(traj);
-		/*, [traj, &backbone, &traj_angles]() {
-			printf("DONE!\n");
-			printf("COMPUTING ANGLES...\n");
-			//traj_angles = compute_backbone_angles_trajectory(*traj, backbone);
-			printf("DONE!\n");
-			for (int i = 0; i < traj_angles.num_frames; i++) {
-				auto angles = get_backbone_angles(traj_angles, i);
-				printf("omega  phi   psi\n");
-				for (const auto& ba : angles) {
-					printf("% 6.1f % 6.1f % 6.1f\n", ba.omega * math::RAD_TO_DEG, ba.phi * math::RAD_TO_DEG, ba.psi * math::RAD_TO_DEG);
-				}
-			}
-			*/
-		//});
-	}
 
     if (data.dynamic.trajectory && data.dynamic.trajectory->num_frames > 0)
         copy_trajectory_positions(data.dynamic.molecule->atom_positions, *data.dynamic.trajectory, 0);
@@ -599,7 +580,11 @@ static void draw_representations_window(ApplicationData* data) {
 		if (ImGui::Button("-")) {
 			remove_representation(data, i);
 		}
-		ImGui::InputText("filter", rep.filter.buffer, rep.filter.MAX_LENGTH, 0);
+		if (ImGui::InputText("filter", rep.filter.buffer, rep.filter.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
+			DynamicArray<bool> mask(data->dynamic.molecule->atom_elements.count, false);
+			filter::compute_filter_mask(mask, data->dynamic, rep.filter.buffer);
+			filter::filter_colors(rep.colors, mask);
+		}
 		ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0\0");
 		if (ImGui::Combo("color mapping", (int*)(&rep.color_mapping), "Static Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0\0")) {
 			recompute_colors = true;

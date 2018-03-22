@@ -25,8 +25,9 @@ static inline bool internal_compare(const char* str_a, const char* str_b, int64 
 }
 
 bool compare(CString str_a, CString str_b, bool ignore_case) {
-	int64 len = MIN(str_a.count, str_b.count);
-	return internal_compare(str_a, str_b, len, ignore_case);
+	//int64 len = MIN(str_a.count, str_b.count);
+	if (str_a.count != str_b.count) return false;
+	return internal_compare(str_a, str_b, str_a.count, ignore_case);
 }
 
 bool compare_n(CString str_a, CString str_b, int64 num_chars, bool ignore_case) {
@@ -292,11 +293,13 @@ DynamicArray<CString> ctokenize(CString str, char delimiter) {
 	const char* beg = str.beg();
 	const char* end = str.beg();
 
+	const char* str_end = str.end();
+
 	while (end != str.end() && *end != '\0') {
 		while (end != str.end() && *end != '\0' && *end != delimiter) end++;
 		tokens.push_back(CString(beg, end));
 		beg = end;
-		while (beg != str.end() && *end != '\0' && *beg == delimiter) beg++;
+		while (beg != str.end() && *beg != '\0' && *beg == delimiter) beg++;
 		end = beg;
 	}
 
