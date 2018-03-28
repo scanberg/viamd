@@ -526,6 +526,8 @@ void update(Context* ctx) {
         glfwSwapInterval((int)ctx->window.vsync);
     }
 
+	internal_ctx.window.should_close = (bool)glfwWindowShouldClose((GLFWwindow*)internal_ctx.window.ptr);
+
 	double x, y;
 	glfwGetCursorPos((GLFWwindow*)internal_ctx.window.ptr, &x, &y);
 	vec2 new_coord{ x,y };

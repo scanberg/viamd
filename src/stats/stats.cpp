@@ -263,10 +263,10 @@ bool compute_stats(MoleculeDynamic* dynamic) {
                     }
                 }
 
-                int32 len = snprintf(prop_data_name.beg(), 64, "%s.%s.%i", group->name.beg(), prop.name.beg(), i);
+                snprintf(prop_data_name.beg(), 64, "%s.%s.%i", group->name.beg(), prop.name.beg(), i);
 
                 PropertyData prop_data;
-                prop_data.id = COMPUTE_ID(prop_data_name.beg(), len);
+                prop_data.id = COMPUTE_ID(prop_data_name);
                 prop_data.group_id = group->id;
                 prop_data.property_id = prop.id;
                 prop_data.residue_idx = res_idx;
@@ -309,13 +309,26 @@ void register_group_command(CString command, ResidueMatchFunc func) {
     ctx.group_commands.push_back({id, func});
 }
 
-ID create_group(CString name, CString cmd, CString args) {
+ID create_group(CString name, CString cmd_and_args) {
 	ID grp_id = COMPUTE_ID(name);
 	Group* grp = find_id(ctx.groups, grp_id);
 	if (grp != nullptr) {
 		StringBuffer<32> buf = name;
 		printf("ERROR: GROUP '%s' ALREADY REGISTERED!", buf.beg());
 		return INVALID_ID;
+	}
+	
+	if (cmd_and_args.count == 0) {
+		printf("ERROR: command and arguments is missing\n");
+		return INVALID_ID;
+	}
+
+	auto tokens = ctokenize(cmd_and_args);
+	CString cmd = tokens[0];
+	CString args = "";
+
+	if (tokens.count > 1) {
+		args = { tokens[1].beg(), tokens.back().end() };
 	}
 
 	ID grp_cmd_id = COMPUTE_ID(cmd);
@@ -334,8 +347,6 @@ ID create_group(CString name, CString cmd, CString args) {
     group.args = alloc_string(args);
 	group.cmd_id = grp_cmd_id;
     group.residues = {};
-    //group.residue_indices = nullptr;
-    //group.residue_count = 0;
 
 	ctx.groups.push_back(group);
 
@@ -356,6 +367,9 @@ void remove_group(ID group_id) {
 	for (Property* p = ctx.properties.beg(); p != ctx.properties.end(); p++) {
 		if (p->group_id == group_id) ctx.properties.remove(p);
 	}
+
+	free_string(group->name);
+	free_string(group->args);
 
     ctx.groups.remove(group);
 }
@@ -402,7 +416,7 @@ int32 get_property_count(ID group_id) {
     return 0;
 }
 
-ID create_property(ID group_id, CString name, CString cmd, CString args) {
+ID create_property(ID group_id, CString name, CString cmd_and_args) {
     Group* group = find_id(ctx.groups, group_id);
     if (group == nullptr) {
         StringBuffer<32> buf = name;
@@ -419,6 +433,19 @@ ID create_property(ID group_id, CString name, CString cmd, CString args) {
         printf("ERROR: PROPERTY '%s' ALREADY EXISTS!", buf.beg());
         return INVALID_ID;
     }
+
+	if (cmd_and_args.count == 0) {
+		printf("ERROR: command and arguments is missing\n");
+		return INVALID_ID;
+	}
+
+	auto tokens = ctokenize(cmd_and_args);
+	CString cmd = tokens[0];
+	CString args = "";
+
+	if (tokens.count > 1) {
+		args = { tokens[1].beg(), tokens.back().end() };
+	}
 
     ID prop_cmd_id = COMPUTE_ID(cmd);
     PropertyCommand* prop_cmd = find_id(ctx.property_commands, prop_cmd_id);
@@ -462,6 +489,9 @@ void remove_property(ID prop_id) {
     for (PropertyData* pd = ctx.property_data.beg(); pd != ctx.property_data.end(); pd++) {
         if (pd->property_id == prop_id) ctx.property_data.remove(pd);
     }
+
+	free_string(prop->name);
+	free_string(prop->args);
 
     ctx.properties.remove(prop);
 }

@@ -32,7 +32,7 @@ void clear_stats();
 void store_stats(CString filename);
 void load_stats(CString filename);
 
-ID      create_group(CString name, CString cmd, CString args);
+ID      create_group(CString name, CString cmd_and_args);
 void	remove_group(ID group_id);
 
 ID      get_group(CString name);
@@ -43,7 +43,7 @@ ID      get_property(ID group_id, CString name);
 ID      get_property(ID group_id, int32 idx);
 int32   get_property_count(ID group_id);
 
-ID		create_property(ID group_id, CString name, CString cmd, CString args);
+ID		create_property(ID group_id, CString name, CString cmd_and_args);
 void	remove_property(ID prop_id);
 
 void*        get_property_data(ID prop_id, int32 residue_idx);

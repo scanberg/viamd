@@ -10,6 +10,12 @@ void camera_controller_fps(Camera* camera, bool key_fwd, bool key_bwd, bool key_
 
 void camera_trackball(Camera* camera, vec2 prev_ndc, vec2 curr_ndc);
 void camera_move(Camera* camera, vec3 vec);
+void camera_look_at(Camera* camera, vec3 look_at, vec3 look_up);
+
+mat4 compute_world_to_view_matrix(const Camera& camera);
+mat4 compute_view_to_world_matrix(const Camera& camera);
+mat4 compute_perspective_projection_matrix(const Camera& camera, int width, int height);
+mat4 compute_orthographic_projection_matrix(const Camera& camera, int width, int height);
 
 struct TrackballController {
     struct InputState {

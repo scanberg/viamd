@@ -24,10 +24,6 @@ MoleculeStructure* allocate_and_parse_gro_from_string(CString gro_string) {
         return nullptr;
     }
 
-    vec3 pos, vel, box;
-	char atom_name[8];
-	char res_name[8];
-    int atom_idx, res_idx;
 	int res_count = 0;
     int cur_res = -1;
 
@@ -52,6 +48,11 @@ MoleculeStructure* allocate_and_parse_gro_from_string(CString gro_string) {
 	char buffer[256] = {};
 	String line(buffer, 256);
     for (int i = 0; i < num_atoms; ++i) {
+		vec3 pos, vel;
+		int atom_idx, res_idx;
+		char atom_name[8] = {};
+		char res_name[8] = {};
+
         // Get line first and then scanf the line to avoid bug when velocities are not present in data
 		copy_line(line, gro_string);
         auto result =
@@ -92,6 +93,7 @@ MoleculeStructure* allocate_and_parse_gro_from_string(CString gro_string) {
     }
 
 	//std::getline(ss, buffer); // Get simulation box
+	vec3 box;
 	copy_line(line, gro_string);
     sscanf(line, "%8f %8f %8f", &box.x, &box.y, &box.z);
 

@@ -2,6 +2,46 @@
 #include <core/common.h>
 #include <core/math_utils.h>
 
+mat4 compute_view_to_world_matrix(const Camera& camera) {
+	auto r = glm::mat4_cast(camera.orientation);
+	auto t = glm::translate(mat4(1), camera.position);
+	return  t * r;
+}
+
+mat4 compute_world_to_view_matrix(const Camera& camera) {
+	auto r = glm::mat4_cast(glm::conjugate(camera.orientation));
+	auto t = glm::translate(mat4(1), -camera.position);
+	return r * t;
+}
+
+mat4 compute_perspective_projection_matrix(const Camera& camera, int width, int height) {
+	float aspect = (float)width / (float)height;
+	return glm::perspective(camera.fov_y, aspect, camera.near_plane, camera.far_plane);
+}
+
+// @TODO: This is messed up... what values should one use to control the zoomlevel?
+mat4 compute_orthographic_projection_matrix(const Camera & camera, int width, int height) {
+	float h_w = width * 0.05f;
+	float h_h = height * 0.05f;
+	return glm::ortho(-h_w, h_w, -h_h, h_h, camera.near_plane, camera.far_plane);
+}
+
+void camera_look_at(Camera* camera, vec3 look_at, vec3 look_up) {
+	ASSERT(camera);
+	vec3 look = camera->position - look_at;
+	float len2 = dot(look, look);
+	if (len2 > 0.f) {
+		look /= sqrtf(len2);
+		vec3 right = normalize(cross(look_up, look));
+		// @TODO: Make sure look and look_up dont coincide
+		look_up = cross(look, right);
+
+		camera->orientation = glm::quat_cast(mat3(right, look_up, look));
+	}
+
+	// @TODO: make sure look_up is kept.
+}
+
 void camera_controller_fps(Camera* camera, bool key_fwd, bool key_bwd, bool key_lft, bool key_rht, vec2 mouse_vel, float delta_time, float move_speed,
                            float rot_speed) {
 	(void)rot_speed;
@@ -68,7 +108,6 @@ void camera_move(Camera* camera, vec3 vec) {
 }
 
 static inline vec3 transform_vec(quat q, vec3 v) {
-	//return math::mat3_cast(q) * v;
 	return q * v;
 }
 

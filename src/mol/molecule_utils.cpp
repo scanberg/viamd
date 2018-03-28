@@ -31,6 +31,7 @@ void compute_bounding_box(vec3* min_box, vec3* max_box, const Array<vec3> positi
 }
 
 // @TODO: Fix this, is it possible in theory to get a good interpolation between frames with periodicity without modifying source data?
+// @PERFORMANCE: VECTORIZE THE LIVING SHIET OUT OF THIS
 void linear_interpolation_periodic(Array<vec3> positions, const Array<vec3> prev_pos, const Array<vec3> next_pos, float t, mat3 sim_box) {
     ASSERT(prev_pos.count == positions.count);
     ASSERT(next_pos.count == positions.count);
@@ -226,60 +227,16 @@ DynamicArray<BackboneSegment> compute_backbone_segments(const Array<Residue> res
                     if (lbl[0] == 'o' || lbl[0] == 'O') o_idx = i;
                 }
             }
+
+			if (ca_idx != -1 && n_idx != -1 && c_idx != -1 && o_idx != -1) {
+				printf("ERROR! Could not identify backbone indices for residue %s.\n", res.name.beg());
+				continue;
+			}
+			segments.push_back({ ca_idx, n_idx, c_idx, o_idx });
         }
-        segments.push_back({ca_idx, n_idx, c_idx, o_idx});
     }
 
     return segments;
-}
-
-// @TODO: Is this in use???
-DynamicArray<BackboneSegment> compute_backbone(const Chain& chain, const Array<Residue> residues, const Array<Label> atom_labels) {
-    DynamicArray<BackboneSegment> backbones;
-    for (int32 res_idx = chain.beg_res_idx; res_idx < chain.end_res_idx; res_idx++) {
-        const auto& residue = residues[res_idx];
-        if (is_amino_acid(residue) == false) continue;
-        // find atoms
-        auto ca_idx = -1;
-        // auto ha_idx = -1;
-        // auto cb_idx = -1;
-        auto n_idx = -1;
-        auto c_idx = -1;
-        auto o_idx = -1;
-        for (int32 i = residue.beg_atom_idx; i < residue.end_atom_idx; i++) {
-            const auto& lbl = atom_labels[i];
-            if (ca_idx == -1 && match(lbl, "CA")) ca_idx = i;
-            // if (ha_idx == -1 && match(lbl, "HA")) ha_idx = i;
-            // if (cb_idx == -1 && match(lbl, "CB")) cb_idx = i;
-            if (n_idx == -1 && match(lbl, "N")) n_idx = i;
-            if (c_idx == -1 && match(lbl, "C")) c_idx = i;
-            if (o_idx == -1 && match(lbl, "O")) o_idx = i;
-        }
-        if (ca_idx == -1) {
-            printf("No CA label found for residue[%i]: %s.\n", res_idx, residues[res_idx].name.beg());
-        }
-        /*
-if (ha_idx == -1) {
-    printf("No HA label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
-}
-if (cb_idx == -1) {
-    printf("No CB label found for residue[%i]: %s.\n", res_idx, residues[res_idx].id.beg());
-}
-        */
-        if (n_idx == -1) {
-            printf("No N label found for residue[%i]: %s.\n", res_idx, residues[res_idx].name.beg());
-        }
-        if (c_idx == -1) {
-            printf("No C label found for residue[%i]: %s.\n", res_idx, residues[res_idx].name.beg());
-        }
-        if (o_idx == -1) {
-            printf("No O label found for residue[%i]: %s.\n", res_idx, residues[res_idx].name.beg());
-        }
-
-        backbones.push_back({ca_idx, n_idx, c_idx, o_idx});
-    }
-
-    return backbones;
 }
 
 DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Array<BackboneSegment>& backbone, int num_subdivisions) {
@@ -556,8 +513,7 @@ static bool is_modifier(CString str) {
     if (compare(str, "AND")) return true;
     if (compare(str, "or")) return true;
     if (compare(str, "OR")) return true;
-    if (compare(str, "not")) return true;
-    if (compare(str, "NOT")) return true;
+	return false;
 }
 
 int32 count_parentheses(CString str) {
@@ -611,19 +567,21 @@ DynamicArray<CString> extract_chunks(CString str) {
 
 	CString* chunk = chunks.beg();
 	while (chunk != chunks.end()) {
-		if (chunk->front() == '(')
+		if (chunk->front() == '(') {
 			big_chunks.push_back(*chunk);
-		else if (is_modifier(*chunk))
+			chunk++;
+		}
+		else if (is_modifier(*chunk)) {
 			big_chunks.push_back(*chunk);
+			chunk++;
+		}
 		else {
 			CString* beg_chunk = chunk;
 			CString* end_chunk = chunk + 1;
 			while (end_chunk != chunks.end() && !is_modifier(*end_chunk) && end_chunk->front() != '(') end_chunk++;
-			if (end_chunk == chunks.end()) end_chunk--;
-			big_chunks.push_back({ beg_chunk->beg(), end_chunk->end() });
+			big_chunks.push_back({ beg_chunk->beg(), (end_chunk-1)->end() });
 			chunk = end_chunk;
 		}
-		chunk++;
 	}
 
 	return big_chunks;
@@ -662,8 +620,6 @@ bool internal_filter_mask(Array<bool> mask, const MoleculeDynamic& dyn, CString 
 	DynamicArray<CString> chunks = extract_chunks(filter);
 	DynamicArray<bool> chunk_mask(mask.count);
 
-	CString* chunk = chunks.beg();
-
 	bool state_and = true;
 	bool state_or = false;
 	bool state_not = false;
@@ -694,6 +650,12 @@ bool internal_filter_mask(Array<bool> mask, const MoleculeDynamic& dyn, CString 
 				}
 
 				auto args = tokens.sub_array(1);
+
+				while (args.count > 0 && compare(args[0], "not", true)) {
+					state_not = !state_not;
+					args = args.sub_array(1);
+				}
+
 				if (!cmd->func(chunk_mask, dyn, args)) {
 					StringBuffer<32> buf = tokens[0];
 					printf("ERROR! could not parse command: '%s' with arguments: ", buf.beg());
@@ -905,7 +867,7 @@ void initialize() {
                                    for (int i = 0; i < args.count; i++) {
                                        auto res = to_int(args[i]);
                                        if (!res.success) return false;
-                                       int chain_idx = res.value - 1;
+                                       ChainIdx chain_idx = (ChainIdx)res.value - 1;
                                        if (chain_idx < 0 || dyn.molecule->chains.count <= chain_idx) return false;
                                        Chain chain = get_chain(*dyn.molecule, chain_idx);
                                        int beg = get_atom_beg_idx(*dyn.molecule, chain);
@@ -951,8 +913,10 @@ static GLuint vao = 0;
 static GLuint ibo = 0;
 static GLuint buf_position_radius = 0;
 static GLuint buf_color = 0;
+static GLuint buf_index = 0;
 static GLuint tex_position_radius = 0;
 static GLuint tex_color = 0;
+static GLuint tex_index = 0;
 
 static GLint uniform_loc_view_mat = -1;
 static GLint uniform_loc_proj_mat = -1;
@@ -960,6 +924,7 @@ static GLint uniform_loc_inv_proj_mat = -1;
 static GLint uniform_loc_fov = -1;
 static GLint uniform_loc_tex_pos_rad = -1;
 static GLint uniform_loc_tex_color = -1;
+static GLint uniform_loc_tex_index = -1;
 
 static const char* v_shader_src = R"(
 #version 150 core
@@ -970,6 +935,7 @@ uniform mat4 u_inv_proj_mat;
 
 uniform samplerBuffer u_tex_pos_rad;
 uniform samplerBuffer u_tex_color;
+uniform isamplerBuffer u_tex_index;
 
 out Fragment {
     flat vec4 color;
@@ -1010,6 +976,7 @@ void main() {
 
 	vec4 pos_rad = texelFetch(u_tex_pos_rad, IID);
 	vec4 color = texelFetch(u_tex_color, IID);
+	int index = texelFetch(u_tex_index, IID).x;
 
 	vec3 pos = pos_rad.xyz;
 	float rad = pos_rad.w;
@@ -1020,7 +987,7 @@ void main() {
 
     out_frag.color = color;
     out_frag.view_sphere = vec4(view_coord.xyz, rad);
-	out_frag.picking_color = pack_u32(uint(IID));
+	out_frag.picking_color = pack_u32(uint(index));
 
 	// Focal length
 	float fle = u_proj_mat[1][1];
@@ -1181,9 +1148,16 @@ static void initialize() {
         glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
 
-    if (!tex_position_radius) glGenTextures(1, &tex_position_radius);
+	if (!buf_index) {
+		glGenBuffers(1, &buf_index);
+		glBindBuffer(GL_ARRAY_BUFFER, buf_index);
+		glBufferData(GL_ARRAY_BUFFER, MEGABYTES(5), 0, GL_STREAM_DRAW);
+		glBindBuffer(GL_ARRAY_BUFFER, 0);
+	}
 
+    if (!tex_position_radius) glGenTextures(1, &tex_position_radius);
     if (!tex_color) glGenTextures(1, &tex_color);
+	if (!tex_index) glGenTextures(1, &tex_index);
 
     glBindVertexArray(vao);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
@@ -1195,10 +1169,19 @@ static void initialize() {
     uniform_loc_fov = glGetUniformLocation(program, "u_fov");
     uniform_loc_tex_pos_rad = glGetUniformLocation(vdw::program, "u_tex_pos_rad");
     uniform_loc_tex_color = glGetUniformLocation(vdw::program, "u_tex_color");
+	uniform_loc_tex_index = glGetUniformLocation(vdw::program, "u_tex_index");
 }
 
 static void shutdown() {
     if (program) glDeleteProgram(program);
+
+	if (buf_position_radius) glDeleteBuffers(1, &buf_position_radius);
+	if (buf_color) glDeleteBuffers(1, &buf_color);
+	if (!buf_index) glDeleteBuffers(1, &buf_index);
+
+	if (tex_position_radius) glDeleteTextures(1, &tex_position_radius);
+	if (tex_color) glDeleteTextures(1, &tex_color);
+	if (tex_index) glDeleteTextures(1, &tex_index);
 }
 
 }  // namespace vdw
@@ -2029,6 +2012,8 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
     vec4* gpu_pos_rad = (vec4*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
     glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_color);
     uint32* gpu_color = (uint32*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+	glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_index);
+	int32* gpu_index = (int32*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
 
     // @ TODO: DISCARD ANY ZERO RADII OR ZERO COLOR ALPHA ATOMS HERE
     for (int64_t i = 0; i < count; i++) {
@@ -2036,9 +2021,12 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
         if ((atom_colors[i] & 0xff000000) == 0) continue;
         gpu_pos_rad[draw_count] = vec4(atom_positions[i], atom_radii[i] * radii_scale);
         gpu_color[draw_count] = atom_colors[i];
+		gpu_index[draw_count] = i;
         draw_count++;
     }
 
+	glUnmapBuffer(GL_ARRAY_BUFFER);
+	glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_color);
     glUnmapBuffer(GL_ARRAY_BUFFER);
     glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_position_radius);
     glUnmapBuffer(GL_ARRAY_BUFFER);
@@ -2062,9 +2050,15 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
     glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_color);
     glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, vdw::buf_color);
 
+	// Texture 2
+	glActiveTexture(GL_TEXTURE2);
+	glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_index);
+	glTexBuffer(GL_TEXTURE_BUFFER, GL_R32I, vdw::buf_index);
+
     // Uniforms
     glUniform1i(vdw::uniform_loc_tex_pos_rad, 0);
     glUniform1i(vdw::uniform_loc_tex_color, 1);
+	glUniform1i(vdw::uniform_loc_tex_index, 2);
     glUniformMatrix4fv(vdw::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
     glUniformMatrix4fv(vdw::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
     glUniformMatrix4fv(vdw::uniform_loc_inv_proj_mat, 1, GL_FALSE, &inv_proj_mat[0][0]);
