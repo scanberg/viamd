@@ -47,6 +47,7 @@ struct MainFramebuffer {
 	GLuint id = 0;
 	GLuint tex_depth = 0;
 	GLuint tex_color = 0;
+	GLuint tex_normal = 0;
 	GLuint tex_picking = 0;
 	int width = 0;
 	int height = 0;
@@ -81,7 +82,7 @@ struct ApplicationData {
     TrackballController controller;
 
     // --- MOL DATA ---
-	MoleculeDynamic dynamic;
+	MoleculeDynamic dynamic = { nullptr, nullptr };
 
 	// --- MOL VISUALS ---
     DynamicArray<float> atom_radii;
@@ -139,7 +140,7 @@ struct ApplicationData {
 static void draw_main_menu(ApplicationData* data);
 static void draw_representations_window(ApplicationData* data);
 static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y);
-static void draw_statistics();
+static void draw_statistics(ApplicationData* data);
 
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height);
 static void destroy_main_framebuffer(MainFramebuffer* fbo);
@@ -171,41 +172,49 @@ int main(int, char**) {
 	ImGui::StyleColorsClassic();
 
 	bool show_demo_window = false;
-	vec4 clear_color = vec4(0.6, 0.6, 0.6, 1);
+	vec4 clear_color = vec4(1, 1, 1, 1);
 	vec4 clear_index = vec4(1, 1, 1, 1);
-
 	
     //data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
     //data.dynamic.molecule= allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
 	//data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
-	data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
-	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/water/water.gro");
-	//data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid-6T/conf-60-6T.gro");
+	//data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
+	//data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/water/water.gro");
+	data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid-6T/conf-60-6T.gro");
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/yuya/nowat_npt.gro");
-	//auto res = load_pdb_from_file(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
-	//data.dynamic = allocate_and_load_pdb_from_file(PROJECT_SOURCE_DIR "/data/1ALA-560ns.pdb");
+	//data.dynamic = allocate_and_load_pdb_from_file(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
+	//data.dynamic = allocate_and_load_pdb_from_file(PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
 
     //data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
     //data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
 	//data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
-	data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
-	//data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid-6T/prod-centered.xtc");
+	//data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
+	data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid-6T/prod-centered.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/yuya/traj-centered.xtc");
-	read_trajectory_async(data.dynamic.trajectory);
+	if (data.dynamic.trajectory)
+		read_trajectory_async(data.dynamic.trajectory);
 
 	auto g1 = stats::create_group("group1", "resid ALA");
     auto b1 = stats::create_property(g1, "b1", "dist 1 2");
 	auto a1 = stats::create_property(g1, "a1", "angle 1 2 3");
 	auto d1 = stats::create_property(g1, "d1", "dist 1 2 3 4");
 
-	stats::compute_stats(&data.dynamic);
+	//stats::compute_stats(&data.dynamic);
 
-	DynamicArray<BackboneSegment> backbone = compute_backbone_segments(get_residues(*data.dynamic.molecule, get_chain(*data.dynamic.molecule, 0)), data.dynamic.molecule->atom_labels);
-	BackboneAnglesTrajectory backbone_angles = compute_backbone_angles_trajectory(*data.dynamic.trajectory, data.dynamic.molecule->backbone_segments);
-	DynamicArray<BackboneAngles> current_backbone_angles = compute_backbone_angles(data.dynamic.molecule->atom_positions, backbone);
-	DynamicArray<SplineSegment> current_spline = compute_spline(data.dynamic.molecule->atom_positions, backbone, 8);
+	DynamicArray<BackboneSegment> backbone;
+	BackboneAnglesTrajectory backbone_angles;
+	DynamicArray<BackboneAngles> current_backbone_angles;
+	DynamicArray<SplineSegment> current_spline;
+
+	if (data.dynamic.molecule->chains.count > 0) {
+		backbone = compute_backbone_segments(get_residues(*data.dynamic.molecule, get_chain(*data.dynamic.molecule, 0)), data.dynamic.molecule->atom_labels);
+		if (data.dynamic.trajectory)
+			backbone_angles = compute_backbone_angles_trajectory(*data.dynamic.trajectory, data.dynamic.molecule->backbone_segments);
+		current_backbone_angles = compute_backbone_angles(data.dynamic.molecule->atom_positions, backbone);
+		current_spline = compute_spline(data.dynamic.molecule->atom_positions, backbone, 8);
+	}
 
     if (data.dynamic.trajectory && data.dynamic.trajectory->num_frames > 0)
         copy_trajectory_positions(data.dynamic.molecule->atom_positions, *data.dynamic.trajectory, 0);
@@ -310,8 +319,12 @@ int main(int, char**) {
             data.controller.input.rotate_button = data.ctx.input.mouse.down[0];
             data.controller.input.pan_button = data.ctx.input.mouse.down[1];
             data.controller.input.dolly_button = data.ctx.input.mouse.down[2];
-            data.controller.input.prev_mouse_ndc = data.ctx.input.mouse.ndc_prev;
-            data.controller.input.curr_mouse_ndc = data.ctx.input.mouse.ndc_curr;
+			data.controller.input.mouse_coord_prev = data.ctx.input.mouse.coord_prev;
+			data.controller.input.mouse_coord_curr = data.ctx.input.mouse.coord_curr;
+			data.controller.input.screen_size = vec2(data.ctx.window.width, data.ctx.window.height);
+
+            //data.controller.input.prev_mouse_ndc = data.ctx.input.mouse.ndc_prev;
+            //data.controller.input.curr_mouse_ndc = data.ctx.input.mouse.ndc_curr;
             data.controller.input.dolly_delta = data.ctx.input.mouse.scroll.y;
 			data.controller.update();
 			data.camera.position = data.controller.position;
@@ -330,24 +343,25 @@ int main(int, char**) {
         // RENDER TO FBO
 		mat4 view_mat = compute_world_to_view_matrix(data.camera);
 		mat4 proj_mat = compute_perspective_projection_matrix(data.camera, data.fbo.width, data.fbo.height);
+		mat4 inv_proj_mat = math::inverse(proj_mat);
 
         glViewport(0, 0, data.fbo.width, data.fbo.height);
 
-		const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+		const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2 };
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.id);
 
+		// Clear color, normal and depth buffer
+		glDrawBuffers(2, draw_buffers);
+		glClearColor(clear_color.x, clear_color.y, clear_color.z, clear_color.w);
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
 		// Clear picking buffer
-		glDrawBuffer(GL_COLOR_ATTACHMENT1);
+		glDrawBuffer(GL_COLOR_ATTACHMENT2);
 		glClearColor(clear_index.x, clear_index.y, clear_index.z, clear_index.w);
 		glClear(GL_COLOR_BUFFER_BIT);
 
-		// Clear color buffer
-		glClearColor(clear_color.x, clear_color.y, clear_color.z, clear_color.w);
-		glDrawBuffer(GL_COLOR_ATTACHMENT0);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-		// Enable both color and picking
-		glDrawBuffers(2, draw_buffers);
+		// Enable all draw buffers
+		glDrawBuffers(3, draw_buffers);
 		glEnable(GL_DEPTH_TEST);
 		glDepthFunc(GL_LESS);
 
@@ -375,8 +389,11 @@ int main(int, char**) {
 		glDrawBuffer(GL_BACK);
         glClear(GL_COLOR_BUFFER_BIT);
 
+		// Render deferred
+		postprocessing::render_deferred(data.fbo.tex_depth, data.fbo.tex_color, data.fbo.tex_normal, inv_proj_mat);
+
         // Apply tone mapping
-        postprocessing::apply_tonemapping(data.fbo.tex_color);
+        //postprocessing::apply_tonemapping(data.fbo.tex_color);
 
 		if (data.debug_draw.backbone.enabled) {
 			draw::draw_backbone(backbone, data.dynamic.molecule->atom_positions, view_mat, proj_mat);
@@ -386,7 +403,7 @@ int main(int, char**) {
 		}
 
 		if (data.ssao.enabled) {
-			postprocessing::apply_ssao(data.fbo.tex_depth, proj_mat, data.ssao.intensity, data.ssao.radius);
+			postprocessing::apply_ssao(data.fbo.tex_depth, data.fbo.tex_normal, proj_mat, data.ssao.intensity, data.ssao.radius);
 		}
 
 		// GUI ELEMENTS
@@ -403,7 +420,7 @@ int main(int, char**) {
 			draw_representations_window(&data);
 		}
 
-		draw_statistics();
+		//draw_statistics(&data);
 
 		// 3. Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
 		if (show_demo_window) {
@@ -473,7 +490,7 @@ static float compute_avg_ms(float dt) {
 uint32 get_picking_id(uint32 fbo_id, int32 x, int32 y) {
 	unsigned char color[4];
 	glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_id);
-	glReadBuffer(GL_COLOR_ATTACHMENT1);
+	glReadBuffer(GL_COLOR_ATTACHMENT2);
 	glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, color);
 	glReadBuffer(GL_NONE);
 	glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
@@ -665,20 +682,26 @@ static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, in
     ImGui::PopStyleColor();
 }
 
-static void draw_statistics() {
+static void draw_statistics(ApplicationData* data) {
 	//if (!stats) return;
 
 	ImGui::Begin("Timelines");
 	auto group_id = stats::get_group("group1");
 	stats::get_property_count(group_id);
 
+	int32 frame_idx = (int32)data->time;
+
 	for (int i = 0; i < stats::get_property_count(group_id); i++) {
 		auto prop_id = stats::get_property(group_id, i);
 		auto avg_data = stats::get_property_data(prop_id, 0);
 		auto count = stats::get_property_data_count(prop_id);
 		auto frame = ImGui::BeginPlotFrame(stats::get_property_name(prop_id), ImVec2(0, 100), 0, count, -2.f, 2.f);
-		ImGui::PlotFrameLine(frame, "group1", (float*)avg_data);
-		ImGui::EndPlotFrame(frame);
+		ImGui::PlotFrameLine(frame, "group1", (float*)avg_data, ImGui::FrameLineStyle(), frame_idx);
+		int32 new_frame_idx = ImGui::EndPlotFrame(frame, frame_idx);
+		if (new_frame_idx != -1) {
+			frame_idx = new_frame_idx;
+			data->time = (float64)frame_idx;
+		}
 	}
 
 	//stats::get_group_properties();
@@ -724,6 +747,8 @@ static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height) {
 		glGenTextures(1, &fbo->tex_depth);
 	if (!fbo->tex_color)
 		glGenTextures(1, &fbo->tex_color);
+	if (!fbo->tex_normal)
+		glGenTextures(1, &fbo->tex_normal);
 	if (!fbo->tex_picking)
 		glGenTextures(1, &fbo->tex_picking);
 
@@ -735,11 +760,18 @@ static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
 	glBindTexture(GL_TEXTURE_2D, fbo->tex_color);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+	glBindTexture(GL_TEXTURE_2D, fbo->tex_normal);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16, width, height, 0, GL_RG, GL_UNSIGNED_SHORT, nullptr);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
 	glBindTexture(GL_TEXTURE_2D, fbo->tex_picking);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
@@ -757,7 +789,8 @@ static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height) {
 	if (attach_textures) {
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, fbo->tex_depth, 0);
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->tex_color, 0);
-		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, fbo->tex_picking, 0);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, fbo->tex_normal, 0);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, fbo->tex_picking, 0);
 	}
 
 	ASSERT(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
@@ -769,6 +802,7 @@ static void destroy_main_framebuffer(MainFramebuffer* fbo) {
 	if (fbo->id) glDeleteFramebuffers(1, &fbo->id);
 	if (fbo->tex_depth) glDeleteTextures(1, &fbo->tex_depth);
 	if (fbo->tex_color) glDeleteTextures(1, &fbo->tex_color);
+	if (fbo->tex_normal) glDeleteTextures(1, &fbo->tex_normal);
 	if (fbo->tex_picking) glDeleteTextures(1, &fbo->tex_picking);
 }
 

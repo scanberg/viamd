@@ -17,7 +17,7 @@ struct Bond {
 
 using Label    = StringBuffer<8>;
 using AtomIdx  = int32;
-using ResIdx   = int16;
+using ResIdx   = int32;
 using ChainIdx = int16;
 
 struct Residue {

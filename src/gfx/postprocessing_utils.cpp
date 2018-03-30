@@ -136,6 +136,7 @@ static GLint uniform_loc_linearize_depth_tex_depth = -1;
 
 static GLint uniform_block_index_hbao_control_buffer = -1;
 static GLint uniform_loc_hbao_tex_linear_depth = -1;
+static GLint uniform_loc_hbao_tex_normal = -1;
 static GLint uniform_loc_hbao_tex_random = -1;
 
 static GLint uniform_loc_blur_sharpness = -1;
@@ -249,6 +250,7 @@ layout(std140) uniform u_control_buffer {
 };
 
 uniform sampler2D u_tex_linear_depth;
+uniform sampler2D u_tex_normal;
 uniform sampler2D u_tex_random;
 
 in vec2 tc;
@@ -264,9 +266,9 @@ vec3 UVToView(vec2 uv, float eye_z) {
   return vec3((uv * control.proj_info.xy + control.proj_info.zw) * (control.proj_ortho != 0 ? 1. : eye_z), eye_z);
 }
 
-vec3 FetchViewPos(vec2 UV) {
-  float ViewDepth = textureLod(u_tex_linear_depth,UV,0).x;
-  return UVToView(UV, ViewDepth);
+vec3 FetchViewPos(vec2 uv) {
+  float ViewDepth = textureLod(u_tex_linear_depth, uv, 0).x;
+  return UVToView(uv, ViewDepth);
 }
 
 vec3 MinDiff(vec3 P, vec3 Pr, vec3 Pl) {
@@ -281,6 +283,22 @@ vec3 ReconstructNormal(vec2 UV, vec3 P) {
   vec3 Pt = FetchViewPos(UV + vec2(0, control.inv_full_res.y));
   vec3 Pb = FetchViewPos(UV + vec2(0, -control.inv_full_res.y));
   return normalize(cross(MinDiff(P, Pr, Pl), MinDiff(P, Pt, Pb)));
+}
+
+vec3 DecodeNormal(vec2 enc) {
+    vec2 fenc = enc*4-2;
+    float f = dot(fenc,fenc);
+    float g = sqrt(1-f/4.0);
+    vec3 n;
+    n.xy = fenc*g;
+    n.z = 1-f/2.0;
+    return n;
+}
+
+vec3 FetchViewNormal(vec2 uv) {
+	vec2 enc = textureLod(u_tex_normal, uv, 0).xy;
+	vec3 n = DecodeNormal(enc);
+	return n * vec3(1,1,-1);
 }
 
 //----------------------------------------------------------------------------------
@@ -356,7 +374,7 @@ void main() {
 
   // Reconstruct view-space normal from nearest neighbors
 #if AO_USE_NORMAL
-  vec3 ViewNormal = -ReconstructNormal(uv, ViewPosition);
+  vec3 ViewNormal = FetchViewNormal(uv);
 #else
   vec3 ViewNormal = vec3(0,0,-1);
 #endif
@@ -557,10 +575,12 @@ void initialize(int width, int height) {
 
 	uniform_block_index_hbao_control_buffer = glGetUniformBlockIndex(prog_hbao, "u_control_buffer");
 	uniform_loc_hbao_tex_linear_depth = glGetUniformLocation(prog_hbao, "u_tex_linear_depth");
+	uniform_loc_hbao_tex_normal = glGetUniformLocation(prog_hbao, "u_tex_normal");
 	uniform_loc_hbao_tex_random = glGetUniformLocation(prog_hbao, "u_tex_random");
 
 	ASSERT(uniform_block_index_hbao_control_buffer != -1);
 	ASSERT(uniform_loc_hbao_tex_linear_depth != -1);
+	ASSERT(uniform_loc_hbao_tex_normal != -1);
 	ASSERT(uniform_loc_hbao_tex_random != -1);
 
 	uniform_loc_blur_sharpness = glGetUniformLocation(prog_blur_second, "u_sharpness");
@@ -642,6 +662,99 @@ void shutdown() {
 
 }  // namespace ssao
 
+namespace deferred {
+
+static GLuint prog_deferred = 0;
+static GLint uniform_loc_texture_depth = -1;
+static GLint uniform_loc_texture_color = -1;
+static GLint uniform_loc_texture_normal = -1;
+static GLint uniform_loc_inv_proj_mat = -1;
+static const char* f_shader_src_deferred = R"(
+#version 150 core
+
+uniform sampler2D u_texture_depth;
+uniform sampler2D u_texture_color;
+uniform sampler2D u_texture_normal;
+
+uniform mat4 u_inv_proj_mat;
+
+in vec2 tc;
+out vec4 out_frag;
+
+vec4 depth_to_view_coord(float depth) {
+    vec4 clip_coord = vec4(vec3(tc, depth) * 2.0 - 1.0, 1.0);
+    vec4 view_coord = u_inv_proj_mat * clip_coord;
+    return view_coord / view_coord.w;
+}
+
+float fresnel(float H_dot_V) {   
+    const float n1 = 1.0;
+    const float n2 = 1.5;
+    const float R0 = pow((n1-n2)/(n1+n2), 2);
+
+    return R0 + (1.0 - R0)*pow(1.0 - H_dot_V, 5);
+}
+
+// https://aras-p.info/texts/CompactNormalStorage.html
+vec3 decode_normal(vec2 enc) {
+    vec2 fenc = enc*4-2;
+    float f = dot(fenc,fenc);
+    float g = sqrt(1-f/4.0);
+    vec3 n;
+    n.xy = fenc*g;
+    n.z = 1-f/2.0;
+    return n;
+}
+
+vec3 shade(vec3 color, vec3 V, vec3 N) {
+    const vec3 env_radiance = vec3(0.5);
+    const vec3 dir_radiance = vec3(0.5);
+    const vec3 L = normalize(vec3(1));
+    const float spec_exp = 10.0;
+
+    vec3 H = normalize(L + V);
+    float H_dot_V = max(0.0, dot(H, V));
+    float N_dot_H = max(0.0, dot(N, H));
+    float N_dot_L = max(0.0, dot(N, L));
+    float fr = fresnel(H_dot_V);
+
+    vec3 diffuse = color.rgb * (env_radiance + N_dot_L * dir_radiance);
+    vec3 specular = dir_radiance * pow(N_dot_H, spec_exp);
+
+    return mix(diffuse, specular, fr);
+}
+
+void main() {
+	float depth = texelFetch(u_texture_depth, ivec2(gl_FragCoord.xy), 0).x;
+	if (depth == 1.0) discard;
+
+	vec4 color = texelFetch(u_texture_color, ivec2(gl_FragCoord.xy), 0);
+	vec3 normal = decode_normal(texelFetch(u_texture_normal, ivec2(gl_FragCoord.xy), 0).xy);
+	
+	vec4 view_coord = depth_to_view_coord(depth);
+
+	vec3 N = normal;
+	vec3 V = -normalize(view_coord.xyz);
+
+	vec3 result = shade(color.rgb, V, N);
+
+	out_frag = vec4(result, color.a);
+}
+)";
+
+void initialize() {
+	if (!prog_deferred) setup_program(&prog_deferred, "deferred", f_shader_src_deferred);
+	uniform_loc_texture_depth = glGetUniformLocation(prog_deferred, "u_texture_depth");
+	uniform_loc_texture_color = glGetUniformLocation(prog_deferred, "u_texture_color");
+	uniform_loc_texture_normal = glGetUniformLocation(prog_deferred, "u_texture_normal");
+	uniform_loc_inv_proj_mat = glGetUniformLocation(prog_deferred, "u_inv_proj_mat");
+}
+
+void shutdown() {
+	if (prog_deferred) glDeleteProgram(prog_deferred);
+}
+}
+
 namespace tonemapping {
 static GLuint prog_tonemap = 0;
 static GLint uniform_loc_texture = -1;
@@ -692,7 +805,7 @@ vec3 hejl_dawsson(vec3 c) {
 
 void main() {
 	vec4 color = texelFetch(u_texture, ivec2(gl_FragCoord.xy), 0);
-	out_frag = vec4(uncharted2(color.rgb), color.a);
+	out_frag = vec4(color.rgb, color.a);
 }
 )";
 
@@ -731,11 +844,13 @@ void initialize(int width, int height) {
     }
 
     ssao::initialize(width, height);
+	deferred::initialize();
     tonemapping::initialize();
 }
 
 void shutdown() {
     ssao::shutdown();
+	deferred::shutdown();
     tonemapping::shutdown();
 
     if (vao) glDeleteVertexArrays(1, &vao);
@@ -743,8 +858,10 @@ void shutdown() {
     if (v_shader_fs_quad) glDeleteShader(v_shader_fs_quad);
 }
 
-void apply_ssao(GLuint depth_tex, const mat4& proj_matrix, float intensity, float radius, float bias) {
+void apply_ssao(GLuint depth_tex, GLuint normal_tex, const mat4& proj_matrix, float intensity, float radius, float bias) {
 	ASSERT(glIsTexture(depth_tex));
+	ASSERT(glIsTexture(normal_tex));
+
 	ssao::setup_ubo_hbao_data(ssao::ubo_hbao_data, ssao::tex_width, ssao::tex_height, proj_matrix, intensity, radius, bias);
 
 	float m22 = proj_matrix[2][2];
@@ -784,12 +901,15 @@ void apply_ssao(GLuint depth_tex, const mat4& proj_matrix, float intensity, floa
 	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, ssao::tex_linear_depth);
 	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, normal_tex);
+	glActiveTexture(GL_TEXTURE2);
 	glBindTexture(GL_TEXTURE_2D, ssao::tex_random);
 
 	glBindBufferBase(GL_UNIFORM_BUFFER, 0, ssao::ubo_hbao_data);
 	glUniformBlockBinding(ssao::prog_hbao, ssao::uniform_block_index_hbao_control_buffer, 0);
 	glUniform1i(ssao::uniform_loc_hbao_tex_linear_depth, 0);
-	glUniform1i(ssao::uniform_loc_hbao_tex_random, 1);
+	glUniform1i(ssao::uniform_loc_hbao_tex_normal, 1);
+	glUniform1i(ssao::uniform_loc_hbao_tex_random, 2);
 
 	glDrawArrays(GL_TRIANGLES, 0, 3);
 
@@ -827,6 +947,28 @@ void apply_ssao(GLuint depth_tex, const mat4& proj_matrix, float intensity, floa
 	glColorMask(1, 1, 1, 1);
 
 	glBindVertexArray(0);
+}
+
+void render_deferred(GLuint depth_tex, GLuint color_tex, GLuint normal_tex, const mat4& inv_proj_matrix) {
+	ASSERT(glIsTexture(depth_tex));
+	ASSERT(glIsTexture(color_tex));
+	ASSERT(glIsTexture(normal_tex));
+
+	glUseProgram(deferred::prog_deferred);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, depth_tex);
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, color_tex);
+	glActiveTexture(GL_TEXTURE2);
+	glBindTexture(GL_TEXTURE_2D, normal_tex);
+	glUniform1i(deferred::uniform_loc_texture_depth, 0);
+	glUniform1i(deferred::uniform_loc_texture_color, 1);
+	glUniform1i(deferred::uniform_loc_texture_normal, 2);
+	glUniformMatrix4fv(deferred::uniform_loc_inv_proj_mat, 1, GL_FALSE, &inv_proj_matrix[0][0]);
+	glBindVertexArray(vao);
+	glDrawArrays(GL_TRIANGLES, 0, 3);
+	glBindVertexArray(0);
+	glUseProgram(0);
 }
 
 void apply_tonemapping(GLuint color_tex) {

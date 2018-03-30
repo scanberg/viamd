@@ -16,6 +16,7 @@ struct TrajOnFinishFunctor {
 };
 template<typename Functor = TrajOnFinishFunctor>
 void read_trajectory_async(Trajectory* traj, Functor on_finish = TrajOnFinishFunctor()) {
+	ASSERT(traj);
 	if (traj->path_to_file) {
 		std::thread([traj, on_finish]() {
 			read_trajectory(traj);

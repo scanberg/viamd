@@ -459,6 +459,7 @@ void initialize(Context* ctx, int width, int height, const char* title) {
     internal_ctx.window.title = title;
     internal_ctx.window.width = width;
     internal_ctx.window.height = height;
+	internal_ctx.window.vsync = true;
 
 	int w, h;
 	glfwGetFramebufferSize(window, &w, &h);
@@ -473,6 +474,7 @@ void initialize(Context* ctx, int width, int height, const char* title) {
     vec2 half_res = vec2(width, height) * 0.5f;
     internal_ctx.input.mouse.ndc_prev = (vec2(x, height-y) - half_res) / half_res;
     internal_ctx.input.mouse.ndc_curr = internal_ctx.input.mouse.ndc_prev;
+
 
     glfwSetMouseButtonCallback(window, mouse_button_callback);
     glfwSetScrollCallback(window, mouse_scroll_callback);

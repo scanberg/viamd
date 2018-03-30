@@ -6,6 +6,7 @@
 template <typename T>
 struct Array {
     Array(T* _data = 0, int64 _count = 0) : data(_data), count(_count) {}
+	Array(T* _data_beg, T* _data_end) : data(_data_beg), count(_data_end - _data_beg) {}
 
     template <size_t N>
     Array(const T (&c_arr)[N]) : data(c_arr), count(N) {}
@@ -180,7 +181,7 @@ struct DynamicArray : Array<T> {
         } else {
             if (capacity < new_count) {
                 reserve(_grow_capacity(new_count));
-				memset(this->data + this->count, 0, new_count - this->count);
+				memset(this->data + this->count, 0, (new_count - this->count) * sizeof(T));
                 this->count = new_count;
             }
         }

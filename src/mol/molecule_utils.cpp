@@ -163,23 +163,31 @@ DynamicArray<Chain> compute_chains(const Array<Residue> residues, const Array<Bo
         ASSERT(false, "Not implemented Yeti");
     }
 
+	if (residue_bonds.count == 0) {
+		// No residue bonds, No chains.
+		return {};
+	}
+
     DynamicArray<int> residue_chains(residues.count, -1);
 
-    int curr_chain_idx = 0;
-    int res_bond_idx = 0;
-    for (int i = 0; i < residues.count; i++) {
-        if (residue_chains[i] == -1) residue_chains[i] = curr_chain_idx++;
-        for (; res_bond_idx < residue_bonds.count; res_bond_idx++) {
-            const auto& res_bond = residue_bonds[res_bond_idx];
-            if (i == res_bond.idx_a) {
-                residue_chains[res_bond.idx_b] = residue_chains[res_bond.idx_a];
-            } else if (res_bond.idx_a > i)
-                break;
-        }
-    }
+	if (residue_bonds.count > 0) {
+		int curr_chain_idx = 0;
+		int res_bond_idx = 0;
+		for (int i = 0; i < residues.count; i++) {
+			if (residue_chains[i] == -1) residue_chains[i] = curr_chain_idx++;
+			for (; res_bond_idx < residue_bonds.count; res_bond_idx++) {
+				const auto& res_bond = residue_bonds[res_bond_idx];
+				if (i == res_bond.idx_a) {
+					residue_chains[res_bond.idx_b] = residue_chains[res_bond.idx_a];
+				}
+				else if (res_bond.idx_a > i)
+					break;
+			}
+		}
+	}
 
     DynamicArray<Chain> chains;
-    curr_chain_idx = -1;
+    int curr_chain_idx = -1;
     for (int i = 0; i < residue_chains.count; i++) {
         if (residue_chains[i] != curr_chain_idx) {
             curr_chain_idx = residue_chains[i];
@@ -228,7 +236,7 @@ DynamicArray<BackboneSegment> compute_backbone_segments(const Array<Residue> res
                 }
             }
 
-			if (ca_idx != -1 && n_idx != -1 && c_idx != -1 && o_idx != -1) {
+			if (ca_idx == -1 || n_idx == -1 || c_idx == -1 || o_idx == -1) {
 				printf("ERROR! Could not identify backbone indices for residue %s.\n", res.name.beg());
 				continue;
 			}
@@ -430,7 +438,8 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
                     const auto& res = mol.residues[mol.atom_residue_indices[i]];
                     unsigned int h = hash::crc32(res.name.beg(), res.name.MAX_LENGTH);
                     float hue = (h % 32) / 32.f;
-                    vec3 c = math::hcl_to_rgb(vec3(hue, 0.8f, 0.8f));
+                    //vec3 c = math::hcl_to_rgb(vec3(hue, 0.1f, 1.0f));
+					vec3 c = math::hsv_to_rgb(vec3(hue, 0.7f, 1.0f));
                     unsigned char color[4];
                     color[0] = (unsigned char)(c.x * 255);
                     color[1] = (unsigned char)(c.y * 255);
@@ -1033,18 +1042,13 @@ in Fragment {
 layout (depth_greater) out float gl_FragDepth;
 #endif
 layout(location = 0) out vec4 out_color;
-layout(location = 1) out vec4 out_picking_id;
+layout(location = 1) out vec4 out_normal;
+layout(location = 2) out vec4 out_picking_id;
 
-float fresnel(float H_dot_V) {   
-    const float n1 = 1.0;
-    const float n2 = 1.5;
-    const float R0 = pow((n1-n2)/(n1+n2), 2);
-
-    return R0 + (1.0 - R0)*pow(1.0 - H_dot_V, 5);
-}
-
-vec3 srgb_to_rgb_approx(vec3 srgb) {
-    return pow(srgb, vec3(2.2));
+// https://aras-p.info/texts/CompactNormalStorage.html
+vec4 encode_normal (vec3 n) {
+    float p = sqrt(n.z*8+8);
+    return vec4(n.xy/p + 0.5,0,0);
 }
 
 void main() {
@@ -1063,29 +1067,10 @@ void main() {
 
     vec3 view_hit = d * t;
     vec3 view_normal = (view_hit - center) / radius;
-    vec4 color = in_frag.color;
-
-    // Compute Color
-    const vec3 env_radiance = vec3(1.0);
-    const vec3 dir_radiance = vec3(10.0);
-    const vec3 L = normalize(vec3(1));
-    const float spec_exp = 50.0;
-
-    vec3 N = view_normal;
-    vec3 V = view_dir;
-    vec3 H = normalize(L + V);
-    float H_dot_V = max(0.0, dot(H, V));
-    float N_dot_H = max(0.0, dot(N, H));
-    float N_dot_L = max(0.0, dot(N, L));
-    float fr = fresnel(H_dot_V);
-
-    vec3 diffuse = color.rgb * (env_radiance + N_dot_L * dir_radiance);
-    vec3 specular = dir_radiance * pow(N_dot_H, spec_exp);
-
-    color.rgb = mix(diffuse, specular, fr);
 
     gl_FragDepth = (-u_proj_mat[2][2] - u_proj_mat[3][2] / view_hit.z) * 0.5 + 0.5;
-    out_color = vec4(color.rgb, color.a);
+    out_color = in_frag.color;
+	out_normal = encode_normal(view_normal);
 	out_picking_id = in_frag.picking_color;
 }
 )";
@@ -1357,7 +1342,8 @@ in Fragment {
 layout (depth_greater) out float gl_FragDepth;
 #endif
 layout(location = 0) out vec4 out_color;
-layout(location = 1) out vec4 out_picking_id;
+layout(location = 1) out vec4 out_normal;
+layout(location = 2) out vec4 out_picking_id;
 
 // Source from Ingo Quilez (https://www.shadertoy.com/view/Xt3SzX)
 float intersect_capsule(in vec3 ro, in vec3 rd, in vec3 cc, in vec3 ca, float cr,
@@ -1400,20 +1386,9 @@ float intersect_capsule(in vec3 ro, in vec3 rd, in vec3 cc, in vec3 ca, float cr
     return -1.0;
 }
 
-vec4 pack_u32(uint data) {
-	return vec4(
-        (data & uint(0x000000FF)) >> 0,
-        (data & uint(0x0000FF00)) >> 8,
-        (data & uint(0x00FF0000)) >> 16,
-        (data & uint(0xFF000000)) >> 24) / 255.0;
-}
-
-float fresnel(float H_dot_V) {   
-    const float n1 = 1.0;
-    const float n2 = 1.5;
-    const float R0 = pow((n1-n2)/(n1+n2), 2);
-
-    return R0 + (1.0 - R0)*pow(1.0 - H_dot_V, 5);
+vec4 encode_normal (vec3 n) {
+    float p = sqrt(n.z*8+8);
+    return vec4(n.xy/p + 0.5,0,0);
 }
 
 void main() {
@@ -1436,31 +1411,13 @@ void main() {
     vec4 color = in_frag.color[side];
 	vec4 picking_color = in_frag.picking_color[side];
 
-    // Compute Color
-    const vec3 env_radiance = vec3(1.0);
-    const vec3 dir_radiance = vec3(10.0);
-    const vec3 L = normalize(vec3(1));
-    const float spec_exp = 50.0;
-
-    vec3 N = normal;
-    vec3 V = -rd;
-    vec3 H = normalize(L + V);
-    float H_dot_V = max(0.0, dot(H, V));
-    float N_dot_H = max(0.0, dot(N, H));
-    float N_dot_L = max(0.0, dot(N, L));
-    float fr = fresnel(H_dot_V);
-
-    vec3 diffuse = color.rgb * (env_radiance + N_dot_L * dir_radiance);
-    vec3 specular = dir_radiance * pow(N_dot_H, spec_exp);
-
-    color.rgb = mix(diffuse, specular, fr);
-
     vec4 coord = vec4(0, 0, pos.z, 1);
     coord = u_proj_mat * coord;
     coord = coord / coord.w;
 
     gl_FragDepth = coord.z * 0.5 + 0.5;
-    out_color = vec4(color.rgb, color.a);
+    out_color = color;
+	out_normal = encode_normal(normal);
 	out_picking_id = picking_color;
 }
 )";

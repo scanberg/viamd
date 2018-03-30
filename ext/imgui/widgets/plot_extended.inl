@@ -354,7 +354,7 @@ int EndPlotFrame(const PlotFrame& frame, int selected_idx) {
 		const ImVec2 top = ImVec2((int)(ctx.IO.MousePos.x + 0.5f), frame.inner_bb_max.y);
 		window->DrawList->AddLine(btm, top, col_base);
 
-		SetTooltip(frame.tooltip.c_str());
+		SetTooltip("%s", frame.tooltip.c_str());
 	}
 
 	if (frame.hovered_index > -1 && ctx.IO.MouseClicked[0]) {
@@ -498,9 +498,10 @@ void PlotFrameLine(PlotFrame& frame, const char* label, const float* values, Fra
 		}
 
 		if (frame.hovered_index > -1) {
-			const char* c = reinterpret_cast<char*>(&style.line_color);
-			std::string color_modifier{ '\033', c[0], c[1], c[2], c[3] };
-			frame.tooltip += color_modifier + label + ": " + std::to_string(values[frame.hovered_index]) + "\n";
+			//const char* c = reinterpret_cast<char*>(&style.line_color);
+			//std::string color_modifier{ '\033', c[0], c[1], c[2], c[3] };
+			//frame.tooltip += color_modifier + label + ": " + std::to_string(values[frame.hovered_index]) + "\n";
+			frame.tooltip += std::string(label) + ": " + std::to_string(values[frame.hovered_index]) + "\n";
 		}
 
 		if (selected_idx > -1) {
