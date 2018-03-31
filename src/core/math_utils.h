@@ -64,7 +64,7 @@ inline float distance2(const T& a, const T& b) {
 }
 using glm::normalize;
 
-template <size_t N, typename T, glm::qualifier Q>
+template <int N, typename T, glm::qualifier Q>
 T angle(glm::vec<N, T, Q> const& a, glm::vec<N, T, Q> const& b) {
 	return acos(dot(normalize(a), normalize(b)));
 }

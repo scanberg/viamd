@@ -142,13 +142,21 @@ struct DynamicArray : Array<T> {
 		return new_capacity > sz ? new_capacity : sz;
 	}
 
-	void append(Array<T> arr) {
+	void append(Array<const T> arr) {
 		if (this->count + arr.count >= capacity) {
 			reserve(_grow_capacity(this->count + arr.count));
 		}
 		memcpy(this->end(), arr.data, arr.count * sizeof(T));
 		this->count += arr.count;
 	}
+
+    void append(Array<T> arr) {
+        if (this->count + arr.count >= capacity) {
+            reserve(_grow_capacity(this->count + arr.count));
+        }
+        memcpy(this->end(), arr.data, arr.count * sizeof(T));
+        this->count += arr.count;
+    }
 
     T& push_back(const T& item) {
         if (this->count == capacity) {

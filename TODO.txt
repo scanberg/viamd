@@ -1,5 +1,32 @@
 TODO: VIAMD
 
+// CONCRETE LIST OF TODOs
+SpatialHash
+    Should store positions
+Statistics
+    Clean up interface
+    Fix Property Groups
+    Implement Histograms
+    Implement Periodic Histograms
+    Port Distribution plots
+    Create Interface for groups and properties
+    Implement View Matrix
+    Implement Controls for properties
+        (Hierarchical?)
+    Implement Periodic control widget
+
+DensityVolume
+    Implement RayCaster
+    Compute Density Volume
+Rendering
+    ComputeOccupancy Volume (no need for spatial hash)
+
+
+
+
+
+// BIG STUFF
+
 Design principles:
     Data Oriented Design, try and avoid Object Orientation unless it is the better choice for some reason.
     C++11 / 14 with minimal dependencies.

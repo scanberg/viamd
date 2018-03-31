@@ -43,6 +43,8 @@ ID      get_property(ID group_id, CString name);
 ID      get_property(ID group_id, int32 idx);
 int32   get_property_count(ID group_id);
 
+Array<ID> get_groups_with_property(CString property_name);
+
 ID		create_property(ID group_id, CString name, CString cmd_and_args);
 void	remove_property(ID prop_id);
 

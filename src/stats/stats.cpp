@@ -22,6 +22,7 @@ struct GroupCommand {
 struct Property {
     ID id = INVALID_ID;
     ID group_id = INVALID_ID;
+    ID property_group_id = INVALID_ID;
     ID data_avg_id = INVALID_ID;
     ID data_beg_id = INVALID_ID;
     int32 data_count = 0;
@@ -55,12 +56,19 @@ struct Group {
     Array<int32> residues {};
 };
 
+struct PropertyGroup {
+    ID id = INVALID_ID;
+    ID groups[32] = {};
+    int group_count = 0;
+};
+
 struct StatisticsContext {
     DynamicArray<String> string_buffer {};
 
     DynamicArray<Property> properties{};
     DynamicArray<PropertyData> property_data{};
     DynamicArray<Group> groups{};
+    DynamicArray<PropertyGroup> property_groups{}; 
 
     DynamicArray<PropertyCommand> property_commands;
     DynamicArray<GroupCommand> group_commands;
@@ -365,7 +373,17 @@ void remove_group(ID group_id) {
     }
 
 	for (Property* p = ctx.properties.beg(); p != ctx.properties.end(); p++) {
-		if (p->group_id == group_id) ctx.properties.remove(p);
+		if (p->group_id == group_id) {
+            PropertyGroup* prop_group = find_id(ctx.property_groups, p->property_group_id);
+            ASSERT(prop_group);
+            for (int i = 0; i < prop_group->group_count; i++) {
+                if (prop_group->groups[i] == group_id) {
+                    memcpy(prop_group->groups + i, prop_group->groups + i + 1, (prop_group->group_count - i - 1) * sizeof(ID));
+                    break;
+                }
+            }
+            ctx.properties.remove(p);
+        }
 	}
 
 	free_string(group->name);
@@ -458,6 +476,7 @@ ID create_property(ID group_id, CString name, CString cmd_and_args) {
     Property prop;
     prop.id = prop_id;
     prop.group_id = group_id;
+    prop.property_group_id = COMPUTE_ID(name);
     prop.data_beg_id = INVALID_ID;
     prop.data_count = 0;
 
@@ -475,11 +494,19 @@ ID create_property(ID group_id, CString name, CString cmd_and_args) {
     }
     group->property_count++;
 
+    
+    PropertyGroup* prop_group = find_id(ctx.property_groups, prop.property_group_id);
+    if (!prop_group) {
+        prop_group = &ctx.property_groups.push_back({prop.property_group_id, {}, 0});
+    }
+    ASSERT(prop_group->group_count < 32); //@TODO: FIX THIS UGLY HACK 
+    prop_group->groups[prop_group->group_count] = group_id;
+    prop_group->group_count++;
+
 	return prop.id;
 }
 
 void remove_property(ID prop_id) {
-    // @TODO remove from instances
     Property* prop = find_id(ctx.properties, prop_id);
     if (prop == nullptr) {
         printf("ERROR: PROPERTY NOT FOUND\n");
@@ -490,8 +517,15 @@ void remove_property(ID prop_id) {
         if (pd->property_id == prop_id) ctx.property_data.remove(pd);
     }
 
-	free_string(prop->name);
-	free_string(prop->args);
+/*
+    ID prop_group_id = COMPUTE_ID(prop->name);
+    PropertyGroup* prop_group = find_id(ctx.property_groups, prop_group_id);
+    ASSERT(prop_group);
+    ctx.property_groups.remove(prop_group);
+    */
+
+    free_string(prop->name);
+    free_string(prop->args);
 
     ctx.properties.remove(prop);
 }

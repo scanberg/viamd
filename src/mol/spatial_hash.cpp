@@ -23,6 +23,7 @@ Frame spatialhash::compute_frame(Array<vec3> positions, vec3 cell_ext, vec3 min_
 	frame.cell_count = ivec3((max_box - min_box) / cell_ext);
 	frame.cell_ext = (max_box - min_box) / (vec3)frame.cell_count;
 	frame.cells.resize(frame.cell_count.x * frame.cell_count.y * frame.cell_count.z);
+	frame.positions = positions;
 
 	if (positions.count == 0) return frame;
 
@@ -32,10 +33,16 @@ Frame spatialhash::compute_frame(Array<vec3> positions, vec3 cell_ext, vec3 min_
 	for (int i = 0; i < positions.count; i++) {
 		int cell_idx = compute_cell_idx(frame, positions[i]);
 		l_idx[i] = frame.cells[cell_idx].count++;
+		g_idx[i] = cell_idx;
 	}
 
-	for (int i = 0; i < frame.cells.count; i++) {
+	for (int i = 1; i < frame.cells.count; i++) {
+		frame.cells[i].offset = frame.cells[i-1].offset + frame.cells[i-1].count;
+	}
 
+	for (int i = 0; i < frame.positions.count; i++) {
+		int dst = frame.cells[g_idx[i]].offset + l_idx[i];
+		//frame.positions[dst] = i;
 	}
 
 	TMP_FREE(g_idx);
