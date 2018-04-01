@@ -20,9 +20,11 @@ DensityVolume
     Compute Density Volume
 Rendering
     ComputeOccupancy Volume (no need for spatial hash)
-
-
-
+Application
+    Implement Load File
+Platform
+    Cross-platform DirListing (Prio mac and Win32)
+    (Cross-platform FileDialog (Prio mac and Win32))
 
 
 // BIG STUFF

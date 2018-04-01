@@ -39,11 +39,13 @@
 #ifdef USE_DEFAULT_MALLOC_AND_FREE
 #define MALLOC(x) malloc(x)
 #define REALLOC(x, y) realloc(x, y)
+#define CALLOC(x, y) calloc(x, y)
 #define FREE(x) free(x)
 #endif
 
 #ifdef USE_DEFAULT_TMP_MALLOC_AND_FREE
 #define TMP_MALLOC(x) malloc(x)
 #define TMP_REALLOC(x, y) realloc(x, y)
+#define TMP_CALLOC(x, y) calloc(x, y)
 #define TMP_FREE(x) free(x)
 #endif

@@ -100,3 +100,44 @@ set(SOURCES
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/libxdrfile/src)
 add_library(libxdrfile STATIC ${HEADERS} ${SOURCES})
+
+
+
+
+### NATIVEFILEDIALOG ###
+
+project(nativefiledialog)
+#enable_language (C)
+
+set(HEADERS
+    ${CMAKE_CURRENT_SOURCE_DIR}/nativefiledialog/src/common.h
+)
+set(SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/nativefiledialog/src/nfd_common.c
+)
+
+IF(WIN32)
+set(SOURCES
+    ${SOURCES}
+    ${CMAKE_CURRENT_SOURCE_DIR}/nativefiledialog/src/nfd_win.cpp
+)
+ELSEIF(APPLE)
+set(SOURCES
+    ${SOURCES}
+    ${CMAKE_CURRENT_SOURCE_DIR}/nativefiledialog/src/nfd_cocoa.m
+)
+ELSEIF(LINUX)
+  find_package(GTK2 REQUIRED gtk)
+set(SOURCES
+    ${SOURCES}
+    ${CMAKE_CURRENT_SOURCE_DIR}/nativefiledialog/src/nfd_gtk.c
+)
+ENDIF()
+
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/nativefiledialog/src/include)
+add_library(nativefiledialog STATIC ${HEADERS} ${SOURCES})
+
+IF(APPLE)
+target_link_libraries(nativefiledialog
+                      "-framework AppKit")
+ENDIF()

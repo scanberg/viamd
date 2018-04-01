@@ -1,13 +1,14 @@
 #include <core/platform.h>
 #include <core/gl.h>
 #include <GLFW/glfw3.h>
-#ifdef _WIN32
+#ifdef OS_WINDOWS
 #undef APIENTRY
 #define GLFW_EXPOSE_NATIVE_WIN32
 #define GLFW_EXPOSE_NATIVE_WGL
 #include <GLFW/glfw3native.h>
 #endif
 #include <imgui.h>
+#include <nfd.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -94,8 +95,7 @@ static void char_callback(GLFWwindow*, unsigned int c) {
 // This is the main rendering function that you have to implement and provide to ImGui (via setting up 'RenderDrawListsFn' in the ImGuiIO structure)
 // Note that this implementation is little overcomplicated because we are saving/setting up/restoring every OpenGL state explicitly, in order to be able to run within any OpenGL engine that doesn't do so. 
 // If text or lines are blurry when integrating ImGui in your engine: in your Render function, try translating your projection matrix by (0.5f,0.5f) or (0.375f,0.375f)
-static void imgui_render_draw_lists(ImDrawData* draw_data)
-{
+static void imgui_render_draw_lists(ImDrawData* draw_data) {
     // Avoid rendering when minimized, scale coordinates for retina displays (screen coordinates != framebuffer coordinates)
     ImGuiIO& io = ImGui::GetIO();
     int fb_width = (int)(io.DisplaySize.x * io.DisplayFramebufferScale.x);
@@ -357,20 +357,18 @@ static bool imgui_init(GLFWwindow* window) {
     io.SetClipboardTextFn = imgui_set_clipboard_text;
     io.GetClipboardTextFn = imgui_get_clipboard_text;
     io.ClipboardUserData = window;
-#ifdef _WIN32
+#ifdef OS_WINDOWS
     io.ImeWindowHandle = glfwGetWin32Window(window);
 #endif
 
     return true;
 }
 
-static void imgui_shutdown()
-{
+static void imgui_shutdown() {
     imgui_invalidate_device_objects();
 }
 
-static void imgui_new_frame()
-{
+static void imgui_new_frame() {
     if (!g_font_texture)
         imgui_create_device_objects();
 
@@ -430,7 +428,7 @@ void initialize(Context* ctx, int width, int height, const char* title) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-#if __APPLE__
+#ifdef OS_MAC
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
     GLFWwindow* window = glfwCreateWindow(width, height, title, NULL, NULL);
@@ -555,40 +553,33 @@ void update(Context* ctx) {
 	memcpy(ctx, &internal_ctx, sizeof(Context));
 }
 
-/*
-bool window_in_focus(Window* window) {
-    return glfwGetWindowAttrib(window->glfw_window, GLFW_FOCUSED);
-}
-
-bool window_should_close(Window* window) {
-    return glfwWindowShouldClose(window->glfw_window);
-}
-
-void get_framebuffer_size(Window* window, int* width, int* height) {
-    glfwGetFramebufferSize(window->glfw_window, width, height);
-}
-
-InputState* get_input_state() {
-    return &g_input_state;
-}
-
-double get_delta_time() {
-	return ImGui::GetIO().DeltaTime;
-}
-*/
-
 void swap_buffers(Context* ctx) {
     glfwSwapBuffers((GLFWwindow*)internal_ctx.window.ptr);
 }
 
-void* malloc(size_t size) {
-	return malloc(size);
-}
-void free(void* ptr) {
-    free(ptr);
+Path open_file_dialog(CString filter) {
+    Path path;
+    nfdchar_t *out_path = NULL;
+    StringBuffer<256> filter_buf = filter;
+    nfdresult_t result = NFD_OpenDialog( filter_buf, NULL, &out_path );
+    if ( result == NFD_OKAY ) {
+        strncpy(path.beg(), out_path, path.MAX_LENGTH);
+    }
+    else if ( result == NFD_CANCEL ) {
+        // User pressed cancel
+    }
+    else {
+        printf("Error: %s\n", NFD_GetError() );
+    }
+    free(out_path);
+    return path;
 }
 
-void* tmp_malloc(size_t);
-void tmp_free(void*);
+#ifdef OS_WINDOWS
+#include <core/platform/platform_win32.h>
+#elif defined OS_MAC
+#include <core/platform/platform_osx.h>
+#elif defined OS_LINUX
+#endif
 
 }

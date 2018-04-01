@@ -379,6 +379,7 @@ void remove_group(ID group_id) {
             for (int i = 0; i < prop_group->group_count; i++) {
                 if (prop_group->groups[i] == group_id) {
                     memcpy(prop_group->groups + i, prop_group->groups + i + 1, (prop_group->group_count - i - 1) * sizeof(ID));
+                    prop_group->group_count--;
                     break;
                 }
             }
@@ -432,6 +433,17 @@ int32 get_property_count(ID group_id) {
         return (int32)group->property_count;
     }
     return 0;
+}
+
+Array<ID> get_groups_with_property(CString prop_name) {
+    ID prop_group_id = COMPUTE_ID(prop_name);
+    PropertyGroup* prop_group = find_id(ctx.property_groups, prop_group_id);
+    if (!prop_group) {
+        StringBuffer<32> buf = prop_name;
+        printf("ERROR: PROPERTY '%s' NOT FOUND!", buf.beg());
+        return {};
+    } 
+    return {prop_group->groups, prop_group->group_count};
 }
 
 ID create_property(ID group_id, CString name, CString cmd_and_args) {

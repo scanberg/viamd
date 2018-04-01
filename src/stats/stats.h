@@ -54,8 +54,8 @@ int32        get_property_data_count(ID prop_id);
 PropertyType get_property_type(ID prop_id);
 CString	     get_property_name(ID prop_id);
 
-void	  register_property_command(CString command, PropertyType type, PropertyComputeFunc func);
-void	  register_group_command(CString command, ResidueMatchFunc func);
+void register_property_command(CString command, PropertyType type, PropertyComputeFunc func);
+void register_group_command(CString command, ResidueMatchFunc func);
 
 void initialize();
 void shutdown();

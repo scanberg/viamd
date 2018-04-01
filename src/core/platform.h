@@ -1,7 +1,22 @@
 #pragma once
 
+#ifdef __APPLE__
+    #include "TargetConditionals.h"
+    #ifdef TARGET_OS_MAC
+        #define OS_MAC
+    #endif
+#elif defined _WIN32 || defined _WIN64
+    #define OS_WINDOWS
+#elif defined __linux__
+    #define OS_LINUX
+#else
+    #error
+#endif 
+
 #include <core/keys.h>
 #include <core/types.h>
+#include <core/array.h>
+#include <core/string_utils.h>
 
 namespace platform {
 
@@ -58,7 +73,25 @@ void initialize(Context* ctx, int width, int height, const char* title);
 void shutdown(Context* ctx);
 void update(Context* ctx);
 void swap_buffers(Context* ctx);
-// CString open_file_dialog();
+
+typedef StringBuffer<512> Path;
+
+struct DirEntry {
+    enum Type {
+        File,
+        Dir,
+        Link,
+        Unknown
+    };
+    Type type;
+    Path name;
+};
+
+// Filter example "jpg|png|tga"
+DynamicArray<DirEntry> list_directory(CString dir_path, CString filter = {});
+CString get_cwd();
+
+Path open_file_dialog(CString filter = {});
 
 }  // namespace platform
 

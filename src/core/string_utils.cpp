@@ -243,7 +243,7 @@ CString get_file_extension(CString url) {
         return CString();
     }
     
-    return CString(beg, end - beg);
+    return CString(beg + 1, end - beg);
 }
 
 inline static bool char_in_string(char c, CString str) {

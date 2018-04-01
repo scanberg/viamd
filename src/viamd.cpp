@@ -73,6 +73,11 @@ struct AtomSelection {
 	int32 chain_idx = -1;
 };
 
+struct MoleculeData {
+    MoleculeDynamic dynamic;
+    DynamicArray<float> atom_radii;
+};
+
 struct ApplicationData {
 	// --- PLATFORM ---
     platform::Context ctx;
@@ -82,11 +87,12 @@ struct ApplicationData {
     TrackballController controller;
 
     // --- MOL DATA ---
-	MoleculeDynamic dynamic = { nullptr, nullptr };
+    MoleculeData mol_data;
+	//MoleculeDynamic dynamic = { nullptr, nullptr };
 
 	// --- MOL VISUALS ---
-    DynamicArray<float> atom_radii;
-    DynamicArray<uint32> atom_colors;
+    //DynamicArray<float> atom_radii;
+    //DynamicArray<uint32> atom_colors;
 
 	struct {
 		bool show_window;
@@ -149,11 +155,20 @@ static void reset_view(ApplicationData* data);
 static float compute_avg_ms(float dt);
 static uint32 get_picking_id(uint32 fbo, int32 x, int32 y);
 
+static void load_molecule_data(MoleculeData* mol_data, CString file);
+
 static void create_representation(ApplicationData* data);
 static void remove_representation(ApplicationData* data, int idx);
+static void reset_representations(ApplicationData* data);
 
 int main(int, char**) {
 	ApplicationData data;
+
+    auto dir_list = platform::list_directory(".", "txt|ini");
+    for (const auto& l : dir_list) {
+        printf("%s\n", l.name.beg());
+    }
+    printf("%s\n", platform::get_cwd());
 
 	// Init platform
 	platform::initialize(&data.ctx, 1920, 1080, "VIAMD");
@@ -169,11 +184,13 @@ int main(int, char**) {
 	postprocessing::initialize(data.fbo.width, data.fbo.height);
 
 	// Setup style
-	ImGui::StyleColorsClassic();
+	ImGui::StyleColorsLight();
 
 	bool show_demo_window = false;
 	vec4 clear_color = vec4(1, 1, 1, 1);
 	vec4 clear_index = vec4(1, 1, 1, 1);
+
+    load_molecule_data(&data.mol_data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
 	
     //data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
     //data.dynamic.molecule= allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
@@ -184,7 +201,7 @@ int main(int, char**) {
 	//data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid-6T/conf-60-6T.gro");
 	//auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/yuya/nowat_npt.gro");
 	//data.dynamic = allocate_and_load_pdb_from_file(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
-	data.dynamic = allocate_and_load_pdb_from_file(PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
+	//data.dynamic = allocate_and_load_pdb_from_file(PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
 
     //data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
     //data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
@@ -193,8 +210,8 @@ int main(int, char**) {
 	//data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
 	//data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid-6T/prod-centered.xtc");
 	//Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/yuya/traj-centered.xtc");
-	if (data.dynamic.trajectory)
-		read_trajectory_async(data.dynamic.trajectory);
+	//if (data.dynamic.trajectory)
+	//	read_trajectory_async(data.dynamic.trajectory);
 
 	auto g1 = stats::create_group("group1", "resid ALA");
     auto b1 = stats::create_property(g1, "b1", "dist 1 2");
@@ -208,20 +225,18 @@ int main(int, char**) {
 	DynamicArray<BackboneAngles> current_backbone_angles;
 	DynamicArray<SplineSegment> current_spline;
 
-	if (data.dynamic.molecule->chains.count > 0) {
-		backbone = compute_backbone_segments(get_residues(*data.dynamic.molecule, get_chain(*data.dynamic.molecule, 0)), data.dynamic.molecule->atom_labels);
-		if (data.dynamic.trajectory)
-			backbone_angles = compute_backbone_angles_trajectory(*data.dynamic.trajectory, data.dynamic.molecule->backbone_segments);
-		current_backbone_angles = compute_backbone_angles(data.dynamic.molecule->atom_positions, backbone);
-		current_spline = compute_spline(data.dynamic.molecule->atom_positions, backbone, 8);
+	if (data.mol_data.dynamic.molecule->chains.count > 0) {
+		backbone = compute_backbone_segments(get_residues(*data.mol_data.dynamic.molecule, get_chain(*data.mol_data.dynamic.molecule, 0)), data.mol_data.dynamic.molecule->atom_labels);
+		if (data.mol_data.dynamic.trajectory)
+			backbone_angles = compute_backbone_angles_trajectory(*data.mol_data.dynamic.trajectory, data.mol_data.dynamic.molecule->backbone_segments);
+		current_backbone_angles = compute_backbone_angles(data.mol_data.dynamic.molecule->atom_positions, backbone);
+		current_spline = compute_spline(data.mol_data.dynamic.molecule->atom_positions, backbone, 8);
 	}
 
-    if (data.dynamic.trajectory && data.dynamic.trajectory->num_frames > 0)
-        copy_trajectory_positions(data.dynamic.molecule->atom_positions, *data.dynamic.trajectory, 0);
+    if (data.mol_data.dynamic.trajectory && data.mol_data.dynamic.trajectory->num_frames > 0)
+        copy_trajectory_positions(data.mol_data.dynamic.molecule->atom_positions, *data.mol_data.dynamic.trajectory, 0);
     reset_view(&data);
 
-    data.atom_radii = compute_atom_radii(data.dynamic.molecule->atom_elements);
-    data.atom_colors = compute_atom_colors(*data.dynamic.molecule, ColorMapping::RES_ID);
 	create_representation(&data);
 
     // Main loop
@@ -247,11 +262,11 @@ int main(int, char**) {
 			data.hovered = {};
 			if (data.picking_idx != NO_PICKING_IDX) {
 				data.hovered.atom_idx = data.picking_idx;
-				if (-1 < data.hovered.atom_idx && data.hovered.atom_idx < data.dynamic.molecule->atom_residue_indices.count) {
-					data.hovered.residue_idx = data.dynamic.molecule->atom_residue_indices[data.hovered.atom_idx];
+				if (-1 < data.hovered.atom_idx && data.hovered.atom_idx < data.mol_data.dynamic.molecule->atom_residue_indices.count) {
+					data.hovered.residue_idx = data.mol_data.dynamic.molecule->atom_residue_indices[data.hovered.atom_idx];
 				}
-				if (-1 < data.hovered.residue_idx && data.hovered.residue_idx < data.dynamic.molecule->residues.count) {
-					data.hovered.chain_idx = data.dynamic.molecule->residues[data.hovered.residue_idx].chain_idx;
+				if (-1 < data.hovered.residue_idx && data.hovered.residue_idx < data.mol_data.dynamic.molecule->residues.count) {
+					data.hovered.chain_idx = data.mol_data.dynamic.molecule->residues[data.hovered.residue_idx].chain_idx;
 				}
 			}
         }
@@ -267,10 +282,10 @@ int main(int, char**) {
         if (ImGui::Button("Reset View")) {
             reset_view(&data);
         }
-		if (data.dynamic.trajectory) {
-			ImGui::Text("Num Frames: %i", data.dynamic.trajectory->num_frames);
+		if (data.mol_data.dynamic.trajectory) {
+			ImGui::Text("Num Frames: %i", data.mol_data.dynamic.trajectory->num_frames);
 			float t = (float)data.time;
-			if (ImGui::SliderFloat("Time", &t, 0, (float)(data.dynamic.trajectory->num_frames - 1))) {
+			if (ImGui::SliderFloat("Time", &t, 0, (float)(data.mol_data.dynamic.trajectory->num_frames - 1))) {
 				time_changed = true;
 				data.time = t;
 			}
@@ -294,25 +309,25 @@ int main(int, char**) {
 			time_changed = true;
         }
 
-        if (data.dynamic.trajectory && time_changed) {
-            data.time = math::clamp(data.time, 0.0, float64(data.dynamic.trajectory->num_frames - 1));
-			if (data.time == float64(data.dynamic.trajectory->num_frames - 1)) data.is_playing = false;
+        if (data.mol_data.dynamic.trajectory && time_changed) {
+            data.time = math::clamp(data.time, 0.0, float64(data.mol_data.dynamic.trajectory->num_frames - 1));
+			if (data.time == float64(data.mol_data.dynamic.trajectory->num_frames - 1)) data.is_playing = false;
 
 			int prev_frame_idx = math::max(0, (int)data.time);
-			int next_frame_idx = math::min(prev_frame_idx + 1, data.dynamic.trajectory->num_frames - 1);
+			int next_frame_idx = math::min(prev_frame_idx + 1, data.mol_data.dynamic.trajectory->num_frames - 1);
 			if (prev_frame_idx == next_frame_idx) {
-				copy_trajectory_positions(data.dynamic.molecule->atom_positions, *data.dynamic.trajectory, prev_frame_idx);
+				copy_trajectory_positions(data.mol_data.dynamic.molecule->atom_positions, *data.mol_data.dynamic.trajectory, prev_frame_idx);
 			}
 			else {
 				// INTERPOLATE
-				auto prev_frame = get_trajectory_frame(*data.dynamic.trajectory, prev_frame_idx);
-				auto next_frame = get_trajectory_frame(*data.dynamic.trajectory, next_frame_idx);
+				auto prev_frame = get_trajectory_frame(*data.mol_data.dynamic.trajectory, prev_frame_idx);
+				auto next_frame = get_trajectory_frame(*data.mol_data.dynamic.trajectory, next_frame_idx);
 
 				float t = (float)math::fract(data.time);
-				linear_interpolation_periodic(data.dynamic.molecule->atom_positions, prev_frame.atom_positions, next_frame.atom_positions, t, prev_frame.box);
+				linear_interpolation_periodic(data.mol_data.dynamic.molecule->atom_positions, prev_frame.atom_positions, next_frame.atom_positions, t, prev_frame.box);
 			}
 
-			current_spline = compute_spline(data.dynamic.molecule->atom_positions, backbone, 8);
+			current_spline = compute_spline(data.mol_data.dynamic.molecule->atom_positions, backbone, 8);
         }
 
 		if (!ImGui::GetIO().WantCaptureMouse) {
@@ -336,7 +351,7 @@ int main(int, char**) {
 
             if (data.picking_idx != NO_PICKING_IDX) {
                 ivec2 pos = data.ctx.input.mouse.coord_curr;
-                draw_atom_info(*data.dynamic.molecule, data.picking_idx, pos.x, pos.y);
+                draw_atom_info(*data.mol_data.dynamic.molecule, data.picking_idx, pos.x, pos.y);
             }
 		}
         
@@ -368,10 +383,10 @@ int main(int, char**) {
 		for (const auto& rep : data.representations.data) {
 			switch (rep.type) {
 			case Representation::VDW:
-				draw::draw_vdw(data.dynamic.molecule->atom_positions, data.atom_radii, rep.colors, view_mat, proj_mat, rep.radii_scale);
+				draw::draw_vdw(data.mol_data.dynamic.molecule->atom_positions, data.mol_data.atom_radii, rep.colors, view_mat, proj_mat, rep.radii_scale);
 				break;
 			case Representation::LICORICE:
-				draw::draw_licorice(data.dynamic.molecule->atom_positions, data.dynamic.molecule->bonds, rep.colors, view_mat, proj_mat, rep.radii_scale);
+				draw::draw_licorice(data.mol_data.dynamic.molecule->atom_positions, data.mol_data.dynamic.molecule->bonds, rep.colors, view_mat, proj_mat, rep.radii_scale);
 				break;
 			case Representation::RIBBONS:
 				draw::draw_ribbons(current_spline, view_mat, proj_mat);
@@ -396,7 +411,7 @@ int main(int, char**) {
         //postprocessing::apply_tonemapping(data.fbo.tex_color);
 
 		if (data.debug_draw.backbone.enabled) {
-			draw::draw_backbone(backbone, data.dynamic.molecule->atom_positions, view_mat, proj_mat);
+			draw::draw_backbone(backbone, data.mol_data.dynamic.molecule->atom_positions, view_mat, proj_mat);
 		}
 		if (data.debug_draw.spline.enabled) {
 			draw::draw_spline(current_spline, view_mat, proj_mat);
@@ -408,7 +423,7 @@ int main(int, char**) {
 
 		// GUI ELEMENTS
 		if (data.ramachandran.enabled) {
-			current_backbone_angles = compute_backbone_angles(data.dynamic.molecule->atom_positions, backbone);
+			current_backbone_angles = compute_backbone_angles(data.mol_data.dynamic.molecule->atom_positions, backbone);
 			draw::plot_ramachandran(backbone_angles.angle_data, current_backbone_angles);
 		}
 
@@ -503,22 +518,18 @@ static void draw_main_menu(ApplicationData* data) {
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("New", "CTRL+N")) new_clicked = true;
-
+            if (ImGui::MenuItem("Load Data", "CTRL+L")) {
+                platform::Path path = platform::open_file_dialog("pdb,gro,xtc");
+                load_molecule_data(&data->mol_data, path);
+                reset_representations(data);
+                reset_view(data);
+            }
             if (ImGui::MenuItem("Open", "CTRL+O")) {
+                platform::open_file_dialog();
             }
-			/*
-            if (ImGui::BeginMenu("Open Recent")) {
-                ImGui::MenuItem("fish_hat.c");
-                ImGui::MenuItem("fish_hat.inl");
-                ImGui::MenuItem("fish_hat.h");
-                ImGui::EndMenu();
-            }
-			*/
             if (ImGui::MenuItem("Save", "CTRL+S")) {
             }
-            if (ImGui::MenuItem("Save As..")) {
-            }
-            if (ImGui::MenuItem("Export", "CTRL+E")) {
+            if (ImGui::MenuItem("Save As")) {
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Quit", "ALT+F4")) {
@@ -625,9 +636,9 @@ static void draw_representations_window(ApplicationData* data) {
 		ImGui::Spacing();
 
 		if (recompute_colors) {
-			compute_atom_colors(rep.colors, *data->dynamic.molecule, rep.color_mapping, ImGui::ColorConvertFloat4ToU32(vec_cast(rep.static_color)));
-			DynamicArray<bool> mask(data->dynamic.molecule->atom_elements.count, false);
-			filter::compute_filter_mask(mask, data->dynamic, rep.filter.buffer);
+			compute_atom_colors(rep.colors, *data->mol_data.dynamic.molecule, rep.color_mapping, ImGui::ColorConvertFloat4ToU32(vec_cast(rep.static_color)));
+			DynamicArray<bool> mask(data->mol_data.dynamic.molecule->atom_elements.count, false);
+			filter::compute_filter_mask(mask, data->mol_data.dynamic, rep.filter.buffer);
 			filter::filter_colors(rep.colors, mask);
 		}
 	}
@@ -720,10 +731,10 @@ static void draw_statistics(ApplicationData* data) {
 
 static void reset_view(ApplicationData* data) {
     ASSERT(data);
-    ASSERT(data->dynamic.molecule);
+    ASSERT(data->mol_data.dynamic.molecule);
 
     vec3 min_box, max_box;
-    compute_bounding_box(&min_box, &max_box, data->dynamic.molecule->atom_positions);
+    compute_bounding_box(&min_box, &max_box, data->mol_data.dynamic.molecule->atom_positions);
     vec3 size = max_box - min_box;
     vec3 cent = (min_box + max_box) * 0.5f;
 
@@ -806,11 +817,61 @@ static void destroy_main_framebuffer(MainFramebuffer* fbo) {
 	if (fbo->tex_picking) glDeleteTextures(1, &fbo->tex_picking);
 }
 
+static void free_dynamic(MoleculeDynamic* dynamic) {
+    if (dynamic) {
+        if (dynamic->molecule) {
+            free_molecule_structure(dynamic->molecule);
+            dynamic->molecule = nullptr;
+        }
+        if (dynamic->trajectory) {
+            FREE(dynamic->trajectory);
+            dynamic->trajectory = nullptr;
+        }
+    }
+}
+
+static void load_molecule_data(MoleculeData* mol_data, CString file) {
+    ASSERT(mol_data);
+    if (file.count > 0) {
+        CString ext = get_file_extension(file);
+        printf("'%s'\n", ext.beg());
+        if (compare_n(ext, "pdb", 3, true)) {
+            free_dynamic(&mol_data->dynamic);
+            mol_data->dynamic = allocate_and_load_pdb_from_file(file);
+            mol_data->atom_radii = compute_atom_radii(mol_data->dynamic.molecule->atom_elements);
+            if (!mol_data->dynamic.molecule) {
+                printf("ERROR! Failed to load pdb file.\n");
+            }
+        }
+        else if (compare_n(ext, "gro", 3, true)) {
+            free_dynamic(&mol_data->dynamic);
+            mol_data->dynamic.molecule = allocate_and_load_gro_from_file(file);
+            mol_data->atom_radii = compute_atom_radii(mol_data->dynamic.molecule->atom_elements);
+            if (!mol_data->dynamic.molecule) {
+                printf("ERROR! Failed to load gro file.\n");
+            }
+        }
+        else if (compare_n(ext, "xtc", 3, true)) {
+            if (!mol_data->dynamic.molecule) {
+                printf("ERROR! Must have molecule loaded before trajectory can be loaded!\n");
+            } else {
+                mol_data->dynamic.trajectory = allocate_trajectory(file);
+                if (mol_data->dynamic.trajectory) {
+                    read_trajectory_async(mol_data->dynamic.trajectory);
+                }
+            }
+        }
+        else {
+            printf("ERROR! file extension not supported!\n");
+        }
+    }
+}
+
 static void create_representation(ApplicationData* data) {
 	auto& rep = data->representations.data.push_back({});
-	rep.colors.count = data->dynamic.molecule->atom_positions.count;
+	rep.colors.count = data->mol_data.dynamic.molecule->atom_positions.count;
 	rep.colors.data = (uint32*)MALLOC(rep.colors.count * sizeof(uint32));
-	compute_atom_colors(rep.colors, *data->dynamic.molecule, rep.color_mapping);
+	compute_atom_colors(rep.colors, *data->mol_data.dynamic.molecule, rep.color_mapping);
 }
 
 static void remove_representation(ApplicationData* data, int idx) {
@@ -820,4 +881,21 @@ static void remove_representation(ApplicationData* data, int idx) {
 		FREE(rep.colors.data);
 	}
 	data->representations.data.remove(&rep);
+}
+
+static void reset_representations(ApplicationData* data) {
+    ASSERT(data);
+    for (int i = 0; i < data->representations.data.count; i++) {
+        auto& rep = data->representations.data[i];
+        if (rep.colors) {
+            FREE(rep.colors.data);
+        }
+        rep.colors.count = data->mol_data.dynamic.molecule->atom_positions.count;
+        rep.colors.data = (uint32*)MALLOC(rep.colors.count * sizeof(uint32));
+
+        compute_atom_colors(rep.colors, *data->mol_data.dynamic.molecule, rep.color_mapping, ImGui::ColorConvertFloat4ToU32(vec_cast(rep.static_color)));
+        DynamicArray<bool> mask(data->mol_data.dynamic.molecule->atom_elements.count, false);
+        filter::compute_filter_mask(mask, data->mol_data.dynamic, rep.filter.buffer);
+        filter::filter_colors(rep.colors, mask);
+    }
 }

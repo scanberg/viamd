@@ -49,21 +49,22 @@ struct DynamicArray : Array<T> {
 
 	static constexpr int64 INIT_CAPACITY = 32;
     DynamicArray() : capacity(INIT_CAPACITY) {
-		this->data = (T*)MALLOC(capacity * sizeof(T));
+		this->data = (T*)CALLOC(capacity, sizeof(T));
         this->count = 0;
     }
 
 	DynamicArray(int64 count) : capacity(count) {
 		ASSERT(capacity > 0);
-		this->data = (T*)MALLOC(capacity * sizeof(T));
+		this->data = (T*)CALLOC(capacity, sizeof(T));
 		this->count = capacity;
 	}
 
 	DynamicArray(int64 count, T value) : capacity(count > INIT_CAPACITY ? count : INIT_CAPACITY) {
-		this->data = (T*)MALLOC(capacity * sizeof(T));
+		this->data = (T*)CALLOC(capacity, sizeof(T));
 		this->count = count;
-		// Is this decent?
-		memset(this->data, (int)value, this->count * sizeof(T));
+        for (int i = 0; i < count; i++) {
+            this->data[i] = value;
+        }
 	}
 
     DynamicArray(const Array<T>& clone_source) : capacity(clone_source.count) {
@@ -169,7 +170,7 @@ struct DynamicArray : Array<T> {
 
     void reserve(int64 new_capacity) {
         if (new_capacity < capacity) return;
-		T* new_data = (T*)MALLOC(new_capacity * sizeof(T));
+		T* new_data = (T*)CALLOC(new_capacity, sizeof(T));
         if (this->data) {
             memcpy(new_data, this->data, this->count * sizeof(T));
         }

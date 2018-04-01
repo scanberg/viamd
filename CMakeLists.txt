@@ -8,10 +8,6 @@ if(UNIX AND NOT APPLE)
   set(LINUX TRUE)
 endif()
 
-if(LINUX) 
-  find_package(GTK2 REQUIRED gtk)
-endif()
-
 if(MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4 /wd4201")
 else()
@@ -28,7 +24,8 @@ include_directories(src
                     ext/glm
                     ext/imgui
                     ext/ppk_assert
-                    ext/libxdrfile/src)
+                    ext/libxdrfile/src
+                    ext/nativefiledialog/src/include)
 
 file(GLOB_RECURSE PROJECT_HEADERS src/*.h)
 file(GLOB_RECURSE PROJECT_SOURCES src/*.cpp)
@@ -47,14 +44,13 @@ add_definitions(-DGLFW_INCLUDE_NONE
 
 add_executable(${PROJECT_NAME} ${PROJECT_HEADERS} ${PROJECT_SOURCES})
 
-
-
 target_link_libraries(${PROJECT_NAME}
                       glfw
                       gl3w
                       imgui
                       ppk_assert
                       libxdrfile
+                      nativefiledialog
                       ${GLFW_LIBRARIES}
                       ${OPENGL_LIBRARY})
 
