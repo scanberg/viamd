@@ -13,10 +13,25 @@ namespace stats {
 typedef uint64 ID;
 constexpr ID INVALID_ID = 0;
 
+enum struct PropertyType { FLOAT32, UNKNOWN };
+
 typedef bool (*PropertyComputeFunc)(void* data, const Array<CString> args, const MoleculeDynamic* dynamic, int res_idx);
 typedef bool (*ResidueMatchFunc)(const Array<CString> args, const MoleculeStructure* mol, int res_idx);
 
-enum struct PropertyType { FLOAT32, UNKNOWN };
+typedef vec2 Range;
+
+struct Histogram {
+    DynamicArray<float> bins = {};
+    Range val_range = {};
+    Range bin_range = {};
+    int32 num_samples = 0;
+};
+
+Histogram compute_histogram(Array<float> data);
+Histogram compute_histogram(Array<float> data, float min_val, float max_val);
+
+void compute_histogram(Histogram* hist, Array<float> data);
+void compute_histogram(Histogram* hist, Array<float> data, float min_val, float max_val);
 
 inline int32 get_stride(PropertyType type) {
 	switch (type) {

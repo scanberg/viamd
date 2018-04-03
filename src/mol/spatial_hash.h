@@ -2,22 +2,28 @@
 
 #include <core/types.h>
 #include <core/array.h>
+#include <core/math_utils.h>
 
 namespace spatialhash {
 
+struct Entry {
+	vec3 position = {};
+	int index = 0;
+};
+
 struct Cell {
-	int offset;
-	int count;
+	int offset = 0;
+	int count = 0;
 };
 
 struct Frame {
-	vec3 min_box;
-	vec3 max_box;
-	vec3 cell_ext;
-	ivec3 cell_count;
+	vec3 min_box = {};
+	vec3 max_box = {};
+	vec3 cell_ext = {};
+	ivec3 cell_count = {};
 
-	DynamicArray<vec3> positions;
-	DynamicArray<Cell> cells;
+	DynamicArray<Cell> cells = {};
+	DynamicArray<Entry> entries = {};
 };
 
 inline int compute_cell_idx(const Frame& frame, ivec3 cell_coord) {
@@ -29,7 +35,7 @@ inline int compute_cell_idx(const Frame& frame, ivec3 cell_coord) {
 }
 
 inline ivec3 compute_cell_coord(const Frame& frame, vec3 coord) {
-	return ivec3((coord - frame.min_box) / frame.cell_ext);
+	return math::clamp(ivec3((coord - frame.min_box) / frame.cell_ext), ivec3(0), frame.cell_count-1);
 }
 
 inline int compute_cell_idx(const Frame& frame, vec3 coord) {
@@ -42,32 +48,54 @@ inline Cell get_cell(const Frame& frame, ivec3 cell_coord) {
 	return frame.cells[idx];
 }
 
-/*
-inline Array<const int> get_cell_indices(const Frame& frame, ivec3 cell_coord) {
+inline Array<const Entry> get_cell_entries(const Frame& frame, ivec3 cell_coord) {
 	Cell cell = get_cell(frame, cell_coord);
-	return { frame.indices.beg() + cell.offset, cell.count };
+	return { frame.entries.beg() + cell.offset, cell.count };
 }
 
 inline DynamicArray<int> query_indices(const Frame& frame, vec3 coord, float radius) {
+	const float r2 = radius * radius;
+	ivec3 min_cc = compute_cell_coord(frame, coord - radius);
+	ivec3 max_cc = compute_cell_coord(frame, coord + radius);
+	ivec3 cc;
 	DynamicArray<int> res;
+	for (cc.z = min_cc.z; cc.z <= max_cc.z; cc.z++) {
+		for (cc.y = min_cc.y; cc.y <= max_cc.y; cc.y++) {
+			for (cc.x = min_cc.x; cc.x <= max_cc.x; cc.x++) {
+				for (const auto& e : get_cell_entries(frame, cc)) {
+					if (math::distance2(coord, e.position) < r2) {
+						res.push_back(e.index);
+					}
+				}
+			}
+		}
+	}
+	return res;
+}
+
+template<typename Callback>
+void for_each_within(const Frame& frame, vec3 coord, float radius, Callback cb) {
+	const float r2 = radius * radius;
 	ivec3 min_cc = compute_cell_coord(frame, coord - radius);
 	ivec3 max_cc = compute_cell_coord(frame, coord + radius);
 	ivec3 cc;
 	for (cc.z = min_cc.z; cc.z <= max_cc.z; cc.z++) {
 		for (cc.y = min_cc.y; cc.y <= max_cc.y; cc.y++) {
-			Cell beg_cell = get_cell(frame, ivec3(cc.x, cc.y, min_cc.x));
-			Cell end_cell = get_cell(frame, ivec3(cc.x, cc.y, max_cc.x));
-			Array<const int> arr(frame.indices.beg() + beg_cell.index, frame.indices.beg() + end_cell.index + end_cell.count);
-			res.append(get_cell_indices(frame, cc));
+			for (cc.x = min_cc.x; cc.x <= max_cc.x; cc.x++) {
+				for (const auto& e : get_cell_entries(frame, cc)) {
+					if (math::distance2(coord, e.position) < r2) {
+						cb(e.index);
+					}
+				}
+			}
 		}
 	}
-
-	return res;
 }
-*/
 
 Frame compute_frame(Array<vec3> positions, vec3 cell_ext);
+void compute_frame(Frame* frame, Array<vec3> positions, vec3 cell_ext);
 
 Frame compute_frame(Array<vec3> positions, vec3 cell_ext, vec3 min_box, vec3 max_box);
+void compute_frame(Frame* frame, Array<vec3> positions, vec3 cell_ext, vec3 min_box, vec3 max_box);
 
 }

@@ -30,6 +30,11 @@ enum class RamachandranConformationClassification {
 	PLow
 };
 
+struct Volume {
+	DynamicArray<uint8> data;
+	ivec3 dim;
+};
+
 // Tangent and binormal is perhaps redundant
 struct SplineSegment {
     vec3 position;
@@ -93,6 +98,12 @@ void compute_atom_radii(Array<float> radii_dst, const Array<Element> elements);
 
 DynamicArray<uint32> compute_atom_colors(const MoleculeStructure& mol, ColorMapping mapping, uint32 static_color = 0xffffffff);
 void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, ColorMapping mapping, uint32 static_color = 0xffffffff);
+
+Volume compute_occupancy_volume(Array<vec3> atom_pos);
+void compute_occupancy_volume(Volume* volume, Array<vec3> atom_pos);
+
+Volume compute_occupancy_volume(Array<vec3> atom_pos, vec3 min_box, vec3 max_box);
+void compute_occupancy_volume(Volume* volume, Array<vec3> atom_pos, vec3 min_box, vec3 max_box);
 
 //bool filter_valid(CString filter);
 //bool filter_colors(Array<uint32> color_dst, const MoleculeStructure& mol, CString filter);

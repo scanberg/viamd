@@ -554,7 +554,7 @@ void update(Context* ctx) {
 }
 
 void swap_buffers(Context* ctx) {
-    glfwSwapBuffers((GLFWwindow*)internal_ctx.window.ptr);
+    glfwSwapBuffers((GLFWwindow*)ctx->window.ptr);
 }
 
 Path open_file_dialog(CString filter) {

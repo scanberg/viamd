@@ -211,6 +211,36 @@ static void free_string(CString str) {
     }
 }
 
+// HISTOGRAMS
+Histogram compute_histogram(Array<float> data) {
+    Histogram hist;
+    compute_histogram(&hist, data);
+    return hist;
+}
+
+Histogram compute_histogram(Array<float> data, float min_val, float max_val) {
+    Histogram hist;
+    compute_histogram(&hist, data, min_val, max_val);
+    return hist;
+}
+
+void compute_histogram(Histogram* hist, Array<float> data) {
+    ASSERT(hist);
+    if (data.count == 0) return;
+    float min_val = FLT_MAX;
+    float max_val = -FLT_MAX;
+    for (const auto& d : data) {
+        min_val = math::min(min_val, d);
+        max_val = math::max(max_val, d);
+    }
+    compute_histogram(hist, data, min_val, max_val);
+}
+
+void compute_histogram(Histogram* hist, Array<float> data, float min_val, float max_val) {
+    ASSERT(hist);
+    //memset(hist->bins.data, 0);
+}
+
 bool compute_stats(MoleculeDynamic* dynamic) {
     ASSERT(dynamic);
     ASSERT(dynamic->molecule);

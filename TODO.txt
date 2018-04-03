@@ -2,7 +2,7 @@ TODO: VIAMD
 
 // CONCRETE LIST OF TODOs
 SpatialHash
-    Should store positions
+    --- Should store positions
 Statistics
     Clean up interface
     Fix Property Groups
@@ -10,7 +10,7 @@ Statistics
     Implement Periodic Histograms
     Port Distribution plots
     Create Interface for groups and properties
-    Implement View Matrix
+    Implement Configure View Matrix
     Implement Controls for properties
         (Hierarchical?)
     Implement Periodic control widget
@@ -21,11 +21,13 @@ DensityVolume
 Rendering
     ComputeOccupancy Volume (no need for spatial hash)
 Application
-    Implement Load File
+    --- Implement Load File
+    Fix data synchronization bugs between datasets
 Platform
     Cross-platform DirListing (Prio mac and Win32)
-    (Cross-platform FileDialog (Prio mac and Win32))
-
+        --- mac
+        win32
+    --- (Cross-platform FileDialog (Prio mac and Win32))
 
 // BIG STUFF
 
@@ -56,7 +58,7 @@ General:
         mat4
         dot
         cross
-        + - * /
+        operators + - * /
     Array
     Allocator
     DynamicArray
@@ -74,7 +76,7 @@ Platform layer:
     Provide IMGUI with optional define to enable disable
 
 VIAMD:
-    MENU BAR
+    --- MENU BAR
     Load/Store Scene?
 
 Molecule:
@@ -82,8 +84,8 @@ Molecule:
         Extra RenderingData ptr??? Not needed as a first step
     PDB (PDB Molecule struct?)
     GRO (GRO Molecule struct?)
-    Multiframe PDB
-    Multiframe GRO?
+    --- Multiframe PDB
+    (Multiframe GRO? No)
     Utils:
         Backbone / Spline?
 
@@ -95,10 +97,10 @@ Trajectory:
     Load trejectory in different thread but make the results immediately visible.
 
 Representations:
-    Port VDW
-    Port Licorice
-        Fix precision errors in Licorice
-    Port Ribbons
+    --- Port VDW
+    --- Port Licorice
+        --- Fix precision errors in Licorice
+    --- Port Ribbons
         Fix Orientation problems
 
 Rendering:

@@ -88,11 +88,6 @@ struct ApplicationData {
 
     // --- MOL DATA ---
     MoleculeData mol_data;
-	//MoleculeDynamic dynamic = { nullptr, nullptr };
-
-	// --- MOL VISUALS ---
-    //DynamicArray<float> atom_radii;
-    //DynamicArray<uint32> atom_colors;
 
 	struct {
 		bool show_window;
@@ -168,7 +163,7 @@ int main(int, char**) {
     for (const auto& l : dir_list) {
         printf("%s\n", l.name.beg());
     }
-    printf("%s\n", platform::get_cwd());
+    printf("%s\n", platform::get_cwd().beg());
 
 	// Init platform
 	platform::initialize(&data.ctx, 1920, 1080, "VIAMD");
@@ -184,7 +179,7 @@ int main(int, char**) {
 	postprocessing::initialize(data.fbo.width, data.fbo.height);
 
 	// Setup style
-	ImGui::StyleColorsLight();
+	ImGui::StyleColorsClassic();
 
 	bool show_demo_window = false;
 	vec4 clear_color = vec4(1, 1, 1, 1);
@@ -214,9 +209,9 @@ int main(int, char**) {
 	//	read_trajectory_async(data.dynamic.trajectory);
 
 	auto g1 = stats::create_group("group1", "resid ALA");
-    auto b1 = stats::create_property(g1, "b1", "dist 1 2");
-	auto a1 = stats::create_property(g1, "a1", "angle 1 2 3");
-	auto d1 = stats::create_property(g1, "d1", "dist 1 2 3 4");
+    stats::create_property(g1, "b1", "dist 1 2");
+	stats::create_property(g1, "a1", "angle 1 2 3");
+	stats::create_property(g1, "d1", "dist 1 2 3 4");
 
 	//stats::compute_stats(&data.dynamic);
 
@@ -409,17 +404,16 @@ int main(int, char**) {
 
         // Apply tone mapping
         //postprocessing::apply_tonemapping(data.fbo.tex_color);
-
-		if (data.debug_draw.backbone.enabled) {
-			draw::draw_backbone(backbone, data.mol_data.dynamic.molecule->atom_positions, view_mat, proj_mat);
-		}
-		if (data.debug_draw.spline.enabled) {
-			draw::draw_spline(current_spline, view_mat, proj_mat);
-		}
-
 		if (data.ssao.enabled) {
 			postprocessing::apply_ssao(data.fbo.tex_depth, data.fbo.tex_normal, proj_mat, data.ssao.intensity, data.ssao.radius);
 		}
+
+        if (data.debug_draw.backbone.enabled) {
+            draw::draw_backbone(backbone, data.mol_data.dynamic.molecule->atom_positions, view_mat, proj_mat);
+        }
+        if (data.debug_draw.spline.enabled) {
+            draw::draw_spline(current_spline, view_mat, proj_mat);
+        }
 
 		// GUI ELEMENTS
 		if (data.ramachandran.enabled) {
@@ -427,7 +421,6 @@ int main(int, char**) {
 			draw::plot_ramachandran(backbone_angles.angle_data, current_backbone_angles);
 		}
 
-		// DRAW CONSOLE
 		data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, data.ctx.timing.dt);
 
 		draw_main_menu(&data);
@@ -437,7 +430,7 @@ int main(int, char**) {
 
 		//draw_statistics(&data);
 
-		// 3. Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
+		// Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
 		if (show_demo_window) {
 			ImGui::SetNextWindowPos(ImVec2(650, 20),
 				ImGuiCond_FirstUseEver);  // Normally user code doesn't need/want to call this because positions are saved in .ini

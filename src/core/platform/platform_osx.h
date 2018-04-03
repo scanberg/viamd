@@ -89,7 +89,8 @@ DynamicArray<DirEntry> list_directory(CString dir_path, CString filter) {
         free (files);
 
     } else {
-        printf ("Cannot open directory %s\n", dir_path);
+        StringBuffer<512> buf = dir_path;
+        printf ("Cannot open directory %s\n", buf.beg());
     }
 
     return res;

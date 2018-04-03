@@ -96,19 +96,6 @@ Path open_file_dialog(CString filter = {});
 }  // namespace platform
 
 /*
-Window* create_window(int width, int height, const char* window_title);
-void	destroy_window(Window* window);
-void	set_window_should_close(Window* window, bool value);
-bool	window_in_focus(Window* window);
-bool	window_should_close(Window* window);
-void	get_framebuffer_size(Window* window, int* width, int* height);
-*/
-/*
-InputState* get_input_state();
-double get_delta_time();
-void swap_buffers(Window* window);
-void set_vsync(bool value);
-
 void* perm_alloc(size_t);
 void perm_free(void*);
 
@@ -117,23 +104,19 @@ void scratch_free(void*);
 
 }  // namespace platform
 
-/*
 struct KeyboardEvent {
     InputState* state;
     Key::Key_t key;
-
 };
 
 struct MouseEvent {
 
 };
-*/
 
 // struct FileEvent {
 //    CString path;
 //};
 
-/*
 typedef void (*FileCallback)(const FileEvent& event);
 
 void register_file_event_callback(FileCallback callback);
