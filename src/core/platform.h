@@ -87,8 +87,7 @@ struct DirEntry {
     Path name;
 };
 
-// Filter example "jpg|png|tga"
-DynamicArray<DirEntry> list_directory(CString dir_path, CString filter = {});
+DynamicArray<DirEntry> list_directory(CString dir_path);
 CString get_cwd();
 
 Path open_file_dialog(CString filter = {});

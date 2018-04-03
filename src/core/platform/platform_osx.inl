@@ -31,20 +31,15 @@ static int filter_func(const struct dirent *dir) {
     return 0;
 }
 
-DynamicArray<DirEntry> list_directory(CString dir_path, CString filter) {
+DynamicArray<DirEntry> list_directory(CString dir_path) {
     struct dirent **files;
     int i;
     int n;
 
     DynamicArray<DirEntry> res;
 
-    if (filter.count > 0) {
-        curr_filters = ctokenize(filter, '|');
-        n = scandir (dir_path, &files, filter_func, alphasort);        
-    }
-    else {
-        n = scandir (dir_path, &files, NULL, alphasort);
-    }
+
+    n = scandir (dir_path, &files, NULL, alphasort);
 
     if (n >= 0) {
         /* Loop through file names */
@@ -97,7 +92,7 @@ DynamicArray<DirEntry> list_directory(CString dir_path, CString filter) {
 }
 
 CString get_cwd() {
-    return {getcwd(NULL,0)};
+    return { getcwd(path_cwd.beg(), 512) };
 }
 
 /*

@@ -14,8 +14,9 @@ static inline bool valid_line(CString line, uint32 options) {
 
 MoleculeDynamic allocate_and_load_pdb_from_file(const char* filename, PdbLoadParams params) {
 	String txt = allocate_and_read_textfile(filename);
-	return allocate_and_parse_pdb_from_string(txt, params);
+	auto dyn = allocate_and_parse_pdb_from_string(txt, params);
 	FREE(txt);
+	return dyn;
 }
 
 MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadParams params) {
@@ -55,7 +56,7 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 					bonds = compute_covalent_bonds(positions, elements, residues);
 					backbone_segments = compute_backbone_segments(residues, labels);
 
-					md.molecule = allocate_molecule_structure(num_atoms, bonds.count, residues.count, chains.count, backbone_segments.count);
+					md.molecule = allocate_molecule_structure(num_atoms, (int32)bonds.count, (int32)residues.count, (int32)chains.count, (int32)backbone_segments.count);
 
 					// Copy data into molecule
 					memcpy(md.molecule->atom_positions.data, positions.data, positions.size() * sizeof(vec3));
@@ -74,7 +75,7 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 				}
 
 				//@TODO: ASSERT that things are matching up in terms of size and such.
-				md.trajectory->num_atoms = positions.count;
+				md.trajectory->num_atoms = (int32)positions.count;
 				md.trajectory->num_frames++;
 				md.trajectory->position_data.append(positions);
 			}
@@ -129,7 +130,7 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 				Residue residue;
 				residue.beg_atom_idx = num_atoms;
 				residue.end_atom_idx = residue.beg_atom_idx;
-				residue.chain_idx = chains.size() - 1;
+				residue.chain_idx = (ChainIdx)(chains.size() - 1);
 				copy(String(residue.name.beg(), Label::MAX_LENGTH-1), trim(line.substr(17, 3)));
 				residues.push_back(residue);
 				chains.back().end_res_idx++;
@@ -147,7 +148,7 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 		bonds = compute_covalent_bonds(positions, elements, residues);
 		backbone_segments = compute_backbone_segments(residues, labels);
 
-		md.molecule = allocate_molecule_structure(num_atoms, bonds.count, residues.count, chains.count, backbone_segments.count);
+		md.molecule = allocate_molecule_structure(num_atoms, (int32)bonds.count, (int32)residues.count, (int32)chains.count, (int32)backbone_segments.count);
 
 		// Copy data into molecule
 		memcpy(md.molecule->atom_positions.data, positions.data, positions.size() * sizeof(vec3));

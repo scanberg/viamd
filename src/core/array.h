@@ -34,6 +34,9 @@ struct Array {
     T& front() { return data[0]; }
     T& back() { return data[count - 1]; }
 
+	int64 size() const { return count; }
+	int64 size_in_bytes() const { return count * sizeof(T); }
+
     operator bool() const { return data != nullptr && count > 0; }
     const T& operator[](int64 i) const { return data[i]; }
     T& operator[](int64 i) { return data[i]; }
@@ -135,8 +138,6 @@ struct DynamicArray : Array<T> {
 		}
 		return *this;
 	}
-
-	int64 size() const { return this->count; }
 
 	inline int64 _grow_capacity(int64 sz) const {
 		int64 new_capacity = capacity ? (capacity + capacity / 2) : INIT_CAPACITY;

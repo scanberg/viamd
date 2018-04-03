@@ -8,31 +8,31 @@
 
 enum class ColorMapping { STATIC_COLOR, CPK, RES_ID, RES_INDEX, CHAIN_ID, CHAIN_INDEX };
 
-typedef bool(*FilterCommandFunc)(Array<bool> mask, const MoleculeDynamic& dynamic, const Array<CString> args);
+typedef bool (*FilterCommandFunc)(Array<bool> mask, const MoleculeDynamic& dynamic, const Array<CString> args);
 
 struct FilterCommand {
-	StringBuffer<16> keyword {};
-	FilterCommandFunc func = nullptr;
+    StringBuffer<16> keyword{};
+    FilterCommandFunc func = nullptr;
 };
 
 enum class RamachandranConformationClassification {
-	None,
-	BetaHigh,
-	BetaMid,
-	BetaLow,
-	AlphaHigh,
-	AlphaMid,
-	AlphaLow,
-	LeftAlphaHigh,
-	LeftAlphaMid,
-	LeftAlphaLow,
-	PMid,
-	PLow
+    None,
+    BetaHigh,
+    BetaMid,
+    BetaLow,
+    AlphaHigh,
+    AlphaMid,
+    AlphaLow,
+    LeftAlphaHigh,
+    LeftAlphaMid,
+    LeftAlphaLow,
+    PMid,
+    PLow
 };
 
 struct Volume {
-	DynamicArray<uint8> data;
-	ivec3 dim;
+    DynamicArray<uint8> data;
+    ivec3 dim;
 };
 
 // Tangent and binormal is perhaps redundant
@@ -41,6 +41,9 @@ struct SplineSegment {
     vec3 tangent;
     vec3 normal;
     vec3 binormal;
+
+	uint32 index;
+	uint32 color;
 };
 
 struct BackboneAngles {
@@ -55,10 +58,13 @@ struct BackboneAnglesTrajectory {
     DynamicArray<BackboneAngles> angle_data;
 };
 
-inline Array<BackboneAngles> get_backbone_segment_angles(BackboneAnglesTrajectory& backbone_segment_angle_traj, int frame_index) {
-    ASSERT(frame_index < backbone_segment_angle_traj.num_frames);
-    return Array<BackboneAngles>(&backbone_segment_angle_traj.angle_data[frame_index * backbone_segment_angle_traj.num_segments],
-                                 backbone_segment_angle_traj.num_segments);
+inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backbone_angle_traj, int frame_index) {
+    ASSERT(frame_index < backbone_angle_traj.num_frames);
+    return Array<BackboneAngles>(&backbone_angle_traj.angle_data[frame_index * backbone_angle_traj.num_segments], backbone_angle_traj.num_segments);
+}
+
+inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backbone_angle_traj, int frame_index, Chain chain) {
+    return get_backbone_angles(backbone_angle_traj, frame_index).sub_array(chain.beg_res_idx, chain.end_res_idx - chain.beg_res_idx);
 }
 
 void transform_positions(Array<vec3> positions, const mat4& transformation);
@@ -81,8 +87,7 @@ inline float dihedral_angle(const vec3 p[4]) { return dihedral_angle(p[0], p[1],
 DynamicArray<Bond> compute_covalent_bonds(const Array<vec3> atom_pos, const Array<Element> atom_elem, const Array<Residue> residues = {});
 DynamicArray<Chain> compute_chains(const Array<Residue> residue, const Array<Bond> bonds, const Array<ResIdx> atom_residue_indices = {});
 DynamicArray<BackboneSegment> compute_backbone_segments(const Array<Residue> residues, const Array<Label> atom_labels);
-DynamicArray<BackboneSegment> compute_backbone(const Chain& chain, const Array<Residue> residues, const Array<Label> atom_labels);
-DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Array<BackboneSegment>& backbone, int num_subdivisions = 1);
+DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Array<uint32> colors, const Array<BackboneSegment>& backbone, int num_subdivisions = 1);
 
 // Computes the dihedral angles within the backbone:
 // omega = dihedral(CA[i-1], C[i-1], N[i], CA[i])
@@ -105,15 +110,15 @@ void compute_occupancy_volume(Volume* volume, Array<vec3> atom_pos);
 Volume compute_occupancy_volume(Array<vec3> atom_pos, vec3 min_box, vec3 max_box);
 void compute_occupancy_volume(Volume* volume, Array<vec3> atom_pos, vec3 min_box, vec3 max_box);
 
-//bool filter_valid(CString filter);
-//bool filter_colors(Array<uint32> color_dst, const MoleculeStructure& mol, CString filter);
+// bool filter_valid(CString filter);
+// bool filter_colors(Array<uint32> color_dst, const MoleculeStructure& mol, CString filter);
 
 namespace filter {
-	void initialize();
-	void shutdown();
-	bool compute_filter_mask(Array<bool> mask, const MoleculeDynamic& mol, CString filter);
-	void filter_colors(Array<uint32> colors, Array<bool> mask);
-}
+void initialize();
+void shutdown();
+bool compute_filter_mask(Array<bool> mask, const MoleculeDynamic& mol, CString filter);
+void filter_colors(Array<uint32> colors, Array<bool> mask);
+}  // namespace filter
 
 inline bool is_amino_acid(Residue res) { return aminoacid::get_from_string(res.name) != AminoAcid::Unknown; }
 
@@ -124,7 +129,8 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
               const mat4& proj_mat, float radii_scale = 1.f);
 void draw_licorice(const Array<vec3> atom_positions, const Array<Bond> atom_bonds, const Array<uint32> atom_colors, const mat4& view_mat,
                    const mat4& proj_mat, float radii_scale = 1.f);
-void draw_ribbons(const Array<SplineSegment> spline, const mat4& view_mat, const mat4& proj_mat);
+void draw_ribbons(const Array<BackboneSegment> backbone_segments, const Array<Chain> chains, const Array<vec3> atom_positions,
+                  const Array<uint32> atom_colors, const mat4& view_mat, const mat4& proj_mat, int num_subdivisions = 8);
 
 // DEBUG
 void draw_backbone(const Array<BackboneSegment> backbone, const Array<vec3> atom_positions, const mat4& view_mat, const mat4& proj_mat);

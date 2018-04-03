@@ -28,7 +28,8 @@ include_directories(src
                     ext/nativefiledialog/src/include)
 
 file(GLOB_RECURSE PROJECT_HEADERS src/*.h)
-file(GLOB_RECURSE PROJECT_SOURCES src/*.cpp)
+file(GLOB_RECURSE PROJECT_SOURCES src/*.cpp
+                                  src/*.inl)
 
 file(GLOB PROJECT_CONFIGS CMakeLists.txt
                           Readme.md

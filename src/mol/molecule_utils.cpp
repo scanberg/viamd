@@ -163,28 +163,27 @@ DynamicArray<Chain> compute_chains(const Array<Residue> residues, const Array<Bo
         ASSERT(false, "Not implemented Yeti");
     }
 
-	if (residue_bonds.count == 0) {
-		// No residue bonds, No chains.
-		return {};
-	}
+    if (residue_bonds.count == 0) {
+        // No residue bonds, No chains.
+        return {};
+    }
 
     DynamicArray<int> residue_chains(residues.count, -1);
 
-	if (residue_bonds.count > 0) {
-		int curr_chain_idx = 0;
-		int res_bond_idx = 0;
-		for (int i = 0; i < residues.count; i++) {
-			if (residue_chains[i] == -1) residue_chains[i] = curr_chain_idx++;
-			for (; res_bond_idx < residue_bonds.count; res_bond_idx++) {
-				const auto& res_bond = residue_bonds[res_bond_idx];
-				if (i == res_bond.idx_a) {
-					residue_chains[res_bond.idx_b] = residue_chains[res_bond.idx_a];
-				}
-				else if (res_bond.idx_a > i)
-					break;
-			}
-		}
-	}
+    if (residue_bonds.count > 0) {
+        int curr_chain_idx = 0;
+        int res_bond_idx = 0;
+        for (int i = 0; i < residues.count; i++) {
+            if (residue_chains[i] == -1) residue_chains[i] = curr_chain_idx++;
+            for (; res_bond_idx < residue_bonds.count; res_bond_idx++) {
+                const auto& res_bond = residue_bonds[res_bond_idx];
+                if (i == res_bond.idx_a) {
+                    residue_chains[res_bond.idx_b] = residue_chains[res_bond.idx_a];
+                } else if (res_bond.idx_a > i)
+                    break;
+            }
+        }
+    }
 
     DynamicArray<Chain> chains;
     int curr_chain_idx = -1;
@@ -228,7 +227,6 @@ DynamicArray<BackboneSegment> compute_backbone_segments(const Array<Residue> res
 
             // Could not match "O"
             if (o_idx == -1) {
-                ASSERT(c_idx);
                 // Pick first atom containing O after C atom
                 for (int32 i = c_idx; i < res.end_atom_idx; i++) {
                     const auto& lbl = atom_labels[i];
@@ -236,18 +234,20 @@ DynamicArray<BackboneSegment> compute_backbone_segments(const Array<Residue> res
                 }
             }
 
-			if (ca_idx == -1 || n_idx == -1 || c_idx == -1 || o_idx == -1) {
-				printf("ERROR! Could not identify backbone indices for residue %s.\n", res.name.beg());
-				continue;
-			}
-			segments.push_back({ ca_idx, n_idx, c_idx, o_idx });
+            if (ca_idx == -1 || n_idx == -1 || c_idx == -1 || o_idx == -1) {
+                printf("ERROR! Could not identify all backbone indices for residue %s.\n", res.name.beg());
+            }
+            segments.push_back({ca_idx, n_idx, c_idx, o_idx});
         }
+		else {
+			segments.push_back({ -1, -1, -1, -1 });
+		}
     }
 
     return segments;
 }
 
-DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Array<BackboneSegment>& backbone, int num_subdivisions) {
+DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Array<uint32> colors, const Array<BackboneSegment>& backbone, int num_subdivisions) {
     if (backbone.count < 4) return {};
 
     DynamicArray<vec3> p_tmp;
@@ -318,6 +318,9 @@ DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Arr
         auto c2 = c_tmp[i + 1];
         auto c3 = c_tmp[i + 2];
 
+		uint32 idx = ca_idx[i];
+		uint32 color = colors[idx];
+
         auto count = (i < (p_tmp.size() - 3)) ? num_subdivisions : num_subdivisions + 1;
         for (int n = 0; n < count; n++) {
             auto t = n / (float)(num_subdivisions);
@@ -333,12 +336,12 @@ DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Arr
             float d1 = math::min(t + eps, 1.f);
 
             vec3 tangent = math::normalize(math::spline(p0, p1, p2, p3, d1, tension) - math::spline(p0, p1, p2, p3, d0, tension));
-            vec3 binormal = math::normalize(math::cross(v_dir, tangent));
-            vec3 normal = math::normalize(math::cross(tangent, binormal));
+            vec3 normal = math::normalize(math::cross(v_dir, tangent));
+            vec3 binormal = math::normalize(math::cross(tangent, normal));
             // vec3 normal = v_dir;
             // vec3 binormal = math::normalize(math::cross(tangent, normal));
 
-            segments.push_back({p, tangent, normal, binormal});
+            segments.push_back({p, tangent, normal, binormal, idx, color});
         }
     }
 
@@ -389,7 +392,7 @@ BackboneAnglesTrajectory compute_backbone_angles_trajectory(const Trajectory& tr
     // @TODO: parallelize?
     for (int f_idx = 0; f_idx < num_frames; f_idx++) {
         auto pos = get_trajectory_positions(trajectory, f_idx);
-        auto b_angles = get_backbone_segment_angles(bat, f_idx);
+        auto b_angles = get_backbone_angles(bat, f_idx);
         compute_backbone_angles(b_angles, pos, backbone_segments);
     }
 
@@ -421,9 +424,9 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
     // CPK
     switch (mapping) {
         case ColorMapping::STATIC_COLOR:
-			for (int64 i = 0; i < color_dst.count; i++) {
-				color_dst[i] = static_color;
-			}
+            for (int64 i = 0; i < color_dst.count; i++) {
+                color_dst[i] = static_color;
+            }
             break;
         case ColorMapping::CPK:
             for (int64 i = 0; i < color_dst.count; i++) {
@@ -438,8 +441,8 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
                     const auto& res = mol.residues[mol.atom_residue_indices[i]];
                     unsigned int h = hash::crc32(res.name.beg(), res.name.MAX_LENGTH);
                     float hue = (h % 32) / 32.f;
-                    //vec3 c = math::hcl_to_rgb(vec3(hue, 0.1f, 1.0f));
-					vec3 c = math::hsv_to_rgb(vec3(hue, 0.7f, 1.0f));
+                    // vec3 c = math::hcl_to_rgb(vec3(hue, 0.1f, 1.0f));
+                    vec3 c = math::hsv_to_rgb(vec3(hue, 0.7f, 1.0f));
                     unsigned char color[4];
                     color[0] = (unsigned char)(c.x * 255);
                     color[1] = (unsigned char)(c.y * 255);
@@ -464,23 +467,23 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
                 }
             }
             break;
-		case ColorMapping::CHAIN_ID:
-			for (int64 i = 0; i < color_dst.count; i++) {
-				if (i < mol.atom_residue_indices.count) {
-					const auto& res = mol.residues[mol.atom_residue_indices[i]];
-					if (res.chain_idx < mol.chains.count) {
-						unsigned int h = hash::crc32(res.name.operator CString());
-						float hue = (h % 32) / 32.f;
-						vec3 c = math::hcl_to_rgb(vec3(hue, 0.8f, 0.8f));
-						unsigned char color[4];
-						color[0] = (unsigned char)(c.x * 255);
-						color[1] = (unsigned char)(c.y * 255);
-						color[2] = (unsigned char)(c.z * 255);
-						color[3] = (unsigned char)(255);
-						color_dst[i] = *(uint32*)(color);
-					}
-				}
-			}
+        case ColorMapping::CHAIN_ID:
+            for (int64 i = 0; i < color_dst.count; i++) {
+                if (i < mol.atom_residue_indices.count) {
+                    const auto& res = mol.residues[mol.atom_residue_indices[i]];
+                    if (res.chain_idx < mol.chains.count) {
+                        unsigned int h = hash::crc32(res.name.operator CString());
+                        float hue = (h % 32) / 32.f;
+                        vec3 c = math::hcl_to_rgb(vec3(hue, 0.8f, 0.8f));
+                        unsigned char color[4];
+                        color[0] = (unsigned char)(c.x * 255);
+                        color[1] = (unsigned char)(c.y * 255);
+                        color[2] = (unsigned char)(c.z * 255);
+                        color[3] = (unsigned char)(255);
+                        color_dst[i] = *(uint32*)(color);
+                    }
+                }
+            }
         case ColorMapping::CHAIN_INDEX:
             for (int64 i = 0; i < color_dst.count; i++) {
                 if (i < mol.atom_residue_indices.count) {
@@ -505,14 +508,9 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
 
 namespace filter {
 struct Token {
-	enum Type {
-		SYMBOL,
-		IDENTIFIER,
-		NUMBER,
-		COMMAND
-	};
-	Type type;
-	CString data;
+    enum Type { SYMBOL, IDENTIFIER, NUMBER, COMMAND };
+    Type type;
+    CString data;
 };
 
 static DynamicArray<FilterCommand> filter_commands;
@@ -522,7 +520,7 @@ static bool is_modifier(CString str) {
     if (compare(str, "AND")) return true;
     if (compare(str, "or")) return true;
     if (compare(str, "OR")) return true;
-	return false;
+    return false;
 }
 
 int32 count_parentheses(CString str) {
@@ -533,185 +531,178 @@ int32 count_parentheses(CString str) {
         if (str[i] == '(') beg_parentheses_count++;
         if (str[i] == ')') end_parentheses_count++;
     }
-	return beg_parentheses_count - end_parentheses_count;
+    return beg_parentheses_count - end_parentheses_count;
 }
 
 CString extract_parenthesis(CString str) {
-	const char* beg = str.beg();
-	while (beg != str.end() && *beg != '(') beg++;
-	if (beg == str.end()) return {};
+    const char* beg = str.beg();
+    while (beg != str.end() && *beg != '(') beg++;
+    if (beg == str.end()) return {};
 
-	const char* end = beg + 1;
-	int count = 1;
-	while (end++ != str.end() && count > 0) {
-		if (*end == '(') count++;
-		if (*end == ')') count--;
-	}
-	if (end == str.end()) return {};
-	return CString(beg, end);
+    const char* end = beg + 1;
+    int count = 1;
+    while (end++ != str.end() && count > 0) {
+        if (*end == '(') count++;
+        if (*end == ')') count--;
+    }
+    if (end == str.end()) return {};
+    return CString(beg, end);
 }
 
 DynamicArray<CString> extract_chunks(CString str) {
-	DynamicArray<CString> chunks;
-	
-	const char* beg = str.beg();
-	while (beg != str.end()) {
-		if (*beg == '(') {
-			CString par = extract_parenthesis(CString(beg, str.end()));
-			chunks.push_back({ par.beg(), par.end() }); // Exclude actual parentheses
-			beg = par.end();
-		}
-		else if (*beg != ' ') {
-			const char* end = beg;
-			while (end != str.end() && *end != ' ') end++;
-			CString chunk = CString(beg, end);
-			chunks.push_back(CString(beg, end));
-			beg = end;
-		}
-		else
-			beg++;
-	}
+    DynamicArray<CString> chunks;
 
-	DynamicArray<CString> big_chunks;
+    const char* beg = str.beg();
+    while (beg != str.end()) {
+        if (*beg == '(') {
+            CString par = extract_parenthesis(CString(beg, str.end()));
+            chunks.push_back({par.beg(), par.end()});  // Exclude actual parentheses
+            beg = par.end();
+        } else if (*beg != ' ') {
+            const char* end = beg;
+            while (end != str.end() && *end != ' ') end++;
+            CString chunk = CString(beg, end);
+            chunks.push_back(CString(beg, end));
+            beg = end;
+        } else
+            beg++;
+    }
 
-	CString* chunk = chunks.beg();
-	while (chunk != chunks.end()) {
-		if (chunk->front() == '(') {
-			big_chunks.push_back(*chunk);
-			chunk++;
-		}
-		else if (is_modifier(*chunk)) {
-			big_chunks.push_back(*chunk);
-			chunk++;
-		}
-		else {
-			CString* beg_chunk = chunk;
-			CString* end_chunk = chunk + 1;
-			while (end_chunk != chunks.end() && !is_modifier(*end_chunk) && end_chunk->front() != '(') end_chunk++;
-			big_chunks.push_back({ beg_chunk->beg(), (end_chunk-1)->end() });
-			chunk = end_chunk;
-		}
-	}
+    DynamicArray<CString> big_chunks;
 
-	return big_chunks;
+    CString* chunk = chunks.beg();
+    while (chunk != chunks.end()) {
+        if (chunk->front() == '(') {
+            big_chunks.push_back(*chunk);
+            chunk++;
+        } else if (is_modifier(*chunk)) {
+            big_chunks.push_back(*chunk);
+            chunk++;
+        } else {
+            CString* beg_chunk = chunk;
+            CString* end_chunk = chunk + 1;
+            while (end_chunk != chunks.end() && !is_modifier(*end_chunk) && end_chunk->front() != '(') end_chunk++;
+            big_chunks.push_back({beg_chunk->beg(), (end_chunk - 1)->end()});
+            chunk = end_chunk;
+        }
+    }
+
+    return big_chunks;
 }
 
 FilterCommand* find_filter_command(CString command) {
-	for (auto& f : filter_commands) {
-		if (compare(command, f.keyword)) return &f;
-	}
-	return nullptr;
+    for (auto& f : filter_commands) {
+        if (compare(command, f.keyword)) return &f;
+    }
+    return nullptr;
 }
 
 void combine_mask_and(Array<bool> dst, Array<bool> src_a, Array<bool> src_b, bool state_not) {
-	if (state_not) {
-		for (int i = 0; i < dst.count; i++)
-			dst[i] = src_a[i] & !src_b[i];
-	}
-	else {
-		for (int i = 0; i < dst.count; i++)
-			dst[i] = src_a[i] & src_b[i];
-	}
+    if (state_not) {
+        for (int i = 0; i < dst.count; i++) dst[i] = src_a[i] & !src_b[i];
+    } else {
+        for (int i = 0; i < dst.count; i++) dst[i] = src_a[i] & src_b[i];
+    }
 }
 
 void combine_mask_or(Array<bool> dst, Array<bool> src_a, Array<bool> src_b, bool state_not) {
-	if (state_not) {
-		for (int i = 0; i < dst.count; i++)
-			dst[i] = src_a[i] | !src_b[i];
-	}
-	else {
-		for (int i = 0; i < dst.count; i++)
-			dst[i] = src_a[i] | src_b[i];
-	}
+    if (state_not) {
+        for (int i = 0; i < dst.count; i++) dst[i] = src_a[i] | !src_b[i];
+    } else {
+        for (int i = 0; i < dst.count; i++) dst[i] = src_a[i] | src_b[i];
+    }
 }
 
 bool internal_filter_mask(Array<bool> mask, const MoleculeDynamic& dyn, CString filter) {
-	DynamicArray<CString> chunks = extract_chunks(filter);
-	DynamicArray<bool> chunk_mask(mask.count);
+    DynamicArray<CString> chunks = extract_chunks(filter);
+    DynamicArray<bool> chunk_mask(mask.count);
 
-	bool state_and = true;
-	bool state_or = false;
-	bool state_not = false;
+    bool state_and = true;
+    bool state_or = false;
+    bool state_not = false;
 
-	for (const auto& chunk : chunks) {
-		if (is_modifier(chunk)) {
-			if (compare(chunk, "and", true))		state_and = true;
-			else if (compare(chunk, "or", true))	state_or = true;
-			else if (compare(chunk, "not", true))	state_not = true;
+    for (const auto& chunk : chunks) {
+        if (is_modifier(chunk)) {
+            if (compare(chunk, "and", true))
+                state_and = true;
+            else if (compare(chunk, "or", true))
+                state_or = true;
+            else if (compare(chunk, "not", true))
+                state_not = true;
 
-			if (state_and && state_or) {
-				printf("ERROR! Cannot use both 'and' and 'or' to combine filter options\n");
-				return false;
-			}
-		}
-		else {
-			if (chunk.front() == '(') {
-				ASSERT(chunk.back() == ')');
-				if (!internal_filter_mask(chunk_mask, dyn, CString(chunk.beg() + 1, chunk.end() - 1))) return false;
-			}
-			else {
-				auto tokens = ctokenize(chunk);
-				auto cmd = find_filter_command(tokens[0]);
-				if (!cmd) {
-					StringBuffer<32> buf = tokens[0];
-					printf("ERROR! could not match command: '%s'\n", buf.beg());
-					return false;
-				}
+            if (state_and && state_or) {
+                printf("ERROR! Cannot use both 'and' and 'or' to combine filter options\n");
+                return false;
+            }
+        } else {
+            if (chunk.front() == '(') {
+                ASSERT(chunk.back() == ')');
+                if (!internal_filter_mask(chunk_mask, dyn, CString(chunk.beg() + 1, chunk.end() - 1))) return false;
+            } else {
+                auto tokens = ctokenize(chunk);
+                auto cmd = find_filter_command(tokens[0]);
+                if (!cmd) {
+                    StringBuffer<32> buf = tokens[0];
+                    printf("ERROR! could not match command: '%s'\n", buf.beg());
+                    return false;
+                }
 
-				auto args = tokens.sub_array(1);
+                auto args = tokens.sub_array(1);
 
-				while (args.count > 0 && compare(args[0], "not", true)) {
-					state_not = !state_not;
-					args = args.sub_array(1);
-				}
+                while (args.count > 0 && compare(args[0], "not", true)) {
+                    state_not = !state_not;
+                    args = args.sub_array(1);
+                }
 
-				if (!cmd->func(chunk_mask, dyn, args)) {
-					StringBuffer<32> buf = tokens[0];
-					printf("ERROR! could not parse command: '%s' with arguments: ", buf.beg());
-					for (const auto& arg : args) {
-						buf = arg;
-						printf("'%s'", buf.beg());
-					}
-					return false;
-				}
-			}
+                if (!cmd->func(chunk_mask, dyn, args)) {
+                    StringBuffer<32> buf = tokens[0];
+                    printf("ERROR! could not parse command: '%s' with arguments: ", buf.beg());
+                    for (const auto& arg : args) {
+                        buf = arg;
+                        printf("'%s'", buf.beg());
+                    }
+                    return false;
+                }
+            }
 
-			if (state_and) combine_mask_and(mask, mask, chunk_mask, state_not);
-			else if (state_or) combine_mask_or(mask, mask, chunk_mask, state_not);
+            if (state_and)
+                combine_mask_and(mask, mask, chunk_mask, state_not);
+            else if (state_or)
+                combine_mask_or(mask, mask, chunk_mask, state_not);
 
-			state_and = false;
-			state_or = false;
-			state_not = false;
-		}
-	}
+            state_and = false;
+            state_or = false;
+            state_not = false;
+        }
+    }
 
-	return true;
+    return true;
 }
 
 bool compute_filter_mask(Array<bool> mask, const MoleculeDynamic& dyn, CString filter) {
-	auto count = dyn.molecule->atom_elements.count;
-	ASSERT(count == dyn.molecule->atom_labels.count);
-	ASSERT(count == dyn.molecule->atom_positions.count);
-	ASSERT(count == dyn.molecule->atom_residue_indices.count);
-	ASSERT(count == mask.count);
+    auto count = dyn.molecule->atom_elements.count;
+    ASSERT(count == dyn.molecule->atom_labels.count);
+    ASSERT(count == dyn.molecule->atom_positions.count);
+    ASSERT(count == dyn.molecule->atom_residue_indices.count);
+    ASSERT(count == mask.count);
 
-	if (count_parentheses(filter) != 0) {
-		printf("ERROR! Unmatched parentheses\n");
-		return false;
-	}
+    if (count_parentheses(filter) != 0) {
+        printf("ERROR! Unmatched parentheses\n");
+        return false;
+    }
 
-	memset(mask.data, 1, mask.count);
-	return internal_filter_mask(mask, dyn, filter);
+    memset(mask.data, 1, mask.count);
+    return internal_filter_mask(mask, dyn, filter);
 }
 
 void filter_colors(Array<uint32> colors, Array<bool> mask) {
-	ASSERT(colors.count == mask.count);
-	for (int i = 0; i < colors.count; i++) {
-		if (mask[i])
-			colors[i] |= 0xff000000;
-		else
-			colors[i] &= ~0xff000000;
-	}
+    ASSERT(colors.count == mask.count);
+    for (int i = 0; i < colors.count; i++) {
+        if (mask[i])
+            colors[i] |= 0xff000000;
+        else
+            colors[i] &= ~0xff000000;
+    }
 }
 
 void initialize() {
@@ -1133,16 +1124,16 @@ static void initialize() {
         glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
 
-	if (!buf_index) {
-		glGenBuffers(1, &buf_index);
-		glBindBuffer(GL_ARRAY_BUFFER, buf_index);
-		glBufferData(GL_ARRAY_BUFFER, MEGABYTES(5), 0, GL_STREAM_DRAW);
-		glBindBuffer(GL_ARRAY_BUFFER, 0);
-	}
+    if (!buf_index) {
+        glGenBuffers(1, &buf_index);
+        glBindBuffer(GL_ARRAY_BUFFER, buf_index);
+        glBufferData(GL_ARRAY_BUFFER, MEGABYTES(5), 0, GL_STREAM_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
 
     if (!tex_position_radius) glGenTextures(1, &tex_position_radius);
     if (!tex_color) glGenTextures(1, &tex_color);
-	if (!tex_index) glGenTextures(1, &tex_index);
+    if (!tex_index) glGenTextures(1, &tex_index);
 
     glBindVertexArray(vao);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
@@ -1154,19 +1145,19 @@ static void initialize() {
     uniform_loc_fov = glGetUniformLocation(program, "u_fov");
     uniform_loc_tex_pos_rad = glGetUniformLocation(vdw::program, "u_tex_pos_rad");
     uniform_loc_tex_color = glGetUniformLocation(vdw::program, "u_tex_color");
-	uniform_loc_tex_index = glGetUniformLocation(vdw::program, "u_tex_index");
+    uniform_loc_tex_index = glGetUniformLocation(vdw::program, "u_tex_index");
 }
 
 static void shutdown() {
     if (program) glDeleteProgram(program);
 
-	if (buf_position_radius) glDeleteBuffers(1, &buf_position_radius);
-	if (buf_color) glDeleteBuffers(1, &buf_color);
-	if (!buf_index) glDeleteBuffers(1, &buf_index);
+    if (buf_position_radius) glDeleteBuffers(1, &buf_position_radius);
+    if (buf_color) glDeleteBuffers(1, &buf_color);
+    if (!buf_index) glDeleteBuffers(1, &buf_index);
 
-	if (tex_position_radius) glDeleteTextures(1, &tex_position_radius);
-	if (tex_color) glDeleteTextures(1, &tex_color);
-	if (tex_index) glDeleteTextures(1, &tex_index);
+    if (tex_position_radius) glDeleteTextures(1, &tex_position_radius);
+    if (tex_color) glDeleteTextures(1, &tex_color);
+    if (tex_index) glDeleteTextures(1, &tex_index);
 }
 
 }  // namespace vdw
@@ -1572,16 +1563,14 @@ in Vertex {
 } in_vert[];
 
 out Fragment {
-    smooth vec3 view_position;
-    smooth vec3 view_normal;
     smooth vec4 color;
+    smooth vec3 view_normal;
     flat vec4 picking_color;
 } out_frag;
 
 void emit(mat4 mat, int input_idx, vec4 v, vec3 n) {
     vec4 view_coord = u_view_mat * mat * v;
     mat3 norm_mat = inverse(transpose(mat3(u_view_mat) * mat3(mat)));
-    out_frag.view_position = view_coord.xyz;
     out_frag.view_normal = normalize(norm_mat * n);
     out_frag.color = in_vert[input_idx].color;
     out_frag.picking_color = in_vert[input_idx].picking_color;
@@ -1662,24 +1651,23 @@ static const char* f_shader_src = R"(
 #extension GL_ARB_explicit_attrib_location : enable
 
 in Fragment {
-	smooth vec3 view_position;
-    smooth vec3 view_normal;
     smooth vec4 color;
+    smooth vec3 view_normal;
 	flat vec4 picking_color;
 } in_frag;
 
 layout(location = 0) out vec4 out_color;
-layout(location = 1) out vec4 out_picking_id;
+layout(location = 1) out vec4 out_normal;
+layout(location = 2) out vec4 out_picking_id;
+
+vec4 encode_normal (vec3 n) {
+    float p = sqrt(n.z*8+8);
+    return vec4(n.xy/p + 0.5,0,0);
+}
 
 void main() {
-    vec4 color = in_frag.color;
-    vec3 V = -normalize(in_frag.view_position);
-	vec3 N = normalize(in_frag.view_normal);
-	vec3 L = normalize(vec3(1,1,1));
-
-    color.rgb = color.rgb * max(0.0, dot(N, L));
-
-    out_color = vec4(color.rgb, color.a);
+    out_color = in_frag.color;
+	out_normal = encode_normal(in_frag.view_normal);
     out_picking_id = in_frag.picking_color;
 }
 )";
@@ -1956,7 +1944,7 @@ void draw_instanced_quads(int num_instances) {
 
 void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, const Array<uint32> atom_colors, const mat4& view_mat,
               const mat4& proj_mat, float radii_scale) {
-    int64_t count = atom_positions.count;
+    int32 count = (int32)atom_positions.count;
     ASSERT(count == atom_radii.count && count == atom_colors.count);
 
     mat4 inv_proj_mat = math::inverse(proj_mat);
@@ -1969,21 +1957,21 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
     vec4* gpu_pos_rad = (vec4*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
     glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_color);
     uint32* gpu_color = (uint32*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-	glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_index);
-	int32* gpu_index = (int32*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+    glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_index);
+    int32* gpu_index = (int32*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
 
     // @ TODO: DISCARD ANY ZERO RADII OR ZERO COLOR ALPHA ATOMS HERE
-    for (int64_t i = 0; i < count; i++) {
+    for (int32 i = 0; i < count; i++) {
         if (atom_radii[i] <= 0.f) continue;
         if ((atom_colors[i] & 0xff000000) == 0) continue;
         gpu_pos_rad[draw_count] = vec4(atom_positions[i], atom_radii[i] * radii_scale);
         gpu_color[draw_count] = atom_colors[i];
-		gpu_index[draw_count] = i;
+        gpu_index[draw_count] = i;
         draw_count++;
     }
 
-	glUnmapBuffer(GL_ARRAY_BUFFER);
-	glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_color);
+    glUnmapBuffer(GL_ARRAY_BUFFER);
+    glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_color);
     glUnmapBuffer(GL_ARRAY_BUFFER);
     glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_position_radius);
     glUnmapBuffer(GL_ARRAY_BUFFER);
@@ -2007,15 +1995,15 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
     glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_color);
     glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, vdw::buf_color);
 
-	// Texture 2
-	glActiveTexture(GL_TEXTURE2);
-	glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_index);
-	glTexBuffer(GL_TEXTURE_BUFFER, GL_R32I, vdw::buf_index);
+    // Texture 2
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_index);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R32I, vdw::buf_index);
 
     // Uniforms
     glUniform1i(vdw::uniform_loc_tex_pos_rad, 0);
     glUniform1i(vdw::uniform_loc_tex_color, 1);
-	glUniform1i(vdw::uniform_loc_tex_index, 2);
+    glUniform1i(vdw::uniform_loc_tex_index, 2);
     glUniformMatrix4fv(vdw::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
     glUniformMatrix4fv(vdw::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
     glUniformMatrix4fv(vdw::uniform_loc_inv_proj_mat, 1, GL_FALSE, &inv_proj_mat[0][0]);
@@ -2060,6 +2048,79 @@ void draw_licorice(const Array<vec3> atom_positions, const Array<Bond> atom_bond
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+    glDisable(GL_DEPTH_TEST);
+}
+
+void draw_ribbons(const Array<BackboneSegment> backbone_segments, const Array<Chain> chains, const Array<vec3> atom_positions,
+                  const Array<uint32> atom_colors, const mat4& view_mat, const mat4& proj_mat, int num_subdivisions) {
+    if (backbone_segments.count == 0) return;
+    if (chains.count == 0) return;
+    if (atom_positions.count == 0) return;
+    if (atom_colors.count == 0) return;
+
+    struct DrawInfo {
+        int32 offset;
+        int32 count;
+    };
+
+    DynamicArray<DrawInfo> draw_data;
+    DynamicArray<BackboneSegment> visible_segments;
+    DynamicArray<SplineSegment> spline_segments;
+    DynamicArray<uint32> spline_segment_colors;
+    DynamicArray<uint32> spline_segment_picking_ids;
+
+    int32 offset = 0;
+    for (const auto& c : chains) {
+        visible_segments.clear();
+        for (int i = c.beg_res_idx; i < c.end_res_idx; i++) {
+            int ca_idx = backbone_segments[i].ca_idx;
+            if (ca_idx == -1 || (atom_colors[ca_idx] & 0xff000000) == 0)
+                break;
+            else {
+                visible_segments.push_back(backbone_segments[i]);
+            }
+        }
+        // Only do this if all segments within a chain was visible
+        if (visible_segments.size() == (c.end_res_idx - c.beg_res_idx)) {
+            auto splines = compute_spline(atom_positions, atom_colors, visible_segments, num_subdivisions);
+            spline_segments.append(splines);
+            draw_data.push_back({offset, (int32)splines.count});
+            offset += (int32)splines.count;
+        }
+    }
+
+    ASSERT(spline_segments.count * sizeof(ribbons::Vertex) < VERTEX_BUFFER_SIZE);
+
+	glBindBuffer(GL_ARRAY_BUFFER, vbo);
+	ribbons::Vertex* data = (ribbons::Vertex*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+	//memcpy(data, spline_segments.data, spline_segments.size_in_bytes());
+	
+    for (int64_t i = 0; i < spline_segments.count; i++) {
+        data[i].position = spline_segments[i].position;
+        data[i].tangent = spline_segments[i].tangent;
+        data[i].normal = spline_segments[i].normal;
+        data[i].color = spline_segments[i].color;
+        data[i].picking_id = spline_segments[i].index;
+    }
+	
+    glUnmapBuffer(GL_ARRAY_BUFFER);
+	//glBufferData(GL_ARRAY_BUFFER, spline_segments.size_in_bytes(), spline_segments.data, GL_STREAM_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    glEnable(GL_DEPTH_TEST);
+
+    glBindVertexArray(ribbons::vao);
+    glUseProgram(ribbons::program);
+    glUniformMatrix4fv(ribbons::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
+    glUniformMatrix4fv(ribbons::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
+    glUniform1f(ribbons::uniform_loc_scale_x, 0.5f);
+    glUniform1f(ribbons::uniform_loc_scale_y, 0.1f);
+    for (const auto& di : draw_data) {
+        glDrawArrays(GL_LINE_STRIP, di.offset, di.count);
+    }
+    glUseProgram(0);
+    glBindVertexArray(0);
 
     glDisable(GL_DEPTH_TEST);
 }

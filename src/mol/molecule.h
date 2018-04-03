@@ -21,16 +21,16 @@ using ResIdx   = int32;
 using ChainIdx = int16;
 
 struct Residue {
-	Label name;
+	Label name = "";
 	AtomIdx beg_atom_idx = 0;
 	AtomIdx end_atom_idx = 0;
 	ChainIdx chain_idx = -1;
 };
 
 struct Chain {
-	Label id;
-	ResIdx beg_res_idx;
-	ResIdx end_res_idx;
+	Label id = "";
+	ResIdx beg_res_idx = 0;
+	ResIdx end_res_idx = 0;
 };
 
 struct BackboneSegment {
@@ -72,6 +72,12 @@ inline AtomIdx get_atom_end_idx(MoleculeStructure& mol, Chain chain) {
 inline Chain get_chain(MoleculeStructure& mol, ChainIdx idx) {
 	ASSERT(0 <= idx && idx < mol.chains.count);
 	return mol.chains[idx];
+}
+
+inline Array<BackboneSegment> get_backbone(MoleculeStructure& mol, Chain chain) {
+	ASSERT(0 < chain.end_res_idx && chain.end_res_idx <= mol.residues.count);
+	if (mol.backbone_segments.count == 0) return {};
+	return { mol.backbone_segments.beg() + chain.beg_res_idx, mol.backbone_segments.beg() + chain.end_res_idx };
 }
 
 inline Array<Residue> get_residues(MoleculeStructure& mol, Chain chain) {

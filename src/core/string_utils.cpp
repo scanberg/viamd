@@ -293,8 +293,6 @@ DynamicArray<CString> ctokenize(CString str, char delimiter) {
 	const char* beg = str.beg();
 	const char* end = str.beg();
 
-	const char* str_end = str.end();
-
 	while (end != str.end() && *end != '\0') {
 		while (end != str.end() && *end != '\0' && *end != delimiter) end++;
 		tokens.push_back(CString(beg, end));

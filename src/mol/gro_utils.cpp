@@ -106,6 +106,7 @@ MoleculeStructure* allocate_and_parse_gro_from_string(CString gro_string) {
 	}
     box *= 10.f;
 
+	DynamicArray<BackboneSegment> backbone_segments = compute_backbone_segments(residues, labels);
 	DynamicArray<Bond> bonds = compute_covalent_bonds(positions, elements, residues);
 	DynamicArray<Chain> chains = compute_chains(residues, bonds, residue_indices);
 
@@ -115,17 +116,18 @@ MoleculeStructure* allocate_and_parse_gro_from_string(CString gro_string) {
 	   	}
 	}
 
-	MoleculeStructure* mol = allocate_molecule_structure(num_atoms, (int)bonds.size(), (int)residues.size(), (int)chains.size(), 0);
+	MoleculeStructure* mol = allocate_molecule_structure(num_atoms, (int)bonds.size(), (int)residues.size(), (int)chains.size(), (int)backbone_segments.size());
 
 	// Copy data into molecule
-	memcpy(mol->atom_positions.data, positions.data, positions.size() * sizeof(vec3));
-	memcpy(mol->atom_elements.data, elements.data, elements.size() * sizeof(Element));
-	memcpy(mol->atom_labels.data, labels.data, labels.size() * sizeof(Label));
-	memcpy(mol->atom_residue_indices.data, residue_indices.data, residue_indices.size() * sizeof(ResIdx));
+	memcpy(mol->atom_positions.data, positions.data, positions.size_in_bytes());
+	memcpy(mol->atom_elements.data, elements.data, elements.size_in_bytes());
+	memcpy(mol->atom_labels.data, labels.data, labels.size_in_bytes());
+	memcpy(mol->atom_residue_indices.data, residue_indices.data, residue_indices.size_in_bytes());
 
-	memcpy(mol->residues.data, residues.data, residues.size() * sizeof(Residue));
-	memcpy(mol->chains.data, chains.data, chains.size() * sizeof(Chain));
-	memcpy(mol->bonds.data, bonds.data, bonds.size() * sizeof(Bond));
+	memcpy(mol->residues.data, residues.data, residues.size_in_bytes());
+	memcpy(mol->chains.data, chains.data, chains.size_in_bytes());
+	memcpy(mol->bonds.data, bonds.data, bonds.size_in_bytes());
+	memcpy(mol->backbone_segments.data, backbone_segments.data, backbone_segments.size_in_bytes());
 
     //gro.box = mat3(vec3(box.x, 0, 0), vec3(0, box.y, 0), vec3(0, 0, box.z));
 

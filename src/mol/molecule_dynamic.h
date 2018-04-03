@@ -4,6 +4,6 @@
 #include <mol/trajectory.h>
 
 struct MoleculeDynamic {
-	MoleculeStructure* molecule;
-	Trajectory* trajectory;
+	MoleculeStructure* molecule = nullptr;
+	Trajectory* trajectory = nullptr;
 };

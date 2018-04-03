@@ -29,7 +29,10 @@ Platform
         win32
     --- (Cross-platform FileDialog (Prio mac and Win32))
 
-// BIG STUFF
+
+
+
+// BIG PICTURE
 
 Design principles:
     Data Oriented Design, try and avoid Object Orientation unless it is the better choice for some reason.

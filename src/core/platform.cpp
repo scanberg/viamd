@@ -3,6 +3,9 @@
 #include <GLFW/glfw3.h>
 #ifdef OS_WINDOWS
 #undef APIENTRY
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN 1
+#endif
 #define GLFW_EXPOSE_NATIVE_WIN32
 #define GLFW_EXPOSE_NATIVE_WGL
 #include <GLFW/glfw3native.h>
@@ -16,6 +19,7 @@ namespace platform {
 
 // Data
 static Context      internal_ctx;
+static Path			path_cwd;
 static double       g_time = 0.0f;
 static GLuint       g_font_texture = 0;
 static int          g_shader_handle = 0, g_vert_handle = 0, g_frag_handle = 0;
@@ -521,6 +525,10 @@ void update(Context* ctx) {
     internal_ctx.framebuffer.width = w;
     internal_ctx.framebuffer.height = h;
 
+	glfwGetWindowSize((GLFWwindow*)internal_ctx.window.ptr, &w, &h);
+	internal_ctx.window.width = w;
+	internal_ctx.window.height = h;
+
     if (ctx->window.vsync != internal_ctx.window.vsync) {
         internal_ctx.window.vsync = ctx->window.vsync;
         glfwSwapInterval((int)ctx->window.vsync);
@@ -547,7 +555,7 @@ void update(Context* ctx) {
     imgui_new_frame();
 
 	double t = glfwGetTime();
-	internal_ctx.timing.dt = t - internal_ctx.timing.total_s;
+	internal_ctx.timing.dt = (float)(t - internal_ctx.timing.total_s);
 	internal_ctx.timing.total_s = t;
 
 	memcpy(ctx, &internal_ctx, sizeof(Context));
@@ -576,9 +584,9 @@ Path open_file_dialog(CString filter) {
 }
 
 #ifdef OS_WINDOWS
-#include <core/platform/platform_win32.h>
+#include <core/platform/platform_win32.inl>
 #elif defined OS_MAC
-#include <core/platform/platform_osx.h>
+#include <core/platform/platform_osx.inl>
 #elif defined OS_LINUX
 #endif
 

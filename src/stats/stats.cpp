@@ -10,7 +10,6 @@ namespace stats {
 
 struct PropertyCommand {
     ID id;
-    PropertyType type;
     PropertyComputeFunc func;
 };
 
@@ -26,12 +25,14 @@ struct Property {
     ID data_avg_id = INVALID_ID;
     ID data_beg_id = INVALID_ID;
     int32 data_count = 0;
+	CString unit;
+
+	float filter_min = 0.f;
+	float filter_max = 1.f;
 
     ID cmd_id = INVALID_ID;
     CString name;
     CString args;
-
-    PropertyType type = PropertyType::FLOAT32;
 };
 
 struct PropertyData {
@@ -40,7 +41,7 @@ struct PropertyData {
     ID property_id = INVALID_ID;
 
     int32 residue_idx;
-    void* data;
+    float* data;
     int32 count;
 };
 
@@ -76,7 +77,7 @@ struct StatisticsContext {
 
 static StatisticsContext ctx;
 
-static bool compute_atomic_distance(void* data, const Array<CString> args, const MoleculeDynamic* dynamic, int res_idx) {
+static bool compute_atomic_distance(float* data, const Array<CString> args, const MoleculeDynamic* dynamic, int res_idx) {
 	if (args.count != 2) return false;
 
     auto res = dynamic->molecule->residues[res_idx];
@@ -88,17 +89,16 @@ static bool compute_atomic_distance(void* data, const Array<CString> args, const
 	int32 atom_b = res.beg_atom_idx + int_b;
 
     int32 count = dynamic->trajectory->num_frames;
-    float* f_data = (float*)data;
     for (int32 i = 0; i < count; i++) {
         vec3 pos_a = dynamic->trajectory->frame_buffer[i].atom_positions[atom_a];
         vec3 pos_b = dynamic->trajectory->frame_buffer[i].atom_positions[atom_b];
-        f_data[i] = math::distance(pos_a, pos_b);
+        data[i] = math::distance(pos_a, pos_b);
     }
 
     return true;
 }
 
-static bool compute_atomic_angle(void* data, const Array<CString> args, const MoleculeDynamic* dynamic, int res_idx) {
+static bool compute_atomic_angle(float* data, const Array<CString> args, const MoleculeDynamic* dynamic, int res_idx) {
 	if (args.count != 3) return false;
 
 	auto res = dynamic->molecule->residues[res_idx];
@@ -112,19 +112,18 @@ static bool compute_atomic_angle(void* data, const Array<CString> args, const Mo
 	int32 atom_c = res.beg_atom_idx + int_c;
 
 	int32 count = dynamic->trajectory->num_frames;
-	float* f_data = (float*)data;
 	for (int32 i = 0; i < count; i++) {
 		vec3 pos_a = dynamic->trajectory->frame_buffer[i].atom_positions[atom_a];
 		vec3 pos_b = dynamic->trajectory->frame_buffer[i].atom_positions[atom_b];
 		vec3 pos_c = dynamic->trajectory->frame_buffer[i].atom_positions[atom_c];
 
-		f_data[i] = math::angle(pos_a - pos_b, pos_c - pos_b);
+		data[i] = math::angle(pos_a - pos_b, pos_c - pos_b);
 	}
 
 	return true;
 }
 
-static bool compute_atomic_dihedral(void* data, const Array<CString> args, const MoleculeDynamic* dynamic, int res_idx) {
+static bool compute_atomic_dihedral(float* data, const Array<CString> args, const MoleculeDynamic* dynamic, int res_idx) {
 	if (args.count != 4) return false;
 
 	auto res = dynamic->molecule->residues[res_idx];
@@ -140,14 +139,13 @@ static bool compute_atomic_dihedral(void* data, const Array<CString> args, const
 	int32 atom_d = res.beg_atom_idx + int_d;
 
 	int32 count = dynamic->trajectory->num_frames;
-	float* f_data = (float*)data;
 	for (int32 i = 0; i < count; i++) {
 		vec3 pos_a = dynamic->trajectory->frame_buffer[i].atom_positions[atom_a];
 		vec3 pos_b = dynamic->trajectory->frame_buffer[i].atom_positions[atom_b];
 		vec3 pos_c = dynamic->trajectory->frame_buffer[i].atom_positions[atom_c];
 		vec3 pos_d = dynamic->trajectory->frame_buffer[i].atom_positions[atom_d];
 
-		f_data[i] = dihedral_angle(pos_a, pos_b, pos_c, pos_d);
+		data[i] = dihedral_angle(pos_a, pos_b, pos_c, pos_d);
 	}
 
 	return true;
@@ -162,10 +160,10 @@ static bool match_by_resid(const Array<CString> args, const MoleculeStructure* m
 }
 
 void initialize() {
-    ctx.property_commands.push_back({ COMPUTE_ID("dist"),	  PropertyType::FLOAT32, compute_atomic_distance});
-	ctx.property_commands.push_back({ COMPUTE_ID("bond"),	  PropertyType::FLOAT32, compute_atomic_distance });
-	ctx.property_commands.push_back({ COMPUTE_ID("angle"),	  PropertyType::FLOAT32, compute_atomic_angle });
-	ctx.property_commands.push_back({ COMPUTE_ID("dihedral"), PropertyType::FLOAT32, compute_atomic_dihedral });
+    ctx.property_commands.push_back({ COMPUTE_ID("dist"),	  compute_atomic_distance});
+	ctx.property_commands.push_back({ COMPUTE_ID("bond"),	  compute_atomic_distance });
+	ctx.property_commands.push_back({ COMPUTE_ID("angle"),	  compute_atomic_angle });
+	ctx.property_commands.push_back({ COMPUTE_ID("dihedral"), compute_atomic_dihedral });
 
     ctx.group_commands.push_back({ COMPUTE_ID("resid"), match_by_resid});
 }
@@ -212,19 +210,19 @@ static void free_string(CString str) {
 }
 
 // HISTOGRAMS
-Histogram compute_histogram(Array<float> data) {
+Histogram compute_histogram(int32 num_bins, Array<float> data) {
     Histogram hist;
-    compute_histogram(&hist, data);
+    compute_histogram(&hist, num_bins, data);
     return hist;
 }
 
-Histogram compute_histogram(Array<float> data, float min_val, float max_val) {
+Histogram compute_histogram(int32 num_bins, Array<float> data, float min_val, float max_val) {
     Histogram hist;
-    compute_histogram(&hist, data, min_val, max_val);
+    compute_histogram(&hist, num_bins, data, min_val, max_val);
     return hist;
 }
 
-void compute_histogram(Histogram* hist, Array<float> data) {
+void compute_histogram(Histogram* hist, int32 num_bins, Array<float> data) {
     ASSERT(hist);
     if (data.count == 0) return;
     float min_val = FLT_MAX;
@@ -233,12 +231,21 @@ void compute_histogram(Histogram* hist, Array<float> data) {
         min_val = math::min(min_val, d);
         max_val = math::max(max_val, d);
     }
-    compute_histogram(hist, data, min_val, max_val);
+    compute_histogram(hist, num_bins, data, min_val, max_val);
 }
 
-void compute_histogram(Histogram* hist, Array<float> data, float min_val, float max_val) {
+void compute_histogram(Histogram* hist, int32 num_bins, Array<float> data, float min_val, float max_val) {
     ASSERT(hist);
-    //memset(hist->bins.data, 0);
+	ASSERT(num_bins > 0);
+
+	hist->bins.resize(num_bins);
+	memset(hist->bins.data, 0, hist->bins.count * sizeof(float));
+
+	const float scl = num_bins / (max_val - min_val);
+	for (auto v : data) {
+		int32 bin_idx = math::clamp((int32)((v - min_val) * scl), 0, num_bins - 1);
+		hist->bins[bin_idx]++;
+	}
 }
 
 bool compute_stats(MoleculeDynamic* dynamic) {
@@ -270,7 +277,7 @@ bool compute_stats(MoleculeDynamic* dynamic) {
             PropertyCommand* prop_cmd = find_id(ctx.property_commands, prop.cmd_id);
             DynamicArray<CString> args = ctokenize(prop.args);
             Group* group = find_id(ctx.groups, prop.group_id);
-            auto byte_size = count * get_stride(prop.type);
+            auto byte_size = count * sizeof(float);
 
             // DATA AVERAGE
             StringBuffer<64> prop_data_name;
@@ -281,7 +288,7 @@ bool compute_stats(MoleculeDynamic* dynamic) {
             prop_avg_data.group_id = group->id;
             prop_avg_data.property_id = prop.id;
             prop_avg_data.residue_idx = -1;
-            prop_avg_data.data = MALLOC(byte_size);
+            prop_avg_data.data = (float*)MALLOC(byte_size);
             prop_avg_data.count = count;
             memset(prop_avg_data.data, 0, byte_size);
 
@@ -291,14 +298,11 @@ bool compute_stats(MoleculeDynamic* dynamic) {
             // DATA
             for (int32 i = 0; i < (int32)group->residues.count; i++) {
                 int32 res_idx = group->residues[i];
-                void* data = MALLOC(byte_size);
+                float* data = (float*)MALLOC(byte_size);
                 prop_cmd->func(data, args, dynamic, res_idx);
 
                 for (int32 j = 0; j < count; j++) {
-                    switch(prop.type) {
-                        case PropertyType::FLOAT32:
-                        ((float*)prop_avg_data.data)[j] += ((float*)data)[j] / (float)group->residues.count;
-                    }
+					prop_avg_data.data[j] += (data)[j] / (float)group->residues.count;
                 }
 
                 snprintf(prop_data_name.beg(), 64, "%s.%s.%i", group->name.beg(), prop.name.beg(), i);
@@ -325,7 +329,7 @@ bool compute_stats(MoleculeDynamic* dynamic) {
     return true;
 }
 
-void register_property_command(CString command, PropertyType type, PropertyComputeFunc func) {
+void register_property_command(CString command, PropertyComputeFunc func) {
     ID id = COMPUTE_ID(command);
     auto cmd = find_id(ctx.property_commands, id);
     if (cmd != nullptr) {
@@ -333,7 +337,7 @@ void register_property_command(CString command, PropertyType type, PropertyCompu
         return;
     }
 
-    ctx.property_commands.push_back({id, type, func});
+    ctx.property_commands.push_back({id, func});
 }
 
 void register_group_command(CString command, ResidueMatchFunc func) {
@@ -523,7 +527,6 @@ ID create_property(ID group_id, CString name, CString cmd_and_args) {
     prop.data_count = 0;
 
     prop.cmd_id = prop_cmd_id;
-    prop.type = prop_cmd->type;
     prop.name = alloc_string(name);
     prop.args = alloc_string(args);
 
@@ -600,14 +603,6 @@ int32 get_property_data_count(ID prop_id) {
 		}
 	}
 	return 0;
-}
-
-PropertyType get_property_type(ID prop_id) {
-	auto prop = find_id(ctx.properties, prop_id);
-	if (prop) {
-		return prop->type;
-	}
-	return PropertyType::UNKNOWN;
 }
 
 CString	get_property_name(ID prop_id) {
