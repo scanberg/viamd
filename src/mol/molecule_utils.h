@@ -35,7 +35,7 @@ struct Volume {
     ivec3 dim;
 };
 
-// Tangent and binormal is perhaps redundant
+// tangent AND binormal is perhaps redundant
 struct SplineSegment {
     vec3 position;
     vec3 tangent;

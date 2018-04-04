@@ -1605,42 +1605,31 @@ void main() {
     mat[0] = compute_mat(t[0], n[0], pos[0]);
     mat[1] = compute_mat(t[1], n[1], pos[1]);
 
-    //const float delta_angle = 6.28318530718 / float(CIRCLE_RES);
-    //for (int u = 0; u <= CIRCLE_RES; u++) {
-    //    float angle = delta_angle * u;
-    //    vec4 v = vec4(u_scale_x * cos(angle), u_scale_y * sin(angle), 0, 1);
-        // disc 0
-        // FIX THIS COLOR INTERPOLATION
-    //    emit(mat[0], 0, v);
-        // disc 1
-    //    emit(mat[1], 1, v);
-    //}
-
 	// BOTTOM
-	emit(mat[0], 0, vec4(1 * u_scale_x, -1 * u_scale_y, 0, 1), vec3(0,-1,0));
+	emit(mat[0], 0, vec4( 1 * u_scale_x, -1 * u_scale_y, 0, 1), vec3(0,-1,0));
 	emit(mat[0], 0, vec4(-1 * u_scale_x, -1 * u_scale_y, 0, 1), vec3(0,-1,0));
-	emit(mat[1], 1, vec4(1 * u_scale_x, -1 * u_scale_y, 0, 1), vec3(0,-1,0));
+	emit(mat[1], 1, vec4( 1 * u_scale_x, -1 * u_scale_y, 0, 1), vec3(0,-1,0));
 	emit(mat[1], 1, vec4(-1 * u_scale_x, -1 * u_scale_y, 0, 1), vec3(0,-1,0));
 	EndPrimitive();
 
 	// TOP
 	emit(mat[0], 0, vec4(-1 * u_scale_x, 1 * u_scale_y, 0, 1), vec3(0,1,0));
-	emit(mat[0], 0, vec4(1 * u_scale_x, 1 * u_scale_y, 0, 1), vec3(0,1,0));
+	emit(mat[0], 0, vec4( 1 * u_scale_x, 1 * u_scale_y, 0, 1), vec3(0,1,0));
 	emit(mat[1], 1, vec4(-1 * u_scale_x, 1 * u_scale_y, 0, 1), vec3(0,1,0));
-	emit(mat[1], 1, vec4(1 * u_scale_x, 1 * u_scale_y, 0, 1), vec3(0,1,0));
+	emit(mat[1], 1, vec4( 1 * u_scale_x, 1 * u_scale_y, 0, 1), vec3(0,1,0));
 	EndPrimitive();
 
 	// LEFT
 	emit(mat[0], 0, vec4(-1 * u_scale_x, -1 * u_scale_y, 0, 1), vec3(-1,0,0));
-	emit(mat[0], 0, vec4(-1 * u_scale_x, 1 * u_scale_y, 0, 1), vec3(-1,0,0));
+	emit(mat[0], 0, vec4(-1 * u_scale_x,  1 * u_scale_y, 0, 1), vec3(-1,0,0));
 	emit(mat[1], 1, vec4(-1 * u_scale_x, -1 * u_scale_y, 0, 1), vec3(-1,0,0));
-	emit(mat[1], 1, vec4(-1 * u_scale_x, 1 * u_scale_y, 0, 1), vec3(-1,0,0));
+	emit(mat[1], 1, vec4(-1 * u_scale_x,  1 * u_scale_y, 0, 1), vec3(-1,0,0));
 	EndPrimitive();
 
 	// RIGHT
-	emit(mat[0], 0, vec4(1 * u_scale_x, 1 * u_scale_y, 0, 1), vec3(1,0,0));
+	emit(mat[0], 0, vec4(1 * u_scale_x,  1 * u_scale_y, 0, 1), vec3(1,0,0));
 	emit(mat[0], 0, vec4(1 * u_scale_x, -1 * u_scale_y, 0, 1), vec3(1,0,0));
-	emit(mat[1], 1, vec4(1 * u_scale_x, 1 * u_scale_y, 0, 1), vec3(1,0,0));
+	emit(mat[1], 1, vec4(1 * u_scale_x,  1 * u_scale_y, 0, 1), vec3(1,0,0));
 	emit(mat[1], 1, vec4(1 * u_scale_x, -1 * u_scale_y, 0, 1), vec3(1,0,0));
     EndPrimitive();
 }
@@ -2067,8 +2056,7 @@ void draw_ribbons(const Array<BackboneSegment> backbone_segments, const Array<Ch
     DynamicArray<DrawInfo> draw_data;
     DynamicArray<BackboneSegment> visible_segments;
     DynamicArray<SplineSegment> spline_segments;
-    DynamicArray<uint32> spline_segment_colors;
-    DynamicArray<uint32> spline_segment_picking_ids;
+    DynamicArray<ribbons::Vertex> vertices;
 
     int32 offset = 0;
     for (const auto& c : chains) {
@@ -2084,18 +2072,20 @@ void draw_ribbons(const Array<BackboneSegment> backbone_segments, const Array<Ch
         // Only do this if all segments within a chain was visible
         if (visible_segments.size() == (c.end_res_idx - c.beg_res_idx)) {
             auto splines = compute_spline(atom_positions, atom_colors, visible_segments, num_subdivisions);
-            spline_segments.append(splines);
+            //spline_segments.append(splines);
+            for (const auto& s : splines) {
+                vertices.push_back({s.position, s.tangent, s.normal, s.color, s.index});
+            }
             draw_data.push_back({offset, (int32)splines.count});
             offset += (int32)splines.count;
         }
     }
 
-    ASSERT(spline_segments.count * sizeof(ribbons::Vertex) < VERTEX_BUFFER_SIZE);
+    //ASSERT(spline_segments.count * sizeof(ribbons::Vertex) < VERTEX_BUFFER_SIZE);
 
 	glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    /*
 	ribbons::Vertex* data = (ribbons::Vertex*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-	//memcpy(data, spline_segments.data, spline_segments.size_in_bytes());
-	
     for (int64_t i = 0; i < spline_segments.count; i++) {
         data[i].position = spline_segments[i].position;
         data[i].tangent = spline_segments[i].tangent;
@@ -2103,9 +2093,9 @@ void draw_ribbons(const Array<BackboneSegment> backbone_segments, const Array<Ch
         data[i].color = spline_segments[i].color;
         data[i].picking_id = spline_segments[i].index;
     }
-	
     glUnmapBuffer(GL_ARRAY_BUFFER);
-	//glBufferData(GL_ARRAY_BUFFER, spline_segments.size_in_bytes(), spline_segments.data, GL_STREAM_DRAW);
+    */
+	glBufferData(GL_ARRAY_BUFFER, vertices.size_in_bytes(), vertices.data, GL_STREAM_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     glEnable(GL_DEPTH_TEST);
