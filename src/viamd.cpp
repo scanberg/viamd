@@ -321,23 +321,6 @@ int main(int, char**) {
             data.console.visible = !data.console.visible;
         }
 
-        // PICKING
-        {
-            ivec2 coord = {data.ctx.input.mouse.coord_curr.x, data.ctx.framebuffer.height - data.ctx.input.mouse.coord_curr.y};
-            data.picking_idx = get_picking_id(data.fbo.id, coord.x, coord.y);
-
-            data.hovered = {};
-            if (data.picking_idx != NO_PICKING_IDX) {
-                data.hovered.atom_idx = data.picking_idx;
-                if (-1 < data.hovered.atom_idx && data.hovered.atom_idx < data.mol_data.dynamic.molecule->atom_residue_indices.count) {
-                    data.hovered.residue_idx = data.mol_data.dynamic.molecule->atom_residue_indices[data.hovered.atom_idx];
-                }
-                if (-1 < data.hovered.residue_idx && data.hovered.residue_idx < data.mol_data.dynamic.molecule->residues.count) {
-                    data.hovered.chain_idx = data.mol_data.dynamic.molecule->residues[data.hovered.residue_idx].chain_idx;
-                }
-            }
-        }
-
         float ms = compute_avg_ms(data.ctx.timing.dt);
         bool time_changed = false;
 
@@ -450,6 +433,23 @@ int main(int, char**) {
         // draw::draw_vdw(data.dynamic.molecule->atom_positions, data.atom_radii, data.atom_colors, view_mat, proj_mat, radii_scale);
         // draw::draw_licorice(data.mol_struct->atom_positions, data.mol_struct->bonds, data.atom_colors, view_mat, proj_mat, radii_scale);
         // draw::draw_ribbons(current_spline, view_mat, proj_mat);
+
+		// PICKING
+		{
+			ivec2 coord = { data.ctx.input.mouse.coord_curr.x, data.ctx.framebuffer.height - data.ctx.input.mouse.coord_curr.y };
+			data.picking_idx = get_picking_id(data.fbo.id, coord.x, coord.y);
+
+			data.hovered = {};
+			if (data.picking_idx != NO_PICKING_IDX) {
+				data.hovered.atom_idx = data.picking_idx;
+				if (-1 < data.hovered.atom_idx && data.hovered.atom_idx < data.mol_data.dynamic.molecule->atom_residue_indices.count) {
+					data.hovered.residue_idx = data.mol_data.dynamic.molecule->atom_residue_indices[data.hovered.atom_idx];
+				}
+				if (-1 < data.hovered.residue_idx && data.hovered.residue_idx < data.mol_data.dynamic.molecule->residues.count) {
+					data.hovered.chain_idx = data.mol_data.dynamic.molecule->residues[data.hovered.residue_idx].chain_idx;
+				}
+			}
+		}
 
         // Activate backbuffer
         glDisable(GL_DEPTH_TEST);
