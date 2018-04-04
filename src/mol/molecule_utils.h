@@ -42,8 +42,8 @@ struct SplineSegment {
     vec3 normal;
     vec3 binormal;
 
-	uint32 index;
-	uint32 color;
+    uint32 index;
+    uint32 color;
 };
 
 struct BackboneAngles {
@@ -55,13 +55,27 @@ struct BackboneAngles {
 struct BackboneAnglesTrajectory {
     int num_segments = 0;
     int num_frames = 0;
-	Array<BackboneAngles> angle_data{};
+    Array<BackboneAngles> angle_data{};
 };
 
 inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backbone_angle_traj, int frame_index) {
-	if (backbone_angle_traj.angle_data.count == 0 || backbone_angle_traj.num_segments == 0) return {};
+    if (backbone_angle_traj.angle_data.count == 0 || backbone_angle_traj.num_segments == 0) return {};
     ASSERT(frame_index < backbone_angle_traj.angle_data.count / backbone_angle_traj.num_segments);
     return Array<BackboneAngles>(&backbone_angle_traj.angle_data[frame_index * backbone_angle_traj.num_segments], backbone_angle_traj.num_segments);
+}
+
+inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backbone_angle_traj, int frame_offset, int frame_count) {
+    if (backbone_angle_traj.angle_data.count == 0 || backbone_angle_traj.num_segments == 0) return {};
+    int32 num_frames = (int32)backbone_angle_traj.angle_data.count / backbone_angle_traj.num_segments;
+    ASSERT(frame_offset < num_frames);
+    ASSERT(frame_offset + frame_count <= num_frames);
+    return backbone_angle_traj.angle_data.sub_array(frame_offset * backbone_angle_traj.num_segments,
+                                                    frame_count * backbone_angle_traj.num_segments);
+}
+
+inline int32 get_backbone_angles_trajectory_current_frame_count(const BackboneAnglesTrajectory& backbone_angle_traj) {
+	if (backbone_angle_traj.angle_data.count == 0 || backbone_angle_traj.num_segments == 0) return 0;
+	return (int32)backbone_angle_traj.angle_data.count / backbone_angle_traj.num_segments;
 }
 
 inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backbone_angle_traj, int frame_index, Chain chain) {
@@ -88,7 +102,8 @@ inline float dihedral_angle(const vec3 p[4]) { return dihedral_angle(p[0], p[1],
 DynamicArray<Bond> compute_covalent_bonds(const Array<vec3> atom_pos, const Array<Element> atom_elem, const Array<Residue> residues = {});
 DynamicArray<Chain> compute_chains(const Array<Residue> residue, const Array<Bond> bonds, const Array<ResIdx> atom_residue_indices = {});
 DynamicArray<BackboneSegment> compute_backbone_segments(const Array<Residue> residues, const Array<Label> atom_labels);
-DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Array<uint32> colors, const Array<BackboneSegment>& backbone, int32 num_subdivisions = 1);
+DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Array<uint32> colors, const Array<BackboneSegment>& backbone,
+                                           int32 num_subdivisions = 1);
 
 // Computes the dihedral angles within the backbone:
 // omega = dihedral(CA[i-1], C[i-1], N[i], CA[i])
@@ -140,7 +155,14 @@ void draw_ribbons(const Array<BackboneSegment> backbone_segments, const Array<Ch
 void draw_backbone(const Array<BackboneSegment> backbone, const Array<vec3> atom_positions, const mat4& view_mat, const mat4& proj_mat);
 void draw_spline(const Array<SplineSegment> spline, const mat4& view_mat, const mat4& proj_mat);
 
-// Radius is given as percentage of normalized texture space coordinates (1.0 = 1% of texture width and height)
-void plot_ramachandran(const Array<BackboneAngles> angles = {}, const Array<BackboneAngles> highlighted_angles = {}, float* radius = nullptr, float* opacity = nullptr);
-
 }  // namespace draw
+
+namespace ramachandran {
+void initialize();
+void shutdown();
+// Radius is given as percentage of normalized texture space coordinates (1.0 = 1% of texture width and height)
+void compute_accumulation_texture(const Array<BackboneAngles> angles, const Array<BackboneAngles> highlighted_angles, float radius = 1.f,
+                                  float opacity = 1.f);
+uint32 get_accumulation_texture();
+uint32 get_segmentation_texture();
+}  // namespace ramachandran

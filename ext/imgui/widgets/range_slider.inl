@@ -156,6 +156,11 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
 
 				value_changed = true;
 			}
+			if (*v2 < *v1) {
+				float tmp = *v1;
+				*v1 = *v2;
+				*v2 = tmp;
+			}
         } else {
             state.min_grab = false;
             state.max_grab = false;

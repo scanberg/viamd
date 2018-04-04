@@ -13,7 +13,7 @@ struct Array {
 
     Array sub_array(int64 _offset, int64 _count = -1) {
         ASSERT(0 <= _offset);
-		ASSERT(_count > 0 || _count == -1);
+		ASSERT(_count >= -1);
         if (_count == -1) {
             _count = (this->count - _offset) > 0 ? (this->count - _offset) : 0;
         }
