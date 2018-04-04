@@ -27,11 +27,13 @@ static inline bool internal_compare(const char* str_a, const char* str_b, int64 
 bool compare(CString str_a, CString str_b, bool ignore_case) {
 	//int64 len = MIN(str_a.count, str_b.count);
 	if (str_a.count != str_b.count) return false;
+	if (str_a.count == 0) return false;
 	return internal_compare(str_a, str_b, str_a.count, ignore_case);
 }
 
 bool compare_n(CString str_a, CString str_b, int64 num_chars, bool ignore_case) {
 	int64 len = MIN(str_a.count, MIN(str_b.count, num_chars));
+	if (len == 0) return false;
 	return internal_compare(str_a, str_b, len, ignore_case);
 }
 

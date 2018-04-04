@@ -22,19 +22,18 @@ struct Trajectory {
 	float32 total_simulation_time = 0;
 	Type	simulation_type = NVT;
 
-	CString path_to_file;
+	CString path_to_file = "";
 
     // @NOTE: The frame_buffer may not contain all frames in trajectory.
     // If the trajectory is large, frame_buffer will be used as a cache towards the trajectory streamed from disk.
-	DynamicArray<TrajectoryFrame> frame_buffer;
+	DynamicArray<TrajectoryFrame> frame_buffer{};
 
     // This is the position data of the trajectories
-	DynamicArray<vec3> position_data;
+	DynamicArray<vec3> position_data{};
 
     // These are the offsets for each frame within the compressed blob of XTC data
-	DynamicArray<int64> frame_offsets;
+	DynamicArray<int64> frame_offsets{};
 
 	// This is for synchronization
-	volatile bool stop_operations;
-	volatile bool is_done;
+	volatile bool is_loading = false;
 };

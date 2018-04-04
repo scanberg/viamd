@@ -78,6 +78,7 @@ void read_trajectory(Trajectory* traj) {
 		printf("Error, could not open file %s\n", traj->path_to_file.data);
 		return;
 	}
+	traj->is_loading = true;
 	for (int i = 0; i < num_frames; i++) {
 		vec3* pos_data = traj->position_data.data + (i * traj->num_atoms);
 		TrajectoryFrame* frame = traj->frame_buffer.data + i;
@@ -93,6 +94,7 @@ void read_trajectory(Trajectory* traj) {
 		frame->box *= 10.f;
 		traj->num_frames++;
 	}
+	traj->is_loading = false;
 }
 
 TrajectoryFrame copy_trajectory_frame(const Trajectory& traj, int frame_index) {

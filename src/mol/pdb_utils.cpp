@@ -96,6 +96,16 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 			residues.clear();
 			chains.clear();
 		}
+		else if (compare_n(line, "TER", 3)) {
+			// @TODO: Do!
+			/*
+			Chain chain;
+			chain.beg_res_idx = (ResIdx)residues.size();
+			chain.end_res_idx = chain.beg_res_idx;
+			chain.id = chain_id;
+			chains.push_back(chain);
+			*/
+		}
 		else if (valid_line(line, params)) {
 			labels.push_back(trim(line.substr(12, 4)));
 			positions.push_back(vec3(to_float(line.substr(30, 8)), to_float(line.substr(38, 8)), to_float(line.substr(46, 8))));
@@ -107,7 +117,11 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 			}
 
 			// Try to determine element from optional element column first, then name
-			Element elem = element::get_from_string(line.substr(76, 2));
+			
+			Element elem = Element::Unknown;
+			if (line.count >= 78) {
+				element::get_from_string(line.substr(76, 2));
+			}
 			if (elem == Element::Unknown) elem = element::get_from_string(labels.back());
 			elements.push_back(elem);
 

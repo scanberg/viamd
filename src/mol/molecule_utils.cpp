@@ -238,16 +238,16 @@ DynamicArray<BackboneSegment> compute_backbone_segments(const Array<Residue> res
                 printf("ERROR! Could not identify all backbone indices for residue %s.\n", res.name.beg());
             }
             segments.push_back({ca_idx, n_idx, c_idx, o_idx});
+        } else {
+            segments.push_back({-1, -1, -1, -1});
         }
-		else {
-			segments.push_back({ -1, -1, -1, -1 });
-		}
     }
 
     return segments;
 }
 
-DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Array<uint32> colors, const Array<BackboneSegment>& backbone, int num_subdivisions) {
+DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Array<uint32> colors, const Array<BackboneSegment>& backbone,
+                                           int num_subdivisions) {
     if (backbone.count < 4) return {};
 
     DynamicArray<vec3> p_tmp;
@@ -318,8 +318,8 @@ DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Arr
         auto c2 = c_tmp[i + 1];
         auto c3 = c_tmp[i + 2];
 
-		uint32 idx = ca_idx[i];
-		uint32 color = colors[idx];
+        uint32 idx = ca_idx[i];
+        uint32 color = colors[idx];
 
         auto count = (i < (p_tmp.size() - 3)) ? num_subdivisions : num_subdivisions + 1;
         for (int n = 0; n < count; n++) {
@@ -355,48 +355,80 @@ DynamicArray<BackboneAngles> compute_backbone_angles(const Array<vec3> pos, cons
     return angles;
 }
 
-void compute_backbone_angles(Array<BackboneAngles> dst, const Array<vec3> pos, const Array<BackboneSegment> backbone) {
-    ASSERT(dst.count >= backbone.count);
+void compute_backbone_angles(Array<BackboneAngles> dst, const Array<vec3> pos, const Array<BackboneSegment> backbone_segments) {
+    ASSERT(dst.count >= backbone_segments.count);
     float omega, phi, psi;
 
     omega = 0;
     phi = 0;
-    psi = dihedral_angle(pos[backbone[0].n_idx], pos[backbone[0].ca_idx], pos[backbone[0].c_idx], pos[backbone[1].n_idx]);
+    psi = dihedral_angle(pos[backbone_segments[0].n_idx], pos[backbone_segments[0].ca_idx], pos[backbone_segments[0].c_idx],
+                         pos[backbone_segments[1].n_idx]);
     dst[0] = {omega, phi, psi};
 
-    for (int64 i = 1; i < backbone.count - 1; i++) {
-        omega = dihedral_angle(pos[backbone[i - 1].ca_idx], pos[backbone[i - 1].c_idx], pos[backbone[i].n_idx], pos[backbone[i].ca_idx]);
-        phi = dihedral_angle(pos[backbone[i - 1].c_idx], pos[backbone[i].n_idx], pos[backbone[i].ca_idx], pos[backbone[i].c_idx]);
-        psi = dihedral_angle(pos[backbone[i].n_idx], pos[backbone[i].ca_idx], pos[backbone[i].c_idx], pos[backbone[i + 1].n_idx]);
+    for (int64 i = 1; i < backbone_segments.count - 1; i++) {
+        omega = dihedral_angle(pos[backbone_segments[i - 1].ca_idx], pos[backbone_segments[i - 1].c_idx], pos[backbone_segments[i].n_idx],
+                               pos[backbone_segments[i].ca_idx]);
+        phi = dihedral_angle(pos[backbone_segments[i - 1].c_idx], pos[backbone_segments[i].n_idx], pos[backbone_segments[i].ca_idx],
+                             pos[backbone_segments[i].c_idx]);
+        psi = dihedral_angle(pos[backbone_segments[i].n_idx], pos[backbone_segments[i].ca_idx], pos[backbone_segments[i].c_idx],
+                             pos[backbone_segments[i + 1].n_idx]);
         dst[i] = {omega, phi, psi};
     }
 
-    auto N = backbone.count - 1;
-    omega = dihedral_angle(pos[backbone[N - 1].ca_idx], pos[backbone[N - 1].c_idx], pos[backbone[N].n_idx], pos[backbone[N].ca_idx]);
-    phi = dihedral_angle(pos[backbone[N - 1].c_idx], pos[backbone[N].n_idx], pos[backbone[N].ca_idx], pos[backbone[N].c_idx]);
+    auto N = backbone_segments.count - 1;
+    omega = dihedral_angle(pos[backbone_segments[N - 1].ca_idx], pos[backbone_segments[N - 1].c_idx], pos[backbone_segments[N].n_idx],
+                           pos[backbone_segments[N].ca_idx]);
+    phi = dihedral_angle(pos[backbone_segments[N - 1].c_idx], pos[backbone_segments[N].n_idx], pos[backbone_segments[N].ca_idx],
+                         pos[backbone_segments[N].c_idx]);
     psi = 0;
     dst[N] = {omega, phi, psi};
 }
 
-BackboneAnglesTrajectory compute_backbone_angles_trajectory(const Trajectory& trajectory, const Array<BackboneSegment> backbone_segments) {
-    if (trajectory.num_frames == 0 || backbone_segments.count == 0) return {};
+void init_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const MoleculeDynamic& dynamic) {
+	ASSERT(data);
+	if (!dynamic.molecule || !dynamic.trajectory) return;
+
+	if (data->angle_data) {
+		FREE(data->angle_data.data);
+	}
+
+	int32 alloc_count = (int32)dynamic.molecule->backbone_segments.count * (int32)dynamic.trajectory->frame_buffer.count;
+	data->num_segments = (int32)dynamic.molecule->backbone_segments.count;
+	data->num_frames = 0;
+	data->angle_data = { (BackboneAngles*)CALLOC(alloc_count, sizeof(BackboneAngles)), alloc_count };
+}
+
+void free_backbone_angles_trajectory(BackboneAnglesTrajectory* data) {
+	ASSERT(data);
+	if (data->angle_data) {
+		FREE(data->angle_data.data);
+		*data = {};
+	}
+}
+
+void compute_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const MoleculeDynamic& dynamic) {
+	ASSERT(dynamic.trajectory && dynamic.molecule);
+    if (dynamic.trajectory->num_frames == 0 || dynamic.molecule->backbone_segments.count == 0) return;
 
     //@NOTE: Trajectory may be loading while this is taking place, therefore read num_frames once and stick to that
-    auto num_frames = trajectory.num_frames;
+	auto traj_num_frames = dynamic.trajectory->num_frames;
 
-    BackboneAnglesTrajectory bat;
-    bat.num_frames = num_frames;
-    bat.num_segments = (int)backbone_segments.count;
-    bat.angle_data = DynamicArray<BackboneAngles>(bat.num_frames * bat.num_segments);
+	// @NOTE: If we are up to date, no need to compute anything
+	if (traj_num_frames == data->num_frames) {
+		return;
+	}
 
     // @TODO: parallelize?
-    for (int f_idx = 0; f_idx < num_frames; f_idx++) {
-        auto pos = get_trajectory_positions(trajectory, f_idx);
-        auto b_angles = get_backbone_angles(bat, f_idx);
-        compute_backbone_angles(b_angles, pos, backbone_segments);
+	// @NOTE: Only compute data for indices which are new
+    for (int32 f_idx = data->num_frames; f_idx < traj_num_frames; f_idx++) {
+        auto frame_pos = get_trajectory_positions(*dynamic.trajectory, f_idx);
+        auto frame_angles = get_backbone_angles(*data, f_idx);
+		for (const auto& c : dynamic.molecule->chains) {
+			auto bb_segments = get_backbone(*dynamic.molecule, c);
+			auto bb_angles = frame_angles.sub_array(c.beg_res_idx, c.end_res_idx - c.beg_res_idx);
+			compute_backbone_angles(bb_angles, frame_pos, bb_segments);
+		}
     }
-
-    return bat;
 }
 
 DynamicArray<float> compute_atom_radii(const Array<Element> elements) {
@@ -1797,7 +1829,7 @@ in vec2 uv;
 out vec4 out_frag;
 
 void main() {
-	float falloff = 1.0 - dot(uv, uv);
+	float falloff = max(0, sqrt(1.0 - dot(uv, uv)));
 	out_frag = vec4(u_color.rgb, u_color.a * falloff);	
 }
 )";
@@ -2072,7 +2104,7 @@ void draw_ribbons(const Array<BackboneSegment> backbone_segments, const Array<Ch
         // Only do this if all segments within a chain was visible
         if (visible_segments.size() == (c.end_res_idx - c.beg_res_idx)) {
             auto splines = compute_spline(atom_positions, atom_colors, visible_segments, num_subdivisions);
-            //spline_segments.append(splines);
+            // spline_segments.append(splines);
             for (const auto& s : splines) {
                 vertices.push_back({s.position, s.tangent, s.normal, s.color, s.index});
             }
@@ -2081,11 +2113,11 @@ void draw_ribbons(const Array<BackboneSegment> backbone_segments, const Array<Ch
         }
     }
 
-    //ASSERT(spline_segments.count * sizeof(ribbons::Vertex) < VERTEX_BUFFER_SIZE);
+    // ASSERT(spline_segments.count * sizeof(ribbons::Vertex) < VERTEX_BUFFER_SIZE);
 
-	glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
     /*
-	ribbons::Vertex* data = (ribbons::Vertex*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+        ribbons::Vertex* data = (ribbons::Vertex*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
     for (int64_t i = 0; i < spline_segments.count; i++) {
         data[i].position = spline_segments[i].position;
         data[i].tangent = spline_segments[i].tangent;
@@ -2095,7 +2127,7 @@ void draw_ribbons(const Array<BackboneSegment> backbone_segments, const Array<Ch
     }
     glUnmapBuffer(GL_ARRAY_BUFFER);
     */
-	glBufferData(GL_ARRAY_BUFFER, vertices.size_in_bytes(), vertices.data, GL_STREAM_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size_in_bytes(), vertices.data, GL_STREAM_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     glEnable(GL_DEPTH_TEST);
@@ -2181,24 +2213,30 @@ void draw_spline(const Array<SplineSegment> spline, const mat4& view_mat, const 
     immediate::flush();
 }
 
-void plot_ramachandran(const Array<BackboneAngles> angles, const Array<BackboneAngles> highlighted_angles, float radius) {
-    // Upload data to textures
-    const vec4 ORDINARY_COLOR = vec4(1.f, 1.f, 1.f, 0.1f);
+void plot_ramachandran(const Array<BackboneAngles> angles, const Array<BackboneAngles> highlighted_angles, float* radius, float* opacity) {
+	float radius_val =  1.f;
+	float opacity_val = 1.f;
+	if (radius) radius_val = *radius;
+	if (opacity) opacity_val = *opacity;
+
+    const vec4 ORDINARY_COLOR = vec4(1.f, 1.f, 1.f, 0.1f * opacity_val);
     const vec4 HIGHLIGHT_COLOR = vec4(1.f, 0.0f, 0.0f, 1.f);
 
     struct Coord {
         unsigned short x, y;
     };
 
-    // @TODO: Use fast scratch memory here
+    // Use fast scratch memory here
     Coord* coords = (Coord*)TMP_MALLOC((angles.count + highlighted_angles.count) * sizeof(Coord));
+
+	const float one_over_two_pi = 1.f / (2.f * math::PI);
 
     int32 tot_count = 0;
     for (const auto& angle : angles) {
         if (angle.phi == 0 || angle.psi == 0) continue;
         // [-PI, PI] -> [0, 1]
-        vec2 coord = vec2(angle.phi, angle.psi) / (2.f * math::PI) + 0.5f;
-        coord = vec2(coord.x, 1.f - coord.y);
+        vec2 coord = vec2(angle.phi, angle.psi) * one_over_two_pi + 0.5f;
+        coord.y = 1.f - coord.y;
         coords[tot_count].x = (unsigned short)(coord.x * 0xffff);
         coords[tot_count].y = (unsigned short)(coord.y * 0xffff);
         tot_count++;
@@ -2208,15 +2246,15 @@ void plot_ramachandran(const Array<BackboneAngles> angles, const Array<BackboneA
     for (const auto& angle : highlighted_angles) {
         if (angle.phi == 0 || angle.psi == 0) continue;
         // [-PI, PI] -> [0, 1]
-        vec2 coord = vec2(angle.phi, angle.psi) / (2.f * math::PI) + 0.5f;
-        coord = vec2(coord.x, 1.f - coord.y);
+        vec2 coord = vec2(angle.phi, angle.psi) * one_over_two_pi + 0.5f;
+        coord.y = 1.f - coord.y;
         coords[tot_count].x = (unsigned short)(coord.x * 0xffff);
         coords[tot_count].y = (unsigned short)(coord.y * 0xffff);
         tot_count++;
     }
     int32 highlight_count = tot_count - ordinary_count;
 
-    glBindBuffer(GL_ARRAY_BUFFER, ramachandran::coord_buf);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBufferData(GL_ARRAY_BUFFER, tot_count * 2 * sizeof(unsigned short), coords, GL_STREAM_DRAW);
 
     TMP_FREE(coords);
@@ -2249,13 +2287,14 @@ void plot_ramachandran(const Array<BackboneAngles> angles, const Array<BackboneA
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ramachandran::fbo);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
 
-    glDisable(GL_BLEND);
+    //glDisable(GL_BLEND);
     glClearColor(0, 0, 0, 0);
     glClear(GL_COLOR_BUFFER_BIT);
 
     glEnable(GL_BLEND);
     glBlendEquation(GL_FUNC_ADD);
-    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+	//glBlendFunc(GL_ONE, GL_ONE);
+	glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glDisable(GL_CULL_FACE);
     glDisable(GL_DEPTH_TEST);
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
@@ -2263,25 +2302,24 @@ void plot_ramachandran(const Array<BackboneAngles> angles, const Array<BackboneA
     // Texture 0
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_BUFFER, ramachandran::coord_tex);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_RG16, ramachandran::coord_buf);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RG16, vbo);
 
     glUseProgram(ramachandran::program);
     glUniform1i(ramachandran::uniform_loc_coord_tex, 0);
 
     // Draw ordinary
-    glUniform1f(ramachandran::uniform_loc_radius, radius * 0.01f);
+    glUniform1f(ramachandran::uniform_loc_radius, radius_val * 0.01f);
     glUniform1i(ramachandran::uniform_loc_instance_offset, 0);
     glUniform4fv(ramachandran::uniform_loc_color, 1, &ORDINARY_COLOR[0]);
     draw_instanced_quads(ordinary_count);
 
     // Draw highlighted
-    glUniform1f(ramachandran::uniform_loc_radius, radius * 0.02f);
+    glUniform1f(ramachandran::uniform_loc_radius, radius_val * 0.02f);
     glUniform1i(ramachandran::uniform_loc_instance_offset, ordinary_count);
     glUniform4fv(ramachandran::uniform_loc_color, 1, &HIGHLIGHT_COLOR[0]);
     draw_instanced_quads(highlight_count);
 
     glUseProgram(0);
-
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 
     // Restore modified GL state
@@ -2310,6 +2348,9 @@ void plot_ramachandran(const Array<BackboneAngles> angles, const Array<BackboneA
     ImGui::SetNextWindowContentSize(ImVec2(res.x, res.y));
     ImGui::Begin("Ramachandran", 0, ImGuiWindowFlags_NoFocusOnAppearing);
 
+	if (opacity) ImGui::SliderFloat("opacity", opacity, 0.f, 2.f);
+	if (radius) ImGui::SliderFloat("radius", radius, 0.1f, 2.f);
+
     ImVec2 win_pos = ImGui::GetCursorScreenPos();
     ImVec2 max_region = ImGui::GetWindowContentRegionMax();
     ImVec2 min_region = ImGui::GetWindowContentRegionMin();
@@ -2327,6 +2368,9 @@ void plot_ramachandran(const Array<BackboneAngles> angles, const Array<BackboneA
     // ImGui::Image((ImTextureID)ramachandran::accumulation_tex, canvas_size);
     dl->AddImage((ImTextureID)(intptr_t)ramachandran::accumulation_tex, x0, x1);
     dl->ChannelsMerge();
+
+	dl->ChannelsSetCurrent(0);
+
 
     /*
 constexpr float radius = 10.f;

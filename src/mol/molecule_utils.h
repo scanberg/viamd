@@ -55,11 +55,12 @@ struct BackboneAngles {
 struct BackboneAnglesTrajectory {
     int num_segments = 0;
     int num_frames = 0;
-    DynamicArray<BackboneAngles> angle_data;
+	Array<BackboneAngles> angle_data{};
 };
 
 inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backbone_angle_traj, int frame_index) {
-    ASSERT(frame_index < backbone_angle_traj.num_frames);
+	if (backbone_angle_traj.angle_data.count == 0 || backbone_angle_traj.num_segments == 0) return {};
+    ASSERT(frame_index < backbone_angle_traj.angle_data.count / backbone_angle_traj.num_segments);
     return Array<BackboneAngles>(&backbone_angle_traj.angle_data[frame_index * backbone_angle_traj.num_segments], backbone_angle_traj.num_segments);
 }
 
@@ -87,16 +88,19 @@ inline float dihedral_angle(const vec3 p[4]) { return dihedral_angle(p[0], p[1],
 DynamicArray<Bond> compute_covalent_bonds(const Array<vec3> atom_pos, const Array<Element> atom_elem, const Array<Residue> residues = {});
 DynamicArray<Chain> compute_chains(const Array<Residue> residue, const Array<Bond> bonds, const Array<ResIdx> atom_residue_indices = {});
 DynamicArray<BackboneSegment> compute_backbone_segments(const Array<Residue> residues, const Array<Label> atom_labels);
-DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Array<uint32> colors, const Array<BackboneSegment>& backbone, int num_subdivisions = 1);
+DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Array<uint32> colors, const Array<BackboneSegment>& backbone, int32 num_subdivisions = 1);
 
 // Computes the dihedral angles within the backbone:
 // omega = dihedral(CA[i-1], C[i-1], N[i], CA[i])
 // phi   = dihedral( C[i-1], N[i],  CA[i],  C[i])
 // psi   = dihedral( N[i],  CA[i],   C[i],  N[i+1])
 // As seen here https://en.wikipedia.org/wiki/Ramachandran_plot.
-DynamicArray<BackboneAngles> compute_backbone_angles(const Array<vec3> atom_pos, const Array<BackboneSegment> backbone);
-void compute_backbone_angles(Array<BackboneAngles> dst, const Array<vec3> atom_pos, const Array<BackboneSegment> backbone);
-BackboneAnglesTrajectory compute_backbone_angles_trajectory(const Trajectory& trajectory, const Array<BackboneSegment> backbone);
+DynamicArray<BackboneAngles> compute_backbone_angles(const Array<vec3> atom_pos, const Array<BackboneSegment> backbone_segments);
+void compute_backbone_angles(Array<BackboneAngles> dst, const Array<vec3> atom_pos, const Array<BackboneSegment> backbone_segments);
+
+void init_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const MoleculeDynamic& dynamic);
+void free_backbone_angles_trajectory(BackboneAnglesTrajectory* data);
+void compute_backbone_angles_trajectory(BackboneAnglesTrajectory* bb_angle_traj, const MoleculeDynamic& dynamic);
 
 DynamicArray<float> compute_atom_radii(const Array<Element> elements);
 void compute_atom_radii(Array<float> radii_dst, const Array<Element> elements);
@@ -137,6 +141,6 @@ void draw_backbone(const Array<BackboneSegment> backbone, const Array<vec3> atom
 void draw_spline(const Array<SplineSegment> spline, const mat4& view_mat, const mat4& proj_mat);
 
 // Radius is given as percentage of normalized texture space coordinates (1.0 = 1% of texture width and height)
-void plot_ramachandran(const Array<BackboneAngles> angles = {}, const Array<BackboneAngles> highlighted_angles = {}, float radius = 2.f);
+void plot_ramachandran(const Array<BackboneAngles> angles = {}, const Array<BackboneAngles> highlighted_angles = {}, float* radius = nullptr, float* opacity = nullptr);
 
 }  // namespace draw

@@ -11,11 +11,12 @@ void free_trajectory(Trajectory* traj);
 
 void read_trajectory(Trajectory* traj);
 
-struct TrajOnFinishFunctor {
+struct TrajAsyncDefaultFunctor {
 	void operator()() const {};
 };
-template<typename Functor = TrajOnFinishFunctor>
-void read_trajectory_async(Trajectory* traj, Functor on_finish = TrajOnFinishFunctor()) {
+
+template<typename OnFinishFunctor = TrajAsyncDefaultFunctor>
+void read_trajectory_async(Trajectory* traj, OnFinishFunctor on_finish = TrajAsyncDefaultFunctor()) {
 	ASSERT(traj);
 	if (traj->path_to_file) {
 		std::thread([traj, on_finish]() {

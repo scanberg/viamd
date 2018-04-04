@@ -34,12 +34,12 @@ struct Chain {
 };
 
 struct BackboneSegment {
-	int32 ca_idx;
+	AtomIdx ca_idx;
 	//int32 ha_idx;
 	//int32 cb_idx;
-	int32 n_idx;
-	int32 c_idx;
-	int32 o_idx;
+	AtomIdx n_idx;
+	AtomIdx c_idx;
+	AtomIdx o_idx;
 };
 
 // Interface to access molecular data
@@ -53,7 +53,7 @@ struct MoleculeStructure {
 	Array<Residue>	residues;
 	Array<Chain>	chains;
 
-	// If this is not zero in length it shall have the same length as residues
+	// If this is not zero in length it should have the same length as residues
 	Array<BackboneSegment> backbone_segments;
 };
 
