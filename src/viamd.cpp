@@ -824,7 +824,7 @@ static void draw_ramachandran(ApplicationData* data) {
 	ramachandran::compute_accumulation_texture(accumulated_angles, ordinary_color, data->ramachandran.radius);
 
 	const vec4 highlight_color(1.f, 1.f, 0.f, 1.0f);
-	ramachandran::compute_accumulation_texture(current_angles, highlight_color, data->ramachandran.radius * 2.f);
+	ramachandran::compute_accumulation_texture(current_angles, highlight_color, data->ramachandran.radius * 2.f, 0.1f);
 
 	float dim = math::min(ImGui::GetWindowWidth(), ImGui::GetWindowHeight());
 	ImVec2 win_pos = ImGui::GetCursorScreenPos();

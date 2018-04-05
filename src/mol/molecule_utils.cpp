@@ -2103,8 +2103,8 @@ constexpr unsigned char seg_data[] =
 constexpr unsigned char seg_data2[] =
 	R"(z™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ì­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿ØÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿ØÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì UÌz™Ìz™Ì UÌz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿ØÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Ø­¿ØÌÂ·ÌÂ·ÌžfÌžfÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿ØÌÂ·ÌÂ·ÌžfÌžfÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿ØÿÿÿÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿ØÿÿÿÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌžfÌžfÌžfÌžfÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌžfÌžfÌp ÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌp Ìp ÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•ÌzDÌ •Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌžfÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌÂ·ÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·•Ìz•Ìz¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·­¿Ø¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø¾Ì·¾Ì·¾Ì·­¿Ø­¿Ø­¿Ø­¿Ø¾Ì·•Ìz¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ì­¿Ø¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Øz™Ìz™Ìz™Ì­¿Øz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈQÌ··ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈQÌ··ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈQÌ·QÌ··ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ì)";
 // Accumulation texture data
-constexpr int acc_width = 512;
-constexpr int acc_height = 512;
+constexpr int acc_width = 2048;
+constexpr int acc_height = 2048;
 
 static GLuint segmentation_tex = 0;
 static GLuint accumulation_tex = 0;
@@ -2151,12 +2151,22 @@ uniform float u_outline;
 in vec2 uv;
 out vec4 out_frag;
 
+float step_dist(float edge, float dist) {
+	float factor = 1.0; // <-- value can be played around with a bit
+	float mask = step(edge, dist);
+	float step_w = factor * length(vec2(dFdx(mask), dFdy(mask)));
+	return smoothstep(-step_w/2.0, step_w/2.0, mask);
+}
+
 void main() {
-	float falloff = max(0, 1.0 - sqrt(dot(uv, uv)));
+	float dist = sqrt(dot(uv, uv));
 	if (u_outline > 0) {
-		//out_frag = vec4(mix(u_color.rgb, vec3(0), smoothstep(1.0 - sqrt(dot(uv,uv)))), u_color.a);
-		out_frag = vec4(u_color);
+		vec4 inner_color = u_color.rgba;
+		vec4 rim_color = vec4(0,0,0,1);
+		vec4 outer_color = vec4(0,0,0,0);
+		out_frag = mix(inner_color, mix(rim_color, outer_color, step_dist(1.0, dist)), step_dist(1.0 - u_outline, dist));
 	} else {
+		float falloff = max(0, 1.0 - dist);
 		out_frag = vec4(u_color.rgb, u_color.a * falloff);	
 	}
 }
@@ -2198,6 +2208,7 @@ void initialize() {
     uniform_loc_instance_offset = glGetUniformLocation(program, "u_instance_offset");
     uniform_loc_radius = glGetUniformLocation(program, "u_radius");
     uniform_loc_color = glGetUniformLocation(program, "u_color");
+	uniform_loc_outline = glGetUniformLocation(program, "u_outline");
 
     if (!segmentation_tex) {
         glGenTextures(1, &segmentation_tex);
@@ -2259,7 +2270,7 @@ void clear_accumulation_texture() {
 	glViewport(last_viewport[0], last_viewport[1], (GLsizei)last_viewport[2], (GLsizei)last_viewport[3]);
 }
 
-void compute_accumulation_texture(const Array<BackboneAngles> angles, vec4 color, float radius, bool outline) {
+void compute_accumulation_texture(const Array<BackboneAngles> angles, vec4 color, float radius, float outline) {
     struct Coord {
         unsigned short x, y;
     };
@@ -2336,7 +2347,7 @@ void compute_accumulation_texture(const Array<BackboneAngles> angles, vec4 color
     glUniform1f(uniform_loc_radius, radius * 0.01f);
     glUniform1i(uniform_loc_instance_offset, 0);
     glUniform4fv(uniform_loc_color, 1, &color[0]);
-	glUniform1f(uniform_loc_outline, (float)outline);
+	glUniform1f(uniform_loc_outline, outline);
     draw::draw_instanced_quads(count);
 
     // Draw highlighted
