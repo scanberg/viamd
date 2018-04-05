@@ -30,56 +30,31 @@ constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
 #endif
 constexpr unsigned int NO_PICKING_IDX = 0xffffffff;
 
-constexpr const char* testosterone_pdb = R"(
-ATOM      1  C           1      26.334  10.561 -22.799  1.00  0.00
-ATOM      2  C           1      26.570  10.310 -21.300  1.00  0.00
-ATOM      3  C           1      25.355  10.680 -20.409  1.00  0.00
-ATOM      4  C           1      24.998  12.157 -20.713  1.00  0.00
-ATOM      5  C           1      24.767  12.453 -22.204  1.00  0.00
-ATOM      6  C           1      25.970  12.029 -23.053  1.00  0.00
-ATOM      7  C           1      25.204  10.780 -16.421  1.00  0.00
-ATOM      8  C           1      25.656   9.334 -16.165  1.00  0.00
-ATOM      9  C           1      26.790   9.024 -17.158  1.00  0.00
-ATOM     10  C           1      26.396   9.103 -14.833  1.00  0.00
-ATOM     11  H           1      25.945   8.688 -12.826  1.00  0.00
-ATOM     12  C           1      24.749  10.968 -17.880  1.00  0.00
-ATOM     13  H           1      26.643  11.188 -18.796  1.00  0.00
-ATOM     14  C           1      24.457   8.379 -16.309  1.00  0.00
-ATOM     15  H           1      27.554   9.796 -17.059  1.00  0.00
-ATOM     17  C           1      24.153   9.767 -20.712  1.00  0.00
-ATOM     18  H           1      26.415   9.800 -23.575  1.00  0.00
-ATOM     19  C           1      26.333   9.093 -18.621  1.00  0.00
-ATOM     20  C           1      25.795  10.514 -18.923  1.00  0.00
-ATOM     21  H           1      24.087  12.408 -20.170  1.00  0.00
-ATOM     22  H           1      25.816  12.786 -20.362  1.00  0.00
-ATOM     23  C           1      27.071   8.880 -21.042  1.00  0.00
-ATOM     24  C           1      27.477   8.712 -19.574  1.00  0.00
-ATOM     25  H           1      23.886  11.907 -22.541  1.00  0.00
-ATOM     26  H           1      24.602  13.522 -22.331  1.00  0.00
-ATOM     27  O           1      26.607  12.821 -23.890  1.00  0.00
-ATOM     29  H           1      24.374  11.016 -15.755  1.00  0.00
-ATOM     30  H           1      26.036  11.454 -16.217  1.00  0.00
-ATOM     31  C           1      27.397   7.722 -16.623  1.00  0.00
-ATOM     32  C           1      27.273   7.862 -15.092  1.00  0.00
-ATOM     33  O           1      25.421   8.842 -13.723  1.00  0.00
-ATOM     34  H           1      27.012   9.966 -14.580  1.00  0.00
-ATOM     35  H           1      23.838  10.389 -18.033  1.00  0.00
-ATOM     36  H           1      24.539  12.025 -18.041  1.00  0.00
-ATOM     37  H           1      24.808   7.348 -16.280  1.00  0.00
-ATOM     38  H           1      23.758   8.548 -15.489  1.00  0.00
-ATOM     39  H           1      23.955   8.566 -17.258  1.00  0.00
-ATOM     40  H           1      24.432   8.728 -20.536  1.00  0.00
-ATOM     41  H           1      23.320  10.035 -20.061  1.00  0.00
-ATOM     42  H           1      23.855   9.892 -21.753  1.00  0.00
-ATOM     43  H           1      25.521   8.379 -18.764  1.00  0.00
-ATOM     44  H           1      26.275   8.174 -21.277  1.00  0.00
-ATOM     45  H           1      27.933   8.682 -21.679  1.00  0.00
-ATOM     46  H           1      27.751   7.672 -19.399  1.00  0.00
-ATOM     47  H           1      28.335   9.353 -19.369  1.00  0.00
-ATOM     48  H           1      26.838   6.857 -16.981  1.00  0.00
-ATOM     49  H           1      28.441   7.629 -16.922  1.00  0.00
-ATOM     50  H           1      26.809   6.965 -14.682  1.00  0.00
-ATOM     51  H           1      28.265   7.989 -14.657  1.00  0.00
+constexpr const char* caffeine_pdb = R"(
+ATOM      1  N1  BENZ    1       5.040   1.944  -8.324                          
+ATOM      2  C2  BENZ    1       6.469   2.092  -7.915                          
+ATOM      3  C3  BENZ    1       7.431   0.865  -8.072                          
+ATOM      4  C4  BENZ    1       6.916  -0.391  -8.544                          
+ATOM      5  N5  BENZ    1       5.532  -0.541  -8.901                          
+ATOM      6  C6  BENZ    1       4.590   0.523  -8.394                          
+ATOM      7  C11 BENZ    1       4.045   3.041  -8.005                          
+ATOM      8  H111BENZ    1       4.453   4.038  -8.264                          
+ATOM      9  H112BENZ    1       3.101   2.907  -8.570                          
+ATOM     10  H113BENZ    1       3.795   3.050  -6.926                          
+ATOM     11  O21 BENZ    1       6.879   3.181  -7.503                          
+ATOM     12  C51 BENZ    1       4.907  -1.659  -9.696                          
+ATOM     13  H511BENZ    1       4.397  -1.273 -10.599                          
+ATOM     14  H512BENZ    1       5.669  -2.391 -10.028                          
+ATOM     15  H513BENZ    1       4.161  -2.209  -9.089                          
+ATOM     16  O61 BENZ    1       3.470   0.208  -7.986                          
+ATOM     17  N1  NSP3    1B      8.807   0.809  -7.799                          
+ATOM     18  N1  NSP3    1C      7.982  -1.285  -8.604                          
+ATOM     19  C1  CSP3    1D      9.015  -0.500  -8.152                          
+ATOM     20  H1  CSP3    1D     10.007  -0.926  -8.079                          
+ATOM     21  C1  CSP3    1E      9.756   1.835  -7.299                          
+ATOM     22  H11 CSP3    1E     10.776   1.419  -7.199                          
+ATOM     23  H12 CSP3    1E      9.437   2.207  -6.309                          
+ATOM     24  H13 CSP3    1E      9.801   2.693  -7.994
 )";
 
 inline ImVec4 vec_cast(vec4 v) { return ImVec4(v.x, v.y, v.z, v.w); }
@@ -106,12 +81,20 @@ struct Representation {
     StringBuffer<128> filter = "all";
     Type type = VDW;
     ColorMapping color_mapping = ColorMapping::CPK;
-    Array<uint32> colors;
+	Array<uint32> colors{};
+	
+	bool enabled = true;
+	bool filter_is_ok = true;
+    
+	// Static color mode
+	vec4 static_color = vec4(1);
+    
+	// VDW and Licorice
+	float radii_scale = 1.f;
 
-    // @TODO Fill in options heres
-    vec4 static_color = vec4(1);
-    float radii_scale = 1.f;
+	// Ribbons and other spline primitives
     int num_subdivisions = 8;
+	float tension = 0.5f;
 };
 
 struct AtomSelection {
@@ -241,7 +224,7 @@ int main(int, char**) {
     vec4 clear_color = vec4(1, 1, 1, 1);
     vec4 clear_index = vec4(1, 1, 1, 1);
 
-    data.mol_data.dynamic = allocate_and_parse_pdb_from_string(testosterone_pdb);
+    data.mol_data.dynamic = allocate_and_parse_pdb_from_string(caffeine_pdb);
     data.mol_data.atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule->atom_elements);
     create_default_representation(&data);
     reset_view(&data);
@@ -269,10 +252,10 @@ int main(int, char**) {
     // if (data.dynamic.trajectory)
     //	read_trajectory_async(data.dynamic.trajectory);
 
-    auto g1 = stats::create_group("group1", "resid ALA");
-    stats::create_property(g1, "b1", "dist 1 2");
-    stats::create_property(g1, "a1", "angle 1 2 3");
-    stats::create_property(g1, "d1", "dist 1 2 3 4");
+    //auto g1 = stats::create_group("group1", "resid ALA");
+    //stats::create_property("b1", "dist 1 2");
+    //stats::create_property("a1", "angle 1 2 3");
+    //stats::create_property("d1", "dist 1 2 3 4");
 
     // stats::compute_stats(&data.dynamic);
 
@@ -410,6 +393,7 @@ int main(int, char**) {
         mat4 inv_proj_mat = math::inverse(proj_mat);
 
         for (const auto& rep : data.representations.data) {
+			if (!rep.enabled) continue;
             switch (rep.type) {
                 case Representation::VDW:
                     draw::draw_vdw(data.mol_data.dynamic.molecule->atom_positions, data.mol_data.atom_radii, rep.colors, view_mat, proj_mat,
@@ -421,7 +405,7 @@ int main(int, char**) {
                     break;
                 case Representation::RIBBONS:
                     draw::draw_ribbons(data.mol_data.dynamic.molecule->backbone_segments, data.mol_data.dynamic.molecule->chains,
-                                       data.mol_data.dynamic.molecule->atom_positions, rep.colors, view_mat, proj_mat, rep.num_subdivisions);
+                                       data.mol_data.dynamic.molecule->atom_positions, rep.colors, view_mat, proj_mat, rep.num_subdivisions, rep.tension);
                     break;
             }
         }
@@ -664,12 +648,18 @@ static void draw_main_menu(ApplicationData* data) {
 }
 
 static void draw_representations_window(ApplicationData* data) {
+	constexpr uint32 FILTER_ERROR_COLOR = 0xdd2222bb;
+
     ImGui::Begin("Representations", &data->representations.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
-    if (ImGui::Button("Create New Representation")) {
+    if (ImGui::Button("create new")) {
         create_default_representation(data);
     }
-
+	ImGui::SameLine();
+	if (ImGui::Button("clear all")) {
+		data->representations.data.clear();
+	}
+	ImGui::Spacing();
     for (int i = 0; i < data->representations.data.count; i++) {
         auto& rep = data->representations.data[i];
         ImGui::Separator();
@@ -677,14 +667,17 @@ static void draw_representations_window(ApplicationData* data) {
 
         bool recompute_colors = false;
         ImGui::PushID(i);
+		ImGui::Checkbox("enabled", &rep.enabled);
+		ImGui::SameLine();
+		if (ImGui::Button("remove")) {
+			remove_representation(data, i);
+		}
         ImGui::InputText("name", rep.name.buffer, rep.name.MAX_LENGTH);
-        ImGui::SameLine();
-        if (ImGui::Button("remove")) {
-            remove_representation(data, i);
-        }
+		if (!rep.filter_is_ok) ImGui::PushStyleColor(ImGuiCol_FrameBg, FILTER_ERROR_COLOR);
         if (ImGui::InputText("filter", rep.filter.buffer, rep.filter.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
             recompute_colors = true;
         }
+		if (!rep.filter_is_ok) ImGui::PopStyleColor();
         ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0\0");
         if (ImGui::Combo("color mapping", (int*)(&rep.color_mapping), "Static Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0\0")) {
             recompute_colors = true;
@@ -694,6 +687,7 @@ static void draw_representations_window(ApplicationData* data) {
         }
         if (rep.type == Representation::RIBBONS) {
             ImGui::SliderInt("spline subdivisions", &rep.num_subdivisions, 1, 16);
+			ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f);
         }
         if (rep.color_mapping == ColorMapping::STATIC_COLOR) {
             if (ImGui::ColorEdit4("color", (float*)&rep.static_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
@@ -708,7 +702,7 @@ static void draw_representations_window(ApplicationData* data) {
             compute_atom_colors(rep.colors, *data->mol_data.dynamic.molecule, rep.color_mapping,
                                 ImGui::ColorConvertFloat4ToU32(vec_cast(rep.static_color)));
             DynamicArray<bool> mask(data->mol_data.dynamic.molecule->atom_elements.count, false);
-            filter::compute_filter_mask(mask, data->mol_data.dynamic, rep.filter.buffer);
+            rep.filter_is_ok = filter::compute_filter_mask(mask, data->mol_data.dynamic, rep.filter.buffer);
             filter::filter_colors(rep.colors, mask);
         }
     }
@@ -767,6 +761,7 @@ static void draw_statistics(ApplicationData* data) {
 
     ImGui::Begin("Timelines");
     auto group_id = stats::get_group("group1");
+	/*
     stats::get_property_count(group_id);
 
     int32 frame_idx = (int32)data->time;
@@ -783,6 +778,7 @@ static void draw_statistics(ApplicationData* data) {
             data->time = (float64)frame_idx;
         }
     }
+	*/
 
     // stats::get_group_properties();
     /*
@@ -822,7 +818,13 @@ static void draw_ramachandran(ApplicationData* data) {
 	Array<BackboneAngles> accumulated_angles = get_backbone_angles(data->mol_data.backbone_angles, data->ramachandran.frame_range_min, data->ramachandran.frame_range_max - data->ramachandran.frame_range_min);
 	Array<BackboneAngles> current_angles = get_backbone_angles(data->mol_data.backbone_angles, frame);
 
-	ramachandran::compute_accumulation_texture(accumulated_angles, current_angles, data->ramachandran.radius, data->ramachandran.opacity);
+	ramachandran::clear_accumulation_texture();
+
+	const vec4 ordinary_color(1.f, 1.f, 1.f, 0.1f * data->ramachandran.opacity);
+	ramachandran::compute_accumulation_texture(accumulated_angles, ordinary_color, data->ramachandran.radius);
+
+	const vec4 highlight_color(1.f, 1.f, 0.f, 1.0f);
+	ramachandran::compute_accumulation_texture(current_angles, highlight_color, data->ramachandran.radius * 2.f);
 
 	float dim = math::min(ImGui::GetWindowWidth(), ImGui::GetWindowHeight());
 	ImVec2 win_pos = ImGui::GetCursorScreenPos();

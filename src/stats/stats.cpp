@@ -18,10 +18,13 @@ struct GroupCommand {
     ResidueMatchFunc func;
 };
 
+struct Instance {
+	int32 offset;
+	int32 count;
+};
+
 struct Property {
     ID id = INVALID_ID;
-    ID group_id = INVALID_ID;
-    ID property_group_id = INVALID_ID;
     ID data_avg_id = INVALID_ID;
     ID data_beg_id = INVALID_ID;
     int32 data_count = 0;
@@ -37,7 +40,6 @@ struct Property {
 
 struct PropertyData {
     ID id = INVALID_ID;
-    ID group_id = INVALID_ID;
     ID property_id = INVALID_ID;
 
     int32 residue_idx;
@@ -47,21 +49,21 @@ struct PropertyData {
 
 struct Group {
     ID id = INVALID_ID;
-    ID property_beg_id = INVALID_ID;
-    int32 property_count = 0;
+
+    Array<Instance> instances {};
 
     ID cmd_id = INVALID_ID;
     CString name;
     CString args;
-
-    Array<int32> residues {};
 };
 
+/*
 struct PropertyGroup {
     ID id = INVALID_ID;
     ID groups[32] = {};
     int group_count = 0;
 };
+*/
 
 struct StatisticsContext {
     DynamicArray<String> string_buffer {};
@@ -69,7 +71,7 @@ struct StatisticsContext {
     DynamicArray<Property> properties{};
     DynamicArray<PropertyData> property_data{};
     DynamicArray<Group> groups{};
-    DynamicArray<PropertyGroup> property_groups{}; 
+    //DynamicArray<PropertyGroup> property_groups{}; 
 
     DynamicArray<PropertyCommand> property_commands;
     DynamicArray<GroupCommand> group_commands;
@@ -248,6 +250,7 @@ void compute_histogram(Histogram* hist, int32 num_bins, Array<float> data, float
 	}
 }
 
+/*
 bool compute_stats(MoleculeDynamic* dynamic) {
     ASSERT(dynamic);
     ASSERT(dynamic->molecule);
@@ -328,6 +331,7 @@ bool compute_stats(MoleculeDynamic* dynamic) {
 
     return true;
 }
+*/
 
 void register_property_command(CString command, PropertyComputeFunc func) {
     ID id = COMPUTE_ID(command);
@@ -351,6 +355,7 @@ void register_group_command(CString command, ResidueMatchFunc func) {
     ctx.group_commands.push_back({id, func});
 }
 
+/*
 ID create_group(CString name, CString cmd_and_args) {
 	ID grp_id = COMPUTE_ID(name);
 	Group* grp = find_id(ctx.groups, grp_id);
@@ -395,6 +400,7 @@ ID create_group(CString name, CString cmd_and_args) {
 	return group.id;
 }
 
+
 void remove_group(ID group_id) {
 	Group* group = find_id(ctx.groups, group_id);
 	if (!group) {
@@ -426,6 +432,7 @@ void remove_group(ID group_id) {
 
     ctx.groups.remove(group);
 }
+*/
 
 ID get_group(CString name) {
     for (const auto& g : ctx.groups) {
@@ -445,30 +452,19 @@ int32 get_group_count() {
     return (int32)ctx.groups.count;
 }
 
-ID get_property(ID group_id, CString name) {
+ID get_property(CString name) {
     for (const auto &p : ctx.properties) {
-        if (p.group_id == group_id && compare(p.name, name)) return p.id;
+        if (compare(p.name, name)) return p.id;
     }
     return INVALID_ID;
 }
 
-ID get_property(ID group_id, int32 idx) {
-    // @TODO: Perhaps do this in another way...
-    int32 counter = 0;
-    for (const auto& p : ctx.properties) {
-        if (p.group_id == group_id && counter++ == idx) return p.id;
-    }
+ID get_property(int32 idx) {
+	if (-1 < idx && idx < ctx.properties.count) return ctx.properties[idx].id;
     return INVALID_ID;
 }
 
-int32 get_property_count(ID group_id) {
-    auto group = find_id(ctx.groups, group_id);
-    if (group) {
-        return (int32)group->property_count;
-    }
-    return 0;
-}
-
+/*
 Array<ID> get_groups_with_property(CString prop_name) {
     ID prop_group_id = COMPUTE_ID(prop_name);
     PropertyGroup* prop_group = find_id(ctx.property_groups, prop_group_id);
@@ -550,6 +546,7 @@ ID create_property(ID group_id, CString name, CString cmd_and_args) {
 
 	return prop.id;
 }
+*/
 
 void remove_property(ID prop_id) {
     Property* prop = find_id(ctx.properties, prop_id);
@@ -575,6 +572,7 @@ void remove_property(ID prop_id) {
     ctx.properties.remove(prop);
 }
 
+/*
 void* get_property_data(ID prop_id, int32 residue_idx) {
 	if (prop_id != INVALID_ID) {
 		for (const auto& prop_data : ctx.property_data) {
@@ -594,6 +592,7 @@ void* get_property_avg_data(ID prop_id) {
 	}
 	return nullptr;
 }
+*/
 
 int32 get_property_data_count(ID prop_id) {
 	if (prop_id != INVALID_ID) {

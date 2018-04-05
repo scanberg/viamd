@@ -6,7 +6,6 @@
 
 struct MoleculeDynamic;
 struct MoleculeStructure;
-struct Residue;
 
 namespace stats {
 
@@ -26,10 +25,10 @@ struct Histogram {
 };
 
 struct PropertyCommandDescriptor {
-	CString cmd;
-	PropertyComputeFunc func;
-	float min_val = 0.f;
-	float max_val = 1.f;
+	CString command_keyword;
+	PropertyComputeFunc compute_function;
+	float min_val = FLT_MAX;
+	float max_val = FLT_MAX;
 	bool periodic = false;
 	CString unit = "";
 };
@@ -47,7 +46,7 @@ void clear_stats();
 void store_stats(CString filename);
 void load_stats(CString filename);
 
-void register_property_command(CString command, PropertyComputeFunc func);
+void register_property_command(PropertyCommandDescriptor cmd_desc);
 void register_group_command(CString command, ResidueMatchFunc func);
 
 void initialize();
@@ -61,31 +60,33 @@ ID      get_group(CString name);
 ID      get_group(int32 idx);
 int32   get_group_count();
 
-int32   get_property_count(ID group_id);
-ID      get_property(ID group_id, CString name);
-ID      get_property(ID group_id, int32 idx);
-
-Array<ID> get_groups_with_property(CString property_name);
-
 // PROPERTY
-ID	 create_property(ID group_id, CString name, CString cmd_and_args);
-void remove_property(ID prop_id);
+ID		create_property(CString name, CString cmd_and_args);
+void	remove_property(ID prop_id);
 
-CString			 get_property_name(ID prop_id);
-CString			 get_property_unit(ID prop_id);
-float			 get_property_min_val(ID prop_id);
-float			 get_property_max_val(ID prop_id);
-void*			 get_property_data(ID prop_id, int32 residue_idx);
-void*			 get_property_avg_data(ID prop_id);
-int32			 get_property_data_count(ID prop_id);
+ID		get_property(CString name);
+ID		get_property(int32 idx);
+int32	get_property_count();
 
-Histogram*		 get_property_histogram(ID prop_id, int32 residue_idx);
-Histogram*		 get_property_avg_histogram(ID prop_id);
+CString	get_property_name(ID prop_id);
+CString	get_property_unit(ID prop_id);
+bool	get_property_periodic(ID prop_id);
+float	get_property_min_val(ID prop_id);
+float	get_property_max_val(ID prop_id);
+
+void	set_property_filter_min(ID prop_id, float min_val);
+void	set_property_filter_max(ID prop_id, float max_val);
+void	set_property_filter(ID prop_id, float min_val, float max_val);
+
+// PROPERTY DATA
+Array<float> get_property_data(ID prop_id, int32 instance_idx);
+Array<float> get_property_avg_data(ID prop_id);
+
+//Histogram*	 get_property_histogram(ID prop_id, int32 residue_idx);
+//Histogram*	 get_property_avg_histogram(ID prop_id);
 
 // PROPERTY FILTER
-void set_property_filter_min(ID prop_id, float min_val);
-void set_property_filter_max(ID prop_id, float max_val);
-void set_property_filter(ID prop_id, float min_val, float max_val);
+
 
 
 }  // namespace stats

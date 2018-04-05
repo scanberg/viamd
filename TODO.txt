@@ -1,8 +1,9 @@
 TODO: VIAMD
 
 // CONCRETE LIST OF TODOs
-SpatialHash
-    --- Should store positions
+Stability
+    When loading in different thread, make sure the loading is killed when changing datasets.
+
 Statistics
     Clean up interface
     Fix Property Groups
@@ -21,14 +22,12 @@ DensityVolume
 Rendering
     ComputeOccupancy Volume (no need for spatial hash)
 Application
-    --- Implement Load File
     Fix data synchronization bugs between datasets
+    Extend datastructure to hold backbone segments of all dataset and separate container for arrays into this
 Platform
     Cross-platform DirListing (Prio mac and Win32)
         --- mac
         win32
-    --- (Cross-platform FileDialog (Prio mac and Win32))
-
 
 
 

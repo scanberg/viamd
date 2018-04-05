@@ -247,7 +247,7 @@ DynamicArray<BackboneSegment> compute_backbone_segments(const Array<Residue> res
 }
 
 DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Array<uint32> colors, const Array<BackboneSegment>& backbone,
-                                           int num_subdivisions) {
+                                           int num_subdivisions, float tension) {
     if (backbone.count < 4) return {};
 
     DynamicArray<vec3> p_tmp;
@@ -299,7 +299,6 @@ DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Arr
         }
     }
 
-    const float tension = 0.5f;
     DynamicArray<SplineSegment> segments;
 
     for (int64 i = 1; i < p_tmp.size() - 2; i++) {
@@ -548,11 +547,16 @@ struct Token {
 static DynamicArray<FilterCommand> filter_commands;
 
 static bool is_modifier(CString str) {
-    if (compare(str, "and")) return true;
-    if (compare(str, "AND")) return true;
-    if (compare(str, "or")) return true;
-    if (compare(str, "OR")) return true;
+    if (compare(str, "and", true)) return true;
+    if (compare(str, "or", true)) return true;
     return false;
+}
+
+static bool is_keyword(CString str) {
+	if (compare(str, "and", true)) return true;
+	if (compare(str, "or", true)) return true;
+	if (compare(str, "not", true)) return true;
+	return false;
 }
 
 int32 count_parentheses(CString str) {
@@ -607,7 +611,7 @@ DynamicArray<CString> extract_chunks(CString str) {
         if (chunk->front() == '(') {
             big_chunks.push_back(*chunk);
             chunk++;
-        } else if (is_modifier(*chunk)) {
+        } else if (is_keyword(*chunk)) {
             big_chunks.push_back(*chunk);
             chunk++;
         } else {
@@ -654,18 +658,14 @@ bool internal_filter_mask(Array<bool> mask, const MoleculeDynamic& dyn, CString 
     bool state_not = false;
 
     for (const auto& chunk : chunks) {
-        if (is_modifier(chunk)) {
-            if (compare(chunk, "and", true))
-                state_and = true;
-            else if (compare(chunk, "or", true))
-                state_or = true;
-            else if (compare(chunk, "not", true))
-                state_not = true;
-
-            if (state_and && state_or) {
-                printf("ERROR! Cannot use both 'and' and 'or' to combine filter options\n");
-                return false;
-            }
+		if (compare(chunk, "and", true)) {
+			state_and = true;
+		}
+		else if (compare(chunk, "or", true)) {
+			state_or = true;
+		}
+        else if (compare(chunk, "not", true)) {
+            state_not = true;
         } else {
             if (chunk.front() == '(') {
                 ASSERT(chunk.back() == ')');
@@ -706,6 +706,11 @@ bool internal_filter_mask(Array<bool> mask, const MoleculeDynamic& dyn, CString 
             state_or = false;
             state_not = false;
         }
+
+		if (state_and && state_or) {
+			printf("ERROR! Cannot use both 'and' and 'or' to combine filter options\n");
+			return false;
+		}
     }
 
     return true;
@@ -930,16 +935,28 @@ void shutdown() {}
 
 namespace draw {
 
-static constexpr int VERTEX_BUFFER_SIZE = MEGABYTES(4);
 static GLuint instanced_quad_vao = 0;
 static GLuint instanced_quad_ibo = 0;
 
 static GLuint vbo = 0;
+static GLsizeiptr vbo_size = MEGABYTES(4);
 
-void draw_instanced_quads(int num_instances) {
+inline void draw_instanced_quads(int num_instances) {
     glBindVertexArray(instanced_quad_vao);
     glDrawElementsInstanced(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_BYTE, 0, num_instances);
     glBindVertexArray(0);
+}
+
+inline void set_vbo_data(const void* data, GLsizeiptr size_in_bytes) {
+	glBindBuffer(GL_ARRAY_BUFFER, vbo);
+	if (vbo_size > size_in_bytes) {
+		glBufferSubData(GL_ARRAY_BUFFER, 0, size_in_bytes, data);
+	}
+	else {
+		glBufferData(GL_ARRAY_BUFFER, size_in_bytes, data, GL_STREAM_DRAW);
+		vbo_size = size_in_bytes;
+	}
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
 namespace vdw {
@@ -1512,7 +1529,7 @@ static void initialize() {
 
     glGenBuffers(1, &ibo);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, VERTEX_BUFFER_SIZE, nullptr, GL_STREAM_DRAW);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, MEGABYTES(4), nullptr, GL_STREAM_DRAW);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 }
 
@@ -1799,7 +1816,7 @@ void initialize() {
 
     glGenBuffers(1, &vbo);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, VERTEX_BUFFER_SIZE, nullptr, GL_STREAM_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, vbo_size, nullptr, GL_STREAM_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     vdw::initialize();
@@ -1899,15 +1916,16 @@ void draw_licorice(const Array<vec3> atom_positions, const Array<Bond> atom_bond
                    const mat4& proj_mat, float radii_scale) {
     int64_t count = atom_positions.count;
     ASSERT(count == atom_colors.count);
-    ASSERT(count * sizeof(licorice::Vertex) < VERTEX_BUFFER_SIZE);
 
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    licorice::Vertex* data = (licorice::Vertex*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+	licorice::Vertex* data = (licorice::Vertex*)TMP_MALLOC(MEGABYTES(8));
+	ASSERT(count * sizeof(licorice::Vertex) < MEGABYTES(8));
+
     for (int64_t i = 0; i < count; i++) {
         data[i].position = atom_positions[i];
         data[i].color = atom_colors[i];
     }
-    glUnmapBuffer(GL_ARRAY_BUFFER);
+
+	draw::set_vbo_data(data, count * sizeof(licorice::Vertex));
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, licorice::ibo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, atom_bonds.count * sizeof(Bond), atom_bonds.data, GL_STREAM_DRAW);
@@ -1930,7 +1948,7 @@ void draw_licorice(const Array<vec3> atom_positions, const Array<Bond> atom_bond
 }
 
 void draw_ribbons(const Array<BackboneSegment> backbone_segments, const Array<Chain> chains, const Array<vec3> atom_positions,
-                  const Array<uint32> atom_colors, const mat4& view_mat, const mat4& proj_mat, int num_subdivisions) {
+                  const Array<uint32> atom_colors, const mat4& view_mat, const mat4& proj_mat, int num_subdivisions, float tension) {
     if (backbone_segments.count == 0) return;
     if (chains.count == 0) return;
     if (atom_positions.count == 0) return;
@@ -1959,7 +1977,7 @@ void draw_ribbons(const Array<BackboneSegment> backbone_segments, const Array<Ch
         }
         // Only do this if all segments within a chain was visible
         if (visible_segments.size() == (c.end_res_idx - c.beg_res_idx)) {
-            auto splines = compute_spline(atom_positions, atom_colors, visible_segments, num_subdivisions);
+            auto splines = compute_spline(atom_positions, atom_colors, visible_segments, num_subdivisions, tension);
             // spline_segments.append(splines);
             for (const auto& s : splines) {
                 vertices.push_back({s.position, s.tangent, s.normal, s.color, s.index});
@@ -2004,10 +2022,11 @@ void draw_ribbons(const Array<BackboneSegment> backbone_segments, const Array<Ch
 }
 
 void draw_ribbons(const Array<SplineSegment> spline, const mat4& view_mat, const mat4& proj_mat) {
-    ASSERT(spline.count * sizeof(ribbons::Vertex) < VERTEX_BUFFER_SIZE);
+    ASSERT(spline.count * sizeof(ribbons::Vertex) < MEGABYTES(4));
 
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    ribbons::Vertex* data = (ribbons::Vertex*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+    //glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    //ribbons::Vertex* data = (ribbons::Vertex*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+	ribbons::Vertex* data = (ribbons::Vertex*)TMP_MALLOC(MEGABYTES(8));
     for (int64_t i = 0; i < spline.count; i++) {
         data[i].position = spline[i].position;
         data[i].tangent = spline[i].tangent;
@@ -2015,8 +2034,9 @@ void draw_ribbons(const Array<SplineSegment> spline, const mat4& view_mat, const
         data[i].color = *((uint32*)immediate::COLOR_WHITE);
         data[i].picking_id = 0xffffffff;
     }
-    glUnmapBuffer(GL_ARRAY_BUFFER);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+	draw::set_vbo_data(data, spline.count * sizeof(ribbons::Vertex));
+    //glUnmapBuffer(GL_ARRAY_BUFFER);
+    //glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     glEnable(GL_DEPTH_TEST);
 
@@ -2097,6 +2117,7 @@ static GLint uniform_loc_coord_tex = -1;
 static GLint uniform_loc_instance_offset = -1;
 static GLint uniform_loc_radius = -1;
 static GLint uniform_loc_color = -1;
+static GLint uniform_loc_outline = -1;
 
 GLuint get_accumulation_texture() { return accumulation_tex; }
 GLuint get_segmentation_texture() { return segmentation_tex; }
@@ -2126,12 +2147,18 @@ constexpr const char* f_shader_src = R"(
 #version 150 core
 
 uniform vec4 u_color;
+uniform float u_outline;
 in vec2 uv;
 out vec4 out_frag;
 
 void main() {
 	float falloff = max(0, 1.0 - sqrt(dot(uv, uv)));
-	out_frag = vec4(u_color.rgb, u_color.a * falloff);	
+	if (u_outline > 0) {
+		//out_frag = vec4(mix(u_color.rgb, vec3(0), smoothstep(1.0 - sqrt(dot(uv,uv)))), u_color.a);
+		out_frag = vec4(u_color);
+	} else {
+		out_frag = vec4(u_color.rgb, u_color.a * falloff);	
+	}
 }
 )";
 
@@ -2218,44 +2245,42 @@ void shutdown() {
     if (fbo) glDeleteFramebuffers(1, &fbo);
 }
 
-void compute_accumulation_texture(const Array<BackboneAngles> angles, const Array<BackboneAngles> highlighted_angles, float radius, float opacity) {
-    const vec4 ORDINARY_COLOR = vec4(1.f, 1.f, 1.f, 0.1f * opacity);
-    const vec4 HIGHLIGHT_COLOR = vec4(1.f, 0.0f, 0.0f, 1.f);
+void clear_accumulation_texture() {
+	GLint last_viewport[4];
+	glGetIntegerv(GL_VIEWPORT, last_viewport);
 
+	glViewport(0, 0, acc_width, acc_height);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
+	glDrawBuffer(GL_COLOR_ATTACHMENT0);
+
+	glClearColor(0, 0, 0, 0);
+	glClear(GL_COLOR_BUFFER_BIT);
+
+	glViewport(last_viewport[0], last_viewport[1], (GLsizei)last_viewport[2], (GLsizei)last_viewport[3]);
+}
+
+void compute_accumulation_texture(const Array<BackboneAngles> angles, vec4 color, float radius, bool outline) {
     struct Coord {
         unsigned short x, y;
     };
 
     // Use fast scratch memory here
-    Coord* coords = (Coord*)TMP_MALLOC((angles.count + highlighted_angles.count) * sizeof(Coord));
+    Coord* coords = (Coord*)TMP_MALLOC((angles.count) * sizeof(Coord));
 
-    const float one_over_two_pi = 1.f / (2.f * math::PI);
+    constexpr float ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
 
-    int32 tot_count = 0;
+	int32 count = 0;
     for (const auto& angle : angles) {
         if (angle.phi == 0 || angle.psi == 0) continue;
-        // [-PI, PI] -> [0, 1]
-        vec2 coord = vec2(angle.phi, angle.psi) * one_over_two_pi + 0.5f;
+        vec2 coord = vec2(angle.phi, angle.psi) * ONE_OVER_TWO_PI + 0.5f; // [-PI, PI] -> [0, 1]
         coord.y = 1.f - coord.y;
-        coords[tot_count].x = (unsigned short)(coord.x * 0xffff);
-        coords[tot_count].y = (unsigned short)(coord.y * 0xffff);
-        tot_count++;
+        coords[count].x = (unsigned short)(coord.x * 0xffff);
+        coords[count].y = (unsigned short)(coord.y * 0xffff);
+		count++;
     }
-
-    int32 ordinary_count = tot_count;
-    for (const auto& angle : highlighted_angles) {
-        if (angle.phi == 0 || angle.psi == 0) continue;
-        // [-PI, PI] -> [0, 1]
-        vec2 coord = vec2(angle.phi, angle.psi) * one_over_two_pi + 0.5f;
-        coord.y = 1.f - coord.y;
-        coords[tot_count].x = (unsigned short)(coord.x * 0xffff);
-        coords[tot_count].y = (unsigned short)(coord.y * 0xffff);
-        tot_count++;
-    }
-    int32 highlight_count = tot_count - ordinary_count;
 
     glBindBuffer(GL_ARRAY_BUFFER, draw::vbo);
-    glBufferData(GL_ARRAY_BUFFER, tot_count * 2 * sizeof(unsigned short), coords, GL_STREAM_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, count * 2 * sizeof(unsigned short), coords, GL_STREAM_DRAW);
 
     TMP_FREE(coords);
 
@@ -2288,8 +2313,8 @@ void compute_accumulation_texture(const Array<BackboneAngles> angles, const Arra
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
 
     // glDisable(GL_BLEND);
-    glClearColor(0, 0, 0, 0);
-    glClear(GL_COLOR_BUFFER_BIT);
+    //glClearColor(0, 0, 0, 0);
+    //glClear(GL_COLOR_BUFFER_BIT);
 
     glEnable(GL_BLEND);
     glBlendEquation(GL_FUNC_ADD);
@@ -2310,14 +2335,15 @@ void compute_accumulation_texture(const Array<BackboneAngles> angles, const Arra
     // Draw ordinary
     glUniform1f(uniform_loc_radius, radius * 0.01f);
     glUniform1i(uniform_loc_instance_offset, 0);
-    glUniform4fv(uniform_loc_color, 1, &ORDINARY_COLOR[0]);
-    draw::draw_instanced_quads(ordinary_count);
+    glUniform4fv(uniform_loc_color, 1, &color[0]);
+	glUniform1f(uniform_loc_outline, (float)outline);
+    draw::draw_instanced_quads(count);
 
     // Draw highlighted
-    glUniform1f(uniform_loc_radius, radius * 0.02f);
-    glUniform1i(uniform_loc_instance_offset, ordinary_count);
-    glUniform4fv(uniform_loc_color, 1, &HIGHLIGHT_COLOR[0]);
-    draw::draw_instanced_quads(highlight_count);
+    //glUniform1f(uniform_loc_radius, radius * 0.02f);
+    //glUniform1i(uniform_loc_instance_offset, ordinary_count);
+    //glUniform4fv(uniform_loc_color, 1, &HIGHLIGHT_COLOR[0]);
+    //draw::draw_instanced_quads(highlight_count);
 
     glUseProgram(0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);

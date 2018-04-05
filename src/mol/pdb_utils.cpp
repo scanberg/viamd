@@ -97,14 +97,12 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 			chains.clear();
 		}
 		else if (compare_n(line, "TER", 3)) {
-			// @TODO: Do!
-			/*
+			current_chain_id = line[21];
 			Chain chain;
 			chain.beg_res_idx = (ResIdx)residues.size();
 			chain.end_res_idx = chain.beg_res_idx;
-			chain.id = chain_id;
+			chain.id = current_chain_id;
 			chains.push_back(chain);
-			*/
 		}
 		else if (valid_line(line, params)) {
 			labels.push_back(trim(line.substr(12, 4)));

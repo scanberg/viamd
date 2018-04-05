@@ -103,7 +103,7 @@ DynamicArray<Bond> compute_covalent_bonds(const Array<vec3> atom_pos, const Arra
 DynamicArray<Chain> compute_chains(const Array<Residue> residue, const Array<Bond> bonds, const Array<ResIdx> atom_residue_indices = {});
 DynamicArray<BackboneSegment> compute_backbone_segments(const Array<Residue> residues, const Array<Label> atom_labels);
 DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Array<uint32> colors, const Array<BackboneSegment>& backbone,
-                                           int32 num_subdivisions = 1);
+                                           int32 num_subdivisions = 1, float tension = 0.5f);
 
 // Computes the dihedral angles within the backbone:
 // omega = dihedral(CA[i-1], C[i-1], N[i], CA[i])
@@ -149,7 +149,7 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
 void draw_licorice(const Array<vec3> atom_positions, const Array<Bond> atom_bonds, const Array<uint32> atom_colors, const mat4& view_mat,
                    const mat4& proj_mat, float radii_scale = 1.f);
 void draw_ribbons(const Array<BackboneSegment> backbone_segments, const Array<Chain> chains, const Array<vec3> atom_positions,
-                  const Array<uint32> atom_colors, const mat4& view_mat, const mat4& proj_mat, int num_subdivisions = 8);
+                  const Array<uint32> atom_colors, const mat4& view_mat, const mat4& proj_mat, int num_subdivisions = 8, float tension = 0.5f);
 
 // DEBUG
 void draw_backbone(const Array<BackboneSegment> backbone, const Array<vec3> atom_positions, const mat4& view_mat, const mat4& proj_mat);
@@ -160,9 +160,10 @@ void draw_spline(const Array<SplineSegment> spline, const mat4& view_mat, const 
 namespace ramachandran {
 void initialize();
 void shutdown();
+
+void clear_accumulation_texture();
 // Radius is given as percentage of normalized texture space coordinates (1.0 = 1% of texture width and height)
-void compute_accumulation_texture(const Array<BackboneAngles> angles, const Array<BackboneAngles> highlighted_angles, float radius = 1.f,
-                                  float opacity = 1.f);
+void compute_accumulation_texture(const Array<BackboneAngles> angles, vec4 color, float radius = 1.f, bool outline = false);
 uint32 get_accumulation_texture();
 uint32 get_segmentation_texture();
 }  // namespace ramachandran
