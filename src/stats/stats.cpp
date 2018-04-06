@@ -36,18 +36,25 @@ struct Property {
     CString args;
 };
 
+struct GroupInstance {
+	ID id = INVALID_ID;
+	ID group_id = INVALID_ID;
+	Structure structure;
+};
+
 struct PropertyData {
     ID id = INVALID_ID;
     ID property_id = INVALID_ID;
+	ID instance_id = INVALID_ID;
 
-    int32 idx;
     Array<float> data;
 };
 
 struct Group {
     ID id = INVALID_ID;
 
-    Array<Structure> structures {};
+	ID instance_beg_id = INVALID_ID;
+	int32 instance_count = 0;
 
     ID cmd_id = INVALID_ID;
     CString name;
@@ -60,6 +67,7 @@ struct StatisticsContext {
     DynamicArray<Property> properties{};
     DynamicArray<PropertyData> property_data{};
     DynamicArray<Group> groups{};
+	DynamicArray<GroupInstance> group_instances{};
 
     DynamicArray<PropertyCommand> property_commands;
     DynamicArray<GroupCommand> group_commands;
@@ -159,7 +167,7 @@ void initialize() {
 	ctx.property_commands.push_back({ COMPUTE_ID("angle"),	  compute_atomic_angle, {0, math::PI}, INTRA, true, "°" });
 	ctx.property_commands.push_back({ COMPUTE_ID("dihedral"), compute_atomic_dihedral, {-math::PI, math::PI}, INTRA, true, "°" });
 
-    ctx.group_commands.push_back({ COMPUTE_ID("resid"), match_by_resname});
+    //ctx.group_commands.push_back({ COMPUTE_ID("resid"), match_by_resname});
     ctx.group_commands.push_back({ COMPUTE_ID("resname"), match_by_resname});
 }
 
@@ -175,6 +183,7 @@ void clear() {
     ctx.properties.clear();
     ctx.property_data.clear();
     ctx.groups.clear();
+	ctx.group_instances.clear();
 
     //ctx.property_commands.clear();
     //ctx.group_commands.clear();
@@ -254,16 +263,34 @@ bool compute_stats(MoleculeDynamic* dynamic) {
         return false;
     }
 
-    // Find and compute uninitialized groups and their structures
+    // Find uninitialized groups and compute their instances
     for (auto& group : ctx.groups) {
-        if (!group.structures) {
+		if (group.instance_count == 0) {
             GroupCommand* group_cmd = find_id(ctx.group_commands, group.cmd_id);
+			ASSERT(group_cmd);
             DynamicArray<CString> args = ctokenize(group.args);
             auto matching_structures = group_cmd->func(args, *dynamic->molecule);
 
-            group.structures.data = (Structure*)MALLOC(matching_structures.count * sizeof(Structure));
-            group.structures.count = matching_structures.count;
-            memcpy(group.residues.data, matching_structures.data, matching_structures.count * sizeof(Structure));
+			if (matching_structures.count == 0) {
+				printf("WARNING! group '%s' did not match any structures.\n");
+				continue;
+			}
+
+			for (int32 i = 0; i < matching_structures.count; i++) {
+				char buf[64];
+				snprintf(buf, 64, "%s.%i", group.name.beg(), i);
+				GroupInstance instance;
+				instance.id = COMPUTE_ID(buf);
+				instance.group_id = group.id;
+				instance.structure = matching_structures[i];
+				ctx.group_instances.push_back(instance);
+
+				if (i == 0) {
+					group.instance_beg_id = instance.id;
+					group.instance_count = 0;
+				}
+				group.instance_count++;
+			}
         }
     }
 
@@ -272,54 +299,65 @@ bool compute_stats(MoleculeDynamic* dynamic) {
         if (prop.data_beg_id == INVALID_ID) {
             // NEED TO COMPUTE PROPERTY DATA
             PropertyCommand* prop_cmd = find_id(ctx.property_commands, prop.cmd_id);
+			ASSERT(prop_cmd);
             DynamicArray<CString> args = ctokenize(prop.args);
-            Group* group = find_id(ctx.groups, prop.group_id);
-            auto byte_size = count * sizeof(float);
 
-            // DATA AVERAGE
-            StringBuffer<64> prop_data_name;
-            snprintf(prop_data_name.beg(), 64, "%s.%s.avg", group->name.beg(), prop.name.beg());
+			if (prop_cmd->type == INTRA) {
+				if (args == 0) {
+					printf("WARNING! Property '%s': Missing arguments!", prop.name.beg());
+					continue;
+				}
+				ID group_id = get_group(args[0]);
+				Group* group = find_id(ctx.groups, group_id);
 
-            PropertyData prop_avg_data;
-            prop_avg_data.id = COMPUTE_ID(prop_data_name.operator CString());
-            prop_avg_data.group_id = group->id;
-            prop_avg_data.property_id = prop.id;
-            prop_avg_data.idx = -1;
-            prop_avg_data.data = (float*)MALLOC(byte_size);
-            prop_avg_data.count = count;
-            memset(prop_avg_data.data, 0, byte_size);
+				if (group_id == INVALID_ID) {
+					printf("WARNING! Property '%s': could not find group with name '%s'", prop.name.beg(), args[0].beg());
+					continue;
+				}
 
-            prop.data_avg_id = prop_avg_data.id;
-			ctx.property_data.push_back(prop_avg_data);
+				// DATA AVERAGE
+				StringBuffer<64> prop_data_name;
+				snprintf(prop_data_name.beg(), 64, "%s.%s.avg", group->name.beg(), prop.name.beg());
 
-            // DATA
-            for (int32 i = 0; i < (int32)group->residues.count; i++) {
-                int32 res_idx = group->residues[i];
-                float* data = (float*)MALLOC(byte_size);
-                prop_cmd->func(data, args, dynamic, res_idx);
+				PropertyData prop_avg_data;
+				prop_avg_data.id = COMPUTE_ID(prop_data_name.operator CString());
+				prop_avg_data.instance_id = INVALID_ID;
+				prop_avg_data.property_id = prop.id;
+				prop_avg_data.data = { (float*)CALLOC(count, sizeof(float)), count };
+				prop.data_avg_id = prop_avg_data.id;
+				ctx.property_data.push_back(prop_avg_data);
 
-                for (int32 j = 0; j < count; j++) {
-					prop_avg_data.data[j] += (data)[j] / (float)group->residues.count;
-                }
+				// DATA
+				for (int32 i = 0; i < group->instance_count; i++) {
+					ID instance_id = get_group_instance(group_id, i);
+					auto inst = find_id(ctx.group_instances, instance_id);
+					float* data = (float*)CALLOC(count, sizeof(float));
+					prop_cmd->func(data, args, *dynamic, inst->structure);
 
-                snprintf(prop_data_name.beg(), 64, "%s.%s.%i", group->name.beg(), prop.name.beg(), i);
+					for (int32 j = 0; j < count; j++) {
+						prop_avg_data.data[j] += data[j] / (float)group->instance_count;
+					}
 
-                PropertyData prop_data;
-                prop_data.id = COMPUTE_ID(prop_data_name);
-                prop_data.group_id = group->id;
-                prop_data.property_id = prop.id;
-                prop_data.residue_idx = res_idx;
-                prop_data.data = data;
-                prop_data.count = count;
+					snprintf(prop_data_name.beg(), 64, "%s.%s.%i", group->name.beg(), prop.name.beg(), i);
 
-                ctx.property_data.push_back(prop_data);
-                if (i == 0) {
-                    prop.data_beg_id = prop_data.id;
-                    prop.data_count = 1;
-                } else {
-                    prop.data_count++;
-                }
-            }
+					PropertyData prop_data;
+					prop_data.id = COMPUTE_ID(prop_data_name);
+					prop_data.instance_id = instance_id;
+					prop_data.property_id = prop.id;
+					prop_data.data = { data, count };
+
+					ctx.property_data.push_back(prop_data);
+					if (i == 0) {
+						prop.data_beg_id = prop_data.id;
+						prop.data_count = 0;
+					}
+					prop.data_count++;
+				}
+			}
+			else if (prop_cmd->type == INTER) {
+
+			}
+
         }
     }
 
@@ -335,7 +373,7 @@ void register_property_command(CString command, PropertyCommandDescriptor desc) 
     }
 
     auto unit = alloc_string(desc.unit);
-    ctx.property_commands.push_back({id, desc.func, desc.val_range, desc.type, desc.periodic, unit});
+    ctx.property_commands.push_back({id, desc.compute_function, desc.val_range, desc.type, desc.periodic, unit});
 }
 
 void register_group_command(CString command, StructureExtractFunc func) {
@@ -384,7 +422,8 @@ ID create_group(CString name, CString cmd_and_args) {
 	group.name = alloc_string(name);
     group.args = alloc_string(args);
 	group.cmd_id = grp_cmd_id;
-    group.structures = {};
+	group.instance_beg_id = INVALID_ID;
+	group.instance_count = 0;
 
 	ctx.groups.push_back(group);
 
@@ -420,6 +459,25 @@ ID get_group(int32 idx) {
 
 int32 get_group_count() {
     return (int32)ctx.groups.count;
+}
+
+ID get_group_instance(ID group_id, int32 idx) {
+	int32 count = 0;
+	for (const auto &inst : ctx.group_instances) {
+		if (inst.group_id == group_id) {
+			if (count == idx) return inst.id;
+			count++;
+		}
+	}
+	return INVALID_ID;
+}
+
+int32 get_group_instance_count(ID group_id) {
+	auto group = find_id(ctx.groups, group_id);
+	if (group) {
+		return group->instance_count;
+	}
+	return 0;
 }
 
 ID get_property(CString name) {

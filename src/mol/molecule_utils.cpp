@@ -55,15 +55,23 @@ void linear_interpolation_periodic(Array<vec3> positions, const Array<vec3> prev
         } else {
             positions[i] = math::mix(prev, next, t);
         }
-        /*
-if (abs_delta.y > half_box_ext.y) next.y -= full_box_ext.y * sign.y;
-if (abs_delta.z > half_box_ext.z) next.z -= full_box_ext.z * sign.z;
-
-// next -= math::step(half_box_ext, math::abs(delta)) * delta;
-
-positions[i] = math::mix(prev, next, t);
-        */
     }
+}
+
+void spline_interpolation(Array<vec3> positions, const Array<vec3> pos0, const Array<vec3> pos1, const Array<vec3> pos2, const Array<vec3> pos3, float t) {
+	ASSERT(pos0.count == positions.count);
+	ASSERT(pos1.count == positions.count);
+	ASSERT(pos2.count == positions.count);
+	ASSERT(pos3.count == positions.count);
+
+	for (int i = 0; i < positions.count; i++) {
+		vec3 p0 = pos0[0];
+		vec3 p1 = pos1[i];
+		vec3 p2 = pos2[i];
+		vec3 p3 = pos3[i];
+
+		positions[i] = math::spline(p0, p1, p2, p3, t);
+	}
 }
 
 void linear_interpolation(Array<vec3> positions, const Array<vec3> prev_pos, const Array<vec3> next_pos, float t) {

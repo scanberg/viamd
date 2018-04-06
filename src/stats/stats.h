@@ -68,6 +68,10 @@ ID      get_group(CString name);
 ID      get_group(int32 idx);
 int32   get_group_count();
 
+// INSTANCES
+ID		get_group_instance(ID group_id, int32 idx);
+int32   get_group_instance_count(ID group_id);
+
 // PROPERTY
 ID		create_property(CString name, CString cmd_and_args);
 void	remove_property(ID prop_id);
