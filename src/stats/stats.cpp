@@ -11,16 +11,15 @@ namespace stats {
 struct PropertyCommand {
     ID id;
     PropertyComputeFunc func;
+    Range val_range;
+    PropertyType type;
+    bool periodic;
+    CString unit;
 };
 
 struct GroupCommand {
     ID id;
-    ResidueMatchFunc func;
-};
-
-struct Instance {
-	int32 offset;
-	int32 count;
+    StructureExtractFunc func;
 };
 
 struct Property {
@@ -28,7 +27,6 @@ struct Property {
     ID data_avg_id = INVALID_ID;
     ID data_beg_id = INVALID_ID;
     int32 data_count = 0;
-	CString unit;
 
 	float filter_min = 0.f;
 	float filter_max = 1.f;
@@ -42,28 +40,19 @@ struct PropertyData {
     ID id = INVALID_ID;
     ID property_id = INVALID_ID;
 
-    int32 residue_idx;
-    float* data;
-    int32 count;
+    int32 idx;
+    Array<float> data;
 };
 
 struct Group {
     ID id = INVALID_ID;
 
-    Array<Instance> instances {};
+    Array<Structure> structures {};
 
     ID cmd_id = INVALID_ID;
     CString name;
     CString args;
 };
-
-/*
-struct PropertyGroup {
-    ID id = INVALID_ID;
-    ID groups[32] = {};
-    int group_count = 0;
-};
-*/
 
 struct StatisticsContext {
     DynamicArray<String> string_buffer {};
@@ -71,7 +60,6 @@ struct StatisticsContext {
     DynamicArray<Property> properties{};
     DynamicArray<PropertyData> property_data{};
     DynamicArray<Group> groups{};
-    //DynamicArray<PropertyGroup> property_groups{}; 
 
     DynamicArray<PropertyCommand> property_commands;
     DynamicArray<GroupCommand> group_commands;
@@ -79,45 +67,45 @@ struct StatisticsContext {
 
 static StatisticsContext ctx;
 
-static bool compute_atomic_distance(float* data, const Array<CString> args, const MoleculeDynamic* dynamic, int res_idx) {
+static bool compute_atomic_distance(float* data, const Array<CString> args, const MoleculeDynamic& dynamic, Structure group_struct) {
 	if (args.count != 2) return false;
+    if (group_struct.beg_atom_idx == group_struct.end_atom_idx) return false;
 
-    auto res = dynamic->molecule->residues[res_idx];
 	auto int_a = to_int32(args[0]);
 	auto int_b = to_int32(args[1]);
 
 	if (!int_a.success || !int_b.success) return false;
-	int32 atom_a = res.beg_atom_idx + int_a;
-	int32 atom_b = res.beg_atom_idx + int_b;
+	int32 atom_a = group_struct.beg_atom_idx + int_a;
+	int32 atom_b = group_struct.beg_atom_idx + int_b;
 
-    int32 count = dynamic->trajectory->num_frames;
+    int32 count = dynamic.trajectory->num_frames;
     for (int32 i = 0; i < count; i++) {
-        vec3 pos_a = dynamic->trajectory->frame_buffer[i].atom_positions[atom_a];
-        vec3 pos_b = dynamic->trajectory->frame_buffer[i].atom_positions[atom_b];
+        vec3 pos_a = dynamic.trajectory->frame_buffer[i].atom_positions[atom_a];
+        vec3 pos_b = dynamic.trajectory->frame_buffer[i].atom_positions[atom_b];
         data[i] = math::distance(pos_a, pos_b);
     }
 
     return true;
 }
 
-static bool compute_atomic_angle(float* data, const Array<CString> args, const MoleculeDynamic* dynamic, int res_idx) {
+static bool compute_atomic_angle(float* data, const Array<CString> args, const MoleculeDynamic& dynamic, Structure group_struct) {
 	if (args.count != 3) return false;
+    if (group_struct.beg_atom_idx == group_struct.end_atom_idx) return false;
 
-	auto res = dynamic->molecule->residues[res_idx];
 	auto int_a = to_int32(args[0]);
 	auto int_b = to_int32(args[1]);
 	auto int_c = to_int32(args[2]);
 
 	if (!int_a.success || !int_b.success || !int_c.success) return false;
-	int32 atom_a = res.beg_atom_idx + int_a;
-	int32 atom_b = res.beg_atom_idx + int_b;
-	int32 atom_c = res.beg_atom_idx + int_c;
+	int32 atom_a = group_struct.beg_atom_idx + int_a;
+	int32 atom_b = group_struct.beg_atom_idx + int_b;
+	int32 atom_c = group_struct.beg_atom_idx + int_c;
 
-	int32 count = dynamic->trajectory->num_frames;
+	int32 count = dynamic.trajectory->num_frames;
 	for (int32 i = 0; i < count; i++) {
-		vec3 pos_a = dynamic->trajectory->frame_buffer[i].atom_positions[atom_a];
-		vec3 pos_b = dynamic->trajectory->frame_buffer[i].atom_positions[atom_b];
-		vec3 pos_c = dynamic->trajectory->frame_buffer[i].atom_positions[atom_c];
+		vec3 pos_a = dynamic.trajectory->frame_buffer[i].atom_positions[atom_a];
+		vec3 pos_b = dynamic.trajectory->frame_buffer[i].atom_positions[atom_b];
+		vec3 pos_c = dynamic.trajectory->frame_buffer[i].atom_positions[atom_c];
 
 		data[i] = math::angle(pos_a - pos_b, pos_c - pos_b);
 	}
@@ -125,27 +113,27 @@ static bool compute_atomic_angle(float* data, const Array<CString> args, const M
 	return true;
 }
 
-static bool compute_atomic_dihedral(float* data, const Array<CString> args, const MoleculeDynamic* dynamic, int res_idx) {
+static bool compute_atomic_dihedral(float* data, const Array<CString> args, const MoleculeDynamic& dynamic, Structure group_struct) {
 	if (args.count != 4) return false;
+    if (group_struct.beg_atom_idx == group_struct.end_atom_idx) return false;
 
-	auto res = dynamic->molecule->residues[res_idx];
 	auto int_a = to_int32(args[0]);
 	auto int_b = to_int32(args[1]);
 	auto int_c = to_int32(args[2]);
 	auto int_d = to_int32(args[2]);
 
-	if (!int_a.success || !int_b.success || !int_c.success, !int_d.success) return false;
-	int32 atom_a = res.beg_atom_idx + int_a;
-	int32 atom_b = res.beg_atom_idx + int_b;
-	int32 atom_c = res.beg_atom_idx + int_c;
-	int32 atom_d = res.beg_atom_idx + int_d;
+	if (!int_a.success || !int_b.success || !int_c.success || !int_d.success) return false;
+    int32 atom_a = group_struct.beg_atom_idx + int_a;
+    int32 atom_b = group_struct.beg_atom_idx + int_b;
+    int32 atom_c = group_struct.beg_atom_idx + int_c;
+    int32 atom_d = group_struct.beg_atom_idx + int_d;
 
-	int32 count = dynamic->trajectory->num_frames;
+	int32 count = dynamic.trajectory->num_frames;
 	for (int32 i = 0; i < count; i++) {
-		vec3 pos_a = dynamic->trajectory->frame_buffer[i].atom_positions[atom_a];
-		vec3 pos_b = dynamic->trajectory->frame_buffer[i].atom_positions[atom_b];
-		vec3 pos_c = dynamic->trajectory->frame_buffer[i].atom_positions[atom_c];
-		vec3 pos_d = dynamic->trajectory->frame_buffer[i].atom_positions[atom_d];
+		vec3 pos_a = dynamic.trajectory->frame_buffer[i].atom_positions[atom_a];
+		vec3 pos_b = dynamic.trajectory->frame_buffer[i].atom_positions[atom_b];
+		vec3 pos_c = dynamic.trajectory->frame_buffer[i].atom_positions[atom_c];
+		vec3 pos_d = dynamic.trajectory->frame_buffer[i].atom_positions[atom_d];
 
 		data[i] = dihedral_angle(pos_a, pos_b, pos_c, pos_d);
 	}
@@ -153,21 +141,26 @@ static bool compute_atomic_dihedral(float* data, const Array<CString> args, cons
 	return true;
 }
 
-static bool match_by_resid(const Array<CString> args, const MoleculeStructure* mol, int32 res_idx) {
-    const auto& res = mol->residues[res_idx];
-    for (const auto& arg : args) {
-        if (compare(res.name, arg)) return true;
+static DynamicArray<Structure> match_by_resname(const Array<CString> args, const MoleculeStructure& mol) {
+    DynamicArray<Structure> result;
+    for (const auto& res : mol.residues) {
+        for (const auto& arg : args) {
+            if (compare(res.name, arg)) {
+                result.push_back({res.beg_atom_idx, res.end_atom_idx});
+            }
+        }
     }
-    return false;
+    return result;
 }
 
 void initialize() {
-    ctx.property_commands.push_back({ COMPUTE_ID("dist"),	  compute_atomic_distance});
-	ctx.property_commands.push_back({ COMPUTE_ID("bond"),	  compute_atomic_distance });
-	ctx.property_commands.push_back({ COMPUTE_ID("angle"),	  compute_atomic_angle });
-	ctx.property_commands.push_back({ COMPUTE_ID("dihedral"), compute_atomic_dihedral });
+    ctx.property_commands.push_back({ COMPUTE_ID("dist"),	  compute_atomic_distance, {0, FLT_MAX}, INTRA, false, "å" });
+	ctx.property_commands.push_back({ COMPUTE_ID("bond"),	  compute_atomic_distance, {0, FLT_MAX}, INTRA, false, "å" });
+	ctx.property_commands.push_back({ COMPUTE_ID("angle"),	  compute_atomic_angle, {0, math::PI}, INTRA, true, "°" });
+	ctx.property_commands.push_back({ COMPUTE_ID("dihedral"), compute_atomic_dihedral, {-math::PI, math::PI}, INTRA, true, "°" });
 
-    ctx.group_commands.push_back({ COMPUTE_ID("resid"), match_by_resid});
+    ctx.group_commands.push_back({ COMPUTE_ID("resid"), match_by_resname});
+    ctx.group_commands.push_back({ COMPUTE_ID("resname"), match_by_resname});
 }
 
 void shutdown() {
@@ -250,33 +243,34 @@ void compute_histogram(Histogram* hist, int32 num_bins, Array<float> data, float
 	}
 }
 
-/*
 bool compute_stats(MoleculeDynamic* dynamic) {
     ASSERT(dynamic);
-    ASSERT(dynamic->molecule);
-    ASSERT(dynamic->trajectory);
+    if (!dynamic->molecule) {
+        printf("ERROR! Computing statistics: molecule is not set");
+        return false;
+    }
+    if (!dynamic->trajectory) {
+        printf("ERROR! Computing statistics: trajectory is not set");
+        return false;
+    }
 
+    // Find and compute uninitialized groups and their structures
     for (auto& group : ctx.groups) {
-        if (!group.residues) {
-            // MATCH RESIDUE INDICES
+        if (!group.structures) {
             GroupCommand* group_cmd = find_id(ctx.group_commands, group.cmd_id);
             DynamicArray<CString> args = ctokenize(group.args);
-            DynamicArray<int32> residue_indices;
-            for (int32 res_idx = 0; res_idx < dynamic->molecule->residues.count; res_idx++) {
-                if (group_cmd->func(args, dynamic->molecule, res_idx)) {
-                    residue_indices.push_back(res_idx);
-                }
-            }
-            group.residues.data = (int32*)MALLOC(residue_indices.count * sizeof(int32));
-            group.residues.count = residue_indices.count;
-            memcpy(group.residues.data, residue_indices.data, residue_indices.count * sizeof(int32));
+            auto matching_structures = group_cmd->func(args, *dynamic->molecule);
+
+            group.structures.data = (Structure*)MALLOC(matching_structures.count * sizeof(Structure));
+            group.structures.count = matching_structures.count;
+            memcpy(group.residues.data, matching_structures.data, matching_structures.count * sizeof(Structure));
         }
     }
 
     int32 count = dynamic->trajectory->num_frames;
     for (auto& prop : ctx.properties) {
         if (prop.data_beg_id == INVALID_ID) {
-            // NEED TO COMPUTE PROPERTY DATA FOR RESIDUES
+            // NEED TO COMPUTE PROPERTY DATA
             PropertyCommand* prop_cmd = find_id(ctx.property_commands, prop.cmd_id);
             DynamicArray<CString> args = ctokenize(prop.args);
             Group* group = find_id(ctx.groups, prop.group_id);
@@ -290,7 +284,7 @@ bool compute_stats(MoleculeDynamic* dynamic) {
             prop_avg_data.id = COMPUTE_ID(prop_data_name.operator CString());
             prop_avg_data.group_id = group->id;
             prop_avg_data.property_id = prop.id;
-            prop_avg_data.residue_idx = -1;
+            prop_avg_data.idx = -1;
             prop_avg_data.data = (float*)MALLOC(byte_size);
             prop_avg_data.count = count;
             memset(prop_avg_data.data, 0, byte_size);
@@ -331,9 +325,8 @@ bool compute_stats(MoleculeDynamic* dynamic) {
 
     return true;
 }
-*/
 
-void register_property_command(CString command, PropertyComputeFunc func) {
+void register_property_command(CString command, PropertyCommandDescriptor desc) {
     ID id = COMPUTE_ID(command);
     auto cmd = find_id(ctx.property_commands, id);
     if (cmd != nullptr) {
@@ -341,10 +334,11 @@ void register_property_command(CString command, PropertyComputeFunc func) {
         return;
     }
 
-    ctx.property_commands.push_back({id, func});
+    auto unit = alloc_string(desc.unit);
+    ctx.property_commands.push_back({id, desc.func, desc.val_range, desc.type, desc.periodic, unit});
 }
 
-void register_group_command(CString command, ResidueMatchFunc func) {
+void register_group_command(CString command, StructureExtractFunc func) {
     ID id = COMPUTE_ID(command);
     auto cmd = find_id(ctx.group_commands, id);
     if (cmd != nullptr) {
@@ -355,7 +349,6 @@ void register_group_command(CString command, ResidueMatchFunc func) {
     ctx.group_commands.push_back({id, func});
 }
 
-/*
 ID create_group(CString name, CString cmd_and_args) {
 	ID grp_id = COMPUTE_ID(name);
 	Group* grp = find_id(ctx.groups, grp_id);
@@ -388,18 +381,15 @@ ID create_group(CString name, CString cmd_and_args) {
 
 	Group group;
 	group.id = grp_id;
-	group.property_beg_id = INVALID_ID;
-	group.property_count = 0;
 	group.name = alloc_string(name);
     group.args = alloc_string(args);
 	group.cmd_id = grp_cmd_id;
-    group.residues = {};
+    group.structures = {};
 
 	ctx.groups.push_back(group);
 
 	return group.id;
 }
-
 
 void remove_group(ID group_id) {
 	Group* group = find_id(ctx.groups, group_id);
@@ -408,31 +398,11 @@ void remove_group(ID group_id) {
 		return;
 	}
 
-    for (PropertyData* pd = ctx.property_data.beg(); pd != ctx.property_data.end(); pd++) {
-        if (pd->group_id == group_id) ctx.property_data.remove(pd);
-    }
-
-	for (Property* p = ctx.properties.beg(); p != ctx.properties.end(); p++) {
-		if (p->group_id == group_id) {
-            PropertyGroup* prop_group = find_id(ctx.property_groups, p->property_group_id);
-            ASSERT(prop_group);
-            for (int i = 0; i < prop_group->group_count; i++) {
-                if (prop_group->groups[i] == group_id) {
-                    memcpy(prop_group->groups + i, prop_group->groups + i + 1, (prop_group->group_count - i - 1) * sizeof(ID));
-                    prop_group->group_count--;
-                    break;
-                }
-            }
-            ctx.properties.remove(p);
-        }
-	}
-
 	free_string(group->name);
 	free_string(group->args);
 
     ctx.groups.remove(group);
 }
-*/
 
 ID get_group(CString name) {
     for (const auto& g : ctx.groups) {
@@ -464,32 +434,11 @@ ID get_property(int32 idx) {
     return INVALID_ID;
 }
 
-/*
-Array<ID> get_groups_with_property(CString prop_name) {
-    ID prop_group_id = COMPUTE_ID(prop_name);
-    PropertyGroup* prop_group = find_id(ctx.property_groups, prop_group_id);
-    if (!prop_group) {
-        StringBuffer<32> buf = prop_name;
-        printf("ERROR: PROPERTY '%s' NOT FOUND!", buf.beg());
-        return {};
-    } 
-    return {prop_group->groups, prop_group->group_count};
-}
-
-ID create_property(ID group_id, CString name, CString cmd_and_args) {
-    Group* group = find_id(ctx.groups, group_id);
-    if (group == nullptr) {
-        StringBuffer<32> buf = name;
-        printf("ERROR: GROUP '%s' NOT FOUND!", buf.beg());
-        return INVALID_ID;
-    }
-
-    StringBuffer<32> name_buf = name;
-    StringBuffer<32> buf;
-    snprintf(buf.beg(), 32, "%s.%s", group->name.beg(), name_buf.beg());
-    ID prop_id = COMPUTE_ID(buf.operator CString());
+ID create_property(CString name, CString cmd_and_args) {
+    ID prop_id = COMPUTE_ID(name);
     Property* old_prop = find_id(ctx.properties, prop_id);
     if (old_prop != nullptr) {
+        StringBuffer<32> buf = name;
         printf("ERROR: PROPERTY '%s' ALREADY EXISTS!", buf.beg());
         return INVALID_ID;
     }
@@ -517,8 +466,6 @@ ID create_property(ID group_id, CString name, CString cmd_and_args) {
 
     Property prop;
     prop.id = prop_id;
-    prop.group_id = group_id;
-    prop.property_group_id = COMPUTE_ID(name);
     prop.data_beg_id = INVALID_ID;
     prop.data_count = 0;
 
@@ -526,27 +473,8 @@ ID create_property(ID group_id, CString name, CString cmd_and_args) {
     prop.name = alloc_string(name);
     prop.args = alloc_string(args);
 
-    Property* group_beg_prop = find_id(ctx.properties, group->property_beg_id);
-    if (group_beg_prop != nullptr) {
-        ctx.properties.insert(group_beg_prop + group->property_count, prop);
-    }
-    else {
-        ctx.properties.push_back(prop);
-    }
-    group->property_count++;
-
-    
-    PropertyGroup* prop_group = find_id(ctx.property_groups, prop.property_group_id);
-    if (!prop_group) {
-        prop_group = &ctx.property_groups.push_back({prop.property_group_id, {}, 0});
-    }
-    ASSERT(prop_group->group_count < 32); //@TODO: FIX THIS UGLY HACK 
-    prop_group->groups[prop_group->group_count] = group_id;
-    prop_group->group_count++;
-
 	return prop.id;
 }
-*/
 
 void remove_property(ID prop_id) {
     Property* prop = find_id(ctx.properties, prop_id);
@@ -559,48 +487,35 @@ void remove_property(ID prop_id) {
         if (pd->property_id == prop_id) ctx.property_data.remove(pd);
     }
 
-/*
-    ID prop_group_id = COMPUTE_ID(prop->name);
-    PropertyGroup* prop_group = find_id(ctx.property_groups, prop_group_id);
-    ASSERT(prop_group);
-    ctx.property_groups.remove(prop_group);
-    */
-
     free_string(prop->name);
     free_string(prop->args);
 
     ctx.properties.remove(prop);
 }
 
-/*
-void* get_property_data(ID prop_id, int32 residue_idx) {
-	if (prop_id != INVALID_ID) {
-		for (const auto& prop_data : ctx.property_data) {
-			if (prop_data.property_id == prop_id && prop_data.residue_idx == residue_idx)
-				return prop_data.data;
-		}
-	}
-	return nullptr;
+Array<float> get_property_data(ID prop_id, int32 idx) {
+    auto prop = find_id(ctx.properties, prop_id);
+    if (prop && prop->data_beg_id != INVALID_ID && idx < prop->data_count) {
+        auto prop_data = find_id(ctx.property_data, prop->data_beg_id);
+        return prop_data[idx].data;
+    }
+    return {};
 }
 
-void* get_property_avg_data(ID prop_id) {
-	if (prop_id != INVALID_ID) {
-		for (const auto& prop_data : ctx.property_data) {
-			if (prop_data.property_id == prop_id && prop_data.residue_idx == -1)
-				return prop_data.data;
-		}
-	}
-	return nullptr;
+Array<float> get_property_avg_data(ID prop_id) {
+    auto prop = find_id(ctx.properties, prop_id);
+    if (prop && prop->data_avg_id != INVALID_ID) {
+        auto prop_data = find_id(ctx.property_data, prop->data_avg_id);
+        return prop_data->data;
+    }
+    return {};
 }
-*/
 
 int32 get_property_data_count(ID prop_id) {
-	if (prop_id != INVALID_ID) {
-		for (const auto& prop_data : ctx.property_data) {
-			if (prop_data.property_id == prop_id)
-				return prop_data.count;
-		}
-	}
+    auto prop = find_id(ctx.properties, prop_id);
+    if (prop) {
+        return prop->data_count;
+    }
 	return 0;
 }
 

@@ -7,27 +7,26 @@ Stability
 Statistics
     Clean up interface
     Fix Property Groups
-    Implement Histograms
-    Implement Periodic Histograms
-    Port Distribution plots
+    Compute Histograms
+    Plot Histograms
     Create Interface for groups and properties
     Implement Configure View Matrix
     Implement Controls for properties
         (Hierarchical?)
-    Implement Periodic control widget
+    Implement Periodic Control widget
+    Implement Periodic Histograms
 
 DensityVolume
-    Implement RayCaster
     Compute Density Volume
+    Implement RayCaster
 Rendering
     ComputeOccupancy Volume (no need for spatial hash)
 Application
     Fix data synchronization bugs between datasets
-    Extend datastructure to hold backbone segments of all dataset and separate container for arrays into this
 Platform
     Cross-platform DirListing (Prio mac and Win32)
         --- mac
-        win32
+        --- win32
 
 
 
