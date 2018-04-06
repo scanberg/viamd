@@ -30,6 +30,15 @@ void compute_bounding_box(vec3* min_box, vec3* max_box, const Array<vec3> positi
     }
 }
 
+void linear_interpolation(Array<vec3> positions, const Array<vec3> prev_pos, const Array<vec3> next_pos, float t) {
+    ASSERT(prev_pos.count == positions.count);
+    ASSERT(next_pos.count == positions.count);
+
+    for (int i = 0; i < positions.count; i++) {
+        positions[i] = math::mix(prev_pos[i], next_pos[i], t);
+    }
+}
+
 // @TODO: Fix this, is it possible in theory to get a good interpolation between frames with periodicity without modifying source data?
 // @PERFORMANCE: VECTORIZE THE LIVING SHIET OUT OF THIS
 void linear_interpolation_periodic(Array<vec3> positions, const Array<vec3> prev_pos, const Array<vec3> next_pos, float t, mat3 sim_box) {
@@ -65,22 +74,13 @@ void spline_interpolation(Array<vec3> positions, const Array<vec3> pos0, const A
 	ASSERT(pos3.count == positions.count);
 
 	for (int i = 0; i < positions.count; i++) {
-		vec3 p0 = pos0[0];
+		vec3 p0 = pos0[i];
 		vec3 p1 = pos1[i];
 		vec3 p2 = pos2[i];
 		vec3 p3 = pos3[i];
 
 		positions[i] = math::spline(p0, p1, p2, p3, t);
 	}
-}
-
-void linear_interpolation(Array<vec3> positions, const Array<vec3> prev_pos, const Array<vec3> next_pos, float t) {
-    ASSERT(prev_pos.count == positions.count);
-    ASSERT(next_pos.count == positions.count);
-
-    for (int i = 0; i < positions.count; i++) {
-        positions[i] = math::mix(prev_pos[i], next_pos[i], t);
-    }
 }
 
 DynamicArray<Bond> compute_covalent_bonds(const Array<vec3> atom_pos, const Array<Element> atom_elem, const Array<Residue> residues) {

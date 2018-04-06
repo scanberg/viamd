@@ -62,7 +62,7 @@ inline vec4 vec_cast(ImVec4 v) { return vec4(v.x, v.y, v.z, v.w); }
 inline ImVec2 vec_cast(vec2 v) { return ImVec2(v.x, v.y); }
 inline vec2 vec_cast(ImVec2 v) { return vec2(v.x, v.y); }
 
-enum struct PlaybackInterpolationMode { NEAREST_FRAME, LINEAR, LINEAR_PERIODIC, CUBIC, CUBIC_PERIODIC };
+enum PlaybackInterpolationMode { NEAREST, LINEAR, LINEAR_PERIODIC, CUBIC, CUBIC_PERIODIC };
 
 struct MainFramebuffer {
     GLuint id = 0;
@@ -106,9 +106,6 @@ struct AtomSelection {
 struct MoleculeData {
     MoleculeDynamic dynamic{};
     DynamicArray<float> atom_radii{};
-
-    BackboneAnglesTrajectory backbone_angles{};
-    Array<BackboneAngles> current_backbone_angles{};
 };
 
 struct ApplicationData {
@@ -132,6 +129,9 @@ struct ApplicationData {
     AtomSelection selected;
 
     // --- STATISTICAL DATA ---
+    struct {
+        bool show_window;
+    } statistics;
     // stats::StatisticsContext stats;
 
     // Framebuffer
@@ -158,6 +158,9 @@ struct ApplicationData {
         float opacity = 1.f;
         int frame_range_min = 0;
         int frame_range_max = 0;
+
+        BackboneAnglesTrajectory backbone_angles{};
+        Array<BackboneAngles> current_backbone_angles{};
     } ramachandran;
 
     struct {
@@ -177,8 +180,9 @@ struct ApplicationData {
 
 static void draw_main_menu(ApplicationData* data);
 static void draw_representations_window(ApplicationData* data);
+static void draw_statistics_window(ApplicationData* data);
 static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y);
-static void draw_statistics(ApplicationData* data);
+static void draw_timelines(ApplicationData* data);
 static void draw_ramachandran(ApplicationData* data);
 
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height);
@@ -188,7 +192,7 @@ static void reset_view(ApplicationData* data);
 static float compute_avg_ms(float dt);
 static uint32 get_picking_id(uint32 fbo, int32 x, int32 y);
 
-static void load_molecule_data(MoleculeData* mol_data, CString file);
+static void load_molecule_data(ApplicationData* mol_data, CString file);
 
 static void create_default_representation(ApplicationData* data);
 static void remove_representation(ApplicationData* data, int idx);
@@ -224,12 +228,12 @@ int main(int, char**) {
     vec4 clear_color = vec4(1, 1, 1, 1);
     vec4 clear_index = vec4(1, 1, 1, 1);
 
-    data.mol_data.dynamic = allocate_and_parse_pdb_from_string(caffeine_pdb);
-    data.mol_data.atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule->atom_elements);
-    create_default_representation(&data);
-    reset_view(&data);
+    //data.mol_data.dynamic = allocate_and_parse_pdb_from_string(caffeine_pdb);
+    //data.mol_data.atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule->atom_elements);
 
-    // load_molecule_data(&data.mol_data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
+    load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
+    reset_view(&data);
+    create_default_representation(&data);
 
     // data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
     // data.dynamic.molecule= allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
@@ -252,12 +256,12 @@ int main(int, char**) {
     // if (data.dynamic.trajectory)
     //	read_trajectory_async(data.dynamic.trajectory);
 
-    //auto g1 = stats::create_group("group1", "resid ALA");
-    //stats::create_property("b1", "dist 1 2");
-    //stats::create_property("a1", "angle 1 2 3");
-    //stats::create_property("d1", "dist 1 2 3 4");
+    auto g1 = stats::create_group("group1", "resname ALA");
+    stats::create_property("b1", "dist group1 1 2");
+    stats::create_property("a1", "angle group1 1 2 3");
+    stats::create_property("d1", "dihedral group1 1 2 3 4");
 
-    // stats::compute_stats(&data.dynamic);
+    stats::compute_stats(data.mol_data.dynamic);
 
     /*
     if (data.mol_data.dynamic.molecule->chains.count > 0) {
@@ -334,6 +338,7 @@ int main(int, char**) {
                 data.time = 0.0;
                 time_changed = true;
             }
+            ImGui::Combo("type", (int*)(&data.interpolation), "Nearest\0Linear\0Linear Periodic\0Cubic\0Cubic Periodic\0\0");
         }
         ImGui::End();
 
@@ -343,28 +348,57 @@ int main(int, char**) {
         }
 
         if (data.mol_data.dynamic.trajectory && time_changed) {
-            data.time = math::clamp(data.time, 0.0, float64(data.mol_data.dynamic.trajectory->num_frames - 1));
-            if (data.time == float64(data.mol_data.dynamic.trajectory->num_frames - 1)) data.is_playing = false;
+            int last_frame = data.mol_data.dynamic.trajectory->num_frames - 1;
+            data.time = math::clamp(data.time, 0.0, float64(last_frame));
+            if (data.time == float64(last_frame)) data.is_playing = false;
 
-            int prev_frame_idx = math::max(0, (int)data.time);
-            int next_frame_idx = math::min(prev_frame_idx + 1, data.mol_data.dynamic.trajectory->num_frames - 1);
-            if (prev_frame_idx == next_frame_idx) {
-                copy_trajectory_positions(data.mol_data.dynamic.molecule->atom_positions, *data.mol_data.dynamic.trajectory, prev_frame_idx);
+            int frame = (int)data.time;
+            int prev_frame_2 = math::max(0, frame - 1);
+            int prev_frame_1 = math::max(0, frame);
+            int next_frame_1 = math::min(frame + 1, last_frame);
+            int next_frame_2 = math::min(frame + 2, last_frame);
+
+            if (prev_frame_1 == next_frame_1) {
+                copy_trajectory_positions(data.mol_data.dynamic.molecule->atom_positions, *data.mol_data.dynamic.trajectory, prev_frame_1);
             } else {
-                // INTERPOLATE
-                auto prev_frame = get_trajectory_frame(*data.mol_data.dynamic.trajectory, prev_frame_idx);
-                auto next_frame = get_trajectory_frame(*data.mol_data.dynamic.trajectory, next_frame_idx);
-
                 float t = (float)math::fract(data.time);
-                linear_interpolation_periodic(data.mol_data.dynamic.molecule->atom_positions, prev_frame.atom_positions, next_frame.atom_positions, t,
-                                              prev_frame.box);
-            }
 
-            for (auto& r : data.representations.data) {
-                if (r.type == Representation::RIBBONS) {
+                // INTERPOLATE
+                switch (data.interpolation) {
+                    case PlaybackInterpolationMode::NEAREST:
+                        // @NOTE THIS IS ACTUALLY FLOORING
+                        copy_trajectory_positions(data.mol_data.dynamic.molecule->atom_positions, *data.mol_data.dynamic.trajectory, prev_frame_1);
+                        break;
+                    case PlaybackInterpolationMode::LINEAR:
+                    {
+                        auto prev_frame = get_trajectory_frame(*data.mol_data.dynamic.trajectory, prev_frame_1);
+                        auto next_frame = get_trajectory_frame(*data.mol_data.dynamic.trajectory, next_frame_1);
+                        linear_interpolation(data.mol_data.dynamic.molecule->atom_positions, prev_frame.atom_positions, next_frame.atom_positions, t);
+                        break;
+                    }
+                    case PlaybackInterpolationMode::LINEAR_PERIODIC:
+                    {
+                        auto prev_frame = get_trajectory_frame(*data.mol_data.dynamic.trajectory, prev_frame_1);
+                        auto next_frame = get_trajectory_frame(*data.mol_data.dynamic.trajectory, next_frame_1);
+                        linear_interpolation_periodic(data.mol_data.dynamic.molecule->atom_positions, prev_frame.atom_positions, next_frame.atom_positions, t,
+                                                      prev_frame.box);
+                        break;
+                    }
+                    case PlaybackInterpolationMode::CUBIC:
+                    case PlaybackInterpolationMode::CUBIC_PERIODIC:
+                    {
+                        auto prev_2 = get_trajectory_frame(*data.mol_data.dynamic.trajectory, prev_frame_2);
+                        auto prev_1 = get_trajectory_frame(*data.mol_data.dynamic.trajectory, prev_frame_1);
+                        auto next_1 = get_trajectory_frame(*data.mol_data.dynamic.trajectory, next_frame_1);
+                        auto next_2 = get_trajectory_frame(*data.mol_data.dynamic.trajectory, next_frame_2);
+                        spline_interpolation(data.mol_data.dynamic.molecule->atom_positions, prev_2.atom_positions, prev_1.atom_positions, next_1.atom_positions, next_2.atom_positions, t);
+                        break;
+                    }
+
+                    default:
+                    break;
                 }
             }
-            // data.mol_data.current_spline = compute_spline(data.mol_data.dynamic.molecule->atom_positions, backbone, 8);
         }
 
         if (!ImGui::GetIO().WantCaptureMouse) {
@@ -374,9 +408,6 @@ int main(int, char**) {
             data.controller.input.mouse_coord_prev = data.ctx.input.mouse.coord_prev;
             data.controller.input.mouse_coord_curr = data.ctx.input.mouse.coord_curr;
             data.controller.input.screen_size = vec2(data.ctx.window.width, data.ctx.window.height);
-
-            // data.controller.input.prev_mouse_ndc = data.ctx.input.mouse.ndc_prev;
-            // data.controller.input.curr_mouse_ndc = data.ctx.input.mouse.ndc_curr;
             data.controller.input.dolly_delta = data.ctx.input.mouse.scroll.y;
             data.controller.update();
             data.camera.position = data.controller.position;
@@ -459,10 +490,10 @@ if (data.debug_draw.spline.enabled) {
         if (data.ramachandran.enabled) {
 			if (data.mol_data.dynamic.trajectory && data.mol_data.dynamic.trajectory->is_loading) {
 				static int32 prev_frame = 0;
-				if (get_backbone_angles_trajectory_current_frame_count(data.mol_data.backbone_angles) - prev_frame > 100) {
-					compute_backbone_angles_trajectory(&data.mol_data.backbone_angles, data.mol_data.dynamic);
-					prev_frame = data.mol_data.backbone_angles.num_frames;
-					data.ramachandran.frame_range_max = data.mol_data.backbone_angles.num_frames;
+				if (get_backbone_angles_trajectory_current_frame_count(data.ramachandran.backbone_angles) - prev_frame > 100) {
+					compute_backbone_angles_trajectory(&data.ramachandran.backbone_angles, data.mol_data.dynamic);
+					prev_frame = data.ramachandran.backbone_angles.num_frames;
+					data.ramachandran.frame_range_max = data.ramachandran.backbone_angles.num_frames;
 				}
 			}
             draw_ramachandran(&data);
@@ -475,6 +506,10 @@ if (data.debug_draw.spline.enabled) {
             draw_representations_window(&data);
         }
 
+        if (data.statistics.show_window) {
+            draw_statistics_window(&data);
+        }
+
         if (!ImGui::GetIO().WantCaptureMouse) {
             if (data.picking_idx != NO_PICKING_IDX) {
                 ivec2 pos = data.ctx.input.mouse.coord_curr;
@@ -482,7 +517,7 @@ if (data.debug_draw.spline.enabled) {
             }
         }
 
-        // draw_statistics(&data);
+        draw_timelines(&data);
 
         // Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
         if (show_demo_window) {
@@ -567,7 +602,7 @@ static void draw_main_menu(ApplicationData* data) {
             if (ImGui::MenuItem("New", "CTRL+N")) new_clicked = true;
             if (ImGui::MenuItem("Load Data", "CTRL+L")) {
                 platform::Path path = platform::open_file_dialog("pdb,gro,xtc");
-                load_molecule_data(&data->mol_data, path);
+                load_molecule_data(data, path);
                 if (data->representations.data.count > 0) {
                     reset_representations(data);
                 } else {
@@ -710,6 +745,69 @@ static void draw_representations_window(ApplicationData* data) {
     ImGui::End();
 }
 
+static void draw_statistics_window(ApplicationData* data) {
+    constexpr uint32 FILTER_ERROR_COLOR = 0xdd2222bb;
+
+    ImGui::Begin("Statistics", &data->representations.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
+
+    if (ImGui::Button("create new")) {
+        create_default_representation(data);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("clear all")) {
+        data->representations.data.clear();
+    }
+    ImGui::Spacing();
+    for (int i = 0; i < data->representations.data.count; i++) {
+        auto& rep = data->representations.data[i];
+        ImGui::Separator();
+        ImGui::BeginGroup();
+
+        bool recompute_colors = false;
+        ImGui::PushID(i);
+        ImGui::Checkbox("enabled", &rep.enabled);
+        ImGui::SameLine();
+        if (ImGui::Button("remove")) {
+            remove_representation(data, i);
+        }
+        ImGui::InputText("name", rep.name.buffer, rep.name.MAX_LENGTH);
+        if (!rep.filter_is_ok) ImGui::PushStyleColor(ImGuiCol_FrameBg, FILTER_ERROR_COLOR);
+        if (ImGui::InputText("filter", rep.filter.buffer, rep.filter.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
+            recompute_colors = true;
+        }
+        if (!rep.filter_is_ok) ImGui::PopStyleColor();
+        ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0\0");
+        if (ImGui::Combo("color mapping", (int*)(&rep.color_mapping), "Static Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0\0")) {
+            recompute_colors = true;
+        }
+        if (rep.type == Representation::VDW || rep.type == Representation::LICORICE) {
+            ImGui::SliderFloat("radii scale", &rep.radii_scale, 0.1f, 2.f);
+        }
+        if (rep.type == Representation::RIBBONS) {
+            ImGui::SliderInt("spline subdivisions", &rep.num_subdivisions, 1, 16);
+            ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f);
+        }
+        if (rep.color_mapping == ColorMapping::STATIC_COLOR) {
+            if (ImGui::ColorEdit4("color", (float*)&rep.static_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
+                recompute_colors = true;
+            }
+        }
+        ImGui::PopID();
+        ImGui::EndGroup();
+        ImGui::Spacing();
+
+        if (recompute_colors) {
+            compute_atom_colors(rep.colors, *data->mol_data.dynamic.molecule, rep.color_mapping,
+                                ImGui::ColorConvertFloat4ToU32(vec_cast(rep.static_color)));
+            DynamicArray<bool> mask(data->mol_data.dynamic.molecule->atom_elements.count, false);
+            rep.filter_is_ok = filter::compute_filter_mask(mask, data->mol_data.dynamic, rep.filter.buffer);
+            filter::filter_colors(rep.colors, mask);
+        }
+    }
+
+    ImGui::End();
+}
+
 static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y) {
 
     // @TODO: Assert things and make this failproof
@@ -756,29 +854,25 @@ static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, in
     ImGui::PopStyleColor();
 }
 
-static void draw_statistics(ApplicationData* data) {
+static void draw_timelines(ApplicationData* data) {
     // if (!stats) return;
 
     ImGui::Begin("Timelines");
-    auto group_id = stats::get_group("group1");
-	/*
-    stats::get_property_count(group_id);
+    //auto group_id = stats::get_group("group1");
 
     int32 frame_idx = (int32)data->time;
 
-    for (int i = 0; i < stats::get_property_count(group_id); i++) {
-        auto prop_id = stats::get_property(group_id, i);
-        auto avg_data = stats::get_property_data(prop_id, 0);
-        auto count = stats::get_property_data_count(prop_id);
-        auto frame = ImGui::BeginPlotFrame(stats::get_property_name(prop_id), ImVec2(0, 100), 0, count, -2.f, 2.f);
-        ImGui::PlotFrameLine(frame, "group1", (float*)avg_data, ImGui::FrameLineStyle(), frame_idx);
+    for (int i = 0; i < stats::get_property_count(); i++) {
+        auto prop_id = stats::get_property(i);
+        auto prop_data = stats::get_property_data(prop_id, 0);
+        auto frame = ImGui::BeginPlotFrame(stats::get_property_name(prop_id), ImVec2(0, 100), 0, prop_data.count, -2.f, 2.f);
+        ImGui::PlotFrameLine(frame, "group1", prop_data.data, ImGui::FrameLineStyle(), frame_idx);
         int32 new_frame_idx = ImGui::EndPlotFrame(frame, frame_idx);
         if (new_frame_idx != -1) {
             frame_idx = new_frame_idx;
             data->time = (float64)frame_idx;
         }
     }
-	*/
 
     // stats::get_group_properties();
     /*
@@ -815,8 +909,8 @@ static void draw_ramachandran(ApplicationData* data) {
 	data->ramachandran.frame_range_max = (int32)range_max;
 
 	int32 frame = (int32)data->time;
-	Array<BackboneAngles> accumulated_angles = get_backbone_angles(data->mol_data.backbone_angles, data->ramachandran.frame_range_min, data->ramachandran.frame_range_max - data->ramachandran.frame_range_min);
-	Array<BackboneAngles> current_angles = get_backbone_angles(data->mol_data.backbone_angles, frame);
+	Array<BackboneAngles> accumulated_angles = get_backbone_angles(data->ramachandran.backbone_angles, data->ramachandran.frame_range_min, data->ramachandran.frame_range_max - data->ramachandran.frame_range_min);
+	Array<BackboneAngles> current_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame);
 
 	ramachandran::clear_accumulation_texture();
 
@@ -932,51 +1026,53 @@ static void destroy_main_framebuffer(MainFramebuffer* fbo) {
     if (fbo->tex_picking) glDeleteTextures(1, &fbo->tex_picking);
 }
 
-static void free_mol_data(MoleculeData* data) {
-    if (data->dynamic.molecule) {
-        free_molecule_structure(data->dynamic.molecule);
-        data->dynamic.molecule = nullptr;
+static void free_mol_data(ApplicationData* data) {
+    if (data->mol_data.dynamic.molecule) {
+        free_molecule_structure(data->mol_data.dynamic.molecule);
+        data->mol_data.dynamic.molecule = nullptr;
     }
-    if (data->dynamic.trajectory) {
-        FREE(data->dynamic.trajectory);
-        data->dynamic.trajectory = nullptr;
+    if (data->mol_data.dynamic.trajectory) {
+        FREE(data->mol_data.dynamic.trajectory);
+        data->mol_data.dynamic.trajectory = nullptr;
     }
-    free_backbone_angles_trajectory(&data->backbone_angles);
+    free_backbone_angles_trajectory(&data->ramachandran.backbone_angles);
+    data->ramachandran.backbone_angles = {};
+    data->ramachandran.current_backbone_angles = {};
 }
 
-static void load_molecule_data(MoleculeData* mol_data, CString file) {
-    ASSERT(mol_data);
+static void load_molecule_data(ApplicationData* data, CString file) {
+    ASSERT(data);
     if (file.count > 0) {
         CString ext = get_file_extension(file);
         printf("'%s'\n", ext.beg());
         if (compare_n(ext, "pdb", 3, true)) {
-            free_mol_data(mol_data);
-            mol_data->dynamic = allocate_and_load_pdb_from_file(file);
-            if (!mol_data->dynamic.molecule) {
+            free_mol_data(data);
+            data->mol_data.dynamic = allocate_and_load_pdb_from_file(file);
+            if (!data->mol_data.dynamic.molecule) {
                 printf("ERROR! Failed to load pdb file.\n");
                 return;
             }
-            mol_data->atom_radii = compute_atom_radii(mol_data->dynamic.molecule->atom_elements);
-            if (mol_data->dynamic.trajectory) {
-                init_backbone_angles_trajectory(&mol_data->backbone_angles, mol_data->dynamic);
-                compute_backbone_angles_trajectory(&mol_data->backbone_angles, mol_data->dynamic);
+            data->mol_data.atom_radii = compute_atom_radii(data->mol_data.dynamic.molecule->atom_elements);
+            if (data->mol_data.dynamic.trajectory) {
+                init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
+                compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
             }
         } else if (compare_n(ext, "gro", 3, true)) {
-            free_mol_data(mol_data);
-            mol_data->dynamic.molecule = allocate_and_load_gro_from_file(file);
-            mol_data->atom_radii = compute_atom_radii(mol_data->dynamic.molecule->atom_elements);
-            if (!mol_data->dynamic.molecule) {
+            free_mol_data(data);
+            data->mol_data.dynamic.molecule = allocate_and_load_gro_from_file(file);
+            data->mol_data.atom_radii = compute_atom_radii(data->mol_data.dynamic.molecule->atom_elements);
+            if (!data->mol_data.dynamic.molecule) {
                 printf("ERROR! Failed to load gro file.\n");
             }
         } else if (compare_n(ext, "xtc", 3, true)) {
-            if (!mol_data->dynamic.molecule) {
+            if (!data->mol_data.dynamic.molecule) {
                 printf("ERROR! Must have molecule loaded before trajectory can be loaded!\n");
             } else {
-                mol_data->dynamic.trajectory = allocate_trajectory(file);
-                init_backbone_angles_trajectory(&mol_data->backbone_angles, mol_data->dynamic);
-                if (mol_data->dynamic.trajectory) {
-                    read_trajectory_async(mol_data->dynamic.trajectory, [mol_data]() {
-						compute_backbone_angles_trajectory(&mol_data->backbone_angles, mol_data->dynamic);
+                data->mol_data.dynamic.trajectory = allocate_trajectory(file);
+                init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
+                if (data->mol_data.dynamic.trajectory) {
+                    read_trajectory_async(data->mol_data.dynamic.trajectory, [data]() {
+						compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
 					});
                 }
             }

@@ -87,6 +87,7 @@ void compute_bounding_box(vec3* min_box, vec3* max_box, const Array<vec3> positi
 
 void linear_interpolation_periodic(Array<vec3> positions, const Array<vec3> prev_pos, const Array<vec3> next_pos, float t, mat3 sim_box);
 void linear_interpolation(Array<vec3> positions, const Array<vec3> prev_pos, const Array<vec3> next_pos, float t);
+void spline_interpolation(Array<vec3> positions, const Array<vec3> pos0, const Array<vec3> pos1, const Array<vec3> pos2, const Array<vec3> pos3, float t);
 
 inline float dihedral_angle(const vec3& p0, const vec3& p1, const vec3& p2, const vec3& p3) {
     vec3 b1 = p1 - p0;

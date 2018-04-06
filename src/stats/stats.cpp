@@ -252,13 +252,12 @@ void compute_histogram(Histogram* hist, int32 num_bins, Array<float> data, float
 	}
 }
 
-bool compute_stats(MoleculeDynamic* dynamic) {
-    ASSERT(dynamic);
-    if (!dynamic->molecule) {
+bool compute_stats(const MoleculeDynamic& dynamic) {
+    if (!dynamic.molecule) {
         printf("ERROR! Computing statistics: molecule is not set");
         return false;
     }
-    if (!dynamic->trajectory) {
+    if (!dynamic.trajectory) {
         printf("ERROR! Computing statistics: trajectory is not set");
         return false;
     }
@@ -269,10 +268,10 @@ bool compute_stats(MoleculeDynamic* dynamic) {
             GroupCommand* group_cmd = find_id(ctx.group_commands, group.cmd_id);
 			ASSERT(group_cmd);
             DynamicArray<CString> args = ctokenize(group.args);
-            auto matching_structures = group_cmd->func(args, *dynamic->molecule);
+            auto matching_structures = group_cmd->func(args, *dynamic.molecule);
 
 			if (matching_structures.count == 0) {
-				printf("WARNING! group '%s' did not match any structures.\n");
+				printf("WARNING! group '%s' did not match any structures.\n", group.name.beg());
 				continue;
 			}
 
@@ -294,7 +293,7 @@ bool compute_stats(MoleculeDynamic* dynamic) {
         }
     }
 
-    int32 count = dynamic->trajectory->num_frames;
+    int32 count = dynamic.trajectory->num_frames;
     for (auto& prop : ctx.properties) {
         if (prop.data_beg_id == INVALID_ID) {
             // NEED TO COMPUTE PROPERTY DATA
@@ -307,11 +306,14 @@ bool compute_stats(MoleculeDynamic* dynamic) {
 					printf("WARNING! Property '%s': Missing arguments!", prop.name.beg());
 					continue;
 				}
-				ID group_id = get_group(args[0]);
+                CString group_name = args[0];
+				ID group_id = get_group(group_name);
 				Group* group = find_id(ctx.groups, group_id);
 
+                args = args.sub_array(1);
+
 				if (group_id == INVALID_ID) {
-					printf("WARNING! Property '%s': could not find group with name '%s'", prop.name.beg(), args[0].beg());
+					printf("WARNING! Property '%s': could not find group with name '%s'", prop.name.beg(), group_name.beg());
 					continue;
 				}
 
@@ -332,7 +334,7 @@ bool compute_stats(MoleculeDynamic* dynamic) {
 					ID instance_id = get_group_instance(group_id, i);
 					auto inst = find_id(ctx.group_instances, instance_id);
 					float* data = (float*)CALLOC(count, sizeof(float));
-					prop_cmd->func(data, args, *dynamic, inst->structure);
+					prop_cmd->func(data, args, dynamic, inst->structure);
 
 					for (int32 j = 0; j < count; j++) {
 						prop_avg_data.data[j] += data[j] / (float)group->instance_count;
@@ -355,7 +357,7 @@ bool compute_stats(MoleculeDynamic* dynamic) {
 				}
 			}
 			else if (prop_cmd->type == INTER) {
-
+                // @TODO: Implement
 			}
 
         }
@@ -492,6 +494,10 @@ ID get_property(int32 idx) {
     return INVALID_ID;
 }
 
+int32 get_property_count() {
+    return (int32)ctx.properties.count;
+}
+
 ID create_property(CString name, CString cmd_and_args) {
     ID prop_id = COMPUTE_ID(name);
     Property* old_prop = find_id(ctx.properties, prop_id);
@@ -530,6 +536,8 @@ ID create_property(CString name, CString cmd_and_args) {
     prop.cmd_id = prop_cmd_id;
     prop.name = alloc_string(name);
     prop.args = alloc_string(args);
+
+    ctx.properties.push_back(prop);
 
 	return prop.id;
 }

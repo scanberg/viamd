@@ -49,7 +49,7 @@ void compute_histogram(Histogram* hist, int32 num_bins, Array<float> data);
 void compute_histogram(Histogram* hist, int32 num_bins, Array<float> data, float min_val, float max_val);
 
 // STATS
-bool compute_stats(MoleculeDynamic* dynamic);
+bool compute_stats(const MoleculeDynamic& dynamic);
 void clear_stats();
 void store_stats(CString filename);
 void load_stats(CString filename);
