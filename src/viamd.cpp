@@ -751,8 +751,13 @@ static void draw_statistics_window(ApplicationData* data) {
 
     ImGui::Begin("Statistics", &data->statistics.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
-    StringBuffer<32> name;
-    StringBuffer<64> args;
+    // This is to hold temporary names and arguments while they are being edited any may not be valid yet.
+    struct Entry {
+        StringBuffer<32> name;
+        StringBuffer<64> args;
+    };
+    static DynamicArray<Entry> group_entry_data;
+    static DynamicArray<Entry> property_entry_data;
 
     ImGui::Text("Groups");
     if (ImGui::Button("create new")) {
@@ -764,9 +769,16 @@ static void draw_statistics_window(ApplicationData* data) {
     ImGui::SameLine();
     if (ImGui::Button("clear all")) {
     }
+
+    int32 group_count = stats::get_group_count();
+    group_entry_data.resize(group_count);
+
     ImGui::Spacing();
-    for (int i = 0; i < stats::get_group_count(); i++) {
+    ImGui::PushID("GROUPS");
+    for (int i = 0; i < group_count; i++) {
         stats::ID group_id = stats::get_group(i);
+        Entry& e = group_entry_data[i];
+
         ImGui::Separator();
         ImGui::BeginGroup();
         ImGui::PushID(i);
@@ -774,15 +786,16 @@ static void draw_statistics_window(ApplicationData* data) {
         bool update = false;
         ImGui::SameLine();
         ImGui::PushItemWidth(math::clamp(ImGui::GetWindowWidth() * 40.f, 50.f, 200.f));
-        if (ImGui::InputText("name", name.buffer, name.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
+        if (ImGui::InputText("name", e.name.buffer, e.name.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
         //ImGui::PopItemWidth();
         ImGui::SameLine();
         //ImGui::PushItemWidth(200);
-        if (ImGui::InputText("cmd args", args.buffer, args.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
+        if (ImGui::InputText("cmd args", e.args.buffer, e.args.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
         ImGui::PopItemWidth();
         ImGui::SameLine();
         if (ImGui::Button("remove")) {
             stats::remove_group(group_id);
+            group_entry_data.remove(&e);
         }
 
         ImGui::PopID();
@@ -793,6 +806,7 @@ static void draw_statistics_window(ApplicationData* data) {
 
         }
     }
+    ImGui::PopID();
 
     ImGui::Spacing();
     ImGui::Text("Properties");
@@ -803,19 +817,27 @@ static void draw_statistics_window(ApplicationData* data) {
     if (ImGui::Button("clear all")) {
     }
     ImGui::Spacing();
+
+    int32 property_count = stats::get_property_count();
+    property_entry_data.resize(property_count);
+
+    ImGui::PushID("PROPERTIES");
     for (int i = 0; i < stats::get_property_count(); i++) {
         stats::ID prop_id = stats::get_property(i);
+        Entry& e = property_entry_data[i];
+
         ImGui::Separator();
         ImGui::BeginGroup();
         ImGui::PushID(i);
 
         bool update = false;
-        if (ImGui::InputText("name", name.buffer, name.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
+        if (ImGui::InputText("name", e.name.buffer, e.name.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
         ImGui::SameLine();
-        if (ImGui::InputText("cmd args", args.buffer, args.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
+        if (ImGui::InputText("cmd args", e.args.buffer, e.args.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
         ImGui::SameLine();
         if (ImGui::Button("remove")) {
             stats::remove_property(prop_id);
+            property_entry_data.remove(&e);
         }
 
         ImGui::PopID();
@@ -826,6 +848,7 @@ static void draw_statistics_window(ApplicationData* data) {
 
         }
     }
+    ImGui::PopID();
 
     ImGui::End();
 }
