@@ -659,6 +659,7 @@ static void draw_main_menu(ApplicationData* data) {
         }
         if (ImGui::BeginMenu("Windows")) {
             ImGui::Checkbox("Representations", &data->representations.show_window);
+            ImGui::Checkbox("Statistics", &data->statistics.show_window);
             ImGui::Checkbox("Ramachandran", &data->ramachandran.enabled);
 
             ImGui::EndMenu();
@@ -746,62 +747,83 @@ static void draw_representations_window(ApplicationData* data) {
 }
 
 static void draw_statistics_window(ApplicationData* data) {
-    constexpr uint32 FILTER_ERROR_COLOR = 0xdd2222bb;
+    constexpr uint32 ERROR_COLOR = 0xdd2222bb;
 
-    ImGui::Begin("Statistics", &data->representations.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::Begin("Statistics", &data->statistics.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
+    StringBuffer<32> name;
+    StringBuffer<64> args;
+
+    ImGui::Text("Groups");
     if (ImGui::Button("create new")) {
-        create_default_representation(data);
+        //if (create_group(group_name, group_cmd_args) != INVALID_ID) {
+        //    group_name = {};
+        //    group_cmd_args = {};
+        //}
     }
     ImGui::SameLine();
     if (ImGui::Button("clear all")) {
-        data->representations.data.clear();
     }
     ImGui::Spacing();
-    for (int i = 0; i < data->representations.data.count; i++) {
-        auto& rep = data->representations.data[i];
+    for (int i = 0; i < stats::get_group_count(); i++) {
+        stats::ID group_id = stats::get_group(i);
         ImGui::Separator();
         ImGui::BeginGroup();
-
-        bool recompute_colors = false;
         ImGui::PushID(i);
-        ImGui::Checkbox("enabled", &rep.enabled);
+
+        bool update = false;
+        ImGui::SameLine();
+        ImGui::PushItemWidth(math::clamp(ImGui::GetWindowWidth() * 40.f, 50.f, 200.f));
+        if (ImGui::InputText("name", name.buffer, name.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
+        //ImGui::PopItemWidth();
+        ImGui::SameLine();
+        //ImGui::PushItemWidth(200);
+        if (ImGui::InputText("cmd args", args.buffer, args.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
+        ImGui::PopItemWidth();
         ImGui::SameLine();
         if (ImGui::Button("remove")) {
-            remove_representation(data, i);
+            stats::remove_group(group_id);
         }
-        ImGui::InputText("name", rep.name.buffer, rep.name.MAX_LENGTH);
-        if (!rep.filter_is_ok) ImGui::PushStyleColor(ImGuiCol_FrameBg, FILTER_ERROR_COLOR);
-        if (ImGui::InputText("filter", rep.filter.buffer, rep.filter.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
-            recompute_colors = true;
-        }
-        if (!rep.filter_is_ok) ImGui::PopStyleColor();
-        ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0\0");
-        if (ImGui::Combo("color mapping", (int*)(&rep.color_mapping), "Static Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0\0")) {
-            recompute_colors = true;
-        }
-        if (rep.type == Representation::VDW || rep.type == Representation::LICORICE) {
-            ImGui::SliderFloat("radii scale", &rep.radii_scale, 0.1f, 2.f);
-        }
-        if (rep.type == Representation::RIBBONS) {
-            ImGui::SliderInt("spline subdivisions", &rep.num_subdivisions, 1, 16);
-            ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f);
-        }
-        if (rep.color_mapping == ColorMapping::STATIC_COLOR) {
-            if (ImGui::ColorEdit4("color", (float*)&rep.static_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
-                recompute_colors = true;
-            }
-        }
+
         ImGui::PopID();
         ImGui::EndGroup();
         ImGui::Spacing();
 
-        if (recompute_colors) {
-            compute_atom_colors(rep.colors, *data->mol_data.dynamic.molecule, rep.color_mapping,
-                                ImGui::ColorConvertFloat4ToU32(vec_cast(rep.static_color)));
-            DynamicArray<bool> mask(data->mol_data.dynamic.molecule->atom_elements.count, false);
-            rep.filter_is_ok = filter::compute_filter_mask(mask, data->mol_data.dynamic, rep.filter.buffer);
-            filter::filter_colors(rep.colors, mask);
+        if (update) {
+
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Text("Properties");
+    if (ImGui::Button("create new")) {
+
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("clear all")) {
+    }
+    ImGui::Spacing();
+    for (int i = 0; i < stats::get_property_count(); i++) {
+        stats::ID prop_id = stats::get_property(i);
+        ImGui::Separator();
+        ImGui::BeginGroup();
+        ImGui::PushID(i);
+
+        bool update = false;
+        if (ImGui::InputText("name", name.buffer, name.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
+        ImGui::SameLine();
+        if (ImGui::InputText("cmd args", args.buffer, args.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
+        ImGui::SameLine();
+        if (ImGui::Button("remove")) {
+            stats::remove_property(prop_id);
+        }
+
+        ImGui::PopID();
+        ImGui::EndGroup();
+        ImGui::Spacing();
+
+        if (update) {
+
         }
     }
 

@@ -68,6 +68,9 @@ ID      get_group(CString name);
 ID      get_group(int32 idx);
 int32   get_group_count();
 
+bool    set_group_name(ID group_id, CString name);
+bool    set_group_args(ID group_id, CString args);
+
 // INSTANCES
 ID		get_group_instance(ID group_id, int32 idx);
 int32   get_group_instance_count(ID group_id);
@@ -80,15 +83,16 @@ ID		get_property(CString name);
 ID		get_property(int32 idx);
 int32	get_property_count();
 
-CString	get_property_name(ID prop_id);
-CString	get_property_unit(ID prop_id);
-bool	get_property_periodic(ID prop_id);
-float	get_property_min_val(ID prop_id);
-float	get_property_max_val(ID prop_id);
+bool    set_property_name(ID prop_id, CString name);
+bool    set_property_args(ID prop_id, CString args);
+float*  get_property_filter_min(ID prop_id);
+float*  get_property_filter_max(ID prop_id);
 
-void	set_property_filter_min(ID prop_id, float min_val);
-void	set_property_filter_max(ID prop_id, float max_val);
-void	set_property_filter(ID prop_id, float min_val, float max_val);
+CString get_property_name(ID prop_id);
+CString get_property_unit(ID prop_id);
+bool    get_property_periodic(ID prop_id);
+float   get_property_min_val(ID prop_id);
+float   get_property_max_val(ID prop_id);
 
 // PROPERTY DATA
 int32        get_property_data_count(ID prop_id);
