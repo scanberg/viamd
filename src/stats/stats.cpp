@@ -10,6 +10,7 @@ namespace stats {
 
 struct PropertyCommand {
     ID id;
+	CString keyword;
     PropertyComputeFunc func;
     Range val_range;
     PropertyType type;
@@ -19,6 +20,7 @@ struct PropertyCommand {
 
 struct GroupCommand {
     ID id;
+	CString keyword;
     StructureExtractFunc func;
 };
 
@@ -374,8 +376,9 @@ void register_property_command(CString command, PropertyCommandDescriptor desc) 
         return;
     }
 
+	auto keyword = alloc_string(command);
     auto unit = alloc_string(desc.unit);
-    ctx.property_commands.push_back({id, desc.compute_function, desc.val_range, desc.type, desc.periodic, unit});
+    ctx.property_commands.push_back({id, keyword, desc.compute_function, desc.val_range, desc.type, desc.periodic, unit});
 }
 
 void register_group_command(CString command, StructureExtractFunc func) {
@@ -386,7 +389,23 @@ void register_group_command(CString command, StructureExtractFunc func) {
         return;
     }
 
-    ctx.group_commands.push_back({id, func});
+	auto keyword = alloc_string(command);
+    ctx.group_commands.push_back({id, keyword, func});
+}
+
+int32 get_property_command_count() {
+	return (int32)ctx.property_commands.count;
+}
+CString get_property_command_keyword(int32 idx) {
+	return ctx.property_commands[idx].keyword;
+}
+
+int32 get_group_command_count() {
+	return (int32)ctx.group_commands.count;
+}
+
+CString get_group_command_keyword(int32 idx) {
+	return ctx.group_commands[idx].keyword;
 }
 
 ID create_group(CString name, CString cmd_and_args) {

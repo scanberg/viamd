@@ -57,6 +57,12 @@ void load_stats(CString filename);
 void register_property_command(CString cmd_keyword, PropertyCommandDescriptor cmd_desc);
 void register_group_command(CString cmd_keyword, StructureExtractFunc func);
 
+int32 get_property_command_count();
+CString get_property_command_keyword(int32 idx);
+
+int32 get_group_command_count();
+CString get_group_command_keyword(int32 idx);
+
 void initialize();
 void shutdown();
 

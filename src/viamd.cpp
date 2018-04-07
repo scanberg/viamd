@@ -759,6 +759,82 @@ static void draw_statistics_window(ApplicationData* data) {
     static DynamicArray<Entry> group_entry_data;
     static DynamicArray<Entry> property_entry_data;
 
+	auto group_callback = [](ImGuiTextEditCallbackData* data) -> int {
+		switch (data->EventFlag)
+		{
+		case ImGuiInputTextFlags_CallbackCompletion:
+		{
+			// Example of TEXT COMPLETION
+
+			// Locate beginning of current word
+			const char* word_end = data->Buf + data->CursorPos;
+			const char* word_start = word_end;
+			while (word_start > data->Buf) {
+				const char c = word_start[-1];
+				if (c == ' ' || c == '\t' || c == ',' || c == ';')
+					break;
+				word_start--;
+			}
+
+			// Build a list of candidates
+			ImVector<const char*> candidates;
+
+			for (int i = 0; i < .Size; i++)
+				if (Strnicmp(commands[i], word_start, (int)(word_end - word_start)) == 0)
+					candidates.push_back(commands[i]);
+
+			if (candidates.Size == 0)
+			{
+				// No match
+				AddLog("No match for \"%.*s\"!\n", (int)(word_end - word_start), word_start);
+			}
+			else if (candidates.Size == 1)
+			{
+				// Single match. Delete the beginning of the word and replace it entirely so we've got nice casing
+				data->DeleteChars((int)(word_start - data->Buf), (int)(word_end - word_start));
+				data->InsertChars(data->CursorPos, candidates[0]);
+				data->InsertChars(data->CursorPos, " ");
+			}
+			else
+			{
+				// Multiple matches. Complete as much as we can, so inputing "C" will complete to "CL" and display "CLEAR" and "CLASSIFY"
+				int match_len = (int)(word_end - word_start);
+				for (;;)
+				{
+					int c = 0;
+					bool all_candidates_matches = true;
+					for (int i = 0; i < candidates.Size && all_candidates_matches; i++)
+						if (i == 0)
+							c = toupper(candidates[i][match_len]);
+						else if (c == 0 || c != toupper(candidates[i][match_len]))
+							all_candidates_matches = false;
+					if (!all_candidates_matches)
+						break;
+					match_len++;
+				}
+
+				if (match_len > 0)
+				{
+					data->DeleteChars((int)(word_start - data->Buf), (int)(word_end - word_start));
+					data->InsertChars(data->CursorPos, candidates[0], candidates[0] + match_len);
+				}
+
+				// List matches
+				AddLog("Possible matches:\n");
+				for (int i = 0; i < candidates.Size; i++)
+					AddLog("- %s\n", candidates[i]);
+			}
+
+			break;
+		}
+		}
+		return 0;
+	};
+
+	auto property_callback = [](ImGuiTextEditCallbackData* data) -> int {
+
+	};
+
     ImGui::Text("Groups");
     if (ImGui::Button("create new")) {
         //if (create_group(group_name, group_cmd_args) != INVALID_ID) {
@@ -768,6 +844,7 @@ static void draw_statistics_window(ApplicationData* data) {
     }
     ImGui::SameLine();
     if (ImGui::Button("clear all")) {
+
     }
 
     int32 group_count = stats::get_group_count();
@@ -786,7 +863,9 @@ static void draw_statistics_window(ApplicationData* data) {
         bool update = false;
         ImGui::SameLine();
         ImGui::PushItemWidth(math::clamp(ImGui::GetWindowWidth() * 40.f, 50.f, 200.f));
-        if (ImGui::InputText("name", e.name.buffer, e.name.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
+		if (ImGui::InputText("name", e.name.buffer, e.name.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackCompletion, group_callback)) {
+			printf("LOL!");
+		}
         //ImGui::PopItemWidth();
         ImGui::SameLine();
         //ImGui::PushItemWidth(200);
