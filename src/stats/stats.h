@@ -17,8 +17,8 @@ enum PropertyType {
 };
 
 struct Structure {
-    int32 beg_atom_idx;
-    int32 end_atom_idx;
+    int32 beg_atom_idx = 0;
+    int32 end_atom_idx = 0;
 };
 
 typedef bool (*PropertyComputeFunc)(float* data, const Array<CString> args, const MoleculeDynamic& dynamic, Structure group_structure);
@@ -67,34 +67,42 @@ void initialize();
 void shutdown();
 
 // GROUP
-ID      create_group(CString name, CString cmd_and_args);
-void	remove_group(ID group_id);
+ID   create_group(CString name = {}, CString cmd_and_args = {});
+void remove_group(ID group_id);
 
 ID      get_group(CString name);
 ID      get_group(int32 idx);
 int32   get_group_count();
+    
+bool    validate_group(ID group_id);
 
-bool    set_group_name(ID group_id, CString name);
-bool    set_group_args(ID group_id, CString args);
-
+StringBuffer<32>* get_group_name_buf(ID group_id);
+StringBuffer<64>* get_group_args_buf(ID group_id);
+CString  get_group_name(ID group_id);
+bool     get_group_valid(ID group_id);
+    
 // INSTANCES
 ID		get_group_instance(ID group_id, int32 idx);
 int32   get_group_instance_count(ID group_id);
 
 // PROPERTY
-ID		create_property(CString name, CString cmd_and_args);
+ID      create_property(CString name = {}, CString cmd_and_args = {});
 void	remove_property(ID prop_id);
 
 ID		get_property(CString name);
 ID		get_property(int32 idx);
 int32	get_property_count();
 
-bool    set_property_name(ID prop_id, CString name);
-bool    set_property_args(ID prop_id, CString args);
+bool    validate_property(ID prop_id);
+
 float*  get_property_filter_min(ID prop_id);
 float*  get_property_filter_max(ID prop_id);
-
+ 
+StringBuffer<32>* get_property_name_buf(ID prop_id);
+StringBuffer<64>* get_property_args_buf(ID prop_id);
+    
 CString get_property_name(ID prop_id);
+bool    get_property_valid(ID prop_id);
 CString get_property_unit(ID prop_id);
 bool    get_property_periodic(ID prop_id);
 float   get_property_min_val(ID prop_id);

@@ -471,7 +471,7 @@ int main(int, char**) {
         // Render deferred
         postprocessing::render_deferred(data.fbo.tex_depth, data.fbo.tex_color, data.fbo.tex_normal, inv_proj_mat);
 
-        // Apply tone mapping
+        // Apply post processing
         // postprocessing::apply_tonemapping(data.fbo.tex_color);
         if (data.ssao.enabled) {
             postprocessing::apply_ssao(data.fbo.tex_depth, data.fbo.tex_normal, proj_mat, data.ssao.intensity, data.ssao.radius);
@@ -751,15 +751,7 @@ static void draw_statistics_window(ApplicationData* data) {
 
     ImGui::Begin("Statistics", &data->statistics.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
-    // This is to hold temporary names and arguments while they are being edited any may not be valid yet.
-    struct Entry {
-        StringBuffer<32> name;
-        StringBuffer<64> args;
-    };
-    static DynamicArray<Entry> group_entry_data;
-    static DynamicArray<Entry> property_entry_data;
-
-	auto group_callback = [](ImGuiTextEditCallbackData* data) -> int {
+	auto group_args_callback = [](ImGuiTextEditCallbackData* data) -> int {
 		switch (data->EventFlag)
 		{
 		case ImGuiInputTextFlags_CallbackCompletion:
@@ -779,14 +771,16 @@ static void draw_statistics_window(ApplicationData* data) {
 			// Build a list of candidates
 			ImVector<const char*> candidates;
 
-			for (int i = 0; i < .Size; i++)
-				if (Strnicmp(commands[i], word_start, (int)(word_end - word_start)) == 0)
-					candidates.push_back(commands[i]);
+			for (int i = 0; i < stats::get_group_command_count(); i++) {
+                CString cmd = stats::get_group_command_keyword(i);
+				if (compare_n(cmd, word_start, (int)(word_end - word_start)))
+					candidates.push_back(cmd.beg());
+            }
 
 			if (candidates.Size == 0)
 			{
 				// No match
-				AddLog("No match for \"%.*s\"!\n", (int)(word_end - word_start), word_start);
+				//AddLog("No match for \"%.*s\"!\n", (int)(word_end - word_start), word_start);
 			}
 			else if (candidates.Size == 1)
 			{
@@ -820,9 +814,9 @@ static void draw_statistics_window(ApplicationData* data) {
 				}
 
 				// List matches
-				AddLog("Possible matches:\n");
-				for (int i = 0; i < candidates.Size; i++)
-					AddLog("- %s\n", candidates[i]);
+				//AddLog("Possible matches:\n");
+				//for (int i = 0; i < candidates.Size; i++)
+				//	AddLog("- %s\n", candidates[i]);
 			}
 
 			break;
@@ -832,29 +826,26 @@ static void draw_statistics_window(ApplicationData* data) {
 	};
 
 	auto property_callback = [](ImGuiTextEditCallbackData* data) -> int {
-
+        return 0;
 	};
 
     ImGui::Text("Groups");
     if (ImGui::Button("create new")) {
-        //if (create_group(group_name, group_cmd_args) != INVALID_ID) {
-        //    group_name = {};
-        //    group_cmd_args = {};
-        //}
+        stats::create_group();
     }
     ImGui::SameLine();
     if (ImGui::Button("clear all")) {
 
     }
-
-    int32 group_count = stats::get_group_count();
-    group_entry_data.resize(group_count);
+    
+    bool compute_stats = false;
 
     ImGui::Spacing();
     ImGui::PushID("GROUPS");
-    for (int i = 0; i < group_count; i++) {
-        stats::ID group_id = stats::get_group(i);
-        Entry& e = group_entry_data[i];
+    for (int i = 0; i < stats::get_group_count(); i++) {
+        auto group_id = stats::get_group(i);
+        auto name_buf = stats::get_group_name_buf(group_id);
+        auto args_buf = stats::get_group_args_buf(group_id);
 
         ImGui::Separator();
         ImGui::BeginGroup();
@@ -863,18 +854,19 @@ static void draw_statistics_window(ApplicationData* data) {
         bool update = false;
         ImGui::SameLine();
         ImGui::PushItemWidth(math::clamp(ImGui::GetWindowWidth() * 40.f, 50.f, 200.f));
-		if (ImGui::InputText("name", e.name.buffer, e.name.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackCompletion, group_callback)) {
-			printf("LOL!");
+        if (ImGui::InputText("name", name_buf->buffer, name_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
+            update = true;
 		}
         //ImGui::PopItemWidth();
         ImGui::SameLine();
         //ImGui::PushItemWidth(200);
-        if (ImGui::InputText("cmd args", e.args.buffer, e.args.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
+        if (ImGui::InputText("cmd args", args_buf->buffer, args_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackCompletion, group_args_callback)) {
+            update = true;
+        }
         ImGui::PopItemWidth();
         ImGui::SameLine();
         if (ImGui::Button("remove")) {
             stats::remove_group(group_id);
-            group_entry_data.remove(&e);
         }
 
         ImGui::PopID();
@@ -882,7 +874,8 @@ static void draw_statistics_window(ApplicationData* data) {
         ImGui::Spacing();
 
         if (update) {
-
+            stats::validate_group(group_id);
+            compute_stats = true;
         }
     }
     ImGui::PopID();
@@ -890,33 +883,30 @@ static void draw_statistics_window(ApplicationData* data) {
     ImGui::Spacing();
     ImGui::Text("Properties");
     if (ImGui::Button("create new")) {
-
+        stats::create_property();
     }
     ImGui::SameLine();
     if (ImGui::Button("clear all")) {
     }
     ImGui::Spacing();
 
-    int32 property_count = stats::get_property_count();
-    property_entry_data.resize(property_count);
-
     ImGui::PushID("PROPERTIES");
     for (int i = 0; i < stats::get_property_count(); i++) {
-        stats::ID prop_id = stats::get_property(i);
-        Entry& e = property_entry_data[i];
+        auto prop_id = stats::get_property(i);
+        auto name_buf = stats::get_property_name_buf(prop_id);
+        auto args_buf = stats::get_property_args_buf(prop_id);
 
         ImGui::Separator();
         ImGui::BeginGroup();
         ImGui::PushID(i);
 
         bool update = false;
-        if (ImGui::InputText("name", e.name.buffer, e.name.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
+        if (ImGui::InputText("name", name_buf->buffer, name_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
         ImGui::SameLine();
-        if (ImGui::InputText("cmd args", e.args.buffer, e.args.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
+        if (ImGui::InputText("cmd args", args_buf->buffer, args_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
         ImGui::SameLine();
         if (ImGui::Button("remove")) {
             stats::remove_property(prop_id);
-            property_entry_data.remove(&e);
         }
 
         ImGui::PopID();
@@ -924,12 +914,16 @@ static void draw_statistics_window(ApplicationData* data) {
         ImGui::Spacing();
 
         if (update) {
-
+            stats::validate_property(prop_id);
+            compute_stats = true;
         }
     }
     ImGui::PopID();
-
     ImGui::End();
+    
+    if (compute_stats) {
+        stats::compute_stats(data->mol_data.dynamic);
+    }
 }
 
 static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y) {
@@ -989,6 +983,7 @@ static void draw_timelines(ApplicationData* data) {
     for (int i = 0; i < stats::get_property_count(); i++) {
         auto prop_id = stats::get_property(i);
         auto prop_data = stats::get_property_data(prop_id, 0);
+        if (!prop_data) continue;
         auto frame = ImGui::BeginPlotFrame(stats::get_property_name(prop_id), ImVec2(0, 100), 0, prop_data.count, -2.f, 2.f);
         ImGui::PlotFrameLine(frame, "group1", prop_data.data, ImGui::FrameLineStyle(), frame_idx);
         int32 new_frame_idx = ImGui::EndPlotFrame(frame, frame_idx);

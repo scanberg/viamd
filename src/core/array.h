@@ -168,6 +168,12 @@ struct DynamicArray : Array<T> {
         this->count++;
 		return this->back();
     }
+    
+    T pop_back() {
+        ASSERT(this->count > 0);
+        this->count--;
+        return this->data[this->count];
+    }
 
     void reserve(int64 new_capacity) {
         if (new_capacity < capacity) return;

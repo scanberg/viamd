@@ -9,19 +9,19 @@
 namespace stats {
 
 struct PropertyCommand {
-    ID id;
-	CString keyword;
-    PropertyComputeFunc func;
-    Range val_range;
+    ID id = INVALID_ID;
+	CString keyword = "";
+    PropertyComputeFunc func = nullptr;
+    Range val_range {};
     PropertyType type;
-    bool periodic;
-    CString unit;
+    bool periodic = false;
+    CString unit = "";
 };
 
 struct GroupCommand {
-    ID id;
-	CString keyword;
-    StructureExtractFunc func;
+    ID id = INVALID_ID;
+	CString keyword = "";
+    StructureExtractFunc func = nullptr;
 };
 
 struct Property {
@@ -33,37 +33,45 @@ struct Property {
 	float filter_min = 0.f;
 	float filter_max = 1.f;
 
+    StringBuffer<32> name_buf{};
+    StringBuffer<64> args_buf{};
+    CString name{};
+    CString cmd{};
+    CString args{};
     ID cmd_id = INVALID_ID;
-    CString name;
-    CString args;
+    bool valid = true;
 };
-
-struct GroupInstance {
-	ID id = INVALID_ID;
-	ID group_id = INVALID_ID;
-	Structure structure;
-};
-
+    
 struct PropertyData {
     ID id = INVALID_ID;
     ID property_id = INVALID_ID;
 	ID instance_id = INVALID_ID;
-
-    Array<float> data;
+    Array<float> data {};
 };
 
 struct Group {
     ID id = INVALID_ID;
-
 	ID instance_beg_id = INVALID_ID;
 	int32 instance_count = 0;
 
+    StringBuffer<32> name_buf{};
+    StringBuffer<64> args_buf{};
+    CString name{};
+    CString cmd{};
+    CString args{};
     ID cmd_id = INVALID_ID;
-    CString name;
-    CString args;
+    bool valid;
+};
+    
+struct GroupInstance {
+    ID id = INVALID_ID;
+    ID group_id = INVALID_ID;
+    Structure structure {};
 };
 
 struct StatisticsContext {
+    ID next_id = 0;
+    DynamicArray<ID> free_ids {};
     DynamicArray<String> string_buffer {};
 
     DynamicArray<Property> properties{};
@@ -71,8 +79,8 @@ struct StatisticsContext {
     DynamicArray<Group> groups{};
 	DynamicArray<GroupInstance> group_instances{};
 
-    DynamicArray<PropertyCommand> property_commands;
-    DynamicArray<GroupCommand> group_commands;
+    DynamicArray<PropertyCommand> property_commands {};
+    DynamicArray<GroupCommand> group_commands {};
 };
 
 static StatisticsContext ctx;
@@ -164,13 +172,13 @@ static DynamicArray<Structure> match_by_resname(const Array<CString> args, const
 }
 
 void initialize() {
-    ctx.property_commands.push_back({ COMPUTE_ID("dist"),	  compute_atomic_distance, {0, FLT_MAX}, INTRA, false, "å" });
-	ctx.property_commands.push_back({ COMPUTE_ID("bond"),	  compute_atomic_distance, {0, FLT_MAX}, INTRA, false, "å" });
-	ctx.property_commands.push_back({ COMPUTE_ID("angle"),	  compute_atomic_angle, {0, math::PI}, INTRA, true, "°" });
-	ctx.property_commands.push_back({ COMPUTE_ID("dihedral"), compute_atomic_dihedral, {-math::PI, math::PI}, INTRA, true, "°" });
+    ctx.property_commands.push_back({ COMPUTE_ID("dist"),     "dist",	  compute_atomic_distance, {0, FLT_MAX}, INTRA, false, "å" });
+	ctx.property_commands.push_back({ COMPUTE_ID("bond"),     "bond",     compute_atomic_distance, {0, FLT_MAX}, INTRA, false, "å" });
+	ctx.property_commands.push_back({ COMPUTE_ID("angle"),    "angle",    compute_atomic_angle,    {0, math::PI}, INTRA, true, "°" });
+	ctx.property_commands.push_back({ COMPUTE_ID("dihedral"), "dihedral", compute_atomic_dihedral, {-math::PI, math::PI}, INTRA, true, "°" });
 
     //ctx.group_commands.push_back({ COMPUTE_ID("resid"), match_by_resname});
-    ctx.group_commands.push_back({ COMPUTE_ID("resname"), match_by_resname});
+    ctx.group_commands.push_back({ COMPUTE_ID("resname"), "resname", match_by_resname});
 }
 
 void shutdown() {
@@ -197,6 +205,11 @@ static T* find_id(Array<T> data, ID id) {
         if (item.id == id) return &item;
     }
     return nullptr;
+}
+   
+static ID create_id() {
+    if (ctx.free_ids.count > 0) return ctx.free_ids.pop_back();
+    return ctx.next_id++;
 }
 
 static CString alloc_string(CString str) {
@@ -266,7 +279,7 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
 
     // Find uninitialized groups and compute their instances
     for (auto& group : ctx.groups) {
-		if (group.instance_count == 0) {
+		if (group.valid && group.instance_count == 0) {
             GroupCommand* group_cmd = find_id(ctx.group_commands, group.cmd_id);
 			ASSERT(group_cmd);
             DynamicArray<CString> args = ctokenize(group.args);
@@ -297,7 +310,7 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
 
     int32 count = dynamic.trajectory->num_frames;
     for (auto& prop : ctx.properties) {
-        if (prop.data_beg_id == INVALID_ID) {
+        if (prop.valid && prop.data_beg_id == INVALID_ID) {
             // NEED TO COMPUTE PROPERTY DATA
             PropertyCommand* prop_cmd = find_id(ctx.property_commands, prop.cmd_id);
 			ASSERT(prop_cmd);
@@ -407,48 +420,72 @@ int32 get_group_command_count() {
 CString get_group_command_keyword(int32 idx) {
 	return ctx.group_commands[idx].keyword;
 }
+    
+bool validate_group(Group* group) {
+    ASSERT(group);
+    group->valid = false;
+    
+    group->name = CString(group->name_buf.beg());
+    auto tokens = ctokenize(group->args_buf);
+    
+    group->cmd_id = INVALID_ID;
+    group->cmd = {};
+    group->args = {};
+    
+    if (tokens.count > 0) {
+        group->cmd = tokens[0];
+        if (tokens.count > 1) {
+            group->args = {tokens[1].beg(), tokens.back().end()};
+        }
+    }
+    
+    if (group->name) {
+        for (const auto& g : ctx.groups) {
+            if (g.id != group->id && compare(g.name, group->name)) {
+                return false;
+            }
+        }
+    } else {
+        return false;
+    }
+    
+    if (group->cmd) {
+        for (const auto& c : ctx.group_commands) {
+            if (compare(c.keyword, group->cmd)) {
+                group->cmd_id = c.id;
+                break;
+            }
+        }
+        if (group->cmd_id == INVALID_ID) {
+            return false;
+        }
+    } else {
+        return false;
+    }
+    
+    group->valid = true;
+    return true;
+}
+    
+bool validate_group(ID group_id) {
+    auto group = find_id(ctx.groups, group_id);
+    if (!group) return false;
+    return validate_group(group);
+}
 
 ID create_group(CString name, CString cmd_and_args) {
-	ID grp_id = COMPUTE_ID(name);
-	Group* grp = find_id(ctx.groups, grp_id);
-	if (grp != nullptr) {
-		StringBuffer<32> buf = name;
-		printf("ERROR: GROUP '%s' ALREADY REGISTERED!", buf.beg());
-		return INVALID_ID;
-	}
-	
-	if (cmd_and_args.count == 0) {
-		printf("ERROR: command and arguments is missing\n");
-		return INVALID_ID;
-	}
-
-	auto tokens = ctokenize(cmd_and_args);
-	CString cmd = tokens[0];
-	CString args = "";
-
-	if (tokens.count > 1) {
-		args = { tokens[1].beg(), tokens.back().end() };
-	}
-
-	ID grp_cmd_id = COMPUTE_ID(cmd);
-	GroupCommand* grp_cmd = find_id(ctx.group_commands, grp_cmd_id);
-	if (grp_cmd == nullptr) {
-		StringBuffer<32> buf = cmd;
-		printf("ERROR: UNIDENTIFIED GROUP COMMAND '%s'!", buf.beg());
-		return INVALID_ID;
-	}
-
-	Group group;
-	group.id = grp_id;
-	group.name = alloc_string(name);
-    group.args = alloc_string(args);
-	group.cmd_id = grp_cmd_id;
-	group.instance_beg_id = INVALID_ID;
-	group.instance_count = 0;
-
-	ctx.groups.push_back(group);
-
-	return group.id;
+    Group group;
+    group.id = create_id();
+    group.instance_beg_id = INVALID_ID;
+    group.instance_count = 0;
+    group.name_buf = name;
+    group.args_buf = cmd_and_args;
+    group.valid = false;
+    
+    ctx.groups.push_back(group);
+    validate_group(&group);
+    
+    return group.id;
 }
 
 void remove_group(ID group_id) {
@@ -480,6 +517,57 @@ ID get_group(int32 idx) {
 
 int32 get_group_count() {
     return (int32)ctx.groups.count;
+}
+    
+StringBuffer<32>* get_group_name_buf(ID group_id) {
+    auto group = find_id(ctx.groups, group_id);
+    if (group) {
+        return &group->name_buf;
+    }
+    return nullptr;
+}
+
+StringBuffer<64>* get_group_args_buf(ID group_id) {
+    auto group = find_id(ctx.groups, group_id);
+    if (group) {
+        return &group->args_buf;
+    }
+    return nullptr;
+}
+    
+bool get_group_valid(ID group_id) {
+    auto group = find_id(ctx.groups, group_id);
+    if (group) {
+        return group->valid;
+    } else {
+        printf("ERROR! Could not find group id!\n");
+    }
+    return false;
+}
+    
+CString get_group_name(ID group_id) {
+    auto group = find_id(ctx.groups, group_id);
+    if (group) {
+        return group->name;
+    } else {
+        printf("ERROR! Could not find group id!\n");
+    }
+    return {};
+}
+    
+bool set_group_name(ID group_id, CString name) {
+    if (name.count == 0) return false;
+    
+    Group* group = find_id(ctx.groups, group_id);
+    if (!group) {
+        printf("ERROR! Could not find group id!\n");
+        return false;
+    }
+    
+    if (group->name) free_string(group->name);
+    group->name = alloc_string(name);
+    
+    return true;
 }
 
 ID get_group_instance(ID group_id, int32 idx) {
@@ -516,48 +604,71 @@ ID get_property(int32 idx) {
 int32 get_property_count() {
     return (int32)ctx.properties.count;
 }
+    
+bool validate_property(Property* prop) {
+    ASSERT(prop);
+    prop->valid = false;
+    
+    prop->name = CString(prop->name_buf.beg());
+    auto tokens = ctokenize(prop->args_buf);
+    
+    prop->cmd_id = INVALID_ID;
+    prop->cmd = {};
+    prop->args = {};
+
+    if (tokens.count > 0) {
+        prop->cmd = tokens[0];
+        if (tokens.count > 1) {
+            prop->args = {tokens[1].beg(), tokens.back().end()};
+        }
+    }
+    
+    if (prop->name) {
+        for (const auto& p : ctx.properties) {
+            if (p.id != prop->id && compare(p.name, prop->name)) {
+                return false;
+            }
+        }
+    } else {
+        return false;
+    }
+    
+    if (prop->cmd) {
+        for (const auto& c : ctx.property_commands) {
+            if (compare(c.keyword, prop->cmd)) {
+                prop->cmd_id = c.id;
+                break;
+            }
+        }
+        if (prop->cmd_id == INVALID_ID) {
+            return false;
+        }
+    } else {
+        return false;
+    }
+
+    prop->valid = true;
+    return true;
+}
+    
+bool validate_property(ID prop_id) {
+    auto prop = find_id(ctx.properties, prop_id);
+    if (!prop) return false;
+    return validate_property(prop);
+}
 
 ID create_property(CString name, CString cmd_and_args) {
-    ID prop_id = COMPUTE_ID(name);
-    Property* old_prop = find_id(ctx.properties, prop_id);
-    if (old_prop != nullptr) {
-        StringBuffer<32> buf = name;
-        printf("ERROR: PROPERTY '%s' ALREADY EXISTS!", buf.beg());
-        return INVALID_ID;
-    }
-
-	if (cmd_and_args.count == 0) {
-		printf("ERROR: command and arguments is missing\n");
-		return INVALID_ID;
-	}
-
-	auto tokens = ctokenize(cmd_and_args);
-	CString cmd = tokens[0];
-	CString args = "";
-
-	if (tokens.count > 1) {
-		args = { tokens[1].beg(), tokens.back().end() };
-	}
-
-    ID prop_cmd_id = COMPUTE_ID(cmd);
-    PropertyCommand* prop_cmd = find_id(ctx.property_commands, prop_cmd_id);
-    if (prop_cmd == nullptr) {
-        StringBuffer<32> cmd_buf = cmd;
-        printf("ERROR: UNIDENTIFIED PROPERTY COMMAND '%s'!", cmd_buf.beg());
-        return INVALID_ID;
-    }
-
     Property prop;
-    prop.id = prop_id;
+    prop.id = create_id();
     prop.data_beg_id = INVALID_ID;
     prop.data_count = 0;
-
-    prop.cmd_id = prop_cmd_id;
-    prop.name = alloc_string(name);
-    prop.args = alloc_string(args);
-
+    prop.name_buf = name;
+    prop.args_buf = cmd_and_args;
+    prop.valid = false;
+    
     ctx.properties.push_back(prop);
-
+    validate_property(&prop);
+    
 	return prop.id;
 }
 
@@ -571,9 +682,6 @@ void remove_property(ID prop_id) {
     for (PropertyData* pd = ctx.property_data.beg(); pd != ctx.property_data.end(); pd++) {
         if (pd->property_id == prop_id) ctx.property_data.remove(pd);
     }
-
-    free_string(prop->name);
-    free_string(prop->args);
 
     ctx.properties.remove(prop);
 }
@@ -603,13 +711,37 @@ int32 get_property_data_count(ID prop_id) {
     }
 	return 0;
 }
+    
+StringBuffer<32>* get_property_name_buf(ID prop_id) {
+    auto prop = find_id(ctx.properties, prop_id);
+    if (prop) {
+        return &prop->name_buf;
+    }
+    return nullptr;
+}
+    
+StringBuffer<64>* get_property_args_buf(ID prop_id) {
+    auto prop = find_id(ctx.properties, prop_id);
+    if (prop) {
+        return &prop->args_buf;
+    }
+    return nullptr;
+}
 
-CString	get_property_name(ID prop_id) {
+CString get_property_name(ID prop_id) {
 	auto prop = find_id(ctx.properties, prop_id);
 	if (prop) {
 		return prop->name;
 	}
 	return {};
+}
+    
+bool get_property_valid(ID prop_id) {
+    auto prop = find_id(ctx.properties, prop_id);
+    if (prop) {
+        return prop->valid;
+    }
+    return false;
 }
 
 }  // namespace stats
