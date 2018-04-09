@@ -70,7 +70,7 @@ struct GroupInstance {
 };
 
 struct StatisticsContext {
-    ID next_id = 0;
+    ID next_id = 1;
     DynamicArray<ID> free_ids {};
     DynamicArray<String> string_buffer {};
 
@@ -328,7 +328,8 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
                 args = args.sub_array(1);
 
 				if (group_id == INVALID_ID) {
-					printf("WARNING! Property '%s': could not find group with name '%s'", prop.name.beg(), group_name.beg());
+                    StringBuffer<32> buf = group_name;
+					printf("WARNING! Property '%s': could not find group with name '%s'\n", prop.name.beg(), buf.buffer);
 					continue;
 				}
 

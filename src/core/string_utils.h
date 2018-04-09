@@ -189,9 +189,9 @@ struct StringBuffer {
 	}
 
 	StringBuffer& operator =(const CString& cstr) {
-		auto len = cstr.count < MAX_LENGTH ? cstr.count : MAX_LENGTH;
+		auto len = cstr.count < (MAX_LENGTH - 1) ? cstr.count : (MAX_LENGTH - 1);
 		strncpy(buffer, cstr.data, len);
-		buffer[len - 1] = '\0';
+		buffer[len] = '\0';
 		return *this;
 	}
 
