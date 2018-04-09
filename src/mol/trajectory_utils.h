@@ -4,7 +4,12 @@
 #include <thread>
 
 // Reads the header info of a trajectory and allocates space for it
-Trajectory* allocate_trajectory(const char* file);
+bool init_trajectory(Trajectory* traj, CString path);
+
+// Allocates space for trajectory
+bool init_trajectory(Trajectory* traj, int32 num_atoms, int32 num_frames);
+
+// Frees memory allocated by trajectory
 void free_trajectory(Trajectory* traj);
 
 // Reads the actual trajectory position information

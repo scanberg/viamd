@@ -54,6 +54,26 @@ void copy_n(String dst, CString src, int64 num_chars) {
 	dst.data[num_chars] = '\0';
 }
 
+String allocate_string(CString str) {
+	if (str.count == 0) return {};
+	char* data = (char*)MALLOC(str.count);
+	return { data, str.count };
+}
+
+String allocate_string(int32 length) {
+	if (length == 0) return {};
+	char* data = (char*)MALLOC(length);
+	return { data, length };
+}
+
+void free_string(String* str) {
+	if (str->data) {
+		FREE(str->data);
+		str->data = nullptr;
+		str->count = 0;
+	}
+}
+
 bool extract_line(CString& line, CString& str) {
 	const char* str_beg = str.data;
 	const char* str_end = str.data + str.count;

@@ -394,7 +394,7 @@ static void imgui_new_frame() {
     // Setup inputs
     // (we already got mouse wheel, keyboard keys & characters from glfw callbacks polled in glfwPollEvents())
     if (glfwGetWindowAttrib((GLFWwindow*)internal_ctx.window.ptr, GLFW_FOCUSED)) {
-        if (io.WantMoveMouse) {
+        if (io.WantSetMousePos) {
             glfwSetCursorPos((GLFWwindow*)internal_ctx.window.ptr, (double)io.MousePos.x, (double)io.MousePos.y);   // Set mouse position if requested by io.WantMoveMouse flag (used when io.NavMovesTrue is enabled by user and using directional navigation)
         }
         else {
@@ -565,7 +565,7 @@ void swap_buffers(Context* ctx) {
     glfwSwapBuffers((GLFWwindow*)ctx->window.ptr);
 }
 
-Path open_file_dialog(CString filter) {
+FileDialogResult open_file_dialog(CString filter) {
     Path path;
     nfdchar_t *out_path = NULL;
     StringBuffer<256> filter_buf = filter;
@@ -575,12 +575,32 @@ Path open_file_dialog(CString filter) {
     }
     else if ( result == NFD_CANCEL ) {
         // User pressed cancel
+		return { {}, FileDialogResult::CANCEL };
     }
     else {
         printf("Error: %s\n", NFD_GetError() );
     }
     free(out_path);
-    return path;
+    return { path, FileDialogResult::CANCEL };
+}
+
+FileDialogResult save_file_dialog(CString filter) {
+	Path path;
+	nfdchar_t *out_path = NULL;
+	StringBuffer<256> filter_buf = filter;
+	nfdresult_t result = NFD_SaveDialog(filter_buf, NULL, &out_path);
+	if (result == NFD_OKAY) {
+		strncpy(path.beg(), out_path, path.MAX_LENGTH);
+	}
+	else if (result == NFD_CANCEL) {
+		// User pressed cancel
+		return { {}, FileDialogResult::CANCEL };
+	}
+	else {
+		printf("Error: %s\n", NFD_GetError());
+	}
+	free(out_path);
+	return { path, FileDialogResult::CANCEL };
 }
 
 #ifdef OS_WINDOWS

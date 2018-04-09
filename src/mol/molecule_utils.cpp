@@ -30,6 +30,14 @@ void compute_bounding_box(vec3* min_box, vec3* max_box, const Array<vec3> positi
     }
 }
 
+inline bool periodic_jump(const vec3& p_prev, const vec3& p_next, const vec3& half_box) {
+	const vec3 abs_delta = math::abs(p_next - p_prev);
+	if (abs_delta.x > half_box.x) return true;
+	if (abs_delta.y > half_box.y) return true;
+	if (abs_delta.z > half_box.z) return true;
+	return false;
+}
+
 void linear_interpolation(Array<vec3> positions, const Array<vec3> prev_pos, const Array<vec3> next_pos, float t) {
     ASSERT(prev_pos.count == positions.count);
     ASSERT(next_pos.count == positions.count);
@@ -45,26 +53,48 @@ void linear_interpolation_periodic(Array<vec3> positions, const Array<vec3> prev
     ASSERT(prev_pos.count == positions.count);
     ASSERT(next_pos.count == positions.count);
 
-    vec3 full_box_ext = sim_box * vec3(1);
-    vec3 half_box_ext = full_box_ext * 0.5f;
+    const vec3 full_box_ext = sim_box * vec3(1);
+    const vec3 half_box_ext = full_box_ext * 0.5f;
 
     for (int i = 0; i < positions.count; i++) {
         vec3 next = next_pos[i];
         vec3 prev = prev_pos[i];
 
-        vec3 delta = next - prev;
-        vec3 sign = math::sign(delta);
-
-        vec3 abs_delta = math::abs(delta);
-
-        if (abs_delta.x > half_box_ext.x || abs_delta.y > half_box_ext.y || abs_delta.z > half_box_ext.z) {
+        if (periodic_jump(prev, next, half_box_ext)) {
             // Atom moved across periodic boundry we cannot apply linearly interpolate directly
             positions[i] = t < 0.5f ? prev : next;
-
-        } else {
+        }
+		else {
             positions[i] = math::mix(prev, next, t);
         }
     }
+}
+
+void spline_interpolation_periodic(Array<vec3> positions, const Array<vec3> pos0, const Array<vec3> pos1, const Array<vec3> pos2, const Array<vec3> pos3, float t, mat3 sim_box) {
+	ASSERT(pos0.count == positions.count);
+	ASSERT(pos1.count == positions.count);
+	ASSERT(pos2.count == positions.count);
+	ASSERT(pos3.count == positions.count);
+
+	const vec3 full_box_ext = sim_box * vec3(1);
+	const vec3 half_box_ext = full_box_ext * 0.5f;
+
+	for (int i = 0; i < positions.count; i++) {
+		vec3 p0 = pos0[i];
+		vec3 p1 = pos1[i];
+		vec3 p2 = pos2[i];
+		vec3 p3 = pos3[i];
+
+		if (periodic_jump(p0, p1, half_box_ext)) p0 = p1;
+		if (periodic_jump(p2, p3, half_box_ext)) p3 = p2;
+
+		if (periodic_jump(p1, p2, half_box_ext)) {
+			positions[i] = t < 0.5f ? p1 : p2;
+		}
+		else {
+			positions[i] = math::spline(p0, p1, p2, p3, t);
+		}
+	}
 }
 
 void spline_interpolation(Array<vec3> positions, const Array<vec3> pos0, const Array<vec3> pos1, const Array<vec3> pos2, const Array<vec3> pos3, float t) {
@@ -1934,6 +1964,7 @@ void draw_licorice(const Array<vec3> atom_positions, const Array<Bond> atom_bond
     }
 
 	draw::set_vbo_data(data, count * sizeof(licorice::Vertex));
+	TMP_FREE(data);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, licorice::ibo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, atom_bonds.count * sizeof(Bond), atom_bonds.data, GL_STREAM_DRAW);

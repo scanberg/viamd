@@ -5,8 +5,6 @@
 #include <core/string_utils.h>
 #include <core/common.h>
 
-constexpr int MAX_TRAJECTORY_FRAME_BUFFER_SIZE = GIGABYTES(2);
-
 struct TrajectoryFrame {
     int index;
     float time;
@@ -26,13 +24,13 @@ struct Trajectory {
 
     // @NOTE: The frame_buffer may not contain all frames in trajectory.
     // If the trajectory is large, frame_buffer will be used as a cache towards the trajectory streamed from disk.
-	DynamicArray<TrajectoryFrame> frame_buffer{};
+	Array<TrajectoryFrame> frame_buffer{};
 
     // This is the position data of the trajectories
-	DynamicArray<vec3> position_data{};
+	Array<vec3> position_data{};
 
     // These are the offsets for each frame within the compressed blob of XTC data
-	DynamicArray<int64> frame_offsets{};
+	Array<int64> frame_offsets{};
 
 	// This is for synchronization
 	volatile bool is_loading = false;

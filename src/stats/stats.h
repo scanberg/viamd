@@ -27,7 +27,7 @@ typedef DynamicArray<Structure> (*StructureExtractFunc)(const Array<CString> arg
 typedef vec2 Range;
 
 struct Histogram {
-    DynamicArray<float> bins = {};
+    Array<float> bins = {};
     Range val_range = {};
     Range bin_range = {};
     int32 num_samples = 0;
@@ -42,6 +42,9 @@ struct PropertyCommandDescriptor {
 };
 
 // HISTOGRAM
+void init_histogram(Histogram* hist, int32 num_bins);
+void free_histogram(Histogram* hist);
+
 Histogram compute_histogram(int32 num_bins, Array<float> data);
 Histogram compute_histogram(int32 num_bins, Array<float> data, float min_val, float max_val);
 
@@ -69,12 +72,13 @@ void shutdown();
 // GROUP
 ID   create_group(CString name = {}, CString cmd_and_args = {});
 void remove_group(ID group_id);
+void clear_groups();
+
+void clear_group(ID group_id);
 
 ID      get_group(CString name);
 ID      get_group(int32 idx);
 int32   get_group_count();
-    
-bool    validate_group(ID group_id);
 
 StringBuffer<32>* get_group_name_buf(ID group_id);
 StringBuffer<64>* get_group_args_buf(ID group_id);
@@ -84,16 +88,18 @@ bool     get_group_valid(ID group_id);
 // INSTANCES
 ID		get_group_instance(ID group_id, int32 idx);
 int32   get_group_instance_count(ID group_id);
+void    clear_instances();
 
 // PROPERTY
 ID      create_property(CString name = {}, CString cmd_and_args = {});
 void	remove_property(ID prop_id);
 
+void	clear_properties();
+void	clear_property(ID prop_id);
+
 ID		get_property(CString name);
 ID		get_property(int32 idx);
 int32	get_property_count();
-
-bool    validate_property(ID prop_id);
 
 float*  get_property_filter_min(ID prop_id);
 float*  get_property_filter_max(ID prop_id);
@@ -112,6 +118,10 @@ float   get_property_max_val(ID prop_id);
 int32        get_property_data_count(ID prop_id);
 Array<float> get_property_data(ID prop_id, int32 instance_idx);
 Array<float> get_property_avg_data(ID prop_id);
+Histogram*	 get_property_histogram(ID prop_id, int32 instance_idx);
+Histogram*   get_property_avg_histogram(ID prop_id);
+
+void		 clear_property_data();
 
 //Histogram*	 get_property_histogram(ID prop_id, int32 residue_idx);
 //Histogram*	 get_property_avg_histogram(ID prop_id);

@@ -8,7 +8,8 @@
 
 // @TODO: Remove dependency of string
 
-Trajectory* allocate_trajectory(const char* path) {
+bool init_trajectory(Trajectory* traj, CString path) {
+	ASSERT(traj);
     std::string url(path);
 
     auto dot_pos = url.find_last_of(".");
@@ -46,7 +47,6 @@ Trajectory* allocate_trajectory(const char* path) {
     }
 
     ASSERT(offsets, "Failed to read offsets");
-    Trajectory* traj = (Trajectory*)MALLOC(sizeof(Trajectory));
 	new (traj) Trajectory();
 	traj->num_atoms = num_atoms;
 	traj->num_frames = 0;
@@ -54,14 +54,14 @@ Trajectory* allocate_trajectory(const char* path) {
 	traj->simulation_type = Trajectory::NVT;
 	traj->path_to_file = CString(path);
 
-    traj->frame_offsets.resize(num_frames);
+	traj->frame_offsets = { (int64*)CALLOC(num_frames, sizeof(int64)), num_frames };
     memcpy(traj->frame_offsets.data, offsets, num_frames * sizeof(int64));
     free(offsets);
 
 	// @TODO: Only read in data if it fits into memory
 	// Allocate the data needed for the frames
-	traj->position_data.resize(num_frames * traj->num_atoms);
-	traj->frame_buffer.resize(num_frames);
+	traj->position_data = { (vec3*)MALLOC(num_frames * num_atoms * sizeof(vec3)), num_frames * num_atoms };
+	traj->frame_buffer = { (TrajectoryFrame*)MALLOC(num_frames * sizeof(TrajectoryFrame)), num_frames };
 
     return traj;
 }

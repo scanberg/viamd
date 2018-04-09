@@ -264,6 +264,10 @@ bool extract_line(CString& line, CString& str);
 // Note: Guaranteed that the line will be zero terminated.
 bool copy_line(String& line, CString& str);
 
+String allocate_string(CString str);
+String allocate_string(int32 length);
+void free_string(String* str);
+
 template<typename T>
 struct ConversionResult {
 	T value;

@@ -106,6 +106,8 @@ struct AtomSelection {
 struct MoleculeData {
     MoleculeDynamic dynamic{};
     DynamicArray<float> atom_radii{};
+	String mol_file{};
+	String traj_file{};
 };
 
 struct ApplicationData {
@@ -130,9 +132,10 @@ struct ApplicationData {
 
     // --- STATISTICAL DATA ---
     struct {
-        bool show_window;
+        bool show_property_window = false;
+		bool show_timeline_window = false;
+		bool show_distribution_window = false;
     } statistics;
-    // stats::StatisticsContext stats;
 
     // Framebuffer
     MainFramebuffer fbo;
@@ -153,7 +156,7 @@ struct ApplicationData {
     } ssao;
 
     struct {
-        bool enabled = false;
+        bool show_window = false;
         float radius = 1.f;
         float opacity = 1.f;
         int frame_range_min = 0;
@@ -180,10 +183,11 @@ struct ApplicationData {
 
 static void draw_main_menu(ApplicationData* data);
 static void draw_representations_window(ApplicationData* data);
-static void draw_statistics_window(ApplicationData* data);
-static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y);
-static void draw_timelines(ApplicationData* data);
+static void draw_property_window(ApplicationData* data);
+static void draw_timeline_window(ApplicationData* data);
+static void draw_distribution_window(ApplicationData* data);
 static void draw_ramachandran(ApplicationData* data);
+static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y);
 
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height);
 static void destroy_main_framebuffer(MainFramebuffer* fbo);
@@ -192,7 +196,9 @@ static void reset_view(ApplicationData* data);
 static float compute_avg_ms(float dt);
 static uint32 get_picking_id(uint32 fbo, int32 x, int32 y);
 
-static void load_molecule_data(ApplicationData* mol_data, CString file);
+static void load_molecule_data(ApplicationData* data, CString file);
+static void load_workspace(ApplicationData* data, CString file);
+static void save_workspace(ApplicationData* data, CString file);
 
 static void create_default_representation(ApplicationData* data);
 static void remove_representation(ApplicationData* data, int idx);
@@ -231,6 +237,11 @@ int main(int, char**) {
     //data.mol_data.dynamic = allocate_and_parse_pdb_from_string(caffeine_pdb);
     //data.mol_data.atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule->atom_elements);
 
+	auto g1 = stats::create_group("group1", "resname ALA");
+	stats::create_property("b1", "dist group1 1 2");
+	stats::create_property("a1", "angle group1 1 2 3");
+	stats::create_property("d1", "dihedral group1 1 2 3 4");
+
     load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
     reset_view(&data);
     create_default_representation(&data);
@@ -256,12 +267,7 @@ int main(int, char**) {
     // if (data.dynamic.trajectory)
     //	read_trajectory_async(data.dynamic.trajectory);
 
-    auto g1 = stats::create_group("group1", "resname ALA");
-    stats::create_property("b1", "dist group1 1 2");
-    stats::create_property("a1", "angle group1 1 2 3");
-    stats::create_property("d1", "dihedral group1 1 2 3 4");
 
-    stats::compute_stats(data.mol_data.dynamic);
 
     /*
     if (data.mol_data.dynamic.molecule->chains.count > 0) {
@@ -385,13 +391,21 @@ int main(int, char**) {
                         break;
                     }
                     case PlaybackInterpolationMode::CUBIC:
+					{
+						auto prev_2 = get_trajectory_frame(*data.mol_data.dynamic.trajectory, prev_frame_2);
+						auto prev_1 = get_trajectory_frame(*data.mol_data.dynamic.trajectory, prev_frame_1);
+						auto next_1 = get_trajectory_frame(*data.mol_data.dynamic.trajectory, next_frame_1);
+						auto next_2 = get_trajectory_frame(*data.mol_data.dynamic.trajectory, next_frame_2);
+						spline_interpolation(data.mol_data.dynamic.molecule->atom_positions, prev_2.atom_positions, prev_1.atom_positions, next_1.atom_positions, next_2.atom_positions, t);
+						break;
+					}
                     case PlaybackInterpolationMode::CUBIC_PERIODIC:
                     {
                         auto prev_2 = get_trajectory_frame(*data.mol_data.dynamic.trajectory, prev_frame_2);
                         auto prev_1 = get_trajectory_frame(*data.mol_data.dynamic.trajectory, prev_frame_1);
                         auto next_1 = get_trajectory_frame(*data.mol_data.dynamic.trajectory, next_frame_1);
                         auto next_2 = get_trajectory_frame(*data.mol_data.dynamic.trajectory, next_frame_2);
-                        spline_interpolation(data.mol_data.dynamic.molecule->atom_positions, prev_2.atom_positions, prev_1.atom_positions, next_1.atom_positions, next_2.atom_positions, t);
+                        spline_interpolation_periodic(data.mol_data.dynamic.molecule->atom_positions, prev_2.atom_positions, prev_1.atom_positions, next_1.atom_positions, next_2.atom_positions, t, prev_1.box);
                         break;
                     }
 
@@ -487,7 +501,16 @@ if (data.debug_draw.spline.enabled) {
         */
 
         // GUI ELEMENTS
-        if (data.ramachandran.enabled) {
+        data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, data.ctx.timing.dt);
+
+        draw_main_menu(&data);
+
+        if (data.representations.show_window) draw_representations_window(&data);
+        if (data.statistics.show_property_window) draw_property_window(&data);
+		if (data.statistics.show_timeline_window) draw_timeline_window(&data);
+		if (data.statistics.show_distribution_window) draw_distribution_window(&data);
+
+		if (data.ramachandran.show_window) {
 			if (data.mol_data.dynamic.trajectory && data.mol_data.dynamic.trajectory->is_loading) {
 				static int32 prev_frame = 0;
 				if (get_backbone_angles_trajectory_current_frame_count(data.ramachandran.backbone_angles) - prev_frame > 100) {
@@ -496,28 +519,15 @@ if (data.debug_draw.spline.enabled) {
 					data.ramachandran.frame_range_max = data.ramachandran.backbone_angles.num_frames;
 				}
 			}
-            draw_ramachandran(&data);
-        }
+			draw_ramachandran(&data);
+		}
 
-        data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, data.ctx.timing.dt);
-
-        draw_main_menu(&data);
-        if (data.representations.show_window) {
-            draw_representations_window(&data);
-        }
-
-        if (data.statistics.show_window) {
-            draw_statistics_window(&data);
-        }
-
-        if (!ImGui::GetIO().WantCaptureMouse) {
+		if (!ImGui::GetIO().WantCaptureMouse) {
             if (data.picking_idx != NO_PICKING_IDX) {
                 ivec2 pos = data.ctx.input.mouse.coord_curr;
                 draw_atom_info(*data.mol_data.dynamic.molecule, data.picking_idx, pos.x, pos.y);
             }
         }
-
-        draw_timelines(&data);
 
         // Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
         if (show_demo_window) {
@@ -601,21 +611,32 @@ static void draw_main_menu(ApplicationData* data) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("New", "CTRL+N")) new_clicked = true;
             if (ImGui::MenuItem("Load Data", "CTRL+L")) {
-                platform::Path path = platform::open_file_dialog("pdb,gro,xtc");
-                load_molecule_data(data, path);
-                if (data->representations.data.count > 0) {
-                    reset_representations(data);
-                } else {
-                    create_default_representation(data);
-                }
-                reset_view(data);
+                auto res = platform::open_file_dialog("pdb,gro,xtc");
+				if (res.action == platform::FileDialogResult::OK) {
+					load_molecule_data(data, res.path);
+					if (data->representations.data.count > 0) {
+						reset_representations(data);
+					}
+					else {
+						create_default_representation(data);
+					}
+					reset_view(data);
+				}
             }
             if (ImGui::MenuItem("Open", "CTRL+O")) {
-                platform::open_file_dialog();
+				auto res = platform::open_file_dialog("vwf");
+				if (res.action == platform::FileDialogResult::OK) {
+					
+				}
             }
             if (ImGui::MenuItem("Save", "CTRL+S")) {
+
             }
             if (ImGui::MenuItem("Save As")) {
+				auto res = platform::save_file_dialog("vwf");
+				if (res.action == platform::FileDialogResult::OK) {
+
+				}
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Quit", "ALT+F4")) {
@@ -659,8 +680,10 @@ static void draw_main_menu(ApplicationData* data) {
         }
         if (ImGui::BeginMenu("Windows")) {
             ImGui::Checkbox("Representations", &data->representations.show_window);
-            ImGui::Checkbox("Statistics", &data->statistics.show_window);
-            ImGui::Checkbox("Ramachandran", &data->ramachandran.enabled);
+            ImGui::Checkbox("Ramachandran", &data->ramachandran.show_window);
+			ImGui::Checkbox("Properties", &data->statistics.show_property_window);
+			ImGui::Checkbox("Timelines", &data->statistics.show_timeline_window);
+			ImGui::Checkbox("Distributions", &data->statistics.show_distribution_window);
 
             ImGui::EndMenu();
         }
@@ -746,10 +769,14 @@ static void draw_representations_window(ApplicationData* data) {
     ImGui::End();
 }
 
-static void draw_statistics_window(ApplicationData* data) {
-    constexpr uint32 ERROR_COLOR = 0xdd2222bb;
+static void draw_property_window(ApplicationData* data) {
+	constexpr uint32 DEL_BTN_COLOR		  = 0xff1111cc;
+	constexpr uint32 DEL_BTN_HOVER_COLOR  = 0xff3333dd;
+	constexpr uint32 DEL_BTN_ACTIVE_COLOR = 0xff5555ff;
 
-    ImGui::Begin("Statistics", &data->statistics.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
+    constexpr uint32 ERROR_COLOR		 = 0xaa222299;
+
+	bool compute_stats = false;
 
 	auto group_args_callback = [](ImGuiTextEditCallbackData* data) -> int {
 		switch (data->EventFlag)
@@ -829,95 +856,147 @@ static void draw_statistics_window(ApplicationData* data) {
         return 0;
 	};
 
-    ImGui::Text("Groups");
+	ImGui::Begin("Properties", &data->statistics.show_property_window, ImGuiWindowFlags_NoFocusOnAppearing);
+
+	ImGui::PushID("GROUPS");
+    ImGui::Text("GROUPS");
     if (ImGui::Button("create new")) {
         stats::create_group();
     }
     ImGui::SameLine();
+	ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
+	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
+	ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
     if (ImGui::Button("clear all")) {
 
     }
-    
-    bool compute_stats = false;
+	ImGui::PopStyleColor(3);
+	ImGui::Spacing();
 
-    ImGui::Spacing();
-    ImGui::PushID("GROUPS");
+	ImGui::Columns(3, "columns", true);
+	ImGui::Separator();
+	ImGui::SetColumnWidth(0, ImGui::GetWindowContentRegionWidth() * 0.4f);
+	ImGui::SetColumnWidth(1, ImGui::GetWindowContentRegionWidth() * 0.5f);
+	ImGui::SetColumnWidth(2, ImGui::GetWindowContentRegionWidth() * 0.1f);
+
+	ImGui::Text("name"); ImGui::NextColumn();
+	ImGui::Text("args"); ImGui::NextColumn();
+	ImGui::NextColumn();
+	
     for (int i = 0; i < stats::get_group_count(); i++) {
         auto group_id = stats::get_group(i);
         auto name_buf = stats::get_group_name_buf(group_id);
         auto args_buf = stats::get_group_args_buf(group_id);
+		auto valid    = stats::get_group_valid(group_id);
+		bool update   = false;
 
-        ImGui::Separator();
-        ImGui::BeginGroup();
+		ImGui::Separator();
         ImGui::PushID(i);
-
-        bool update = false;
-        ImGui::SameLine();
-        ImGui::PushItemWidth(math::clamp(ImGui::GetWindowWidth() * 40.f, 50.f, 200.f));
-        if (ImGui::InputText("name", name_buf->buffer, name_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
-            update = true;
+		if (!valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, ERROR_COLOR);
+		ImGui::PushItemWidth(-1);
+		if (ImGui::InputText("##name", name_buf->buffer, name_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
+			update = true;
 		}
-        //ImGui::PopItemWidth();
-        ImGui::SameLine();
-        //ImGui::PushItemWidth(200);
-        if (ImGui::InputText("cmd args", args_buf->buffer, args_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackCompletion, group_args_callback)) {
+		ImGui::PopItemWidth();
+		ImGui::NextColumn();
+		ImGui::PushItemWidth(-1);
+		if (ImGui::InputText("##args", args_buf->buffer, args_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackCompletion, group_args_callback)) {
             update = true;
         }
-        ImGui::PopItemWidth();
-        ImGui::SameLine();
-        if (ImGui::Button("remove")) {
-            stats::remove_group(group_id);
-        }
+		ImGui::PopItemWidth();
+		if (!valid) ImGui::PopStyleColor();
+		ImGui::NextColumn();
 
+		ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
+		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
+		ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
+        if (ImGui::Button("del")) {
+            stats::remove_group(group_id);
+			compute_stats = true;
+        }
+		ImGui::PopStyleColor(3);
+
+		ImGui::NextColumn();
         ImGui::PopID();
-        ImGui::EndGroup();
-        ImGui::Spacing();
 
         if (update) {
-            stats::validate_group(group_id);
+			stats::clear_group(group_id);
             compute_stats = true;
         }
     }
+	ImGui::Columns(1);
+	ImGui::Separator();
     ImGui::PopID();
 
     ImGui::Spacing();
-    ImGui::Text("Properties");
+	ImGui::Spacing();
+
+	ImGui::PushID("PROPERTIES");
+    ImGui::Text("PROPERTIES");
     if (ImGui::Button("create new")) {
         stats::create_property();
     }
     ImGui::SameLine();
+
+	ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
+	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
+	ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
     if (ImGui::Button("clear all")) {
     }
-    ImGui::Spacing();
+	ImGui::PopStyleColor(3);
+	ImGui::Spacing();
 
-    ImGui::PushID("PROPERTIES");
+	ImGui::Columns(3, "columns", true);
+	ImGui::Separator();
+	ImGui::SetColumnWidth(0, ImGui::GetWindowContentRegionWidth() * 0.4f);
+	ImGui::SetColumnWidth(1, ImGui::GetWindowContentRegionWidth() * 0.5f);
+	ImGui::SetColumnWidth(2, ImGui::GetWindowContentRegionWidth() * 0.1f);
+
+	ImGui::Text("name"); ImGui::NextColumn();
+	ImGui::Text("args"); ImGui::NextColumn();
+	ImGui::NextColumn();
+    
     for (int i = 0; i < stats::get_property_count(); i++) {
-        auto prop_id = stats::get_property(i);
+        auto prop_id  = stats::get_property(i);
         auto name_buf = stats::get_property_name_buf(prop_id);
         auto args_buf = stats::get_property_args_buf(prop_id);
+		auto valid	  = stats::get_property_valid(prop_id);
+        bool update   = false;
 
         ImGui::Separator();
-        ImGui::BeginGroup();
         ImGui::PushID(i);
 
-        bool update = false;
-        if (ImGui::InputText("name", name_buf->buffer, name_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
-        ImGui::SameLine();
-        if (ImGui::InputText("cmd args", args_buf->buffer, args_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) update = true;
-        ImGui::SameLine();
-        if (ImGui::Button("remove")) {
+		if (!valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, ERROR_COLOR);
+		ImGui::PushItemWidth(-1);
+		if (ImGui::InputText("##name", name_buf->buffer, name_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
+			update = true;
+		}
+		ImGui::PopItemWidth();
+		ImGui::NextColumn();
+		ImGui::PushItemWidth(-1);
+		if (ImGui::InputText("##args", args_buf->buffer, args_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
+			update = true;
+		}
+		ImGui::PopItemWidth();
+		if (!valid) ImGui::PopStyleColor();
+        ImGui::NextColumn();
+		ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
+		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
+		ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
+        if (ImGui::Button("del")) {
             stats::remove_property(prop_id);
         }
-
+		ImGui::PopStyleColor(3);
+		ImGui::NextColumn();
         ImGui::PopID();
-        ImGui::EndGroup();
-        ImGui::Spacing();
 
         if (update) {
-            stats::validate_property(prop_id);
+			stats::clear_property(prop_id);
             compute_stats = true;
         }
     }
+	ImGui::Columns(1);
+	ImGui::Separator();
     ImGui::PopID();
     ImGui::End();
     
@@ -972,10 +1051,10 @@ static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, in
     ImGui::PopStyleColor();
 }
 
-static void draw_timelines(ApplicationData* data) {
+static void draw_timeline_window(ApplicationData* data) {
     // if (!stats) return;
 
-    ImGui::Begin("Timelines");
+    ImGui::Begin("Timelines", &data->statistics.show_timeline_window);
     //auto group_id = stats::get_group("group1");
 
     int32 frame_idx = (int32)data->time;
@@ -984,7 +1063,7 @@ static void draw_timelines(ApplicationData* data) {
         auto prop_id = stats::get_property(i);
         auto prop_data = stats::get_property_data(prop_id, 0);
         if (!prop_data) continue;
-        auto frame = ImGui::BeginPlotFrame(stats::get_property_name(prop_id), ImVec2(0, 100), 0, prop_data.count, -2.f, 2.f);
+        auto frame = ImGui::BeginPlotFrame(stats::get_property_name(prop_id), ImVec2(0, 100), 0, (int32)prop_data.count, -2.f, 2.f);
         ImGui::PlotFrameLine(frame, "group1", prop_data.data, ImGui::FrameLineStyle(), frame_idx);
         int32 new_frame_idx = ImGui::EndPlotFrame(frame, frame_idx);
         if (new_frame_idx != -1) {
@@ -1007,10 +1086,24 @@ static void draw_timelines(ApplicationData* data) {
     ImGui::End();
 }
 
+static void draw_distribution_window(ApplicationData* data) {
+	ImGui::Begin("Distributions", &data->statistics.show_distribution_window);
+	for (int i = 0; i < stats::get_property_count(); i++) {
+		ImGui::PushID(i);
+		auto prop_id = stats::get_property(i);
+		auto hist = stats::get_property_histogram(prop_id, 0);
+		if (!hist) continue;
+		//ImGui::PlotHistogram(stats::get_property_name(prop_id), [](void* data, int32 idx) -> float { return ((float*)data)[idx]; }, prop_data->bins.data, prop_data->bins.count);
+		ImGui::PlotHistogramExtended(stats::get_property_name(prop_id), hist->bins.data, hist->bins.count, 0, 0, 0, 0, hist->bin_range.x, hist->bin_range.y, ImVec2(0, 100));
+		ImGui::PopID();
+	}
+	ImGui::End();
+}
+
 static void draw_ramachandran(ApplicationData* data) {
 	constexpr vec2 res(512, 512);
 	ImGui::SetNextWindowContentSize(ImVec2(res.x, res.y));
-	ImGui::Begin("Ramachandran", &data->ramachandran.enabled, ImGuiWindowFlags_NoFocusOnAppearing);
+	ImGui::Begin("Ramachandran", &data->ramachandran.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
 	int32 num_frames = data->mol_data.dynamic.trajectory ? data->mol_data.dynamic.trajectory->num_frames : 0;
 	float range_min = (float)data->ramachandran.frame_range_min;
@@ -1018,7 +1111,7 @@ static void draw_ramachandran(ApplicationData* data) {
 
 	ImGui::SliderFloat("opacity", &data->ramachandran.opacity, 0.f, 2.f);
 	ImGui::SliderFloat("radius", &data->ramachandran.radius, 0.1f, 2.f);
-	ImGui::RangeSliderFloat("framerange", &range_min, &range_max, 0, math::max(0, num_frames - 1));
+	ImGui::RangeSliderFloat("framerange", &range_min, &range_max, 0, (float)math::max(0, num_frames - 1));
 	ImGui::SameLine();
 	if (ImGui::Button("reset")) {
 		range_min = 0;
@@ -1157,6 +1250,17 @@ static void free_mol_data(ApplicationData* data) {
     free_backbone_angles_trajectory(&data->ramachandran.backbone_angles);
     data->ramachandran.backbone_angles = {};
     data->ramachandran.current_backbone_angles = {};
+	stats::clear_instances();
+	stats::clear_property_data();
+
+	if (data->mol_data.mol_file.data) {
+		FREE(data->mol_data.mol_file.data);
+		data->mol_data.mol_file = {};
+	}
+	if (data->mol_data.traj_file.data) {
+		FREE(data->mol_data.traj_file.data);
+		data->mol_data.traj_file = {};
+	}
 }
 
 static void load_molecule_data(ApplicationData* data, CString file) {
@@ -1167,31 +1271,48 @@ static void load_molecule_data(ApplicationData* data, CString file) {
         if (compare_n(ext, "pdb", 3, true)) {
             free_mol_data(data);
             data->mol_data.dynamic = allocate_and_load_pdb_from_file(file);
+
             if (!data->mol_data.dynamic.molecule) {
                 printf("ERROR! Failed to load pdb file.\n");
                 return;
             }
+
+			data->mol_data.mol_file = allocate_string(file);
             data->mol_data.atom_radii = compute_atom_radii(data->mol_data.dynamic.molecule->atom_elements);
             if (data->mol_data.dynamic.trajectory) {
                 init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
                 compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
+				stats::compute_stats(data->mol_data.dynamic);
             }
         } else if (compare_n(ext, "gro", 3, true)) {
             free_mol_data(data);
             data->mol_data.dynamic.molecule = allocate_and_load_gro_from_file(file);
-            data->mol_data.atom_radii = compute_atom_radii(data->mol_data.dynamic.molecule->atom_elements);
+
             if (!data->mol_data.dynamic.molecule) {
                 printf("ERROR! Failed to load gro file.\n");
+				return;
             }
+
+			data->mol_data.mol_file = allocate_string(file);
+            data->mol_data.atom_radii = compute_atom_radii(data->mol_data.dynamic.molecule->atom_elements);
         } else if (compare_n(ext, "xtc", 3, true)) {
             if (!data->mol_data.dynamic.molecule) {
                 printf("ERROR! Must have molecule loaded before trajectory can be loaded!\n");
             } else {
+				if (data->mol_data.dynamic.trajectory) free_trajectory(data->mol_data.dynamic.trajectory);
                 data->mol_data.dynamic.trajectory = allocate_trajectory(file);
-                init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
                 if (data->mol_data.dynamic.trajectory) {
+					if (data->mol_data.dynamic.trajectory->num_atoms != data->mol_data.dynamic.molecule->atom_positions.count) {
+						printf("ERROR! The number of atoms in the molecule does not match the number of atoms in the trajectory\n");
+						free_trajectory(data->mol_data.dynamic.trajectory);
+						data->mol_data.dynamic.trajectory = nullptr;
+						return;
+					}
+					data->mol_data.traj_file = allocate_string(file);
+					init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
                     read_trajectory_async(data->mol_data.dynamic.trajectory, [data]() {
 						compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
+						stats::compute_stats(data->mol_data.dynamic);
 					});
                 }
             }
@@ -1199,6 +1320,51 @@ static void load_molecule_data(ApplicationData* data, CString file) {
             printf("ERROR! file extension not supported!\n");
         }
     }
+}
+
+static void load_workspace(ApplicationData* data, CString file) {
+	String txt = allocate_and_read_textfile(file);
+	CString c_txt = txt;
+	CString line;
+	while (extract_line(line, c_txt)) {
+		if (compare_n(line, "mol_file", 8)) {
+
+		}
+		else if (compare_n(line, "traj_file", 9)) {
+
+		}
+		else if (compare_n(line, "representation", 14)) {
+
+		}
+		else if (compare_n(line, "group", 5)) {
+
+		}
+		else if (compare_n(line, "property", 8)) {
+
+		}
+		else if (compare_n(line, "ssao", 4)) {
+
+		}
+	}
+
+	// Store Loaded Molecule File Relative Path
+	// (Store Loaded Trajectory File Relative Path)
+	// Store Representations
+	// Store Groups and Properties
+	// Store SSAO
+	// ...
+
+	if (txt.data) FREE(txt.data);
+}
+
+static void save_workspace(ApplicationData* data, CString file) {
+	FILE* handle = fopen(file.beg(), "w");
+	if (!handle) {
+		printf("ERROR! Could not save workspace to file '%s'\n", file.beg());
+	}
+	DynamicString str;
+
+	
 }
 
 static void create_default_representation(ApplicationData* data) {

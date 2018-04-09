@@ -90,7 +90,17 @@ struct DirEntry {
 DynamicArray<DirEntry> list_directory(CString dir_path);
 CString get_cwd();
 
-Path open_file_dialog(CString filter = {});
+struct FileDialogResult {
+	enum Action {
+		OK,
+		CANCEL
+	};
+	Path path;
+	Action action;
+};
+
+FileDialogResult open_file_dialog(CString filter = {});
+FileDialogResult save_file_dialog(CString filter = {});
 
 }  // namespace platform
 
