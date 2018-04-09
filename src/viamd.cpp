@@ -234,50 +234,20 @@ int main(int, char**) {
     vec4 clear_color = vec4(1, 1, 1, 1);
     vec4 clear_index = vec4(1, 1, 1, 1);
 
-    //data.mol_data.dynamic = allocate_and_parse_pdb_from_string(caffeine_pdb);
-    //data.mol_data.atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule->atom_elements);
-
+#ifdef RELEASE_VERSION
+    data.mol_data.dynamic = allocate_and_parse_pdb_from_string(caffeine_pdb);
+    data.mol_data.atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule->atom_elements);
+#else
 	auto g1 = stats::create_group("group1", "resname ALA");
 	stats::create_property("b1", "dist group1 1 2");
 	stats::create_property("a1", "angle group1 1 2 3");
 	stats::create_property("d1", "dihedral group1 1 2 3 4");
 
     load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
+
+#endif
     reset_view(&data);
     create_default_representation(&data);
-
-    // data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/bta-gro/20-mol-p.gro");
-    // data.dynamic.molecule= allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
-    // data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/shaoqi/md-nowater.gro");
-    // auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/peptides/box_2.gro");
-    // data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
-    // data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/water/water.gro");
-    // data.dynamic.molecule = allocate_and_load_gro_from_file(PROJECT_SOURCE_DIR "/data/amyloid-6T/conf-60-6T.gro");
-    // auto res = load_gro_from_file(PROJECT_SOURCE_DIR "/data/yuya/nowat_npt.gro");
-    // data.dynamic = allocate_and_load_pdb_from_file(PROJECT_SOURCE_DIR "/data/5ulj.pdb");
-    // data.dynamic = allocate_and_load_pdb_from_file(PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
-
-    // data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/bta-gro/traj-centered.xtc");
-    // data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
-    // data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/shaoqi/md-centered.xtc");
-    // Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/peptides/md_0_1_noPBC_2.xtc");
-    // data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid/centered.xtc");
-    // data.dynamic.trajectory = allocate_trajectory(PROJECT_SOURCE_DIR "/data/amyloid-6T/prod-centered.xtc");
-    // Trajectory* traj = allocate_trajectory(PROJECT_SOURCE_DIR "/data/yuya/traj-centered.xtc");
-    // if (data.dynamic.trajectory)
-    //	read_trajectory_async(data.dynamic.trajectory);
-
-
-
-    /*
-    if (data.mol_data.dynamic.molecule->chains.count > 0) {
-            backbone = compute_backbone_segments(get_residues(*data.mol_data.dynamic.molecule, get_chain(*data.mol_data.dynamic.molecule, 0)),
-    data.mol_data.dynamic.molecule->atom_labels); if (data.mol_data.dynamic.trajectory) backbone_angles =
-    compute_backbone_angles_trajectory(*data.mol_data.dynamic.trajectory, data.mol_data.dynamic.molecule->backbone_segments); current_backbone_angles
-    = compute_backbone_angles(data.mol_data.dynamic.molecule->atom_positions, backbone); current_spline =
-    compute_spline(data.mol_data.dynamic.molecule->atom_positions, backbone, 8);
-    }
-    */
 
     // Main loop
     while (!data.ctx.window.should_close) {
@@ -1300,7 +1270,10 @@ static void load_molecule_data(ApplicationData* data, CString file) {
                 printf("ERROR! Must have molecule loaded before trajectory can be loaded!\n");
             } else {
 				if (data->mol_data.dynamic.trajectory) free_trajectory(data->mol_data.dynamic.trajectory);
-                data->mol_data.dynamic.trajectory = allocate_trajectory(file);
+                if (!init_trajectory(data->mol_data.dynamic.trajectory, file)) {
+                    printf("ERROR! Problem loading trajectory\n");
+                    return;
+                }
                 if (data->mol_data.dynamic.trajectory) {
 					if (data->mol_data.dynamic.trajectory->num_atoms != data->mol_data.dynamic.molecule->atom_positions.count) {
 						printf("ERROR! The number of atoms in the molecule does not match the number of atoms in the trajectory\n");
@@ -1358,13 +1331,15 @@ static void load_workspace(ApplicationData* data, CString file) {
 }
 
 static void save_workspace(ApplicationData* data, CString file) {
-	FILE* handle = fopen(file.beg(), "w");
-	if (!handle) {
+	FILE* fptr = fopen(file.beg(), "w");
+	if (!fptr) {
 		printf("ERROR! Could not save workspace to file '%s'\n", file.beg());
 	}
-	DynamicString str;
 
-	
+	fprintf(fptr, "mol_file %s\n", data->mol_data.mol_file.beg());
+    fprintf(fptr, "traj_file %s\n", data->mol_data.traj_file.beg());
+    //fprintf(fptr, "representation %s");
+
 }
 
 static void create_default_representation(ApplicationData* data) {

@@ -1,6 +1,7 @@
 #include "pdb_utils.h"
 #include <mol/element.h>
 #include <mol/molecule_utils.h>
+#include <mol/trajectory_utils.h>
 #include <core/string_utils.h>
 
 static inline bool valid_line(CString line, uint32 options) {
@@ -30,6 +31,7 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 	DynamicArray<Chain> chains;
 	DynamicArray<Bond> bonds;
 	DynamicArray<BackboneSegment> backbone_segments;
+	DynamicArray<vec3> traj_position_data;
 
 	MoleculeDynamic md{ nullptr, nullptr };
 		
@@ -37,6 +39,7 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 	char current_chain_id = -1;
 	int num_atoms = 0;
 	int num_models = 0;
+	int num_frames = 0;
 	mat3 box(0);
 	CString line;
 	while (extract_line(line, pdb_string)) {
@@ -74,29 +77,29 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 					new(md.trajectory) Trajectory();
 				}
 
-				//@TODO: ASSERT that things are matching up in terms of size and such.
-				md.trajectory->num_atoms = (int32)positions.count;
-				md.trajectory->num_frames++;
-				md.trajectory->position_data.append(positions);
+				num_frames++;
+				traj_position_data.append(positions);
+                positions.clear();
 			}
 			else {
 				ASSERT(false);
+                num_models++;
+                num_atoms = 0;
+                current_res_id = -1;
+                current_chain_id = -1;
+                
+                positions.clear();
+                labels.clear();
+                elements.clear();
+                residue_indices.clear();
+                occupancies.clear();
+                temp_factors.clear();
+                residues.clear();
+                chains.clear();
 			}
-			num_models++;
-			num_atoms = 0;
-			current_res_id = -1;
-			current_chain_id = -1;
-
-			positions.clear();
-			labels.clear();
-			elements.clear();
-			residue_indices.clear();
-			occupancies.clear();
-			temp_factors.clear();
-			residues.clear();
-			chains.clear();
 		}
 		else if (compare_n(line, "TER", 3)) {
+            if (params & PDB_TREAT_MODELS_AS_FRAMES && num_frames > 0) continue;
 			current_chain_id = line[21];
 			Chain chain;
 			chain.beg_res_idx = (ResIdx)residues.size();
@@ -105,8 +108,9 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 			chains.push_back(chain);
 		}
 		else if (valid_line(line, params)) {
-			labels.push_back(trim(line.substr(12, 4)));
-			positions.push_back(vec3(to_float(line.substr(30, 8)), to_float(line.substr(38, 8)), to_float(line.substr(46, 8))));
+            positions.push_back(vec3(to_float(line.substr(30, 8)), to_float(line.substr(38, 8)), to_float(line.substr(46, 8))));
+            if (params & PDB_TREAT_MODELS_AS_FRAMES && num_frames > 0) continue;
+            labels.push_back(trim(line.substr(12, 4)));
 			if (line.count > 60) {
 				occupancies.push_back(to_float(line.substr(54, 6)));
 			}
@@ -174,12 +178,18 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 		memcpy(md.molecule->backbone_segments.data, backbone_segments.data, backbone_segments.size() * sizeof(BackboneSegment));
 	}
 
-	if (md.trajectory) {
+	if (md.trajectory && num_frames > 0) {
+		init_trajectory(md.trajectory, num_atoms, num_frames);
+		// COPY POSITION DATA
+
+		ASSERT(traj_position_data.count > 0);
+		memcpy(md.trajectory->position_data.data, traj_position_data.data, sizeof(vec3) * traj_position_data.count);
+
 		for (int i = 0; i < md.trajectory->num_frames; i++) {
 			int index = i;
 			float time = 0;
 			Array<vec3> atom_positions{ md.trajectory->position_data.beg() + i * md.trajectory->num_atoms, md.trajectory->num_atoms };
-			md.trajectory->frame_buffer.push_back({ index, time, box, atom_positions });
+			md.trajectory->frame_buffer[i] = { index, time, box, atom_positions };
 		}
 	}
 

@@ -20,7 +20,7 @@ struct Trajectory {
 	float32 total_simulation_time = 0;
 	Type	simulation_type = NVT;
 
-	CString path_to_file = "";
+	String path_to_file {};
 
     // @NOTE: The frame_buffer may not contain all frames in trajectory.
     // If the trajectory is large, frame_buffer will be used as a cache towards the trajectory streamed from disk.
@@ -32,6 +32,7 @@ struct Trajectory {
     // These are the offsets for each frame within the compressed blob of XTC data
 	Array<int64> frame_offsets{};
 
-	// This is for synchronization
+	// For synchronization between threads
 	volatile bool is_loading = false;
+    volatile bool signal_stop = false;
 };
