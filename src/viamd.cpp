@@ -1295,27 +1295,65 @@ static void load_molecule_data(ApplicationData* data, CString file) {
     }
 }
 
+static Representation::Type get_rep_type(CString str) {
+    if (compare(str, "VDW")) return Representation::VDW;
+    else if (compare(str, "LICORICE")) return Representation::LICORICE;
+    else if (compare(str, "RIBBONS")) return Representation::RIBBONS;
+    else return Representation::VDW;
+}
+
+static CString get_rep_type_name(Representation::Type type) {
+    switch(type) {
+        case Representation::VDW: return "VDW";
+        case Representation::LICORICE: return "LICORICE";
+        case Representation::RIBBONS: return "RIBBONS";
+        default: return "UNKNOWN";
+    }
+}
+
+static ColorMapping get_color_mapping(CString str) {
+    if (compare(str, "STATIC_COLOR")) return ColorMapping::STATIC_COLOR;
+    else if (compare(str, "CPK")) return ColorMapping::CPK;
+    else if (compare(str, "RES_ID")) return ColorMapping::RES_ID;
+    else if (compare(str, "RES_INDEX")) return ColorMapping::RES_INDEX;
+    else if (compare(str, "CHAIN_ID")) return ColorMapping::CHAIN_ID;
+    else if (compare(str, "CHAIN_INDEX")) return ColorMapping::CHAIN_INDEX;
+    else return ColorMapping::CPK;
+}
+
+static CString get_color_mapping_name(ColorMapping mapping) {
+    switch(mapping) {
+        case ColorMapping::STATIC_COLOR: return "STATIC_COLOR";
+        case ColorMapping::CPK: return "CPK";
+        case ColorMapping::RES_ID: return "RES_ID";
+        case ColorMapping::RES_INDEX: return "RES_INDEX";
+        case ColorMapping::CHAIN_ID: return "CHAIN_ID";
+        case ColorMapping::CHAIN_INDEX: return "CHAIN_INDEX";
+        default: return "UNKNOWN";
+    }
+}
+
 static void load_workspace(ApplicationData* data, CString file) {
 	String txt = allocate_and_read_textfile(file);
 	CString c_txt = txt;
 	CString line;
 	while (extract_line(line, c_txt)) {
-		if (compare_n(line, "mol_file", 8)) {
+		if (compare_n(line, "[mol_file]", 8)) {
 
 		}
-		else if (compare_n(line, "traj_file", 9)) {
+		else if (compare_n(line, "[traj_file]", 9)) {
 
 		}
-		else if (compare_n(line, "representation", 14)) {
+		else if (compare_n(line, "[representation]", 14)) {
 
 		}
-		else if (compare_n(line, "group", 5)) {
+		else if (compare_n(line, "[group]", 5)) {
 
 		}
-		else if (compare_n(line, "property", 8)) {
+		else if (compare_n(line, "[property]", 8)) {
 
 		}
-		else if (compare_n(line, "ssao", 4)) {
+		else if (compare_n(line, "[ssao]", 4)) {
 
 		}
 	}
@@ -1334,11 +1372,22 @@ static void save_workspace(ApplicationData* data, CString file) {
 	FILE* fptr = fopen(file.beg(), "w");
 	if (!fptr) {
 		printf("ERROR! Could not save workspace to file '%s'\n", file.beg());
+        return;
 	}
 
-	fprintf(fptr, "mol_file %s\n", data->mol_data.mol_file.beg());
-    fprintf(fptr, "traj_file %s\n", data->mol_data.traj_file.beg());
-    //fprintf(fptr, "representation %s");
+    // @TODO: Make relative paths
+	fprintf(fptr, "[mol_file]\n%s\n\n", data->mol_data.mol_file.beg());
+    fprintf(fptr, "[traj_file]\n%s\n\n", data->mol_data.traj_file.beg());
+    for (const auto& rep : data->representations.data) {
+        CString name = rep.name;
+        CString filter = rep.filter;
+        CString type = get_rep_type_name(rep.type);
+        CString color_mapping = get_color_mapping_name(rep.color_mapping);
+        int enabled = rep.enabled ? 1 : 0;
+        vec4 static_color = rep.static_color;
+        float radii = rep.radii_scale;
+        fprintf(fptr, "[representation]\n%s\n%s\n", rep.name.beg(), rep.filter.beg());
+    }
 
 }
 
