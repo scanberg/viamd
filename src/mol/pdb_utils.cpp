@@ -13,14 +13,17 @@ static inline bool valid_line(CString line, uint32 options) {
 	return false;
 }
 
-MoleculeDynamic allocate_and_load_pdb_from_file(const char* filename, PdbLoadParams params) {
+bool allocate_and_load_pdb_from_file(MoleculeDynamic* md, const char* filename, PdbLoadParams params) {
 	String txt = allocate_and_read_textfile(filename);
-	auto dyn = allocate_and_parse_pdb_from_string(txt, params);
+	auto res = allocate_and_parse_pdb_from_string(md, txt, params);
 	FREE(txt);
-	return dyn;
+	return res;
 }
 
-MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadParams params) {
+bool allocate_and_parse_pdb_from_string(MoleculeDynamic* md, CString pdb_string, PdbLoadParams params) {
+	free_molecule_structure(&md->molecule);
+	free_trajectory(&md->trajectory);
+
 	DynamicArray<vec3> positions;
 	DynamicArray<Label> labels;
 	DynamicArray<Element> elements;
@@ -31,10 +34,7 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 	DynamicArray<Chain> chains;
 	DynamicArray<Bond> bonds;
 	DynamicArray<BackboneSegment> backbone_segments;
-	DynamicArray<vec3> traj_position_data;
 
-	MoleculeDynamic md{ nullptr, nullptr };
-		
 	int current_res_id = -1;
 	char current_chain_id = -1;
 	int num_atoms = 0;
@@ -55,31 +55,27 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 		}
 		else if (compare_n(line, "ENDMDL", 6)) {
 			if (params & PDB_TREAT_MODELS_AS_FRAMES) {
-				if (!md.molecule) {
+				/*
+				if (!md->molecule) {
 					bonds = compute_covalent_bonds(positions, elements, residues);
 					backbone_segments = compute_backbone_segments(residues, labels);
 
-					md.molecule = allocate_molecule_structure(num_atoms, (int32)bonds.count, (int32)residues.count, (int32)chains.count, (int32)backbone_segments.count);
+					init_molecule_structure(&md->molecule, num_atoms, (int32)bonds.count, (int32)residues.count, (int32)chains.count, (int32)backbone_segments.count);
 
 					// Copy data into molecule
-					memcpy(md.molecule->atom_positions.data, positions.data, positions.size() * sizeof(vec3));
-					memcpy(md.molecule->atom_elements.data, elements.data, elements.size() * sizeof(Element));
-					memcpy(md.molecule->atom_labels.data, labels.data, labels.size() * sizeof(Label));
-					memcpy(md.molecule->atom_residue_indices.data, residue_indices.data, residue_indices.size() * sizeof(ResIdx));
+					memcpy(md->molecule.atom_positions.data, positions.data, positions.size() * sizeof(vec3));
+					memcpy(md->molecule.atom_elements.data, elements.data, elements.size() * sizeof(Element));
+					memcpy(md->molecule.atom_labels.data, labels.data, labels.size() * sizeof(Label));
+					memcpy(md->molecule.atom_residue_indices.data, residue_indices.data, residue_indices.size() * sizeof(ResIdx));
 
-					memcpy(md.molecule->residues.data, residues.data, residues.size() * sizeof(Residue));
-					memcpy(md.molecule->chains.data, chains.data, chains.size() * sizeof(Chain));
-					memcpy(md.molecule->bonds.data, bonds.data, bonds.size() * sizeof(Bond));
-					memcpy(md.molecule->backbone_segments.data, backbone_segments.data, backbone_segments.size() * sizeof(BackboneSegment));
+					memcpy(md->molecule.residues.data, residues.data, residues.size() * sizeof(Residue));
+					memcpy(md->molecule.chains.data, chains.data, chains.size() * sizeof(Chain));
+					memcpy(md->molecule.bonds.data, bonds.data, bonds.size() * sizeof(Bond));
+					memcpy(md->molecule.backbone_segments.data, backbone_segments.data, backbone_segments.size() * sizeof(BackboneSegment));
 				}
-				if (!md.trajectory) {
-					md.trajectory = (Trajectory*)MALLOC(sizeof(Trajectory));
-					new(md.trajectory) Trajectory();
-				}
+				*/
 
 				num_frames++;
-				traj_position_data.append(positions);
-                positions.clear();
 			}
 			else {
 				ASSERT(false);
@@ -160,38 +156,39 @@ MoleculeDynamic allocate_and_parse_pdb_from_string(CString pdb_string, PdbLoadPa
 		}
 	}
 
-	if (!md.molecule) {
-		bonds = compute_covalent_bonds(positions, elements, residues);
+	if (!md->molecule) {
+		auto mol_pos = positions.sub_array(0, num_atoms);
+		bonds = compute_covalent_bonds(mol_pos, elements, residues);
 		backbone_segments = compute_backbone_segments(residues, labels);
 
-		md.molecule = allocate_molecule_structure(num_atoms, (int32)bonds.count, (int32)residues.count, (int32)chains.count, (int32)backbone_segments.count);
+		init_molecule_structure(&md->molecule, num_atoms, (int32)bonds.count, (int32)residues.count, (int32)chains.count, (int32)backbone_segments.count);
 
 		// Copy data into molecule
-		memcpy(md.molecule->atom_positions.data, positions.data, positions.size() * sizeof(vec3));
-		memcpy(md.molecule->atom_elements.data, elements.data, elements.size() * sizeof(Element));
-		memcpy(md.molecule->atom_labels.data, labels.data, labels.size() * sizeof(Label));
-		memcpy(md.molecule->atom_residue_indices.data, residue_indices.data, residue_indices.size() * sizeof(ResIdx));
+		memcpy(md->molecule.atom_positions.data, mol_pos.data, num_atoms * sizeof(vec3));
+		memcpy(md->molecule.atom_elements.data, elements.data, num_atoms * sizeof(Element));
+		memcpy(md->molecule.atom_labels.data, labels.data, num_atoms * sizeof(Label));
+		memcpy(md->molecule.atom_residue_indices.data, residue_indices.data, num_atoms * sizeof(ResIdx));
 
-		memcpy(md.molecule->residues.data, residues.data, residues.size() * sizeof(Residue));
-		memcpy(md.molecule->chains.data, chains.data, chains.size() * sizeof(Chain));
-		memcpy(md.molecule->bonds.data, bonds.data, bonds.size() * sizeof(Bond));
-		memcpy(md.molecule->backbone_segments.data, backbone_segments.data, backbone_segments.size() * sizeof(BackboneSegment));
+		memcpy(md->molecule.residues.data, residues.data, residues.size() * sizeof(Residue));
+		memcpy(md->molecule.chains.data, chains.data, chains.size() * sizeof(Chain));
+		memcpy(md->molecule.bonds.data, bonds.data, bonds.size() * sizeof(Bond));
+		memcpy(md->molecule.backbone_segments.data, backbone_segments.data, backbone_segments.size() * sizeof(BackboneSegment));
 	}
 
-	if (md.trajectory && num_frames > 0) {
-		init_trajectory(md.trajectory, num_atoms, num_frames);
+	if (num_frames > 0) {
+		init_trajectory(&md->trajectory, num_atoms, num_frames);
 		// COPY POSITION DATA
 
-		ASSERT(traj_position_data.count > 0);
-		memcpy(md.trajectory->position_data.data, traj_position_data.data, sizeof(vec3) * traj_position_data.count);
+		ASSERT(positions.count > 0);
+		memcpy(md->trajectory.position_data.data, positions.data, sizeof(vec3) * positions.count);
 
-		for (int i = 0; i < md.trajectory->num_frames; i++) {
+		for (int i = 0; i < md->trajectory.num_frames; i++) {
 			int index = i;
 			float time = 0;
-			Array<vec3> atom_positions{ md.trajectory->position_data.beg() + i * md.trajectory->num_atoms, md.trajectory->num_atoms };
-			md.trajectory->frame_buffer[i] = { index, time, box, atom_positions };
+			Array<vec3> atom_positions{ md->trajectory.position_data.beg() + i * num_atoms, num_atoms };
+			md->trajectory.frame_buffer[i] = { index, time, box, atom_positions };
 		}
 	}
 
-	return md;
+	return true;
 }

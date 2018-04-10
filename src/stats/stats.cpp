@@ -97,10 +97,10 @@ static bool compute_atomic_distance(float* data, const Array<CString> args, cons
 	int32 atom_a = group_struct.beg_atom_idx + int_a;
 	int32 atom_b = group_struct.beg_atom_idx + int_b;
 
-    int32 count = dynamic.trajectory->num_frames;
+    int32 count = dynamic.trajectory.num_frames;
     for (int32 i = 0; i < count; i++) {
-        vec3 pos_a = dynamic.trajectory->frame_buffer[i].atom_positions[atom_a];
-        vec3 pos_b = dynamic.trajectory->frame_buffer[i].atom_positions[atom_b];
+        vec3 pos_a = dynamic.trajectory.frame_buffer[i].atom_positions[atom_a];
+        vec3 pos_b = dynamic.trajectory.frame_buffer[i].atom_positions[atom_b];
         data[i] = math::distance(pos_a, pos_b);
     }
 
@@ -120,11 +120,11 @@ static bool compute_atomic_angle(float* data, const Array<CString> args, const M
 	int32 atom_b = group_struct.beg_atom_idx + int_b;
 	int32 atom_c = group_struct.beg_atom_idx + int_c;
 
-	int32 count = dynamic.trajectory->num_frames;
+	int32 count = dynamic.trajectory.num_frames;
 	for (int32 i = 0; i < count; i++) {
-		vec3 pos_a = dynamic.trajectory->frame_buffer[i].atom_positions[atom_a];
-		vec3 pos_b = dynamic.trajectory->frame_buffer[i].atom_positions[atom_b];
-		vec3 pos_c = dynamic.trajectory->frame_buffer[i].atom_positions[atom_c];
+		vec3 pos_a = dynamic.trajectory.frame_buffer[i].atom_positions[atom_a];
+		vec3 pos_b = dynamic.trajectory.frame_buffer[i].atom_positions[atom_b];
+		vec3 pos_c = dynamic.trajectory.frame_buffer[i].atom_positions[atom_c];
 
 		data[i] = math::angle(pos_a - pos_b, pos_c - pos_b);
 	}
@@ -147,12 +147,12 @@ static bool compute_atomic_dihedral(float* data, const Array<CString> args, cons
     int32 atom_c = group_struct.beg_atom_idx + int_c;
     int32 atom_d = group_struct.beg_atom_idx + int_d;
 
-	int32 count = dynamic.trajectory->num_frames;
+	int32 count = dynamic.trajectory.num_frames;
 	for (int32 i = 0; i < count; i++) {
-		vec3 pos_a = dynamic.trajectory->frame_buffer[i].atom_positions[atom_a];
-		vec3 pos_b = dynamic.trajectory->frame_buffer[i].atom_positions[atom_b];
-		vec3 pos_c = dynamic.trajectory->frame_buffer[i].atom_positions[atom_c];
-		vec3 pos_d = dynamic.trajectory->frame_buffer[i].atom_positions[atom_d];
+		vec3 pos_a = dynamic.trajectory.frame_buffer[i].atom_positions[atom_a];
+		vec3 pos_b = dynamic.trajectory.frame_buffer[i].atom_positions[atom_b];
+		vec3 pos_c = dynamic.trajectory.frame_buffer[i].atom_positions[atom_c];
+		vec3 pos_d = dynamic.trajectory.frame_buffer[i].atom_positions[atom_d];
 
 		data[i] = dihedral_angle(pos_a, pos_b, pos_c, pos_d);
 	}
@@ -787,7 +787,7 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
 			GroupCommand* group_cmd = find_id(ctx.group_commands, group.cmd_id);
 			ASSERT(group_cmd);
 			DynamicArray<CString> args = ctokenize(group.args);
-			auto matching_structures = group_cmd->func(args, *dynamic.molecule);
+			auto matching_structures = group_cmd->func(args, dynamic.molecule);
 
 			if (matching_structures.count == 0) {
 				printf("WARNING! group '%s' did not match any structures.\n", group.name.beg());
@@ -812,7 +812,7 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
 		}
 	}
 
-	int32 count = dynamic.trajectory->num_frames;
+	int32 count = dynamic.trajectory.num_frames;
 	for (auto& prop : ctx.properties) {
 		if (!prop.valid) validate_property(&prop);
 		if (prop.valid && prop.data_beg_id == INVALID_ID) {

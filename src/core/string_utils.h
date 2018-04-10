@@ -307,6 +307,8 @@ CString get_file_without_extension(CString url);
 // Returns file extension part of url, ex: func("C:/folder/file.ext") should return "ext"
 CString get_file_extension(CString url);
 
+DynamicString get_relative_path(CString absolute_from, CString absolute_to);
+
 // Tokenizes a string into shorter strings based on some delimiter 
 // @TODO: Implement a CString instead of a char
 DynamicArray<String> tokenize(String str, char delimiter = ' ');

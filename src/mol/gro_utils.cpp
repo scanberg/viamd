@@ -3,15 +3,14 @@
 #include <mol/element.h>
 #include <mol/molecule_utils.h>
 
-MoleculeStructure* allocate_and_load_gro_from_file(const char* filename) {
+bool allocate_and_load_gro_from_file(MoleculeStructure* mol, const char* filename) {
 	String txt = allocate_and_read_textfile(filename);
-	auto mol = allocate_and_parse_gro_from_string(txt);
+	auto res = allocate_and_parse_gro_from_string(mol, txt);
 	FREE(txt);
-	return mol;
+	return res;
 }
 
-MoleculeStructure* allocate_and_parse_gro_from_string(CString gro_string) {
-
+bool allocate_and_parse_gro_from_string(MoleculeStructure* mol, CString gro_string) {
 	CString header;
 	CString length;
 
@@ -27,22 +26,11 @@ MoleculeStructure* allocate_and_parse_gro_from_string(CString gro_string) {
 	int res_count = 0;
     int cur_res = -1;
 
-	/*
-    struct GroAtom {
-		vec3 position;
-		vec3 velocity;
-		Label label {};
-		Element element;
-		int32 residue_idx;
-	};
-	*/
-
 	DynamicArray<vec3> positions;
 	DynamicArray<vec3> velocities;
 	DynamicArray<Label> labels;
 	DynamicArray<Element> elements;
 	DynamicArray<ResIdx> residue_indices;
-	//DynamicArray<GroAtom> atoms;
 	DynamicArray<Residue> residues;
 
 	char buffer[256] = {};
@@ -116,7 +104,7 @@ MoleculeStructure* allocate_and_parse_gro_from_string(CString gro_string) {
 	   	}
 	}
 
-	MoleculeStructure* mol = allocate_molecule_structure(num_atoms, (int)bonds.size(), (int)residues.size(), (int)chains.size(), (int)backbone_segments.size());
+	init_molecule_structure(mol, num_atoms, (int)bonds.size(), (int)residues.size(), (int)chains.size(), (int)backbone_segments.size());
 
 	// Copy data into molecule
 	memcpy(mol->atom_positions.data, positions.data, positions.size_in_bytes());
@@ -131,5 +119,5 @@ MoleculeStructure* allocate_and_parse_gro_from_string(CString gro_string) {
 
     //gro.box = mat3(vec3(box.x, 0, 0), vec3(0, box.y, 0), vec3(0, 0, box.z));
 
-	return mol;
+	return true;
 }

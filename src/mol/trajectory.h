@@ -35,4 +35,14 @@ struct Trajectory {
 	// For synchronization between threads
 	volatile bool is_loading = false;
     volatile bool signal_stop = false;
+
+	operator bool() const {
+		return num_atoms > 0 && frame_buffer.count > 0;
+	}
 };
+
+// Allocates space and initializes trajectory
+bool init_trajectory(Trajectory* traj, int32 num_atoms, int32 num_frames);
+
+// Frees memory allocated by trajectory
+void free_trajectory(Trajectory* traj);

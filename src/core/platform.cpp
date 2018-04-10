@@ -42,7 +42,7 @@ static void gl_callback(
 	(void)source; (void)type; (void)id;
 	(void)severity; (void)length; (void)userParam;
 
-	if (severity >= GL_DEBUG_SEVERITY_LOW)
+	if (severity > GL_DEBUG_SEVERITY_LOW)
 		fprintf(stderr, "%s\n\n", message);
 	if (severity == GL_DEBUG_SEVERITY_HIGH) {
 		fprintf(stderr, "Aborting...\n");
@@ -581,7 +581,7 @@ FileDialogResult open_file_dialog(CString filter) {
         printf("Error: %s\n", NFD_GetError() );
     }
     free(out_path);
-    return { path, FileDialogResult::CANCEL };
+    return { path, FileDialogResult::OK };
 }
 
 FileDialogResult save_file_dialog(CString filter) {
@@ -600,7 +600,7 @@ FileDialogResult save_file_dialog(CString filter) {
 		printf("Error: %s\n", NFD_GetError());
 	}
 	free(out_path);
-	return { path, FileDialogResult::CANCEL };
+	return { path, FileDialogResult::OK };
 }
 
 #ifdef OS_WINDOWS

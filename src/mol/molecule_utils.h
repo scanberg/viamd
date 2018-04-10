@@ -8,7 +8,7 @@
 
 enum class ColorMapping { STATIC_COLOR, CPK, RES_ID, RES_INDEX, CHAIN_ID, CHAIN_INDEX };
 
-typedef bool (*FilterCommandFunc)(Array<bool> mask, const MoleculeDynamic& dynamic, const Array<CString> args);
+typedef bool (*FilterCommandFunc)(Array<bool> mask, const MoleculeDynamic& dynamic, Array<const CString> args);
 
 struct FilterCommand {
     StringBuffer<16> keyword{};
@@ -83,12 +83,12 @@ inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backb
 }
 
 void transform_positions(Array<vec3> positions, const mat4& transformation);
-void compute_bounding_box(vec3* min_box, vec3* max_box, const Array<vec3> positions);
+void compute_bounding_box(vec3* min_box, vec3* max_box, Array<const vec3> positions);
 
-void linear_interpolation_periodic(Array<vec3> positions, const Array<vec3> prev_pos, const Array<vec3> next_pos, float t, mat3 sim_box);
-void linear_interpolation(Array<vec3> positions, const Array<vec3> prev_pos, const Array<vec3> next_pos, float t);
-void spline_interpolation_periodic(Array<vec3> positions, const Array<vec3> pos0, const Array<vec3> pos1, const Array<vec3> pos2, const Array<vec3> pos3, float t, mat3 sim_box);
-void spline_interpolation(Array<vec3> positions, const Array<vec3> pos0, const Array<vec3> pos1, const Array<vec3> pos2, const Array<vec3> pos3, float t);
+void linear_interpolation_periodic(Array<vec3> positions, Array<const vec3> prev_pos, Array<const vec3> next_pos, float t, mat3 sim_box);
+void linear_interpolation(Array<vec3> positions, Array<const vec3> prev_pos, Array<const vec3> next_pos, float t);
+void spline_interpolation_periodic(Array<vec3> positions, Array<const vec3> pos0, Array<const vec3> pos1, Array<const vec3> pos2, Array<const vec3> pos3, float t, mat3 sim_box);
+void spline_interpolation(Array<vec3> positions, Array<const vec3> pos0, Array<const vec3> pos1, Array<const vec3> pos2, Array<const vec3> pos3, float t);
 
 inline float dihedral_angle(const vec3& p0, const vec3& p1, const vec3& p2, const vec3& p3) {
     vec3 b1 = p1 - p0;
@@ -101,10 +101,10 @@ inline float dihedral_angle(const vec3& p0, const vec3& p1, const vec3& p2, cons
 
 inline float dihedral_angle(const vec3 p[4]) { return dihedral_angle(p[0], p[1], p[2], p[3]); }
 
-DynamicArray<Bond> compute_covalent_bonds(const Array<vec3> atom_pos, const Array<Element> atom_elem, const Array<Residue> residues = {});
-DynamicArray<Chain> compute_chains(const Array<Residue> residue, const Array<Bond> bonds, const Array<ResIdx> atom_residue_indices = {});
-DynamicArray<BackboneSegment> compute_backbone_segments(const Array<Residue> residues, const Array<Label> atom_labels);
-DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Array<uint32> colors, const Array<BackboneSegment>& backbone,
+DynamicArray<Bond> compute_covalent_bonds(Array<const vec3> atom_pos, Array<const Element> atom_elem, Array<const Residue> residues = {});
+DynamicArray<Chain> compute_chains(Array<const Residue> residue, Array<const Bond> bonds, Array<const ResIdx> atom_residue_indices = {});
+DynamicArray<BackboneSegment> compute_backbone_segments(Array<const Residue> residues, Array<const Label> atom_labels);
+DynamicArray<SplineSegment> compute_spline(Array<const vec3> atom_pos, Array<const uint32> colors, Array<const BackboneSegment> backbone,
                                            int32 num_subdivisions = 1, float tension = 0.5f);
 
 // Computes the dihedral angles within the backbone:
@@ -112,15 +112,15 @@ DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Arr
 // phi   = dihedral( C[i-1], N[i],  CA[i],  C[i])
 // psi   = dihedral( N[i],  CA[i],   C[i],  N[i+1])
 // As seen here https://en.wikipedia.org/wiki/Ramachandran_plot.
-DynamicArray<BackboneAngles> compute_backbone_angles(const Array<vec3> atom_pos, const Array<BackboneSegment> backbone_segments);
-void compute_backbone_angles(Array<BackboneAngles> dst, const Array<vec3> atom_pos, const Array<BackboneSegment> backbone_segments);
+DynamicArray<BackboneAngles> compute_backbone_angles(Array<const vec3> atom_pos, Array<const BackboneSegment> backbone_segments);
+void compute_backbone_angles(Array<BackboneAngles> dst, Array<const vec3> atom_pos, Array<const BackboneSegment> backbone_segments);
 
 void init_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const MoleculeDynamic& dynamic);
 void free_backbone_angles_trajectory(BackboneAnglesTrajectory* data);
 void compute_backbone_angles_trajectory(BackboneAnglesTrajectory* bb_angle_traj, const MoleculeDynamic& dynamic);
 
-DynamicArray<float> compute_atom_radii(const Array<Element> elements);
-void compute_atom_radii(Array<float> radii_dst, const Array<Element> elements);
+DynamicArray<float> compute_atom_radii(Array<const Element> elements);
+void compute_atom_radii(Array<float> radii_dst, Array<const Element> elements);
 
 DynamicArray<uint32> compute_atom_colors(const MoleculeStructure& mol, ColorMapping mapping, uint32 static_color = 0xffffffff);
 void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, ColorMapping mapping, uint32 static_color = 0xffffffff);
@@ -146,16 +146,16 @@ inline bool is_amino_acid(Residue res) { return aminoacid::get_from_string(res.n
 namespace draw {
 void initialize();
 void shutdown();
-void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, const Array<uint32> atom_colors, const mat4& view_mat,
+void draw_vdw(Array<const vec3> atom_positions, Array<const float> atom_radii, Array<const uint32> atom_colors, const mat4& view_mat,
               const mat4& proj_mat, float radii_scale = 1.f);
-void draw_licorice(const Array<vec3> atom_positions, const Array<Bond> atom_bonds, const Array<uint32> atom_colors, const mat4& view_mat,
+void draw_licorice(Array<const vec3> atom_positions, Array<const Bond> atom_bonds, Array<const uint32> atom_colors, const mat4& view_mat,
                    const mat4& proj_mat, float radii_scale = 1.f);
-void draw_ribbons(const Array<BackboneSegment> backbone_segments, const Array<Chain> chains, const Array<vec3> atom_positions,
-                  const Array<uint32> atom_colors, const mat4& view_mat, const mat4& proj_mat, int num_subdivisions = 8, float tension = 0.5f);
+void draw_ribbons(Array<const BackboneSegment> backbone_segments, Array<const Chain> chains, Array<const vec3> atom_positions,
+                  Array<const uint32> atom_colors, const mat4& view_mat, const mat4& proj_mat, int num_subdivisions = 8, float tension = 0.5f, float width_scale = 1.f, float thickness_scale = 1.f);
 
 // DEBUG
-void draw_backbone(const Array<BackboneSegment> backbone, const Array<vec3> atom_positions, const mat4& view_mat, const mat4& proj_mat);
-void draw_spline(const Array<SplineSegment> spline, const mat4& view_mat, const mat4& proj_mat);
+void draw_backbone(Array<const BackboneSegment> backbone, Array<const vec3> atom_positions, const mat4& view_mat, const mat4& proj_mat);
+void draw_spline(Array<const SplineSegment> spline, const mat4& view_mat, const mat4& proj_mat);
 
 }  // namespace draw
 
@@ -165,7 +165,7 @@ void shutdown();
 
 void clear_accumulation_texture();
 // Radius is given as percentage of normalized texture space coordinates (1.0 = 1% of texture width and height)
-void compute_accumulation_texture(const Array<BackboneAngles> angles, vec4 color, float radius = 1.f, float outline = 0.f);
+void compute_accumulation_texture(Array<const BackboneAngles> angles, vec4 color, float radius = 1.f, float outline = 0.f);
 uint32 get_accumulation_texture();
 uint32 get_segmentation_texture();
 }  // namespace ramachandran

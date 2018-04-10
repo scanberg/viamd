@@ -56,7 +56,8 @@ void copy_n(String dst, CString src, int64 num_chars) {
 
 String allocate_string(CString str) {
 	if (str.count == 0) return {};
-	char* data = (char*)MALLOC(str.count);
+	char* data = (char*)MALLOC(str.count + 1);
+	strncpy(data, str.data, str.count + 1);
 	return { data, str.count };
 }
 
@@ -273,6 +274,25 @@ inline static bool char_in_string(char c, CString str) {
 		if (c == str[i]) return true;
 	}
 	return false;
+}
+
+DynamicString get_relative_path(CString from, CString to) {
+	CString from_dir = get_directory(from);
+	CString to_dir = get_directory(to);
+	const char* c_from = from_dir.beg();
+	const char* c_to = to_dir.beg();
+	while (c_from != from.end() && c_to != to.end() && *c_from == *c_to) {
+		c_from++;
+		c_to++;
+	}
+
+	int dir_count = 0;
+	for (const char* c = c_from; c != from_dir.end(); c++) /* <- LOL! */ {
+		if (*c == '\\' || *c == '/') dir_count++;
+	}
+
+	DynamicString res;
+	// @TODO: .. fill in
 }
 
 DynamicArray<String> tokenize(String str, char delimiter) {

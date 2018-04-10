@@ -11,7 +11,7 @@ struct Array {
     template <size_t N>
     Array(const T (&c_arr)[N]) : data(c_arr), count(N) {}
 
-    Array sub_array(int64 _offset, int64 _count = -1) {
+    Array<T> sub_array(int64 _offset, int64 _count = -1) {
         ASSERT(0 <= _offset);
 		ASSERT(_count >= -1);
         if (_count == -1) {
@@ -20,6 +20,16 @@ struct Array {
 		ASSERT((_offset + _count) <= this->count);
         return {data + _offset, _count};
     }
+
+	Array<const T> sub_array(int64 _offset, int64 _count = -1) const {
+		ASSERT(0 <= _offset);
+		ASSERT(_count >= -1);
+		if (_count == -1) {
+			_count = (this->count - _offset) > 0 ? (this->count - _offset) : 0;
+		}
+		ASSERT((_offset + _count) <= this->count);
+		return { data + _offset, _count };
+	}
 
     const T* begin() const { return data; }
     const T* beg() const { return data; }
@@ -40,6 +50,8 @@ struct Array {
     operator bool() const { return data != nullptr && count > 0; }
     const T& operator[](int64 i) const { return data[i]; }
     T& operator[](int64 i) { return data[i]; }
+
+	operator Array<const T>() const { return { data, count }; }
 
     T* data;
     int64 count;

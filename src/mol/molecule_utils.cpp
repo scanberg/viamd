@@ -15,7 +15,7 @@ void transform_positions(Array<vec3> positions, const mat4& transformation) {
     }
 }
 
-void compute_bounding_box(vec3* min_box, vec3* max_box, const Array<vec3> positions) {
+void compute_bounding_box(vec3* min_box, vec3* max_box, Array<const vec3> positions) {
     ASSERT(min_box);
     ASSERT(max_box);
 
@@ -38,7 +38,7 @@ inline bool periodic_jump(const vec3& p_prev, const vec3& p_next, const vec3& ha
 	return false;
 }
 
-void linear_interpolation(Array<vec3> positions, const Array<vec3> prev_pos, const Array<vec3> next_pos, float t) {
+void linear_interpolation(Array<vec3> positions, Array<const vec3> prev_pos, Array<const vec3> next_pos, float t) {
     ASSERT(prev_pos.count == positions.count);
     ASSERT(next_pos.count == positions.count);
 
@@ -49,7 +49,7 @@ void linear_interpolation(Array<vec3> positions, const Array<vec3> prev_pos, con
 
 // @TODO: Fix this, is it possible in theory to get a good interpolation between frames with periodicity without modifying source data?
 // @PERFORMANCE: VECTORIZE THE LIVING SHIET OUT OF THIS
-void linear_interpolation_periodic(Array<vec3> positions, const Array<vec3> prev_pos, const Array<vec3> next_pos, float t, mat3 sim_box) {
+void linear_interpolation_periodic(Array<vec3> positions, Array<const vec3> prev_pos, Array<const vec3> next_pos, float t, mat3 sim_box) {
     ASSERT(prev_pos.count == positions.count);
     ASSERT(next_pos.count == positions.count);
 
@@ -70,7 +70,7 @@ void linear_interpolation_periodic(Array<vec3> positions, const Array<vec3> prev
     }
 }
 
-void spline_interpolation_periodic(Array<vec3> positions, const Array<vec3> pos0, const Array<vec3> pos1, const Array<vec3> pos2, const Array<vec3> pos3, float t, mat3 sim_box) {
+void spline_interpolation_periodic(Array<vec3> positions, Array<const vec3> pos0, Array<const vec3> pos1, Array<const vec3> pos2, Array<const vec3> pos3, float t, mat3 sim_box) {
 	ASSERT(pos0.count == positions.count);
 	ASSERT(pos1.count == positions.count);
 	ASSERT(pos2.count == positions.count);
@@ -97,7 +97,7 @@ void spline_interpolation_periodic(Array<vec3> positions, const Array<vec3> pos0
 	}
 }
 
-void spline_interpolation(Array<vec3> positions, const Array<vec3> pos0, const Array<vec3> pos1, const Array<vec3> pos2, const Array<vec3> pos3, float t) {
+void spline_interpolation(Array<vec3> positions, Array<const vec3> pos0, Array<const vec3> pos1, Array<const vec3> pos2, Array<const vec3> pos3, float t) {
 	ASSERT(pos0.count == positions.count);
 	ASSERT(pos1.count == positions.count);
 	ASSERT(pos2.count == positions.count);
@@ -113,7 +113,7 @@ void spline_interpolation(Array<vec3> positions, const Array<vec3> pos0, const A
 	}
 }
 
-DynamicArray<Bond> compute_covalent_bonds(const Array<vec3> atom_pos, const Array<Element> atom_elem, const Array<Residue> residues) {
+DynamicArray<Bond> compute_covalent_bonds(Array<const vec3> atom_pos, Array<const Element> atom_elem, Array<const Residue> residues) {
     ASSERT(atom_pos.count == atom_elem.count);
 
     DynamicArray<Bond> bonds;
@@ -174,21 +174,9 @@ DynamicArray<Bond> compute_covalent_bonds(const Array<vec3> atom_pos, const Arra
     return bonds;
 }
 
-/*
-static inline bool idx_in_residue(int idx, const Residue& res) { return res.beg_atom_idx <= idx && idx < res.end_atom_idx; }
-
-static bool residues_are_connected(Residue res_a, Residue res_b, const Array<Bond> bonds) {
-        for (const auto& bond : bonds) {
-                if (idx_in_residue(bond.idx_a, res_a) && idx_in_residue(bond.idx_b, res_b)) return true;
-                if (idx_in_residue(bond.idx_b, res_a) && idx_in_residue(bond.idx_a, res_b)) return true;
-        }
-        return false;
-}
-*/
-
 // @NOTE this method is sub-optimal and can surely be improved...
 // Residues should have no more than 2 potential connections to other residues.
-DynamicArray<Chain> compute_chains(const Array<Residue> residues, const Array<Bond> bonds, const Array<ResIdx> atom_residue_indices) {
+DynamicArray<Chain> compute_chains(Array<const Residue> residues, Array<const Bond> bonds, Array<const ResIdx> atom_residue_indices) {
     DynamicArray<Bond> residue_bonds;
 
     if (atom_residue_indices) {
@@ -246,7 +234,7 @@ bool match(const Label& lbl, const char (&cstr)[N]) {
     return true;
 }
 
-DynamicArray<BackboneSegment> compute_backbone_segments(const Array<Residue> residues, const Array<Label> atom_labels) {
+DynamicArray<BackboneSegment> compute_backbone_segments(Array<const Residue> residues, Array<const Label> atom_labels) {
     DynamicArray<BackboneSegment> segments;
     for (auto& res : residues) {
         auto ca_idx = -1;
@@ -284,7 +272,7 @@ DynamicArray<BackboneSegment> compute_backbone_segments(const Array<Residue> res
     return segments;
 }
 
-DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Array<uint32> colors, const Array<BackboneSegment>& backbone,
+DynamicArray<SplineSegment> compute_spline(Array<const vec3> atom_pos, Array<const uint32> colors, Array<const BackboneSegment> backbone,
                                            int num_subdivisions, float tension) {
     if (backbone.count < 4) return {};
 
@@ -385,14 +373,14 @@ DynamicArray<SplineSegment> compute_spline(const Array<vec3> atom_pos, const Arr
     return segments;
 }
 
-DynamicArray<BackboneAngles> compute_backbone_angles(const Array<vec3> pos, const Array<BackboneSegment> backbone) {
+DynamicArray<BackboneAngles> compute_backbone_angles(Array<const vec3> pos, Array<const BackboneSegment> backbone) {
     if (backbone.count == 0) return {};
     DynamicArray<BackboneAngles> angles(backbone.count);
     compute_backbone_angles(angles, pos, backbone);
     return angles;
 }
 
-void compute_backbone_angles(Array<BackboneAngles> dst, const Array<vec3> pos, const Array<BackboneSegment> backbone_segments) {
+void compute_backbone_angles(Array<BackboneAngles> dst, Array<const vec3> pos, Array<const BackboneSegment> backbone_segments) {
     ASSERT(dst.count >= backbone_segments.count);
     float omega, phi, psi;
 
@@ -429,8 +417,8 @@ void init_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const Molec
         FREE(data->angle_data.data);
     }
 
-    int32 alloc_count = (int32)dynamic.molecule->backbone_segments.count * (int32)dynamic.trajectory->frame_buffer.count;
-    data->num_segments = (int32)dynamic.molecule->backbone_segments.count;
+    int32 alloc_count = (int32)dynamic.molecule.backbone_segments.count * (int32)dynamic.trajectory.frame_buffer.count;
+    data->num_segments = (int32)dynamic.molecule.backbone_segments.count;
     data->num_frames = 0;
     data->angle_data = {(BackboneAngles*)CALLOC(alloc_count, sizeof(BackboneAngles)), alloc_count};
 }
@@ -445,10 +433,10 @@ void free_backbone_angles_trajectory(BackboneAnglesTrajectory* data) {
 
 void compute_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const MoleculeDynamic& dynamic) {
     ASSERT(dynamic.trajectory && dynamic.molecule);
-    if (dynamic.trajectory->num_frames == 0 || dynamic.molecule->backbone_segments.count == 0) return;
+    if (dynamic.trajectory.num_frames == 0 || dynamic.molecule.backbone_segments.count == 0) return;
 
     //@NOTE: Trajectory may be loading while this is taking place, therefore read num_frames once and stick to that
-    auto traj_num_frames = dynamic.trajectory->num_frames;
+    auto traj_num_frames = dynamic.trajectory.num_frames;
 
     // @NOTE: If we are up to date, no need to compute anything
     if (traj_num_frames == data->num_frames) {
@@ -458,23 +446,23 @@ void compute_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const Mo
     // @TODO: parallelize?
     // @NOTE: Only compute data for indices which are new
     for (int32 f_idx = data->num_frames; f_idx < traj_num_frames; f_idx++) {
-        auto frame_pos = get_trajectory_positions(*dynamic.trajectory, f_idx);
+        auto frame_pos = get_trajectory_positions(dynamic.trajectory, f_idx);
         auto frame_angles = get_backbone_angles(*data, f_idx);
-        for (const auto& c : dynamic.molecule->chains) {
-            auto bb_segments = get_backbone(*dynamic.molecule, c);
+        for (const auto& c : dynamic.molecule.chains) {
+            auto bb_segments = get_backbone(dynamic.molecule, c);
             auto bb_angles = frame_angles.sub_array(c.beg_res_idx, c.end_res_idx - c.beg_res_idx);
             compute_backbone_angles(bb_angles, frame_pos, bb_segments);
         }
     }
 }
 
-DynamicArray<float> compute_atom_radii(const Array<Element> elements) {
+DynamicArray<float> compute_atom_radii(Array<const Element> elements) {
     DynamicArray<float> radii(elements.count, 0);
     compute_atom_radii(radii, elements);
     return radii;
 }
 
-void compute_atom_radii(Array<float> radii_dst, const Array<Element> elements) {
+void compute_atom_radii(Array<float> radii_dst, Array<const Element> elements) {
     ASSERT(radii_dst.count <= elements.count);
     for (int64 i = 0; i < radii_dst.count; i++) {
         radii_dst[i] = element::vdw_radius(elements[i]);
@@ -576,12 +564,6 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
 }
 
 namespace filter {
-struct Token {
-    enum Type { SYMBOL, IDENTIFIER, NUMBER, COMMAND };
-    Type type;
-    CString data;
-};
-
 static DynamicArray<FilterCommand> filter_commands;
 
 static bool is_modifier(CString str) {
@@ -755,10 +737,10 @@ bool internal_filter_mask(Array<bool> mask, const MoleculeDynamic& dyn, CString 
 }
 
 bool compute_filter_mask(Array<bool> mask, const MoleculeDynamic& dyn, CString filter) {
-    auto count = dyn.molecule->atom_elements.count;
-    ASSERT(count == dyn.molecule->atom_labels.count);
-    ASSERT(count == dyn.molecule->atom_positions.count);
-    ASSERT(count == dyn.molecule->atom_residue_indices.count);
+    auto count = dyn.molecule.atom_elements.count;
+    ASSERT(count == dyn.molecule.atom_labels.count);
+    ASSERT(count == dyn.molecule.atom_positions.count);
+    ASSERT(count == dyn.molecule.atom_residue_indices.count);
     ASSERT(count == mask.count);
 
     if (count_parentheses(filter) != 0) {
@@ -780,6 +762,45 @@ void filter_colors(Array<uint32> colors, Array<bool> mask) {
     }
 }
 
+static inline bool is_range(CString arg) {
+	for (const char* c = arg.beg(); c != arg.end(); c++) {
+		if (*c == '-') return true;
+	}
+	return false;
+}
+
+static inline bool get_range(int* first, int* last, CString arg) {
+	const char* mid = arg.beg();
+	while (mid != arg.end() && *mid != '-') mid++;
+	if (mid == arg.end()) return false;
+	auto range_first = to_int32(CString(arg.beg(), mid));
+	auto range_last = to_int32(CString(mid + 1, arg.end()));
+	
+	if (!range_first.success || !range_last.success) return false;
+	*first = range_first;
+	*last = range_last;
+
+	return true;
+}
+
+static inline bool get_ranges(DynamicArray<ivec2>* ranges, Array<const CString> args) {
+	ASSERT(ranges);
+
+	for (auto arg : args) {
+		if (is_range(arg)) {
+			ivec2 r;
+			if (!get_range(&r.x, &r.y, arg)) return false;
+			ranges->push_back(r);
+		}
+		else {
+			auto res = to_int(arg);
+			if (!res.success) return false;
+			ranges->push_back({ res.value, res.value });
+		}
+	}
+	return true;
+}
+
 void initialize() {
 
     /*
@@ -787,6 +808,7 @@ void initialize() {
             water
             aminoacid
             backbone?
+			protein
 
             name
             element
@@ -799,53 +821,55 @@ void initialize() {
             chainid
     */
 
-    filter_commands.push_back({"all", [](Array<bool> mask, const MoleculeDynamic&, const Array<CString>) {
+	auto filter_amino_acid = [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString>) {
+			memset(mask.data, 0, mask.count);
+			for (const auto& res : dyn.molecule.residues) {
+				if (is_amino_acid(res)) {
+					memset(mask.data + res.beg_atom_idx, 1, (res.end_atom_idx - res.beg_atom_idx));
+				}
+			}
+			return true;
+		};
+
+    filter_commands.push_back({"all", [](Array<bool> mask, const MoleculeDynamic&, Array<const CString>) {
                                    memset(mask.data, 1, mask.count);
                                    return true;
                                }});
-    filter_commands.push_back({"water", [](Array<bool>, const MoleculeDynamic&, const Array<CString>) { return true; }});  // NOT DONE
-    filter_commands.push_back({"aminoacid", [](Array<bool> mask, const MoleculeDynamic& dyn, const Array<CString>) {
-                                   memset(mask.data, 0, mask.count);
-                                   for (const auto& res : dyn.molecule->residues) {
-                                       if (is_amino_acid(res)) {
-                                           memset(mask.data + res.beg_atom_idx, 1, (res.end_atom_idx - res.beg_atom_idx));
-                                       }
-                                   }
-                                   return true;
-                               }});
-    filter_commands.push_back({"backbone", [](Array<bool>, const MoleculeDynamic&, const Array<CString>) { return true; }});  // NOT DONE
+    filter_commands.push_back({ "water", [](Array<bool>, const MoleculeDynamic&, Array<const CString>) { return true; }});  // NOT DONE
+	filter_commands.push_back({ "aminoacid", filter_amino_acid });
+    filter_commands.push_back({ "backbone", [](Array<bool>, const MoleculeDynamic&, Array<const CString>) { return true; }});  // NOT DONE
+	filter_commands.push_back({ "protein", filter_amino_acid });
 
-    filter_commands.push_back({"name", [](Array<bool> mask, const MoleculeDynamic& dyn, const Array<CString> args) {
+    filter_commands.push_back({"name", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
                                    if (args.count == 0) return false;
 
-                                   for (int i = 0; i < dyn.molecule->atom_labels.count; i++) {
+                                   for (int i = 0; i < dyn.molecule.atom_labels.count; i++) {
                                        mask[i] = false;
                                        for (const auto& arg : args) {
-                                           if (compare(dyn.molecule->atom_labels[i], arg)) {
+                                           if (compare(dyn.molecule.atom_labels[i], arg)) {
                                                mask[i] = true;
                                                break;
                                            }
                                        }
                                    }
-
                                    return true;
                                }});
 
-    filter_commands.push_back({"label", [](Array<bool> mask, const MoleculeDynamic& dyn, const Array<CString> args) {
+    filter_commands.push_back({"label", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
                                    return find_filter_command("label")->func(mask, dyn, args);
                                }});
 
-    filter_commands.push_back({"element", [](Array<bool> mask, const MoleculeDynamic& dyn, const Array<CString> args) {
+    filter_commands.push_back({"element", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
                                    Array<Element> elements = {(Element*)(TMP_MALLOC(args.count * sizeof(Element))), args.count};
                                    for (int i = 0; i < elements.count; i++) {
                                        elements[i] = element::get_from_string(args[i]);
                                        if (elements[i] == Element::Unknown) return false;
                                    }
 
-                                   for (int i = 0; i < dyn.molecule->atom_elements.count; i++) {
+                                   for (int i = 0; i < dyn.molecule.atom_elements.count; i++) {
                                        mask[i] = false;
                                        for (const auto& ele : elements) {
-                                           if (dyn.molecule->atom_elements[i] == ele) {
+                                           if (dyn.molecule.atom_elements[i] == ele) {
                                                mask[i] = true;
                                                break;
                                            }
@@ -855,64 +879,68 @@ void initialize() {
                                    return true;
                                }});
 
-    filter_commands.push_back({"atomicnumber", [](Array<bool> mask, const MoleculeDynamic& dyn, const Array<CString> args) {
-                                   Array<int> numbers = {(int*)(TMP_MALLOC(args.count * sizeof(int))), args.count};
-                                   for (int i = 0; i < numbers.count; i++) {
-                                       auto res = to_int(args[i]);
-                                       if (!res.success) return false;
-                                       numbers[i] = res.value;
-                                   }
-                                   for (int i = 0; i < dyn.molecule->atom_elements.count; i++) {
+    filter_commands.push_back({"atomicnumber", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
+								   DynamicArray<ivec2> ranges;
+								   if (!get_ranges(&ranges, args)) return false;
+                                   for (int i = 0; i < dyn.molecule.atom_elements.count; i++) {
+									   int atomnr = (int)dyn.molecule.atom_elements[i];
                                        mask[i] = false;
-                                       for (int number : numbers) {
-                                           if ((int)dyn.molecule->atom_elements[i] == number) {
-                                               mask[i] = true;
-                                               break;
-                                           }
-                                       }
+									   for (ivec2 range : ranges) {
+										   if (range.x <= atomnr && atomnr <= range.y) {
+											   mask[i] = true;
+											   break;
+										   }
+									   }
                                    }
-                                   TMP_FREE(numbers.data);
                                    return true;
                                }});
 
-    filter_commands.push_back({"atom", [](Array<bool> mask, const MoleculeDynamic& dyn, const Array<CString> args) {
-                                   Array<int> indices = {(int*)(TMP_MALLOC(args.count * sizeof(int))), args.count};
-                                   for (int i = 0; i < indices.count; i++) {
-                                       auto res = to_int(args[i]);
-                                       if (!res.success) return false;
-                                       indices[i] = res.value;
-                                   }
-                                   for (int i = 0; i < dyn.molecule->atom_positions.count; i++) {
-                                       mask[i] = false;
-                                       for (int idx : indices) {
-                                           if (i == idx) {
-                                               mask[i] = true;
-                                               break;
-                                           }
-                                       }
-                                   }
-                                   TMP_FREE(indices.data);
+    filter_commands.push_back({"atom", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
+									DynamicArray<ivec2> ranges;
+									if (!get_ranges(&ranges, args)) return false;
+								   memset(mask.data, 0, mask.size_in_bytes());
+								   for (auto range : ranges) {
+									   range.x = math::clamp(range.x - 1, 0, (int32)dyn.molecule.atom_positions.count - 1);
+									   range.y = math::clamp(range.y - 1, 0, (int32)dyn.molecule.atom_positions.count - 1);
+									   if (range.x == range.y)
+										   mask[range.x] = true;
+									   else
+											memset(mask.data + range.x, 1, range.y - range.x + 1);
+								   }
                                    return true;
                                }});
 
-    filter_commands.push_back({"residue", [](Array<bool> mask, const MoleculeDynamic& dyn, const Array<CString> args) {
-                                   memset(mask.data, 0, mask.count);
+    filter_commands.push_back({"residue", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
+									DynamicArray<ivec2> ranges;
+									if (!get_ranges(&ranges, args)) return false;
+                                   memset(mask.data, 0, mask.size_in_bytes());
+								   for (auto range : ranges) {
+									   range.x = math::clamp(range.x, 0, (int32)dyn.molecule.residues.count - 1);
+									   range.y = math::clamp(range.y, 0, (int32)dyn.molecule.residues.count - 1);
+									   for (int i = range.x; i <= range.y; i++) {
+										   int beg = dyn.molecule.residues[i].beg_atom_idx;
+										   int end = dyn.molecule.residues[i].end_atom_idx;
+										   memset(mask.data + beg, 1, end - beg);
+									   }
+								   }
+								   /*
                                    for (int i = 0; i < args.count; i++) {
                                        auto res = to_int(args[i]);
                                        if (!res.success) return false;
                                        int res_idx = res.value;
-                                       if (res_idx < 0 || dyn.molecule->residues.count <= res_idx) return false;
-                                       int beg = dyn.molecule->residues[res_idx].beg_atom_idx;
-                                       int end = dyn.molecule->residues[res_idx].end_atom_idx;
+                                       if (res_idx < 0 || dyn.molecule.residues.count <= res_idx) return false;
+                                       int beg = dyn.molecule.residues[res_idx].beg_atom_idx;
+                                       int end = dyn.molecule.residues[res_idx].end_atom_idx;
                                        memset(mask.data + beg, 1, end - beg);
                                    }
+								   */
                                    return true;
                                }});
 
-    filter_commands.push_back({"resname", [](Array<bool> mask, const MoleculeDynamic& dyn, const Array<CString> args) {
+    filter_commands.push_back({"resname", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
                                    memset(mask.data, 0, mask.count);
                                    for (int i = 0; i < args.count; i++) {
-                                       for (const auto& res : dyn.molecule->residues) {
+                                       for (const auto& res : dyn.molecule.residues) {
                                            if (compare(args[i], res.name)) {
                                                int beg = res.beg_atom_idx;
                                                int end = res.end_atom_idx;
@@ -923,42 +951,71 @@ void initialize() {
                                    return true;
                                }});
 
-    filter_commands.push_back({"resid", [](Array<bool> mask, const MoleculeDynamic& dyn, const Array<CString> args) {
+    filter_commands.push_back({"resid", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
+									DynamicArray<ivec2> ranges;
+									if (!get_ranges(&ranges, args)) return false;
+									memset(mask.data, 0, mask.size_in_bytes());
+									for (auto range : ranges) {
+										range.x = math::clamp(range.x - 1, 0, (int32)dyn.molecule.residues.count - 1);
+										range.y = math::clamp(range.y - 1, 0, (int32)dyn.molecule.residues.count - 1);
+										for (int i = range.x; i <= range.y; i++) {
+											int beg = dyn.molecule.residues[i].beg_atom_idx;
+											int end = dyn.molecule.residues[i].end_atom_idx;
+											memset(mask.data + beg, 1, end - beg);
+										}
+									}
+									/*
                                    memset(mask.data, 0, mask.count);
                                    for (int i = 0; i < args.count; i++) {
                                        auto res = to_int(args[i]);
                                        if (!res.success) return false;
                                        int res_idx = res.value - 1;
-                                       if (res_idx < 0 || dyn.molecule->residues.count <= res_idx) return false;
-                                       int beg = dyn.molecule->residues[res_idx].beg_atom_idx;
-                                       int end = dyn.molecule->residues[res_idx].end_atom_idx;
+                                       if (res_idx < 0 || dyn.molecule.residues.count <= res_idx) return false;
+                                       int beg = dyn.molecule.residues[res_idx].beg_atom_idx;
+                                       int end = dyn.molecule.residues[res_idx].end_atom_idx;
                                        memset(mask.data + beg, 1, end - beg);
                                    }
+								   */
                                    return true;
                                }});
 
-    filter_commands.push_back({"chain", [](Array<bool> mask, const MoleculeDynamic& dyn, const Array<CString> args) {
+    filter_commands.push_back({"chain", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
+									DynamicArray<ivec2> ranges;
+									if (!get_ranges(&ranges, args)) return false;
+									memset(mask.data, 0, mask.size_in_bytes());
+									for (auto range : ranges) {
+										range.x = math::clamp(range.x - 1, 0, (int32)dyn.molecule.residues.count - 1);
+										range.y = math::clamp(range.y - 1, 0, (int32)dyn.molecule.residues.count - 1);
+										for (int i = range.x; i <= range.y; i++) {
+											Chain chain = get_chain(dyn.molecule, (ChainIdx)i);
+											int beg = get_atom_beg_idx(dyn.molecule, chain);
+											int end = get_atom_end_idx(dyn.molecule, chain);
+											memset(mask.data + beg, 1, end - beg);
+										}
+									}
+									/*
                                    memset(mask.data, 0, mask.count);
                                    for (int i = 0; i < args.count; i++) {
                                        auto res = to_int(args[i]);
                                        if (!res.success) return false;
                                        ChainIdx chain_idx = (ChainIdx)res.value - 1;
-                                       if (chain_idx < 0 || dyn.molecule->chains.count <= chain_idx) return false;
-                                       Chain chain = get_chain(*dyn.molecule, chain_idx);
-                                       int beg = get_atom_beg_idx(*dyn.molecule, chain);
-                                       int end = get_atom_end_idx(*dyn.molecule, chain);
+                                       if (chain_idx < 0 || dyn.molecule.chains.count <= chain_idx) return false;
+                                       Chain chain = get_chain(dyn.molecule, chain_idx);
+                                       int beg = get_atom_beg_idx(dyn.molecule, chain);
+                                       int end = get_atom_end_idx(dyn.molecule, chain);
                                        memset(mask.data + beg, 1, end - beg);
                                    }
+								   */
                                    return true;
                                }});
 
-    filter_commands.push_back({"chainid", [](Array<bool> mask, const MoleculeDynamic& dyn, const Array<CString> args) {
+    filter_commands.push_back({"chainid", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
                                    memset(mask.data, 0, mask.count);
                                    for (int i = 0; i < args.count; i++) {
-                                       for (const auto& chain : dyn.molecule->chains) {
+                                       for (const auto& chain : dyn.molecule.chains) {
                                            if (compare(args[i], chain.id)) {
-                                               int beg = get_atom_beg_idx(*dyn.molecule, chain);
-                                               int end = get_atom_end_idx(*dyn.molecule, chain);
+                                               int beg = get_atom_beg_idx(dyn.molecule, chain);
+                                               int end = get_atom_end_idx(dyn.molecule, chain);
                                                memset(mask.data + beg, 1, end - beg);
                                            }
                                        }
@@ -1874,7 +1931,7 @@ void shutdown() {
     ramachandran::shutdown();
 }
 
-void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, const Array<uint32> atom_colors, const mat4& view_mat,
+void draw_vdw(Array<const vec3> atom_positions, Array<const float> atom_radii, Array<const uint32> atom_colors, const mat4& view_mat,
               const mat4& proj_mat, float radii_scale) {
     int32 count = (int32)atom_positions.count;
     ASSERT(count == atom_radii.count && count == atom_colors.count);
@@ -1950,20 +2007,20 @@ void draw_vdw(const Array<vec3> atom_positions, const Array<float> atom_radii, c
     glDisable(GL_DEPTH_TEST);
 }
 
-void draw_licorice(const Array<vec3> atom_positions, const Array<Bond> atom_bonds, const Array<uint32> atom_colors, const mat4& view_mat,
+void draw_licorice(Array<const vec3> atom_positions, Array<const Bond> atom_bonds, Array<const uint32> atom_colors, const mat4& view_mat,
                    const mat4& proj_mat, float radii_scale) {
-    int64_t count = atom_positions.count;
-    ASSERT(count == atom_colors.count);
+    ASSERT(atom_positions.count == atom_colors.count);
 
-	licorice::Vertex* data = (licorice::Vertex*)TMP_MALLOC(MEGABYTES(8));
-	ASSERT(count * sizeof(licorice::Vertex) < MEGABYTES(8));
+	constexpr int32 TMP_BYTES = MEGABYTES(4);
+	licorice::Vertex* data = (licorice::Vertex*)TMP_MALLOC(TMP_BYTES);
+	ASSERT(atom_positions.count * sizeof(licorice::Vertex) < TMP_BYTES);
 
-    for (int64_t i = 0; i < count; i++) {
+    for (int64_t i = 0; i < atom_positions.count; i++) {
         data[i].position = atom_positions[i];
         data[i].color = atom_colors[i];
     }
 
-	draw::set_vbo_data(data, count * sizeof(licorice::Vertex));
+	draw::set_vbo_data(data, atom_positions.count * sizeof(licorice::Vertex));
 	TMP_FREE(data);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, licorice::ibo);
@@ -1986,8 +2043,8 @@ void draw_licorice(const Array<vec3> atom_positions, const Array<Bond> atom_bond
     glDisable(GL_DEPTH_TEST);
 }
 
-void draw_ribbons(const Array<BackboneSegment> backbone_segments, const Array<Chain> chains, const Array<vec3> atom_positions,
-                  const Array<uint32> atom_colors, const mat4& view_mat, const mat4& proj_mat, int num_subdivisions, float tension) {
+void draw_ribbons(Array<const BackboneSegment> backbone_segments, Array<const Chain> chains, Array<const vec3> atom_positions,
+                  Array<const uint32> atom_colors, const mat4& view_mat, const mat4& proj_mat, int num_subdivisions, float tension, float width_scale, float thickness_scale) {
     if (backbone_segments.count == 0) return;
     if (chains.count == 0) return;
     if (atom_positions.count == 0) return;
@@ -2026,22 +2083,7 @@ void draw_ribbons(const Array<BackboneSegment> backbone_segments, const Array<Ch
         }
     }
 
-    // ASSERT(spline_segments.count * sizeof(ribbons::Vertex) < VERTEX_BUFFER_SIZE);
-
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    /*
-        ribbons::Vertex* data = (ribbons::Vertex*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-    for (int64_t i = 0; i < spline_segments.count; i++) {
-        data[i].position = spline_segments[i].position;
-        data[i].tangent = spline_segments[i].tangent;
-        data[i].normal = spline_segments[i].normal;
-        data[i].color = spline_segments[i].color;
-        data[i].picking_id = spline_segments[i].index;
-    }
-    glUnmapBuffer(GL_ARRAY_BUFFER);
-    */
-    glBufferData(GL_ARRAY_BUFFER, vertices.size_in_bytes(), vertices.data, GL_STREAM_DRAW);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+	set_vbo_data(vertices.data, vertices.size_in_bytes());
 
     glEnable(GL_DEPTH_TEST);
 
@@ -2049,8 +2091,8 @@ void draw_ribbons(const Array<BackboneSegment> backbone_segments, const Array<Ch
     glUseProgram(ribbons::program);
     glUniformMatrix4fv(ribbons::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
     glUniformMatrix4fv(ribbons::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
-    glUniform1f(ribbons::uniform_loc_scale_x, 0.5f);
-    glUniform1f(ribbons::uniform_loc_scale_y, 0.1f);
+    glUniform1f(ribbons::uniform_loc_scale_x, 0.5f * width_scale);
+    glUniform1f(ribbons::uniform_loc_scale_y, 0.1f * thickness_scale);
     for (const auto& di : draw_data) {
         glDrawArrays(GL_LINE_STRIP, di.offset, di.count);
     }
@@ -2060,39 +2102,7 @@ void draw_ribbons(const Array<BackboneSegment> backbone_segments, const Array<Ch
     glDisable(GL_DEPTH_TEST);
 }
 
-void draw_ribbons(const Array<SplineSegment> spline, const mat4& view_mat, const mat4& proj_mat) {
-    ASSERT(spline.count * sizeof(ribbons::Vertex) < MEGABYTES(4));
-
-    //glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    //ribbons::Vertex* data = (ribbons::Vertex*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-	ribbons::Vertex* data = (ribbons::Vertex*)TMP_MALLOC(MEGABYTES(8));
-    for (int64_t i = 0; i < spline.count; i++) {
-        data[i].position = spline[i].position;
-        data[i].tangent = spline[i].tangent;
-        data[i].normal = spline[i].normal;
-        data[i].color = *((uint32*)immediate::COLOR_WHITE);
-        data[i].picking_id = 0xffffffff;
-    }
-	draw::set_vbo_data(data, spline.count * sizeof(ribbons::Vertex));
-    //glUnmapBuffer(GL_ARRAY_BUFFER);
-    //glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-    glEnable(GL_DEPTH_TEST);
-
-    glBindVertexArray(ribbons::vao);
-    glUseProgram(ribbons::program);
-    glUniformMatrix4fv(ribbons::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
-    glUniformMatrix4fv(ribbons::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
-    glUniform1f(ribbons::uniform_loc_scale_x, 0.5f);
-    glUniform1f(ribbons::uniform_loc_scale_y, 0.1f);
-    glDrawArrays(GL_LINE_STRIP, 0, (GLsizei)spline.count);
-    glUseProgram(0);
-    glBindVertexArray(0);
-
-    glDisable(GL_DEPTH_TEST);
-}
-
-void draw_backbone(const Array<BackboneSegment> backbone_segments, const Array<vec3> atom_positions, const mat4& view_mat, const mat4& proj_mat) {
+void draw_backbone(Array<const BackboneSegment> backbone_segments, Array<const vec3> atom_positions, const mat4& view_mat, const mat4& proj_mat) {
     immediate::set_view_matrix(view_mat);
     immediate::set_proj_matrix(proj_mat);
 
@@ -2111,7 +2121,7 @@ void draw_backbone(const Array<BackboneSegment> backbone_segments, const Array<v
     immediate::flush();
 }
 
-void draw_spline(const Array<SplineSegment> spline, const mat4& view_mat, const mat4& proj_mat) {
+void draw_spline(Array<const SplineSegment> spline, const mat4& view_mat, const mat4& proj_mat) {
     immediate::set_view_matrix(view_mat);
     immediate::set_proj_matrix(proj_mat);
 
@@ -2309,7 +2319,7 @@ void clear_accumulation_texture() {
 	glViewport(last_viewport[0], last_viewport[1], (GLsizei)last_viewport[2], (GLsizei)last_viewport[3]);
 }
 
-void compute_accumulation_texture(const Array<BackboneAngles> angles, vec4 color, float radius, float outline) {
+void compute_accumulation_texture(Array<const BackboneAngles> angles, vec4 color, float radius, float outline) {
     struct Coord {
         unsigned short x, y;
     };
@@ -2362,13 +2372,8 @@ void compute_accumulation_texture(const Array<BackboneAngles> angles, vec4 color
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
 
-    // glDisable(GL_BLEND);
-    //glClearColor(0, 0, 0, 0);
-    //glClear(GL_COLOR_BUFFER_BIT);
-
     glEnable(GL_BLEND);
     glBlendEquation(GL_FUNC_ADD);
-    // glBlendFunc(GL_ONE, GL_ONE);
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glDisable(GL_CULL_FACE);
     glDisable(GL_DEPTH_TEST);
@@ -2382,18 +2387,12 @@ void compute_accumulation_texture(const Array<BackboneAngles> angles, vec4 color
     glUseProgram(program);
     glUniform1i(uniform_loc_coord_tex, 0);
 
-    // Draw ordinary
+    // Draw
     glUniform1f(uniform_loc_radius, radius * 0.01f);
     glUniform1i(uniform_loc_instance_offset, 0);
     glUniform4fv(uniform_loc_color, 1, &color[0]);
 	glUniform1f(uniform_loc_outline, outline);
     draw::draw_instanced_quads(count);
-
-    // Draw highlighted
-    //glUniform1f(uniform_loc_radius, radius * 0.02f);
-    //glUniform1i(uniform_loc_instance_offset, ordinary_count);
-    //glUniform4fv(uniform_loc_color, 1, &HIGHLIGHT_COLOR[0]);
-    //draw::draw_instanced_quads(highlight_count);
 
     glUseProgram(0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);

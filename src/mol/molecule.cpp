@@ -1,7 +1,8 @@
 #include "molecule.h"
 
-MoleculeStructure* allocate_molecule_structure(int num_atoms, int num_bonds, int num_residues, int num_chains, int num_backbone_segments) {
-	MoleculeStructure* mol = (MoleculeStructure*)MALLOC(sizeof(MoleculeStructure));
+bool init_molecule_structure(MoleculeStructure* mol, int num_atoms, int num_bonds, int num_residues, int num_chains, int num_backbone_segments) {
+	free_molecule_structure(mol);
+
 	int64 alloc_size = 0;
 
 	alloc_size += num_atoms * (sizeof(vec3) + sizeof(Element) + sizeof(Label) + sizeof(ResIdx));
@@ -22,11 +23,11 @@ MoleculeStructure* allocate_molecule_structure(int num_atoms, int num_bonds, int
 	mol->chains =			 { (Chain*)(mol->residues.end()), num_chains };
 	mol->backbone_segments = { (BackboneSegment*)(mol->chains.end()), num_backbone_segments };
 
-	return mol;
+	return true;
 }
 
 void free_molecule_structure(MoleculeStructure* mol) {
 	ASSERT(mol);
-	FREE(mol->atom_positions.beg());
-	FREE(mol);
+	if (mol->atom_positions.beg()) FREE(mol->atom_positions.beg());
+	*mol = {};
 }
