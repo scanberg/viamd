@@ -1059,14 +1059,12 @@ static GLuint v_shader = 0;
 static GLuint f_shader = 0;
 static GLuint program = 0;
 
-static GLuint vao = 0;
-static GLuint ibo = 0;
 static GLuint buf_position_radius = 0;
 static GLuint buf_color = 0;
-static GLuint buf_index = 0;
+static GLuint buf_picking = 0;
 static GLuint tex_position_radius = 0;
 static GLuint tex_color = 0;
-static GLuint tex_index = 0;
+static GLuint tex_picking = 0;
 
 static GLint uniform_loc_view_mat = -1;
 static GLint uniform_loc_proj_mat = -1;
@@ -1074,7 +1072,7 @@ static GLint uniform_loc_inv_proj_mat = -1;
 static GLint uniform_loc_fov = -1;
 static GLint uniform_loc_tex_pos_rad = -1;
 static GLint uniform_loc_tex_color = -1;
-static GLint uniform_loc_tex_index = -1;
+static GLint uniform_loc_tex_picking = -1;
 
 static const char* v_shader_src = R"(
 #version 150 core
@@ -1085,7 +1083,7 @@ uniform mat4 u_inv_proj_mat;
 
 uniform samplerBuffer u_tex_pos_rad;
 uniform samplerBuffer u_tex_color;
-uniform isamplerBuffer u_tex_index;
+uniform samplerBuffer u_tex_picking;
 
 out Fragment {
     flat vec4 color;
@@ -1093,14 +1091,6 @@ out Fragment {
 	flat vec4 picking_color;
     smooth vec4 view_coord;
 } out_frag;
-
-vec4 pack_u32(uint data) {
-	return vec4(
-        (data & uint(0x000000FF)) >> 0,
-        (data & uint(0x0000FF00)) >> 8,
-        (data & uint(0x00FF0000)) >> 16,
-        (data & uint(0xFF000000)) >> 24) / 255.0;
-}
 
 // From Inigo Quilez!
 void proj_sphere(in vec4 sphere, 
@@ -1125,8 +1115,8 @@ void main() {
 	vec2 uv = vec2(VID / 2, VID % 2) * 2.0 - 1.0; 
 
 	vec4 pos_rad = texelFetch(u_tex_pos_rad, IID);
-	vec4 color = texelFetch(u_tex_color, IID);
-	int index = texelFetch(u_tex_index, IID).x;
+	vec4 color	 = texelFetch(u_tex_color, IID);
+	vec4 picking = texelFetch(u_tex_picking, IID);
 
 	vec3 pos = pos_rad.xyz;
 	float rad = pos_rad.w;
@@ -1137,7 +1127,7 @@ void main() {
 
     out_frag.color = color;
     out_frag.view_sphere = vec4(view_coord.xyz, rad);
-	out_frag.picking_color = pack_u32(uint(index));
+	out_frag.picking_color = picking;
 
 	// Focal length
 	float fle = u_proj_mat[1][1];
@@ -1250,16 +1240,6 @@ static void initialize() {
     glDeleteShader(v_shader);
     glDeleteShader(f_shader);
 
-    if (!vao) glGenVertexArrays(1, &vao);
-
-    if (!ibo) {
-        const unsigned char data[4] = {0, 1, 2, 3};
-        glGenBuffers(1, &ibo);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, 4, data, GL_STATIC_DRAW);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-    }
-
     if (!buf_position_radius) {
         glGenBuffers(1, &buf_position_radius);
         glBindBuffer(GL_ARRAY_BUFFER, buf_position_radius);
@@ -1274,20 +1254,16 @@ static void initialize() {
         glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
 
-    if (!buf_index) {
-        glGenBuffers(1, &buf_index);
-        glBindBuffer(GL_ARRAY_BUFFER, buf_index);
+    if (!buf_picking) {
+        glGenBuffers(1, &buf_picking);
+        glBindBuffer(GL_ARRAY_BUFFER, buf_picking);
         glBufferData(GL_ARRAY_BUFFER, MEGABYTES(5), 0, GL_STREAM_DRAW);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
 
     if (!tex_position_radius) glGenTextures(1, &tex_position_radius);
     if (!tex_color) glGenTextures(1, &tex_color);
-    if (!tex_index) glGenTextures(1, &tex_index);
-
-    glBindVertexArray(vao);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-    glBindVertexArray(0);
+    if (!tex_picking) glGenTextures(1, &tex_picking);
 
     uniform_loc_view_mat = glGetUniformLocation(program, "u_view_mat");
     uniform_loc_proj_mat = glGetUniformLocation(program, "u_proj_mat");
@@ -1295,7 +1271,7 @@ static void initialize() {
     uniform_loc_fov = glGetUniformLocation(program, "u_fov");
     uniform_loc_tex_pos_rad = glGetUniformLocation(vdw::program, "u_tex_pos_rad");
     uniform_loc_tex_color = glGetUniformLocation(vdw::program, "u_tex_color");
-    uniform_loc_tex_index = glGetUniformLocation(vdw::program, "u_tex_index");
+    uniform_loc_tex_picking = glGetUniformLocation(vdw::program, "u_tex_picking");
 }
 
 static void shutdown() {
@@ -1303,11 +1279,11 @@ static void shutdown() {
 
     if (buf_position_radius) glDeleteBuffers(1, &buf_position_radius);
     if (buf_color) glDeleteBuffers(1, &buf_color);
-    if (!buf_index) glDeleteBuffers(1, &buf_index);
+    if (!buf_picking) glDeleteBuffers(1, &buf_picking);
 
     if (tex_position_radius) glDeleteTextures(1, &tex_position_radius);
     if (tex_color) glDeleteTextures(1, &tex_color);
-    if (tex_index) glDeleteTextures(1, &tex_index);
+    if (buf_picking) glDeleteTextures(1, &buf_picking);
 }
 
 }  // namespace vdw
@@ -1933,29 +1909,26 @@ void shutdown() {
 
 void draw_vdw(Array<const vec3> atom_positions, Array<const float> atom_radii, Array<const uint32> atom_colors, const mat4& view_mat,
               const mat4& proj_mat, float radii_scale) {
-    int32 count = (int32)atom_positions.count;
+    uint32 count = (uint32)atom_positions.count;
     ASSERT(count == atom_radii.count && count == atom_colors.count);
 
     mat4 inv_proj_mat = math::inverse(proj_mat);
 
-    unsigned int draw_count = 0;
-    static bool initialized = false;
-
-    // if (!initialized) {
     glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_position_radius);
     vec4* gpu_pos_rad = (vec4*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
     glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_color);
     uint32* gpu_color = (uint32*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-    glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_index);
-    int32* gpu_index = (int32*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+    glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_picking);
+    uint32* gpu_picking = (uint32*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
 
-    // @ TODO: DISCARD ANY ZERO RADII OR ZERO COLOR ALPHA ATOMS HERE
-    for (int32 i = 0; i < count; i++) {
+	unsigned int draw_count = 0;
+    // DISCARD ANY ZERO RADII OR ZERO COLOR ALPHA ATOMS HERE
+    for (uint32 i = 0; i < count; i++) {
         if (atom_radii[i] <= 0.f) continue;
         if ((atom_colors[i] & 0xff000000) == 0) continue;
         gpu_pos_rad[draw_count] = vec4(atom_positions[i], atom_radii[i] * radii_scale);
         gpu_color[draw_count] = atom_colors[i];
-        gpu_index[draw_count] = i;
+		gpu_picking[draw_count] = i;
         draw_count++;
     }
 
@@ -1966,12 +1939,8 @@ void draw_vdw(Array<const vec3> atom_positions, Array<const float> atom_radii, A
     glUnmapBuffer(GL_ARRAY_BUFFER);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    initialized = true;
-    //}
-
     glEnable(GL_DEPTH_TEST);
 
-    glBindVertexArray(vdw::vao);
     glUseProgram(vdw::program);
 
     // Texture 0
@@ -1986,13 +1955,13 @@ void draw_vdw(Array<const vec3> atom_positions, Array<const float> atom_radii, A
 
     // Texture 2
     glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_index);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_R32I, vdw::buf_index);
+    glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_picking);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, vdw::buf_picking);
 
     // Uniforms
     glUniform1i(vdw::uniform_loc_tex_pos_rad, 0);
     glUniform1i(vdw::uniform_loc_tex_color, 1);
-    glUniform1i(vdw::uniform_loc_tex_index, 2);
+    glUniform1i(vdw::uniform_loc_tex_picking, 2);
     glUniformMatrix4fv(vdw::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
     glUniformMatrix4fv(vdw::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
     glUniformMatrix4fv(vdw::uniform_loc_inv_proj_mat, 1, GL_FALSE, &inv_proj_mat[0][0]);
@@ -2339,8 +2308,7 @@ void compute_accumulation_texture(Array<const BackboneAngles> angles, vec4 color
 		count++;
     }
 
-    glBindBuffer(GL_ARRAY_BUFFER, draw::vbo);
-    glBufferData(GL_ARRAY_BUFFER, count * 2 * sizeof(unsigned short), coords, GL_STREAM_DRAW);
+	draw::set_vbo_data(coords, count * 2 * sizeof(unsigned short));
 
     TMP_FREE(coords);
 

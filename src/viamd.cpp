@@ -29,8 +29,9 @@ constexpr Key::Key_t CONSOLE_KEY = Key::KEY_WORLD_1;
 constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
 #endif
 constexpr unsigned int NO_PICKING_IDX = 0xffffffff;
+constexpr const char* FILE_EXTENSION = "via";
 
-constexpr const char* caffeine_pdb = R"(
+constexpr const char* CAFFINE_PDB = R"(
 ATOM      1  N1  BENZ    1       5.040   1.944  -8.324                          
 ATOM      2  C2  BENZ    1       6.469   2.092  -7.915                          
 ATOM      3  C3  BENZ    1       7.431   0.865  -8.072                          
@@ -81,22 +82,22 @@ struct Representation {
     StringBuffer<128> filter = "all";
     Type type = VDW;
     ColorMapping color_mapping = ColorMapping::CPK;
-	Array<uint32> colors{};
-	
-	bool enabled = true;
-	bool filter_is_ok = true;
-    
-	// Static color mode
-	vec4 static_color = vec4(1);
-    
-	// VDW and Licorice
-	float radii_scale = 1.f;
+    Array<uint32> colors{};
 
-	// Ribbons and other spline primitives
+    bool enabled = true;
+    bool filter_is_ok = true;
+
+    // Static color mode
+    vec4 static_color = vec4(1);
+
+    // VDW and Licorice
+    float radius = 1.f;
+
+    // Ribbons and other spline primitives
     int num_subdivisions = 8;
-	float tension = 0.5f;
-	float width_scale = 1.f;
-	float thickness_scale = 1.f;
+    float tension = 0.5f;
+    float width = 1.f;
+    float thickness = 1.f;
 };
 
 struct AtomSelection {
@@ -114,11 +115,11 @@ struct ApplicationData {
     // --- PLATFORM ---
     platform::Context ctx;
 
-	struct {
-		String molecule{};
-		String trajectory{};
-		String workspace{};
-	} files;
+    struct {
+        String molecule{};
+        String trajectory{};
+        String workspace{};
+    } files;
 
     // --- CAMERA ---
     Camera camera;
@@ -139,8 +140,8 @@ struct ApplicationData {
     // --- STATISTICAL DATA ---
     struct {
         bool show_property_window = false;
-		bool show_timeline_window = false;
-		bool show_distribution_window = false;
+        bool show_timeline_window = false;
+        bool show_distribution_window = false;
     } statistics;
 
     // Framebuffer
@@ -209,6 +210,7 @@ static void save_workspace(ApplicationData* data, CString file);
 static void create_default_representation(ApplicationData* data);
 static void remove_representation(ApplicationData* data, int idx);
 static void reset_representations(ApplicationData* data);
+static void clear_representations(ApplicationData* data);
 
 int main(int, char**) {
     ApplicationData data;
@@ -228,7 +230,7 @@ int main(int, char**) {
     // Init subsystems
     immediate::initialize();
     draw::initialize();
-	ramachandran::initialize();
+    ramachandran::initialize();
     stats::initialize();
     filter::initialize();
     postprocessing::initialize(data.fbo.width, data.fbo.height);
@@ -244,10 +246,10 @@ int main(int, char**) {
     data.mol_data.dynamic = allocate_and_parse_pdb_from_string(caffeine_pdb);
     data.mol_data.atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule->atom_elements);
 #else
-	stats::create_group("group1", "resname ALA");
-	stats::create_property("b1", "dist group1 1 2");
-	stats::create_property("a1", "angle group1 1 2 3");
-	stats::create_property("d1", "dihedral group1 1 2 3 4");
+    stats::create_group("group1", "resname ALA");
+    stats::create_property("b1", "dist group1 1 2");
+    stats::create_property("a1", "angle group1 1 2 3");
+    stats::create_property("d1", "dihedral group1 1 2 3 4");
 
     load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
 #endif
@@ -259,7 +261,8 @@ int main(int, char**) {
         platform::update(&data.ctx);
 
         // RESIZE FRAMEBUFFER?
-        if (data.fbo.width != data.ctx.framebuffer.width || data.fbo.height != data.ctx.framebuffer.height) {
+        if ((data.fbo.width != data.ctx.framebuffer.width || data.fbo.height != data.ctx.framebuffer.height) &&
+            (data.ctx.framebuffer.width != 0 && data.ctx.framebuffer.height != 0)) {
             init_main_framebuffer(&data.fbo, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
             postprocessing::initialize(data.fbo.width, data.fbo.height);
         }
@@ -350,42 +353,40 @@ int main(int, char**) {
                         // @NOTE THIS IS ACTUALLY FLOORING
                         copy_trajectory_positions(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.dynamic.trajectory, prev_frame_1);
                         break;
-                    case PlaybackInterpolationMode::LINEAR:
-                    {
+                    case PlaybackInterpolationMode::LINEAR: {
                         auto prev_frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, prev_frame_1);
                         auto next_frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, next_frame_1);
                         linear_interpolation(data.mol_data.dynamic.molecule.atom_positions, prev_frame.atom_positions, next_frame.atom_positions, t);
                         break;
                     }
-                    case PlaybackInterpolationMode::LINEAR_PERIODIC:
-                    {
+                    case PlaybackInterpolationMode::LINEAR_PERIODIC: {
                         auto prev_frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, prev_frame_1);
                         auto next_frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, next_frame_1);
-                        linear_interpolation_periodic(data.mol_data.dynamic.molecule.atom_positions, prev_frame.atom_positions, next_frame.atom_positions, t,
-                                                      prev_frame.box);
+                        linear_interpolation_periodic(data.mol_data.dynamic.molecule.atom_positions, prev_frame.atom_positions,
+                                                      next_frame.atom_positions, t, prev_frame.box);
                         break;
                     }
-                    case PlaybackInterpolationMode::CUBIC:
-					{
-						auto prev_2 = get_trajectory_frame(data.mol_data.dynamic.trajectory, prev_frame_2);
-						auto prev_1 = get_trajectory_frame(data.mol_data.dynamic.trajectory, prev_frame_1);
-						auto next_1 = get_trajectory_frame(data.mol_data.dynamic.trajectory, next_frame_1);
-						auto next_2 = get_trajectory_frame(data.mol_data.dynamic.trajectory, next_frame_2);
-						spline_interpolation(data.mol_data.dynamic.molecule.atom_positions, prev_2.atom_positions, prev_1.atom_positions, next_1.atom_positions, next_2.atom_positions, t);
-						break;
-					}
-                    case PlaybackInterpolationMode::CUBIC_PERIODIC:
-                    {
+                    case PlaybackInterpolationMode::CUBIC: {
                         auto prev_2 = get_trajectory_frame(data.mol_data.dynamic.trajectory, prev_frame_2);
                         auto prev_1 = get_trajectory_frame(data.mol_data.dynamic.trajectory, prev_frame_1);
                         auto next_1 = get_trajectory_frame(data.mol_data.dynamic.trajectory, next_frame_1);
                         auto next_2 = get_trajectory_frame(data.mol_data.dynamic.trajectory, next_frame_2);
-                        spline_interpolation_periodic(data.mol_data.dynamic.molecule.atom_positions, prev_2.atom_positions, prev_1.atom_positions, next_1.atom_positions, next_2.atom_positions, t, prev_1.box);
+                        spline_interpolation(data.mol_data.dynamic.molecule.atom_positions, prev_2.atom_positions, prev_1.atom_positions,
+                                             next_1.atom_positions, next_2.atom_positions, t);
+                        break;
+                    }
+                    case PlaybackInterpolationMode::CUBIC_PERIODIC: {
+                        auto prev_2 = get_trajectory_frame(data.mol_data.dynamic.trajectory, prev_frame_2);
+                        auto prev_1 = get_trajectory_frame(data.mol_data.dynamic.trajectory, prev_frame_1);
+                        auto next_1 = get_trajectory_frame(data.mol_data.dynamic.trajectory, next_frame_1);
+                        auto next_2 = get_trajectory_frame(data.mol_data.dynamic.trajectory, next_frame_2);
+                        spline_interpolation_periodic(data.mol_data.dynamic.molecule.atom_positions, prev_2.atom_positions, prev_1.atom_positions,
+                                                      next_1.atom_positions, next_2.atom_positions, t, prev_1.box);
                         break;
                     }
 
                     default:
-                    break;
+                        break;
                 }
             }
         }
@@ -413,25 +414,23 @@ int main(int, char**) {
         mat4 inv_proj_mat = math::inverse(proj_mat);
 
         for (const auto& rep : data.representations.data) {
-			if (!rep.enabled) continue;
+            if (!rep.enabled) continue;
             switch (rep.type) {
                 case Representation::VDW:
                     draw::draw_vdw(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.atom_radii, rep.colors, view_mat, proj_mat,
-                                   rep.radii_scale);
+                                   rep.radius);
                     break;
                 case Representation::LICORICE:
                     draw::draw_licorice(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.dynamic.molecule.bonds, rep.colors, view_mat,
-                                        proj_mat, rep.radii_scale);
+                                        proj_mat, rep.radius);
                     break;
                 case Representation::RIBBONS:
                     draw::draw_ribbons(data.mol_data.dynamic.molecule.backbone_segments, data.mol_data.dynamic.molecule.chains,
-                                       data.mol_data.dynamic.molecule.atom_positions, rep.colors, view_mat, proj_mat, rep.num_subdivisions, rep.tension, rep.width_scale, rep.thickness_scale);
+                                       data.mol_data.dynamic.molecule.atom_positions, rep.colors, view_mat, proj_mat, rep.num_subdivisions,
+                                       rep.tension, rep.width, rep.thickness);
                     break;
             }
         }
-        // draw::draw_vdw(data.dynamic.molecule->atom_positions, data.atom_radii, data.atom_colors, view_mat, proj_mat, radii_scale);
-        // draw::draw_licorice(data.mol_struct->atom_positions, data.mol_struct->bonds, data.atom_colors, view_mat, proj_mat, radii_scale);
-        // draw::draw_ribbons(current_spline, view_mat, proj_mat);
 
         // PICKING
         {
@@ -467,12 +466,12 @@ int main(int, char**) {
         }
 
         /*
-if (data.debug_draw.backbone.enabled) {
-    draw::draw_backbone(backbone, data.mol_data.dynamic.molecule->atom_positions, view_mat, proj_mat);
-}
-if (data.debug_draw.spline.enabled) {
-    draw::draw_spline(current_spline, view_mat, proj_mat);
-}
+                if (data.debug_draw.backbone.enabled) {
+                        draw::draw_backbone(backbone, data.mol_data.dynamic.molecule->atom_positions, view_mat, proj_mat);
+                }
+                if (data.debug_draw.spline.enabled) {
+                        draw::draw_spline(current_spline, view_mat, proj_mat);
+                }
         */
 
         // GUI ELEMENTS
@@ -482,22 +481,22 @@ if (data.debug_draw.spline.enabled) {
 
         if (data.representations.show_window) draw_representations_window(&data);
         if (data.statistics.show_property_window) draw_property_window(&data);
-		if (data.statistics.show_timeline_window) draw_timeline_window(&data);
-		if (data.statistics.show_distribution_window) draw_distribution_window(&data);
+        if (data.statistics.show_timeline_window) draw_timeline_window(&data);
+        if (data.statistics.show_distribution_window) draw_distribution_window(&data);
 
-		if (data.ramachandran.show_window) {
-			if (data.mol_data.dynamic.trajectory && data.mol_data.dynamic.trajectory.is_loading) {
-				static int32 prev_frame = 0;
-				if (get_backbone_angles_trajectory_current_frame_count(data.ramachandran.backbone_angles) - prev_frame > 100) {
-					compute_backbone_angles_trajectory(&data.ramachandran.backbone_angles, data.mol_data.dynamic);
-					prev_frame = data.ramachandran.backbone_angles.num_frames;
-					data.ramachandran.frame_range_max = data.ramachandran.backbone_angles.num_frames;
-				}
-			}
-			draw_ramachandran(&data);
-		}
+        if (data.ramachandran.show_window) {
+            if (data.mol_data.dynamic.trajectory && data.mol_data.dynamic.trajectory.is_loading) {
+                static int32 prev_frame = 0;
+                if (get_backbone_angles_trajectory_current_frame_count(data.ramachandran.backbone_angles) - prev_frame > 100) {
+                    compute_backbone_angles_trajectory(&data.ramachandran.backbone_angles, data.mol_data.dynamic);
+                    prev_frame = data.ramachandran.backbone_angles.num_frames;
+                    data.ramachandran.frame_range_max = data.ramachandran.backbone_angles.num_frames;
+                }
+            }
+            draw_ramachandran(&data);
+        }
 
-		if (!ImGui::GetIO().WantCaptureMouse) {
+        if (!ImGui::GetIO().WantCaptureMouse) {
             if (data.picking_idx != NO_PICKING_IDX) {
                 ivec2 pos = data.ctx.input.mouse.coord_curr;
                 draw_atom_info(data.mol_data.dynamic.molecule, data.picking_idx, pos.x, pos.y);
@@ -553,20 +552,6 @@ static float compute_avg_ms(float dt) {
     }
 
     return avg;
-
-    /*
-    constexpr int num_frames = 100;
-    static float ms_buffer[num_frames] = {};
-    static int next_idx = 0;
-    next_idx = (next_idx + 1) % num_frames;
-    ms_buffer[next_idx] = dt * 1000.f; // seconds to milliseconds
-
-    float avg = 0.f;
-    for (int i = 0; i < num_frames; i++) {
-            avg += ms_buffer[i];
-    }
-    return avg / (float)num_frames;
-    */
 }
 
 uint32 get_picking_id(uint32 fbo_id, int32 x, int32 y) {
@@ -587,31 +572,43 @@ static void draw_main_menu(ApplicationData* data) {
             if (ImGui::MenuItem("New", "CTRL+N")) new_clicked = true;
             if (ImGui::MenuItem("Load Data", "CTRL+L")) {
                 auto res = platform::open_file_dialog("pdb,gro,xtc");
-				if (res.action == platform::FileDialogResult::OK) {
-					load_molecule_data(data, res.path);
-					if (data->representations.data.count > 0) {
-						reset_representations(data);
-					}
-					else {
-						create_default_representation(data);
-					}
-					reset_view(data);
-				}
+                if (res.action == platform::FileDialogResult::FILE_OK) {
+                    load_molecule_data(data, res.path);
+                    if (data->representations.data.count > 0) {
+                        reset_representations(data);
+                    } else {
+                        create_default_representation(data);
+                    }
+                    reset_view(data);
+                }
             }
             if (ImGui::MenuItem("Open", "CTRL+O")) {
-				auto res = platform::open_file_dialog("vwf");
-				if (res.action == platform::FileDialogResult::OK) {
-					
-				}
+                auto res = platform::open_file_dialog(FILE_EXTENSION);
+                if (res.action == platform::FileDialogResult::FILE_OK) {
+                    load_workspace(data, res.path);
+                }
             }
             if (ImGui::MenuItem("Save", "CTRL+S")) {
-
+                if (!data->files.workspace) {
+                    auto res = platform::save_file_dialog({}, FILE_EXTENSION);
+                    if (res.action == platform::FileDialogResult::FILE_OK) {
+                        if (!get_file_extension(res.path)) {
+                            snprintf(res.path.buffer + strnlen(res.path.buffer, res.path.MAX_LENGTH), res.path.MAX_LENGTH, ".%s", FILE_EXTENSION);
+                        }
+                        save_workspace(data, res.path);
+                    }
+                } else {
+                    save_workspace(data, data->files.workspace);
+                }
             }
             if (ImGui::MenuItem("Save As")) {
-				auto res = platform::save_file_dialog("vwf");
-				if (res.action == platform::FileDialogResult::OK) {
-					save_workspace(data, res.path);
-				}
+                auto res = platform::save_file_dialog({}, FILE_EXTENSION);
+                if (res.action == platform::FileDialogResult::FILE_OK) {
+                    if (!get_file_extension(res.path)) {
+                        snprintf(res.path.buffer + strnlen(res.path.buffer, res.path.MAX_LENGTH), res.path.MAX_LENGTH, ".%s", FILE_EXTENSION);
+                    }
+                    save_workspace(data, res.path);
+                }
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Quit", "ALT+F4")) {
@@ -656,9 +653,9 @@ static void draw_main_menu(ApplicationData* data) {
         if (ImGui::BeginMenu("Windows")) {
             ImGui::Checkbox("Representations", &data->representations.show_window);
             ImGui::Checkbox("Ramachandran", &data->ramachandran.show_window);
-			ImGui::Checkbox("Properties", &data->statistics.show_property_window);
-			ImGui::Checkbox("Timelines", &data->statistics.show_timeline_window);
-			ImGui::Checkbox("Distributions", &data->statistics.show_distribution_window);
+            ImGui::Checkbox("Properties", &data->statistics.show_property_window);
+            ImGui::Checkbox("Timelines", &data->statistics.show_timeline_window);
+            ImGui::Checkbox("Distributions", &data->statistics.show_distribution_window);
 
             ImGui::EndMenu();
         }
@@ -682,18 +679,18 @@ static void draw_main_menu(ApplicationData* data) {
 }
 
 static void draw_representations_window(ApplicationData* data) {
-	constexpr uint32 FILTER_ERROR_COLOR = 0xdd2222bb;
+    constexpr uint32 FILTER_ERROR_COLOR = 0xdd2222bb;
 
     ImGui::Begin("Representations", &data->representations.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
     if (ImGui::Button("create new")) {
         create_default_representation(data);
     }
-	ImGui::SameLine();
-	if (ImGui::Button("clear all")) {
-		data->representations.data.clear();
-	}
-	ImGui::Spacing();
+    ImGui::SameLine();
+    if (ImGui::Button("clear all")) {
+        data->representations.data.clear();
+    }
+    ImGui::Spacing();
     for (int i = 0; i < data->representations.data.count; i++) {
         auto& rep = data->representations.data[i];
         ImGui::Separator();
@@ -701,51 +698,51 @@ static void draw_representations_window(ApplicationData* data) {
 
         bool recompute_colors = false;
         ImGui::PushID(i);
-		ImGui::Checkbox("enabled", &rep.enabled);
-		ImGui::SameLine();
-		if (ImGui::Button("remove")) {
-			remove_representation(data, i);
-		}
-		ImGui::SameLine();
-		if (ImGui::Button("clone")) {
-			Representation clone = rep;
-			clone.colors = { (uint32*)MALLOC(rep.colors.size_in_bytes()), rep.colors.count };
-			memcpy(clone.colors.data, rep.colors.data, rep.colors.size_in_bytes());
-			data->representations.data.insert(&rep, clone);
-		}
+        ImGui::Checkbox("enabled", &rep.enabled);
+        ImGui::SameLine();
+        if (ImGui::Button("remove")) {
+            remove_representation(data, i);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("clone")) {
+            Representation clone = rep;
+            clone.colors = {(uint32*)MALLOC(rep.colors.size_in_bytes()), rep.colors.count};
+            memcpy(clone.colors.data, rep.colors.data, rep.colors.size_in_bytes());
+            data->representations.data.insert(&rep, clone);
+        }
 
-		const float item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 80.f, 100.f, 300.f);
+        const float item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 80.f, 100.f, 300.f);
 
-		ImGui::PushItemWidth(item_width);
+        ImGui::PushItemWidth(item_width);
         ImGui::InputText("name", rep.name.buffer, rep.name.MAX_LENGTH);
-		if (!rep.filter_is_ok) ImGui::PushStyleColor(ImGuiCol_FrameBg, FILTER_ERROR_COLOR);
+        if (!rep.filter_is_ok) ImGui::PushStyleColor(ImGuiCol_FrameBg, FILTER_ERROR_COLOR);
         if (ImGui::InputText("filter", rep.filter.buffer, rep.filter.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
             recompute_colors = true;
         }
-		
-		if (!rep.filter_is_ok) ImGui::PopStyleColor();
+
+        if (!rep.filter_is_ok) ImGui::PopStyleColor();
         if (ImGui::Combo("color mapping", (int*)(&rep.color_mapping), "Static Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0\0")) {
             recompute_colors = true;
         }
-		ImGui::PopItemWidth();
-		if (rep.color_mapping == ColorMapping::STATIC_COLOR) {
-			ImGui::SameLine();
-			if (ImGui::ColorEdit4("color", (float*)&rep.static_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
-				recompute_colors = true;
-			}
-		}
-		ImGui::PushItemWidth(item_width);
-		ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0\0");
+        ImGui::PopItemWidth();
+        if (rep.color_mapping == ColorMapping::STATIC_COLOR) {
+            ImGui::SameLine();
+            if (ImGui::ColorEdit4("color", (float*)&rep.static_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
+                recompute_colors = true;
+            }
+        }
+        ImGui::PushItemWidth(item_width);
+        ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0\0");
         if (rep.type == Representation::VDW || rep.type == Representation::LICORICE) {
-            ImGui::SliderFloat("radii scale", &rep.radii_scale, 0.1f, 2.f);
+            ImGui::SliderFloat("radii scale", &rep.radius, 0.1f, 2.f);
         }
         if (rep.type == Representation::RIBBONS) {
             ImGui::SliderInt("spline subdivisions", &rep.num_subdivisions, 1, 16);
-			ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f);
-			ImGui::SliderFloat("spline width", &rep.width_scale, 0.1f, 2.f);
-			ImGui::SliderFloat("spline thickness", &rep.thickness_scale, 0.1f, 2.f);
+            ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f);
+            ImGui::SliderFloat("spline width", &rep.width, 0.1f, 2.f);
+            ImGui::SliderFloat("spline thickness", &rep.thickness, 0.1f, 2.f);
         }
-		ImGui::PopItemWidth();
+        ImGui::PopItemWidth();
 
         ImGui::PopID();
         ImGui::EndGroup();
@@ -764,236 +761,229 @@ static void draw_representations_window(ApplicationData* data) {
 }
 
 static void draw_property_window(ApplicationData* data) {
-	constexpr uint32 DEL_BTN_COLOR		  = 0xff1111cc;
-	constexpr uint32 DEL_BTN_HOVER_COLOR  = 0xff3333dd;
-	constexpr uint32 DEL_BTN_ACTIVE_COLOR = 0xff5555ff;
+    constexpr uint32 DEL_BTN_COLOR = 0xff1111cc;
+    constexpr uint32 DEL_BTN_HOVER_COLOR = 0xff3333dd;
+    constexpr uint32 DEL_BTN_ACTIVE_COLOR = 0xff5555ff;
 
-    constexpr uint32 ERROR_COLOR		 = 0xaa222299;
+    constexpr uint32 ERROR_COLOR = 0xaa222299;
 
-	bool compute_stats = false;
+    bool compute_stats = false;
 
-	auto group_args_callback = [](ImGuiTextEditCallbackData* data) -> int {
-		switch (data->EventFlag)
-		{
-		case ImGuiInputTextFlags_CallbackCompletion:
-		{
-			// Example of TEXT COMPLETION
+    auto group_args_callback = [](ImGuiTextEditCallbackData* data) -> int {
+        switch (data->EventFlag) {
+            case ImGuiInputTextFlags_CallbackCompletion: {
+                // Example of TEXT COMPLETION
 
-			// Locate beginning of current word
-			const char* word_end = data->Buf + data->CursorPos;
-			const char* word_start = word_end;
-			while (word_start > data->Buf) {
-				const char c = word_start[-1];
-				if (c == ' ' || c == '\t' || c == ',' || c == ';')
-					break;
-				word_start--;
-			}
+                // Locate beginning of current word
+                const char* word_end = data->Buf + data->CursorPos;
+                const char* word_start = word_end;
+                while (word_start > data->Buf) {
+                    const char c = word_start[-1];
+                    if (c == ' ' || c == '\t' || c == ',' || c == ';') break;
+                    word_start--;
+                }
 
-			// Build a list of candidates
-			ImVector<const char*> candidates;
+                // Build a list of candidates
+                ImVector<const char*> candidates;
 
-			for (int i = 0; i < stats::get_group_command_count(); i++) {
-                CString cmd = stats::get_group_command_keyword(i);
-				if (compare_n(cmd, word_start, (int)(word_end - word_start)))
-					candidates.push_back(cmd.beg());
+                for (int i = 0; i < stats::get_group_command_count(); i++) {
+                    CString cmd = stats::get_group_command_keyword(i);
+                    if (compare_n(cmd, word_start, (int)(word_end - word_start))) candidates.push_back(cmd.beg());
+                }
+
+                if (candidates.Size == 0) {
+                    // No match
+                    // AddLog("No match for \"%.*s\"!\n", (int)(word_end - word_start), word_start);
+                } else if (candidates.Size == 1) {
+                    // Single match. Delete the beginning of the word and replace it entirely so we've got nice casing
+                    data->DeleteChars((int)(word_start - data->Buf), (int)(word_end - word_start));
+                    data->InsertChars(data->CursorPos, candidates[0]);
+                    data->InsertChars(data->CursorPos, " ");
+                } else {
+                    // Multiple matches. Complete as much as we can, so inputing "C" will complete to "CL" and display "CLEAR" and "CLASSIFY"
+                    int match_len = (int)(word_end - word_start);
+                    for (;;) {
+                        int c = 0;
+                        bool all_candidates_matches = true;
+                        for (int i = 0; i < candidates.Size && all_candidates_matches; i++)
+                            if (i == 0)
+                                c = toupper(candidates[i][match_len]);
+                            else if (c == 0 || c != toupper(candidates[i][match_len]))
+                                all_candidates_matches = false;
+                        if (!all_candidates_matches) break;
+                        match_len++;
+                    }
+
+                    if (match_len > 0) {
+                        data->DeleteChars((int)(word_start - data->Buf), (int)(word_end - word_start));
+                        data->InsertChars(data->CursorPos, candidates[0], candidates[0] + match_len);
+                    }
+
+                    // List matches
+                    // AddLog("Possible matches:\n");
+                    // for (int i = 0; i < candidates.Size; i++)
+                    //	AddLog("- %s\n", candidates[i]);
+                }
+
+                break;
             }
-
-			if (candidates.Size == 0)
-			{
-				// No match
-				//AddLog("No match for \"%.*s\"!\n", (int)(word_end - word_start), word_start);
-			}
-			else if (candidates.Size == 1)
-			{
-				// Single match. Delete the beginning of the word and replace it entirely so we've got nice casing
-				data->DeleteChars((int)(word_start - data->Buf), (int)(word_end - word_start));
-				data->InsertChars(data->CursorPos, candidates[0]);
-				data->InsertChars(data->CursorPos, " ");
-			}
-			else
-			{
-				// Multiple matches. Complete as much as we can, so inputing "C" will complete to "CL" and display "CLEAR" and "CLASSIFY"
-				int match_len = (int)(word_end - word_start);
-				for (;;)
-				{
-					int c = 0;
-					bool all_candidates_matches = true;
-					for (int i = 0; i < candidates.Size && all_candidates_matches; i++)
-						if (i == 0)
-							c = toupper(candidates[i][match_len]);
-						else if (c == 0 || c != toupper(candidates[i][match_len]))
-							all_candidates_matches = false;
-					if (!all_candidates_matches)
-						break;
-					match_len++;
-				}
-
-				if (match_len > 0)
-				{
-					data->DeleteChars((int)(word_start - data->Buf), (int)(word_end - word_start));
-					data->InsertChars(data->CursorPos, candidates[0], candidates[0] + match_len);
-				}
-
-				// List matches
-				//AddLog("Possible matches:\n");
-				//for (int i = 0; i < candidates.Size; i++)
-				//	AddLog("- %s\n", candidates[i]);
-			}
-
-			break;
-		}
-		}
-		return 0;
-	};
-
-	auto property_callback = [](ImGuiTextEditCallbackData* data) -> int {
+        }
         return 0;
-	};
+    };
 
-	ImGui::Begin("Properties", &data->statistics.show_property_window, ImGuiWindowFlags_NoFocusOnAppearing);
+    auto property_callback = [](ImGuiTextEditCallbackData* data) -> int {
+        (void)data;
+        return 0;
+    };
 
-	ImGui::PushID("GROUPS");
+    ImGui::Begin("Properties", &data->statistics.show_property_window, ImGuiWindowFlags_NoFocusOnAppearing);
+
+    ImGui::PushID("GROUPS");
     ImGui::Text("GROUPS");
     if (ImGui::Button("create new")) {
         stats::create_group();
     }
     ImGui::SameLine();
-	ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
-	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
-	ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
+    ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
     if (ImGui::Button("clear all")) {
-
     }
-	ImGui::PopStyleColor(3);
-	ImGui::Spacing();
+    ImGui::PopStyleColor(3);
+    ImGui::Spacing();
 
-	ImGui::Columns(3, "columns", true);
-	ImGui::Separator();
-	ImGui::SetColumnWidth(0, ImGui::GetWindowContentRegionWidth() * 0.4f);
-	ImGui::SetColumnWidth(1, ImGui::GetWindowContentRegionWidth() * 0.5f);
-	ImGui::SetColumnWidth(2, ImGui::GetWindowContentRegionWidth() * 0.1f);
+    ImGui::Columns(3, "columns", true);
+    ImGui::Separator();
+    ImGui::SetColumnWidth(0, ImGui::GetWindowContentRegionWidth() * 0.4f);
+    ImGui::SetColumnWidth(1, ImGui::GetWindowContentRegionWidth() * 0.5f);
+    ImGui::SetColumnWidth(2, ImGui::GetWindowContentRegionWidth() * 0.1f);
 
-	ImGui::Text("name"); ImGui::NextColumn();
-	ImGui::Text("args"); ImGui::NextColumn();
-	ImGui::NextColumn();
-	
+    ImGui::Text("name");
+    ImGui::NextColumn();
+    ImGui::Text("args");
+    ImGui::NextColumn();
+    ImGui::NextColumn();
+
     for (int i = 0; i < stats::get_group_count(); i++) {
         auto group_id = stats::get_group(i);
         auto name_buf = stats::get_group_name_buf(group_id);
         auto args_buf = stats::get_group_args_buf(group_id);
-		auto valid    = stats::get_group_valid(group_id);
-		bool update   = false;
+        auto valid = stats::get_group_valid(group_id);
+        bool update = false;
 
-		ImGui::Separator();
+        ImGui::Separator();
         ImGui::PushID(i);
-		if (!valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, ERROR_COLOR);
-		ImGui::PushItemWidth(-1);
-		if (ImGui::InputText("##name", name_buf->buffer, name_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
-			update = true;
-		}
-		ImGui::PopItemWidth();
-		ImGui::NextColumn();
-		ImGui::PushItemWidth(-1);
-		if (ImGui::InputText("##args", args_buf->buffer, args_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackCompletion, group_args_callback)) {
+        if (!valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, ERROR_COLOR);
+        ImGui::PushItemWidth(-1);
+        if (ImGui::InputText("##name", name_buf->buffer, name_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
             update = true;
         }
-		ImGui::PopItemWidth();
-		if (!valid) ImGui::PopStyleColor();
-		ImGui::NextColumn();
+        ImGui::PopItemWidth();
+        ImGui::NextColumn();
+        ImGui::PushItemWidth(-1);
+        if (ImGui::InputText("##args", args_buf->buffer, args_buf->MAX_LENGTH,
+                             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackCompletion, group_args_callback)) {
+            update = true;
+        }
+        ImGui::PopItemWidth();
+        if (!valid) ImGui::PopStyleColor();
+        ImGui::NextColumn();
 
-		ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
-		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
-		ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
+        ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
         if (ImGui::Button("del")) {
             stats::remove_group(group_id);
-			compute_stats = true;
+            compute_stats = true;
         }
-		ImGui::PopStyleColor(3);
+        ImGui::PopStyleColor(3);
 
-		ImGui::NextColumn();
+        ImGui::NextColumn();
         ImGui::PopID();
 
         if (update) {
-			stats::clear_group(group_id);
+            stats::clear_group(group_id);
             compute_stats = true;
         }
     }
-	ImGui::Columns(1);
-	ImGui::Separator();
+    ImGui::Columns(1);
+    ImGui::Separator();
     ImGui::PopID();
 
     ImGui::Spacing();
-	ImGui::Spacing();
+    ImGui::Spacing();
 
-	ImGui::PushID("PROPERTIES");
+    ImGui::PushID("PROPERTIES");
     ImGui::Text("PROPERTIES");
     if (ImGui::Button("create new")) {
         stats::create_property();
     }
     ImGui::SameLine();
 
-	ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
-	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
-	ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
+    ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
     if (ImGui::Button("clear all")) {
     }
-	ImGui::PopStyleColor(3);
-	ImGui::Spacing();
+    ImGui::PopStyleColor(3);
+    ImGui::Spacing();
 
-	ImGui::Columns(3, "columns", true);
-	ImGui::Separator();
-	ImGui::SetColumnWidth(0, ImGui::GetWindowContentRegionWidth() * 0.4f);
-	ImGui::SetColumnWidth(1, ImGui::GetWindowContentRegionWidth() * 0.5f);
-	ImGui::SetColumnWidth(2, ImGui::GetWindowContentRegionWidth() * 0.1f);
+    ImGui::Columns(3, "columns", true);
+    ImGui::Separator();
+    ImGui::SetColumnWidth(0, ImGui::GetWindowContentRegionWidth() * 0.4f);
+    ImGui::SetColumnWidth(1, ImGui::GetWindowContentRegionWidth() * 0.5f);
+    ImGui::SetColumnWidth(2, ImGui::GetWindowContentRegionWidth() * 0.1f);
 
-	ImGui::Text("name"); ImGui::NextColumn();
-	ImGui::Text("args"); ImGui::NextColumn();
-	ImGui::NextColumn();
-    
+    ImGui::Text("name");
+    ImGui::NextColumn();
+    ImGui::Text("args");
+    ImGui::NextColumn();
+    ImGui::NextColumn();
+
     for (int i = 0; i < stats::get_property_count(); i++) {
-        auto prop_id  = stats::get_property(i);
+        auto prop_id = stats::get_property(i);
         auto name_buf = stats::get_property_name_buf(prop_id);
         auto args_buf = stats::get_property_args_buf(prop_id);
-		auto valid	  = stats::get_property_valid(prop_id);
-        bool update   = false;
+        auto valid = stats::get_property_valid(prop_id);
+        bool update = false;
 
         ImGui::Separator();
         ImGui::PushID(i);
 
-		if (!valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, ERROR_COLOR);
-		ImGui::PushItemWidth(-1);
-		if (ImGui::InputText("##name", name_buf->buffer, name_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
-			update = true;
-		}
-		ImGui::PopItemWidth();
-		ImGui::NextColumn();
-		ImGui::PushItemWidth(-1);
-		if (ImGui::InputText("##args", args_buf->buffer, args_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
-			update = true;
-		}
-		ImGui::PopItemWidth();
-		if (!valid) ImGui::PopStyleColor();
+        if (!valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, ERROR_COLOR);
+        ImGui::PushItemWidth(-1);
+        if (ImGui::InputText("##name", name_buf->buffer, name_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
+            update = true;
+        }
+        ImGui::PopItemWidth();
         ImGui::NextColumn();
-		ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
-		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
-		ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
+        ImGui::PushItemWidth(-1);
+        if (ImGui::InputText("##args", args_buf->buffer, args_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
+            update = true;
+        }
+        ImGui::PopItemWidth();
+        if (!valid) ImGui::PopStyleColor();
+        ImGui::NextColumn();
+        ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
         if (ImGui::Button("del")) {
             stats::remove_property(prop_id);
         }
-		ImGui::PopStyleColor(3);
-		ImGui::NextColumn();
+        ImGui::PopStyleColor(3);
+        ImGui::NextColumn();
         ImGui::PopID();
 
         if (update) {
-			stats::clear_property(prop_id);
+            stats::clear_property(prop_id);
             compute_stats = true;
         }
     }
-	ImGui::Columns(1);
-	ImGui::Separator();
+    ImGui::Columns(1);
+    ImGui::Separator();
     ImGui::PopID();
     ImGui::End();
-    
+
     if (compute_stats) {
         stats::compute_stats(data->mol_data.dynamic);
     }
@@ -1049,7 +1039,7 @@ static void draw_timeline_window(ApplicationData* data) {
     // if (!stats) return;
 
     ImGui::Begin("Timelines", &data->statistics.show_timeline_window, ImGuiWindowFlags_NoFocusOnAppearing);
-    //auto group_id = stats::get_group("group1");
+    // auto group_id = stats::get_group("group1");
 
     int32 frame_idx = (int32)data->time;
 
@@ -1081,71 +1071,75 @@ static void draw_timeline_window(ApplicationData* data) {
 }
 
 static void draw_distribution_window(ApplicationData* data) {
-	ImGui::Begin("Distributions", &data->statistics.show_distribution_window, ImGuiWindowFlags_NoFocusOnAppearing);
-	for (int i = 0; i < stats::get_property_count(); i++) {
-		ImGui::PushID(i);
+    ImGui::Begin("Distributions", &data->statistics.show_distribution_window, ImGuiWindowFlags_NoFocusOnAppearing);
+    for (int i = 0; i < stats::get_property_count(); i++) {
 		auto prop_id = stats::get_property(i);
 		auto hist = stats::get_property_histogram(prop_id, 0);
 		if (!hist) continue;
-		//ImGui::PlotHistogram(stats::get_property_name(prop_id), [](void* data, int32 idx) -> float { return ((float*)data)[idx]; }, prop_data->bins.data, prop_data->bins.count);
-		ImGui::PlotHistogramExtended(stats::get_property_name(prop_id), hist->bins.data, (int32)hist->bins.count, 0, 0, 0, 0, hist->bin_range.x, hist->bin_range.y, ImVec2(0, 100));
-		ImGui::PopID();
-	}
-	ImGui::End();
+
+        ImGui::PushID(i);
+        // ImGui::PlotHistogram(stats::get_property_name(prop_id), [](void* data, int32 idx) -> float { return ((float*)data)[idx]; },
+        // prop_data->bins.data, prop_data->bins.count);
+        ImGui::PlotHistogramExtended(stats::get_property_name(prop_id), hist->bins.data, (int32)hist->bins.count, 0, 0, 0, 0, hist->bin_range.x,
+                                     hist->bin_range.y, ImVec2(0, 100));
+        ImGui::PopID();
+    }
+    ImGui::End();
 }
 
 static void draw_ramachandran(ApplicationData* data) {
-	constexpr vec2 res(512, 512);
-	ImGui::SetNextWindowContentSize(ImVec2(res.x, res.y));
-	ImGui::Begin("Ramachandran", &data->ramachandran.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
+    constexpr vec2 res(512, 512);
+    ImGui::SetNextWindowContentSize(ImVec2(res.x, res.y));
+    ImGui::Begin("Ramachandran", &data->ramachandran.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
-	int32 num_frames = data->mol_data.dynamic.trajectory ? data->mol_data.dynamic.trajectory.num_frames : 0;
-	float range_min = (float)data->ramachandran.frame_range_min;
-	float range_max = (float)data->ramachandran.frame_range_max;
+    int32 num_frames = data->mol_data.dynamic.trajectory ? data->mol_data.dynamic.trajectory.num_frames : 0;
+    float range_min = (float)data->ramachandran.frame_range_min;
+    float range_max = (float)data->ramachandran.frame_range_max;
 
-	ImGui::SliderFloat("opacity", &data->ramachandran.opacity, 0.f, 2.f);
-	ImGui::SliderFloat("radius", &data->ramachandran.radius, 0.1f, 2.f);
-	ImGui::RangeSliderFloat("framerange", &range_min, &range_max, 0, (float)math::max(0, num_frames - 1));
-	ImGui::SameLine();
-	if (ImGui::Button("reset")) {
-		range_min = 0;
-		range_max = num_frames - 1;
-	}
-	data->ramachandran.frame_range_min = (int32)range_min;
-	data->ramachandran.frame_range_max = (int32)range_max;
+    ImGui::SliderFloat("opacity", &data->ramachandran.opacity, 0.f, 2.f);
+    ImGui::SliderFloat("radius", &data->ramachandran.radius, 0.1f, 2.f);
+    ImGui::RangeSliderFloat("framerange", &range_min, &range_max, 0, (float)math::max(0, num_frames - 1));
+    ImGui::SameLine();
+    if (ImGui::Button("reset")) {
+        range_min = 0;
+        range_max = num_frames - 1;
+    }
+    data->ramachandran.frame_range_min = (int32)range_min;
+    data->ramachandran.frame_range_max = (int32)range_max;
 
-	int32 frame = (int32)data->time;
-	Array<BackboneAngles> accumulated_angles = get_backbone_angles(data->ramachandran.backbone_angles, data->ramachandran.frame_range_min, data->ramachandran.frame_range_max - data->ramachandran.frame_range_min);
-	Array<BackboneAngles> current_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame);
+    int32 frame = (int32)data->time;
+    Array<BackboneAngles> accumulated_angles = get_backbone_angles(data->ramachandran.backbone_angles, data->ramachandran.frame_range_min,
+                                                                   data->ramachandran.frame_range_max - data->ramachandran.frame_range_min);
+    Array<BackboneAngles> current_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame);
 
-	ramachandran::clear_accumulation_texture();
+    ramachandran::clear_accumulation_texture();
 
-	const vec4 ordinary_color(1.f, 1.f, 1.f, 0.1f * data->ramachandran.opacity);
-	ramachandran::compute_accumulation_texture(accumulated_angles, ordinary_color, data->ramachandran.radius);
+    const vec4 ordinary_color(1.f, 1.f, 1.f, 0.1f * data->ramachandran.opacity);
+    ramachandran::compute_accumulation_texture(accumulated_angles, ordinary_color, data->ramachandran.radius);
 
-	const vec4 highlight_color(1.f, 1.f, 0.f, 1.0f);
-	ramachandran::compute_accumulation_texture(current_angles, highlight_color, data->ramachandran.radius * 2.f, 0.1f);
+    const vec4 highlight_color(1.f, 1.f, 0.f, 1.0f);
+    ramachandran::compute_accumulation_texture(current_angles, highlight_color, data->ramachandran.radius * 2.f, 0.1f);
 
-	float dim = math::min(ImGui::GetWindowWidth(), ImGui::GetWindowHeight());
-	ImVec2 win_pos = ImGui::GetCursorScreenPos();
-	ImVec2 canvas_size(dim, dim);
-	ImDrawList* dl = ImGui::GetWindowDrawList();
+    float dim = math::min(ImGui::GetWindowWidth(), ImGui::GetWindowHeight());
+    ImVec2 win_pos = ImGui::GetCursorScreenPos();
+    ImVec2 canvas_size(dim, dim);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
 
-	ImVec2 x0 = win_pos;
-	ImVec2 x1(win_pos.x + canvas_size.x, win_pos.y + canvas_size.y);
+    ImVec2 x0 = win_pos;
+    ImVec2 x1(win_pos.x + canvas_size.x, win_pos.y + canvas_size.y);
 
-	dl->ChannelsSplit(2);
-	dl->ChannelsSetCurrent(0);
-	// ImGui::Image((ImTextureID)ramachandran::segmentation_tex, canvas_size);
-	dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_segmentation_texture(), x0, x1);
-	dl->ChannelsSetCurrent(1);
-	// ImGui::Image((ImTextureID)ramachandran::accumulation_tex, canvas_size);
-	dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_accumulation_texture(), x0, x1);
-	dl->ChannelsMerge();
+    dl->ChannelsSplit(2);
+    dl->ChannelsSetCurrent(0);
+    // ImGui::Image((ImTextureID)ramachandran::segmentation_tex, canvas_size);
+    dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_segmentation_texture(), x0, x1);
+    dl->ChannelsSetCurrent(1);
+    // ImGui::Image((ImTextureID)ramachandran::accumulation_tex, canvas_size);
+    dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_accumulation_texture(), x0, x1);
+    dl->ChannelsMerge();
 
-	dl->ChannelsSetCurrent(0);
+    dl->ChannelsSetCurrent(0);
 
-	ImGui::End();
+    ImGui::End();
 }
 
 static void reset_view(ApplicationData* data) {
@@ -1161,7 +1155,7 @@ static void reset_view(ApplicationData* data) {
     data->camera.position = data->controller.position;
     data->camera.orientation = data->controller.orientation;
     data->camera.near_plane = 1.f;
-    data->camera.far_plane = math::length(size) * 10.f;
+    data->camera.far_plane = math::length(size) * 30.f;
 }
 
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height) {
@@ -1237,13 +1231,13 @@ static void free_mol_data(ApplicationData* data) {
         free_molecule_structure(&data->mol_data.dynamic.molecule);
     }
     if (data->mol_data.dynamic.trajectory) {
-		free_trajectory(&data->mol_data.dynamic.trajectory);
+        free_trajectory(&data->mol_data.dynamic.trajectory);
     }
     free_backbone_angles_trajectory(&data->ramachandran.backbone_angles);
     data->ramachandran.backbone_angles = {};
     data->ramachandran.current_backbone_angles = {};
-	stats::clear_instances();
-	stats::clear_property_data();
+    stats::clear_instances();
+    stats::clear_property_data();
 }
 
 static void load_molecule_data(ApplicationData* data, CString file) {
@@ -1253,8 +1247,8 @@ static void load_molecule_data(ApplicationData* data, CString file) {
         printf("'%s'\n", ext.beg());
         if (compare_n(ext, "pdb", 3, true)) {
             free_mol_data(data);
-			free_string(&data->files.molecule);
-			free_string(&data->files.trajectory);
+            free_string(&data->files.molecule);
+            free_string(&data->files.trajectory);
             allocate_and_load_pdb_from_file(&data->mol_data.dynamic, file);
 
             if (!data->mol_data.dynamic.molecule) {
@@ -1262,48 +1256,48 @@ static void load_molecule_data(ApplicationData* data, CString file) {
                 return;
             }
 
-			data->files.molecule = allocate_string(file);
+            data->files.molecule = allocate_string(file);
             data->mol_data.atom_radii = compute_atom_radii(data->mol_data.dynamic.molecule.atom_elements);
             if (data->mol_data.dynamic.trajectory) {
                 init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
                 compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
-				stats::compute_stats(data->mol_data.dynamic);
+                stats::compute_stats(data->mol_data.dynamic);
             }
         } else if (compare_n(ext, "gro", 3, true)) {
             free_mol_data(data);
-			free_string(&data->files.molecule);
-			free_string(&data->files.trajectory);
+            free_string(&data->files.molecule);
+            free_string(&data->files.trajectory);
             allocate_and_load_gro_from_file(&data->mol_data.dynamic.molecule, file);
 
             if (!data->mol_data.dynamic.molecule) {
                 printf("ERROR! Failed to load gro file.\n");
-				return;
+                return;
             }
 
-			data->files.molecule = allocate_string(file);
+            data->files.molecule = allocate_string(file);
             data->mol_data.atom_radii = compute_atom_radii(data->mol_data.dynamic.molecule.atom_elements);
         } else if (compare_n(ext, "xtc", 3, true)) {
             if (!data->mol_data.dynamic.molecule) {
                 printf("ERROR! Must have molecule loaded before trajectory can be loaded!\n");
             } else {
-				if (data->mol_data.dynamic.trajectory) free_trajectory(&data->mol_data.dynamic.trajectory);
+                if (data->mol_data.dynamic.trajectory) free_trajectory(&data->mol_data.dynamic.trajectory);
                 if (!load_and_allocate_trajectory(&data->mol_data.dynamic.trajectory, file)) {
                     printf("ERROR! Problem loading trajectory\n");
                     return;
                 }
                 if (data->mol_data.dynamic.trajectory) {
-					if (data->mol_data.dynamic.trajectory.num_atoms != data->mol_data.dynamic.molecule.atom_positions.count) {
-						printf("ERROR! The number of atoms in the molecule does not match the number of atoms in the trajectory\n");
-						free_trajectory(&data->mol_data.dynamic.trajectory);
-						data->mol_data.dynamic.trajectory = {};
-						return;
-					}
-					data->files.trajectory = allocate_string(file);
-					init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
+                    if (data->mol_data.dynamic.trajectory.num_atoms != data->mol_data.dynamic.molecule.atom_positions.count) {
+                        printf("ERROR! The number of atoms in the molecule does not match the number of atoms in the trajectory\n");
+                        free_trajectory(&data->mol_data.dynamic.trajectory);
+                        data->mol_data.dynamic.trajectory = {};
+                        return;
+                    }
+                    data->files.trajectory = allocate_string(file);
+                    init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
                     read_trajectory_async(&data->mol_data.dynamic.trajectory, [data]() {
-						compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
-						stats::compute_stats(data->mol_data.dynamic);
-					});
+                        stats::compute_stats(data->mol_data.dynamic);
+                        compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
+                    });
                 }
             }
         } else {
@@ -1313,143 +1307,246 @@ static void load_molecule_data(ApplicationData* data, CString file) {
 }
 
 static Representation::Type get_rep_type(CString str) {
-    if (compare(str, "VDW")) return Representation::VDW;
-    else if (compare(str, "LICORICE")) return Representation::LICORICE;
-    else if (compare(str, "RIBBONS")) return Representation::RIBBONS;
-    else return Representation::VDW;
+    if (compare(str, "VDW"))
+        return Representation::VDW;
+    else if (compare(str, "LICORICE"))
+        return Representation::LICORICE;
+    else if (compare(str, "RIBBONS"))
+        return Representation::RIBBONS;
+    else
+        return Representation::VDW;
 }
 
 static CString get_rep_type_name(Representation::Type type) {
-    switch(type) {
-        case Representation::VDW: return "VDW";
-        case Representation::LICORICE: return "LICORICE";
-        case Representation::RIBBONS: return "RIBBONS";
-        default: return "UNKNOWN";
+    switch (type) {
+        case Representation::VDW:
+            return "VDW";
+        case Representation::LICORICE:
+            return "LICORICE";
+        case Representation::RIBBONS:
+            return "RIBBONS";
+        default:
+            return "UNKNOWN";
     }
 }
 
 static ColorMapping get_color_mapping(CString str) {
-    if (compare(str, "STATIC_COLOR")) return ColorMapping::STATIC_COLOR;
-    else if (compare(str, "CPK")) return ColorMapping::CPK;
-    else if (compare(str, "RES_ID")) return ColorMapping::RES_ID;
-    else if (compare(str, "RES_INDEX")) return ColorMapping::RES_INDEX;
-    else if (compare(str, "CHAIN_ID")) return ColorMapping::CHAIN_ID;
-    else if (compare(str, "CHAIN_INDEX")) return ColorMapping::CHAIN_INDEX;
-    else return ColorMapping::CPK;
+    if (compare(str, "STATIC_COLOR"))
+        return ColorMapping::STATIC_COLOR;
+    else if (compare(str, "CPK"))
+        return ColorMapping::CPK;
+    else if (compare(str, "RES_ID"))
+        return ColorMapping::RES_ID;
+    else if (compare(str, "RES_INDEX"))
+        return ColorMapping::RES_INDEX;
+    else if (compare(str, "CHAIN_ID"))
+        return ColorMapping::CHAIN_ID;
+    else if (compare(str, "CHAIN_INDEX"))
+        return ColorMapping::CHAIN_INDEX;
+    else
+        return ColorMapping::CPK;
 }
 
 static CString get_color_mapping_name(ColorMapping mapping) {
-    switch(mapping) {
-        case ColorMapping::STATIC_COLOR: return "STATIC_COLOR";
-        case ColorMapping::CPK: return "CPK";
-        case ColorMapping::RES_ID: return "RES_ID";
-        case ColorMapping::RES_INDEX: return "RES_INDEX";
-        case ColorMapping::CHAIN_ID: return "CHAIN_ID";
-        case ColorMapping::CHAIN_INDEX: return "CHAIN_INDEX";
-        default: return "UNKNOWN";
+    switch (mapping) {
+        case ColorMapping::STATIC_COLOR:
+            return "STATIC_COLOR";
+        case ColorMapping::CPK:
+            return "CPK";
+        case ColorMapping::RES_ID:
+            return "RES_ID";
+        case ColorMapping::RES_INDEX:
+            return "RES_INDEX";
+        case ColorMapping::CHAIN_ID:
+            return "CHAIN_ID";
+        case ColorMapping::CHAIN_INDEX:
+            return "CHAIN_INDEX";
+        default:
+            return "UNKNOWN";
     }
+}
+
+static vec4 to_vec4(CString txt, vec4 default_val = vec4(1)) {
+    vec4 res = default_val;
+    auto tokens = ctokenize(txt, ",");
+    int32 count = (int32)tokens.count < 4 ? (int32)tokens.count : 4;
+    for (int i = 0; i < count; i++) {
+        res[i] = to_float(tokens[i]);
+    }
+    return res;
 }
 
 static void load_workspace(ApplicationData* data, CString file) {
-	*data = {};
+	ASSERT(data);
+    clear_representations(data);
+    stats::clear();
 
-	String txt = allocate_and_read_textfile(file);
-	CString c_txt = txt;
-	CString line;
-	while (extract_line(line, c_txt)) {
-		if (compare(line, "[Files]")) {
-			while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
-				extract_line(line, c_txt);
-				if (compare(line, "MoleculeFile=")) data->files.molecule = allocate_string(line.substr(13));
-				if (compare(line, "TrajectoryFile=")) data->files.trajectory = allocate_string(line.substr(15));
-			}
-		}
-		else if (compare(line, "[Representation]")) {
+	StringBuffer<256> new_molecule_file;
+	StringBuffer<256> new_trajectory_file;
 
-		}
-		else if (compare(line, "[Group]")) {
+    String txt = allocate_and_read_textfile(file);
+    CString c_txt = txt;
+    CString line;
+    while (extract_line(line, c_txt)) {
+        if (compare(line, "[Files]")) {
+            while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
+                extract_line(line, c_txt);
+                if (compare_n(line, "MoleculeFile=", 13)) {
+                    new_molecule_file = get_absolute_path(file, trim(line.substr(13)));
+                }
+                if (compare_n(line, "TrajectoryFile=", 15)) {
+                    new_trajectory_file = get_absolute_path(file, trim(line.substr(15)));
+                }
+            }
+        } else if (compare(line, "[Representation]")) {
+            Representation rep{};
+            while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
+                extract_line(line, c_txt);
+                if (compare_n(line, "Name=", 5)) rep.name = trim(line.substr(5));
+                if (compare_n(line, "Filter=", 7)) rep.filter = trim(line.substr(7));
+                if (compare_n(line, "Type=", 5)) rep.type = get_rep_type(trim(line.substr(5)));
+                if (compare_n(line, "ColorMapping=", 13)) rep.color_mapping = get_color_mapping(trim(line.substr(13)));
+                if (compare_n(line, "Enabled=", 8)) rep.enabled = to_int(trim(line.substr(8))) != 0;
+                if (compare_n(line, "StaticColor=", 12)) rep.static_color = to_vec4(trim(line.substr(12)));
+                if (compare_n(line, "Radius=", 7)) rep.radius = to_float(trim(line.substr(7)));
+                if (compare_n(line, "NumSubdivisions=", 16)) rep.num_subdivisions = to_int(trim(line.substr(16)));
+                if (compare_n(line, "Tension=", 8)) rep.tension = to_float(trim(line.substr(8)));
+                if (compare_n(line, "Width=", 6)) rep.width = to_float(trim(line.substr(6)));
+                if (compare_n(line, "Thickness=", 10)) rep.thickness = to_float(trim(line.substr(10)));
+            }
+            data->representations.data.push_back(rep);
+        } else if (compare(line, "[Group]")) {
+            StringBuffer<64> name, args;
+            while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
+                extract_line(line, c_txt);
+                if (compare_n(line, "Name=", 5)) name = trim(line.substr(5));
+                if (compare_n(line, "Args=", 5)) args = trim(line.substr(5));
+            }
+            stats::create_group(name, args);
+        } else if (compare(line, "[Property]")) {
+            StringBuffer<64> name, args;
+            while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
+                extract_line(line, c_txt);
+                if (compare_n(line, "Name=", 5)) name = trim(line.substr(5));
+                if (compare_n(line, "Args=", 5)) args = trim(line.substr(5));
+            }
+            stats::create_property(name, args);
+        } else if (compare(line, "[RenderSettings]")) {
+            while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
+                extract_line(line, c_txt);
+                if (compare_n(line, "SsaoEnabled=", 12)) data->ssao.enabled = to_int(trim(line.substr(12))) != 0;
+                if (compare_n(line, "SsaoIntensity=", 14)) data->ssao.intensity = to_float(trim(line.substr(14)));
+                if (compare_n(line, "SsaoRadius=", 11)) data->ssao.radius = to_float(trim(line.substr(11)));
+            }
+        } else if (compare(line, "[Camera]")) {
+            while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
+                extract_line(line, c_txt);
+				if (compare_n(line, "Position=", 9)) {
+					vec3 pos = vec3(to_vec4(trim(line.substr(9))));
+					data->camera.position = pos;
+					data->controller.position = pos;
+				}
+				if (compare_n(line, "Rotation=", 9)) {
+					quat rot = quat(to_vec4(trim(line.substr(9))));
+					data->camera.orientation = rot;
+					data->controller.orientation = rot;
+				}
+				if (compare_n(line, "Distance=", 9)) data->controller.distance = to_float(trim(line.substr(9)));
+            }
+        }
+    }
 
-		}
-		else if (compare(line, "[Property]")) {
+    // Store Loaded Molecule File Relative Path
+    // (Store Loaded Trajectory File Relative Path)
+    // Store Representations
+    // Store Groups and Properties
+    // Store Rendersettings
+    // ...
 
-		}
-		else if (compare(line, "[RenderSettings]")) {
+    if (txt) FREE(txt.data);
 
-		}
+    if (data->files.workspace) free_string(&data->files.workspace);
+    data->files.workspace = allocate_string(file);
+
+	if (!compare(new_molecule_file, data->files.molecule) && new_molecule_file) {
+		load_molecule_data(data, new_molecule_file);
 	}
 
-	// Store Loaded Molecule File Relative Path
-	// (Store Loaded Trajectory File Relative Path)
-	// Store Representations
-	// Store Groups and Properties
-	// Store Rendersettings
-	// ...
+	if (!compare(new_trajectory_file, data->files.trajectory) && new_trajectory_file) {
+		load_molecule_data(data, new_trajectory_file);
+	}
 
-	if (txt.data) FREE(txt.data);
+    reset_representations(data);
 }
 
 static void save_workspace(ApplicationData* data, CString file) {
-	FILE* fptr = fopen(file.beg(), "w");
-	if (!fptr) {
-		printf("ERROR! Could not save workspace to file '%s'\n", file.beg());
+    FILE* fptr = fopen(file.beg(), "w");
+    if (!fptr) {
+        printf("ERROR! Could not save workspace to file '%s'\n", file.beg());
         return;
-	}
-
-    // @TODO: Make relative paths
-	fprintf(fptr, "[Files]\n");
-	fprintf(fptr, "MoleculeFile=%s\n", data->files.molecule ? data->files.molecule.beg() : "");
-    fprintf(fptr, "TrajectoryFile=%s\n", data->files.trajectory ? data->files.trajectory.beg() : "");
-	fprintf(fptr, "\n");
-
-	// REPRESENTATIONS
-    for (const auto& rep : data->representations.data) {
-        fprintf(fptr, "[Representation]\n");
-		fprintf(fptr, "Name=%s\n", rep.name.beg());
-		fprintf(fptr, "Filter=%s\n", rep.name.beg());
-		fprintf(fptr, "Type=%s\n", get_rep_type_name(rep.type).beg());
-		fprintf(fptr, "ColorMapping=%s\n", get_color_mapping_name(rep.color_mapping).beg());
-		fprintf(fptr, "Enabled=%i\n", rep.enabled);
-		if (rep.color_mapping == ColorMapping::STATIC_COLOR)
-			fprintf(fptr, "StaticColor=%i\n", rep.enabled);
-		if (rep.type == Representation::VDW || Representation::LICORICE)
-			fprintf(fptr, "RadiiScale=%g\n", rep.radii_scale);
-		else if (rep.type == Representation::RIBBONS) {
-			fprintf(fptr, "NumSubdivisions=%i\n", rep.num_subdivisions);
-			fprintf(fptr, "Tension=%g\n", rep.tension);
-		}
-		fprintf(fptr, "\n");
     }
 
-	// GROUPS
-	for (int i = 0; i < stats::get_group_count(); i++) {
-		auto id = stats::get_group(i);
-		fprintf(fptr, "[Group]\n");
-		fprintf(fptr, "Name=%s\n", stats::get_group_name_buf(id)->beg());
-		fprintf(fptr, "Args=%s\n", stats::get_group_args_buf(id)->beg());
-		fprintf(fptr, "\n");
-	}
+    // @TODO: Make relative paths
+    fprintf(fptr, "[Files]\n");
+    fprintf(fptr, "MoleculeFile=%s\n", data->files.molecule ? get_relative_path(file, data->files.molecule).beg() : "");
+    fprintf(fptr, "TrajectoryFile=%s\n", data->files.trajectory ? get_relative_path(file, data->files.trajectory).beg() : "");
+    fprintf(fptr, "\n");
 
-	// PROPERTIES
-	for (int i = 0; i < stats::get_property_count(); i++) {
-		auto id = stats::get_property(i);
-		fprintf(fptr, "[Property]\n");
-		fprintf(fptr, "Name=%s\n", stats::get_property_name_buf(id)->beg());
-		fprintf(fptr, "Args=%s\n", stats::get_property_args_buf(id)->beg());
-		fprintf(fptr, "\n");
-	}
+    // REPRESENTATIONS
+    for (const auto& rep : data->representations.data) {
+        fprintf(fptr, "[Representation]\n");
+        fprintf(fptr, "Name=%s\n", rep.name.beg());
+        fprintf(fptr, "Filter=%s\n", rep.filter.beg());
+        fprintf(fptr, "Type=%s\n", get_rep_type_name(rep.type).beg());
+        fprintf(fptr, "ColorMapping=%s\n", get_color_mapping_name(rep.color_mapping).beg());
+        fprintf(fptr, "Enabled=%i\n", rep.enabled);
+        if (rep.color_mapping == ColorMapping::STATIC_COLOR) fprintf(fptr, "StaticColor=%i\n", rep.enabled);
+        if (rep.type == Representation::VDW || Representation::LICORICE)
+            fprintf(fptr, "Radius=%g\n", rep.radius);
+        else if (rep.type == Representation::RIBBONS) {
+            fprintf(fptr, "NumSubdivisions=%i\n", rep.num_subdivisions);
+            fprintf(fptr, "Tension=%g\n", rep.tension);
+            fprintf(fptr, "Width=%g\n", rep.width);
+            fprintf(fptr, "Thickness=%g\n", rep.thickness);
+        }
+        fprintf(fptr, "\n");
+    }
 
-	fprintf(fptr, "[RenderSettings]\n");
-	fprintf(fptr, "SsaoEnabled=%i\n", data->ssao.enabled ? 1 : 0);
-	fprintf(fptr, "SsaoIntensity=%g\n", data->ssao.intensity);
-	fprintf(fptr, "SsaoRadius=%g\n", data->ssao.radius);
-	fprintf(fptr, "\n");
+    // GROUPS
+    for (int i = 0; i < stats::get_group_count(); i++) {
+        auto id = stats::get_group(i);
+        fprintf(fptr, "[Group]\n");
+        fprintf(fptr, "Name=%s\n", stats::get_group_name_buf(id)->beg());
+        fprintf(fptr, "Args=%s\n", stats::get_group_args_buf(id)->beg());
+        fprintf(fptr, "\n");
+    }
 
-	fprintf(fptr, "[Camera]\n");
-	fprintf(fptr, "Pos:%g,%g,%g\n", data->camera.position.x, data->camera.position.y, data->camera.position.z);
-	fprintf(fptr, "Rot:%g,%g,%g,%g\n", data->camera.orientation.x, data->camera.orientation.y, data->camera.orientation.z, data->camera.orientation.w);
-	fprintf(fptr, "\n");
+    // PROPERTIES
+    for (int i = 0; i < stats::get_property_count(); i++) {
+        auto id = stats::get_property(i);
+        fprintf(fptr, "[Property]\n");
+        fprintf(fptr, "Name=%s\n", stats::get_property_name_buf(id)->beg());
+        fprintf(fptr, "Args=%s\n", stats::get_property_args_buf(id)->beg());
+        fprintf(fptr, "\n");
+    }
 
-	fclose(fptr);
+    fprintf(fptr, "[RenderSettings]\n");
+    fprintf(fptr, "SsaoEnabled=%i\n", data->ssao.enabled ? 1 : 0);
+    fprintf(fptr, "SsaoIntensity=%g\n", data->ssao.intensity);
+    fprintf(fptr, "SsaoRadius=%g\n", data->ssao.radius);
+    fprintf(fptr, "\n");
+
+    fprintf(fptr, "[Camera]\n");
+    fprintf(fptr, "Position=%g,%g,%g\n", data->camera.position.x, data->camera.position.y, data->camera.position.z);
+    fprintf(fptr, "Rotation=%g,%g,%g,%g\n", data->camera.orientation.x, data->camera.orientation.y, data->camera.orientation.z,
+            data->camera.orientation.w);
+	fprintf(fptr, "Distance=%g\n", data->controller.distance);
+    fprintf(fptr, "\n");
+
+    fclose(fptr);
+
+    if (data->files.workspace) free_string(&data->files.workspace);
+    data->files.workspace = allocate_string(file);
 }
 
 static void create_default_representation(ApplicationData* data) {
@@ -1473,11 +1570,16 @@ static void remove_representation(ApplicationData* data, int idx) {
 
 static void reset_representations(ApplicationData* data) {
     ASSERT(data);
+
     for (auto& rep : data->representations.data) {
         if (rep.colors) {
             FREE(rep.colors.data);
         }
         rep.colors.count = data->mol_data.dynamic.molecule.atom_positions.count;
+		if (rep.colors.count == 0) {
+			rep.colors.data = nullptr;
+			continue;
+		}
         rep.colors.data = (uint32*)MALLOC(rep.colors.count * sizeof(uint32));
 
         compute_atom_colors(rep.colors, data->mol_data.dynamic.molecule, rep.color_mapping,
@@ -1488,3 +1590,12 @@ static void reset_representations(ApplicationData* data) {
     }
 }
 
+static void clear_representations(ApplicationData* data) {
+    ASSERT(data);
+    for (auto& rep : data->representations.data) {
+        if (rep.colors) {
+            FREE(rep.colors.data);
+        }
+    }
+    data->representations.data.clear();
+}

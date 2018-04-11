@@ -90,17 +90,18 @@ static bool compute_atomic_distance(float* data, const Array<CString> args, cons
 	if (args.count != 2) return false;
     if (group_struct.beg_atom_idx == group_struct.end_atom_idx) return false;
 
-	auto int_a = to_int32(args[0]);
-	auto int_b = to_int32(args[1]);
+	int atom_idx[2];
+	for (int i = 0; i < 2; i++) {
+		auto res = to_int32(args[i]);
+		if (!res.success) return false;
+		int idx = group_struct.beg_atom_idx + res - 1;
+		if (idx < 0 || (int32)dynamic.molecule.atom_positions.count <= idx) return false;
+		atom_idx[i] = idx;
+	}
 
-	if (!int_a.success || !int_b.success) return false;
-	int32 atom_a = group_struct.beg_atom_idx + int_a;
-	int32 atom_b = group_struct.beg_atom_idx + int_b;
-
-    int32 count = dynamic.trajectory.num_frames;
-    for (int32 i = 0; i < count; i++) {
-        vec3 pos_a = dynamic.trajectory.frame_buffer[i].atom_positions[atom_a];
-        vec3 pos_b = dynamic.trajectory.frame_buffer[i].atom_positions[atom_b];
+    for (int32 i = 0; i < dynamic.trajectory.num_frames; i++) {
+        vec3 pos_a = dynamic.trajectory.frame_buffer[i].atom_positions[atom_idx[0]];
+        vec3 pos_b = dynamic.trajectory.frame_buffer[i].atom_positions[atom_idx[1]];
         data[i] = math::distance(pos_a, pos_b);
     }
 
@@ -111,20 +112,20 @@ static bool compute_atomic_angle(float* data, const Array<CString> args, const M
 	if (args.count != 3) return false;
     if (group_struct.beg_atom_idx == group_struct.end_atom_idx) return false;
 
-	auto int_a = to_int32(args[0]);
-	auto int_b = to_int32(args[1]);
-	auto int_c = to_int32(args[2]);
-
-	if (!int_a.success || !int_b.success || !int_c.success) return false;
-	int32 atom_a = group_struct.beg_atom_idx + int_a;
-	int32 atom_b = group_struct.beg_atom_idx + int_b;
-	int32 atom_c = group_struct.beg_atom_idx + int_c;
+	int atom_idx[3];
+	for (int i = 0; i < 3; i++) {
+		auto res = to_int32(args[i]);
+		if (!res.success) return false;
+		int idx = group_struct.beg_atom_idx + res - 1;
+		if (idx < 0 || (int32)dynamic.molecule.atom_positions.count <= idx) return false;
+		atom_idx[i] = idx;
+	}
 
 	int32 count = dynamic.trajectory.num_frames;
 	for (int32 i = 0; i < count; i++) {
-		vec3 pos_a = dynamic.trajectory.frame_buffer[i].atom_positions[atom_a];
-		vec3 pos_b = dynamic.trajectory.frame_buffer[i].atom_positions[atom_b];
-		vec3 pos_c = dynamic.trajectory.frame_buffer[i].atom_positions[atom_c];
+		vec3 pos_a = dynamic.trajectory.frame_buffer[i].atom_positions[atom_idx[0]];
+		vec3 pos_b = dynamic.trajectory.frame_buffer[i].atom_positions[atom_idx[1]];
+		vec3 pos_c = dynamic.trajectory.frame_buffer[i].atom_positions[atom_idx[2]];
 
 		data[i] = math::angle(pos_a - pos_b, pos_c - pos_b);
 	}
@@ -136,24 +137,21 @@ static bool compute_atomic_dihedral(float* data, const Array<CString> args, cons
 	if (args.count != 4) return false;
     if (group_struct.beg_atom_idx == group_struct.end_atom_idx) return false;
 
-	auto int_a = to_int32(args[0]);
-	auto int_b = to_int32(args[1]);
-	auto int_c = to_int32(args[2]);
-	auto int_d = to_int32(args[3]);
-
-	if (!int_a.success || !int_b.success || !int_c.success || !int_d.success) return false;
-    int32 atom_a = group_struct.beg_atom_idx + int_a;
-    int32 atom_b = group_struct.beg_atom_idx + int_b;
-    int32 atom_c = group_struct.beg_atom_idx + int_c;
-    int32 atom_d = group_struct.beg_atom_idx + int_d;
+	int atom_idx[4];
+	for (int i = 0; i < 4; i++) {
+		auto res = to_int32(args[i]);
+		if (!res.success) return false;
+		int idx = group_struct.beg_atom_idx + res - 1;
+		if (idx < 0 || (int32)dynamic.molecule.atom_positions.count <= idx) return false;
+		atom_idx[i] = idx;
+	}
 
 	int32 count = dynamic.trajectory.num_frames;
 	for (int32 i = 0; i < count; i++) {
-		vec3 pos_a = dynamic.trajectory.frame_buffer[i].atom_positions[atom_a];
-		vec3 pos_b = dynamic.trajectory.frame_buffer[i].atom_positions[atom_b];
-		vec3 pos_c = dynamic.trajectory.frame_buffer[i].atom_positions[atom_c];
-		vec3 pos_d = dynamic.trajectory.frame_buffer[i].atom_positions[atom_d];
-
+		vec3 pos_a = dynamic.trajectory.frame_buffer[i].atom_positions[atom_idx[0]];
+		vec3 pos_b = dynamic.trajectory.frame_buffer[i].atom_positions[atom_idx[1]];
+		vec3 pos_c = dynamic.trajectory.frame_buffer[i].atom_positions[atom_idx[2]];
+		vec3 pos_d = dynamic.trajectory.frame_buffer[i].atom_positions[atom_idx[3]];
 		data[i] = dihedral_angle(pos_a, pos_b, pos_c, pos_d);
 	}
 

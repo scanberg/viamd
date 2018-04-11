@@ -230,6 +230,7 @@ CString get_file(CString url) {
     while (beg != url.begin() && *beg != '\\' && *beg != '/') {
         beg--;
     }
+	if (*beg == '\\' || *beg == '/') beg++;
     
     return CString(beg, end - beg);
 }
@@ -260,9 +261,9 @@ CString get_file_extension(CString url) {
     const char* beg = url.end() - 1;
     const char* end = url.end();
     
-    while (beg != url.begin() && *beg != '.') beg--;
+    while (beg != url.begin() && *beg != '.' && *beg != '\\' && *beg != '/') beg--;
     
-    if (beg == url.begin()) {
+    if (beg == url.begin() || *beg == '\\' || *beg == '/') {
         return CString();
     }
     
@@ -276,23 +277,73 @@ inline static bool char_in_string(char c, CString str) {
 	return false;
 }
 
-DynamicString get_relative_path(CString from, CString to) {
-	CString from_dir = get_directory(from);
-	CString to_dir = get_directory(to);
-	const char* c_from = from_dir.beg();
-	const char* c_to = to_dir.beg();
+StringBuffer<256> get_relative_path(CString from, CString to) {
+	const char* c_from = from.beg();
+	const char* c_to = to.beg();
 	while (c_from != from.end() && c_to != to.end() && *c_from == *c_to) {
 		c_from++;
 		c_to++;
 	}
 
+	// If they have nothing in common. Return absolute path of to
+	if (c_to == to.beg()) {
+		return to;
+	}
+
 	int dir_count = 0;
-	for (const char* c = c_from; c != from_dir.end(); c++) /* <- LOL! */ {
+	for (const char* c = c_from; c != from.end(); c++ /* <- LOL! */)  {
 		if (*c == '\\' || *c == '/') dir_count++;
 	}
 
-	DynamicString res;
-	// @TODO: .. fill in
+	StringBuffer<256> res;
+	int offset = 0;
+	for (int i = 0; i < dir_count; i++) {
+		offset += snprintf(res.buffer + offset, res.MAX_LENGTH, "../");
+	}
+	
+	StringBuffer<256> to_buf = CString(c_to, to.end());
+	snprintf(res.buffer + offset, res.MAX_LENGTH, "%s", to_buf.beg());
+
+	return res;
+}
+
+StringBuffer<256> get_absolute_path(CString absolute_reference, CString relative_file) {
+	CString abs_dir = get_directory(absolute_reference);
+	if (relative_file.count < 3) return {};
+
+	StringBuffer<256> res;
+	// If relative path is really an absolute path, just return that
+	if (relative_file[0] == '/' || relative_file[1] == ':') {
+		res = relative_file;
+		return res;
+	}
+
+	int dir_count = 0;
+	for (const char* c = relative_file.beg(); c < relative_file.end(); c += 3) {
+		if (c[0] == '.' && (c + 1) != relative_file.end() && c[1] == '.' && (c + 2) != relative_file.end() && (c[2] == '/' || c[2] == '\\')) dir_count++;
+	}
+
+	const char* c = abs_dir.end() - 1;
+	while (c > abs_dir.beg() && dir_count > 0) {
+		if (*c == '/' || *c == '\\') {
+			if (--dir_count == 0) break;
+		}
+		c--;
+	}
+	if (dir_count > 0 || c == abs_dir.beg()) return res;
+
+	CString base_dir(abs_dir.beg(), c + 1);
+	res = base_dir;
+	StringBuffer<128> file = get_file(relative_file);
+	snprintf(res.buffer + base_dir.count, res.MAX_LENGTH - base_dir.count, "/%s", file.beg());
+
+	return res;
+}
+
+void convert_backslashes(String str) {
+	for (char* c = str.beg(); c != str.end(); c++) {
+		if (*c == '\\') *c = '/';
+	}
 }
 
 DynamicArray<String> tokenize(String str, char delimiter) {

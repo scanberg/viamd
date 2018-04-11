@@ -572,35 +572,40 @@ FileDialogResult open_file_dialog(CString filter) {
     nfdresult_t result = NFD_OpenDialog( filter_buf, NULL, &out_path );
     if ( result == NFD_OKAY ) {
         strncpy(path.beg(), out_path, path.MAX_LENGTH);
+		convert_backslashes(path);
     }
     else if ( result == NFD_CANCEL ) {
         // User pressed cancel
-		return { {}, FileDialogResult::CANCEL };
+		return { {}, FileDialogResult::FILE_CANCEL };
     }
     else {
         printf("Error: %s\n", NFD_GetError() );
+		return { {}, FileDialogResult::FILE_ERROR };
     }
     free(out_path);
-    return { path, FileDialogResult::OK };
+    return { path, FileDialogResult::FILE_OK };
 }
 
-FileDialogResult save_file_dialog(CString filter) {
+FileDialogResult save_file_dialog(CString file, CString filter) {
 	Path path;
 	nfdchar_t *out_path = NULL;
 	StringBuffer<256> filter_buf = filter;
-	nfdresult_t result = NFD_SaveDialog(filter_buf, NULL, &out_path);
+	StringBuffer<256> default_path = file;
+	nfdresult_t result = NFD_SaveDialog(filter_buf.beg(), default_path.beg(), &out_path);
 	if (result == NFD_OKAY) {
 		strncpy(path.beg(), out_path, path.MAX_LENGTH);
+		convert_backslashes(path);
 	}
 	else if (result == NFD_CANCEL) {
 		// User pressed cancel
-		return { {}, FileDialogResult::CANCEL };
+		return { {}, FileDialogResult::FILE_CANCEL };
 	}
 	else {
 		printf("Error: %s\n", NFD_GetError());
+		return { {}, FileDialogResult::FILE_ERROR };
 	}
 	free(out_path);
-	return { path, FileDialogResult::OK };
+	return { path, FileDialogResult::FILE_OK };
 }
 
 #ifdef OS_WINDOWS

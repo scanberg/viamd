@@ -201,17 +201,17 @@ struct DynamicArray : Array<T> {
     // Resizes the array to a new size and zeros eventual new slots
     void resize(int64 new_count) {
         ASSERT(new_count > 0);
-        if (new_count == this->count)
-            return;
+		if (new_count == this->count) {
+			return;
+		}
         else if (new_count < this->count) {
             this->count = new_count;
-            return;
         } else {
             if (capacity < new_count) {
                 reserve(_grow_capacity(new_count));
 				memset(this->data + this->count, 0, (new_count - this->count) * sizeof(T));
-                this->count = new_count;
             }
+			this->count = new_count;
         }
     }
 

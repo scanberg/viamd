@@ -53,9 +53,9 @@ void compute_histogram(Histogram* hist, int32 num_bins, Array<float> data, float
 
 // STATS
 bool compute_stats(const MoleculeDynamic& dynamic);
-void clear_stats();
-void store_stats(CString filename);
-void load_stats(CString filename);
+void clear();
+//void store_stats(CString filename);
+//void load_stats(CString filename);
 
 void register_property_command(CString cmd_keyword, PropertyCommandDescriptor cmd_desc);
 void register_group_command(CString cmd_keyword, StructureExtractFunc func);

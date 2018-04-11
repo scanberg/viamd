@@ -76,8 +76,11 @@ struct String : Array<char> {
 	operator bool() { return (data != 0 && count != 0); }
 };
 
+/*
 struct DynamicString : DynamicArray<char> {
-	DynamicString() = default;
+	DynamicString() : DynamicArray("\0") {
+
+	}
 
 	DynamicString(CString other) : DynamicArray(other) {}
 
@@ -99,17 +102,23 @@ struct DynamicString : DynamicArray<char> {
 		return { arr.data, arr.count };
 	}
 
+	int64 size() const { return this->count - 1; }
+	int64 length() const { return this->count - 1; }
+
 	operator String() { return String(data, count); }
 	operator CString() { return CString(data, count); }
 	operator char*() { return data; }
 	operator bool() { return (data != 0 && count != 0); }
 
 	DynamicString& operator += (CString other) {
+		auto dst = end();
 		this->resize(count + other.count + 1);
-		strncpy(end(), other.data, other.count);
+		strncpy(dst, other.data, other.count);
+		this->back() = '\0';
 		return *this;
 	}
 };
+*/
 
 // A buffer string for wrapping a char buffer[N]
 template<int64 Size>
@@ -307,10 +316,16 @@ CString get_file_without_extension(CString url);
 // Returns file extension part of url, ex: func("C:/folder/file.ext") should return "ext"
 CString get_file_extension(CString url);
 
-DynamicString get_relative_path(CString absolute_from, CString absolute_to);
+// Creates a relative path from the absolute path specified in the first file to the absolute path of the second file
+StringBuffer<256> get_relative_path(CString absolute_from, CString absolute_to);
+
+// Creates an absolute path using an absolute reference path specified in the first file and the relative path specified in the second
+StringBuffer<256> get_absolute_path(CString absolute_reference, CString relative_file);
+
+// Converts windows backslashes '\\' to forward slashes '/'
+void convert_backslashes(String str);
 
 // Tokenizes a string into shorter strings based on some delimiter 
-// @TODO: Implement a CString instead of a char
 DynamicArray<String> tokenize(String str, char delimiter = ' ');
 DynamicArray<String> tokenize(String str, CString delimiter);
 DynamicArray<CString> ctokenize(CString str, char delimiter = ' ');

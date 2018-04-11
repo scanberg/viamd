@@ -92,15 +92,16 @@ CString get_cwd();
 
 struct FileDialogResult {
 	enum Action {
-		OK,
-		CANCEL
+		FILE_ERROR,
+		FILE_OK,
+		FILE_CANCEL
 	};
 	Path path;
 	Action action;
 };
 
 FileDialogResult open_file_dialog(CString filter = {});
-FileDialogResult save_file_dialog(CString filter = {});
+FileDialogResult save_file_dialog(CString file = {}, CString filter = {});
 
 }  // namespace platform
 
