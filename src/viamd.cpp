@@ -20,6 +20,8 @@
 
 #include <stdio.h>
 
+#define VIAMD_RELEASE 1
+
 #ifdef _WIN32
 constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
 #elif __APPLE__
@@ -199,7 +201,7 @@ static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, in
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height);
 static void destroy_main_framebuffer(MainFramebuffer* fbo);
 
-static void reset_view(ApplicationData* data);
+static void reset_view(ApplicationData* data, bool reposition_camera = true);
 static float compute_avg_ms(float dt);
 static uint32 get_picking_id(uint32 fbo, int32 x, int32 y);
 
@@ -242,9 +244,9 @@ int main(int, char**) {
     vec4 clear_color = vec4(1, 1, 1, 1);
     vec4 clear_index = vec4(1, 1, 1, 1);
 
-#ifdef RELEASE_VERSION
-    data.mol_data.dynamic = allocate_and_parse_pdb_from_string(caffeine_pdb);
-    data.mol_data.atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule->atom_elements);
+#ifdef VIAMD_RELEASE
+    allocate_and_parse_pdb_from_string(&data.mol_data.dynamic, CAFFINE_PDB);
+    data.mol_data.atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule.atom_elements);
 #else
     stats::create_group("group1", "resname ALA");
     stats::create_property("b1", "dist group1 1 2");
@@ -1142,7 +1144,7 @@ static void draw_ramachandran(ApplicationData* data) {
     ImGui::End();
 }
 
-static void reset_view(ApplicationData* data) {
+static void reset_view(ApplicationData* data, bool reposition_camera) {
     ASSERT(data);
     if (!data->mol_data.dynamic.molecule) return;
 
@@ -1151,9 +1153,11 @@ static void reset_view(ApplicationData* data) {
     vec3 size = max_box - min_box;
     vec3 cent = (min_box + max_box) * 0.5f;
 
-    data->controller.look_at(cent, cent + size * 2.f);
-    data->camera.position = data->controller.position;
-    data->camera.orientation = data->controller.orientation;
+	if (reposition_camera) {
+		data->controller.look_at(cent, cent + size * 2.f);
+		data->camera.position = data->controller.position;
+		data->camera.orientation = data->controller.orientation;
+	}
     data->camera.near_plane = 1.f;
     data->camera.far_plane = math::length(size) * 30.f;
 }
@@ -1476,6 +1480,7 @@ static void load_workspace(ApplicationData* data, CString file) {
 		load_molecule_data(data, new_trajectory_file);
 	}
 
+	reset_view(data, false);
     reset_representations(data);
 }
 
