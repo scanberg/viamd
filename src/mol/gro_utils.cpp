@@ -50,10 +50,6 @@ bool allocate_and_parse_gro_from_string(MoleculeStructure* mol, CString gro_stri
 			if (cur_res != res_idx) {
 				cur_res = res_idx;
 				res_count = (int)residues.count;
-				//auto amino = aminoacid::getFromString(res_name_trim);
-				//if (amino != AminoAcid::Unknown) {
-				//	mol.pushStructure<structure::AminoAcid>(static_cast<int>(residues.size()), amino);
-				//}
 				CString res_name_trim = trim(CString(res_name));
 				Residue res{ res_name_trim, i, i };
 				residues.push_back(res);
@@ -68,19 +64,9 @@ bool allocate_and_parse_gro_from_string(MoleculeStructure* mol, CString gro_stri
 			labels.push_back(atom_name_trim);
 			elements.push_back(elem);
 			residue_indices.push_back((ResIdx)res_count);
-
-
-
-			//atoms.push_back({pos, vel, atom_name, elem, res_idx});
-
-			//gro.atom_labels.push_back(trim(CString(atom_name)));
-			//gro.atom_elements.push_back(elem);
-			//gro.atom_positions.push_back(pos);
-            //mol.pushAtom<field::Label, field::Element, field::Position, field::Velocity>(atom_name_trim, elem, pos, vel);
         }
     }
 
-	//std::getline(ss, buffer); // Get simulation box
 	vec3 box;
 	copy_line(line, gro_string);
     sscanf(line, "%8f %8f %8f", &box.x, &box.y, &box.z);
@@ -116,8 +102,6 @@ bool allocate_and_parse_gro_from_string(MoleculeStructure* mol, CString gro_stri
 	memcpy(mol->chains.data, chains.data, chains.size_in_bytes());
 	memcpy(mol->bonds.data, bonds.data, bonds.size_in_bytes());
 	memcpy(mol->backbone_segments.data, backbone_segments.data, backbone_segments.size_in_bytes());
-
-    //gro.box = mat3(vec3(box.x, 0, 0), vec3(0, box.y, 0), vec3(0, 0, box.z));
 
 	return true;
 }
