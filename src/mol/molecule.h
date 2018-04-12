@@ -4,11 +4,6 @@
 #include <core/array.h>
 #include <core/string_utils.h>
 #include <mol/element.h>
-#include <string.h>
-
-#ifdef WIN32
-#pragma warning(disable:4996) // strncpy instead of strncpy_s (windows)
-#endif
 
 struct Bond {
 	int32 idx_a;
@@ -22,6 +17,7 @@ using ChainIdx = int16;
 
 struct Residue {
 	Label name = "";
+	ResIdx id = -1;
 	AtomIdx beg_atom_idx = 0;
 	AtomIdx end_atom_idx = 0;
 	ChainIdx chain_idx = -1;
@@ -35,8 +31,6 @@ struct Chain {
 
 struct BackboneSegment {
 	AtomIdx ca_idx;
-	//int32 ha_idx;
-	//int32 cb_idx;
 	AtomIdx n_idx;
 	AtomIdx c_idx;
 	AtomIdx o_idx;

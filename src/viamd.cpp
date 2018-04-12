@@ -20,7 +20,7 @@
 
 #include <stdio.h>
 
-#define VIAMD_RELEASE 1
+//#define VIAMD_RELEASE 1
 
 #ifdef _WIN32
 constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
@@ -238,7 +238,7 @@ int main(int, char**) {
     postprocessing::initialize(data.fbo.width, data.fbo.height);
 
     // Setup style
-    ImGui::StyleColorsClassic();
+    //ImGui::StyleColorsClassic();
 
     bool show_demo_window = false;
     vec4 clear_color = vec4(1, 1, 1, 1);
@@ -693,62 +693,66 @@ static void draw_representations_window(ApplicationData* data) {
         data->representations.data.clear();
     }
     ImGui::Spacing();
+	ImGui::Separator();
     for (int i = 0; i < data->representations.data.count; i++) {
         auto& rep = data->representations.data[i];
-        ImGui::Separator();
-        ImGui::BeginGroup();
-
+        
         bool recompute_colors = false;
         ImGui::PushID(i);
-        ImGui::Checkbox("enabled", &rep.enabled);
-        ImGui::SameLine();
-        if (ImGui::Button("remove")) {
-            remove_representation(data, i);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("clone")) {
-            Representation clone = rep;
-            clone.colors = {(uint32*)MALLOC(rep.colors.size_in_bytes()), rep.colors.count};
-            memcpy(clone.colors.data, rep.colors.data, rep.colors.size_in_bytes());
-            data->representations.data.insert(&rep, clone);
-        }
 
-        const float item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 80.f, 100.f, 300.f);
+        const float item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
 
-        ImGui::PushItemWidth(item_width);
-        ImGui::InputText("name", rep.name.buffer, rep.name.MAX_LENGTH);
-        if (!rep.filter_is_ok) ImGui::PushStyleColor(ImGuiCol_FrameBg, FILTER_ERROR_COLOR);
-        if (ImGui::InputText("filter", rep.filter.buffer, rep.filter.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
-            recompute_colors = true;
-        }
+		StringBuffer<128> name;
+		snprintf(name.buffer, name.MAX_LENGTH, "%s###ID", rep.name.buffer);
+		if (ImGui::CollapsingHeader(name.buffer)) {
+			ImGui::Checkbox("enabled", &rep.enabled);
+			ImGui::SameLine();
+			if (ImGui::Button("remove")) {
+				remove_representation(data, i);
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("clone")) {
+				Representation clone = rep;
+				clone.colors = { (uint32*)MALLOC(rep.colors.size_in_bytes()), rep.colors.count };
+				memcpy(clone.colors.data, rep.colors.data, rep.colors.size_in_bytes());
+				data->representations.data.insert(&rep, clone);
+			}
 
-        if (!rep.filter_is_ok) ImGui::PopStyleColor();
-        if (ImGui::Combo("color mapping", (int*)(&rep.color_mapping), "Static Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0\0")) {
-            recompute_colors = true;
-        }
-        ImGui::PopItemWidth();
-        if (rep.color_mapping == ColorMapping::STATIC_COLOR) {
-            ImGui::SameLine();
-            if (ImGui::ColorEdit4("color", (float*)&rep.static_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
-                recompute_colors = true;
-            }
-        }
-        ImGui::PushItemWidth(item_width);
-        ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0\0");
-        if (rep.type == Representation::VDW || rep.type == Representation::LICORICE) {
-            ImGui::SliderFloat("radii scale", &rep.radius, 0.1f, 2.f);
-        }
-        if (rep.type == Representation::RIBBONS) {
-            ImGui::SliderInt("spline subdivisions", &rep.num_subdivisions, 1, 16);
-            ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f);
-            ImGui::SliderFloat("spline width", &rep.width, 0.1f, 2.f);
-            ImGui::SliderFloat("spline thickness", &rep.thickness, 0.1f, 2.f);
-        }
-        ImGui::PopItemWidth();
+			ImGui::PushItemWidth(item_width);
+			ImGui::InputText("name", rep.name.buffer, rep.name.MAX_LENGTH);
+			if (!rep.filter_is_ok) ImGui::PushStyleColor(ImGuiCol_FrameBg, FILTER_ERROR_COLOR);
+			if (ImGui::InputText("filter", rep.filter.buffer, rep.filter.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
+				recompute_colors = true;
+			}
+
+			if (!rep.filter_is_ok) ImGui::PopStyleColor();
+			if (ImGui::Combo("color mapping", (int*)(&rep.color_mapping), "Static Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0\0")) {
+				recompute_colors = true;
+			}
+			ImGui::PopItemWidth();
+			if (rep.color_mapping == ColorMapping::STATIC_COLOR) {
+				ImGui::SameLine();
+				if (ImGui::ColorEdit4("color", (float*)&rep.static_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
+					recompute_colors = true;
+				}
+			}
+			ImGui::PushItemWidth(item_width);
+			ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0\0");
+			if (rep.type == Representation::VDW || rep.type == Representation::LICORICE) {
+				ImGui::SliderFloat("radii scale", &rep.radius, 0.1f, 2.f);
+			}
+			if (rep.type == Representation::RIBBONS) {
+				ImGui::SliderInt("spline subdivisions", &rep.num_subdivisions, 1, 16);
+				ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f);
+				ImGui::SliderFloat("spline width", &rep.width, 0.1f, 2.f);
+				ImGui::SliderFloat("spline thickness", &rep.thickness, 0.1f, 2.f);
+			}
+			ImGui::PopItemWidth();
+			ImGui::Spacing();
+			ImGui::Separator();
+		}
 
         ImGui::PopID();
-        ImGui::EndGroup();
-        ImGui::Spacing();
 
         if (recompute_colors) {
             compute_atom_colors(rep.colors, data->mol_data.dynamic.molecule, rep.color_mapping,
@@ -1045,17 +1049,20 @@ static void draw_timeline_window(ApplicationData* data) {
 
     int32 frame_idx = (int32)data->time;
 
+	
     for (int i = 0; i < stats::get_property_count(); i++) {
         auto prop_id = stats::get_property(i);
         auto prop_data = stats::get_property_data(prop_id, 0);
+		auto prop_name = stats::get_property_name(prop_id);
+		auto prop_range = stats::get_property_data_range(prop_id, 0);
         if (!prop_data) continue;
-        auto frame = ImGui::BeginPlotFrame(stats::get_property_name(prop_id), ImVec2(0, 100), 0, (int32)prop_data.count, -2.f, 2.f);
-        ImGui::PlotFrameLine(frame, "group1", prop_data.data, ImGui::FrameLineStyle(), frame_idx);
-        int32 new_frame_idx = ImGui::EndPlotFrame(frame, frame_idx);
-        if (new_frame_idx != -1) {
-            frame_idx = new_frame_idx;
-            data->time = (float64)frame_idx;
-        }
+		float pad = math::max((prop_range.y - prop_range.x) * 0.1f, 1.f);
+		vec2 display_range = prop_range + vec2(-pad, pad);
+		//ImGui::PushStyleColor(ImGuiCol_FrameBg, 0x44333333);
+		ImGui::BeginPlot(prop_name, ImVec2(0, 100), ImVec2(0, display_range.x), ImVec2(prop_data.count, display_range.y));
+		ImGui::PlotLine("Najs", prop_data.data, prop_data.count);
+		ImGui::EndPlot();
+		//ImGui::PopStyleColor();
     }
 
     // stats::get_group_properties();

@@ -116,6 +116,7 @@ float   get_property_max_val(ID prop_id);
 
 // PROPERTY DATA
 int32        get_property_data_count(ID prop_id);
+Range		 get_property_data_range(ID prop_id, int32 instance_idx);
 Array<float> get_property_data(ID prop_id, int32 instance_idx);
 Array<float> get_property_avg_data(ID prop_id);
 Histogram*	 get_property_histogram(ID prop_id, int32 instance_idx);

@@ -518,4 +518,76 @@ void PlotFrameLine(PlotFrame& frame, const char* label, const float* values, Fra
 	}
 }
 
+struct PlotState {
+	ImGuiID id = 0;
+	ImRect inner_bb;
+	ImRect coord_view;
+};
+
+static PlotState ps;
+
+IMGUI_API void BeginPlot(const char* label, ImVec2 frame_size, ImVec2 min_coord, ImVec2 max_coord, float* selected_range_from, float* selected_range_to, LinePlotFlags flags) {
+	ImGuiWindow* window = GetCurrentWindow();
+	if (window->SkipItems) return;
+
+	ImGuiContext& ctx = *GImGui;
+	const ImGuiStyle& style = ctx.Style;
+
+	PushItemWidth(-1);
+
+	if (frame_size.x == 0.0f) frame_size.x = CalcItemWidth();
+	if (frame_size.y == 0.0f) frame_size.y = (style.FramePadding.y * 2);
+
+	const ImRect frame_bb(window->DC.CursorPos, window->DC.CursorPos + ImVec2(frame_size.x, frame_size.y));
+	const ImRect inner_bb(frame_bb.Min + style.FramePadding, frame_bb.Max - style.FramePadding);
+	const ImRect total_bb(frame_bb.Min, frame_bb.Max);
+	ItemSize(total_bb, style.FramePadding.y);
+	if (!ItemAdd(total_bb, NULL)) return;
+
+	RenderFrame(frame_bb.Min, frame_bb.Max, GetColorU32(ImGuiCol_FrameBg), true,
+		style.FrameRounding);
+
+	PopItemWidth();
+
+	const ImGuiID id = window->GetID(label);
+
+	ps.id = id;
+	ps.inner_bb = inner_bb;
+	ps.coord_view = ImRect(min_coord, max_coord);
+}
+
+IMGUI_API void PlotLine(const char* line_label, const float* values, int count, ImU32 line_color) {
+	IM_ASSERT(ps.id != 0);
+	ImGuiWindow* window = GetCurrentWindow();
+	if (window->SkipItems) return;
+	if (count < 2) return;
+
+	ImVec2 prev_c = ImVec2(0, values[0]);
+	for (int i = 1; i < count; i++) {
+		ImVec2 next_c = ImVec2(i, values[i]);
+
+		if (prev_c.x < ps.coord_view.Min.x && next_c.x < ps.coord_view.Min.x) continue;
+		if (prev_c.x > ps.coord_view.Max.x && next_c.x > ps.coord_view.Max.x) continue;
+
+		float px = ImClamp((prev_c.x - ps.coord_view.Min.x) / (ps.coord_view.Max.x - ps.coord_view.Min.x), 0.f, 1.f);
+		float py = ImClamp((prev_c.y - ps.coord_view.Min.y) / (ps.coord_view.Max.y - ps.coord_view.Min.y), 0.f, 1.f);
+		float nx = ImClamp((next_c.x - ps.coord_view.Min.x) / (ps.coord_view.Max.x - ps.coord_view.Min.x), 0.f, 1.f);
+		float ny = ImClamp((next_c.y - ps.coord_view.Min.y) / (ps.coord_view.Max.y - ps.coord_view.Min.y), 0.f, 1.f);
+
+		ImVec2 pos0 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(px, py));
+		ImVec2 pos2 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(nx, ny));
+		window->DrawList->AddLine(pos0, pos2, line_color);
+
+		prev_c = next_c;
+	}
+}
+
+IMGUI_API void PlotLine(const char* line_label, const ImVec2* values, int count, ImU32 line_color) {
+	
+}
+
+IMGUI_API void EndPlot() {
+	ps.id = 0;
+}
+
 }  // namespace ImGui

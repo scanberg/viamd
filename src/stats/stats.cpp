@@ -46,6 +46,7 @@ struct PropertyData {
     ID id = INVALID_ID;
     ID property_id = INVALID_ID;
 	ID instance_id = INVALID_ID;
+	Range data_range;
     Array<float> data{};
 	Histogram histogram{};
 };
@@ -683,6 +684,15 @@ void clear_property(ID prop_id) {
 	}
 }
 
+Range get_property_data_range(ID prop_id, int32 idx) {
+	auto prop = find_id(ctx.properties, prop_id);
+	if (prop && prop->data_beg_id != INVALID_ID && idx < prop->data_count) {
+		auto prop_data = find_id(ctx.property_data, prop->data_beg_id);
+		return prop_data[idx].data_range;
+	}
+	return {0,0};
+}
+
 Array<float> get_property_data(ID prop_id, int32 idx) {
     auto prop = find_id(ctx.properties, prop_id);
     if (prop && prop->data_beg_id != INVALID_ID && idx < prop->data_count) {
@@ -853,9 +863,12 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
 					auto inst = find_id(ctx.group_instances, instance_id);
 					float* data = (float*)CALLOC(count, sizeof(float));
 					prop_cmd->func(data, args, dynamic, inst->structure);
+					Range data_range(FLT_MAX, -FLT_MAX);
 
 					for (int32 j = 0; j < count; j++) {
 						prop_avg_data.data[j] += data[j] / (float)group->instance_count;
+						data_range.x = math::min(data[j], data_range.x);
+						data_range.y = math::max(data[j], data_range.y);
 					}
 
 					snprintf(prop_data_name.beg(), 64, "%s.%s.%i", group->name.beg(), prop.name.beg(), i);
@@ -864,6 +877,7 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
 					prop_data.id = create_id();
 					prop_data.instance_id = instance_id;
 					prop_data.property_id = prop.id;
+					prop_data.data_range = data_range;
 					prop_data.data = { data, count };
 
 					ctx.property_data.push_back(prop_data);

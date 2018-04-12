@@ -1,33 +1,32 @@
-TODO: VIAMD
+VIAMD
+CONCRETE LIST OF TODOs
 
-// CONCRETE LIST OF TODOs
-Stability
-    When loading in different thread, make sure the loading is killed when changing datasets.
+### Stability ###
+    [X] When loading in different thread, make sure the loading is killed when changing datasets.
+    [ ] Visual bug when RangeSliders Float when range is zero
+    [ ] Occasional crash on Mac???
 
-Statistics
-    Clean up interface
-    Fix Property Groups
-    Compute Histograms
-    Plot Histograms
-    Create Interface for groups and properties
-    Implement Configure View Matrix
-    Implement Controls for properties
-        (Hierarchical?)
-    Implement Periodic Control widget
-    Implement Periodic Histograms
+### Performance ###
+    [ ] PDB-Loader: When data is multi-frame: Allocate overestimation of frames based of file size, then load traj async.
+    [ ] Compute statistics async while loading frames
+    [ ] Compute backbone angles async while loading frames
 
-DensityVolume
-    Compute Density Volume
-    Implement RayCaster
-Rendering
-    ComputeOccupancy Volume (no need for spatial hash)
-Application
-    Fix data synchronization bugs between datasets
-Platform
-    Cross-platform DirListing (Prio mac and Win32)
-        --- mac
-        --- win32
+### Look & Feel ###
+    [ ] Improve Ramachandran interface, it looks like shiet
+    [ ] Improve Ramachandran current plots rendering, they look like shiet (Use imgui for these? not acc-texture)
+    [ ] Implement Minimize Representations or Hide Details somehow
 
+### Features ###
+    [ ] Improved Line Plot Frame (Support selection of range(s?), Zoom, Axis, Grid, etc.)
+    [ ] Improved Histogram Plot  (Support selection of range(s?))
+    [ ] Implement Periodic Histograms
+    [ ] Implement Segmentation uint8 map for Ramachandran plot and apply colors later
+    [ ] Expose Color schemes for Ramachandran plot
+    [ ] Volume Density Generation
+    [ ] Volume RayCaster
+    [ ] Transfer Function Design
+    [ ] Occupancy Volume
+    
 
 
 // BIG PICTURE
@@ -43,7 +42,7 @@ Design principles:
 
 Target Platforms:
     Win32
-    OSX 10.9+ (OpenGL 3.2? 3.3 / 4.1)
+    OSX 10.9+ (3.3 / 4.1)
     Linux
 
 License:
@@ -66,29 +65,31 @@ General:
     Hash CRC32/64 (Constexpr)
 
 Platform layer:
-    Move all GLFW into here (Window creation)
-    OnFileChanged
-    StoreFile
-    ReadFile
+    [DONE] Move all GLFW into here (Window creation)
+    [DONE] OpenFileDialog
+    [DONE] SaveFileDialog
+    EventSystem ???
+    (OnFileChanged)
     StoreCompressed (ZIP? STB?)
     ReadCompressed
     LoadImg
-    StoreImg
+    SaveImg
     Provide IMGUI with optional define to enable disable
 
 VIAMD:
-    --- MENU BAR
-    Load/Store Scene?
+    [DONE] MENU BAR
+    [DONE] Load/Store Scene?
 
 Molecule:
-    Molecule structure
-        Extra RenderingData ptr??? Not needed as a first step
-    PDB (PDB Molecule struct?)
-    GRO (GRO Molecule struct?)
-    --- Multiframe PDB
+    [DONE]   Molecule structure
+    (Maybe!) Extra RenderingData ptr??? Not needed as a first step
+    [DONE] PDB Loader
+    [DONE] GRO Loader
+    [DONE] XTC Loader
+    [DONE] Multiframe PDB
     (Multiframe GRO? No)
     Utils:
-        Backbone / Spline?
+    [DONE-ish]    Backbone / Spline?
 
 Trajectory:
     Trajectory structure
