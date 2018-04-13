@@ -561,13 +561,19 @@ IMGUI_API void BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, I
 
     if (ctx.ActiveId == id) {
         if (view_range && ctx.IO.MouseWheel != 0.f) {
-            float ext = x_range.y - x_range.x;
+            //float ext = x_range.y - x_range.x;
             //float scl = ext * 0.1f * ctx.IO.MouseWheel;
+			float speed = (view_range->y - view_range->x) / (x_range.y - x_range.x);
+			float new_view_range_ext = (view_range->y - view_range->x) + speed * -80.f * powf(ctx.IO.MouseWheel, 3.f);
             float val = (ctx.IO.MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
-            float c_x = ImLerp(inner_bb.Min.x, inner_bb.Max.x, val);
+			float old_val = ImLerp(view_range->x, view_range->y, val);
+			view_range->x = old_val - new_view_range_ext * val;
+			view_range->y = view_range->x + new_view_range_ext;
 
-            view_range->x -= (c_x - x_range.x) / ext * 0.1f * ctx.IO.MouseWheel;
-            view_range->y -= (c_x - x_range.y) / ext * 0.1f * ctx.IO.MouseWheel;
+            //float c_x = ImLerp(view_range->x, view_range->y, val);
+
+            //view_range->x -= (c_x - x_range.x) * 0.1f * ctx.IO.MouseWheel;
+            //view_range->y -= (c_x - x_range.y) * 0.1f * ctx.IO.MouseWheel;
         }
         if (!IsItemHovered()) {
             ClearActiveID();
