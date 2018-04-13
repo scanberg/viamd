@@ -80,7 +80,7 @@ enum LinePlotFlags_ {
 
 typedef int LinePlotFlags;
 
-IMGUI_API void BeginPlot(const char* label, ImVec2 frame_size, ImVec2 min_coord, ImVec2 max_coord, float* selected_range_from = nullptr, float* selected_range_to = nullptr, LinePlotFlags flags = 0);
+IMGUI_API void BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, ImVec2 y_range, ImVec2* view_range = nullptr, ImVec2* selection_range = nullptr, LinePlotFlags flags = 0);
 IMGUI_API void PlotLine(const char* line_label, const float* values, int count, ImU32 line_color = 0xffffffff);
 IMGUI_API void PlotLine(const char* line_label, const ImVec2* values, int count, ImU32 line_color = 0xffffffff);
 IMGUI_API void EndPlot();

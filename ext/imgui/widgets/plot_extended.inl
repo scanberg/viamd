@@ -522,11 +522,13 @@ struct PlotState {
 	ImGuiID id = 0;
 	ImRect inner_bb;
 	ImRect coord_view;
+    ImVec2* view_range;
+    ImVec2* selection_range;
 };
 
 static PlotState ps;
 
-IMGUI_API void BeginPlot(const char* label, ImVec2 frame_size, ImVec2 min_coord, ImVec2 max_coord, float* selected_range_from, float* selected_range_to, LinePlotFlags flags) {
+IMGUI_API void BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, ImVec2 y_range, ImVec2* view_range, ImVec2* selection_range, LinePlotFlags flags) {
 	ImGuiWindow* window = GetCurrentWindow();
 	if (window->SkipItems) return;
 
@@ -544,20 +546,58 @@ IMGUI_API void BeginPlot(const char* label, ImVec2 frame_size, ImVec2 min_coord,
 	ItemSize(total_bb, style.FramePadding.y);
 	if (!ItemAdd(total_bb, NULL)) return;
 
+    const ImGuiID id = window->GetID(label);
+
 	RenderFrame(frame_bb.Min, frame_bb.Max, GetColorU32(ImGuiCol_FrameBg), true,
 		style.FrameRounding);
 
 	PopItemWidth();
 
-	const ImGuiID id = window->GetID(label);
+   //if (!ItemAdd(inner_bb, NULL)) return;
+
+    if (IsItemHovered()) {
+        SetActiveID(id, window);
+    }
+
+    if (ctx.ActiveId == id) {
+        if (view_range && ctx.IO.MouseWheel != 0.f) {
+            float ext = x_range.y - x_range.x;
+            //float scl = ext * 0.1f * ctx.IO.MouseWheel;
+            float val = (ctx.IO.MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
+            float c_x = ImLerp(inner_bb.Min.x, inner_bb.Max.x, val);
+
+            view_range->x -= (c_x - x_range.x) / ext * 0.1f * ctx.IO.MouseWheel;
+            view_range->y -= (c_x - x_range.y) / ext * 0.1f * ctx.IO.MouseWheel;
+        }
+        if (!IsItemHovered()) {
+            ClearActiveID();
+        }
+    }
+
+    if (view_range) {
+        view_range->x = ImClamp(view_range->x, x_range.x, x_range.y);
+        view_range->y = ImClamp(view_range->y, x_range.x, x_range.y);
+    }
+
+    if (selection_range) {
+        selection_range->x = ImClamp(selection_range->x, x_range.x, x_range.y);
+        selection_range->y = ImClamp(selection_range->y, x_range.x, x_range.y);
+    }
 
 	ps.id = id;
 	ps.inner_bb = inner_bb;
-	ps.coord_view = ImRect(min_coord, max_coord);
+    if (view_range) {
+        ps.coord_view = ImRect(ImVec2(view_range->x, y_range.x), ImVec2(view_range->y, y_range.y));
+    }
+    else {
+        ps.coord_view = ImRect(ImVec2(x_range.x, y_range.x), ImVec2(x_range.y, y_range.y));
+    }
+    ps.view_range = view_range;
+    ps.selection_range = selection_range;
 }
 
 IMGUI_API void PlotLine(const char* line_label, const float* values, int count, ImU32 line_color) {
-	IM_ASSERT(ps.id != 0);
+	if (!ps.id) return;
 	ImGuiWindow* window = GetCurrentWindow();
 	if (window->SkipItems) return;
 	if (count < 2) return;
@@ -567,7 +607,9 @@ IMGUI_API void PlotLine(const char* line_label, const float* values, int count, 
 		ImVec2 next_c = ImVec2(i, values[i]);
 
 		if (prev_c.x < ps.coord_view.Min.x && next_c.x < ps.coord_view.Min.x) continue;
+        if (prev_c.y < ps.coord_view.Min.y && next_c.y < ps.coord_view.Min.y) continue;
 		if (prev_c.x > ps.coord_view.Max.x && next_c.x > ps.coord_view.Max.x) continue;
+        if (prev_c.y > ps.coord_view.Max.y && next_c.y > ps.coord_view.Max.y) continue;
 
 		float px = ImClamp((prev_c.x - ps.coord_view.Min.x) / (ps.coord_view.Max.x - ps.coord_view.Min.x), 0.f, 1.f);
 		float py = ImClamp((prev_c.y - ps.coord_view.Min.y) / (ps.coord_view.Max.y - ps.coord_view.Min.y), 0.f, 1.f);
