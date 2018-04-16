@@ -30,6 +30,7 @@ using glm::min;
 using glm::mod;
 using glm::modf;
 using glm::pow;
+using glm::round;
 using glm::sign;
 using glm::sqrt;
 using glm::step;

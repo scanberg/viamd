@@ -1,4 +1,5 @@
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <core/platform.h>
 #include <core/gl.h>
 #include <core/types.h>
@@ -190,6 +191,10 @@ struct ApplicationData {
     bool show_console;
 };
 
+static void reset_view(ApplicationData* data, bool reposition_camera = true);
+static float compute_avg_ms(float dt);
+static uint32 get_picking_id(uint32 fbo, int32 x, int32 y);
+
 static void draw_main_menu(ApplicationData* data);
 static void draw_representations_window(ApplicationData* data);
 static void draw_property_window(ApplicationData* data);
@@ -201,11 +206,9 @@ static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, in
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height);
 static void destroy_main_framebuffer(MainFramebuffer* fbo);
 
-static void reset_view(ApplicationData* data, bool reposition_camera = true);
-static float compute_avg_ms(float dt);
-static uint32 get_picking_id(uint32 fbo, int32 x, int32 y);
-
+static void free_molecule_data(ApplicationData* data);
 static void load_molecule_data(ApplicationData* data, CString file);
+
 static void load_workspace(ApplicationData* data, CString file);
 static void save_workspace(ApplicationData* data, CString file);
 
@@ -213,6 +216,10 @@ static void create_default_representation(ApplicationData* data);
 static void remove_representation(ApplicationData* data, int idx);
 static void reset_representations(ApplicationData* data);
 static void clear_representations(ApplicationData* data);
+
+static void load_trajectory_async(ApplicationData* data);
+static void compute_statistics_async(ApplicationData* data);
+static void compute_backbone_angles_async(ApplicationData* data);
 
 int main(int, char**) {
     ApplicationData data;
@@ -330,8 +337,15 @@ int main(int, char**) {
 
         if (data.is_playing) {
             data.time += data.ctx.timing.dt * data.frames_per_second;
-            time_changed = true;
         }
+
+		{
+			static float64 prev_time = data.time;
+			if (data.time != prev_time) {
+				time_changed = true;
+			}
+			prev_time = data.time;
+		}
 
         if (data.mol_data.dynamic.trajectory && time_changed) {
             int last_frame = data.mol_data.dynamic.trajectory.num_frames - 1;
@@ -409,6 +423,9 @@ int main(int, char**) {
                 data.selected = data.hovered;
             }
         }
+		if (!ImGui::GetIO().WantCaptureKeyboard) {
+			if (data.ctx.input.key.hit[Key::KEY_SPACE]) data.is_playing = !data.is_playing;
+		}
 
         // RENDER TO FBO
         mat4 view_mat = compute_world_to_view_matrix(data.camera);
@@ -525,7 +542,9 @@ int main(int, char**) {
     return 0;
 }
 
-void draw_random_triangles(const mat4& mvp) {
+
+// ### MISC FUNCTIONS ###
+static void draw_random_triangles(const mat4& mvp) {
     immediate::set_view_matrix(mvp);
     immediate::set_proj_matrix(mat4(1));
     math::set_rnd_seed(0);
@@ -538,8 +557,8 @@ void draw_random_triangles(const mat4& mvp) {
     immediate::flush();
 }
 
-// @NOTE: Perhaps this can be done with a simple running mean?
 static float compute_avg_ms(float dt) {
+	// @NOTE: Perhaps this can be done with a simple running mean?
     constexpr float interval = 0.5f;
     static float avg = 0.f;
     static int num_frames = 0;
@@ -556,7 +575,25 @@ static float compute_avg_ms(float dt) {
     return avg;
 }
 
-uint32 get_picking_id(uint32 fbo_id, int32 x, int32 y) {
+static void reset_view(ApplicationData* data, bool reposition_camera) {
+	ASSERT(data);
+	if (!data->mol_data.dynamic.molecule) return;
+
+	vec3 min_box, max_box;
+	compute_bounding_box(&min_box, &max_box, data->mol_data.dynamic.molecule.atom_positions);
+	vec3 size = max_box - min_box;
+	vec3 cent = (min_box + max_box) * 0.5f;
+
+	if (reposition_camera) {
+		data->controller.look_at(cent, cent + size * 2.f);
+		data->camera.position = data->controller.position;
+		data->camera.orientation = data->controller.orientation;
+	}
+	data->camera.near_plane = 1.f;
+	data->camera.far_plane = math::length(size) * 30.f;
+}
+
+static uint32 get_picking_id(uint32 fbo_id, int32 x, int32 y) {
     unsigned char color[4];
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_id);
     glReadBuffer(GL_COLOR_ATTACHMENT2);
@@ -566,6 +603,8 @@ uint32 get_picking_id(uint32 fbo_id, int32 x, int32 y) {
     return color[0] + (color[1] << 8) + (color[2] << 16) + (color[3] << 24);
 }
 
+
+// ### DRAW WINDOWS ###
 static void draw_main_menu(ApplicationData* data) {
     ASSERT(data);
     bool new_clicked = false;
@@ -1042,43 +1081,54 @@ static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, in
 }
 
 static void draw_timeline_window(ApplicationData* data) {
-    // if (!stats) return;
-
     ImGui::Begin("Timelines", &data->statistics.show_timeline_window, ImGuiWindowFlags_NoFocusOnAppearing);
-    // auto group_id = stats::get_group("group1");
 
-    int32 frame_idx = (int32)data->time;
-    static ImVec2 view_range(0, 1000);
-    static ImVec2 selection_range(100, 300);
-	
-    for (int i = 0; i < stats::get_property_count(); i++) {
-        auto prop_id = stats::get_property(i);
-        auto prop_data = stats::get_property_data(prop_id, 0);
-		auto prop_name = stats::get_property_name(prop_id);
-		auto prop_range = stats::get_property_data_range(prop_id, 0);
-        if (!prop_data) continue;
-		float pad = math::max((prop_range.y - prop_range.x) * 0.1f, 1.f);
-		vec2 display_range = prop_range + vec2(-pad, pad);
-		//ImGui::PushStyleColor(ImGuiCol_FrameBg, 0x44333333);
-        ImGui::PushID(i);
-		ImGui::BeginPlot(prop_name, ImVec2(0, 100), ImVec2(0, prop_data.count), ImVec2(display_range.x, display_range.y), &view_range, &selection_range);
-		ImGui::PlotLine("Najs", prop_data.data, prop_data.count);
-		ImGui::EndPlot();
-        ImGui::PopID();
-		//ImGui::PopStyleColor();
-    }
+	if (!ImGui::IsWindowCollapsed()) {
+		const int max_frame = data->mol_data.dynamic.trajectory.num_frames;
+		const ImVec2 frame_range(0, (float)max_frame);
+		static ImVec2 view_range(0, 1000);
+		static ImVec2 selection_range(100, 300);
 
-    // stats::get_group_properties();
-    /*
-    if (stats->properties.size() > 0) {
-            const auto& g = stats->groups.front();
-            const auto& i = stats->instances[g.instance_avg_idx];
-            const auto& p = stats->properties[i.property_beg_idx];
-            auto frame = ImGui::BeginPlotFrame("Prop0", ImVec2(0, 100), 0, p.count, -2.f, 2.f);
-            ImGui::PlotFrameLine(frame, "najs", (float*)p.data);
-            ImGui::EndPlotFrame(frame);
-    }
-    */
+		ImGui::PushItemWidth(-1);
+		ImGui::RangeSliderFloat("###selection_range", &selection_range.x, &selection_range.y, 0.f, (float)max_frame);
+		ImVec2 rect_min = ImGui::GetItemRectMin();
+		ImVec2 rect_max = ImGui::GetItemRectMax();
+		float t0 = (view_range.x - frame_range.x) / (frame_range.y - frame_range.x);
+		float t1 = (view_range.y - frame_range.x) / (frame_range.y - frame_range.x);
+		float box_min_x = ImLerp(rect_min.x, rect_max.x, t0);
+		float box_max_x = ImLerp(rect_min.x, rect_max.x, t1);
+		ImGui::GetWindowDrawList()->AddQuadFilled(ImVec2(box_min_x, rect_min.y), ImVec2(box_min_x, rect_max.y), ImVec2(box_max_x, rect_max.y), ImVec2(box_max_x, rect_min.y), 0x22ffffff);
+		ImGui::PopItemWidth();
+
+		for (int i = 0; i < stats::get_property_count(); i++) {
+			auto prop_id = stats::get_property(i);
+			auto prop_data = stats::get_property_data(prop_id, 0);
+			auto prop_name = stats::get_property_name(prop_id);
+			auto prop_range = stats::get_property_data_range(prop_id, 0);
+			if (!prop_data) continue;
+			float pad = math::max((prop_range.y - prop_range.x) * 0.1f, 1.f);
+			vec2 display_range = prop_range + vec2(-pad, pad);
+			float val = (float)data->time;
+			ImGui::PushID(i);
+			if (ImGui::BeginPlot(prop_name, ImVec2(0, 100), frame_range, ImVec2(display_range.x, display_range.y), &val, &view_range, &selection_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal)) {
+				data->time = val;
+			}
+			ImGui::PlotValues("Najs", prop_data.data, (int)prop_data.count);
+			ImGui::EndPlot();
+			ImGui::PopID();
+
+			selection_range.x = math::round(selection_range.x);
+			selection_range.y = math::round(selection_range.y);
+
+			if (selection_range.x == selection_range.y) {
+				selection_range.y = math::min((int)selection_range.x + 1, max_frame);
+				if (selection_range.x == selection_range.y) {
+					selection_range.x = math::max((int)selection_range.y - 1, 0);
+				}
+			}
+		}
+	}
+
     ImGui::End();
 }
 
@@ -1154,24 +1204,8 @@ static void draw_ramachandran(ApplicationData* data) {
     ImGui::End();
 }
 
-static void reset_view(ApplicationData* data, bool reposition_camera) {
-    ASSERT(data);
-    if (!data->mol_data.dynamic.molecule) return;
 
-    vec3 min_box, max_box;
-    compute_bounding_box(&min_box, &max_box, data->mol_data.dynamic.molecule.atom_positions);
-    vec3 size = max_box - min_box;
-    vec3 cent = (min_box + max_box) * 0.5f;
-
-	if (reposition_camera) {
-		data->controller.look_at(cent, cent + size * 2.f);
-		data->camera.position = data->controller.position;
-		data->camera.orientation = data->controller.orientation;
-	}
-    data->camera.near_plane = 1.f;
-    data->camera.far_plane = math::length(size) * 30.f;
-}
-
+// ### FRAMEBUFFER ###
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height) {
     ASSERT(fbo);
 
@@ -1240,7 +1274,9 @@ static void destroy_main_framebuffer(MainFramebuffer* fbo) {
     if (fbo->tex_picking) glDeleteTextures(1, &fbo->tex_picking);
 }
 
-static void free_mol_data(ApplicationData* data) {
+
+// ### LOAD / FREE DATA ###
+static void free_molecule_data(ApplicationData* data) {
     if (data->mol_data.dynamic.molecule) {
         free_molecule_structure(&data->mol_data.dynamic.molecule);
     }
@@ -1260,7 +1296,7 @@ static void load_molecule_data(ApplicationData* data, CString file) {
         CString ext = get_file_extension(file);
         printf("'%s'\n", ext.beg());
         if (compare_n(ext, "pdb", 3, true)) {
-            free_mol_data(data);
+            free_molecule_data(data);
             free_string(&data->files.molecule);
             free_string(&data->files.trajectory);
             allocate_and_load_pdb_from_file(&data->mol_data.dynamic, file);
@@ -1278,7 +1314,7 @@ static void load_molecule_data(ApplicationData* data, CString file) {
                 stats::compute_stats(data->mol_data.dynamic);
             }
         } else if (compare_n(ext, "gro", 3, true)) {
-            free_mol_data(data);
+			free_molecule_data(data);
             free_string(&data->files.molecule);
             free_string(&data->files.trajectory);
             allocate_and_load_gro_from_file(&data->mol_data.dynamic.molecule, file);
@@ -1320,6 +1356,8 @@ static void load_molecule_data(ApplicationData* data, CString file) {
     }
 }
 
+
+// ### OPEN / SAVE WORKSPACE ###
 static Representation::Type get_rep_type(CString str) {
     if (compare(str, "VDW"))
         return Representation::VDW;
@@ -1564,6 +1602,8 @@ static void save_workspace(ApplicationData* data, CString file) {
     data->files.workspace = allocate_string(file);
 }
 
+
+// ### REPRESENTATIONS ###
 static void create_default_representation(ApplicationData* data) {
     ASSERT(data);
     if (!data->mol_data.dynamic.molecule) return;
@@ -1613,4 +1653,19 @@ static void clear_representations(ApplicationData* data) {
         }
     }
     data->representations.data.clear();
+}
+
+
+
+// ### ASYNC OPERATIONS ON DATA ###
+static void load_trajectory_async(ApplicationData* data) {
+
+}
+
+static void compute_statistics_async(ApplicationData* data) {
+
+}
+
+static void compute_backbone_angles_async(ApplicationData* data) {
+
 }

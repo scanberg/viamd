@@ -25,8 +25,8 @@ struct TrackballController {
 		vec2 mouse_coord_prev = vec2(0, 0);
 		vec2 mouse_coord_curr = vec2(0, 0);
 		vec2 screen_size = vec2(0, 0);
-        vec2 prev_mouse_ndc = vec2(0,0);
-        vec2 curr_mouse_ndc = vec2(0,0);
+       // vec2 prev_mouse_ndc = vec2(0,0);
+        //vec2 curr_mouse_ndc = vec2(0,0);
         float dolly_delta = 0;
     };
 	InputState input;

@@ -23,8 +23,8 @@ CONCRETE LIST OF TODOs
         [X] Zoom in on current mouse coord
         [X] Pan
         [X] Range selection
-        [ ] X-axis
-        [ ] Y-axis
+        [X] X-axis
+        [X] Y-axis
         [ ] (Grid)?
         [ ] Tooltip + Line
         [ ] Draw outline + transparent area

@@ -73,16 +73,17 @@ IMGUI_API int EndPlotFrame(const PlotFrame& frame, int selected_idx = -1);
 IMGUI_API void PlotFrameLine(PlotFrame& frame, const char* label, const float* values, FrameLineStyle style = FrameLineStyle(), int selected_idx = -1);
 
 enum LinePlotFlags_ {
-	LinePlotFlags_AxisX,
-	LinePlotFlags_AxisY,
-	LinePlotFlats_Grid
+	LinePlotFlags_AxisX		= 1 << 0,
+	LinePlotFlags_AxisY		= 1 << 1,
+	LinePlotFlags_ShowXVal  = 1 << 2,
+	LinePlotFlats_Grid		= 1 << 3
 };
 
 typedef int LinePlotFlags;
 
-IMGUI_API void BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, ImVec2 y_range, ImVec2* view_range = nullptr, ImVec2* selection_range = nullptr, LinePlotFlags flags = 0);
-IMGUI_API void PlotLine(const char* line_label, const float* values, int count, ImU32 line_color = 0xffffffff);
-IMGUI_API void PlotLine(const char* line_label, const ImVec2* values, int count, ImU32 line_color = 0xffffffff);
+IMGUI_API bool BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, ImVec2 y_range, float* x_val = nullptr, ImVec2* view_range = nullptr, ImVec2* selection_range = nullptr, LinePlotFlags flags = LinePlotFlags_ShowXVal);
+IMGUI_API void PlotValues(const char* line_label, const float* values, int count, ImU32 line_color = 0xffffffff);
+IMGUI_API void PlotValues(const char* line_label, const ImVec2* values, int count, ImU32 line_color = 0xffffffff);
 IMGUI_API void EndPlot();
 
 //IMGUI_API int GetPlotRangeCount(const char* label);

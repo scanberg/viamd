@@ -114,7 +114,8 @@ static inline vec3 transform_vec(quat q, vec3 v) {
 void TrackballController::update() {
 	constexpr float PAN_SCL = 0.0008f;
 	constexpr float PAN_EXP = 1.f;
-	constexpr float DOLLY_DRAG_SCL = 50.f;
+	constexpr float DOLLY_DRAG_SCL = 0.01f;
+	constexpr float DOLLY_DRAG_EXP = 1.1f;
 	constexpr float DOLLY_DELTA_SCL = 0.1f;
 	constexpr float DOLLY_DELTA_EXP = 1.1f;
 
@@ -134,7 +135,7 @@ void TrackballController::update() {
 		position += move;
 	}
 	else if (input.dolly_button || input.dolly_delta != 0.f) {
-		float delta = -(input.curr_mouse_ndc.y - input.prev_mouse_ndc.y) * math::sqrt(distance * DOLLY_DRAG_SCL);
+		float delta = -(input.mouse_coord_curr.y - input.mouse_coord_prev.y) * math::pow(distance * DOLLY_DRAG_SCL, DOLLY_DRAG_EXP);
 		delta -= input.dolly_delta * math::pow(distance * DOLLY_DELTA_SCL, DOLLY_DELTA_EXP);
 		vec3 look_at = compute_look_at();
 		distance = math::clamp(distance + delta, min_distance, max_distance);
