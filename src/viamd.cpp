@@ -1049,6 +1049,7 @@ static void draw_timeline_window(ApplicationData* data) {
 
     int32 frame_idx = (int32)data->time;
     static ImVec2 view_range(0, 1000);
+    static ImVec2 selection_range(100, 300);
 	
     for (int i = 0; i < stats::get_property_count(); i++) {
         auto prop_id = stats::get_property(i);
@@ -1059,9 +1060,11 @@ static void draw_timeline_window(ApplicationData* data) {
 		float pad = math::max((prop_range.y - prop_range.x) * 0.1f, 1.f);
 		vec2 display_range = prop_range + vec2(-pad, pad);
 		//ImGui::PushStyleColor(ImGuiCol_FrameBg, 0x44333333);
-		ImGui::BeginPlot(prop_name, ImVec2(0, 100), ImVec2(0, prop_data.count), ImVec2(display_range.x, display_range.y), &view_range);
+        ImGui::PushID(i);
+		ImGui::BeginPlot(prop_name, ImVec2(0, 100), ImVec2(0, prop_data.count), ImVec2(display_range.x, display_range.y), &view_range, &selection_range);
 		ImGui::PlotLine("Najs", prop_data.data, prop_data.count);
 		ImGui::EndPlot();
+        ImGui::PopID();
 		//ImGui::PopStyleColor();
     }
 

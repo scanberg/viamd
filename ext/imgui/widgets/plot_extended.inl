@@ -524,6 +524,8 @@ struct PlotState {
 	ImRect coord_view;
     ImVec2* view_range;
     ImVec2* selection_range;
+    float selection_start;
+    bool is_selecting = false;
 };
 
 static PlotState ps;
@@ -555,28 +557,62 @@ IMGUI_API void BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, I
 
    //if (!ItemAdd(inner_bb, NULL)) return;
 
-    if (IsItemHovered()) {
+    if (IsItemHovered() && (ctx.IO.MouseWheel != 0.f || (ctx.IO.MouseClicked[0] && ctx.IO.KeyCtrl) || ctx.IO.MouseClicked[1])) {
         SetActiveID(id, window);
+        FocusWindow(window);
     }
 
     if (ctx.ActiveId == id) {
-        if (view_range && ctx.IO.MouseWheel != 0.f) {
-            //float ext = x_range.y - x_range.x;
-            //float scl = ext * 0.1f * ctx.IO.MouseWheel;
-			float speed = (view_range->y - view_range->x) / (x_range.y - x_range.x);
-			float new_view_range_ext = (view_range->y - view_range->x) + speed * -80.f * powf(ctx.IO.MouseWheel, 3.f);
-            float val = (ctx.IO.MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
-			float old_val = ImLerp(view_range->x, view_range->y, val);
-			view_range->x = old_val - new_view_range_ext * val;
-			view_range->y = view_range->x + new_view_range_ext;
-
-            //float c_x = ImLerp(view_range->x, view_range->y, val);
-
-            //view_range->x -= (c_x - x_range.x) * 0.1f * ctx.IO.MouseWheel;
-            //view_range->y -= (c_x - x_range.y) * 0.1f * ctx.IO.MouseWheel;
+        if (ctx.IO.MouseClicked[0]) {
+            float t = (ctx.IO.MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
+            ps.selection_start = ImLerp(view_range->x, view_range->y, t);
+            selection_range->x = ps.selection_start;
+            selection_range->y = ps.selection_start;
+            ps.is_selecting = true;
+        
         }
-        if (!IsItemHovered()) {
+        else if (ps.is_selecting) {
+            float t = (ctx.IO.MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
+            float v = ImLerp(view_range->x, view_range->y, t);
+            if (v < selection_range->x) {
+                selection_range->x = v;
+            }
+            else if (v > selection_range->x && v < selection_range->y) {
+                if (ps.selection_start < v) {
+                    selection_range->y = v;
+                } else {
+                    selection_range->x = v;
+                }
+            }
+            else if (v > selection_range->y) {
+                selection_range->y = v;
+            }
+        }
+        else if (ctx.IO.MouseDown[1]) {
+            float ext = view_range->y - view_range->x;
+            float pan = ext * ctx.IO.MouseDelta.x / (inner_bb.Max.x - inner_bb.Min.x);
+            
+            if (pan > 0) {
+                view_range->x = ImClamp(view_range->x - pan, x_range.x, x_range.y);
+                view_range->y = view_range->x + ext;
+            }
+            else {
+                view_range->y = ImClamp(view_range->y - pan, x_range.x, x_range.y);
+                view_range->x = view_range->y - ext;
+            }
+        }
+        else if (view_range && ctx.IO.MouseWheel != 0.f) {
+			float speed = (view_range->y - view_range->x) / (x_range.y - x_range.x);
+			float new_view_range_ext = (view_range->y - view_range->x) + speed * -80.f * ctx.IO.MouseWheel;
+            new_view_range_ext = ImMax(new_view_range_ext, 10.f);
+            float t = (ctx.IO.MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
+			float old_val = ImLerp(view_range->x, view_range->y, t);
+			view_range->x = old_val - new_view_range_ext * t;
+			view_range->y = view_range->x + new_view_range_ext;
+        }
+        if ((ps.is_selecting && (!ctx.IO.MouseDown[0] || !ctx.IO.KeyCtrl)) && !IsItemHovered() && !ctx.IO.MouseDown[1]) {
             ClearActiveID();
+            ps.is_selecting = false;
         }
     }
 
@@ -586,8 +622,16 @@ IMGUI_API void BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, I
     }
 
     if (selection_range) {
+        const unsigned int highlight_col = 0x33bbbbbb;
         selection_range->x = ImClamp(selection_range->x, x_range.x, x_range.y);
         selection_range->y = ImClamp(selection_range->y, x_range.x, x_range.y);
+
+        // Draw selection range
+        const float t0 = (selection_range->x - view_range->x) / (view_range->y - view_range->x);
+        const float t1 = (selection_range->y - view_range->x) / (view_range->y - view_range->x);
+        ImVec2 pos0 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t0, 0));
+        ImVec2 pos1 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t1, 1));
+        window->DrawList->AddRectFilled(pos0, pos1, highlight_col);
     }
 
 	ps.id = id;
