@@ -770,7 +770,7 @@ IMGUI_API void EndPlot() {
 	ps.id = 0;
 }
 
-IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_radius_ratio, const float* values, int count, float max_value, ImU32 line_color) {
+IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_radius_ratio, const float* values, int count, ImVec2 value_range, ImU32 line_color) {
 	ImGuiWindow* window = GetCurrentWindow();
 	const ImGuiID id = window->GetID(label);
 	ps.id = id;
@@ -793,16 +793,15 @@ IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_r
 	RenderFrame(frame_bb.Min, frame_bb.Max, GetColorU32(ImGuiCol_FrameBg), true,
 		style.FrameRounding);
 
-
-	if (IsItemHovered() && (ctx.IO.MouseWheel != 0.f || ctx.IO.MouseClicked[0] || ctx.IO.MouseClicked[1])) {
-		SetActiveID(id, window);
-		FocusWindow(window);
-	}
-
 	if (GetActiveID() == id) {
 		if (!IsItemHovered()) {
 			ClearActiveID();
 		}
+	}
+
+	if (IsItemHovered()) {
+		SetActiveID(id, window);
+		FocusWindow(window);
 	}
 
 	float max_val = 0.f;
@@ -813,25 +812,64 @@ IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_r
 
 	ImVec2 center = ImLerp(inner_bb.Min, inner_bb.Max, 0.5f);
 	float inner_radius = outer_radius * inner_radius_ratio;
-	window->DrawList->AddCircleFilled(center, outer_radius, GetColorU32(ImGuiCol_FrameBg), 32);
-	window->DrawList->AddCircleFilled(center, inner_radius, 0xdd555555, 32);
+	window->DrawList->AddCircleFilled(center, outer_radius, GetColorU32(ImGuiCol_ChildBg), 32);
+	window->DrawList->AddCircleFilled(center, inner_radius, GetColorU32(ImGuiCol_WindowBg), 32);
 	//window->DrawList->AddCircle(center, inner_radius, 0xffffffff, 64);
 	window->DrawList->AddCircle(center, outer_radius, 0xffffffff, 64);
 	
 	if (count == 0) return true;
-	ImVec2 beg(center.x, center.y - ImLerp(inner_radius, outer_radius, values[0] / max_val));
-	ImVec2 prev = beg;
-	ImVec2 next;
-	const float PI_HALF = 3.14159265f * 0.5f;
-	const float TWO_PI = 3.14159265f * 2.f;
+	const ImVec2 zero_line(center.x, center.y - ImLerp(inner_radius, outer_radius, values[0] / max_val));
+	const ImVec2 zero_inner(center.x, center.y - inner_radius);
+	ImVec2 prev_line = zero_line;
+	ImVec2 next_line;
+	ImVec2 prev_inner = zero_inner;
+	ImVec2 next_inner;
+	const float PI_HALF = IM_PI * 0.5f;
+	const float TWO_PI = IM_PI * 2.f;
 	for (int i = 1; i < count; i++) {
 		float angle = PI_HALF - TWO_PI * (i / (float)count);
 		float radius = ImLerp(inner_radius, outer_radius, values[i] / max_val);
-		next = ImVec2(center.x + cosf(angle) * radius, center.y - sinf(angle) * radius);
-		window->DrawList->AddLine(prev, next, line_color);
-		prev = next;
+		next_line = ImVec2(center.x + cosf(angle) * radius, center.y - sinf(angle) * radius);
+		next_inner = ImVec2(center.x + cosf(angle) * inner_radius, center.y - sinf(angle) * inner_radius);
+		ImVec2 points[4]{
+			prev_inner,
+			prev_line,
+			next_line,
+			next_inner
+		};
+		window->DrawList->AddConvexPolyFilled(points, 4, 0x44aabb33);
+		window->DrawList->AddLine(prev_line, next_line, line_color);
+		prev_line = next_line;
+		prev_inner = next_inner;
 	}
-	window->DrawList->AddLine(prev, beg, line_color);
+	ImVec2 points[4]{
+		prev_inner,
+		prev_line,
+		zero_line,
+		zero_inner
+	};
+	window->DrawList->AddConvexPolyFilled(points, 4, 0x44aabb33);
+	window->DrawList->AddLine(prev_line, zero_line, line_color);
+
+
+	if (GetActiveID() == id) {
+		const ImVec2 delta(ctx.IO.MousePos.x - center.x, ctx.IO.MousePos.y - center.y);
+		const float len_sqr = ImLengthSqr(delta);
+		if (inner_radius * inner_radius < len_sqr && len_sqr < outer_radius * outer_radius) {
+			float angle = atan2f(delta.y, delta.x);
+			// @TODO: FIX THIS!
+			float t = (angle / IM_PI) * 0.5f + 0.5f + 0.25f;
+			t = t - (int)t;
+			float val = values[ImClamp((int)(t * count), 0, count - 1)] / max_val;
+
+			ImVec2 inner(center.x + inner_radius * cosf(angle), center.y + inner_radius * sinf(angle));
+			ImVec2 outer(center.x + outer_radius * cosf(angle), center.y + outer_radius * sinf(angle));
+			window->DrawList->AddLine(inner, outer, 0xffffffff);
+			BeginTooltip();
+			Text("%.3f: %.3f\n", ImLerp(value_range.x, value_range.y, t), val);
+			EndTooltip();
+		}
+	}
 
 	return true;
 }

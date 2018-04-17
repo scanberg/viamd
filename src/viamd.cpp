@@ -1214,7 +1214,7 @@ static void draw_distribution_window(ApplicationData* data) {
         // ImGui::PlotHistogram(stats::get_property_name(prop_id), [](void* data, int32 idx) -> float { return ((float*)data)[idx]; },
         // prop_data->bins.data, prop_data->bins.count);
 		if (periodic) {
-			ImGui::PlotPeriodic(stats::get_property_name(prop_id), 100.f, 0.25f, hist->bins.data, (int32)hist->bins.count, range.y);
+			ImGui::PlotPeriodic(stats::get_property_name(prop_id), 100.f, 0.25f, hist->bins.data, (int32)hist->bins.count, ImVec2(-math::PI, math::PI));
 		}
 		else {
 			ImGui::PlotHistogramExtended(stats::get_property_name(prop_id), hist->bins.data, (int32)hist->bins.count, 0, 0, 0, 0, hist->bin_range.x,
