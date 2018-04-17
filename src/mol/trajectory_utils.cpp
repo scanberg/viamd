@@ -10,8 +10,10 @@
 
 bool load_and_allocate_trajectory(Trajectory* traj, CString path) {
 	ASSERT(traj);
-    std::string url(path);
+	free_trajectory(traj);
 
+	// @TODO: Remove this shit
+    std::string url(path);
     auto dot_pos = url.find_last_of(".");
     std::string file_without_ext = url.substr(0, dot_pos);
     std::string cache_file = file_without_ext + ".cache";
@@ -55,13 +57,14 @@ bool load_and_allocate_trajectory(Trajectory* traj, CString path) {
 	traj->total_simulation_time = 0;
 	traj->simulation_type = Trajectory::NVT;
 	traj->path_to_file = allocate_string(path);
+	traj->file_handle = file_handle;
 
 	traj->frame_offsets = { offsets, num_frames };
 	traj->position_data = { (vec3*)MALLOC(num_frames * num_atoms * sizeof(vec3)), num_frames * num_atoms };
 	traj->frame_buffer = { (TrajectoryFrame*)MALLOC(num_frames * sizeof(TrajectoryFrame)), num_frames };
 
-    traj->is_loading = false;
-    traj->signal_stop = false;
+    //traj->is_loading = false;
+    //traj->signal_stop = false;
 
     return true;
 }
@@ -74,12 +77,12 @@ bool read_trajectory_data(Trajectory* traj) {
 		printf("Error, could not open file %s\n", traj->path_to_file.data);
 		return false;
 	}
-	traj->is_loading = true;
+	//traj->is_loading = true;
 	for (int i = 0; i < num_frames; i++) {
-		if (traj->signal_stop) {
-			traj->is_loading = false;
-			return false;
-		}
+		//if (traj->signal_stop) {
+		//	traj->is_loading = false;
+		//	return false;
+		//}
 		vec3* pos_data = traj->position_data.data + (i * traj->num_atoms);
 		TrajectoryFrame* frame = traj->frame_buffer.data + i;
 		frame->atom_positions.data = pos_data;
@@ -94,8 +97,48 @@ bool read_trajectory_data(Trajectory* traj) {
 		frame->box *= 10.f;
 		traj->num_frames++;
 	}
-	traj->is_loading = false;
+	//traj->is_loading = false;
 	return true;
+}
+
+bool read_next_trajectory_frame(Trajectory* traj) {
+	ASSERT(traj);
+	if (!traj->file_handle) return false;
+	auto num_frames = traj->frame_offsets.count;
+	if (traj->num_frames == num_frames) return false;
+
+	// Next index to be loaded
+	int i = traj->num_frames;
+	vec3* pos_data = traj->position_data.data + (i * traj->num_atoms);
+	TrajectoryFrame* frame = traj->frame_buffer.data + i;
+	frame->atom_positions.data = pos_data;
+	frame->atom_positions.count = traj->num_atoms;
+	frame->index = i;
+	int step;
+	float precision;
+	read_xtc((XDRFILE*)traj->file_handle, traj->num_atoms, &step, &frame->time, (float(*)[3]) & frame->box, (float(*)[3])pos_data, &precision);
+	for (int j = 0; j < traj->num_atoms; j++) {
+		pos_data[j] *= 10.f;
+	}
+	frame->box *= 10.f;
+	traj->num_frames++;
+
+	return true;
+}
+
+bool all_trajectory_frames_read(Trajectory* traj) {
+	ASSERT(traj);
+	return (traj->num_frames == (int32)traj->frame_offsets.count);
+}
+
+bool close_file_handle(Trajectory* traj) {
+	ASSERT(traj);
+	if (traj->file_handle) {
+		xdrfile_close((XDRFILE*)traj->file_handle);
+		traj->file_handle = nullptr;
+		return true;
+	}
+	return false;
 }
 
 void copy_trajectory_frame(TrajectoryFrame* frame, const Trajectory& traj, int frame_index) {

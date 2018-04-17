@@ -114,6 +114,26 @@ struct MoleculeData {
     DynamicArray<float> atom_radii{};
 };
 
+struct ThreadSyncData {
+	std::thread thread{};
+	volatile bool running = false;
+	volatile bool stop_signal = false;
+
+	void signal_stop() {
+		stop_signal = true;
+	}
+
+	void wait_until_finished() {
+		while (running) { platform::sleep(1); }
+		//thread.join();
+	}
+
+	void signal_stop_and_wait() {
+		signal_stop();
+		wait_until_finished();
+	}
+};
+
 struct ApplicationData {
     // --- PLATFORM ---
     platform::Context ctx;
@@ -131,6 +151,26 @@ struct ApplicationData {
     // --- MOL DATA ---
     MoleculeData mol_data;
 
+	// --- THREAD SYNCHRONIZATION ---
+	struct {
+		struct {
+			ThreadSyncData sync{};
+			float progress = 0.f;
+		} trajectory;
+
+		struct {
+			ThreadSyncData sync{};
+			float progress = 0.f;
+			bool query_update = false;
+		} statistics;
+
+		struct {
+			ThreadSyncData sync{};
+			float progress = 0.f;
+			bool query_update = false;
+		} backbone_angles;
+	} async;
+
     struct {
         bool show_window;
         DynamicArray<Representation> data;
@@ -147,7 +187,7 @@ struct ApplicationData {
         bool show_distribution_window = false;
     } statistics;
 
-    // Framebuffer
+    // --- FRAMEBUFFER ---
     MainFramebuffer fbo;
     unsigned int picking_idx = NO_PICKING_IDX;
 
@@ -165,6 +205,7 @@ struct ApplicationData {
         float radius = 6.0f;
     } ssao;
 
+	// RAMACHANDRAN
     struct {
         bool show_window = false;
         float radius = 1.f;
@@ -176,6 +217,7 @@ struct ApplicationData {
         Array<BackboneAngles> current_backbone_angles{};
     } ramachandran;
 
+	// DEBUG DRAW
     struct {
         struct {
             bool enabled = false;
@@ -217,7 +259,9 @@ static void remove_representation(ApplicationData* data, int idx);
 static void reset_representations(ApplicationData* data);
 static void clear_representations(ApplicationData* data);
 
+// Async operations
 static void load_trajectory_async(ApplicationData* data);
+static void clear_statistics_data(ApplicationData* data);
 static void compute_statistics_async(ApplicationData* data);
 static void compute_backbone_angles_async(ApplicationData* data);
 
@@ -301,13 +345,22 @@ int main(int, char**) {
             data.console.visible = !data.console.visible;
         }
 
+		if (data.async.trajectory.sync.running) {
+			constexpr float TICK_INTERVAL = 2.f;
+			static float time = 0.f;
+			time += data.ctx.timing.dt;
+			if (time > TICK_INTERVAL) {
+				time = 0.f;
+				compute_statistics_async(&data);
+				compute_backbone_angles_async(&data);
+			}
+		}
+
         float ms = compute_avg_ms(data.ctx.timing.dt);
         bool time_changed = false;
 
         ImGui::Begin("Misc");
         ImGui::Text("%.2f ms (%.1f fps)", ms, 1000.f / (ms));
-        ImGui::Text("MouseVel: %g, %g", data.ctx.input.mouse.velocity.x, data.ctx.input.mouse.velocity.y);
-        ImGui::Text("Camera Pos: %g, %g, %g", data.camera.position.x, data.camera.position.y, data.camera.position.z);
         ImGui::Checkbox("Show Demo Window", &show_demo_window);
         if (ImGui::Button("Reset View")) {
             reset_view(&data);
@@ -504,6 +557,7 @@ int main(int, char**) {
         if (data.statistics.show_distribution_window) draw_distribution_window(&data);
 
         if (data.ramachandran.show_window) {
+			/*
             if (data.mol_data.dynamic.trajectory && data.mol_data.dynamic.trajectory.is_loading) {
                 static int32 prev_frame = 0;
                 if (get_backbone_angles_trajectory_current_frame_count(data.ramachandran.backbone_angles) - prev_frame > 100) {
@@ -511,7 +565,7 @@ int main(int, char**) {
                     prev_frame = data.ramachandran.backbone_angles.num_frames;
                     data.ramachandran.frame_range_max = data.ramachandran.backbone_angles.num_frames;
                 }
-            }
+            }*/
             draw_ramachandran(&data);
         }
 
@@ -763,8 +817,8 @@ static void draw_representations_window(ApplicationData* data) {
 			if (ImGui::InputText("filter", rep.filter.buffer, rep.filter.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
 				recompute_colors = true;
 			}
-
 			if (!rep.filter_is_ok) ImGui::PopStyleColor();
+			ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0\0");
 			if (ImGui::Combo("color mapping", (int*)(&rep.color_mapping), "Static Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0\0")) {
 				recompute_colors = true;
 			}
@@ -776,7 +830,6 @@ static void draw_representations_window(ApplicationData* data) {
 				}
 			}
 			ImGui::PushItemWidth(item_width);
-			ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0\0");
 			if (rep.type == Representation::VDW || rep.type == Representation::LICORICE) {
 				ImGui::SliderFloat("radii scale", &rep.radius, 0.1f, 2.f);
 			}
@@ -1030,7 +1083,8 @@ static void draw_property_window(ApplicationData* data) {
     ImGui::End();
 
     if (compute_stats) {
-        stats::compute_stats(data->mol_data.dynamic);
+        //stats::compute_stats(data->mol_data.dynamic);
+		compute_statistics_async(data);
     }
 }
 
@@ -1078,6 +1132,21 @@ static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, in
     ImGui::Text("%s", buff);
     ImGui::End();
     ImGui::PopStyleColor();
+}
+
+static void draw_async_info(ApplicationData* data) {
+	/*
+	ImGui::SetNextWindowPos(ImVec2(-100.f, -100.f));
+	ImGui::SetNextWindowSize(ImVec2(text_size.x + 20.f, text_size.y + 15.f));
+	ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
+	ImGui::Begin("##Atom Info", 0,
+		ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+		ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBringToFrontOnFocus |
+		ImGuiWindowFlags_NoFocusOnAppearing);
+	ImGui::Text("%s", buff);
+	ImGui::End();
+	ImGui::PopStyleColor();
+	*/
 }
 
 static void draw_timeline_window(ApplicationData* data) {
@@ -1135,15 +1204,22 @@ static void draw_timeline_window(ApplicationData* data) {
 static void draw_distribution_window(ApplicationData* data) {
     ImGui::Begin("Distributions", &data->statistics.show_distribution_window, ImGuiWindowFlags_NoFocusOnAppearing);
     for (int i = 0; i < stats::get_property_count(); i++) {
-		auto prop_id = stats::get_property(i);
-		auto hist = stats::get_property_histogram(prop_id, 0);
+		auto prop_id  = stats::get_property(i);
+		auto hist	  = stats::get_property_histogram(prop_id, 0);
+		auto periodic = stats::get_property_periodic(prop_id);
+		auto range    = stats::get_property_data_range(prop_id, i);
 		if (!hist) continue;
 
         ImGui::PushID(i);
         // ImGui::PlotHistogram(stats::get_property_name(prop_id), [](void* data, int32 idx) -> float { return ((float*)data)[idx]; },
         // prop_data->bins.data, prop_data->bins.count);
-        ImGui::PlotHistogramExtended(stats::get_property_name(prop_id), hist->bins.data, (int32)hist->bins.count, 0, 0, 0, 0, hist->bin_range.x,
-                                     hist->bin_range.y, ImVec2(0, 100));
+		if (periodic) {
+			ImGui::PlotPeriodic(stats::get_property_name(prop_id), 100.f, 0.25f, hist->bins.data, (int32)hist->bins.count, range.y);
+		}
+		else {
+			ImGui::PlotHistogramExtended(stats::get_property_name(prop_id), hist->bins.data, (int32)hist->bins.count, 0, 0, 0, 0, hist->bin_range.x,
+				hist->bin_range.y, ImVec2(0, 100));
+		}
         ImGui::PopID();
     }
     ImGui::End();
@@ -1275,19 +1351,28 @@ static void destroy_main_framebuffer(MainFramebuffer* fbo) {
 }
 
 
-// ### LOAD / FREE DATA ###
+// ### MOLECULE DATA ###
+static void free_trajectory_data(ApplicationData* data) {
+	if (data->mol_data.dynamic.trajectory) {
+		data->async.trajectory.sync.signal_stop_and_wait();
+		data->async.statistics.sync.signal_stop_and_wait();
+		data->async.backbone_angles.sync.signal_stop_and_wait();
+		close_file_handle(&data->mol_data.dynamic.trajectory);
+		free_trajectory(&data->mol_data.dynamic.trajectory);
+	}
+}
+
 static void free_molecule_data(ApplicationData* data) {
     if (data->mol_data.dynamic.molecule) {
         free_molecule_structure(&data->mol_data.dynamic.molecule);
     }
-    if (data->mol_data.dynamic.trajectory) {
-        free_trajectory(&data->mol_data.dynamic.trajectory);
-    }
+	if (data->mol_data.dynamic.trajectory) {
+		free_trajectory_data(data);
+	}
     free_backbone_angles_trajectory(&data->ramachandran.backbone_angles);
     data->ramachandran.backbone_angles = {};
     data->ramachandran.current_backbone_angles = {};
-    stats::clear_instances();
-    stats::clear_property_data();
+	clear_statistics_data(data);
 }
 
 static void load_molecule_data(ApplicationData* data, CString file) {
@@ -1330,7 +1415,9 @@ static void load_molecule_data(ApplicationData* data, CString file) {
             if (!data->mol_data.dynamic.molecule) {
                 printf("ERROR! Must have molecule loaded before trajectory can be loaded!\n");
             } else {
-                if (data->mol_data.dynamic.trajectory) free_trajectory(&data->mol_data.dynamic.trajectory);
+				if (data->mol_data.dynamic.trajectory) {
+					free_trajectory_data(data);
+				}
                 if (!load_and_allocate_trajectory(&data->mol_data.dynamic.trajectory, file)) {
                     printf("ERROR! Problem loading trajectory\n");
                     return;
@@ -1338,16 +1425,18 @@ static void load_molecule_data(ApplicationData* data, CString file) {
                 if (data->mol_data.dynamic.trajectory) {
                     if (data->mol_data.dynamic.trajectory.num_atoms != data->mol_data.dynamic.molecule.atom_positions.count) {
                         printf("ERROR! The number of atoms in the molecule does not match the number of atoms in the trajectory\n");
-                        free_trajectory(&data->mol_data.dynamic.trajectory);
-                        data->mol_data.dynamic.trajectory = {};
+						free_trajectory_data(data);
                         return;
                     }
                     data->files.trajectory = allocate_string(file);
                     init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
+					load_trajectory_async(data);
+					/*
                     read_trajectory_async(&data->mol_data.dynamic.trajectory, [data]() {
                         stats::compute_stats(data->mol_data.dynamic);
                         compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
                     });
+					*/
                 }
             }
         } else {
@@ -1357,7 +1446,7 @@ static void load_molecule_data(ApplicationData* data, CString file) {
 }
 
 
-// ### OPEN / SAVE WORKSPACE ###
+// ### WORKSPACE ###
 static Representation::Type get_rep_type(CString str) {
     if (compare(str, "VDW"))
         return Representation::VDW;
@@ -1656,16 +1745,74 @@ static void clear_representations(ApplicationData* data) {
 }
 
 
-
 // ### ASYNC OPERATIONS ON DATA ###
 static void load_trajectory_async(ApplicationData* data) {
+	ASSERT(data);
+	// Wait for thread to finish if already running
+	if (data->async.trajectory.sync.running) {
+		data->async.trajectory.sync.signal_stop_and_wait();
+	}
 
+	if (data->mol_data.dynamic.trajectory.file_handle) {
+		data->async.trajectory.sync.stop_signal = false;
+		data->async.trajectory.sync.running = true;
+		data->async.trajectory.sync.thread = std::thread([data]() {
+			while (read_next_trajectory_frame(&data->mol_data.dynamic.trajectory)) {
+				if (data->async.trajectory.sync.stop_signal) break;
+			}
+			data->async.trajectory.sync.running = false;
+			data->async.trajectory.sync.stop_signal = false;
+
+			compute_statistics_async(data);
+			compute_backbone_angles_async(data);
+		});
+		data->async.trajectory.sync.thread.detach();
+	}
+}
+
+static void clear_statistics_data(ApplicationData* data) {
+	data->async.statistics.sync.signal_stop_and_wait();
+	stats::clear_instances();
+	stats::clear_property_data();
 }
 
 static void compute_statistics_async(ApplicationData* data) {
+	ASSERT(data);
+	data->async.statistics.query_update = true;
+	if (data->async.statistics.sync.running == false) {
+		data->async.statistics.sync.running = true;
+		
+		data->async.statistics.sync.thread = std::thread([data]() {
+			while (data->async.statistics.query_update) {
+				data->async.statistics.query_update = false;
+				stats::clear_instances();
+				stats::clear_property_data();
+				stats::compute_stats(data->mol_data.dynamic);
+				if (data->async.statistics.sync.stop_signal) break;
+			}
+			data->async.statistics.sync.running = false;
+			data->async.statistics.sync.stop_signal = false;
+		});
+		data->async.statistics.sync.thread.detach();
 
+	}
 }
 
 static void compute_backbone_angles_async(ApplicationData* data) {
+	ASSERT(data);
+	data->async.backbone_angles.query_update = true;
+	if (data->async.backbone_angles.sync.running == false) {
+		data->async.backbone_angles.sync.running = true;
 
+		data->async.backbone_angles.sync.thread = std::thread([data]() {
+			while (data->async.backbone_angles.query_update) {
+				data->async.backbone_angles.query_update = false;
+				compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
+				if (data->async.backbone_angles.sync.stop_signal) break;
+			}
+			data->async.backbone_angles.sync.running = false;
+			data->async.backbone_angles.sync.stop_signal = false;
+		});
+		data->async.backbone_angles.sync.thread.detach();
+	}
 }

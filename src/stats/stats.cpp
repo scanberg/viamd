@@ -25,28 +25,31 @@ struct GroupCommand {
 };
 
 struct Property {
-    ID id = INVALID_ID;
-    ID data_avg_id = INVALID_ID;
-    ID data_beg_id = INVALID_ID;
-    int32 data_count = 0;
+	StringBuffer<32> name_buf{};
+	StringBuffer<64> args_buf{};
 
 	float filter_min = 0.f;
 	float filter_max = 1.f;
+};
 
-    StringBuffer<32> name_buf{};
-    StringBuffer<64> args_buf{};
-    CString name{};
-    CString cmd{};
-    CString args{};
-    ID cmd_id = INVALID_ID;
-    bool valid = true;
+struct PropertyInternal : Property {
+	ID id = INVALID_ID;
+	ID data_avg_id = INVALID_ID;
+	ID data_beg_id = INVALID_ID;
+	int32 data_count = 0;
+
+	CString name{};
+	CString cmd{};
+	CString args{};
+	ID cmd_id = INVALID_ID;
+	bool valid = true;
 };
     
 struct PropertyData {
     ID id = INVALID_ID;
     ID property_id = INVALID_ID;
 	ID instance_id = INVALID_ID;
-	Range data_range;
+	Range data_range{};
     Array<float> data{};
 	Histogram histogram{};
 };
@@ -76,7 +79,7 @@ struct StatisticsContext {
     DynamicArray<ID> free_ids {};
     DynamicArray<String> string_buffer {};
 
-    DynamicArray<Property> properties{};
+    DynamicArray<PropertyInternal> properties{};
     DynamicArray<PropertyData> property_data{};
     DynamicArray<Group> groups{};
 	DynamicArray<GroupInstance> group_instances{};
@@ -232,15 +235,12 @@ static void free_string(CString str) {
 void init_histogram(Histogram* hist, int32 num_bins) {
 	ASSERT(hist);
 	if (hist->bins.data) {
-		if ((int32)hist->bins.count != num_bins) {
-			REALLOC(hist->bins.data, num_bins * sizeof(float));
-			hist->bins.count = num_bins;
-		}
+		FREE(hist->bins.data);
 	}
-	else {
-		hist->bins = (float*)MALLOC(num_bins * sizeof(float));
-		hist->bins.count = num_bins;
-	}
+	hist->bins.data = (float*)MALLOC(num_bins * sizeof(float));
+	hist->bins.count = num_bins;
+
+	ASSERT(hist->bins.data);
 }
 
 void free_histogram(Histogram* hist) {
@@ -553,6 +553,7 @@ void clear_instances() {
 	}
 	for (auto& prop : ctx.properties) {
 		prop.data_beg_id = INVALID_ID;
+		prop.data_avg_id = INVALID_ID;
 		prop.data_count = 0;
 	}
 	ctx.group_instances.clear();
@@ -575,7 +576,7 @@ int32 get_property_count() {
     return (int32)ctx.properties.count;
 }
     
-bool validate_property(Property* prop) {
+bool validate_property(PropertyInternal* prop) {
     ASSERT(prop);
     prop->valid = false;
     
@@ -628,7 +629,7 @@ bool validate_property(ID prop_id) {
 }
 
 ID create_property(CString name, CString cmd_and_args) {
-    Property prop;
+    PropertyInternal prop;
     prop.id = create_id();
     prop.data_beg_id = INVALID_ID;
     prop.data_count = 0;
@@ -642,7 +643,7 @@ ID create_property(CString name, CString cmd_and_args) {
 }
 
 void remove_property(ID prop_id) {
-    Property* prop = find_id(ctx.properties, prop_id);
+    auto prop = find_id(ctx.properties, prop_id);
     if (prop == nullptr) {
         printf("ERROR: PROPERTY NOT FOUND\n");
         return;
@@ -661,7 +662,7 @@ void clear_properties() {
 }
 
 void clear_property(ID prop_id) {
-	Property* prop = find_id(ctx.properties, prop_id);
+	auto prop = find_id(ctx.properties, prop_id);
 	if (prop) {
 		if (prop->data_beg_id != INVALID_ID) {
 			auto data_beg = find_id(ctx.property_data, prop->data_beg_id);
@@ -733,6 +734,7 @@ Histogram* get_property_avg_histogram(ID prop_id) {
 void clear_property_data() {
 	for (auto& prop : ctx.properties) {
 		prop.data_beg_id = INVALID_ID;
+		prop.data_avg_id = INVALID_ID;
 		prop.data_count = 0;
 	}
 	ctx.property_data.clear();
@@ -776,6 +778,28 @@ bool get_property_valid(ID prop_id) {
         return prop->valid;
     }
     return false;
+}
+
+CString get_property_unit(ID prop_id) {
+	auto prop = find_id(ctx.properties, prop_id);
+	if (prop) {
+		auto cmd = find_id(ctx.property_commands, prop->cmd_id);
+		if (cmd) {
+			return cmd->unit;
+		}
+	}
+	return "";
+}
+
+bool get_property_periodic(ID prop_id) {
+	auto prop = find_id(ctx.properties, prop_id);
+	if (prop) {
+		auto cmd = find_id(ctx.property_commands, prop->cmd_id);
+		if (cmd) {
+			return cmd->periodic;
+		}
+	}
+	return false;
 }
 
 bool compute_stats(const MoleculeDynamic& dynamic) {
@@ -902,11 +926,15 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
 	// Compute histograms for properties
 	for (auto& prop_data : ctx.property_data) {
 		if (prop_data.instance_id != INVALID_ID) {
-			compute_histogram(&prop_data.histogram, num_bins, prop_data.data);
+			auto prop = find_id(ctx.properties, prop_data.property_id);
+			if (prop && prop->valid) {
+				compute_histogram(&prop_data.histogram, num_bins, prop_data.data);
+			}
 		}
 	}
 
 	for (auto& prop : ctx.properties) {
+		if (!prop.valid) continue;
 		auto avg_data = find_id(ctx.property_data, prop.data_avg_id);
 		auto prop_data = find_id(ctx.property_data, prop.data_beg_id);
 		if (!avg_data || !prop_data) continue;
@@ -915,6 +943,7 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
 		memset(avg_data->histogram.bins.data, 0, avg_data->histogram.bins.count);
 		avg_data->histogram.bin_range = { 0,0 };
 		for (int i = 0; i < prop.data_count; i++) {
+			if (!prop_data[i].histogram.bins.data || prop_data[i].histogram.bins.count == 0) continue;
 			for (int j = 0; j < avg_data->histogram.bins.count; j++) {
 				avg_data->histogram.bins.data[j] += prop_data[i].histogram.bins.data[j];
 				avg_data->histogram.bin_range.y = math::max(avg_data->histogram.bin_range.y, avg_data->histogram.bins.data[j]);

@@ -421,7 +421,7 @@ static void imgui_new_frame() {
 }
 
 
-void initialize(Context* ctx, int width, int height, const char* title) {
+void initialize(Context* ctx, int32 width, int32 height, const char* title) {
     if (!glfwInit()) {
         // TODO Throw critical error
         error_callback(1, "Error while initializing. Terminating.");

@@ -86,6 +86,7 @@ IMGUI_API void PlotValues(const char* line_label, const float* values, int count
 IMGUI_API void PlotValues(const char* line_label, const ImVec2* values, int count, ImU32 line_color = 0xffffffff);
 IMGUI_API void EndPlot();
 
+IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_radius_ratio, const float* values, int count, float max_value, ImU32 line_color = 0xffffffff);
 //IMGUI_API int GetPlotRangeCount(const char* label);
 //IMGUI_API void GetPlotRange(const char* label, int idx, float* range_from, float* range_to);
 

@@ -51,7 +51,7 @@ bool allocate_and_parse_gro_from_string(MoleculeStructure* mol, CString gro_stri
 				cur_res = res_idx;
 				res_count = (int)residues.count;
 				CString res_name_trim = trim(CString(res_name));
-				Residue res{ res_name_trim, i, i };
+				Residue res{ res_name_trim, res_idx, i, i };
 				residues.push_back(res);
 			}
 			residues.back().end_atom_idx++;

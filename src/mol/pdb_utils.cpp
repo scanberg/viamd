@@ -140,6 +140,7 @@ bool allocate_and_parse_pdb_from_string(MoleculeDynamic* md, CString pdb_string,
 			if (res_id != current_res_id) {
 				current_res_id = res_id;
 				Residue residue;
+				residue.id = res_id;
 				residue.beg_atom_idx = num_atoms;
 				residue.end_atom_idx = residue.beg_atom_idx;
 				residue.chain_idx = (ChainIdx)(chains.size() - 1);

@@ -1980,9 +1980,8 @@ void draw_licorice(Array<const vec3> atom_positions, Array<const Bond> atom_bond
                    const mat4& proj_mat, float radii_scale) {
     ASSERT(atom_positions.count == atom_colors.count);
 
-	constexpr int32 TMP_BYTES = MEGABYTES(4);
-	licorice::Vertex* data = (licorice::Vertex*)TMP_MALLOC(TMP_BYTES);
-	ASSERT(atom_positions.count * sizeof(licorice::Vertex) < TMP_BYTES);
+	const int32 num_bytes = atom_positions.count * sizeof(licorice::Vertex);
+	licorice::Vertex* data = (licorice::Vertex*)TMP_MALLOC(num_bytes);
 
     for (int64_t i = 0; i < atom_positions.count; i++) {
         data[i].position = atom_positions[i];
@@ -2001,7 +2000,7 @@ void draw_licorice(Array<const vec3> atom_positions, Array<const Bond> atom_bond
     glUseProgram(licorice::program);
     glUniformMatrix4fv(licorice::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
     glUniformMatrix4fv(licorice::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
-    glUniform1f(licorice::uniform_loc_radius, 0.5f * radii_scale);
+    glUniform1f(licorice::uniform_loc_radius, 0.25f * radii_scale);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, licorice::ibo);
     glDrawElements(GL_LINES, (GLsizei)atom_bonds.count * 2, GL_UNSIGNED_INT, (const void*)0);
     glUseProgram(0);

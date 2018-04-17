@@ -770,4 +770,71 @@ IMGUI_API void EndPlot() {
 	ps.id = 0;
 }
 
+IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_radius_ratio, const float* values, int count, float max_value, ImU32 line_color) {
+	ImGuiWindow* window = GetCurrentWindow();
+	const ImGuiID id = window->GetID(label);
+	ps.id = id;
+
+	if (window->SkipItems) return false;
+
+	ImGuiContext& ctx = *GImGui;
+	const ImGuiStyle& style = ctx.Style;
+
+	if (outer_radius == 0.0f) outer_radius = CalcItemWidth();
+	ImVec2 frame_size(2.f * outer_radius, 2.f * outer_radius);
+
+	const ImRect frame_bb(window->DC.CursorPos, window->DC.CursorPos + ImVec2(frame_size.x, frame_size.y));
+	const ImRect inner_bb(frame_bb.Min + style.FramePadding, frame_bb.Max - style.FramePadding);
+	const ImRect total_bb(frame_bb.Min, frame_bb.Max);
+	ItemSize(total_bb, style.FramePadding.y);
+	if (!ItemAdd(total_bb, NULL)) return false;
+
+
+	RenderFrame(frame_bb.Min, frame_bb.Max, GetColorU32(ImGuiCol_FrameBg), true,
+		style.FrameRounding);
+
+
+	if (IsItemHovered() && (ctx.IO.MouseWheel != 0.f || ctx.IO.MouseClicked[0] || ctx.IO.MouseClicked[1])) {
+		SetActiveID(id, window);
+		FocusWindow(window);
+	}
+
+	if (GetActiveID() == id) {
+		if (!IsItemHovered()) {
+			ClearActiveID();
+		}
+	}
+
+	float max_val = 0.f;
+	for (int i = 0; i < count; i++) {
+		max_val = ImMax(max_val, values[i]);
+	}
+
+
+	ImVec2 center = ImLerp(inner_bb.Min, inner_bb.Max, 0.5f);
+	float inner_radius = outer_radius * inner_radius_ratio;
+	window->DrawList->AddCircleFilled(center, outer_radius, GetColorU32(ImGuiCol_FrameBg), 32);
+	window->DrawList->AddCircleFilled(center, inner_radius, 0xdd555555, 32);
+	//window->DrawList->AddCircle(center, inner_radius, 0xffffffff, 64);
+	window->DrawList->AddCircle(center, outer_radius, 0xffffffff, 64);
+	
+	if (count == 0) return true;
+	ImVec2 beg(center.x, center.y - ImLerp(inner_radius, outer_radius, values[0] / max_val));
+	ImVec2 prev = beg;
+	ImVec2 next;
+	const float PI_HALF = 3.14159265f * 0.5f;
+	const float TWO_PI = 3.14159265f * 2.f;
+	for (int i = 1; i < count; i++) {
+		float angle = PI_HALF - TWO_PI * (i / (float)count);
+		float radius = ImLerp(inner_radius, outer_radius, values[i] / max_val);
+		next = ImVec2(center.x + cosf(angle) * radius, center.y - sinf(angle) * radius);
+		window->DrawList->AddLine(prev, next, line_color);
+		prev = next;
+	}
+	window->DrawList->AddLine(prev, beg, line_color);
+
+	return true;
+}
+
+
 }  // namespace ImGui

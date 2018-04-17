@@ -9,21 +9,9 @@ bool load_and_allocate_trajectory(Trajectory* traj, CString path);
 // Reads the actual trajectory position information... Necessary?
 bool read_trajectory_data(Trajectory* traj);
 
-struct TrajAsyncDefaultFunctor {
-	void operator()() const {};
-};
-
-template<typename OnFinishFunctor = TrajAsyncDefaultFunctor>
-void read_trajectory_async(Trajectory* traj, OnFinishFunctor on_finish = TrajAsyncDefaultFunctor()) {
-	ASSERT(traj);
-	if (traj->path_to_file) {
-		std::thread([traj, on_finish]() {
-			if (read_trajectory_data(traj)) {
-				on_finish();
-			}
-		}).detach();
-	}
-}
+bool read_next_trajectory_frame(Trajectory* traj);
+bool all_trajectory_frames_read(Trajectory* traj);
+bool close_file_handle(Trajectory* traj);
 
 void copy_trajectory_frame(TrajectoryFrame* dst, const Trajectory& src_traj, int frame_index);
 void copy_trajectory_positions(Array<vec3> dst_array, const Trajectory& traj, int frame_index);

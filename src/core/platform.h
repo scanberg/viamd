@@ -29,12 +29,12 @@ struct Context {
         bool should_close;
         const char* title;
         bool vsync;
-        int width, height;
+        int32 width, height;
     } window;
 
 	struct {
-		int width;
-		int height;
+		int32 width;
+		int32 height;
 	} framebuffer;
 
     struct {
@@ -61,18 +61,19 @@ struct Context {
     } input;
 
     struct {
-        float dt;
+        float32 dt;
         uint64 delta_ns;
         uint64 total_ns;
 
-		double total_s;
+		float64 total_s;
     } timing;
 };
 
-void initialize(Context* ctx, int width, int height, const char* title);
+void initialize(Context* ctx, int32 width, int32 height, const char* title);
 void shutdown(Context* ctx);
 void update(Context* ctx);
 void swap_buffers(Context* ctx);
+void sleep(int32 milliseconds);
 
 typedef StringBuffer<512> Path;
 

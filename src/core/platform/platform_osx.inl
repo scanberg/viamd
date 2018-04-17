@@ -137,3 +137,7 @@ bool RemoveWatch(CString path_to_watch) {
     FSEventStreamRelease(stream);
 }
 */
+
+void sleep(int32 milliseconds) {
+	usleep(milliseconds * 1000);
+}
