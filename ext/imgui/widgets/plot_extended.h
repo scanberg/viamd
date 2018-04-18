@@ -81,10 +81,12 @@ enum LinePlotFlags_ {
 
 typedef int LinePlotFlags;
 
-IMGUI_API bool BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, ImVec2 y_range, float* x_val = nullptr, ImVec2* view_range = nullptr, ImVec2* selection_range = nullptr, LinePlotFlags flags = LinePlotFlags_ShowXVal);
+IMGUI_API bool BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, ImVec2 y_range, float* x_val = nullptr, ImVec2* selection_range = nullptr, LinePlotFlags flags = LinePlotFlags_ShowXVal);
 IMGUI_API void PlotValues(const char* line_label, const float* values, int count, ImU32 line_color = 0xffffffff);
 IMGUI_API void PlotValues(const char* line_label, const ImVec2* values, int count, ImU32 line_color = 0xffffffff);
 IMGUI_API void EndPlot();
+
+IMGUI_API bool PlotHistogram(const char* label, ImVec2 frame_size, const float* values, int count, bool periodic = false, ImVec2 value_range = ImVec2(0,1), ImVec2* selection_range = nullptr);
 
 IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_radius_ratio, const float* values, int count, ImVec2 value_range, ImU32 line_color = 0xffffffff);
 //IMGUI_API int GetPlotRangeCount(const char* label);

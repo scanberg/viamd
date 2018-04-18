@@ -155,18 +155,18 @@ struct ApplicationData {
 	struct {
 		struct {
 			ThreadSyncData sync{};
-			float progress = 0.f;
+			float fraction = 0.f;
 		} trajectory;
 
 		struct {
 			ThreadSyncData sync{};
-			float progress = 0.f;
+			float fraction = 0.f;
 			bool query_update = false;
 		} statistics;
 
 		struct {
 			ThreadSyncData sync{};
-			float progress = 0.f;
+			float fraction = 0.f;
 			bool query_update = false;
 		} backbone_angles;
 	} async;
@@ -244,6 +244,7 @@ static void draw_timeline_window(ApplicationData* data);
 static void draw_distribution_window(ApplicationData* data);
 static void draw_ramachandran(ApplicationData* data);
 static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y);
+static void draw_async_info(ApplicationData* data);
 
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height);
 static void destroy_main_framebuffer(MainFramebuffer* fbo);
@@ -351,7 +352,7 @@ int main(int, char**) {
 			time += data.ctx.timing.dt;
 			if (time > TICK_INTERVAL) {
 				time = 0.f;
-				compute_statistics_async(&data);
+				//compute_statistics_async(&data);
 				compute_backbone_angles_async(&data);
 			}
 		}
@@ -575,6 +576,8 @@ int main(int, char**) {
                 draw_atom_info(data.mol_data.dynamic.molecule, data.picking_idx, pos.x, pos.y);
             }
         }
+
+		draw_async_info(&data);
 
         // Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
         if (show_demo_window) {
@@ -1135,39 +1138,55 @@ static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, in
 }
 
 static void draw_async_info(ApplicationData* data) {
-	/*
-	ImGui::SetNextWindowPos(ImVec2(-100.f, -100.f));
-	ImGui::SetNextWindowSize(ImVec2(text_size.x + 20.f, text_size.y + 15.f));
-	ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
-	ImGui::Begin("##Atom Info", 0,
-		ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-		ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBringToFrontOnFocus |
-		ImGuiWindowFlags_NoFocusOnAppearing);
-	ImGui::Text("%s", buff);
-	ImGui::End();
-	ImGui::PopStyleColor();
-	*/
+	constexpr float WIDTH  = 300.f;
+	constexpr float MARGIN = 10.f;
+
+	float traj_fract = data->async.trajectory.fraction;
+	float angle_fract = data->async.backbone_angles.fraction;
+	float stats_fract = data->async.statistics.fraction;
+
+	if ((0.f < traj_fract && traj_fract < 1.f) ||
+		(0.f < angle_fract && angle_fract < 1.f) ||
+		(0.f < stats_fract && stats_fract < 1.f)) {
+
+		ImGui::SetNextWindowPos(ImVec2(data->ctx.window.width - WIDTH - MARGIN, ImGui::GetCurrentContext()->FontBaseSize + ImGui::GetStyle().FramePadding.y * 2.f + MARGIN));
+		ImGui::SetNextWindowSize(ImVec2(WIDTH, 0));
+		ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
+		ImGui::Begin("##Async Info", 0,
+			ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBringToFrontOnFocus |
+			ImGuiWindowFlags_NoFocusOnAppearing);
+
+		char buf[32];
+		if (0.f < traj_fract && traj_fract < 1.f) {
+			snprintf(buf, 32, "%.1f%%", traj_fract * 100.f);
+			ImGui::ProgressBar(traj_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * 0.5f, 0), buf); ImGui::SameLine(); ImGui::Text("Reading Trajectory");
+		}
+		if (0.f < angle_fract && angle_fract < 1.f) {
+			snprintf(buf, 32, "%.1f%%", angle_fract * 100.f);
+			ImGui::ProgressBar(angle_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * 0.5f, 0), buf); ImGui::SameLine(); ImGui::Text("Computing Backbone Angles");
+		}
+		if (0.f < stats_fract && stats_fract < 1.f) {
+			snprintf(buf, 32, "%.1f%%", stats_fract * 100.f);
+			ImGui::ProgressBar(stats_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * 0.5f, 0), buf); ImGui::SameLine(); ImGui::Text("Computing Statistics");
+		}
+
+		ImGui::End();
+		ImGui::PopStyleColor();
+	}
 }
 
 static void draw_timeline_window(ApplicationData* data) {
-    ImGui::Begin("Timelines", &data->statistics.show_timeline_window, ImGuiWindowFlags_NoFocusOnAppearing);
+	if (ImGui::Begin("Timelines", &data->statistics.show_timeline_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+		static float zoom = 1.f;
+		ImGui::BeginChild("Scroll Region", ImVec2(0, 0), true, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_HorizontalScrollbar);
 
-	if (!ImGui::IsWindowCollapsed()) {
 		const int max_frame = data->mol_data.dynamic.trajectory.num_frames;
 		const ImVec2 frame_range(0, (float)max_frame);
-		static ImVec2 view_range(0, 1000);
 		static ImVec2 selection_range(100, 300);
 
-		ImGui::PushItemWidth(-1);
+		ImGui::PushItemWidth(ImGui::GetWindowContentRegionWidth() * zoom);
 		ImGui::RangeSliderFloat("###selection_range", &selection_range.x, &selection_range.y, 0.f, (float)max_frame);
-		ImVec2 rect_min = ImGui::GetItemRectMin();
-		ImVec2 rect_max = ImGui::GetItemRectMax();
-		float t0 = (view_range.x - frame_range.x) / (frame_range.y - frame_range.x);
-		float t1 = (view_range.y - frame_range.x) / (frame_range.y - frame_range.x);
-		float box_min_x = ImLerp(rect_min.x, rect_max.x, t0);
-		float box_max_x = ImLerp(rect_min.x, rect_max.x, t1);
-		ImGui::GetWindowDrawList()->AddQuadFilled(ImVec2(box_min_x, rect_min.y), ImVec2(box_min_x, rect_max.y), ImVec2(box_max_x, rect_max.y), ImVec2(box_max_x, rect_min.y), 0x22ffffff);
-		ImGui::PopItemWidth();
 
 		for (int i = 0; i < stats::get_property_count(); i++) {
 			auto prop_id = stats::get_property(i);
@@ -1178,8 +1197,9 @@ static void draw_timeline_window(ApplicationData* data) {
 			float pad = math::max((prop_range.y - prop_range.x) * 0.1f, 1.f);
 			vec2 display_range = prop_range + vec2(-pad, pad);
 			float val = (float)data->time;
+
 			ImGui::PushID(i);
-			if (ImGui::BeginPlot(prop_name, ImVec2(0, 100), frame_range, ImVec2(display_range.x, display_range.y), &val, &view_range, &selection_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal)) {
+			if (ImGui::BeginPlot(prop_name, ImVec2(0, 100), frame_range, ImVec2(display_range.x, display_range.y), &val, &selection_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal)) {
 				data->time = val;
 			}
 			ImGui::PlotValues("Najs", prop_data.data, (int)prop_data.count);
@@ -1196,6 +1216,18 @@ static void draw_timeline_window(ApplicationData* data) {
 				}
 			}
 		}
+		ImGui::PopItemWidth();
+
+		if (ImGui::IsWindowHovered() && ImGui::GetIO().MouseWheel != 0.f && ImGui::GetIO().KeyCtrl) {
+			constexpr float ZOOM_SCL = 0.24f;
+			float pre_coord = ImGui::GetScrollX() + (ImGui::GetIO().MousePos.x - ImGui::GetWindowPos().x) * zoom;
+			zoom = math::clamp(zoom + ZOOM_SCL * ImGui::GetIO().MouseWheel, 1.f, 100.f);
+			float post_coord = ImGui::GetScrollX() + (ImGui::GetIO().MousePos.x - ImGui::GetWindowPos().x) * zoom;
+			float delta = pre_coord - post_coord;
+			ImGui::SetScrollX(ImGui::GetScrollX() - delta);
+		}
+
+		ImGui::EndChild();
 	}
 
     ImGui::End();
@@ -1203,7 +1235,9 @@ static void draw_timeline_window(ApplicationData* data) {
 
 static void draw_distribution_window(ApplicationData* data) {
     ImGui::Begin("Distributions", &data->statistics.show_distribution_window, ImGuiWindowFlags_NoFocusOnAppearing);
-    for (int i = 0; i < stats::get_property_count(); i++) {
+	static ImVec2 selection_range{ 0,0 };
+	
+	for (int i = 0; i < stats::get_property_count(); i++) {
 		auto prop_id  = stats::get_property(i);
 		auto hist	  = stats::get_property_histogram(prop_id, 0);
 		auto periodic = stats::get_property_periodic(prop_id);
@@ -1213,13 +1247,14 @@ static void draw_distribution_window(ApplicationData* data) {
         ImGui::PushID(i);
         // ImGui::PlotHistogram(stats::get_property_name(prop_id), [](void* data, int32 idx) -> float { return ((float*)data)[idx]; },
         // prop_data->bins.data, prop_data->bins.count);
-		if (periodic) {
-			ImGui::PlotPeriodic(stats::get_property_name(prop_id), 100.f, 0.25f, hist->bins.data, (int32)hist->bins.count, ImVec2(-math::PI, math::PI));
-		}
-		else {
-			ImGui::PlotHistogramExtended(stats::get_property_name(prop_id), hist->bins.data, (int32)hist->bins.count, 0, 0, 0, 0, hist->bin_range.x,
-				hist->bin_range.y, ImVec2(0, 100));
-		}
+		//if (periodic) {
+		//	ImGui::PlotPeriodic(stats::get_property_name(prop_id), 200.f, 0.5f, hist->bins.data, (int32)hist->bins.count, ImVec2(-math::PI, math::PI));
+		//}
+		//else {
+		//ImGui::PlotHistogramExtended(stats::get_property_name(prop_id), hist->bins.data, (int32)hist->bins.count, 0, 0, 0, 0, hist->bin_range.x,
+		//	hist->bin_range.y, ImVec2(0, 100));
+		ImGui::PlotHistogram("Cool", ImVec2(0, 100), hist->bins.data, (int32)hist->bins.count, periodic, ImVec2(0,1), &selection_range);
+		//}
         ImGui::PopID();
     }
     ImGui::End();
@@ -1758,6 +1793,7 @@ static void load_trajectory_async(ApplicationData* data) {
 		data->async.trajectory.sync.running = true;
 		data->async.trajectory.sync.thread = std::thread([data]() {
 			while (read_next_trajectory_frame(&data->mol_data.dynamic.trajectory)) {
+				data->async.trajectory.fraction = data->mol_data.dynamic.trajectory.num_frames / (float)data->mol_data.dynamic.trajectory.frame_offsets.count;
 				if (data->async.trajectory.sync.stop_signal) break;
 			}
 			data->async.trajectory.sync.running = false;
@@ -1783,18 +1819,20 @@ static void compute_statistics_async(ApplicationData* data) {
 		data->async.statistics.sync.running = true;
 		
 		data->async.statistics.sync.thread = std::thread([data]() {
+			data->async.statistics.fraction = 0.0f;
 			while (data->async.statistics.query_update) {
 				data->async.statistics.query_update = false;
+				data->async.statistics.fraction = 0.5f;
 				stats::clear_instances();
 				stats::clear_property_data();
 				stats::compute_stats(data->mol_data.dynamic);
 				if (data->async.statistics.sync.stop_signal) break;
 			}
+			data->async.statistics.fraction = 1.f;
 			data->async.statistics.sync.running = false;
 			data->async.statistics.sync.stop_signal = false;
 		});
 		data->async.statistics.sync.thread.detach();
-
 	}
 }
 
@@ -1805,11 +1843,14 @@ static void compute_backbone_angles_async(ApplicationData* data) {
 		data->async.backbone_angles.sync.running = true;
 
 		data->async.backbone_angles.sync.thread = std::thread([data]() {
+			data->async.backbone_angles.fraction = 0.0f;
 			while (data->async.backbone_angles.query_update) {
 				data->async.backbone_angles.query_update = false;
+				data->async.backbone_angles.fraction = 0.5f;
 				compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
 				if (data->async.backbone_angles.sync.stop_signal) break;
 			}
+			data->async.backbone_angles.fraction = 1.f;
 			data->async.backbone_angles.sync.running = false;
 			data->async.backbone_angles.sync.stop_signal = false;
 		});
