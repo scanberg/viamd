@@ -16,8 +16,6 @@ enum PropertyType {
     INTRA
 };
 
-
-
 struct Structure {
     int32 beg_atom_idx = 0;
     int32 end_atom_idx = 0;

@@ -940,7 +940,7 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
 		if (!avg_data || !prop_data) continue;
 
 		init_histogram(&avg_data->histogram, num_bins);
-		memset(avg_data->histogram.bins.data, 0, avg_data->histogram.bins.count);
+		memset(avg_data->histogram.bins.data, 0, avg_data->histogram.bins.count * sizeof(float));
 		avg_data->histogram.bin_range = { 0,0 };
 		for (int i = 0; i < prop.data_count; i++) {
 			if (!prop_data[i].histogram.bins.data || prop_data[i].histogram.bins.count == 0) continue;

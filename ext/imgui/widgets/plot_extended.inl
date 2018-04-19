@@ -560,6 +560,10 @@ IMGUI_API bool BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, I
         SetActiveID(id, window);
         FocusWindow(window);
     }
+
+	if (selection_range && IsItemHovered() && ctx.IO.MouseClicked[1] && ctx.IO.KeyCtrl) {
+		*selection_range = x_range;
+	}
 	
 	bool interacting_x_val = false;
 
@@ -570,12 +574,7 @@ IMGUI_API bool BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, I
             selection_range->x = ps.selection_start;
             selection_range->y = ps.selection_start;
             ps.is_selecting = true;
-        
         }
-		else if (selection_range && ctx.IO.MouseClicked[1] && ctx.IO.KeyCtrl) {
-			selection_range->x = x_range.x;
-			selection_range->y = x_range.y;
-		}
         else if (ps.is_selecting) {
             float t = (ctx.IO.MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
             float v = ImLerp(x_range.x, x_range.y, t);
@@ -653,6 +652,10 @@ IMGUI_API bool BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, I
 	ps.inner_bb = inner_bb;
     ps.coord_view = ImRect(ImVec2(x_range.x, y_range.x), ImVec2(x_range.y, y_range.y));
     ps.selection_range = selection_range;
+
+	RenderTextClipped(ImVec2(frame_bb.Min.x + style.FramePadding.x, frame_bb.Min.y + style.FramePadding.y),
+		frame_bb.Max, label, NULL, NULL, ImVec2(0.0f, 0.0f));
+
 
 	return interacting_x_val;
 }
@@ -761,13 +764,12 @@ IMGUI_API bool PlotHistogram(const char* label, ImVec2 frame_size, const float* 
 				}
 			}
 			if (drag_target) {
-                
+				*drag_target = ImLerp(value_range.x, value_range.y, t);
                 if (drag_target == &selection_range->y) {
                     if (selection_range->y < selection_range->x) {
                         if (periodic_counter == 0) {
                             ImSwap(selection_range->x, selection_range->y);
                             drag_target = &selection_range->x;
-                            
                         }
                     }
                 }
@@ -778,9 +780,7 @@ IMGUI_API bool PlotHistogram(const char* label, ImVec2 frame_size, const float* 
                             drag_target = &selection_range->y;
                         }
                     }
-                    //drag_target = &selection_range->y;
                 }
-				*drag_target = ImLerp(value_range.x, value_range.y, t);
 			}
 		}
 	}
@@ -821,6 +821,18 @@ IMGUI_API bool PlotHistogram(const char* label, ImVec2 frame_size, const float* 
 			}
 		}
 	}
+
+	if (IsItemHovered()) {
+		window->DrawList->AddLine(ImVec2(ctx.IO.MousePos.x, inner_bb.Min.y), ImVec2(ctx.IO.MousePos.x, inner_bb.Max.y), 0xffffffff);
+		float t = (ctx.IO.MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
+		float val = values[ImClamp((int)(t * (count-1)), 0, count - 1)];
+		BeginTooltip();
+		Text("%.3f: %.3f\n", ImLerp(value_range.x, value_range.y, t), val);
+		EndTooltip();
+	}
+
+	RenderTextClipped(ImVec2(frame_bb.Min.x + style.FramePadding.x, frame_bb.Min.y + style.FramePadding.y),
+		frame_bb.Max, label, NULL, NULL, ImVec2(0.0f, 0.0f));
 }
 
 IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_radius_ratio, const float* values, int count, ImVec2 value_range, ImU32 line_color) {
@@ -927,6 +939,5 @@ IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_r
 
 	return true;
 }
-
 
 }  // namespace ImGui

@@ -61,10 +61,10 @@ ATOM     23  H12 CSP3    1E      9.437   2.207  -6.309
 ATOM     24  H13 CSP3    1E      9.801   2.693  -7.994
 )";
 
-inline ImVec4 vec_cast(vec4 v) { return ImVec4(v.x, v.y, v.z, v.w); }
-inline vec4 vec_cast(ImVec4 v) { return vec4(v.x, v.y, v.z, v.w); }
-inline ImVec2 vec_cast(vec2 v) { return ImVec2(v.x, v.y); }
-inline vec2 vec_cast(ImVec2 v) { return vec2(v.x, v.y); }
+inline ImVec4& vec_cast(vec4& v) { return *(ImVec4*)(&v); }
+inline vec4& vec_cast(ImVec4& v) { return *(vec4*)(&v); }
+inline ImVec2& vec_cast(vec2& v) { return *(ImVec2*)(&v); }
+inline vec2& vec_cast(ImVec2& v) { return *(vec2*)(&v); }
 
 enum PlaybackInterpolationMode { NEAREST, LINEAR, LINEAR_PERIODIC, CUBIC, CUBIC_PERIODIC };
 
@@ -115,23 +115,23 @@ struct MoleculeData {
 };
 
 struct ThreadSyncData {
-	std::thread thread{};
-	volatile bool running = false;
-	volatile bool stop_signal = false;
+    std::thread thread{};
+    volatile bool running = false;
+    volatile bool stop_signal = false;
 
-	void signal_stop() {
-		stop_signal = true;
-	}
+    void signal_stop() { stop_signal = true; }
 
-	void wait_until_finished() {
-		while (running) { platform::sleep(1); }
-		//thread.join();
-	}
+    void wait_until_finished() {
+        while (running) {
+            platform::sleep(1);
+        }
+        // thread.join();
+    }
 
-	void signal_stop_and_wait() {
-		signal_stop();
-		wait_until_finished();
-	}
+    void signal_stop_and_wait() {
+        signal_stop();
+        wait_until_finished();
+    }
 };
 
 struct ApplicationData {
@@ -151,25 +151,25 @@ struct ApplicationData {
     // --- MOL DATA ---
     MoleculeData mol_data;
 
-	// --- THREAD SYNCHRONIZATION ---
-	struct {
-		struct {
-			ThreadSyncData sync{};
-			float fraction = 0.f;
-		} trajectory;
+    // --- THREAD SYNCHRONIZATION ---
+    struct {
+        struct {
+            ThreadSyncData sync{};
+            float fraction = 0.f;
+        } trajectory;
 
-		struct {
-			ThreadSyncData sync{};
-			float fraction = 0.f;
-			bool query_update = false;
-		} statistics;
+        struct {
+            ThreadSyncData sync{};
+            float fraction = 0.f;
+            bool query_update = false;
+        } statistics;
 
-		struct {
-			ThreadSyncData sync{};
-			float fraction = 0.f;
-			bool query_update = false;
-		} backbone_angles;
-	} async;
+        struct {
+            ThreadSyncData sync{};
+            float fraction = 0.f;
+            bool query_update = false;
+        } backbone_angles;
+    } async;
 
     struct {
         bool show_window;
@@ -197,6 +197,12 @@ struct ApplicationData {
     bool is_playing = false;
     PlaybackInterpolationMode interpolation = PlaybackInterpolationMode::LINEAR_PERIODIC;
 
+	struct {
+		vec2 range {};
+		bool dynamic_window = false;
+		float window_extent = 10.f;
+	} time_filter;
+
     // --- VISUALS ---
     // SSAO
     struct {
@@ -205,7 +211,7 @@ struct ApplicationData {
         float radius = 6.0f;
     } ssao;
 
-	// RAMACHANDRAN
+    // RAMACHANDRAN
     struct {
         bool show_window = false;
         float radius = 1.f;
@@ -217,7 +223,7 @@ struct ApplicationData {
         Array<BackboneAngles> current_backbone_angles{};
     } ramachandran;
 
-	// DEBUG DRAW
+    // DEBUG DRAW
     struct {
         struct {
             bool enabled = false;
@@ -242,7 +248,7 @@ static void draw_representations_window(ApplicationData* data);
 static void draw_property_window(ApplicationData* data);
 static void draw_timeline_window(ApplicationData* data);
 static void draw_distribution_window(ApplicationData* data);
-static void draw_ramachandran(ApplicationData* data);
+static void draw_ramachandran_window(ApplicationData* data);
 static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y);
 static void draw_async_info(ApplicationData* data);
 
@@ -290,7 +296,7 @@ int main(int, char**) {
     postprocessing::initialize(data.fbo.width, data.fbo.height);
 
     // Setup style
-    //ImGui::StyleColorsClassic();
+    // ImGui::StyleColorsClassic();
 
     bool show_demo_window = false;
     vec4 clear_color = vec4(1, 1, 1, 1);
@@ -346,16 +352,16 @@ int main(int, char**) {
             data.console.visible = !data.console.visible;
         }
 
-		if (data.async.trajectory.sync.running) {
-			constexpr float TICK_INTERVAL = 2.f;
-			static float time = 0.f;
-			time += data.ctx.timing.dt;
-			if (time > TICK_INTERVAL) {
-				time = 0.f;
-				//compute_statistics_async(&data);
-				compute_backbone_angles_async(&data);
-			}
-		}
+        if (data.async.trajectory.sync.running) {
+            constexpr float TICK_INTERVAL = 2.f;
+            static float time = 0.f;
+            time += data.ctx.timing.dt;
+            if (time > TICK_INTERVAL) {
+                time = 0.f;
+                // compute_statistics_async(&data);
+                compute_backbone_angles_async(&data);
+            }
+        }
 
         float ms = compute_avg_ms(data.ctx.timing.dt);
         bool time_changed = false;
@@ -367,9 +373,10 @@ int main(int, char**) {
             reset_view(&data);
         }
         if (data.mol_data.dynamic.trajectory) {
-            ImGui::Text("Num Frames: %i", data.mol_data.dynamic.trajectory.num_frames);
+			int32 num_frames = data.mol_data.dynamic.trajectory.num_frames;
+            ImGui::Text("Num Frames: %i", num_frames);
             float t = (float)data.time;
-            if (ImGui::SliderFloat("Time", &t, 0, (float)(data.mol_data.dynamic.trajectory.num_frames - 1))) {
+            if (ImGui::SliderFloat("Time", &t, 0, (float)(num_frames - 1))) {
                 time_changed = true;
                 data.time = t;
             }
@@ -386,6 +393,10 @@ int main(int, char**) {
                 time_changed = true;
             }
             ImGui::Combo("type", (int*)(&data.interpolation), "Nearest\0Linear\0Linear Periodic\0Cubic\0Cubic Periodic\0\0");
+			ImGui::Checkbox("Dynamic Framewindow", &data.time_filter.dynamic_window);
+			if (data.time_filter.dynamic_window) {
+				ImGui::SliderFloat("Window Extent", &data.time_filter.window_extent, 1.f, (float)num_frames);
+			}
         }
         ImGui::End();
 
@@ -393,13 +404,19 @@ int main(int, char**) {
             data.time += data.ctx.timing.dt * data.frames_per_second;
         }
 
-		{
-			static float64 prev_time = data.time;
-			if (data.time != prev_time) {
-				time_changed = true;
-			}
-			prev_time = data.time;
+		if (data.time_filter.dynamic_window) {
+			float max_frame = data.mol_data.dynamic.trajectory ? data.mol_data.dynamic.trajectory.num_frames : 1.f;
+			data.time_filter.range.x = math::max((float)data.time - data.time_filter.window_extent * 0.5f, 0.f);
+			data.time_filter.range.y = math::min((float)data.time + data.time_filter.window_extent * 0.5f, max_frame);
 		}
+
+        {
+            static float64 prev_time = data.time;
+            if (data.time != prev_time) {
+                time_changed = true;
+            }
+            prev_time = data.time;
+        }
 
         if (data.mol_data.dynamic.trajectory && time_changed) {
             int last_frame = data.mol_data.dynamic.trajectory.num_frames - 1;
@@ -477,9 +494,9 @@ int main(int, char**) {
                 data.selected = data.hovered;
             }
         }
-		if (!ImGui::GetIO().WantCaptureKeyboard) {
-			if (data.ctx.input.key.hit[Key::KEY_SPACE]) data.is_playing = !data.is_playing;
-		}
+        if (!ImGui::GetIO().WantCaptureKeyboard) {
+            if (data.ctx.input.key.hit[Key::KEY_SPACE]) data.is_playing = !data.is_playing;
+        }
 
         // RENDER TO FBO
         mat4 view_mat = compute_world_to_view_matrix(data.camera);
@@ -558,16 +575,16 @@ int main(int, char**) {
         if (data.statistics.show_distribution_window) draw_distribution_window(&data);
 
         if (data.ramachandran.show_window) {
-			/*
-            if (data.mol_data.dynamic.trajectory && data.mol_data.dynamic.trajectory.is_loading) {
-                static int32 prev_frame = 0;
-                if (get_backbone_angles_trajectory_current_frame_count(data.ramachandran.backbone_angles) - prev_frame > 100) {
-                    compute_backbone_angles_trajectory(&data.ramachandran.backbone_angles, data.mol_data.dynamic);
-                    prev_frame = data.ramachandran.backbone_angles.num_frames;
-                    data.ramachandran.frame_range_max = data.ramachandran.backbone_angles.num_frames;
-                }
-            }*/
-            draw_ramachandran(&data);
+            /*
+if (data.mol_data.dynamic.trajectory && data.mol_data.dynamic.trajectory.is_loading) {
+    static int32 prev_frame = 0;
+    if (get_backbone_angles_trajectory_current_frame_count(data.ramachandran.backbone_angles) - prev_frame > 100) {
+        compute_backbone_angles_trajectory(&data.ramachandran.backbone_angles, data.mol_data.dynamic);
+        prev_frame = data.ramachandran.backbone_angles.num_frames;
+        data.ramachandran.frame_range_max = data.ramachandran.backbone_angles.num_frames;
+    }
+}*/
+            draw_ramachandran_window(&data);
         }
 
         if (!ImGui::GetIO().WantCaptureMouse) {
@@ -577,7 +594,7 @@ int main(int, char**) {
             }
         }
 
-		draw_async_info(&data);
+        draw_async_info(&data);
 
         // Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
         if (show_demo_window) {
@@ -591,11 +608,11 @@ int main(int, char**) {
         // Swap buffers
         platform::swap_buffers(&data.ctx);
     }
-    
+
     data.async.trajectory.sync.signal_stop();
     data.async.backbone_angles.sync.signal_stop();
     data.async.statistics.sync.signal_stop();
-    
+
     data.async.trajectory.sync.wait_until_finished();
     data.async.backbone_angles.sync.wait_until_finished();
     data.async.statistics.sync.wait_until_finished();
@@ -606,7 +623,6 @@ int main(int, char**) {
 
     return 0;
 }
-
 
 // ### MISC FUNCTIONS ###
 static void draw_random_triangles(const mat4& mvp) {
@@ -623,7 +639,7 @@ static void draw_random_triangles(const mat4& mvp) {
 }
 
 static float compute_avg_ms(float dt) {
-	// @NOTE: Perhaps this can be done with a simple running mean?
+    // @NOTE: Perhaps this can be done with a simple running mean?
     constexpr float interval = 0.5f;
     static float avg = 0.f;
     static int num_frames = 0;
@@ -641,21 +657,21 @@ static float compute_avg_ms(float dt) {
 }
 
 static void reset_view(ApplicationData* data, bool reposition_camera) {
-	ASSERT(data);
-	if (!data->mol_data.dynamic.molecule) return;
+    ASSERT(data);
+    if (!data->mol_data.dynamic.molecule) return;
 
-	vec3 min_box, max_box;
-	compute_bounding_box(&min_box, &max_box, data->mol_data.dynamic.molecule.atom_positions);
-	vec3 size = max_box - min_box;
-	vec3 cent = (min_box + max_box) * 0.5f;
+    vec3 min_box, max_box;
+    compute_bounding_box(&min_box, &max_box, data->mol_data.dynamic.molecule.atom_positions);
+    vec3 size = max_box - min_box;
+    vec3 cent = (min_box + max_box) * 0.5f;
 
-	if (reposition_camera) {
-		data->controller.look_at(cent, cent + size * 2.f);
-		data->camera.position = data->controller.position;
-		data->camera.orientation = data->controller.orientation;
-	}
-	data->camera.near_plane = 1.f;
-	data->camera.far_plane = math::length(size) * 30.f;
+    if (reposition_camera) {
+        data->controller.look_at(cent, cent + size * 2.f);
+        data->camera.position = data->controller.position;
+        data->camera.orientation = data->controller.orientation;
+    }
+    data->camera.near_plane = 1.f;
+    data->camera.far_plane = math::length(size) * 30.f;
 }
 
 static uint32 get_picking_id(uint32 fbo_id, int32 x, int32 y) {
@@ -667,7 +683,6 @@ static uint32 get_picking_id(uint32 fbo_id, int32 x, int32 y) {
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     return color[0] + (color[1] << 8) + (color[2] << 16) + (color[3] << 24);
 }
-
 
 // ### DRAW WINDOWS ###
 static void draw_main_menu(ApplicationData* data) {
@@ -797,63 +812,63 @@ static void draw_representations_window(ApplicationData* data) {
         data->representations.data.clear();
     }
     ImGui::Spacing();
-	ImGui::Separator();
+    ImGui::Separator();
     for (int i = 0; i < data->representations.data.count; i++) {
         auto& rep = data->representations.data[i];
-        
+
         bool recompute_colors = false;
         ImGui::PushID(i);
 
         const float item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
 
-		StringBuffer<128> name;
-		snprintf(name.buffer, name.MAX_LENGTH, "%s###ID", rep.name.buffer);
-		if (ImGui::CollapsingHeader(name.buffer)) {
-			ImGui::Checkbox("enabled", &rep.enabled);
-			ImGui::SameLine();
-			if (ImGui::Button("remove")) {
-				remove_representation(data, i);
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("clone")) {
-				Representation clone = rep;
-				clone.colors = { (uint32*)MALLOC(rep.colors.size_in_bytes()), rep.colors.count };
-				memcpy(clone.colors.data, rep.colors.data, rep.colors.size_in_bytes());
-				data->representations.data.insert(&rep, clone);
-			}
+        StringBuffer<128> name;
+        snprintf(name.buffer, name.MAX_LENGTH, "%s###ID", rep.name.buffer);
+        if (ImGui::CollapsingHeader(name.buffer)) {
+            ImGui::Checkbox("enabled", &rep.enabled);
+            ImGui::SameLine();
+            if (ImGui::Button("remove")) {
+                remove_representation(data, i);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("clone")) {
+                Representation clone = rep;
+                clone.colors = {(uint32*)MALLOC(rep.colors.size_in_bytes()), rep.colors.count};
+                memcpy(clone.colors.data, rep.colors.data, rep.colors.size_in_bytes());
+                data->representations.data.insert(&rep, clone);
+            }
 
-			ImGui::PushItemWidth(item_width);
-			ImGui::InputText("name", rep.name.buffer, rep.name.MAX_LENGTH);
-			if (!rep.filter_is_ok) ImGui::PushStyleColor(ImGuiCol_FrameBg, FILTER_ERROR_COLOR);
-			if (ImGui::InputText("filter", rep.filter.buffer, rep.filter.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
-				recompute_colors = true;
-			}
-			if (!rep.filter_is_ok) ImGui::PopStyleColor();
-			ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0\0");
-			if (ImGui::Combo("color mapping", (int*)(&rep.color_mapping), "Static Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0\0")) {
-				recompute_colors = true;
-			}
-			ImGui::PopItemWidth();
-			if (rep.color_mapping == ColorMapping::STATIC_COLOR) {
-				ImGui::SameLine();
-				if (ImGui::ColorEdit4("color", (float*)&rep.static_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
-					recompute_colors = true;
-				}
-			}
-			ImGui::PushItemWidth(item_width);
-			if (rep.type == Representation::VDW || rep.type == Representation::LICORICE) {
-				ImGui::SliderFloat("radii scale", &rep.radius, 0.1f, 2.f);
-			}
-			if (rep.type == Representation::RIBBONS) {
-				ImGui::SliderInt("spline subdivisions", &rep.num_subdivisions, 1, 16);
-				ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f);
-				ImGui::SliderFloat("spline width", &rep.width, 0.1f, 2.f);
-				ImGui::SliderFloat("spline thickness", &rep.thickness, 0.1f, 2.f);
-			}
-			ImGui::PopItemWidth();
-			ImGui::Spacing();
-			ImGui::Separator();
-		}
+            ImGui::PushItemWidth(item_width);
+            ImGui::InputText("name", rep.name.buffer, rep.name.MAX_LENGTH);
+            if (!rep.filter_is_ok) ImGui::PushStyleColor(ImGuiCol_FrameBg, FILTER_ERROR_COLOR);
+            if (ImGui::InputText("filter", rep.filter.buffer, rep.filter.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
+                recompute_colors = true;
+            }
+            if (!rep.filter_is_ok) ImGui::PopStyleColor();
+            ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0\0");
+            if (ImGui::Combo("color mapping", (int*)(&rep.color_mapping), "Static Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0\0")) {
+                recompute_colors = true;
+            }
+            ImGui::PopItemWidth();
+            if (rep.color_mapping == ColorMapping::STATIC_COLOR) {
+                ImGui::SameLine();
+                if (ImGui::ColorEdit4("color", (float*)&rep.static_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
+                    recompute_colors = true;
+                }
+            }
+            ImGui::PushItemWidth(item_width);
+            if (rep.type == Representation::VDW || rep.type == Representation::LICORICE) {
+                ImGui::SliderFloat("radii scale", &rep.radius, 0.1f, 2.f);
+            }
+            if (rep.type == Representation::RIBBONS) {
+                ImGui::SliderInt("spline subdivisions", &rep.num_subdivisions, 1, 16);
+                ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f);
+                ImGui::SliderFloat("spline width", &rep.width, 0.1f, 2.f);
+                ImGui::SliderFloat("spline thickness", &rep.thickness, 0.1f, 2.f);
+            }
+            ImGui::PopItemWidth();
+            ImGui::Spacing();
+            ImGui::Separator();
+        }
 
         ImGui::PopID();
 
@@ -1094,8 +1109,8 @@ static void draw_property_window(ApplicationData* data) {
     ImGui::End();
 
     if (compute_stats) {
-        //stats::compute_stats(data->mol_data.dynamic);
-		compute_statistics_async(data);
+        // stats::compute_stats(data->mol_data.dynamic);
+        compute_statistics_async(data);
     }
 }
 
@@ -1146,151 +1161,152 @@ static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, in
 }
 
 static void draw_async_info(ApplicationData* data) {
-	constexpr float WIDTH  = 300.f;
-	constexpr float MARGIN = 10.f;
+    constexpr float WIDTH = 300.f;
+    constexpr float MARGIN = 10.f;
 
-	float traj_fract = data->async.trajectory.fraction;
-	float angle_fract = data->async.backbone_angles.fraction;
-	float stats_fract = data->async.statistics.fraction;
+    float traj_fract = data->async.trajectory.fraction;
+    float angle_fract = data->async.backbone_angles.fraction;
+    float stats_fract = data->async.statistics.fraction;
 
-	if ((0.f < traj_fract && traj_fract < 1.f) ||
-		(0.f < angle_fract && angle_fract < 1.f) ||
-		(0.f < stats_fract && stats_fract < 1.f)) {
+    if ((0.f < traj_fract && traj_fract < 1.f) || (0.f < angle_fract && angle_fract < 1.f) || (0.f < stats_fract && stats_fract < 1.f)) {
 
-		ImGui::SetNextWindowPos(ImVec2(data->ctx.window.width - WIDTH - MARGIN, ImGui::GetCurrentContext()->FontBaseSize + ImGui::GetStyle().FramePadding.y * 2.f + MARGIN));
-		ImGui::SetNextWindowSize(ImVec2(WIDTH, 0));
-		ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
-		ImGui::Begin("##Async Info", 0,
-			ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBringToFrontOnFocus |
-			ImGuiWindowFlags_NoFocusOnAppearing);
+        ImGui::SetNextWindowPos(ImVec2(data->ctx.window.width - WIDTH - MARGIN,
+                                       ImGui::GetCurrentContext()->FontBaseSize + ImGui::GetStyle().FramePadding.y * 2.f + MARGIN));
+        ImGui::SetNextWindowSize(ImVec2(WIDTH, 0));
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
+        ImGui::Begin("##Async Info", 0,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                         ImGuiWindowFlags_NoFocusOnAppearing);
 
-		char buf[32];
-		if (0.f < traj_fract && traj_fract < 1.f) {
-			snprintf(buf, 32, "%.1f%%", traj_fract * 100.f);
-			ImGui::ProgressBar(traj_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * 0.5f, 0), buf); ImGui::SameLine(); ImGui::Text("Reading Trajectory");
-		}
-		if (0.f < angle_fract && angle_fract < 1.f) {
-			snprintf(buf, 32, "%.1f%%", angle_fract * 100.f);
-			ImGui::ProgressBar(angle_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * 0.5f, 0), buf); ImGui::SameLine(); ImGui::Text("Computing Backbone Angles");
-		}
-		if (0.f < stats_fract && stats_fract < 1.f) {
-			snprintf(buf, 32, "%.1f%%", stats_fract * 100.f);
-			ImGui::ProgressBar(stats_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * 0.5f, 0), buf); ImGui::SameLine(); ImGui::Text("Computing Statistics");
-		}
+        char buf[32];
+        if (0.f < traj_fract && traj_fract < 1.f) {
+            snprintf(buf, 32, "%.1f%%", traj_fract * 100.f);
+            ImGui::ProgressBar(traj_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * 0.5f, 0), buf);
+            ImGui::SameLine();
+            ImGui::Text("Reading Trajectory");
+        }
+        if (0.f < angle_fract && angle_fract < 1.f) {
+            snprintf(buf, 32, "%.1f%%", angle_fract * 100.f);
+            ImGui::ProgressBar(angle_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * 0.5f, 0), buf);
+            ImGui::SameLine();
+            ImGui::Text("Computing Backbone Angles");
+        }
+        if (0.f < stats_fract && stats_fract < 1.f) {
+            snprintf(buf, 32, "%.1f%%", stats_fract * 100.f);
+            ImGui::ProgressBar(stats_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * 0.5f, 0), buf);
+            ImGui::SameLine();
+            ImGui::Text("Computing Statistics");
+        }
 
-		ImGui::End();
-		ImGui::PopStyleColor();
-	}
+        ImGui::End();
+        ImGui::PopStyleColor();
+    }
 }
 
 static void draw_timeline_window(ApplicationData* data) {
-	if (ImGui::Begin("Timelines", &data->statistics.show_timeline_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
-		static float zoom = 1.f;
-		ImGui::BeginChild("Scroll Region", ImVec2(0, 0), true, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_HorizontalScrollbar);
+    if (ImGui::Begin("Timelines", &data->statistics.show_timeline_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+        static float zoom = 1.f;
+        ImGui::BeginChild("Scroll Region", ImVec2(0, 0), true, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_HorizontalScrollbar);
 
-		const int max_frame = data->mol_data.dynamic.trajectory.num_frames;
-		const ImVec2 frame_range(0, (float)max_frame);
-		static ImVec2 selection_range(100, 300);
+        const int max_frame = data->mol_data.dynamic.trajectory.num_frames;
+        const ImVec2 frame_range(0, (float)max_frame);
+        static ImVec2 selection_range(100, 300);
 
-		ImGui::PushItemWidth(ImGui::GetWindowContentRegionWidth() * zoom);
-		ImGui::RangeSliderFloat("###selection_range", &selection_range.x, &selection_range.y, 0.f, (float)max_frame);
+        ImGui::PushItemWidth(ImGui::GetWindowContentRegionWidth() * zoom);
+        ImGui::RangeSliderFloat("###selection_range", &data->time_filter.range.x, &data->time_filter.range.y, 0.f, (float)max_frame);
 
-		for (int i = 0; i < stats::get_property_count(); i++) {
-			auto prop_id = stats::get_property(i);
-			auto prop_data = stats::get_property_data(prop_id, 0);
-			auto prop_name = stats::get_property_name(prop_id);
-			auto prop_range = stats::get_property_data_range(prop_id, 0);
-			if (!prop_data) continue;
-			float pad = math::max((prop_range.y - prop_range.x) * 0.1f, 1.f);
-			vec2 display_range = prop_range + vec2(-pad, pad);
-			float val = (float)data->time;
+        for (int i = 0; i < stats::get_property_count(); i++) {
+            auto prop_id = stats::get_property(i);
+            auto prop_data = stats::get_property_data(prop_id, 0);
+            auto prop_name = stats::get_property_name(prop_id);
+            auto prop_range = stats::get_property_data_range(prop_id, 0);
+            if (!prop_data) continue;
+            float pad = math::max((prop_range.y - prop_range.x) * 0.1f, 1.f);
+            vec2 display_range = prop_range + vec2(-pad, pad);
+            float val = (float)data->time;
 
-			ImGui::PushID(i);
-			if (ImGui::BeginPlot(prop_name, ImVec2(0, 100), frame_range, ImVec2(display_range.x, display_range.y), &val, &selection_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal)) {
-				data->time = val;
-			}
-			ImGui::PlotValues("Najs", prop_data.data, (int)prop_data.count);
-			ImGui::EndPlot();
-			ImGui::PopID();
+            ImGui::PushID(i);
+            if (ImGui::BeginPlot(prop_name, ImVec2(0, 100), frame_range, ImVec2(display_range.x, display_range.y), &val, &vec_cast(data->time_filter.range),
+                                 ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal)) {
+                data->time = val;
+            }
+            ImGui::PlotValues("Najs", prop_data.data, (int)prop_data.count);
+            ImGui::EndPlot();
+            ImGui::PopID();
 
-			selection_range.x = math::round(selection_range.x);
-			selection_range.y = math::round(selection_range.y);
+			/*
+            selection_range.x = math::round(selection_range.x);
+            selection_range.y = math::round(selection_range.y);
 
-			if (selection_range.x == selection_range.y) {
-				selection_range.y = math::min((int)selection_range.x + 1, max_frame);
-				if (selection_range.x == selection_range.y) {
-					selection_range.x = math::max((int)selection_range.y - 1, 0);
-				}
-			}
-		}
-		ImGui::PopItemWidth();
+            if (selection_range.x == selection_range.y) {
+                selection_range.y = math::min((int)selection_range.x + 1, max_frame);
+                if (selection_range.x == selection_range.y) {
+                    selection_range.x = math::max((int)selection_range.y - 1, 0);
+                }
+            }
+			*/
+        }
+        ImGui::PopItemWidth();
 
-		if (ImGui::IsWindowHovered() && ImGui::GetIO().MouseWheel != 0.f && ImGui::GetIO().KeyCtrl) {
-			constexpr float ZOOM_SCL = 0.24f;
-			float pre_coord = ImGui::GetScrollX() + (ImGui::GetIO().MousePos.x - ImGui::GetWindowPos().x) * zoom;
-			zoom = math::clamp(zoom + ZOOM_SCL * ImGui::GetIO().MouseWheel, 1.f, 100.f);
-			float post_coord = ImGui::GetScrollX() + (ImGui::GetIO().MousePos.x - ImGui::GetWindowPos().x) * zoom;
-			float delta = pre_coord - post_coord;
-			ImGui::SetScrollX(ImGui::GetScrollX() - delta);
-		}
+        if (ImGui::IsWindowHovered() && ImGui::GetIO().MouseWheel != 0.f && ImGui::GetIO().KeyCtrl) {
+            constexpr float ZOOM_SCL = 0.24f;
+            float pre_coord = ImGui::GetScrollX() + (ImGui::GetIO().MousePos.x - ImGui::GetWindowPos().x) * zoom;
+            zoom = math::clamp(zoom + ZOOM_SCL * ImGui::GetIO().MouseWheel, 1.f, 100.f);
+            float post_coord = ImGui::GetScrollX() + (ImGui::GetIO().MousePos.x - ImGui::GetWindowPos().x) * zoom;
+            float delta = pre_coord - post_coord;
+            ImGui::SetScrollX(ImGui::GetScrollX() - delta);
+        }
 
-		ImGui::EndChild();
-	}
+        ImGui::EndChild();
+    }
 
     ImGui::End();
 }
 
 static void draw_distribution_window(ApplicationData* data) {
     ImGui::Begin("Distributions", &data->statistics.show_distribution_window, ImGuiWindowFlags_NoFocusOnAppearing);
-	static ImVec2 selection_range{ 0,0 };
-	
-	for (int i = 0; i < stats::get_property_count(); i++) {
-		auto prop_id  = stats::get_property(i);
-		auto hist	  = stats::get_property_histogram(prop_id, 0);
-		auto periodic = stats::get_property_periodic(prop_id);
-		auto range    = stats::get_property_data_range(prop_id, i);
-		if (!hist) continue;
+    static ImVec2 selection_range{0, 0};
 
+    for (int i = 0; i < stats::get_property_count(); i++) {
+        auto prop_id  = stats::get_property(i);
+		auto name	  = stats::get_property_name(prop_id);
+		auto hist	  = stats::get_property_avg_histogram(prop_id);
+        auto periodic = stats::get_property_periodic(prop_id);
+        if (!hist) continue;
+
+        ImGui::PushItemWidth(-1);
         ImGui::PushID(i);
-        // ImGui::PlotHistogram(stats::get_property_name(prop_id), [](void* data, int32 idx) -> float { return ((float*)data)[idx]; },
-        // prop_data->bins.data, prop_data->bins.count);
-		//if (periodic) {
-		//	ImGui::PlotPeriodic(stats::get_property_name(prop_id), 200.f, 0.5f, hist->bins.data, (int32)hist->bins.count, ImVec2(-math::PI, math::PI));
-		//}
-		//else {
-		//ImGui::PlotHistogramExtended(stats::get_property_name(prop_id), hist->bins.data, (int32)hist->bins.count, 0, 0, 0, 0, hist->bin_range.x,
-		//	hist->bin_range.y, ImVec2(0, 100));
-		ImGui::PlotHistogram("Cool", ImVec2(0, 100), hist->bins.data, (int32)hist->bins.count, periodic, ImVec2(0,1), &selection_range);
-		//}
+        ImGui::PlotHistogram(name, ImVec2(0, 100), hist->bins.data, (int32)hist->bins.count, periodic, vec_cast(hist->val_range), &selection_range);
         ImGui::PopID();
+        ImGui::PopItemWidth();
     }
     ImGui::End();
 }
 
-static void draw_ramachandran(ApplicationData* data) {
+static void draw_ramachandran_window(ApplicationData* data) {
     constexpr vec2 res(512, 512);
     ImGui::SetNextWindowContentSize(ImVec2(res.x, res.y));
     ImGui::Begin("Ramachandran", &data->ramachandran.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
     int32 num_frames = data->mol_data.dynamic.trajectory ? data->mol_data.dynamic.trajectory.num_frames : 0;
-    float range_min = (float)data->ramachandran.frame_range_min;
-    float range_max = (float)data->ramachandran.frame_range_max;
+    //float range_min = (float)data->ramachandran.frame_range_min;
+    //float range_max = (float)data->ramachandran.frame_range_max;
 
-    ImGui::SliderFloat("opacity", &data->ramachandran.opacity, 0.f, 2.f);
+    ImGui::SliderFloat("opacity", &data->ramachandran.opacity, 0.f, 10.f);
     ImGui::SliderFloat("radius", &data->ramachandran.radius, 0.1f, 2.f);
-    ImGui::RangeSliderFloat("framerange", &range_min, &range_max, 0, (float)math::max(0, num_frames - 1));
-    ImGui::SameLine();
-    if (ImGui::Button("reset")) {
-        range_min = 0;
-        range_max = num_frames - 1;
-    }
-    data->ramachandran.frame_range_min = (int32)range_min;
-    data->ramachandran.frame_range_max = (int32)range_max;
+    ImGui::RangeSliderFloat("framerange", &data->time_filter.range.x, &data->time_filter.range.y, 0, (float)math::max(0, num_frames));
+    //ImGui::SameLine();
+    //if (ImGui::Button("reset")) {
+    //    range_min = 0;
+    //    range_max = num_frames - 1;
+    //}
+    //data->ramachandran.frame_range_min = (int32)range_min;
+    //data->ramachandran.frame_range_max = (int32)range_max;
 
     int32 frame = (int32)data->time;
-    Array<BackboneAngles> accumulated_angles = get_backbone_angles(data->ramachandran.backbone_angles, data->ramachandran.frame_range_min,
-                                                                   data->ramachandran.frame_range_max - data->ramachandran.frame_range_min);
+    Array<BackboneAngles> accumulated_angles = get_backbone_angles(data->ramachandran.backbone_angles, data->time_filter.range.x,
+                                                                   data->time_filter.range.y - data->time_filter.range.x);
     Array<BackboneAngles> current_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame);
 
     ramachandran::clear_accumulation_texture();
@@ -1298,8 +1314,8 @@ static void draw_ramachandran(ApplicationData* data) {
     const vec4 ordinary_color(1.f, 1.f, 1.f, 0.1f * data->ramachandran.opacity);
     ramachandran::compute_accumulation_texture(accumulated_angles, ordinary_color, data->ramachandran.radius);
 
-    const vec4 highlight_color(1.f, 1.f, 0.f, 1.0f);
-    ramachandran::compute_accumulation_texture(current_angles, highlight_color, data->ramachandran.radius * 2.f, 0.1f);
+    //const vec4 highlight_color(1.f, 1.f, 0.f, 1.0f);
+    //ramachandran::compute_accumulation_texture(current_angles, highlight_color, data->ramachandran.radius * 2.f, 0.1f);
 
     float dim = math::min(ImGui::GetWindowWidth(), ImGui::GetWindowHeight());
     ImVec2 win_pos = ImGui::GetCursorScreenPos();
@@ -1309,20 +1325,34 @@ static void draw_ramachandran(ApplicationData* data) {
     ImVec2 x0 = win_pos;
     ImVec2 x1(win_pos.x + canvas_size.x, win_pos.y + canvas_size.y);
 
-    dl->ChannelsSplit(2);
+    dl->ChannelsSplit(3);
     dl->ChannelsSetCurrent(0);
     // ImGui::Image((ImTextureID)ramachandran::segmentation_tex, canvas_size);
     dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_segmentation_texture(), x0, x1);
     dl->ChannelsSetCurrent(1);
     // ImGui::Image((ImTextureID)ramachandran::accumulation_tex, canvas_size);
     dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_accumulation_texture(), x0, x1);
+	dl->ChannelsSetCurrent(2);
+	constexpr float ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
+	for (const auto& angle : current_angles) {
+		if (angle.phi == 0 || angle.psi == 0) continue;
+		ImVec2 coord(angle.phi * ONE_OVER_TWO_PI + 0.5f, angle.psi * ONE_OVER_TWO_PI + 0.5f); // [-PI, PI] -> [0, 1]
+		coord.y = 1.f - coord.y;
+		coord = ImLerp(x0, x1, coord);
+		//dl->AddCircleFilled(coord, data->ramachandran.radius * 10.f, 0xff00ffff);
+		//dl->AddCircle(coord, data->ramachandran.radius * 10.f, 0xff000000);
+		float radius = data->ramachandran.radius * 5.f;
+		ImVec2 min_box(math::round(coord.x - radius), math::round(coord.y - radius));
+		ImVec2 max_box(math::round(coord.x + radius), math::round(coord.y + radius));
+		dl->AddRectFilled(min_box, max_box, 0xff00ffff);
+		dl->AddRect(min_box, max_box, 0xff000000);
+	}
     dl->ChannelsMerge();
 
     dl->ChannelsSetCurrent(0);
 
     ImGui::End();
 }
-
 
 // ### FRAMEBUFFER ###
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height) {
@@ -1393,34 +1423,34 @@ static void destroy_main_framebuffer(MainFramebuffer* fbo) {
     if (fbo->tex_picking) glDeleteTextures(1, &fbo->tex_picking);
 }
 
-
 // ### MOLECULE DATA ###
 static void free_trajectory_data(ApplicationData* data) {
-	if (data->mol_data.dynamic.trajectory) {
-		data->async.trajectory.sync.signal_stop_and_wait();
-		data->async.statistics.sync.signal_stop_and_wait();
-		data->async.backbone_angles.sync.signal_stop_and_wait();
-		close_file_handle(&data->mol_data.dynamic.trajectory);
-		free_trajectory(&data->mol_data.dynamic.trajectory);
-	}
+    if (data->mol_data.dynamic.trajectory) {
+        data->async.trajectory.sync.signal_stop_and_wait();
+        data->async.statistics.sync.signal_stop_and_wait();
+        data->async.backbone_angles.sync.signal_stop_and_wait();
+        close_file_handle(&data->mol_data.dynamic.trajectory);
+        free_trajectory(&data->mol_data.dynamic.trajectory);
+    }
 }
 
 static void free_molecule_data(ApplicationData* data) {
     if (data->mol_data.dynamic.molecule) {
         free_molecule_structure(&data->mol_data.dynamic.molecule);
     }
-	if (data->mol_data.dynamic.trajectory) {
-		free_trajectory_data(data);
-	}
+    if (data->mol_data.dynamic.trajectory) {
+        free_trajectory_data(data);
+    }
     free_backbone_angles_trajectory(&data->ramachandran.backbone_angles);
     data->ramachandran.backbone_angles = {};
     data->ramachandran.current_backbone_angles = {};
-	clear_statistics_data(data);
+    clear_statistics_data(data);
 }
 
 static void load_molecule_data(ApplicationData* data, CString file) {
     ASSERT(data);
     if (file.count > 0) {
+        data->is_playing = false;
         CString ext = get_file_extension(file);
         printf("'%s'\n", ext.beg());
         if (compare_n(ext, "pdb", 3, true)) {
@@ -1442,7 +1472,7 @@ static void load_molecule_data(ApplicationData* data, CString file) {
                 stats::compute_stats(data->mol_data.dynamic);
             }
         } else if (compare_n(ext, "gro", 3, true)) {
-			free_molecule_data(data);
+            free_molecule_data(data);
             free_string(&data->files.molecule);
             free_string(&data->files.trajectory);
             allocate_and_load_gro_from_file(&data->mol_data.dynamic.molecule, file);
@@ -1458,9 +1488,9 @@ static void load_molecule_data(ApplicationData* data, CString file) {
             if (!data->mol_data.dynamic.molecule) {
                 printf("ERROR! Must have molecule loaded before trajectory can be loaded!\n");
             } else {
-				if (data->mol_data.dynamic.trajectory) {
-					free_trajectory_data(data);
-				}
+                if (data->mol_data.dynamic.trajectory) {
+                    free_trajectory_data(data);
+                }
                 if (!load_and_allocate_trajectory(&data->mol_data.dynamic.trajectory, file)) {
                     printf("ERROR! Problem loading trajectory\n");
                     return;
@@ -1468,18 +1498,18 @@ static void load_molecule_data(ApplicationData* data, CString file) {
                 if (data->mol_data.dynamic.trajectory) {
                     if (data->mol_data.dynamic.trajectory.num_atoms != data->mol_data.dynamic.molecule.atom_positions.count) {
                         printf("ERROR! The number of atoms in the molecule does not match the number of atoms in the trajectory\n");
-						free_trajectory_data(data);
+                        free_trajectory_data(data);
                         return;
                     }
                     data->files.trajectory = allocate_string(file);
                     init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
-					load_trajectory_async(data);
-					/*
-                    read_trajectory_async(&data->mol_data.dynamic.trajectory, [data]() {
-                        stats::compute_stats(data->mol_data.dynamic);
-                        compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
-                    });
-					*/
+                    load_trajectory_async(data);
+                    /*
+read_trajectory_async(&data->mol_data.dynamic.trajectory, [data]() {
+    stats::compute_stats(data->mol_data.dynamic);
+    compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
+});
+                    */
                 }
             }
         } else {
@@ -1487,7 +1517,6 @@ static void load_molecule_data(ApplicationData* data, CString file) {
         }
     }
 }
-
 
 // ### WORKSPACE ###
 static Representation::Type get_rep_type(CString str) {
@@ -1561,12 +1590,12 @@ static vec4 to_vec4(CString txt, vec4 default_val = vec4(1)) {
 }
 
 static void load_workspace(ApplicationData* data, CString file) {
-	ASSERT(data);
+    ASSERT(data);
     clear_representations(data);
     stats::clear();
 
-	StringBuffer<256> new_molecule_file;
-	StringBuffer<256> new_trajectory_file;
+    StringBuffer<256> new_molecule_file;
+    StringBuffer<256> new_trajectory_file;
 
     String txt = allocate_and_read_textfile(file);
     CString c_txt = txt;
@@ -1625,17 +1654,17 @@ static void load_workspace(ApplicationData* data, CString file) {
         } else if (compare(line, "[Camera]")) {
             while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
                 extract_line(line, c_txt);
-				if (compare_n(line, "Position=", 9)) {
-					vec3 pos = vec3(to_vec4(trim(line.substr(9))));
-					data->camera.position = pos;
-					data->controller.position = pos;
-				}
-				if (compare_n(line, "Rotation=", 9)) {
-					quat rot = quat(to_vec4(trim(line.substr(9))));
-					data->camera.orientation = rot;
-					data->controller.orientation = rot;
-				}
-				if (compare_n(line, "Distance=", 9)) data->controller.distance = to_float(trim(line.substr(9)));
+                if (compare_n(line, "Position=", 9)) {
+                    vec3 pos = vec3(to_vec4(trim(line.substr(9))));
+                    data->camera.position = pos;
+                    data->controller.position = pos;
+                }
+                if (compare_n(line, "Rotation=", 9)) {
+                    quat rot = quat(to_vec4(trim(line.substr(9))));
+                    data->camera.orientation = rot;
+                    data->controller.orientation = rot;
+                }
+                if (compare_n(line, "Distance=", 9)) data->controller.distance = to_float(trim(line.substr(9)));
             }
         }
     }
@@ -1652,15 +1681,15 @@ static void load_workspace(ApplicationData* data, CString file) {
     if (data->files.workspace) free_string(&data->files.workspace);
     data->files.workspace = allocate_string(file);
 
-	if (!compare(new_molecule_file, data->files.molecule) && new_molecule_file) {
-		load_molecule_data(data, new_molecule_file);
-	}
+    if (!compare(new_molecule_file, data->files.molecule) && new_molecule_file) {
+        load_molecule_data(data, new_molecule_file);
+    }
 
-	if (!compare(new_trajectory_file, data->files.trajectory) && new_trajectory_file) {
-		load_molecule_data(data, new_trajectory_file);
-	}
+    if (!compare(new_trajectory_file, data->files.trajectory) && new_trajectory_file) {
+        load_molecule_data(data, new_trajectory_file);
+    }
 
-	reset_view(data, false);
+    reset_view(data, false);
     reset_representations(data);
 }
 
@@ -1725,7 +1754,7 @@ static void save_workspace(ApplicationData* data, CString file) {
     fprintf(fptr, "Position=%g,%g,%g\n", data->camera.position.x, data->camera.position.y, data->camera.position.z);
     fprintf(fptr, "Rotation=%g,%g,%g,%g\n", data->camera.orientation.x, data->camera.orientation.y, data->camera.orientation.z,
             data->camera.orientation.w);
-	fprintf(fptr, "Distance=%g\n", data->controller.distance);
+    fprintf(fptr, "Distance=%g\n", data->controller.distance);
     fprintf(fptr, "\n");
 
     fclose(fptr);
@@ -1733,7 +1762,6 @@ static void save_workspace(ApplicationData* data, CString file) {
     if (data->files.workspace) free_string(&data->files.workspace);
     data->files.workspace = allocate_string(file);
 }
-
 
 // ### REPRESENTATIONS ###
 static void create_default_representation(ApplicationData* data) {
@@ -1763,10 +1791,10 @@ static void reset_representations(ApplicationData* data) {
             FREE(rep.colors.data);
         }
         rep.colors.count = data->mol_data.dynamic.molecule.atom_positions.count;
-		if (rep.colors.count == 0) {
-			rep.colors.data = nullptr;
-			continue;
-		}
+        if (rep.colors.count == 0) {
+            rep.colors.data = nullptr;
+            continue;
+        }
         rep.colors.data = (uint32*)MALLOC(rep.colors.count * sizeof(uint32));
 
         compute_atom_colors(rep.colors, data->mol_data.dynamic.molecule, rep.color_mapping,
@@ -1787,81 +1815,81 @@ static void clear_representations(ApplicationData* data) {
     data->representations.data.clear();
 }
 
-
 // ### ASYNC OPERATIONS ON DATA ###
 static void load_trajectory_async(ApplicationData* data) {
-	ASSERT(data);
-	// Wait for thread to finish if already running
-	if (data->async.trajectory.sync.running) {
-		data->async.trajectory.sync.signal_stop_and_wait();
-	}
+    ASSERT(data);
+    // Wait for thread to finish if already running
+    if (data->async.trajectory.sync.running) {
+        data->async.trajectory.sync.signal_stop_and_wait();
+    }
 
-	if (data->mol_data.dynamic.trajectory.file_handle) {
-		data->async.trajectory.sync.stop_signal = false;
-		data->async.trajectory.sync.running = true;
-		data->async.trajectory.sync.thread = std::thread([data]() {
-			while (read_next_trajectory_frame(&data->mol_data.dynamic.trajectory)) {
-				data->async.trajectory.fraction = data->mol_data.dynamic.trajectory.num_frames / (float)data->mol_data.dynamic.trajectory.frame_offsets.count;
-				if (data->async.trajectory.sync.stop_signal) break;
-			}
-			data->async.trajectory.sync.running = false;
-			data->async.trajectory.sync.stop_signal = false;
+    if (data->mol_data.dynamic.trajectory.file_handle) {
+        data->async.trajectory.sync.stop_signal = false;
+        data->async.trajectory.sync.running = true;
+        data->async.trajectory.sync.thread = std::thread([data]() {
+            while (read_next_trajectory_frame(&data->mol_data.dynamic.trajectory)) {
+                data->async.trajectory.fraction =
+                    data->mol_data.dynamic.trajectory.num_frames / (float)data->mol_data.dynamic.trajectory.frame_offsets.count;
+                if (data->async.trajectory.sync.stop_signal) break;
+            }
+            data->async.trajectory.sync.running = false;
+            data->async.trajectory.sync.stop_signal = false;
 
-			compute_statistics_async(data);
-			compute_backbone_angles_async(data);
-		});
-		data->async.trajectory.sync.thread.detach();
-	}
+            compute_statistics_async(data);
+            compute_backbone_angles_async(data);
+        });
+        data->async.trajectory.sync.thread.detach();
+    }
 }
 
 static void clear_statistics_data(ApplicationData* data) {
-	data->async.statistics.sync.signal_stop_and_wait();
-	stats::clear_instances();
-	stats::clear_property_data();
+    data->async.statistics.sync.signal_stop_and_wait();
+    stats::clear_instances();
+    stats::clear_property_data();
 }
 
 static void compute_statistics_async(ApplicationData* data) {
-	ASSERT(data);
-	data->async.statistics.query_update = true;
-	if (data->async.statistics.sync.running == false) {
-		data->async.statistics.sync.running = true;
-		
-		data->async.statistics.sync.thread = std::thread([data]() {
-			data->async.statistics.fraction = 0.0f;
-			while (data->async.statistics.query_update) {
-				data->async.statistics.query_update = false;
-				data->async.statistics.fraction = 0.5f;
-				stats::clear_instances();
-				stats::clear_property_data();
-				stats::compute_stats(data->mol_data.dynamic);
-				if (data->async.statistics.sync.stop_signal) break;
-			}
-			data->async.statistics.fraction = 1.f;
-			data->async.statistics.sync.running = false;
-			data->async.statistics.sync.stop_signal = false;
-		});
-		data->async.statistics.sync.thread.detach();
-	}
+    ASSERT(data);
+    data->async.statistics.query_update = true;
+    if (data->async.statistics.sync.running == false) {
+        data->async.statistics.sync.running = true;
+
+        data->async.statistics.sync.thread = std::thread([data]() {
+            data->async.statistics.fraction = 0.0f;
+            while (data->async.statistics.query_update) {
+                data->async.statistics.query_update = false;
+                data->async.statistics.fraction = 0.5f;
+                stats::clear_instances();
+                stats::clear_property_data();
+                stats::compute_stats(data->mol_data.dynamic);
+                if (data->async.statistics.sync.stop_signal) break;
+            }
+            data->async.statistics.fraction = 1.f;
+            data->async.statistics.sync.running = false;
+            data->async.statistics.sync.stop_signal = false;
+        });
+        data->async.statistics.sync.thread.detach();
+    }
 }
 
 static void compute_backbone_angles_async(ApplicationData* data) {
-	ASSERT(data);
-	data->async.backbone_angles.query_update = true;
-	if (data->async.backbone_angles.sync.running == false) {
-		data->async.backbone_angles.sync.running = true;
+    ASSERT(data);
+    data->async.backbone_angles.query_update = true;
+    if (data->async.backbone_angles.sync.running == false) {
+        data->async.backbone_angles.sync.running = true;
 
-		data->async.backbone_angles.sync.thread = std::thread([data]() {
-			data->async.backbone_angles.fraction = 0.0f;
-			while (data->async.backbone_angles.query_update) {
-				data->async.backbone_angles.query_update = false;
-				data->async.backbone_angles.fraction = 0.5f;
-				compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
-				if (data->async.backbone_angles.sync.stop_signal) break;
-			}
-			data->async.backbone_angles.fraction = 1.f;
-			data->async.backbone_angles.sync.running = false;
-			data->async.backbone_angles.sync.stop_signal = false;
-		});
-		data->async.backbone_angles.sync.thread.detach();
-	}
+        data->async.backbone_angles.sync.thread = std::thread([data]() {
+            data->async.backbone_angles.fraction = 0.0f;
+            while (data->async.backbone_angles.query_update) {
+                data->async.backbone_angles.query_update = false;
+                data->async.backbone_angles.fraction = 0.5f;
+                compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
+                if (data->async.backbone_angles.sync.stop_signal) break;
+            }
+            data->async.backbone_angles.fraction = 1.f;
+            data->async.backbone_angles.sync.running = false;
+            data->async.backbone_angles.sync.stop_signal = false;
+        });
+        data->async.backbone_angles.sync.thread.detach();
+    }
 }
