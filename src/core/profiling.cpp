@@ -25,11 +25,11 @@ inline Entry* find_entry(Array<Entry> ent, Key key) {
 	return nullptr;
 }
 
-void profiling::initialize() {}
+void initialize() {}
 
-void profiling::shutdown() {}
+void shutdown() {}
 
-void profiling::push_section(CString sec) {
+void push_section(CString sec) {
 	uint32 key = hash::crc32(sec);
 	auto* e = find_entry(entries, key);
 	if (!e) {
@@ -37,12 +37,12 @@ void profiling::push_section(CString sec) {
 	}
 }
 
-void profiling::pop_section() {}
+void pop_section() {}
 
-void profiling::finish() {
+void finish() {
 	entries.clear();
 }
 
-void profiling::print_log() {}
+void print_log() {}
 
 }  // namespace profiling

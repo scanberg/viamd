@@ -591,6 +591,14 @@ int main(int, char**) {
         // Swap buffers
         platform::swap_buffers(&data.ctx);
     }
+    
+    data.async.trajectory.sync.signal_stop();
+    data.async.backbone_angles.sync.signal_stop();
+    data.async.statistics.sync.signal_stop();
+    
+    data.async.trajectory.sync.wait_until_finished();
+    data.async.backbone_angles.sync.wait_until_finished();
+    data.async.statistics.sync.wait_until_finished();
 
     destroy_main_framebuffer(&data.fbo);
 

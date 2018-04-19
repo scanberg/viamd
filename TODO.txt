@@ -8,7 +8,7 @@ CONCRETE LIST OF TODOs
 
 ### Performance ###
     [ ] Compute statistics async while loading frames
-    [ ] Compute backbone angles async while loading frames
+    [X] Compute backbone angles async while loading frames
     [ ] PDB-Loader: When data is multi-frame: Allocate overestimation of frames based of file size, then load traj async.
 
 ### Look & Feel ###
@@ -16,7 +16,7 @@ CONCRETE LIST OF TODOs
         [ ] Improve interface design
         [ ] Improve current frame plots, use Imgui?
     [X] Implement Minimize Representations or Hide Details somehow
-    [ ] On screen info on background operations (Loading data, Computing stats, etc.)
+    [X] On screen info on background operations (Loading data, Computing stats, etc.)
 
 ### Features ###
     [ ] Improved Line Plot Frame (Support selection of range(s?), Zoom, Axis, Grid, etc.)
@@ -28,7 +28,7 @@ CONCRETE LIST OF TODOs
         [ ] (Grid)?
         [ ] Tooltip + Line
         [ ] Draw outline + transparent area
-    [ ] Implement Periodic Plot Frame
+    ([ ] Implement Periodic Plot Frame)
         [ ] Range selection
         [ ] Tooltip + Line
         [ ] Draw current value as line
@@ -36,6 +36,9 @@ CONCRETE LIST OF TODOs
         [ ] Change to uint8
         [ ] Colormap with increasing lightness
         [ ] Expose different Color schemes
+    [ ] Statistics
+        [ ] Support frame range
+        [ ] Support property filtering
     [ ] Volume Density Generation
     [ ] Volume RayCaster
     [ ] Transfer Function Design

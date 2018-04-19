@@ -761,13 +761,25 @@ IMGUI_API bool PlotHistogram(const char* label, ImVec2 frame_size, const float* 
 				}
 			}
 			if (drag_target) {
-				if (periodic_counter == 0 && selection_range->y < selection_range->x) {
-					ImSwap(selection_range->x, selection_range->y);
-					//drag_target = &selection_range->y;
-				}
-				else {
-					//drag_target = &selection_range->y;
-				}
+                
+                if (drag_target == &selection_range->y) {
+                    if (selection_range->y < selection_range->x) {
+                        if (periodic_counter == 0) {
+                            ImSwap(selection_range->x, selection_range->y);
+                            drag_target = &selection_range->x;
+                            
+                        }
+                    }
+                }
+                else if (drag_target == &selection_range->x) {
+                    if (selection_range->x > selection_range->y) {
+                        if (periodic_counter == 0) {
+                            ImSwap(selection_range->x, selection_range->y);
+                            drag_target = &selection_range->y;
+                        }
+                    }
+                    //drag_target = &selection_range->y;
+                }
 				*drag_target = ImLerp(value_range.x, value_range.y, t);
 			}
 		}

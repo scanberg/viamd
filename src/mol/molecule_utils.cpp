@@ -617,7 +617,6 @@ DynamicArray<CString> extract_chunks(CString str) {
         } else if (*beg != ' ') {
             const char* end = beg;
             while (end != str.end() && *end != ' ') end++;
-            CString chunk = CString(beg, end);
             chunks.push_back(CString(beg, end));
             beg = end;
         } else
