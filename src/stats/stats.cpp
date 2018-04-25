@@ -18,18 +18,10 @@ struct PropertyCommand {
     CString unit = "";
 };
 
-struct GroupCommand {
+struct StructureCommand {
     ID id = INVALID_ID;
 	CString keyword = "";
     StructureExtractFunc func = nullptr;
-};
-
-struct Property {
-	StringBuffer<32> name_buf{};
-	StringBuffer<64> args_buf{};
-
-	float filter_min = 0.f;
-	float filter_max = 1.f;
 };
 
 struct PropertyInternal : Property {
@@ -54,25 +46,9 @@ struct PropertyData {
 	Histogram histogram{};
 };
 
-struct Group {
-    ID id = INVALID_ID;
-	ID instance_beg_id = INVALID_ID;
-	int32 instance_count = 0;
+struct PropertyArgData {
 
-    StringBuffer<32> name_buf{};
-    StringBuffer<64> args_buf{};
-    CString name{};
-    CString cmd{};
-    CString args{};
-    ID cmd_id = INVALID_ID;
-    bool valid;
-};
-    
-struct GroupInstance {
-    ID id = INVALID_ID;
-    ID group_id = INVALID_ID;
-    Structure structure {};
-};
+}
 
 struct StatisticsContext {
     ID next_id = 1;
@@ -81,11 +57,11 @@ struct StatisticsContext {
 
     DynamicArray<PropertyInternal> properties{};
     DynamicArray<PropertyData> property_data{};
-    DynamicArray<Group> groups{};
-	DynamicArray<GroupInstance> group_instances{};
+
+	DynamicArray<PropertyArgumentData> property_args_data{};
 
     DynamicArray<PropertyCommand> property_commands {};
-    DynamicArray<GroupCommand> group_commands {};
+    DynamicArray<StructureCommand> structure_commands {};
 };
 
 static StatisticsContext ctx;
