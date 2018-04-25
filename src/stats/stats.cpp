@@ -8,20 +8,21 @@
 
 namespace stats {
 
+typedef DynamicArray<Structure>(*StructureMatchFunc)(const Array<CString> args, const MoleculeStructure& molecule);
+
 struct PropertyCommand {
     ID id = INVALID_ID;
 	CString keyword = "";
     PropertyComputeFunc func = nullptr;
     Range val_range {};
-    PropertyType type;
     bool periodic = false;
     CString unit = "";
 };
 
 struct StructureCommand {
-    ID id = INVALID_ID;
+	ID id = INVALID_ID;
 	CString keyword = "";
-    StructureExtractFunc func = nullptr;
+
 };
 
 struct PropertyInternal : Property {
@@ -48,7 +49,7 @@ struct PropertyData {
 
 struct PropertyArgData {
 
-}
+};
 
 struct StatisticsContext {
     ID next_id = 1;
@@ -58,14 +59,184 @@ struct StatisticsContext {
     DynamicArray<PropertyInternal> properties{};
     DynamicArray<PropertyData> property_data{};
 
-	DynamicArray<PropertyArgumentData> property_args_data{};
-
     DynamicArray<PropertyCommand> property_commands {};
     DynamicArray<StructureCommand> structure_commands {};
 };
 
 static StatisticsContext ctx;
 
+static void set_error_message(CString msg) {
+	
+}
+
+bool structure_match_resname(DynamicArray<Structure>* matched_structures, const Array<CString> args, const MoleculeStructure& molecule) {
+	ASSERT(matched_structures);
+
+	// Expect args.count to be > 0
+	if (args.count == 0) {
+		set_error_message("Expects one or more arguments for resname");
+		return false;
+	}
+
+	for (const auto& res : molecule.residues) {
+		for (const auto& arg : args) {
+			if (compare(res.name, arg)) {
+				Structure s;
+				s.type = Structure::AtomicRange;
+				s.data.atom_range = { res.beg_atom_idx, res.end_atom_idx };
+				matched_structures->push_back(s);
+				break;
+			}
+		}
+	}
+
+	return true;
+}
+
+bool structure_match_resid(DynamicArray<Structure>* matched_structures, const Array<CString> args, const MoleculeStructure& molecule) {
+	ASSERT(matched_structures);
+
+	// Expect args to be  > 0
+	if (args.count == 0) {
+		set_error_message("Expects one or more arguments for resid");
+		return false;
+	}
+
+	for (const auto& res : molecule.residues) {
+		for (const auto& arg : args) {
+			auto id = to_int(arg);
+			if (!id.success) {
+				set_error_message("Failed to parse argument for resid");
+				return false;
+			}
+			if (res.id == id) {
+				Structure s;
+				s.type = Structure::AtomicRange;
+				s.data.atom_range = { res.beg_atom_idx, res.end_atom_idx };
+				matched_structures->push_back(s);
+				break;
+			}
+		}
+	}
+
+	return true;
+}
+
+bool structure_match_residue(DynamicArray<Structure>* matched_structures, const Array<CString> args, const MoleculeStructure& molecule) {
+	ASSERT(matched_structures);
+
+	// Expect args to be  > 0
+	if (args.count == 0) {
+		set_error_message("Expects one or more arguments for residue");
+		return false;
+	}
+
+	for (const auto& arg : args) {
+		auto id = to_int(arg);
+		if (!id.success) {
+			set_error_message("Failed to parse argument for residue");
+			return false;
+		}
+		auto idx = id - 1;
+		if (idx < 0 || molecule.residues.count <= idx) {
+			set_error_message("Index for residue is out of bounds");
+			return false;
+		}
+		const auto& res = molecule.residues[idx];
+
+		Structure s;
+		s.type = Structure::AtomicRange;
+		s.data.atom_range = { res.beg_atom_idx, res.end_atom_idx };
+		matched_structures->push_back(s);
+	}
+
+	return true;
+}
+
+bool structure_extract_res_atom(DynamicArray<Structure>* matched_structures, const Array<CString> args, const MoleculeStructure& molecule) {
+	ASSERT(matched_structures);
+	if (args.count == 0) {
+		set_error_message("resatom requires 1 argument");
+		return false;
+	}
+
+	auto res = to_int(args[0]);
+	if (!res.success) {
+		set_error_message("resatom: failed to parse argument");
+		return false;
+	}
+	int idx = res - 1;
+
+	for (auto& s : *matched_structures) {
+		if (s.type == Structure::AtomicRange) {
+			// @ TODO: RANGE CHECK FOR IDX.
+			s.type = s.AtomicIndex;
+			s.data.atom_index = s.data.atom_range.beg + idx;
+		}
+	}
+}
+
+bool structure_extract_com(DynamicArray<Structure>* matched_structures, const Array<CString> args, const MoleculeStructure& molecule) {
+	ASSERT(matched_structures);
+	(void)args;
+	if (matched_structures->count == 0) return false;
+
+	switch ((*matched_structures)[0].type) {
+	case Structure::AtomicIndex:
+		vec3 pos(0);
+		for (auto& s : *matched_structures) {
+			ASSERT(s.type == s.AtomicIndex);
+			pos += molecule.atom_positions[s.data.atom_index];
+		}
+		pos /= (float)matched_structures->count;
+		matched_structures->clear();
+		Structure s;
+		s.type = Structure::Position;
+		s.data.position = pos;
+		matched_structures->push_back(s);
+		break;
+	case Structure::Position:
+	{
+		vec3 pos(0);
+		for (auto& s : *matched_structures) {
+			ASSERT(s.type == s.Position);
+			pos += s.data.position;
+		}
+		pos /= (float)matched_structures->count;
+		matched_structures->clear();
+		Structure s;
+		s.type = Structure::Position;
+		s.data.position = pos;
+		matched_structures->push_back(s);
+		break;
+	}
+	case Structure::AtomicRange:
+	{
+		for (auto& s : *matched_structures) {
+			ASSERT(s.type == s.AtomicRange);
+			vec3 pos(0);
+			for (int i = s.data.atom_range.beg; i < s.data.atom_range.end; i++) {
+				pos += molecule.atom_positions[i];
+			}
+			pos /= (float)(s.data.atom_range.end - s.data.atom_range.beg);
+
+			s.type = Structure::Position;
+			s.data.position = pos;
+		}
+		break;
+	}
+	default:
+		break;
+	}
+
+	return true;
+}
+
+static bool compute_atomic_distance(float* data, const Array <CString> args, const MoleculeDynamic& dynamic) {
+
+}
+
+/*
 static bool compute_atomic_distance(float* data, const Array<CString> args, const MoleculeDynamic& dynamic, Structure group_struct) {
 	if (args.count != 2) return false;
     if (group_struct.beg_atom_idx == group_struct.end_atom_idx) return false;
@@ -137,6 +308,7 @@ static bool compute_atomic_dihedral(float* data, const Array<CString> args, cons
 
 	return true;
 }
+*/
 
 static DynamicArray<Structure> match_by_resname(const Array<CString> args, const MoleculeStructure& mol) {
     DynamicArray<Structure> result;
