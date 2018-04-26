@@ -170,7 +170,7 @@ CString trim(CString str) {
 	const char* end = str.data + str.count;
 
 	while (beg < end && isspace(*beg)) ++beg;
-	while (end > beg && isspace(*(end-1))) --end;
+	while (end > beg && (isspace(*(end-1)) || *(end-1) == '\0')) --end;
 
 	return CString(beg, end - beg);
 }

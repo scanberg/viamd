@@ -306,10 +306,7 @@ int main(int, char**) {
     allocate_and_parse_pdb_from_string(&data.mol_data.dynamic, CAFFINE_PDB);
     data.mol_data.atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule.atom_elements);
 #else
-    stats::create_group("group1", "resname ALA");
-    stats::create_property("b1", "dist group1 1 2");
-    stats::create_property("a1", "angle group1 1 2 3");
-    stats::create_property("d1", "dihedral group1 1 2 3 4");
+	stats::create_property("b1", "distance resatom(resname(ALA), 1) resatom(resname(ALA), 2)");
 
     load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
 #endif
@@ -910,10 +907,10 @@ static void draw_property_window(ApplicationData* data) {
                 // Build a list of candidates
                 ImVector<const char*> candidates;
 
-                for (int i = 0; i < stats::get_group_command_count(); i++) {
-                    CString cmd = stats::get_group_command_keyword(i);
-                    if (compare_n(cmd, word_start, (int)(word_end - word_start))) candidates.push_back(cmd.beg());
-                }
+                //for (int i = 0; i < stats::get_group_command_count(); i++) {
+                //    CString cmd = stats::get_group_command_keyword(i);
+                //    if (compare_n(cmd, word_start, (int)(word_end - word_start))) candidates.push_back(cmd.beg());
+                //}
 
                 if (candidates.Size == 0) {
                     // No match
@@ -962,19 +959,20 @@ static void draw_property_window(ApplicationData* data) {
 
     ImGui::Begin("Properties", &data->statistics.show_property_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
-    ImGui::PushID("GROUPS");
-    ImGui::Text("GROUPS");
-    if (ImGui::Button("create new")) {
-        stats::create_group();
-    }
-    ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
-    if (ImGui::Button("clear all")) {
-    }
-    ImGui::PopStyleColor(3);
-    ImGui::Spacing();
+	/*
+    //ImGui::PushID("GROUPS");
+    //ImGui::Text("GROUPS");
+    //if (ImGui::Button("create new")) {
+    //    stats::create_group();
+    //}
+    //ImGui::SameLine();
+    //ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
+    //ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
+    //ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
+    //if (ImGui::Button("clear all")) {
+    //}
+    //ImGui::PopStyleColor(3);
+    //ImGui::Spacing();
 
     ImGui::Columns(3, "columns", true);
     ImGui::Separator();
@@ -1036,6 +1034,7 @@ static void draw_property_window(ApplicationData* data) {
 
     ImGui::Spacing();
     ImGui::Spacing();
+	*/
 
     ImGui::PushID("PROPERTIES");
     ImGui::Text("PROPERTIES");
@@ -1099,7 +1098,7 @@ static void draw_property_window(ApplicationData* data) {
         ImGui::PopID();
 
         if (update) {
-            stats::clear_property(prop_id);
+            //stats::clear_property(prop_id);
             compute_stats = true;
         }
     }
@@ -1218,9 +1217,9 @@ static void draw_timeline_window(ApplicationData* data) {
 
         for (int i = 0; i < stats::get_property_count(); i++) {
             auto prop_id = stats::get_property(i);
-            auto prop_data = stats::get_property_data(prop_id, 0);
+            auto prop_data = stats::get_property_data(prop_id);
             auto prop_name = stats::get_property_name(prop_id);
-            auto prop_range = stats::get_property_data_range(prop_id, 0);
+            auto prop_range = stats::get_property_data_range(prop_id);
             if (!prop_data) continue;
             float pad = math::max((prop_range.y - prop_range.x) * 0.1f, 1.f);
             vec2 display_range = prop_range + vec2(-pad, pad);
@@ -1271,13 +1270,13 @@ static void draw_distribution_window(ApplicationData* data) {
     for (int i = 0; i < stats::get_property_count(); i++) {
         auto prop_id  = stats::get_property(i);
 		auto name	  = stats::get_property_name(prop_id);
-		auto hist	  = stats::get_property_avg_histogram(prop_id);
+		auto hist	  = stats::get_property_histogram(prop_id);
         auto periodic = stats::get_property_periodic(prop_id);
         if (!hist) continue;
 
         ImGui::PushItemWidth(-1);
         ImGui::PushID(i);
-        ImGui::PlotHistogram(name, ImVec2(0, 100), hist->bins.data, (int32)hist->bins.count, periodic, vec_cast(hist->val_range), &selection_range);
+        ImGui::PlotHistogram(name, ImVec2(0, 100), hist->bins.data, (int32)hist->bins.count, periodic, vec_cast(hist->value_range), &selection_range);
         ImGui::PopID();
         ImGui::PopItemWidth();
     }
@@ -1592,7 +1591,7 @@ static vec4 to_vec4(CString txt, vec4 default_val = vec4(1)) {
 static void load_workspace(ApplicationData* data, CString file) {
     ASSERT(data);
     clear_representations(data);
-    stats::clear();
+    //stats::clear();
 
     StringBuffer<256> new_molecule_file;
     StringBuffer<256> new_trajectory_file;
@@ -1628,7 +1627,8 @@ static void load_workspace(ApplicationData* data, CString file) {
                 if (compare_n(line, "Thickness=", 10)) rep.thickness = to_float(trim(line.substr(10)));
             }
             data->representations.data.push_back(rep);
-        } else if (compare(line, "[Group]")) {
+        }
+		/*else if (compare(line, "[Group]")) {
             StringBuffer<64> name, args;
             while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
                 extract_line(line, c_txt);
@@ -1636,7 +1636,8 @@ static void load_workspace(ApplicationData* data, CString file) {
                 if (compare_n(line, "Args=", 5)) args = trim(line.substr(5));
             }
             stats::create_group(name, args);
-        } else if (compare(line, "[Property]")) {
+			*/
+        else if (compare(line, "[Property]")) {
             StringBuffer<64> name, args;
             while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
                 extract_line(line, c_txt);
@@ -1727,6 +1728,7 @@ static void save_workspace(ApplicationData* data, CString file) {
     }
 
     // GROUPS
+	/*
     for (int i = 0; i < stats::get_group_count(); i++) {
         auto id = stats::get_group(i);
         fprintf(fptr, "[Group]\n");
@@ -1734,6 +1736,7 @@ static void save_workspace(ApplicationData* data, CString file) {
         fprintf(fptr, "Args=%s\n", stats::get_group_args_buf(id)->beg());
         fprintf(fptr, "\n");
     }
+	*/
 
     // PROPERTIES
     for (int i = 0; i < stats::get_property_count(); i++) {
@@ -1844,8 +1847,8 @@ static void load_trajectory_async(ApplicationData* data) {
 
 static void clear_statistics_data(ApplicationData* data) {
     data->async.statistics.sync.signal_stop_and_wait();
-    stats::clear_instances();
-    stats::clear_property_data();
+    //stats::clear_instances();
+    //stats::clear_property_data();
 }
 
 static void compute_statistics_async(ApplicationData* data) {
@@ -1859,8 +1862,8 @@ static void compute_statistics_async(ApplicationData* data) {
             while (data->async.statistics.query_update) {
                 data->async.statistics.query_update = false;
                 data->async.statistics.fraction = 0.5f;
-                stats::clear_instances();
-                stats::clear_property_data();
+                //stats::clear_instances();
+                //stats::clear_property_data();
                 stats::compute_stats(data->mol_data.dynamic);
                 if (data->async.statistics.sync.stop_signal) break;
             }

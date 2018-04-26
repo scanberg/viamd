@@ -3,6 +3,9 @@
 #include <core/hash.h>
 #include <mol/molecule_dynamic.h>
 #include <mol/molecule_utils.h>
+#include <mol/trajectory_utils.h>
+
+#include <ctype.h>
 
 #define COMPUTE_ID(x) (hash::crc64(x))
 
@@ -22,33 +25,20 @@ struct PropertyCommand {
 struct StructureCommand {
 	ID id = INVALID_ID;
 	CString keyword = "";
-
 };
 
-struct PropertyInternal : Property {
+struct Property {
 	ID id = INVALID_ID;
-	ID data_avg_id = INVALID_ID;
-	ID data_beg_id = INVALID_ID;
-	int32 data_count = 0;
-
-	CString name{};
-	CString cmd{};
-	CString args{};
-	ID cmd_id = INVALID_ID;
-	bool valid = true;
-};
-    
-struct PropertyData {
-    ID id = INVALID_ID;
-    ID property_id = INVALID_ID;
-	ID instance_id = INVALID_ID;
-	Range data_range{};
-    Array<float> data{};
-	Histogram histogram{};
-};
-
-struct PropertyArgData {
-
+	StringBuffer<32>  name{};
+	StringBuffer<256> args{};
+	StringBuffer<32>  unit{};
+	StringBuffer<128> error_msg{};
+	bool valid = false;
+	bool periodic = false;
+	Range filter{ 0,0 };
+	Range data_range{ 0,0 };
+	Array<float> data{};
+	Histogram hist;
 };
 
 struct StatisticsContext {
@@ -56,8 +46,7 @@ struct StatisticsContext {
     DynamicArray<ID> free_ids {};
     DynamicArray<String> string_buffer {};
 
-    DynamicArray<PropertyInternal> properties{};
-    DynamicArray<PropertyData> property_data{};
+    DynamicArray<Property> properties{};
 
     DynamicArray<PropertyCommand> property_commands {};
     DynamicArray<StructureCommand> structure_commands {};
@@ -65,12 +54,106 @@ struct StatisticsContext {
 
 static StatisticsContext ctx;
 
+template <typename T>
+static T* find_id(Array<T> data, ID id) {
+	for (auto& item : data) {
+		if (item.id == id) return &item;
+	}
+	return nullptr;
+}
+
+static ID create_id() {
+	if (ctx.free_ids.count > 0) return ctx.free_ids.pop_back();
+	return ctx.next_id++;
+}
+
+static CString alloc_string(CString str) {
+	char* data = (char*)MALLOC(str.count);
+	ctx.string_buffer.push_back({ data, str.count });
+	copy(ctx.string_buffer.back(), str);
+	return ctx.string_buffer.back();
+}
+
+static void free_string(CString str) {
+	for (auto int_str : ctx.string_buffer) {
+		if (int_str.count == str.count && compare(int_str, str)) {
+			ctx.string_buffer.remove(&int_str);
+			return;
+		}
+	}
+}
+
+// HISTOGRAMS
+void init_histogram(Histogram* hist, int32 num_bins) {
+	ASSERT(hist);
+	if (hist->bins.data) {
+		FREE(hist->bins.data);
+	}
+	hist->bins.data = (float*)MALLOC(num_bins * sizeof(float));
+	hist->bins.count = num_bins;
+
+	ASSERT(hist->bins.data);
+}
+
+void free_histogram(Histogram* hist) {
+	ASSERT(hist);
+	if (hist->bins.data) {
+		FREE(hist->bins.data);
+		hist->bins.data = nullptr;
+		hist->bins.count = 0;
+	}
+}
+
+Histogram compute_histogram(int32 num_bins, Array<float> data) {
+	Histogram hist;
+	compute_histogram(&hist, num_bins, data);
+	return hist;
+}
+
+Histogram compute_histogram(int32 num_bins, Array<float> data, float min_val, float max_val) {
+	Histogram hist;
+	compute_histogram(&hist, num_bins, data, min_val, max_val);
+	return hist;
+}
+
+void compute_histogram(Histogram* hist, int32 num_bins, Array<float> data) {
+	ASSERT(hist);
+	if (data.count == 0) return;
+	float min_val = FLT_MAX;
+	float max_val = -FLT_MAX;
+	for (const auto& d : data) {
+		min_val = math::min(min_val, d);
+		max_val = math::max(max_val, d);
+	}
+	compute_histogram(hist, num_bins, data, min_val, max_val);
+}
+
+void compute_histogram(Histogram* hist, int32 num_bins, Array<float> data, float min_val, float max_val) {
+	ASSERT(hist);
+	ASSERT(num_bins > 0);
+
+	init_histogram(hist, num_bins);
+	memset(hist->bins.data, 0, hist->bins.count * sizeof(float));
+
+	const float scl = num_bins / (max_val - min_val);
+	hist->bin_range = { 0,0 };
+	for (auto v : data) {
+		int32 bin_idx = math::clamp((int32)((v - min_val) * scl), 0, num_bins - 1);
+		hist->bins[bin_idx]++;
+		hist->bin_range.y = math::max(hist->bin_range.y, hist->bins[bin_idx]);
+	}
+	hist->value_range = { min_val, max_val };
+}
+
 static void set_error_message(CString msg) {
 	
 }
 
-bool structure_match_resname(DynamicArray<Structure>* matched_structures, const Array<CString> args, const MoleculeStructure& molecule) {
-	ASSERT(matched_structures);
+typedef bool(*StructureFunc)(StructureData* data, const Array<CString> args, const MoleculeStructure& molecule);
+
+
+bool structure_match_resname(StructureData* data, const Array<CString> args, const MoleculeStructure& molecule) {
+	ASSERT(data);
 
 	// Expect args.count to be > 0
 	if (args.count == 0) {
@@ -81,10 +164,7 @@ bool structure_match_resname(DynamicArray<Structure>* matched_structures, const 
 	for (const auto& res : molecule.residues) {
 		for (const auto& arg : args) {
 			if (compare(res.name, arg)) {
-				Structure s;
-				s.type = Structure::AtomicRange;
-				s.data.atom_range = { res.beg_atom_idx, res.end_atom_idx };
-				matched_structures->push_back(s);
+				data->structures.push_back({ res.beg_atom_idx, res.end_atom_idx });
 				break;
 			}
 		}
@@ -93,8 +173,8 @@ bool structure_match_resname(DynamicArray<Structure>* matched_structures, const 
 	return true;
 }
 
-bool structure_match_resid(DynamicArray<Structure>* matched_structures, const Array<CString> args, const MoleculeStructure& molecule) {
-	ASSERT(matched_structures);
+bool structure_match_resid(StructureData* data, const Array<CString> args, const MoleculeStructure& molecule) {
+	ASSERT(data);
 
 	// Expect args to be  > 0
 	if (args.count == 0) {
@@ -102,18 +182,15 @@ bool structure_match_resid(DynamicArray<Structure>* matched_structures, const Ar
 		return false;
 	}
 
-	for (const auto& res : molecule.residues) {
-		for (const auto& arg : args) {
-			auto id = to_int(arg);
-			if (!id.success) {
-				set_error_message("Failed to parse argument for resid");
-				return false;
-			}
+	for (const auto& arg : args) {
+		auto id = to_int(arg);
+		if (!id.success) {
+			set_error_message("Failed to parse argument for resid");
+			return false;
+		}
+		for (const auto& res : molecule.residues) {
 			if (res.id == id) {
-				Structure s;
-				s.type = Structure::AtomicRange;
-				s.data.atom_range = { res.beg_atom_idx, res.end_atom_idx };
-				matched_structures->push_back(s);
+				data->structures.push_back({ res.beg_atom_idx, res.end_atom_idx });
 				break;
 			}
 		}
@@ -122,8 +199,8 @@ bool structure_match_resid(DynamicArray<Structure>* matched_structures, const Ar
 	return true;
 }
 
-bool structure_match_residue(DynamicArray<Structure>* matched_structures, const Array<CString> args, const MoleculeStructure& molecule) {
-	ASSERT(matched_structures);
+bool structure_match_residue(StructureData* data, const Array<CString> args, const MoleculeStructure& molecule) {
+	ASSERT(data);
 
 	// Expect args to be  > 0
 	if (args.count == 0) {
@@ -143,18 +220,40 @@ bool structure_match_residue(DynamicArray<Structure>* matched_structures, const 
 			return false;
 		}
 		const auto& res = molecule.residues[idx];
-
-		Structure s;
-		s.type = Structure::AtomicRange;
-		s.data.atom_range = { res.beg_atom_idx, res.end_atom_idx };
-		matched_structures->push_back(s);
+		data->structures.push_back({ res.beg_atom_idx, res.end_atom_idx });
 	}
 
 	return true;
 }
 
-bool structure_extract_res_atom(DynamicArray<Structure>* matched_structures, const Array<CString> args, const MoleculeStructure& molecule) {
-	ASSERT(matched_structures);
+bool structure_match_atom(StructureData* data, const Array<CString> args, const MoleculeStructure& molecule) {
+	ASSERT(data);
+
+	// Expect args to be  > 0
+	if (args.count == 0) {
+		set_error_message("Expects one or more arguments for atom");
+		return false;
+	}
+
+	for (const auto& arg : args) {
+		auto id = to_int(arg);
+		if (!id.success) {
+			set_error_message("Failed to parse argument for atom");
+			return false;
+		}
+		auto idx = id - 1;
+		if (idx < 0 || molecule.atom_positions.count <= idx) {
+			set_error_message("Index for atom is out of bounds");
+			return false;
+		}
+		data->structures.push_back({ idx, idx + 1 });
+	}
+
+	return true;
+}
+
+bool structure_extract_resatom(StructureData* data, const Array<CString> args, const MoleculeStructure& molecule) {
+	ASSERT(data);
 	if (args.count == 0) {
 		set_error_message("resatom requires 1 argument");
 		return false;
@@ -165,75 +264,300 @@ bool structure_extract_res_atom(DynamicArray<Structure>* matched_structures, con
 		set_error_message("resatom: failed to parse argument");
 		return false;
 	}
-	int idx = res - 1;
+	int offset = res - 1;
 
-	for (auto& s : *matched_structures) {
-		if (s.type == Structure::AtomicRange) {
-			// @ TODO: RANGE CHECK FOR IDX.
-			s.type = s.AtomicIndex;
-			s.data.atom_index = s.data.atom_range.beg + idx;
+	for (auto& s : data->structures) {
+		int count = s.end_idx - s.beg_idx;
+		if (offset >= count) {
+			set_error_message("restom: Index is out of range for structure");
+			return false;
+		}
+		if (count > 1) {
+			int new_idx = s.beg_idx + offset;
+			s = { new_idx, new_idx + 1 };
 		}
 	}
 }
 
-bool structure_extract_com(DynamicArray<Structure>* matched_structures, const Array<CString> args, const MoleculeStructure& molecule) {
-	ASSERT(matched_structures);
-	(void)args;
-	if (matched_structures->count == 0) return false;
+bool structure_apply_aggregation_strategy_com(StructureData* data, const Array<CString>, const MoleculeStructure&) {
+	ASSERT(data);
+	data->strategy = AggregationStrategy::COM;
+	return true;
+}
 
-	switch ((*matched_structures)[0].type) {
-	case Structure::AtomicIndex:
-		vec3 pos(0);
-		for (auto& s : *matched_structures) {
-			ASSERT(s.type == s.AtomicIndex);
-			pos += molecule.atom_positions[s.data.atom_index];
-		}
-		pos /= (float)matched_structures->count;
-		matched_structures->clear();
-		Structure s;
-		s.type = Structure::Position;
-		s.data.position = pos;
-		matched_structures->push_back(s);
-		break;
-	case Structure::Position:
-	{
-		vec3 pos(0);
-		for (auto& s : *matched_structures) {
-			ASSERT(s.type == s.Position);
-			pos += s.data.position;
-		}
-		pos /= (float)matched_structures->count;
-		matched_structures->clear();
-		Structure s;
-		s.type = Structure::Position;
-		s.data.position = pos;
-		matched_structures->push_back(s);
-		break;
+// Helper funcs
+inline static vec3 compute_com(Array<const vec3> positions) {
+	if (positions.count == 0) return { 0,0,0 };
+	if (positions.count == 1) return positions[0];
+	
+	vec3 com{ 0 };
+	for (const auto& p : positions) {
+		com += p;
 	}
-	case Structure::AtomicRange:
-	{
-		for (auto& s : *matched_structures) {
-			ASSERT(s.type == s.AtomicRange);
-			vec3 pos(0);
-			for (int i = s.data.atom_range.beg; i < s.data.atom_range.end; i++) {
-				pos += molecule.atom_positions[i];
-			}
-			pos /= (float)(s.data.atom_range.end - s.data.atom_range.beg);
 
-			s.type = Structure::Position;
-			s.data.position = pos;
+	return com / (float)positions.count;
+}
+
+
+void compute_frame_positions(Array<vec3> dst, const StructureData& data, const MoleculeDynamic& dynamic, int frame_index) {
+	ASSERT(dst.data);
+	ASSERT(dst.count > data.structures.count);
+	
+	Array<vec3> positions = get_trajectory_positions(dynamic.trajectory, frame_index);
+	switch (data.strategy) {
+	case AggregationStrategy::COM:
+		for (int32 i = 0; i < data.structures.count; i++) {
+			dst[i] = compute_com(positions.sub_array(data.structures[i].beg_idx, data.structures[i].end_idx - data.structures[i].beg_idx));
 		}
 		break;
-	}
 	default:
+		for (int32 i = 0; i < data.structures.count; i++) {
+			dst[i] = positions[data.structures[i].beg_idx];
+		}
 		break;
+	}
+}
+
+static bool compute_distance(Array<float> data, const Array<CString> args, const MoleculeDynamic& dynamic) {
+	ASSERT(data);
+	if (args.count != 2) {
+		set_error_message("distance expects 2 arguments");
+		return false;
+	}
+
+	StructureData arg_structure_data[2];
+	if (!extract_structures(&arg_structure_data[0], args[0], dynamic.molecule)) return false;
+	if (!extract_structures(&arg_structure_data[1], args[1], dynamic.molecule)) return false;
+
+	if (arg_structure_data[0].structures.count == 0 || arg_structure_data[1].structures.count == 0) {
+		set_error_message("distance: one argument did not match any structures");
+		return false;
+	}
+
+	if (arg_structure_data[0].structures.count > 1 && arg_structure_data[1].structures.count > 1) {
+		set_error_message("distance cannot be computed between many to many, only supports many to one or one to many");
+		return false;
+	}
+
+	DynamicArray<vec3> pos_a(arg_structure_data[0].structures.count);
+	DynamicArray<vec3> pos_b(arg_structure_data[1].structures.count);
+
+	for (int i = 0; i < dynamic.trajectory.num_frames; i++) {
+		compute_frame_positions(pos_a, arg_structure_data[0], dynamic, i);
+		compute_frame_positions(pos_b, arg_structure_data[1], dynamic, i);
+		float dist = 0.f;
+
+		if (pos_a.count > 1) {
+			for (const auto& p : pos_a) {
+				dist += math::distance(p, pos_b[0]);
+			}
+			dist /= (float)pos_a.count;
+		}
+		else if (pos_b.count > 1) {
+			for (const auto& p : pos_b) {
+				dist += math::distance(pos_a[0], p);
+			}
+			dist /= (float)pos_b.count;
+		}
+		else {
+			dist = math::distance(pos_a[0], pos_b[0]);
+		}
 	}
 
 	return true;
 }
 
-static bool compute_atomic_distance(float* data, const Array <CString> args, const MoleculeDynamic& dynamic) {
+void initialize() {
 
+}
+
+void shutdown() {
+
+}
+
+static CString extract_parentheses(CString str) {
+	const char* beg = str.beg();
+	const char* end = str.end();
+
+	while (beg < end && *beg != '(') beg++;
+	if (beg < end) beg++;
+	while (end > beg && *end != ')') end--;
+
+	return { beg, end };
+}
+
+static const char* find_character(CString str, char c) {
+	const char* ptr = str.beg();
+	while (ptr < str.end() && *ptr != c) ptr++;
+	return ptr;
+}
+
+static DynamicArray<CString> extract_arguments(CString str) {
+	DynamicArray<CString> args;
+
+	const char* beg = str.beg();
+	const char* end = str.beg();
+	int32 count = 0;
+
+	while (end < str.end()) {
+		if (*end == '(')
+			count++;
+		else if (*end == ')')
+			count--;
+		else if (*end == ',') {
+			if (count == 0) {
+				args.push_back(trim({ beg, end }));
+				beg = end + 1;
+			}
+		}
+		end++;
+	}
+	if (beg != end) args.push_back(trim({ beg, end }));
+
+	return args;
+}
+
+static CString extract_command(CString str) {
+	str = trim(str);
+	const char* ptr = str.beg();
+	while (ptr != str.end() && *ptr != '(' && !isspace(*ptr)) ptr++;
+	return { str.beg(), ptr };
+}
+
+static StructureFunc get_structure_func(CString cmd) {
+	if (compare(cmd, "resname")) {
+		return structure_match_resname;
+	}
+	else if (compare(cmd, "residue")) {
+		return structure_match_residue;
+	}
+	else if (compare(cmd, "resid")) {
+		return structure_match_resid;
+	}
+	else if (compare(cmd, "atom")) {
+		return structure_match_atom;
+	}
+	else if (compare(cmd, "resatom")) {
+		return structure_extract_resatom;
+	}
+	else if (compare(cmd, "com")) {
+		return structure_apply_aggregation_strategy_com;
+	}
+	return nullptr;
+}
+
+bool extract_structures(StructureData* data, CString arg, const MoleculeStructure& molecule) {
+	CString cmd = extract_command(arg);
+	auto func = get_structure_func(cmd);
+
+	if (!func) {
+		char buf[64];
+		snprintf(buf, 64, "Could not identify command '%s'", cmd.beg());
+		set_error_message(buf);
+		return false;
+	}
+
+	CString outer = extract_parentheses(arg);
+	DynamicArray<CString> cmd_args = extract_arguments(outer);
+
+	// @NOTE: ONLY ALLOW RECURSION FOR FIRST ARGUMENT?
+	if (cmd_args.count > 0 && find_character(cmd_args[0], '(') != cmd_args[0].end()) {
+		extract_structures(data, cmd_args[0], molecule);
+		cmd_args = cmd_args.sub_array(1);
+	}
+	func(data, cmd_args, molecule);
+}
+
+bool balanced_parantheses(CString str) {
+	int count = 0;
+	const char* ptr = str.beg();
+	while (ptr != str.end()) {
+		if (*ptr == '(') count++;
+		else if (*ptr == ')') count--;
+		ptr++;
+	}
+	return count == 0;
+}
+
+static PropertyComputeFunc get_property_func(CString cmd) {
+	if (compare(cmd, "distance")) {
+		return compute_distance;
+	}
+	return nullptr;
+}
+
+bool compute_stats(const MoleculeDynamic& dynamic) {
+	int num_frames = dynamic.trajectory.num_frames;
+	
+	for (auto& prop : ctx.properties) {
+		if (prop.data.count != num_frames) {
+			if (prop.data.data) FREE(prop.data.data);
+			prop.data = { (float*)MALLOC(num_frames * sizeof(float)), num_frames };
+		}
+		memset(prop.data.data, 0, prop.data.count * sizeof(float));
+
+		if (!balanced_parantheses(prop.args)) {
+			snprintf(prop.error_msg.beg(), prop.error_msg.MAX_LENGTH, "Unbalanced parantheses!");
+			prop.valid = false;
+			continue;
+		}
+
+		DynamicArray<CString> args;
+
+		// Extract big arguments
+		const char* beg = prop.args.beg();
+		const char* end = prop.args.beg();
+		int count = 0;
+
+		while (end != prop.args.end()) {
+			if (*end == '(') count++;
+			else if (*end == ')') count--;
+			else if (isspace(*end) && count == 0) {
+				args.push_back(trim({ beg, end }));
+				beg = end + 1;
+			}
+			end++;
+		}
+		if (beg != end) args.push_back(trim({ beg,end }));
+
+		if (args.count == 0) {
+			prop.valid = false;
+			continue;
+		}
+
+		CString cmd = args[0];
+		args = args.sub_array(1);
+		
+		auto func = get_property_func(cmd);
+		if (!func) {
+			snprintf(prop.error_msg.beg(), prop.error_msg.MAX_LENGTH, "Could not recognize command '%s'", cmd);
+			prop.valid = false;
+			continue;
+		}
+
+		func(prop.data, args, dynamic);
+	}
+
+	return true;
+}
+
+ID create_property(CString name, CString args) {
+	Property prop;
+	prop.id = create_id();
+	prop.name = name;
+	prop.args = args;
+	prop.valid = false;
+
+	ctx.properties.push_back(prop);
+	return prop.id;
+}
+
+void remove_property(ID prop_id) {
+	auto prop = find_id(ctx.properties, prop_id);
+	if (prop) {
+		if (prop->data.data) FREE(prop->data.data);
+		ctx.properties.remove(prop);
+	}
 }
 
 /*
@@ -310,6 +634,7 @@ static bool compute_atomic_dihedral(float* data, const Array<CString> args, cons
 }
 */
 
+/*
 static DynamicArray<Structure> match_by_resname(const Array<CString> args, const MoleculeStructure& mol) {
     DynamicArray<Structure> result;
     for (const auto& res : mol.residues) {
@@ -349,98 +674,9 @@ void clear() {
     //ctx.property_commands.clear();
     //ctx.group_commands.clear();
 }
+*/
 
-template <typename T>
-static T* find_id(Array<T> data, ID id) {
-    for (auto& item : data) {
-        if (item.id == id) return &item;
-    }
-    return nullptr;
-}
-   
-static ID create_id() {
-    if (ctx.free_ids.count > 0) return ctx.free_ids.pop_back();
-    return ctx.next_id++;
-}
-
-static CString alloc_string(CString str) {
-    char* data = (char*)MALLOC(str.count);
-    ctx.string_buffer.push_back({data, str.count});
-	copy(ctx.string_buffer.back(), str);
-    return ctx.string_buffer.back();
-}
-
-static void free_string(CString str) {
-    for (auto int_str : ctx.string_buffer)  {
-        if (int_str.count == str.count && compare(int_str, str)) {
-            ctx.string_buffer.remove(&int_str);
-            return;
-        }
-    }
-}
-
-// HISTOGRAMS
-void init_histogram(Histogram* hist, int32 num_bins) {
-	ASSERT(hist);
-	if (hist->bins.data) {
-		FREE(hist->bins.data);
-	}
-	hist->bins.data = (float*)MALLOC(num_bins * sizeof(float));
-	hist->bins.count = num_bins;
-
-	ASSERT(hist->bins.data);
-}
-
-void free_histogram(Histogram* hist) {
-	ASSERT(hist);
-	if (hist->bins.data) {
-		FREE(hist->bins.data);
-		hist->bins.data = nullptr;
-		hist->bins.count = 0;
-	}
-}
-
-Histogram compute_histogram(int32 num_bins, Array<float> data) {
-    Histogram hist;
-    compute_histogram(&hist, num_bins, data);
-    return hist;
-}
-
-Histogram compute_histogram(int32 num_bins, Array<float> data, float min_val, float max_val) {
-    Histogram hist;
-    compute_histogram(&hist, num_bins, data, min_val, max_val);
-    return hist;
-}
-
-void compute_histogram(Histogram* hist, int32 num_bins, Array<float> data) {
-    ASSERT(hist);
-    if (data.count == 0) return;
-    float min_val = FLT_MAX;
-    float max_val = -FLT_MAX;
-    for (const auto& d : data) {
-        min_val = math::min(min_val, d);
-        max_val = math::max(max_val, d);
-    }
-    compute_histogram(hist, num_bins, data, min_val, max_val);
-}
-
-void compute_histogram(Histogram* hist, int32 num_bins, Array<float> data, float min_val, float max_val) {
-    ASSERT(hist);
-	ASSERT(num_bins > 0);
-
-	init_histogram(hist, num_bins);
-	memset(hist->bins.data, 0, hist->bins.count * sizeof(float));
-
-	const float scl = num_bins / (max_val - min_val);
-	hist->bin_range = { 0,0 };
-	for (auto v : data) {
-		int32 bin_idx = math::clamp((int32)((v - min_val) * scl), 0, num_bins - 1);
-		hist->bins[bin_idx]++;
-		hist->bin_range.y = math::max(hist->bin_range.y, hist->bins[bin_idx]);
-	}
-	hist->val_range = { min_val, max_val };
-}
-
+/*
 void register_property_command(CString command, PropertyCommandDescriptor desc) {
     ID id = COMPUTE_ID(command);
     auto cmd = find_id(ctx.property_commands, id);
@@ -708,22 +944,7 @@ void clear_instances() {
 	ctx.property_data.clear();
 }
 
-ID get_property(CString name) {
-    for (const auto &p : ctx.properties) {
-        if (compare(p.name, name)) return p.id;
-    }
-    return INVALID_ID;
-}
 
-ID get_property(int32 idx) {
-	if (-1 < idx && idx < ctx.properties.count) return ctx.properties[idx].id;
-    return INVALID_ID;
-}
-
-int32 get_property_count() {
-    return (int32)ctx.properties.count;
-}
-    
 bool validate_property(PropertyInternal* prop) {
     ASSERT(prop);
     prop->valid = false;
@@ -833,81 +1054,61 @@ void clear_property(ID prop_id) {
 	}
 }
 
-Range get_property_data_range(ID prop_id, int32 idx) {
-	auto prop = find_id(ctx.properties, prop_id);
-	if (prop && prop->data_beg_id != INVALID_ID && idx < prop->data_count) {
-		auto prop_data = find_id(ctx.property_data, prop->data_beg_id);
-		return prop_data[idx].data_range;
+*/
+
+ID get_property(CString name) {
+	for (const auto &p : ctx.properties) {
+		if (compare(p.name, name)) return p.id;
 	}
-	return {0,0};
+	return INVALID_ID;
 }
 
-Array<float> get_property_data(ID prop_id, int32 idx) {
-    auto prop = find_id(ctx.properties, prop_id);
-    if (prop && prop->data_beg_id != INVALID_ID && idx < prop->data_count) {
-        auto prop_data = find_id(ctx.property_data, prop->data_beg_id);
-        return prop_data[idx].data;
-    }
-    return {};
+ID get_property(int32 idx) {
+	if (-1 < idx && idx < ctx.properties.count) return ctx.properties[idx].id;
+	return INVALID_ID;
 }
 
-Array<float> get_property_avg_data(ID prop_id) {
-    auto prop = find_id(ctx.properties, prop_id);
-    if (prop && prop->data_avg_id != INVALID_ID) {
-        auto prop_data = find_id(ctx.property_data, prop->data_avg_id);
-        return prop_data->data;
-    }
-    return {};
+int32 get_property_count() {
+	return (int32)ctx.properties.count;
 }
 
-Histogram* get_property_histogram(ID prop_id, int32 instance_idx) {
+
+Range get_property_data_range(ID prop_id) {
 	auto prop = find_id(ctx.properties, prop_id);
 	if (prop) {
-		if (instance_idx >= prop->data_count) return nullptr;
-		auto prop_data = find_id(ctx.property_data, prop->data_beg_id);
-		return &prop_data[instance_idx].histogram;
+		return prop->data_range;
 	}
-	return nullptr;
+	return {};
 }
 
-Histogram* get_property_avg_histogram(ID prop_id) {
-	auto prop = find_id(ctx.properties, prop_id);
-	if (prop) {
-		auto prop_data = find_id(ctx.property_data, prop->data_avg_id);
-		return &prop_data->histogram;
-	}
-	return nullptr;
-}
-
-void clear_property_data() {
-	for (auto& prop : ctx.properties) {
-		prop.data_beg_id = INVALID_ID;
-		prop.data_avg_id = INVALID_ID;
-		prop.data_count = 0;
-	}
-	ctx.property_data.clear();
-}
-
-int32 get_property_data_count(ID prop_id) {
+Array<float> get_property_data(ID prop_id) {
     auto prop = find_id(ctx.properties, prop_id);
     if (prop) {
-        return prop->data_count;
+		return prop->data;
     }
-	return 0;
+    return {};
 }
-    
+
+Histogram* get_property_histogram(ID prop_id) {
+	auto prop = find_id(ctx.properties, prop_id);
+	if (prop) {
+		return &prop->hist;
+	}
+	return nullptr;
+}
+
 StringBuffer<32>* get_property_name_buf(ID prop_id) {
     auto prop = find_id(ctx.properties, prop_id);
     if (prop) {
-        return &prop->name_buf;
+        return &prop->name;
     }
     return nullptr;
 }
     
-StringBuffer<64>* get_property_args_buf(ID prop_id) {
+StringBuffer<256>* get_property_args_buf(ID prop_id) {
     auto prop = find_id(ctx.properties, prop_id);
     if (prop) {
-        return &prop->args_buf;
+        return &prop->args;
     }
     return nullptr;
 }
@@ -931,10 +1132,7 @@ bool get_property_valid(ID prop_id) {
 CString get_property_unit(ID prop_id) {
 	auto prop = find_id(ctx.properties, prop_id);
 	if (prop) {
-		auto cmd = find_id(ctx.property_commands, prop->cmd_id);
-		if (cmd) {
-			return cmd->unit;
-		}
+		return prop->unit;
 	}
 	return "";
 }
@@ -942,13 +1140,12 @@ CString get_property_unit(ID prop_id) {
 bool get_property_periodic(ID prop_id) {
 	auto prop = find_id(ctx.properties, prop_id);
 	if (prop) {
-		auto cmd = find_id(ctx.property_commands, prop->cmd_id);
-		if (cmd) {
-			return cmd->periodic;
-		}
+		return false;
 	}
 	return false;
 }
+
+/*
 
 bool compute_stats(const MoleculeDynamic& dynamic) {
 	if (!dynamic.molecule) {
@@ -1102,5 +1299,7 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
 
 	return true;
 }
+
+*/
 
 }  // namespace stats
