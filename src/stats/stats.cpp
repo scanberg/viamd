@@ -146,7 +146,7 @@ void compute_histogram(Histogram* hist, int32 num_bins, Array<float> data, float
 }
 
 static void set_error_message(CString msg) {
-	
+    printf("%s\n", msg.beg());
 }
 
 typedef bool(*StructureFunc)(StructureData* data, const Array<CString> args, const MoleculeStructure& molecule);
@@ -277,6 +277,7 @@ bool structure_extract_resatom(StructureData* data, const Array<CString> args, c
 			s = { new_idx, new_idx + 1 };
 		}
 	}
+    return true;
 }
 
 bool structure_apply_aggregation_strategy_com(StructureData* data, const Array<CString>, const MoleculeStructure&) {
@@ -301,7 +302,7 @@ inline static vec3 compute_com(Array<const vec3> positions) {
 
 void compute_frame_positions(Array<vec3> dst, const StructureData& data, const MoleculeDynamic& dynamic, int frame_index) {
 	ASSERT(dst.data);
-	ASSERT(dst.count > data.structures.count);
+	ASSERT(dst.count >= data.structures.count);
 	
 	Array<vec3> positions = get_trajectory_positions(dynamic.trajectory, frame_index);
 	switch (data.strategy) {
@@ -334,34 +335,32 @@ static bool compute_distance(Array<float> data, const Array<CString> args, const
 		return false;
 	}
 
-	if (arg_structure_data[0].structures.count > 1 && arg_structure_data[1].structures.count > 1) {
-		set_error_message("distance cannot be computed between many to many, only supports many to one or one to many");
+	if (arg_structure_data[0].structures.count > 1 && arg_structure_data[1].structures.count > 1 &&
+        arg_structure_data[0].structures.count != arg_structure_data[1].structures.count) {
+		set_error_message("distance cannot be computed between many to many since the matching structure count differs");
 		return false;
 	}
 
-	DynamicArray<vec3> pos_a(arg_structure_data[0].structures.count);
-	DynamicArray<vec3> pos_b(arg_structure_data[1].structures.count);
+    int count = math::max(arg_structure_data[0].structures.count, arg_structure_data[1].structures.count);
+    while (arg_structure_data[0].structures.count < count) {
+        arg_structure_data[0].structures.push_back(arg_structure_data[0].structures.front());
+    }
+    while (arg_structure_data[1].structures.count < count) {
+        arg_structure_data[1].structures.push_back(arg_structure_data[1].structures.front());
+    }
+
+    DynamicArray<vec3> pos_a(count);
+    DynamicArray<vec3> pos_b(count);
 
 	for (int i = 0; i < dynamic.trajectory.num_frames; i++) {
 		compute_frame_positions(pos_a, arg_structure_data[0], dynamic, i);
 		compute_frame_positions(pos_b, arg_structure_data[1], dynamic, i);
-		float dist = 0.f;
 
-		if (pos_a.count > 1) {
-			for (const auto& p : pos_a) {
-				dist += math::distance(p, pos_b[0]);
-			}
-			dist /= (float)pos_a.count;
-		}
-		else if (pos_b.count > 1) {
-			for (const auto& p : pos_b) {
-				dist += math::distance(pos_a[0], p);
-			}
-			dist /= (float)pos_b.count;
-		}
-		else {
-			dist = math::distance(pos_a[0], pos_b[0]);
-		}
+        float dist = 0.f;
+        for (int i = 0; i < count; i++) {
+		    dist += math::distance(pos_a[0], pos_b[0]);
+        }
+        dist /= (float)count;
 	}
 
 	return true;
@@ -462,10 +461,11 @@ bool extract_structures(StructureData* data, CString arg, const MoleculeStructur
 
 	// @NOTE: ONLY ALLOW RECURSION FOR FIRST ARGUMENT?
 	if (cmd_args.count > 0 && find_character(cmd_args[0], '(') != cmd_args[0].end()) {
-		extract_structures(data, cmd_args[0], molecule);
+        if (!extract_structures(data, cmd_args[0], molecule)) return false;
 		cmd_args = cmd_args.sub_array(1);
 	}
-	func(data, cmd_args, molecule);
+    if (!func(data, cmd_args, molecule)) return false;
+    return true;
 }
 
 bool balanced_parantheses(CString str) {
