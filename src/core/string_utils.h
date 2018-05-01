@@ -37,6 +37,8 @@ struct CString : Array<const char> {
 		return { array.data, array.count };
 	}
 
+	const char* cstr() const { return data; }
+
 	operator const char*() { return data; }
 	operator bool() { return (data != 0 && count != 0); }
 };

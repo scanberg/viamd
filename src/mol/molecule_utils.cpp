@@ -1979,7 +1979,7 @@ void draw_licorice(Array<const vec3> atom_positions, Array<const Bond> atom_bond
                    const mat4& proj_mat, float radii_scale) {
     ASSERT(atom_positions.count == atom_colors.count);
 
-	const int32 num_bytes = atom_positions.count * sizeof(licorice::Vertex);
+	const auto num_bytes = atom_positions.count * sizeof(licorice::Vertex);
 	licorice::Vertex* data = (licorice::Vertex*)TMP_MALLOC(num_bytes);
 
     for (int64_t i = 0; i < atom_positions.count; i++) {

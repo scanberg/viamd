@@ -56,8 +56,18 @@ struct StructureData {
 	AggregationStrategy strategy;
 };
 
+struct StructData {
+	struct ArgData {
+		Array<Structure> structures;
+		AggregationStrategy strategy;
+	};
+
+	DynamicArray<Structure> structures;
+	DynamicArray<ArgData> arg_structures;
+};
+
 // Helper functions
-bool extract_structures(StructureData* data, CString arg, const MoleculeStructure& structure);
+bool extract_args_structures(Array<StructureData> data, Array<CString> arg, const MoleculeStructure& structure);
 void compute_frame_positions(Array<vec3> dst, const StructureData& data, const MoleculeDynamic& dynamic, int frame_idx);
 
 typedef bool (*PropertyComputeFunc)(Array<float> data, const Array<CString> args, const MoleculeDynamic& dynamic);
@@ -98,6 +108,7 @@ ID		get_property(int32 idx);
 int32	get_property_count();
 
 bool			   get_property_valid(ID prop_id); 
+CString			   get_property_error_message(ID prop_id);
 StringBuffer<32>*  get_property_name_buf(ID prop_id);
 StringBuffer<256>* get_property_args_buf(ID prop_id);
 CString			   get_property_name(ID prop_id);
@@ -105,6 +116,7 @@ Range			   get_property_data_range(ID prop_id);
 Array<float>	   get_property_data(ID prop_id);
 bool			   get_property_periodic(ID prop_id);
 Histogram*		   get_property_histogram(ID prop_id);
+
 
 //void		 clear_property_data();
 

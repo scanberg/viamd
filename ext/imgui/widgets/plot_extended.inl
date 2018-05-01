@@ -81,12 +81,12 @@ int PlotExtended(ImGuiPlotType plot_type, const char* label, const float* data, 
 				}
 
 				SetTooltip(formatted.c_str());
-				float val = get_data(v_idx);
+				//float val = get_data(v_idx);
 			}
 
             // Draw vertical-line
-            const ImVec2 btm = ImVec2((int)(g.IO.MousePos.x + 0.5f), inner_bb.Min.y);
-            const ImVec2 top = ImVec2((int)(g.IO.MousePos.x + 0.5f), inner_bb.Max.y);
+            const ImVec2 btm = ImVec2(roundf(g.IO.MousePos.x + 0.5f), inner_bb.Min.y);
+            const ImVec2 top = ImVec2(roundf(g.IO.MousePos.x + 0.5f), inner_bb.Max.y);
             window->DrawList->AddLine(btm, top, col_base);
 
             v_hovered = v_idx;
@@ -95,7 +95,7 @@ int PlotExtended(ImGuiPlotType plot_type, const char* label, const float* data, 
         // Draw zero axis
         if (plot_type == ImGuiPlotType_Lines && scale_min < 0.f && scale_max > 0.f) {
             auto t = 1.0f - ImSaturate((0.f - scale_min) / (scale_max - scale_min));
-            auto y_pos = (int)(ImLerp(inner_bb.Min.y, inner_bb.Max.y, t) + 0.5f);
+            auto y_pos = roundf(ImLerp(inner_bb.Min.y, inner_bb.Max.y, t) + 0.5f);
             auto color = IM_COL32(255, 255, 255, 140);
             window->DrawList->AddLine(ImVec2(inner_bb.Min.x, y_pos), ImVec2(inner_bb.Max.x, y_pos),
                                       color);
@@ -201,7 +201,7 @@ int PlotExtended(ImGuiPlotType plot_type, const char* label, const float* data, 
             if (offset <= *selected_idx && *selected_idx < offset + count) {
                 const float t = ImClamp((*selected_idx - offset) / (float)(count - 1), 0.0f, 1.0f);
                 // cast to int for sharp edges due to dpi-scaling
-                const float x = (int)(ImLerp(inner_bb.Min.x, inner_bb.Max.x, t) + 0.5f);
+                const float x = roundf(ImLerp(inner_bb.Min.x, inner_bb.Max.x, t) + 0.5f);
                 ImVec2 btm = ImVec2(x, inner_bb.Min.y);
                 ImVec2 top = ImVec2(x, inner_bb.Max.y);
                 window->DrawList->AddLine(btm, top, col_hovered);

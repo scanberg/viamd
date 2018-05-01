@@ -890,68 +890,6 @@ static void draw_property_window(ApplicationData* data) {
 
     bool compute_stats = false;
 
-    auto group_args_callback = [](ImGuiTextEditCallbackData* data) -> int {
-        switch (data->EventFlag) {
-            case ImGuiInputTextFlags_CallbackCompletion: {
-                // Example of TEXT COMPLETION
-
-                // Locate beginning of current word
-                const char* word_end = data->Buf + data->CursorPos;
-                const char* word_start = word_end;
-                while (word_start > data->Buf) {
-                    const char c = word_start[-1];
-                    if (c == ' ' || c == '\t' || c == ',' || c == ';') break;
-                    word_start--;
-                }
-
-                // Build a list of candidates
-                ImVector<const char*> candidates;
-
-                //for (int i = 0; i < stats::get_group_command_count(); i++) {
-                //    CString cmd = stats::get_group_command_keyword(i);
-                //    if (compare_n(cmd, word_start, (int)(word_end - word_start))) candidates.push_back(cmd.beg());
-                //}
-
-                if (candidates.Size == 0) {
-                    // No match
-                    // AddLog("No match for \"%.*s\"!\n", (int)(word_end - word_start), word_start);
-                } else if (candidates.Size == 1) {
-                    // Single match. Delete the beginning of the word and replace it entirely so we've got nice casing
-                    data->DeleteChars((int)(word_start - data->Buf), (int)(word_end - word_start));
-                    data->InsertChars(data->CursorPos, candidates[0]);
-                    data->InsertChars(data->CursorPos, " ");
-                } else {
-                    // Multiple matches. Complete as much as we can, so inputing "C" will complete to "CL" and display "CLEAR" and "CLASSIFY"
-                    int match_len = (int)(word_end - word_start);
-                    for (;;) {
-                        int c = 0;
-                        bool all_candidates_matches = true;
-                        for (int i = 0; i < candidates.Size && all_candidates_matches; i++)
-                            if (i == 0)
-                                c = toupper(candidates[i][match_len]);
-                            else if (c == 0 || c != toupper(candidates[i][match_len]))
-                                all_candidates_matches = false;
-                        if (!all_candidates_matches) break;
-                        match_len++;
-                    }
-
-                    if (match_len > 0) {
-                        data->DeleteChars((int)(word_start - data->Buf), (int)(word_end - word_start));
-                        data->InsertChars(data->CursorPos, candidates[0], candidates[0] + match_len);
-                    }
-
-                    // List matches
-                    // AddLog("Possible matches:\n");
-                    // for (int i = 0; i < candidates.Size; i++)
-                    //	AddLog("- %s\n", candidates[i]);
-                }
-
-                break;
-            }
-        }
-        return 0;
-    };
-
     auto property_callback = [](ImGuiTextEditCallbackData* data) -> int {
         (void)data;
         return 0;
@@ -1053,8 +991,8 @@ static void draw_property_window(ApplicationData* data) {
 
     ImGui::Columns(3, "columns", true);
     ImGui::Separator();
-    ImGui::SetColumnWidth(0, ImGui::GetWindowContentRegionWidth() * 0.4f);
-    ImGui::SetColumnWidth(1, ImGui::GetWindowContentRegionWidth() * 0.5f);
+    ImGui::SetColumnWidth(0, ImGui::GetWindowContentRegionWidth() * 0.2f);
+    ImGui::SetColumnWidth(1, ImGui::GetWindowContentRegionWidth() * 0.7f);
     ImGui::SetColumnWidth(2, ImGui::GetWindowContentRegionWidth() * 0.1f);
 
     ImGui::Text("name");
@@ -1068,6 +1006,7 @@ static void draw_property_window(ApplicationData* data) {
         auto name_buf = stats::get_property_name_buf(prop_id);
         auto args_buf = stats::get_property_args_buf(prop_id);
         auto valid = stats::get_property_valid(prop_id);
+		auto error_msg = stats::get_property_error_message(prop_id);
         bool update = false;
 
         ImGui::Separator();
@@ -1078,14 +1017,19 @@ static void draw_property_window(ApplicationData* data) {
         if (ImGui::InputText("##name", name_buf->buffer, name_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
             update = true;
         }
-        ImGui::PopItemWidth();
+		ImGui::PopItemWidth();
         ImGui::NextColumn();
-        ImGui::PushItemWidth(-1);
+		ImGui::PushItemWidth(-1);
         if (ImGui::InputText("##args", args_buf->buffer, args_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
             update = true;
         }
         ImGui::PopItemWidth();
-        if (!valid) ImGui::PopStyleColor();
+		if (!valid) {
+			ImGui::PopStyleColor();
+			if (!valid && ImGui::GetHoveredID() == ImGui::GetID("##args")) {
+				ImGui::SetTooltip("%s", error_msg.cstr());
+			}
+		}
         ImGui::NextColumn();
         ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);

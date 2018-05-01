@@ -5,11 +5,12 @@
 
 template <typename T>
 struct Array {
-    Array(T* _data = 0, int64 _count = 0) : data(_data), count(_count) {}
+	Array() : data(nullptr), count(0) {}
+    template <size_t N>
+    Array(T (&c_arr)[N]) : data(c_arr), count(N) {}
+    Array(T* _data, int64 _count) : data(_data), count(_count) {}
 	Array(T* _data_beg, T* _data_end) : data(_data_beg), count(_data_end - _data_beg) {}
 
-    template <size_t N>
-    Array(const T (&c_arr)[N]) : data(c_arr), count(N) {}
 
     Array<T> sub_array(int64 _offset, int64 _count = -1) {
         ASSERT(0 <= _offset);
@@ -58,6 +59,7 @@ struct Array {
 };
 
 // Light-weight std::vector alternative
+// @WARNING: THIS IS NOT A STRAIGHT FORWARD REPLACEMENT TO STD::VECTOR AS CONSTRUCTORS AND DESTRUCTORS ARE NEVER CALLED.
 template <typename T>
 struct DynamicArray : Array<T> {
 	static_assert(std::is_trivially_destructible<T>::value, "DynamicArray only supports trivially destructable data types");
@@ -136,13 +138,13 @@ struct DynamicArray : Array<T> {
 	}
 
 	DynamicArray& operator =(DynamicArray&& other) {
-		// Is this check needed?
+		// @NOTE: Is this check needed?
 		if (&other != this) {
 			if (this->data) {
 				FREE(this->data);
 			}
-			capacity = other.capacity;
-			other.capacity = 0;
+            capacity = other.capacity;
+            other.capacity = 0;
 			this->data = other.data;
 			other.data = nullptr;
 			this->count = other.count;
@@ -236,32 +238,30 @@ struct DynamicArray : Array<T> {
 		this->count--;
 	}
 
+	void swap_back_and_pop(T* it) {
+		ASSERT(this->beg() <= it && it < this->end());
+		*it = this->back();
+		pop_back();
+	}
+
     void clear() {
         this->count = 0;
     }
 
 private:
-	/*
-	T* internal_alloc(size_t size) {
-		if (allocator)
-			return (T*)allocator->alloc(size * sizeof(T));
-		else {
-			T* ptr = (T*)MALLOC(size * sizeof(T));
-			printf("Allocating %u into ptr %p at [%s][%i]\n", size * sizeof(T), ptr, __FUNCTION__, __LINE__);
-			return ptr;
-		}
-	}
-
-	void internal_free(T* mem) {
-		if (allocator)
-			allocator->free(mem);
-		else {
-			printf("Freeing ptr %p at [%s][%i]\n", mem, __FUNCTION__, __LINE__);
-			FREE(mem);
-		}
-	}
-	*/
-
     int64 capacity;
-    //Allocator* allocator = nullptr;
 };
+
+template <typename T>
+Array<T> allocate_array(int64 num_elements) {
+	return { (T*)MALLOC(num_elements * sizeof(T)), num_elements };
+}
+
+template <typename T>
+void free_array(Array<T>* arr) {
+	ASSERT(arr);
+	if (arr->data) {
+		FREE(arr->data);
+	}
+	*arr = { nullptr, 0 };
+}
