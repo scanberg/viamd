@@ -70,6 +70,17 @@ T angle(glm::vec<N, T, Q> const& a, glm::vec<N, T, Q> const& b) {
 	return acos(dot(normalize(a), normalize(b)));
 }
 
+inline float dihedral_angle(const vec3& p0, const vec3& p1, const vec3& p2, const vec3& p3) {
+	vec3 b1 = p1 - p0;
+	vec3 b2 = p2 - p1;
+	vec3 b3 = p3 - p2;
+	vec3 c1 = math::cross(b1, b2);
+	vec3 c2 = math::cross(b2, b3);
+	return glm::atan(glm::dot(glm::cross(c1, c2), glm::normalize(b2)), glm::dot(c1, c2));
+}
+
+inline float dihedral_angle(const vec3 p[4]) { return dihedral_angle(p[0], p[1], p[2], p[3]); }
+
 // Matrix
 using glm::determinant;
 using glm::inverse;

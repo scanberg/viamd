@@ -248,6 +248,10 @@ struct DynamicArray : Array<T> {
         this->count = 0;
     }
 
+	void set_mem_to_zero() {
+		memset(this->data, 0, this->count * sizeof(T));
+	}
+
 private:
     int64 capacity;
 };
@@ -263,5 +267,6 @@ void free_array(Array<T>* arr) {
 	if (arr->data) {
 		FREE(arr->data);
 	}
-	*arr = { nullptr, 0 };
+	arr->data = nullptr;
+	arr->count = 0;
 }

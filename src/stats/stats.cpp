@@ -4,81 +4,43 @@
 #include <mol/molecule_dynamic.h>
 #include <mol/molecule_utils.h>
 #include <mol/trajectory_utils.h>
+#include <gfx/immediate_draw_utils.h>
 
 #include <ctype.h>
 
-#define COMPUTE_ID(x) (hash::crc64(x))
+#define HASH(x) (hash::crc64(x))
 
 namespace stats {
 
-typedef DynamicArray<Structure>(*StructureMatchFunc)(const Array<CString> args, const MoleculeStructure& molecule);
+typedef bool(*StructureFunc)(StructureData* data, const Array<CString> args, const MoleculeStructure& molecule);
 
-struct PropertyCommand {
-    ID id = INVALID_ID;
-	CString keyword = "";
-    PropertyComputeFunc func = nullptr;
-    Range val_range {};
-    bool periodic = false;
-    CString unit = "";
+struct PropertyFuncEntry {
+	ID hash = INVALID_ID;
+	PropertyComputeFunc compute_func = nullptr;
+	PropertyVisualizeFunc visualize_func = nullptr;
 };
 
-struct StructureCommand {
-	ID id = INVALID_ID;
-	CString keyword = "";
-};
-
-struct Property {
-	ID id = INVALID_ID;
-	StringBuffer<32>  name{};
-	StringBuffer<256> args{};
-	StringBuffer<32>  unit{};
-	StringBuffer<128> error_msg{};
-	bool valid = false;
-	bool periodic = false;
-	Range filter{ 0,0 };
-	Range data_range{ 0,0 };
-	Array<float> data{};
-	Histogram hist;
-};
-
-struct PropertyEntry {
-	ID id = INVALID_ID;
-	Property* ptr = nullptr;
+struct StructureFuncEntry {
+	ID hash = INVALID_ID;
+	StructureFunc func = nullptr;
 };
 
 struct StatisticsContext {
-    ID next_id = 1;
-    DynamicArray<ID> free_ids {};
+	DynamicArray<PropertyFuncEntry> property_func_entries{};
+	DynamicArray<StructureFuncEntry> structure_func_entries{};
+	DynamicArray<Property*> properties {};
     DynamicArray<String> string_buffer {};
-
-    DynamicArray<PropertyEntry> property_entries{};
-
-    DynamicArray<PropertyCommand> property_commands {};
-    DynamicArray<StructureCommand> structure_commands {};
 };
 
 static StatisticsContext ctx;
 
-static Property* find_property(ID id) {
-	for (auto& e : ctx.property_entries) {
-		if (id == e.id) {
-			return e.ptr;
+static PropertyFuncEntry* find_property_func_entry(ID hash) {
+	for (auto& e : ctx.property_func_entries) {
+		if (hash == e.hash) {
+			return &e;
 		}
 	}
 	return nullptr;
-}
-
-template <typename T>
-static T* find_id(Array<T> data, ID id) {
-	for (auto& item : data) {
-		if (item.id == id) return &item;
-	}
-	return nullptr;
-}
-
-static ID create_id() {
-	if (ctx.free_ids.count > 0) return ctx.free_ids.pop_back();
-	return ctx.next_id++;
 }
 
 static CString alloc_string(CString str) {
@@ -159,12 +121,16 @@ void compute_histogram(Histogram* hist, int32 num_bins, Array<float> data, float
 	hist->value_range = { min_val, max_val };
 }
 
+void clear_histogram(Histogram* hist) {
+	ASSERT(hist);
+	if (hist->bins.data) {
+		memset(hist->bins.data, 0, hist->bins.count * sizeof(float));
+	}
+}
+
 static void set_error_message(CString msg) {
     printf("%s\n", msg.beg());
 }
-
-typedef bool(*StructureFunc)(StructureData* data, const Array<CString> args, const MoleculeStructure& molecule);
-
 
 bool structure_match_resname(StructureData* data, const Array<CString> args, const MoleculeStructure& molecule) {
 	ASSERT(data);
@@ -313,77 +279,89 @@ inline static vec3 compute_com(Array<const vec3> positions) {
 	return com / (float)positions.count;
 }
 
-void compute_frame_positions(Array<vec3> dst, const StructureData& data, const MoleculeDynamic& dynamic, int frame_index) {
+void compute_positions(Array<vec3> dst, const StructureData& data, Array<const vec3> atom_positions) {
 	ASSERT(dst.data);
 	ASSERT(dst.count >= data.structures.count);
 	
-	Array<vec3> positions = get_trajectory_positions(dynamic.trajectory, frame_index);
 	switch (data.strategy) {
 	case AggregationStrategy::COM:
 		for (int32 i = 0; i < data.structures.count; i++) {
-			dst[i] = compute_com(positions.sub_array(data.structures[i].beg_idx, data.structures[i].end_idx - data.structures[i].beg_idx));
+			dst[i] = compute_com(atom_positions.sub_array(data.structures[i].beg_idx, data.structures[i].end_idx - data.structures[i].beg_idx));
 		}
 		break;
 	default:
 		for (int32 i = 0; i < data.structures.count; i++) {
-			dst[i] = positions[data.structures[i].beg_idx];
+			dst[i] = atom_positions[data.structures[i].beg_idx];
 		}
 		break;
 	}
 }
 
-DynamicArray<vec3> compute_frame_positions(const StructureData& data, const MoleculeDynamic& dynamic, int frame_index) {
+DynamicArray<vec3> compute_positions(const StructureData& data, Array<const vec3> atom_positions) {
 	DynamicArray<vec3> positions(data.structures.count);
-	compute_frame_positions(positions, data, dynamic, frame_index);
+	compute_positions(positions, data, atom_positions);
 	return positions;
 }
 
-static bool compute_distance(Array<float32> data, const Array<CString> args, const MoleculeDynamic& dynamic) {
-	ASSERT(data);
+static bool compute_distance(Property* prop, const Array<CString> args, const MoleculeDynamic& dynamic) {
+	ASSERT(prop);
 	if (args.count != 2) {
 		set_error_message("distance expects 2 arguments");
 		return false;
 	}
 
-	StructureData arg_structure_data[2];
-	extract_args_structures(arg_structure_data, args, dynamic.molecule);
+	init_structure_data(&prop->structure_data, 2);
+	extract_args_structures(prop->structure_data, args, dynamic.molecule);
 
-	int32 count = (int32)arg_structure_data[0].structures.count;
-	DynamicArray<vec3> pos[2] { {count}, {count} };
+	const int32 count = (int32)prop->structure_data[0].structures.count;
+	void* tmp_data = TMP_MALLOC(count * 2 * sizeof(vec3));
+	Array<vec3> pos[2] = {
+		{ (vec3*)tmp_data + count * 0, count },
+		{ (vec3*)tmp_data + count * 1, count } };
 
+	const float32 scl = 1.f / (float32)count;
 	for (int32 i = 0; i < dynamic.trajectory.num_frames; i++) {
-		compute_frame_positions(pos[0], arg_structure_data[0], dynamic, i);
-		compute_frame_positions(pos[1], arg_structure_data[1], dynamic, i);
+		Array<const vec3> atom_positions = get_trajectory_positions(dynamic.trajectory, i);
+		compute_positions(pos[0], prop->structure_data[0], atom_positions);
+		compute_positions(pos[1], prop->structure_data[1], atom_positions);
 
         float32 dist = 0.f;
         for (int32 j = 0; j < count; j++) {
 		    dist += math::distance(pos[0][j], pos[1][j]);
         }
-		data[i] = dist / (float32)count;
+		prop->data[i] = dist * scl;
 	}
+
+	TMP_FREE(tmp_data);
 
 	return true;
 }
 
-static bool compute_angle(Array<float32> data, const Array<CString> args, const MoleculeDynamic& dynamic) {
-	ASSERT(data);
+static bool compute_angle(Property* prop, const Array<CString> args, const MoleculeDynamic& dynamic) {
+	ASSERT(prop);
 	if (args.count != 3) {
-		set_error_message("angle expects 2 arguments");
+		set_error_message("angle expects 3 arguments");
 		return false;
 	}
 
-	StructureData arg_structure_data[3];
-	if (!extract_args_structures(arg_structure_data, args, dynamic.molecule)) {
+	init_structure_data(&prop->structure_data, 3);
+	if (!extract_args_structures(prop->structure_data, args, dynamic.molecule)) {
 		return false;
 	}
 
-	int32 count = (int32)arg_structure_data[0].structures.count;
-	DynamicArray<vec3> pos[3]{ { count }, { count }, { count } };
+	const int32 count = (int32)prop->structure_data[0].structures.count;
+	void* tmp_data = TMP_MALLOC(count * 3 * sizeof(vec3));
+	Array<vec3> pos[3] = {
+		{ (vec3*)tmp_data + count * 0, count },
+		{ (vec3*)tmp_data + count * 1, count },
+		{ (vec3*)tmp_data + count * 2, count } };
 
+	const float32 scl = 1.f / (float32)count;
 	for (int32 i = 0; i < dynamic.trajectory.num_frames; i++) {
-		compute_frame_positions(pos[0], arg_structure_data[0], dynamic, i);
-		compute_frame_positions(pos[1], arg_structure_data[1], dynamic, i);
-		compute_frame_positions(pos[2], arg_structure_data[2], dynamic, i);
+		Array<const vec3> atom_positions = get_trajectory_positions(dynamic.trajectory, i);
+		compute_positions(pos[0], prop->structure_data[0], atom_positions);
+		compute_positions(pos[1], prop->structure_data[1], atom_positions);
+		compute_positions(pos[2], prop->structure_data[2], atom_positions);
 
 		float32 angle = 0.f;
 		for (int32 j = 0; j < count; j++) {
@@ -391,19 +369,130 @@ static bool compute_angle(Array<float32> data, const Array<CString> args, const 
 			vec3 b = pos[2][j] - pos[1][j];
 			angle += math::angle(a, b);
 		}
-		data[i] = angle / (float32)count;
+		prop->data[i] = angle * scl;
+	}
+
+	TMP_FREE(tmp_data);
+
+	return true;
+}
+
+static bool compute_dihedral(Property* prop, const Array<CString> args, const MoleculeDynamic& dynamic) {
+	ASSERT(prop);
+	if (args.count != 4) {
+		set_error_message("dihedral expects 4 arguments");
+		return false;
+	}
+
+	init_structure_data(&prop->structure_data, 4);
+	if (!extract_args_structures(prop->structure_data, args, dynamic.molecule)) {
+		return false;
+	}
+
+	const int32 count = (int32)prop->structure_data[0].structures.count;
+	void* tmp_data = TMP_MALLOC(count * 4 * sizeof(vec3));
+	Array<vec3> pos[4] = {
+		{ (vec3*)tmp_data + count * 0, count },
+		{ (vec3*)tmp_data + count * 1, count }, 
+		{ (vec3*)tmp_data + count * 2, count }, 
+		{ (vec3*)tmp_data + count * 3, count } };
+
+	const float32 scl = 1.f / (float32)count;
+	for (int32 i = 0; i < dynamic.trajectory.num_frames; i++) {
+		Array<const vec3> atom_positions = get_trajectory_positions(dynamic.trajectory, i);
+		compute_positions(pos[0], prop->structure_data[0], atom_positions);
+		compute_positions(pos[1], prop->structure_data[1], atom_positions);
+		compute_positions(pos[2], prop->structure_data[2], atom_positions);
+		compute_positions(pos[3], prop->structure_data[3], atom_positions);
+
+		float32 angle = 0.f;
+		for (int32 j = 0; j < count; j++) {
+			angle += math::dihedral_angle(pos[0][j], pos[1][j], pos[2][j], pos[3][j]);
+		}
+		prop->data[i] = angle * scl;
+	}
+
+	TMP_FREE(tmp_data);
+
+	return true;
+}
+
+static bool visualize_structures(const Property& prop, const MoleculeDynamic& dynamic) {
+	if (prop.structure_data.count == 0) return false;
+
+	if (prop.structure_data.count == 1) {
+		auto pos = compute_positions(prop.structure_data[0], dynamic.molecule.atom_positions);
+		for (const auto& p : pos) {
+			immediate::draw_point(p);
+		}
+	}
+	else {
+		int32 count = (int32)prop.structure_data[0].structures.count;
+		DynamicArray<vec3> pos_prev(count);
+		DynamicArray<vec3> pos_next(count);
+
+		pos_prev = compute_positions(prop.structure_data[0], dynamic.molecule.atom_positions);
+		for (const auto& p : pos_prev) {
+			immediate::draw_point(p);
+		}
+		for (int32 i = 1; i < prop.structure_data.count; i++) {
+			pos_next = compute_positions(prop.structure_data[i], dynamic.molecule.atom_positions);
+			for (const auto& p : pos_next) {
+				immediate::draw_point(p);
+			}
+			for (int32 j = 0; j < pos_next.count; j++) {
+				immediate::draw_line(pos_prev[j], pos_next[j]);
+			}
+			pos_prev = pos_next;
+		}
 	}
 
 	return true;
 }
 
 void initialize() {
+	ctx.property_func_entries.push_back({ HASH("distance"), compute_distance, visualize_structures });
+	ctx.property_func_entries.push_back({ HASH("angle"),	compute_angle,	  visualize_structures });
+	ctx.property_func_entries.push_back({ HASH("dihedral"), compute_dihedral, visualize_structures });
 
+	ctx.structure_func_entries.push_back({ HASH("resname"), structure_match_resname });
+	ctx.structure_func_entries.push_back({ HASH("resid"),   structure_match_resid });
+	ctx.structure_func_entries.push_back({ HASH("residue"), structure_match_residue });
+	ctx.structure_func_entries.push_back({ HASH("atom"),    structure_match_atom });
+	ctx.structure_func_entries.push_back({ HASH("resatom"), structure_extract_resatom });
+	ctx.structure_func_entries.push_back({ HASH("com"),		structure_apply_aggregation_strategy_com });
 }
 
 void shutdown() {
 
 }
+
+bool register_property_command(CString cmd_keyword, PropertyComputeFunc compute_func, PropertyVisualizeFunc visualize_func) {
+	if (!cmd_keyword.data || cmd_keyword.count == 0) {
+		printf("Error! Property command cannot be an empty string!\n");
+		return false;
+	}
+	
+	if (contains_whitespace(cmd_keyword)) {
+		printf("Error! Property command cannot contain whitespace!\n");
+		return false;
+	}
+
+	if (!compute_func) {
+		printf("Error! Property command must have compute function!\n");
+		return false;
+	}
+	
+	ID hash = HASH(cmd_keyword);
+	if (find_property_func_entry(hash) != nullptr) {
+		printf("Error! Property command already registered!\n");
+		return false;
+	}
+
+	ctx.property_func_entries.push_back({ hash, compute_func, visualize_func });
+	return true;
+}
+
 
 static CString extract_parentheses(CString str) {
 	const char* beg = str.beg();
@@ -576,15 +665,15 @@ static Range compute_range(Array<float> data) {
 }
 
 bool compute_stats(const MoleculeDynamic& dynamic) {
-	int num_frames = dynamic.trajectory.num_frames;
+	int32 num_frames = dynamic.trajectory.num_frames;
 	
-	for (auto& pe : ctx.property_entries) {
-		auto& prop = *pe.ptr;
+	for (auto p : ctx.properties) {
+		auto& prop = *p;
 		if (prop.data.count != num_frames) {
-			if (prop.data.data) FREE(prop.data.data);
-			prop.data = { (float*)MALLOC(num_frames * sizeof(float)), num_frames };
+			prop.data.resize(num_frames);
 		}
-		memset(prop.data.data, 0, prop.data.count * sizeof(float));
+		prop.data.set_mem_to_zero();
+		clear_histogram(&prop.hist);
 
 		if (!balanced_parentheses(prop.args)) {
 			snprintf(prop.error_msg.beg(), prop.error_msg.MAX_LENGTH, "Unbalanced parantheses!");
@@ -621,13 +710,15 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
 		
 		auto func = get_property_func(cmd);
 		if (!func) {
-			snprintf(prop.error_msg.beg(), prop.error_msg.MAX_LENGTH, "Could not recognize command '%s'", cmd);
+			snprintf(prop.error_msg.beg(), prop.error_msg.MAX_LENGTH, "Could not recognize command '%s'", cmd.cstr());
 			prop.valid = false;
 			continue;
 		}
 
-		if (func(prop.data, args, dynamic)) {
+		if (func(&prop, args, dynamic)) {
+			constexpr int32 NUM_BINS = 64;
 			prop.data_range = compute_range(prop.data);
+			compute_histogram(&prop.hist, NUM_BINS, prop.data, prop.data_range.x, prop.data_range.y);
 			prop.valid = true;
 		}
 	}
@@ -635,122 +726,51 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
 	return true;
 }
 
-ID create_property(CString name, CString args) {
-	Property* prop = (Property*)MALLOC(sizeof(Property));
-	new(prop) Property();
-	prop->id = create_id();
-	prop->name = name;
-	prop->args = args;
-	prop->valid = false;
-
-	ctx.property_entries.push_back({ prop->id, prop });
-	return prop->id;
-}
-
-void remove_property(ID prop_id) {
-	for (auto& pe : ctx.property_entries) {
-		if (pe.id == prop_id) {
-			auto prop = pe.ptr;
-			if (prop->data.data) FREE(prop->data.data);
-			ctx.property_entries.swap_back_and_pop(&pe);
+void visualize(const MoleculeDynamic& dynamic) {
+	for (auto p : ctx.properties) {
+		if (!p->visualize) continue;
+		CString cmd = extract_command(p->args);
+		auto entry = find_property_func_entry(HASH(cmd));
+		if (entry && entry->visualize_func) {
+			entry->visualize_func(*p, dynamic);
 		}
 	}
 }
 
-ID get_property(CString name) {
-	for (const auto &pe : ctx.property_entries) {
-		if (compare(pe.ptr->name, name)) return pe.id;
+Property* create_property(CString name, CString args) {
+	Property* prop = (Property*)MALLOC(sizeof(Property));
+	new(prop) Property();
+	prop->name = name;
+	prop->args = args;
+	prop->valid = false;
+
+	ctx.properties.push_back(prop);
+	return prop;
+}
+
+void remove_property(Property* prop) {
+	for (auto p : ctx.properties) {
+		if (p == prop) {
+			free_histogram(&p->hist);
+			ctx.properties.swap_back_and_pop(&p);
+		}
 	}
-	return INVALID_ID;
 }
 
-ID get_property(int32 idx) {
-	if (-1 < idx && idx < ctx.property_entries.count) return ctx.property_entries[idx].id;
-	return INVALID_ID;
-}
-
-int32 get_property_count() {
-	return (int32)ctx.property_entries.count;
-}
-
-Range get_property_data_range(ID prop_id) {
-	auto prop = find_property(prop_id);
-	if (prop) {
-		return prop->data_range;
-	}
-	return {};
-}
-
-Array<float> get_property_data(ID prop_id) {
-    auto prop = find_property(prop_id);
-    if (prop) {
-		return prop->data;
-    }
-    return {};
-}
-
-Histogram* get_property_histogram(ID prop_id) {
-	auto prop = find_property(prop_id);
-	if (prop) {
-		return &prop->hist;
+Property* get_property(CString name) {
+	for (auto p : ctx.properties) {
+		if (compare(p->name, name)) return p;
 	}
 	return nullptr;
 }
 
-StringBuffer<32>* get_property_name_buf(ID prop_id) {
-    auto prop = find_property(prop_id);
-    if (prop) {
-        return &prop->name;
-    }
-    return nullptr;
-}
-    
-StringBuffer<256>* get_property_args_buf(ID prop_id) {
-    auto prop = find_property(prop_id);
-    if (prop) {
-        return &prop->args;
-    }
-    return nullptr;
+Property* get_property(int32 idx) {
+	if (-1 < idx && idx < ctx.properties.count) return ctx.properties[idx];
+	return nullptr;
 }
 
-CString get_property_name(ID prop_id) {
-	auto prop = find_property(prop_id);
-	if (prop) {
-		return prop->name;
-	}
-	return {};
-}
-    
-bool get_property_valid(ID prop_id) {
-    auto prop = find_property(prop_id);
-    if (prop) {
-        return prop->valid;
-    }
-    return false;
-}
-
-CString get_property_error_message(ID prop_id) {
-	auto prop = find_property(prop_id);
-	if (prop) {
-		return prop->error_msg;
-	}
-	return "";
-}
-
-CString get_property_unit(ID prop_id) {
-	auto prop = find_property(prop_id);
-	if (prop) {
-		return prop->unit;
-	}
-	return "";
-}
-
-bool get_property_periodic(ID prop_id) {
-	auto prop = find_property(prop_id);
-	if (prop) {
-		return false;
-	}
-	return false;
+int32 get_property_count() {
+	return (int32)ctx.properties.count;
 }
 
 }  // namespace stats

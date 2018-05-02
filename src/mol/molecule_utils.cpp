@@ -386,24 +386,24 @@ void compute_backbone_angles(Array<BackboneAngles> dst, Array<const vec3> pos, A
 
     omega = 0;
     phi = 0;
-    psi = dihedral_angle(pos[backbone_segments[0].n_idx], pos[backbone_segments[0].ca_idx], pos[backbone_segments[0].c_idx],
+    psi = math::dihedral_angle(pos[backbone_segments[0].n_idx], pos[backbone_segments[0].ca_idx], pos[backbone_segments[0].c_idx],
                          pos[backbone_segments[1].n_idx]);
     dst[0] = {omega, phi, psi};
 
     for (int64 i = 1; i < backbone_segments.count - 1; i++) {
-        omega = dihedral_angle(pos[backbone_segments[i - 1].ca_idx], pos[backbone_segments[i - 1].c_idx], pos[backbone_segments[i].n_idx],
+        omega = math::dihedral_angle(pos[backbone_segments[i - 1].ca_idx], pos[backbone_segments[i - 1].c_idx], pos[backbone_segments[i].n_idx],
                                pos[backbone_segments[i].ca_idx]);
-        phi = dihedral_angle(pos[backbone_segments[i - 1].c_idx], pos[backbone_segments[i].n_idx], pos[backbone_segments[i].ca_idx],
+        phi = math::dihedral_angle(pos[backbone_segments[i - 1].c_idx], pos[backbone_segments[i].n_idx], pos[backbone_segments[i].ca_idx],
                              pos[backbone_segments[i].c_idx]);
-        psi = dihedral_angle(pos[backbone_segments[i].n_idx], pos[backbone_segments[i].ca_idx], pos[backbone_segments[i].c_idx],
+        psi = math::dihedral_angle(pos[backbone_segments[i].n_idx], pos[backbone_segments[i].ca_idx], pos[backbone_segments[i].c_idx],
                              pos[backbone_segments[i + 1].n_idx]);
         dst[i] = {omega, phi, psi};
     }
 
     auto N = backbone_segments.count - 1;
-    omega = dihedral_angle(pos[backbone_segments[N - 1].ca_idx], pos[backbone_segments[N - 1].c_idx], pos[backbone_segments[N].n_idx],
+    omega = math::dihedral_angle(pos[backbone_segments[N - 1].ca_idx], pos[backbone_segments[N - 1].c_idx], pos[backbone_segments[N].n_idx],
                            pos[backbone_segments[N].ca_idx]);
-    phi = dihedral_angle(pos[backbone_segments[N - 1].c_idx], pos[backbone_segments[N].n_idx], pos[backbone_segments[N].ca_idx],
+    phi = math::dihedral_angle(pos[backbone_segments[N - 1].c_idx], pos[backbone_segments[N].n_idx], pos[backbone_segments[N].ca_idx],
                          pos[backbone_segments[N].c_idx]);
     psi = 0;
     dst[N] = {omega, phi, psi};

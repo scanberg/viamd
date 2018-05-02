@@ -500,6 +500,9 @@ int main(int, char**) {
         mat4 proj_mat = compute_perspective_projection_matrix(data.camera, data.fbo.width, data.fbo.height);
         mat4 inv_proj_mat = math::inverse(proj_mat);
 
+		immediate::set_view_matrix(view_mat);
+		immediate::set_proj_matrix(proj_mat);
+
         for (const auto& rep : data.representations.data) {
             if (!rep.enabled) continue;
             switch (rep.type) {
@@ -552,14 +555,7 @@ int main(int, char**) {
             postprocessing::apply_ssao(data.fbo.tex_depth, data.fbo.tex_normal, proj_mat, data.ssao.intensity, data.ssao.radius);
         }
 
-        /*
-                if (data.debug_draw.backbone.enabled) {
-                        draw::draw_backbone(backbone, data.mol_data.dynamic.molecule->atom_positions, view_mat, proj_mat);
-                }
-                if (data.debug_draw.spline.enabled) {
-                        draw::draw_spline(current_spline, view_mat, proj_mat);
-                }
-        */
+		immediate::flush();
 
         // GUI ELEMENTS
         data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, data.ctx.timing.dt);
@@ -572,17 +568,10 @@ int main(int, char**) {
         if (data.statistics.show_distribution_window) draw_distribution_window(&data);
 
         if (data.ramachandran.show_window) {
-            /*
-if (data.mol_data.dynamic.trajectory && data.mol_data.dynamic.trajectory.is_loading) {
-    static int32 prev_frame = 0;
-    if (get_backbone_angles_trajectory_current_frame_count(data.ramachandran.backbone_angles) - prev_frame > 100) {
-        compute_backbone_angles_trajectory(&data.ramachandran.backbone_angles, data.mol_data.dynamic);
-        prev_frame = data.ramachandran.backbone_angles.num_frames;
-        data.ramachandran.frame_range_max = data.ramachandran.backbone_angles.num_frames;
-    }
-}*/
             draw_ramachandran_window(&data);
         }
+
+		stats::visualize(data.mol_data.dynamic);
 
         if (!ImGui::GetIO().WantCaptureMouse) {
             if (data.picking_idx != NO_PICKING_IDX) {
@@ -622,19 +611,6 @@ if (data.mol_data.dynamic.trajectory && data.mol_data.dynamic.trajectory.is_load
 }
 
 // ### MISC FUNCTIONS ###
-static void draw_random_triangles(const mat4& mvp) {
-    immediate::set_view_matrix(mvp);
-    immediate::set_proj_matrix(mat4(1));
-    math::set_rnd_seed(0);
-    for (int i = 0; i < 500; i++) {
-        vec3 v0 = vec3(math::rnd(), math::rnd(), math::rnd()) * 50.f - 50.f;
-        vec3 v1 = vec3(math::rnd(), math::rnd(), math::rnd()) * 50.f - 50.f;
-        vec3 v2 = vec3(math::rnd(), math::rnd(), math::rnd()) * 50.f - 50.f;
-        immediate::draw_triangle(&v0[0], &v1[0], &v2[0], immediate::COLOR_RED);
-    }
-    immediate::flush();
-}
-
 static float compute_avg_ms(float dt) {
     // @NOTE: Perhaps this can be done with a simple running mean?
     constexpr float interval = 0.5f;
@@ -991,9 +967,9 @@ static void draw_property_window(ApplicationData* data) {
 
     ImGui::Columns(3, "columns", true);
     ImGui::Separator();
-    ImGui::SetColumnWidth(0, ImGui::GetWindowContentRegionWidth() * 0.2f);
+    ImGui::SetColumnWidth(0, ImGui::GetWindowContentRegionWidth() * 0.15f);
     ImGui::SetColumnWidth(1, ImGui::GetWindowContentRegionWidth() * 0.7f);
-    ImGui::SetColumnWidth(2, ImGui::GetWindowContentRegionWidth() * 0.1f);
+    ImGui::SetColumnWidth(2, ImGui::GetWindowContentRegionWidth() * 0.15f);
 
     ImGui::Text("name");
     ImGui::NextColumn();
@@ -1002,32 +978,28 @@ static void draw_property_window(ApplicationData* data) {
     ImGui::NextColumn();
 
     for (int i = 0; i < stats::get_property_count(); i++) {
-        auto prop_id = stats::get_property(i);
-        auto name_buf = stats::get_property_name_buf(prop_id);
-        auto args_buf = stats::get_property_args_buf(prop_id);
-        auto valid = stats::get_property_valid(prop_id);
-		auto error_msg = stats::get_property_error_message(prop_id);
+		auto prop = stats::get_property(i);
         bool update = false;
 
         ImGui::Separator();
         ImGui::PushID(i);
 
-        if (!valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, ERROR_COLOR);
+        if (!prop->valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, ERROR_COLOR);
         ImGui::PushItemWidth(-1);
-        if (ImGui::InputText("##name", name_buf->buffer, name_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
+        if (ImGui::InputText("##name", prop->name.buffer, prop->name.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
             update = true;
         }
 		ImGui::PopItemWidth();
         ImGui::NextColumn();
 		ImGui::PushItemWidth(-1);
-        if (ImGui::InputText("##args", args_buf->buffer, args_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
+        if (ImGui::InputText("##args", prop->args.buffer, prop->args.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
             update = true;
         }
         ImGui::PopItemWidth();
-		if (!valid) {
+		if (!prop->valid) {
 			ImGui::PopStyleColor();
-			if (!valid && ImGui::GetHoveredID() == ImGui::GetID("##args")) {
-				ImGui::SetTooltip("%s", error_msg.cstr());
+			if (!prop->valid && ImGui::GetHoveredID() == ImGui::GetID("##args")) {
+				ImGui::SetTooltip("%s", prop->error_msg.beg());
 			}
 		}
         ImGui::NextColumn();
@@ -1035,8 +1007,10 @@ static void draw_property_window(ApplicationData* data) {
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
         if (ImGui::Button("del")) {
-            stats::remove_property(prop_id);
+            stats::remove_property(prop);
         }
+		ImGui::SameLine();
+		ImGui::Checkbox("visualize", &prop->visualize);
         ImGui::PopStyleColor(3);
         ImGui::NextColumn();
         ImGui::PopID();
@@ -1160,10 +1134,10 @@ static void draw_timeline_window(ApplicationData* data) {
         ImGui::RangeSliderFloat("###selection_range", &data->time_filter.range.x, &data->time_filter.range.y, 0.f, (float)max_frame);
 
         for (int i = 0; i < stats::get_property_count(); i++) {
-            auto prop_id = stats::get_property(i);
-            auto prop_data = stats::get_property_data(prop_id);
-            auto prop_name = stats::get_property_name(prop_id);
-            auto prop_range = stats::get_property_data_range(prop_id);
+            auto prop = stats::get_property(i);
+			Array<float> prop_data = prop->data;
+			CString		 prop_name = prop->name;
+			stats::Range prop_range = prop->data_range;
             if (!prop_data) continue;
             float pad = math::max((prop_range.y - prop_range.x) * 0.1f, 1.f);
             vec2 display_range = prop_range + vec2(-pad, pad);
@@ -1212,15 +1186,10 @@ static void draw_distribution_window(ApplicationData* data) {
     static ImVec2 selection_range{0, 0};
 
     for (int i = 0; i < stats::get_property_count(); i++) {
-        auto prop_id  = stats::get_property(i);
-		auto name	  = stats::get_property_name(prop_id);
-		auto hist	  = stats::get_property_histogram(prop_id);
-        auto periodic = stats::get_property_periodic(prop_id);
-        if (!hist) continue;
-
+        stats::Property*  prop = stats::get_property(i);
         ImGui::PushItemWidth(-1);
         ImGui::PushID(i);
-        ImGui::PlotHistogram(name, ImVec2(0, 100), hist->bins.data, (int32)hist->bins.count, periodic, vec_cast(hist->value_range), &selection_range);
+        ImGui::PlotHistogram(prop->name, ImVec2(0, 100), prop->hist.bins.data, (int32)prop->hist.bins.count, prop->periodic, vec_cast(prop->hist.value_range), &selection_range);
         ImGui::PopID();
         ImGui::PopItemWidth();
     }
@@ -1684,10 +1653,10 @@ static void save_workspace(ApplicationData* data, CString file) {
 
     // PROPERTIES
     for (int i = 0; i < stats::get_property_count(); i++) {
-        auto id = stats::get_property(i);
+        auto prop = stats::get_property(i);
         fprintf(fptr, "[Property]\n");
-        fprintf(fptr, "Name=%s\n", stats::get_property_name_buf(id)->beg());
-        fprintf(fptr, "Args=%s\n", stats::get_property_args_buf(id)->beg());
+        fprintf(fptr, "Name=%s\n", prop->name.cstr());
+        fprintf(fptr, "Args=%s\n", prop->args.cstr());
         fprintf(fptr, "\n");
     }
 

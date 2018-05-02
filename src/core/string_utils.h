@@ -244,6 +244,7 @@ struct StringBuffer {
 
 	int64 size() const { return MAX_LENGTH; }
 
+	const char* cstr() const { return buffer; }
 	const char* begin() const { return buffer; }
 	const char* beg() const { return buffer; }
 	const char* end() const { return buffer + MAX_LENGTH; }
@@ -326,6 +327,8 @@ StringBuffer<256> get_absolute_path(CString absolute_reference, CString relative
 
 // Converts windows backslashes '\\' to forward slashes '/'
 void convert_backslashes(String str);
+
+bool contains_whitespace(CString str);
 
 // Tokenizes a string into shorter strings based on some delimiter 
 DynamicArray<String> tokenize(String str, char delimiter = ' ');

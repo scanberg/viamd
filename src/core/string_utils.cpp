@@ -346,6 +346,13 @@ void convert_backslashes(String str) {
 	}
 }
 
+bool contains_whitespace(CString str) {
+	for (const char* c = str.beg(); c != str.end(); c++) {
+		if (isspace(*c)) return true;
+	}
+	return false;
+}
+
 DynamicArray<String> tokenize(String str, char delimiter) {
 	DynamicArray<String> tokens;
 

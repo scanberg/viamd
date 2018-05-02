@@ -41,6 +41,7 @@ prop7 lj12		resname(pft) protein
 
 */
 
+
 struct Structure {
 	int32 beg_idx;
 	int32 end_idx;
@@ -52,26 +53,54 @@ enum AggregationStrategy {
 };
 
 struct StructureData {
-	DynamicArray<Structure> structures;
-	AggregationStrategy strategy;
+	DynamicArray<Structure> structures{};
+	AggregationStrategy strategy = NONE;
 };
 
-struct StructData {
-	struct ArgData {
-		Array<Structure> structures;
-		AggregationStrategy strategy;
-	};
+struct Property {
+	StringBuffer<32>  name{};
+	StringBuffer<256> args{};
+	StringBuffer<32>  unit{};
+	StringBuffer<128> error_msg{};
 
-	DynamicArray<Structure> structures;
-	DynamicArray<ArgData> arg_structures;
+	bool valid = false;
+	bool periodic = false;
+	bool visualize = false;
+
+	Range filter{ 0,0 };
+	Range data_range{ 0,0 };
+	DynamicArray<float> data{};
+	Histogram hist;
+
+	Array<StructureData> structure_data{};
 };
 
 // Helper functions
-bool extract_args_structures(Array<StructureData> data, Array<CString> arg, const MoleculeStructure& structure);
-void compute_frame_positions(Array<vec3> dst, const StructureData& data, const MoleculeDynamic& dynamic, int frame_idx);
+inline void free_structure_data(Array<StructureData>* structure_data) {
+	ASSERT(structure_data);
+	if (structure_data) {
+		for (auto& s : *structure_data) {
+			s.StructureData::~StructureData();
+		}
+		free_array(structure_data);
+	}
+}
 
-typedef bool (*PropertyComputeFunc)(Array<float> data, const Array<CString> args, const MoleculeDynamic& dynamic);
-//typedef DynamicArray<Structure> (*StructureExtractFunc)(const Array<CString> args, const MoleculeStructure& mol);
+inline void init_structure_data(Array<StructureData>* structure_data, int32 count) {
+	ASSERT(count > 0);
+	ASSERT(structure_data);
+	free_structure_data(structure_data);
+	*structure_data = allocate_array<StructureData>(count);
+	for (int i = 0; i < count; i++) {
+		new (structure_data->data + i) StructureData();
+	}
+}
+
+bool extract_args_structures(Array<StructureData> data, Array<CString> arg, const MoleculeStructure& structure);
+void compute_positions(Array<vec3> dst, const StructureData& data, Array<const vec3> atom_positions);
+
+typedef bool (*PropertyComputeFunc)(Property* prop, const Array<CString> args, const MoleculeDynamic& dynamic);
+typedef bool (*PropertyVisualizeFunc)(const Property& prop, const MoleculeDynamic& dynamic);
 
 // HISTOGRAM
 void init_histogram(Histogram* hist, int32 num_bins);
@@ -82,41 +111,44 @@ Histogram compute_histogram(int32 num_bins, Array<float> data, float min_val, fl
 
 void compute_histogram(Histogram* hist, int32 num_bins, Array<float> data);
 void compute_histogram(Histogram* hist, int32 num_bins, Array<float> data, float min_val, float max_val);
+void clear_histogram(Histogram* hist);
 
 // STATS
 void initialize();
 void shutdown();
 
 bool compute_stats(const MoleculeDynamic& dynamic);
+void visualize(const MoleculeDynamic& dynamic);
 //void clear();
 
-void register_property_command(CString cmd_keyword, PropertyComputeFunc func, Range value_range, bool periodic, CString unit);
+bool register_property_command(CString cmd_keyword, PropertyComputeFunc compute_func, PropertyVisualizeFunc visualize_func);
 
-Array<CString> get_property_commands();
-Array<CString> get_structure_commands();
+//Array<CString> get_property_commands();
+//Array<CString> get_structure_commands();
 
 // PROPERTY
-ID      create_property(CString name = {}, CString args = {});
-void	remove_property(ID prop_id);
+Property* create_property(CString name = {}, CString args = {});
+void	  remove_property(Property* prop);
 
-void	clear_property(ID prop_id);
-void    clear_properties();
+void	  clear_property(Property* prop);
+void      clear_properties();
 
-ID		get_property(CString name);
-ID		get_property(int32 idx);
+int32	  get_property_count();
+Property* get_property(int32 idx);
+Property* get_property(CString name);
 
-int32	get_property_count();
-
-bool			   get_property_valid(ID prop_id); 
-CString			   get_property_error_message(ID prop_id);
-StringBuffer<32>*  get_property_name_buf(ID prop_id);
-StringBuffer<256>* get_property_args_buf(ID prop_id);
-CString			   get_property_name(ID prop_id);
-Range			   get_property_data_range(ID prop_id);
-Array<float>	   get_property_data(ID prop_id);
-bool			   get_property_periodic(ID prop_id);
-Histogram*		   get_property_histogram(ID prop_id);
-
+/*
+bool			      get_property_valid(ID prop_id); 
+CString			      get_property_error_message(ID prop_id);
+StringBuffer<32>*     get_property_name_buf(ID prop_id);
+StringBuffer<256>*    get_property_args_buf(ID prop_id);
+CString				  get_property_name(ID prop_id);
+Range				  get_property_data_range(ID prop_id);
+Array<float>		  get_property_data(ID prop_id);
+Array<StructureData>  get_property_structure_data(ID prop_id);
+bool			      get_property_periodic(ID prop_id);
+Histogram*		      get_property_histogram(ID prop_id);
+*/
 
 //void		 clear_property_data();
 
