@@ -60,6 +60,7 @@ out vec4 col;
 
 void main() {
 	gl_Position = u_mvp * vec4(in_pos, 1);
+    gl_PointSize = max(1.f, 200.f / gl_Position.w);
 	tc = in_tc;
 	col = in_col;
 }
@@ -179,8 +180,10 @@ void flush() {
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.count * sizeof(Index), indices.data, GL_STREAM_DRAW);
 
+    glEnable(GL_PROGRAM_POINT_SIZE);
+    
     glUseProgram(program);
-	glPointSize(25.f);
+	glPointSize(10.f);
 	glLineWidth(2.f);
 
     for (const auto& cmd : commands) {
@@ -193,6 +196,9 @@ void flush() {
 
     glBindVertexArray(0);
     glUseProgram(0);
+    
+    glDisable(GL_PROGRAM_POINT_SIZE);
+    
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 

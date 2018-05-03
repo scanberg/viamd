@@ -554,7 +554,8 @@ int main(int, char**) {
         if (data.ssao.enabled) {
             postprocessing::apply_ssao(data.fbo.tex_depth, data.fbo.tex_normal, proj_mat, data.ssao.intensity, data.ssao.radius);
         }
-
+        
+        stats::visualize(data.mol_data.dynamic);
 		immediate::flush();
 
         // GUI ELEMENTS
@@ -570,8 +571,6 @@ int main(int, char**) {
         if (data.ramachandran.show_window) {
             draw_ramachandran_window(&data);
         }
-
-		stats::visualize(data.mol_data.dynamic);
 
         if (!ImGui::GetIO().WantCaptureMouse) {
             if (data.picking_idx != NO_PICKING_IDX) {

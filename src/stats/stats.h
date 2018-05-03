@@ -2,6 +2,7 @@
 
 #include <core/types.h>
 #include <core/string_utils.h>
+#include <new>
 
 struct MoleculeDynamic;
 struct MoleculeStructure;
@@ -91,8 +92,8 @@ inline void init_structure_data(Array<StructureData>* structure_data, int32 coun
 	ASSERT(structure_data);
 	free_structure_data(structure_data);
 	*structure_data = allocate_array<StructureData>(count);
-	for (int i = 0; i < count; i++) {
-		new (structure_data->data + i) StructureData();
+    for (auto& s : *structure_data) {
+        new (&s) StructureData();
 	}
 }
 
