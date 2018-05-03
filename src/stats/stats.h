@@ -97,8 +97,9 @@ inline void init_structure_data(Array<StructureData>* structure_data, int32 coun
 	}
 }
 
+bool sync_structure_count(Array<StructureData> data);
 bool extract_args_structures(Array<StructureData> data, Array<CString> arg, const MoleculeStructure& structure);
-void compute_positions(Array<vec3> dst, const StructureData& data, Array<const vec3> atom_positions);
+Array<const vec3> extract_positions(const StructureData& data, Array<const vec3> atom_positions);
 
 typedef bool (*PropertyComputeFunc)(Property* prop, const Array<CString> args, const MoleculeDynamic& dynamic);
 typedef bool (*PropertyVisualizeFunc)(const Property& prop, const MoleculeDynamic& dynamic);
