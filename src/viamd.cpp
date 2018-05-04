@@ -1188,7 +1188,7 @@ static void draw_distribution_window(ApplicationData* data) {
         stats::Property*  prop = stats::get_property(i);
         ImGui::PushItemWidth(-1);
         ImGui::PushID(i);
-        ImGui::PlotHistogram(prop->name, ImVec2(0, 100), prop->hist.bins.data, (int32)prop->hist.bins.count, prop->periodic, vec_cast(prop->hist.value_range), &selection_range);
+        ImGui::PlotHistogram(prop->name, ImVec2(0, 100), prop->histogram.bins.data, (int32)prop->histogram.bins.count, prop->periodic, vec_cast(prop->histogram.value_range), &selection_range);
         ImGui::PopID();
         ImGui::PopItemWidth();
     }
@@ -1759,8 +1759,7 @@ static void load_trajectory_async(ApplicationData* data) {
 
 static void clear_statistics_data(ApplicationData* data) {
     data->async.statistics.sync.signal_stop_and_wait();
-    //stats::clear_instances();
-    //stats::clear_property_data();
+    stats::clear_all_properties();
 }
 
 static void compute_statistics_async(ApplicationData* data) {

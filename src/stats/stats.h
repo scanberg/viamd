@@ -71,35 +71,18 @@ struct Property {
 	Range filter{ 0,0 };
 	Range data_range{ 0,0 };
 	DynamicArray<float> data{};
-	Histogram hist;
+	Histogram histogram;
 
 	Array<StructureData> structure_data{};
 };
 
 // Helper functions
-inline void free_structure_data(Array<StructureData>* structure_data) {
-	ASSERT(structure_data);
-	if (structure_data) {
-		for (auto& s : *structure_data) {
-			s.StructureData::~StructureData();
-		}
-		free_array(structure_data);
-	}
-}
-
-inline void init_structure_data(Array<StructureData>* structure_data, int32 count) {
-	ASSERT(count > 0);
-	ASSERT(structure_data);
-	free_structure_data(structure_data);
-	*structure_data = allocate_array<StructureData>(count);
-    for (auto& s : *structure_data) {
-        new (&s) StructureData();
-	}
-}
-
-bool sync_structure_count(Array<StructureData> data);
+void init_structure_data(Array<StructureData>* structure_data, int32 count);
+void free_structure_data(Array<StructureData>* structure_data);
+bool sync_structure_data_length(Array<StructureData> data);
 bool extract_args_structures(Array<StructureData> data, Array<CString> arg, const MoleculeStructure& structure);
 Array<const vec3> extract_positions(const StructureData& data, Array<const vec3> atom_positions);
+vec3 compute_com(Array<const vec3> positions);
 
 typedef bool (*PropertyComputeFunc)(Property* prop, const Array<CString> args, const MoleculeDynamic& dynamic);
 typedef bool (*PropertyVisualizeFunc)(const Property& prop, const MoleculeDynamic& dynamic);
@@ -133,7 +116,9 @@ Property* create_property(CString name = {}, CString args = {});
 void	  remove_property(Property* prop);
 
 void	  clear_property(Property* prop);
-void      clear_properties();
+void      clear_all_properties();
+void	  clear_property_data(Property* prop);
+void 	  clear_all_property_data();
 
 int32	  get_property_count();
 Property* get_property(int32 idx);

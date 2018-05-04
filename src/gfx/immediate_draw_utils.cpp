@@ -9,7 +9,7 @@ namespace immediate {
 struct Vertex {
     float position[3];
     unsigned short tex_coord[2];
-    unsigned char color[4];
+    uint32 color;
 };
 
 using Index = uint16;
@@ -60,7 +60,7 @@ out vec4 col;
 
 void main() {
 	gl_Position = u_mvp * vec4(in_pos, 1);
-    gl_PointSize = max(1.f, 200.f / gl_Position.w);
+    gl_PointSize = max(2.f, 200.f / gl_Position.w);
 	tc = in_tc;
 	col = in_col;
 }
@@ -211,9 +211,9 @@ void flush() {
 }
 
 // PRIMITIVES
-void draw_point(const float pos[3], const unsigned char color[4]) {
+void draw_point(const float pos[3], const uint32 color) {
     Index idx = (Index)vertices.count;
-    Vertex vert = {{pos[0], pos[1], pos[2]}, {0, 0}, {color[0], color[1], color[2], color[3]}};
+    Vertex vert = {{pos[0], pos[1], pos[2]}, {0, 0}, color};
 
     vertices.push_back(vert);
     indices.push_back(idx);
@@ -221,10 +221,10 @@ void draw_point(const float pos[3], const unsigned char color[4]) {
     append_draw_command(idx, 1, GL_POINTS);
 }
 
-void draw_line(const float from[3], const float to[3], const unsigned char color[4]) {
+void draw_line(const float from[3], const float to[3], const uint32 color) {
     Index idx = (Index)vertices.count;
-    Vertex v0 = {{from[0], from[1], from[2]}, {0, 0}, {color[0], color[1], color[2], color[3]}};
-    Vertex v1 = {{to[0], to[1], to[2]}, {0, 0}, {color[0], color[1], color[2], color[3]}};
+    Vertex v0 = {{from[0], from[1], from[2]}, {0, 0}, color};
+    Vertex v1 = {{to[0], to[1], to[2]}, {0, 0}, color};
 
     vertices.push_back(v0);
     vertices.push_back(v1);
@@ -235,11 +235,11 @@ void draw_line(const float from[3], const float to[3], const unsigned char color
     append_draw_command(idx, 2, GL_LINES);
 }
 
-void draw_triangle(const float p0[3], const float p1[3], const float p2[3], const unsigned char color[4]) {
+void draw_triangle(const float p0[3], const float p1[3], const float p2[3], const uint32 color) {
     Index idx = (Index)vertices.count;
-    Vertex v0 = {{p0[0], p0[1], p0[2]}, {0, 0}, {color[0], color[1], color[2], color[3]}};
-    Vertex v1 = {{p1[0], p1[1], p1[2]}, {0, 0}, {color[0], color[1], color[2], color[3]}};
-    Vertex v2 = {{p2[0], p2[1], p2[2]}, {0, 0}, {color[0], color[1], color[2], color[3]}};
+    Vertex v0 = {{p0[0], p0[1], p0[2]}, {0, 0}, color};
+    Vertex v1 = {{p1[0], p1[1], p1[2]}, {0, 0}, color};
+    Vertex v2 = {{p2[0], p2[1], p2[2]}, {0, 0}, color};
 
     vertices.push_back(v0);
     vertices.push_back(v1);
@@ -253,12 +253,12 @@ void draw_triangle(const float p0[3], const float p1[3], const float p2[3], cons
 }
 
 /*
-void draw_quad(const float v0[3], const float v1[3], const float v2[3], const float v3[3], const unsigned char color[4]) {}
+void draw_quad(const float v0[3], const float v1[3], const float v2[3], const float v3[3], const uint32 color) {}
 
 // COMPOSITS
-void draw_sphere(const float pos[3], const float radius, const unsigned char color[4]) {}
+void draw_sphere(const float pos[3], const float radius, const uint32 color) {}
 
-void draw_axis_aligned_box(const float min_box[3], const float max_box[3], const unsigned char color[4]) {}
+void draw_axis_aligned_box(const float min_box[3], const float max_box[3], const uint32 color) {}
 */
 
 }  // namespace immediate

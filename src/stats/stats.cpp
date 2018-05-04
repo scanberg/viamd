@@ -73,6 +73,26 @@ static StructureFunc find_structure_func(CString cmd) {
 	return nullptr;
 }
 
+void init_structure_data(Array<StructureData>* structure_data, int32 count) {
+	ASSERT(count > 0);
+	ASSERT(structure_data);
+	free_structure_data(structure_data);
+	*structure_data = allocate_array<StructureData>(count);
+    for (auto& s : *structure_data) {
+        new (&s) StructureData();
+	}
+}
+
+void free_structure_data(Array<StructureData>* structure_data) {
+	ASSERT(structure_data);
+	if (structure_data) {
+		for (auto& s : *structure_data) {
+			s.StructureData::~StructureData();
+		}
+		free_array(structure_data);
+	}
+}
+
 // HISTOGRAMS
 void init_histogram(Histogram* hist, int32 num_bins) {
     ASSERT(hist);
@@ -279,7 +299,7 @@ bool structure_apply_aggregation_strategy_com(StructureData* data, const Array<C
 }
 
 // Helper funcs
-inline static vec3 compute_com(Array<const vec3> positions) {
+vec3 compute_com(Array<const vec3> positions) {
     if (positions.count == 0) return {0, 0, 0};
     if (positions.count == 1) return positions[0];
 
@@ -448,8 +468,8 @@ static bool compute_distance(Property* prop, const Array<CString> args, const Mo
 		return false;
 	}
 
-	// Sync the count of structures for between arguments
-	if (!sync_structure_count(prop->structure_data)) {
+	// Sync the number of structures between arguments
+	if (!sync_structure_data_length(prop->structure_data)) {
 		return false;
 	}
     const int32 structure_count = (int32)prop->structure_data[0].structures.count;
@@ -492,8 +512,8 @@ static bool compute_angle(Property* prop, const Array<CString> args, const Molec
         return false;
     }
 
-	// Sync the count of structures for between arguments
-	if (!sync_structure_count(prop->structure_data)) {
+	// Sync the number of structures between arguments
+	if (!sync_structure_data_length(prop->structure_data)) {
 		return false;
 	}
 	const int32 structure_count = (int32)prop->structure_data[0].structures.count;
@@ -542,8 +562,8 @@ static bool compute_dihedral(Property* prop, const Array<CString> args, const Mo
         return false;
     }
 
-	// Sync the count of structures for between arguments
-	if (!sync_structure_count(prop->structure_data)) {
+	// Sync the number of structures between arguments
+	if (!sync_structure_data_length(prop->structure_data)) {
 		return false;
 	}
 	const int32 structure_count = (int32)prop->structure_data[0].structures.count;
@@ -606,6 +626,10 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
 		vec3 com_prev(0);
 		vec3 com_next(0);
 
+		const int32 NUM_COLORS = 5;
+		const uint32 COLORS[NUM_COLORS] { 0xffa6cee3, 0xff1f78b4, 0xffb2df8a, 0xff33a02c, 0xfffb9a99 };
+		const uint32 LINE_COLOR = 0xff222222;
+
 		for (int32 i = 0; i < count; i++) {
 			pos_prev = extract_positions(prop.structure_data[0].structures[i], dynamic.molecule.atom_positions);
 			if (prop.structure_data[0].strategy == COM) {
@@ -613,7 +637,7 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
 				pos_prev = { &com_prev, 1 };
 			}
 			for (const auto& p : pos_prev) {
-				immediate::draw_point(p);
+				immediate::draw_point(p, COLORS[0]);
 			}
 			for (int32 j = 1; j < prop.structure_data.count; j++) {
 				pos_next = extract_positions(prop.structure_data[j].structures[i], dynamic.molecule.atom_positions);
@@ -622,19 +646,19 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
 					pos_next = { &com_next, 1 };
 				}
 				for (const auto& p : pos_next) {
-					immediate::draw_point(p);
+					immediate::draw_point(p, COLORS[j % NUM_COLORS]);
 				}
 				if (pos_prev.count == 1 && pos_next.count == 1) {
-					immediate::draw_line(pos_prev[0], pos_next[0]);
+					immediate::draw_line(pos_prev[0], pos_next[0], LINE_COLOR);
 				}
 				if (pos_prev.count > 1) {
 					for (int32 k = 0; k < pos_prev.count; k++) {
-						immediate::draw_line(pos_prev[k], pos_next[0]);
+						immediate::draw_line(pos_prev[k], pos_next[0], LINE_COLOR);
 					}
 				}
 				else if (pos_next.count > 1) {
 					for (int32 k = 0; k < pos_next.count; k++) {
-						immediate::draw_line(pos_prev[0], pos_next[k]);
+						immediate::draw_line(pos_prev[0], pos_next[k], LINE_COLOR);
 					}
 				}
 
@@ -649,15 +673,15 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
 
 void initialize() {
     ctx.property_func_entries.push_back({HASH("distance"), compute_distance, visualize_structures});
-    ctx.property_func_entries.push_back({HASH("angle"), compute_angle, visualize_structures});
+    ctx.property_func_entries.push_back({HASH("angle"),    compute_angle, 	 visualize_structures});
     ctx.property_func_entries.push_back({HASH("dihedral"), compute_dihedral, visualize_structures});
 
     ctx.structure_func_entries.push_back({HASH("resname"), structure_match_resname});
-    ctx.structure_func_entries.push_back({HASH("resid"), structure_match_resid});
+    ctx.structure_func_entries.push_back({HASH("resid"),   structure_match_resid});
     ctx.structure_func_entries.push_back({HASH("residue"), structure_match_residue});
-    ctx.structure_func_entries.push_back({HASH("atom"), structure_match_atom});
+    ctx.structure_func_entries.push_back({HASH("atom"),    structure_match_atom});
     ctx.structure_func_entries.push_back({HASH("resatom"), structure_extract_resatom});
-    ctx.structure_func_entries.push_back({HASH("com"), structure_apply_aggregation_strategy_com});
+    ctx.structure_func_entries.push_back({HASH("com"), 	   structure_apply_aggregation_strategy_com});
 }
 
 void shutdown() {}
@@ -795,7 +819,7 @@ bool extract_args_structures(Array<StructureData> data, Array<CString> args, con
     return true;
 }
 
-bool sync_structure_count(Array<StructureData> data) {
+bool sync_structure_data_length(Array<StructureData> data) {
 	int32 max_count = 0;
 	for (const auto& s : data) {
 		max_count = math::max(max_count, (int32)s.structures.count);
@@ -860,7 +884,7 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
             prop.data.resize(num_frames);
         }
         prop.data.set_mem_to_zero();
-        clear_histogram(&prop.hist);
+        clear_histogram(&prop.histogram);
 
         if (!balanced_parentheses(prop.args)) {
             snprintf(prop.error_msg.beg(), prop.error_msg.MAX_LENGTH, "Unbalanced parantheses!");
@@ -907,7 +931,7 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
         if (func(&prop, args, dynamic)) {
             constexpr int32 NUM_BINS = 64;
             prop.data_range = compute_range(prop.data);
-            compute_histogram(&prop.hist, NUM_BINS, prop.data, prop.data_range.x, prop.data_range.y);
+            compute_histogram(&prop.histogram, NUM_BINS, prop.data, prop.data_range.x, prop.data_range.y);
             prop.valid = true;
         }
     }
@@ -940,7 +964,7 @@ Property* create_property(CString name, CString args) {
 void remove_property(Property* prop) {
     for (auto p : ctx.properties) {
         if (p == prop) {
-            free_histogram(&p->hist);
+            free_histogram(&p->histogram);
             ctx.properties.swap_back_and_pop(&p);
         }
     }
@@ -959,5 +983,30 @@ Property* get_property(int32 idx) {
 }
 
 int32 get_property_count() { return (int32)ctx.properties.count; }
+
+void clear_property(Property* prop) {
+	ASSERT(prop);
+	free_structure_data(&prop->structure_data);
+	free_histogram(&prop->histogram);
+}
+
+void clear_all_properties() {
+	for (auto p : ctx.properties) {
+		clear_property(p);
+	}
+	ctx.properties.clear();
+}
+
+void clear_property_data(Property* prop) {
+	ASSERT(prop);
+	prop->data.clear();
+	clear_histogram(&prop->histogram);
+}
+
+void clear_all_property_data() {
+	for (auto p : ctx.properties) {
+		clear_property_data(p);
+	}
+}
 
 }  // namespace stats
