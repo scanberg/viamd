@@ -34,6 +34,11 @@ constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
 constexpr unsigned int NO_PICKING_IDX = 0xffffffff;
 constexpr const char* FILE_EXTENSION = "via";
 
+constexpr uint32 DEL_BTN_COLOR = 0xff1111cc;
+constexpr uint32 DEL_BTN_HOVER_COLOR = 0xff3333dd;
+constexpr uint32 DEL_BTN_ACTIVE_COLOR = 0xff5555ff;
+constexpr uint32 TEXT_BG_ERROR_COLOR = 0xaa222299;
+
 constexpr const char* CAFFINE_PDB = R"(
 ATOM      1  N1  BENZ    1       5.040   1.944  -8.324                          
 ATOM      2  C2  BENZ    1       6.469   2.092  -7.915                          
@@ -268,7 +273,8 @@ static void clear_representations(ApplicationData* data);
 
 // Async operations
 static void load_trajectory_async(ApplicationData* data);
-static void clear_statistics_data(ApplicationData* data);
+static void remove_properties(ApplicationData* data);
+static void clear_properties(ApplicationData* data);
 static void compute_statistics_async(ApplicationData* data);
 static void compute_backbone_angles_async(ApplicationData* data);
 
@@ -296,7 +302,7 @@ int main(int, char**) {
     postprocessing::initialize(data.fbo.width, data.fbo.height);
 
     // Setup style
-    // ImGui::StyleColorsClassic();
+    ImGui::StyleColorsClassic();
 
     bool show_demo_window = false;
     vec4 clear_color = vec4(1, 1, 1, 1);
@@ -555,7 +561,9 @@ int main(int, char**) {
             postprocessing::apply_ssao(data.fbo.tex_depth, data.fbo.tex_normal, proj_mat, data.ssao.intensity, data.ssao.radius);
         }
         
-        stats::visualize(data.mol_data.dynamic);
+		if (!data.async.statistics.sync.running) {
+			stats::visualize(data.mol_data.dynamic);
+		}
 		immediate::flush();
 
         // GUI ELEMENTS
@@ -672,6 +680,7 @@ static void draw_main_menu(ApplicationData* data) {
                     } else {
                         create_default_representation(data);
                     }
+					clear_properties(data);
                     reset_view(data);
                 }
             }
@@ -772,17 +781,19 @@ static void draw_main_menu(ApplicationData* data) {
 }
 
 static void draw_representations_window(ApplicationData* data) {
-    constexpr uint32 FILTER_ERROR_COLOR = 0xdd2222bb;
-
     ImGui::Begin("Representations", &data->representations.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
     if (ImGui::Button("create new")) {
         create_default_representation(data);
     }
     ImGui::SameLine();
-    if (ImGui::Button("clear all")) {
+	ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
+	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
+	ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
+    if (ImGui::Button("remove all")) {
         data->representations.data.clear();
     }
+	ImGui::PopStyleColor(3);
     ImGui::Spacing();
     ImGui::Separator();
     for (int i = 0; i < data->representations.data.count; i++) {
@@ -798,9 +809,13 @@ static void draw_representations_window(ApplicationData* data) {
         if (ImGui::CollapsingHeader(name.buffer)) {
             ImGui::Checkbox("enabled", &rep.enabled);
             ImGui::SameLine();
+			ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
+			ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
+			ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
             if (ImGui::Button("remove")) {
                 remove_representation(data, i);
             }
+			ImGui::PopStyleColor(3);
             ImGui::SameLine();
             if (ImGui::Button("clone")) {
                 Representation clone = rep;
@@ -811,7 +826,7 @@ static void draw_representations_window(ApplicationData* data) {
 
             ImGui::PushItemWidth(item_width);
             ImGui::InputText("name", rep.name.buffer, rep.name.MAX_LENGTH);
-            if (!rep.filter_is_ok) ImGui::PushStyleColor(ImGuiCol_FrameBg, FILTER_ERROR_COLOR);
+            if (!rep.filter_is_ok) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
             if (ImGui::InputText("filter", rep.filter.buffer, rep.filter.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
                 recompute_colors = true;
             }
@@ -857,11 +872,7 @@ static void draw_representations_window(ApplicationData* data) {
 }
 
 static void draw_property_window(ApplicationData* data) {
-    constexpr uint32 DEL_BTN_COLOR = 0xff1111cc;
-    constexpr uint32 DEL_BTN_HOVER_COLOR = 0xff3333dd;
-    constexpr uint32 DEL_BTN_ACTIVE_COLOR = 0xff5555ff;
 
-    constexpr uint32 ERROR_COLOR = 0xaa222299;
 
     bool compute_stats = false;
 
@@ -871,83 +882,6 @@ static void draw_property_window(ApplicationData* data) {
     };
 
     ImGui::Begin("Properties", &data->statistics.show_property_window, ImGuiWindowFlags_NoFocusOnAppearing);
-
-	/*
-    //ImGui::PushID("GROUPS");
-    //ImGui::Text("GROUPS");
-    //if (ImGui::Button("create new")) {
-    //    stats::create_group();
-    //}
-    //ImGui::SameLine();
-    //ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
-    //ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
-    //ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
-    //if (ImGui::Button("clear all")) {
-    //}
-    //ImGui::PopStyleColor(3);
-    //ImGui::Spacing();
-
-    ImGui::Columns(3, "columns", true);
-    ImGui::Separator();
-    ImGui::SetColumnWidth(0, ImGui::GetWindowContentRegionWidth() * 0.4f);
-    ImGui::SetColumnWidth(1, ImGui::GetWindowContentRegionWidth() * 0.5f);
-    ImGui::SetColumnWidth(2, ImGui::GetWindowContentRegionWidth() * 0.1f);
-
-    ImGui::Text("name");
-    ImGui::NextColumn();
-    ImGui::Text("args");
-    ImGui::NextColumn();
-    ImGui::NextColumn();
-
-    for (int i = 0; i < stats::get_group_count(); i++) {
-        auto group_id = stats::get_group(i);
-        auto name_buf = stats::get_group_name_buf(group_id);
-        auto args_buf = stats::get_group_args_buf(group_id);
-        auto valid = stats::get_group_valid(group_id);
-        bool update = false;
-
-        ImGui::Separator();
-        ImGui::PushID(i);
-        if (!valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, ERROR_COLOR);
-        ImGui::PushItemWidth(-1);
-        if (ImGui::InputText("##name", name_buf->buffer, name_buf->MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
-            update = true;
-        }
-        ImGui::PopItemWidth();
-        ImGui::NextColumn();
-        ImGui::PushItemWidth(-1);
-        if (ImGui::InputText("##args", args_buf->buffer, args_buf->MAX_LENGTH,
-                             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackCompletion, group_args_callback)) {
-            update = true;
-        }
-        ImGui::PopItemWidth();
-        if (!valid) ImGui::PopStyleColor();
-        ImGui::NextColumn();
-
-        ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
-        if (ImGui::Button("del")) {
-            stats::remove_group(group_id);
-            compute_stats = true;
-        }
-        ImGui::PopStyleColor(3);
-
-        ImGui::NextColumn();
-        ImGui::PopID();
-
-        if (update) {
-            stats::clear_group(group_id);
-            compute_stats = true;
-        }
-    }
-    ImGui::Columns(1);
-    ImGui::Separator();
-    ImGui::PopID();
-
-    ImGui::Spacing();
-    ImGui::Spacing();
-	*/
 
     ImGui::PushID("PROPERTIES");
     ImGui::Text("PROPERTIES");
@@ -959,7 +893,8 @@ static void draw_property_window(ApplicationData* data) {
     ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
-    if (ImGui::Button("clear all")) {
+    if (ImGui::Button("remove all")) {
+		remove_properties(data);
     }
     ImGui::PopStyleColor(3);
     ImGui::Spacing();
@@ -983,7 +918,7 @@ static void draw_property_window(ApplicationData* data) {
         ImGui::Separator();
         ImGui::PushID(i);
 
-        if (!prop->valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, ERROR_COLOR);
+        if (!prop->valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
         ImGui::PushItemWidth(-1);
         if (ImGui::InputText("##name", prop->name.buffer, prop->name.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
             update = true;
@@ -1005,7 +940,7 @@ static void draw_property_window(ApplicationData* data) {
         ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
-        if (ImGui::Button("del")) {
+        if (ImGui::Button("remove")) {
             stats::remove_property(prop);
         }
 		ImGui::SameLine();
@@ -1079,6 +1014,7 @@ static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, in
 static void draw_async_info(ApplicationData* data) {
     constexpr float WIDTH = 300.f;
     constexpr float MARGIN = 10.f;
+	constexpr float PROGRESS_FRACT = 0.3f;
 
     float traj_fract = data->async.trajectory.fraction;
     float angle_fract = data->async.backbone_angles.fraction;
@@ -1092,25 +1028,31 @@ static void draw_async_info(ApplicationData* data) {
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
         ImGui::Begin("##Async Info", 0,
                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
                          ImGuiWindowFlags_NoFocusOnAppearing);
 
         char buf[32];
         if (0.f < traj_fract && traj_fract < 1.f) {
             snprintf(buf, 32, "%.1f%%", traj_fract * 100.f);
-            ImGui::ProgressBar(traj_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * 0.5f, 0), buf);
+            ImGui::ProgressBar(traj_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * PROGRESS_FRACT, 0), buf);
             ImGui::SameLine();
             ImGui::Text("Reading Trajectory");
+			ImGui::SameLine();
+			if (ImGui::Button("X")) {
+				data->async.trajectory.sync.signal_stop_and_wait();
+				compute_statistics_async(data);
+				data->async.trajectory.fraction = 0.f;
+			}
         }
         if (0.f < angle_fract && angle_fract < 1.f) {
             snprintf(buf, 32, "%.1f%%", angle_fract * 100.f);
-            ImGui::ProgressBar(angle_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * 0.5f, 0), buf);
+            ImGui::ProgressBar(angle_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * PROGRESS_FRACT, 0), buf);
             ImGui::SameLine();
             ImGui::Text("Computing Backbone Angles");
         }
         if (0.f < stats_fract && stats_fract < 1.f) {
             snprintf(buf, 32, "%.1f%%", stats_fract * 100.f);
-            ImGui::ProgressBar(stats_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * 0.5f, 0), buf);
+            ImGui::ProgressBar(stats_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * PROGRESS_FRACT, 0), buf);
             ImGui::SameLine();
             ImGui::Text("Computing Statistics");
         }
@@ -1185,7 +1127,7 @@ static void draw_distribution_window(ApplicationData* data) {
     static ImVec2 selection_range{0, 0};
 
     for (int i = 0; i < stats::get_property_count(); i++) {
-        stats::Property*  prop = stats::get_property(i);
+        stats::Property* prop = stats::get_property(i);
         ImGui::PushItemWidth(-1);
         ImGui::PushID(i);
         ImGui::PlotHistogram(prop->name, ImVec2(0, 100), prop->histogram.bins.data, (int32)prop->histogram.bins.count, prop->periodic, vec_cast(prop->histogram.value_range), &selection_range);
@@ -1201,32 +1143,20 @@ static void draw_ramachandran_window(ApplicationData* data) {
     ImGui::Begin("Ramachandran", &data->ramachandran.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
     int32 num_frames = data->mol_data.dynamic.trajectory ? data->mol_data.dynamic.trajectory.num_frames : 0;
-    //float range_min = (float)data->ramachandran.frame_range_min;
-    //float range_max = (float)data->ramachandran.frame_range_max;
 
     ImGui::SliderFloat("opacity", &data->ramachandran.opacity, 0.f, 10.f);
     ImGui::SliderFloat("radius", &data->ramachandran.radius, 0.1f, 2.f);
     ImGui::RangeSliderFloat("framerange", &data->time_filter.range.x, &data->time_filter.range.y, 0, (float)math::max(0, num_frames));
-    //ImGui::SameLine();
-    //if (ImGui::Button("reset")) {
-    //    range_min = 0;
-    //    range_max = num_frames - 1;
-    //}
-    //data->ramachandran.frame_range_min = (int32)range_min;
-    //data->ramachandran.frame_range_max = (int32)range_max;
 
     int32 frame = (int32)data->time;
-    Array<BackboneAngles> accumulated_angles = get_backbone_angles(data->ramachandran.backbone_angles, data->time_filter.range.x,
-                                                                   data->time_filter.range.y - data->time_filter.range.x);
+    Array<BackboneAngles> accumulated_angles = get_backbone_angles(data->ramachandran.backbone_angles, (int32)data->time_filter.range.x,
+                                                                   (int32)data->time_filter.range.y - (int32)data->time_filter.range.x);
     Array<BackboneAngles> current_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame);
 
     ramachandran::clear_accumulation_texture();
 
     const vec4 ordinary_color(1.f, 1.f, 1.f, 0.1f * data->ramachandran.opacity);
     ramachandran::compute_accumulation_texture(accumulated_angles, ordinary_color, data->ramachandran.radius);
-
-    //const vec4 highlight_color(1.f, 1.f, 0.f, 1.0f);
-    //ramachandran::compute_accumulation_texture(current_angles, highlight_color, data->ramachandran.radius * 2.f, 0.1f);
 
     float dim = math::min(ImGui::GetWindowWidth(), ImGui::GetWindowHeight());
     ImVec2 win_pos = ImGui::GetCursorScreenPos();
@@ -1250,8 +1180,6 @@ static void draw_ramachandran_window(ApplicationData* data) {
 		ImVec2 coord(angle.phi * ONE_OVER_TWO_PI + 0.5f, angle.psi * ONE_OVER_TWO_PI + 0.5f); // [-PI, PI] -> [0, 1]
 		coord.y = 1.f - coord.y;
 		coord = ImLerp(x0, x1, coord);
-		//dl->AddCircleFilled(coord, data->ramachandran.radius * 10.f, 0xff00ffff);
-		//dl->AddCircle(coord, data->ramachandran.radius * 10.f, 0xff000000);
 		float radius = data->ramachandran.radius * 5.f;
 		ImVec2 min_box(math::round(coord.x - radius), math::round(coord.y - radius));
 		ImVec2 max_box(math::round(coord.x + radius), math::round(coord.y + radius));
@@ -1355,7 +1283,6 @@ static void free_molecule_data(ApplicationData* data) {
     free_backbone_angles_trajectory(&data->ramachandran.backbone_angles);
     data->ramachandran.backbone_angles = {};
     data->ramachandran.current_backbone_angles = {};
-    clear_statistics_data(data);
 }
 
 static void load_molecule_data(ApplicationData* data, CString file) {
@@ -1503,7 +1430,7 @@ static vec4 to_vec4(CString txt, vec4 default_val = vec4(1)) {
 static void load_workspace(ApplicationData* data, CString file) {
     ASSERT(data);
     clear_representations(data);
-    //stats::clear();
+	remove_properties(data);
 
     StringBuffer<256> new_molecule_file;
     StringBuffer<256> new_trajectory_file;
@@ -1540,17 +1467,8 @@ static void load_workspace(ApplicationData* data, CString file) {
             }
             data->representations.data.push_back(rep);
         }
-		/*else if (compare(line, "[Group]")) {
-            StringBuffer<64> name, args;
-            while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
-                extract_line(line, c_txt);
-                if (compare_n(line, "Name=", 5)) name = trim(line.substr(5));
-                if (compare_n(line, "Args=", 5)) args = trim(line.substr(5));
-            }
-            stats::create_group(name, args);
-			*/
         else if (compare(line, "[Property]")) {
-            StringBuffer<64> name, args;
+            StringBuffer<256> name, args;
             while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
                 extract_line(line, c_txt);
                 if (compare_n(line, "Name=", 5)) name = trim(line.substr(5));
@@ -1638,17 +1556,6 @@ static void save_workspace(ApplicationData* data, CString file) {
         }
         fprintf(fptr, "\n");
     }
-
-    // GROUPS
-	/*
-    for (int i = 0; i < stats::get_group_count(); i++) {
-        auto id = stats::get_group(i);
-        fprintf(fptr, "[Group]\n");
-        fprintf(fptr, "Name=%s\n", stats::get_group_name_buf(id)->beg());
-        fprintf(fptr, "Args=%s\n", stats::get_group_args_buf(id)->beg());
-        fprintf(fptr, "\n");
-    }
-	*/
 
     // PROPERTIES
     for (int i = 0; i < stats::get_property_count(); i++) {
@@ -1757,7 +1664,12 @@ static void load_trajectory_async(ApplicationData* data) {
     }
 }
 
-static void clear_statistics_data(ApplicationData* data) {
+static void remove_properties(ApplicationData* data) {
+	data->async.statistics.sync.signal_stop_and_wait();
+	stats::remove_all_properties();
+}
+
+static void clear_properties(ApplicationData* data) {
     data->async.statistics.sync.signal_stop_and_wait();
     stats::clear_all_properties();
 }

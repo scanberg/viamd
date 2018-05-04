@@ -7,6 +7,7 @@
 #include <gfx/immediate_draw_utils.h>
 
 #include <ctype.h>
+#include <new>
 
 #define HASH(x) (hash::crc64(x))
 
@@ -73,16 +74,6 @@ static StructureFunc find_structure_func(CString cmd) {
 	return nullptr;
 }
 
-void init_structure_data(Array<StructureData>* structure_data, int32 count) {
-	ASSERT(count > 0);
-	ASSERT(structure_data);
-	free_structure_data(structure_data);
-	*structure_data = allocate_array<StructureData>(count);
-    for (auto& s : *structure_data) {
-        new (&s) StructureData();
-	}
-}
-
 void free_structure_data(Array<StructureData>* structure_data) {
 	ASSERT(structure_data);
 	if (structure_data) {
@@ -93,14 +84,46 @@ void free_structure_data(Array<StructureData>* structure_data) {
 	}
 }
 
+void init_instance_data(Array<InstanceData>* instance_data, int32 num_instances, int32 num_frames) {
+	ASSERT(instance_data);
+	free_instance_data(instance_data);
+
+	*instance_data = allocate_array<InstanceData>(num_instances);
+	for (auto& inst : *instance_data) {
+		new (&inst) InstanceData(num_frames);
+	}
+}
+
+void free_instance_data(Array<InstanceData>* instance_data) {
+	ASSERT(instance_data);
+	if (instance_data->data) {
+		for (auto inst : *instance_data) {
+			inst.~InstanceData();
+		}
+	}
+	free_array(instance_data);
+}
+
+void init_structure_data(Array<StructureData>* structure_data, int32 count) {
+	ASSERT(count > 0);
+	ASSERT(structure_data);
+	free_structure_data(structure_data);
+	*structure_data = allocate_array<StructureData>(count);
+    for (auto& s : *structure_data) {
+        new (&s) StructureData();
+	}
+}
+
 // HISTOGRAMS
-void init_histogram(Histogram* hist, int32 num_bins) {
+void init_histogram(Histogram* hist, int32 num_bins, Range value_range) {
     ASSERT(hist);
     if (hist->bins.data) {
         FREE(hist->bins.data);
     }
     hist->bins.data = (float*)MALLOC(num_bins * sizeof(float));
     hist->bins.count = num_bins;
+	hist->value_range = value_range;
+	hist->bin_range = { 0,0 };
 
     ASSERT(hist->bins.data);
 }
@@ -114,6 +137,7 @@ void free_histogram(Histogram* hist) {
     }
 }
 
+/*
 Histogram compute_histogram(int32 num_bins, Array<float> data) {
     Histogram hist;
     compute_histogram(&hist, num_bins, data);
@@ -126,7 +150,7 @@ Histogram compute_histogram(int32 num_bins, Array<float> data, float min_val, fl
     return hist;
 }
 
-void compute_histogram(Histogram* hist, int32 num_bins, Array<float> data) {
+void compute_histogram(Histogram* hist, Array<float> data) {
     ASSERT(hist);
     if (data.count == 0) return;
     float min_val = FLT_MAX;
@@ -137,22 +161,18 @@ void compute_histogram(Histogram* hist, int32 num_bins, Array<float> data) {
     }
     compute_histogram(hist, num_bins, data, min_val, max_val);
 }
+*/
 
-void compute_histogram(Histogram* hist, int32 num_bins, Array<float> data, float min_val, float max_val) {
+void compute_histogram(Histogram* hist, Array<float> data) {
     ASSERT(hist);
-    ASSERT(num_bins > 0);
-
-    init_histogram(hist, num_bins);
-    memset(hist->bins.data, 0, hist->bins.count * sizeof(float));
-
-    const float scl = num_bins / (max_val - min_val);
+	const int32 num_bins = (int32)hist->bins.count;
+    const float scl = num_bins / (hist->value_range.y - hist->value_range.x);
     hist->bin_range = {0, 0};
     for (auto v : data) {
-        int32 bin_idx = math::clamp((int32)((v - min_val) * scl), 0, num_bins - 1);
+        int32 bin_idx = math::clamp((int32)((v - hist->value_range.x) * scl), 0, num_bins - 1);
         hist->bins[bin_idx]++;
         hist->bin_range.y = math::max(hist->bin_range.y, hist->bins[bin_idx]);
     }
-    hist->value_range = {min_val, max_val};
 }
 
 void clear_histogram(Histogram* hist) {
@@ -160,6 +180,18 @@ void clear_histogram(Histogram* hist) {
     if (hist->bins.data) {
         memset(hist->bins.data, 0, hist->bins.count * sizeof(float));
     }
+}
+
+static Range compute_range(Array<float> data) {
+	if (data.count == 0) {
+		return { 0, 0 };
+	}
+	Range range{ FLT_MAX, -FLT_MAX };
+	for (float v : data) {
+		range.x = math::min(range.x, v);
+		range.y = math::max(range.y, v);
+	}
+	return range;
 }
 
 static void set_error_message(CString msg) { printf("%s\n", msg.beg()); }
@@ -321,55 +353,7 @@ static inline int32 structures_index_count(Array<const Structure> structures) {
     return count;
 }
 
-static inline int32 compute_positions(Array<vec3> positions, Structure structure, AggregationStrategy strategy, Array<const vec3> atom_positions) {
-    switch (strategy) {
-        case NONE: {
-            int32 count = structure_index_count(structure);
-			ASSERT(positions.count >= count);
-            for (int32 i = 0; i < count; i++) {
-                positions[i] = atom_positions[structure.beg_idx + i];
-            }
-			return count;
-        }
-        case COM: {
-			ASSERT(positions.count >= 1);
-            vec3 com(0);
-            for (int32 i = structure.beg_idx; i < structure.end_idx; i++) {
-                com += atom_positions[i];
-            }
-            positions[0] = com / (float)structure_index_count(structure);
-			return 1;
-        }
-    }
-	return 0;
-}
-
-/*
-static inline void compute_positions(Array<vec3> dst, const StructureData& data, Array<const vec3> atom_positions) {
-	ASSERT(dst.count >= (data.strategy == COM) ? data.structures.count : structures_index_count(data.structures));
-
-	switch (data.strategy) {
-	case AggregationStrategy::COM:
-		for (int32 i = 0; i < data.structures.count; i++) {
-			dst[i] = compute_com(atom_positions.sub_array(data.structures[i].beg_idx, data.structures[i].end_idx - data.structures[i].beg_idx));
-		}
-		break;
-	default:
-		for (int32 i = 0; i < data.structures.count; i++) {
-			dst[i] = atom_positions[data.structures[i].beg_idx];
-		}
-		break;
-	}
-}
-
-DynamicArray<vec3> compute_positions(const StructureData& data, Array<const vec3> atom_positions) {
-	DynamicArray<vec3> positions(data.structures.count);
-	compute_positions(positions, data, atom_positions);
-	return positions;
-}
-*/
-
-static Array<const vec3> extract_positions(Structure structure, Array<const vec3> atom_positions) {
+Array<const vec3> extract_positions(Structure structure, Array<const vec3> atom_positions) {
 	return atom_positions.sub_array(structure.beg_idx, structure.end_idx - structure.beg_idx);
 }
 
@@ -394,7 +378,6 @@ static inline float multi_distance(Array<const vec3> pos_a, Array<const vec3> po
 		}
 		return dist / count;
 	}
-	return 0.f;
 }
 
 static inline float multi_angle(Array<const vec3> pos_a, Array<const vec3> pos_b, Array<const vec3> pos_c) {
@@ -474,6 +457,8 @@ static bool compute_distance(Property* prop, const Array<CString> args, const Mo
 	}
     const int32 structure_count = (int32)prop->structure_data[0].structures.count;
 
+	init_instance_data(&prop->instance_data, structure_count, dynamic.trajectory.num_frames);
+
     const float32 scl = 1.f / (float32)structure_count;
 	Array<const vec3> pos[2];
 	vec3 com[2];
@@ -491,11 +476,26 @@ static bool compute_distance(Property* prop, const Array<CString> args, const Mo
 				pos[1] = { &com[1], 1 };
 			}
 
-			val += multi_distance(pos[0], pos[1]);
+			prop->instance_data[j].data[i] = multi_distance(pos[0], pos[1]);
+			val += prop->instance_data[j].data[i];
 		}
 
         prop->data[i] = val * scl;
     }
+
+	for (int32 i = 0; i < (int32)prop->instance_data.count; i++) {
+		Range range = compute_range(prop->instance_data[i].data);
+		if (i == 0) {
+			prop->data_range = range;
+		}
+		else {
+			prop->data_range.x = math::min(prop->data_range.x, range.x);
+			prop->data_range.y = math::max(prop->data_range.y, range.y);
+		}
+	}
+
+	prop->periodic = false;
+	prop->unit = "Å";
 
     return true;
 }
@@ -517,6 +517,8 @@ static bool compute_angle(Property* prop, const Array<CString> args, const Molec
 		return false;
 	}
 	const int32 structure_count = (int32)prop->structure_data[0].structures.count;
+
+	init_instance_data(&prop->instance_data, structure_count, dynamic.trajectory.num_frames);
 
 	const float32 scl = 1.f / (float32)structure_count;
 	Array<const vec3> pos[3];
@@ -541,11 +543,16 @@ static bool compute_angle(Property* prop, const Array<CString> args, const Molec
 				pos[2] = { &com[2], 1 };
 			}
 
-			val += multi_angle(pos[0], pos[1], pos[2]);
+			prop->instance_data[j].data[i] = multi_angle(pos[0], pos[1], pos[2]);
+			val += prop->instance_data[j].data[i];
 		}
 
 		prop->data[i] = val * scl;
 	}
+
+	prop->data_range = { 0, math::PI };
+	prop->periodic = true;
+	prop->unit = "°";
 
     return true;
 }
@@ -567,6 +574,8 @@ static bool compute_dihedral(Property* prop, const Array<CString> args, const Mo
 		return false;
 	}
 	const int32 structure_count = (int32)prop->structure_data[0].structures.count;
+
+	init_instance_data(&prop->instance_data, structure_count, dynamic.trajectory.num_frames);
 
 	const float32 scl = 1.f / (float32)structure_count;
 	Array<const vec3> pos[4];
@@ -596,11 +605,17 @@ static bool compute_dihedral(Property* prop, const Array<CString> args, const Mo
 				pos[3] = { &com[3], 1 };
 			}
 
-			val += multi_dihedral(pos[0], pos[1], pos[2], pos[3]);
+			prop->instance_data[j].data[i] = multi_dihedral(pos[0], pos[1], pos[2], pos[3]);
+			val += prop->instance_data[j].data[i];
 		}
 
 		prop->data[i] = val * scl;
 	}
+
+	prop->data_range = { -math::PI, math::PI };
+	prop->periodic = true;
+	prop->unit = "°";
+
     return true;
 }
 
@@ -626,9 +641,9 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
 		vec3 com_prev(0);
 		vec3 com_next(0);
 
-		const int32 NUM_COLORS = 5;
-		const uint32 COLORS[NUM_COLORS] { 0xffa6cee3, 0xff1f78b4, 0xffb2df8a, 0xff33a02c, 0xfffb9a99 };
-		const uint32 LINE_COLOR = 0xff222222;
+		const int32 NUM_COLORS = 4;
+		const uint32 COLORS[NUM_COLORS] { 0xffe3cea6, 0xffb4781f, 0xff8adfb2, 0xff2ca033 };
+		const uint32 LINE_COLOR = 0xffcccccc;
 
 		for (int32 i = 0; i < count; i++) {
 			pos_prev = extract_positions(prop.structure_data[0].structures[i], dynamic.molecule.atom_positions);
@@ -863,18 +878,6 @@ bool balanced_parentheses(CString str) {
     return count == 0;
 }
 
-static Range compute_range(Array<float> data) {
-    if (data.count == 0) {
-        return {0, 0};
-    }
-    Range range{FLT_MAX, -FLT_MAX};
-    for (float v : data) {
-        range.x = math::min(range.x, v);
-        range.y = math::max(range.y, v);
-    }
-    return range;
-}
-
 bool compute_stats(const MoleculeDynamic& dynamic) {
     int32 num_frames = dynamic.trajectory.num_frames;
 
@@ -930,8 +933,12 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
 
         if (func(&prop, args, dynamic)) {
             constexpr int32 NUM_BINS = 64;
-            prop.data_range = compute_range(prop.data);
-            compute_histogram(&prop.histogram, NUM_BINS, prop.data, prop.data_range.x, prop.data_range.y);
+            //prop.data_range = compute_range(prop.data);
+			init_histogram(&prop.histogram, NUM_BINS, prop.data_range);
+			clear_histogram(&prop.histogram);
+			for (const auto& inst : prop.instance_data) {
+				compute_histogram(&prop.histogram, inst.data);
+			}
             prop.valid = true;
         }
     }
@@ -950,6 +957,10 @@ void visualize(const MoleculeDynamic& dynamic) {
     }
 }
 
+void update_property(Property* prop) {
+
+}
+
 Property* create_property(CString name, CString args) {
     Property* prop = (Property*)MALLOC(sizeof(Property));
     new (prop) Property();
@@ -961,13 +972,28 @@ Property* create_property(CString name, CString args) {
     return prop;
 }
 
+static void free_property_data(Property* prop) {
+	ASSERT(prop);
+	free_histogram(&prop->histogram);
+	free_structure_data(&prop->structure_data);
+	free_instance_data(&prop->instance_data);
+}
+
 void remove_property(Property* prop) {
-    for (auto p : ctx.properties) {
+	ASSERT(prop);
+    for (auto& p : ctx.properties) {
         if (p == prop) {
-            free_histogram(&p->histogram);
-            ctx.properties.swap_back_and_pop(&p);
+			free_property_data(prop);
+            ctx.properties.remove(&p);
         }
     }
+}
+
+void remove_all_properties() {
+	for (auto prop : ctx.properties) {
+		free_property_data(prop);
+	}
+	ctx.properties.clear();
 }
 
 Property* get_property(CString name) {
@@ -987,25 +1013,14 @@ int32 get_property_count() { return (int32)ctx.properties.count; }
 void clear_property(Property* prop) {
 	ASSERT(prop);
 	free_structure_data(&prop->structure_data);
-	free_histogram(&prop->histogram);
+	free_instance_data(&prop->instance_data);
+	clear_histogram(&prop->histogram);
+	prop->data.clear();
 }
 
 void clear_all_properties() {
 	for (auto p : ctx.properties) {
 		clear_property(p);
-	}
-	ctx.properties.clear();
-}
-
-void clear_property_data(Property* prop) {
-	ASSERT(prop);
-	prop->data.clear();
-	clear_histogram(&prop->histogram);
-}
-
-void clear_all_property_data() {
-	for (auto p : ctx.properties) {
-		clear_property_data(p);
 	}
 }
 

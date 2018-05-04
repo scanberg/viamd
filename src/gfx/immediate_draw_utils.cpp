@@ -60,7 +60,7 @@ out vec4 col;
 
 void main() {
 	gl_Position = u_mvp * vec4(in_pos, 1);
-    gl_PointSize = max(2.f, 200.f / gl_Position.w);
+    gl_PointSize = max(2.f, 400.f / gl_Position.w);
 	tc = in_tc;
 	col = in_col;
 }
@@ -152,6 +152,7 @@ void initialize() {
     glBindVertexArray(0);
 
     vertices.reserve(100000);
+	indices.reserve(100000);
 }
 
 void shutdown() {

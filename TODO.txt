@@ -47,13 +47,15 @@ CONCRETE LIST OF TODOs
 // BIG PICTURE
 
 Design principles:
-    Data Oriented Design, try and avoid Object Orientation unless it is the better choice for some reason.
+    Data Oriented Design, try and avoid Object Orientation unless it is the better choice in some particular case.
+
+    Moderate C++ or (C with some C++ features)
+    Example Orthodox C++ [https://gist.github.com/bkaradzic/2e39896bc7d8c34e042b]
     C++11 / 14 with minimal dependencies.
     Avoid Templates unless necessary (example: Array might be a candidate for template).
     No STL, it is bulky and not really needed.
     Maintain interactivity!
     Keep low compile times!
-    Move most functionality into stand alone header files like nothings stb libs
 
 Target Platforms:
     Win32
@@ -75,19 +77,19 @@ General:
         cross
         operators + - * /
     Array
-    Allocator
+    (Allocator) Use Malloc and TmpMalloc for now
     DynamicArray
     Hash CRC32/64 (Constexpr)
 
 Platform layer:
-    [DONE] Move all GLFW into here (Window creation)
-    [DONE] OpenFileDialog
-    [DONE] SaveFileDialog
-    EventSystem ???
+    Move all GLFW into here (Window creation)
+    OpenFileDialog
+    SaveFileDialog
+    (EventSystem)
     (OnFileChanged)
-    StoreCompressed (ZIP? STB?)
-    ReadCompressed
-    LoadImg
+    (StoreCompressed)
+    (ReadCompressed)
+    (LoadImg???)
     SaveImg
     Provide IMGUI with optional define to enable disable
 
@@ -133,9 +135,8 @@ Rendering:
         Surface?
 
 Statistics:
-    Revise structure
     ComputeHistogram
-    ComputeAbsorptionSpectrum
+    (ComputeAbsorptionSpectrum)
     ComputeDensityVolume
     Port GUI
         Histograms Plots

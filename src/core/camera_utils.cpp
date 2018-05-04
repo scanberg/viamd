@@ -112,24 +112,26 @@ static inline vec3 transform_vec(quat q, vec3 v) {
 }
 
 void TrackballController::update() {
-	constexpr float PAN_SCL = 0.0008f;
+	constexpr float PAN_SCL = 0.5f;
 	constexpr float PAN_EXP = 1.f;
 	constexpr float DOLLY_DRAG_SCL = 0.01f;
 	constexpr float DOLLY_DRAG_EXP = 1.1f;
 	constexpr float DOLLY_DELTA_SCL = 0.1f;
 	constexpr float DOLLY_DELTA_EXP = 1.1f;
 
+	const vec2 half_res = input.screen_size * 0.5f;
+	vec2 ndc_prev = (vec2(input.mouse_coord_prev.x, input.screen_size.y - input.mouse_coord_prev.y) - half_res) / half_res;
+	vec2 ndc_curr = (vec2(input.mouse_coord_curr.x, input.screen_size.y - input.mouse_coord_curr.y) - half_res) / half_res;
+
 	if (input.rotate_button) {
-		const vec2 half_res = input.screen_size * 0.5f;
-		vec2 ndc_prev = (vec2(input.mouse_coord_prev.x, input.screen_size.y - input.mouse_coord_prev.y) - half_res) / half_res;
-		vec2 ndc_curr = (vec2(input.mouse_coord_curr.x, input.screen_size.y - input.mouse_coord_curr.y) - half_res) / half_res;
 		quat q = trackball(ndc_prev, ndc_curr);
 		vec3 look_at = compute_look_at();
 		orientation = glm::normalize(orientation * q);
 		position = look_at + transform_vec(orientation, vec3(0, 0, distance));
 	}
 	else if (input.pan_button) {
-		vec2 delta = input.mouse_coord_curr - input.mouse_coord_prev;
+		vec2 delta = ndc_curr - ndc_prev;
+		delta.y = -delta.y;
 		vec3 move = vec3(-delta.x, delta.y, 0);
 		move = transform_vec(orientation, move) * math::pow(distance * PAN_SCL, PAN_EXP);
 		position += move;

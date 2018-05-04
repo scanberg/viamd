@@ -226,6 +226,7 @@ struct StringBuffer {
         int64 len = (int64)strnlen(cstr, MAX_LENGTH);
         strncpy(buffer, cstr, len);
         buffer[len - 1] = '\0';
+		return *this;
     }
 
     char operator[](int64 i) const {
