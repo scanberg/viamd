@@ -3,6 +3,7 @@
 #include <gfx/immediate_draw_utils.h>
 #include <core/hash.h>
 #include <core/common.h>
+#include <core/log.h>
 #include <core/math_utils.h>
 #include <mol/trajectory_utils.h>
 #include <imgui.h>
@@ -261,7 +262,7 @@ DynamicArray<BackboneSegment> compute_backbone_segments(Array<const Residue> res
             }
 
             if (ca_idx == -1 || n_idx == -1 || c_idx == -1 || o_idx == -1) {
-                printf("ERROR! Could not identify all backbone indices for residue %s.\n", res.name.beg());
+                LOG_ERROR("Could not identify all backbone indices for residue %s.\n", res.name.beg());
             }
             segments.push_back({ca_idx, n_idx, c_idx, o_idx});
         } else {
@@ -694,7 +695,7 @@ bool internal_filter_mask(Array<bool> mask, const MoleculeDynamic& dyn, CString 
                 auto cmd = find_filter_command(tokens[0]);
                 if (!cmd) {
                     StringBuffer<32> buf = tokens[0];
-                    printf("ERROR! could not match command: '%s'\n", buf.beg());
+                    LOG_ERROR("Could not match command: '%s'\n", buf.beg());
                     return false;
                 }
 
@@ -707,7 +708,7 @@ bool internal_filter_mask(Array<bool> mask, const MoleculeDynamic& dyn, CString 
 
                 if (!cmd->func(chunk_mask, dyn, args)) {
                     StringBuffer<32> buf = tokens[0];
-                    printf("ERROR! could not parse command: '%s' with arguments: ", buf.beg());
+                    LOG_ERROR("Could not parse command: '%s' with arguments: ", buf.beg());
                     for (const auto& arg : args) {
                         buf = arg;
                         printf("'%s'", buf.beg());
@@ -727,7 +728,7 @@ bool internal_filter_mask(Array<bool> mask, const MoleculeDynamic& dyn, CString 
         }
 
 		if (state_and && state_or) {
-			printf("ERROR! Cannot use both 'and' and 'or' to combine filter options\n");
+			LOG_ERROR("Cannot use both 'and' and 'or' to combine filter options\n");
 			return false;
 		}
     }
@@ -743,7 +744,7 @@ bool compute_filter_mask(Array<bool> mask, const MoleculeDynamic& dyn, CString f
     ASSERT(count == mask.count);
 
     if (count_parentheses(filter) != 0) {
-        printf("ERROR! Unmatched parentheses\n");
+        LOG_ERROR("Unmatched parentheses\n");
         return false;
     }
 
@@ -759,45 +760,6 @@ void filter_colors(Array<uint32> colors, Array<bool> mask) {
         else
             colors[i] &= ~0xff000000;
     }
-}
-
-static inline bool is_range(CString arg) {
-	for (const char* c = arg.beg(); c != arg.end(); c++) {
-		if (*c == '-') return true;
-	}
-	return false;
-}
-
-static inline bool get_range(int* first, int* last, CString arg) {
-	const char* mid = arg.beg();
-	while (mid != arg.end() && *mid != '-') mid++;
-	if (mid == arg.end()) return false;
-	auto range_first = to_int32(CString(arg.beg(), mid));
-	auto range_last = to_int32(CString(mid + 1, arg.end()));
-	
-	if (!range_first.success || !range_last.success) return false;
-	*first = range_first;
-	*last = range_last;
-
-	return true;
-}
-
-static inline bool get_ranges(DynamicArray<ivec2>* ranges, Array<const CString> args) {
-	ASSERT(ranges);
-
-	for (auto arg : args) {
-		if (is_range(arg)) {
-			ivec2 r;
-			if (!get_range(&r.x, &r.y, arg)) return false;
-			ranges->push_back(r);
-		}
-		else {
-			auto res = to_int(arg);
-			if (!res.success) return false;
-			ranges->push_back({ res.value, res.value });
-		}
-	}
-	return true;
 }
 
 void initialize() {
@@ -880,7 +842,7 @@ void initialize() {
 
     filter_commands.push_back({"atomicnumber", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
 								   DynamicArray<ivec2> ranges;
-								   if (!get_ranges(&ranges, args)) return false;
+								   if (!extract_ranges(&ranges, args)) return false;
                                    for (int i = 0; i < dyn.molecule.atom_elements.count; i++) {
 									   int atomnr = (int)dyn.molecule.atom_elements[i];
                                        mask[i] = false;
@@ -896,7 +858,7 @@ void initialize() {
 
     filter_commands.push_back({"atom", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
 									DynamicArray<ivec2> ranges;
-									if (!get_ranges(&ranges, args)) return false;
+									if (!extract_ranges(&ranges, args)) return false;
 								   memset(mask.data, 0, mask.size_in_bytes());
 								   for (auto range : ranges) {
 									   range.x = math::clamp(range.x - 1, 0, (int32)dyn.molecule.atom_positions.count - 1);
@@ -911,7 +873,7 @@ void initialize() {
 
     filter_commands.push_back({"residue", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
 									DynamicArray<ivec2> ranges;
-									if (!get_ranges(&ranges, args)) return false;
+									if (!extract_ranges(&ranges, args)) return false;
                                    memset(mask.data, 0, mask.size_in_bytes());
 								   for (auto range : ranges) {
 									   range.x = math::clamp(range.x, 0, (int32)dyn.molecule.residues.count - 1);
@@ -952,7 +914,7 @@ void initialize() {
 
     filter_commands.push_back({"resid", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
 									DynamicArray<ivec2> ranges;
-									if (!get_ranges(&ranges, args)) return false;
+									if (!extract_ranges(&ranges, args)) return false;
 									memset(mask.data, 0, mask.size_in_bytes());
 									for (auto range : ranges) {
 										range.x = math::clamp(range.x - 1, 0, (int32)dyn.molecule.residues.count - 1);
@@ -980,7 +942,7 @@ void initialize() {
 
     filter_commands.push_back({"chain", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
 									DynamicArray<ivec2> ranges;
-									if (!get_ranges(&ranges, args)) return false;
+									if (!extract_ranges(&ranges, args)) return false;
 									memset(mask.data, 0, mask.size_in_bytes());
 									for (auto range : ranges) {
 										range.x = math::clamp(range.x - 1, 0, (int32)dyn.molecule.residues.count - 1);
@@ -1217,12 +1179,12 @@ static void initialize() {
 
     glCompileShader(v_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
-        printf("Error while compiling vdw vertex shader:\n%s\n", buffer);
+        LOG_ERROR("Compiling vdw vertex shader:\n%s\n", buffer);
     }
 
     glCompileShader(f_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
-        printf("Error while compiling vdw fragment shader:\n%s\n", buffer);
+		LOG_ERROR("Compiling vdw fragment shader:\n%s\n", buffer);
     }
 
     program = glCreateProgram();
@@ -1230,7 +1192,7 @@ static void initialize() {
     glAttachShader(program, f_shader);
     glLinkProgram(program);
     if (gl::get_program_link_error(buffer, BUFFER_SIZE, program)) {
-        printf("Error while linking vdw program:\n%s\n", buffer);
+		LOG_ERROR("Linking vdw program:\n%s\n", buffer);
     }
 
     glDetachShader(program, v_shader);
@@ -1551,15 +1513,15 @@ static void initialize() {
 
     glCompileShader(v_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
-        printf("Error while compiling licorice vertex shader:\n%s\n", buffer);
+		LOG_ERROR("Compiling licorice vertex shader:\n%s\n", buffer);
     }
     glCompileShader(g_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, g_shader)) {
-        printf("Error while compiling licorice geometry shader:\n%s\n", buffer);
+		LOG_ERROR("Compiling licorice geometry shader:\n%s\n", buffer);
     }
     glCompileShader(f_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
-        printf("Error while compiling licorice fragment shader:\n%s\n", buffer);
+		LOG_ERROR("Compiling licorice fragment shader:\n%s\n", buffer);
     }
 
     program = glCreateProgram();
@@ -1568,7 +1530,7 @@ static void initialize() {
     glAttachShader(program, f_shader);
     glLinkProgram(program);
     if (gl::get_program_link_error(buffer, BUFFER_SIZE, program)) {
-        printf("Error while linking licorice program:\n%s\n", buffer);
+		LOG_ERROR("Linking licorice program:\n%s\n", buffer);
     }
 
     glDetachShader(program, v_shader);
@@ -1799,15 +1761,15 @@ void intitialize() {
 
     glCompileShader(v_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
-        printf("Error while compiling ribbons vertex shader:\n%s\n", buffer);
+		LOG_ERROR("Compiling ribbons vertex shader:\n%s\n", buffer);
     }
     glCompileShader(g_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, g_shader)) {
-        printf("Error while compiling ribbons geometry shader:\n%s\n", buffer);
+		LOG_ERROR("Compiling ribbons geometry shader:\n%s\n", buffer);
     }
     glCompileShader(f_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
-        printf("Error while compiling ribbons fragment shader:\n%s\n", buffer);
+		LOG_ERROR("Compiling ribbons fragment shader:\n%s\n", buffer);
     }
 
     program = glCreateProgram();
@@ -1816,7 +1778,7 @@ void intitialize() {
     glAttachShader(program, f_shader);
     glLinkProgram(program);
     if (gl::get_program_link_error(buffer, BUFFER_SIZE, program)) {
-        printf("Error while linking ribbons program:\n%s\n", buffer);
+		LOG_ERROR("Linking ribbons program:\n%s\n", buffer);
     }
 
     glDetachShader(program, v_shader);
@@ -2199,11 +2161,11 @@ void initialize() {
 
     glCompileShader(v_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
-        printf("Error while compiling ramachandran vertex shader:\n%s\n", buffer);
+		LOG_ERROR("Compiling ramachandran vertex shader:\n%s\n", buffer);
     }
     glCompileShader(f_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
-        printf("Error while compiling ramachandran fragment shader:\n%s\n", buffer);
+		LOG_ERROR("Compiling ramachandran fragment shader:\n%s\n", buffer);
     }
 
     program = glCreateProgram();
@@ -2211,7 +2173,7 @@ void initialize() {
     glAttachShader(program, f_shader);
     glLinkProgram(program);
     if (gl::get_program_link_error(buffer, BUFFER_SIZE, program)) {
-        printf("Error while linking ramachandran program:\n%s\n", buffer);
+		LOG_ERROR("Linking ramachandran program:\n%s\n", buffer);
     }
 
     glDetachShader(program, v_shader);

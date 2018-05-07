@@ -2,6 +2,7 @@
 #include <core/types.h>
 #include <core/array.h>
 #include <core/gl.h>
+#include <core/log.h>
 #include <gfx/gl_utils.h>
 
 namespace immediate {
@@ -101,11 +102,11 @@ void initialize() {
     glShaderSource(f_shader, 1, &f_shader_src, 0);
     glCompileShader(v_shader);
 	if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
-		printf("Error while compiling immediate vertex shader:\n%s\n", buffer);
+		LOG_ERROR("Error while compiling immediate vertex shader:\n%s\n", buffer);
 	}
     glCompileShader(f_shader);
 	if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
-		printf("Error while compiling immediate fragment shader:\n%s\n", buffer);
+		LOG_ERROR("Error while compiling immediate fragment shader:\n%s\n", buffer);
 	}
 
     program = glCreateProgram();
@@ -113,7 +114,7 @@ void initialize() {
     glAttachShader(program, f_shader);
     glLinkProgram(program);
 	if (gl::get_program_link_error(buffer, BUFFER_SIZE, program)) {
-		printf("Error while linking immediate program:\n%s\n", buffer);
+		LOG_ERROR("Error while linking immediate program:\n%s\n", buffer);
 	}
 
     glDetachShader(program, v_shader);

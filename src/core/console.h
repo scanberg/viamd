@@ -23,7 +23,6 @@ struct Console
 		commands.push_back("HISTORY");
 		commands.push_back("CLEAR");
 		commands.push_back("CLASSIFY");  // "classify" is here to provide an example of "C"+[tab] completing to "CL" and displaying matches.
-		AddLog("Welcome to ImGui!");
 	}
 	~Console()
 	{
@@ -119,7 +118,10 @@ struct Console
 			//if (!filter.PassFilter(item))
 			//    continue;
 			ImVec4 col = col_default_text;
-			if (strstr(item, "[error]")) col = ImColor(1.0f, 0.4f, 0.4f, 1.0f);
+			if (strstr(item, "[note]")) col = ImColor(1.0f, 1.0f, 1.0f, 1.0f);
+			else if (strstr(item, "[warning]")) col = ImColor(1.0f, 1.0f, 0.4f, 1.0f);
+			else if (strstr(item, "[error]")) col = ImColor(1.0f, 0.4f, 0.4f, 1.0f);
+			else if (strstr(item, "[fatal]")) col = ImColor(0.8f, 0.2f, 0.2f, 1.0f);
 			else if (strncmp(item, "# ", 2) == 0) col = ImColor(1.0f, 0.78f, 0.58f, 1.0f);
 			ImGui::PushStyleColor(ImGuiCol_Text, col);
 			ImGui::TextUnformatted(item);

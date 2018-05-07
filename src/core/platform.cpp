@@ -1,5 +1,6 @@
 #include <core/platform.h>
 #include <core/gl.h>
+#include <core/log.h>
 #include <GLFW/glfw3.h>
 #ifdef OS_WINDOWS
 #undef APIENTRY
@@ -11,6 +12,7 @@
 #include <GLFW/glfw3native.h>
 #endif
 #include <imgui.h>
+#include <core/platform/cousine_font.inl>
 #include <nfd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,7 +30,7 @@ static int          g_attrib_location_position = 0, g_attrib_location_uv = 0, g_
 static unsigned int g_vbo_handle = 0, g_vao_handle = 0, g_elements_handle = 0;
 
 static void error_callback(int error, const char* description) {
-    fprintf(stderr, "Error %d: %s\n", error, description);
+	LOG_ERROR("%d: %s\n", error, description);
 }
 
 static void gl_callback(
@@ -42,11 +44,11 @@ static void gl_callback(
 	(void)source; (void)type; (void)id;
 	(void)severity; (void)length; (void)userParam;
 
-	if (severity > GL_DEBUG_SEVERITY_LOW)
-		fprintf(stderr, "%s\n\n", message);
+	if (severity > GL_DEBUG_SEVERITY_LOW) {
+		LOG_WARNING(message);
+	}
 	if (severity == GL_DEBUG_SEVERITY_HIGH) {
-		fprintf(stderr, "Aborting...\n");
-		abort();
+		LOG_ERROR("A SEVERE GL ERROR HAS OCCURED!");
 	}
 }
 
@@ -215,7 +217,11 @@ static bool imgui_create_fonts_texture() {
     ImGuiIO& io = ImGui::GetIO();
     unsigned char* pixels;
     int width, height;
+
+	io.Fonts->AddFontDefault();
+	io.Fonts->AddFontFromMemoryCompressedTTF(Cousine_compressed_data, Cousine_compressed_size, 32);
     io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);   // Load as RGBA 32-bits (75% of the memory is wasted, but default font is so small) because it is more likely to be compatible with user's existing shaders. If your ImTextureId represent a higher-level concept than just a GL texture id, consider calling GetTexDataAsAlpha8() instead to save on GPU memory.
+	io.FontGlobalScale = 1.0f;
 
     // Upload texture to graphics system
     GLint last_texture;
@@ -225,6 +231,7 @@ static bool imgui_create_fonts_texture() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+	glGenerateMipmap(GL_TEXTURE_2D);
 
     // Store our identifier
     io.Fonts->TexID = (void *)(intptr_t)g_font_texture;
@@ -579,7 +586,7 @@ FileDialogResult open_file_dialog(CString filter) {
 		return { {}, FileDialogResult::FILE_CANCEL };
     }
     else {
-        printf("Error: %s\n", NFD_GetError() );
+        LOG_ERROR(NFD_GetError());
 		return { {}, FileDialogResult::FILE_ERROR };
     }
     free(out_path);
@@ -601,7 +608,7 @@ FileDialogResult save_file_dialog(CString file, CString filter) {
 		return { {}, FileDialogResult::FILE_CANCEL };
 	}
 	else {
-		printf("Error: %s\n", NFD_GetError());
+		LOG_ERROR(NFD_GetError());
 		return { {}, FileDialogResult::FILE_ERROR };
 	}
 	free(out_path);

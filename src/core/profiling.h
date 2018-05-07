@@ -17,4 +17,4 @@ namespace profiling {
 		ScopedSection(CString sec) { push_section(sec); }
 		~ScopedSection() { pop_section(); }
 	};
-}  // namespace math
+}

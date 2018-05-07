@@ -8,10 +8,7 @@
 #endif
 
 struct CString : Array<const char> {
-	CString() {
-		data = 0;
-		count = 0;
-	}
+	CString() = default;
 
 	CString(const char* cstr, int64 length = -1) {
 		data = cstr;
@@ -77,50 +74,6 @@ struct String : Array<char> {
 	operator char*() { return data; }
 	operator bool() { return (data != 0 && count != 0); }
 };
-
-/*
-struct DynamicString : DynamicArray<char> {
-	DynamicString() : DynamicArray("\0") {
-
-	}
-
-	DynamicString(CString other) : DynamicArray(other) {}
-
-	DynamicString(DynamicString&& other) : DynamicArray(std::forward<DynamicArray<char>>(other)) {};
-
-	DynamicString(char* cstr, int64 length) {
-		this->resize(length + 1);
-		strncpy(data, cstr, length);
-	}
-
-	template <int64 length>
-	DynamicString(char(&cstr)[length]) {
-		this->resize(length + 1);
-		strncpy(data, cstr, length);
-	}
-
-	String substr(int64 _offset, int64 _count = -1) {
-		auto arr = sub_array(_offset, _count);
-		return { arr.data, arr.count };
-	}
-
-	int64 size() const { return this->count - 1; }
-	int64 length() const { return this->count - 1; }
-
-	operator String() { return String(data, count); }
-	operator CString() { return CString(data, count); }
-	operator char*() { return data; }
-	operator bool() { return (data != 0 && count != 0); }
-
-	DynamicString& operator += (CString other) {
-		auto dst = end();
-		this->resize(count + other.count + 1);
-		strncpy(dst, other.data, other.count);
-		this->back() = '\0';
-		return *this;
-	}
-};
-*/
 
 // A buffer string for wrapping a char buffer[N]
 template<int64 Size>
@@ -331,9 +284,45 @@ void convert_backslashes(String str);
 
 bool contains_whitespace(CString str);
 
+bool balanced_parentheses(CString str);
+
+CString extract_parentheses(CString str);
+CString extract_parentheses_contents(CString str);
+
+const char* find_character(CString str, char c);
+bool contains_character(CString str, char c);
+
 // Tokenizes a string into shorter strings based on some delimiter 
 DynamicArray<String> tokenize(String str, char delimiter = ' ');
 DynamicArray<String> tokenize(String str, CString delimiter);
 DynamicArray<CString> ctokenize(CString str, char delimiter = ' ');
 DynamicArray<CString> ctokenize(CString str, CString delimiter);
 
+// Range extraction functionality
+bool is_range(CString arg);
+bool extract_range(int* first, int* last, CString arg);
+bool extract_ranges(DynamicArray<ivec2>* ranges, Array<const CString> args);
+
+// Temporary string object with managed memory
+struct TmpString : CString {
+	TmpString(CString str) {
+		String tmp = allocate_string(str);
+		this->data = tmp.data;
+		this->count = tmp.count;
+	}
+	TmpString(const TmpString& other) = delete;
+	TmpString(TmpString&& other) {
+		this->data = other.data;
+		this->count = other.count;
+	}
+	~TmpString() {
+		FREE((void*)this->data);
+	}
+};
+
+// This is a hack to generate a zero terminated string from a CString object
+// Returns an object with a temporary allocated string which is freed upon its destruction
+inline TmpString make_tmp_str(CString str) { return TmpString(str); }
+
+// TODO: Possibly implement a good templated print function in the style of printf as discussed here
+// https://stackoverflow.com/questions/17671772/c11-variadic-printf-performance

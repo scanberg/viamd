@@ -5,7 +5,7 @@
 
 template <typename T>
 struct Array {
-	Array() : data(nullptr), count(0) {}
+	Array() = default;
     template <size_t N>
     Array(T (&c_arr)[N]) : data(c_arr), count(N) {}
     Array(T* _data, int64 _count) : data(_data), count(_count) {}
@@ -55,7 +55,7 @@ struct Array {
 	operator Array<const T>() const { return { data, count }; }
 
     T* data;
-    int64 count;
+	int64 count;
 };
 
 // Light-weight std::vector alternative

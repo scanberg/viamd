@@ -353,6 +353,52 @@ bool contains_whitespace(CString str) {
 	return false;
 }
 
+bool balanced_parentheses(CString str) {
+	int count = 0;
+	const char* ptr = str.beg();
+	while (ptr != str.end()) {
+		if (*ptr == '(')
+			count++;
+		else if (*ptr == ')')
+			count--;
+		ptr++;
+	}
+	return count == 0;
+}
+
+CString extract_parentheses(CString str) {
+	const char* beg = str.beg();
+
+	while (beg != str.end() && *beg != '(') beg++;
+	if (beg == str.end()) return { beg, str.end() };
+
+	const char* end = beg + 1;
+	int count = 1;
+	while (end != str.end()) {
+		if (*end == '(') count++;
+		else if (*end == ')' && --count == 0) break;
+		end++;
+	}
+
+	return { beg, end };
+}
+
+CString extract_parentheses_contents(CString str) {
+	CString p = extract_parentheses(str);
+	if (p.count < 2) return p;
+	return { p.beg() + 1, p.end() - 1 };
+}
+
+const char * find_character(CString str, char c) {
+	const char* ptr = str.beg();
+	while (ptr < str.end() && *ptr != c) ptr++;
+	return ptr;
+}
+
+bool contains_character(CString str, char c) {
+	return find_character(str, c) != str.end();
+}
+
 DynamicArray<String> tokenize(String str, char delimiter) {
 	DynamicArray<String> tokens;
 
@@ -419,4 +465,59 @@ DynamicArray<CString> ctokenize(CString str, CString delimiter) {
 	}
 
 	return tokens;
+}
+
+// Range extraction functionality
+bool is_range(CString arg) {
+	for (const char* c = arg.beg(); c != arg.end(); c++) {
+		if (*c == '-') return true;
+	}
+	return false;
+}
+
+bool extract_range(int * first, int * last, CString arg) {
+	const char* mid = arg.beg();
+	while (mid != arg.end() && *mid != '-') mid++;
+	if (mid == arg.end()) return false;
+
+	CString str_first(arg.beg(), mid);
+	CString str_last(mid + 1, arg.end());
+
+	if (str_first.count == 1 && str_first[0] == '*') {
+		*first = -1;
+	}
+	else {
+		auto res = to_int32(str_first);
+		if (!res) return false;
+		*first = res;
+	}
+
+	if (str_last.count == 1 && str_last[0] == '*') {
+		*last = -1;
+	}
+	else {
+		auto res = to_int32(str_last);
+		if (!res) return false;
+		*last = res;
+	}
+
+	return true;
+}
+
+bool extract_ranges(DynamicArray<ivec2>* ranges, Array<const CString> args) {
+	ASSERT(ranges);
+
+	for (auto arg : args) {
+		if (is_range(arg)) {
+			ivec2 r;
+			if (!extract_range(&r.x, &r.y, arg)) return false;
+			ranges->push_back(r);
+		}
+		else {
+			auto res = to_int(arg);
+			if (!res.success) return false;
+			ranges->push_back({ res.value, res.value });
+		}
+	}
+	return true;
 }

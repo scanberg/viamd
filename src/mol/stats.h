@@ -62,6 +62,8 @@ struct Property {
 };
 
 // Helper functions
+void set_error_message(CString msg);
+
 void init_instance_data(Array<InstanceData>* instance_data, int32 num_instances, int32 num_frames);
 void free_instance_data(Array<InstanceData>* instance_data);
 

@@ -1,6 +1,7 @@
 #include "stats.h"
 #include <core/math_utils.h>
 #include <core/hash.h>
+#include <core/log.h>
 #include <mol/molecule.h>
 #include <mol/molecule_dynamic.h>
 #include <mol/molecule_utils.h>
@@ -13,6 +14,92 @@
 #define HASH(x) (hash::crc64(x))
 
 namespace stats {
+
+static bool eval_expr(Array<float> data, Array<const Property*> properties, CString expr, char op) {
+	if (contains_character(expr, '(')) {
+		return eval_expr(data, properties, extract_parentheses_contents(expr));
+	}
+	else {
+		const char* op;
+		op = find_character(expr, '*');
+		if (op != expr.end()) {
+			CString lhs(expr.beg(), op);
+			CString rhs(op + 1, expr.end());
+			eval_expr(data, properties, lhs);
+			eval_expr(data, properties, rhs);
+		}
+		op = find_character(expr, '/');
+		if (op != expr.end()) {
+
+		}
+		op = find_character(expr, '+');
+		if (op != expr.end()) {
+
+		}
+		op = find_character(expr, '-');
+		if (op != expr.end()) {
+
+		}
+
+		
+	}
+}
+
+static bool parse_expr(Array<float> data, Array<const Property*> properties, int property_idx, CString expr) {
+	if (!balanced_parentheses(expr)) return false;
+	
+	struct Operand {
+		enum {
+			FLOAT,
+			PROPERTY
+		} t;
+
+		union {
+			float const_val;
+			Array<const float> prop_data;
+		} u;
+	};
+
+	DynamicArray<Operand> operand_stack;
+	DynamicArray<char> operator_stack;
+
+	const char* c = expr.beg();
+	while (c != expr.end()) {
+		if (isdigit(*c)) {
+			const char* end = c;
+			while (end != expr.end() && isdigit(*end)) end++;
+			auto res = to_float({ c, end });
+			if (!res) {
+				set_error_message("Could not parse constant value in expression");
+				return false;
+			}
+			operand_stack.push_back({ Operand::FLOAT, res });
+			c = end;
+		}
+		else if (isalpha(*c)) {
+			const char* end = c;
+			while (end != expr.end() && (isalpha(*c) || isdigit(*end))) end++;
+			CString prop_name(c, end);
+			// ONLY MATCH AGAINST PRECEEDING PROPERTIES
+			bool found = false;
+			for (int32 i = 0; i < property_idx; i++) {
+				if (compare(prop_name, properties[i]->name)) {
+					found = true;
+					operand_stack.push_back({ Operand::PROPERTY, properties[i]->data });
+				}
+			}
+		}
+		else if (*c == '*' || *c == '/' || *c == '+' || *c == '-' || *c == '(') {
+			operator_stack.push_back(*c);
+		}
+		else if (*c == ')') {
+
+		}
+	}
+
+	// INSPIRED BY
+	// http://www.codinghelmet.com/?path=exercises/expression-evaluator
+}
 
 typedef bool (*StructureFunc)(StructureData* data, const Array<CString> args, const MoleculeStructure& molecule);
 
@@ -31,6 +118,8 @@ struct StatisticsContext {
     DynamicArray<PropertyFuncEntry> property_func_entries{};
     DynamicArray<StructureFuncEntry> structure_func_entries{};
     DynamicArray<Property*> properties{};
+
+	Property* current_property = nullptr;
 };
 
 static StatisticsContext ctx;
@@ -195,7 +284,12 @@ static Range compute_range(Array<float> data) {
 	return range;
 }
 
-static void set_error_message(CString msg) { printf("%s\n", msg.beg()); }
+void set_error_message(CString msg) {
+	if (ctx.current_property) {
+		ctx.current_property->error_msg = msg;
+		LOG_ERROR("Error when evaluating property '%s': %s", ctx.current_property->name.cstr(), msg.cstr());
+	}
+}
 
 bool structure_match_resname(StructureData* data, const Array<CString> args, const MoleculeStructure& molecule) {
     ASSERT(data);
@@ -254,18 +348,34 @@ bool structure_match_residue(StructureData* data, const Array<CString> args, con
     }
 
     for (const auto& arg : args) {
-        auto id = to_int(arg);
-        if (!id.success) {
-            set_error_message("Failed to parse argument for residue");
-            return false;
-        }
-        auto idx = id - 1;
-        if (idx < 0 || molecule.residues.count <= idx) {
+		int32 first = 0;
+		int32 last = 0;
+
+		if (is_range(arg)) {	
+			if (!extract_range(&first, &last, arg)) {
+				set_error_message("Failed to parse range in argument for residue");
+				return false;
+			}
+			if (first == -1) first = 1;
+			if (last == -1) last = molecule.residues.count;
+		}
+		else {
+			auto id = to_int(arg);
+			if (!id.success) {
+				set_error_message("Failed to parse argument for residue");
+				return false;
+			}
+			first = last = id;
+		}
+
+        if (first < 1 || molecule.residues.count < last) {
             set_error_message("Index for residue is out of bounds");
             return false;
         }
-        const auto& res = molecule.residues[idx];
-        data->structures.push_back({res.beg_atom_idx, res.end_atom_idx});
+		for (int32 i = first - 1; i <= last - 1; i++) {
+			const auto& res = molecule.residues[i];
+			data->structures.push_back({ res.beg_atom_idx, res.end_atom_idx });
+		}
     }
 
     return true;
@@ -301,20 +411,36 @@ bool structure_match_chain(StructureData* data, const Array<CString> args, const
         return false;
     }
 
-    for (const auto& arg : args) {
-        auto res = to_int(arg);
-        if (!res.success) {
-            set_error_message("Failed to parse argument for chain");
-            return false;
-        }
-        auto idx = res - 1;
-        if (idx < 0 || molecule.chains.count <= idx) {
-            set_error_message("Index for chain is out of bounds");
-            return false;
-        }
-        const auto& chain = molecule.chains[idx];
-        data->structures.push_back({get_atom_beg_idx(molecule, chain), get_atom_end_idx(molecule, chain)});
-    }
+	for (const auto& arg : args) {
+		int32 first = 0;
+		int32 last = 0;
+
+		if (is_range(arg)) {
+			if (!extract_range(&first, &last, arg)) {
+				set_error_message("Failed to parse range in argument for chain");
+				return false;
+			}
+			if (first == -1) first = 1;
+			if (last == -1) last = molecule.chains.count;
+		}
+		else {
+			auto id = to_int(arg);
+			if (!id.success) {
+				set_error_message("Failed to parse argument for chain");
+				return false;
+			}
+			first = last = id;
+		}
+
+		if (first < 1 || molecule.chains.count < last) {
+			set_error_message("Index for chain is out of bounds");
+			return false;
+		}
+		for (int32 i = first - 1; i <= last - 1; i++) {
+			const auto& chain = molecule.chains[i];
+			data->structures.push_back({ get_atom_beg_idx(molecule, chain), get_atom_end_idx(molecule, chain) });
+		}
+	}
 
     return true;
 }
@@ -328,48 +454,78 @@ bool structure_match_atom(StructureData* data, const Array<CString> args, const 
         return false;
     }
 
-    for (const auto& arg : args) {
-        auto id = to_int(arg);
-        if (!id.success) {
-            set_error_message("Failed to parse argument for atom");
-            return false;
-        }
-        auto idx = id - 1;
-        if (idx < 0 || molecule.atom_positions.count <= idx) {
-            set_error_message("Index for atom is out of bounds");
-            return false;
-        }
-        data->structures.push_back({idx, idx + 1});
-    }
+	for (const auto& arg : args) {
+		int32 first = 0;
+		int32 last = 0;
+
+		if (is_range(arg)) {
+			if (!extract_range(&first, &last, arg)) {
+				set_error_message("Failed to parse range in argument for atom");
+				return false;
+			}
+			if (first == -1) first = 1;
+			if (last == -1) last = molecule.chains.count;
+		}
+		else {
+			auto id = to_int(arg);
+			if (!id.success) {
+				set_error_message("Failed to parse argument for atom");
+				return false;
+			}
+			first = last = id;
+		}
+
+		if (first < 1 || molecule.atom_positions.count < last) {
+			set_error_message("Index for atom is out of bounds");
+			return false;
+		}
+
+		data->structures.push_back({ first - 1, last });
+	}
 
     return true;
 }
 
 bool structure_extract_resatom(StructureData* data, const Array<CString> args, const MoleculeStructure&) {
     ASSERT(data);
-    if (args.count == 0) {
-        set_error_message("resatom requires 1 argument");
+    if (args.count != 1) {
+        set_error_message("resatom requires exactly 1 argument");
         return false;
     }
 
-    auto res = to_int(args[0]);
-    if (!res.success) {
-        set_error_message("resatom: failed to parse argument");
-        return false;
-    }
-    int offset = res - 1;
+	int32 first = 0;
+	int32 last = 0;
 
-    for (auto& s : data->structures) {
-        int count = s.end_idx - s.beg_idx;
-        if (offset >= count) {
-            set_error_message("restom: Index is out of range for structure");
-            return false;
-        }
-        if (count > 1) {
-            int new_idx = s.beg_idx + offset;
-            s = {new_idx, new_idx + 1};
-        }
-    }
+	if (is_range(args[0])) {
+		if (!extract_range(&first, &last, args[0])) {
+			set_error_message("Failed to parse range in argument for atom");
+			return false;
+		}
+	}
+	else {
+		auto id = to_int(args[0]);
+		if (!id.success) {
+			set_error_message("Failed to parse argument for atom");
+			return false;
+		}
+		first = last = id;
+	}
+
+	for (auto& s : data->structures) {
+		int32 count = s.end_idx - s.beg_idx;
+		if (first == -1) first = 1;
+		if (last == -1) last = count;
+
+		if (count < 0 || first < 1 || count < last) {
+			set_error_message("restom: Index is out of range for structure");
+			return false;
+		}
+
+		int new_beg = s.beg_idx + first;
+		int new_end = s.beg_idx + last + 1;
+		s = { new_beg, new_end };
+	}
+
     return true;
 }
 
@@ -754,54 +910,28 @@ void shutdown() {}
 
 bool register_property_command(CString cmd_keyword, PropertyComputeFunc compute_func, PropertyVisualizeFunc visualize_func) {
     if (!cmd_keyword.data || cmd_keyword.count == 0) {
-        printf("Error! Property command cannot be an empty string!\n");
+		LOG_ERROR("Property command cannot be an empty string!");
         return false;
     }
 
     if (contains_whitespace(cmd_keyword)) {
-        printf("Error! Property command cannot contain whitespace!\n");
+		LOG_ERROR("Property command cannot contain whitespace!");
         return false;
     }
 
     if (!compute_func) {
-        printf("Error! Property command must have compute function!\n");
+		LOG_ERROR("Property command must have compute function!");
         return false;
     }
 
     ID hash = HASH(cmd_keyword);
     if (find_property_func_entry(hash) != nullptr) {
-        printf("Error! Property command already registered!\n");
+		LOG_ERROR("Property command already registered!");
         return false;
     }
 
     ctx.property_func_entries.push_back({hash, compute_func, visualize_func});
     return true;
-}
-
-static CString extract_parentheses(CString str) {
-    const char* beg = str.beg();
-
-    while (beg < str.end() && *beg != '(') beg++;
-    if (beg < str.end()) beg++;
-    if (beg == str.end()) return {beg, str.end()};
-
-    const char* end = beg;
-    int count = 1;
-    while (end != str.end()) {
-        if (*end == '(')
-            count++;
-        else if (*end == ')' && --count == 0)
-            break;
-        end++;
-    }
-
-    return {beg, end};
-}
-
-static const char* find_character(CString str, char c) {
-    const char* ptr = str.beg();
-    while (ptr < str.end() && *ptr != c) ptr++;
-    return ptr;
 }
 
 static DynamicArray<CString> extract_arguments(CString str) {
@@ -842,7 +972,7 @@ bool extract_structures(StructureData* data, CString arg, const MoleculeStructur
 
     if (!func) {
         char buf[64];
-        snprintf(buf, 64, "Could not identify command '%s'", cmd.beg());
+        snprintf(buf, 64, "Could not identify command '%s'", make_tmp_str(cmd).cstr());
         set_error_message(buf);
         return false;
     }
@@ -915,25 +1045,12 @@ bool sync_structure_data_length(Array<StructureData> data) {
 	return true;
 }
 
-
-bool balanced_parentheses(CString str) {
-    int count = 0;
-    const char* ptr = str.beg();
-    while (ptr != str.end()) {
-        if (*ptr == '(')
-            count++;
-        else if (*ptr == ')')
-            count--;
-        ptr++;
-    }
-    return count == 0;
-}
-
 bool compute_stats(const MoleculeDynamic& dynamic) {
     int32 num_frames = dynamic.trajectory.num_frames;
 
     for (auto p : ctx.properties) {
         auto& prop = *p;
+		ctx.current_property = p;
         if (prop.data.count != num_frames) {
             prop.data.resize(num_frames);
         }
@@ -977,7 +1094,7 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
 
 		auto func = find_property_compute_func(cmd);
         if (!func) {
-            snprintf(prop.error_msg.beg(), prop.error_msg.MAX_LENGTH, "Could not recognize command '%s'", cmd.cstr());
+            snprintf(prop.error_msg.beg(), prop.error_msg.MAX_LENGTH, "Could not recognize command '%s'", make_tmp_str(cmd).cstr());
             prop.valid = false;
             continue;
         }
@@ -993,6 +1110,7 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
             prop.valid = true;
         }
     }
+	ctx.current_property = nullptr;
 
     return true;
 }

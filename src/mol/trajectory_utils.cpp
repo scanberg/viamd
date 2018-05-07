@@ -1,5 +1,6 @@
 #include "trajectory_utils.h"
 #include <core/string_utils.h>
+#include <core/log.h>
 
 #include <stdio.h>
 #include <xdrfile_xtc.h>
@@ -74,7 +75,7 @@ bool read_trajectory_data(Trajectory* traj) {
 	auto num_frames = traj->frame_offsets.count;
 	XDRFILE* file = xdrfile_open(traj->path_to_file, "r");
 	if (!file) {
-		printf("Error, could not open file %s\n", traj->path_to_file.data);
+		LOG_ERROR("Could not open file %s\n", traj->path_to_file.beg());
 		return false;
 	}
 	//traj->is_loading = true;

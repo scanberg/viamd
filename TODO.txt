@@ -1,6 +1,14 @@
 VIAMD
 CONCRETE LIST OF TODOs
 
+Small TODO:
+[ ] Implement Log
+[ ] Implement Range selection in property (1-N) Asterisk (*)
+[ ] Implement Expression function
+[ ] Implement Filtering
+[ ] Implement Property show/hide in Timeline + Distribution windows
+[ ] Show Simulation Box
+
 ### Stability ###
     [X] When loading in different thread, make sure the loading is killed when changing datasets.
     [ ] Visual bug when RangeSliders Float when range is zero

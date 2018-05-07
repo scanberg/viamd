@@ -4,6 +4,7 @@
 #include <core/gl.h>
 #include <core/types.h>
 #include <core/hash.h>
+#include <core/log.h>
 #include <core/math_utils.h>
 #include <core/camera.h>
 #include <core/camera_utils.h>
@@ -15,7 +16,7 @@
 #include <mol/molecule_utils.h>
 #include <mol/pdb_utils.h>
 #include <mol/gro_utils.h>
-#include <stats/stats.h>
+#include <mol/stats.h>
 #include <gfx/immediate_draw_utils.h>
 #include <gfx/postprocessing_utils.h>
 
@@ -281,12 +282,6 @@ static void compute_backbone_angles_async(ApplicationData* data);
 int main(int, char**) {
     ApplicationData data;
 
-    auto dir_list = platform::list_directory(".");
-    for (const auto& d : dir_list) {
-        printf("%s\n", d.name.beg());
-    }
-    printf("%s\n", platform::get_cwd().beg());
-
     // Init platform
     platform::initialize(&data.ctx, 1920, 1080, "VIAMD");
     data.ctx.window.vsync = false;
@@ -294,12 +289,36 @@ int main(int, char**) {
     init_main_framebuffer(&data.fbo, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
 
     // Init subsystems
+	logging::initialize();
     immediate::initialize();
     draw::initialize();
     ramachandran::initialize();
     stats::initialize();
     filter::initialize();
     postprocessing::initialize(data.fbo.width, data.fbo.height);
+
+	// Standard output
+	logging::register_backend([](CString str, logging::Severity severity, void*) {
+		printf("%s\n", str.cstr());
+	});
+
+	// App Console output
+	logging::register_backend([](CString str, logging::Severity severity, void* usr_data) {
+		const char* modifier = "";
+		switch (severity) {
+		case logging::Note:
+			modifier = "[note] "; break;
+		case logging::Warning:
+			modifier = "[warning] "; break;
+		case logging::Error:
+			modifier = "[error] "; break;
+		case logging::Fatal:
+			modifier = "[fatal] "; break;
+		default:
+			break;
+		}
+		((Console*)usr_data)->AddLog("%s%s", modifier, str.cstr());
+	}, &data.console);
 
     // Setup style
     ImGui::StyleColorsClassic();

@@ -28,6 +28,7 @@
 #include "postprocessing_utils.h"
 #include <core/types.h>
 #include <core/common.h>
+#include <core/log.h>
 #include <core/math_utils.h>
 #include <gfx/gl_utils.h>
 #include <stdio.h>
@@ -73,7 +74,7 @@ void setup_program(GLuint* program, const char* name, const char* f_shader_src, 
 
     glCompileShader(f_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
-        printf("Error while compiling %s shader:\n%s\n", name, buffer);
+        LOG_ERROR("Error while compiling %s shader:\n%s", name, buffer);
     }
 
     if (!*program) {
@@ -86,7 +87,7 @@ void setup_program(GLuint* program, const char* name, const char* f_shader_src, 
     glAttachShader(*program, f_shader);
     glLinkProgram(*program);
     if (gl::get_program_link_error(buffer, BUFFER_SIZE, *program)) {
-        printf("Error while linking %s program:\n%s\n", name, buffer);
+		LOG_ERROR("Error while linking %s program:\n%s", name, buffer);
     }
 
     glDetachShader(*program, v_shader_fs_quad);
@@ -839,7 +840,7 @@ void initialize(int width, int height) {
         glShaderSource(v_shader_fs_quad, 1, &v_shader_src_fs_quad, 0);
         glCompileShader(v_shader_fs_quad);
         if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader_fs_quad)) {
-            printf("Error while compiling postprocessing fs-quad vertex shader:\n%s\n", buffer);
+			LOG_ERROR("Error while compiling postprocessing fs-quad vertex shader:\n%s", buffer);
         }
     }
 
