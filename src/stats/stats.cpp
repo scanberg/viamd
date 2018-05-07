@@ -1,6 +1,7 @@
 #include "stats.h"
 #include <core/math_utils.h>
 #include <core/hash.h>
+#include <mol/molecule.h>
 #include <mol/molecule_dynamic.h>
 #include <mol/molecule_utils.h>
 #include <mol/trajectory_utils.h>
@@ -270,6 +271,54 @@ bool structure_match_residue(StructureData* data, const Array<CString> args, con
     return true;
 }
 
+bool structure_match_chainid(StructureData* data, const Array<CString> args, const MoleculeStructure& molecule) {
+    ASSERT(data);
+
+    // Expect args.count to be > 0
+    if (args.count == 0) {
+        set_error_message("Expects one or more arguments for chainid");
+        return false;
+    }
+
+    for (const auto& chain : molecule.chains) {
+        for (const auto& arg : args) {
+            if (compare(chain.id, arg)) {
+                data->structures.push_back({get_atom_beg_idx(molecule, chain), get_atom_end_idx(molecule, chain)});
+                break;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool structure_match_chain(StructureData* data, const Array<CString> args, const MoleculeStructure& molecule) {
+    ASSERT(data);
+
+    // Expect args to be  > 0
+    if (args.count == 0) {
+        set_error_message("Expects one or more arguments for chain");
+        return false;
+    }
+
+    for (const auto& arg : args) {
+        auto res = to_int(arg);
+        if (!res.success) {
+            set_error_message("Failed to parse argument for chain");
+            return false;
+        }
+        auto idx = res - 1;
+        if (idx < 0 || molecule.chains.count <= idx) {
+            set_error_message("Index for chain is out of bounds");
+            return false;
+        }
+        const auto& chain = molecule.chains[idx];
+        data->structures.push_back({get_atom_beg_idx(molecule, chain), get_atom_end_idx(molecule, chain)});
+    }
+
+    return true;
+}
+
 bool structure_match_atom(StructureData* data, const Array<CString> args, const MoleculeStructure& molecule) {
     ASSERT(data);
 
@@ -495,7 +544,7 @@ static bool compute_distance(Property* prop, const Array<CString> args, const Mo
 	}
 
 	prop->periodic = false;
-	prop->unit = "Å";
+	prop->unit = "?";
 
     return true;
 }
@@ -552,7 +601,7 @@ static bool compute_angle(Property* prop, const Array<CString> args, const Molec
 
 	prop->data_range = { 0, math::PI };
 	prop->periodic = true;
-	prop->unit = "°";
+	prop->unit = "?";
 
     return true;
 }
@@ -614,7 +663,7 @@ static bool compute_dihedral(Property* prop, const Array<CString> args, const Mo
 
 	prop->data_range = { -math::PI, math::PI };
 	prop->periodic = true;
-	prop->unit = "°";
+	prop->unit = "?";
 
     return true;
 }
@@ -694,6 +743,8 @@ void initialize() {
     ctx.structure_func_entries.push_back({HASH("resname"), structure_match_resname});
     ctx.structure_func_entries.push_back({HASH("resid"),   structure_match_resid});
     ctx.structure_func_entries.push_back({HASH("residue"), structure_match_residue});
+    ctx.structure_func_entries.push_back({HASH("chainid"), structure_match_chainid});
+    ctx.structure_func_entries.push_back({HASH("chain"),   structure_match_chain});
     ctx.structure_func_entries.push_back({HASH("atom"),    structure_match_atom});
     ctx.structure_func_entries.push_back({HASH("resatom"), structure_extract_resatom});
     ctx.structure_func_entries.push_back({HASH("com"), 	   structure_apply_aggregation_strategy_com});
