@@ -18,4 +18,4 @@ void shutdown();
 void register_backend(LoggingFunc func, void* usr_data = nullptr);
 
 void record(Severity severity, const char* format, ...);
-}  // namespace log
+}  // namespace logging

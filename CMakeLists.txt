@@ -31,7 +31,8 @@ include_directories(src
                     ext/imgui
                     ext/ppk_assert
                     ext/libxdrfile/src
-                    ext/nativefiledialog/src/include)
+                    ext/nativefiledialog/src/include
+                    ext/tinyexpr)
 
 file(GLOB_RECURSE PROJECT_HEADERS src/*.h)
 file(GLOB_RECURSE PROJECT_SOURCES src/*.cpp
@@ -58,6 +59,7 @@ target_link_libraries(${PROJECT_NAME}
                       ppk_assert
                       libxdrfile
                       nativefiledialog
+                      tinyexpr
                       ${GLFW_LIBRARIES}
                       ${OPENGL_LIBRARY})
 

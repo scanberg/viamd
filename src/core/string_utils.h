@@ -4,182 +4,181 @@
 #include "array.h"
 
 #ifdef _MSC_VER
-#pragma warning(disable:4996)
+#pragma warning(disable : 4996)
 #endif
 
 struct CString : Array<const char> {
-	CString() = default;
+    CString() = default;
 
-	CString(const char* cstr, int64 length = -1) {
-		data = cstr;
-		if (length == -1)
-			length = strlen(cstr);
-		count = length;
-	}
+    CString(const char* cstr, int64 length = -1) {
+        data = cstr;
+        if (length == -1) length = strlen(cstr);
+        count = length;
+    }
 
-	CString(const char* beg, const char* end) {
-		data = beg;
-		count = end - beg;
-		ASSERT(count >= 0);
-	}
+    CString(const char* beg, const char* end) {
+        data = beg;
+        count = end - beg;
+        ASSERT(count >= 0);
+    }
 
-	template <int64 length>
-	CString(const char(&cstr)[length]) {
-		data = cstr;
-		count = length;
-	}
+    template <int64 length>
+    CString(const char (&cstr)[length]) {
+        data = cstr;
+        count = length;
+    }
 
-	CString substr(int64 _offset, int64 _count = -1) {
-		auto array = sub_array(_offset, _count);
-		return { array.data, array.count };
-	}
+    CString substr(int64 _offset, int64 _count = -1) {
+        auto array = sub_array(_offset, _count);
+        return {array.data, array.count};
+    }
 
-	const char* cstr() const { return data; }
+    const char* cstr() const { return data; }
 
-	operator const char*() { return data; }
-	operator bool() { return (data != 0 && count != 0); }
+    operator const char*() { return data; }
+    operator bool() { return (data != 0 && count != 0); }
 };
 
 struct String : Array<char> {
-	String() {
-		data = 0;
-		count = 0;
-	}
+    String() {
+        data = 0;
+        count = 0;
+    }
 
-	String(const String& other) : Array(other.data, other.count) {}
+    String(const String& other) : Array(other.data, other.count) {}
 
-	String(char* cstr, int64 length) {
-		data = cstr;
-		count = length;
-	}
+    String(char* cstr, int64 length) {
+        data = cstr;
+        count = length;
+    }
 
-	String(char* beg, char* end) {
-		data = beg;
-		count = end - beg;
-		ASSERT(count >= 0);
-	}
+    String(char* beg, char* end) {
+        data = beg;
+        count = end - beg;
+        ASSERT(count >= 0);
+    }
 
-	template <int64 length>
-	String(char(&cstr)[length]) {
-		data = cstr;
-		count = length;
-	}
+    template <int64 length>
+    String(char (&cstr)[length]) {
+        data = cstr;
+        count = length;
+    }
 
-	String substr(int64 _offset, int64 _count = -1) {
-		auto array = sub_array(_offset, _count);
-		return { array.data, array.count };
-	}
+    String substr(int64 _offset, int64 _count = -1) {
+        auto array = sub_array(_offset, _count);
+        return {array.data, array.count};
+    }
 
-	operator CString() { return CString(data, count); }
-	operator char*() { return data; }
-	operator bool() { return (data != 0 && count != 0); }
+    operator CString() { return CString(data, count); }
+    operator char*() { return data; }
+    operator bool() { return (data != 0 && count != 0); }
 };
 
 // A buffer string for wrapping a char buffer[N]
-template<int64 Size>
+template <int64 Size>
 struct StringBuffer {
-	static constexpr int64 MAX_LENGTH = Size;
-	STATIC_ASSERT(MAX_LENGTH > 1, "Size of StringBuffer must be more than 1");
-	char buffer[MAX_LENGTH] = {};
-	//int32 length = 0;
+    static constexpr int64 MAX_LENGTH = Size;
+    STATIC_ASSERT(MAX_LENGTH > 1, "Size of StringBuffer must be more than 1");
+    char buffer[MAX_LENGTH] = {};
+    // int32 length = 0;
 
-	StringBuffer() = default;
+    StringBuffer() = default;
 
-	template <int64 N>
-	StringBuffer(const char(&cstr)[N]) {
-		constexpr auto len = N < MAX_LENGTH ? N : MAX_LENGTH;
-		strncpy(buffer, cstr, len);
-		buffer[len] = '\0';
-	}
+    template <int64 N>
+    StringBuffer(const char (&cstr)[N]) {
+        constexpr auto len = N < MAX_LENGTH ? N : MAX_LENGTH;
+        strncpy(buffer, cstr, len);
+        buffer[len] = '\0';
+    }
 
-	StringBuffer(const char* cstr) {
-		int64 len = (int64)strnlen(cstr, MAX_LENGTH);
-		strncpy(buffer, cstr, len);
-		buffer[len] = '\0';
-	}
+    StringBuffer(const char* cstr) {
+        int64 len = (int64)strnlen(cstr, MAX_LENGTH);
+        strncpy(buffer, cstr, len);
+        buffer[len] = '\0';
+    }
 
-	StringBuffer(char c) {
-		buffer[0] = c;
-		buffer[1] = '\0';
-	}
+    StringBuffer(char c) {
+        buffer[0] = c;
+        buffer[1] = '\0';
+    }
 
-	StringBuffer(const StringBuffer& other) {
-		memcpy(buffer, other.buffer, MAX_LENGTH);
-		buffer[MAX_LENGTH - 1] = '\0';
-	}
+    StringBuffer(const StringBuffer& other) {
+        memcpy(buffer, other.buffer, MAX_LENGTH);
+        buffer[MAX_LENGTH - 1] = '\0';
+    }
 
-	template <int64 N>
-	StringBuffer(const StringBuffer<N>& other) {
-		constexpr auto len = N < MAX_LENGTH ? N : MAX_LENGTH;
-		memcpy(buffer, other.buffer, len);
-		buffer[len - 1] = '\0';
-	}
+    template <int64 N>
+    StringBuffer(const StringBuffer<N>& other) {
+        constexpr auto len = N < MAX_LENGTH ? N : MAX_LENGTH;
+        memcpy(buffer, other.buffer, len);
+        buffer[len - 1] = '\0';
+    }
 
-	StringBuffer(StringBuffer&& other) {
-		memcpy(buffer, other.buffer, MAX_LENGTH);
-		buffer[MAX_LENGTH - 1] = '\0';
-	}
+    StringBuffer(StringBuffer&& other) {
+        memcpy(buffer, other.buffer, MAX_LENGTH);
+        buffer[MAX_LENGTH - 1] = '\0';
+    }
 
-	template <int64 N>
-	StringBuffer(StringBuffer<N>&& other) {
-		constexpr auto len = N < MAX_LENGTH ? N : MAX_LENGTH;
-		memcpy(buffer, other.buffer, len);
-		buffer[len - 1] = '\0';
-	}
+    template <int64 N>
+    StringBuffer(StringBuffer<N>&& other) {
+        constexpr auto len = N < MAX_LENGTH ? N : MAX_LENGTH;
+        memcpy(buffer, other.buffer, len);
+        buffer[len - 1] = '\0';
+    }
 
-	StringBuffer(const CString& cstr) {
-		// @NOTE: MAX_LENGTH - 1 here because we copy from cstring which excludes \0
-		auto len = cstr.count < MAX_LENGTH - 1 ? cstr.count : MAX_LENGTH - 1;
-		strncpy(buffer, cstr.data, len);
-		buffer[len] = '\0';
-	}
+    StringBuffer(const CString& cstr) {
+        // @NOTE: MAX_LENGTH - 1 here because we copy from cstring which excludes \0
+        auto len = cstr.count < MAX_LENGTH - 1 ? cstr.count : MAX_LENGTH - 1;
+        strncpy(buffer, cstr.data, len);
+        buffer[len] = '\0';
+    }
 
-	StringBuffer& operator =(const StringBuffer& other) {
-		if (this != &other) {
-			memcpy(buffer, other.buffer, MAX_LENGTH);
-			buffer[MAX_LENGTH - 1] = '\0';
-		}
-		return *this;
-	}
+    StringBuffer& operator=(const StringBuffer& other) {
+        if (this != &other) {
+            memcpy(buffer, other.buffer, MAX_LENGTH);
+            buffer[MAX_LENGTH - 1] = '\0';
+        }
+        return *this;
+    }
 
-	template <int64 N>
-	StringBuffer& operator =(const StringBuffer<N>& other) {
-		if (this != &other) {
-			auto len = other.count < MAX_LENGTH ? other.count : MAX_LENGTH;
-			memcpy(buffer, other.buffer, len);
-			buffer[len - 1] = '\0';
-		}
-		return *this;
-	}
+    template <int64 N>
+    StringBuffer& operator=(const StringBuffer<N>& other) {
+        if (this != &other) {
+            auto len = other.count < MAX_LENGTH ? other.count : MAX_LENGTH;
+            memcpy(buffer, other.buffer, len);
+            buffer[len - 1] = '\0';
+        }
+        return *this;
+    }
 
-	StringBuffer& operator =(const CString& cstr) {
-		auto len = cstr.count < (MAX_LENGTH - 1) ? cstr.count : (MAX_LENGTH - 1);
-		strncpy(buffer, cstr.data, len);
-		buffer[len] = '\0';
-		return *this;
-	}
+    StringBuffer& operator=(const CString& cstr) {
+        auto len = cstr.count < (MAX_LENGTH - 1) ? cstr.count : (MAX_LENGTH - 1);
+        strncpy(buffer, cstr.data, len);
+        buffer[len] = '\0';
+        return *this;
+    }
 
-	StringBuffer& operator =(char c) {
-		buffer[0] = c;
-		buffer[1] = '\0';
-		return *this;
-	}
+    StringBuffer& operator=(char c) {
+        buffer[0] = c;
+        buffer[1] = '\0';
+        return *this;
+    }
 
-	template<int64 N>
-	StringBuffer& operator =(const char(&cstr)[N]) {
-		if (buffer != cstr) {
-			constexpr auto len = N < MAX_LENGTH ? N : MAX_LENGTH;
-			strncpy(buffer, cstr, len);
-			buffer[len - 1] = '\0';
-		}
-		return *this;
-	}
+    template <int64 N>
+    StringBuffer& operator=(const char (&cstr)[N]) {
+        if (buffer != cstr) {
+            constexpr auto len = N < MAX_LENGTH ? N : MAX_LENGTH;
+            strncpy(buffer, cstr, len);
+            buffer[len - 1] = '\0';
+        }
+        return *this;
+    }
 
-    StringBuffer& operator =(const char* cstr) {
+    StringBuffer& operator=(const char* cstr) {
         int64 len = (int64)strnlen(cstr, MAX_LENGTH);
         strncpy(buffer, cstr, len);
         buffer[len - 1] = '\0';
-		return *this;
+        return *this;
     }
 
     char operator[](int64 i) const {
@@ -192,20 +191,20 @@ struct StringBuffer {
         return buffer[i];
     }
 
-	operator String() { return String(buffer, MAX_LENGTH); }
-	operator CString() const { return CString(buffer, strnlen(buffer, MAX_LENGTH)); }
-	operator const char*() const { return buffer; }
+    operator String() { return String(buffer, MAX_LENGTH); }
+    operator CString() const { return CString(buffer, strnlen(buffer, MAX_LENGTH)); }
+    operator const char*() const { return buffer; }
 
-	int64 size() const { return MAX_LENGTH; }
+    int64 size() const { return MAX_LENGTH; }
 
-	const char* cstr() const { return buffer; }
-	const char* begin() const { return buffer; }
-	const char* beg() const { return buffer; }
-	const char* end() const { return buffer + MAX_LENGTH; }
+    const char* cstr() const { return buffer; }
+    const char* begin() const { return buffer; }
+    const char* beg() const { return buffer; }
+    const char* end() const { return buffer + MAX_LENGTH; }
 
-	char* begin() { return buffer; }
-	char* beg() { return buffer; }
-	char* end() { return buffer + MAX_LENGTH; }
+    char* begin() { return buffer; }
+    char* beg() { return buffer; }
+    char* end() { return buffer + MAX_LENGTH; }
 };
 
 // Comparison of Strings
@@ -234,14 +233,12 @@ String allocate_string(CString str);
 String allocate_string(int32 length);
 void free_string(String* str);
 
-template<typename T>
+template <typename T>
 struct ConversionResult {
-	T value;
-	bool success;
+    T value;
+    bool success;
 
-	operator T() {
-		return value;
-	}
+    operator T() { return value; }
 };
 
 // Wrappers around strtof
@@ -292,7 +289,7 @@ CString extract_parentheses_contents(CString str);
 const char* find_character(CString str, char c);
 bool contains_character(CString str, char c);
 
-// Tokenizes a string into shorter strings based on some delimiter 
+// Tokenizes a string into shorter strings based on some delimiter
 DynamicArray<String> tokenize(String str, char delimiter = ' ');
 DynamicArray<String> tokenize(String str, CString delimiter);
 DynamicArray<CString> ctokenize(CString str, char delimiter = ' ');
@@ -305,19 +302,17 @@ bool extract_ranges(DynamicArray<ivec2>* ranges, Array<const CString> args);
 
 // Temporary string object with managed memory
 struct TmpString : CString {
-	TmpString(CString str) {
-		String tmp = allocate_string(str);
-		this->data = tmp.data;
-		this->count = tmp.count;
-	}
-	TmpString(const TmpString& other) = delete;
-	TmpString(TmpString&& other) {
-		this->data = other.data;
-		this->count = other.count;
-	}
-	~TmpString() {
-		FREE((void*)this->data);
-	}
+    TmpString(CString str) {
+        String tmp = allocate_string(str);
+        this->data = tmp.data;
+        this->count = tmp.count;
+    }
+    TmpString(const TmpString& other) = delete;
+    TmpString(TmpString&& other) {
+        this->data = other.data;
+        this->count = other.count;
+    }
+    ~TmpString() { FREE((void*)this->data); }
 };
 
 // This is a hack to generate a zero terminated string from a CString object

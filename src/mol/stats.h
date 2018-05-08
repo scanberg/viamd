@@ -21,48 +21,45 @@ struct Histogram {
 };
 
 struct Structure {
-	int32 beg_idx;
-	int32 end_idx;
+    int32 beg_idx;
+    int32 end_idx;
 };
 
-enum AggregationStrategy {
-	COM,
-	NONE
-};
+enum AggregationStrategy { COM, NONE };
 
 struct StructureData {
-	DynamicArray<Structure> structures{};
-	AggregationStrategy strategy = NONE;
+    DynamicArray<Structure> structures{};
+    AggregationStrategy strategy = NONE;
 };
 
 struct InstanceData {
-	InstanceData(int32 size) { data = allocate_array<float>(size); }
-	~InstanceData() { free_array(&data); }
+    InstanceData(int32 size) { data = allocate_array<float>(size); }
+    ~InstanceData() { free_array(&data); }
 
-	Array<float> data;
+    Array<float> data;
 };
 
 struct Property {
-	StringBuffer<32>  name{};
-	StringBuffer<256> args{};
-	StringBuffer<32>  unit{};
-	StringBuffer<128> error_msg{};
+    StringBuffer<32> name{};
+    StringBuffer<256> args{};
+    StringBuffer<32> unit{};
+    StringBuffer<128> error_msg{};
 
-	bool valid = false;
-	bool periodic = false;
-	bool visualize = false;
+    bool valid = false;
+    bool periodic = false;
+    bool visualize = false;
 
-	Range filter{ 0,0 };
-	Range data_range{ 0,0 };
-	DynamicArray<float> data{};
-	Histogram histogram;
+    Range filter{0, 0};
+    Range data_range{0, 0};
+    DynamicArray<float> data{};
+    Histogram histogram;
 
-	Array<InstanceData> instance_data{};
-	Array<StructureData> structure_data{};
+    Array<InstanceData> instance_data{};
+    Array<StructureData> structure_data{};
 };
 
 // Helper functions
-void set_error_message(CString msg);
+void set_error_message(const char* fmt, ...);
 
 void init_instance_data(Array<InstanceData>* instance_data, int32 num_instances, int32 num_frames);
 void free_instance_data(Array<InstanceData>* instance_data);
@@ -81,10 +78,10 @@ typedef bool (*PropertyVisualizeFunc)(const Property& prop, const MoleculeDynami
 void init_histogram(Histogram* hist, int32 num_bins, Range value_range);
 void free_histogram(Histogram* hist);
 
-//Histogram compute_histogram(int32 num_bins, Array<float> data);
-//Histogram compute_histogram(int32 num_bins, Array<float> data, float min_val, float max_val);
+// Histogram compute_histogram(int32 num_bins, Array<float> data);
+// Histogram compute_histogram(int32 num_bins, Array<float> data, float min_val, float max_val);
 
-//void compute_histogram(Histogram* hist, Array<float> data);
+// void compute_histogram(Histogram* hist, Array<float> data);
 void compute_histogram(Histogram* hist, Array<float> data, float min_val, float max_val);
 void clear_histogram(Histogram* hist);
 
@@ -94,7 +91,7 @@ void shutdown();
 
 bool compute_stats(const MoleculeDynamic& dynamic);
 void visualize(const MoleculeDynamic& dynamic);
-void update_property(Property* prop);
+void update_property(Property* prop, Range frame_range = { 0,0 });
 
 bool register_property_command(CString cmd_keyword, PropertyComputeFunc compute_func, PropertyVisualizeFunc visualize_func);
 
@@ -104,16 +101,17 @@ Array<CString> get_property_names();
 
 // PROPERTY
 Property* create_property(CString name = {}, CString args = {});
-void	  remove_property(Property* prop);
-void	  remove_all_properties();
+void remove_property(Property* prop);
+void remove_all_properties();
+void move_property_up(Property* prop);
+void move_property_down(Property* prop);
 
 // Keep property, but remove the generated data
-void	  clear_property(Property* prop);
-void      clear_all_properties();
+void clear_property(Property* prop);
+void clear_all_properties();
 
-int32	  get_property_count();
+int32 get_property_count();
 Property* get_property(int32 idx);
 Property* get_property(CString name);
-
 
 }  // namespace stats

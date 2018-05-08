@@ -69,13 +69,12 @@ inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backb
     int32 num_frames = (int32)backbone_angle_traj.angle_data.count / backbone_angle_traj.num_segments;
     ASSERT(frame_offset < num_frames);
     ASSERT(frame_offset + frame_count <= num_frames);
-    return backbone_angle_traj.angle_data.sub_array(frame_offset * backbone_angle_traj.num_segments,
-                                                    frame_count * backbone_angle_traj.num_segments);
+    return backbone_angle_traj.angle_data.sub_array(frame_offset * backbone_angle_traj.num_segments, frame_count * backbone_angle_traj.num_segments);
 }
 
 inline int32 get_backbone_angles_trajectory_current_frame_count(const BackboneAnglesTrajectory& backbone_angle_traj) {
-	if (backbone_angle_traj.angle_data.count == 0 || backbone_angle_traj.num_segments == 0) return 0;
-	return (int32)backbone_angle_traj.angle_data.count / backbone_angle_traj.num_segments;
+    if (backbone_angle_traj.angle_data.count == 0 || backbone_angle_traj.num_segments == 0) return 0;
+    return (int32)backbone_angle_traj.angle_data.count / backbone_angle_traj.num_segments;
 }
 
 inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backbone_angle_traj, int frame_index, Chain chain) {
@@ -87,8 +86,10 @@ void compute_bounding_box(vec3* min_box, vec3* max_box, Array<const vec3> positi
 
 void linear_interpolation_periodic(Array<vec3> positions, Array<const vec3> prev_pos, Array<const vec3> next_pos, float t, mat3 sim_box);
 void linear_interpolation(Array<vec3> positions, Array<const vec3> prev_pos, Array<const vec3> next_pos, float t);
-void spline_interpolation_periodic(Array<vec3> positions, Array<const vec3> pos0, Array<const vec3> pos1, Array<const vec3> pos2, Array<const vec3> pos3, float t, mat3 sim_box);
-void spline_interpolation(Array<vec3> positions, Array<const vec3> pos0, Array<const vec3> pos1, Array<const vec3> pos2, Array<const vec3> pos3, float t);
+void spline_interpolation_periodic(Array<vec3> positions, Array<const vec3> pos0, Array<const vec3> pos1, Array<const vec3> pos2,
+                                   Array<const vec3> pos3, float t, mat3 sim_box);
+void spline_interpolation(Array<vec3> positions, Array<const vec3> pos0, Array<const vec3> pos1, Array<const vec3> pos2, Array<const vec3> pos3,
+                          float t);
 
 DynamicArray<Bond> compute_covalent_bonds(Array<const vec3> atom_pos, Array<const Element> atom_elem, Array<const Residue> residues = {});
 DynamicArray<Chain> compute_chains(Array<const Residue> residue, Array<const Bond> bonds, Array<const ResIdx> atom_residue_indices = {});
@@ -140,7 +141,8 @@ void draw_vdw(Array<const vec3> atom_positions, Array<const float> atom_radii, A
 void draw_licorice(Array<const vec3> atom_positions, Array<const Bond> atom_bonds, Array<const uint32> atom_colors, const mat4& view_mat,
                    const mat4& proj_mat, float radii_scale = 1.f);
 void draw_ribbons(Array<const BackboneSegment> backbone_segments, Array<const Chain> chains, Array<const vec3> atom_positions,
-                  Array<const uint32> atom_colors, const mat4& view_mat, const mat4& proj_mat, int num_subdivisions = 8, float tension = 0.5f, float width_scale = 1.f, float thickness_scale = 1.f);
+                  Array<const uint32> atom_colors, const mat4& view_mat, const mat4& proj_mat, int num_subdivisions = 8, float tension = 0.5f,
+                  float width_scale = 1.f, float thickness_scale = 1.f);
 
 // DEBUG
 void draw_backbone(Array<const BackboneSegment> backbone, Array<const vec3> atom_positions, const mat4& view_mat, const mat4& proj_mat);

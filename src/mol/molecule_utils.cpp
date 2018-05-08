@@ -32,11 +32,11 @@ void compute_bounding_box(vec3* min_box, vec3* max_box, Array<const vec3> positi
 }
 
 inline bool periodic_jump(const vec3& p_prev, const vec3& p_next, const vec3& half_box) {
-	const vec3 abs_delta = math::abs(p_next - p_prev);
-	if (abs_delta.x > half_box.x) return true;
-	if (abs_delta.y > half_box.y) return true;
-	if (abs_delta.z > half_box.z) return true;
-	return false;
+    const vec3 abs_delta = math::abs(p_next - p_prev);
+    if (abs_delta.x > half_box.x) return true;
+    if (abs_delta.y > half_box.y) return true;
+    if (abs_delta.z > half_box.z) return true;
+    return false;
 }
 
 void linear_interpolation(Array<vec3> positions, Array<const vec3> prev_pos, Array<const vec3> next_pos, float t) {
@@ -64,54 +64,54 @@ void linear_interpolation_periodic(Array<vec3> positions, Array<const vec3> prev
         if (periodic_jump(prev, next, half_box_ext)) {
             // Atom moved across periodic boundry we cannot apply linearly interpolate directly
             positions[i] = t < 0.5f ? prev : next;
-        }
-		else {
+        } else {
             positions[i] = math::mix(prev, next, t);
         }
     }
 }
 
-void spline_interpolation_periodic(Array<vec3> positions, Array<const vec3> pos0, Array<const vec3> pos1, Array<const vec3> pos2, Array<const vec3> pos3, float t, mat3 sim_box) {
-	ASSERT(pos0.count == positions.count);
-	ASSERT(pos1.count == positions.count);
-	ASSERT(pos2.count == positions.count);
-	ASSERT(pos3.count == positions.count);
+void spline_interpolation_periodic(Array<vec3> positions, Array<const vec3> pos0, Array<const vec3> pos1, Array<const vec3> pos2,
+                                   Array<const vec3> pos3, float t, mat3 sim_box) {
+    ASSERT(pos0.count == positions.count);
+    ASSERT(pos1.count == positions.count);
+    ASSERT(pos2.count == positions.count);
+    ASSERT(pos3.count == positions.count);
 
-	const vec3 full_box_ext = sim_box * vec3(1);
-	const vec3 half_box_ext = full_box_ext * 0.5f;
+    const vec3 full_box_ext = sim_box * vec3(1);
+    const vec3 half_box_ext = full_box_ext * 0.5f;
 
-	for (int i = 0; i < positions.count; i++) {
-		vec3 p0 = pos0[i];
-		vec3 p1 = pos1[i];
-		vec3 p2 = pos2[i];
-		vec3 p3 = pos3[i];
+    for (int i = 0; i < positions.count; i++) {
+        vec3 p0 = pos0[i];
+        vec3 p1 = pos1[i];
+        vec3 p2 = pos2[i];
+        vec3 p3 = pos3[i];
 
-		if (periodic_jump(p0, p1, half_box_ext)) p0 = p1;
-		if (periodic_jump(p2, p3, half_box_ext)) p3 = p2;
+        if (periodic_jump(p0, p1, half_box_ext)) p0 = p1;
+        if (periodic_jump(p2, p3, half_box_ext)) p3 = p2;
 
-		if (periodic_jump(p1, p2, half_box_ext)) {
-			positions[i] = t < 0.5f ? p1 : p2;
-		}
-		else {
-			positions[i] = math::spline(p0, p1, p2, p3, t);
-		}
-	}
+        if (periodic_jump(p1, p2, half_box_ext)) {
+            positions[i] = t < 0.5f ? p1 : p2;
+        } else {
+            positions[i] = math::spline(p0, p1, p2, p3, t);
+        }
+    }
 }
 
-void spline_interpolation(Array<vec3> positions, Array<const vec3> pos0, Array<const vec3> pos1, Array<const vec3> pos2, Array<const vec3> pos3, float t) {
-	ASSERT(pos0.count == positions.count);
-	ASSERT(pos1.count == positions.count);
-	ASSERT(pos2.count == positions.count);
-	ASSERT(pos3.count == positions.count);
+void spline_interpolation(Array<vec3> positions, Array<const vec3> pos0, Array<const vec3> pos1, Array<const vec3> pos2, Array<const vec3> pos3,
+                          float t) {
+    ASSERT(pos0.count == positions.count);
+    ASSERT(pos1.count == positions.count);
+    ASSERT(pos2.count == positions.count);
+    ASSERT(pos3.count == positions.count);
 
-	for (int i = 0; i < positions.count; i++) {
-		vec3 p0 = pos0[i];
-		vec3 p1 = pos1[i];
-		vec3 p2 = pos2[i];
-		vec3 p3 = pos3[i];
+    for (int i = 0; i < positions.count; i++) {
+        vec3 p0 = pos0[i];
+        vec3 p1 = pos1[i];
+        vec3 p2 = pos2[i];
+        vec3 p3 = pos3[i];
 
-		positions[i] = math::spline(p0, p1, p2, p3, t);
-	}
+        positions[i] = math::spline(p0, p1, p2, p3, t);
+    }
 }
 
 DynamicArray<Bond> compute_covalent_bonds(Array<const vec3> atom_pos, Array<const Element> atom_elem, Array<const Residue> residues) {
@@ -388,24 +388,24 @@ void compute_backbone_angles(Array<BackboneAngles> dst, Array<const vec3> pos, A
     omega = 0;
     phi = 0;
     psi = math::dihedral_angle(pos[backbone_segments[0].n_idx], pos[backbone_segments[0].ca_idx], pos[backbone_segments[0].c_idx],
-                         pos[backbone_segments[1].n_idx]);
+                               pos[backbone_segments[1].n_idx]);
     dst[0] = {omega, phi, psi};
 
     for (int64 i = 1; i < backbone_segments.count - 1; i++) {
         omega = math::dihedral_angle(pos[backbone_segments[i - 1].ca_idx], pos[backbone_segments[i - 1].c_idx], pos[backbone_segments[i].n_idx],
-                               pos[backbone_segments[i].ca_idx]);
+                                     pos[backbone_segments[i].ca_idx]);
         phi = math::dihedral_angle(pos[backbone_segments[i - 1].c_idx], pos[backbone_segments[i].n_idx], pos[backbone_segments[i].ca_idx],
-                             pos[backbone_segments[i].c_idx]);
+                                   pos[backbone_segments[i].c_idx]);
         psi = math::dihedral_angle(pos[backbone_segments[i].n_idx], pos[backbone_segments[i].ca_idx], pos[backbone_segments[i].c_idx],
-                             pos[backbone_segments[i + 1].n_idx]);
+                                   pos[backbone_segments[i + 1].n_idx]);
         dst[i] = {omega, phi, psi};
     }
 
     auto N = backbone_segments.count - 1;
     omega = math::dihedral_angle(pos[backbone_segments[N - 1].ca_idx], pos[backbone_segments[N - 1].c_idx], pos[backbone_segments[N].n_idx],
-                           pos[backbone_segments[N].ca_idx]);
+                                 pos[backbone_segments[N].ca_idx]);
     phi = math::dihedral_angle(pos[backbone_segments[N - 1].c_idx], pos[backbone_segments[N].n_idx], pos[backbone_segments[N].ca_idx],
-                         pos[backbone_segments[N].c_idx]);
+                               pos[backbone_segments[N].c_idx]);
     psi = 0;
     dst[N] = {omega, phi, psi};
 }
@@ -574,10 +574,10 @@ static bool is_modifier(CString str) {
 }
 
 static bool is_keyword(CString str) {
-	if (compare(str, "and", true)) return true;
-	if (compare(str, "or", true)) return true;
-	if (compare(str, "not", true)) return true;
-	return false;
+    if (compare(str, "and", true)) return true;
+    if (compare(str, "or", true)) return true;
+    if (compare(str, "not", true)) return true;
+    return false;
 }
 
 int32 count_parentheses(CString str) {
@@ -678,13 +678,11 @@ bool internal_filter_mask(Array<bool> mask, const MoleculeDynamic& dyn, CString 
     bool state_not = false;
 
     for (const auto& chunk : chunks) {
-		if (compare(chunk, "and", true)) {
-			state_and = true;
-		}
-		else if (compare(chunk, "or", true)) {
-			state_or = true;
-		}
-        else if (compare(chunk, "not", true)) {
+        if (compare(chunk, "and", true)) {
+            state_and = true;
+        } else if (compare(chunk, "or", true)) {
+            state_or = true;
+        } else if (compare(chunk, "not", true)) {
             state_not = true;
         } else {
             if (chunk.front() == '(') {
@@ -727,10 +725,10 @@ bool internal_filter_mask(Array<bool> mask, const MoleculeDynamic& dyn, CString 
             state_not = false;
         }
 
-		if (state_and && state_or) {
-			LOG_ERROR("Cannot use both 'and' and 'or' to combine filter options\n");
-			return false;
-		}
+        if (state_and && state_or) {
+            LOG_ERROR("Cannot use both 'and' and 'or' to combine filter options\n");
+            return false;
+        }
     }
 
     return true;
@@ -769,7 +767,7 @@ void initialize() {
             water
             aminoacid
             backbone?
-			protein
+                        protein
 
             name
             element
@@ -782,24 +780,24 @@ void initialize() {
             chainid
     */
 
-	auto filter_amino_acid = [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString>) {
-			memset(mask.data, 0, mask.count);
-			for (const auto& res : dyn.molecule.residues) {
-				if (is_amino_acid(res)) {
-					memset(mask.data + res.beg_atom_idx, 1, (res.end_atom_idx - res.beg_atom_idx));
-				}
-			}
-			return true;
-		};
+    auto filter_amino_acid = [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString>) {
+        memset(mask.data, 0, mask.count);
+        for (const auto& res : dyn.molecule.residues) {
+            if (is_amino_acid(res)) {
+                memset(mask.data + res.beg_atom_idx, 1, (res.end_atom_idx - res.beg_atom_idx));
+            }
+        }
+        return true;
+    };
 
     filter_commands.push_back({"all", [](Array<bool> mask, const MoleculeDynamic&, Array<const CString>) {
                                    memset(mask.data, 1, mask.count);
                                    return true;
                                }});
-    filter_commands.push_back({ "water", [](Array<bool>, const MoleculeDynamic&, Array<const CString>) { return true; }});  // NOT DONE
-	filter_commands.push_back({ "aminoacid", filter_amino_acid });
-    filter_commands.push_back({ "backbone", [](Array<bool>, const MoleculeDynamic&, Array<const CString>) { return true; }});  // NOT DONE
-	filter_commands.push_back({ "protein", filter_amino_acid });
+    filter_commands.push_back({"water", [](Array<bool>, const MoleculeDynamic&, Array<const CString>) { return true; }});  // NOT DONE
+    filter_commands.push_back({"aminoacid", filter_amino_acid});
+    filter_commands.push_back({"backbone", [](Array<bool>, const MoleculeDynamic&, Array<const CString>) { return true; }});  // NOT DONE
+    filter_commands.push_back({"protein", filter_amino_acid});
 
     filter_commands.push_back({"name", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
                                    if (args.count == 0) return false;
@@ -841,60 +839,60 @@ void initialize() {
                                }});
 
     filter_commands.push_back({"atomicnumber", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
-								   DynamicArray<ivec2> ranges;
-								   if (!extract_ranges(&ranges, args)) return false;
+                                   DynamicArray<ivec2> ranges;
+                                   if (!extract_ranges(&ranges, args)) return false;
                                    for (int i = 0; i < dyn.molecule.atom_elements.count; i++) {
-									   int atomnr = (int)dyn.molecule.atom_elements[i];
+                                       int atomnr = (int)dyn.molecule.atom_elements[i];
                                        mask[i] = false;
-									   for (ivec2 range : ranges) {
-										   if (range.x <= atomnr && atomnr <= range.y) {
-											   mask[i] = true;
-											   break;
-										   }
-									   }
+                                       for (ivec2 range : ranges) {
+                                           if (range.x <= atomnr && atomnr <= range.y) {
+                                               mask[i] = true;
+                                               break;
+                                           }
+                                       }
                                    }
                                    return true;
                                }});
 
     filter_commands.push_back({"atom", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
-									DynamicArray<ivec2> ranges;
-									if (!extract_ranges(&ranges, args)) return false;
-								   memset(mask.data, 0, mask.size_in_bytes());
-								   for (auto range : ranges) {
-									   range.x = math::clamp(range.x - 1, 0, (int32)dyn.molecule.atom_positions.count - 1);
-									   range.y = math::clamp(range.y - 1, 0, (int32)dyn.molecule.atom_positions.count - 1);
-									   if (range.x == range.y)
-										   mask[range.x] = true;
-									   else
-											memset(mask.data + range.x, 1, range.y - range.x + 1);
-								   }
+                                   DynamicArray<ivec2> ranges;
+                                   if (!extract_ranges(&ranges, args)) return false;
+                                   memset(mask.data, 0, mask.size_in_bytes());
+                                   for (auto range : ranges) {
+                                       range.x = math::clamp(range.x - 1, 0, (int32)dyn.molecule.atom_positions.count - 1);
+                                       range.y = math::clamp(range.y - 1, 0, (int32)dyn.molecule.atom_positions.count - 1);
+                                       if (range.x == range.y)
+                                           mask[range.x] = true;
+                                       else
+                                           memset(mask.data + range.x, 1, range.y - range.x + 1);
+                                   }
                                    return true;
                                }});
 
     filter_commands.push_back({"residue", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
-									DynamicArray<ivec2> ranges;
-									if (!extract_ranges(&ranges, args)) return false;
+                                   DynamicArray<ivec2> ranges;
+                                   if (!extract_ranges(&ranges, args)) return false;
                                    memset(mask.data, 0, mask.size_in_bytes());
-								   for (auto range : ranges) {
-									   range.x = math::clamp(range.x, 0, (int32)dyn.molecule.residues.count - 1);
-									   range.y = math::clamp(range.y, 0, (int32)dyn.molecule.residues.count - 1);
-									   for (int i = range.x; i <= range.y; i++) {
-										   int beg = dyn.molecule.residues[i].beg_atom_idx;
-										   int end = dyn.molecule.residues[i].end_atom_idx;
-										   memset(mask.data + beg, 1, end - beg);
-									   }
-								   }
-								   /*
-                                   for (int i = 0; i < args.count; i++) {
-                                       auto res = to_int(args[i]);
-                                       if (!res.success) return false;
-                                       int res_idx = res.value;
-                                       if (res_idx < 0 || dyn.molecule.residues.count <= res_idx) return false;
-                                       int beg = dyn.molecule.residues[res_idx].beg_atom_idx;
-                                       int end = dyn.molecule.residues[res_idx].end_atom_idx;
-                                       memset(mask.data + beg, 1, end - beg);
+                                   for (auto range : ranges) {
+                                       range.x = math::clamp(range.x, 0, (int32)dyn.molecule.residues.count - 1);
+                                       range.y = math::clamp(range.y, 0, (int32)dyn.molecule.residues.count - 1);
+                                       for (int i = range.x; i <= range.y; i++) {
+                                           int beg = dyn.molecule.residues[i].beg_atom_idx;
+                                           int end = dyn.molecule.residues[i].end_atom_idx;
+                                           memset(mask.data + beg, 1, end - beg);
+                                       }
                                    }
-								   */
+                                   /*
+   for (int i = 0; i < args.count; i++) {
+       auto res = to_int(args[i]);
+       if (!res.success) return false;
+       int res_idx = res.value;
+       if (res_idx < 0 || dyn.molecule.residues.count <= res_idx) return false;
+       int beg = dyn.molecule.residues[res_idx].beg_atom_idx;
+       int end = dyn.molecule.residues[res_idx].end_atom_idx;
+       memset(mask.data + beg, 1, end - beg);
+   }
+                                   */
                                    return true;
                                }});
 
@@ -913,60 +911,60 @@ void initialize() {
                                }});
 
     filter_commands.push_back({"resid", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
-									DynamicArray<ivec2> ranges;
-									if (!extract_ranges(&ranges, args)) return false;
-									memset(mask.data, 0, mask.size_in_bytes());
-									for (auto range : ranges) {
-										range.x = math::clamp(range.x - 1, 0, (int32)dyn.molecule.residues.count - 1);
-										range.y = math::clamp(range.y - 1, 0, (int32)dyn.molecule.residues.count - 1);
-										for (int i = range.x; i <= range.y; i++) {
-											int beg = dyn.molecule.residues[i].beg_atom_idx;
-											int end = dyn.molecule.residues[i].end_atom_idx;
-											memset(mask.data + beg, 1, end - beg);
-										}
-									}
-									/*
-                                   memset(mask.data, 0, mask.count);
-                                   for (int i = 0; i < args.count; i++) {
-                                       auto res = to_int(args[i]);
-                                       if (!res.success) return false;
-                                       int res_idx = res.value - 1;
-                                       if (res_idx < 0 || dyn.molecule.residues.count <= res_idx) return false;
-                                       int beg = dyn.molecule.residues[res_idx].beg_atom_idx;
-                                       int end = dyn.molecule.residues[res_idx].end_atom_idx;
-                                       memset(mask.data + beg, 1, end - beg);
+                                   DynamicArray<ivec2> ranges;
+                                   if (!extract_ranges(&ranges, args)) return false;
+                                   memset(mask.data, 0, mask.size_in_bytes());
+                                   for (auto range : ranges) {
+                                       range.x = math::clamp(range.x - 1, 0, (int32)dyn.molecule.residues.count - 1);
+                                       range.y = math::clamp(range.y - 1, 0, (int32)dyn.molecule.residues.count - 1);
+                                       for (int i = range.x; i <= range.y; i++) {
+                                           int beg = dyn.molecule.residues[i].beg_atom_idx;
+                                           int end = dyn.molecule.residues[i].end_atom_idx;
+                                           memset(mask.data + beg, 1, end - beg);
+                                       }
                                    }
-								   */
+                                   /*
+memset(mask.data, 0, mask.count);
+for (int i = 0; i < args.count; i++) {
+  auto res = to_int(args[i]);
+  if (!res.success) return false;
+  int res_idx = res.value - 1;
+  if (res_idx < 0 || dyn.molecule.residues.count <= res_idx) return false;
+  int beg = dyn.molecule.residues[res_idx].beg_atom_idx;
+  int end = dyn.molecule.residues[res_idx].end_atom_idx;
+  memset(mask.data + beg, 1, end - beg);
+}
+                              */
                                    return true;
                                }});
 
     filter_commands.push_back({"chain", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
-									DynamicArray<ivec2> ranges;
-									if (!extract_ranges(&ranges, args)) return false;
-									memset(mask.data, 0, mask.size_in_bytes());
-									for (auto range : ranges) {
-										range.x = math::clamp(range.x - 1, 0, (int32)dyn.molecule.residues.count - 1);
-										range.y = math::clamp(range.y - 1, 0, (int32)dyn.molecule.residues.count - 1);
-										for (int i = range.x; i <= range.y; i++) {
-											Chain chain = get_chain(dyn.molecule, (ChainIdx)i);
-											int beg = get_atom_beg_idx(dyn.molecule, chain);
-											int end = get_atom_end_idx(dyn.molecule, chain);
-											memset(mask.data + beg, 1, end - beg);
-										}
-									}
-									/*
-                                   memset(mask.data, 0, mask.count);
-                                   for (int i = 0; i < args.count; i++) {
-                                       auto res = to_int(args[i]);
-                                       if (!res.success) return false;
-                                       ChainIdx chain_idx = (ChainIdx)res.value - 1;
-                                       if (chain_idx < 0 || dyn.molecule.chains.count <= chain_idx) return false;
-                                       Chain chain = get_chain(dyn.molecule, chain_idx);
-                                       int beg = get_atom_beg_idx(dyn.molecule, chain);
-                                       int end = get_atom_end_idx(dyn.molecule, chain);
-                                       memset(mask.data + beg, 1, end - beg);
+                                   DynamicArray<ivec2> ranges;
+                                   if (!extract_ranges(&ranges, args)) return false;
+                                   memset(mask.data, 0, mask.size_in_bytes());
+                                   for (auto range : ranges) {
+                                       range.x = math::clamp(range.x - 1, 0, (int32)dyn.molecule.residues.count - 1);
+                                       range.y = math::clamp(range.y - 1, 0, (int32)dyn.molecule.residues.count - 1);
+                                       for (int i = range.x; i <= range.y; i++) {
+                                           Chain chain = get_chain(dyn.molecule, (ChainIdx)i);
+                                           int beg = get_atom_beg_idx(dyn.molecule, chain);
+                                           int end = get_atom_end_idx(dyn.molecule, chain);
+                                           memset(mask.data + beg, 1, end - beg);
+                                       }
                                    }
-								   */
+                                   /*
+memset(mask.data, 0, mask.count);
+for (int i = 0; i < args.count; i++) {
+  auto res = to_int(args[i]);
+  if (!res.success) return false;
+  ChainIdx chain_idx = (ChainIdx)res.value - 1;
+  if (chain_idx < 0 || dyn.molecule.chains.count <= chain_idx) return false;
+  Chain chain = get_chain(dyn.molecule, chain_idx);
+  int beg = get_atom_beg_idx(dyn.molecule, chain);
+  int end = get_atom_end_idx(dyn.molecule, chain);
+  memset(mask.data + beg, 1, end - beg);
+}
+                              */
                                    return true;
                                }});
 
@@ -1004,15 +1002,14 @@ inline void draw_instanced_quads(int num_instances) {
 }
 
 inline void set_vbo_data(const void* data, GLsizeiptr size_in_bytes) {
-	glBindBuffer(GL_ARRAY_BUFFER, vbo);
-	if (vbo_size > size_in_bytes) {
-		glBufferSubData(GL_ARRAY_BUFFER, 0, size_in_bytes, data);
-	}
-	else {
-		glBufferData(GL_ARRAY_BUFFER, size_in_bytes, data, GL_STREAM_DRAW);
-		vbo_size = size_in_bytes;
-	}
-	glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    if (vbo_size > size_in_bytes) {
+        glBufferSubData(GL_ARRAY_BUFFER, 0, size_in_bytes, data);
+    } else {
+        glBufferData(GL_ARRAY_BUFFER, size_in_bytes, data, GL_STREAM_DRAW);
+        vbo_size = size_in_bytes;
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
 namespace vdw {
@@ -1184,7 +1181,7 @@ static void initialize() {
 
     glCompileShader(f_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
-		LOG_ERROR("Compiling vdw fragment shader:\n%s\n", buffer);
+        LOG_ERROR("Compiling vdw fragment shader:\n%s\n", buffer);
     }
 
     program = glCreateProgram();
@@ -1192,7 +1189,7 @@ static void initialize() {
     glAttachShader(program, f_shader);
     glLinkProgram(program);
     if (gl::get_program_link_error(buffer, BUFFER_SIZE, program)) {
-		LOG_ERROR("Linking vdw program:\n%s\n", buffer);
+        LOG_ERROR("Linking vdw program:\n%s\n", buffer);
     }
 
     glDetachShader(program, v_shader);
@@ -1513,15 +1510,15 @@ static void initialize() {
 
     glCompileShader(v_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
-		LOG_ERROR("Compiling licorice vertex shader:\n%s\n", buffer);
+        LOG_ERROR("Compiling licorice vertex shader:\n%s\n", buffer);
     }
     glCompileShader(g_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, g_shader)) {
-		LOG_ERROR("Compiling licorice geometry shader:\n%s\n", buffer);
+        LOG_ERROR("Compiling licorice geometry shader:\n%s\n", buffer);
     }
     glCompileShader(f_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
-		LOG_ERROR("Compiling licorice fragment shader:\n%s\n", buffer);
+        LOG_ERROR("Compiling licorice fragment shader:\n%s\n", buffer);
     }
 
     program = glCreateProgram();
@@ -1530,7 +1527,7 @@ static void initialize() {
     glAttachShader(program, f_shader);
     glLinkProgram(program);
     if (gl::get_program_link_error(buffer, BUFFER_SIZE, program)) {
-		LOG_ERROR("Linking licorice program:\n%s\n", buffer);
+        LOG_ERROR("Linking licorice program:\n%s\n", buffer);
     }
 
     glDetachShader(program, v_shader);
@@ -1761,15 +1758,15 @@ void intitialize() {
 
     glCompileShader(v_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
-		LOG_ERROR("Compiling ribbons vertex shader:\n%s\n", buffer);
+        LOG_ERROR("Compiling ribbons vertex shader:\n%s\n", buffer);
     }
     glCompileShader(g_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, g_shader)) {
-		LOG_ERROR("Compiling ribbons geometry shader:\n%s\n", buffer);
+        LOG_ERROR("Compiling ribbons geometry shader:\n%s\n", buffer);
     }
     glCompileShader(f_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
-		LOG_ERROR("Compiling ribbons fragment shader:\n%s\n", buffer);
+        LOG_ERROR("Compiling ribbons fragment shader:\n%s\n", buffer);
     }
 
     program = glCreateProgram();
@@ -1778,7 +1775,7 @@ void intitialize() {
     glAttachShader(program, f_shader);
     glLinkProgram(program);
     if (gl::get_program_link_error(buffer, BUFFER_SIZE, program)) {
-		LOG_ERROR("Linking ribbons program:\n%s\n", buffer);
+        LOG_ERROR("Linking ribbons program:\n%s\n", buffer);
     }
 
     glDetachShader(program, v_shader);
@@ -1882,14 +1879,14 @@ void draw_vdw(Array<const vec3> atom_positions, Array<const float> atom_radii, A
     glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_picking);
     uint32* gpu_picking = (uint32*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
 
-	unsigned int draw_count = 0;
+    unsigned int draw_count = 0;
     // DISCARD ANY ZERO RADII OR ZERO COLOR ALPHA ATOMS HERE
     for (uint32 i = 0; i < count; i++) {
         if (atom_radii[i] <= 0.f) continue;
         if ((atom_colors[i] & 0xff000000) == 0) continue;
         gpu_pos_rad[draw_count] = vec4(atom_positions[i], atom_radii[i] * radii_scale);
         gpu_color[draw_count] = atom_colors[i];
-		gpu_picking[draw_count] = i;
+        gpu_picking[draw_count] = i;
         draw_count++;
     }
 
@@ -1941,16 +1938,16 @@ void draw_licorice(Array<const vec3> atom_positions, Array<const Bond> atom_bond
                    const mat4& proj_mat, float radii_scale) {
     ASSERT(atom_positions.count == atom_colors.count);
 
-	const auto num_bytes = atom_positions.count * sizeof(licorice::Vertex);
-	licorice::Vertex* data = (licorice::Vertex*)TMP_MALLOC(num_bytes);
+    const auto num_bytes = atom_positions.count * sizeof(licorice::Vertex);
+    licorice::Vertex* data = (licorice::Vertex*)TMP_MALLOC(num_bytes);
 
     for (int64_t i = 0; i < atom_positions.count; i++) {
         data[i].position = atom_positions[i];
         data[i].color = atom_colors[i];
     }
 
-	draw::set_vbo_data(data, atom_positions.count * sizeof(licorice::Vertex));
-	TMP_FREE(data);
+    draw::set_vbo_data(data, atom_positions.count * sizeof(licorice::Vertex));
+    TMP_FREE(data);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, licorice::ibo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, atom_bonds.count * sizeof(Bond), atom_bonds.data, GL_STREAM_DRAW);
@@ -1973,7 +1970,8 @@ void draw_licorice(Array<const vec3> atom_positions, Array<const Bond> atom_bond
 }
 
 void draw_ribbons(Array<const BackboneSegment> backbone_segments, Array<const Chain> chains, Array<const vec3> atom_positions,
-                  Array<const uint32> atom_colors, const mat4& view_mat, const mat4& proj_mat, int num_subdivisions, float tension, float width_scale, float thickness_scale) {
+                  Array<const uint32> atom_colors, const mat4& view_mat, const mat4& proj_mat, int num_subdivisions, float tension, float width_scale,
+                  float thickness_scale) {
     if (backbone_segments.count == 0) return;
     if (chains.count == 0) return;
     if (atom_positions.count == 0) return;
@@ -2012,7 +2010,7 @@ void draw_ribbons(Array<const BackboneSegment> backbone_segments, Array<const Ch
         }
     }
 
-	set_vbo_data(vertices.data, vertices.size_in_bytes());
+    set_vbo_data(vertices.data, vertices.size_in_bytes());
 
     glEnable(GL_DEPTH_TEST);
 
@@ -2079,7 +2077,7 @@ constexpr unsigned char seg_data[] =
     R"(  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                PP PP PP PP PP                 P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                            P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P                                      P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                      P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                         P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P         P  P  P  P  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  PP  P  P  P  P  P  P  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  PP  P  P  P  P  ?  ?  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  PP  P  ?  ?  ?  ?  P  P  P                   P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  P  P  PP  P  ?  ?  ?  ?  P  P  P                   P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P            P  P  P  ?  ?  ?  P  P  P  P                P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P            P  P  ?  ?  ?  ?  ?  ?  P  P                P  P  P P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P             P  P  ?  ?  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P             P  P  P  ?  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P          P  P  P  ?  ?  ?  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P          P  P  P  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P          P  P  P  P  ?  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P       P  P  P  ?  P  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P    P  P  P  P  P  P  P  P  P               P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P    P  P  P  P  P  P  P  P  P               P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                         P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                         P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P  ?  ?  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                      P  P  P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P   P P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  P  P                                                P  P  P P  P  P   P  P  P  P P  ?  P  P  P  P  P  P  P  P                                                   P  P  P  P  P  P  P  ?  ?  P P  P  P  P  P  P  P                                                            P  P  P  P  P  ?  ?  P  P  P  P  P  P  P                      PP PP PP PP PP                                P  P  P  P  P  P  ?  ?  ?  ?  P  P  P  P                      PP PP PP PP PP                                P  ?  ?  ?  P  ?  ?  ?  ?  ?  P  P  P  P  P                   PP PP ?? PP PP PP                             P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P                   PP PP ?? PP PP PP                    P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                   PP PP ?? ?? PP PP                    P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                   PP PP PP PP PP PP                    P  P  ?)";
 
 constexpr unsigned char seg_data2[] =
-	R"(z™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ì­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿ØÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿ØÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì UÌz™Ìz™Ì UÌz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿ØÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Ø­¿ØÌÂ·ÌÂ·ÌžfÌžfÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿ØÌÂ·ÌÂ·ÌžfÌžfÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿ØÿÿÿÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿ØÿÿÿÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌžfÌžfÌžfÌžfÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌžfÌžfÌp ÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌp Ìp ÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•ÌzDÌ •Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌžfÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌÂ·ÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·•Ìz•Ìz¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·­¿Ø¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø¾Ì·¾Ì·¾Ì·­¿Ø­¿Ø­¿Ø­¿Ø¾Ì·•Ìz¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ì­¿Ø¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Øz™Ìz™Ìz™Ì­¿Øz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈQÌ··ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈQÌ··ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈQÌ·QÌ··ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ì)";
+    R"(z™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ì­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿ØÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿ØÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì UÌz™Ìz™Ì UÌz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿ØÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Ø­¿ØÌÂ·ÌÂ·ÌžfÌžfÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿ØÌÂ·ÌÂ·ÌžfÌžfÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿ØÿÿÿÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿ØÿÿÿÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌžfÌžfÌžfÌžfÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌžfÌžfÌp ÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌp Ìp ÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•ÌzDÌ •Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌžfÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌÂ·ÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·•Ìz•Ìz¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·­¿Ø¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø¾Ì·¾Ì·¾Ì·­¿Ø­¿Ø­¿Ø­¿Ø¾Ì·•Ìz¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ì­¿Ø¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Øz™Ìz™Ìz™Ì­¿Øz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈQÌ··ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈQÌ··ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈQÌ·QÌ··ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ì)";
 // Accumulation texture data
 constexpr int acc_width = 2048;
 constexpr int acc_height = 2048;
@@ -2161,11 +2159,11 @@ void initialize() {
 
     glCompileShader(v_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
-		LOG_ERROR("Compiling ramachandran vertex shader:\n%s\n", buffer);
+        LOG_ERROR("Compiling ramachandran vertex shader:\n%s\n", buffer);
     }
     glCompileShader(f_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
-		LOG_ERROR("Compiling ramachandran fragment shader:\n%s\n", buffer);
+        LOG_ERROR("Compiling ramachandran fragment shader:\n%s\n", buffer);
     }
 
     program = glCreateProgram();
@@ -2173,7 +2171,7 @@ void initialize() {
     glAttachShader(program, f_shader);
     glLinkProgram(program);
     if (gl::get_program_link_error(buffer, BUFFER_SIZE, program)) {
-		LOG_ERROR("Linking ramachandran program:\n%s\n", buffer);
+        LOG_ERROR("Linking ramachandran program:\n%s\n", buffer);
     }
 
     glDetachShader(program, v_shader);
@@ -2186,7 +2184,7 @@ void initialize() {
     uniform_loc_instance_offset = glGetUniformLocation(program, "u_instance_offset");
     uniform_loc_radius = glGetUniformLocation(program, "u_radius");
     uniform_loc_color = glGetUniformLocation(program, "u_color");
-	uniform_loc_outline = glGetUniformLocation(program, "u_outline");
+    uniform_loc_outline = glGetUniformLocation(program, "u_outline");
 
     if (!segmentation_tex) {
         glGenTextures(1, &segmentation_tex);
@@ -2235,17 +2233,17 @@ void shutdown() {
 }
 
 void clear_accumulation_texture() {
-	GLint last_viewport[4];
-	glGetIntegerv(GL_VIEWPORT, last_viewport);
+    GLint last_viewport[4];
+    glGetIntegerv(GL_VIEWPORT, last_viewport);
 
-	glViewport(0, 0, acc_width, acc_height);
-	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
-	glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    glViewport(0, 0, acc_width, acc_height);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
 
-	glClearColor(0, 0, 0, 0);
-	glClear(GL_COLOR_BUFFER_BIT);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
 
-	glViewport(last_viewport[0], last_viewport[1], (GLsizei)last_viewport[2], (GLsizei)last_viewport[3]);
+    glViewport(last_viewport[0], last_viewport[1], (GLsizei)last_viewport[2], (GLsizei)last_viewport[3]);
 }
 
 void compute_accumulation_texture(Array<const BackboneAngles> angles, vec4 color, float radius, float outline) {
@@ -2258,17 +2256,17 @@ void compute_accumulation_texture(Array<const BackboneAngles> angles, vec4 color
 
     constexpr float ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
 
-	int32 count = 0;
+    int32 count = 0;
     for (const auto& angle : angles) {
         if (angle.phi == 0 || angle.psi == 0) continue;
-        vec2 coord = vec2(angle.phi, angle.psi) * ONE_OVER_TWO_PI + 0.5f; // [-PI, PI] -> [0, 1]
+        vec2 coord = vec2(angle.phi, angle.psi) * ONE_OVER_TWO_PI + 0.5f;  // [-PI, PI] -> [0, 1]
         coord.y = 1.f - coord.y;
         coords[count].x = (unsigned short)(coord.x * 0xffff);
         coords[count].y = (unsigned short)(coord.y * 0xffff);
-		count++;
+        count++;
     }
 
-	draw::set_vbo_data(coords, count * 2 * sizeof(unsigned short));
+    draw::set_vbo_data(coords, count * 2 * sizeof(unsigned short));
 
     TMP_FREE(coords);
 
@@ -2319,7 +2317,7 @@ void compute_accumulation_texture(Array<const BackboneAngles> angles, vec4 color
     glUniform1f(uniform_loc_radius, radius * 0.01f);
     glUniform1i(uniform_loc_instance_offset, 0);
     glUniform4fv(uniform_loc_color, 1, &color[0]);
-	glUniform1f(uniform_loc_outline, outline);
+    glUniform1f(uniform_loc_outline, outline);
     draw::draw_instanced_quads(count);
 
     glUseProgram(0);

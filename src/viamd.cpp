@@ -203,11 +203,11 @@ struct ApplicationData {
     bool is_playing = false;
     PlaybackInterpolationMode interpolation = PlaybackInterpolationMode::LINEAR_PERIODIC;
 
-	struct {
-		vec2 range {};
-		bool dynamic_window = false;
-		float window_extent = 10.f;
-	} time_filter;
+    struct {
+        vec2 range{};
+        bool dynamic_window = false;
+        float window_extent = 10.f;
+    } time_filter;
 
     // --- VISUALS ---
     // SSAO
@@ -289,7 +289,7 @@ int main(int, char**) {
     init_main_framebuffer(&data.fbo, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
 
     // Init subsystems
-	logging::initialize();
+    logging::initialize();
     immediate::initialize();
     draw::initialize();
     ramachandran::initialize();
@@ -297,28 +297,32 @@ int main(int, char**) {
     filter::initialize();
     postprocessing::initialize(data.fbo.width, data.fbo.height);
 
-	// Standard output
-	logging::register_backend([](CString str, logging::Severity severity, void*) {
-		printf("%s\n", str.cstr());
-	});
+    // Standard output
+    logging::register_backend([](CString str, logging::Severity severity, void*) { printf("%s\n", str.cstr()); });
 
-	// App Console output
-	logging::register_backend([](CString str, logging::Severity severity, void* usr_data) {
-		const char* modifier = "";
-		switch (severity) {
-		case logging::Note:
-			modifier = "[note] "; break;
-		case logging::Warning:
-			modifier = "[warning] "; break;
-		case logging::Error:
-			modifier = "[error] "; break;
-		case logging::Fatal:
-			modifier = "[fatal] "; break;
-		default:
-			break;
-		}
-		((Console*)usr_data)->AddLog("%s%s", modifier, str.cstr());
-	}, &data.console);
+    // App Console output
+    logging::register_backend(
+        [](CString str, logging::Severity severity, void* usr_data) {
+            const char* modifier = "";
+            switch (severity) {
+                case logging::Note:
+                    modifier = "[note] ";
+                    break;
+                case logging::Warning:
+                    modifier = "[warning] ";
+                    break;
+                case logging::Error:
+                    modifier = "[error] ";
+                    break;
+                case logging::Fatal:
+                    modifier = "[fatal] ";
+                    break;
+                default:
+                    break;
+            }
+            ((Console*)usr_data)->AddLog("%s%s", modifier, str.cstr());
+        },
+        &data.console);
 
     // Setup style
     ImGui::StyleColorsClassic();
@@ -331,7 +335,7 @@ int main(int, char**) {
     allocate_and_parse_pdb_from_string(&data.mol_data.dynamic, CAFFINE_PDB);
     data.mol_data.atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule.atom_elements);
 #else
-	stats::create_property("b1", "distance resatom(resname(ALA), 1) resatom(resname(ALA), 2)");
+    stats::create_property("b1", "distance resatom(resname(ALA), 1) resatom(resname(ALA), 2)");
 
     load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
 #endif
@@ -395,7 +399,7 @@ int main(int, char**) {
             reset_view(&data);
         }
         if (data.mol_data.dynamic.trajectory) {
-			int32 num_frames = data.mol_data.dynamic.trajectory.num_frames;
+            int32 num_frames = data.mol_data.dynamic.trajectory.num_frames;
             ImGui::Text("Num Frames: %i", num_frames);
             float t = (float)data.time;
             if (ImGui::SliderFloat("Time", &t, 0, (float)(num_frames - 1))) {
@@ -415,10 +419,10 @@ int main(int, char**) {
                 time_changed = true;
             }
             ImGui::Combo("type", (int*)(&data.interpolation), "Nearest\0Linear\0Linear Periodic\0Cubic\0Cubic Periodic\0\0");
-			ImGui::Checkbox("Dynamic Framewindow", &data.time_filter.dynamic_window);
-			if (data.time_filter.dynamic_window) {
-				ImGui::SliderFloat("Window Extent", &data.time_filter.window_extent, 1.f, (float)num_frames);
-			}
+            ImGui::Checkbox("Dynamic Framewindow", &data.time_filter.dynamic_window);
+            if (data.time_filter.dynamic_window) {
+                ImGui::SliderFloat("Window Extent", &data.time_filter.window_extent, 1.f, (float)num_frames);
+            }
         }
         ImGui::End();
 
@@ -426,11 +430,11 @@ int main(int, char**) {
             data.time += data.ctx.timing.dt * data.frames_per_second;
         }
 
-		if (data.time_filter.dynamic_window) {
-			float max_frame = data.mol_data.dynamic.trajectory ? data.mol_data.dynamic.trajectory.num_frames : 1.f;
-			data.time_filter.range.x = math::max((float)data.time - data.time_filter.window_extent * 0.5f, 0.f);
-			data.time_filter.range.y = math::min((float)data.time + data.time_filter.window_extent * 0.5f, max_frame);
-		}
+        if (data.time_filter.dynamic_window) {
+            float max_frame = data.mol_data.dynamic.trajectory ? data.mol_data.dynamic.trajectory.num_frames : 1.f;
+            data.time_filter.range.x = math::max((float)data.time - data.time_filter.window_extent * 0.5f, 0.f);
+            data.time_filter.range.y = math::min((float)data.time + data.time_filter.window_extent * 0.5f, max_frame);
+        }
 
         {
             static float64 prev_time = data.time;
@@ -525,8 +529,8 @@ int main(int, char**) {
         mat4 proj_mat = compute_perspective_projection_matrix(data.camera, data.fbo.width, data.fbo.height);
         mat4 inv_proj_mat = math::inverse(proj_mat);
 
-		immediate::set_view_matrix(view_mat);
-		immediate::set_proj_matrix(proj_mat);
+        immediate::set_view_matrix(view_mat);
+        immediate::set_proj_matrix(proj_mat);
 
         for (const auto& rep : data.representations.data) {
             if (!rep.enabled) continue;
@@ -579,11 +583,11 @@ int main(int, char**) {
         if (data.ssao.enabled) {
             postprocessing::apply_ssao(data.fbo.tex_depth, data.fbo.tex_normal, proj_mat, data.ssao.intensity, data.ssao.radius);
         }
-        
-		if (!data.async.statistics.sync.running) {
-			stats::visualize(data.mol_data.dynamic);
-		}
-		immediate::flush();
+
+        if (!data.async.statistics.sync.running) {
+            stats::visualize(data.mol_data.dynamic);
+        }
+        immediate::flush();
 
         // GUI ELEMENTS
         data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, data.ctx.timing.dt);
@@ -699,7 +703,7 @@ static void draw_main_menu(ApplicationData* data) {
                     } else {
                         create_default_representation(data);
                     }
-					clear_properties(data);
+                    clear_properties(data);
                     reset_view(data);
                 }
             }
@@ -806,13 +810,13 @@ static void draw_representations_window(ApplicationData* data) {
         create_default_representation(data);
     }
     ImGui::SameLine();
-	ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
-	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
-	ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
+    ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
     if (ImGui::Button("remove all")) {
         data->representations.data.clear();
     }
-	ImGui::PopStyleColor(3);
+    ImGui::PopStyleColor(3);
     ImGui::Spacing();
     ImGui::Separator();
     for (int i = 0; i < data->representations.data.count; i++) {
@@ -828,13 +832,13 @@ static void draw_representations_window(ApplicationData* data) {
         if (ImGui::CollapsingHeader(name.buffer)) {
             ImGui::Checkbox("enabled", &rep.enabled);
             ImGui::SameLine();
-			ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
-			ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
-			ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
+            ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
             if (ImGui::Button("remove")) {
                 remove_representation(data, i);
             }
-			ImGui::PopStyleColor(3);
+            ImGui::PopStyleColor(3);
             ImGui::SameLine();
             if (ImGui::Button("clone")) {
                 Representation clone = rep;
@@ -891,15 +895,6 @@ static void draw_representations_window(ApplicationData* data) {
 }
 
 static void draw_property_window(ApplicationData* data) {
-
-
-    bool compute_stats = false;
-
-    auto property_callback = [](ImGuiTextEditCallbackData* data) -> int {
-        (void)data;
-        return 0;
-    };
-
     ImGui::Begin("Properties", &data->statistics.show_property_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
     ImGui::PushID("PROPERTIES");
@@ -913,7 +908,7 @@ static void draw_property_window(ApplicationData* data) {
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
     if (ImGui::Button("remove all")) {
-		remove_properties(data);
+        remove_properties(data);
     }
     ImGui::PopStyleColor(3);
     ImGui::Spacing();
@@ -930,9 +925,10 @@ static void draw_property_window(ApplicationData* data) {
     ImGui::NextColumn();
     ImGui::NextColumn();
 
+	bool compute_stats = false;
+
     for (int i = 0; i < stats::get_property_count(); i++) {
-		auto prop = stats::get_property(i);
-        bool update = false;
+        auto prop = stats::get_property(i);
 
         ImGui::Separator();
         ImGui::PushID(i);
@@ -940,38 +936,43 @@ static void draw_property_window(ApplicationData* data) {
         if (!prop->valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
         ImGui::PushItemWidth(-1);
         if (ImGui::InputText("##name", prop->name.buffer, prop->name.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
-            update = true;
-        }
-		ImGui::PopItemWidth();
-        ImGui::NextColumn();
-		ImGui::PushItemWidth(-1);
-        if (ImGui::InputText("##args", prop->args.buffer, prop->args.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
-            update = true;
+            compute_stats = true;
         }
         ImGui::PopItemWidth();
-		if (!prop->valid) {
-			ImGui::PopStyleColor();
-			if (!prop->valid && ImGui::GetHoveredID() == ImGui::GetID("##args")) {
-				ImGui::SetTooltip("%s", prop->error_msg.beg());
-			}
-		}
         ImGui::NextColumn();
+        ImGui::PushItemWidth(-1);
+        if (ImGui::InputText("##args", prop->args.buffer, prop->args.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
+			compute_stats = true;
+        }
+        ImGui::PopItemWidth();
+        if (!prop->valid) {
+            ImGui::PopStyleColor();
+            if (!prop->valid && ImGui::GetHoveredID() == ImGui::GetID("##args")) {
+                ImGui::SetTooltip("%s", prop->error_msg.beg());
+            }
+        }
+        ImGui::NextColumn();
+		if (ImGui::ArrowButton("up", ImGuiDir_Up)) {
+			stats::move_property_up(prop);
+			compute_stats = true;
+		}
+		ImGui::SameLine();
+		if (ImGui::ArrowButton("down", ImGuiDir_Down)) {
+			stats::move_property_down(prop);
+			compute_stats = true;
+		}
+		ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
         if (ImGui::Button("remove")) {
             stats::remove_property(prop);
         }
-		ImGui::SameLine();
-		ImGui::Checkbox("visualize", &prop->visualize);
+        ImGui::SameLine();
+        ImGui::Checkbox("show", &prop->visualize);
         ImGui::PopStyleColor(3);
         ImGui::NextColumn();
         ImGui::PopID();
-
-        if (update) {
-            //stats::clear_property(prop_id);
-            compute_stats = true;
-        }
     }
     ImGui::Columns(1);
     ImGui::Separator();
@@ -1033,7 +1034,7 @@ static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, in
 static void draw_async_info(ApplicationData* data) {
     constexpr float WIDTH = 300.f;
     constexpr float MARGIN = 10.f;
-	constexpr float PROGRESS_FRACT = 0.3f;
+    constexpr float PROGRESS_FRACT = 0.3f;
 
     float traj_fract = data->async.trajectory.fraction;
     float angle_fract = data->async.backbone_angles.fraction;
@@ -1047,8 +1048,7 @@ static void draw_async_info(ApplicationData* data) {
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
         ImGui::Begin("##Async Info", 0,
                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
-                         ImGuiWindowFlags_NoFocusOnAppearing);
+                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing);
 
         char buf[32];
         if (0.f < traj_fract && traj_fract < 1.f) {
@@ -1056,12 +1056,12 @@ static void draw_async_info(ApplicationData* data) {
             ImGui::ProgressBar(traj_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * PROGRESS_FRACT, 0), buf);
             ImGui::SameLine();
             ImGui::Text("Reading Trajectory");
-			ImGui::SameLine();
-			if (ImGui::Button("X")) {
-				data->async.trajectory.sync.signal_stop_and_wait();
-				compute_statistics_async(data);
-				data->async.trajectory.fraction = 0.f;
-			}
+            ImGui::SameLine();
+            if (ImGui::Button("X")) {
+                data->async.trajectory.sync.signal_stop_and_wait();
+                compute_statistics_async(data);
+                data->async.trajectory.fraction = 0.f;
+            }
         }
         if (0.f < angle_fract && angle_fract < 1.f) {
             snprintf(buf, 32, "%.1f%%", angle_fract * 100.f);
@@ -1095,34 +1095,34 @@ static void draw_timeline_window(ApplicationData* data) {
 
         for (int i = 0; i < stats::get_property_count(); i++) {
             auto prop = stats::get_property(i);
-			Array<float> prop_data = prop->data;
-			CString		 prop_name = prop->name;
-			stats::Range prop_range = prop->data_range;
+            Array<float> prop_data = prop->data;
+            CString prop_name = prop->name;
+            stats::Range prop_range = prop->data_range;
             if (!prop_data) continue;
             float pad = math::max((prop_range.y - prop_range.x) * 0.1f, 1.f);
             vec2 display_range = prop_range + vec2(-pad, pad);
             float val = (float)data->time;
 
             ImGui::PushID(i);
-            if (ImGui::BeginPlot(prop_name, ImVec2(0, 100), frame_range, ImVec2(display_range.x, display_range.y), &val, &vec_cast(data->time_filter.range),
-                                 ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal)) {
+            if (ImGui::BeginPlot(prop_name, ImVec2(0, 100), frame_range, ImVec2(display_range.x, display_range.y), &val,
+                                 &vec_cast(data->time_filter.range), ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal)) {
                 data->time = val;
             }
             ImGui::PlotValues("Najs", prop_data.data, (int)prop_data.count);
             ImGui::EndPlot();
             ImGui::PopID();
 
-			/*
-            selection_range.x = math::round(selection_range.x);
-            selection_range.y = math::round(selection_range.y);
+            /*
+selection_range.x = math::round(selection_range.x);
+selection_range.y = math::round(selection_range.y);
 
-            if (selection_range.x == selection_range.y) {
-                selection_range.y = math::min((int)selection_range.x + 1, max_frame);
-                if (selection_range.x == selection_range.y) {
-                    selection_range.x = math::max((int)selection_range.y - 1, 0);
-                }
-            }
-			*/
+if (selection_range.x == selection_range.y) {
+    selection_range.y = math::min((int)selection_range.x + 1, max_frame);
+    if (selection_range.x == selection_range.y) {
+        selection_range.x = math::max((int)selection_range.y - 1, 0);
+    }
+}
+            */
         }
         ImGui::PopItemWidth();
 
@@ -1143,13 +1143,13 @@ static void draw_timeline_window(ApplicationData* data) {
 
 static void draw_distribution_window(ApplicationData* data) {
     ImGui::Begin("Distributions", &data->statistics.show_distribution_window, ImGuiWindowFlags_NoFocusOnAppearing);
-    static ImVec2 selection_range{0, 0};
 
     for (int i = 0; i < stats::get_property_count(); i++) {
         stats::Property* prop = stats::get_property(i);
         ImGui::PushItemWidth(-1);
         ImGui::PushID(i);
-        ImGui::PlotHistogram(prop->name, ImVec2(0, 100), prop->histogram.bins.data, (int32)prop->histogram.bins.count, prop->periodic, vec_cast(prop->histogram.value_range), &selection_range);
+        ImGui::PlotHistogram(prop->name, ImVec2(0, 100), prop->histogram.bins.data, (int32)prop->histogram.bins.count, prop->periodic,
+                             vec_cast(prop->histogram.value_range), &vec_cast(prop->filter));
         ImGui::PopID();
         ImGui::PopItemWidth();
     }
@@ -1192,19 +1192,19 @@ static void draw_ramachandran_window(ApplicationData* data) {
     dl->ChannelsSetCurrent(1);
     // ImGui::Image((ImTextureID)ramachandran::accumulation_tex, canvas_size);
     dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_accumulation_texture(), x0, x1);
-	dl->ChannelsSetCurrent(2);
-	constexpr float ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
-	for (const auto& angle : current_angles) {
-		if (angle.phi == 0 || angle.psi == 0) continue;
-		ImVec2 coord(angle.phi * ONE_OVER_TWO_PI + 0.5f, angle.psi * ONE_OVER_TWO_PI + 0.5f); // [-PI, PI] -> [0, 1]
-		coord.y = 1.f - coord.y;
-		coord = ImLerp(x0, x1, coord);
-		float radius = data->ramachandran.radius * 5.f;
-		ImVec2 min_box(math::round(coord.x - radius), math::round(coord.y - radius));
-		ImVec2 max_box(math::round(coord.x + radius), math::round(coord.y + radius));
-		dl->AddRectFilled(min_box, max_box, 0xff00ffff);
-		dl->AddRect(min_box, max_box, 0xff000000);
-	}
+    dl->ChannelsSetCurrent(2);
+    constexpr float ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
+    for (const auto& angle : current_angles) {
+        if (angle.phi == 0 || angle.psi == 0) continue;
+        ImVec2 coord(angle.phi * ONE_OVER_TWO_PI + 0.5f, angle.psi * ONE_OVER_TWO_PI + 0.5f);  // [-PI, PI] -> [0, 1]
+        coord.y = 1.f - coord.y;
+        coord = ImLerp(x0, x1, coord);
+        float radius = data->ramachandran.radius * 5.f;
+        ImVec2 min_box(math::round(coord.x - radius), math::round(coord.y - radius));
+        ImVec2 max_box(math::round(coord.x + radius), math::round(coord.y + radius));
+        dl->AddRectFilled(min_box, max_box, 0xff00ffff);
+        dl->AddRect(min_box, max_box, 0xff000000);
+    }
     dl->ChannelsMerge();
 
     dl->ChannelsSetCurrent(0);
@@ -1449,7 +1449,7 @@ static vec4 to_vec4(CString txt, vec4 default_val = vec4(1)) {
 static void load_workspace(ApplicationData* data, CString file) {
     ASSERT(data);
     clear_representations(data);
-	remove_properties(data);
+    remove_properties(data);
 
     StringBuffer<256> new_molecule_file;
     StringBuffer<256> new_trajectory_file;
@@ -1485,8 +1485,7 @@ static void load_workspace(ApplicationData* data, CString file) {
                 if (compare_n(line, "Thickness=", 10)) rep.thickness = to_float(trim(line.substr(10)));
             }
             data->representations.data.push_back(rep);
-        }
-        else if (compare(line, "[Property]")) {
+        } else if (compare(line, "[Property]")) {
             StringBuffer<256> name, args;
             while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
                 extract_line(line, c_txt);
@@ -1684,8 +1683,8 @@ static void load_trajectory_async(ApplicationData* data) {
 }
 
 static void remove_properties(ApplicationData* data) {
-	data->async.statistics.sync.signal_stop_and_wait();
-	stats::remove_all_properties();
+    data->async.statistics.sync.signal_stop_and_wait();
+    stats::remove_all_properties();
 }
 
 static void clear_properties(ApplicationData* data) {
@@ -1704,8 +1703,8 @@ static void compute_statistics_async(ApplicationData* data) {
             while (data->async.statistics.query_update) {
                 data->async.statistics.query_update = false;
                 data->async.statistics.fraction = 0.5f;
-                //stats::clear_instances();
-                //stats::clear_property_data();
+                // stats::clear_instances();
+                // stats::clear_property_data();
                 stats::compute_stats(data->mol_data.dynamic);
                 if (data->async.statistics.sync.stop_signal) break;
             }

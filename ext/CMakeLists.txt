@@ -141,3 +141,13 @@ IF(APPLE)
 target_link_libraries(nativefiledialog
                       "-framework AppKit")
 ENDIF()
+
+
+
+### TINYEXPR ###
+
+project(tinyexpr)
+#enable_language (C)
+add_library(tinyexpr STATIC ${CMAKE_CURRENT_SOURCE_DIR}/tinyexpr/tinyexpr.c)
+
+
