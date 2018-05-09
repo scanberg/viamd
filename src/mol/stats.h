@@ -48,6 +48,7 @@ struct Property {
     bool valid = false;
     bool periodic = false;
     bool visualize = false;
+    bool histogram_dirty = false;
 
     Range filter{0, 0};
     Range data_range{0, 0};
@@ -82,7 +83,8 @@ void free_histogram(Histogram* hist);
 // Histogram compute_histogram(int32 num_bins, Array<float> data, float min_val, float max_val);
 
 // void compute_histogram(Histogram* hist, Array<float> data);
-void compute_histogram(Histogram* hist, Array<float> data, float min_val, float max_val);
+void compute_histogram(Histogram* hist, Array<const float> data);
+void compute_histogram(Histogram* hist, Array<const float> data, Range filter);
 void clear_histogram(Histogram* hist);
 
 // STATS
@@ -91,7 +93,10 @@ void shutdown();
 
 bool compute_stats(const MoleculeDynamic& dynamic);
 void visualize(const MoleculeDynamic& dynamic);
-void update_property(Property* prop, Range frame_range = { 0,0 });
+
+void compute_property(Property* prop);
+void compute_histogram(Property* prop);
+void compute_histogram(Property* prop, Range frame_filter);
 
 bool register_property_command(CString cmd_keyword, PropertyComputeFunc compute_func, PropertyVisualizeFunc visualize_func);
 

@@ -154,6 +154,21 @@ void compute_histogram(Histogram* hist, Array<const float> data) {
     }
 }
 
+
+void compute_histogram(Histogram* hist, Array<const float> data, Range filter) {
+    ASSERT(hist);
+    const int32 num_bins = (int32)hist->bins.count;
+    const float scl = num_bins / (hist->value_range.y - hist->value_range.x);
+    hist->bin_range = {0, 0};
+    for (auto v : data) {
+        if (filter.x <= v && v <= filter.y) {
+            int32 bin_idx = math::clamp((int32)((v - hist->value_range.x) * scl), 0, num_bins - 1);
+            hist->bins[bin_idx]++;
+            hist->bin_range.y = math::max(hist->bin_range.y, hist->bins[bin_idx]);
+		}
+    }
+}
+
 void clear_histogram(Histogram* hist) {
     ASSERT(hist);
     if (hist->bins.data) {
@@ -867,9 +882,9 @@ static bool compute_expression(Property* prop, const Array<CString> args, const 
     // Concatenate all arguments
     auto expr_str = make_tmp_str(CString(args.front().beg(), args.back().end()));
 
-	if (!expr_str) {
-		return false;    
-	}
+    if (!expr_str) {
+        return false;
+    }
 
     if (!balanced_parentheses(expr_str)) {
         set_error_message("Expression contains unbalanced parentheses!");
@@ -1215,7 +1230,7 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
             continue;
         }
 
-		update_property(&prop);
+        compute_histogram(&prop);
         prop.valid = true;
     }
     ctx.current_property = nullptr;
@@ -1234,34 +1249,61 @@ void visualize(const MoleculeDynamic& dynamic) {
     }
 }
 
-void update_property(Property* prop, Range frame_range) {
-	ASSERT(prop);
-	for (auto& p : ctx.properties) {
-		if (p == prop) {
-			constexpr int32 NUM_BINS = 64;
-			init_histogram(&p->histogram, NUM_BINS, p->data_range);
-			clear_histogram(&p->histogram);
+void compute_property(Property* prop) {
+    ASSERT(prop);
+    for (auto& p : ctx.properties) {
+        if (p == prop) {
 
-			if (frame_range.x == frame_range.y && frame_range.x == 0.f) {
-				frame_range.x = 0;
-				frame_range.y = prop->data.count;
-			}
-
-			int32 beg_idx = math::clamp((int32)frame_range.x, 0, (int32)prop->data.count);
-			int32 end_idx = math::clamp((int32)frame_range.y, 0, (int32)prop->data.count);
-			int32 offset = beg_idx;
-			int32 count = end_idx - beg_idx;
-
-			if (p->instance_data) {
-				for (const auto& inst : p->instance_data) {
-					compute_histogram(&p->histogram, inst.data.sub_array(offset, count));
-				}
-			}
-			else {
-				compute_histogram(&p->histogram, p->data.sub_array(offset, count));
-			}
-		}
+        }
 	}
+}
+
+void compute_histogram(Property* prop) {
+    ASSERT(prop);
+    for (auto& p : ctx.properties) {
+        if (p == prop) {
+            constexpr int32 NUM_BINS = 64;
+            init_histogram(&p->histogram, NUM_BINS, p->data_range);
+            clear_histogram(&p->histogram);
+
+            if (p->instance_data) {
+                for (const auto& inst : p->instance_data) {
+                    compute_histogram(&p->histogram, inst.data, prop->filter);
+                }
+            } else {
+                compute_histogram(&p->histogram, p->data, prop->filter);
+            }
+        }
+    }
+}
+
+void compute_histogram(Property* prop, Range frame_range) {
+    ASSERT(prop);
+    for (auto& p : ctx.properties) {
+        if (p == prop) {
+            constexpr int32 NUM_BINS = 64;
+            init_histogram(&p->histogram, NUM_BINS, p->data_range);
+            clear_histogram(&p->histogram);
+
+            if (frame_range.x == frame_range.y && frame_range.x == 0.f) {
+                frame_range.x = 0;
+                frame_range.y = prop->data.count;
+            }
+
+            int32 beg_idx = math::clamp((int32)frame_range.x, 0, (int32)prop->data.count);
+            int32 end_idx = math::clamp((int32)frame_range.y, 0, (int32)prop->data.count);
+            int32 offset = beg_idx;
+            int32 count = end_idx - beg_idx;
+
+            if (p->instance_data) {
+                for (const auto& inst : p->instance_data) {
+                    compute_histogram(&p->histogram, inst.data.sub_array(offset, count), prop->filter);
+                }
+            } else {
+                compute_histogram(&p->histogram, p->data.sub_array(offset, count), prop->filter);
+            }
+        }
+    }
 }
 
 Property* create_property(CString name, CString args) {
@@ -1300,29 +1342,29 @@ void remove_all_properties() {
 }
 
 void move_property_up(Property* prop) {
-	if (ctx.properties.count <= 1) return;
-	for (int32 i = 1; i < (int32)ctx.properties.count; i++) {
-		if (ctx.properties[i] == prop) {
-			// swap
-			Property* tmp = ctx.properties[i - 1];
-			ctx.properties[i - 1] = ctx.properties[i];
-			ctx.properties[i] = tmp;
-			break;
-		}
-	}
+    if (ctx.properties.count <= 1) return;
+    for (int32 i = 1; i < (int32)ctx.properties.count; i++) {
+        if (ctx.properties[i] == prop) {
+            // swap
+            Property* tmp = ctx.properties[i - 1];
+            ctx.properties[i - 1] = ctx.properties[i];
+            ctx.properties[i] = tmp;
+            break;
+        }
+    }
 }
 
 void move_property_down(Property* prop) {
-	if (ctx.properties.count <= 1) return;
-	for (int32 i = 0; i < (int32)ctx.properties.count - 1; i++) {
-		if (ctx.properties[i] == prop) {
-			// swap
-			Property* tmp = ctx.properties[i + 1];
-			ctx.properties[i + 1] = ctx.properties[i];
-			ctx.properties[i] = tmp;
-			break;
-		}
-	}
+    if (ctx.properties.count <= 1) return;
+    for (int32 i = 0; i < (int32)ctx.properties.count - 1; i++) {
+        if (ctx.properties[i] == prop) {
+            // swap
+            Property* tmp = ctx.properties[i + 1];
+            ctx.properties[i + 1] = ctx.properties[i];
+            ctx.properties[i] = tmp;
+            break;
+        }
+    }
 }
 
 Property* get_property(CString name) {

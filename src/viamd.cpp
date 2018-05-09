@@ -898,7 +898,6 @@ static void draw_property_window(ApplicationData* data) {
     ImGui::Begin("Properties", &data->statistics.show_property_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
     ImGui::PushID("PROPERTIES");
-    ImGui::Text("PROPERTIES");
     if (ImGui::Button("create new")) {
         stats::create_property();
     }
