@@ -2,10 +2,10 @@
 
 #include <core/string_utils.h>
 
-#define LOG_NOTE(format, ...) logging::record(logging::Note, format, __VA_ARGS__);
-#define LOG_WARNING(format, ...) logging::record(logging::Warning, format, __VA_ARGS__);
-#define LOG_ERROR(format, ...) logging::record(logging::Error, format, __VA_ARGS__);
-#define LOG_FATAL(format, ...) logging::record(logging::Fatal, format, __VA_ARGS__);
+#define LOG_NOTE(...) logging::record(logging::Note, __VA_ARGS__);
+#define LOG_WARNING(...) logging::record(logging::Warning, __VA_ARGS__);
+#define LOG_ERROR(...) logging::record(logging::Error, __VA_ARGS__);
+#define LOG_FATAL(...) logging::record(logging::Fatal, __VA_ARGS__);
 
 namespace logging {
 enum Severity { Note, Warning, Error, Fatal };
