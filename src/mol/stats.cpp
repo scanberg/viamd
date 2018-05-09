@@ -120,14 +120,14 @@ void init_structure_data(Array<StructureData>* structure_data, int32 count) {
 }
 
 // HISTOGRAMS
-void init_histogram(Histogram* hist, int32 num_bins, Range value_range) {
+void init_histogram(Histogram* hist, int32 num_bins) {
     ASSERT(hist);
     if (hist->bins.data) {
         FREE(hist->bins.data);
     }
     hist->bins.data = (float*)MALLOC(num_bins * sizeof(float));
     hist->bins.count = num_bins;
-    hist->value_range = value_range;
+    hist->value_range = {0, 0};
     hist->bin_range = {0, 0};
 
     ASSERT(hist->bins.data);
@@ -1171,69 +1171,9 @@ bool sync_structure_data_length(Array<StructureData> data) {
 }
 
 bool compute_stats(const MoleculeDynamic& dynamic) {
-    int32 num_frames = dynamic.trajectory.num_frames;
-
     for (auto p : ctx.properties) {
-        auto& prop = *p;
-        ctx.current_property = p;
-        prop.error_msg = "";
-        if (prop.data.count != num_frames) {
-            prop.data.resize(num_frames);
-        }
-        prop.data.set_mem_to_zero();
-        clear_histogram(&prop.histogram);
-
-        if (!balanced_parentheses(prop.args)) {
-            snprintf(prop.error_msg.beg(), prop.error_msg.MAX_LENGTH, "Unbalanced parantheses!");
-            prop.valid = false;
-            continue;
-        }
-
-        DynamicArray<CString> args;
-
-        // Extract big argument chunks
-        const char* beg = prop.args.beg();
-        const char* end = prop.args.beg();
-        int count = 0;
-
-        // Use space separation unless we are inside a parenthesis
-        while (end != prop.args.end()) {
-            if (*end == '(')
-                count++;
-            else if (*end == ')')
-                count--;
-            else if (isspace(*end) && count == 0) {
-                args.push_back(trim({beg, end}));
-                beg = end + 1;
-            }
-            end++;
-        }
-        if (beg != end) args.push_back(trim({beg, end}));
-
-        if (args.count == 0) {
-            prop.valid = false;
-            continue;
-        }
-
-        CString cmd = args[0];
-        args = args.sub_array(1);
-
-        auto func = find_property_compute_func(cmd);
-        if (!func) {
-            set_error_message("Could not recognize command '%s'", make_tmp_str(cmd).cstr());
-            prop.valid = false;
-            continue;
-        }
-
-        if (!func(&prop, args, dynamic)) {
-            prop.valid = false;
-            continue;
-        }
-
-        compute_histogram(&prop);
-        prop.valid = true;
+        compute_property(p, dynamic);
     }
-    ctx.current_property = nullptr;
 
     return true;
 }
@@ -1249,29 +1189,88 @@ void visualize(const MoleculeDynamic& dynamic) {
     }
 }
 
-void compute_property(Property* prop) {
+void compute_property(Property* prop, const MoleculeDynamic& dynamic) {
     ASSERT(prop);
-    for (auto& p : ctx.properties) {
-        if (p == prop) {
+    int32 num_frames = dynamic.trajectory.num_frames;
 
+    for (auto& p : ctx.properties) {
+        ctx.current_property = p;
+        if (p == prop) {
+            auto& prop = *p;
+            ctx.current_property = p;
+            prop.error_msg = "";
+            if (prop.data.count != num_frames) {
+                prop.data.resize(num_frames);
+            }
+            prop.data.set_mem_to_zero();
+            clear_histogram(&prop.full_histogram);
+
+            if (!balanced_parentheses(prop.args)) {
+                snprintf(prop.error_msg.beg(), prop.error_msg.MAX_LENGTH, "Unbalanced parantheses!");
+                prop.valid = false;
+                continue;
+            }
+
+            DynamicArray<CString> args;
+
+            // Extract big argument chunks
+            const char* beg = prop.args.beg();
+            const char* end = prop.args.beg();
+            int count = 0;
+
+            // Use space separation unless we are inside a parenthesis
+            while (end != prop.args.end()) {
+                if (*end == '(')
+                    count++;
+                else if (*end == ')')
+                    count--;
+                else if (isspace(*end) && count == 0) {
+                    args.push_back(trim({beg, end}));
+                    beg = end + 1;
+                }
+                end++;
+            }
+            if (beg != end) args.push_back(trim({beg, end}));
+
+            if (args.count == 0) {
+                prop.valid = false;
+                continue;
+            }
+
+            CString cmd = args[0];
+            args = args.sub_array(1);
+
+            auto func = find_property_compute_func(cmd);
+            if (!func) {
+                set_error_message("Could not recognize command '%s'", make_tmp_str(cmd).cstr());
+                prop.valid = false;
+                continue;
+            }
+
+            if (!func(&prop, args, dynamic)) {
+                prop.valid = false;
+                continue;
+            }
+
+            compute_histogram(&prop);
+            prop.valid = true;
         }
 	}
+    ctx.current_property = nullptr;
 }
 
-void compute_histogram(Property* prop) {
+void compute_filtered_histogram(Property* prop) {
     ASSERT(prop);
     for (auto& p : ctx.properties) {
         if (p == prop) {
-            constexpr int32 NUM_BINS = 64;
-            init_histogram(&p->histogram, NUM_BINS, p->data_range);
-            clear_histogram(&p->histogram);
+            clear_histogram(&p->full_histogram);
 
             if (p->instance_data) {
                 for (const auto& inst : p->instance_data) {
-                    compute_histogram(&p->histogram, inst.data, prop->filter);
+                    compute_histogram(&p->full_histogram, inst.data, p->filter);
                 }
             } else {
-                compute_histogram(&p->histogram, p->data, prop->filter);
+                compute_histogram(&p->full_histogram, p->data, p->filter);
             }
         }
     }
@@ -1281,37 +1280,43 @@ void compute_histogram(Property* prop, Range frame_range) {
     ASSERT(prop);
     for (auto& p : ctx.properties) {
         if (p == prop) {
-            constexpr int32 NUM_BINS = 64;
-            init_histogram(&p->histogram, NUM_BINS, p->data_range);
-            clear_histogram(&p->histogram);
+            clear_histogram(&p->full_histogram);
 
             if (frame_range.x == frame_range.y && frame_range.x == 0.f) {
                 frame_range.x = 0;
-                frame_range.y = prop->data.count;
+                frame_range.y = p->data.count;
             }
 
-            int32 beg_idx = math::clamp((int32)frame_range.x, 0, (int32)prop->data.count);
-            int32 end_idx = math::clamp((int32)frame_range.y, 0, (int32)prop->data.count);
+            int32 beg_idx = math::clamp((int32)frame_range.x, 0, (int32)p->data.count);
+            int32 end_idx = math::clamp((int32)frame_range.y, 0, (int32)p->data.count);
             int32 offset = beg_idx;
             int32 count = end_idx - beg_idx;
 
             if (p->instance_data) {
                 for (const auto& inst : p->instance_data) {
-                    compute_histogram(&p->histogram, inst.data.sub_array(offset, count), prop->filter);
+                    compute_histogram(&p->full_histogram, inst.data.sub_array(offset, count), p->filter);
                 }
             } else {
-                compute_histogram(&p->histogram, p->data.sub_array(offset, count), prop->filter);
+                compute_histogram(&p->full_histogram, p->data.sub_array(offset, count), p->filter);
             }
         }
     }
 }
 
 Property* create_property(CString name, CString args) {
+    constexpr int32 NUM_BINS = 64;
+
     Property* prop = (Property*)MALLOC(sizeof(Property));
     new (prop) Property();
     prop->name = name;
     prop->args = args;
     prop->valid = false;
+
+    init_histogram(&prop->full_histogram, NUM_BINS);
+    clear_histogram(&prop->full_histogram);
+
+	init_histogram(&prop->filt_histogram, NUM_BINS);
+    clear_histogram(&prop->filt_histogram);
 
     ctx.properties.push_back(prop);
     return prop;
@@ -1319,7 +1324,8 @@ Property* create_property(CString name, CString args) {
 
 static void free_property_data(Property* prop) {
     ASSERT(prop);
-    free_histogram(&prop->histogram);
+    free_histogram(&prop->full_histogram);
+    free_histogram(&prop->filt_histogram);
     free_structure_data(&prop->structure_data);
     free_instance_data(&prop->instance_data);
 }
@@ -1385,7 +1391,7 @@ void clear_property(Property* prop) {
     ASSERT(prop);
     free_structure_data(&prop->structure_data);
     free_instance_data(&prop->instance_data);
-    clear_histogram(&prop->histogram);
+    clear_histogram(&prop->full_histogram);
     prop->data.clear();
 }
 

@@ -48,12 +48,16 @@ struct Property {
     bool valid = false;
     bool periodic = false;
     bool visualize = false;
-    bool histogram_dirty = false;
+
+    bool data_dirty = false;
+    bool full_hist_dirty = false;
+    bool filt_hist_dirty = false;
 
     Range filter{0, 0};
     Range data_range{0, 0};
     DynamicArray<float> data{};
-    Histogram histogram;
+    Histogram full_histogram;
+    Histogram filt_histogram;
 
     Array<InstanceData> instance_data{};
     Array<StructureData> structure_data{};
@@ -76,7 +80,7 @@ typedef bool (*PropertyComputeFunc)(Property* prop, const Array<CString> args, c
 typedef bool (*PropertyVisualizeFunc)(const Property& prop, const MoleculeDynamic& dynamic);
 
 // HISTOGRAM
-void init_histogram(Histogram* hist, int32 num_bins, Range value_range);
+void init_histogram(Histogram* hist, int32 num_bins);
 void free_histogram(Histogram* hist);
 
 // Histogram compute_histogram(int32 num_bins, Array<float> data);
@@ -94,9 +98,9 @@ void shutdown();
 bool compute_stats(const MoleculeDynamic& dynamic);
 void visualize(const MoleculeDynamic& dynamic);
 
-void compute_property(Property* prop);
-void compute_histogram(Property* prop);
-void compute_histogram(Property* prop, Range frame_filter);
+void compute_property(Property* prop, const MoleculeDynamic& dynamic);
+void compute_property_histograms(Property* prop);
+void compute_property_histograms(Property* prop, Range frame_filter);
 
 bool register_property_command(CString cmd_keyword, PropertyComputeFunc compute_func, PropertyVisualizeFunc visualize_func);
 
