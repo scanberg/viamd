@@ -867,6 +867,10 @@ static bool compute_expression(Property* prop, const Array<CString> args, const 
     // Concatenate all arguments
     auto expr_str = make_tmp_str(CString(args.front().beg(), args.back().end()));
 
+	if (!expr_str) {
+		return false;    
+	}
+
     if (!balanced_parentheses(expr_str)) {
         set_error_message("Expression contains unbalanced parentheses!");
         return false;
@@ -1157,6 +1161,7 @@ bool compute_stats(const MoleculeDynamic& dynamic) {
     for (auto p : ctx.properties) {
         auto& prop = *p;
         ctx.current_property = p;
+        prop.error_msg = "";
         if (prop.data.count != num_frames) {
             prop.data.resize(num_frames);
         }

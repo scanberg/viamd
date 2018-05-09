@@ -328,15 +328,14 @@ int main(int, char**) {
     ImGui::StyleColorsClassic();
 
     bool show_demo_window = false;
-    vec4 clear_color = vec4(1, 1, 1, 1);
-    vec4 clear_index = vec4(1, 1, 1, 1);
+    const vec4 CLEAR_COLOR = vec4(1, 1, 1, 1);
+    const vec4 CLEAR_INDEX = vec4(1, 1, 1, 1);
 
 #ifdef VIAMD_RELEASE
     allocate_and_parse_pdb_from_string(&data.mol_data.dynamic, CAFFINE_PDB);
     data.mol_data.atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule.atom_elements);
 #else
-    stats::create_property("b1", "distance resatom(resname(ALA), 1) resatom(resname(ALA), 2)");
-
+    stats::create_property("b1", "distance resatom(resname(ALA), 1) com(resname(ALA))");
     load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
 #endif
     reset_view(&data);
@@ -361,12 +360,12 @@ int main(int, char**) {
 
         // Clear color, normal and depth buffer
         glDrawBuffers(2, draw_buffers);
-        glClearColor(clear_color.x, clear_color.y, clear_color.z, clear_color.w);
+        glClearColor(CLEAR_COLOR.x, CLEAR_COLOR.y, CLEAR_COLOR.z, CLEAR_COLOR.w);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         // Clear picking buffer
         glDrawBuffer(GL_COLOR_ATTACHMENT2);
-        glClearColor(clear_index.x, clear_index.y, clear_index.z, clear_index.w);
+        glClearColor(CLEAR_INDEX.x, CLEAR_INDEX.y, CLEAR_INDEX.z, CLEAR_INDEX.w);
         glClear(GL_COLOR_BUFFER_BIT);
 
         // Enable all draw buffers
@@ -895,6 +894,7 @@ static void draw_representations_window(ApplicationData* data) {
 }
 
 static void draw_property_window(ApplicationData* data) {
+	static bool first_time_shown = true;
     ImGui::Begin("Properties", &data->statistics.show_property_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
     ImGui::PushID("PROPERTIES");
@@ -915,9 +915,13 @@ static void draw_property_window(ApplicationData* data) {
 
     ImGui::Columns(3, "columns", true);
     ImGui::Separator();
-    ImGui::SetColumnWidth(0, ImGui::GetWindowContentRegionWidth() * 0.15f);
-    ImGui::SetColumnWidth(1, ImGui::GetWindowContentRegionWidth() * 0.7f);
-    ImGui::SetColumnWidth(2, ImGui::GetWindowContentRegionWidth() * 0.15f);
+
+	if (first_time_shown) {
+        first_time_shown = false;
+        ImGui::SetColumnWidth(0, ImGui::GetWindowContentRegionWidth() * 0.1f);
+        ImGui::SetColumnWidth(1, ImGui::GetWindowContentRegionWidth() * 0.7f);
+        ImGui::SetColumnWidth(2, ImGui::GetWindowContentRegionWidth() * 0.2f);
+    }
 
     ImGui::Text("name");
     ImGui::NextColumn();
@@ -947,8 +951,8 @@ static void draw_property_window(ApplicationData* data) {
         ImGui::PopItemWidth();
         if (!prop->valid) {
             ImGui::PopStyleColor();
-            if (!prop->valid && ImGui::GetHoveredID() == ImGui::GetID("##args")) {
-                ImGui::SetTooltip("%s", prop->error_msg.beg());
+            if (!prop->valid && prop->error_msg && ImGui::GetHoveredID() == ImGui::GetID("##args")) {
+                ImGui::SetTooltip("%s", prop->error_msg.cstr());
             }
         }
         ImGui::NextColumn();
@@ -1150,6 +1154,7 @@ static void draw_distribution_window(ApplicationData* data) {
         ImGui::PushID(i);
         ImGui::PlotHistogram(prop->name, ImVec2(0, 100), prop->histogram.bins.data, (int32)prop->histogram.bins.count, prop->periodic,
                              vec_cast(prop->histogram.value_range), &vec_cast(prop->filter));
+        ImGui::RangeSliderFloat("filter", &prop->filter.x, &prop->filter.y, prop->data_range.x, prop->data_range.y);
         ImGui::PopID();
         ImGui::PopItemWidth();
     }
