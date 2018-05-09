@@ -49,9 +49,9 @@ struct Property {
     bool periodic = false;
     bool visualize = false;
 
-    bool data_dirty = false;
-    bool full_hist_dirty = false;
-    bool filt_hist_dirty = false;
+    volatile bool data_dirty = false;
+    volatile bool full_hist_dirty = false;
+    volatile bool filt_hist_dirty = false;
 
     Range filter{0, 0};
     Range data_range{0, 0};
@@ -94,13 +94,15 @@ void clear_histogram(Histogram* hist);
 // STATS
 void initialize();
 void shutdown();
+// Kick of this in a separate thread whenever the data should to be modified.
+void update(const MoleculeDynamic& dynamic, volatile bool* use_frame_range, volatile Range* frame_range);
 
-bool compute_stats(const MoleculeDynamic& dynamic);
+//bool compute_stats(const MoleculeDynamic& dynamic);
 void visualize(const MoleculeDynamic& dynamic);
 
-void compute_property(Property* prop, const MoleculeDynamic& dynamic);
-void compute_property_histograms(Property* prop);
-void compute_property_histograms(Property* prop, Range frame_filter);
+//void compute_property(Property* prop, const MoleculeDynamic& dynamic);
+//void compute_property_histograms(Property* prop);
+//void compute_property_histograms(Property* prop, Range frame_filter);
 
 bool register_property_command(CString cmd_keyword, PropertyComputeFunc compute_func, PropertyVisualizeFunc visualize_func);
 
@@ -118,6 +120,8 @@ void move_property_down(Property* prop);
 // Keep property, but remove the generated data
 void clear_property(Property* prop);
 void clear_all_properties();
+
+void set_all_property_flags(bool data_dirty, bool full_hist_dirty, bool filt_hist_dirty);
 
 int32 get_property_count();
 Property* get_property(int32 idx);

@@ -727,6 +727,7 @@ IMGUI_API bool PlotHistogram(const char* label, ImVec2 frame_size, const float* 
 		style.FrameRounding);
 
 	static float* drag_target = nullptr;
+    bool modifying = false;
 
 	if (GetActiveID() == id) {
 		if (!ctx.IO.MouseDown[0]) {
@@ -741,7 +742,8 @@ IMGUI_API bool PlotHistogram(const char* label, ImVec2 frame_size, const float* 
 	}
 
 	if (GetActiveID() == id) {
-		if (selection_range && ctx.IO.MouseDown[0] && ctx.IO.KeyCtrl) {
+		if (selection_range && ctx.IO.MouseDown[0] && ctx.IO.KeyCtrl && ctx.IO.MouseDelta.x != 0) {
+            modifying = true;
 			float t = ImClamp((ctx.IO.MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x), 0.f, 1.f);
 			static int periodic_counter = 0;
 			if (ctx.IO.MouseClicked[0]) {
@@ -833,6 +835,8 @@ IMGUI_API bool PlotHistogram(const char* label, ImVec2 frame_size, const float* 
 
 	RenderTextClipped(ImVec2(frame_bb.Min.x + style.FramePadding.x, frame_bb.Min.y + style.FramePadding.y),
 		frame_bb.Max, label, NULL, NULL, ImVec2(0.0f, 0.0f));
+
+	return modifying;
 }
 
 IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_radius_ratio, const float* values, int count, ImVec2 value_range, ImU32 line_color) {

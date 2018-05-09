@@ -204,7 +204,8 @@ struct ApplicationData {
     PlaybackInterpolationMode interpolation = PlaybackInterpolationMode::LINEAR_PERIODIC;
 
     struct {
-        vec2 range{};
+        bool enabled = true;
+        vec2 range{0, 0};
         bool dynamic_window = false;
         float window_extent = 10.f;
     } time_filter;
@@ -894,7 +895,7 @@ static void draw_representations_window(ApplicationData* data) {
 }
 
 static void draw_property_window(ApplicationData* data) {
-	static bool first_time_shown = true;
+    static bool first_time_shown = true;
     ImGui::Begin("Properties", &data->statistics.show_property_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
     ImGui::PushID("PROPERTIES");
@@ -915,7 +916,7 @@ static void draw_property_window(ApplicationData* data) {
     ImGui::Columns(3, "columns", true);
     ImGui::Separator();
 
-	if (first_time_shown) {
+    if (first_time_shown) {
         first_time_shown = false;
         ImGui::SetColumnWidth(0, ImGui::GetWindowContentRegionWidth() * 0.1f);
         ImGui::SetColumnWidth(1, ImGui::GetWindowContentRegionWidth() * 0.7f);
@@ -928,7 +929,7 @@ static void draw_property_window(ApplicationData* data) {
     ImGui::NextColumn();
     ImGui::NextColumn();
 
-	bool compute_stats = false;
+    bool compute_stats = false;
 
     for (int i = 0; i < stats::get_property_count(); i++) {
         auto prop = stats::get_property(i);
@@ -939,13 +940,15 @@ static void draw_property_window(ApplicationData* data) {
         if (!prop->valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
         ImGui::PushItemWidth(-1);
         if (ImGui::InputText("##name", prop->name.buffer, prop->name.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
+            prop->data_dirty = true;
             compute_stats = true;
         }
         ImGui::PopItemWidth();
         ImGui::NextColumn();
         ImGui::PushItemWidth(-1);
         if (ImGui::InputText("##args", prop->args.buffer, prop->args.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
-			compute_stats = true;
+            prop->data_dirty = true;
+            compute_stats = true;
         }
         ImGui::PopItemWidth();
         if (!prop->valid) {
@@ -955,16 +958,16 @@ static void draw_property_window(ApplicationData* data) {
             }
         }
         ImGui::NextColumn();
-		if (ImGui::ArrowButton("up", ImGuiDir_Up)) {
-			stats::move_property_up(prop);
-			compute_stats = true;
-		}
-		ImGui::SameLine();
-		if (ImGui::ArrowButton("down", ImGuiDir_Down)) {
-			stats::move_property_down(prop);
-			compute_stats = true;
-		}
-		ImGui::SameLine();
+        if (ImGui::ArrowButton("up", ImGuiDir_Up)) {
+            stats::move_property_up(prop);
+            compute_stats = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::ArrowButton("down", ImGuiDir_Down)) {
+            stats::move_property_down(prop);
+            compute_stats = true;
+        }
+        ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
@@ -1091,7 +1094,7 @@ static void draw_timeline_window(ApplicationData* data) {
 
         const int max_frame = data->mol_data.dynamic.trajectory.num_frames;
         const ImVec2 frame_range(0, (float)max_frame);
-        static ImVec2 selection_range(100, 300);
+        auto old_range = data->time_filter.range;
 
         ImGui::PushItemWidth(ImGui::GetWindowContentRegionWidth() * zoom);
         ImGui::RangeSliderFloat("###selection_range", &data->time_filter.range.x, &data->time_filter.range.y, 0.f, (float)max_frame);
@@ -1114,20 +1117,13 @@ static void draw_timeline_window(ApplicationData* data) {
             ImGui::PlotValues("Najs", prop_data.data, (int)prop_data.count);
             ImGui::EndPlot();
             ImGui::PopID();
-
-            /*
-selection_range.x = math::round(selection_range.x);
-selection_range.y = math::round(selection_range.y);
-
-if (selection_range.x == selection_range.y) {
-    selection_range.y = math::min((int)selection_range.x + 1, max_frame);
-    if (selection_range.x == selection_range.y) {
-        selection_range.x = math::max((int)selection_range.y - 1, 0);
-    }
-}
-            */
         }
         ImGui::PopItemWidth();
+
+		if (old_range != data->time_filter.range) {
+            stats::set_all_property_flags(false, false, true);
+            compute_statistics_async(data);
+		}
 
         if (ImGui::IsWindowHovered() && ImGui::GetIO().MouseWheel != 0.f && ImGui::GetIO().KeyCtrl) {
             constexpr float ZOOM_SCL = 0.24f;
@@ -1151,9 +1147,15 @@ static void draw_distribution_window(ApplicationData* data) {
         stats::Property* prop = stats::get_property(i);
         ImGui::PushItemWidth(-1);
         ImGui::PushID(i);
-        ImGui::PlotHistogram(prop->name, ImVec2(0, 100), prop->histogram.bins.data, (int32)prop->histogram.bins.count, prop->periodic,
-                             vec_cast(prop->histogram.value_range), &vec_cast(prop->filter));
-        ImGui::RangeSliderFloat("filter", &prop->filter.x, &prop->filter.y, prop->data_range.x, prop->data_range.y);
+        if (ImGui::PlotHistogram(prop->name, ImVec2(0, 100), prop->filt_histogram.bins.data, (int32)prop->filt_histogram.bins.count, prop->periodic,
+                                 vec_cast(prop->filt_histogram.value_range), &vec_cast(prop->filter))) {
+            prop->filt_hist_dirty = true;
+            compute_statistics_async(data);
+        }
+        if (ImGui::RangeSliderFloat("filter", &prop->filter.x, &prop->filter.y, prop->data_range.x, prop->data_range.y)) {
+			prop->filt_hist_dirty = true;
+            compute_statistics_async(data);
+		}
         ImGui::PopID();
         ImGui::PopItemWidth();
     }
@@ -1330,7 +1332,8 @@ static void load_molecule_data(ApplicationData* data, CString file) {
             if (data->mol_data.dynamic.trajectory) {
                 init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
                 compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
-                stats::compute_stats(data->mol_data.dynamic);
+                // stats::update(data->mol_data.dynamic, );
+                compute_statistics_async(data);
             }
         } else if (compare_n(ext, "gro", 3, true)) {
             free_molecule_data(data);
@@ -1709,7 +1712,7 @@ static void compute_statistics_async(ApplicationData* data) {
                 data->async.statistics.fraction = 0.5f;
                 // stats::clear_instances();
                 // stats::clear_property_data();
-                stats::compute_stats(data->mol_data.dynamic);
+                stats::update(data->mol_data.dynamic, &data->time_filter.enabled, &data->time_filter.range);
                 if (data->async.statistics.sync.stop_signal) break;
             }
             data->async.statistics.fraction = 1.f;

@@ -154,7 +154,6 @@ void compute_histogram(Histogram* hist, Array<const float> data) {
     }
 }
 
-
 void compute_histogram(Histogram* hist, Array<const float> data, Range filter) {
     ASSERT(hist);
     const int32 num_bins = (int32)hist->bins.count;
@@ -165,7 +164,7 @@ void compute_histogram(Histogram* hist, Array<const float> data, Range filter) {
             int32 bin_idx = math::clamp((int32)((v - hist->value_range.x) * scl), 0, num_bins - 1);
             hist->bins[bin_idx]++;
             hist->bin_range.y = math::max(hist->bin_range.y, hist->bins[bin_idx]);
-		}
+        }
     }
 }
 
@@ -1170,26 +1169,7 @@ bool sync_structure_data_length(Array<StructureData> data) {
     return true;
 }
 
-bool compute_stats(const MoleculeDynamic& dynamic) {
-    for (auto p : ctx.properties) {
-        compute_property(p, dynamic);
-    }
-
-    return true;
-}
-
-void visualize(const MoleculeDynamic& dynamic) {
-    for (auto p : ctx.properties) {
-        if (!p->visualize) continue;
-        CString cmd = extract_command(p->args);
-        auto entry = find_property_func_entry(HASH(cmd));
-        if (entry && entry->visualize_func) {
-            entry->visualize_func(*p, dynamic);
-        }
-    }
-}
-
-void compute_property(Property* prop, const MoleculeDynamic& dynamic) {
+static void compute_property_data(Property* prop, const MoleculeDynamic& dynamic) {
     ASSERT(prop);
     int32 num_frames = dynamic.trajectory.num_frames;
 
@@ -1204,6 +1184,7 @@ void compute_property(Property* prop, const MoleculeDynamic& dynamic) {
             }
             prop.data.set_mem_to_zero();
             clear_histogram(&prop.full_histogram);
+            clear_histogram(&prop.filt_histogram);
 
             if (!balanced_parentheses(prop.args)) {
                 snprintf(prop.error_msg.beg(), prop.error_msg.MAX_LENGTH, "Unbalanced parantheses!");
@@ -1252,13 +1233,72 @@ void compute_property(Property* prop, const MoleculeDynamic& dynamic) {
                 continue;
             }
 
-            compute_histogram(&prop);
+			prop.full_histogram.value_range = prop.data_range;
+            prop.filt_histogram.value_range = prop.data_range;
+            prop.full_hist_dirty = true;
+            prop.filt_hist_dirty = true;
             prop.valid = true;
         }
-	}
+    }
     ctx.current_property = nullptr;
 }
 
+void update(const MoleculeDynamic& dynamic, volatile bool* use_frame_range, volatile Range* frame_range) {
+    for (auto p : ctx.properties) {
+        if (p->data_dirty) {
+            p->data_dirty = false;
+            compute_property_data(p, dynamic);
+        }
+
+        if (p->full_hist_dirty) {
+            p->full_hist_dirty = false;
+            clear_histogram(&p->full_histogram);
+            if (p->instance_data) {
+                for (const auto& inst : p->instance_data) {
+                    compute_histogram(&p->full_histogram, inst.data);
+                }
+            } else {
+                compute_histogram(&p->full_histogram, p->data);
+            }
+		}
+
+		if (p->filt_hist_dirty) {
+            p->filt_hist_dirty = false;
+            clear_histogram(&p->filt_histogram);
+
+			int32 beg_idx = 0;
+            int32 end_idx = (int32)p->data.count;
+            if (use_frame_range) {
+                beg_idx = math::clamp((int32)frame_range->x, 0, (int32)p->data.count);
+                end_idx = math::clamp((int32)frame_range->y, 0, (int32)p->data.count);
+			}
+
+			// Since the data is probably showing, perform the operations on tmp data then copy the results
+            if (p->instance_data) {
+                for (const auto& inst : p->instance_data) {
+                    compute_histogram(&p->filt_histogram, inst.data.sub_array(beg_idx, end_idx - beg_idx), p->filter);
+                }
+            } else {
+                compute_histogram(&p->filt_histogram, p->data.sub_array(beg_idx, end_idx - beg_idx), p->filter);
+            }
+		}
+    }
+}
+
+void visualize(const MoleculeDynamic& dynamic) {
+    for (auto p : ctx.properties) {
+        if (!p->visualize) continue;
+        CString cmd = extract_command(p->args);
+        auto entry = find_property_func_entry(HASH(cmd));
+        if (entry && entry->visualize_func) {
+            entry->visualize_func(*p, dynamic);
+        }
+    }
+}
+
+
+
+/*
 void compute_filtered_histogram(Property* prop) {
     ASSERT(prop);
     for (auto& p : ctx.properties) {
@@ -1302,6 +1342,7 @@ void compute_histogram(Property* prop, Range frame_range) {
         }
     }
 }
+*/
 
 Property* create_property(CString name, CString args) {
     constexpr int32 NUM_BINS = 64;
@@ -1311,11 +1352,14 @@ Property* create_property(CString name, CString args) {
     prop->name = name;
     prop->args = args;
     prop->valid = false;
+    prop->data_dirty = true;
+    prop->full_hist_dirty = true;
+    prop->filt_hist_dirty = true;
 
     init_histogram(&prop->full_histogram, NUM_BINS);
     clear_histogram(&prop->full_histogram);
 
-	init_histogram(&prop->filt_histogram, NUM_BINS);
+    init_histogram(&prop->filt_histogram, NUM_BINS);
     clear_histogram(&prop->filt_histogram);
 
     ctx.properties.push_back(prop);
@@ -1398,6 +1442,14 @@ void clear_property(Property* prop) {
 void clear_all_properties() {
     for (auto p : ctx.properties) {
         clear_property(p);
+    }
+}
+
+void set_all_property_flags(bool data_dirty, bool full_hist_dirty, bool filt_hist_dirty) {
+    for (auto p : ctx.properties) {
+        p->data_dirty |= data_dirty;
+        p->full_hist_dirty |= full_hist_dirty;
+        p->filt_hist_dirty |= filt_hist_dirty;
     }
 }
 
