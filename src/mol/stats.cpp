@@ -11,6 +11,7 @@
 #include <ctype.h>
 #include <stdarg.h>
 #include <new>
+#include <thread>
 #include <tinyexpr.h>
 
 #define HASH(x) (hash::crc64(x))
@@ -37,6 +38,11 @@ struct StatisticsContext {
     DynamicArray<Property*> properties{};
 
     Property* current_property = nullptr;
+
+    volatile bool  thread_running = false;
+    volatile bool  stop_signal = false;
+    volatile float fraction_done = 0.f;
+    volatile Range frame_filter {0,0};
 };
 
 static StatisticsContext ctx;
@@ -1172,6 +1178,85 @@ void update(const MoleculeDynamic& dynamic, volatile Range* frame_range) {
     }
 
     free_histogram(&tmp_hist);
+}
+
+void internal_update(const MoleculeDynamic& dynamic) {
+
+}
+
+bool in_sync(Range frame_filter) {
+    if (frame_filter != ctx.frame_filter) return false;
+
+    for (const auto p : ctx.properties) {
+        if (p.data_dirty) return false;
+        if (p.full_hist_dirty) return false;
+        if (p.filt_hist_dirty) return false;
+    }
+
+    return true;
+} 
+
+void update(const MoleculeDynamic& dynamic, Range frame_filter) {
+    if (!in_sync(frame_filter) && ctx.thread_running == false) {
+        ctx.thread_running = true;
+        std::thread([&dynamic, &ctx]() {
+            init_histogram(&tmp_hist, NUM_BINS);
+
+            bool in_sync = false;
+            while (!in_sync) {
+                Histogram tmp_hist;
+
+                for (auto p : ctx.properties) {
+                    if (p->data_dirty) {
+                        p->data_dirty = false;
+                        compute_property_data(p, dynamic);
+                    }
+
+                    if (p->full_hist_dirty) {
+                        p->full_hist_dirty = false;
+                        clear_histogram(&p->full_histogram);
+                        if (p->instance_data) {
+                            for (const auto& inst : p->instance_data) {
+                                compute_histogram(&p->full_histogram, inst.data);
+                            }
+                        } else {
+                            compute_histogram(&p->full_histogram, p->data);
+                        }
+                        normalize_histogram(&p->full_histogram);
+                    }
+
+                    if (p->filt_hist_dirty) {
+                        p->filt_hist_dirty = false;
+                        clear_histogram(&tmp_hist);
+                        tmp_hist.value_range = p->filt_histogram.value_range;
+
+                        int32 beg_idx = math::clamp((int32)frame_range->x, 0, (int32)p->data.count);
+                        int32 end_idx = math::clamp((int32)frame_range->y, 0, (int32)p->data.count);
+
+                        // Since the data is probably showing, perform the operations on tmp data then copy the results
+                        if (p->instance_data) {
+                            for (const auto& inst : p->instance_data) {
+                                compute_histogram(&tmp_hist, inst.data.sub_array(beg_idx, end_idx - beg_idx), p->filter);
+                            }
+                        } else {
+                            compute_histogram(&tmp_hist, p->data.sub_array(beg_idx, end_idx - beg_idx), p->filter);
+                        }
+                        normalize_histogram(&tmp_hist);
+                        p->filt_histogram.bin_range = tmp_hist.bin_range;
+                        p->filt_histogram.num_samples = tmp_hist.num_samples;
+                        memcpy(p->filt_histogram.bins.data, tmp_hist.bins.data, p->filt_histogram.bins.size_in_bytes());
+                    }
+                }
+
+                ctx.fraction = 0.0f;
+                if (ctx.stop_signal) break;
+            }
+            free_histogram(&tmp_hist);
+            ctx.fraction_done = 1.f;
+            ctx.thread_running = false;
+            ctx.stop_signal = false;
+        }).detach();
+    }
 }
 
 void visualize(const MoleculeDynamic& dynamic) {

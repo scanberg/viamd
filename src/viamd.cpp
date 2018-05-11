@@ -21,6 +21,7 @@
 #include <gfx/postprocessing_utils.h>
 
 #include <stdio.h>
+#include <thread>
 
 //#define VIAMD_RELEASE 1
 

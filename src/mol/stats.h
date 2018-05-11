@@ -94,6 +94,12 @@ void shutdown();
 // Kick of in a separate thread whenever the data should to be modified.
 void update(const MoleculeDynamic& dynamic);
 void update(const MoleculeDynamic& dynamic, volatile Range* frame_range);
+void update(const MoleculeDynamic& dynamic, Range frame_filter);
+
+// Sync functionality
+bool  thread_running();
+void  send_stop_signal();
+float fraction_done();
 
 //bool compute_stats(const MoleculeDynamic& dynamic);
 void visualize(const MoleculeDynamic& dynamic);
