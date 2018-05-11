@@ -67,7 +67,8 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
     }
 
     // Process clicking on the slider
-    bool value_changed = false;
+    const float old_v1 = *v1;
+    const float old_v2 = *v2;
     if (g.ActiveId == id) {
         const float mouse_abs_pos = is_horizontal ? g.IO.MousePos.x : g.IO.MousePos.y;
 
@@ -136,11 +137,9 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
         } else if (g.IO.MouseDown[0]) {
 			if (state.min_grab) {
 				*v1 = compute_val();
-				value_changed = true;
 			}
 			else if (state.max_grab) {
 				*v2 = compute_val();
-				value_changed = true;
 			}
 			else if (state.range_grab) {
 				float val = compute_val();
@@ -153,8 +152,6 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
 
 				if (*v1 == v_min) *v2 = *v1 + v_diff;
 				if (*v2 == v_max) *v1 = *v2 - v_diff;
-
-				value_changed = true;
 			}
 			if (*v2 < *v1) {
 				float tmp = *v1;
@@ -222,7 +219,7 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
     window->DrawList->AddRectFilled(connector.Min, connector.Max, GetColorU32(state.range_grab ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab),
                                     style.GrabRounding);
 
-    return value_changed;
+    return *v1 != old_v1 || *v2 != old_v2;
 }
 
 // ~95% common code with ImGui::SliderFloat

@@ -101,3 +101,5 @@ using glm::mat3x4;
 using glm::mat4x2;
 using glm::mat4x3;
 using glm::mat4x4;
+
+typedef vec2 Range;

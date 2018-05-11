@@ -72,6 +72,11 @@ inline vec4& vec_cast(ImVec4& v) { return *(vec4*)(&v); }
 inline ImVec2& vec_cast(vec2& v) { return *(ImVec2*)(&v); }
 inline vec2& vec_cast(ImVec2& v) { return *(vec2*)(&v); }
 
+inline ImVec2 operator+(const ImVec2& a, const ImVec2& b) { return {a.x + b.x, a.y + b.y}; }
+inline ImVec2 operator-(const ImVec2& a, const ImVec2& b) { return {a.x - b.x, a.y - b.y}; }
+inline ImVec2 operator*(const ImVec2& a, const ImVec2& b) { return {a.x * b.x, a.y * b.y}; }
+inline ImVec2 operator/(const ImVec2& a, const ImVec2& b) { return {a.x / b.x, a.y / b.y}; }
+
 enum PlaybackInterpolationMode { NEAREST, LINEAR, LINEAR_PERIODIC, CUBIC, CUBIC_PERIODIC };
 
 struct MainFramebuffer {
@@ -430,12 +435,6 @@ int main(int, char**) {
             data.time += data.ctx.timing.dt * data.frames_per_second;
         }
 
-        if (data.time_filter.dynamic_window) {
-            float max_frame = data.mol_data.dynamic.trajectory ? data.mol_data.dynamic.trajectory.num_frames : 1.f;
-            data.time_filter.range.x = math::max((float)data.time - data.time_filter.window_extent * 0.5f, 0.f);
-            data.time_filter.range.y = math::min((float)data.time + data.time_filter.window_extent * 0.5f, max_frame);
-        }
-
         {
             static float64 prev_time = data.time;
             if (data.time != prev_time) {
@@ -444,10 +443,21 @@ int main(int, char**) {
             prev_time = data.time;
         }
 
+        if (data.time_filter.dynamic_window) {
+            float max_frame = data.mol_data.dynamic.trajectory ? data.mol_data.dynamic.trajectory.num_frames : 1.f;
+            data.time_filter.range.x = math::max((float)data.time - data.time_filter.window_extent * 0.5f, 0.f);
+            data.time_filter.range.y = math::min((float)data.time + data.time_filter.window_extent * 0.5f, max_frame);
+        }
+
         if (data.mol_data.dynamic.trajectory && time_changed) {
             int last_frame = data.mol_data.dynamic.trajectory.num_frames - 1;
             data.time = math::clamp(data.time, 0.0, float64(last_frame));
             if (data.time == float64(last_frame)) data.is_playing = false;
+
+            if (data.time_filter.dynamic_window) {
+                stats::set_all_property_flags(false, false, true);
+                compute_statistics_async(&data);
+            }
 
             int frame = (int)data.time;
             int prev_frame_2 = math::max(0, frame - 1);
@@ -820,15 +830,13 @@ static void draw_representations_window(ApplicationData* data) {
     ImGui::Spacing();
     ImGui::Separator();
     for (int i = 0; i < data->representations.data.count; i++) {
-        auto& rep = data->representations.data[i];
-
         bool recompute_colors = false;
-        ImGui::PushID(i);
-
+        auto& rep = data->representations.data[i];
         const float item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
-
         StringBuffer<128> name;
         snprintf(name.buffer, name.MAX_LENGTH, "%s###ID", rep.name.buffer);
+
+        ImGui::PushID(i);
         if (ImGui::CollapsingHeader(name.buffer)) {
             ImGui::Checkbox("enabled", &rep.enabled);
             ImGui::SameLine();
@@ -880,6 +888,26 @@ static void draw_representations_window(ApplicationData* data) {
             ImGui::Separator();
         }
 
+        // ENABLE DRAGGING TO REORDER ELEMENTS
+        // THIS IS BROKEN BECAUSE OF THE SPACE BETWEEN ELEMENTS
+
+        /*
+if (ImGui::GetActiveID() == ImGui::GetID(name.buffer) && !ImGui::IsItemHovered()) {
+    float drag_dy = ImGui::GetMouseDragDelta(0).y;
+    if (drag_dy < 0.0f && i > 0) {
+        // Swap
+        Representation tmp = data->representations.data[i];
+        data->representations.data[i] = data->representations.data[i - 1];
+        data->representations.data[i - 1] = tmp;
+        ImGui::ResetMouseDragDelta();
+    } else if (drag_dy > 0.0f && i < data->representations.data.count - 1) {
+        Representation tmp = data->representations.data[i];
+        data->representations.data[i] = data->representations.data[i + 1];
+        data->representations.data[i + 1] = tmp;
+        ImGui::ResetMouseDragDelta();
+    }
+}
+        */
         ImGui::PopID();
 
         if (recompute_colors) {
@@ -1097,13 +1125,25 @@ static void draw_timeline_window(ApplicationData* data) {
         auto old_range = data->time_filter.range;
 
         ImGui::PushItemWidth(ImGui::GetWindowContentRegionWidth() * zoom);
-        ImGui::RangeSliderFloat("###selection_range", &data->time_filter.range.x, &data->time_filter.range.y, 0.f, (float)max_frame);
+        if (ImGui::RangeSliderFloat("###selection_range", &data->time_filter.range.x, &data->time_filter.range.y, 0.f, (float)max_frame)) {
+            if (data->time_filter.dynamic_window) {
+                if (data->time_filter.range.x != old_range.x && data->time_filter.range.y != old_range.y) {
+                    data->time = math::lerp(data->time_filter.range.x, data->time_filter.range.y, 0.5f);
+                } else {
+                    if (data->time_filter.range.x != old_range.x) {
+                        data->time_filter.window_extent = 2.f * math::abs(data->time - data->time_filter.range.x);
+                    } else if (data->time_filter.range.y != old_range.y) {
+                        data->time_filter.window_extent = 2.f * math::abs(data->time - data->time_filter.range.y);
+                    }
+                }
+            }
+        }
 
         for (int i = 0; i < stats::get_property_count(); i++) {
             auto prop = stats::get_property(i);
             Array<float> prop_data = prop->data;
             CString prop_name = prop->name;
-            stats::Range prop_range = prop->data_range;
+            Range prop_range = prop->data_range;
             if (!prop_data) continue;
             float pad = math::max((prop_range.y - prop_range.x) * 0.1f, 1.f);
             vec2 display_range = prop_range + vec2(-pad, pad);
@@ -1120,10 +1160,10 @@ static void draw_timeline_window(ApplicationData* data) {
         }
         ImGui::PopItemWidth();
 
-		if (old_range != data->time_filter.range) {
+        if (data->time_filter.range != old_range) {
             stats::set_all_property_flags(false, false, true);
             compute_statistics_async(data);
-		}
+        }
 
         if (ImGui::IsWindowHovered() && ImGui::GetIO().MouseWheel != 0.f && ImGui::GetIO().KeyCtrl) {
             constexpr float ZOOM_SCL = 0.24f;
@@ -1142,23 +1182,59 @@ static void draw_timeline_window(ApplicationData* data) {
 
 static void draw_distribution_window(ApplicationData* data) {
     ImGui::Begin("Distributions", &data->statistics.show_distribution_window, ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window->SkipItems) return;
+
+    ImGuiContext& ctx = *GImGui;
+    const ImGuiStyle& style = ctx.Style;
+    ImGui::PushItemWidth(-1);
+    ImVec2 frame_size{ImGui::CalcItemWidth(), 100.f};
+
+	constexpr uint32 FULL_COLOR = 0x77cc9e66;
+    constexpr uint32 FILT_COLOR = 0x5533ffff;
 
     for (int i = 0; i < stats::get_property_count(); i++) {
         stats::Property* prop = stats::get_property(i);
-        ImGui::PushItemWidth(-1);
         ImGui::PushID(i);
-        if (ImGui::PlotHistogram(prop->name, ImVec2(0, 100), prop->filt_histogram.bins.data, (int32)prop->filt_histogram.bins.count, prop->periodic,
-                                 vec_cast(prop->filt_histogram.value_range), &vec_cast(prop->filter))) {
+
+        const ImRect frame_bb(window->DC.CursorPos, window->DC.CursorPos + ImVec2(frame_size.x, frame_size.y));
+        const ImRect inner_bb(frame_bb.Min + style.FramePadding, frame_bb.Max - style.FramePadding);
+        const ImRect total_bb(frame_bb.Min, frame_bb.Max);
+        ImGui::ItemSize(total_bb, style.FramePadding.y);
+        if (!ImGui::ItemAdd(total_bb, NULL)) return;
+        ImGui::RenderFrame(frame_bb.Min, frame_bb.Max, ImGui::GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
+
+        //if (ImGui::PlotHistogram(prop->name, ImVec2(0, 100), prop->filt_histogram.bins.data, (int32)prop->filt_histogram.bins.count, prop->periodic,
+        //                         vec_cast(prop->filt_histogram.value_range), &vec_cast(prop->filter))) {
+        //    prop->filt_hist_dirty = true;
+        //    compute_statistics_async(data);
+        //}
+        const float max_val = math::max(prop->filt_histogram.bin_range.y, prop->filt_histogram.bin_range.y);
+        ImGui::DrawHistogram(inner_bb.Min, inner_bb.Max, prop->full_histogram.bins.data, prop->full_histogram.bins.count, max_val, FULL_COLOR);
+        ImGui::DrawHistogram(inner_bb.Min, inner_bb.Max, prop->filt_histogram.bins.data, prop->filt_histogram.bins.count, max_val, FILT_COLOR);
+
+		if (ImGui::IsItemHovered()) {
+            window->DrawList->AddLine(ImVec2(ctx.IO.MousePos.x, inner_bb.Min.y), ImVec2(ctx.IO.MousePos.x, inner_bb.Max.y), 0xffffffff);
+            float t = (ctx.IO.MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
+            int32 count = prop->full_histogram.bins.count;
+            int32 idx = ImClamp((int32)(t * (count - 1)), 0, count - 1);
+            float full_val = prop->full_histogram.bins.data[idx];
+            float filt_val = prop->filt_histogram.bins.data[idx];
+			ImVec2 val_range = vec_cast(prop->filt_histogram.value_range);
+            ImGui::BeginTooltip();
+            ImGui::Text("%.3f:", ImLerp(val_range.x, val_range.y, t));
+            ImGui::TextColored(ImColor(FULL_COLOR), "%g", full_val * 100.f);
+            ImGui::TextColored(ImColor(FILT_COLOR), "%g", filt_val * 100.f);
+            ImGui::EndTooltip();
+        }
+
+        if (ImGui::RangeSliderFloat("filter", &prop->filter.x, &prop->filter.y, prop->data_range.x, prop->data_range.y)) {
             prop->filt_hist_dirty = true;
             compute_statistics_async(data);
         }
-        if (ImGui::RangeSliderFloat("filter", &prop->filter.x, &prop->filter.y, prop->data_range.x, prop->data_range.y)) {
-			prop->filt_hist_dirty = true;
-            compute_statistics_async(data);
-		}
         ImGui::PopID();
-        ImGui::PopItemWidth();
     }
+    ImGui::PopItemWidth();
     ImGui::End();
 }
 
@@ -1710,9 +1786,11 @@ static void compute_statistics_async(ApplicationData* data) {
             while (data->async.statistics.query_update) {
                 data->async.statistics.query_update = false;
                 data->async.statistics.fraction = 0.5f;
-                // stats::clear_instances();
-                // stats::clear_property_data();
-                stats::update(data->mol_data.dynamic, &data->time_filter.enabled, &data->time_filter.range);
+                if (data->time_filter.enabled) {
+                    stats::update(data->mol_data.dynamic, &data->time_filter.range);
+                } else {
+                    stats::update(data->mol_data.dynamic);
+                }
                 if (data->async.statistics.sync.stop_signal) break;
             }
             data->async.statistics.fraction = 1.f;

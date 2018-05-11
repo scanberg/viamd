@@ -14,6 +14,7 @@
 #include <tinyexpr.h>
 
 #define HASH(x) (hash::crc64(x))
+constexpr int32 NUM_BINS = 64;
 
 namespace stats {
 
@@ -146,24 +147,22 @@ void compute_histogram(Histogram* hist, Array<const float> data) {
     ASSERT(hist);
     const int32 num_bins = (int32)hist->bins.count;
     const float scl = num_bins / (hist->value_range.y - hist->value_range.x);
-    hist->bin_range = {0, 0};
     for (auto v : data) {
         int32 bin_idx = math::clamp((int32)((v - hist->value_range.x) * scl), 0, num_bins - 1);
         hist->bins[bin_idx]++;
-        hist->bin_range.y = math::max(hist->bin_range.y, hist->bins[bin_idx]);
     }
+    hist->num_samples += (int32)data.count;
 }
 
 void compute_histogram(Histogram* hist, Array<const float> data, Range filter) {
     ASSERT(hist);
     const int32 num_bins = (int32)hist->bins.count;
     const float scl = num_bins / (hist->value_range.y - hist->value_range.x);
-    hist->bin_range = {0, 0};
     for (auto v : data) {
         if (filter.x <= v && v <= filter.y) {
             int32 bin_idx = math::clamp((int32)((v - hist->value_range.x) * scl), 0, num_bins - 1);
             hist->bins[bin_idx]++;
-            hist->bin_range.y = math::max(hist->bin_range.y, hist->bins[bin_idx]);
+            hist->num_samples++;
         }
     }
 }
@@ -172,6 +171,17 @@ void clear_histogram(Histogram* hist) {
     ASSERT(hist);
     if (hist->bins.data) {
         memset(hist->bins.data, 0, hist->bins.count * sizeof(float));
+    }
+    hist->bin_range = {0, 0};
+    hist->num_samples = 0;
+}
+
+void normalize_histogram(Histogram* hist) {
+    hist->bin_range = {0, 0};
+    const float bin_scl = 1.f / (float)hist->num_samples;
+    for (auto& b : hist->bins) {
+        b *= bin_scl;
+        hist->bin_range.y = math::max(hist->bin_range.y, b);
     }
 }
 
@@ -216,144 +226,6 @@ void set_error_message(const char* fmt, ...) {
         LOG_ERROR("Error when evaluating property '%s': %s", ctx.current_property->name.cstr(), buf);
     }
 }
-
-// Parse arithmetic expression
-
-/*
-// Operations
-namespace op {
-        void negate(Array<float> data) {
-                for (auto& v : data) v = -v;
-        }
-
-        void add(Array<float> dst, Array<const float> val) {
-                ASSERT(dst.count == val.count);
-                for (int64 i = 0; i < dst.count; i++) {
-                        dst[i] += val[i];
-                }
-        }
-
-        void sub(Array<float> dst, Array<const float> val) {
-                ASSERT(dst.count == val.count);
-                for (int64 i = 0; i < dst.count; i++) {
-                        dst[i] -= val[i];
-                }
-        }
-
-        void mul(Array<float> dst, Array<const float> val) {
-                ASSERT(dst.count == val.count);
-                for (int64 i = 0; i < dst.count; i++) {
-                        dst[i] *= val[i];
-                }
-        }
-
-        void div(Array<float> dst, Array<const float> val) {
-                ASSERT(dst.count == val.count);
-                for (int64 i = 0; i < dst.count; i++) {
-                        dst[i] /= val[i];
-                }
-        }
-
-        typedef void(*ExprFunc)(Array<float> dst, Array<const float> val);
-
-        void abs(Array<float> dst, Array<const float>) {
-                for (auto& v : dst) {
-                        v = math::abs(v);
-                }
-        }
-
-        void pi(Array<float> dst, Array<const float>) {
-
-        }
-}
-
-
-// parsing
-char peek(CString expr) { return expr[0]; }
-
-char get(CString* expr) { return *(expr->data)++; }
-
-DynamicArray<float> number(CString* expr, int32 count) {
-    const char* beg = expr->beg();
-    const char* end = beg + 1;
-    while (end != expr->end() && (isdigit(*end) || *end == '.')) end++;
-    CString float_expr(beg, end);
-        *expr = { end, expr->end() };
-
-    auto res = to_float(float_expr);
-    if (!res) {
-        set_error_message("Could not parse number given in expression: '%s'", make_tmp_str(float_expr).cstr());
-    }
-    return DynamicArray<float>(count, res.value);
-}
-
-DynamicArray<float> variable(CString* expr, Array<Property*> properties, int32 count) {
-    const char* beg = expr->beg();
-    const char* end = beg + 1;
-    while (end != expr->end() && (isalpha(*end) || isdigit(*end))) end++;
-    CString prop_name(beg, end);
-        *expr = { end, expr->end() };
-
-    for (auto p : properties) {
-                if (compare(prop_name, p->name)) {
-                        return p->data;
-                }
-    }
-        set_error_message("Could not find property: '%s'", make_tmp_str(prop_name).cstr());
-    return DynamicArray<float>(count, 0);
-}
-
-DynamicArray<float> expression(CString* expr, Array<Property*> properties, int32 count);
-
-
-
-DynamicArray<float> factor(CString* expr, Array<Property*> properties, int32 count) {
-        struct Command {
-                const char* cmd = "";
-                ExprFunc func = nullptr;
-        };
-
-        const Command cmd_list[] = { {"abs", abs}, {"PI", pi} };
-
-    if (isdigit(peek(*expr)))
-        return number(expr, count);
-    else if (isalpha(peek(*expr)))
-        return variable(expr, properties, count);
-    else if (peek(*expr) == '(') {
-        get(expr);  // '('
-        auto result = expression(expr, properties, count);
-        get(expr);  // ')'
-        return result;
-    } else if (peek(*expr) == '-') {
-        get(expr);
-        auto result = factor(expr, properties, count);
-        negate(result);
-        return result;
-    }
-        set_error_message("Some thing went wrong when parsing the expression");
-        return DynamicArray<float>(count, 0.f);
-}
-
-DynamicArray<float> term(CString* expr, Array<Property*> properties, int32 count) {
-    auto result = factor(expr, properties, count);
-    while (peek(*expr) == '*' || peek(*expr) == '/')
-        if (get(expr) == '*')
-            mul(result, factor(expr, properties, count));
-        else
-            div(result, factor(expr, properties, count));
-    return result;
-}
-
-DynamicArray<float> expression(CString* expr, Array<Property*> properties, int32 count) {
-    auto result = term(expr, properties, count);
-    while (peek(*expr) == '+' || peek(*expr) == '-')
-        if (get(expr) == '+')
-            add(result, term(expr, properties, count));
-        else
-            sub(result, term(expr, properties, count));
-    return result;
-}
-*/
 
 bool structure_match_resname(StructureData* data, const Array<CString> args, const MoleculeStructure& molecule) {
     ASSERT(data);
@@ -1228,12 +1100,17 @@ static void compute_property_data(Property* prop, const MoleculeDynamic& dynamic
                 continue;
             }
 
+            Range pre_range = prop.data_range;
             if (!func(&prop, args, dynamic)) {
                 prop.valid = false;
                 continue;
             }
 
-			prop.full_histogram.value_range = prop.data_range;
+            if (pre_range != prop.data_range) {
+                prop.filter = prop.data_range;
+			}
+
+            prop.full_histogram.value_range = prop.data_range;
             prop.filt_histogram.value_range = prop.data_range;
             prop.full_hist_dirty = true;
             prop.filt_hist_dirty = true;
@@ -1243,7 +1120,15 @@ static void compute_property_data(Property* prop, const MoleculeDynamic& dynamic
     ctx.current_property = nullptr;
 }
 
-void update(const MoleculeDynamic& dynamic, volatile bool* use_frame_range, volatile Range* frame_range) {
+void update(const MoleculeDynamic& dynamic) {
+    Range range(0, dynamic.trajectory.num_frames);
+    update(dynamic, &range);
+}
+
+void update(const MoleculeDynamic& dynamic, volatile Range* frame_range) {
+    Histogram tmp_hist;
+    init_histogram(&tmp_hist, NUM_BINS);
+
     for (auto p : ctx.properties) {
         if (p->data_dirty) {
             p->data_dirty = false;
@@ -1260,29 +1145,33 @@ void update(const MoleculeDynamic& dynamic, volatile bool* use_frame_range, vola
             } else {
                 compute_histogram(&p->full_histogram, p->data);
             }
-		}
+            normalize_histogram(&p->full_histogram);
+        }
 
-		if (p->filt_hist_dirty) {
+        if (p->filt_hist_dirty) {
             p->filt_hist_dirty = false;
-            clear_histogram(&p->filt_histogram);
+            clear_histogram(&tmp_hist);
+            tmp_hist.value_range = p->filt_histogram.value_range;
 
-			int32 beg_idx = 0;
-            int32 end_idx = (int32)p->data.count;
-            if (use_frame_range) {
-                beg_idx = math::clamp((int32)frame_range->x, 0, (int32)p->data.count);
-                end_idx = math::clamp((int32)frame_range->y, 0, (int32)p->data.count);
-			}
+            int32 beg_idx = math::clamp((int32)frame_range->x, 0, (int32)p->data.count);
+            int32 end_idx = math::clamp((int32)frame_range->y, 0, (int32)p->data.count);
 
-			// Since the data is probably showing, perform the operations on tmp data then copy the results
+            // Since the data is probably showing, perform the operations on tmp data then copy the results
             if (p->instance_data) {
                 for (const auto& inst : p->instance_data) {
-                    compute_histogram(&p->filt_histogram, inst.data.sub_array(beg_idx, end_idx - beg_idx), p->filter);
+                    compute_histogram(&tmp_hist, inst.data.sub_array(beg_idx, end_idx - beg_idx), p->filter);
                 }
             } else {
-                compute_histogram(&p->filt_histogram, p->data.sub_array(beg_idx, end_idx - beg_idx), p->filter);
+                compute_histogram(&tmp_hist, p->data.sub_array(beg_idx, end_idx - beg_idx), p->filter);
             }
-		}
+            normalize_histogram(&tmp_hist);
+            p->filt_histogram.bin_range = tmp_hist.bin_range;
+            p->filt_histogram.num_samples = tmp_hist.num_samples;
+            memcpy(p->filt_histogram.bins.data, tmp_hist.bins.data, p->filt_histogram.bins.size_in_bytes());
+        }
     }
+
+    free_histogram(&tmp_hist);
 }
 
 void visualize(const MoleculeDynamic& dynamic) {
@@ -1296,56 +1185,7 @@ void visualize(const MoleculeDynamic& dynamic) {
     }
 }
 
-
-
-/*
-void compute_filtered_histogram(Property* prop) {
-    ASSERT(prop);
-    for (auto& p : ctx.properties) {
-        if (p == prop) {
-            clear_histogram(&p->full_histogram);
-
-            if (p->instance_data) {
-                for (const auto& inst : p->instance_data) {
-                    compute_histogram(&p->full_histogram, inst.data, p->filter);
-                }
-            } else {
-                compute_histogram(&p->full_histogram, p->data, p->filter);
-            }
-        }
-    }
-}
-
-void compute_histogram(Property* prop, Range frame_range) {
-    ASSERT(prop);
-    for (auto& p : ctx.properties) {
-        if (p == prop) {
-            clear_histogram(&p->full_histogram);
-
-            if (frame_range.x == frame_range.y && frame_range.x == 0.f) {
-                frame_range.x = 0;
-                frame_range.y = p->data.count;
-            }
-
-            int32 beg_idx = math::clamp((int32)frame_range.x, 0, (int32)p->data.count);
-            int32 end_idx = math::clamp((int32)frame_range.y, 0, (int32)p->data.count);
-            int32 offset = beg_idx;
-            int32 count = end_idx - beg_idx;
-
-            if (p->instance_data) {
-                for (const auto& inst : p->instance_data) {
-                    compute_histogram(&p->full_histogram, inst.data.sub_array(offset, count), p->filter);
-                }
-            } else {
-                compute_histogram(&p->full_histogram, p->data.sub_array(offset, count), p->filter);
-            }
-        }
-    }
-}
-*/
-
 Property* create_property(CString name, CString args) {
-    constexpr int32 NUM_BINS = 64;
 
     Property* prop = (Property*)MALLOC(sizeof(Property));
     new (prop) Property();

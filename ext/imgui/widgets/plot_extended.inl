@@ -708,6 +708,27 @@ IMGUI_API void EndPlot() {
 	ps.id = 0;
 }
 
+IMGUI_API void DrawHistogram(ImVec2 frame_min, ImVec2 frame_max, const float* values, int count, float max_val, ImU32 color) {
+    if (max_val == 0.f) {
+		for (int i = 0; i < count; i++) {
+			max_val = ImMax(max_val, values[i]);
+		}
+		if (max_val == 0.f) return;
+    }
+
+    PushClipRect(frame_min, frame_max, true);
+	const float x_scl = 1.f / (float)(count - 1);
+	const float y_scl = 1.f / max_val;
+    for (int i = 1; i < count; i++) {
+        ImVec2 pos0 = ImLerp(frame_min, frame_max, ImVec2((i - 1) * x_scl, 1.f));
+        ImVec2 pos1 = ImLerp(frame_min, frame_max, ImVec2(i * x_scl, 1.f - values[i - 1] * y_scl));
+
+        if (pos1.x >= pos0.x + 2.0f) pos1.x -= 1.0f;
+        GetCurrentWindow()->DrawList->AddRectFilled(pos0, pos1, color);
+    }
+    PopClipRect();
+}
+
 IMGUI_API bool PlotHistogram(const char* label, ImVec2 frame_size, const float* values, int count, bool periodic, ImVec2 value_range, ImVec2* selection_range) {
 	ImGuiWindow* window = GetCurrentWindow();
 	if (window->SkipItems) return false;

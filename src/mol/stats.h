@@ -11,8 +11,6 @@ namespace stats {
 typedef uint64 ID;
 constexpr ID INVALID_ID = 0;
 
-typedef vec2 Range;
-
 struct Histogram {
     Array<float> bins = {};
     Range value_range = {};
@@ -83,19 +81,19 @@ typedef bool (*PropertyVisualizeFunc)(const Property& prop, const MoleculeDynami
 void init_histogram(Histogram* hist, int32 num_bins);
 void free_histogram(Histogram* hist);
 
-// Histogram compute_histogram(int32 num_bins, Array<float> data);
-// Histogram compute_histogram(int32 num_bins, Array<float> data, float min_val, float max_val);
-
-// void compute_histogram(Histogram* hist, Array<float> data);
 void compute_histogram(Histogram* hist, Array<const float> data);
 void compute_histogram(Histogram* hist, Array<const float> data, Range filter);
+
 void clear_histogram(Histogram* hist);
+void normalize_histogram(Histogram* hist);
 
 // STATS
 void initialize();
 void shutdown();
-// Kick of this in a separate thread whenever the data should to be modified.
-void update(const MoleculeDynamic& dynamic, volatile bool* use_frame_range, volatile Range* frame_range);
+
+// Kick of in a separate thread whenever the data should to be modified.
+void update(const MoleculeDynamic& dynamic);
+void update(const MoleculeDynamic& dynamic, volatile Range* frame_range);
 
 //bool compute_stats(const MoleculeDynamic& dynamic);
 void visualize(const MoleculeDynamic& dynamic);
