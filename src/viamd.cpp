@@ -1184,18 +1184,14 @@ static void draw_timeline_window(ApplicationData* data) {
 static void draw_distribution_window(ApplicationData* data) {
     ImGui::Begin("Distributions", &data->statistics.show_distribution_window, ImGuiWindowFlags_NoFocusOnAppearing);
     ImGuiWindow* window = ImGui::GetCurrentWindow();
-	if (window->SkipItems) {
-		ImGui::End();
-		return;
-	}
-
-    ImGuiContext& ctx = *GImGui;
-    const ImGuiStyle& style = ctx.Style;
+    const ImGuiStyle& style = ImGui::GetStyle();
     ImGui::PushItemWidth(-1);
     ImVec2 frame_size{ImGui::CalcItemWidth(), 100.f};
 
-	constexpr uint32 FULL_COLOR = 0x77cc9e66;
-    constexpr uint32 FILT_COLOR = 0x5533ffff;
+	constexpr uint32 FULL_BAR_COLOR = 0x77cc9e66;
+    constexpr uint32 FULL_TXT_COLOR = 0xffcc9e66;
+    constexpr uint32 FILT_BAR_COLOR = 0x5533ffff;
+    constexpr uint32 FILT_TXT_COLOR = 0xff33ffff;
 
     for (int i = 0; i < stats::get_property_count(); i++) {
         stats::Property* prop = stats::get_property(i);
@@ -1205,36 +1201,31 @@ static void draw_distribution_window(ApplicationData* data) {
         const ImRect inner_bb(frame_bb.Min + style.FramePadding, frame_bb.Max - style.FramePadding);
         const ImRect total_bb(frame_bb.Min, frame_bb.Max);
         ImGui::ItemSize(total_bb, style.FramePadding.y);
-        if (!ImGui::ItemAdd(total_bb, NULL)) return;
-        ImGui::RenderFrame(frame_bb.Min, frame_bb.Max, ImGui::GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
+        if (ImGui::ItemAdd(total_bb, NULL)) {
+            ImGui::RenderFrame(frame_bb.Min, frame_bb.Max, ImGui::GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
 
-        //if (ImGui::PlotHistogram(prop->name, ImVec2(0, 100), prop->filt_histogram.bins.data, (int32)prop->filt_histogram.bins.count, prop->periodic,
-        //                         vec_cast(prop->filt_histogram.value_range), &vec_cast(prop->filter))) {
-        //    prop->filt_hist_dirty = true;
-        //    compute_statistics_async(data);
-        //}
-        const float max_val = math::max(prop->filt_histogram.bin_range.y, prop->filt_histogram.bin_range.y);
-        ImGui::DrawHistogram(inner_bb.Min, inner_bb.Max, prop->full_histogram.bins.data, (int32)prop->full_histogram.bins.count, max_val, FULL_COLOR);
-        ImGui::DrawHistogram(inner_bb.Min, inner_bb.Max, prop->filt_histogram.bins.data, (int32)prop->filt_histogram.bins.count, max_val, FILT_COLOR);
+            const float max_val = math::max(prop->filt_histogram.bin_range.y, prop->filt_histogram.bin_range.y);
+            ImGui::DrawHistogram(inner_bb.Min, inner_bb.Max, prop->full_histogram.bins.data, (int32)prop->full_histogram.bins.count, max_val, FULL_BAR_COLOR);
+            ImGui::DrawHistogram(inner_bb.Min, inner_bb.Max, prop->filt_histogram.bins.data, (int32)prop->filt_histogram.bins.count, max_val, FILT_BAR_COLOR);
 
-		if (ImGui::IsItemHovered()) {
-            window->DrawList->AddLine(ImVec2(ctx.IO.MousePos.x, inner_bb.Min.y), ImVec2(ctx.IO.MousePos.x, inner_bb.Max.y), 0xffffffff);
-            float t = (ctx.IO.MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
-            int32 count = (int32)prop->full_histogram.bins.count;
-            int32 idx = ImClamp((int32)(t * (count - 1)), 0, count - 1);
-            float full_val = prop->full_histogram.bins.data[idx];
-            float filt_val = prop->filt_histogram.bins.data[idx];
-			ImVec2 val_range = vec_cast(prop->filt_histogram.value_range);
-            ImGui::BeginTooltip();
-            ImGui::Text("%.3f:", ImLerp(val_range.x, val_range.y, t));
-            ImGui::TextColored(ImColor(FULL_COLOR), "%g", full_val * 100.f);
-            ImGui::TextColored(ImColor(FILT_COLOR), "%g", filt_val * 100.f);
-            ImGui::EndTooltip();
-        }
+            if (ImGui::IsItemHovered()) {
+                window->DrawList->AddLine(ImVec2(ImGui::GetIO().MousePos.x, inner_bb.Min.y), ImVec2(ImGui::GetIO().MousePos.x, inner_bb.Max.y), 0xffffffff);
+                float t = (ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
+                int32 count = (int32)prop->full_histogram.bins.count;
+                int32 idx = ImClamp((int32)(t * (count - 1)), 0, count - 1);
+                float full_val = prop->full_histogram.bins.data[idx];
+                float filt_val = prop->filt_histogram.bins.data[idx];
+                ImVec2 val_range = vec_cast(prop->filt_histogram.value_range);
+                ImGui::BeginTooltip();
+                ImGui::Text("%.3f:", ImLerp(val_range.x, val_range.y, t));
+                ImGui::TextColored(ImColor(FULL_TXT_COLOR), "%g", full_val * 100.f);
+                ImGui::TextColored(ImColor(FILT_TXT_COLOR), "%g", filt_val * 100.f);
+                ImGui::EndTooltip();
+            }
 
-        if (ImGui::RangeSliderFloat("filter", &prop->filter.x, &prop->filter.y, prop->data_range.x, prop->data_range.y)) {
-            prop->filt_hist_dirty = true;
-            //compute_statistics_async(data);
+            if (ImGui::RangeSliderFloat("##filter", &prop->filter.x, &prop->filter.y, prop->data_range.x, prop->data_range.y)) {
+                prop->filt_hist_dirty = true;
+            }
         }
         ImGui::PopID();
     }
@@ -1273,10 +1264,8 @@ static void draw_ramachandran_window(ApplicationData* data) {
 
     dl->ChannelsSplit(3);
     dl->ChannelsSetCurrent(0);
-    // ImGui::Image((ImTextureID)ramachandran::segmentation_tex, canvas_size);
     dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_segmentation_texture(), x0, x1);
     dl->ChannelsSetCurrent(1);
-    // ImGui::Image((ImTextureID)ramachandran::accumulation_tex, canvas_size);
     dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_accumulation_texture(), x0, x1);
     dl->ChannelsSetCurrent(2);
     constexpr float ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
