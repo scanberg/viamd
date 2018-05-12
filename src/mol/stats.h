@@ -5,6 +5,8 @@
 
 struct MoleculeDynamic;
 struct MoleculeStructure;
+struct MoleculeTrajectory;
+struct DensityVolume;
 
 namespace stats {
 
@@ -41,15 +43,15 @@ struct Property {
     StringBuffer<32> name{};
     StringBuffer<256> args{};
     StringBuffer<32> unit{};
-    StringBuffer<128> error_msg{};
+    StringBuffer<256> error_msg{};
 
     bool valid = false;
     bool periodic = false;
     bool visualize = false;
 
-    volatile bool data_dirty = false;
-    volatile bool full_hist_dirty = false;
-    volatile bool filt_hist_dirty = false;
+    bool data_dirty = false;
+    bool full_hist_dirty = false;
+    bool filt_hist_dirty = false;
 
     Range filter{0, 0};
     Range data_range{0, 0};
@@ -87,18 +89,20 @@ void compute_histogram(Histogram* hist, Array<const float> data, Range filter);
 void clear_histogram(Histogram* hist);
 void normalize_histogram(Histogram* hist);
 
+// DENSITY VOLUME
+void compute_density_volume(DensityVolume* vol, const MoleculeTrajectory& traj);
+
 // STATS
 void initialize();
 void shutdown();
 
 // Kick of in a separate thread whenever the data should to be modified.
-void update(const MoleculeDynamic& dynamic);
-void update(const MoleculeDynamic& dynamic, volatile Range* frame_range);
-void update(const MoleculeDynamic& dynamic, Range frame_filter);
+void async_update(const MoleculeDynamic& dynamic, Range frame_filter = { 0,0 });
 
-// Sync functionality
+// ASync functionality
 bool  thread_running();
 void  send_stop_signal();
+void  send_stop_signal_and_wait();
 float fraction_done();
 
 //bool compute_stats(const MoleculeDynamic& dynamic);

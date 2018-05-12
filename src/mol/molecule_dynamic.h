@@ -5,5 +5,5 @@
 
 struct MoleculeDynamic {
 	MoleculeStructure molecule{};
-	Trajectory trajectory{};
+	MoleculeTrajectory trajectory{};
 };

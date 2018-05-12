@@ -12,7 +12,7 @@ struct TrajectoryFrame {
     Array<vec3> atom_positions;
 };
 
-struct Trajectory {
+struct MoleculeTrajectory {
 	enum Type { NVT, NPT };
 
 	int32	num_atoms = 0;
@@ -43,7 +43,7 @@ struct Trajectory {
 };
 
 // Allocates space and initializes trajectory
-bool init_trajectory(Trajectory* traj, int32 num_atoms, int32 num_frames);
+bool init_trajectory(MoleculeTrajectory* traj, int32 num_atoms, int32 num_frames);
 
 // Frees memory allocated by trajectory
-void free_trajectory(Trajectory* traj);
+void free_trajectory(MoleculeTrajectory* traj);

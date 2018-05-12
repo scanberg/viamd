@@ -9,7 +9,7 @@
 
 // @TODO: Remove dependency of string
 
-bool load_and_allocate_trajectory(Trajectory* traj, CString path) {
+bool load_and_allocate_trajectory(MoleculeTrajectory* traj, CString path) {
 	ASSERT(traj);
 	free_trajectory(traj);
 
@@ -56,7 +56,7 @@ bool load_and_allocate_trajectory(Trajectory* traj, CString path) {
 	traj->num_atoms = num_atoms;
 	traj->num_frames = 0;
 	traj->total_simulation_time = 0;
-	traj->simulation_type = Trajectory::NVT;
+	traj->simulation_type = MoleculeTrajectory::NVT;
 	traj->path_to_file = allocate_string(path);
 	traj->file_handle = file_handle;
 
@@ -70,7 +70,7 @@ bool load_and_allocate_trajectory(Trajectory* traj, CString path) {
     return true;
 }
 
-bool read_trajectory_data(Trajectory* traj) {
+bool read_trajectory_data(MoleculeTrajectory* traj) {
 	ASSERT(traj);
 	auto num_frames = traj->frame_offsets.count;
 	XDRFILE* file = xdrfile_open(traj->path_to_file, "r");
@@ -102,7 +102,7 @@ bool read_trajectory_data(Trajectory* traj) {
 	return true;
 }
 
-bool read_next_trajectory_frame(Trajectory* traj) {
+bool read_next_trajectory_frame(MoleculeTrajectory* traj) {
 	ASSERT(traj);
 	if (!traj->file_handle) return false;
 	auto num_frames = traj->frame_offsets.count;
@@ -117,7 +117,7 @@ bool read_next_trajectory_frame(Trajectory* traj) {
 	frame->index = i;
 	int step;
 	float precision;
-	read_xtc((XDRFILE*)traj->file_handle, traj->num_atoms, &step, &frame->time, (float(*)[3]) & frame->box, (float(*)[3])pos_data, &precision);
+	read_xtc((XDRFILE*)traj->file_handle, traj->num_atoms, &step, &frame->time, (float(*)[3]) &frame->box, (float(*)[3])pos_data, &precision);
 	for (int j = 0; j < traj->num_atoms; j++) {
 		pos_data[j] *= 10.f;
 	}
@@ -127,12 +127,12 @@ bool read_next_trajectory_frame(Trajectory* traj) {
 	return true;
 }
 
-bool all_trajectory_frames_read(Trajectory* traj) {
+bool all_trajectory_frames_read(MoleculeTrajectory* traj) {
 	ASSERT(traj);
 	return (traj->num_frames == (int32)traj->frame_offsets.count);
 }
 
-bool close_file_handle(Trajectory* traj) {
+bool close_file_handle(MoleculeTrajectory* traj) {
 	ASSERT(traj);
 	if (traj->file_handle) {
 		xdrfile_close((XDRFILE*)traj->file_handle);
@@ -142,31 +142,31 @@ bool close_file_handle(Trajectory* traj) {
 	return false;
 }
 
-void copy_trajectory_frame(TrajectoryFrame* frame, const Trajectory& traj, int frame_index) {
+void copy_trajectory_frame(TrajectoryFrame* frame, const MoleculeTrajectory& traj, int frame_index) {
 	ASSERT(frame);
 	ASSERT(frame_index < traj.num_frames);
 	memcpy(frame, &traj.frame_buffer[frame_index], sizeof(TrajectoryFrame));
 }
 
-void copy_trajectory_positions(Array<vec3> dst_array, const Trajectory& traj, int frame_index) {
+void copy_trajectory_positions(Array<vec3> dst_array, const MoleculeTrajectory& traj, int frame_index) {
     ASSERT(dst_array);
     ASSERT(dst_array.count >= traj.num_atoms);
     ASSERT(frame_index < traj.num_frames);
     memcpy(dst_array.data, traj.frame_buffer.data[frame_index].atom_positions.data, traj.num_atoms * sizeof(vec3));
 }
 
-void read_trajectory_box_vectors(vec3 box_vectors[3], const Trajectory& traj, int frame_index) {
+void read_trajectory_box_vectors(vec3 box_vectors[3], const MoleculeTrajectory& traj, int frame_index) {
 	(void)box_vectors;
 	(void)traj;
 	(void)frame_index;
 }
 
-TrajectoryFrame get_trajectory_frame(const Trajectory& traj, int frame_index) {
+TrajectoryFrame get_trajectory_frame(const MoleculeTrajectory& traj, int frame_index) {
     ASSERT(frame_index < traj.num_frames);
     return traj.frame_buffer.data[frame_index];
 }
 
-Array<vec3> get_trajectory_positions(const Trajectory& traj, int frame_index) {
+Array<vec3> get_trajectory_positions(const MoleculeTrajectory& traj, int frame_index) {
     ASSERT(frame_index < traj.num_frames);
     return traj.frame_buffer.data[frame_index].atom_positions;
 }

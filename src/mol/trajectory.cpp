@@ -1,12 +1,12 @@
 #include "trajectory.h"
 
-bool init_trajectory(Trajectory* traj, int32 num_atoms, int32 num_frames) {
+bool init_trajectory(MoleculeTrajectory* traj, int32 num_atoms, int32 num_frames) {
 	ASSERT(traj);
 
 	traj->num_atoms = num_atoms;
 	traj->num_frames = num_frames;
 	traj->total_simulation_time = 0;
-	traj->simulation_type = Trajectory::NVT;
+	traj->simulation_type = MoleculeTrajectory::NVT;
 	traj->path_to_file = {};
 	traj->file_handle = nullptr;
 
@@ -20,7 +20,7 @@ bool init_trajectory(Trajectory* traj, int32 num_atoms, int32 num_frames) {
 	return true;
 }
 
-void free_trajectory(Trajectory* traj) {
+void free_trajectory(MoleculeTrajectory* traj) {
 	ASSERT(traj);
 
 	// @TODO: Fix this using condition variables (platform specific???)

@@ -6,6 +6,7 @@
 #include <mol/molecule_dynamic.h>
 #include <mol/molecule_utils.h>
 #include <mol/trajectory_utils.h>
+#include <mol/density.h>
 #include <gfx/immediate_draw_utils.h>
 
 #include <ctype.h>
@@ -42,7 +43,6 @@ struct StatisticsContext {
     volatile bool  thread_running = false;
     volatile bool  stop_signal = false;
     volatile float fraction_done = 0.f;
-    volatile Range frame_filter {0,0};
 };
 
 static StatisticsContext ctx;
@@ -108,8 +108,10 @@ void init_instance_data(Array<InstanceData>* instance_data, int32 num_instances,
 
 void free_instance_data(Array<InstanceData>* instance_data) {
     ASSERT(instance_data);
+	static int32 count = 0;
+	count++;
     if (instance_data->data) {
-        for (auto inst : *instance_data) {
+        for (auto& inst : *instance_data) {
             inst.~InstanceData();
         }
     }
@@ -189,6 +191,17 @@ void normalize_histogram(Histogram* hist) {
         b *= bin_scl;
         hist->bin_range.y = math::max(hist->bin_range.y, b);
     }
+}
+
+void compute_density_volume(DensityVolume* vol) {
+	ASSERT(vol);
+	if (vol->dim.x == 0 || vol->dim.y == 0 || vol->dim.z == 0) {
+		LOG_ERROR("One or more volume dimension are zero...");
+		return;
+	}
+
+	clear_volume(vol);
+	// for (auto p : ctx.properties) {}
 }
 
 static Range compute_range(Array<float> data) {
@@ -299,7 +312,7 @@ bool structure_match_residue(StructureData* data, const Array<CString> args, con
                 return false;
             }
             if (first == -1) first = 1;
-            if (last == -1) last = molecule.residues.count;
+            if (last == -1) last = (int32)molecule.residues.count;
         } else {
             auto id = to_int(arg);
             if (!id.success) {
@@ -309,7 +322,7 @@ bool structure_match_residue(StructureData* data, const Array<CString> args, con
             first = last = id;
         }
 
-        if (first < 1 || molecule.residues.count < last) {
+        if (first < 1 || (int32)molecule.residues.count < last) {
             set_error_message("Index for residue is out of bounds");
             return false;
         }
@@ -362,7 +375,7 @@ bool structure_match_chain(StructureData* data, const Array<CString> args, const
                 return false;
             }
             if (first == -1) first = 1;
-            if (last == -1) last = molecule.chains.count;
+            if (last == -1) last = (int32)molecule.chains.count;
         } else {
             auto id = to_int(arg);
             if (!id.success) {
@@ -372,7 +385,7 @@ bool structure_match_chain(StructureData* data, const Array<CString> args, const
             first = last = id;
         }
 
-        if (first < 1 || molecule.chains.count < last) {
+        if (first < 1 || (int32)molecule.chains.count < last) {
             set_error_message("Index for chain is out of bounds");
             return false;
         }
@@ -404,7 +417,7 @@ bool structure_match_atom(StructureData* data, const Array<CString> args, const 
                 return false;
             }
             if (first == -1) first = 1;
-            if (last == -1) last = molecule.chains.count;
+            if (last == -1) last = (int32)molecule.chains.count;
         } else {
             auto id = to_int(arg);
             if (!id.success) {
@@ -414,7 +427,7 @@ bool structure_match_atom(StructureData* data, const Array<CString> args, const 
             first = last = id;
         }
 
-        if (first < 1 || molecule.atom_positions.count < last) {
+        if (first < 1 || (int32)molecule.atom_positions.count < last) {
             set_error_message("Index for atom is out of bounds");
             return false;
         }
@@ -595,14 +608,17 @@ static bool compute_distance(Property* prop, const Array<CString> args, const Mo
     if (!sync_structure_data_length(prop->structure_data)) {
         return false;
     }
+
+	// @IMPORTANT! Use this instead of dynamic.trajectory.num_frames as that can be changing in a different thread!
+	const int32 num_frames = (int32)prop->data.count;
     const int32 structure_count = (int32)prop->structure_data[0].structures.count;
 
-    init_instance_data(&prop->instance_data, structure_count, dynamic.trajectory.num_frames);
+    init_instance_data(&prop->instance_data, structure_count, num_frames);
 
     const float32 scl = 1.f / (float32)structure_count;
     Array<const vec3> pos[2];
     vec3 com[2];
-    for (int32 i = 0; i < dynamic.trajectory.num_frames; i++) {
+    for (int32 i = 0; i < num_frames; i++) {
         float val = 0.f;
         for (int32 j = 0; j < structure_count; j++) {
             pos[0] = extract_positions(prop->structure_data[0].structures[j], get_trajectory_positions(dynamic.trajectory, i));
@@ -646,14 +662,17 @@ static bool compute_angle(Property* prop, const Array<CString> args, const Molec
     if (!sync_structure_data_length(prop->structure_data)) {
         return false;
     }
+
+	// @IMPORTANT! Use this instead of dynamic.trajectory.num_frames as that can be changing in a different thread!
+	const int32 num_frames = (int32)prop->data.count;
     const int32 structure_count = (int32)prop->structure_data[0].structures.count;
 
-    init_instance_data(&prop->instance_data, structure_count, dynamic.trajectory.num_frames);
+    init_instance_data(&prop->instance_data, structure_count, num_frames);
 
     const float32 scl = 1.f / (float32)structure_count;
     Array<const vec3> pos[3];
     vec3 com[3];
-    for (int32 i = 0; i < dynamic.trajectory.num_frames; i++) {
+    for (int32 i = 0; i < num_frames; i++) {
         float val = 0.f;
         for (int32 j = 0; j < structure_count; j++) {
             pos[0] = extract_positions(prop->structure_data[0].structures[j], get_trajectory_positions(dynamic.trajectory, i));
@@ -703,14 +722,17 @@ static bool compute_dihedral(Property* prop, const Array<CString> args, const Mo
     if (!sync_structure_data_length(prop->structure_data)) {
         return false;
     }
+
+	// @IMPORTANT! Use this instead of dynamic.trajectory.num_frames as that can be changing in a different thread!
+	const int32 num_frames = (int32)prop->data.count;
     const int32 structure_count = (int32)prop->structure_data[0].structures.count;
 
-    init_instance_data(&prop->instance_data, structure_count, dynamic.trajectory.num_frames);
+    init_instance_data(&prop->instance_data, structure_count, num_frames);
 
     const float32 scl = 1.f / (float32)structure_count;
     Array<const vec3> pos[4];
     vec3 com[4];
-    for (int32 i = 0; i < dynamic.trajectory.num_frames; i++) {
+    for (int32 i = 0; i < num_frames; i++) {
         float val = 0.f;
         for (int32 j = 0; j < structure_count; j++) {
             pos[0] = extract_positions(prop->structure_data[0].structures[j], get_trajectory_positions(dynamic.trajectory, i));
@@ -785,7 +807,7 @@ static bool compute_expression(Property* prop, const Array<CString> args, const 
     }
 
     int err;
-    te_expr* expr = te_compile(expr_str.cstr(), vars.data, vars.count, &err);
+    te_expr* expr = te_compile(expr_str.cstr(), vars.data, (int32)vars.count, &err);
 
     if (expr) {
         int32 max_instance_count = 0;
@@ -1051,34 +1073,33 @@ static void compute_property_data(Property* prop, const MoleculeDynamic& dynamic
     ASSERT(prop);
     int32 num_frames = dynamic.trajectory.num_frames;
 
-    for (auto& p : ctx.properties) {
-        ctx.current_property = p;
+    for (auto p : ctx.properties) {
         if (p == prop) {
-            auto& prop = *p;
+            //auto& prop = *p;
             ctx.current_property = p;
-            prop.error_msg = "";
-            if (prop.data.count != num_frames) {
-                prop.data.resize(num_frames);
+            prop->error_msg = "";
+            if (prop->data.count != num_frames) {
+                prop->data.resize(num_frames);
             }
-            prop.data.set_mem_to_zero();
-            clear_histogram(&prop.full_histogram);
-            clear_histogram(&prop.filt_histogram);
+            prop->data.set_mem_to_zero();
+            clear_histogram(&prop->full_histogram);
+            clear_histogram(&prop->filt_histogram);
 
-            if (!balanced_parentheses(prop.args)) {
-                snprintf(prop.error_msg.beg(), prop.error_msg.MAX_LENGTH, "Unbalanced parantheses!");
-                prop.valid = false;
+            if (!balanced_parentheses(prop->args)) {
+                snprintf(prop->error_msg.beg(), prop->error_msg.MAX_LENGTH, "Unbalanced parantheses!");
+                prop->valid = false;
                 continue;
             }
 
             DynamicArray<CString> args;
 
             // Extract big argument chunks
-            const char* beg = prop.args.beg();
-            const char* end = prop.args.beg();
+            const char* beg = prop->args.beg();
+            const char* end = prop->args.beg();
             int count = 0;
 
             // Use space separation unless we are inside a parenthesis
-            while (end != prop.args.end()) {
+            while (end != prop->args.end()) {
                 if (*end == '(')
                     count++;
                 else if (*end == ')')
@@ -1092,7 +1113,7 @@ static void compute_property_data(Property* prop, const MoleculeDynamic& dynamic
             if (beg != end) args.push_back(trim({beg, end}));
 
             if (args.count == 0) {
-                prop.valid = false;
+                prop->valid = false;
                 continue;
             }
 
@@ -1102,30 +1123,31 @@ static void compute_property_data(Property* prop, const MoleculeDynamic& dynamic
             auto func = find_property_compute_func(cmd);
             if (!func) {
                 set_error_message("Could not recognize command '%s'", make_tmp_str(cmd).cstr());
-                prop.valid = false;
+                prop->valid = false;
                 continue;
             }
 
-            Range pre_range = prop.data_range;
-            if (!func(&prop, args, dynamic)) {
-                prop.valid = false;
+            Range pre_range = prop->data_range;
+            if (!func(prop, args, dynamic)) {
+                prop->valid = false;
                 continue;
             }
 
-            if (pre_range != prop.data_range) {
-                prop.filter = prop.data_range;
+            if (pre_range != prop->data_range) {
+                prop->filter = prop->data_range;
 			}
 
-            prop.full_histogram.value_range = prop.data_range;
-            prop.filt_histogram.value_range = prop.data_range;
-            prop.full_hist_dirty = true;
-            prop.filt_hist_dirty = true;
-            prop.valid = true;
+            prop->full_histogram.value_range = prop->data_range;
+            prop->filt_histogram.value_range = prop->data_range;
+            prop->full_hist_dirty = true;
+            prop->filt_hist_dirty = true;
+            prop->valid = true;
         }
     }
     ctx.current_property = nullptr;
 }
 
+/*
 void update(const MoleculeDynamic& dynamic) {
     Range range(0, dynamic.trajectory.num_frames);
     update(dynamic, &range);
@@ -1137,12 +1159,11 @@ void update(const MoleculeDynamic& dynamic, volatile Range* frame_range) {
 
     for (auto p : ctx.properties) {
         if (p->data_dirty) {
-            p->data_dirty = false;
             compute_property_data(p, dynamic);
+            p->data_dirty = false;
         }
 
         if (p->full_hist_dirty) {
-            p->full_hist_dirty = false;
             clear_histogram(&p->full_histogram);
             if (p->instance_data) {
                 for (const auto& inst : p->instance_data) {
@@ -1152,10 +1173,10 @@ void update(const MoleculeDynamic& dynamic, volatile Range* frame_range) {
                 compute_histogram(&p->full_histogram, p->data);
             }
             normalize_histogram(&p->full_histogram);
+            p->full_hist_dirty = false;
         }
 
         if (p->filt_hist_dirty) {
-            p->filt_hist_dirty = false;
             clear_histogram(&tmp_hist);
             tmp_hist.value_range = p->filt_histogram.value_range;
 
@@ -1174,92 +1195,124 @@ void update(const MoleculeDynamic& dynamic, volatile Range* frame_range) {
             p->filt_histogram.bin_range = tmp_hist.bin_range;
             p->filt_histogram.num_samples = tmp_hist.num_samples;
             memcpy(p->filt_histogram.bins.data, tmp_hist.bins.data, p->filt_histogram.bins.size_in_bytes());
+            p->filt_hist_dirty = false;
         }
     }
 
     free_histogram(&tmp_hist);
 }
+*/
 
-void internal_update(const MoleculeDynamic& dynamic) {
+bool properties_dirty() {
+    for (const auto p : ctx.properties) {
+        if (p->data_dirty) return true;
+        if (p->full_hist_dirty) return true;
+        if (p->filt_hist_dirty) return true;
+    }
 
+    return false;
 }
 
-bool in_sync(Range frame_filter) {
-    if (frame_filter != ctx.frame_filter) return false;
+void async_update(const MoleculeDynamic& dynamic, Range frame_filter) {
+	if (frame_filter.x == 0.f && frame_filter.y == 0.f) {
+		frame_filter.x = 0;
+		frame_filter.y = (float)dynamic.trajectory.num_frames;
+	}
 
-    for (const auto p : ctx.properties) {
-        if (p.data_dirty) return false;
-        if (p.full_hist_dirty) return false;
-        if (p.filt_hist_dirty) return false;
-    }
+	static Range prev_frame_filter{ 0,0 };
 
-    return true;
-} 
+	if ((prev_frame_filter != frame_filter || properties_dirty()) && !ctx.thread_running && !ctx.stop_signal) {
+		prev_frame_filter = frame_filter;
+		ctx.thread_running = true;
+		std::thread([&dynamic, frame_filter]() {
+			Histogram tmp_hist;
+			init_histogram(&tmp_hist, NUM_BINS);
+			ctx.fraction_done = 0.f;
 
-void update(const MoleculeDynamic& dynamic, Range frame_filter) {
-    if (!in_sync(frame_filter) && ctx.thread_running == false) {
-        ctx.thread_running = true;
-        std::thread([&dynamic, &ctx]() {
-            init_histogram(&tmp_hist, NUM_BINS);
+			for (int32 i = 0; i < ctx.properties.count; i++) {
+				auto p = ctx.properties[i];
+				ctx.fraction_done = (i / (float)ctx.properties.count);
 
-            bool in_sync = false;
-            while (!in_sync) {
-                Histogram tmp_hist;
+				if (p->data_dirty) {
+					compute_property_data(p, dynamic);
+					p->data_dirty = false;
+				}
 
-                for (auto p : ctx.properties) {
-                    if (p->data_dirty) {
-                        p->data_dirty = false;
-                        compute_property_data(p, dynamic);
-                    }
+				if (ctx.stop_signal) break;
 
-                    if (p->full_hist_dirty) {
-                        p->full_hist_dirty = false;
-                        clear_histogram(&p->full_histogram);
-                        if (p->instance_data) {
-                            for (const auto& inst : p->instance_data) {
-                                compute_histogram(&p->full_histogram, inst.data);
-                            }
-                        } else {
-                            compute_histogram(&p->full_histogram, p->data);
-                        }
-                        normalize_histogram(&p->full_histogram);
-                    }
+				if (p->full_hist_dirty) {
+					clear_histogram(&p->full_histogram);
+					if (p->instance_data) {
+						for (const auto& inst : p->instance_data) {
+							compute_histogram(&p->full_histogram, inst.data);
+						}
+					}
+					else {
+						compute_histogram(&p->full_histogram, p->data);
+					}
+					normalize_histogram(&p->full_histogram);
+					p->full_hist_dirty = false;
+				}
 
-                    if (p->filt_hist_dirty) {
-                        p->filt_hist_dirty = false;
-                        clear_histogram(&tmp_hist);
-                        tmp_hist.value_range = p->filt_histogram.value_range;
+				if (ctx.stop_signal) break;
 
-                        int32 beg_idx = math::clamp((int32)frame_range->x, 0, (int32)p->data.count);
-                        int32 end_idx = math::clamp((int32)frame_range->y, 0, (int32)p->data.count);
+				if (p->filt_hist_dirty) {
+					clear_histogram(&tmp_hist);
+					tmp_hist.value_range = p->filt_histogram.value_range;
 
-                        // Since the data is probably showing, perform the operations on tmp data then copy the results
-                        if (p->instance_data) {
-                            for (const auto& inst : p->instance_data) {
-                                compute_histogram(&tmp_hist, inst.data.sub_array(beg_idx, end_idx - beg_idx), p->filter);
-                            }
-                        } else {
-                            compute_histogram(&tmp_hist, p->data.sub_array(beg_idx, end_idx - beg_idx), p->filter);
-                        }
-                        normalize_histogram(&tmp_hist);
-                        p->filt_histogram.bin_range = tmp_hist.bin_range;
-                        p->filt_histogram.num_samples = tmp_hist.num_samples;
-                        memcpy(p->filt_histogram.bins.data, tmp_hist.bins.data, p->filt_histogram.bins.size_in_bytes());
-                    }
-                }
+					int32 beg_idx = math::clamp((int32)frame_filter.x, 0, (int32)p->data.count);
+					int32 end_idx = math::clamp((int32)frame_filter.y, 0, (int32)p->data.count);
 
-                ctx.fraction = 0.0f;
-                if (ctx.stop_signal) break;
-            }
-            free_histogram(&tmp_hist);
-            ctx.fraction_done = 1.f;
-            ctx.thread_running = false;
-            ctx.stop_signal = false;
-        }).detach();
-    }
+					if (beg_idx != end_idx) {
+						// Since the data is probably showing, perform the operations on tmp data then copy the results
+						if (p->instance_data) {
+							for (const auto& inst : p->instance_data) {
+								compute_histogram(&tmp_hist, inst.data.sub_array(beg_idx, end_idx - beg_idx), p->filter);
+							}
+						}
+						else {
+							compute_histogram(&tmp_hist, p->data.sub_array(beg_idx, end_idx - beg_idx), p->filter);
+						}
+						normalize_histogram(&tmp_hist);
+						p->filt_histogram.bin_range = tmp_hist.bin_range;
+						p->filt_histogram.num_samples = tmp_hist.num_samples;
+						memcpy(p->filt_histogram.bins.data, tmp_hist.bins.data, p->filt_histogram.bins.size_in_bytes());
+					}
+					p->filt_hist_dirty = false;
+				}
+
+				if (ctx.stop_signal) break;
+			}
+
+			free_histogram(&tmp_hist);
+			ctx.fraction_done = 1.f;
+			ctx.thread_running = false;
+			ctx.stop_signal = false;
+		}).detach();
+	}
+}
+
+bool thread_running() {
+	return ctx.thread_running;
+}
+
+void send_stop_signal() {
+	ctx.stop_signal = true;
+}
+
+void send_stop_signal_and_wait() {
+	ctx.stop_signal = true;
+	while (ctx.thread_running) {
+		// possibly sleep 1 ms or so
+	}
+}
+
+float fraction_done() {
+	return ctx.fraction_done;
 }
 
 void visualize(const MoleculeDynamic& dynamic) {
+	if (thread_running()) return;
     for (auto p : ctx.properties) {
         if (!p->visualize) continue;
         CString cmd = extract_command(p->args);
@@ -1292,32 +1345,39 @@ Property* create_property(CString name, CString args) {
 }
 
 static void free_property_data(Property* prop) {
+	send_stop_signal_and_wait();
     ASSERT(prop);
     free_histogram(&prop->full_histogram);
     free_histogram(&prop->filt_histogram);
     free_structure_data(&prop->structure_data);
     free_instance_data(&prop->instance_data);
+	ctx.stop_signal = false;
 }
 
 void remove_property(Property* prop) {
     ASSERT(prop);
+	send_stop_signal_and_wait();
     for (auto& p : ctx.properties) {
         if (p == prop) {
             free_property_data(prop);
             ctx.properties.remove(&p);
         }
     }
+	ctx.stop_signal = false;
 }
 
 void remove_all_properties() {
+	send_stop_signal_and_wait();
     for (auto prop : ctx.properties) {
         free_property_data(prop);
     }
     ctx.properties.clear();
+	ctx.stop_signal = false;
 }
 
 void move_property_up(Property* prop) {
     if (ctx.properties.count <= 1) return;
+	send_stop_signal_and_wait();
     for (int32 i = 1; i < (int32)ctx.properties.count; i++) {
         if (ctx.properties[i] == prop) {
             // swap
@@ -1327,10 +1387,12 @@ void move_property_up(Property* prop) {
             break;
         }
     }
+	ctx.stop_signal = false;
 }
 
 void move_property_down(Property* prop) {
     if (ctx.properties.count <= 1) return;
+	send_stop_signal_and_wait();
     for (int32 i = 0; i < (int32)ctx.properties.count - 1; i++) {
         if (ctx.properties[i] == prop) {
             // swap
@@ -1340,6 +1402,7 @@ void move_property_down(Property* prop) {
             break;
         }
     }
+	ctx.stop_signal = false;
 }
 
 Property* get_property(CString name) {
@@ -1357,17 +1420,28 @@ Property* get_property(int32 idx) {
 int32 get_property_count() { return (int32)ctx.properties.count; }
 
 void clear_property(Property* prop) {
+	send_stop_signal_and_wait();
     ASSERT(prop);
-    free_structure_data(&prop->structure_data);
-    free_instance_data(&prop->instance_data);
-    clear_histogram(&prop->full_histogram);
-    prop->data.clear();
+	for (auto p : ctx.properties) {
+		if (p == prop) {
+			free_structure_data(&prop->structure_data);
+			free_instance_data(&prop->instance_data);
+			clear_histogram(&prop->full_histogram);
+			prop->data.clear();
+		}
+	}
+	ctx.stop_signal = false;
 }
 
 void clear_all_properties() {
+	send_stop_signal_and_wait();
     for (auto p : ctx.properties) {
-        clear_property(p);
+		free_structure_data(&p->structure_data);
+		free_instance_data(&p->instance_data);
+		clear_histogram(&p->full_histogram);
+		p->data.clear();
     }
+	ctx.stop_signal = false;
 }
 
 void set_all_property_flags(bool data_dirty, bool full_hist_dirty, bool filt_hist_dirty) {
