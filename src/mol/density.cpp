@@ -17,7 +17,7 @@ void free_volume(DensityVolume* vol) {
 	if (vol->voxel_data) {
 		free_array(&vol->voxel_data);
 	}
-	vol->dim = { 0 };
+	vol->dim = { 0, 0, 0 };
 	vol->voxel_range = { 0,0 };
 }
 

@@ -350,7 +350,7 @@ int main(int, char**) {
 
     // Main loop
     while (!data.ctx.window.should_close) {
-        platform::async_update(&data.ctx);
+        platform::update(&data.ctx);
 		stats::async_update(data.mol_data.dynamic, data.time_filter.range);
 
         // RESIZE FRAMEBUFFER?
@@ -525,7 +525,7 @@ int main(int, char**) {
             data.controller.input.mouse_coord_curr = data.ctx.input.mouse.coord_curr;
             data.controller.input.screen_size = vec2(data.ctx.window.width, data.ctx.window.height);
             data.controller.input.dolly_delta = data.ctx.input.mouse.scroll.y;
-            data.controller.async_update();
+            data.controller.update();
             data.camera.position = data.controller.position;
             data.camera.orientation = data.controller.orientation;
 
