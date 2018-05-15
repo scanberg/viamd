@@ -2,7 +2,7 @@
 #include <array>
 #include <core/string_utils.h>
 
-#ifdef WIN32
+#ifdef _MSC_VER
 #pragma warning(disable : 4305)  // double to float
 #endif
 

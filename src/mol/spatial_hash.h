@@ -76,15 +76,15 @@ inline DynamicArray<int> query_indices(const Frame& frame, vec3 coord, float rad
 template<typename Callback>
 void for_each_within(const Frame& frame, vec3 coord, float radius, Callback cb) {
 	const float r2 = radius * radius;
-	ivec3 min_cc = compute_cell_coord(frame, coord - radius);
-	ivec3 max_cc = compute_cell_coord(frame, coord + radius);
+	const ivec3 min_cc = compute_cell_coord(frame, coord - radius);
+	const ivec3 max_cc = compute_cell_coord(frame, coord + radius);
 	ivec3 cc;
 	for (cc.z = min_cc.z; cc.z <= max_cc.z; cc.z++) {
 		for (cc.y = min_cc.y; cc.y <= max_cc.y; cc.y++) {
 			for (cc.x = min_cc.x; cc.x <= max_cc.x; cc.x++) {
 				for (const auto& e : get_cell_entries(frame, cc)) {
 					if (math::distance2(coord, e.position) < r2) {
-						cb(e.index);
+						cb(e.index, e.position);
 					}
 				}
 			}

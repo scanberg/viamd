@@ -15,7 +15,7 @@
 #include <thread>
 #include <tinyexpr.h>
 
-#define HASH(x) (hash::crc64(x))
+#define COMPUTE_ID(x) (hash::crc64(x))
 constexpr int32 NUM_BINS = 64;
 
 namespace stats {
@@ -57,14 +57,14 @@ static PropertyFuncEntry* find_property_func_entry(ID hash) {
 }
 
 static PropertyComputeFunc find_property_compute_func(CString cmd) {
-    auto e = find_property_func_entry(HASH(cmd));
+    auto e = find_property_func_entry(COMPUTE_ID(cmd));
     if (e) return e->compute_func;
 
     return nullptr;
 }
 
 static PropertyVisualizeFunc find_property_visualize_func(CString cmd) {
-    auto e = find_property_func_entry(HASH(cmd));
+    auto e = find_property_func_entry(COMPUTE_ID(cmd));
     if (e) return e->visualize_func;
 
     return nullptr;
@@ -80,7 +80,7 @@ static StructureFuncEntry* find_structure_func_entry(ID hash) {
 }
 
 static StructureFunc find_structure_func(CString cmd) {
-    auto e = find_structure_func_entry(HASH(cmd));
+    auto e = find_structure_func_entry(COMPUTE_ID(cmd));
     if (e) return e->func;
 
     return nullptr;
@@ -201,7 +201,15 @@ void compute_density_volume(DensityVolume* vol) {
 	}
 
 	clear_volume(vol);
-	// for (auto p : ctx.properties) {}
+	for (auto p : ctx.properties) {
+		for (const auto& i : p->instance_data) {
+			for (auto v : i.data) {
+				if (p->filter.x <= v && v <= p->filter.y) {
+				
+				}
+			}
+		}
+	}
 }
 
 static Range compute_range(Array<float> data) {
@@ -913,19 +921,19 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
 }
 
 void initialize() {
-    ctx.property_func_entries.push_back({HASH("distance"), compute_distance, visualize_structures});
-    ctx.property_func_entries.push_back({HASH("angle"), compute_angle, visualize_structures});
-    ctx.property_func_entries.push_back({HASH("dihedral"), compute_dihedral, visualize_structures});
-    ctx.property_func_entries.push_back({HASH("expression"), compute_expression, nullptr});
+    ctx.property_func_entries.push_back({COMPUTE_ID("distance"), compute_distance, visualize_structures});
+    ctx.property_func_entries.push_back({COMPUTE_ID("angle"), compute_angle, visualize_structures});
+    ctx.property_func_entries.push_back({COMPUTE_ID("dihedral"), compute_dihedral, visualize_structures});
+    ctx.property_func_entries.push_back({COMPUTE_ID("expression"), compute_expression, nullptr});
 
-    ctx.structure_func_entries.push_back({HASH("resname"), structure_match_resname});
-    ctx.structure_func_entries.push_back({HASH("resid"), structure_match_resid});
-    ctx.structure_func_entries.push_back({HASH("residue"), structure_match_residue});
-    ctx.structure_func_entries.push_back({HASH("chainid"), structure_match_chainid});
-    ctx.structure_func_entries.push_back({HASH("chain"), structure_match_chain});
-    ctx.structure_func_entries.push_back({HASH("atom"), structure_match_atom});
-    ctx.structure_func_entries.push_back({HASH("resatom"), structure_extract_resatom});
-    ctx.structure_func_entries.push_back({HASH("com"), structure_apply_aggregation_strategy_com});
+    ctx.structure_func_entries.push_back({COMPUTE_ID("resname"), structure_match_resname});
+    ctx.structure_func_entries.push_back({COMPUTE_ID("resid"), structure_match_resid});
+    ctx.structure_func_entries.push_back({COMPUTE_ID("residue"), structure_match_residue});
+    ctx.structure_func_entries.push_back({COMPUTE_ID("chainid"), structure_match_chainid});
+    ctx.structure_func_entries.push_back({COMPUTE_ID("chain"), structure_match_chain});
+    ctx.structure_func_entries.push_back({COMPUTE_ID("atom"), structure_match_atom});
+    ctx.structure_func_entries.push_back({COMPUTE_ID("resatom"), structure_extract_resatom});
+    ctx.structure_func_entries.push_back({COMPUTE_ID("com"), structure_apply_aggregation_strategy_com});
 }
 
 void shutdown() {}
@@ -946,7 +954,7 @@ bool register_property_command(CString cmd_keyword, PropertyComputeFunc compute_
         return false;
     }
 
-    ID hash = HASH(cmd_keyword);
+    ID hash = COMPUTE_ID(cmd_keyword);
     if (find_property_func_entry(hash) != nullptr) {
         LOG_ERROR("Property command already registered!");
         return false;
@@ -1316,7 +1324,7 @@ void visualize(const MoleculeDynamic& dynamic) {
     for (auto p : ctx.properties) {
         if (!p->visualize) continue;
         CString cmd = extract_command(p->args);
-        auto entry = find_property_func_entry(HASH(cmd));
+        auto entry = find_property_func_entry(COMPUTE_ID(cmd));
         if (entry && entry->visualize_func) {
             entry->visualize_func(*p, dynamic);
         }

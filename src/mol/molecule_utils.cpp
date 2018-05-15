@@ -6,6 +6,7 @@
 #include <core/log.h>
 #include <core/math_utils.h>
 #include <mol/trajectory_utils.h>
+#include <mol/spatial_hash.h>
 #include <imgui.h>
 #include <ctype.h>
 #include <fstream>
@@ -562,6 +563,50 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
         default:
             break;
     }
+}
+
+void compute_hydrogen_bonds(DynamicArray<HydrogenBond>* bonds, const MoleculeDynamic& dyn, int32 frame_idx, float dist_cutoff, float angle_cutoff, const HydrogenBondCandidates* candidates) {
+	ASSERT(false);
+}
+
+DynamicArray<HydrogenBond> compute_hydrogen_bonds(const MoleculeDynamic& dyn, int32 frame_idx, float dist_cutoff, float angle_cutoff, const HydrogenBondCandidates* candidates) {
+	DynamicArray<HydrogenBond> bonds;
+	compute_hydrogen_bonds(&bonds, dyn, frame_idx, dist_cutoff, angle_cutoff, candidates);
+	return bonds;
+}
+
+HydrogenBondTrajectory compute_hydrogen_bonds_trajectory(const MoleculeDynamic& dyn, float max_dist, float max_angle) {
+	HydrogenBondTrajectory hbt;
+	spatialhash::Frame frame;
+
+	struct Donor {
+		AtomIdx donor_idx = 0;
+		AtomIdx hydro_idx = 0;
+	};
+
+	DynamicArray<Donor>		pot_don{};
+	DynamicArray<AtomIdx>	pot_acc{};
+
+	int32 count = (int32)dyn.molecule.atom_labels.count;
+	for (int32 i = 0; i < count; i++) {
+		if (compare_n(dyn.molecule.atom_labels[i], "OH", 2) || compare_n(dyn.molecule.atom_labels[i], "NH", 2)) {
+			if (i + 1 < count && compare_n(dyn.molecule.atom_labels[i + 1], "HH", 2)) {
+				pot_don.push_back({ i, i + 1 });
+			}
+			if (i + 2 < count && compare_n(dyn.molecule.atom_labels[i + 2], "HH", 2)) {
+				pot_don.push_back({ i, i + 2 });
+			}
+		}
+		if (dyn.molecule.atom_elements[i] == Element::O || dyn.molecule.atom_elements[i] == Element::N) {
+			pot_acc.push_back(i);
+		}
+	}
+
+	for (int32 i = 0; i < dyn.trajectory.num_frames; i++) {
+		spatialhash::compute_frame(&frame, get_trajectory_positions(dyn.trajectory, i), vec3(max_dist));
+	}
+
+	return hbt;
 }
 
 namespace filter {

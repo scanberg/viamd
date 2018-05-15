@@ -121,6 +121,40 @@ void compute_occupancy_volume(Volume* volume, Array<vec3> atom_pos);
 Volume compute_occupancy_volume(Array<vec3> atom_pos, vec3 min_box, vec3 max_box);
 void compute_occupancy_volume(Volume* volume, Array<vec3> atom_pos, vec3 min_box, vec3 max_box);
 
+struct HydrogenBondDonor {
+	AtomIdx donor_idx = 0;
+	AtomIdx hydro_idx = 0;
+};
+
+typedef AtomIdx HydrogenBondAcceptor;
+
+struct HydrogenBondCandidates {
+	DynamicArray<HydrogenBondDonor> donors;
+	DynamicArray<HydrogenBondAcceptor> acceptors;
+};
+
+struct HydrogenBond {
+	AtomIdx acc_idx = 0;
+	AtomIdx don_idx = 0;
+};
+
+struct HydrogenBondTrajectory {
+	DynamicArray<HydrogenBond> bond_data{};
+	DynamicArray<Array<HydrogenBond>> frame_bonds{};
+};
+
+void compute_hydrogen_bond_candidates(HydrogenBondCandidates* candidates, const MoleculeStructure& mol);
+inline HydrogenBondCandidates compute_hydrogen_bond_candidates(const MoleculeStructure& mol) {
+	HydrogenBondCandidates candidates;
+	compute_hydrogen_bond_candidates(&candidates, mol);
+	return candidates;
+}
+
+void compute_hydrogen_bonds(DynamicArray<HydrogenBond>* bonds, const MoleculeDynamic& dyn, int32 frame_idx, float dist_cutoff = 2.f, float angle_cutoff = 3.14159265f * 0.25f, const HydrogenBondCandidates* candidates = nullptr);
+DynamicArray<HydrogenBond> compute_hydrogen_bonds(const MoleculeDynamic& dyn, int32 frame_idx, float dist_cutoff = 2.f, float angle_cutoff = 3.14159265f * 0.25f, const HydrogenBondCandidates* candidates = nullptr);
+
+HydrogenBondTrajectory compute_hydrogen_bonds_trajectory(const MoleculeDynamic& dyn, float dist_cutoff, float angle_cutoff);
+
 // bool filter_valid(CString filter);
 // bool filter_colors(Array<uint32> color_dst, const MoleculeStructure& mol, CString filter);
 

@@ -250,6 +250,8 @@ struct ApplicationData {
     // --- CONSOLE ---
     Console console;
     bool show_console;
+
+	bool high_res_font = false;
 };
 
 static void reset_view(ApplicationData* data, bool reposition_camera = true);
@@ -778,6 +780,19 @@ static void draw_main_menu(ApplicationData* data) {
             ImGui::EndGroup();
             ImGui::Separator();
 
+			ImGui::BeginGroup();
+			if (ImGui::Checkbox("Use high-res font", &data->high_res_font)) {
+				if (ImGui::GetIO().Fonts->Fonts.size() > 1 && data->high_res_font) {
+					ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts[1];
+					ImGui::GetIO().FontGlobalScale = 0.75f;
+				}
+				else {
+					ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts[0];
+					ImGui::GetIO().FontGlobalScale = 1.0f;
+				}
+			}
+			ImGui::EndGroup();
+
             // DEBUG DRAW
             ImGui::BeginGroup();
             ImGui::Checkbox("Spline", &data->debug_draw.spline.enabled);
@@ -942,6 +957,7 @@ static void draw_property_window(ApplicationData* data) {
     ImGui::PopStyleColor(3);
     ImGui::Spacing();
 
+	ImGui::PushItemWidth(-1);
     ImGui::Columns(3, "columns", true);
     ImGui::Separator();
 
@@ -1012,6 +1028,7 @@ static void draw_property_window(ApplicationData* data) {
     ImGui::Columns(1);
     ImGui::Separator();
     ImGui::PopID();
+	ImGui::PopItemWidth();
     ImGui::End();
 
     //if (compute_stats) {
@@ -1094,6 +1111,7 @@ static void draw_async_info(ApplicationData* data) {
 			ImGui::SameLine();
             if (ImGui::Button("X")) {
                 data->async.trajectory.sync.signal_stop_and_wait();
+				compute_backbone_angles_async(data);
                 //compute_statistics_async(data);
                 data->async.trajectory.fraction = 0.f;
             }

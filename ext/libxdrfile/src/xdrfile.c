@@ -2594,7 +2594,7 @@ xdrstdio_putbytes (XDR *xdrs, char *addr, unsigned int len)
 static int64_t
 xdrstdio_getpos (XDR *xdrs)
 {
-#ifdef WIN32
+#ifdef _WIN32
     return _ftelli64((FILE *) xdrs->x_private);
 #else
     return ftello((FILE *) xdrs->x_private);
@@ -2604,7 +2604,7 @@ xdrstdio_getpos (XDR *xdrs)
 static int
 xdrstdio_setpos (XDR *xdrs, int64_t pos, int whence)
 {
-#ifdef WIN32
+#ifdef _WIN32
     return _fseeki64((FILE *)xdrs->x_private, pos, whence) < 0 ? exdrNR : exdrOK;
 #else
 	return fseeko((FILE *) xdrs->x_private, pos, whence) < 0 ? exdrNR : exdrOK;

@@ -147,7 +147,7 @@ inline uint64 crc64(CString str) {
 
 template <size_t N>
 constexpr uint64 crc64(const char(&cstr)[N]) {
-	STATIC_ASSERT(N > 0);
+	STATIC_ASSERT(N > 0, "crc64: length of cstring was zero!");
 	return crc64(cstr, N - 1);
 }
 
