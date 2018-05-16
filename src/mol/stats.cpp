@@ -2,7 +2,8 @@
 #include <core/math_utils.h>
 #include <core/hash.h>
 #include <core/log.h>
-#include <mol/molecule.h>
+#include <mol/molecule_structure.h>
+#include <mol/molecule_trajectory.h>
 #include <mol/molecule_dynamic.h>
 #include <mol/molecule_utils.h>
 #include <mol/trajectory_utils.h>

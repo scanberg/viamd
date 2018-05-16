@@ -1,4 +1,4 @@
-#include <imgui.h>
+﻿#include <imgui.h>
 #include <imgui_internal.h>
 #include <core/platform.h>
 #include <core/gl.h>
@@ -10,13 +10,14 @@
 #include <core/camera_utils.h>
 #include <core/console.h>
 #include <core/string_utils.h>
-#include <mol/molecule.h>
-#include <mol/trajectory.h>
+#include <mol/molecule_structure.h>
+#include <mol/molecule_trajectory.h>
 #include <mol/trajectory_utils.h>
 #include <mol/molecule_utils.h>
 #include <mol/pdb_utils.h>
 #include <mol/gro_utils.h>
 #include <mol/stats.h>
+#include <mol/spatial_hash.h>
 #include <gfx/immediate_draw_utils.h>
 #include <gfx/postprocessing_utils.h>
 
@@ -247,11 +248,17 @@ struct ApplicationData {
         } backbone;
     } debug_draw;
 
+    struct {
+        bool enabled = false;
+        bool dirty = true;
+        DynamicArray<HydrogenBond> bonds{};
+    } hydrogen_bonds;
+
     // --- CONSOLE ---
     Console console;
     bool show_console;
 
-	bool high_res_font = false;
+    bool high_res_font = false;
 };
 
 static void reset_view(ApplicationData* data, bool reposition_camera = true);
@@ -283,9 +290,9 @@ static void clear_representations(ApplicationData* data);
 
 // Async operations
 static void load_trajectory_async(ApplicationData* data);
-//static void remove_properties(ApplicationData* data);
-//static void clear_properties(ApplicationData* data);
-//static void compute_statistics_async(ApplicationData* data);
+// static void remove_properties(ApplicationData* data);
+// static void clear_properties(ApplicationData* data);
+// static void compute_statistics_async(ApplicationData* data);
 static void compute_backbone_angles_async(ApplicationData* data);
 
 int main(int, char**) {
@@ -353,7 +360,7 @@ int main(int, char**) {
     // Main loop
     while (!data.ctx.window.should_close) {
         platform::update(&data.ctx);
-		stats::async_update(data.mol_data.dynamic, data.time_filter.range);
+        stats::async_update(data.mol_data.dynamic, data.time_filter.range);
 
         // RESIZE FRAMEBUFFER?
         if ((data.fbo.width != data.ctx.framebuffer.width || data.fbo.height != data.ctx.framebuffer.height) &&
@@ -382,6 +389,7 @@ int main(int, char**) {
         glDrawBuffers(3, draw_buffers);
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
+        glEnable(GL_DEPTH_TEST);
 
         if (data.ctx.input.key.hit[CONSOLE_KEY]) {
             data.console.visible = !data.console.visible;
@@ -393,47 +401,13 @@ int main(int, char**) {
             time += data.ctx.timing.dt;
             if (time > TICK_INTERVAL_SEC) {
                 time = 0.f;
-				stats::set_all_property_flags(true, true, true);
+                stats::set_all_property_flags(true, true, true);
                 compute_backbone_angles_async(&data);
             }
         }
 
         float ms = compute_avg_ms(data.ctx.timing.dt);
         bool time_changed = false;
-
-        ImGui::Begin("Misc");
-        ImGui::Text("%.2f ms (%.1f fps)", ms, 1000.f / (ms));
-        ImGui::Checkbox("Show Demo Window", &show_demo_window);
-        if (ImGui::Button("Reset View")) {
-            reset_view(&data);
-        }
-        if (data.mol_data.dynamic.trajectory) {
-            int32 num_frames = data.mol_data.dynamic.trajectory.num_frames;
-            ImGui::Text("Num Frames: %i", num_frames);
-            float t = (float)data.time;
-            if (ImGui::SliderFloat("Time", &t, 0, (float)(num_frames - 1))) {
-                time_changed = true;
-                data.time = t;
-            }
-            ImGui::SliderFloat("Frames Per Second", &data.frames_per_second, 0.1f, 100.f, "%.3f", 4.f);
-            if (data.is_playing) {
-                if (ImGui::Button("Pause")) data.is_playing = false;
-            } else {
-                if (ImGui::Button("Play")) data.is_playing = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Stop")) {
-                data.is_playing = false;
-                data.time = 0.0;
-                time_changed = true;
-            }
-            ImGui::Combo("type", (int*)(&data.interpolation), "Nearest\0Linear\0Linear Periodic\0Cubic\0Cubic Periodic\0\0");
-            ImGui::Checkbox("Dynamic Framewindow", &data.time_filter.dynamic_window);
-            if (data.time_filter.dynamic_window) {
-                ImGui::SliderFloat("Window Extent", &data.time_filter.window_extent, 1.f, (float)num_frames);
-            }
-        }
-        ImGui::End();
 
         if (data.is_playing) {
             data.time += data.ctx.timing.dt * data.frames_per_second;
@@ -460,7 +434,7 @@ int main(int, char**) {
 
             if (data.time_filter.dynamic_window) {
                 stats::set_all_property_flags(false, false, true);
-                //compute_statistics_async(&data);
+                // compute_statistics_async(&data);
             }
 
             int frame = (int)data.time;
@@ -518,7 +492,18 @@ int main(int, char**) {
             }
         }
 
-		// CAMERA CONTROLS
+        if (time_changed) {
+            data.hydrogen_bonds.dirty = true;
+        }
+
+        if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.dirty) {
+            data.hydrogen_bonds.dirty = false;
+            data.hydrogen_bonds.bonds.clear();
+            hydrogen_bond::compute_bonds(&data.hydrogen_bonds.bonds, data.mol_data.dynamic.molecule.hydrogen_bond.donors,
+                                         data.mol_data.dynamic.molecule.hydrogen_bond.acceptors, data.mol_data.dynamic.molecule.atom_positions);
+        }
+
+        // CAMERA CONTROLS
         if (!ImGui::GetIO().WantCaptureMouse) {
             data.controller.input.rotate_button = data.ctx.input.mouse.down[0];
             data.controller.input.pan_button = data.ctx.input.mouse.down[1];
@@ -544,8 +529,17 @@ int main(int, char**) {
         mat4 proj_mat = compute_perspective_projection_matrix(data.camera, data.fbo.width, data.fbo.height);
         mat4 inv_proj_mat = math::inverse(proj_mat);
 
-        immediate::set_view_matrix(view_mat);
-        immediate::set_proj_matrix(proj_mat);
+        {
+            immediate::set_view_matrix(view_mat);
+            immediate::set_proj_matrix(proj_mat);
+            if (data.hydrogen_bonds.enabled) {
+                for (const auto& bond : data.hydrogen_bonds.bonds) {
+                    immediate::draw_line(data.mol_data.dynamic.molecule.atom_positions[bond.acc_idx],
+                                         data.mol_data.dynamic.molecule.atom_positions[bond.hyd_idx], immediate::COLOR_MAGENTA);
+                }
+            }
+            immediate::flush();
+        }
 
         for (const auto& rep : data.representations.data) {
             if (!rep.enabled) continue;
@@ -555,8 +549,8 @@ int main(int, char**) {
                                    rep.radius);
                     break;
                 case Representation::LICORICE:
-                    draw::draw_licorice(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.dynamic.molecule.bonds, rep.colors, view_mat,
-                                        proj_mat, rep.radius);
+                    draw::draw_licorice(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.dynamic.molecule.covalent_bonds, rep.colors,
+                                        view_mat, proj_mat, rep.radius);
                     break;
                 case Representation::RIBBONS:
                     draw::draw_ribbons(data.mol_data.dynamic.molecule.backbone_segments, data.mol_data.dynamic.molecule.chains,
@@ -569,7 +563,11 @@ int main(int, char**) {
         // PICKING
         {
             ivec2 coord = {data.ctx.input.mouse.coord_curr.x, data.ctx.framebuffer.height - data.ctx.input.mouse.coord_curr.y};
-            data.picking_idx = get_picking_id(data.fbo.id, coord.x, coord.y);
+            if (coord.x < 0 || coord.y < 0 || coord.x >= data.ctx.framebuffer.width || coord.y >= data.ctx.framebuffer.height) {
+                data.picking_idx = NO_PICKING_IDX;
+            } else {
+                data.picking_idx = get_picking_id(data.fbo.id, coord.x, coord.y);
+            }
 
             data.hovered = {};
             if (data.picking_idx != NO_PICKING_IDX) {
@@ -599,8 +597,12 @@ int main(int, char**) {
             postprocessing::apply_ssao(data.fbo.tex_depth, data.fbo.tex_normal, proj_mat, data.ssao.intensity, data.ssao.radius);
         }
 
-        stats::visualize(data.mol_data.dynamic);
-        immediate::flush();
+        {
+            immediate::set_view_matrix(view_mat);
+            immediate::set_proj_matrix(proj_mat);
+            stats::visualize(data.mol_data.dynamic);
+            immediate::flush();
+        }
 
         // GUI ELEMENTS
         data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, data.ctx.timing.dt);
@@ -624,6 +626,41 @@ int main(int, char**) {
         }
 
         draw_async_info(&data);
+
+        // MISC WINDOW
+        ImGui::Begin("Misc");
+        ImGui::Text("%.2f ms (%.1f fps)", ms, 1000.f / (ms));
+        ImGui::Checkbox("Show Demo Window", &show_demo_window);
+        if (ImGui::Button("Reset View")) {
+            reset_view(&data);
+        }
+        if (data.mol_data.dynamic.trajectory) {
+            int32 num_frames = data.mol_data.dynamic.trajectory.num_frames;
+            ImGui::Text("Num Frames: %i", num_frames);
+            float t = (float)data.time;
+            if (ImGui::SliderFloat("Time", &t, 0, (float)(num_frames - 1))) {
+                time_changed = true;
+                data.time = t;
+            }
+            ImGui::SliderFloat("Frames Per Second", &data.frames_per_second, 0.1f, 100.f, "%.3f", 4.f);
+            if (data.is_playing) {
+                if (ImGui::Button("Pause")) data.is_playing = false;
+            } else {
+                if (ImGui::Button("Play")) data.is_playing = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Stop")) {
+                data.is_playing = false;
+                data.time = 0.0;
+                time_changed = true;
+            }
+            ImGui::Combo("type", (int*)(&data.interpolation), "Nearest\0Linear\0Linear Periodic\0Cubic\0Cubic Periodic\0\0");
+            ImGui::Checkbox("Dynamic Framewindow", &data.time_filter.dynamic_window);
+            if (data.time_filter.dynamic_window) {
+                ImGui::SliderFloat("Window Extent", &data.time_filter.window_extent, 1.f, (float)num_frames);
+            }
+        }
+        ImGui::End();
 
         // Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
         if (show_demo_window) {
@@ -716,7 +753,7 @@ static void draw_main_menu(ApplicationData* data) {
                     } else {
                         create_default_representation(data);
                     }
-					stats::clear_all_properties();
+                    stats::clear_all_properties();
                     reset_view(data);
                 }
             }
@@ -780,18 +817,23 @@ static void draw_main_menu(ApplicationData* data) {
             ImGui::EndGroup();
             ImGui::Separator();
 
-			ImGui::BeginGroup();
-			if (ImGui::Checkbox("Use high-res font", &data->high_res_font)) {
-				if (ImGui::GetIO().Fonts->Fonts.size() > 1 && data->high_res_font) {
-					ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts[1];
-					ImGui::GetIO().FontGlobalScale = 0.75f;
-				}
-				else {
-					ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts[0];
-					ImGui::GetIO().FontGlobalScale = 1.0f;
-				}
-			}
-			ImGui::EndGroup();
+            ImGui::BeginGroup();
+            if (ImGui::Checkbox("Use high-res font", &data->high_res_font)) {
+                if (ImGui::GetIO().Fonts->Fonts.size() > 1 && data->high_res_font) {
+                    ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts[1];
+                    ImGui::GetIO().FontGlobalScale = 0.75f;
+                } else {
+                    ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts[0];
+                    ImGui::GetIO().FontGlobalScale = 1.0f;
+                }
+            }
+            ImGui::EndGroup();
+            ImGui::Separator();
+
+            ImGui::BeginGroup();
+            ImGui::Checkbox("Hydrogen Bond", &data->hydrogen_bonds.enabled);
+            ImGui::EndGroup();
+            ImGui::Separator();
 
             // DEBUG DRAW
             ImGui::BeginGroup();
@@ -943,38 +985,27 @@ static void draw_property_window(ApplicationData* data) {
     ImGui::Begin("Properties", &data->statistics.show_property_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
     ImGui::PushID("PROPERTIES");
-    if (ImGui::Button("create new")) {
-        stats::create_property();
-    }
-    ImGui::SameLine();
-
-    ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
-    if (ImGui::Button("remove all")) {
-        stats::remove_all_properties();
-    }
-    ImGui::PopStyleColor(3);
-    ImGui::Spacing();
-
-	ImGui::PushItemWidth(-1);
-    ImGui::Columns(3, "columns", true);
+    ImGui::PushItemWidth(-1);
+    ImGui::Columns(4, "columns", true);
     ImGui::Separator();
 
     if (first_time_shown) {
         first_time_shown = false;
         ImGui::SetColumnWidth(0, ImGui::GetWindowContentRegionWidth() * 0.1f);
         ImGui::SetColumnWidth(1, ImGui::GetWindowContentRegionWidth() * 0.7f);
-        ImGui::SetColumnWidth(2, ImGui::GetWindowContentRegionWidth() * 0.2f);
+        ImGui::SetColumnWidth(2, ImGui::GetWindowContentRegionWidth() * 0.1f);
+        ImGui::SetColumnWidth(3, ImGui::GetWindowContentRegionWidth() * 0.1f);
     }
 
     ImGui::Text("name");
     ImGui::NextColumn();
     ImGui::Text("args");
     ImGui::NextColumn();
+    ImGui::Text("struct/time/dist");
+    ImGui::NextColumn();
     ImGui::NextColumn();
 
-    //bool compute_stats = false;
+    // bool compute_stats = false;
 
     for (int i = 0; i < stats::get_property_count(); i++) {
         auto prop = stats::get_property(i);
@@ -986,14 +1017,14 @@ static void draw_property_window(ApplicationData* data) {
         ImGui::PushItemWidth(-1);
         if (ImGui::InputText("##name", prop->name.buffer, prop->name.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
             prop->data_dirty = true;
-            //compute_stats = true;
+            // compute_stats = true;
         }
         ImGui::PopItemWidth();
         ImGui::NextColumn();
         ImGui::PushItemWidth(-1);
         if (ImGui::InputText("##args", prop->args.buffer, prop->args.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
             prop->data_dirty = true;
-            //compute_stats = true;
+            // compute_stats = true;
         }
         ImGui::PopItemWidth();
         if (!prop->valid) {
@@ -1003,14 +1034,18 @@ static void draw_property_window(ApplicationData* data) {
             }
         }
         ImGui::NextColumn();
+        ImGui::Checkbox("##visualize", &prop->visualize);
+        ImGui::SameLine();
+        ImGui::Checkbox("##timeline", &prop->show_as_timeline);
+        ImGui::SameLine();
+        ImGui::Checkbox("##distribution", &prop->show_as_distribution);
+        ImGui::NextColumn();
         if (ImGui::ArrowButton("up", ImGuiDir_Up)) {
             stats::move_property_up(prop);
-            //compute_stats = true;
         }
         ImGui::SameLine();
         if (ImGui::ArrowButton("down", ImGuiDir_Down)) {
             stats::move_property_down(prop);
-            //compute_stats = true;
         }
         ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
@@ -1019,8 +1054,6 @@ static void draw_property_window(ApplicationData* data) {
         if (ImGui::Button("remove")) {
             stats::remove_property(prop);
         }
-        ImGui::SameLine();
-        ImGui::Checkbox("show", &prop->visualize);
         ImGui::PopStyleColor(3);
         ImGui::NextColumn();
         ImGui::PopID();
@@ -1028,12 +1061,24 @@ static void draw_property_window(ApplicationData* data) {
     ImGui::Columns(1);
     ImGui::Separator();
     ImGui::PopID();
-	ImGui::PopItemWidth();
+    ImGui::PopItemWidth();
+
+    if (ImGui::Button("create new")) {
+        stats::create_property();
+    }
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
+    if (ImGui::Button("remove all")) {
+        stats::remove_all_properties();
+    }
+    ImGui::PopStyleColor(3);
     ImGui::End();
 
-    //if (compute_stats) {
-        // stats::compute_stats(data->mol_data.dynamic);
-        //compute_statistics_async(data);
+    // if (compute_stats) {
+    // stats::compute_stats(data->mol_data.dynamic);
+    // compute_statistics_async(data);
     //}
 }
 
@@ -1108,11 +1153,11 @@ static void draw_async_info(ApplicationData* data) {
             ImGui::ProgressBar(traj_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * PROGRESS_FRACT, 0), buf);
             ImGui::SameLine();
             ImGui::Text("Reading Trajectory");
-			ImGui::SameLine();
+            ImGui::SameLine();
             if (ImGui::Button("X")) {
                 data->async.trajectory.sync.signal_stop_and_wait();
-				compute_backbone_angles_async(data);
-                //compute_statistics_async(data);
+                compute_backbone_angles_async(data);
+                // compute_statistics_async(data);
                 data->async.trajectory.fraction = 0.f;
             }
         }
@@ -1160,6 +1205,7 @@ static void draw_timeline_window(ApplicationData* data) {
 
         for (int i = 0; i < stats::get_property_count(); i++) {
             auto prop = stats::get_property(i);
+            if (!prop->show_as_timeline) continue;
             Array<float> prop_data = prop->data;
             CString prop_name = prop->name;
             Range prop_range = prop->data_range;
@@ -1181,7 +1227,7 @@ static void draw_timeline_window(ApplicationData* data) {
 
         if (data->time_filter.range != old_range) {
             stats::set_all_property_flags(false, false, true);
-            //compute_statistics_async(data);
+            // compute_statistics_async(data);
         }
 
         if (ImGui::IsWindowHovered() && ImGui::GetIO().MouseWheel != 0.f && ImGui::GetIO().KeyCtrl) {
@@ -1206,13 +1252,14 @@ static void draw_distribution_window(ApplicationData* data) {
     ImGui::PushItemWidth(-1);
     ImVec2 frame_size{ImGui::CalcItemWidth(), 100.f};
 
-	constexpr uint32 FULL_BAR_COLOR = 0x77cc9e66;
+    constexpr uint32 FULL_BAR_COLOR = 0x77cc9e66;
     constexpr uint32 FULL_TXT_COLOR = 0xffcc9e66;
     constexpr uint32 FILT_BAR_COLOR = 0x5533ffff;
     constexpr uint32 FILT_TXT_COLOR = 0xff33ffff;
 
     for (int i = 0; i < stats::get_property_count(); i++) {
         stats::Property* prop = stats::get_property(i);
+        if (!prop->show_as_distribution) continue;
         ImGui::PushID(i);
 
         const ImRect frame_bb(window->DC.CursorPos, window->DC.CursorPos + ImVec2(frame_size.x, frame_size.y));
@@ -1223,11 +1270,14 @@ static void draw_distribution_window(ApplicationData* data) {
             ImGui::RenderFrame(frame_bb.Min, frame_bb.Max, ImGui::GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
 
             const float max_val = math::max(prop->filt_histogram.bin_range.y, prop->filt_histogram.bin_range.y);
-            ImGui::DrawHistogram(inner_bb.Min, inner_bb.Max, prop->full_histogram.bins.data, (int32)prop->full_histogram.bins.count, max_val, FULL_BAR_COLOR);
-            ImGui::DrawHistogram(inner_bb.Min, inner_bb.Max, prop->filt_histogram.bins.data, (int32)prop->filt_histogram.bins.count, max_val, FILT_BAR_COLOR);
+            ImGui::DrawHistogram(inner_bb.Min, inner_bb.Max, prop->full_histogram.bins.data, (int32)prop->full_histogram.bins.count, max_val,
+                                 FULL_BAR_COLOR);
+            ImGui::DrawHistogram(inner_bb.Min, inner_bb.Max, prop->filt_histogram.bins.data, (int32)prop->filt_histogram.bins.count, max_val,
+                                 FILT_BAR_COLOR);
 
             if (ImGui::IsItemHovered()) {
-                window->DrawList->AddLine(ImVec2(ImGui::GetIO().MousePos.x, inner_bb.Min.y), ImVec2(ImGui::GetIO().MousePos.x, inner_bb.Max.y), 0xffffffff);
+                window->DrawList->AddLine(ImVec2(ImGui::GetIO().MousePos.x, inner_bb.Min.y), ImVec2(ImGui::GetIO().MousePos.x, inner_bb.Max.y),
+                                          0xffffffff);
                 float t = (ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
                 int32 count = (int32)prop->full_histogram.bins.count;
                 int32 idx = ImClamp((int32)(t * (count - 1)), 0, count - 1);
@@ -1420,7 +1470,7 @@ static void load_molecule_data(ApplicationData* data, CString file) {
                 init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
                 compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
                 // stats::update(data->mol_data.dynamic, );
-                //compute_statistics_async(data);
+                // compute_statistics_async(data);
             }
         } else if (compare_n(ext, "gro", 3, true)) {
             free_molecule_data(data);
@@ -1760,7 +1810,7 @@ static void load_trajectory_async(ApplicationData* data) {
     if (data->mol_data.dynamic.trajectory.file_handle) {
         data->async.trajectory.sync.stop_signal = false;
         data->async.trajectory.sync.running = true;
-        data->async.trajectory.sync.thread = std::thread([data]() {		
+        data->async.trajectory.sync.thread = std::thread([data]() {
             while (read_next_trajectory_frame(&data->mol_data.dynamic.trajectory)) {
                 data->async.trajectory.fraction =
                     data->mol_data.dynamic.trajectory.num_frames / (float)data->mol_data.dynamic.trajectory.frame_offsets.count;
@@ -1769,22 +1819,22 @@ static void load_trajectory_async(ApplicationData* data) {
             data->async.trajectory.sync.running = false;
             data->async.trajectory.sync.stop_signal = false;
 
-            //compute_statistics_async(data);
-			stats::set_all_property_flags(true, true, true);
+            // compute_statistics_async(data);
+            stats::set_all_property_flags(true, true, true);
             compute_backbone_angles_async(data);
         });
         data->async.trajectory.sync.thread.detach();
     }
 }
 
-//static void remove_properties(ApplicationData* data) {
-    //data->async.statistics.sync.signal_stop_and_wait();
-    //stats::remove_all_properties();
+// static void remove_properties(ApplicationData* data) {
+// data->async.statistics.sync.signal_stop_and_wait();
+// stats::remove_all_properties();
 //}
 
-//static void clear_properties(ApplicationData* data) {
-    //data->async.statistics.sync.signal_stop_and_wait();
-    //stats::clear_all_properties();
+// static void clear_properties(ApplicationData* data) {
+// data->async.statistics.sync.signal_stop_and_wait();
+// stats::clear_all_properties();
 //}
 
 /*

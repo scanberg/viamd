@@ -1,5 +1,7 @@
 #pragma once
 
+#define NOMINMAX
+
 #include <core/types.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -67,21 +69,21 @@ using glm::normalize;
 
 template <int N, typename T, glm::qualifier Q>
 T angle(glm::vec<N, T, Q> const& a, glm::vec<N, T, Q> const& b) {
-	return acos(dot(normalize(a), normalize(b)));
+    return acos(dot(normalize(a), normalize(b)));
 }
 
 template <int N, typename T, glm::qualifier Q>
 T angle(glm::vec<N, T, Q> const& a, glm::vec<N, T, Q> const& b, glm::vec<N, T, Q> const& c) {
-	return angle(a - b, c - b);
+    return angle(a - b, c - b);
 }
 
 inline float dihedral_angle(const vec3& p0, const vec3& p1, const vec3& p2, const vec3& p3) {
-	vec3 b1 = p1 - p0;
-	vec3 b2 = p2 - p1;
-	vec3 b3 = p3 - p2;
-	vec3 c1 = math::cross(b1, b2);
-	vec3 c2 = math::cross(b2, b3);
-	return glm::atan(glm::dot(glm::cross(c1, c2), glm::normalize(b2)), glm::dot(c1, c2));
+    vec3 b1 = p1 - p0;
+    vec3 b2 = p2 - p1;
+    vec3 b3 = p3 - p2;
+    vec3 c1 = math::cross(b1, b2);
+    vec3 c2 = math::cross(b2, b3);
+    return glm::atan(glm::dot(glm::cross(c1, c2), glm::normalize(b2)), glm::dot(c1, c2));
 }
 
 inline float dihedral_angle(const vec3 p[4]) { return dihedral_angle(p[0], p[1], p[2], p[3]); }
@@ -120,11 +122,11 @@ T hermite(T const& v1, T const& t1, T const& v2, T const& t2, V s) {
 
 template <typename T, typename V>
 static T spline(const T& p0, const T& p1, const T& p2, const T& p3, V s, V tension = (V)0.5) {
-	T v0 = (p2 - p0) * tension;
-	T v1 = (p3 - p1) * tension;
-	V s2 = s * s;
-	V s3 = s * s2;
-	return ((V)2.0 * p1 - (V)2.0 * p2 + v0 + v1) * s3 + (-(V)3.0 * p1 + (V)3.0 * p2 - (V)2.0 * v0 - v1) * s2 + v0 * s + p1;
+    T v0 = (p2 - p0) * tension;
+    T v1 = (p3 - p1) * tension;
+    V s2 = s * s;
+    V s3 = s * s2;
+    return ((V)2.0 * p1 - (V)2.0 * p2 + v0 + v1) * s3 + (-(V)3.0 * p1 + (V)3.0 * p2 - (V)2.0 * v0 - v1) * s2 + v0 * s + p1;
 }
 
 // Quaternion

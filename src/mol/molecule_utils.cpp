@@ -1,12 +1,14 @@
+//#define NOMINMAX
+
 #include "molecule_utils.h"
-#include <gfx/gl_utils.h>
-#include <gfx/immediate_draw_utils.h>
 #include <core/hash.h>
 #include <core/common.h>
 #include <core/log.h>
-#include <core/math_utils.h>
 #include <mol/trajectory_utils.h>
 #include <mol/spatial_hash.h>
+#include <gfx/gl_utils.h>
+#include <gfx/immediate_draw_utils.h>
+
 #include <imgui.h>
 #include <ctype.h>
 #include <fstream>
@@ -565,49 +567,103 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
     }
 }
 
-void compute_hydrogen_bonds(DynamicArray<HydrogenBond>* bonds, const MoleculeDynamic& dyn, int32 frame_idx, float dist_cutoff, float angle_cutoff, const HydrogenBondCandidates* candidates) {
-	ASSERT(false);
+namespace hydrogen_bond {
+int32 compute_donors(DynamicArray<HydrogenBondDonor>* donors, Array<const Label> labels) {
+    ASSERT(donors);
+    int32 count = 0;
+    const int32 num_labels = (int32)labels.count;
+    for (int32 i = 0; i < num_labels; i++) {
+        if (compare_n(labels[i], "OH", 2) || compare_n(labels[i], "NH", 2)) {
+            if (i + 1 < num_labels && compare_n(labels[i + 1], "H", 1)) {
+                donors->push_back({i, i + 1});
+                count++;
+            }
+            if (i + 2 < num_labels && compare_n(labels[i + 2], "H", 1)) {
+                donors->push_back({i, i + 2});
+                count++;
+            }
+        }
+    }
+    return count;
 }
 
-DynamicArray<HydrogenBond> compute_hydrogen_bonds(const MoleculeDynamic& dyn, int32 frame_idx, float dist_cutoff, float angle_cutoff, const HydrogenBondCandidates* candidates) {
-	DynamicArray<HydrogenBond> bonds;
-	compute_hydrogen_bonds(&bonds, dyn, frame_idx, dist_cutoff, angle_cutoff, candidates);
-	return bonds;
+DynamicArray<HydrogenBondDonor> compute_donors(Array<const Label> labels) {
+    DynamicArray<HydrogenBondDonor> donors;
+    compute_donors(&donors, labels);
+    return donors;
 }
 
-HydrogenBondTrajectory compute_hydrogen_bonds_trajectory(const MoleculeDynamic& dyn, float max_dist, float max_angle) {
-	HydrogenBondTrajectory hbt;
-	spatialhash::Frame frame;
-
-	struct Donor {
-		AtomIdx donor_idx = 0;
-		AtomIdx hydro_idx = 0;
-	};
-
-	DynamicArray<Donor>		pot_don{};
-	DynamicArray<AtomIdx>	pot_acc{};
-
-	int32 count = (int32)dyn.molecule.atom_labels.count;
-	for (int32 i = 0; i < count; i++) {
-		if (compare_n(dyn.molecule.atom_labels[i], "OH", 2) || compare_n(dyn.molecule.atom_labels[i], "NH", 2)) {
-			if (i + 1 < count && compare_n(dyn.molecule.atom_labels[i + 1], "HH", 2)) {
-				pot_don.push_back({ i, i + 1 });
-			}
-			if (i + 2 < count && compare_n(dyn.molecule.atom_labels[i + 2], "HH", 2)) {
-				pot_don.push_back({ i, i + 2 });
-			}
-		}
-		if (dyn.molecule.atom_elements[i] == Element::O || dyn.molecule.atom_elements[i] == Element::N) {
-			pot_acc.push_back(i);
-		}
-	}
-
-	for (int32 i = 0; i < dyn.trajectory.num_frames; i++) {
-		spatialhash::compute_frame(&frame, get_trajectory_positions(dyn.trajectory, i), vec3(max_dist));
-	}
-
-	return hbt;
+int32 compute_acceptors(DynamicArray<HydrogenBondAcceptor>* acceptors, Array<const Element> elements) {
+    ASSERT(acceptors);
+    const int32 pre_count = (int32)acceptors->count;
+    for (int32 i = 0; i < (int32)elements.count; i++) {
+        if (elements[i] == Element::O || elements[i] == Element::N) {
+            acceptors->push_back(i);
+        }
+    }
+    return (int32)acceptors->count - pre_count;
 }
+
+DynamicArray<HydrogenBondAcceptor> compute_acceptors(Array<const Element> elements) {
+    DynamicArray<HydrogenBondAcceptor> acceptors;
+    compute_acceptors(&acceptors, elements);
+    return acceptors;
+}
+
+int32 compute_bonds(DynamicArray<HydrogenBond>* bonds, Array<const HydrogenBondDonor> donors, Array<const HydrogenBondAcceptor> acceptors,
+                    Array<const vec3> atom_positions, float dist_cutoff, float angle_cutoff) {
+    const int32 num_acceptors = (int32)acceptors.count;
+    if (!num_acceptors) return 0;
+
+    DynamicArray<vec3> acceptor_pos(num_acceptors);
+    DynamicArray<AtomIdx> acceptor_idx(num_acceptors);
+    for (int32 i = 0; i < num_acceptors; i++) {
+        acceptor_pos[i] = atom_positions[acceptors[i]];
+        acceptor_idx[i] = acceptors[i];
+    }
+
+    int32 pre_count = (int32)bonds->count;
+    spatialhash::Frame frame = spatialhash::compute_frame(acceptor_pos, vec3(dist_cutoff));
+    for (const auto& don : donors) {
+        vec3 donor_pos = atom_positions[don.donor_idx];
+        vec3 hydro_pos = atom_positions[don.hydro_idx];
+        spatialhash::for_each_within(frame, hydro_pos, dist_cutoff,
+                                     [bonds, &donor_pos, &hydro_pos, &acceptor_idx, &don, angle_cutoff, dist_cutoff](int32 idx, const vec3& pos) {
+                                         AtomIdx g_idx = acceptor_idx[idx];
+                                         if (g_idx == don.donor_idx) return;
+                                         const vec3 a = hydro_pos - donor_pos;
+                                         const vec3 b = pos - hydro_pos;
+                                         if (math::angle(a, b) < angle_cutoff) {
+                                             bonds->push_back({g_idx, don.donor_idx, don.hydro_idx});
+                                         }
+                                     });
+    }
+    return (int32)bonds->count - pre_count;
+}
+
+DynamicArray<HydrogenBond> compute_bonds(Array<const HydrogenBondDonor> donors, Array<const HydrogenBondAcceptor> acceptors,
+                                         Array<const vec3> atom_positions, float dist_cutoff, float angle_cutoff) {
+    DynamicArray<HydrogenBond> bonds;
+    compute_bonds(&bonds, donors, acceptors, atom_positions, dist_cutoff, angle_cutoff);
+    return bonds;
+}
+
+void compute_bonds_trajectory(HydrogenBondTrajectory* hbt, const MoleculeDynamic& dyn, float max_dist, float max_angle) {
+    ASSERT(hbt);
+    for (int32 i = 0; i < dyn.trajectory.num_frames; i++) {
+        Array<HydrogenBond> frame_bonds{(HydrogenBond*)(hbt->bond_data.end()), int64(0)};
+        Array<const vec3> atom_positions = get_trajectory_positions(dyn.trajectory, i);
+        frame_bonds.count = compute_bonds(&hbt->bond_data, dyn.molecule.hydrogen_bond.donors, dyn.molecule.hydrogen_bond.acceptors, atom_positions,
+                                          max_dist, max_angle);
+    }
+}
+
+HydrogenBondTrajectory compute_bonds_trajectory(const MoleculeDynamic& dyn, float max_dist, float max_angle) {
+    HydrogenBondTrajectory hbt;
+    compute_bonds_trajectory(&hbt, dyn, max_dist, max_angle);
+    return hbt;
+}
+}  // namespace hydrogen_bond
 
 namespace filter {
 static DynamicArray<FilterCommand> filter_commands;
@@ -1942,7 +1998,7 @@ void draw_vdw(Array<const vec3> atom_positions, Array<const float> atom_radii, A
     glUnmapBuffer(GL_ARRAY_BUFFER);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    glEnable(GL_DEPTH_TEST);
+    // glEnable(GL_DEPTH_TEST);
 
     glUseProgram(vdw::program);
 
@@ -1976,7 +2032,7 @@ void draw_vdw(Array<const vec3> atom_positions, Array<const float> atom_radii, A
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    glDisable(GL_DEPTH_TEST);
+    // glDisable(GL_DEPTH_TEST);
 }
 
 void draw_licorice(Array<const vec3> atom_positions, Array<const Bond> atom_bonds, Array<const uint32> atom_colors, const mat4& view_mat,
@@ -1997,7 +2053,7 @@ void draw_licorice(Array<const vec3> atom_positions, Array<const Bond> atom_bond
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, licorice::ibo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, atom_bonds.count * sizeof(Bond), atom_bonds.data, GL_STREAM_DRAW);
 
-    glEnable(GL_DEPTH_TEST);
+    // glEnable(GL_DEPTH_TEST);
 
     glBindVertexArray(licorice::vao);
     glUseProgram(licorice::program);
@@ -2011,7 +2067,7 @@ void draw_licorice(Array<const vec3> atom_positions, Array<const Bond> atom_bond
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
-    glDisable(GL_DEPTH_TEST);
+    // glDisable(GL_DEPTH_TEST);
 }
 
 void draw_ribbons(Array<const BackboneSegment> backbone_segments, Array<const Chain> chains, Array<const vec3> atom_positions,
@@ -2057,7 +2113,7 @@ void draw_ribbons(Array<const BackboneSegment> backbone_segments, Array<const Ch
 
     set_vbo_data(vertices.data, vertices.size_in_bytes());
 
-    glEnable(GL_DEPTH_TEST);
+    // glEnable(GL_DEPTH_TEST);
 
     glBindVertexArray(ribbons::vao);
     glUseProgram(ribbons::program);
@@ -2071,7 +2127,7 @@ void draw_ribbons(Array<const BackboneSegment> backbone_segments, Array<const Ch
     glUseProgram(0);
     glBindVertexArray(0);
 
-    glDisable(GL_DEPTH_TEST);
+    // glDisable(GL_DEPTH_TEST);
 }
 
 void draw_backbone(Array<const BackboneSegment> backbone_segments, Array<const vec3> atom_positions, const mat4& view_mat, const mat4& proj_mat) {

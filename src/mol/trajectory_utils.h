@@ -1,6 +1,6 @@
 #pragma once
 
-#include <mol/trajectory.h>
+#include <mol/molecule_trajectory.h>
 
 // Reads the header info of a trajectory and allocates space for it
 bool load_and_allocate_trajectory(MoleculeTrajectory* traj, CString path);

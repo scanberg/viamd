@@ -13,7 +13,7 @@ struct Bond {
 using Label    = StringBuffer<8>;
 using AtomIdx  = int32;
 using ResIdx   = int32;
-using ChainIdx = int16;
+using ChainIdx = int32;
 
 struct Residue {
 	Label name = "";
@@ -36,6 +36,13 @@ struct BackboneSegment {
 	AtomIdx o_idx;
 };
 
+struct HydrogenBondDonor {
+    AtomIdx donor_idx = 0;
+    AtomIdx hydro_idx = 0;
+};
+
+typedef AtomIdx HydrogenBondAcceptor;
+
 // Interface to access molecular data
 struct MoleculeStructure {
 	Array<vec3>		atom_positions{};
@@ -43,12 +50,17 @@ struct MoleculeStructure {
 	Array<Label>	atom_labels{};
 	Array<ResIdx>	atom_residue_indices{};
 
-	Array<Bond>		bonds{};
+	Array<Bond>		covalent_bonds{};
 	Array<Residue>	residues{};
 	Array<Chain>	chains{};
 
 	// If this is not zero in length it should have the same length as residues
 	Array<BackboneSegment> backbone_segments{};
+
+	struct {
+        Array<HydrogenBondDonor>	donors{};
+        Array<HydrogenBondAcceptor> acceptors{};
+	} hydrogen_bond;
 
 	operator bool() const {
 		return atom_positions.count > 0;
@@ -168,5 +180,5 @@ inline Array<const Label> get_labels(const MoleculeStructure& mol, Residue res) 
 	return mol.atom_labels.sub_array(res.beg_atom_idx, res.end_atom_idx - res.beg_atom_idx);
 }
 
-bool init_molecule_structure(MoleculeStructure* mol, int num_atoms, int num_bonds, int num_residues, int num_chains, int num_backbone_segments);
+bool init_molecule_structure(MoleculeStructure* mol, int32 num_atoms, int32 num_bonds, int32 num_residues, int32 num_chains, int32 num_backbone_segments = 0, int32 num_hydrogen_bond_donors = 0, int32 num_hydrogen_bond_acceptors = 0);
 void free_molecule_structure(MoleculeStructure* mol);

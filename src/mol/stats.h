@@ -47,7 +47,10 @@ struct Property {
 
     bool valid = false;
     bool periodic = false;
+
     bool visualize = false;
+    bool show_as_timeline = true;
+    bool show_as_distribution = true;
 
     bool data_dirty = false;
     bool full_hist_dirty = false;

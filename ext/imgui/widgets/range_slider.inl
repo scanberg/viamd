@@ -17,7 +17,7 @@ std::unordered_map<ImGuiID, RangeSliderState> range_slider_states;
 
 // ~80% common code with ImGui::SliderBehavior
 bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v2, float v_min,
-                         float v_max, float power, int decimal_precision, ImGuiSliderFlags flags) {
+                         float v_max, float power, const char* format, ImGuiSliderFlags flags) {
     ImGuiContext& g = *GImGui;
     ImGuiWindow* window = GetCurrentWindow();
     const ImGuiStyle& style = g.Style;
@@ -32,14 +32,7 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
     const float grab_padding = 2.0f;
     const float slider_sz = is_horizontal ? (frame_bb.GetWidth() - grab_padding * 2.0f)
                                           : (frame_bb.GetHeight() - grab_padding * 2.0f);
-    float grab_sz;
-    if (decimal_precision > 0)
-        grab_sz = ImMin(style.GrabMinSize, slider_sz);
-    else
-        grab_sz = ImMin(
-            ImMax(1.0f * (slider_sz / ((v_min < v_max ? v_max - v_min : v_min - v_max) + 1.0f)),
-                  style.GrabMinSize),
-            slider_sz);  // Integer sliders, if possible have the grab size represent 1 unit
+    float grab_sz = ImMin(style.GrabMinSize, slider_sz);
     const float slider_usable_sz = slider_sz - grab_sz;
     const float slider_usable_pos_min =
         (is_horizontal ? frame_bb.Min.x : frame_bb.Min.y) + grab_padding + grab_sz * 0.5f;
@@ -106,19 +99,18 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
 			}
 
 			// Round past decimal precision
-			new_value = RoundScalar(new_value, decimal_precision);
-
+			new_value = RoundScalarWithFormat<float, int>(format, ImGuiDataType_Float, new_value);
 			return new_value;
 		};
 
         if (g.IO.MouseClicked[0]) {
 			const float min_dist = 4.f;
 
-			float t1 = SliderBehaviorCalcRatioFromValue(*v1, v_min, v_max, power, linear_zero_pos);
+			float t1 = SliderBehaviorCalcRatioFromValue<float, float>(ImGuiDataType_Float, *v1, v_min, v_max, power, linear_zero_pos);
 			if (!is_horizontal) t1 = 1.0f - t1;
 			float p1 = ImLerp(slider_usable_pos_min, slider_usable_pos_max, t1);
 
-			float t2 = SliderBehaviorCalcRatioFromValue(*v2, v_min, v_max, power, linear_zero_pos);
+			float t2 = SliderBehaviorCalcRatioFromValue<float, float>(ImGuiDataType_Float, *v2, v_min, v_max, power, linear_zero_pos);
 			if (!is_horizontal) t2 = 1.0f - t2;
 			float p2 = ImLerp(slider_usable_pos_min, slider_usable_pos_max, t2);
 
@@ -175,7 +167,7 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
     range_slider_states[id] = state;
 
     // Calculate slider grab positioning
-    float grab_t = SliderBehaviorCalcRatioFromValue(*v1, v_min, v_max, power, linear_zero_pos);
+    float grab_t = SliderBehaviorCalcRatioFromValue<float, float>(ImGuiDataType_Float, *v1, v_min, v_max, power, linear_zero_pos);
 
     // Draw
     if (!is_horizontal) grab_t = 1.0f - grab_t;
@@ -193,7 +185,7 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
         style.GrabRounding);
 
     // Calculate slider grab positioning
-    grab_t = SliderBehaviorCalcRatioFromValue(*v2, v_min, v_max, power, linear_zero_pos);
+    grab_t = SliderBehaviorCalcRatioFromValue<float, float>(ImGuiDataType_Float, *v2, v_min, v_max, power, linear_zero_pos);
 
     // Draw
     if (!is_horizontal) grab_t = 1.0f - grab_t;
@@ -252,7 +244,6 @@ bool RangeSliderFloat(const char* label, float* v1, float* v2, float v_min, floa
     if (hovered) SetHoveredID(id);
 
     if (!display_format) display_format = "(%.3f, %.3f)";
-    int decimal_precision = ParseFormatPrecision(display_format, 3);
 
     // Tabbing or CTRL-clicking on Slider turns it into an input box
     bool start_text_input = false;
@@ -267,14 +258,12 @@ bool RangeSliderFloat(const char* label, float* v1, float* v2, float v_min, floa
         }
     }
     if (start_text_input || (g.ActiveId == id && g.ScalarAsInputTextId == id))
-        return InputScalarAsWidgetReplacement(frame_bb, label, ImGuiDataType_Float, v1, id,
-                                              decimal_precision);
+        return InputScalarAsWidgetReplacement(frame_bb, id, label, ImGuiDataType_Float, v1, "%g");
 
     ItemSize(total_bb, style.FramePadding.y);
 
     // Actual slider behavior + render grab
-    const bool value_changed =
-        RangeSliderBehavior(frame_bb, id, v1, v2, v_min, v_max, power, decimal_precision, 0);
+    const bool value_changed = RangeSliderBehavior(frame_bb, id, v1, v2, v_min, v_max, power, display_format, 0);
 
     // Display value using user-provided display format so user can add prefix/suffix/decorations to
     // the value.

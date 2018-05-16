@@ -1,6 +1,6 @@
 #pragma once
 
-#include <mol/molecule.h>
+#include <mol/molecule_structure.h>
 #include <core/string_utils.h>
 
 bool allocate_and_load_gro_from_file(MoleculeStructure* mol, const char* filename);

@@ -1,7 +1,7 @@
 #pragma once
 
-#include <mol/molecule.h>
-#include <mol/trajectory.h>
+#include <mol/molecule_structure.h>
+#include <mol/molecule_trajectory.h>
 
 struct MoleculeDynamic {
 	MoleculeStructure molecule{};

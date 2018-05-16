@@ -1,4 +1,4 @@
-#include "trajectory.h"
+#include "molecule_trajectory.h"
 
 bool init_trajectory(MoleculeTrajectory* traj, int32 num_atoms, int32 num_frames) {
 	ASSERT(traj);
