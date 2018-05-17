@@ -22,8 +22,8 @@
 #include <stdio.h>
 #include <stdarg.h>
 
-#if !defined(NDEBUG)
-inline void _assert(bool cond, const char* file, const char* func, int line, const char* fmt, ...) {
+#ifndef NDEBUG
+inline void _assert(const char* file, const char* func, int line, bool cond, const char* fmt, ...) {
     if (!cond) {
         va_list ap;
         va_start(ap, fmt);
@@ -33,9 +33,9 @@ inline void _assert(bool cond, const char* file, const char* func, int line, con
         assert(false);
     }
 }
-inline void _assert(bool cond, const char* file, const char* func, int line) { _assert(cond, file, func, line, ""); }
+inline void _assert(const char* file, const char* func, int line, bool cond) { _assert(file, func, line, cond, ""); }
 
-#define ASSERT(cond, ...) _assert(cond, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
+#define ASSERT(...) _assert(__FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
 #else
 #define ASSERT(...) \
     {}

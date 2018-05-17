@@ -15,10 +15,10 @@ bool init_molecule_structure(MoleculeStructure* mol, int32 num_atoms, int32 num_
 
 	void* data = MALLOC(alloc_size);
 
-	mol->atom_positions =		{ (vec3*)data, num_atoms };
-	mol->atom_elements =		{ (Element*)(mol->atom_positions.end()), num_atoms };
-	mol->atom_labels =			{ (Label*)(mol->atom_elements.end()), num_atoms };
-	mol->atom_residue_indices =	{ (ResIdx*)(mol->atom_labels.end()), num_atoms };
+	mol->atom_positions =			{ (vec3*)data, num_atoms };
+	mol->atom_elements =			{ (Element*)(mol->atom_positions.end()), num_atoms };
+	mol->atom_labels =				{ (Label*)(mol->atom_elements.end()), num_atoms };
+	mol->atom_residue_indices =		{ (ResIdx*)(mol->atom_labels.end()), num_atoms };
 	
 	mol->covalent_bonds =			{ (Bond*)(mol->atom_residue_indices.end()), num_bonds };
 	mol->residues =					{ (Residue*)(mol->covalent_bonds.end()), num_residues };
