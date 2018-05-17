@@ -31,9 +31,24 @@ enum class RamachandranConformationClassification {
     PLow
 };
 
-struct Volume {
-    DynamicArray<uint8> data;
-    ivec3 dim;
+struct DynamicBasis {
+    AtomIdx origin_idx = -1;
+    AtomIdx x_idx = -1;
+    AtomIdx y_idx = -1;
+    AtomIdx z_idx = -1;
+
+    vec3 extent;
+};
+
+struct HydrogenBond {
+    AtomIdx acc_idx = 0;
+    AtomIdx don_idx = 0;
+    AtomIdx hyd_idx = 0;
+};
+
+struct HydrogenBondTrajectory {
+    DynamicArray<HydrogenBond> bond_data{};
+    DynamicArray<Array<HydrogenBond>> frame_bonds{};
 };
 
 // tangent AND binormal is perhaps redundant
@@ -85,6 +100,15 @@ inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backb
 void transform_positions(Array<vec3> positions, const mat4& transformation);
 void compute_bounding_box(vec3* min_box, vec3* max_box, Array<const vec3> positions);
 
+inline mat4 compute_basis(const DynamicBasis& basis, Array<const vec3> atom_positions) {
+    mat4 mat;
+    vec3 x = atom_positions[basis.x_idx] - atom_positions[basis.origin_idx];
+    vec3 y = atom_positions[basis.y_idx] - atom_positions[basis.origin_idx];
+    vec3 z = atom_positions[basis.z_idx] - atom_positions[basis.origin_idx];
+
+    return mat;
+}
+
 void linear_interpolation_periodic(Array<vec3> positions, Array<const vec3> prev_pos, Array<const vec3> next_pos, float t, mat3 sim_box);
 void linear_interpolation(Array<vec3> positions, Array<const vec3> prev_pos, Array<const vec3> next_pos, float t);
 void spline_interpolation_periodic(Array<vec3> positions, Array<const vec3> pos0, Array<const vec3> pos1, Array<const vec3> pos2,
@@ -115,23 +139,6 @@ void compute_atom_radii(Array<float> radii_dst, Array<const Element> elements);
 
 DynamicArray<uint32> compute_atom_colors(const MoleculeStructure& mol, ColorMapping mapping, uint32 static_color = 0xffffffff);
 void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, ColorMapping mapping, uint32 static_color = 0xffffffff);
-
-Volume compute_occupancy_volume(Array<vec3> atom_pos);
-void compute_occupancy_volume(Volume* volume, Array<vec3> atom_pos);
-
-Volume compute_occupancy_volume(Array<vec3> atom_pos, vec3 min_box, vec3 max_box);
-void compute_occupancy_volume(Volume* volume, Array<vec3> atom_pos, vec3 min_box, vec3 max_box);
-
-struct HydrogenBond {
-    AtomIdx acc_idx = 0;
-    AtomIdx don_idx = 0;
-    AtomIdx hyd_idx = 0;
-};
-
-struct HydrogenBondTrajectory {
-    DynamicArray<HydrogenBond> bond_data{};
-    DynamicArray<Array<HydrogenBond>> frame_bonds{};
-};
 
 namespace hydrogen_bond {
 int32 compute_acceptors(DynamicArray<HydrogenBondAcceptor>* acceptors, Array<const Element> elements);

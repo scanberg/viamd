@@ -41,8 +41,8 @@ struct StatisticsContext {
 
     Property* current_property = nullptr;
 
-    volatile bool  thread_running = false;
-    volatile bool  stop_signal = false;
+    volatile bool thread_running = false;
+    volatile bool stop_signal = false;
     volatile float fraction_done = 0.f;
 };
 
@@ -109,8 +109,8 @@ void init_instance_data(Array<InstanceData>* instance_data, int32 num_instances,
 
 void free_instance_data(Array<InstanceData>* instance_data) {
     ASSERT(instance_data);
-	static int32 count = 0;
-	count++;
+    static int32 count = 0;
+    count++;
     if (instance_data->data) {
         for (auto& inst : *instance_data) {
             inst.~InstanceData();
@@ -194,23 +194,44 @@ void normalize_histogram(Histogram* hist) {
     }
 }
 
-void compute_density_volume(DensityVolume* vol) {
-	ASSERT(vol);
-	if (vol->dim.x == 0 || vol->dim.y == 0 || vol->dim.z == 0) {
-		LOG_ERROR("One or more volume dimension are zero...");
-		return;
-	}
+inline bool point_in_aabb(const vec3& p, const vec3& min_box, const vec3& max_box) {
+    if (p.x < min_box.x || max_box.x < p.x) return false;
+    if (p.y < min_box.y || max_box.y < p.y) return false;
+    if (p.z < min_box.z || max_box.z < p.z) return false;
+    return true;
+}
 
-	clear_volume(vol);
-	for (auto p : ctx.properties) {
-		for (const auto& i : p->instance_data) {
-			for (auto v : i.data) {
-				if (p->filter.x <= v && v <= p->filter.y) {
-				
-				}
-			}
-		}
-	}
+void compute_density_volume(DensityVolume* vol, const MoleculeTrajectory& traj, Range frame_range) {
+    ASSERT(vol);
+    if (vol->dim.x == 0 || vol->dim.y == 0 || vol->dim.z == 0) {
+        LOG_ERROR("One or more volume dimension are zero...");
+        return;
+    }
+
+    int32 beg_frame = math::clamp((int32)frame_range.x, 0, traj.num_frames - 1);
+    int32 end_frame = math::clamp((int32)frame_range.y, 0, traj.num_frames - 1);
+
+    clear_volume(vol);
+    for (int32 frame_idx = beg_frame; frame_idx < end_frame; frame_idx++) {
+        auto atom_positions = get_trajectory_positions(traj, frame_idx);
+        for (auto prop : ctx.properties) {
+            for (int32 inst_idx = 0; inst_idx < prop->instance_data.count; inst_idx++) {
+                const float v = prop->instance_data[inst_idx].data[frame_idx];
+                if (prop->filter.x <= v && v <= prop->filter.y) {
+                    for (const auto& s : prop->structure_data) {
+                        for (int32 i = s.structures[inst_idx].beg_idx; i < s.structures[inst_idx].end_idx; i++) {
+                            vec3 p = atom_positions[i];
+                            if (point_in_aabb(p, vol->min_box, vol->max_box)) {
+                                ivec3 c = ((p - vol->min_box) / (vol->max_box - vol->min_box)) * (vec3)vol->dim;
+                                int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
+                                vol->voxel_data[voxel_idx]++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 static Range compute_range(Array<float> data) {
@@ -618,8 +639,8 @@ static bool compute_distance(Property* prop, const Array<CString> args, const Mo
         return false;
     }
 
-	// @IMPORTANT! Use this instead of dynamic.trajectory.num_frames as that can be changing in a different thread!
-	const int32 num_frames = (int32)prop->data.count;
+    // @IMPORTANT! Use this instead of dynamic.trajectory.num_frames as that can be changing in a different thread!
+    const int32 num_frames = (int32)prop->data.count;
     const int32 structure_count = (int32)prop->structure_data[0].structures.count;
 
     init_instance_data(&prop->instance_data, structure_count, num_frames);
@@ -650,7 +671,7 @@ static bool compute_distance(Property* prop, const Array<CString> args, const Mo
 
     prop->data_range = compute_range(*prop);
     prop->periodic = false;
-    prop->unit = "?";
+    prop->unit = "Å";
 
     return true;
 }
@@ -672,8 +693,8 @@ static bool compute_angle(Property* prop, const Array<CString> args, const Molec
         return false;
     }
 
-	// @IMPORTANT! Use this instead of dynamic.trajectory.num_frames as that can be changing in a different thread!
-	const int32 num_frames = (int32)prop->data.count;
+    // @IMPORTANT! Use this instead of dynamic.trajectory.num_frames as that can be changing in a different thread!
+    const int32 num_frames = (int32)prop->data.count;
     const int32 structure_count = (int32)prop->structure_data[0].structures.count;
 
     init_instance_data(&prop->instance_data, structure_count, num_frames);
@@ -710,7 +731,7 @@ static bool compute_angle(Property* prop, const Array<CString> args, const Molec
 
     prop->data_range = {0, math::PI};
     prop->periodic = true;
-    prop->unit = "?";
+    prop->unit = u8"°";
 
     return true;
 }
@@ -732,8 +753,8 @@ static bool compute_dihedral(Property* prop, const Array<CString> args, const Mo
         return false;
     }
 
-	// @IMPORTANT! Use this instead of dynamic.trajectory.num_frames as that can be changing in a different thread!
-	const int32 num_frames = (int32)prop->data.count;
+    // @IMPORTANT! Use this instead of dynamic.trajectory.num_frames as that can be changing in a different thread!
+    const int32 num_frames = (int32)prop->data.count;
     const int32 structure_count = (int32)prop->structure_data[0].structures.count;
 
     init_instance_data(&prop->instance_data, structure_count, num_frames);
@@ -775,7 +796,7 @@ static bool compute_dihedral(Property* prop, const Array<CString> args, const Mo
 
     prop->data_range = {-math::PI, math::PI};
     prop->periodic = true;
-    prop->unit = "?";
+    prop->unit = u8"°";
 
     return true;
 }
@@ -1084,7 +1105,7 @@ static void compute_property_data(Property* prop, const MoleculeDynamic& dynamic
 
     for (auto p : ctx.properties) {
         if (p == prop) {
-            //auto& prop = *p;
+            // auto& prop = *p;
             ctx.current_property = p;
             prop->error_msg = "";
             if (prop->data.count != num_frames) {
@@ -1144,7 +1165,7 @@ static void compute_property_data(Property* prop, const MoleculeDynamic& dynamic
 
             if (pre_range != prop->data_range) {
                 prop->filter = prop->data_range;
-			}
+            }
 
             prop->full_histogram.value_range = prop->data_range;
             prop->filt_histogram.value_range = prop->data_range;
@@ -1223,105 +1244,98 @@ bool properties_dirty() {
 }
 
 void async_update(const MoleculeDynamic& dynamic, Range frame_filter) {
-	if (frame_filter.x == 0.f && frame_filter.y == 0.f) {
-		frame_filter.x = 0;
-		frame_filter.y = (float)dynamic.trajectory.num_frames;
-	}
+    if (frame_filter.x == 0.f && frame_filter.y == 0.f) {
+        frame_filter.x = 0;
+        frame_filter.y = (float)dynamic.trajectory.num_frames;
+    }
 
-	static Range prev_frame_filter{ 0,0 };
+    static Range prev_frame_filter{0, 0};
 
-	if ((prev_frame_filter != frame_filter || properties_dirty()) && !ctx.thread_running && !ctx.stop_signal) {
-		prev_frame_filter = frame_filter;
-		ctx.thread_running = true;
-		std::thread([&dynamic, frame_filter]() {
-			Histogram tmp_hist;
-			init_histogram(&tmp_hist, NUM_BINS);
-			ctx.fraction_done = 0.f;
+    if ((prev_frame_filter != frame_filter || properties_dirty()) && !ctx.thread_running && !ctx.stop_signal) {
+        prev_frame_filter = frame_filter;
+        ctx.thread_running = true;
+        std::thread([&dynamic, frame_filter]() {
+            Histogram tmp_hist;
+            init_histogram(&tmp_hist, NUM_BINS);
+            ctx.fraction_done = 0.f;
 
-			for (int32 i = 0; i < ctx.properties.count; i++) {
-				auto p = ctx.properties[i];
-				ctx.fraction_done = (i / (float)ctx.properties.count);
+            for (int32 i = 0; i < ctx.properties.count; i++) {
+                auto p = ctx.properties[i];
+                ctx.fraction_done = (i / (float)ctx.properties.count);
 
-				if (p->data_dirty) {
-					compute_property_data(p, dynamic);
-					p->data_dirty = false;
-				}
+                if (p->data_dirty) {
+                    compute_property_data(p, dynamic);
+                    p->data_dirty = false;
+                }
 
-				if (ctx.stop_signal) break;
+                if (ctx.stop_signal) break;
 
-				if (p->full_hist_dirty) {
-					clear_histogram(&p->full_histogram);
-					if (p->instance_data) {
-						for (const auto& inst : p->instance_data) {
-							compute_histogram(&p->full_histogram, inst.data);
-						}
-					}
-					else {
-						compute_histogram(&p->full_histogram, p->data);
-					}
-					normalize_histogram(&p->full_histogram);
-					p->full_hist_dirty = false;
-				}
+                if (p->full_hist_dirty) {
+                    clear_histogram(&p->full_histogram);
+                    if (p->instance_data) {
+                        for (const auto& inst : p->instance_data) {
+                            compute_histogram(&p->full_histogram, inst.data);
+                        }
+                    } else {
+                        compute_histogram(&p->full_histogram, p->data);
+                    }
+                    normalize_histogram(&p->full_histogram);
+                    p->full_hist_dirty = false;
+                }
 
-				if (ctx.stop_signal) break;
+                if (ctx.stop_signal) break;
 
-				if (p->filt_hist_dirty) {
-					clear_histogram(&tmp_hist);
-					tmp_hist.value_range = p->filt_histogram.value_range;
+                if (p->filt_hist_dirty) {
+                    clear_histogram(&tmp_hist);
+                    tmp_hist.value_range = p->filt_histogram.value_range;
 
-					int32 beg_idx = math::clamp((int32)frame_filter.x, 0, (int32)p->data.count);
-					int32 end_idx = math::clamp((int32)frame_filter.y, 0, (int32)p->data.count);
+                    int32 beg_idx = math::clamp((int32)frame_filter.x, 0, (int32)p->data.count);
+                    int32 end_idx = math::clamp((int32)frame_filter.y, 0, (int32)p->data.count);
 
-					if (beg_idx != end_idx) {
-						// Since the data is probably showing, perform the operations on tmp data then copy the results
-						if (p->instance_data) {
-							for (const auto& inst : p->instance_data) {
-								compute_histogram(&tmp_hist, inst.data.sub_array(beg_idx, end_idx - beg_idx), p->filter);
-							}
-						}
-						else {
-							compute_histogram(&tmp_hist, p->data.sub_array(beg_idx, end_idx - beg_idx), p->filter);
-						}
-						normalize_histogram(&tmp_hist);
-						p->filt_histogram.bin_range = tmp_hist.bin_range;
-						p->filt_histogram.num_samples = tmp_hist.num_samples;
-						memcpy(p->filt_histogram.bins.data, tmp_hist.bins.data, p->filt_histogram.bins.size_in_bytes());
-					}
-					p->filt_hist_dirty = false;
-				}
+                    if (beg_idx != end_idx) {
+                        // Since the data is probably showing, perform the operations on tmp data then copy the results
+                        if (p->instance_data) {
+                            for (const auto& inst : p->instance_data) {
+                                compute_histogram(&tmp_hist, inst.data.sub_array(beg_idx, end_idx - beg_idx), p->filter);
+                            }
+                        } else {
+                            compute_histogram(&tmp_hist, p->data.sub_array(beg_idx, end_idx - beg_idx), p->filter);
+                        }
+                        normalize_histogram(&tmp_hist);
+                        p->filt_histogram.bin_range = tmp_hist.bin_range;
+                        p->filt_histogram.num_samples = tmp_hist.num_samples;
+                        memcpy(p->filt_histogram.bins.data, tmp_hist.bins.data, p->filt_histogram.bins.size_in_bytes());
+                    }
+                    p->filt_hist_dirty = false;
+                }
 
-				if (ctx.stop_signal) break;
-			}
+                if (ctx.stop_signal) break;
+            }
 
-			free_histogram(&tmp_hist);
-			ctx.fraction_done = 1.f;
-			ctx.thread_running = false;
-			ctx.stop_signal = false;
-		}).detach();
-	}
+            free_histogram(&tmp_hist);
+            ctx.fraction_done = 1.f;
+            ctx.thread_running = false;
+            ctx.stop_signal = false;
+        })
+            .detach();
+    }
 }
 
-bool thread_running() {
-	return ctx.thread_running;
-}
+bool thread_running() { return ctx.thread_running; }
 
-void send_stop_signal() {
-	ctx.stop_signal = true;
-}
+void send_stop_signal() { ctx.stop_signal = true; }
 
 void send_stop_signal_and_wait() {
-	ctx.stop_signal = true;
-	while (ctx.thread_running) {
-		// possibly sleep 1 ms or so
-	}
+    ctx.stop_signal = true;
+    while (ctx.thread_running) {
+        // possibly sleep 1 ms or so
+    }
 }
 
-float fraction_done() {
-	return ctx.fraction_done;
-}
+float fraction_done() { return ctx.fraction_done; }
 
 void visualize(const MoleculeDynamic& dynamic) {
-	if (thread_running()) return;
+    if (thread_running()) return;
     for (auto p : ctx.properties) {
         if (!p->visualize) continue;
         CString cmd = extract_command(p->args);
@@ -1354,39 +1368,39 @@ Property* create_property(CString name, CString args) {
 }
 
 static void free_property_data(Property* prop) {
-	send_stop_signal_and_wait();
+    send_stop_signal_and_wait();
     ASSERT(prop);
     free_histogram(&prop->full_histogram);
     free_histogram(&prop->filt_histogram);
     free_structure_data(&prop->structure_data);
     free_instance_data(&prop->instance_data);
-	ctx.stop_signal = false;
+    ctx.stop_signal = false;
 }
 
 void remove_property(Property* prop) {
     ASSERT(prop);
-	send_stop_signal_and_wait();
+    send_stop_signal_and_wait();
     for (auto& p : ctx.properties) {
         if (p == prop) {
             free_property_data(prop);
             ctx.properties.remove(&p);
         }
     }
-	ctx.stop_signal = false;
+    ctx.stop_signal = false;
 }
 
 void remove_all_properties() {
-	send_stop_signal_and_wait();
+    send_stop_signal_and_wait();
     for (auto prop : ctx.properties) {
         free_property_data(prop);
     }
     ctx.properties.clear();
-	ctx.stop_signal = false;
+    ctx.stop_signal = false;
 }
 
 void move_property_up(Property* prop) {
     if (ctx.properties.count <= 1) return;
-	send_stop_signal_and_wait();
+    send_stop_signal_and_wait();
     for (int32 i = 1; i < (int32)ctx.properties.count; i++) {
         if (ctx.properties[i] == prop) {
             // swap
@@ -1396,12 +1410,12 @@ void move_property_up(Property* prop) {
             break;
         }
     }
-	ctx.stop_signal = false;
+    ctx.stop_signal = false;
 }
 
 void move_property_down(Property* prop) {
     if (ctx.properties.count <= 1) return;
-	send_stop_signal_and_wait();
+    send_stop_signal_and_wait();
     for (int32 i = 0; i < (int32)ctx.properties.count - 1; i++) {
         if (ctx.properties[i] == prop) {
             // swap
@@ -1411,7 +1425,7 @@ void move_property_down(Property* prop) {
             break;
         }
     }
-	ctx.stop_signal = false;
+    ctx.stop_signal = false;
 }
 
 Property* get_property(CString name) {
@@ -1429,28 +1443,28 @@ Property* get_property(int32 idx) {
 int32 get_property_count() { return (int32)ctx.properties.count; }
 
 void clear_property(Property* prop) {
-	send_stop_signal_and_wait();
+    send_stop_signal_and_wait();
     ASSERT(prop);
-	for (auto p : ctx.properties) {
-		if (p == prop) {
-			free_structure_data(&prop->structure_data);
-			free_instance_data(&prop->instance_data);
-			clear_histogram(&prop->full_histogram);
-			prop->data.clear();
-		}
-	}
-	ctx.stop_signal = false;
+    for (auto p : ctx.properties) {
+        if (p == prop) {
+            free_structure_data(&prop->structure_data);
+            free_instance_data(&prop->instance_data);
+            clear_histogram(&prop->full_histogram);
+            prop->data.clear();
+        }
+    }
+    ctx.stop_signal = false;
 }
 
 void clear_all_properties() {
-	send_stop_signal_and_wait();
+    send_stop_signal_and_wait();
     for (auto p : ctx.properties) {
-		free_structure_data(&p->structure_data);
-		free_instance_data(&p->instance_data);
-		clear_histogram(&p->full_histogram);
-		p->data.clear();
+        free_structure_data(&p->structure_data);
+        free_instance_data(&p->instance_data);
+        clear_histogram(&p->full_histogram);
+        p->data.clear();
     }
-	ctx.stop_signal = false;
+    ctx.stop_signal = false;
 }
 
 void set_all_property_flags(bool data_dirty, bool full_hist_dirty, bool filt_hist_dirty) {

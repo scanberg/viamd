@@ -17,6 +17,7 @@
 #include <mol/pdb_utils.h>
 #include <mol/gro_utils.h>
 #include <mol/stats.h>
+#include <mol/density.h>
 #include <mol/spatial_hash.h>
 #include <gfx/immediate_draw_utils.h>
 #include <gfx/postprocessing_utils.h>
@@ -195,6 +196,7 @@ struct ApplicationData {
 
     // --- STATISTICAL DATA ---
     struct {
+        DensityVolume density_volume;
         bool show_property_window = false;
         bool show_timeline_window = false;
         bool show_distribution_window = false;
@@ -522,6 +524,10 @@ int main(int, char**) {
         }
         if (!ImGui::GetIO().WantCaptureKeyboard) {
             if (data.ctx.input.key.hit[Key::KEY_SPACE]) data.is_playing = !data.is_playing;
+        }
+
+        if (data.ctx.input.key.hit[Key::KEY_R]) {
+            stats::compute_density_volume(&data.statistics.density_volume, data.mol_data.dynamic.trajectory, data.time_filter.range);
         }
 
         // RENDER TO FBO

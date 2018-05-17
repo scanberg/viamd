@@ -93,27 +93,27 @@ void clear_histogram(Histogram* hist);
 void normalize_histogram(Histogram* hist);
 
 // DENSITY VOLUME
-void compute_density_volume(DensityVolume* vol, const MoleculeTrajectory& traj);
+void compute_density_volume(DensityVolume* vol, const MoleculeTrajectory& traj, Range frame_range);
 
 // STATS
 void initialize();
 void shutdown();
 
 // Kick of in a separate thread whenever the data should to be modified.
-void async_update(const MoleculeDynamic& dynamic, Range frame_filter = { 0,0 });
+void async_update(const MoleculeDynamic& dynamic, Range frame_filter = {0, 0});
 
 // ASync functionality
-bool  thread_running();
-void  send_stop_signal();
-void  send_stop_signal_and_wait();
+bool thread_running();
+void send_stop_signal();
+void send_stop_signal_and_wait();
 float fraction_done();
 
-//bool compute_stats(const MoleculeDynamic& dynamic);
+// bool compute_stats(const MoleculeDynamic& dynamic);
 void visualize(const MoleculeDynamic& dynamic);
 
-//void compute_property(Property* prop, const MoleculeDynamic& dynamic);
-//void compute_property_histograms(Property* prop);
-//void compute_property_histograms(Property* prop, Range frame_filter);
+// void compute_property(Property* prop, const MoleculeDynamic& dynamic);
+// void compute_property_histograms(Property* prop);
+// void compute_property_histograms(Property* prop, Range frame_filter);
 
 bool register_property_command(CString cmd_keyword, PropertyComputeFunc compute_func, PropertyVisualizeFunc visualize_func);
 
