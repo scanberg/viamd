@@ -1,4 +1,4 @@
-﻿#include <imgui.h>
+#include <imgui.h>
 #include <imgui_internal.h>
 #include <core/platform.h>
 #include <core/gl.h>
@@ -314,16 +314,6 @@ int main(int, char**) {
 
     // Init subsystems
     logging::initialize();
-    immediate::initialize();
-    draw::initialize();
-    ramachandran::initialize();
-    stats::initialize();
-    filter::initialize();
-    postprocessing::initialize(data.fbo.width, data.fbo.height);
-    volume::initialize();
-
-    data.density_volume.texture = volume::create_volume_texture();
-
     // Standard output
     logging::register_backend([](CString str, logging::Severity, void*) { printf("%s\n", str.cstr()); });
 
@@ -351,7 +341,17 @@ int main(int, char**) {
         },
         &data.console);
 
-    // Setup style
+    immediate::initialize();
+    draw::initialize();
+    ramachandran::initialize();
+    stats::initialize();
+    filter::initialize();
+    postprocessing::initialize(data.fbo.width, data.fbo.height);
+    volume::initialize();
+
+    data.density_volume.texture = volume::create_volume_texture();
+
+    // Setup IMGUI style
     ImGui::StyleColorsClassic();
 
     bool show_demo_window = false;
@@ -400,7 +400,6 @@ int main(int, char**) {
         glDrawBuffers(3, draw_buffers);
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
-        glEnable(GL_DEPTH_TEST);
 
         if (data.ctx.input.key.hit[CONSOLE_KEY]) {
             data.console.visible = !data.console.visible;
@@ -419,6 +418,7 @@ int main(int, char**) {
 
         float ms = compute_avg_ms(data.ctx.timing.dt);
         bool time_changed = false;
+        bool frame_changed = false;
 
         if (data.is_playing) {
             data.time += data.ctx.timing.dt * data.frames_per_second;
@@ -426,10 +426,18 @@ int main(int, char**) {
 
         {
             static float64 prev_time = data.time;
+            static int32 prev_frame = (int32)data.time;
+
             if (data.time != prev_time) {
                 time_changed = true;
             }
             prev_time = data.time;
+            
+            int32 frame = (int32)data.time;
+            if (frame != prev_frame) {
+                frame_changed = true;
+            }
+            prev_frame = frame;
         }
 
         if (data.time_filter.dynamic_window) {
@@ -442,11 +450,6 @@ int main(int, char**) {
             int last_frame = data.mol_data.dynamic.trajectory.num_frames - 1;
             data.time = math::clamp(data.time, 0.0, float64(last_frame));
             if (data.time == float64(last_frame)) data.is_playing = false;
-
-            if (data.time_filter.dynamic_window) {
-                stats::set_all_property_flags(false, false, true);
-                // compute_statistics_async(&data);
-            }
 
             int frame = (int)data.time;
             int prev_frame_2 = math::max(0, frame - 1);
@@ -503,8 +506,13 @@ int main(int, char**) {
             }
         }
 
-        if (time_changed) {
+        if (frame_changed) {
             data.hydrogen_bonds.dirty = true;
+            if (data.mol_data.dynamic.trajectory) {
+                if (data.time_filter.dynamic_window) {
+                    stats::set_all_property_flags(false, false, true);
+                }
+            }
         }
 
         if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.dirty) {
@@ -541,7 +549,7 @@ int main(int, char**) {
             data.density_volume.basis[0] = vec4(data.density_volume.volume.max_box.x, 0, 0, 0);
             data.density_volume.basis[1] = vec4(0, data.density_volume.volume.max_box.y, 0, 0);
             data.density_volume.basis[2] = vec4(0, 0, data.density_volume.volume.max_box.z, 0);
-            data.density_volume.basis[3] = vec4(0);
+            data.density_volume.basis[3] = vec4(0, 0, 0, 1);
         }
 
         // RENDER TO FBO
@@ -609,11 +617,11 @@ int main(int, char**) {
         }
 
         // Activate backbuffer
-        glDisable(GL_DEPTH_TEST);
-        glDepthFunc(GL_ALWAYS);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         glDrawBuffer(GL_BACK);
-        glClear(GL_COLOR_BUFFER_BIT);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
 
         // Render deferred
         postprocessing::render_deferred(data.fbo.tex_depth, data.fbo.tex_color, data.fbo.tex_normal, inv_proj_mat);

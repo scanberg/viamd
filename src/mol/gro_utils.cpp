@@ -20,7 +20,7 @@ bool allocate_and_parse_gro_from_string(MoleculeStructure* mol, CString gro_stri
     int num_atoms = to_int(length);
 
     if (num_atoms == 0) {
-        return nullptr;
+        return false;
     }
 
     int res_count = 0;

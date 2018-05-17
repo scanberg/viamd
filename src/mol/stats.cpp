@@ -675,7 +675,7 @@ static bool compute_distance(Property* prop, const Array<CString> args, const Mo
 
     prop->data_range = compute_range(*prop);
     prop->periodic = false;
-    prop->unit = "Å";
+    prop->unit = "Ã…";
 
     return true;
 }
@@ -735,7 +735,7 @@ static bool compute_angle(Property* prop, const Array<CString> args, const Molec
 
     prop->data_range = {0, math::PI};
     prop->periodic = true;
-    prop->unit = u8"°";
+    prop->unit = u8"Â°";
 
     return true;
 }
@@ -800,7 +800,7 @@ static bool compute_dihedral(Property* prop, const Array<CString> args, const Mo
 
     prop->data_range = {-math::PI, math::PI};
     prop->periodic = true;
-    prop->unit = u8"°";
+    prop->unit = u8"Â°";
 
     return true;
 }

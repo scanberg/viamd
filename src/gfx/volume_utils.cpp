@@ -33,7 +33,7 @@ uniform mat4 u_proj_mat;
 out vec3 view_pos;
 
 void main() {
-	view_pos = (u_view_mat * vec4(in_pos)).xyz;
+	view_pos = (u_view_mat * vec4(in_pos, 1)).xyz;
 	gl_Position = u_proj_mat * vec4(view_pos, 1);
 }
 )";
@@ -43,7 +43,7 @@ static const char* f_shader_src_volume_renderer = R"(
 
 uniform sampler2D u_tex_depth;
 uniform sampler3D u_tex_volume;
-uniform vec4	  u_color;
+uniform vec3	  u_color;
 uniform float	  u_scale;
 uniform mat4	  u_view_to_vol_mat;
 
@@ -52,24 +52,20 @@ out vec4 out_frag;
 
 vec4 fetch_voxel(vec3 tc) {
 	float a = texture(u_tex_volume, tc).x * u_scale;
-	return vec4(u_color.xyz, a);
+	return vec4(u_color, a);
 }
 
 const float REF = 150.0;
+const float step = 0.1;
 
 void main() {
-
-	out_frag = vec4(1,0,0,1);
-	return;
-
-	vec3 p = view_pos;
-	vec3 d = normalize(view_pos);
+    vec3 d = normalize(view_pos);
+	vec3 p = view_pos + d * 0.1;
 
 	vec4 result = vec4(0);
-	
-	for (float d = 0; d < 100.0; d += step) {
-		p += d * step;
-		vec3 tc	= view_to_tex_mat * vec4(p, 1);
+	for (float t = 0; t < 100.0; t += step) {
+		p += d * t;
+		vec3 tc	= (u_view_to_vol_mat * vec4(p, 1)).xyz;
 		if (any(lessThan(tc, vec3(0))) || any(greaterThan(tc, vec3(1)))) break;
 		vec4 rgba = fetch_voxel(tc);
 		
@@ -189,8 +185,9 @@ void set_volume_texture_data(GLuint texture, const Volume& volume) {
 void render_volume_texture(GLuint volume_texture, GLuint depth_texture, const mat4& basis, const mat4& view_matrix, const mat4& proj_matrix,
                            vec3 color, float opacity_scale) {
 
-    const mat4 view_to_vol_matrix = basis * math::inverse(view_matrix);
-
+    const mat4 vol_to_view_matrix = view_matrix * basis;
+    const mat4 view_to_vol_matrix = math::inverse(vol_to_view_matrix);
+    
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, depth_texture);
 
@@ -202,14 +199,22 @@ void render_volume_texture(GLuint volume_texture, GLuint depth_texture, const ma
     glUniform1i(uniform_loc_tex_depth, 0);
     glUniform1i(uniform_loc_tex_volume, 1);
     glUniform3fv(uniform_loc_color, 1, &color[0]);
-    glUniform1f(uniform_loc_scale, opacity_scale);
-    glUniformMatrix4fv(uniform_loc_view_matrix, 1, GL_FALSE, &view_matrix[0][0]);
+    glUniform1f(uniform_loc_scale, 0.01f);
+    glUniformMatrix4fv(uniform_loc_view_matrix, 1, GL_FALSE, &vol_to_view_matrix[0][0]);
     glUniformMatrix4fv(uniform_loc_proj_matrix, 1, GL_FALSE, &proj_matrix[0][0]);
     glUniformMatrix4fv(uniform_loc_view_to_vol_matrix, 1, GL_FALSE, &view_to_vol_matrix[0][0]);
 
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glDepthMask(GL_TRUE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 42);
     glBindVertexArray(0);
+    
+    glDisable(GL_BLEND);
 }
 
 }  // namespace volume
