@@ -10,6 +10,7 @@
 #include <core/camera_utils.h>
 #include <core/console.h>
 #include <core/string_utils.h>
+#include <core/volume.h>
 #include <mol/molecule_structure.h>
 #include <mol/molecule_trajectory.h>
 #include <mol/trajectory_utils.h>
@@ -17,10 +18,10 @@
 #include <mol/pdb_utils.h>
 #include <mol/gro_utils.h>
 #include <mol/stats.h>
-#include <mol/density.h>
 #include <mol/spatial_hash.h>
 #include <gfx/immediate_draw_utils.h>
 #include <gfx/postprocessing_utils.h>
+#include <gfx/volume_utils.h>
 
 #include <stdio.h>
 #include <thread>
@@ -196,7 +197,6 @@ struct ApplicationData {
 
     // --- STATISTICAL DATA ---
     struct {
-        DensityVolume density_volume;
         bool show_property_window = false;
         bool show_timeline_window = false;
         bool show_distribution_window = false;
@@ -256,6 +256,12 @@ struct ApplicationData {
         DynamicArray<HydrogenBond> bonds{};
     } hydrogen_bonds;
 
+    struct {
+        Volume volume;
+        GLuint texture;
+        mat4 basis;
+    } density_volume;
+
     // --- CONSOLE ---
     Console console;
     bool show_console;
@@ -314,6 +320,9 @@ int main(int, char**) {
     stats::initialize();
     filter::initialize();
     postprocessing::initialize(data.fbo.width, data.fbo.height);
+    volume::initialize();
+
+    data.density_volume.texture = volume::create_volume_texture();
 
     // Standard output
     logging::register_backend([](CString str, logging::Severity, void*) { printf("%s\n", str.cstr()); });
@@ -527,7 +536,12 @@ int main(int, char**) {
         }
 
         if (data.ctx.input.key.hit[Key::KEY_R]) {
-            stats::compute_density_volume(&data.statistics.density_volume, data.mol_data.dynamic.trajectory, data.time_filter.range);
+            stats::compute_density_volume(&data.density_volume.volume, data.mol_data.dynamic.trajectory, data.time_filter.range);
+            volume::set_volume_texture_data(data.density_volume.texture, data.density_volume.volume);
+            data.density_volume.basis[0] = vec4(data.density_volume.volume.max_box.x, 0, 0, 0);
+            data.density_volume.basis[1] = vec4(0, data.density_volume.volume.max_box.y, 0, 0);
+            data.density_volume.basis[2] = vec4(0, 0, data.density_volume.volume.max_box.z, 0);
+            data.density_volume.basis[3] = vec4(0);
         }
 
         // RENDER TO FBO
@@ -544,6 +558,13 @@ int main(int, char**) {
                                          data.mol_data.dynamic.molecule.atom_positions[bond.hyd_idx], immediate::COLOR_MAGENTA);
                 }
             }
+
+            if (data.mol_data.dynamic.trajectory.num_frames > 0) {
+                int frame_idx = math::clamp((int)data.time, 0, data.mol_data.dynamic.trajectory.num_frames - 1);
+                auto frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, frame_idx);
+                immediate::draw_aabb(vec3(0), frame.box * vec3(1), immediate::COLOR_MAGENTA);
+            }
+
             immediate::flush();
         }
 
@@ -609,6 +630,8 @@ int main(int, char**) {
             stats::visualize(data.mol_data.dynamic);
             immediate::flush();
         }
+
+        volume::render_volume_texture(data.density_volume.texture, data.fbo.tex_depth, data.density_volume.basis, view_mat, proj_mat);
 
         // GUI ELEMENTS
         data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, data.ctx.timing.dt);
@@ -1473,6 +1496,13 @@ static void load_molecule_data(ApplicationData* data, CString file) {
             data->files.molecule = allocate_string(file);
             data->mol_data.atom_radii = compute_atom_radii(data->mol_data.dynamic.molecule.atom_elements);
             if (data->mol_data.dynamic.trajectory) {
+                if (data->mol_data.dynamic.trajectory.num_frames > 0) {
+                    vec3 box_ext = data->mol_data.dynamic.trajectory.frame_buffer[0].box * vec3(1);
+                    init_volume(&data->density_volume.volume, math::max(ivec3(1), ivec3(box_ext) / 4));
+                    data->density_volume.volume.min_box = vec3(0);
+                    data->density_volume.volume.max_box = box_ext;
+                }
+
                 init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
                 compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
                 // stats::update(data->mol_data.dynamic, );
@@ -1509,14 +1539,9 @@ static void load_molecule_data(ApplicationData* data, CString file) {
                         return;
                     }
                     data->files.trajectory = allocate_string(file);
+
                     init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
                     load_trajectory_async(data);
-                    /*
-read_trajectory_async(&data->mol_data.dynamic.trajectory, [data]() {
-    stats::compute_stats(data->mol_data.dynamic);
-    compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
-});
-                    */
                 }
             }
         } else {
@@ -1817,6 +1842,16 @@ static void load_trajectory_async(ApplicationData* data) {
         data->async.trajectory.sync.stop_signal = false;
         data->async.trajectory.sync.running = true;
         data->async.trajectory.sync.thread = std::thread([data]() {
+            // read first frame expicitly
+            read_next_trajectory_frame(&data->mol_data.dynamic.trajectory);
+
+            if (data->mol_data.dynamic.trajectory.num_frames > 0) {
+                vec3 box_ext = data->mol_data.dynamic.trajectory.frame_buffer[0].box * vec3(1);
+                init_volume(&data->density_volume.volume, math::max(ivec3(1), ivec3(box_ext) / 4));
+                data->density_volume.volume.min_box = vec3(0);
+                data->density_volume.volume.max_box = box_ext;
+            }
+
             while (read_next_trajectory_frame(&data->mol_data.dynamic.trajectory)) {
                 data->async.trajectory.fraction =
                     data->mol_data.dynamic.trajectory.num_frames / (float)data->mol_data.dynamic.trajectory.frame_offsets.count;

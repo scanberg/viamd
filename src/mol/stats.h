@@ -6,7 +6,7 @@
 struct MoleculeDynamic;
 struct MoleculeStructure;
 struct MoleculeTrajectory;
-struct DensityVolume;
+struct Volume;
 
 namespace stats {
 
@@ -93,7 +93,7 @@ void clear_histogram(Histogram* hist);
 void normalize_histogram(Histogram* hist);
 
 // DENSITY VOLUME
-void compute_density_volume(DensityVolume* vol, const MoleculeTrajectory& traj, Range frame_range);
+void compute_density_volume(Volume* vol, const MoleculeTrajectory& traj, Range frame_range);
 
 // STATS
 void initialize();

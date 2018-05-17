@@ -2,12 +2,12 @@
 #include <core/math_utils.h>
 #include <core/hash.h>
 #include <core/log.h>
+#include <core/volume.h>
 #include <mol/molecule_structure.h>
 #include <mol/molecule_trajectory.h>
 #include <mol/molecule_dynamic.h>
 #include <mol/molecule_utils.h>
 #include <mol/trajectory_utils.h>
-#include <mol/density.h>
 #include <gfx/immediate_draw_utils.h>
 
 #include <ctype.h>
@@ -201,13 +201,16 @@ inline bool point_in_aabb(const vec3& p, const vec3& min_box, const vec3& max_bo
     return true;
 }
 
-void compute_density_volume(DensityVolume* vol, const MoleculeTrajectory& traj, Range frame_range) {
+void compute_density_volume(Volume* vol, const MoleculeTrajectory& traj, Range frame_range) {
     ASSERT(vol);
     if (vol->dim.x == 0 || vol->dim.y == 0 || vol->dim.z == 0) {
         LOG_ERROR("One or more volume dimension are zero...");
         return;
     }
 
+    if (frame_range.x == 0 && frame_range.y == 0) {
+        frame_range.y = (float)traj.num_frames;
+    }
     int32 beg_frame = math::clamp((int32)frame_range.x, 0, traj.num_frames - 1);
     int32 end_frame = math::clamp((int32)frame_range.y, 0, traj.num_frames - 1);
 
@@ -225,6 +228,7 @@ void compute_density_volume(DensityVolume* vol, const MoleculeTrajectory& traj, 
                                 ivec3 c = ((p - vol->min_box) / (vol->max_box - vol->min_box)) * (vec3)vol->dim;
                                 int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
                                 vol->voxel_data[voxel_idx]++;
+                                vol->voxel_range.y = math::max(vol->voxel_range.y, vol->voxel_data[voxel_idx]);
                             }
                         }
                     }
