@@ -682,13 +682,13 @@ uniform mat4 u_inv_proj_mat;
 in vec2 tc;
 out vec4 out_frag;
 
-vec4 depth_to_view_coord(float depth) {
-    vec4 clip_coord = vec4(vec3(tc, depth) * 2.0 - 1.0, 1.0);
+vec4 depth_to_view_coord(vec2 tex_coord, float depth) {
+    vec4 clip_coord = vec4(vec3(tex_coord, depth) * 2.0 - 1.0, 1.0);
     vec4 view_coord = u_inv_proj_mat * clip_coord;
     return view_coord / view_coord.w;
 }
 
-float fresnel(float H_dot_V) {   
+float fresnel(float H_dot_V) {
     const float n1 = 1.0;
     const float n2 = 1.5;
     const float R0 = pow((n1-n2)/(n1+n2), 2);
@@ -728,15 +728,12 @@ vec3 shade(vec3 color, vec3 V, vec3 N) {
 void main() {
 	float depth = texelFetch(u_texture_depth, ivec2(gl_FragCoord.xy), 0).x;
 	if (depth == 1.0) discard;
-
 	vec4 color = texelFetch(u_texture_color, ivec2(gl_FragCoord.xy), 0);
 	vec3 normal = decode_normal(texelFetch(u_texture_normal, ivec2(gl_FragCoord.xy), 0).xy);
-	
-	vec4 view_coord = depth_to_view_coord(depth);
+	vec4 view_coord = depth_to_view_coord(tc, depth);
 
 	vec3 N = normal;
 	vec3 V = -normalize(view_coord.xyz);
-
 	vec3 result = shade(color.rgb, V, N);
 
 	out_frag = vec4(result, color.a);

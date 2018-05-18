@@ -50,6 +50,12 @@ uniform mat4	  u_view_to_vol_mat;
 in  vec3 view_pos;
 out vec4 out_frag;
 
+vec4 depth_to_view_coord(float depth) {
+    vec4 clip_coord = vec4(vec3(tc, depth) * 2.0 - 1.0, 1.0);
+    vec4 view_coord = u_inv_proj_mat * clip_coord;
+    return view_coord / view_coord.w;
+}
+
 vec4 fetch_voxel(vec3 tc) {
 	float a = texture(u_tex_volume, tc).x * u_scale;
 	return vec4(u_color, a);
@@ -59,6 +65,9 @@ const float REF = 150.0;
 const float step = 0.1;
 
 void main() {
+    out_frag = vec4(1,0,0,1);
+    return;
+
     vec3 d = normalize(view_pos);
 	vec3 p = view_pos + d * 0.1;
 
@@ -122,22 +131,38 @@ void initialize() {
 
     // From here:
     // https://stackoverflow.com/questions/28375338/cube-using-single-gl-triangle-strip
-    static const GLfloat cube_strip[] = {
-        0.f, 1.f, 1.f,  // Front-top-left
-        1.f, 1.f, 1.f,  // Front-top-right
-        0.f, 0.f, 1.f,  // Front-bottom-left
-        1.f, 0.f, 1.f,  // Front-bottom-right
-        1.f, 0.f, 0.f,  // Back-bottom-right
-        1.f, 1.f, 1.f,  // Front-top-right
-        1.f, 1.f, 0.f,  // Back-top-right
-        0.f, 1.f, 1.f,  // Front-top-left
-        0.f, 1.f, 0.f,  // Back-top-left
-        0.f, 0.f, 1.f,  // Front-bottom-left
-        0.f, 0.f, 0.f,  // Back-bottom-left
-        1.f, 0.f, 0.f,  // Back-bottom-right
-        0.f, 1.f, 0.f,  // Back-top-left
-        1.f, 1.f, 0.f   // Back-top-right
-    };
+    // static const GLfloat cube_strip[] = {
+    //     0.f, 1.f, 1.f,  // Front-top-left
+    //     1.f, 1.f, 1.f,  // Front-top-right
+    //     0.f, 0.f, 1.f,  // Front-bottom-left
+    //     1.f, 0.f, 1.f,  // Front-bottom-right
+    //     1.f, 0.f, 0.f,  // Back-bottom-right
+    //     1.f, 1.f, 1.f,  // Front-top-right
+    //     1.f, 1.f, 0.f,  // Back-top-right
+    //     0.f, 1.f, 1.f,  // Front-top-left
+    //     0.f, 1.f, 0.f,  // Back-top-left
+    //     0.f, 0.f, 1.f,  // Front-bottom-left
+    //     0.f, 0.f, 0.f,  // Back-bottom-left
+    //     1.f, 0.f, 0.f,  // Back-bottom-right
+    //     0.f, 1.f, 0.f,  // Back-top-left
+    //     1.f, 1.f, 0.f   // Back-top-right
+    // };
+
+static const float cube_strip[] = {
+0, 0, 0,
+0, 1, 0,
+1, 0, 0,
+1, 1, 0,
+1, 1, 1,
+0, 1, 0,
+0, 1, 1,
+0, 0, 1,
+1, 1, 1,
+1, 0, 1,
+1, 0, 0,
+0, 0, 1,
+0, 0, 0,
+0, 1, 0 };
 
     if (!vbo) {
         glGenBuffers(1, &vbo);
@@ -205,8 +230,13 @@ void render_volume_texture(GLuint volume_texture, GLuint depth_texture, const ma
     glUniformMatrix4fv(uniform_loc_view_to_vol_matrix, 1, GL_FALSE, &view_to_vol_matrix[0][0]);
 
     glEnable(GL_DEPTH_TEST);
+    glEnable(GL_DEPTH_CLAMP);
     glDepthFunc(GL_LESS);
     glDepthMask(GL_TRUE);
+
+    //glEnable(GL_CULL_FACE);
+    //glCullFace(GL_FRONT);
+
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     
@@ -215,6 +245,7 @@ void render_volume_texture(GLuint volume_texture, GLuint depth_texture, const ma
     glBindVertexArray(0);
     
     glDisable(GL_BLEND);
+    glDisable(GL_DEPTH_CLAMP);
 }
 
 }  // namespace volume
