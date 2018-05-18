@@ -44,6 +44,7 @@ static void gl_callback(GLenum source, GLenum type, GLuint id, GLenum severity, 
     }
     if (severity == GL_DEBUG_SEVERITY_HIGH) {
         LOG_ERROR("A SEVERE GL ERROR HAS OCCURED!");
+        abort();
     }
 }
 

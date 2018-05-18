@@ -440,7 +440,7 @@ void compute_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const Mo
     if (dynamic.trajectory.num_frames == 0 || dynamic.molecule.backbone_segments.count == 0) return;
 
     //@NOTE: Trajectory may be loading while this is taking place, therefore read num_frames once and stick to that
-    auto traj_num_frames = dynamic.trajectory.num_frames;
+    int32 traj_num_frames = dynamic.trajectory.num_frames;
 
     // @NOTE: If we are up to date, no need to compute anything
     if (traj_num_frames == data->num_frames) {
@@ -450,9 +450,9 @@ void compute_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const Mo
     // @TODO: parallelize?
     // @NOTE: Only compute data for indices which are new
     for (int32 f_idx = data->num_frames; f_idx < traj_num_frames; f_idx++) {
-        auto frame_pos = get_trajectory_positions(dynamic.trajectory, f_idx);
-        auto frame_angles = get_backbone_angles(*data, f_idx);
-        for (const auto& c : dynamic.molecule.chains) {
+        Array<const vec3> frame_pos = get_trajectory_positions(dynamic.trajectory, f_idx);
+        Array<BackboneAngles> frame_angles = get_backbone_angles(*data, f_idx);
+        for (const Chain& c : dynamic.molecule.chains) {
             auto bb_segments = get_backbone(dynamic.molecule, c);
             auto bb_angles = frame_angles.sub_array(c.beg_res_idx, c.end_res_idx - c.beg_res_idx);
             compute_backbone_angles(bb_angles, frame_pos, bb_segments);
@@ -568,23 +568,24 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
 }
 
 namespace hydrogen_bond {
+
+// Computes the potential donors given a set of atom labels.
+// OH and NH atoms are assumed to be donors if the concecutive atom is marked with 'H' for Hydrogen.
 int32 compute_donors(DynamicArray<HydrogenBondDonor>* donors, Array<const Label> labels) {
     ASSERT(donors);
-    int32 count = 0;
+    int32 pre_count = (int32)donors->count;
     const int32 num_labels = (int32)labels.count;
     for (int32 i = 0; i < num_labels; i++) {
         if (compare_n(labels[i], "OH", 2) || compare_n(labels[i], "NH", 2)) {
             if (i + 1 < num_labels && compare_n(labels[i + 1], "H", 1)) {
                 donors->push_back({i, i + 1});
-                count++;
             }
             if (i + 2 < num_labels && compare_n(labels[i + 2], "H", 1)) {
                 donors->push_back({i, i + 2});
-                count++;
             }
         }
     }
-    return count;
+    return (int32)donors->count - pre_count;
 }
 
 DynamicArray<HydrogenBondDonor> compute_donors(Array<const Label> labels) {
@@ -593,6 +594,8 @@ DynamicArray<HydrogenBondDonor> compute_donors(Array<const Label> labels) {
     return donors;
 }
 
+// Computes the potential acceptors given a set of atom elements.
+// This essentially just a filter on atom element which extracts Oxygen and Nitrogen
 int32 compute_acceptors(DynamicArray<HydrogenBondAcceptor>* acceptors, Array<const Element> elements) {
     ASSERT(acceptors);
     const int32 pre_count = (int32)acceptors->count;
@@ -609,6 +612,10 @@ DynamicArray<HydrogenBondAcceptor> compute_acceptors(Array<const Element> elemen
     compute_acceptors(&acceptors, elements);
     return acceptors;
 }
+
+// Computes hydrogen bonds given a certain set of potential donors, acceptors and atomic positions from a frame.
+// The distance cutoff sets the distance from bonds to potential acceptors.
+//
 
 int32 compute_bonds(DynamicArray<HydrogenBond>* bonds, Array<const HydrogenBondDonor> donors, Array<const HydrogenBondAcceptor> acceptors,
                     Array<const vec3> atom_positions, float dist_cutoff, float angle_cutoff) {

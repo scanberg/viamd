@@ -40,6 +40,7 @@ struct StatisticsContext {
     DynamicArray<Property*> properties{};
 
     Property* current_property = nullptr;
+    Volume volume{};
 
     volatile bool thread_running = false;
     volatile bool stop_signal = false;
@@ -201,7 +202,7 @@ inline bool point_in_aabb(const vec3& p, const vec3& min_box, const vec3& max_bo
     return true;
 }
 
-void compute_density_volume(Volume* vol, const MoleculeTrajectory& traj, Range frame_range) {
+void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, const MoleculeTrajectory& traj, Range frame_range) {
     ASSERT(vol);
     if (vol->dim.x == 0 || vol->dim.y == 0 || vol->dim.z == 0) {
         LOG_ERROR("One or more volume dimension are zero...");
@@ -223,13 +224,14 @@ void compute_density_volume(Volume* vol, const MoleculeTrajectory& traj, Range f
                 if (prop->filter.x <= v && v <= prop->filter.y) {
                     for (const auto& s : prop->structure_data) {
                         for (int32 i = s.structures[inst_idx].beg_idx; i < s.structures[inst_idx].end_idx; i++) {
-                            vec3 p = atom_positions[i];
-                            if (point_in_aabb(p, vol->min_box, vol->max_box)) {
-                                ivec3 c = ((p - vol->min_box) / (vol->max_box - vol->min_box)) * (vec3)vol->dim;
-                                int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
-                                vol->voxel_data[voxel_idx]++;
-                                vol->voxel_range.y = math::max(vol->voxel_range.y, vol->voxel_data[voxel_idx]);
-                            }
+                            vec4 tc = world_to_volume_matrix * vec4(atom_positions[i], 1);
+                            if (tc.x < 0.f || 1.f < tc.x) continue;
+                            if (tc.y < 0.f || 1.f < tc.y) continue;
+                            if (tc.z < 0.f || 1.f < tc.z) continue;
+                            ivec3 c = vec3(tc) * (vec3)vol->dim;
+                            int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
+                            vol->voxel_data[voxel_idx]++;
+                            vol->voxel_range.y = math::max(vol->voxel_range.y, vol->voxel_data[voxel_idx]);
                         }
                     }
                 }
@@ -1249,7 +1251,6 @@ bool properties_dirty() {
 
 void async_update(const MoleculeDynamic& dynamic, Range frame_filter) {
     if (frame_filter.x == 0.f && frame_filter.y == 0.f) {
-        frame_filter.x = 0;
         frame_filter.y = (float)dynamic.trajectory.num_frames;
     }
 
@@ -1349,6 +1350,8 @@ void visualize(const MoleculeDynamic& dynamic) {
         }
     }
 }
+
+const Volume& get_density_volume() { return ctx.volume; }
 
 Property* create_property(CString name, CString args) {
 

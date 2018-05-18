@@ -93,7 +93,7 @@ void clear_histogram(Histogram* hist);
 void normalize_histogram(Histogram* hist);
 
 // DENSITY VOLUME
-void compute_density_volume(Volume* vol, const MoleculeTrajectory& traj, Range frame_range);
+void compute_density_volume(Volume* vol, const mat4& world_to_volume, const MoleculeTrajectory& traj, Range frame_range);
 
 // STATS
 void initialize();
@@ -110,6 +110,8 @@ float fraction_done();
 
 // bool compute_stats(const MoleculeDynamic& dynamic);
 void visualize(const MoleculeDynamic& dynamic);
+
+const Volume& get_density_volume();
 
 // void compute_property(Property* prop, const MoleculeDynamic& dynamic);
 // void compute_property_histograms(Property* prop);

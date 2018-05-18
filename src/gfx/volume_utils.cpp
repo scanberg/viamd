@@ -5,6 +5,8 @@
 #include <gfx/gl_utils.h>
 #include <stdio.h>
 
+#include <fstream>
+
 namespace volume {
 
 static GLuint vao = 0;
@@ -20,7 +22,9 @@ static GLint uniform_loc_tex_depth = -1;
 static GLint uniform_loc_tex_volume = -1;
 static GLint uniform_loc_color = -1;
 static GLint uniform_loc_scale = -1;
+static GLint uniform_loc_inv_res = -1;
 static GLint uniform_loc_view_to_vol_matrix = -1;
+static GLint uniform_loc_inv_proj_matrix = -1;
 
 static const char* v_shader_src_volume_renderer = R"(
 #version 150 core
@@ -45,12 +49,51 @@ uniform sampler2D u_tex_depth;
 uniform sampler3D u_tex_volume;
 uniform vec3	  u_color;
 uniform float	  u_scale;
+uniform vec2	  u_inv_res;
 uniform mat4	  u_view_to_vol_mat;
+uniform mat4	  u_inv_proj_mat;
 
 in  vec3 view_pos;
 out vec4 out_frag;
 
-vec4 depth_to_view_coord(float depth) {
+/*
+float ray_vs_aabb(vec3 o, vec3 d, vec3 min_box, vec3 max_box) {
+	vec3 dirfrac = 1.f / 
+	dirfrac.x = 1.0f / r.dir.x;
+	dirfrac.y = 1.0f / r.dir.y;
+	dirfrac.z = 1.0f / r.dir.z;
+	// lb is the corner of AABB with minimal coordinates - left bottom, rt is maximal corner
+	// r.org is origin of ray
+	float t1 = (lb.x - r.org.x)*dirfrac.x;
+	float t2 = (rt.x - r.org.x)*dirfrac.x;
+	float t3 = (lb.y - r.org.y)*dirfrac.y;
+	float t4 = (rt.y - r.org.y)*dirfrac.y;
+	float t5 = (lb.z - r.org.z)*dirfrac.z;
+	float t6 = (rt.z - r.org.z)*dirfrac.z;
+
+	float tmin = max(max(min(t1, t2), min(t3, t4)), min(t5, t6));
+	float tmax = min(min(max(t1, t2), max(t3, t4)), max(t5, t6));
+
+	// if tmax < 0, ray (line) is intersecting AABB, but the whole AABB is behind us
+	if (tmax < 0)
+	{
+		t = tmax;
+		return false;
+	}
+
+	// if tmin > tmax, ray doesn't intersect AABB
+	if (tmin > tmax)
+	{
+		t = tmax;
+		return false;
+	}
+
+	t = tmin;
+	return true;
+}
+*/
+
+vec4 depth_to_view_coord(vec2 tc, float depth) {
     vec4 clip_coord = vec4(vec3(tc, depth) * 2.0 - 1.0, 1.0);
     vec4 view_coord = u_inv_proj_mat * clip_coord;
     return view_coord / view_coord.w;
@@ -62,26 +105,35 @@ vec4 fetch_voxel(vec3 tc) {
 }
 
 const float REF = 150.0;
-const float step = 0.1;
+const float step = 0.01;
 
 void main() {
-    out_frag = vec4(1,0,0,1);
-    return;
+    vec3 dir = normalize(view_pos);
+	vec3 pos = view_pos + dir * step;
 
-    vec3 d = normalize(view_pos);
-	vec3 p = view_pos + d * 0.1;
+	float depth = texelFetch(u_tex_depth, ivec2(gl_FragCoord.xy), 0).x;
+	float view_z = depth_to_view_coord(gl_FragCoord.xy * u_inv_res, depth).z;
+
+//	vec3 texCoord = (u_view_to_vol_mat * vec4(pos, 1)).xyz;
+//	out_frag = vec4(mix(vec3(1, 0, 0), vec3(0, 1, 0), lessThan(texCoord, vec3(1.0))), 1.0);
+//	return;
 
 	vec4 result = vec4(0);
 	for (float t = 0; t < 100.0; t += step) {
-		p += d * t;
-		vec3 tc	= (u_view_to_vol_mat * vec4(p, 1)).xyz;
+		if (pos.z < view_z) break;
+		vec3 tc	= (u_view_to_vol_mat * vec4(pos, 1)).xyz;
 		if (any(lessThan(tc, vec3(0))) || any(greaterThan(tc, vec3(1)))) break;
 		vec4 rgba = fetch_voxel(tc);
 		
 		rgba.a     = 1.0 - pow(1.0 - rgba.a, step * REF);
-		result.rgb = result.rgb + (1.0 - result.a) * rgba.a * rgba.rgb;
-		result.a   = result.a + (1.0 - result.a) * rgba.a;
+
+		rgba.rgb *= rgba.a;
+		result += (1.0 - result.a) * rgba;
+
+		//result.rgb = result.rgb + (1.0 - result.a) * rgba.a * rgba.rgb;
+		//result.a   = result.a + (1.0 - result.a) * rgba.a;
 		if (result.a > 0.99) break;
+		pos += dir * t;
 	}
 
 	out_frag = result;
@@ -128,41 +180,12 @@ void initialize() {
     uniform_loc_color = glGetUniformLocation(prog_volume_renderer, "u_color");
     uniform_loc_scale = glGetUniformLocation(prog_volume_renderer, "u_scale");
     uniform_loc_view_to_vol_matrix = glGetUniformLocation(prog_volume_renderer, "u_view_to_vol_mat");
+    uniform_loc_inv_proj_matrix = glGetUniformLocation(prog_volume_renderer, "u_inv_proj_mat");
 
     // From here:
     // https://stackoverflow.com/questions/28375338/cube-using-single-gl-triangle-strip
-    // static const GLfloat cube_strip[] = {
-    //     0.f, 1.f, 1.f,  // Front-top-left
-    //     1.f, 1.f, 1.f,  // Front-top-right
-    //     0.f, 0.f, 1.f,  // Front-bottom-left
-    //     1.f, 0.f, 1.f,  // Front-bottom-right
-    //     1.f, 0.f, 0.f,  // Back-bottom-right
-    //     1.f, 1.f, 1.f,  // Front-top-right
-    //     1.f, 1.f, 0.f,  // Back-top-right
-    //     0.f, 1.f, 1.f,  // Front-top-left
-    //     0.f, 1.f, 0.f,  // Back-top-left
-    //     0.f, 0.f, 1.f,  // Front-bottom-left
-    //     0.f, 0.f, 0.f,  // Back-bottom-left
-    //     1.f, 0.f, 0.f,  // Back-bottom-right
-    //     0.f, 1.f, 0.f,  // Back-top-left
-    //     1.f, 1.f, 0.f   // Back-top-right
-    // };
-
-static const float cube_strip[] = {
-0, 0, 0,
-0, 1, 0,
-1, 0, 0,
-1, 1, 0,
-1, 1, 1,
-0, 1, 0,
-0, 1, 1,
-0, 0, 1,
-1, 1, 1,
-1, 0, 1,
-1, 0, 0,
-0, 0, 1,
-0, 0, 0,
-0, 1, 0 };
+    static const float cube_strip[] = {0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1,
+                                       0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
 
     if (!vbo) {
         glGenBuffers(1, &vbo);
@@ -193,6 +216,7 @@ GLuint create_volume_texture() {
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_3D, 0);
     return tex;
 }
@@ -207,12 +231,30 @@ void set_volume_texture_data(GLuint texture, const Volume& volume) {
     }
 }
 
+mat4 compute_model_to_world_matrix(const vec3& min_world_aabb, const vec3& max_world_aabb) {
+    vec3 ext = max_world_aabb - min_world_aabb;
+    return mat4(vec4(ext.x, 0, 0, 0), vec4(0, ext.y, 0, 0), vec4(0, 0, ext.z, 0), vec4(min_world_aabb, 1));
+}
+
+mat4 compute_data_to_model_matrix(const ivec3& dim) { return mat4(1.f); }
+
+void dump_volume(const Volume& volume, const char* file) {
+    std::ofstream of(file, std::ios::binary);
+    if (!of.is_open()) return;
+
+    of.write(reinterpret_cast<char*>(volume.voxel_data.data), volume.voxel_data.size_in_bytes());
+}
+
 void render_volume_texture(GLuint volume_texture, GLuint depth_texture, const mat4& basis, const mat4& view_matrix, const mat4& proj_matrix,
                            vec3 color, float opacity_scale) {
+    GLint viewport[4];
+    glGetIntegerv(GL_VIEWPORT, viewport);
 
     const mat4 vol_to_view_matrix = view_matrix * basis;
     const mat4 view_to_vol_matrix = math::inverse(vol_to_view_matrix);
-    
+    const mat4 inv_proj_matrix = math::inverse(proj_matrix);
+    const vec2 inv_res = vec2(1.f / (float)(viewport[2]), 1.f / (float)(viewport[3]));
+
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, depth_texture);
 
@@ -224,27 +266,30 @@ void render_volume_texture(GLuint volume_texture, GLuint depth_texture, const ma
     glUniform1i(uniform_loc_tex_depth, 0);
     glUniform1i(uniform_loc_tex_volume, 1);
     glUniform3fv(uniform_loc_color, 1, &color[0]);
-    glUniform1f(uniform_loc_scale, 0.01f);
+    glUniform1f(uniform_loc_scale, opacity_scale);
+    glUniform2fv(uniform_loc_inv_res, 1, &inv_res[0]);
     glUniformMatrix4fv(uniform_loc_view_matrix, 1, GL_FALSE, &vol_to_view_matrix[0][0]);
     glUniformMatrix4fv(uniform_loc_proj_matrix, 1, GL_FALSE, &proj_matrix[0][0]);
     glUniformMatrix4fv(uniform_loc_view_to_vol_matrix, 1, GL_FALSE, &view_to_vol_matrix[0][0]);
+    glUniformMatrix4fv(uniform_loc_inv_proj_matrix, 1, GL_FALSE, &inv_proj_matrix[0][0]);
 
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_DEPTH_CLAMP);
     glDepthFunc(GL_LESS);
     glDepthMask(GL_TRUE);
 
-    //glEnable(GL_CULL_FACE);
-    //glCullFace(GL_FRONT);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    
+
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 42);
     glBindVertexArray(0);
-    
+
     glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
     glDisable(GL_DEPTH_CLAMP);
 }
 

@@ -223,9 +223,28 @@ struct ApplicationData {
     // SSAO
     struct {
         bool enabled = false;
-        float intensity = 1.5f;
+        float intensity = 2.0f;
         float radius = 6.0f;
     } ssao;
+
+    // HYDROGEN BONDS
+    struct {
+        bool enabled = false;
+        bool dirty = true;
+        vec4 color = vec4(1, 0, 1, 1);
+        DynamicArray<HydrogenBond> bonds{};
+    } hydrogen_bonds;
+
+    // VOLUME
+    struct {
+        bool enabled = true;
+        vec3 color = vec4(1, 0, 0, 1);
+        float density_scale = 1.f;
+        GLuint texture = 0;
+        Volume volume{};
+        mat4 model_to_world_matrix{};
+        mat4 data_to_model_matrix{};
+    } density_volume;
 
     // RAMACHANDRAN
     struct {
@@ -238,29 +257,6 @@ struct ApplicationData {
         BackboneAnglesTrajectory backbone_angles{};
         Array<BackboneAngles> current_backbone_angles{};
     } ramachandran;
-
-    // DEBUG DRAW
-    struct {
-        struct {
-            bool enabled = false;
-        } spline;
-
-        struct {
-            bool enabled = false;
-        } backbone;
-    } debug_draw;
-
-    struct {
-        bool enabled = false;
-        bool dirty = true;
-        DynamicArray<HydrogenBond> bonds{};
-    } hydrogen_bonds;
-
-    struct {
-        Volume volume;
-        GLuint texture;
-        mat4 basis;
-    } density_volume;
 
     // --- CONSOLE ---
     Console console;
@@ -386,6 +382,10 @@ int main(int, char**) {
         const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2};
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.id);
 
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        glDepthMask(GL_TRUE);
+
         // Clear color, normal and depth buffer
         glDrawBuffers(2, draw_buffers);
         glClearColor(CLEAR_COLOR.x, CLEAR_COLOR.y, CLEAR_COLOR.z, CLEAR_COLOR.w);
@@ -398,8 +398,6 @@ int main(int, char**) {
 
         // Enable all draw buffers
         glDrawBuffers(3, draw_buffers);
-        glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_LESS);
 
         if (data.ctx.input.key.hit[CONSOLE_KEY]) {
             data.console.visible = !data.console.visible;
@@ -432,7 +430,7 @@ int main(int, char**) {
                 time_changed = true;
             }
             prev_time = data.time;
-            
+
             int32 frame = (int32)data.time;
             if (frame != prev_frame) {
                 frame_changed = true;
@@ -544,12 +542,11 @@ int main(int, char**) {
         }
 
         if (data.ctx.input.key.hit[Key::KEY_R]) {
-            stats::compute_density_volume(&data.density_volume.volume, data.mol_data.dynamic.trajectory, data.time_filter.range);
+            stats::compute_density_volume(&data.density_volume.volume, math::inverse(data.density_volume.model_to_world_matrix),
+                                          data.mol_data.dynamic.trajectory, data.time_filter.range);
             volume::set_volume_texture_data(data.density_volume.texture, data.density_volume.volume);
-            data.density_volume.basis[0] = vec4(data.density_volume.volume.max_box.x, 0, 0, 0);
-            data.density_volume.basis[1] = vec4(0, data.density_volume.volume.max_box.y, 0, 0);
-            data.density_volume.basis[2] = vec4(0, 0, data.density_volume.volume.max_box.z, 0);
-            data.density_volume.basis[3] = vec4(0, 0, 0, 1);
+
+            // volume::dump_volume(data.density_volume.volume, "volume.raw");
         }
 
         // RENDER TO FBO
@@ -639,7 +636,10 @@ int main(int, char**) {
             immediate::flush();
         }
 
-        volume::render_volume_texture(data.density_volume.texture, data.fbo.tex_depth, data.density_volume.basis, view_mat, proj_mat);
+        if (data.density_volume.enabled) {
+            volume::render_volume_texture(data.density_volume.texture, data.fbo.tex_depth, data.density_volume.model_to_world_matrix, view_mat,
+                                          proj_mat, data.density_volume.color, data.density_volume.density_scale);
+        }
 
         // GUI ELEMENTS
         data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, data.ctx.timing.dt);
@@ -854,30 +854,45 @@ static void draw_main_menu(ApplicationData* data) {
             ImGui::EndGroup();
             ImGui::Separator();
 
+            /*
+ImGui::BeginGroup();
+if (ImGui::Checkbox("Use high-res font", &data->high_res_font)) {
+    if (ImGui::GetIO().Fonts->Fonts.size() > 1 && data->high_res_font) {
+        ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts[1];
+        ImGui::GetIO().FontGlobalScale = 0.75f;
+    } else {
+        ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts[0];
+        ImGui::GetIO().FontGlobalScale = 1.0f;
+    }
+}
+ImGui::EndGroup();
+ImGui::Separator();
+            */
+
             ImGui::BeginGroup();
-            if (ImGui::Checkbox("Use high-res font", &data->high_res_font)) {
-                if (ImGui::GetIO().Fonts->Fonts.size() > 1 && data->high_res_font) {
-                    ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts[1];
-                    ImGui::GetIO().FontGlobalScale = 0.75f;
-                } else {
-                    ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts[0];
-                    ImGui::GetIO().FontGlobalScale = 1.0f;
-                }
+            ImGui::Checkbox("Hydrogen Bond", &data->hydrogen_bonds.enabled);
+            if (data->hydrogen_bonds.enabled) {
+                ImGui::ColorEdit4("hydrogen_bond_color", (float*)&data->hydrogen_bonds.color,
+                                  ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
             }
             ImGui::EndGroup();
             ImGui::Separator();
 
             ImGui::BeginGroup();
-            ImGui::Checkbox("Hydrogen Bond", &data->hydrogen_bonds.enabled);
+            ImGui::Checkbox("Density Volume", &data->density_volume.enabled);
+            if (data->density_volume.enabled) {
+                ImGui::ColorEdit3("density_color", (float*)&data->density_volume.color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+                ImGui::SliderFloat("density_scale", &data->density_volume.density_scale, 0.001f, 10.f, "%.3f", 3.f);
+            }
             ImGui::EndGroup();
-            ImGui::Separator();
+            /*
+// DEBUG DRAW
+ImGui::BeginGroup();
+ImGui::Checkbox("Spline", &data->debug_draw.spline.enabled);
+ImGui::Checkbox("Backbone", &data->debug_draw.backbone.enabled);
+ImGui::EndGroup();
 
-            // DEBUG DRAW
-            ImGui::BeginGroup();
-            ImGui::Checkbox("Spline", &data->debug_draw.spline.enabled);
-            ImGui::Checkbox("Backbone", &data->debug_draw.backbone.enabled);
-            ImGui::EndGroup();
-
+            */
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Windows")) {
@@ -1507,8 +1522,8 @@ static void load_molecule_data(ApplicationData* data, CString file) {
                 if (data->mol_data.dynamic.trajectory.num_frames > 0) {
                     vec3 box_ext = data->mol_data.dynamic.trajectory.frame_buffer[0].box * vec3(1);
                     init_volume(&data->density_volume.volume, math::max(ivec3(1), ivec3(box_ext) / 4));
-                    data->density_volume.volume.min_box = vec3(0);
-                    data->density_volume.volume.max_box = box_ext;
+                    data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(vec3(0), box_ext);
+                    data->density_volume.data_to_model_matrix = volume::compute_data_to_model_matrix(data->density_volume.volume.dim);
                 }
 
                 init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
@@ -1856,8 +1871,8 @@ static void load_trajectory_async(ApplicationData* data) {
             if (data->mol_data.dynamic.trajectory.num_frames > 0) {
                 vec3 box_ext = data->mol_data.dynamic.trajectory.frame_buffer[0].box * vec3(1);
                 init_volume(&data->density_volume.volume, math::max(ivec3(1), ivec3(box_ext) / 4));
-                data->density_volume.volume.min_box = vec3(0);
-                data->density_volume.volume.max_box = box_ext;
+                data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(vec3(0), box_ext);
+                data->density_volume.data_to_model_matrix = volume::compute_data_to_model_matrix(data->density_volume.volume.dim);
             }
 
             while (read_next_trajectory_frame(&data->mol_data.dynamic.trajectory)) {
