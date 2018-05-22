@@ -33,9 +33,10 @@ constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
 #elif __APPLE__
 constexpr Key::Key_t CONSOLE_KEY = Key::KEY_WORLD_1;
 #else
-// @TODO: Make sure this is right for Linux?
+// @TODO: Make sure this is currect for Linux?
 constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
 #endif
+
 constexpr unsigned int NO_PICKING_IDX = 0xffffffff;
 constexpr const char* FILE_EXTENSION = "via";
 
@@ -44,8 +45,6 @@ constexpr uint32 DEL_BTN_HOVER_COLOR = 0xff3333dd;
 constexpr uint32 DEL_BTN_ACTIVE_COLOR = 0xff5555ff;
 constexpr uint32 TEXT_BG_ERROR_COLOR = 0xaa222299;
 
-constexpr int32 VOLUME_DOWNSAMPLE_FACTOR = 2;
-
 constexpr float HYDROGEN_BOND_DISTANCE_CUTOFF_DEFAULT = 3.0f;
 constexpr float HYDROGEN_BOND_DISTANCE_CUTOFF_MIN = 0.1f;
 constexpr float HYDROGEN_BOND_DISTANCE_CUTOFF_MAX = 12.0f;
@@ -53,6 +52,8 @@ constexpr float HYDROGEN_BOND_DISTANCE_CUTOFF_MAX = 12.0f;
 constexpr float HYDROGEN_BOND_ANGLE_CUTOFF_DEFAULT = 20.f;
 constexpr float HYDROGEN_BOND_ANGLE_CUTOFF_MIN = 5.f;
 constexpr float HYDROGEN_BOND_ANGLE_CUTOFF_MAX = 90.f;
+
+constexpr int32 VOLUME_DOWNSAMPLE_FACTOR = 2;
 
 constexpr const char* CAFFINE_PDB = R"(
 ATOM      1  N1  BENZ    1       5.040   1.944  -8.324                          
@@ -222,7 +223,7 @@ struct ApplicationData {
     unsigned int picking_idx = NO_PICKING_IDX;
 
     // --- PLAYBACK ---
-    float64 time = 0.f;  // needs to be double precision
+    float64 time = 0.f;  // needs to be double precision for long trajectories
     float frames_per_second = 10.f;
     bool is_playing = false;
     PlaybackInterpolationMode interpolation = PlaybackInterpolationMode::LINEAR_PERIODIC;

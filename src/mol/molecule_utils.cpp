@@ -117,6 +117,8 @@ void spline_interpolation(Array<vec3> positions, Array<const vec3> pos0, Array<c
     }
 }
 
+// Computes covalent bonds between a set of atoms with given positions and elements.
+// The approach is inspired by the technique used in NGL (https://github.com/arose/ngl)
 DynamicArray<Bond> compute_covalent_bonds(Array<const vec3> atom_pos, Array<const Element> atom_elem, Array<const Residue> residues) {
     ASSERT(atom_pos.count == atom_elem.count);
 
