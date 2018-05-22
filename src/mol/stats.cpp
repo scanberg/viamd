@@ -1246,7 +1246,7 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_
             init_histogram(&tmp_hist, NUM_BINS);
             ctx.fraction_done = 0.f;
 
-            ctx.thread_mutex.lock();
+            //ctx.thread_mutex.lock();
             for (int32 i = 0; i < ctx.properties.count; i++) {
                 auto p = ctx.properties[i];
                 ctx.fraction_done = (i / (float)ctx.properties.count);
@@ -1304,7 +1304,7 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_
                 on_finished(usr_data);
             }
 
-            ctx.thread_mutex.unlock();
+            //ctx.thread_mutex.unlock();
 
             free_histogram(&tmp_hist);
             ctx.fraction_done = 1.f;

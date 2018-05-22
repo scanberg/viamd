@@ -202,7 +202,7 @@ struct ApplicationData {
     AtomSelection hovered;
     AtomSelection selected;
 
-    // --- STATISTICAL DATA ---
+    // --- STATISTICS ---
     struct {
         bool show_property_window = false;
         bool show_timeline_window = false;
@@ -240,6 +240,8 @@ struct ApplicationData {
         bool enabled = false;
         bool dirty = true;
         vec4 color = vec4(1, 0, 1, 1);
+		float distance_cutoff = 3.0f; // In Ångström
+		float angle_cutoff = 20.f;    // In Degrees
         DynamicArray<HydrogenBond> bonds{};
     } hydrogen_bonds;
 
@@ -258,6 +260,7 @@ struct ApplicationData {
         GLuint texture = 0;
         ivec3 texture_dim = ivec3(0);
         Volume volume{};
+		std::mutex volume_data_mutex{};
 
         mat4 model_to_world_matrix{};
         mat4 texture_to_model_matrix{};
@@ -388,16 +391,10 @@ int main(int, char**) {
             stats::async_update(data.mol_data.dynamic, data.time_filter.range,
                                 [](void* usr_data) {
                                     ApplicationData* data = (ApplicationData*)usr_data;
-                                    // vec3 min_box = vec3(0);
-                                    // vec3 max_box = data->mol_data.dynamic.trajectory.frame_buffer.count
-                                    //                   ? data->mol_data.dynamic.trajectory.frame_buffer[0].box * vec3(1)
-                                    //                   : vec3(0);
-                                    // data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(min_box, max_box);
-                                    // data->density_volume.texture_to_model_matrix =
-                                    //    volume::compute_texture_to_model_matrix(data->density_volume.volume.dim);
-                                    // data->density_volume.world_to_texture_matrix = math::inverse(data->density_volume.model_to_world_matrix);
+									data->density_volume.volume_data_mutex.lock();
                                     stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix,
                                                                   data->mol_data.dynamic.trajectory, data->time_filter.range);
+									data->density_volume.volume_data_mutex.unlock();
                                     data->density_volume.texture_dirty = true;
                                 },
                                 &data);
@@ -407,21 +404,16 @@ int main(int, char**) {
 
         // If gpu representation of volume is not up to date, upload data
         if (data.density_volume.texture_dirty) {
-            if (data.density_volume.texture_dim != data.density_volume.volume.dim) {
-                data.density_volume.texture_dim = data.density_volume.volume.dim;
-                volume::create_volume_texture(&data.density_volume.texture, data.density_volume.texture_dim);
-            }
+			if (data.density_volume.volume_data_mutex.try_lock()) {
+				if (data.density_volume.texture_dim != data.density_volume.volume.dim) {
+					data.density_volume.texture_dim = data.density_volume.volume.dim;
+					volume::create_volume_texture(&data.density_volume.texture, data.density_volume.texture_dim);
+				}
 
-            auto bytes = data.density_volume.volume.voxel_data.size_in_bytes();
-            float* texture_data = (float*)TMP_MALLOC(bytes);
-
-            // stats::lock_thread_mutex();
-            memcpy(texture_data, data.density_volume.volume.voxel_data.data, bytes);
-            // stats::unlock_thread_mutex();
-
-            volume::set_volume_texture_data(data.density_volume.texture, data.density_volume.texture_dim, texture_data);
-            data.density_volume.texture_dirty = false;
-            TMP_FREE(texture_data);
+				volume::set_volume_texture_data(data.density_volume.texture, data.density_volume.texture_dim, data.density_volume.volume.voxel_data.data);
+				data.density_volume.volume_data_mutex.unlock();
+				data.density_volume.texture_dirty = false;
+			}
         }
 
         // RESIZE FRAMEBUFFER?
@@ -594,13 +586,6 @@ int main(int, char**) {
         }
         if (!ImGui::GetIO().WantCaptureKeyboard) {
             if (data.ctx.input.key.hit[Key::KEY_SPACE]) data.is_playing = !data.is_playing;
-        }
-
-        if (data.ctx.input.key.hit[Key::KEY_R]) {
-            // stats::compute_density_volume(&data.density_volume.volume, , data.mol_data.dynamic.trajectory, data.time_filter.range);
-            // volume::set_volume_texture_data(data.density_volume.texture, data.density_volume.volume);
-
-            // volume::dump_volume(data.density_volume.volume, "volume.raw");
         }
 
         // RENDER TO FBO
