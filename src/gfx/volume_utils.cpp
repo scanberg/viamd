@@ -5,8 +5,6 @@
 #include <gfx/gl_utils.h>
 #include <stdio.h>
 
-#include <fstream>
-
 namespace volume {
 
 static GLuint vao = 0;
@@ -16,14 +14,16 @@ static GLuint prog_volume_renderer = 0;
 
 static GLint attrib_loc_pos = -1;
 
-static GLint uniform_loc_view_matrix = -1;
-static GLint uniform_loc_proj_matrix = -1;
+static GLint uniform_loc_model_view_proj_matrix = -1;
 static GLint uniform_loc_tex_depth = -1;
 static GLint uniform_loc_tex_volume = -1;
+static GLint uniform_loc_min_box = -1;
+static GLint uniform_loc_max_box = -1;
 static GLint uniform_loc_color = -1;
 static GLint uniform_loc_scale = -1;
 static GLint uniform_loc_inv_res = -1;
-static GLint uniform_loc_view_to_vol_matrix = -1;
+static GLint uniform_loc_view_to_model_matrix = -1;
+static GLint uniform_loc_model_to_tex_matrix = -1;
 static GLint uniform_loc_inv_proj_matrix = -1;
 
 static const char* v_shader_src_volume_renderer = R"(
@@ -31,14 +31,18 @@ static const char* v_shader_src_volume_renderer = R"(
 
 in vec3 in_pos;
 
-uniform mat4 u_view_mat;
-uniform mat4 u_proj_mat;
+uniform mat4 u_view_to_model_mat;
+uniform mat4 u_model_view_proj_mat;
 
-out vec3 view_pos;
+out vec3 model_pos;
+out vec3 model_eye;
+out vec3 color;
 
 void main() {
-	view_pos = (u_view_mat * vec4(in_pos, 1)).xyz;
-	gl_Position = u_proj_mat * vec4(view_pos, 1);
+	color = mix(vec3(1,0,0), vec3(0,1,0), float(gl_VertexID) / 42.0);
+	model_pos = in_pos;
+	model_eye = u_view_to_model_mat[3].xyz;
+	gl_Position = u_model_view_proj_mat * vec4(in_pos, 1);
 }
 )";
 
@@ -50,48 +54,40 @@ uniform sampler3D u_tex_volume;
 uniform vec3	  u_color;
 uniform float	  u_scale;
 uniform vec2	  u_inv_res;
-uniform mat4	  u_view_to_vol_mat;
+uniform mat4      u_view_to_model_mat;
+uniform mat4	  u_model_to_tex_mat;
 uniform mat4	  u_inv_proj_mat;
 
-in  vec3 view_pos;
+in  vec3 model_pos;
+in  vec3 model_eye;
+in  vec3 color;
+
 out vec4 out_frag;
 
-/*
-float ray_vs_aabb(vec3 o, vec3 d, vec3 min_box, vec3 max_box) {
-	vec3 dirfrac = 1.f / 
-	dirfrac.x = 1.0f / r.dir.x;
-	dirfrac.y = 1.0f / r.dir.y;
-	dirfrac.z = 1.0f / r.dir.z;
-	// lb is the corner of AABB with minimal coordinates - left bottom, rt is maximal corner
-	// r.org is origin of ray
-	float t1 = (lb.x - r.org.x)*dirfrac.x;
-	float t2 = (rt.x - r.org.x)*dirfrac.x;
-	float t3 = (lb.y - r.org.y)*dirfrac.y;
-	float t4 = (rt.y - r.org.y)*dirfrac.y;
-	float t5 = (lb.z - r.org.z)*dirfrac.z;
-	float t6 = (rt.z - r.org.z)*dirfrac.z;
+// Modified version from source found here:
+// https://gamedev.stackexchange.com/questions/18436/most-efficient-aabb-vs-ray-collision-algorithms#18459
 
-	float tmin = max(max(min(t1, t2), min(t3, t4)), min(t5, t6));
-	float tmax = min(min(max(t1, t2), max(t3, t4)), max(t5, t6));
+bool ray_vs_aabb(out float t_entry, out float t_exit, in vec3 ori, in vec3 dir, in vec3 min_box, in vec3 max_box) {
+	vec3 dir_frac = 1.0 / dir;
 
-	// if tmax < 0, ray (line) is intersecting AABB, but the whole AABB is behind us
-	if (tmax < 0)
-	{
-		t = tmax;
+	vec3 tv_1 = (min_box - ori) * dir_frac;
+	vec3 tv_2 = (max_box - ori) * dir_frac;
+
+	vec3 tv_min = min(tv_1, tv_2);
+	vec3 tv_max = max(tv_1, tv_2); 
+
+	float t_min = max(max(tv_min.x, tv_min.y), tv_min.z);
+	float t_max = min(min(tv_max.x, tv_max.y), tv_max.z);
+
+	if (t_max < 0 || t_min > t_max) {
 		return false;
 	}
 
-	// if tmin > tmax, ray doesn't intersect AABB
-	if (tmin > tmax)
-	{
-		t = tmax;
-		return false;
-	}
+	t_entry = t_min;
+	t_exit  = t_max;
 
-	t = tmin;
 	return true;
-}
-*/
+} 
 
 vec4 depth_to_view_coord(vec2 tc, float depth) {
     vec4 clip_coord = vec4(vec3(tc, depth) * 2.0 - 1.0, 1.0);
@@ -100,40 +96,37 @@ vec4 depth_to_view_coord(vec2 tc, float depth) {
 }
 
 vec4 fetch_voxel(vec3 tc) {
-	float a = texture(u_tex_volume, tc).x * u_scale;
-	return vec4(u_color, a);
+	float a = pow(min(texture(u_tex_volume, tc).x * u_scale, 1.0), 0.25);
+	return vec4(mix(vec3(0), u_color, min(a * 10.0, 1.0)), a);
 }
 
 const float REF = 150.0;
-const float step = 0.01;
+const float step = 0.005;
 
 void main() {
-    vec3 dir = normalize(view_pos);
-	vec3 pos = view_pos + dir * step;
+	// Do everything in model space
+	vec3 ori = model_eye;
+    vec3 dir = normalize(model_pos - model_eye);
+
+	float t_entry, t_exit;
+	if (!ray_vs_aabb(t_entry, t_exit, ori, dir, vec3(0), vec3(1))) discard;
+	t_entry = max(0, t_entry);
 
 	float depth = texelFetch(u_tex_depth, ivec2(gl_FragCoord.xy), 0).x;
-	float view_z = depth_to_view_coord(gl_FragCoord.xy * u_inv_res, depth).z;
-
-//	vec3 texCoord = (u_view_to_vol_mat * vec4(pos, 1)).xyz;
-//	out_frag = vec4(mix(vec3(1, 0, 0), vec3(0, 1, 0), lessThan(texCoord, vec3(1.0))), 1.0);
-//	return;
+	if (depth < 1.0) {
+		vec3 stop_pos = (u_view_to_model_mat * depth_to_view_coord(gl_FragCoord.xy * u_inv_res, depth)).xyz;
+		t_exit = min(t_exit, dot(stop_pos - ori, dir));
+	}
 
 	vec4 result = vec4(0);
-	for (float t = 0; t < 100.0; t += step) {
-		if (pos.z < view_z) break;
-		vec3 tc	= (u_view_to_vol_mat * vec4(pos, 1)).xyz;
-		if (any(lessThan(tc, vec3(0))) || any(greaterThan(tc, vec3(1)))) break;
-		vec4 rgba = fetch_voxel(tc);
-		
-		rgba.a     = 1.0 - pow(1.0 - rgba.a, step * REF);
-
+	for (float t = t_entry + step; t < t_exit; t += step) {
+		vec3 pos  = ori + dir * t;
+		vec4 rgba = fetch_voxel((u_model_to_tex_mat * vec4(pos, 1)).xyz);
+		rgba.a    = 1.0 - pow(1.0 - rgba.a, step * REF);
 		rgba.rgb *= rgba.a;
-		result += (1.0 - result.a) * rgba;
 
-		//result.rgb = result.rgb + (1.0 - result.a) * rgba.a * rgba.rgb;
-		//result.a   = result.a + (1.0 - result.a) * rgba.a;
+		result += (1.0 - result.a) * rgba;
 		if (result.a > 0.99) break;
-		pos += dir * t;
 	}
 
 	out_frag = result;
@@ -173,13 +166,14 @@ void initialize() {
 
     attrib_loc_pos = glGetAttribLocation(prog_volume_renderer, "in_pos");
 
-    uniform_loc_view_matrix = glGetUniformLocation(prog_volume_renderer, "u_view_mat");
-    uniform_loc_proj_matrix = glGetUniformLocation(prog_volume_renderer, "u_proj_mat");
+    uniform_loc_model_view_proj_matrix = glGetUniformLocation(prog_volume_renderer, "u_model_view_proj_mat");
     uniform_loc_tex_depth = glGetUniformLocation(prog_volume_renderer, "u_tex_depth");
     uniform_loc_tex_volume = glGetUniformLocation(prog_volume_renderer, "u_tex_volume");
     uniform_loc_color = glGetUniformLocation(prog_volume_renderer, "u_color");
     uniform_loc_scale = glGetUniformLocation(prog_volume_renderer, "u_scale");
-    uniform_loc_view_to_vol_matrix = glGetUniformLocation(prog_volume_renderer, "u_view_to_vol_mat");
+    uniform_loc_inv_res = glGetUniformLocation(prog_volume_renderer, "u_inv_res");
+    uniform_loc_view_to_model_matrix = glGetUniformLocation(prog_volume_renderer, "u_view_to_model_mat");
+    uniform_loc_model_to_tex_matrix = glGetUniformLocation(prog_volume_renderer, "u_model_to_tex_mat");
     uniform_loc_inv_proj_matrix = glGetUniformLocation(prog_volume_renderer, "u_inv_proj_mat");
 
     // From here:
@@ -208,26 +202,32 @@ void initialize() {
 
 void shutdown() {}
 
-GLuint create_volume_texture() {
-    GLuint tex;
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_3D, tex);
+void create_volume_texture(GLuint* texture, const ivec3& dim) {
+    ASSERT(texture);
+    if (*texture != 0 && glIsTexture(*texture)) {
+        glDeleteTextures(1, texture);
+    }
+    glGenTextures(1, texture);
+    glBindTexture(GL_TEXTURE_3D, *texture);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glTexImage3D(GL_TEXTURE_3D, 0, GL_R32F, dim.x, dim.y, dim.z, 0, GL_RED, GL_FLOAT, nullptr);
     glBindTexture(GL_TEXTURE_3D, 0);
-    return tex;
 }
 
 void free_volume_texture(GLuint texture) {
     if (glIsTexture(texture)) glDeleteTextures(1, &texture);
 }
 
-void set_volume_texture_data(GLuint texture, const Volume& volume) {
+void set_volume_texture_data(GLuint texture, ivec3 dim, void* data) {
     if (glIsTexture(texture)) {
-        glTexImage3D(GL_TEXTURE_3D, 0, GL_R8, volume.dim.x, volume.dim.y, volume.dim.z, 0, GL_RED, GL_FLOAT, volume.voxel_data.data);
+        glBindTexture(GL_TEXTURE_3D, texture);
+        glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, dim.x, dim.y, dim.z, GL_RED, GL_FLOAT, data);
+        // glTexImage3D(GL_TEXTURE_3D, 0, GL_R32F, volume.dim.x, volume.dim.y, volume.dim.z, 0, GL_RED, GL_FLOAT, volume.voxel_data.data);
+        glBindTexture(GL_TEXTURE_3D, 0);
     }
 }
 
@@ -236,24 +236,43 @@ mat4 compute_model_to_world_matrix(const vec3& min_world_aabb, const vec3& max_w
     return mat4(vec4(ext.x, 0, 0, 0), vec4(0, ext.y, 0, 0), vec4(0, 0, ext.z, 0), vec4(min_world_aabb, 1));
 }
 
-mat4 compute_data_to_model_matrix(const ivec3& dim) { return mat4(1.f); }
-
-void dump_volume(const Volume& volume, const char* file) {
-    std::ofstream of(file, std::ios::binary);
-    if (!of.is_open()) return;
-
-    of.write(reinterpret_cast<char*>(volume.voxel_data.data), volume.voxel_data.size_in_bytes());
+mat4 compute_texture_to_model_matrix(const ivec3& dim) {
+    return mat4(1);
+    const vec3 cell_ext = 1.f / vec3(dim);
+    const vec3 scl = 1.f + cell_ext;
+    return math::inverse(mat4(vec4(scl.x, 0, 0, 0), vec4(0, scl.y, 0, 0), vec4(0, 0, scl.z, 0), vec4(-0.5f * cell_ext, 1.f)));
 }
 
-void render_volume_texture(GLuint volume_texture, GLuint depth_texture, const mat4& basis, const mat4& view_matrix, const mat4& proj_matrix,
-                           vec3 color, float opacity_scale) {
+void save_volume_to_file(const Volume& volume, const char* file) {
+    FILE* fs = fopen(file, "wb");
+    if (!fs) {
+        LOG_ERROR("Could not open file %s", fs);
+    }
+    fwrite(volume.voxel_data.data, sizeof(Volume::VoxelDataType), volume.voxel_data.count, fs);
+    fclose(fs);
+}
+
+void render_volume_texture(GLuint volume_texture, GLuint depth_texture, const mat4& texture_matrix, const mat4& model_matrix, const mat4& view_matrix,
+                           const mat4& proj_matrix, vec3 color, float opacity_scale) {
     GLint viewport[4];
     glGetIntegerv(GL_VIEWPORT, viewport);
 
-    const mat4 vol_to_view_matrix = view_matrix * basis;
-    const mat4 view_to_vol_matrix = math::inverse(vol_to_view_matrix);
+    const mat4 model_to_view_matrix = view_matrix * model_matrix;
+    const mat4 view_to_model_matrix = math::inverse(model_to_view_matrix);
+    const mat4 model_view_proj_matrix = proj_matrix * model_to_view_matrix;
+    const mat4 model_to_tex_matrix = math::inverse(texture_matrix);
     const mat4 inv_proj_matrix = math::inverse(proj_matrix);
     const vec2 inv_res = vec2(1.f / (float)(viewport[2]), 1.f / (float)(viewport[3]));
+
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glDepthMask(GL_TRUE);
+
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_FRONT);
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, depth_texture);
@@ -268,29 +287,19 @@ void render_volume_texture(GLuint volume_texture, GLuint depth_texture, const ma
     glUniform3fv(uniform_loc_color, 1, &color[0]);
     glUniform1f(uniform_loc_scale, opacity_scale);
     glUniform2fv(uniform_loc_inv_res, 1, &inv_res[0]);
-    glUniformMatrix4fv(uniform_loc_view_matrix, 1, GL_FALSE, &vol_to_view_matrix[0][0]);
-    glUniformMatrix4fv(uniform_loc_proj_matrix, 1, GL_FALSE, &proj_matrix[0][0]);
-    glUniformMatrix4fv(uniform_loc_view_to_vol_matrix, 1, GL_FALSE, &view_to_vol_matrix[0][0]);
+    glUniformMatrix4fv(uniform_loc_model_view_proj_matrix, 1, GL_FALSE, &model_view_proj_matrix[0][0]);
+    glUniformMatrix4fv(uniform_loc_view_to_model_matrix, 1, GL_FALSE, &view_to_model_matrix[0][0]);
+    glUniformMatrix4fv(uniform_loc_model_to_tex_matrix, 1, GL_FALSE, &model_to_tex_matrix[0][0]);
     glUniformMatrix4fv(uniform_loc_inv_proj_matrix, 1, GL_FALSE, &inv_proj_matrix[0][0]);
-
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_DEPTH_CLAMP);
-    glDepthFunc(GL_LESS);
-    glDepthMask(GL_TRUE);
-
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_BACK);
-
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 42);
     glBindVertexArray(0);
 
+    glUseProgram(0);
+
     glDisable(GL_BLEND);
     glDisable(GL_CULL_FACE);
-    glDisable(GL_DEPTH_CLAMP);
 }
 
 }  // namespace volume

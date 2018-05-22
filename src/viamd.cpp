@@ -71,6 +71,8 @@ ATOM     23  H12 CSP3    1E      9.437   2.207  -6.309
 ATOM     24  H13 CSP3    1E      9.801   2.693  -7.994
 )";
 
+constexpr int32 VOLUME_DOWNSAMPLE_FACTOR = 2;
+
 inline ImVec4& vec_cast(vec4& v) { return *(ImVec4*)(&v); }
 inline vec4& vec_cast(ImVec4& v) { return *(vec4*)(&v); }
 inline ImVec2& vec_cast(vec2& v) { return *(ImVec2*)(&v); }
@@ -82,6 +84,14 @@ inline ImVec2 operator*(const ImVec2& a, const ImVec2& b) { return {a.x * b.x, a
 inline ImVec2 operator/(const ImVec2& a, const ImVec2& b) { return {a.x / b.x, a.y / b.y}; }
 
 enum PlaybackInterpolationMode { NEAREST, LINEAR, LINEAR_PERIODIC, CUBIC, CUBIC_PERIODIC };
+
+struct CameraTransformation {
+    mat4 world_to_view;
+    mat4 view_to_world;
+    // Projection
+    mat4 view_to_clip;
+    mat4 clip_to_view;
+};
 
 struct MainFramebuffer {
     GLuint id = 0;
@@ -124,11 +134,6 @@ struct AtomSelection {
     int32 chain_idx = -1;
 };
 
-struct MoleculeData {
-    MoleculeDynamic dynamic{};
-    DynamicArray<float> atom_radii{};
-};
-
 struct ThreadSyncData {
     std::thread thread{};
     volatile bool running = false;
@@ -153,6 +158,8 @@ struct ApplicationData {
     // --- PLATFORM ---
     platform::Context ctx;
 
+    // --- FILES ---
+    // for keeping track of open files
     struct {
         String molecule{};
         String trajectory{};
@@ -160,11 +167,17 @@ struct ApplicationData {
     } files;
 
     // --- CAMERA ---
-    Camera camera;
-    TrackballController controller;
+    struct {
+        Camera camera;
+        TrackballController controller;
+        CameraTransformation matrices;
+    } camera;
 
-    // --- MOL DATA ---
-    MoleculeData mol_data;
+    // --- MOLECULAR DATA ---
+    struct {
+        MoleculeDynamic dynamic{};
+        DynamicArray<float> atom_radii{};
+    } mol_data;
 
     // --- THREAD SYNCHRONIZATION ---
     struct {
@@ -172,12 +185,6 @@ struct ApplicationData {
             ThreadSyncData sync{};
             float fraction = 0.f;
         } trajectory;
-
-        struct {
-            ThreadSyncData sync{};
-            float fraction = 0.f;
-            bool query_update = false;
-        } statistics;
 
         struct {
             ThreadSyncData sync{};
@@ -212,6 +219,7 @@ struct ApplicationData {
     bool is_playing = false;
     PlaybackInterpolationMode interpolation = PlaybackInterpolationMode::LINEAR_PERIODIC;
 
+    // --- TIME LINE FILTERING ---
     struct {
         bool enabled = true;
         vec2 range{0, 0};
@@ -235,15 +243,25 @@ struct ApplicationData {
         DynamicArray<HydrogenBond> bonds{};
     } hydrogen_bonds;
 
+    struct {
+        bool enabled = false;
+        vec4 color = vec4(1, 1, 0, 0.5);
+    } bounding_box;
+
     // VOLUME
     struct {
         bool enabled = true;
-        vec3 color = vec4(1, 0, 0, 1);
+        vec3 color = vec3(1, 0, 0);
         float density_scale = 1.f;
+
+        bool texture_dirty = false;
         GLuint texture = 0;
+        ivec3 texture_dim = ivec3(0);
         Volume volume{};
+
         mat4 model_to_world_matrix{};
-        mat4 data_to_model_matrix{};
+        mat4 texture_to_model_matrix{};
+        mat4 world_to_texture_matrix{};
     } density_volume;
 
     // RAMACHANDRAN
@@ -292,11 +310,10 @@ static void remove_representation(ApplicationData* data, int idx);
 static void reset_representations(ApplicationData* data);
 static void clear_representations(ApplicationData* data);
 
+static void create_volume(ApplicationData* data);
+
 // Async operations
 static void load_trajectory_async(ApplicationData* data);
-// static void remove_properties(ApplicationData* data);
-// static void clear_properties(ApplicationData* data);
-// static void compute_statistics_async(ApplicationData* data);
 static void compute_backbone_angles_async(ApplicationData* data);
 
 int main(int, char**) {
@@ -345,8 +362,6 @@ int main(int, char**) {
     postprocessing::initialize(data.fbo.width, data.fbo.height);
     volume::initialize();
 
-    data.density_volume.texture = volume::create_volume_texture();
-
     // Setup IMGUI style
     ImGui::StyleColorsClassic();
 
@@ -363,11 +378,51 @@ int main(int, char**) {
 #endif
     reset_view(&data);
     create_default_representation(&data);
+    create_volume(&data);
 
     // Main loop
     while (!data.ctx.window.should_close) {
         platform::update(&data.ctx);
-        stats::async_update(data.mol_data.dynamic, data.time_filter.range);
+
+        if (data.density_volume.enabled) {
+            stats::async_update(data.mol_data.dynamic, data.time_filter.range,
+                                [](void* usr_data) {
+                                    ApplicationData* data = (ApplicationData*)usr_data;
+                                    // vec3 min_box = vec3(0);
+                                    // vec3 max_box = data->mol_data.dynamic.trajectory.frame_buffer.count
+                                    //                   ? data->mol_data.dynamic.trajectory.frame_buffer[0].box * vec3(1)
+                                    //                   : vec3(0);
+                                    // data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(min_box, max_box);
+                                    // data->density_volume.texture_to_model_matrix =
+                                    //    volume::compute_texture_to_model_matrix(data->density_volume.volume.dim);
+                                    // data->density_volume.world_to_texture_matrix = math::inverse(data->density_volume.model_to_world_matrix);
+                                    stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix,
+                                                                  data->mol_data.dynamic.trajectory, data->time_filter.range);
+                                    data->density_volume.texture_dirty = true;
+                                },
+                                &data);
+        } else {
+            stats::async_update(data.mol_data.dynamic, data.time_filter.range);
+        }
+
+        // If gpu representation of volume is not up to date, upload data
+        if (data.density_volume.texture_dirty) {
+            if (data.density_volume.texture_dim != data.density_volume.volume.dim) {
+                data.density_volume.texture_dim = data.density_volume.volume.dim;
+                volume::create_volume_texture(&data.density_volume.texture, data.density_volume.texture_dim);
+            }
+
+            auto bytes = data.density_volume.volume.voxel_data.size_in_bytes();
+            float* texture_data = (float*)TMP_MALLOC(bytes);
+
+            // stats::lock_thread_mutex();
+            memcpy(texture_data, data.density_volume.volume.voxel_data.data, bytes);
+            // stats::unlock_thread_mutex();
+
+            volume::set_volume_texture_data(data.density_volume.texture, data.density_volume.texture_dim, texture_data);
+            data.density_volume.texture_dirty = false;
+            TMP_FREE(texture_data);
+        }
 
         // RESIZE FRAMEBUFFER?
         if ((data.fbo.width != data.ctx.framebuffer.width || data.fbo.height != data.ctx.framebuffer.height) &&
@@ -522,16 +577,16 @@ int main(int, char**) {
 
         // CAMERA CONTROLS
         if (!ImGui::GetIO().WantCaptureMouse) {
-            data.controller.input.rotate_button = data.ctx.input.mouse.down[0];
-            data.controller.input.pan_button = data.ctx.input.mouse.down[1];
-            data.controller.input.dolly_button = data.ctx.input.mouse.down[2];
-            data.controller.input.mouse_coord_prev = data.ctx.input.mouse.coord_prev;
-            data.controller.input.mouse_coord_curr = data.ctx.input.mouse.coord_curr;
-            data.controller.input.screen_size = vec2(data.ctx.window.width, data.ctx.window.height);
-            data.controller.input.dolly_delta = data.ctx.input.mouse.scroll.y;
-            data.controller.update();
-            data.camera.position = data.controller.position;
-            data.camera.orientation = data.controller.orientation;
+            data.camera.controller.input.rotate_button = data.ctx.input.mouse.down[0];
+            data.camera.controller.input.pan_button = data.ctx.input.mouse.down[1];
+            data.camera.controller.input.dolly_button = data.ctx.input.mouse.down[2];
+            data.camera.controller.input.mouse_coord_prev = data.ctx.input.mouse.coord_prev;
+            data.camera.controller.input.mouse_coord_curr = data.ctx.input.mouse.coord_curr;
+            data.camera.controller.input.screen_size = vec2(data.ctx.window.width, data.ctx.window.height);
+            data.camera.controller.input.dolly_delta = data.ctx.input.mouse.scroll.y;
+            data.camera.controller.update();
+            data.camera.camera.position = data.camera.controller.position;
+            data.camera.camera.orientation = data.camera.controller.orientation;
 
             if (data.ctx.input.mouse.release[0] && data.ctx.input.mouse.velocity == vec2(0)) {
                 data.selected = data.hovered;
@@ -542,16 +597,15 @@ int main(int, char**) {
         }
 
         if (data.ctx.input.key.hit[Key::KEY_R]) {
-            stats::compute_density_volume(&data.density_volume.volume, math::inverse(data.density_volume.model_to_world_matrix),
-                                          data.mol_data.dynamic.trajectory, data.time_filter.range);
-            volume::set_volume_texture_data(data.density_volume.texture, data.density_volume.volume);
+            // stats::compute_density_volume(&data.density_volume.volume, , data.mol_data.dynamic.trajectory, data.time_filter.range);
+            // volume::set_volume_texture_data(data.density_volume.texture, data.density_volume.volume);
 
             // volume::dump_volume(data.density_volume.volume, "volume.raw");
         }
 
         // RENDER TO FBO
-        mat4 view_mat = compute_world_to_view_matrix(data.camera);
-        mat4 proj_mat = compute_perspective_projection_matrix(data.camera, data.fbo.width, data.fbo.height);
+        mat4 view_mat = compute_world_to_view_matrix(data.camera.camera);
+        mat4 proj_mat = compute_perspective_projection_matrix(data.camera.camera, data.fbo.width, data.fbo.height);
         mat4 inv_proj_mat = math::inverse(proj_mat);
 
         {
@@ -564,10 +618,10 @@ int main(int, char**) {
                 }
             }
 
-            if (data.mol_data.dynamic.trajectory.num_frames > 0) {
-                int frame_idx = math::clamp((int)data.time, 0, data.mol_data.dynamic.trajectory.num_frames - 1);
-                auto frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, frame_idx);
-                immediate::draw_aabb(vec3(0), frame.box * vec3(1), immediate::COLOR_MAGENTA);
+            if (data.bounding_box.enabled && data.mol_data.dynamic.trajectory.num_frames > 0) {
+                int32 frame_idx = math::clamp((int)data.time, 0, data.mol_data.dynamic.trajectory.num_frames - 1);
+                TrajectoryFrame frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, frame_idx);
+                immediate::draw_aabb(vec3(0), frame.box * vec3(1), ImColor(vec_cast(data.bounding_box.color)));
             }
 
             immediate::flush();
@@ -637,8 +691,9 @@ int main(int, char**) {
         }
 
         if (data.density_volume.enabled) {
-            volume::render_volume_texture(data.density_volume.texture, data.fbo.tex_depth, data.density_volume.model_to_world_matrix, view_mat,
-                                          proj_mat, data.density_volume.color, data.density_volume.density_scale);
+            const float scl = 100.f * data.density_volume.density_scale / data.density_volume.volume.voxel_range.y;
+            volume::render_volume_texture(data.density_volume.texture, data.fbo.tex_depth, data.density_volume.texture_to_model_matrix,
+                                          data.density_volume.model_to_world_matrix, view_mat, proj_mat, data.density_volume.color, scl);
         }
 
         // GUI ELEMENTS
@@ -712,13 +767,9 @@ int main(int, char**) {
         platform::swap_buffers(&data.ctx);
     }
 
-    data.async.trajectory.sync.signal_stop();
-    data.async.backbone_angles.sync.signal_stop();
-    data.async.statistics.sync.signal_stop();
-
-    data.async.trajectory.sync.wait_until_finished();
-    data.async.backbone_angles.sync.wait_until_finished();
-    data.async.statistics.sync.wait_until_finished();
+    data.async.trajectory.sync.signal_stop_and_wait();
+    stats::signal_stop_and_wait();
+    data.async.backbone_angles.sync.signal_stop_and_wait();
 
     destroy_main_framebuffer(&data.fbo);
 
@@ -756,12 +807,12 @@ static void reset_view(ApplicationData* data, bool reposition_camera) {
     vec3 cent = (min_box + max_box) * 0.5f;
 
     if (reposition_camera) {
-        data->controller.look_at(cent, cent + size * 2.f);
-        data->camera.position = data->controller.position;
-        data->camera.orientation = data->controller.orientation;
+        data->camera.controller.look_at(cent, cent + size * 2.f);
+        data->camera.camera.position = data->camera.controller.position;
+        data->camera.camera.orientation = data->camera.controller.orientation;
     }
-    data->camera.near_plane = 1.f;
-    data->camera.far_plane = math::length(size) * 30.f;
+    data->camera.camera.near_plane = 1.f;
+    data->camera.camera.far_plane = math::length(size) * 30.f;
 }
 
 static uint32 get_picking_id(uint32 fbo_id, int32 x, int32 y) {
@@ -872,8 +923,19 @@ ImGui::Separator();
             ImGui::BeginGroup();
             ImGui::Checkbox("Hydrogen Bond", &data->hydrogen_bonds.enabled);
             if (data->hydrogen_bonds.enabled) {
-                ImGui::ColorEdit4("hydrogen_bond_color", (float*)&data->hydrogen_bonds.color,
-                                  ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+                ImGui::PushID("hydrogen_bond");
+                ImGui::ColorEdit4("Color", (float*)&data->hydrogen_bonds.color, ImGuiColorEditFlags_NoInputs);
+                ImGui::PopID();
+            }
+            ImGui::EndGroup();
+            ImGui::Separator();
+
+            ImGui::BeginGroup();
+            ImGui::Checkbox("Bounding Volume", &data->bounding_box.enabled);
+            if (data->bounding_box.enabled) {
+                ImGui::PushID("bounding_box");
+                ImGui::ColorEdit4("Color", (float*)&data->bounding_box.color, ImGuiColorEditFlags_NoInputs);
+                ImGui::PopID();
             }
             ImGui::EndGroup();
             ImGui::Separator();
@@ -881,8 +943,10 @@ ImGui::Separator();
             ImGui::BeginGroup();
             ImGui::Checkbox("Density Volume", &data->density_volume.enabled);
             if (data->density_volume.enabled) {
-                ImGui::ColorEdit3("density_color", (float*)&data->density_volume.color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
-                ImGui::SliderFloat("density_scale", &data->density_volume.density_scale, 0.001f, 10.f, "%.3f", 3.f);
+                ImGui::PushID("density_volume");
+                ImGui::ColorEdit3("Color", (float*)&data->density_volume.color, ImGuiColorEditFlags_NoInputs);
+                ImGui::SliderFloat("Scale", &data->density_volume.density_scale, 0.001f, 10.f, "%.3f", 3.f);
+                ImGui::PopID();
             }
             ImGui::EndGroup();
             /*
@@ -1187,7 +1251,7 @@ static void draw_async_info(ApplicationData* data) {
 
     float traj_fract = data->async.trajectory.fraction;
     float angle_fract = data->async.backbone_angles.fraction;
-    float stats_fract = data->async.statistics.fraction;
+    float stats_fract = stats::fraction_done();
 
     if ((0.f < traj_fract && traj_fract < 1.f) || (0.f < angle_fract && angle_fract < 1.f) || (0.f < stats_fract && stats_fract < 1.f)) {
 
@@ -1480,7 +1544,7 @@ static void destroy_main_framebuffer(MainFramebuffer* fbo) {
 static void free_trajectory_data(ApplicationData* data) {
     if (data->mol_data.dynamic.trajectory) {
         data->async.trajectory.sync.signal_stop_and_wait();
-        data->async.statistics.sync.signal_stop_and_wait();
+        stats::signal_stop_and_wait();
         data->async.backbone_angles.sync.signal_stop_and_wait();
         close_file_handle(&data->mol_data.dynamic.trajectory);
         free_trajectory(&data->mol_data.dynamic.trajectory);
@@ -1519,12 +1583,15 @@ static void load_molecule_data(ApplicationData* data, CString file) {
             data->files.molecule = allocate_string(file);
             data->mol_data.atom_radii = compute_atom_radii(data->mol_data.dynamic.molecule.atom_elements);
             if (data->mol_data.dynamic.trajectory) {
-                if (data->mol_data.dynamic.trajectory.num_frames > 0) {
-                    vec3 box_ext = data->mol_data.dynamic.trajectory.frame_buffer[0].box * vec3(1);
-                    init_volume(&data->density_volume.volume, math::max(ivec3(1), ivec3(box_ext) / 4));
-                    data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(vec3(0), box_ext);
-                    data->density_volume.data_to_model_matrix = volume::compute_data_to_model_matrix(data->density_volume.volume.dim);
-                }
+                create_volume(data);
+                /*
+if (data->mol_data.dynamic.trajectory.num_frames > 0) {
+    vec3 box_ext = data->mol_data.dynamic.trajectory.frame_buffer[0].box * vec3(1);
+    init_volume(&data->density_volume.volume, math::max(ivec3(1), ivec3(box_ext) / VOLUME_DOWNSAMPLE_FACTOR));
+    data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(vec3(0), box_ext);
+    data->density_volume.texture_to_model_matrix = volume::compute_texture_to_model_matrix(data->density_volume.volume.dim);
+}
+                */
 
                 init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
                 compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
@@ -1703,15 +1770,15 @@ static void load_workspace(ApplicationData* data, CString file) {
                 extract_line(line, c_txt);
                 if (compare_n(line, "Position=", 9)) {
                     vec3 pos = vec3(to_vec4(trim(line.substr(9))));
-                    data->camera.position = pos;
-                    data->controller.position = pos;
+                    data->camera.camera.position = pos;
+                    data->camera.controller.position = pos;
                 }
                 if (compare_n(line, "Rotation=", 9)) {
                     quat rot = quat(to_vec4(trim(line.substr(9))));
-                    data->camera.orientation = rot;
-                    data->controller.orientation = rot;
+                    data->camera.camera.orientation = rot;
+                    data->camera.controller.orientation = rot;
                 }
-                if (compare_n(line, "Distance=", 9)) data->controller.distance = to_float(trim(line.substr(9)));
+                if (compare_n(line, "Distance=", 9)) data->camera.controller.distance = to_float(trim(line.substr(9)));
             }
         }
     }
@@ -1789,10 +1856,10 @@ static void save_workspace(ApplicationData* data, CString file) {
     fprintf(fptr, "\n");
 
     fprintf(fptr, "[Camera]\n");
-    fprintf(fptr, "Position=%g,%g,%g\n", data->camera.position.x, data->camera.position.y, data->camera.position.z);
-    fprintf(fptr, "Rotation=%g,%g,%g,%g\n", data->camera.orientation.x, data->camera.orientation.y, data->camera.orientation.z,
-            data->camera.orientation.w);
-    fprintf(fptr, "Distance=%g\n", data->controller.distance);
+    fprintf(fptr, "Position=%g,%g,%g\n", data->camera.camera.position.x, data->camera.camera.position.y, data->camera.camera.position.z);
+    fprintf(fptr, "Rotation=%g,%g,%g,%g\n", data->camera.camera.orientation.x, data->camera.camera.orientation.y, data->camera.camera.orientation.z,
+            data->camera.camera.orientation.w);
+    fprintf(fptr, "Distance=%g\n", data->camera.controller.distance);
     fprintf(fptr, "\n");
 
     fclose(fptr);
@@ -1868,12 +1935,16 @@ static void load_trajectory_async(ApplicationData* data) {
             // read first frame expicitly
             read_next_trajectory_frame(&data->mol_data.dynamic.trajectory);
 
-            if (data->mol_data.dynamic.trajectory.num_frames > 0) {
-                vec3 box_ext = data->mol_data.dynamic.trajectory.frame_buffer[0].box * vec3(1);
-                init_volume(&data->density_volume.volume, math::max(ivec3(1), ivec3(box_ext) / 4));
-                data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(vec3(0), box_ext);
-                data->density_volume.data_to_model_matrix = volume::compute_data_to_model_matrix(data->density_volume.volume.dim);
-            }
+            create_volume(data);
+
+            /*
+if (data->mol_data.dynamic.trajectory.num_frames > 0) {
+    vec3 box_ext = data->mol_data.dynamic.trajectory.frame_buffer[0].box * vec3(1);
+    init_volume(&data->density_volume.volume, math::max(ivec3(1), ivec3(box_ext) / VOLUME_DOWNSAMPLE_FACTOR));
+    data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(vec3(0), box_ext);
+    data->density_volume.texture_to_model_matrix = volume::compute_texture_to_model_matrix(data->density_volume.volume.dim);
+}
+            */
 
             while (read_next_trajectory_frame(&data->mol_data.dynamic.trajectory)) {
                 data->async.trajectory.fraction =
@@ -1890,44 +1961,6 @@ static void load_trajectory_async(ApplicationData* data) {
         data->async.trajectory.sync.thread.detach();
     }
 }
-
-// static void remove_properties(ApplicationData* data) {
-// data->async.statistics.sync.signal_stop_and_wait();
-// stats::remove_all_properties();
-//}
-
-// static void clear_properties(ApplicationData* data) {
-// data->async.statistics.sync.signal_stop_and_wait();
-// stats::clear_all_properties();
-//}
-
-/*
-static void compute_statistics_async(ApplicationData* data) {
-    ASSERT(data);
-    data->async.statistics.query_update = true;
-    if (data->async.statistics.sync.running == false) {
-        data->async.statistics.sync.running = true;
-
-        data->async.statistics.sync.thread = std::thread([data]() {
-            data->async.statistics.fraction = 0.0f;
-            while (data->async.statistics.query_update) {
-                data->async.statistics.query_update = false;
-                data->async.statistics.fraction = 0.5f;
-                if (data->time_filter.enabled) {
-                    stats::update(data->mol_data.dynamic, &data->time_filter.range);
-                } else {
-                    stats::update(data->mol_data.dynamic);
-                }
-                if (data->async.statistics.sync.stop_signal) break;
-            }
-            data->async.statistics.fraction = 1.f;
-            data->async.statistics.sync.running = false;
-            data->async.statistics.sync.stop_signal = false;
-        });
-        data->async.statistics.sync.thread.detach();
-    }
-}
-*/
 
 static void compute_backbone_angles_async(ApplicationData* data) {
     ASSERT(data);
@@ -1949,4 +1982,16 @@ static void compute_backbone_angles_async(ApplicationData* data) {
         });
         data->async.backbone_angles.sync.thread.detach();
     }
+}
+
+static void create_volume(ApplicationData* data) {
+    const vec3 min_box = vec3(0);
+    const vec3 max_box = data->mol_data.dynamic.trajectory.num_frames > 0 ? data->mol_data.dynamic.trajectory.frame_buffer[0].box * vec3(1) : vec3(1);
+    const ivec3 dim = ivec3(max_box) / VOLUME_DOWNSAMPLE_FACTOR;
+    init_volume(&data->density_volume.volume, dim);
+    // volume::create_volume_texture(&data->density_volume.texture, dim);
+    data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(min_box, max_box);
+    data->density_volume.texture_to_model_matrix = volume::compute_texture_to_model_matrix(dim);
+    data->density_volume.world_to_texture_matrix =
+        math::inverse(data->density_volume.model_to_world_matrix * data->density_volume.texture_to_model_matrix);
 }

@@ -17,7 +17,7 @@
 #include <tinyexpr.h>
 
 #define COMPUTE_ID(x) (hash::crc64(x))
-constexpr int32 NUM_BINS = 64;
+constexpr int32 NUM_BINS = 32;
 
 namespace stats {
 
@@ -41,7 +41,9 @@ struct StatisticsContext {
 
     Property* current_property = nullptr;
     Volume volume{};
+    bool volume_dirty = false;
 
+    std::mutex thread_mutex;
     volatile bool thread_running = false;
     volatile bool stop_signal = false;
     volatile float fraction_done = 0.f;
@@ -202,6 +204,25 @@ inline bool point_in_aabb(const vec3& p, const vec3& min_box, const vec3& max_bo
     return true;
 }
 
+// from here https://stackoverflow.com/questions/6127503/shuffle-array-in-c
+/* Arrange the N elements of ARRAY in random order.
+Only effective if N is much smaller than RAND_MAX;
+if this may not be the case, use a better random
+number generator. */
+inline void shuffle(int32* arr, size_t n) {
+    if (n > 1) {
+        size_t i;
+        for (i = 0; i < n - 1; i++) {
+            size_t j = i + rand() / (RAND_MAX / (n - i) + 1);
+            int32 t = arr[j];
+            arr[j] = arr[i];
+            arr[i] = t;
+        }
+    }
+}
+
+//#pragma optimize("", off)
+
 void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, const MoleculeTrajectory& traj, Range frame_range) {
     ASSERT(vol);
     if (vol->dim.x == 0 || vol->dim.y == 0 || vol->dim.z == 0) {
@@ -209,27 +230,40 @@ void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, con
         return;
     }
 
+    if (ctx.properties.count == 0) return;
+    int32 num_frames = (int32)ctx.properties.front()->data.count;
+
     if (frame_range.x == 0 && frame_range.y == 0) {
-        frame_range.y = (float)traj.num_frames;
+        frame_range.y = (float)num_frames;
     }
-    int32 beg_frame = math::clamp((int32)frame_range.x, 0, traj.num_frames - 1);
-    int32 end_frame = math::clamp((int32)frame_range.y, 0, traj.num_frames - 1);
+
+    int32 beg_frame = math::clamp((int32)frame_range.x, 0, num_frames - 1);
+    int32 end_frame = math::clamp((int32)frame_range.y, 0, num_frames - 1);
+
+    int32 frame_count = end_frame - beg_frame;
+    int32* permuted_frames = (int32*)TMP_MALLOC(frame_count * sizeof(int32));
+    for (int32 i = 0; i < frame_count; i++) {
+        permuted_frames[i] = beg_frame + i;
+    }
+
+    shuffle(permuted_frames, frame_count);
 
     clear_volume(vol);
-    for (int32 frame_idx = beg_frame; frame_idx < end_frame; frame_idx++) {
-        auto atom_positions = get_trajectory_positions(traj, frame_idx);
+    for (int32 p_idx = 0; p_idx < frame_count; p_idx++) {
+        int32 frame_idx = permuted_frames[p_idx];
+        Array<const vec3> atom_positions = get_trajectory_positions(traj, frame_idx);
         for (auto prop : ctx.properties) {
             for (int32 inst_idx = 0; inst_idx < prop->instance_data.count; inst_idx++) {
                 const float v = prop->instance_data[inst_idx].data[frame_idx];
                 if (prop->filter.x <= v && v <= prop->filter.y) {
                     for (const auto& s : prop->structure_data) {
                         for (int32 i = s.structures[inst_idx].beg_idx; i < s.structures[inst_idx].end_idx; i++) {
-                            vec4 tc = world_to_volume_matrix * vec4(atom_positions[i], 1);
+                            const vec4 tc = world_to_volume_matrix * vec4(atom_positions[i], 1);
                             if (tc.x < 0.f || 1.f < tc.x) continue;
                             if (tc.y < 0.f || 1.f < tc.y) continue;
                             if (tc.z < 0.f || 1.f < tc.z) continue;
-                            ivec3 c = vec3(tc) * (vec3)vol->dim;
-                            int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
+                            const ivec3 c = vec3(tc) * (vec3)vol->dim;
+                            const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
                             vol->voxel_data[voxel_idx]++;
                             vol->voxel_range.y = math::max(vol->voxel_range.y, vol->voxel_data[voxel_idx]);
                         }
@@ -238,7 +272,11 @@ void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, con
             }
         }
     }
+
+    TMP_FREE(permuted_frames);
 }
+
+//#pragma optimize("", on)
 
 static Range compute_range(Array<float> data) {
     if (data.count == 0) {
@@ -1183,62 +1221,6 @@ static void compute_property_data(Property* prop, const MoleculeDynamic& dynamic
     ctx.current_property = nullptr;
 }
 
-/*
-void update(const MoleculeDynamic& dynamic) {
-    Range range(0, dynamic.trajectory.num_frames);
-    update(dynamic, &range);
-}
-
-void update(const MoleculeDynamic& dynamic, volatile Range* frame_range) {
-    Histogram tmp_hist;
-    init_histogram(&tmp_hist, NUM_BINS);
-
-    for (auto p : ctx.properties) {
-        if (p->data_dirty) {
-            compute_property_data(p, dynamic);
-            p->data_dirty = false;
-        }
-
-        if (p->full_hist_dirty) {
-            clear_histogram(&p->full_histogram);
-            if (p->instance_data) {
-                for (const auto& inst : p->instance_data) {
-                    compute_histogram(&p->full_histogram, inst.data);
-                }
-            } else {
-                compute_histogram(&p->full_histogram, p->data);
-            }
-            normalize_histogram(&p->full_histogram);
-            p->full_hist_dirty = false;
-        }
-
-        if (p->filt_hist_dirty) {
-            clear_histogram(&tmp_hist);
-            tmp_hist.value_range = p->filt_histogram.value_range;
-
-            int32 beg_idx = math::clamp((int32)frame_range->x, 0, (int32)p->data.count);
-            int32 end_idx = math::clamp((int32)frame_range->y, 0, (int32)p->data.count);
-
-            // Since the data is probably showing, perform the operations on tmp data then copy the results
-            if (p->instance_data) {
-                for (const auto& inst : p->instance_data) {
-                    compute_histogram(&tmp_hist, inst.data.sub_array(beg_idx, end_idx - beg_idx), p->filter);
-                }
-            } else {
-                compute_histogram(&tmp_hist, p->data.sub_array(beg_idx, end_idx - beg_idx), p->filter);
-            }
-            normalize_histogram(&tmp_hist);
-            p->filt_histogram.bin_range = tmp_hist.bin_range;
-            p->filt_histogram.num_samples = tmp_hist.num_samples;
-            memcpy(p->filt_histogram.bins.data, tmp_hist.bins.data, p->filt_histogram.bins.size_in_bytes());
-            p->filt_hist_dirty = false;
-        }
-    }
-
-    free_histogram(&tmp_hist);
-}
-*/
-
 bool properties_dirty() {
     for (const auto p : ctx.properties) {
         if (p->data_dirty) return true;
@@ -1249,7 +1231,7 @@ bool properties_dirty() {
     return false;
 }
 
-void async_update(const MoleculeDynamic& dynamic, Range frame_filter) {
+void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_finished)(void*), void* usr_data) {
     if (frame_filter.x == 0.f && frame_filter.y == 0.f) {
         frame_filter.y = (float)dynamic.trajectory.num_frames;
     }
@@ -1259,11 +1241,12 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter) {
     if ((prev_frame_filter != frame_filter || properties_dirty()) && !ctx.thread_running && !ctx.stop_signal) {
         prev_frame_filter = frame_filter;
         ctx.thread_running = true;
-        std::thread([&dynamic, frame_filter]() {
+        std::thread([&dynamic, frame_filter, on_finished, usr_data]() {
             Histogram tmp_hist;
             init_histogram(&tmp_hist, NUM_BINS);
             ctx.fraction_done = 0.f;
 
+            ctx.thread_mutex.lock();
             for (int32 i = 0; i < ctx.properties.count; i++) {
                 auto p = ctx.properties[i];
                 ctx.fraction_done = (i / (float)ctx.properties.count);
@@ -1317,6 +1300,12 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter) {
                 if (ctx.stop_signal) break;
             }
 
+            if (on_finished) {
+                on_finished(usr_data);
+            }
+
+            ctx.thread_mutex.unlock();
+
             free_histogram(&tmp_hist);
             ctx.fraction_done = 1.f;
             ctx.thread_running = false;
@@ -1326,16 +1315,23 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter) {
     }
 }
 
+void lock_thread_mutex() { ctx.thread_mutex.lock(); }
+
+void unlock_thread_mutex() { ctx.thread_mutex.unlock(); }
+
 bool thread_running() { return ctx.thread_running; }
 
-void send_stop_signal() { ctx.stop_signal = true; }
+void signal_stop() { ctx.stop_signal = true; }
 
-void send_stop_signal_and_wait() {
+void signal_stop_and_wait() {
     ctx.stop_signal = true;
     while (ctx.thread_running) {
         // possibly sleep 1 ms or so
     }
+    ctx.stop_signal = false;
 }
+
+void signal_start() { ctx.stop_signal = false; }
 
 float fraction_done() { return ctx.fraction_done; }
 
@@ -1375,7 +1371,7 @@ Property* create_property(CString name, CString args) {
 }
 
 static void free_property_data(Property* prop) {
-    send_stop_signal_and_wait();
+    signal_stop_and_wait();
     ASSERT(prop);
     free_histogram(&prop->full_histogram);
     free_histogram(&prop->filt_histogram);
@@ -1386,7 +1382,7 @@ static void free_property_data(Property* prop) {
 
 void remove_property(Property* prop) {
     ASSERT(prop);
-    send_stop_signal_and_wait();
+    signal_stop_and_wait();
     for (auto& p : ctx.properties) {
         if (p == prop) {
             free_property_data(prop);
@@ -1397,7 +1393,7 @@ void remove_property(Property* prop) {
 }
 
 void remove_all_properties() {
-    send_stop_signal_and_wait();
+    signal_stop_and_wait();
     for (auto prop : ctx.properties) {
         free_property_data(prop);
     }
@@ -1407,7 +1403,7 @@ void remove_all_properties() {
 
 void move_property_up(Property* prop) {
     if (ctx.properties.count <= 1) return;
-    send_stop_signal_and_wait();
+    signal_stop_and_wait();
     for (int32 i = 1; i < (int32)ctx.properties.count; i++) {
         if (ctx.properties[i] == prop) {
             // swap
@@ -1422,7 +1418,7 @@ void move_property_up(Property* prop) {
 
 void move_property_down(Property* prop) {
     if (ctx.properties.count <= 1) return;
-    send_stop_signal_and_wait();
+    signal_stop_and_wait();
     for (int32 i = 0; i < (int32)ctx.properties.count - 1; i++) {
         if (ctx.properties[i] == prop) {
             // swap
@@ -1450,7 +1446,7 @@ Property* get_property(int32 idx) {
 int32 get_property_count() { return (int32)ctx.properties.count; }
 
 void clear_property(Property* prop) {
-    send_stop_signal_and_wait();
+    signal_stop_and_wait();
     ASSERT(prop);
     for (auto p : ctx.properties) {
         if (p == prop) {
@@ -1464,7 +1460,7 @@ void clear_property(Property* prop) {
 }
 
 void clear_all_properties() {
-    send_stop_signal_and_wait();
+    signal_stop_and_wait();
     for (auto p : ctx.properties) {
         free_structure_data(&p->structure_data);
         free_instance_data(&p->instance_data);

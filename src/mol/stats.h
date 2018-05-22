@@ -2,6 +2,7 @@
 
 #include <core/types.h>
 #include <core/string_utils.h>
+#include <mutex>
 
 struct MoleculeDynamic;
 struct MoleculeStructure;
@@ -99,13 +100,15 @@ void compute_density_volume(Volume* vol, const mat4& world_to_volume, const Mole
 void initialize();
 void shutdown();
 
-// Kick of in a separate thread whenever the data should to be modified.
-void async_update(const MoleculeDynamic& dynamic, Range frame_filter = {0, 0});
+void async_update(const MoleculeDynamic& dynamic, Range frame_filter = {0, 0}, void (*on_finished)(void*) = nullptr, void* usr_data = nullptr);
 
 // ASync functionality
+void lock_thread_mutex();
+void unlock_thread_mutex();
 bool thread_running();
-void send_stop_signal();
-void send_stop_signal_and_wait();
+void signal_stop();
+void signal_stop_and_wait();
+void signal_start();
 float fraction_done();
 
 // bool compute_stats(const MoleculeDynamic& dynamic);
