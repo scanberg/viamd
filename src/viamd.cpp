@@ -44,6 +44,16 @@ constexpr uint32 DEL_BTN_HOVER_COLOR = 0xff3333dd;
 constexpr uint32 DEL_BTN_ACTIVE_COLOR = 0xff5555ff;
 constexpr uint32 TEXT_BG_ERROR_COLOR = 0xaa222299;
 
+constexpr int32 VOLUME_DOWNSAMPLE_FACTOR = 2;
+
+constexpr float HYDROGEN_BOND_DISTANCE_CUTOFF_DEFAULT = 3.0f;
+constexpr float HYDROGEN_BOND_DISTANCE_CUTOFF_MIN = 0.1f;
+constexpr float HYDROGEN_BOND_DISTANCE_CUTOFF_MAX = 12.0f;
+
+constexpr float HYDROGEN_BOND_ANGLE_CUTOFF_DEFAULT = 20.f;
+constexpr float HYDROGEN_BOND_ANGLE_CUTOFF_MIN = 5.f;
+constexpr float HYDROGEN_BOND_ANGLE_CUTOFF_MAX = 90.f;
+
 constexpr const char* CAFFINE_PDB = R"(
 ATOM      1  N1  BENZ    1       5.040   1.944  -8.324                          
 ATOM      2  C2  BENZ    1       6.469   2.092  -7.915                          
@@ -70,8 +80,6 @@ ATOM     22  H11 CSP3    1E     10.776   1.419  -7.199
 ATOM     23  H12 CSP3    1E      9.437   2.207  -6.309                          
 ATOM     24  H13 CSP3    1E      9.801   2.693  -7.994
 )";
-
-constexpr int32 VOLUME_DOWNSAMPLE_FACTOR = 2;
 
 inline ImVec4& vec_cast(vec4& v) { return *(ImVec4*)(&v); }
 inline vec4& vec_cast(ImVec4& v) { return *(vec4*)(&v); }
@@ -240,8 +248,8 @@ struct ApplicationData {
         bool enabled = false;
         bool dirty = true;
         vec4 color = vec4(1, 0, 1, 1);
-		float distance_cutoff = 3.0f; // In Ångström
-		float angle_cutoff = 20.f;    // In Degrees
+        float distance_cutoff = HYDROGEN_BOND_DISTANCE_CUTOFF_DEFAULT;  // In Ångström
+        float angle_cutoff = HYDROGEN_BOND_ANGLE_CUTOFF_DEFAULT;        // In Degrees
         DynamicArray<HydrogenBond> bonds{};
     } hydrogen_bonds;
 
@@ -260,7 +268,7 @@ struct ApplicationData {
         GLuint texture = 0;
         ivec3 texture_dim = ivec3(0);
         Volume volume{};
-		std::mutex volume_data_mutex{};
+        std::mutex volume_data_mutex{};
 
         mat4 model_to_world_matrix{};
         mat4 texture_to_model_matrix{};
@@ -391,10 +399,10 @@ int main(int, char**) {
             stats::async_update(data.mol_data.dynamic, data.time_filter.range,
                                 [](void* usr_data) {
                                     ApplicationData* data = (ApplicationData*)usr_data;
-									data->density_volume.volume_data_mutex.lock();
+                                    data->density_volume.volume_data_mutex.lock();
                                     stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix,
                                                                   data->mol_data.dynamic.trajectory, data->time_filter.range);
-									data->density_volume.volume_data_mutex.unlock();
+                                    data->density_volume.volume_data_mutex.unlock();
                                     data->density_volume.texture_dirty = true;
                                 },
                                 &data);
@@ -404,16 +412,17 @@ int main(int, char**) {
 
         // If gpu representation of volume is not up to date, upload data
         if (data.density_volume.texture_dirty) {
-			if (data.density_volume.volume_data_mutex.try_lock()) {
-				if (data.density_volume.texture_dim != data.density_volume.volume.dim) {
-					data.density_volume.texture_dim = data.density_volume.volume.dim;
-					volume::create_volume_texture(&data.density_volume.texture, data.density_volume.texture_dim);
-				}
+            if (data.density_volume.volume_data_mutex.try_lock()) {
+                if (data.density_volume.texture_dim != data.density_volume.volume.dim) {
+                    data.density_volume.texture_dim = data.density_volume.volume.dim;
+                    volume::create_volume_texture(&data.density_volume.texture, data.density_volume.texture_dim);
+                }
 
-				volume::set_volume_texture_data(data.density_volume.texture, data.density_volume.texture_dim, data.density_volume.volume.voxel_data.data);
-				data.density_volume.volume_data_mutex.unlock();
-				data.density_volume.texture_dirty = false;
-			}
+                volume::set_volume_texture_data(data.density_volume.texture, data.density_volume.texture_dim,
+                                                data.density_volume.volume.voxel_data.data);
+                data.density_volume.volume_data_mutex.unlock();
+                data.density_volume.texture_dirty = false;
+            }
         }
 
         // RESIZE FRAMEBUFFER?
@@ -561,10 +570,11 @@ int main(int, char**) {
         }
 
         if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.dirty) {
-            data.hydrogen_bonds.dirty = false;
             data.hydrogen_bonds.bonds.clear();
             hydrogen_bond::compute_bonds(&data.hydrogen_bonds.bonds, data.mol_data.dynamic.molecule.hydrogen_bond.donors,
-                                         data.mol_data.dynamic.molecule.hydrogen_bond.acceptors, data.mol_data.dynamic.molecule.atom_positions);
+                                         data.mol_data.dynamic.molecule.hydrogen_bond.acceptors, data.mol_data.dynamic.molecule.atom_positions,
+                                         data.hydrogen_bonds.distance_cutoff, data.hydrogen_bonds.angle_cutoff * math::DEG_TO_RAD);
+            data.hydrogen_bonds.dirty = false;
         }
 
         // CAMERA CONTROLS
@@ -909,6 +919,14 @@ ImGui::Separator();
             ImGui::Checkbox("Hydrogen Bond", &data->hydrogen_bonds.enabled);
             if (data->hydrogen_bonds.enabled) {
                 ImGui::PushID("hydrogen_bond");
+                if (ImGui::SliderFloat("Distance Cutoff", &data->hydrogen_bonds.distance_cutoff, HYDROGEN_BOND_DISTANCE_CUTOFF_MIN,
+                                       HYDROGEN_BOND_DISTANCE_CUTOFF_MAX)) {
+                    data->hydrogen_bonds.dirty = true;
+                }
+                if (ImGui::SliderFloat("Angle Cutoff", &data->hydrogen_bonds.angle_cutoff, HYDROGEN_BOND_ANGLE_CUTOFF_MIN,
+                                       HYDROGEN_BOND_ANGLE_CUTOFF_MAX)) {
+                    data->hydrogen_bonds.dirty = true;
+                }
                 ImGui::ColorEdit4("Color", (float*)&data->hydrogen_bonds.color, ImGuiColorEditFlags_NoInputs);
                 ImGui::PopID();
             }
