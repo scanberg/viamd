@@ -240,17 +240,22 @@ void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, con
     int32 beg_frame = math::clamp((int32)frame_range.x, 0, num_frames - 1);
     int32 end_frame = math::clamp((int32)frame_range.y, 0, num_frames - 1);
 
+#ifdef PERMUTE_FRAMES
     int32 frame_count = end_frame - beg_frame;
     int32* permuted_frames = (int32*)TMP_MALLOC(frame_count * sizeof(int32));
     for (int32 i = 0; i < frame_count; i++) {
         permuted_frames[i] = beg_frame + i;
     }
-
     shuffle(permuted_frames, frame_count);
+#endif
 
     clear_volume(vol);
+#ifdef PERMUTE_FRAMES
     for (int32 p_idx = 0; p_idx < frame_count; p_idx++) {
         int32 frame_idx = permuted_frames[p_idx];
+#else
+    for (int32 frame_idx = beg_frame; frame_idx < end_frame; frame_idx++) {
+#endif
         Array<const vec3> atom_positions = get_trajectory_positions(traj, frame_idx);
         for (auto prop : ctx.properties) {
             for (int32 inst_idx = 0; inst_idx < prop->instance_data.count; inst_idx++) {
@@ -273,7 +278,9 @@ void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, con
         }
     }
 
+#ifdef PERMUTE_FRAMES
     TMP_FREE(permuted_frames);
+#endif
 }
 
 //#pragma optimize("", on)
@@ -1246,7 +1253,7 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_
             init_histogram(&tmp_hist, NUM_BINS);
             ctx.fraction_done = 0.f;
 
-            //ctx.thread_mutex.lock();
+            // ctx.thread_mutex.lock();
             for (int32 i = 0; i < ctx.properties.count; i++) {
                 auto p = ctx.properties[i];
                 ctx.fraction_done = (i / (float)ctx.properties.count);
@@ -1304,7 +1311,7 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_
                 on_finished(usr_data);
             }
 
-            //ctx.thread_mutex.unlock();
+            // ctx.thread_mutex.unlock();
 
             free_histogram(&tmp_hist);
             ctx.fraction_done = 1.f;

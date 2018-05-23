@@ -265,9 +265,13 @@ struct ApplicationData {
         vec3 color = vec3(1, 0, 0);
         float density_scale = 1.f;
 
-        bool texture_dirty = false;
-        GLuint texture = 0;
-        ivec3 texture_dim = ivec3(0);
+        struct {
+            GLuint id = 0;
+            bool dirty = false;
+            ivec3 dim = ivec3(0);
+            float max_value = 1.f;
+        } texture;
+
         Volume volume{};
         std::mutex volume_data_mutex{};
 
@@ -404,7 +408,7 @@ int main(int, char**) {
                                     stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix,
                                                                   data->mol_data.dynamic.trajectory, data->time_filter.range);
                                     data->density_volume.volume_data_mutex.unlock();
-                                    data->density_volume.texture_dirty = true;
+                                    data->density_volume.texture.dirty = true;
                                 },
                                 &data);
         } else {
@@ -412,17 +416,18 @@ int main(int, char**) {
         }
 
         // If gpu representation of volume is not up to date, upload data
-        if (data.density_volume.texture_dirty) {
+        if (data.density_volume.texture.dirty) {
             if (data.density_volume.volume_data_mutex.try_lock()) {
-                if (data.density_volume.texture_dim != data.density_volume.volume.dim) {
-                    data.density_volume.texture_dim = data.density_volume.volume.dim;
-                    volume::create_volume_texture(&data.density_volume.texture, data.density_volume.texture_dim);
+                if (data.density_volume.texture.dim != data.density_volume.volume.dim) {
+                    data.density_volume.texture.dim = data.density_volume.volume.dim;
+                    volume::create_volume_texture(&data.density_volume.texture.id, data.density_volume.texture.dim);
                 }
 
-                volume::set_volume_texture_data(data.density_volume.texture, data.density_volume.texture_dim,
+                volume::set_volume_texture_data(data.density_volume.texture.id, data.density_volume.texture.dim,
                                                 data.density_volume.volume.voxel_data.data);
                 data.density_volume.volume_data_mutex.unlock();
-                data.density_volume.texture_dirty = false;
+                data.density_volume.texture.max_value = data.density_volume.volume.voxel_range.y;
+                data.density_volume.texture.dirty = false;
             }
         }
 
@@ -687,8 +692,8 @@ int main(int, char**) {
         }
 
         if (data.density_volume.enabled) {
-            const float scl = 100.f * data.density_volume.density_scale / data.density_volume.volume.voxel_range.y;
-            volume::render_volume_texture(data.density_volume.texture, data.fbo.tex_depth, data.density_volume.texture_to_model_matrix,
+            const float scl = 0.1f * data.density_volume.density_scale / data.density_volume.texture.max_value;
+            volume::render_volume_texture(data.density_volume.texture.id, data.fbo.tex_depth, data.density_volume.texture_to_model_matrix,
                                           data.density_volume.model_to_world_matrix, view_mat, proj_mat, data.density_volume.color, scl);
         }
 

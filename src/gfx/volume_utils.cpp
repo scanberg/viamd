@@ -96,7 +96,7 @@ vec4 depth_to_view_coord(vec2 tc, float depth) {
 }
 
 vec4 fetch_voxel(vec3 tc) {
-	float a = pow(min(texture(u_tex_volume, tc).x * u_scale, 1.0), 0.25);
+	float a = min(texture(u_tex_volume, tc).x * u_scale, 1.0);
 	return vec4(mix(vec3(0), u_color, min(a * 10.0, 1.0)), a);
 }
 
