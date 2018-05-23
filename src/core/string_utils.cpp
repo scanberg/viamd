@@ -473,11 +473,19 @@ DynamicArray<CString> ctokenize(CString str, CString delimiter) {
 bool is_range(CString arg) {
     for (const char* c = arg.beg(); c != arg.end(); c++) {
         if (*c == '-') return true;
+        if (*c == '*') return true;
     }
     return false;
 }
 
 bool extract_range(int* first, int* last, CString arg) {
+
+    if (arg.count == 1 && arg[0] == '*') {
+        *first = -1;
+        *last = -1;
+        return true;
+    }
+
     const char* mid = arg.beg();
     while (mid != arg.end() && *mid != '-') mid++;
     if (mid == arg.end()) return false;

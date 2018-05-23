@@ -17,7 +17,7 @@
 #include <tinyexpr.h>
 
 #define COMPUTE_ID(x) (hash::crc64(x))
-constexpr int32 NUM_BINS = 32;
+constexpr int32 NUM_BINS = 64;
 
 namespace stats {
 
@@ -498,7 +498,7 @@ bool structure_match_atom(StructureData* data, const Array<CString> args, const 
                 return false;
             }
             if (first == -1) first = 1;
-            if (last == -1) last = (int32)molecule.chains.count;
+            if (last == -1) last = (int32)molecule.atom_positions.count;
         } else {
             auto id = to_int(arg);
             if (!id.success) {
@@ -1081,8 +1081,8 @@ bool extract_structures(StructureData* data, CString arg, const MoleculeStructur
     DynamicArray<CString> cmd_args;
     CString outer = extract_parentheses(arg);
     if (outer) {
-        outer = {outer.beg() + 1, outer.end() - 1};
-        cmd_args = extract_arguments(outer);
+        CString inner = {outer.beg() + 1, outer.end() - 1};
+        cmd_args = extract_arguments(inner);
     }
 
     // @NOTE: ONLY ALLOW RECURSION FOR FIRST ARGUMENT?

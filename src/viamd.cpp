@@ -203,8 +203,8 @@ struct ApplicationData {
     } async;
 
     struct {
-        bool show_window;
-        DynamicArray<Representation> data;
+        bool show_window = false;
+        DynamicArray<Representation> data{};
     } representations;
 
     // --- ATOM SELECTION ---
@@ -692,7 +692,7 @@ int main(int, char**) {
         }
 
         if (data.density_volume.enabled) {
-            const float scl = 0.1f * data.density_volume.density_scale / data.density_volume.texture.max_value;
+            const float scl = 1.f * data.density_volume.density_scale / data.density_volume.texture.max_value;
             volume::render_volume_texture(data.density_volume.texture.id, data.fbo.tex_depth, data.density_volume.texture_to_model_matrix,
                                           data.density_volume.model_to_world_matrix, view_mat, proj_mat, data.density_volume.color, scl);
         }
@@ -880,20 +880,22 @@ static void draw_main_menu(ApplicationData* data) {
             }
             ImGui::EndMenu();
         }
-        if (ImGui::BeginMenu("Edit")) {
-            if (ImGui::MenuItem("Undo", "CTRL+Z")) {
-            }
-            if (ImGui::MenuItem("Redo", "CTRL+Y", false, false)) {
-            }  // Disabled item
-            ImGui::Separator();
-            if (ImGui::MenuItem("Cut", "CTRL+X")) {
-            }
-            if (ImGui::MenuItem("Copy", "CTRL+C")) {
-            }
-            if (ImGui::MenuItem("Paste", "CTRL+V")) {
-            }
-            ImGui::EndMenu();
-        }
+        /*
+if (ImGui::BeginMenu("Edit")) {
+    if (ImGui::MenuItem("Undo", "CTRL+Z")) {
+    }
+    if (ImGui::MenuItem("Redo", "CTRL+Y", false, false)) {
+    }  // Disabled item
+    ImGui::Separator();
+    if (ImGui::MenuItem("Cut", "CTRL+X")) {
+    }
+    if (ImGui::MenuItem("Copy", "CTRL+C")) {
+    }
+    if (ImGui::MenuItem("Paste", "CTRL+V")) {
+    }
+    ImGui::EndMenu();
+}
+        */
         if (ImGui::BeginMenu("Visuals")) {
 
             // SSAO
@@ -1305,6 +1307,7 @@ static void draw_async_info(ApplicationData* data) {
 }
 
 static void draw_timeline_window(ApplicationData* data) {
+    ImGui::SetNextWindowSize(ImVec2(400, 150), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Timelines", &data->statistics.show_timeline_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
         static float zoom = 1.f;
         ImGui::BeginChild("Scroll Region", ImVec2(0, 0), true, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_HorizontalScrollbar);
@@ -1371,16 +1374,20 @@ static void draw_timeline_window(ApplicationData* data) {
 }
 
 static void draw_distribution_window(ApplicationData* data) {
+    ImGui::SetNextWindowSize(ImVec2(200, 300), ImGuiCond_FirstUseEver);
     ImGui::Begin("Distributions", &data->statistics.show_distribution_window, ImGuiWindowFlags_NoFocusOnAppearing);
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     const ImGuiStyle& style = ImGui::GetStyle();
     ImGui::PushItemWidth(-1);
     ImVec2 frame_size{ImGui::CalcItemWidth(), 100.f};
 
-    constexpr uint32 FULL_BAR_COLOR = 0x77cc9e66;
-    constexpr uint32 FULL_TXT_COLOR = 0xffcc9e66;
-    constexpr uint32 FILT_BAR_COLOR = 0x5533ffff;
-    constexpr uint32 FILT_TXT_COLOR = 0xff33ffff;
+    constexpr uint32 FULL_FILL_COLOR = 0x99cc9e66;
+    constexpr uint32 FULL_LINE_COLOR = 0xffcc9e66;
+    constexpr uint32 FULL_TEXT_COLOR = 0xffcc9e66;
+
+    constexpr uint32 FILT_FILL_COLOR = 0x3333ffff;
+    constexpr uint32 FILT_LINE_COLOR = 0xaa33ffff;
+    constexpr uint32 FILT_TEXT_COLOR = 0xaa33ffff;
 
     for (int i = 0; i < stats::get_property_count(); i++) {
         stats::Property* prop = stats::get_property(i);
@@ -1395,10 +1402,10 @@ static void draw_distribution_window(ApplicationData* data) {
             ImGui::RenderFrame(frame_bb.Min, frame_bb.Max, ImGui::GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
 
             const float max_val = math::max(prop->filt_histogram.bin_range.y, prop->filt_histogram.bin_range.y);
-            ImGui::DrawHistogram(inner_bb.Min, inner_bb.Max, prop->full_histogram.bins.data, (int32)prop->full_histogram.bins.count, max_val,
-                                 FULL_BAR_COLOR);
-            ImGui::DrawHistogram(inner_bb.Min, inner_bb.Max, prop->filt_histogram.bins.data, (int32)prop->filt_histogram.bins.count, max_val,
-                                 FILT_BAR_COLOR);
+            ImGui::DrawFilledLine(inner_bb.Min, inner_bb.Max, prop->full_histogram.bins.data, (int32)prop->full_histogram.bins.count, max_val,
+                                  FULL_LINE_COLOR, FULL_FILL_COLOR);
+            ImGui::DrawFilledLine(inner_bb.Min, inner_bb.Max, prop->filt_histogram.bins.data, (int32)prop->filt_histogram.bins.count, max_val,
+                                  FILT_LINE_COLOR, FILT_FILL_COLOR);
 
             if (ImGui::IsItemHovered()) {
                 window->DrawList->AddLine(ImVec2(ImGui::GetIO().MousePos.x, inner_bb.Min.y), ImVec2(ImGui::GetIO().MousePos.x, inner_bb.Max.y),
@@ -1411,8 +1418,8 @@ static void draw_distribution_window(ApplicationData* data) {
                 ImVec2 val_range = vec_cast(prop->filt_histogram.value_range);
                 ImGui::BeginTooltip();
                 ImGui::Text("%.3f:", ImLerp(val_range.x, val_range.y, t));
-                ImGui::TextColored(ImColor(FULL_TXT_COLOR), "%g", full_val * 100.f);
-                ImGui::TextColored(ImColor(FILT_TXT_COLOR), "%g", filt_val * 100.f);
+                ImGui::TextColored(ImColor(FULL_TEXT_COLOR), "%g", full_val * 100.f);
+                ImGui::TextColored(ImColor(FILT_TEXT_COLOR), "%g", filt_val * 100.f);
                 ImGui::EndTooltip();
             }
 

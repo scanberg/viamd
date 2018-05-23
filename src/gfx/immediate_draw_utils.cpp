@@ -14,7 +14,7 @@ struct Vertex {
     uint32 color;
 };
 
-using Index = uint16;
+using Index = uint32;
 
 struct DrawCommand {
     Index offset;
