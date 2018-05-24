@@ -174,9 +174,10 @@ void compute_histogram(Histogram* hist, Array<const float> data, Range filter) {
         if (filter.x <= v && v <= filter.y) {
             int32 bin_idx = math::clamp((int32)((v - hist->value_range.x) * scl), 0, num_bins - 1);
             hist->bins[bin_idx]++;
-            hist->num_samples++;
+            // hist->num_samples++;
         }
     }
+    hist->num_samples += (int32)data.count;
 }
 
 void clear_histogram(Histogram* hist) {
@@ -188,9 +189,9 @@ void clear_histogram(Histogram* hist) {
     hist->num_samples = 0;
 }
 
-void normalize_histogram(Histogram* hist) {
+void normalize_histogram(Histogram* hist, int32 num_samples) {
     hist->bin_range = {0, 0};
-    const float bin_scl = 1.f / (float)hist->num_samples;
+    const float bin_scl = 1.f / (float)num_samples;
     for (auto& b : hist->bins) {
         b *= bin_scl;
         hist->bin_range.y = math::max(hist->bin_range.y, b);
@@ -1274,7 +1275,7 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_
                     } else {
                         compute_histogram(&p->full_histogram, p->data);
                     }
-                    normalize_histogram(&p->full_histogram);
+                    normalize_histogram(&p->full_histogram, p->full_histogram.num_samples);
                     p->full_hist_dirty = false;
                 }
 
@@ -1296,7 +1297,7 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_
                         } else {
                             compute_histogram(&tmp_hist, p->data.sub_array(beg_idx, end_idx - beg_idx), p->filter);
                         }
-                        normalize_histogram(&tmp_hist);
+                        normalize_histogram(&tmp_hist, tmp_hist.num_samples);
                         p->filt_histogram.bin_range = tmp_hist.bin_range;
                         p->filt_histogram.num_samples = tmp_hist.num_samples;
                         memcpy(p->filt_histogram.bins.data, tmp_hist.bins.data, p->filt_histogram.bins.size_in_bytes());

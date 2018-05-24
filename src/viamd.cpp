@@ -293,8 +293,8 @@ struct ApplicationData {
     } ramachandran;
 
     // --- CONSOLE ---
-    Console console;
-    bool show_console;
+    Console console{};
+    bool show_console = false;
 
     bool high_res_font = false;
 };
@@ -309,7 +309,8 @@ static void draw_property_window(ApplicationData* data);
 static void draw_timeline_window(ApplicationData* data);
 static void draw_distribution_window(ApplicationData* data);
 static void draw_ramachandran_window(ApplicationData* data);
-static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y);
+static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, int x, int y);
+static void draw_atom_context_window(ApplicationData* data, int32 x, int32 y);
 static void draw_async_info(ApplicationData* data);
 
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height);
@@ -714,7 +715,10 @@ int main(int, char**) {
         if (!ImGui::GetIO().WantCaptureMouse) {
             if (data.picking_idx != NO_PICKING_IDX) {
                 ivec2 pos = data.ctx.input.mouse.coord_curr;
-                draw_atom_info(data.mol_data.dynamic.molecule, data.picking_idx, pos.x, pos.y);
+                // draw_atom_info_window(data.mol_data.dynamic.molecule, data.picking_idx, pos.x, pos.y);
+                // if (data.ctx.input.mouse.hit[1]) {
+                // draw_atom_context_window(&data, pos.x, pos.y);
+                //}
             }
         }
 
@@ -754,6 +758,10 @@ int main(int, char**) {
             }
         }
         ImGui::End();
+
+        if (!ImGui::GetIO().WantCaptureMouse && data.picking_idx != NO_PICKING_IDX) {
+            draw_atom_context_window(&data, 0, 0);
+        }
 
         // Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
         if (show_demo_window) {
@@ -953,7 +961,7 @@ ImGui::Separator();
 
             ImGui::BeginGroup();
             if (ImGui::Checkbox("Density Volume", &data->density_volume.enabled)) {
-                //if (data->density_volume.enabled) data->density_volume.texture.dirty = true;
+                // if (data->density_volume.enabled) data->density_volume.texture.dirty = true;
             }
             if (data->density_volume.enabled) {
                 ImGui::PushID("density_volume");
@@ -1211,7 +1219,7 @@ static void draw_property_window(ApplicationData* data) {
     //}
 }
 
-static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, int y) {
+static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, int x, int y) {
 
     // @TODO: Assert things and make this failproof
     if (atom_idx < 0 || atom_idx >= mol.atom_positions.count) return;
@@ -1255,6 +1263,22 @@ static void draw_atom_info(const MoleculeStructure& mol, int atom_idx, int x, in
     ImGui::Text("%s", buff);
     ImGui::End();
     ImGui::PopStyleColor();
+}
+
+static void draw_atom_context_window(ApplicationData* data, int32 x, int32 y) {
+    if (ImGui::BeginPopupEx)
+        if (ImGui::BeginPopupContextVoid()) {
+            if (ImGui::Selectable("Set to zero")) x = 0.0f;
+            /*
+    if (ImGui::MenuItem("Atom")) {
+    }
+    if (ImGui::MenuItem("Residue")) {
+    }
+    if (ImGui::MenuItem("Resname")) {
+    }
+            */
+            ImGui::EndPopup();
+        }
 }
 
 static void draw_async_info(ApplicationData* data) {
@@ -1332,9 +1356,9 @@ static void draw_timeline_window(ApplicationData* data) {
                 }
             }
         }
-        
-        //const int32 prop_count = stats::get_property_count();
-        //const float plot_height = ImGui::GetContentRegionAvail().y / (float)prop_count;
+
+        // const int32 prop_count = stats::get_property_count();
+        // const float plot_height = ImGui::GetContentRegionAvail().y / (float)prop_count;
         const float plot_height = 100.f;
 
         for (int i = 0; i < stats::get_property_count(); i++) {
@@ -1344,8 +1368,12 @@ static void draw_timeline_window(ApplicationData* data) {
             CString prop_name = prop->name;
             Range prop_range = prop->data_range;
             if (!prop_data) continue;
-            float pad = math::max((prop_range.y - prop_range.x) * 0.1f, 1.f);
+            float pad = math::abs(prop_range.y - prop_range.x) * 0.1f;
             vec2 display_range = prop_range + vec2(-pad, pad);
+            if (display_range.x == display_range.y) {
+                display_range.x -= 1.f;
+                display_range.y += 1.f;
+            }
             float val = (float)data->time;
 
             ImGui::PushID(i);
@@ -1385,10 +1413,11 @@ static void draw_distribution_window(ApplicationData* data) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     const ImGuiStyle& style = ImGui::GetStyle();
     ImGui::PushItemWidth(-1);
-    
+
+    constexpr float RANGE_SLIDER_HEIGHT = 26.f;
     const float prop_count = (float)stats::get_property_count();
-    const float plot_height = ImGui::GetContentRegionAvail().y / prop_count - 26.f;
-    
+    const float plot_height = ImGui::GetContentRegionAvail().y / prop_count - RANGE_SLIDER_HEIGHT;
+
     ImVec2 frame_size{ImGui::CalcItemWidth(), plot_height};
 
     constexpr uint32 FULL_FILL_COLOR = 0x99cc9e66;
@@ -1411,7 +1440,8 @@ static void draw_distribution_window(ApplicationData* data) {
         if (ImGui::ItemAdd(total_bb, NULL)) {
             ImGui::RenderFrame(frame_bb.Min, frame_bb.Max, ImGui::GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
 
-            const float max_val = math::max(prop->filt_histogram.bin_range.y, prop->filt_histogram.bin_range.y);
+            // const float max_val = math::max(prop->full_histogram.bin_range.y, prop->filt_histogram.bin_range.y);
+            const float max_val = prop->full_histogram.bin_range.y * 1.25f;
             ImGui::DrawFilledLine(inner_bb.Min, inner_bb.Max, prop->full_histogram.bins.data, (int32)prop->full_histogram.bins.count, max_val,
                                   FULL_LINE_COLOR, FULL_FILL_COLOR);
             ImGui::DrawFilledLine(inner_bb.Min, inner_bb.Max, prop->filt_histogram.bins.data, (int32)prop->filt_histogram.bins.count, max_val,
