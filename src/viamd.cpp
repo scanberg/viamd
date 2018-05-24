@@ -1,4 +1,4 @@
-#include <imgui.h>
+ï»¿#include <imgui.h>
 #include <imgui_internal.h>
 #include <core/platform.h>
 #include <core/gl.h>
@@ -249,7 +249,7 @@ struct ApplicationData {
         bool enabled = false;
         bool dirty = true;
         vec4 color = vec4(1, 0, 1, 1);
-        float distance_cutoff = HYDROGEN_BOND_DISTANCE_CUTOFF_DEFAULT;  // In Ångström
+        float distance_cutoff = HYDROGEN_BOND_DISTANCE_CUTOFF_DEFAULT;  // In ?gstr?m
         float angle_cutoff = HYDROGEN_BOND_ANGLE_CUTOFF_DEFAULT;        // In Degrees
         DynamicArray<HydrogenBond> bonds{};
     } hydrogen_bonds;
@@ -261,7 +261,7 @@ struct ApplicationData {
 
     // VOLUME
     struct {
-        bool enabled = true;
+        bool enabled = false;
         vec3 color = vec3(1, 0, 0);
         float density_scale = 1.f;
 
@@ -952,7 +952,9 @@ ImGui::Separator();
             ImGui::Separator();
 
             ImGui::BeginGroup();
-            ImGui::Checkbox("Density Volume", &data->density_volume.enabled);
+            if (ImGui::Checkbox("Density Volume", &data->density_volume.enabled)) {
+                //if (data->density_volume.enabled) data->density_volume.texture.dirty = true;
+            }
             if (data->density_volume.enabled) {
                 ImGui::PushID("density_volume");
                 ImGui::ColorEdit3("Color", (float*)&data->density_volume.color, ImGuiColorEditFlags_NoInputs);
@@ -1330,6 +1332,10 @@ static void draw_timeline_window(ApplicationData* data) {
                 }
             }
         }
+        
+        //const int32 prop_count = stats::get_property_count();
+        //const float plot_height = ImGui::GetContentRegionAvail().y / (float)prop_count;
+        const float plot_height = 100.f;
 
         for (int i = 0; i < stats::get_property_count(); i++) {
             auto prop = stats::get_property(i);
@@ -1343,7 +1349,7 @@ static void draw_timeline_window(ApplicationData* data) {
             float val = (float)data->time;
 
             ImGui::PushID(i);
-            if (ImGui::BeginPlot(prop_name, ImVec2(0, 100), frame_range, ImVec2(display_range.x, display_range.y), &val,
+            if (ImGui::BeginPlot(prop_name, ImVec2(0, plot_height), frame_range, ImVec2(display_range.x, display_range.y), &val,
                                  &vec_cast(data->time_filter.range), ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal)) {
                 data->time = val;
             }
@@ -1379,7 +1385,11 @@ static void draw_distribution_window(ApplicationData* data) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     const ImGuiStyle& style = ImGui::GetStyle();
     ImGui::PushItemWidth(-1);
-    ImVec2 frame_size{ImGui::CalcItemWidth(), 100.f};
+    
+    const float prop_count = (float)stats::get_property_count();
+    const float plot_height = ImGui::GetContentRegionAvail().y / prop_count - 26.f;
+    
+    ImVec2 frame_size{ImGui::CalcItemWidth(), plot_height};
 
     constexpr uint32 FULL_FILL_COLOR = 0x99cc9e66;
     constexpr uint32 FULL_LINE_COLOR = 0xffcc9e66;
