@@ -1151,82 +1151,97 @@ bool sync_structure_data_length(Array<StructureData> data) {
     return true;
 }
 
-static void compute_property_data(Property* prop, const MoleculeDynamic& dynamic) {
+static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic) {
     ASSERT(prop);
     int32 num_frames = dynamic.trajectory.num_frames;
 
-    for (auto p : ctx.properties) {
-        if (p == prop) {
-            // auto& prop = *p;
-            ctx.current_property = p;
-            prop->error_msg = "";
-            if (prop->data.count != num_frames) {
-                prop->data.resize(num_frames);
+    ctx.current_property = prop;
+    prop->error_msg = "";
+    if (prop->data.count != num_frames) {
+        prop->data.resize(num_frames);
+    }
+    prop->data.set_mem_to_zero();
+    clear_histogram(&prop->full_histogram);
+    clear_histogram(&prop->filt_histogram);
+
+    for (const auto p : ctx.properties) {
+        if (p != prop && compare(p->name, prop->name)) {
+            snprintf(prop->error_msg.beg(), prop->error_msg.MAX_LENGTH, "A property is already defined with that name!");
+            prop->valid = false;
+            return false;
+        }
+        if (p == prop) break;
+    }
+
+    if (!balanced_parentheses(prop->args)) {
+        snprintf(prop->error_msg.beg(), prop->error_msg.MAX_LENGTH, "Unbalanced parantheses!");
+        prop->valid = false;
+        return false;
+    }
+
+    DynamicArray<CString> args;
+
+    // Extract big argument chunks
+    const char* beg = prop->args.beg();
+    const char* end = prop->args.beg();
+    int count = 0;
+
+    // Use space separation unless we are inside a parenthesis
+    while (end != prop->args.end()) {
+        if (*end == '(')
+            count++;
+        else if (*end == ')')
+            count--;
+        else if (count == 0 && isspace(*end)) {
+            CString arg = trim({beg, end});
+            if (arg.size() > 0) {
+                args.push_back(trim({beg, end}));
             }
-            prop->data.set_mem_to_zero();
-            clear_histogram(&prop->full_histogram);
-            clear_histogram(&prop->filt_histogram);
-
-            if (!balanced_parentheses(prop->args)) {
-                snprintf(prop->error_msg.beg(), prop->error_msg.MAX_LENGTH, "Unbalanced parantheses!");
-                prop->valid = false;
-                continue;
-            }
-
-            DynamicArray<CString> args;
-
-            // Extract big argument chunks
-            const char* beg = prop->args.beg();
-            const char* end = prop->args.beg();
-            int count = 0;
-
-            // Use space separation unless we are inside a parenthesis
-            while (end != prop->args.end()) {
-                if (*end == '(')
-                    count++;
-                else if (*end == ')')
-                    count--;
-                else if (isspace(*end) && count == 0) {
-                    args.push_back(trim({beg, end}));
-                    beg = end + 1;
-                }
-                end++;
-            }
-            if (beg != end) args.push_back(trim({beg, end}));
-
-            if (args.count == 0) {
-                prop->valid = false;
-                continue;
-            }
-
-            CString cmd = args[0];
-            args = args.sub_array(1);
-
-            auto func = find_property_compute_func(cmd);
-            if (!func) {
-                set_error_message("Could not recognize command '%s'", make_tmp_str(cmd).cstr());
-                prop->valid = false;
-                continue;
-            }
-
-            Range pre_range = prop->data_range;
-            if (!func(prop, args, dynamic)) {
-                prop->valid = false;
-                continue;
-            }
-
-            if (pre_range != prop->data_range) {
-                prop->filter = prop->data_range;
-            }
-
-            prop->full_histogram.value_range = prop->data_range;
-            prop->filt_histogram.value_range = prop->data_range;
-            prop->full_hist_dirty = true;
-            prop->filt_hist_dirty = true;
-            prop->valid = true;
+            beg = end + 1;
+        }
+        end++;
+    }
+    if (beg != end) {
+        CString arg = trim({beg, end});
+        if (arg.size() > 0) {
+            args.push_back(trim({beg, end}));
         }
     }
+
+    if (args.count == 0) {
+        prop->valid = false;
+        return false;
+    }
+
+    CString cmd = args[0];
+    args = args.sub_array(1);
+
+    auto func = find_property_compute_func(cmd);
+    if (!func) {
+        set_error_message("Could not recognize command '%s'", make_tmp_str(cmd).cstr());
+        prop->valid = false;
+        return false;
+    }
+
+    Range pre_range = prop->data_range;
+    if (!func(prop, args, dynamic)) {
+        prop->valid = false;
+        return false;
+    }
+
+    if (pre_range != prop->data_range) {
+        prop->filter = prop->data_range;
+    }
+
+    prop->full_histogram.value_range = prop->data_range;
+    prop->filt_histogram.value_range = prop->data_range;
+    prop->full_hist_dirty = true;
+    prop->filt_hist_dirty = true;
+    prop->valid = true;
+
     ctx.current_property = nullptr;
+
+    return true;
 }
 
 bool properties_dirty() {
@@ -1254,7 +1269,6 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_
             init_histogram(&tmp_hist, NUM_BINS);
             ctx.fraction_done = 0.f;
 
-            // ctx.thread_mutex.lock();
             for (int32 i = 0; i < ctx.properties.count; i++) {
                 auto p = ctx.properties[i];
                 ctx.fraction_done = (i / (float)ctx.properties.count);
@@ -1311,8 +1325,6 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_
             if (on_finished) {
                 on_finished(usr_data);
             }
-
-            // ctx.thread_mutex.unlock();
 
             free_histogram(&tmp_hist);
             ctx.fraction_done = 1.f;

@@ -208,8 +208,10 @@ struct ApplicationData {
     } representations;
 
     // --- ATOM SELECTION ---
-    AtomSelection hovered;
-    AtomSelection selected;
+    AtomSelection hovered{};
+    AtomSelection selected{};
+    AtomSelection right_clicked{};
+    ImGuiID text_field_target = 0;
 
     // --- STATISTICS ---
     struct {
@@ -666,6 +668,10 @@ int main(int, char**) {
                 if (-1 < data.hovered.residue_idx && data.hovered.residue_idx < data.mol_data.dynamic.molecule.residues.count) {
                     data.hovered.chain_idx = data.mol_data.dynamic.molecule.residues[data.hovered.residue_idx].chain_idx;
                 }
+
+                if (data.ctx.input.mouse.hit[1]) {
+                    data.right_clicked = data.hovered;
+                }
             }
         }
 
@@ -715,10 +721,7 @@ int main(int, char**) {
         if (!ImGui::GetIO().WantCaptureMouse) {
             if (data.picking_idx != NO_PICKING_IDX) {
                 ivec2 pos = data.ctx.input.mouse.coord_curr;
-                // draw_atom_info_window(data.mol_data.dynamic.molecule, data.picking_idx, pos.x, pos.y);
-                // if (data.ctx.input.mouse.hit[1]) {
-                // draw_atom_context_window(&data, pos.x, pos.y);
-                //}
+                draw_atom_info_window(data.mol_data.dynamic.molecule, data.picking_idx, pos.x, pos.y);
             }
         }
 
@@ -759,9 +762,16 @@ int main(int, char**) {
         }
         ImGui::End();
 
-        if (!ImGui::GetIO().WantCaptureMouse && data.picking_idx != NO_PICKING_IDX) {
-            draw_atom_context_window(&data, 0, 0);
+        if (data.right_clicked.atom_idx != NO_PICKING_IDX && data.ctx.input.mouse.hit[1]) {
+            // data.text_field_target = 0;
+            // if (ImGui::GetIO().WantTextInput) {
+            //    data.text_field_target = ImGui::GetActiveID();
+            //}
+            ImGui::OpenPopup("AtomContextMenu");
         }
+        // if (data.picking_idx != NO_PICKING_IDX) {
+        draw_atom_context_window(&data, 0, 0);
+        //}
 
         // Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
         if (show_demo_window) {
@@ -1138,7 +1148,7 @@ static void draw_property_window(ApplicationData* data) {
     ImGui::NextColumn();
     ImGui::Text("args");
     ImGui::NextColumn();
-    ImGui::Text("struct/time/dist");
+    ImGui::Text("S/T/D");
     ImGui::NextColumn();
     ImGui::NextColumn();
 
@@ -1158,12 +1168,76 @@ static void draw_property_window(ApplicationData* data) {
         }
         ImGui::PopItemWidth();
         ImGui::NextColumn();
+
+        char insert_buf[32];
+        bool insert_buf_set = false;
+        if (ImGui::BeginPopup("AtomContextMenu")) {
+            char buf[32];
+            if (data->right_clicked.atom_idx != -1) {
+                snprintf(buf, 32, "atom(%i) ", data->right_clicked.atom_idx + 1);
+                if (ImGui::MenuItem(buf)) {
+                    memcpy(insert_buf, buf, 32);
+                    insert_buf_set = true;
+                }
+            }
+            if (data->right_clicked.residue_idx != -1) {
+                snprintf(buf, 32, "residue(%i) ", data->right_clicked.residue_idx + 1);
+                if (ImGui::MenuItem(buf)) {
+                    memcpy(insert_buf, buf, 32);
+                    insert_buf_set = true;
+                }
+                snprintf(buf, 32, "resid(%i) ", data->mol_data.dynamic.molecule.residues[data->right_clicked.residue_idx].id);
+                if (ImGui::MenuItem(buf)) {
+                    memcpy(insert_buf, buf, 32);
+                    insert_buf_set = true;
+                }
+                snprintf(buf, 32, "resname(%s) ", data->mol_data.dynamic.molecule.residues[data->right_clicked.residue_idx].name.cstr());
+                if (ImGui::MenuItem(buf)) {
+                    memcpy(insert_buf, buf, 32);
+                    insert_buf_set = true;
+                }
+                /*
+                                // This does not work as the internal buffer of imgui has a length of 17 characters.
+                                if (ImGui::BeginMenu("resatom...")) {
+                                        snprintf(buf, 32, "resatom(resid(%i), %i) ",
+data->mol_data.dynamic.molecule.residues[data->right_clicked.residue_idx].id, data->right_clicked.atom_idx + 1); if (ImGui::MenuItem(buf)) {
+                                                memcpy(insert_buf, buf, 32);
+                                                insert_buf_set = true;
+                                        }
+                                        snprintf(buf, 32, "resatom(resname(%s), %i) ",
+                                                         data->mol_data.dynamic.molecule.residues[data->right_clicked.residue_idx].name.cstr(),
+data->right_clicked.atom_idx + 1); if (ImGui::MenuItem(buf)) { memcpy(insert_buf, buf, 32); insert_buf_set = true;
+                                        }
+                                        ImGui::EndMenu();
+}
+                */
+            }
+            if (data->right_clicked.chain_idx != -1) {
+                snprintf(buf, 32, "chain(%i) ", data->right_clicked.chain_idx + 1);
+                if (ImGui::MenuItem(buf)) {
+                    memcpy(insert_buf, buf, 32);
+                    insert_buf_set = true;
+                }
+            }
+            ImGui::EndPopup();
+        }
+
+        if (insert_buf_set) {
+            ImGui::SetActiveID(ImGui::GetID("##args"), ImGui::GetCurrentWindow());
+            ImGui::SetKeyboardFocusHere();
+            ImGui::GetIO().AddInputCharactersUTF8(insert_buf);
+        }
+
         ImGui::PushItemWidth(-1);
         if (ImGui::InputText("##args", prop->args.buffer, prop->args.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
             prop->data_dirty = true;
-            // compute_stats = true;
         }
         ImGui::PopItemWidth();
+
+        if (ImGui::IsItemActive() && data->hovered.atom_idx != -1 && data->ctx.input.mouse.release[1]) {
+            ImGui::OpenPopup("AtomContextMenu");
+        }
+
         if (!prop->valid) {
             ImGui::PopStyleColor();
             if (!prop->valid && prop->error_msg && ImGui::GetHoveredID() == ImGui::GetID("##args")) {
@@ -1266,19 +1340,34 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, in
 }
 
 static void draw_atom_context_window(ApplicationData* data, int32 x, int32 y) {
-    if (ImGui::BeginPopupEx)
-        if (ImGui::BeginPopupContextVoid()) {
-            if (ImGui::Selectable("Set to zero")) x = 0.0f;
-            /*
-    if (ImGui::MenuItem("Atom")) {
-    }
-    if (ImGui::MenuItem("Residue")) {
-    }
-    if (ImGui::MenuItem("Resname")) {
-    }
-            */
-            ImGui::EndPopup();
+
+    /*
+if (ImGui::BeginPopup("AtomContextMenu", ImGuiWindowFlags_NoBringToFrontOnFocus)) {
+    ImGui::PushAllowKeyboardFocus(false);
+
+    ImGui::SetKeyboardFocusHere(-1);
+    if (data->right_clicked.atom_idx != NO_PICKING_IDX) {
+        char buf[32];
+        snprintf(buf, 32, "atom(%i)", data->right_clicked.atom_idx);
+
+        if (ImGui::ButtonEx("Cool", ImVec2(0, 0), ImGuiButtonFlags_PressedOnClick | ImGuiButtonFlags_NoHoldingActiveID)) {
         }
+        if (ImGui::MenuItem(buf)) {
+        }
+    }
+    if (data->right_clicked.residue_idx != NO_PICKING_IDX) {
+        char buf[32];
+        snprintf(buf, 32, "residue(%i)", data->right_clicked.residue_idx);
+        if (ImGui::MenuItem(buf)) {
+        }
+        snprintf(buf, 32, "resname(%s)", data->mol_data.dynamic.molecule.residues[data->right_clicked.residue_idx].name.cstr());
+        if (ImGui::MenuItem(buf)) {
+        }
+    }
+    ImGui::PopAllowKeyboardFocus();
+    ImGui::EndPopup();
+}
+    */
 }
 
 static void draw_async_info(ApplicationData* data) {
@@ -1381,7 +1470,7 @@ static void draw_timeline_window(ApplicationData* data) {
                                  &vec_cast(data->time_filter.range), ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal)) {
                 data->time = val;
             }
-            ImGui::PlotValues("Najs", prop_data.data, (int)prop_data.count);
+            ImGui::PlotValues("Property", prop_data.data, (int)prop_data.count);
             ImGui::EndPlot();
             ImGui::PopID();
         }

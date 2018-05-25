@@ -181,6 +181,16 @@ struct StringBuffer {
         return *this;
     }
 
+    StringBuffer& operator+=(CString txt) {
+        int32 offset = strnlen(buffer, MAX_LENGTH);
+        int32 length = MAX_LENGTH - offset;
+        if (length > 0) {
+            strncpy(buffer + offset, txt, txt.count < length ? txt.count : length);
+        }
+        buffer[MAX_LENGTH - 1] = '\0';
+        return *this;
+    }
+
     char operator[](int64 i) const {
         ASSERT(i < MAX_LENGTH);
         return buffer[i];
