@@ -300,6 +300,9 @@ CString extract_parentheses_contents(CString str);
 const char* find_character(CString str, char c);
 bool contains_character(CString str, char c);
 
+CString find_first_match(CString str, CString match);
+bool contains_string(CString big_str, CString str);
+
 // Tokenizes a string into shorter strings based on some delimiter
 DynamicArray<String> tokenize(String str, char delimiter = ' ');
 DynamicArray<String> tokenize(String str, CString delimiter);

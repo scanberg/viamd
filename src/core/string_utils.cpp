@@ -401,6 +401,24 @@ const char* find_character(CString str, char c) {
 
 bool contains_character(CString str, char c) { return find_character(str, c) != str.end(); }
 
+CString find_first_match(CString str, CString match) {
+    if (str.count == 0 || match.count == 0) return {};
+
+    const char* beg = str.beg();
+    const char* end = str.end();
+
+    while (beg != end) {
+        if (*beg == *match.beg()) {
+            int32 count = 1;
+            while (beg != end) {
+            }
+        }
+        beg++;
+    }
+}
+
+bool contains_string(CString big_str, CString str) { return (bool)find_first_match(big_str, str); }
+
 DynamicArray<String> tokenize(String str, char delimiter) {
     DynamicArray<String> tokens;
 

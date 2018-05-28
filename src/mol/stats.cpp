@@ -853,6 +853,8 @@ static bool compute_dihedral(Property* prop, const Array<CString> args, const Mo
     return true;
 }
 
+static DynamicArray<Property*> identify_property_dependencies(CString expression) {}
+
 static bool compute_expression(Property* prop, const Array<CString> args, const MoleculeDynamic&) {
     ASSERT(prop);
     if (args.count == 0) {
