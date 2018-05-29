@@ -1162,7 +1162,7 @@ static void draw_property_window(ApplicationData* data) {
 
         if (!prop->valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
         ImGui::PushItemWidth(-1);
-        if (ImGui::InputText("##name", prop->name.buffer, prop->name.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
+        if (ImGui::InputText("##name", prop->name_buf.buffer, prop->name_buf.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
             prop->data_dirty = true;
             // compute_stats = true;
         }
@@ -1229,7 +1229,7 @@ data->right_clicked.atom_idx + 1); if (ImGui::MenuItem(buf)) { memcpy(insert_buf
         }
 
         ImGui::PushItemWidth(-1);
-        if (ImGui::InputText("##args", prop->args.buffer, prop->args.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
+        if (ImGui::InputText("##args", prop->args_buf.buffer, prop->args_buf.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
             prop->data_dirty = true;
         }
         ImGui::PopItemWidth();
@@ -1240,8 +1240,8 @@ data->right_clicked.atom_idx + 1); if (ImGui::MenuItem(buf)) { memcpy(insert_buf
 
         if (!prop->valid) {
             ImGui::PopStyleColor();
-            if (!prop->valid && prop->error_msg && ImGui::GetHoveredID() == ImGui::GetID("##args")) {
-                ImGui::SetTooltip("%s", prop->error_msg.cstr());
+            if (!prop->valid && prop->error_msg_buf && ImGui::GetHoveredID() == ImGui::GetID("##args")) {
+                ImGui::SetTooltip("%s", prop->error_msg_buf.cstr());
             }
         }
         ImGui::NextColumn();
@@ -1453,8 +1453,8 @@ static void draw_timeline_window(ApplicationData* data) {
         for (int i = 0; i < stats::get_property_count(); i++) {
             auto prop = stats::get_property(i);
             if (!prop->show_as_timeline) continue;
-            Array<float> prop_data = prop->data;
-            CString prop_name = prop->name;
+            Array<float> prop_data = prop->avg_data;
+            CString prop_name = prop->name_buf;
             Range prop_range = prop->data_range;
             if (!prop_data) continue;
             float pad = math::abs(prop_range.y - prop_range.x) * 0.1f;
@@ -1470,7 +1470,17 @@ static void draw_timeline_window(ApplicationData* data) {
                                  &vec_cast(data->time_filter.range), ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal)) {
                 data->time = val;
             }
-            ImGui::PlotValues("Property", prop_data.data, (int)prop_data.count);
+            ImGui::PushClipRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), true);
+
+            const uint32 bar_color = ImColor(1.f, 1.f, 1.f, 0.3f);
+            ImGui::PlotVerticalBars(prop->filter_fraction.data, (int32)prop->filter_fraction.count, bar_color);
+
+            if (prop->instance_data.count > 1) {
+                ImGui::PlotVariance(prop->avg_data.data, prop->std_dev_data.data, (int32)prop->std_dev_data.count);
+            }
+            ImGui::PlotValues(prop->name_buf.cstr(), prop_data.data, (int32)prop_data.count);
+
+            ImGui::PopClipRect();
             ImGui::EndPlot();
             ImGui::PopID();
         }
@@ -1989,8 +1999,8 @@ static void save_workspace(ApplicationData* data, CString file) {
     for (int i = 0; i < stats::get_property_count(); i++) {
         auto prop = stats::get_property(i);
         fprintf(fptr, "[Property]\n");
-        fprintf(fptr, "Name=%s\n", prop->name.cstr());
-        fprintf(fptr, "Args=%s\n", prop->args.cstr());
+        fprintf(fptr, "Name=%s\n", prop->name_buf.cstr());
+        fprintf(fptr, "Args=%s\n", prop->args_buf.cstr());
         fprintf(fptr, "\n");
     }
 

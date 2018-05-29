@@ -67,6 +67,10 @@ typedef int LinePlotFlags;
 
 IMGUI_API bool BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, ImVec2 y_range, float* x_val = nullptr,
                          ImVec2* selection_range = nullptr, LinePlotFlags flags = LinePlotFlags_ShowXVal);
+IMGUI_API void PlotVerticalBars(const float* bar_opacity, int count, ImU32 color = ImColor(1.f, 1.f, 1.f, 0.5f));
+IMGUI_API void PlotVariance(const float* avg, const float* var, int count, float var_scl = 1.f, ImU32 line_color = ImColor(1.f, 1.f, 0.2f, 0.3f),
+                            ImU32 fill_color = ImColor(1.f, 1.f, 0.2f, 0.1f));
+
 IMGUI_API void PlotValues(const char* line_label, const float* values, int count, ImU32 line_color = 0xffffffff);
 IMGUI_API void PlotValues(const char* line_label, const ImVec2* values, int count, ImU32 line_color = 0xffffffff);
 IMGUI_API void EndPlot();

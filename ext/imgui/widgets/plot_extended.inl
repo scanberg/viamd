@@ -612,6 +612,94 @@ IMGUI_API bool BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, I
     return interacting_x_val;
 }
 
+IMGUI_API void PlotVerticalBars(const float* bar_opacity, int count, ImU32 color) {
+    if (!ps.id) return;
+    ImGuiWindow* window = GetCurrentWindow();
+    if (window->SkipItems) return;
+    if (count < 2) return;
+
+    ImVec4 base_color = ImColor(color);
+
+    // ImVec2 prev_c = ImVec2(0, values[0]);
+    // bool prev_v = valid_range.x <= values[0] && values[0] <= valid_range.y;
+    for (int i = 0; i < count; i++) {
+        if (bar_opacity[i] > 0) {
+            ImVec2 prev_c = ImVec2((float)i, ps.coord_view.Min.y);
+            float prev_o = bar_opacity[i];
+            i++;
+            while (i < count) {
+                if (bar_opacity[i] != prev_o) break;
+                i++;
+            }
+            ImVec2 next_c = ImVec2((float)i, ps.coord_view.Max.y);
+
+            // if (prev_c.x < ps.coord_view.Min.x && next_c.x < ps.coord_view.Min.x) continue;
+            // if (prev_c.y < ps.coord_view.Min.y && next_c.y < ps.coord_view.Min.y) continue;
+            if (prev_c.x > ps.coord_view.Max.x && next_c.x > ps.coord_view.Max.x) break;
+            // if (prev_c.y > ps.coord_view.Max.y && next_c.y > ps.coord_view.Max.y) continue;
+
+            float px = ImClamp((prev_c.x - ps.coord_view.Min.x) / (ps.coord_view.Max.x - ps.coord_view.Min.x), 0.f, 1.f);
+            float py = ImClamp((prev_c.y - ps.coord_view.Min.y) / (ps.coord_view.Max.y - ps.coord_view.Min.y), 0.f, 1.f);
+            float nx = ImClamp((next_c.x - ps.coord_view.Min.x) / (ps.coord_view.Max.x - ps.coord_view.Min.x), 0.f, 1.f);
+            float ny = ImClamp((next_c.y - ps.coord_view.Min.y) / (ps.coord_view.Max.y - ps.coord_view.Min.y), 0.f, 1.f);
+
+            ImVec2 pos0 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(px, 1.f - py));
+            ImVec2 pos1 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(nx, 1.f - ny));
+            window->DrawList->AddRectFilled(pos0, pos1, ImColor(base_color.x, base_color.y, base_color.z, base_color.w * prev_o));
+        }
+    }
+}
+
+IMGUI_API void PlotVariance(const float* avg, const float* var, int count, float var_scl, ImU32 line_color, ImU32 fill_color) {
+    if (!ps.id) return;
+    ImGuiWindow* window = GetCurrentWindow();
+    if (window->SkipItems) return;
+    if (count < 2) return;
+
+    ImVec2 prev_c = ImVec2(0, avg[0]);
+    float prev_w = var[0] * var_scl;
+    for (int i = 1; i < count; i++) {
+        ImVec2 next_c = ImVec2((float)i, avg[i]);
+        float next_w = var[i] * var_scl;
+
+        if (prev_c.x < ps.coord_view.Min.x && next_c.x < ps.coord_view.Min.x) continue;
+        if (prev_c.y < ps.coord_view.Min.y && next_c.y < ps.coord_view.Min.y) continue;
+        if (prev_c.x > ps.coord_view.Max.x && next_c.x > ps.coord_view.Max.x) break;
+        if (prev_c.y > ps.coord_view.Max.y && next_c.y > ps.coord_view.Max.y) continue;
+
+        float px = ImClamp((prev_c.x - ps.coord_view.Min.x) / (ps.coord_view.Max.x - ps.coord_view.Min.x), 0.f, 1.f);
+        float py = ImClamp((prev_c.y - ps.coord_view.Min.y) / (ps.coord_view.Max.y - ps.coord_view.Min.y), 0.f, 1.f);
+        float nx = ImClamp((next_c.x - ps.coord_view.Min.x) / (ps.coord_view.Max.x - ps.coord_view.Min.x), 0.f, 1.f);
+        float ny = ImClamp((next_c.y - ps.coord_view.Min.y) / (ps.coord_view.Max.y - ps.coord_view.Min.y), 0.f, 1.f);
+        float pw = prev_w / (ps.coord_view.Max.y - ps.coord_view.Min.y);
+        float nw = next_w / (ps.coord_view.Max.y - ps.coord_view.Min.y);
+
+        ImVec2 pos0 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(px, 1.f - py + pw));
+        ImVec2 pos1 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(px, 1.f - py - pw));
+        ImVec2 pos2 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(nx, 1.f - ny + nw));
+        ImVec2 pos3 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(nx, 1.f - ny - nw));
+
+        pos0.x = roundf(pos0.x);
+        pos1.x = roundf(pos1.x);
+        pos2.x = roundf(pos2.x);
+        pos3.x = roundf(pos3.x);
+
+        if (pos0.x == pos2.x) continue;
+
+        // float scl_prev_w = prev_w / (ps.coord_view.Max.y - ps.coord_view.Min.y);
+        // float scl_next_w = next_w / (ps.coord_view.Max.y - ps.coord_view.Min.y);
+        const ImVec2 pos[] = {pos1, pos0, pos2, pos3};
+
+        // GetCurrentWindow()->DrawList->AddConvexPolyFilled(pos, 4, fill_color);
+        GetCurrentWindow()->DrawList->AddQuadFilled(pos1, pos0, pos2, pos3, fill_color);
+        // window->DrawList->AddLine(pos0, pos1, line_color);
+        // window->DrawList->AddLine(pos2, pos3, line_color);
+
+        prev_c = next_c;
+        prev_w = next_w;
+    }
+}
+
 IMGUI_API void PlotValues(const char* line_label, const float* values, int count, ImU32 line_color) {
     (void)line_label;
     if (!ps.id) return;
@@ -625,7 +713,7 @@ IMGUI_API void PlotValues(const char* line_label, const float* values, int count
 
         if (prev_c.x < ps.coord_view.Min.x && next_c.x < ps.coord_view.Min.x) continue;
         if (prev_c.y < ps.coord_view.Min.y && next_c.y < ps.coord_view.Min.y) continue;
-        if (prev_c.x > ps.coord_view.Max.x && next_c.x > ps.coord_view.Max.x) continue;
+        if (prev_c.x > ps.coord_view.Max.x && next_c.x > ps.coord_view.Max.x) break;
         if (prev_c.y > ps.coord_view.Max.y && next_c.y > ps.coord_view.Max.y) continue;
 
         float px = ImClamp((prev_c.x - ps.coord_view.Min.x) / (ps.coord_view.Max.x - ps.coord_view.Min.x), 0.f, 1.f);

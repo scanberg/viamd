@@ -42,6 +42,7 @@ static GLuint program = 0;
 static GLint attrib_loc_pos = -1;
 static GLint attrib_loc_col = -1;
 static GLint uniform_loc_mvp = -1;
+static GLint uniform_loc_point_size = -1;
 
 static int curr_view_matrix_idx = -1;
 static int curr_proj_matrix_idx = -1;
@@ -49,6 +50,7 @@ static int curr_proj_matrix_idx = -1;
 static const char* v_shader_src = R"(
 #version 150 core
 uniform mat4 u_mvp;
+uniform float u_point_size = 1.f;
 
 in vec3 in_pos;
 in vec4 in_col;
@@ -57,7 +59,7 @@ out vec4 col;
 
 void main() {
 	gl_Position = u_mvp * vec4(in_pos, 1);
-    gl_PointSize = max(2.f, 400.f / gl_Position.w);
+    gl_PointSize = max(u_point_size, 400.f / gl_Position.w);
 	col = in_col;
 }
 )";
@@ -120,6 +122,7 @@ void initialize() {
     attrib_loc_pos = glGetAttribLocation(program, "in_pos");
     attrib_loc_col = glGetAttribLocation(program, "in_col");
     uniform_loc_mvp = glGetUniformLocation(program, "u_mvp");
+    uniform_loc_point_size = glGetUniformLocation(program, "u_point_size");
 
     glGenBuffers(1, &vbo);
     glGenBuffers(1, &ibo);
@@ -188,9 +191,10 @@ ImGui::End();
     glEnable(GL_PROGRAM_POINT_SIZE);
 
     glUseProgram(program);
-    glPointSize(10.f);
-    glLineWidth(2.f);
+    // glPointSize(20.f);
+    glLineWidth(3.f);
 
+    glUniform1f(uniform_loc_point_size, 4.f);
     for (const auto& cmd : commands) {
         mat4 mvp_matrix = matrix_stack[cmd.proj_matrix_idx] * matrix_stack[cmd.view_matrix_idx];
         glUniformMatrix4fv(uniform_loc_mvp, 1, GL_FALSE, &mvp_matrix[0][0]);
@@ -202,7 +206,7 @@ ImGui::End();
     glBindVertexArray(0);
     glUseProgram(0);
 
-    glDisable(GL_PROGRAM_POINT_SIZE);
+    // glDisable(GL_PROGRAM_POINT_SIZE);
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);

@@ -290,8 +290,8 @@ StringBuffer<256> get_absolute_path(CString absolute_reference, CString relative
 // Converts windows backslashes '\\' to forward slashes '/'
 void convert_backslashes(String str);
 
+bool is_whitespace(char c);
 bool contains_whitespace(CString str);
-
 bool balanced_parentheses(CString str);
 
 CString extract_parentheses(CString str);

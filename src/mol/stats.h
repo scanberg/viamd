@@ -41,10 +41,10 @@ struct InstanceData {
 };
 
 struct Property {
-    StringBuffer<32> name{};
-    StringBuffer<256> args{};
-    StringBuffer<32> unit{};
-    StringBuffer<256> error_msg{};
+    StringBuffer<32> name_buf{};
+    StringBuffer<256> args_buf{};
+    StringBuffer<32> unit_buf{};
+    StringBuffer<256> error_msg_buf{};
 
     bool valid = false;
     bool periodic = false;
@@ -59,12 +59,15 @@ struct Property {
 
     Range filter{0, 0};
     Range data_range{0, 0};
-    DynamicArray<float> data{};
-    Histogram full_histogram;
-    Histogram filt_histogram;
+    DynamicArray<float> filter_fraction{};
+    DynamicArray<float> avg_data{};
+    DynamicArray<float> std_dev_data{};
+    Histogram full_histogram{};
+    Histogram filt_histogram{};
 
     Array<InstanceData> instance_data{};
     Array<StructureData> structure_data{};
+    DynamicArray<Property*> dependencies{};
 };
 
 // Helper functions

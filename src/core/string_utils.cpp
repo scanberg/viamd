@@ -168,8 +168,8 @@ CString trim(CString str) {
     const char* beg = str.data;
     const char* end = str.data + str.count;
 
-    while (beg < end && isspace(*beg)) ++beg;
-    while (end > beg && (isspace(*(end - 1)) || *(end - 1) == '\0')) --end;
+    while (beg < end && is_whitespace(*beg)) ++beg;
+    while (end > beg && (is_whitespace(*(end - 1)) || *(end - 1) == '\0')) --end;
 
     return CString(beg, end - beg);
 }
@@ -178,8 +178,8 @@ String trim(String str) {
     char* beg = str.data;
     char* end = str.data + str.count;
 
-    while (beg < end && isspace(*beg)) ++beg;
-    while (end > beg && isspace(*(end - 1))) --end;
+    while (beg < end && is_whitespace(*beg)) ++beg;
+    while (end > beg && is_whitespace(*(end - 1))) --end;
 
     return String(beg, end - beg);
 }
@@ -346,9 +346,15 @@ void convert_backslashes(String str) {
     }
 }
 
+bool is_whitespace(char c) {
+    // Not to trigger assert if encoding is different.
+    if (c < 0) return false;
+    return isspace(c);
+}
+
 bool contains_whitespace(CString str) {
     for (const char* c = str.beg(); c != str.end(); c++) {
-        if (isspace(*c)) return true;
+        if (is_whitespace(*c)) return true;
     }
     return false;
 }
@@ -404,17 +410,16 @@ bool contains_character(CString str, char c) { return find_character(str, c) != 
 CString find_first_match(CString str, CString match) {
     if (str.count == 0 || match.count == 0) return {};
 
-    const char* beg = str.beg();
-    const char* end = str.end();
+    const char* ptr = str.beg();
 
-    while (beg != end) {
-        if (*beg == *match.beg()) {
-            int32 count = 1;
-            while (beg != end) {
-            }
+    while (ptr != str.end()) {
+        if (*ptr == *match.beg()) {
+            CString candidate(ptr, MIN(str.end() - ptr, match.count));
+            if (compare(candidate, match)) return candidate;
         }
-        beg++;
+        ptr++;
     }
+    return {};
 }
 
 bool contains_string(CString big_str, CString str) { return (bool)find_first_match(big_str, str); }
