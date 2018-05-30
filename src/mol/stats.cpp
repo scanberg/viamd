@@ -678,7 +678,7 @@ Array<const vec3> extract_positions(Structure structure, Array<const vec3> atom_
     return atom_positions.sub_array(structure.beg_idx, structure.end_idx - structure.beg_idx);
 }
 
-static inline float multi_distance(Array<const vec3> pos_a, Array<const vec3> pos_b, float* std_dev = nullptr) {
+static inline float multi_distance(Array<const vec3> pos_a, Array<const vec3> pos_b, float* variance = nullptr) {
     if (pos_a.count == 0 || pos_b.count == 0)
         return 0.f;
     else if (pos_a.count == 1 && pos_b.count == 1)
@@ -693,21 +693,22 @@ static inline float multi_distance(Array<const vec3> pos_a, Array<const vec3> po
         float count = (float)(pos_a.count * pos_b.count);
         float mean = total / count;
 
-        if (std_dev) {
-            *std_dev = 0.f;
+        if (variance) {
+            *variance = 0.f;
             for (const auto& a : pos_a) {
                 for (const auto& b : pos_b) {
-                    *std_dev += math::distance(a, b) - mean;
+                    float x = math::distance(a, b) - mean;
+                    *variance += x * x;
                 }
             }
-            *std_dev = math::sqrt(*std_dev / count);
+            *variance = *variance / count;
         }
 
         return mean;
     }
 }
 
-static inline float multi_angle(Array<const vec3> pos_a, Array<const vec3> pos_b, Array<const vec3> pos_c, float* std_dev = nullptr) {
+static inline float multi_angle(Array<const vec3> pos_a, Array<const vec3> pos_b, Array<const vec3> pos_c, float* variance = nullptr) {
     if (pos_a.count == 0 || pos_b.count == 0 || pos_c.count == 0)
         return 0.f;
     else if (pos_a.count == 1 && pos_b.count == 1 && pos_c.count == 1)
@@ -725,16 +726,17 @@ static inline float multi_angle(Array<const vec3> pos_a, Array<const vec3> pos_b
         float count = (float)(pos_a.count * pos_b.count * pos_c.count);
         float mean = total / count;
 
-        if (std_dev) {
-            *std_dev = 0.f;
+        if (variance) {
+            *variance = 0.f;
             for (const auto& a : pos_a) {
                 for (const auto& b : pos_b) {
                     for (const auto& c : pos_c) {
-                        *std_dev += math::angle(a, b, c) - mean;
+                        float x = math::angle(a, b, c) - mean;
+                        *variance += x * x;
                     }
                 }
             }
-            *std_dev = math::sqrt(*std_dev / count);
+            *variance = *variance / count;
         }
 
         return mean;
@@ -759,7 +761,7 @@ if (pos_a.count > 1.f) {
 }
 
 static inline float multi_dihedral(Array<const vec3> pos_a, Array<const vec3> pos_b, Array<const vec3> pos_c, Array<const vec3> pos_d,
-                                   float* std_dev = nullptr) {
+                                   float* variance = nullptr) {
     if (pos_a.count == 0 || pos_b.count == 0 || pos_c.count == 0 || pos_d.count == 0)
         return 0.f;
     else if (pos_a.count == 1 && pos_b.count == 1 && pos_c.count == 1 && pos_d.count == 1)
@@ -770,7 +772,8 @@ static inline float multi_dihedral(Array<const vec3> pos_a, Array<const vec3> po
             for (const auto& b : pos_b) {
                 for (const auto& c : pos_c) {
                     for (const auto& d : pos_d) {
-                        total += math::dihedral_angle(a, b, c, d);
+                        float x = math::dihedral_angle(a, b, c, d);
+                        total += x * x;
                     }
                 }
             }
@@ -780,18 +783,18 @@ static inline float multi_dihedral(Array<const vec3> pos_a, Array<const vec3> po
         float mean = total / count;
 
         // @TODO: This is madness, just use a temporary array and reuse the values
-        if (std_dev) {
-            *std_dev = 0.f;
+        if (variance) {
+            *variance = 0.f;
             for (const auto& a : pos_a) {
                 for (const auto& b : pos_b) {
                     for (const auto& c : pos_c) {
                         for (const auto& d : pos_d) {
-                            *std_dev += math::dihedral_angle(a, b, c, d) - mean;
+                            *variance += math::dihedral_angle(a, b, c, d) - mean;
                         }
                     }
                 }
             }
-            *std_dev = math::sqrt(*std_dev / count);
+            *variance = *variance / count;
         }
 
         return mean;
@@ -849,7 +852,8 @@ static bool compute_distance(Property* prop, const Array<CString> args, const Mo
     Array<const vec3> pos[2];
     vec3 com[2];
     for (int32 i = 0; i < num_frames; i++) {
-        float val = 0.f;
+        float sum = 0.f;
+        float var = 0.f;
         for (int32 j = 0; j < structure_count; j++) {
             pos[0] = extract_positions(prop->structure_data[0].structures[j], get_trajectory_positions(dynamic.trajectory, i));
             pos[1] = extract_positions(prop->structure_data[1].structures[j], get_trajectory_positions(dynamic.trajectory, i));
@@ -862,11 +866,14 @@ static bool compute_distance(Property* prop, const Array<CString> args, const Mo
                 pos[1] = {&com[1], 1};
             }
 
-            prop->instance_data[j].data[i] = multi_distance(pos[0], pos[1]);
-            val += prop->instance_data[j].data[i];
+            float variance = 0.f;
+            prop->instance_data[j].data[i] = multi_distance(pos[0], pos[1], &variance);
+            sum += prop->instance_data[j].data[i];
+            var += variance;
         }
 
-        prop->avg_data[i] = val * scl;
+        prop->avg_data[i] = sum * scl;
+        if (var > 0.f) prop->std_dev_data.data[i] = math::sqrt(var * scl);
     }
 
     prop->data_range = compute_range(*prop);
@@ -903,7 +910,8 @@ static bool compute_angle(Property* prop, const Array<CString> args, const Molec
     Array<const vec3> pos[3];
     vec3 com[3];
     for (int32 i = 0; i < num_frames; i++) {
-        float val = 0.f;
+        float sum = 0.f;
+        float var = 0.f;
         for (int32 j = 0; j < structure_count; j++) {
             pos[0] = extract_positions(prop->structure_data[0].structures[j], get_trajectory_positions(dynamic.trajectory, i));
             pos[1] = extract_positions(prop->structure_data[1].structures[j], get_trajectory_positions(dynamic.trajectory, i));
@@ -922,11 +930,14 @@ static bool compute_angle(Property* prop, const Array<CString> args, const Molec
                 pos[2] = {&com[2], 1};
             }
 
-            prop->instance_data[j].data[i] = multi_angle(pos[0], pos[1], pos[2]);
-            val += prop->instance_data[j].data[i];
+            float variance = 0.f;
+            prop->instance_data[j].data[i] = multi_angle(pos[0], pos[1], pos[2], &variance);
+            sum += prop->instance_data[j].data[i];
+            var += variance;
         }
 
-        prop->avg_data[i] = val * scl;
+        prop->avg_data[i] = sum * scl;
+        if (var > 0.f) prop->std_dev_data[i] = math::sqrt(var * scl);
     }
 
     prop->data_range = {0, math::PI};
@@ -963,7 +974,8 @@ static bool compute_dihedral(Property* prop, const Array<CString> args, const Mo
     Array<const vec3> pos[4];
     vec3 com[4];
     for (int32 i = 0; i < num_frames; i++) {
-        float val = 0.f;
+        float sum = 0.f;
+        float var = 0.f;
         for (int32 j = 0; j < structure_count; j++) {
             pos[0] = extract_positions(prop->structure_data[0].structures[j], get_trajectory_positions(dynamic.trajectory, i));
             pos[1] = extract_positions(prop->structure_data[1].structures[j], get_trajectory_positions(dynamic.trajectory, i));
@@ -987,11 +999,14 @@ static bool compute_dihedral(Property* prop, const Array<CString> args, const Mo
                 pos[3] = {&com[3], 1};
             }
 
-            prop->instance_data[j].data[i] = multi_dihedral(pos[0], pos[1], pos[2], pos[3]);
-            val += prop->instance_data[j].data[i];
+            float variance = 0.f;
+            prop->instance_data[j].data[i] = multi_dihedral(pos[0], pos[1], pos[2], pos[3], &variance);
+            sum += prop->instance_data[j].data[i];
+            var += variance;
         }
 
-        prop->avg_data[i] = val * scl;
+        prop->avg_data[i] = sum * scl;
+        if (var > 0.f) prop->std_dev_data[i] = math::sqrt(var * scl);
     }
 
     prop->data_range = {-math::PI, math::PI};
@@ -1340,13 +1355,20 @@ static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic
     }
 
     if (prop->instance_data.count > 1) {
-        const float scl = 1.f / (float)prop->instance_data.count;
-        for (int32 i = 0; i < num_frames; i++) {
-            for (const auto& inst : prop->instance_data) {
-                float x = inst.data[i] - prop->avg_data[i];
-                prop->std_dev_data[i] += x * x;
+        if (prop->std_dev_data[0] > 0.f) {
+            // Compute mean std dev
+        }
+        else {
+            // Compute std dev of instances
+            const float scl = 1.f / (float)prop->instance_data.count;
+            for (int32 i = 0; i < num_frames; i++) {
+                float std_dev = 0.f;
+                for (const auto& inst : prop->instance_data) {
+                    float x = inst.data[i] - prop->avg_data[i];
+                    std_dev += x * x;
+                }
+                prop->std_dev_data[i] = math::sqrt(std_dev * scl);
             }
-            prop->std_dev_data[i] *= scl;
         }
     }
 
