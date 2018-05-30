@@ -1355,19 +1355,16 @@ static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic
     }
 
     if (prop->instance_data.count > 1) {
-        if (prop->std_dev_data[0] > 0.f) {
-            // Compute mean std dev
-        }
-        else {
+        if (prop->std_dev_data[0] == 0.f) {
             // Compute std dev of instances
             const float scl = 1.f / (float)prop->instance_data.count;
             for (int32 i = 0; i < num_frames; i++) {
-                float std_dev = 0.f;
+                float sum = 0.f;
                 for (const auto& inst : prop->instance_data) {
                     float x = inst.data[i] - prop->avg_data[i];
-                    std_dev += x * x;
+                    sum += x * x;
                 }
-                prop->std_dev_data[i] = math::sqrt(std_dev * scl);
+                prop->std_dev_data[i] = math::sqrt(sum * scl);
             }
         }
     }

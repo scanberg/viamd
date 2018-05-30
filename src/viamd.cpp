@@ -1428,7 +1428,7 @@ static void draw_timeline_window(ApplicationData* data) {
         ImGui::BeginChild("Scroll Region", ImVec2(0, 0), true, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_HorizontalScrollbar);
 
         const int max_frame = data->mol_data.dynamic.trajectory.num_frames;
-        const ImVec2 frame_range(0, (float)max_frame);
+        const Range frame_range(0, (float)max_frame);
         auto old_range = data->time_filter.range;
 
         ImGui::PushItemWidth(ImGui::GetWindowContentRegionWidth() * zoom);
@@ -1449,6 +1449,13 @@ static void draw_timeline_window(ApplicationData* data) {
         // const int32 prop_count = stats::get_property_count();
         // const float plot_height = ImGui::GetContentRegionAvail().y / (float)prop_count;
         const float plot_height = 100.f;
+        const uint32 bar_fill_color = ImColor(1.f, 1.f, 1.f, 0.3f);
+        const uint32 var_fill_color = ImColor(1.f, 1.f, 0.3f, 0.1f);
+        const uint32 var_line_color = ImColor(1.f, 1.f, 0.3f, 0.3f);
+        const uint32 var_text_color = ImColor(1.f, 1.f, 0.3f, 0.5f);
+
+        static float selection_start;
+        static bool is_selecting = false;
 
         for (int i = 0; i < stats::get_property_count(); i++) {
             auto prop = stats::get_property(i);
@@ -1464,23 +1471,92 @@ static void draw_timeline_window(ApplicationData* data) {
                 display_range.y += 1.f;
             }
             float val = (float)data->time;
+            ImGuiID id = ImGui::GetID(prop_name);
 
             ImGui::PushID(i);
-            if (ImGui::BeginPlot(prop_name, ImVec2(0, plot_height), frame_range, ImVec2(display_range.x, display_range.y), &val,
-                                 &vec_cast(data->time_filter.range), ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal)) {
-                data->time = val;
-            }
+
+            ImGui::BeginPlot(prop_name, ImVec2(0, plot_height), ImVec2(frame_range.x, frame_range.y), ImVec2(display_range.x, display_range.y),
+                             ImGui::LinePlotFlags_AxisX);
+
+            const ImRect inner_bb(ImGui::GetItemRectMin() + ImGui::GetStyle().FramePadding, ImGui::GetItemRectMax() - ImGui::GetStyle().FramePadding);
+
             ImGui::PushClipRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), true);
 
-            const uint32 bar_color = ImColor(1.f, 1.f, 1.f, 0.3f);
-            ImGui::PlotVerticalBars(prop->filter_fraction.data, (int32)prop->filter_fraction.count, bar_color);
+            ImGui::PlotVerticalBars(prop->filter_fraction.data, (int32)prop->filter_fraction.count, bar_fill_color);
 
-            if (prop->instance_data.count > 1) {
-                ImGui::PlotVariance(prop->avg_data.data, prop->std_dev_data.data, (int32)prop->std_dev_data.count);
+            if (prop->std_dev_data.data[0] > 0.f) {
+                ImGui::PlotVariance(prop->avg_data.data, prop->std_dev_data.data, (int32)prop->std_dev_data.count, 1.f, var_line_color,
+                                    var_fill_color);
             }
             ImGui::PlotValues(prop->name_buf.cstr(), prop_data.data, (int32)prop_data.count);
 
             ImGui::PopClipRect();
+
+            if (ImGui::IsItemHovered() && ImGui::GetIO().MouseClicked[0]) {
+                ImGui::SetActiveID(id, ImGui::GetCurrentWindow());
+                ImGui::FocusWindow(ImGui::GetCurrentWindow());
+            }
+
+            if (ImGui::IsItemHovered() && ImGui::GetIO().MouseClicked[1] && ImGui::GetIO().KeyCtrl) {
+                data->time_filter.range = frame_range;
+            }
+
+            if (ImGui::GetActiveID() == id) {
+                if (ImGui::GetIO().MouseClicked[0] && ImGui::GetIO().KeyCtrl) {
+                    float t = (ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
+                    selection_start = ImLerp(frame_range.x, frame_range.y, t);
+                    data->time_filter.range.x = selection_start;
+                    data->time_filter.range.y = selection_start;
+                    is_selecting = true;
+                } else if (is_selecting) {
+                    float t = (ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
+                    float v = ImLerp(frame_range.x, frame_range.y, t);
+                    if (v < data->time_filter.range.x) {
+                        data->time_filter.range.x = v;
+                    } else if (v > data->time_filter.range.x && v < data->time_filter.range.y) {
+                        if (selection_start < v) {
+                            data->time_filter.range.y = v;
+                        } else {
+                            data->time_filter.range.x = v;
+                        }
+                    } else if (v > data->time_filter.range.y) {
+                        data->time_filter.range.y = v;
+                    }
+                } else if (ImGui::GetIO().MouseDown[0]) {
+                    float t = ImClamp((ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x), 0.f, 1.f);
+                    data->time = ImLerp(frame_range.x, frame_range.y, t);
+                }
+
+                if (!ImGui::GetIO().MouseDown[0] && !ImGui::IsItemHovered()) {
+                    ImGui::ClearActiveID();
+                    is_selecting = false;
+                }
+            }
+
+            data->time_filter.range.x = ImClamp(data->time_filter.range.x, frame_range.x, frame_range.y);
+            data->time_filter.range.y = ImClamp(data->time_filter.range.y, frame_range.x, frame_range.y);
+
+            // Draw selection range
+            const float t0 = (data->time_filter.range.x - frame_range.x) / (frame_range.y - frame_range.x);
+            const float t1 = (data->time_filter.range.y - frame_range.x) / (frame_range.y - frame_range.x);
+            ImVec2 pos0 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t0, 0));
+            ImVec2 pos1 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t1, 1));
+            const ImU32 SELECTION_RANGE_COLOR = 0x33bbbbbb;
+            ImGui::GetCurrentWindow()->DrawList->AddRectFilled(pos0, pos1, SELECTION_RANGE_COLOR);
+
+            if (ImGui::GetActiveID() == ImGui::GetID(prop_name) || ImGui::IsItemHovered()) {
+                const float min_x = ImGui::GetItemRectMin().x;
+                const float max_x = ImGui::GetItemRectMax().x;
+                float t = ImClamp((ImGui::GetIO().MousePos.x - min_x) / (max_x - min_x), 0.f, 1.f);
+                int idx = ImClamp((int32)ImLerp(min_x, max_x, t), 0, (int32)prop->avg_data.count - 1);
+
+                ImGui::BeginTooltip();
+                ImGui::Text("%i: %g ", idx, prop->avg_data[idx]);
+                ImGui::SameLine();
+                ImGui::TextColored(ImColor(var_text_color), "(%g)", prop->std_dev_data[idx]);
+                ImGui::EndTooltip();
+            }
+
             ImGui::EndPlot();
             ImGui::PopID();
         }
@@ -1488,7 +1564,6 @@ static void draw_timeline_window(ApplicationData* data) {
 
         if (data->time_filter.range != old_range) {
             stats::set_all_property_flags(false, false, true);
-            // compute_statistics_async(data);
         }
 
         if (ImGui::IsWindowHovered() && ImGui::GetIO().MouseWheel != 0.f && ImGui::GetIO().KeyCtrl) {

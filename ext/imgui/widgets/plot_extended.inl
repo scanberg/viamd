@@ -479,9 +479,9 @@ struct PlotState {
     ImGuiID id = 0;
     ImRect inner_bb;
     ImRect coord_view;
-    ImVec2* selection_range;
-    float selection_start;
-    bool is_selecting = false;
+    // ImVec2* selection_range;
+    // float selection_start;
+    // bool is_selecting = false;
 };
 
 static PlotState ps;
@@ -491,13 +491,12 @@ const ImU32 CURRENT_LINE_COLOR = 0xaa33ffff;
 const ImU32 AXIS_COLOR = 0xaaffffff;
 const ImU32 SELECTION_RANGE_COLOR = 0x33bbbbbb;
 
-IMGUI_API bool BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, ImVec2 y_range, float* x_val, ImVec2* selection_range,
-                         LinePlotFlags flags) {
+IMGUI_API void BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, ImVec2 y_range, LinePlotFlags flags) {
     ImGuiWindow* window = GetCurrentWindow();
     const ImGuiID id = window->GetID(label);
     ps.id = id;
 
-    if (window->SkipItems) return false;
+    if (window->SkipItems) return;
 
     ImGuiContext& ctx = *GImGui;
     const ImGuiStyle& style = ctx.Style;
@@ -509,69 +508,15 @@ IMGUI_API bool BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, I
     const ImRect inner_bb(frame_bb.Min + style.FramePadding, frame_bb.Max - style.FramePadding);
     const ImRect total_bb(frame_bb.Min, frame_bb.Max);
     ItemSize(total_bb, style.FramePadding.y);
-    if (!ItemAdd(total_bb, NULL)) return false;
+    if (!ItemAdd(total_bb, NULL)) return;
 
     RenderFrame(frame_bb.Min, frame_bb.Max, GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
-
-    if (IsItemHovered() && ctx.IO.MouseClicked[0]) {
-        SetActiveID(id, window);
-        FocusWindow(window);
-    }
-
-    if (selection_range && IsItemHovered() && ctx.IO.MouseClicked[1] && ctx.IO.KeyCtrl) {
-        *selection_range = x_range;
-    }
-
-    bool interacting_x_val = false;
-
-    if (ctx.ActiveId == id) {
-        if (selection_range && ctx.IO.MouseClicked[0] && ctx.IO.KeyCtrl) {
-            float t = (ctx.IO.MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
-            ps.selection_start = ImLerp(x_range.x, x_range.y, t);
-            selection_range->x = ps.selection_start;
-            selection_range->y = ps.selection_start;
-            ps.is_selecting = true;
-        } else if (ps.is_selecting) {
-            float t = (ctx.IO.MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
-            float v = ImLerp(x_range.x, x_range.y, t);
-            if (v < selection_range->x) {
-                selection_range->x = v;
-            } else if (v > selection_range->x && v < selection_range->y) {
-                if (ps.selection_start < v) {
-                    selection_range->y = v;
-                } else {
-                    selection_range->x = v;
-                }
-            } else if (v > selection_range->y) {
-                selection_range->y = v;
-            }
-        } else if (ctx.IO.MouseDown[0]) {
-            if (x_val) {
-                float t = ImClamp((ctx.IO.MousePos.x - ps.inner_bb.Min.x) / (ps.inner_bb.Max.x - ps.inner_bb.Min.x), 0.f, 1.f);
-                *x_val = ImLerp(x_range.x, x_range.y, t);
-                interacting_x_val = true;
-            }
-        }
-
-        if (!ctx.IO.MouseDown[0] && !IsItemHovered()) {
-            ClearActiveID();
-            ps.is_selecting = false;
-        }
-    }
 
     if (flags & LinePlotFlags_AxisY) {
         if (x_range.x < 0 && 0 < x_range.y) {
             const float t = (0 - x_range.x) / (x_range.y - x_range.x);
             const float x = ImLerp(inner_bb.Min.x, inner_bb.Max.x, t);
             window->DrawList->AddLine(ImVec2(x, inner_bb.Min.y), ImVec2(x, inner_bb.Max.y), AXIS_COLOR);
-        }
-    }
-
-    if (flags & LinePlotFlags_ShowXVal && x_val) {
-        if (x_range.x < *x_val && *x_val < x_range.y) {
-            const float t = (*x_val - x_range.x) / (x_range.y - x_range.x);
-            const float x = roundf(ImLerp(inner_bb.Min.x, inner_bb.Max.x, t));
-            window->DrawList->AddLine(ImVec2(x, inner_bb.Min.y), ImVec2(x, inner_bb.Max.y), CURRENT_LINE_COLOR);
         }
     }
 
@@ -590,26 +535,34 @@ IMGUI_API bool BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, I
         window->DrawList->AddLine(pos0, pos1, HOVER_LINE_COLOR);
     }
 
-    if (selection_range) {
-        selection_range->x = ImClamp(selection_range->x, x_range.x, x_range.y);
-        selection_range->y = ImClamp(selection_range->y, x_range.x, x_range.y);
+    /*
+if (selection_range) {
+    selection_range->x = ImClamp(selection_range->x, x_range.x, x_range.y);
+    selection_range->y = ImClamp(selection_range->y, x_range.x, x_range.y);
 
-        // Draw selection range
-        const float t0 = (selection_range->x - x_range.x) / (x_range.y - x_range.x);
-        const float t1 = (selection_range->y - x_range.x) / (x_range.y - x_range.x);
-        ImVec2 pos0 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t0, 0));
-        ImVec2 pos1 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t1, 1));
-        window->DrawList->AddRectFilled(pos0, pos1, SELECTION_RANGE_COLOR);
-    }
+    // Draw selection range
+    const float t0 = (selection_range->x - x_range.x) / (x_range.y - x_range.x);
+    const float t1 = (selection_range->y - x_range.x) / (x_range.y - x_range.x);
+    ImVec2 pos0 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t0, 0));
+    ImVec2 pos1 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t1, 1));
+    window->DrawList->AddRectFilled(pos0, pos1, SELECTION_RANGE_COLOR);
+}
+    */
 
     ps.inner_bb = inner_bb;
     ps.coord_view = ImRect(ImVec2(x_range.x, y_range.x), ImVec2(x_range.y, y_range.y));
-    ps.selection_range = selection_range;
+    // ps.selection_range = selection_range;
 
     RenderTextClipped(ImVec2(frame_bb.Min.x + style.FramePadding.x, frame_bb.Min.y + style.FramePadding.y), frame_bb.Max, label, NULL, NULL,
                       ImVec2(0.0f, 0.0f));
 
-    return interacting_x_val;
+    // return interacting_x_val;
+}
+
+static inline ImVec2 compute_frame_coord(ImRect frame, ImVec2 coord) {
+    float cx = ImClamp((coord.x - ps.coord_view.Min.x) / (ps.coord_view.Max.x - ps.coord_view.Min.x), 0.f, 1.f);
+    float cy = ImClamp((coord.y - ps.coord_view.Min.y) / (ps.coord_view.Max.y - ps.coord_view.Min.y), 0.f, 1.f);
+    return {cx, cy};
 }
 
 IMGUI_API void PlotVerticalBars(const float* bar_opacity, int count, ImU32 color) {
@@ -638,14 +591,12 @@ IMGUI_API void PlotVerticalBars(const float* bar_opacity, int count, ImU32 color
             if (prev_c.x > ps.coord_view.Max.x && next_c.x > ps.coord_view.Max.x) break;
             // if (prev_c.y > ps.coord_view.Max.y && next_c.y > ps.coord_view.Max.y) continue;
 
-            float px = ImClamp((prev_c.x - ps.coord_view.Min.x) / (ps.coord_view.Max.x - ps.coord_view.Min.x), 0.f, 1.f);
-            float py = ImClamp((prev_c.y - ps.coord_view.Min.y) / (ps.coord_view.Max.y - ps.coord_view.Min.y), 0.f, 1.f);
-            float nx = ImClamp((next_c.x - ps.coord_view.Min.x) / (ps.coord_view.Max.x - ps.coord_view.Min.x), 0.f, 1.f);
-            float ny = ImClamp((next_c.y - ps.coord_view.Min.y) / (ps.coord_view.Max.y - ps.coord_view.Min.y), 0.f, 1.f);
+            ImVec2 p = compute_frame_coord(ps.coord_view, prev_c);
+            ImVec2 n = compute_frame_coord(ps.coord_view, next_c);
 
-            ImVec2 pos0 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(px, 1.f - py));
-            ImVec2 pos1 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(nx, 1.f - ny));
-            window->DrawList->AddRectFilled(pos0, pos1, ImColor(base_color.x, base_color.y, base_color.z, base_color.w * prev_o));
+            ImVec2 pos0 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(p.x, 1.f - p.y));
+            ImVec2 pos1 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(n.x, 1.f - n.y));
+            window->DrawList->AddRectFilled(pos0, pos1, ImColor(base_color.x, base_color.y, base_color.z, base_color.w * sqrtf(prev_o)));
         }
     }
 }
@@ -657,46 +608,37 @@ IMGUI_API void PlotVariance(const float* avg, const float* var, int count, float
     if (count < 2) return;
 
     ImVec2 prev_c = ImVec2(0, avg[0]);
-    float prev_w = var[0] * var_scl;
+    float pw = var[0] * var_scl / (ps.coord_view.Max.y - ps.coord_view.Min.y);
+    ImVec2 p = compute_frame_coord(ps.coord_view, prev_c);
+    ImVec2 prev_screen_pos_btm = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(p.x, ImClamp(1.f - p.y + pw, 0.f, 1.f)));
+    ImVec2 prev_screen_pos_top = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(p.x, ImClamp(1.f - p.y - pw, 0.f, 1.f)));
     for (int i = 1; i < count; i++) {
         ImVec2 next_c = ImVec2((float)i, avg[i]);
-        float next_w = var[i] * var_scl;
 
         if (prev_c.x < ps.coord_view.Min.x && next_c.x < ps.coord_view.Min.x) continue;
-        if (prev_c.y < ps.coord_view.Min.y && next_c.y < ps.coord_view.Min.y) continue;
         if (prev_c.x > ps.coord_view.Max.x && next_c.x > ps.coord_view.Max.x) break;
-        if (prev_c.y > ps.coord_view.Max.y && next_c.y > ps.coord_view.Max.y) continue;
 
-        float px = ImClamp((prev_c.x - ps.coord_view.Min.x) / (ps.coord_view.Max.x - ps.coord_view.Min.x), 0.f, 1.f);
-        float py = ImClamp((prev_c.y - ps.coord_view.Min.y) / (ps.coord_view.Max.y - ps.coord_view.Min.y), 0.f, 1.f);
-        float nx = ImClamp((next_c.x - ps.coord_view.Min.x) / (ps.coord_view.Max.x - ps.coord_view.Min.x), 0.f, 1.f);
-        float ny = ImClamp((next_c.y - ps.coord_view.Min.y) / (ps.coord_view.Max.y - ps.coord_view.Min.y), 0.f, 1.f);
-        float pw = prev_w / (ps.coord_view.Max.y - ps.coord_view.Min.y);
-        float nw = next_w / (ps.coord_view.Max.y - ps.coord_view.Min.y);
+        ImVec2 n = compute_frame_coord(ps.coord_view, next_c);
+        float nw = var[i] * var_scl / (ps.coord_view.Max.y - ps.coord_view.Min.y);
 
-        ImVec2 pos0 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(px, 1.f - py + pw));
-        ImVec2 pos1 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(px, 1.f - py - pw));
-        ImVec2 pos2 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(nx, 1.f - ny + nw));
-        ImVec2 pos3 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(nx, 1.f - ny - nw));
+        ImVec2 next_screen_pos_btm = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(n.x, ImClamp(1.f - n.y + nw, 0.f, 1.f)));
+        ImVec2 next_screen_pos_top = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(n.x, ImClamp(1.f - n.y - nw, 0.f, 1.f)));
 
-        pos0.x = roundf(pos0.x);
-        pos1.x = roundf(pos1.x);
-        pos2.x = roundf(pos2.x);
-        pos3.x = roundf(pos3.x);
-
-        if (pos0.x == pos2.x) continue;
-
-        // float scl_prev_w = prev_w / (ps.coord_view.Max.y - ps.coord_view.Min.y);
-        // float scl_next_w = next_w / (ps.coord_view.Max.y - ps.coord_view.Min.y);
-        const ImVec2 pos[] = {pos1, pos0, pos2, pos3};
-
-        // GetCurrentWindow()->DrawList->AddConvexPolyFilled(pos, 4, fill_color);
-        GetCurrentWindow()->DrawList->AddQuadFilled(pos1, pos0, pos2, pos3, fill_color);
-        // window->DrawList->AddLine(pos0, pos1, line_color);
-        // window->DrawList->AddLine(pos2, pos3, line_color);
+        if ((fill_color & IM_COL32_A_MASK) > 0) {
+            int flags = GetCurrentWindow()->DrawList->Flags;
+            GetCurrentWindow()->DrawList->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+            GetCurrentWindow()->DrawList->AddQuadFilled(prev_screen_pos_top, prev_screen_pos_btm, next_screen_pos_btm, next_screen_pos_top,
+                                                        fill_color);
+            GetCurrentWindow()->DrawList->Flags = flags;
+        }
+        if ((line_color & IM_COL32_A_MASK) > 0) {
+            GetCurrentWindow()->DrawList->AddLine(prev_screen_pos_btm, next_screen_pos_btm, line_color);
+            GetCurrentWindow()->DrawList->AddLine(prev_screen_pos_top, next_screen_pos_top, line_color);
+        }
 
         prev_c = next_c;
-        prev_w = next_w;
+        prev_screen_pos_btm = {(next_screen_pos_btm.x), next_screen_pos_btm.y};
+        prev_screen_pos_top = {(next_screen_pos_top.x), next_screen_pos_top.y};
     }
 }
 
@@ -716,27 +658,14 @@ IMGUI_API void PlotValues(const char* line_label, const float* values, int count
         if (prev_c.x > ps.coord_view.Max.x && next_c.x > ps.coord_view.Max.x) break;
         if (prev_c.y > ps.coord_view.Max.y && next_c.y > ps.coord_view.Max.y) continue;
 
-        float px = ImClamp((prev_c.x - ps.coord_view.Min.x) / (ps.coord_view.Max.x - ps.coord_view.Min.x), 0.f, 1.f);
-        float py = ImClamp((prev_c.y - ps.coord_view.Min.y) / (ps.coord_view.Max.y - ps.coord_view.Min.y), 0.f, 1.f);
-        float nx = ImClamp((next_c.x - ps.coord_view.Min.x) / (ps.coord_view.Max.x - ps.coord_view.Min.x), 0.f, 1.f);
-        float ny = ImClamp((next_c.y - ps.coord_view.Min.y) / (ps.coord_view.Max.y - ps.coord_view.Min.y), 0.f, 1.f);
+        ImVec2 p = compute_frame_coord(ps.coord_view, prev_c);
+        ImVec2 n = compute_frame_coord(ps.coord_view, next_c);
 
-        ImVec2 pos0 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(px, 1.f - py));
-        ImVec2 pos1 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(nx, 1.f - ny));
+        ImVec2 pos0 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(p.x, 1.f - p.y));
+        ImVec2 pos1 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(n.x, 1.f - n.y));
         window->DrawList->AddLine(pos0, pos1, line_color);
 
         prev_c = next_c;
-    }
-
-    if (GetActiveID() == ps.id || IsItemHovered()) {
-        ImGuiContext& ctx = *GImGui;
-        float t = ImClamp((ctx.IO.MousePos.x - ps.inner_bb.Min.x) / (ps.inner_bb.Max.x - ps.inner_bb.Min.x), 0.f, 1.f);
-        int i = ImClamp((int)ImLerp(ps.coord_view.Min.x, ps.coord_view.Max.x, t), 0, count - 1);
-        float y = values[i];
-
-        BeginTooltip();
-        Text("%i: %g\n", i, y);
-        EndTooltip();
     }
 }
 
