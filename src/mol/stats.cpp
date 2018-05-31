@@ -629,16 +629,17 @@ bool structure_extract_resatom(StructureData* data, const Array<CString> args, c
 
     for (auto& s : data->structures) {
         int32 count = s.end_idx - s.beg_idx;
-        if (first == -1) first = 1;
-        if (last == -1) last = count;
 
-        if (count < 0 || first < 1 || count < last) {
+        int32 s_first = (first == -1) ? 1 : first;
+        int32 s_last = (last == -1) ? count : last;
+
+        if (count < 0 || s_first < 1 || count < s_last) {
             set_error_message("restom: Index is out of range for structure");
             return false;
         }
 
-        int new_beg = s.beg_idx + first - 1;
-        int new_end = s.beg_idx + last;
+        int new_beg = s.beg_idx + s_first - 1;
+        int new_end = s.beg_idx + s_last;
         s = {new_beg, new_end};
     }
 
@@ -1447,10 +1448,10 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_
                         // Since the data is probably showing, perform the operations on tmp data then copy the results
                         if (p->instance_data) {
                             for (const auto& inst : p->instance_data) {
-                                compute_histogram(&tmp_hist, inst.data.sub_array(beg_idx, end_idx - beg_idx), filter);
+                                compute_histogram(&tmp_hist, inst.data.sub_array(beg_idx, end_idx - beg_idx));
                             }
                         } else {
-                            compute_histogram(&tmp_hist, p->avg_data.sub_array(beg_idx, end_idx - beg_idx), filter);
+                            compute_histogram(&tmp_hist, p->avg_data.sub_array(beg_idx, end_idx - beg_idx));
                         }
                         normalize_histogram(&tmp_hist, tmp_hist.num_samples);
                         p->filt_histogram.bin_range = tmp_hist.bin_range;

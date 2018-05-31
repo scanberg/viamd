@@ -528,13 +528,6 @@ IMGUI_API void BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, I
         }
     }
 
-    if (IsItemHovered()) {
-        // Draw vertical line to show current position
-        ImVec2 pos0(roundf(ctx.IO.MousePos.x), inner_bb.Min.y);
-        ImVec2 pos1(roundf(ctx.IO.MousePos.x), inner_bb.Max.y);
-        window->DrawList->AddLine(pos0, pos1, HOVER_LINE_COLOR);
-    }
-
     /*
 if (selection_range) {
     selection_range->x = ImClamp(selection_range->x, x_range.x, x_range.y);
@@ -586,17 +579,15 @@ IMGUI_API void PlotVerticalBars(const float* bar_opacity, int count, ImU32 color
             }
             ImVec2 next_c = ImVec2((float)i, ps.coord_view.Max.y);
 
-            // if (prev_c.x < ps.coord_view.Min.x && next_c.x < ps.coord_view.Min.x) continue;
-            // if (prev_c.y < ps.coord_view.Min.y && next_c.y < ps.coord_view.Min.y) continue;
-            if (prev_c.x > ps.coord_view.Max.x && next_c.x > ps.coord_view.Max.x) break;
-            // if (prev_c.y > ps.coord_view.Max.y && next_c.y > ps.coord_view.Max.y) continue;
+            if (next_c.x < ps.coord_view.Min.x) continue;
+            if (prev_c.x > ps.coord_view.Max.x) break;
 
             ImVec2 p = compute_frame_coord(ps.coord_view, prev_c);
             ImVec2 n = compute_frame_coord(ps.coord_view, next_c);
 
             ImVec2 pos0 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(p.x, 1.f - p.y));
             ImVec2 pos1 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(n.x, 1.f - n.y));
-            window->DrawList->AddRectFilled(pos0, pos1, ImColor(base_color.x, base_color.y, base_color.z, base_color.w * sqrtf(prev_o)));
+            window->DrawList->AddRectFilled(pos0, pos1, ImColor(base_color.x, base_color.y, base_color.z, base_color.w * prev_o));
         }
     }
 }

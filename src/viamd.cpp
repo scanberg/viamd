@@ -1449,7 +1449,7 @@ static void draw_timeline_window(ApplicationData* data) {
         // const int32 prop_count = stats::get_property_count();
         // const float plot_height = ImGui::GetContentRegionAvail().y / (float)prop_count;
         const float plot_height = 100.f;
-        const uint32 bar_fill_color = ImColor(1.f, 1.f, 1.f, 0.3f);
+        const uint32 bar_fill_color = ImColor(1.f, 1.f, 1.f, 0.25f);
         const uint32 var_fill_color = ImColor(1.f, 1.f, 0.3f, 0.1f);
         const uint32 var_line_color = ImColor(1.f, 1.f, 0.3f, 0.3f);
         const uint32 var_text_color = ImColor(1.f, 1.f, 0.3f, 0.5f);
@@ -1477,13 +1477,12 @@ static void draw_timeline_window(ApplicationData* data) {
 
             ImGui::BeginPlot(prop_name, ImVec2(0, plot_height), ImVec2(frame_range.x, frame_range.y), ImVec2(display_range.x, display_range.y),
                              ImGui::LinePlotFlags_AxisX);
-
             const ImRect inner_bb(ImGui::GetItemRectMin() + ImGui::GetStyle().FramePadding, ImGui::GetItemRectMax() - ImGui::GetStyle().FramePadding);
-
             ImGui::PushClipRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), true);
 
-            ImGui::PlotVerticalBars(prop->filter_fraction.data, (int32)prop->filter_fraction.count, bar_fill_color);
+            if (ImGui::IsItemHovered()) ImGui::SetHoveredID(id);
 
+            ImGui::PlotVerticalBars(prop->filter_fraction.data, (int32)prop->filter_fraction.count, bar_fill_color);
             if (prop->std_dev_data.data[0] > 0.f) {
                 ImGui::PlotVariance(prop->avg_data.data, prop->std_dev_data.data, (int32)prop->std_dev_data.count, 1.f, var_line_color,
                                     var_fill_color);
@@ -1494,7 +1493,6 @@ static void draw_timeline_window(ApplicationData* data) {
 
             if (ImGui::IsItemHovered() && ImGui::GetIO().MouseClicked[0]) {
                 ImGui::SetActiveID(id, ImGui::GetCurrentWindow());
-                ImGui::FocusWindow(ImGui::GetCurrentWindow());
             }
 
             if (ImGui::IsItemHovered() && ImGui::GetIO().MouseClicked[1] && ImGui::GetIO().KeyCtrl) {
@@ -1536,19 +1534,39 @@ static void draw_timeline_window(ApplicationData* data) {
             data->time_filter.range.x = ImClamp(data->time_filter.range.x, frame_range.x, frame_range.y);
             data->time_filter.range.y = ImClamp(data->time_filter.range.y, frame_range.x, frame_range.y);
 
-            // Draw selection range
-            const float t0 = (data->time_filter.range.x - frame_range.x) / (frame_range.y - frame_range.x);
-            const float t1 = (data->time_filter.range.y - frame_range.x) / (frame_range.y - frame_range.x);
-            ImVec2 pos0 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t0, 0));
-            ImVec2 pos1 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t1, 1));
-            const ImU32 SELECTION_RANGE_COLOR = 0x33bbbbbb;
-            ImGui::GetCurrentWindow()->DrawList->AddRectFilled(pos0, pos1, SELECTION_RANGE_COLOR);
+            // SELECTION RANGE
+            {
+                constexpr ImU32 SELECTION_RANGE_COLOR = 0x55bbbbbb;
+                const float t0 = (data->time_filter.range.x - frame_range.x) / (frame_range.y - frame_range.x);
+                const float t1 = (data->time_filter.range.y - frame_range.x) / (frame_range.y - frame_range.x);
+                const ImVec2 pos0 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t0, 0));
+                const ImVec2 pos1 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t1, 1));
+                ImGui::GetCurrentWindow()->DrawList->AddRectFilled(pos0, pos1, SELECTION_RANGE_COLOR);
+            }
 
-            if (ImGui::GetActiveID() == ImGui::GetID(prop_name) || ImGui::IsItemHovered()) {
+            // CURRENT FRAME POSITION
+            {
+                constexpr ImU32 CURRENT_LINE_COLOR = 0xaa33ffff;
+                const float t = ((float)data->time - frame_range.x) / (frame_range.y - frame_range.x);
+                const ImVec2 pos0 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t, 0));
+                const ImVec2 pos1 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t, 1));
+                ImGui::GetCurrentWindow()->DrawList->AddLine(pos0, pos1, CURRENT_LINE_COLOR);
+            }
+
+            // HOVERED CURSOR POSITION
+            if (ImGui::IsItemHovered()) {
+                constexpr ImU32 HOVER_LINE_COLOR = 0xaaffffff;
+                const ImVec2 pos0(roundf(ImGui::GetIO().MousePos.x), inner_bb.Min.y);
+                const ImVec2 pos1(roundf(ImGui::GetIO().MousePos.x), inner_bb.Max.y);
+                ImGui::GetCurrentWindow()->DrawList->AddLine(pos0, pos1, HOVER_LINE_COLOR);
+            }
+
+            // TOOLTIP
+            if (ImGui::GetActiveID() == id || ImGui::GetHoveredID() == id) {
                 const float min_x = ImGui::GetItemRectMin().x;
                 const float max_x = ImGui::GetItemRectMax().x;
                 float t = ImClamp((ImGui::GetIO().MousePos.x - min_x) / (max_x - min_x), 0.f, 1.f);
-                int idx = ImClamp((int32)ImLerp(min_x, max_x, t), 0, (int32)prop->avg_data.count - 1);
+                int idx = ImClamp((int32)ImLerp(frame_range.x, frame_range.y, t), 0, (int32)prop->avg_data.count - 1);
 
                 ImGui::BeginTooltip();
                 ImGui::Text("%i: %g ", idx, prop->avg_data[idx]);
@@ -1601,6 +1619,7 @@ static void draw_distribution_window(ApplicationData* data) {
     constexpr uint32 FILT_FILL_COLOR = 0x3333ffff;
     constexpr uint32 FILT_LINE_COLOR = 0xaa33ffff;
     constexpr uint32 FILT_TEXT_COLOR = 0xaa33ffff;
+    constexpr ImU32 SELECTION_RANGE_COLOR = 0x55bbbbbb;
 
     for (int i = 0; i < stats::get_property_count(); i++) {
         stats::Property* prop = stats::get_property(i);
@@ -1615,11 +1634,25 @@ static void draw_distribution_window(ApplicationData* data) {
             ImGui::RenderFrame(frame_bb.Min, frame_bb.Max, ImGui::GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
 
             // const float max_val = math::max(prop->full_histogram.bin_range.y, prop->filt_histogram.bin_range.y);
-            const float max_val = prop->full_histogram.bin_range.y * 1.25f;
+            ImGui::PushClipRect(inner_bb.Min, inner_bb.Max, true);
+            const float max_val = prop->full_histogram.bin_range.y * 1.5f;
             ImGui::DrawFilledLine(inner_bb.Min, inner_bb.Max, prop->full_histogram.bins.data, (int32)prop->full_histogram.bins.count, max_val,
                                   FULL_LINE_COLOR, FULL_FILL_COLOR);
+
             ImGui::DrawFilledLine(inner_bb.Min, inner_bb.Max, prop->filt_histogram.bins.data, (int32)prop->filt_histogram.bins.count, max_val,
                                   FILT_LINE_COLOR, FILT_FILL_COLOR);
+            // ImGui::PopClipRect();
+
+            // SELECTION RANGE
+            {
+                const float t0 = (prop->filter.x - prop->data_range.x) / (prop->data_range.y - prop->data_range.x);
+                const float t1 = (prop->filter.y - prop->data_range.x) / (prop->data_range.y - prop->data_range.x);
+                const ImVec2 pos0 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t0, 0));
+                const ImVec2 pos1 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t1, 1));
+                ImGui::GetCurrentWindow()->DrawList->AddRectFilled(pos0, pos1, SELECTION_RANGE_COLOR);
+            }
+
+            ImGui::PopClipRect();
 
             if (ImGui::IsItemHovered()) {
                 window->DrawList->AddLine(ImVec2(ImGui::GetIO().MousePos.x, inner_bb.Min.y), ImVec2(ImGui::GetIO().MousePos.x, inner_bb.Max.y),
