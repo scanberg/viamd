@@ -58,7 +58,8 @@ struct Property {
     bool filt_hist_dirty = false;
 
     Range filter{0, 0};
-    Range data_range{0, 0};
+    Range total_data_range{0, 0};
+    Range avg_data_range{0, 0};
     DynamicArray<float> filter_fraction{};
     DynamicArray<float> avg_data{};
     DynamicArray<float> std_dev_data{};

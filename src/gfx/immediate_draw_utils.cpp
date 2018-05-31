@@ -189,6 +189,8 @@ ImGui::End();
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.count * sizeof(Index), indices.data, GL_STREAM_DRAW);
 
     glEnable(GL_PROGRAM_POINT_SIZE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     glUseProgram(program);
     // glPointSize(20.f);
@@ -207,6 +209,7 @@ ImGui::End();
     glUseProgram(0);
 
     // glDisable(GL_PROGRAM_POINT_SIZE);
+    glDisable(GL_BLEND);
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);

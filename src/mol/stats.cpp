@@ -17,7 +17,7 @@
 #include <tinyexpr.h>
 
 #define COMPUTE_ID(x) (hash::crc64(x))
-constexpr int32 NUM_BINS = 64;
+constexpr int32 NUM_BINS = 128;
 
 namespace stats {
 
@@ -675,7 +675,7 @@ static inline int32 structures_index_count(Array<const Structure> structures) {
     return count;
 }
 
-Array<const vec3> extract_positions(Structure structure, Array<const vec3> atom_positions) {
+inline Array<const vec3> extract_positions(Structure structure, Array<const vec3> atom_positions) {
     return atom_positions.sub_array(structure.beg_idx, structure.end_idx - structure.beg_idx);
 }
 
@@ -877,7 +877,8 @@ static bool compute_distance(Property* prop, const Array<CString> args, const Mo
         if (var > 0.f) prop->std_dev_data.data[i] = math::sqrt(var * scl);
     }
 
-    prop->data_range = compute_range(*prop);
+    prop->total_data_range = compute_range(*prop);
+    prop->avg_data_range = compute_range(prop->avg_data);
     prop->periodic = false;
     prop->unit_buf = "Å";
 
@@ -941,7 +942,8 @@ static bool compute_angle(Property* prop, const Array<CString> args, const Molec
         if (var > 0.f) prop->std_dev_data[i] = math::sqrt(var * scl);
     }
 
-    prop->data_range = {0, math::PI};
+    prop->total_data_range = {0, math::PI};
+    prop->avg_data_range = compute_range(prop->avg_data);
     prop->periodic = true;
     prop->unit_buf = u8"°";
 
@@ -1010,7 +1012,8 @@ static bool compute_dihedral(Property* prop, const Array<CString> args, const Mo
         if (var > 0.f) prop->std_dev_data[i] = math::sqrt(var * scl);
     }
 
-    prop->data_range = {-math::PI, math::PI};
+    prop->total_data_range = {-math::PI, math::PI};
+    prop->avg_data_range = compute_range(prop->avg_data);
     prop->periodic = true;
     prop->unit_buf = u8"°";
 
@@ -1111,7 +1114,8 @@ static bool compute_expression(Property* prop, const Array<CString> args, const 
         return false;
     }
 
-    prop->data_range = compute_range(*prop);
+    prop->total_data_range = compute_range(*prop);
+    prop->avg_data_range = compute_range(prop->avg_data);
     prop->periodic = false;
     prop->unit_buf = "";
 
@@ -1141,7 +1145,7 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
 
         const int32 NUM_COLORS = 4;
         const uint32 COLORS[NUM_COLORS]{0xffe3cea6, 0xffb4781f, 0xff8adfb2, 0xff2ca033};
-        const uint32 LINE_COLOR = 0xbb000000;
+        const uint32 LINE_COLOR = 0x55cccccc;
 
         for (int32 i = 0; i < count; i++) {
             pos_prev = extract_positions(prop.structure_data[0].structures[i], dynamic.molecule.atom_positions);
@@ -1164,13 +1168,20 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
                 if (pos_prev.count == 1 && pos_next.count == 1) {
                     immediate::draw_line(pos_prev[0], pos_next[0], LINE_COLOR);
                 }
-                if (pos_prev.count > 1) {
-                    for (int32 k = 0; k < pos_prev.count; k++) {
-                        immediate::draw_line(pos_prev[k], pos_next[0], LINE_COLOR);
+                if (pos_prev.count > 1 && pos_next.count == 1) {
+                    for (const auto& pp : pos_prev) {
+                        immediate::draw_line(pp, pos_next[0], LINE_COLOR);
                     }
-                } else if (pos_next.count > 1) {
-                    for (int32 k = 0; k < pos_next.count; k++) {
-                        immediate::draw_line(pos_prev[0], pos_next[k], LINE_COLOR);
+                } else if (pos_next.count > 1 && pos_prev.count == 1) {
+                    for (const auto& pn : pos_next) {
+                        immediate::draw_line(pos_prev[0], pn, LINE_COLOR);
+                    }
+                } else {
+                    // N^2 :'(
+                    for (const auto& pp : pos_prev) {
+                        for (const auto& pn : pos_next) {
+                            immediate::draw_line(pp, pn, LINE_COLOR);
+                        }
                     }
                 }
 
@@ -1349,7 +1360,7 @@ static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic
         return false;
     }
 
-    Range pre_range = prop->data_range;
+    Range pre_range = prop->total_data_range;
     if (!func(prop, args, dynamic)) {
         prop->valid = false;
         return false;
@@ -1370,12 +1381,12 @@ static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic
         }
     }
 
-    if (pre_range != prop->data_range) {
-        prop->filter = prop->data_range;
+    if (pre_range != prop->total_data_range) {
+        prop->filter = prop->total_data_range;
     }
 
-    prop->full_histogram.value_range = prop->data_range;
-    prop->filt_histogram.value_range = prop->data_range;
+    prop->full_histogram.value_range = prop->total_data_range;
+    prop->filt_histogram.value_range = prop->total_data_range;
     prop->full_hist_dirty = true;
     prop->filt_hist_dirty = true;
     prop->valid = true;

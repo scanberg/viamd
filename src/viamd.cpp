@@ -691,17 +691,17 @@ int main(int, char**) {
             postprocessing::apply_ssao(data.fbo.tex_depth, data.fbo.tex_normal, proj_mat, data.ssao.intensity, data.ssao.radius);
         }
 
+        if (data.density_volume.enabled) {
+            const float scl = 1.f * data.density_volume.density_scale / data.density_volume.texture.max_value;
+            volume::render_volume_texture(data.density_volume.texture.id, data.fbo.tex_depth, data.density_volume.texture_to_model_matrix,
+                                          data.density_volume.model_to_world_matrix, view_mat, proj_mat, data.density_volume.color, scl);
+        }
+
         {
             immediate::set_view_matrix(view_mat);
             immediate::set_proj_matrix(proj_mat);
             stats::visualize(data.mol_data.dynamic);
             immediate::flush();
-        }
-
-        if (data.density_volume.enabled) {
-            const float scl = 1.f * data.density_volume.density_scale / data.density_volume.texture.max_value;
-            volume::render_volume_texture(data.density_volume.texture.id, data.fbo.tex_depth, data.density_volume.texture_to_model_matrix,
-                                          data.density_volume.model_to_world_matrix, view_mat, proj_mat, data.density_volume.color, scl);
         }
 
         // GUI ELEMENTS
@@ -1462,9 +1462,9 @@ static void draw_timeline_window(ApplicationData* data) {
             if (!prop->show_as_timeline) continue;
             Array<float> prop_data = prop->avg_data;
             CString prop_name = prop->name_buf;
-            Range prop_range = prop->data_range;
+            Range prop_range = prop->avg_data_range;
             if (!prop_data) continue;
-            float pad = math::abs(prop_range.y - prop_range.x) * 0.1f;
+            float pad = math::abs(prop_range.y - prop_range.x) * 0.75f;
             vec2 display_range = prop_range + vec2(-pad, pad);
             if (display_range.x == display_range.y) {
                 display_range.x -= 1.f;
@@ -1645,8 +1645,8 @@ static void draw_distribution_window(ApplicationData* data) {
 
             // SELECTION RANGE
             {
-                const float t0 = (prop->filter.x - prop->data_range.x) / (prop->data_range.y - prop->data_range.x);
-                const float t1 = (prop->filter.y - prop->data_range.x) / (prop->data_range.y - prop->data_range.x);
+                const float t0 = (prop->filter.x - prop->total_data_range.x) / (prop->total_data_range.y - prop->total_data_range.x);
+                const float t1 = (prop->filter.y - prop->total_data_range.x) / (prop->total_data_range.y - prop->total_data_range.x);
                 const ImVec2 pos0 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t0, 0));
                 const ImVec2 pos1 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t1, 1));
                 ImGui::GetCurrentWindow()->DrawList->AddRectFilled(pos0, pos1, SELECTION_RANGE_COLOR);
@@ -1670,7 +1670,7 @@ static void draw_distribution_window(ApplicationData* data) {
                 ImGui::EndTooltip();
             }
 
-            if (ImGui::RangeSliderFloat("##filter", &prop->filter.x, &prop->filter.y, prop->data_range.x, prop->data_range.y)) {
+            if (ImGui::RangeSliderFloat("##filter", &prop->filter.x, &prop->filter.y, prop->total_data_range.x, prop->total_data_range.y)) {
                 prop->filt_hist_dirty = true;
             }
         }
