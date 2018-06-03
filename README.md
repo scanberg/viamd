@@ -25,4 +25,4 @@ https://github.com/glfw/glfw
 
 https://github.com/skaslev/gl3w
 
-...
+https://github.com/codeplea/tinyexpr
