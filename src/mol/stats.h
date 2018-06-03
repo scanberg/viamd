@@ -1,8 +1,8 @@
 #pragma once
 
+#include <core/common.h>
 #include <core/types.h>
 #include <core/string_utils.h>
-#include <mutex>
 
 struct MoleculeDynamic;
 struct MoleculeStructure;
@@ -40,6 +40,20 @@ struct InstanceData {
     Array<float> data;
 };
 
+/*
+typedef int PropertyFlags;
+enum PropertyFlags_ {
+    PropertyFlags_Valid             = BIT(1);
+    PropertyFlags_Periodic          = BIT(2);
+    PropertyFlags_ShowOverlay       = BIT(3);
+    PropertyFlags_ShowTimeline      = BIT(4);
+    PropertyFlags_ShowDistribution  = BIT(5);
+    PropertyFlags_ShowVolume        = BIT(5);
+    PropertyFlags_DataDirty         = BIT(6);
+    PropertyFlags_FilterDirty       = BIT(7);
+}
+*/
+
 struct Property {
     StringBuffer<32> name_buf{};
     StringBuffer<256> args_buf{};
@@ -52,6 +66,7 @@ struct Property {
     bool visualize = false;
     bool show_as_timeline = true;
     bool show_as_distribution = true;
+    bool show_as_volume = true;
 
     bool data_dirty = false;
     bool full_hist_dirty = false;

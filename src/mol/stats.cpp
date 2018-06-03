@@ -14,6 +14,7 @@
 #include <stdarg.h>
 #include <new>
 #include <thread>
+#include <mutex>
 #include <tinyexpr.h>
 
 #define COMPUTE_ID(x) (hash::crc64(x))
