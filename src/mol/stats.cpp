@@ -44,7 +44,9 @@ struct StatisticsContext {
     Volume volume{};
     bool volume_dirty = false;
 
-    std::mutex thread_mutex;
+    VisualizationStyle style;
+
+    //   std::mutex thread_mutex;
     volatile bool thread_running = false;
     volatile bool stop_signal = false;
     volatile float fraction_done = 0.f;
@@ -1144,9 +1146,9 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
         vec3 com_prev(0);
         vec3 com_next(0);
 
-        const int32 NUM_COLORS = 4;
-        const uint32 COLORS[NUM_COLORS]{0xffe3cea6, 0xffb4781f, 0xff8adfb2, 0xff2ca033};
-        const uint32 LINE_COLOR = 0x55cccccc;
+        // const int32 NUM_COLORS = 4;
+        // const uint32 COLORS[NUM_COLORS]{0xffe3cea6, 0xffb4781f, 0xff8adfb2, 0xff2ca033};
+        // const uint32 LINE_COLOR = 0x55cccccc;
 
         for (int32 i = 0; i < count; i++) {
             pos_prev = extract_positions(prop.structure_data[0].structures[i], dynamic.molecule.atom_positions);
@@ -1155,33 +1157,34 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
                 pos_prev = {&com_prev, 1};
             }
             for (const auto& p : pos_prev) {
-                immediate::draw_point(p, COLORS[0]);
+                immediate::draw_point(p, ctx.style.point_colors[0]);
             }
             for (int32 j = 1; j < prop.structure_data.count; j++) {
+                const int32 col_idx = j % VisualizationStyle::NUM_COLORS;
                 pos_next = extract_positions(prop.structure_data[j].structures[i], dynamic.molecule.atom_positions);
                 if (prop.structure_data[j].strategy == COM) {
                     com_next = compute_com(pos_next);
                     pos_next = {&com_next, 1};
                 }
                 for (const auto& p : pos_next) {
-                    immediate::draw_point(p, COLORS[j % NUM_COLORS]);
+                    immediate::draw_point(p, ctx.style.point_colors[col_idx]);
                 }
                 if (pos_prev.count == 1 && pos_next.count == 1) {
-                    immediate::draw_line(pos_prev[0], pos_next[0], LINE_COLOR);
+                    immediate::draw_line(pos_prev[0], pos_next[0], ctx.style.line_color);
                 }
                 if (pos_prev.count > 1 && pos_next.count == 1) {
                     for (const auto& pp : pos_prev) {
-                        immediate::draw_line(pp, pos_next[0], LINE_COLOR);
+                        immediate::draw_line(pp, pos_next[0], ctx.style.line_color);
                     }
                 } else if (pos_next.count > 1 && pos_prev.count == 1) {
                     for (const auto& pn : pos_next) {
-                        immediate::draw_line(pos_prev[0], pn, LINE_COLOR);
+                        immediate::draw_line(pos_prev[0], pn, ctx.style.line_color);
                     }
                 } else {
                     // N^2 :'(
                     for (const auto& pp : pos_prev) {
                         for (const auto& pn : pos_next) {
-                            immediate::draw_line(pp, pn, LINE_COLOR);
+                            immediate::draw_line(pp, pn, ctx.style.line_color);
                         }
                     }
                 }
@@ -1473,14 +1476,14 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_
 
                     // Compute filter fractions for frames
                     if (p->instance_data) {
-                        for (int32 i = 0; i < p->filter_fraction.count; i++) {
+                        for (int32 j = 0; j < p->filter_fraction.count; j++) {
                             float val = 0.f;
                             for (const auto& inst : p->instance_data) {
-                                if (filter.x <= inst.data[i] && inst.data[i] <= filter.y) {
+                                if (filter.x <= inst.data[j] && inst.data[j] <= filter.y) {
                                     val += 1.f;
                                 }
                             }
-                            p->filter_fraction[i] = val / (float)p->instance_data.count;
+                            p->filter_fraction[j] = val / (float)p->instance_data.count;
                         }
                     }
 
@@ -1503,9 +1506,9 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_
     }
 }
 
-void lock_thread_mutex() { ctx.thread_mutex.lock(); }
+// void lock_thread_mutex() { ctx.thread_mutex.lock(); }
 
-void unlock_thread_mutex() { ctx.thread_mutex.unlock(); }
+// void unlock_thread_mutex() { ctx.thread_mutex.unlock(); }
 
 bool thread_running() { return ctx.thread_running; }
 
@@ -1536,6 +1539,8 @@ void visualize(const MoleculeDynamic& dynamic) {
 }
 
 const Volume& get_density_volume() { return ctx.volume; }
+
+VisualizationStyle* get_style() { return &ctx.style; }
 
 Property* create_property(CString name, CString args) {
     Property* prop = (Property*)MALLOC(sizeof(Property));

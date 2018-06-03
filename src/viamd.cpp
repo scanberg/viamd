@@ -25,6 +25,7 @@
 
 #include <stdio.h>
 #include <thread>
+#include <mutex>
 
 //#define VIAMD_RELEASE 1
 
@@ -312,7 +313,6 @@ static void draw_timeline_window(ApplicationData* data);
 static void draw_distribution_window(ApplicationData* data);
 static void draw_ramachandran_window(ApplicationData* data);
 static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, int x, int y);
-static void draw_atom_context_window(ApplicationData* data, int32 x, int32 y);
 static void draw_async_info(ApplicationData* data);
 
 static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height);
@@ -762,16 +762,15 @@ int main(int, char**) {
         }
         ImGui::End();
 
-        if (data.right_clicked.atom_idx != NO_PICKING_IDX && data.ctx.input.mouse.hit[1]) {
-            // data.text_field_target = 0;
-            // if (ImGui::GetIO().WantTextInput) {
-            //    data.text_field_target = ImGui::GetActiveID();
-            //}
-            ImGui::OpenPopup("AtomContextMenu");
-        }
-        // if (data.picking_idx != NO_PICKING_IDX) {
-        draw_atom_context_window(&data, 0, 0);
-        //}
+        /*
+if (data.right_clicked.atom_idx != NO_PICKING_IDX && data.ctx.input.mouse.hit[1]) {
+    // data.text_field_target = 0;
+    // if (ImGui::GetIO().WantTextInput) {
+    //    data.text_field_target = ImGui::GetActiveID();
+    //}
+    ImGui::OpenPopup("AtomContextMenu");
+}
+        */
 
         // Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
         if (show_demo_window) {
@@ -926,9 +925,30 @@ if (ImGui::BeginMenu("Edit")) {
             ImGui::EndGroup();
             ImGui::Separator();
 
+            // Property Overlay
+            ImGui::BeginGroup();
+            ImGui::Text("Property Style");
+            auto style = stats::get_style();
+            ImGui::Text("point colors ");
+            for (int32 i = 0; i < style->NUM_COLORS; i++) {
+                ImGui::SameLine();
+                ImGui::PushID(i);
+                ImVec4 color = ImColor(style->point_colors[i]);
+                if (ImGui::ColorEdit4("PointColor", (float*)&color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel))
+                    style->point_colors[i] = ImColor(color);
+                ImGui::PopID();
+            }
+            ImGui::Text("line color   ");
+            ImGui::SameLine();
+            ImVec4 color = ImColor(style->line_color);
+            if (ImGui::ColorEdit4("LineColor", (float*)&color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel))
+                style->line_color = ImColor(color);
+            ImGui::EndGroup();
+            ImGui::Separator();
+
             /*
-ImGui::BeginGroup();
-if (ImGui::Checkbox("Use high-res font", &data->high_res_font)) {
+    ImGui::BeginGroup();
+    if (ImGui::Checkbox("Use high-res font", &data->high_res_font)) {
     if (ImGui::GetIO().Fonts->Fonts.size() > 1 && data->high_res_font) {
         ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts[1];
         ImGui::GetIO().FontGlobalScale = 0.75f;
@@ -936,9 +956,9 @@ if (ImGui::Checkbox("Use high-res font", &data->high_res_font)) {
         ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts[0];
         ImGui::GetIO().FontGlobalScale = 1.0f;
     }
-}
-ImGui::EndGroup();
-ImGui::Separator();
+    }
+    ImGui::EndGroup();
+    ImGui::Separator();
             */
 
             ImGui::BeginGroup();
@@ -981,11 +1001,11 @@ ImGui::Separator();
             }
             ImGui::EndGroup();
             /*
-// DEBUG DRAW
-ImGui::BeginGroup();
-ImGui::Checkbox("Spline", &data->debug_draw.spline.enabled);
-ImGui::Checkbox("Backbone", &data->debug_draw.backbone.enabled);
-ImGui::EndGroup();
+    // DEBUG DRAW
+    ImGui::BeginGroup();
+    ImGui::Checkbox("Spline", &data->debug_draw.spline.enabled);
+    ImGui::Checkbox("Backbone", &data->debug_draw.backbone.enabled);
+    ImGui::EndGroup();
 
             */
             ImGui::EndMenu();
@@ -1337,37 +1357,6 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, in
     ImGui::Text("%s", buff);
     ImGui::End();
     ImGui::PopStyleColor();
-}
-
-static void draw_atom_context_window(ApplicationData* data, int32 x, int32 y) {
-
-    /*
-if (ImGui::BeginPopup("AtomContextMenu", ImGuiWindowFlags_NoBringToFrontOnFocus)) {
-    ImGui::PushAllowKeyboardFocus(false);
-
-    ImGui::SetKeyboardFocusHere(-1);
-    if (data->right_clicked.atom_idx != NO_PICKING_IDX) {
-        char buf[32];
-        snprintf(buf, 32, "atom(%i)", data->right_clicked.atom_idx);
-
-        if (ImGui::ButtonEx("Cool", ImVec2(0, 0), ImGuiButtonFlags_PressedOnClick | ImGuiButtonFlags_NoHoldingActiveID)) {
-        }
-        if (ImGui::MenuItem(buf)) {
-        }
-    }
-    if (data->right_clicked.residue_idx != NO_PICKING_IDX) {
-        char buf[32];
-        snprintf(buf, 32, "residue(%i)", data->right_clicked.residue_idx);
-        if (ImGui::MenuItem(buf)) {
-        }
-        snprintf(buf, 32, "resname(%s)", data->mol_data.dynamic.molecule.residues[data->right_clicked.residue_idx].name.cstr());
-        if (ImGui::MenuItem(buf)) {
-        }
-    }
-    ImGui::PopAllowKeyboardFocus();
-    ImGui::EndPopup();
-}
-    */
 }
 
 static void draw_async_info(ApplicationData* data) {
@@ -2091,7 +2080,9 @@ static void save_workspace(ApplicationData* data, CString file) {
         fprintf(fptr, "Type=%s\n", get_rep_type_name(rep.type).beg());
         fprintf(fptr, "ColorMapping=%s\n", get_color_mapping_name(rep.color_mapping).beg());
         fprintf(fptr, "Enabled=%i\n", rep.enabled);
-        if (rep.color_mapping == ColorMapping::STATIC_COLOR) fprintf(fptr, "StaticColor=%i\n", rep.enabled);
+        if (rep.color_mapping == ColorMapping::STATIC_COLOR) {
+            fprintf(fptr, "StaticColor=%i\n", rep.enabled);
+        }
         if (rep.type == Representation::VDW || Representation::LICORICE)
             fprintf(fptr, "Radius=%g\n", rep.radius);
         else if (rep.type == Representation::RIBBONS) {

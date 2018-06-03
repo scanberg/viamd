@@ -86,6 +86,13 @@ struct Property {
     DynamicArray<Property*> dependencies{};
 };
 
+// This is to use as base colors for overlaying graphics
+struct VisualizationStyle {
+    static const int32 NUM_COLORS = 4;
+    uint32 point_colors[NUM_COLORS] = {0xffe3cea6, 0xffb4781f, 0xff8adfb2, 0xff2ca033};
+    uint32 line_color = 0x55cccccc;
+};
+
 // Helper functions
 void set_error_message(const char* fmt, ...);
 
@@ -121,9 +128,9 @@ void shutdown();
 
 void async_update(const MoleculeDynamic& dynamic, Range frame_filter = {0, 0}, void (*on_finished)(void*) = nullptr, void* usr_data = nullptr);
 
-// ASync functionality
-void lock_thread_mutex();
-void unlock_thread_mutex();
+// Async functionality
+// void lock_thread_mutex();
+// void unlock_thread_mutex();
 bool thread_running();
 void signal_stop();
 void signal_stop_and_wait();
@@ -134,6 +141,7 @@ float fraction_done();
 void visualize(const MoleculeDynamic& dynamic);
 
 const Volume& get_density_volume();
+VisualizationStyle* get_style();
 
 // void compute_property(Property* prop, const MoleculeDynamic& dynamic);
 // void compute_property_histograms(Property* prop);
