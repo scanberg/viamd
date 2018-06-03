@@ -27,7 +27,7 @@
 #include <thread>
 #include <mutex>
 
-//#define VIAMD_RELEASE 1
+#define VIAMD_RELEASE 1
 
 #ifdef _WIN32
 constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;

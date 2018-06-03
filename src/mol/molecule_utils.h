@@ -100,6 +100,7 @@ inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backb
 void transform_positions(Array<vec3> positions, const mat4& transformation);
 void compute_bounding_box(vec3* min_box, vec3* max_box, Array<const vec3> positions);
 
+/*
 inline mat4 compute_basis(const DynamicBasis& basis, Array<const vec3> atom_positions) {
     mat4 mat;
     vec3 x = atom_positions[basis.x_idx] - atom_positions[basis.origin_idx];
@@ -108,6 +109,7 @@ inline mat4 compute_basis(const DynamicBasis& basis, Array<const vec3> atom_posi
 
     return mat;
 }
+*/
 
 void linear_interpolation_periodic(Array<vec3> positions, Array<const vec3> prev_pos, Array<const vec3> next_pos, float t, mat3 sim_box);
 void linear_interpolation(Array<vec3> positions, Array<const vec3> prev_pos, Array<const vec3> next_pos, float t);
