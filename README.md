@@ -1,6 +1,7 @@
 # viamd
 Visual Interactive Analysis of Molecular Dynamics
 
+## Building
 ### Step 1: Clone the repository:
 
 (Make sure the fetch the submodules as well)
@@ -12,10 +13,15 @@ Visual Interactive Analysis of Molecular Dynamics
 
 https://cmake.org/
 
-### Step 3: Build
+### Step 3: Build!
 
+### Step 4: Profit?
 
+## Binaries
 
+https://github.com/scanberg/viamd/releases/download/v0.7a/viamd_0.7a_osx.zip
+
+https://github.com/scanberg/viamd/releases/download/v0.7a/viamd_0.7a_win64.zip
 
 ## Acknowledgements
 
