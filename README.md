@@ -23,6 +23,8 @@ https://github.com/scanberg/viamd/releases/download/v0.7a/viamd_0.7a_osx.zip
 
 https://github.com/scanberg/viamd/releases/download/v0.7a/viamd_0.7a_win64.zip
 
+https://github.com/scanberg/viamd/releases/download/v0.7a/viamd_0.7a_linux.zip
+
 ## Acknowledgements
 
 https://github.com/ocornut/imgui
