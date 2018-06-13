@@ -507,12 +507,6 @@ void initialize(Context* ctx, int32 width, int32 height, const char* title) {
     memcpy(ctx, &internal_ctx, sizeof(Context));
 }
 
-/*
-void set_window_should_close(Window* window, bool value) {
-        glfwSetWindowShouldClose(window->glfw_window, (int)value);
-}
-*/
-
 void shutdown(Context* ctx) {
     glfwDestroyWindow((GLFWwindow*)internal_ctx.window.ptr);
     imgui_shutdown();
@@ -627,6 +621,7 @@ FileDialogResult save_file_dialog(CString file, CString filter) {
 #elif defined OS_MAC
 #include <core/platform/platform_osx.inl>
 #elif defined OS_LINUX
+#include <core/platform/platform_linux.inl>
 #endif
 
 }  // namespace platform

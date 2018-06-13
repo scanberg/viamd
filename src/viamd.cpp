@@ -2241,7 +2241,7 @@ static void compute_backbone_angles_async(ApplicationData* data) {
 static void create_volume(ApplicationData* data) {
     const vec3 min_box = vec3(0);
     const vec3 max_box = data->mol_data.dynamic.trajectory.num_frames > 0 ? data->mol_data.dynamic.trajectory.frame_buffer[0].box * vec3(1) : vec3(1);
-    const ivec3 dim = ivec3(max_box) / VOLUME_DOWNSAMPLE_FACTOR;
+    const ivec3 dim = math::max(ivec3(1), ivec3(max_box) / VOLUME_DOWNSAMPLE_FACTOR);
     init_volume(&data->density_volume.volume, dim);
     // volume::create_volume_texture(&data->density_volume.texture, dim);
     data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(min_box, max_box);
