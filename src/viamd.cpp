@@ -27,7 +27,7 @@
 #include <thread>
 #include <mutex>
 
-#define VIAMD_RELEASE 1
+//#define VIAMD_RELEASE
 
 #ifdef _WIN32
 constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
@@ -474,7 +474,7 @@ int main(int, char**) {
             time += data.ctx.timing.dt;
             if (time > TICK_INTERVAL_SEC) {
                 time = 0.f;
-                stats::set_all_property_flags(true, true, true);
+                stats::set_all_property_flags(true, true);
                 compute_backbone_angles_async(&data);
             }
         }
@@ -573,7 +573,7 @@ int main(int, char**) {
             data.hydrogen_bonds.dirty = true;
             if (data.mol_data.dynamic.trajectory) {
                 if (data.time_filter.dynamic_window) {
-                    stats::set_all_property_flags(false, false, true);
+                    stats::set_all_property_flags(false, true);
                 }
             }
         }
@@ -1168,7 +1168,7 @@ static void draw_property_window(ApplicationData* data) {
     ImGui::NextColumn();
     ImGui::Text("args");
     ImGui::NextColumn();
-    ImGui::Text("S/T/D");
+    ImGui::Text("S/T/D/V");
     ImGui::NextColumn();
     ImGui::NextColumn();
 
@@ -1180,12 +1180,13 @@ static void draw_property_window(ApplicationData* data) {
         ImGui::Separator();
         ImGui::PushID(i);
 
-        if (!prop->valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
         ImGui::PushItemWidth(-1);
+        if (!prop->valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
         if (ImGui::InputText("##name", prop->name_buf.buffer, prop->name_buf.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
             prop->data_dirty = true;
             // compute_stats = true;
         }
+        if (!prop->valid) ImGui::PopStyleColor();
         ImGui::PopItemWidth();
         ImGui::NextColumn();
 
@@ -1249,9 +1250,11 @@ data->right_clicked.atom_idx + 1); if (ImGui::MenuItem(buf)) { memcpy(insert_buf
         }
 
         ImGui::PushItemWidth(-1);
+        if (!prop->valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
         if (ImGui::InputText("##args", prop->args_buf.buffer, prop->args_buf.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
             prop->data_dirty = true;
         }
+        if (!prop->valid) ImGui::PopStyleColor();
         ImGui::PopItemWidth();
 
         if (ImGui::IsItemActive() && data->hovered.atom_idx != -1 && data->ctx.input.mouse.release[1]) {
@@ -1259,17 +1262,22 @@ data->right_clicked.atom_idx + 1); if (ImGui::MenuItem(buf)) { memcpy(insert_buf
         }
 
         if (!prop->valid) {
-            ImGui::PopStyleColor();
             if (!prop->valid && prop->error_msg_buf && ImGui::GetHoveredID() == ImGui::GetID("##args")) {
                 ImGui::SetTooltip("%s", prop->error_msg_buf.cstr());
             }
         }
         ImGui::NextColumn();
-        ImGui::Checkbox("##visualize", &prop->visualize);
+        ImGui::Checkbox("##visualize", &prop->enable_visualization);
         ImGui::SameLine();
-        ImGui::Checkbox("##timeline", &prop->show_as_timeline);
+        ImGui::Checkbox("##timeline", &prop->enable_timeline);
         ImGui::SameLine();
-        ImGui::Checkbox("##distribution", &prop->show_as_distribution);
+        ImGui::Checkbox("##distribution", &prop->enable_distribution);
+        ImGui::SameLine();
+        if (ImGui::Checkbox("##volume", &prop->enable_volume)) {
+            // Trigger update of volume
+            prop->filter_dirty = true;
+        }
+
         ImGui::NextColumn();
         if (ImGui::ArrowButton("up", ImGuiDir_Up)) {
             stats::move_property_up(prop);
@@ -1448,7 +1456,7 @@ static void draw_timeline_window(ApplicationData* data) {
 
         for (int i = 0; i < stats::get_property_count(); i++) {
             auto prop = stats::get_property(i);
-            if (!prop->show_as_timeline) continue;
+            if (!prop->enable_timeline) continue;
             Array<float> prop_data = prop->avg_data;
             CString prop_name = prop->name_buf;
             Range prop_range = prop->avg_data_range;
@@ -1459,7 +1467,7 @@ static void draw_timeline_window(ApplicationData* data) {
                 display_range.x -= 1.f;
                 display_range.y += 1.f;
             }
-            float val = (float)data->time;
+            // float val = (float)data->time;
             ImGuiID id = ImGui::GetID(prop_name);
 
             ImGui::PushID(i);
@@ -1570,7 +1578,7 @@ static void draw_timeline_window(ApplicationData* data) {
         ImGui::PopItemWidth();
 
         if (data->time_filter.range != old_range) {
-            stats::set_all_property_flags(false, false, true);
+            stats::set_all_property_flags(false, true);
         }
 
         if (ImGui::IsWindowHovered() && ImGui::GetIO().MouseWheel != 0.f && ImGui::GetIO().KeyCtrl) {
@@ -1612,7 +1620,7 @@ static void draw_distribution_window(ApplicationData* data) {
 
     for (int i = 0; i < stats::get_property_count(); i++) {
         stats::Property* prop = stats::get_property(i);
-        if (!prop->show_as_distribution) continue;
+        if (!prop->enable_distribution) continue;
         ImGui::PushID(i);
 
         const ImRect frame_bb(window->DC.CursorPos, window->DC.CursorPos + ImVec2(frame_size.x, frame_size.y));
@@ -1660,7 +1668,7 @@ static void draw_distribution_window(ApplicationData* data) {
             }
 
             if (ImGui::RangeSliderFloat("##filter", &prop->filter.x, &prop->filter.y, prop->total_data_range.x, prop->total_data_range.y)) {
-                prop->filt_hist_dirty = true;
+                prop->filter_dirty = true;
             }
         }
         ImGui::PopID();
@@ -2209,7 +2217,7 @@ if (data->mol_data.dynamic.trajectory.num_frames > 0) {
             data->async.trajectory.sync.stop_signal = false;
 
             // compute_statistics_async(data);
-            stats::set_all_property_flags(true, true, true);
+            stats::set_all_property_flags(true, true);
             compute_backbone_angles_async(data);
         });
         data->async.trajectory.sync.thread.detach();

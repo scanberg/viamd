@@ -225,8 +225,6 @@ inline void shuffle(int32* arr, size_t n) {
     }
 }
 
-//#pragma optimize("", off)
-
 void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, const MoleculeTrajectory& traj, Range frame_range) {
     ASSERT(vol);
     if (vol->dim.x == 0 || vol->dim.y == 0 || vol->dim.z == 0) {
@@ -241,27 +239,15 @@ void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, con
         frame_range.y = (float)num_frames;
     }
 
-    int32 beg_frame = math::clamp((int32)frame_range.x, 0, num_frames - 1);
-    int32 end_frame = math::clamp((int32)frame_range.y, 0, num_frames - 1);
-
-#ifdef PERMUTE_FRAMES
-    int32 frame_count = end_frame - beg_frame;
-    int32* permuted_frames = (int32*)TMP_MALLOC(frame_count * sizeof(int32));
-    for (int32 i = 0; i < frame_count; i++) {
-        permuted_frames[i] = beg_frame + i;
-    }
-    shuffle(permuted_frames, frame_count);
-#endif
+    int32 beg_frame = math::clamp((int32)frame_range.x, 0, num_frames);
+    int32 end_frame = math::clamp((int32)frame_range.y, 0, num_frames);
 
     clear_volume(vol);
-#ifdef PERMUTE_FRAMES
-    for (int32 p_idx = 0; p_idx < frame_count; p_idx++) {
-        int32 frame_idx = permuted_frames[p_idx];
-#else
+
     for (int32 frame_idx = beg_frame; frame_idx < end_frame; frame_idx++) {
-#endif
         Array<const vec3> atom_positions = get_trajectory_positions(traj, frame_idx);
         for (auto prop : ctx.properties) {
+            if (!prop->enable_volume) continue;
             for (int32 inst_idx = 0; inst_idx < prop->instance_data.count; inst_idx++) {
                 const float v = prop->instance_data[inst_idx].data[frame_idx];
                 if (prop->filter.x <= v && v <= prop->filter.y) {
@@ -281,13 +267,7 @@ void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, con
             }
         }
     }
-
-#ifdef PERMUTE_FRAMES
-    TMP_FREE(permuted_frames);
-#endif
 }
-
-//#pragma optimize("", on)
 
 static Range compute_range(Array<float> data) {
     if (data.count == 0) {
@@ -1391,8 +1371,7 @@ static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic
 
     prop->full_histogram.value_range = prop->total_data_range;
     prop->filt_histogram.value_range = prop->total_data_range;
-    prop->full_hist_dirty = true;
-    prop->filt_hist_dirty = true;
+    prop->filter_dirty = true;
     prop->valid = true;
 
     ctx.current_property = nullptr;
@@ -1403,8 +1382,7 @@ static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic
 bool properties_dirty() {
     for (const auto p : ctx.properties) {
         if (p->data_dirty) return true;
-        if (p->full_hist_dirty) return true;
-        if (p->filt_hist_dirty) return true;
+        if (p->filter_dirty) return true;
     }
 
     return false;
@@ -1432,12 +1410,8 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_
 
                 if (p->data_dirty) {
                     compute_property_data(p, dynamic);
-                    p->data_dirty = false;
-                }
 
-                if (ctx.stop_signal) break;
-
-                if (p->full_hist_dirty) {
+                    // recompute full histogram
                     clear_histogram(&p->full_histogram);
                     if (p->instance_data) {
                         for (const auto& inst : p->instance_data) {
@@ -1447,12 +1421,13 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_
                         compute_histogram(&p->full_histogram, p->avg_data);
                     }
                     normalize_histogram(&p->full_histogram, p->full_histogram.num_samples);
-                    p->full_hist_dirty = false;
+
+                    p->data_dirty = false;
                 }
 
                 if (ctx.stop_signal) break;
 
-                if (p->filt_hist_dirty) {
+                if (p->filter_dirty) {
                     clear_histogram(&tmp_hist);
                     tmp_hist.value_range = p->filt_histogram.value_range;
 
@@ -1487,7 +1462,7 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_
                         }
                     }
 
-                    if (p->filter == filter) p->filt_hist_dirty = false;
+                    if (p->filter == filter) p->filter_dirty = false;
                 }
 
                 if (ctx.stop_signal) break;
@@ -1529,7 +1504,7 @@ float fraction_done() { return ctx.fraction_done; }
 void visualize(const MoleculeDynamic& dynamic) {
     if (thread_running()) return;
     for (auto p : ctx.properties) {
-        if (!p->visualize) continue;
+        if (!p->enable_visualization) continue;
         CString cmd = extract_command(p->args_buf);
         auto entry = find_property_func_entry(COMPUTE_ID(cmd));
         if (entry && entry->visualize_func) {
@@ -1549,8 +1524,7 @@ Property* create_property(CString name, CString args) {
     prop->args_buf = args;
     prop->valid = false;
     prop->data_dirty = true;
-    prop->full_hist_dirty = true;
-    prop->filt_hist_dirty = true;
+    prop->filter_dirty = true;
 
     init_histogram(&prop->full_histogram, NUM_BINS);
     clear_histogram(&prop->full_histogram);
@@ -1662,11 +1636,10 @@ void clear_all_properties() {
     ctx.stop_signal = false;
 }
 
-void set_all_property_flags(bool data_dirty, bool full_hist_dirty, bool filt_hist_dirty) {
+void set_all_property_flags(bool data_dirty, bool filter_dirty) {
     for (auto p : ctx.properties) {
         p->data_dirty |= data_dirty;
-        p->full_hist_dirty |= full_hist_dirty;
-        p->filt_hist_dirty |= filt_hist_dirty;
+        p->filter_dirty |= filter_dirty;
     }
 }
 

@@ -1,17 +1,17 @@
 #pragma once
 
 #ifdef __APPLE__
-    #include "TargetConditionals.h"
-    #ifdef TARGET_OS_MAC
-        #define OS_MAC
-    #endif
+#include "TargetConditionals.h"
+#ifdef TARGET_OS_MAC
+#define OS_MAC
+#endif
 #elif defined _WIN32 || defined _WIN64
-    #define OS_WINDOWS
+#define OS_WINDOWS
 #elif defined __linux__
-    #define OS_LINUX
+#define OS_LINUX
 #else
-    #error
-#endif 
+#error
+#endif
 
 #include <core/keys.h>
 #include <core/types.h>
@@ -32,10 +32,10 @@ struct Context {
         int32 width, height;
     } window;
 
-	struct {
-		int32 width;
-		int32 height;
-	} framebuffer;
+    struct {
+        int32 width;
+        int32 height;
+    } framebuffer;
 
     struct {
         struct {
@@ -61,11 +61,11 @@ struct Context {
     } input;
 
     struct {
-        float32 dt;
         uint64 delta_ns;
         uint64 total_ns;
 
-		float64 total_s;
+        float32 dt;
+        float64 total_s;
     } timing;
 };
 
@@ -73,66 +73,27 @@ void initialize(Context* ctx, int32 width, int32 height, const char* title);
 void shutdown(Context* ctx);
 void update(Context* ctx);
 void swap_buffers(Context* ctx);
-void sleep(int32 milliseconds);
 
 typedef StringBuffer<512> Path;
 
 struct DirEntry {
-    enum Type {
-        File,
-        Dir,
-        Link,
-        Unknown
-    };
+    enum Type { File, Dir, Link, Unknown };
     Type type;
     Path name;
 };
 
+// Platform specific
+void sleep(int32 milliseconds);
 DynamicArray<DirEntry> list_directory(CString dir_path);
 CString get_cwd();
 
 struct FileDialogResult {
-	enum Action {
-		FILE_ERROR,
-		FILE_OK,
-		FILE_CANCEL
-	};
-	Path path;
-	Action action;
+    enum Action { FILE_ERROR, FILE_OK, FILE_CANCEL };
+    Path path;
+    Action action;
 };
 
 FileDialogResult open_file_dialog(CString filter = {});
 FileDialogResult save_file_dialog(CString file = {}, CString filter = {});
 
 }  // namespace platform
-
-/*
-void* perm_alloc(size_t);
-void perm_free(void*);
-
-void* scratch_malloc(size_t);
-void scratch_free(void*);
-
-}  // namespace platform
-
-struct KeyboardEvent {
-    InputState* state;
-    Key::Key_t key;
-};
-
-struct MouseEvent {
-
-};
-
-// struct FileEvent {
-//    CString path;
-//};
-
-typedef void (*FileCallback)(const FileEvent& event);
-
-void register_file_event_callback(FileCallback callback);
-    
-
-
-}
-*/

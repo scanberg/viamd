@@ -63,14 +63,13 @@ struct Property {
     bool valid = false;
     bool periodic = false;
 
-    bool visualize = false;
-    bool show_as_timeline = true;
-    bool show_as_distribution = true;
-    bool show_as_volume = true;
+    bool enable_visualization = false;
+    bool enable_timeline = true;
+    bool enable_distribution = true;
+    bool enable_volume = true;
 
     bool data_dirty = false;
-    bool full_hist_dirty = false;
-    bool filt_hist_dirty = false;
+    bool filter_dirty = false;
 
     Range filter{0, 0};
     Range total_data_range{0, 0};
@@ -164,7 +163,7 @@ void move_property_down(Property* prop);
 void clear_property(Property* prop);
 void clear_all_properties();
 
-void set_all_property_flags(bool data_dirty, bool full_hist_dirty, bool filt_hist_dirty);
+void set_all_property_flags(bool data_dirty, bool filter_dirty);
 
 int32 get_property_count();
 Property* get_property(int32 idx);
