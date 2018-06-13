@@ -182,8 +182,8 @@ struct StringBuffer {
     }
 
     StringBuffer& operator+=(CString txt) {
-        int32 offset = strnlen(buffer, MAX_LENGTH);
-        int32 length = MAX_LENGTH - offset;
+        int64 offset = (int64)strnlen(buffer, MAX_LENGTH);
+        int64 length = MAX_LENGTH - offset;
         if (length > 0) {
             strncpy(buffer + offset, txt, txt.count < length ? txt.count : length);
         }
