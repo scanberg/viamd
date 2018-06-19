@@ -83,7 +83,7 @@ struct DynamicArray : Array<T> {
         }
     }
 
-    DynamicArray(const Array<T>& clone_source) : capacity(clone_source.count) {
+    DynamicArray(const Array<const T>& clone_source) : capacity(clone_source.count) {
         this->count = capacity;
         if (this->count > 0) {
             this->data = (T*)MALLOC(capacity * sizeof(T));
@@ -114,8 +114,8 @@ struct DynamicArray : Array<T> {
         this->count = 0;
     }
 
-    DynamicArray& operator=(const Array<T>& other) {
-        if (&other != this) {
+    DynamicArray& operator=(const Array<const T>& other) {
+        if (other != *this) {
             if (other.count > capacity) {
                 reserve(other.count);
             }
@@ -209,7 +209,7 @@ struct DynamicArray : Array<T> {
         } else {
             if (capacity < new_count) {
                 reserve(_grow_capacity(new_count));
-                //memset(this->data + this->count, 0, (new_count - this->count) * sizeof(T));
+                // memset(this->data + this->count, 0, (new_count - this->count) * sizeof(T));
             }
             this->count = new_count;
         }

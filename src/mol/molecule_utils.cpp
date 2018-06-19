@@ -34,6 +34,18 @@ void compute_bounding_box(vec3* min_box, vec3* max_box, Array<const vec3> positi
     }
 }
 
+vec3 compute_com(Array<const vec3> positions) {
+    if (positions.count == 0) return {0, 0, 0};
+    if (positions.count == 1) return positions[0];
+
+    vec3 com{0};
+    for (const auto& p : positions) {
+        com += p;
+    }
+
+    return com / (float)positions.count;
+}
+
 inline bool periodic_jump(const vec3& p_prev, const vec3& p_next, const vec3& half_box) {
     const vec3 abs_delta = math::abs(p_next - p_prev);
     if (abs_delta.x > half_box.x) return true;
@@ -2185,7 +2197,30 @@ constexpr int seg_height = 36;
 constexpr GLenum seg_data_format = GL_BGR;
 /* UGLY
 constexpr unsigned char seg_data[] =
-    R"(  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                PP PP PP PP PP                 P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                            P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P                                      P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                      P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                         P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P         P  P  P  P  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  PP  P  P  P  P  P  P  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  PP  P  P  P  P  ?  ?  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  PP  P  ?  ?  ?  ?  P  P  P                   P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  P  P  PP  P  ?  ?  ?  ?  P  P  P                   P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P            P  P  P  ?  ?  ?  P  P  P  P                P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P            P  P  ?  ?  ?  ?  ?  ?  P  P                P  P  P P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P             P  P  ?  ?  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P             P  P  P  ?  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P          P  P  P  ?  ?  ?  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P          P  P  P  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P          P  P  P  P  ?  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P       P  P  P  ?  P  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P    P  P  P  P  P  P  P  P  P               P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P    P  P  P  P  P  P  P  P  P               P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                         P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                         P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P  ?  ?  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                      P  P  P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                      P  P  P   P P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  P  P                                                P  P  P P  P  P   P  P  P  P P  ?  P  P  P  P  P  P  P  P                                                   P  P  P  P  P  P  P  ?  ?  P P  P  P  P  P  P  P                                                            P  P  P  P  P  ?  ?  P  P  P  P  P  P  P                      PP PP PP PP PP                                P  P  P  P  P  P  ?  ?  ?  ?  P  P  P  P                      PP PP PP PP PP                                P  ?  ?  ?  P  ?  ?  ?  ?  ?  P  P  P  P  P                   PP PP ?? PP PP PP                             P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P                   PP PP ?? PP PP PP                    P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                   PP PP ?? ?? PP PP                    P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                   PP PP PP PP PP PP                    P  P  ?)";
+    R"(  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                PP PP PP PP PP                 P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?
+?  ?  ?  ?  P  P                                            P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P P  P  ?  ?  ?  ?  ?
+?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                      P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?
+P  P  P                                      P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?
+?  ?  ?  ?  ?  ?  ?  ?  P  P  P         P  P  P  P  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  PP  P  P  P
+P  P  P  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  PP  P  P  P  P  ?  ?  P  P                   P  P  ?  ?
+?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  PP  P  ?  ?  ?  ?  P  P  P                   P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P
+P  P  P  PP  P  ?  ?  ?  ?  P  P  P                   P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P            P  P  P  ?  ?  ?  P  P  P  P P
+P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P            P  P  ?  ?  ?  ?  ?  ?  P  P                P  P  P P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P
+P  P             P  P  ?  ?  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P             P  P  P  ?  ?  ?  ?  P  P
+P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P          P  P  P  ?  ?  ?  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?
+?  ?  ?  ?  ?  ?  ?  P  P  P  P          P  P  P  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P          P
+P  P  P  ?  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P       P  P  P  ?  P  ?  ?  P  P               P  P
+P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P    P  P  P  P  P  P  P  P  P               P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?
+?  ?  ?  P  P  P    P  P  P  P  P  P  P  P  P               P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P P  P  P  P  P  P  ?  ?
+?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                         P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P
+P  P                                      P  P  P  ?  ?  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?
+?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                      P  P  P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P P  P  P P
+P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  P  P                                                P  P  P P  P  P   P  P  P  P P  ?  P  P  P
+P  P  P  P  P                                                   P  P  P  P  P  P  P  ?  ?  P P  P  P  P  P  P  P P  P  P  P  P  ?  ?  P  P  P  P  P  P
+P                      PP PP PP PP PP                                P  P  P  P  P  P  ?  ?  ?  ?  P  P  P  P                      PP PP PP PP PP P  ?
+?  ?  P  ?  ?  ?  ?  ?  P  P  P  P  P                   PP PP ?? PP PP PP                             P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P PP
+PP ?? PP PP PP                    P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                   PP PP ?? ?? PP PP                    P  P  P
+?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                   PP PP PP PP PP PP                    P  P  ?)";
 */
 constexpr unsigned char seg_data[] =
     R"(z™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ì­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿ØÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ì UÌ UÌ UÌ UÌ UÌ UÌ UÌz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿ØÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì UÌz™Ìz™Ì UÌz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿ØÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Ø­¿ØÌÂ·ÌÂ·ÌžfÌžfÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿ØÌÂ·ÌÂ·ÌžfÌžfÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿ØÿÿÿÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿ØÿÿÿÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌžfÌžfÌžfÌžfÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌžfÌžfÌp ÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌp Ìp ÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•ÌzDÌ •Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌžfÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌžfÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌžfÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÌÂ·ÌÂ·ÌÂ·ÌžfÌÂ·ÌžfÌžfÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÌÂ·ÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·•Ìz•Ìz¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•ÌzDÌ DÌ DÌ DÌ •Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¾Ì·¾Ì·¾Ì·­¿Ø¾Ì·¾Ì·¾Ì·¾Ì·•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz•Ìz¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø¾Ì·¾Ì·¾Ì·­¿Ø­¿Ø­¿Ø­¿Ø¾Ì·•Ìz¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ì­¿Ø¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·¾Ì·ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Øz™Ìz™Ìz™Ì­¿Øz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈQÌ··ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Ø­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈQÌ··ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈQÌ·QÌ··ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Ø­¿Øz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ìz™Ì­¿Ø­¿Øÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈ·ÌÈÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ­¿Ø­¿Øz™Ì)";
@@ -2458,3 +2493,97 @@ void compute_accumulation_texture(Array<const BackboneAngles> angles, vec4 color
 }
 
 }  // namespace ramachandran
+
+mat4 compute_transform(Array<const vec3> pos_frame_a, Array<const vec3> pos_frame_b) {
+    ASSERT(pos_frame_a.count == pos_frame_b.count);
+    vec3 com_a = compute_com(pos_frame_a);
+    vec3 com_b = compute_com(pos_frame_b);
+
+    DynamicArray<vec3> p_a = pos_frame_a;
+    for (auto& p : p_a) p -= com_a;
+
+    DynamicArray<vec3> p_b = pos_frame_b;
+    for (auto& p : p_b) p -= com_b;
+
+    const int32 N = pos_frame_a.count;
+
+    // compute mat3 (A) which best maps a set of points P onto points P'
+    // X * a = Y
+    // =>
+    // X'X * a = X'Y
+    // =>
+    // a = inv(X'X) X'Y
+
+    // X is given as a 3Nx9 matrix
+    // [Px(0) Py(0) Pz(0)  0 0 0  0 0 0; 0 0 0  Px(0) Py(0) Pz(0)  0 0 0; 0 0 0  0 0 0  Px(0) Py(0) Pz(0);
+    //  Px(1) Py(1) Pz(1)  0 0 0  0 0 0; 0 0 0  Px(1) Py(1) Pz(1)  0 0 0; 0 0 0  0 0 0  Px(1) Py(1) Pz(1);
+    //  ...]
+
+    // Y is given as a 3Nx1 matrix
+    // [P'x(0); P'y(0); P'z(0);
+    //  P'x(1); P'y(1); P'z(1);
+    //  ...]
+
+    // a corresponds to a vector which holds the transformation matrix components of interest and is given as a 9x1 vector
+    // [a11; a12; a13; a21; a22; a23; a31; a32; a33]
+
+    // Because of the sparsity and symmetry of the matrix X, compute and store X'X and X'Y directly where X' denotes the transpose of X
+    // X'X is symmetric and is composed of core 3x3 matrix M
+    // X'X = [M 0 0;
+    //        0 M 0;
+    //        0 0 M]
+    // Where the matrix M is
+    // M = [sum(Px(i)*Px(i)) sum(Px(i)*Py(i)) sum(Px(i)*Pz(i));
+    //      sum(Px(i)*Py(i)) sum(Py(i)*Py(i)) sum(Py(i)*Pz(i));
+    //      sum(Px(i)*Py(i)) sum(Py(i)*Pz(i)) sum(Pz(i)*Pz(i))]
+    // This simplifies our problem quite a bit
+
+    // X'Y = [sum(Px(i)*P'x(i); sum(Py(i)*P'x(i); sum(Pz(i)*P'x(i);
+    //        sum(Px(i)*P'y(i); sum(Py(i)*P'y(i); sum(Pz(i)*P'y(i);
+    //        sum(Px(i)*P'z(i); sum(Py(i)*P'z(i); sum(Pz(i)*P'z(i)]
+
+    // Compute submatrix M within X'X
+    mat3 M(0);
+    for (int32 i = 0; i < N; i++) {
+        M[0][0] += p_a[i].x * p_a[i].x;
+        M[0][1] += p_a[i].x * p_a[i].y;
+        M[0][2] += p_a[i].x * p_a[i].z;
+        M[1][1] += p_a[i].y * p_a[i].y;
+        M[1][2] += p_a[i].y * p_a[i].z;
+        M[2][2] += p_a[i].z * p_a[i].z;
+    }
+
+    // Copy symmetric results
+    M[1][0] = M[0][1];
+    M[2][0] = M[0][2];
+    M[2][1] = M[1][2];
+
+    mat3 M_inv = math::inverse(M);
+
+    // Compute X'Y
+    vec3 X_trans_Y[3] = {vec3(0), vec3(0), vec3(0)};
+    for (int32 i = 0; i < N; i++) {
+        X_trans_Y[0].x += p_a[i].x * p_b[i].x;
+        X_trans_Y[0].y += p_a[i].y * p_b[i].x;
+        X_trans_Y[0].z += p_a[i].z * p_b[i].x;
+
+        X_trans_Y[1].x += p_a[i].x * p_b[i].y;
+        X_trans_Y[1].y += p_a[i].y * p_b[i].y;
+        X_trans_Y[1].z += p_a[i].z * p_b[i].y;
+
+        X_trans_Y[2].x += p_a[i].x * p_b[i].z;
+        X_trans_Y[2].y += p_a[i].y * p_b[i].z;
+        X_trans_Y[2].z += p_a[i].z * p_b[i].z;
+    }
+
+    // Matrix A holds the components of our resulting transformation (but components are transposed)
+    mat3 A;
+    A[0] = M_inv * X_trans_Y[0];
+    A[1] = M_inv * X_trans_Y[1];
+    A[2] = M_inv * X_trans_Y[2];
+
+    mat4 result(math::transpose(A));
+    result[3] = vec4(com_b, 1);
+
+    return result;
+}

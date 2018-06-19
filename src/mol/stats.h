@@ -103,7 +103,6 @@ bool sync_structure_data_length(Array<StructureData> data);
 bool extract_args_structures(Array<StructureData> data, Array<CString> arg, const MoleculeStructure& structure);
 
 Array<const vec3> extract_positions(Structure structure, Array<const vec3> atom_positions);
-vec3 compute_com(Array<const vec3> positions);
 
 typedef bool (*PropertyComputeFunc)(Property* prop, const Array<CString> args, const MoleculeDynamic& dynamic);
 typedef bool (*PropertyVisualizeFunc)(const Property& prop, const MoleculeDynamic& dynamic);

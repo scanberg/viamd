@@ -386,18 +386,23 @@ int main(int, char**) {
 
     bool show_demo_window = false;
     const vec4 CLEAR_COLOR = vec4(1, 1, 1, 1);
+    const vec4 CLEAR_NORMAL = vec4(0.5f, 0, 0, 0);
     const vec4 CLEAR_INDEX = vec4(1, 1, 1, 1);
 
 #ifdef VIAMD_RELEASE
     allocate_and_parse_pdb_from_string(&data.mol_data.dynamic, CAFFINE_PDB);
     data.mol_data.atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule.atom_elements);
 #else
-    stats::create_property("b1", "distance resatom(resname(ALA), 1) com(resname(ALA))");
-    load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
+    // stats::create_property("b1", "distance resatom(resname(ALA), 1) com(resname(ALA))");
+    // load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
+    load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/haofan/for_VIAMD.pdb");
 #endif
     reset_view(&data);
     create_default_representation(&data);
     create_volume(&data);
+
+    const auto reference_pos = get_trajectory_positions(data.mol_data.dynamic.trajectory, 0).sub_array(0, 1277);
+    mat4 dynamic_frame{1};
 
     // Main loop
     while (!data.ctx.window.should_close) {
@@ -567,6 +572,8 @@ int main(int, char**) {
                         break;
                 }
             }
+
+            dynamic_frame = compute_transform(reference_pos, data.mol_data.dynamic.molecule.atom_positions.sub_array(0, 1277));
         }
 
         if (frame_changed) {
@@ -612,25 +619,6 @@ int main(int, char**) {
         mat4 proj_mat = compute_perspective_projection_matrix(data.camera.camera, data.fbo.width, data.fbo.height);
         mat4 inv_proj_mat = math::inverse(proj_mat);
 
-        {
-            immediate::set_view_matrix(view_mat);
-            immediate::set_proj_matrix(proj_mat);
-            if (data.hydrogen_bonds.enabled) {
-                for (const auto& bond : data.hydrogen_bonds.bonds) {
-                    immediate::draw_line(data.mol_data.dynamic.molecule.atom_positions[bond.acc_idx],
-                                         data.mol_data.dynamic.molecule.atom_positions[bond.hyd_idx], immediate::COLOR_MAGENTA);
-                }
-            }
-
-            if (data.bounding_box.enabled && data.mol_data.dynamic.trajectory.num_frames > 0) {
-                int32 frame_idx = math::clamp((int)data.time, 0, data.mol_data.dynamic.trajectory.num_frames - 1);
-                TrajectoryFrame frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, frame_idx);
-                immediate::draw_aabb(vec3(0), frame.box * vec3(1), ImColor(vec_cast(data.bounding_box.color)));
-            }
-
-            immediate::flush();
-        }
-
         for (const auto& rep : data.representations.data) {
             if (!rep.enabled) continue;
             switch (rep.type) {
@@ -648,6 +636,46 @@ int main(int, char**) {
                                        rep.tension, rep.width, rep.thickness);
                     break;
             }
+        }
+
+        {
+            immediate::set_view_matrix(view_mat);
+            immediate::set_proj_matrix(proj_mat);
+            if (data.hydrogen_bonds.enabled) {
+                for (const auto& bond : data.hydrogen_bonds.bonds) {
+                    immediate::draw_line(data.mol_data.dynamic.molecule.atom_positions[bond.acc_idx],
+                                         data.mol_data.dynamic.molecule.atom_positions[bond.hyd_idx], ImColor(vec_cast(data.hydrogen_bonds.color)));
+                }
+            }
+
+            if (data.bounding_box.enabled && data.mol_data.dynamic.trajectory.num_frames > 0) {
+                int32 frame_idx = math::clamp((int)data.time, 0, data.mol_data.dynamic.trajectory.num_frames - 1);
+                TrajectoryFrame frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, frame_idx);
+                immediate::draw_aabb(vec3(0), frame.box * vec3(1), ImColor(vec_cast(data.bounding_box.color)));
+            }
+
+            const mat4& mat = dynamic_frame;
+
+            const float min_val = -20.f;
+            const float max_val = 20.f;
+            const float step = 10.f;
+            for (float x = min_val; x <= max_val; x += step) {
+                for (float y = min_val; y <= max_val; y += step) {
+                    immediate::draw_line(mat * vec4(x, y, min_val, 1), mat * vec4(x, y, max_val, 1), 0xff000000);
+                }
+            }
+            for (float x = min_val; x <= max_val; x += step) {
+                for (float z = min_val; z <= max_val; z += step) {
+                    immediate::draw_line(mat * vec4(x, min_val, z, 1), mat * vec4(x, max_val, z, 1), 0xff000000);
+                }
+            }
+            for (float y = min_val; y <= max_val; y += step) {
+                for (float z = min_val; z <= max_val; z += step) {
+                    immediate::draw_line(mat * vec4(min_val, y, z, 1), mat * vec4(max_val, y, z, 1), 0xff000000);
+                }
+            }
+
+            immediate::flush();
         }
 
         // PICKING
@@ -701,6 +729,7 @@ int main(int, char**) {
             immediate::set_view_matrix(view_mat);
             immediate::set_proj_matrix(proj_mat);
             stats::visualize(data.mol_data.dynamic);
+            immediate::draw_basis(dynamic_frame, 5.f);
             immediate::flush();
         }
 

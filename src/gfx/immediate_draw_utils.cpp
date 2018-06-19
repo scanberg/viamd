@@ -49,6 +49,7 @@ static int curr_proj_matrix_idx = -1;
 
 static const char* v_shader_src = R"(
 #version 150 core
+
 uniform mat4 u_mvp;
 uniform float u_point_size = 1.f;
 
@@ -66,13 +67,21 @@ void main() {
 
 static const char* f_shader_src = R"(
 #version 150 core
+#extension GL_ARB_explicit_attrib_location : enable
 
 in vec4 col;
 
-out vec4 out_frag;
+layout(location = 0) out vec4 out_color;
+layout(location = 1) out vec4 out_normal;
+
+vec4 encode_normal (vec3 n) {
+    float p = sqrt(n.z*8+8);
+    return vec4(n.xy/p + 0.5,0,0);
+}
 
 void main() {
-	out_frag = col;
+	out_color = col;
+	out_normal = encode_normal(vec3(1,0,0));
 }
 )";
 
@@ -279,6 +288,17 @@ void draw_aabb(const float min_box[3], const float max_box[3], const uint32 colo
     draw_line(vec3(min_box[0], max_box[1], min_box[2]), vec3(min_box[0], max_box[1], max_box[2]), color);
     draw_line(vec3(max_box[0], min_box[1], min_box[2]), vec3(max_box[0], min_box[1], max_box[2]), color);
     draw_line(vec3(max_box[0], max_box[1], min_box[2]), vec3(max_box[0], max_box[1], max_box[2]), color);
+}
+
+void draw_basis(const mat4& basis, const float scale, const uint32 x_axis_color, const uint32 y_axis_color, const uint32 z_axis_color) {
+    const vec3 O = vec3(basis[3]);
+    const vec3 X = O + vec3(basis[0]) * scale;
+    const vec3 Y = O + vec3(basis[1]) * scale;
+    const vec3 Z = O + vec3(basis[2]) * scale;
+
+    draw_line(O, X, x_axis_color);
+    draw_line(O, Y, y_axis_color);
+    draw_line(O, Z, z_axis_color);
 }
 
 }  // namespace immediate
