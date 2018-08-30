@@ -30,10 +30,10 @@ include_directories(src
                     ext/gl3w/include
                     ext/glm
                     ext/imgui
-                    ext/ppk_assert
                     ext/libxdrfile/src
-                    ext/nativefiledialog/src/include
-                    ext/tinyexpr)
+                    ext/noc
+                    ext/tinyexpr
+                    ext/Eigen)
 
 file(GLOB_RECURSE PROJECT_HEADERS src/*.h)
 file(GLOB_RECURSE PROJECT_SOURCES src/*.cpp
@@ -51,6 +51,15 @@ source_group("Sources" FILES ${PROJECT_SOURCES})
 add_definitions(-DGLFW_INCLUDE_NONE
                 -DPROJECT_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\")
 
+IF(LINUX)
+  find_package(GTK2 REQUIRED gtk)
+ENDIF()
+
+IF(APPLE)
+  target_link_libraries(${PROJECT_NAME}
+                        "-framework AppKit")
+ENDIF()
+
 add_executable(${PROJECT_NAME} MACOSX_BUNDLE ${PROJECT_HEADERS} ${PROJECT_SOURCES})
 #add_executable(${PROJECT_NAME} ${PROJECT_HEADERS} ${PROJECT_SOURCES})
 
@@ -58,9 +67,7 @@ target_link_libraries(${PROJECT_NAME}
                       glfw
                       gl3w
                       imgui
-                      ppk_assert
                       libxdrfile
-                      nativefiledialog
                       tinyexpr
                       ${GLFW_LIBRARIES}
                       ${OPENGL_LIBRARY})

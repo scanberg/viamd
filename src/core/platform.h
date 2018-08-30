@@ -3,7 +3,7 @@
 #ifdef __APPLE__
 #include "TargetConditionals.h"
 #ifdef TARGET_OS_MAC
-#define OS_MAC
+#define OS_MAC_OSX
 #endif
 #elif defined _WIN32 || defined _WIN64
 #define OS_WINDOWS
@@ -82,18 +82,25 @@ struct DirEntry {
     Path name;
 };
 
+typedef uint64 Timestamp;
+
 // Platform specific
 void sleep(int32 milliseconds);
 DynamicArray<DirEntry> list_directory(CString dir_path);
 CString get_cwd();
 
+Timestamp get_time();
+float compute_delta_ms(Timestamp t0, Timestamp t1);
+
 struct FileDialogResult {
-    enum Action { FILE_ERROR, FILE_OK, FILE_CANCEL };
+    enum Result { FILE_OK, FILE_CANCEL };
     Path path;
-    Action action;
+    Result result;
 };
 
-FileDialogResult open_file_dialog(CString filter = {});
-FileDialogResult save_file_dialog(CString file = {}, CString filter = {});
+typedef int FileDialogFlags;
+enum FileDialogFlags_ { FileDialogFlags_Open = BIT(0), FileDialogFlags_Save = BIT(1), FileDialogFlags_Directory = BIT(2) };
+
+FileDialogResult file_dialog(FileDialogFlags flags, CString default_path = {}, CString filter = {});
 
 }  // namespace platform
