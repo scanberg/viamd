@@ -179,7 +179,7 @@ struct ApplicationData {
     // --- CAMERA ---
     struct {
         Camera camera;
-        TrackballController controller;
+        TrackballControllerState trackball_state;
         CameraTransformation matrices;
     } camera;
 
@@ -588,16 +588,15 @@ int main(int, char**) {
 
         // CAMERA CONTROLS
         if (!ImGui::GetIO().WantCaptureMouse) {
-            data.camera.controller.input.rotate_button = data.ctx.input.mouse.down[0];
-            data.camera.controller.input.pan_button = data.ctx.input.mouse.down[1];
-            data.camera.controller.input.dolly_button = data.ctx.input.mouse.down[2];
-            data.camera.controller.input.mouse_coord_prev = data.ctx.input.mouse.coord_prev;
-            data.camera.controller.input.mouse_coord_curr = data.ctx.input.mouse.coord_curr;
-            data.camera.controller.input.screen_size = vec2(data.ctx.window.width, data.ctx.window.height);
-            data.camera.controller.input.dolly_delta = data.ctx.input.mouse.scroll.y;
-            data.camera.controller.update();
-            data.camera.camera.position = data.camera.controller.position;
-            data.camera.camera.orientation = data.camera.controller.orientation;
+            data.camera.trackball_state.input.rotate_button = data.ctx.input.mouse.down[0];
+            data.camera.trackball_state.input.pan_button = data.ctx.input.mouse.down[1];
+            data.camera.trackball_state.input.dolly_button = data.ctx.input.mouse.down[2];
+            data.camera.trackball_state.input.mouse_coord_prev = data.ctx.input.mouse.coord_prev;
+            data.camera.trackball_state.input.mouse_coord_curr = data.ctx.input.mouse.coord_curr;
+            data.camera.trackball_state.input.screen_size = vec2(data.ctx.window.width, data.ctx.window.height);
+            data.camera.trackball_state.input.dolly_delta = data.ctx.input.mouse.scroll.y;
+
+            camera_controller_trackball(&data.camera.camera, &data.camera.trackball_state);
 
             if (data.ctx.input.mouse.release[0] && data.ctx.input.mouse.velocity == vec2(0)) {
                 data.selected = data.hovered;
@@ -823,14 +822,15 @@ static void reset_view(ApplicationData* data, bool reposition_camera) {
     compute_bounding_box(&min_box, &max_box, data->mol_data.dynamic.molecule.atom_positions);
     vec3 size = max_box - min_box;
     vec3 cent = (min_box + max_box) * 0.5f;
+    vec3 pos = cent + size * 4.f;
 
     if (reposition_camera) {
-        data->camera.controller.look_at(cent, cent + size * 2.f);
-        data->camera.camera.position = data->camera.controller.position;
-        data->camera.camera.orientation = data->camera.controller.orientation;
+        data->camera.camera.position = pos;
+        data->camera.trackball_state.distance = math::length(pos - cent);
+        look_at(&data->camera.camera.position, &data->camera.camera.orientation, cent, vec3(0, 1, 0));
     }
     data->camera.camera.near_plane = 1.f;
-    data->camera.camera.far_plane = math::length(size) * 30.f;
+    data->camera.camera.far_plane = math::length(size) * 50.f;
 }
 
 static uint32 get_picking_id(uint32 fbo_id, int32 x, int32 y) {
@@ -851,8 +851,8 @@ static void draw_main_menu(ApplicationData* data) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("New", "CTRL+N")) new_clicked = true;
             if (ImGui::MenuItem("Load Data", "CTRL+L")) {
-                auto res = platform::open_file_dialog("pdb,gro,xtc");
-                if (res.action == platform::FileDialogResult::FILE_OK) {
+                auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, "pdb;gro;xtc");
+                if (res.result == platform::FileDialogResult::FILE_OK) {
                     load_molecule_data(data, res.path);
                     if (data->representations.data.count > 0) {
                         reset_representations(data);
@@ -864,15 +864,15 @@ static void draw_main_menu(ApplicationData* data) {
                 }
             }
             if (ImGui::MenuItem("Open", "CTRL+O")) {
-                auto res = platform::open_file_dialog(FILE_EXTENSION);
-                if (res.action == platform::FileDialogResult::FILE_OK) {
+                auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, FILE_EXTENSION);
+                if (res.result == platform::FileDialogResult::FILE_OK) {
                     load_workspace(data, res.path);
                 }
             }
             if (ImGui::MenuItem("Save", "CTRL+S")) {
                 if (!data->files.workspace) {
-                    auto res = platform::save_file_dialog({}, FILE_EXTENSION);
-                    if (res.action == platform::FileDialogResult::FILE_OK) {
+                    auto res = platform::file_dialog(platform::FileDialogFlags_Save, {}, FILE_EXTENSION);
+                    if (res.result == platform::FileDialogResult::FILE_OK) {
                         if (!get_file_extension(res.path)) {
                             snprintf(res.path.buffer + strnlen(res.path.buffer, res.path.MAX_LENGTH), res.path.MAX_LENGTH, ".%s", FILE_EXTENSION);
                         }
@@ -883,8 +883,8 @@ static void draw_main_menu(ApplicationData* data) {
                 }
             }
             if (ImGui::MenuItem("Save As")) {
-                auto res = platform::save_file_dialog({}, FILE_EXTENSION);
-                if (res.action == platform::FileDialogResult::FILE_OK) {
+                auto res = platform::file_dialog(platform::FileDialogFlags_Save, {}, FILE_EXTENSION);
+                if (res.result == platform::FileDialogResult::FILE_OK) {
                     if (!get_file_extension(res.path)) {
                         snprintf(res.path.buffer + strnlen(res.path.buffer, res.path.MAX_LENGTH), res.path.MAX_LENGTH, ".%s", FILE_EXTENSION);
                     }

@@ -75,3 +75,43 @@ inline void _assert(const char* file, const char* func, int line, bool cond) { _
 #define TMP_CALLOC(x, y) calloc(x, y)
 #define TMP_FREE(x) free(x)
 #endif
+
+// implementation of 'defer' in c++.
+// from here https://pastebin.com/suTkpYp4
+
+#define CONCAT_INTERNAL(x, y) x##y
+#define CONCAT(x, y) CONCAT_INTERNAL(x, y)
+
+struct ExitScopeHelp {
+    template <typename T>
+    struct ExitScope {
+        T lambda;
+        ExitScope(T lambda) : lambda(lambda) {}
+        ~ExitScope() { lambda(); }
+        ExitScope& operator=(const ExitScope&) = delete;
+    };
+
+    template <typename T>
+    ExitScope<T> operator+(T t) {
+        return t;
+    }
+};
+
+#define defer const auto& CONCAT(defer__, __LINE__) = ExitScopeHelp() + [&]()
+
+// //sample code:
+// {
+// 	defer
+// 	{
+// 		printf("three\n");
+// 	};
+// 	printf("one\n");
+// 	defer
+// 	{
+// 		printf("two\n");
+// 	};
+// }
+// prints
+// one
+// two
+// three
