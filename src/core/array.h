@@ -3,6 +3,11 @@
 #include <core/types.h>
 #include <core/common.h>
 
+/*
+  This is an 'array-view' which exposes access to some data which is not owned by the array itself.
+  Nothing will be allocated or freed by the constructors and destructors of this object.
+*/
+
 template <typename T>
 struct Array {
     Array() = default;
@@ -83,6 +88,15 @@ struct DynamicArray : Array<T> {
         }
     }
 
+    DynamicArray(const T* first, const T* last) noexcept {
+        this->capacity = last - first;
+        this->count = capacity;
+        if (this->count > 0) {
+            this->data = (T*)MALLOC(capacity * sizeof(T));
+            memcpy(this->data, first, this->count * sizeof(T));
+        }
+    }
+
     DynamicArray(const Array<const T>& clone_source) : capacity(clone_source.count) {
         this->count = capacity;
         if (this->count > 0) {
@@ -115,7 +129,7 @@ struct DynamicArray : Array<T> {
     }
 
     DynamicArray& operator=(const Array<const T>& other) {
-        if (other != *this) {
+        if (&other != (const Array<const T>*)this) {
             if (other.count > capacity) {
                 reserve(other.count);
             }
