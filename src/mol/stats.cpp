@@ -636,18 +636,6 @@ bool structure_apply_aggregation_strategy_com(StructureData* data, const Array<C
 }
 
 // Helper funcs
-vec3 compute_com(Array<const vec3> positions) {
-    if (positions.count == 0) return {0, 0, 0};
-    if (positions.count == 1) return positions[0];
-
-    vec3 com{0};
-    for (const auto& p : positions) {
-        com += p;
-    }
-
-    return com / (float)positions.count;
-}
-
 static inline int32 structure_index_count(Structure s) { return s.end_idx - s.beg_idx; }
 
 static inline int32 structures_index_count(Array<const Structure> structures) {

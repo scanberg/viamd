@@ -40,6 +40,9 @@ inline void draw_triangle(vec3 v0, vec3 v1, vec3 v2, const uint32 color = COLOR_
 void draw_aabb(const float min_box[3], const float max_box[3], const uint32 color = COLOR_WHITE);
 inline void draw_aabb(vec3 min_box, vec3 max_box, const uint32 color = COLOR_WHITE) { draw_aabb(&min_box[0], &max_box[0], color); }
 
+void draw_basis(const mat4& basis, const float scale = 1.f, const uint32 x_axis_color = COLOR_RED, const uint32 y_axis_color = COLOR_GREEN,
+                const uint32 z_axis_color = COLOR_BLUE);
+
 // Advanced
 // void draw_sphere_glyph(const float pos[3], const float radius, const uint32 color);
 // void draw_capsule(const float v0[3], const float v1[3], const uint32 color);

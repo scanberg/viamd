@@ -224,7 +224,7 @@ struct DynamicArray : Array<T> {
         } else {
             if (capacity < new_count) {
                 reserve(_grow_capacity(new_count));
-                //memset(this->data + this->count, 0, (new_count - this->count) * sizeof(T));
+                // memset(this->data + this->count, 0, (new_count - this->count) * sizeof(T));
             }
             this->count = new_count;
         }

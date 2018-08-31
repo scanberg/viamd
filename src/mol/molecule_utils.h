@@ -99,6 +99,7 @@ inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backb
 
 void transform_positions(Array<vec3> positions, const mat4& transformation);
 void compute_bounding_box(vec3* min_box, vec3* max_box, Array<const vec3> positions);
+vec3 compute_com(Array<const vec3> positions);
 
 /*
 inline mat4 compute_basis(const DynamicBasis& basis, Array<const vec3> atom_positions) {
@@ -197,3 +198,6 @@ void compute_accumulation_texture(Array<const BackboneAngles> angles, vec4 color
 uint32 get_accumulation_texture();
 uint32 get_segmentation_texture();
 }  // namespace ramachandran
+
+// Compute a linear transform which fits a set of points_a onto a set of points_b in least squares fashion.
+mat4 compute_transform(Array<const vec3> pos_frame_a, Array<const vec3> pos_frame_b);

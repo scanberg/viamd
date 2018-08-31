@@ -3,7 +3,7 @@
 #include <core/log.h>
 #include <GLFW/glfw3.h>
 #ifdef OS_WINDOWS
-#undef APIENTRY
+//#undef APIENTRY
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN 1
 #endif
@@ -13,9 +13,18 @@
 #endif
 #include <imgui.h>
 #include <core/platform/cousine_font.inl>
-#include <nfd.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#ifdef OS_WINDOWS
+#define NOC_FILE_DIALOG_WIN32
+#elif defined OS_MAC_OSX
+#define NOC_FILE_DIALOG_OSX
+#elif defined OS_LINUX
+#define NOC_FILE_DIALOG_GTK
+#endif
+#define NOC_FILE_DIALOG_IMPLEMENTATION
+#include <noc_file_dialog.h>
 
 namespace platform {
 
@@ -577,48 +586,57 @@ void update(Context* ctx) {
 
 void swap_buffers(Context* ctx) { glfwSwapBuffers((GLFWwindow*)ctx->window.ptr); }
 
-FileDialogResult open_file_dialog(CString filter) {
-    Path path;
-    nfdchar_t* out_path = NULL;
+FileDialogResult file_dialog(FileDialogFlags flags, CString default_path, CString filter) {
+    // Create zero terminated strings
     StringBuffer<256> filter_buf = filter;
-    nfdresult_t result = NFD_OpenDialog(filter_buf, NULL, &out_path);
-    if (result == NFD_OKAY) {
-        strncpy(path.beg(), out_path, path.MAX_LENGTH);
-        convert_backslashes(path);
-    } else if (result == NFD_CANCEL) {
-        // User pressed cancel
+    StringBuffer<256> path = get_directory(default_path);
+    StringBuffer<256> file = get_file(default_path);
+
+    int noc_flags = 0;
+    noc_flags |= (flags & FileDialogFlags_Open) ? NOC_FILE_DIALOG_OPEN : 0;
+    noc_flags |= (flags & FileDialogFlags_Save) ? NOC_FILE_DIALOG_SAVE : 0;
+    noc_flags |= (flags & FileDialogFlags_Directory) ? NOC_FILE_DIALOG_DIR : 0;
+
+    const char* res = noc_file_dialog_open(noc_flags, filter_buf.cstr(), path.cstr(), file.cstr());
+
+    if (res == nullptr) {
         return {{}, FileDialogResult::FILE_CANCEL};
-    } else {
-        LOG_ERROR(NFD_GetError());
-        return {{}, FileDialogResult::FILE_ERROR};
     }
-    free(out_path);
-    return {path, FileDialogResult::FILE_OK};
+
+    return {res, FileDialogResult::FILE_OK};
 }
 
-FileDialogResult save_file_dialog(CString file, CString filter) {
-    Path path;
-    nfdchar_t* out_path = NULL;
+/*
+FileDialogResult open_file_dialog(CString file, CString filter) {
     StringBuffer<256> filter_buf = filter;
-    StringBuffer<256> default_path = file;
-    nfdresult_t result = NFD_SaveDialog(filter_buf.beg(), default_path.beg(), &out_path);
-    if (result == NFD_OKAY) {
-        strncpy(path.beg(), out_path, path.MAX_LENGTH);
-        convert_backslashes(path);
-    } else if (result == NFD_CANCEL) {
-        // User pressed cancel
+    const char* res = noc_file_dialog_open(NOC_FILE_DIALOG_OPEN, filter.cstr(), NULL, NULL);
+
+    if (res == nullptr) {
         return {{}, FileDialogResult::FILE_CANCEL};
-    } else {
-        LOG_ERROR(NFD_GetError());
-        return {{}, FileDialogResult::FILE_ERROR};
     }
-    free(out_path);
-    return {path, FileDialogResult::FILE_OK};
+
+
+    return {res, FileDialogResult::FILE_OK};
 }
+
+
+FileDialogResult save_file_dialog(CString file, CString filter) {
+    StringBuffer<256> filter_buf = filter;
+    StringBuffer<256> default_path = get_directory(file);
+    StringBuffer<256> default_file = get_file(file);
+    const char* res = noc_file_dialog_open(NOC_FILE_DIALOG_SAVE, filter_buf.cstr(), default_path.cstr(), default_file.cstr());
+
+    if (res == nullptr) {
+        return {{}, FileDialogResult::FILE_CANCEL};
+    }
+
+    return {res, FileDialogResult::FILE_OK};
+}
+*/
 
 #ifdef OS_WINDOWS
 #include <core/platform/platform_win32.inl>
-#elif defined OS_MAC
+#elif defined OS_MAC_OSX
 #include <core/platform/platform_osx.inl>
 #elif defined OS_LINUX
 #include <core/platform/platform_linux.inl>
