@@ -185,11 +185,11 @@ static constexpr std::array<unsigned int, 119> colors = {
 }  // namespace detail
 
 // Element functions
-constexpr const char* name(Element symbol) { return detail::names[static_cast<int>(symbol)]; }
-constexpr const char* symbol(Element symbol) { return detail::symbols[static_cast<int>(symbol)]; }
-constexpr unsigned int color(Element symbol) { return detail::colors[static_cast<int>(symbol)]; }
-constexpr float vdw_radius(Element symbol) { return detail::vdw_radii[static_cast<int>(symbol)]; }
-constexpr float covalent_radius(Element symbol) { return detail::covalent_radii[static_cast<int>(symbol)]; }
+constexpr const char* name(Element symbol) { return detail::names[(int)symbol]; }
+constexpr const char* symbol(Element symbol) { return detail::symbols[(int)symbol]; }
+constexpr unsigned int color(Element symbol) { return detail::colors[(int)symbol]; }
+constexpr float vdw_radius(Element symbol) { return detail::vdw_radii[(int)symbol]; }
+constexpr float covalent_radius(Element symbol) { return detail::covalent_radii[(int)symbol]; }
 
 Element get_from_string(CString cstr);
 

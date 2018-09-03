@@ -2505,7 +2505,7 @@ mat4 compute_transform(Array<const vec3> pos_frame_a, Array<const vec3> pos_fram
     DynamicArray<vec3> p_b = pos_frame_b;
     for (auto& p : p_b) p -= com_b;
 
-    const int32 N = pos_frame_a.count;
+    const int32 N = (int32)pos_frame_a.count;
 
     // compute mat3 (A) which best maps a set of points P onto points P'
     // X * a = Y

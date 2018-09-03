@@ -18,7 +18,7 @@ Element get_from_string(CString cstr) {
 
     for (size_t i = 0; i < detail::symbols.size(); i++) {
         if (strncmp(beg, detail::symbols[i], strlen(detail::symbols[i])) == 0) {
-            return static_cast<Element>(i);
+            return (Element)i;
         }
     }
     return Element::Unknown;

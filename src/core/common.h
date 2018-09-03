@@ -23,6 +23,7 @@
 #include <stdarg.h>
 
 #ifndef NDEBUG
+#define DEBUG
 inline void _assert(const char* file, const char* func, int line, bool cond, const char* fmt, ...) {
     if (!cond) {
         va_list ap;

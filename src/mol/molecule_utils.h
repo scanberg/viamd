@@ -82,9 +82,11 @@ inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backb
 
 inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backbone_angle_traj, int frame_offset, int frame_count) {
     if (backbone_angle_traj.angle_data.count == 0 || backbone_angle_traj.num_segments == 0) return {};
+#ifdef DEBUG
     int32 num_frames = (int32)backbone_angle_traj.angle_data.count / backbone_angle_traj.num_segments;
     ASSERT(frame_offset < num_frames);
     ASSERT(frame_offset + frame_count <= num_frames);
+#endif
     return backbone_angle_traj.angle_data.sub_array(frame_offset * backbone_angle_traj.num_segments, frame_count * backbone_angle_traj.num_segments);
 }
 

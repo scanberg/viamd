@@ -257,10 +257,11 @@ struct ApplicationData {
         DynamicArray<HydrogenBond> bonds{};
     } hydrogen_bonds;
 
+    // SIMULATION BOX
     struct {
         bool enabled = false;
         vec4 color = vec4(1, 1, 0, 0.5);
-    } bounding_box;
+    } simulation_box;
 
     // VOLUME
     struct {
@@ -393,35 +394,30 @@ int main(int, char**) {
     allocate_and_parse_pdb_from_string(&data.mol_data.dynamic, CAFFINE_PDB);
     data.mol_data.atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule.atom_elements);
 #else
-    // stats::create_property("b1", "distance resatom(resname(ALA), 1) com(resname(ALA))");
-    // load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
-    load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/haofan/for_VIAMD.pdb");
+    stats::create_property("b1", "distance resatom(resname(ALA), 1) com(resname(ALA))");
+    load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
+    // load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/haofan/for_VIAMD.pdb");
 #endif
     reset_view(&data);
     create_default_representation(&data);
     create_volume(&data);
 
-    const auto reference_pos = get_trajectory_positions(data.mol_data.dynamic.trajectory, 0).sub_array(0, 1277);
-    mat4 dynamic_frame{1};
-
     // Main loop
     while (!data.ctx.window.should_close) {
         platform::update(&data.ctx);
 
-        if (data.density_volume.enabled) {
-            stats::async_update(data.mol_data.dynamic, data.time_filter.range,
-                                [](void* usr_data) {
-                                    ApplicationData* data = (ApplicationData*)usr_data;
+        stats::async_update(data.mol_data.dynamic, data.time_filter.range,
+                            [](void* usr_data) {
+                                ApplicationData* data = (ApplicationData*)usr_data;
+                                if (data->density_volume.enabled) {
                                     data->density_volume.volume_data_mutex.lock();
                                     stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix,
                                                                   data->mol_data.dynamic.trajectory, data->time_filter.range);
                                     data->density_volume.volume_data_mutex.unlock();
                                     data->density_volume.texture.dirty = true;
-                                },
-                                &data);
-        } else {
-            stats::async_update(data.mol_data.dynamic, data.time_filter.range);
-        }
+                                }
+                            },
+                            &data);
 
         // If gpu representation of volume is not up to date, upload data
         if (data.density_volume.texture.dirty) {
@@ -572,8 +568,6 @@ int main(int, char**) {
                         break;
                 }
             }
-
-            dynamic_frame = compute_transform(reference_pos, data.mol_data.dynamic.molecule.atom_positions.sub_array(0, 1277));
         }
 
         if (frame_changed) {
@@ -637,9 +631,11 @@ int main(int, char**) {
             }
         }
 
+        // RENDER DEBUG INFORMATION (WITH DEPTH)
         {
             immediate::set_view_matrix(view_mat);
             immediate::set_proj_matrix(proj_mat);
+
             if (data.hydrogen_bonds.enabled) {
                 for (const auto& bond : data.hydrogen_bonds.bonds) {
                     immediate::draw_line(data.mol_data.dynamic.molecule.atom_positions[bond.acc_idx],
@@ -647,31 +643,10 @@ int main(int, char**) {
                 }
             }
 
-            if (data.bounding_box.enabled && data.mol_data.dynamic.trajectory.num_frames > 0) {
+            if (data.simulation_box.enabled && data.mol_data.dynamic.trajectory.num_frames > 0) {
                 int32 frame_idx = math::clamp((int)data.time, 0, data.mol_data.dynamic.trajectory.num_frames - 1);
                 TrajectoryFrame frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, frame_idx);
-                immediate::draw_aabb(vec3(0), frame.box * vec3(1), ImColor(vec_cast(data.bounding_box.color)));
-            }
-
-            const mat4& mat = dynamic_frame;
-
-            const float min_val = -20.f;
-            const float max_val = 20.f;
-            const float step = 10.f;
-            for (float x = min_val; x <= max_val; x += step) {
-                for (float y = min_val; y <= max_val; y += step) {
-                    immediate::draw_line(mat * vec4(x, y, min_val, 1), mat * vec4(x, y, max_val, 1), 0xff000000);
-                }
-            }
-            for (float x = min_val; x <= max_val; x += step) {
-                for (float z = min_val; z <= max_val; z += step) {
-                    immediate::draw_line(mat * vec4(x, min_val, z, 1), mat * vec4(x, max_val, z, 1), 0xff000000);
-                }
-            }
-            for (float y = min_val; y <= max_val; y += step) {
-                for (float z = min_val; z <= max_val; z += step) {
-                    immediate::draw_line(mat * vec4(min_val, y, z, 1), mat * vec4(max_val, y, z, 1), 0xff000000);
-                }
+                immediate::draw_aabb(vec3(0), frame.box * vec3(1), ImColor(vec_cast(data.simulation_box.color)));
             }
 
             immediate::flush();
@@ -724,11 +699,11 @@ int main(int, char**) {
                                           data.density_volume.model_to_world_matrix, view_mat, proj_mat, data.density_volume.color, scl);
         }
 
+        // DRAW DEBUG GRAPHICS W/O DEPTH
         {
             immediate::set_view_matrix(view_mat);
             immediate::set_proj_matrix(proj_mat);
             stats::visualize(data.mol_data.dynamic);
-            immediate::draw_basis(dynamic_frame, 5.f);
             immediate::flush();
         }
 
@@ -1009,10 +984,10 @@ if (ImGui::BeginMenu("Edit")) {
             ImGui::Separator();
 
             ImGui::BeginGroup();
-            ImGui::Checkbox("Bounding Volume", &data->bounding_box.enabled);
-            if (data->bounding_box.enabled) {
-                ImGui::PushID("bounding_box");
-                ImGui::ColorEdit4("Color", (float*)&data->bounding_box.color, ImGuiColorEditFlags_NoInputs);
+            ImGui::Checkbox("Simulation Box", &data->simulation_box.enabled);
+            if (data->simulation_box.enabled) {
+                ImGui::PushID("simulation_box");
+                ImGui::ColorEdit4("Color", (float*)&data->simulation_box.color, ImGuiColorEditFlags_NoInputs);
                 ImGui::PopID();
             }
             ImGui::EndGroup();
@@ -2060,14 +2035,12 @@ static void load_workspace(ApplicationData* data, CString file) {
                 if (compare_n(line, "Position=", 9)) {
                     vec3 pos = vec3(to_vec4(trim(line.substr(9))));
                     data->camera.camera.position = pos;
-                    data->camera.controller.position = pos;
                 }
                 if (compare_n(line, "Rotation=", 9)) {
                     quat rot = quat(to_vec4(trim(line.substr(9))));
                     data->camera.camera.orientation = rot;
-                    data->camera.controller.orientation = rot;
                 }
-                if (compare_n(line, "Distance=", 9)) data->camera.controller.distance = to_float(trim(line.substr(9)));
+                if (compare_n(line, "Distance=", 9)) data->camera.trackball_state.distance = to_float(trim(line.substr(9)));
             }
         }
     }
@@ -2150,7 +2123,7 @@ static void save_workspace(ApplicationData* data, CString file) {
     fprintf(fptr, "Position=%g,%g,%g\n", data->camera.camera.position.x, data->camera.camera.position.y, data->camera.camera.position.z);
     fprintf(fptr, "Rotation=%g,%g,%g,%g\n", data->camera.camera.orientation.x, data->camera.camera.orientation.y, data->camera.camera.orientation.z,
             data->camera.camera.orientation.w);
-    fprintf(fptr, "Distance=%g\n", data->camera.controller.distance);
+    fprintf(fptr, "Distance=%g\n", data->camera.trackball_state.distance);
     fprintf(fptr, "\n");
 
     fclose(fptr);

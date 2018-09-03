@@ -35,8 +35,8 @@ static constexpr std::array<const char*, 26> names = {{"Unknown",
 static constexpr std::array<const char*, 26> symbols = {{"XAA", "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE", "LEU", "LYS",
                                                          "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL", "SEC", "PYL", "ASC", "GLX", "XLE"}};
 
-constexpr const char* name(AminoAcid amino) { return names[static_cast<int>(amino)]; }
-constexpr const char* symbol(AminoAcid amino) { return symbols[static_cast<int>(amino)]; }
+constexpr const char* name(AminoAcid amino) { return names[(int)amino]; }
+constexpr const char* symbol(AminoAcid amino) { return symbols[(int)amino]; }
 
 AminoAcid get_from_string(const char* cstr) {
 
@@ -44,10 +44,7 @@ AminoAcid get_from_string(const char* cstr) {
     const char seq[3] = {(char)toupper(cstr[0]), (char)toupper(cstr[1]), (char)toupper(cstr[2])};
 
     for (size_t i = 0; i < symbols.size(); i++) {
-        if (symbols[i][0] == seq[0] &&
-			symbols[i][1] == seq[1] &&
-			symbols[i][2] == seq[2])
-			return static_cast<AminoAcid>(i);
+        if (symbols[i][0] == seq[0] && symbols[i][1] == seq[1] && symbols[i][2] == seq[2]) return (AminoAcid)i;
     }
     return AminoAcid::Unknown;
 }

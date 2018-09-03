@@ -16,11 +16,13 @@ bool AddDirectoryWatch(CString path_to_watch, void (*callback)(FileEvent)) {
 
 
 
+
     CFStringRef path = CFStringCreateWithCString(NULL, path_to_watch, CFStringBuiltInEncodings::kCFStringEncodingUTF8);
     CFArrayRef path_array = CFArrayCreate(NULL, (const void **)&path, 1, NULL);
     FSEventStreamRef stream;
     const CFAbsoluteTime latency = 1.0; // Latency in seconds
     
+
 
 
 
@@ -36,9 +38,11 @@ bool AddDirectoryWatch(CString path_to_watch, void (*callback)(FileEvent)) {
 
 
 
+
     FSEventStreamScheduleWithRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
     FSEventStreamStart(stream);
     
+
 
 
 
@@ -49,6 +53,7 @@ bool RemoveWatch(CString path_to_watch) {
     CString dir = get_directory(path_to_watch);
     CString file = get_file(path_to_watch);
     
+
 
 
 
