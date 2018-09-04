@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.0)
 
 project(viamd)
 
-find_package(OpenGL REQUIRED)
+#find_package(OpenGL REQUIRED)
 
 if(UNIX AND NOT APPLE)
   set(LINUX TRUE)
@@ -25,13 +25,13 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
 
 add_subdirectory(ext)
 
+                    #ext/noc
+                    #ext/glfw/include
+                    #ext/gl3w/include
+                    #ext/imgui
 include_directories(src
-                    ext/glfw/include
-                    ext/gl3w/include
                     ext/glm
-                    ext/imgui
                     ext/libxdrfile/src
-                    ext/noc
                     ext/tinyexpr
                     ext/Eigen)
 
@@ -51,26 +51,28 @@ source_group("Sources" FILES ${PROJECT_SOURCES})
 add_definitions(-DGLFW_INCLUDE_NONE
                 -DPROJECT_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\")
 
-IF(LINUX)
-  find_package(GTK2 REQUIRED gtk)
-ENDIF()
+#IF(LINUX)
+#  find_package(GTK2 REQUIRED gtk)
+#ENDIF()
 
-IF(APPLE)
-  target_link_libraries(${PROJECT_NAME}
-                        "-framework AppKit")
-ENDIF()
+#IF(APPLE)
+#  target_link_libraries(${PROJECT_NAME}
+#                        "-framework AppKit")
+#ENDIF()
 
-add_executable(${PROJECT_NAME} MACOSX_BUNDLE ${PROJECT_HEADERS} ${PROJECT_SOURCES})
-#add_executable(${PROJECT_NAME} ${PROJECT_HEADERS} ${PROJECT_SOURCES})
+#add_executable(${PROJECT_NAME} MACOSX_BUNDLE ${PROJECT_HEADERS} ${PROJECT_SOURCES})
+add_executable(${PROJECT_NAME} ${PROJECT_HEADERS} ${PROJECT_SOURCES})
 
 target_link_libraries(${PROJECT_NAME}
-                      glfw
-                      gl3w
-                      imgui
+                      #glfw
+                      #gl3w
+                      #imgui
+                      rsk_platform
                       libxdrfile
                       tinyexpr
-                      ${GLFW_LIBRARIES}
-                      ${OPENGL_LIBRARY})
+                      #${GLFW_LIBRARIES}
+                      #${OPENGL_LIBRARY}
+                      )
 
 #set_target_properties(${PROJECT_NAME} PROPERTIES
 #    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PROJECT_NAME})
