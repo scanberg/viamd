@@ -16,15 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#ifdef OS_WINDOWS
-#define NOC_FILE_DIALOG_WIN32
-#elif defined OS_MAC_OSX
-#define NOC_FILE_DIALOG_OSX
-#elif defined OS_LINUX
-#define NOC_FILE_DIALOG_GTK
-#endif
-#define NOC_FILE_DIALOG_IMPLEMENTATION
-#include <noc_file_dialog.h>
+#include <nfd.h>
 
 namespace platform {
 bool operator!=(const Coordinate& lhs, const Coordinate& rhs) { return lhs.x != rhs.x && lhs.y != rhs.y; }
@@ -594,7 +586,29 @@ FileDialogResult file_dialog(FileDialogFlags flags, CString default_path, CStrin
     StringBuffer<256> path = get_directory(default_path);
     StringBuffer<256> file = get_file(default_path);
 
-    int noc_flags = 0;
+    nfdchar_t *out_path = NULL;
+    nfdresult_t result = NFD_ERROR;
+
+    if (flags & FileDialogFlags_Open) {
+        result = NFD_OpenDialog( NULL, NULL, &out_path );
+    }
+    else if (flags & FileDialogFlags_Save) {
+        result = NFD_SaveDialog( NULL, NULL, &out_path );
+    }
+        
+    if ( result == NFD_OKAY ) {
+        puts("Success!");
+        puts(out_path);
+        free(out_path);
+    }
+    else if ( result == NFD_CANCEL ) {
+        puts("User pressed cancel.");
+    }
+    else {
+        printf("Error: %s\n", NFD_GetError() );
+    }
+
+/*    int noc_flags = 0;
     noc_flags |= (flags & FileDialogFlags_Open) ? NOC_FILE_DIALOG_OPEN : 0;
     noc_flags |= (flags & FileDialogFlags_Save) ? NOC_FILE_DIALOG_SAVE : 0;
     noc_flags |= (flags & FileDialogFlags_Directory) ? NOC_FILE_DIALOG_DIR : 0;
@@ -606,6 +620,7 @@ FileDialogResult file_dialog(FileDialogFlags flags, CString default_path, CStrin
     }
 
     return {res, FileDialogResult::FILE_OK};
+    */
 }
 
 /*

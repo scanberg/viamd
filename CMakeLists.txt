@@ -2,12 +2,6 @@ cmake_minimum_required(VERSION 3.0)
 
 project(viamd)
 
-#find_package(OpenGL REQUIRED)
-
-if(UNIX AND NOT APPLE)
-  set(LINUX TRUE)
-endif()
-
 if(APPLE)
   set(CMAKE_OSX_DEPLOYMENT_TARGET "10.9")
 endif()
@@ -50,15 +44,6 @@ source_group("Sources" FILES ${PROJECT_SOURCES})
 
 add_definitions(-DGLFW_INCLUDE_NONE
                 -DPROJECT_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\")
-
-#IF(LINUX)
-#  find_package(GTK2 REQUIRED gtk)
-#ENDIF()
-
-#IF(APPLE)
-#  target_link_libraries(${PROJECT_NAME}
-#                        "-framework AppKit")
-#ENDIF()
 
 #add_executable(${PROJECT_NAME} MACOSX_BUNDLE ${PROJECT_HEADERS} ${PROJECT_SOURCES})
 add_executable(${PROJECT_NAME} ${PROJECT_HEADERS} ${PROJECT_SOURCES})

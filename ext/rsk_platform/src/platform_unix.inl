@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include <core/string_utils.h>
+#include "string_utils.h"
 
 static DynamicArray<CString> curr_filters;
 
@@ -31,40 +31,40 @@ static int filter_func(const struct dirent *dir) {
     return 0;
 }
 
-DynamicArray<DirEntry> list_directory(CString dir_path) {
+DynamicArray<DirectoryEntry> list_directory(CString dir_path) {
     struct dirent **files;
     int n = scandir (dir_path, &files, NULL, alphasort);
-	DynamicArray<DirEntry> res{};
+	DynamicArray<DirectoryEntry> res{};
 
     if (n >= 0) {
         /* Loop through file names */
-        for (i = 0; i < n; i++) {
+        for (int i = 0; i < n; i++) {
             struct dirent *ent;
 
             /* Get pointer to file entry */
             ent = files[i];
 
-            DirEntry entry;
+            DirectoryEntry entry;
 
             /* Output file name */
             switch (ent->d_type) {
             case DT_REG:
-                entry.type = DirEntry::File;
+                entry.type = DirectoryEntry::File;
                 //printf ("%s\n", ent->d_name);
                 break;
 
             case DT_DIR:
-                entry.type = DirEntry::Dir;
+                entry.type = DirectoryEntry::Dir;
                 //printf ("%s/\n", ent->d_name);
                 break;
 
             case DT_LNK:
-                entry.type = DirEntry::Link;
+                entry.type = DirectoryEntry::Link;
                 //printf ("%s@\n", ent->d_name);
                 break;
 
             default:
-                entry.type = DirEntry::Unknown;
+                entry.type = DirectoryEntry::Unknown;
                 //printf ("%s*\n", ent->d_name);
             }
             strncpy(entry.name.beg(), ent->d_name, 512);
@@ -73,7 +73,7 @@ DynamicArray<DirEntry> list_directory(CString dir_path) {
         }
 
         /* Release file names */
-        for (i = 0; i < n; i++) {
+        for (int i = 0; i < n; i++) {
             free (files[i]);
         }
         free (files);

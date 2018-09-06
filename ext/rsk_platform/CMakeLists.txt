@@ -1,17 +1,16 @@
 ### GLFW ###
-
 option(GLFW_BUILD_DOCS OFF)
 option(GLFW_BUILD_EXAMPLES OFF)
 option(GLFW_BUILD_TESTS OFF)
 option(GLFW_INSTALL OFF)
 
+add_subdirectory(ext/glfw)
+add_subdirectory(ext/nativefiledialog)
+
 ### OPENGL ###
 find_package(OpenGL REQUIRED)
 
-add_subdirectory(ext/glfw)
-
 ### IMGUI ###
-
 project(imgui)
 
 file(GLOB_RECURSE WIDGET_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/ext/imgui/widgets/*.h)
@@ -33,6 +32,7 @@ set(SOURCES
 
 add_library(imgui STATIC ${HEADERS} ${SOURCES})
 
+### PLATFORM ###
 project(rsk_platform)
 
 set(HEADERS
@@ -58,12 +58,13 @@ set(SOURCES
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/ext/gl3w/include/
                     ${CMAKE_CURRENT_SOURCE_DIR}/ext/glfw/include/
                     ${CMAKE_CURRENT_SOURCE_DIR}/ext/imgui/
-                    ${CMAKE_CURRENT_SOURCE_DIR}/ext/noc/
+                    ${CMAKE_CURRENT_SOURCE_DIR}/ext/nativefiledialog/src/include/
                     ${CMAKE_CURRENT_SOURCE_DIR}/src/)
 
 add_library(${PROJECT_NAME} ${HEADERS} ${SOURCES})
 
 target_link_libraries(${PROJECT_NAME}
                       imgui
+                      nativefiledialog
                       ${GLFW_LIBRARIES}
                       ${OPENGL_LIBRARY})
