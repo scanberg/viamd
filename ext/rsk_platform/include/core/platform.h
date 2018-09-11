@@ -47,6 +47,9 @@ struct Coordinate {
     float32 y;
 };
 
+inline bool operator==(const Coordinate& a, const Coordinate& b) { return a.x == b.x && a.y == b.y; }
+inline bool operator!=(const Coordinate& a, const Coordinate& b) { return a.x != b.x || a.y != b.y; }
+
 struct Context {
     struct {
         void* ptr;

@@ -451,30 +451,29 @@ bool structure_match_residue(StructureData* data, const Array<CString> args, con
     }
 
     for (const auto& arg : args) {
-        int32 first = 0;
-        int32 last = 0;
+        IntRange range = {-1, -1};
 
         if (is_range(arg)) {
-            if (!extract_range(&first, &last, arg)) {
+            if (!extract_range(&range, arg)) {
                 set_error_message("Failed to parse range in argument for residue");
                 return false;
             }
-            if (first == -1) first = 1;
-            if (last == -1) last = (int32)molecule.residues.count;
+            if (range.x == -1) range.x = 1;
+            if (range.y == -1) range.y = (int32)molecule.residues.count;
         } else {
             auto id = to_int(arg);
             if (!id.success) {
                 set_error_message("Failed to parse argument for residue");
                 return false;
             }
-            first = last = id;
+            range.x = range.y = id;
         }
 
-        if (first < 1 || (int32)molecule.residues.count < last) {
+        if (range.x < 1 || (int32)molecule.residues.count < range.y) {
             set_error_message("Index for residue is out of bounds");
             return false;
         }
-        for (int32 i = first - 1; i < last; i++) {
+        for (int32 i = range.x - 1; i < range.y; i++) {
             const auto& res = molecule.residues[i];
             data->structures.push_back({res.beg_atom_idx, res.end_atom_idx});
         }
@@ -514,30 +513,29 @@ bool structure_match_chain(StructureData* data, const Array<CString> args, const
     }
 
     for (const auto& arg : args) {
-        int32 first = 0;
-        int32 last = 0;
+        IntRange range{0, 0};
 
         if (is_range(arg)) {
-            if (!extract_range(&first, &last, arg)) {
+            if (!extract_range(&range, arg)) {
                 set_error_message("Failed to parse range in argument for chain");
                 return false;
             }
-            if (first == -1) first = 1;
-            if (last == -1) last = (int32)molecule.chains.count;
+            if (range.x == -1) range.x = 1;
+            if (range.y == -1) range.y = (int32)molecule.chains.count;
         } else {
             auto id = to_int(arg);
             if (!id.success) {
                 set_error_message("Failed to parse argument for chain");
                 return false;
             }
-            first = last = id;
+            range.x = range.y = id;
         }
 
-        if (first < 1 || (int32)molecule.chains.count < last) {
+        if (range.x < 1 || (int32)molecule.chains.count < range.y) {
             set_error_message("Index for chain is out of bounds");
             return false;
         }
-        for (int32 i = first - 1; i <= last - 1; i++) {
+        for (int32 i = range.x - 1; i <= range.y - 1; i++) {
             const auto& chain = molecule.chains[i];
             data->structures.push_back({get_atom_beg_idx(molecule, chain), get_atom_end_idx(molecule, chain)});
         }
@@ -556,31 +554,30 @@ bool structure_match_atom(StructureData* data, const Array<CString> args, const 
     }
 
     for (const auto& arg : args) {
-        int32 first = 0;
-        int32 last = 0;
+        IntRange range{0, 0};
 
         if (is_range(arg)) {
-            if (!extract_range(&first, &last, arg)) {
+            if (!extract_range(&range, arg)) {
                 set_error_message("Failed to parse range in argument for atom");
                 return false;
             }
-            if (first == -1) first = 1;
-            if (last == -1) last = (int32)molecule.atom_positions.count;
+            if (range.x == -1) range.x = 1;
+            if (range.y == -1) range.y = (int32)molecule.atom_positions.count;
         } else {
             auto id = to_int(arg);
             if (!id.success) {
                 set_error_message("Failed to parse argument for atom");
                 return false;
             }
-            first = last = id;
+            range.x = range.y = id;
         }
 
-        if (first < 1 || (int32)molecule.atom_positions.count < last) {
+        if (range.x < 1 || (int32)molecule.atom_positions.count < range.y) {
             set_error_message("Index for atom is out of bounds");
             return false;
         }
 
-        data->structures.push_back({first - 1, last});
+        data->structures.push_back({range.x - 1, range.y});
     }
 
     return true;
@@ -593,11 +590,10 @@ bool structure_extract_resatom(StructureData* data, const Array<CString> args, c
         return false;
     }
 
-    int32 first = 0;
-    int32 last = 0;
+    IntRange range{0, 0};
 
     if (is_range(args[0])) {
-        if (!extract_range(&first, &last, args[0])) {
+        if (!extract_range(&range, args[0])) {
             set_error_message("Failed to parse range in argument for resatom");
             return false;
         }
@@ -607,14 +603,14 @@ bool structure_extract_resatom(StructureData* data, const Array<CString> args, c
             set_error_message("Failed to parse argument for resatom");
             return false;
         }
-        first = last = id;
+        range.x = range.y = id;
     }
 
     for (auto& s : data->structures) {
         int32 count = s.end_idx - s.beg_idx;
 
-        int32 s_first = (first == -1) ? 1 : first;
-        int32 s_last = (last == -1) ? count : last;
+        int32 s_first = (range.x == -1) ? 1 : range.x;
+        int32 s_last = (range.y == -1) ? count : range.y;
 
         if (count < 0 || s_first < 1 || count < s_last) {
             set_error_message("restom: Index is out of range for structure");

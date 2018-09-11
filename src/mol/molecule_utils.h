@@ -1,6 +1,6 @@
 #pragma once
 
-#include <core/array.h>
+#include <core/array_types.h>
 #include <core/math_utils.h>
 #include <mol/molecule_structure.h>
 #include <mol/molecule_trajectory.h>

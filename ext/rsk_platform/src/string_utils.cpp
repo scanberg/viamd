@@ -1,5 +1,5 @@
-#include "string_utils.h"
-#include "common.h"
+#include <core/string_utils.h>
+#include <core/common.h>
 #include <stdio.h>
 #include <ctype.h>
 
@@ -189,7 +189,7 @@ String allocate_and_read_textfile(CString filename) {
     FILE* file = fopen(c_str_path.cstr(), "r");
     if (!file) return {};
 
-    fseek(file, EOF, 0);
+    fseek(file, 0, SEEK_END);
     int64 file_size = ftell(file);
     rewind(file);
 

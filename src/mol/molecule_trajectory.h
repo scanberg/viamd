@@ -1,13 +1,14 @@
 #pragma once
 
 #include <core/types.h>
-#include <core/array.h>
+#include <core/array_types.h>
+#include <core/vector_types.h>
 #include <core/string_utils.h>
 #include <core/common.h>
 
 struct TrajectoryFrame {
-    int index;
-    float time;
+    int32 index;
+    float32 time;
     mat3 box;
     Array<vec3> atom_positions;
 };

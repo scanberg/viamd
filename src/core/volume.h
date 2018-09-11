@@ -1,7 +1,8 @@
 #pragma once
 
 #include <core/types.h>
-#include <core/array.h>
+#include <core/array_types.h>
+#include <core/vector_types.h>
 
 struct Volume {
     typedef float VoxelDataType;

@@ -1,3 +1,7 @@
+### OPENGL ###
+find_package(OpenGL REQUIRED)
+
+
 ### GLFW ###
 option(GLFW_BUILD_DOCS OFF)
 option(GLFW_BUILD_EXAMPLES OFF)
@@ -5,10 +9,11 @@ option(GLFW_BUILD_TESTS OFF)
 option(GLFW_INSTALL OFF)
 
 add_subdirectory(ext/glfw)
+
+
+### NATIVEFILEDIALOG ###
 add_subdirectory(ext/nativefiledialog)
 
-### OPENGL ###
-find_package(OpenGL REQUIRED)
 
 ### IMGUI ###
 project(imgui)
@@ -32,39 +37,43 @@ set(SOURCES
 
 add_library(imgui STATIC ${HEADERS} ${SOURCES})
 
-### PLATFORM ###
+
+### RSK PLATFORM ###
 project(rsk_platform)
 
 set(HEADERS
-    ${CMAKE_CURRENT_SOURCE_DIR}/ext/gl3w/include/GL/gl3w.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/ext/gl3w/include/GL/glcorearb.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/array_types.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/common.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/gl.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/keys.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/platform.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/string_types.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/string_utils.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/types.h 
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/core/array_types.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/core/common.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/core/gl.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/core/keys.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/core/log.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/core/platform.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/core/string_types.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/core/string_utils.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/core/types.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/core/vector_types.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/GL/glcorearb.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/GL/gl3w.h
 )
                    
 set(SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/ext/gl3w/src/gl3w.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/log.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/platform.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/string_utils.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/log.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/gl3w.c
 )
 
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/ext/gl3w/include/
-                    ${CMAKE_CURRENT_SOURCE_DIR}/ext/glfw/include/
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/ext/glfw/include/
                     ${CMAKE_CURRENT_SOURCE_DIR}/ext/imgui/
                     ${CMAKE_CURRENT_SOURCE_DIR}/ext/nativefiledialog/src/include/
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/)
+                    ${CMAKE_CURRENT_SOURCE_DIR}/include/)
 
-add_library(${PROJECT_NAME} ${HEADERS} ${SOURCES})
+add_definitions(-DGLFW_INCLUDE_NONE)
+add_library(rsk_platform STATIC ${HEADERS} ${SOURCES})
 
-target_link_libraries(${PROJECT_NAME}
+target_link_libraries(rsk_platform
+                      glfw
                       imgui
                       nativefiledialog
-                      ${GLFW_LIBRARIES}
+                      ${glfw_LIBRARIES}
                       ${OPENGL_LIBRARY})

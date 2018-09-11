@@ -1,11 +1,9 @@
 #include "immediate_draw_utils.h"
 #include <core/types.h>
-#include <core/array.h>
+#include <core/array_types.h>
 #include <core/gl.h>
 #include <core/log.h>
 #include <gfx/gl_utils.h>
-
-#include <imgui.h>
 
 namespace immediate {
 

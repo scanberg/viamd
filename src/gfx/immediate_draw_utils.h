@@ -1,6 +1,7 @@
 #pragma once
 
 #include <core/types.h>
+#include <core/vector_types.h>
 
 namespace immediate {
 

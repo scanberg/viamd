@@ -2,6 +2,8 @@
 
 #include <core/common.h>
 #include <core/types.h>
+#include <core/array_types.h>
+#include <core/vector_types.h>
 #include <core/string_utils.h>
 
 struct MoleculeDynamic;

@@ -1,6 +1,7 @@
-#include "platform.h"
-#include "gl.h"
-#include "log.h"
+#include <core/platform.h>
+#include <core/gl.h>
+#include <core/log.h>
+#include <core/string_utils.h>
 #include <GLFW/glfw3.h>
 #ifdef OS_WINDOWS
 //#undef APIENTRY
@@ -19,7 +20,6 @@
 #include <nfd.h>
 
 namespace platform {
-bool operator!=(const Coordinate& lhs, const Coordinate& rhs) { return lhs.x != rhs.x && lhs.y != rhs.y; }
 
 // Data
 static Context internal_ctx;
@@ -564,6 +564,7 @@ void update(Context* ctx) {
     /*internal_ctx.input.mouse.velocity = new_coord - internal_ctx.input.mouse.coord_prev;
     internal_ctx.input.mouse.coord_prev = internal_ctx.input.mouse.coord_curr;
     internal_ctx.input.mouse.coord_curr = new_coord;*/
+    internal_ctx.input.mouse.coord = new_coord;
 
     const float half_res_x = w * 0.5f;
     const float half_res_y = h * 0.5f;
@@ -586,41 +587,41 @@ FileDialogResult file_dialog(FileDialogFlags flags, CString default_path, CStrin
     StringBuffer<256> path = get_directory(default_path);
     StringBuffer<256> file = get_file(default_path);
 
-    nfdchar_t *out_path = NULL;
+    nfdchar_t* out_path = NULL;
     nfdresult_t result = NFD_ERROR;
 
     if (flags & FileDialogFlags_Open) {
-        result = NFD_OpenDialog( NULL, NULL, &out_path );
+        result = NFD_OpenDialog(NULL, NULL, &out_path);
+    } else if (flags & FileDialogFlags_Save) {
+        result = NFD_SaveDialog(NULL, NULL, &out_path);
     }
-    else if (flags & FileDialogFlags_Save) {
-        result = NFD_SaveDialog( NULL, NULL, &out_path );
-    }
-        
-    if ( result == NFD_OKAY ) {
-        puts("Success!");
-        puts(out_path);
-        free(out_path);
-    }
-    else if ( result == NFD_CANCEL ) {
-        puts("User pressed cancel.");
-    }
-    else {
-        printf("Error: %s\n", NFD_GetError() );
-    }
+    defer { free(out_path); };
 
-/*    int noc_flags = 0;
-    noc_flags |= (flags & FileDialogFlags_Open) ? NOC_FILE_DIALOG_OPEN : 0;
-    noc_flags |= (flags & FileDialogFlags_Save) ? NOC_FILE_DIALOG_SAVE : 0;
-    noc_flags |= (flags & FileDialogFlags_Directory) ? NOC_FILE_DIALOG_DIR : 0;
+    if (result == NFD_OKAY) {
+        Path res_path = out_path;
+        convert_backslashes(res_path);
 
-    const char* res = noc_file_dialog_open(noc_flags, filter_buf.cstr(), path.cstr(), file.cstr());
-
-    if (res == nullptr) {
+        return {res_path, FileDialogResult::FILE_OK};
+    } else if (result == NFD_CANCEL) {
+        return {{}, FileDialogResult::FILE_CANCEL};
+    } else {
+        printf("Error: %s\n", NFD_GetError());
         return {{}, FileDialogResult::FILE_CANCEL};
     }
 
-    return {res, FileDialogResult::FILE_OK};
-    */
+    /*    int noc_flags = 0;
+        noc_flags |= (flags & FileDialogFlags_Open) ? NOC_FILE_DIALOG_OPEN : 0;
+        noc_flags |= (flags & FileDialogFlags_Save) ? NOC_FILE_DIALOG_SAVE : 0;
+        noc_flags |= (flags & FileDialogFlags_Directory) ? NOC_FILE_DIALOG_DIR : 0;
+
+        const char* res = noc_file_dialog_open(noc_flags, filter_buf.cstr(), path.cstr(), file.cstr());
+
+        if (res == nullptr) {
+            return {{}, FileDialogResult::FILE_CANCEL};
+        }
+
+        return {res, FileDialogResult::FILE_OK};
+        */
 }
 
 /*

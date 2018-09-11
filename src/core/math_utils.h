@@ -3,6 +3,7 @@
 #define NOMINMAX
 
 #include <core/types.h>
+#include <core/vector_types.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -136,7 +137,7 @@ glm::tquat<T, Q> angle_axis(T const& angle, glm::vec<3, T, Q> const& axis) {
 }
 
 // Random
-inline float rnd() { return rand() / (float)RAND_MAX; }
+inline float rnd() { return (float)rand() / (float)RAND_MAX; }
 inline void set_rnd_seed(unsigned int seed) { srand(seed); }
 
 // Color
