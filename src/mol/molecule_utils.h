@@ -101,7 +101,7 @@ inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backb
 
 void transform_positions(Array<vec3> positions, const mat4& transformation);
 void compute_bounding_box(vec3* min_box, vec3* max_box, Array<const vec3> positions);
-vec3 compute_com(Array<const vec3> positions);
+vec3 compute_com(Array<const vec3> positions, Array<const float> masses = {});
 
 /*
 inline mat4 compute_basis(const DynamicBasis& basis, Array<const vec3> atom_positions) {
@@ -203,3 +203,10 @@ uint32 get_segmentation_texture();
 
 // Compute a linear transform which fits a set of points_a onto a set of points_b in least squares fashion.
 mat4 compute_transform(Array<const vec3> pos_frame_a, Array<const vec3> pos_frame_b);
+mat4 compute_transform_simple(Array<const vec3> pos_frame_a, Array<const vec3> pos_frame_b);
+mat4 compute_transform_simple(Array<const vec3> pos_frame_a, Array<const vec3> pos_frame_b, Array<const float> mass);
+void compute_RS(mat3* R, mat3* S, Array<const vec3> x0, Array<const vec3> x, Array<const float> mass = {});
+
+// 3x3 matrix operations
+void diagonalize(const mat3& M, mat3* Q, mat3* D);
+void decompose(const mat3& M, mat3* R, mat3* S);

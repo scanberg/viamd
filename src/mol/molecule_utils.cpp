@@ -1,15 +1,15 @@
 //#define NOMINMAX
 
 #include "molecule_utils.h"
-#include <core/hash.h>
 #include <core/common.h>
+#include <core/hash.h>
 #include <core/log.h>
 #include <mol/trajectory_utils.h>
 #include <mol/spatial_hash.h>
 #include <gfx/gl_utils.h>
 #include <gfx/immediate_draw_utils.h>
 
-#include <imgui.h>
+//#include <imgui.h>
 #include <ctype.h>
 #include <fstream>
 
@@ -34,16 +34,28 @@ void compute_bounding_box(vec3* min_box, vec3* max_box, Array<const vec3> positi
     }
 }
 
-vec3 compute_com(Array<const vec3> positions) {
+vec3 compute_com(Array<const vec3> positions, Array<const float> masses) {
     if (positions.count == 0) return {0, 0, 0};
     if (positions.count == 1) return positions[0];
 
     vec3 com{0};
-    for (const auto& p : positions) {
-        com += p;
+    if (masses.count == 0) {
+        for (const auto& p : positions) {
+            com += p;
+        }
+        com = com / (float)positions.count;
+    } else {
+        ASSERT(masses.count == positions.count);
+        vec3 pos_mass_sum{0};
+        float mass_sum{0};
+        for (int32 i = 0; i < positions.count; i++) {
+            pos_mass_sum += positions[i] * masses[i];
+            mass_sum += masses[i];
+        }
+        com = pos_mass_sum / mass_sum;
     }
 
-    return com / (float)positions.count;
+    return com;
 }
 
 inline bool periodic_jump(const vec3& p_prev, const vec3& p_next, const vec3& half_box) {
@@ -961,12 +973,12 @@ void initialize() {
                                }});
 
     filter_commands.push_back({"atomicnumber", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
-                                   DynamicArray<ivec2> ranges;
+                                   DynamicArray<IntRange> ranges;
                                    if (!extract_ranges(&ranges, args)) return false;
                                    for (int i = 0; i < dyn.molecule.atom_elements.count; i++) {
                                        int atomnr = (int)dyn.molecule.atom_elements[i];
                                        mask[i] = false;
-                                       for (ivec2 range : ranges) {
+                                       for (auto range : ranges) {
                                            if (range.x <= atomnr && atomnr <= range.y) {
                                                mask[i] = true;
                                                break;
@@ -977,7 +989,7 @@ void initialize() {
                                }});
 
     filter_commands.push_back({"atom", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
-                                   DynamicArray<ivec2> ranges;
+                                   DynamicArray<IntRange> ranges;
                                    if (!extract_ranges(&ranges, args)) return false;
                                    memset(mask.data, 0, mask.size_in_bytes());
                                    for (auto range : ranges) {
@@ -992,7 +1004,7 @@ void initialize() {
                                }});
 
     filter_commands.push_back({"residue", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
-                                   DynamicArray<ivec2> ranges;
+                                   DynamicArray<IntRange> ranges;
                                    if (!extract_ranges(&ranges, args)) return false;
                                    memset(mask.data, 0, mask.size_in_bytes());
                                    for (auto range : ranges) {
@@ -1033,7 +1045,7 @@ void initialize() {
                                }});
 
     filter_commands.push_back({"resid", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
-                                   DynamicArray<ivec2> ranges;
+                                   DynamicArray<IntRange> ranges;
                                    if (!extract_ranges(&ranges, args)) return false;
                                    memset(mask.data, 0, mask.size_in_bytes());
                                    for (auto range : ranges) {
@@ -1045,23 +1057,11 @@ void initialize() {
                                            memset(mask.data + beg, 1, end - beg);
                                        }
                                    }
-                                   /*
-memset(mask.data, 0, mask.count);
-for (int i = 0; i < args.count; i++) {
-  auto res = to_int(args[i]);
-  if (!res.success) return false;
-  int res_idx = res.value - 1;
-  if (res_idx < 0 || dyn.molecule.residues.count <= res_idx) return false;
-  int beg = dyn.molecule.residues[res_idx].beg_atom_idx;
-  int end = dyn.molecule.residues[res_idx].end_atom_idx;
-  memset(mask.data + beg, 1, end - beg);
-}
-                              */
                                    return true;
                                }});
 
     filter_commands.push_back({"chain", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
-                                   DynamicArray<ivec2> ranges;
+                                   DynamicArray<IntRange> ranges;
                                    if (!extract_ranges(&ranges, args)) return false;
                                    memset(mask.data, 0, mask.size_in_bytes());
                                    for (auto range : ranges) {
@@ -1074,19 +1074,6 @@ for (int i = 0; i < args.count; i++) {
                                            memset(mask.data + beg, 1, end - beg);
                                        }
                                    }
-                                   /*
-memset(mask.data, 0, mask.count);
-for (int i = 0; i < args.count; i++) {
-  auto res = to_int(args[i]);
-  if (!res.success) return false;
-  ChainIdx chain_idx = (ChainIdx)res.value - 1;
-  if (chain_idx < 0 || dyn.molecule.chains.count <= chain_idx) return false;
-  Chain chain = get_chain(dyn.molecule, chain_idx);
-  int beg = get_atom_beg_idx(dyn.molecule, chain);
-  int end = get_atom_end_idx(dyn.molecule, chain);
-  memset(mask.data + beg, 1, end - beg);
-}
-                              */
                                    return true;
                                }});
 
@@ -2586,4 +2573,209 @@ mat4 compute_transform(Array<const vec3> pos_frame_a, Array<const vec3> pos_fram
     result[3] = vec4(com_b, 1);
 
     return result;
+}
+
+mat4 compute_transform_simple(Array<const vec3> pos_frame_a, Array<const vec3> pos_frame_b, Array<const float> mass) {
+    ASSERT(pos_frame_a.count == pos_frame_b.count);
+    ASSERT(mass.count == pos_frame_a.count);
+
+    const vec3 com_a = compute_com(pos_frame_a, mass);
+    DynamicArray<vec3> q(pos_frame_a.count);
+    for (int32 i = 0; i < q.count; i++) {
+        q[i] = pos_frame_a[i] - com_a;
+    }
+
+    const vec3 com_b = compute_com(pos_frame_b, mass);
+    DynamicArray<vec3> p(pos_frame_b.count);
+    for (int32 i = 0; i < p.count; i++) {
+        p[i] = pos_frame_b[i] - com_b;
+    }
+
+    mat3 Apq{0};
+    for (int32 i = 0; i < p.count; i++) {
+        Apq[0][0] += mass[i] * p[i].x * q[i].x;
+        Apq[0][1] += mass[i] * p[i].y * q[i].x;
+        Apq[0][2] += mass[i] * p[i].z * q[i].x;
+        Apq[1][0] += mass[i] * p[i].x * q[i].y;
+        Apq[1][1] += mass[i] * p[i].y * q[i].y;
+        Apq[1][2] += mass[i] * p[i].z * q[i].y;
+        Apq[2][0] += mass[i] * p[i].x * q[i].z;
+        Apq[2][1] += mass[i] * p[i].y * q[i].z;
+        Apq[2][2] += mass[i] * p[i].z * q[i].z;
+    }
+
+    mat3 Aqq{0};
+    for (int32 i = 0; i < q.count; i++) {
+        Aqq[0][0] += mass[i] * q[i].x * q[i].x;
+        Aqq[0][1] += mass[i] * q[i].y * q[i].x;
+        Aqq[0][2] += mass[i] * q[i].z * q[i].x;
+        Aqq[1][0] += mass[i] * q[i].x * q[i].y;
+        Aqq[1][1] += mass[i] * q[i].y * q[i].y;
+        Aqq[1][2] += mass[i] * q[i].z * q[i].y;
+        Aqq[2][0] += mass[i] * q[i].x * q[i].z;
+        Aqq[2][1] += mass[i] * q[i].y * q[i].z;
+        Aqq[2][2] += mass[i] * q[i].z * q[i].z;
+    }
+
+    mat3 A = Apq / Aqq;
+    mat4 result = A;
+    result[3] = vec4(com_b, 1);
+    return result;
+}
+
+void compute_RS(mat3* R, mat3* S, Array<const vec3> x0, Array<const vec3> x, Array<const float> m) {
+    ASSERT(x0.count == x.count);
+    ASSERT(m.count == x0.count);
+
+    const vec3 com_x0 = compute_com(x0, m);
+    DynamicArray<vec3> q(x0.count);
+    for (int32 i = 0; i < q.count; i++) {
+        q[i] = x0[i] - com_x0;
+    }
+
+    const vec3 com_x = compute_com(x, m);
+    DynamicArray<vec3> p(x.count);
+    for (int32 i = 0; i < p.count; i++) {
+        p[i] = x[i] - com_x;
+    }
+
+    mat3 Apq{0};
+    for (int32 i = 0; i < p.count; i++) {
+        Apq[0][0] += m[i] * p[i].x * q[i].x;
+        Apq[0][1] += m[i] * p[i].y * q[i].x;
+        Apq[0][2] += m[i] * p[i].z * q[i].x;
+        Apq[1][0] += m[i] * p[i].x * q[i].y;
+        Apq[1][1] += m[i] * p[i].y * q[i].y;
+        Apq[1][2] += m[i] * p[i].z * q[i].y;
+        Apq[2][0] += m[i] * p[i].x * q[i].z;
+        Apq[2][1] += m[i] * p[i].y * q[i].z;
+        Apq[2][2] += m[i] * p[i].z * q[i].z;
+    }
+
+    mat3 Q, D;
+    diagonalize(math::transpose(Apq) * Apq, &Q, &D);
+    D[0][0] = sqrtf(D[0][0]);
+    D[1][1] = sqrtf(D[1][1]);
+    D[2][2] = sqrtf(D[2][2]);
+
+    *S = Q * D * math::inverse(Q);
+    *R = Apq * math::inverse(*S);
+}
+
+// from here https://stackoverflow.com/questions/4372224/fast-method-for-computing-3x3-symmetric-matrix-spectral-decomposition
+// Slightly modified version of  Stan Melax's code for 3x3 matrix diagonalization (Thanks Stan!)
+// source: http://www.melax.com/diag.html?attredirects=0
+void Diagonalize(const float (&A)[3][3], float (&Q)[3][3], float (&D)[3][3]) {
+    // A must be a symmetric matrix.
+    // returns Q and D such that
+    // Diagonal matrix D = QT * A * Q;  and  A = Q*D*QT
+    const int maxsteps = 24;  // certainly wont need that many.
+    int k0, k1, k2;
+    float o[3], m[3];
+    float q[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    float jr[4];
+    float sqw, sqx, sqy, sqz;
+    float tmp1, tmp2, mq;
+    float AQ[3][3];
+    float thet, sgn, t, c;
+    for (int i = 0; i < maxsteps; ++i) {
+        // quat to matrix
+        sqx = q[0] * q[0];
+        sqy = q[1] * q[1];
+        sqz = q[2] * q[2];
+        sqw = q[3] * q[3];
+        Q[0][0] = (sqx - sqy - sqz + sqw);
+        Q[1][1] = (-sqx + sqy - sqz + sqw);
+        Q[2][2] = (-sqx - sqy + sqz + sqw);
+        tmp1 = q[0] * q[1];
+        tmp2 = q[2] * q[3];
+        Q[1][0] = 2.0f * (tmp1 + tmp2);
+        Q[0][1] = 2.0f * (tmp1 - tmp2);
+        tmp1 = q[0] * q[2];
+        tmp2 = q[1] * q[3];
+        Q[2][0] = 2.0f * (tmp1 - tmp2);
+        Q[0][2] = 2.0f * (tmp1 + tmp2);
+        tmp1 = q[1] * q[2];
+        tmp2 = q[0] * q[3];
+        Q[2][1] = 2.0f * (tmp1 + tmp2);
+        Q[1][2] = 2.0f * (tmp1 - tmp2);
+
+        // AQ = A * Q
+        AQ[0][0] = Q[0][0] * A[0][0] + Q[1][0] * A[0][1] + Q[2][0] * A[0][2];
+        AQ[0][1] = Q[0][1] * A[0][0] + Q[1][1] * A[0][1] + Q[2][1] * A[0][2];
+        AQ[0][2] = Q[0][2] * A[0][0] + Q[1][2] * A[0][1] + Q[2][2] * A[0][2];
+        AQ[1][0] = Q[0][0] * A[0][1] + Q[1][0] * A[1][1] + Q[2][0] * A[1][2];
+        AQ[1][1] = Q[0][1] * A[0][1] + Q[1][1] * A[1][1] + Q[2][1] * A[1][2];
+        AQ[1][2] = Q[0][2] * A[0][1] + Q[1][2] * A[1][1] + Q[2][2] * A[1][2];
+        AQ[2][0] = Q[0][0] * A[0][2] + Q[1][0] * A[1][2] + Q[2][0] * A[2][2];
+        AQ[2][1] = Q[0][1] * A[0][2] + Q[1][1] * A[1][2] + Q[2][1] * A[2][2];
+        AQ[2][2] = Q[0][2] * A[0][2] + Q[1][2] * A[1][2] + Q[2][2] * A[2][2];
+        // D = Qt * AQ
+        D[0][0] = AQ[0][0] * Q[0][0] + AQ[1][0] * Q[1][0] + AQ[2][0] * Q[2][0];
+        D[0][1] = AQ[0][0] * Q[0][1] + AQ[1][0] * Q[1][1] + AQ[2][0] * Q[2][1];
+        D[0][2] = AQ[0][0] * Q[0][2] + AQ[1][0] * Q[1][2] + AQ[2][0] * Q[2][2];
+        D[1][0] = AQ[0][1] * Q[0][0] + AQ[1][1] * Q[1][0] + AQ[2][1] * Q[2][0];
+        D[1][1] = AQ[0][1] * Q[0][1] + AQ[1][1] * Q[1][1] + AQ[2][1] * Q[2][1];
+        D[1][2] = AQ[0][1] * Q[0][2] + AQ[1][1] * Q[1][2] + AQ[2][1] * Q[2][2];
+        D[2][0] = AQ[0][2] * Q[0][0] + AQ[1][2] * Q[1][0] + AQ[2][2] * Q[2][0];
+        D[2][1] = AQ[0][2] * Q[0][1] + AQ[1][2] * Q[1][1] + AQ[2][2] * Q[2][1];
+        D[2][2] = AQ[0][2] * Q[0][2] + AQ[1][2] * Q[1][2] + AQ[2][2] * Q[2][2];
+        o[0] = D[1][2];
+        o[1] = D[0][2];
+        o[2] = D[0][1];
+        m[0] = fabs(o[0]);
+        m[1] = fabs(o[1]);
+        m[2] = fabs(o[2]);
+
+        k0 = (m[0] > m[1] && m[0] > m[2]) ? 0 : (m[1] > m[2]) ? 1 : 2;  // index of largest element of offdiag
+        k1 = (k0 + 1) % 3;
+        k2 = (k0 + 2) % 3;
+        if (o[k0] == 0.0f) {
+            break;  // diagonal already
+        }
+        thet = (D[k2][k2] - D[k1][k1]) / (2.0f * o[k0]);
+        sgn = (thet > 0.0f) ? 1.0f : -1.0f;
+        thet *= sgn;                                                             // make it positive
+        t = sgn / (thet + ((thet < 1.E6f) ? sqrtf(thet * thet + 1.0f) : thet));  // sign(T)/(|T|+sqrt(T^2+1))
+        c = 1.0f / sqrtf(t * t + 1.0f);                                          //  c= 1/(t^2+1) , t=s/c
+        if (c == 1.0f) {
+            break;  // no room for improvement - reached machine precision.
+        }
+        jr[0] = jr[1] = jr[2] = jr[3] = 0.0f;
+        jr[k0] = sgn * sqrtf((1.0f - c) / 2.0f);  // using 1/2 angle identity sin(a/2) = sqrt((1-cos(a))/2)
+        jr[k0] *= -1.0f;                          // since our quat-to-matrix convention was for v*M instead of M*v
+        jr[3] = sqrtf(1.0f - jr[k0] * jr[k0]);
+        if (jr[3] == 1.0f) {
+            break;  // reached limits of floating point precision
+        }
+        q[0] = (q[3] * jr[0] + q[0] * jr[3] + q[1] * jr[2] - q[2] * jr[1]);
+        q[1] = (q[3] * jr[1] - q[0] * jr[2] + q[1] * jr[3] + q[2] * jr[0]);
+        q[2] = (q[3] * jr[2] + q[0] * jr[1] - q[1] * jr[0] + q[2] * jr[3]);
+        q[3] = (q[3] * jr[3] - q[0] * jr[0] - q[1] * jr[1] - q[2] * jr[2]);
+        mq = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+        q[0] /= mq;
+        q[1] /= mq;
+        q[2] /= mq;
+        q[3] /= mq;
+    }
+}
+
+void diagonalize(const mat3& M, mat3* Q, mat3* D) {
+    ASSERT(Q);
+    ASSERT(D);
+    Diagonalize((const float(&)[3][3])M, (float(&)[3][3])Q, (float(&)[3][3])D);
+}
+
+void decompose(const mat3& M, mat3* R, mat3* S) {
+    ASSERT(R);
+    ASSERT(S);
+    mat3 Q, D;
+    mat3 AtA = math::transpose(M) * M;
+    diagonalize(AtA, &Q, &D);
+    float det = math::determinant(AtA);
+    D[0][0] = sqrtf(D[0][0]);
+    D[1][1] = sqrtf(D[1][1]);
+    D[2][2] = sqrtf(D[2][2]);
+    *S = Q * D * math::inverse(Q);
+    *R = M * math::inverse(*S);
 }

@@ -27,6 +27,9 @@
 #include <thread>
 #include <mutex>
 
+#include <iostream>
+#include <glm/gtx/io.hpp>
+
 //#define VIAMD_RELEASE
 
 #ifdef _WIN32
@@ -402,8 +405,36 @@ int main(int, char**) {
     create_default_representation(&data);
     create_volume(&data);
 
+    auto pos_a = get_trajectory_positions(data.mol_data.dynamic.trajectory, 0);
+    auto pos_b = get_trajectory_positions(data.mol_data.dynamic.trajectory, 100);
+
+    mat4 M1 = compute_transform(pos_a, pos_b);
+    mat4 M2 = compute_transform(pos_a, pos_b);
+
+    std::cout << "m1: \n" << M1;
+    std::cout << "m2: \n" << M2;
+
+    auto t0 = platform::get_time();
+    const int N = 1;
+    /*
+for (int32 i = 0; i < N; i++) {
+    mat3 A = {1, 1, 0, 0, 1, 1, 1, 0, 1};
+    mat3 R, S;
+    decompose(A, &R, &S);
+
+    mat3 B = R * S;
+    std::cout << A;
+    std::cout << B;
+}
+    */
+    auto t1 = platform::get_time();
+
+    auto delta = platform::compute_delta_ms(t0, t1);
+    printf("Time taken to compute %i diagonalizations: %.3f ms\n", N, delta);
+
     // Main loop
     while (!data.ctx.window.should_close) {
+        platform::Coordinate previous_mouse_coord = data.ctx.input.mouse.coord;
         platform::update(&data.ctx);
 
         stats::async_update(data.mol_data.dynamic, data.time_filter.range,
@@ -472,7 +503,7 @@ int main(int, char**) {
         if (data.async.trajectory.sync.running) {
             constexpr float TICK_INTERVAL_SEC = 3.f;
             static float time = 0.f;
-            time += data.ctx.timing.dt;
+            time += data.ctx.timing.delta_s;
             if (time > TICK_INTERVAL_SEC) {
                 time = 0.f;
                 stats::set_all_property_flags(true, true);
@@ -480,12 +511,12 @@ int main(int, char**) {
             }
         }
 
-        float ms = compute_avg_ms(data.ctx.timing.dt);
+        float ms = compute_avg_ms(data.ctx.timing.delta_s);
         bool time_changed = false;
         bool frame_changed = false;
 
         if (data.is_playing) {
-            data.time += data.ctx.timing.dt * data.frames_per_second;
+            data.time += data.ctx.timing.delta_s * data.frames_per_second;
         }
 
         {
@@ -592,14 +623,14 @@ int main(int, char**) {
             data.camera.trackball_state.input.rotate_button = data.ctx.input.mouse.down[0];
             data.camera.trackball_state.input.pan_button = data.ctx.input.mouse.down[1];
             data.camera.trackball_state.input.dolly_button = data.ctx.input.mouse.down[2];
-            data.camera.trackball_state.input.mouse_coord_prev = data.ctx.input.mouse.coord_prev;
-            data.camera.trackball_state.input.mouse_coord_curr = data.ctx.input.mouse.coord_curr;
+            data.camera.trackball_state.input.mouse_coord_prev = {previous_mouse_coord.x, previous_mouse_coord.y};
+            data.camera.trackball_state.input.mouse_coord_curr = {data.ctx.input.mouse.coord.x, data.ctx.input.mouse.coord.y};
             data.camera.trackball_state.input.screen_size = vec2(data.ctx.window.width, data.ctx.window.height);
-            data.camera.trackball_state.input.dolly_delta = data.ctx.input.mouse.scroll.y;
+            data.camera.trackball_state.input.dolly_delta = data.ctx.input.mouse.scroll_delta;
 
             camera_controller_trackball(&data.camera.camera, &data.camera.trackball_state);
 
-            if (data.ctx.input.mouse.release[0] && data.ctx.input.mouse.velocity == vec2(0)) {
+            if (data.ctx.input.mouse.release[0] && data.ctx.input.mouse.coord == previous_mouse_coord) {
                 data.selected = data.hovered;
             }
         }
@@ -654,7 +685,7 @@ int main(int, char**) {
 
         // PICKING
         {
-            ivec2 coord = {data.ctx.input.mouse.coord_curr.x, data.ctx.framebuffer.height - data.ctx.input.mouse.coord_curr.y};
+            ivec2 coord = {data.ctx.input.mouse.coord.x, data.ctx.framebuffer.height - data.ctx.input.mouse.coord.y};
             if (coord.x < 0 || coord.y < 0 || coord.x >= data.ctx.framebuffer.width || coord.y >= data.ctx.framebuffer.height) {
                 data.picking_idx = NO_PICKING_IDX;
             } else {
@@ -708,7 +739,7 @@ int main(int, char**) {
         }
 
         // GUI ELEMENTS
-        data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, data.ctx.timing.dt);
+        data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, data.ctx.timing.delta_s);
 
         draw_main_menu(&data);
 
@@ -723,8 +754,7 @@ int main(int, char**) {
 
         if (!ImGui::GetIO().WantCaptureMouse) {
             if (data.picking_idx != NO_PICKING_IDX) {
-                ivec2 pos = data.ctx.input.mouse.coord_curr;
-                draw_atom_info_window(data.mol_data.dynamic.molecule, data.picking_idx, pos.x, pos.y);
+                draw_atom_info_window(data.mol_data.dynamic.molecule, data.picking_idx, data.ctx.input.mouse.coord.x, data.ctx.input.mouse.coord.y);
             }
         }
 
