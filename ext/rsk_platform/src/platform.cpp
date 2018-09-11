@@ -447,29 +447,32 @@ static void imgui_new_frame() {
     ImGui::NewFrame();
 }
 
-void initialize(Context* ctx, int32 width, int32 height, const char* title) {
+bool initialize(Context* ctx, int32 width, int32 height, const char* title) {
     if (!glfwInit()) {
         // TODO Throw critical error
         error_callback(1, "Error while initializing. Terminating.");
-        exit(1);
+        return false;
     }
     glfwSetErrorCallback(error_callback);
 
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-#ifdef OS_MAC
+#ifdef OS_MAC_OSX
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
     GLFWwindow* window = glfwCreateWindow(width, height, title, NULL, NULL);
     if (!window) {
         error_callback(2, "Could not create window. Terminating.");
-        return;
+        return false;
     }
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
-    gl3wInit();
+    if (gl3wInit() != GL3W_OK) {
+        error_callback(3, "Could not load gl functions. Terminating.");
+        return false;
+    }
 
     if (glDebugMessageCallback) {
         glEnable(GL_DEBUG_OUTPUT);
@@ -507,6 +510,8 @@ void initialize(Context* ctx, int32 width, int32 height, const char* title) {
     glfwSetCharCallback(window, char_callback);
 
     memcpy(ctx, &internal_ctx, sizeof(Context));
+
+    return true;
 }
 
 void shutdown(Context* ctx) {

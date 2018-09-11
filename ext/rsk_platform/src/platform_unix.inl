@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include "string_utils.h"
+#include <time.h>
 
 static DynamicArray<CString> curr_filters;
 
@@ -29,6 +29,18 @@ static int filter_func(const struct dirent *dir) {
     }
 
     return 0;
+}
+
+Timestamp get_time() {
+    timespec t;
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t);
+    return *(Timestamp*)(&t);
+}
+
+float compute_delta_ms(Timestamp t0, Timestamp t1) {
+    timespec ts0 = *(timespec*)(&t0);
+    timespec ts1 = *(timespec*)(&t1);
+    return (ts1.tv_sec - ts0.tv_sec) * 1000 + (ts1.tv_nsec - ts0.tv_nsec) / 1000;
 }
 
 DynamicArray<DirectoryEntry> list_directory(CString dir_path) {

@@ -342,13 +342,7 @@ static void compute_backbone_angles_async(ApplicationData* data);
 int main(int, char**) {
     ApplicationData data;
 
-    // Init platform
-    platform::initialize(&data.ctx, 1920, 1080, "VIAMD");
-    data.ctx.window.vsync = false;
-
-    init_main_framebuffer(&data.fbo, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
-
-    // Init subsystems
+    // Init logging
     logging::initialize();
     // Standard output
     logging::register_backend([](CString str, logging::Severity, void*) { printf("%s\n", str.cstr()); });
@@ -377,6 +371,16 @@ int main(int, char**) {
         },
         &data.console);
 
+    // Init platform
+    if (!platform::initialize(&data.ctx, 1920, 1080, "VIAMD")) {
+        printf("Could not initialize platform layer... terminating\n");
+        return 1;
+    }
+    data.ctx.window.vsync = false;
+
+    init_main_framebuffer(&data.fbo, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
+
+    // Init subsystems
     immediate::initialize();
     draw::initialize();
     ramachandran::initialize();
