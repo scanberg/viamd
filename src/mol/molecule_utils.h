@@ -167,8 +167,25 @@ HydrogenBondTrajectory compute_bonds_trajectory(const MoleculeDynamic& dyn, floa
 namespace filter {
 void initialize();
 void shutdown();
-bool compute_filter_mask(Array<bool> mask, const MoleculeDynamic& mol, CString filter);
+bool compute_filter_mask(Array<bool> mask, const MoleculeDynamic& dynamic, CString filter);
 void filter_colors(Array<uint32> colors, Array<bool> mask);
+
+template <typename T>
+void extract_filtered_data(DynamicArray<T>* dst_data, Array<const T> src_data, Array<const bool> mask) {
+    ASSERT(dst_data);
+    dst_data->clear();
+    for (auto m : mask) {
+        if (m) dst_data->push_back(data);
+    }
+}
+
+template <typename T>
+DynamicArray<T> extract_filtered_data(Array<const T> data, Array<const bool> mask) {
+    DynamicArray<T> result{};
+    extract_filtered_data(&result, data, mask);
+    return result;
+}
+
 }  // namespace filter
 
 inline bool is_amino_acid(Residue res) { return aminoacid::get_from_string(res.name) != AminoAcid::Unknown; }

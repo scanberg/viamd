@@ -304,17 +304,21 @@ struct ApplicationData {
     // DYNAMIC REFERENCE FRAME
     struct {
         Range atom_range{0, 0};
+        DynamicArray<bool> atom_mask;
+
         int32 frame_index = 10;
         mat4 world_to_reference{1};
         mat4 reference_to_world{1};
 
-        bool enable_rbf_refinement = false;
+        bool use_rbf_refinement = false;
         bool view_in_reference = false;
         RadialBasis refinement_basis;
 
         bool show_grid = false;
         bool show_grid_points = false;
         bool show_error = false;
+
+        float beta = 0.5f;
     } dynamic_frame;
 
     // --- CONSOLE ---
@@ -323,6 +327,33 @@ struct ApplicationData {
 
     bool high_res_font = false;
 };
+
+namespace dynamic_structure {
+
+enum class StructureType { Undefined = 0, Vector, Plane, CoordinateSystem };
+
+struct DynamicStructure {
+    StringBuffer<32> identifier = {};
+    StructureType type = StructureType::Undefined;
+};
+
+struct VectorStructure : DynamicStructure {
+    Array<vec3> frame_data;
+};
+
+struct PlaneStructure : DynamicStructure {
+    Array<vec4> frame_data;
+};
+
+struct CoordinateSystemStructure : DynamicStructure {
+    Array<mat4> frame_data;
+};
+
+typedef bool (*StructureComputeFunc)(DynamicStructure* structure, CString argument, const MoleculeDynamic& dynamic);
+
+DynamicArray<DynamicStructure> structures;
+
+}  // namespace dynamic_structure
 
 static void reset_view(ApplicationData* data, bool reposition_camera = true);
 static float compute_avg_ms(float dt);
@@ -375,10 +406,7 @@ int main(int, char**) {
 
     // Init logging
     logging::initialize();
-    // Standard output
     logging::register_backend([](CString str, logging::Severity, void*) { printf("%s\n", str.cstr()); });
-
-    // App Console output
     logging::register_backend(
         [](CString str, logging::Severity severity, void* usr_data) {
             const char* modifier = "";
@@ -434,10 +462,11 @@ int main(int, char**) {
 #else
     stats::create_property("b1", "distance resatom(resname(ALA), 1) com(resname(ALA))");
     load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
+    data.dynamic_frame.atom_range = {0, 152};
 
-    stats::create_property("b1", "distance resname(DE3) com(resname(DE3))");
-    load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/haofan/for_VIAMD.pdb");
-    data.dynamic_frame.atom_range = {0, 1277};
+    // stats::create_property("b1", "distance resname(DE3) com(resname(DE3))");
+    // load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/haofan/for_VIAMD.pdb");
+    // data.dynamic_frame.atom_range = {0, 1277};
 
 #endif
     reset_view(&data);
@@ -646,13 +675,25 @@ int main(int, char**) {
             const auto p_ref = get_trajectory_positions(data.mol_data.dynamic.trajectory, data.dynamic_frame.frame_index)
                                    .sub_array(data.dynamic_frame.atom_range.x, data.dynamic_frame.atom_range.y);
             auto p_cur = data.mol_data.dynamic.molecule.atom_positions.sub_array(data.dynamic_frame.atom_range.x, data.dynamic_frame.atom_range.y);
-            data.dynamic_frame.reference_to_world = compute_linear_transform(p_ref, p_cur);
+
+            mat4 M = compute_linear_transform(p_ref, p_cur);
+            mat3 A = M;
+            mat3 R, S;
+            decompose(A, &R, &S);
+            float det = math::abs(math::determinant(A));
+            LOG_NOTE("Determinant is: %.5f", det);
+            A = A / math::pow(det, 1.f / 3.f);
+
+            mat4 M2 = data.dynamic_frame.beta * A + (1.f - data.dynamic_frame.beta) * R;
+            M2[3] = M[3];
+            data.dynamic_frame.reference_to_world = M2;
+
             // Transform origin to corner instead of center
             // data.dynamic_frame.reference_to_world[3] -= data.dynamic_frame.reference_to_world * vec4(box * vec3(0.5f), 0);
             data.dynamic_frame.world_to_reference = math::inverse(data.dynamic_frame.reference_to_world);
             data.density_volume.model_to_world_matrix = math::inverse(compute_volume_basis(data.dynamic_frame.world_to_reference, box));
 
-            if (data.dynamic_frame.enable_rbf_refinement) {
+            if (data.dynamic_frame.use_rbf_refinement) {
                 DynamicArray<vec3> basis_points;
                 DynamicArray<vec3> basis_values;
                 const auto elements = data.mol_data.dynamic.molecule.atom_elements;
@@ -799,7 +840,7 @@ for (float y = min_val.y; y <= max_val.y; y += step.y) {
                             int32 idx = z * RES.x * RES.y + y * RES.y + x;
                             vec3 p = mat * vec4(min_val + STEP * vec3(x, y, z), 1.f);
                             grid_points[idx] = p;
-                            if (data.dynamic_frame.enable_rbf_refinement) {
+                            if (data.dynamic_frame.use_rbf_refinement) {
                                 auto v = evaluate_radial_basis(data.dynamic_frame.refinement_basis, p);
                                 grid_points[idx] += v;
                             }
@@ -1245,11 +1286,12 @@ if (ImGui::BeginMenu("Edit")) {
         }
 
         if (ImGui::BeginMenu("Test")) {
-            ImGui::Checkbox("RBF-refinement", &data->dynamic_frame.enable_rbf_refinement);
+            ImGui::Checkbox("RBF-refinement", &data->dynamic_frame.use_rbf_refinement);
             ImGui::Checkbox("View in Reference", &data->dynamic_frame.view_in_reference);
             ImGui::Checkbox("Show error", &data->dynamic_frame.show_error);
             ImGui::Checkbox("Show grid", &data->dynamic_frame.show_grid);
             ImGui::Checkbox("Show grid points", &data->dynamic_frame.show_grid_points);
+            ImGui::SliderFloat("Beta", &data->dynamic_frame.beta, 0.f, 1.f);
 
             ImGui::EndMenu();
         }

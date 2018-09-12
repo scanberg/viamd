@@ -450,7 +450,7 @@ static void imgui_new_frame() {
 bool initialize(Context* ctx, int32 width, int32 height, const char* title) {
     if (!glfwInit()) {
         // TODO Throw critical error
-        error_callback(1, "Error while initializing. Terminating.");
+        error_callback(1, "Error while initializing glfw.");
         return false;
     }
     glfwSetErrorCallback(error_callback);
@@ -463,14 +463,14 @@ bool initialize(Context* ctx, int32 width, int32 height, const char* title) {
 #endif
     GLFWwindow* window = glfwCreateWindow(width, height, title, NULL, NULL);
     if (!window) {
-        error_callback(2, "Could not create window. Terminating.");
+        error_callback(2, "Could not create glfw window.");
         return false;
     }
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
     if (gl3wInit() != GL3W_OK) {
-        error_callback(3, "Could not load gl functions. Terminating.");
+        error_callback(3, "Could not load gl functions.");
         return false;
     }
 

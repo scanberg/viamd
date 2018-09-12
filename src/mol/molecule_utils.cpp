@@ -88,12 +88,11 @@ void linear_interpolation_periodic(Array<vec3> positions, Array<const vec3> prev
         vec3 next = next_pos[i];
         vec3 prev = prev_pos[i];
 
-        if (periodic_jump(prev, next, half_box_ext)) {
-            // Atom moved across periodic boundry we cannot apply linearly interpolate directly
-            positions[i] = t < 0.5f ? prev : next;
-        } else {
-            positions[i] = math::mix(prev, next, t);
-        }
+        vec3 delta = next - prev;
+        vec3 signed_mask = math::sign(delta) * math::step(half_box_ext, math::abs(delta));
+        next = next - full_box_ext * signed_mask;
+
+        positions[i] = math::mix(prev, next, t);
     }
 }
 
@@ -113,14 +112,20 @@ void spline_interpolation_periodic(Array<vec3> positions, Array<const vec3> pos0
         vec3 p2 = pos2[i];
         vec3 p3 = pos3[i];
 
-        if (periodic_jump(p0, p1, half_box_ext)) p0 = p1;
-        if (periodic_jump(p2, p3, half_box_ext)) p3 = p2;
+        // p1 is our reference which we want to 'de-periodize' the other positions to in order to interpolate correctly
+        vec3 d0 = p0 - p1;
+        vec3 s0 = math::sign(d0) * math::step(half_box_ext, math::abs(d0));
+        p0 = p0 - full_box_ext * s0;
 
-        if (periodic_jump(p1, p2, half_box_ext)) {
-            positions[i] = t < 0.5f ? p1 : p2;
-        } else {
-            positions[i] = math::spline(p0, p1, p2, p3, t);
-        }
+        vec3 d2 = p2 - p1;
+        vec3 s2 = math::sign(d2) * math::step(half_box_ext, math::abs(d2));
+        p2 = p2 - full_box_ext * s2;
+
+        vec3 d3 = p3 - p1;
+        vec3 s3 = math::sign(d3) * math::step(half_box_ext, math::abs(d3));
+        p3 = p3 - full_box_ext * s3;
+
+        positions[i] = math::spline(p0, p1, p2, p3, t);
     }
 }
 
@@ -2727,6 +2732,6 @@ void decompose(const mat3& M, mat3* R, mat3* S) {
     D[0][0] = sqrtf(D[0][0]);
     D[1][1] = sqrtf(D[1][1]);
     D[2][2] = sqrtf(D[2][2]);
-    *S = Q * D * math::inverse(Q);
+    *S = math::inverse(Q) * D * Q;
     *R = M * math::inverse(*S);
 }

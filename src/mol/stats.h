@@ -6,7 +6,7 @@
 #include <core/vector_types.h>
 #include <core/string_utils.h>
 
-#include <initializer_list>
+//#include <initializer_list>
 
 struct MoleculeDynamic;
 struct MoleculeStructure;
