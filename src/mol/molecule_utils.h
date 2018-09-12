@@ -104,7 +104,7 @@ void compute_bounding_box(vec3* min_box, vec3* max_box, Array<const vec3> positi
 vec3 compute_com(Array<const vec3> positions, Array<const float> masses = {});
 
 /*
-inline mat4 compute_basis(const DynamicBasis& basis, Array<const vec3> atom_positions) {
+inline mat(const DynamicBasis& basis, Array<const vec3> atom_positions) {
     mat4 mat;
     vec3 x = atom_positions[basis.x_idx] - atom_positions[basis.origin_idx];
     vec3 y = atom_positions[basis.y_idx] - atom_positions[basis.origin_idx];

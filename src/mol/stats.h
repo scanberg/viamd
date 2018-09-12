@@ -6,6 +6,8 @@
 #include <core/vector_types.h>
 #include <core/string_utils.h>
 
+#include <initializer_list>
+
 struct MoleculeDynamic;
 struct MoleculeStructure;
 struct MoleculeTrajectory;
@@ -106,6 +108,21 @@ bool extract_args_structures(Array<StructureData> data, Array<CString> arg, cons
 
 Array<const vec3> extract_positions(Structure structure, Array<const vec3> atom_positions);
 
+template <typename Callback>
+void for_each_filtered_property_structure_in_frame(Property* prop, int32 frame_idx, Callback cb) {
+    ASSERT(prop);
+    for (int32 inst_idx = 0; inst_idx < prop->instance_data.count; inst_idx++) {
+        const float v = prop->instance_data[inst_idx].data[frame_idx];
+        if (prop->filter.x <= v && v <= prop->filter.y) {
+            for (const auto& s_data : prop->structure_data) {
+                for (const auto& s : s_data.structures) {
+                    cb(s);
+                }
+            }
+        }
+    }
+}
+
 typedef bool (*PropertyComputeFunc)(Property* prop, const Array<CString> args, const MoleculeDynamic& dynamic);
 typedef bool (*PropertyVisualizeFunc)(const Property& prop, const MoleculeDynamic& dynamic);
 
@@ -121,6 +138,49 @@ void normalize_histogram(Histogram* hist);
 
 // DENSITY VOLUME
 void compute_density_volume(Volume* vol, const mat4& world_to_volume, const MoleculeTrajectory& traj, Range frame_range);
+
+template <typename WorldToVolumeFunc>
+void compute_density_volume_with_basis(Volume* vol, const MoleculeTrajectory& traj, Range frame_range, WorldToVolumeFunc func) {
+    ASSERT(vol);
+    if (vol->dim.x == 0 || vol->dim.y == 0 || vol->dim.z == 0) {
+        LOG_ERROR("One or more volume dimension are zero...");
+        return;
+    }
+
+    auto properties = get_properties();
+    if (properties.count == 0) return;
+    float num_frames = (float)properties.front()->avg_data.count;
+
+    if (frame_range.x == 0 && frame_range.y == 0) {
+        frame_range.y = num_frames;
+    }
+
+    frame_range.x = math::clamp(frame_range.x, 0.f, num_frames);
+    frame_range.y = math::clamp(frame_range.y, 0.f, num_frames);
+
+    clear_volume(vol);
+
+    for (auto prop : get_properties()) {
+        if (!prop->enable_volume) continue;
+        for (int32 frame_idx = (int32)frame_range.x; frame_idx < (int32)frame_range.y; frame_idx++) {
+            const Array<const vec3> atom_positions = get_trajectory_positions(traj, frame_idx);
+            const mat4 world_to_volume_matrix = func(frame_idx);
+            for_each_filtered_property_structure_in_frame(prop, frame_idx,
+                                                          [vol, &atom_positions, &world_to_volume_matrix, &traj](const Structure& s) {
+                                                              for (int32 i = s.beg_idx; i < s.end_idx; i++) {
+                                                                  const vec4 tc = math::fract(world_to_volume_matrix * vec4(atom_positions[i], 1));
+                                                                  // if (tc.x < 0.f || 1.f < tc.x) continue;
+                                                                  // if (tc.y < 0.f || 1.f < tc.y) continue;
+                                                                  // if (tc.z < 0.f || 1.f < tc.z) continue;
+                                                                  const ivec3 c = vec3(tc) * (vec3)vol->dim;
+                                                                  const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
+                                                                  vol->voxel_data[voxel_idx]++;
+                                                                  vol->voxel_range.y = math::max(vol->voxel_range.y, vol->voxel_data[voxel_idx]);
+                                                              }
+                                                          });
+        }
+    }
+}
 
 // STATS
 void initialize();
@@ -166,8 +226,7 @@ void clear_all_properties();
 
 void set_all_property_flags(bool data_dirty, bool filter_dirty);
 
-int32 get_property_count();
-Property* get_property(int32 idx);
-Property* get_property(CString name);
+Array<Property*> get_properties();
+Property* find_property(CString name);
 
 }  // namespace stats

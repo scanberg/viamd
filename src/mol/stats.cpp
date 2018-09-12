@@ -233,38 +233,34 @@ void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, con
     }
 
     if (ctx.properties.count == 0) return;
-    int32 num_frames = (int32)ctx.properties.front()->avg_data.count;
+    float num_frames = (float)ctx.properties.front()->avg_data.count;
 
     if (frame_range.x == 0 && frame_range.y == 0) {
-        frame_range.y = (float)num_frames;
+        frame_range.y = num_frames;
     }
 
-    int32 beg_frame = math::clamp((int32)frame_range.x, 0, num_frames);
-    int32 end_frame = math::clamp((int32)frame_range.y, 0, num_frames);
+    frame_range.x = math::clamp(frame_range.x, 0.f, num_frames);
+    frame_range.y = math::clamp(frame_range.y, 0.f, num_frames);
 
     clear_volume(vol);
 
-    for (int32 frame_idx = beg_frame; frame_idx < end_frame; frame_idx++) {
-        Array<const vec3> atom_positions = get_trajectory_positions(traj, frame_idx);
-        for (auto prop : ctx.properties) {
-            if (!prop->enable_volume) continue;
-            for (int32 inst_idx = 0; inst_idx < prop->instance_data.count; inst_idx++) {
-                const float v = prop->instance_data[inst_idx].data[frame_idx];
-                if (prop->filter.x <= v && v <= prop->filter.y) {
-                    for (const auto& s : prop->structure_data) {
-                        for (int32 i = s.structures[inst_idx].beg_idx; i < s.structures[inst_idx].end_idx; i++) {
-                            const vec4 tc = world_to_volume_matrix * vec4(atom_positions[i], 1);
-                            if (tc.x < 0.f || 1.f < tc.x) continue;
-                            if (tc.y < 0.f || 1.f < tc.y) continue;
-                            if (tc.z < 0.f || 1.f < tc.z) continue;
-                            const ivec3 c = vec3(tc) * (vec3)vol->dim;
-                            const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
-                            vol->voxel_data[voxel_idx]++;
-                            vol->voxel_range.y = math::max(vol->voxel_range.y, vol->voxel_data[voxel_idx]);
-                        }
-                    }
-                }
-            }
+    for (auto prop : ctx.properties) {
+        if (!prop->enable_volume) continue;
+        for (int32 frame_idx = (int32)frame_range.x; frame_idx < (int32)frame_range.y; frame_idx++) {
+            const Array<const vec3> atom_positions = get_trajectory_positions(traj, frame_idx);
+            for_each_filtered_property_structure_in_frame(prop, frame_idx,
+                                                          [vol, &atom_positions, &world_to_volume_matrix, &traj](const Structure& s) {
+                                                              for (int32 i = s.beg_idx; i < s.end_idx; i++) {
+                                                                  const vec4 tc = world_to_volume_matrix * vec4(atom_positions[i], 1);
+                                                                  if (tc.x < 0.f || 1.f < tc.x) continue;
+                                                                  if (tc.y < 0.f || 1.f < tc.y) continue;
+                                                                  if (tc.z < 0.f || 1.f < tc.z) continue;
+                                                                  const ivec3 c = vec3(tc) * (vec3)vol->dim;
+                                                                  const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
+                                                                  vol->voxel_data[voxel_idx]++;
+                                                                  vol->voxel_range.y = math::max(vol->voxel_range.y, vol->voxel_data[voxel_idx]);
+                                                              }
+                                                          });
         }
     }
 }
@@ -1581,19 +1577,14 @@ void move_property_down(Property* prop) {
     ctx.stop_signal = false;
 }
 
-Property* get_property(CString name) {
+Array<Property*> get_properties() { return ctx.properties; }
+
+Property* find_property(CString name) {
     for (auto p : ctx.properties) {
         if (compare(p->name_buf, name)) return p;
     }
     return nullptr;
 }
-
-Property* get_property(int32 idx) {
-    if (-1 < idx && idx < ctx.properties.count) return ctx.properties[idx];
-    return nullptr;
-}
-
-int32 get_property_count() { return (int32)ctx.properties.count; }
 
 void clear_property(Property* prop) {
     signal_stop_and_wait();

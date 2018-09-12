@@ -201,7 +201,7 @@ ImGui::End();
 
     glUseProgram(program);
     // glPointSize(20.f);
-    glLineWidth(3.f);
+    glLineWidth(1.f);
 
     glUniform1f(uniform_loc_point_size, 4.f);
     for (const auto& cmd : commands) {

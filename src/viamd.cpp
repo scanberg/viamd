@@ -23,6 +23,8 @@
 #include <gfx/postprocessing_utils.h>
 #include <gfx/volume_utils.h>
 
+#include <mol/radial_basis.h>
+
 #include <stdio.h>
 #include <thread>
 #include <mutex>
@@ -299,6 +301,22 @@ struct ApplicationData {
         Array<BackboneAngles> current_backbone_angles{};
     } ramachandran;
 
+    // DYNAMIC REFERENCE FRAME
+    struct {
+        Range atom_range{0, 0};
+        int32 frame_index = 10;
+        mat4 world_to_reference{1};
+        mat4 reference_to_world{1};
+
+        bool enable_rbf_refinement = false;
+        bool view_in_reference = false;
+        RadialBasis refinement_basis;
+
+        bool show_grid = false;
+        bool show_grid_points = false;
+        bool show_error = false;
+    } dynamic_frame;
+
     // --- CONSOLE ---
     Console console{};
     bool show_console = false;
@@ -335,11 +353,24 @@ static void clear_representations(ApplicationData* data);
 
 static void create_volume(ApplicationData* data);
 
+static mat4 compute_volume_basis(const mat4& world_to_reference, const mat3& box) {
+    mat4 world_to_volume;
+    world_to_volume[0] = world_to_reference[0] / box[0][0];
+    world_to_volume[1] = world_to_reference[1] / box[1][1];
+    world_to_volume[2] = world_to_reference[2] / box[2][2];
+    world_to_volume[3] = vec4(-vec3(0.5f), 0);
+
+    return world_to_volume;
+}
+
 // Async operations
 static void load_trajectory_async(ApplicationData* data);
 static void compute_backbone_angles_async(ApplicationData* data);
 
 int main(int, char**) {
+
+    defer { printf("Good bye!"); };
+
     ApplicationData data;
 
     // Init logging
@@ -403,62 +434,63 @@ int main(int, char**) {
 #else
     stats::create_property("b1", "distance resatom(resname(ALA), 1) com(resname(ALA))");
     load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
-    // load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/haofan/for_VIAMD.pdb");
+
+    stats::create_property("b1", "distance resname(DE3) com(resname(DE3))");
+    load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/haofan/for_VIAMD.pdb");
+    data.dynamic_frame.atom_range = {0, 1277};
+
 #endif
     reset_view(&data);
     create_default_representation(&data);
     create_volume(&data);
-
-    auto pos_a = get_trajectory_positions(data.mol_data.dynamic.trajectory, 0);
-    auto pos_b = get_trajectory_positions(data.mol_data.dynamic.trajectory, 100);
-
-    mat4 M = compute_linear_transform(pos_a, pos_b);
-
-    mat3 A = math::transpose(M) * M;
-
-    mat3 R, S;
-    decompose(A, &R, &S);
-
-    std::cout << "A:" << A << "\n";
-    std::cout << "R:" << R << "\n";
-    std::cout << "S:" << S << "\n";
-    std::cout << "RS:" << R * S << "\n";
-
-    auto t0 = platform::get_time();
-    const int N = 1;
-    /*
-for (int32 i = 0; i < N; i++) {
-    mat3 A = {1, 1, 0, 0, 1, 1, 1, 0, 1};
-    mat3 R, S;
-    decompose(A, &R, &S);
-
-    mat3 B = R * S;
-    std::cout << A;
-    std::cout << B;
-}
-    */
-    auto t1 = platform::get_time();
-
-    auto delta = platform::compute_delta_ms(t0, t1);
-    printf("Time taken to compute %i diagonalizations: %.3f ms\n", N, delta);
 
     // Main loop
     while (!data.ctx.window.should_close) {
         platform::Coordinate previous_mouse_coord = data.ctx.input.mouse.coord;
         platform::update(&data.ctx);
 
-        stats::async_update(data.mol_data.dynamic, data.time_filter.range,
-                            [](void* usr_data) {
-                                ApplicationData* data = (ApplicationData*)usr_data;
-                                if (data->density_volume.enabled) {
-                                    data->density_volume.volume_data_mutex.lock();
-                                    stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix,
-                                                                  data->mol_data.dynamic.trajectory, data->time_filter.range);
-                                    data->density_volume.volume_data_mutex.unlock();
-                                    data->density_volume.texture.dirty = true;
-                                }
-                            },
-                            &data);
+        if (data.density_volume.enabled) {
+            stats::async_update(
+                data.mol_data.dynamic, data.time_filter.range,
+                [](void* usr_data) {
+                    ApplicationData* data = (ApplicationData*)usr_data;
+                    data->density_volume.volume_data_mutex.lock();
+
+                    stats::compute_density_volume_with_basis(
+                        &data->density_volume.volume, data->mol_data.dynamic.trajectory, data->time_filter.range, [data](int32 frame_idx) -> mat4 {
+                            /*
+        const auto p_ref = get_trajectory_positions(data->mol_data.dynamic.trajectory, data->dynamic_frame.frame_index)
+                               .sub_array(data->dynamic_frame.atom_range.x, data->dynamic_frame.atom_range.y);
+        const auto p_cur = get_trajectory_positions(data->mol_data.dynamic.trajectory, frame_idx)
+                               .sub_array(data->dynamic_frame.atom_range.x, data->dynamic_frame.atom_range.y);
+        mat4 world_to_volume = compute_transform(p_cur, p_ref);
+        const auto box = get_trajectory_frame(data->mol_data.dynamic.trajectory, frame_idx).box;
+        world_to_volume[3] += vec4(box * vec3(0.5f), 0);
+        world_to_volume[0] /= box[0][0];
+        world_to_volume[1] /= box[1][1];
+        world_to_volume[2] /= box[2][2];
+                                    */
+
+                            const auto box = get_trajectory_frame(data->mol_data.dynamic.trajectory, frame_idx).box;
+                            const auto p_ref = get_trajectory_positions(data->mol_data.dynamic.trajectory, data->dynamic_frame.frame_index)
+                                                   .sub_array(data->dynamic_frame.atom_range.x, data->dynamic_frame.atom_range.y);
+                            const auto p_cur = get_trajectory_positions(data->mol_data.dynamic.trajectory, frame_idx)
+                                                   .sub_array(data->dynamic_frame.atom_range.x, data->dynamic_frame.atom_range.y);
+
+                            auto cur_to_ref = compute_linear_transform(p_cur, p_ref);
+                            return compute_volume_basis(cur_to_ref, box);
+                        });
+
+                    // stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix,
+                    //                              data->mol_data.dynamic.trajectory, data->time_filter.range);
+
+                    data->density_volume.volume_data_mutex.unlock();
+                    data->density_volume.texture.dirty = true;
+                },
+                &data);
+        } else {
+            stats::async_update(data.mol_data.dynamic, data.time_filter.range);
+        }
 
         // If gpu representation of volume is not up to date, upload data
         if (data.density_volume.texture.dirty) {
@@ -609,6 +641,42 @@ for (int32 i = 0; i < N; i++) {
                         break;
                 }
             }
+
+            const auto box = get_trajectory_frame(data.mol_data.dynamic.trajectory, frame).box;
+            const auto p_ref = get_trajectory_positions(data.mol_data.dynamic.trajectory, data.dynamic_frame.frame_index)
+                                   .sub_array(data.dynamic_frame.atom_range.x, data.dynamic_frame.atom_range.y);
+            auto p_cur = data.mol_data.dynamic.molecule.atom_positions.sub_array(data.dynamic_frame.atom_range.x, data.dynamic_frame.atom_range.y);
+            data.dynamic_frame.reference_to_world = compute_linear_transform(p_ref, p_cur);
+            // Transform origin to corner instead of center
+            // data.dynamic_frame.reference_to_world[3] -= data.dynamic_frame.reference_to_world * vec4(box * vec3(0.5f), 0);
+            data.dynamic_frame.world_to_reference = math::inverse(data.dynamic_frame.reference_to_world);
+            data.density_volume.model_to_world_matrix = math::inverse(compute_volume_basis(data.dynamic_frame.world_to_reference, box));
+
+            if (data.dynamic_frame.enable_rbf_refinement) {
+                DynamicArray<vec3> basis_points;
+                DynamicArray<vec3> basis_values;
+                const auto elements = data.mol_data.dynamic.molecule.atom_elements;
+                for (int32 i = 0; i < p_cur.count; i++) {
+                    // if (elements[i] == Element::C || elements[i] == Element::O || elements[i] == Element::P) {
+                    if (elements[i] == Element::C) {
+                        vec3 delta = vec3(data.dynamic_frame.reference_to_world * vec4(p_ref[i], 1.f)) - p_cur[i];
+                        basis_points.push_back(p_cur[i]);
+                        basis_values.push_back(delta);
+                    }
+                }
+
+                // DynamicArray<vec3> p_ref_mod(p_ref.count);
+                // for (int32 i = 0; i < p_ref_mod.count; i++) {
+                //    p_ref_mod[i] = vec3(data.dynamic_frame.reference_to_world * vec4(p_ref[i], 1.f));
+                //}
+
+                data.dynamic_frame.refinement_basis = compute_radial_basis(basis_points, basis_values);
+
+                for (auto& p : data.mol_data.dynamic.molecule.atom_positions) {
+                    auto v = evaluate_radial_basis(data.dynamic_frame.refinement_basis, p);
+                    p = p + v;
+                }
+            }
         }
 
         if (frame_changed) {
@@ -650,6 +718,9 @@ for (int32 i = 0; i < N; i++) {
 
         // RENDER TO FBO
         mat4 view_mat = compute_world_to_view_matrix(data.camera.camera);
+        if (data.dynamic_frame.view_in_reference) {
+            view_mat = view_mat * data.dynamic_frame.world_to_reference;
+        }
         mat4 proj_mat = compute_perspective_projection_matrix(data.camera.camera, data.fbo.width, data.fbo.height);
         mat4 inv_proj_mat = math::inverse(proj_mat);
 
@@ -688,6 +759,101 @@ for (int32 i = 0; i < N; i++) {
                 int32 frame_idx = math::clamp((int)data.time, 0, data.mol_data.dynamic.trajectory.num_frames - 1);
                 TrajectoryFrame frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, frame_idx);
                 immediate::draw_aabb(vec3(0), frame.box * vec3(1), ImColor(vec_cast(data.simulation_box.color)));
+            }
+
+            if (data.mol_data.dynamic.trajectory) {
+                const mat4& mat = data.dynamic_frame.reference_to_world;
+                const TrajectoryFrame frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, 0);
+                const vec3 ext = frame.box * vec3(1.0f);
+
+                const vec3 min_val = vec3(0);
+                const vec3 max_val = ext;
+                const vec3 step = ext / 4.f;
+
+                /*
+
+for (float x = min_val.x; x <= max_val.x; x += step.x) {
+    for (float y = min_val.y; y <= max_val.y; y += step.y) {
+        immediate::draw_line(mat * vec4(x, y, min_val.z, 1), mat * vec4(x, y, max_val.z, 1), 0xff000000);
+    }
+}
+for (float x = min_val.x; x <= max_val.x; x += step.x) {
+    for (float z = min_val.z; z <= max_val.z; z += step.z) {
+        immediate::draw_line(mat * vec4(x, min_val.y, z, 1), mat * vec4(x, max_val.y, z, 1), 0xff000000);
+    }
+}
+for (float y = min_val.y; y <= max_val.y; y += step.y) {
+    for (float z = min_val.z; z <= max_val.z; z += step.z) {
+        immediate::draw_line(mat * vec4(min_val.x, y, z, 1), mat * vec4(max_val.x, y, z, 1), 0xff000000);
+    }
+}
+                */
+
+                const ivec3 RES = {15, 15, 15};
+                const vec3 STEP = {ext.x / RES.x, ext.y / RES.y, ext.z / RES.z};
+
+                DynamicArray<vec3> grid_points(RES.x * RES.y * RES.z);
+                for (int32 z = 0; z < RES.z; z++) {
+                    for (int32 y = 0; y < RES.y; y++) {
+                        for (int32 x = 0; x < RES.x; x++) {
+                            int32 idx = z * RES.x * RES.y + y * RES.y + x;
+                            vec3 p = mat * vec4(min_val + STEP * vec3(x, y, z), 1.f);
+                            grid_points[idx] = p;
+                            if (data.dynamic_frame.enable_rbf_refinement) {
+                                auto v = evaluate_radial_basis(data.dynamic_frame.refinement_basis, p);
+                                grid_points[idx] += v;
+                            }
+                            if (data.dynamic_frame.show_grid_points) {
+                                immediate::draw_point(grid_points[idx], immediate::COLOR_CYAN);
+                            }
+                        }
+                    }
+                }
+
+                if (data.dynamic_frame.show_grid) {
+                    for (int32 x = 0; x < RES.x; x++) {
+                        for (int32 y = 0; y < RES.y; y++) {
+                            for (int32 z = 0; z < RES.z - 1; z++) {
+                                int32 i = z * RES.x * RES.y + y * RES.y + x;
+                                int32 j = (z + 1) * RES.x * RES.y + y * RES.y + x;
+                                immediate::draw_line(grid_points[i], grid_points[j], 0xff000000);
+                            }
+                        }
+                    }
+
+                    for (int32 x = 0; x < RES.x; x++) {
+                        for (int32 z = 0; z < RES.z; z++) {
+                            for (int32 y = 0; y < RES.y - 1; y++) {
+                                int32 i = z * RES.x * RES.y + y * RES.y + x;
+                                int32 j = z * RES.x * RES.y + (y + 1) * RES.y + x;
+                                immediate::draw_line(grid_points[i], grid_points[j], 0xff000000);
+                            }
+                        }
+                    }
+
+                    for (int32 y = 0; y < RES.y; y++) {
+                        for (int32 z = 0; z < RES.z; z++) {
+                            for (int32 x = 0; x < RES.x - 1; x++) {
+                                int32 i = z * RES.x * RES.y + y * RES.y + x;
+                                int32 j = z * RES.x * RES.y + y * RES.y + x + 1;
+                                immediate::draw_line(grid_points[i], grid_points[j], 0xff000000);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (data.dynamic_frame.show_error) {
+                const auto p_ref = get_trajectory_positions(data.mol_data.dynamic.trajectory, data.dynamic_frame.frame_index)
+                                       .sub_array(data.dynamic_frame.atom_range.x, data.dynamic_frame.atom_range.y);
+                const auto p_cur =
+                    data.mol_data.dynamic.molecule.atom_positions.sub_array(data.dynamic_frame.atom_range.x, data.dynamic_frame.atom_range.y);
+
+                for (int32 i = 0; i < p_cur.count; i++) {
+                    vec3 v0 = p_cur[i];
+                    vec3 v1 = vec3(data.dynamic_frame.reference_to_world * vec4(p_ref[i], 1.f));
+                    immediate::draw_line(v0, v1, immediate::COLOR_MAGENTA);
+                }
             }
 
             immediate::flush();
@@ -745,6 +911,20 @@ for (int32 i = 0; i < N; i++) {
             immediate::set_view_matrix(view_mat);
             immediate::set_proj_matrix(proj_mat);
             stats::visualize(data.mol_data.dynamic);
+
+            immediate::draw_basis(data.dynamic_frame.reference_to_world, 5.f);
+
+            /*
+for (const auto& p : ps.particle_positions) {
+    immediate::draw_point(p, immediate::COLOR_RED);
+}
+for (const auto& d_c : ps.constraints.distance) {
+    const vec3& p0 = ps.particle_positions[d_c.idx[0]];
+    const vec3& p1 = ps.particle_positions[d_c.idx[1]];
+    immediate::draw_line(p0, p1, immediate::COLOR_GREEN);
+}
+            */
+
             immediate::flush();
         }
 
@@ -1063,6 +1243,17 @@ if (ImGui::BeginMenu("Edit")) {
 
             ImGui::EndMenu();
         }
+
+        if (ImGui::BeginMenu("Test")) {
+            ImGui::Checkbox("RBF-refinement", &data->dynamic_frame.enable_rbf_refinement);
+            ImGui::Checkbox("View in Reference", &data->dynamic_frame.view_in_reference);
+            ImGui::Checkbox("Show error", &data->dynamic_frame.show_error);
+            ImGui::Checkbox("Show grid", &data->dynamic_frame.show_grid);
+            ImGui::Checkbox("Show grid points", &data->dynamic_frame.show_grid_points);
+
+            ImGui::EndMenu();
+        }
+
         ImGui::EndMainMenuBar();
     }
 
@@ -1218,8 +1409,9 @@ static void draw_property_window(ApplicationData* data) {
 
     // bool compute_stats = false;
 
-    for (int i = 0; i < stats::get_property_count(); i++) {
-        auto prop = stats::get_property(i);
+    auto properties = stats::get_properties();
+    for (int32 i = 0; i < (int32)properties.count; i++) {
+        auto prop = properties[i];
 
         ImGui::Separator();
         ImGui::PushID(i);
@@ -1498,8 +1690,10 @@ static void draw_timeline_window(ApplicationData* data) {
         static float selection_start;
         static bool is_selecting = false;
 
-        for (int i = 0; i < stats::get_property_count(); i++) {
-            auto prop = stats::get_property(i);
+        const auto properties = stats::get_properties();
+        for (int i = 0; i < (int32)properties.count; i++) {
+            auto prop = properties[i];
+
             if (!prop->enable_timeline) continue;
             Array<float> prop_data = prop->avg_data;
             CString prop_name = prop->name_buf;
@@ -1647,9 +1841,9 @@ static void draw_distribution_window(ApplicationData* data) {
     const ImGuiStyle& style = ImGui::GetStyle();
     ImGui::PushItemWidth(-1);
 
+    const auto properties = stats::get_properties();
     constexpr float RANGE_SLIDER_HEIGHT = 26.f;
-    const float prop_count = (float)stats::get_property_count();
-    const float plot_height = ImGui::GetContentRegionAvail().y / prop_count - RANGE_SLIDER_HEIGHT;
+    const float plot_height = ImGui::GetContentRegionAvail().y / (float)properties.count - RANGE_SLIDER_HEIGHT;
 
     ImVec2 frame_size{ImGui::CalcItemWidth(), plot_height};
 
@@ -1662,8 +1856,8 @@ static void draw_distribution_window(ApplicationData* data) {
     constexpr uint32 FILT_TEXT_COLOR = 0xaa33ffff;
     constexpr ImU32 SELECTION_RANGE_COLOR = 0x55bbbbbb;
 
-    for (int i = 0; i < stats::get_property_count(); i++) {
-        stats::Property* prop = stats::get_property(i);
+    for (int32 i = 0; i < (int32)properties.count; i++) {
+        stats::Property* prop = properties[i];
         if (!prop->enable_distribution) continue;
         ImGui::PushID(i);
 
@@ -1862,6 +2056,7 @@ static void free_molecule_data(ApplicationData* data) {
     if (data->mol_data.dynamic.trajectory) {
         free_trajectory_data(data);
     }
+    data->mol_data.atom_radii.clear();
     free_backbone_angles_trajectory(&data->ramachandran.backbone_angles);
     data->ramachandran.backbone_angles = {};
     data->ramachandran.current_backbone_angles = {};
@@ -2145,8 +2340,7 @@ static void save_workspace(ApplicationData* data, CString file) {
     }
 
     // PROPERTIES
-    for (int i = 0; i < stats::get_property_count(); i++) {
-        auto prop = stats::get_property(i);
+    for (const auto prop : stats::get_properties()) {
         fprintf(fptr, "[Property]\n");
         fprintf(fptr, "Name=%s\n", prop->name_buf.cstr());
         fprintf(fptr, "Args=%s\n", prop->args_buf.cstr());

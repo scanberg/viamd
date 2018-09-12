@@ -16,5 +16,12 @@ void copy_trajectory_frame(TrajectoryFrame* dst, const MoleculeTrajectory& src_t
 void copy_trajectory_positions(Array<vec3> dst_array, const MoleculeTrajectory& traj, int frame_index);
 void read_trajectory_box_vectors(vec3 box_vectors[3], const MoleculeTrajectory& traj, int frame_index);
 
-TrajectoryFrame get_trajectory_frame(const MoleculeTrajectory& traj, int frame_index);
-Array<vec3> get_trajectory_positions(const MoleculeTrajectory& traj, int frame_index);
+inline TrajectoryFrame get_trajectory_frame(const MoleculeTrajectory& traj, int frame_index) {
+    ASSERT(frame_index < traj.num_frames);
+    return traj.frame_buffer.data[frame_index];
+}
+
+inline Array<vec3> get_trajectory_positions(const MoleculeTrajectory& traj, int frame_index) {
+    ASSERT(frame_index < traj.num_frames);
+    return traj.frame_buffer.data[frame_index].atom_positions;
+}
