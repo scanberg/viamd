@@ -412,11 +412,17 @@ int main(int, char**) {
     auto pos_a = get_trajectory_positions(data.mol_data.dynamic.trajectory, 0);
     auto pos_b = get_trajectory_positions(data.mol_data.dynamic.trajectory, 100);
 
-    mat4 M1 = compute_transform(pos_a, pos_b);
-    mat4 M2 = compute_transform(pos_a, pos_b);
+    mat4 M = compute_linear_transform(pos_a, pos_b);
 
-    std::cout << "m1: \n" << M1;
-    std::cout << "m2: \n" << M2;
+    mat3 A = math::transpose(M) * M;
+
+    mat3 R, S;
+    decompose(A, &R, &S);
+
+    std::cout << "A:" << A << "\n";
+    std::cout << "R:" << R << "\n";
+    std::cout << "S:" << S << "\n";
+    std::cout << "RS:" << R * S << "\n";
 
     auto t0 = platform::get_time();
     const int N = 1;

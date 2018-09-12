@@ -202,9 +202,8 @@ uint32 get_segmentation_texture();
 }  // namespace ramachandran
 
 // Compute a linear transform which fits a set of points_a onto a set of points_b in least squares fashion.
-mat4 compute_transform(Array<const vec3> pos_frame_a, Array<const vec3> pos_frame_b);
-mat4 compute_transform_simple(Array<const vec3> pos_frame_a, Array<const vec3> pos_frame_b);
-mat4 compute_transform_simple(Array<const vec3> pos_frame_a, Array<const vec3> pos_frame_b, Array<const float> mass);
+mat4 compute_linear_transform(Array<const vec3> pos_frame_a, Array<const vec3> pos_frame_b);
+mat4 compute_linear_transform(Array<const vec3> pos_frame_a, Array<const vec3> pos_frame_b, Array<const float> mass);
 void compute_RS(mat3* R, mat3* S, Array<const vec3> x0, Array<const vec3> x, Array<const float> mass = {});
 
 // 3x3 matrix operations

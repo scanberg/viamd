@@ -2481,101 +2481,53 @@ void compute_accumulation_texture(Array<const BackboneAngles> angles, vec4 color
 
 }  // namespace ramachandran
 
-mat4 compute_transform(Array<const vec3> pos_frame_a, Array<const vec3> pos_frame_b) {
+mat4 compute_linear_transform(Array<const vec3> pos_frame_a, Array<const vec3> pos_frame_b) {
     ASSERT(pos_frame_a.count == pos_frame_b.count);
-    vec3 com_a = compute_com(pos_frame_a);
-    vec3 com_b = compute_com(pos_frame_b);
 
-    DynamicArray<vec3> p_a = pos_frame_a;
-    for (auto& p : p_a) p -= com_a;
-
-    DynamicArray<vec3> p_b = pos_frame_b;
-    for (auto& p : p_b) p -= com_b;
-
-    const int32 N = (int32)pos_frame_a.count;
-
-    // compute mat3 (A) which best maps a set of points P onto points P'
-    // X * a = Y
-    // =>
-    // X'X * a = X'Y
-    // =>
-    // a = inv(X'X) X'Y
-
-    // X is given as a 3Nx9 matrix
-    // [Px(0) Py(0) Pz(0)  0 0 0  0 0 0; 0 0 0  Px(0) Py(0) Pz(0)  0 0 0; 0 0 0  0 0 0  Px(0) Py(0) Pz(0);
-    //  Px(1) Py(1) Pz(1)  0 0 0  0 0 0; 0 0 0  Px(1) Py(1) Pz(1)  0 0 0; 0 0 0  0 0 0  Px(1) Py(1) Pz(1);
-    //  ...]
-
-    // Y is given as a 3Nx1 matrix
-    // [P'x(0); P'y(0); P'z(0);
-    //  P'x(1); P'y(1); P'z(1);
-    //  ...]
-
-    // a corresponds to a vector which holds the transformation matrix components of interest and is given as a 9x1 vector
-    // [a11; a12; a13; a21; a22; a23; a31; a32; a33]
-
-    // Because of the sparsity and symmetry of the matrix X, compute and store X'X and X'Y directly where X' denotes the transpose of X
-    // X'X is symmetric and is composed of core 3x3 matrix M
-    // X'X = [M 0 0;
-    //        0 M 0;
-    //        0 0 M]
-    // Where the matrix M is
-    // M = [sum(Px(i)*Px(i)) sum(Px(i)*Py(i)) sum(Px(i)*Pz(i));
-    //      sum(Px(i)*Py(i)) sum(Py(i)*Py(i)) sum(Py(i)*Pz(i));
-    //      sum(Px(i)*Py(i)) sum(Py(i)*Pz(i)) sum(Pz(i)*Pz(i))]
-    // This simplifies our problem quite a bit
-
-    // X'Y = [sum(Px(i)*P'x(i); sum(Py(i)*P'x(i); sum(Pz(i)*P'x(i);
-    //        sum(Px(i)*P'y(i); sum(Py(i)*P'y(i); sum(Pz(i)*P'y(i);
-    //        sum(Px(i)*P'z(i); sum(Py(i)*P'z(i); sum(Pz(i)*P'z(i)]
-
-    // Compute submatrix M within X'X
-    mat3 M(0);
-    for (int32 i = 0; i < N; i++) {
-        M[0][0] += p_a[i].x * p_a[i].x;
-        M[0][1] += p_a[i].x * p_a[i].y;
-        M[0][2] += p_a[i].x * p_a[i].z;
-        M[1][1] += p_a[i].y * p_a[i].y;
-        M[1][2] += p_a[i].y * p_a[i].z;
-        M[2][2] += p_a[i].z * p_a[i].z;
+    const vec3 com_a = compute_com(pos_frame_a);
+    DynamicArray<vec3> q(pos_frame_a.count);
+    for (int32 i = 0; i < q.count; i++) {
+        q[i] = pos_frame_a[i] - com_a;
     }
 
-    // Copy symmetric results
-    M[1][0] = M[0][1];
-    M[2][0] = M[0][2];
-    M[2][1] = M[1][2];
-
-    mat3 M_inv = math::inverse(M);
-
-    // Compute X'Y
-    vec3 X_trans_Y[3] = {vec3(0), vec3(0), vec3(0)};
-    for (int32 i = 0; i < N; i++) {
-        X_trans_Y[0].x += p_a[i].x * p_b[i].x;
-        X_trans_Y[0].y += p_a[i].y * p_b[i].x;
-        X_trans_Y[0].z += p_a[i].z * p_b[i].x;
-
-        X_trans_Y[1].x += p_a[i].x * p_b[i].y;
-        X_trans_Y[1].y += p_a[i].y * p_b[i].y;
-        X_trans_Y[1].z += p_a[i].z * p_b[i].y;
-
-        X_trans_Y[2].x += p_a[i].x * p_b[i].z;
-        X_trans_Y[2].y += p_a[i].y * p_b[i].z;
-        X_trans_Y[2].z += p_a[i].z * p_b[i].z;
+    const vec3 com_b = compute_com(pos_frame_b);
+    DynamicArray<vec3> p(pos_frame_b.count);
+    for (int32 i = 0; i < p.count; i++) {
+        p[i] = pos_frame_b[i] - com_b;
     }
 
-    // Matrix A holds the components of our resulting transformation (but components are transposed)
-    mat3 A;
-    A[0] = M_inv * X_trans_Y[0];
-    A[1] = M_inv * X_trans_Y[1];
-    A[2] = M_inv * X_trans_Y[2];
+    mat3 Apq{0};
+    for (int32 i = 0; i < p.count; i++) {
+        Apq[0][0] += p[i].x * q[i].x;
+        Apq[0][1] += p[i].y * q[i].x;
+        Apq[0][2] += p[i].z * q[i].x;
+        Apq[1][0] += p[i].x * q[i].y;
+        Apq[1][1] += p[i].y * q[i].y;
+        Apq[1][2] += p[i].z * q[i].y;
+        Apq[2][0] += p[i].x * q[i].z;
+        Apq[2][1] += p[i].y * q[i].z;
+        Apq[2][2] += p[i].z * q[i].z;
+    }
 
-    mat4 result(math::transpose(A));
+    mat3 Aqq{0};
+    for (int32 i = 0; i < q.count; i++) {
+        Aqq[0][0] += q[i].x * q[i].x;
+        Aqq[0][1] += q[i].y * q[i].x;
+        Aqq[0][2] += q[i].z * q[i].x;
+        Aqq[1][0] += q[i].x * q[i].y;
+        Aqq[1][1] += q[i].y * q[i].y;
+        Aqq[1][2] += q[i].z * q[i].y;
+        Aqq[2][0] += q[i].x * q[i].z;
+        Aqq[2][1] += q[i].y * q[i].z;
+        Aqq[2][2] += q[i].z * q[i].z;
+    }
+
+    mat4 result = Apq / Aqq;
     result[3] = vec4(com_b, 1);
-
     return result;
 }
 
-mat4 compute_transform_simple(Array<const vec3> pos_frame_a, Array<const vec3> pos_frame_b, Array<const float> mass) {
+mat4 compute_linear_transform(Array<const vec3> pos_frame_a, Array<const vec3> pos_frame_b, Array<const float> mass) {
     ASSERT(pos_frame_a.count == pos_frame_b.count);
     ASSERT(mass.count == pos_frame_a.count);
 
@@ -2617,8 +2569,7 @@ mat4 compute_transform_simple(Array<const vec3> pos_frame_a, Array<const vec3> p
         Aqq[2][2] += mass[i] * q[i].z * q[i].z;
     }
 
-    mat3 A = Apq / Aqq;
-    mat4 result = A;
+    mat4 result = Apq / Aqq;
     result[3] = vec4(com_b, 1);
     return result;
 }
@@ -2763,7 +2714,7 @@ void Diagonalize(const float (&A)[3][3], float (&Q)[3][3], float (&D)[3][3]) {
 void diagonalize(const mat3& M, mat3* Q, mat3* D) {
     ASSERT(Q);
     ASSERT(D);
-    Diagonalize((const float(&)[3][3])M, (float(&)[3][3])Q, (float(&)[3][3])D);
+    Diagonalize((const float(&)[3][3])M, (float(&)[3][3]) * Q, (float(&)[3][3]) * D);
 }
 
 void decompose(const mat3& M, mat3* R, mat3* S) {
