@@ -184,8 +184,8 @@ struct ApplicationData {
     // --- CAMERA ---
     struct {
         Camera camera;
-        TrackballControllerState trackball_state;
-        CameraTransformation matrices;
+        TrackballControllerState trackball_state{};
+        CameraTransformation matrices{};
     } camera;
 
     // --- MOLECULAR DATA ---
@@ -234,7 +234,7 @@ struct ApplicationData {
     float64 time = 0.f;  // needs to be double precision for long trajectories
     float frames_per_second = 10.f;
     bool is_playing = false;
-    PlaybackInterpolationMode interpolation = PlaybackInterpolationMode::LINEAR_PERIODIC;
+    PlaybackInterpolationMode interpolation = PlaybackInterpolationMode::CUBIC_PERIODIC;
 
     // --- TIME LINE FILTERING ---
     struct {
@@ -319,6 +319,7 @@ struct ApplicationData {
         bool show_error = false;
 
         float beta = 0.5f;
+        bool dirty_flag = false;
     } dynamic_frame;
 
     // --- CONSOLE ---
@@ -460,13 +461,14 @@ int main(int, char**) {
     allocate_and_parse_pdb_from_string(&data.mol_data.dynamic, CAFFINE_PDB);
     data.mol_data.atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule.atom_elements);
 #else
-    stats::create_property("b1", "distance resatom(resname(ALA), 1) com(resname(ALA))");
-    load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
-    data.dynamic_frame.atom_range = {0, 152};
-
-    // stats::create_property("b1", "distance resname(DE3) com(resname(DE3))");
-    // load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/haofan/for_VIAMD.pdb");
-    // data.dynamic_frame.atom_range = {0, 1277};
+    /*
+stats::create_property("b1", "distance resatom(resname(ALA), 1) com(resname(ALA))");
+load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
+data.dynamic_frame.atom_range = {0, 152};
+    */
+    stats::create_property("b1", "distance resname(DE3) com(resname(DE3))");
+    load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/haofan/for_VIAMD.pdb");
+    data.dynamic_frame.atom_range = {0, 1277};
 
 #endif
     reset_view(&data);
@@ -477,6 +479,11 @@ int main(int, char**) {
     while (!data.ctx.window.should_close) {
         platform::Coordinate previous_mouse_coord = data.ctx.input.mouse.coord;
         platform::update(&data.ctx);
+
+        // Try to fix false move on touch
+        if (data.ctx.input.mouse.hit[0]) {
+            previous_mouse_coord = data.ctx.input.mouse.coord;
+        }
 
         if (data.density_volume.enabled) {
             stats::async_update(
@@ -613,6 +620,8 @@ int main(int, char**) {
         }
 
         if (data.mol_data.dynamic.trajectory && time_changed) {
+            data.dynamic_frame.dirty_flag = true;
+
             int last_frame = data.mol_data.dynamic.trajectory.num_frames - 1;
             data.time = math::clamp(data.time, 0.0, float64(last_frame));
             if (data.time == float64(last_frame)) data.is_playing = false;
@@ -670,7 +679,12 @@ int main(int, char**) {
                         break;
                 }
             }
+        }
 
+        if (data.dynamic_frame.dirty_flag) {
+            data.dynamic_frame.dirty_flag = false;
+
+            int frame = (int)data.time;
             const auto box = get_trajectory_frame(data.mol_data.dynamic.trajectory, frame).box;
             const auto p_ref = get_trajectory_positions(data.mol_data.dynamic.trajectory, data.dynamic_frame.frame_index)
                                    .sub_array(data.dynamic_frame.atom_range.x, data.dynamic_frame.atom_range.y);
@@ -681,7 +695,7 @@ int main(int, char**) {
             mat3 R, S;
             decompose(A, &R, &S);
             float det = math::abs(math::determinant(A));
-            LOG_NOTE("Determinant is: %.5f", det);
+            // LOG_NOTE("Determinant is: %.5f", det);
             A = A / math::pow(det, 1.f / 3.f);
 
             mat4 M2 = data.dynamic_frame.beta * A + (1.f - data.dynamic_frame.beta) * R;
@@ -1286,12 +1300,16 @@ if (ImGui::BeginMenu("Edit")) {
         }
 
         if (ImGui::BeginMenu("Test")) {
-            ImGui::Checkbox("RBF-refinement", &data->dynamic_frame.use_rbf_refinement);
+            if (ImGui::Checkbox("RBF-refinement", &data->dynamic_frame.use_rbf_refinement)) {
+                data->dynamic_frame.dirty_flag = true;
+            }
             ImGui::Checkbox("View in Reference", &data->dynamic_frame.view_in_reference);
             ImGui::Checkbox("Show error", &data->dynamic_frame.show_error);
             ImGui::Checkbox("Show grid", &data->dynamic_frame.show_grid);
             ImGui::Checkbox("Show grid points", &data->dynamic_frame.show_grid_points);
-            ImGui::SliderFloat("Beta", &data->dynamic_frame.beta, 0.f, 1.f);
+            if (ImGui::SliderFloat("Beta", &data->dynamic_frame.beta, 0.f, 1.f)) {
+                data->dynamic_frame.dirty_flag = true;
+            }
 
             ImGui::EndMenu();
         }

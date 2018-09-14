@@ -22,14 +22,49 @@
 namespace platform {
 
 // Data
-static Context internal_ctx;
-static Path path_cwd;
-static double g_time = 0.0f;
+static struct {
+    Context internal_ctx{};
+
+    struct {
+        Path cwd{};
+    } file_system;
+
+    struct {
+        double time = 0.0;
+
+        struct {
+            GLint tex = 0;
+            GLint proj_mat = 0;
+            GLint position = 0;
+            GLint uv = 0;
+            GLint color = 0;
+        } attrib_location;
+
+        struct {
+            GLuint font_texture = 0;
+
+            int vertex_shader = 0;
+            int fragment_shader = 0;
+            int program = 0;
+
+            GLuint vao = 0;
+            GLuint vbo = 0;
+            GLuint ibo = 0;
+        } handle;
+    } imgui;
+} data;
+
+// static Context internal_ctx;
+// static Path path_cwd;
+
+/*
+static double g_time = 0.0;
 static GLuint g_font_texture = 0;
 static int g_shader_handle = 0, g_vert_handle = 0, g_frag_handle = 0;
 static int g_attrib_location_tex = 0, g_attrib_location_proj_mat = 0;
 static int g_attrib_location_position = 0, g_attrib_location_uv = 0, g_attrib_location_color = 0;
 static unsigned int g_vbo_handle = 0, g_vao_handle = 0, g_elements_handle = 0;
+*/
 
 static void error_callback(int error, const char* description) { LOG_ERROR("%d: %s\n", error, description); }
 
@@ -52,18 +87,18 @@ static void gl_callback(GLenum source, GLenum type, GLuint id, GLenum severity, 
 
 static void mouse_button_callback(GLFWwindow*, int button, int action, int /*mods*/) {
     if (action == GLFW_PRESS) {
-        internal_ctx.input.mouse.down[button] = true;
-        internal_ctx.input.mouse.hit[button] = true;
+        data.internal_ctx.input.mouse.down[button] = true;
+        data.internal_ctx.input.mouse.hit[button] = true;
     } else if (action == GLFW_RELEASE) {
-        internal_ctx.input.mouse.down[button] = false;
-        internal_ctx.input.mouse.release[button] = true;
+        data.internal_ctx.input.mouse.down[button] = false;
+        data.internal_ctx.input.mouse.release[button] = true;
     }
 }
 
 static void mouse_scroll_callback(GLFWwindow*, double xoffset, double yoffset) {
     ImGuiIO& io = ImGui::GetIO();
 
-    internal_ctx.input.mouse.scroll_delta = (float)yoffset;
+    data.internal_ctx.input.mouse.scroll_delta = (float)yoffset;
     io.MouseWheelH += (float)xoffset;
     io.MouseWheel += (float)yoffset;
 }
@@ -73,12 +108,12 @@ static void key_callback(GLFWwindow*, int key, int, int action, int mods) {
 
     if (action == GLFW_PRESS) {
         io.KeysDown[key] = true;
-        internal_ctx.input.key.down[key] = true;
-        internal_ctx.input.key.hit[key] = true;
+        data.internal_ctx.input.key.down[key] = true;
+        data.internal_ctx.input.key.hit[key] = true;
     }
     if (action == GLFW_RELEASE) {
         io.KeysDown[key] = false;
-        internal_ctx.input.key.down[key] = false;
+        data.internal_ctx.input.key.down[key] = false;
     }
 
     // IMGUI
@@ -162,21 +197,22 @@ static void imgui_render_draw_lists(ImDrawData* draw_data) {
         {0.0f, 0.0f, -1.0f, 0.0f},
         {-1.0f, 1.0f, 0.0f, 1.0f},
     };
-    glUseProgram(g_shader_handle);
-    glUniform1i(g_attrib_location_tex, 0);
-    glUniformMatrix4fv(g_attrib_location_proj_mat, 1, GL_FALSE, &ortho_projection[0][0]);
-    glBindVertexArray(g_vao_handle);
+
+    glUseProgram(data.imgui.handle.program);
+    glUniform1i(data.imgui.attrib_location.tex, 0);
+    glUniformMatrix4fv(data.imgui.attrib_location.proj_mat, 1, GL_FALSE, &ortho_projection[0][0]);
+    glBindVertexArray(data.imgui.handle.vao);
     glBindSampler(0, 0);  // Rely on combined texture/sampler state.
 
     for (int n = 0; n < draw_data->CmdListsCount; n++) {
         const ImDrawList* cmd_list = draw_data->CmdLists[n];
         const ImDrawIdx* idx_buffer_offset = 0;
 
-        glBindBuffer(GL_ARRAY_BUFFER, g_vbo_handle);
+        glBindBuffer(GL_ARRAY_BUFFER, data.imgui.handle.vbo);
         glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)cmd_list->VtxBuffer.Size * sizeof(ImDrawVert), (const GLvoid*)cmd_list->VtxBuffer.Data,
                      GL_STREAM_DRAW);
 
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_elements_handle);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, data.imgui.handle.ibo);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)cmd_list->IdxBuffer.Size * sizeof(ImDrawIdx), (const GLvoid*)cmd_list->IdxBuffer.Data,
                      GL_STREAM_DRAW);
 
@@ -247,15 +283,15 @@ static bool imgui_create_fonts_texture() {
     // Upload texture to graphics system
     GLint last_texture;
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &last_texture);
-    glGenTextures(1, &g_font_texture);
-    glBindTexture(GL_TEXTURE_2D, g_font_texture);
+    glGenTextures(1, &data.imgui.handle.font_texture);
+    glBindTexture(GL_TEXTURE_2D, data.imgui.handle.font_texture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
     glGenerateMipmap(GL_TEXTURE_2D);
 
     // Store our identifier
-    io.Fonts->TexID = (void*)(intptr_t)g_font_texture;
+    io.Fonts->TexID = (void*)(intptr_t)data.imgui.handle.font_texture;
 
     // Restore state
     glBindTexture(GL_TEXTURE_2D, last_texture);
@@ -296,36 +332,36 @@ bool imgui_create_device_objects() {
         "   Out_Color = Frag_Color * texture( Texture, Frag_UV.st);\n"
         "}\n";
 
-    g_shader_handle = glCreateProgram();
-    g_vert_handle = glCreateShader(GL_VERTEX_SHADER);
-    g_frag_handle = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(g_vert_handle, 1, &vertex_shader, 0);
-    glShaderSource(g_frag_handle, 1, &fragment_shader, 0);
-    glCompileShader(g_vert_handle);
-    glCompileShader(g_frag_handle);
-    glAttachShader(g_shader_handle, g_vert_handle);
-    glAttachShader(g_shader_handle, g_frag_handle);
-    glLinkProgram(g_shader_handle);
+    data.imgui.handle.program = glCreateProgram();
+    data.imgui.handle.vertex_shader = glCreateShader(GL_VERTEX_SHADER);
+    data.imgui.handle.fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(data.imgui.handle.vertex_shader, 1, &vertex_shader, 0);
+    glShaderSource(data.imgui.handle.fragment_shader, 1, &fragment_shader, 0);
+    glCompileShader(data.imgui.handle.vertex_shader);
+    glCompileShader(data.imgui.handle.fragment_shader);
+    glAttachShader(data.imgui.handle.program, data.imgui.handle.vertex_shader);
+    glAttachShader(data.imgui.handle.program, data.imgui.handle.fragment_shader);
+    glLinkProgram(data.imgui.handle.program);
 
-    g_attrib_location_tex = glGetUniformLocation(g_shader_handle, "Texture");
-    g_attrib_location_proj_mat = glGetUniformLocation(g_shader_handle, "ProjMtx");
-    g_attrib_location_position = glGetAttribLocation(g_shader_handle, "Position");
-    g_attrib_location_uv = glGetAttribLocation(g_shader_handle, "UV");
-    g_attrib_location_color = glGetAttribLocation(g_shader_handle, "Color");
+    data.imgui.attrib_location.tex = glGetUniformLocation(data.imgui.handle.program, "Texture");
+    data.imgui.attrib_location.proj_mat = glGetUniformLocation(data.imgui.handle.program, "ProjMtx");
+    data.imgui.attrib_location.position = glGetAttribLocation(data.imgui.handle.program, "Position");
+    data.imgui.attrib_location.uv = glGetAttribLocation(data.imgui.handle.program, "UV");
+    data.imgui.attrib_location.color = glGetAttribLocation(data.imgui.handle.program, "Color");
 
-    glGenBuffers(1, &g_vbo_handle);
-    glGenBuffers(1, &g_elements_handle);
+    glGenBuffers(1, &data.imgui.handle.vbo);
+    glGenBuffers(1, &data.imgui.handle.ibo);
 
-    glGenVertexArrays(1, &g_vao_handle);
-    glBindVertexArray(g_vao_handle);
-    glBindBuffer(GL_ARRAY_BUFFER, g_vbo_handle);
-    glEnableVertexAttribArray(g_attrib_location_position);
-    glEnableVertexAttribArray(g_attrib_location_uv);
-    glEnableVertexAttribArray(g_attrib_location_color);
+    glGenVertexArrays(1, &data.imgui.handle.vao);
+    glBindVertexArray(data.imgui.handle.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, data.imgui.handle.vbo);
+    glEnableVertexAttribArray(data.imgui.attrib_location.position);
+    glEnableVertexAttribArray(data.imgui.attrib_location.uv);
+    glEnableVertexAttribArray(data.imgui.attrib_location.color);
 
-    glVertexAttribPointer(g_attrib_location_position, 2, GL_FLOAT, GL_FALSE, sizeof(ImDrawVert), (GLvoid*)IM_OFFSETOF(ImDrawVert, pos));
-    glVertexAttribPointer(g_attrib_location_uv, 2, GL_FLOAT, GL_FALSE, sizeof(ImDrawVert), (GLvoid*)IM_OFFSETOF(ImDrawVert, uv));
-    glVertexAttribPointer(g_attrib_location_color, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(ImDrawVert), (GLvoid*)IM_OFFSETOF(ImDrawVert, col));
+    glVertexAttribPointer(data.imgui.attrib_location.position, 2, GL_FLOAT, GL_FALSE, sizeof(ImDrawVert), (GLvoid*)IM_OFFSETOF(ImDrawVert, pos));
+    glVertexAttribPointer(data.imgui.attrib_location.uv, 2, GL_FLOAT, GL_FALSE, sizeof(ImDrawVert), (GLvoid*)IM_OFFSETOF(ImDrawVert, uv));
+    glVertexAttribPointer(data.imgui.attrib_location.color, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(ImDrawVert), (GLvoid*)IM_OFFSETOF(ImDrawVert, col));
 
     imgui_create_fonts_texture();
 
@@ -338,26 +374,26 @@ bool imgui_create_device_objects() {
 }
 
 static void imgui_invalidate_device_objects() {
-    if (g_vao_handle) glDeleteVertexArrays(1, &g_vao_handle);
-    if (g_vbo_handle) glDeleteBuffers(1, &g_vbo_handle);
-    if (g_elements_handle) glDeleteBuffers(1, &g_elements_handle);
-    g_vao_handle = g_vbo_handle = g_elements_handle = 0;
+    if (data.imgui.handle.vao) glDeleteVertexArrays(1, &data.imgui.handle.vao);
+    if (data.imgui.handle.vbo) glDeleteBuffers(1, &data.imgui.handle.vbo);
+    if (data.imgui.handle.ibo) glDeleteBuffers(1, &data.imgui.handle.ibo);
+    data.imgui.handle.vao = data.imgui.handle.vbo = data.imgui.handle.ibo = 0;
 
-    if (g_shader_handle && g_vert_handle) glDetachShader(g_shader_handle, g_vert_handle);
-    if (g_vert_handle) glDeleteShader(g_vert_handle);
-    g_vert_handle = 0;
+    if (data.imgui.handle.program && data.imgui.handle.vertex_shader) glDetachShader(data.imgui.handle.program, data.imgui.handle.vertex_shader);
+    if (data.imgui.handle.vertex_shader) glDeleteShader(data.imgui.handle.vertex_shader);
+    data.imgui.handle.vertex_shader = 0;
 
-    if (g_shader_handle && g_frag_handle) glDetachShader(g_shader_handle, g_frag_handle);
-    if (g_frag_handle) glDeleteShader(g_frag_handle);
-    g_frag_handle = 0;
+    if (data.imgui.handle.program && data.imgui.handle.fragment_shader) glDetachShader(data.imgui.handle.program, data.imgui.handle.fragment_shader);
+    if (data.imgui.handle.fragment_shader) glDeleteShader(data.imgui.handle.fragment_shader);
+    data.imgui.handle.fragment_shader = 0;
 
-    if (g_shader_handle) glDeleteProgram(g_shader_handle);
-    g_shader_handle = 0;
+    if (data.imgui.handle.program) glDeleteProgram(data.imgui.handle.program);
+    data.imgui.handle.program = 0;
 
-    if (g_font_texture) {
-        glDeleteTextures(1, &g_font_texture);
+    if (data.imgui.handle.font_texture) {
+        glDeleteTextures(1, &data.imgui.handle.font_texture);
         ImGui::GetIO().Fonts->TexID = 0;
-        g_font_texture = 0;
+        data.imgui.handle.font_texture = 0;
     }
 }
 
@@ -399,33 +435,33 @@ static bool imgui_init(GLFWwindow* window) {
 static void imgui_shutdown() { imgui_invalidate_device_objects(); }
 
 static void imgui_new_frame() {
-    if (!g_font_texture) imgui_create_device_objects();
+    if (!data.imgui.handle.font_texture) imgui_create_device_objects();
 
     ImGuiIO& io = ImGui::GetIO();
 
     // Setup display size (every frame to accommodate for window resizing)
     int w, h;
     int display_w, display_h;
-    glfwGetWindowSize((GLFWwindow*)internal_ctx.window.ptr, &w, &h);
-    glfwGetFramebufferSize((GLFWwindow*)internal_ctx.window.ptr, &display_w, &display_h);
+    glfwGetWindowSize((GLFWwindow*)data.internal_ctx.window.ptr, &w, &h);
+    glfwGetFramebufferSize((GLFWwindow*)data.internal_ctx.window.ptr, &display_w, &display_h);
     io.DisplaySize = ImVec2((float)w, (float)h);
     io.DisplayFramebufferScale = ImVec2(w > 0 ? ((float)display_w / w) : 0, h > 0 ? ((float)display_h / h) : 0);
 
     // Setup time step
     double current_time = glfwGetTime();
-    io.DeltaTime = g_time > 0.0 ? (float)(current_time - g_time) : (float)(1.0f / 60.0f);
-    g_time = current_time;
+    io.DeltaTime = data.imgui.time > 0.0 ? (float)(current_time - data.imgui.time) : (float)(1.0f / 60.0f);
+    data.imgui.time = current_time;
 
     // Setup inputs
     // (we already got mouse wheel, keyboard keys & characters from glfw callbacks polled in glfwPollEvents())
-    if (glfwGetWindowAttrib((GLFWwindow*)internal_ctx.window.ptr, GLFW_FOCUSED)) {
+    if (glfwGetWindowAttrib((GLFWwindow*)data.internal_ctx.window.ptr, GLFW_FOCUSED)) {
         if (io.WantSetMousePos) {
-            glfwSetCursorPos((GLFWwindow*)internal_ctx.window.ptr, (double)io.MousePos.x,
+            glfwSetCursorPos((GLFWwindow*)data.internal_ctx.window.ptr, (double)io.MousePos.x,
                              (double)io.MousePos.y);  // Set mouse position if requested by io.WantMoveMouse flag (used when io.NavMovesTrue is
                                                       // enabled by user and using directional navigation)
         } else {
             double mouse_x, mouse_y;
-            glfwGetCursorPos((GLFWwindow*)internal_ctx.window.ptr, &mouse_x, &mouse_y);
+            glfwGetCursorPos((GLFWwindow*)data.internal_ctx.window.ptr, &mouse_x, &mouse_y);
             io.MousePos = ImVec2((float)mouse_x, (float)mouse_y);
         }
     } else {
@@ -435,12 +471,12 @@ static void imgui_new_frame() {
     for (int i = 0; i < 3; i++) {
         // If a mouse press event came, always pass it as "mouse held this frame", so we don't miss click-release events that are shorter than 1
         // frame.
-        io.MouseDown[i] = internal_ctx.input.mouse.hit[i] || glfwGetMouseButton((GLFWwindow*)internal_ctx.window.ptr, i) != 0;
+        io.MouseDown[i] = data.internal_ctx.input.mouse.hit[i] || glfwGetMouseButton((GLFWwindow*)data.internal_ctx.window.ptr, i) != 0;
         // g_input_state.mouse_hit[i] = false;
     }
 
     // Hide OS mouse cursor if ImGui is drawing it
-    glfwSetInputMode((GLFWwindow*)internal_ctx.window.ptr, GLFW_CURSOR, io.MouseDrawCursor ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL);
+    glfwSetInputMode((GLFWwindow*)data.internal_ctx.window.ptr, GLFW_CURSOR, io.MouseDrawCursor ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL);
 
     // Start the frame. This call will update the io.WantCaptureMouse, io.WantCaptureKeyboard flag that you can use to dispatch inputs (or not) to
     // your application.
@@ -484,38 +520,38 @@ bool initialize(Context* ctx, int32 width, int32 height, const char* title) {
     ImGui::CreateContext();
     imgui_init(window);
 
-    internal_ctx.window.ptr = window;
-    internal_ctx.window.title = title;
-    internal_ctx.window.width = width;
-    internal_ctx.window.height = height;
-    internal_ctx.window.vsync = true;
+    data.internal_ctx.window.ptr = window;
+    data.internal_ctx.window.title = title;
+    data.internal_ctx.window.width = width;
+    data.internal_ctx.window.height = height;
+    data.internal_ctx.window.vsync = true;
 
     int w, h;
     glfwGetFramebufferSize(window, &w, &h);
-    internal_ctx.framebuffer.width = w;
-    internal_ctx.framebuffer.height = h;
+    data.internal_ctx.framebuffer.width = w;
+    data.internal_ctx.framebuffer.height = h;
 
     double x, y;
     glfwGetCursorPos(window, &x, &y);
     Coordinate coord = {(float)x, (float)y};
-    internal_ctx.input.mouse.coord = coord;
+    data.internal_ctx.input.mouse.coord = coord;
 
     const float half_res_x = width * 0.5f;
     const float half_res_y = height * 0.5f;
-    internal_ctx.input.mouse.ndc_coord = {(coord.x - half_res_x) / half_res_x, ((height - coord.y) - half_res_y) / half_res_y};
+    data.internal_ctx.input.mouse.ndc_coord = {(coord.x - half_res_x) / half_res_x, ((height - coord.y) - half_res_y) / half_res_y};
 
     glfwSetMouseButtonCallback(window, mouse_button_callback);
     glfwSetScrollCallback(window, mouse_scroll_callback);
     glfwSetKeyCallback(window, key_callback);
     glfwSetCharCallback(window, char_callback);
 
-    memcpy(ctx, &internal_ctx, sizeof(Context));
+    memcpy(ctx, &data.internal_ctx, sizeof(Context));
 
     return true;
 }
 
 void shutdown(Context* ctx) {
-    glfwDestroyWindow((GLFWwindow*)internal_ctx.window.ptr);
+    glfwDestroyWindow((GLFWwindow*)data.internal_ctx.window.ptr);
     imgui_shutdown();
     ImGui::DestroyContext();
     glfwTerminate();
@@ -528,134 +564,89 @@ void shutdown(Context* ctx) {
 
 void update(Context* ctx) {
     // Reset hit states
-    memset(internal_ctx.input.key.hit, 0, MAX_KEYS);
-    memset(internal_ctx.input.key.release, 0, MAX_KEYS);
-    memset(internal_ctx.input.mouse.hit, 0, MAX_MOUSE_BUTTONS);
-    memset(internal_ctx.input.mouse.release, 0, MAX_MOUSE_BUTTONS);
-    internal_ctx.input.mouse.scroll_delta = 0;
+    memset(data.internal_ctx.input.key.hit, 0, MAX_KEYS);
+    memset(data.internal_ctx.input.key.release, 0, MAX_KEYS);
+    memset(data.internal_ctx.input.mouse.hit, 0, MAX_MOUSE_BUTTONS);
+    memset(data.internal_ctx.input.mouse.release, 0, MAX_MOUSE_BUTTONS);
+    data.internal_ctx.input.mouse.scroll_delta = 0;
 
     glfwPollEvents();
 
-    if (ctx->window.width != internal_ctx.window.width || ctx->window.height != internal_ctx.window.height) {
+    if (ctx->window.width != data.internal_ctx.window.width || ctx->window.height != data.internal_ctx.window.height) {
         glfwSetWindowSize((GLFWwindow*)ctx->window.ptr, ctx->window.width, ctx->window.height);
-        internal_ctx.window.width = ctx->window.width;
-        internal_ctx.window.height = ctx->window.height;
+        data.internal_ctx.window.width = ctx->window.width;
+        data.internal_ctx.window.height = ctx->window.height;
     }
     int w, h;
-    glfwGetFramebufferSize((GLFWwindow*)internal_ctx.window.ptr, &w, &h);
-    internal_ctx.framebuffer.width = w;
-    internal_ctx.framebuffer.height = h;
+    glfwGetFramebufferSize((GLFWwindow*)data.internal_ctx.window.ptr, &w, &h);
+    data.internal_ctx.framebuffer.width = w;
+    data.internal_ctx.framebuffer.height = h;
 
-    glfwGetWindowSize((GLFWwindow*)internal_ctx.window.ptr, &w, &h);
-    internal_ctx.window.width = w;
-    internal_ctx.window.height = h;
+    glfwGetWindowSize((GLFWwindow*)data.internal_ctx.window.ptr, &w, &h);
+    data.internal_ctx.window.width = w;
+    data.internal_ctx.window.height = h;
 
-    if (ctx->window.vsync != internal_ctx.window.vsync) {
-        internal_ctx.window.vsync = ctx->window.vsync;
+    if (ctx->window.vsync != data.internal_ctx.window.vsync) {
+        data.internal_ctx.window.vsync = ctx->window.vsync;
         glfwSwapInterval((int)ctx->window.vsync);
     }
 
-    internal_ctx.window.should_close = (bool)glfwWindowShouldClose((GLFWwindow*)internal_ctx.window.ptr);
+    data.internal_ctx.window.should_close = (bool)glfwWindowShouldClose((GLFWwindow*)data.internal_ctx.window.ptr);
 
     double x, y;
-    glfwGetCursorPos((GLFWwindow*)internal_ctx.window.ptr, &x, &y);
+    glfwGetCursorPos((GLFWwindow*)data.internal_ctx.window.ptr, &x, &y);
     Coordinate new_coord{(float)x, (float)y};
 
     // If user has modified value, set the mouse pointer to that value
-    if (ctx->input.mouse.coord != internal_ctx.input.mouse.coord) {
+    if (ctx->input.mouse.coord != data.internal_ctx.input.mouse.coord) {
         new_coord = ctx->input.mouse.coord;
     }
 
-    /*internal_ctx.input.mouse.velocity = new_coord - internal_ctx.input.mouse.coord_prev;
-    internal_ctx.input.mouse.coord_prev = internal_ctx.input.mouse.coord_curr;
-    internal_ctx.input.mouse.coord_curr = new_coord;*/
-    internal_ctx.input.mouse.coord = new_coord;
+    data.internal_ctx.input.mouse.coord = new_coord;
 
     const float half_res_x = w * 0.5f;
     const float half_res_y = h * 0.5f;
-    internal_ctx.input.mouse.ndc_coord = {(new_coord.x - half_res_x) / half_res_x, ((h - new_coord.y) - half_res_y) / half_res_y};
+    data.internal_ctx.input.mouse.ndc_coord = {(new_coord.x - half_res_x) / half_res_x, ((h - new_coord.y) - half_res_y) / half_res_y};
 
     imgui_new_frame();
 
     double t = glfwGetTime();
-    internal_ctx.timing.delta_s = (float)(t - internal_ctx.timing.total_s);
-    internal_ctx.timing.total_s = t;
+    data.internal_ctx.timing.delta_s = (float)(t - data.internal_ctx.timing.total_s);
+    data.internal_ctx.timing.total_s = t;
 
-    memcpy(ctx, &internal_ctx, sizeof(Context));
+    memcpy(ctx, &data.internal_ctx, sizeof(Context));
 }
 
 void swap_buffers(Context* ctx) { glfwSwapBuffers((GLFWwindow*)ctx->window.ptr); }
 
 FileDialogResult file_dialog(FileDialogFlags flags, CString default_path, CString filter) {
     // Create zero terminated strings
+    Path path_buf = default_path;
+    convert_backslashes(path_buf);
     StringBuffer<256> filter_buf = filter;
-    StringBuffer<256> path = get_directory(default_path);
-    StringBuffer<256> file = get_file(default_path);
 
     nfdchar_t* out_path = NULL;
     nfdresult_t result = NFD_ERROR;
 
     if (flags & FileDialogFlags_Open) {
-        result = NFD_OpenDialog(NULL, NULL, &out_path);
+        result = NFD_OpenDialog(filter_buf.cstr(), path_buf.cstr(), &out_path);
     } else if (flags & FileDialogFlags_Save) {
-        result = NFD_SaveDialog(NULL, NULL, &out_path);
+        result = NFD_SaveDialog(filter_buf.cstr(), path_buf.cstr(), &out_path);
     }
-    defer { free(out_path); };
+    defer {
+        if (out_path) free(out_path);
+    };
 
     if (result == NFD_OKAY) {
         Path res_path = out_path;
         convert_backslashes(res_path);
-
         return {res_path, FileDialogResult::FILE_OK};
     } else if (result == NFD_CANCEL) {
         return {{}, FileDialogResult::FILE_CANCEL};
-    } else {
-        printf("Error: %s\n", NFD_GetError());
-        return {{}, FileDialogResult::FILE_CANCEL};
     }
-
-    /*    int noc_flags = 0;
-        noc_flags |= (flags & FileDialogFlags_Open) ? NOC_FILE_DIALOG_OPEN : 0;
-        noc_flags |= (flags & FileDialogFlags_Save) ? NOC_FILE_DIALOG_SAVE : 0;
-        noc_flags |= (flags & FileDialogFlags_Directory) ? NOC_FILE_DIALOG_DIR : 0;
-
-        const char* res = noc_file_dialog_open(noc_flags, filter_buf.cstr(), path.cstr(), file.cstr());
-
-        if (res == nullptr) {
-            return {{}, FileDialogResult::FILE_CANCEL};
-        }
-
-        return {res, FileDialogResult::FILE_OK};
-        */
+    LOG_ERROR("%s\n", NFD_GetError());
+    return {{}, FileDialogResult::FILE_CANCEL};
 }
-
-/*
-FileDialogResult open_file_dialog(CString file, CString filter) {
-    StringBuffer<256> filter_buf = filter;
-    const char* res = noc_file_dialog_open(NOC_FILE_DIALOG_OPEN, filter.cstr(), NULL, NULL);
-
-    if (res == nullptr) {
-        return {{}, FileDialogResult::FILE_CANCEL};
-    }
-
-
-    return {res, FileDialogResult::FILE_OK};
-}
-
-
-FileDialogResult save_file_dialog(CString file, CString filter) {
-    StringBuffer<256> filter_buf = filter;
-    StringBuffer<256> default_path = get_directory(file);
-    StringBuffer<256> default_file = get_file(file);
-    const char* res = noc_file_dialog_open(NOC_FILE_DIALOG_SAVE, filter_buf.cstr(), default_path.cstr(), default_file.cstr());
-
-    if (res == nullptr) {
-        return {{}, FileDialogResult::FILE_CANCEL};
-    }
-
-    return {res, FileDialogResult::FILE_OK};
-}
-*/
 
 #ifdef OS_WINDOWS
 #include "platform_win32.inl"

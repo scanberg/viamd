@@ -1,5 +1,12 @@
 #pragma once
 
+/*
+@TODO:
+        - Fix delta time computation for unix systems, this is not correct at al
+        - Implement directory watch (+file watch) for different systems (win32, osx and linux)
+        - Make sure that filters work with all systems for file_dialog
+*/
+
 #ifdef __APPLE__
 #include "TargetConditionals.h"
 #ifdef TARGET_OS_MAC
@@ -24,24 +31,6 @@ namespace platform {
 const int MAX_KEYS = 512;
 const int MAX_MOUSE_BUTTONS = 8;
 
-typedef StringBuffer<512> Path;
-typedef uint64 Timestamp;
-
-typedef int32 FileDialogFlags;
-enum FileDialogFlags_ { FileDialogFlags_Open = BIT(0), FileDialogFlags_Save = BIT(1), FileDialogFlags_Directory = BIT(2) };
-
-struct FileDialogResult {
-    enum Result { FILE_OK, FILE_CANCEL };
-    Path path;
-    Result result;
-};
-
-struct DirectoryEntry {
-    enum Type { File, Dir, Link, Unknown };
-    Type type;
-    Path name;
-};
-
 struct Coordinate {
     float32 x;
     float32 y;
@@ -52,11 +41,11 @@ inline bool operator!=(const Coordinate& a, const Coordinate& b) { return a.x !=
 
 struct Context {
     struct {
-        void* ptr;
-        bool should_close;
         const char* title;
-        bool vsync;
         int32 width, height;
+        bool vsync;
+        bool should_close;
+        void* ptr;
     } window;
 
     struct {
@@ -78,20 +67,7 @@ struct Context {
 
             Coordinate coord;      // Window coordinates
             Coordinate ndc_coord;  // Normalized device coordinates
-            /*
-struct {
-    Coordinate window;
-    struct {
-        Coordinate current;
-        Coordinate previous;
-    } window;
 
-    struct {
-        Coordinate current;
-        Coordinate previous;
-    } ndc;
-} coordinate;
-            */
             float32 scroll_delta;
         } mouse;
     } input;
@@ -112,13 +88,36 @@ void update(Context* ctx);
 void swap_buffers(Context* ctx);
 
 // Timing
+typedef uint64 Timestamp;
+
 void sleep(int32 milliseconds);
 Timestamp get_time();
 float compute_delta_ms(Timestamp t0, Timestamp t1);
 
 // Filesystem
-DynamicArray<DirectoryEntry> list_directory(CString directory);
-CString get_cwd();
-FileDialogResult file_dialog(FileDialogFlags flags, CString default_path = {}, CString filter = {});
+typedef StringBuffer<512> Path;
+typedef int32 FileDialogFlags;
+// typedef void (*DirectoryWatchCallback)(const DirectoryEntry entry, void* usr_data);
 
+enum FileDialogFlags_ { FileDialogFlags_Open = BIT(0), FileDialogFlags_Save = BIT(1), FileDialogFlags_Directory = BIT(2) };
+
+struct FileDialogResult {
+    enum Result { FILE_OK, FILE_CANCEL };
+    Path path;
+    Result result;
+};
+
+struct DirectoryEntry {
+    enum Type { File, Dir, Link, Unknown };
+    Type type;
+    Path name;
+};
+
+CString get_cwd();
+DynamicArray<DirectoryEntry> list_directory(CString directory);
+FileDialogResult file_dialog(FileDialogFlags flags, CString default_path = {}, CString filter = {});
+/*
+bool add_directory_watch(CString directory, DirectoryWatchCallback, void* usr_data = NULL);
+bool remove_directory_watch(CString directory);
+*/
 }  // namespace platform

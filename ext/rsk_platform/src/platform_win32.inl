@@ -53,6 +53,6 @@ DynamicArray<DirectoryEntry> list_directory(CString dir_path) {
     return res;
 }
 
-CString get_cwd() { return {_getcwd(path_cwd.beg(), 512)}; }
+CString get_cwd() { return {_getcwd(data.file_system.cwd.beg(), 512)}; }
 
 void sleep(int32 milliseconds) { Sleep(milliseconds); }

@@ -59,6 +59,10 @@ set(HEADERS
 set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/log.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/platform.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/platform_unix.inl
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/platform_linux.inl
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/platform_osx.inl
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/platform_win32.inl
     ${CMAKE_CURRENT_SOURCE_DIR}/src/string_utils.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/gl3w.c
 )
