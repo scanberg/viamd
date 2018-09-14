@@ -507,11 +507,10 @@ DynamicArray<CString> ctokenize(CString str, CString delimiter) {
 bool is_range(CString arg) {
     for (const char* c = arg.beg(); c != arg.end(); c++) {
         if (is_digit(*c)) continue;
-        if (*c == '-') continue;
-        if (*c == '*') continue;
-        return false;
+        if (*c == '-') return true;
+        if (*c == '*') return true;
     }
-    return true;
+    return false;
 }
 
 bool extract_range(IntRange* range, CString arg) {
