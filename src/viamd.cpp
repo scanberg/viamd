@@ -405,6 +405,8 @@ int main(int, char**) {
 
     ApplicationData data;
 
+    //__attribute__((unused)) int pelle = 0;
+
     // Init logging
     logging::initialize();
     logging::register_backend([](CString str, logging::Severity, void*) { printf("%s\n", str.cstr()); });

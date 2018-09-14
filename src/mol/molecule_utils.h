@@ -174,8 +174,8 @@ template <typename T>
 void extract_filtered_data(DynamicArray<T>* dst_data, Array<const T> src_data, Array<const bool> mask) {
     ASSERT(dst_data);
     dst_data->clear();
-    for (auto m : mask) {
-        if (m) dst_data->push_back(data);
+    for (int32 i = 0; i < mask.count; i++) {
+        if (mask[i]) dst_data->push_back(src_data[i]);
     }
 }
 
