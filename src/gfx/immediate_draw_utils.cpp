@@ -268,24 +268,61 @@ void draw_triangle(const float p0[3], const float p1[3], const float p2[3], cons
     append_draw_command(idx, 3, GL_TRIANGLES);
 }
 
-void draw_aabb(const float min_box[3], const float max_box[3], const uint32 color) {
-    // Z = min
-    draw_line(vec3(min_box[0], min_box[1], min_box[2]), vec3(max_box[0], min_box[1], min_box[2]), color);
-    draw_line(vec3(min_box[0], min_box[1], min_box[2]), vec3(min_box[0], max_box[1], min_box[2]), color);
-    draw_line(vec3(max_box[0], min_box[1], min_box[2]), vec3(max_box[0], max_box[1], min_box[2]), color);
-    draw_line(vec3(min_box[0], max_box[1], min_box[2]), vec3(max_box[0], max_box[1], min_box[2]), color);
+void draw_box(const float min_box[3], const float max_box[3], const uint32 color) {
+    const Index idx = (Index)vertices.count;
 
-    // Z = max
-    draw_line(vec3(min_box[0], min_box[1], max_box[2]), vec3(max_box[0], min_box[1], max_box[2]), color);
-    draw_line(vec3(min_box[0], min_box[1], max_box[2]), vec3(min_box[0], max_box[1], max_box[2]), color);
-    draw_line(vec3(max_box[0], min_box[1], max_box[2]), vec3(max_box[0], max_box[1], max_box[2]), color);
-    draw_line(vec3(min_box[0], max_box[1], max_box[2]), vec3(max_box[0], max_box[1], max_box[2]), color);
+    vertices.push_back({{min_box[0], min_box[1], min_box[2]}, color});
+    vertices.push_back({{max_box[0], min_box[1], min_box[2]}, color});
+    vertices.push_back({{min_box[0], max_box[1], min_box[2]}, color});
+    vertices.push_back({{max_box[0], max_box[1], min_box[2]}, color});
 
-    // Z min to Z max
-    draw_line(vec3(min_box[0], min_box[1], min_box[2]), vec3(min_box[0], min_box[1], max_box[2]), color);
-    draw_line(vec3(min_box[0], max_box[1], min_box[2]), vec3(min_box[0], max_box[1], max_box[2]), color);
-    draw_line(vec3(max_box[0], min_box[1], min_box[2]), vec3(max_box[0], min_box[1], max_box[2]), color);
-    draw_line(vec3(max_box[0], max_box[1], min_box[2]), vec3(max_box[0], max_box[1], max_box[2]), color);
+    vertices.push_back({{min_box[0], min_box[1], max_box[2]}, color});
+    vertices.push_back({{max_box[0], min_box[1], max_box[2]}, color});
+    vertices.push_back({{min_box[0], max_box[1], max_box[2]}, color});
+    vertices.push_back({{max_box[0], max_box[1], max_box[2]}, color});
+
+    indices.push_back(idx + 4 - 1);
+    indices.push_back(idx + 3 - 1);
+    indices.push_back(idx + 7 - 1);
+    indices.push_back(idx + 4 - 1);
+    indices.push_back(idx + 8 - 1);
+    indices.push_back(idx + 5 - 1);
+    indices.push_back(idx + 3 - 1);
+    indices.push_back(idx + 1 - 1);
+    indices.push_back(idx + 4 - 1);
+    indices.push_back(idx + 2 - 1);
+    indices.push_back(idx + 7 - 1);
+    indices.push_back(idx + 6 - 1);
+    indices.push_back(idx + 5 - 1);
+    indices.push_back(idx + 2 - 1);
+    indices.push_back(idx + 1 - 1);
+
+    append_draw_command(idx, 15, GL_TRIANGLE_STRIP);
+}  // namespace immediate
+
+void draw_aabb(const float min_box[3], const float max_box[3], const uint32 color, bool filled) {
+
+    if (filled) {
+        draw_box(min_box, max_box, color);
+    } else {
+        // Z = min
+        draw_line(vec3(min_box[0], min_box[1], min_box[2]), vec3(max_box[0], min_box[1], min_box[2]), color);
+        draw_line(vec3(min_box[0], min_box[1], min_box[2]), vec3(min_box[0], max_box[1], min_box[2]), color);
+        draw_line(vec3(max_box[0], min_box[1], min_box[2]), vec3(max_box[0], max_box[1], min_box[2]), color);
+        draw_line(vec3(min_box[0], max_box[1], min_box[2]), vec3(max_box[0], max_box[1], min_box[2]), color);
+
+        // Z = max
+        draw_line(vec3(min_box[0], min_box[1], max_box[2]), vec3(max_box[0], min_box[1], max_box[2]), color);
+        draw_line(vec3(min_box[0], min_box[1], max_box[2]), vec3(min_box[0], max_box[1], max_box[2]), color);
+        draw_line(vec3(max_box[0], min_box[1], max_box[2]), vec3(max_box[0], max_box[1], max_box[2]), color);
+        draw_line(vec3(min_box[0], max_box[1], max_box[2]), vec3(max_box[0], max_box[1], max_box[2]), color);
+
+        // Z min to Z max
+        draw_line(vec3(min_box[0], min_box[1], min_box[2]), vec3(min_box[0], min_box[1], max_box[2]), color);
+        draw_line(vec3(min_box[0], max_box[1], min_box[2]), vec3(min_box[0], max_box[1], max_box[2]), color);
+        draw_line(vec3(max_box[0], min_box[1], min_box[2]), vec3(max_box[0], min_box[1], max_box[2]), color);
+        draw_line(vec3(max_box[0], max_box[1], min_box[2]), vec3(max_box[0], max_box[1], max_box[2]), color);
+    }
 }
 
 void draw_basis(const mat4& basis, const float scale, const uint32 x_axis_color, const uint32 y_axis_color, const uint32 z_axis_color) {
