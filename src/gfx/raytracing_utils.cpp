@@ -161,11 +161,11 @@ void draw_voxelized_scene(const mat4& view_mat, const mat4& proj_mat) {
     for (int32 z = 0; z < voxel_data.dim.z; z++) {
         for (int32 y = 0; y < voxel_data.dim.y; y++) {
             for (int32 x = 0; x < voxel_data.dim.x; x++) {
-                int32 i = compute_voxel_idx(voxel_data, ivec3(x, y, z));
+                int32 i = compute_voxel_idx(voxel_data.dim, ivec3(x, y, z));
                 if (voxel_data.data[i] > 0) {
                     vec3 min_box = voxel_data.min_box + vec3(x, y, z) * voxel_data.voxel_ext;
                     vec3 max_box = min_box + voxel_data.voxel_ext;
-                    immediate::draw_aabb(min_box, max_box, voxel_data.data[i]);
+                    immediate::draw_aabb(min_box, max_box, voxel_data.data[i], true);
                 }
             }
         }

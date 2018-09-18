@@ -693,7 +693,7 @@ data.dynamic_frame.atom_range = {0, 152};
             spatialhash::compute_frame(&data.spatial_hash.frame, data.mol_data.dynamic.molecule.atom_positions, data.spatial_hash.cell_ext);
 
             DynamicArray<uint32> atom_colors = compute_atom_colors(data.mol_data.dynamic.molecule, ColorMapping::CPK);
-            render::voxelize_scene(data.mol_data.dynamic.molecule.atom_positions, atom_colors, ivec3(32, 32, 32));
+            render::voxelize_scene(data.mol_data.dynamic.molecule.atom_positions, atom_colors, ivec3(8, 8, 8));
         }
 
         if (data.dynamic_frame.dirty_flag) {
