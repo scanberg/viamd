@@ -691,6 +691,9 @@ data.dynamic_frame.atom_range = {0, 152};
             data.spatial_hash.dirty_flag = false;
 
             spatialhash::compute_frame(&data.spatial_hash.frame, data.mol_data.dynamic.molecule.atom_positions, data.spatial_hash.cell_ext);
+
+            DynamicArray<uint32> atom_colors = compute_atom_colors(data.mol_data.dynamic.molecule, ColorMapping::CPK);
+            render::voxelize_scene(data.mol_data.dynamic.molecule.atom_positions, atom_colors, ivec3(32, 32, 32));
         }
 
         if (data.dynamic_frame.dirty_flag) {
@@ -994,7 +997,7 @@ for (const auto& d_c : ps.constraints.distance) {
 
             immediate::flush();
 
-            render::draw_spatial_hash_cells(data.spatial_hash.frame, view_mat, proj_mat);
+            render::draw_voxelized_scene(view_mat, proj_mat);
         }
 
         // GUI ELEMENTS
