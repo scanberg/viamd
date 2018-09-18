@@ -22,6 +22,7 @@
 #include <gfx/immediate_draw_utils.h>
 #include <gfx/postprocessing_utils.h>
 #include <gfx/volume_utils.h>
+#include <gfx/raytracing_utils.h>
 
 #include <mol/radial_basis.h>
 
@@ -34,11 +35,9 @@
 
 //#define VIAMD_RELEASE
 
-#ifdef _WIN32
-constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
-#elif __APPLE__
+#ifdef OS_MAC_OSX
 constexpr Key::Key_t CONSOLE_KEY = Key::KEY_WORLD_1;
-#else
+#else  // WIN32 and Linux
 // @TODO: Make sure this is currect for Linux?
 constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
 #endif
@@ -319,8 +318,14 @@ struct ApplicationData {
         bool show_error = false;
 
         float beta = 0.5f;
-        bool dirty_flag = false;
+        bool dirty_flag = true;
     } dynamic_frame;
+
+    struct {
+        spatialhash::Frame frame = {};
+        vec3 cell_ext = vec3(4.f);  // in Ångström
+        bool dirty_flag = true;
+    } spatial_hash;
 
     // --- CONSOLE ---
     Console console{};
@@ -621,6 +626,7 @@ data.dynamic_frame.atom_range = {0, 152};
 
         if (data.mol_data.dynamic.trajectory && time_changed) {
             data.dynamic_frame.dirty_flag = true;
+            data.spatial_hash.dirty_flag = true;
 
             int last_frame = data.mol_data.dynamic.trajectory.num_frames - 1;
             data.time = math::clamp(data.time, 0.0, float64(last_frame));
@@ -679,6 +685,12 @@ data.dynamic_frame.atom_range = {0, 152};
                         break;
                 }
             }
+        }
+
+        if (data.spatial_hash.dirty_flag) {
+            data.spatial_hash.dirty_flag = false;
+
+            spatialhash::compute_frame(&data.spatial_hash.frame, data.mol_data.dynamic.molecule.atom_positions, data.spatial_hash.cell_ext);
         }
 
         if (data.dynamic_frame.dirty_flag) {
@@ -920,7 +932,7 @@ for (float y = min_val.y; y <= max_val.y; y += step.y) {
             if (coord.x < 0 || coord.y < 0 || coord.x >= data.ctx.framebuffer.width || coord.y >= data.ctx.framebuffer.height) {
                 data.picking_idx = NO_PICKING_IDX;
             } else {
-                data.picking_idx = get_picking_id(data.fbo.id, coord.x, coord.y);
+                // data.picking_idx = get_picking_id(data.fbo.id, coord.x, coord.y);
             }
 
             data.hovered = {};
@@ -981,6 +993,8 @@ for (const auto& d_c : ps.constraints.distance) {
             */
 
             immediate::flush();
+
+            render::draw_spatial_hash_cells(data.spatial_hash.frame, view_mat, proj_mat);
         }
 
         // GUI ELEMENTS
@@ -1225,20 +1239,18 @@ if (ImGui::BeginMenu("Edit")) {
             ImGui::EndGroup();
             ImGui::Separator();
 
-            /*
-    ImGui::BeginGroup();
-    if (ImGui::Checkbox("Use high-res font", &data->high_res_font)) {
-    if (ImGui::GetIO().Fonts->Fonts.size() > 1 && data->high_res_font) {
-        ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts[1];
-        ImGui::GetIO().FontGlobalScale = 0.75f;
-    } else {
-        ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts[0];
-        ImGui::GetIO().FontGlobalScale = 1.0f;
-    }
-    }
-    ImGui::EndGroup();
-    ImGui::Separator();
-            */
+            ImGui::BeginGroup();
+            if (ImGui::Checkbox("Use high-res font", &data->high_res_font)) {
+                if (ImGui::GetIO().Fonts->Fonts.size() > 1 && data->high_res_font) {
+                    ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts[1];
+                    ImGui::GetIO().FontGlobalScale = 0.75f;
+                } else {
+                    ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts[0];
+                    ImGui::GetIO().FontGlobalScale = 1.0f;
+                }
+            }
+            ImGui::EndGroup();
+            ImGui::Separator();
 
             ImGui::BeginGroup();
             ImGui::Checkbox("Hydrogen Bond", &data->hydrogen_bonds.enabled);
