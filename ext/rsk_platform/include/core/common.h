@@ -80,4 +80,9 @@ struct ExitScopeHelp {
     }
 };
 
-#define defer const auto& CONCAT(defer__, __LINE__) = ExitScopeHelp() + [&]()
+#if defined(__GNUC__)
+#define __UNUSED   __attribute__((unused))
+#else
+#define __UNUSED
+#endif
+#define defer __UNUSED const auto& CONCAT(defer__, __LINE__) = ExitScopeHelp() + [&]()
