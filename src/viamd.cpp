@@ -61,6 +61,7 @@ constexpr float HYDROGEN_BOND_ANGLE_CUTOFF_MAX = 90.f;
 
 constexpr int32 VOLUME_DOWNSAMPLE_FACTOR = 2;
 
+#ifdef VIAMD_RELEASE
 constexpr const char* CAFFINE_PDB = R"(
 ATOM      1  N1  BENZ    1       5.040   1.944  -8.324                          
 ATOM      2  C2  BENZ    1       6.469   2.092  -7.915                          
@@ -87,6 +88,7 @@ ATOM     22  H11 CSP3    1E     10.776   1.419  -7.199
 ATOM     23  H12 CSP3    1E      9.437   2.207  -6.309                          
 ATOM     24  H13 CSP3    1E      9.801   2.693  -7.994
 )";
+#endif
 
 inline ImVec4& vec_cast(vec4& v) { return *(ImVec4*)(&v); }
 inline vec4& vec_cast(ImVec4& v) { return *(vec4*)(&v); }
@@ -463,15 +465,15 @@ int main(int, char**) {
     allocate_and_parse_pdb_from_string(&data.mol_data.dynamic, CAFFINE_PDB);
     data.mol_data.atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule.atom_elements);
 #else
-    /*
+    
 stats::create_property("b1", "distance resatom(resname(ALA), 1) com(resname(ALA))");
 load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
 data.dynamic_frame.atom_range = {0, 152};
-    */
+    /*
     stats::create_property("b1", "distance resname(DE3) com(resname(DE3))");
     load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/haofan/for_VIAMD.pdb");
     data.dynamic_frame.atom_range = {0, 1277};
-
+    */
 #endif
     reset_view(&data);
     create_default_representation(&data);
