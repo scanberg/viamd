@@ -19,9 +19,12 @@ void transform_positions(Array<vec3> positions, const mat4& transformation) {
     }
 }
 
-void compute_bounding_box(vec3* min_box, vec3* max_box, Array<const vec3> positions) {
+void compute_bounding_box(vec3* min_box, vec3* max_box, Array<const vec3> positions, Array<const float> radii) {
     ASSERT(min_box);
     ASSERT(max_box);
+    if (radii.count > 0) {
+        ASSERT(radii.count == positions.count);
+    }
 
     if (positions.count == 0) {
         *min_box = *max_box = vec3(0);
@@ -29,8 +32,10 @@ void compute_bounding_box(vec3* min_box, vec3* max_box, Array<const vec3> positi
 
     *min_box = *max_box = positions.data[0];
     for (int64 i = 0; i < positions.count; i++) {
-        *min_box = math::min(*min_box, positions.data[i]);
-        *max_box = math::max(*max_box, positions.data[i]);
+        const vec3& p = positions.data[i];
+        const float r = radii.count > 0 ? radii.data[i] : 0.f;
+        *min_box = math::min(*min_box, p - r);
+        *max_box = math::max(*max_box, p + r);
     }
 }
 

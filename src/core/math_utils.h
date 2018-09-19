@@ -217,4 +217,7 @@ inline vec3 rgb_to_hcl(vec3 rgb) {
     return HCL;
 }
 
+inline vec4 convert_color(uint32 color) { return glm::unpackUnorm4x8(color); }
+inline uint32 convert_color(vec4 color) { return glm::packUnorm4x8(color); }
+
 }  // namespace math

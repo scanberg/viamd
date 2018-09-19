@@ -271,33 +271,38 @@ void draw_triangle(const float p0[3], const float p1[3], const float p2[3], cons
 void draw_box(const float min_box[3], const float max_box[3], const uint32 color) {
     const Index idx = (Index)vertices.count;
 
-    vertices.push_back({{min_box[0], min_box[1], min_box[2]}, color});
-    vertices.push_back({{max_box[0], min_box[1], min_box[2]}, color});
-    vertices.push_back({{min_box[0], max_box[1], min_box[2]}, color});
-    vertices.push_back({{max_box[0], max_box[1], min_box[2]}, color});
+    // @ TODO: This is incorrect and needs to be fixed
 
-    vertices.push_back({{min_box[0], min_box[1], max_box[2]}, color});
-    vertices.push_back({{max_box[0], min_box[1], max_box[2]}, color});
-    vertices.push_back({{min_box[0], max_box[1], max_box[2]}, color});
     vertices.push_back({{max_box[0], max_box[1], max_box[2]}, color});
+    vertices.push_back({{min_box[0], max_box[1], max_box[2]}, color});
+    vertices.push_back({{max_box[0], max_box[1], min_box[2]}, color});
+    vertices.push_back({{min_box[0], max_box[1], min_box[2]}, color});
+
+    vertices.push_back({{max_box[0], min_box[1], max_box[2]}, color});
+    vertices.push_back({{min_box[0], min_box[1], max_box[2]}, color});
+    vertices.push_back({{max_box[0], min_box[1], min_box[2]}, color});
+    vertices.push_back({{min_box[0], min_box[1], min_box[2]}, color});
 
     indices.push_back(idx + 4 - 1);
     indices.push_back(idx + 3 - 1);
     indices.push_back(idx + 7 - 1);
-    indices.push_back(idx + 4 - 1);
+
     indices.push_back(idx + 8 - 1);
     indices.push_back(idx + 5 - 1);
     indices.push_back(idx + 3 - 1);
+
     indices.push_back(idx + 1 - 1);
     indices.push_back(idx + 4 - 1);
     indices.push_back(idx + 2 - 1);
+
     indices.push_back(idx + 7 - 1);
     indices.push_back(idx + 6 - 1);
     indices.push_back(idx + 5 - 1);
+
     indices.push_back(idx + 2 - 1);
     indices.push_back(idx + 1 - 1);
 
-    append_draw_command(idx, 15, GL_TRIANGLE_STRIP);
+    append_draw_command(idx, 14, GL_TRIANGLE_STRIP);
 }  // namespace immediate
 
 void draw_aabb(const float min_box[3], const float max_box[3], const uint32 color, bool filled) {
