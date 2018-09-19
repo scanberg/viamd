@@ -100,7 +100,7 @@ inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backb
 }
 
 void transform_positions(Array<vec3> positions, const mat4& transformation);
-void compute_bounding_box(vec3* min_box, vec3* max_box, Array<const vec3> positions);
+void compute_bounding_box(vec3* min_box, vec3* max_box, Array<const vec3> positions, Array<const float> radii = {});
 vec3 compute_com(Array<const vec3> positions, Array<const float> masses = {});
 
 /*

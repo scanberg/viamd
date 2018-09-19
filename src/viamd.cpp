@@ -452,6 +452,7 @@ int main(int, char**) {
     // Init subsystems
     immediate::initialize();
     draw::initialize();
+    render::initialize();
     ramachandran::initialize();
     stats::initialize();
     filter::initialize();
@@ -470,10 +471,9 @@ int main(int, char**) {
     allocate_and_parse_pdb_from_string(&data.mol_data.dynamic, CAFFINE_PDB);
     data.mol_data.atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule.atom_elements);
 #else
-    
-stats::create_property("b1", "distance resatom(resname(ALA), 1) com(resname(ALA))");
-load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
-data.dynamic_frame.atom_range = {0, 152};
+    stats::create_property("b1", "distance resatom(resname(ALA), 1) com(resname(ALA))");
+    load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
+    data.dynamic_frame.atom_range = {0, 152};
     /*
     stats::create_property("b1", "distance resname(DE3) com(resname(DE3))");
     load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/haofan/for_VIAMD.pdb");
@@ -696,8 +696,16 @@ data.dynamic_frame.atom_range = {0, 152};
 
             spatialhash::compute_frame(&data.spatial_hash.frame, data.mol_data.dynamic.molecule.atom_positions, data.spatial_hash.cell_ext);
 
+            Array<const vec3> atom_pos = data.mol_data.dynamic.molecule.atom_positions;
             DynamicArray<uint32> atom_colors = compute_atom_colors(data.mol_data.dynamic.molecule, ColorMapping::CPK);
-            render::voxelize_scene(data.mol_data.dynamic.molecule.atom_positions, atom_colors, ivec3(8, 8, 8));
+            DynamicArray<float> atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule.atom_elements);
+
+            vec3 min_box, max_box;
+            compute_bounding_box(&min_box, &max_box, atom_pos, atom_radii);
+            const float desired_voxel_ext = 0.2f;
+            const ivec3 res = math::max(ivec3(1), ivec3((max_box - min_box) / desired_voxel_ext));
+
+            render::voxelize_scene(data.mol_data.dynamic.molecule.atom_positions, atom_radii, atom_colors, res, min_box, max_box);
         }
 
         if (data.dynamic_frame.dirty_flag) {
@@ -970,6 +978,7 @@ for (float y = min_val.y; y <= max_val.y; y += step.y) {
 
         // Apply post processing
         // postprocessing::apply_tonemapping(data.fbo.tex_color);
+
         if (data.ssao.enabled) {
             postprocessing::apply_ssao(data.fbo.tex_depth, data.fbo.tex_normal, proj_mat, data.ssao.intensity, data.ssao.radius);
         }
@@ -979,6 +988,9 @@ for (float y = min_val.y; y <= max_val.y; y += step.y) {
             volume::render_volume_texture(data.density_volume.texture.id, data.fbo.tex_depth, data.density_volume.texture_to_model_matrix,
                                           data.density_volume.model_to_world_matrix, view_mat, proj_mat, data.density_volume.color, scl);
         }
+
+        render::cone_trace_scene(data.fbo.tex_depth, data.fbo.tex_normal, view_mat, proj_mat);
+        // render::draw_voxelized_scene(view_mat, proj_mat);
 
         // DRAW DEBUG GRAPHICS W/O DEPTH
         {
@@ -1000,8 +1012,6 @@ for (const auto& d_c : ps.constraints.distance) {
             */
 
             immediate::flush();
-
-            render::draw_voxelized_scene(view_mat, proj_mat);
         }
 
         // GUI ELEMENTS
