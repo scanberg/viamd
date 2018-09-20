@@ -128,31 +128,31 @@ vec4 cone_trace(vec3 world_position, vec3 world_normal, vec3 direction, float ta
     
     // lod level 0 mipmap is full size, level 1 is half that size and so on
     float lod = 0.0;
-    vec3 color = vec3(0);
-    float alpha = 0.0;
+    vec4 rgba = vec4(0);
     occlusion = 0.0;
 
     float dist = u_voxel_extent; // Start one voxel away to avoid self occlusion
     vec3 start_pos = world_position + world_normal * u_voxel_extent; // Plus move away slightly in the normal direction to avoid
                                                                      // self occlusion in flat surfaces
 
-    while(dist < MAX_DIST && alpha < ALPHA_THRESH) {
+    while(dist < MAX_DIST && rgba.a < ALPHA_THRESH) {
         // smallest sample diameter possible is the voxel size
         float diameter = max(u_voxel_extent, 2.0 * tan_half_angle * dist);
         float lod_level = log2(diameter / u_voxel_extent);
         vec4 voxel_color = sample_voxels(start_pos + dist * direction, lod_level);
 
         // front-to-back compositing
-        float a = (1.0 - alpha);
-        color += a * voxel_color.rgb;
-        alpha += a * voxel_color.a;
+        float a = (1.0 - rgba.a);
+        rgba += a * voxel_color;
+        //color += a * voxel_color.rgb;
+        //alpha += a * voxel_color.a;
         //occlusion += a * voxelColor.a;
         occlusion += (a * voxel_color.a) / (1.0 + 0.03 * diameter);
         dist += diameter * 0.5; // smoother
         //dist += diameter; // faster but misses more voxels
     }
 
-    return vec4(color, alpha);
+    return rgba;
 }
 
 vec4 indirect_light(in vec3 world_position, in vec3 world_normal, in mat3 tangent_to_world, out float occlusion_out) {
@@ -204,10 +204,10 @@ vec3 decode_normal(vec2 enc) {
 }
 
 void main() {
-    float depth = texture2D(u_depth_texture, uv).r;
+    float depth = texture(u_depth_texture, uv).r;
 	if (depth == 1.0) discard;
 
-    vec2 encoded_normal = texture2D(u_normal_texture, uv).rg;
+    vec2 encoded_normal = texture(u_normal_texture, uv).rg;
     vec3 world_position = depth_to_world_coord(uv, depth).xyz;
     vec3 world_normal = mat3(u_inv_view_mat) * decode_normal(encoded_normal);
     vec3 world_eye = u_world_space_camera;
@@ -236,11 +236,11 @@ void main() {
         // Maybe fix so that the cone doesnt trace below the plane defined by the surface normal.
         // For example so that the floor doesnt reflect itself when looking at it with a small angle
         float occlusion;
-        vec4 traced_specular = cone_trace(world_position, world_normal, world_normal, cone_angle, occlusion); 
+        vec4 traced_specular = cone_trace(world_position, world_normal, reflect_dir, cone_angle, occlusion); 
         specular_contribution = u_use_indirect_specular * 2.0 * traced_specular.rgb;
     }
 
-    frag_color = vec4(specular_contribution, 1.0);
+    frag_color = vec4(diffuse_contribution * 0.4, 1.0);
 	//frag_color = vec4(sample_voxels(world_position, 0).rgb, 1.0);
 	//frag_color = vec4(tc, 1.0);
 }
@@ -464,21 +464,21 @@ void cone_trace_scene(GLuint depth_tex, GLuint normal_tex, const mat4& view_mat,
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_3D, cone_trace::gl.voxel_texture);
 
-    // glDisable(GL_DEPTH_TEST);
-    // glEnable(GL_BLEND);
-    // glBlendFunc(GL_ONE, GL_ONE);
-    // glColorMask(1, 1, 1, 0);
-    // glDepthMask(GL_FALSE);
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE);
+    glColorMask(1, 1, 1, 0);
+    glDepthMask(GL_FALSE);
 
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
 
-    // glDisable(GL_BLEND);
-    // glBlendFunc(GL_ONE, GL_ZERO);
-    // glColorMask(1, 1, 1, 1);
-    // glDepthMask(GL_TRUE);
-    // glEnable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ZERO);
+    glColorMask(1, 1, 1, 1);
+    glDepthMask(GL_TRUE);
+    glEnable(GL_DEPTH_TEST);
 }
 
 }  // namespace render
