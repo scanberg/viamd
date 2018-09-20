@@ -329,6 +329,16 @@ struct ApplicationData {
         bool dirty_flag = true;
     } spatial_hash;
 
+    struct {
+        bool enabled = true;
+        bool show_voxels = false;
+        bool dirty_flag = true;
+        float voxel_ext = 1.f;
+        float indirect_diffuse_scale = 1.f;
+        float indirect_specular_scale = 1.f;
+        float ambient_occlusion_scale = 1.f;
+    } cone_trace;
+
     // --- CONSOLE ---
     Console console{};
     bool show_console = false;
@@ -471,12 +481,12 @@ int main(int, char**) {
     allocate_and_parse_pdb_from_string(&data.mol_data.dynamic, CAFFINE_PDB);
     data.mol_data.atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule.atom_elements);
 #else
-
-    stats::create_property("b1", "distance resatom(resname(ALA), 1) com(resname(ALA))");
-    load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
-    data.dynamic_frame.atom_range = {0, 152};
-
-    // load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
+    /*
+stats::create_property("b1", "distance resatom(resname(ALA), 1) com(resname(ALA))");
+load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
+data.dynamic_frame.atom_range = {0, 152};
+    */
+    load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
 
     /*
     stats::create_property("b1", "distance resname(DE3) com(resname(DE3))");
@@ -699,17 +709,6 @@ int main(int, char**) {
             data.spatial_hash.dirty_flag = false;
 
             spatialhash::compute_frame(&data.spatial_hash.frame, data.mol_data.dynamic.molecule.atom_positions, data.spatial_hash.cell_ext);
-
-            Array<const vec3> atom_pos = data.mol_data.dynamic.molecule.atom_positions;
-            DynamicArray<uint32> atom_colors = compute_atom_colors(data.mol_data.dynamic.molecule, ColorMapping::CPK);
-            DynamicArray<float> atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule.atom_elements);
-
-            vec3 min_box, max_box;
-            compute_bounding_box(&min_box, &max_box, atom_pos, atom_radii);
-            const float desired_voxel_ext = 3.0f;
-            const ivec3 res = math::max(ivec3(1), ivec3((max_box - min_box) / desired_voxel_ext));
-
-            render::voxelize_scene(data.mol_data.dynamic.molecule.atom_positions, atom_radii, atom_colors, res, min_box, max_box);
         }
 
         if (data.dynamic_frame.dirty_flag && data.mol_data.dynamic.trajectory) {
@@ -763,6 +762,20 @@ int main(int, char**) {
                     p = p + v;
                 }
             }
+        }
+
+        if (data.cone_trace.enabled && data.cone_trace.dirty_flag) {
+            data.cone_trace.dirty_flag = false;
+
+            Array<const vec3> atom_pos = data.mol_data.dynamic.molecule.atom_positions;
+            DynamicArray<uint32> atom_colors = compute_atom_colors(data.mol_data.dynamic.molecule, ColorMapping::CPK);
+            DynamicArray<float> atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule.atom_elements);
+
+            vec3 min_box, max_box;
+            compute_bounding_box(&min_box, &max_box, atom_pos, atom_radii);
+            const ivec3 res = math::max(ivec3(1), ivec3((max_box - min_box) / data.cone_trace.voxel_ext));
+
+            render::voxelize_scene(data.mol_data.dynamic.molecule.atom_positions, atom_radii, atom_colors, res, min_box, max_box);
         }
 
         if (frame_changed) {
@@ -977,8 +990,17 @@ for (float y = min_val.y; y <= max_val.y; y += step.y) {
         glDisable(GL_DEPTH_TEST);
         glDepthMask(GL_FALSE);
 
-        // Render deferred
-        postprocessing::render_deferred(data.fbo.tex_depth, data.fbo.tex_color, data.fbo.tex_normal, inv_proj_mat);
+        if (data.cone_trace.enabled) {
+            render::cone_trace_scene(data.fbo.tex_depth, data.fbo.tex_normal, data.fbo.tex_color, view_mat, proj_mat,
+                                     data.cone_trace.indirect_diffuse_scale, data.cone_trace.indirect_specular_scale,
+                                     data.cone_trace.ambient_occlusion_scale);
+            if (data.cone_trace.show_voxels) {
+                render::draw_voxelized_scene(view_mat, proj_mat);
+            }
+        } else {
+            // Render deferred
+            postprocessing::render_deferred(data.fbo.tex_depth, data.fbo.tex_color, data.fbo.tex_normal, inv_proj_mat);
+        }
 
         // Apply post processing
         // postprocessing::apply_tonemapping(data.fbo.tex_color);
@@ -992,9 +1014,6 @@ for (float y = min_val.y; y <= max_val.y; y += step.y) {
             volume::render_volume_texture(data.density_volume.texture.id, data.fbo.tex_depth, data.density_volume.texture_to_model_matrix,
                                           data.density_volume.model_to_world_matrix, view_mat, proj_mat, data.density_volume.color, scl);
         }
-
-        render::cone_trace_scene(data.fbo.tex_depth, data.fbo.tex_normal, data.fbo.tex_color, view_mat, proj_mat);
-        // render::draw_voxelized_scene(view_mat, proj_mat);
 
         // DRAW DEBUG GRAPHICS W/O DEPTH
         {
@@ -1332,7 +1351,7 @@ if (ImGui::BeginMenu("Edit")) {
             ImGui::EndMenu();
         }
 
-        if (ImGui::BeginMenu("Test")) {
+        if (ImGui::BeginMenu("Dynamic Frame")) {
             if (ImGui::Checkbox("RBF-refinement", &data->dynamic_frame.use_rbf_refinement)) {
                 data->dynamic_frame.dirty_flag = true;
             }
@@ -1342,6 +1361,23 @@ if (ImGui::BeginMenu("Edit")) {
             ImGui::Checkbox("Show grid points", &data->dynamic_frame.show_grid_points);
             if (ImGui::SliderFloat("Beta", &data->dynamic_frame.beta, 0.f, 1.f)) {
                 data->dynamic_frame.dirty_flag = true;
+            }
+
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Cone Trace")) {
+            if (ImGui::Checkbox("Enabled", &data->cone_trace.enabled)) {
+                data->cone_trace.dirty_flag = true;
+            }
+            if (data->cone_trace.enabled) {
+                ImGui::Checkbox("Show voxels", &data->cone_trace.show_voxels);
+                if (ImGui::SliderFloat("Voxel Extent", &data->cone_trace.voxel_ext, 0.1f, 3.f)) {
+                    data->cone_trace.dirty_flag = true;
+                }
+                ImGui::SliderFloat("Indirect Diffuse Scale", &data->cone_trace.indirect_diffuse_scale, 0.f, 4.f);
+                ImGui::SliderFloat("Indirect Specular Scale", &data->cone_trace.indirect_specular_scale, 0.f, 4.f);
+                ImGui::SliderFloat("Ambient Occlusion Scale", &data->cone_trace.ambient_occlusion_scale, 0.f, 4.f);
             }
 
             ImGui::EndMenu();

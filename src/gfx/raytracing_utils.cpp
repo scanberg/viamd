@@ -50,9 +50,9 @@ static struct {
         GLint voxel_grid_size = -1;
         GLint voxel_dimensions = -1;
         GLint voxel_extent = -1;
-        GLint use_indirect_diffuse = -1;
-        GLint use_indirect_specular = -1;
-        GLint use_ambient_occlusion = -1;
+        GLint indirect_diffuse_scale = -1;
+        GLint indirect_specular_scale = -1;
+        GLint ambient_occlusion_scale = -1;
         GLint inv_view_mat = -1;
         GLint inv_view_proj_mat = -1;
         GLint world_space_camera = -1;
@@ -81,10 +81,10 @@ uniform vec3 u_voxel_grid_world_min;
 uniform ivec3 u_voxel_dimensions;
 uniform float u_voxel_extent;
 
-// Toggle "booleans"
-uniform float u_use_indirect_diffuse;
-uniform float u_use_indirect_specular;
-uniform float u_use_ambient_occluision;
+// Scaling factors
+uniform float u_indirect_diffuse_scale = 1.f;
+uniform float u_indirect_specular_scale = 1.f;
+uniform float u_ambient_occlusion_scale = 1.f;
 
 // View parameters
 uniform mat4 u_inv_view_mat;
@@ -119,7 +119,7 @@ const float cone_weights[6] = float[](0.25, 0.15, 0.15, 0.15, 0.15, 0.15);
 
 vec4 sample_voxels(vec3 world_position, float lod) {
     vec3 tc = (world_position - u_voxel_grid_world_min) / (u_voxel_grid_world_size);
-	tc = tc + vec3(0.5) / vec3(u_voxel_dimensions);;
+	//tc = tc + vec3(0.5) / vec3(u_voxel_dimensions);;
     return textureLod(u_voxel_texture, tc, lod);
 }
 
@@ -213,45 +213,44 @@ void main() {
     vec3 world_normal = mat3(u_inv_view_mat) * decode_normal(encoded_normal);
     vec3 world_eye = u_world_space_camera;
 
+	vec3 L = normalize(vec3(1,1,1));
+	vec3 N = world_normal;
+	vec3 E = normalize(world_eye - world_position);
+	float cos_term = max(0, dot(L, N));
+
     mat3 tangent_to_world = compute_ON_basis(world_normal);
   
     // Calculate diffuse light
-    vec3 diffuse_contribution;
+    vec3 diffuse_contribution = vec3(0);
     {
-		const vec3 light_dir = normalize(vec3(1, 1, 1));
-		const vec3 light_intensity = vec3(1,1,1);
-		
-		float cos_theta = max(0, dot(light_dir, world_normal));
-		vec3 direct_diffuse = cos_theta * light_intensity;
+		vec3 direct_diffuse = cos_term * vec3(1,1,1);
 
         // Indirect diffuse light
         float occlusion = 0.0;
         vec3 indirect_diffuse = indirect_light(world_position, world_normal, tangent_to_world, occlusion).rgb;
 
         // Sum direct and indirect diffuse light and tweak a little bit
-        occlusion = min(1.0, 1.5 * occlusion); // Make occlusion brighter
-        diffuse_contribution = u_use_indirect_diffuse * 2.0 * occlusion * (direct_diffuse + 1.0 * indirect_diffuse) * albedo;
+        // occlusion = min(1.0, 1.5 * occlusion); // Make occlusion brighter
+		// TODO: apply occlusion
+        diffuse_contribution = (direct_diffuse + u_indirect_diffuse_scale * indirect_diffuse) * albedo;
     }
     
     // Calculate specular light
-    vec3 specular_contribution;
+    vec3 specular_contribution = vec3(0);
     {
         // 0.2 = 22.6 degrees, 0.1 = 11.4 degrees, 0.07 = 8 degrees angle
         const float cone_angle = 0.07;
-		vec3 I = -normalize(world_eye);
-		vec3 N = world_normal;
-        vec3 reflect_dir = I - 2.0 * dot(N, I) * N;
+
+        vec3 E_refl = -E + 2.0 * dot(N, E) * N;
 
         // Maybe fix so that the cone doesnt trace below the plane defined by the surface normal.
         // For example so that the floor doesnt reflect itself when looking at it with a small angle
         float occlusion;
-        vec4 traced_specular = cone_trace(world_position, world_normal, world_normal, cone_angle, occlusion); 
-        specular_contribution = u_use_indirect_specular * 2.0 * traced_specular.rgb;
+        vec4 traced_specular = cone_trace(world_position, world_normal, E_refl, cone_angle, occlusion); 
+        specular_contribution = u_indirect_specular_scale * traced_specular.rgb;
     }
 
-    frag_color = vec4(specular_contribution, 1.0);
-	//frag_color = vec4(sample_voxels(world_position, 0).rgb, 1.0);
-	//frag_color = vec4(tc, 1.0);
+    frag_color = vec4(diffuse_contribution + specular_contribution, 1.0);
 }
 )";
 
@@ -297,9 +296,9 @@ static void initialize() {
     gl.uniform_location.voxel_grid_size = glGetUniformLocation(gl.program, "u_voxel_grid_world_size");
     gl.uniform_location.voxel_dimensions = glGetUniformLocation(gl.program, "u_voxel_dimensions");
     gl.uniform_location.voxel_extent = glGetUniformLocation(gl.program, "u_voxel_extent");
-    gl.uniform_location.use_indirect_diffuse = glGetUniformLocation(gl.program, "u_use_indirect_diffuse");
-    gl.uniform_location.use_indirect_specular = glGetUniformLocation(gl.program, "u_use_indirect_specular");
-    gl.uniform_location.use_ambient_occlusion = glGetUniformLocation(gl.program, "u_use_ambient_occlusion");
+    gl.uniform_location.indirect_diffuse_scale = glGetUniformLocation(gl.program, "u_indirect_diffuse_scale");
+    gl.uniform_location.indirect_specular_scale = glGetUniformLocation(gl.program, "u_indirect_specular_scale");
+    gl.uniform_location.ambient_occlusion_scale = glGetUniformLocation(gl.program, "u_ambient_occlusion_scale");
     gl.uniform_location.inv_view_mat = glGetUniformLocation(gl.program, "u_inv_view_mat");
     gl.uniform_location.inv_view_proj_mat = glGetUniformLocation(gl.program, "u_inv_view_proj_mat");
     gl.uniform_location.world_space_camera = glGetUniformLocation(gl.program, "u_world_space_camera");
@@ -308,6 +307,9 @@ static void initialize() {
     glBindTexture(GL_TEXTURE_3D, gl.voxel_texture);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_BORDER);
     glBindTexture(GL_TEXTURE_3D, 0);
 }
 
@@ -380,7 +382,7 @@ void voxelize_scene(Array<const vec3> atom_pos, Array<const float> atom_radii, A
     cone_trace::volume.voxel_ext = (max_box - min_box) / vec3(resolution);
 
     // For running mean
-    DynamicArray<float> counter(cone_trace::volume.voxel_data.count, 0);
+    DynamicArray<float> counter(cone_trace::volume.voxel_data.count, 1);
 
     for (int32 i = 0; i < N; i++) {
         const auto& pos = atom_pos[i];
@@ -436,16 +438,13 @@ void draw_voxelized_scene(const mat4& view_mat, const mat4& proj_mat) {
     immediate::flush();
 }
 
-void cone_trace_scene(GLuint depth_tex, GLuint normal_tex, GLuint color_tex, const mat4& view_mat, const mat4& proj_mat) {
-
-    float use_indirect_diffuse = 1.f;
-    float use_indirect_specular = 1.f;
-    float use_ambient_occlusion = 1.f;
+void cone_trace_scene(GLuint depth_tex, GLuint normal_tex, GLuint color_tex, const mat4& view_mat, const mat4& proj_mat, float indirect_diffuse_scale,
+                      float indirect_specular_scale, float ambient_occlusion_scale) {
 
     mat4 inv_view_proj_mat = math::inverse(proj_mat * view_mat);
     mat4 inv_view_mat = math::inverse(view_mat);
     vec3 world_space_camera = inv_view_mat * vec4(0, 0, 0, 1);
-    printf("cam: %.2f %.2f %.2f\n", world_space_camera.x, world_space_camera.y, world_space_camera.z);
+    // printf("cam: %.2f %.2f %.2f\n", world_space_camera.x, world_space_camera.y, world_space_camera.z);
     vec3 voxel_grid_min = cone_trace::volume.min_box;
     vec3 voxel_grid_ext = cone_trace::volume.max_box - cone_trace::volume.min_box;
     float voxel_ext = math::max(math::max(cone_trace::volume.voxel_ext.x, cone_trace::volume.voxel_ext.y), cone_trace::volume.voxel_ext.z);
@@ -460,9 +459,9 @@ void cone_trace_scene(GLuint depth_tex, GLuint normal_tex, GLuint color_tex, con
     glUniform3fv(cone_trace::gl.uniform_location.voxel_grid_size, 1, &voxel_grid_ext[0]);
     glUniform3iv(cone_trace::gl.uniform_location.voxel_dimensions, 1, &cone_trace::volume.dim[0]);
     glUniform1f(cone_trace::gl.uniform_location.voxel_extent, voxel_ext);
-    glUniform1f(cone_trace::gl.uniform_location.use_indirect_diffuse, use_indirect_diffuse);
-    glUniform1f(cone_trace::gl.uniform_location.use_indirect_specular, use_indirect_specular);
-    glUniform1f(cone_trace::gl.uniform_location.use_ambient_occlusion, use_ambient_occlusion);
+    glUniform1f(cone_trace::gl.uniform_location.indirect_diffuse_scale, indirect_diffuse_scale);
+    glUniform1f(cone_trace::gl.uniform_location.indirect_specular_scale, indirect_specular_scale);
+    glUniform1f(cone_trace::gl.uniform_location.ambient_occlusion_scale, ambient_occlusion_scale);
     glUniformMatrix4fv(cone_trace::gl.uniform_location.inv_view_mat, 1, GL_FALSE, &inv_view_mat[0][0]);
     glUniformMatrix4fv(cone_trace::gl.uniform_location.inv_view_proj_mat, 1, GL_FALSE, &inv_view_proj_mat[0][0]);
     glUniform3fv(cone_trace::gl.uniform_location.world_space_camera, 1, &world_space_camera[0]);
