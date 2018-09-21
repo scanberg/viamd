@@ -486,7 +486,7 @@ stats::create_property("b1", "distance resatom(resname(ALA), 1) com(resname(ALA)
 load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
 data.dynamic_frame.atom_range = {0, 152};
     */
-    load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/amyloid/centered.gro");
+    load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/5ulj.pdb");
 
     /*
     stats::create_property("b1", "distance resname(DE3) com(resname(DE3))");

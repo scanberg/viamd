@@ -203,6 +203,48 @@ vec3 decode_normal(vec2 enc) {
     return n;
 }
 
+float fresnel(float H_dot_V) {
+    const float n1 = 1.0;
+    const float n2 = 1.5;
+    const float R0 = pow((n1-n2)/(n1+n2), 2);
+    return R0 + (1.0 - R0)*pow(1.0 - H_dot_V, 5);
+}
+
+vec3 shade(vec3 color, vec3 P, vec3 V, vec3 N) {
+    const vec3 env_radiance = vec3(0.5);
+    const vec3 dir_radiance = vec3(0.5);
+    const vec3 L = normalize(vec3(1));
+    const float spec_exp = 10.0;
+    const float cone_angle = 0.07;     // 0.2 = 22.6 degrees, 0.1 = 11.4 degrees, 0.07 = 8 degrees angle
+
+    mat3 tangent_to_world = compute_ON_basis(N);
+
+    float N_dot_V = dot(N, V);
+    vec3 R = -V + 2.0 * dot(N, V) * N;
+    vec3 H = normalize(L + V);
+    float H_dot_V = max(0.0, dot(H, V));
+    float N_dot_H = max(0.0, dot(N, H));
+    float N_dot_L = max(0.0, dot(N, L));
+    float fresnel_direct = fresnel(H_dot_V);
+    float fresnel_indirect = 1.0;
+
+    float diffuse_occlusion;
+    vec3 direct_diffuse = color.rgb * (env_radiance + N_dot_L * dir_radiance);
+    vec3 indirect_diffuse = indirect_light(P, N, tangent_to_world, diffuse_occlusion).rgb;
+
+    float specular_occlusion;
+    vec3 direct_specular = dir_radiance * pow(N_dot_H, spec_exp);
+    vec3 indirect_specular = cone_trace(P, N, R, cone_angle, specular_occlusion).rgb; 
+
+    //diffuse_occlusion = min(1.0, 1.5 * diffuse_occlusion);
+    vec3 result = vec3(0);
+    result += (direct_diffuse + u_indirect_diffuse_scale * indirect_diffuse) * (diffuse_occlusion);
+    result += direct_specular * fresnel_direct + u_indirect_specular_scale * indirect_specular * fresnel_indirect;
+
+    return vec3(pow(diffuse_occlusion, 0.5));
+    return result;
+}
+
 void main() {
     float depth = texture(u_depth_texture, uv).r;
 	if (depth == 1.0) discard;
@@ -212,6 +254,10 @@ void main() {
     vec3 world_position = depth_to_world_coord(uv, depth).xyz;
     vec3 world_normal = mat3(u_inv_view_mat) * decode_normal(encoded_normal);
     vec3 world_eye = u_world_space_camera;
+
+    frag_color = vec4(shade(albedo, world_position, normalize(world_eye - world_position), world_normal), 1);
+
+    /*
 
 	vec3 L = normalize(vec3(1,1,1));
 	vec3 N = world_normal;
@@ -233,6 +279,8 @@ void main() {
         // occlusion = min(1.0, 1.5 * occlusion); // Make occlusion brighter
 		// TODO: apply occlusion
         diffuse_contribution = (direct_diffuse + u_indirect_diffuse_scale * indirect_diffuse) * albedo;
+
+        diffuse_contribution = diffuse_contribution * u_ambient_occlusion_scale * occlusion;
     }
     
     // Calculate specular light
@@ -249,8 +297,9 @@ void main() {
         vec4 traced_specular = cone_trace(world_position, world_normal, E_refl, cone_angle, occlusion); 
         specular_contribution = u_indirect_specular_scale * traced_specular.rgb;
     }
+    */
 
-    frag_color = vec4(diffuse_contribution + specular_contribution, 1.0);
+    //frag_color = vec4(diffuse_contribution + specular_contribution, 1.0);
 }
 )";
 
