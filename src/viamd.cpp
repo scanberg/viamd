@@ -112,7 +112,8 @@ struct CameraTransformation {
 struct MainFramebuffer {
     GLuint id = 0;
     GLuint tex_depth = 0;
-    GLuint tex_color = 0;
+    GLuint tex_base_color_and_alpha = 0;
+    GLuint tex_f0_and_smoothness = 0;
     GLuint tex_normal = 0;
     GLuint tex_picking = 0;
     int width = 0;
@@ -333,11 +334,20 @@ struct ApplicationData {
         bool enabled = true;
         bool show_voxels = false;
         bool dirty_flag = true;
-        float voxel_ext = 1.f;
-        float indirect_diffuse_scale = 1.f;
-        float indirect_specular_scale = 1.f;
-        float ambient_occlusion_scale = 1.f;
+        float voxel_ext = 0.3f;
+        float indirect_diffuse_scale = 0.5f;
+        float indirect_specular_scale = 0.3f;
+        float ambient_occlusion_scale = 1.5f;
     } cone_trace;
+
+    struct {
+        float line_width = 1.f;
+        float point_size = 4.f;
+        struct {
+            float smoothness = 0.5;
+            float f0 = 0.04;
+        } material;
+    } immediate_gfx;
 
     // --- CONSOLE ---
     Console console{};
@@ -577,7 +587,7 @@ data.dynamic_frame.atom_range = {0, 152};
         // Setup fbo and clear textures
         glViewport(0, 0, data.fbo.width, data.fbo.height);
 
-        const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2};
+        const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3};
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.id);
 
         glEnable(GL_DEPTH_TEST);
@@ -823,6 +833,10 @@ data.dynamic_frame.atom_range = {0, 152};
         mat4 proj_mat = compute_perspective_projection_matrix(data.camera.camera, data.fbo.width, data.fbo.height);
         mat4 inv_proj_mat = math::inverse(proj_mat);
 
+        // Set matrices for immediate mode rendering
+        immediate::set_view_matrix(view_mat);
+        immediate::set_proj_matrix(proj_mat);
+
         for (const auto& rep : data.representations.data) {
             if (!rep.enabled) continue;
             switch (rep.type) {
@@ -844,8 +858,8 @@ data.dynamic_frame.atom_range = {0, 152};
 
         // RENDER DEBUG INFORMATION (WITH DEPTH)
         {
-            immediate::set_view_matrix(view_mat);
-            immediate::set_proj_matrix(proj_mat);
+            immediate::set_material(immediate::MATERIAL_GLOSSY_WHITE);
+            immediate::draw_plane({-30, -30, -50}, {100, 0, 0}, {0, 0, 100});
 
             if (data.hydrogen_bonds.enabled) {
                 for (const auto& bond : data.hydrogen_bonds.bonds) {
@@ -991,19 +1005,19 @@ for (float y = min_val.y; y <= max_val.y; y += step.y) {
         glDepthMask(GL_FALSE);
 
         if (data.cone_trace.enabled) {
-            render::cone_trace_scene(data.fbo.tex_depth, data.fbo.tex_normal, data.fbo.tex_color, view_mat, proj_mat,
-                                     data.cone_trace.indirect_diffuse_scale, data.cone_trace.indirect_specular_scale,
+            render::cone_trace_scene(data.fbo.tex_depth, data.fbo.tex_normal, data.fbo.tex_base_color_and_alpha, data.fbo.tex_f0_and_smoothness,
+                                     view_mat, proj_mat, data.cone_trace.indirect_diffuse_scale, data.cone_trace.indirect_specular_scale,
                                      data.cone_trace.ambient_occlusion_scale);
             if (data.cone_trace.show_voxels) {
                 render::draw_voxelized_scene(view_mat, proj_mat);
             }
         } else {
             // Render deferred
-            postprocessing::render_deferred(data.fbo.tex_depth, data.fbo.tex_color, data.fbo.tex_normal, inv_proj_mat);
+            postprocessing::render_deferred(data.fbo.tex_depth, data.fbo.tex_base_color_and_alpha, data.fbo.tex_normal, inv_proj_mat);
         }
 
         // Apply post processing
-        // postprocessing::apply_tonemapping(data.fbo.tex_color);
+        // postprocessing::apply_tonemapping(data.fbo.tex_base_color_and_alpha);
 
         if (data.ssao.enabled) {
             postprocessing::apply_ssao(data.fbo.tex_depth, data.fbo.tex_normal, proj_mat, data.ssao.intensity, data.ssao.radius);
@@ -1017,8 +1031,6 @@ for (float y = min_val.y; y <= max_val.y; y += step.y) {
 
         // DRAW DEBUG GRAPHICS W/O DEPTH
         {
-            immediate::set_view_matrix(view_mat);
-            immediate::set_proj_matrix(proj_mat);
             stats::visualize(data.mol_data.dynamic);
 
             immediate::draw_basis(data.dynamic_frame.reference_to_world, 5.f);
@@ -1169,7 +1181,7 @@ static void reset_view(ApplicationData* data, bool reposition_camera) {
 static uint32 get_picking_id(uint32 fbo_id, int32 x, int32 y) {
     unsigned char color[4];
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_id);
-    glReadBuffer(GL_COLOR_ATTACHMENT2);
+    glReadBuffer(GL_COLOR_ATTACHMENT3);
     glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, color);
     glReadBuffer(GL_NONE);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
@@ -1372,7 +1384,7 @@ if (ImGui::BeginMenu("Edit")) {
             }
             if (data->cone_trace.enabled) {
                 ImGui::Checkbox("Show voxels", &data->cone_trace.show_voxels);
-                if (ImGui::SliderFloat("Voxel Extent", &data->cone_trace.voxel_ext, 0.1f, 3.f)) {
+                if (ImGui::SliderFloat("Voxel Extent", &data->cone_trace.voxel_ext, 0.2f, 3.f)) {
                     data->cone_trace.dirty_flag = true;
                 }
                 ImGui::SliderFloat("Indirect Diffuse Scale", &data->cone_trace.indirect_diffuse_scale, 0.f, 4.f);
@@ -1381,6 +1393,11 @@ if (ImGui::BeginMenu("Edit")) {
             }
 
             ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Immediate Gfx")) {
+            ImGui::SliderFloat("Smoothness", &data->immediate_gfx.material.smoothness, 0.0f, 1.0f);
+            ImGui::SliderFloat("f0", &data->immediate_gfx.material.f0, 0.01f, 0.5f);
         }
 
         ImGui::EndMainMenuBar();
@@ -2109,7 +2126,8 @@ static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height) {
     }
 
     if (!fbo->tex_depth) glGenTextures(1, &fbo->tex_depth);
-    if (!fbo->tex_color) glGenTextures(1, &fbo->tex_color);
+    if (!fbo->tex_base_color_and_alpha) glGenTextures(1, &fbo->tex_base_color_and_alpha);
+    if (!fbo->tex_f0_and_smoothness) glGenTextures(1, &fbo->tex_f0_and_smoothness);
     if (!fbo->tex_normal) glGenTextures(1, &fbo->tex_normal);
     if (!fbo->tex_picking) glGenTextures(1, &fbo->tex_picking);
 
@@ -2120,7 +2138,14 @@ static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glBindTexture(GL_TEXTURE_2D, fbo->tex_color);
+    glBindTexture(GL_TEXTURE_2D, fbo->tex_base_color_and_alpha);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glBindTexture(GL_TEXTURE_2D, fbo->tex_f0_and_smoothness);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -2149,9 +2174,10 @@ static void init_main_framebuffer(MainFramebuffer* fbo, int width, int height) {
     glBindFramebuffer(GL_FRAMEBUFFER, fbo->id);
     if (attach_textures) {
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, fbo->tex_depth, 0);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->tex_color, 0);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, fbo->tex_normal, 0);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, fbo->tex_picking, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->tex_base_color_and_alpha, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, fbo->tex_f0_and_smoothness, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, fbo->tex_normal, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, fbo->tex_picking, 0);
     }
 
     ASSERT(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
@@ -2162,7 +2188,7 @@ static void destroy_main_framebuffer(MainFramebuffer* fbo) {
     ASSERT(fbo);
     if (fbo->id) glDeleteFramebuffers(1, &fbo->id);
     if (fbo->tex_depth) glDeleteTextures(1, &fbo->tex_depth);
-    if (fbo->tex_color) glDeleteTextures(1, &fbo->tex_color);
+    if (fbo->tex_base_color_and_alpha) glDeleteTextures(1, &fbo->tex_base_color_and_alpha);
     if (fbo->tex_normal) glDeleteTextures(1, &fbo->tex_normal);
     if (fbo->tex_picking) glDeleteTextures(1, &fbo->tex_picking);
 }

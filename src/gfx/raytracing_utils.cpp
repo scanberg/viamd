@@ -44,7 +44,8 @@ static struct {
     struct {
         GLint depth_tex = -1;
         GLint normal_tex = -1;
-        GLint color_tex = -1;
+        GLint color_alpha_tex = -1;
+        GLint f0_smoothness_tex = -1;
         GLint voxel_tex = -1;
         GLint voxel_grid_min = -1;
         GLint voxel_grid_size = -1;
@@ -53,6 +54,7 @@ static struct {
         GLint indirect_diffuse_scale = -1;
         GLint indirect_specular_scale = -1;
         GLint ambient_occlusion_scale = -1;
+        GLint cone_angle = -1;
         GLint inv_view_mat = -1;
         GLint inv_view_proj_mat = -1;
         GLint world_space_camera = -1;
@@ -72,7 +74,8 @@ out vec4 frag_color;
 // Textures
 uniform sampler2D u_depth_texture;
 uniform sampler2D u_normal_texture;
-uniform sampler2D u_color_texture;
+uniform sampler2D u_color_alpha_texture;
+uniform sampler2D u_f0_smoothness_texture;
 
 // Voxel stuff
 uniform sampler3D u_voxel_texture;
@@ -85,13 +88,14 @@ uniform float u_voxel_extent;
 uniform float u_indirect_diffuse_scale = 1.f;
 uniform float u_indirect_specular_scale = 1.f;
 uniform float u_ambient_occlusion_scale = 1.f;
+uniform float u_cone_angle = 0.08;
 
 // View parameters
 uniform mat4 u_inv_view_mat;
 uniform mat4 u_inv_view_proj_mat;
 uniform vec3 u_world_space_camera;
 
-const float MAX_DIST = 100.0;
+const float MAX_DIST = 1000.0;
 const float ALPHA_THRESH = 0.95;
 
 // 6 60 degree cone
@@ -119,7 +123,8 @@ const float cone_weights[6] = float[](0.25, 0.15, 0.15, 0.15, 0.15, 0.15);
 
 vec4 sample_voxels(vec3 world_position, float lod) {
     vec3 tc = (world_position - u_voxel_grid_world_min) / (u_voxel_grid_world_size);
-	//tc = tc + vec3(0.5) / vec3(u_voxel_dimensions);;
+	//if (any(lessThan(tc, vec3(0))) || any(greaterThan(tc, vec3(1)))) return vec4(-1);
+	//tc = tc + vec3(0.5) / vec3(u_voxel_dimensions);
     return textureLod(u_voxel_texture, tc, lod);
 }
 
@@ -140,6 +145,7 @@ vec4 cone_trace(vec3 world_position, vec3 world_normal, vec3 direction, float ta
         float diameter = max(u_voxel_extent, 2.0 * tan_half_angle * dist);
         float lod_level = log2(diameter / u_voxel_extent);
         vec4 voxel_color = sample_voxels(start_pos + dist * direction, lod_level);
+		//if (voxel_color.a < 0) break;
 
         // front-to-back compositing
         float a = (1.0 - rgba.a);
@@ -148,8 +154,8 @@ vec4 cone_trace(vec3 world_position, vec3 world_normal, vec3 direction, float ta
         //alpha += a * voxel_color.a;
         //occlusion += a * voxelColor.a;
         occlusion += (a * voxel_color.a) / (1.0 + 0.03 * diameter);
-        dist += diameter * 0.5; // smoother
-        //dist += diameter; // faster but misses more voxels
+        //dist += diameter * 0.5; // smoother
+        dist += diameter; // faster but misses more voxels
     }
 
     return rgba;
@@ -203,46 +209,44 @@ vec3 decode_normal(vec2 enc) {
     return n;
 }
 
-float fresnel(float H_dot_V) {
-    const float n1 = 1.0;
-    const float n2 = 1.5;
-    const float R0 = pow((n1-n2)/(n1+n2), 2);
-    return R0 + (1.0 - R0)*pow(1.0 - H_dot_V, 5);
+vec3 fresnel(vec3 f0, float H_dot_V) {
+    //const float n1 = 1.0;
+    //const float n2 = 1.5;
+    //const float R0 = pow((n1-n2)/(n1+n2), 2);
+    return f0 + (1.0 - f0)*pow(1.0 - H_dot_V, 5);
 }
 
-vec3 shade(vec3 color, vec3 P, vec3 V, vec3 N) {
+vec3 shade(vec3 albedo, float alpha, vec3 f0, float smoothness, vec3 P, vec3 V, vec3 N) {
     const vec3 env_radiance = vec3(0.5);
     const vec3 dir_radiance = vec3(0.5);
     const vec3 L = normalize(vec3(1));
     const float spec_exp = 10.0;
-    const float cone_angle = 0.07;     // 0.2 = 22.6 degrees, 0.1 = 11.4 degrees, 0.07 = 8 degrees angle
 
     mat3 tangent_to_world = compute_ON_basis(N);
 
-    float N_dot_V = dot(N, V);
+    float N_dot_V = max(0.0, dot(N, V));
     vec3 R = -V + 2.0 * dot(N, V) * N;
     vec3 H = normalize(L + V);
     float H_dot_V = max(0.0, dot(H, V));
     float N_dot_H = max(0.0, dot(N, H));
     float N_dot_L = max(0.0, dot(N, L));
-    float fresnel_direct = fresnel(H_dot_V);
-    float fresnel_indirect = 1.0;
+    vec3 fresnel_direct = fresnel(f0, H_dot_V);
+    vec3 fresnel_indirect = fresnel(f0, N_dot_V);
+	float tan_half_angle = tan(mix(45.0, 0.0, smoothness));
 
     float diffuse_occlusion;
-    vec3 direct_diffuse = color.rgb * (env_radiance + N_dot_L * dir_radiance);
+    vec3 direct_diffuse = env_radiance + N_dot_L * dir_radiance;
     vec3 indirect_diffuse = indirect_light(P, N, tangent_to_world, diffuse_occlusion).rgb;
 
     float specular_occlusion;
     vec3 direct_specular = dir_radiance * pow(N_dot_H, spec_exp);
-    vec3 indirect_specular = cone_trace(P, N, R, cone_angle, specular_occlusion).rgb; 
+    vec3 indirect_specular = cone_trace(P, N, R, tan_half_angle, specular_occlusion).rgb; 
 
-    //diffuse_occlusion = min(1.0, 1.5 * diffuse_occlusion);
     vec3 result = vec3(0);
-    result += (direct_diffuse + u_indirect_diffuse_scale * indirect_diffuse) * (diffuse_occlusion);
+    result += albedo * (direct_diffuse + u_indirect_diffuse_scale * indirect_diffuse) * pow(diffuse_occlusion, u_ambient_occlusion_scale * 0.5);
     result += direct_specular * fresnel_direct + u_indirect_specular_scale * indirect_specular * fresnel_indirect;
 
-    return vec3(pow(diffuse_occlusion, 0.5));
-    return result;
+    return vec3(smoothness);
 }
 
 void main() {
@@ -250,12 +254,22 @@ void main() {
 	if (depth == 1.0) discard;
 
     vec2 encoded_normal = texture(u_normal_texture, uv).rg;
-	vec3 albedo = texture(u_color_texture, uv).rgb;
+	vec4 albedo_alpha = texture(u_color_alpha_texture, uv);
+	vec4 f0_smoothness = texture(u_f0_smoothness_texture, uv);
+	vec3 albedo = albedo_alpha.rgb;
+	float alpha = albedo_alpha.a;
+	vec3 f0 = f0_smoothness.rgb;
+	float smoothness = f0_smoothness.a;
+
     vec3 world_position = depth_to_world_coord(uv, depth).xyz;
     vec3 world_normal = mat3(u_inv_view_mat) * decode_normal(encoded_normal);
     vec3 world_eye = u_world_space_camera;
 
-    frag_color = vec4(shade(albedo, world_position, normalize(world_eye - world_position), world_normal), 1);
+	vec3 P = world_position;
+	vec3 V = normalize(world_eye - world_position);
+	vec3 N = world_normal;
+
+    frag_color = vec4(shade(albedo, alpha, f0, smoothness, P, V, N), 1);
 
     /*
 
@@ -339,7 +353,8 @@ static void initialize() {
 
     gl.uniform_location.depth_tex = glGetUniformLocation(gl.program, "u_depth_texture");
     gl.uniform_location.normal_tex = glGetUniformLocation(gl.program, "u_normal_texture");
-    gl.uniform_location.color_tex = glGetUniformLocation(gl.program, "u_color_texture");
+    gl.uniform_location.color_alpha_tex = glGetUniformLocation(gl.program, "u_color_alpha_texture");
+    gl.uniform_location.f0_smoothness_tex = glGetUniformLocation(gl.program, "u_f0_smoothness_texture");
     gl.uniform_location.voxel_tex = glGetUniformLocation(gl.program, "u_voxel_texture");
     gl.uniform_location.voxel_grid_min = glGetUniformLocation(gl.program, "u_voxel_grid_world_min");
     gl.uniform_location.voxel_grid_size = glGetUniformLocation(gl.program, "u_voxel_grid_world_size");
@@ -348,6 +363,7 @@ static void initialize() {
     gl.uniform_location.indirect_diffuse_scale = glGetUniformLocation(gl.program, "u_indirect_diffuse_scale");
     gl.uniform_location.indirect_specular_scale = glGetUniformLocation(gl.program, "u_indirect_specular_scale");
     gl.uniform_location.ambient_occlusion_scale = glGetUniformLocation(gl.program, "u_ambient_occlusion_scale");
+    gl.uniform_location.cone_angle = glGetUniformLocation(gl.program, "u_cone_angle");
     gl.uniform_location.inv_view_mat = glGetUniformLocation(gl.program, "u_inv_view_mat");
     gl.uniform_location.inv_view_proj_mat = glGetUniformLocation(gl.program, "u_inv_view_proj_mat");
     gl.uniform_location.world_space_camera = glGetUniformLocation(gl.program, "u_world_space_camera");
@@ -478,7 +494,7 @@ void draw_voxelized_scene(const mat4& view_mat, const mat4& proj_mat) {
                 if (cone_trace::volume.voxel_data[i] > 0) {
                     vec3 min_box = cone_trace::volume.min_box + vec3(x, y, z) * cone_trace::volume.voxel_ext;
                     vec3 max_box = min_box + cone_trace::volume.voxel_ext;
-                    immediate::draw_aabb(min_box, max_box, cone_trace::volume.voxel_data[i], false);
+                    immediate::draw_aabb_lines(min_box, max_box, cone_trace::volume.voxel_data[i]);
                 }
             }
         }
@@ -487,8 +503,8 @@ void draw_voxelized_scene(const mat4& view_mat, const mat4& proj_mat) {
     immediate::flush();
 }
 
-void cone_trace_scene(GLuint depth_tex, GLuint normal_tex, GLuint color_tex, const mat4& view_mat, const mat4& proj_mat, float indirect_diffuse_scale,
-                      float indirect_specular_scale, float ambient_occlusion_scale) {
+void cone_trace_scene(GLuint depth_tex, GLuint normal_tex, GLuint color_alpha_tex, GLuint f0_smoothness_tex, const mat4& view_mat,
+                      const mat4& proj_mat, float indirect_diffuse_scale, float indirect_specular_scale, float ambient_occlusion_scale) {
 
     mat4 inv_view_proj_mat = math::inverse(proj_mat * view_mat);
     mat4 inv_view_mat = math::inverse(view_mat);
@@ -498,12 +514,15 @@ void cone_trace_scene(GLuint depth_tex, GLuint normal_tex, GLuint color_tex, con
     vec3 voxel_grid_ext = cone_trace::volume.max_box - cone_trace::volume.min_box;
     float voxel_ext = math::max(math::max(cone_trace::volume.voxel_ext.x, cone_trace::volume.voxel_ext.y), cone_trace::volume.voxel_ext.z);
 
+    const float cone_angle = 0.07;  // 0.2 = 22.6 degrees, 0.1 = 11.4 degrees, 0.07 = 8 degrees angle
+
     glUseProgram(cone_trace::gl.program);
 
     glUniform1i(cone_trace::gl.uniform_location.depth_tex, 0);
     glUniform1i(cone_trace::gl.uniform_location.normal_tex, 1);
-    glUniform1i(cone_trace::gl.uniform_location.color_tex, 2);
-    glUniform1i(cone_trace::gl.uniform_location.voxel_tex, 3);
+    glUniform1i(cone_trace::gl.uniform_location.color_alpha_tex, 2);
+    glUniform1i(cone_trace::gl.uniform_location.f0_smoothness_tex, 3);
+    glUniform1i(cone_trace::gl.uniform_location.voxel_tex, 4);
     glUniform3fv(cone_trace::gl.uniform_location.voxel_grid_min, 1, &voxel_grid_min[0]);
     glUniform3fv(cone_trace::gl.uniform_location.voxel_grid_size, 1, &voxel_grid_ext[0]);
     glUniform3iv(cone_trace::gl.uniform_location.voxel_dimensions, 1, &cone_trace::volume.dim[0]);
@@ -522,9 +541,12 @@ void cone_trace_scene(GLuint depth_tex, GLuint normal_tex, GLuint color_tex, con
     glBindTexture(GL_TEXTURE_2D, normal_tex);
 
     glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, color_tex);
+    glBindTexture(GL_TEXTURE_2D, color_alpha_tex);
 
     glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, f0_smoothness_tex);
+
+    glActiveTexture(GL_TEXTURE4);
     glBindTexture(GL_TEXTURE_3D, cone_trace::gl.voxel_texture);
 
     glDisable(GL_DEPTH_TEST);

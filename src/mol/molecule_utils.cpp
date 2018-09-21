@@ -1249,9 +1249,10 @@ in Fragment {
 #ifdef GL_EXT_conservative_depth
 layout (depth_greater) out float gl_FragDepth;
 #endif
-layout(location = 0) out vec4 out_color;
-layout(location = 1) out vec4 out_normal;
-layout(location = 2) out vec4 out_picking_id;
+layout(location = 0) out vec4 out_color_alpha;
+layout(location = 1) out vec4 out_f0_smoothness;
+layout(location = 2) out vec4 out_normal;
+layout(location = 3) out vec4 out_picking_id;
 
 // https://aras-p.info/texts/CompactNormalStorage.html
 vec4 encode_normal (vec3 n) {
@@ -1277,7 +1278,8 @@ void main() {
     vec3 view_normal = (view_hit - center) / radius;
 
     gl_FragDepth = (-u_proj_mat[2][2] - u_proj_mat[3][2] / view_hit.z) * 0.5 + 0.5;
-    out_color = in_frag.color;
+    out_color_alpha = in_frag.color;
+	out_f0_smoothness = vec4(0.04, 0.04, 0.04, 0.0);
 	out_normal = encode_normal(view_normal);
 	out_picking_id = in_frag.picking_color;
 }
@@ -1535,9 +1537,10 @@ in Fragment {
 #ifdef GL_EXT_conservative_depth
 layout (depth_greater) out float gl_FragDepth;
 #endif
-layout(location = 0) out vec4 out_color;
-layout(location = 1) out vec4 out_normal;
-layout(location = 2) out vec4 out_picking_id;
+layout(location = 0) out vec4 out_color_alpha;
+layout(location = 1) out vec4 out_f0_smoothness;
+layout(location = 2) out vec4 out_normal;
+layout(location = 3) out vec4 out_picking_id;
 
 // Source from Ingo Quilez (https://www.shadertoy.com/view/Xt3SzX)
 float intersect_capsule(in vec3 ro, in vec3 rd, in vec3 cc, in vec3 ca, float cr,
@@ -1610,7 +1613,8 @@ void main() {
     coord = coord / coord.w;
 
     gl_FragDepth = coord.z * 0.5 + 0.5;
-    out_color = color;
+    out_color_alpha = color;
+	out_f0_smoothness = vec4(0.04, 0.04, 0.04, 0.0);
 	out_normal = encode_normal(normal);
 	out_picking_id = picking_color;
 }
@@ -1848,9 +1852,10 @@ in Fragment {
 	flat vec4 picking_color;
 } in_frag;
 
-layout(location = 0) out vec4 out_color;
-layout(location = 1) out vec4 out_normal;
-layout(location = 2) out vec4 out_picking_id;
+layout(location = 0) out vec4 out_color_alpha;
+layout(location = 1) out vec4 out_f0_smoothness;
+layout(location = 2) out vec4 out_normal;
+layout(location = 3) out vec4 out_picking_id;
 
 vec4 encode_normal (vec3 n) {
     float p = sqrt(n.z*8+8);
@@ -1858,7 +1863,8 @@ vec4 encode_normal (vec3 n) {
 }
 
 void main() {
-    out_color = in_frag.color;
+    out_color_alpha = in_frag.color;
+	out_f0_smoothness = vec4(0.04, 0.04, 0.04, 0.0);
 	out_normal = encode_normal(in_frag.view_normal);
     out_picking_id = in_frag.picking_color;
 }
