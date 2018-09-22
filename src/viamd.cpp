@@ -334,7 +334,7 @@ struct ApplicationData {
         bool enabled = true;
         bool show_voxels = false;
         bool dirty_flag = true;
-        float voxel_ext = 0.3f;
+        float voxel_ext = 1.0f;
         float indirect_diffuse_scale = 0.5f;
         float indirect_specular_scale = 0.3f;
         float ambient_occlusion_scale = 1.5f;
@@ -832,10 +832,6 @@ data.dynamic_frame.atom_range = {0, 152};
         mat4 proj_mat = compute_perspective_projection_matrix(data.camera.camera, data.fbo.width, data.fbo.height);
         mat4 inv_proj_mat = math::inverse(proj_mat);
 
-        // Set matrices for immediate mode rendering
-        immediate::set_view_matrix(view_mat);
-        immediate::set_proj_matrix(proj_mat);
-
         for (const auto& rep : data.representations.data) {
             if (!rep.enabled) continue;
             switch (rep.type) {
@@ -857,6 +853,8 @@ data.dynamic_frame.atom_range = {0, 152};
 
         // RENDER DEBUG INFORMATION (WITH DEPTH)
         {
+			immediate::set_view_matrix(view_mat);
+			immediate::set_proj_matrix(proj_mat);
             immediate::set_material(immediate::MATERIAL_GLOSSY_WHITE);
             immediate::draw_plane({-30, -30, -50}, {100, 0, 0}, {0, 0, 100});
 
@@ -1014,6 +1012,8 @@ data.dynamic_frame.atom_range = {0, 152};
 
         // DRAW DEBUG GRAPHICS W/O DEPTH
         {
+			immediate::set_view_matrix(view_mat);
+			immediate::set_proj_matrix(proj_mat);
             stats::visualize(data.mol_data.dynamic);
 
             immediate::draw_basis(data.dynamic_frame.reference_to_world, 5.f);
@@ -1381,6 +1381,7 @@ if (ImGui::BeginMenu("Edit")) {
         if (ImGui::BeginMenu("Immediate Gfx")) {
             ImGui::SliderFloat("Smoothness", &data->immediate_gfx.material.smoothness, 0.0f, 1.0f);
             ImGui::SliderFloat("f0", &data->immediate_gfx.material.f0, 0.01f, 0.5f);
+			ImGui::EndMenu();
         }
 
         ImGui::EndMainMenuBar();

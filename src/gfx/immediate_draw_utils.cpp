@@ -60,7 +60,6 @@ static int curr_material_idx = -1;
 static const char* v_shader_src = R"(
 #version 150 core
 
-/*
 struct Material {
 	vec4 color_alpha;
 	vec3 f0;
@@ -73,7 +72,6 @@ struct Material {
 layout(std140) uniform u_material_buffer {
 	Material material;
 };
-*/
 
 uniform mat4 u_mvp_matrix;
 uniform mat3 u_normal_matrix;
@@ -103,8 +101,8 @@ struct Material {
 	vec3 f0;
 	float smoothness;
 	vec2 uv_scale;
-	float pad_0;
-	float pad_1;
+	float _pad_0;
+	float _pad_1;
 };
 
 layout(std140) uniform u_material_buffer {
@@ -138,8 +136,9 @@ static inline void append_draw_command(Index offset, Index count, GLenum primiti
     } else {
         ASSERT(curr_view_matrix_idx > -1, "Immediate Mode View Matrix not set!");
         ASSERT(curr_proj_matrix_idx > -1, "Immediate Mode Proj Matrix not set!");
+		ASSERT(curr_material_idx > -1, "Material not set!");
 
-        DrawCommand cmd{offset, count, primitive_type, program, curr_view_matrix_idx, curr_proj_matrix_idx};
+        DrawCommand cmd{offset, count, primitive_type, program, curr_view_matrix_idx, curr_proj_matrix_idx, curr_material_idx};
         commands.push_back(cmd);
     }
 }
@@ -216,10 +215,10 @@ void initialize() {
     if (!default_tex) glGenTextures(1, &default_tex);
     glBindTexture(GL_TEXTURE_2D, default_tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, &pixel_data);
-    glTextureParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTextureParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTextureParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTextureParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
 
     vertices.reserve(100000);
@@ -284,23 +283,36 @@ ImGui::End();
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_material);
     glUniformBlockBinding(program, uniform_block_index_material, 0);
 
-    int current_view_matrix_idx = -1;
-    int current_proj_matrix_idx = -1;
-    int current_material_idx = -1;
+    int current_view_matrix_idx = -999;
+    int current_proj_matrix_idx = -999;
+    int current_material_idx = -999;
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, default_tex);
 
     for (const auto& cmd : commands) {
-        if (cmd.view_matrix_idx != current_view_matrix_idx) {
+		bool update_view = false;
+		bool update_mvp = false;
+		if (cmd.view_matrix_idx != current_view_matrix_idx) {
+			current_view_matrix_idx = cmd.view_matrix_idx;
+			update_view = true;
+			update_mvp = true;
+		}
+		if (cmd.proj_matrix_idx != current_proj_matrix_idx) {
+			current_proj_matrix_idx = cmd.proj_matrix_idx;
+			update_mvp = true;
+		}
+
+		if (update_view) {
             mat3 normal_matrix = math::transpose(math::inverse(matrix_stack[cmd.view_matrix_idx]));
             glUniformMatrix3fv(uniform_loc_normal_matrix, 1, GL_FALSE, &normal_matrix[0][0]);
         }
-        if (cmd.proj_matrix_idx != current_proj_matrix_idx || cmd.view_matrix_idx != current_view_matrix_idx) {
+        if (update_mvp) {
             mat4 mvp_matrix = matrix_stack[cmd.proj_matrix_idx] * matrix_stack[cmd.view_matrix_idx];
             glUniformMatrix4fv(uniform_loc_mvp_matrix, 1, GL_FALSE, &mvp_matrix[0][0]);
         }
         if (cmd.material_idx != current_material_idx) {
+			current_material_idx = cmd.material_idx;
             const Material& material = cmd.material_idx == -1 ? DEFAULT_MAT : material_stack[cmd.material_idx];
             glBindBuffer(GL_UNIFORM_BUFFER, ubo_material);
             glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(Material), &material);
