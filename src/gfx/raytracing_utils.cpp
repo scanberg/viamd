@@ -487,6 +487,7 @@ void draw_voxelized_scene(const mat4& view_mat, const mat4& proj_mat) {
     immediate::set_view_matrix(view_mat);
     immediate::set_proj_matrix(proj_mat);
 
+    /*
     for (int32 z = 0; z < cone_trace::volume.dim.z; z++) {
         for (int32 y = 0; y < cone_trace::volume.dim.y; y++) {
             for (int32 x = 0; x < cone_trace::volume.dim.x; x++) {
@@ -499,6 +500,7 @@ void draw_voxelized_scene(const mat4& view_mat, const mat4& proj_mat) {
             }
         }
     }
+    */
 
     immediate::flush();
 }

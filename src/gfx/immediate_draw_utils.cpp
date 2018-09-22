@@ -8,12 +8,12 @@
 
 namespace immediate {
 
-constexpr Material DEFAULT_MAT = MATERIAL_ROUGH_RED;
+const Material DEFAULT_MAT = MATERIAL_ROUGH_RED;
 
 struct Vertex {
     vec3 position;
     vec3 normal = {0, 0, 1};
-    uint32 color;
+    vec2 uv = {0,0};
 };
 
 using Index = uint32;
@@ -39,6 +39,7 @@ static GLuint vbo = 0;
 static GLuint ibo = 0;
 static GLuint vao = 0;
 static GLuint ubo_material = 0;
+static GLuint default_tex = 0;
 
 static GLuint v_shader = 0;
 static GLuint f_shader = 0;
@@ -59,9 +60,9 @@ static int curr_material_idx = -1;
 static const char* v_shader_src = R"(
 #version 150 core
 
+/*
 struct Material {
-	vec3 base_color;
-	float alpha;
+	vec4 color_alpha;
 	vec3 f0;
 	float smoothness;
 	vec2 uv_scale;
@@ -69,13 +70,10 @@ struct Material {
 	float _pad_1;
 };
 
-// tweakables
-const float NUM_STEPS = AO_STEPS;
-const float NUM_DIRECTIONS = AO_DIRS; // tex_random/jitter initialization depends on this
-
-layout(std140) uniform u_material {
+layout(std140) uniform u_material_buffer {
 	Material material;
 };
+*/
 
 uniform mat4 u_mvp_matrix;
 uniform mat3 u_normal_matrix;
@@ -92,7 +90,7 @@ void main() {
 	gl_Position = u_mvp_matrix * vec4(in_position, 1);
     gl_PointSize = max(u_point_size, 400.f / gl_Position.w);
 	normal = u_normal_matrix * in_normal;
-	out_uv = in_uv;
+	uv = in_uv;
 }
 )";
 
@@ -101,8 +99,7 @@ static const char* f_shader_src = R"(
 #extension GL_ARB_explicit_attrib_location : enable
 
 struct Material {
-	vec3 base_color;
-	float alpha;
+	vec4 color_alpha;
 	vec3 f0;
 	float smoothness;
 	vec2 uv_scale;
@@ -110,8 +107,11 @@ struct Material {
 	float pad_1;
 };
 
+layout(std140) uniform u_material_buffer {
+	Material material;
+};
+
 uniform sampler2D u_base_color_texture;
-uniform Material u_material;
 
 in vec3 normal;
 in vec2 uv;
@@ -126,7 +126,7 @@ vec4 encode_normal (vec3 n) {
 }
 
 void main() {
-	out_color_alpha = texture2D(u_base_color_texture, uv) * vec4(material.base_color, material.alpha);
+	out_color_alpha = texture(u_base_color_texture, uv) * material.color_alpha;
 	out_f0_smoothness = vec4(material.f0, material.smoothness);
 	out_normal = encode_normal(normalize(normal));
 }
@@ -155,6 +155,7 @@ void initialize() {
     glCompileShader(v_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
         LOG_ERROR("Error while compiling immediate vertex shader:\n%s\n", buffer);
+
     }
     glCompileShader(f_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
@@ -177,11 +178,11 @@ void initialize() {
 
     attrib_loc_position = glGetAttribLocation(program, "in_position");
     attrib_loc_normal = glGetAttribLocation(program, "in_normal");
-    attrib_loc_uv = glGetAttribLocation(program, "in_color");
+    attrib_loc_uv = glGetAttribLocation(program, "in_uv");
     uniform_loc_mvp_matrix = glGetUniformLocation(program, "u_mvp_matrix");
     uniform_loc_normal_matrix = glGetUniformLocation(program, "u_normal_matrix");
     uniform_loc_point_size = glGetUniformLocation(program, "u_point_size");
-    uniform_block_index_material = glGetUniformBlockIndex(program, "u_material");
+    uniform_block_index_material = glGetUniformBlockIndex(program, "u_material_buffer");
 
     glGenBuffers(1, &vbo);
     glGenBuffers(1, &ibo);
@@ -210,6 +211,16 @@ void initialize() {
     if (!ubo_material) glGenBuffers(1, &ubo_material);
     glBindBuffer(GL_UNIFORM_BUFFER, ubo_material);
     glBufferData(GL_UNIFORM_BUFFER, sizeof(Material), nullptr, GL_DYNAMIC_DRAW);
+
+    constexpr uint32 pixel_data = 0xffffffff;
+    if (!default_tex) glGenTextures(1, &default_tex);
+    glBindTexture(GL_TEXTURE_2D, default_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, &pixel_data);
+    glTextureParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTextureParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTextureParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
 
     vertices.reserve(100000);
     indices.reserve(100000);
@@ -270,16 +281,37 @@ ImGui::End();
     glLineWidth(1.f);
 
     glUniform1f(uniform_loc_point_size, 4.f);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_material);
+    glUniformBlockBinding(program, uniform_block_index_material, 0);
+
+    int current_view_matrix_idx = -1;
+    int current_proj_matrix_idx = -1;
+    int current_material_idx = -1;
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, default_tex);
+
     for (const auto& cmd : commands) {
-        mat4 mvp_matrix = matrix_stack[cmd.proj_matrix_idx] * matrix_stack[cmd.view_matrix_idx];
-        mat3 normal_matrix = math::transpose(math::inverse(matrix_stack[cmd.view_matrix_idx]));
-        const Material& material = cmd.
-
-                                   glBindBufferBase(GL_UNIFORM_BUFFER, 0, ssao::ubo_hbao_data);
-        glUniformBlockBinding(ssao::prog_hbao, ssao::uniform_block_index_hbao_control_buffer, 0);
-
-        glUniformMatrix4fv(uniform_loc_mvp_matrix, 1, GL_FALSE, &mvp_matrix[0][0]);
-        glUniformMatrix3fv(uniform_loc_normal_matrix, 1, GL_FALSE, &normal_matrix[0][0]);
+        if (cmd.view_matrix_idx != current_view_matrix_idx) {
+            mat3 normal_matrix = math::transpose(math::inverse(matrix_stack[cmd.view_matrix_idx]));
+            glUniformMatrix3fv(uniform_loc_normal_matrix, 1, GL_FALSE, &normal_matrix[0][0]);
+        }
+        if (cmd.proj_matrix_idx != current_proj_matrix_idx || cmd.view_matrix_idx != current_view_matrix_idx) {
+            mat4 mvp_matrix = matrix_stack[cmd.proj_matrix_idx] * matrix_stack[cmd.view_matrix_idx];
+            glUniformMatrix4fv(uniform_loc_mvp_matrix, 1, GL_FALSE, &mvp_matrix[0][0]);
+        }
+        if (cmd.material_idx != current_material_idx) {
+            const Material& material = cmd.material_idx == -1 ? DEFAULT_MAT : material_stack[cmd.material_idx];
+            glBindBuffer(GL_UNIFORM_BUFFER, ubo_material);
+            glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(Material), &material);
+            glBindBuffer(GL_UNIFORM_BUFFER, 0);
+            if (material.texture_id != 0) {
+                glBindTexture(GL_TEXTURE_2D, material.texture_id);
+            }
+            else {
+                glBindTexture(GL_TEXTURE_2D, default_tex);
+            }
+        }
 
         glDrawElements(cmd.primitive_type, cmd.count, sizeof(Index) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT,
                        reinterpret_cast<const void*>(cmd.offset * sizeof(Index)));
@@ -305,20 +337,20 @@ ImGui::End();
 }
 
 // PRIMITIVES
-void draw_point(const vec3& pos, const uint32 color) {
+void draw_point(const vec3& pos) {
     const Index idx = (Index)vertices.count;
 
-    vertices.push_back({pos, vec3(0, 0, 1), color});
+    vertices.push_back({pos, vec3(0, 0, 1)});
     indices.push_back(idx);
 
     append_draw_command(idx, 1, GL_POINTS);
 }
 
-void draw_line(const vec3& from, const vec3& to, const uint32 color) {
+void draw_line(const vec3& from, const vec3& to) {
     const Index idx = (Index)vertices.count;
 
-    vertices.push_back({from, vec3(0, 0, 1), color});
-    vertices.push_back({to, vec3(0, 0, 1), color});
+    vertices.push_back({from, vec3(0, 0, 1)});
+    vertices.push_back({to, vec3(0, 0, 1)});
 
     indices.push_back(idx);
     indices.push_back(idx + 1);
@@ -326,13 +358,13 @@ void draw_line(const vec3& from, const vec3& to, const uint32 color) {
     append_draw_command(idx, 2, GL_LINES);
 }
 
-void draw_triangle(const vec3& p0, const vec3& p1, const vec3& p2, const uint32 color) {
+void draw_triangle(const vec3& p0, const vec3& p1, const vec3& p2) {
     const Index idx = (Index)vertices.count;
     const vec3 normal = math::normalize(math::cross(p1 - p0, p2 - p0));
 
-    vertices.push_back({p0, normal, color});
-    vertices.push_back({p1, normal, color});
-    vertices.push_back({p2, normal, color});
+    vertices.push_back({p0, normal, {0, 0}});
+    vertices.push_back({p1, normal, {1, 0}});
+    vertices.push_back({p2, normal, {0, 1}});
 
     indices.push_back(idx);
     indices.push_back(idx + 1);
@@ -341,14 +373,14 @@ void draw_triangle(const vec3& p0, const vec3& p1, const vec3& p2, const uint32 
     append_draw_command(idx, 3, GL_TRIANGLES);
 }
 
-void draw_plane(const vec3& center, const vec3& vec_u, const vec3& vec_v, const uint32 color) {
+void draw_plane(const vec3& center, const vec3& vec_u, const vec3& vec_v) {
     const Index idx = (Index)vertices.count;
     const vec3 normal = math::normalize(math::cross(vec_u, vec_v));
 
-    vertices.push_back({{center - vec_u + vec_v}, normal, color});
-    vertices.push_back({{center - vec_u - vec_v}, normal, color});
-    vertices.push_back({{center + vec_u + vec_v}, normal, color});
-    vertices.push_back({{center + vec_u - vec_v}, normal, color});
+    vertices.push_back({{center - vec_u + vec_v}, normal, {0,1}});
+    vertices.push_back({{center - vec_u - vec_v}, normal, {0,0}});
+    vertices.push_back({{center + vec_u + vec_v}, normal, {1,1}});
+    vertices.push_back({{center + vec_u - vec_v}, normal, {1,0}});
 
     indices.push_back(idx);
     indices.push_back(idx + 1);
@@ -358,21 +390,21 @@ void draw_plane(const vec3& center, const vec3& vec_u, const vec3& vec_v, const 
     append_draw_command(idx, 4, GL_TRIANGLE_STRIP);
 }
 
-void draw_aabb(const vec3& min_box, const vec3& max_box, const uint32 color) {
+void draw_aabb(const vec3& min_box, const vec3& max_box) {
     const Index idx = (Index)vertices.count;
     const vec3 normal = {0, 0, 1};
 
     // @ TODO: This is incorrect and needs to be fixed
 
-    vertices.push_back({{max_box[0], max_box[1], max_box[2]}, normal, color});
-    vertices.push_back({{min_box[0], max_box[1], max_box[2]}, normal, color});
-    vertices.push_back({{max_box[0], max_box[1], min_box[2]}, normal, color});
-    vertices.push_back({{min_box[0], max_box[1], min_box[2]}, normal, color});
+    vertices.push_back({{max_box[0], max_box[1], max_box[2]}, normal});
+    vertices.push_back({{min_box[0], max_box[1], max_box[2]}, normal});
+    vertices.push_back({{max_box[0], max_box[1], min_box[2]}, normal});
+    vertices.push_back({{min_box[0], max_box[1], min_box[2]}, normal});
 
-    vertices.push_back({{max_box[0], min_box[1], max_box[2]}, normal, color});
-    vertices.push_back({{min_box[0], min_box[1], max_box[2]}, normal, color});
-    vertices.push_back({{max_box[0], min_box[1], min_box[2]}, normal, color});
-    vertices.push_back({{min_box[0], min_box[1], min_box[2]}, normal, color});
+    vertices.push_back({{max_box[0], min_box[1], max_box[2]}, normal});
+    vertices.push_back({{min_box[0], min_box[1], max_box[2]}, normal});
+    vertices.push_back({{max_box[0], min_box[1], min_box[2]}, normal});
+    vertices.push_back({{min_box[0], min_box[1], min_box[2]}, normal});
 
     indices.push_back(idx + 4 - 1);
     indices.push_back(idx + 3 - 1);
@@ -397,35 +429,44 @@ void draw_aabb(const vec3& min_box, const vec3& max_box, const uint32 color) {
 }  // namespace immediate
 
 /**/
-void draw_aabb_lines(const vec3& min_box, const vec3& max_box, const uint32 color) {
+void draw_aabb_lines(const vec3& min_box, const vec3& max_box) {
     // Z = min
-    draw_line(vec3(min_box[0], min_box[1], min_box[2]), vec3(max_box[0], min_box[1], min_box[2]), color);
-    draw_line(vec3(min_box[0], min_box[1], min_box[2]), vec3(min_box[0], max_box[1], min_box[2]), color);
-    draw_line(vec3(max_box[0], min_box[1], min_box[2]), vec3(max_box[0], max_box[1], min_box[2]), color);
-    draw_line(vec3(min_box[0], max_box[1], min_box[2]), vec3(max_box[0], max_box[1], min_box[2]), color);
+    draw_line(vec3(min_box[0], min_box[1], min_box[2]), vec3(max_box[0], min_box[1], min_box[2]));
+    draw_line(vec3(min_box[0], min_box[1], min_box[2]), vec3(min_box[0], max_box[1], min_box[2]));
+    draw_line(vec3(max_box[0], min_box[1], min_box[2]), vec3(max_box[0], max_box[1], min_box[2]));
+    draw_line(vec3(min_box[0], max_box[1], min_box[2]), vec3(max_box[0], max_box[1], min_box[2]));
 
     // Z = max
-    draw_line(vec3(min_box[0], min_box[1], max_box[2]), vec3(max_box[0], min_box[1], max_box[2]), color);
-    draw_line(vec3(min_box[0], min_box[1], max_box[2]), vec3(min_box[0], max_box[1], max_box[2]), color);
-    draw_line(vec3(max_box[0], min_box[1], max_box[2]), vec3(max_box[0], max_box[1], max_box[2]), color);
-    draw_line(vec3(min_box[0], max_box[1], max_box[2]), vec3(max_box[0], max_box[1], max_box[2]), color);
+    draw_line(vec3(min_box[0], min_box[1], max_box[2]), vec3(max_box[0], min_box[1], max_box[2]));
+    draw_line(vec3(min_box[0], min_box[1], max_box[2]), vec3(min_box[0], max_box[1], max_box[2]));
+    draw_line(vec3(max_box[0], min_box[1], max_box[2]), vec3(max_box[0], max_box[1], max_box[2]));
+    draw_line(vec3(min_box[0], max_box[1], max_box[2]), vec3(max_box[0], max_box[1], max_box[2]));
 
-    // Z min to Z max
-    draw_line(vec3(min_box[0], min_box[1], min_box[2]), vec3(min_box[0], min_box[1], max_box[2]), color);
-    draw_line(vec3(min_box[0], max_box[1], min_box[2]), vec3(min_box[0], max_box[1], max_box[2]), color);
-    draw_line(vec3(max_box[0], min_box[1], min_box[2]), vec3(max_box[0], min_box[1], max_box[2]), color);
-    draw_line(vec3(max_box[0], max_box[1], min_box[2]), vec3(max_box[0], max_box[1], max_box[2]), color);
+    // Z min tax
+    draw_line(vec3(min_box[0], min_box[1], min_box[2]), vec3(min_box[0], min_box[1], max_box[2]));
+    draw_line(vec3(min_box[0], max_box[1], min_box[2]), vec3(min_box[0], max_box[1], max_box[2]));
+    draw_line(vec3(max_box[0], min_box[1], min_box[2]), vec3(max_box[0], min_box[1], max_box[2]));
+    draw_line(vec3(max_box[0], max_box[1], min_box[2]), vec3(max_box[0], max_box[1], max_box[2]));
 }
 
-void draw_basis(const mat4& basis, const float scale, const uint32 x_axis_color, const uint32 y_axis_color, const uint32 z_axis_color) {
+void draw_basis(const mat4& basis, const float scale) {
     const vec3 O = vec3(basis[3]);
     const vec3 X = O + vec3(basis[0]) * scale;
     const vec3 Y = O + vec3(basis[1]) * scale;
     const vec3 Z = O + vec3(basis[2]) * scale;
 
-    draw_line(O, X, x_axis_color);
-    draw_line(O, Y, y_axis_color);
-    draw_line(O, Z, z_axis_color);
+    int mat_idx = material_stack.count;
+    set_material(MATERIAL_ROUGH_RED);
+    draw_line(O, X);
+    set_material(MATERIAL_ROUGH_GREEN);
+    draw_line(O, Y);
+    set_material(MATERIAL_ROUGH_BLUE);
+    draw_line(O, Z);
+
+    if (mat_idx > 0)
+        set_material(material_stack[mat_idx]);
+    else
+        set_material(DEFAULT_MAT);
 }
 
 }  // namespace immediate

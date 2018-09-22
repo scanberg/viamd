@@ -484,7 +484,6 @@ int main(int, char**) {
 
     bool show_demo_window = false;
     const vec4 CLEAR_COLOR = vec4(1, 1, 1, 1);
-    const vec4 CLEAR_NORMAL = vec4(0.5f, 0, 0, 0);
     const vec4 CLEAR_INDEX = vec4(1, 1, 1, 1);
 
 #ifdef VIAMD_RELEASE
@@ -862,49 +861,31 @@ data.dynamic_frame.atom_range = {0, 152};
             immediate::draw_plane({-30, -30, -50}, {100, 0, 0}, {0, 0, 100});
 
             if (data.hydrogen_bonds.enabled) {
+                immediate::set_material(immediate::MATERIAL_ROUGH_MAGENTA);
                 for (const auto& bond : data.hydrogen_bonds.bonds) {
                     immediate::draw_line(data.mol_data.dynamic.molecule.atom_positions[bond.acc_idx],
-                                         data.mol_data.dynamic.molecule.atom_positions[bond.hyd_idx], ImColor(vec_cast(data.hydrogen_bonds.color)));
+                                         data.mol_data.dynamic.molecule.atom_positions[bond.hyd_idx]);
                 }
             }
 
             if (data.simulation_box.enabled && data.mol_data.dynamic.trajectory.num_frames > 0) {
+                immediate::Material mat = immediate::MATERIAL_ROUGH_WHITE;
+                mat.color_alpha = data.simulation_box.color;
+                immediate::set_material(mat);
                 int32 frame_idx = math::clamp((int)data.time, 0, data.mol_data.dynamic.trajectory.num_frames - 1);
                 TrajectoryFrame frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, frame_idx);
-                immediate::draw_aabb(vec3(0), frame.box * vec3(1), ImColor(vec_cast(data.simulation_box.color)));
+                immediate::draw_aabb(vec3(0), frame.box * vec3(1));
             }
 
             if (data.mol_data.dynamic.trajectory) {
                 const mat4& mat = data.dynamic_frame.reference_to_world;
                 const TrajectoryFrame frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, 0);
                 const vec3 ext = frame.box * vec3(1.0f);
-
                 const vec3 min_val = vec3(0);
-                const vec3 max_val = ext;
-                const vec3 step = ext / 4.f;
-
-                /*
-
-for (float x = min_val.x; x <= max_val.x; x += step.x) {
-    for (float y = min_val.y; y <= max_val.y; y += step.y) {
-        immediate::draw_line(mat * vec4(x, y, min_val.z, 1), mat * vec4(x, y, max_val.z, 1), 0xff000000);
-    }
-}
-for (float x = min_val.x; x <= max_val.x; x += step.x) {
-    for (float z = min_val.z; z <= max_val.z; z += step.z) {
-        immediate::draw_line(mat * vec4(x, min_val.y, z, 1), mat * vec4(x, max_val.y, z, 1), 0xff000000);
-    }
-}
-for (float y = min_val.y; y <= max_val.y; y += step.y) {
-    for (float z = min_val.z; z <= max_val.z; z += step.z) {
-        immediate::draw_line(mat * vec4(min_val.x, y, z, 1), mat * vec4(max_val.x, y, z, 1), 0xff000000);
-    }
-}
-                */
-
                 const ivec3 RES = {15, 15, 15};
                 const vec3 STEP = {ext.x / RES.x, ext.y / RES.y, ext.z / RES.z};
 
+                immediate::set_material(immediate::MATERIAL_ROUGH_CYAN);
                 DynamicArray<vec3> grid_points(RES.x * RES.y * RES.z);
                 for (int32 z = 0; z < RES.z; z++) {
                     for (int32 y = 0; y < RES.y; y++) {
@@ -917,19 +898,20 @@ for (float y = min_val.y; y <= max_val.y; y += step.y) {
                                 grid_points[idx] += v;
                             }
                             if (data.dynamic_frame.show_grid_points) {
-                                immediate::draw_point(grid_points[idx], immediate::COLOR_CYAN);
+                                immediate::draw_point(grid_points[idx]);
                             }
                         }
                     }
                 }
 
                 if (data.dynamic_frame.show_grid) {
+                    immediate::set_material(immediate::MATERIAL_ROUGH_BLACK);                    
                     for (int32 x = 0; x < RES.x; x++) {
                         for (int32 y = 0; y < RES.y; y++) {
                             for (int32 z = 0; z < RES.z - 1; z++) {
                                 int32 i = z * RES.x * RES.y + y * RES.y + x;
                                 int32 j = (z + 1) * RES.x * RES.y + y * RES.y + x;
-                                immediate::draw_line(grid_points[i], grid_points[j], 0xff000000);
+                                immediate::draw_line(grid_points[i], grid_points[j]);
                             }
                         }
                     }
@@ -939,7 +921,7 @@ for (float y = min_val.y; y <= max_val.y; y += step.y) {
                             for (int32 y = 0; y < RES.y - 1; y++) {
                                 int32 i = z * RES.x * RES.y + y * RES.y + x;
                                 int32 j = z * RES.x * RES.y + (y + 1) * RES.y + x;
-                                immediate::draw_line(grid_points[i], grid_points[j], 0xff000000);
+                                immediate::draw_line(grid_points[i], grid_points[j]);
                             }
                         }
                     }
@@ -949,7 +931,7 @@ for (float y = min_val.y; y <= max_val.y; y += step.y) {
                             for (int32 x = 0; x < RES.x - 1; x++) {
                                 int32 i = z * RES.x * RES.y + y * RES.y + x;
                                 int32 j = z * RES.x * RES.y + y * RES.y + x + 1;
-                                immediate::draw_line(grid_points[i], grid_points[j], 0xff000000);
+                                immediate::draw_line(grid_points[i], grid_points[j]);
                             }
                         }
                     }
@@ -962,10 +944,11 @@ for (float y = min_val.y; y <= max_val.y; y += step.y) {
                 const auto p_cur =
                     data.mol_data.dynamic.molecule.atom_positions.sub_array(data.dynamic_frame.atom_range.x, data.dynamic_frame.atom_range.y);
 
+                immediate::set_material(immediate::MATERIAL_ROUGH_MAGENTA);
                 for (int32 i = 0; i < p_cur.count; i++) {
                     vec3 v0 = p_cur[i];
                     vec3 v1 = vec3(data.dynamic_frame.reference_to_world * vec4(p_ref[i], 1.f));
-                    immediate::draw_line(v0, v1, immediate::COLOR_MAGENTA);
+                    immediate::draw_line(v0, v1);
                 }
             }
 

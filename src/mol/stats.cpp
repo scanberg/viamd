@@ -1088,6 +1088,7 @@ static bool compute_expression(Property* prop, const Array<CString> args, const 
 static bool visualize_structures(const Property& prop, const MoleculeDynamic& dynamic) {
     if (prop.structure_data.count == 0) return false;
 
+    immediate::set_material(immediate::MATERIAL_ROUGH_BLACK);
     if (prop.structure_data.count == 1) {
         for (const auto& s : prop.structure_data[0].structures) {
             Array<const vec3> pos = extract_positions(s, dynamic.molecule.atom_positions);
@@ -1110,14 +1111,18 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
         // const uint32 COLORS[NUM_COLORS]{0xffe3cea6, 0xffb4781f, 0xff8adfb2, 0xff2ca033};
         // const uint32 LINE_COLOR = 0x55cccccc;
 
+        immediate::Material mat = immediate::MATERIAL_ROUGH_WHITE;
+
         for (int32 i = 0; i < count; i++) {
             pos_prev = extract_positions(prop.structure_data[0].structures[i], dynamic.molecule.atom_positions);
             if (prop.structure_data[0].strategy == COM) {
                 com_prev = compute_com(pos_prev);
                 pos_prev = {&com_prev, 1};
             }
+            mat.color_alpha = math::convert_color(ctx.style.point_colors[0]);
+            immediate::set_material(mat);
             for (const auto& p : pos_prev) {
-                immediate::draw_point(p, ctx.style.point_colors[0]);
+                immediate::draw_point(p);
             }
             for (int32 j = 1; j < prop.structure_data.count; j++) {
                 const int32 col_idx = j % VisualizationStyle::NUM_COLORS;
@@ -1126,25 +1131,29 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
                     com_next = compute_com(pos_next);
                     pos_next = {&com_next, 1};
                 }
+                mat.color_alpha = math::convert_color(ctx.style.point_colors[col_idx]);
+                immediate::set_material(mat);
                 for (const auto& p : pos_next) {
-                    immediate::draw_point(p, ctx.style.point_colors[col_idx]);
+                    immediate::draw_point(p);
                 }
+                mat.color_alpha = math::convert_color(ctx.style.line_color);
+                immediate::set_material(mat);
                 if (pos_prev.count == 1 && pos_next.count == 1) {
-                    immediate::draw_line(pos_prev[0], pos_next[0], ctx.style.line_color);
+                    immediate::draw_line(pos_prev[0], pos_next[0]);
                 }
                 if (pos_prev.count > 1 && pos_next.count == 1) {
                     for (const auto& pp : pos_prev) {
-                        immediate::draw_line(pp, pos_next[0], ctx.style.line_color);
+                        immediate::draw_line(pp, pos_next[0]);
                     }
                 } else if (pos_next.count > 1 && pos_prev.count == 1) {
                     for (const auto& pn : pos_next) {
-                        immediate::draw_line(pos_prev[0], pn, ctx.style.line_color);
+                        immediate::draw_line(pos_prev[0], pn);
                     }
                 } else {
                     // N^2 :'(
                     for (const auto& pp : pos_prev) {
                         for (const auto& pn : pos_next) {
-                            immediate::draw_line(pp, pn, ctx.style.line_color);
+                            immediate::draw_line(pp, pn);
                         }
                     }
                 }
