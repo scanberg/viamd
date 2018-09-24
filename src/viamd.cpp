@@ -853,9 +853,12 @@ data.dynamic_frame.atom_range = {0, 152};
 
         // RENDER DEBUG INFORMATION (WITH DEPTH)
         {
-			immediate::set_view_matrix(view_mat);
-			immediate::set_proj_matrix(proj_mat);
-            immediate::set_material(immediate::MATERIAL_GLOSSY_WHITE);
+            immediate::set_view_matrix(view_mat);
+            immediate::set_proj_matrix(proj_mat);
+            immediate::Material mat = immediate::MATERIAL_GLOSSY_WHITE;
+            mat.f0 = {data.immediate_gfx.material.f0, data.immediate_gfx.material.f0, data.immediate_gfx.material.f0};
+            mat.smoothness = data.immediate_gfx.material.smoothness;
+            immediate::set_material(mat);
             immediate::draw_plane({-30, -30, -50}, {100, 0, 0}, {0, 0, 100});
 
             if (data.hydrogen_bonds.enabled) {
@@ -903,7 +906,7 @@ data.dynamic_frame.atom_range = {0, 152};
                 }
 
                 if (data.dynamic_frame.show_grid) {
-                    immediate::set_material(immediate::MATERIAL_ROUGH_BLACK);                    
+                    immediate::set_material(immediate::MATERIAL_ROUGH_BLACK);
                     for (int32 x = 0; x < RES.x; x++) {
                         for (int32 y = 0; y < RES.y; y++) {
                             for (int32 z = 0; z < RES.z - 1; z++) {
@@ -1012,8 +1015,8 @@ data.dynamic_frame.atom_range = {0, 152};
 
         // DRAW DEBUG GRAPHICS W/O DEPTH
         {
-			immediate::set_view_matrix(view_mat);
-			immediate::set_proj_matrix(proj_mat);
+            immediate::set_view_matrix(view_mat);
+            immediate::set_proj_matrix(proj_mat);
             stats::visualize(data.mol_data.dynamic);
 
             immediate::draw_basis(data.dynamic_frame.reference_to_world, 5.f);
@@ -1381,7 +1384,7 @@ if (ImGui::BeginMenu("Edit")) {
         if (ImGui::BeginMenu("Immediate Gfx")) {
             ImGui::SliderFloat("Smoothness", &data->immediate_gfx.material.smoothness, 0.0f, 1.0f);
             ImGui::SliderFloat("f0", &data->immediate_gfx.material.f0, 0.01f, 0.5f);
-			ImGui::EndMenu();
+            ImGui::EndMenu();
         }
 
         ImGui::EndMainMenuBar();

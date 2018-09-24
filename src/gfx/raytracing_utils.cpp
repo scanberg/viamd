@@ -217,6 +217,7 @@ vec3 fresnel(vec3 f0, float H_dot_V) {
 }
 
 vec3 shade(vec3 albedo, float alpha, vec3 f0, float smoothness, vec3 P, vec3 V, vec3 N) {
+	const float PI_QUARTER = 3.14159265 * 0.25;
     const vec3 env_radiance = vec3(0.5);
     const vec3 dir_radiance = vec3(0.5);
     const vec3 L = normalize(vec3(1));
@@ -232,7 +233,7 @@ vec3 shade(vec3 albedo, float alpha, vec3 f0, float smoothness, vec3 P, vec3 V, 
     float N_dot_L = max(0.0, dot(N, L));
     vec3 fresnel_direct = fresnel(f0, H_dot_V);
     vec3 fresnel_indirect = fresnel(f0, N_dot_V);
-	float tan_half_angle = tan(mix(45.0, 0.0, smoothness));
+	float tan_half_angle = tan(mix(PI_QUARTER, 0.0, smoothness));
 
     float diffuse_occlusion;
     vec3 direct_diffuse = env_radiance + N_dot_L * dir_radiance;
@@ -240,13 +241,13 @@ vec3 shade(vec3 albedo, float alpha, vec3 f0, float smoothness, vec3 P, vec3 V, 
 
     float specular_occlusion;
     vec3 direct_specular = dir_radiance * pow(N_dot_H, spec_exp);
-    vec3 indirect_specular = cone_trace(P, N, R, tan_half_angle, specular_occlusion).rgb; 
+    vec3 indirect_specular = cone_trace(P, N, R, tan_half_angle, specular_occlusion).rgb;
 
-    vec3 result = vec3(0);
-    result += albedo * (direct_diffuse + u_indirect_diffuse_scale * indirect_diffuse) * pow(diffuse_occlusion, u_ambient_occlusion_scale * 0.5);
-    result += direct_specular * fresnel_direct + u_indirect_specular_scale * indirect_specular * fresnel_indirect;
+	vec3 result = vec3(0);
+	result += albedo * (direct_diffuse + u_indirect_diffuse_scale * indirect_diffuse) * pow(diffuse_occlusion, u_ambient_occlusion_scale * 0.5);
+	result += direct_specular * fresnel_direct + u_indirect_specular_scale * indirect_specular * fresnel_indirect;
 
-    return vec3(smoothness);
+    return result;
 }
 
 void main() {
@@ -270,50 +271,6 @@ void main() {
 	vec3 N = world_normal;
 
     frag_color = vec4(shade(albedo, alpha, f0, smoothness, P, V, N), 1);
-
-    /*
-
-	vec3 L = normalize(vec3(1,1,1));
-	vec3 N = world_normal;
-	vec3 E = normalize(world_eye - world_position);
-	float cos_term = max(0, dot(L, N));
-
-    mat3 tangent_to_world = compute_ON_basis(world_normal);
-  
-    // Calculate diffuse light
-    vec3 diffuse_contribution = vec3(0);
-    {
-		vec3 direct_diffuse = cos_term * vec3(1,1,1);
-
-        // Indirect diffuse light
-        float occlusion = 0.0;
-        vec3 indirect_diffuse = indirect_light(world_position, world_normal, tangent_to_world, occlusion).rgb;
-
-        // Sum direct and indirect diffuse light and tweak a little bit
-        // occlusion = min(1.0, 1.5 * occlusion); // Make occlusion brighter
-		// TODO: apply occlusion
-        diffuse_contribution = (direct_diffuse + u_indirect_diffuse_scale * indirect_diffuse) * albedo;
-
-        diffuse_contribution = diffuse_contribution * u_ambient_occlusion_scale * occlusion;
-    }
-    
-    // Calculate specular light
-    vec3 specular_contribution = vec3(0);
-    {
-        // 0.2 = 22.6 degrees, 0.1 = 11.4 degrees, 0.07 = 8 degrees angle
-        const float cone_angle = 0.07;
-
-        vec3 E_refl = -E + 2.0 * dot(N, E) * N;
-
-        // Maybe fix so that the cone doesnt trace below the plane defined by the surface normal.
-        // For example so that the floor doesnt reflect itself when looking at it with a small angle
-        float occlusion;
-        vec4 traced_specular = cone_trace(world_position, world_normal, E_refl, cone_angle, occlusion); 
-        specular_contribution = u_indirect_specular_scale * traced_specular.rgb;
-    }
-    */
-
-    //frag_color = vec4(diffuse_contribution + specular_contribution, 1.0);
 }
 )";
 
@@ -476,18 +433,36 @@ void voxelize_scene(Array<const vec3> atom_pos, Array<const float> atom_radii, A
         }
     }
 
+    for (auto& v : cone_trace::volume.voxel_data) {
+        vec4 c = math::convert_color(v);
+        v = math::convert_color(vec4(vec3(c) / math::PI, c.a));
+    }
+
     glBindTexture(GL_TEXTURE_3D, cone_trace::gl.voxel_texture);
     glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, cone_trace::volume.dim.x, cone_trace::volume.dim.y, cone_trace::volume.dim.z, 0, GL_RGBA,
                  GL_UNSIGNED_BYTE, cone_trace::volume.voxel_data.data);
     glGenerateMipmap(GL_TEXTURE_3D);
     glBindTexture(GL_TEXTURE_3D, 0);
-}  // namespace render
+}
+
+void illuminate_voxels_omnidirectional_constant(const vec3& intensity) {
+
+    // X-direction sweep plane
+    DynamicArray<vec4> plane_slice_yz(cone_trace::volume.dim.y * cone_trace::volume.dim.z, vec4(intensity, 0));
+
+    for (int32 x = 0; x < cone_trace::volume.dim.x; x++) {
+        for (int32 y = 0; y < cone_trace::volume.dim.y; y++) {
+            for (int32 z = 0; z < cone_trace::volume.dim.z; z++) {
+            }
+        }
+    }
+}
 
 void draw_voxelized_scene(const mat4& view_mat, const mat4& proj_mat) {
     immediate::set_view_matrix(view_mat);
     immediate::set_proj_matrix(proj_mat);
+    immediate::set_material(immediate::MATERIAL_ROUGH_BLACK);
 
-    /*
     for (int32 z = 0; z < cone_trace::volume.dim.z; z++) {
         for (int32 y = 0; y < cone_trace::volume.dim.y; y++) {
             for (int32 x = 0; x < cone_trace::volume.dim.x; x++) {
@@ -495,12 +470,11 @@ void draw_voxelized_scene(const mat4& view_mat, const mat4& proj_mat) {
                 if (cone_trace::volume.voxel_data[i] > 0) {
                     vec3 min_box = cone_trace::volume.min_box + vec3(x, y, z) * cone_trace::volume.voxel_ext;
                     vec3 max_box = min_box + cone_trace::volume.voxel_ext;
-                    immediate::draw_aabb_lines(min_box, max_box, cone_trace::volume.voxel_data[i]);
+                    immediate::draw_aabb_lines(min_box, max_box);
                 }
             }
         }
     }
-    */
 
     immediate::flush();
 }
