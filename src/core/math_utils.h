@@ -100,10 +100,14 @@ using glm::mat4_cast;
 using glm::quat_cast;
 
 // Interpolation
-using glm::mix;
 template <typename T, typename V>
 T lerp(T const& a, T const& b, V t) {
-    return glm::mix(a, b, t);
+    return ((V)1.0 - t) * a + t * b;
+}
+
+template <typename T, typename V>
+T mix(T const& a, T const& b, V t) {
+    return lerp(a, b, t);
 }
 
 template <typename T, typename V>
