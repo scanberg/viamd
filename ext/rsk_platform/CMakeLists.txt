@@ -1,42 +1,18 @@
 ### OPENGL ###
 find_package(OpenGL REQUIRED)
 
-
 ### GLFW ###
 option(GLFW_BUILD_DOCS OFF)
 option(GLFW_BUILD_EXAMPLES OFF)
 option(GLFW_BUILD_TESTS OFF)
 option(GLFW_INSTALL OFF)
-
 add_subdirectory(ext/glfw)
-
 
 ### NATIVEFILEDIALOG ###
 add_subdirectory(ext/nativefiledialog)
 
-
 ### IMGUI ###
-project(imgui)
-
-file(GLOB_RECURSE WIDGET_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/ext/imgui/widgets/*.h)
-file(GLOB_RECURSE WIDGET_INLINES ${CMAKE_CURRENT_SOURCE_DIR}/ext/imgui/widgets/*.inl)
-
-set(HEADERS
-    ${CMAKE_CURRENT_SOURCE_DIR}/ext/imgui/imconfig.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/ext/imgui/imgui.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/ext/imgui/imgui_internal.h
-    ${WIDGET_HEADERS}
-)
-                   
-set(SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/ext/imgui/imgui.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/ext/imgui/imgui_draw.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/ext/imgui/imgui_demo.cpp
-    ${WIDGET_INLINES}
-)
-
-add_library(imgui STATIC ${HEADERS} ${SOURCES})
-
+add_subdirectory(ext/imgui)
 
 ### RSK PLATFORM ###
 project(rsk_platform)
@@ -76,8 +52,8 @@ add_definitions(-DGLFW_INCLUDE_NONE)
 add_library(rsk_platform STATIC ${HEADERS} ${SOURCES})
 
 target_link_libraries(rsk_platform
-                      glfw
-                      imgui
-                      nativefiledialog
-                      ${glfw_LIBRARIES}
-                      ${OPENGL_LIBRARY})
+                      PUBLIC imgui
+                      PRIVATE glfw
+                      PRIVATE nativefiledialog
+                      PRIVATE ${glfw_LIBRARIES}
+                      PRIVATE ${OPENGL_LIBRARY})

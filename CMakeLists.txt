@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.0)
 
+add_subdirectory(ext/rsk_platform)
+add_subdirectory(ext/libxdrfile)
+add_subdirectory(ext/tinyexpr)
+
 project(viamd)
 
 if(APPLE)
@@ -10,14 +14,11 @@ if(MSVC)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4 /wd4201 /MP")
   #set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MT")
   #set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /MTd")
-
 else()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types")
 endif()
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
-
-add_subdirectory(ext)
 
 include_directories(src
                     ext/glm
