@@ -11,6 +11,7 @@
 #include <core/console.h>
 #include <core/string_utils.h>
 #include <core/volume.h>
+#include <core/profiling.h>
 #include <mol/molecule_structure.h>
 #include <mol/molecule_trajectory.h>
 #include <mol/trajectory_utils.h>
@@ -478,6 +479,7 @@ int main(int, char**) {
     filter::initialize();
     postprocessing::initialize(data.fbo.width, data.fbo.height);
     volume::initialize();
+    gpu_profiling::initialize();
 
     // Setup IMGUI style
     ImGui::StyleColorsClassic();
@@ -509,6 +511,8 @@ data.dynamic_frame.atom_range = {0, 152};
 
     // Main loop
     while (!data.ctx.window.should_close) {
+        gpu_profiling::clear();
+        gpu_profiling::push_section("FRAME");
         platform::Coordinate previous_mouse_coord = data.ctx.input.mouse.coord;
         platform::update(&data.ctx);
 
@@ -583,6 +587,9 @@ data.dynamic_frame.atom_range = {0, 152};
             postprocessing::initialize(data.fbo.width, data.fbo.height);
         }
 
+        gpu_profiling::push_section("GBUFFER");
+
+        gpu_profiling::push_section("CLEAR");
         // Setup fbo and clear textures
         glViewport(0, 0, data.fbo.width, data.fbo.height);
 
@@ -593,18 +600,26 @@ data.dynamic_frame.atom_range = {0, 152};
         glDepthFunc(GL_LESS);
         glDepthMask(GL_TRUE);
 
-        // Clear color, normal and depth buffer
-        glDrawBuffers(2, draw_buffers);
+        // Clear color+alpha and depth
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
         glClearColor(CLEAR_COLOR.x, CLEAR_COLOR.y, CLEAR_COLOR.z, CLEAR_COLOR.w);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        // Clear picking buffer
-        glDrawBuffer(GL_COLOR_ATTACHMENT2);
-        glClearColor(CLEAR_INDEX.x, CLEAR_INDEX.y, CLEAR_INDEX.z, CLEAR_INDEX.w);
+        // Clear f0_smoothness and normal
+        glDrawBuffers(2, draw_buffers + 1);
+        glClearColor(0, 0, 0, 0);
         glClear(GL_COLOR_BUFFER_BIT);
 
+        // Clear picking buffer
+        glDrawBuffer(GL_COLOR_ATTACHMENT3);
+        glClearColor(CLEAR_INDEX.x, CLEAR_INDEX.y, CLEAR_INDEX.z, CLEAR_INDEX.w);
+        glClear(GL_COLOR_BUFFER_BIT);
+        gpu_profiling::pop_section("CLEAR");
+
         // Enable all draw buffers
-        glDrawBuffers(3, draw_buffers);
+        glDrawBuffers(4, draw_buffers);
+
+        gpu_profiling::pop_section("GBUFFER");
 
         if (data.ctx.input.key.hit[CONSOLE_KEY]) {
             data.console.visible = !data.console.visible;
@@ -832,27 +847,38 @@ data.dynamic_frame.atom_range = {0, 152};
         mat4 proj_mat = compute_perspective_projection_matrix(data.camera.camera, data.fbo.width, data.fbo.height);
         mat4 inv_proj_mat = math::inverse(proj_mat);
 
+        gpu_profiling::push_section("GBUFFER");
+
+        gpu_profiling::push_section("MOLECULES");
         for (const auto& rep : data.representations.data) {
             if (!rep.enabled) continue;
             switch (rep.type) {
                 case Representation::VDW:
+                    gpu_profiling::push_section("VDW");
                     draw::draw_vdw(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.atom_radii, rep.colors, view_mat, proj_mat,
                                    rep.radius);
+                    gpu_profiling::pop_section("VDW");
                     break;
                 case Representation::LICORICE:
+                    gpu_profiling::push_section("LICORICE");
                     draw::draw_licorice(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.dynamic.molecule.covalent_bonds, rep.colors,
                                         view_mat, proj_mat, rep.radius);
+                    gpu_profiling::pop_section("LICORICE");
                     break;
                 case Representation::RIBBONS:
+                    gpu_profiling::push_section("RIBBONS");
                     draw::draw_ribbons(data.mol_data.dynamic.molecule.backbone_segments, data.mol_data.dynamic.molecule.chains,
                                        data.mol_data.dynamic.molecule.atom_positions, rep.colors, view_mat, proj_mat, rep.num_subdivisions,
                                        rep.tension, rep.width, rep.thickness);
+                    gpu_profiling::pop_section("RIBBONS");
                     break;
             }
         }
+        gpu_profiling::pop_section("MOLECULES");
 
         // RENDER DEBUG INFORMATION (WITH DEPTH)
         {
+            gpu_profiling::push_section("DEBUG GFX");
             immediate::set_view_matrix(view_mat);
             immediate::set_proj_matrix(proj_mat);
             immediate::Material mat = immediate::MATERIAL_GLOSSY_WHITE;
@@ -954,15 +980,19 @@ data.dynamic_frame.atom_range = {0, 152};
             }
 
             immediate::flush();
+            gpu_profiling::pop_section("DEBUG GFX");
         }
+
+        gpu_profiling::pop_section("GBUFFER");
 
         // PICKING
         {
+            gpu_profiling::push_section("PICKING");
             ivec2 coord = {data.ctx.input.mouse.coord.x, data.ctx.framebuffer.height - data.ctx.input.mouse.coord.y};
             if (coord.x < 0 || coord.y < 0 || coord.x >= data.ctx.framebuffer.width || coord.y >= data.ctx.framebuffer.height) {
                 data.picking_idx = NO_PICKING_IDX;
             } else {
-                // data.picking_idx = get_picking_id(data.fbo.id, coord.x, coord.y);
+                data.picking_idx = get_picking_id(data.fbo.id, coord.x, coord.y);
             }
 
             data.hovered = {};
@@ -979,6 +1009,7 @@ data.dynamic_frame.atom_range = {0, 152};
                     data.right_clicked = data.hovered;
                 }
             }
+            gpu_profiling::pop_section("PICKING");
         }
 
         // Activate backbuffer
@@ -989,28 +1020,38 @@ data.dynamic_frame.atom_range = {0, 152};
         glDepthMask(GL_FALSE);
 
         if (data.cone_trace.enabled) {
+            gpu_profiling::push_section("SHADING + CONE_TRACE");
             render::cone_trace_scene(data.fbo.tex_depth, data.fbo.tex_normal, data.fbo.tex_base_color_and_alpha, data.fbo.tex_f0_and_smoothness,
                                      view_mat, proj_mat, data.cone_trace.indirect_diffuse_scale, data.cone_trace.indirect_specular_scale,
                                      data.cone_trace.ambient_occlusion_scale);
+            gpu_profiling::pop_section("SHADING + CONE_TRACE");
             if (data.cone_trace.show_voxels) {
+                gpu_profiling::push_section("DRAW VOXELS");
                 render::draw_voxelized_scene(view_mat, proj_mat);
+                gpu_profiling::pop_section("DRAW VOXELS");
             }
         } else {
             // Render deferred
+            gpu_profiling::push_section("SHADING");
             postprocessing::render_deferred(data.fbo.tex_depth, data.fbo.tex_base_color_and_alpha, data.fbo.tex_normal, inv_proj_mat);
+            gpu_profiling::pop_section("SHADING");
         }
 
         // Apply post processing
         // postprocessing::apply_tonemapping(data.fbo.tex_base_color_and_alpha);
 
         if (data.ssao.enabled) {
+            gpu_profiling::push_section("SSAO");
             postprocessing::apply_ssao(data.fbo.tex_depth, data.fbo.tex_normal, proj_mat, data.ssao.intensity, data.ssao.radius);
+            gpu_profiling::pop_section("SSAO");
         }
 
         if (data.density_volume.enabled) {
+            gpu_profiling::push_section("VOLUME RENDERING");
             const float scl = 1.f * data.density_volume.density_scale / data.density_volume.texture.max_value;
             volume::render_volume_texture(data.density_volume.texture.id, data.fbo.tex_depth, data.density_volume.texture_to_model_matrix,
                                           data.density_volume.model_to_world_matrix, view_mat, proj_mat, data.density_volume.color, scl);
+            gpu_profiling::pop_section("VOLUME RENDERING");
         }
 
         // DRAW DEBUG GRAPHICS W/O DEPTH
@@ -1020,17 +1061,6 @@ data.dynamic_frame.atom_range = {0, 152};
             stats::visualize(data.mol_data.dynamic);
 
             immediate::draw_basis(data.dynamic_frame.reference_to_world, 5.f);
-
-            /*
-for (const auto& p : ps.particle_positions) {
-    immediate::draw_point(p, immediate::COLOR_RED);
-}
-for (const auto& d_c : ps.constraints.distance) {
-    const vec3& p0 = ps.particle_positions[d_c.idx[0]];
-    const vec3& p1 = ps.particle_positions[d_c.idx[1]];
-    immediate::draw_line(p0, p1, immediate::COLOR_GREEN);
-}
-            */
 
             immediate::flush();
         }
@@ -1092,16 +1122,6 @@ for (const auto& d_c : ps.constraints.distance) {
         }
         ImGui::End();
 
-        /*
-if (data.right_clicked.atom_idx != NO_PICKING_IDX && data.ctx.input.mouse.hit[1]) {
-    // data.text_field_target = 0;
-    // if (ImGui::GetIO().WantTextInput) {
-    //    data.text_field_target = ImGui::GetActiveID();
-    //}
-    ImGui::OpenPopup("AtomContextMenu");
-}
-        */
-
         // Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
         if (show_demo_window) {
             ImGui::SetNextWindowPos(ImVec2(650, 20),
@@ -1109,10 +1129,16 @@ if (data.right_clicked.atom_idx != NO_PICKING_IDX && data.ctx.input.mouse.hit[1]
                                                               // file anyway. Here we just want to make the demo initial state a bit more friendly!
             ImGui::ShowDemoWindow(&show_demo_window);
         }
+
+        gpu_profiling::push_section("IMGUI RENDER");
         ImGui::Render();
+        gpu_profiling::pop_section("IMGUI RENDER");
 
         // Swap buffers
         platform::swap_buffers(&data.ctx);
+        gpu_profiling::pop_section("FRAME");
+        gpu_profiling::finish();
+        // gpu_profiling::print();
     }
 
     data.async.trajectory.sync.signal_stop_and_wait();

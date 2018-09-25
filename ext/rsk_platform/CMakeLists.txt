@@ -27,7 +27,6 @@ set(HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/core/string_types.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/core/string_utils.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/core/types.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/core/vector_types.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/GL/glcorearb.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/GL/gl3w.h
 )
