@@ -511,10 +511,12 @@ data.dynamic_frame.atom_range = {0, 152};
 
     // Main loop
     while (!data.ctx.window.should_close) {
-        gpu_profiling::clear();
-        gpu_profiling::push_section("FRAME");
         platform::Coordinate previous_mouse_coord = data.ctx.input.mouse.coord;
         platform::update(&data.ctx);
+
+		gpu_profiling::draw_window();
+		gpu_profiling::clear();
+		gpu_profiling::push_section("FRAME");
 
         // Try to fix false move on touch
         if (data.ctx.input.mouse.hit[0]) {
@@ -589,10 +591,10 @@ data.dynamic_frame.atom_range = {0, 152};
 
         gpu_profiling::push_section("GBUFFER");
 
-        gpu_profiling::push_section("CLEAR");
         // Setup fbo and clear textures
         glViewport(0, 0, data.fbo.width, data.fbo.height);
 
+        gpu_profiling::push_section("CLEAR");
         const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3};
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.id);
 
@@ -800,6 +802,8 @@ data.dynamic_frame.atom_range = {0, 152};
             const ivec3 res = math::max(ivec3(1), ivec3((max_box - min_box) / data.cone_trace.voxel_ext));
 
             render::voxelize_scene(data.mol_data.dynamic.molecule.atom_positions, atom_radii, atom_colors, res, min_box, max_box);
+			render::illuminate_voxels_omnidirectional_constant(vec3(1));
+			render::update_gpu_volume();
         }
 
         if (frame_changed) {

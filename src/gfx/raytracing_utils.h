@@ -24,6 +24,8 @@ void voxelize_scene_gpu(Array<const vec3> atom_pos, Array<const float> atom_radi
 
 void illuminate_voxels_omnidirectional_constant(const vec3& intensity);
 
+void update_gpu_volume();
+
 void draw_voxelized_scene(const mat4& view_mat, const mat4& proj_mat);
 void cone_trace_scene(GLuint depth_tex, GLuint normal_tex, GLuint color_alpha_tex, GLuint f0_smoothness_tex, const mat4& view_mat,
                       const mat4& proj_mat, float indirect_diffuse_scale, float indirect_specular_scale, float ambient_occlusion_scale);
