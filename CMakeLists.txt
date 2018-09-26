@@ -1,11 +1,5 @@
 cmake_minimum_required(VERSION 3.0)
 
-add_subdirectory(ext/rsk_platform)
-add_subdirectory(ext/libxdrfile)
-add_subdirectory(ext/tinyexpr)
-
-project(viamd)
-
 if(APPLE)
   set(CMAKE_OSX_DEPLOYMENT_TARGET "10.9")
 endif()
@@ -19,6 +13,12 @@ else()
 endif()
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
+
+add_subdirectory(ext/rsk_platform)
+add_subdirectory(ext/libxdrfile)
+add_subdirectory(ext/tinyexpr)
+
+project(viamd)
 
 include_directories(src
                     ext/glm
