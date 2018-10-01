@@ -151,63 +151,47 @@ void spline_interpolation(Array<vec3> positions, Array<const vec3> pos0, Array<c
     }
 }
 
+inline bool covelent_bond_heuristic(const vec3& pos_a, Element elem_a, const vec3& pos_b, Element elem_b) {
+    auto d = element::covalent_radius(elem_a) + element::covalent_radius(elem_b);
+    auto d1 = d + 0.3f;
+    auto d2 = d - 0.5f;
+    auto v = pos_a - pos_b;
+    auto dist2 = math::dot(v, v);
+    return dist2 < (d1 * d1) && dist2 > (d2 * d2);
+}
+
 // Computes covalent bonds between a set of atoms with given positions and elements.
 // The approach is inspired by the technique used in NGL (https://github.com/arose/ngl)
-DynamicArray<Bond> compute_covalent_bonds(Array<const vec3> atom_pos, Array<const Element> atom_elem, Array<const Residue> residues) {
+DynamicArray<Bond> compute_covalent_bonds(Array<const vec3> atom_pos, Array<const Element> atom_elem, Array<const ResIdx> atom_res_idx) {
     ASSERT(atom_pos.count == atom_elem.count);
+    if (atom_res_idx.count > 0) {
+        ASSERT(atom_pos.count == atom_res_idx.count);
+    }
 
+    constexpr float max_covelent_bond_length = 3.5f;
+    spatialhash::Frame frame = spatialhash::compute_frame(atom_pos, vec3(max_covelent_bond_length));
     DynamicArray<Bond> bonds;
 
-    auto try_and_create_atom_bond = [& pos = atom_pos, &elem = atom_elem, &bonds = bonds](int i, int j) -> bool {
-        auto d = element::covalent_radius(elem[i]) + element::covalent_radius(elem[j]);
-        auto d1 = d + 0.3f;
-        auto d2 = d - 0.5f;
-        auto v = pos[i] - pos[j];
-        auto dist2 = glm::dot(v, v);
-
-        if (dist2 < (d1 * d1) && dist2 > (d2 * d2)) {
-            bonds.push_back({i, j});
-            return true;
-        } else
-            return false;
-    };
-
-    if (residues) {
-        // Create connections within residues
-        for (int64 i = 0; i < residues.count; i++) {
-            const Residue& res = residues[i];
-            for (int atom_i = res.beg_atom_idx; atom_i < res.end_atom_idx - 1; atom_i++) {
-                for (int atom_j = atom_i + 1; atom_j < res.end_atom_idx; atom_j++) {
-                    try_and_create_atom_bond(atom_i, atom_j);
-                }
-            }
-        }
-
-        // @TODO:
-        // Create connections between consecutive residues (Is it enough and correct to only check
-        // consecutive residues?)
-
-        for (int res_i = 0; res_i < residues.count - 1; res_i++) {
-            auto res_j = res_i + 1;
-            auto atom_i_beg = residues[res_i].beg_atom_idx;
-            auto atom_i_end = residues[res_i].end_atom_idx;
-            auto atom_j_beg = residues[res_j].beg_atom_idx;
-            auto atom_j_end = residues[res_j].end_atom_idx;
-
-            for (int atom_i = atom_i_beg; atom_i < atom_i_end; atom_i++) {
-                for (int atom_j = atom_j_beg; atom_j < atom_j_end; atom_j++) {
-                    try_and_create_atom_bond(atom_i, atom_j);
-                }
-            }
+    if (atom_res_idx.count > 0) {
+        // @NOTE: If we have residues the assumtion is that a bond is either within a single residue or between concecutive residues.
+        for (int atom_i = 0; atom_i < atom_pos.count; atom_i++) {
+            spatialhash::for_each_within(frame, atom_pos[atom_i], max_covelent_bond_length,
+                                         [&bonds, &atom_pos, &atom_elem, &atom_res_idx, atom_i](int atom_j, const vec3& atom_j_pos) {
+                                             if (atom_i < atom_j && (math::abs(atom_res_idx[atom_i] - atom_res_idx[atom_j]) < 2) &&
+                                                 covelent_bond_heuristic(atom_pos[atom_i], atom_elem[atom_i], atom_pos[atom_j], atom_elem[atom_j])) {
+                                                 bonds.push_back({atom_i, atom_j});
+                                             }
+                                         });
         }
     } else {
-        // Brute force N^2 check
-        // @TODO: Use spatial hash
-        auto atom_count = atom_pos.count;
-        for (int atom_i = 0; atom_i < atom_count - 1; ++atom_i) {
-            for (int atom_j = 1; atom_j < atom_count; ++atom_j) {
-                try_and_create_atom_bond(atom_i, atom_j);
-            }
+        // @NOTE: Since we do not have any hierarchical information given, try all atoms against all other atoms.
+        for (int atom_i = 0; atom_i < atom_pos.count; atom_i++) {
+            spatialhash::for_each_within(
+                frame, atom_pos[atom_i], max_covelent_bond_length, [&bonds, &atom_pos, &atom_elem, atom_i](int atom_j, const vec3& atom_j_pos) {
+                    if (atom_i < atom_j && covelent_bond_heuristic(atom_pos[atom_i], atom_elem[atom_i], atom_pos[atom_j], atom_elem[atom_j])) {
+                        bonds.push_back({atom_i, atom_j});
+                    }
+                });
         }
     }
 
@@ -2179,12 +2163,8 @@ void draw_spline(Array<const SplineSegment> spline, const mat4& view_mat, const 
     immediate::set_proj_matrix(proj_mat);
 
     for (const auto& seg : spline) {
-        mat4 basis = mat4(
-            vec4(seg.position + seg.binormal, 0),
-            vec4(seg.position + seg.normal, 0),
-            vec4(seg.position + seg.tangent, 0),
-            vec4(seg.position, 1)
-        );
+        mat4 basis = mat4(vec4(seg.position + seg.binormal, 0), vec4(seg.position + seg.normal, 0), vec4(seg.position + seg.tangent, 0),
+                          vec4(seg.position, 1));
         immediate::draw_basis(basis);
     }
 
@@ -2206,30 +2186,30 @@ constexpr int seg_height = 36;
 constexpr GLenum seg_data_format = GL_BGR;
 /* UGLY
 constexpr unsigned char seg_data[] =
-    R"(  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                PP PP PP PP PP                 P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?
-?  ?  ?  ?  P  P                                            P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P P  P  ?  ?  ?  ?  ?
-?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                      P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?
-P  P  P                                      P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?
-?  ?  ?  ?  ?  ?  ?  ?  P  P  P         P  P  P  P  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  PP  P  P  P
-P  P  P  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  PP  P  P  P  P  ?  ?  P  P                   P  P  ?  ?
-?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  PP  P  ?  ?  ?  ?  P  P  P                   P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P
-P  P  P  PP  P  ?  ?  ?  ?  P  P  P                   P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P            P  P  P  ?  ?  ?  P  P  P  P P
-P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P            P  P  ?  ?  ?  ?  ?  ?  P  P                P  P  P P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P
-P  P             P  P  ?  ?  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P             P  P  P  ?  ?  ?  ?  P  P
-P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P          P  P  P  ?  ?  ?  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?
-?  ?  ?  ?  ?  ?  ?  P  P  P  P          P  P  P  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P          P
-P  P  P  ?  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P       P  P  P  ?  P  ?  ?  P  P               P  P
-P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P    P  P  P  P  P  P  P  P  P               P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?
-?  ?  ?  P  P  P    P  P  P  P  P  P  P  P  P               P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P P  P  P  P  P  P  ?  ?
-?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                         P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P
-P  P                                      P  P  P  ?  ?  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?
-?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                      P  P  P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P P  P  P P
-P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  P  P                                                P  P  P P  P  P   P  P  P  P P  ?  P  P  P
-P  P  P  P  P                                                   P  P  P  P  P  P  P  ?  ?  P P  P  P  P  P  P  P P  P  P  P  P  ?  ?  P  P  P  P  P  P
-P                      PP PP PP PP PP                                P  P  P  P  P  P  ?  ?  ?  ?  P  P  P  P                      PP PP PP PP PP P  ?
-?  ?  P  ?  ?  ?  ?  ?  P  P  P  P  P                   PP PP ?? PP PP PP                             P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P PP
-PP ?? PP PP PP                    P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                   PP PP ?? ?? PP PP                    P  P  P
-?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                   PP PP PP PP PP PP                    P  P  ?)";
+    R"(  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                PP PP PP PP PP                 P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?
+? ?  ?  ?  ?  P  P                                            P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P P  P  ?  ?  ?
+?  ? ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                      P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?
+?  ?  ? P  P  P                                      P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P P  P  P  ?  ?  ?  ?  ?
+?  ?  ?  ? ?  ?  ?  ?  ?  ?  ?  ?  P  P  P         P  P  P  P  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?
+P  PP  P  P  P P  P  P  P  P                   P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  PP  P  P  P  P  ?  ?  P  P P  P  ? ?
+?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  PP  P  ?  ?  ?  ?  P  P  P                   P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P
+P P  P  P  PP  P  ?  ?  ?  ?  P  P  P                   P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P            P  P  P  ?  ?  ?  P  P  P
+P P P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P            P  P  ?  ?  ?  ?  ?  ?  P  P                P  P  P P  P  ?  ?  ?  ?  ?  ?  ?  ?
+?  ?  P P  P             P  P  ?  ?  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P             P  P  P  ?  ?
+?  ?  P  P P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P          P  P  P  ?  ?  ?  ?  ?  P  P               P  P  P  P
+?  ?  ?  ?  ? ?  ?  ?  ?  ?  ?  ?  P  P  P  P          P  P  P  ?  ?  ?  P  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?
+P  P  P          P P  P  P  ?  ?  ?  P  P               P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P       P  P  P  ?  P  ?  ?  P
+P               P  P P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P    P  P  P  P  P  P  P  P  P               P  P  P  P  P  ?  ?  ?
+?  ?  ?  ?  ?  ?  ?  ? ?  ?  ?  P  P  P    P  P  P  P  P  P  P  P  P               P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P
+P  P P  P  P  P  P  P  ?  ? ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P                                         P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?
+?  ?  ?  ?  ?  ?  ?  ?  ?  P P  P                                      P  P  P  ?  ?  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P P  P
+P  P  P  P  ?  ?  ?  ?  ?  ?  ? ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                                      P  P  P  P  P  P  P  P  ?  ?  ?  ?  ?  ?  ?
+?  ?  ?  ?  ?  ?  P  P  P P  P  P P P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P  P  P                                                P  P
+P P  P  P   P  P  P  P P  ?  P  P  P P  P  P  P  P                                                   P  P  P  P  P  P  P  ?  ?  P P  P  P  P  P  P
+P P  P  P  P  P  ?  ?  P  P  P  P  P  P P                      PP PP PP PP PP                                P  P  P  P  P  P  ?  ?  ?  ?  P  P  P
+P                      PP PP PP PP PP P  ? ?  ?  P  ?  ?  ?  ?  ?  P  P  P  P  P                   PP PP ?? PP PP PP                             P
+?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P  P  P PP PP ?? PP PP PP                    P  P  P  P  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P PP PP ?? ?? PP
+PP                    P  P  P ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  P  P                   PP PP PP PP PP PP                    P  P  ?)";
 */
 constexpr unsigned char seg_data[] =
     R"(z�� U� U� U� U� U� U� U� U� U� U�z��z��z�̭�ح�������������������ȷ�ȷ�ȷ�ȷ�������������������ح�ح�ح��z��z�� U� U� U� U� U� U� U� U� U� U� U�z��z��z�̭�ح����������������������������������������������ح�ح��z��z��z�� U� U� U� U� U� U� U� U� U� U� U�z��z��z�̭�ح�ح�ح����������������������������������������ح��z��z��z��z��z�� U� U� U� U� U� U� U� U� U� U� U�z��z��z��z�̭�ح����������������������������������������ح�ح��z��z��z��z�� U� U� U� U� U� U� U� U� U� U� U� U�z��z�̭�ح�ح����������������������������������������ح�ح�ح��z��z��z�� U� U� U� U� U� U� U� U� U� U� U�z��z��z�̭�ح�ح�������������������������������������������ح�ح��z��z��z��z�� U� U� U� U� U� U� U� U� U�z��z��z��z�̭�ح�ح������������·�·�·�·�·�·�����������������ح��z��z��z��z��z�� U� U� U� U� U� U� U�z��z��z��z��z��z�̭�ح���·�·�·�·�·�·�·�·�·�����������������ح��z��z��z��z��z��z�� U�z��z�� U�z��z��z��z��z��z��z��z�̭�ح���·�·�·�·�·̞f̞f�·�·�����������������ح��z��z��z��z��z��z��z��z��z��z��z��z��z��z��z�̭�ح�ح�ح�ح���·�·̞f̞f̞f̞f�·�·�·�����������������ح�ح��z��z��z��z��z��z��z��z��z��z��z��z�̭�ح�ح�ح�ح�ح�ح���·�·̞f̞f̞f̞f�·�·�·�����������������ح�ح�ح��z��z��z��z��z��z��z��z��z��z��z��z�̭�ح���������������·�·�·̞f̞f̞f�·�·�·�·��������������ح�ح�ح�ح��z��z��z��z��z��z��z��z��z��z��z�̭�ح���������������·�·̞f̞f̞f̞f̞f̞f�·�·��������������ح�ح�ؾ̷�̷��z��z��z��z��z��z��z��z��z��z�̷�̷�̷�������������·�·̞f̞f�p ̞f̞f�·�·�·�������������̷�̷�̷�̷��z��z��z��z��z��z��z��z��z��z��z�̷�̷�̷�������������·�·�·̞f�p �p ̞f�·�·�·�������������̷�̷�̷�̷��z��z��z��z��z��zD� ��z��z��z��z��z�̷�̷�̷����������·�·�·̞f̞f̞f̞f̞f�·�·�������������̷�̷�̷�̷��z��z��z��z��zD� D� D� D� ��z��z��z�̷�̷�̷�̷����������·�·�·̞f̞f̞f�·�·�·�������������̷�̷�̷�̷��z��z��z��z��zD� D� D� D� D� ��z��z��z�̷�̷�̷����������·�·�·�·̞f̞f̞f�·�·�������������̷�̷�̷�̷��z��z��z��zD� D� D� D� D� D� D� ��z��z��z�̷�̷�̷�������·�·�·̞f�·̞f̞f�·�·�������������̷�̷�̷�̷��z��z��z��z��zD� D� D� D� D� D� D� ��z��z�̷�̷�̷�̷����·�·�·�·�·�·�·�·�·�������������̷�̷�̷�̷�̷��z��z��z��zD� D� D� D� D� D� D� D� ��z��z�̷�̷�̷����·�·�·�·�·�·�·�·�·�������������̷�̷�̷�̷�̷��z��z��z��z��zD� D� D� D� D� D� D� ��z��z��z�̷�̷�̷����������������������������������������̷�̷�̷�̷�̷�̷��z��z��z��z��zD� D� D� D� D� D� D� ��z��z�̷�̷�̷����������������������������������������̷�̷�̷�̷��z��z��z��z��z��z��z��zD� D� D� D� D� D� ��z��z��z�̷�̷�̷�������������������������������������̷�̷�̷��z��z�̷��z��z��z��z��z��z��z��zD� D� D� D� ��z��z��z�̷�̷�̷�������������������������������������̷�̷�̷�̷�̷�̷��z��z��z��z��z��z��z��z��z��z��z��z��z��z��z��z�̷�̷�������������������������������������̷�̷�̷�̷�̷�̷�̷�̷��z��z��z��z��z��z��z��z��z��z��z��z��z�̷�̷�̷�������������������������������������̷�̷�̷��ؾ̷�̷�̷�̷��z��z��z��z��z��z��z��z��z��z�̷�̷�̷�̷�̷�̷�����������������������������������������������ح�ح�ؾ̷�̷�̷��ح�ح�ح�ؾ̷��z�̷�̷�̷�̷�̷�̷�̷�̷��������������������������������������������������ح�ح�ح�ح�ح�ح��z��z�̭�ؾ̷�̷�̷�̷�̷�̷�̷�����������������������������������������������������������ح�ح�ح�ح��z��z�̭�ح�ح�ح�ح�ح�ح�������������������������ȷ�ȷ�ȷ�ȷ����������������������������������ح�ح�ح�ح�ح��z��z��z��z�̭�ح�ح�ح�������������������������ȷ�ȷ�ȷ�ȷ�����������������������������������z��z��z�̭��z��z��z��z��z�̭�ح�ح�ح�ح����������������������ȷ��Q̷��ȷ�ȷ��������������������������������z��z��z��z��z��z��z��z��z��z�̭�ح�ح�ح����������������������ȷ��Q̷��ȷ�ȷ����������������������ح�ح�ح��z��z��z��z��z��z��z��z��z��z��z��z�̭�ح����������������������ȷ��Q̷Q̷��ȷ����������������������ح�ح��z��z��z��z��z��z��z��z��z��z��z��z��z�̭�ح����������������������ȷ�ȷ�ȷ�ȷ�ȷ����������������������ح��z��)";
