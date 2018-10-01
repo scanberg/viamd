@@ -2089,7 +2089,7 @@ static void draw_distribution_window(ApplicationData* data) {
 }
 
 static void draw_ramachandran_window(ApplicationData* data) {
-    constexpr vec2 res(512, 512);
+    const vec2 res(512, 512);
     ImGui::SetNextWindowContentSize(ImVec2(res.x, res.y));
     ImGui::Begin("Ramachandran", &data->ramachandran.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
@@ -2554,17 +2554,14 @@ static void create_default_representation(ApplicationData* data) {
     if (!data->mol_data.dynamic.molecule) return;
 
     auto& rep = data->representations.data.push_back({});
-    rep.colors.count = data->mol_data.dynamic.molecule.atom_positions.count;
-    rep.colors.data = (uint32*)MALLOC(rep.colors.count * sizeof(uint32));
+    rep.colors = allocate_array<uint32>(data->mol_data.dynamic.molecule.atom_positions.count);
     compute_atom_colors(rep.colors, data->mol_data.dynamic.molecule, rep.color_mapping);
 }
 
 static void remove_representation(ApplicationData* data, int idx) {
     ASSERT(idx < data->representations.data.count);
     auto& rep = data->representations.data[idx];
-    if (rep.colors) {
-        FREE(rep.colors.data);
-    }
+    free_array(&rep.colors);
     data->representations.data.remove(&rep);
 }
 
@@ -2572,15 +2569,8 @@ static void reset_representations(ApplicationData* data) {
     ASSERT(data);
 
     for (auto& rep : data->representations.data) {
-        if (rep.colors) {
-            FREE(rep.colors.data);
-        }
-        rep.colors.count = data->mol_data.dynamic.molecule.atom_positions.count;
-        if (rep.colors.count == 0) {
-            rep.colors.data = nullptr;
-            continue;
-        }
-        rep.colors.data = (uint32*)MALLOC(rep.colors.count * sizeof(uint32));
+        free_array(&rep.colors);
+        rep.colors = allocate_array<uint32>(data->mol_data.dynamic.molecule.atom_positions.count);
 
         compute_atom_colors(rep.colors, data->mol_data.dynamic.molecule, rep.color_mapping,
                             ImGui::ColorConvertFloat4ToU32(vec_cast(rep.static_color)));
@@ -2593,9 +2583,7 @@ static void reset_representations(ApplicationData* data) {
 static void clear_representations(ApplicationData* data) {
     ASSERT(data);
     for (auto& rep : data->representations.data) {
-        if (rep.colors) {
-            FREE(rep.colors.data);
-        }
+        if (rep.colors) free_array(&rep.colors);
     }
     data->representations.data.clear();
 }

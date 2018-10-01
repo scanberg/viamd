@@ -10,13 +10,12 @@
 #include <glm/gtc/random.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/spline.hpp>
-#include <float.h>
 #include <stdlib.h>
 
 namespace math {
-constexpr float PI = glm::pi<float>();
-constexpr float EPSILON = glm::epsilon<float>();
-constexpr float FLOAT_MAX = FLT_MAX;
+constexpr float PI = 3.14159265358979323846264338327950288f;
+constexpr float EPSILON = 1.192092896e-07f;
+constexpr float FLOAT_MAX = 3.402823466e+38f;
 constexpr float RAD_TO_DEG = 180.f / PI;
 constexpr float DEG_TO_RAD = PI / 180.f;
 

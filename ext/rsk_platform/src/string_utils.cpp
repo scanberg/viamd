@@ -32,7 +32,7 @@ bool compare(CString str_a, CString str_b, bool ignore_case) {
 
 bool compare_n(CString str_a, CString str_b, int64 num_chars, bool ignore_case) {
     int64 len = MIN(str_a.count, MIN(str_b.count, num_chars));
-    if (len == 0) return false;
+    if (len < num_chars) return false;
     return internal_compare(str_a, str_b, len, ignore_case);
 }
 
@@ -186,7 +186,7 @@ String trim(String str) {
 
 String allocate_and_read_textfile(CString filename) {
     StringBuffer<512> c_str_path = filename;
-    FILE* file = fopen(c_str_path.cstr(), "r");
+    FILE* file = fopen(c_str_path.cstr(), "rb");
     if (!file) return {};
 
     fseek(file, 0, SEEK_END);
@@ -347,21 +347,11 @@ void convert_backslashes(String str) {
     }
 }
 
-bool is_digit(char c) {
-    if (c < 0) return false;
-    return isdigit(c);
-}
+bool is_digit(char c) { return (c > 0) && isdigit(c); }
 
-bool is_alpha(char c) {
-    if (c < 0) return false;
-    return isalpha(c);
-}
+bool is_alpha(char c) { return (c > 0) && isalpha(c); }
 
-bool is_whitespace(char c) {
-    // Not to trigger assert if encoding is different.
-    if (c < 0) return false;
-    return isspace(c);
-}
+bool is_whitespace(char c) { return (c > 0) && isspace(c); }
 
 bool contains_whitespace(CString str) {
     for (const char* c = str.beg(); c != str.end(); c++) {

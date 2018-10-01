@@ -95,11 +95,13 @@ DynamicArray<String> tokenize(String str, CString delimiter);
 DynamicArray<CString> ctokenize(CString str, char delimiter = ' ');
 DynamicArray<CString> ctokenize(CString str, CString delimiter);
 
-// Range extraction functionality
+// Positive range extraction functionality
 // Examples of ranges:
-// 1-4
-// 1-*
-// *-18
+// input -> output
+// 1-4  -> { 1, 4}
+// 1-*  -> { 1,-1}
+// *-18 -> {-1,18}
+// *-*  -> {-1,-1}
 
 struct IntRange {
     int32 x;

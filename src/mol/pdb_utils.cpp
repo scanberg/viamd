@@ -44,6 +44,8 @@ bool allocate_and_parse_pdb_from_string(MoleculeDynamic* md, CString pdb_string,
         if (compare_n(line, "CRYST1", 6)) {
             vec3 dim(to_float(line.substr(6, 9)), to_float(line.substr(15, 9)), to_float(line.substr(24, 9)));
             vec3 angles(to_float(line.substr(33, 7)), to_float(line.substr(40, 7)), to_float(line.substr(47, 7)));
+            // @NOTE: If we are given a zero dim, just use unit length
+            if (dim == vec3(0)) dim = vec3(1);
             box[0].x = dim.x;
             box[1].y = dim.y;
             box[2].z = dim.z;
@@ -51,27 +53,6 @@ bool allocate_and_parse_pdb_from_string(MoleculeDynamic* md, CString pdb_string,
 
         } else if (compare_n(line, "ENDMDL", 6)) {
             if (params & PDB_TREAT_MODELS_AS_FRAMES) {
-                /*
-                if (!md->molecule) {
-                        bonds = compute_covalent_bonds(positions, elements, residues);
-                        backbone_segments = compute_backbone_segments(residues, labels);
-
-                        init_molecule_structure(&md->molecule, num_atoms, (int32)bonds.count, (int32)residues.count, (int32)chains.count,
-                (int32)backbone_segments.count);
-
-                        // Copy data into molecule
-                        memcpy(md->molecule.atom_positions.data, positions.data, positions.size() * sizeof(vec3));
-                        memcpy(md->molecule.atom_elements.data, elements.data, elements.size() * sizeof(Element));
-                        memcpy(md->molecule.atom_labels.data, labels.data, labels.size() * sizeof(Label));
-                        memcpy(md->molecule.atom_residue_indices.data, residue_indices.data, residue_indices.size() * sizeof(ResIdx));
-
-                        memcpy(md->molecule.residues.data, residues.data, residues.size() * sizeof(Residue));
-                        memcpy(md->molecule.chains.data, chains.data, chains.size() * sizeof(Chain));
-                        memcpy(md->molecule.bonds.data, bonds.data, bonds.size() * sizeof(Bond));
-                        memcpy(md->molecule.backbone_segments.data, backbone_segments.data, backbone_segments.size() * sizeof(BackboneSegment));
-                }
-                */
-
                 num_frames++;
             } else {
                 ASSERT(false);
@@ -112,9 +93,11 @@ bool allocate_and_parse_pdb_from_string(MoleculeDynamic* md, CString pdb_string,
 
             Element elem = Element::Unknown;
             if (line.count >= 78) {
-                element::get_from_string(line.substr(76, 2));
+                elem = element::get_from_string(line.substr(76, 2));
             }
-            if (elem == Element::Unknown) elem = element::get_from_string(labels.back());
+            if (elem == Element::Unknown) {
+                elem = element::get_from_string(labels.back());
+            }
             elements.push_back(elem);
 
             auto res_id = to_int(line.substr(22, 4));

@@ -9,15 +9,15 @@ Element get_from_string(CString cstr) {
 
     const char* beg = cstr.beg();
     const char* end = cstr.end();
-    while (!isupper(*beg) && beg != end) beg++;
+    while (!isalpha(*beg) && beg != end) beg++;
     if (beg == end) return Element::Unknown;
     const char* tmp = beg + 1;
-    while (tmp != end && islower(*tmp)) tmp++;
+    while (tmp != end && isalpha(*tmp)) tmp++;
     end = tmp;
     if (end - beg > 3) return Element::Unknown;
 
-    for (size_t i = 0; i < detail::symbols.size(); i++) {
-        if (strncmp(beg, detail::symbols[i], strlen(detail::symbols[i])) == 0) {
+    for (int i = 0; i < 119; i++) {
+        if (compare(CString(beg, end - beg), detail::symbols[i], true)) {
             return (Element)i;
         }
     }
