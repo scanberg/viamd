@@ -225,7 +225,7 @@ vec3 shade(vec3 albedo, float alpha, vec3 f0, float smoothness, vec3 P, vec3 V, 
 
     mat3 tangent_to_world = compute_ON_basis(N);
 
-    float N_dot_V = max(0.0, dot(N, V));
+    float N_dot_V = max(0.0, -dot(N, V));
     vec3 R = -V + 2.0 * dot(N, V) * N;
     vec3 H = normalize(L + V);
     float H_dot_V = max(0.0, dot(H, V));
@@ -439,176 +439,161 @@ void voxelize_scene(Array<const vec3> atom_pos, Array<const float> atom_radii, A
     }
 }
 
-enum IlluminationDirection {
-	POSITIVE_X,
-	NEGATIVE_X,
-	POSITIVE_Y,
-	NEGATIVE_Y,
-	POSITIVE_Z,
-	NEGATIVE_Z
-};
+enum IlluminationDirection { POSITIVE_X, NEGATIVE_X, POSITIVE_Y, NEGATIVE_Y, POSITIVE_Z, NEGATIVE_Z };
 
-void illuminate_voxels_directional_constant(Array<vec3> light_voxels, Array<const uint32> rgba_voxels, const ivec3& voxel_dim, IlluminationDirection direction, const vec3& intensity) {
-	const auto dim = cone_trace::volume.dim;
-	const bool positive = direction % 2 == 0;
+void illuminate_voxels_directional_constant(Array<vec3> light_voxels, Array<const uint32> rgba_voxels, const ivec3& voxel_dim,
+                                            IlluminationDirection direction, const vec3& intensity) {
+    const auto dim = cone_trace::volume.dim;
+    const bool positive = direction % 2 == 0;
 
-	ivec3 step = { 1, 1, 1 };
-	ivec3 beg_idx = { 0, 0, 0 };
-	ivec3 end_idx = dim;
+    ivec3 step = {1, 1, 1};
+    ivec3 beg_idx = {0, 0, 0};
+    ivec3 end_idx = dim;
 
-	switch (direction) {
-	case POSITIVE_X:
-	case NEGATIVE_X:
-	{
-		if (positive) {
-			beg_idx.x = 1;
-		}
-		else {
-			step.x = -1;
-			beg_idx.x = dim.x - 2;
-			end_idx.x = -1;
-		}
+    switch (direction) {
+        case POSITIVE_X:
+        case NEGATIVE_X: {
+            if (positive) {
+                beg_idx.x = 1;
+            } else {
+                step.x = -1;
+                beg_idx.x = dim.x - 2;
+                end_idx.x = -1;
+            }
 
-		for (int32 z = beg_idx.z; z != end_idx.z; z += step.z) {
-			for (int32 y = beg_idx.y; y != end_idx.y; y += step.y) {
-				light_voxels[z * dim.y * dim.x + y * dim.x + (beg_idx.x - step.x)] += intensity;
-			}
-		}
+            for (int32 z = beg_idx.z; z != end_idx.z; z += step.z) {
+                for (int32 y = beg_idx.y; y != end_idx.y; y += step.y) {
+                    light_voxels[z * dim.y * dim.x + y * dim.x + (beg_idx.x - step.x)] += intensity;
+                }
+            }
 
-		for (int32 x = beg_idx.x; x != end_idx.x; x += step.x) {
-			for (int32 z = beg_idx.z; z != end_idx.z; z += step.z) {
-				for (int32 y = beg_idx.y; y != end_idx.y; y += step.y) {
-					const int32 src_vol_idx = z * dim.y * dim.x + y * dim.x + (x - step.x);
-					const int32 dst_vol_idx = z * dim.y * dim.x + y * dim.x + x;
-					const vec4 voxel_rgba = math::convert_color(rgba_voxels[src_vol_idx]);
-					light_voxels[dst_vol_idx] += (1.f - voxel_rgba.a) * light_voxels[src_vol_idx];
-				}
-			}
-		}
-	}
-		break;
-	case POSITIVE_Y:
-	case NEGATIVE_Y:
-	{
-		if (positive) {
-			beg_idx.y = 1;
-		}
-		else {
-			step.y = -1;
-			beg_idx.y = dim.y - 2;
-			end_idx.y = -1;
-		}
+            for (int32 x = beg_idx.x; x != end_idx.x; x += step.x) {
+                for (int32 z = beg_idx.z; z != end_idx.z; z += step.z) {
+                    for (int32 y = beg_idx.y; y != end_idx.y; y += step.y) {
+                        const int32 src_vol_idx = z * dim.y * dim.x + y * dim.x + (x - step.x);
+                        const int32 dst_vol_idx = z * dim.y * dim.x + y * dim.x + x;
+                        const vec4 voxel_rgba = math::convert_color(rgba_voxels[src_vol_idx]);
+                        light_voxels[dst_vol_idx] += (1.f - voxel_rgba.a) * light_voxels[src_vol_idx];
+                    }
+                }
+            }
+        } break;
+        case POSITIVE_Y:
+        case NEGATIVE_Y: {
+            if (positive) {
+                beg_idx.y = 1;
+            } else {
+                step.y = -1;
+                beg_idx.y = dim.y - 2;
+                end_idx.y = -1;
+            }
 
-		for (int32 z = beg_idx.z; z != end_idx.z; z += step.z) {
-			for (int32 x = beg_idx.x; x != end_idx.x; x += step.x) {
-				light_voxels[z * dim.y * dim.x + (beg_idx.y - step.y) * dim.x + x] += intensity;
-			}
-		}
+            for (int32 z = beg_idx.z; z != end_idx.z; z += step.z) {
+                for (int32 x = beg_idx.x; x != end_idx.x; x += step.x) {
+                    light_voxels[z * dim.y * dim.x + (beg_idx.y - step.y) * dim.x + x] += intensity;
+                }
+            }
 
-		for (int32 y = beg_idx.y; y != end_idx.y; y += step.y) {
-			for (int32 z = beg_idx.z; z != end_idx.z; z += step.z) {
-				for (int32 x = beg_idx.x; x != end_idx.x; x += step.x) {
-					const int32 src_vol_idx = z * dim.y * dim.x + (y - step.y) * dim.x + x;
-					const int32 dst_vol_idx = z * dim.y * dim.x + y * dim.x + x;
-					const vec4 voxel_rgba = math::convert_color(rgba_voxels[src_vol_idx]);
-					light_voxels[dst_vol_idx] += (1.f - voxel_rgba.a) * light_voxels[src_vol_idx];
-				}
-			}
-		}
-	}
-		break;
-	case POSITIVE_Z:
-	case NEGATIVE_Z:
-	{
-		if (positive) {
-			beg_idx.z = 1;
-		}
-		else {
-			step.z = -1;
-			beg_idx.z = dim.z - 2;
-			end_idx.z = -1;
-		}
+            for (int32 y = beg_idx.y; y != end_idx.y; y += step.y) {
+                for (int32 z = beg_idx.z; z != end_idx.z; z += step.z) {
+                    for (int32 x = beg_idx.x; x != end_idx.x; x += step.x) {
+                        const int32 src_vol_idx = z * dim.y * dim.x + (y - step.y) * dim.x + x;
+                        const int32 dst_vol_idx = z * dim.y * dim.x + y * dim.x + x;
+                        const vec4 voxel_rgba = math::convert_color(rgba_voxels[src_vol_idx]);
+                        light_voxels[dst_vol_idx] += (1.f - voxel_rgba.a) * light_voxels[src_vol_idx];
+                    }
+                }
+            }
+        } break;
+        case POSITIVE_Z:
+        case NEGATIVE_Z: {
+            if (positive) {
+                beg_idx.z = 1;
+            } else {
+                step.z = -1;
+                beg_idx.z = dim.z - 2;
+                end_idx.z = -1;
+            }
 
-		for (int32 y = beg_idx.y; y != end_idx.y; y += step.y) {
-			for (int32 x = beg_idx.x; x != end_idx.x; x += step.x) {
-				light_voxels[(beg_idx.z - step.z) * dim.y * dim.x + y * dim.x + x] += intensity;
-			}
-		}
+            for (int32 y = beg_idx.y; y != end_idx.y; y += step.y) {
+                for (int32 x = beg_idx.x; x != end_idx.x; x += step.x) {
+                    light_voxels[(beg_idx.z - step.z) * dim.y * dim.x + y * dim.x + x] += intensity;
+                }
+            }
 
-		for (int32 z = beg_idx.z; z != end_idx.z; z += step.z) {
-			for (int32 y = beg_idx.y; y != end_idx.y; y += step.y) {
-				for (int32 x = beg_idx.x; x != end_idx.x; x += step.x) {
-					const int32 src_vol_idx = (z - step.z) * dim.y * dim.x + y * dim.x + x;
-					const int32 dst_vol_idx = z * dim.y * dim.x + y * dim.x + x;
-					const vec4 voxel_rgba = math::convert_color(rgba_voxels[src_vol_idx]);
-					light_voxels[dst_vol_idx] += (1.f - voxel_rgba.a) * light_voxels[src_vol_idx];
-				}
-			}
-		}
-	}
-		break;
-	}
+            for (int32 z = beg_idx.z; z != end_idx.z; z += step.z) {
+                for (int32 y = beg_idx.y; y != end_idx.y; y += step.y) {
+                    for (int32 x = beg_idx.x; x != end_idx.x; x += step.x) {
+                        const int32 src_vol_idx = (z - step.z) * dim.y * dim.x + y * dim.x + x;
+                        const int32 dst_vol_idx = z * dim.y * dim.x + y * dim.x + x;
+                        const vec4 voxel_rgba = math::convert_color(rgba_voxels[src_vol_idx]);
+                        light_voxels[dst_vol_idx] += (1.f - voxel_rgba.a) * light_voxels[src_vol_idx];
+                    }
+                }
+            }
+        } break;
+    }
 }
 
 void illuminate_voxels_omnidirectional_constant(const vec3& intensity) {
-	auto dim = cone_trace::volume.dim;
-	DynamicArray<vec3> light_vol(cone_trace::volume.voxel_data.size(), vec3(0));
-	illuminate_voxels_directional_constant(light_vol, cone_trace::volume.voxel_data, dim, POSITIVE_X, intensity);
-	illuminate_voxels_directional_constant(light_vol, cone_trace::volume.voxel_data, dim, NEGATIVE_X, intensity);
+    auto dim = cone_trace::volume.dim;
+    DynamicArray<vec3> light_vol(cone_trace::volume.voxel_data.size(), vec3(0));
+    illuminate_voxels_directional_constant(light_vol, cone_trace::volume.voxel_data, dim, POSITIVE_X, intensity);
+    illuminate_voxels_directional_constant(light_vol, cone_trace::volume.voxel_data, dim, NEGATIVE_X, intensity);
 
-	for (int32 i = 0; i < light_vol.count; i++) {
-		vec4 voxel_rgba = math::convert_color(cone_trace::volume.voxel_data[i]);
-		voxel_rgba *= vec4(light_vol[i], 1.f);
-		cone_trace::volume.voxel_data[i] = math::convert_color(voxel_rgba);
-	}
-	//illuminate_voxels_directional_constant(NEGATIVE_X, intensity);
-	//illuminate_voxels_directional_constant(POSITIVE_Y, intensity);
-	//illuminate_voxels_directional_constant(NEGATIVE_Y, intensity);
-	//illuminate_voxels_directional_constant(POSITIVE_Z, intensity);
+    for (int32 i = 0; i < light_vol.count; i++) {
+        vec4 voxel_rgba = math::convert_color(cone_trace::volume.voxel_data[i]);
+        voxel_rgba *= vec4(light_vol[i], 1.f);
+        cone_trace::volume.voxel_data[i] = math::convert_color(voxel_rgba);
+    }
+    // illuminate_voxels_directional_constant(NEGATIVE_X, intensity);
+    // illuminate_voxels_directional_constant(POSITIVE_Y, intensity);
+    // illuminate_voxels_directional_constant(NEGATIVE_Y, intensity);
+    // illuminate_voxels_directional_constant(POSITIVE_Z, intensity);
 
-	//illuminate_voxels_directional_constant(NEGATIVE_Z, intensity);
+    // illuminate_voxels_directional_constant(NEGATIVE_Z, intensity);
 
-	/*
-    // X-direction sweep plane
-	DynamicArray<vec4> plane_slice_zy[2] = {
-		{ cone_trace::volume.dim.y * cone_trace::volume.dim.z, vec4(intensity, 0) },
-		{ cone_trace::volume.dim.y * cone_trace::volume.dim.z, vec4(intensity, 0) }
-	};
+    /*
+// X-direction sweep plane
+    DynamicArray<vec4> plane_slice_zy[2] = {
+            { cone_trace::volume.dim.y * cone_trace::volume.dim.z, vec4(intensity, 0) },
+            { cone_trace::volume.dim.y * cone_trace::volume.dim.z, vec4(intensity, 0) }
+    };
 
-	int curr_plane = 0;
-	int prev_plane = 1;
+    int curr_plane = 0;
+    int prev_plane = 1;
 
-	const auto dim = cone_trace::volume.dim;
-	Array<uint32> voxels = cone_trace::volume.voxel_data;
+    const auto dim = cone_trace::volume.dim;
+    Array<uint32> voxels = cone_trace::volume.voxel_data;
 
-    for (int32 x = 1; x < dim.x; x++) {
-        for (int32 z = 0; z < dim.z; z++) {
-			for (int32 y = 0; y < dim.y; y++) {
-				const int32 plane_idx = z * dim.y + y;
-				const int32 src_vol_idx = z * dim.y * dim.x + y * dim.x + (x - 1);
-				const int32 dst_vol_idx = z * dim.y * dim.x + y * dim.x + x;
-				const vec4 voxel_rgba = math::convert_color(voxels[src_vol_idx]);
-				const vec4& src_light_voxel = plane_slice_zy[prev_plane][plane_idx];
-				vec4& dst_light_voxel = plane_slice_zy[curr_plane][plane_idx];
+for (int32 x = 1; x < dim.x; x++) {
+    for (int32 z = 0; z < dim.z; z++) {
+                    for (int32 y = 0; y < dim.y; y++) {
+                            const int32 plane_idx = z * dim.y + y;
+                            const int32 src_vol_idx = z * dim.y * dim.x + y * dim.x + (x - 1);
+                            const int32 dst_vol_idx = z * dim.y * dim.x + y * dim.x + x;
+                            const vec4 voxel_rgba = math::convert_color(voxels[src_vol_idx]);
+                            const vec4& src_light_voxel = plane_slice_zy[prev_plane][plane_idx];
+                            vec4& dst_light_voxel = plane_slice_zy[curr_plane][plane_idx];
 
-				dst_light_voxel = (1.f - voxel_rgba.a) * src_light_voxel;
-				vec4 dst_rgba = math::convert_color(voxels[dst_vol_idx]);
-				dst_rgba = vec4(vec3(dst_rgba) * vec3(dst_light_voxel), dst_rgba.a);
-				voxels[dst_vol_idx] = math::convert_color(dst_rgba);
-				prev_plane = (prev_plane + 1) % 2;
-				curr_plane = (curr_plane + 1) % 2;
-            }
+                            dst_light_voxel = (1.f - voxel_rgba.a) * src_light_voxel;
+                            vec4 dst_rgba = math::convert_color(voxels[dst_vol_idx]);
+                            dst_rgba = vec4(vec3(dst_rgba) * vec3(dst_light_voxel), dst_rgba.a);
+                            voxels[dst_vol_idx] = math::convert_color(dst_rgba);
+                            prev_plane = (prev_plane + 1) % 2;
+                            curr_plane = (curr_plane + 1) % 2;
         }
     }
-	*/
+}
+    */
 }
 
 void update_gpu_volume() {
-	glBindTexture(GL_TEXTURE_3D, cone_trace::gl.voxel_texture);
-	glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, cone_trace::volume.dim.x, cone_trace::volume.dim.y, cone_trace::volume.dim.z, 0, GL_RGBA,
-		GL_UNSIGNED_BYTE, cone_trace::volume.voxel_data.data);
-	glGenerateMipmap(GL_TEXTURE_3D);
-	glBindTexture(GL_TEXTURE_3D, 0);
+    glBindTexture(GL_TEXTURE_3D, cone_trace::gl.voxel_texture);
+    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, cone_trace::volume.dim.x, cone_trace::volume.dim.y, cone_trace::volume.dim.z, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, cone_trace::volume.voxel_data.data);
+    glGenerateMipmap(GL_TEXTURE_3D);
+    glBindTexture(GL_TEXTURE_3D, 0);
 }
 
 void draw_voxelized_scene(const mat4& view_mat, const mat4& proj_mat) {

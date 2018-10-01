@@ -176,6 +176,12 @@ struct ApplicationData {
     // --- PLATFORM ---
     platform::Context ctx;
 
+    // --- PROFILING ---
+    struct {
+        bool show_gpu_profiler = false;
+        bool show_cpu_profiler = false;
+    } profiling;
+
     // --- FILES ---
     // for keeping track of open files
     struct {
@@ -336,9 +342,9 @@ struct ApplicationData {
         bool show_voxels = false;
         bool dirty_flag = true;
         float voxel_ext = 1.0f;
-        float indirect_diffuse_scale = 0.5f;
+        float indirect_diffuse_scale = 1.0f;
         float indirect_specular_scale = 0.3f;
-        float ambient_occlusion_scale = 1.5f;
+        float ambient_occlusion_scale = 1.0f;
     } cone_trace;
 
     struct {
@@ -513,15 +519,20 @@ data.dynamic_frame.atom_range = {0, 152};
     while (!data.ctx.window.should_close) {
         platform::Coordinate previous_mouse_coord = data.ctx.input.mouse.coord;
         platform::update(&data.ctx);
-
-		gpu_profiling::draw_window();
-		gpu_profiling::clear();
-		gpu_profiling::push_section("FRAME");
-
         // Try to fix false move on touch
         if (data.ctx.input.mouse.hit[0]) {
             previous_mouse_coord = data.ctx.input.mouse.coord;
         }
+
+        if (data.profiling.show_gpu_profiler) {
+            gpu_profiling::draw_window(&data.profiling.show_gpu_profiler);
+        }
+        /*
+if (data.profiling.show_cpu_profiler) {
+    cpu_profiling::draw_window(&data.profiling.show_cpu_profiler);
+}
+        */
+        gpu_profiling::begin_frame();
 
         if (data.density_volume.enabled) {
             stats::async_update(
@@ -589,8 +600,6 @@ data.dynamic_frame.atom_range = {0, 152};
             postprocessing::initialize(data.fbo.width, data.fbo.height);
         }
 
-        gpu_profiling::push_section("GBUFFER");
-
         // Setup fbo and clear textures
         glViewport(0, 0, data.fbo.width, data.fbo.height);
 
@@ -616,12 +625,10 @@ data.dynamic_frame.atom_range = {0, 152};
         glDrawBuffer(GL_COLOR_ATTACHMENT3);
         glClearColor(CLEAR_INDEX.x, CLEAR_INDEX.y, CLEAR_INDEX.z, CLEAR_INDEX.w);
         glClear(GL_COLOR_BUFFER_BIT);
-        gpu_profiling::pop_section("CLEAR");
+        gpu_profiling::pop_section();
 
         // Enable all draw buffers
         glDrawBuffers(4, draw_buffers);
-
-        gpu_profiling::pop_section("GBUFFER");
 
         if (data.ctx.input.key.hit[CONSOLE_KEY]) {
             data.console.visible = !data.console.visible;
@@ -802,8 +809,8 @@ data.dynamic_frame.atom_range = {0, 152};
             const ivec3 res = math::max(ivec3(1), ivec3((max_box - min_box) / data.cone_trace.voxel_ext));
 
             render::voxelize_scene(data.mol_data.dynamic.molecule.atom_positions, atom_radii, atom_colors, res, min_box, max_box);
-			render::illuminate_voxels_omnidirectional_constant(vec3(1));
-			render::update_gpu_volume();
+            render::illuminate_voxels_omnidirectional_constant(vec3(1));
+            render::update_gpu_volume();
         }
 
         if (frame_changed) {
@@ -861,24 +868,24 @@ data.dynamic_frame.atom_range = {0, 152};
                     gpu_profiling::push_section("VDW");
                     draw::draw_vdw(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.atom_radii, rep.colors, view_mat, proj_mat,
                                    rep.radius);
-                    gpu_profiling::pop_section("VDW");
+                    gpu_profiling::pop_section();
                     break;
                 case Representation::LICORICE:
                     gpu_profiling::push_section("LICORICE");
                     draw::draw_licorice(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.dynamic.molecule.covalent_bonds, rep.colors,
                                         view_mat, proj_mat, rep.radius);
-                    gpu_profiling::pop_section("LICORICE");
+                    gpu_profiling::pop_section();
                     break;
                 case Representation::RIBBONS:
                     gpu_profiling::push_section("RIBBONS");
                     draw::draw_ribbons(data.mol_data.dynamic.molecule.backbone_segments, data.mol_data.dynamic.molecule.chains,
                                        data.mol_data.dynamic.molecule.atom_positions, rep.colors, view_mat, proj_mat, rep.num_subdivisions,
                                        rep.tension, rep.width, rep.thickness);
-                    gpu_profiling::pop_section("RIBBONS");
+                    gpu_profiling::pop_section();
                     break;
             }
         }
-        gpu_profiling::pop_section("MOLECULES");
+        gpu_profiling::pop_section();
 
         // RENDER DEBUG INFORMATION (WITH DEPTH)
         {
@@ -984,10 +991,10 @@ data.dynamic_frame.atom_range = {0, 152};
             }
 
             immediate::flush();
-            gpu_profiling::pop_section("DEBUG GFX");
+            gpu_profiling::pop_section();
         }
 
-        gpu_profiling::pop_section("GBUFFER");
+        gpu_profiling::pop_section();
 
         // PICKING
         {
@@ -1013,7 +1020,7 @@ data.dynamic_frame.atom_range = {0, 152};
                     data.right_clicked = data.hovered;
                 }
             }
-            gpu_profiling::pop_section("PICKING");
+            gpu_profiling::pop_section();
         }
 
         // Activate backbuffer
@@ -1028,17 +1035,17 @@ data.dynamic_frame.atom_range = {0, 152};
             render::cone_trace_scene(data.fbo.tex_depth, data.fbo.tex_normal, data.fbo.tex_base_color_and_alpha, data.fbo.tex_f0_and_smoothness,
                                      view_mat, proj_mat, data.cone_trace.indirect_diffuse_scale, data.cone_trace.indirect_specular_scale,
                                      data.cone_trace.ambient_occlusion_scale);
-            gpu_profiling::pop_section("SHADING + CONE_TRACE");
+            gpu_profiling::pop_section();
             if (data.cone_trace.show_voxels) {
                 gpu_profiling::push_section("DRAW VOXELS");
                 render::draw_voxelized_scene(view_mat, proj_mat);
-                gpu_profiling::pop_section("DRAW VOXELS");
+                gpu_profiling::pop_section();
             }
         } else {
             // Render deferred
             gpu_profiling::push_section("SHADING");
             postprocessing::render_deferred(data.fbo.tex_depth, data.fbo.tex_base_color_and_alpha, data.fbo.tex_normal, inv_proj_mat);
-            gpu_profiling::pop_section("SHADING");
+            gpu_profiling::pop_section();
         }
 
         // Apply post processing
@@ -1047,7 +1054,7 @@ data.dynamic_frame.atom_range = {0, 152};
         if (data.ssao.enabled) {
             gpu_profiling::push_section("SSAO");
             postprocessing::apply_ssao(data.fbo.tex_depth, data.fbo.tex_normal, proj_mat, data.ssao.intensity, data.ssao.radius);
-            gpu_profiling::pop_section("SSAO");
+            gpu_profiling::pop_section();
         }
 
         if (data.density_volume.enabled) {
@@ -1055,7 +1062,7 @@ data.dynamic_frame.atom_range = {0, 152};
             const float scl = 1.f * data.density_volume.density_scale / data.density_volume.texture.max_value;
             volume::render_volume_texture(data.density_volume.texture.id, data.fbo.tex_depth, data.density_volume.texture_to_model_matrix,
                                           data.density_volume.model_to_world_matrix, view_mat, proj_mat, data.density_volume.color, scl);
-            gpu_profiling::pop_section("VOLUME RENDERING");
+            gpu_profiling::pop_section();
         }
 
         // DRAW DEBUG GRAPHICS W/O DEPTH
@@ -1136,12 +1143,13 @@ data.dynamic_frame.atom_range = {0, 152};
 
         gpu_profiling::push_section("IMGUI RENDER");
         ImGui::Render();
-        gpu_profiling::pop_section("IMGUI RENDER");
+        gpu_profiling::pop_section();
 
         // Swap buffers
+        gpu_profiling::push_section("SWAP BUFFERS");
         platform::swap_buffers(&data.ctx);
-        gpu_profiling::pop_section("FRAME");
-        gpu_profiling::finish();
+        gpu_profiling::pop_section();
+        gpu_profiling::end_frame();
         // gpu_profiling::print();
     }
 
@@ -1375,6 +1383,8 @@ if (ImGui::BeginMenu("Edit")) {
             ImGui::Checkbox("Properties", &data->statistics.show_property_window);
             ImGui::Checkbox("Timelines", &data->statistics.show_timeline_window);
             ImGui::Checkbox("Distributions", &data->statistics.show_distribution_window);
+            ImGui::Checkbox("GPU Profiler", &data->profiling.show_gpu_profiler);
+            // ImGui::Checkbox("CPU Profiler", &data->profiling.show_cpu_profiler);
 
             ImGui::EndMenu();
         }
@@ -2240,7 +2250,7 @@ static void load_molecule_data(ApplicationData* data, CString file) {
         data->is_playing = false;
         CString ext = get_file_extension(file);
         printf("'%s'\n", ext.beg());
-        if (compare_n(ext, "pdb", 3, true)) {
+        if (compare_n(ext, "pdb", 3, true) || compare_n(ext, "cif", 3, true)) {
             free_molecule_data(data);
             free_string(&data->files.molecule);
             free_string(&data->files.trajectory);

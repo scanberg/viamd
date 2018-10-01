@@ -7,36 +7,25 @@ namespace cpu_profiling {
 void initialize();
 void shutdown();
 
-void push_section(CString sec);
-void pop_section(CString sec);
+void push_section(CString label);
+void pop_section();
 
 void clear();
 void finish();
-void draw_window();
-
-struct ScopedSection {
-    ScopedSection(CString section) : sec(section) { push_section(sec); }
-    ~ScopedSection() { pop_section(sec); }
-    CString sec;
-};
+void draw_window(bool* window_open);
 }  // namespace cpu_profiling
 
 namespace gpu_profiling {
 void initialize();
 void shutdown();
 
-void push_section(CString sec);
-void pop_section(CString sec);
+void push_section(CString label);
+void pop_section();
 
-void clear();
-void finish();
-void draw_window();
+void begin_frame();
+void end_frame();
+
+void draw_window(bool* window_open);
 void print();
-
-struct ScopedSection {
-    ScopedSection(CString section) : sec(section) { push_section(sec); }
-    ~ScopedSection() { pop_section(sec); }
-    CString sec;
-};
 
 }  // namespace gpu_profiling
