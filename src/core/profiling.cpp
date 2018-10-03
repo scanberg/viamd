@@ -18,7 +18,7 @@ struct Section {
 };
 
 constexpr int MAX_SECTIONS = 1024;
-static Section sections[1024];
+static Section sections[MAX_SECTIONS] {};
 static int section_count = 0;
 static int current_section_idx = -1;
 
@@ -85,7 +85,7 @@ struct Section {
     float end_ms[NUM_SAMPLES] = {0};
 };
 
-static Section sections[MAX_SECTIONS];
+static Section sections[MAX_SECTIONS] {};
 static int section_count = 0;
 static int current_section_idx = -1;
 
@@ -164,7 +164,7 @@ void print() {
     for (int i = 0; i < section_count; i++) {
         int count = 0;
         count += snprintf(buff.beg(), 32, "%*c [%s]:", get_depth(i) * 4, ' ', sections[i].name.cstr());
-        printf("%s%8.4f\n", buff.cstr(), (sections[i].end_ms - sections[i].beg_ms));
+        printf("%s%8.4f\n", buff.cstr(), (sections[i].end_avg - sections[i].beg_avg));
     }
     printf("\n");
 }

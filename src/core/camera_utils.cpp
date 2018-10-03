@@ -45,6 +45,8 @@ void look_at(vec3* position, quat* orientation, vec3 look_at, vec3 look_up) {
 }
 
 void camera_controller_fps(Camera* camera, const FpsControllerState& state) {
+    (void)camera;
+    (void)state;
     /*
 ASSERT(camera);
 

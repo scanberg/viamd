@@ -3,6 +3,7 @@
 #include <mol/molecule_trajectory.h>
 
 // Reads the header info of a trajectory and allocates space for it
+// Only supports XTC currently
 bool load_and_allocate_trajectory(MoleculeTrajectory* traj, CString path);
 
 // Reads the actual trajectory position information... Necessary?

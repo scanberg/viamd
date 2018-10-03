@@ -2,6 +2,7 @@
 #include <core/string_utils.h>
 #include <mol/element.h>
 #include <mol/molecule_utils.h>
+#include <mol/hydrogen_bond.h>
 
 bool allocate_and_load_gro_from_file(MoleculeStructure* mol, const char* filename) {
     String txt = allocate_and_read_textfile(filename);

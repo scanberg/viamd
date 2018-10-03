@@ -1,6 +1,4 @@
-﻿#include <imgui.h>
-#include <imgui_internal.h>
-#include <core/platform.h>
+﻿#include <core/platform.h>
 #include <core/gl.h>
 #include <core/types.h>
 #include <core/hash.h>
@@ -12,27 +10,34 @@
 #include <core/string_utils.h>
 #include <core/volume.h>
 #include <core/profiling.h>
+
 #include <mol/molecule_structure.h>
 #include <mol/molecule_trajectory.h>
 #include <mol/trajectory_utils.h>
 #include <mol/molecule_utils.h>
+#include <mol/molecule_draw.h>
+#include <mol/ramachandran.h>
+#include <mol/hydrogen_bond.h>
+#include <mol/filter.h>
 #include <mol/pdb_utils.h>
 #include <mol/gro_utils.h>
 #include <mol/stats.h>
 #include <mol/spatial_hash.h>
+#include <mol/radial_basis.h>
+
 #include <gfx/immediate_draw_utils.h>
 #include <gfx/postprocessing_utils.h>
 #include <gfx/volume_utils.h>
 #include <gfx/raytracing_utils.h>
 
-#include <mol/radial_basis.h>
+#include <imgui.h>
+#include <imgui_internal.h>
+#include <glm/gtx/io.hpp>
 
 #include <stdio.h>
 #include <thread>
 #include <mutex>
-
 #include <iostream>
-#include <glm/gtx/io.hpp>
 
 //#define VIAMD_RELEASE
 
@@ -2038,7 +2043,7 @@ static void draw_distribution_window(ApplicationData* data) {
         const ImRect inner_bb(frame_bb.Min + style.FramePadding, frame_bb.Max - style.FramePadding);
         const ImRect total_bb(frame_bb.Min, frame_bb.Max);
         ImGui::ItemSize(total_bb, style.FramePadding.y);
-        if (ImGui::ItemAdd(total_bb, NULL)) {
+        if (ImGui::ItemAdd(total_bb, 0)) {
             ImGui::RenderFrame(frame_bb.Min, frame_bb.Max, ImGui::GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
 
             // const float max_val = math::max(prop->full_histogram.bin_range.y, prop->filt_histogram.bin_range.y);

@@ -14,6 +14,7 @@
 
 namespace math {
 constexpr float PI = 3.14159265358979323846264338327950288f;
+constexpr float SQRT_TWO = 1.41421356237309504880f;
 constexpr float EPSILON = 1.192092896e-07f;
 constexpr float FLOAT_MAX = 3.402823466e+38f;
 constexpr float RAD_TO_DEG = 180.f / PI;

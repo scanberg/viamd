@@ -1,6 +1,7 @@
 #include "pdb_utils.h"
 #include <mol/element.h>
 #include <mol/molecule_utils.h>
+#include <mol/hydrogen_bond.h>
 #include <mol/trajectory_utils.h>
 #include <core/string_utils.h>
 

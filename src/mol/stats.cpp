@@ -249,7 +249,7 @@ void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, con
         for (int32 frame_idx = (int32)frame_range.x; frame_idx < (int32)frame_range.y; frame_idx++) {
             const Array<const vec3> atom_positions = get_trajectory_positions(traj, frame_idx);
             for_each_filtered_property_structure_in_frame(prop, frame_idx,
-                                                          [vol, &atom_positions, &world_to_volume_matrix, &traj](const Structure& s) {
+                                                          [vol, &atom_positions, &world_to_volume_matrix](const Structure& s) {
                                                               for (int32 i = s.beg_idx; i < s.end_idx; i++) {
                                                                   const vec4 tc = world_to_volume_matrix * vec4(atom_positions[i], 1);
                                                                   if (tc.x < 0.f || 1.f < tc.x) continue;
@@ -987,7 +987,6 @@ static DynamicArray<Property*> extract_property_dependencies(Array<Property*> pr
     DynamicArray<Property*> dependencies;
     for (Property* prop : properties) {
         if (!prop->valid) continue;
-        CString name = prop->name_buf;
         CString match = find_first_match(expression, prop->name_buf);
         if (match) {
             if (match.beg() != expression.beg()) {
@@ -1040,7 +1039,7 @@ static bool compute_expression(Property* prop, const Array<CString> args, const 
     DynamicArray<double> values(prop->dependencies.count, 0);
     DynamicArray<te_variable> vars;
     for (int32 i = 0; i < prop->dependencies.count; i++) {
-        vars.push_back({prop->dependencies[i]->name_buf.cstr(), &values[i]});
+        vars.push_back({prop->dependencies[i]->name_buf.cstr(), &values[i], 0, 0});
     }
 
     int err;

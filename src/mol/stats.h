@@ -217,7 +217,7 @@ void compute_density_volume_with_basis(Volume* vol, const MoleculeTrajectory& tr
             const Array<const vec3> atom_positions = get_trajectory_positions(traj, frame_idx);
             const mat4 world_to_volume_matrix = func(frame_idx);
             for_each_filtered_property_structure_in_frame(prop, frame_idx,
-                                                          [vol, &atom_positions, &world_to_volume_matrix, &traj](const Structure& s) {
+                                                          [vol, &atom_positions, &world_to_volume_matrix](const Structure& s) {
                                                               for (int32 i = s.beg_idx; i < s.end_idx; i++) {
                                                                   const vec4 tc = math::fract(world_to_volume_matrix * vec4(atom_positions[i], 1));
                                                                   // if (tc.x < 0.f || 1.f < tc.x) continue;
