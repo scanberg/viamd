@@ -4,7 +4,7 @@
 
 namespace element {
 
-Element get_from_string(CString cstr) {
+Element get_from_string(CString cstr, bool ignore_case) {
     if (cstr.count == 0) return Element::Unknown;
 
     const char* beg = cstr.beg();
@@ -17,7 +17,7 @@ Element get_from_string(CString cstr) {
     if (end - beg > 3) return Element::Unknown;
 
     for (int i = 0; i < 119; i++) {
-        if (compare(CString(beg, end - beg), detail::symbols[i], true)) {
+        if (compare(CString(beg, end - beg), detail::symbols[i], ignore_case)) {
             return (Element)i;
         }
     }

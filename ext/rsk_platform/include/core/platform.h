@@ -85,6 +85,7 @@ struct Context {
 bool initialize(Context* ctx, int32 width, int32 height, const char* title);
 void shutdown(Context* ctx);
 void update(Context* ctx);
+void render_imgui(Context* ctx);
 void swap_buffers(Context* ctx);
 
 // Timing

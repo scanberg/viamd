@@ -191,6 +191,6 @@ constexpr unsigned int color(Element symbol) { return detail::colors[(int)symbol
 constexpr float vdw_radius(Element symbol) { return detail::vdw_radii[(int)symbol]; }
 constexpr float covalent_radius(Element symbol) { return detail::covalent_radii[(int)symbol]; }
 
-Element get_from_string(CString cstr);
+Element get_from_string(CString cstr, bool ignore_case = false);
 
 }  // namespace element

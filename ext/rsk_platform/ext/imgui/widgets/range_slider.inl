@@ -5,6 +5,9 @@
 
 namespace ImGui {
 
+extern template IMGUI_API float RoundScalarWithFormatT<float, float>(const char* format, ImGuiDataType data_type, float v);
+extern template IMGUI_API float SliderCalcRatioFromValueT<float, float>(ImGuiDataType data_type, float v, float v_min, float v_max, float power, float linear_zero_pos);
+
 struct RangeSliderState {
     bool min_grab = false;
     bool max_grab = false;
@@ -99,18 +102,18 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
 			}
 
 			// Round past decimal precision
-			new_value = RoundScalarWithFormat<float, int>(format, ImGuiDataType_Float, new_value);
+			new_value = RoundScalarWithFormatT<float, float>(format, ImGuiDataType_Float, new_value);
 			return new_value;
 		};
 
         if (g.IO.MouseClicked[0]) {
 			const float min_dist = 4.f;
 
-			float t1 = SliderBehaviorCalcRatioFromValue<float, float>(ImGuiDataType_Float, *v1, v_min, v_max, power, linear_zero_pos);
+			float t1 = SliderCalcRatioFromValueT<float, float>(ImGuiDataType_Float, *v1, v_min, v_max, power, linear_zero_pos);
 			if (!is_horizontal) t1 = 1.0f - t1;
 			float p1 = ImLerp(slider_usable_pos_min, slider_usable_pos_max, t1);
 
-			float t2 = SliderBehaviorCalcRatioFromValue<float, float>(ImGuiDataType_Float, *v2, v_min, v_max, power, linear_zero_pos);
+			float t2 = SliderCalcRatioFromValueT<float, float>(ImGuiDataType_Float, *v2, v_min, v_max, power, linear_zero_pos);
 			if (!is_horizontal) t2 = 1.0f - t2;
 			float p2 = ImLerp(slider_usable_pos_min, slider_usable_pos_max, t2);
 
@@ -167,7 +170,7 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
     range_slider_states[id] = state;
 
     // Calculate slider grab positioning
-    float grab_t = SliderBehaviorCalcRatioFromValue<float, float>(ImGuiDataType_Float, *v1, v_min, v_max, power, linear_zero_pos);
+    float grab_t = SliderCalcRatioFromValueT<float, float>(ImGuiDataType_Float, *v1, v_min, v_max, power, linear_zero_pos);
 
     // Draw
     if (!is_horizontal) grab_t = 1.0f - grab_t;
@@ -185,7 +188,7 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
         style.GrabRounding);
 
     // Calculate slider grab positioning
-    grab_t = SliderBehaviorCalcRatioFromValue<float, float>(ImGuiDataType_Float, *v2, v_min, v_max, power, linear_zero_pos);
+    grab_t = SliderCalcRatioFromValueT<float, float>(ImGuiDataType_Float, *v2, v_min, v_max, power, linear_zero_pos);
 
     // Draw
     if (!is_horizontal) grab_t = 1.0f - grab_t;

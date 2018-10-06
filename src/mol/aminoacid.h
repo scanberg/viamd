@@ -1,5 +1,7 @@
 #pragma once
 
+#include <core/string_types.h>
+
 enum class AminoAcid : unsigned char {
 	Unknown = 0,
 	Ala,
@@ -35,5 +37,5 @@ namespace aminoacid {
 // Amino Acid functions
 constexpr const char* name(AminoAcid amino);
 constexpr const char* symbol(AminoAcid amino);
-AminoAcid get_from_string(const char* cstr);
+AminoAcid get_from_string(CString cstr);
 }  // namespace animoacid

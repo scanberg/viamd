@@ -170,7 +170,7 @@ void print() {
 }
 
 void draw_window(bool* window_open) {
-    ImGui::SetNextWindowSize(ImVec2(600, 200), ImGuiSetCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(600, 200), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("GPU Profiler", window_open, ImGuiWindowFlags_NoFocusOnAppearing)) {
         ImGui::End();
         return;

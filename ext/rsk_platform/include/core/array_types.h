@@ -71,14 +71,15 @@ template <typename T>
 struct DynamicArray : Array<T> {
     static_assert(std::is_trivially_destructible<T>::value, "DynamicArray only supports trivially destructable data types");
 
-    static constexpr int64 INIT_CAPACITY = 32;
+    static constexpr int64 INIT_CAPACITY = 8;
     DynamicArray() : capacity(INIT_CAPACITY) {
         this->data = (T*)CALLOC(capacity, sizeof(T));
         this->count = 0;
     }
 
-    DynamicArray(int64 count) : capacity(count) {
-        ASSERT(capacity > 0);
+    DynamicArray(int64 count) {
+		count < 1 ? count = 1 : count;
+		capacity = count;
         this->data = (T*)CALLOC(capacity, sizeof(T));
         this->count = capacity;
     }

@@ -86,8 +86,9 @@ struct Console
 
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.f);
 
+		ImGuiViewport* vp = ImGui::GetMainViewport();
 		ImGui::SetNextWindowSize(ImVec2(console_width, console_height));
-		ImGui::SetNextWindowPos(ImVec2(0.f, y_pos));
+		ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + y_pos));
 		ImGui::Begin(title, &visible, WINDOW_FLAGS);
 
 		const float footer_height_to_reserve = ImGui::GetStyle().ItemSpacing.y + ImGui::GetFrameHeightWithSpacing(); // 1 separator, 1 input text
@@ -130,7 +131,7 @@ struct Console
 		//if (copy_to_clipboard)
 		//    ImGui::LogFinish();
 		if (scroll_to_bottom)
-			ImGui::SetScrollHere();
+			ImGui::SetScrollHereY();
 		scroll_to_bottom = false;
 		ImGui::PopStyleVar();
 		ImGui::EndChild();
@@ -193,13 +194,13 @@ struct Console
 		}
 	}
 
-	static int TextEditCallbackStub(ImGuiTextEditCallbackData* data) // In C++11 you are better off using lambdas for this sort of forwarding callbacks
+	static int TextEditCallbackStub(ImGuiInputTextCallbackData* data) // In C++11 you are better off using lambdas for this sort of forwarding callbacks
 	{
 		Console* console = (Console*)data->UserData;
 		return console->TextEditCallback(data);
 	}
 
-	int TextEditCallback(ImGuiTextEditCallbackData* data)
+	int TextEditCallback(ImGuiInputTextCallbackData* data)
 	{
 		//AddLog("cursor: %d, selection: %d-%d", data->CursorPos, data->SelectionStart, data->SelectionEnd);
 		switch (data->EventFlag)

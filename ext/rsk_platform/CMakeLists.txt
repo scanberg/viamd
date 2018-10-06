@@ -29,6 +29,8 @@ set(HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/core/types.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/GL/glcorearb.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/GL/gl3w.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/imgui_impl_glfw.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/imgui_impl_opengl3.h
 )
                    
 set(SOURCES
@@ -40,6 +42,9 @@ set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/platform_win32.inl
     ${CMAKE_CURRENT_SOURCE_DIR}/src/string_utils.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/gl3w.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/imgui_impl_glfw.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/imgui_impl_opengl3.cpp
+
 )
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/ext/glfw/include/

@@ -90,14 +90,13 @@ bool allocate_and_parse_pdb_from_string(MoleculeDynamic* md, CString pdb_string,
                 temp_factors.push_back(to_float(line.substr(60, 6)));
             }
 
-            // Try to determine element from optional element column first, then name
-
+            // Try to determine element from optional element column first, then from label
             Element elem = Element::Unknown;
             if (line.count >= 78) {
-                elem = element::get_from_string(line.substr(76, 2));
+                elem = element::get_from_string(line.substr(76, 2), true);
             }
             if (elem == Element::Unknown) {
-                elem = element::get_from_string(labels.back());
+                elem = element::get_from_string(labels.back(), false);
             }
             elements.push_back(elem);
 

@@ -13,6 +13,7 @@ set(HEADERS
                    
 set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/imgui_widgets.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui_draw.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui_demo.cpp
     ${WIDGET_INLINES}
