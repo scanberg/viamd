@@ -9,7 +9,11 @@ bool load_and_allocate_trajectory(MoleculeTrajectory* traj, CString path) {
     ASSERT(traj);
     free_trajectory(traj);
 
-    StringBuffer<512> cache_file = get_file_without_extension(path);
+    CString directory = get_directory(path);
+    CString file = get_file_without_extension(path);
+    StringBuffer<512> cache_file = directory;
+    cache_file += "/";
+    cache_file += file;
     cache_file += ".cache";
 
     XDRFILE* file_handle = xdrfile_open(path, "r");
@@ -104,12 +108,19 @@ bool read_next_trajectory_frame(MoleculeTrajectory* traj) {
     frame->index = i;
     int step;
     float precision;
-    read_xtc((XDRFILE*)traj->file_handle, traj->num_atoms, &step, &frame->time, (float(*)[3]) & frame->box, (float(*)[3])pos_data, &precision);
+    float matrix[3][3];
+    float* pos_buf = (float*)TMP_MALLOC(traj->num_atoms * 3 * sizeof(float));
+
+    read_xtc((XDRFILE*)traj->file_handle, traj->num_atoms, &step, &frame->time, matrix, (float(*)[3])pos_buf, &precision);
+    frame->box = mat3(matrix[0][0], matrix[0][1], matrix[0][2], matrix[1][0], matrix[1][1], matrix[1][2], matrix[2][0], matrix[2][1], matrix[2][2]);
+
     for (int j = 0; j < traj->num_atoms; j++) {
-        pos_data[j] *= 10.f;
+        pos_data[j] = vec3(10.f) * vec3(pos_buf[j * 3 + 0], pos_buf[j * 3 + 1], pos_buf[j * 3 + 2]);
     }
     frame->box *= 10.f;
     traj->num_frames++;
+
+    TMP_FREE(pos_buf);
 
     return true;
 }
@@ -139,6 +150,7 @@ void copy_trajectory_positions(Array<vec3> dst_array, const MoleculeTrajectory& 
     ASSERT(dst_array);
     ASSERT(dst_array.count >= traj.num_atoms);
     ASSERT(frame_index < traj.num_frames);
+    constexpr auto size = sizeof(vec3);
     memcpy(dst_array.data, traj.frame_buffer.data[frame_index].atom_positions.data, traj.num_atoms * sizeof(vec3));
 }
 

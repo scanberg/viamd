@@ -76,24 +76,69 @@ void linear_interpolation(Array<vec3> positions, Array<const vec3> prev_pos, Arr
     }
 }
 
+inline __m128 mm_abs(const __m128 x) { return _mm_and_ps(x, _mm_castsi128_ps(_mm_set1_epi32(0x7FFFFFFF))); }
+
+inline __m128 mm_sign(const __m128 x) {
+    __m128 const zro0 = _mm_setzero_ps();
+    __m128 const cmp0 = _mm_cmplt_ps(x, zro0);
+    __m128 const cmp1 = _mm_cmpgt_ps(x, zro0);
+    __m128 const and0 = _mm_and_ps(cmp0, _mm_set1_ps(-1.0f));
+    __m128 const and1 = _mm_and_ps(cmp1, _mm_set1_ps(1.0f));
+    __m128 const or0 = _mm_or_ps(and0, and1);
+    return or0;
+}
+
 // @TODO: Fix this, is it possible in theory to get a good interpolation between frames with periodicity without modifying source data?
 // @PERFORMANCE: VECTORIZE THE LIVING SHIET OUT OF THIS
 void linear_interpolation_periodic(Array<vec3> positions, Array<const vec3> prev_pos, Array<const vec3> next_pos, float t, mat3 sim_box) {
     ASSERT(prev_pos.count == positions.count);
     ASSERT(next_pos.count == positions.count);
 
-    const vec3 full_box_ext = sim_box * vec3(1);
-    const vec3 half_box_ext = full_box_ext * 0.5f;
+    const glm_vec4 full_box_ext = _mm_set_ps(sim_box[0][0], sim_box[1][1], sim_box[2][2], 0.f);
+    const glm_vec4 half_box_ext = glm_vec4_mul(full_box_ext, _mm_set_ps1(0.5f));
+    const glm_vec4 t_vec = _mm_set_ps1(t);
 
     for (int i = 0; i < positions.count; i++) {
-        vec3 next = next_pos[i];
-        vec3 prev = prev_pos[i];
+        glm_vec4 next = _mm_set_ps(0, next_pos[i].z, next_pos[i].y, next_pos[i].x);
+        glm_vec4 prev = _mm_set_ps(0, prev_pos[i].z, prev_pos[i].y, prev_pos[i].x);
 
-        vec3 delta = next - prev;
-        vec3 signed_mask = math::sign(delta) * math::step(half_box_ext, math::abs(delta));
-        next = next - full_box_ext * signed_mask;
+        const glm_vec4 delta = glm_vec4_sub(next, prev);
+        const glm_vec4 sign_delta = glm_vec4_sign(delta);
+        const glm_vec4 abs_delta = glm_vec4_abs(delta);
+        const glm_vec4 signed_mask = glm_vec4_mul(sign_delta, glm_vec4_step(half_box_ext, abs_delta));
+        next = glm_vec4_sub(next, glm_vec4_mul(full_box_ext, signed_mask));
 
-        positions[i] = math::mix(prev, next, t);
+        const glm_vec4 res = glm_vec4_mix(prev, next, t_vec);
+        positions[i] = *reinterpret_cast<const vec3*>(&res);
+
+        /*
+__m128 delta = _mm_sub_ps(next, prev);
+__m128 abs_delta = mm_abs(delta);
+__m128 sign_delta = mm_sign(delta);
+* / glm_vec4_sign
+
+/*
+vec4 next = vec4(next_pos[i], 0);
+vec4 prev = vec4(prev_pos[i], 0);
+
+const vec4 delta = next - prev;
+const vec4 sign_delta = math::sign(delta);
+const vec4 abs_delta = math::abs(delta);
+const vec4 signed_mask = sign_delta * math::step(half_box_ext, abs_delta);
+next = next - full_box_ext * signed_mask;
+*/
+
+        // if (abs_delta.x > half_box_ext.x) next.x = next.x - sign_delta.x * full_box_ext.x;
+        // if (abs_delta.y > half_box_ext.y) next.y = next.y - sign_delta.y * full_box_ext.y;
+        // if (abs_delta.z > half_box_ext.z) next.z = next.z - sign_delta.z * full_box_ext.z;
+
+        // vec3 signed_mask = math::sign(delta) * math::step(half_box_ext, math::abs(delta));
+        // next = next - full_box_ext * signed_mask;
+
+        // Make sure we do not violate periodic bounds
+        // vec3 periodic_pos = math::fract(vec3(1, 1, 1) + math::mix(prev, next, t) * inv_full_box_ext);
+        // positions[i] = periodic_pos * full_box_ext;
+        // positions[i] = math::mix(prev, next, t);
     }
 }
 
@@ -105,6 +150,7 @@ void spline_interpolation_periodic(Array<vec3> positions, Array<const vec3> pos0
     ASSERT(pos3.count == positions.count);
 
     const vec3 full_box_ext = sim_box * vec3(1);
+    // const vec3 inv_full_box_ext = 1.f / full_box_ext;
     const vec3 half_box_ext = full_box_ext * 0.5f;
 
     for (int i = 0; i < positions.count; i++) {
@@ -126,6 +172,9 @@ void spline_interpolation_periodic(Array<vec3> positions, Array<const vec3> pos0
         vec3 s3 = math::sign(d3) * math::step(half_box_ext, math::abs(d3));
         p3 = p3 - full_box_ext * s3;
 
+        // Make sure we do not violate periodic bounds
+        // vec3 periodic_pos = math::fract(vec3(1, 1, 1) + math::spline(p0, p1, p2, p3, t) * inv_full_box_ext);
+        // positions[i] = periodic_pos * full_box_ext;
         positions[i] = math::spline(p0, p1, p2, p3, t);
     }
 }
@@ -258,6 +307,7 @@ bool match(const Label& lbl, const char (&cstr)[N]) {
 
 DynamicArray<BackboneSegment> compute_backbone_segments(Array<const Residue> residues, Array<const Label> atom_labels) {
     DynamicArray<BackboneSegment> segments;
+    int64 invalid_segments = 0;
     for (auto& res : residues) {
         auto ca_idx = -1;
         auto n_idx = -1;
@@ -284,12 +334,16 @@ DynamicArray<BackboneSegment> compute_backbone_segments(Array<const Residue> res
 
             if (ca_idx == -1 || n_idx == -1 || c_idx == -1 || o_idx == -1) {
                 LOG_ERROR("Could not identify all backbone indices for residue %s.\n", res.name.beg());
+                invalid_segments++;
             }
             segments.push_back({ca_idx, n_idx, c_idx, o_idx});
         } else {
             segments.push_back({-1, -1, -1, -1});
+            invalid_segments++;
         }
     }
+
+    if (invalid_segments == segments.count) return {};
 
     return segments;
 }
@@ -827,7 +881,7 @@ void decompose(const mat3& M, mat3* R, mat3* S) {
     mat3 Q, D;
     mat3 AtA = math::transpose(M) * M;
     diagonalize(AtA, &Q, &D);
-    //float det = math::determinant(AtA);
+    // float det = math::determinant(AtA);
     D[0][0] = sqrtf(D[0][0]);
     D[1][1] = sqrtf(D[1][1]);
     D[2][2] = sqrtf(D[2][2]);
