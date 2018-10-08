@@ -15,8 +15,8 @@
 #include <imgui.h>
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
-#include "cousine_font.inl"
-#include "noto_sans_regular_font.inl"
+//#include "cousine_font.inl"
+#include "droid_sans.inl"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -131,12 +131,10 @@ bool initialize(Context* ctx, int32 width, int32 height, const char* title) {
 	io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;
 	io.ConfigDockingWithShift = true;
 
-	/*
 	ImFontConfig config;
-	config.OversampleV = 8;
-	config.OversampleH = 8;
-	ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)NotoSansRegular_compressed_data, NotoSansRegular_compressed_size, 20.f, &config);
-	*/
+	config.OversampleV = 2;
+	config.OversampleH = 2;
+	ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)DroidSans_compressed_data, DroidSans_compressed_size, 17.f, &config);
 
 	ImGui_ImplGlfw_InitForOpenGL(window, false);
 	ImGui_ImplOpenGL3_Init("#version 150");

@@ -246,7 +246,9 @@ CString get_file_without_extension(CString url) {
     const char* end = url.end();
 
     while (beg != url.begin() && *beg != '\\' && *beg != '/') beg--;
-    while (end != beg && *beg != '.') end--;
+    if (beg != url.begin()) beg++;
+
+    while (end != beg && *end != '.') end--;
 
     return CString(beg, end - beg);
 }
