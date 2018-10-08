@@ -38,3 +38,23 @@ RadialBasis compute_radial_basis(Array<const vec3> points, Array<const vec3> val
     compute_radial_basis(&basis, points, values);
     return basis;
 }
+
+vec3 evaluate_radial_basis(const RadialBasis& basis, const vec3& point) {
+    vec3 result{0};
+    switch (basis.function.type) {
+        case RadialBasisFunctionType::Wendland_3_1:
+            for (const auto& cp : basis.control_points) {
+                result += cp.weight * Wendland_3_1(math::length(point - cp.position), basis.function.param);
+            }
+            break;
+        case RadialBasisFunctionType::Gaussian:
+            for (const auto& cp : basis.control_points) {
+                result += cp.weight * Gaussian(math::length(point - cp.position));
+            }
+            break;
+        default:
+            break;
+    }
+
+    return result;
+}

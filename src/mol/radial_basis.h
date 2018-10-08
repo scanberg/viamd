@@ -36,22 +36,4 @@ void compute_radial_basis(RadialBasis* dst, Array<const vec3> points, Array<cons
 RadialBasis compute_radial_basis(Array<const vec3> points, Array<const vec3> values,
                                  RadialBasisFunctionType type = RadialBasisFunctionType::Wendland_3_1, float function_param = 10.f);
 
-inline vec3 evaluate_radial_basis(const RadialBasis& basis, const vec3& point) {
-    vec3 result{0};
-    switch (basis.function.type) {
-        case RadialBasisFunctionType::Wendland_3_1:
-            for (const auto& cp : basis.control_points) {
-                result += cp.weight * Wendland_3_1(math::length(point - cp.position), basis.function.param);
-            }
-            break;
-        case RadialBasisFunctionType::Gaussian:
-            for (const auto& cp : basis.control_points) {
-                result += cp.weight * Gaussian(math::length(point - cp.position));
-            }
-            break;
-        default:
-            break;
-    }
-
-    return result;
-}
+vec3 evaluate_radial_basis(const RadialBasis& basis, const vec3& point);
