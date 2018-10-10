@@ -1,6 +1,13 @@
 #pragma once
 
 #define NOMINMAX
+//#ifndef GLM_FORCE_SSE2
+//#define GLM_FORCE_SSE2
+//#endif
+
+//#ifndef GLM_FORCE_ALIGNED
+//#define GLM_FORCE_ALIGNED
+//#endif
 
 #include <core/types.h>
 #include <core/vector_types.h>
@@ -131,7 +138,26 @@ static T spline(const T& p0, const T& p1, const T& p2, const T& p3, V s, V tensi
     T v1 = (p3 - p1) * tension;
     V s2 = s * s;
     V s3 = s * s2;
+
     return ((V)2.0 * p1 - (V)2.0 * p2 + v0 + v1) * s3 + (-(V)3.0 * p1 + (V)3.0 * p2 - (V)2.0 * v0 - v1) * s2 + v0 * s + p1;
+}
+
+static inline glm_vec4 spline(const glm_vec4 p0, const glm_vec4 p1, const glm_vec4 p2, const glm_vec4 p3, float s, float tension = 0.5f) {
+    const glm_vec4 v_t = _mm_set_ps1(tension);
+
+    const glm_vec4 v0 = glm_vec4_mul(glm_vec4_sub(p2, p0), v_t);
+    const glm_vec4 v1 = glm_vec4_mul(glm_vec4_sub(p3, p1), v_t);
+
+    // (2p1  - 2p2 + v0 + v1) s3 + (-3p1 + 3p2 - 2v0 - v1) s2 + v0 s + p1
+    // a = 2(p1 - p2) + (v0 + v1)
+    // b = 3(p2 - p1) - (2v0 + v1) 
+
+    const glm_vec4 a = glm_vec4_add(glm_vec4_mul(_mm_set_ps1(2), glm_vec4_sub(p1, p2)), glm_vec4_add(v0, v1));
+    const glm_vec4 b = glm_vec4_sub(glm_vec4_mul(_mm_set_ps1(3), glm_vec4_sub(p2, p1)), glm_vec4_add(glm_vec4_mul(_mm_set_ps1(2), v0), v1));
+    
+    const glm_vec4 res_0 = glm_vec4_add(glm_vec4_mul(a, _mm_set_ps1(s*s*s)), glm_vec4_mul(b, _mm_set_ps1(s*s)));
+    const glm_vec4 res_1 = glm_vec4_add(glm_vec4_mul(v0, _mm_set_ps1(s)), p1);
+    return glm_vec4_add(res_0, res_1);
 }
 
 // Quaternion

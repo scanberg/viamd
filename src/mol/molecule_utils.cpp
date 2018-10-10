@@ -88,13 +88,25 @@ inline __m128 mm_sign(const __m128 x) {
     return or0;
 }
 
+inline glm_vec4 glm_step(const glm_vec4 edge, const glm_vec4 x) {
+    const glm_vec4 cmp = _mm_cmpge_ps(x, edge);
+    const glm_vec4 res = _mm_and_ps(cmp, _mm_set1_ps(1.f));
+    return res;
+}
+
+inline glm_vec4 de_periodize(const glm_vec4 p0, const glm_vec4 p1, const glm_vec4 full_ext, const glm_vec4 half_ext) {
+    const glm_vec4 delta = glm_vec4_sub(p1, p0);
+    const glm_vec4 signed_mask = glm_vec4_mul(glm_vec4_sign(delta), glm_step(half_ext, glm_vec4_abs(delta)));
+    return glm_vec4_sub(p1, glm_vec4_mul(full_ext, signed_mask));
+}
+
 // @TODO: Fix this, is it possible in theory to get a good interpolation between frames with periodicity without modifying source data?
-// @PERFORMANCE: VECTORIZE THE LIVING SHIET OUT OF THIS
+// @PERFORMANCE: VECTORIZE THIS
 void linear_interpolation_periodic(Array<vec3> positions, Array<const vec3> prev_pos, Array<const vec3> next_pos, float t, mat3 sim_box) {
     ASSERT(prev_pos.count == positions.count);
     ASSERT(next_pos.count == positions.count);
 
-    const glm_vec4 full_box_ext = _mm_set_ps(sim_box[0][0], sim_box[1][1], sim_box[2][2], 0.f);
+    const glm_vec4 full_box_ext = _mm_set_ps(0.f, sim_box[2][2], sim_box[1][1], sim_box[0][0]);
     const glm_vec4 half_box_ext = glm_vec4_mul(full_box_ext, _mm_set_ps1(0.5f));
     const glm_vec4 t_vec = _mm_set_ps1(t);
 
@@ -102,13 +114,9 @@ void linear_interpolation_periodic(Array<vec3> positions, Array<const vec3> prev
         glm_vec4 next = _mm_set_ps(0, next_pos[i].z, next_pos[i].y, next_pos[i].x);
         glm_vec4 prev = _mm_set_ps(0, prev_pos[i].z, prev_pos[i].y, prev_pos[i].x);
 
-        const glm_vec4 delta = glm_vec4_sub(next, prev);
-        const glm_vec4 sign_delta = glm_vec4_sign(delta);
-        const glm_vec4 abs_delta = glm_vec4_abs(delta);
-        const glm_vec4 signed_mask = glm_vec4_mul(sign_delta, glm_vec4_step(half_box_ext, abs_delta));
-        next = glm_vec4_sub(next, glm_vec4_mul(full_box_ext, signed_mask));
-
+        next = de_periodize(prev, next, full_box_ext, half_box_ext);
         const glm_vec4 res = glm_vec4_mix(prev, next, t_vec);
+
         positions[i] = *reinterpret_cast<const vec3*>(&res);
 
         /*
@@ -149,11 +157,28 @@ void spline_interpolation_periodic(Array<vec3> positions, Array<const vec3> pos0
     ASSERT(pos2.count == positions.count);
     ASSERT(pos3.count == positions.count);
 
+/*
     const vec3 full_box_ext = sim_box * vec3(1);
     // const vec3 inv_full_box_ext = 1.f / full_box_ext;
     const vec3 half_box_ext = full_box_ext * 0.5f;
+*/
+    const glm_vec4 full_box_ext = _mm_set_ps(0.f, sim_box[2][2], sim_box[1][1], sim_box[0][0]);
+    const glm_vec4 half_box_ext = glm_vec4_mul(full_box_ext, _mm_set_ps1(0.5f));
 
     for (int i = 0; i < positions.count; i++) {
+        glm_vec4 p0 = _mm_set_ps(0, pos0[i].z, pos0[i].y, pos0[i].x);
+        glm_vec4 p1 = _mm_set_ps(0, pos1[i].z, pos1[i].y, pos1[i].x);
+        glm_vec4 p2 = _mm_set_ps(0, pos2[i].z, pos2[i].y, pos2[i].x);
+        glm_vec4 p3 = _mm_set_ps(0, pos3[i].z, pos3[i].y, pos3[i].x);
+
+        p0 = de_periodize(p1, p0, full_box_ext, half_box_ext);
+        p2 = de_periodize(p1, p2, full_box_ext, half_box_ext);
+        p3 = de_periodize(p1, p3, full_box_ext, half_box_ext);
+
+        const glm_vec4 res = math::spline(p0, p1, p2, p3, t);
+        positions[i] = *reinterpret_cast<const vec3*>(&res);
+
+        /*
         vec3 p0 = pos0[i];
         vec3 p1 = pos1[i];
         vec3 p2 = pos2[i];
@@ -176,6 +201,7 @@ void spline_interpolation_periodic(Array<vec3> positions, Array<const vec3> pos0
         // vec3 periodic_pos = math::fract(vec3(1, 1, 1) + math::spline(p0, p1, p2, p3, t) * inv_full_box_ext);
         // positions[i] = periodic_pos * full_box_ext;
         positions[i] = math::spline(p0, p1, p2, p3, t);
+        */
     }
 }
 

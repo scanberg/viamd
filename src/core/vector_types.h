@@ -1,7 +1,12 @@
 #pragma once
 
-#define GLM_FORCE_SSE2
-#define GLM_FORCE_ALIGNED
+//#ifndef GLM_FORCE_SSE2
+//#define GLM_FORCE_SSE2
+//#endif
+
+//#ifndef GLM_FORCE_ALIGNED
+//#define GLM_FORCE_ALIGNED
+//#endif
 
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>

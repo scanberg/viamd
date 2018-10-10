@@ -172,6 +172,13 @@ struct ThreadSyncData {
     }
 };
 
+struct ReferenceFrame {
+    StringBuffer<128> query{};
+    float rmsd_filter = 1.f;
+    Array<bool> atom_query_mask{};
+    Array<bool> atom_rmsd_mask{};
+};
+
 struct ApplicationData {
     // --- PLATFORM ---
     platform::Context ctx;
@@ -314,10 +321,10 @@ struct ApplicationData {
 
     // DYNAMIC REFERENCE FRAME
     struct {
-        IntRange atom_range{0, 0};
+        //IntRange atom_range{0, 0};
         DynamicArray<bool> atom_mask;
 
-        int32 frame_index = 10;
+        //int32 frame_index = 10;
         mat4 world_to_reference{1};
         mat4 reference_to_world{1};
 
@@ -340,9 +347,9 @@ struct ApplicationData {
     } spatial_hash;
 
     struct {
-        bool enabled = true;
+        bool enabled = false;
         bool show_voxels = false;
-        bool dirty_flag = true;
+        bool dirty_flag = false;
         float voxel_ext = 1.0f;
         float indirect_diffuse_scale = 1.0f;
         float indirect_specular_scale = 0.3f;
@@ -392,6 +399,8 @@ DynamicArray<DynamicStructure> structures;
 
 }  // namespace dynamic_structure
 
+static void interpolate_atomic_positions(Array<vec3> dst_pos, const MoleculeTrajectory& traj, float64 time, PlaybackInterpolationMode interpolation_mode);
+static void compute_dynamic_frame(ApplicationData* data);
 static void reset_view(ApplicationData* data, bool reposition_camera = true);
 static float compute_avg_ms(float dt);
 static uint32 get_picking_id(const MainFramebuffer& fbo, int32 x, int32 y);
@@ -399,6 +408,7 @@ static uint32 get_picking_id(const MainFramebuffer& fbo, int32 x, int32 y);
 static void imgui_dockspace();
 
 static void draw_main_menu(ApplicationData* data);
+static void draw_control_window(ApplicationData* data);
 static void draw_representations_window(ApplicationData* data);
 static void draw_property_window(ApplicationData* data);
 static void draw_timeline_window(ApplicationData* data);
@@ -541,25 +551,24 @@ int main(int, char**) {
     colors[ImGuiCol_NavWindowingDimBg] = ImVec4(0.80f, 0.80f, 0.80f, 0.20f);
     colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.20f, 0.20f, 0.20f, 0.35f);
 
-    bool show_demo_window = false;
     const vec4 CLEAR_COLOR = vec4(1, 1, 1, 1);
     const vec4 CLEAR_INDEX = vec4(1, 1, 1, 1);
 
 #ifdef VIAMD_RELEASE
-    allocate_and_parse_pdb_from_string(&data.mol_data.dynamic, CAFFINE_PDB);
-    data.mol_data.atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule.atom_elements);
+    allocate_and_parse_pdb_from_string(&data->mol_data.dynamic, CAFFINE_PDB);
+    data->mol_data.atom_radii = compute_atom_radii(data->mol_data.dynamic.molecule.atom_elements);
 #else
     /*
 stats::create_property("b1", "distance resatom(resname(ALA), 1) com(resname(ALA))");
 load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
-data.dynamic_frame.atom_range = {0, 152};
+data->dynamic_frame.atom_range = {0, 152};
     */
     load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/5ulj.pdb");
 
     /*
     stats::create_property("b1", "distance resname(DE3) com(resname(DE3))");
     load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/haofan/for_VIAMD.pdb");
-    data.dynamic_frame.atom_range = {0, 1277};
+    data->dynamic_frame.atom_range = {0, 1277};
     */
 #endif
     reset_view(&data);
@@ -598,12 +607,12 @@ if (data.profiling.show_cpu_profiler) {
                     stats::compute_density_volume_with_basis(
                         &data->density_volume.volume, data->mol_data.dynamic.trajectory, data->time_filter.range, [data](int32 frame_idx) -> mat4 {
                             /*
-        const auto p_ref = get_trajectory_positions(data->mol_data.dynamic.trajectory, data->dynamic_frame.frame_index)
+        const auto p_ref = get_trajectory_positions(traj, data->dynamic_frame.frame_index)
                                .sub_array(data->dynamic_frame.atom_range.x, data->dynamic_frame.atom_range.y);
-        const auto p_cur = get_trajectory_positions(data->mol_data.dynamic.trajectory, frame_idx)
+        const auto p_cur = get_trajectory_positions(traj, frame_idx)
                                .sub_array(data->dynamic_frame.atom_range.x, data->dynamic_frame.atom_range.y);
         mat4 world_to_volume = compute_transform(p_cur, p_ref);
-        const auto box = get_trajectory_frame(data->mol_data.dynamic.trajectory, frame_idx).box;
+        const auto box = get_trajectory_frame(traj, frame_idx).box;
         world_to_volume[3] += vec4(box * vec3(0.5f), 0);
         world_to_volume[0] /= box[0][0];
         world_to_volume[1] /= box[1][1];
@@ -621,7 +630,7 @@ if (data.profiling.show_cpu_profiler) {
                         });
 
                     // stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix,
-                    //                              data->mol_data.dynamic.trajectory, data->time_filter.range);
+                    //                              traj, time_filter.range);
 
                     data->density_volume.volume_data_mutex.unlock();
                     data->density_volume.texture.dirty = true;
@@ -699,12 +708,19 @@ if (data.profiling.show_cpu_profiler) {
             }
         }
 
-        float ms = compute_avg_ms(data.ctx.timing.delta_s);
         bool time_changed = false;
         bool frame_changed = false;
 
         if (data.is_playing) {
+            const int32 num_frames = data.mol_data.dynamic.trajectory ? data.mol_data.dynamic.trajectory.num_frames : 0;
+            const float64 max_time = (float64)math::max(0, num_frames - 1);
+
             data.time += data.ctx.timing.delta_s * data.frames_per_second;
+            data.time = math::clamp(data.time, 0.0, max_time);
+            if (data.time >= max_time) {
+                data.is_playing = false;
+                data.time = 0;
+            }
         }
 
         {
@@ -732,65 +748,7 @@ if (data.profiling.show_cpu_profiler) {
         if (data.mol_data.dynamic.trajectory && time_changed) {
             data.dynamic_frame.dirty_flag = true;
             data.spatial_hash.dirty_flag = true;
-
-            const int last_frame = data.mol_data.dynamic.trajectory.num_frames - 1;
-            data.time = math::clamp(data.time, 0.0, float64(last_frame));
-            if (data.time == float64(last_frame)) data.is_playing = false;
-
-            const int frame = (int)data.time;
-            const int prev_frame_2 = math::max(0, frame - 1);
-            const int prev_frame_1 = math::max(0, frame);
-            const int next_frame_1 = math::min(frame + 1, last_frame);
-            const int next_frame_2 = math::min(frame + 2, last_frame);
-
-            if (prev_frame_1 == next_frame_1) {
-                copy_trajectory_positions(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.dynamic.trajectory, prev_frame_1);
-            } else {
-                const float t = (float)math::fract(data.time);
-
-                // INTERPOLATE
-                switch (data.interpolation) {
-                    case PlaybackInterpolationMode::NEAREST: {
-                        const int nearest_frame = math::clamp((int)(data.time + 0.5), 0, last_frame);
-                        copy_trajectory_positions(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.dynamic.trajectory, nearest_frame);
-                        break;
-                    }
-                    case PlaybackInterpolationMode::LINEAR: {
-                        auto prev_frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, prev_frame_1);
-                        auto next_frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, next_frame_1);
-                        linear_interpolation(data.mol_data.dynamic.molecule.atom_positions, prev_frame.atom_positions, next_frame.atom_positions, t);
-                        break;
-                    }
-                    case PlaybackInterpolationMode::LINEAR_PERIODIC: {
-                        auto prev_frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, prev_frame_1);
-                        auto next_frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, next_frame_1);
-                        linear_interpolation_periodic(data.mol_data.dynamic.molecule.atom_positions, prev_frame.atom_positions,
-                                                      next_frame.atom_positions, t, prev_frame.box);
-                        break;
-                    }
-                    case PlaybackInterpolationMode::CUBIC: {
-                        auto prev_2 = get_trajectory_frame(data.mol_data.dynamic.trajectory, prev_frame_2);
-                        auto prev_1 = get_trajectory_frame(data.mol_data.dynamic.trajectory, prev_frame_1);
-                        auto next_1 = get_trajectory_frame(data.mol_data.dynamic.trajectory, next_frame_1);
-                        auto next_2 = get_trajectory_frame(data.mol_data.dynamic.trajectory, next_frame_2);
-                        spline_interpolation(data.mol_data.dynamic.molecule.atom_positions, prev_2.atom_positions, prev_1.atom_positions,
-                                             next_1.atom_positions, next_2.atom_positions, t);
-                        break;
-                    }
-                    case PlaybackInterpolationMode::CUBIC_PERIODIC: {
-                        auto prev_2 = get_trajectory_frame(data.mol_data.dynamic.trajectory, prev_frame_2);
-                        auto prev_1 = get_trajectory_frame(data.mol_data.dynamic.trajectory, prev_frame_1);
-                        auto next_1 = get_trajectory_frame(data.mol_data.dynamic.trajectory, next_frame_1);
-                        auto next_2 = get_trajectory_frame(data.mol_data.dynamic.trajectory, next_frame_2);
-                        spline_interpolation_periodic(data.mol_data.dynamic.molecule.atom_positions, prev_2.atom_positions, prev_1.atom_positions,
-                                                      next_1.atom_positions, next_2.atom_positions, t, prev_1.box);
-                        break;
-                    }
-
-                    default:
-                        break;
-                }
-            }
+            interpolate_atomic_positions(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.dynamic.trajectory, data.time, data.interpolation);
         }
 
         if (data.spatial_hash.dirty_flag) {
@@ -800,75 +758,21 @@ if (data.profiling.show_cpu_profiler) {
 
         if (data.dynamic_frame.dirty_flag && data.mol_data.dynamic.trajectory) {
             data.dynamic_frame.dirty_flag = false;
-
-            int frame = math::min((int)data.time, data.mol_data.dynamic.trajectory.num_frames - 1);
-
-            if (0 < frame && frame < data.mol_data.dynamic.trajectory.num_frames) {
-
-                int ref_frame = data.dynamic_frame.frame_index < data.mol_data.dynamic.trajectory.num_frames ? data.dynamic_frame.frame_index : 0;
-                const auto box = get_trajectory_frame(data.mol_data.dynamic.trajectory, frame).box;
-                const auto p_ref = get_trajectory_positions(data.mol_data.dynamic.trajectory, ref_frame)
-                                       .sub_array(data.dynamic_frame.atom_range.x, data.dynamic_frame.atom_range.y);
-                auto p_cur =
-                    data.mol_data.dynamic.molecule.atom_positions.sub_array(data.dynamic_frame.atom_range.x, data.dynamic_frame.atom_range.y);
-
-                mat4 M = compute_linear_transform(p_ref, p_cur);
-                mat3 A = M;
-                mat3 R, S;
-                decompose(A, &R, &S);
-                float det = math::abs(math::determinant(A));
-                // LOG_NOTE("Determinant is: %.5f", det);
-                A = A / math::pow(det, 1.f / 3.f);
-
-                mat4 M2 = data.dynamic_frame.beta * A + (1.f - data.dynamic_frame.beta) * R;
-                M2[3] = M[3];
-                data.dynamic_frame.reference_to_world = M2;
-
-                // Transform origin to corner instead of center
-                // data.dynamic_frame.reference_to_world[3] -= data.dynamic_frame.reference_to_world * vec4(box * vec3(0.5f), 0);
-                data.dynamic_frame.world_to_reference = math::inverse(data.dynamic_frame.reference_to_world);
-                data.density_volume.model_to_world_matrix = math::inverse(compute_volume_basis(data.dynamic_frame.world_to_reference, box));
-
-                if (data.dynamic_frame.use_rbf_refinement) {
-                    DynamicArray<vec3> basis_points;
-                    DynamicArray<vec3> basis_values;
-                    const auto elements = data.mol_data.dynamic.molecule.atom_elements;
-                    for (int32 i = 0; i < p_cur.count; i++) {
-                        // if (elements[i] == Element::C || elements[i] == Element::O || elements[i] == Element::P) {
-                        if (elements[i] == Element::C) {
-                            vec3 delta = vec3(data.dynamic_frame.reference_to_world * vec4(p_ref[i], 1.f)) - p_cur[i];
-                            basis_points.push_back(p_cur[i]);
-                            basis_values.push_back(delta);
-                        }
-                    }
-
-                    // DynamicArray<vec3> p_ref_mod(p_ref.count);
-                    // for (int32 i = 0; i < p_ref_mod.count; i++) {
-                    //    p_ref_mod[i] = vec3(data.dynamic_frame.reference_to_world * vec4(p_ref[i], 1.f));
-                    //}
-
-                    data.dynamic_frame.refinement_basis = compute_radial_basis(basis_points, basis_values);
-
-                    for (auto& p : data.mol_data.dynamic.molecule.atom_positions) {
-                        auto v = evaluate_radial_basis(data.dynamic_frame.refinement_basis, p);
-                        p = p + v;
-                    }
-                }
-            }
+            compute_dynamic_frame(&data);
         }
 
         if (data.cone_trace.enabled && data.cone_trace.dirty_flag) {
             data.cone_trace.dirty_flag = false;
 
             Array<const vec3> atom_pos = data.mol_data.dynamic.molecule.atom_positions;
-            DynamicArray<uint32> atom_colors = compute_atom_colors(data.mol_data.dynamic.molecule, ColorMapping::CPK);
-            DynamicArray<float> atom_radii = compute_atom_radii(data.mol_data.dynamic.molecule.atom_elements);
+            DynamicArray<uint32> atom_col = compute_atom_colors(data.mol_data.dynamic.molecule, ColorMapping::CPK);
+            DynamicArray<float> atom_rad = compute_atom_radii(data.mol_data.dynamic.molecule.atom_elements);
 
             vec3 min_box, max_box;
-            compute_bounding_box(&min_box, &max_box, atom_pos, atom_radii);
+            compute_bounding_box(&min_box, &max_box, atom_pos, atom_rad);
             const ivec3 res = math::max(ivec3(1), ivec3((max_box - min_box) / data.cone_trace.voxel_ext));
 
-            render::voxelize_scene(data.mol_data.dynamic.molecule.atom_positions, atom_radii, atom_colors, res, min_box, max_box);
+            render::voxelize_scene(atom_pos, atom_rad, atom_col, res, min_box, max_box);
             render::illuminate_voxels_omnidirectional_constant(vec3(1));
             render::update_gpu_volume();
         }
@@ -899,7 +803,6 @@ if (data.profiling.show_cpu_profiler) {
             data.camera.trackball_state.input.mouse_coord_curr = {data.ctx.input.mouse.coord.x, data.ctx.input.mouse.coord.y};
             data.camera.trackball_state.input.screen_size = vec2(data.ctx.window.width, data.ctx.window.height);
             data.camera.trackball_state.input.dolly_delta = data.ctx.input.mouse.scroll_delta;
-
             camera_controller_trackball(&data.camera.camera, &data.camera.trackball_state);
         }
         if (!ImGui::GetIO().WantCaptureKeyboard) {
@@ -966,8 +869,8 @@ if (data.profiling.show_cpu_profiler) {
                 immediate::Material box_mat = immediate::MATERIAL_ROUGH_WHITE;
                 box_mat.color_alpha = data.simulation_box.color;
                 immediate::set_material(box_mat);
-                int32 frame_idx = math::clamp((int)data.time, 0, data.mol_data.dynamic.trajectory.num_frames - 1);
-                TrajectoryFrame frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, frame_idx);
+                auto frame_idx = math::clamp((int)data.time, 0, data.mol_data.dynamic.trajectory.num_frames - 1);
+                auto frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, frame_idx);
                 immediate::draw_aabb(vec3(0), frame.box * vec3(1));
             }
 
@@ -1150,49 +1053,7 @@ if (data.profiling.show_cpu_profiler) {
         }
 
         draw_async_info(&data);
-
-        // MISC WINDOW
-        ImGui::Begin("Misc");
-        ImGui::Text("%.2f ms (%.1f fps)", ms, 1000.f / (ms));
-        ImGui::Checkbox("Show Demo Window", &show_demo_window);
-        if (ImGui::Button("Reset View")) {
-            reset_view(&data);
-        }
-        if (data.mol_data.dynamic.trajectory) {
-            int32 num_frames = data.mol_data.dynamic.trajectory.num_frames;
-            ImGui::Text("Num Frames: %i", num_frames);
-            float t = (float)data.time;
-            if (ImGui::SliderFloat("Time", &t, 0, (float)(num_frames - 1))) {
-                time_changed = true;
-                data.time = t;
-            }
-            ImGui::SliderFloat("Frames Per Second", &data.frames_per_second, 0.1f, 100.f, "%.3f", 4.f);
-            if (data.is_playing) {
-                if (ImGui::Button("Pause")) data.is_playing = false;
-            } else {
-                if (ImGui::Button("Play")) data.is_playing = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Stop")) {
-                data.is_playing = false;
-                data.time = 0.0;
-                time_changed = true;
-            }
-            ImGui::Combo("type", (int*)(&data.interpolation), "Nearest\0Linear\0Linear Periodic\0Cubic\0Cubic Periodic\0\0");
-            ImGui::Checkbox("Dynamic Framewindow", &data.time_filter.dynamic_window);
-            if (data.time_filter.dynamic_window) {
-                ImGui::SliderFloat("Window Extent", &data.time_filter.window_extent, 1.f, (float)num_frames);
-            }
-        }
-        ImGui::End();
-
-        // Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
-        if (show_demo_window) {
-            ImGui::SetNextWindowPos(ImVec2(650, 20),
-                                    ImGuiCond_FirstUseEver);  // Normally user code doesn't need/want to call this because positions are saved in .ini
-                                                              // file anyway. Here we just want to make the demo initial state a bit more friendly!
-            ImGui::ShowDemoWindow(&show_demo_window);
-        }
+        draw_control_window(&data);
 
         gpu_profiling::push_section("IMGUI RENDER");
         platform::render_imgui(&data.ctx);
@@ -1215,6 +1076,126 @@ if (data.profiling.show_cpu_profiler) {
     platform::shutdown(&data.ctx);
 
     return 0;
+}
+
+static void interpolate_atomic_positions(Array<vec3> dst_pos, const MoleculeTrajectory& traj, float64 time, PlaybackInterpolationMode interpolation_mode) {
+    const int last_frame = traj.num_frames - 1;
+    time = math::clamp(time, 0.0, float64(last_frame));
+
+    const int frame = (int)time;
+    const int prev_frame_2 = math::max(0, frame - 1);
+    const int prev_frame_1 = math::max(0, frame);
+    const int next_frame_1 = math::min(frame + 1, last_frame);
+    const int next_frame_2 = math::min(frame + 2, last_frame);
+
+    if (prev_frame_1 == next_frame_1) {
+        copy_trajectory_positions(dst_pos, traj, prev_frame_1);
+    } else {
+        const float t = (float)math::fract(time);
+
+        // INTERPOLATE
+        switch (interpolation_mode) {
+            case PlaybackInterpolationMode::NEAREST: {
+                const int nearest_frame = math::clamp((int)(time + 0.5), 0, last_frame);
+                copy_trajectory_positions(dst_pos, traj, nearest_frame);
+                break;
+            }
+            case PlaybackInterpolationMode::LINEAR: {
+                auto prev = get_trajectory_positions(traj, prev_frame_1);
+                auto next = get_trajectory_positions(traj, next_frame_1);
+                linear_interpolation(dst_pos, prev, next, t);
+                break;
+            }
+            case PlaybackInterpolationMode::LINEAR_PERIODIC: {
+                auto prev = get_trajectory_positions(traj, prev_frame_1);
+                auto next = get_trajectory_positions(traj, next_frame_1);
+                auto box = get_trajectory_frame(traj, prev_frame_1).box;
+                linear_interpolation_periodic(dst_pos, prev, next, t, box);
+                break;
+            }
+            case PlaybackInterpolationMode::CUBIC: {
+                Array<const vec3> pos[4] = {
+                    get_trajectory_positions(traj, prev_frame_2),
+                    get_trajectory_positions(traj, prev_frame_1),
+                    get_trajectory_positions(traj, next_frame_1),
+                    get_trajectory_positions(traj, next_frame_2)
+                };
+                spline_interpolation(dst_pos, pos[0], pos[1], pos[2], pos[3], t);
+                break;
+            }
+            case PlaybackInterpolationMode::CUBIC_PERIODIC: {
+                Array<const vec3> pos[4] = {
+                    get_trajectory_positions(traj, prev_frame_2),
+                    get_trajectory_positions(traj, prev_frame_1),
+                    get_trajectory_positions(traj, next_frame_1),
+                    get_trajectory_positions(traj, next_frame_2)
+                };
+                auto box = get_trajectory_frame(traj, prev_frame_1).box;
+                spline_interpolation_periodic(dst_pos, pos[0], pos[1], pos[2], pos[3], t, box);
+                break;
+            }
+
+            default:
+                break;
+        }
+    }
+}
+
+static void compute_dynamic_frame(ApplicationData* data) {
+    int frame = math::min((int)data->time, data->mol_data.dynamic.trajectory.num_frames - 1);
+
+    if (0 < frame && frame < data->mol_data.dynamic.trajectory.num_frames) {
+
+        int ref_frame = math::clamp(data->dynamic_frame.frame_index, 0, data->mol_data.dynamic.trajectory.num_frames - 1);
+        const auto box = get_trajectory_frame(data->mol_data.dynamic.trajectory, frame).box;
+        const auto p_ref = get_trajectory_positions(data->mol_data.dynamic.trajectory, ref_frame)
+                                .sub_array(data->dynamic_frame.atom_range.x, data->dynamic_frame.atom_range.y);
+        auto p_cur =
+            data->mol_data.dynamic.molecule.atom_positions.sub_array(data->dynamic_frame.atom_range.x, data->dynamic_frame.atom_range.y);
+
+        mat4 M = compute_linear_transform(p_ref, p_cur);
+        mat3 A = M;
+        mat3 R, S;
+        decompose(A, &R, &S);
+        float det = math::abs(math::determinant(A));
+        // LOG_NOTE("Determinant is: %.5f", det);
+        A = A / math::pow(det, 1.f / 3.f);
+
+        mat4 M2 = data->dynamic_frame.beta * A + (1.f - data->dynamic_frame.beta) * R;
+        M2[3] = M[3];
+        data->dynamic_frame.reference_to_world = M2;
+
+        // Transform origin to corner instead of center
+        // data.dynamic_frame.reference_to_world[3] -= data.dynamic_frame.reference_to_world * vec4(box * vec3(0.5f), 0);
+        data->dynamic_frame.world_to_reference = math::inverse(data->dynamic_frame.reference_to_world);
+        data->density_volume.model_to_world_matrix = math::inverse(compute_volume_basis(data->dynamic_frame.world_to_reference, box));
+
+        if (data->dynamic_frame.use_rbf_refinement) {
+            DynamicArray<vec3> basis_points;
+            DynamicArray<vec3> basis_values;
+            const auto elements = data->mol_data.dynamic.molecule.atom_elements;
+            for (int32 i = 0; i < p_cur.count; i++) {
+                // if (elements[i] == Element::C || elements[i] == Element::O || elements[i] == Element::P) {
+                if (elements[i] == Element::C) {
+                    vec3 delta = vec3(data->dynamic_frame.reference_to_world * vec4(p_ref[i], 1.f)) - p_cur[i];
+                    basis_points.push_back(p_cur[i]);
+                    basis_values.push_back(delta);
+                }
+            }
+
+            // DynamicArray<vec3> p_ref_mod(p_ref.count);
+            // for (int32 i = 0; i < p_ref_mod.count; i++) {
+            //    p_ref_mod[i] = vec3(data.dynamic_frame.reference_to_world * vec4(p_ref[i], 1.f));
+            //}
+
+            data->dynamic_frame.refinement_basis = compute_radial_basis(basis_points, basis_values);
+
+            for (auto& p : data->mol_data.dynamic.molecule.atom_positions) {
+                auto v = evaluate_radial_basis(data->dynamic_frame.refinement_basis, p);
+                p = p + v;
+            }
+        }
+    }
 }
 
 // ### MISC FUNCTIONS ###
@@ -1537,6 +1518,52 @@ if (ImGui::BeginMenu("Edit")) {
     }
 }
 
+static void draw_control_window(ApplicationData* data) {
+    // MISC WINDOW
+    float ms = compute_avg_ms(data->ctx.timing.delta_s);
+    static bool show_demo_window = false;
+
+    ImGui::Begin("Control");
+    ImGui::Text("%.2f ms (%.1f fps)", ms, 1000.f / (ms));
+    ImGui::Checkbox("Show Demo Window", &show_demo_window);
+    if (ImGui::Button("Reset View")) {
+        reset_view(data);
+    }
+    if (data->mol_data.dynamic.trajectory) {
+        int32 num_frames = data->mol_data.dynamic.trajectory.num_frames;
+        ImGui::Text("Num Frames: %i", num_frames);
+        float t = (float)data->time;
+        if (ImGui::SliderFloat("Time", &t, 0, (float)(num_frames - 1))) {
+            data->time = t;
+        }
+        ImGui::SliderFloat("fps", &data->frames_per_second, 0.1f, 100.f, "%.3f", 4.f);
+        if (data->is_playing) {
+            if (ImGui::Button("Pause")) data->is_playing = false;
+        } else {
+            if (ImGui::Button("Play")) data->is_playing = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Stop")) {
+            data->is_playing = false;
+            data->time = 0.0;
+        }
+        ImGui::Combo("type", (int*)(&data->interpolation), "Nearest\0Linear\0Linear Periodic\0Cubic\0Cubic Periodic\0\0");
+        ImGui::Checkbox("Dynamic Framewindow", &data->time_filter.dynamic_window);
+        if (data->time_filter.dynamic_window) {
+            ImGui::SliderFloat("Window Extent", &data->time_filter.window_extent, 1.f, (float)num_frames);
+        }
+    }
+    ImGui::End();
+
+    // Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
+    if (show_demo_window) {
+        ImGui::SetNextWindowPos(ImVec2(650, 20),
+                                ImGuiCond_FirstUseEver);  // Normally user code doesn't need/want to call this because positions are saved in .ini
+                                                              // file anyway. Here we just want to make the demo initial state a bit more friendly!
+        ImGui::ShowDemoWindow(&show_demo_window);
+    }
+}
+
 static void draw_representations_window(ApplicationData* data) {
     ImGui::Begin("Representations", &data->representations.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
@@ -1624,7 +1651,7 @@ if (ImGui::GetActiveID() == ImGui::GetID(name.buffer) && !ImGui::IsItemHovered()
         data->representations.data[i] = data->representations.data[i - 1];
         data->representations.data[i - 1] = tmp;
         ImGui::ResetMouseDragDelta();
-    } else if (drag_dy > 0.0f && i < data->representations.data.count - 1) {
+    } else if (drag_dy > 0.0f && i < data->representations.data->count - 1) {
         Representation tmp = data->representations.data[i];
         data->representations.data[i] = data->representations.data[i + 1];
         data->representations.data[i + 1] = tmp;
@@ -1934,6 +1961,7 @@ static void draw_async_info(ApplicationData* data) {
 }
 
 static void draw_timeline_window(ApplicationData* data) {
+    ASSERT(data);
     ImGui::SetNextWindowSize(ImVec2(400, 150), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Timelines", &data->statistics.show_timeline_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
         static float zoom = 1.f;
@@ -1984,7 +2012,7 @@ static void draw_timeline_window(ApplicationData* data) {
                 display_range.x -= 1.f;
                 display_range.y += 1.f;
             }
-            // float val = (float)data->time;
+            // float val = (float)time;
             ImGuiID id = ImGui::GetID(prop_name);
 
             ImGui::PushID(i);
@@ -2338,6 +2366,7 @@ static void destroy_framebuffer(MainFramebuffer* fbo) {
 
 // ### MOLECULE DATA ###
 static void free_trajectory_data(ApplicationData* data) {
+    ASSERT(data);
     if (data->mol_data.dynamic.trajectory) {
         data->async.trajectory.sync.signal_stop_and_wait();
         stats::signal_stop_and_wait();
@@ -2348,6 +2377,7 @@ static void free_trajectory_data(ApplicationData* data) {
 }
 
 static void free_molecule_data(ApplicationData* data) {
+    ASSERT(data);
     if (data->mol_data.dynamic.molecule) {
         free_molecule_structure(&data->mol_data.dynamic.molecule);
     }
@@ -2382,8 +2412,8 @@ static void load_molecule_data(ApplicationData* data, CString file) {
             if (data->mol_data.dynamic.trajectory) {
                 create_volume(data);
                 /*
-if (data->mol_data.dynamic.trajectory.num_frames > 0) {
-    vec3 box_ext = data->mol_data.dynamic.trajectory.frame_buffer[0].box * vec3(1);
+if (traj.num_frames > 0) {
+    vec3 box_ext = traj.frame_buffer[0].box * vec3(1);
     init_volume(&data->density_volume.volume, math::max(ivec3(1), ivec3(box_ext) / VOLUME_DOWNSAMPLE_FACTOR));
     data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(vec3(0), box_ext);
     data->density_volume.texture_to_model_matrix = volume::compute_texture_to_model_matrix(data->density_volume.volume.dim);
@@ -2722,8 +2752,8 @@ static void load_trajectory_async(ApplicationData* data) {
             create_volume(data);
 
             /*
-if (data->mol_data.dynamic.trajectory.num_frames > 0) {
-    vec3 box_ext = data->mol_data.dynamic.trajectory.frame_buffer[0].box * vec3(1);
+if (traj.num_frames > 0) {
+    vec3 box_ext = traj.frame_buffer[0].box * vec3(1);
     init_volume(&data->density_volume.volume, math::max(ivec3(1), ivec3(box_ext) / VOLUME_DOWNSAMPLE_FACTOR));
     data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(vec3(0), box_ext);
     data->density_volume.texture_to_model_matrix = volume::compute_texture_to_model_matrix(data->density_volume.volume.dim);
