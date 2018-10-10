@@ -170,6 +170,20 @@ static constexpr float vdw_radii[119] = {
     2.25, 2.20, 2.10, 2.05, 2.00, 2.00, 2.05, 2.10, 2.05, 1.96, 2.02, 2.07, 1.97, 2.02, 2.20, 3.48, 2.83, 2.00, 2.40, 2.00, 2.30, 2.00, 2.00, 2.00,
     2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00};
 
+// http://chemistry.wikia.com/wiki/List_of_elements_by_atomic_mass
+// last element padded with 295
+static constexpr float atomic_mass[119] = {
+    0,       1.00794,    4.002602, 6.941,     9.012182, 10.811,    12.0107,   14.0067,     15.9994, 18.9984032, 20.1797, 22.98976928,
+    24.3050, 26.9815386, 28.0855,  30.973762, 32.065,   35.453,    39.0983,   39.948,      40.078,  44.955912,  47.867,  50.9415,
+    51.9961, 54.938045,  55.845,   58.933195, 58.6934,  63.546,    65.409,    69.723,      72.64,   74.92160,   78.96,   79.904,
+    83.798,  85.4678,    87.62,    88.90585,  91.224,   92.906,    95.94,     98,          101.07,  102.905,    106.42,  107.8682,
+    112.411, 114.818,    118.710,  121.760,   127.60,   126.904,   131.293,   132.9054519, 137.327, 138.90547,  140.116, 140.90765,
+    144.242, 145,        150.36,   151.964,   157.25,   158.92535, 162.500,   164.930,     167.259, 168.93421,  173.04,  174.967,
+    178.49,  180.94788,  183.84,   186.207,   190.23,   192.217,   195.084,   196.966569,  200.59,  204.3833,   207.2,   208.98040,
+    210,     210,        220,      223,       226,      227,       231.03588, 232.03806,   237,     238.02891,  243,     244,
+    247,     247,        251,      252,       257,      258,       259,       262,         261,     262,        266,     264,
+    277,     268,        271,      272,       285,      284,       289,       288,         292,     294,        295};
+
 // http://jmol.sourceforge.net/jscolors/
 static constexpr unsigned int colors[119] = {
     0xFF000000, 0xFFFFFFFF, 0xFFFFFFD9, 0xFF2222B2, 0xFF00FFC2, 0xFFB5B5FF, 0xFFB0B0B0, 0xFFFF8F8F, 0xFF0000F0, 0xFF50E090, 0xFFF5E3B3, 0xFFF25CAB,
@@ -190,6 +204,7 @@ constexpr const char* symbol(Element symbol) { return detail::symbols[(int)symbo
 constexpr unsigned int color(Element symbol) { return detail::colors[(int)symbol]; }
 constexpr float vdw_radius(Element symbol) { return detail::vdw_radii[(int)symbol]; }
 constexpr float covalent_radius(Element symbol) { return detail::covalent_radii[(int)symbol]; }
+constexpr float atomic_mass(Element symbol) { return detail::atomic_mass[(int)symbol]; }
 
 Element get_from_string(CString cstr, bool ignore_case = false);
 

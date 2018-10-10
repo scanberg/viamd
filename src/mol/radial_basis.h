@@ -3,37 +3,25 @@
 #include <core/vector_types.h>
 #include <core/math_utils.h>
 
-enum class RadialBasisFunctionType : uint8 { Wendland_3_1, Gaussian };
+namespace radial_basis {
+enum class FunctionType : uint8 { Wendland_3_1, Gaussian };
 
-struct RadialBasis {
-    struct ControlPoint {
-        vec3 position;
-        vec3 weight;
-    };
-    DynamicArray<ControlPoint> control_points = {};
+void compute_radial_basis(Array<float> rbf_weights, Array<const vec3> positions, Array<const float> values,
+                          FunctionType type = FunctionType::Wendland_3_1, float cutoff = 10.f);
 
-    struct {
-        RadialBasisFunctionType type = RadialBasisFunctionType::Wendland_3_1;
-        float param = 0.f;
-    } function;
-};
+void compute_radial_basis(Array<vec2> rbf_weights, Array<const vec3> positions, Array<const vec2> values,
+                          FunctionType type = FunctionType::Wendland_3_1, float cutoff = 10.f);
 
-// RBF functions
-inline float Wendland_3_1(float r, float radius = 1.f) {
-    r = r / radius;
-    if (r <= 0.f) return 0.f;
-    if (r >= 1.f) return 0.f;
+void compute_radial_basis(Array<vec3> rbf_weights, Array<const vec3> positions, Array<const vec3> values,
+                          FunctionType type = FunctionType::Wendland_3_1, float cutoff = 10.f);
 
-    const float x = 1.f - r;
-    const float x2 = x * x;
-    return x2 * x2 * (4.f * r + 1.f);
-}
+void compute_radial_basis(Array<vec4> rbf_weights, Array<const vec3> positions, Array<const vec4> values,
+                          FunctionType type = FunctionType::Wendland_3_1, float cutoff = 10.f);
 
-inline float Gaussian(float r) { return math::exp(-math::pow(0.5f * r, 2)); }
+float evaluate_radial_basis(const vec3& point, Array<const vec3> rbf_positions, Array<const float> rbf_wights, FunctionType type,
+                            float cutoff = 10.f);
+vec2 evaluate_radial_basis(const vec3& point, Array<const vec3> rbf_positions, Array<const vec2> rbf_wights, FunctionType type, float cutoff = 10.f);
+vec3 evaluate_radial_basis(const vec3& point, Array<const vec3> rbf_positions, Array<const vec3> rbf_wights, FunctionType type, float cutoff = 10.f);
+vec4 evaluate_radial_basis(const vec3& point, Array<const vec3> rbf_positions, Array<const vec4> rbf_wights, FunctionType type, float cutoff = 10.f);
 
-void compute_radial_basis(RadialBasis* dst, Array<const vec3> points, Array<const vec3> values,
-                          RadialBasisFunctionType type = RadialBasisFunctionType::Wendland_3_1, float function_param = 10.f);
-RadialBasis compute_radial_basis(Array<const vec3> points, Array<const vec3> values,
-                                 RadialBasisFunctionType type = RadialBasisFunctionType::Wendland_3_1, float function_param = 10.f);
-
-vec3 evaluate_radial_basis(const RadialBasis& basis, const vec3& point);
+}  // namespace radial_basis

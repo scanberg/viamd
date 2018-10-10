@@ -3,9 +3,11 @@
 #include <core/math_utils.h>
 
 mat4 compute_view_to_world_matrix(const Camera& camera) {
-    auto r = glm::mat4_cast(camera.orientation);
-    auto t = glm::translate(mat4(1), camera.position);
-    return t * r;
+    auto m = math::mat4_cast(camera.orientation);
+    m[3] = vec4(camera.orientation * camera.position, 1);
+    return m;
+    // auto t = math::translate(mat4(1), camera.position);
+    // return t * r;
 }
 
 mat4 compute_world_to_view_matrix(const Camera& camera) {

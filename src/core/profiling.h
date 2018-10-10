@@ -10,8 +10,7 @@ void shutdown();
 void push_section(CString label);
 void pop_section();
 
-void clear();
-void finish();
+void new_frame();
 void draw_window(bool* window_open);
 }  // namespace cpu_profiling
 

@@ -78,8 +78,8 @@ struct DynamicArray : Array<T> {
     }
 
     DynamicArray(int64 count) {
-		count < 1 ? count = 1 : count;
-		capacity = count;
+        count < 1 ? count = 1 : count;
+        capacity = count;
         this->data = (T*)CALLOC(capacity, sizeof(T));
         this->count = capacity;
     }
@@ -269,6 +269,7 @@ private:
 
 template <typename T>
 Array<T> allocate_array(int64 num_elements) {
+    if (num_elements == 0) return {};
     return {(T*)MALLOC(num_elements * sizeof(T)), num_elements};
 }
 

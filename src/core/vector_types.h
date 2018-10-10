@@ -4,9 +4,11 @@
 //#define GLM_FORCE_SSE2
 //#endif
 
-//#ifndef GLM_FORCE_ALIGNED
-//#define GLM_FORCE_ALIGNED
-//#endif
+/*
+#ifndef GLM_FORCE_ALIGNED
+#define GLM_FORCE_ALIGNED
+#endif
+*/
 
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
@@ -23,25 +25,25 @@
 #include <glm/mat4x4.hpp>
 
 using quat = glm::tquat<float>;
-using glm::vec2;
-using glm::vec3;
-using glm::vec4;
+using vec2 = glm::tvec2<float>;
+using vec3 = glm::tvec3<float>;
+using vec4 = glm::tvec4<float>;
 
 using f32vec2 = glm::tvec2<float>;
 using f32vec3 = glm::tvec3<float>;
 using f32vec4 = glm::tvec4<float>;
 
-using glm::dvec2;
-using glm::dvec3;
-using glm::dvec4;
+using dvec2 = glm::tvec2<double>;
+using dvec3 = glm::tvec3<double>;
+using dvec4 = glm::tvec4<double>;
 
 using f64vec2 = glm::tvec2<double>;
 using f64vec3 = glm::tvec3<double>;
 using f64vec4 = glm::tvec4<double>;
 
-using glm::ivec2;
-using glm::ivec3;
-using glm::ivec4;
+using ivec2 = glm::tvec2<int32_t>;
+using ivec3 = glm::tvec3<int32_t>;
+using ivec4 = glm::tvec4<int32_t>;
 
 using i8vec2 = glm::tvec2<int8_t>;
 using i8vec3 = glm::tvec3<int8_t>;
@@ -59,9 +61,9 @@ using i64vec2 = glm::tvec2<int64_t>;
 using i64vec3 = glm::tvec3<int64_t>;
 using i64vec4 = glm::tvec4<int64_t>;
 
-using glm::uvec2;
-using glm::uvec3;
-using glm::uvec4;
+using uvec2 = glm::tvec2<uint32_t>;
+using uvec3 = glm::tvec3<uint32_t>;
+using uvec4 = glm::tvec4<uint32_t>;
 
 using u8vec2 = glm::tvec2<uint8_t>;
 using u8vec3 = glm::tvec3<uint8_t>;
@@ -79,20 +81,17 @@ using u64vec2 = glm::tvec2<uint64_t>;
 using u64vec3 = glm::tvec3<uint64_t>;
 using u64vec4 = glm::tvec4<uint64_t>;
 
-using glm::mat2;
-using glm::mat3;
-using glm::mat4;
-
-using glm::mat2x2;
-using glm::mat2x3;
-using glm::mat2x4;
-
-using glm::mat3x2;
-using glm::mat3x3;
-using glm::mat3x4;
-
-using glm::mat4x2;
-using glm::mat4x3;
-using glm::mat4x4;
+using mat2 = glm::tmat2x2<float>;
+using mat3 = glm::tmat3x3<float>;
+using mat4 = glm::tmat4x4<float>;
+using mat2x2 = glm::tmat2x2<float>;
+using mat2x3 = glm::tmat2x3<float>;
+using mat2x4 = glm::tmat2x4<float>;
+using mat3x2 = glm::tmat3x2<float>;
+using mat3x3 = glm::tmat3x3<float>;
+using mat3x4 = glm::tmat3x4<float>;
+using mat4x2 = glm::tmat4x2<float>;
+using mat4x3 = glm::tmat4x3<float>;
+using mat4x4 = glm::tmat4x4<float>;
 
 using Range = vec2;

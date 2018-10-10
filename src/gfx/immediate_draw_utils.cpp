@@ -13,7 +13,7 @@ const Material DEFAULT_MAT = MATERIAL_ROUGH_RED;
 struct Vertex {
     vec3 position;
     vec3 normal = {0, 0, 1};
-    vec2 uv = {0,0};
+    vec2 uv = {0, 0};
 };
 
 using Index = uint32;
@@ -136,7 +136,7 @@ static inline void append_draw_command(Index offset, Index count, GLenum primiti
     } else {
         ASSERT(curr_view_matrix_idx > -1, "Immediate Mode View Matrix not set!");
         ASSERT(curr_proj_matrix_idx > -1, "Immediate Mode Proj Matrix not set!");
-		ASSERT(curr_material_idx > -1, "Material not set!");
+        ASSERT(curr_material_idx > -1, "Material not set!");
 
         DrawCommand cmd{offset, count, primitive_type, program, curr_view_matrix_idx, curr_proj_matrix_idx, curr_material_idx};
         commands.push_back(cmd);
@@ -154,7 +154,6 @@ void initialize() {
     glCompileShader(v_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
         LOG_ERROR("Error while compiling immediate vertex shader:\n%s\n", buffer);
-
     }
     glCompileShader(f_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
@@ -291,20 +290,20 @@ ImGui::End();
     glBindTexture(GL_TEXTURE_2D, default_tex);
 
     for (const auto& cmd : commands) {
-		bool update_view = false;
-		bool update_mvp = false;
-		if (cmd.view_matrix_idx != current_view_matrix_idx) {
-			current_view_matrix_idx = cmd.view_matrix_idx;
-			update_view = true;
-			update_mvp = true;
-		}
-		if (cmd.proj_matrix_idx != current_proj_matrix_idx) {
-			current_proj_matrix_idx = cmd.proj_matrix_idx;
-			update_mvp = true;
-		}
+        bool update_view = false;
+        bool update_mvp = false;
+        if (cmd.view_matrix_idx != current_view_matrix_idx) {
+            current_view_matrix_idx = cmd.view_matrix_idx;
+            update_view = true;
+            update_mvp = true;
+        }
+        if (cmd.proj_matrix_idx != current_proj_matrix_idx) {
+            current_proj_matrix_idx = cmd.proj_matrix_idx;
+            update_mvp = true;
+        }
 
-		if (update_view) {
-            mat3 normal_matrix = math::transpose(math::inverse(matrix_stack[cmd.view_matrix_idx]));
+        if (update_view) {
+            mat3 normal_matrix = mat3(math::transpose(math::inverse(matrix_stack[cmd.view_matrix_idx])));
             glUniformMatrix3fv(uniform_loc_normal_matrix, 1, GL_FALSE, &normal_matrix[0][0]);
         }
         if (update_mvp) {
@@ -312,15 +311,14 @@ ImGui::End();
             glUniformMatrix4fv(uniform_loc_mvp_matrix, 1, GL_FALSE, &mvp_matrix[0][0]);
         }
         if (cmd.material_idx != current_material_idx) {
-			current_material_idx = cmd.material_idx;
+            current_material_idx = cmd.material_idx;
             const Material& material = cmd.material_idx == -1 ? DEFAULT_MAT : material_stack[cmd.material_idx];
             glBindBuffer(GL_UNIFORM_BUFFER, ubo_material);
             glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(Material), &material);
             glBindBuffer(GL_UNIFORM_BUFFER, 0);
             if (material.texture_id != 0) {
                 glBindTexture(GL_TEXTURE_2D, material.texture_id);
-            }
-            else {
+            } else {
                 glBindTexture(GL_TEXTURE_2D, default_tex);
             }
         }
@@ -389,10 +387,10 @@ void draw_plane(const vec3& center, const vec3& vec_u, const vec3& vec_v) {
     const Index idx = (Index)vertices.count;
     const vec3 normal = math::normalize(math::cross(vec_u, vec_v));
 
-    vertices.push_back({{center - vec_u + vec_v}, normal, {0,1}});
-    vertices.push_back({{center - vec_u - vec_v}, normal, {0,0}});
-    vertices.push_back({{center + vec_u + vec_v}, normal, {1,1}});
-    vertices.push_back({{center + vec_u - vec_v}, normal, {1,0}});
+    vertices.push_back({{center - vec_u + vec_v}, normal, {0, 1}});
+    vertices.push_back({{center - vec_u - vec_v}, normal, {0, 0}});
+    vertices.push_back({{center + vec_u + vec_v}, normal, {1, 1}});
+    vertices.push_back({{center + vec_u - vec_v}, normal, {1, 0}});
 
     indices.push_back(idx);
     indices.push_back(idx + 1);
