@@ -101,6 +101,9 @@ using glm::determinant;
 using glm::inverse;
 using glm::transpose;
 
+// Quat
+using glm::conjugate;
+
 // Cast
 using glm::mat3_cast;
 using glm::mat4_cast;

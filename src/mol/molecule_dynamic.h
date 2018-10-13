@@ -6,4 +6,8 @@
 struct MoleculeDynamic {
 	MoleculeStructure molecule{};
 	MoleculeTrajectory trajectory{};
+
+	operator bool() const {
+		return molecule && trajectory;
+	}
 };

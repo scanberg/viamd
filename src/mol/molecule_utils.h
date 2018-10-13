@@ -102,6 +102,7 @@ DynamicArray<uint32> compute_atom_colors(const MoleculeStructure& mol, ColorMapp
 void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, ColorMapping mapping, uint32 static_color = 0xffffffff);
 
 inline bool is_amino_acid(Residue res) { return aminoacid::get_from_string(res.name) != AminoAcid::Unknown; }
+bool is_dna(Residue res);
 
 // Compute a linear transform which fits a set of points_a onto a set of points_b in least squares fashion.
 mat4 compute_linear_transform(Array<const vec3> pos_frame_a, Array<const vec3> pos_frame_b);

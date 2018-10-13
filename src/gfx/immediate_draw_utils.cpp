@@ -247,21 +247,6 @@ void set_material(const Material& material) {
 }
 
 void flush() {
-    /*
-ImGui::SetNextWindowPos(ImVec2(0, 0));
-ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
-ImGui::SetNextWindowBgAlpha(0);
-ImGui::Begin("##ImmediateFull", nullptr,
-             ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-                 ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs);
-
-ImDrawList* dl = ImGui::GetWindowDrawList();
-
-dl->AddCircle(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, ImGui::GetIO().DisplaySize.y * 0.5f), 200.f, ImColor(1, 0, 0), 36, 2.f);
-
-ImGui::End();
-    */
-
     glBindVertexArray(vao);
 
     glBindBuffer(GL_ARRAY_BUFFER, vbo);

@@ -665,6 +665,14 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
     }
 }
 
+bool is_dna(Residue res) {
+	constexpr char* dna_residues[] = { "DA", "DA3", "DA5", "DC", "DC3", "DC5", "DG", "DG3", "DG5", "DT", "DT3", "DT5" };
+	for (auto dna_res : dna_residues) {
+		if (compare(res.name, dna_res)) return true;
+	}
+	return false;
+}
+
 mat4 compute_linear_transform(Array<const vec3> pos_frame_a, Array<const vec3> pos_frame_b) {
     ASSERT(pos_frame_a.count == pos_frame_b.count);
 
@@ -707,7 +715,7 @@ mat4 compute_linear_transform(Array<const vec3> pos_frame_a, Array<const vec3> p
     }
 
     mat4 result = Apq / Aqq;
-    result[3] = vec4(com_b, 1);
+    result[3] = vec4(com_b - com_a, 1);
     return result;
 }
 

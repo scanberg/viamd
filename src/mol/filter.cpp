@@ -239,6 +239,15 @@ void initialize() {
     filter_commands.push_back({"aminoacid", filter_amino_acid});
     filter_commands.push_back({"backbone", [](Array<bool>, const MoleculeDynamic&, Array<const CString>) { return true; }});  // NOT DONE
     filter_commands.push_back({"protein", filter_amino_acid});
+    filter_commands.push_back({"dna", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
+								   memset(mask.data, 0, mask.size_in_bytes());
+                                   for (const auto& res : dyn.molecule.residues) {
+									   if (is_dna(res)) {
+										   memset(mask.data + res.beg_atom_idx, 1, res.end_atom_idx - res.beg_atom_idx);
+									   }
+								   }
+                                   return true;
+                               }});
 
     filter_commands.push_back({"name", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
                                    if (args.count == 0) return false;

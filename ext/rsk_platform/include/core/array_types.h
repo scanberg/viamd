@@ -220,7 +220,6 @@ struct DynamicArray : Array<T> {
 
     // Resizes the array to a new size and zeros eventual new slots
     void resize(int64 new_count) {
-        ASSERT(new_count > 0);
         if (new_count == this->count) {
             return;
         } else if (new_count < this->count) {
@@ -267,6 +266,16 @@ private:
     int64 capacity;
 };
 
+/*
+// @TODO: Implement this (like std::array ish)
+// @TODO: Make StringBuffer to use this
+
+template <typename T, int64 Length>
+struct StaticArray {
+	T data[Length];
+};
+*/
+
 template <typename T>
 Array<T> allocate_array(int64 num_elements) {
     if (num_elements == 0) return {};
@@ -281,4 +290,10 @@ void free_array(Array<T>* arr) {
     }
     arr->data = nullptr;
     arr->count = 0;
+}
+
+template <typename T>
+void zero_array(Array<T>* arr) {
+	ASSERT(arr);
+	memset(arr->data, 0, arr->count * sizeof(T));
 }
