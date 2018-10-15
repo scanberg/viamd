@@ -21,6 +21,35 @@ bool allocate_and_load_pdb_from_file(MoleculeDynamic* md, const char* filename, 
     return res;
 }
 
+inline int char_to_digit(char c) { return c - '0'; }
+
+#include <ctype.h>
+inline float fast_and_unsafe_str_to_float(CString str) {
+    str = trim(str);
+    if (str.beg() == str.end()) return 0;
+    float val = 0;
+    float base = 1;
+    float sign = 1;
+    const char* c = str.beg();
+    if (*c == '-') {
+        sign = -1;
+        c++;
+    }
+    while (c != str.end() && *c != '.') {
+        val *= 10;
+        val += char_to_digit(*c);
+        c++;
+    }
+    if (c != str.end()) c++;
+    while (c != str.end()) {
+        base *= 0.1f;
+        val += char_to_digit(*c) * base;
+        c++;
+    }
+
+    return val;
+}
+
 bool allocate_and_parse_pdb_from_string(MoleculeDynamic* md, CString pdb_string, PdbLoadParams params) {
     free_molecule_structure(&md->molecule);
     free_trajectory(&md->trajectory);
@@ -42,45 +71,19 @@ bool allocate_and_parse_pdb_from_string(MoleculeDynamic* md, CString pdb_string,
     mat3 box(0);
     CString line;
     while (extract_line(line, pdb_string)) {
-        if (compare_n(line, "CRYST1", 6)) {
-            vec3 dim(to_float(line.substr(6, 9)), to_float(line.substr(15, 9)), to_float(line.substr(24, 9)));
-            vec3 angles(to_float(line.substr(33, 7)), to_float(line.substr(40, 7)), to_float(line.substr(47, 7)));
-            // @NOTE: If we are given a zero dim, just use unit length
-            if (dim == vec3(0)) dim = vec3(1);
-            box[0].x = dim.x;
-            box[1].y = dim.y;
-            box[2].z = dim.z;
-        } else if (compare_n(line, "MODEL", 5)) {
+        if (valid_line(line, params)) {
+            vec3 pos;
 
-        } else if (compare_n(line, "ENDMDL", 6)) {
-            if (params & PDB_TREAT_MODELS_AS_FRAMES) {
-                num_frames++;
-            } else {
-                ASSERT(false);
-                num_models++;
-                num_atoms = 0;
-                current_res_id = -1;
-                current_chain_id = -1;
+            // SLOW AS SHIT
+            // sscanf(line.substr(30).data, "%8f%8f%8f", &pos.x, &pos.y, &pos.z);
 
-                positions.clear();
-                labels.clear();
-                elements.clear();
-                residue_indices.clear();
-                occupancies.clear();
-                temp_factors.clear();
-                residues.clear();
-                chains.clear();
-            }
-        } else if (compare_n(line, "TER", 3)) {
-            if (params & PDB_TREAT_MODELS_AS_FRAMES && num_frames > 0) continue;
-            current_chain_id = line[21];
-            Chain chain;
-            chain.beg_res_idx = (ResIdx)residues.size();
-            chain.end_res_idx = chain.beg_res_idx;
-            chain.id = current_chain_id;
-            chains.push_back(chain);
-        } else if (valid_line(line, params)) {
-            positions.push_back(vec3(to_float(line.substr(30, 8)), to_float(line.substr(38, 8)), to_float(line.substr(46, 8))));
+            // FASTEST?
+            pos.x = fast_and_unsafe_str_to_float(line.substr(30, 8));
+            pos.y = fast_and_unsafe_str_to_float(line.substr(38, 8));
+            pos.z = fast_and_unsafe_str_to_float(line.substr(46, 8));
+
+            positions.push_back(pos);
+            // positions.push_back(vec3(to_float(line.substr(30, 8)), to_float(line.substr(38, 8)), to_float(line.substr(46, 8))));
             if (params & PDB_TREAT_MODELS_AS_FRAMES && num_frames > 0) continue;
             labels.push_back(trim(line.substr(12, 4)));
             if (line.count > 60) {
@@ -131,6 +134,43 @@ bool allocate_and_parse_pdb_from_string(MoleculeDynamic* md, CString pdb_string,
 
             // Add Atom
             num_atoms++;
+        } else if (compare_n(line, "CRYST1", 6)) {
+            vec3 dim(to_float(line.substr(6, 9)), to_float(line.substr(15, 9)), to_float(line.substr(24, 9)));
+            vec3 angles(to_float(line.substr(33, 7)), to_float(line.substr(40, 7)), to_float(line.substr(47, 7)));
+            // @NOTE: If we are given a zero dim, just use unit length
+            if (dim == vec3(0)) dim = vec3(1);
+            box[0].x = dim.x;
+            box[1].y = dim.y;
+            box[2].z = dim.z;
+        } else if (compare_n(line, "MODEL", 5)) {
+
+        } else if (compare_n(line, "ENDMDL", 6)) {
+            if (params & PDB_TREAT_MODELS_AS_FRAMES) {
+                num_frames++;
+            } else {
+                ASSERT(false);
+                num_models++;
+                num_atoms = 0;
+                current_res_id = -1;
+                current_chain_id = -1;
+
+                positions.clear();
+                labels.clear();
+                elements.clear();
+                residue_indices.clear();
+                occupancies.clear();
+                temp_factors.clear();
+                residues.clear();
+                chains.clear();
+            }
+        } else if (compare_n(line, "TER", 3)) {
+            if (params & PDB_TREAT_MODELS_AS_FRAMES && num_frames > 0) continue;
+            current_chain_id = line[21];
+            Chain chain;
+            chain.beg_res_idx = (ResIdx)residues.size();
+            chain.end_res_idx = chain.beg_res_idx;
+            chain.id = current_chain_id;
+            chains.push_back(chain);
         }
     }
 

@@ -57,13 +57,13 @@ bool allocate_and_parse_gro_from_string(MoleculeStructure* mol, CString gro_stri
             residues.back().end_atom_idx++;
 
             CString atom_name_trim = trim(CString(atom_name));
-			CString element_str = atom_name_trim;
+            CString element_str = atom_name_trim;
 
-			if (is_amino_acid(residues.back())) {
-				// If we have an amino acid, we can assume its an organic element with just one letter. C/N/H/O?
-				element_str = element_str.substr(0, 1);
-			}
-			Element elem = element::get_from_string(element_str);
+            if (is_amino_acid(residues.back())) {
+                // If we have an amino acid, we can assume its an organic element with just one letter. C/N/H/O?
+                element_str = element_str.substr(0, 1);
+            }
+            Element elem = element::get_from_string(element_str, true);
 
             positions.push_back(pos);
             velocities.push_back(vel);

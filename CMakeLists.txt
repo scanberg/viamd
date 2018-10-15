@@ -30,6 +30,7 @@ include_directories(src
                     ext/libxdrfile/src
                     ext/tinyexpr
                     ext/Eigen
+                    ext/svd3
                     ext/rsk_platform/include
                     ext/rsk_platform/ext/imgui)
 

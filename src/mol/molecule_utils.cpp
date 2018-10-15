@@ -157,11 +157,11 @@ void spline_interpolation_periodic(Array<vec3> positions, Array<const vec3> pos0
     ASSERT(pos2.count == positions.count);
     ASSERT(pos3.count == positions.count);
 
-/*
-    const vec3 full_box_ext = sim_box * vec3(1);
-    // const vec3 inv_full_box_ext = 1.f / full_box_ext;
-    const vec3 half_box_ext = full_box_ext * 0.5f;
-*/
+    /*
+        const vec3 full_box_ext = sim_box * vec3(1);
+        // const vec3 inv_full_box_ext = 1.f / full_box_ext;
+        const vec3 half_box_ext = full_box_ext * 0.5f;
+    */
     const glm_vec4 full_box_ext = _mm_set_ps(0.f, sim_box[2][2], sim_box[1][1], sim_box[0][0]);
     const glm_vec4 half_box_ext = glm_vec4_mul(full_box_ext, _mm_set_ps1(0.5f));
 
@@ -666,11 +666,11 @@ void compute_atom_colors(Array<uint32> color_dst, const MoleculeStructure& mol, 
 }
 
 bool is_dna(Residue res) {
-	constexpr char* dna_residues[] = { "DA", "DA3", "DA5", "DC", "DC3", "DC5", "DG", "DG3", "DG5", "DT", "DT3", "DT5" };
-	for (auto dna_res : dna_residues) {
-		if (compare(res.name, dna_res)) return true;
-	}
-	return false;
+    constexpr const char* dna_residues[] = {"DA", "DA3", "DA5", "DC", "DC3", "DC5", "DG", "DG3", "DG5", "DT", "DT3", "DT5"};
+    for (auto dna_res : dna_residues) {
+        if (compare(res.name, dna_res)) return true;
+    }
+    return false;
 }
 
 mat4 compute_linear_transform(Array<const vec3> pos_frame_a, Array<const vec3> pos_frame_b) {
@@ -921,4 +921,135 @@ void decompose(const mat3& M, mat3* R, mat3* S) {
     D[2][2] = sqrtf(D[2][2]);
     *S = math::inverse(Q) * D * Q;
     *R = M * math::inverse(*S);
+}
+
+#include <svd3.h>
+#define MATRIX_ARGS(M) M[0][0], M[0][1], M[0][2], M[1][0], M[1][1], M[1][2], M[2][0], M[2][1], M[2][2]
+void svd(const mat3& A, mat3* U, mat3* S, mat3* V) {
+    ASSERT(U);
+    ASSERT(S);
+    ASSERT(V);
+    mat3& u = *U;
+    mat3& s = *S;
+    mat3& v = *V;
+    svd(MATRIX_ARGS(A), MATRIX_ARGS(u), MATRIX_ARGS(s), MATRIX_ARGS(v));
+}
+
+void pd(const mat3& A, mat3* U, mat3* P) {
+    ASSERT(U);
+    ASSERT(P);
+    mat3& u = *U;
+    mat3& p = *P;
+    pd(MATRIX_ARGS(A), MATRIX_ARGS(u), MATRIX_ARGS(p));
+}
+#undef MATRIX_ARGS
+
+// From here
+// https://opensource.apple.com/source/WebCore/WebCore-514/platform/graphics/transforms/TransformationMatrix.cpp
+DecomposedMat3 decompose(const mat3& matrix) {
+    DecomposedMat3 result;
+
+    // Vector4 type and functions need to be added to the common set.
+    vec3 row[3], pdum3;
+
+    // Now get scale and shear.
+    for (int i = 0; i < 3; i++) {
+        row[i][0] = matrix[i][0];
+        row[i][1] = matrix[i][1];
+        row[i][2] = matrix[i][2];
+    }
+
+    // Compute X scale factor and normalize first row.
+    result.scale.x = math::length(row[0]);
+    row[0] = math::normalize(row[0]);
+
+    // Compute XY shear factor and make 2nd row orthogonal to 1st.
+    result.skew.xy = math::dot(row[0], row[1]);
+    // v3Combine(row[1], row[0], row[1], 1.0, -result.skewXY);
+    row[1] = row[1] - result.skew.xy * row[0];
+
+    // Now, compute Y scale and normalize 2nd row.
+    result.scale.y = math::length(row[1]);
+    row[1] = math::normalize(row[1]);
+    result.skew.xy /= result.scale.y;
+
+    // Compute XZ and YZ shears, orthogonalize 3rd row.
+    result.skew.xz = math::dot(row[0], row[2]);
+    // v3Combine(row[2], row[0], row[2], 1.0, -result.skewXZ);
+    row[2] = row[2] - result.skew.xz * row[0];
+    result.skew.yz = math::dot(row[1], row[2]);
+    // v3Combine(row[2], row[1], row[2], 1.0, -result.skewYZ);
+    row[2] = row[2] - result.skew.yz * row[1];
+
+    // Next, get Z scale and normalize 3rd row.
+    result.scale.z = math::length(row[2]);
+    row[2] = math::normalize(row[2]);
+    result.skew.xz /= result.scale.z;
+    result.skew.yz /= result.scale.z;
+
+    // At this point, the matrix (in rows[]) is orthonormal.
+    // Check for a coordinate system flip.  If the determinant
+    // is -1, then negate the matrix and the scaling factors.
+    pdum3 = math::cross(row[1], row[2]);
+    if (math::dot(row[0], pdum3) < 0) {
+        // Is this correct?
+        result.scale.x *= -1;
+        row[0] *= -1;
+        row[1] *= -1;
+        row[2] *= -1;
+    }
+
+    // Now, get the rotations out, as described in the gem.
+
+    // FIXME - Add the ability to return either quaternions (which are
+    // easier to recompose with) or Euler angles (rx, ry, rz), which
+    // are easier for authors to deal with. The latter will only be useful
+    // when we fix https://bugs.webkit.org/show_bug.cgi?id=23799, so I
+    // will leave the Euler angle code here for now.
+
+    // ret.rotateY = asin(-row[0][2]);
+    // if (cos(ret.rotateY) != 0) {
+    //     ret.rotateX = atan2(row[1][2], row[2][2]);
+    //     ret.rotateZ = atan2(row[0][1], row[0][0]);
+    // } else {
+    //     ret.rotateX = atan2(-row[2][0], row[1][1]);
+    //     ret.rotateZ = 0;
+    // }
+
+    float s, t, x, y, z, w;
+
+    t = row[0][0] + row[1][1] + row[2][2] + 1.0;
+
+    if (t > 1e-4) {
+        s = 0.5 / sqrt(t);
+        w = 0.25 / s;
+        x = (row[2][1] - row[1][2]) * s;
+        y = (row[0][2] - row[2][0]) * s;
+        z = (row[1][0] - row[0][1]) * s;
+    } else if (row[0][0] > row[1][1] && row[0][0] > row[2][2]) {
+        s = sqrt(1.0 + row[0][0] - row[1][1] - row[2][2]) * 2.0;  // S=4*qx
+        x = 0.25 * s;
+        y = (row[0][1] + row[1][0]) / s;
+        z = (row[0][2] + row[2][0]) / s;
+        w = (row[2][1] - row[1][2]) / s;
+    } else if (row[1][1] > row[2][2]) {
+        s = sqrt(1.0 + row[1][1] - row[0][0] - row[2][2]) * 2.0;  // S=4*qy
+        x = (row[0][1] + row[1][0]) / s;
+        y = 0.25 * s;
+        z = (row[1][2] + row[2][1]) / s;
+        w = (row[0][2] - row[2][0]) / s;
+    } else {
+        s = sqrt(1.0 + row[2][2] - row[0][0] - row[1][1]) * 2.0;  // S=4*qz
+        x = (row[0][2] + row[2][0]) / s;
+        y = (row[1][2] + row[2][1]) / s;
+        z = 0.25 * s;
+        w = (row[1][0] - row[0][1]) / s;
+    }
+
+    result.rotation.x = x;
+    result.rotation.y = y;
+    result.rotation.z = z;
+    result.rotation.w = w;
+
+    return result;
 }

@@ -112,3 +112,18 @@ void compute_RS(mat3* R, mat3* S, Array<const vec3> x0, Array<const vec3> x, Arr
 // 3x3 matrix operations
 void diagonalize(const mat3& M, mat3* Q, mat3* D);
 void decompose(const mat3& M, mat3* R, mat3* S);
+
+void svd(const mat3& M, mat3* U, mat3* S, mat3* V);
+void pd(const mat3& M, mat3* U, mat3* P);
+
+struct DecomposedMat3 {
+    quat rotation;
+    vec3 scale;
+    struct {
+        float xy;
+        float xz;
+        float yz;
+    } skew;
+};
+
+DecomposedMat3 decompose(const mat3& matrix);
