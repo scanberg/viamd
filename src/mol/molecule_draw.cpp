@@ -293,8 +293,8 @@ static GLuint g_shader = 0;
 static GLuint f_shader = 0;
 static GLuint program = 0;
 
-static GLint attrib_loc_pos = -1;
-static GLint attrib_loc_col = -1;
+static GLint attrib_loc_position = -1;
+static GLint attrib_loc_color = -1;
 static GLint uniform_loc_view_mat = -1;
 static GLint uniform_loc_proj_mat = -1;
 static GLint uniform_loc_radius = -1;
@@ -573,8 +573,8 @@ static void initialize() {
     glDeleteShader(g_shader);
     glDeleteShader(f_shader);
 
-    attrib_loc_pos = glGetAttribLocation(program, "v_position");
-    attrib_loc_col = glGetAttribLocation(program, "v_color");
+    attrib_loc_position = glGetAttribLocation(program, "v_position");
+    attrib_loc_color = glGetAttribLocation(program, "v_color");
     uniform_loc_view_mat = glGetUniformLocation(program, "u_view_mat");
     uniform_loc_proj_mat = glGetUniformLocation(program, "u_proj_mat");
     uniform_loc_radius = glGetUniformLocation(program, "u_radius");
@@ -583,11 +583,11 @@ static void initialize() {
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
 
-    glEnableVertexAttribArray(attrib_loc_pos);
-    glVertexAttribPointer(attrib_loc_pos, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const GLvoid*)0);
+    glEnableVertexAttribArray(attrib_loc_position);
+    glVertexAttribPointer(attrib_loc_position, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const GLvoid*)0);
 
-    glEnableVertexAttribArray(attrib_loc_col);
-    glVertexAttribPointer(attrib_loc_col, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (const GLvoid*)12);
+    glEnableVertexAttribArray(attrib_loc_color);
+    glVertexAttribPointer(attrib_loc_color, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (const GLvoid*)12);
 
     glBindVertexArray(0);
 
@@ -959,6 +959,28 @@ void draw_vdw(Array<const vec3> atom_positions, Array<const float> atom_radii, A
     draw_vdw(vdw::buf_position_radius, vdw::buf_color, count, view_mat, proj_mat, radii_scale);
 }
 
+void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint bond_buffer, int32 bond_count, const mat4& view_mat, const mat4& proj_mat, float radius_scale) {
+    glBindVertexArray(licorice::vao);
+    glBindBuffer(GL_ARRAY_BUFFER, atom_position_buffer);
+    glEnableVertexAttribArray(licorice::attrib_loc_position);
+    glVertexAttribPointer(licorice::attrib_loc_position, 3, GL_FLOAT, GL_FALSE, sizeof(vec4), (const GLvoid*)0);
+    glBindBuffer(GL_ARRAY_BUFFER, atom_color_buffer);
+    glEnableVertexAttribArray(licorice::attrib_loc_color);
+    glVertexAttribPointer(licorice::attrib_loc_color, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(unsigned int), (const GLvoid*)0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, bond_buffer);
+
+    glUseProgram(licorice::program);
+    glUniformMatrix4fv(licorice::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
+    glUniformMatrix4fv(licorice::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
+    glUniform1f(licorice::uniform_loc_radius, 0.25f * radius_scale);
+    
+    glDrawElements(GL_LINES, bond_count * 2, GL_UNSIGNED_INT, (const void*)0);
+    glUseProgram(0);
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+}
+
 void draw_licorice(Array<const vec3> atom_positions, Array<const Bond> atom_bonds, Array<const uint32> atom_colors, const mat4& view_mat,
                    const mat4& proj_mat, float radii_scale) {
     ASSERT(atom_positions.count == atom_colors.count);
@@ -977,7 +999,7 @@ void draw_licorice(Array<const vec3> atom_positions, Array<const Bond> atom_bond
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, licorice::ibo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, atom_bonds.count * sizeof(Bond), atom_bonds.data, GL_STREAM_DRAW);
 
-    // glEnable(GL_DEPTH_TEST);
+    //glEnable(GL_DEPTH_TEST);
 
     glBindVertexArray(licorice::vao);
     glUseProgram(licorice::program);
@@ -991,7 +1013,7 @@ void draw_licorice(Array<const vec3> atom_positions, Array<const Bond> atom_bond
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
-    // glDisable(GL_DEPTH_TEST);
+    //glDisable(GL_DEPTH_TEST);
 }
 
 void draw_ribbons(Array<const BackboneSegment> backbone_segments, Array<const Chain> chains, Array<const vec3> atom_positions,

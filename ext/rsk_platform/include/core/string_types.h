@@ -36,7 +36,7 @@ struct CString : Array<const char> {
     }
 
     const char* cstr() const { return data; }
-    const int64 length() const { return count; }
+    int64 length() const { return count; }
 
     operator const char*() { return data; }
     operator bool() { return (data != 0 && count != 0); }

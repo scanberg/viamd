@@ -329,10 +329,10 @@ DynamicArray<BackboneSegment> compute_backbone_segments(Array<const Residue> res
     DynamicArray<BackboneSegment> segments;
     int64 invalid_segments = 0;
     for (auto& res : residues) {
-        auto ca_idx = -1;
-        auto n_idx = -1;
-        auto c_idx = -1;
-        auto o_idx = -1;
+        int32 ca_idx = -1;
+        int32 n_idx = -1;
+        int32 c_idx = -1;
+        int32 o_idx = -1;
         if (is_amino_acid(res)) {
             // find atoms
             for (int32 i = res.beg_atom_idx; i < res.end_atom_idx; i++) {

@@ -915,8 +915,9 @@ load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
                         POP_GPU_SECTION() break;
                     case Representation::LICORICE:
                         PUSH_GPU_SECTION("Licorice")
-                        draw::draw_licorice(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.dynamic.molecule.covalent_bonds, rep.colors,
-                                            view_mat, proj_mat, rep.radius);
+                        draw::draw_licorice(data.gpu_buffers.position_radius, data.gpu_buffers.color, data.gpu_buffers.bond, data.mol_data.dynamic.molecule.covalent_bonds.count, view_mat, proj_mat, rep.radius);
+                        //draw::draw_licorice(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.dynamic.molecule.covalent_bonds, rep.colors,
+                        //                    view_mat, proj_mat, rep.radius);
                         POP_GPU_SECTION()
                         break;
                     case Representation::RIBBONS:

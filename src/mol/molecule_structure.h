@@ -6,28 +6,14 @@
 #include <core/string_utils.h>
 #include <mol/element.h>
 
-struct Bond {
-    int32 idx_a;
-    int32 idx_b;
-};
-
 using Label = StringBuffer<8>;
 using AtomIdx = int32;
 using ResIdx = int32;
 using ChainIdx = int32;
 
-struct Residue {
-    Label name = "";
-    ResIdx id = -1;
-    AtomIdx beg_atom_idx = 0;
-    AtomIdx end_atom_idx = 0;
-    ChainIdx chain_idx = -1;
-};
-
-struct Chain {
-    Label id = "";
-    ResIdx beg_res_idx = 0;
-    ResIdx end_res_idx = 0;
+struct Bond {
+    int32 idx_a;
+    int32 idx_b;
 };
 
 struct BackboneSegment {
@@ -43,6 +29,20 @@ struct HydrogenBondDonor {
 };
 
 typedef AtomIdx HydrogenBondAcceptor;
+
+struct Residue {
+    Label name = "";
+    ResIdx id = -1;
+    AtomIdx beg_atom_idx = 0;
+    AtomIdx end_atom_idx = 0;
+    ChainIdx chain_idx = -1;
+};
+
+struct Chain {
+    Label id = "";
+    ResIdx beg_res_idx = 0;
+    ResIdx end_res_idx = 0;
+};
 
 // Interface to access molecular data
 struct MoleculeStructure {
