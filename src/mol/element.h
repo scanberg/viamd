@@ -206,6 +206,6 @@ constexpr float vdw_radius(Element symbol) { return detail::vdw_radii[(int)symbo
 constexpr float covalent_radius(Element symbol) { return detail::covalent_radii[(int)symbol]; }
 constexpr float atomic_mass(Element symbol) { return detail::atomic_mass[(int)symbol]; }
 
-Element get_from_string(CString cstr, bool ignore_case = false);
+Element get_from_string(CString cstr);
 
 }  // namespace element

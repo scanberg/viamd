@@ -47,7 +47,7 @@ static GLuint tex_picking = 0;
 static GLint uniform_loc_view_mat = -1;
 static GLint uniform_loc_proj_mat = -1;
 static GLint uniform_loc_inv_proj_mat = -1;
-static GLint uniform_loc_fov = -1;
+static GLint uniform_loc_radius_scale = -1;
 static GLint uniform_loc_tex_pos_rad = -1;
 static GLint uniform_loc_tex_color = -1;
 static GLint uniform_loc_tex_picking = -1;
@@ -63,12 +63,22 @@ uniform samplerBuffer u_tex_pos_rad;
 uniform samplerBuffer u_tex_color;
 uniform samplerBuffer u_tex_picking;
 
+uniform float u_radius_scale = 1.0;
+
 out Fragment {
     flat vec4 color;
     flat vec4 view_sphere;
 	flat vec4 picking_color;
     smooth vec4 view_coord;
 } out_frag;
+
+vec4 pack_u32(uint data) {
+	return vec4(
+        (data & uint(0x000000FF)) >> 0,
+        (data & uint(0x0000FF00)) >> 8,
+        (data & uint(0x00FF0000)) >> 16,
+        (data & uint(0xFF000000)) >> 24) / 255.0;
+}
 
 // From Inigo Quilez!
 void proj_sphere(in vec4 sphere, 
@@ -94,10 +104,11 @@ void main() {
 
 	vec4 pos_rad = texelFetch(u_tex_pos_rad, IID);
 	vec4 color	 = texelFetch(u_tex_color, IID);
-	vec4 picking = texelFetch(u_tex_picking, IID);
+	vec4 picking = pack_u32(uint(IID));
 
 	vec3 pos = pos_rad.xyz;
-	float rad = pos_rad.w;
+	float rad = pos_rad.w * u_radius_scale;
+	if (color.a == 0) rad = 0;
 
     vec4 view_coord = u_view_mat * vec4(pos, 1.0);
     float len = length(view_coord.xyz);
@@ -248,7 +259,7 @@ static void initialize() {
     uniform_loc_view_mat = glGetUniformLocation(program, "u_view_mat");
     uniform_loc_proj_mat = glGetUniformLocation(program, "u_proj_mat");
     uniform_loc_inv_proj_mat = glGetUniformLocation(program, "u_inv_proj_mat");
-    uniform_loc_fov = glGetUniformLocation(program, "u_fov");
+    uniform_loc_radius_scale = glGetUniformLocation(program, "u_radius_scale");
     uniform_loc_tex_pos_rad = glGetUniformLocation(vdw::program, "u_tex_pos_rad");
     uniform_loc_tex_color = glGetUniformLocation(vdw::program, "u_tex_color");
     uniform_loc_tex_picking = glGetUniformLocation(vdw::program, "u_tex_picking");
@@ -889,6 +900,40 @@ void shutdown() {
     ribbons::shutdown();
 }
 
+void draw_vdw(GLuint atom_position_radius_buffer, GLuint atom_color_buffer, int32 atom_count, const mat4& view_mat, const mat4& proj_mat,
+              float radius_scale) {
+    mat4 inv_proj_mat = math::inverse(proj_mat);
+
+    glEnable(GL_DEPTH_TEST);
+    glUseProgram(vdw::program);
+
+    // Texture 0
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_position_radius);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, atom_position_radius_buffer);
+
+    // Texture 1
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_color);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, atom_color_buffer);
+
+    // Uniforms
+    glUniform1f(vdw::uniform_loc_radius_scale, radius_scale);
+    glUniform1i(vdw::uniform_loc_tex_pos_rad, 0);
+    glUniform1i(vdw::uniform_loc_tex_color, 1);
+    glUniform1i(vdw::uniform_loc_tex_picking, 2);
+    glUniformMatrix4fv(vdw::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
+    glUniformMatrix4fv(vdw::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
+    glUniformMatrix4fv(vdw::uniform_loc_inv_proj_mat, 1, GL_FALSE, &inv_proj_mat[0][0]);
+
+    // Draw
+    draw_instanced_quads(atom_count);
+
+    glUseProgram(0);
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
 void draw_vdw(Array<const vec3> atom_positions, Array<const float> atom_radii, Array<const uint32> atom_colors, const mat4& view_mat,
               const mat4& proj_mat, float radii_scale) {
     uint32 count = (uint32)atom_positions.count;
@@ -900,62 +945,18 @@ void draw_vdw(Array<const vec3> atom_positions, Array<const float> atom_radii, A
     vec4* gpu_pos_rad = (vec4*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
     glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_color);
     uint32* gpu_color = (uint32*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-    glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_picking);
-    uint32* gpu_picking = (uint32*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
 
-    unsigned int draw_count = 0;
-    // DISCARD ANY ZERO RADII OR ZERO COLOR ALPHA ATOMS HERE
     for (uint32 i = 0; i < count; i++) {
-        if (atom_radii[i] <= 0.f) continue;
-        if ((atom_colors[i] & 0xff000000) == 0) continue;
-        gpu_pos_rad[draw_count] = vec4(atom_positions[i], atom_radii[i] * radii_scale);
-        gpu_color[draw_count] = atom_colors[i];
-        gpu_picking[draw_count] = i;
-        draw_count++;
+        gpu_pos_rad[i] = vec4(atom_positions[i], atom_radii[i]);
+        gpu_color[i] = atom_colors[i];
     }
 
-    glUnmapBuffer(GL_ARRAY_BUFFER);
-    glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_color);
     glUnmapBuffer(GL_ARRAY_BUFFER);
     glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_position_radius);
     glUnmapBuffer(GL_ARRAY_BUFFER);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    // glEnable(GL_DEPTH_TEST);
-
-    glUseProgram(vdw::program);
-
-    // Texture 0
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_position_radius);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, vdw::buf_position_radius);
-
-    // Texture 1
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_color);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, vdw::buf_color);
-
-    // Texture 2
-    glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_picking);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, vdw::buf_picking);
-
-    // Uniforms
-    glUniform1i(vdw::uniform_loc_tex_pos_rad, 0);
-    glUniform1i(vdw::uniform_loc_tex_color, 1);
-    glUniform1i(vdw::uniform_loc_tex_picking, 2);
-    glUniformMatrix4fv(vdw::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
-    glUniformMatrix4fv(vdw::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
-    glUniformMatrix4fv(vdw::uniform_loc_inv_proj_mat, 1, GL_FALSE, &inv_proj_mat[0][0]);
-
-    // Draw
-    draw_instanced_quads(draw_count);
-
-    glUseProgram(0);
-    glBindVertexArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-    // glDisable(GL_DEPTH_TEST);
+    draw_vdw(vdw::buf_position_radius, vdw::buf_color, count, view_mat, proj_mat, radii_scale);
 }
 
 void draw_licorice(Array<const vec3> atom_positions, Array<const Bond> atom_bonds, Array<const uint32> atom_colors, const mat4& view_mat,

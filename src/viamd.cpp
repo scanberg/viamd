@@ -136,6 +136,12 @@ struct MainFramebuffer {
     int height = 0;
 };
 
+struct MoleculeBuffers {
+    GLuint position_radius = 0;
+    GLuint color = 0;
+    GLuint bond = 0;
+};
+
 struct Representation {
     enum Type { VDW, LICORICE, RIBBONS };
 
@@ -281,6 +287,9 @@ struct ApplicationData {
     MainFramebuffer fbo;
     unsigned int picking_idx = NO_PICKING_IDX;
 
+    // --- MOLECULE GPU BUFFERS ---
+    MoleculeBuffers gpu_buffers;
+
     // --- PLAYBACK ---
     float64 time = 0.f;  // needs to be double precision for long trajectories
     float frames_per_second = 10.f;
@@ -303,7 +312,7 @@ struct ApplicationData {
         float radius = 6.0f;
     } ssao;
 
-    // HYDROGEN BONDS
+    // --- HYDROGEN BONDS ---
     struct {
         bool enabled = false;
         bool dirty = true;
@@ -313,13 +322,13 @@ struct ApplicationData {
         DynamicArray<HydrogenBond> bonds{};
     } hydrogen_bonds;
 
-    // SIMULATION BOX
+    // --- SIMULATION BOX ---
     struct {
         bool enabled = false;
         vec4 color = vec4(1, 1, 0, 0.5);
     } simulation_box;
 
-    // VOLUME
+    // --- VOLUME ---
     struct {
         bool enabled = false;
         vec3 color = vec3(1, 0, 0);
@@ -340,7 +349,7 @@ struct ApplicationData {
         mat4 world_to_texture_matrix{};
     } density_volume;
 
-    // RAMACHANDRAN
+    // --- RAMACHANDRAN ---
     struct {
         bool show_window = false;
         float radius = 1.f;
@@ -352,7 +361,7 @@ struct ApplicationData {
         Array<BackboneAngles> current_backbone_angles{};
     } ramachandran;
 
-    // REFERENCE FRAMES
+    // --- REFERENCE FRAMES ---
     struct {
         static constexpr int32 max_reference_frames = 16;
         ReferenceFrame frames[max_reference_frames]{};
@@ -442,8 +451,13 @@ static void draw_async_info(ApplicationData* data);
 static void init_framebuffer(MainFramebuffer* fbo, int width, int height);
 static void destroy_framebuffer(MainFramebuffer* fbo);
 
-static void free_molecule_data(ApplicationData* data);
+static void init_molecule_buffers(ApplicationData* data);
+static void free_molecule_buffers(ApplicationData* data);
+
+static void copy_molecule_position_radius_to_buffer(ApplicationData* data);
+
 static void load_molecule_data(ApplicationData* data, CString file);
+static void free_molecule_data(ApplicationData* data);
 
 static void load_workspace(ApplicationData* data, CString file);
 static void save_workspace(ApplicationData* data, CString file);
@@ -783,9 +797,10 @@ load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
 
         PUSH_CPU_SECTION("Interpolate position")
         if (data.mol_data.dynamic.trajectory && time_changed) {
+            auto positions = data.mol_data.dynamic.molecule.atom_positions;
             data.spatial_hash.dirty_flag = true;
-            interpolate_atomic_positions(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.dynamic.trajectory, data.time,
-                                         data.interpolation);
+            interpolate_atomic_positions(positions, data.mol_data.dynamic.trajectory, data.time, data.interpolation);
+            copy_molecule_position_radius_to_buffer(&data);
         }
         POP_CPU_SECTION()
 
@@ -850,16 +865,37 @@ load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
         mat4 proj_mat = compute_perspective_projection_matrix(data.camera.camera, data.fbo.width, data.fbo.height);
         mat4 inv_proj_mat = math::inverse(proj_mat);
 
+        // RECOMPUTE COLORS
+        bool recompute_colors = true;
+        if (recompute_colors) {
+            glBindBuffer(GL_ARRAY_BUFFER, data.gpu_buffers.color);
+            uint32* gpu_color_data = (uint32*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+            if (!gpu_color_data) {
+                LOG_ERROR("Could not map color buffer");
+            } else {
+                for (const auto& rep : data.representations.data) {
+                    if (!rep.enabled) continue;
+                    for (int32 i = 0; i < rep.colors.count; i++) {
+                        if ((rep.colors[i] & 0xff000000) == 0) continue;
+                        gpu_color_data[i] = rep.colors[i];
+                    }
+                }
+                glUnmapBuffer(GL_ARRAY_BUFFER);
+            }
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+        }
+
         PUSH_GPU_SECTION("G-Buffer fill") {
             for (const auto& rep : data.representations.data) {
                 if (!rep.enabled) continue;
                 switch (rep.type) {
                     case Representation::VDW:
                         PUSH_GPU_SECTION("Vdw")
-                        draw::draw_vdw(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.atom_radii, rep.colors, view_mat, proj_mat,
-                                       rep.radius);
-                        POP_GPU_SECTION()
-                        break;
+                        // draw::draw_vdw(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.atom_radii, rep.colors, view_mat, proj_mat,
+                        //               rep.radius);
+                        draw::draw_vdw(data.gpu_buffers.position_radius, data.gpu_buffers.color, data.mol_data.dynamic.molecule.atom_positions.count,
+                                       view_mat, proj_mat, rep.radius);
+                        POP_GPU_SECTION() break;
                     case Representation::LICORICE:
                         PUSH_GPU_SECTION("Licorice")
                         draw::draw_licorice(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.dynamic.molecule.covalent_bonds, rep.colors,
@@ -2378,6 +2414,71 @@ static void destroy_framebuffer(MainFramebuffer* fbo) {
     if (fbo->pbo_picking[0]) glDeleteBuffers(2, fbo->pbo_picking);
 }
 
+static void init_molecule_buffers(ApplicationData* data) {
+    ASSERT(data);
+
+    int32 atom_count = (int32)data->mol_data.dynamic.molecule.atom_positions.count;
+    int32 bond_count = (int32)data->mol_data.dynamic.molecule.covalent_bonds.count;
+
+    DynamicArray<vec4> pos_rad(atom_count);
+    DynamicArray<uint32> color(atom_count);
+    auto bond_data = data->mol_data.dynamic.molecule.covalent_bonds.data;
+
+    for (int32 i = 0; i < atom_count; i++) {
+        pos_rad[i] = {data->mol_data.dynamic.molecule.atom_positions[i], data->mol_data.atom_radii[i]};
+    }
+    compute_atom_colors(color, data->mol_data.dynamic.molecule, ColorMapping::CPK);
+
+    if (!data->gpu_buffers.position_radius) glGenBuffers(1, &data->gpu_buffers.position_radius);
+    if (!data->gpu_buffers.color) glGenBuffers(1, &data->gpu_buffers.color);
+    if (!data->gpu_buffers.bond) glGenBuffers(1, &data->gpu_buffers.bond);
+
+    glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.position_radius);
+    glBufferData(GL_ARRAY_BUFFER, atom_count * sizeof(vec4), pos_rad.data, GL_DYNAMIC_DRAW);
+
+    glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.color);
+    glBufferData(GL_ARRAY_BUFFER, atom_count * sizeof(uint32), color.data, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.bond);
+    glBufferData(GL_ARRAY_BUFFER, bond_count * sizeof(uint32) * 2, bond_data, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+static void free_molecule_buffers(ApplicationData* data) {
+    ASSERT(data);
+    if (!data->gpu_buffers.position_radius) {
+        glDeleteBuffers(1, &data->gpu_buffers.position_radius);
+        data->gpu_buffers.position_radius = 0;
+    }
+    if (!data->gpu_buffers.color) {
+        glDeleteBuffers(1, &data->gpu_buffers.color);
+        data->gpu_buffers.color = 0;
+    }
+    if (!data->gpu_buffers.bond) {
+        glDeleteBuffers(1, &data->gpu_buffers.bond);
+        data->gpu_buffers.bond = 0;
+    }
+}
+
+void copy_molecule_position_radius_to_buffer(ApplicationData* data) {
+    ASSERT(data);
+    auto positions = data->mol_data.dynamic.molecule.atom_positions;
+    auto radii = data->mol_data.atom_radii;
+
+    glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.position_radius);
+    vec4* pos_rad_gpu = (vec4*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+    if (!pos_rad_gpu) {
+        LOG_ERROR("Could not map position radius buffer");
+    } else {
+        for (int32 i = 0; i < positions.count; i++) {
+            pos_rad_gpu[i] = {positions[i], radii[i]};
+        }
+        glUnmapBuffer(GL_ARRAY_BUFFER);
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
 // ### MOLECULE DATA ###
 static void free_trajectory_data(ApplicationData* data) {
     ASSERT(data);
@@ -2399,6 +2500,7 @@ static void free_molecule_data(ApplicationData* data) {
         free_trajectory_data(data);
     }
     data->mol_data.atom_radii.clear();
+    free_molecule_buffers(data);
     free_backbone_angles_trajectory(&data->ramachandran.backbone_angles);
     data->ramachandran.backbone_angles = {};
     data->ramachandran.current_backbone_angles = {};
@@ -2424,6 +2526,8 @@ static void load_molecule_data(ApplicationData* data, CString file) {
 
             data->files.molecule = allocate_string(file);
             data->mol_data.atom_radii = compute_atom_radii(data->mol_data.dynamic.molecule.atom_elements);
+            init_molecule_buffers(data);
+            copy_molecule_position_radius_to_buffer(data);
             if (data->mol_data.dynamic.trajectory) {
                 create_volume(data);
                 /*
@@ -2453,6 +2557,8 @@ if (traj.num_frames > 0) {
 
             data->files.molecule = allocate_string(file);
             data->mol_data.atom_radii = compute_atom_radii(data->mol_data.dynamic.molecule.atom_elements);
+            init_molecule_buffers(data);
+            copy_molecule_position_radius_to_buffer(data);
         } else if (compare_n(ext, "xtc", 3, true)) {
             if (!data->mol_data.dynamic.molecule) {
                 LOG_ERROR("ERROR! Must have molecule structure before trajectory can be loaded.");

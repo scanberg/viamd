@@ -63,7 +63,7 @@ bool allocate_and_parse_gro_from_string(MoleculeStructure* mol, CString gro_stri
                 // If we have an amino acid, we can assume its an organic element with just one letter. C/N/H/O?
                 element_str = element_str.substr(0, 1);
             }
-            Element elem = element::get_from_string(element_str, true);
+            Element elem = element::get_from_string(element_str);
 
             positions.push_back(pos);
             velocities.push_back(vel);

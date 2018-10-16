@@ -36,6 +36,7 @@ struct CString : Array<const char> {
     }
 
     const char* cstr() const { return data; }
+    const int64 length() const { return count; }
 
     operator const char*() { return data; }
     operator bool() { return (data != 0 && count != 0); }
@@ -70,6 +71,8 @@ struct String : Array<char> {
         auto array = sub_array(_offset, _count);
         return {array.data, array.count};
     }
+
+    const int64 length() const { return count; }
 
     operator CString() { return CString(data, count); }
     operator char*() { return data; }

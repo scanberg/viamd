@@ -33,6 +33,76 @@ void main() {
 }
 )";
 
+namespace voxelize_spheres {
+static struct {
+    GLuint program = 0;
+
+    struct {
+        GLint sphere_tex = -1;
+        GLint color_tex = -1;
+        GLint volume_tex = -1;
+        GLint volume_min = -1;
+        GLint voxel_ext = -1;
+    } uniform_location;
+
+} gl;
+
+static const char* v_shader = R"(
+#version 150 core
+
+uniform vec3 u_volume_min;
+uniform vec3 u_voxel_ext;
+uniform samplerBuffer u_tex_sphere;
+uniform samplerBuffer u_tex_color;
+layout(rgba8, binding=0) uniform coherent image3D u_tex_volume;
+
+void main() {
+	int idx = gl_VertexID;
+	vec4 sphere = texelFetch(u_tex_sphere, idx);
+	vec4 color = texelFetch(u_tex_color, idx);
+	ivec3 coord = (sphere.xyz - volume_min) / voxel_ext;
+	imageStore(tex_volume, coord, color);
+}
+)";
+
+static void initialize() {
+    constexpr int BUFFER_SIZE = 1024;
+    char buffer[BUFFER_SIZE];
+
+    GLuint v_shader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(v_shader, 1, &v_shader_fs_quad_src, 0);
+
+    glCompileShader(v_shader);
+    if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
+        LOG_ERROR("Compiling sphere binning vertex shader:\n%s\n", buffer);
+    }
+
+    gl.program = glCreateProgram();
+    glAttachShader(gl.program, v_shader);
+    glLinkProgram(gl.program);
+    if (gl::get_program_link_error(buffer, BUFFER_SIZE, gl.program)) {
+        LOG_ERROR("Linking sphere binning program:\n%s\n", buffer);
+    }
+
+    glDetachShader(gl.program, v_shader);
+    glDeleteShader(v_shader);
+
+    gl.uniform_location.sphere_tex = glGetUniformLocation(gl.program, "u_tex_sphere");
+    gl.uniform_location.color_tex = glGetUniformLocation(gl.program, "u_tex_color");
+    gl.uniform_location.volume_tex = glGetUniformLocation(gl.program, "u_tex_volume");
+    gl.uniform_location.volume_min = glGetUniformLocation(gl.program, "u_volume_min");
+    gl.uniform_location.voxel_ext = glGetUniformLocation(gl.program, "u_voxel_ext");
+}
+
+static void shutdown() {
+    if (gl.program) {
+        glDeleteProgram(gl.program);
+        gl.program = 0;
+    }
+}
+
+}  // namespace voxelize_spheres
+
 namespace cone_trace {
 
 static Volume volume;
@@ -360,9 +430,13 @@ void initialize() {
     glBindVertexArray(0);
 
     cone_trace::initialize();
+    voxelize_spheres::initialize();
 }
 
-void shutdown() { cone_trace::shutdown(); }
+void shutdown() {
+    cone_trace::shutdown();
+    voxelize_spheres::shutdown();
+}
 
 inline ivec3 compute_voxel_coord(const Volume& data, const vec3& coord) {
     return math::clamp(ivec3((coord - data.min_box) / data.voxel_ext), ivec3(0), data.dim - 1);

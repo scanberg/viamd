@@ -1,6 +1,7 @@
 #pragma once
 
 #include <core/types.h>
+#include <core/gl.h>
 #include <core/array_types.h>
 #include <core/vector_types.h>
 #include <mol/molecule_structure.h>
@@ -12,8 +13,11 @@ void shutdown();
 
 void draw_instanced_quads(int num_instances);
 
+void draw_vdw(GLuint atom_position_radius_buffer, GLuint atom_color_buffer, int32 atom_count, const mat4& view_mat, const mat4& proj_mat,
+              float radius_scale = 1.f);
+
 void draw_vdw(Array<const vec3> atom_positions, Array<const float> atom_radii, Array<const uint32> atom_colors, const mat4& view_mat,
-              const mat4& proj_mat, float radii_scale = 1.f);
+              const mat4& proj_mat, float radius_scale = 1.f);
 void draw_licorice(Array<const vec3> atom_positions, Array<const Bond> atom_bonds, Array<const uint32> atom_colors, const mat4& view_mat,
                    const mat4& proj_mat, float radii_scale = 1.f);
 void draw_ribbons(Array<const BackboneSegment> backbone_segments, Array<const Chain> chains, Array<const vec3> atom_positions,

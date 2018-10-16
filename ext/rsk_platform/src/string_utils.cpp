@@ -189,9 +189,20 @@ String allocate_and_read_textfile(CString filename) {
     FILE* file = fopen(c_str_path.cstr(), "rb");
     if (!file) return {};
 
-    fseek(file, 0, SEEK_END);
-    int64 file_size = ftell(file);
+// This is to handle big files.
+#ifdef _WIN32
+#define FSEEK _fseeki64
+#define FTELL _ftelli64
+#else
+#define FSEEK fseeko
+#define FTELL ftello
+#endif
+
+    FSEEK(file, 0, SEEK_END);
+    int64 file_size = FTELL(file);
     rewind(file);
+
+    if (file_size <= 0) return {};
 
     char* data = (char*)MALLOC(file_size + 1);
     fread(data, 1, file_size, file);

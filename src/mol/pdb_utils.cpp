@@ -4,6 +4,7 @@
 #include <mol/hydrogen_bond.h>
 #include <mol/trajectory_utils.h>
 #include <core/string_utils.h>
+#include <core/log.h>
 
 static inline bool valid_line(CString line, uint32 options) {
     if ((options & PDB_READ_ATOM) && compare_n(line, "ATOM", 4))
@@ -16,6 +17,10 @@ static inline bool valid_line(CString line, uint32 options) {
 
 bool allocate_and_load_pdb_from_file(MoleculeDynamic* md, const char* filename, PdbLoadParams params) {
     String txt = allocate_and_read_textfile(filename);
+    if (!txt) {
+        LOG_ERROR("Could not read file: '%s'.", filename);
+        return false;
+    }
     auto res = allocate_and_parse_pdb_from_string(md, txt, params);
     FREE(txt);
     return res;
@@ -96,10 +101,10 @@ bool allocate_and_parse_pdb_from_string(MoleculeDynamic* md, CString pdb_string,
             // Try to determine element from optional element column first, then from label
             Element elem = Element::Unknown;
             if (line.count >= 78) {
-                elem = element::get_from_string(line.substr(76, 2), true);
+                elem = element::get_from_string(line.substr(76, 2));
             }
             if (elem == Element::Unknown) {
-                elem = element::get_from_string(labels.back(), false);
+                elem = element::get_from_string(labels.back());
             }
             elements.push_back(elem);
 
