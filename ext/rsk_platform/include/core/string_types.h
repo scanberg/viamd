@@ -72,7 +72,7 @@ struct String : Array<char> {
         return {array.data, array.count};
     }
 
-    const int64 length() const { return count; }
+    int64 length() const { return count; }
 
     operator CString() { return CString(data, count); }
     operator char*() { return data; }
