@@ -120,12 +120,6 @@ void linear_interpolation_periodic(Array<vec3> positions, Array<const vec3> prev
         positions[i] = *reinterpret_cast<const vec3*>(&res);
 
         /*
-__m128 delta = _mm_sub_ps(next, prev);
-__m128 abs_delta = mm_abs(delta);
-__m128 sign_delta = mm_sign(delta);
-* / glm_vec4_sign
-
-/*
 vec4 next = vec4(next_pos[i], 0);
 vec4 prev = vec4(prev_pos[i], 0);
 

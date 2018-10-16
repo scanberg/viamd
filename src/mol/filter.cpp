@@ -177,6 +177,7 @@ bool internal_filter_mask(Array<bool> mask, const MoleculeDynamic& dyn, CString 
 
 bool compute_filter_mask(Array<bool> mask, const MoleculeDynamic& dyn, CString filter) {
     auto count = dyn.molecule.atom_elements.count;
+    (void)count;
     ASSERT(count == dyn.molecule.atom_labels.count);
     ASSERT(count == dyn.molecule.atom_positions.count);
     ASSERT(count == dyn.molecule.atom_residue_indices.count);
@@ -239,7 +240,7 @@ void initialize() {
     filter_commands.push_back({"aminoacid", filter_amino_acid});
     filter_commands.push_back({"backbone", [](Array<bool>, const MoleculeDynamic&, Array<const CString>) { return true; }});  // NOT DONE
     filter_commands.push_back({"protein", filter_amino_acid});
-    filter_commands.push_back({"dna", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString> args) {
+    filter_commands.push_back({"dna", [](Array<bool> mask, const MoleculeDynamic& dyn, Array<const CString>) {
 								   memset(mask.data, 0, mask.size_in_bytes());
                                    for (const auto& res : dyn.molecule.residues) {
 									   if (is_dna(res)) {

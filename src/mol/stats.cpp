@@ -1381,6 +1381,9 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_
         frame_filter.y = (float)dynamic.trajectory.num_frames;
     }
 
+    if (dynamic) return;
+    if (dynamic.trajectory.num_frames == 0) return;
+
     static Range prev_frame_filter{0, 0};
 
     if ((prev_frame_filter != frame_filter || properties_dirty()) && !ctx.thread_running && !ctx.stop_signal) {

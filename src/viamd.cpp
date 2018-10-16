@@ -1,4 +1,4 @@
-﻿#include <core/platform.h>
+#include <core/platform.h>
 #include <core/gl.h>
 #include <core/types.h>
 #include <core/hash.h>
@@ -54,8 +54,13 @@ constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
 #define POP_CPU_SECTION() {};
 
 // For gpu profiling
+#ifndef OS_MAC_OSX
 #define PUSH_GPU_SECTION(lbl) glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, GL_KHR_debug, -1, lbl);
 #define POP_GPU_SECTION() glPopDebugGroup();
+#else
+#define PUSH_GPU_SECTION(lbl) {};
+#define POP_GPU_SECTION() {};
+#endif
 
 constexpr unsigned int NO_PICKING_IDX = 0xffffffff;
 constexpr const char* FILE_EXTENSION = "via";
@@ -74,6 +79,8 @@ constexpr float HYDROGEN_BOND_ANGLE_CUTOFF_MIN = 5.f;
 constexpr float HYDROGEN_BOND_ANGLE_CUTOFF_MAX = 90.f;
 
 constexpr int32 VOLUME_DOWNSAMPLE_FACTOR = 2;
+
+constexpr int32 MAX_REFERENCE_FRAMES = 16;
 
 #ifdef VIAMD_RELEASE
 constexpr const char* CAFFINE_PDB = R"(
@@ -206,8 +213,8 @@ struct ReferenceFrame {
 
 struct ThreadSyncData {
     std::thread thread{};
-    std::atomic<bool> running = false;
-    std::atomic<bool> stop_signal = false;
+    std::atomic<bool> running{false};
+    std::atomic<bool> stop_signal{false};
 
     void signal_stop() { stop_signal = true; }
 
@@ -363,8 +370,7 @@ struct ApplicationData {
 
     // --- REFERENCE FRAMES ---
     struct {
-        static constexpr int32 max_reference_frames = 16;
-        ReferenceFrame frames[max_reference_frames]{};
+        ReferenceFrame frames[MAX_REFERENCE_FRAMES]{};
         int32 num_reference_frames = 0;
         bool show_window = false;
     } reference_frames;
@@ -523,22 +529,32 @@ int main(int, char**) {
         &data.console);
 
     // Init platform
+    LOG_NOTE("Initializing GL...");
     if (!platform::initialize(&data.ctx, 1920, 1080, "VIAMD")) {
         LOG_ERROR("Could not initialize platform layer... terminating\n");
         return -1;
     }
     data.ctx.window.vsync = false;
 
+    LOG_NOTE("Creating framebuffer...");
     init_framebuffer(&data.fbo, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
 
     // Init subsystems
+    LOG_NOTE("Initializing immediate draw...");
     immediate::initialize();
+    LOG_NOTE("Initializing molecule draw...");
     draw::initialize();
+    LOG_NOTE("Initializing render functionality...");
     render::initialize();
+    LOG_NOTE("Initializing ramachandran...");
     ramachandran::initialize();
+    LOG_NOTE("Initializing stats...");
     stats::initialize();
+    LOG_NOTE("Initializing filter...");
     filter::initialize();
+    LOG_NOTE("Initializing post processing...");
     postprocessing::initialize(data.fbo.width, data.fbo.height);
+    LOG_NOTE("Initializing volume...");
     volume::initialize();
 
     // Setup IMGUI style
@@ -609,7 +625,7 @@ colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.20f, 0.20f, 0.20f, 0.35f);
 stats::create_property("b1", "distance resatom(resname(ALA), 1) com(resname(ALA))");
 load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
 */
-    // load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/5ulj.pdb");
+    //load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/5ulj.pdb");
 
     load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/haofan/for_VIAMD.pdb");
     stats::create_property("b1", "distance resname(DE3) com(resname(DE3))");
@@ -716,6 +732,7 @@ load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
         // Setup fbo and clear textures
         PUSH_GPU_SECTION("Clear G-buffer") {
             const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3};
+                        
             glViewport(0, 0, data.fbo.width, data.fbo.height);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.id);
 
@@ -2873,7 +2890,7 @@ void init_reference_frame(ReferenceFrame* ref, int32 num_frames, int32 num_filte
 
 static void create_reference_frame(ApplicationData* data, CString filter) {
     ASSERT(data);
-    if (data->reference_frames.num_reference_frames < data->reference_frames.max_reference_frames) {
+    if (data->reference_frames.num_reference_frames < MAX_REFERENCE_FRAMES) {
         int32 idx = data->reference_frames.num_reference_frames++;
         data->reference_frames.frames[idx] = {};
         data->reference_frames.frames[idx].filter = filter;
@@ -2881,7 +2898,7 @@ static void create_reference_frame(ApplicationData* data, CString filter) {
             data->reference_frames.frames[idx].dirty = true;
         }
     } else {
-        LOG_ERROR("Maximum number of reference frames reached! (%i)", data->reference_frames.max_reference_frames);
+        LOG_ERROR("Maximum number of reference frames reached! (%i)", MAX_REFERENCE_FRAMES);
     }
 }
 
@@ -2924,7 +2941,6 @@ static void compute_reference_frame(ReferenceFrame* ref, const MoleculeDynamic& 
 
     const int32 ref_frame = 0;
     const int32 num_frames = dynamic.trajectory.num_frames;
-    const int32 num_atoms = dynamic.trajectory.num_atoms;
     DynamicArray<int> filtered_indices{};
     for (int32 i = 0; i < ref->atom_filter_mask.count; i++) {
         if (ref->atom_filter_mask[i]) filtered_indices.push_back(i);
