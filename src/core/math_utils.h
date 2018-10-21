@@ -145,6 +145,16 @@ static T spline(const T& p0, const T& p1, const T& p2, const T& p3, V s, V tensi
     return ((V)2.0 * p1 - (V)2.0 * p2 + v0 + v1) * s3 + (-(V)3.0 * p1 + (V)3.0 * p2 - (V)2.0 * v0 - v1) * s2 + v0 * s + p1;
 }
 
+template <typename T, typename V>
+static T spline_tangent(const T& p0, const T& p1, const T& p2, const T& p3, V s, V tension = (V)0.5) {
+	T v0 = (p2 - p0) * tension;
+	T v1 = (p3 - p1) * tension;
+
+	// f(t) = (2p1 - 2p2 + v0 + v1)s^3 + (-3p1 + 3p2 - 2v0 - v1)s^2 + v0s + p1;
+	// df(t)/dt = (2p1 - 2p2 + v0 + v1)*3s^2 + (-3p1 + 3p2 - 2v0 - v1)*2s + v0;
+	return ((V)2.0 * p1 - (V)2.0 * p2 + v0 + v1) * (V)3.0 * s * s + (-(V)3.0 * p1 + (V)3.0 * p2 - (V)2.0 * v0 - v1) * (V)2.0 * s + v0;
+}
+
 static inline glm_vec4 spline(const glm_vec4 p0, const glm_vec4 p1, const glm_vec4 p2, const glm_vec4 p3, float s, float tension = 0.5f) {
     const glm_vec4 v_t = _mm_set_ps1(tension);
 

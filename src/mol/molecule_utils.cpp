@@ -377,6 +377,7 @@ DynamicArray<SplineSegment> compute_spline(Array<const vec3> atom_pos, Array<con
     DynamicArray<vec3> c_tmp;
     DynamicArray<int> ca_idx;
 
+	// Pad front with duplicated vectors
     auto d_p0 = atom_pos[backbone[1].ca_idx] - atom_pos[backbone[0].ca_idx];
     p_tmp.push_back(atom_pos[backbone[0].ca_idx] - d_p0);
 
@@ -388,6 +389,7 @@ DynamicArray<SplineSegment> compute_spline(Array<const vec3> atom_pos, Array<con
 
     ca_idx.push_back(backbone[0].ca_idx);
 
+	// Fetch vectors
     const int size = (int)(backbone.count);
     for (auto i = 0; i < size; i++) {
         p_tmp.push_back(atom_pos[backbone[i].ca_idx]);
@@ -396,6 +398,7 @@ DynamicArray<SplineSegment> compute_spline(Array<const vec3> atom_pos, Array<con
         ca_idx.push_back(backbone[i].ca_idx);
     }
 
+	// Pad back with duplicated vectors
     auto d_pn = atom_pos[backbone[size - 1].ca_idx] - atom_pos[backbone[size - 2].ca_idx];
     p_tmp.push_back(atom_pos[backbone[size - 1].ca_idx] + d_pn);
     p_tmp.push_back(p_tmp.back() + d_pn);
@@ -411,7 +414,7 @@ DynamicArray<SplineSegment> compute_spline(Array<const vec3> atom_pos, Array<con
     ca_idx.push_back(backbone[size - 1].ca_idx);
     ca_idx.push_back(backbone[size - 1].ca_idx);
 
-    // NEEDED?
+    // @NOTE: Flip direction of support vector (O-C) if pointing the 'wrong way' as seen from previous segment
     for (int64 i = 1; i < o_tmp.size(); i++) {
         vec3 v0 = o_tmp[i - 1] - c_tmp[i - 1];
         vec3 v1 = o_tmp[i] - c_tmp[i];
@@ -452,15 +455,9 @@ DynamicArray<SplineSegment> compute_spline(Array<const vec3> atom_pos, Array<con
 
             vec3 v_dir = math::normalize(o - c);
 
-            const float eps = 0.0001f;
-            float d0 = math::max(0.f, t - eps);
-            float d1 = math::min(t + eps, 1.f);
-
-            vec3 tangent = math::normalize(math::spline(p0, p1, p2, p3, d1, tension) - math::spline(p0, p1, p2, p3, d0, tension));
+			vec3 tangent = math::spline_tangent(p0, p1, p2, p3, t, tension);
             vec3 normal = math::normalize(math::cross(v_dir, tangent));
             vec3 binormal = math::normalize(math::cross(tangent, normal));
-            // vec3 normal = v_dir;
-            // vec3 binormal = math::normalize(math::cross(tangent, normal));
 
             segments.push_back({p, tangent, normal, binormal, idx, color});
         }

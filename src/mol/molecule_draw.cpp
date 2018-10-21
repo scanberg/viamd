@@ -34,25 +34,23 @@ inline void set_vbo_data(const void* data, GLsizeiptr size_in_bytes) {
 
 namespace vdw {
 static GLuint v_shader = 0;
+static GLuint g_shader = 0;
 static GLuint f_shader = 0;
 static GLuint program = 0;
+static GLuint vao = 0;
 
 static GLuint buf_position_radius = 0;
 static GLuint buf_color = 0;
-static GLuint buf_picking = 0;
-static GLuint tex_position_radius = 0;
-static GLuint tex_color = 0;
-static GLuint tex_picking = 0;
+
+static GLint attrib_loc_pos_rad = -1;
+static GLint attrib_loc_color = -1;
 
 static GLint uniform_loc_view_mat = -1;
 static GLint uniform_loc_proj_mat = -1;
 static GLint uniform_loc_inv_proj_mat = -1;
 static GLint uniform_loc_radius_scale = -1;
-static GLint uniform_loc_tex_pos_rad = -1;
-static GLint uniform_loc_tex_color = -1;
-static GLint uniform_loc_tex_picking = -1;
 
-static const char* v_shader_src = R"(
+static const char* v_shader_src_old = R"(
 #version 150 core
 
 uniform mat4 u_view_mat;
@@ -143,6 +141,154 @@ void main() {
 }
 )";
 
+static const char* v_shader_src = R"(
+#version 150 core
+#extension GL_ARB_explicit_attrib_location : enable
+
+uniform mat4 u_view_mat;
+uniform mat4 u_proj_mat;
+uniform mat4 u_inv_proj_mat;
+
+uniform float u_radius_scale = 1.0;
+
+layout (location = 0) in vec4 in_pos_rad;
+layout (location = 1) in vec4 in_color;
+
+out VS_GS {
+	flat vec4 view_sphere;
+    flat vec4 color;
+	flat vec4 picking_color;
+	flat vec2 axis_a;
+	flat vec2 axis_b;
+	flat vec2 center;
+	flat float inv_aspect_ratio;
+	flat float z;
+} out_geom;
+
+vec4 pack_u32(uint data) {
+	return vec4(
+        (data & uint(0x000000FF)) >> 0,
+        (data & uint(0x0000FF00)) >> 8,
+        (data & uint(0x00FF0000)) >> 16,
+        (data & uint(0xFF000000)) >> 24) / 255.0;
+}
+
+// From Inigo Quilez!
+void proj_sphere(in vec4 sphere, 
+				 in float fle,
+				 out vec2 axis_a,
+				 out vec2 axis_b,
+				 out vec2 center) {
+	vec3  o = sphere.xyz;
+    float r2 = sphere.w*sphere.w;
+	float z2 = o.z*o.z;	
+	float l2 = dot(o,o);
+	
+	// axis
+	axis_a = fle*sqrt(-r2*(r2-l2)/((l2-z2)*(r2-z2)*(r2-z2)))*vec2( o.x,o.y);
+	axis_b = fle*sqrt(-r2*(r2-l2)/((l2-z2)*(r2-z2)*(r2-l2)))*vec2(-o.y,o.x);
+	center = -fle*o.z*o.xy/(z2-r2);
+}
+
+void main() {
+	vec4 pos_rad = in_pos_rad;
+	vec4 color = in_color;
+	vec4 picking_color = pack_u32(uint(gl_VertexID));
+
+	vec3 pos = pos_rad.xyz;
+	float rad = pos_rad.w * u_radius_scale;
+    vec4 view_coord = u_view_mat * vec4(pos, 1.0);
+	vec4 view_sphere = vec4(view_coord.xyz, rad);
+
+	// Focal length
+	float fle = u_proj_mat[1][1];
+	// 1.0 / aspect_ratio
+	float inv_ar = u_proj_mat[0][0] / u_proj_mat[1][1];
+	// Compute view depth (with bias of radius) 
+	float z = -u_proj_mat[2][2] - u_proj_mat[3][2] / (view_coord.z + rad);
+
+	vec2 axis_a;
+	vec2 axis_b;
+	vec2 center;
+	proj_sphere(view_sphere, fle, axis_a, axis_b, center);
+
+    out_geom.view_sphere = view_sphere;
+    out_geom.color = color;
+	out_geom.picking_color = picking_color;
+    out_geom.axis_a = axis_a;
+    out_geom.axis_b = axis_b;
+    out_geom.center = center;
+	out_geom.inv_aspect_ratio = inv_ar;
+	out_geom.z = z;
+
+    gl_Position = view_coord;
+}
+)";
+
+
+static const char* g_shader_src = R"(
+#version 150 core
+
+uniform mat4 u_inv_proj_mat;
+
+layout (points) in;
+layout (triangle_strip, max_vertices = 4) out;
+
+in VS_GS {
+	flat vec4 view_sphere;
+    flat vec4 color;
+	flat vec4 picking_color;
+	flat vec2 axis_a;
+	flat vec2 axis_b;
+	flat vec2 center;
+	flat float inv_aspect_ratio;
+	flat float z;
+} in_vert[];
+
+out GS_FS {
+    flat vec4 color;
+    flat vec4 view_sphere;
+	flat vec4 picking_color;
+    smooth vec4 view_coord;
+} out_frag;
+
+void emit_vertex(vec2 uv) {
+	vec2 axis_a = in_vert[0].axis_a;
+	vec2 axis_b = in_vert[0].axis_b;
+	vec2 center = in_vert[0].center;
+	float inv_aspect_ratio = in_vert[0].inv_aspect_ratio;
+	float z = in_vert[0].z;
+
+	vec2 xy = (center + axis_a * uv.x + axis_b * uv.y) * vec2(inv_aspect_ratio, 1.0);
+	vec4 pc = vec4(xy, z, 1);
+	vec4 vc = u_inv_proj_mat * pc;
+
+	out_frag.view_coord = vc / vc.w;
+	gl_Position = pc;
+	EmitVertex();
+}
+
+void main()
+{
+    if (in_vert[0].color.a == 0 || in_vert[0].view_sphere.w == 0) {
+        EndPrimitive();
+        return;
+    }
+
+    out_frag.color = in_vert[0].color;
+    out_frag.view_sphere = in_vert[0].view_sphere;
+    out_frag.picking_color = in_vert[0].picking_color;
+
+	emit_vertex(vec2(-1,-1));
+	emit_vertex(vec2( 1,-1));
+	emit_vertex(vec2(-1, 1));
+	emit_vertex(vec2( 1, 1));
+
+	EndPrimitive();
+}
+)";
+
+
 static const char* f_shader_src = R"(
 #version 150 core
 #extension GL_ARB_conservative_depth : enable
@@ -151,7 +297,7 @@ static const char* f_shader_src = R"(
 uniform mat4 u_proj_mat;
 uniform float u_exposure = 1.0;
 
-in Fragment {
+in GS_FS {
     flat vec4 color;
     flat vec4 view_sphere;
 	flat vec4 picking_color;
@@ -164,7 +310,7 @@ layout (depth_greater) out float gl_FragDepth;
 layout(location = 0) out vec4 out_color_alpha;
 layout(location = 1) out vec4 out_f0_smoothness;
 layout(location = 2) out vec4 out_normal;
-layout(location = 3) out vec4 out_picking_id;
+layout(location = 3) out vec4 out_picking_color;
 
 // https://aras-p.info/texts/CompactNormalStorage.html
 vec4 encode_normal (vec3 n) {
@@ -193,7 +339,7 @@ void main() {
     out_color_alpha = in_frag.color;
 	out_f0_smoothness = vec4(0.04, 0.04, 0.04, 0.0);
 	out_normal = encode_normal(view_normal);
-	out_picking_id = in_frag.picking_color;
+	out_picking_color = in_frag.picking_color;
 }
 )";
 
@@ -202,15 +348,22 @@ static void initialize() {
     char buffer[BUFFER_SIZE];
 
     v_shader = glCreateShader(GL_VERTEX_SHADER);
+	g_shader = glCreateShader(GL_GEOMETRY_SHADER);
     f_shader = glCreateShader(GL_FRAGMENT_SHADER);
 
     glShaderSource(v_shader, 1, &v_shader_src, 0);
+	glShaderSource(g_shader, 1, &g_shader_src, 0);
     glShaderSource(f_shader, 1, &f_shader_src, 0);
 
     glCompileShader(v_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
         LOG_ERROR("Compiling vdw vertex shader:\n%s\n", buffer);
     }
+
+	glCompileShader(g_shader);
+	if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, g_shader)) {
+		LOG_ERROR("Compiling vdw geometry shader:\n%s\n", buffer);
+	}
 
     glCompileShader(f_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
@@ -219,6 +372,7 @@ static void initialize() {
 
     program = glCreateProgram();
     glAttachShader(program, v_shader);
+	glAttachShader(program, g_shader);
     glAttachShader(program, f_shader);
     glLinkProgram(program);
     if (gl::get_program_link_error(buffer, BUFFER_SIZE, program)) {
@@ -226,43 +380,25 @@ static void initialize() {
     }
 
     glDetachShader(program, v_shader);
+	glDetachShader(program, g_shader);
     glDetachShader(program, f_shader);
 
     glDeleteShader(v_shader);
+	glDeleteShader(g_shader);
     glDeleteShader(f_shader);
 
-    if (!buf_position_radius) {
-        glGenBuffers(1, &buf_position_radius);
-        glBindBuffer(GL_ARRAY_BUFFER, buf_position_radius);
-        glBufferData(GL_ARRAY_BUFFER, MEGABYTES(20), 0, GL_STREAM_DRAW);
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
-    }
+	if (!vao) glGenVertexArrays(1, &vao);
 
-    if (!buf_color) {
-        glGenBuffers(1, &buf_color);
-        glBindBuffer(GL_ARRAY_BUFFER, buf_color);
-        glBufferData(GL_ARRAY_BUFFER, MEGABYTES(5), 0, GL_STREAM_DRAW);
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
-    }
+    if (!buf_position_radius) glGenBuffers(1, &buf_position_radius);
+    if (!buf_color) glGenBuffers(1, &buf_color);
 
-    if (!buf_picking) {
-        glGenBuffers(1, &buf_picking);
-        glBindBuffer(GL_ARRAY_BUFFER, buf_picking);
-        glBufferData(GL_ARRAY_BUFFER, MEGABYTES(5), 0, GL_STREAM_DRAW);
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
-    }
-
-    if (!tex_position_radius) glGenTextures(1, &tex_position_radius);
-    if (!tex_color) glGenTextures(1, &tex_color);
-    if (!tex_picking) glGenTextures(1, &tex_picking);
+	attrib_loc_pos_rad = glGetAttribLocation(program, "in_pos_rad");
+	attrib_loc_color = glGetAttribLocation(program, "in_color");
 
     uniform_loc_view_mat = glGetUniformLocation(program, "u_view_mat");
     uniform_loc_proj_mat = glGetUniformLocation(program, "u_proj_mat");
     uniform_loc_inv_proj_mat = glGetUniformLocation(program, "u_inv_proj_mat");
     uniform_loc_radius_scale = glGetUniformLocation(program, "u_radius_scale");
-    uniform_loc_tex_pos_rad = glGetUniformLocation(vdw::program, "u_tex_pos_rad");
-    uniform_loc_tex_color = glGetUniformLocation(vdw::program, "u_tex_color");
-    uniform_loc_tex_picking = glGetUniformLocation(vdw::program, "u_tex_picking");
 }
 
 static void shutdown() {
@@ -270,11 +406,6 @@ static void shutdown() {
 
     if (buf_position_radius) glDeleteBuffers(1, &buf_position_radius);
     if (buf_color) glDeleteBuffers(1, &buf_color);
-    if (!buf_picking) glDeleteBuffers(1, &buf_picking);
-
-    if (tex_position_radius) glDeleteTextures(1, &tex_position_radius);
-    if (tex_color) glDeleteTextures(1, &tex_color);
-    if (buf_picking) glDeleteTextures(1, &buf_picking);
 }
 
 }  // namespace vdw
@@ -904,59 +1035,28 @@ void draw_vdw(GLuint atom_position_radius_buffer, GLuint atom_color_buffer, int3
               float radius_scale) {
     mat4 inv_proj_mat = math::inverse(proj_mat);
 
-    glEnable(GL_DEPTH_TEST);
+	glBindVertexArray(vdw::vao);
+	glBindBuffer(GL_ARRAY_BUFFER, atom_position_radius_buffer);
+	glVertexAttribPointer(vdw::attrib_loc_pos_rad, 4, GL_FLOAT, GL_FALSE, sizeof(vec4), (const GLvoid*)0);
+	glEnableVertexAttribArray(vdw::attrib_loc_pos_rad);
+	glBindBuffer(GL_ARRAY_BUFFER, atom_color_buffer);
+	glVertexAttribPointer(vdw::attrib_loc_color, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(uint32), (const GLvoid*)0);
+	glEnableVertexAttribArray(vdw::attrib_loc_color);
+
     glUseProgram(vdw::program);
-
-    // Texture 0
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_position_radius);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, atom_position_radius_buffer);
-
-    // Texture 1
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_color);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, atom_color_buffer);
 
     // Uniforms
     glUniform1f(vdw::uniform_loc_radius_scale, radius_scale);
-    glUniform1i(vdw::uniform_loc_tex_pos_rad, 0);
-    glUniform1i(vdw::uniform_loc_tex_color, 1);
-    glUniform1i(vdw::uniform_loc_tex_picking, 2);
     glUniformMatrix4fv(vdw::uniform_loc_view_mat, 1, GL_FALSE, &view_mat[0][0]);
     glUniformMatrix4fv(vdw::uniform_loc_proj_mat, 1, GL_FALSE, &proj_mat[0][0]);
     glUniformMatrix4fv(vdw::uniform_loc_inv_proj_mat, 1, GL_FALSE, &inv_proj_mat[0][0]);
+	
+	glDrawArrays(GL_POINTS, 0, atom_count);
 
-    // Draw
-    draw_instanced_quads(atom_count);
-
+	glBindVertexArray(0);
     glUseProgram(0);
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
-}
-
-void draw_vdw(Array<const vec3> atom_positions, Array<const float> atom_radii, Array<const uint32> atom_colors, const mat4& view_mat,
-              const mat4& proj_mat, float radii_scale) {
-    uint32 count = (uint32)atom_positions.count;
-    ASSERT(count == atom_radii.count && count == atom_colors.count);
-
-    mat4 inv_proj_mat = math::inverse(proj_mat);
-
-    glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_position_radius);
-    vec4* gpu_pos_rad = (vec4*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-    glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_color);
-    uint32* gpu_color = (uint32*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-
-    for (uint32 i = 0; i < count; i++) {
-        gpu_pos_rad[i] = vec4(atom_positions[i], atom_radii[i]);
-        gpu_color[i] = atom_colors[i];
-    }
-
-    glUnmapBuffer(GL_ARRAY_BUFFER);
-    glBindBuffer(GL_ARRAY_BUFFER, vdw::buf_position_radius);
-    glUnmapBuffer(GL_ARRAY_BUFFER);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-    draw_vdw(vdw::buf_position_radius, vdw::buf_color, count, view_mat, proj_mat, radii_scale);
 }
 
 void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint bond_buffer, int32 bond_count, const mat4& view_mat, const mat4& proj_mat, float radius_scale) {
