@@ -297,3 +297,13 @@ void zero_array(Array<T>* arr) {
 	ASSERT(arr);
 	memset(arr->data, 0, arr->count * sizeof(T));
 }
+
+// count = 4
+// i = 2
+// [0,1,2,3]
+template <typename T>
+void remove_array_element(Array<T>* arr, int i) {
+    ASSERT(arr);
+    ASSERT(i < arr->count);
+    memmove(arr->data + i, arr->data + (i + 1), arr->count - (i + 1));
+}

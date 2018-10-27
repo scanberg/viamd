@@ -16,16 +16,15 @@ struct GPUVolume {
 };
 
 
-void initialize();
+void initialize(int gl_version_major = 3, int gl_version_minor = 3);
 void shutdown();
 
 void init_volume(GPUVolume* vol, ivec3 res, vec3 min_box, vec3 max_box);
 void free_volume(GPUVolume* vol);
 
-void voxelize_scene(Array<const vec3> atom_pos, Array<const float> atom_radii, Array<const uint32> atom_color, ivec3 resolution = {256, 256, 256},
-                    vec3 min_box = {0, 0, 0}, vec3 max_box = {0, 0, 0});
+void voxelize_spheres_cpu(const GPUVolume& vol, Array<const vec3> atom_pos, Array<const float> atom_radii, Array<const uint32> atom_color);
 
-void voxelize_spheres(const GPUVolume& vol, GLuint position_radius_buffer, GLuint color_buffer, int32 num_spheres);
+void voxelize_spheres_gpu(const GPUVolume& vol, GLuint position_radius_buffer, GLuint color_buffer, int32 num_spheres);
 
 void illuminate_voxels_omnidirectional_constant(const GPUVolume& vol, const vec3& intensity);
 

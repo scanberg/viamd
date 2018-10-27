@@ -55,6 +55,14 @@ struct Context {
 
     struct {
         struct {
+            int major;
+            int minor;
+            int revision;
+        } version;
+    } gl_info;
+
+    struct {
+        struct {
             bool down[MAX_KEYS];
             bool hit[MAX_KEYS];
             bool release[MAX_KEYS];

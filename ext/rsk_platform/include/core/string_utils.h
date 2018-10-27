@@ -131,5 +131,7 @@ struct TmpString : CString {
 // Returns an object with a temporary allocated string which is freed upon its destruction
 inline TmpString make_tmp_str(CString str) { return TmpString(str); }
 
+inline void print_string(CString str) { printf("%.*s", (int)str.count, str.data); }
+
 // TODO: Possibly implement a good templated print function in the style of printf as discussed here
 // https://stackoverflow.com/questions/17671772/c11-variadic-printf-performance

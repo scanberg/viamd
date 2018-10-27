@@ -7,7 +7,7 @@
 namespace spatialhash {
 
 struct Entry {
-    vec3 position = {};
+    vec3 position{};
     int index = 0;
 };
 
@@ -17,13 +17,13 @@ struct Cell {
 };
 
 struct Frame {
-    vec3 min_box = {};
-    vec3 max_box = {};
-    vec3 cell_ext = {};
-    ivec3 cell_count = {};
+    vec3 min_box{};
+    vec3 max_box{};
+    vec3 cell_ext{};
+    ivec3 cell_count{};
 
-    DynamicArray<Cell> cells = {};
-    DynamicArray<Entry> entries = {};
+    DynamicArray<Cell> cells{};
+    DynamicArray<Entry> entries{};
 };
 
 inline int compute_cell_idx(const Frame& frame, ivec3 cell_coord) {

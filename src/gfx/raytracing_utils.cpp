@@ -39,7 +39,7 @@ static struct {
 } gl;
 
 static const char* v_shader_src = R"(
-#version 450 core
+#version 430 core
 
 uniform ivec3 u_volume_dim;
 uniform vec3 u_volume_min;
@@ -78,35 +78,40 @@ void main() {
 }
 )";
 
-static void initialize() {
+static void initialize(int version_major, int version_minor) {
 	if (!gl.program) {
-		constexpr int BUFFER_SIZE = 1024;
-		char buffer[BUFFER_SIZE];
+        if (version_major >= 4 && version_minor >= 3) {
+            constexpr int BUFFER_SIZE = 1024;
+		    char buffer[BUFFER_SIZE];
 
-		GLuint v_shader = glCreateShader(GL_VERTEX_SHADER);
-		glShaderSource(v_shader, 1, &v_shader_src, 0);
+            GLuint v_shader = glCreateShader(GL_VERTEX_SHADER);
+            glShaderSource(v_shader, 1, &v_shader_src, 0);
 
-		glCompileShader(v_shader);
-		if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
-			LOG_ERROR("Compiling sphere binning vertex shader:\n%s\n", buffer);
-		}
+            glCompileShader(v_shader);
+            if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
+                LOG_ERROR("Compiling sphere binning vertex shader:\n%s\n", buffer);
+            }
 
-		gl.program = glCreateProgram();
-		glAttachShader(gl.program, v_shader);
-		glLinkProgram(gl.program);
-		if (gl::get_program_link_error(buffer, BUFFER_SIZE, gl.program)) {
-			LOG_ERROR("Linking sphere binning program:\n%s\n", buffer);
-		}
-		glDetachShader(gl.program, v_shader);
-		glDeleteShader(v_shader);
+            gl.program = glCreateProgram();
+            glAttachShader(gl.program, v_shader);
+            glLinkProgram(gl.program);
+            if (gl::get_program_link_error(buffer, BUFFER_SIZE, gl.program)) {
+                LOG_ERROR("Linking sphere binning program:\n%s\n", buffer);
+            }
+            glDetachShader(gl.program, v_shader);
+            glDeleteShader(v_shader);
+
+            gl.uniform_location.volume_dim = glGetUniformLocation(gl.program, "u_volume_dim");
+            gl.uniform_location.volume_min = glGetUniformLocation(gl.program, "u_volume_min");
+            gl.uniform_location.voxel_ext = glGetUniformLocation(gl.program, "u_voxel_ext");
+            gl.uniform_location.tex_volume = glGetUniformLocation(gl.program, "u_tex_volume");
+        }
+        else {
+            LOG_NOTE("Sphere binning shader requires OpenGL 4.3");
+        }
 	}
 
 	if (!gl.vao) glGenVertexArrays(1, &gl.vao);
-
-	gl.uniform_location.volume_dim = glGetUniformLocation(gl.program, "u_volume_dim");
-    gl.uniform_location.volume_min = glGetUniformLocation(gl.program, "u_volume_min");
-    gl.uniform_location.voxel_ext = glGetUniformLocation(gl.program, "u_voxel_ext");
-	gl.uniform_location.tex_volume = glGetUniformLocation(gl.program, "u_tex_volume");
 }
 
 static void shutdown() {
@@ -210,7 +215,8 @@ const float cone_weights[6] = float[](0.25, 0.15, 0.15, 0.15, 0.15, 0.15);
 
 vec4 sample_voxels(vec3 world_position, float lod) {
     vec3 tc = (world_position - u_voxel_grid_world_min) / (u_voxel_grid_world_size);
-	//if (any(lessThan(tc, vec3(0))) || any(greaterThan(tc, vec3(1)))) return vec4(-1);
+    //vec3 d = tc - vec3(0.5);
+    //if (dot(d,d) > 1) return vec4(0,0,0,1);
 	//tc = tc + vec3(0.5) / vec3(u_voxel_dimensions);
     return textureLod(u_voxel_texture, tc, lod);
 }
@@ -326,6 +332,16 @@ vec3 shade(vec3 albedo, float alpha, vec3 f0, float smoothness, vec3 P, vec3 V, 
     vec3 direct_diffuse = env_radiance + N_dot_L * dir_radiance;
     vec3 indirect_diffuse = indirect_light(P, N, tangent_to_world, diffuse_occlusion).rgb;
 
+    float transmissive_occlusion;
+    vec3 transmissive = vec3(0);
+    //alpha = 0.1;
+    //if (alpha < 1.0) {
+    //    transmissive = cone_trace(P, N, -V, tan_half_angle, transmissive_occlusion).rgb;
+    //    transmissive *= 1.0 - alpha * albedo;
+    //    direct_diffuse *= alpha;
+    //    indirect_diffuse *= alpha;
+    //}
+
     float specular_occlusion;
     vec3 direct_specular = dir_radiance * pow(N_dot_H, spec_exp);
     vec3 indirect_specular = cone_trace(P, N, R, tan_half_angle, specular_occlusion).rgb;
@@ -333,6 +349,7 @@ vec3 shade(vec3 albedo, float alpha, vec3 f0, float smoothness, vec3 P, vec3 V, 
 	vec3 result = vec3(0);
 	result += albedo * (direct_diffuse + u_indirect_diffuse_scale * indirect_diffuse) * pow(diffuse_occlusion, u_ambient_occlusion_scale * 0.5);
 	result += direct_specular * fresnel_direct + u_indirect_specular_scale * indirect_specular * fresnel_indirect;
+    result += transmissive;
 
     return result;
 }
@@ -422,7 +439,7 @@ static void shutdown() {
 
 }  // namespace cone_trace
 
-void initialize() {
+void initialize(int version_major, int version_minor) {
     if (!vao) glGenVertexArrays(1, &vao);
     if (!vbo) glGenBuffers(1, &vbo);
 
@@ -434,7 +451,7 @@ void initialize() {
     glBindVertexArray(0);
 
     cone_trace::initialize();
-    voxelize::initialize();
+    voxelize::initialize(version_major, version_minor);
 }
 
 void shutdown() {
@@ -480,76 +497,72 @@ inline int compute_voxel_idx(const ivec3& res, const ivec3& coord) { return coor
 inline int compute_voxel_idx(const GPUVolume& data, const vec3& coord) { return compute_voxel_idx(data.resolution, compute_voxel_coord(data, coord)); }
 
 inline uint32 accumulate_voxel_color(uint32 current_color, uint32 new_color, float counter) {
-    // @TODO: Implement proper color blending
     vec4 c = math::convert_color(current_color);
     vec4 n = math::convert_color(new_color);
-
     c = (counter * c + n) / (counter + 1.f);
     return math::convert_color(c);
 }
-/*
 
-void voxelize_scene(Array<const vec3> atom_pos, Array<const float> atom_radii, Array<const uint32> atom_colors, ivec3 resolution, vec3 min_box,
-                    vec3 max_box) {
+void voxelize_spheres_cpu(const GPUVolume& vol, Array<const vec3> atom_pos, Array<const float> atom_radii, Array<const uint32> atom_colors) {
     ASSERT(atom_pos.count == atom_radii.count);
     ASSERT(atom_pos.count == atom_colors.count);
     const int32 N = (int32)atom_pos.count;
 
-    if (min_box == vec3(0, 0, 0) && max_box == vec3(0, 0, 0)) {
-        min_box = vec3(FLT_MAX);
-        max_box = vec3(-FLT_MAX);
-        for (int32 i = 0; i < N; i++) {
-            min_box = math::min(min_box, atom_pos[i] - atom_radii[i]);
-            max_box = math::max(max_box, atom_pos[i] + atom_radii[i]);
-        }
+    const int32 voxel_count = vol.resolution.x * vol.resolution.y * vol.resolution.z;
+    if (voxel_count == 0) {
+        LOG_WARNING("Volume resolution is zero on one or more axes.");
+        return;
     }
 
-    cone_trace::volume.dim = resolution;
-    cone_trace::volume.voxel_data.resize(resolution.x * resolution.y * resolution.z);
-    cone_trace::volume.voxel_data.set_mem_to_zero();
-    cone_trace::volume.min_box = min_box;
-    cone_trace::volume.max_box = max_box;
-    cone_trace::volume.voxel_ext = (max_box - min_box) / vec3(resolution);
-
+    DynamicArray<uint32> voxel_data(voxel_count);
     // For running mean
-    DynamicArray<float> counter(cone_trace::volume.voxel_data.count, 1);
+    DynamicArray<float> voxel_counter(voxel_data.count, 1);
 
     for (int32 i = 0; i < N; i++) {
         const auto& pos = atom_pos[i];
         const auto& rad = atom_radii[i];
         const auto& col = atom_colors[i];
         const float r2 = rad * rad;
-        ivec3 min_cc = compute_voxel_coord(cone_trace::volume, pos - rad);
-        ivec3 max_cc = compute_voxel_coord(cone_trace::volume, pos + rad);
+        ivec3 min_cc = compute_voxel_coord(vol, pos - rad);
+        ivec3 max_cc = compute_voxel_coord(vol, pos + rad);
         ivec3 cc;
         for (cc.z = min_cc.z; cc.z <= max_cc.z; cc.z++) {
             for (cc.y = min_cc.y; cc.y <= max_cc.y; cc.y++) {
                 for (cc.x = min_cc.x; cc.x <= max_cc.x; cc.x++) {
-                    vec3 min_voxel = cone_trace::volume.min_box + vec3(cc) * cone_trace::volume.voxel_ext;
-                    vec3 max_voxel = min_voxel + cone_trace::volume.voxel_ext;
+                    vec3 min_voxel = vol.min_box + vec3(cc) * vol.voxel_ext;
+                    vec3 max_voxel = min_voxel + vol.voxel_ext;
                     vec3 clamped_pos = math::clamp(pos, min_voxel, max_voxel);
                     vec3 d = clamped_pos - pos;
 
                     if (dot(d, d) < r2) {
-                        int voxel_idx = compute_voxel_idx(cone_trace::volume.dim, cc);
-                        cone_trace::volume.voxel_data[voxel_idx] =
-                            accumulate_voxel_color(cone_trace::volume.voxel_data[voxel_idx], col, counter[voxel_idx]);
-                        counter[voxel_idx]++;
+                        int voxel_idx = compute_voxel_idx(vol.resolution, cc);
+                        voxel_data[voxel_idx] = accumulate_voxel_color(voxel_data[voxel_idx], col, voxel_counter[voxel_idx]);
+                        voxel_counter[voxel_idx]++;
                     }
                 }
             }
         }
     }
 
-    for (auto& v : cone_trace::volume.voxel_data) {
+    // Apply crude lambert illumination model
+    for (auto& v : voxel_data) {
         vec4 c = math::convert_color(v);
         v = math::convert_color(vec4(vec3(c) / math::PI, c.a));
     }
-}
-*/
 
-void voxelize_spheres(const GPUVolume& vol, GLuint position_radius_buffer, GLuint color_buffer, int32 num_spheres) {
-	glClearTexImage(vol.texture_id, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glBindTexture(GL_TEXTURE_3D, vol.texture_id);
+    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, vol.resolution.x, vol.resolution.y, vol.resolution.z, GL_RGBA, GL_UNSIGNED_BYTE, voxel_data.data);
+    glGenerateMipmap(GL_TEXTURE_3D);
+    glBindTexture(GL_TEXTURE_3D, 0);
+}
+
+void voxelize_spheres_gpu(const GPUVolume& vol, GLuint position_radius_buffer, GLuint color_buffer, int32 num_spheres) {
+	if (!voxelize::gl.program) {
+        LOG_WARNING("sphere_binning program is not compiled");
+        return;
+    }
+    
+    glClearTexImage(vol.texture_id, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
 
 	glBindVertexArray(voxelize::gl.vao);
 	glBindBuffer(GL_ARRAY_BUFFER, position_radius_buffer);

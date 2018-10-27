@@ -23,7 +23,7 @@
   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 -----------------------------------------------------------------------*/
 
-// Shaders are taken from nVidias examples and are copyright protected as stated above
+// Shaders for HBAO are taken from nVidias examples and are copyright protected as stated above
 
 #include "postprocessing_utils.h"
 #include <core/types.h>
@@ -45,6 +45,14 @@ static struct {
 	GLuint v_shader_fs_quad = 0;
 	GLuint tex_width = 0;
 	GLuint tex_height = 0;
+
+    struct {
+        GLuint fbo_id = 0;
+        struct {
+            GLuint linear_depth = 0;
+            GLuint color_coc = 0;
+        } tex; 
+    } half_res_fbo;
 
 	struct {
 		GLuint fbo = 0;

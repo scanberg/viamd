@@ -52,7 +52,7 @@ inline float fast_and_unsafe_str_to_float(CString str) {
         c++;
     }
 
-    return val;
+    return sign * val;
 }
 
 bool allocate_and_parse_pdb_from_string(MoleculeDynamic* md, CString pdb_string, PdbLoadParams params) {

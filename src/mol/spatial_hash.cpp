@@ -2,6 +2,8 @@
 #include <core/common.h>
 #include <core/math_utils.h>
 
+#include <atomic>
+
 namespace spatialhash {
 
 void compute_frame(Frame* frame, Array<const vec3> positions, vec3 cell_ext) {
@@ -42,8 +44,16 @@ void compute_frame(Frame* frame, Array<const vec3> positions, vec3 cell_ext, vec
     frame->entries.resize(positions.count);
     memset(frame->cells.data, 0, frame->cells.count * sizeof(Cell));
 
-    int* l_idx = (int*)TMP_MALLOC(positions.count * sizeof(int));
-    int* g_idx = (int*)TMP_MALLOC(positions.count * sizeof(int));
+    unsigned int num_points = positions.count;
+    unsigned int num_cells = frame->cells.count;
+
+    uint32* l_idx = (uint32*)TMP_MALLOC(num_points * sizeof(uint32));
+    uint32* g_idx = (uint32*)TMP_MALLOC(num_points * sizeof(uint32));
+    //std::atomic<uint32>* cell_counter = (std::atomic<uint32>*)TMP_MALLOC(num_cells * sizeof(std::atomic<uint32>));
+    defer {
+        TMP_FREE(l_idx);
+        TMP_FREE(g_idx);
+    };
 
     for (int i = 0; i < positions.count; i++) {
         int cell_idx = compute_cell_idx(*frame, positions[i]);
@@ -59,9 +69,6 @@ void compute_frame(Frame* frame, Array<const vec3> positions, vec3 cell_ext, vec
         int dst = frame->cells[g_idx[i]].offset + l_idx[i];
         frame->entries[dst] = {positions[i], i};
     }
-
-    TMP_FREE(g_idx);
-    TMP_FREE(l_idx);
 }
 
 }  // namespace spatialhash

@@ -119,6 +119,8 @@ bool initialize(Context* ctx, int32 width, int32 height, const char* title) {
         glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, NULL, true);
     }
 
+    glfwGetVersion(&data.internal_ctx.gl_info.version.major, &data.internal_ctx.gl_info.version.minor, &data.internal_ctx.gl_info.version.revision);
+
 	IMGUI_CHECKVERSION();
     ImGui::CreateContext();
 	ImGuiIO& io = ImGui::GetIO();

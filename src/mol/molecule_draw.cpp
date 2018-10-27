@@ -481,11 +481,12 @@ vec4 pack_u32(uint data) {
         (data & uint(0xFF000000)) >> 24) / 255.0;
 }
 
-vec4 prismoid[8];
+vec4 view_vertices[8];
+vec4 proj_vertices[8];
 
-void emit_vertex(int a){
-    out_frag.view_pos = prismoid[a].xyz;
-	gl_Position = u_proj_mat * prismoid[a];
+void emit_vertex(int i){
+    out_frag.view_pos = view_vertices[i].xyz;
+	gl_Position = proj_vertices[i];
     EmitVertex();
 }
 
@@ -543,14 +544,23 @@ void main()
 
     // Compute vertices of prismoid:
     j = a; i = o; k = normalize(cross(i, j)); i = normalize(cross(k, j)); ; i *= r; k *= r;
-    prismoid[0] = vec4(p0 + i + k, 1);
-    prismoid[1] = vec4(p0 + i - k, 1);
-    prismoid[2] = vec4(p0 - i - k, 1);
-    prismoid[3] = vec4(p0 - i + k, 1);
-    prismoid[4] = vec4(p1 + i + k, 1);
-    prismoid[5] = vec4(p1 + i - k, 1);
-    prismoid[6] = vec4(p1 - i - k, 1);
-    prismoid[7] = vec4(p1 - i + k, 1);
+    view_vertices[0] = vec4(p0 + i + k, 1);
+    view_vertices[1] = vec4(p0 + i - k, 1);
+    view_vertices[2] = vec4(p0 - i - k, 1);
+    view_vertices[3] = vec4(p0 - i + k, 1);
+    view_vertices[4] = vec4(p1 + i + k, 1);
+    view_vertices[5] = vec4(p1 + i - k, 1);
+    view_vertices[6] = vec4(p1 - i - k, 1);
+    view_vertices[7] = vec4(p1 - i + k, 1);
+
+    proj_vertices[0] = u_proj_mat * view_vertices[0];
+    proj_vertices[1] = u_proj_mat * view_vertices[1];
+    proj_vertices[2] = u_proj_mat * view_vertices[2];
+    proj_vertices[3] = u_proj_mat * view_vertices[3];
+    proj_vertices[4] = u_proj_mat * view_vertices[4];
+    proj_vertices[5] = u_proj_mat * view_vertices[5];
+    proj_vertices[6] = u_proj_mat * view_vertices[6];
+    proj_vertices[7] = u_proj_mat * view_vertices[7];
 
     // Emit the six faces of the prismoid:
     emit(0,1,3,2); emit(5,4,6,7);
@@ -851,6 +861,9 @@ void main() {
     n[0] = normalize(in_vert[0].normal);
     n[1] = normalize(in_vert[1].normal);
 
+    // Possibly flip
+    n[1] = n[1] * sign(dot(n[0], n[1]));
+
     mat4 mat[2];
     mat[0] = compute_mat(t[0], n[0], pos[0]);
     mat[1] = compute_mat(t[1], n[1], pos[1]);
@@ -882,6 +895,104 @@ void main() {
 	emit(mat[1], 1, vec4(1 * u_scale_x,  1 * u_scale_y, 0, 1), vec3(1,0,0));
 	emit(mat[1], 1, vec4(1 * u_scale_x, -1 * u_scale_y, 0, 1), vec3(1,0,0));
     EndPrimitive();
+}
+)";
+
+static const char* g_shader_src_new = R"(
+#version 150 core
+
+layout(lines) in;
+layout(triangle_strip, max_vertices = 4) out;
+
+uniform mat4 u_view_mat;
+uniform mat4 u_proj_mat;
+uniform float u_scale_x = 1.0;
+uniform float u_scale_y = 0.1;
+
+in Vertex {
+    vec3 tangent;
+    vec3 normal;
+    vec4 color;
+    vec4 picking_color;
+} in_vert[];
+
+out Fragment {
+    smooth vec4 color;
+    smooth vec3 view_normal;
+    flat vec4 picking_color;
+} out_frag;
+
+mat4 compute_mat(vec3 tangent, vec3 normal, vec3 translation) {
+    vec3 binormal = normalize(cross(tangent, normal));
+    return mat4(vec4(binormal, 0), vec4(normal, 0), vec4(tangent, 0), vec4(translation, 1));
+}
+
+void main() {
+    if (in_vert[0].color.a == 0 || in_vert[1].color.a == 0) {
+        EndPrimitive();
+        return;
+    }
+
+    const float r = 1.0; // radius of swept capsule (which is the ribbon)
+    vec4 offset = u_proj_mat * vec4(r, r, 0, 0);
+
+    vec3 p[2];
+    p[0] = gl_in[0].gl_Position.xyz + vec3(0,0,r);
+    p[1] = gl_in[1].gl_Position.xyz + vec3(0,0,r);
+
+    vec3 t[2];
+    t[0] = normalize(in_vert[0].tangent);
+    t[1] = normalize(in_vert[1].tangent);
+
+    vec3 n[2];
+    n[0] = normalize(in_vert[0].normal);
+    n[1] = normalize(in_vert[1].normal);
+
+    // Possibly flip
+    n[1] = n[1] * sign(dot(n[0], n[1]));
+
+    mat4 mat[2];
+    mat[0] = compute_mat(t[0], n[0], p[0]);
+    mat[1] = compute_mat(t[1], n[1], p[1]);
+
+    // Project four spheres which serve as the corners of the screen space quad
+    vec4 proj_p[4];
+
+    mat4 view_proj_mat = u_proj_mat * u_view_mat;
+
+    /*     ^
+           |
+        0-----2
+      <-|     |->
+        1-----3
+           |
+           v
+    */     
+
+   // TODO: EXPAND THE QUAD BY THE PROJECTED RADIUS (of capsule)
+
+    proj_p[0] = view_proj_mat * mat[0] * vec4(-u_scale_x,0,0,1);
+    proj_p[1] = view_proj_mat * mat[0] * vec4( u_scale_x,0,0,1);
+    proj_p[2] = view_proj_mat * mat[1] * vec4(-u_scale_x,0,0,1);
+    proj_p[3] = view_proj_mat * mat[1] * vec4( u_scale_x,0,0,1);
+
+    out_frag.color = vec4(1,0,0,1);
+    out_frag.view_normal = vec3(0,0,1);
+    out_frag.picking_color = in_vert[0].picking_color;
+
+    gl_Position = proj_p[0];
+    EmitVertex();
+
+    gl_Position = proj_p[1];
+    EmitVertex();
+
+    gl_Position = proj_p[2];
+    EmitVertex();
+
+    gl_Position = proj_p[3];
+    EmitVertex();
+
+	EndPrimitive();
 }
 )";
 

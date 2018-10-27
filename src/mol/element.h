@@ -1,5 +1,4 @@
 #pragma once
-//#include <array>
 #include <core/string_utils.h>
 
 #ifdef _MSC_VER
