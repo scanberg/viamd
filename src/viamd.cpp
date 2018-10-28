@@ -867,19 +867,20 @@ load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
         mat4 inv_proj_mat = math::inverse(proj_mat);
 
         PUSH_GPU_SECTION("G-Buffer fill") {
-            for (const auto& rep : data.representations.data) {
+			for (int i = 0; i < data.representations.num_representations; i++) {
+				const auto& rep = data.representations.data[i];
                 if (!rep.enabled) continue;
                 switch (rep.type) {
                     case Representation::VDW:
                         PUSH_GPU_SECTION("Vdw")
                         // draw::draw_vdw(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.atom_radii, rep.colors, view_mat, proj_mat,
                         //               rep.radius);
-                        draw::draw_vdw(data.gpu_buffers.position_radius, rep.color_buffer, data.mol_data.dynamic.molecule.atom_positions.count,
+                        draw::draw_vdw(data.gpu_buffers.position_radius, rep.color_buffer, (int)data.mol_data.dynamic.molecule.atom_positions.count,
                                        view_mat, proj_mat, rep.radius);
                         POP_GPU_SECTION() break;
                     case Representation::LICORICE:
                         PUSH_GPU_SECTION("Licorice")
-                        draw::draw_licorice(data.gpu_buffers.position_radius, rep.color_buffer, data.gpu_buffers.bond, data.mol_data.dynamic.molecule.covalent_bonds.count, view_mat, proj_mat, rep.radius);
+                        draw::draw_licorice(data.gpu_buffers.position_radius, rep.color_buffer, data.gpu_buffers.bond, (int)data.mol_data.dynamic.molecule.covalent_bonds.count, view_mat, proj_mat, rep.radius);
                         //draw::draw_licorice(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.dynamic.molecule.covalent_bonds, rep.colors,
                         //                    view_mat, proj_mat, rep.radius);
                         POP_GPU_SECTION()
@@ -1391,19 +1392,6 @@ if (ImGui::BeginMenu("Edit")) {
             ImVec4 color = ImColor(style->line_color);
             if (ImGui::ColorEdit4("LineColor", (float*)&color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel))
                 style->line_color = ImColor(color);
-            ImGui::EndGroup();
-            ImGui::Separator();
-
-            ImGui::BeginGroup();
-            if (ImGui::Checkbox("Use high-res font", &data->high_res_font)) {
-                if (ImGui::GetIO().Fonts->Fonts.size() > 1 && data->high_res_font) {
-                    ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts[1];
-                    ImGui::GetIO().FontGlobalScale = 0.75f;
-                } else {
-                    ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts[0];
-                    ImGui::GetIO().FontGlobalScale = 1.0f;
-                }
-            }
             ImGui::EndGroup();
             ImGui::Separator();
 

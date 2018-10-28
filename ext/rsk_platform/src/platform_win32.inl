@@ -15,7 +15,7 @@ float compute_delta_ms(Timestamp t0, Timestamp t1) {
     stop.QuadPart = t1;
     elapsed.QuadPart = stop.QuadPart - start.QuadPart;
     elapsed.QuadPart *= 1000;
-    float ms = (double)elapsed.QuadPart / (double)frequency.QuadPart;
+    float ms = (float)((double)elapsed.QuadPart / (double)frequency.QuadPart);
     return ms;
 }
 
