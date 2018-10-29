@@ -17,6 +17,8 @@ void compute_frame(Frame* frame, Array<const vec3> positions, vec3 cell_ext) {
         min_box = math::min(min_box, p);
         max_box = math::max(max_box, p);
     }
+    min_box -= 1.f;
+    max_box += 1.f;
     compute_frame(frame, positions, cell_ext, min_box, max_box);
 }
 
@@ -49,7 +51,6 @@ void compute_frame(Frame* frame, Array<const vec3> positions, vec3 cell_ext, vec
 
     uint32* l_idx = (uint32*)TMP_MALLOC(num_points * sizeof(uint32));
     uint32* g_idx = (uint32*)TMP_MALLOC(num_points * sizeof(uint32));
-    //std::atomic<uint32>* cell_counter = (std::atomic<uint32>*)TMP_MALLOC(num_cells * sizeof(std::atomic<uint32>));
     defer {
         TMP_FREE(l_idx);
         TMP_FREE(g_idx);
@@ -67,7 +68,8 @@ void compute_frame(Frame* frame, Array<const vec3> positions, vec3 cell_ext, vec
 
     for (int i = 0; i < frame->entries.count; i++) {
         int dst = frame->cells[g_idx[i]].offset + l_idx[i];
-        frame->entries[dst] = {positions[i], i};
+        frame->entries[dst].position = positions[i];
+        frame->entries[dst].index = i;
     }
 }
 

@@ -145,8 +145,8 @@ struct MainFramebuffer {
     GLuint tex_normal = 0;
     GLuint tex_picking = 0;
 
-	GLuint fbo_hdr = 0;
-	GLuint tex_hdr = 0;
+    GLuint fbo_hdr = 0;
+    GLuint tex_hdr = 0;
 
     GLuint pbo_picking[2] = {0, 0};
     int width = 0;
@@ -322,11 +322,11 @@ struct ApplicationData {
         float radius = 6.0f;
     } ssao;
 
-	struct {
-		bool enabled = false;
-		float focus_point = 0.5f;
-		float focus_scale = 1.0f;
-	} dof;
+    struct {
+        bool enabled = false;
+        float focus_point = 0.5f;
+        float focus_scale = 1.0f;
+    } dof;
 
     // --- HYDROGEN BONDS ---
     struct {
@@ -398,7 +398,7 @@ struct ApplicationData {
     } spatial_hash;
 
     struct {
-		render::GPUVolume vol{};
+        render::GPUVolume vol{};
         bool enabled = false;
         bool show_voxels = false;
         bool dirty_flag = true;
@@ -523,7 +523,10 @@ int main(int, char**) {
 
     // Init logging
     logging::initialize();
-    logging::register_backend([](CString str, logging::Severity, void*) { print_string(str); printf("\n"); });
+    logging::register_backend([](CString str, logging::Severity, void*) {
+        print_string(str);
+        printf("\n");
+    });
     logging::register_backend(
         [](CString str, logging::Severity severity, void* usr_data) {
             const char* modifier = "";
@@ -699,7 +702,7 @@ load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
         // Setup fbo and clear textures
         PUSH_GPU_SECTION("Clear G-buffer") {
             const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3};
-                        
+
             glViewport(0, 0, data.fbo.width, data.fbo.height);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.fbo_deferred);
 
@@ -790,7 +793,7 @@ load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
 
         PUSH_CPU_SECTION("Spatial Hash")
         if (data.spatial_hash.dirty_flag) {
-            data.spatial_hash.dirty_flag = false;
+            // data.spatial_hash.dirty_flag = false;
             spatialhash::compute_frame(&data.spatial_hash.frame, data.mol_data.dynamic.molecule.atom_positions, data.spatial_hash.cell_ext);
         }
         POP_CPU_SECTION()
@@ -811,25 +814,26 @@ load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
         if (data.cone_trace.enabled && data.cone_trace.dirty_flag) {
             data.cone_trace.dirty_flag = false;
 
-			vec3 min_box, max_box;
-			compute_bounding_box(&min_box, &max_box, data.mol_data.dynamic.molecule.atom_positions, data.mol_data.atom_radii);
+            vec3 min_box, max_box;
+            compute_bounding_box(&min_box, &max_box, data.mol_data.dynamic.molecule.atom_positions, data.mol_data.atom_radii);
             min_box -= 5.f;
             max_box += 5.f;
             ivec3 res = ivec3((max_box - min_box) / data.cone_trace.voxel_ext);
-			render::init_volume(&data.cone_trace.vol, res, min_box, max_box);
+            render::init_volume(&data.cone_trace.vol, res, min_box, max_box);
 
-/*
-			PUSH_GPU_SECTION("VOXELIZE SPHERES")
-			{
-                for (int32 i = 0; i < data.representations.num_representations; i++) {
-                    auto color_buffer = data.representations.data[i].color_buffer;
-				    render::voxelize_spheres_gpu(data.cone_trace.vol, data.gpu_buffers.position_radius, color_buffer, data.mol_data.dynamic.molecule.atom_positions.count);
-                }
-			}
-			POP_GPU_SECTION()
-            */
+            /*
+                                    PUSH_GPU_SECTION("VOXELIZE SPHERES")
+                                    {
+                            for (int32 i = 0; i < data.representations.num_representations; i++) {
+                                auto color_buffer = data.representations.data[i].color_buffer;
+                                                render::voxelize_spheres_gpu(data.cone_trace.vol, data.gpu_buffers.position_radius, color_buffer,
+               data.mol_data.dynamic.molecule.atom_positions.count);
+                            }
+                                    }
+                                    POP_GPU_SECTION()
+                        */
             if (data.representations.num_representations > 0) {
-			    const Array<vec3> atom_pos = data.mol_data.dynamic.molecule.atom_positions;
+                const Array<vec3> atom_pos = data.mol_data.dynamic.molecule.atom_positions;
                 const Array<float> atom_rad = data.mol_data.atom_radii;
                 DynamicArray<uint32> atom_col = compute_atom_colors(data.mol_data.dynamic.molecule, data.representations.data[0].color_mapping);
                 DynamicArray<bool> mask(atom_col.count);
@@ -838,9 +842,9 @@ load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
 
                 render::voxelize_spheres_cpu(data.cone_trace.vol, atom_pos, atom_rad, atom_col);
             }
-            //render::illuminate_voxels_omnidirectional_constant(vec3(1));
+            // render::illuminate_voxels_omnidirectional_constant(vec3(1));
         }
-		POP_CPU_SECTION()
+        POP_CPU_SECTION()
 
         if (frame_changed) {
             data.hydrogen_bonds.dirty = true;
@@ -867,8 +871,8 @@ load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
         mat4 inv_proj_mat = math::inverse(proj_mat);
 
         PUSH_GPU_SECTION("G-Buffer fill") {
-			for (int i = 0; i < data.representations.num_representations; i++) {
-				const auto& rep = data.representations.data[i];
+            for (int i = 0; i < data.representations.num_representations; i++) {
+                const auto& rep = data.representations.data[i];
                 if (!rep.enabled) continue;
                 switch (rep.type) {
                     case Representation::VDW:
@@ -880,8 +884,10 @@ load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
                         POP_GPU_SECTION() break;
                     case Representation::LICORICE:
                         PUSH_GPU_SECTION("Licorice")
-                        draw::draw_licorice(data.gpu_buffers.position_radius, rep.color_buffer, data.gpu_buffers.bond, (int)data.mol_data.dynamic.molecule.covalent_bonds.count, view_mat, proj_mat, rep.radius);
-                        //draw::draw_licorice(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.dynamic.molecule.covalent_bonds, rep.colors,
+                        draw::draw_licorice(data.gpu_buffers.position_radius, rep.color_buffer, data.gpu_buffers.bond,
+                                            (int)data.mol_data.dynamic.molecule.covalent_bonds.count, view_mat, proj_mat, rep.radius);
+                        // draw::draw_licorice(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.dynamic.molecule.covalent_bonds,
+                        // rep.colors,
                         //                    view_mat, proj_mat, rep.radius);
                         POP_GPU_SECTION()
                         break;
@@ -958,23 +964,23 @@ load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
         }
         POP_GPU_SECTION()
 
-		// Activate hdr fbo
-		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.fbo_hdr);
-		glDrawBuffer(GL_COLOR_ATTACHMENT0);
-		glClear(GL_COLOR_BUFFER_BIT);
-		glDisable(GL_DEPTH_TEST);
-		glDepthMask(GL_FALSE);
+        // Activate hdr fbo
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.fbo_hdr);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
 
         PUSH_GPU_SECTION("Deferred") {
             if (data.cone_trace.enabled) {
                 PUSH_GPU_SECTION("Shade + Cone-Trace")
-                render::cone_trace_scene(data.fbo.tex_depth, data.fbo.tex_normal, data.fbo.tex_base_color_and_alpha, data.fbo.tex_f0_and_smoothness, data.cone_trace.vol,
-                                         view_mat, proj_mat, data.cone_trace.indirect_diffuse_scale, data.cone_trace.indirect_specular_scale,
-                                         data.cone_trace.ambient_occlusion_scale);
+                render::cone_trace_scene(data.fbo.tex_depth, data.fbo.tex_normal, data.fbo.tex_base_color_and_alpha, data.fbo.tex_f0_and_smoothness,
+                                         data.cone_trace.vol, view_mat, proj_mat, data.cone_trace.indirect_diffuse_scale,
+                                         data.cone_trace.indirect_specular_scale, data.cone_trace.ambient_occlusion_scale);
                 POP_GPU_SECTION()
                 if (data.cone_trace.show_voxels) {
                     PUSH_GPU_SECTION("Draw Voxels")
-                    //render::draw_voxelized_scene(view_mat, proj_mat);
+                    // render::draw_voxelized_scene(view_mat, proj_mat);
                     POP_GPU_SECTION()
                 }
             } else {
@@ -983,30 +989,31 @@ load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
                 postprocessing::render_deferred(data.fbo.tex_depth, data.fbo.tex_base_color_and_alpha, data.fbo.tex_normal, inv_proj_mat);
                 POP_GPU_SECTION()
             }
-        } POP_GPU_SECTION()  // Deferred
+        }
+        POP_GPU_SECTION()  // Deferred
 
         // Apply post processing
         PUSH_GPU_SECTION("Post Processing") {
-			if (data.ssao.enabled) {
-				PUSH_GPU_SECTION("SSAO")
-					postprocessing::apply_ssao(data.fbo.tex_depth, data.fbo.tex_normal, proj_mat, data.ssao.intensity, data.ssao.radius);
-				POP_GPU_SECTION()
-			}
-
-			// Activate backbuffer
-			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-			glDrawBuffer(GL_BACK);
-			glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-			glDisable(GL_DEPTH_TEST);
-			glDepthMask(GL_FALSE);
-
-			if (data.dof.enabled) {
-                postprocessing::apply_dof(data.fbo.tex_depth, data.fbo.tex_hdr, proj_mat, data.camera.trackball_state.distance, data.dof.focus_scale);
+            if (data.ssao.enabled) {
+                PUSH_GPU_SECTION("SSAO")
+                postprocessing::apply_ssao(data.fbo.tex_depth, data.fbo.tex_normal, proj_mat, data.ssao.intensity, data.ssao.radius);
+                POP_GPU_SECTION()
             }
-            else {
+
+            // Activate backbuffer
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glDrawBuffer(GL_BACK);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glDisable(GL_DEPTH_TEST);
+            glDepthMask(GL_FALSE);
+
+            if (data.dof.enabled) {
+                postprocessing::apply_dof(data.fbo.tex_depth, data.fbo.tex_hdr, proj_mat, data.camera.trackball_state.distance, data.dof.focus_scale);
+            } else {
                 postprocessing::apply_tonemapping(data.fbo.tex_hdr);
             }
-        } POP_GPU_SECTION()  // Post Processing
+        }
+        POP_GPU_SECTION()  // Post Processing
 
         if (data.density_volume.enabled) {
             PUSH_GPU_SECTION("Volume Rendering")
@@ -1022,14 +1029,14 @@ load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
             immediate::set_proj_matrix(proj_mat);
             stats::visualize(data.mol_data.dynamic);
 
-			if (data.mol_data.dynamic && data.mol_data.dynamic.trajectory.num_frames > 0) {
-				for (int32 i = 0; i < data.reference_frames.num_reference_frames; i++) {
-					auto& ref = data.reference_frames.frames[i];
-					if (ref.visualization.show_atoms || ref.visualization.show_basis_vectors) {
-						draw_reference_frame(ref, data.mol_data.dynamic, data.time);
-					}
-				}
-			}
+            if (data.mol_data.dynamic && data.mol_data.dynamic.trajectory.num_frames > 0) {
+                for (int32 i = 0; i < data.reference_frames.num_reference_frames; i++) {
+                    auto& ref = data.reference_frames.frames[i];
+                    if (ref.visualization.show_atoms || ref.visualization.show_basis_vectors) {
+                        draw_reference_frame(ref, data.mol_data.dynamic, data.time);
+                    }
+                }
+            }
 
             immediate::flush();
         }
@@ -1362,17 +1369,15 @@ if (ImGui::BeginMenu("Edit")) {
             ImGui::EndGroup();
             ImGui::Separator();
 
-			// DOF
-			ImGui::BeginGroup();
-			ImGui::Checkbox("Depth of Field", &data->dof.enabled);
-			if (data->dof.enabled) {
-				ImGui::SliderFloat("Focus Point", &data->dof.focus_point, 0.001f, 200.f);
-				ImGui::SliderFloat("Focus Scale", &data->dof.focus_scale, 0.001f, 100.f);
-			}
-			ImGui::EndGroup();
-			ImGui::Separator();
-
-
+            // DOF
+            ImGui::BeginGroup();
+            ImGui::Checkbox("Depth of Field", &data->dof.enabled);
+            if (data->dof.enabled) {
+                ImGui::SliderFloat("Focus Point", &data->dof.focus_point, 0.001f, 200.f);
+                ImGui::SliderFloat("Focus Scale", &data->dof.focus_scale, 0.001f, 100.f);
+            }
+            ImGui::EndGroup();
+            ImGui::Separator();
 
             // Property Overlay
             ImGui::BeginGroup();
@@ -2331,21 +2336,21 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     bool attach_textures_deferred = false;
     if (!fbo->fbo_deferred) {
         glGenFramebuffers(1, &fbo->fbo_deferred);
-		attach_textures_deferred = true;
+        attach_textures_deferred = true;
     }
 
-	bool attach_textures_hdr = false;
-	if (!fbo->fbo_hdr) {
-		glGenFramebuffers(1, &fbo->fbo_hdr);
-		attach_textures_hdr = true;
-	}
+    bool attach_textures_hdr = false;
+    if (!fbo->fbo_hdr) {
+        glGenFramebuffers(1, &fbo->fbo_hdr);
+        attach_textures_hdr = true;
+    }
 
     if (!fbo->tex_depth) glGenTextures(1, &fbo->tex_depth);
     if (!fbo->tex_base_color_and_alpha) glGenTextures(1, &fbo->tex_base_color_and_alpha);
     if (!fbo->tex_f0_and_smoothness) glGenTextures(1, &fbo->tex_f0_and_smoothness);
     if (!fbo->tex_normal) glGenTextures(1, &fbo->tex_normal);
     if (!fbo->tex_picking) glGenTextures(1, &fbo->tex_picking);
-	if (!fbo->tex_hdr) glGenTextures(1, &fbo->tex_hdr);
+    if (!fbo->tex_hdr) glGenTextures(1, &fbo->tex_hdr);
     if (!fbo->pbo_picking[0]) glGenBuffers(2, fbo->pbo_picking);
 
     glBindTexture(GL_TEXTURE_2D, fbo->tex_depth);
@@ -2383,12 +2388,12 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-	glBindTexture(GL_TEXTURE_2D, fbo->tex_hdr);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, fbo->tex_hdr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glBindBuffer(GL_PIXEL_PACK_BUFFER, fbo->pbo_picking[0]);
     glBufferData(GL_PIXEL_PACK_BUFFER, 4, 0, GL_DYNAMIC_READ);
@@ -2413,11 +2418,11 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     }
     ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
 
-	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo->fbo_hdr);
-	if (attach_textures_hdr) {
-		glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->tex_hdr, 0);
-	}
-	ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo->fbo_hdr);
+    if (attach_textures_hdr) {
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->tex_hdr, 0);
+    }
+    ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 }
@@ -2850,8 +2855,7 @@ static void clone_representation(ApplicationData* data, const Representation& re
         *clone = rep;
         clone->color_buffer = 0;
         update_representation(clone, data->mol_data.dynamic);
-    }
-    else {
+    } else {
         LOG_ERROR("Maximum number of representations reached! (%i)", MAX_REPRESENTATIONS);
     }
 }
@@ -2862,7 +2866,7 @@ static void remove_representation(ApplicationData* data, int idx) {
     auto& rep = data->representations.data[idx];
     if (!rep.color_buffer) glDeleteBuffers(1, &rep.color_buffer);
     for (int32 i = idx; i < data->representations.num_representations - 1; i++) {
-        data->representations.data[i] = data->representations.data[i+1];
+        data->representations.data[i] = data->representations.data[i + 1];
     }
     data->representations.num_representations--;
 }
@@ -2997,14 +3001,14 @@ static void compute_reference_frame(ReferenceFrame* ref, const MoleculeDynamic& 
                 frame_pos[i] = all_src_pos[filtered_indices[i]];
             }
             mat4 transform = compute_linear_transform(frame_pos, reference_pos);
-			mat3 upper = mat3(transform);
-			float d = math::sign(math::determinant(upper));
-           // mat3 R, S;
-            //pd(upper, &R, &S);
+            mat3 upper = mat3(transform);
+            float d = math::sign(math::determinant(upper));
+            // mat3 R, S;
+            // pd(upper, &R, &S);
 
-			mat3 V, S, W;
-			svd(upper, &V, &S, &W);
-			mat3 R = math::transpose(V) * mat3(1, 0, 0, 0, 1, 0, 0, 0, d) * W;
+            mat3 V, S, W;
+            svd(upper, &V, &S, &W);
+            mat3 R = math::transpose(V) * mat3(1, 0, 0, 0, 1, 0, 0, 0, d) * W;
 
             ref->frame_data[f].com = compute_com(frame_pos, masses);
             ref->frame_data[f].rotation = math::quat_cast(R);

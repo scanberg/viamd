@@ -248,19 +248,18 @@ void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, con
         if (!prop->enable_volume) continue;
         for (int32 frame_idx = (int32)frame_range.x; frame_idx < (int32)frame_range.y; frame_idx++) {
             const Array<const vec3> atom_positions = get_trajectory_positions(traj, frame_idx);
-            for_each_filtered_property_structure_in_frame(prop, frame_idx,
-                                                          [vol, &atom_positions, &world_to_volume_matrix](const Structure& s) {
-                                                              for (int32 i = s.beg_idx; i < s.end_idx; i++) {
-                                                                  const vec4 tc = world_to_volume_matrix * vec4(atom_positions[i], 1);
-                                                                  if (tc.x < 0.f || 1.f < tc.x) continue;
-                                                                  if (tc.y < 0.f || 1.f < tc.y) continue;
-                                                                  if (tc.z < 0.f || 1.f < tc.z) continue;
-                                                                  const ivec3 c = vec3(tc) * (vec3)vol->dim;
-                                                                  const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
-                                                                  vol->voxel_data[voxel_idx]++;
-                                                                  vol->voxel_range.y = math::max(vol->voxel_range.y, vol->voxel_data[voxel_idx]);
-                                                              }
-                                                          });
+            for_each_filtered_property_structure_in_frame(prop, frame_idx, [vol, &atom_positions, &world_to_volume_matrix](const Structure& s) {
+                for (int32 i = s.beg_idx; i < s.end_idx; i++) {
+                    const vec4 tc = world_to_volume_matrix * vec4(atom_positions[i], 1);
+                    if (tc.x < 0.f || 1.f < tc.x) continue;
+                    if (tc.y < 0.f || 1.f < tc.y) continue;
+                    if (tc.z < 0.f || 1.f < tc.z) continue;
+                    const ivec3 c = vec3(tc) * (vec3)vol->dim;
+                    const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
+                    vol->voxel_data[voxel_idx]++;
+                    vol->voxel_range.y = math::max(vol->voxel_range.y, vol->voxel_data[voxel_idx]);
+                }
+            });
         }
     }
 }
@@ -1381,7 +1380,7 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_
         frame_filter.y = (float)dynamic.trajectory.num_frames;
     }
 
-    if (dynamic) return;
+    if (!dynamic) return;
     if (dynamic.trajectory.num_frames == 0) return;
 
     static Range prev_frame_filter{0, 0};

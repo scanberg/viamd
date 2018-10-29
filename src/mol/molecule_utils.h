@@ -9,15 +9,6 @@
 
 enum class ColorMapping { STATIC_COLOR, CPK, RES_ID, RES_INDEX, CHAIN_ID, CHAIN_INDEX };
 
-struct DynamicBasis {
-    AtomIdx origin_idx = -1;
-    AtomIdx x_idx = -1;
-    AtomIdx y_idx = -1;
-    AtomIdx z_idx = -1;
-
-    vec3 extent;
-};
-
 // tangent AND binormal is perhaps redundant
 struct SplineSegment {
     vec3 position;
@@ -69,6 +60,8 @@ inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backb
 void transform_positions(Array<vec3> positions, const mat4& transformation);
 void compute_bounding_box(vec3* min_box, vec3* max_box, Array<const vec3> positions, Array<const float> radii = {});
 vec3 compute_com(Array<const vec3> positions, Array<const float> masses = {});
+
+void recenter_trajectory(MoleculeDynamic* dynamic, ResIdx center_res_idx, bool whole_residues = true);
 
 void linear_interpolation_periodic(Array<vec3> positions, Array<const vec3> prev_pos, Array<const vec3> next_pos, float t, mat3 sim_box);
 void linear_interpolation(Array<vec3> positions, Array<const vec3> prev_pos, Array<const vec3> next_pos, float t);

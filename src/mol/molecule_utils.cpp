@@ -9,6 +9,19 @@
 
 #include <ctype.h>
 
+inline glm_vec4 glm_step(const glm_vec4 edge, const glm_vec4 x) {
+    const glm_vec4 cmp = _mm_cmpge_ps(x, edge);
+    const glm_vec4 res = _mm_and_ps(cmp, _mm_set1_ps(1.f));
+    return res;
+}
+
+inline glm_vec4 de_periodize(const glm_vec4 p0, const glm_vec4 p1, const glm_vec4 full_ext) {
+    const glm_vec4 half_ext = glm_vec4_mul(full_ext, _mm_set1_ps(0.5f));
+    const glm_vec4 delta = glm_vec4_sub(p1, p0);
+    const glm_vec4 signed_mask = glm_vec4_mul(glm_vec4_sign(delta), glm_step(half_ext, glm_vec4_abs(delta)));
+    return glm_vec4_sub(p1, glm_vec4_mul(full_ext, signed_mask));
+}
+
 void transform_positions(Array<vec3> positions, const mat4& transformation) {
     for (auto& p : positions) {
         p = vec3(transformation * vec4(p, 1));
@@ -59,6 +72,57 @@ vec3 compute_com(Array<const vec3> positions, Array<const float> masses) {
     return com;
 }
 
+vec3 compute_deperiodized_com(Array<const vec3> positions, Array<const Element> elements, const mat3& sim_box) {
+    if (positions.count == 0) return {0, 0, 0};
+    if (positions.count == 1) return positions[0];
+
+    const glm_vec4 full_box_ext = _mm_set_ps(0.f, sim_box[2][2], sim_box[1][1], sim_box[0][0]);
+
+    ASSERT(positions.count == elements.count);
+    glm_vec4 p_prev = _mm_set_ps(element::atomic_mass(elements[0]), positions[0].z, positions[0].y, positions[0].x);
+    glm_vec4 sum = _mm_set_ps1(0);
+
+    for (int32 i = 1; i < positions.count; i++) {
+        glm_vec4 p_curr = _mm_set_ps(element::atomic_mass(elements[i]), positions[i].z, positions[i].y, positions[i].x);
+        p_curr = de_periodize(p_prev, p_curr, full_box_ext);
+        sum = glm_vec4_add(sum, p_curr);
+    }
+
+    vec4& com_mass_sum = *reinterpret_cast<vec4*>(&sum);
+    return vec3(com_mass_sum) / com_mass_sum.w;
+}
+
+void recenter_trajectory(MoleculeDynamic* dynamic, ResIdx center_res_idx, bool whole_residues) {
+    ASSERT(dynamic);
+    if (!dynamic->operator bool()) {
+        LOG_ERROR("Dynamic is not valid.");
+        return;
+    }
+
+    const auto elements = dynamic->molecule.atom_elements;
+    DynamicArray<vec3> com_residues(dynamic->molecule.residues.count);
+
+    for (int32 f_idx = 0; f_idx < dynamic->trajectory.num_frames; f_idx++) {
+        auto frame = get_trajectory_frame(dynamic->trajectory, f_idx);
+        auto positions = frame.atom_positions;
+        auto box = frame.box;
+        auto box_center = frame.box * vec3(0.5f);
+
+        for (int32 r_idx = 0; r_idx < dynamic->molecule.residues.count; r_idx++) {
+            auto r = dynamic->molecule.residues[r_idx];
+            auto p = positions.sub_array(r.beg_atom_idx, r.end_atom_idx - r.beg_atom_idx);
+            auto e = elements.sub_array(r.beg_atom_idx, r.end_atom_idx - r.beg_atom_idx);
+            com_residues[r_idx] = compute_deperiodized_com(p, e, box);
+        }
+
+        vec3 delta = box_center - com_residues[center_res_idx];
+        for (int32 r_idx = 0; r_idx < dynamic->molecule.residues.count; r_idx++) {
+        }
+    }
+
+    // @ NOTE: IMPLEMENT
+}
+
 inline bool periodic_jump(const vec3& p_prev, const vec3& p_next, const vec3& half_box) {
     const vec3 abs_delta = math::abs(p_next - p_prev);
     if (abs_delta.x > half_box.x) return true;
@@ -76,30 +140,6 @@ void linear_interpolation(Array<vec3> positions, Array<const vec3> prev_pos, Arr
     }
 }
 
-inline __m128 mm_abs(const __m128 x) { return _mm_and_ps(x, _mm_castsi128_ps(_mm_set1_epi32(0x7FFFFFFF))); }
-
-inline __m128 mm_sign(const __m128 x) {
-    __m128 const zro0 = _mm_setzero_ps();
-    __m128 const cmp0 = _mm_cmplt_ps(x, zro0);
-    __m128 const cmp1 = _mm_cmpgt_ps(x, zro0);
-    __m128 const and0 = _mm_and_ps(cmp0, _mm_set1_ps(-1.0f));
-    __m128 const and1 = _mm_and_ps(cmp1, _mm_set1_ps(1.0f));
-    __m128 const or0 = _mm_or_ps(and0, and1);
-    return or0;
-}
-
-inline glm_vec4 glm_step(const glm_vec4 edge, const glm_vec4 x) {
-    const glm_vec4 cmp = _mm_cmpge_ps(x, edge);
-    const glm_vec4 res = _mm_and_ps(cmp, _mm_set1_ps(1.f));
-    return res;
-}
-
-inline glm_vec4 de_periodize(const glm_vec4 p0, const glm_vec4 p1, const glm_vec4 full_ext, const glm_vec4 half_ext) {
-    const glm_vec4 delta = glm_vec4_sub(p1, p0);
-    const glm_vec4 signed_mask = glm_vec4_mul(glm_vec4_sign(delta), glm_step(half_ext, glm_vec4_abs(delta)));
-    return glm_vec4_sub(p1, glm_vec4_mul(full_ext, signed_mask));
-}
-
 // @TODO: Fix this, is it possible in theory to get a good interpolation between frames with periodicity without modifying source data?
 // @PERFORMANCE: VECTORIZE THIS
 void linear_interpolation_periodic(Array<vec3> positions, Array<const vec3> prev_pos, Array<const vec3> next_pos, float t, mat3 sim_box) {
@@ -107,14 +147,13 @@ void linear_interpolation_periodic(Array<vec3> positions, Array<const vec3> prev
     ASSERT(next_pos.count == positions.count);
 
     const glm_vec4 full_box_ext = _mm_set_ps(0.f, sim_box[2][2], sim_box[1][1], sim_box[0][0]);
-    const glm_vec4 half_box_ext = glm_vec4_mul(full_box_ext, _mm_set_ps1(0.5f));
     const glm_vec4 t_vec = _mm_set_ps1(t);
 
     for (int i = 0; i < positions.count; i++) {
         glm_vec4 next = _mm_set_ps(0, next_pos[i].z, next_pos[i].y, next_pos[i].x);
         glm_vec4 prev = _mm_set_ps(0, prev_pos[i].z, prev_pos[i].y, prev_pos[i].x);
 
-        next = de_periodize(prev, next, full_box_ext, half_box_ext);
+        next = de_periodize(prev, next, full_box_ext);
         const glm_vec4 res = glm_vec4_mix(prev, next, t_vec);
 
         positions[i] = *reinterpret_cast<const vec3*>(&res);
@@ -157,7 +196,6 @@ void spline_interpolation_periodic(Array<vec3> positions, Array<const vec3> pos0
         const vec3 half_box_ext = full_box_ext * 0.5f;
     */
     const glm_vec4 full_box_ext = _mm_set_ps(0.f, sim_box[2][2], sim_box[1][1], sim_box[0][0]);
-    const glm_vec4 half_box_ext = glm_vec4_mul(full_box_ext, _mm_set_ps1(0.5f));
 
     for (int i = 0; i < positions.count; i++) {
         glm_vec4 p0 = _mm_set_ps(0, pos0[i].z, pos0[i].y, pos0[i].x);
@@ -165,9 +203,9 @@ void spline_interpolation_periodic(Array<vec3> positions, Array<const vec3> pos0
         glm_vec4 p2 = _mm_set_ps(0, pos2[i].z, pos2[i].y, pos2[i].x);
         glm_vec4 p3 = _mm_set_ps(0, pos3[i].z, pos3[i].y, pos3[i].x);
 
-        p0 = de_periodize(p1, p0, full_box_ext, half_box_ext);
-        p2 = de_periodize(p1, p2, full_box_ext, half_box_ext);
-        p3 = de_periodize(p1, p3, full_box_ext, half_box_ext);
+        p0 = de_periodize(p1, p0, full_box_ext);
+        p2 = de_periodize(p1, p2, full_box_ext);
+        p3 = de_periodize(p1, p3, full_box_ext);
 
         const glm_vec4 res = math::spline(p0, p1, p2, p3, t);
         positions[i] = *reinterpret_cast<const vec3*>(&res);
@@ -377,7 +415,7 @@ DynamicArray<SplineSegment> compute_spline(Array<const vec3> atom_pos, Array<con
     DynamicArray<vec3> c_tmp;
     DynamicArray<int> ca_idx;
 
-	// Pad front with duplicated vectors
+    // Pad front with duplicated vectors
     auto d_p0 = atom_pos[backbone[1].ca_idx] - atom_pos[backbone[0].ca_idx];
     p_tmp.push_back(atom_pos[backbone[0].ca_idx] - d_p0);
 
@@ -389,7 +427,7 @@ DynamicArray<SplineSegment> compute_spline(Array<const vec3> atom_pos, Array<con
 
     ca_idx.push_back(backbone[0].ca_idx);
 
-	// Fetch vectors
+    // Fetch vectors
     const int size = (int)(backbone.count);
     for (auto i = 0; i < size; i++) {
         p_tmp.push_back(atom_pos[backbone[i].ca_idx]);
@@ -398,7 +436,7 @@ DynamicArray<SplineSegment> compute_spline(Array<const vec3> atom_pos, Array<con
         ca_idx.push_back(backbone[i].ca_idx);
     }
 
-	// Pad back with duplicated vectors
+    // Pad back with duplicated vectors
     auto d_pn = atom_pos[backbone[size - 1].ca_idx] - atom_pos[backbone[size - 2].ca_idx];
     p_tmp.push_back(atom_pos[backbone[size - 1].ca_idx] + d_pn);
     p_tmp.push_back(p_tmp.back() + d_pn);
@@ -455,7 +493,7 @@ DynamicArray<SplineSegment> compute_spline(Array<const vec3> atom_pos, Array<con
 
             vec3 v_dir = math::normalize(o - c);
 
-			vec3 tangent = math::spline_tangent(p0, p1, p2, p3, t, tension);
+            vec3 tangent = math::spline_tangent(p0, p1, p2, p3, t, tension);
             vec3 normal = math::normalize(math::cross(v_dir, tangent));
             vec3 binormal = math::normalize(math::cross(tangent, normal));
 
