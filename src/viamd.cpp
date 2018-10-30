@@ -461,6 +461,7 @@ static uint32 get_picking_id(const MainFramebuffer& fbo, int32 x, int32 y);
 static void imgui_dockspace();
 
 static void draw_main_menu(ApplicationData* data);
+static void draw_context_popup(ApplicationData* data);
 static void draw_control_window(ApplicationData* data);
 static void draw_representations_window(ApplicationData* data);
 static void draw_property_window(ApplicationData* data);
@@ -1046,6 +1047,7 @@ load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
         data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, data.ctx.timing.delta_s);
 
         draw_main_menu(&data);
+        draw_context_popup(&data);
 
         if (data.representations.show_window) draw_representations_window(&data);
         if (data.reference_frames.show_window) draw_reference_frames_window(&data);
@@ -1291,6 +1293,7 @@ void imgui_dockspace() {
 static void draw_main_menu(ApplicationData* data) {
     ASSERT(data);
     bool new_clicked = false;
+
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("New", "CTRL+N")) new_clicked = true;
@@ -1500,6 +1503,26 @@ if (ImGui::BeginMenu("Edit")) {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
+    }
+}
+
+void draw_context_popup(ApplicationData* data) {
+    ASSERT(data);
+
+    if (ImGui::BeginPopup("OtherContextPopup")) {
+        if (ImGui::MenuItem("Recenter on residue")) {
+            if (data->selection.right_clicked != -1) {
+                recenter_trajectory(&data->mol_data.dynamic, data->mol_data.dynamic.molecule.atom_residue_indices[data->selection.right_clicked]);
+            }
+        }
+        ImGui::EndPopup();
+    }
+    if (data->selection.hovered != -1 && data->ctx.input.mouse.release[1]) {
+        if (ImGui::GetIO().WantTextInput) {
+            ImGui::OpenPopup("TextContextPopup");
+        } else {
+            ImGui::OpenPopup("OtherContextPopup");
+        }
     }
 }
 

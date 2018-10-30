@@ -21,6 +21,9 @@ bool allocate_and_load_pdb_from_file(MoleculeDynamic* md, const char* filename, 
         LOG_ERROR("Could not read file: '%s'.", filename);
         return false;
     }
+
+    free_molecule_structure(&md->molecule);
+    free_trajectory(&md->trajectory);
     auto res = allocate_and_parse_pdb_from_string(md, txt, params);
     FREE(txt);
     return res;
@@ -181,7 +184,7 @@ bool allocate_and_parse_pdb_from_string(MoleculeDynamic* md, CString pdb_string,
 
     if (!md->molecule) {
         auto mol_pos = positions.sub_array(0, num_atoms);
-        auto covalent_bonds = compute_covalent_bonds(mol_pos, elements, residue_indices);
+        auto covalent_bonds = compute_covalent_bonds(residues, residue_indices, mol_pos, elements);
         auto backbone_segments = compute_backbone_segments(residues, labels);
         auto donors = hydrogen_bond::compute_donors(labels);
         auto acceptors = hydrogen_bond::compute_acceptors(elements);

@@ -57,9 +57,14 @@ inline Array<BackboneAngles> get_backbone_angles(BackboneAnglesTrajectory& backb
     return get_backbone_angles(backbone_angle_traj, frame_index).sub_array(chain.beg_res_idx, chain.end_res_idx - chain.beg_res_idx);
 }
 
+void translate_positions(Array<vec3> positions, const vec3& translation);
 void transform_positions(Array<vec3> positions, const mat4& transformation);
 void compute_bounding_box(vec3* min_box, vec3* max_box, Array<const vec3> positions, Array<const float> radii = {});
-vec3 compute_com(Array<const vec3> positions, Array<const float> masses = {});
+
+vec3 compute_com(Array<const vec3> positions);
+vec3 compute_com(Array<const vec3> positions, Array<const float> masses);
+vec3 compute_com(Array<const vec3> positions, Array<const Element> elements);
+vec3 compute_periodic_com(Array<const vec3> positions, Array<const Element> elements, const vec3& box_ext);
 
 void recenter_trajectory(MoleculeDynamic* dynamic, ResIdx center_res_idx, bool whole_residues = true);
 
@@ -70,7 +75,14 @@ void spline_interpolation_periodic(Array<vec3> positions, Array<const vec3> pos0
 void spline_interpolation(Array<vec3> positions, Array<const vec3> pos0, Array<const vec3> pos1, Array<const vec3> pos2, Array<const vec3> pos3,
                           float t);
 
-DynamicArray<Bond> compute_covalent_bonds(Array<const vec3> atom_pos, Array<const Element> atom_elem, Array<const ResIdx> atom_res_idx = {});
+// This computes heuristical covalent bonds in a hierarchical way (first internal, then external per residue) and stores the indices to the bonds
+// within the residues. Only adjacent residues can form external covalent bonds in this function.
+DynamicArray<Bond> compute_covalent_bonds(Array<Residue> residues, Array<const ResIdx> atom_res_idx, Array<const vec3> atom_pos,
+                                          Array<const Element> atom_elem);
+
+// This is computes heuristical covalent bonds between any atoms without hierarchical constraints.
+DynamicArray<Bond> compute_covalent_bonds(Array<const vec3> atom_pos, Array<const Element> atom_elem);
+
 DynamicArray<Chain> compute_chains(Array<const Residue> residue, Array<const Bond> bonds, Array<const ResIdx> atom_res_idx = {});
 DynamicArray<BackboneSegment> compute_backbone_segments(Array<const Residue> residues, Array<const Label> atom_labels);
 DynamicArray<SplineSegment> compute_spline(Array<const vec3> atom_pos, Array<const uint32> colors, Array<const BackboneSegment> backbone,

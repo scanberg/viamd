@@ -15,11 +15,24 @@ inline glm_vec4 glm_step(const glm_vec4 edge, const glm_vec4 x) {
     return res;
 }
 
-inline glm_vec4 de_periodize(const glm_vec4 p0, const glm_vec4 p1, const glm_vec4 full_ext) {
-    const glm_vec4 half_ext = glm_vec4_mul(full_ext, _mm_set1_ps(0.5f));
+inline glm_vec4 de_periodize(const glm_vec4 p0, const glm_vec4 p1, const glm_vec4 box_ext) {
+    const glm_vec4 half_ext = glm_vec4_mul(box_ext, _mm_set1_ps(0.5f));
     const glm_vec4 delta = glm_vec4_sub(p1, p0);
     const glm_vec4 signed_mask = glm_vec4_mul(glm_vec4_sign(delta), glm_step(half_ext, glm_vec4_abs(delta)));
-    return glm_vec4_sub(p1, glm_vec4_mul(full_ext, signed_mask));
+    return glm_vec4_sub(p1, glm_vec4_mul(box_ext, signed_mask));
+}
+
+inline vec3 de_periodize(const vec3 ref, const vec3 p, const vec3 box_ext) {
+    const vec3 half_ext = box_ext * 0.5f;
+    const vec3 delta = p - ref;
+    const vec3 signed_mask = sign(delta) * step(half_ext, abs(delta));
+    return p - box_ext * signed_mask;
+}
+
+void translate_positions(Array<vec3> positions, const vec3& translation) {
+    for (auto& p : positions) {
+        p = p + translation;
+    }
 }
 
 void transform_positions(Array<vec3> positions, const mat4& transformation) {
@@ -48,48 +61,65 @@ void compute_bounding_box(vec3* min_box, vec3* max_box, Array<const vec3> positi
     }
 }
 
-vec3 compute_com(Array<const vec3> positions, Array<const float> masses) {
+vec3 compute_com(Array<const vec3> positions) {
     if (positions.count == 0) return {0, 0, 0};
     if (positions.count == 1) return positions[0];
 
-    vec3 com{0};
-    if (masses.count == 0) {
-        for (const auto& p : positions) {
-            com += p;
-        }
-        com = com / (float)positions.count;
-    } else {
-        ASSERT(masses.count == positions.count);
-        vec3 pos_mass_sum{0};
-        float mass_sum{0};
-        for (int32 i = 0; i < positions.count; i++) {
-            pos_mass_sum += positions[i] * masses[i];
-            mass_sum += masses[i];
-        }
-        com = pos_mass_sum / mass_sum;
+    vec3 sum{0};
+    for (const auto& p : positions) {
+        sum += p;
     }
-
-    return com;
+    return sum / (float)positions.count;
 }
 
-vec3 compute_deperiodized_com(Array<const vec3> positions, Array<const Element> elements, const mat3& sim_box) {
+vec3 compute_com(Array<const vec3> positions, Array<const float> masses) {
+    ASSERT(masses.count == positions.count);
     if (positions.count == 0) return {0, 0, 0};
     if (positions.count == 1) return positions[0];
 
-    const glm_vec4 full_box_ext = _mm_set_ps(0.f, sim_box[2][2], sim_box[1][1], sim_box[0][0]);
-
-    ASSERT(positions.count == elements.count);
-    glm_vec4 p_prev = _mm_set_ps(element::atomic_mass(elements[0]), positions[0].z, positions[0].y, positions[0].x);
-    glm_vec4 sum = _mm_set_ps1(0);
-
-    for (int32 i = 1; i < positions.count; i++) {
-        glm_vec4 p_curr = _mm_set_ps(element::atomic_mass(elements[i]), positions[i].z, positions[i].y, positions[i].x);
-        p_curr = de_periodize(p_prev, p_curr, full_box_ext);
-        sum = glm_vec4_add(sum, p_curr);
+    vec3 sum{0};
+    for (int32 i = 0; i < positions.count; i++) {
+        sum += positions[i] * masses[i];
     }
 
-    vec4& com_mass_sum = *reinterpret_cast<vec4*>(&sum);
-    return vec3(com_mass_sum) / com_mass_sum.w;
+    return sum / (float)positions.count;
+}
+
+vec3 compute_com(Array<const vec3> positions, Array<const Element> elements) {
+    ASSERT(elements.count == positions.count);
+    if (positions.count == 0) return {0, 0, 0};
+    if (positions.count == 1) return positions[0];
+
+    vec3 sum{0};
+    for (int32 i = 0; i < positions.count; i++) {
+        sum += positions[i] * element::atomic_mass(elements[i]);
+    }
+
+    return sum / (float)positions.count;
+}
+
+vec3 compute_periodic_com(Array<const vec3> positions, Array<const Element> elements, const vec3& box_ext) {
+    ASSERT(positions.count == elements.count);
+
+    if (positions.count == 0) return {0, 0, 0};
+    if (positions.count == 1) return positions[0];
+
+    const glm_vec4 full_box_ext = _mm_set_ps(0.f, box_ext[2], box_ext[1], box_ext[0]);
+    const glm_vec4 box_center = glm_vec4_mul(full_box_ext, _mm_set_ps1(0.5f));
+
+    glm_vec4 p_ref = _mm_set_ps(0, positions[0].z, positions[0].y, positions[0].x);
+    glm_vec4 sum = glm_vec4_mul(p_ref, _mm_set_ps1(element::atomic_mass(elements[0])));
+
+    for (int32 i = 1; i < positions.count; i++) {
+        glm_vec4 p_curr = _mm_set_ps(0, positions[i].z, positions[i].y, positions[i].x);
+        p_curr = de_periodize(p_ref, p_curr, full_box_ext);
+        sum = glm_vec4_add(sum, glm_vec4_mul(p_curr, _mm_set_ps1(element::atomic_mass(elements[i]))));
+    }
+
+    sum = glm_vec4_div(sum, _mm_set_ps1(positions.count));
+    sum = de_periodize(box_center, sum, full_box_ext);
+
+    return *reinterpret_cast<vec3*>(&sum);
 }
 
 void recenter_trajectory(MoleculeDynamic* dynamic, ResIdx center_res_idx, bool whole_residues) {
@@ -105,22 +135,27 @@ void recenter_trajectory(MoleculeDynamic* dynamic, ResIdx center_res_idx, bool w
     for (int32 f_idx = 0; f_idx < dynamic->trajectory.num_frames; f_idx++) {
         auto frame = get_trajectory_frame(dynamic->trajectory, f_idx);
         auto positions = frame.atom_positions;
-        auto box = frame.box;
+        auto box_ext = frame.box * vec3(1);
         auto box_center = frame.box * vec3(0.5f);
 
         for (int32 r_idx = 0; r_idx < dynamic->molecule.residues.count; r_idx++) {
             auto r = dynamic->molecule.residues[r_idx];
             auto p = positions.sub_array(r.beg_atom_idx, r.end_atom_idx - r.beg_atom_idx);
             auto e = elements.sub_array(r.beg_atom_idx, r.end_atom_idx - r.beg_atom_idx);
-            com_residues[r_idx] = compute_deperiodized_com(p, e, box);
+            com_residues[r_idx] = compute_periodic_com(p, e, box_ext);
         }
 
         vec3 delta = box_center - com_residues[center_res_idx];
+
         for (int32 r_idx = 0; r_idx < dynamic->molecule.residues.count; r_idx++) {
+            auto r = dynamic->molecule.residues[r_idx];
+            auto p = positions.sub_array(r.beg_atom_idx, r.end_atom_idx - r.beg_atom_idx);
+            vec3 old_com = com_residues[r_idx];
+            vec3 new_com = de_periodize(box_center, old_com + delta, box_ext);
+            vec3 diff = new_com - old_com;
+            translate_positions(p, diff);
         }
     }
-
-    // @ NOTE: IMPLEMENT
 }
 
 inline bool periodic_jump(const vec3& p_prev, const vec3& p_next, const vec3& half_box) {
@@ -265,39 +300,84 @@ inline bool covelent_bond_heuristic(const vec3& pos_a, Element elem_a, const vec
 
 // Computes covalent bonds between a set of atoms with given positions and elements.
 // The approach is inspired by the technique used in NGL (https://github.com/arose/ngl)
-DynamicArray<Bond> compute_covalent_bonds(Array<const vec3> atom_pos, Array<const Element> atom_elem, Array<const ResIdx> atom_res_idx) {
+DynamicArray<Bond> compute_covalent_bonds(Array<Residue> residues, Array<const ResIdx> atom_res_idx, Array<const vec3> atom_pos,
+                                          Array<const Element> atom_elem) {
     ASSERT(atom_pos.count == atom_elem.count);
-    if (atom_res_idx.count > 0) {
-        ASSERT(atom_pos.count == atom_res_idx.count);
+    ASSERT(atom_pos.count == atom_res_idx.count);
+
+    if (residues.count == 0) {
+        LOG_WARNING("Cannot compute covalent bonds, no residues were given.");
+        return {};
     }
 
-    constexpr float max_covelent_bond_length = 3.5f;
+    constexpr float max_covelent_bond_length = 4.0f;
     spatialhash::Frame frame = spatialhash::compute_frame(atom_pos, vec3(max_covelent_bond_length));
     DynamicArray<Bond> bonds;
 
-    if (atom_res_idx.count > 0) {
-        // @NOTE: If we have residues the assumtion is that a bond is either within a single residue or between concecutive residues.
-        for (int atom_i = 0; atom_i < atom_pos.count; atom_i++) {
+    // @NOTE: The assumtion is that a bond is either within a single residue or between concecutive residues.
+
+    for (auto& res : residues) {
+        // Find internal bonds within residues first
+        res.bonds.beg = res.bonds.end = bonds.count;
+        for (AtomIdx atom_i = res.beg_atom_idx; atom_i < res.end_atom_idx; atom_i++) {
             spatialhash::for_each_within(frame, atom_pos[atom_i], max_covelent_bond_length,
-                                         [&bonds, &atom_pos, &atom_elem, &atom_res_idx, atom_i](int atom_j, const vec3& atom_j_pos) {
+                                         [&bonds, &res, atom_pos, atom_elem, atom_res_idx, atom_i](int atom_j, const vec3& atom_j_pos) {
                                              (void)atom_j_pos;
-                                             if (atom_i < atom_j && (math::abs(atom_res_idx[atom_i] - atom_res_idx[atom_j]) < 2) &&
+                                             if (atom_i < atom_j && atom_res_idx[atom_i] == atom_res_idx[atom_j] &&
                                                  covelent_bond_heuristic(atom_pos[atom_i], atom_elem[atom_i], atom_pos[atom_j], atom_elem[atom_j])) {
                                                  bonds.push_back({atom_i, atom_j});
+                                                 res.bonds.end++;
                                              }
                                          });
         }
-    } else {
-        // @NOTE: Since we do not have any hierarchical information given, try all atoms against all other atoms.
-        for (int atom_i = 0; atom_i < atom_pos.count; atom_i++) {
-            spatialhash::for_each_within(
-                frame, atom_pos[atom_i], max_covelent_bond_length, [&bonds, &atom_pos, &atom_elem, atom_i](int atom_j, const vec3& atom_j_pos) {
-                    (void)atom_j_pos;
-                    if (atom_i < atom_j && covelent_bond_heuristic(atom_pos[atom_i], atom_elem[atom_i], atom_pos[atom_j], atom_elem[atom_j])) {
-                        bonds.push_back({atom_i, atom_j});
-                    }
-                });
+        res.bonds.end_internal = res.bonds.end;
+        // Now locate external bonds
+        for (AtomIdx atom_i = res.beg_atom_idx; atom_i < res.end_atom_idx; atom_i++) {
+            spatialhash::for_each_within(frame, atom_pos[atom_i], max_covelent_bond_length,
+                                         [&bonds, &res, atom_pos, atom_elem, atom_res_idx, atom_i](int atom_j, const vec3& atom_j_pos) {
+                                             (void)atom_j_pos;
+                                             if (atom_i < atom_j && math::abs(atom_res_idx[atom_i] - atom_res_idx[atom_j]) == 1 &&  // consecutive
+                                                 covelent_bond_heuristic(atom_pos[atom_i], atom_elem[atom_i], atom_pos[atom_j], atom_elem[atom_j])) {
+                                                 bonds.push_back({atom_i, atom_j});
+                                                 res.bonds.end++;
+                                             }
+                                         });
         }
+    }
+
+    /*
+        // Old approach which does not give internal then external bonds for residues
+for (int atom_i = 0; atom_i < atom_pos.count; atom_i++) {
+spatialhash::for_each_within(
+    frame, atom_pos[atom_i], max_covelent_bond_length,
+    [&bonds, &atom_pos, &atom_elem, &atom_res_idx, atom_i](int atom_j, const vec3& atom_j_pos) {
+        (void)atom_j_pos;
+        if (atom_i < atom_j &&
+            (math::abs(atom_res_idx[atom_i] - atom_res_idx[atom_j]) <
+                2) &&  // only create bonds where i < j and res_idx is concecutive (abs(res_idx[i] - res_idx[j]) < 2)
+            covelent_bond_heuristic(atom_pos[atom_i], atom_elem[atom_i], atom_pos[atom_j], atom_elem[atom_j])) {
+            bonds.push_back({atom_i, atom_j});
+        }
+    });
+}
+    */
+
+    return bonds;
+}
+
+DynamicArray<Bond> conpute_covalent_bonds(Array<const vec3> atom_pos, Array<const Element> atom_elem) {
+    constexpr float max_covelent_bond_length = 4.0f;
+    spatialhash::Frame frame = spatialhash::compute_frame(atom_pos, vec3(max_covelent_bond_length));
+    DynamicArray<Bond> bonds;
+
+    for (int atom_i = 0; atom_i < atom_pos.count; atom_i++) {
+        spatialhash::for_each_within(
+            frame, atom_pos[atom_i], max_covelent_bond_length, [&bonds, atom_pos, atom_elem, atom_i](int atom_j, const vec3& atom_j_pos) {
+                (void)atom_j_pos;
+                if (atom_i < atom_j && covelent_bond_heuristic(atom_pos[atom_i], atom_elem[atom_i], atom_pos[atom_j], atom_elem[atom_j])) {
+                    bonds.push_back({atom_i, atom_j});
+                }
+            });
     }
 
     return bonds;

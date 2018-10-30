@@ -24,6 +24,7 @@ endif()
 add_subdirectory(ext/rsk_platform)
 add_subdirectory(ext/libxdrfile)
 add_subdirectory(ext/tinyexpr)
+add_subdirectory(unittests)
 
 include_directories(src
                     ext/glm

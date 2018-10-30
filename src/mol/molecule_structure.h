@@ -10,10 +10,11 @@ using Label = StringBuffer<8>;
 using AtomIdx = int32;
 using ResIdx = int32;
 using ChainIdx = int32;
+using BondIdx = int32;
 
 struct Bond {
-    int32 idx_a;
-    int32 idx_b;
+    AtomIdx idx_a;
+    AtomIdx idx_b;
 };
 
 struct BackboneSegment {
@@ -33,9 +34,19 @@ typedef AtomIdx HydrogenBondAcceptor;
 struct Residue {
     Label name = "";
     ResIdx id = -1;
+    ChainIdx chain_idx = -1;
     AtomIdx beg_atom_idx = 0;
     AtomIdx end_atom_idx = 0;
-    ChainIdx chain_idx = -1;
+    struct {
+        // Covalent bonds for a residue
+        // [beg, end[ is the range for all bonds connected to this residue.
+        // [beg, end_internal[ is the range for internal bonds.
+        // [end_internal, end[ is the range for external bonds.
+
+        BondIdx beg = 0;
+        BondIdx end_internal = 0;
+        BondIdx end = 0;
+    } bonds;
 };
 
 struct Chain {
