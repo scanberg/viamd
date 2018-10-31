@@ -1127,14 +1127,14 @@ static void interpolate_atomic_positions(Array<vec3> dst_pos, const MoleculeTraj
             case PlaybackInterpolationMode::CUBIC: {
                 const Array<const vec3> pos[4] = {get_trajectory_positions(traj, prev_frame_2), get_trajectory_positions(traj, prev_frame_1),
                                                   get_trajectory_positions(traj, next_frame_1), get_trajectory_positions(traj, next_frame_2)};
-                spline_interpolation(dst_pos, pos[0], pos[1], pos[2], pos[3], t);
+                cubic_interpolation(dst_pos, pos[0], pos[1], pos[2], pos[3], t);
                 break;
             }
             case PlaybackInterpolationMode::CUBIC_PERIODIC: {
                 const Array<const vec3> pos[4] = {get_trajectory_positions(traj, prev_frame_2), get_trajectory_positions(traj, prev_frame_1),
                                                   get_trajectory_positions(traj, next_frame_1), get_trajectory_positions(traj, next_frame_2)};
                 const auto box = get_trajectory_frame(traj, prev_frame_1).box;
-                spline_interpolation_periodic(dst_pos, pos[0], pos[1], pos[2], pos[3], t, box);
+                cubic_interpolation_periodic(dst_pos, pos[0], pos[1], pos[2], pos[3], t, box);
                 break;
             }
 

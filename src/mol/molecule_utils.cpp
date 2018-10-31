@@ -104,19 +104,19 @@ vec3 compute_periodic_com(Array<const vec3> positions, Array<const Element> elem
     if (positions.count == 0) return {0, 0, 0};
     if (positions.count == 1) return positions[0];
 
-    const glm_vec4 full_box_ext = _mm_set_ps(0.f, box_ext[2], box_ext[1], box_ext[0]);
+    const glm_vec4 full_box_ext = _mm_set_ps(0, box_ext[2], box_ext[1], box_ext[0]);
     const glm_vec4 box_center = glm_vec4_mul(full_box_ext, _mm_set_ps1(0.5f));
 
-    glm_vec4 p_ref = _mm_set_ps(0, positions[0].z, positions[0].y, positions[0].x);
+    glm_vec4 p_ref = _mm_set_ps(1, positions[0].z, positions[0].y, positions[0].x);
     glm_vec4 sum = glm_vec4_mul(p_ref, _mm_set_ps1(element::atomic_mass(elements[0])));
 
     for (int32 i = 1; i < positions.count; i++) {
-        glm_vec4 p_curr = _mm_set_ps(0, positions[i].z, positions[i].y, positions[i].x);
+        glm_vec4 p_curr = _mm_set_ps(1, positions[i].z, positions[i].y, positions[i].x);
         p_curr = de_periodize(p_ref, p_curr, full_box_ext);
         sum = glm_vec4_add(sum, glm_vec4_mul(p_curr, _mm_set_ps1(element::atomic_mass(elements[i]))));
     }
 
-    sum = glm_vec4_div(sum, _mm_set_ps1(positions.count));
+    sum = glm_vec4_div(sum, _mm_shuffle_ps(sum, sum, _MM_SHUFFLE(3,3,3,3)));
     sum = de_periodize(box_center, sum, full_box_ext);
 
     return *reinterpret_cast<vec3*>(&sum);
@@ -218,7 +218,7 @@ next = next - full_box_ext * signed_mask;
     }
 }
 
-void spline_interpolation_periodic(Array<vec3> positions, Array<const vec3> pos0, Array<const vec3> pos1, Array<const vec3> pos2,
+void cubic_interpolation_periodic(Array<vec3> positions, Array<const vec3> pos0, Array<const vec3> pos1, Array<const vec3> pos2,
                                    Array<const vec3> pos3, float t, mat3 sim_box) {
     ASSERT(pos0.count == positions.count);
     ASSERT(pos1.count == positions.count);
@@ -272,7 +272,7 @@ void spline_interpolation_periodic(Array<vec3> positions, Array<const vec3> pos0
     }
 }
 
-void spline_interpolation(Array<vec3> positions, Array<const vec3> pos0, Array<const vec3> pos1, Array<const vec3> pos2, Array<const vec3> pos3,
+void cubic_interpolation(Array<vec3> positions, Array<const vec3> pos0, Array<const vec3> pos1, Array<const vec3> pos2, Array<const vec3> pos3,
                           float t) {
     ASSERT(pos0.count == positions.count);
     ASSERT(pos1.count == positions.count);
