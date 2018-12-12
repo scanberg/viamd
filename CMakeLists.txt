@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.0)
 
-project(viamd)
+project(viamd_app)
 
 if(APPLE)
   set(CMAKE_OSX_DEPLOYMENT_TARGET "10.9")
@@ -21,23 +21,22 @@ else()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types")
 endif()
 
-add_subdirectory(ext/rsk_platform)
-add_subdirectory(ext/libxdrfile)
-add_subdirectory(ext/tinyexpr)
-add_subdirectory(unittests)
+add_subdirectory(ext/glfw)
+add_subdirectory(ext/imgui)
+add_subdirectory(ext/nativefiledialog)
+add_subdirectory(ext/viamd)
+add_subdirectory(unittest)
 
-include_directories(src
-                    ext/glm
-                    ext/libxdrfile/src
-                    ext/tinyexpr
+include_directories(src/
+                    ext/viamd/src
+                    ext/viamd/ext/glm
+                    ext/viamd/ext/gl3w
                     ext/Eigen
-                    ext/svd3
-                    ext/rsk_platform/include
-                    ext/rsk_platform/ext/imgui)
+                    ext/imgui
+                    ext/glfw/include
+                    ext/nativefiledialog/src/include)
 
-file(GLOB_RECURSE PROJECT_HEADERS src/*.h)
-file(GLOB_RECURSE PROJECT_SOURCES src/*.cpp
-                                  src/*.inl)
+file(GLOB_RECURSE PLATFORM_FILES src/platform/*)
 
 file(GLOB PROJECT_CONFIGS CMakeLists.txt
                           Readme.md
@@ -45,18 +44,21 @@ file(GLOB PROJECT_CONFIGS CMakeLists.txt
                          .gitignore
                          .gitmodules)
 
-source_group("Headers" FILES ${PROJECT_HEADERS})
-source_group("Sources" FILES ${PROJECT_SOURCES})
+set(APPLICATION_FILES
+    src/main.cpp
+)
+
+source_group("platform" FILES ${PLATFORM_FILES})
+source_group("application" FILES ${APPLICATION_FILES})
 
 add_definitions(-DPROJECT_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\")
+add_definitions(-DDATA_DIR=\"${PROJECT_SOURCE_DIR}/data\")
 
-#add_executable(${PROJECT_NAME} MACOSX_BUNDLE ${PROJECT_HEADERS} ${PROJECT_SOURCES})
-add_executable(${PROJECT_NAME} ${PROJECT_HEADERS} ${PROJECT_SOURCES})
+#add_executable(${PROJECT_NAME} MACOSX_BUNDLE ${PLATFORM_FILES} ${APPLICATION_FILES})
+add_executable(${PROJECT_NAME} ${PLATFORM_FILES} ${APPLICATION_FILES})
 
 target_link_libraries(${PROJECT_NAME}
-                      rsk_platform
-                      libxdrfile
-                      tinyexpr)
-
-#set_target_properties(${PROJECT_NAME} PROPERTIES
-#    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PROJECT_NAME})
+                      glfw
+                      imgui
+                      nativefiledialog
+                      viamd_lib)
