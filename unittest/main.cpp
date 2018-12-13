@@ -12,7 +12,6 @@
 #include <mol/molecule_trajectory.h>
 #include <mol/trajectory_utils.h>
 #include <mol/molecule_utils.h>
-#include <mol/molecule_draw.h>
 #include <mol/ramachandran.h>
 #include <mol/hydrogen_bond.h>
 #include <mol/filter.h>
@@ -56,10 +55,7 @@ ATOM     24  H13 CSP3    1E      9.801   2.693  -7.994
 TEST_CASE("Testing pdb loader caffine", "[parse_pdb]") {
     MoleculeDynamic md;
     allocate_and_parse_pdb_from_string(&md, CAFFINE_PDB);
-    defer {
-        free_molecule_structure(&md.molecule);
-        free_trajectory(&md.trajectory);
-    };
+    defer { free_molecule_structure(&md.molecule); };
 
     REQUIRE(md.molecule.atom.count == 24);
 }
@@ -67,10 +63,7 @@ TEST_CASE("Testing pdb loader caffine", "[parse_pdb]") {
 TEST_CASE("Testing filter", "[filter]") {
     MoleculeDynamic md;
     allocate_and_parse_pdb_from_string(&md, CAFFINE_PDB);
-    defer {
-        free_molecule_structure(&md.molecule);
-        free_trajectory(&md.trajectory);
-    };
+    defer { free_molecule_structure(&md.molecule); };
 
     filter::initialize();
     DynamicArray<bool> mask(md.molecule.atom.count);

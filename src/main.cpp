@@ -13,7 +13,6 @@
 #include <mol/molecule_trajectory.h>
 #include <mol/trajectory_utils.h>
 #include <mol/molecule_utils.h>
-#include <mol/molecule_draw.h>
 #include <mol/ramachandran.h>
 #include <mol/hydrogen_bond.h>
 #include <mol/filter.h>
@@ -22,12 +21,18 @@
 #include <mol/stats.h>
 #include <mol/spatial_hash.h>
 
+#include <gfx/molecule_draw.h>
 #include <gfx/immediate_draw_utils.h>
 #include <gfx/postprocessing_utils.h>
 #include <gfx/volume_utils.h>
 
 #include <imgui.h>
+#define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui_internal.h>
+
+#include <range_slider.h>
+#include <plot_extended.h>
+
 #include <glm/gtx/io.hpp>
 
 #include <stdio.h>
@@ -79,7 +84,6 @@ constexpr float HYDROGEN_BOND_ANGLE_CUTOFF_MAX = 90.f;
 constexpr int32 VOLUME_DOWNSAMPLE_FACTOR = 2;
 
 constexpr int32 MAX_REPRESENTATIONS = 16;
-constexpr int32 MAX_REFERENCE_FRAMES = 16;
 
 #ifdef VIAMD_RELEASE
 constexpr const char* CAFFINE_PDB = R"(
@@ -119,11 +123,6 @@ inline ImVec4& vec_cast(vec4& v) { return *(ImVec4*)(&v); }
 inline vec4& vec_cast(ImVec4& v) { return *(vec4*)(&v); }
 inline ImVec2& vec_cast(vec2& v) { return *(ImVec2*)(&v); }
 inline vec2& vec_cast(ImVec2& v) { return *(vec2*)(&v); }
-
-inline ImVec2 operator+(const ImVec2& a, const ImVec2& b) { return {a.x + b.x, a.y + b.y}; }
-inline ImVec2 operator-(const ImVec2& a, const ImVec2& b) { return {a.x - b.x, a.y - b.y}; }
-inline ImVec2 operator*(const ImVec2& a, const ImVec2& b) { return {a.x * b.x, a.y * b.y}; }
-inline ImVec2 operator/(const ImVec2& a, const ImVec2& b) { return {a.x / b.x, a.y / b.y}; }
 
 enum PlaybackInterpolationMode { NEAREST, LINEAR, LINEAR_PERIODIC, CUBIC, CUBIC_PERIODIC };
 
@@ -191,43 +190,6 @@ struct Representation {
     float thickness = 1.f;
 };
 
-struct ReferenceFrame {
-    StringBuffer<128> name = "frame";
-    StringBuffer<128> filter{};
-
-    int32 num_atoms = 0;
-    DynamicArray<bool> atom_filter_mask{};
-    DynamicArray<vec3> rbf_weight_data{};
-
-    struct FrameData {
-        vec3 com{};
-        quat rotation{};
-        mat3 scale_shear{};
-        Array<vec3> rbf_weights_to_ref{};
-        Array<vec3> rbf_weights_from_ref{};
-    };
-
-    DynamicArray<FrameData> frame_data{};
-
-    struct {
-        bool translation = true;
-        bool rotation = true;
-        bool scale = false;
-        bool shear = false;
-        bool rbf_refine = false;
-    } options;
-
-    struct {
-        bool show_atoms = false;
-        bool show_basis_vectors = false;
-        bool show_grid = false;
-        int32 grid_res = 8;
-    } visualization;
-
-    bool filter_is_ok = false;
-    bool dirty = false;
-};
-
 struct ThreadSyncData {
     std::thread thread{};
     std::atomic<bool> running{false};
@@ -262,7 +224,7 @@ struct ApplicationData {
 
     // --- CAMERA ---
     struct {
-        Camera camera;
+        Camera camera{};
         TrackballControllerState trackball_state{};
         CameraTransformation matrices{};
 
@@ -357,7 +319,7 @@ struct ApplicationData {
     // --- SIMULATION BOX ---
     struct {
         bool enabled = false;
-        vec4 color = vec4(1, 1, 0, 0.5);
+        vec4 color = vec4(0, 0, 0, 0.5);
     } simulation_box;
 
     // --- VOLUME ---
@@ -428,7 +390,6 @@ static void draw_timeline_window(ApplicationData* data);
 static void draw_distribution_window(ApplicationData* data);
 static void draw_ramachandran_window(ApplicationData* data);
 static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, int x, int y);
-static void draw_reference_frames_window(ApplicationData* data);
 static void draw_async_info(ApplicationData* data);
 
 static void init_framebuffer(MainFramebuffer* fbo, int width, int height);
@@ -539,17 +500,7 @@ int main(int, char**) {
     allocate_and_parse_pdb_from_string(&data->mol_data.dynamic, CAFFINE_PDB);
     data->mol_data.atom_radii = compute_atom_radii(data->mol_data.dynamic.molecule.atom_elements);
 #else
-
-    /*
-stats::create_property("b1", "distance resatom(resname(ALA), 1) com(resname(ALA))");
-load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
-*/
     load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1af6.pdb");
-/*
-    load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/haofan/for_VIAMD.pdb");
-    stats::create_property("b1", "distance resname(DE3) com(resname(DE3))");
-    create_reference_frame(&data, "dna and element C");
-*/
 #endif
     reset_view(&data);
     create_default_representation(&data, ColorMapping::CHAIN_ID);
@@ -578,15 +529,10 @@ load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
             {
                 vec3 pos = data.camera.camera.position;
                 quat ori = data.camera.camera.orientation;
-                camera_controller_trackball(&pos, &ori, &data.camera.trackball_state);
-
-                if (pos != data.camera.camera.position) {
-                    data.camera.camera.position = pos;
+                if (camera_controller_trackball(&pos, &ori, &data.camera.trackball_state)) {
                     data.camera.animation.target_position = pos;
-                }
-                if (ori != data.camera.camera.orientation) {
+                    data.camera.camera.position = pos;
                     data.camera.camera.orientation = ori;
-                    data.camera.animation.target_orientation = ori;
                 }
             }
 
@@ -596,11 +542,27 @@ load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
                     const float dist = data.camera.trackball_state.distance;
                     const vec3 camera_target_pos = data.picking.world_coord + forward * dist;
 
-                    // @TODO: Animate this
-                    data.camera.camera.position = camera_target_pos;
+                    data.camera.animation.target_position = camera_target_pos;
                 }
             }
         }
+        // Animate camera
+        {
+            const float dt = data.ctx.timing.delta_s;
+            const float acc_const = 10.0f;
+
+            // data.camera.animation.acc = (data.camera.animation.target_position - data.camera.camera.position) * acc_const;
+            data.camera.animation.vel = (data.camera.animation.target_position - data.camera.camera.position) * acc_const;
+            data.camera.camera.position += data.camera.animation.vel * dt;
+            ImGui::Begin("Shiet");
+            ImGui::Text("vel [%.2f %.2f %.2f]", data.camera.animation.vel.x, data.camera.animation.vel.y, data.camera.animation.vel.z);
+            ImGui::Text("cur [%.2f %.2f %.2f]", data.camera.camera.position.x, data.camera.camera.position.y, data.camera.camera.position.z);
+            ImGui::Text("tar [%.2f %.2f %.2f]", data.camera.animation.target_position.x, data.camera.animation.target_position.y,
+                        data.camera.animation.target_position.z);
+
+            ImGui::End();
+        }
+
         if (!ImGui::GetIO().WantCaptureKeyboard) {
             if (data.ctx.input.key.hit[Key::KEY_SPACE]) {
                 const int32 num_frames = data.mol_data.dynamic.trajectory ? data.mol_data.dynamic.trajectory.num_frames : 0;
@@ -829,21 +791,17 @@ load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1ALA-250ns-2500frames.pdb");
 
                 // HYDROGEN BONDS
                 if (data.hydrogen_bonds.enabled) {
-                    immediate::set_material(immediate::MATERIAL_ROUGH_MAGENTA);
                     for (const auto& bond : data.hydrogen_bonds.bonds) {
                         immediate::draw_line(data.mol_data.dynamic.molecule.atom.positions[bond.acc_idx],
-                                             data.mol_data.dynamic.molecule.atom.positions[bond.hyd_idx]);
+                                             data.mol_data.dynamic.molecule.atom.positions[bond.hyd_idx], immediate::COLOR_MAGENTA);
                     }
                 }
 
                 // SIMULATION BOX
                 if (data.simulation_box.enabled && data.mol_data.dynamic.trajectory.num_frames > 0) {
-                    immediate::Material box_mat = immediate::MATERIAL_ROUGH_WHITE;
-                    box_mat.color_alpha = data.simulation_box.color;
-                    immediate::set_material(box_mat);
                     auto frame_idx = math::clamp((int)data.time, 0, data.mol_data.dynamic.trajectory.num_frames - 1);
                     auto frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, frame_idx);
-                    immediate::draw_aabb_lines(vec3(0), frame.box * vec3(1));
+                    immediate::draw_aabb_lines(vec3(0), frame.box * vec3(1), math::convert_color(data.simulation_box.color));
                 }
 
                 immediate::flush();
@@ -1061,6 +1019,7 @@ static void reset_view(ApplicationData* data, bool reposition_camera) {
 
     if (reposition_camera) {
         data->camera.camera.position = pos;
+        data->camera.animation.target_position = pos;
         data->camera.trackball_state.distance = math::length(pos - cent);
         look_at(&data->camera.camera.position, &data->camera.camera.orientation, cent, vec3(0, 1, 0));
     }
@@ -2511,6 +2470,7 @@ static void load_workspace(ApplicationData* data, CString file) {
                 if (compare_n(line, "Position=", 9)) {
                     vec3 pos = vec3(to_vec4(trim(line.substr(9))));
                     data->camera.camera.position = pos;
+                    data->camera.animation.target_position = pos;
                 }
                 if (compare_n(line, "Rotation=", 9)) {
                     quat rot = quat(to_vec4(trim(line.substr(9))));

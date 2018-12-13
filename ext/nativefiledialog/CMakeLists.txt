@@ -1,11 +1,7 @@
 
 ### NATIVEFILEDIALOG ###
-project(nativefiledialog)
-
-set(HEADERS
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_common.h
-)
-                   
+project(nativefiledialoglib LANGUAGES C)
+                  
 set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_common.c
 )
@@ -29,10 +25,21 @@ IF(WIN32)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_win.cpp)
 ENDIF()
 
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src/include)
-add_library(${PROJECT_NAME} STATIC ${HEADERS} ${SOURCES})
+add_library(nativefiledialog ${SOURCES})
+
+target_include_directories(nativefiledialog
+	PUBLIC
+		$<INSTALL_INTERFACE:/src/include>
+		$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/include>
+	PRIVATE
+		${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+#include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src/include)
 
 IF(APPLE)
-    target_link_libraries(${PROJECT_NAME}
-                        "-framework AppKit")
+    target_link_libraries(nativefiledialog "-framework AppKit")
+ENDIF()
+IF (UNIX AND NOT APPLE)
+	target_link_libraries(nativefiledialog gtk)
 ENDIF()
