@@ -13,12 +13,11 @@
 #include <mol/molecule_trajectory.h>
 #include <mol/trajectory_utils.h>
 #include <mol/molecule_utils.h>
-#include <mol/ramachandran.h>
 #include <mol/hydrogen_bond.h>
 #include <mol/filter.h>
 #include <mol/pdb_utils.h>
 #include <mol/gro_utils.h>
-#include <mol/stats.h>
+
 #include <mol/spatial_hash.h>
 
 #include <gfx/molecule_draw.h>
@@ -42,6 +41,8 @@
 #include <iostream>
 
 #include "console.h"
+#include "stats.h"
+#include "ramachandran.h"
 
 //#define VIAMD_RELEASE
 

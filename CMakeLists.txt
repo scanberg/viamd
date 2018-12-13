@@ -21,13 +21,22 @@ else()
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types")
 endif()
 
+option(BUILD_SHARED_LIBS OFF)
+option(GLFW_BUILD_EXAMPLES OFF)
+option(GLFW_BUILD_TESTS OFF)
+option(GLFW_BUILD_DOCS OFF)
+option(GLFW_INSTALL OFF)
+option(GLFW_VULKAN_STATIC OFF)
+
 add_subdirectory(ext/glfw)
 add_subdirectory(ext/imgui)
 add_subdirectory(ext/nativefiledialog)
-add_subdirectory(ext/viamdutils)
+add_subdirectory(ext/tinyexpr)
+add_subdirectory(ext/mdutils)
 add_subdirectory(unittest)
 
 file(GLOB PLATFORM_FILES src/platform/*)
+file(GLOB SRC_FILES src/*)
 
 source_group("platform" FILES ${PLATFORM_FILES})
 
@@ -35,15 +44,15 @@ add_definitions(-DPROJECT_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\")
 add_definitions(-DDATA_DIR=\"${PROJECT_SOURCE_DIR}/data\")
 
 #add_executable(viamd MACOSX_BUNDLE src/main.cpp ${PLATFORM_FILES})
-add_executable(viamd src/main.cpp src/plot_extended.cpp src/range_slider.cpp ${PLATFORM_FILES})
+add_executable(viamd ${SRC_FILES} ${PLATFORM_FILES})
 
-target_compile_options(viamd PRIVATE -W4)
+#target_compile_options(viamd PRIVATE -W4)
 target_compile_features(viamd PRIVATE cxx_std_17)
 
 target_include_directories(viamd
-    PUBLIC 
-        $<INSTALL_INTERFACE:src>    
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+#    PUBLIC 
+#        $<INSTALL_INTERFACE:src>    
+#        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
@@ -52,5 +61,6 @@ target_link_libraries(viamd
     glfw
     imgui
     nativefiledialog
-    viamdutils
+	tinyexpr
+    mdutils
 )

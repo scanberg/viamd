@@ -12,12 +12,10 @@
 #include <mol/molecule_trajectory.h>
 #include <mol/trajectory_utils.h>
 #include <mol/molecule_utils.h>
-#include <mol/ramachandran.h>
 #include <mol/hydrogen_bond.h>
 #include <mol/filter.h>
 #include <mol/pdb_utils.h>
 #include <mol/gro_utils.h>
-#include <mol/stats.h>
 #include <mol/spatial_hash.h>
 
 #include <glm/gtx/io.hpp>
