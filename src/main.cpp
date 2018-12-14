@@ -230,10 +230,8 @@ struct ApplicationData {
         CameraTransformation matrices{};
 
         struct {
-            vec3 acc{};
-            vec3 vel{};
             vec3 target_position{};
-            quat target_orientation{};
+            // quat target_orientation{};
         } animation;
     } camera;
 
@@ -311,6 +309,7 @@ struct ApplicationData {
     struct {
         bool enabled = false;
         bool dirty = true;
+        bool overlay = false;
         vec4 color = vec4(1, 0, 1, 1);
         float distance_cutoff = HYDROGEN_BOND_DISTANCE_CUTOFF_DEFAULT;  // In Ånggström
         float angle_cutoff = HYDROGEN_BOND_ANGLE_CUTOFF_DEFAULT;        // In Degrees
@@ -532,6 +531,7 @@ int main(int, char**) {
                 quat ori = data.camera.camera.orientation;
                 if (camera_controller_trackball(&pos, &ori, &data.camera.trackball_state)) {
                     data.camera.animation.target_position = pos;
+                    // data.camera.animation.target_orientation = ori;
                     data.camera.camera.position = pos;
                     data.camera.camera.orientation = ori;
                 }
@@ -550,16 +550,25 @@ int main(int, char**) {
         // Animate camera
         {
             const float dt = data.ctx.timing.delta_s;
-            const float acc_const = 10.0f;
+            const float speed = 10.0f;
 
-            data.camera.animation.vel = (data.camera.animation.target_position - data.camera.camera.position) * acc_const;
-            data.camera.camera.position += data.camera.animation.vel * dt;
+            const vec3 vel = (data.camera.animation.target_position - data.camera.camera.position) * speed;
+            data.camera.camera.position += vel * dt;
+
+            // const vec3 target_pos =
+            //   data.camera.animation.target_position - data.camera.animation.target_orientation * vec3(0, 0, data.camera.trackball_state.distance);
+            // look_at(&data.camera.camera.position, &data.camera.camera.orientation, target_pos, vec3(0, 1, 0));
+            // data.camera.camera.orientation = glm::slerp(data.camera.camera.orientation, data.camera.animation.target_orientation, speed * dt);
             /*
 ImGui::Begin("Camera Debug Info");
-ImGui::Text("vel [%.2f %.2f %.2f]", data.camera.animation.vel.x, data.camera.animation.vel.y, data.camera.animation.vel.z);
-ImGui::Text("cur [%.2f %.2f %.2f]", data.camera.camera.position.x, data.camera.camera.position.y, data.camera.camera.position.z);
-ImGui::Text("tar [%.2f %.2f %.2f]", data.camera.animation.target_position.x, data.camera.animation.target_position.y,
+ImGui::Text("lin vel [%.2f %.2f %.2f]", vel.x, vel.y, vel.z);
+ImGui::Text("lin cur [%.2f %.2f %.2f]", data.camera.camera.position.x, data.camera.camera.position.y, data.camera.camera.position.z);
+ImGui::Text("lin tar [%.2f %.2f %.2f]", data.camera.animation.target_position.x, data.camera.animation.target_position.y,
             data.camera.animation.target_position.z);
+ImGui::Text("ang cur [%.2f %.2f %.2f %.2f]", data.camera.camera.orientation.x, data.camera.camera.orientation.y,
+            data.camera.camera.orientation.z, data.camera.camera.orientation.w);
+ImGui::Text("ang tar [%.2f %.2f %.2f %.2f]", data.camera.animation.target_orientation.x, data.camera.animation.target_orientation.y,
+            data.camera.animation.target_orientation.z, data.camera.animation.target_orientation.w);
 ImGui::End();
             */
         }
@@ -718,12 +727,15 @@ ImGui::End();
         POP_CPU_SECTION()
 
         if (frame_changed) {
-            data.hydrogen_bonds.dirty = true;
             if (data.mol_data.dynamic.trajectory) {
                 if (data.time_filter.dynamic_window) {
                     stats::set_all_property_flags(false, true);
                 }
             }
+        }
+
+        if (time_changed) {
+            data.hydrogen_bonds.dirty = true;
         }
 
         PUSH_CPU_SECTION("Hydrogen bonds")
@@ -791,7 +803,7 @@ ImGui::End();
                 // immediate::draw_plane({-30, -30, -50}, {100, 0, 0}, {0, 0, 100});
 
                 // HYDROGEN BONDS
-                if (data.hydrogen_bonds.enabled) {
+                if (data.hydrogen_bonds.enabled && !data.hydrogen_bonds.overlay) {
                     for (const auto& bond : data.hydrogen_bonds.bonds) {
                         immediate::draw_line(data.mol_data.dynamic.molecule.atom.positions[bond.acc_idx],
                                              data.mol_data.dynamic.molecule.atom.positions[bond.hyd_idx], immediate::COLOR_MAGENTA);
@@ -885,6 +897,14 @@ ImGui::End();
             immediate::set_view_matrix(view_mat);
             immediate::set_proj_matrix(proj_mat);
             stats::visualize(data.mol_data.dynamic);
+
+            // HYDROGEN BONDS
+            if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.overlay) {
+                for (const auto& bond : data.hydrogen_bonds.bonds) {
+                    immediate::draw_line(data.mol_data.dynamic.molecule.atom.positions[bond.acc_idx],
+                                         data.mol_data.dynamic.molecule.atom.positions[bond.hyd_idx], immediate::COLOR_MAGENTA);
+                }
+            }
             immediate::flush();
         }
         POP_GPU_SECTION()
@@ -1016,13 +1036,13 @@ static void reset_view(ApplicationData* data, bool reposition_camera) {
     compute_bounding_box(&min_box, &max_box, get_positions(data->mol_data.dynamic.molecule));
     vec3 size = max_box - min_box;
     vec3 cent = (min_box + max_box) * 0.5f;
-    vec3 pos = cent + size * 4.f;
+    vec3 pos = cent + size * 3.f;
 
     if (reposition_camera) {
-        data->camera.camera.position = pos;
+        // data->camera.camera.position = pos;
         data->camera.animation.target_position = pos;
         data->camera.trackball_state.distance = math::length(pos - cent);
-        look_at(&data->camera.camera.position, &data->camera.camera.orientation, cent, vec3(0, 1, 0));
+        look_at(&data->camera.animation.target_position, &data->camera.camera.orientation, cent, vec3(0, 1, 0));
     }
     data->camera.camera.near_plane = 1.f;
     data->camera.camera.far_plane = math::length(size) * 50.f;
@@ -1218,6 +1238,7 @@ if (ImGui::BeginMenu("Edit")) {
                                        HYDROGEN_BOND_ANGLE_CUTOFF_MAX)) {
                     data->hydrogen_bonds.dirty = true;
                 }
+                ImGui::Checkbox("Overlay", &data->hydrogen_bonds.overlay);
                 ImGui::ColorEdit4("Color", (float*)&data->hydrogen_bonds.color, ImGuiColorEditFlags_NoInputs);
                 ImGui::PopID();
             }
