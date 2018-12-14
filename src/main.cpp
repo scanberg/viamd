@@ -1,4 +1,3 @@
-#include <platform/platform.h>
 #include <core/gl.h>
 #include <core/types.h>
 #include <core/hash.h>
@@ -40,6 +39,7 @@
 #include <mutex>
 #include <iostream>
 
+#include "platform/platform.h"
 #include "console.h"
 #include "stats.h"
 #include "ramachandran.h"
@@ -552,16 +552,16 @@ int main(int, char**) {
             const float dt = data.ctx.timing.delta_s;
             const float acc_const = 10.0f;
 
-            // data.camera.animation.acc = (data.camera.animation.target_position - data.camera.camera.position) * acc_const;
             data.camera.animation.vel = (data.camera.animation.target_position - data.camera.camera.position) * acc_const;
             data.camera.camera.position += data.camera.animation.vel * dt;
-            ImGui::Begin("Shiet");
-            ImGui::Text("vel [%.2f %.2f %.2f]", data.camera.animation.vel.x, data.camera.animation.vel.y, data.camera.animation.vel.z);
-            ImGui::Text("cur [%.2f %.2f %.2f]", data.camera.camera.position.x, data.camera.camera.position.y, data.camera.camera.position.z);
-            ImGui::Text("tar [%.2f %.2f %.2f]", data.camera.animation.target_position.x, data.camera.animation.target_position.y,
-                        data.camera.animation.target_position.z);
-
-            ImGui::End();
+            /*
+ImGui::Begin("Camera Debug Info");
+ImGui::Text("vel [%.2f %.2f %.2f]", data.camera.animation.vel.x, data.camera.animation.vel.y, data.camera.animation.vel.z);
+ImGui::Text("cur [%.2f %.2f %.2f]", data.camera.camera.position.x, data.camera.camera.position.y, data.camera.camera.position.z);
+ImGui::Text("tar [%.2f %.2f %.2f]", data.camera.animation.target_position.x, data.camera.animation.target_position.y,
+            data.camera.animation.target_position.z);
+ImGui::End();
+            */
         }
 
         if (!ImGui::GetIO().WantCaptureKeyboard) {

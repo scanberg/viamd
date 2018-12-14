@@ -25,8 +25,8 @@
 - Add Hierarchical info of dataset (chains, residues, atoms, element types what ever)
 
 ## Navigation ##
-- Double click -> Center on atom
-- Use animation
+- Double click -> Center on atom [X]
+- Use animation [X]
 
 ## Representation ##
 - Fix Bugs
@@ -55,6 +55,7 @@
 - Add units on hover
 - Export to ascii table
 
+EXAMPLE OF EXPORT:
 [//]: #  asd: distance resatom(resname(ALA), 6) resatom(resname(ALA), 4)
 [//]: # asd1: distance resatom(residue(1), 6) resatom(residue(1), 4)
 [//]: # asd2: distance resatom(residue(2), 6) resatom(residue(2), 4)
@@ -79,6 +80,7 @@ Compute per shown frame
 
 ## Ramachandran ##
 - Fix size of image
+- Show Zero on axis (center lines)
 - Show values of X and Y axis
 - Show phi and psi on axis
 - Filter (Same as representation)

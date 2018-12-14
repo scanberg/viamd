@@ -2,13 +2,11 @@ cmake_minimum_required(VERSION 3.5)
 
 project(viamd)
 
-if(APPLE)
+if (APPLE)
 	set(CMAKE_OSX_DEPLOYMENT_TARGET "10.9")
 endif()
 
-#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
-
-if(MSVC)
+if (MSVC)
 	message(STATUS "MSVC configure was used")
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4 /wd4201 /MP /GR-")
 	set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MT")
@@ -28,6 +26,9 @@ option(GLFW_BUILD_DOCS OFF)
 option(GLFW_INSTALL OFF)
 option(GLFW_VULKAN_STATIC OFF)
 
+
+option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
+
 add_subdirectory(ext/glfw)
 add_subdirectory(ext/imgui)
 add_subdirectory(ext/nativefiledialog)
@@ -43,8 +44,12 @@ source_group("platform" FILES ${PLATFORM_FILES})
 add_definitions(-DPROJECT_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\")
 add_definitions(-DDATA_DIR=\"${PROJECT_SOURCE_DIR}/data\")
 
-#add_executable(viamd MACOSX_BUNDLE src/main.cpp ${PLATFORM_FILES})
-add_executable(viamd ${SRC_FILES} ${PLATFORM_FILES})
+set(OSX_BUNDLE "")
+if (VIAMD_CREATE_MACOSX_BUNDLE)
+	set(OSX_BUNDLE "MACOSX_BUNDLE")
+endif()
+
+add_executable(viamd ${OSX_BUNDLE} ${SRC_FILES} ${PLATFORM_FILES})
 
 #target_compile_options(viamd PRIVATE -W4)
 target_compile_features(viamd PRIVATE cxx_std_17)
