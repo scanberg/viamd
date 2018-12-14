@@ -20,6 +20,9 @@
 
 #include <glm/gtx/io.hpp>
 
+#ifdef __clang__
+#define CATCH_CONFIG_NO_CPP17_UNCAUGHT_EXCEPTIONS
+#endif
 #define CATCH_CONFIG_MAIN
 #include "catch.hpp"
 
