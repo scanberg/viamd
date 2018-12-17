@@ -244,6 +244,10 @@ void initialize() {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
+	if (!vao) {
+        glGenVertexArrays(1, &vao);
+	}
+
     if (!vbo) {
         glGenBuffers(1, &vbo);
     }
@@ -264,6 +268,7 @@ void shutdown() {
     if (coord_tex) glDeleteTextures(1, &coord_tex);
     if (fbo) glDeleteFramebuffers(1, &fbo);
     if (vbo) glDeleteBuffers(1, &vbo);
+    if (vbo) glDeleteVertexArrays(1, &vao);
 }
 
 void clear_accumulation_texture() {
@@ -354,6 +359,7 @@ void compute_accumulation_texture(Array<const BackboneAngles> angles, vec4 color
     glUniform1f(uniform_loc_outline, outline);
 
     glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
     glDrawElementsInstanced(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_BYTE, 0, count);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);

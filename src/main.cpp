@@ -492,6 +492,7 @@ int main(int, char**) {
     // Setup IMGUI style
     ImGui::StyleColorsClassic();
     ImGui::GetStyle().WindowRounding = 0.0f;
+    ImGui::GetStyle().Colors[ImGuiCol_TitleBgCollapsed] = ImVec4(0.40f, 0.40f, 0.80f, 0.30f);
 
     const vec4 CLEAR_COLOR = vec4(1, 1, 1, 1);
     const vec4 CLEAR_INDEX = vec4(1, 1, 1, 1);
@@ -760,18 +761,13 @@ ImGui::End();
                 switch (rep.type) {
                     case Representation::VDW:
                         PUSH_GPU_SECTION("Vdw")
-                        // draw::draw_vdw(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.atom_radii, rep.colors, view_mat, proj_mat,
-                        //               rep.radius);
                         draw::draw_vdw(data.gpu_buffers.position_radius, rep.color_buffer, (int)data.mol_data.dynamic.molecule.atom.count, view_mat,
                                        proj_mat, rep.radius);
                         POP_GPU_SECTION() break;
                     case Representation::LICORICE:
                         PUSH_GPU_SECTION("Licorice")
                         draw::draw_licorice(data.gpu_buffers.position_radius, rep.color_buffer, data.gpu_buffers.bond,
-                                            (int)data.mol_data.dynamic.molecule.covalent_bonds.count, view_mat, proj_mat, rep.radius);
-                        // draw::draw_licorice(data.mol_data.dynamic.molecule.atom_positions, data.mol_data.dynamic.molecule.covalent_bonds,
-                        // rep.colors,
-                        //                    view_mat, proj_mat, rep.radius);
+                                            (int)data.mol_data.dynamic.molecule.covalent_bonds.size(), view_mat, proj_mat, rep.radius);
                         POP_GPU_SECTION()
                         break;
                     case Representation::RIBBONS:
@@ -806,7 +802,7 @@ ImGui::End();
                 if (data.hydrogen_bonds.enabled && !data.hydrogen_bonds.overlay) {
                     for (const auto& bond : data.hydrogen_bonds.bonds) {
                         immediate::draw_line(data.mol_data.dynamic.molecule.atom.positions[bond.acc_idx],
-                                             data.mol_data.dynamic.molecule.atom.positions[bond.hyd_idx], immediate::COLOR_MAGENTA);
+                                             data.mol_data.dynamic.molecule.atom.positions[bond.hyd_idx], math::convert_color(data.hydrogen_bonds.color));
                     }
                 }
 
@@ -902,7 +898,7 @@ ImGui::End();
             if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.overlay) {
                 for (const auto& bond : data.hydrogen_bonds.bonds) {
                     immediate::draw_line(data.mol_data.dynamic.molecule.atom.positions[bond.acc_idx],
-                                         data.mol_data.dynamic.molecule.atom.positions[bond.hyd_idx], immediate::COLOR_MAGENTA);
+                                         data.mol_data.dynamic.molecule.atom.positions[bond.hyd_idx], math::convert_color(data.hydrogen_bonds.color));
                 }
             }
             immediate::flush();
