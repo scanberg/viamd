@@ -86,6 +86,8 @@ constexpr int32 VOLUME_DOWNSAMPLE_FACTOR = 2;
 
 constexpr int32 MAX_REPRESENTATIONS = 16;
 
+constexpr int32 SPLINE_SUBDIVISION_COUNT = 8;
+
 #ifdef VIAMD_RELEASE
 constexpr const char* CAFFINE_PDB = R"(
 ATOM      1  N1  BENZ    1       5.040   1.944  -8.324                          
@@ -164,6 +166,18 @@ struct MainFramebuffer {
 struct MoleculeBuffers {
     GLuint position_radius = 0;
     GLuint bond = 0;
+    struct {
+        GLuint backbone_segment_index = 0;  // Stores indices to Ca atoms and O atoms which are needed for control points and support vectors
+        GLuint control_point = 0;           // Stores extracted control points[vec3] and support vectors[vec3] before subdivision
+        GLuint control_point_index =
+            0;  // Stores draw element indices to compute splines with adjacent index information (each chain separated by restart-index 0xFFFFFFFFU).
+        GLuint spline = 0;        // Stores subdivided spline data control points[vec3] + support vector[vec3]
+        GLuint spline_index = 0;  // Stores draw element indices to render splines (each chain separated by restart-index 0xFFFFFFFFU).
+
+        int32 num_backbone_segment_indices = 0;
+        int32 num_control_point_indices = 0;
+        int32 num_spline_indices = 0;
+    } backbone;
 };
 
 struct Representation {
@@ -416,16 +430,6 @@ static void clear_representations(ApplicationData* data);
 
 static void create_volume(ApplicationData* data);
 
-static mat4 compute_volume_basis(const mat4& world_to_reference, const mat3& box) {
-    mat4 world_to_volume;
-    world_to_volume[0] = world_to_reference[0] / box[0][0];
-    world_to_volume[1] = world_to_reference[1] / box[1][1];
-    world_to_volume[2] = world_to_reference[2] / box[2][2];
-    world_to_volume[3] = vec4(-vec3(0.5f), 0);
-
-    return world_to_volume;
-}
-
 // Async operations
 static void load_trajectory_async(ApplicationData* data);
 static void compute_backbone_angles_async(ApplicationData* data);
@@ -589,19 +593,18 @@ ImGui::End();
         imgui_dockspace();
 
         if (data.density_volume.enabled) {
-            stats::async_update(
-                data.mol_data.dynamic, data.time_filter.range,
-                [](void* usr_data) {
-                    ApplicationData* data = (ApplicationData*)usr_data;
-                    data->density_volume.volume_data_mutex.lock();
+            stats::async_update(data.mol_data.dynamic, data.time_filter.range,
+                                [](void* usr_data) {
+                                    ApplicationData* data = (ApplicationData*)usr_data;
+                                    data->density_volume.volume_data_mutex.lock();
 
-                    stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix,
-                                                  data->mol_data.dynamic.trajectory, data->time_filter.range);
+                                    stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix,
+                                                                  data->mol_data.dynamic.trajectory, data->time_filter.range);
 
-                    data->density_volume.volume_data_mutex.unlock();
-                    data->density_volume.texture.dirty = true;
-                },
-                &data);
+                                    data->density_volume.volume_data_mutex.unlock();
+                                    data->density_volume.texture.dirty = true;
+                                },
+                                &data);
         } else {
             stats::async_update(data.mol_data.dynamic, data.time_filter.range);
         }
@@ -711,7 +714,7 @@ ImGui::End();
             data.time_filter.range.y = math::min((float)data.time + data.time_filter.window_extent * 0.5f, max_frame);
         }
 
-        PUSH_CPU_SECTION("Interpolate position")
+        PUSH_CPU_SECTION("Interpolate Position")
         if (data.mol_data.dynamic.trajectory && time_changed) {
             data.spatial_hash.dirty_flag = true;
             interpolate_atomic_positions(get_positions(data.mol_data.dynamic.molecule), data.mol_data.dynamic.trajectory, data.time,
@@ -719,6 +722,24 @@ ImGui::End();
             copy_molecule_position_radius_to_buffer(&data);
         }
         POP_CPU_SECTION()
+
+        PUSH_GPU_SECTION("Compute Backbone Spline") {
+            bool compute = false;
+            for (int32 i = 0; i < data.representations.num_representations; i++) {
+                if (data.representations.data[i].type == Representation::RIBBONS) {
+                    compute = true;
+                    break;
+                }
+            }
+            if (true) {
+                draw::compute_backbone_control_points(data.gpu_buffers.backbone.control_point, data.gpu_buffers.position_radius,
+                                                      data.gpu_buffers.backbone.backbone_segment_index,
+                                                      data.gpu_buffers.backbone.num_backbone_segment_indices);
+                draw::compute_backbone_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.control_point,
+                                              data.gpu_buffers.backbone.control_point_index, data.gpu_buffers.backbone.num_control_point_indices);
+            }
+        }
+        POP_GPU_SECTION()
 
         PUSH_CPU_SECTION("Spatial Hash")
         if (data.spatial_hash.dirty_flag) {
@@ -754,6 +775,9 @@ ImGui::End();
         mat4 proj_mat = compute_perspective_projection_matrix(data.camera.camera, data.fbo.width, data.fbo.height);
         mat4 inv_proj_mat = math::inverse(proj_mat);
 
+		glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+
         PUSH_GPU_SECTION("G-Buffer fill") {
             for (int i = 0; i < data.representations.num_representations; i++) {
                 const auto& rep = data.representations.data[i];
@@ -788,6 +812,9 @@ ImGui::End();
                 }
             }
 
+			draw::draw_ribbons(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices,
+                    view_mat, proj_mat, 0xFF00FF00);
+
             // RENDER DEBUG INFORMATION (WITH DEPTH)
             PUSH_GPU_SECTION("Debug Draw") {
                 immediate::set_view_matrix(view_mat);
@@ -802,7 +829,8 @@ ImGui::End();
                 if (data.hydrogen_bonds.enabled && !data.hydrogen_bonds.overlay) {
                     for (const auto& bond : data.hydrogen_bonds.bonds) {
                         immediate::draw_line(data.mol_data.dynamic.molecule.atom.positions[bond.acc_idx],
-                                             data.mol_data.dynamic.molecule.atom.positions[bond.hyd_idx], math::convert_color(data.hydrogen_bonds.color));
+                                             data.mol_data.dynamic.molecule.atom.positions[bond.hyd_idx],
+                                             math::convert_color(data.hydrogen_bonds.color));
                     }
                 }
 
@@ -902,6 +930,21 @@ ImGui::End();
                 }
             }
             immediate::flush();
+        }
+        POP_GPU_SECTION()
+
+        PUSH_GPU_SECTION("Draw Control Points") {
+			/*
+            draw::draw_spline(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index, data.gpu_buffers.backbone.num_control_point_indices,
+                              proj_mat * view_mat, 0xFF0000FF);
+            draw::draw_support_vectors(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index,
+                              data.gpu_buffers.backbone.num_control_point_indices, proj_mat * view_mat, 0xFF0000FF);
+            draw::draw_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices,
+                              proj_mat * view_mat, 0xFF00FF00);
+            draw::draw_support_vectors(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index,
+                                       data.gpu_buffers.backbone.num_spline_indices,
+                              proj_mat * view_mat, 0xFF00FF00);
+							  */
         }
         POP_GPU_SECTION()
 
@@ -2192,25 +2235,99 @@ static void destroy_framebuffer(MainFramebuffer* fbo) {
 
 static void init_molecule_buffers(ApplicationData* data) {
     ASSERT(data);
+    const auto& mol = data->mol_data.dynamic.molecule;
 
-    int32 atom_count = (int32)data->mol_data.dynamic.molecule.atom.count;
-    int32 bond_count = (int32)data->mol_data.dynamic.molecule.covalent_bonds.count;
-
-    DynamicArray<vec4> pos_rad(atom_count);
-    auto bond_data = data->mol_data.dynamic.molecule.covalent_bonds.data;
-
-    for (int32 i = 0; i < atom_count; i++) {
+    DynamicArray<vec4> pos_rad(mol.atom.count);
+    for (int32 i = 0; i < mol.atom.count; i++) {
         pos_rad[i] = {data->mol_data.dynamic.molecule.atom.positions[i], data->mol_data.atom_radii[i]};
     }
 
+    DynamicArray<uint32> backbone_index_data;
+    DynamicArray<uint32> control_point_index_data;
+    DynamicArray<uint32> spline_index_data;
+
+    {
+        int32 idx = 0;
+        int32 jdx = 0;
+        for (const auto& seq : mol.backbone_sequences) {
+            const auto backbone = get_backbone(mol, seq);
+            const int32 count = backbone.size();
+
+            for (int32 i = 0; i < count; i++) {
+                const bool first = (i == 0);
+                const bool last = (i == count - 1);
+                const auto ca_p_idx = backbone[math::max(i - 1, 0)].ca_idx;
+                const auto ca_idx	= backbone[i].ca_idx;
+                const auto ca_n_idx	= backbone[math::min(i + 1, count - 1)].ca_idx;
+                const auto o_idx	= backbone[i].o_idx;
+                const auto c_idx	= backbone[i].c_idx;
+                const auto n_idx	= backbone[i].n_idx;
+
+                backbone_index_data.push_back(ca_p_idx);
+                backbone_index_data.push_back(ca_idx);
+                backbone_index_data.push_back(ca_n_idx);
+                backbone_index_data.push_back(o_idx);
+                backbone_index_data.push_back(c_idx);
+                backbone_index_data.push_back(n_idx);
+                control_point_index_data.push_back(idx);
+
+                if (first || last) {
+					// @NOTE: Pad with extra index on first and last to help cubic spline construction
+                    control_point_index_data.push_back(idx);
+                }
+				// @NOTE: For every control point we generate N spline control points
+                if (!last) {
+                    for (int32 j = 0; j < SPLINE_SUBDIVISION_COUNT; j++) {
+                        spline_index_data.push_back(jdx);
+                        jdx++;
+                    }
+                } else {
+                    spline_index_data.push_back(0xFFFFFFFFU);
+                }
+                idx++;
+            }
+            control_point_index_data.push_back(0xFFFFFFFFU);
+        }
+    }
+
+    data->gpu_buffers.backbone.num_backbone_segment_indices = (int32)backbone_index_data.size();
+    data->gpu_buffers.backbone.num_control_point_indices = (int32)control_point_index_data.size();
+    data->gpu_buffers.backbone.num_spline_indices = (int32)spline_index_data.size();
+
+    const int32 num_backbone_segments = backbone_index_data.size() / 6;
+    const int32 atom_buffer_size = mol.atom.count * sizeof(vec4);
+    const int32 bond_buffer_size = mol.covalent_bonds.count * sizeof(uint32) * 2;
+    const int32 control_point_buffer_size = num_backbone_segments * 36;  // 3x vec3 
+    const int32 spline_buffer_size = control_point_buffer_size * SPLINE_SUBDIVISION_COUNT;
+
     if (!data->gpu_buffers.position_radius) glGenBuffers(1, &data->gpu_buffers.position_radius);
     if (!data->gpu_buffers.bond) glGenBuffers(1, &data->gpu_buffers.bond);
+    if (!data->gpu_buffers.backbone.backbone_segment_index) glGenBuffers(1, &data->gpu_buffers.backbone.backbone_segment_index);
+    if (!data->gpu_buffers.backbone.control_point) glGenBuffers(1, &data->gpu_buffers.backbone.control_point);
+    if (!data->gpu_buffers.backbone.control_point_index) glGenBuffers(1, &data->gpu_buffers.backbone.control_point_index);
+    if (!data->gpu_buffers.backbone.spline) glGenBuffers(1, &data->gpu_buffers.backbone.spline);
+    if (!data->gpu_buffers.backbone.spline_index) glGenBuffers(1, &data->gpu_buffers.backbone.spline_index);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.position_radius);
-    glBufferData(GL_ARRAY_BUFFER, atom_count * sizeof(vec4), pos_rad.data, GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, atom_buffer_size, pos_rad.data, GL_DYNAMIC_DRAW);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.bond);
-    glBufferData(GL_ARRAY_BUFFER, bond_count * sizeof(uint32) * 2, bond_data, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, bond_buffer_size, mol.covalent_bonds.data, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.backbone.backbone_segment_index);
+    glBufferData(GL_ARRAY_BUFFER, backbone_index_data.size_in_bytes(), backbone_index_data.data, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.backbone.control_point);
+    glBufferData(GL_ARRAY_BUFFER, control_point_buffer_size, nullptr, GL_STATIC_READ);
+
+    glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.backbone.control_point_index);
+    glBufferData(GL_ARRAY_BUFFER, control_point_index_data.size_in_bytes(), control_point_index_data.data, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.backbone.spline);
+    glBufferData(GL_ARRAY_BUFFER, spline_buffer_size, nullptr, GL_STATIC_READ);
+
+    glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.backbone.spline_index);
+    glBufferData(GL_ARRAY_BUFFER, spline_index_data.size_in_bytes(), spline_index_data.data, GL_STATIC_DRAW);
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
@@ -2271,6 +2388,8 @@ static void free_molecule_data(ApplicationData* data) {
     free_backbone_angles_trajectory(&data->ramachandran.backbone_angles);
     data->ramachandran.backbone_angles = {};
     data->ramachandran.current_backbone_angles = {};
+    data->hydrogen_bonds.bonds.clear();
+    data->hydrogen_bonds.dirty = true;
 }
 
 static void load_molecule_data(ApplicationData* data, CString file) {
@@ -2329,6 +2448,7 @@ if (traj.num_frames > 0) {
         } else if (compare_n(ext, "xtc", 3, true)) {
             if (!data->mol_data.dynamic.molecule) {
                 LOG_ERROR("ERROR! Must have molecule structure before trajectory can be loaded.");
+                return;
             } else {
                 if (data->mol_data.dynamic.trajectory) {
                     free_trajectory_data(data);
@@ -2351,9 +2471,13 @@ if (traj.num_frames > 0) {
             }
         } else {
             LOG_ERROR("ERROR! file extension not supported!\n");
+            return;
         }
         auto t1 = platform::get_time();
         LOG_NOTE("Success! operation took %.3fs.", platform::compute_delta_ms(t0, t1) / 1000.f);
+        LOG_NOTE("Number of chains: %i", (int32)data->mol_data.dynamic.molecule.chains.size());
+        LOG_NOTE("Number of residues: %i", (int32)data->mol_data.dynamic.molecule.residues.size());
+        LOG_NOTE("Number of atoms: %i", (int32)data->mol_data.dynamic.molecule.atom.count);
     }
 }
 

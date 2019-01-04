@@ -53,6 +53,24 @@ ATOM     23  H12 CSP3    1E      9.437   2.207  -6.309
 ATOM     24  H13 CSP3    1E      9.801   2.693  -7.994
 )";
 
+TEST_CASE("Testing DynamicArray", "[DynamicArray") {
+    //MoleculeDynamic md;
+    //allocate_and_parse_pdb_from_string(&md, CAFFINE_PDB);
+    //defer { free_molecule_structure(&md.molecule); };
+    DynamicArray<int> da1;
+    DynamicArray<int> da2;
+
+	auto func = []() -> DynamicArray<int> {
+		DynamicArray<int> cool;
+        cool.push_back(1);
+        cool.push_back(2);
+        cool.push_back(3);
+        return cool;
+	};
+
+	da1 = func();
+}
+
 TEST_CASE("Testing pdb loader caffine", "[parse_pdb]") {
     MoleculeDynamic md;
     allocate_and_parse_pdb_from_string(&md, CAFFINE_PDB);
