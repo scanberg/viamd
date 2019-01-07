@@ -508,7 +508,7 @@ int main(int, char**) {
     load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1af6.pdb");
 #endif
     reset_view(&data);
-    create_default_representation(&data, ColorMapping::CHAIN_ID);
+    create_default_representation(&data, ColorMapping::RES_ID);
     create_volume(&data);
 
     // Main loop
@@ -554,7 +554,7 @@ int main(int, char**) {
         }
         // Animate camera
         {
-            const float dt = data.ctx.timing.delta_s;
+            const float dt = math::max(data.ctx.timing.delta_s, 1.f);
             const float speed = 10.0f;
 
             const vec3 vel = (data.camera.animation.target_position - data.camera.camera.position) * speed;
@@ -731,7 +731,7 @@ ImGui::End();
                     break;
                 }
             }
-            if (true) {
+            if (time_changed) {
                 draw::compute_backbone_control_points(data.gpu_buffers.backbone.control_point, data.gpu_buffers.position_radius,
                                                       data.gpu_buffers.backbone.backbone_segment_index,
                                                       data.gpu_buffers.backbone.num_backbone_segment_indices);
@@ -812,8 +812,8 @@ ImGui::End();
                 }
             }
 
-			draw::draw_ribbons(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices,
-                    view_mat, proj_mat, 0xFF00FF00);
+			//draw::draw_ribbons(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices,
+            //        view_mat, proj_mat, 0xFF00FF00);
 
             // RENDER DEBUG INFORMATION (WITH DEPTH)
             PUSH_GPU_SECTION("Debug Draw") {
@@ -2294,6 +2294,10 @@ static void init_molecule_buffers(ApplicationData* data) {
     data->gpu_buffers.backbone.num_control_point_indices = (int32)control_point_index_data.size();
     data->gpu_buffers.backbone.num_spline_indices = (int32)spline_index_data.size();
 
+    LOG_NOTE("num backbone segment indices: %i", (int32)backbone_index_data.size());
+    LOG_NOTE("num control point indices: %i", (int32)control_point_index_data.size());
+    LOG_NOTE("num spline indices: %i", (int32)spline_index_data.size());
+
     const int32 num_backbone_segments = backbone_index_data.size() / 6;
     const int32 atom_buffer_size = mol.atom.count * sizeof(vec4);
     const int32 bond_buffer_size = mol.covalent_bonds.count * sizeof(uint32) * 2;
@@ -2318,13 +2322,13 @@ static void init_molecule_buffers(ApplicationData* data) {
     glBufferData(GL_ARRAY_BUFFER, backbone_index_data.size_in_bytes(), backbone_index_data.data, GL_STATIC_DRAW);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.backbone.control_point);
-    glBufferData(GL_ARRAY_BUFFER, control_point_buffer_size, nullptr, GL_STATIC_READ);
+    glBufferData(GL_ARRAY_BUFFER, control_point_buffer_size, nullptr, GL_DYNAMIC_READ);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.backbone.control_point_index);
     glBufferData(GL_ARRAY_BUFFER, control_point_index_data.size_in_bytes(), control_point_index_data.data, GL_STATIC_DRAW);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.backbone.spline);
-    glBufferData(GL_ARRAY_BUFFER, spline_buffer_size, nullptr, GL_STATIC_READ);
+    glBufferData(GL_ARRAY_BUFFER, spline_buffer_size, nullptr, GL_DYNAMIC_READ);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.backbone.spline_index);
     glBufferData(GL_ARRAY_BUFFER, spline_index_data.size_in_bytes(), spline_index_data.data, GL_STATIC_DRAW);
