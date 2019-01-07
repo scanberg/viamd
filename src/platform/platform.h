@@ -38,6 +38,8 @@ struct Coordinate {
 
 inline bool operator==(const Coordinate& a, const Coordinate& b) { return a.x == b.x && a.y == b.y; }
 inline bool operator!=(const Coordinate& a, const Coordinate& b) { return a.x != b.x || a.y != b.y; }
+inline Coordinate operator+(const Coordinate& a, const Coordinate& b) { return {a.x + b.x, a.y + b.y}; }
+inline Coordinate operator-(const Coordinate& a, const Coordinate& b) { return {a.x - b.x, a.y - b.y}; }
 
 struct Context {
     struct {
@@ -73,10 +75,15 @@ struct Context {
             bool hit[MAX_MOUSE_BUTTONS];
             bool release[MAX_MOUSE_BUTTONS];
 
-            Coordinate coord;      // Window coordinates
+            Coordinate win_coord;  // Window coordinates
+            Coordinate win_delta;
+
             Coordinate ndc_coord;  // Normalized device coordinates
+            Coordinate ndc_delta;
 
             float32 scroll_delta;
+
+            bool moving;
         } mouse;
     } input;
 

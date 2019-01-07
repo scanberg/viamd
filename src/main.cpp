@@ -177,6 +177,7 @@ struct MoleculeBuffers {
         int32 num_backbone_segment_indices = 0;
         int32 num_control_point_indices = 0;
         int32 num_spline_indices = 0;
+        bool dirty = true;
     } backbone;
 };
 
@@ -199,7 +200,6 @@ struct Representation {
     float radius = 1.f;
 
     // Ribbons and other spline primitives
-    int num_subdivisions = 8;
     float tension = 0.5f;
     float width = 1.f;
     float thickness = 1.f;
@@ -421,7 +421,8 @@ static void load_workspace(ApplicationData* data, CString file);
 static void save_workspace(ApplicationData* data, CString file);
 
 // Representations
-static Representation* create_default_representation(ApplicationData* data, ColorMapping color_mapping = ColorMapping::CPK, CString filter = "all");
+static Representation* create_representation(ApplicationData* data, Representation::Type type = Representation::VDW,
+                                             ColorMapping color_mapping = ColorMapping::CPK, CString filter = "all");
 static void clone_representation(ApplicationData* data, const Representation& rep);
 static void remove_representation(ApplicationData* data, int idx);
 static void reset_representations(ApplicationData* data);
@@ -508,17 +509,17 @@ int main(int, char**) {
     load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1af6.pdb");
 #endif
     reset_view(&data);
-    create_default_representation(&data, ColorMapping::RES_ID);
+    create_representation(&data, Representation::RIBBONS, ColorMapping::RES_ID);
     create_volume(&data);
 
     // Main loop
     while (!data.ctx.window.should_close) {
-        platform::Coordinate previous_mouse_coord = data.ctx.input.mouse.coord;
+        platform::Coordinate previous_mouse_coord = data.ctx.input.mouse.win_coord;
         platform::update(&data.ctx);
 
         // Try to fix false move on touch
         if (data.ctx.input.mouse.hit[0]) {
-            previous_mouse_coord = data.ctx.input.mouse.coord;
+            previous_mouse_coord = data.ctx.input.mouse.win_coord;
         }
 
         // CAMERA CONTROLS
@@ -527,7 +528,7 @@ int main(int, char**) {
             data.camera.trackball_state.input.pan_button = data.ctx.input.mouse.down[1];
             data.camera.trackball_state.input.dolly_button = data.ctx.input.mouse.down[2];
             data.camera.trackball_state.input.mouse_coord_prev = {previous_mouse_coord.x, previous_mouse_coord.y};
-            data.camera.trackball_state.input.mouse_coord_curr = {data.ctx.input.mouse.coord.x, data.ctx.input.mouse.coord.y};
+            data.camera.trackball_state.input.mouse_coord_curr = {data.ctx.input.mouse.win_coord.x, data.ctx.input.mouse.win_coord.y};
             data.camera.trackball_state.input.screen_size = vec2(data.ctx.window.width, data.ctx.window.height);
             data.camera.trackball_state.input.dolly_delta = data.ctx.input.mouse.scroll_delta;
 
@@ -554,7 +555,7 @@ int main(int, char**) {
         }
         // Animate camera
         {
-            const float dt = math::max(data.ctx.timing.delta_s, 1.f);
+            const float dt = math::min(data.ctx.timing.delta_s, 0.033f);
             const float speed = 10.0f;
 
             const vec3 vel = (data.camera.animation.target_position - data.camera.camera.position) * speed;
@@ -593,18 +594,19 @@ ImGui::End();
         imgui_dockspace();
 
         if (data.density_volume.enabled) {
-            stats::async_update(data.mol_data.dynamic, data.time_filter.range,
-                                [](void* usr_data) {
-                                    ApplicationData* data = (ApplicationData*)usr_data;
-                                    data->density_volume.volume_data_mutex.lock();
+            stats::async_update(
+                data.mol_data.dynamic, data.time_filter.range,
+                [](void* usr_data) {
+                    ApplicationData* data = (ApplicationData*)usr_data;
+                    data->density_volume.volume_data_mutex.lock();
 
-                                    stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix,
-                                                                  data->mol_data.dynamic.trajectory, data->time_filter.range);
+                    stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix,
+                                                  data->mol_data.dynamic.trajectory, data->time_filter.range);
 
-                                    data->density_volume.volume_data_mutex.unlock();
-                                    data->density_volume.texture.dirty = true;
-                                },
-                                &data);
+                    data->density_volume.volume_data_mutex.unlock();
+                    data->density_volume.texture.dirty = true;
+                },
+                &data);
         } else {
             stats::async_update(data.mol_data.dynamic, data.time_filter.range);
         }
@@ -714,40 +716,6 @@ ImGui::End();
             data.time_filter.range.y = math::min((float)data.time + data.time_filter.window_extent * 0.5f, max_frame);
         }
 
-        PUSH_CPU_SECTION("Interpolate Position")
-        if (data.mol_data.dynamic.trajectory && time_changed) {
-            data.spatial_hash.dirty_flag = true;
-            interpolate_atomic_positions(get_positions(data.mol_data.dynamic.molecule), data.mol_data.dynamic.trajectory, data.time,
-                                         data.interpolation);
-            copy_molecule_position_radius_to_buffer(&data);
-        }
-        POP_CPU_SECTION()
-
-        PUSH_GPU_SECTION("Compute Backbone Spline") {
-            bool compute = false;
-            for (int32 i = 0; i < data.representations.num_representations; i++) {
-                if (data.representations.data[i].type == Representation::RIBBONS) {
-                    compute = true;
-                    break;
-                }
-            }
-            if (time_changed) {
-                draw::compute_backbone_control_points(data.gpu_buffers.backbone.control_point, data.gpu_buffers.position_radius,
-                                                      data.gpu_buffers.backbone.backbone_segment_index,
-                                                      data.gpu_buffers.backbone.num_backbone_segment_indices);
-                draw::compute_backbone_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.control_point,
-                                              data.gpu_buffers.backbone.control_point_index, data.gpu_buffers.backbone.num_control_point_indices);
-            }
-        }
-        POP_GPU_SECTION()
-
-        PUSH_CPU_SECTION("Spatial Hash")
-        if (data.spatial_hash.dirty_flag) {
-            // data.spatial_hash.dirty_flag = false;
-            // spatialhash::compute_frame(&data.spatial_hash.frame, get_positions(data.mol_data.dynamic.molecule), data.spatial_hash.cell_ext);
-        }
-        POP_CPU_SECTION()
-
         if (frame_changed) {
             if (data.mol_data.dynamic.trajectory) {
                 if (data.time_filter.dynamic_window) {
@@ -758,7 +726,48 @@ ImGui::End();
 
         if (time_changed) {
             data.hydrogen_bonds.dirty = true;
+            data.gpu_buffers.backbone.dirty = true;
         }
+
+        PUSH_CPU_SECTION("Interpolate Position") {
+            if (data.mol_data.dynamic.trajectory && time_changed) {
+                data.spatial_hash.dirty_flag = true;
+                interpolate_atomic_positions(get_positions(data.mol_data.dynamic.molecule), data.mol_data.dynamic.trajectory, data.time,
+                                             data.interpolation);
+                copy_molecule_position_radius_to_buffer(&data);
+            }
+        }
+        POP_CPU_SECTION()
+
+        /*
+                        PUSH_CPU_SECTION("Spatial Hash")
+                        if (data.spatial_hash.dirty_flag) {
+                        // data.spatial_hash.dirty_flag = false;
+                        // spatialhash::compute_frame(&data.spatial_hash.frame, get_positions(data.mol_data.dynamic.molecule),
+           data.spatial_hash.cell_ext);
+                        }
+                        POP_CPU_SECTION()
+        */
+
+        PUSH_GPU_SECTION("Compute Backbone Spline") {
+            bool has_spline_rep = false;
+            for (int32 i = 0; i < data.representations.num_representations; i++) {
+                if (data.representations.data[i].type == Representation::RIBBONS) {
+                    has_spline_rep = true;
+                    break;
+                }
+            }
+
+            if (has_spline_rep && data.gpu_buffers.backbone.dirty) {
+                data.gpu_buffers.backbone.dirty = false;
+                draw::compute_backbone_control_points(data.gpu_buffers.backbone.control_point, data.gpu_buffers.position_radius,
+                                                      data.gpu_buffers.backbone.backbone_segment_index,
+                                                      data.gpu_buffers.backbone.num_backbone_segment_indices);
+                draw::compute_backbone_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.control_point,
+                                              data.gpu_buffers.backbone.control_point_index, data.gpu_buffers.backbone.num_control_point_indices);
+            }
+        }
+        POP_GPU_SECTION()
 
         PUSH_CPU_SECTION("Hydrogen bonds")
         if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.dirty) {
@@ -775,7 +784,7 @@ ImGui::End();
         mat4 proj_mat = compute_perspective_projection_matrix(data.camera.camera, data.fbo.width, data.fbo.height);
         mat4 inv_proj_mat = math::inverse(proj_mat);
 
-		glEnable(GL_CULL_FACE);
+        glEnable(GL_CULL_FACE);
         glCullFace(GL_BACK);
 
         PUSH_GPU_SECTION("G-Buffer fill") {
@@ -798,22 +807,23 @@ ImGui::End();
                         PUSH_GPU_SECTION("Ribbons")
                         // @NOTE: This is madness, redo draw_ribbons to use gpu buffers!!!!
                         // @FIX: GPU BUFFERS GOD DAMN IT
-                        uint32 static_color = ImGui::ColorConvertFloat4ToU32(vec_cast(rep.static_color));
-                        DynamicArray<uint32> colors = compute_atom_colors(data.mol_data.dynamic.molecule, rep.color_mapping, static_color);
-                        DynamicArray<bool> mask(data.mol_data.dynamic.molecule.atom.count, false);
-                        filter::compute_filter_mask(mask, data.mol_data.dynamic, rep.filter.buffer);
-                        filter::filter_colors(colors, mask);
+                        /*
+uint32 static_color = ImGui::ColorConvertFloat4ToU32(vec_cast(rep.static_color));
+DynamicArray<uint32> colors = compute_atom_colors(data.mol_data.dynamic.molecule, rep.color_mapping, static_color);
+DynamicArray<bool> mask(data.mol_data.dynamic.molecule.atom.count, false);
+filter::compute_filter_mask(mask, data.mol_data.dynamic, rep.filter.buffer);
+filter::filter_colors(colors, mask);
 
-                        draw::draw_ribbons(data.mol_data.dynamic.molecule.backbone_segments, data.mol_data.dynamic.molecule.chains,
-                                           get_positions(data.mol_data.dynamic.molecule), colors, view_mat, proj_mat, rep.num_subdivisions,
-                                           rep.tension, rep.width, rep.thickness);
+draw::draw_ribbons(data.mol_data.dynamic.molecule.backbone_segments, data.mol_data.dynamic.molecule.chains,
+           get_positions(data.mol_data.dynamic.molecule), colors, view_mat, proj_mat, rep.num_subdivisions,
+           rep.tension, rep.width, rep.thickness);
+                                                   */
+                        draw::draw_ribbons(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, rep.color_buffer,
+                                           data.gpu_buffers.backbone.num_spline_indices, view_mat, proj_mat);
                         POP_GPU_SECTION()
                         break;
                 }
             }
-
-			//draw::draw_ribbons(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices,
-            //        view_mat, proj_mat, 0xFF00FF00);
 
             // RENDER DEBUG INFORMATION (WITH DEPTH)
             PUSH_GPU_SECTION("Debug Draw") {
@@ -849,7 +859,7 @@ ImGui::End();
 
         // PICKING
         PUSH_GPU_SECTION("Picking") {
-            ivec2 coord = {data.ctx.input.mouse.coord.x, data.ctx.framebuffer.height - data.ctx.input.mouse.coord.y};
+            ivec2 coord = {data.ctx.input.mouse.win_coord.x, data.ctx.framebuffer.height - data.ctx.input.mouse.win_coord.y};
             if (coord.x < 0 || coord.y < 0 || coord.x >= data.ctx.framebuffer.width || coord.y >= data.ctx.framebuffer.height) {
                 data.picking.idx = NO_PICKING_IDX;
                 data.picking.depth = 1.f;
@@ -934,17 +944,17 @@ ImGui::End();
         POP_GPU_SECTION()
 
         PUSH_GPU_SECTION("Draw Control Points") {
-			/*
-            draw::draw_spline(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index, data.gpu_buffers.backbone.num_control_point_indices,
-                              proj_mat * view_mat, 0xFF0000FF);
-            draw::draw_support_vectors(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index,
-                              data.gpu_buffers.backbone.num_control_point_indices, proj_mat * view_mat, 0xFF0000FF);
-            draw::draw_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices,
-                              proj_mat * view_mat, 0xFF00FF00);
-            draw::draw_support_vectors(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index,
-                                       data.gpu_buffers.backbone.num_spline_indices,
-                              proj_mat * view_mat, 0xFF00FF00);
-							  */
+            /*
+draw::draw_spline(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index,
+data.gpu_buffers.backbone.num_control_point_indices, proj_mat * view_mat, 0xFF0000FF);
+draw::draw_support_vectors(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index,
+                  data.gpu_buffers.backbone.num_control_point_indices, proj_mat * view_mat, 0xFF0000FF);
+draw::draw_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices,
+                  proj_mat * view_mat, 0xFF00FF00);
+draw::draw_support_vectors(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index,
+                           data.gpu_buffers.backbone.num_spline_indices,
+                  proj_mat * view_mat, 0xFF00FF00);
+                                              */
         }
         POP_GPU_SECTION()
 
@@ -965,8 +975,8 @@ ImGui::End();
 
         if (!ImGui::GetIO().WantCaptureMouse) {
             if (data.picking.idx != NO_PICKING_IDX) {
-                draw_atom_info_window(data.mol_data.dynamic.molecule, data.picking.idx, (int)data.ctx.input.mouse.coord.x,
-                                      (int)data.ctx.input.mouse.coord.y);
+                draw_atom_info_window(data.mol_data.dynamic.molecule, data.picking.idx, (int)data.ctx.input.mouse.win_coord.x,
+                                      (int)data.ctx.input.mouse.win_coord.y);
             }
         }
 
@@ -1166,7 +1176,7 @@ static void draw_main_menu(ApplicationData* data) {
                     if (data->representations.num_representations > 0) {
                         reset_representations(data);
                     } else {
-                        create_default_representation(data);
+                        create_representation(data);
                     }
                     stats::clear_all_properties();
                     reset_view(data);
@@ -1355,7 +1365,7 @@ void draw_context_popup(ApplicationData* data) {
         }
         ImGui::EndPopup();
     }
-    if (data->selection.hovered != -1 && data->ctx.input.mouse.release[1]) {
+    if (data->selection.hovered != -1 && data->ctx.input.mouse.release[1] && !data->ctx.input.mouse.moving) {
         if (ImGui::GetIO().WantTextInput) {
             ImGui::OpenPopup("TextContextPopup");
         } else {
@@ -1414,7 +1424,7 @@ static void draw_representations_window(ApplicationData* data) {
     ImGui::Begin("Representations", &data->representations.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
     if (ImGui::Button("create new")) {
-        create_default_representation(data);
+        create_representation(data);
     }
     ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
@@ -1472,7 +1482,6 @@ static void draw_representations_window(ApplicationData* data) {
                 ImGui::SliderFloat("radii scale", &rep.radius, 0.1f, 2.f);
             }
             if (rep.type == Representation::RIBBONS) {
-                ImGui::SliderInt("spline subdivisions", &rep.num_subdivisions, 1, 16);
                 ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f);
                 ImGui::SliderFloat("spline width", &rep.width, 0.1f, 2.f);
                 ImGui::SliderFloat("spline thickness", &rep.thickness, 0.1f, 2.f);
@@ -2251,17 +2260,17 @@ static void init_molecule_buffers(ApplicationData* data) {
         int32 jdx = 0;
         for (const auto& seq : mol.backbone_sequences) {
             const auto backbone = get_backbone(mol, seq);
-            const int32 count = backbone.size();
+            const int32 count = (int32)backbone.size();
 
             for (int32 i = 0; i < count; i++) {
                 const bool first = (i == 0);
                 const bool last = (i == count - 1);
                 const auto ca_p_idx = backbone[math::max(i - 1, 0)].ca_idx;
-                const auto ca_idx	= backbone[i].ca_idx;
-                const auto ca_n_idx	= backbone[math::min(i + 1, count - 1)].ca_idx;
-                const auto o_idx	= backbone[i].o_idx;
-                const auto c_idx	= backbone[i].c_idx;
-                const auto n_idx	= backbone[i].n_idx;
+                const auto ca_idx = backbone[i].ca_idx;
+                const auto ca_n_idx = backbone[math::min(i + 1, count - 1)].ca_idx;
+                const auto o_idx = backbone[i].o_idx;
+                const auto c_idx = backbone[i].c_idx;
+                const auto n_idx = backbone[i].n_idx;
 
                 backbone_index_data.push_back(ca_p_idx);
                 backbone_index_data.push_back(ca_idx);
@@ -2272,10 +2281,10 @@ static void init_molecule_buffers(ApplicationData* data) {
                 control_point_index_data.push_back(idx);
 
                 if (first || last) {
-					// @NOTE: Pad with extra index on first and last to help cubic spline construction
+                    // @NOTE: Pad with extra index on first and last to help cubic spline construction
                     control_point_index_data.push_back(idx);
                 }
-				// @NOTE: For every control point we generate N spline control points
+                // @NOTE: For every control point we generate N spline control points
                 if (!last) {
                     for (int32 j = 0; j < SPLINE_SUBDIVISION_COUNT; j++) {
                         spline_index_data.push_back(jdx);
@@ -2298,10 +2307,18 @@ static void init_molecule_buffers(ApplicationData* data) {
     LOG_NOTE("num control point indices: %i", (int32)control_point_index_data.size());
     LOG_NOTE("num spline indices: %i", (int32)spline_index_data.size());
 
+    // This is a dummy struct for laying out data that will be captured by the transform feedback into control_point_buffer and spline_buffer
+    struct ControlPoint {
+        float pos[3];
+        float v1[3];
+        float v2[3];
+        uint32 atom_index;
+    };
+
     const int32 num_backbone_segments = backbone_index_data.size() / 6;
     const int32 atom_buffer_size = mol.atom.count * sizeof(vec4);
     const int32 bond_buffer_size = mol.covalent_bonds.count * sizeof(uint32) * 2;
-    const int32 control_point_buffer_size = num_backbone_segments * 36;  // 3x vec3 
+    const int32 control_point_buffer_size = num_backbone_segments * sizeof(ControlPoint);
     const int32 spline_buffer_size = control_point_buffer_size * SPLINE_SUBDIVISION_COUNT;
 
     if (!data->gpu_buffers.position_radius) glGenBuffers(1, &data->gpu_buffers.position_radius);
@@ -2394,6 +2411,7 @@ static void free_molecule_data(ApplicationData* data) {
     data->ramachandran.current_backbone_angles = {};
     data->hydrogen_bonds.bonds.clear();
     data->hydrogen_bonds.dirty = true;
+    data->gpu_buffers.backbone.dirty = true;
 }
 
 static void load_molecule_data(ApplicationData* data, CString file) {
@@ -2417,7 +2435,7 @@ static void load_molecule_data(ApplicationData* data, CString file) {
             data->files.molecule = allocate_string(file);
             data->mol_data.atom_radii = compute_atom_radii(get_elements(data->mol_data.dynamic.molecule));
             init_molecule_buffers(data);
-            copy_molecule_position_radius_to_buffer(data);
+            // copy_molecule_position_radius_to_buffer(data);
             if (data->mol_data.dynamic.trajectory) {
                 create_volume(data);
                 /*
@@ -2448,7 +2466,7 @@ if (traj.num_frames > 0) {
             data->files.molecule = allocate_string(file);
             data->mol_data.atom_radii = compute_atom_radii(get_elements(data->mol_data.dynamic.molecule));
             init_molecule_buffers(data);
-            copy_molecule_position_radius_to_buffer(data);
+            // copy_molecule_position_radius_to_buffer(data);
         } else if (compare_n(ext, "xtc", 3, true)) {
             if (!data->mol_data.dynamic.molecule) {
                 LOG_ERROR("ERROR! Must have molecule structure before trajectory can be loaded.");
@@ -2579,7 +2597,7 @@ static void load_workspace(ApplicationData* data, CString file) {
                 }
             }
         } else if (compare(line, "[Representation]")) {
-            create_default_representation(data);
+            create_representation(data);
             Representation& rep = data->representations.data[data->representations.num_representations - 1];
             while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
                 extract_line(line, c_txt);
@@ -2590,7 +2608,6 @@ static void load_workspace(ApplicationData* data, CString file) {
                 if (compare_n(line, "Enabled=", 8)) rep.enabled = to_int(trim(line.substr(8))) != 0;
                 if (compare_n(line, "StaticColor=", 12)) rep.static_color = to_vec4(trim(line.substr(12)));
                 if (compare_n(line, "Radius=", 7)) rep.radius = to_float(trim(line.substr(7)));
-                if (compare_n(line, "NumSubdivisions=", 16)) rep.num_subdivisions = to_int(trim(line.substr(16)));
                 if (compare_n(line, "Tension=", 8)) rep.tension = to_float(trim(line.substr(8)));
                 if (compare_n(line, "Width=", 6)) rep.width = to_float(trim(line.substr(6)));
                 if (compare_n(line, "Thickness=", 10)) rep.thickness = to_float(trim(line.substr(10)));
@@ -2678,7 +2695,6 @@ static void save_workspace(ApplicationData* data, CString file) {
         if (rep.type == Representation::VDW || Representation::LICORICE)
             fprintf(fptr, "Radius=%g\n", rep.radius);
         else if (rep.type == Representation::RIBBONS) {
-            fprintf(fptr, "NumSubdivisions=%i\n", rep.num_subdivisions);
             fprintf(fptr, "Tension=%g\n", rep.tension);
             fprintf(fptr, "Width=%g\n", rep.width);
             fprintf(fptr, "Thickness=%g\n", rep.thickness);
@@ -2714,11 +2730,12 @@ static void save_workspace(ApplicationData* data, CString file) {
 }
 
 // #representation
-static Representation* create_default_representation(ApplicationData* data, ColorMapping color_mapping, CString filter) {
+static Representation* create_representation(ApplicationData* data, Representation::Type type, ColorMapping color_mapping, CString filter) {
     ASSERT(data);
     if (data->representations.num_representations < MAX_REPRESENTATIONS) {
         auto rep = data->representations.data + data->representations.num_representations;
-        *rep = Representation();
+        *rep = {};
+        rep->type = type;
         rep->color_mapping = color_mapping;
         rep->filter = filter;
         data->representations.num_representations++;

@@ -152,12 +152,18 @@ bool initialize(Context* ctx, int32 width, int32 height, const char* title) {
 
     double x, y;
     glfwGetCursorPos(window, &x, &y);
-    Coordinate coord = {(float)x, (float)y};
-    data.internal_ctx.input.mouse.coord = coord;
+    Coordinate win_coord = {(float)x, (float)y};
+    data.internal_ctx.input.mouse.win_delta = win_coord - data.internal_ctx.input.mouse.win_coord;
+    data.internal_ctx.input.mouse.win_coord = win_coord;
 
     const float half_res_x = width * 0.5f;
     const float half_res_y = height * 0.5f;
-    data.internal_ctx.input.mouse.ndc_coord = {(coord.x - half_res_x) / half_res_x, ((height - coord.y) - half_res_y) / half_res_y};
+    Coordinate ndc_coord = {(win_coord.x - half_res_x) / half_res_x, ((height - win_coord.y) - half_res_y) / half_res_y};
+    data.internal_ctx.input.mouse.ndc_delta = ndc_coord - data.internal_ctx.input.mouse.ndc_coord;
+    data.internal_ctx.input.mouse.ndc_coord = ndc_coord;
+
+    constexpr Coordinate zero_coord{0, 0};
+    data.internal_ctx.input.mouse.moving = data.internal_ctx.input.mouse.win_delta != zero_coord;
 
     glfwSetMouseButtonCallback(window, mouse_button_callback);
     glfwSetScrollCallback(window, mouse_scroll_callback);
@@ -221,11 +227,11 @@ void update(Context* ctx) {
     Coordinate new_coord{(float)x, (float)y};
 
     // If user has modified value, set the mouse pointer to that value
-    if (ctx->input.mouse.coord != data.internal_ctx.input.mouse.coord) {
-        new_coord = ctx->input.mouse.coord;
+    if (ctx->input.mouse.win_coord != data.internal_ctx.input.mouse.win_coord) {
+        new_coord = ctx->input.mouse.win_coord;
     }
 
-    data.internal_ctx.input.mouse.coord = new_coord;
+    data.internal_ctx.input.mouse.win_coord = new_coord;
 
     const float half_res_x = w * 0.5f;
     const float half_res_y = h * 0.5f;

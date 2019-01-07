@@ -23,6 +23,7 @@ IF(WIN32)
     set(SOURCES
         ${SOURCES}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_win.cpp)
+	add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 ENDIF()
 
 add_library(nativefiledialog ${SOURCES})
@@ -34,8 +35,6 @@ target_include_directories(nativefiledialog
 	PRIVATE
 		${CMAKE_CURRENT_SOURCE_DIR}/src
 )
-
-#include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src/include)
 
 IF(APPLE)
     target_link_libraries(nativefiledialog "-framework AppKit")
