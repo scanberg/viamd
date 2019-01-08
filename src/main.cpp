@@ -805,19 +805,6 @@ ImGui::End();
                         break;
                     case Representation::RIBBONS:
                         PUSH_GPU_SECTION("Ribbons")
-                        // @NOTE: This is madness, redo draw_ribbons to use gpu buffers!!!!
-                        // @FIX: GPU BUFFERS GOD DAMN IT
-                        /*
-uint32 static_color = ImGui::ColorConvertFloat4ToU32(vec_cast(rep.static_color));
-DynamicArray<uint32> colors = compute_atom_colors(data.mol_data.dynamic.molecule, rep.color_mapping, static_color);
-DynamicArray<bool> mask(data.mol_data.dynamic.molecule.atom.count, false);
-filter::compute_filter_mask(mask, data.mol_data.dynamic, rep.filter.buffer);
-filter::filter_colors(colors, mask);
-
-draw::draw_ribbons(data.mol_data.dynamic.molecule.backbone_segments, data.mol_data.dynamic.molecule.chains,
-           get_positions(data.mol_data.dynamic.molecule), colors, view_mat, proj_mat, rep.num_subdivisions,
-           rep.tension, rep.width, rep.thickness);
-                                                   */
                         draw::draw_ribbons(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, rep.color_buffer,
                                            data.gpu_buffers.backbone.num_spline_indices, view_mat, proj_mat);
                         POP_GPU_SECTION()
@@ -2262,22 +2249,28 @@ static void init_molecule_buffers(ApplicationData* data) {
             const auto backbone = get_backbone(mol, seq);
             const int32 count = (int32)backbone.size();
 
+            /*
+            phi = math::dihedral_angle(c_idx[i-1], n_idx[i], ca_idx[i], c_idx[i]);
+            psi = math::dihedral_angle(n_idx[i], ca_idx[i], c_idx[i], n_idx[i+1]);
+            */
+
             for (int32 i = 0; i < count; i++) {
                 const bool first = (i == 0);
                 const bool last = (i == count - 1);
-                const auto ca_p_idx = backbone[math::max(i - 1, 0)].ca_idx;
-                const auto ca_idx = backbone[i].ca_idx;
-                const auto ca_n_idx = backbone[math::min(i + 1, count - 1)].ca_idx;
-                const auto o_idx = backbone[i].o_idx;
-                const auto c_idx = backbone[i].c_idx;
-                const auto n_idx = backbone[i].n_idx;
 
-                backbone_index_data.push_back(ca_p_idx);
-                backbone_index_data.push_back(ca_idx);
-                backbone_index_data.push_back(ca_n_idx);
-                backbone_index_data.push_back(o_idx);
-                backbone_index_data.push_back(c_idx);
-                backbone_index_data.push_back(n_idx);
+                const auto ca_i  = backbone[i].ca_idx;
+                const auto c_i   = backbone[i].c_idx;
+                const auto o_i   = backbone[i].o_idx;
+                const auto n_i   = backbone[i].n_idx;
+                const auto c_im1 = backbone[math::max(i - 1, 0)].c_idx;
+                const auto n_ip1 = backbone[math::min(i + 1, count - 1)].n_idx;
+
+                backbone_index_data.push_back(ca_i);
+                backbone_index_data.push_back(c_i);
+                backbone_index_data.push_back(o_i);
+                backbone_index_data.push_back(n_i);
+                backbone_index_data.push_back(c_im1);
+                backbone_index_data.push_back(n_ip1);
                 control_point_index_data.push_back(idx);
 
                 if (first || last) {
