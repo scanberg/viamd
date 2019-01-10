@@ -367,7 +367,7 @@ struct ApplicationData {
         int frame_range_max = 0;
 
         BackboneAnglesTrajectory backbone_angles{};
-        Array<BackboneAngles> current_backbone_angles{};
+        Array<vec2> current_backbone_angles{};
     } ramachandran;
 
     // --- REPRESENTATIONS ---
@@ -2044,9 +2044,8 @@ static void draw_ramachandran_window(ApplicationData* data) {
     ImGui::RangeSliderFloat("framerange", &data->time_filter.range.x, &data->time_filter.range.y, 0, (float)math::max(0, num_frames));
 
     int32 frame = (int32)data->time;
-    Array<BackboneAngles> accumulated_angles =
-        get_backbone_angles(data->ramachandran.backbone_angles, (int32)data->time_filter.range.x, (int32)data->time_filter.range.y - (int32)data->time_filter.range.x);
-    Array<BackboneAngles> current_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame);
+    Array<vec2> accumulated_angles = get_backbone_angles(data->ramachandran.backbone_angles, (int32)data->time_filter.range.x, (int32)data->time_filter.range.y - (int32)data->time_filter.range.x);
+    Array<vec2> current_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame);
 
     ramachandran::clear_accumulation_texture();
 
@@ -2069,8 +2068,8 @@ static void draw_ramachandran_window(ApplicationData* data) {
     dl->ChannelsSetCurrent(2);
     constexpr float ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
     for (const auto& angle : current_angles) {
-        if (angle.phi == 0 || angle.psi == 0) continue;
-        ImVec2 coord(angle.phi * ONE_OVER_TWO_PI + 0.5f, angle.psi * ONE_OVER_TWO_PI + 0.5f);  // [-PI, PI] -> [0, 1]
+        if (angle.x == 0 || angle.y == 0) continue;
+        ImVec2 coord(angle.x * ONE_OVER_TWO_PI + 0.5f, angle.y * ONE_OVER_TWO_PI + 0.5f);  // [-PI, PI] -> [0, 1]
         coord.y = 1.f - coord.y;
         coord = ImLerp(x0, x1, coord);
         float radius = data->ramachandran.radius * 5.f;

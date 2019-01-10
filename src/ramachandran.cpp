@@ -1,105 +1,28 @@
-//#define NOMINMAX
-
 #include "ramachandran.h"
 #include <core/gl.h>
 #include <core/log.h>
+#include <core/math_utils.h>
 #include <gfx/gl_utils.h>
+#include "image.h"
 
 namespace ramachandran {
 
 // Segmentation texture data
-constexpr int seg_width = 36;
-constexpr int seg_height = 36;
-constexpr GLenum seg_data_format = GL_RGB;
-constexpr unsigned int seg_data[] = {
-    0xCC997ACC, 0x5500CC55, 0x00CC5500, 0xCC5500CC, 0x5500CC55, 0x00CC5500, 0xCC5500CC, 0x5500CC55, 0x00CC997A, 0xCC997ACC, 0x997AD8BF, 0xADD8BFAD,
-    0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFC8, 0xCCB7C8CC, 0xB7C8CCB7, 0xC8CCB7C8, 0xCCB7FFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFD8BFAD,
-    0xD8BFADD8, 0xBFADD8BF, 0xADCC997A, 0xCC997ACC, 0x5500CC55, 0x00CC5500, 0xCC5500CC, 0x5500CC55, 0x00CC5500, 0xCC5500CC, 0x5500CC55, 0x00CC5500,
-    0xCC997ACC, 0x997ACC99, 0x7AD8BFAD, 0xD8BFADFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xFFFFFFFF, 0xFFFFFFFF, 0xFFD8BFAD, 0xD8BFADD8, 0xBFADCC99, 0x7ACC997A, 0xCC997ACC, 0x5500CC55, 0x00CC5500, 0xCC5500CC, 0x5500CC55, 0x00CC5500,
-    0xCC5500CC, 0x5500CC55, 0x00CC5500, 0xCC997ACC, 0x997ACC99, 0x7AD8BFAD, 0xD8BFADD8, 0xBFADD8BF, 0xADFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFD8BFAD, 0xD8BFADCC, 0x997ACC99, 0x7ACC997A, 0xCC997ACC, 0x997ACC55, 0x00CC5500,
-    0xCC5500CC, 0x5500CC55, 0x00CC5500, 0xCC5500CC, 0x5500CC55, 0x00CC5500, 0xCC5500CC, 0x997ACC99, 0x7ACC997A, 0xCC997AD8, 0xBFADD8BF, 0xADFFFFFF,
-    0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFD8BFAD, 0xD8BFADD8, 0xBFADCC99, 0x7ACC997A,
-    0xCC997ACC, 0x997ACC55, 0x00CC5500, 0xCC5500CC, 0x5500CC55, 0x00CC5500, 0xCC5500CC, 0x5500CC55, 0x00CC5500, 0xCC5500CC, 0x5500CC99, 0x7ACC997A,
-    0xD8BFADD8, 0xBFADD8BF, 0xADFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFD8BFAD,
-    0xD8BFADD8, 0xBFADD8BF, 0xADCC997A, 0xCC997ACC, 0x997ACC55, 0x00CC5500, 0xCC5500CC, 0x5500CC55, 0x00CC5500, 0xCC5500CC, 0x5500CC55, 0x00CC5500,
-    0xCC5500CC, 0x997ACC99, 0x7ACC997A, 0xD8BFADD8, 0xBFADD8BF, 0xADFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xD8BFADD8, 0xBFADD8BF, 0xADCC997A, 0xCC997ACC, 0x997ACC99, 0x7ACC5500, 0xCC5500CC, 0x5500CC55, 0x00CC5500,
-    0xCC5500CC, 0x5500CC55, 0x00CC5500, 0xCC997ACC, 0x997ACC99, 0x7ACC997A, 0xD8BFADD8, 0xBFADD8BF, 0xADFFFFFF, 0xFFFFFFFF, 0xFFFFB7C2, 0xCCB7C2CC,
-    0xB7C2CCB7, 0xC2CCB7C2, 0xCCB7C2CC, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFD8, 0xBFADD8BF, 0xADCC997A, 0xCC997ACC, 0x997ACC99, 0x7ACC997A,
-    0xCC5500CC, 0x5500CC55, 0x00CC5500, 0xCC5500CC, 0x5500CC55, 0x00CC997A, 0xCC997ACC, 0x997ACC99, 0x7ACC997A, 0xCC997AD8, 0xBFADD8BF, 0xADB7C2CC,
-    0xB7C2CCB7, 0xC2CCB7C2, 0xCCB7C2CC, 0xB7C2CCB7, 0xC2CCB7C2, 0xCCB7C2CC, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFD8, 0xBFADD8BF, 0xADCC997A,
-    0xCC997ACC, 0x997ACC99, 0x7ACC997A, 0xCC997ACC, 0x5500CC99, 0x7ACC997A, 0xCC5500CC, 0x997ACC99, 0x7ACC997A, 0xCC997ACC, 0x997ACC99, 0x7ACC997A,
-    0xCC997AD8, 0xBFADD8BF, 0xADB7C2CC, 0xB7C2CCB7, 0xC2CCB7C2, 0xCCB7C2CC, 0x669ECC66, 0x9ECCB7C2, 0xCCB7C2CC, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xFFFFFFD8, 0xBFADD8BF, 0xADCC997A, 0xCC997ACC, 0x997ACC99, 0x7ACC997A, 0xCC997ACC, 0x997ACC99, 0x7ACC997A, 0xCC997ACC, 0x997ACC99, 0x7ACC997A,
-    0xCC997ACC, 0x997AD8BF, 0xADD8BFAD, 0xD8BFADD8, 0xBFADD8BF, 0xADB7C2CC, 0xB7C2CC66, 0x9ECC669E, 0xCC669ECC, 0x669ECCB7, 0xC2CCB7C2, 0xCCB7C2CC,
-    0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFD8, 0xBFADD8BF, 0xADD8BFAD, 0xCC997ACC, 0x997ACC99, 0x7ACC997A, 0xCC997ACC, 0x997ACC99, 0x7ACC997A,
-    0xCC997ACC, 0x997ACC99, 0x7ACC997A, 0xD8BFADD8, 0xBFADD8BF, 0xADD8BFAD, 0xD8BFADD8, 0xBFADD8BF, 0xADB7C2CC, 0xB7C2CC66, 0x9ECC669E, 0xCC669ECC,
-    0x669ECCB7, 0xC2CCB7C2, 0xCCB7C2CC, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFD8, 0xBFADD8BF, 0xADD8BFAD, 0xD8BFADCC, 0x997ACC99, 0x7ACC997A,
-    0xCC997ACC, 0x997ACC99, 0x7ACC997A, 0xCC997ACC, 0x997ACC99, 0x7ACC997A, 0xCC997AD8, 0xBFADD8BF, 0xADFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFB7C2CC,
-    0xB7C2CCB7, 0xC2CC669E, 0xCC669ECC, 0x669ECCB7, 0xC2CCB7C2, 0xCCB7C2CC, 0xB7C2CCFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFD8, 0xBFADD8BF, 0xADD8BFAD,
-    0xD8BFADD8, 0xBFADCC99, 0x7ACC997A, 0xCC997ACC, 0x997ACC99, 0x7ACC997A, 0xCC997ACC, 0x997ACC99, 0x7ACC997A, 0xCC997AD8, 0xBFADD8BF, 0xADFFFFFF,
-    0xFFFFFFFF, 0xFFFFFFFF, 0xFFB7C2CC, 0xB7C2CC66, 0x9ECC669E, 0xCC669ECC, 0x669ECC66, 0x9ECC669E, 0xCCB7C2CC, 0xB7C2CCFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xFFFFFFD8, 0xBFADD8BF, 0xADD8BFAD, 0xB7CCBEB7, 0xCCBE7ACC, 0x957ACC95, 0x7ACC957A, 0xCC957ACC, 0x957ACC95, 0x7ACC957A, 0xCC957ACC, 0x957ACC95,
-    0xB7CCBEB7, 0xCCBEB7CC, 0xBEFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFB7C2CC, 0xB7C2CC66, 0x9ECC669E, 0xCC0070CC, 0x669ECC66, 0x9ECCB7C2, 0xCCB7C2CC,
-    0xB7C2CCFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFB7, 0xCCBEB7CC, 0xBEB7CCBE, 0xB7CCBE7A, 0xCC957ACC, 0x957ACC95, 0x7ACC957A, 0xCC957ACC, 0x957ACC95,
-    0x7ACC957A, 0xCC957ACC, 0x957ACC95, 0xB7CCBEB7, 0xCCBEB7CC, 0xBEFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFB7C2CC, 0xB7C2CCB7, 0xC2CC669E, 0xCC0070CC,
-    0x0070CC66, 0x9ECCB7C2, 0xCCB7C2CC, 0xB7C2CCFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFB7, 0xCCBEB7CC, 0xBEB7CCBE, 0xB7CCBE7A, 0xCC957ACC, 0x957ACC95,
-    0x7ACC957A, 0xCC957ACC, 0x9500CC44, 0x7ACC957A, 0xCC957ACC, 0x957ACC95, 0x7ACC95B7, 0xCCBEB7CC, 0xBEB7CCBE, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFB7C2CC,
-    0xB7C2CCB7, 0xC2CC669E, 0xCC669ECC, 0x669ECC66, 0x9ECC669E, 0xCCB7C2CC, 0xB7C2CCFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFB7, 0xCCBEB7CC, 0xBEB7CCBE,
-    0xB7CCBE7A, 0xCC957ACC, 0x957ACC95, 0x7ACC957A, 0xCC9500CC, 0x4400CC44, 0x00CC4400, 0xCC447ACC, 0x957ACC95, 0x7ACC95B7, 0xCCBEB7CC, 0xBEB7CCBE,
-    0xB7CCBEFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xB7C2CCB7, 0xC2CCB7C2, 0xCC669ECC, 0x669ECC66, 0x9ECCB7C2, 0xCCB7C2CC, 0xB7C2CCFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xFFFFFFB7, 0xCCBEB7CC, 0xBEB7CCBE, 0xB7CCBE7A, 0xCC957ACC, 0x957ACC95, 0x7ACC957A, 0xCC9500CC, 0x4400CC44, 0x00CC4400, 0xCC4400CC, 0x447ACC95,
-    0x7ACC957A, 0xCC95B7CC, 0xBEB7CCBE, 0xB7CCBEFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xB7C2CCB7, 0xC2CCB7C2, 0xCCB7C2CC, 0x669ECC66, 0x9ECC669E, 0xCCB7C2CC,
-    0xB7C2CCFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFB7, 0xCCBEB7CC, 0xBEB7CCBE, 0xB7CCBE7A, 0xCC957ACC, 0x957ACC95, 0x7ACC9500, 0xCC4400CC, 0x4400CC44,
-    0x00CC4400, 0xCC4400CC, 0x4400CC44, 0x7ACC957A, 0xCC957ACC, 0x95B7CCBE, 0xB7CCBEB7, 0xCCBEFFFF, 0xFFFFFFFF, 0xB7C2CCB7, 0xC2CCB7C2, 0xCC669ECC,
-    0xB7C2CC66, 0x9ECC669E, 0xCCB7C2CC, 0xB7C2CCFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFB7, 0xCCBEB7CC, 0xBEB7CCBE, 0xB7CCBE7A, 0xCC957ACC, 0x957ACC95,
-    0x7ACC957A, 0xCC9500CC, 0x4400CC44, 0x00CC4400, 0xCC4400CC, 0x4400CC44, 0x00CC447A, 0xCC957ACC, 0x95B7CCBE, 0xB7CCBEB7, 0xCCBEB7CC, 0xBEFFFFFF,
-    0xB7C2CCB7, 0xC2CCB7C2, 0xCCB7C2CC, 0xB7C2CCB7, 0xC2CCB7C2, 0xCCB7C2CC, 0xB7C2CCFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFB7, 0xCCBEB7CC, 0xBEB7CCBE,
-    0xB7CCBEB7, 0xCCBE7ACC, 0x957ACC95, 0x7ACC957A, 0xCC9500CC, 0x4400CC44, 0x00CC4400, 0xCC4400CC, 0x4400CC44, 0x00CC4400, 0xCC447ACC, 0x957ACC95,
-    0xB7CCBEB7, 0xCCBEB7CC, 0xBEFFFFFF, 0xB7C2CCB7, 0xC2CCB7C2, 0xCCB7C2CC, 0xB7C2CCB7, 0xC2CCB7C2, 0xCCB7C2CC, 0xB7C2CCFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xFFFFFFB7, 0xCCBEB7CC, 0xBEB7CCBE, 0xB7CCBEB7, 0xCCBE7ACC, 0x957ACC95, 0x7ACC957A, 0xCC957ACC, 0x9500CC44, 0x00CC4400, 0xCC4400CC, 0x4400CC44,
-    0x00CC4400, 0xCC447ACC, 0x957ACC95, 0x7ACC95B7, 0xCCBEB7CC, 0xBEB7CCBE, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFB7, 0xCCBEB7CC, 0xBEB7CCBE, 0xB7CCBEB7, 0xCCBEB7CC, 0xBE7ACC95, 0x7ACC957A, 0xCC957ACC, 0x957ACC95,
-    0x00CC4400, 0xCC4400CC, 0x4400CC44, 0x00CC4400, 0xCC4400CC, 0x447ACC95, 0x7ACC95B7, 0xCCBEB7CC, 0xBEB7CCBE, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFB7, 0xCCBEB7CC, 0xBEB7CCBE, 0xB7CCBE7A, 0xCC957ACC, 0x957ACC95,
-    0x7ACC957A, 0xCC957ACC, 0x957ACC95, 0x7ACC9500, 0xCC4400CC, 0x4400CC44, 0x00CC4400, 0xCC4400CC, 0x447ACC95, 0x7ACC957A, 0xCC95B7CC, 0xBEB7CCBE,
-    0xB7CCBEFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFB7, 0xCCBEB7CC, 0xBEB7CCBE,
-    0x7ACC957A, 0xCC95B7CC, 0xBE7ACC95, 0x7ACC957A, 0xCC957ACC, 0x957ACC95, 0x7ACC957A, 0xCC957ACC, 0x9500CC44, 0x00CC4400, 0xCC4400CC, 0x447ACC95,
-    0x7ACC957A, 0xCC95B7CC, 0xBEB7CCBE, 0xB7CCBEFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xFFFFFFB7, 0xCCBEB7CC, 0xBEB7CCBE, 0xB7CCBEB7, 0xCCBEB7CC, 0xBE7ACC95, 0x7ACC957A, 0xCC957ACC, 0x957ACC95, 0x7ACC957A, 0xCC957ACC, 0x957ACC95,
-    0x7ACC957A, 0xCC957ACC, 0x957ACC95, 0x7ACC957A, 0xCC957ACC, 0x95B7CCBE, 0xB7CCBEFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFB7, 0xCCBEB7CC, 0xBEB7CCBE, 0xB7CCBEB7, 0xCCBEB7CC, 0xBEB7CCBE, 0xB7CCBE7A, 0xCC957ACC, 0x957ACC95,
-    0x7ACC957A, 0xCC957ACC, 0x957ACC95, 0x7ACC957A, 0xCC957ACC, 0x957ACC95, 0x7ACC957A, 0xCC95B7CC, 0xBEB7CCBE, 0xB7CCBEFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFB7, 0xCCBEB7CC, 0xBEB7CCBE, 0xD8BFADB7, 0xCCBEB7CC, 0xBEB7CCBE,
-    0xB7CCBE7A, 0xCC957ACC, 0x957ACC95, 0x7ACC957A, 0xCC957ACC, 0x957ACC95, 0x7ACC957A, 0xCC957ACC, 0x95B7CCBE, 0xB7CCBEB7, 0xCCBEB7CC, 0xBEB7CCBE,
-    0xB7CCBEFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xD8BFADD8, 0xBFADD8BF, 0xADB7CCBE, 0xB7CCBEB7, 0xCCBED8BF, 0xADD8BFAD, 0xD8BFADD8, 0xBFADB7CC, 0xBE7ACC95, 0xB7CCBEB7, 0xCCBEB7CC, 0xBEB7CCBE,
-    0xB7CCBEB7, 0xCCBEB7CC, 0xBEB7CCBE, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xD8BFADD8, 0xBFADD8BF, 0xADD8BFAD, 0xD8BFADD8, 0xBFADD8BF, 0xADCC997A, 0xCC997AD8, 0xBFADB7CC, 0xBEB7CCBE,
-    0xB7CCBEB7, 0xCCBEB7CC, 0xBEB7CCBE, 0xB7CCBEFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xD8BFADD8, 0xBFADD8BF, 0xADD8BFAD, 0xD8BFADCC, 0x997ACC99, 0x7AD8BFAD,
-    0xD8BFADD8, 0xBFADD8BF, 0xADD8BFAD, 0xD8BFADD8, 0xBFADFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFC8, 0xCCB7C8CC, 0xB7C8CCB7,
-    0xC8CCB7C8, 0xCCB7FFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xD8BFADD8, 0xBFADD8BF, 0xADD8BFAD,
-    0xD8BFADD8, 0xBFADCC99, 0x7ACC997A, 0xCC997ACC, 0x997AD8BF, 0xADD8BFAD, 0xD8BFADD8, 0xBFADFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xFFFFFFC8, 0xCCB7C8CC, 0xB7C8CCB7, 0xC8CCB7C8, 0xCCB7FFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xD8BFADCC, 0x997ACC99, 0x7ACC997A, 0xD8BFADCC, 0x997ACC99, 0x7ACC997A, 0xCC997ACC, 0x997AD8BF, 0xADD8BFAD, 0xD8BFADD8, 0xBFADD8BF, 0xADFFFFFF,
-    0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFC8, 0xCCB7C8CC, 0xB7B7CC51, 0xC8CCB7C8, 0xCCB7C8CC, 0xB7FFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xD8BFADCC, 0x997ACC99, 0x7ACC997A, 0xCC997ACC, 0x997ACC99, 0x7ACC997A, 0xCC997ACC, 0x997ACC99, 0x7AD8BFAD,
-    0xD8BFADD8, 0xBFADD8BF, 0xADFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFC8, 0xCCB7C8CC, 0xB7B7CC51, 0xC8CCB7C8, 0xCCB7C8CC, 0xB7FFFFFF,
-    0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFD8, 0xBFADD8BF, 0xADD8BFAD, 0xD8BFADCC, 0x997ACC99, 0x7ACC997A, 0xCC997ACC, 0x997ACC99, 0x7ACC997A,
-    0xCC997ACC, 0x997ACC99, 0x7ACC997A, 0xCC997AD8, 0xBFADD8BF, 0xADFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFC8, 0xCCB7C8CC, 0xB7B7CC51,
-    0xB7CC51C8, 0xCCB7C8CC, 0xB7FFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFD8, 0xBFADD8BF, 0xADD8BFAD, 0xCC997ACC, 0x997ACC99, 0x7ACC997A,
-    0xCC997ACC, 0x997ACC99, 0x7ACC997A, 0xCC997ACC, 0x997ACC99, 0x7ACC997A, 0xCC997AD8, 0xBFADD8BF, 0xADFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xFFFFFFC8, 0xCCB7C8CC, 0xB7C8CCB7, 0xC8CCB7C8, 0xCCB7C8CC, 0xB7FFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFD8, 0xBFADD8BF, 0xADCC997A};
+constexpr int seg_width = 512;
+constexpr int seg_height = 512;
+
+// Color texture data
+constexpr int col_width = 512;
+constexpr int col_height = 512;
 
 // Accumulation texture data
 constexpr int acc_width = 1024;
 constexpr int acc_height = 1024;
 
-static GLuint segmentation_tex = 0;
-static GLuint accumulation_tex = 0;
+static GLuint seg_tex = 0;
+static GLuint acc_tex = 0;
+static GLuint col_tex = 0;
+
 static GLuint coord_tex = 0;
 static GLuint coord_buf = 0;
 static GLuint fbo = 0;
@@ -115,8 +38,9 @@ static GLint uniform_loc_radius = -1;
 static GLint uniform_loc_color = -1;
 static GLint uniform_loc_outline = -1;
 
-GLuint get_accumulation_texture() { return accumulation_tex; }
-GLuint get_segmentation_texture() { return segmentation_tex; }
+GLuint get_accumulation_texture() { return acc_tex; }
+GLuint get_segmentation_texture() { return seg_tex; }
+GLuint get_color_texture() { return col_tex; }
 
 // @NOTE: This should generate a quad with a certain size in texture coordinates
 constexpr const char* v_shader_src = R"(
@@ -169,6 +93,86 @@ void main() {
 )";
 
 void initialize() {
+    Image seg_img;
+    bool read_result = read_image(&seg_img, PROJECT_SOURCE_DIR "/resources/ramachandran.png");
+    defer { free_image(&seg_img); };
+
+    if (read_result == false) {
+        return;
+    }
+
+    const uint32 IN_ALPHA_HIGH = 0xFF0000FF;
+    const uint32 IN_ALPHA_MID = 0xFF7F7FFF;
+
+    const uint32 IN_BETA_HIGH = 0xFFFF0000;
+    const uint32 IN_BETA_MID = 0xFFFF7F7F;
+
+    const uint32 IN_LEFT_ALPHA_HIGH = 0xFF00FF00;
+    const uint32 IN_LEFT_ALPHA_MID = 0xFF7FFF7F;
+
+    const uint32 IN_LEFT_OTHER_HIGH = 0xFF00FFFF;
+    const uint32 IN_LEFT_OTHER_MID = 0xFF7FFFFF;
+
+    const float h_red = 0.0 / 360.0;
+    const float h_green = 120.0 / 360.0;
+    const float h_blue = 240.0 / 360.0;
+    const float h_yellow = 60.0 / 360.0;
+
+    const float c_high = 0.4;
+    const float c_mid = 0.2;
+
+    const float l_high = 0.8;
+    const float l_mid = 0.8;
+
+    const uint32 OUT_ALPHA_HIGH = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_red, c_high, l_high)), 1));
+    const uint32 OUT_ALPHA_MID = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_red, c_mid, l_mid)), 1));
+
+    const uint32 OUT_BETA_HIGH = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_blue, c_high, l_high)), 1));
+    const uint32 OUT_BETA_MID = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_blue, c_mid, l_mid)), 1));
+
+    const uint32 OUT_LEFT_ALPHA_HIGH = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_green, c_high, l_high)), 1));
+    const uint32 OUT_LEFT_ALPHA_MID = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_green, c_mid, l_mid)), 1));
+
+    const uint32 OUT_LEFT_OTHER_HIGH = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_yellow, c_high, l_high)), 1));
+    const uint32 OUT_LEFT_OTHER_MID = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_yellow, c_mid, l_mid)), 1));
+
+    for (int i = 0; i < seg_img.width * seg_img.height; i++) {
+        switch (seg_img.data[i]) {
+            case IN_ALPHA_HIGH:
+                seg_img.data[i] = OUT_ALPHA_HIGH;
+                break;
+            case IN_ALPHA_MID:
+                seg_img.data[i] = OUT_ALPHA_MID;
+                break;
+            case IN_BETA_HIGH:
+                seg_img.data[i] = OUT_BETA_HIGH;
+                break;
+            case IN_BETA_MID:
+                seg_img.data[i] = OUT_BETA_MID;
+                break;
+            case IN_LEFT_ALPHA_HIGH:
+                seg_img.data[i] = OUT_LEFT_ALPHA_HIGH;
+                break;
+            case IN_LEFT_ALPHA_MID:
+                seg_img.data[i] = OUT_LEFT_ALPHA_MID;
+                break;
+            case IN_LEFT_OTHER_HIGH:
+                seg_img.data[i] = OUT_LEFT_OTHER_HIGH;
+                break;
+            case IN_LEFT_OTHER_MID:
+                seg_img.data[i] = OUT_LEFT_OTHER_MID;
+                break;
+            default:
+                break;
+        }
+    }
+
+    Image blur_img;
+    init_image(&blur_img, seg_img.width, seg_img.height);
+    defer { free_image(&blur_img); };
+
+    gaussian_blur(&seg_img, &blur_img, 2);
+
     constexpr int BUFFER_SIZE = 1024;
     char buffer[BUFFER_SIZE];
 
@@ -207,21 +211,32 @@ void initialize() {
     uniform_loc_color = glGetUniformLocation(program, "u_color");
     uniform_loc_outline = glGetUniformLocation(program, "u_outline");
 
-    if (!segmentation_tex) {
-        glGenTextures(1, &segmentation_tex);
-        glBindTexture(GL_TEXTURE_2D, segmentation_tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, seg_width, seg_height, 0, seg_data_format, GL_UNSIGNED_BYTE, seg_data);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    if (!seg_tex) {
+        glGenTextures(1, &seg_tex);
+        glBindTexture(GL_TEXTURE_2D, seg_tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, seg_img.width, seg_img.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, seg_img.data);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
-    if (!accumulation_tex) {
-        glGenTextures(1, &accumulation_tex);
-        glBindTexture(GL_TEXTURE_2D, accumulation_tex);
+    if (!acc_tex) {
+        glGenTextures(1, &acc_tex);
+        glBindTexture(GL_TEXTURE_2D, acc_tex);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, acc_width, acc_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    if (!col_tex) {
+        glGenTextures(1, &col_tex);
+        glBindTexture(GL_TEXTURE_2D, col_tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, acc_width, acc_height, 0, GL_RGB, GL_UNSIGNED_BYTE, 0);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -240,13 +255,13 @@ void initialize() {
     if (!fbo) {
         glGenFramebuffers(1, &fbo);
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, accumulation_tex, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, acc_tex, 0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
-	if (!vao) {
+    if (!vao) {
         glGenVertexArrays(1, &vao);
-	}
+    }
 
     if (!vbo) {
         glGenBuffers(1, &vbo);
@@ -262,8 +277,9 @@ void initialize() {
 }
 
 void shutdown() {
-    if (segmentation_tex) glDeleteTextures(1, &segmentation_tex);
-    if (accumulation_tex) glDeleteTextures(1, &accumulation_tex);
+    if (seg_tex) glDeleteTextures(1, &seg_tex);
+    if (acc_tex) glDeleteTextures(1, &acc_tex);
+    if (col_tex) glDeleteTextures(1, &col_tex);
     if (coord_buf) glDeleteBuffers(1, &coord_buf);
     if (coord_tex) glDeleteTextures(1, &coord_tex);
     if (fbo) glDeleteFramebuffers(1, &fbo);
@@ -285,7 +301,7 @@ void clear_accumulation_texture() {
     glViewport(last_viewport[0], last_viewport[1], (GLsizei)last_viewport[2], (GLsizei)last_viewport[3]);
 }
 
-void compute_accumulation_texture(Array<const BackboneAngles> angles, vec4 color, float radius, float outline) {
+void compute_accumulation_texture(Array<const vec2> angles, vec4 color, float radius, float outline) {
     constexpr float ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
 
     struct Coord {
@@ -298,8 +314,8 @@ void compute_accumulation_texture(Array<const BackboneAngles> angles, vec4 color
 
     int32 count = 0;
     for (const auto& angle : angles) {
-        if (angle.phi == 0 || angle.psi == 0) continue;
-        vec2 coord = vec2(angle.phi, angle.psi) * ONE_OVER_TWO_PI + 0.5f;  // [-PI, PI] -> [0, 1]
+        if (angle.x == 0 || angle.y == 0) continue;
+        vec2 coord = vec2(angle.x, angle.y) * ONE_OVER_TWO_PI + 0.5f;  // [-PI, PI] -> [0, 1]
         coord.y = 1.f - coord.y;
         coords[count].x = (unsigned short)(coord.x * 0xffff);
         coords[count].y = (unsigned short)(coord.y * 0xffff);

@@ -31,6 +31,7 @@ option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an exec
 
 add_subdirectory(ext/glfw)
 add_subdirectory(ext/imgui)
+add_subdirectory(ext/stb)
 add_subdirectory(ext/nativefiledialog)
 add_subdirectory(ext/tinyexpr)
 add_subdirectory(ext/mdutils)
@@ -65,6 +66,7 @@ target_include_directories(viamd
 target_link_libraries(viamd
     glfw
     imgui
+    stb
     nativefiledialog
 	tinyexpr
     mdutils
