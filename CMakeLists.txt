@@ -42,15 +42,17 @@ file(GLOB SRC_FILES src/*)
 
 source_group("platform" FILES ${PLATFORM_FILES})
 
-add_definitions(-DPROJECT_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\")
-add_definitions(-DDATA_DIR=\"${PROJECT_SOURCE_DIR}/data\")
-
 set(OSX_BUNDLE "")
 if (VIAMD_CREATE_MACOSX_BUNDLE)
 	set(OSX_BUNDLE "MACOSX_BUNDLE")
 endif()
 
 add_executable(viamd ${OSX_BUNDLE} ${SRC_FILES} ${PLATFORM_FILES})
+
+target_compile_definitions(viamd PRIVATE
+	-DVIAMD_DATA_DIR=\"${PROJECT_SOURCE_DIR}/data\"
+	-DVIAMD_SHADER_DIR=\"${PROJECT_SOURCE_DIR}/shaders\"
+	-DVIAMD_IMAGE_DIR=\"${PROJECT_SOURCE_DIR}/images\")
 
 #target_compile_options(viamd PRIVATE -W4)
 target_compile_features(viamd PRIVATE cxx_std_17)

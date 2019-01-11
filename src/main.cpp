@@ -505,7 +505,7 @@ int main(int, char**) {
     allocate_and_parse_pdb_from_string(&data->mol_data.dynamic, CAFFINE_PDB);
     data->mol_data.atom_radii = compute_atom_radii(data->mol_data.dynamic.molecule.atom_elements);
 #else
-    load_molecule_data(&data, PROJECT_SOURCE_DIR "/data/1af6.pdb");
+    load_molecule_data(&data, VIAMD_DATA_DIR "/1af6.pdb");
 #endif
     reset_view(&data);
     create_representation(&data, Representation::RIBBONS, ColorMapping::RES_ID);
@@ -533,6 +533,10 @@ int main(int, char**) {
 
             if (data.ctx.input.key.hit[CONSOLE_KEY]) {
                 data.console.visible = !data.console.visible;
+            }
+
+            if (data.ctx.input.key.hit[Key::KEY_F5]) {
+                draw::initialize();
             }
 
             // CAMERA CONTROLS
@@ -786,7 +790,8 @@ int main(int, char**) {
                     case Representation::VDW:
                         PUSH_GPU_SECTION("Vdw")
                         draw::draw_vdw(data.gpu_buffers.position_radius, rep.color_buffer, (int)data.mol_data.dynamic.molecule.atom.count, view_mat, proj_mat, rep.radius);
-                        POP_GPU_SECTION() break;
+                        POP_GPU_SECTION()
+                        break;
                     case Representation::LICORICE:
                         PUSH_GPU_SECTION("Licorice")
                         draw::draw_licorice(data.gpu_buffers.position_radius, rep.color_buffer, data.gpu_buffers.bond, (int)data.mol_data.dynamic.molecule.covalent_bonds.size(), view_mat, proj_mat,
@@ -919,20 +924,13 @@ int main(int, char**) {
         }
         POP_GPU_SECTION()
 
-#if 0
+#if 1
         PUSH_GPU_SECTION("Draw Control Points") {
-            draw::draw_spline(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index,
-                              data.gpu_buffers.backbone.num_control_point_indices, view_proj_mat, 0xFF0000FF);
-            draw::draw_support_vectors(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index,
-                                       data.gpu_buffers.backbone.num_control_point_indices, view_proj_mat, 0xFF0000FF);
-            draw::draw_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices,
-                              view_proj_mat, 0xFF00FF00);
-            draw::draw_support_vectors(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index,
-                                       data.gpu_buffers.backbone.num_spline_indices, view_proj_mat, 0xFF0000FF, 0xFFFF0000);
+            // draw::draw_spline(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index, data.gpu_buffers.backbone.num_control_point_indices, view_proj_mat);
+            draw::draw_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices, view_proj_mat);
         }
         POP_GPU_SECTION()
 #endif
-
         // GUI ELEMENTS
         data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, data.ctx.timing.delta_s);
 

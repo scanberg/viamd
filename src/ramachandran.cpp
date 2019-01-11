@@ -94,7 +94,7 @@ void main() {
 
 void initialize() {
     Image seg_img;
-    bool read_result = read_image(&seg_img, PROJECT_SOURCE_DIR "/resources/ramachandran.png");
+    bool read_result = read_image(&seg_img, VIAMD_IMAGE_DIR "/ramachandran.png");
     defer { free_image(&seg_img); };
 
     if (read_result == false) {
