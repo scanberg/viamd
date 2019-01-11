@@ -43,6 +43,7 @@
 #include "console.h"
 #include "stats.h"
 #include "ramachandran.h"
+#include "color_utils.h"
 
 //#define VIAMD_RELEASE
 
@@ -684,6 +685,14 @@ int main(int, char**) {
         }
         POP_CPU_SECTION()
 
+        if (time_changed) {
+            for (int32 i = 0; i < data.representations.num_representations; i++) {
+                if (data.representations.data[i].color_mapping == ColorMapping::SECONDARY_STRUCTURE) {
+                    update_representation(&data.representations.data[i], data.mol_data.dynamic);
+                }
+            }
+        }
+
         if (data.async.trajectory.sync.running) {
             constexpr float TICK_INTERVAL_SEC = 3.f;
             static float time = 0.f;
@@ -924,7 +933,7 @@ int main(int, char**) {
         }
         POP_GPU_SECTION()
 
-#if 1
+#if 0
         PUSH_GPU_SECTION("Draw Control Points") {
             // draw::draw_spline(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index, data.gpu_buffers.backbone.num_control_point_indices, view_proj_mat);
             draw::draw_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices, view_proj_mat);
@@ -1434,7 +1443,7 @@ static void draw_representations_window(ApplicationData* data) {
             }
             if (!rep.filter_is_ok) ImGui::PopStyleColor();
             ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0\0");
-            if (ImGui::Combo("color mapping", (int*)(&rep.color_mapping), "Static Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0\0")) {
+            if (ImGui::Combo("color mapping", (int*)(&rep.color_mapping), "Static Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0\0")) {
                 recompute_colors = true;
             }
             ImGui::PopItemWidth();
@@ -1691,7 +1700,7 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, in
 
     int chain_idx = res.chain_idx;
     const char* chain_id = "\0";
-    if (chain_idx != -1) {
+    if (chain_idx != -1 && mol.chains.size() > 0) {
         const Chain& chain = mol.chains[chain_idx];
         chain_id = chain.id;
         chain_idx = res.chain_idx;
@@ -2649,7 +2658,8 @@ static void save_workspace(ApplicationData* data, CString file) {
     fprintf(fptr, "\n");
 
     // REPRESENTATIONS
-    for (const auto& rep : data->representations.data) {
+    for (int32 i = 0; i < data->representations.num_representations; i++) {
+        const auto& rep = data->representations.data[i];
         fprintf(fptr, "[Representation]\n");
         fprintf(fptr, "Name=%s\n", rep.name.beg());
         fprintf(fptr, "Filter=%s\n", rep.filter.beg());
@@ -2740,7 +2750,37 @@ static void remove_representation(ApplicationData* data, int idx) {
 static void update_representation(Representation* rep, const MoleculeDynamic& dynamic) {
     ASSERT(rep);
     uint32 static_color = ImGui::ColorConvertFloat4ToU32(vec_cast(rep->static_color));
-    DynamicArray<uint32> colors = compute_atom_colors(dynamic.molecule, rep->color_mapping, static_color);
+    DynamicArray<uint32> colors(dynamic.molecule.atom.count);
+
+    switch (rep->color_mapping) {
+        case ColorMapping::STATIC_COLOR:
+            memset(colors.data, static_color, dynamic.molecule.atom.count * sizeof(uint32));
+            break;
+        case ColorMapping::CPK:
+            color_atoms_cpk(colors, get_elements(dynamic.molecule));
+            break;
+        case ColorMapping::RES_ID:
+            color_atoms_residue_id(colors, dynamic.molecule.residues);
+            break;
+        case ColorMapping::RES_INDEX:
+            color_atoms_residue_index(colors, dynamic.molecule.residues);
+            break;
+        case ColorMapping::CHAIN_ID:
+            color_atoms_chain_id(colors, dynamic.molecule.chains, dynamic.molecule.residues);
+            break;
+        case ColorMapping::SECONDARY_STRUCTURE: {
+            DynamicArray<vec2> bb_angles(dynamic.molecule.backbone_segments.size());
+            for (const auto& bb_seq : dynamic.molecule.backbone_sequences) {
+                auto bb_ang = bb_angles.sub_array(bb_seq.beg, bb_seq.end - bb_seq.beg);
+                const auto bb_seg = dynamic.molecule.backbone_segments.sub_array(bb_seq.beg, bb_seq.end - bb_seq.beg);
+                compute_backbone_angles(bb_ang, get_positions(dynamic.molecule), bb_seg);
+            }
+            color_atoms_backbone_angles(colors, dynamic.molecule.residues, dynamic.molecule.backbone_sequences, bb_angles, ramachandran::get_color_image());
+        } break;
+        default:
+            break;
+    }
+
     DynamicArray<bool> mask(dynamic.molecule.atom.count, false);
     rep->filter_is_ok = filter::compute_filter_mask(mask, dynamic, rep->filter.buffer);
     filter::filter_colors(colors, mask);
@@ -2752,8 +2792,8 @@ static void update_representation(Representation* rep, const MoleculeDynamic& dy
 
 static void reset_representations(ApplicationData* data) {
     ASSERT(data);
-    for (auto& rep : data->representations.data) {
-        update_representation(&rep, data->mol_data.dynamic);
+    for (int32 i = 0; i < data->representations.num_representations; i++) {
+        update_representation(&data->representations.data[i], data->mol_data.dynamic);
     }
 }
 

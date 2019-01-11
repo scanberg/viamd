@@ -2,7 +2,7 @@
 
 #include <core/vector_types.h>
 #include <core/array_types.h>
-
+#include "image.h"
 // enum class RamachandranConformationClassification { None, BetaHigh, BetaMid, BetaLow, AlphaHigh, AlphaMid, AlphaLow, LeftAlphaHigh, LeftAlphaMid, LeftAlphaLow, PMid, PLow };
 
 namespace ramachandran {
@@ -18,5 +18,8 @@ void compute_accumulation_texture(Array<const vec2> angles, vec4 color, float ra
 uint32 get_accumulation_texture();
 uint32 get_segmentation_texture();
 uint32 get_color_texture();
+
+const Image& get_segmentation_image();
+const Image& get_color_image();
 
 }  // namespace ramachandran

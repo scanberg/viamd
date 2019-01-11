@@ -38,9 +38,15 @@ static GLint uniform_loc_radius = -1;
 static GLint uniform_loc_color = -1;
 static GLint uniform_loc_outline = -1;
 
+static Image seg_image = {};
+static Image col_image = {};
+
 GLuint get_accumulation_texture() { return acc_tex; }
 GLuint get_segmentation_texture() { return seg_tex; }
 GLuint get_color_texture() { return col_tex; }
+
+const Image& get_segmentation_image() { return seg_image; }
+const Image& get_color_image() { return seg_image; }
 
 // @NOTE: This should generate a quad with a certain size in texture coordinates
 constexpr const char* v_shader_src = R"(
@@ -93,9 +99,8 @@ void main() {
 )";
 
 void initialize() {
-    Image seg_img;
-    bool read_result = read_image(&seg_img, VIAMD_IMAGE_DIR "/ramachandran.png");
-    defer { free_image(&seg_img); };
+    // Image seg_img;
+    bool read_result = read_image(&seg_image, VIAMD_IMAGE_DIR "/ramachandran.png");
 
     if (read_result == false) {
         return;
@@ -136,42 +141,48 @@ void initialize() {
     const uint32 OUT_LEFT_OTHER_HIGH = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_yellow, c_high, l_high)), 1));
     const uint32 OUT_LEFT_OTHER_MID = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_yellow, c_mid, l_mid)), 1));
 
-    for (int i = 0; i < seg_img.width * seg_img.height; i++) {
-        switch (seg_img.data[i]) {
+    for (int i = 0; i < seg_image.width * seg_image.height; i++) {
+        switch (seg_image.data[i]) {
             case IN_ALPHA_HIGH:
-                seg_img.data[i] = OUT_ALPHA_HIGH;
+                seg_image.data[i] = OUT_ALPHA_HIGH;
                 break;
             case IN_ALPHA_MID:
-                seg_img.data[i] = OUT_ALPHA_MID;
+                seg_image.data[i] = OUT_ALPHA_MID;
                 break;
             case IN_BETA_HIGH:
-                seg_img.data[i] = OUT_BETA_HIGH;
+                seg_image.data[i] = OUT_BETA_HIGH;
                 break;
             case IN_BETA_MID:
-                seg_img.data[i] = OUT_BETA_MID;
+                seg_image.data[i] = OUT_BETA_MID;
                 break;
             case IN_LEFT_ALPHA_HIGH:
-                seg_img.data[i] = OUT_LEFT_ALPHA_HIGH;
+                seg_image.data[i] = OUT_LEFT_ALPHA_HIGH;
                 break;
             case IN_LEFT_ALPHA_MID:
-                seg_img.data[i] = OUT_LEFT_ALPHA_MID;
+                seg_image.data[i] = OUT_LEFT_ALPHA_MID;
                 break;
             case IN_LEFT_OTHER_HIGH:
-                seg_img.data[i] = OUT_LEFT_OTHER_HIGH;
+                seg_image.data[i] = OUT_LEFT_OTHER_HIGH;
                 break;
             case IN_LEFT_OTHER_MID:
-                seg_img.data[i] = OUT_LEFT_OTHER_MID;
+                seg_image.data[i] = OUT_LEFT_OTHER_MID;
                 break;
             default:
                 break;
         }
     }
 
-    Image blur_img;
-    init_image(&blur_img, seg_img.width, seg_img.height);
-    defer { free_image(&blur_img); };
+    Image tmp_image;
+    init_image(&tmp_image, seg_image.width, seg_image.height);
+    defer { free_image(&tmp_image); };
+    gaussian_blur(&seg_image, &tmp_image, 1);
+    gaussian_blur(&tmp_image, &seg_image, 1);
 
-    gaussian_blur(&seg_img, &blur_img, 2);
+    gaussian_blur(&seg_image, &tmp_image, 1);
+    gaussian_blur(&tmp_image, &seg_image, 1);
+
+    init_image(&col_image, seg_image.width, seg_image.height);
+    gaussian_blur(&tmp_image, &col_image, 2);
 
     constexpr int BUFFER_SIZE = 1024;
     char buffer[BUFFER_SIZE];
@@ -214,7 +225,7 @@ void initialize() {
     if (!seg_tex) {
         glGenTextures(1, &seg_tex);
         glBindTexture(GL_TEXTURE_2D, seg_tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, seg_img.width, seg_img.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, seg_img.data);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, seg_image.width, seg_image.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, seg_image.data);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
