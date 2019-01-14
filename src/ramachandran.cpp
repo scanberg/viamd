@@ -100,7 +100,7 @@ void main() {
 
 void initialize() {
     // Image seg_img;
-    bool read_result = read_image(&seg_image, VIAMD_IMAGE_DIR "/ramachandran.png");
+    bool read_result = read_image(&seg_image, VIAMD_IMAGE_DIR "/ramachandran.bmp");
 
     if (read_result == false) {
         return;
@@ -124,10 +124,10 @@ void initialize() {
     const float h_yellow = 60.0 / 360.0;
 
     const float c_high = 0.4;
-    const float c_mid = 0.2;
+    const float c_mid = 0.0;
 
     const float l_high = 0.8;
-    const float l_mid = 0.8;
+    const float l_mid = 1.0;
 
     const uint32 OUT_ALPHA_HIGH = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_red, c_high, l_high)), 1));
     const uint32 OUT_ALPHA_MID = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_red, c_mid, l_mid)), 1));
@@ -175,11 +175,7 @@ void initialize() {
     Image tmp_image;
     init_image(&tmp_image, seg_image.width, seg_image.height);
     defer { free_image(&tmp_image); };
-    gaussian_blur(&seg_image, &tmp_image, 1);
-    gaussian_blur(&tmp_image, &seg_image, 1);
-
-    gaussian_blur(&seg_image, &tmp_image, 1);
-    gaussian_blur(&tmp_image, &seg_image, 1);
+    //gaussian_blur(&seg_image, &tmp_image, 2);
 
     init_image(&col_image, seg_image.width, seg_image.height);
     gaussian_blur(&tmp_image, &col_image, 2);

@@ -390,7 +390,7 @@ struct ApplicationData {
 };
 
 static void interpolate_atomic_positions(Array<vec3> dst_pos, const MoleculeTrajectory& traj, float64 time, PlaybackInterpolationMode interpolation_mode);
-static void reset_view(ApplicationData* data, bool reposition_camera = true);
+static void reset_view(ApplicationData* data, bool move_camera = false, bool smooth_transition = false);
 static float compute_avg_ms(float dt);
 static PickingData get_picking_data(const MainFramebuffer& fbo, int32 x, int32 y);
 
@@ -508,7 +508,7 @@ int main(int, char**) {
 #else
     load_molecule_data(&data, VIAMD_DATA_DIR "/1af6.pdb");
 #endif
-    reset_view(&data);
+    reset_view(&data, true);
     create_representation(&data, Representation::RIBBONS, ColorMapping::RES_ID);
     create_volume(&data);
 
@@ -680,6 +680,10 @@ int main(int, char**) {
             if (data.mol_data.dynamic.trajectory && time_changed) {
                 data.spatial_hash.dirty_flag = true;
                 interpolate_atomic_positions(get_positions(data.mol_data.dynamic.molecule), data.mol_data.dynamic.trajectory, data.time, data.interpolation);
+                if (data.interpolation != PlaybackInterpolationMode::NEAREST) {
+					const auto& box = get_trajectory_frame(data.mol_data.dynamic.trajectory, (int)data.time).box;
+                    apply_pbc_residues(get_positions(data.mol_data.dynamic.molecule), data.mol_data.dynamic.molecule.residues, box);
+				}
                 copy_molecule_position_radius_to_buffer(&data);
             }
         }
@@ -992,6 +996,7 @@ static void interpolate_atomic_positions(Array<vec3> dst_pos, const MoleculeTraj
     const int prev_frame_1 = math::max(0, frame);
     const int next_frame_1 = math::min(frame + 1, last_frame);
     const int next_frame_2 = math::min(frame + 2, last_frame);
+    const mat3& box = get_trajectory_frame(traj, prev_frame_1).box;
 
     if (prev_frame_1 == next_frame_1) {
         copy_trajectory_positions(dst_pos, traj, prev_frame_1);
@@ -1014,7 +1019,6 @@ static void interpolate_atomic_positions(Array<vec3> dst_pos, const MoleculeTraj
             case PlaybackInterpolationMode::LINEAR_PERIODIC: {
                 const auto prev = get_trajectory_positions(traj, prev_frame_1);
                 const auto next = get_trajectory_positions(traj, next_frame_1);
-                const auto box = get_trajectory_frame(traj, prev_frame_1).box;
                 linear_interpolation_periodic(dst_pos, prev, next, t, box);
                 break;
             }
@@ -1027,7 +1031,6 @@ static void interpolate_atomic_positions(Array<vec3> dst_pos, const MoleculeTraj
             case PlaybackInterpolationMode::CUBIC_PERIODIC: {
                 const Array<const vec3> pos[4] = {get_trajectory_positions(traj, prev_frame_2), get_trajectory_positions(traj, prev_frame_1), get_trajectory_positions(traj, next_frame_1),
                                                   get_trajectory_positions(traj, next_frame_2)};
-                const auto box = get_trajectory_frame(traj, prev_frame_1).box;
                 cubic_interpolation_periodic(dst_pos, pos[0], pos[1], pos[2], pos[3], t, box);
                 break;
             }
@@ -1057,7 +1060,7 @@ static float compute_avg_ms(float dt) {
     return avg;
 }
 
-static void reset_view(ApplicationData* data, bool reposition_camera) {
+static void reset_view(ApplicationData* data, bool move_camera, bool smooth_transition) {
     ASSERT(data);
     if (!data->mol_data.dynamic.molecule) return;
 
@@ -1067,12 +1070,13 @@ static void reset_view(ApplicationData* data, bool reposition_camera) {
     vec3 cent = (min_box + max_box) * 0.5f;
     vec3 pos = cent + size * 3.f;
 
-    if (reposition_camera) {
-        // data->camera.camera.position = pos;
-        data->camera.animation.target_position = pos;
-        data->camera.trackball_state.distance = math::length(pos - cent);
-        look_at(&data->camera.animation.target_position, &data->camera.camera.orientation, cent, vec3(0, 1, 0));
-    }
+	if (move_camera) {
+		if (!smooth_transition) data->camera.camera.position = pos;
+		data->camera.animation.target_position = pos;
+		data->camera.trackball_state.distance = math::length(pos - cent);
+		look_at(&data->camera.animation.target_position, &data->camera.camera.orientation, cent, vec3(0, 1, 0));
+	}
+    
     data->camera.camera.near_plane = 1.f;
     data->camera.camera.far_plane = math::length(size) * 50.f;
 }
@@ -1159,7 +1163,7 @@ static void draw_main_menu(ApplicationData* data) {
                         create_representation(data);
                     }
                     stats::clear_all_properties();
-                    reset_view(data);
+                    reset_view(data, true);
                 }
             }
             if (ImGui::MenuItem("Open", "CTRL+O")) {
@@ -1173,7 +1177,7 @@ static void draw_main_menu(ApplicationData* data) {
                     auto res = platform::file_dialog(platform::FileDialogFlags_Save, {}, FILE_EXTENSION);
                     if (res.result == platform::FileDialogResult::FILE_OK) {
                         if (!get_file_extension(res.path)) {
-                            snprintf(res.path.buffer + strnlen(res.path.buffer, res.path.MAX_LENGTH), res.path.MAX_LENGTH, ".%s", FILE_EXTENSION);
+                            snprintf(res.path.cstr() + strnlen(res.path.cstr(), res.path.MAX_LENGTH), res.path.MAX_LENGTH, ".%s", FILE_EXTENSION);
                         }
                         save_workspace(data, res.path);
                     }
@@ -1185,7 +1189,7 @@ static void draw_main_menu(ApplicationData* data) {
                 auto res = platform::file_dialog(platform::FileDialogFlags_Save, {}, FILE_EXTENSION);
                 if (res.result == platform::FileDialogResult::FILE_OK) {
                     if (!get_file_extension(res.path)) {
-                        snprintf(res.path.buffer + strnlen(res.path.buffer, res.path.MAX_LENGTH), res.path.MAX_LENGTH, ".%s", FILE_EXTENSION);
+                        snprintf(res.path.cstr() + strnlen(res.path.cstr(), res.path.MAX_LENGTH), res.path.MAX_LENGTH, ".%s", FILE_EXTENSION);
                     }
                     save_workspace(data, res.path);
                 }
@@ -1359,7 +1363,7 @@ static void draw_control_window(ApplicationData* data) {
     ImGui::Text("%.2f ms (%.1f fps)", ms, 1000.f / (ms));
     ImGui::Checkbox("Show Demo Window", &show_demo_window);
     if (ImGui::Button("Reset View")) {
-        reset_view(data);
+        reset_view(data, true, true);
     }
     if (data->mol_data.dynamic.trajectory) {
         int32 num_frames = data->mol_data.dynamic.trajectory.num_frames;
@@ -1417,10 +1421,10 @@ static void draw_representations_window(ApplicationData* data) {
         auto& rep = data->representations.data[i];
         const float item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
         StringBuffer<128> name;
-        snprintf(name.buffer, name.MAX_LENGTH, "%s###ID", rep.name.buffer);
+        snprintf(name, name.size(), "%s###ID", rep.name.buffer);
 
         ImGui::PushID(i);
-        if (ImGui::CollapsingHeader(name.buffer)) {
+        if (ImGui::CollapsingHeader(name)) {
             ImGui::Checkbox("enabled", &rep.enabled);
             ImGui::SameLine();
             ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
@@ -1436,9 +1440,9 @@ static void draw_representations_window(ApplicationData* data) {
             }
 
             ImGui::PushItemWidth(item_width);
-            ImGui::InputText("name", rep.name.buffer, rep.name.MAX_LENGTH);
+            ImGui::InputText("name", rep.name, rep.name.MAX_LENGTH);
             if (!rep.filter_is_ok) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-            if (ImGui::InputText("filter", rep.filter.buffer, rep.filter.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
+            if (ImGui::InputText("filter", rep.filter, rep.filter.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
                 recompute_colors = true;
             }
             if (!rep.filter_is_ok) ImGui::PopStyleColor();
@@ -1533,7 +1537,7 @@ static void draw_property_window(ApplicationData* data) {
 
         ImGui::PushItemWidth(-1);
         if (!prop->valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-        if (ImGui::InputText("##name", prop->name_buf.buffer, prop->name_buf.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
+        if (ImGui::InputText("##name", prop->name_buf, prop->name_buf.size(), ImGuiInputTextFlags_EnterReturnsTrue)) {
             prop->data_dirty = true;
             // compute_stats = true;
         }
@@ -1615,7 +1619,7 @@ data->right_clicked.atom_idx + 1); if (ImGui::MenuItem(buf)) { memcpy(insert_buf
 
         ImGui::PushItemWidth(-1);
         if (!prop->valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-        if (ImGui::InputText("##args", prop->args_buf.buffer, prop->args_buf.MAX_LENGTH, ImGuiInputTextFlags_EnterReturnsTrue)) {
+        if (ImGui::InputText("##args", prop->args_buf, prop->args_buf.size(), ImGuiInputTextFlags_EnterReturnsTrue)) {
             prop->data_dirty = true;
         }
         if (!prop->valid) ImGui::PopStyleColor();
@@ -2462,8 +2466,13 @@ if (traj.num_frames > 0) {
                         return;
                     }
                     data->files.trajectory = allocate_string(file);
-
                     init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
+
+					read_next_trajectory_frame(&data->mol_data.dynamic.trajectory); // read first frame
+                    auto frame_0_pos = get_trajectory_positions(data->mol_data.dynamic.trajectory, 0);
+                    memcpy(data->mol_data.dynamic.molecule.atom.positions, frame_0_pos.data, frame_0_pos.size_in_bytes());
+                    copy_molecule_position_radius_to_buffer(data);
+
                     load_trajectory_async(data);
                 }
             }
@@ -2561,10 +2570,10 @@ static void load_workspace(ApplicationData* data, CString file) {
     String txt = allocate_and_read_textfile(file);
     CString c_txt = txt;
     CString line;
-    while (extract_line(line, c_txt)) {
+    while (line = extract_line(c_txt)) {
         if (compare(line, "[Files]")) {
             while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
-                extract_line(line, c_txt);
+                line = extract_line(c_txt);
                 if (compare_n(line, "MoleculeFile=", 13)) {
                     new_molecule_file = get_absolute_path(file, trim(line.substr(13)));
                 }
@@ -2576,7 +2585,7 @@ static void load_workspace(ApplicationData* data, CString file) {
             create_representation(data);
             Representation& rep = data->representations.data[data->representations.num_representations - 1];
             while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
-                extract_line(line, c_txt);
+                line = extract_line(c_txt);
                 if (compare_n(line, "Name=", 5)) rep.name = trim(line.substr(5));
                 if (compare_n(line, "Filter=", 7)) rep.filter = trim(line.substr(7));
                 if (compare_n(line, "Type=", 5)) rep.type = get_rep_type(trim(line.substr(5)));
@@ -2591,21 +2600,21 @@ static void load_workspace(ApplicationData* data, CString file) {
         } else if (compare(line, "[Property]")) {
             StringBuffer<256> name, args;
             while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
-                extract_line(line, c_txt);
+                line = extract_line(c_txt);
                 if (compare_n(line, "Name=", 5)) name = trim(line.substr(5));
                 if (compare_n(line, "Args=", 5)) args = trim(line.substr(5));
             }
             stats::create_property(name, args);
         } else if (compare(line, "[RenderSettings]")) {
             while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
-                extract_line(line, c_txt);
+                line = extract_line(c_txt);
                 if (compare_n(line, "SsaoEnabled=", 12)) data->ssao.enabled = to_int(trim(line.substr(12))) != 0;
                 if (compare_n(line, "SsaoIntensity=", 14)) data->ssao.intensity = to_float(trim(line.substr(14)));
                 if (compare_n(line, "SsaoRadius=", 11)) data->ssao.radius = to_float(trim(line.substr(11)));
             }
         } else if (compare(line, "[Camera]")) {
             while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
-                extract_line(line, c_txt);
+                line = extract_line(c_txt);
                 if (compare_n(line, "Position=", 9)) {
                     vec3 pos = vec3(to_vec4(trim(line.substr(9))));
                     data->camera.camera.position = pos;
@@ -2645,7 +2654,7 @@ static void load_workspace(ApplicationData* data, CString file) {
 }
 
 static void save_workspace(ApplicationData* data, CString file) {
-    FILE* fptr = fopen(file.beg(), "w");
+    FILE* fptr = fopen(file, "w");
     if (!fptr) {
         printf("ERROR! Could not save workspace to file '%s'\n", file.beg());
         return;
@@ -2653,8 +2662,8 @@ static void save_workspace(ApplicationData* data, CString file) {
 
     // @TODO: Make relative paths
     fprintf(fptr, "[Files]\n");
-    fprintf(fptr, "MoleculeFile=%s\n", data->files.molecule ? get_relative_path(file, data->files.molecule).beg() : "");
-    fprintf(fptr, "TrajectoryFile=%s\n", data->files.trajectory ? get_relative_path(file, data->files.trajectory).beg() : "");
+    fprintf(fptr, "MoleculeFile=%s\n", data->files.molecule ? get_relative_path(file, data->files.molecule).cstr() : "");
+    fprintf(fptr, "TrajectoryFile=%s\n", data->files.trajectory ? get_relative_path(file, data->files.trajectory).cstr() : "");
     fprintf(fptr, "\n");
 
     // REPRESENTATIONS

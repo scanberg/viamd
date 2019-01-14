@@ -48,19 +48,27 @@ void color_atoms_chain_index(Array<uint32> dst_atom_colors, Array<const Chain> c
     }
 }
 
-inline uint32 fetch_pixel(const Image& color_map, const vec2& coords) {
-    int x = math::clamp((int32)(coords.x * color_map.width), 0, math::max(0, color_map.width - 1));
-    int y = math::clamp((int32)(coords.y * color_map.height), 0, math::max(0, color_map.height - 1));
-    return color_map.data[y * color_map.width + x];
+inline uint32 lerp_pixel(const Image& color_map, const vec2& coords) {
+    const int x0 = math::clamp((int32)(coords.x * color_map.width), 0, color_map.width - 1);
+    const int y0 = math::clamp((int32)(coords.y * color_map.height), 0, color_map.height - 1);
+    const int x1 = math::min(x0 + 1, color_map.width - 1);
+    const int y1 = math::min(y0 + 1, color_map.height - 1);
+    const vec2 f = math::fract(coords);
+    const vec4 cx0 = math::mix(math::convert_color(color_map.data[y0 * color_map.width + x0]), math::convert_color(color_map.data[y0 * color_map.width + x1]), f.x);
+    const vec4 cx1 = math::mix(math::convert_color(color_map.data[y1 * color_map.width + x0]), math::convert_color(color_map.data[y1 * color_map.width + x1]), f.x);
+    return math::convert_color(math::mix(cx0, cx1, f.y));
 }
 
 void color_atoms_backbone_angles(Array<uint32> dst_atom_colors, Array<const Residue> residues, Array<const BackboneSequence> bb_seq, Array<const vec2> bb_angles, const Image& color_map) {
     memset32(dst_atom_colors.data, 0xffffffff, dst_atom_colors.size());
+
+	if (color_map.width == 0 || color_map.height == 0) return;
+
     for (const auto& seq : bb_seq) {
         for (int64 i = seq.beg; i < seq.end; i++) {
             const float one_over_two_pi = 1.f / (2.f * math::PI);
             const vec2 coord = vec2(0, 1) + vec2(1, -1) * (bb_angles[i] * one_over_two_pi + 0.5f);
-            const uint32 color = fetch_pixel(color_map, bb_angles[i] * one_over_two_pi + 0.5f);
+            const uint32 color = lerp_pixel(color_map, coord);
             memset32(dst_atom_colors.data + residues[i].atom_idx.beg, color, residues[i].atom_idx.end - residues[i].atom_idx.beg);
         }
     }

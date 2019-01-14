@@ -44,7 +44,7 @@ DynamicArray<DirectoryEntry> list_directory(CString dir_path) {
         } else {
             entry.type = DirectoryEntry::File;
         }
-        strncpy(entry.name.beg(), ffd.cFileName, MAX_PATH);
+        strncpy(entry.name.cstr(), ffd.cFileName, MAX_PATH);
         res.push_back(entry);
     } while (FindNextFile(h_find, &ffd) != 0);
 
@@ -53,6 +53,6 @@ DynamicArray<DirectoryEntry> list_directory(CString dir_path) {
     return res;
 }
 
-CString get_cwd() { return {_getcwd(data.file_system.cwd.beg(), 512)}; }
+CString get_cwd() { return {_getcwd(data.file_system.cwd.cstr(), 512)}; }
 
 void sleep(int32 milliseconds) { Sleep(milliseconds); }

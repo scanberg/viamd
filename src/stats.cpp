@@ -294,23 +294,22 @@ static Range compute_range(const Property& prop) {
     return range;
 }
 
-void set_error_message(const char* fmt, ...) {
-    if (ctx.current_property) {
-        char* buf = ctx.current_property->error_msg_buf.buffer;
-        int32 len = ctx.current_property->error_msg_buf.MAX_LENGTH;
-        va_list ap;
-        va_start(ap, fmt);
-        vsnprintf(buf, len, fmt, ap);
-        va_end(ap);
-        LOG_ERROR("Error when evaluating property '%s': %s", ctx.current_property->name_buf.cstr(), buf);
-    }
+void set_error_message(Property* prop, const char* fmt, ...) {
+    ASSERT(prop);
+    char* buf = prop->error_msg_buf.cstr();
+    int32 len = prop->error_msg_buf.MAX_LENGTH;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, len, fmt, ap);
+    va_end(ap);
+    LOG_ERROR("Error when evaluating property '%s': %s", ctx.current_property->name_buf.cstr(), buf);
 }
 
 static DynamicArray<CString> extract_arguments(CString str) {
     DynamicArray<CString> args;
 
-    const char* beg = str.beg();
-    const char* end = str.beg();
+    const uint8* beg = str.beg();
+    const uint8* end = str.beg();
     int32 count = 0;
 
     while (end < str.end()) {
@@ -333,7 +332,7 @@ static DynamicArray<CString> extract_arguments(CString str) {
 
 static CString extract_command(CString str) {
     str = trim(str);
-    const char* ptr = str.beg();
+    const uint8* ptr = str.beg();
     while (ptr != str.end() && *ptr != '(' && !isspace(*ptr)) ptr++;
     return {str.beg(), ptr};
 }
@@ -343,7 +342,7 @@ bool extract_structures(StructureData* data, CString arg, const MoleculeStructur
     auto func = find_structure_func(cmd);
 
     if (!func) {
-        set_error_message("Could not identify command: '%s'", make_tmp_str(cmd).cstr());
+        set_error_message(ctx.current_property, "Could not identify command: '%s'", make_tmp_str(cmd).cstr());
         return false;
     }
 
@@ -375,13 +374,13 @@ bool extract_args_structures(Array<StructureData> data, Array<CString> args, con
     for (const auto& s : data) {
         int32 count = (int32)s.structures.count;
         if (count == 0) {
-            set_error_message("One argument did not match any structures");
+            set_error_message(ctx.current_property, "One argument did not match any structures");
             return false;
         }
 
         max_count = math::max(max_count, count);
         if (count > 1 && max_count > 1 && count != max_count) {
-            set_error_message("Multiple structures found for more than one argument, but the structure count did not match");
+            set_error_message(ctx.current_property, "Multiple structures found for more than one argument, but the structure count did not match");
             return false;
         }
     }
@@ -394,7 +393,7 @@ bool structure_match_resname(StructureData* data, const Array<CString> args, con
 
     // Expect args.count to be > 0
     if (args.count == 0) {
-        set_error_message("Expects one or more arguments for resname");
+        set_error_message(ctx.current_property, "Expects one or more arguments for resname");
         return false;
     }
 
@@ -415,14 +414,14 @@ bool structure_match_resid(StructureData* data, const Array<CString> args, const
 
     // Expect args to be  > 0
     if (args.count == 0) {
-        set_error_message("Expects one or more arguments for resid");
+        set_error_message(ctx.current_property, "Expects one or more arguments for resid");
         return false;
     }
 
     for (const auto& arg : args) {
         auto id = to_int(arg);
         if (!id.success) {
-            set_error_message("Failed to parse argument for resid");
+            set_error_message(ctx.current_property, "Failed to parse argument for resid");
             return false;
         }
         for (const auto& res : molecule.residues) {
@@ -441,7 +440,7 @@ bool structure_match_residue(StructureData* data, const Array<CString> args, con
 
     // Expect args to be  > 0
     if (args.count == 0) {
-        set_error_message("Expects one or more arguments for residue");
+        set_error_message(ctx.current_property, "Expects one or more arguments for residue");
         return false;
     }
 
@@ -450,7 +449,7 @@ bool structure_match_residue(StructureData* data, const Array<CString> args, con
 
         if (is_range(arg)) {
             if (!extract_range(&range, arg)) {
-                set_error_message("Failed to parse range in argument for residue");
+                set_error_message(ctx.current_property, "Failed to parse range in argument for residue");
                 return false;
             }
             if (range.x == -1) range.x = 1;
@@ -458,14 +457,14 @@ bool structure_match_residue(StructureData* data, const Array<CString> args, con
         } else {
             auto id = to_int(arg);
             if (!id.success) {
-                set_error_message("Failed to parse argument for residue");
+                set_error_message(ctx.current_property, "Failed to parse argument for residue");
                 return false;
             }
             range.x = range.y = id;
         }
 
         if (range.x < 1 || (int32)molecule.residues.count < range.y) {
-            set_error_message("Index for residue is out of bounds");
+            set_error_message(ctx.current_property, "Index for residue is out of bounds");
             return false;
         }
         for (int32 i = range.x - 1; i < range.y; i++) {
@@ -482,7 +481,7 @@ bool structure_match_chainid(StructureData* data, const Array<CString> args, con
 
     // Expect args.count to be > 0
     if (args.count == 0) {
-        set_error_message("Expects one or more arguments for chainid");
+        set_error_message(ctx.current_property, "Expects one or more arguments for chainid");
         return false;
     }
 
@@ -503,7 +502,7 @@ bool structure_match_chain(StructureData* data, const Array<CString> args, const
 
     // Expect args to be  > 0
     if (args.count == 0) {
-        set_error_message("Expects one or more arguments for chain");
+        set_error_message(ctx.current_property, "Expects one or more arguments for chain");
         return false;
     }
 
@@ -512,7 +511,7 @@ bool structure_match_chain(StructureData* data, const Array<CString> args, const
 
         if (is_range(arg)) {
             if (!extract_range(&range, arg)) {
-                set_error_message("Failed to parse range in argument for chain");
+                set_error_message(ctx.current_property, "Failed to parse range in argument for chain");
                 return false;
             }
             if (range.x == -1) range.x = 1;
@@ -520,14 +519,14 @@ bool structure_match_chain(StructureData* data, const Array<CString> args, const
         } else {
             auto id = to_int(arg);
             if (!id.success) {
-                set_error_message("Failed to parse argument for chain");
+                set_error_message(ctx.current_property, "Failed to parse argument for chain");
                 return false;
             }
             range.x = range.y = id;
         }
 
         if (range.x < 1 || (int32)molecule.chains.count < range.y) {
-            set_error_message("Index for chain is out of bounds");
+            set_error_message(ctx.current_property, "Index for chain is out of bounds");
             return false;
         }
         for (int32 i = range.x - 1; i <= range.y - 1; i++) {
@@ -544,7 +543,7 @@ bool structure_match_atom(StructureData* data, const Array<CString> args, const 
 
     // Expect args to be  > 0
     if (args.count == 0) {
-        set_error_message("Expects one or more arguments for atom");
+        set_error_message(ctx.current_property, "Expects one or more arguments for atom");
         return false;
     }
 
@@ -553,7 +552,7 @@ bool structure_match_atom(StructureData* data, const Array<CString> args, const 
 
         if (is_range(arg)) {
             if (!extract_range(&range, arg)) {
-                set_error_message("Failed to parse range in argument for atom");
+                set_error_message(ctx.current_property, "Failed to parse range in argument for atom");
                 return false;
             }
             if (range.x == -1) range.x = 1;
@@ -561,14 +560,14 @@ bool structure_match_atom(StructureData* data, const Array<CString> args, const 
         } else {
             auto id = to_int(arg);
             if (!id.success) {
-                set_error_message("Failed to parse argument for atom");
+                set_error_message(ctx.current_property, "Failed to parse argument for atom");
                 return false;
             }
             range.x = range.y = id;
         }
 
         if (range.x < 1 || (int32)molecule.atom.count < range.y) {
-            set_error_message("Index for atom is out of bounds");
+            set_error_message(ctx.current_property, "Index for atom is out of bounds");
             return false;
         }
 
@@ -581,7 +580,7 @@ bool structure_match_atom(StructureData* data, const Array<CString> args, const 
 bool structure_extract_resatom(StructureData* data, const Array<CString> args, const MoleculeStructure&) {
     ASSERT(data);
     if (args.count != 1) {
-        set_error_message("resatom requires exactly 1 argument");
+        set_error_message(ctx.current_property, "resatom requires exactly 1 argument");
         return false;
     }
 
@@ -589,13 +588,13 @@ bool structure_extract_resatom(StructureData* data, const Array<CString> args, c
 
     if (is_range(args[0])) {
         if (!extract_range(&range, args[0])) {
-            set_error_message("Failed to parse range in argument for resatom");
+            set_error_message(ctx.current_property, "Failed to parse range in argument for resatom");
             return false;
         }
     } else {
         auto id = to_int(args[0]);
         if (!id.success) {
-            set_error_message("Failed to parse argument for resatom");
+            set_error_message(ctx.current_property, "Failed to parse argument for resatom");
             return false;
         }
         range.x = range.y = id;
@@ -608,7 +607,7 @@ bool structure_extract_resatom(StructureData* data, const Array<CString> args, c
         int32 s_last = (range.y == -1) ? count : range.y;
 
         if (count < 0 || s_first < 1 || count < s_last) {
-            set_error_message("restom: Index is out of range for structure");
+            set_error_message(ctx.current_property, "restom: Index is out of range for structure");
             return false;
         }
 
@@ -788,7 +787,7 @@ return angle / count;
 static bool compute_distance(Property* prop, const Array<CString> args, const MoleculeDynamic& dynamic) {
     ASSERT(prop);
     if (args.count != 2) {
-        set_error_message("distance expects 2 arguments");
+        set_error_message(ctx.current_property, "distance expects 2 arguments");
         return false;
     }
 
@@ -850,7 +849,7 @@ static bool compute_distance(Property* prop, const Array<CString> args, const Mo
 static bool compute_angle(Property* prop, const Array<CString> args, const MoleculeDynamic& dynamic) {
     ASSERT(prop);
     if (args.count != 3) {
-        set_error_message("angle expects 3 arguments");
+        set_error_message(ctx.current_property, "angle expects 3 arguments");
         return false;
     }
 
@@ -915,7 +914,7 @@ static bool compute_angle(Property* prop, const Array<CString> args, const Molec
 static bool compute_dihedral(Property* prop, const Array<CString> args, const MoleculeDynamic& dynamic) {
     ASSERT(prop);
     if (args.count != 4) {
-        set_error_message("dihedral expects 4 arguments");
+        set_error_message(ctx.current_property, "dihedral expects 4 arguments");
         return false;
     }
 
@@ -1007,7 +1006,7 @@ static DynamicArray<Property*> extract_property_dependencies(Array<Property*> pr
 static bool compute_expression(Property* prop, const Array<CString> args, const MoleculeDynamic&) {
     ASSERT(prop);
     if (args.count == 0) {
-        set_error_message("expression expects 1 or more arguments");
+        set_error_message(ctx.current_property, "expression expects 1 or more arguments");
         return false;
     }
 
@@ -1019,7 +1018,7 @@ static bool compute_expression(Property* prop, const Array<CString> args, const 
     }
 
     if (!balanced_parentheses(expr_str)) {
-        set_error_message("Expression contains unbalanced parentheses!");
+        set_error_message(ctx.current_property, "Expression contains unbalanced parentheses!");
         return false;
     }
 
@@ -1071,7 +1070,7 @@ static bool compute_expression(Property* prop, const Array<CString> args, const 
 
         te_free(expr);
     } else {
-        set_error_message("Malformed expression:\n%s\n%*s^\nError near here", expr_str.cstr(), err - 1, "");
+        set_error_message(ctx.current_property, "Malformed expression:\n%s\n%*s^\nError near here", expr_str.cstr(), err - 1, "");
         return false;
     }
 
@@ -1228,7 +1227,7 @@ bool sync_structure_data_length(Array<StructureData> data) {
                 int32 c = structure_index_count(s.structures[i]);
                 max_structure_count = math::max(max_structure_count, c);
                 if (c > 1 && c != max_structure_count) {
-                    set_error_message("Structures matched has different sizes in different arguments, this is not supported");
+                    set_error_message(ctx.current_property, "Structures matched has different sizes in different arguments, this is not supported");
                     return false;
                 }
             }
@@ -1261,7 +1260,7 @@ static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic
 
     for (const auto p : ctx.properties) {
         if (p != prop && compare(p->name_buf, prop->name_buf)) {
-            snprintf(prop->error_msg_buf.beg(), prop->error_msg_buf.MAX_LENGTH, "A property is already defined with that name!");
+            set_error_message(prop, "A property is already defined with that name!");
             prop->valid = false;
             return false;
         }
@@ -1269,7 +1268,7 @@ static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic
     }
 
     if (!balanced_parentheses(prop->args_buf)) {
-        snprintf(prop->error_msg_buf.beg(), prop->error_msg_buf.MAX_LENGTH, "Unbalanced parantheses!");
+        set_error_message(prop, "Unbalanced parantheses!");
         prop->valid = false;
         return false;
     }
@@ -1277,8 +1276,8 @@ static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic
     DynamicArray<CString> args;
 
     // Extract big argument chunks
-    const char* beg = prop->args_buf.beg();
-    const char* end = prop->args_buf.beg();
+    const uint8* beg = (uint8*)prop->args_buf.beg();
+    const uint8* end = (uint8*)prop->args_buf.beg();
     int count = 0;
 
     // Use space separation unless we are inside a parenthesis
@@ -1313,7 +1312,7 @@ static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic
 
     auto func = find_property_compute_func(cmd);
     if (!func) {
-        set_error_message("Could not recognize command '%s'", make_tmp_str(cmd).cstr());
+        set_error_message(prop, "Could not recognize command '%.*s'", cmd.length(), cmd.cstr());
         prop->valid = false;
         return false;
     }

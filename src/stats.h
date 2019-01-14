@@ -101,7 +101,7 @@ struct VisualizationStyle {
 };
 
 // Helper functions
-void set_error_message(const char* fmt, ...);
+void set_error_message(Property* prop, const char* fmt, ...);
 
 void init_instance_data(Array<InstanceData>* instance_data, int32 num_instances, int32 num_frames);
 void free_instance_data(Array<InstanceData>* instance_data);
