@@ -16,9 +16,8 @@ static int filter_func(const struct dirent *dir) {
                 for (const auto& f : curr_filters) {
                     int len = s_len - f.count - 1;
                     if (len >= 0) {
-                        StringBuffer<32> ext = f;
                         StringBuffer<32> buf;
-                        snprintf(buf.beg(), 32, ".%s", ext.beg());
+                        snprintf(buf.cstr(), 32, ".%.*s", (int32)f.length(), f.cstr());
                         if (compare(s + len, buf, true)) return 1;
                     }
                 }
@@ -79,7 +78,7 @@ DynamicArray<DirectoryEntry> list_directory(CString dir_path) {
                 entry.type = DirectoryEntry::Unknown;
                 //printf ("%s*\n", ent->d_name);
             }
-            strncpy(entry.name.beg(), ent->d_name, 512);
+            strncpy(entry.name.cstr(), ent->d_name, 512);
 
             res.push_back(entry);
         }
@@ -91,15 +90,14 @@ DynamicArray<DirectoryEntry> list_directory(CString dir_path) {
         free (files);
 
     } else {
-        StringBuffer<512> buf = dir_path;
-        printf ("Cannot open directory %s\n", buf.beg());
+        printf ("Cannot open directory %.*s\n", (int32)dir_path.length(), dir_path.cstr());
     }
 
     return res;
 }
 
 CString get_cwd() {
-    return { getcwd(data.file_system.cwd.beg(), 512) };
+    return { getcwd(data.file_system.cwd.cstr(), 512) };
 }
 
 void sleep(int32 milliseconds) {
