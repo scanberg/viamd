@@ -62,14 +62,30 @@ inline uint32 lerp_pixel(const Image& color_map, const vec2& coords) {
 void color_atoms_backbone_angles(Array<uint32> dst_atom_colors, Array<const Residue> residues, Array<const BackboneSequence> bb_seq, Array<const vec2> bb_angles, const Image& color_map) {
     memset32(dst_atom_colors.data, 0xffffffff, dst_atom_colors.size());
 
-	if (color_map.width == 0 || color_map.height == 0) return;
+    if (color_map.width == 0 || color_map.height == 0) return;
+    const float one_over_two_pi = 1.f / (2.f * math::PI);
 
     for (const auto& seq : bb_seq) {
-        for (int64 i = seq.beg; i < seq.end; i++) {
-            const float one_over_two_pi = 1.f / (2.f * math::PI);
+        if (seq.end - seq.beg < 2) continue;
+
+        for (int64 i = seq.beg + 1; i < seq.end - 1; i++) {
             const vec2 coord = vec2(0, 1) + vec2(1, -1) * (bb_angles[i] * one_over_two_pi + 0.5f);
             const uint32 color = lerp_pixel(color_map, coord);
             memset32(dst_atom_colors.data + residues[i].atom_idx.beg, color, residues[i].atom_idx.end - residues[i].atom_idx.beg);
+        }
+
+        // Do first and last segment explicitly since it lacks adjacent [next] amino acid to properly compute phi and psi.
+        {
+            const auto dst_i = seq.beg;
+            const auto src_i = math::min(seq.end - 1, dst_i + 1);
+            const uint32 color = dst_atom_colors[residues[src_i].atom_idx.beg];  // copy color from previous residue
+            memset32(dst_atom_colors.data + residues[dst_i].atom_idx.beg, color, residues[dst_i].atom_idx.end - residues[dst_i].atom_idx.beg);
+        }
+        {
+            const auto dst_i = math::max(0, seq.end - 1);
+            const auto src_i = math::max(0, dst_i - 1);
+            const uint32 color = dst_atom_colors[residues[src_i].atom_idx.beg];  // copy color from previous residue
+            memset32(dst_atom_colors.data + residues[dst_i].atom_idx.beg, color, residues[dst_i].atom_idx.end - residues[dst_i].atom_idx.beg);
         }
     }
 }

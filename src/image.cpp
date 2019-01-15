@@ -4,7 +4,7 @@
 #include <core/math_utils.h>
 #include <stb_image.h>
 
-bool init_image(Image* img, int32 width, int32 height, uint32 color) {
+bool init_image(Image* img, int32 width, int32 height) {
     ASSERT(img);
     ASSERT(width > 0);
     ASSERT(height > 0);
@@ -16,6 +16,15 @@ bool init_image(Image* img, int32 width, int32 height, uint32 color) {
     img->width = width;
     img->height = height;
     img->data = data;
+    return true;
+}
+
+bool init_image(Image* img, const Image& other) {
+    ASSERT(img);
+    if (!init_image(img, other.width, other.height)) {
+        return false;
+    }
+    memcpy(img->data, other.data, other.width * other.height * sizeof(uint32));
     return true;
 }
 
@@ -120,44 +129,25 @@ void box_blur_v(uint32* src, uint32* dst, int w, int h, int r) {
     }
 }
 
-void box_blur(Image* src, Image* dst, int32 radius) {
-    ASSERT(src);
-    ASSERT(dst);
-    ASSERT(src->width == dst->width);
-    ASSERT(src->height == dst->height);
+void box_blur(uint32* data_in, uint32* data_out, int32 w, int32 h, int32 r) {
+    ASSERT(data_in);
+    ASSERT(data_out);
 
-    const int w = src->width;
-    const int h = src->height;
-    const int r = radius;
-
-    memcpy(dst->data, src->data, w * h * sizeof(uint32));
-    box_blur_h(dst->data, src->data, w, h, r);
-    box_blur_v(src->data, dst->data, w, h, r);
-
-    /*
-for (int y = 0; y < h; y++) {
-    const int32 y_m = (y == 0) ? 0 : y - 1;
-    const int32 y_p = (y == h - 1) ? h - 1 : y + 1;
-    for (int x = 0; x < w; x++) {
-        const int32 x_m = (x == 0) ? 0 : x - 1;
-        const int32 x_p = (x == w - 1) ? w - 1 : x + 1;
-
-        const vec4 val = 1.f / 9.f *
-                         (math::convert_color(src->data[y_m * w + x_m]) + math::convert_color(src->data[y_m * w + x]) + math::convert_color(src->data[y_m * w + x_p]) +
-                          math::convert_color(src->data[y * w + x_m]) + math::convert_color(src->data[y * w + x]) + math::convert_color(src->data[y * w + x_p]) +
-                          math::convert_color(src->data[y_p * w + x_m]) + math::convert_color(src->data[y_p * w + x]) + math::convert_color(src->data[y_p * w + x_p]));
-
-        dst->data[y * w + x] = math::convert_color(val);
-    }
-}
-    */
+    box_blur_h(data_out, data_in, w, h, r);
+    box_blur_v(data_in, data_out, w, h, r);
 }
 
-void gaussian_blur(Image* src, Image* dst, int32 radius) {
+void gaussian_blur(Image* img, int32 radius) {
+    ASSERT(img);
+    const int w = img->width;
+    const int h = img->height;
+
     int box_w[3];
     boxes_for_gauss_3(box_w, 3, radius);
+    uint32* tmp_data = (uint32*)TMP_MALLOC(img->width * img->height * sizeof(uint32));
+    memcpy(tmp_data, img->data, w * h * sizeof(uint32));
 
-    box_blur(src, dst, box_w[0] / 2);
-    box_blur(dst, src, box_w[1] / 2);
-    box_blur(src, dst, box_w[2] / 2);
+    box_blur(tmp_data, img->data, w, h, box_w[0] / 2);
+    box_blur(img->data, tmp_data, w, h, box_w[1] / 2);
+    box_blur(tmp_data, img->data, w, h, box_w[2] / 2);
 }

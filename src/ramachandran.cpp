@@ -38,15 +38,16 @@ static GLint uniform_loc_radius = -1;
 static GLint uniform_loc_color = -1;
 static GLint uniform_loc_outline = -1;
 
-static Image seg_image = {};
-static Image col_image = {};
+static Image src_image = {};  // This is the unmodified source image (Ramachandran plot)
+static Image seg_image = {};  // Segmentation version of image (Blurred, to hide low res artifacts and for smoother transitions)
+static Image col_image = {};  // Color version of image (Even more blurred, for smoother transitions of secondary structure colors)
 
 GLuint get_accumulation_texture() { return acc_tex; }
 GLuint get_segmentation_texture() { return seg_tex; }
 GLuint get_color_texture() { return col_tex; }
 
 const Image& get_segmentation_image() { return seg_image; }
-const Image& get_color_image() { return seg_image; }
+const Image& get_color_image() { return col_image; }
 
 // @NOTE: This should generate a quad with a certain size in texture coordinates
 constexpr const char* v_shader_src = R"(
@@ -100,7 +101,7 @@ void main() {
 
 void initialize() {
     // Image seg_img;
-    bool read_result = read_image(&seg_image, VIAMD_IMAGE_DIR "/ramachandran.bmp");
+    bool read_result = read_image(&src_image, VIAMD_IMAGE_DIR "/ramachandran.bmp");
 
     if (read_result == false) {
         return;
@@ -141,44 +142,43 @@ void initialize() {
     const uint32 OUT_LEFT_OTHER_HIGH = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_yellow, c_high, l_high)), 1));
     const uint32 OUT_LEFT_OTHER_MID = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_yellow, c_mid, l_mid)), 1));
 
-    for (int i = 0; i < seg_image.width * seg_image.height; i++) {
-        switch (seg_image.data[i]) {
+    for (int i = 0; i < src_image.width * src_image.height; i++) {
+        uint32& pixel_color = src_image.data[i];
+        switch (pixel_color) {
             case IN_ALPHA_HIGH:
-                seg_image.data[i] = OUT_ALPHA_HIGH;
+                pixel_color = OUT_ALPHA_HIGH;
                 break;
             case IN_ALPHA_MID:
-                seg_image.data[i] = OUT_ALPHA_MID;
+                pixel_color = OUT_ALPHA_MID;
                 break;
             case IN_BETA_HIGH:
-                seg_image.data[i] = OUT_BETA_HIGH;
+                pixel_color = OUT_BETA_HIGH;
                 break;
             case IN_BETA_MID:
-                seg_image.data[i] = OUT_BETA_MID;
+                pixel_color = OUT_BETA_MID;
                 break;
             case IN_LEFT_ALPHA_HIGH:
-                seg_image.data[i] = OUT_LEFT_ALPHA_HIGH;
+                pixel_color = OUT_LEFT_ALPHA_HIGH;
                 break;
             case IN_LEFT_ALPHA_MID:
-                seg_image.data[i] = OUT_LEFT_ALPHA_MID;
+                pixel_color = OUT_LEFT_ALPHA_MID;
                 break;
             case IN_LEFT_OTHER_HIGH:
-                seg_image.data[i] = OUT_LEFT_OTHER_HIGH;
+                pixel_color = OUT_LEFT_OTHER_HIGH;
                 break;
             case IN_LEFT_OTHER_MID:
-                seg_image.data[i] = OUT_LEFT_OTHER_MID;
+                pixel_color = OUT_LEFT_OTHER_MID;
                 break;
             default:
                 break;
         }
     }
 
-    Image tmp_image;
-    init_image(&tmp_image, seg_image.width, seg_image.height);
-    defer { free_image(&tmp_image); };
-    //gaussian_blur(&seg_image, &tmp_image, 2);
+    init_image(&seg_image, src_image);
+    gaussian_blur(&seg_image, 2);
 
-    init_image(&col_image, seg_image.width, seg_image.height);
-    gaussian_blur(&tmp_image, &col_image, 2);
+    init_image(&col_image, src_image);
+    gaussian_blur(&col_image, 4);
 
     constexpr int BUFFER_SIZE = 1024;
     char buffer[BUFFER_SIZE];
