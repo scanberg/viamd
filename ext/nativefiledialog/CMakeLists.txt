@@ -1,32 +1,42 @@
-
 ### NATIVEFILEDIALOG ###
 project(nativefiledialoglib LANGUAGES C)
                   
-set(SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_common.c
-)
+set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_common.c)
+set(LIB "")
+set(DEF "")
 
-IF(UNIX AND NOT APPLE)
-    find_package(GTK2 REQUIRED gtk)
-    set(SOURCES
-        ${SOURCES}
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_gtk.c)
-ENDIF()
 
-IF(APPLE)
-    set(SOURCES
-        ${SOURCES}
+if(UNIX AND NOT APPLE)
+    option(NATIVEFILEDIALOG_USE_GTK "Use GTK for window handling, fallback is Zenity" ON)
+    if (NATIVEFILEDIALOG_USE_GTK)
+        include(cmake/FindGT3.cmake)
+        find_package(GTK3 REQUIRED gtk)
+        set(SRC
+            ${SRC}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_gtk.c)
+        set(LIBS gtk)
+    else()
+        set(SRC
+            ${SRC}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_zenity.c)
+    endif()
+endif()
+
+if(APPLE)
+    set(SRC
+        ${SRC}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_cocoa.m)
-ENDIF()
+    set(LIB \"-framework AppKit\")
+endif()
 
-IF(WIN32)
-    set(SOURCES
-        ${SOURCES}
+if(WIN32)
+    set(SRC
+        ${SRC}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_win.cpp)
-	add_definitions(-D_CRT_SECURE_NO_WARNINGS)
-ENDIF()
+    set(DEF "_CRT_SECURE_NO_WARNINGS")
+endif()
 
-add_library(nativefiledialog ${SOURCES})
+add_library(nativefiledialog ${SRC})
 
 target_include_directories(nativefiledialog
 	PUBLIC
@@ -36,9 +46,7 @@ target_include_directories(nativefiledialog
 		${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-IF(APPLE)
-    target_link_libraries(nativefiledialog "-framework AppKit")
-ENDIF()
-IF (UNIX AND NOT APPLE)
-	target_link_libraries(nativefiledialog gtk)
-ENDIF()
+target_compile_definitions(nativefiledialog
+    PRIVATE ${DEF})
+
+target_link_libraries(nativefiledialog ${LIBS})
