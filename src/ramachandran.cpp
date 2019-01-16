@@ -119,16 +119,18 @@ void initialize() {
     const uint32 IN_LEFT_OTHER_HIGH = 0xFF00FFFF;
     const uint32 IN_LEFT_OTHER_MID = 0xFF7FFFFF;
 
-    const float h_red = 0.0 / 360.0;
-    const float h_green = 120.0 / 360.0;
-    const float h_blue = 240.0 / 360.0;
-    const float h_yellow = 60.0 / 360.0;
+    const uint32 IN_BACKGROUND = 0xFFFFFFFF;
 
-    const float c_high = 0.4;
-    const float c_mid = 0.0;
+    const float h_red = 0.0f / 360.0f;
+    const float h_green = 120.0f / 360.0f;
+    const float h_blue = 240.0f / 360.0f;
+    const float h_yellow = 60.0f / 360.0f;
 
-    const float l_high = 0.8;
-    const float l_mid = 1.0;
+    const float c_high = 1.0f;
+    const float c_mid = 0.0f;
+
+    const float l_high = 1.0f;
+    const float l_mid = 0.0f;
 
     const uint32 OUT_ALPHA_HIGH = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_red, c_high, l_high)), 1));
     const uint32 OUT_ALPHA_MID = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_red, c_mid, l_mid)), 1));
@@ -142,9 +144,14 @@ void initialize() {
     const uint32 OUT_LEFT_OTHER_HIGH = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_yellow, c_high, l_high)), 1));
     const uint32 OUT_LEFT_OTHER_MID = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_yellow, c_mid, l_mid)), 1));
 
+    const uint32 OUT_BACKGROUND = 0x0000000;
+
     for (int i = 0; i < src_image.width * src_image.height; i++) {
         uint32& pixel_color = src_image.data[i];
         switch (pixel_color) {
+            case IN_BACKGROUND:
+                pixel_color = OUT_BACKGROUND;
+                break;
             case IN_ALPHA_HIGH:
                 pixel_color = OUT_ALPHA_HIGH;
                 break;

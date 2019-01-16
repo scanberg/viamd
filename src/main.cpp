@@ -184,7 +184,7 @@ struct MoleculeBuffers {
 };
 
 struct Representation {
-    enum Type { VDW, LICORICE, RIBBONS };
+    enum Type { VDW, LICORICE, BALL_AND_STICK, RIBBONS, CARTOON };
 
     StringBuffer<128> name = "rep";
     StringBuffer<128> filter = "all";
@@ -768,12 +768,13 @@ int main(int, char**) {
         PUSH_GPU_SECTION("Compute Backbone Spline") {
             bool has_spline_rep = false;
             for (int32 i = 0; i < data.representations.num_representations; i++) {
-                if (data.representations.data[i].type == Representation::RIBBONS) {
+                if (data.representations.data[i].type == Representation::RIBBONS || data.representations.data[i].type == Representation::CARTOON) {
                     has_spline_rep = true;
                     break;
                 }
             }
 
+            data.gpu_buffers.backbone.dirty = true;
             if (has_spline_rep && data.gpu_buffers.backbone.dirty) {
                 data.gpu_buffers.backbone.dirty = false;
                 draw::compute_backbone_control_points(data.gpu_buffers.backbone.control_point, data.gpu_buffers.position_radius, data.gpu_buffers.backbone.backbone_segment_index,
@@ -792,8 +793,8 @@ int main(int, char**) {
         mat4 inv_proj_mat = math::inverse(proj_mat);
         mat4 inv_view_proj_mat = math::inverse(proj_mat * view_mat);
 
-        glEnable(GL_CULL_FACE);
-        glCullFace(GL_BACK);
+        // glEnable(GL_CULL_FACE);
+        // glCullFace(GL_BACK);
 
         PUSH_GPU_SECTION("G-Buffer fill") {
             for (int i = 0; i < data.representations.num_representations; i++) {
@@ -811,10 +812,25 @@ int main(int, char**) {
                                             rep.radius);
                         POP_GPU_SECTION()
                         break;
+                    case Representation::BALL_AND_STICK:
+                        PUSH_GPU_SECTION("Vdw")
+                        draw::draw_vdw(data.gpu_buffers.position_radius, rep.color_buffer, (int)data.mol_data.dynamic.molecule.atom.count, view_mat, proj_mat, rep.radius * 0.25);
+                        POP_GPU_SECTION()
+                        PUSH_GPU_SECTION("Licorice")
+                        draw::draw_licorice(data.gpu_buffers.position_radius, rep.color_buffer, data.gpu_buffers.bond, (int)data.mol_data.dynamic.molecule.covalent_bonds.size(), view_mat, proj_mat,
+                                            rep.radius * 0.4);
+                        POP_GPU_SECTION()
+                        break;
                     case Representation::RIBBONS:
                         PUSH_GPU_SECTION("Ribbons")
                         draw::draw_ribbons(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, rep.color_buffer, data.gpu_buffers.backbone.num_spline_indices, view_mat,
                                            proj_mat);
+                        POP_GPU_SECTION()
+                        break;
+                    case Representation::CARTOON:
+                        PUSH_GPU_SECTION("Cartoon")
+                        draw::draw_cartoon(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, rep.color_buffer, data.gpu_buffers.backbone.num_spline_indices,
+                                           ramachandran::get_segmentation_texture(), view_mat, proj_mat);
                         POP_GPU_SECTION()
                         break;
                 }
@@ -939,8 +955,8 @@ int main(int, char**) {
 
 #if 1
         PUSH_GPU_SECTION("Draw Control Points") {
-            draw::draw_spline(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index, data.gpu_buffers.backbone.num_control_point_indices, view_proj_mat);
-            // draw::draw_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices, view_proj_mat);
+            // draw::draw_spline(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index, data.gpu_buffers.backbone.num_control_point_indices, view_proj_mat);
+            draw::draw_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices, view_proj_mat);
         }
         POP_GPU_SECTION()
 #endif
@@ -1446,7 +1462,7 @@ static void draw_representations_window(ApplicationData* data) {
                 recompute_colors = true;
             }
             if (!rep.filter_is_ok) ImGui::PopStyleColor();
-            ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0\0");
+            ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ball & Stick\0Ribbons\0Cartoon\0\0");
             if (ImGui::Combo("color mapping", (int*)(&rep.color_mapping), "Static Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0\0")) {
                 recompute_colors = true;
             }
@@ -2275,10 +2291,12 @@ static void init_molecule_buffers(ApplicationData* data) {
                 backbone_index_data.push_back(n_ip1);
                 control_point_index_data.push_back(control_idx);
 
+                // @NOTE: Pad with extra index on first and last to help cubic spline construction
                 if (first || last) {
-                    // @NOTE: Pad with extra index on first and last to help cubic spline construction
                     control_point_index_data.push_back(control_idx);
                 }
+                control_idx++;
+
                 // @NOTE: For every control point we generate N spline control points
                 if (!last) {
                     for (int32 j = 0; j < SPLINE_SUBDIVISION_COUNT; j++) {
@@ -2288,7 +2306,6 @@ static void init_molecule_buffers(ApplicationData* data) {
                 } else {
                     spline_index_data.push_back(0xFFFFFFFFU);
                 }
-                control_idx++;
             }
             control_point_index_data.push_back(0xFFFFFFFFU);
         }
@@ -2501,8 +2518,12 @@ static Representation::Type get_rep_type(CString str) {
         return Representation::VDW;
     else if (compare(str, "LICORICE"))
         return Representation::LICORICE;
+    else if (compare(str, "BALL_AND_STICK"))
+        return Representation::BALL_AND_STICK;
     else if (compare(str, "RIBBONS"))
         return Representation::RIBBONS;
+    else if (compare(str, "CARTOON"))
+        return Representation::CARTOON;
     else
         return Representation::VDW;
 }
@@ -2513,8 +2534,12 @@ static CString get_rep_type_name(Representation::Type type) {
             return "VDW";
         case Representation::LICORICE:
             return "LICORICE";
+        case Representation::BALL_AND_STICK:
+            return "BALL_AND_STICK";
         case Representation::RIBBONS:
             return "RIBBONS";
+        case Representation::CARTOON:
+            return "CARTOON";
         default:
             return "UNKNOWN";
     }
