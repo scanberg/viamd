@@ -38,16 +38,16 @@ static GLint uniform_loc_radius = -1;
 static GLint uniform_loc_color = -1;
 static GLint uniform_loc_outline = -1;
 
-static Image src_image = {};  // This is the unmodified source image (Ramachandran plot)
-static Image seg_image = {};  // Segmentation version of image (Blurred, to hide low res artifacts and for smoother transitions)
-static Image col_image = {};  // Color version of image (Even more blurred, for smoother transitions of secondary structure colors)
+static Image src_img = {};  // This is the unmodified source image (Ramachandran plot)
+static Image seg_img = {};  // Segmentation version of image (Blurred, to hide low res artifacts and for smoother transitions)
+static Image col_img = {};  // Color version of image (Even more blurred, for smoother transitions of secondary structure colors)
 
 GLuint get_accumulation_texture() { return acc_tex; }
 GLuint get_segmentation_texture() { return seg_tex; }
 GLuint get_color_texture() { return col_tex; }
 
-const Image& get_segmentation_image() { return seg_image; }
-const Image& get_color_image() { return col_image; }
+const Image& get_segmentation_image() { return seg_img; }
+const Image& get_color_image() { return col_img; }
 
 // @NOTE: This should generate a quad with a certain size in texture coordinates
 constexpr const char* v_shader_src = R"(
@@ -99,93 +99,105 @@ void main() {
 }
 )";
 
-void initialize() {
-    // Image seg_img;
-    bool read_result = read_image(&src_image, VIAMD_IMAGE_DIR "/ramachandran.bmp");
+void init_map(Image* img, GLuint tex, const ColorMap& color_map, int blur_level) {
+    ASSERT(src_img);
+    ASSERT(img);
+    ASSERT(tex);
 
-    if (read_result == false) {
-        return;
-    }
+    init_image(img, src_img);
 
-    const uint32 IN_ALPHA_HIGH = 0xFF0000FF;
-    const uint32 IN_ALPHA_MID = 0xFF7F7FFF;
+    constexpr uint32 IN_BACKGROUND = 0xFFFFFFFF;
+    constexpr uint32 IN_ALPHA_HIGH = 0xFF0000FF;
+    constexpr uint32 IN_ALPHA_MID = 0xFF7F7FFF;
+    constexpr uint32 IN_BETA_HIGH = 0xFFFF0000;
+    constexpr uint32 IN_BETA_MID = 0xFFFF7F7F;
+    constexpr uint32 IN_LEFT_ALPHA_HIGH = 0xFF00FF00;
+    constexpr uint32 IN_LEFT_ALPHA_MID = 0xFF7FFF7F;
+    constexpr uint32 IN_P_MID = 0xFF7FFFFF;
 
-    const uint32 IN_BETA_HIGH = 0xFFFF0000;
-    const uint32 IN_BETA_MID = 0xFFFF7F7F;
-
-    const uint32 IN_LEFT_ALPHA_HIGH = 0xFF00FF00;
-    const uint32 IN_LEFT_ALPHA_MID = 0xFF7FFF7F;
-
-    const uint32 IN_LEFT_OTHER_HIGH = 0xFF00FFFF;
-    const uint32 IN_LEFT_OTHER_MID = 0xFF7FFFFF;
-
-    const uint32 IN_BACKGROUND = 0xFFFFFFFF;
-
-    const float h_red = 0.0f / 360.0f;
-    const float h_green = 120.0f / 360.0f;
-    const float h_blue = 240.0f / 360.0f;
-    const float h_yellow = 60.0f / 360.0f;
-
-    const float c_high = 1.0f;
-    const float c_mid = 0.0f;
-
-    const float l_high = 1.0f;
-    const float l_mid = 0.0f;
-
-    const uint32 OUT_ALPHA_HIGH = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_red, c_high, l_high)), 1));
-    const uint32 OUT_ALPHA_MID = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_red, c_mid, l_mid)), 1));
-
-    const uint32 OUT_BETA_HIGH = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_blue, c_high, l_high)), 1));
-    const uint32 OUT_BETA_MID = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_blue, c_mid, l_mid)), 1));
-
-    const uint32 OUT_LEFT_ALPHA_HIGH = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_green, c_high, l_high)), 1));
-    const uint32 OUT_LEFT_ALPHA_MID = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_green, c_mid, l_mid)), 1));
-
-    const uint32 OUT_LEFT_OTHER_HIGH = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_yellow, c_high, l_high)), 1));
-    const uint32 OUT_LEFT_OTHER_MID = math::convert_color(vec4(math::hcl_to_rgb(vec3(h_yellow, c_mid, l_mid)), 1));
-
-    const uint32 OUT_BACKGROUND = 0x0000000;
-
-    for (int i = 0; i < src_image.width * src_image.height; i++) {
-        uint32& pixel_color = src_image.data[i];
+    for (int i = 0; i < src_img.width * src_img.height; i++) {
+        uint32& pixel_color = src_img.data[i];
         switch (pixel_color) {
             case IN_BACKGROUND:
-                pixel_color = OUT_BACKGROUND;
+                pixel_color = math::convert_color(color_map.region_color[Region_None]);
                 break;
             case IN_ALPHA_HIGH:
-                pixel_color = OUT_ALPHA_HIGH;
+                pixel_color = math::convert_color(color_map.region_color[Region_AlphaHigh]);
                 break;
             case IN_ALPHA_MID:
-                pixel_color = OUT_ALPHA_MID;
+                pixel_color = math::convert_color(color_map.region_color[Region_AlphaMid]);
                 break;
             case IN_BETA_HIGH:
-                pixel_color = OUT_BETA_HIGH;
+                pixel_color = math::convert_color(color_map.region_color[Region_BetaHigh]);
                 break;
             case IN_BETA_MID:
-                pixel_color = OUT_BETA_MID;
+                pixel_color = math::convert_color(color_map.region_color[Region_BetaMid]);
                 break;
             case IN_LEFT_ALPHA_HIGH:
-                pixel_color = OUT_LEFT_ALPHA_HIGH;
+                pixel_color = math::convert_color(color_map.region_color[Region_LeftAlphaHigh]);
                 break;
             case IN_LEFT_ALPHA_MID:
-                pixel_color = OUT_LEFT_ALPHA_MID;
+                pixel_color = math::convert_color(color_map.region_color[Region_LeftAlphaMid]);
                 break;
-            case IN_LEFT_OTHER_HIGH:
-                pixel_color = OUT_LEFT_OTHER_HIGH;
-                break;
-            case IN_LEFT_OTHER_MID:
-                pixel_color = OUT_LEFT_OTHER_MID;
+            case IN_P_MID:
+                pixel_color = math::convert_color(color_map.region_color[Region_PMid]);
                 break;
             default:
                 break;
         }
     }
 
-    init_image(&seg_image, src_image);
-    gaussian_blur(&seg_image, 2);
+    gaussian_blur(img, blur_level);
 
-    init_image(&col_image, src_image);
-    gaussian_blur(&col_image, 4);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, img->width, img->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, img->data);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+void init_segmentation_map(const ColorMap& color_map, int blur_level) { init_map(&seg_img, seg_tex, color_map, blur_level); }
+void init_color_map(const ColorMap& color_map, int blur_level) { init_map(&seg_img, seg_tex, color_map, blur_level); }
+
+void initialize() {
+    if (!read_image(&src_img, VIAMD_IMAGE_DIR "/ramachandran.bmp")) {
+        LOG_ERROR("Could not read ramachandran map!");
+        return;
+    }
+
+    if (!seg_tex) {
+        glGenTextures(1, &seg_tex);
+        glBindTexture(GL_TEXTURE_2D, seg_tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, seg_img.width, seg_img.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, seg_img.data);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    if (!acc_tex) {
+        glGenTextures(1, &acc_tex);
+        glBindTexture(GL_TEXTURE_2D, acc_tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, acc_width, acc_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    if (!col_tex) {
+        glGenTextures(1, &col_tex);
+        glBindTexture(GL_TEXTURE_2D, col_tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, acc_width, acc_height, 0, GL_RGB, GL_UNSIGNED_BYTE, 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    init_segmentation_map(ColorMap(), 2);
+    init_color_map(ColorMap(), 4);
 
     constexpr int BUFFER_SIZE = 1024;
     char buffer[BUFFER_SIZE];
@@ -224,39 +236,6 @@ void initialize() {
     uniform_loc_radius = glGetUniformLocation(program, "u_radius");
     uniform_loc_color = glGetUniformLocation(program, "u_color");
     uniform_loc_outline = glGetUniformLocation(program, "u_outline");
-
-    if (!seg_tex) {
-        glGenTextures(1, &seg_tex);
-        glBindTexture(GL_TEXTURE_2D, seg_tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, seg_image.width, seg_image.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, seg_image.data);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }
-
-    if (!acc_tex) {
-        glGenTextures(1, &acc_tex);
-        glBindTexture(GL_TEXTURE_2D, acc_tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, acc_width, acc_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }
-
-    if (!col_tex) {
-        glGenTextures(1, &col_tex);
-        glBindTexture(GL_TEXTURE_2D, col_tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, acc_width, acc_height, 0, GL_RGB, GL_UNSIGNED_BYTE, 0);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }
 
     if (!coord_buf) {
         glGenBuffers(1, &coord_buf);

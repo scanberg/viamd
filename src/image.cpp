@@ -21,6 +21,8 @@ bool init_image(Image* img, int32 width, int32 height) {
 
 bool init_image(Image* img, const Image& other) {
     ASSERT(img);
+    ASSERT(other);
+
     if (!init_image(img, other.width, other.height)) {
         return false;
     }

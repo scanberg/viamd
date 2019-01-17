@@ -362,13 +362,24 @@ struct ApplicationData {
     // --- RAMACHANDRAN ---
     struct {
         bool show_window = false;
-        float radius = 1.f;
-        float opacity = 1.f;
         int frame_range_min = 0;
         int frame_range_max = 0;
 
+        ramachandran::ColorMap color_map{};
+
+        struct {
+            float radius = 1.f;
+            vec4 color = vec4(0, 0, 0, 1);
+        } range;
+
+        struct {
+            float radius = 1.5f;
+            vec4 border_color = vec4(0, 0, 0, 1);
+            vec4 fill_color = vec4(1, 1, 0, 1);
+        } current;
+
         BackboneAnglesTrajectory backbone_angles{};
-        Array<vec2> current_backbone_angles{};
+        Array<BackboneAngle> current_backbone_angles{};
     } ramachandran;
 
     // --- REPRESENTATIONS ---
@@ -501,6 +512,11 @@ int main(int, char**) {
 
     const vec4 CLEAR_COLOR = vec4(1, 1, 1, 1);
     const vec4 CLEAR_INDEX = vec4(1, 1, 1, 1);
+
+    float halton_x[16];
+    float halton_y[16];
+    math::generate_halton_sequence(halton_x, 16, 2);
+    math::generate_halton_sequence(halton_y, 16, 3);
 
 #ifdef VIAMD_RELEASE
     allocate_and_parse_pdb_from_string(&data->mol_data.dynamic, CAFFINE_PDB);
@@ -672,13 +688,16 @@ int main(int, char**) {
         }
 
         if (time_changed) {
+            auto& mol = data.mol_data.dynamic.molecule;
+            auto& traj = data.mol_data.dynamic.trajectory;
+
             data.hydrogen_bonds.dirty = true;
             data.gpu_buffers.backbone.dirty = true;
 
             PUSH_CPU_SECTION("Interpolate Position")
-            if (data.mol_data.dynamic.trajectory) {
+            if (traj) {
                 data.spatial_hash.dirty_flag = true;
-                interpolate_atomic_positions(get_positions(data.mol_data.dynamic.molecule), data.mol_data.dynamic.trajectory, data.time, data.interpolation);
+                interpolate_atomic_positions(get_positions(mol), traj, data.time, data.interpolation);
                 if (data.interpolation != PlaybackInterpolationMode::NEAREST) {
                     // const auto& box = get_trajectory_frame(data.mol_data.dynamic.trajectory, (int)data.time).box;
                     // apply_pbc_residues(get_positions(data.mol_data.dynamic.molecule), data.mol_data.dynamic.molecule.residues, box);
@@ -688,8 +707,12 @@ int main(int, char**) {
             }
             POP_CPU_SECTION()
 
-            PUSH_CPU_SECTION("Update dynamic representations")
-            for (int32 i = 0; i < data.representations.num_representations; i++) {
+            PUSH_CPU_SECTION("Compute backbone angles")
+            zero_array(&mol.backbone.angles);
+            compute_backbone_angles(mol.backbone.angles, get_positions(mol), mol.backbone.segments, mol.backbone.sequences);
+            POP_CPU_SECTION()
+
+            PUSH_CPU_SECTION("Update dynamic representations") for (int32 i = 0; i < data.representations.num_representations; i++) {
                 if (data.representations.data[i].color_mapping == ColorMapping::SECONDARY_STRUCTURE) {
                     update_representation(&data.representations.data[i], data.mol_data.dynamic);
                 }
@@ -788,6 +811,14 @@ int main(int, char**) {
         // RENDER TO FBO
         mat4 view_mat = compute_world_to_view_matrix(data.camera.camera);
         mat4 proj_mat = compute_perspective_projection_matrix(data.camera.camera, data.fbo.width, data.fbo.height);
+
+        {
+            static uint32 i = 0;
+            i++;
+            const vec2 offset = vec2(halton_x[i % 16], halton_y[i % 16]) * 2.f - 1.f;
+            proj_mat = proj_mat * mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(offset.x / data.fbo.width, offset.y / data.fbo.height, 0, 1));
+        }
+
         mat4 view_proj_mat = proj_mat * view_mat;
         mat4 inv_view_mat = math::inverse(view_mat);
         mat4 inv_proj_mat = math::inverse(proj_mat);
@@ -920,11 +951,26 @@ int main(int, char**) {
             glDisable(GL_DEPTH_TEST);
             glDepthMask(GL_FALSE);
 
+            /*
+bool blend = math::distance(data.camera.animation.target_position, data.camera.camera.position) < 0.01f && !data.is_playing;
+if (blend) {
+    glEnable(GL_BLEND);
+    glBlendEquation(GL_FUNC_ADD);
+    glBlendColor(0.5f, 0.5f, 0.5f, 0.5f);
+    glBlendFunc(GL_CONSTANT_COLOR, GL_CONSTANT_COLOR);
+    // glBlendFunc(GL_ONE, GL_ONE);
+}
+            */
+
             if (data.dof.enabled) {
                 postprocessing::apply_dof(data.fbo.tex_depth, data.fbo.tex_hdr, proj_mat, data.camera.trackball_state.distance, data.dof.focus_scale);
             } else {
                 postprocessing::apply_tonemapping(data.fbo.tex_hdr);
             }
+
+            // if (blend) {
+            glDisable(GL_BLEND);
+            //}
         }
         POP_GPU_SECTION()  // Post Processing
 
@@ -953,7 +999,7 @@ int main(int, char**) {
         }
         POP_GPU_SECTION()
 
-#if 1
+#if 0
         PUSH_GPU_SECTION("Draw Control Points") {
             // draw::draw_spline(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index, data.gpu_buffers.backbone.num_control_point_indices, view_proj_mat);
             draw::draw_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices, view_proj_mat);
@@ -2063,67 +2109,94 @@ static void draw_distribution_window(ApplicationData* data) {
 }
 
 static void draw_ramachandran_window(ApplicationData* data) {
-    // const vec2 res(512, 512);
-    // ImGui::SetNextWindowContentSize(ImVec2(res.x, res.y));
+    const int32 num_frames = data->mol_data.dynamic.trajectory ? data->mol_data.dynamic.trajectory.num_frames : 0;
+    const int32 frame = (int32)data->time;
+    const IntRange frame_range = {(int32)data->time_filter.range.x, (int32)data->time_filter.range.y};
+    Array<const BackboneAngle> accumulated_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame_range.x, frame_range.y - frame_range.x);
+    Array<const BackboneAngle> current_angles = data->mol_data.dynamic.molecule.backbone.angles;
+
     ImGui::SetNextWindowSizeConstraints(ImVec2(100, 100), ImVec2(1000, 1000), [](ImGuiSizeCallbackData* data) {
         const float ar = 3.f / 4.f;
-        data->DesiredSize.x = data->DesiredSize.y * ar;
+        data->DesiredSize.x = data->DesiredSize.y * ar + 100;
     });
 
     ImGui::Begin("Ramachandran", &data->ramachandran.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::Text("Current");
+    ImGui::PushID("current");
+    ImGui::SliderFloat("", &data->ramachandran.current.radius, 0.5f, 3.f, "radius %1.2f");
+    data->ramachandran.current.radius = math::round(data->ramachandran.current.radius * 2.f) / 2.f;
+    ImGui::SameLine();
+    ImGui::ColorEdit4("border color", (float*)&data->ramachandran.current.border_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+    ImGui::SameLine();
+    ImGui::ColorEdit4("fill color", (float*)&data->ramachandran.current.fill_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+    ImGui::PopID();
 
-    int32 num_frames = data->mol_data.dynamic.trajectory ? data->mol_data.dynamic.trajectory.num_frames : 0;
+    ImGui::Separator();
 
-    ImGui::SliderFloat("opacity", &data->ramachandran.opacity, 0.f, 10.f);
-    ImGui::SliderFloat("radius", &data->ramachandran.radius, 0.1f, 2.f);
+    ImGui::Text("Range");
+    ImGui::PushID("range");
+    ImGui::SliderFloat("radius", &data->ramachandran.range.radius, 0.1f, 5.f);
+    ImGui::SameLine();
+    ImGui::ColorEdit4("color", (float*)&data->ramachandran.range.color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
     ImGui::RangeSliderFloat("framerange", &data->time_filter.range.x, &data->time_filter.range.y, 0, (float)math::max(0, num_frames));
-
-    int32 frame = (int32)data->time;
-    Array<vec2> accumulated_angles = get_backbone_angles(data->ramachandran.backbone_angles, (int32)data->time_filter.range.x, (int32)data->time_filter.range.y - (int32)data->time_filter.range.x);
-    Array<vec2> current_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame);
+    ImGui::PopID();
 
     ramachandran::clear_accumulation_texture();
+    ramachandran::compute_accumulation_texture(accumulated_angles, data->ramachandran.range.color, data->ramachandran.range.radius);
 
-    const vec4 ordinary_color(1.f, 1.f, 1.f, 0.1f * data->ramachandran.opacity);
-    ramachandran::compute_accumulation_texture(accumulated_angles, ordinary_color, data->ramachandran.radius);
-
-    ImGui::BeginChild("plot", ImVec2(0, 0), true, ImGuiWindowFlags_NoScrollbar);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::BeginChild("canvas", ImVec2(0, 0), true, ImGuiWindowFlags_NoScrollbar);
 
     const float dim = ImGui::GetWindowContentRegionWidth();
     const ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
     const ImVec2 canvas_size(dim, dim);
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
-    const ImVec2 angles = (ImGui::GetMousePos() - canvas_pos) / canvas_size;
-    // ImGui::SetTooltip(u8"[φ:%.1f, ψ:%.1f]", angles);
-
     const ImVec2 x0 = canvas_pos;
     const ImVec2 x1(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y);
-    dl->ChannelsSplit(3);
+    dl->ChannelsSplit(4);
     dl->ChannelsSetCurrent(0);
-    dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_segmentation_texture(), x0, x1);
+    dl->AddRectFilled(x0, x1, 0xffffffff, 0);
     dl->ChannelsSetCurrent(1);
-    dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_accumulation_texture(), x0, x1);
+    dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_segmentation_texture(), x0, x1);
     dl->ChannelsSetCurrent(2);
-    constexpr float ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
-    for (const auto& angle : current_angles) {
-        if (angle.x == 0 || angle.y == 0) continue;
-        ImVec2 coord(angle.x * ONE_OVER_TWO_PI + 0.5f, angle.y * ONE_OVER_TWO_PI + 0.5f);  // [-PI, PI] -> [0, 1]
-        coord.y = 1.f - coord.y;
-        coord = ImLerp(x0, x1, coord);
-        float radius = data->ramachandran.radius * 5.f;
-        ImVec2 min_box(math::round(coord.x - radius), math::round(coord.y - radius));
-        ImVec2 max_box(math::round(coord.x + radius), math::round(coord.y + radius));
-        dl->AddRectFilled(min_box, max_box, 0xff00ffff);
-        dl->AddRect(min_box, max_box, 0xff000000);
-    }
-    dl->ChannelsMerge();
+    dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_accumulation_texture(), x0, x1);
+    dl->ChannelsSetCurrent(3);
 
+    constexpr float ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
+    const uint32 fill_color = math::convert_color(data->ramachandran.current.fill_color);
+    const uint32 border_color = math::convert_color(data->ramachandran.current.border_color);
+    const float radius = data->ramachandran.current.radius;
+    for (const auto& angle : current_angles) {
+        if (angle.x == 0.f || angle.y == 0.f) continue;
+        const ImVec2 coord = ImLerp(x0, x1, ImVec2(angle.x * ONE_OVER_TWO_PI + 0.5f, -angle.y * ONE_OVER_TWO_PI + 0.5f));  // [-PI, PI] -> [0, 1]
+        const ImVec2 min_box(math::round(coord.x - radius), math::round(coord.y - radius));
+        const ImVec2 max_box(math::round(coord.x + radius), math::round(coord.y + radius));
+        if (radius > 1.f) {
+            dl->AddRectFilled(min_box, max_box, fill_color);
+            dl->AddRect(min_box, max_box, border_color);
+        } else {
+            dl->AddRectFilled(min_box, max_box, border_color);
+        }
+    }
+
+    const auto cx = math::round(math::mix(x0.x, x1.x, 0.5f));
+    const auto cy = math::round(math::mix(x0.y, x1.y, 0.5f));
+    dl->AddLine(ImVec2(cx, x0.y), ImVec2(cx, x1.y), 0xff000000, 0.5f);
+    dl->AddLine(ImVec2(x0.x, cy), ImVec2(x1.x, cy), 0xff000000, 0.5f);
+    dl->ChannelsMerge();
     dl->ChannelsSetCurrent(0);
 
     ImGui::PopStyleVar(1);
     ImGui::EndChild();
+
+    if (ImGui::IsItemHovered()) {
+        const ImVec2 normalized_coord = ((ImGui::GetMousePos() - canvas_pos) / canvas_size - ImVec2(0.5f, 0.5f)) * ImVec2(1, -1);
+        const ImVec2 angles = normalized_coord * 2.f * 180.f;
+        ImGui::BeginTooltip();
+        ImGui::Text(u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0", angles.x, angles.y);
+        ImGui::EndTooltip();
+    }
 
     ImGui::End();
 }

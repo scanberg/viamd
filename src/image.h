@@ -7,6 +7,7 @@ struct Image {
     int32 width = 0;
     int32 height = 0;
     uint32* data = nullptr;
+    operator bool() const { return data != nullptr; }
 };
 
 bool init_image(Image* img, int32 width, int32 height);

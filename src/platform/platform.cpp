@@ -1,4 +1,4 @@
-#include "platform.h"
+﻿#include "platform.h"
 #include <core/gl.h>
 #include <core/log.h>
 #include <core/string_utils.h>
@@ -131,10 +131,13 @@ bool initialize(Context* ctx, int32 width, int32 height, const char* title) {
     io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;
     io.ConfigDockingWithShift = true;
 
+    // default range is 0x0020 - 0x00FF.
+    // BAKE ALL!
+    static const ImWchar ranges[] = {0x0020, 0xFFFF, 0};
     ImFontConfig config;
     config.OversampleV = 2;
     config.OversampleH = 2;
-    ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)DroidSans_compressed_data, DroidSans_compressed_size, 17.f, &config);
+    ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)DroidSans_compressed_data, DroidSans_compressed_size, 17.f, &config, ranges);
 
     ImGui_ImplGlfw_InitForOpenGL(window, false);
     ImGui_ImplOpenGL3_Init("#version 150");
