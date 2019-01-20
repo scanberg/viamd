@@ -241,6 +241,7 @@ struct ApplicationData {
 
     // --- CAMERA ---
     struct {
+        bool moving = false;
         Camera camera{};
         TrackballControllerState trackball_state{};
         CameraTransformation matrices{};
@@ -484,7 +485,7 @@ int main(int, char**) {
         LOG_ERROR("Could not initialize platform layer... terminating\n");
         return -1;
     }
-    data.ctx.window.vsync = false;
+    data.ctx.window.vsync = true;
 
     LOG_NOTE("Creating framebuffer...");
     init_framebuffer(&data.fbo, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
@@ -513,10 +514,8 @@ int main(int, char**) {
     const vec4 CLEAR_COLOR = vec4(1, 1, 1, 1);
     const vec4 CLEAR_INDEX = vec4(1, 1, 1, 1);
 
-    float halton_x[16];
-    float halton_y[16];
-    math::generate_halton_sequence(halton_x, 16, 2);
-    math::generate_halton_sequence(halton_y, 16, 3);
+    vec2 halton_23[16];
+    math::generate_halton_sequence(halton_23, 16, 2, 3);
 
 #ifdef VIAMD_RELEASE
     allocate_and_parse_pdb_from_string(&data->mol_data.dynamic, CAFFINE_PDB);
@@ -565,10 +564,12 @@ int main(int, char**) {
             data.camera.trackball_state.input.screen_size = vec2(data.ctx.window.width, data.ctx.window.height);
             data.camera.trackball_state.input.dolly_delta = data.ctx.input.mouse.scroll_delta;
 
+            data.camera.moving = false;
             {
                 vec3 pos = data.camera.camera.position;
                 quat ori = data.camera.camera.orientation;
                 if (camera_controller_trackball(&pos, &ori, &data.camera.trackball_state)) {
+                    data.camera.moving = true;
                     data.camera.animation.target_position = pos;
                     // data.camera.animation.target_orientation = ori;
                     data.camera.camera.position = pos;
@@ -593,7 +594,9 @@ int main(int, char**) {
 
             const vec3 vel = (data.camera.animation.target_position - data.camera.camera.position) * speed;
             data.camera.camera.position += vel * dt;
-
+            if (math::length(vel) > 0.01f) {
+                data.camera.moving = true;
+            }
 #if 0
             ImGui::Begin("Camera Debug Info");
             ImGui::Text("lin vel [%.2f %.2f %.2f]", vel.x, vel.y, vel.z);
@@ -612,18 +615,18 @@ int main(int, char**) {
         imgui_dockspace();
 
         if (data.density_volume.enabled) {
-            stats::async_update(
-                data.mol_data.dynamic, data.time_filter.range,
-                [](void* usr_data) {
-                    ApplicationData* data = (ApplicationData*)usr_data;
-                    data->density_volume.volume_data_mutex.lock();
+            stats::async_update(data.mol_data.dynamic, data.time_filter.range,
+                                [](void* usr_data) {
+                                    ApplicationData* data = (ApplicationData*)usr_data;
+                                    data->density_volume.volume_data_mutex.lock();
 
-                    stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix, data->mol_data.dynamic.trajectory, data->time_filter.range);
+                                    stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix, data->mol_data.dynamic.trajectory,
+                                                                  data->time_filter.range);
 
-                    data->density_volume.volume_data_mutex.unlock();
-                    data->density_volume.texture.dirty = true;
-                },
-                &data);
+                                    data->density_volume.volume_data_mutex.unlock();
+                                    data->density_volume.texture.dirty = true;
+                                },
+                                &data);
         } else {
             stats::async_update(data.mol_data.dynamic, data.time_filter.range);
         }
@@ -812,11 +815,14 @@ int main(int, char**) {
         mat4 view_mat = compute_world_to_view_matrix(data.camera.camera);
         mat4 proj_mat = compute_perspective_projection_matrix(data.camera.camera, data.fbo.width, data.fbo.height);
 
-        {
+		const bool blend = !data.camera.moving && !data.is_playing;
+
+        if (blend) {
             static uint32 i = 0;
-            i++;
-            const vec2 offset = vec2(halton_x[i % 16], halton_y[i % 16]) * 2.f - 1.f;
-            proj_mat = proj_mat * mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(offset.x / data.fbo.width, offset.y / data.fbo.height, 0, 1));
+            i = (++i) % 16;
+            const vec2 offset = halton_23[i] * 2.f - 1.f;
+            const mat4 jitter_mat = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(offset.x / data.fbo.width, offset.y / data.fbo.height, 0, 1));
+            proj_mat = jitter_mat * proj_mat;
         }
 
         mat4 view_proj_mat = proj_mat * view_mat;
@@ -824,8 +830,8 @@ int main(int, char**) {
         mat4 inv_proj_mat = math::inverse(proj_mat);
         mat4 inv_view_proj_mat = math::inverse(proj_mat * view_mat);
 
-        // glEnable(GL_CULL_FACE);
-        // glCullFace(GL_BACK);
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
 
         PUSH_GPU_SECTION("G-Buffer fill") {
             for (int i = 0; i < data.representations.num_representations; i++) {
@@ -924,9 +930,17 @@ int main(int, char**) {
         // Activate hdr fbo
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.fbo_hdr);
         glDrawBuffer(GL_COLOR_ATTACHMENT0);
-        glClear(GL_COLOR_BUFFER_BIT);
         glDisable(GL_DEPTH_TEST);
         glDepthMask(GL_FALSE);
+
+        if (blend) {
+            glEnable(GL_BLEND);
+            glBlendEquation(GL_FUNC_ADD);
+            glBlendColor(0.1f, 0.1f, 0.1f, 0.0f);
+            glBlendFunc(GL_CONSTANT_COLOR, GL_ONE_MINUS_CONSTANT_COLOR);
+        } else {
+            glClear(GL_COLOR_BUFFER_BIT);
+		}
 
         PUSH_GPU_SECTION("Deferred") {
             // Render deferred
@@ -935,6 +949,8 @@ int main(int, char**) {
             POP_GPU_SECTION()
         }
         POP_GPU_SECTION()  // Deferred
+
+        glDisable(GL_BLEND);
 
         // Apply post processing
         PUSH_GPU_SECTION("Post Processing") {
@@ -951,26 +967,11 @@ int main(int, char**) {
             glDisable(GL_DEPTH_TEST);
             glDepthMask(GL_FALSE);
 
-            /*
-bool blend = math::distance(data.camera.animation.target_position, data.camera.camera.position) < 0.01f && !data.is_playing;
-if (blend) {
-    glEnable(GL_BLEND);
-    glBlendEquation(GL_FUNC_ADD);
-    glBlendColor(0.5f, 0.5f, 0.5f, 0.5f);
-    glBlendFunc(GL_CONSTANT_COLOR, GL_CONSTANT_COLOR);
-    // glBlendFunc(GL_ONE, GL_ONE);
-}
-            */
-
             if (data.dof.enabled) {
                 postprocessing::apply_dof(data.fbo.tex_depth, data.fbo.tex_hdr, proj_mat, data.camera.trackball_state.distance, data.dof.focus_scale);
             } else {
                 postprocessing::apply_tonemapping(data.fbo.tex_hdr);
             }
-
-            // if (blend) {
-            glDisable(GL_BLEND);
-            //}
         }
         POP_GPU_SECTION()  // Post Processing
 
