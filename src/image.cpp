@@ -145,7 +145,7 @@ void gaussian_blur(Image* img, int32 radius) {
     const int h = img->height;
 
     int box_w[3];
-    boxes_for_gauss_3(box_w, 3, radius);
+    boxes_for_gauss_3(box_w, 3, (float)radius);
     uint32* tmp_data = (uint32*)TMP_MALLOC(img->width * img->height * sizeof(uint32));
     memcpy(tmp_data, img->data, w * h * sizeof(uint32));
 

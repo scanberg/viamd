@@ -132,7 +132,8 @@ bool initialize(Context* ctx, int32 width, int32 height, const char* title) {
     io.ConfigDockingWithShift = true;
 
     // default range is 0x0020 - 0x00FF.
-    // BAKE ALL!
+    // In our case we BAKE ALL!
+    // @TODO: reduce this to only the used characters... for some release...
     static const ImWchar ranges[] = {0x0020, 0xFFFF, 0};
     ImFontConfig config;
     config.OversampleV = 2;

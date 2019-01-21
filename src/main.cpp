@@ -47,6 +47,8 @@
 
 //#define VIAMD_RELEASE
 
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
+
 #ifdef OS_MAC_OSX
 constexpr Key::Key_t CONSOLE_KEY = Key::KEY_WORLD_1;
 #else  // WIN32 and Linux
@@ -146,17 +148,29 @@ struct PickingData {
 };
 
 struct MainFramebuffer {
-    GLuint fbo_deferred = 0;
-    GLuint tex_depth = 0;
-    GLuint tex_base_color_and_alpha = 0;
-    GLuint tex_f0_and_smoothness = 0;
-    GLuint tex_normal = 0;
-    GLuint tex_picking = 0;
-
-    GLuint fbo_hdr = 0;
-    GLuint tex_hdr = 0;
+    struct {
+        GLuint depth = 0;
+        GLuint color = 0;
+        GLuint normal = 0;
+        GLuint picking = 0;
+        GLuint fbo = 0;
+    } deferred;
 
     struct {
+        GLuint color = 0;
+        GLuint fbo = 0;
+    } hdr;
+
+    struct {
+        GLuint depth = 0;
+        GLuint color[2] = {0, 0};
+        GLuint fbo = 0;
+        bool enabled = true;
+        bool force_clear = false;
+    } temporal;
+
+    struct {
+        // @NOTE: two of each for ping-pong read / write
         GLuint color[2] = {0, 0};
         GLuint depth[2] = {0, 0};
     } pbo_picking;
@@ -309,11 +323,11 @@ struct ApplicationData {
     } time_filter;
 
     // --- VISUALS ---
-    // SSAO
     struct {
         bool enabled = false;
         float intensity = 2.0f;
         float radius = 6.0f;
+        float bias = 0.1f;
     } ssao;
 
     struct {
@@ -322,24 +336,21 @@ struct ApplicationData {
         float focus_scale = 1.0f;
     } dof;
 
-    // --- HYDROGEN BONDS ---
     struct {
         bool enabled = false;
         bool dirty = true;
         bool overlay = false;
         vec4 color = vec4(1, 0, 1, 1);
-        float distance_cutoff = HYDROGEN_BOND_DISTANCE_CUTOFF_DEFAULT;  // In Ånggström
+        float distance_cutoff = HYDROGEN_BOND_DISTANCE_CUTOFF_DEFAULT;  // In Ångström
         float angle_cutoff = HYDROGEN_BOND_ANGLE_CUTOFF_DEFAULT;        // In Degrees
         DynamicArray<HydrogenBond> bonds{};
     } hydrogen_bonds;
 
-    // --- SIMULATION BOX ---
     struct {
         bool enabled = false;
         vec4 color = vec4(0, 0, 0, 0.5);
     } simulation_box;
 
-    // --- VOLUME ---
     struct {
         bool enabled = false;
         vec3 color = vec3(1, 0, 0);
@@ -388,6 +399,7 @@ struct ApplicationData {
         Representation data[MAX_REPRESENTATIONS]{};
         int32 num_representations = 0;
         bool show_window = false;
+        bool changed = false;
     } representations;
 
     struct {
@@ -514,8 +526,8 @@ int main(int, char**) {
     const vec4 CLEAR_COLOR = vec4(1, 1, 1, 1);
     const vec4 CLEAR_INDEX = vec4(1, 1, 1, 1);
 
-    vec2 halton_23[16];
-    math::generate_halton_sequence(halton_23, 16, 2, 3);
+    vec2 halton_23[32];
+    math::generate_halton_sequence(halton_23, ARRAY_SIZE(halton_23), 2, 3);
 
 #ifdef VIAMD_RELEASE
     allocate_and_parse_pdb_from_string(&data->mol_data.dynamic, CAFFINE_PDB);
@@ -615,18 +627,18 @@ int main(int, char**) {
         imgui_dockspace();
 
         if (data.density_volume.enabled) {
-            stats::async_update(data.mol_data.dynamic, data.time_filter.range,
-                                [](void* usr_data) {
-                                    ApplicationData* data = (ApplicationData*)usr_data;
-                                    data->density_volume.volume_data_mutex.lock();
+            stats::async_update(
+                data.mol_data.dynamic, data.time_filter.range,
+                [](void* usr_data) {
+                    ApplicationData* data = (ApplicationData*)usr_data;
+                    data->density_volume.volume_data_mutex.lock();
 
-                                    stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix, data->mol_data.dynamic.trajectory,
-                                                                  data->time_filter.range);
+                    stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix, data->mol_data.dynamic.trajectory, data->time_filter.range);
 
-                                    data->density_volume.volume_data_mutex.unlock();
-                                    data->density_volume.texture.dirty = true;
-                                },
-                                &data);
+                    data->density_volume.volume_data_mutex.unlock();
+                    data->density_volume.texture.dirty = true;
+                },
+                &data);
         } else {
             stats::async_update(data.mol_data.dynamic, data.time_filter.range);
         }
@@ -711,7 +723,7 @@ int main(int, char**) {
             POP_CPU_SECTION()
 
             PUSH_CPU_SECTION("Compute backbone angles")
-            zero_array(&mol.backbone.angles);
+            zero_array(mol.backbone.angles);
             compute_backbone_angles(mol.backbone.angles, get_positions(mol), mol.backbone.segments, mol.backbone.sequences);
             POP_CPU_SECTION()
 
@@ -759,38 +771,6 @@ int main(int, char**) {
             postprocessing::initialize(data.fbo.width, data.fbo.height);
         }
 
-        // Setup fbo and clear textures
-        PUSH_GPU_SECTION("Clear G-buffer") {
-            const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3};
-
-            glViewport(0, 0, data.fbo.width, data.fbo.height);
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.fbo_deferred);
-
-            glEnable(GL_DEPTH_TEST);
-            glDepthFunc(GL_LESS);
-            glDepthMask(GL_TRUE);
-
-            // Clear color+alpha and depth
-            glDrawBuffer(GL_COLOR_ATTACHMENT0);
-            glClearColor(CLEAR_COLOR.x, CLEAR_COLOR.y, CLEAR_COLOR.z, CLEAR_COLOR.w);
-            glClearDepthf(1.f);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-            // Clear f0_smoothness and normal
-            glDrawBuffers(2, draw_buffers + 1);
-            glClearColor(0, 0, 0, 0);
-            glClear(GL_COLOR_BUFFER_BIT);
-
-            // Clear picking buffer
-            glDrawBuffer(GL_COLOR_ATTACHMENT3);
-            glClearColor(CLEAR_INDEX.x, CLEAR_INDEX.y, CLEAR_INDEX.z, CLEAR_INDEX.w);
-            glClear(GL_COLOR_BUFFER_BIT);
-
-            // Enable all draw buffers
-            glDrawBuffers(4, draw_buffers);
-        }
-        POP_GPU_SECTION()
-
         PUSH_GPU_SECTION("Compute Backbone Spline") {
             bool has_spline_rep = false;
             for (int32 i = 0; i < data.representations.num_representations; i++) {
@@ -811,15 +791,45 @@ int main(int, char**) {
         }
         POP_GPU_SECTION()
 
+        // Setup fbo and clear textures
+        PUSH_GPU_SECTION("Clear G-buffer") {
+            const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2};
+
+            glViewport(0, 0, data.fbo.width, data.fbo.height);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.deferred.fbo);
+
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LESS);
+            glDepthMask(GL_TRUE);
+
+            // Clear color+alpha and depth
+            glDrawBuffer(GL_COLOR_ATTACHMENT0);
+            glClearColor(CLEAR_COLOR.x, CLEAR_COLOR.y, CLEAR_COLOR.z, CLEAR_COLOR.w);
+            glClearDepthf(1.f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            // Clear normal
+            glDrawBuffer(GL_COLOR_ATTACHMENT1);
+            glClearColor(0, 0, 0, 0);
+            glClear(GL_COLOR_BUFFER_BIT);
+
+            // Clear picking buffer
+            glDrawBuffer(GL_COLOR_ATTACHMENT2);
+            glClearColor(CLEAR_INDEX.x, CLEAR_INDEX.y, CLEAR_INDEX.z, CLEAR_INDEX.w);
+            glClear(GL_COLOR_BUFFER_BIT);
+
+            // Enable all draw buffers
+            glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
+        }
+        POP_GPU_SECTION()
+
         // RENDER TO FBO
         mat4 view_mat = compute_world_to_view_matrix(data.camera.camera);
         mat4 proj_mat = compute_perspective_projection_matrix(data.camera.camera, data.fbo.width, data.fbo.height);
 
-		const bool blend = !data.camera.moving && !data.is_playing;
-
-        if (blend) {
+        if (data.fbo.temporal.enabled) {
             static uint32 i = 0;
-            i = (++i) % 16;
+            i = (++i) % ARRAY_SIZE(halton_23);
             const vec2 offset = halton_23[i] * 2.f - 1.f;
             const mat4 jitter_mat = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(offset.x / data.fbo.width, offset.y / data.fbo.height, 0, 1));
             proj_mat = jitter_mat * proj_mat;
@@ -851,11 +861,11 @@ int main(int, char**) {
                         break;
                     case Representation::BALL_AND_STICK:
                         PUSH_GPU_SECTION("Vdw")
-                        draw::draw_vdw(data.gpu_buffers.position_radius, rep.color_buffer, (int)data.mol_data.dynamic.molecule.atom.count, view_mat, proj_mat, rep.radius * 0.25);
+                        draw::draw_vdw(data.gpu_buffers.position_radius, rep.color_buffer, (int)data.mol_data.dynamic.molecule.atom.count, view_mat, proj_mat, rep.radius * 0.25f);
                         POP_GPU_SECTION()
                         PUSH_GPU_SECTION("Licorice")
                         draw::draw_licorice(data.gpu_buffers.position_radius, rep.color_buffer, data.gpu_buffers.bond, (int)data.mol_data.dynamic.molecule.covalent_bonds.size(), view_mat, proj_mat,
-                                            rep.radius * 0.4);
+                                            rep.radius * 0.4f);
                         POP_GPU_SECTION()
                         break;
                     case Representation::RIBBONS:
@@ -906,13 +916,13 @@ int main(int, char**) {
 
         // PICKING
         PUSH_GPU_SECTION("Picking") {
-            ivec2 coord = {data.ctx.input.mouse.win_coord.x, data.ctx.framebuffer.height - data.ctx.input.mouse.win_coord.y};
-            if (coord.x < 0 || coord.y < 0 || coord.x >= data.ctx.framebuffer.width || coord.y >= data.ctx.framebuffer.height) {
+            ivec2 coord = {data.ctx.input.mouse.win_coord.x, data.fbo.height - data.ctx.input.mouse.win_coord.y};
+            if (coord.x < 0 || coord.y < 0 || coord.x >= data.fbo.width || coord.y >= data.fbo.height) {
                 data.picking.idx = NO_PICKING_IDX;
                 data.picking.depth = 1.f;
             } else {
                 data.picking = get_picking_data(data.fbo, coord.x, coord.y);
-                const vec4 viewport(0, 0, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
+                const vec4 viewport(0, 0, data.fbo.width, data.fbo.height);
                 data.picking.world_coord = math::unproject(vec3(coord.x, coord.y, data.picking.depth), inv_view_proj_mat, viewport);
             }
 
@@ -927,58 +937,68 @@ int main(int, char**) {
         }
         POP_GPU_SECTION()
 
-        // Activate hdr fbo
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.fbo_hdr);
-        glDrawBuffer(GL_COLOR_ATTACHMENT0);
         glDisable(GL_DEPTH_TEST);
         glDepthMask(GL_FALSE);
 
-        if (blend) {
-            glEnable(GL_BLEND);
-            glBlendEquation(GL_FUNC_ADD);
-            glBlendColor(0.1f, 0.1f, 0.1f, 0.0f);
-            glBlendFunc(GL_CONSTANT_COLOR, GL_ONE_MINUS_CONSTANT_COLOR);
-        } else {
-            glClear(GL_COLOR_BUFFER_BIT);
-		}
+        // Activate hdr fbo
+        // Shade deferred
+        PUSH_GPU_SECTION("Shading") {
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.hdr.fbo);
+            glDrawBuffer(GL_COLOR_ATTACHMENT0);
+            postprocessing::shade_deferred(data.fbo.deferred.depth, data.fbo.deferred.color, data.fbo.deferred.normal, inv_proj_mat);
+        }
+        POP_GPU_SECTION()
 
-        PUSH_GPU_SECTION("Deferred") {
-            // Render deferred
-            PUSH_GPU_SECTION("Shading")
-            postprocessing::render_deferred(data.fbo.tex_depth, data.fbo.tex_base_color_and_alpha, data.fbo.tex_normal, inv_proj_mat);
+        PUSH_GPU_SECTION("Tonemap") {
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.deferred.fbo);
+            glDrawBuffer(GL_COLOR_ATTACHMENT0);
+            postprocessing::apply_tonemapping(data.fbo.hdr.color);
+        }
+        POP_GPU_SECTION()
+
+        if (data.ssao.enabled) {
+            PUSH_GPU_SECTION("SSAO")
+            postprocessing::apply_ssao(data.fbo.deferred.depth, data.fbo.deferred.normal, proj_mat, data.ssao.intensity, data.ssao.radius, data.ssao.bias);
             POP_GPU_SECTION()
         }
-        POP_GPU_SECTION()  // Deferred
 
-        glDisable(GL_BLEND);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.temporal.fbo);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
 
-        // Apply post processing
-        PUSH_GPU_SECTION("Post Processing") {
-            if (data.ssao.enabled) {
-                PUSH_GPU_SECTION("SSAO")
-                postprocessing::apply_ssao(data.fbo.tex_depth, data.fbo.tex_normal, proj_mat, data.ssao.intensity, data.ssao.radius);
-                POP_GPU_SECTION()
-            }
-
-            // Activate backbuffer
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-            glDrawBuffer(GL_BACK);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            glDisable(GL_DEPTH_TEST);
-            glDepthMask(GL_FALSE);
-
-            if (data.dof.enabled) {
-                postprocessing::apply_dof(data.fbo.tex_depth, data.fbo.tex_hdr, proj_mat, data.camera.trackball_state.distance, data.dof.focus_scale);
-            } else {
-                postprocessing::apply_tonemapping(data.fbo.tex_hdr);
-            }
+        if (data.dof.enabled) {
+            postprocessing::apply_dof(data.fbo.deferred.depth, data.fbo.deferred.color, proj_mat, data.camera.trackball_state.distance, data.dof.focus_scale);
+        } else {
+            // Copy texture
+            postprocessing::blit_texture(data.fbo.deferred.color);
         }
-        POP_GPU_SECTION()  // Post Processing
+
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.temporal.fbo);
+        glDrawBuffer(GL_COLOR_ATTACHMENT1);
+
+        const bool clear_temporal = (data.camera.moving || data.is_playing || data.representations.changed);
+
+        PUSH_GPU_SECTION("Temporal")
+        if (data.fbo.temporal.enabled && !clear_temporal) {
+            glEnable(GL_BLEND);
+            glBlendEquation(GL_FUNC_ADD);
+            glBlendColor(0.125f, 0.125f, 0.125f, 0.0f);
+            glBlendFunc(GL_CONSTANT_COLOR, GL_ONE_MINUS_CONSTANT_COLOR);
+        }
+        postprocessing::blit_texture(data.fbo.temporal.color[0]);
+        glDisable(GL_BLEND);
+        POP_GPU_SECTION()
+
+        // Activate backbuffer
+        glViewport(0, 0, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glDrawBuffer(GL_BACK);
+
+        postprocessing::blit_texture(data.fbo.temporal.color[1]);
 
         if (data.density_volume.enabled) {
             PUSH_GPU_SECTION("Volume Rendering")
             const float scl = 1.f * data.density_volume.density_scale / data.density_volume.texture.max_value;
-            volume::render_volume_texture(data.density_volume.texture.id, data.fbo.tex_depth, data.density_volume.texture_to_model_matrix, data.density_volume.model_to_world_matrix, view_mat,
+            volume::render_volume_texture(data.density_volume.texture.id, data.fbo.deferred.depth, data.density_volume.texture_to_model_matrix, data.density_volume.model_to_world_matrix, view_mat,
                                           proj_mat, data.density_volume.color, scl);
             POP_GPU_SECTION()
         }
@@ -997,16 +1017,17 @@ int main(int, char**) {
                 }
             }
             immediate::flush();
+
+#if 0
+			PUSH_GPU_SECTION("Draw Control Points") {
+				// draw::draw_spline(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index, data.gpu_buffers.backbone.num_control_point_indices, view_proj_mat);
+				draw::draw_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices, view_proj_mat);
+			}
+			POP_GPU_SECTION()
+#endif
         }
         POP_GPU_SECTION()
 
-#if 0
-        PUSH_GPU_SECTION("Draw Control Points") {
-            // draw::draw_spline(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index, data.gpu_buffers.backbone.num_control_point_indices, view_proj_mat);
-            draw::draw_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices, view_proj_mat);
-        }
-        POP_GPU_SECTION()
-#endif
         // GUI ELEMENTS
         data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, data.ctx.timing.delta_s);
 
@@ -1151,13 +1172,12 @@ static PickingData get_picking_data(const MainFramebuffer& framebuffer, int32 x,
 
     PickingData data{};
 
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer.fbo_deferred);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer.deferred.fbo);
 
-    glReadBuffer(GL_COLOR_ATTACHMENT3);
+    glReadBuffer(GL_COLOR_ATTACHMENT2);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, framebuffer.pbo_picking.color[frame]);
     glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, 0);
 
-    // glReadBuffer(GL_DEPTH_ATTACHMENT);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, framebuffer.pbo_picking.depth[frame]);
     glReadPixels(x, y, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, 0);
 
@@ -1287,6 +1307,7 @@ if (ImGui::BeginMenu("Edit")) {
             if (data->ssao.enabled) {
                 ImGui::SliderFloat("Intensity", &data->ssao.intensity, 0.5f, 6.f);
                 ImGui::SliderFloat("Radius", &data->ssao.radius, 1.f, 30.f);
+                ImGui::SliderFloat("Bias", &data->ssao.bias, 0.0f, 1.0f);
             }
             ImGui::EndGroup();
             ImGui::Separator();
@@ -1464,8 +1485,9 @@ static void draw_control_window(ApplicationData* data) {
 }
 
 static void draw_representations_window(ApplicationData* data) {
-    ImGui::Begin("Representations", &data->representations.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
+    const auto old_hash = hash::crc64(data->representations.data, sizeof(Representation) * data->representations.num_representations);
 
+    ImGui::Begin("Representations", &data->representations.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
     if (ImGui::Button("create new")) {
         create_representation(data);
     }
@@ -1562,6 +1584,9 @@ if (ImGui::GetActiveID() == ImGui::GetID(name.buffer) && !ImGui::IsItemHovered()
     }
 
     ImGui::End();
+
+    const auto new_hash = hash::crc64(data->representations.data, sizeof(Representation) * data->representations.num_representations);
+    data->representations.changed = (new_hash != old_hash);
 }
 
 static void draw_property_window(ApplicationData* data) {
@@ -2207,62 +2232,83 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     ASSERT(fbo);
 
     bool attach_textures_deferred = false;
-    if (!fbo->fbo_deferred) {
-        glGenFramebuffers(1, &fbo->fbo_deferred);
+    if (!fbo->deferred.fbo) {
+        glGenFramebuffers(1, &fbo->deferred.fbo);
         attach_textures_deferred = true;
     }
 
     bool attach_textures_hdr = false;
-    if (!fbo->fbo_hdr) {
-        glGenFramebuffers(1, &fbo->fbo_hdr);
+    if (!fbo->hdr.fbo) {
+        glGenFramebuffers(1, &fbo->hdr.fbo);
         attach_textures_hdr = true;
     }
 
-    if (!fbo->tex_depth) glGenTextures(1, &fbo->tex_depth);
-    if (!fbo->tex_base_color_and_alpha) glGenTextures(1, &fbo->tex_base_color_and_alpha);
-    if (!fbo->tex_f0_and_smoothness) glGenTextures(1, &fbo->tex_f0_and_smoothness);
-    if (!fbo->tex_normal) glGenTextures(1, &fbo->tex_normal);
-    if (!fbo->tex_picking) glGenTextures(1, &fbo->tex_picking);
-    if (!fbo->tex_hdr) glGenTextures(1, &fbo->tex_hdr);
+    bool attach_textures_temporal = false;
+    if (!fbo->temporal.fbo) {
+        glGenFramebuffers(1, &fbo->temporal.fbo);
+        attach_textures_temporal = true;
+    }
+
+    if (!fbo->deferred.depth) glGenTextures(1, &fbo->deferred.depth);
+    if (!fbo->deferred.color) glGenTextures(1, &fbo->deferred.color);
+    if (!fbo->deferred.normal) glGenTextures(1, &fbo->deferred.normal);
+    if (!fbo->deferred.picking) glGenTextures(1, &fbo->deferred.picking);
+    if (!fbo->hdr.color) glGenTextures(1, &fbo->hdr.color);
+    if (!fbo->temporal.depth) glGenTextures(1, &fbo->temporal.depth);
+    if (!fbo->temporal.color[0]) glGenTextures(2, fbo->temporal.color);
     if (!fbo->pbo_picking.color[0]) glGenBuffers(2, fbo->pbo_picking.color);
     if (!fbo->pbo_picking.depth[0]) glGenBuffers(2, fbo->pbo_picking.depth);
 
-    glBindTexture(GL_TEXTURE_2D, fbo->tex_depth);
+    glBindTexture(GL_TEXTURE_2D, fbo->deferred.depth);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glBindTexture(GL_TEXTURE_2D, fbo->tex_base_color_and_alpha);
+    glBindTexture(GL_TEXTURE_2D, fbo->deferred.color);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glBindTexture(GL_TEXTURE_2D, fbo->tex_f0_and_smoothness);
+    glBindTexture(GL_TEXTURE_2D, fbo->temporal.depth);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glBindTexture(GL_TEXTURE_2D, fbo->temporal.color[0]);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glBindTexture(GL_TEXTURE_2D, fbo->tex_normal);
+    glBindTexture(GL_TEXTURE_2D, fbo->temporal.color[1]);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glBindTexture(GL_TEXTURE_2D, fbo->deferred.normal);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16, width, height, 0, GL_RG, GL_UNSIGNED_SHORT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glBindTexture(GL_TEXTURE_2D, fbo->tex_picking);
+    glBindTexture(GL_TEXTURE_2D, fbo->deferred.picking);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glBindTexture(GL_TEXTURE_2D, fbo->tex_hdr);
+    glBindTexture(GL_TEXTURE_2D, fbo->hdr.color);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -2290,19 +2336,26 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     fbo->width = width;
     fbo->height = height;
 
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo->fbo_deferred);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo->deferred.fbo);
     if (attach_textures_deferred) {
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, fbo->tex_depth, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->tex_base_color_and_alpha, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, fbo->tex_f0_and_smoothness, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, fbo->tex_normal, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, fbo->tex_picking, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, fbo->deferred.depth, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->deferred.color, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, fbo->deferred.normal, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, fbo->deferred.picking, 0);
     }
     ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
 
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo->fbo_hdr);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo->hdr.fbo);
     if (attach_textures_hdr) {
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->tex_hdr, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->hdr.color, 0);
+    }
+    ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo->temporal.fbo);
+    if (attach_textures_temporal) {
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, fbo->temporal.depth, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->temporal.color[0], 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, fbo->temporal.color[1], 0);
     }
     ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
 
@@ -2311,11 +2364,19 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
 
 static void destroy_framebuffer(MainFramebuffer* fbo) {
     ASSERT(fbo);
-    if (fbo->fbo_deferred) glDeleteFramebuffers(1, &fbo->fbo_deferred);
-    if (fbo->tex_depth) glDeleteTextures(1, &fbo->tex_depth);
-    if (fbo->tex_base_color_and_alpha) glDeleteTextures(1, &fbo->tex_base_color_and_alpha);
-    if (fbo->tex_normal) glDeleteTextures(1, &fbo->tex_normal);
-    if (fbo->tex_picking) glDeleteTextures(1, &fbo->tex_picking);
+    if (fbo->deferred.fbo) glDeleteFramebuffers(1, &fbo->deferred.fbo);
+    if (fbo->deferred.depth) glDeleteTextures(1, &fbo->deferred.depth);
+    if (fbo->deferred.color) glDeleteTextures(1, &fbo->deferred.color);
+    if (fbo->deferred.normal) glDeleteTextures(1, &fbo->deferred.normal);
+    if (fbo->deferred.picking) glDeleteTextures(1, &fbo->deferred.picking);
+
+    if (fbo->hdr.fbo) glDeleteFramebuffers(1, &fbo->hdr.fbo);
+    if (fbo->hdr.color) glDeleteTextures(1, &fbo->hdr.color);
+
+    if (fbo->temporal.fbo) glDeleteFramebuffers(1, &fbo->temporal.fbo);
+    if (fbo->temporal.depth) glDeleteTextures(1, &fbo->temporal.depth);
+    if (fbo->temporal.color[0]) glDeleteTextures(2, fbo->temporal.color);
+
     if (fbo->pbo_picking.color[0]) glDeleteBuffers(2, fbo->pbo_picking.color);
     if (fbo->pbo_picking.depth[0]) glDeleteBuffers(2, fbo->pbo_picking.depth);
 }
@@ -2393,11 +2454,11 @@ static void init_molecule_buffers(ApplicationData* data) {
     LOG_NOTE("num control point indices: %i", (int32)control_point_index_data.size());
     LOG_NOTE("num spline indices: %i", (int32)spline_index_data.size());
 
-    const int32 num_backbone_segments = backbone_index_data.size() / 6;
-    const int32 atom_buffer_size = mol.atom.count * sizeof(vec4);
-    const int32 bond_buffer_size = mol.covalent_bonds.count * sizeof(uint32) * 2;
-    const int32 control_point_buffer_size = num_backbone_segments * sizeof(draw::ControlPoint);
-    const int32 spline_buffer_size = control_point_buffer_size * SPLINE_SUBDIVISION_COUNT;
+    const int64 num_backbone_segments = backbone_index_data.size() / 6;
+    const int64 atom_buffer_size = mol.atom.count * sizeof(vec4);
+    const int64 bond_buffer_size = mol.covalent_bonds.size() * sizeof(uint32) * 2;
+    const int64 control_point_buffer_size = num_backbone_segments * sizeof(draw::ControlPoint);
+    const int64 spline_buffer_size = control_point_buffer_size * SPLINE_SUBDIVISION_COUNT;
 
     if (!data->gpu_buffers.position_radius) glGenBuffers(1, &data->gpu_buffers.position_radius);
     if (!data->gpu_buffers.bond) glGenBuffers(1, &data->gpu_buffers.bond);
