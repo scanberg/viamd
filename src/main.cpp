@@ -165,8 +165,6 @@ struct MainFramebuffer {
         GLuint depth = 0;
         GLuint color[2] = {0, 0};
         GLuint fbo = 0;
-        bool enabled = true;
-        bool force_clear = false;
     } temporal;
 
     struct {
@@ -309,6 +307,7 @@ struct ApplicationData {
     MoleculeBuffers gpu_buffers;
 
     // --- PLAYBACK ---
+    uint64 frame = 0;
     float64 time = 0.f;  // needs to be double precision for long trajectories
     float frames_per_second = 10.f;
     bool is_playing = false;
@@ -324,17 +323,24 @@ struct ApplicationData {
 
     // --- VISUALS ---
     struct {
-        bool enabled = false;
-        float intensity = 2.0f;
-        float radius = 6.0f;
-        float bias = 0.1f;
-    } ssao;
+        struct {
+            bool enabled = false;
+            float intensity = 2.0f;
+            float radius = 6.0f;
+            float bias = 0.1f;
+        } ssao;
 
-    struct {
-        bool enabled = false;
-        float focus_point = 0.5f;
-        float focus_scale = 1.0f;
-    } dof;
+        struct {
+            bool enabled = false;
+            float focus_point = 0.5f;
+            float focus_scale = 1.0f;
+        } dof;
+
+        struct {
+            bool enabled = false;
+            float blend_factor = 0.125f;
+        } temporal_aa;
+    } visuals;
 
     struct {
         bool enabled = false;
@@ -497,7 +503,7 @@ int main(int, char**) {
         LOG_ERROR("Could not initialize platform layer... terminating\n");
         return -1;
     }
-    data.ctx.window.vsync = true;
+    data.ctx.window.vsync = false;
 
     LOG_NOTE("Creating framebuffer...");
     init_framebuffer(&data.fbo, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
@@ -536,7 +542,7 @@ int main(int, char**) {
     load_molecule_data(&data, VIAMD_DATA_DIR "/1af6.pdb");
 #endif
     reset_view(&data, true);
-    create_representation(&data, Representation::RIBBONS, ColorMapping::RES_ID);
+    create_representation(&data, Representation::VDW, ColorMapping::RES_ID);
     create_volume(&data);
 
     // Main loop
@@ -765,6 +771,16 @@ int main(int, char**) {
             }
         }
 
+        bool visuals_changed = false;
+        {
+            static auto old_hash = hash::crc64(&data.visuals, sizeof(data.visuals));
+            const auto new_hash = hash::crc64(&data.visuals, sizeof(data.visuals));
+            visuals_changed = (new_hash != old_hash);
+            old_hash = new_hash;
+        }
+
+        const bool clear_temporal_aa = (data.camera.moving || data.is_playing || data.representations.changed || visuals_changed || data.frame == 0);
+
         // Resize Framebuffer
         if ((data.fbo.width != data.ctx.framebuffer.width || data.fbo.height != data.ctx.framebuffer.height) && (data.ctx.framebuffer.width != 0 && data.ctx.framebuffer.height != 0)) {
             init_framebuffer(&data.fbo, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
@@ -827,7 +843,7 @@ int main(int, char**) {
         mat4 view_mat = compute_world_to_view_matrix(data.camera.camera);
         mat4 proj_mat = compute_perspective_projection_matrix(data.camera.camera, data.fbo.width, data.fbo.height);
 
-        if (data.fbo.temporal.enabled) {
+        if (data.visuals.temporal_aa.enabled && !clear_temporal_aa) {
             static uint32 i = 0;
             i = (++i) % ARRAY_SIZE(halton_23);
             const vec2 offset = halton_23[i] * 2.f - 1.f;
@@ -835,8 +851,8 @@ int main(int, char**) {
             proj_mat = jitter_mat * proj_mat;
         }
 
-        mat4 view_proj_mat = proj_mat * view_mat;
-        mat4 inv_view_mat = math::inverse(view_mat);
+        //mat4 view_proj_mat = proj_mat * view_mat;
+        //mat4 inv_view_mat = math::inverse(view_mat);
         mat4 inv_proj_mat = math::inverse(proj_mat);
         mat4 inv_view_proj_mat = math::inverse(proj_mat * view_mat);
 
@@ -956,17 +972,17 @@ int main(int, char**) {
         }
         POP_GPU_SECTION()
 
-        if (data.ssao.enabled) {
+        if (data.visuals.ssao.enabled) {
             PUSH_GPU_SECTION("SSAO")
-            postprocessing::apply_ssao(data.fbo.deferred.depth, data.fbo.deferred.normal, proj_mat, data.ssao.intensity, data.ssao.radius, data.ssao.bias);
+            postprocessing::apply_ssao(data.fbo.deferred.depth, data.fbo.deferred.normal, proj_mat, data.visuals.ssao.intensity, data.visuals.ssao.radius, data.visuals.ssao.bias);
             POP_GPU_SECTION()
         }
 
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.temporal.fbo);
         glDrawBuffer(GL_COLOR_ATTACHMENT0);
 
-        if (data.dof.enabled) {
-            postprocessing::apply_dof(data.fbo.deferred.depth, data.fbo.deferred.color, proj_mat, data.camera.trackball_state.distance, data.dof.focus_scale);
+        if (data.visuals.dof.enabled) {
+            postprocessing::apply_dof(data.fbo.deferred.depth, data.fbo.deferred.color, proj_mat, data.camera.trackball_state.distance, data.visuals.dof.focus_scale);
         } else {
             // Copy texture
             postprocessing::blit_texture(data.fbo.deferred.color);
@@ -975,13 +991,12 @@ int main(int, char**) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.temporal.fbo);
         glDrawBuffer(GL_COLOR_ATTACHMENT1);
 
-        const bool clear_temporal = (data.camera.moving || data.is_playing || data.representations.changed);
-
         PUSH_GPU_SECTION("Temporal")
-        if (data.fbo.temporal.enabled && !clear_temporal) {
+        if (data.visuals.temporal_aa.enabled && !clear_temporal_aa) {
+            const float k = data.visuals.temporal_aa.blend_factor;
             glEnable(GL_BLEND);
             glBlendEquation(GL_FUNC_ADD);
-            glBlendColor(0.125f, 0.125f, 0.125f, 0.0f);
+            glBlendColor(k, k, k, 0.0f);
             glBlendFunc(GL_CONSTANT_COLOR, GL_ONE_MINUS_CONSTANT_COLOR);
         }
         postprocessing::blit_texture(data.fbo.temporal.color[0]);
@@ -1058,6 +1073,7 @@ int main(int, char**) {
 
         // Swap buffers
         platform::swap_buffers(&data.ctx);
+        data.frame++;
     }
 
     data.async.trajectory.sync.signal_stop_and_wait();
@@ -1300,24 +1316,32 @@ if (ImGui::BeginMenu("Edit")) {
 }
         */
         if (ImGui::BeginMenu("Visuals")) {
+            ImGui::BeginGroup();
+            ImGui::Checkbox("Vsync", &data->ctx.window.vsync);
+            ImGui::Checkbox("Temporal-AA", &data->visuals.temporal_aa.enabled);
+            if (data->visuals.temporal_aa.enabled) {
+
+            }
+            ImGui::EndGroup();
+            ImGui::Separator();
 
             // SSAO
             ImGui::BeginGroup();
-            ImGui::Checkbox("SSAO", &data->ssao.enabled);
-            if (data->ssao.enabled) {
-                ImGui::SliderFloat("Intensity", &data->ssao.intensity, 0.5f, 6.f);
-                ImGui::SliderFloat("Radius", &data->ssao.radius, 1.f, 30.f);
-                ImGui::SliderFloat("Bias", &data->ssao.bias, 0.0f, 1.0f);
+            ImGui::Checkbox("SSAO", &data->visuals.ssao.enabled);
+            if (data->visuals.ssao.enabled) {
+                ImGui::SliderFloat("Intensity", &data->visuals.ssao.intensity, 0.5f, 6.f);
+                ImGui::SliderFloat("Radius", &data->visuals.ssao.radius, 1.f, 30.f);
+                ImGui::SliderFloat("Bias", &data->visuals.ssao.bias, 0.0f, 1.0f);
             }
             ImGui::EndGroup();
             ImGui::Separator();
 
             // DOF
             ImGui::BeginGroup();
-            ImGui::Checkbox("Depth of Field", &data->dof.enabled);
-            if (data->dof.enabled) {
-                ImGui::SliderFloat("Focus Point", &data->dof.focus_point, 0.001f, 200.f);
-                ImGui::SliderFloat("Focus Scale", &data->dof.focus_scale, 0.001f, 100.f);
+            ImGui::Checkbox("Depth of Field", &data->visuals.dof.enabled);
+            if (data->visuals.dof.enabled) {
+                ImGui::SliderFloat("Focus Point", &data->visuals.dof.focus_point, 0.001f, 200.f);
+                ImGui::SliderFloat("Focus Scale", &data->visuals.dof.focus_scale, 0.001f, 100.f);
             }
             ImGui::EndGroup();
             ImGui::Separator();
@@ -2136,7 +2160,7 @@ static void draw_distribution_window(ApplicationData* data) {
 
 static void draw_ramachandran_window(ApplicationData* data) {
     const int32 num_frames = data->mol_data.dynamic.trajectory ? data->mol_data.dynamic.trajectory.num_frames : 0;
-    const int32 frame = (int32)data->time;
+    //const int32 frame = (int32)data->time;
     const IntRange frame_range = {(int32)data->time_filter.range.x, (int32)data->time_filter.range.y};
     Array<const BackboneAngle> accumulated_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame_range.x, frame_range.y - frame_range.x);
     Array<const BackboneAngle> current_angles = data->mol_data.dynamic.molecule.backbone.angles;
@@ -2336,6 +2360,10 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     fbo->width = width;
     fbo->height = height;
 
+    const GLenum draw_buffers[] = {
+        GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2
+    };
+
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo->deferred.fbo);
     if (attach_textures_deferred) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, fbo->deferred.depth, 0);
@@ -2344,12 +2372,16 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, fbo->deferred.picking, 0);
     }
     ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+    glDrawBuffers(3, draw_buffers);
+    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo->hdr.fbo);
     if (attach_textures_hdr) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->hdr.color, 0);
     }
     ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+    glDrawBuffers(1, draw_buffers);
+    glClear(GL_COLOR_BUFFER_BIT);
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo->temporal.fbo);
     if (attach_textures_temporal) {
@@ -2358,6 +2390,8 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, fbo->temporal.color[1], 0);
     }
     ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+    glDrawBuffers(2, draw_buffers);
+    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 }
@@ -2737,7 +2771,7 @@ static void load_workspace(ApplicationData* data, CString file) {
     String txt = allocate_and_read_textfile(file);
     CString c_txt = txt;
     CString line;
-    while (line = extract_line(c_txt)) {
+    while ((line = extract_line(c_txt))) {
         if (compare(line, "[Files]")) {
             while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
                 line = extract_line(c_txt);
@@ -2775,9 +2809,10 @@ static void load_workspace(ApplicationData* data, CString file) {
         } else if (compare(line, "[RenderSettings]")) {
             while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
                 line = extract_line(c_txt);
-                if (compare_n(line, "SsaoEnabled=", 12)) data->ssao.enabled = to_int(trim(line.substr(12))) != 0;
-                if (compare_n(line, "SsaoIntensity=", 14)) data->ssao.intensity = to_float(trim(line.substr(14)));
-                if (compare_n(line, "SsaoRadius=", 11)) data->ssao.radius = to_float(trim(line.substr(11)));
+                if (compare_n(line, "SsaoEnabled=", 12)) data->visuals.ssao.enabled = to_int(trim(line.substr(12))) != 0;
+                if (compare_n(line, "SsaoIntensity=", 14)) data->visuals.ssao.intensity = to_float(trim(line.substr(14)));
+                if (compare_n(line, "SsaoRadius=", 11)) data->visuals.ssao.radius = to_float(trim(line.substr(11)));
+                if (compare_n(line, "SsaoBias=", 9)) data->visuals.ssao.radius = to_float(trim(line.substr(9)));
             }
         } else if (compare(line, "[Camera]")) {
             while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
@@ -2864,9 +2899,10 @@ static void save_workspace(ApplicationData* data, CString file) {
     }
 
     fprintf(fptr, "[RenderSettings]\n");
-    fprintf(fptr, "SsaoEnabled=%i\n", data->ssao.enabled ? 1 : 0);
-    fprintf(fptr, "SsaoIntensity=%g\n", data->ssao.intensity);
-    fprintf(fptr, "SsaoRadius=%g\n", data->ssao.radius);
+    fprintf(fptr, "SsaoEnabled=%i\n", data->visuals.ssao.enabled ? 1 : 0);
+    fprintf(fptr, "SsaoIntensity=%g\n", data->visuals.ssao.intensity);
+    fprintf(fptr, "SsaoRadius=%g\n", data->visuals.ssao.radius);
+    fprintf(fptr, "SsaoBias=%g\n", data->visuals.ssao.bias);
     fprintf(fptr, "\n");
 
     fprintf(fptr, "[Camera]\n");
