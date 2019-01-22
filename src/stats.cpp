@@ -117,7 +117,7 @@ void free_instance_data(Array<InstanceData>* instance_data) {
     ASSERT(instance_data);
     static int32 count = 0;
     count++;
-    if (instance_data->data) {
+    if (instance_data->ptr) {
         for (auto& inst : *instance_data) {
             inst.~InstanceData();
         }
@@ -138,24 +138,16 @@ void init_structure_data(Array<StructureData>* structure_data, int32 count) {
 // HISTOGRAMS
 void init_histogram(Histogram* hist, int32 num_bins) {
     ASSERT(hist);
-    if (hist->bins.data) {
-        FREE(hist->bins.data);
-    }
-    hist->bins.data = (float*)MALLOC(num_bins * sizeof(float));
-    hist->bins.count = num_bins;
+    free_array(&hist->bins);
+    hist->bins = allocate_array<float>(num_bins);
     hist->value_range = {0, 0};
     hist->bin_range = {0, 0};
-
-    ASSERT(hist->bins.data);
+    ASSERT(hist->bins);
 }
 
 void free_histogram(Histogram* hist) {
     ASSERT(hist);
-    if (hist->bins.data) {
-        FREE(hist->bins.data);
-        hist->bins.data = nullptr;
-        hist->bins.count = 0;
-    }
+    free_array(&hist->bins);
 }
 
 void compute_histogram(Histogram* hist, Array<const float> data) {
@@ -185,8 +177,8 @@ void compute_histogram(Histogram* hist, Array<const float> data, Range filter) {
 
 void clear_histogram(Histogram* hist) {
     ASSERT(hist);
-    if (hist->bins.data) {
-        memset(hist->bins.data, 0, hist->bins.count * sizeof(float));
+    if (hist->bins.ptr) {
+        memset(hist->bins.ptr, 0, hist->bins.count * sizeof(float));
     }
     hist->bin_range = {0, 0};
     hist->num_samples = 0;
@@ -296,8 +288,8 @@ static Range compute_range(const Property& prop) {
 
 void set_error_message(Property* prop, const char* fmt, ...) {
     ASSERT(prop);
-    char* buf = prop->error_msg_buf.cstr();
-    int32 len = prop->error_msg_buf.MAX_LENGTH;
+    auto buf = prop->error_msg_buf.cstr();
+    auto len = prop->error_msg_buf.capacity();
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(buf, len, fmt, ap);
@@ -356,7 +348,7 @@ bool extract_structures(StructureData* data, CString arg, const MoleculeStructur
     // @NOTE: ONLY ALLOW RECURSION FOR FIRST ARGUMENT?
     if (cmd_args.count > 0 && find_character(cmd_args[0], '(') != cmd_args[0].end()) {
         if (!extract_structures(data, cmd_args[0], molecule)) return false;
-        cmd_args = cmd_args.sub_array(1);
+        cmd_args = cmd_args.subarray(1);
     }
     if (!func(data, cmd_args, molecule)) return false;
 
@@ -636,9 +628,7 @@ static inline int32 structures_index_count(Array<const Structure> structures) {
     return count;
 }
 
-inline Array<const vec3> extract_positions(Structure structure, Array<const vec3> atom_positions) {
-    return atom_positions.sub_array(structure.beg_idx, structure.end_idx - structure.beg_idx);
-}
+inline Array<const vec3> extract_positions(Structure structure, Array<const vec3> atom_positions) { return atom_positions.subarray(structure.beg_idx, structure.end_idx - structure.beg_idx); }
 
 static inline float multi_distance(Array<const vec3> pos_a, Array<const vec3> pos_b, float* variance = nullptr) {
     if (pos_a.count == 0 || pos_b.count == 0)
@@ -722,8 +712,7 @@ if (pos_a.count > 1.f) {
     }
 }
 
-static inline float multi_dihedral(Array<const vec3> pos_a, Array<const vec3> pos_b, Array<const vec3> pos_c, Array<const vec3> pos_d,
-                                   float* variance = nullptr) {
+static inline float multi_dihedral(Array<const vec3> pos_a, Array<const vec3> pos_b, Array<const vec3> pos_c, Array<const vec3> pos_d, float* variance = nullptr) {
     if (pos_a.count == 0 || pos_b.count == 0 || pos_c.count == 0 || pos_d.count == 0)
         return 0.f;
     else if (pos_a.count == 1 && pos_b.count == 1 && pos_c.count == 1 && pos_d.count == 1)
@@ -835,7 +824,7 @@ static bool compute_distance(Property* prop, const Array<CString> args, const Mo
         }
 
         prop->avg_data[i] = sum * scl;
-        if (var > 0.f) prop->std_dev_data.data[i] = math::sqrt(var * scl);
+        if (var > 0.f) prop->std_dev_data.ptr[i] = math::sqrt(var * scl);
     }
 
     prop->total_data_range = compute_range(*prop);
@@ -1041,7 +1030,7 @@ static bool compute_expression(Property* prop, const Array<CString> args, const 
     }
 
     int err;
-    te_expr* expr = te_compile(expr_str.cstr(), vars.data, (int32)vars.count, &err);
+    te_expr* expr = te_compile(expr_str.cstr(), vars.ptr, (int32)vars.count, &err);
 
     if (expr) {
         int32 max_instance_count = 0;
@@ -1182,7 +1171,7 @@ void initialize() {
 void shutdown() {}
 
 bool register_property_command(CString cmd_keyword, PropertyComputeFunc compute_func, PropertyVisualizeFunc visualize_func) {
-    if (!cmd_keyword.data || cmd_keyword.count == 0) {
+    if (!cmd_keyword.ptr || cmd_keyword.count == 0) {
         LOG_ERROR("Property command cannot be an empty string!");
         return false;
     }
@@ -1308,7 +1297,7 @@ static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic
     }
 
     CString cmd = args[0];
-    args = args.sub_array(1);
+    args = args.subarray(1);
 
     auto func = find_property_compute_func(cmd);
     if (!func) {
@@ -1414,15 +1403,15 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_
                         // Since the data is probably showing, perform the operations on tmp data then copy the results
                         if (p->instance_data) {
                             for (const auto& inst : p->instance_data) {
-                                compute_histogram(&tmp_hist, inst.data.sub_array(beg_idx, end_idx - beg_idx));
+                                compute_histogram(&tmp_hist, inst.data.subarray(beg_idx, end_idx - beg_idx));
                             }
                         } else {
-                            compute_histogram(&tmp_hist, p->avg_data.sub_array(beg_idx, end_idx - beg_idx));
+                            compute_histogram(&tmp_hist, p->avg_data.subarray(beg_idx, end_idx - beg_idx));
                         }
                         normalize_histogram(&tmp_hist, tmp_hist.num_samples);
                         p->filt_histogram.bin_range = tmp_hist.bin_range;
                         p->filt_histogram.num_samples = tmp_hist.num_samples;
-                        memcpy(p->filt_histogram.bins.data, tmp_hist.bins.data, p->filt_histogram.bins.size_in_bytes());
+                        memcpy(p->filt_histogram.bins.ptr, tmp_hist.bins.ptr, p->filt_histogram.bins.size_in_bytes());
                     }
 
                     // Compute filter fractions for frames

@@ -40,13 +40,16 @@ struct ColorMap {
     vec4 region_color[8] = {DEF_COL_BACKGROUND, DEF_COL_ALPHA_HIGH, DEF_COL_ALPHA_MID, DEF_COL_BETA_HIGH, DEF_COL_BETA_MID, DEF_COL_LEFT_ALPHA_HIGH, DEF_COL_LEFT_ALPHA_MID, DEF_COL_P_MID};
 };
 
+void init_gui_map(const ColorMap& color_map = {}, int blur_level = 2);
 void init_segmentation_map(const ColorMap& color_map = {}, int blur_level = 2);
 void init_color_map(const ColorMap& color_map = {}, int blur_level = 2);
 
+const Image& get_gui_image();
 const Image& get_segmentation_image();
 const Image& get_color_image();
 
 uint32 get_accumulation_texture();
+uint32 get_gui_texture();
 uint32 get_segmentation_texture();
 uint32 get_color_texture();
 
