@@ -152,7 +152,7 @@ struct MainFramebuffer {
         GLuint depth = 0;
         GLuint color = 0;
         GLuint normal = 0;
-        GLuint picking = 0;
+        GLuint atom_idx = 0;
         GLuint fbo = 0;
     } deferred;
 
@@ -179,6 +179,7 @@ struct MainFramebuffer {
 
 struct MoleculeBuffers {
     GLuint position_radius = 0;
+    GLuint selection = 0;
     GLuint bond = 0;
     struct {
         GLuint backbone_segment_index = 0;  // Stores indices to Ca atoms and O atoms which are needed for control points and support vectors
@@ -262,7 +263,7 @@ struct ApplicationData {
             vec3 target_position{};
             // quat target_orientation{};
         } animation;
-    } camera;
+    } view;
 
     // --- MOLECULAR DATA ---
     struct {
@@ -288,7 +289,7 @@ struct ApplicationData {
     struct {
         int32 hovered = -1;
         int32 right_clicked = -1;
-        DynamicArray<bool> selected{};
+        DynamicArray<uint8> selected{};
     } selection;
 
     // --- STATISTICS ---
@@ -325,7 +326,7 @@ struct ApplicationData {
     struct {
         struct {
             bool enabled = false;
-            float intensity = 2.0f;
+            float intensity = 3.0f;
             float radius = 6.0f;
             float bias = 0.1f;
         } ssao;
@@ -340,6 +341,13 @@ struct ApplicationData {
             bool enabled = false;
             float blend_factor = 0.125f;
         } temporal_aa;
+
+        struct {
+            bool enabled = true;
+            postprocessing::Tonemapping tonemapper = postprocessing::Tonemapping_Filmic;
+            float exposure = 1.f;
+            float gamma = 2.2;
+        } tonemapping;
 
         struct {
             bool draw_control_points = false;
@@ -407,8 +415,7 @@ struct ApplicationData {
 
     // --- REPRESENTATIONS ---
     struct {
-        StaticArray<Representation, MAX_REPRESENTATIONS> buffer = StaticArray<Representation, MAX_REPRESENTATIONS>(0);
-        // int32 num_representations = 0;
+        DynamicArray<Representation> buffer{};
         bool show_window = false;
         bool changed = false;
     } representations;
@@ -458,7 +465,7 @@ static void save_workspace(ApplicationData* data, CString file);
 
 // Representations
 static Representation* create_representation(ApplicationData* data, Representation::Type type = Representation::VDW, ColorMapping color_mapping = ColorMapping::CPK, CString filter = "all");
-static void clone_representation(ApplicationData* data, const Representation& rep);
+static Representation* clone_representation(ApplicationData* data, const Representation& rep);
 static void remove_representation(ApplicationData* data, int idx);
 static void reset_representations(ApplicationData* data);
 static void update_representation(Representation* rep, const MoleculeDynamic& dynamic);
@@ -576,6 +583,7 @@ int main(int, char**) {
 
             if (data.ctx.input.key.hit[Key::KEY_F5]) {
                 draw::initialize();
+                postprocessing::initialize(data.fbo.width, data.fbo.height);
             }
 
             const bool shift_down = data.ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data.ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
@@ -583,15 +591,35 @@ int main(int, char**) {
             if (shift_down) {
                 static bool selecting = false;
                 static platform::Coordinate x0;
+                const platform::Coordinate x1 = data.ctx.input.mouse.win_coord;
+
                 if (!selecting && data.ctx.input.mouse.hit[0]) {
                     selecting = true;
                     x0 = data.ctx.input.mouse.win_coord;
                 }
                 if (selecting && data.ctx.input.mouse.release[0]) {
                     selecting = false;
+                    memset_array(data.selection.selected, (uint8)0);
+
+                    const int32 w = data.ctx.window.width;
+                    const int32 h = data.ctx.window.height;
+                    const mat4 mvp = compute_perspective_projection_matrix(data.view.camera, w, h) * compute_world_to_view_matrix(data.view.camera);
+                    const auto positions = data.mol_data.dynamic.molecule.atom.positions;
+                    for (int64 i = 0; i < data.mol_data.dynamic.molecule.atom.count; i++) {
+                        vec4 p = mvp * vec4(positions[i], 1);
+                        p /= p.w;
+                        vec2 c = (vec2(p.x, -p.y) * 0.5f + 0.5f) * vec2(w, h);
+                        if (c.x < x0.x || x1.x < c.x) continue;
+                        if (c.y < x0.y || x1.y < c.y) continue;
+                        data.selection.selected[i] = 0xFF;
+                    }
+
+                    glBindBuffer(GL_ARRAY_BUFFER, data.gpu_buffers.selection);
+                    glBufferSubData(GL_ARRAY_BUFFER, 0, data.selection.selected.size_in_bytes(), data.selection.selected.data());
+                    glBindBuffer(GL_ARRAY_BUFFER, 0);
                 }
+
                 if (selecting) {
-                    const auto x1 = data.ctx.input.mouse.win_coord;
                     const auto vp_pos = ImGui::GetMainViewport()->Pos;
                     const auto vp_size = ImGui::GetMainViewport()->Size;
 
@@ -599,42 +627,43 @@ int main(int, char**) {
                     const auto size = (ImVec2(x1.x - x0.x, x1.y - x0.y));
                     ImGui::SetNextWindowPos(pos);
                     ImGui::SetNextWindowSize(size);
-                    ImGui::SetNextWindowSizeConstraints(ImVec2(1,1), ImVec2(999,999));
-                    ImGui::Begin("cool", nullptr, ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoTitleBar);
+                    // ImGui::SetNextWindowSizeConstraints(ImVec2(1, 1), ImVec2(9999, 9999));
+                    ImGui::Begin("selection", nullptr,
+                                 ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoScrollbar);
                     ImGui::End();
                 }
             }
 
             if (!shift_down) {
                 // CAMERA CONTROLS
-                data.camera.trackball_state.input.rotate_button = data.ctx.input.mouse.down[0];
-                data.camera.trackball_state.input.pan_button = data.ctx.input.mouse.down[1];
-                data.camera.trackball_state.input.dolly_button = data.ctx.input.mouse.down[2];
-                data.camera.trackball_state.input.mouse_coord_prev = {previous_mouse_coord.x, previous_mouse_coord.y};
-                data.camera.trackball_state.input.mouse_coord_curr = {data.ctx.input.mouse.win_coord.x, data.ctx.input.mouse.win_coord.y};
-                data.camera.trackball_state.input.screen_size = vec2(data.ctx.window.width, data.ctx.window.height);
-                data.camera.trackball_state.input.dolly_delta = data.ctx.input.mouse.scroll_delta;
+                data.view.trackball_state.input.rotate_button = data.ctx.input.mouse.down[0];
+                data.view.trackball_state.input.pan_button = data.ctx.input.mouse.down[1];
+                data.view.trackball_state.input.dolly_button = data.ctx.input.mouse.down[2];
+                data.view.trackball_state.input.mouse_coord_prev = {previous_mouse_coord.x, previous_mouse_coord.y};
+                data.view.trackball_state.input.mouse_coord_curr = {data.ctx.input.mouse.win_coord.x, data.ctx.input.mouse.win_coord.y};
+                data.view.trackball_state.input.screen_size = vec2(data.ctx.window.width, data.ctx.window.height);
+                data.view.trackball_state.input.dolly_delta = data.ctx.input.mouse.scroll_delta;
 
-                data.camera.moving = false;
+                data.view.moving = false;
                 {
-                    vec3 pos = data.camera.camera.position;
-                    quat ori = data.camera.camera.orientation;
-                    if (camera_controller_trackball(&pos, &ori, &data.camera.trackball_state)) {
-                        data.camera.moving = true;
-                        data.camera.animation.target_position = pos;
+                    vec3 pos = data.view.camera.position;
+                    quat ori = data.view.camera.orientation;
+                    if (camera_controller_trackball(&pos, &ori, &data.view.trackball_state)) {
+                        data.view.moving = true;
+                        data.view.animation.target_position = pos;
                         // data.camera.animation.target_orientation = ori;
-                        data.camera.camera.position = pos;
-                        data.camera.camera.orientation = ori;
+                        data.view.camera.position = pos;
+                        data.view.camera.orientation = ori;
                     }
                 }
 
                 if (ImGui::GetIO().MouseDoubleClicked[0]) {
                     if (data.picking.depth < 1.f) {
-                        const vec3 forward = data.camera.camera.orientation * vec3(0, 0, 1);
-                        const float dist = data.camera.trackball_state.distance;
+                        const vec3 forward = data.view.camera.orientation * vec3(0, 0, 1);
+                        const float dist = data.view.trackball_state.distance;
                         const vec3 camera_target_pos = data.picking.world_coord + forward * dist;
 
-                        data.camera.animation.target_position = camera_target_pos;
+                        data.view.animation.target_position = camera_target_pos;
                     }
                 }
             }
@@ -644,10 +673,10 @@ int main(int, char**) {
             const float dt = math::min(data.ctx.timing.delta_s, 0.033f);
             const float speed = 10.0f;
 
-            const vec3 vel = (data.camera.animation.target_position - data.camera.camera.position) * speed;
-            data.camera.camera.position += vel * dt;
+            const vec3 vel = (data.view.animation.target_position - data.view.camera.position) * speed;
+            data.view.camera.position += vel * dt;
             if (math::length(vel) > 0.01f) {
-                data.camera.moving = true;
+                data.view.moving = true;
             }
 #if 0
             ImGui::Begin("Camera Debug Info");
@@ -814,7 +843,7 @@ int main(int, char**) {
             old_hash = new_hash;
         }
 
-        const bool clear_temporal_aa = (data.camera.moving || data.is_playing || data.representations.changed || visuals_changed || data.frame == 0);
+        const bool clear_temporal_aa = (data.view.moving || data.is_playing || data.representations.changed || visuals_changed || data.frame == 0);
 
         // Resize Framebuffer
         if ((data.fbo.width != data.ctx.framebuffer.width || data.fbo.height != data.ctx.framebuffer.height) && (data.ctx.framebuffer.width != 0 && data.ctx.framebuffer.height != 0)) {
@@ -876,8 +905,8 @@ int main(int, char**) {
         POP_GPU_SECTION()
 
         // RENDER TO FBO
-        mat4 view_mat = compute_world_to_view_matrix(data.camera.camera);
-        mat4 proj_mat = compute_perspective_projection_matrix(data.camera.camera, data.fbo.width, data.fbo.height);
+        mat4 view_mat = compute_world_to_view_matrix(data.view.camera);
+        mat4 proj_mat = compute_perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height);
 
         if (data.visuals.temporal_aa.enabled && !clear_temporal_aa) {
             static uint32 i = 0;
@@ -991,21 +1020,25 @@ int main(int, char**) {
         glDisable(GL_DEPTH_TEST);
         glDepthMask(GL_FALSE);
 
+        PUSH_GPU_SECTION("Clear HDR")
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.hdr.fbo);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        glClearColor(100.f, 100.f, 100.f, 1.f);  // Bright white background.
+        glClear(GL_COLOR_BUFFER_BIT);
+        POP_GPU_SECTION();
+
         // Activate hdr fbo
         // Shade deferred
-        PUSH_GPU_SECTION("Shading") {
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.hdr.fbo);
-            glDrawBuffer(GL_COLOR_ATTACHMENT0);
-            postprocessing::shade_deferred(data.fbo.deferred.depth, data.fbo.deferred.color, data.fbo.deferred.normal, inv_proj_mat);
-        }
+        PUSH_GPU_SECTION("Shading")
+        postprocessing::shade_deferred(data.fbo.deferred.depth, data.fbo.deferred.color, data.fbo.deferred.normal, inv_proj_mat);
         POP_GPU_SECTION()
 
-        PUSH_GPU_SECTION("Tonemap") {
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.deferred.fbo);
-            glDrawBuffer(GL_COLOR_ATTACHMENT0);
-            postprocessing::apply_tonemapping(data.fbo.hdr.color);
-        }
-        POP_GPU_SECTION()
+        PUSH_GPU_SECTION("Highlight Selection")
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+        postprocessing::highlight_selection(data.fbo.deferred.atom_idx, data.gpu_buffers.selection);
+        glDisable(GL_BLEND);
+        POP_GPU_SECTION();
 
         if (data.visuals.ssao.enabled) {
             PUSH_GPU_SECTION("SSAO")
@@ -1013,11 +1046,22 @@ int main(int, char**) {
             POP_GPU_SECTION()
         }
 
+        PUSH_GPU_SECTION("Tonemap") {
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.deferred.fbo);
+            glDrawBuffer(GL_COLOR_ATTACHMENT0);
+            if (!data.visuals.tonemapping.enabled) {
+                postprocessing::blit_texture(data.fbo.hdr.color);
+            } else {
+                postprocessing::apply_tonemapping(data.fbo.hdr.color, data.visuals.tonemapping.tonemapper, data.visuals.tonemapping.exposure, data.visuals.tonemapping.gamma);
+            }
+        }
+        POP_GPU_SECTION()
+
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.temporal.fbo);
         glDrawBuffer(GL_COLOR_ATTACHMENT0);
 
         if (data.visuals.dof.enabled) {
-            postprocessing::apply_dof(data.fbo.deferred.depth, data.fbo.deferred.color, proj_mat, data.camera.trackball_state.distance, data.visuals.dof.focus_scale);
+            postprocessing::apply_dof(data.fbo.deferred.depth, data.fbo.deferred.color, proj_mat, data.view.trackball_state.distance, data.visuals.dof.focus_scale);
         } else {
             // Copy texture
             postprocessing::blit_texture(data.fbo.deferred.color);
@@ -1207,14 +1251,14 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
     vec3 pos = cent + size * 3.f;
 
     if (move_camera) {
-        if (!smooth_transition) data->camera.camera.position = pos;
-        data->camera.animation.target_position = pos;
-        data->camera.trackball_state.distance = math::length(pos - cent);
-        look_at(&data->camera.animation.target_position, &data->camera.camera.orientation, cent, vec3(0, 1, 0));
+        if (!smooth_transition) data->view.camera.position = pos;
+        data->view.animation.target_position = pos;
+        data->view.trackball_state.distance = math::length(pos - cent);
+        look_at(&data->view.animation.target_position, &data->view.camera.orientation, cent, vec3(0, 1, 0));
     }
 
-    data->camera.camera.near_plane = 1.f;
-    data->camera.camera.far_plane = math::length(size) * 50.f;
+    data->view.camera.near_plane = 1.f;
+    data->view.camera.far_plane = math::length(size) * 50.f;
 }
 
 // #picking
@@ -1377,6 +1421,17 @@ if (ImGui::BeginMenu("Edit")) {
             if (data->visuals.dof.enabled) {
                 ImGui::SliderFloat("Focus Point", &data->visuals.dof.focus_point, 0.001f, 200.f);
                 ImGui::SliderFloat("Focus Scale", &data->visuals.dof.focus_scale, 0.001f, 100.f);
+            }
+            ImGui::EndGroup();
+            ImGui::Separator();
+
+            // Tonemapping
+            ImGui::BeginGroup();
+            ImGui::Checkbox("Tonemapping", &data->visuals.tonemapping.enabled);
+            if (data->visuals.tonemapping.enabled) {
+                ImGui::Combo("Function", &data->visuals.tonemapping.tonemapper, "Passthrough\0Exposure Gamma\0Filmic\0\0");
+                ImGui::SliderFloat("Exposure", &data->visuals.tonemapping.exposure, 0.01f, 10.f);
+                ImGui::SliderFloat("Gamma", &data->visuals.tonemapping.gamma, 1.0f, 3.0f);
             }
             ImGui::EndGroup();
             ImGui::Separator();
@@ -2252,7 +2307,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
     const ImVec2 x1(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y);
     dl->ChannelsSplit(4);
     dl->ChannelsSetCurrent(0);
-    dl->AddRectFilled(x0, x1, 0xffffffff, 0);
+    dl->AddRectFilled(x0, x1, 0xffffffff);
     dl->ChannelsSetCurrent(1);
     dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_gui_texture(), x0, x1);
     dl->ChannelsSetCurrent(2);
@@ -2322,7 +2377,7 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     if (!fbo->deferred.depth) glGenTextures(1, &fbo->deferred.depth);
     if (!fbo->deferred.color) glGenTextures(1, &fbo->deferred.color);
     if (!fbo->deferred.normal) glGenTextures(1, &fbo->deferred.normal);
-    if (!fbo->deferred.picking) glGenTextures(1, &fbo->deferred.picking);
+    if (!fbo->deferred.atom_idx) glGenTextures(1, &fbo->deferred.atom_idx);
     if (!fbo->hdr.color) glGenTextures(1, &fbo->hdr.color);
     if (!fbo->temporal.depth) glGenTextures(1, &fbo->temporal.depth);
     if (!fbo->temporal.color[0]) glGenTextures(2, fbo->temporal.color);
@@ -2371,7 +2426,7 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glBindTexture(GL_TEXTURE_2D, fbo->deferred.picking);
+    glBindTexture(GL_TEXTURE_2D, fbo->deferred.atom_idx);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -2413,7 +2468,7 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, fbo->deferred.depth, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->deferred.color, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, fbo->deferred.normal, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, fbo->deferred.picking, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, fbo->deferred.atom_idx, 0);
     }
     ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
     glDrawBuffers(3, draw_buffers);
@@ -2446,7 +2501,7 @@ static void destroy_framebuffer(MainFramebuffer* fbo) {
     if (fbo->deferred.depth) glDeleteTextures(1, &fbo->deferred.depth);
     if (fbo->deferred.color) glDeleteTextures(1, &fbo->deferred.color);
     if (fbo->deferred.normal) glDeleteTextures(1, &fbo->deferred.normal);
-    if (fbo->deferred.picking) glDeleteTextures(1, &fbo->deferred.picking);
+    if (fbo->deferred.atom_idx) glDeleteTextures(1, &fbo->deferred.atom_idx);
 
     if (fbo->hdr.fbo) glDeleteFramebuffers(1, &fbo->hdr.fbo);
     if (fbo->hdr.color) glDeleteTextures(1, &fbo->hdr.color);
@@ -2540,6 +2595,7 @@ static void init_molecule_buffers(ApplicationData* data) {
 
     if (!data->gpu_buffers.position_radius) glGenBuffers(1, &data->gpu_buffers.position_radius);
     if (!data->gpu_buffers.bond) glGenBuffers(1, &data->gpu_buffers.bond);
+    if (!data->gpu_buffers.selection) glGenBuffers(1, &data->gpu_buffers.selection);
     if (!data->gpu_buffers.backbone.backbone_segment_index) glGenBuffers(1, &data->gpu_buffers.backbone.backbone_segment_index);
     if (!data->gpu_buffers.backbone.control_point) glGenBuffers(1, &data->gpu_buffers.backbone.control_point);
     if (!data->gpu_buffers.backbone.control_point_index) glGenBuffers(1, &data->gpu_buffers.backbone.control_point_index);
@@ -2551,6 +2607,9 @@ static void init_molecule_buffers(ApplicationData* data) {
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.bond);
     glBufferData(GL_ARRAY_BUFFER, bond_buffer_size, mol.covalent_bonds.ptr, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.selection);
+    glBufferData(GL_ARRAY_BUFFER, data->selection.selected.size_in_bytes(), data->selection.selected.data(), GL_STATIC_DRAW);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.backbone.backbone_segment_index);
     glBufferData(GL_ARRAY_BUFFER, backbone_index_data.size_in_bytes(), backbone_index_data.ptr, GL_STATIC_DRAW);
@@ -2616,9 +2675,11 @@ static void free_trajectory_data(ApplicationData* data) {
 static void free_molecule_data(ApplicationData* data) {
     ASSERT(data);
     if (data->mol_data.dynamic.molecule) {
+        free_string(&data->files.molecule);
         free_molecule_structure(&data->mol_data.dynamic.molecule);
     }
     if (data->mol_data.dynamic.trajectory) {
+        free_string(&data->files.trajectory);
         free_trajectory_data(data);
     }
     data->mol_data.atom_radii.clear();
@@ -2629,6 +2690,46 @@ static void free_molecule_data(ApplicationData* data) {
     data->hydrogen_bonds.bonds.clear();
     data->hydrogen_bonds.dirty = true;
     data->gpu_buffers.backbone.dirty = true;
+    data->selection.selected.clear();
+}
+
+static void init_molecule_data(ApplicationData* data) {
+    if (data->mol_data.dynamic.molecule) {
+        data->mol_data.atom_radii = compute_atom_radii(get_elements(data->mol_data.dynamic.molecule));
+        data->selection.selected.resize(data->mol_data.dynamic.molecule.atom.count);
+        memset_array(data->selection.selected, (uint8)0);
+        init_molecule_buffers(data);
+    }
+}
+
+static void init_trajectory_data(ApplicationData* data) {
+    if (data->mol_data.dynamic.trajectory) {
+        if (data->mol_data.dynamic.trajectory.num_atoms != data->mol_data.dynamic.molecule.atom.count) {
+            LOG_ERROR("ERROR! The number of atoms in the molecule does not match the number of atoms in the trajectory.");
+            free_trajectory_data(data);
+            return;
+        }
+
+        read_next_trajectory_frame(&data->mol_data.dynamic.trajectory);  // read first frame explicitly
+        auto frame_0_pos = get_trajectory_positions(data->mol_data.dynamic.trajectory, 0);
+        memcpy(data->mol_data.dynamic.molecule.atom.positions, frame_0_pos.ptr, frame_0_pos.size_in_bytes());
+        copy_molecule_position_radius_to_buffer(data);
+
+        load_trajectory_async(data);
+
+        create_volume(data);
+#if 0
+		if (traj.num_frames > 0) {
+			vec3 box_ext = traj.frame_buffer[0].box * vec3(1);
+			init_volume(&data->density_volume.volume, math::max(ivec3(1), ivec3(box_ext) / VOLUME_DOWNSAMPLE_FACTOR));
+			data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(vec3(0), box_ext);
+			data->density_volume.texture_to_model_matrix = volume::compute_texture_to_model_matrix(data->density_volume.volume.dim);
+}
+#endif
+
+        init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
+        compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
+    }
 }
 
 static void load_molecule_data(ApplicationData* data, CString file) {
@@ -2638,83 +2739,35 @@ static void load_molecule_data(ApplicationData* data, CString file) {
         CString ext = get_file_extension(file);
         LOG_NOTE("Loading molecular data from file '%.*s'...", file.count, file.ptr);
         auto t0 = platform::get_time();
-        if (compare_n(ext, "pdb", 3, true)) {
+        if (compare(ext, "pdb", true)) {
             free_molecule_data(data);
-            free_string(&data->files.molecule);
-            free_string(&data->files.trajectory);
-            allocate_and_load_pdb_from_file(&data->mol_data.dynamic, file);
-
-            if (!data->mol_data.dynamic.molecule) {
+            if (!allocate_and_load_pdb_from_file(&data->mol_data.dynamic, file)) {
                 LOG_ERROR("ERROR! Failed to load pdb file.");
-                return;
             }
-
             data->files.molecule = allocate_string(file);
-            data->mol_data.atom_radii = compute_atom_radii(get_elements(data->mol_data.dynamic.molecule));
-            init_molecule_buffers(data);
-            // copy_molecule_position_radius_to_buffer(data);
-            if (data->mol_data.dynamic.trajectory) {
-                create_volume(data);
-                /*
-if (traj.num_frames > 0) {
-    vec3 box_ext = traj.frame_buffer[0].box * vec3(1);
-    init_volume(&data->density_volume.volume, math::max(ivec3(1), ivec3(box_ext) / VOLUME_DOWNSAMPLE_FACTOR));
-    data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(vec3(0), box_ext);
-    data->density_volume.texture_to_model_matrix = volume::compute_texture_to_model_matrix(data->density_volume.volume.dim);
-}
-                */
-
-                init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
-                compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
-                // stats::update(data->mol_data.dynamic, );
-                // compute_statistics_async(data);
-            }
-        } else if (compare_n(ext, "gro", 3, true)) {
+            init_molecule_data(data);
+            init_trajectory_data(data);
+        } else if (compare(ext, "gro", true)) {
             free_molecule_data(data);
-            free_string(&data->files.molecule);
-            free_string(&data->files.trajectory);
-            allocate_and_load_gro_from_file(&data->mol_data.dynamic.molecule, file);
-
-            if (!data->mol_data.dynamic.molecule) {
+            if (!allocate_and_load_gro_from_file(&data->mol_data.dynamic.molecule, file)) {
                 LOG_ERROR("ERROR! Failed to load gro file.");
                 return;
             }
-
             data->files.molecule = allocate_string(file);
-            data->mol_data.atom_radii = compute_atom_radii(get_elements(data->mol_data.dynamic.molecule));
-            init_molecule_buffers(data);
-            // copy_molecule_position_radius_to_buffer(data);
-        } else if (compare_n(ext, "xtc", 3, true)) {
+            init_molecule_data(data);
+        } else if (compare_n(ext, "xtc", true)) {
             if (!data->mol_data.dynamic.molecule) {
                 LOG_ERROR("ERROR! Must have molecule structure before trajectory can be loaded.");
                 return;
-            } else {
-                if (data->mol_data.dynamic.trajectory) {
-                    free_trajectory_data(data);
-                }
-                if (!load_and_allocate_trajectory(&data->mol_data.dynamic.trajectory, file)) {
-                    LOG_ERROR("ERROR! Problem loading trajectory.");
-                    return;
-                }
-                if (data->mol_data.dynamic.trajectory) {
-                    if (data->mol_data.dynamic.trajectory.num_atoms != data->mol_data.dynamic.molecule.atom.count) {
-                        LOG_ERROR("ERROR! The number of atoms in the molecule does not match the number of atoms in the trajectory.");
-                        free_trajectory_data(data);
-                        return;
-                    }
-                    data->files.trajectory = allocate_string(file);
-                    init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
-
-                    read_next_trajectory_frame(&data->mol_data.dynamic.trajectory);  // read first frame
-                    auto frame_0_pos = get_trajectory_positions(data->mol_data.dynamic.trajectory, 0);
-                    memcpy(data->mol_data.dynamic.molecule.atom.positions, frame_0_pos.ptr, frame_0_pos.size_in_bytes());
-                    copy_molecule_position_radius_to_buffer(data);
-
-                    load_trajectory_async(data);
-                }
             }
+            free_trajectory_data(data);
+            if (!load_and_allocate_trajectory(&data->mol_data.dynamic.trajectory, file)) {
+                LOG_ERROR("ERROR! Problem loading trajectory.");
+                return;
+            }
+            init_trajectory_data(data);
         } else {
-            LOG_ERROR("ERROR! file extension not supported!\n");
+            LOG_ERROR("ERROR! file extension is not supported!\n");
             return;
         }
         auto t1 = platform::get_time();
@@ -2866,14 +2919,14 @@ static void load_workspace(ApplicationData* data, CString file) {
                 line = extract_line(c_txt);
                 if (compare_n(line, "Position=", 9)) {
                     vec3 pos = vec3(to_vec4(trim(line.substr(9))));
-                    data->camera.camera.position = pos;
-                    data->camera.animation.target_position = pos;
+                    data->view.camera.position = pos;
+                    data->view.animation.target_position = pos;
                 }
                 if (compare_n(line, "Rotation=", 9)) {
                     quat rot = quat(to_vec4(trim(line.substr(9))));
-                    data->camera.camera.orientation = rot;
+                    data->view.camera.orientation = rot;
                 }
-                if (compare_n(line, "Distance=", 9)) data->camera.trackball_state.distance = to_float(trim(line.substr(9)));
+                if (compare_n(line, "Distance=", 9)) data->view.trackball_state.distance = to_float(trim(line.substr(9)));
             }
         }
     }
@@ -2950,9 +3003,9 @@ static void save_workspace(ApplicationData* data, CString file) {
     fprintf(fptr, "\n");
 
     fprintf(fptr, "[Camera]\n");
-    fprintf(fptr, "Position=%g,%g,%g\n", data->camera.camera.position.x, data->camera.camera.position.y, data->camera.camera.position.z);
-    fprintf(fptr, "Rotation=%g,%g,%g,%g\n", data->camera.camera.orientation.x, data->camera.camera.orientation.y, data->camera.camera.orientation.z, data->camera.camera.orientation.w);
-    fprintf(fptr, "Distance=%g\n", data->camera.trackball_state.distance);
+    fprintf(fptr, "Position=%g,%g,%g\n", data->view.camera.position.x, data->view.camera.position.y, data->view.camera.position.z);
+    fprintf(fptr, "Rotation=%g,%g,%g,%g\n", data->view.camera.orientation.x, data->view.camera.orientation.y, data->view.camera.orientation.z, data->view.camera.orientation.w);
+    fprintf(fptr, "Distance=%g\n", data->view.trackball_state.distance);
     fprintf(fptr, "\n");
 
     fclose(fptr);
@@ -2964,43 +3017,29 @@ static void save_workspace(ApplicationData* data, CString file) {
 // #representation
 static Representation* create_representation(ApplicationData* data, Representation::Type type, ColorMapping color_mapping, CString filter) {
     ASSERT(data);
-    if (data->representations.buffer.size() < data->representations.buffer.capacity()) {
-        auto rep = data->representations.buffer.end();
-        *rep = {};
-        rep->type = type;
-        rep->color_mapping = color_mapping;
-        rep->filter = filter;
-        data->representations.buffer.count++;
-        update_representation(rep, data->mol_data.dynamic);
-        return rep;
-    } else {
-        LOG_ERROR("Maximum number of representations reached! (%i)", MAX_REPRESENTATIONS);
-        return nullptr;
-    }
+    Representation& rep = data->representations.buffer.push_back({});
+    rep.type = type;
+    rep.color_mapping = color_mapping;
+    rep.filter = filter;
+    update_representation(&rep, data->mol_data.dynamic);
+    return &rep;
 }
 
-static void clone_representation(ApplicationData* data, const Representation& rep) {
+static Representation* clone_representation(ApplicationData* data, const Representation& rep) {
     ASSERT(data);
-    if (data->representations.buffer.size() < data->representations.buffer.capacity()) {
-        auto clone = data->representations.buffer.end();
-        data->representations.buffer.count++;
-        *clone = rep;
-        clone->color_buffer = 0;
-        update_representation(clone, data->mol_data.dynamic);
-    } else {
-        LOG_ERROR("Maximum number of representations reached! (%i)", MAX_REPRESENTATIONS);
-    }
+    Representation& clone = data->representations.buffer.push_back(rep);
+    clone.color_buffer = 0;
+    update_representation(&clone, data->mol_data.dynamic);
+    return &clone;
 }
 
 static void remove_representation(ApplicationData* data, int idx) {
     ASSERT(data);
     ASSERT(idx < data->representations.buffer.size());
+
     auto& rep = data->representations.buffer[idx];
     if (!rep.color_buffer) glDeleteBuffers(1, &rep.color_buffer);
-    for (int32 i = idx; i < data->representations.buffer.size() - 1; i++) {
-        data->representations.buffer[i] = data->representations.buffer[i + 1];
-    }
-    data->representations.buffer.count--;
+    data->representations.buffer.remove(&rep);
 }
 
 static void update_representation(Representation* rep, const MoleculeDynamic& dynamic) {
@@ -3010,7 +3049,7 @@ static void update_representation(Representation* rep, const MoleculeDynamic& dy
 
     switch (rep->color_mapping) {
         case ColorMapping::STATIC_COLOR:
-            memset(colors.ptr, static_color, dynamic.molecule.atom.count * sizeof(uint32));
+            memset(colors.data(), static_color, dynamic.molecule.atom.count * sizeof(uint32));
             break;
         case ColorMapping::CPK:
             color_atoms_cpk(colors, get_elements(dynamic.molecule));
@@ -3036,7 +3075,7 @@ static void update_representation(Representation* rep, const MoleculeDynamic& dy
     filter::filter_colors(colors, mask);
     if (!rep->color_buffer) glGenBuffers(1, &rep->color_buffer);
     glBindBuffer(GL_ARRAY_BUFFER, rep->color_buffer);
-    glBufferData(GL_ARRAY_BUFFER, colors.size_in_bytes(), colors.ptr, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, colors.size_in_bytes(), colors.data(), GL_STATIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
@@ -3050,7 +3089,7 @@ static void reset_representations(ApplicationData* data) {
 static void clear_representations(ApplicationData* data) {
     ASSERT(data);
     while (data->representations.buffer.size() > 0) {
-        remove_representation(data, data->representations.buffer.size() - 1);
+        remove_representation(data, (int32)data->representations.buffer.size() - 1);
     }
 }
 
@@ -3066,20 +3105,6 @@ static void load_trajectory_async(ApplicationData* data) {
         data->async.trajectory.sync.stop_signal = false;
         data->async.trajectory.sync.running = true;
         data->async.trajectory.sync.thread = std::thread([data]() {
-            // read first frame expicitly
-            read_next_trajectory_frame(&data->mol_data.dynamic.trajectory);
-
-            create_volume(data);
-
-            /*
-if (traj.num_frames > 0) {
-    vec3 box_ext = traj.frame_buffer[0].box * vec3(1);
-    init_volume(&data->density_volume.volume, math::max(ivec3(1), ivec3(box_ext) / VOLUME_DOWNSAMPLE_FACTOR));
-    data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(vec3(0), box_ext);
-    data->density_volume.texture_to_model_matrix = volume::compute_texture_to_model_matrix(data->density_volume.volume.dim);
-}
-            */
-
             while (read_next_trajectory_frame(&data->mol_data.dynamic.trajectory)) {
                 data->async.trajectory.fraction = data->mol_data.dynamic.trajectory.num_frames / (float)data->mol_data.dynamic.trajectory.frame_offsets.count;
                 if (data->async.trajectory.sync.stop_signal) break;

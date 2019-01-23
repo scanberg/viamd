@@ -147,7 +147,7 @@ void init_map(Image* img, GLuint tex, const ColorMap& color_map, int blur_level)
     gaussian_blur(img, blur_level);
 
     glBindTexture(GL_TEXTURE_2D, tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, img->width, img->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, img->data);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, img->width, img->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, img->data);
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
@@ -191,19 +191,59 @@ void initialize() {
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
-    ColorMap seg_color_map{};
-    seg_color_map.region_color[Region_None] = vec4(0, 0, 0, 0);
-    seg_color_map.region_color[Region_AlphaHigh] = vec4(1, 0, 0, 1);
-    seg_color_map.region_color[Region_AlphaMid] = vec4(0, 0, 0, 0);
-    seg_color_map.region_color[Region_BetaHigh] = vec4(0, 0, 1, 1);
-    seg_color_map.region_color[Region_BetaMid] = vec4(0, 0, 0, 0);
-    seg_color_map.region_color[Region_LeftAlphaHigh] = vec4(1, 0, 0, 1);
-    seg_color_map.region_color[Region_LeftAlphaMid] = vec4(0, 0, 0, 0);
-    seg_color_map.region_color[Region_PMid] = vec4(0, 0, 0, 0);
+    {
+        ColorMap seg_color_map;
+        seg_color_map.region_color[Region_None] = vec4(0, 0, 0, 0);
+        seg_color_map.region_color[Region_AlphaHigh] = vec4(1, 0, 0, 1);
+        seg_color_map.region_color[Region_AlphaMid] = vec4(0, 0, 0, 0);
+        seg_color_map.region_color[Region_BetaHigh] = vec4(0, 0, 1, 1);
+        seg_color_map.region_color[Region_BetaMid] = vec4(0, 0, 0, 0);
+        seg_color_map.region_color[Region_LeftAlphaHigh] = vec4(1, 0, 0, 1);
+        seg_color_map.region_color[Region_LeftAlphaMid] = vec4(0, 0, 0, 0);
+        seg_color_map.region_color[Region_PMid] = vec4(0, 0, 0, 0);
+        init_segmentation_map(seg_color_map, 2);
+    }
 
-    init_segmentation_map(seg_color_map, 2);
-    init_color_map(ColorMap(), 4);
-    init_gui_map(ColorMap(), 2);
+    constexpr float h_r = 0.0f / 360.0f;
+    constexpr float h_g = 120.0f / 360.0f;
+    constexpr float h_b = 240.0f / 360.0f;
+    constexpr float h_y = 60.0f / 360.0f;
+
+    {
+        constexpr float c = 0.45f;
+        constexpr float l = 0.9f;
+        constexpr float a_high = 0.8;
+        constexpr float a_mid = 0.2;
+
+        ColorMap gui_color_map;
+        gui_color_map.region_color[Region_None] = vec4(0, 0, 0, 0);
+        gui_color_map.region_color[Region_AlphaHigh] = vec4(math::hcl_to_rgb(h_r, c, l), a_high);
+        gui_color_map.region_color[Region_AlphaMid] = vec4(math::hcl_to_rgb(h_r, c, l), a_mid);
+        gui_color_map.region_color[Region_BetaHigh] = vec4(math::hcl_to_rgb(h_b, c, l), a_high);
+        gui_color_map.region_color[Region_BetaMid] = vec4(math::hcl_to_rgb(h_b, c, l), a_mid);
+        gui_color_map.region_color[Region_LeftAlphaHigh] = vec4(math::hcl_to_rgb(h_g, c, l), a_high);
+        gui_color_map.region_color[Region_LeftAlphaMid] = vec4(math::hcl_to_rgb(h_g, c, l), a_mid);
+        gui_color_map.region_color[Region_PMid] = vec4(math::hcl_to_rgb(h_y, c, l), a_mid);
+        init_gui_map(gui_color_map, 2);
+    }
+
+    {
+        constexpr float c = 0.8f;
+        constexpr float l = 0.9f;
+        constexpr float a_high = 0.8;
+        constexpr float a_mid = 0.2;
+
+        ColorMap col_color_map;
+        col_color_map.region_color[Region_None] = vec4(1, 1, 1, 1);
+        col_color_map.region_color[Region_AlphaHigh] = vec4(math::hcl_to_rgb(h_r, c, l), a_high);
+        col_color_map.region_color[Region_AlphaMid] = vec4(math::hcl_to_rgb(h_r, c, l), a_mid);
+        col_color_map.region_color[Region_BetaHigh] = vec4(math::hcl_to_rgb(h_b, c, l), a_high);
+        col_color_map.region_color[Region_BetaMid] = vec4(math::hcl_to_rgb(h_b, c, l), a_mid);
+        col_color_map.region_color[Region_LeftAlphaHigh] = vec4(math::hcl_to_rgb(h_g, c, l), a_high);
+        col_color_map.region_color[Region_LeftAlphaMid] = vec4(math::hcl_to_rgb(h_g, c, l), a_mid);
+        col_color_map.region_color[Region_PMid] = vec4(math::hcl_to_rgb(h_y, c, l), a_mid);
+        init_color_map(col_color_map, 4);
+    }
 
     constexpr int BUFFER_SIZE = 1024;
     char buffer[BUFFER_SIZE];

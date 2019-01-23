@@ -6,12 +6,13 @@
 enum class ColorMapping { STATIC_COLOR, CPK, RES_ID, RES_INDEX, CHAIN_ID, CHAIN_INDEX, SECONDARY_STRUCTURE };
 
 inline vec4 color_from_hash(uint32 hash) {
-    constexpr float CHROMA = 0.45f;
-    constexpr float LUMINANCE = 0.90f;
-    constexpr uint32 MOD = 21;
-    constexpr float SCL = 1.f / (float)MOD;
+    constexpr float chroma = 0.8f;
+    constexpr float luminance = 0.90f;
+    constexpr uint32 mod = 21;
+    const float hue = (hash % mod) / (float)mod;
+    const vec3 rgb = math::hcl_to_rgb(vec3(hue, chroma, luminance));
 
-    return vec4(math::hcl_to_rgb(vec3((hash % MOD) * SCL, CHROMA, LUMINANCE)), 1);
+    return vec4(rgb, 1);
 }
 
 void color_atoms_cpk(Array<uint32> dst_atom_colors, Array<const Element> elements);

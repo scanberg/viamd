@@ -3,14 +3,6 @@
 #include <mol/molecule_structure.h>
 #include "color_utils.h"
 
-/*
-inline void memset32(void* buf, uint32_t val, int64_t count) {
-    for (int32_t i = 0; i < count; i++) {
-        ((uint32_t*)buf)[i] = val;
-    }
-}
-*/
-
 void color_atoms_cpk(Array<uint32> dst_atom_colors, Array<const Element> elements) {
     for (int64 i = 0; i < dst_atom_colors.count; i++) {
         dst_atom_colors[i] = element::color(elements[i]);

@@ -22,8 +22,8 @@ constexpr float h_red = 0.0f / 360.0f;
 constexpr float h_green = 120.0f / 360.0f;
 constexpr float h_blue = 240.0f / 360.0f;
 constexpr float h_yellow = 60.0f / 360.0f;
-constexpr float c = 0.5f;
-constexpr float l = 0.8f;
+constexpr float c = 0.8f;
+constexpr float l = 0.9f;
 constexpr float a_high = 0.8f;
 constexpr float a_mid = 0.2f;
 
