@@ -582,17 +582,26 @@ int main(int, char**) {
 
             if (shift_down) {
                 static bool selecting = false;
-                static ImVec2 x0;
+                static platform::Coordinate x0;
                 if (!selecting && data.ctx.input.mouse.hit[0]) {
                     selecting = true;
-                    x0 = ImVec2(data.ctx.input.mouse.win_coord.x, data.ctx.input.mouse.win_coord.y);
+                    x0 = data.ctx.input.mouse.win_coord;
                 }
                 if (selecting && data.ctx.input.mouse.release[0]) {
                     selecting = false;
                 }
                 if (selecting) {
-                    ImVec2 x1 = ImVec2(data.ctx.input.mouse.win_coord.x, data.ctx.input.mouse.win_coord.y);
-                    ImGui::RenderFrame(x0, x1, 0x88888888, true);
+                    const auto x1 = data.ctx.input.mouse.win_coord;
+                    const auto vp_pos = ImGui::GetMainViewport()->Pos;
+                    const auto vp_size = ImGui::GetMainViewport()->Size;
+
+                    const auto pos = (ImVec2(x0.x, x0.y) + vp_pos);
+                    const auto size = (ImVec2(x1.x - x0.x, x1.y - x0.y));
+                    ImGui::SetNextWindowPos(pos);
+                    ImGui::SetNextWindowSize(size);
+                    ImGui::SetNextWindowSizeConstraints(ImVec2(1,1), ImVec2(999,999));
+                    ImGui::Begin("cool", nullptr, ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoTitleBar);
+                    ImGui::End();
                 }
             }
 

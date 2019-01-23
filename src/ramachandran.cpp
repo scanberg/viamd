@@ -7,14 +7,6 @@
 
 namespace ramachandran {
 
-// Segmentation texture data
-constexpr int seg_width = 512;
-constexpr int seg_height = 512;
-
-// Color texture data
-constexpr int col_width = 512;
-constexpr int col_height = 512;
-
 // Accumulation texture data
 constexpr int acc_width = 1024;
 constexpr int acc_height = 1024;

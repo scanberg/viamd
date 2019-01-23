@@ -33,13 +33,11 @@ static int filter_func(const struct dirent *dir) {
 Timestamp get_time() {
     timespec t;
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t);
-    return *(Timestamp*)(&t);
+    return t.tv_sec * 1000000000 + t.tv_nsec;
 }
 
-float compute_delta_ms(Timestamp t0, Timestamp t1) {
-    timespec ts0 = *(timespec*)(&t0);
-    timespec ts1 = *(timespec*)(&t1);
-    return (ts1.tv_sec - ts0.tv_sec) * 1000 + (ts1.tv_nsec - ts0.tv_nsec) / 1000;
+float compute_delta_ms(Timestamp ts0, Timestamp ts1) {
+    return (ts1 - ts0) * 1.0e-6f;
 }
 
 DynamicArray<DirectoryEntry> list_directory(CString dir_path) {
