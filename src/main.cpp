@@ -88,8 +88,6 @@ constexpr float HYDROGEN_BOND_ANGLE_CUTOFF_MAX = 90.f;
 
 constexpr int32 VOLUME_DOWNSAMPLE_FACTOR = 2;
 
-constexpr int32 MAX_REPRESENTATIONS = 16;
-
 constexpr int32 SPLINE_SUBDIVISION_COUNT = 8;
 
 #ifdef VIAMD_RELEASE
@@ -2824,6 +2822,8 @@ static ColorMapping get_color_mapping(CString str) {
         return ColorMapping::CHAIN_ID;
     else if (compare(str, "CHAIN_INDEX"))
         return ColorMapping::CHAIN_INDEX;
+    else if (compare(str, "SECONDARY_STRUCTURE"))
+        return ColorMapping::SECONDARY_STRUCTURE;
     else
         return ColorMapping::CPK;
 }
@@ -2842,8 +2842,10 @@ static CString get_color_mapping_name(ColorMapping mapping) {
             return "CHAIN_ID";
         case ColorMapping::CHAIN_INDEX:
             return "CHAIN_INDEX";
+        case ColorMapping::SECONDARY_STRUCTURE:
+            return "SECONDARY_STRUCTURE";
         default:
-            return "UNKNOWN";
+            return "UNDEFINED";
     }
 }
 
@@ -2874,10 +2876,10 @@ static void load_workspace(ApplicationData* data, CString file) {
         if (compare(line, "[Files]")) {
             while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
                 line = extract_line(c_txt);
-                if (compare_n(line, "MoleculeFile=", 13)) {
+                if (compare(line, "MoleculeFile=")) {
                     new_molecule_file = get_absolute_path(file, trim(line.substr(13)));
                 }
-                if (compare_n(line, "TrajectoryFile=", 15)) {
+                if (compare(line, "TrajectoryFile=")) {
                     new_trajectory_file = get_absolute_path(file, trim(line.substr(15)));
                 }
             }
