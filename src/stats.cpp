@@ -1038,17 +1038,23 @@ static bool compute_expression(Property* prop, const Array<CString> args, const 
             max_instance_count = math::max(max_instance_count, (int32)p->instance_data.count);
         }
 
-        init_instance_data(&prop->instance_data, max_instance_count, (int32)prop->avg_data.count);
+        const int32 frame_count = prop->avg_data.count;
+        init_instance_data(&prop->instance_data, max_instance_count, frame_count);
 
         float scl = 1.f / (float)max_instance_count;
-        for (int32 frame = 0; frame < prop->avg_data.count; frame++) {
+        for (int32 frame = 0; frame < frame_count; frame++) {
             float val = 0.f;
             for (int32 i = 0; i < max_instance_count; i++) {
                 for (int32 j = 0; j < values.count; j++) {
+                    values[j] = 0;
                     if (prop->dependencies[j]->instance_data.count == max_instance_count) {
-                        values[j] = prop->dependencies[j]->instance_data[i].data[frame];
+                        if (frame < prop->dependencies[j]->instance_data[i].data.count) {
+                            values[j] = prop->dependencies[j]->instance_data[i].data[frame];
+                        }
                     } else {
-                        values[j] = prop->dependencies[j]->instance_data[0].data[frame];
+                        if (frame < prop->dependencies[j]->instance_data[0].data.count) {
+                            values[j] = prop->dependencies[j]->instance_data[0].data[frame];
+                        }
                     }
                 }
                 prop->instance_data[i].data[frame] = (float)te_eval(expr);
@@ -1226,9 +1232,8 @@ bool sync_structure_data_length(Array<StructureData> data) {
     return true;
 }
 
-static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic) {
+static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic, int32 num_frames) {
     ASSERT(prop);
-    int32 num_frames = dynamic.trajectory.num_frames;
 
     ctx.current_property = prop;
     prop->error_msg_buf = "";
@@ -1368,13 +1373,18 @@ void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_
             init_histogram(&tmp_hist, NUM_BINS);
             ctx.fraction_done = 0.f;
 
+            // @NOTE IMPORTANT: This is the one 'true' frame count which should be used for properties.
+            // It is important that this is used so that all properties data lengths are in sync
+            // When dealing with dependencies.
+            const int32 num_frames = dynamic.trajectory.num_frames;
+
             for (int32 i = 0; i < ctx.properties.count; i++) {
                 auto p = ctx.properties[i];
                 ctx.fraction_done = (i / (float)ctx.properties.count);
                 auto filter = p->filter;
 
                 if (p->data_dirty) {
-                    compute_property_data(p, dynamic);
+                    compute_property_data(p, dynamic, num_frames);
 
                     // recompute full histogram
                     clear_histogram(&p->full_histogram);

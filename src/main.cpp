@@ -397,15 +397,24 @@ struct ApplicationData {
         ramachandran::ColorMap color_map{};
 
         struct {
-            float radius = 1.f;
+            bool enabled = false;
+            float radius = 0.5f;
             vec4 color = vec4(0, 0, 0, 1);
         } range;
 
         struct {
-            float radius = 1.5f;
+            bool enabled = true;
+            float radius = 1.0f;
             vec4 border_color = vec4(0, 0, 0, 1);
             vec4 fill_color = vec4(1, 1, 0, 1);
         } current;
+
+        struct {
+            bool enabled = true;
+            float radius = 2.0f;
+            vec4 border_color = vec4(0, 0, 0, 1);
+            vec4 fill_color = vec4(1, 0, 1, 1);
+        } selected;
 
         BackboneAnglesTrajectory backbone_angles{};
         Array<BackboneAngle> current_backbone_angles{};
@@ -513,7 +522,7 @@ int main(int, char**) {
         LOG_ERROR("Could not initialize platform layer... terminating\n");
         return -1;
     }
-    data.ctx.window.vsync = false;
+    data.ctx.window.vsync = true;
 
     LOG_NOTE("Creating framebuffer...");
     init_framebuffer(&data.fbo, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
@@ -586,38 +595,82 @@ int main(int, char**) {
 
             const bool shift_down = data.ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data.ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
 
-            if (shift_down) {
-                static bool selecting = false;
+            {
+                static bool region_select = false;
                 static platform::Coordinate x0;
                 const platform::Coordinate x1 = data.ctx.input.mouse.win_coord;
 
-                if (!selecting && data.ctx.input.mouse.hit[0]) {
-                    selecting = true;
-                    x0 = data.ctx.input.mouse.win_coord;
-                }
-                if (selecting && data.ctx.input.mouse.release[0]) {
-                    selecting = false;
-                    memset_array(data.selection.selected, (uint8)0);
-
-                    const int32 w = data.ctx.window.width;
-                    const int32 h = data.ctx.window.height;
-                    const mat4 mvp = compute_perspective_projection_matrix(data.view.camera, w, h) * compute_world_to_view_matrix(data.view.camera);
-                    const auto positions = data.mol_data.dynamic.molecule.atom.positions;
-                    for (int64 i = 0; i < data.mol_data.dynamic.molecule.atom.count; i++) {
-                        vec4 p = mvp * vec4(positions[i], 1);
-                        p /= p.w;
-                        vec2 c = (vec2(p.x, -p.y) * 0.5f + 0.5f) * vec2(w, h);
-                        if (c.x < x0.x || x1.x < c.x) continue;
-                        if (c.y < x0.y || x1.y < c.y) continue;
-                        data.selection.selected[i] = 0xFF;
+                if (!shift_down) {
+                    region_select = false;
+                } else {
+                    if (!region_select && (data.ctx.input.mouse.hit[0] || data.ctx.input.mouse.hit[1])) {
+                        x0 = data.ctx.input.mouse.win_coord;
                     }
 
-                    glBindBuffer(GL_ARRAY_BUFFER, data.gpu_buffers.selection);
-                    glBufferSubData(GL_ARRAY_BUFFER, 0, data.selection.selected.size_in_bytes(), data.selection.selected.data());
-                    glBindBuffer(GL_ARRAY_BUFFER, 0);
+                    if ((data.ctx.input.mouse.down[0] || data.ctx.input.mouse.down[1]) && x1 != x0) {
+                        region_select = true;
+                    }
+
+                    if (data.ctx.input.mouse.release[0] || data.ctx.input.mouse.release[1]) {
+                        const uint8 val = data.ctx.input.mouse.release[0] ? 0xFF : 0;
+                        bool update_buffer = false;
+
+                        if (region_select) {
+                            region_select = false;
+
+                            const int32 w = data.ctx.window.width;
+                            const int32 h = data.ctx.window.height;
+                            const mat4 mvp = compute_perspective_projection_matrix(data.view.camera, w, h) * compute_world_to_view_matrix(data.view.camera);
+                            const auto positions = data.mol_data.dynamic.molecule.atom.positions;
+                            for (int64 i = 0; i < data.mol_data.dynamic.molecule.atom.count; i++) {
+                                vec4 p = mvp * vec4(positions[i], 1);
+                                p /= p.w;
+                                vec2 c = (vec2(p.x, -p.y) * 0.5f + 0.5f) * vec2(w, h);
+                                if (c.x < x0.x || x1.x < c.x) continue;
+                                if (c.y < x0.y || x1.y < c.y) continue;
+                                data.selection.selected[i] = val;
+                            }
+                            update_buffer = true;
+                        } else {
+                            if (data.picking.idx != NO_PICKING_IDX) {
+                                data.selection.selected[data.picking.idx] = val;
+                                update_buffer = true;
+                            } else if (val == 0) {  // Shift + right-click -> Clear
+                                memset_array(data.selection.selected, (uint8)0);
+                                update_buffer = true;
+                            }
+                        }
+                        if (update_buffer) {
+                            glBindBuffer(GL_ARRAY_BUFFER, data.gpu_buffers.selection);
+                            glBufferSubData(GL_ARRAY_BUFFER, 0, data.selection.selected.size_in_bytes(), data.selection.selected.data());
+                            glBindBuffer(GL_ARRAY_BUFFER, 0);
+                        }
+                    }
                 }
 
-                if (selecting) {
+                /*
+if (region_select && data.ctx.input.mouse.release[0]) {
+region_select = false;
+memset_array(data.selection.selected, (uint8)0);
+
+const int32 w = data.ctx.window.width;
+const int32 h = data.ctx.window.height;
+const mat4 mvp = compute_perspective_projection_matrix(data.view.camera, w, h) * compute_world_to_view_matrix(data.view.camera);
+const auto positions = data.mol_data.dynamic.molecule.atom.positions;
+for (int64 i = 0; i < data.mol_data.dynamic.molecule.atom.count; i++) {
+    vec4 p = mvp * vec4(positions[i], 1);
+    p /= p.w;
+    vec2 c = (vec2(p.x, -p.y) * 0.5f + 0.5f) * vec2(w, h);
+    if (c.x < x0.x || x1.x < c.x) continue;
+    if (c.y < x0.y || x1.y < c.y) continue;
+    data.selection.selected[i] = 0xFF;
+}
+
+
+}
+                */
+
+                if (region_select) {
                     const auto vp_pos = ImGui::GetMainViewport()->Pos;
                     const auto vp_size = ImGui::GetMainViewport()->Size;
 
@@ -2263,6 +2316,8 @@ static void draw_ramachandran_window(ApplicationData* data) {
     const IntRange frame_range = {(int32)data->time_filter.range.x, (int32)data->time_filter.range.y};
     Array<const BackboneAngle> accumulated_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame_range.x, frame_range.y - frame_range.x);
     Array<const BackboneAngle> current_angles = data->mol_data.dynamic.molecule.backbone.angles;
+    Array<const BackboneSegment> backbone_segments = data->mol_data.dynamic.molecule.backbone.segments;
+    Array<const uint8> atom_selection = data->selection.selected;
 
     ImGui::SetNextWindowSizeConstraints(ImVec2(100, 100), ImVec2(1000, 1000), [](ImGuiSizeCallbackData* data) {
         const float ar = 3.f / 4.f;
@@ -2270,28 +2325,47 @@ static void draw_ramachandran_window(ApplicationData* data) {
     });
 
     ImGui::Begin("Ramachandran", &data->ramachandran.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
+
     ImGui::Text("Current");
-    ImGui::PushID("current");
-    ImGui::SliderFloat("", &data->ramachandran.current.radius, 0.5f, 3.f, "radius %1.2f");
-    data->ramachandran.current.radius = math::round(data->ramachandran.current.radius * 2.f) / 2.f;
-    ImGui::SameLine();
-    ImGui::ColorEdit4("border color", (float*)&data->ramachandran.current.border_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
-    ImGui::SameLine();
-    ImGui::ColorEdit4("fill color", (float*)&data->ramachandran.current.fill_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
-    ImGui::PopID();
+    ImGui::Checkbox("Show Current Frame", &data->ramachandran.current.enabled);
+    if (data->ramachandran.current.enabled) {
+        ImGui::PushID("current");
+        ImGui::SliderFloat("", &data->ramachandran.current.radius, 0.5f, 3.f, "radius %1.1f");
+        data->ramachandran.current.radius = math::round(data->ramachandran.current.radius * 2.f) / 2.f;
+        ImGui::SameLine();
+        ImGui::ColorEdit4("border color", (float*)&data->ramachandran.current.border_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+        ImGui::SameLine();
+        ImGui::ColorEdit4("fill color", (float*)&data->ramachandran.current.fill_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+        ImGui::PopID();
+    }
+
+    ImGui::Separator();
+
+    ImGui::Text("Selected");
+    ImGui::Checkbox("Show Selection", &data->ramachandran.selected.enabled);
+    if (data->ramachandran.selected.enabled) {
+        ImGui::PushID("selected");
+        ImGui::SliderFloat("", &data->ramachandran.selected.radius, 0.5f, 3.f, "radius %1.1f");
+        data->ramachandran.selected.radius = math::round(data->ramachandran.selected.radius * 2.f) / 2.f;
+        ImGui::SameLine();
+        ImGui::ColorEdit4("border color", (float*)&data->ramachandran.selected.border_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+        ImGui::SameLine();
+        ImGui::ColorEdit4("fill color", (float*)&data->ramachandran.selected.fill_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+        ImGui::PopID();
+    }
 
     ImGui::Separator();
 
     ImGui::Text("Range");
-    ImGui::PushID("range");
-    ImGui::SliderFloat("radius", &data->ramachandran.range.radius, 0.1f, 5.f);
-    ImGui::SameLine();
-    ImGui::ColorEdit4("color", (float*)&data->ramachandran.range.color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
-    ImGui::RangeSliderFloat("framerange", &data->time_filter.range.x, &data->time_filter.range.y, 0, (float)math::max(0, num_frames));
-    ImGui::PopID();
-
-    ramachandran::clear_accumulation_texture();
-    ramachandran::compute_accumulation_texture(accumulated_angles, data->ramachandran.range.color, data->ramachandran.range.radius);
+    ImGui::Checkbox("Show Range", &data->ramachandran.range.enabled);
+    if (data->ramachandran.range.enabled) {
+        ImGui::PushID("range");
+        ImGui::SliderFloat("radius", &data->ramachandran.range.radius, 0.1f, 5.f);
+        ImGui::SameLine();
+        ImGui::ColorEdit4("color", (float*)&data->ramachandran.range.color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+        // ImGui::RangeSliderFloat("framerange", &data->time_filter.range.x, &data->time_filter.range.y, 0, (float)math::max(0, num_frames));
+        ImGui::PopID();
+    }
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::BeginChild("canvas", ImVec2(0, 0), true, ImGuiWindowFlags_NoScrollbar);
@@ -2309,23 +2383,58 @@ static void draw_ramachandran_window(ApplicationData* data) {
     dl->ChannelsSetCurrent(1);
     dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_gui_texture(), x0, x1);
     dl->ChannelsSetCurrent(2);
+    if (data->ramachandran.range.enabled) {
+        ramachandran::clear_accumulation_texture();
+        ramachandran::compute_accumulation_texture(accumulated_angles, data->ramachandran.range.color, data->ramachandran.range.radius);
+    }
     dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_accumulation_texture(), x0, x1);
     dl->ChannelsSetCurrent(3);
 
     constexpr float ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
-    const uint32 fill_color = math::convert_color(data->ramachandran.current.fill_color);
-    const uint32 border_color = math::convert_color(data->ramachandran.current.border_color);
-    const float radius = data->ramachandran.current.radius;
-    for (const auto& angle : current_angles) {
-        if (angle.x == 0.f || angle.y == 0.f) continue;
-        const ImVec2 coord = ImLerp(x0, x1, ImVec2(angle.x * ONE_OVER_TWO_PI + 0.5f, -angle.y * ONE_OVER_TWO_PI + 0.5f));  // [-PI, PI] -> [0, 1]
-        const ImVec2 min_box(math::round(coord.x - radius), math::round(coord.y - radius));
-        const ImVec2 max_box(math::round(coord.x + radius), math::round(coord.y + radius));
-        if (radius > 1.f) {
-            dl->AddRectFilled(min_box, max_box, fill_color);
-            dl->AddRect(min_box, max_box, border_color);
-        } else {
-            dl->AddRectFilled(min_box, max_box, border_color);
+
+    if (data->ramachandran.current.enabled) {
+        const uint32 fill_color = math::convert_color(data->ramachandran.current.fill_color);
+        const uint32 border_color = math::convert_color(data->ramachandran.current.border_color);
+        const float radius = data->ramachandran.current.radius;
+
+        for (int64 i = 0; i < backbone_segments.size(); i++) {
+            const auto& angle = current_angles[i];
+            const auto& seg = backbone_segments[i];
+            if (angle.x == 0.f || angle.y == 0.f) continue;
+            if (atom_selection[seg.ca_idx]) continue;
+
+            const ImVec2 coord = ImLerp(x0, x1, ImVec2(angle.x * ONE_OVER_TWO_PI + 0.5f, -angle.y * ONE_OVER_TWO_PI + 0.5f));  // [-PI, PI] -> [0, 1]
+            const ImVec2 min_box(math::round(coord.x - radius), math::round(coord.y - radius));
+            const ImVec2 max_box(math::round(coord.x + radius), math::round(coord.y + radius));
+            if (radius > 1.f) {
+                dl->AddRectFilled(min_box, max_box, fill_color);
+                dl->AddRect(min_box, max_box, border_color);
+            } else {
+                dl->AddRectFilled(min_box, max_box, border_color);
+            }
+        }
+    }
+
+    if (data->ramachandran.selected.enabled) {
+        const uint32 fill_color = math::convert_color(data->ramachandran.selected.fill_color);
+        const uint32 border_color = math::convert_color(data->ramachandran.selected.border_color);
+        const float radius = data->ramachandran.selected.radius;
+
+        for (int64 i = 0; i < backbone_segments.size(); i++) {
+            const auto& angle = current_angles[i];
+            const auto& seg = backbone_segments[i];
+            if (angle.x == 0.f || angle.y == 0.f) continue;
+            if (!atom_selection[seg.ca_idx]) continue;
+
+            const ImVec2 coord = ImLerp(x0, x1, ImVec2(angle.x * ONE_OVER_TWO_PI + 0.5f, -angle.y * ONE_OVER_TWO_PI + 0.5f));  // [-PI, PI] -> [0, 1]
+            const ImVec2 min_box(math::round(coord.x - radius), math::round(coord.y - radius));
+            const ImVec2 max_box(math::round(coord.x + radius), math::round(coord.y + radius));
+            if (radius > 1.f) {
+                dl->AddRectFilled(min_box, max_box, fill_color);
+                dl->AddRect(min_box, max_box, border_color);
+            } else {
+                dl->AddRectFilled(min_box, max_box, border_color);
+            }
         }
     }
 
@@ -2876,10 +2985,10 @@ static void load_workspace(ApplicationData* data, CString file) {
         if (compare(line, "[Files]")) {
             while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
                 line = extract_line(c_txt);
-                if (compare(line, "MoleculeFile=")) {
+                if (compare_n(line, "MoleculeFile=", 13)) {
                     new_molecule_file = get_absolute_path(file, trim(line.substr(13)));
                 }
-                if (compare(line, "TrajectoryFile=")) {
+                if (compare_n(line, "TrajectoryFile=", 15)) {
                     new_trajectory_file = get_absolute_path(file, trim(line.substr(15)));
                 }
             }
