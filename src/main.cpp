@@ -209,13 +209,15 @@ struct Representation {
     // Static color mode
     vec4 static_color = vec4(1);
 
-    // VDW and Licorice
+    // VDW and Ball & Stick
     float radius = 1.f;
 
-    // Ribbons and other spline primitives
+    // Ball & Stick and Licorice, Ribbons, Cartoon
+    float thickness = 1.f;
+
+    // Ribbons, Cartoon
     float tension = 0.5f;
     float width = 1.f;
-    float thickness = 1.f;
 };
 
 struct ThreadSyncData {
@@ -398,26 +400,25 @@ struct ApplicationData {
 
         struct {
             bool enabled = false;
-            float radius = 0.5f;
+            float radius = 0.2f;
             vec4 color = vec4(0, 0, 0, 1);
         } range;
 
         struct {
             bool enabled = true;
-            float radius = 1.0f;
+            float radius = 2.0f;
             vec4 border_color = vec4(0, 0, 0, 1);
-            vec4 fill_color = vec4(1, 1, 0, 1);
+            vec4 fill_color = vec4(0.5f, 0.5f, 0, 1);
         } current;
 
         struct {
             bool enabled = true;
-            float radius = 2.0f;
+            float radius = 3.0f;
             vec4 border_color = vec4(0, 0, 0, 1);
-            vec4 fill_color = vec4(1, 0, 1, 1);
+            vec4 fill_color = vec4(1, 1, 1, 1);
         } selected;
 
         BackboneAnglesTrajectory backbone_angles{};
-        Array<BackboneAngle> current_backbone_angles{};
     } ramachandran;
 
     // --- REPRESENTATIONS ---
@@ -600,6 +601,9 @@ int main(int, char**) {
                 static platform::Coordinate x0;
                 const platform::Coordinate x1 = data.ctx.input.mouse.win_coord;
 
+                const ImVec2 min_p = ImVec2(math::min(x0.x, x1.x), math::min(x0.y, x1.y));
+                const ImVec2 max_p = ImVec2(math::max(x0.x, x1.x), math::max(x0.y, x1.y));
+
                 if (!shift_down) {
                     region_select = false;
                 } else {
@@ -626,8 +630,8 @@ int main(int, char**) {
                                 vec4 p = mvp * vec4(positions[i], 1);
                                 p /= p.w;
                                 vec2 c = (vec2(p.x, -p.y) * 0.5f + 0.5f) * vec2(w, h);
-                                if (c.x < x0.x || x1.x < c.x) continue;
-                                if (c.y < x0.y || x1.y < c.y) continue;
+                                if (c.x < min_p.x || max_p.x < c.x) continue;
+                                if (c.y < min_p.y || max_p.y < c.y) continue;
                                 data.selection.selected[i] = val;
                             }
                             update_buffer = true;
@@ -648,34 +652,11 @@ int main(int, char**) {
                     }
                 }
 
-                /*
-if (region_select && data.ctx.input.mouse.release[0]) {
-region_select = false;
-memset_array(data.selection.selected, (uint8)0);
-
-const int32 w = data.ctx.window.width;
-const int32 h = data.ctx.window.height;
-const mat4 mvp = compute_perspective_projection_matrix(data.view.camera, w, h) * compute_world_to_view_matrix(data.view.camera);
-const auto positions = data.mol_data.dynamic.molecule.atom.positions;
-for (int64 i = 0; i < data.mol_data.dynamic.molecule.atom.count; i++) {
-    vec4 p = mvp * vec4(positions[i], 1);
-    p /= p.w;
-    vec2 c = (vec2(p.x, -p.y) * 0.5f + 0.5f) * vec2(w, h);
-    if (c.x < x0.x || x1.x < c.x) continue;
-    if (c.y < x0.y || x1.y < c.y) continue;
-    data.selection.selected[i] = 0xFF;
-}
-
-
-}
-                */
-
                 if (region_select) {
                     const auto vp_pos = ImGui::GetMainViewport()->Pos;
                     const auto vp_size = ImGui::GetMainViewport()->Size;
-
-                    const auto pos = (ImVec2(x0.x, x0.y) + vp_pos);
-                    const auto size = (ImVec2(x1.x - x0.x, x1.y - x0.y));
+                    const auto pos = (ImVec2(min_p.x, min_p.y) + vp_pos);
+                    const auto size = (ImVec2(max_p.x - min_p.x, max_p.y - min_p.y));
                     ImGui::SetNextWindowPos(pos);
                     ImGui::SetNextWindowSize(size);
                     // ImGui::SetNextWindowSizeConstraints(ImVec2(1, 1), ImVec2(9999, 9999));
@@ -1118,14 +1099,6 @@ for (int64 i = 0; i < data.mol_data.dynamic.molecule.atom.count; i++) {
             postprocessing::blit_texture(data.fbo.deferred.color);
         }
 
-        if (data.density_volume.enabled) {
-            PUSH_GPU_SECTION("Volume Rendering")
-            const float scl = 1.f * data.density_volume.density_scale / data.density_volume.texture.max_value;
-            volume::render_volume_texture(data.density_volume.texture.id, data.fbo.deferred.depth, data.density_volume.texture_to_model_matrix, data.density_volume.model_to_world_matrix, view_mat,
-                                          proj_mat, data.density_volume.color, scl);
-            POP_GPU_SECTION()
-        }
-
         // DRAW DEBUG GRAPHICS W/O DEPTH
         PUSH_GPU_SECTION("Debug Draw Overlay") {
             immediate::set_view_matrix(view_mat);
@@ -1173,6 +1146,14 @@ for (int64 i = 0; i < data.mol_data.dynamic.molecule.atom.count; i++) {
         glDrawBuffer(GL_BACK);
 
         postprocessing::blit_texture(data.fbo.temporal.color[1]);
+
+        if (data.density_volume.enabled) {
+            PUSH_GPU_SECTION("Volume Rendering")
+            const float scl = 1.f * data.density_volume.density_scale / data.density_volume.texture.max_value;
+            volume::render_volume_texture(data.density_volume.texture.id, data.fbo.deferred.depth, data.density_volume.texture_to_model_matrix, data.density_volume.model_to_world_matrix, view_mat,
+                                          proj_mat, data.density_volume.color, scl);
+            POP_GPU_SECTION()
+        }
 
         // GUI ELEMENTS
         data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, data.ctx.timing.delta_s);
@@ -1382,7 +1363,9 @@ static void draw_main_menu(ApplicationData* data) {
 
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("New", "CTRL+N")) new_clicked = true;
+            if (ImGui::MenuItem("New", "CTRL+N")) {
+                new_clicked = true;
+            }
             if (ImGui::MenuItem("Load Data", "CTRL+L")) {
                 auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, "pdb,gro,xtc");
                 if (res.result == platform::FileDialogResult::FILE_OK) {
@@ -1574,32 +1557,55 @@ if (ImGui::BeginMenu("Edit")) {
     }
 
     if (new_clicked) ImGui::OpenPopup("Warning New");
-    if (ImGui::BeginPopupModal("Warning New")) {
-        ImGui::Text("By creating a new workspace you will loose any unsaved progress.");
-        ImGui::Text("Are you sure?");
-        ImGui::Separator();
-        if (ImGui::Button("OK", ImVec2(120, 0))) {
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
+
+    /*
+        // This does not work atm, probably an Imgui Issue / Bug
+if (ImGui::BeginPopupModal("Warning New")) {
+    ImGui::Text("By creating a new workspace you will loose any unsaved progress.");
+    ImGui::Text("Are you sure?");
+    ImGui::Separator();
+    if (ImGui::Button("OK", ImVec2(120, 0))) {
+        ImGui::CloseCurrentPopup();
     }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+    */
 }
 
 void draw_context_popup(ApplicationData* data) {
     ASSERT(data);
 
     if (ImGui::BeginPopup("OtherContextPopup")) {
-        if (ImGui::MenuItem("Recenter on residue")) {
+        if (ImGui::MenuItem("Recenter Trajectory to residue")) {
             if (data->selection.right_clicked != -1) {
                 recenter_trajectory(&data->mol_data.dynamic, data->mol_data.dynamic.molecule.atom.residue_indices[data->selection.right_clicked]);
             }
         }
+        if (ImGui::MenuItem("Selection Query")) {
+            ImGui::BeginPopup("Selection Query");
+        }
         ImGui::EndPopup();
     }
+
+    if (ImGui::BeginPopup("Selection Query")) {
+        char buf[256];
+        ImGui::InputText("query", buf, 256);
+        if (ImGui::Button("Append")) {
+        }
+        ImGui::SameLine();
+        ImGui::Button("Exclude");
+        ImGui::SameLine();
+        ImGui::Button("Cancel");
+        ImGui::EndPopup();
+    }
+
+    if (data->ctx.input.mouse.release[1] && !data->ctx.input.mouse.moving) {
+    }
+
     if (data->selection.hovered != -1 && data->ctx.input.mouse.release[1] && !data->ctx.input.mouse.moving) {
         if (ImGui::GetIO().WantTextInput) {
             ImGui::OpenPopup("TextContextPopup");
@@ -1766,13 +1772,14 @@ static void draw_property_window(ApplicationData* data) {
 
     ImGui::PushID("PROPERTIES");
     ImGui::PushItemWidth(-1);
-    ImGui::Columns(4, "columns", true);
+    // ImGui::Columns(4, "columns", true);
+    ImGui::BeginColumns("columns", 4, ImGuiColumnsFlags_NoPreserveWidths);
     ImGui::Separator();
 
     if (first_time_shown) {
         first_time_shown = false;
-        ImGui::SetColumnWidth(0, ImGui::GetWindowContentRegionWidth() * 0.1f);
-        ImGui::SetColumnWidth(1, ImGui::GetWindowContentRegionWidth() * 0.7f);
+        ImGui::SetColumnWidth(0, ImGui::GetWindowContentRegionWidth() * 0.15f);
+        ImGui::SetColumnWidth(1, ImGui::GetWindowContentRegionWidth() * 0.65f);
         ImGui::SetColumnWidth(2, ImGui::GetWindowContentRegionWidth() * 0.1f);
         ImGui::SetColumnWidth(3, ImGui::GetWindowContentRegionWidth() * 0.1f);
     }
@@ -1804,76 +1811,75 @@ static void draw_property_window(ApplicationData* data) {
         ImGui::PopItemWidth();
         ImGui::NextColumn();
 
-        char insert_buf[32];
-        bool insert_buf_set = false;
-        if (ImGui::BeginPopup("AtomContextMenu")) {
-            char buf[32];
-            if (data->selection.right_clicked > -1) {
-                snprintf(buf, 32, "atom(%i) ", data->selection.right_clicked + 1);
-                if (ImGui::MenuItem(buf)) {
-                    memcpy(insert_buf, buf, 32);
-                    insert_buf_set = true;
-                }
+        constexpr auto buf_len = 128;
+        char key_buf[buf_len] = {0};
+        bool paste_buf = false;
 
-                int32 residue_idx = -1;
-                int32 chain_idx = -1;
-                if (data->mol_data.dynamic.molecule) {
-                    if (data->selection.right_clicked < data->mol_data.dynamic.molecule.atom.count) {
-                        residue_idx = data->mol_data.dynamic.molecule.atom.residue_indices[data->selection.right_clicked];
-                        if (0 < residue_idx && residue_idx < data->mol_data.dynamic.molecule.residues.count) {
-                            chain_idx = data->mol_data.dynamic.molecule.residues[residue_idx].chain_idx;
+        if (ImGui::BeginPopup("AtomContextMenu")) {
+            if (data->mol_data.dynamic.molecule) {
+                const int32 atom_idx = data->selection.right_clicked;
+                if (atom_idx != -1) {
+                    ASSERT(atom_idx < data->mol_data.dynamic.molecule.atom.count);
+                    const int32 residue_idx = data->mol_data.dynamic.molecule.atom.residue_indices[data->selection.right_clicked];
+                    const int32 chain_idx = data->mol_data.dynamic.molecule.residues[residue_idx].chain_idx;
+
+                    char buf[buf_len];
+
+                    snprintf(buf, buf_len, "atom(%i) ", data->selection.right_clicked + 1);
+                    if (ImGui::MenuItem(buf)) {
+                        memcpy(key_buf, buf, buf_len);
+                        paste_buf = true;
+                    }
+
+                    if (residue_idx > -1) {
+                        const auto& residue = data->mol_data.dynamic.molecule.residues[residue_idx];
+
+                        snprintf(buf, buf_len, "residue(%i) ", residue_idx + 1);
+                        if (ImGui::MenuItem(buf)) {
+                            memcpy(key_buf, buf, buf_len);
+                            paste_buf = true;
+                        }
+                        snprintf(buf, buf_len, "resid(%i) ", residue.id);
+                        if (ImGui::MenuItem(buf)) {
+                            memcpy(key_buf, buf, buf_len);
+                            paste_buf = true;
+                        }
+                        snprintf(buf, buf_len, "resname(%s) ", residue.name.cstr());
+                        if (ImGui::MenuItem(buf)) {
+                            memcpy(key_buf, buf, buf_len);
+                            paste_buf = true;
+                        }
+
+                        if (ImGui::BeginMenu("resatom...")) {
+                            snprintf(buf, buf_len, "resatom(resid(%i), %i) ", residue.id, atom_idx + 1);
+                            if (ImGui::MenuItem(buf)) {
+                                memcpy(key_buf, buf, buf_len);
+                                paste_buf = true;
+                            }
+                            snprintf(buf, buf_len, "resatom(resname(%s), %i) ", residue.name.cstr(), atom_idx + 1);
+                            if (ImGui::MenuItem(buf)) {
+                                memcpy(key_buf, buf, buf_len);
+                                paste_buf = true;
+                            }
+                            ImGui::EndMenu();
+                        }
+                    }
+                    if (chain_idx > -1) {
+                        snprintf(buf, buf_len, "chain(%i) ", chain_idx + 1);
+                        if (ImGui::MenuItem(buf)) {
+                            memcpy(key_buf, buf, buf_len);
+                            paste_buf = true;
                         }
                     }
                 }
-
-                if (residue_idx > -1) {
-                    snprintf(buf, 32, "residue(%i) ", residue_idx + 1);
-                    if (ImGui::MenuItem(buf)) {
-                        memcpy(insert_buf, buf, 32);
-                        insert_buf_set = true;
-                    }
-                    snprintf(buf, 32, "resid(%i) ", data->mol_data.dynamic.molecule.residues[residue_idx].id);
-                    if (ImGui::MenuItem(buf)) {
-                        memcpy(insert_buf, buf, 32);
-                        insert_buf_set = true;
-                    }
-                    snprintf(buf, 32, "resname(%s) ", data->mol_data.dynamic.molecule.residues[residue_idx].name.cstr());
-                    if (ImGui::MenuItem(buf)) {
-                        memcpy(insert_buf, buf, 32);
-                        insert_buf_set = true;
-                    }
-                    /*
-                                                    // This does not work as the internal buffer of imgui has a length of 17 characters.
-                                                    if (ImGui::BeginMenu("resatom...")) {
-                                                                    snprintf(buf, 32, "resatom(resid(%i), %i) ",
-data->mol_data.dynamic.molecule.residues[data->right_clicked.residue_idx].id, data->right_clicked.atom_idx + 1); if (ImGui::MenuItem(buf)) {
-                                                                                    memcpy(insert_buf, buf, 32);
-                                                                                    insert_buf_set = true;
-                                                                    }
-                                                                    snprintf(buf, 32, "resatom(resname(%s), %i) ",
-                                                                                                     data->mol_data.dynamic.molecule.residues[data->right_clicked.residue_idx].name.cstr(),
-data->right_clicked.atom_idx + 1); if (ImGui::MenuItem(buf)) { memcpy(insert_buf, buf, 32); insert_buf_set = true;
-                                                                    }
-                                                                    ImGui::EndMenu();
-}
-                    */
-                }
-                if (chain_idx > -1) {
-                    snprintf(buf, 32, "chain(%i) ", chain_idx + 1);
-                    if (ImGui::MenuItem(buf)) {
-                        memcpy(insert_buf, buf, 32);
-                        insert_buf_set = true;
-                    }
-                }
             }
-
             ImGui::EndPopup();
         }
 
-        if (insert_buf_set) {
+        if (paste_buf) {
             ImGui::SetActiveID(ImGui::GetID("##args"), ImGui::GetCurrentWindow());
             ImGui::SetKeyboardFocusHere();
-            ImGui::GetIO().AddInputCharactersUTF8(insert_buf);
+            ImGui::GetIO().AddInputCharactersUTF8(key_buf);
         }
 
         ImGui::PushItemWidth(-1);
@@ -1924,7 +1930,8 @@ data->right_clicked.atom_idx + 1); if (ImGui::MenuItem(buf)) { memcpy(insert_buf
         ImGui::NextColumn();
         ImGui::PopID();
     }
-    ImGui::Columns(1);
+    ImGui::EndColumns();
+    // ImGui::Columns(1);
     ImGui::Separator();
     ImGui::PopID();
     ImGui::PopItemWidth();
@@ -2241,7 +2248,8 @@ static void draw_distribution_window(ApplicationData* data) {
 
     const auto properties = stats::get_properties();
     constexpr float RANGE_SLIDER_HEIGHT = 26.f;
-    const float plot_height = ImGui::GetContentRegionAvail().y / (float)properties.count - RANGE_SLIDER_HEIGHT;
+    // const float plot_height = ImGui::GetContentRegionAvail().y / (float)properties.count - RANGE_SLIDER_HEIGHT;
+    const float plot_height = 100.f;
 
     ImVec2 frame_size{ImGui::CalcItemWidth(), plot_height};
 
@@ -2314,61 +2322,70 @@ static void draw_ramachandran_window(ApplicationData* data) {
     const int32 num_frames = data->mol_data.dynamic.trajectory ? data->mol_data.dynamic.trajectory.num_frames : 0;
     // const int32 frame = (int32)data->time;
     const IntRange frame_range = {(int32)data->time_filter.range.x, (int32)data->time_filter.range.y};
-    Array<const BackboneAngle> accumulated_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame_range.x, frame_range.y - frame_range.x);
+    Array<const BackboneAngle> trajectory_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame_range.x, frame_range.y - frame_range.x);
     Array<const BackboneAngle> current_angles = data->mol_data.dynamic.molecule.backbone.angles;
     Array<const BackboneSegment> backbone_segments = data->mol_data.dynamic.molecule.backbone.segments;
     Array<const uint8> atom_selection = data->selection.selected;
 
-    ImGui::SetNextWindowSizeConstraints(ImVec2(100, 100), ImVec2(1000, 1000), [](ImGuiSizeCallbackData* data) {
-        const float ar = 3.f / 4.f;
-        data->DesiredSize.x = data->DesiredSize.y * ar + 100;
-    });
+    /*
+ImGui::SetNextWindowSizeConstraints(ImVec2(100, 100), ImVec2(1000, 1000), [](ImGuiSizeCallbackData* data) {
+    const float ar = 3.f / 4.f;
+    data->DesiredSize.x = data->DesiredSize.y * ar + 100;
+});
+    */
 
     ImGui::Begin("Ramachandran", &data->ramachandran.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
-    ImGui::Text("Current");
-    ImGui::Checkbox("Show Current Frame", &data->ramachandran.current.enabled);
-    if (data->ramachandran.current.enabled) {
-        ImGui::PushID("current");
-        ImGui::SliderFloat("", &data->ramachandran.current.radius, 0.5f, 3.f, "radius %1.1f");
-        data->ramachandran.current.radius = math::round(data->ramachandran.current.radius * 2.f) / 2.f;
-        ImGui::SameLine();
-        ImGui::ColorEdit4("border color", (float*)&data->ramachandran.current.border_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
-        ImGui::SameLine();
-        ImGui::ColorEdit4("fill color", (float*)&data->ramachandran.current.fill_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
-        ImGui::PopID();
+    ImGui::BeginColumns("cols", 3, ImGuiColumnsFlags_NoResize);
+    {
+        ImGui::Checkbox("Show Current Frame", &data->ramachandran.current.enabled);
+        if (data->ramachandran.current.enabled) {
+            ImGui::PushID("current");
+            ImGui::SliderFloat("", &data->ramachandran.current.radius, 0.5f, 5.f, "radius %1.1f");
+            data->ramachandran.current.radius = math::round(data->ramachandran.current.radius * 2.f) / 2.f;
+            ImGui::SameLine();
+            ImGui::ColorEdit4("border color", (float*)&data->ramachandran.current.border_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+            ImGui::SameLine();
+            ImGui::ColorEdit4("fill color", (float*)&data->ramachandran.current.fill_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+            ImGui::PopID();
+        }
     }
-
-    ImGui::Separator();
-
-    ImGui::Text("Selected");
-    ImGui::Checkbox("Show Selection", &data->ramachandran.selected.enabled);
-    if (data->ramachandran.selected.enabled) {
-        ImGui::PushID("selected");
-        ImGui::SliderFloat("", &data->ramachandran.selected.radius, 0.5f, 3.f, "radius %1.1f");
-        data->ramachandran.selected.radius = math::round(data->ramachandran.selected.radius * 2.f) / 2.f;
-        ImGui::SameLine();
-        ImGui::ColorEdit4("border color", (float*)&data->ramachandran.selected.border_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
-        ImGui::SameLine();
-        ImGui::ColorEdit4("fill color", (float*)&data->ramachandran.selected.fill_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
-        ImGui::PopID();
+    ImGui::NextColumn();
+    {
+        ImGui::Checkbox("Show Selection", &data->ramachandran.selected.enabled);
+        if (data->ramachandran.selected.enabled) {
+            ImGui::PushID("selected");
+            ImGui::SliderFloat("", &data->ramachandran.selected.radius, 0.5f, 5.f, "radius %1.1f");
+            data->ramachandran.selected.radius = math::round(data->ramachandran.selected.radius * 2.f) / 2.f;
+            ImGui::SameLine();
+            ImGui::ColorEdit4("border color", (float*)&data->ramachandran.selected.border_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+            ImGui::SameLine();
+            ImGui::ColorEdit4("fill color", (float*)&data->ramachandran.selected.fill_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+            ImGui::PopID();
+        }
     }
+    ImGui::NextColumn();
+    {
+        ImGui::Checkbox("Show Range", &data->ramachandran.range.enabled);
+        if (data->ramachandran.range.enabled) {
+            ImGui::PushID("range");
+            ImGui::SliderFloat("", &data->ramachandran.range.radius, 0.1f, 5.f, "radius %1.1f");
+            ImGui::SameLine();
+            ImGui::ColorEdit4("color", (float*)&data->ramachandran.range.color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Fill color for trajectory range");
+            }
+            ImGui::PopID();
 
-    ImGui::Separator();
-
-    ImGui::Text("Range");
-    ImGui::Checkbox("Show Range", &data->ramachandran.range.enabled);
-    if (data->ramachandran.range.enabled) {
-        ImGui::PushID("range");
-        ImGui::SliderFloat("radius", &data->ramachandran.range.radius, 0.1f, 5.f);
-        ImGui::SameLine();
-        ImGui::ColorEdit4("color", (float*)&data->ramachandran.range.color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
-        // ImGui::RangeSliderFloat("framerange", &data->time_filter.range.x, &data->time_filter.range.y, 0, (float)math::max(0, num_frames));
-        ImGui::PopID();
+            ramachandran::clear_accumulation_texture();
+            ramachandran::compute_accumulation_texture(trajectory_angles, data->ramachandran.range.color, data->ramachandran.range.radius);
+        }
     }
+    ImGui::EndColumns();
 
+    const float win_w = ImGui::GetWindowContentRegionWidth();
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::BeginChild("canvas", ImVec2(0, 0), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("canvas", ImVec2(win_w, win_w), true, ImGuiWindowFlags_NoScrollbar);
 
     const float dim = ImGui::GetWindowContentRegionWidth();
     const ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
@@ -2383,10 +2400,6 @@ static void draw_ramachandran_window(ApplicationData* data) {
     dl->ChannelsSetCurrent(1);
     dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_gui_texture(), x0, x1);
     dl->ChannelsSetCurrent(2);
-    if (data->ramachandran.range.enabled) {
-        ramachandran::clear_accumulation_texture();
-        ramachandran::compute_accumulation_texture(accumulated_angles, data->ramachandran.range.color, data->ramachandran.range.radius);
-    }
     dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_accumulation_texture(), x0, x1);
     dl->ChannelsSetCurrent(3);
 
@@ -2793,7 +2806,6 @@ static void free_molecule_data(ApplicationData* data) {
     free_molecule_buffers(data);
     free_backbone_angles_trajectory(&data->ramachandran.backbone_angles);
     data->ramachandran.backbone_angles = {};
-    data->ramachandran.current_backbone_angles = {};
     data->hydrogen_bonds.bonds.clear();
     data->hydrogen_bonds.dirty = true;
     data->gpu_buffers.backbone.dirty = true;
@@ -2825,13 +2837,13 @@ static void init_trajectory_data(ApplicationData* data) {
         load_trajectory_async(data);
 
         create_volume(data);
-#if 0
-		if (traj.num_frames > 0) {
-			vec3 box_ext = traj.frame_buffer[0].box * vec3(1);
-			init_volume(&data->density_volume.volume, math::max(ivec3(1), ivec3(box_ext) / VOLUME_DOWNSAMPLE_FACTOR));
-			data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(vec3(0), box_ext);
-			data->density_volume.texture_to_model_matrix = volume::compute_texture_to_model_matrix(data->density_volume.volume.dim);
-}
+#if 1
+        if (data->mol_data.dynamic.trajectory.num_frames > 0) {
+            vec3 box_ext = data->mol_data.dynamic.trajectory.frame_buffer[0].box * vec3(1);
+            init_volume(&data->density_volume.volume, math::max(ivec3(1), ivec3(box_ext) / VOLUME_DOWNSAMPLE_FACTOR));
+            data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(vec3(0), box_ext);
+            data->density_volume.texture_to_model_matrix = volume::compute_texture_to_model_matrix(data->density_volume.volume.dim);
+        }
 #endif
 
         init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
@@ -2983,8 +2995,7 @@ static void load_workspace(ApplicationData* data, CString file) {
     CString line;
     while ((line = extract_line(c_txt))) {
         if (compare(line, "[Files]")) {
-            while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
-                line = extract_line(c_txt);
+            while (c_txt && c_txt[0] != '[' && (line = extract_line(c_txt))) {
                 if (compare_n(line, "MoleculeFile=", 13)) {
                     new_molecule_file = get_absolute_path(file, trim(line.substr(13)));
                 }
@@ -2995,8 +3006,7 @@ static void load_workspace(ApplicationData* data, CString file) {
         } else if (compare(line, "[Representation]")) {
             Representation* rep = create_representation(data);
             if (rep) {
-                while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
-                    line = extract_line(c_txt);
+                while (c_txt && c_txt[0] != '[' && (line = extract_line(c_txt))) {
                     if (compare_n(line, "Name=", 5)) rep->name = trim(line.substr(5));
                     if (compare_n(line, "Filter=", 7)) rep->filter = trim(line.substr(7));
                     if (compare_n(line, "Type=", 5)) rep->type = get_rep_type(trim(line.substr(5)));
@@ -3011,23 +3021,20 @@ static void load_workspace(ApplicationData* data, CString file) {
             }
         } else if (compare(line, "[Property]")) {
             StringBuffer<256> name, args;
-            while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
-                line = extract_line(c_txt);
+            while (c_txt && c_txt[0] != '[' && (line = extract_line(c_txt))) {
                 if (compare_n(line, "Name=", 5)) name = trim(line.substr(5));
                 if (compare_n(line, "Args=", 5)) args = trim(line.substr(5));
             }
             stats::create_property(name, args);
         } else if (compare(line, "[RenderSettings]")) {
-            while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
-                line = extract_line(c_txt);
+            while (c_txt && c_txt[0] != '[' && (line = extract_line(c_txt))) {
                 if (compare_n(line, "SsaoEnabled=", 12)) data->visuals.ssao.enabled = to_int(trim(line.substr(12))) != 0;
                 if (compare_n(line, "SsaoIntensity=", 14)) data->visuals.ssao.intensity = to_float(trim(line.substr(14)));
                 if (compare_n(line, "SsaoRadius=", 11)) data->visuals.ssao.radius = to_float(trim(line.substr(11)));
-                if (compare_n(line, "SsaoBias=", 9)) data->visuals.ssao.radius = to_float(trim(line.substr(9)));
+                if (compare_n(line, "SsaoBias=", 9)) data->visuals.ssao.bias = to_float(trim(line.substr(9)));
             }
         } else if (compare(line, "[Camera]")) {
-            while (c_txt.beg() != c_txt.end() && c_txt[0] != '[') {
-                line = extract_line(c_txt);
+            while (c_txt && c_txt[0] != '[' && (line = extract_line(c_txt))) {
                 if (compare_n(line, "Position=", 9)) {
                     vec3 pos = vec3(to_vec4(trim(line.substr(9))));
                     data->view.camera.position = pos;
@@ -3060,7 +3067,7 @@ static void load_workspace(ApplicationData* data, CString file) {
         load_molecule_data(data, new_trajectory_file);
     }
 
-    reset_view(data, false);
+    reset_view(data, true);
     reset_representations(data);
 }
 
@@ -3080,21 +3087,16 @@ static void save_workspace(ApplicationData* data, CString file) {
     // REPRESENTATIONS
     for (const auto& rep : data->representations.buffer) {
         fprintf(fptr, "[Representation]\n");
-        fprintf(fptr, "Name=%s\n", rep.name.beg());
-        fprintf(fptr, "Filter=%s\n", rep.filter.beg());
-        fprintf(fptr, "Type=%s\n", get_rep_type_name(rep.type).beg());
-        fprintf(fptr, "ColorMapping=%s\n", get_color_mapping_name(rep.color_mapping).beg());
-        fprintf(fptr, "Enabled=%i\n", rep.enabled);
-        if (rep.color_mapping == ColorMapping::STATIC_COLOR) {
-            fprintf(fptr, "StaticColor=%i\n", rep.enabled);
-        }
-        if (rep.type == Representation::VDW || Representation::LICORICE)
-            fprintf(fptr, "Radius=%g\n", rep.radius);
-        else if (rep.type == Representation::RIBBONS) {
-            fprintf(fptr, "Tension=%g\n", rep.tension);
-            fprintf(fptr, "Width=%g\n", rep.width);
-            fprintf(fptr, "Thickness=%g\n", rep.thickness);
-        }
+        fprintf(fptr, "Name=%s\n", rep.name.cstr());
+        fprintf(fptr, "Filter=%s\n", rep.filter.cstr());
+        fprintf(fptr, "Type=%s\n", get_rep_type_name(rep.type).cstr());
+        fprintf(fptr, "ColorMapping=%s\n", get_color_mapping_name(rep.color_mapping).cstr());
+        fprintf(fptr, "Enabled=%i\n", (int)rep.enabled);
+        fprintf(fptr, "StaticColor=%g,%g,%g,%g\n", rep.static_color.r, rep.static_color.g, rep.static_color.b, rep.static_color.a);
+        fprintf(fptr, "Radius=%g\n", rep.radius);
+        fprintf(fptr, "Tension=%g\n", rep.tension);
+        fprintf(fptr, "Width=%g\n", rep.width);
+        fprintf(fptr, "Thickness=%g\n", rep.thickness);
         fprintf(fptr, "\n");
     }
 
