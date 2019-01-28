@@ -2858,7 +2858,7 @@ static void load_molecule_data(ApplicationData* data, CString file) {
         CString ext = get_file_extension(file);
         LOG_NOTE("Loading molecular data from file '%.*s'...", file.count, file.ptr);
         auto t0 = platform::get_time();
-        if (compare(ext, "pdb", true)) {
+        if (compare_ignore_case(ext, "pdb")) {
             free_molecule_data(data);
             if (!allocate_and_load_pdb_from_file(&data->mol_data.dynamic, file)) {
                 LOG_ERROR("ERROR! Failed to load pdb file.");
@@ -2866,7 +2866,7 @@ static void load_molecule_data(ApplicationData* data, CString file) {
             data->files.molecule = allocate_string(file);
             init_molecule_data(data);
             init_trajectory_data(data);
-        } else if (compare(ext, "gro", true)) {
+        } else if (compare_ignore_case(ext, "gro")) {
             free_molecule_data(data);
             if (!allocate_and_load_gro_from_file(&data->mol_data.dynamic.molecule, file)) {
                 LOG_ERROR("ERROR! Failed to load gro file.");
@@ -2874,7 +2874,7 @@ static void load_molecule_data(ApplicationData* data, CString file) {
             }
             data->files.molecule = allocate_string(file);
             init_molecule_data(data);
-        } else if (compare_n(ext, "xtc", true)) {
+        } else if (compare_ignore_case(ext, "xtc")) {
             if (!data->mol_data.dynamic.molecule) {
                 LOG_ERROR("ERROR! Must have molecule structure before trajectory can be loaded.");
                 return;

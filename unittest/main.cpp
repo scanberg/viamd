@@ -53,7 +53,37 @@ ATOM     23  H12 CSP3    1E      9.437   2.207  -6.309
 ATOM     24  H13 CSP3    1E      9.801   2.693  -7.994
 )";
 
-TEST_CASE("Testing DynamicArray", "[DynamicArray") {
+#include <chrono>
+#define TIME() std::chrono::high_resolution_clock::now()
+#define MILLISEC(x, y) std::chrono::duration_cast<std::chrono::milliseconds>(y - x).count()
+
+TEST_CASE("Testing PdbInfo", "[PdbInfo]") {
+    const auto t0 = TIME();
+    String pdb_str = allocate_and_read_textfile(VIAMD_DATA_DIR "/alanine/14ns-300K.pdb");
+    defer { free_string(&pdb_str); };
+    const auto t1 = TIME();
+
+    const auto t2 = TIME();
+    PdbInfo info;
+    extract_pdb_info(&info, pdb_str);
+    const auto t3 = TIME();
+
+    const auto t4 = TIME();
+    MoleculeDynamic md;
+    allocate_and_parse_pdb_from_string(&md, pdb_str);
+    defer {
+        free_molecule_structure(&md.molecule);
+        free_trajectory(&md.trajectory);
+    };
+    const auto t5 = TIME();
+
+    printf("Time to load dataset: %.2f\n", (double)MILLISEC(t0, t1));
+    printf("Time to extract pdb info: %.2f\n", (double)MILLISEC(t2, t3));
+    printf("Time to parse full pdb: %.2f\n", (double)MILLISEC(t4, t5));
+    printf("PdbInfo:\n num_atoms: %i \n num_residues: %i \n num_chains: %i \n num_frames: %i \n", info.num_atoms, info.num_residues, info.num_chains, info.num_frames);
+}
+
+TEST_CASE("Testing DynamicArray", "[DynamicArray]") {
     // MoleculeDynamic md;
     // allocate_and_parse_pdb_from_string(&md, CAFFINE_PDB);
     // defer { free_molecule_structure(&md.molecule); };

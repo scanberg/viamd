@@ -346,7 +346,7 @@ bool extract_structures(StructureData* data, CString arg, const MoleculeStructur
     }
 
     // @NOTE: ONLY ALLOW RECURSION FOR FIRST ARGUMENT?
-    if (cmd_args.count > 0 && find_character(cmd_args[0], '(') != cmd_args[0].end()) {
+    if (cmd_args.count > 0 && find_character(cmd_args[0], '(')) {
         if (!extract_structures(data, cmd_args[0], molecule)) return false;
         cmd_args = cmd_args.subarray(1);
     }
@@ -974,7 +974,7 @@ static DynamicArray<Property*> extract_property_dependencies(Array<Property*> pr
     DynamicArray<Property*> dependencies;
     for (Property* prop : properties) {
         if (!prop->valid) continue;
-        CString match = find_first_match(expression, prop->name_buf);
+        CString match = find_string(expression, prop->name_buf);
         if (match) {
             if (match.beg() != expression.beg()) {
                 char pre_char = *(match.beg() - 1);
