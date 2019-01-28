@@ -18,7 +18,7 @@ static int filter_func(const struct dirent *dir) {
                     if (len >= 0) {
                         StringBuffer<32> buf;
                         snprintf(buf.cstr(), 32, ".%.*s", (int32)f.length(), f.cstr());
-                        if (compare(s + len, buf, true)) return 1;
+                        if (compare_ignore_case(s + len, buf)) return 1;
                     }
                 }
             }
