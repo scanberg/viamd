@@ -465,6 +465,9 @@ static void free_molecule_buffers(ApplicationData* data);
 
 static void copy_molecule_position_radius_to_buffer(ApplicationData* data);
 
+static void init_molecule_data(ApplicationData* data);
+static void init_trajectory_data(ApplicationData* data);
+
 static void load_molecule_data(ApplicationData* data, CString file);
 static void free_molecule_data(ApplicationData* data);
 
@@ -556,8 +559,8 @@ int main(int, char**) {
     math::generate_halton_sequence(halton_23, ARRAY_SIZE(halton_23), 2, 3);
 
 #ifdef VIAMD_RELEASE
-    allocate_and_parse_pdb_from_string(&data->mol_data.dynamic, CAFFINE_PDB);
-    data->mol_data.atom_radii = compute_atom_radii(data->mol_data.dynamic.molecule.atom_elements);
+    allocate_and_parse_pdb_from_string(&data.mol_data.dynamic, CAFFINE_PDB);
+    init_molecule_data(&data);
 #else
     load_molecule_data(&data, VIAMD_DATA_DIR "/1af6.pdb");
 #endif
@@ -1041,10 +1044,9 @@ int main(int, char**) {
             data.selection.hovered = -1;
             if (data.picking.idx != NO_PICKING_IDX) {
                 data.selection.hovered = data.picking.idx;
-
-                if (data.ctx.input.mouse.hit[1]) {
-                    data.selection.right_clicked = data.selection.hovered;
-                }
+            }
+            if (data.ctx.input.mouse.hit[1]) {
+                data.selection.right_clicked = data.selection.hovered;
             }
         }
         POP_GPU_SECTION()
@@ -1579,39 +1581,42 @@ if (ImGui::BeginPopupModal("Warning New")) {
 void draw_context_popup(ApplicationData* data) {
     ASSERT(data);
 
-    if (ImGui::BeginPopup("OtherContextPopup")) {
-        if (ImGui::MenuItem("Recenter Trajectory to residue")) {
-            if (data->selection.right_clicked != -1) {
-                recenter_trajectory(&data->mol_data.dynamic, data->mol_data.dynamic.molecule.atom.residue_indices[data->selection.right_clicked]);
-            }
-        }
-        if (ImGui::MenuItem("Selection Query")) {
-            ImGui::BeginPopup("Selection Query");
-        }
-        ImGui::EndPopup();
-    }
-
-    if (ImGui::BeginPopup("Selection Query")) {
-        char buf[256];
-        ImGui::InputText("query", buf, 256);
-        if (ImGui::Button("Append")) {
-        }
-        ImGui::SameLine();
-        ImGui::Button("Exclude");
-        ImGui::SameLine();
-        ImGui::Button("Cancel");
-        ImGui::EndPopup();
-    }
-
     if (data->ctx.input.mouse.release[1] && !data->ctx.input.mouse.moving) {
-    }
-
-    if (data->selection.hovered != -1 && data->ctx.input.mouse.release[1] && !data->ctx.input.mouse.moving) {
-        if (ImGui::GetIO().WantTextInput) {
-            ImGui::OpenPopup("TextContextPopup");
-        } else {
+        if (!ImGui::GetIO().WantTextInput) {
             ImGui::OpenPopup("OtherContextPopup");
         }
+    }
+
+    if (ImGui::BeginPopup("OtherContextPopup")) {
+        if (data->selection.right_clicked != -1 && data->mol_data.dynamic) {
+            if (ImGui::Button("Recenter Trajectory")) {
+                recenter_trajectory(&data->mol_data.dynamic, data->mol_data.dynamic.molecule.atom.residue_indices[data->selection.right_clicked]);
+                interpolate_atomic_positions(get_positions(data->mol_data.dynamic.molecule), data->mol_data.dynamic.trajectory, data->time, data->interpolation);
+                copy_molecule_position_radius_to_buffer(data);
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        if (ImGui::Button("Selection Query")) {
+            ImGui::CloseCurrentPopup();
+            ImGui::OpenPopup("Selection Query");
+        }
+        /*
+if (ImGui::MenuItem("Selection Query")) {
+    ImGui::OpenPopup("Selection Query");
+}
+        */
+        if (ImGui::BeginPopup("Selection Query")) {
+            char buf[256] = {0};
+            ImGui::InputText("query", buf, 256);
+            if (ImGui::Button("Append")) {
+            }
+            ImGui::SameLine();
+            ImGui::Button("Exclude");
+            ImGui::SameLine();
+            ImGui::Button("Cancel");
+            ImGui::EndPopup();
+        }
+        ImGui::EndPopup();
     }
 }
 
@@ -2994,7 +2999,7 @@ static void load_workspace(ApplicationData* data, CString file) {
     CString c_txt = txt;
     CString line;
     while ((line = extract_line(c_txt))) {
-        if (compare(line, "[Files]")) {
+        if (compare_n(line, "[Files]", 7)) {
             while (c_txt && c_txt[0] != '[' && (line = extract_line(c_txt))) {
                 if (compare_n(line, "MoleculeFile=", 13)) {
                     new_molecule_file = get_absolute_path(file, trim(line.substr(13)));
@@ -3003,7 +3008,7 @@ static void load_workspace(ApplicationData* data, CString file) {
                     new_trajectory_file = get_absolute_path(file, trim(line.substr(15)));
                 }
             }
-        } else if (compare(line, "[Representation]")) {
+        } else if (compare_n(line, "[Representation]", 16)) {
             Representation* rep = create_representation(data);
             if (rep) {
                 while (c_txt && c_txt[0] != '[' && (line = extract_line(c_txt))) {
@@ -3019,21 +3024,21 @@ static void load_workspace(ApplicationData* data, CString file) {
                     if (compare_n(line, "Thickness=", 10)) rep->thickness = to_float(trim(line.substr(10)));
                 }
             }
-        } else if (compare(line, "[Property]")) {
+        } else if (compare_n(line, "[Property]", 10)) {
             StringBuffer<256> name, args;
             while (c_txt && c_txt[0] != '[' && (line = extract_line(c_txt))) {
                 if (compare_n(line, "Name=", 5)) name = trim(line.substr(5));
                 if (compare_n(line, "Args=", 5)) args = trim(line.substr(5));
             }
             stats::create_property(name, args);
-        } else if (compare(line, "[RenderSettings]")) {
+        } else if (compare_n(line, "[RenderSettings]", 16)) {
             while (c_txt && c_txt[0] != '[' && (line = extract_line(c_txt))) {
                 if (compare_n(line, "SsaoEnabled=", 12)) data->visuals.ssao.enabled = to_int(trim(line.substr(12))) != 0;
                 if (compare_n(line, "SsaoIntensity=", 14)) data->visuals.ssao.intensity = to_float(trim(line.substr(14)));
                 if (compare_n(line, "SsaoRadius=", 11)) data->visuals.ssao.radius = to_float(trim(line.substr(11)));
                 if (compare_n(line, "SsaoBias=", 9)) data->visuals.ssao.bias = to_float(trim(line.substr(9)));
             }
-        } else if (compare(line, "[Camera]")) {
+        } else if (compare_n(line, "[Camera]", 8)) {
             while (c_txt && c_txt[0] != '[' && (line = extract_line(c_txt))) {
                 if (compare_n(line, "Position=", 9)) {
                     vec3 pos = vec3(to_vec4(trim(line.substr(9))));
@@ -3048,13 +3053,6 @@ static void load_workspace(ApplicationData* data, CString file) {
             }
         }
     }
-
-    // Store Loaded Molecule File Relative Path
-    // (Store Loaded Trajectory File Relative Path)
-    // Store Representations
-    // Store Groups and Properties
-    // Store Rendersettings
-    // ...
 
     if (data->files.workspace) free_string(&data->files.workspace);
     data->files.workspace = allocate_string(file);
