@@ -62,13 +62,14 @@ constexpr Key::Key_t PLAY_PAUSE_KEY = Key::KEY_SPACE;
 #define POP_CPU_SECTION() {};
 
 // For gpu profiling
-#ifndef OS_MAC_OSX
-#define PUSH_GPU_SECTION(lbl) glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, GL_KHR_debug, -1, lbl);
-#define POP_GPU_SECTION() glPopDebugGroup();
-#else
-#define PUSH_GPU_SECTION(lbl) {};
-#define POP_GPU_SECTION() {};
-#endif
+#define PUSH_GPU_SECTION(lbl)                                                                       \
+    {                                                                                               \
+        if (glPushDebugGroup) glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, GL_KHR_debug, -1, lbl); \
+    }
+#define POP_GPU_SECTION()                       \
+    {                                           \
+        if (glPopDebugGroup) glPopDebugGroup(); \
+    }
 
 constexpr unsigned int NO_PICKING_IDX = 0xffffffff;
 constexpr const char* FILE_EXTENSION = "via";
@@ -131,14 +132,6 @@ inline vec2& vec_cast(ImVec2& v) { return *(vec2*)(&v); }
 
 enum PlaybackInterpolationMode { NEAREST, LINEAR, LINEAR_PERIODIC, CUBIC, CUBIC_PERIODIC };
 
-struct CameraTransformation {
-    mat4 world_to_view;
-    mat4 view_to_world;
-    // Projection
-    mat4 view_to_clip;
-    mat4 clip_to_view;
-};
-
 struct PickingData {
     uint32 idx;
     float depth;
@@ -150,6 +143,7 @@ struct MainFramebuffer {
         GLuint depth = 0;
         GLuint color = 0;
         GLuint normal = 0;
+		GLuint velocity = 0;
         GLuint atom_idx = 0;
         GLuint fbo = 0;
     } deferred;
@@ -176,7 +170,9 @@ struct MainFramebuffer {
 };
 
 struct MoleculeBuffers {
-    GLuint position_radius = 0;
+	GLuint position = 0;
+	GLuint velocity = 0;
+	GLuint radius = 0;
     GLuint selection = 0;
     GLuint bond = 0;
     struct {
@@ -257,7 +253,7 @@ struct ApplicationData {
         bool moving = false;
         Camera camera{};
         TrackballControllerState trackball_state{};
-        CameraTransformation matrices{};
+        ViewParam param;
 
         struct {
             vec3 target_position{};
@@ -269,6 +265,7 @@ struct ApplicationData {
     struct {
         MoleculeDynamic dynamic{};
         DynamicArray<float> atom_radii{};
+		DynamicArray<vec3> atom_velocity{};
     } mol_data;
 
     // --- THREAD SYNCHRONIZATION ---
@@ -326,21 +323,28 @@ struct ApplicationData {
     struct {
         struct {
             bool enabled = false;
-            float intensity = 3.0f;
+            float intensity = 1.5f;
             float radius = 6.0f;
             float bias = 0.1f;
         } ssao;
 
         struct {
             bool enabled = false;
-            float focus_point = 0.5f;
+            float focus_depth = 0.5f;
             float focus_scale = 1.0f;
         } dof;
 
         struct {
-            bool enabled = false;
-            float blend_factor = 0.125f;
-        } temporal_aa;
+            bool enabled = true;
+			bool jitter = true;
+			float feedback_min = 0.88f;
+			float feedback_max = 0.97f;
+
+			struct {
+				bool enabled = true;
+				float motion_scale = 1.f;
+			} motion_blur;
+        } temporal_reprojection;
 
         struct {
             bool enabled = true;
@@ -408,7 +412,7 @@ struct ApplicationData {
             bool enabled = true;
             float radius = 2.0f;
             vec4 border_color = vec4(0, 0, 0, 1);
-            vec4 fill_color = vec4(0.5f, 0.5f, 0, 1);
+            vec4 fill_color = vec4(1, 1, 0, 1);
         } current;
 
         struct {
@@ -430,7 +434,7 @@ struct ApplicationData {
 
     struct {
         spatialhash::Frame frame = {};
-        vec3 cell_ext = vec3(4.f);  // in Ångström
+        vec3 cell_ext = vec3(4.0f);  // in Ångström
         bool dirty_flag = true;
     } spatial_hash;
 
@@ -439,12 +443,17 @@ struct ApplicationData {
     bool show_console = false;
 };
 
+// custom ImGui procedures
+namespace ImGui {
+static bool DeleteButton(const char* label, const ImVec2& size = ImVec2(0, 0));
+static void CreateDockspace();
+}
+
 static void interpolate_atomic_positions(Array<vec3> dst_pos, const MoleculeTrajectory& traj, float64 time, PlaybackInterpolationMode interpolation_mode);
 static void reset_view(ApplicationData* data, bool move_camera = false, bool smooth_transition = false);
 static float compute_avg_ms(float dt);
 static PickingData get_picking_data(const MainFramebuffer& fbo, int32 x, int32 y);
 
-static void imgui_dockspace();
 
 static void draw_main_menu(ApplicationData* data);
 static void draw_context_popup(ApplicationData* data);
@@ -463,7 +472,7 @@ static void destroy_framebuffer(MainFramebuffer* fbo);
 static void init_molecule_buffers(ApplicationData* data);
 static void free_molecule_buffers(ApplicationData* data);
 
-static void copy_molecule_position_radius_to_buffer(ApplicationData* data);
+static void copy_molecule_data_to_buffers(ApplicationData* data);
 
 static void init_molecule_data(ApplicationData* data);
 static void init_trajectory_data(ApplicationData* data);
@@ -552,7 +561,7 @@ int main(int, char**) {
     ImGui::GetStyle().WindowRounding = 0.0f;
     ImGui::GetStyle().Colors[ImGuiCol_TitleBgCollapsed] = ImVec4(0.40f, 0.40f, 0.80f, 0.30f);
 
-    const vec4 CLEAR_COLOR = vec4(1, 1, 1, 1);
+    const vec4 CLEAR_COLOR = vec4(0, 0, 0, 0);
     const vec4 CLEAR_INDEX = vec4(1, 1, 1, 1);
 
     vec2 halton_23[32];
@@ -728,7 +737,7 @@ int main(int, char**) {
         }
 
         // This needs to happen first (in imgui events) to enable docking of imgui windows
-        imgui_dockspace();
+        ImGui::CreateDockspace();
 
         if (data.density_volume.enabled) {
             stats::async_update(
@@ -816,13 +825,24 @@ int main(int, char**) {
             PUSH_CPU_SECTION("Interpolate Position")
             if (traj) {
                 data.spatial_hash.dirty_flag = true;
-                interpolate_atomic_positions(get_positions(mol), traj, data.time, data.interpolation);
+
+				auto pos = get_positions(mol);
+				vec3* old_pos = (vec3*)TMP_MALLOC(pos.size_in_bytes());
+				defer{ TMP_FREE(old_pos); };
+				memcpy(old_pos, pos.data(), pos.size_in_bytes());
+
+                interpolate_atomic_positions(pos, traj, data.time, data.interpolation);
                 if (data.interpolation != PlaybackInterpolationMode::NEAREST) {
                     // const auto& box = get_trajectory_frame(data.mol_data.dynamic.trajectory, (int)data.time).box;
                     // apply_pbc_residues(get_positions(data.mol_data.dynamic.molecule), data.mol_data.dynamic.molecule.residues, box);
                     // apply_pbc_chains(get_positions(data.mol_data.dynamic.molecule), data.mol_data.dynamic.molecule.chains, data.mol_data.dynamic.molecule.residues, box);
                 }
-                copy_molecule_position_radius_to_buffer(&data);
+
+				for (int64 i = 0; i < mol.atom.count; i++) {
+					data.mol_data.atom_velocity[i] = pos[i] - old_pos[i];
+				}
+
+                copy_molecule_data_to_buffers(&data);
             }
             POP_CPU_SECTION()
 
@@ -878,8 +898,6 @@ int main(int, char**) {
             old_hash = new_hash;
         }
 
-        const bool clear_temporal_aa = (data.view.moving || data.is_playing || data.representations.changed || visuals_changed || data.frame == 0);
-
         // Resize Framebuffer
         if ((data.fbo.width != data.ctx.framebuffer.width || data.fbo.height != data.ctx.framebuffer.height) && (data.ctx.framebuffer.width != 0 && data.ctx.framebuffer.height != 0)) {
             init_framebuffer(&data.fbo, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
@@ -899,7 +917,7 @@ int main(int, char**) {
             data.gpu_buffers.backbone.dirty = true;
             if (has_spline_rep && data.gpu_buffers.backbone.dirty) {
                 data.gpu_buffers.backbone.dirty = false;
-                draw::compute_backbone_control_points(data.gpu_buffers.backbone.control_point, data.gpu_buffers.position_radius, data.gpu_buffers.backbone.backbone_segment_index,
+                draw::compute_backbone_control_points(data.gpu_buffers.backbone.control_point, data.gpu_buffers.position, data.gpu_buffers.backbone.backbone_segment_index,
                                                       data.gpu_buffers.backbone.num_backbone_segment_indices, ramachandran::get_segmentation_texture());
                 draw::compute_backbone_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index,
                                               data.gpu_buffers.backbone.num_control_point_indices);
@@ -907,57 +925,77 @@ int main(int, char**) {
         }
         POP_GPU_SECTION()
 
+		mat4 view_mat = compute_world_to_view_matrix(data.view.camera);
+		mat4 proj_mat = compute_perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height);
+
+		{
+			const vec2 res = vec2(data.fbo.width, data.fbo.height);
+			vec2 jitter = vec2(0, 0);
+			if (data.visuals.temporal_reprojection.enabled && data.visuals.temporal_reprojection.jitter) {
+				static uint32 i = 0;
+				i = (++i) % ARRAY_SIZE(halton_23);
+				jitter = halton_23[i] * 2.0f - 1.0f;
+				//jitter = halton_23[i] - 0.5f;
+				const mat4 jitter_mat = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(jitter / res, 0, 1));
+				proj_mat = jitter_mat * proj_mat;
+			}
+
+			auto& param = data.view.param;
+			param.previous.matrix.view_proj = param.matrix.view_proj;
+			param.previous.jitter = param.jitter;
+			param.matrix.view = view_mat;
+			param.matrix.proj = proj_mat;
+			param.matrix.view_proj = proj_mat * view_mat;
+			param.matrix.inverse.view = math::inverse(view_mat);
+			param.matrix.inverse.proj = math::inverse(proj_mat);
+			param.matrix.inverse.view_proj = math::inverse(param.matrix.view_proj);
+			param.matrix.norm = math::transpose(param.matrix.inverse.view);
+
+			param.jitter = jitter;
+			param.resolution = res;
+		}
+
+		const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3 };
+
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.deferred.fbo);
+		glViewport(0, 0, data.fbo.width, data.fbo.height);
+
+		glDepthMask(GL_TRUE);
+		glColorMask(1, 1, 1, 1);
+
         // Setup fbo and clear textures
         PUSH_GPU_SECTION("Clear G-buffer") {
-            const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2};
-
-            glViewport(0, 0, data.fbo.width, data.fbo.height);
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.deferred.fbo);
-
-            glEnable(GL_DEPTH_TEST);
-            glDepthFunc(GL_LESS);
-            glDepthMask(GL_TRUE);
-
-            // Clear color+alpha and depth
-            glDrawBuffer(GL_COLOR_ATTACHMENT0);
-            glClearColor(CLEAR_COLOR.x, CLEAR_COLOR.y, CLEAR_COLOR.z, CLEAR_COLOR.w);
+            // Clear color+alpha, normal and depth
+            glDrawBuffers(2, draw_buffers);
+            glClearColor(0, 0, 0, 0);
             glClearDepthf(1.f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-            // Clear normal
-            glDrawBuffer(GL_COLOR_ATTACHMENT1);
-            glClearColor(0, 0, 0, 0);
-            glClear(GL_COLOR_BUFFER_BIT);
-
             // Clear picking buffer
-            glDrawBuffer(GL_COLOR_ATTACHMENT2);
+            glDrawBuffer(GL_COLOR_ATTACHMENT3);
             glClearColor(CLEAR_INDEX.x, CLEAR_INDEX.y, CLEAR_INDEX.z, CLEAR_INDEX.w);
             glClear(GL_COLOR_BUFFER_BIT);
-
-            // Enable all draw buffers
-            glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
         }
-        POP_GPU_SECTION()
+		POP_GPU_SECTION()
 
-        // RENDER TO FBO
-        mat4 view_mat = compute_world_to_view_matrix(data.view.camera);
-        mat4 proj_mat = compute_perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height);
+		glDisable(GL_DEPTH_TEST);
+		glDepthMask(GL_FALSE);
 
-        if (data.visuals.temporal_aa.enabled && !clear_temporal_aa) {
-            static uint32 i = 0;
-            i = (++i) % ARRAY_SIZE(halton_23);
-            const vec2 offset = halton_23[i] * 2.f - 1.f;
-            const mat4 jitter_mat = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(offset.x / data.fbo.width, offset.y / data.fbo.height, 0, 1));
-            proj_mat = jitter_mat * proj_mat;
-        }
+		PUSH_GPU_SECTION("BLIT SS VEL") {
+			glDrawBuffer(GL_COLOR_ATTACHMENT2);
+			postprocessing::blit_velocity(data.view.param);
+		}
+		POP_GPU_SECTION();
 
-        // mat4 view_proj_mat = proj_mat * view_mat;
-        // mat4 inv_view_mat = math::inverse(view_mat);
-        mat4 inv_proj_mat = math::inverse(proj_mat);
-        mat4 inv_view_proj_mat = math::inverse(proj_mat * view_mat);
+		glEnable(GL_CULL_FACE);
+		glCullFace(GL_BACK);
 
-        glEnable(GL_CULL_FACE);
-        glCullFace(GL_BACK);
+		glEnable(GL_DEPTH_TEST);
+		glDepthFunc(GL_LESS);
+		glDepthMask(GL_TRUE);
+
+		// Enable all draw buffers
+		glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
 
         PUSH_GPU_SECTION("G-Buffer fill") {
             for (const auto& rep : data.representations.buffer) {
@@ -965,34 +1003,32 @@ int main(int, char**) {
                 switch (rep.type) {
                     case Representation::VDW:
                         PUSH_GPU_SECTION("Vdw")
-                        draw::draw_vdw(data.gpu_buffers.position_radius, rep.color_buffer, (int)data.mol_data.dynamic.molecule.atom.count, view_mat, proj_mat, rep.radius);
+                        draw::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.velocity, (int)data.mol_data.dynamic.molecule.atom.count, data.view.param, rep.radius);
                         POP_GPU_SECTION()
                         break;
                     case Representation::LICORICE:
                         PUSH_GPU_SECTION("Licorice")
-                        draw::draw_licorice(data.gpu_buffers.position_radius, rep.color_buffer, data.gpu_buffers.bond, (int)data.mol_data.dynamic.molecule.covalent_bonds.size(), view_mat, proj_mat,
+                        draw::draw_licorice(data.gpu_buffers.position, rep.color_buffer, data.gpu_buffers.bond, (int)data.mol_data.dynamic.molecule.covalent_bonds.size(), data.view.param,
                                             rep.radius);
                         POP_GPU_SECTION()
                         break;
                     case Representation::BALL_AND_STICK:
                         PUSH_GPU_SECTION("Vdw")
-                        draw::draw_vdw(data.gpu_buffers.position_radius, rep.color_buffer, (int)data.mol_data.dynamic.molecule.atom.count, view_mat, proj_mat, rep.radius * 0.25f);
+                        draw::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.velocity, (int)data.mol_data.dynamic.molecule.atom.count, data.view.param, rep.radius * 0.25f);
                         POP_GPU_SECTION()
                         PUSH_GPU_SECTION("Licorice")
-                        draw::draw_licorice(data.gpu_buffers.position_radius, rep.color_buffer, data.gpu_buffers.bond, (int)data.mol_data.dynamic.molecule.covalent_bonds.size(), view_mat, proj_mat,
+                        draw::draw_licorice(data.gpu_buffers.position, rep.color_buffer, data.gpu_buffers.bond, (int)data.mol_data.dynamic.molecule.covalent_bonds.size(), data.view.param,
                                             rep.radius * 0.4f);
                         POP_GPU_SECTION()
                         break;
                     case Representation::RIBBONS:
                         PUSH_GPU_SECTION("Ribbons")
-                        draw::draw_ribbons(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, rep.color_buffer, data.gpu_buffers.backbone.num_spline_indices, view_mat,
-                                           proj_mat);
+                        draw::draw_ribbons(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, rep.color_buffer, data.gpu_buffers.backbone.num_spline_indices, data.view.param);
                         POP_GPU_SECTION()
                         break;
                     case Representation::CARTOON:
                         PUSH_GPU_SECTION("Cartoon")
-                        draw::draw_cartoon(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, rep.color_buffer, data.gpu_buffers.backbone.num_spline_indices, view_mat,
-                                           proj_mat);
+                        draw::draw_cartoon(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, rep.color_buffer, data.gpu_buffers.backbone.num_spline_indices, data.view.param);
                         POP_GPU_SECTION()
                         break;
                 }
@@ -1031,21 +1067,22 @@ int main(int, char**) {
 
         // PICKING
         PUSH_GPU_SECTION("Picking") {
-            ivec2 coord = {data.ctx.input.mouse.win_coord.x, data.fbo.height - data.ctx.input.mouse.win_coord.y};
-            if (coord.x < 0 || coord.y < 0 || coord.x >= data.fbo.width || coord.y >= data.fbo.height) {
+            vec2 coord = {data.ctx.input.mouse.win_coord.x, data.fbo.height - data.ctx.input.mouse.win_coord.y};
+            if (coord.x < 0.f || coord.y < 0.f || coord.x >= (float)data.fbo.width || coord.y >= (float)data.fbo.height) {
                 data.picking.idx = NO_PICKING_IDX;
                 data.picking.depth = 1.f;
             } else {
-                data.picking = get_picking_data(data.fbo, coord.x, coord.y);
+				coord += data.view.param.jitter;
+                data.picking = get_picking_data(data.fbo, (int32)(coord.x + 0.5f), (int32)(coord.y + 0.5f));
                 const vec4 viewport(0, 0, data.fbo.width, data.fbo.height);
-                data.picking.world_coord = math::unproject(vec3(coord.x, coord.y, data.picking.depth), inv_view_proj_mat, viewport);
+                data.picking.world_coord = math::unproject(vec3(coord.x, coord.y, data.picking.depth), data.view.param.matrix.inverse.view_proj, viewport);
             }
 
             data.selection.hovered = -1;
             if (data.picking.idx != NO_PICKING_IDX) {
                 data.selection.hovered = data.picking.idx;
             }
-            if (data.ctx.input.mouse.hit[1]) {
+            if (data.ctx.input.mouse.clicked[1]) {
                 data.selection.right_clicked = data.selection.hovered;
             }
         }
@@ -1064,7 +1101,7 @@ int main(int, char**) {
         // Activate hdr fbo
         // Shade deferred
         PUSH_GPU_SECTION("Shading")
-        postprocessing::shade_deferred(data.fbo.deferred.depth, data.fbo.deferred.color, data.fbo.deferred.normal, inv_proj_mat);
+        postprocessing::shade_deferred(data.fbo.deferred.depth, data.fbo.deferred.color, data.fbo.deferred.normal, data.view.param.matrix.inverse.proj);
         POP_GPU_SECTION()
 
         PUSH_GPU_SECTION("Highlight Selection")
@@ -1073,6 +1110,41 @@ int main(int, char**) {
         postprocessing::highlight_selection(data.fbo.deferred.atom_idx, data.gpu_buffers.selection);
         glDisable(GL_BLEND);
         POP_GPU_SECTION();
+
+		// Activate backbuffer
+		glViewport(0, 0, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+		glDrawBuffer(GL_BACK);
+
+		PUSH_GPU_SECTION("Postprocessing") {
+			postprocessing::PostProcessingDesc desc;
+			desc.ambient_occlusion.enabled = data.visuals.ssao.enabled;
+			desc.ambient_occlusion.intensity = data.visuals.ssao.intensity;
+			desc.ambient_occlusion.radius = data.visuals.ssao.radius;
+			desc.ambient_occlusion.bias = data.visuals.ssao.bias;
+
+			desc.tonemapping.enabled = data.visuals.tonemapping.enabled;
+			desc.tonemapping.mode = data.visuals.tonemapping.tonemapper;
+			desc.tonemapping.exposure = data.visuals.tonemapping.exposure;
+			desc.tonemapping.gamma = data.visuals.tonemapping.gamma;
+
+			data.visuals.dof.focus_depth = data.view.trackball_state.distance;
+
+			desc.depth_of_field.enabled = data.visuals.dof.enabled;
+			desc.depth_of_field.focus_depth = data.visuals.dof.focus_depth;
+			desc.depth_of_field.focus_scale = data.visuals.dof.focus_scale;
+
+			desc.temporal_reprojection.enabled = data.visuals.temporal_reprojection.enabled;
+			desc.temporal_reprojection.feedback_min = data.visuals.temporal_reprojection.feedback_min;
+			desc.temporal_reprojection.feedback_max = data.visuals.temporal_reprojection.feedback_max;
+			desc.temporal_reprojection.motion_blur.enabled = data.visuals.temporal_reprojection.motion_blur.enabled;
+			desc.temporal_reprojection.motion_blur.motion_scale = data.visuals.temporal_reprojection.motion_blur.motion_scale;
+
+			postprocessing::apply_postprocessing(desc, data.view.param, data.fbo.deferred.depth, data.fbo.hdr.color, data.fbo.deferred.normal, data.fbo.deferred.velocity);
+		}
+		POP_GPU_SECTION()
+
+		/*
 
         if (data.visuals.ssao.enabled) {
             PUSH_GPU_SECTION("SSAO")
@@ -1100,6 +1172,7 @@ int main(int, char**) {
             // Copy texture
             postprocessing::blit_texture(data.fbo.deferred.color);
         }
+		*/
 
         // DRAW DEBUG GRAPHICS W/O DEPTH
         PUSH_GPU_SECTION("Debug Draw Overlay") {
@@ -1118,36 +1191,19 @@ int main(int, char**) {
 
             PUSH_GPU_SECTION("Draw Control Points")
             if (data.visuals.spline.draw_control_points) {
-                draw::draw_spline(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index, data.gpu_buffers.backbone.num_control_point_indices, proj_mat * view_mat);
+                draw::draw_spline(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index, data.gpu_buffers.backbone.num_control_point_indices, data.view.param);
             }
             if (data.visuals.spline.draw_spline) {
-                draw::draw_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices, proj_mat * view_mat);
+                draw::draw_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices, data.view.param);
             }
             POP_GPU_SECTION()
         }
-        POP_GPU_SECTION()
-
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.temporal.fbo);
-        glDrawBuffer(GL_COLOR_ATTACHMENT1);
-
-        PUSH_GPU_SECTION("Temporal")
-        if (data.visuals.temporal_aa.enabled && !clear_temporal_aa) {
-            const float k = data.visuals.temporal_aa.blend_factor;
-            glEnable(GL_BLEND);
-            glBlendEquation(GL_FUNC_ADD);
-            glBlendColor(k, k, k, k);
-            glBlendFunc(GL_CONSTANT_COLOR, GL_ONE_MINUS_CONSTANT_COLOR);
-        }
-        postprocessing::blit_texture(data.fbo.temporal.color[0]);
-        glDisable(GL_BLEND);
         POP_GPU_SECTION()
 
         // Activate backbuffer
         glViewport(0, 0, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         glDrawBuffer(GL_BACK);
-
-        postprocessing::blit_texture(data.fbo.temporal.color[1]);
 
         if (data.density_volume.enabled) {
             PUSH_GPU_SECTION("Volume Rendering")
@@ -1304,7 +1360,7 @@ static PickingData get_picking_data(const MainFramebuffer& framebuffer, int32 x,
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer.deferred.fbo);
 
-    glReadBuffer(GL_COLOR_ATTACHMENT2);
+    glReadBuffer(GL_COLOR_ATTACHMENT3);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, framebuffer.pbo_picking.color[frame]);
     glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, 0);
 
@@ -1332,30 +1388,42 @@ static PickingData get_picking_data(const MainFramebuffer& framebuffer, int32 x,
 }
 
 // #imgui
-void imgui_dockspace() {
-    // Invisible dockspace
-    ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->Pos);
-    ImGui::SetNextWindowSize(viewport->Size);
-    ImGui::SetNextWindowViewport(viewport->ID);
-    ImGui::SetNextWindowBgAlpha(0.0f);
+namespace ImGui {
 
-    ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
-    window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
-    window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
+static void CreateDockspace() {
+	// Invisible dockspace
+	ImGuiViewport* viewport = ImGui::GetMainViewport();
+	ImGui::SetNextWindowPos(viewport->Pos);
+	ImGui::SetNextWindowSize(viewport->Size);
+	ImGui::SetNextWindowViewport(viewport->ID);
+	ImGui::SetNextWindowBgAlpha(0.0f);
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+	ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
+	window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
+	window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
 
-    ImGui::Begin("DockspaceWindow", NULL, window_flags);
-    ImGui::PopStyleVar(3);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 
-    ImGuiID dockspace_id = ImGui::GetID("Dockspace");
-    ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruDockspace;
-    ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
+	ImGui::Begin("DockspaceWindow", NULL, window_flags);
+	ImGui::PopStyleVar(3);
 
-    ImGui::End();
+	ImGuiID dockspace_id = ImGui::GetID("Dockspace");
+	ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruDockspace;
+	ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
+
+	ImGui::End();
+}
+
+static bool DeleteButton(const char* label, const ImVec2& size) {
+	PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
+	PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
+	PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
+	defer{ PopStyleColor(3); };
+	return ImGui::Button(label, size);
+}
+
 }
 
 // ### DRAW WINDOWS ###
@@ -1434,8 +1502,15 @@ if (ImGui::BeginMenu("Edit")) {
         if (ImGui::BeginMenu("Visuals")) {
             ImGui::BeginGroup();
             ImGui::Checkbox("Vsync", &data->ctx.window.vsync);
-            ImGui::Checkbox("Temporal-AA", &data->visuals.temporal_aa.enabled);
-            if (data->visuals.temporal_aa.enabled) {
+            ImGui::Checkbox("Temporal-Reprojection", &data->visuals.temporal_reprojection.enabled);
+            if (data->visuals.temporal_reprojection.enabled) {
+				ImGui::Checkbox("Jitter Samples", &data->visuals.temporal_reprojection.jitter);
+				ImGui::SliderFloat("Feedback Min", &data->visuals.temporal_reprojection.feedback_min, 0.5f, 1.0f);
+				ImGui::SliderFloat("Feedback Max", &data->visuals.temporal_reprojection.feedback_max, 0.5f, 1.0f);
+				ImGui::Checkbox("Motion Blur", &data->visuals.temporal_reprojection.motion_blur.enabled);
+				if (data->visuals.temporal_reprojection.motion_blur.enabled) {
+					ImGui::SliderFloat("Motion Scale", &data->visuals.temporal_reprojection.motion_blur.motion_scale, 0.f, 10.f);
+				}
             }
             ImGui::EndGroup();
             ImGui::Separator();
@@ -1455,7 +1530,7 @@ if (ImGui::BeginMenu("Edit")) {
             ImGui::BeginGroup();
             ImGui::Checkbox("Depth of Field", &data->visuals.dof.enabled);
             if (data->visuals.dof.enabled) {
-                ImGui::SliderFloat("Focus Point", &data->visuals.dof.focus_point, 0.001f, 200.f);
+                ImGui::SliderFloat("Focus Point", &data->visuals.dof.focus_depth, 0.001f, 200.f);
                 ImGui::SliderFloat("Focus Scale", &data->visuals.dof.focus_scale, 0.001f, 100.f);
             }
             ImGui::EndGroup();
@@ -1581,43 +1656,86 @@ if (ImGui::BeginPopupModal("Warning New")) {
 void draw_context_popup(ApplicationData* data) {
     ASSERT(data);
 
-    if (data->ctx.input.mouse.release[1] && !data->ctx.input.mouse.moving) {
+	const bool shift_down = data->ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data->ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
+    if (data->ctx.input.mouse.clicked[1] && !shift_down) {
         if (!ImGui::GetIO().WantTextInput) {
             ImGui::OpenPopup("OtherContextPopup");
         }
     }
 
+	bool opened_selection_query_popup = false;
+
     if (ImGui::BeginPopup("OtherContextPopup")) {
         if (data->selection.right_clicked != -1 && data->mol_data.dynamic) {
-            if (ImGui::Button("Recenter Trajectory")) {
+            if (ImGui::MenuItem("Recenter Trajectory")) {
                 recenter_trajectory(&data->mol_data.dynamic, data->mol_data.dynamic.molecule.atom.residue_indices[data->selection.right_clicked]);
                 interpolate_atomic_positions(get_positions(data->mol_data.dynamic.molecule), data->mol_data.dynamic.trajectory, data->time, data->interpolation);
-                copy_molecule_position_radius_to_buffer(data);
+                copy_molecule_data_to_buffers(data);
                 ImGui::CloseCurrentPopup();
             }
         }
-        if (ImGui::Button("Selection Query")) {
+        if (ImGui::MenuItem("Selection Query")) {
             ImGui::CloseCurrentPopup();
-            ImGui::OpenPopup("Selection Query");
-        }
-        /*
-if (ImGui::MenuItem("Selection Query")) {
-    ImGui::OpenPopup("Selection Query");
-}
-        */
-        if (ImGui::BeginPopup("Selection Query")) {
-            char buf[256] = {0};
-            ImGui::InputText("query", buf, 256);
-            if (ImGui::Button("Append")) {
-            }
-            ImGui::SameLine();
-            ImGui::Button("Exclude");
-            ImGui::SameLine();
-            ImGui::Button("Cancel");
-            ImGui::EndPopup();
+			opened_selection_query_popup = true;
         }
         ImGui::EndPopup();
     }
+
+	if (opened_selection_query_popup) {
+		ImGui::OpenPopup("Selection Query");
+		ImGui::SetNextWindowFocus();
+	}
+
+	if (ImGui::BeginPopup("Selection Query")) {
+		static char buf[256] = { 0 };
+		static bool append = true;
+		int mode = 0;
+
+		if (ImGui::InputText("##query", buf, ARRAY_SIZE(buf), ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue)) {
+			mode = 1;
+			ImGui::CloseCurrentPopup();
+		}
+
+		if (opened_selection_query_popup) {
+			ImGui::ActivateItem(ImGui::GetItemID());
+			ImGui::SetKeyboardFocusHere();
+		}
+
+		if (ImGui::Button("Append")) {
+			mode = 1;
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::SameLine();
+		if (ImGui::DeleteButton("Remove")) {
+			mode = -1;
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Cancel")) {
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::EndPopup();
+
+		if (mode != 0) {
+			Array<bool> mask = allocate_array<bool>(data->selection.selected.size());
+			defer{ free_array(&mask); };
+			if (filter::compute_filter_mask(mask, data->mol_data.dynamic, buf)) {
+				for (int64 i = 0; i < data->selection.selected.size(); i++) {
+					const uint8 val = mask[i] ? 0xFF : 0x00;
+
+					if (mode == 1) {
+						data->selection.selected[i] |= val;
+					}
+					else {
+						data->selection.selected[i] &= ~val;
+					}
+				}
+			}
+			glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.selection);
+			glBufferSubData(GL_ARRAY_BUFFER, 0, data->selection.selected.size_in_bytes(), data->selection.selected.data());
+			glBindBuffer(GL_ARRAY_BUFFER, 0);
+		}
+	}
 }
 
 static void draw_control_window(ApplicationData* data) {
@@ -1674,13 +1792,9 @@ static void draw_representations_window(ApplicationData* data) {
         create_representation(data);
     }
     ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
-    if (ImGui::Button("remove all")) {
+	if (ImGui::DeleteButton("remove all")) {
         clear_representations(data);
-    }
-    ImGui::PopStyleColor(3);
+	}
     ImGui::Spacing();
     ImGui::Separator();
     for (int i = 0; i < data->representations.buffer.size(); i++) {
@@ -1694,13 +1808,9 @@ static void draw_representations_window(ApplicationData* data) {
         if (ImGui::CollapsingHeader(name)) {
             ImGui::Checkbox("enabled", &rep.enabled);
             ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
-            if (ImGui::Button("remove")) {
+			if (ImGui::DeleteButton("remove")) {
                 remove_representation(data, i);
-            }
-            ImGui::PopStyleColor(3);
+			}
             ImGui::SameLine();
             if (ImGui::Button("clone")) {
                 clone_representation(data, rep);
@@ -1925,13 +2035,9 @@ static void draw_property_window(ApplicationData* data) {
             stats::move_property_down(prop);
         }
         ImGui::SameLine();
-        ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
-        if (ImGui::Button("remove")) {
+        if (ImGui::DeleteButton("remove")) {
             stats::remove_property(prop);
         }
-        ImGui::PopStyleColor(3);
         ImGui::NextColumn();
         ImGui::PopID();
     }
@@ -1945,13 +2051,9 @@ static void draw_property_window(ApplicationData* data) {
         stats::create_property();
     }
     ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
-    if (ImGui::Button("remove all")) {
+    if (ImGui::DeleteButton("remove all")) {
         stats::remove_all_properties();
     }
-    ImGui::PopStyleColor(3);
     ImGui::End();
 
     // if (compute_stats) {
@@ -2502,6 +2604,7 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     if (!fbo->deferred.depth) glGenTextures(1, &fbo->deferred.depth);
     if (!fbo->deferred.color) glGenTextures(1, &fbo->deferred.color);
     if (!fbo->deferred.normal) glGenTextures(1, &fbo->deferred.normal);
+	if (!fbo->deferred.velocity) glGenTextures(1, &fbo->deferred.velocity);
     if (!fbo->deferred.atom_idx) glGenTextures(1, &fbo->deferred.atom_idx);
     if (!fbo->hdr.color) glGenTextures(1, &fbo->hdr.color);
     if (!fbo->temporal.depth) glGenTextures(1, &fbo->temporal.depth);
@@ -2523,6 +2626,27 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+	glBindTexture(GL_TEXTURE_2D, fbo->deferred.normal);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16, width, height, 0, GL_RG, GL_UNSIGNED_SHORT, nullptr);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+	glBindTexture(GL_TEXTURE_2D, fbo->deferred.velocity);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, width, height, 0, GL_RG, GL_FLOAT, nullptr);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+	glBindTexture(GL_TEXTURE_2D, fbo->deferred.atom_idx);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
     glBindTexture(GL_TEXTURE_2D, fbo->temporal.depth);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -2538,20 +2662,6 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glBindTexture(GL_TEXTURE_2D, fbo->temporal.color[1]);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    glBindTexture(GL_TEXTURE_2D, fbo->deferred.normal);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16, width, height, 0, GL_RG, GL_UNSIGNED_SHORT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    glBindTexture(GL_TEXTURE_2D, fbo->deferred.atom_idx);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -2586,14 +2696,15 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     fbo->width = width;
     fbo->height = height;
 
-    const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2};
+    const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2 };
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo->deferred.fbo);
     if (attach_textures_deferred) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, fbo->deferred.depth, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->deferred.color, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, fbo->deferred.normal, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, fbo->deferred.atom_idx, 0);
+		glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, fbo->deferred.velocity, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, fbo->deferred.atom_idx, 0);
     }
     ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
     glDrawBuffers(3, draw_buffers);
@@ -2642,11 +2753,6 @@ static void destroy_framebuffer(MainFramebuffer* fbo) {
 static void init_molecule_buffers(ApplicationData* data) {
     ASSERT(data);
     const auto& mol = data->mol_data.dynamic.molecule;
-
-    DynamicArray<vec4> pos_rad(mol.atom.count);
-    for (int32 i = 0; i < mol.atom.count; i++) {
-        pos_rad[i] = {data->mol_data.dynamic.molecule.atom.positions[i], data->mol_data.atom_radii[i]};
-    }
 
     DynamicArray<uint32> backbone_index_data;
     DynamicArray<uint32> control_point_index_data;
@@ -2713,12 +2819,16 @@ static void init_molecule_buffers(ApplicationData* data) {
     LOG_NOTE("num spline indices: %i", (int32)spline_index_data.size());
 
     const int64 num_backbone_segments = backbone_index_data.size() / 6;
-    const int64 atom_buffer_size = mol.atom.count * sizeof(vec4);
+    const int64 position_buffer_size = mol.atom.count * 3 * sizeof(float);
+	const int64 velocity_buffer_size = mol.atom.count * 3 * sizeof(float);
+	const int64 radius_buffer_size = mol.atom.count * sizeof(float);
     const int64 bond_buffer_size = mol.covalent_bonds.size() * sizeof(uint32) * 2;
     const int64 control_point_buffer_size = num_backbone_segments * sizeof(draw::ControlPoint);
     const int64 spline_buffer_size = control_point_buffer_size * SPLINE_SUBDIVISION_COUNT;
 
-    if (!data->gpu_buffers.position_radius) glGenBuffers(1, &data->gpu_buffers.position_radius);
+	if (!data->gpu_buffers.position) glGenBuffers(1, &data->gpu_buffers.position);
+    if (!data->gpu_buffers.velocity) glGenBuffers(1, &data->gpu_buffers.velocity);
+	if (!data->gpu_buffers.radius) glGenBuffers(1, &data->gpu_buffers.radius);
     if (!data->gpu_buffers.bond) glGenBuffers(1, &data->gpu_buffers.bond);
     if (!data->gpu_buffers.selection) glGenBuffers(1, &data->gpu_buffers.selection);
     if (!data->gpu_buffers.backbone.backbone_segment_index) glGenBuffers(1, &data->gpu_buffers.backbone.backbone_segment_index);
@@ -2727,8 +2837,14 @@ static void init_molecule_buffers(ApplicationData* data) {
     if (!data->gpu_buffers.backbone.spline) glGenBuffers(1, &data->gpu_buffers.backbone.spline);
     if (!data->gpu_buffers.backbone.spline_index) glGenBuffers(1, &data->gpu_buffers.backbone.spline_index);
 
-    glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.position_radius);
-    glBufferData(GL_ARRAY_BUFFER, atom_buffer_size, pos_rad.ptr, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.position);
+    glBufferData(GL_ARRAY_BUFFER, position_buffer_size, 0, GL_DYNAMIC_DRAW);
+
+	glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.velocity);
+	glBufferData(GL_ARRAY_BUFFER, velocity_buffer_size, 0, GL_DYNAMIC_DRAW);
+
+	glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.radius);
+	glBufferData(GL_ARRAY_BUFFER, data->mol_data.atom_radii.size_in_bytes(), data->mol_data.atom_radii.data(), GL_STATIC_DRAW);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.bond);
     glBufferData(GL_ARRAY_BUFFER, bond_buffer_size, mol.covalent_bonds.ptr, GL_STATIC_DRAW);
@@ -2752,37 +2868,99 @@ static void init_molecule_buffers(ApplicationData* data) {
     glBufferData(GL_ARRAY_BUFFER, spline_index_data.size_in_bytes(), spline_index_data.ptr, GL_STATIC_DRAW);
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+	copy_molecule_data_to_buffers(data);
 }
 
 static void free_molecule_buffers(ApplicationData* data) {
     ASSERT(data);
-    if (!data->gpu_buffers.position_radius) {
-        glDeleteBuffers(1, &data->gpu_buffers.position_radius);
-        data->gpu_buffers.position_radius = 0;
+    if (data->gpu_buffers.position) {
+        glDeleteBuffers(1, &data->gpu_buffers.position);
+        data->gpu_buffers.position = 0;
     }
-    if (!data->gpu_buffers.bond) {
+	if (data->gpu_buffers.velocity) {
+		glDeleteBuffers(1, &data->gpu_buffers.velocity);
+		data->gpu_buffers.velocity = 0;
+	}
+	if (data->gpu_buffers.radius) {
+		glDeleteBuffers(1, &data->gpu_buffers.radius);
+		data->gpu_buffers.radius = 0;
+	}
+	if (data->gpu_buffers.selection) {
+		glDeleteBuffers(1, &data->gpu_buffers.selection);
+		data->gpu_buffers.selection = 0;
+	}
+	if (data->gpu_buffers.backbone.backbone_segment_index) {
+		glDeleteBuffers(1, &data->gpu_buffers.backbone.backbone_segment_index);
+		data->gpu_buffers.backbone.backbone_segment_index = 0;
+	}
+	if (data->gpu_buffers.backbone.control_point) {
+		glDeleteBuffers(1, &data->gpu_buffers.backbone.control_point);
+		data->gpu_buffers.backbone.control_point = 0;
+	}
+	if (data->gpu_buffers.backbone.control_point_index) {
+		glDeleteBuffers(1, &data->gpu_buffers.backbone.control_point_index);
+		data->gpu_buffers.backbone.control_point_index = 0;
+	}
+	if (data->gpu_buffers.backbone.spline) {
+		glDeleteBuffers(1, &data->gpu_buffers.backbone.spline);
+		data->gpu_buffers.backbone.spline = 0;
+	}
+	if (data->gpu_buffers.backbone.spline_index) {
+		glDeleteBuffers(1, &data->gpu_buffers.backbone.spline_index);
+		data->gpu_buffers.backbone.spline_index = 0;
+	}
+    if (data->gpu_buffers.bond) {
         glDeleteBuffers(1, &data->gpu_buffers.bond);
         data->gpu_buffers.bond = 0;
     }
 }
 
-void copy_molecule_position_radius_to_buffer(ApplicationData* data) {
+void copy_molecule_data_to_buffers(ApplicationData* data) {
     ASSERT(data);
     const auto N = data->mol_data.dynamic.molecule.atom.count;
-    auto positions = data->mol_data.dynamic.molecule.atom.positions;
-    auto radii = data->mol_data.atom_radii;
+    const vec3* position = data->mol_data.dynamic.molecule.atom.positions;
+	const vec3* velocity = data->mol_data.atom_velocity.data();
 
-    glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.position_radius);
-    vec4* pos_rad_gpu = (vec4*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-    if (!pos_rad_gpu) {
-        LOG_ERROR("Could not map position radius buffer");
-    } else {
-        for (int32 i = 0; i < N; i++) {
-            pos_rad_gpu[i] = {positions[i], radii[i]};
-        }
-        glUnmapBuffer(GL_ARRAY_BUFFER);
-    }
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+	{
+		// Update data inside position buffer
+		glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.position);
+
+		float* pos_gpu = (float*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+		if (!pos_gpu) {
+			LOG_ERROR("Could not map position buffer");
+			return;
+		}
+
+		// Note that we cannot do a pure memcpy since the CPU buffer using vec3 can be a m128 with 16-byte alignment.
+		for (int64 i = 0; i < N; i++) {
+			pos_gpu[i * 3 + 0] = position[i][0];
+			pos_gpu[i * 3 + 1] = position[i][1];
+			pos_gpu[i * 3 + 2] = position[i][2];
+		}
+		glUnmapBuffer(GL_ARRAY_BUFFER);
+	}
+
+	{
+		// Update data inside position buffer
+		glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.velocity);
+
+		float* vel_gpu = (float*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+		if (!vel_gpu) {
+			LOG_ERROR("Could not map velocity buffer");
+			return;
+		}
+
+		// Note that we cannot do a pure memcpy since the CPU buffer using vec3 can be a m128 with 16-byte alignment.
+		for (int64 i = 0; i < N; i++) {
+			vel_gpu[i * 3 + 0] = velocity[i][0];
+			vel_gpu[i * 3 + 1] = velocity[i][1];
+			vel_gpu[i * 3 + 2] = velocity[i][2];
+		}
+		glUnmapBuffer(GL_ARRAY_BUFFER);
+	}
+
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
 // #moleculedata
@@ -2808,6 +2986,8 @@ static void free_molecule_data(ApplicationData* data) {
         free_trajectory_data(data);
     }
     data->mol_data.atom_radii.clear();
+	data->mol_data.atom_velocity.clear();
+
     free_molecule_buffers(data);
     free_backbone_angles_trajectory(&data->ramachandran.backbone_angles);
     data->ramachandran.backbone_angles = {};
@@ -2819,9 +2999,12 @@ static void free_molecule_data(ApplicationData* data) {
 
 static void init_molecule_data(ApplicationData* data) {
     if (data->mol_data.dynamic.molecule) {
+		const auto atom_count = data->mol_data.dynamic.molecule.atom.count;
         data->mol_data.atom_radii = compute_atom_radii(get_elements(data->mol_data.dynamic.molecule));
-        data->selection.selected.resize(data->mol_data.dynamic.molecule.atom.count);
-        memset_array(data->selection.selected, (uint8)0);
+		data->mol_data.atom_velocity.resize(atom_count);
+		zero_array(data->mol_data.atom_velocity);
+        data->selection.selected.resize(atom_count);
+        zero_array(data->selection.selected);
         init_molecule_buffers(data);
     }
 }
@@ -2837,7 +3020,7 @@ static void init_trajectory_data(ApplicationData* data) {
         read_next_trajectory_frame(&data->mol_data.dynamic.trajectory);  // read first frame explicitly
         auto frame_0_pos = get_trajectory_positions(data->mol_data.dynamic.trajectory, 0);
         memcpy(data->mol_data.dynamic.molecule.atom.positions, frame_0_pos.ptr, frame_0_pos.size_in_bytes());
-        copy_molecule_position_radius_to_buffer(data);
+        copy_molecule_data_to_buffers(data);
 
         load_trajectory_async(data);
 

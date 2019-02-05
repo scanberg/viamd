@@ -22,6 +22,8 @@
 
 #include <nfd.h>
 
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
+
 namespace platform {
 
 // Data
@@ -242,6 +244,24 @@ void update(Context* ctx) {
     const float half_res_x = w * 0.5f;
     const float half_res_y = h * 0.5f;
     data.internal_ctx.input.mouse.ndc_coord = {(win_coord.x - half_res_x) / half_res_x, ((h - win_coord.y) - half_res_y) / half_res_y};
+
+	// Any mouse key hit
+	bool any_mouse_key_hit = false;
+	for (int i = 0; i < MAX_MOUSE_BUTTONS; i++) {
+		if (data.internal_ctx.input.mouse.hit[i]) {
+			any_mouse_key_hit = true;
+			break;
+		}
+	}
+
+	static Coordinate mouse_click_coord = win_coord;
+	if (any_mouse_key_hit) {
+		mouse_click_coord = win_coord;
+	}
+
+	for (int i = 0; i < MAX_MOUSE_BUTTONS; i++) {
+		data.internal_ctx.input.mouse.clicked[i] = (mouse_click_coord == win_coord) && data.internal_ctx.input.mouse.release[i];
+	}
 
     double t = glfwGetTime();
     data.internal_ctx.timing.delta_s = (float)(t - data.internal_ctx.timing.total_s);

@@ -74,12 +74,13 @@ struct Context {
             bool down[MAX_MOUSE_BUTTONS];
             bool hit[MAX_MOUSE_BUTTONS];
             bool release[MAX_MOUSE_BUTTONS];
+			bool clicked[MAX_MOUSE_BUTTONS]; // This implies that the user did not move the mouse during the hit and the release of the button.
 
             Coordinate win_coord;  // Window coordinates
             Coordinate win_delta;
 
             Coordinate ndc_coord;  // Normalized device coordinates
-            Coordinate ndc_delta;
+			Coordinate ndc_delta;
 
             float32 scroll_delta;
 
