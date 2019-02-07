@@ -869,6 +869,12 @@ int main(int, char**) {
 			POP_CPU_SECTION()
 #endif
         }
+		else { // Not time_changed
+			// @FIXME: DO THIS ONLY ONCE
+			// Clear velocity buffer (once)
+			zero_array(data.mol_data.atom_velocity);
+			copy_molecule_data_to_buffers(&data);
+		}
 
         PUSH_CPU_SECTION("Hydrogen bonds")
         if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.dirty) {
@@ -934,8 +940,8 @@ int main(int, char**) {
 			if (data.visuals.temporal_reprojection.enabled && data.visuals.temporal_reprojection.jitter) {
 				static uint32 i = 0;
 				i = (++i) % ARRAY_SIZE(halton_23);
-				jitter = halton_23[i] * 2.0f - 1.0f;
-				//jitter = halton_23[i] - 0.5f;
+				//jitter = halton_23[i] * 2.0f - 1.0f;
+				jitter = halton_23[i] - 0.5f;
 				const mat4 jitter_mat = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(jitter / res, 0, 1));
 				proj_mat = jitter_mat * proj_mat;
 			}
@@ -965,8 +971,8 @@ int main(int, char**) {
 
         // Setup fbo and clear textures
         PUSH_GPU_SECTION("Clear G-buffer") {
-            // Clear color+alpha, normal and depth
-            glDrawBuffers(2, draw_buffers);
+            // Clear color+alpha, normal, velocity and depth
+            glDrawBuffers(3, draw_buffers);
             glClearColor(0, 0, 0, 0);
             glClearDepthf(1.f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -977,15 +983,6 @@ int main(int, char**) {
             glClear(GL_COLOR_BUFFER_BIT);
         }
 		POP_GPU_SECTION()
-
-		glDisable(GL_DEPTH_TEST);
-		glDepthMask(GL_FALSE);
-
-		PUSH_GPU_SECTION("BLIT SS VEL") {
-			glDrawBuffer(GL_COLOR_ATTACHMENT2);
-			postprocessing::blit_velocity(data.view.param);
-		}
-		POP_GPU_SECTION();
 
 		glEnable(GL_CULL_FACE);
 		glCullFace(GL_BACK);
@@ -1008,7 +1005,7 @@ int main(int, char**) {
                         break;
                     case Representation::LICORICE:
                         PUSH_GPU_SECTION("Licorice")
-                        draw::draw_licorice(data.gpu_buffers.position, rep.color_buffer, data.gpu_buffers.bond, (int)data.mol_data.dynamic.molecule.covalent_bonds.size(), data.view.param,
+                        draw::draw_licorice(data.gpu_buffers.position, rep.color_buffer, data.gpu_buffers.velocity, data.gpu_buffers.bond, (int)data.mol_data.dynamic.molecule.covalent_bonds.size(), data.view.param,
                                             rep.radius);
                         POP_GPU_SECTION()
                         break;
@@ -1017,13 +1014,13 @@ int main(int, char**) {
                         draw::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.velocity, (int)data.mol_data.dynamic.molecule.atom.count, data.view.param, rep.radius * 0.25f);
                         POP_GPU_SECTION()
                         PUSH_GPU_SECTION("Licorice")
-                        draw::draw_licorice(data.gpu_buffers.position, rep.color_buffer, data.gpu_buffers.bond, (int)data.mol_data.dynamic.molecule.covalent_bonds.size(), data.view.param,
+                        draw::draw_licorice(data.gpu_buffers.position, rep.color_buffer, data.gpu_buffers.velocity, data.gpu_buffers.bond, (int)data.mol_data.dynamic.molecule.covalent_bonds.size(), data.view.param,
                                             rep.radius * 0.4f);
                         POP_GPU_SECTION()
                         break;
                     case Representation::RIBBONS:
                         PUSH_GPU_SECTION("Ribbons")
-                        draw::draw_ribbons(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, rep.color_buffer, data.gpu_buffers.backbone.num_spline_indices, data.view.param);
+                        draw::draw_ribbons(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, rep.color_buffer, data.gpu_buffers.velocity, data.gpu_buffers.backbone.num_spline_indices, data.view.param);
                         POP_GPU_SECTION()
                         break;
                     case Representation::CARTOON:
@@ -1072,8 +1069,9 @@ int main(int, char**) {
                 data.picking.idx = NO_PICKING_IDX;
                 data.picking.depth = 1.f;
             } else {
+				// @TODO: FIX THIS: This is broken, reading from the jittered coordinate should provide the correct sample, right?
 				coord += data.view.param.jitter;
-                data.picking = get_picking_data(data.fbo, (int32)(coord.x + 0.5f), (int32)(coord.y + 0.5f));
+                data.picking = get_picking_data(data.fbo, (int32)(coord.x), (int32)(coord.y));
                 const vec4 viewport(0, 0, data.fbo.width, data.fbo.height);
                 data.picking.world_coord = math::unproject(vec3(coord.x, coord.y, data.picking.depth), data.view.param.matrix.inverse.view_proj, viewport);
             }
@@ -2103,6 +2101,7 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, in
         len += snprintf(buff + len, 256 - len, u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0\n", angles.x, angles.y);
     }
 
+	/*
     ImVec2 text_size = ImGui::CalcTextSize(buff);
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(x + 10.f, y + 18.f) + viewport->Pos);
@@ -2114,6 +2113,10 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, in
     ImGui::Text("%s", buff);
     ImGui::End();
     ImGui::PopStyleColor();
+	*/
+	ImGui::BeginTooltip();
+	ImGui::Text("%s", buff);
+	ImGui::EndTooltip();
 }
 
 static void draw_async_info(ApplicationData* data) {
