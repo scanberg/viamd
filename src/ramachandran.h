@@ -18,26 +18,28 @@ void compute_accumulation_texture(Array<const vec2> angles, vec4 color, float ra
 
 enum Region_ { Region_None, Region_AlphaHigh, Region_AlphaMid, Region_BetaHigh, Region_BetaMid, Region_LeftAlphaHigh, Region_LeftAlphaMid, Region_PMid };
 
-constexpr float h_red = 0.0f / 360.0f;
-constexpr float h_green = 120.0f / 360.0f;
-constexpr float h_blue = 240.0f / 360.0f;
-constexpr float h_yellow = 60.0f / 360.0f;
-constexpr float c = 0.8f;
-constexpr float l = 0.9f;
-constexpr float a_high = 0.8f;
-constexpr float a_mid = 0.2f;
+namespace default_colors {
+	constexpr float h_red = 0.0f / 360.0f;
+	constexpr float h_green = 120.0f / 360.0f;
+	constexpr float h_blue = 240.0f / 360.0f;
+	constexpr float h_yellow = 60.0f / 360.0f;
+	constexpr float c = 0.8f;
+	constexpr float l = 0.9f;
+	constexpr float a_high = 0.8f;
+	constexpr float a_mid = 0.2f;
 
-const vec4 DEF_COL_BACKGROUND = vec4(1, 1, 1, 1);
-const vec4 DEF_COL_ALPHA_HIGH = vec4(math::hcl_to_rgb(vec3(h_red, c, l)), a_high);
-const vec4 DEF_COL_ALPHA_MID = vec4(math::hcl_to_rgb(vec3(h_red, c, l)), a_mid);
-const vec4 DEF_COL_BETA_HIGH = vec4(math::hcl_to_rgb(vec3(h_blue, c, l)), a_high);
-const vec4 DEF_COL_BETA_MID = vec4(math::hcl_to_rgb(vec3(h_blue, c, l)), a_mid);
-const vec4 DEF_COL_LEFT_ALPHA_HIGH = vec4(math::hcl_to_rgb(vec3(h_green, c, l)), a_high);
-const vec4 DEF_COL_LEFT_ALPHA_MID = vec4(math::hcl_to_rgb(vec3(h_green, c, l)), a_mid);
-const vec4 DEF_COL_P_MID = vec4(math::hcl_to_rgb(vec3(h_yellow, c, l)), a_mid);
+	const vec4 BACKGROUND = vec4(1, 1, 1, 1);
+	const vec4 ALPHA_HIGH = vec4(math::hcl_to_rgb(vec3(h_red, c, l)), a_high);
+	const vec4 ALPHA_MID = vec4(math::hcl_to_rgb(vec3(h_red, c, l)), a_mid);
+	const vec4 BETA_HIGH = vec4(math::hcl_to_rgb(vec3(h_blue, c, l)), a_high);
+	const vec4 BETA_MID = vec4(math::hcl_to_rgb(vec3(h_blue, c, l)), a_mid);
+	const vec4 LEFT_ALPHA_HIGH = vec4(math::hcl_to_rgb(vec3(h_green, c, l)), a_high);
+	const vec4 LEFT_ALPHA_MID = vec4(math::hcl_to_rgb(vec3(h_green, c, l)), a_mid);
+	const vec4 P_MID = vec4(math::hcl_to_rgb(vec3(h_yellow, c, l)), a_mid);
+}
 
 struct ColorMap {
-    vec4 region_color[8] = {DEF_COL_BACKGROUND, DEF_COL_ALPHA_HIGH, DEF_COL_ALPHA_MID, DEF_COL_BETA_HIGH, DEF_COL_BETA_MID, DEF_COL_LEFT_ALPHA_HIGH, DEF_COL_LEFT_ALPHA_MID, DEF_COL_P_MID};
+    vec4 region_color[8] = {default_colors::BACKGROUND, default_colors::ALPHA_HIGH, default_colors::ALPHA_MID, default_colors::BETA_HIGH, default_colors::BETA_MID, default_colors::LEFT_ALPHA_HIGH, default_colors::LEFT_ALPHA_MID, default_colors::P_MID};
 };
 
 void init_gui_map(const ColorMap& color_map = {}, int blur_level = 2);

@@ -26,8 +26,8 @@ option(GLFW_BUILD_DOCS OFF)
 option(GLFW_INSTALL OFF)
 option(GLFW_VULKAN_STATIC OFF)
 
-
 option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
+option(VIAMD_USE_RELATIVE_PATHS "Use relative paths for resource directories" OFF)
 
 add_subdirectory(ext/glfw)
 add_subdirectory(ext/imgui)
@@ -49,10 +49,15 @@ endif()
 
 add_executable(viamd ${OSX_BUNDLE} ${SRC_FILES} ${PLATFORM_FILES})
 
+set(RESOURCE_DIR "${PROJECT_SOURCE_DIR}/")
+if (VIAMD_USE_RELATIVE_PATHS)
+    set(RESOURCE_DIR "")
+endif()
+
 target_compile_definitions(viamd PRIVATE
-	-DVIAMD_DATA_DIR=\"${PROJECT_SOURCE_DIR}/data\"
-	-DVIAMD_SHADER_DIR=\"${PROJECT_SOURCE_DIR}/shaders\"
-	-DVIAMD_IMAGE_DIR=\"${PROJECT_SOURCE_DIR}/images\")
+	VIAMD_DATA_DIR=\"${RESOURCE_DIR}data\"
+	VIAMD_SHADER_DIR=\"${RESOURCE_DIR}shaders\"
+	VIAMD_IMAGE_DIR=\"${RESOURCE_DIR}images\")
 
 #target_compile_options(viamd PRIVATE -W4)
 target_compile_features(viamd PRIVATE cxx_std_17)

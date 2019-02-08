@@ -212,8 +212,8 @@ void initialize() {
     {
         constexpr float c = 0.45f;
         constexpr float l = 0.9f;
-        constexpr float a_high = 0.8;
-        constexpr float a_mid = 0.2;
+        constexpr float a_high = 0.8f;
+        constexpr float a_mid = 0.2f;
 
         ColorMap gui_color_map;
         gui_color_map.region_color[Region_None] = vec4(0, 0, 0, 0);
@@ -230,8 +230,8 @@ void initialize() {
     {
         constexpr float c = 0.8f;
         constexpr float l = 0.9f;
-        constexpr float a_high = 0.8;
-        constexpr float a_mid = 0.2;
+        constexpr float a_high = 0.8f;
+        constexpr float a_mid = 0.2f;
 
         ColorMap col_color_map;
         col_color_map.region_color[Region_None] = vec4(1, 1, 1, 1);

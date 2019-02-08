@@ -557,8 +557,8 @@ if (selection_range) {
 }
 
 static inline ImVec2 compute_frame_coord(ImRect frame, ImVec2 coord) {
-    float cx = ImClamp((coord.x - ps.coord_view.Min.x) / (ps.coord_view.Max.x - ps.coord_view.Min.x), 0.f, 1.f);
-    float cy = ImClamp((coord.y - ps.coord_view.Min.y) / (ps.coord_view.Max.y - ps.coord_view.Min.y), 0.f, 1.f);
+    float cx = ImClamp((coord.x - frame.Min.x) / (frame.Max.x - frame.Min.x), 0.f, 1.f);
+    float cy = ImClamp((coord.y - frame.Min.y) / (frame.Max.y - frame.Min.y), 0.f, 1.f);
     return {cx, cy};
 }
 
