@@ -1,7 +1,7 @@
 #pragma once
 
 #include <core/math_utils.h>
-#include "image.h"
+#include <core/image.h>
 
 enum class ColorMapping { STATIC_COLOR, CPK, RES_ID, RES_INDEX, CHAIN_ID, CHAIN_INDEX, SECONDARY_STRUCTURE };
 
