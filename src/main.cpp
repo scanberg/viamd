@@ -278,6 +278,7 @@ struct ApplicationData {
 
     // --- ATOM SELECTION ---
     struct {
+        bool show_query_window = false;
         int32 hovered = -1;
         int32 right_clicked = -1;
         DynamicArray<uint8> selected{};
@@ -336,7 +337,7 @@ struct ApplicationData {
 
             struct {
                 bool enabled = true;
-                float motion_scale = 1.f;
+                float motion_scale = 0.5f;
             } motion_blur;
         } temporal_reprojection;
 
@@ -441,6 +442,11 @@ struct ApplicationData {
 namespace ImGui {
 static bool DeleteButton(const char* label, const ImVec2& size = ImVec2(0, 0));
 static void CreateDockspace();
+static bool IsItemActivePreviousFrame() {
+    ImGuiContext& g = *GImGui;
+    if (g.ActiveIdPreviousFrame) return g.ActiveIdPreviousFrame == GImGui->CurrentWindow->DC.LastItemId;
+    return false;
+}
 }  // namespace ImGui
 
 static void interpolate_atomic_positions(Array<vec3> dst_pos, const MoleculeTrajectory& traj, float64 time, PlaybackInterpolationMode interpolation_mode);
@@ -458,6 +464,7 @@ static void draw_distribution_window(ApplicationData* data);
 static void draw_ramachandran_window(ApplicationData* data);
 static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, int x, int y);
 static void draw_async_info(ApplicationData* data);
+static void draw_selection_query_window(ApplicationData* data);
 
 static void init_framebuffer(MainFramebuffer* fbo, int width, int height);
 static void destroy_framebuffer(MainFramebuffer* fbo);
@@ -1096,10 +1103,10 @@ int main(int, char**) {
         PUSH_GPU_SECTION("Shading")
         postprocessing::shade_deferred(data.fbo.deferred.depth, data.fbo.deferred.color, data.fbo.deferred.normal, data.view.param.matrix.inverse.proj);
         POP_GPU_SECTION()
-
         PUSH_GPU_SECTION("Highlight Selection")
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE);
+        // glBlendFuncSeparate(GL_ONE, GL_ONE, GL_ONE, GL_ZERO);
         postprocessing::highlight_selection(data.fbo.deferred.atom_idx, data.gpu_buffers.selection);
         glDisable(GL_BLEND);
         POP_GPU_SECTION();
@@ -1186,6 +1193,7 @@ int main(int, char**) {
         if (data.statistics.show_property_window) draw_property_window(&data);
         if (data.statistics.show_timeline_window) draw_timeline_window(&data);
         if (data.statistics.show_distribution_window) draw_distribution_window(&data);
+        if (data.selection.show_query_window) draw_selection_query_window(&data);
 
         if (data.ramachandran.show_window) {
             draw_ramachandran_window(&data);
@@ -1472,7 +1480,7 @@ if (ImGui::BeginMenu("Edit")) {
                 ImGui::SliderFloat("Feedback Max", &data->visuals.temporal_reprojection.feedback_max, 0.5f, 1.0f);
                 ImGui::Checkbox("Motion Blur", &data->visuals.temporal_reprojection.motion_blur.enabled);
                 if (data->visuals.temporal_reprojection.motion_blur.enabled) {
-                    ImGui::SliderFloat("Motion Scale", &data->visuals.temporal_reprojection.motion_blur.motion_scale, 0.f, 10.f);
+                    ImGui::SliderFloat("Motion Scale", &data->visuals.temporal_reprojection.motion_blur.motion_scale, 0.f, 1.0f);
                 }
             }
             ImGui::EndGroup();
@@ -1616,6 +1624,101 @@ if (ImGui::BeginPopupModal("Warning New")) {
     */
 }
 
+void draw_selection_query_window(ApplicationData* data) {
+    if (!data->selection.show_query_window) return;
+
+    enum Mode { AND, OR };
+
+    static char buf[256] = {0};
+    static Mode mode = OR;
+    static bool not = false;
+    static bool query_ok = false;
+    static DynamicArray<bool> mask;
+    bool update_buffer = false;
+
+    mask.resize(data->selection.selected.size());
+
+    ImGui::Begin("Selection Query", &data->selection.show_query_window);
+    const auto TEXT_BG_DEFAULT_COLOR = ImGui::ColorConvertFloat4ToU32(ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, query_ok ? TEXT_BG_DEFAULT_COLOR : TEXT_BG_ERROR_COLOR);
+    bool query_modified = ImGui::InputText("##query", buf, ARRAY_SIZE(buf), ImGuiInputTextFlags_AutoSelectAll);
+    bool pressed_enter = ImGui::IsItemActivePreviousFrame() && !ImGui::IsItemActive() && ImGui::IsKeyPressed(ImGui::GetIO().KeyMap[ImGuiKey_Enter]);
+    ImGui::PopStyleColor();
+
+    if (query_modified) {
+        query_ok = filter::compute_filter_mask(mask, data->mol_data.dynamic, buf);
+
+        if (!query_ok) {
+            // Clear lower bits which are for highlighting
+            for (int64 i = 0; i < data->selection.selected.size(); i++) {
+                data->selection.selected[i] &= ~0b00001111;
+            }
+        } else {
+            for (int64 i = 0; i < data->selection.selected.size(); i++) {
+                const uint8 mask_val = (mask[i] && !not) ? 0b00001111 : 0;
+                const uint8 curr_val = data->selection.selected[i] >> 4;
+
+                if (mode == AND) {
+                    data->selection.selected[i] = curr_val & mask_val;
+                } else if (mode == OR) {
+                    data->selection.selected[i] = curr_val | mask_val;
+                }
+            }
+        }
+        update_buffer = true;
+    }
+
+    if (ImGui::IsWindowAppearing()) {
+        ImGui::SetKeyboardFocusHere();
+    }
+
+    ImGui::Checkbox("NOT", &not);
+    if (ImGui::RadioButton("OR", mode == OR)) mode = OR;
+    ImGui::SameLine();
+    if (ImGui::RadioButton("AND", mode == AND)) mode = AND;
+
+    if (!query_ok) {
+        ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
+    }
+    if (ImGui::Button("Ok") || pressed_enter) {
+        data->selection.show_query_window = false;
+
+        for (int64 i = 0; i < data->selection.selected.size(); i++) {
+            const uint8 mask_val = (mask[i] && !not) ? 0b11110000 : 0;
+            const uint8 curr_val = data->selection.selected[i];
+
+            if (mode == AND) {
+                data->selection.selected[i] = curr_val & mask_val;
+            } else if (mode == OR) {
+                data->selection.selected[i] = curr_val | mask_val;
+            }
+        }
+        update_buffer = true;
+    }
+    if (!query_ok) {
+        ImGui::PopItemFlag();
+        ImGui::PopStyleVar();
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) {
+        data->selection.show_query_window = false;
+    }
+
+    ImGui::End();
+
+    if (update_buffer) {
+        glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.selection);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, data->selection.selected.size_in_bytes(), data->selection.selected.data());
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+
+    if (ImGui::GetIO().KeysDown[ImGuiKey_Enter]) {
+        printf("cool");
+    }
+}
+
 void draw_context_popup(ApplicationData* data) {
     ASSERT(data);
 
@@ -1625,8 +1728,6 @@ void draw_context_popup(ApplicationData* data) {
             ImGui::OpenPopup("OtherContextPopup");
         }
     }
-
-    bool opened_selection_query_popup = false;
 
     if (ImGui::BeginPopup("OtherContextPopup")) {
         if (data->selection.right_clicked != -1 && data->mol_data.dynamic) {
@@ -1639,64 +1740,9 @@ void draw_context_popup(ApplicationData* data) {
         }
         if (ImGui::MenuItem("Selection Query")) {
             ImGui::CloseCurrentPopup();
-            opened_selection_query_popup = true;
+            data->selection.show_query_window = true;
         }
         ImGui::EndPopup();
-    }
-
-    if (opened_selection_query_popup) {
-        ImGui::OpenPopup("Selection Query");
-        ImGui::SetNextWindowFocus();
-    }
-
-    if (ImGui::BeginPopup("Selection Query")) {
-        static char buf[256] = {0};
-        static bool append = true;
-        int mode = 0;
-
-        if (ImGui::InputText("##query", buf, ARRAY_SIZE(buf), ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue)) {
-            mode = 1;
-            ImGui::CloseCurrentPopup();
-        }
-
-        if (opened_selection_query_popup) {
-            ImGui::ActivateItem(ImGui::GetItemID());
-            ImGui::SetKeyboardFocusHere();
-        }
-
-        if (ImGui::Button("Append")) {
-            mode = 1;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::DeleteButton("Remove")) {
-            mode = -1;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) {
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-
-        if (mode != 0) {
-            Array<bool> mask = allocate_array<bool>(data->selection.selected.size());
-            defer { free_array(&mask); };
-            if (filter::compute_filter_mask(mask, data->mol_data.dynamic, buf)) {
-                for (int64 i = 0; i < data->selection.selected.size(); i++) {
-                    const uint8 val = mask[i] ? 0xFF : 0x00;
-
-                    if (mode == 1) {
-                        data->selection.selected[i] |= val;
-                    } else {
-                        data->selection.selected[i] &= ~val;
-                    }
-                }
-            }
-            glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.selection);
-            glBufferSubData(GL_ARRAY_BUFFER, 0, data->selection.selected.size_in_bytes(), data->selection.selected.data());
-            glBindBuffer(GL_ARRAY_BUFFER, 0);
-        }
     }
 }
 
@@ -2065,24 +2111,21 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, in
         len += snprintf(buff + len, 256 - len, u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0\n", angles.x, angles.y);
     }
 
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(x + 10.f, y + 18.f) + viewport->Pos);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
+    ImGui::Begin("##Atom Info", 0, ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDocking);
+    ImGui::Text("%s", buff);
+    ImGui::End();
+    ImGui::PopStyleColor();
+
     /*
-ImVec2 text_size = ImGui::CalcTextSize(buff);
-ImGuiViewport* viewport = ImGui::GetMainViewport();
-ImGui::SetNextWindowPos(ImVec2(x + 10.f, y + 18.f) + viewport->Pos);
-ImGui::SetNextWindowSize(ImVec2(text_size.x + 20.f, text_size.y + 15.f));
 ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
-ImGui::Begin("##Atom Info", 0,
-             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs |
-                 ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing);
+ImGui::BeginTooltip();
 ImGui::Text("%s", buff);
-ImGui::End();
+ImGui::EndTooltip();
 ImGui::PopStyleColor();
     */
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
-    ImGui::BeginTooltip();
-    ImGui::Text("%s", buff);
-    ImGui::EndTooltip();
-    ImGui::PopStyleColor();
 }
 
 static void draw_async_info(ApplicationData* data) {
