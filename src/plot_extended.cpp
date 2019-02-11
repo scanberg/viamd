@@ -25,7 +25,7 @@ int PlotExtended(ImGuiPlotType plot_type, const char* label, const float* data, 
     const ImRect inner_bb(frame_bb.Min + style.FramePadding, frame_bb.Max - style.FramePadding);
     const ImRect total_bb(frame_bb.Min, frame_bb.Max);
     ItemSize(total_bb, style.FramePadding.y);
-    if (!ItemAdd(total_bb, NULL)) return value;
+    if (!ItemAdd(total_bb, 0)) return value;
 
     if (res < 1) return value;
 
@@ -74,7 +74,7 @@ int PlotExtended(ImGuiPlotType plot_type, const char* label, const float* data, 
                     formatted = formatted.substr(0, v_pos) + std::to_string(get_data(v_idx)) + formatted.substr(v_pos + 5);
                 }
 
-                SetTooltip(formatted.c_str());
+                SetTooltip("%s", formatted.c_str());
                 // float val = get_data(v_idx);
             }
 
@@ -240,7 +240,7 @@ PlotFrame BeginPlotFrame(const char* label, ImVec2 frame_size, int offset, int c
     const ImRect inner_bb(frame_bb.Min + style.FramePadding, frame_bb.Max - style.FramePadding);
     const ImRect total_bb(frame_bb.Min, frame_bb.Max);
     ItemSize(total_bb, style.FramePadding.y);
-    if (!ItemAdd(total_bb, NULL)) return {};
+    if (!ItemAdd(total_bb, 0)) return {};
 
     RenderFrame(frame_bb.Min, frame_bb.Max, GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
 
@@ -512,7 +512,7 @@ IMGUI_API void BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, I
     const ImRect inner_bb(frame_bb.Min + style.FramePadding, frame_bb.Max - style.FramePadding);
     const ImRect total_bb(frame_bb.Min, frame_bb.Max);
     ItemSize(total_bb, style.FramePadding.y);
-    if (!ItemAdd(total_bb, NULL)) return;
+    if (!ItemAdd(total_bb, 0)) return;
 
     RenderFrame(frame_bb.Min, frame_bb.Max, GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
 
@@ -728,7 +728,7 @@ IMGUI_API bool PlotHistogram(const char* label, ImVec2 frame_size, const float* 
     const ImRect inner_bb(frame_bb.Min + style.FramePadding, frame_bb.Max - style.FramePadding);
     const ImRect total_bb(frame_bb.Min, frame_bb.Max);
     ItemSize(total_bb, style.FramePadding.y);
-    if (!ItemAdd(total_bb, NULL)) return false;
+    if (!ItemAdd(total_bb, 0)) return false;
 
     RenderFrame(frame_bb.Min, frame_bb.Max, GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
 
@@ -861,7 +861,7 @@ IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_r
     const ImRect inner_bb(frame_bb.Min + style.FramePadding, frame_bb.Max - style.FramePadding);
     const ImRect total_bb(frame_bb.Min, frame_bb.Max);
     ItemSize(total_bb, style.FramePadding.y);
-    if (!ItemAdd(total_bb, NULL)) return false;
+    if (!ItemAdd(total_bb, 0)) return false;
 
     RenderFrame(frame_bb.Min, frame_bb.Max, GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
 
