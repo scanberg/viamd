@@ -210,6 +210,11 @@ struct Representation {
     float width = 1.f;
 };
 
+struct Selection {
+    StringBuffer<128> name = "sel";
+    Array<bool> atom_mask {};
+};
+
 struct ThreadSyncData {
     std::thread thread{};
     std::atomic<bool> running{false};
@@ -282,6 +287,8 @@ struct ApplicationData {
         int32 hovered = -1;
         int32 right_clicked = -1;
         DynamicArray<uint8> selected{};
+        DynamicArray<bool> highlight{};
+        DynamicArray<Selection> selections{};
     } selection;
 
     // --- STATISTICS ---
@@ -561,7 +568,7 @@ int main(int, char**) {
     ImGui::GetStyle().WindowRounding = 0.0f;
     ImGui::GetStyle().Colors[ImGuiCol_TitleBgCollapsed] = ImVec4(0.40f, 0.40f, 0.80f, 0.30f);
 
-    const vec4 CLEAR_COLOR = vec4(0, 0, 0, 0);
+    //const vec4 CLEAR_COLOR = vec4(0, 0, 0, 0);
     const vec4 CLEAR_INDEX = vec4(1, 1, 1, 1);
 
     vec2 halton_23[32];
@@ -666,7 +673,7 @@ int main(int, char**) {
 
                 if (region_select) {
                     const auto vp_pos = ImGui::GetMainViewport()->Pos;
-                    const auto vp_size = ImGui::GetMainViewport()->Size;
+                    //const auto vp_size = ImGui::GetMainViewport()->Size;
                     const auto pos = (ImVec2(min_p.x, min_p.y) + vp_pos);
                     const auto size = (ImVec2(max_p.x - min_p.x, max_p.y - min_p.y));
                     ImGui::SetNextWindowPos(pos);
@@ -1631,7 +1638,7 @@ void draw_selection_query_window(ApplicationData* data) {
 
     static char buf[256] = {0};
     static Mode mode = OR;
-    static bool not = false;
+    static bool mod_not = false;
     static bool query_ok = false;
     static DynamicArray<bool> mask;
     bool update_buffer = false;
@@ -1655,7 +1662,7 @@ void draw_selection_query_window(ApplicationData* data) {
             }
         } else {
             for (int64 i = 0; i < data->selection.selected.size(); i++) {
-                const uint8 mask_val = (mask[i] && !not) ? 0b00001111 : 0;
+                const uint8 mask_val = (mask[i] && !mod_not) ? 0b00001111 : 0;
                 const uint8 curr_val = data->selection.selected[i] >> 4;
 
                 if (mode == AND) {
@@ -1672,7 +1679,7 @@ void draw_selection_query_window(ApplicationData* data) {
         ImGui::SetKeyboardFocusHere();
     }
 
-    ImGui::Checkbox("NOT", &not);
+    ImGui::Checkbox("NOT", &mod_not);
     if (ImGui::RadioButton("OR", mode == OR)) mode = OR;
     ImGui::SameLine();
     if (ImGui::RadioButton("AND", mode == AND)) mode = AND;
@@ -1685,7 +1692,7 @@ void draw_selection_query_window(ApplicationData* data) {
         data->selection.show_query_window = false;
 
         for (int64 i = 0; i < data->selection.selected.size(); i++) {
-            const uint8 mask_val = (mask[i] && !not) ? 0b11110000 : 0;
+            const uint8 mask_val = (mask[i] && !mod_not) ? 0b11110000 : 0;
             const uint8 curr_val = data->selection.selected[i];
 
             if (mode == AND) {
@@ -2366,7 +2373,7 @@ static void draw_distribution_window(ApplicationData* data) {
     ImGui::PushItemWidth(-1);
 
     const auto properties = stats::get_properties();
-    constexpr float RANGE_SLIDER_HEIGHT = 26.f;
+    // constexpr float RANGE_SLIDER_HEIGHT = 26.f;
     // const float plot_height = ImGui::GetContentRegionAvail().y / (float)properties.count - RANGE_SLIDER_HEIGHT;
     const float plot_height = 100.f;
 
@@ -2438,7 +2445,7 @@ static void draw_distribution_window(ApplicationData* data) {
 }
 
 static void draw_ramachandran_window(ApplicationData* data) {
-    const int32 num_frames = data->mol_data.dynamic.trajectory ? data->mol_data.dynamic.trajectory.num_frames : 0;
+    // const int32 num_frames = data->mol_data.dynamic.trajectory ? data->mol_data.dynamic.trajectory.num_frames : 0;
     // const int32 frame = (int32)data->time;
     const IntRange frame_range = {(int32)data->time_filter.range.x, (int32)data->time_filter.range.y};
     Array<const BackboneAngle> trajectory_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame_range.x, frame_range.y - frame_range.x);
@@ -2790,7 +2797,6 @@ static void init_molecule_buffers(ApplicationData* data) {
     const int64 num_backbone_segments = backbone_index_data.size() / 6;
     const int64 position_buffer_size = mol.atom.count * 3 * sizeof(float);
     const int64 velocity_buffer_size = mol.atom.count * 3 * sizeof(float);
-    const int64 radius_buffer_size = mol.atom.count * sizeof(float);
     const int64 bond_buffer_size = mol.covalent_bonds.size() * sizeof(uint32) * 2;
     const int64 control_point_buffer_size = num_backbone_segments * sizeof(draw::ControlPoint);
     const int64 spline_buffer_size = control_point_buffer_size * SPLINE_SUBDIVISION_COUNT;
