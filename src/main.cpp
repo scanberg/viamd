@@ -71,13 +71,13 @@ constexpr Key::Key_t PLAY_PAUSE_KEY = Key::KEY_SPACE;
         if (glPopDebugGroup) glPopDebugGroup(); \
     }
 
-constexpr unsigned int NO_PICKING_IDX = 0xffffffff;
+constexpr unsigned int NO_PICKING_IDX = 0xFFFFFFFFU;
 constexpr const char* FILE_EXTENSION = "via";
 
-constexpr uint32 DEL_BTN_COLOR = 0xff1111cc;
-constexpr uint32 DEL_BTN_HOVER_COLOR = 0xff3333dd;
-constexpr uint32 DEL_BTN_ACTIVE_COLOR = 0xff5555ff;
-constexpr uint32 TEXT_BG_ERROR_COLOR = 0xaa222299;
+constexpr uint32 DEL_BTN_COLOR = 0xFF1111CC;
+constexpr uint32 DEL_BTN_HOVER_COLOR = 0xFF3333DD;
+constexpr uint32 DEL_BTN_ACTIVE_COLOR = 0xFF5555FF;
+constexpr uint32 TEXT_BG_ERROR_COLOR = 0xAA222299;
 
 constexpr float HYDROGEN_BOND_DISTANCE_CUTOFF_DEFAULT = 3.0f;
 constexpr float HYDROGEN_BOND_DISTANCE_CUTOFF_MIN = 0.1f;
@@ -133,9 +133,9 @@ inline vec2& vec_cast(ImVec2& v) { return *(vec2*)(&v); }
 enum PlaybackInterpolationMode { NEAREST, LINEAR, LINEAR_PERIODIC, CUBIC, CUBIC_PERIODIC };
 
 struct PickingData {
-    uint32 idx;
-    float depth;
-    vec3 world_coord;
+    uint32 idx = NO_PICKING_IDX;
+    float depth = 1.0f;
+	vec3 world_coord = { 0,0,0 };
 };
 
 struct MainFramebuffer {
@@ -168,9 +168,10 @@ struct MoleculeBuffers {
     GLuint velocity = 0;
     GLuint radius = 0;
     GLuint selection = 0;
-    GLuint bond = 0;
+	GLuint bond = 0;
+
     struct {
-        GLuint backbone_segment_index = 0;  // Stores indices to Ca atoms and O atoms which are needed for control points and support vectors
+        GLuint backbone_segment_index = 0;  // Stores indices to atoms which are needed for control points and support vectors
         GLuint control_point = 0;           // Stores extracted control points[vec3] and support vectors[vec3] before subdivision
         GLuint control_point_index = 0;     // Stores draw element indices to compute splines with adjacent index information (each chain separated by restart-index 0xFFFFFFFFU).
         GLuint spline = 0;                  // Stores subdivided spline data control points[vec3] + support vector[vec3]
@@ -178,10 +179,17 @@ struct MoleculeBuffers {
 
         int32 num_backbone_segment_indices = 0;
         int32 num_control_point_indices = 0;
-        int32 num_cap_indices = 0;
         int32 num_spline_indices = 0;
-        bool dirty = true;
     } backbone;
+
+	struct {
+		bool position = false;
+		bool velocity = false;
+		//bool radius = false;
+		bool selection = false;
+		//bool bond = false;
+		bool backbone = false;
+	} dirty;
 };
 
 struct Representation {
@@ -196,7 +204,7 @@ struct Representation {
     bool enabled = true;
     bool filter_is_ok = true;
 
-    // Static color mode
+    // For ColorMapping::StaticColor mode
     vec4 static_color = vec4(1);
 
     // VDW and Ball & Stick
@@ -239,12 +247,14 @@ struct ApplicationData {
     // --- PLATFORM ---
     platform::Context ctx;
 
+	uint64 dirty_flag = 0;
+
     // --- FILES ---
     // for keeping track of open files
     struct {
-        String molecule{};
-        String trajectory{};
-        String workspace{};
+        StringBuffer<512> molecule{};
+        StringBuffer<512> trajectory{};
+        StringBuffer<512> workspace{};
     } files;
 
     // --- CAMERA ---
@@ -283,12 +293,12 @@ struct ApplicationData {
 
     // --- ATOM SELECTION ---
     struct {
-        bool show_query_window = false;
+        bool show_window = false;
         int32 hovered = -1;
         int32 right_clicked = -1;
-        DynamicArray<uint8> selected{};
-        DynamicArray<bool> highlight{};
-        DynamicArray<Selection> selections{};
+        DynamicArray<bool> current_selection{};
+        DynamicArray<bool> current_highlight{};
+        DynamicArray<Selection> stored_selections{};
     } selection;
 
     // --- STATISTICS ---
@@ -434,11 +444,13 @@ struct ApplicationData {
         bool changed = false;
     } representations;
 
+	/*
     struct {
         spatialhash::Frame frame = {};
         vec3 cell_ext = vec3(4.0f);  // in Ångström
-        bool dirty_flag = true;
+        bool dirty = true;
     } spatial_hash;
+	*/
 
     // --- CONSOLE ---
     Console console{};
@@ -459,7 +471,8 @@ static bool IsItemActivePreviousFrame() {
 static void interpolate_atomic_positions(Array<vec3> dst_pos, const MoleculeTrajectory& traj, float64 time, PlaybackInterpolationMode interpolation_mode);
 static void reset_view(ApplicationData* data, bool move_camera = false, bool smooth_transition = false);
 static float compute_avg_ms(float dt);
-static PickingData get_picking_data(const MainFramebuffer& fbo, int32 x, int32 y);
+static PickingData read_picking_data(const MainFramebuffer& fbo, int32 x, int32 y);
+static void handle_selection(ApplicationData* data);
 
 static void draw_main_menu(ApplicationData* data);
 static void draw_context_popup(ApplicationData* data);
@@ -471,7 +484,7 @@ static void draw_distribution_window(ApplicationData* data);
 static void draw_ramachandran_window(ApplicationData* data);
 static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, int x, int y);
 static void draw_async_info(ApplicationData* data);
-static void draw_selection_query_window(ApplicationData* data);
+static void draw_selection_window(ApplicationData* data);
 
 static void init_framebuffer(MainFramebuffer* fbo, int width, int height);
 static void destroy_framebuffer(MainFramebuffer* fbo);
@@ -494,9 +507,17 @@ static void save_workspace(ApplicationData* data, CString file);
 static Representation* create_representation(ApplicationData* data, Representation::Type type = Representation::VDW, ColorMapping color_mapping = ColorMapping::CPK, CString filter = "all");
 static Representation* clone_representation(ApplicationData* data, const Representation& rep);
 static void remove_representation(ApplicationData* data, int idx);
-static void reset_representations(ApplicationData* data);
 static void update_representation(Representation* rep, const MoleculeDynamic& dynamic);
+static void reset_representations(ApplicationData* data);
 static void clear_representations(ApplicationData* data);
+
+// Selections
+static Selection* create_selection(ApplicationData* data, CString name, Array<const bool> atom_mask);
+static Selection* clone_selection(ApplicationData* data, const Selection& sel);
+static void remove_selection(ApplicationData* data, int idx);
+
+static void reset_selections(ApplicationData* data);
+static void clear_selections(ApplicationData* data);
 
 static void create_volume(ApplicationData* data);
 
@@ -595,97 +616,28 @@ int main(int, char**) {
         }
 
         if (!ImGui::GetIO().WantCaptureMouse) {
-            if (data.ctx.input.key.hit[PLAY_PAUSE_KEY]) {
-                const int32 num_frames = data.mol_data.dynamic.trajectory ? data.mol_data.dynamic.trajectory.num_frames : 0;
-                const float64 max_time = (float64)math::max(0, num_frames - 1);
-                if (!data.is_playing && data.time == max_time) {
-                    data.time = 0;
-                }
-                data.is_playing = !data.is_playing;
-            }
-
-            if (data.ctx.input.key.hit[CONSOLE_KEY]) {
-                data.console.visible = !data.console.visible;
-            }
-
-            if (data.ctx.input.key.hit[Key::KEY_F5]) {
-                draw::initialize();
-                postprocessing::initialize(data.fbo.width, data.fbo.height);
-            }
-
+		// #input
+			handle_selection(&data);
             const bool shift_down = data.ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data.ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
+			if (!shift_down) {
+				if (data.ctx.input.key.hit[PLAY_PAUSE_KEY]) {
+					const int32 num_frames = data.mol_data.dynamic.trajectory ? data.mol_data.dynamic.trajectory.num_frames : 0;
+					const float64 max_time = (float64)math::max(0, num_frames - 1);
+					if (!data.is_playing && data.time == max_time) {
+						data.time = 0;
+					}
+					data.is_playing = !data.is_playing;
+				}
 
-            {
-                static bool region_select = false;
-                static platform::Coordinate x0;
-                const platform::Coordinate x1 = data.ctx.input.mouse.win_coord;
+				if (data.ctx.input.key.hit[CONSOLE_KEY]) {
+					data.console.visible = !data.console.visible;
+				}
 
-                const ImVec2 min_p = ImVec2(math::min(x0.x, x1.x), math::min(x0.y, x1.y));
-                const ImVec2 max_p = ImVec2(math::max(x0.x, x1.x), math::max(x0.y, x1.y));
+				if (data.ctx.input.key.hit[Key::KEY_F5]) {
+					draw::initialize();
+					postprocessing::initialize(data.fbo.width, data.fbo.height);
+				}
 
-                if (!shift_down) {
-                    region_select = false;
-                } else {
-                    if (!region_select && (data.ctx.input.mouse.hit[0] || data.ctx.input.mouse.hit[1])) {
-                        x0 = data.ctx.input.mouse.win_coord;
-                    }
-
-                    if ((data.ctx.input.mouse.down[0] || data.ctx.input.mouse.down[1]) && x1 != x0) {
-                        region_select = true;
-                    }
-
-                    if (data.ctx.input.mouse.release[0] || data.ctx.input.mouse.release[1]) {
-                        const uint8 val = data.ctx.input.mouse.release[0] ? 0xFF : 0;
-                        bool update_buffer = false;
-
-                        if (region_select) {
-                            region_select = false;
-
-                            const int32 w = data.ctx.window.width;
-                            const int32 h = data.ctx.window.height;
-                            const mat4 mvp = compute_perspective_projection_matrix(data.view.camera, w, h) * compute_world_to_view_matrix(data.view.camera);
-                            const auto positions = data.mol_data.dynamic.molecule.atom.positions;
-                            for (int64 i = 0; i < data.mol_data.dynamic.molecule.atom.count; i++) {
-                                vec4 p = mvp * vec4(positions[i], 1);
-                                p /= p.w;
-                                vec2 c = (vec2(p.x, -p.y) * 0.5f + 0.5f) * vec2(w, h);
-                                if (c.x < min_p.x || max_p.x < c.x) continue;
-                                if (c.y < min_p.y || max_p.y < c.y) continue;
-                                data.selection.selected[i] = val;
-                            }
-                            update_buffer = true;
-                        } else {
-                            if (data.picking.idx != NO_PICKING_IDX) {
-                                data.selection.selected[data.picking.idx] = val;
-                                update_buffer = true;
-                            } else if (val == 0) {  // Shift + right-click -> Clear
-                                memset_array(data.selection.selected, (uint8)0);
-                                update_buffer = true;
-                            }
-                        }
-                        if (update_buffer) {
-                            glBindBuffer(GL_ARRAY_BUFFER, data.gpu_buffers.selection);
-                            glBufferSubData(GL_ARRAY_BUFFER, 0, data.selection.selected.size_in_bytes(), data.selection.selected.data());
-                            glBindBuffer(GL_ARRAY_BUFFER, 0);
-                        }
-                    }
-                }
-
-                if (region_select) {
-                    const auto vp_pos = ImGui::GetMainViewport()->Pos;
-                    //const auto vp_size = ImGui::GetMainViewport()->Size;
-                    const auto pos = (ImVec2(min_p.x, min_p.y) + vp_pos);
-                    const auto size = (ImVec2(max_p.x - min_p.x, max_p.y - min_p.y));
-                    ImGui::SetNextWindowPos(pos);
-                    ImGui::SetNextWindowSize(size);
-                    // ImGui::SetNextWindowSizeConstraints(ImVec2(1, 1), ImVec2(9999, 9999));
-                    ImGui::Begin("selection", nullptr,
-                                 ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoScrollbar);
-                    ImGui::End();
-                }
-            }
-
-            if (!shift_down) {
                 // CAMERA CONTROLS
                 data.view.trackball_state.input.rotate_button = data.ctx.input.mouse.down[0];
                 data.view.trackball_state.input.pan_button = data.ctx.input.mouse.down[1];
@@ -827,12 +779,10 @@ int main(int, char**) {
             auto& traj = data.mol_data.dynamic.trajectory;
 
             data.hydrogen_bonds.dirty = true;
-            data.gpu_buffers.backbone.dirty = true;
+            data.gpu_buffers.dirty.backbone = true;
 
             PUSH_CPU_SECTION("Interpolate Position")
             if (traj) {
-                data.spatial_hash.dirty_flag = true;
-
                 auto pos = get_positions(mol);
                 vec3* old_pos = (vec3*)TMP_MALLOC(pos.size_in_bytes());
                 defer { TMP_FREE(old_pos); };
@@ -849,7 +799,8 @@ int main(int, char**) {
                     data.mol_data.atom_velocity[i] = pos[i] - old_pos[i];
                 }
 
-                copy_molecule_data_to_buffers(&data);
+				data.gpu_buffers.dirty.position = true;
+				data.gpu_buffers.dirty.velocity = true;
             }
             POP_CPU_SECTION()
 
@@ -926,9 +877,9 @@ int main(int, char**) {
             }
             has_spline_rep |= data.visuals.spline.draw_control_points || data.visuals.spline.draw_spline;
 
-            data.gpu_buffers.backbone.dirty = true;
-            if (has_spline_rep && data.gpu_buffers.backbone.dirty) {
-                data.gpu_buffers.backbone.dirty = false;
+            data.gpu_buffers.dirty.backbone = true;
+            if (has_spline_rep && data.gpu_buffers.dirty.backbone) {
+                data.gpu_buffers.dirty.backbone = false;
                 draw::compute_backbone_control_points(data.gpu_buffers.backbone.control_point, data.gpu_buffers.position, data.gpu_buffers.backbone.backbone_segment_index,
                                                       data.gpu_buffers.backbone.num_backbone_segment_indices, ramachandran::get_segmentation_texture());
                 draw::compute_backbone_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index,
@@ -946,10 +897,8 @@ int main(int, char**) {
             if (data.visuals.temporal_reprojection.enabled && data.visuals.temporal_reprojection.jitter) {
                 static uint32 i = 0;
                 i = (++i) % ARRAY_SIZE(halton_23);
-                jitter = halton_23[i] * 2.0f - 1.0f;
-                // jitter = halton_23[i] - 0.5f;
-                const mat4 jitter_mat = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(jitter / res, 0, 1));
-                proj_mat = jitter_mat * proj_mat;
+				jitter = halton_23[i] - 0.5f;
+				proj_mat = compute_perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height, jitter.x, jitter.y);
             }
 
             auto& param = data.view.param;
@@ -1074,15 +1023,21 @@ int main(int, char**) {
         // PICKING
         PUSH_GPU_SECTION("Picking") {
             vec2 coord = {data.ctx.input.mouse.win_coord.x, data.fbo.height - data.ctx.input.mouse.win_coord.y};
-            if (coord.x < 0.f || coord.y < 0.f || coord.x >= (float)data.fbo.width || coord.y >= (float)data.fbo.height) {
+            if (coord.x < 0.f || coord.x >= (float)data.fbo.width || coord.y < 0.f || coord.y >= (float)data.fbo.height) {
                 data.picking.idx = NO_PICKING_IDX;
                 data.picking.depth = 1.f;
             } else {
+
                 // @TODO: FIX THIS: This is broken, reading from the jittered coordinate should provide the correct sample, right?
-                coord += data.view.param.jitter * vec2(1.f, -1.f);
-                data.picking = get_picking_data(data.fbo, (int32)(coord.x + 0.5f), (int32)(coord.y + 0.5f));
+				coord += (0.5f + data.view.param.jitter * vec2(1,1));
+
+                data.picking = read_picking_data(data.fbo, (int32)(coord.x), (int32)(coord.y));
                 const vec4 viewport(0, 0, data.fbo.width, data.fbo.height);
                 data.picking.world_coord = math::unproject(vec3(coord.x, coord.y, data.picking.depth), data.view.param.matrix.inverse.view_proj, viewport);
+
+				if (data.ctx.input.key.down[Key::KEY_X]) {
+					printf("coord: [%.2f %.2f] jitter: [%.2f %.2f] idx: [%lu]\n", coord.x, coord.y, data.view.param.jitter.x, data.view.param.jitter.y, data.picking.idx);
+				}
             }
 
             data.selection.hovered = -1;
@@ -1200,7 +1155,7 @@ int main(int, char**) {
         if (data.statistics.show_property_window) draw_property_window(&data);
         if (data.statistics.show_timeline_window) draw_timeline_window(&data);
         if (data.statistics.show_distribution_window) draw_distribution_window(&data);
-        if (data.selection.show_query_window) draw_selection_query_window(&data);
+        if (data.selection.show_window) draw_selection_window(&data);
 
         if (data.ramachandran.show_window) {
             draw_ramachandran_window(&data);
@@ -1222,6 +1177,10 @@ int main(int, char**) {
         // Swap buffers
         platform::swap_buffers(&data.ctx);
         data.frame++;
+
+		PUSH_GPU_SECTION("Update Buffers")
+			copy_molecule_data_to_buffers(&data);
+		POP_GPU_SECTION()
     }
 
     data.async.trajectory.sync.signal_stop_and_wait();
@@ -1330,21 +1289,35 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
 }
 
 // #picking
-static PickingData get_picking_data(const MainFramebuffer& framebuffer, int32 x, int32 y) {
+static PickingData read_picking_data(const MainFramebuffer& framebuffer, int32 x, int32 y) {
     static uint32 frame = 0;
     uint32 next = (frame + 1) % 2;
 
     PickingData data{};
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer.deferred.fbo);
-
     glReadBuffer(GL_COLOR_ATTACHMENT3);
+	/*
+	
+	//@REMOVE ME
+	uint8 c[4];
+	float d;
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+	glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &c);
+	glReadPixels(x, y, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &d);
+	data.idx = c[0] + (c[1] << 8) + (c[2] << 16) + (c[3] << 24);
+	data.depth = d;
+	return data;
+	*/
+
+	// Queue async reads from current frame to pixel pack buffer
     glBindBuffer(GL_PIXEL_PACK_BUFFER, framebuffer.pbo_picking.color[frame]);
     glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, 0);
 
     glBindBuffer(GL_PIXEL_PACK_BUFFER, framebuffer.pbo_picking.depth[frame]);
     glReadPixels(x, y, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, 0);
 
+	// Read values from previous frames pixel pack buffer
     glBindBuffer(GL_PIXEL_PACK_BUFFER, framebuffer.pbo_picking.color[next]);
     GLubyte* color = (GLubyte*)glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
     if (color) {
@@ -1604,6 +1577,7 @@ if (ImGui::BeginMenu("Edit")) {
             ImGui::Checkbox("Timelines", &data->statistics.show_timeline_window);
             ImGui::Checkbox("Distributions", &data->statistics.show_distribution_window);
             ImGui::Checkbox("Ramachandran", &data->ramachandran.show_window);
+			ImGui::Checkbox("Selection", &data->selection.show_window);
 
             ImGui::EndMenu();
         }
@@ -1631,8 +1605,8 @@ if (ImGui::BeginPopupModal("Warning New")) {
     */
 }
 
-void draw_selection_query_window(ApplicationData* data) {
-    if (!data->selection.show_query_window) return;
+void draw_selection_window(ApplicationData* data) {
+    if (!data->selection.show_window) return;
 
     enum Mode { AND, OR };
 
@@ -1641,38 +1615,28 @@ void draw_selection_query_window(ApplicationData* data) {
     static bool mod_not = false;
     static bool query_ok = false;
     static DynamicArray<bool> mask;
-    bool update_buffer = false;
 
-    mask.resize(data->selection.selected.size());
+    mask.resize(data->selection.current_selection.size());
 
-    ImGui::Begin("Selection Query", &data->selection.show_query_window);
+    ImGui::Begin("Selection Query", &data->selection.show_window);
     const auto TEXT_BG_DEFAULT_COLOR = ImGui::ColorConvertFloat4ToU32(ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
     ImGui::PushStyleColor(ImGuiCol_FrameBg, query_ok ? TEXT_BG_DEFAULT_COLOR : TEXT_BG_ERROR_COLOR);
-    bool query_modified = ImGui::InputText("##query", buf, ARRAY_SIZE(buf), ImGuiInputTextFlags_AutoSelectAll);
+	bool query_modified = ImGui::InputText("##query", buf, ARRAY_SIZE(buf), ImGuiInputTextFlags_AutoSelectAll);
     bool pressed_enter = ImGui::IsItemActivePreviousFrame() && !ImGui::IsItemActive() && ImGui::IsKeyPressed(ImGui::GetIO().KeyMap[ImGuiKey_Enter]);
     ImGui::PopStyleColor();
 
-    if (query_modified) {
-        query_ok = filter::compute_filter_mask(mask, data->mol_data.dynamic, buf);
+	if (query_modified) {
+		query_ok = filter::compute_filter_mask(mask, data->mol_data.dynamic, buf);
+		if (!query_ok) {
+			memset_array(mask, false);
+		}
+		data->gpu_buffers.dirty.selection = true;
+	}
 
-        if (!query_ok) {
-            // Clear lower bits which are for highlighting
-            for (int64 i = 0; i < data->selection.selected.size(); i++) {
-                data->selection.selected[i] &= ~0b00001111;
-            }
-        } else {
-            for (int64 i = 0; i < data->selection.selected.size(); i++) {
-                const uint8 mask_val = (mask[i] && !mod_not) ? 0b00001111 : 0;
-                const uint8 curr_val = data->selection.selected[i] >> 4;
-
-                if (mode == AND) {
-                    data->selection.selected[i] = curr_val & mask_val;
-                } else if (mode == OR) {
-                    data->selection.selected[i] = curr_val | mask_val;
-                }
-            }
+    if (query_ok) {
+        for (int64 i = 0; i < data->selection.current_highlight.size(); i++) {
+			data->selection.current_highlight[i] |= mask[i];
         }
-        update_buffer = true;
     }
 
     if (ImGui::IsWindowAppearing()) {
@@ -1689,19 +1653,19 @@ void draw_selection_query_window(ApplicationData* data) {
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
     }
     if (ImGui::Button("Ok") || pressed_enter) {
-        data->selection.show_query_window = false;
+        data->selection.show_window = false;
 
-        for (int64 i = 0; i < data->selection.selected.size(); i++) {
-            const uint8 mask_val = (mask[i] && !mod_not) ? 0b11110000 : 0;
-            const uint8 curr_val = data->selection.selected[i];
+        for (int64 i = 0; i < data->selection.current_selection.size(); i++) {
+			const bool mask_val = (mask[i] && !mod_not);
+            const bool curr_val = data->selection.current_selection[i];
 
             if (mode == AND) {
-                data->selection.selected[i] = curr_val & mask_val;
+                data->selection.current_selection[i] = curr_val & mask_val;
             } else if (mode == OR) {
-                data->selection.selected[i] = curr_val | mask_val;
+                data->selection.current_selection[i] = curr_val | mask_val;
             }
         }
-        update_buffer = true;
+		data->gpu_buffers.dirty.selection = true;
     }
     if (!query_ok) {
         ImGui::PopItemFlag();
@@ -1710,20 +1674,10 @@ void draw_selection_query_window(ApplicationData* data) {
 
     ImGui::SameLine();
     if (ImGui::Button("Cancel")) {
-        data->selection.show_query_window = false;
+        data->selection.show_window = false;
     }
 
     ImGui::End();
-
-    if (update_buffer) {
-        glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.selection);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, data->selection.selected.size_in_bytes(), data->selection.selected.data());
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
-    }
-
-    if (ImGui::GetIO().KeysDown[ImGuiKey_Enter]) {
-        printf("cool");
-    }
 }
 
 void draw_context_popup(ApplicationData* data) {
@@ -1741,13 +1695,13 @@ void draw_context_popup(ApplicationData* data) {
             if (ImGui::MenuItem("Recenter Trajectory")) {
                 recenter_trajectory(&data->mol_data.dynamic, data->mol_data.dynamic.molecule.atom.residue_indices[data->selection.right_clicked]);
                 interpolate_atomic_positions(get_positions(data->mol_data.dynamic.molecule), data->mol_data.dynamic.trajectory, data->time, data->interpolation);
-                copy_molecule_data_to_buffers(data);
+				data->gpu_buffers.dirty.position = true;
                 ImGui::CloseCurrentPopup();
             }
         }
         if (ImGui::MenuItem("Selection Query")) {
             ImGui::CloseCurrentPopup();
-            data->selection.show_query_window = true;
+            data->selection.show_window = true;
         }
         ImGui::EndPopup();
     }
@@ -2451,7 +2405,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
     Array<const BackboneAngle> trajectory_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame_range.x, frame_range.y - frame_range.x);
     Array<const BackboneAngle> current_angles = data->mol_data.dynamic.molecule.backbone.angles;
     Array<const BackboneSegment> backbone_segments = data->mol_data.dynamic.molecule.backbone.segments;
-    Array<const uint8> atom_selection = data->selection.selected;
+    Array<const bool> atom_selection = data->selection.current_selection;
 
     /*
 ImGui::SetNextWindowSizeConstraints(ImVec2(100, 100), ImVec2(1000, 1000), [](ImGuiSizeCallbackData* data) {
@@ -2798,6 +2752,7 @@ static void init_molecule_buffers(ApplicationData* data) {
     const int64 position_buffer_size = mol.atom.count * 3 * sizeof(float);
     const int64 velocity_buffer_size = mol.atom.count * 3 * sizeof(float);
     const int64 bond_buffer_size = mol.covalent_bonds.size() * sizeof(uint32) * 2;
+	const int64 selection_buffer_size = mol.atom.count * sizeof(uint8);
     const int64 control_point_buffer_size = num_backbone_segments * sizeof(draw::ControlPoint);
     const int64 spline_buffer_size = control_point_buffer_size * SPLINE_SUBDIVISION_COUNT;
 
@@ -2813,38 +2768,42 @@ static void init_molecule_buffers(ApplicationData* data) {
     if (!data->gpu_buffers.backbone.spline_index) glGenBuffers(1, &data->gpu_buffers.backbone.spline_index);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.position);
-    glBufferData(GL_ARRAY_BUFFER, position_buffer_size, 0, GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, position_buffer_size, NULL, GL_DYNAMIC_DRAW);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.velocity);
-    glBufferData(GL_ARRAY_BUFFER, velocity_buffer_size, 0, GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, velocity_buffer_size, NULL, GL_DYNAMIC_DRAW);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.radius);
     glBufferData(GL_ARRAY_BUFFER, data->mol_data.atom_radii.size_in_bytes(), data->mol_data.atom_radii.data(), GL_STATIC_DRAW);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.bond);
-    glBufferData(GL_ARRAY_BUFFER, bond_buffer_size, mol.covalent_bonds.ptr, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, bond_buffer_size, mol.covalent_bonds.data(), GL_STATIC_DRAW);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.selection);
-    glBufferData(GL_ARRAY_BUFFER, data->selection.selected.size_in_bytes(), data->selection.selected.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, selection_buffer_size, NULL, GL_STATIC_DRAW);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.backbone.backbone_segment_index);
-    glBufferData(GL_ARRAY_BUFFER, backbone_index_data.size_in_bytes(), backbone_index_data.ptr, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, backbone_index_data.size_in_bytes(), backbone_index_data.data(), GL_STATIC_DRAW);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.backbone.control_point);
-    glBufferData(GL_ARRAY_BUFFER, control_point_buffer_size, nullptr, GL_DYNAMIC_COPY);
+    glBufferData(GL_ARRAY_BUFFER, control_point_buffer_size, NULL, GL_DYNAMIC_COPY);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.backbone.control_point_index);
-    glBufferData(GL_ARRAY_BUFFER, control_point_index_data.size_in_bytes(), control_point_index_data.ptr, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, control_point_index_data.size_in_bytes(), control_point_index_data.data(), GL_STATIC_DRAW);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.backbone.spline);
-    glBufferData(GL_ARRAY_BUFFER, spline_buffer_size, nullptr, GL_DYNAMIC_COPY);
+    glBufferData(GL_ARRAY_BUFFER, spline_buffer_size, NULL, GL_DYNAMIC_COPY);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.backbone.spline_index);
-    glBufferData(GL_ARRAY_BUFFER, spline_index_data.size_in_bytes(), spline_index_data.ptr, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, spline_index_data.size_in_bytes(), spline_index_data.data(), GL_STATIC_DRAW);
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    copy_molecule_data_to_buffers(data);
+	data->gpu_buffers.dirty.position = true;
+	data->gpu_buffers.dirty.velocity = true;
+	data->gpu_buffers.dirty.selection = true;
+	data->gpu_buffers.dirty.backbone = true;
+
 }
 
 static void free_molecule_buffers(ApplicationData* data) {
@@ -2894,10 +2853,11 @@ static void free_molecule_buffers(ApplicationData* data) {
 void copy_molecule_data_to_buffers(ApplicationData* data) {
     ASSERT(data);
     const auto N = data->mol_data.dynamic.molecule.atom.count;
-    const vec3* position = data->mol_data.dynamic.molecule.atom.positions;
-    const vec3* velocity = data->mol_data.atom_velocity.data();
 
-    {
+    if (data->gpu_buffers.dirty.position) {
+		data->gpu_buffers.dirty.position = false;
+		const vec3* position = data->mol_data.dynamic.molecule.atom.positions;
+
         // Update data inside position buffer
         glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.position);
 
@@ -2907,7 +2867,7 @@ void copy_molecule_data_to_buffers(ApplicationData* data) {
             return;
         }
 
-        // Note that we cannot do a pure memcpy since the CPU buffer using vec3 can be a m128 with 16-byte alignment.
+        // @NOTE: we cannot do a pure memcpy since the CPU buffer using vec3 can be a m128 with 16-byte alignment.
         for (int64 i = 0; i < N; i++) {
             pos_gpu[i * 3 + 0] = position[i][0];
             pos_gpu[i * 3 + 1] = position[i][1];
@@ -2916,7 +2876,10 @@ void copy_molecule_data_to_buffers(ApplicationData* data) {
         glUnmapBuffer(GL_ARRAY_BUFFER);
     }
 
-    {
+    if (data->gpu_buffers.dirty.velocity) {
+		data->gpu_buffers.dirty.velocity = false;
+		const vec3* velocity = data->mol_data.atom_velocity.data();
+
         // Update data inside position buffer
         glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.velocity);
 
@@ -2926,7 +2889,7 @@ void copy_molecule_data_to_buffers(ApplicationData* data) {
             return;
         }
 
-        // Note that we cannot do a pure memcpy since the CPU buffer using vec3 can be a m128 with 16-byte alignment.
+        // @NOTE: we cannot do a pure memcpy since the CPU buffer using vec3 can be a m128 with 16-byte alignment.
         for (int64 i = 0; i < N; i++) {
             vel_gpu[i * 3 + 0] = velocity[i][0];
             vel_gpu[i * 3 + 1] = velocity[i][1];
@@ -2934,6 +2897,23 @@ void copy_molecule_data_to_buffers(ApplicationData* data) {
         }
         glUnmapBuffer(GL_ARRAY_BUFFER);
     }
+
+	if (data->gpu_buffers.dirty.selection) {
+		data->gpu_buffers.dirty.selection = false;
+
+		glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.selection);
+		uint8* sel_gpu = (uint8*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+
+		if (!sel_gpu) {
+			LOG_ERROR("Could not map selection buffer");
+			return;
+		}
+
+		for (int64 i = 0; i < N; i++) {
+			sel_gpu[i] = (data->selection.current_selection[i] ? 0b10000000 : 0) | (data->selection.current_highlight[i] ? 0b01111111 : 0);
+		}
+		glUnmapBuffer(GL_ARRAY_BUFFER);
+	}
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
@@ -2953,11 +2933,11 @@ static void free_trajectory_data(ApplicationData* data) {
 static void free_molecule_data(ApplicationData* data) {
     ASSERT(data);
     if (data->mol_data.dynamic.molecule) {
-        free_string(&data->files.molecule);
+        data->files.molecule = "";
         free_molecule_structure(&data->mol_data.dynamic.molecule);
     }
     if (data->mol_data.dynamic.trajectory) {
-        free_string(&data->files.trajectory);
+		data->files.trajectory = "";
         free_trajectory_data(data);
     }
     data->mol_data.atom_radii.clear();
@@ -2968,8 +2948,9 @@ static void free_molecule_data(ApplicationData* data) {
     data->ramachandran.backbone_angles = {};
     data->hydrogen_bonds.bonds.clear();
     data->hydrogen_bonds.dirty = true;
-    data->gpu_buffers.backbone.dirty = true;
-    data->selection.selected.clear();
+    data->gpu_buffers.dirty.backbone = true;
+    data->selection.current_selection.clear();
+	data->selection.current_highlight.clear();
 }
 
 static void init_molecule_data(ApplicationData* data) {
@@ -2978,8 +2959,10 @@ static void init_molecule_data(ApplicationData* data) {
         data->mol_data.atom_radii = compute_atom_radii(get_elements(data->mol_data.dynamic.molecule));
         data->mol_data.atom_velocity.resize(atom_count);
         zero_array(data->mol_data.atom_velocity);
-        data->selection.selected.resize(atom_count);
-        zero_array(data->selection.selected);
+        data->selection.current_selection.resize(atom_count);
+		data->selection.current_highlight.resize(atom_count);
+        zero_array(data->selection.current_selection);
+		zero_array(data->selection.current_highlight);
         init_molecule_buffers(data);
     }
 }
@@ -2994,8 +2977,8 @@ static void init_trajectory_data(ApplicationData* data) {
 
         read_next_trajectory_frame(&data->mol_data.dynamic.trajectory);  // read first frame explicitly
         auto frame_0_pos = get_trajectory_positions(data->mol_data.dynamic.trajectory, 0);
-        memcpy(data->mol_data.dynamic.molecule.atom.positions, frame_0_pos.ptr, frame_0_pos.size_in_bytes());
-        copy_molecule_data_to_buffers(data);
+        memcpy(data->mol_data.dynamic.molecule.atom.positions, frame_0_pos.data(), frame_0_pos.size_in_bytes());
+		data->gpu_buffers.dirty.position = true;
 
         load_trajectory_async(data);
 
@@ -3026,7 +3009,7 @@ static void load_molecule_data(ApplicationData* data, CString file) {
             if (!allocate_and_load_pdb_from_file(&data->mol_data.dynamic, file)) {
                 LOG_ERROR("ERROR! Failed to load pdb file.");
             }
-            data->files.molecule = allocate_string(file);
+            data->files.molecule = file;
             init_molecule_data(data);
             init_trajectory_data(data);
         } else if (compare_ignore_case(ext, "gro")) {
@@ -3035,7 +3018,7 @@ static void load_molecule_data(ApplicationData* data, CString file) {
                 LOG_ERROR("ERROR! Failed to load gro file.");
                 return;
             }
-            data->files.molecule = allocate_string(file);
+            data->files.molecule = file;
             init_molecule_data(data);
         } else if (compare_ignore_case(ext, "xtc")) {
             if (!data->mol_data.dynamic.molecule) {
@@ -3133,7 +3116,7 @@ static CString get_color_mapping_name(ColorMapping mapping) {
     }
 }
 
-static vec4 to_vec4(CString txt, vec4 default_val = vec4(1)) {
+static vec4 to_vec4(CString txt, const vec4& default_val = vec4(1)) {
     vec4 res = default_val;
     auto tokens = ctokenize(txt, ",");
     int32 count = (int32)tokens.count < 4 ? (int32)tokens.count : 4;
@@ -3212,8 +3195,7 @@ static void load_workspace(ApplicationData* data, CString file) {
         }
     }
 
-    if (data->files.workspace) free_string(&data->files.workspace);
-    data->files.workspace = allocate_string(file);
+    data->files.workspace = file;
 
     if (!compare(new_molecule_file, data->files.molecule) && new_molecule_file) {
         load_molecule_data(data, new_molecule_file);
@@ -3279,8 +3261,7 @@ static void save_workspace(ApplicationData* data, CString file) {
 
     fclose(fptr);
 
-    if (data->files.workspace) free_string(&data->files.workspace);
-    data->files.workspace = allocate_string(file);
+    data->files.workspace = file;
 }
 
 // #representation
@@ -3360,6 +3341,137 @@ static void clear_representations(ApplicationData* data) {
     while (data->representations.buffer.size() > 0) {
         remove_representation(data, (int32)data->representations.buffer.size() - 1);
     }
+}
+
+// #selection
+static Selection* create_selection(ApplicationData* data, CString name, Array<const bool> atom_mask) {
+	ASSERT(data);
+	Selection sel;
+	sel.name = name;
+	sel.atom_mask = allocate_array<bool>(data->selection.current_selection.size());
+	memcpy(sel.atom_mask.data(), atom_mask.data(), math::min(sel.atom_mask.size_in_bytes(), atom_mask.size_in_bytes()));
+	return &data->selection.stored_selections.push_back(sel);
+}
+
+static Selection* clone_selection(ApplicationData* data, const Selection& src) {
+	ASSERT(data);
+	Selection clone;
+	clone.name = src.name;
+	clone.atom_mask = allocate_array<bool>(data->selection.current_selection.size());
+	memcpy(clone.atom_mask.data(), src.atom_mask.data(), math::min(clone.atom_mask.size_in_bytes(), src.atom_mask.size_in_bytes()));
+	return &data->selection.stored_selections.push_back(clone);
+}
+
+static void remove_selection(ApplicationData* data, int idx) {
+	ASSERT(data);
+	if (idx < 0 || (int)data->selection.stored_selections.size() <= idx) {
+		LOG_ERROR("Index [%i] out of range when trying to remove selection", idx);
+	}
+	auto item = &data->selection.stored_selections[idx];
+	free_array(&item->atom_mask);
+	data->selection.stored_selections.remove(item);
+}
+
+static void reset_selections(ApplicationData* data) {
+	ASSERT(data);
+	// @NOTE: What to do here?
+}
+
+static void clear_selections(ApplicationData* data) {
+	ASSERT(data);
+	while (data->selection.stored_selections.size() > 0) {
+		remove_selection(data, data->selection.stored_selections.size() - 1);
+	}
+}
+
+static void handle_selection(ApplicationData* data) {
+	ASSERT(data);
+	static bool region_select = false;
+	static platform::Coordinate x0;
+	const platform::Coordinate x1 = data->ctx.input.mouse.win_coord;
+
+	const ImVec2 min_p = ImVec2(math::min(x0.x, x1.x), math::min(x0.y, x1.y));
+	const ImVec2 max_p = ImVec2(math::max(x0.x, x1.x), math::max(x0.y, x1.y));
+	const bool shift_down = data->ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data->ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
+
+	zero_array(data->selection.current_highlight);
+	data->gpu_buffers.dirty.selection = true;
+
+	if (data->picking.idx != NO_PICKING_IDX) {
+		data->selection.current_highlight[data->picking.idx] = true;
+		data->gpu_buffers.dirty.selection = true;
+	}
+
+	if (shift_down) {
+		if (!region_select && (data->ctx.input.mouse.hit[0] || data->ctx.input.mouse.hit[1])) {
+			x0 = data->ctx.input.mouse.win_coord;
+		}
+
+		if ((data->ctx.input.mouse.down[0] || data->ctx.input.mouse.down[1]) && x1 != x0) {
+			region_select = true;
+		}
+
+		if (region_select) {
+			const int32 w = data->ctx.window.width;
+			const int32 h = data->ctx.window.height;
+			const mat4 mvp = compute_perspective_projection_matrix(data->view.camera, w, h) * compute_world_to_view_matrix(data->view.camera);
+			const auto positions = data->mol_data.dynamic.molecule.atom.positions;
+			for (int64 i = 0; i < data->mol_data.dynamic.molecule.atom.count; i++) {
+				vec4 p = mvp * vec4(positions[i], 1);
+				p /= p.w;
+				vec2 c = (vec2(p.x, -p.y) * 0.5f + 0.5f) * vec2(w, h);
+				if (c.x < min_p.x || max_p.x < c.x) continue;
+				if (c.y < min_p.y || max_p.y < c.y) continue;
+				data->selection.current_highlight[i] = true;
+			}
+
+			if (data->ctx.input.mouse.release[0]) {
+				for (int64 i = 0; i < data->selection.current_selection.size(); i++) {
+					data->selection.current_selection[i] |= data->selection.current_highlight[i];
+				}
+				zero_array(data->selection.current_highlight);
+				region_select = false;
+
+			}
+			else if (data->ctx.input.mouse.release[1]) {
+				for (int64 i = 0; i < data->selection.current_selection.size(); i++) {
+					data->selection.current_selection[i] &= !data->selection.current_highlight[i];
+				}
+				zero_array(data->selection.current_highlight);
+				region_select = false;
+			}
+
+			data->gpu_buffers.dirty.selection = true;
+
+
+			// Draw selection window
+			// @TODO: Replace this hack with a screen space quad.
+			const auto vp_pos = ImGui::GetMainViewport()->Pos;
+			const auto pos = (ImVec2(min_p.x, min_p.y) + vp_pos);
+			const auto size = (ImVec2(max_p.x - min_p.x, max_p.y - min_p.y));
+			ImGui::SetNextWindowPos(pos);
+			ImGui::SetNextWindowSize(size);
+			// ImGui::SetNextWindowSizeConstraints(ImVec2(1, 1), ImVec2(9999, 9999));
+			ImGui::SetNextWindowBgAlpha(0.125f);
+			ImGui::Begin("selection", nullptr,
+				ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoScrollbar);
+			ImGui::End();
+		}
+		else if (data->ctx.input.mouse.clicked[0] || data->ctx.input.mouse.clicked[1]) {
+			if (data->picking.idx != NO_PICKING_IDX) {
+				const bool val = data->ctx.input.mouse.clicked[0];
+				data->selection.current_selection[data->picking.idx] = val;
+			}
+			else if (data->ctx.input.mouse.clicked[1]) {
+				// Clear selection
+				memset_array(data->selection.current_selection, false);
+			}
+			data->gpu_buffers.dirty.selection = true;
+		}
+	}
+	else {
+		region_select = false;
+	}
 }
 
 // #async
