@@ -79,13 +79,13 @@ constexpr uint32 DEL_BTN_HOVER_COLOR = 0xFF3333DD;
 constexpr uint32 DEL_BTN_ACTIVE_COLOR = 0xFF5555FF;
 constexpr uint32 TEXT_BG_ERROR_COLOR = 0xAA222299;
 
-constexpr float HYDROGEN_BOND_DISTANCE_CUTOFF_DEFAULT = 3.0f;
-constexpr float HYDROGEN_BOND_DISTANCE_CUTOFF_MIN = 0.1f;
-constexpr float HYDROGEN_BOND_DISTANCE_CUTOFF_MAX = 12.0f;
+constexpr float32 HYDROGEN_BOND_DISTANCE_CUTOFF_DEFAULT = 3.0f;
+constexpr float32 HYDROGEN_BOND_DISTANCE_CUTOFF_MIN = 0.1f;
+constexpr float32 HYDROGEN_BOND_DISTANCE_CUTOFF_MAX = 12.0f;
 
-constexpr float HYDROGEN_BOND_ANGLE_CUTOFF_DEFAULT = 20.f;
-constexpr float HYDROGEN_BOND_ANGLE_CUTOFF_MIN = 5.f;
-constexpr float HYDROGEN_BOND_ANGLE_CUTOFF_MAX = 90.f;
+constexpr float32 HYDROGEN_BOND_ANGLE_CUTOFF_DEFAULT = 20.f;
+constexpr float32 HYDROGEN_BOND_ANGLE_CUTOFF_MIN = 5.f;
+constexpr float32 HYDROGEN_BOND_ANGLE_CUTOFF_MAX = 90.f;
 
 constexpr int32 VOLUME_DOWNSAMPLE_FACTOR = 2;
 
@@ -134,7 +134,7 @@ enum PlaybackInterpolationMode { NEAREST, LINEAR, LINEAR_PERIODIC, CUBIC, CUBIC_
 
 struct PickingData {
     uint32 idx = NO_PICKING_IDX;
-    float depth = 1.0f;
+    float32 depth = 1.0f;
 	vec3 world_coord = { 0,0,0 };
 };
 
@@ -144,7 +144,8 @@ struct MainFramebuffer {
         GLuint color = 0;
         GLuint normal = 0;
         GLuint velocity = 0;
-        GLuint atom_idx = 0;
+		GLuint emissive = 0;
+        GLuint picking = 0;
         GLuint fbo = 0;
     } deferred;
 
@@ -208,14 +209,14 @@ struct Representation {
     vec4 static_color = vec4(1);
 
     // VDW and Ball & Stick
-    float radius = 1.f;
+    float32 radius = 1.f;
 
     // Ball & Stick and Licorice, Ribbons, Cartoon
-    float thickness = 1.f;
+    float32 thickness = 1.f;
 
     // Ribbons, Cartoon
-    float tension = 0.5f;
-    float width = 1.f;
+    float32 tension = 0.5f;
+    float32 width = 1.f;
 };
 
 struct Selection {
@@ -281,12 +282,12 @@ struct ApplicationData {
     struct {
         struct {
             ThreadSyncData sync{};
-            float fraction = 0.f;
+            float32 fraction = 0.f;
         } trajectory;
 
         struct {
             ThreadSyncData sync{};
-            float fraction = 0.f;
+            float32 fraction = 0.f;
             bool query_update = false;
         } backbone_angles;
     } async;
@@ -319,7 +320,7 @@ struct ApplicationData {
     // --- PLAYBACK ---
     uint64 frame = 0;
     float64 time = 0.f;  // needs to be double precision for long trajectories
-    float frames_per_second = 10.f;
+    float32 frames_per_second = 10.f;
     bool is_playing = false;
     PlaybackInterpolationMode interpolation = PlaybackInterpolationMode::CUBIC_PERIODIC;
 
@@ -328,41 +329,41 @@ struct ApplicationData {
         bool enabled = true;
         vec2 range{0, 0};
         bool dynamic_window = false;
-        float window_extent = 10.f;
+        float32 window_extent = 10.f;
     } time_filter;
 
     // --- VISUALS ---
     struct {
         struct {
             bool enabled = false;
-            float intensity = 1.5f;
-            float radius = 6.0f;
-            float bias = 0.1f;
+            float32 intensity = 3.0f;
+            float32 radius = 6.0f;
+            float32 bias = 0.1f;
         } ssao;
 
         struct {
             bool enabled = false;
-            float focus_depth = 0.5f;
-            float focus_scale = 1.0f;
+            float32 focus_depth = 0.5f;
+            float32 focus_scale = 1.0f;
         } dof;
 
         struct {
             bool enabled = true;
             bool jitter = true;
-            float feedback_min = 0.88f;
-            float feedback_max = 0.97f;
+            float32 feedback_min = 0.88f;
+            float32 feedback_max = 0.97f;
 
             struct {
                 bool enabled = true;
-                float motion_scale = 0.5f;
+                float32 motion_scale = 0.5f;
             } motion_blur;
         } temporal_reprojection;
 
         struct {
             bool enabled = true;
             postprocessing::Tonemapping tonemapper = postprocessing::Tonemapping_Filmic;
-            float exposure = 1.f;
-            float gamma = 2.2;
+            float32 exposure = 1.f;
+            float32 gamma = 2.2;
         } tonemapping;
 
         struct {
@@ -376,8 +377,8 @@ struct ApplicationData {
         bool dirty = true;
         bool overlay = false;
         vec4 color = vec4(1, 0, 1, 1);
-        float distance_cutoff = HYDROGEN_BOND_DISTANCE_CUTOFF_DEFAULT;  // In Ångström
-        float angle_cutoff = HYDROGEN_BOND_ANGLE_CUTOFF_DEFAULT;        // In Degrees
+        float32 distance_cutoff = HYDROGEN_BOND_DISTANCE_CUTOFF_DEFAULT;  // In Ångström
+        float32 angle_cutoff = HYDROGEN_BOND_ANGLE_CUTOFF_DEFAULT;        // In Degrees
         DynamicArray<HydrogenBond> bonds{};
     } hydrogen_bonds;
 
@@ -389,13 +390,13 @@ struct ApplicationData {
     struct {
         bool enabled = false;
         vec3 color = vec3(1, 0, 0);
-        float density_scale = 1.f;
+        float32 density_scale = 1.f;
 
         struct {
             GLuint id = 0;
             bool dirty = false;
             ivec3 dim = ivec3(0);
-            float max_value = 1.f;
+            float32 max_value = 1.f;
         } texture;
 
         Volume volume{};
@@ -416,20 +417,20 @@ struct ApplicationData {
 
         struct {
             bool enabled = false;
-            float radius = 0.2f;
+            float32 radius = 0.2f;
             vec4 color = vec4(0, 0, 0, 1);
         } range;
 
         struct {
             bool enabled = true;
-            float radius = 2.0f;
+            float32 radius = 2.0f;
             vec4 border_color = vec4(0, 0, 0, 1);
             vec4 fill_color = vec4(1, 1, 0, 1);
         } current;
 
         struct {
             bool enabled = true;
-            float radius = 3.0f;
+            float32 radius = 3.0f;
             vec4 border_color = vec4(0, 0, 0, 1);
             vec4 fill_color = vec4(1, 1, 1, 1);
         } selected;
@@ -470,7 +471,7 @@ static bool IsItemActivePreviousFrame() {
 
 static void interpolate_atomic_positions(Array<vec3> dst_pos, const MoleculeTrajectory& traj, float64 time, PlaybackInterpolationMode interpolation_mode);
 static void reset_view(ApplicationData* data, bool move_camera = false, bool smooth_transition = false);
-static float compute_avg_ms(float dt);
+static float32 compute_avg_ms(float32 dt);
 static PickingData read_picking_data(const MainFramebuffer& fbo, int32 x, int32 y);
 static void handle_selection(ApplicationData* data);
 
@@ -592,7 +593,7 @@ int main(int, char**) {
     //const vec4 CLEAR_COLOR = vec4(0, 0, 0, 0);
     const vec4 CLEAR_INDEX = vec4(1, 1, 1, 1);
 
-    vec2 halton_23[32];
+    vec2 halton_23[16];
     math::generate_halton_sequence(halton_23, ARRAY_SIZE(halton_23), 2, 3);
 
 #ifdef VIAMD_RELEASE
@@ -663,7 +664,7 @@ int main(int, char**) {
                 if (ImGui::GetIO().MouseDoubleClicked[0]) {
                     if (data.picking.depth < 1.f) {
                         const vec3 forward = data.view.camera.orientation * vec3(0, 0, 1);
-                        const float dist = data.view.trackball_state.distance;
+                        const float32 dist = data.view.trackball_state.distance;
                         const vec3 camera_target_pos = data.picking.world_coord + forward * dist;
 
                         data.view.animation.target_position = camera_target_pos;
@@ -673,8 +674,8 @@ int main(int, char**) {
         }
         // Animate camera
         {
-            const float dt = math::min(data.ctx.timing.delta_s, 0.033f);
-            const float speed = 10.0f;
+            const float32 dt = math::min(data.ctx.timing.delta_s, 0.033f);
+            const float32 speed = 10.0f;
 
             const vec3 vel = (data.view.animation.target_position - data.view.camera.position) * speed;
             data.view.camera.position += vel * dt;
@@ -761,7 +762,7 @@ int main(int, char**) {
         }
 
         if (data.time_filter.dynamic_window) {
-            float max_frame = data.mol_data.dynamic.trajectory ? data.mol_data.dynamic.trajectory.num_frames : 1.f;
+            float32 max_frame = data.mol_data.dynamic.trajectory ? data.mol_data.dynamic.trajectory.num_frames : 1.f;
             data.time_filter.range.x = math::max((float)data.time - data.time_filter.window_extent * 0.5f, 0.f);
             data.time_filter.range.y = math::min((float)data.time + data.time_filter.window_extent * 0.5f, max_frame);
         }
@@ -843,8 +844,8 @@ int main(int, char**) {
         POP_CPU_SECTION()
 
         if (data.async.trajectory.sync.running) {
-            constexpr float TICK_INTERVAL_SEC = 3.f;
-            static float time = 0.f;
+            constexpr float32 TICK_INTERVAL_SEC = 3.f;
+            static float32 time = 0.f;
             time += data.ctx.timing.delta_s;
             if (time > TICK_INTERVAL_SEC) {
                 time = 0.f;
@@ -916,7 +917,7 @@ int main(int, char**) {
             param.resolution = res;
         }
 
-        const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3};
+        const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3, GL_COLOR_ATTACHMENT4 };
 
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.deferred.fbo);
         glViewport(0, 0, data.fbo.width, data.fbo.height);
@@ -926,14 +927,14 @@ int main(int, char**) {
 
         // Setup fbo and clear textures
         PUSH_GPU_SECTION("Clear G-buffer") {
-            // Clear color+alpha, normal, velocity and depth
-            glDrawBuffers(3, draw_buffers);
+            // Clear color+alpha, normal, velocity, emissive and depth
+            glDrawBuffers(4, draw_buffers);
             glClearColor(0, 0, 0, 0);
             glClearDepthf(1.f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
             // Clear picking buffer
-            glDrawBuffer(GL_COLOR_ATTACHMENT3);
+            glDrawBuffer(GL_COLOR_ATTACHMENT4);
             glClearColor(CLEAR_INDEX.x, CLEAR_INDEX.y, CLEAR_INDEX.z, CLEAR_INDEX.w);
             glClear(GL_COLOR_BUFFER_BIT);
         }
@@ -1027,16 +1028,21 @@ int main(int, char**) {
                 data.picking.idx = NO_PICKING_IDX;
                 data.picking.depth = 1.f;
             } else {
+				static uint32 frame_idx = 0;
+				static uint32 ref_frame = 0;
+				frame_idx = (frame_idx + 1) % 16;
+				// @NOTE: If we have jittering applied, we cannot? retreive the original pixel value (without the jitter)
+				// Solution, pick one reference frame out of the jittering sequence and use that one...
+				// Ugly hack but works...
 
-                // @TODO: FIX THIS: This is broken, reading from the jittered coordinate should provide the correct sample, right?
-				coord += (0.5f + data.view.param.jitter * vec2(1,1));
+				if (data.ctx.input.mouse.moving) {
+					ref_frame = frame_idx;
+				}
 
-                data.picking = read_picking_data(data.fbo, (int32)(coord.x), (int32)(coord.y));
-                const vec4 viewport(0, 0, data.fbo.width, data.fbo.height);
-                data.picking.world_coord = math::unproject(vec3(coord.x, coord.y, data.picking.depth), data.view.param.matrix.inverse.view_proj, viewport);
-
-				if (data.ctx.input.key.down[Key::KEY_X]) {
-					printf("coord: [%.2f %.2f] jitter: [%.2f %.2f] idx: [%lu]\n", coord.x, coord.y, data.view.param.jitter.x, data.view.param.jitter.y, data.picking.idx);
+				if (ref_frame == frame_idx || data.view.param.jitter == vec2(0, 0)) {
+					data.picking = read_picking_data(data.fbo, (int32)math::round(coord.x), (int32)math::round(coord.y));
+					const vec4 viewport(0, 0, data.fbo.width, data.fbo.height);
+					data.picking.world_coord = math::unproject(vec3(coord.x, coord.y, data.picking.depth), data.view.param.matrix.inverse.view_proj, viewport);
 				}
             }
 
@@ -1053,25 +1059,30 @@ int main(int, char**) {
         glDisable(GL_DEPTH_TEST);
         glDepthMask(GL_FALSE);
 
+		/*
         PUSH_GPU_SECTION("Clear HDR")
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.hdr.fbo);
         glDrawBuffer(GL_COLOR_ATTACHMENT0);
         glClearColor(100.f, 100.f, 100.f, 1.f);  // Bright white background.
         glClear(GL_COLOR_BUFFER_BIT);
         POP_GPU_SECTION();
+		*/
 
         // Activate hdr fbo
         // Shade deferred
+
+		/*
         PUSH_GPU_SECTION("Shading")
         postprocessing::shade_deferred(data.fbo.deferred.depth, data.fbo.deferred.color, data.fbo.deferred.normal, data.view.param.matrix.inverse.proj);
         POP_GPU_SECTION()
+		*/
+		glDrawBuffer(GL_COLOR_ATTACHMENT3); // Emission
         PUSH_GPU_SECTION("Highlight Selection")
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE);
-        // glBlendFuncSeparate(GL_ONE, GL_ONE, GL_ONE, GL_ZERO);
-        postprocessing::highlight_selection(data.fbo.deferred.atom_idx, data.gpu_buffers.selection);
+        postprocessing::highlight_selection(data.fbo.deferred.picking, data.gpu_buffers.selection);
         glDisable(GL_BLEND);
-        POP_GPU_SECTION();
+		POP_GPU_SECTION();
 
         // Activate backbuffer
         glViewport(0, 0, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
@@ -1079,7 +1090,7 @@ int main(int, char**) {
         glDrawBuffer(GL_BACK);
 
         PUSH_GPU_SECTION("Postprocessing") {
-            postprocessing::PostProcessingDesc desc;
+            postprocessing::Descriptor desc;
             desc.ambient_occlusion.enabled = data.visuals.ssao.enabled;
             desc.ambient_occlusion.intensity = data.visuals.ssao.intensity;
             desc.ambient_occlusion.radius = data.visuals.ssao.radius;
@@ -1102,7 +1113,13 @@ int main(int, char**) {
             desc.temporal_reprojection.motion_blur.enabled = data.visuals.temporal_reprojection.motion_blur.enabled;
             desc.temporal_reprojection.motion_blur.motion_scale = data.visuals.temporal_reprojection.motion_blur.motion_scale;
 
-            postprocessing::apply_postprocessing(desc, data.view.param, data.fbo.deferred.depth, data.fbo.hdr.color, data.fbo.deferred.normal, data.fbo.deferred.velocity);
+			desc.input_textures.depth = data.fbo.deferred.depth;
+			desc.input_textures.color = data.fbo.deferred.color;
+			desc.input_textures.normal = data.fbo.deferred.normal;
+			desc.input_textures.velocity = data.fbo.deferred.velocity;
+			desc.input_textures.emissive = data.fbo.deferred.emissive;
+
+            postprocessing::shade_and_postprocess(desc, data.view.param);
         }
         POP_GPU_SECTION()
 
@@ -1139,7 +1156,7 @@ int main(int, char**) {
 
         if (data.density_volume.enabled) {
             PUSH_GPU_SECTION("Volume Rendering")
-            const float scl = 1.f * data.density_volume.density_scale / data.density_volume.texture.max_value;
+            const float32 scl = 1.f * data.density_volume.density_scale / data.density_volume.texture.max_value;
             volume::render_volume_texture(data.density_volume.texture.id, data.fbo.deferred.depth, data.density_volume.texture_to_model_matrix, data.density_volume.model_to_world_matrix, view_mat,
                                           proj_mat, data.density_volume.color, scl);
             POP_GPU_SECTION()
@@ -1208,7 +1225,7 @@ static void interpolate_atomic_positions(Array<vec3> dst_pos, const MoleculeTraj
     if (prev_frame_1 == next_frame_1) {
         copy_trajectory_positions(dst_pos, traj, prev_frame_1);
     } else {
-        const float t = (float)math::fract(time);
+        const float32 t = (float)math::fract(time);
 
         // INTERPOLATE
         switch (interpolation_mode) {
@@ -1249,12 +1266,12 @@ static void interpolate_atomic_positions(Array<vec3> dst_pos, const MoleculeTraj
 }
 
 // #misc
-static float compute_avg_ms(float dt) {
+static float32 compute_avg_ms(float32 dt) {
     // @NOTE: Perhaps this can be done with a simple running mean?
-    constexpr float interval = 0.5f;
-    static float avg = 0.f;
+    constexpr float32 interval = 0.5f;
+    static float32 avg = 0.f;
     static int num_frames = 0;
-    static float t = 0;
+    static float32 t = 0;
     t += dt;
     num_frames++;
 
@@ -1296,12 +1313,12 @@ static PickingData read_picking_data(const MainFramebuffer& framebuffer, int32 x
     PickingData data{};
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer.deferred.fbo);
-    glReadBuffer(GL_COLOR_ATTACHMENT3);
+    glReadBuffer(GL_COLOR_ATTACHMENT4);
 	/*
 	
 	//@REMOVE ME
 	uint8 c[4];
-	float d;
+	float32 d;
 	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 	glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &c);
 	glReadPixels(x, y, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &d);
@@ -1451,13 +1468,16 @@ if (ImGui::BeginMenu("Edit")) {
 }
         */
         if (ImGui::BeginMenu("Visuals")) {
-            ImGui::BeginGroup();
             ImGui::Checkbox("Vsync", &data->ctx.window.vsync);
-            ImGui::Checkbox("Temporal-Reprojection", &data->visuals.temporal_reprojection.enabled);
+			ImGui::Separator();
+
+			// Temporal
+            ImGui::BeginGroup();
+            ImGui::Checkbox("Temporal Effects", &data->visuals.temporal_reprojection.enabled);
             if (data->visuals.temporal_reprojection.enabled) {
                 ImGui::Checkbox("Jitter Samples", &data->visuals.temporal_reprojection.jitter);
-                ImGui::SliderFloat("Feedback Min", &data->visuals.temporal_reprojection.feedback_min, 0.5f, 1.0f);
-                ImGui::SliderFloat("Feedback Max", &data->visuals.temporal_reprojection.feedback_max, 0.5f, 1.0f);
+                //ImGui::SliderFloat("Feedback Min", &data->visuals.temporal_reprojection.feedback_min, 0.5f, 1.0f);
+                //ImGui::SliderFloat("Feedback Max", &data->visuals.temporal_reprojection.feedback_max, 0.5f, 1.0f);
                 ImGui::Checkbox("Motion Blur", &data->visuals.temporal_reprojection.motion_blur.enabled);
                 if (data->visuals.temporal_reprojection.motion_blur.enabled) {
                     ImGui::SliderFloat("Motion Scale", &data->visuals.temporal_reprojection.motion_blur.motion_scale, 0.f, 1.0f);
@@ -1470,7 +1490,7 @@ if (ImGui::BeginMenu("Edit")) {
             ImGui::BeginGroup();
             ImGui::Checkbox("SSAO", &data->visuals.ssao.enabled);
             if (data->visuals.ssao.enabled) {
-                ImGui::SliderFloat("Intensity", &data->visuals.ssao.intensity, 0.5f, 6.f);
+                ImGui::SliderFloat("Intensity", &data->visuals.ssao.intensity, 0.5f, 12.f);
                 ImGui::SliderFloat("Radius", &data->visuals.ssao.radius, 1.f, 30.f);
                 ImGui::SliderFloat("Bias", &data->visuals.ssao.bias, 0.0f, 1.0f);
             }
@@ -1612,7 +1632,6 @@ void draw_selection_window(ApplicationData* data) {
 
     static char buf[256] = {0};
     static Mode mode = OR;
-    static bool mod_not = false;
     static bool query_ok = false;
     static DynamicArray<bool> mask;
 
@@ -1625,6 +1644,14 @@ void draw_selection_window(ApplicationData* data) {
     bool pressed_enter = ImGui::IsItemActivePreviousFrame() && !ImGui::IsItemActive() && ImGui::IsKeyPressed(ImGui::GetIO().KeyMap[ImGuiKey_Enter]);
     ImGui::PopStyleColor();
 
+	if (ImGui::IsWindowAppearing()) {
+		ImGui::SetKeyboardFocusHere();
+	}
+
+	if (ImGui::RadioButton("OR", mode == OR)) mode = OR;
+	ImGui::SameLine();
+	if (ImGui::RadioButton("AND", mode == AND)) mode = AND;
+
 	if (query_modified) {
 		query_ok = filter::compute_filter_mask(mask, data->mol_data.dynamic, buf);
 		if (!query_ok) {
@@ -1635,18 +1662,18 @@ void draw_selection_window(ApplicationData* data) {
 
     if (query_ok) {
         for (int64 i = 0; i < data->selection.current_highlight.size(); i++) {
-			data->selection.current_highlight[i] |= mask[i];
+			const bool mask_val = mask[i];
+			const bool curr_val = data->selection.current_selection[i];
+
+			if (mode == AND) {
+				data->selection.current_highlight[i] = curr_val & mask_val;
+			}
+			else if (mode == OR) {
+				data->selection.current_highlight[i] = curr_val | mask_val;
+			}
         }
+		data->gpu_buffers.dirty.selection = true;
     }
-
-    if (ImGui::IsWindowAppearing()) {
-        ImGui::SetKeyboardFocusHere();
-    }
-
-    ImGui::Checkbox("NOT", &mod_not);
-    if (ImGui::RadioButton("OR", mode == OR)) mode = OR;
-    ImGui::SameLine();
-    if (ImGui::RadioButton("AND", mode == AND)) mode = AND;
 
     if (!query_ok) {
         ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
@@ -1656,7 +1683,7 @@ void draw_selection_window(ApplicationData* data) {
         data->selection.show_window = false;
 
         for (int64 i = 0; i < data->selection.current_selection.size(); i++) {
-			const bool mask_val = (mask[i] && !mod_not);
+			const bool mask_val = mask[i];
             const bool curr_val = data->selection.current_selection[i];
 
             if (mode == AND) {
@@ -1676,6 +1703,55 @@ void draw_selection_window(ApplicationData* data) {
     if (ImGui::Button("Cancel")) {
         data->selection.show_window = false;
     }
+
+	ImGui::Spacing();
+	ImGui::Separator();
+	ImGui::Text("Stored Selections");
+	if (ImGui::Button("Store Active Selection")) {
+		char name_buf[64];
+		snprintf(name_buf, 64, "selection%i", (int)data->selection.stored_selections.size());
+		create_selection(data, name_buf, data->selection.current_selection);
+	}
+	ImGui::Selectable("cool");
+	ImGui::SameLine();
+	ImGui::Button("Cool2");
+	for (int i = 0; i < data->selection.stored_selections.size(); i++) {
+		auto& sel = data->selection.stored_selections[i];
+		const float32 item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
+		StringBuffer<128> name;
+		snprintf(name, name.size(), "%s###ID", sel.name.cstr());
+
+		ImGui::PushID(i);
+		bool show_preview = false;
+		if (ImGui::CollapsingHeader(name)) {
+			if (ImGui::Button("activate")) {
+				memcpy(data->selection.current_selection.data(), sel.atom_mask.data(), sel.atom_mask.size_in_bytes());
+				data->gpu_buffers.dirty.selection = true;
+			}
+			if (ImGui::IsItemHovered()) show_preview = true;
+			ImGui::SameLine();
+			if (ImGui::DeleteButton("remove")) {
+				remove_selection(data, i);
+			}
+			if (ImGui::IsItemHovered()) show_preview = true;
+			ImGui::SameLine();
+			if (ImGui::Button("clone")) {
+				clone_selection(data, sel);
+			}
+			if (ImGui::IsItemHovered()) show_preview = true;
+		}
+
+		if (ImGui::GetHoveredID() == ImGui::GetID(name)) {
+			show_preview = true;
+		}
+		
+		ImGui::PopID();
+
+		if (show_preview) {
+			memcpy(data->selection.current_highlight.data(), sel.atom_mask.data(), sel.atom_mask.size_in_bytes());
+			data->gpu_buffers.dirty.selection = true;
+		}
+	}
 
     ImGui::End();
 }
@@ -1709,7 +1785,7 @@ void draw_context_popup(ApplicationData* data) {
 
 static void draw_control_window(ApplicationData* data) {
     // MISC WINDOW
-    float ms = compute_avg_ms(data->ctx.timing.delta_s);
+    float32 ms = compute_avg_ms(data->ctx.timing.delta_s);
     static bool show_demo_window = false;
 
     ImGui::Begin("Control");
@@ -1721,7 +1797,7 @@ static void draw_control_window(ApplicationData* data) {
     if (data->mol_data.dynamic.trajectory) {
         int32 num_frames = data->mol_data.dynamic.trajectory.num_frames;
         ImGui::Text("Num Frames: %i", num_frames);
-        float t = (float)data->time;
+        float32 t = (float)data->time;
         if (ImGui::SliderFloat("Time", &t, 0, (float)(num_frames - 1))) {
             data->time = t;
         }
@@ -1769,7 +1845,7 @@ static void draw_representations_window(ApplicationData* data) {
     for (int i = 0; i < data->representations.buffer.size(); i++) {
         bool recompute_colors = false;
         auto& rep = data->representations.buffer[i];
-        const float item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
+        const float32 item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
         StringBuffer<128> name;
         snprintf(name, name.size(), "%s###ID", rep.name.buffer);
 
@@ -1816,27 +1892,7 @@ static void draw_representations_window(ApplicationData* data) {
             ImGui::Spacing();
             ImGui::Separator();
         }
-
-        // ENABLE DRAGGING TO REORDER ELEMENTS
-        // THIS IS BROKEN BECAUSE OF THE SPACE BETWEEN ELEMENTS
-
-        /*
-if (ImGui::GetActiveID() == ImGui::GetID(name.buffer) && !ImGui::IsItemHovered()) {
-    float drag_dy = ImGui::GetMouseDragDelta(0).y;
-    if (drag_dy < 0.0f && i > 0) {
-        // Swap
-        Representation tmp = data->representations.data[i];
-        data->representations.data[i] = data->representations.data[i - 1];
-        data->representations.data[i - 1] = tmp;
-        ImGui::ResetMouseDragDelta();
-    } else if (drag_dy > 0.0f && i < data->representations.data->count - 1) {
-        Representation tmp = data->representations.data[i];
-        data->representations.data[i] = data->representations.data[i + 1];
-        data->representations.data[i + 1] = tmp;
-        ImGui::ResetMouseDragDelta();
-    }
-}
-        */
+ 
         ImGui::PopID();
 
         if (recompute_colors) {
@@ -2090,13 +2146,13 @@ ImGui::PopStyleColor();
 }
 
 static void draw_async_info(ApplicationData* data) {
-    constexpr float WIDTH = 300.f;
-    constexpr float MARGIN = 10.f;
-    constexpr float PROGRESS_FRACT = 0.3f;
+    constexpr float32 WIDTH = 300.f;
+    constexpr float32 MARGIN = 10.f;
+    constexpr float32 PROGRESS_FRACT = 0.3f;
 
-    float traj_fract = data->async.trajectory.fraction;
-    float angle_fract = data->async.backbone_angles.fraction;
-    float stats_fract = stats::fraction_done();
+    float32 traj_fract = data->async.trajectory.fraction;
+    float32 angle_fract = data->async.backbone_angles.fraction;
+    float32 stats_fract = stats::fraction_done();
 
     if ((0.f < traj_fract && traj_fract < 1.f) || (0.f < angle_fract && angle_fract < 1.f) || (0.f < stats_fract && stats_fract < 1.f)) {
 
@@ -2144,7 +2200,7 @@ static void draw_timeline_window(ApplicationData* data) {
     ASSERT(data);
     ImGui::SetNextWindowSize(ImVec2(400, 150), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Timelines", &data->statistics.show_timeline_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
-        static float zoom = 1.f;
+        static float32 zoom = 1.f;
         ImGui::BeginChild("Scroll Region", ImVec2(0, 0), true, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_HorizontalScrollbar);
 
         const int max_frame = data->mol_data.dynamic.trajectory.num_frames;
@@ -2167,14 +2223,14 @@ static void draw_timeline_window(ApplicationData* data) {
         }
 
         // const int32 prop_count = stats::get_property_count();
-        // const float plot_height = ImGui::GetContentRegionAvail().y / (float)prop_count;
-        const float plot_height = 100.f;
+        // const float32 plot_height = ImGui::GetContentRegionAvail().y / (float)prop_count;
+        const float32 plot_height = 100.f;
         const uint32 bar_fill_color = ImColor(1.f, 1.f, 1.f, 0.25f);
         const uint32 var_fill_color = ImColor(1.f, 1.f, 0.3f, 0.1f);
         const uint32 var_line_color = ImColor(1.f, 1.f, 0.3f, 0.3f);
         const uint32 var_text_color = ImColor(1.f, 1.f, 0.3f, 0.5f);
 
-        static float selection_start;
+        static float32 selection_start;
         static bool is_selecting = false;
 
         const auto properties = stats::get_properties();
@@ -2186,13 +2242,13 @@ static void draw_timeline_window(ApplicationData* data) {
             CString prop_name = prop->name_buf;
             Range prop_range = prop->avg_data_range;
             if (!prop_data) continue;
-            float pad = math::abs(prop_range.y - prop_range.x) * 0.75f;
+            float32 pad = math::abs(prop_range.y - prop_range.x) * 0.75f;
             vec2 display_range = prop_range + vec2(-pad, pad);
             if (display_range.x == display_range.y) {
                 display_range.x -= 1.f;
                 display_range.y += 1.f;
             }
-            // float val = (float)time;
+            // float32 val = (float)time;
             ImGuiID id = ImGui::GetID(prop_name);
 
             ImGui::PushID(i);
@@ -2221,14 +2277,14 @@ static void draw_timeline_window(ApplicationData* data) {
 
             if (ImGui::GetActiveID() == id) {
                 if (ImGui::GetIO().MouseClicked[0] && ImGui::GetIO().KeyCtrl) {
-                    float t = (ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
+                    float32 t = (ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
                     selection_start = ImLerp(frame_range.x, frame_range.y, t);
                     data->time_filter.range.x = selection_start;
                     data->time_filter.range.y = selection_start;
                     is_selecting = true;
                 } else if (is_selecting) {
-                    float t = (ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
-                    float v = ImLerp(frame_range.x, frame_range.y, t);
+                    float32 t = (ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
+                    float32 v = ImLerp(frame_range.x, frame_range.y, t);
                     if (v < data->time_filter.range.x) {
                         data->time_filter.range.x = v;
                     } else if (v > data->time_filter.range.x && v < data->time_filter.range.y) {
@@ -2241,7 +2297,7 @@ static void draw_timeline_window(ApplicationData* data) {
                         data->time_filter.range.y = v;
                     }
                 } else if (ImGui::GetIO().MouseDown[0]) {
-                    float t = ImClamp((ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x), 0.f, 1.f);
+                    float32 t = ImClamp((ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x), 0.f, 1.f);
                     data->time = ImLerp(frame_range.x, frame_range.y, t);
                 }
 
@@ -2257,8 +2313,8 @@ static void draw_timeline_window(ApplicationData* data) {
             // SELECTION RANGE
             {
                 constexpr ImU32 SELECTION_RANGE_COLOR = 0x55bbbbbb;
-                const float t0 = (data->time_filter.range.x - frame_range.x) / (frame_range.y - frame_range.x);
-                const float t1 = (data->time_filter.range.y - frame_range.x) / (frame_range.y - frame_range.x);
+                const float32 t0 = (data->time_filter.range.x - frame_range.x) / (frame_range.y - frame_range.x);
+                const float32 t1 = (data->time_filter.range.y - frame_range.x) / (frame_range.y - frame_range.x);
                 const ImVec2 pos0 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t0, 0));
                 const ImVec2 pos1 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t1, 1));
                 ImGui::GetCurrentWindow()->DrawList->AddRectFilled(pos0, pos1, SELECTION_RANGE_COLOR);
@@ -2267,7 +2323,7 @@ static void draw_timeline_window(ApplicationData* data) {
             // CURRENT FRAME POSITION
             {
                 constexpr ImU32 CURRENT_LINE_COLOR = 0xaa33ffff;
-                const float t = ((float)data->time - frame_range.x) / (frame_range.y - frame_range.x);
+                const float32 t = ((float)data->time - frame_range.x) / (frame_range.y - frame_range.x);
                 const ImVec2 pos0 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t, 0));
                 const ImVec2 pos1 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t, 1));
                 ImGui::GetCurrentWindow()->DrawList->AddLine(pos0, pos1, CURRENT_LINE_COLOR);
@@ -2283,9 +2339,9 @@ static void draw_timeline_window(ApplicationData* data) {
 
             // TOOLTIP
             if (ImGui::GetActiveID() == id || ImGui::GetHoveredID() == id) {
-                const float min_x = ImGui::GetItemRectMin().x;
-                const float max_x = ImGui::GetItemRectMax().x;
-                float t = ImClamp((ImGui::GetIO().MousePos.x - min_x) / (max_x - min_x), 0.f, 1.f);
+                const float32 min_x = ImGui::GetItemRectMin().x;
+                const float32 max_x = ImGui::GetItemRectMax().x;
+                float32 t = ImClamp((ImGui::GetIO().MousePos.x - min_x) / (max_x - min_x), 0.f, 1.f);
                 int idx = ImClamp((int32)ImLerp(frame_range.x, frame_range.y, t), 0, (int32)prop->avg_data.count - 1);
 
                 ImGui::BeginTooltip();
@@ -2305,11 +2361,11 @@ static void draw_timeline_window(ApplicationData* data) {
         }
 
         if (ImGui::IsWindowHovered() && ImGui::GetIO().MouseWheel != 0.f && ImGui::GetIO().KeyCtrl) {
-            constexpr float ZOOM_SCL = 0.24f;
-            float pre_coord = ImGui::GetScrollX() + (ImGui::GetIO().MousePos.x - ImGui::GetWindowPos().x) * zoom;
+            constexpr float32 ZOOM_SCL = 0.24f;
+            float32 pre_coord = ImGui::GetScrollX() + (ImGui::GetIO().MousePos.x - ImGui::GetWindowPos().x) * zoom;
             zoom = math::clamp(zoom + ZOOM_SCL * ImGui::GetIO().MouseWheel, 1.f, 100.f);
-            float post_coord = ImGui::GetScrollX() + (ImGui::GetIO().MousePos.x - ImGui::GetWindowPos().x) * zoom;
-            float delta = pre_coord - post_coord;
+            float32 post_coord = ImGui::GetScrollX() + (ImGui::GetIO().MousePos.x - ImGui::GetWindowPos().x) * zoom;
+            float32 delta = pre_coord - post_coord;
             ImGui::SetScrollX(ImGui::GetScrollX() - delta);
         }
 
@@ -2327,9 +2383,9 @@ static void draw_distribution_window(ApplicationData* data) {
     ImGui::PushItemWidth(-1);
 
     const auto properties = stats::get_properties();
-    // constexpr float RANGE_SLIDER_HEIGHT = 26.f;
-    // const float plot_height = ImGui::GetContentRegionAvail().y / (float)properties.count - RANGE_SLIDER_HEIGHT;
-    const float plot_height = 100.f;
+    // constexpr float32 RANGE_SLIDER_HEIGHT = 26.f;
+    // const float32 plot_height = ImGui::GetContentRegionAvail().y / (float)properties.count - RANGE_SLIDER_HEIGHT;
+    const float32 plot_height = 100.f;
 
     ImVec2 frame_size{ImGui::CalcItemWidth(), plot_height};
 
@@ -2354,9 +2410,9 @@ static void draw_distribution_window(ApplicationData* data) {
         if (ImGui::ItemAdd(total_bb, 0)) {
             ImGui::RenderFrame(frame_bb.Min, frame_bb.Max, ImGui::GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
 
-            // const float max_val = math::max(prop->full_histogram.bin_range.y, prop->filt_histogram.bin_range.y);
+            // const float32 max_val = math::max(prop->full_histogram.bin_range.y, prop->filt_histogram.bin_range.y);
             ImGui::PushClipRect(inner_bb.Min, inner_bb.Max, true);
-            const float max_val = prop->full_histogram.bin_range.y * 1.5f;
+            const float32 max_val = prop->full_histogram.bin_range.y * 1.5f;
             ImGui::DrawFilledLine(inner_bb.Min, inner_bb.Max, prop->full_histogram.bins.ptr, (int32)prop->full_histogram.bins.count, max_val, FULL_LINE_COLOR, FULL_FILL_COLOR);
 
             ImGui::DrawFilledLine(inner_bb.Min, inner_bb.Max, prop->filt_histogram.bins.ptr, (int32)prop->filt_histogram.bins.count, max_val, FILT_LINE_COLOR, FILT_FILL_COLOR);
@@ -2364,8 +2420,8 @@ static void draw_distribution_window(ApplicationData* data) {
 
             // SELECTION RANGE
             {
-                const float t0 = (prop->filter.x - prop->total_data_range.x) / (prop->total_data_range.y - prop->total_data_range.x);
-                const float t1 = (prop->filter.y - prop->total_data_range.x) / (prop->total_data_range.y - prop->total_data_range.x);
+                const float32 t0 = (prop->filter.x - prop->total_data_range.x) / (prop->total_data_range.y - prop->total_data_range.x);
+                const float32 t1 = (prop->filter.y - prop->total_data_range.x) / (prop->total_data_range.y - prop->total_data_range.x);
                 const ImVec2 pos0 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t0, 0));
                 const ImVec2 pos1 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t1, 1));
                 ImGui::GetCurrentWindow()->DrawList->AddRectFilled(pos0, pos1, SELECTION_RANGE_COLOR);
@@ -2375,11 +2431,11 @@ static void draw_distribution_window(ApplicationData* data) {
 
             if (ImGui::IsItemHovered()) {
                 window->DrawList->AddLine(ImVec2(ImGui::GetIO().MousePos.x, inner_bb.Min.y), ImVec2(ImGui::GetIO().MousePos.x, inner_bb.Max.y), 0xffffffff);
-                float t = (ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
+                float32 t = (ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
                 int32 count = (int32)prop->full_histogram.bins.count;
                 int32 idx = ImClamp((int32)(t * (count - 1)), 0, count - 1);
-                float full_val = prop->full_histogram.bins.ptr[idx];
-                float filt_val = prop->filt_histogram.bins.ptr[idx];
+                float32 full_val = prop->full_histogram.bins.ptr[idx];
+                float32 filt_val = prop->filt_histogram.bins.ptr[idx];
                 ImVec2 val_range = vec_cast(prop->filt_histogram.value_range);
                 ImGui::BeginTooltip();
                 ImGui::Text("%.3f:", ImLerp(val_range.x, val_range.y, t));
@@ -2409,7 +2465,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
 
     /*
 ImGui::SetNextWindowSizeConstraints(ImVec2(100, 100), ImVec2(1000, 1000), [](ImGuiSizeCallbackData* data) {
-    const float ar = 3.f / 4.f;
+    const float32 ar = 3.f / 4.f;
     data->DesiredSize.x = data->DesiredSize.y * ar + 100;
 });
     */
@@ -2463,11 +2519,11 @@ ImGui::SetNextWindowSizeConstraints(ImVec2(100, 100), ImVec2(1000, 1000), [](ImG
     }
     ImGui::EndColumns();
 
-    const float win_w = ImGui::GetWindowContentRegionWidth();
+    const float32 win_w = ImGui::GetWindowContentRegionWidth();
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::BeginChild("canvas", ImVec2(win_w, win_w), true, ImGuiWindowFlags_NoScrollbar);
 
-    const float dim = ImGui::GetWindowContentRegionWidth();
+    const float32 dim = ImGui::GetWindowContentRegionWidth();
     const ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
     const ImVec2 canvas_size(dim, dim);
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -2483,12 +2539,12 @@ ImGui::SetNextWindowSizeConstraints(ImVec2(100, 100), ImVec2(1000, 1000), [](ImG
     dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_accumulation_texture(), x0, x1);
     dl->ChannelsSetCurrent(3);
 
-    constexpr float ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
+    constexpr float32 ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
 
     if (data->ramachandran.current.enabled) {
         const uint32 fill_color = math::convert_color(data->ramachandran.current.fill_color);
         const uint32 border_color = math::convert_color(data->ramachandran.current.border_color);
-        const float radius = data->ramachandran.current.radius;
+        const float32 radius = data->ramachandran.current.radius;
 
         for (int64 i = 0; i < backbone_segments.size(); i++) {
             const auto& angle = current_angles[i];
@@ -2511,7 +2567,7 @@ ImGui::SetNextWindowSizeConstraints(ImVec2(100, 100), ImVec2(1000, 1000), [](ImG
     if (data->ramachandran.selected.enabled) {
         const uint32 fill_color = math::convert_color(data->ramachandran.selected.fill_color);
         const uint32 border_color = math::convert_color(data->ramachandran.selected.border_color);
-        const float radius = data->ramachandran.selected.radius;
+        const float32 radius = data->ramachandran.selected.radius;
 
         for (int64 i = 0; i < backbone_segments.size(); i++) {
             const auto& angle = current_angles[i];
@@ -2572,7 +2628,8 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     if (!fbo->deferred.color) glGenTextures(1, &fbo->deferred.color);
     if (!fbo->deferred.normal) glGenTextures(1, &fbo->deferred.normal);
     if (!fbo->deferred.velocity) glGenTextures(1, &fbo->deferred.velocity);
-    if (!fbo->deferred.atom_idx) glGenTextures(1, &fbo->deferred.atom_idx);
+	if (!fbo->deferred.emissive) glGenTextures(1, &fbo->deferred.emissive);
+    if (!fbo->deferred.picking) glGenTextures(1, &fbo->deferred.picking);
     if (!fbo->hdr.color) glGenTextures(1, &fbo->hdr.color);
     if (!fbo->pbo_picking.color[0]) glGenBuffers(2, fbo->pbo_picking.color);
     if (!fbo->pbo_picking.depth[0]) glGenBuffers(2, fbo->pbo_picking.depth);
@@ -2605,19 +2662,28 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glBindTexture(GL_TEXTURE_2D, fbo->deferred.atom_idx);
+	glBindTexture(GL_TEXTURE_2D, fbo->deferred.emissive);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_R11F_G11F_B10F, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glBindTexture(GL_TEXTURE_2D, fbo->deferred.picking);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+	/*
     glBindTexture(GL_TEXTURE_2D, fbo->hdr.color);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	*/
 
     glBindBuffer(GL_PIXEL_PACK_BUFFER, fbo->pbo_picking.color[0]);
     glBufferData(GL_PIXEL_PACK_BUFFER, 4, 0, GL_DYNAMIC_READ);
@@ -2640,7 +2706,7 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     fbo->width = width;
     fbo->height = height;
 
-    const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2};
+    const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3, GL_COLOR_ATTACHMENT4 };
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo->deferred.fbo);
     if (attach_textures_deferred) {
@@ -2648,12 +2714,15 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->deferred.color, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, fbo->deferred.normal, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, fbo->deferred.velocity, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, fbo->deferred.atom_idx, 0);
+		glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, fbo->deferred.emissive, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT4, GL_TEXTURE_2D, fbo->deferred.picking, 0);
     }
     ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
-    glDrawBuffers(3, draw_buffers);
+    glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
+	glClearColor(0, 0, 0, 0);
     glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
 
+	/*
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo->hdr.fbo);
     if (attach_textures_hdr) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->hdr.color, 0);
@@ -2661,6 +2730,7 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
     glDrawBuffers(1, draw_buffers);
     glClear(GL_COLOR_BUFFER_BIT);
+	*/
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 }
@@ -2671,7 +2741,7 @@ static void destroy_framebuffer(MainFramebuffer* fbo) {
     if (fbo->deferred.depth) glDeleteTextures(1, &fbo->deferred.depth);
     if (fbo->deferred.color) glDeleteTextures(1, &fbo->deferred.color);
     if (fbo->deferred.normal) glDeleteTextures(1, &fbo->deferred.normal);
-    if (fbo->deferred.atom_idx) glDeleteTextures(1, &fbo->deferred.atom_idx);
+    if (fbo->deferred.picking) glDeleteTextures(1, &fbo->deferred.picking);
 
     if (fbo->hdr.fbo) glDeleteFramebuffers(1, &fbo->hdr.fbo);
     if (fbo->hdr.color) glDeleteTextures(1, &fbo->hdr.color);
@@ -2964,6 +3034,10 @@ static void init_molecule_data(ApplicationData* data) {
         zero_array(data->selection.current_selection);
 		zero_array(data->selection.current_highlight);
         init_molecule_buffers(data);
+		data->picking.idx = NO_PICKING_IDX;
+		data->selection.hovered = -1;
+		data->selection.right_clicked = -1;
+
     }
 }
 
@@ -3380,24 +3454,28 @@ static void reset_selections(ApplicationData* data) {
 static void clear_selections(ApplicationData* data) {
 	ASSERT(data);
 	while (data->selection.stored_selections.size() > 0) {
-		remove_selection(data, data->selection.stored_selections.size() - 1);
+		remove_selection(data, (int32)data->selection.stored_selections.size() - 1);
 	}
 }
 
 static void handle_selection(ApplicationData* data) {
 	ASSERT(data);
+	enum Mode{
+		Mode_Append,
+		Mode_Remove
+	};
+	
+	static Mode region_mode = Mode_Append;
 	static bool region_select = false;
 	static platform::Coordinate x0;
 	const platform::Coordinate x1 = data->ctx.input.mouse.win_coord;
 
-	const ImVec2 min_p = ImVec2(math::min(x0.x, x1.x), math::min(x0.y, x1.y));
-	const ImVec2 max_p = ImVec2(math::max(x0.x, x1.x), math::max(x0.y, x1.y));
 	const bool shift_down = data->ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data->ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
 
-	zero_array(data->selection.current_highlight);
+	memset_array(data->selection.current_highlight, false);
 	data->gpu_buffers.dirty.selection = true;
 
-	if (data->picking.idx != NO_PICKING_IDX) {
+	if (data->picking.idx != NO_PICKING_IDX && !region_select) {
 		data->selection.current_highlight[data->picking.idx] = true;
 		data->gpu_buffers.dirty.selection = true;
 	}
@@ -3405,40 +3483,47 @@ static void handle_selection(ApplicationData* data) {
 	if (shift_down) {
 		if (!region_select && (data->ctx.input.mouse.hit[0] || data->ctx.input.mouse.hit[1])) {
 			x0 = data->ctx.input.mouse.win_coord;
+			region_mode = data->ctx.input.mouse.hit[0] ? Mode_Append : Mode_Remove;
 		}
+
+		const ImVec2 min_p = ImVec2(math::min(x0.x, x1.x), math::min(x0.y, x1.y));
+		const ImVec2 max_p = ImVec2(math::max(x0.x, x1.x), math::max(x0.y, x1.y));
 
 		if ((data->ctx.input.mouse.down[0] || data->ctx.input.mouse.down[1]) && x1 != x0) {
 			region_select = true;
 		}
 
 		if (region_select) {
-			const int32 w = data->ctx.window.width;
-			const int32 h = data->ctx.window.height;
-			const mat4 mvp = compute_perspective_projection_matrix(data->view.camera, w, h) * compute_world_to_view_matrix(data->view.camera);
+			const vec2 res = { data->ctx.window.width, data->ctx.window.height };
+			const mat4 mvp = compute_perspective_projection_matrix(data->view.camera, data->ctx.window.width, data->ctx.window.height) * data->view.param.matrix.view;
 			const auto positions = data->mol_data.dynamic.molecule.atom.positions;
+
 			for (int64 i = 0; i < data->mol_data.dynamic.molecule.atom.count; i++) {
 				vec4 p = mvp * vec4(positions[i], 1);
 				p /= p.w;
-				vec2 c = (vec2(p.x, -p.y) * 0.5f + 0.5f) * vec2(w, h);
-				if (c.x < min_p.x || max_p.x < c.x) continue;
-				if (c.y < min_p.y || max_p.y < c.y) continue;
-				data->selection.current_highlight[i] = true;
+				const vec2 c = (vec2(p.x, -p.y) * 0.5f + 0.5f) * res;
+				const bool inside = (min_p.x <= c.x && c.x <= max_p.x && min_p.y <= c.y && c.y <= max_p.y);
+
+				if (region_mode == Mode_Append) {
+					data->selection.current_highlight[i] = !data->selection.current_selection[i] && inside;
+				}
+				else if (region_mode == Mode_Remove) {
+					data->selection.current_highlight[i] = data->selection.current_selection[i] && !inside;
+				}
 			}
 
-			if (data->ctx.input.mouse.release[0]) {
+			if (data->ctx.input.mouse.release[0] || data->ctx.input.mouse.release[1]) {
 				for (int64 i = 0; i < data->selection.current_selection.size(); i++) {
-					data->selection.current_selection[i] |= data->selection.current_highlight[i];
+					if (region_mode == Mode_Append) {
+						data->selection.current_selection[i] |= data->selection.current_highlight[i];
+					}
+					else if (region_mode == Mode_Remove) {
+						data->selection.current_selection[i] &= data->selection.current_highlight[i];
+					}
 				}
 				zero_array(data->selection.current_highlight);
 				region_select = false;
 
-			}
-			else if (data->ctx.input.mouse.release[1]) {
-				for (int64 i = 0; i < data->selection.current_selection.size(); i++) {
-					data->selection.current_selection[i] &= !data->selection.current_highlight[i];
-				}
-				zero_array(data->selection.current_highlight);
-				region_select = false;
 			}
 
 			data->gpu_buffers.dirty.selection = true;
