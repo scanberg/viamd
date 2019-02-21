@@ -153,21 +153,21 @@ void free_histogram(Histogram* hist) {
 void compute_histogram(Histogram* hist, Array<const float> data) {
     ASSERT(hist);
     const int32 num_bins = (int32)hist->bins.count;
-    const float scl = num_bins / (hist->value_range.y - hist->value_range.x);
+    const float scl = num_bins / (hist->value_range.end - hist->value_range.beg);
     for (auto v : data) {
-        int32 bin_idx = math::clamp((int32)((v - hist->value_range.x) * scl), 0, num_bins - 1);
+        int32 bin_idx = math::clamp((int32)((v - hist->value_range.beg) * scl), 0, num_bins - 1);
         hist->bins[bin_idx]++;
     }
     hist->num_samples += (int32)data.count;
 }
 
-void compute_histogram(Histogram* hist, Array<const float> data, Range filter) {
+void compute_histogram(Histogram* hist, Array<const float> data, Range<float> filter) {
     ASSERT(hist);
     const int32 num_bins = (int32)hist->bins.count;
-    const float scl = num_bins / (hist->value_range.y - hist->value_range.x);
+    const float scl = num_bins / (hist->value_range.end - hist->value_range.beg);
     for (auto v : data) {
-        if (filter.x <= v && v <= filter.y) {
-            int32 bin_idx = math::clamp((int32)((v - hist->value_range.x) * scl), 0, num_bins - 1);
+        if (filter.min <= v && v <= filter.max) {
+            int32 bin_idx = math::clamp((int32)((v - hist->value_range.beg) * scl), 0, num_bins - 1);
             hist->bins[bin_idx]++;
             // hist->num_samples++;
         }
@@ -189,7 +189,7 @@ void normalize_histogram(Histogram* hist, int32 num_samples) {
     const float bin_scl = 1.f / (float)num_samples;
     for (auto& b : hist->bins) {
         b *= bin_scl;
-        hist->bin_range.y = math::max(hist->bin_range.y, b);
+        hist->bin_range.y = math::max(hist->bin_range.end, b);
     }
 }
 
@@ -217,7 +217,7 @@ inline void shuffle(int32* arr, size_t n) {
     }
 }
 
-void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, const MoleculeTrajectory& traj, Range frame_range) {
+void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, const MoleculeTrajectory& traj, Range<int32> frame_range) {
     ASSERT(vol);
     if (vol->dim.x == 0 || vol->dim.y == 0 || vol->dim.z == 0) {
         LOG_ERROR("One or more volume dimension are zero...");
@@ -225,20 +225,20 @@ void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, con
     }
 
     if (ctx.properties.count == 0) return;
-    float num_frames = (float)ctx.properties.front()->avg_data.count;
+    const int32 num_frames = (int32)ctx.properties.front()->avg_data.count;
 
-    if (frame_range.x == 0 && frame_range.y == 0) {
-        frame_range.y = num_frames;
+    if (frame_range.beg == 0 && frame_range.end == 0) {
+        frame_range.end = num_frames;
     }
 
-    frame_range.x = math::clamp(frame_range.x, 0.f, num_frames);
-    frame_range.y = math::clamp(frame_range.y, 0.f, num_frames);
+    frame_range.beg = math::clamp(frame_range.beg, 0, num_frames);
+    frame_range.end = math::clamp(frame_range.end, 0, num_frames);
 
     clear_volume(vol);
 
     for (auto prop : ctx.properties) {
         if (!prop->enable_volume) continue;
-        for (int32 frame_idx = (int32)frame_range.x; frame_idx < (int32)frame_range.y; frame_idx++) {
+        for (int32 frame_idx = frame_range.beg; frame_idx < frame_range.end; frame_idx++) {
             const Array<const vec3> atom_positions = get_trajectory_positions(traj, frame_idx);
             for_each_filtered_property_structure_in_frame(prop, frame_idx, [vol, &atom_positions, &world_to_volume_matrix](const Structure& s) {
                 for (int32 i = s.beg_idx; i < s.end_idx; i++) {
@@ -249,35 +249,35 @@ void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, con
                     const ivec3 c = vec3(tc) * (vec3)vol->dim;
                     const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
                     vol->voxel_data[voxel_idx]++;
-                    vol->voxel_range.y = math::max(vol->voxel_range.y, vol->voxel_data[voxel_idx]);
+                    vol->voxel_range.end = math::max(vol->voxel_range.end, vol->voxel_data[voxel_idx]);
                 }
             });
         }
     }
 }
 
-static Range compute_range(Array<float> data) {
+static Range<float> compute_range(Array<float> data) {
     if (data.count == 0) {
         return {0, 0};
     }
-    Range range{FLT_MAX, -FLT_MAX};
+    Range<float> range{FLT_MAX, -FLT_MAX};
     for (float v : data) {
-        range.x = math::min(range.x, v);
-        range.y = math::max(range.y, v);
+        range.beg = math::min(range.beg, v);
+        range.end = math::max(range.end, v);
     }
     return range;
 }
 
-static Range compute_range(const Property& prop) {
-    Range range{0, 0};
+static Range<float> compute_range(const Property& prop) {
+    Range<float> range{0, 0};
     if (prop.instance_data) {
         for (int32 i = 0; i < prop.instance_data.count; i++) {
-            Range r = compute_range(prop.instance_data[i].data);
+            auto r = compute_range(prop.instance_data[i].data);
             if (i == 0)
                 range = r;
             else {
-                range.x = math::min(range.x, r.x);
-                range.y = math::max(range.y, r.y);
+                range.min = math::min(range.min, r.min);
+                range.max = math::max(range.max, r.max);
             }
         }
     } else {
@@ -1038,7 +1038,7 @@ static bool compute_expression(Property* prop, const Array<CString> args, const 
             max_instance_count = math::max(max_instance_count, (int32)p->instance_data.count);
         }
 
-        const int32 frame_count = prop->avg_data.count;
+        const int32 frame_count = (int32)prop->avg_data.count;
         init_instance_data(&prop->instance_data, max_instance_count, frame_count);
 
         float scl = 1.f / (float)max_instance_count;
@@ -1246,9 +1246,10 @@ static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic
     if (prop->filter_fraction.count != num_frames) {
         prop->filter_fraction.resize(num_frames);
     }
-    prop->avg_data.set_mem_to_zero();
-    prop->std_dev_data.set_mem_to_zero();
-    prop->filter_fraction.set_mem_to_zero();
+
+    zero_array(prop->avg_data);
+    zero_array(prop->std_dev_data);
+    zero_array(prop->filter_fraction);
     clear_histogram(&prop->full_histogram);
     clear_histogram(&prop->filt_histogram);
 
@@ -1355,15 +1356,15 @@ bool properties_dirty() {
     return false;
 }
 
-void async_update(const MoleculeDynamic& dynamic, Range frame_filter, void (*on_finished)(void*), void* usr_data) {
-    if (frame_filter.x == 0.f && frame_filter.y == 0.f) {
-        frame_filter.y = (float)dynamic.trajectory.num_frames;
+void async_update(const MoleculeDynamic& dynamic, Range<int32> frame_filter, void (*on_finished)(void*), void* usr_data) {
+    if (frame_filter.beg == 0 && frame_filter.end == 0) {
+        frame_filter.end = dynamic.trajectory.num_frames;
     }
 
     if (!dynamic) return;
     if (dynamic.trajectory.num_frames == 0) return;
 
-    static Range prev_frame_filter{0, 0};
+    static Range<int32> prev_frame_filter{0, 0};
 
     if ((prev_frame_filter != frame_filter || properties_dirty()) && !ctx.thread_running && !ctx.stop_signal) {
         prev_frame_filter = frame_filter;

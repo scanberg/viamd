@@ -24,8 +24,8 @@ constexpr ID INVALID_ID = 0;
 
 struct Histogram {
     Array<float> bins = {};
-    Range value_range = {};
-    Range bin_range = {};
+    Range<float> value_range = {0, 0};
+    Range<float> bin_range = {0, 0};
     int32 num_samples = 0;
 };
 
@@ -79,9 +79,9 @@ struct Property {
     bool data_dirty = false;
     bool filter_dirty = false;
 
-    Range filter{0, 0};
-    Range total_data_range{0, 0};
-    Range avg_data_range{0, 0};
+    Range<float> filter{0, 0};
+    Range<float> total_data_range{0, 0};
+    Range<float> avg_data_range{0, 0};
     DynamicArray<float> filter_fraction{};
     DynamicArray<float> avg_data{};
     DynamicArray<float> std_dev_data{};
@@ -135,7 +135,7 @@ void init_histogram(Histogram* hist, int32 num_bins);
 void free_histogram(Histogram* hist);
 
 void compute_histogram(Histogram* hist, Array<const float> data);
-void compute_histogram(Histogram* hist, Array<const float> data, Range filter);
+void compute_histogram(Histogram* hist, Array<const float> data, Range<float> filter);
 
 void clear_histogram(Histogram* hist);
 void normalize_histogram(Histogram* hist);
@@ -144,7 +144,7 @@ void normalize_histogram(Histogram* hist);
 void initialize();
 void shutdown();
 
-void async_update(const MoleculeDynamic& dynamic, Range frame_filter = {0, 0}, void (*on_finished)(void*) = nullptr, void* usr_data = nullptr);
+void async_update(const MoleculeDynamic& dynamic, Range<int32> frame_filter = {0, 0}, void (*on_finished)(void*) = nullptr, void* usr_data = nullptr);
 
 // Async functionality
 // void lock_thread_mutex();
@@ -188,10 +188,10 @@ Array<Property*> get_properties();
 Property* find_property(CString name);
 
 // DENSITY VOLUME
-void compute_density_volume(Volume* vol, const mat4& world_to_volume, const MoleculeTrajectory& traj, Range frame_range);
+void compute_density_volume(Volume* vol, const mat4& world_to_volume, const MoleculeTrajectory& traj, Range<int32> frame_range);
 
 template <typename WorldToVolumeFunc>
-void compute_density_volume_with_basis(Volume* vol, const MoleculeTrajectory& traj, Range frame_range, WorldToVolumeFunc func) {
+void compute_density_volume_with_basis(Volume* vol, const MoleculeTrajectory& traj, Range<int32> frame_range, WorldToVolumeFunc func) {
     ASSERT(vol);
     if (vol->dim.x == 0 || vol->dim.y == 0 || vol->dim.z == 0) {
         LOG_ERROR("One or more volume dimension are zero...");
@@ -200,35 +200,34 @@ void compute_density_volume_with_basis(Volume* vol, const MoleculeTrajectory& tr
 
     auto properties = get_properties();
     if (properties.count == 0) return;
-    float num_frames = (float)properties.front()->avg_data.count;
+    const int32 num_frames = (int32)properties.front()->avg_data.count;
 
-    if (frame_range.x == 0 && frame_range.y == 0) {
-        frame_range.y = num_frames;
+    if (frame_range.beg == 0 && frame_range.end == 0) {
+        frame_range.beg = num_frames;
     }
 
-    frame_range.x = math::clamp(frame_range.x, 0.f, num_frames);
-    frame_range.y = math::clamp(frame_range.y, 0.f, num_frames);
+    frame_range.beg = math::clamp(frame_range.beg, 0, num_frames);
+    frame_range.end = math::clamp(frame_range.end, 0, num_frames);
 
     clear_volume(vol);
 
     for (auto prop : get_properties()) {
         if (!prop->enable_volume) continue;
-        for (int32 frame_idx = (int32)frame_range.x; frame_idx < (int32)frame_range.y; frame_idx++) {
+        for (int32 frame_idx = frame_range.beg; frame_idx < frame_range.end; frame_idx++) {
             const Array<const vec3> atom_positions = get_trajectory_positions(traj, frame_idx);
             const mat4 world_to_volume_matrix = func(frame_idx);
-            for_each_filtered_property_structure_in_frame(prop, frame_idx,
-                                                          [vol, &atom_positions, &world_to_volume_matrix](const Structure& s) {
-                                                              for (int32 i = s.beg_idx; i < s.end_idx; i++) {
-                                                                  const vec4 tc = math::fract(world_to_volume_matrix * vec4(atom_positions[i], 1));
-                                                                  // if (tc.x < 0.f || 1.f < tc.x) continue;
-                                                                  // if (tc.y < 0.f || 1.f < tc.y) continue;
-                                                                  // if (tc.z < 0.f || 1.f < tc.z) continue;
-                                                                  const ivec3 c = vec3(tc) * (vec3)vol->dim;
-                                                                  const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
-                                                                  vol->voxel_data[voxel_idx]++;
-                                                                  vol->voxel_range.y = math::max(vol->voxel_range.y, vol->voxel_data[voxel_idx]);
-                                                              }
-                                                          });
+            for_each_filtered_property_structure_in_frame(prop, frame_idx, [vol, &atom_positions, &world_to_volume_matrix](const Structure& s) {
+                for (int32 i = s.beg_idx; i < s.end_idx; i++) {
+                    const vec4 tc = math::fract(world_to_volume_matrix * vec4(atom_positions[i], 1));
+                    // if (tc.x < 0.f || 1.f < tc.x) continue;
+                    // if (tc.y < 0.f || 1.f < tc.y) continue;
+                    // if (tc.z < 0.f || 1.f < tc.z) continue;
+                    const ivec3 c = vec3(tc) * (vec3)vol->dim;
+                    const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
+                    vol->voxel_data[voxel_idx]++;
+                    vol->voxel_range.y = math::max(vol->voxel_range.y, vol->voxel_data[voxel_idx]);
+                }
+            });
         }
     }
 }

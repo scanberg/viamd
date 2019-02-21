@@ -3,7 +3,7 @@
 #include <core/math_utils.h>
 #include <core/image.h>
 
-enum class ColorMapping { STATIC_COLOR, CPK, RES_ID, RES_INDEX, CHAIN_ID, CHAIN_INDEX, SECONDARY_STRUCTURE };
+enum class ColorMapping { Static, Cpk, ResId, ResIndex, ChainId, ChainIndex, SecondaryStructure };
 
 inline vec4 color_from_hash(uint32 hash) {
     constexpr float chroma = 0.8f;
