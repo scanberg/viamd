@@ -343,6 +343,11 @@ struct ApplicationData {
     // --- VISUALS ---
     struct {
         struct {
+            vec3 color = {1, 1, 1};
+            float intensity = 10.f;
+        } background;
+
+        struct {
             bool enabled = false;
             float32 intensity = 3.0f;
             float32 radius = 6.0f;
@@ -482,11 +487,11 @@ static void compute_atomic_velocities(Array<vec3> dst_vel, Array<const vec3> pos
 static void reset_view(ApplicationData* data, bool move_camera = false, bool smooth_transition = false);
 static float32 compute_avg_ms(float32 dt);
 static PickingData read_picking_data(const MainFramebuffer& fbo, int32 x, int32 y);
-static void handle_selection(ApplicationData* data);
+static bool handle_selection(ApplicationData* data);
 
 static void draw_main_menu(ApplicationData* data);
 static void draw_context_popup(ApplicationData* data);
-static void draw_control_window(ApplicationData* data);
+static void draw_animation_control_window(ApplicationData* data);
 static void draw_representations_window(ApplicationData* data);
 static void draw_property_window(ApplicationData* data);
 static void draw_timeline_window(ApplicationData* data);
@@ -625,29 +630,37 @@ int main(int, char**) {
             previous_mouse_coord = data.ctx.input.mouse.win_coord;
         }
 
-        if (!ImGui::GetIO().WantCaptureMouse && !ImGui::GetIO().WantCaptureKeyboard) {
-            // #input
-            handle_selection(&data);
-            const bool shift_down = data.ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data.ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
-            if (!shift_down) {
-                if (data.ctx.input.key.hit[PLAY_PAUSE_KEY]) {
-                    const int32 num_frames = data.mol_data.dynamic.trajectory ? data.mol_data.dynamic.trajectory.num_frames : 0;
-                    const float64 max_time = (float64)math::max(0, num_frames - 1);
-                    if (!data.is_playing && data.time == max_time) {
-                        data.time = 0;
-                    }
-                    data.is_playing = !data.is_playing;
-                }
+        // #input
+        if (data.ctx.input.key.hit[CONSOLE_KEY]) {
+            if (data.console.Visible()) {
+                data.console.Hide();
+            } else if (!ImGui::GetIO().WantTextInput) {
+                data.console.Show();
+            }
+        }
 
-                if (data.ctx.input.key.hit[CONSOLE_KEY]) {
-                    data.console.visible = !data.console.visible;
-                }
+        if (!ImGui::GetIO().WantTextInput) {
+            if (data.ctx.input.key.hit[Key::KEY_F5]) {
+                draw::initialize();
+                postprocessing::initialize(data.fbo.width, data.fbo.height);
+            }
 
-                if (data.ctx.input.key.hit[Key::KEY_F5]) {
-                    draw::initialize();
-                    postprocessing::initialize(data.fbo.width, data.fbo.height);
+            if (data.ctx.input.key.hit[PLAY_PAUSE_KEY]) {
+                const int32 num_frames = data.mol_data.dynamic.trajectory ? data.mol_data.dynamic.trajectory.num_frames : 0;
+                const float64 max_time = (float64)math::max(0, num_frames - 1);
+                if (!data.is_playing && data.time == max_time) {
+                    data.time = 0;
                 }
+                data.is_playing = !data.is_playing;
+            }
+        }
 
+        if (!ImGui::GetIO().WantCaptureMouse) {
+            // #selection
+            bool selecting = handle_selection(&data);
+
+            // #camera-control
+            if (!selecting) {
                 // CAMERA CONTROLS
                 data.view.trackball_state.input.rotate_button = data.ctx.input.mouse.down[0];
                 data.view.trackball_state.input.pan_button = data.ctx.input.mouse.down[1];
@@ -678,7 +691,7 @@ int main(int, char**) {
                 }
             }
         }
-        // Animate camera
+        // #animate-camera
         {
             const float32 dt = math::min(data.ctx.timing.delta_s, 0.033f);
             const float32 speed = 10.0f;
@@ -1087,6 +1100,9 @@ int main(int, char**) {
 
         PUSH_GPU_SECTION("Postprocessing") {
             postprocessing::Descriptor desc;
+
+            desc.background.intensity = data.visuals.background.color * data.visuals.background.intensity;
+
             desc.ambient_occlusion.enabled = data.visuals.ssao.enabled;
             desc.ambient_occlusion.intensity = data.visuals.ssao.intensity;
             desc.ambient_occlusion.radius = data.visuals.ssao.radius;
@@ -1181,7 +1197,7 @@ int main(int, char**) {
         }
 
         draw_async_info(&data);
-        draw_control_window(&data);
+        draw_animation_control_window(&data);
 
         PUSH_GPU_SECTION("Imgui render")
         platform::render_imgui(&data.ctx);
@@ -1272,7 +1288,7 @@ static void compute_atomic_velocities(Array<vec3> dst_vel, Array<const vec3> pos
 
         const vec3 delta = p1 - p0;
         const vec3 signed_mask = sign(delta) * step(box_ext * 0.5f, abs(delta));
-        const vec3 dp_p0 = p1 - box_ext * signed_mask;
+        const vec3 dp_p0 = p0 - box_ext * signed_mask;
 
         dst_vel[i] = p1 - dp_p0;
     }
@@ -1469,19 +1485,30 @@ if (ImGui::BeginMenu("Edit")) {
 }
         */
         if (ImGui::BeginMenu("Visuals")) {
+            if (ImGui::Button("Reset View")) {
+                reset_view(data, true, true);
+            }
+            ImGui::Separator();
             ImGui::Checkbox("Vsync", &data->ctx.window.vsync);
             ImGui::Separator();
-
+            ImGui::BeginGroup();
+            ImGui::Text("Background");
+            ImGui::ColorEdit3("Color", &data->visuals.background.color[0], ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
+            ImGui::SliderFloat("##Intensity", &data->visuals.background.intensity, 0.f, 100.f);
+            ImGui::EndGroup();
+            ImGui::Separator();
             // Temporal
             ImGui::BeginGroup();
-            ImGui::Checkbox("Temporal Effects", &data->visuals.temporal_reprojection.enabled);
-            if (data->visuals.temporal_reprojection.enabled) {
-                ImGui::Checkbox("Jitter Samples", &data->visuals.temporal_reprojection.jitter);
-                // ImGui::SliderFloat("Feedback Min", &data->visuals.temporal_reprojection.feedback_min, 0.5f, 1.0f);
-                // ImGui::SliderFloat("Feedback Max", &data->visuals.temporal_reprojection.feedback_max, 0.5f, 1.0f);
-                ImGui::Checkbox("Motion Blur", &data->visuals.temporal_reprojection.motion_blur.enabled);
-                if (data->visuals.temporal_reprojection.motion_blur.enabled) {
-                    ImGui::SliderFloat("Motion Scale", &data->visuals.temporal_reprojection.motion_blur.motion_scale, 0.f, 1.0f);
+            {
+                ImGui::Checkbox("Temporal Effects", &data->visuals.temporal_reprojection.enabled);
+                if (data->visuals.temporal_reprojection.enabled) {
+                    ImGui::Checkbox("Jitter Samples", &data->visuals.temporal_reprojection.jitter);
+                    // ImGui::SliderFloat("Feedback Min", &data->visuals.temporal_reprojection.feedback_min, 0.5f, 1.0f);
+                    // ImGui::SliderFloat("Feedback Max", &data->visuals.temporal_reprojection.feedback_max, 0.5f, 1.0f);
+                    ImGui::Checkbox("Motion Blur", &data->visuals.temporal_reprojection.motion_blur.enabled);
+                    if (data->visuals.temporal_reprojection.motion_blur.enabled) {
+                        ImGui::SliderFloat("Motion Scale", &data->visuals.temporal_reprojection.motion_blur.motion_scale, 0.f, 1.0f);
+                    }
                 }
             }
             ImGui::EndGroup();
@@ -1624,7 +1651,15 @@ if (ImGui::BeginMenu("Edit")) {
 
             ImGui::EndMenu();
         }
-
+        {
+            // Fps counter
+            const float32 ms = compute_avg_ms(data->ctx.timing.delta_s);
+            char fps_buf[32];
+            snprintf(fps_buf, 32, "%.2f ms (%.1f fps)", ms, 1000.f / ms);
+            const float w = ImGui::CalcTextSize(fps_buf).x;
+            ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - w);
+            ImGui::Text("%s", fps_buf);
+        }
         ImGui::EndMainMenuBar();
     }
 
@@ -1913,50 +1948,30 @@ void draw_context_popup(ApplicationData* data) {
     }
 }
 
-static void draw_control_window(ApplicationData* data) {
-    // MISC WINDOW
-    float32 ms = compute_avg_ms(data->ctx.timing.delta_s);
-    static bool show_demo_window = false;
+static void draw_animation_control_window(ApplicationData* data) {
+    ASSERT(data);
+    if (!data->mol_data.dynamic.trajectory) return;
 
     ImGui::Begin("Control");
-    ImGui::Text("%.2f ms (%.1f fps)", ms, 1000.f / (ms));
-    ImGui::Checkbox("Show Demo Window", &show_demo_window);
-    if (ImGui::Button("Reset View")) {
-        reset_view(data, true, true);
+    int32 num_frames = data->mol_data.dynamic.trajectory.num_frames;
+    ImGui::Text("Num Frames: %i", num_frames);
+    float32 t = (float)data->time;
+    if (ImGui::SliderFloat("Time", &t, 0, (float)(num_frames - 1))) {
+        data->time = t;
     }
-    if (data->mol_data.dynamic.trajectory) {
-        int32 num_frames = data->mol_data.dynamic.trajectory.num_frames;
-        ImGui::Text("Num Frames: %i", num_frames);
-        float32 t = (float)data->time;
-        if (ImGui::SliderFloat("Time", &t, 0, (float)(num_frames - 1))) {
-            data->time = t;
-        }
-        ImGui::SliderFloat("fps", &data->frames_per_second, 0.1f, 100.f, "%.3f", 4.f);
-        if (data->is_playing) {
-            if (ImGui::Button("Pause")) data->is_playing = false;
-        } else {
-            if (ImGui::Button("Play")) data->is_playing = true;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Stop")) {
-            data->is_playing = false;
-            data->time = 0.0;
-        }
-        ImGui::Combo("type", (int*)(&data->interpolation), "Nearest\0Linear\0Linear Periodic\0Cubic\0Cubic Periodic\0\0");
-        ImGui::Checkbox("Dynamic Framewindow", &data->time_filter.dynamic_window);
-        if (data->time_filter.dynamic_window) {
-            ImGui::SliderFloat("Window Extent", &data->time_filter.window_extent, 1, num_frames);
-        }
+    ImGui::SliderFloat("fps", &data->frames_per_second, 0.1f, 100.f, "%.3f", 4.f);
+    ImGui::Combo("type", (int*)(&data->interpolation), "Nearest\0Linear\0Linear Periodic\0Cubic\0Cubic Periodic\0\0");
+    if (data->is_playing) {
+        if (ImGui::Button("Pause")) data->is_playing = false;
+    } else {
+        if (ImGui::Button("Play")) data->is_playing = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Stop")) {
+        data->is_playing = false;
+        data->time = 0.0;
     }
     ImGui::End();
-
-    // Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
-    if (show_demo_window) {
-        ImGui::SetNextWindowPos(ImVec2(650, 20),
-                                ImGuiCond_FirstUseEver);  // Normally user code doesn't need/want to call this because positions are saved in .ini
-                                                          // file anyway. Here we just want to make the demo initial state a bit more friendly!
-        ImGui::ShowDemoWindow(&show_demo_window);
-    }
 }
 
 static void draw_representations_window(ApplicationData* data) {
@@ -2330,15 +2345,20 @@ static void draw_timeline_window(ApplicationData* data) {
     ASSERT(data);
     ImGui::SetNextWindowSize(ImVec2(400, 150), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Timelines", &data->statistics.show_timeline_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
-        static float32 zoom = 1.f;
+        static float zoom = 1.f;
+        const float num_frames = (float)data->mol_data.dynamic.trajectory.num_frames;
+
+        ImGui::Checkbox("Dynamic Framewindow", &data->time_filter.dynamic_window);
+        if (data->time_filter.dynamic_window) {
+            ImGui::SliderFloat("Window Extent", &data->time_filter.window_extent, 1.f, num_frames);
+        }
         ImGui::BeginChild("Scroll Region", ImVec2(0, 0), true, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_HorizontalScrollbar);
 
-        const int max_frame = data->mol_data.dynamic.trajectory.num_frames;
-        const Range<float> frame_range = {0, (float)max_frame};
+        const Range<float> frame_range = {0, num_frames};
         auto old_range = data->time_filter.range;
 
         ImGui::PushItemWidth(ImGui::GetWindowContentRegionWidth() * zoom);
-        if (ImGui::RangeSliderFloat("###selection_range", &data->time_filter.range.beg, &data->time_filter.range.end, 0.f, (float)max_frame)) {
+        if (ImGui::RangeSliderFloat("###selection_range", &data->time_filter.range.beg, &data->time_filter.range.end, 0.f, num_frames)) {
             if (data->time_filter.dynamic_window) {
                 if (data->time_filter.range.x != old_range.x && data->time_filter.range.y != old_range.y) {
                     data->time = math::lerp(data->time_filter.range.x, data->time_filter.range.y, 0.5f);
@@ -3585,7 +3605,7 @@ static void clear_selections(ApplicationData* data) {
     }
 }
 
-static void handle_selection(ApplicationData* data) {
+static bool handle_selection(ApplicationData* data) {
     ASSERT(data);
     enum class RegionMode { Append, Remove };
 
@@ -3735,6 +3755,8 @@ static void handle_selection(ApplicationData* data) {
         data->selection.current_highlight[i] |= mask[i];
     }
     data->gpu_buffers.dirty.selection = true;
+
+    return region_select;
 }
 
 // #async
