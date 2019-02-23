@@ -2892,6 +2892,7 @@ ImGui::SetNextWindowSizeConstraints(ImVec2(100, 100), ImVec2(1000, 1000), [](ImG
 });
     */
 
+    ImGui::SetNextWindowSizeConstraints(ImVec2(400,200), ImVec2(10000,10000));
     ImGui::Begin("Ramachandran", &data->ramachandran.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoScrollbar);
 
     ImGui::BeginColumns("cols", 3, ImGuiColumnsFlags_NoResize);
@@ -2941,12 +2942,12 @@ ImGui::SetNextWindowSizeConstraints(ImVec2(100, 100), ImVec2(1000, 1000), [](ImG
     }
     ImGui::EndColumns();
 
-    const float32 win_w = ImGui::GetWindowContentRegionWidth();
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::BeginChild("canvas", ImVec2(win_w, win_w), true, ImGuiWindowFlags_AlwaysHorizontalScrollbar | ImGuiWindowFlags_AlwaysVerticalScrollbar);
+    ImGui::BeginChild("canvas", ImVec2(-1,-1), true, ImGuiWindowFlags_AlwaysHorizontalScrollbar | ImGuiWindowFlags_AlwaysVerticalScrollbar);
 
 	static float zoom_factor = 1.0f;
-	const ImVec2 size = ImVec2(win_w, win_w) * zoom_factor;
+    const float max_c = ImMax(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y);
+	const ImVec2 size = ImVec2(max_c, max_c) * zoom_factor;
 	const ImGuiID id = ImGui::GetID("bg");
 
 	ImRect bb(ImGui::GetCurrentWindow()->DC.CursorPos, ImGui::GetCurrentWindow()->DC.CursorPos + size);
@@ -2956,14 +2957,11 @@ ImGui::SetNextWindowSizeConstraints(ImVec2(100, 100), ImVec2(1000, 1000), [](ImG
 	bool hovered = false, held = false;
 	bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
 
-	const float32 dim = ImGui::GetWindowContentRegionWidth();
-	const ImVec2 canvas_pos = bb.Min;
-	const ImVec2 canvas_size(dim, dim);
 	ImDrawList* dl = ImGui::GetWindowDrawList();
 
 	const ImVec2 mouse_pos = ImGui::GetIO().MousePos;
-	const ImVec2 x0 = canvas_pos;
-	const ImVec2 x1(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y);
+	const ImVec2 x0 = bb.Min;
+	const ImVec2 x1 = bb.Max;
 	dl->ChannelsSplit(4);
 	dl->ChannelsSetCurrent(0);
 	dl->AddRectFilled(x0, x1, 0xffffffff);
@@ -3040,16 +3038,18 @@ ImGui::SetNextWindowSizeConstraints(ImVec2(100, 100), ImVec2(1000, 1000), [](ImG
 	dl->ChannelsMerge();
 	dl->ChannelsSetCurrent(0);
 
-	if (hovered && ImGui::GetIO().MouseWheel != 0.f) {
-		zoom_factor = zoom_factor - ImGui::GetIO().MouseWheel * 0.1f;
-		zoom_factor = ImClamp(zoom_factor, 1.f, 10.f);
+	if (hovered && ImGui::GetIO().KeyCtrl && ImGui::GetIO().MouseWheel != 0.f) {
+		const float old_zoom = zoom_factor;
+        const float new_zoom = ImClamp(zoom_factor - ImGui::GetIO().MouseWheel * 0.1f, 1.0f, 10.0f);
+        //ImGui::GetCurrentWindow()->ScrollTarget.x = ImGui::GetCurrentWindow()->Scroll.x * new_zoom / old_zoom;
+        zoom_factor = new_zoom;
 	}
 
     ImGui::PopStyleVar(1);
     ImGui::EndChild();
 
     if (ImGui::IsItemHovered()) {
-        const ImVec2 normalized_coord = ((ImGui::GetMousePos() - canvas_pos) / canvas_size - ImVec2(0.5f, 0.5f)) * ImVec2(1, -1);
+        const ImVec2 normalized_coord = ((ImGui::GetMousePos() - bb.Min) / (bb.Max - bb.Min) - ImVec2(0.5f, 0.5f)) * ImVec2(1, -1);
         const ImVec2 angles = normalized_coord * 2.f * 180.f;
         ImGui::BeginTooltip();
         ImGui::Text(u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0", angles.x, angles.y);
