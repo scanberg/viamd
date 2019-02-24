@@ -9,7 +9,7 @@ Individuals/hobbyists: support continued maintenance and development via the mon
 <br>&nbsp;&nbsp;[![Patreon](https://raw.githubusercontent.com/wiki/ocornut/imgui/web/patreon_01.png)](http://www.patreon.com/imgui)
 
 Individuals/hobbyists: support continued maintenance and development via PayPal:
-<br>&nbsp;&nbsp;[![PayPal](https://www.paypalobjects.com/en_US/i/btn/btn_donate_LG.gif)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=5Q73FPZ9C526U)
+<br>&nbsp;&nbsp;[![PayPal](https://www.paypalobjects.com/en_US/i/btn/btn_donate_LG.gif)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=WGHNC6MBFLZ2S)
 
 Businesses: support continued maintenance and development via support contracts or sponsoring:
 <br>&nbsp;&nbsp;_E-mail: omarcornut at gmail dot com_
@@ -102,7 +102,7 @@ Demo Binaries
 -------------
 
 You should be able to build the examples from sources (tested on Windows/Mac/Linux). If you don't, let me know! If you want to have a quick look at some Dear ImGui features, you can download Windows binaries of the demo app here:
-- [imgui-demo-binaries-20181008.zip](http://www.miracleworld.net/imgui/binaries/imgui-demo-binaries-20181008.zip) (Windows binaries, Dear ImGui 1.66 WIP built 2018/10/08, master branch, 5 executables)
+- [imgui-demo-binaries-20190219.zip](http://www.dearimgui.org/binaries/imgui-demo-binaries-20190219.zip) (Windows binaries, Dear ImGui 1.68 built 2019/02/19, master branch, 5 executables)
 
 The demo applications are unfortunately not yet DPI aware so expect some blurriness on a 4K screen. For DPI awareness in your application, you can load/reload your font at different scale, and scale your Style with `style.ScaleAllSizes()`.
 
@@ -126,7 +126,7 @@ Languages: (third-party bindings)
 - Odin: [odin-dear_imgui](https://github.com/ThisDrunkDane/odin-dear_imgui)
 - Pascal: [imgui-pas](https://github.com/dpethes/imgui-pas)
 - PureBasic: [pb-cimgui](https://github.com/hippyau/pb-cimgui)
-- Python [CyImGui](https://github.com/chromy/cyimgui) or [pyimgui](https://github.com/swistakm/pyimgui)
+- Python: [pyimgui](https://github.com/swistakm/pyimgui) or [bimpy](https://github.com/podgorskiy/bimpy)
 - Ruby: [ruby-imgui](https://github.com/vaiorabbit/ruby-imgui)
 - Rust: [imgui-rs](https://github.com/Gekkio/imgui-rs) or [imgui-rust](https://github.com/nsf/imgui-rust)
 - Swift [swift-imgui](https://github.com/mnmly/Swift-imgui)
@@ -145,12 +145,12 @@ Frameworks:
 - Ogre: [ogreimgui](https://bitbucket.org/LMCrashy/ogreimgui/src)
 - OpenFrameworks: [ofxImGui](https://github.com/jvcleave/ofxImGui)
 - OpenSceneGraph/OSG: [gist](https://gist.github.com/fulezi/d2442ca7626bf270226014501357042c)
-- ORX: [pr #1843](https://github.com/ocornut/imgui/pull/1843)
+- ORX: [#1843](https://github.com/ocornut/imgui/pull/1843)
 - LÖVE+Lua: [love-imgui](https://github.com/slages/love-imgui)
 - Magnum: [ImGuiIntegration](https://doc.magnum.graphics/magnum/namespaceMagnum_1_1ImGuiIntegration.html) ([example](https://doc.magnum.graphics/magnum/examples-imgui.html))
 - NanoRT: [syoyo/imgui](https://github.com/syoyo/imgui/tree/nanort)
 - Qt: [imgui-qt3d](https://github.com/alpqr/imgui-qt3d) / [QOpenGLWindow (qtimgui)](https://github.com/ocornut/imgui/issues/1910) / [QtDirect3D](https://github.com/giladreich/QtDirect3D) / [qt6](https://github.com/alpqr/qvk6/tree/imgui/examples/rhi/imguidemo)
-- SFML: [imgui-sfml](https://github.com/EliasD/imgui-sfml)
+- SFML: [imgui-sfml](https://github.com/eliasdaler/imgui-sfml)
 - Software renderer: [imgui_software_renderer](https://github.com/emilk/imgui_software_renderer)
 - Unreal Engine 4: [segross/UnrealImGui](https://github.com/segross/UnrealImGui) or [sronsse/UnrealEngine_ImGui](https://github.com/sronsse/UnrealEngine_ImGui)
 
@@ -159,8 +159,8 @@ For other bindings: see [Bindings](https://github.com/ocornut/imgui/wiki/Binding
 Roadmap
 -------
 Some of the goals for 2019 are:
-- Finish work on docking, tabs. (see [#2109](https://github.com/ocornut/imgui/issues/2109), public branch looking for feedback)
-- Finish work on multiple viewports / multiple OS windows. (see [#1542](https://github.com/ocornut/imgui/issues/1542), public branch looking for feedback)
+- Finish work on docking, tabs. (see [#2109](https://github.com/ocornut/imgui/issues/2109), in public `docking` branch looking for feedback)
+- Finish work on multiple viewports / multiple OS windows. (see [#1542](https://github.com/ocornut/imgui/issues/1542), in public `docking` branch looking for feedback)
 - Finish work on gamepad/keyboard controls. (see [#787](https://github.com/ocornut/imgui/issues/787))
 - Add an automation and testing system, both to test the library and end-user apps. (see [#435](https://github.com/ocornut/imgui/issues/435))
 - Make Columns better. (they are currently pretty terrible!)
@@ -177,7 +177,6 @@ User screenshots:
 <br>[Gallery Part 6](https://github.com/ocornut/imgui/issues/1607) (Feb 2018 to June 2018)
 <br>[Gallery Part 7](https://github.com/ocornut/imgui/issues/1902) (June 2018 to January 2019)
 <br>[Gallery Part 8](https://github.com/ocornut/imgui/issues/2265) (January 2019 onward)
-<br>Also see the [Mega screenshots](https://github.com/ocornut/imgui/issues/1273) for an idea of the available features.
 
 Custom engine
 [![screenshot game](https://raw.githubusercontent.com/wiki/ocornut/imgui/web/v149/gallery_TheDragonsTrap-01-thumb.jpg)](https://cloud.githubusercontent.com/assets/8225057/20628927/33e14cac-b329-11e6-80f6-9524e93b048a.png)
@@ -204,12 +203,14 @@ The Immediate Mode GUI paradigm may at first appear unusual to some users. This 
 
 See the [Wiki](https://github.com/ocornut/imgui/wiki) for more references and [Bindings](https://github.com/ocornut/imgui/wiki/Bindings) for third-party bindings to different languages and frameworks.
 
-Support Forums
---------------
+Support
+-------
 
-If you have issues with: compiling, linking, adding fonts, running or displaying Dear ImGui, or wiring inputs: please post on the Discourse forums: https://discourse.dearimgui.org.
+If you are new to Dear ImGui and have issues with: compiling, linking, adding fonts, wiring inputs, running or displaying Dear ImGui: please post on the Discourse forums: https://discourse.dearimgui.org.
 
-For any other questions, bug reports, requests, feedback, you may post on https://github.com/ocornut/imgui/issues. Please read and fill the New Issue template carefully.
+Otherwise for any other questions, bug reports, requests, feedback, you may post on https://github.com/ocornut/imgui/issues. Please read and fill the New Issue template carefully.
+
+Private support is available for paying customers.
 
 Frequently Asked Question (FAQ)
 -------------------------------
@@ -226,7 +227,7 @@ Frequently Asked Question (FAQ)
 
 I occasionally tag [Releases](https://github.com/ocornut/imgui/releases) but it is generally safe and recommended to sync to master/latest. The library is fairly stable and regressions tend to be fixed fast when reported.
 
-You may also peak at the [Multi-Viewport](https://github.com/ocornut/imgui/issues/1542) and [Docking](https://github.com/ocornut/imgui/issues/2109) branches. Even though they are marked beta, several projects are using them and they are kept in sync with master regularly.
+You may also peak at the [Multi-Viewport](https://github.com/ocornut/imgui/issues/1542) and [Docking](https://github.com/ocornut/imgui/issues/2109) features in the `docking` branch. Several projects are using this branch and it is kept in sync with master regularly.
 
 **Who uses Dear ImGui?**
 
@@ -234,7 +235,7 @@ See the [Quotes](https://github.com/ocornut/imgui/wiki/Quotes) and [Software usi
 
 **Why the odd dual naming, "Dear ImGui" vs "ImGui"?**
 
-The library started its life and is best known as "ImGui" only due to the fact that I didn't give it a proper name when I released it. However, the term IMGUI (immediate-mode graphical user interface) was coined before and is being used in variety of other situations. It seemed confusing and unfair to hog the name. To reduce the ambiguity without affecting existing codebases, I have decided on an alternate, longer name "dear imgui" that people can use to refer to this specific library in ambiguous situations.
+The library started its life as "ImGui" due to the fact that I didn't give it a proper name when I released 1.0 and had no particular expectation that it would taker off. However, the term IMGUI (immediate-mode graphical user interface) was coined before and is being used in variety of other situations (e.g. Unity uses it own implementation of the IMGUI paradigm). It seemed confusing and unfair to hog the name. To reduce the ambiguity without affecting existing codebases, I have decided on an alternate, longer name "Dear ImGui" that people can use to refer to this specific library in ambiguous situations. Please try to refer to it as "Dear ImGui".
 
 **How can I tell whether to dispatch mouse/keyboard to imgui or to my application?**
 <br>**How can I display an image? What is ImTextureID, how does it works?**
@@ -269,7 +270,7 @@ You can alter the look of the interface to some degree: changing colors, sizes, 
 
 Dear ImGui takes advantage of a few C++ languages features for convenience but nothing anywhere Boost-insanity/quagmire. Dear ImGui does NOT require C++11 so it can be used with most old C++ compilers. Dear ImGui doesn't use any C++ header file. Language-wise, function overloading and default parameters are used to make the API easier to use and code more terse. Doing so I believe the API is sitting on a sweet spot and giving up on those features would make the API more cumbersome. Other features such as namespace, constructors and templates (in the case of the ImVector<> class) are also relied on as a convenience.
 
-There is an auto-generated [c-api for Dear ImGui (cimgui)](https://github.com/cimgui/cimgui) by Sonoro1234 and Stephan Dilly. This is designed for binding other languages. If possible, I would suggest using your target language functionalities to try replicating the function overloading and default parameters used in C++ else the API may be harder to use. Also see [Bindings](https://github.com/ocornut/imgui/wiki/Bindings) for third-party bindings to other languages.
+There is an auto-generated [c-api for Dear ImGui (cimgui)](https://github.com/cimgui/cimgui) by Sonoro1234 and Stephan Dilly. It is designed for creating binding to other languages. If possible, I would suggest using your target language functionalities to try replicating the function overloading and default parameters used in C++ else the API may be harder to use. Also see [Bindings](https://github.com/ocornut/imgui/wiki/Bindings) for various third-party bindings.
 
 Support dear imgui
 ------------------
@@ -279,7 +280,7 @@ Support dear imgui
 - You may participate in the [Discourse forums](https://discourse.dearimgui.org) and the GitHub [issues tracker](https://github.com/ocornut/imgui/issues).
 - You may help with development and submit pull requests! Please understand that by submitting a PR you are also submitting a request for the maintainer to review your code and then take over its maintenance forever. PR should be crafted both in the interest in the end-users and also to ease the maintainer into understanding and accepting it.
 - See [Help wanted](https://github.com/ocornut/imgui/wiki/Help-Wanted) on the [Wiki](https://github.com/ocornut/imgui/wiki/) for some more ideas.
-- Convince your company to financially support this project.
+- Have your company financially support this project.
 
 **How can I help financing further development of Dear ImGui?**
 
@@ -289,26 +290,26 @@ Individuals/hobbyists: support continued maintenance and development via the mon
 <br>&nbsp;&nbsp;[![Patreon](https://raw.githubusercontent.com/wiki/ocornut/imgui/web/patreon_01.png)](http://www.patreon.com/imgui)
 
 Individuals/hobbyists: support continued maintenance and development via PayPal:
-<br>&nbsp;&nbsp;[![PayPal](https://www.paypalobjects.com/en_US/i/btn/btn_donate_LG.gif)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=5Q73FPZ9C526U)
+<br>&nbsp;&nbsp;[![PayPal](https://www.paypalobjects.com/en_US/i/btn/btn_donate_LG.gif)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=WGHNC6MBFLZ2S)
 
 Businesses: support continued maintenance and development via support contracts or sponsoring:
 <br>&nbsp;&nbsp;_E-mail: omarcornut at gmail dot com_
 
-Ongoing dear imgui development is financially supported by users and private sponsors (past and present):
+Ongoing dear imgui development is financially supported by users and private sponsors, recently:
 
 **Platinum-chocolate sponsors**
 - **Blizzard Entertainment**.
 
 **Double-chocolate sponsors**
-- Media Molecule, Mobigame, Insomniac Games, Aras Pranckevičius, Lizardcube, Greggman, DotEmu, Nadeo, Supercell, Runner, Aiden Koss, Kylotonn.
+- Media Molecule, Mobigame, Aras Pranckevičius, Greggman, DotEmu, Nadeo, Supercell, Runner, Aiden Koss, Kylotonn.
 
 **Salty caramel supporters**
-- Jetha Chan, Wild Sheep Studio, Pastagames, Mārtiņš Možeiko, Daniel Collin, Recognition Robotics, Chris Genova, ikrima, Glenn Fiedler, Geoffrey Evans, Dakko Dakko, Mercury Labs, Singularity Demo Group, Mischa Alff, Sebastien Ronsse, Lionel Landwerlin, Nikolay Ivanov, Ron Gilbert, Brandon Townsend, Nikhil Deshpande, Cort Stratton, drudru, Harfang 3D, Jeff Roberts, Rainway inc.
+- Recognition Robotics, ikrima, Geoffrey Evans, Mercury Labs, Singularity Demo Group, Lionel Landwerlin, Ron Gilbert, Brandon Townsend, Nikhil Deshpande, Cort Stratton, drudru, Harfang 3D, Jeff Roberts, Rainway inc, Ondra Voves, Mesh Consultants.
 
 **Caramel supporters**
-- Michel Courtine, César Leblic, Dale Kim, Alex Evans, Rui Figueira, Paul Patrashcu, Jerome Lanquetot, Ctrl Alt Ninja, Paul Fleming, Neil Henning, Stephan Dilly, Neil Blakey-Milner, Aleksei, NeiloGD, Justin Paver, FiniteSol, Vincent Pancaldi, James Billot, Robin Hübner, furrtek, Eric, Simon Barratt, Game Atelier, Julian Bosch, Simon Lundmark, Vincent Hamm, Farhan Wali, Matt Reyer, Colin Riley, Victor Martins, Josh Simmons, Garrett Hoofman, Sergio Gonzales, Andrew Berridge, Roy Eltham, Game Preservation Society, Kit framework, Josh Faust, Martin Donlon, Quinton, Felix, Andrew Belt, Codecat, Cort Stratton, Claudio Canepa, Doug McNabb, Emmanuel Julien, Guillaume Chereau, Jeffrey Slutter, Jeremiah Deckard, r-lyeh, Roger Clark, Nekith, Joshua Fisher, Malte Hoffmann, Mustafa Karaalioglu, Merlyn Morgan-Graham, Per Vognsen, Fabian Giesen, Jan Staubach, Matt Hargett, John Shearer, Jesse Chounard, kingcoopa, Miloš Tošić, Jonas Bernemann, Johan Andersson, Nathan Hartman, Michael Labbe, Tomasz Golebiowski, Louis Schnellbach, Felipe Alfonso, Jimmy Andrews, Bojan Endrovski, Robin Berg Pettersen, Rachel Crawford, Edsel Malasig, Andrew Johnson, Sean Hunter, Jordan Mellow, Nefarius Software Solutions, Laura Wieme, Robert Nix, Mick Honey, Astrofra, Jonas Lehmann, Steven Kah Hien Wong, Bartosz Bielecki, Oscar Penas, A M, Liam Moynihan, Artometa, Mark Lee, Dimitri Diakopoulos.
+- Jerome Lanquetot, Daniel Collin, Ctrl Alt Ninja, Neil Henning, Neil Blakey-Milner, Aleksei, NeiloGD, Eric, Game Atelier, Vincent Hamm, Colin Riley, Sergio Gonzales, Andrew Berridge, Roy Eltham, Game Preservation Society, Josh Faust, Martin Donlon, Codecat, Doug McNabb, Emmanuel Julien, Guillaume Chereau, Jeffrey Slutter, Jeremiah Deckard, r-lyeh, Nekith, Joshua Fisher, Malte Hoffmann, Mustafa Karaalioglu, Merlyn Morgan-Graham, Per Vognsen, Fabian Giesen, Jan Staubach, Matt Hargett, John Shearer, Jesse Chounard, kingcoopa, Jonas Bernemann, Johan Andersson, Michael Labbe, Tomasz Golebiowski, Louis Schnellbach, Jimmy Andrews, Bojan Endrovski, Robin Berg Pettersen, Rachel Crawford, Andrew Johnson, Sean Hunter, Jordan Mellow, Nefarius Software Solutions, Laura Wieme, Robert Nix, Mick Honey, Steven Kah Hien Wong, Bartosz Bielecki, Oscar Penas, A M, Liam Moynihan, Artometa, Mark Lee, Dimitri Diakopoulos, Pete Goodwin.
 
-And all other supporters; THANK YOU!
+And all other past and present supporters; THANK YOU!
 (Please contact me if you would like to be added or removed from this list)
 
 Credits
@@ -316,7 +317,7 @@ Credits
 
 Developed by [Omar Cornut](http://www.miracleworld.net) and every direct or indirect contributors to the GitHub. The early version of this library was developed with the support of [Media Molecule](http://www.mediamolecule.com) and first used internally on the game [Tearaway](http://tearaway.mediamolecule.com).
 
-I first discovered the IMGUI paradigm at [Q-Games](http://www.q-games.com) where Atman had dropped his own simple implementation in the codebase, which I spent quite some time improving and thinking about. It turned out that Atman was exposed to the concept directly by working with Casey. When I moved to Media Molecule I rewrote a new library trying to overcome the flaws and limitations of the first one I've worked with. It became this library and since then I have spent an unreasonable amount of time iterating on it.
+I first discovered the IMGUI paradigm at [Q-Games](http://www.q-games.com) where Atman Binstock had dropped his own simple implementation in the codebase, which I spent quite some time improving and thinking about. It turned out that Atman was exposed to the concept directly by working with Casey. When I moved to Media Molecule I rewrote a new library trying to overcome the flaws and limitations of the first one I've worked with. It became this library and since then I have spent an unreasonable amount of time iterating and improving it.
 
 Embeds [ProggyClean.ttf](http://upperbounds.net) font by Tristan Grimmer (MIT license).
 
@@ -327,4 +328,4 @@ Inspiration, feedback, and testing for early versions: Casey Muratori, Atman Bin
 License
 -------
 
-Dear ImGui is licensed under the MIT License, see LICENSE for more information.
+Dear ImGui is licensed under the MIT License, see [LICENSE.txt](https://github.com/ocornut/imgui/blob/master/LICENSE.txt) for more information.

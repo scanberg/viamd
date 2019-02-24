@@ -56,7 +56,8 @@ endif()
 target_compile_definitions(viamd PRIVATE
 	VIAMD_DATA_DIR=\"${RESOURCE_DIR}data\"
 	VIAMD_SHADER_DIR=\"${RESOURCE_DIR}shaders\"
-	VIAMD_IMAGE_DIR=\"${RESOURCE_DIR}images\")
+	VIAMD_IMAGE_DIR=\"${RESOURCE_DIR}images\"
+	VIAMD_SCREENSHOT_DIR=\"${RESOURCE_DIR}screenshots\")
 
 #target_compile_options(viamd PRIVATE -W4)
 target_compile_features(viamd PRIVATE cxx_std_17)

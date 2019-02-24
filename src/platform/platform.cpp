@@ -126,12 +126,13 @@ bool initialize(Context* ctx, int32 width, int32 height, const char* title) {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;  // Enable Keyboard Controls
     // io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;  // Enable Docking
+    // io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;  // Enable Docking
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;  // Enable Multi-Viewport / Platform Windows
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoTaskBarIcons;
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoMerge;
     io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;
-    io.ConfigDockingWithShift = true;
+    //io.ConfigDockingWithShift = true;
+	io.ConfigWindowsMoveFromTitleBarOnly = true;
 
     // default range is 0x0020 - 0x00FF.
     // In our case we BAKE ALL!

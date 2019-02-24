@@ -72,8 +72,11 @@ It's mostly a bunch of personal notes, probably incomplete. Feel free to query i
  - input text: add discard flag (e.g. ImGuiInputTextFlags_DiscardActiveBuffer) or make it easier to clear active focus for text replacement during edition (#725)
  - input text: display bug when clicking a drag/slider after an input text in a different window has all-selected text (order dependent). actually a very old bug but no one appears to have noticed it.
  - input text: allow centering/positioning text so that ctrl+clicking Drag or Slider keeps the textual value at the same pixel position.
- - input text: what's the easiest way to implement a nice IP/Mac address input editor?
- - input text: Global callback system so user can plug in an expression evaluator easily.
+ - input text: decorrelate layout from inputs - e.g. what's the easiest way to implement a nice IP/Mac address input editor?
+ - input text: global callback system so user can plug in an expression evaluator easily.
+ - input text: force scroll to end or scroll to a given line/contents (so user can implement a log or a search feature)
+ - input text: a side bar that could e.g. preview where errors are. probably left to the user to draw but we'd need to give them the info there.
+ - input text: a way for the user to provide syntax coloring.
  - input text multi-line: don't directly call AddText() which does an unnecessary vertex reserve for character count prior to clipping. and/or more line-based clipping to AddText(). and/or reorganize TextUnformatted/RenderText for more efficiency for large text (e.g TextUnformatted could clip and log separately, etc).
  - input text multi-line: support for cut/paste without selection (cut/paste the current line)
  - input text multi-line: line numbers? status bar? (follow up on #200)
@@ -135,8 +138,7 @@ It's mostly a bunch of personal notes, probably incomplete. Feel free to query i
  - dock: B~ SetNextWindowDock() calls (with conditional) -> defer everything to DockContextUpdate (repro: Documents->[X]Windows->Dock 1 elsewhere->Click Redock All
  - dock: B~ tidy up tab list popup buttons features (available with manual tab-bar, see ImGuiTabBarFlags_NoTabListPopupButton code, not used by docking nodes)
  - dock: B- SetNextWindowDockId(0) with a second Begin() in the frame will asserts
- - dock: B- inconsistent clipping/border 1-pixel issue (#2)
- - dock: B- fix/disable auto-resize grip on split host nodes (~#2)
+ - dock: B: resize grip drawn in host window typically appears under scrollbar.
  - dock: B- SetNextWindowFocus() doesn't seem to apply if the window is hidden this frame, need repro (#4)
  - dock: B- resizing a dock tree small currently has glitches (overlapping collapse and close button, etc.)
  - dock: B- dpi: look at interaction with the hi-dpi and multi-dpi stuff.
@@ -184,6 +186,7 @@ It's mostly a bunch of personal notes, probably incomplete. Feel free to query i
  - listbox: user may want to initial scroll to focus on the one selected value?
  - listbox: expose hovered item for a basic ListBox
  - listbox: keyboard navigation.
+ - listbox: disable capturing mouse wheel if the listbox has no scrolling. (#1681)
  - listbox: scrolling should track modified selection.
 
 !- popups/menus: clarify usage of popups id, how MenuItem/Selectable closing parent popups affects the ID, etc. this is quite fishy needs improvement! (#331, #402)
@@ -323,7 +326,7 @@ It's mostly a bunch of personal notes, probably incomplete. Feel free to query i
  - viewport: store per-viewport/monitor DPI in .ini file so an application reload or main window changing DPI on reload can be properly patched for.
  - viewport: implicit/fallback Debug window can hog a zombie viewport (harmless, noisy?) > could at least clear out the reference on a per session basis?
  - viewport: need to clarify how to use GetMousePos() from a user point of view.
- - platform: glfw: no support for ImGuiBackendFlags_HasMouseHoveredViewport. 
+ - platform: glfw: no support for ImGuiBackendFlags_HasMouseHoveredViewport.
  - platform: sdl: no support for ImGuiBackendFlags_HasMouseHoveredViewport. maybe we could use SDL_GetMouseFocus() / SDL_WINDOW_MOUSE_FOCUS if imgui could fallback on its heuristic when NoInputs is set
  - platform: sdl: no refresh of monitor/display (SDL doesn't seem to have an event for it).
  - platform: sdl: multi-viewport + minimized window seems to break mouse wheel events (at least under Win32).
