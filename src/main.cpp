@@ -89,7 +89,7 @@ constexpr float32 HYDROGEN_BOND_ANGLE_CUTOFF_MAX = 90.f;
 
 constexpr int32 VOLUME_DOWNSAMPLE_FACTOR = 2;
 
-constexpr int32 SPLINE_SUBDIVISION_COUNT = 8;
+constexpr int32 SPLINE_SUBDIVISION_COUNT = 16;
 
 #ifdef VIAMD_RELEASE
 constexpr const char* CAFFINE_PDB = R"(
@@ -298,8 +298,8 @@ struct ApplicationData {
     struct {
         bool show_window = false;
         SelectionLevel level_mode = SelectionLevel::Atom;
-		SelectionOperator op_mode = SelectionOperator::Or;
-		SelectionGrowth grow_mode = SelectionGrowth::CovalentBond;
+        SelectionOperator op_mode = SelectionOperator::Or;
+        SelectionGrowth grow_mode = SelectionGrowth::CovalentBond;
 
         int32 hovered = -1;
         int32 right_clicked = -1;
@@ -309,11 +309,11 @@ struct ApplicationData {
         DynamicArray<Selection> stored_selections{};
 
         vec3 highlight_color = vec3(1, 1, 1);
-        float highlight_scale = 3.0f;
-        vec3 selection_color = vec3(1, 1, 1);
-        float selection_scale = 5.0f;
+        float highlight_scale = 2.0f;
+        vec3 selection_color = vec3(1, 1, 0);
+        float selection_scale = 2.0f;
         vec3 outline_color = vec3(1, 1, 1);
-        float outline_scale = 5.0f;
+        float outline_scale = 10.0f;
     } selection;
 
     // --- STATISTICS ---
@@ -442,16 +442,16 @@ struct ApplicationData {
 
         struct {
             bool enabled = true;
-            float32 radius = 2.0f;
+            float32 radius = 1.5f;
             vec4 border_color = vec4(0, 0, 0, 1);
-            vec4 fill_color = vec4(1, 1, 0, 1);
+            vec4 fill_color = vec4(1, 1, 1, 1);
         } current;
 
         struct {
             bool enabled = true;
-            float32 radius = 3.0f;
+            float32 radius = 2.5f;
             vec4 border_color = vec4(0, 0, 0, 1);
-            vec4 fill_color = vec4(1, 1, 1, 1);
+            vec4 fill_color = vec4(1, 1, 0, 1);
         } selected;
 
         BackboneAnglesTrajectory backbone_angles{};
@@ -484,12 +484,12 @@ static void CreateDockspace();
 static void BeginCanvas(const char* id);
 static void EndCanvas();
 static void PushDisabled() {
-	ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
-	ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
+    ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
 }
 static void PopDisabled() {
-	ImGui::PopItemFlag();
-	ImGui::PopStyleVar();
+    ImGui::PopItemFlag();
+    ImGui::PopStyleVar();
 }
 
 static bool IsItemActivePreviousFrame() {
@@ -516,7 +516,7 @@ static void draw_distribution_window(ApplicationData* data);
 static void draw_ramachandran_window(ApplicationData* data);
 static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, int x, int y);
 static void draw_async_info(ApplicationData* data);
-//static void draw_selection_window(ApplicationData* data);
+// static void draw_selection_window(ApplicationData* data);
 
 static void init_framebuffer(MainFramebuffer* fbo, int width, int height);
 static void destroy_framebuffer(MainFramebuffer* fbo);
@@ -619,61 +619,61 @@ int main(int, char**) {
     volume::initialize();
 
     // Setup IMGUI style
-	{
-		ImGui::StyleColorsClassic();
-		//ImGui::StyleColorsLight();
-		auto& style = ImGui::GetStyle();
-		style.WindowRounding = 0.0f;
-		style.Colors[ImGuiCol_TitleBgCollapsed] = ImVec4(0.40f, 0.40f, 0.80f, 0.30f);
+    {
+        ImGui::StyleColorsClassic();
+        // ImGui::StyleColorsLight();
+        auto& style = ImGui::GetStyle();
+        style.WindowRounding = 0.0f;
+        style.Colors[ImGuiCol_TitleBgCollapsed] = ImVec4(0.40f, 0.40f, 0.80f, 0.30f);
 
-		/*
-		style.Colors[ImGuiCol_Text] = ImVec4(0.00f, 0.00f, 0.00f, 1.00f);
-		style.Colors[ImGuiCol_TextDisabled] = ImVec4(0.60f, 0.60f, 0.60f, 1.00f);
-		//style.Colors[ImGuiCol_TextHovered] = ImVec4(1.00f, 1.00f, 1.00f, 1.00f);
-		//style.Colors[ImGuiCol_TextActive] = ImVec4(1.00f, 1.00f, 0.00f, 1.00f);
-		style.Colors[ImGuiCol_WindowBg] = ImVec4(0.94f, 0.94f, 0.94f, 1.00f);
-		style.Colors[ImGuiCol_ChildWindowBg] = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
-		style.Colors[ImGuiCol_Border] = ImVec4(0.00f, 0.00f, 0.00f, 0.39f);
-		style.Colors[ImGuiCol_BorderShadow] = ImVec4(1.00f, 1.00f, 1.00f, 0.10f);
-		style.Colors[ImGuiCol_FrameBg] = ImVec4(1.00f, 1.00f, 1.00f, 1.00f);
-		style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.26f, 0.59f, 0.98f, 0.40f);
-		style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.26f, 0.59f, 0.98f, 0.67f);
-		style.Colors[ImGuiCol_TitleBg] = ImVec4(0.96f, 0.96f, 0.96f, 1.00f);
-		style.Colors[ImGuiCol_TitleBgCollapsed] = ImVec4(1.00f, 1.00f, 1.00f, 0.51f);
-		style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.82f, 0.82f, 0.82f, 1.00f);
-		style.Colors[ImGuiCol_MenuBarBg] = ImVec4(0.86f, 0.86f, 0.86f, 1.00f);
-		style.Colors[ImGuiCol_ScrollbarBg] = ImVec4(0.98f, 0.98f, 0.98f, 0.53f);
-		style.Colors[ImGuiCol_ScrollbarGrab] = ImVec4(0.69f, 0.69f, 0.69f, 0.80f);
-		style.Colors[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.49f, 0.49f, 0.49f, 0.80f);
-		style.Colors[ImGuiCol_ScrollbarGrabActive] = ImVec4(0.49f, 0.49f, 0.49f, 1.00f);
-		//style.Colors[ImGuiCol_ComboBg] = ImVec4(0.86f, 0.86f, 0.86f, 0.99f);
-		style.Colors[ImGuiCol_CheckMark] = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
-		style.Colors[ImGuiCol_SliderGrab] = ImVec4(0.26f, 0.59f, 0.98f, 0.78f);
-		style.Colors[ImGuiCol_SliderGrabActive] = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
-		style.Colors[ImGuiCol_Button] = ImVec4(0.26f, 0.59f, 0.98f, 0.40f);
-		style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
-		style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.06f, 0.53f, 0.98f, 1.00f);
-		style.Colors[ImGuiCol_Header] = ImVec4(0.26f, 0.59f, 0.98f, 0.31f);
-		style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.26f, 0.59f, 0.98f, 0.80f);
-		style.Colors[ImGuiCol_HeaderActive] = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
-		style.Colors[ImGuiCol_Column] = ImVec4(0.39f, 0.39f, 0.39f, 1.00f);
-		style.Colors[ImGuiCol_ColumnHovered] = ImVec4(0.26f, 0.59f, 0.98f, 0.78f);
-		style.Colors[ImGuiCol_ColumnActive] = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
-		style.Colors[ImGuiCol_ResizeGrip] = ImVec4(1.00f, 1.00f, 1.00f, 0.00f);
-		style.Colors[ImGuiCol_ResizeGripHovered] = ImVec4(0.26f, 0.59f, 0.98f, 0.67f);
-		style.Colors[ImGuiCol_ResizeGripActive] = ImVec4(0.26f, 0.59f, 0.98f, 0.95f);
-		//style.Colors[ImGuiCol_CloseButton] = ImVec4(0.59f, 0.59f, 0.59f, 0.50f);
-		//style.Colors[ImGuiCol_CloseButtonHovered] = ImVec4(0.98f, 0.39f, 0.36f, 1.00f);
-		//style.Colors[ImGuiCol_CloseButtonActive] = ImVec4(0.98f, 0.39f, 0.36f, 1.00f);
-		style.Colors[ImGuiCol_PlotLines] = ImVec4(0.39f, 0.39f, 0.39f, 1.00f);
-		style.Colors[ImGuiCol_PlotLinesHovered] = ImVec4(1.00f, 0.43f, 0.35f, 1.00f);
-		style.Colors[ImGuiCol_PlotHistogram] = ImVec4(0.90f, 0.70f, 0.00f, 1.00f);
-		style.Colors[ImGuiCol_PlotHistogramHovered] = ImVec4(1.00f, 0.60f, 0.00f, 1.00f);
-		style.Colors[ImGuiCol_TextSelectedBg] = ImVec4(0.26f, 0.59f, 0.98f, 0.35f);
-		//style.Colors[ImGuiCol_TooltipBg] = ImVec4(1.00f, 1.00f, 1.00f, 0.94f);
-		style.Colors[ImGuiCol_ModalWindowDarkening] = ImVec4(0.20f, 0.20f, 0.20f, 0.35f);
-		*/
-	}
+        /*
+        style.Colors[ImGuiCol_Text] = ImVec4(0.00f, 0.00f, 0.00f, 1.00f);
+        style.Colors[ImGuiCol_TextDisabled] = ImVec4(0.60f, 0.60f, 0.60f, 1.00f);
+        //style.Colors[ImGuiCol_TextHovered] = ImVec4(1.00f, 1.00f, 1.00f, 1.00f);
+        //style.Colors[ImGuiCol_TextActive] = ImVec4(1.00f, 1.00f, 0.00f, 1.00f);
+        style.Colors[ImGuiCol_WindowBg] = ImVec4(0.94f, 0.94f, 0.94f, 1.00f);
+        style.Colors[ImGuiCol_ChildWindowBg] = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+        style.Colors[ImGuiCol_Border] = ImVec4(0.00f, 0.00f, 0.00f, 0.39f);
+        style.Colors[ImGuiCol_BorderShadow] = ImVec4(1.00f, 1.00f, 1.00f, 0.10f);
+        style.Colors[ImGuiCol_FrameBg] = ImVec4(1.00f, 1.00f, 1.00f, 1.00f);
+        style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.26f, 0.59f, 0.98f, 0.40f);
+        style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.26f, 0.59f, 0.98f, 0.67f);
+        style.Colors[ImGuiCol_TitleBg] = ImVec4(0.96f, 0.96f, 0.96f, 1.00f);
+        style.Colors[ImGuiCol_TitleBgCollapsed] = ImVec4(1.00f, 1.00f, 1.00f, 0.51f);
+        style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.82f, 0.82f, 0.82f, 1.00f);
+        style.Colors[ImGuiCol_MenuBarBg] = ImVec4(0.86f, 0.86f, 0.86f, 1.00f);
+        style.Colors[ImGuiCol_ScrollbarBg] = ImVec4(0.98f, 0.98f, 0.98f, 0.53f);
+        style.Colors[ImGuiCol_ScrollbarGrab] = ImVec4(0.69f, 0.69f, 0.69f, 0.80f);
+        style.Colors[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.49f, 0.49f, 0.49f, 0.80f);
+        style.Colors[ImGuiCol_ScrollbarGrabActive] = ImVec4(0.49f, 0.49f, 0.49f, 1.00f);
+        //style.Colors[ImGuiCol_ComboBg] = ImVec4(0.86f, 0.86f, 0.86f, 0.99f);
+        style.Colors[ImGuiCol_CheckMark] = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
+        style.Colors[ImGuiCol_SliderGrab] = ImVec4(0.26f, 0.59f, 0.98f, 0.78f);
+        style.Colors[ImGuiCol_SliderGrabActive] = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
+        style.Colors[ImGuiCol_Button] = ImVec4(0.26f, 0.59f, 0.98f, 0.40f);
+        style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
+        style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.06f, 0.53f, 0.98f, 1.00f);
+        style.Colors[ImGuiCol_Header] = ImVec4(0.26f, 0.59f, 0.98f, 0.31f);
+        style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.26f, 0.59f, 0.98f, 0.80f);
+        style.Colors[ImGuiCol_HeaderActive] = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
+        style.Colors[ImGuiCol_Column] = ImVec4(0.39f, 0.39f, 0.39f, 1.00f);
+        style.Colors[ImGuiCol_ColumnHovered] = ImVec4(0.26f, 0.59f, 0.98f, 0.78f);
+        style.Colors[ImGuiCol_ColumnActive] = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
+        style.Colors[ImGuiCol_ResizeGrip] = ImVec4(1.00f, 1.00f, 1.00f, 0.00f);
+        style.Colors[ImGuiCol_ResizeGripHovered] = ImVec4(0.26f, 0.59f, 0.98f, 0.67f);
+        style.Colors[ImGuiCol_ResizeGripActive] = ImVec4(0.26f, 0.59f, 0.98f, 0.95f);
+        //style.Colors[ImGuiCol_CloseButton] = ImVec4(0.59f, 0.59f, 0.59f, 0.50f);
+        //style.Colors[ImGuiCol_CloseButtonHovered] = ImVec4(0.98f, 0.39f, 0.36f, 1.00f);
+        //style.Colors[ImGuiCol_CloseButtonActive] = ImVec4(0.98f, 0.39f, 0.36f, 1.00f);
+        style.Colors[ImGuiCol_PlotLines] = ImVec4(0.39f, 0.39f, 0.39f, 1.00f);
+        style.Colors[ImGuiCol_PlotLinesHovered] = ImVec4(1.00f, 0.43f, 0.35f, 1.00f);
+        style.Colors[ImGuiCol_PlotHistogram] = ImVec4(0.90f, 0.70f, 0.00f, 1.00f);
+        style.Colors[ImGuiCol_PlotHistogramHovered] = ImVec4(1.00f, 0.60f, 0.00f, 1.00f);
+        style.Colors[ImGuiCol_TextSelectedBg] = ImVec4(0.26f, 0.59f, 0.98f, 0.35f);
+        //style.Colors[ImGuiCol_TooltipBg] = ImVec4(1.00f, 1.00f, 1.00f, 0.94f);
+        style.Colors[ImGuiCol_ModalWindowDarkening] = ImVec4(0.20f, 0.20f, 0.20f, 0.35f);
+        */
+    }
 
     // const vec4 CLEAR_COLOR = vec4(0, 0, 0, 0);
     const vec4 CLEAR_INDEX = vec4(1, 1, 1, 1);
@@ -784,7 +784,7 @@ int main(int, char**) {
         }
 
         // This needs to happen first (in imgui events) to enable docking of imgui windows
-        //ImGui::CreateDockspace();
+        // ImGui::CreateDockspace();
 
         {
             if (data.density_volume.enabled) {
@@ -883,7 +883,7 @@ int main(int, char**) {
                 const vec3 box_ext = get_trajectory_frame(data.mol_data.dynamic.trajectory, current_frame).box * vec3(1.0f);
 
                 interpolate_atomic_positions(pos, traj, data.time, data.interpolation);
-                //compute_atomic_velocities(data.mol_data.atom_velocity, pos, Array<const vec3>(old_pos, pos.size()), box_ext);
+                // compute_atomic_velocities(data.mol_data.atom_velocity, pos, Array<const vec3>(old_pos, pos.size()), box_ext);
 #if 0
                 if (data.interpolation != PlaybackInterpolationMode::Nearest) {
                     const auto& box = get_trajectory_frame(data.mol_data.dynamic.trajectory, (int)data.time).box;
@@ -1255,13 +1255,13 @@ int main(int, char**) {
         if (data.statistics.show_property_window) draw_property_window(&data);
         if (data.statistics.show_timeline_window) draw_timeline_window(&data);
         if (data.statistics.show_distribution_window) draw_distribution_window(&data);
-        //if (data.selection.show_window) draw_selection_window(&data);
+        // if (data.selection.show_window) draw_selection_window(&data);
 
         if (data.ramachandran.show_window) {
             draw_ramachandran_window(&data);
         }
 
-		// ImGui::GetIO().WantCaptureMouse does not work with Menu
+        // ImGui::GetIO().WantCaptureMouse does not work with Menu
         if (!ImGui::IsMouseHoveringAnyWindow()) {
             if (data.picking.idx != NO_PICKING_IDX) {
                 draw_atom_info_window(data.mol_data.dynamic.molecule, data.picking.idx, (int)data.ctx.input.mouse.win_coord.x, (int)data.ctx.input.mouse.win_coord.y);
@@ -1473,27 +1473,25 @@ static void CreateDockspace() {
 }
 
 static void BeginCanvas(const char* id) {
-	// Invisible Canvas
-	ImGuiViewport* viewport = ImGui::GetMainViewport();
-	ImGui::SetNextWindowPos(viewport->Pos);
-	ImGui::SetNextWindowSize(viewport->Size);
-	ImGui::SetNextWindowViewport(viewport->ID);
-	ImGui::SetNextWindowBgAlpha(0.0f);
+    // Invisible Canvas
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->Pos);
+    ImGui::SetNextWindowSize(viewport->Size);
+    ImGui::SetNextWindowViewport(viewport->ID);
+    ImGui::SetNextWindowBgAlpha(0.0f);
 
-	ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
-	window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
-	window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoInputs;
+    ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
+    window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
+    window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoInputs;
 
-	ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-	ImGui::Begin(id, NULL, window_flags);
-	ImGui::PopStyleVar(3);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::Begin(id, NULL, window_flags);
+    ImGui::PopStyleVar(3);
 }
 
-static void EndCanvas() {
-	ImGui::End();
-}
+static void EndCanvas() { ImGui::End(); }
 
 static bool DeleteButton(const char* label, const ImVec2& size) {
     PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
@@ -1506,39 +1504,38 @@ static bool DeleteButton(const char* label, const ImVec2& size) {
 }  // namespace ImGui
 
 void grow_mask_by_covalent_bond(Array<bool> mask, Array<const Bond> bonds, int32 extent) {
-	Array<bool> prev_mask = { (bool*)TMP_MALLOC(mask.size_in_bytes()), mask.size() };
-	defer{ TMP_FREE(prev_mask.data()); };
-	memcpy(prev_mask.data(), mask.data(), mask.size_in_bytes());
+    Array<bool> prev_mask = {(bool*)TMP_MALLOC(mask.size_in_bytes()), mask.size()};
+    defer { TMP_FREE(prev_mask.data()); };
+    memcpy(prev_mask.data(), mask.data(), mask.size_in_bytes());
 
-	for (int32 i = 0; i < extent; i++) {
-		for (const auto& bond : bonds) {
-			const int32 idx[2] = { bond.idx[0], bond.idx[1] };
-			if (prev_mask[idx[0]] && !mask[idx[1]]) {
-				mask[idx[1]] = true;
-			}
-			else if (prev_mask[idx[1]] && !mask[idx[0]]) {
-				mask[idx[0]] = true;
-			}
-		}
-		memcpy(prev_mask.data(), mask.data(), prev_mask.size_in_bytes());
-	}
+    for (int32 i = 0; i < extent; i++) {
+        for (const auto& bond : bonds) {
+            const int32 idx[2] = {bond.idx[0], bond.idx[1]};
+            if (prev_mask[idx[0]] && !mask[idx[1]]) {
+                mask[idx[1]] = true;
+            } else if (prev_mask[idx[1]] && !mask[idx[0]]) {
+                mask[idx[0]] = true;
+            }
+        }
+        memcpy(prev_mask.data(), mask.data(), prev_mask.size_in_bytes());
+    }
 }
 
 void grow_mask_by_radial_extent(Array<bool> mask, Array<const vec3> positions, float extent) {
-	Array<bool> prev_mask = { (bool*)TMP_MALLOC(mask.size_in_bytes()), mask.size() };
-	defer{ TMP_FREE(prev_mask.data()); };
-	memcpy(prev_mask.data(), mask.data(), mask.size_in_bytes());
+    Array<bool> prev_mask = {(bool*)TMP_MALLOC(mask.size_in_bytes()), mask.size()};
+    defer { TMP_FREE(prev_mask.data()); };
+    memcpy(prev_mask.data(), mask.data(), mask.size_in_bytes());
 
-	spatialhash::Frame frame = spatialhash::compute_frame(positions, vec3(extent));
-	for (int64 i = 0; i < positions.size(); i++) {
-		if (prev_mask[i]) {
-			spatialhash::for_each_within(frame, positions[i], extent, [mask = mask.data()](int32 idx, const vec3& pos) {
-				if (!mask[idx]) {
-					mask[idx] = true;
-				}
-			});
-		}
-	}
+    spatialhash::Frame frame = spatialhash::compute_frame(positions, vec3(extent));
+    for (int64 i = 0; i < positions.size(); i++) {
+        if (prev_mask[i]) {
+            spatialhash::for_each_within(frame, positions[i], extent, [mask = mask.data()](int32 idx, const vec3& pos) {
+                if (!mask[idx]) {
+                    mask[idx] = true;
+                }
+            });
+        }
+    }
 }
 
 void expand_mask_to_residue(Array<bool> mask, Array<const Residue> residues) {
@@ -1564,505 +1561,498 @@ void expand_mask_to_chain(Array<bool> mask, Array<const Chain> chains) {
 }
 
 void apply_mask(Array<bool> dst_mask, Array<const bool> mask_a, Array<const bool> mask_b, SelectionOperator op) {
-	ASSERT(dst_mask.size() == mask_a.size());
-	ASSERT(dst_mask.size() == mask_b.size());
+    ASSERT(dst_mask.size() == mask_a.size());
+    ASSERT(dst_mask.size() == mask_b.size());
 
-	switch (op) {
-	case SelectionOperator::Or:
-		for (int64 i = 0; i < dst_mask.size(); i++) {
-			dst_mask[i] = mask_a[i] || mask_b[i];
-		}
-		break;
-	case SelectionOperator::And:
-		for (int64 i = 0; i < dst_mask.size(); i++) {
-			dst_mask[i] = mask_a[i] && mask_b[i];
-		}
-		break;
-	default:
-		ASSERT(false);
-	}
+    switch (op) {
+        case SelectionOperator::Or:
+            for (int64 i = 0; i < dst_mask.size(); i++) {
+                dst_mask[i] = mask_a[i] || mask_b[i];
+            }
+            break;
+        case SelectionOperator::And:
+            for (int64 i = 0; i < dst_mask.size(); i++) {
+                dst_mask[i] = mask_a[i] && mask_b[i];
+            }
+            break;
+        default:
+            ASSERT(false);
+    }
 }
 
 void invert_mask(Array<bool> mask) {
-	for (auto& v : mask) {
-		v = !v;
-	}
+    for (auto& v : mask) {
+        v = !v;
+    }
 }
 
 // ### DRAW WINDOWS ###
 static void draw_main_menu(ApplicationData* data) {
-	ASSERT(data);
-	bool new_clicked = false;
+    ASSERT(data);
+    bool new_clicked = false;
 
-	if (ImGui::BeginMainMenuBar()) {
-		if (ImGui::BeginMenu("File")) {
-			if (ImGui::MenuItem("New", "CTRL+N")) {
-				new_clicked = true;
-			}
-			if (ImGui::MenuItem("Load Data", "CTRL+L")) {
-				auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, "pdb,gro,xtc");
-				if (res.result == platform::FileDialogResult::FILE_OK) {
-					load_molecule_data(data, res.path);
-					if (data->representations.buffer.size() > 0) {
-						reset_representations(data);
-					}
-					else {
-						create_representation(data);
-					}
-					stats::clear_all_properties();
-					reset_view(data, true);
-				}
-			}
-			if (ImGui::MenuItem("Open", "CTRL+O")) {
-				auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, FILE_EXTENSION);
-				if (res.result == platform::FileDialogResult::FILE_OK) {
-					load_workspace(data, res.path);
-				}
-			}
-			if (ImGui::MenuItem("Save", "CTRL+S")) {
-				if (!data->files.workspace) {
-					auto res = platform::file_dialog(platform::FileDialogFlags_Save, {}, FILE_EXTENSION);
-					if (res.result == platform::FileDialogResult::FILE_OK) {
-						if (!get_file_extension(res.path)) {
-							snprintf(res.path.cstr() + strnlen(res.path.cstr(), res.path.capacity()), res.path.capacity(), ".%s", FILE_EXTENSION);
-						}
-						save_workspace(data, res.path);
-					}
-				}
-				else {
-					save_workspace(data, data->files.workspace);
-				}
-			}
-			if (ImGui::MenuItem("Save As")) {
-				auto res = platform::file_dialog(platform::FileDialogFlags_Save, {}, FILE_EXTENSION);
-				if (res.result == platform::FileDialogResult::FILE_OK) {
-					if (!get_file_extension(res.path)) {
-						snprintf(res.path.cstr() + strnlen(res.path.cstr(), res.path.capacity()), res.path.capacity(), ".%s", FILE_EXTENSION);
-					}
-					save_workspace(data, res.path);
-				}
-			}
-			ImGui::Separator();
-			if (ImGui::MenuItem("Quit", "ALT+F4")) {
-				data->ctx.window.should_close = true;
-			}
-			ImGui::EndMenu();
-		}
-		/*
+    if (ImGui::BeginMainMenuBar()) {
+        if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("New", "CTRL+N")) {
+                new_clicked = true;
+            }
+            if (ImGui::MenuItem("Load Data", "CTRL+L")) {
+                auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, "pdb,gro,xtc");
+                if (res.result == platform::FileDialogResult::FILE_OK) {
+                    load_molecule_data(data, res.path);
+                    if (data->representations.buffer.size() > 0) {
+                        reset_representations(data);
+                    } else {
+                        create_representation(data);
+                    }
+                    stats::clear_all_properties();
+                    reset_view(data, true);
+                }
+            }
+            if (ImGui::MenuItem("Open", "CTRL+O")) {
+                auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, FILE_EXTENSION);
+                if (res.result == platform::FileDialogResult::FILE_OK) {
+                    load_workspace(data, res.path);
+                }
+            }
+            if (ImGui::MenuItem("Save", "CTRL+S")) {
+                if (!data->files.workspace) {
+                    auto res = platform::file_dialog(platform::FileDialogFlags_Save, {}, FILE_EXTENSION);
+                    if (res.result == platform::FileDialogResult::FILE_OK) {
+                        if (!get_file_extension(res.path)) {
+                            snprintf(res.path.cstr() + strnlen(res.path.cstr(), res.path.capacity()), res.path.capacity(), ".%s", FILE_EXTENSION);
+                        }
+                        save_workspace(data, res.path);
+                    }
+                } else {
+                    save_workspace(data, data->files.workspace);
+                }
+            }
+            if (ImGui::MenuItem("Save As")) {
+                auto res = platform::file_dialog(platform::FileDialogFlags_Save, {}, FILE_EXTENSION);
+                if (res.result == platform::FileDialogResult::FILE_OK) {
+                    if (!get_file_extension(res.path)) {
+                        snprintf(res.path.cstr() + strnlen(res.path.cstr(), res.path.capacity()), res.path.capacity(), ".%s", FILE_EXTENSION);
+                    }
+                    save_workspace(data, res.path);
+                }
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Quit", "ALT+F4")) {
+                data->ctx.window.should_close = true;
+            }
+            ImGui::EndMenu();
+        }
+        /*
 if (ImGui::BeginMenu("Edit")) {
-	if (ImGui::MenuItem("Undo", "CTRL+Z")) {
-	}
-	if (ImGui::MenuItem("Redo", "CTRL+Y", false, false)) {
-	}  // Disabled item
-	ImGui::Separator();
-	if (ImGui::MenuItem("Cut", "CTRL+X")) {
-	}
-	if (ImGui::MenuItem("Copy", "CTRL+C")) {
-	}
-	if (ImGui::MenuItem("Paste", "CTRL+V")) {
-	}
-	ImGui::EndMenu();
+if (ImGui::MenuItem("Undo", "CTRL+Z")) {
 }
-		*/
-		if (ImGui::BeginMenu("Visuals")) {
-			if (ImGui::Button("Reset View")) {
-				reset_view(data, true, true);
-			}
-			ImGui::Separator();
-			ImGui::Checkbox("Vsync", &data->ctx.window.vsync);
-			ImGui::Separator();
-			ImGui::BeginGroup();
-			ImGui::Text("Background");
-			ImGui::ColorEdit3("Color", &data->visuals.background.color[0], ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
-			ImGui::SliderFloat("##Intensity", &data->visuals.background.intensity, 0.f, 100.f);
-			ImGui::EndGroup();
-			ImGui::Separator();
-			// Temporal
-			ImGui::BeginGroup();
-			{
-				ImGui::Checkbox("Temporal Effects", &data->visuals.temporal_reprojection.enabled);
-				if (data->visuals.temporal_reprojection.enabled) {
-					ImGui::Checkbox("Jitter Samples", &data->visuals.temporal_reprojection.jitter);
-					ImGui::SliderFloat("Feedback Min", &data->visuals.temporal_reprojection.feedback_min, 0.5f, 1.0f);
-					ImGui::SliderFloat("Feedback Max", &data->visuals.temporal_reprojection.feedback_max, 0.5f, 1.0f);
-					ImGui::Checkbox("Motion Blur", &data->visuals.temporal_reprojection.motion_blur.enabled);
-					if (data->visuals.temporal_reprojection.motion_blur.enabled) {
-						ImGui::SliderFloat("Motion Scale", &data->visuals.temporal_reprojection.motion_blur.motion_scale, 0.f, 1.0f);
-					}
-				}
-			}
-			ImGui::EndGroup();
-			ImGui::Separator();
+if (ImGui::MenuItem("Redo", "CTRL+Y", false, false)) {
+}  // Disabled item
+ImGui::Separator();
+if (ImGui::MenuItem("Cut", "CTRL+X")) {
+}
+if (ImGui::MenuItem("Copy", "CTRL+C")) {
+}
+if (ImGui::MenuItem("Paste", "CTRL+V")) {
+}
+ImGui::EndMenu();
+}
+        */
+        if (ImGui::BeginMenu("Visuals")) {
+            if (ImGui::Button("Reset View")) {
+                reset_view(data, true, true);
+            }
+            ImGui::Separator();
+            ImGui::Checkbox("Vsync", &data->ctx.window.vsync);
+            ImGui::Separator();
+            ImGui::BeginGroup();
+            ImGui::Text("Background");
+            ImGui::ColorEdit3("Color", &data->visuals.background.color[0], ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
+            ImGui::SliderFloat("##Intensity", &data->visuals.background.intensity, 0.f, 100.f);
+            ImGui::EndGroup();
+            ImGui::Separator();
+            // Temporal
+            ImGui::BeginGroup();
+            {
+                ImGui::Checkbox("Temporal Effects", &data->visuals.temporal_reprojection.enabled);
+                if (data->visuals.temporal_reprojection.enabled) {
+                    ImGui::Checkbox("Jitter Samples", &data->visuals.temporal_reprojection.jitter);
+                    ImGui::SliderFloat("Feedback Min", &data->visuals.temporal_reprojection.feedback_min, 0.5f, 1.0f);
+                    ImGui::SliderFloat("Feedback Max", &data->visuals.temporal_reprojection.feedback_max, 0.5f, 1.0f);
+                    ImGui::Checkbox("Motion Blur", &data->visuals.temporal_reprojection.motion_blur.enabled);
+                    if (data->visuals.temporal_reprojection.motion_blur.enabled) {
+                        ImGui::SliderFloat("Motion Scale", &data->visuals.temporal_reprojection.motion_blur.motion_scale, 0.f, 1.0f);
+                    }
+                }
+            }
+            ImGui::EndGroup();
+            ImGui::Separator();
 
-			// SSAO
-			ImGui::BeginGroup();
-			ImGui::Checkbox("SSAO", &data->visuals.ssao.enabled);
-			if (data->visuals.ssao.enabled) {
-				ImGui::SliderFloat("Intensity", &data->visuals.ssao.intensity, 0.5f, 12.f);
-				ImGui::SliderFloat("Radius", &data->visuals.ssao.radius, 1.f, 30.f);
-				ImGui::SliderFloat("Bias", &data->visuals.ssao.bias, 0.0f, 1.0f);
-			}
-			ImGui::EndGroup();
-			ImGui::Separator();
+            // SSAO
+            ImGui::BeginGroup();
+            ImGui::Checkbox("SSAO", &data->visuals.ssao.enabled);
+            if (data->visuals.ssao.enabled) {
+                ImGui::SliderFloat("Intensity", &data->visuals.ssao.intensity, 0.5f, 12.f);
+                ImGui::SliderFloat("Radius", &data->visuals.ssao.radius, 1.f, 30.f);
+                ImGui::SliderFloat("Bias", &data->visuals.ssao.bias, 0.0f, 1.0f);
+            }
+            ImGui::EndGroup();
+            ImGui::Separator();
 
-			// DOF
-			ImGui::BeginGroup();
-			ImGui::Checkbox("Depth of Field", &data->visuals.dof.enabled);
-			if (data->visuals.dof.enabled) {
-				ImGui::SliderFloat("Focus Point", &data->visuals.dof.focus_depth, 0.001f, 200.f);
-				ImGui::SliderFloat("Focus Scale", &data->visuals.dof.focus_scale, 0.001f, 100.f);
-			}
-			ImGui::EndGroup();
-			ImGui::Separator();
+            // DOF
+            ImGui::BeginGroup();
+            ImGui::Checkbox("Depth of Field", &data->visuals.dof.enabled);
+            if (data->visuals.dof.enabled) {
+                ImGui::SliderFloat("Focus Point", &data->visuals.dof.focus_depth, 0.001f, 200.f);
+                ImGui::SliderFloat("Focus Scale", &data->visuals.dof.focus_scale, 0.001f, 100.f);
+            }
+            ImGui::EndGroup();
+            ImGui::Separator();
 
-			// Tonemapping
-			ImGui::BeginGroup();
-			ImGui::Checkbox("Tonemapping", &data->visuals.tonemapping.enabled);
-			if (data->visuals.tonemapping.enabled) {
-				ImGui::Combo("Function", &data->visuals.tonemapping.tonemapper, "Passthrough\0Exposure Gamma\0Filmic\0\0");
-				ImGui::SliderFloat("Exposure", &data->visuals.tonemapping.exposure, 0.01f, 10.f);
-				ImGui::SliderFloat("Gamma", &data->visuals.tonemapping.gamma, 1.0f, 3.0f);
-			}
-			ImGui::EndGroup();
-			ImGui::Separator();
+            // Tonemapping
+            ImGui::BeginGroup();
+            ImGui::Checkbox("Tonemapping", &data->visuals.tonemapping.enabled);
+            if (data->visuals.tonemapping.enabled) {
+                ImGui::Combo("Function", &data->visuals.tonemapping.tonemapper, "Passthrough\0Exposure Gamma\0Filmic\0\0");
+                ImGui::SliderFloat("Exposure", &data->visuals.tonemapping.exposure, 0.01f, 10.f);
+                ImGui::SliderFloat("Gamma", &data->visuals.tonemapping.gamma, 1.0f, 3.0f);
+            }
+            ImGui::EndGroup();
+            ImGui::Separator();
 
-			ImGui::BeginGroup();
-			ImGui::PushID("Selection");
-			ImGui::Text("Selection");
-			ImGui::ColorEdit3("Color", &data->selection.selection_color[0], ImGuiColorEditFlags_NoInputs);
-			ImGui::SameLine();
-			ImGui::SliderFloat("Scale", &data->selection.selection_scale, 0.f, 20.f);
-			ImGui::PopID();
-			ImGui::PushID("Highlight");
-			ImGui::Text("Highlight");
-			ImGui::ColorEdit3("Color", &data->selection.highlight_color[0], ImGuiColorEditFlags_NoInputs);
-			ImGui::SameLine();
-			ImGui::SliderFloat("Scale", &data->selection.highlight_scale, 0.f, 20.f);
-			ImGui::PopID();
-			ImGui::PushID("Outline");
-			ImGui::Text("Outline");
-			ImGui::ColorEdit3("Color", &data->selection.outline_color[0], ImGuiColorEditFlags_NoInputs);
-			ImGui::SameLine();
-			ImGui::SliderFloat("Scale", &data->selection.outline_scale, 0.f, 20.f);
-			ImGui::PopID();
-			ImGui::EndGroup();
-			ImGui::Separator();
+            ImGui::BeginGroup();
+            ImGui::PushID("Selection");
+            ImGui::Text("Selection");
+            ImGui::ColorEdit3("Color", &data->selection.selection_color[0], ImGuiColorEditFlags_NoInputs);
+            ImGui::SameLine();
+            ImGui::SliderFloat("Scale", &data->selection.selection_scale, 0.f, 20.f);
+            ImGui::PopID();
+            ImGui::PushID("Highlight");
+            ImGui::Text("Highlight");
+            ImGui::ColorEdit3("Color", &data->selection.highlight_color[0], ImGuiColorEditFlags_NoInputs);
+            ImGui::SameLine();
+            ImGui::SliderFloat("Scale", &data->selection.highlight_scale, 0.f, 20.f);
+            ImGui::PopID();
+            ImGui::PushID("Outline");
+            ImGui::Text("Outline");
+            ImGui::ColorEdit3("Color", &data->selection.outline_color[0], ImGuiColorEditFlags_NoInputs);
+            ImGui::SameLine();
+            ImGui::SliderFloat("Scale", &data->selection.outline_scale, 0.f, 20.f);
+            ImGui::PopID();
+            ImGui::EndGroup();
+            ImGui::Separator();
 
-			ImGui::BeginGroup();
-			ImGui::Checkbox("Draw Control Points", &data->visuals.spline.draw_control_points);
-			ImGui::Checkbox("Draw Spline", &data->visuals.spline.draw_spline);
-			ImGui::EndGroup();
-			ImGui::Separator();
+            ImGui::BeginGroup();
+            ImGui::Checkbox("Draw Control Points", &data->visuals.spline.draw_control_points);
+            ImGui::Checkbox("Draw Spline", &data->visuals.spline.draw_spline);
+            ImGui::EndGroup();
+            ImGui::Separator();
 
-			// Property Overlay
-			ImGui::BeginGroup();
-			ImGui::Text("Property Style");
-			auto style = stats::get_style();
-			ImGui::Text("point colors ");
-			for (int32 i = 0; i < style->NUM_COLORS; i++) {
-				ImGui::SameLine();
-				ImGui::PushID(i);
-				ImVec4 color = ImColor(style->point_colors[i]);
-				if (ImGui::ColorEdit4("PointColor", (float*)&color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) style->point_colors[i] = ImColor(color);
-				ImGui::PopID();
-			}
-			ImGui::Text("line color   ");
-			ImGui::SameLine();
-			ImVec4 color = ImColor(style->line_color);
-			if (ImGui::ColorEdit4("LineColor", (float*)&color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) style->line_color = ImColor(color);
-			ImGui::EndGroup();
-			ImGui::Separator();
+            // Property Overlay
+            ImGui::BeginGroup();
+            ImGui::Text("Property Style");
+            auto style = stats::get_style();
+            ImGui::Text("point colors ");
+            for (int32 i = 0; i < style->NUM_COLORS; i++) {
+                ImGui::SameLine();
+                ImGui::PushID(i);
+                ImVec4 color = ImColor(style->point_colors[i]);
+                if (ImGui::ColorEdit4("PointColor", (float*)&color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) style->point_colors[i] = ImColor(color);
+                ImGui::PopID();
+            }
+            ImGui::Text("line color   ");
+            ImGui::SameLine();
+            ImVec4 color = ImColor(style->line_color);
+            if (ImGui::ColorEdit4("LineColor", (float*)&color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) style->line_color = ImColor(color);
+            ImGui::EndGroup();
+            ImGui::Separator();
 
-			ImGui::BeginGroup();
-			ImGui::Checkbox("Hydrogen Bond", &data->hydrogen_bonds.enabled);
-			if (data->hydrogen_bonds.enabled) {
-				ImGui::PushID("hydrogen_bond");
-				if (ImGui::SliderFloat("Distance Cutoff", &data->hydrogen_bonds.distance_cutoff, HYDROGEN_BOND_DISTANCE_CUTOFF_MIN, HYDROGEN_BOND_DISTANCE_CUTOFF_MAX)) {
-					data->hydrogen_bonds.dirty = true;
-				}
-				if (ImGui::SliderFloat("Angle Cutoff", &data->hydrogen_bonds.angle_cutoff, HYDROGEN_BOND_ANGLE_CUTOFF_MIN, HYDROGEN_BOND_ANGLE_CUTOFF_MAX)) {
-					data->hydrogen_bonds.dirty = true;
-				}
-				ImGui::Checkbox("Overlay", &data->hydrogen_bonds.overlay);
-				ImGui::ColorEdit4("Color", (float*)&data->hydrogen_bonds.color, ImGuiColorEditFlags_NoInputs);
-				ImGui::PopID();
-			}
-			ImGui::EndGroup();
-			ImGui::Separator();
+            ImGui::BeginGroup();
+            ImGui::Checkbox("Hydrogen Bond", &data->hydrogen_bonds.enabled);
+            if (data->hydrogen_bonds.enabled) {
+                ImGui::PushID("hydrogen_bond");
+                if (ImGui::SliderFloat("Distance Cutoff", &data->hydrogen_bonds.distance_cutoff, HYDROGEN_BOND_DISTANCE_CUTOFF_MIN, HYDROGEN_BOND_DISTANCE_CUTOFF_MAX)) {
+                    data->hydrogen_bonds.dirty = true;
+                }
+                if (ImGui::SliderFloat("Angle Cutoff", &data->hydrogen_bonds.angle_cutoff, HYDROGEN_BOND_ANGLE_CUTOFF_MIN, HYDROGEN_BOND_ANGLE_CUTOFF_MAX)) {
+                    data->hydrogen_bonds.dirty = true;
+                }
+                ImGui::Checkbox("Overlay", &data->hydrogen_bonds.overlay);
+                ImGui::ColorEdit4("Color", (float*)&data->hydrogen_bonds.color, ImGuiColorEditFlags_NoInputs);
+                ImGui::PopID();
+            }
+            ImGui::EndGroup();
+            ImGui::Separator();
 
-			ImGui::BeginGroup();
-			ImGui::Checkbox("Simulation Box", &data->simulation_box.enabled);
-			if (data->simulation_box.enabled) {
-				ImGui::PushID("simulation_box");
-				ImGui::ColorEdit4("Color", (float*)&data->simulation_box.color, ImGuiColorEditFlags_NoInputs);
-				ImGui::PopID();
-			}
-			ImGui::EndGroup();
-			ImGui::Separator();
+            ImGui::BeginGroup();
+            ImGui::Checkbox("Simulation Box", &data->simulation_box.enabled);
+            if (data->simulation_box.enabled) {
+                ImGui::PushID("simulation_box");
+                ImGui::ColorEdit4("Color", (float*)&data->simulation_box.color, ImGuiColorEditFlags_NoInputs);
+                ImGui::PopID();
+            }
+            ImGui::EndGroup();
+            ImGui::Separator();
 
-			ImGui::BeginGroup();
-			if (ImGui::Checkbox("Density Volume", &data->density_volume.enabled)) {
-				// if (data->density_volume.enabled) data->density_volume.texture.dirty = true;
-			}
-			if (data->density_volume.enabled) {
-				ImGui::PushID("density_volume");
-				ImGui::ColorEdit3("Color", (float*)&data->density_volume.color, ImGuiColorEditFlags_NoInputs);
-				ImGui::SliderFloat("Scale", &data->density_volume.density_scale, 0.001f, 10.f, "%.3f", 3.f);
-				ImGui::PopID();
-			}
-			ImGui::EndGroup();
-			/*
-	// DEBUG DRAW
-	ImGui::BeginGroup();
-	ImGui::Checkbox("Spline", &data->debug_draw.spline.enabled);
-	ImGui::Checkbox("Backbone", &data->debug_draw.backbone.enabled);
-	ImGui::EndGroup();
+            ImGui::BeginGroup();
+            if (ImGui::Checkbox("Density Volume", &data->density_volume.enabled)) {
+                // if (data->density_volume.enabled) data->density_volume.texture.dirty = true;
+            }
+            if (data->density_volume.enabled) {
+                ImGui::PushID("density_volume");
+                ImGui::ColorEdit3("Color", (float*)&data->density_volume.color, ImGuiColorEditFlags_NoInputs);
+                ImGui::SliderFloat("Scale", &data->density_volume.density_scale, 0.001f, 10.f, "%.3f", 3.f);
+                ImGui::PopID();
+            }
+            ImGui::EndGroup();
+            /*
+// DEBUG DRAW
+ImGui::BeginGroup();
+ImGui::Checkbox("Spline", &data->debug_draw.spline.enabled);
+ImGui::Checkbox("Backbone", &data->debug_draw.backbone.enabled);
+ImGui::EndGroup();
 
-			*/
-			ImGui::EndMenu();
-		}
-		if (ImGui::BeginMenu("Windows")) {
-			ImGui::Checkbox("Representations", &data->representations.show_window);
-			ImGui::Checkbox("Properties", &data->statistics.show_property_window);
-			ImGui::Checkbox("Timelines", &data->statistics.show_timeline_window);
-			ImGui::Checkbox("Distributions", &data->statistics.show_distribution_window);
-			ImGui::Checkbox("Ramachandran", &data->ramachandran.show_window);
-			ImGui::Checkbox("Selection", &data->selection.show_window);
+            */
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Windows")) {
+            ImGui::Checkbox("Representations", &data->representations.show_window);
+            ImGui::Checkbox("Properties", &data->statistics.show_property_window);
+            ImGui::Checkbox("Timelines", &data->statistics.show_timeline_window);
+            ImGui::Checkbox("Distributions", &data->statistics.show_distribution_window);
+            ImGui::Checkbox("Ramachandran", &data->ramachandran.show_window);
+            ImGui::Checkbox("Selection", &data->selection.show_window);
 
-			ImGui::EndMenu();
-		}
-		if (ImGui::BeginMenu("Selection")) {
-			const ImVec2 button_size = { 50, 0 };
-			static DynamicArray<bool> mask;
-			mask.resize(data->mol_data.dynamic.molecule.atom.count);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Selection")) {
+            const ImVec2 button_size = {50, 0};
+            static DynamicArray<bool> mask;
+            mask.resize(data->mol_data.dynamic.molecule.atom.count);
 
-			if (ImGui::Button("Clear", button_size)) {
-				memset_array(data->selection.current_selection_mask, false);
-				data->gpu_buffers.dirty.selection = true;
-			}
+            if (ImGui::Button("Clear", button_size)) {
+                memset_array(data->selection.current_selection_mask, false);
+                data->gpu_buffers.dirty.selection = true;
+            }
 
-			if (ImGui::Button("Invert", button_size)) {
-				for (auto& v : data->selection.current_selection_mask) {
-					v = !v;
-				}
-				data->gpu_buffers.dirty.selection = true;
-			}
+            if (ImGui::Button("Invert", button_size)) {
+                for (auto& v : data->selection.current_selection_mask) {
+                    v = !v;
+                }
+                data->gpu_buffers.dirty.selection = true;
+            }
 
-			ImGui::Spacing();
-			ImGui::Separator();
+            ImGui::Spacing();
+            ImGui::Separator();
 
-			// MODES
-			ImGui::Combo("Level Mode", (int*)(&data->selection.level_mode), "Atom\0Residue\0Chain\0\0");
-			ImGui::Combo("Operator Mode", (int*)(&data->selection.op_mode), "Or\0And\0\0");
+            // MODES
+            ImGui::Combo("Level Mode", (int*)(&data->selection.level_mode), "Atom\0Residue\0Chain\0\0");
+            ImGui::Combo("Operator Mode", (int*)(&data->selection.op_mode), "Or\0And\0\0");
 
-			ImGui::Spacing();
-			ImGui::Separator();
+            ImGui::Spacing();
+            ImGui::Separator();
 
-			// QUERY
-			{
-				static char buf[256] = { 0 };
-				static bool query_ok = false;
+            // QUERY
+            {
+                static char buf[256] = {0};
+                static bool query_ok = false;
 
-				ImGui::Text("Query");
-				const auto TEXT_BG_DEFAULT_COLOR = ImGui::ColorConvertFloat4ToU32(ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
-				ImGui::PushStyleColor(ImGuiCol_FrameBg, query_ok ? TEXT_BG_DEFAULT_COLOR : TEXT_BG_ERROR_COLOR);
-				const bool query_modified = ImGui::InputText("##query", buf, ARRAY_SIZE(buf), ImGuiInputTextFlags_AutoSelectAll);
-				const bool pressed_enter = ImGui::IsItemActivePreviousFrame() && !ImGui::IsItemActive() && ImGui::IsKeyPressed(ImGui::GetIO().KeyMap[ImGuiKey_Enter]);
-				ImGui::PopStyleColor();
-				//ImGui::SameLine();
-				if (!query_ok) ImGui::PushDisabled();
-				const bool apply = ImGui::Button("Apply##query") || pressed_enter;
-				if (!query_ok) ImGui::PopDisabled();
+                ImGui::Text("Query");
+                const auto TEXT_BG_DEFAULT_COLOR = ImGui::ColorConvertFloat4ToU32(ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
+                ImGui::PushStyleColor(ImGuiCol_FrameBg, query_ok ? TEXT_BG_DEFAULT_COLOR : TEXT_BG_ERROR_COLOR);
+                const bool query_modified = ImGui::InputText("##query", buf, ARRAY_SIZE(buf), ImGuiInputTextFlags_AutoSelectAll);
+                const bool pressed_enter = ImGui::IsItemActivePreviousFrame() && !ImGui::IsItemActive() && ImGui::IsKeyPressed(ImGui::GetIO().KeyMap[ImGuiKey_Enter]);
+                ImGui::PopStyleColor();
+                // ImGui::SameLine();
+                if (!query_ok) ImGui::PushDisabled();
+                const bool apply = ImGui::Button("Apply##query") || pressed_enter;
+                if (!query_ok) ImGui::PopDisabled();
 
-				if (ImGui::IsWindowAppearing()) {
-					ImGui::SetKeyboardFocusHere(-1);
-				}
+                if (ImGui::IsWindowAppearing()) {
+                    ImGui::SetKeyboardFocusHere(-1);
+                }
 
-				const bool show_preview = (ImGui::GetFocusID() == ImGui::GetID("##query")) ||
-					(ImGui::GetHoveredID() == ImGui::GetID("##query")) ||
-					(ImGui::GetHoveredID() == ImGui::GetID("Apply##query"));
+                const bool show_preview =
+                    (ImGui::GetFocusID() == ImGui::GetID("##query")) || (ImGui::GetHoveredID() == ImGui::GetID("##query")) || (ImGui::GetHoveredID() == ImGui::GetID("Apply##query"));
 
-				if (show_preview) {
-					if (query_modified) {
-						query_ok = filter::compute_filter_mask(mask, data->mol_data.dynamic, buf);
-						if (!query_ok) {
-							memset_array(mask, false);
-						}
-						data->gpu_buffers.dirty.selection = true;
-					}
+                if (show_preview) {
+                    if (query_modified) {
+                        query_ok = filter::compute_filter_mask(mask, data->mol_data.dynamic, buf);
+                        if (!query_ok) {
+                            memset_array(mask, false);
+                        }
+                        data->gpu_buffers.dirty.selection = true;
+                    }
 
-					if (query_ok) {
-						for (int64 i = 0; i < mask.size(); i++) {
-							const bool mask_val = mask[i];
-							const bool curr_val = data->selection.current_selection_mask[i];
+                    if (query_ok) {
+                        for (int64 i = 0; i < mask.size(); i++) {
+                            const bool mask_val = mask[i];
+                            const bool curr_val = data->selection.current_selection_mask[i];
 
-							if (data->selection.op_mode == SelectionOperator::And) {
-								data->selection.current_highlight_mask[i] = curr_val & mask_val;
-							}
-							else if (data->selection.op_mode == SelectionOperator::Or) {
-								data->selection.current_highlight_mask[i] = curr_val | mask_val;
-							}
-						}
-						data->gpu_buffers.dirty.selection = true;
-					}
-				}
+                            if (data->selection.op_mode == SelectionOperator::And) {
+                                data->selection.current_highlight_mask[i] = curr_val & mask_val;
+                            } else if (data->selection.op_mode == SelectionOperator::Or) {
+                                data->selection.current_highlight_mask[i] = curr_val | mask_val;
+                            }
+                        }
+                        data->gpu_buffers.dirty.selection = true;
+                    }
+                }
 
-				if (apply) {
-					for (int64 i = 0; i < mask.size(); i++) {
-						const bool mask_val = mask[i];
-						const bool curr_val = data->selection.current_selection_mask[i];
+                if (apply) {
+                    for (int64 i = 0; i < mask.size(); i++) {
+                        const bool mask_val = mask[i];
+                        const bool curr_val = data->selection.current_selection_mask[i];
 
-						if (data->selection.op_mode == SelectionOperator::And) {
-							data->selection.current_selection_mask[i] = curr_val & mask_val;
-						}
-						else if (data->selection.op_mode == SelectionOperator::Or) {
-							data->selection.current_selection_mask[i] = curr_val | mask_val;
-						}
-					}
-					data->gpu_buffers.dirty.selection = true;
-				}
-			}
+                        if (data->selection.op_mode == SelectionOperator::And) {
+                            data->selection.current_selection_mask[i] = curr_val & mask_val;
+                        } else if (data->selection.op_mode == SelectionOperator::Or) {
+                            data->selection.current_selection_mask[i] = curr_val | mask_val;
+                        }
+                    }
+                    data->gpu_buffers.dirty.selection = true;
+                }
+            }
 
-			ImGui::Spacing();
-			ImGui::Separator();
+            ImGui::Spacing();
+            ImGui::Separator();
 
-			// GROW
-			{
-				//static bool pos_dir = true;
-				//static bool neg_dir = true;
-				static float extent = 1.f;
+            // GROW
+            {
+                // static bool pos_dir = true;
+                // static bool neg_dir = true;
+                static float extent = 1.f;
 
-				ImGui::Text("Grow");
-				const bool mode_changed = ImGui::Combo("Mode", (int*)(&data->selection.grow_mode), "Covalent Bond\0Radial\0\0");
-				const bool extent_changed = ImGui::SliderFloat("Extent", &extent, 1.0f, 10.f);
-				const bool apply = ImGui::Button("Apply##grow");
-				const bool show_preview = mode_changed || extent_changed ||
-					(ImGui::GetHoveredID() == ImGui::GetID("Extent")) ||
-					(ImGui::GetHoveredID() == ImGui::GetID("Apply##grow")) ||
-					(ImGui::GetHoveredID() == ImGui::GetID("Mode"));
+                ImGui::Text("Grow");
+                const bool mode_changed = ImGui::Combo("Mode", (int*)(&data->selection.grow_mode), "Covalent Bond\0Radial\0\0");
+                const bool extent_changed = ImGui::SliderFloat("Extent", &extent, 1.0f, 10.f);
+                const bool apply = ImGui::Button("Apply##grow");
+                const bool show_preview = mode_changed || extent_changed || (ImGui::GetHoveredID() == ImGui::GetID("Extent")) || (ImGui::GetHoveredID() == ImGui::GetID("Apply##grow")) ||
+                                          (ImGui::GetHoveredID() == ImGui::GetID("Mode"));
 
-				if (show_preview) {
-					memcpy(mask.data(), data->selection.current_selection_mask.data(), data->selection.current_selection_mask.size_in_bytes());
+                if (show_preview) {
+                    memcpy(mask.data(), data->selection.current_selection_mask.data(), data->selection.current_selection_mask.size_in_bytes());
 
-					switch (data->selection.grow_mode) {
-					case SelectionGrowth::CovalentBond:
-						grow_mask_by_covalent_bond(mask, get_covalent_bonds(data->mol_data.dynamic.molecule), (int32)extent);
-						break;
-					case SelectionGrowth::Radial:
-						grow_mask_by_radial_extent(mask, get_positions(data->mol_data.dynamic.molecule), extent);
-						break;
-					default:
-						ASSERT(false);
-					}
+                    switch (data->selection.grow_mode) {
+                        case SelectionGrowth::CovalentBond:
+                            grow_mask_by_covalent_bond(mask, get_covalent_bonds(data->mol_data.dynamic.molecule), (int32)extent);
+                            break;
+                        case SelectionGrowth::Radial:
+                            grow_mask_by_radial_extent(mask, get_positions(data->mol_data.dynamic.molecule), extent);
+                            break;
+                        default:
+                            ASSERT(false);
+                    }
 
-					switch (data->selection.level_mode) {
-					case SelectionLevel::Atom:
-						// No need to expand the mask
-						break;
-					case SelectionLevel::Residue:
-						expand_mask_to_residue(mask, data->mol_data.dynamic.molecule.residues);
-						break;
-					case SelectionLevel::Chain:
-						expand_mask_to_chain(mask, data->mol_data.dynamic.molecule.chains);
-						break;
-					default:
-						ASSERT(false);
-					}
+                    switch (data->selection.level_mode) {
+                        case SelectionLevel::Atom:
+                            // No need to expand the mask
+                            break;
+                        case SelectionLevel::Residue:
+                            expand_mask_to_residue(mask, data->mol_data.dynamic.molecule.residues);
+                            break;
+                        case SelectionLevel::Chain:
+                            expand_mask_to_chain(mask, data->mol_data.dynamic.molecule.chains);
+                            break;
+                        default:
+                            ASSERT(false);
+                    }
 
-					memcpy(data->selection.current_highlight_mask.data(), mask.data(), mask.size_in_bytes());
-					data->gpu_buffers.dirty.selection = true;
+                    memcpy(data->selection.current_highlight_mask.data(), mask.data(), mask.size_in_bytes());
+                    data->gpu_buffers.dirty.selection = true;
 
-					if (apply) {
-						memcpy(data->selection.current_selection_mask.data(), mask.data(), mask.size_in_bytes());
-					}
-				}
-			}
+                    if (apply) {
+                        memcpy(data->selection.current_selection_mask.data(), mask.data(), mask.size_in_bytes());
+                    }
+                }
+            }
 
-			ImGui::Spacing();
-			ImGui::Separator();
+            ImGui::Spacing();
+            ImGui::Separator();
 
-			// STORED SELECTIONS
-			{
-				ImGui::Text("Stored Selections");
-				const bool disable_new = is_array_zero((Array<const bool>)(data->selection.current_selection_mask));
-				if (disable_new) ImGui::PushDisabled();
-				if (ImGui::Button("Create New")) {
-					char name_buf[64];
-					snprintf(name_buf, 64, "selection%i", (int)data->selection.stored_selections.size());
-					create_selection(data, name_buf, data->selection.current_selection_mask);
-				}
-				if (disable_new) ImGui::PopDisabled();
-				for (int i = 0; i < data->selection.stored_selections.size(); i++) {
-					auto& sel = data->selection.stored_selections[i];
-					const float32 item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
-					StringBuffer<128> name;
-					snprintf(name, name.size(), "%s###ID", sel.name.cstr());
+            // STORED SELECTIONS
+            {
+                ImGui::Text("Stored Selections");
+                const bool disable_new = is_array_zero((Array<const bool>)(data->selection.current_selection_mask));
+                if (disable_new) ImGui::PushDisabled();
+                if (ImGui::Button("Create New")) {
+                    char name_buf[64];
+                    snprintf(name_buf, 64, "selection%i", (int)data->selection.stored_selections.size());
+                    create_selection(data, name_buf, data->selection.current_selection_mask);
+                }
+                if (disable_new) ImGui::PopDisabled();
+                for (int i = 0; i < data->selection.stored_selections.size(); i++) {
+                    auto& sel = data->selection.stored_selections[i];
+                    const float32 item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
+                    StringBuffer<128> name;
+                    snprintf(name, name.size(), "%s###ID", sel.name.cstr());
 
-					ImGui::PushID(i);
-					if (ImGui::CollapsingHeader(name)) {
-						if (ImGui::Button("Activate")) {
-							memcpy(data->selection.current_selection_mask.data(), sel.atom_mask.data(), sel.atom_mask.size_in_bytes());
-							data->gpu_buffers.dirty.selection = true;
-						}
-						ImGui::SameLine();
-						if (ImGui::DeleteButton("Remove")) {
-							remove_selection(data, i);
-						}
-						ImGui::SameLine();
-						if (ImGui::Button("Save")) {
-							memcpy(sel.atom_mask.data(), data->selection.current_selection_mask.data(), sel.atom_mask.size_in_bytes());
-						}
-					}
+                    ImGui::PushID(i);
+                    if (ImGui::CollapsingHeader(name)) {
+                        if (ImGui::Button("Activate")) {
+                            memcpy(data->selection.current_selection_mask.data(), sel.atom_mask.data(), sel.atom_mask.size_in_bytes());
+                            data->gpu_buffers.dirty.selection = true;
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::DeleteButton("Remove")) {
+                            remove_selection(data, i);
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Save")) {
+                            memcpy(sel.atom_mask.data(), data->selection.current_selection_mask.data(), sel.atom_mask.size_in_bytes());
+                        }
+                    }
 
-					const auto h_id = ImGui::GetHoveredID();
-					bool show_preview = (h_id == ImGui::GetID(name) || h_id == ImGui::GetID("Activate") || h_id == ImGui::GetID("Remove") || h_id == ImGui::GetID("Clone"));
+                    const auto h_id = ImGui::GetHoveredID();
+                    bool show_preview = (h_id == ImGui::GetID(name) || h_id == ImGui::GetID("Activate") || h_id == ImGui::GetID("Remove") || h_id == ImGui::GetID("Clone"));
 
-					ImGui::PopID();
+                    ImGui::PopID();
 
-					if (show_preview) {
-						memcpy(data->selection.current_highlight_mask.data(), sel.atom_mask.data(), sel.atom_mask.size_in_bytes());
-						data->gpu_buffers.dirty.selection = true;
-					}
-				}
-			}
-			ImGui::EndMenu();
-		}
-		if (ImGui::BeginMenu("Screenshot")) {
-			if (ImGui::MenuItem("Take Screenshot")) {
-				create_screenshot(data);
-			}
-			ImGui::EndMenu();
-		}
-		{
-			// Fps counter
-			const float32 ms = compute_avg_ms(data->ctx.timing.delta_s);
-			char fps_buf[32];
-			snprintf(fps_buf, 32, "%.2f ms (%.1f fps)", ms, 1000.f / ms);
-			const float w = ImGui::CalcTextSize(fps_buf).x;
-			ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - w);
-			ImGui::Text("%s", fps_buf);
-		}
-		ImGui::EndMainMenuBar();
-	}
+                    if (show_preview) {
+                        memcpy(data->selection.current_highlight_mask.data(), sel.atom_mask.data(), sel.atom_mask.size_in_bytes());
+                        data->gpu_buffers.dirty.selection = true;
+                    }
+                }
+            }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Screenshot")) {
+            if (ImGui::MenuItem("Take Screenshot")) {
+                create_screenshot(data);
+            }
+            ImGui::EndMenu();
+        }
+        {
+            // Fps counter
+            const float32 ms = compute_avg_ms(data->ctx.timing.delta_s);
+            char fps_buf[32];
+            snprintf(fps_buf, 32, "%.2f ms (%.1f fps)", ms, 1000.f / ms);
+            const float w = ImGui::CalcTextSize(fps_buf).x;
+            ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - w);
+            ImGui::Text("%s", fps_buf);
+        }
+        ImGui::EndMainMenuBar();
+    }
 
-	if (new_clicked) ImGui::OpenPopup("Warning New");
+    if (new_clicked) ImGui::OpenPopup("Warning New");
 
-	/*
-		// This does not work atm, probably an Imgui Issue / Bug
+    /*
+            // This does not work atm, probably an Imgui Issue / Bug
 if (ImGui::BeginPopupModal("Warning New")) {
-	ImGui::Text("By creating a new workspace you will loose any unsaved progress.");
-	ImGui::Text("Are you sure?");
-	ImGui::Separator();
-	if (ImGui::Button("OK", ImVec2(120, 0))) {
-		ImGui::CloseCurrentPopup();
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Cancel", ImVec2(120, 0))) {
-		ImGui::CloseCurrentPopup();
-	}
-	ImGui::EndPopup();
+    ImGui::Text("By creating a new workspace you will loose any unsaved progress.");
+    ImGui::Text("Are you sure?");
+    ImGui::Separator();
+    if (ImGui::Button("OK", ImVec2(120, 0))) {
+            ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
 }
-	*/
+    */
 }
 
 /*
@@ -2708,7 +2698,7 @@ static void draw_timeline_window(ApplicationData* data) {
 
         ImGui::Checkbox("Dynamic Framewindow", &data->time_filter.dynamic_window);
         if (data->time_filter.dynamic_window) {
-			ImGui::SameLine();
+            ImGui::SameLine();
             ImGui::SliderFloat("Window Extent", &data->time_filter.window_extent, 1.f, num_frames);
         }
         ImGui::BeginChild("Scroll Region", ImVec2(0, 0), true, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_HorizontalScrollbar);
@@ -2966,15 +2956,15 @@ static void draw_ramachandran_window(ApplicationData* data) {
     // const int32 num_frames = data->mol_data.dynamic.trajectory ? data->mol_data.dynamic.trajectory.num_frames : 0;
     // const int32 frame = (int32)data->time;
     const IntRange frame_range = {(int32)data->time_filter.range.x, (int32)data->time_filter.range.y};
-	const auto& mol = data->mol_data.dynamic.molecule;
+    const auto& mol = data->mol_data.dynamic.molecule;
     Array<const BackboneAngle> trajectory_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame_range.x, frame_range.y - frame_range.x);
     Array<const BackboneAngle> current_angles = mol.backbone.angles;
-	Array<const BackboneSegment> backbone_segments = mol.backbone.segments;
-	Array<const Residue> residues = mol.residues;
+    Array<const BackboneSegment> backbone_segments = mol.backbone.segments;
+    Array<const Residue> residues = mol.residues;
     Array<const bool> atom_selection = data->selection.current_selection_mask;
-	Array<const bool> atom_highlight = data->selection.current_highlight_mask;
+    Array<const bool> atom_highlight = data->selection.current_highlight_mask;
 
-    ImGui::SetNextWindowSizeConstraints(ImVec2(400,200), ImVec2(10000,10000));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(400, 200), ImVec2(10000, 10000));
     ImGui::Begin("Ramachandran", &data->ramachandran.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoScrollbar);
 
     ImGui::BeginColumns("cols", 2, ImGuiColumnsFlags_NoResize);
@@ -2983,16 +2973,16 @@ static void draw_ramachandran_window(ApplicationData* data) {
         if (data->ramachandran.current.enabled) {
             ImGui::PushID("current");
             ImGui::SliderFloat("##base_radius", &data->ramachandran.current.radius, 0.5f, 5.f, "base radius %1.1f");
-			//ImGui::SameLine();
-            //ImGui::ColorEdit4("base color", (float*)&data->ramachandran.current.fill_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+            // ImGui::SameLine();
+            // ImGui::ColorEdit4("base color", (float*)&data->ramachandran.current.fill_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
 
-			ImGui::SliderFloat("##selected_radius", &data->ramachandran.selected.radius, 0.5, 5.f, "selected radius %1.1f");
-			//ImGui::SameLine();
-			//ImGui::ColorEdit4("selected color", (float*)&data->ramachandran.selected.fill_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+            ImGui::SliderFloat("##selected_radius", &data->ramachandran.selected.radius, 0.5, 5.f, "selected radius %1.1f");
+            // ImGui::SameLine();
+            // ImGui::ColorEdit4("selected color", (float*)&data->ramachandran.selected.fill_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
 
             data->ramachandran.current.radius = math::round(data->ramachandran.current.radius * 2.f) / 2.f;
-			data->ramachandran.selected.radius = math::round(data->ramachandran.selected.radius * 2.f) / 2.f;
-			//ImGui::ColorEdit4("border color", (float*)&data->ramachandran.current.border_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+            data->ramachandran.selected.radius = math::round(data->ramachandran.selected.radius * 2.f) / 2.f;
+            // ImGui::ColorEdit4("border color", (float*)&data->ramachandran.current.border_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
             ImGui::PopID();
         }
     }
@@ -3007,7 +2997,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Fill color for trajectory range");
             }
-			ImGui::RangeSliderFloat("range", &data->time_filter.range.min, &data->time_filter.range.max, 0.f, (float)data->mol_data.dynamic.trajectory.num_frames, "(%.1f, %.1f)");
+            ImGui::RangeSliderFloat("range", &data->time_filter.range.min, &data->time_filter.range.max, 0.f, (float)data->mol_data.dynamic.trajectory.num_frames, "(%.1f, %.1f)");
             ImGui::PopID();
 
             ramachandran::clear_accumulation_texture();
@@ -3017,185 +3007,178 @@ static void draw_ramachandran_window(ApplicationData* data) {
     ImGui::EndColumns();
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::BeginChild("canvas", ImVec2(-1,-1), true);
-	ImGui::PopStyleVar(1);
+    ImGui::BeginChild("canvas", ImVec2(-1, -1), true);
+    ImGui::PopStyleVar(1);
 
-	static float zoom_factor = 1.0f;
+    static float zoom_factor = 1.0f;
     const float max_c = ImMax(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y);
-	const ImVec2 size = ImVec2(max_c, max_c) * zoom_factor;
-	const ImGuiID id = ImGui::GetID("bg");
+    const ImVec2 size = ImVec2(max_c, max_c) * zoom_factor;
+    const ImGuiID id = ImGui::GetID("bg");
 
-	ImRect bb(ImGui::GetCurrentWindow()->DC.CursorPos, ImGui::GetCurrentWindow()->DC.CursorPos + size);
-	//ImGui::ItemSize(bb);
-	//ImGui::ItemAdd(bb, id);
+    ImRect bb(ImGui::GetCurrentWindow()->DC.CursorPos, ImGui::GetCurrentWindow()->DC.CursorPos + size);
+    // ImGui::ItemSize(bb);
+    // ImGui::ItemAdd(bb, id);
 
-	//bool hovered = false, held = false;
-	//bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
-	ImGui::InvisibleButton("bg", bb.Max - bb.Min);
+    // bool hovered = false, held = false;
+    // bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
+    ImGui::InvisibleButton("bg", bb.Max - bb.Min);
 
-	ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
 
-	const ImVec2 mouse_pos = ImGui::GetIO().MousePos;
-	dl->ChannelsSplit(4);
-	dl->ChannelsSetCurrent(0);
-	dl->AddRectFilled(bb.Min, bb.Max, 0xffffffff);
-	dl->ChannelsSetCurrent(1);
-	dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_gui_texture(), bb.Min, bb.Max);
-	dl->ChannelsSetCurrent(2);
-	dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_accumulation_texture(), bb.Min, bb.Max);
-	dl->ChannelsSetCurrent(3);
+    const ImVec2 mouse_pos = ImGui::GetIO().MousePos;
+    dl->ChannelsSplit(4);
+    dl->ChannelsSetCurrent(0);
+    dl->AddRectFilled(bb.Min, bb.Max, 0xffffffff);
+    dl->ChannelsSetCurrent(1);
+    dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_gui_texture(), bb.Min, bb.Max);
+    dl->ChannelsSetCurrent(2);
+    dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_accumulation_texture(), bb.Min, bb.Max);
+    dl->ChannelsSetCurrent(3);
 
-	constexpr float32 ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
+    constexpr float32 ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
 
-	int64 mouse_hover_idx = -1;
+    int64 mouse_hover_idx = -1;
 
-	if (data->ramachandran.current.enabled) {
-		const uint32 border_color = math::convert_color(data->ramachandran.current.border_color);
-		const uint32 base_color = math::convert_color(data->ramachandran.current.fill_color);
-		const uint32 selected_color = math::convert_color(vec4(data->selection.selection_color, 1));
-		const uint32 highlight_color = math::convert_color(vec4(data->selection.highlight_color, 1));
-		const float32 base_radius = data->ramachandran.current.radius;
-		const float32 selected_radius = data->ramachandran.selected.radius;
+    if (data->ramachandran.current.enabled) {
+        const uint32 border_color = math::convert_color(data->ramachandran.current.border_color);
+        const uint32 base_color = math::convert_color(data->ramachandran.current.fill_color);
+        const uint32 selected_color = math::convert_color(vec4(data->selection.selection_color, 1));
+        const uint32 highlight_color = math::convert_color(vec4(data->selection.highlight_color, 1));
+        const float32 base_radius = data->ramachandran.current.radius;
+        const float32 selected_radius = data->ramachandran.selected.radius;
 
-		for (int64 i = 0; i < backbone_segments.size(); i++) {
-			const auto& angle = current_angles[i];
-			const auto& seg = backbone_segments[i];
-			const auto& res = residues[i];
-			if (angle.x == 0.f || angle.y == 0.f) continue;
+        for (int64 i = 0; i < backbone_segments.size(); i++) {
+            const auto& angle = current_angles[i];
+            const auto& seg = backbone_segments[i];
+            const auto& res = residues[i];
+            if (angle.x == 0.f || angle.y == 0.f) continue;
 
-			const auto selected = !is_array_zero(atom_selection.subarray(res.atom_idx));
-			const auto highlight = !is_array_zero(atom_highlight.subarray(res.atom_idx));
-			const auto radius = (highlight || selected) ? selected_radius : base_radius;
-			const auto fill_color = highlight ? highlight_color : (selected ? selected_color : base_color);
+            const auto selected = !is_array_zero(atom_selection.subarray(res.atom_idx));
+            const auto highlight = !is_array_zero(atom_highlight.subarray(res.atom_idx));
+            const auto radius = (highlight || selected) ? selected_radius : base_radius;
+            const auto fill_color = highlight ? highlight_color : (selected ? selected_color : base_color);
 
-			const ImVec2 coord = ImLerp(bb.Min, bb.Max, ImVec2(angle.x * ONE_OVER_TWO_PI + 0.5f, -angle.y * ONE_OVER_TWO_PI + 0.5f));  // [-PI, PI] -> [0, 1]
-			const ImVec2 min_box(math::round(coord.x - radius), math::round(coord.y - radius));
-			const ImVec2 max_box(math::round(coord.x + radius), math::round(coord.y + radius));
-			if (radius > 1.f) {
-				dl->AddRectFilled(min_box, max_box, fill_color);
-				dl->AddRect(min_box, max_box, border_color);
-			}
-			else {
-				dl->AddRectFilled(min_box, max_box, border_color);
-			}
-			if (min_box.x <= mouse_pos.x && mouse_pos.x <= max_box.x &&
-				min_box.y <= mouse_pos.y && mouse_pos.y <= max_box.y) {
-				mouse_hover_idx = i;
-			}
-		}
-	}
+            const ImVec2 coord = ImLerp(bb.Min, bb.Max, ImVec2(angle.x * ONE_OVER_TWO_PI + 0.5f, -angle.y * ONE_OVER_TWO_PI + 0.5f));  // [-PI, PI] -> [0, 1]
+            const ImVec2 min_box(math::round(coord.x - radius), math::round(coord.y - radius));
+            const ImVec2 max_box(math::round(coord.x + radius), math::round(coord.y + radius));
+            if (radius > 1.f) {
+                dl->AddRectFilled(min_box, max_box, fill_color);
+                dl->AddRect(min_box, max_box, border_color);
+            } else {
+                dl->AddRectFilled(min_box, max_box, border_color);
+            }
+            if (min_box.x <= mouse_pos.x && mouse_pos.x <= max_box.x && min_box.y <= mouse_pos.y && mouse_pos.y <= max_box.y) {
+                mouse_hover_idx = i;
+            }
+        }
+    }
 
-	const auto cx = math::round(math::mix(bb.Min.x, bb.Max.x, 0.5f));
-	const auto cy = math::round(math::mix(bb.Min.y, bb.Max.y, 0.5f));
-	dl->AddLine(ImVec2(cx, bb.Min.y), ImVec2(cx, bb.Max.y), 0xff000000, 0.5f);
-	dl->AddLine(ImVec2(bb.Min.x, cy), ImVec2(bb.Max.x, cy), 0xff000000, 0.5f);
-	dl->ChannelsMerge();
-	dl->ChannelsSetCurrent(0);
+    const auto cx = math::round(math::mix(bb.Min.x, bb.Max.x, 0.5f));
+    const auto cy = math::round(math::mix(bb.Min.y, bb.Max.y, 0.5f));
+    dl->AddLine(ImVec2(cx, bb.Min.y), ImVec2(cx, bb.Max.y), 0xff000000, 0.5f);
+    dl->AddLine(ImVec2(bb.Min.x, cy), ImVec2(bb.Max.x, cy), 0xff000000, 0.5f);
+    dl->ChannelsMerge();
+    dl->ChannelsSetCurrent(0);
 
-	enum Mode {
-		Append,
-		Remove
-	};
-	static ImVec2 region_x0 = { 0,0 };
-	static bool region_select = false;
-	static Mode region_mode = Append;
+    enum Mode { Append, Remove };
+    static ImVec2 region_x0 = {0, 0};
+    static bool region_select = false;
+    static Mode region_mode = Append;
 
-	if (ImGui::IsItemHovered()) {
+    if (ImGui::IsItemHovered()) {
 
-		if (ImGui::GetIO().KeyCtrl && ImGui::GetIO().MouseWheel != 0.f) {
-			const float old_zoom = zoom_factor;
-			const float new_zoom = ImClamp(zoom_factor - ImGui::GetIO().MouseWheel * 0.1f, 1.0f, 10.0f);
-			//ImGui::GetCurrentWindow()->ScrollTarget.x = ImGui::GetCurrentWindow()->Scroll.x * new_zoom / old_zoom;
-			zoom_factor = new_zoom;
-		}
+        if (ImGui::GetIO().KeyCtrl && ImGui::GetIO().MouseWheel != 0.f) {
+            const float old_zoom = zoom_factor;
+            const float new_zoom = ImClamp(zoom_factor - ImGui::GetIO().MouseWheel * 0.1f, 1.0f, 10.0f);
+            // ImGui::GetCurrentWindow()->ScrollTarget.x = ImGui::GetCurrentWindow()->Scroll.x * new_zoom / old_zoom;
+            zoom_factor = new_zoom;
+        }
 
-		if (!region_select && ImGui::GetIO().KeyShift && (ImGui::GetIO().MouseClicked[0] || ImGui::GetIO().MouseClicked[1])) {
-			region_select = true;
-			region_mode = ImGui::GetIO().MouseClicked[0] ? Append : Remove;
-			region_x0 = ImGui::GetMousePos();
-		}
+        if (!region_select && ImGui::GetIO().KeyShift && (ImGui::GetIO().MouseClicked[0] || ImGui::GetIO().MouseClicked[1])) {
+            region_select = true;
+            region_mode = ImGui::GetIO().MouseClicked[0] ? Append : Remove;
+            region_x0 = ImGui::GetMousePos();
+        }
 
-		const ImVec2 normalized_coord = ((ImGui::GetMousePos() - bb.Min) / (bb.Max - bb.Min) - ImVec2(0.5f, 0.5f)) * ImVec2(1, -1);
-		const ImVec2 angles = normalized_coord * 2.f * 180.f;
-		ImGui::BeginTooltip();
-		ImGui::Text(u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0", angles.x, angles.y);
-		if (!region_select && mouse_hover_idx != -1) {
-			const auto res_idx = mouse_hover_idx;
-			const auto& res = get_residues(data->mol_data.dynamic.molecule)[res_idx];
-			ImGui::Text("Residue[%lli]: %s", res_idx, res.name.cstr());
-			memset_array(data->selection.current_highlight_mask, false);
-			memset_array(data->selection.current_highlight_mask.subarray(res.atom_idx), true);
-			data->gpu_buffers.dirty.selection = true;
-		}
-		ImGui::EndTooltip();
-	}
+        const ImVec2 normalized_coord = ((ImGui::GetMousePos() - bb.Min) / (bb.Max - bb.Min) - ImVec2(0.5f, 0.5f)) * ImVec2(1, -1);
+        const ImVec2 angles = normalized_coord * 2.f * 180.f;
+        ImGui::BeginTooltip();
+        ImGui::Text(u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0", angles.x, angles.y);
+        if (!region_select && mouse_hover_idx != -1) {
+            const auto res_idx = mouse_hover_idx;
+            const auto& res = get_residues(data->mol_data.dynamic.molecule)[res_idx];
+            ImGui::Text("Residue[%lli]: %s", res_idx, res.name.cstr());
+            memset_array(data->selection.current_highlight_mask, false);
+            memset_array(data->selection.current_highlight_mask.subarray(res.atom_idx), true);
+            data->gpu_buffers.dirty.selection = true;
+        }
+        ImGui::EndTooltip();
+    }
 
-	if (region_select) {
-		const ImVec2 region_x1 = ImGui::GetMousePos();
-		const ImVec2 x0 = ImMin(region_x0, region_x1);
-		const ImVec2 x1 = ImMax(region_x0, region_x1);
-		const ImU32  fill_col = 0x33333333;
-		const ImU32  line_col = 0x88888888;
-		ImDrawList* dl = ImGui::GetWindowDrawList();
-		dl->AddRectFilled(x0, x1, fill_col);
-		dl->AddRect(x0, x1, line_col);
+    if (region_select) {
+        const ImVec2 region_x1 = ImGui::GetMousePos();
+        const ImVec2 x0 = ImMin(region_x0, region_x1);
+        const ImVec2 x1 = ImMax(region_x0, region_x1);
+        const ImU32 fill_col = 0x33333333;
+        const ImU32 line_col = 0x88888888;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(x0, x1, fill_col);
+        dl->AddRect(x0, x1, line_col);
 
-		static DynamicArray<bool> mask;
-		mask.resize(mol.atom.count);
-		memset_array(mask, false);
+        static DynamicArray<bool> mask;
+        mask.resize(mol.atom.count);
+        memset_array(mask, false);
 
-		for (int64 i = 0; i < residues.size(); i++) {
-			const auto& angle = current_angles[i];
-			if (angle.x == 0.f || angle.y == 0.f) continue;
-			const ImVec2 coord = ImLerp(bb.Min, bb.Max, ImVec2(angle.x * ONE_OVER_TWO_PI + 0.5f, -angle.y * ONE_OVER_TWO_PI + 0.5f));  // [-PI, PI] -> [0, 1]
-			if (coord.x < x0.x || x1.x < coord.x) continue;
-			if (coord.y < x0.y || x1.y < coord.y) continue;
+        for (int64 i = 0; i < residues.size(); i++) {
+            const auto& angle = current_angles[i];
+            if (angle.x == 0.f || angle.y == 0.f) continue;
+            const ImVec2 coord = ImLerp(bb.Min, bb.Max, ImVec2(angle.x * ONE_OVER_TWO_PI + 0.5f, -angle.y * ONE_OVER_TWO_PI + 0.5f));  // [-PI, PI] -> [0, 1]
+            if (coord.x < x0.x || x1.x < coord.x) continue;
+            if (coord.y < x0.y || x1.y < coord.y) continue;
 
-			const auto& seg = backbone_segments[i];
-			mask[seg.ca_idx] = true;
-		}
+            const auto& seg = backbone_segments[i];
+            mask[seg.ca_idx] = true;
+        }
 
-		switch (data->selection.level_mode) {
-		case SelectionLevel::Atom:
-			break;
-		case SelectionLevel::Residue:
-			expand_mask_to_residue(mask, mol.residues);
-			break;
-		case SelectionLevel::Chain:
-			expand_mask_to_chain(mask, mol.chains);
-			break;
-		default:
-			ASSERT(false);
-		}
+        switch (data->selection.level_mode) {
+            case SelectionLevel::Atom:
+                break;
+            case SelectionLevel::Residue:
+                expand_mask_to_residue(mask, mol.residues);
+                break;
+            case SelectionLevel::Chain:
+                expand_mask_to_chain(mask, mol.chains);
+                break;
+            default:
+                ASSERT(false);
+        }
 
-		memset_array(data->selection.current_highlight_mask, false);
+        memset_array(data->selection.current_highlight_mask, false);
 
-		if (region_mode == Append) {
-			for (int64 i = 0; i < mask.size(); i++) {
-				data->selection.current_highlight_mask[i] = data->selection.current_selection_mask[i] || mask[i];
-			}
-		}
-		else if (region_mode == Remove) {
-			for (int64 i = 0; i < mask.size(); i++) {
-				data->selection.current_highlight_mask[i] = data->selection.current_selection_mask[i] && !mask[i];
-			}
-		}
+        if (region_mode == Append) {
+            for (int64 i = 0; i < mask.size(); i++) {
+                data->selection.current_highlight_mask[i] = data->selection.current_selection_mask[i] || mask[i];
+            }
+        } else if (region_mode == Remove) {
+            for (int64 i = 0; i < mask.size(); i++) {
+                data->selection.current_highlight_mask[i] = data->selection.current_selection_mask[i] && !mask[i];
+            }
+        }
 
-		if (!ImGui::GetIO().KeyShift || !(ImGui::GetIO().MouseDown[0] || ImGui::GetIO().MouseDown[1])) {
-			if (region_mode == Append) {
-				for (int64 i = 0; i < mask.size(); i++) {
-					data->selection.current_selection_mask[i] |= mask[i];
-				}
-			}
-			else if (region_mode == Remove) {
-				for (int64 i = 0; i < mask.size(); i++) {
-					data->selection.current_selection_mask[i] &= !mask[i];
-				}
-			}
-			region_select = false;
-		}
-		data->gpu_buffers.dirty.selection = true;
-	}
+        if (!ImGui::GetIO().KeyShift || !(ImGui::GetIO().MouseDown[0] || ImGui::GetIO().MouseDown[1])) {
+            if (region_mode == Append) {
+                for (int64 i = 0; i < mask.size(); i++) {
+                    data->selection.current_selection_mask[i] |= mask[i];
+                }
+            } else if (region_mode == Remove) {
+                for (int64 i = 0; i < mask.size(); i++) {
+                    data->selection.current_selection_mask[i] &= !mask[i];
+                }
+            }
+            region_select = false;
+        }
+        data->gpu_buffers.dirty.selection = true;
+    }
 
     ImGui::EndChild();
 
@@ -3871,7 +3854,7 @@ static void load_workspace(ApplicationData* data, CString file) {
         load_molecule_data(data, new_trajectory_file);
     }
 
-    reset_view(data, true);
+    reset_view(data, false, true);
     reset_representations(data);
 }
 
@@ -3931,28 +3914,28 @@ static void save_workspace(ApplicationData* data, CString file) {
 }
 
 void create_screenshot(ApplicationData* data) {
-	ASSERT(data);
-	Image img;
-	init_image(&img, data->fbo.width, data->fbo.height);
+    ASSERT(data);
+    Image img;
+    init_image(&img, data->fbo.width, data->fbo.height);
 
-	glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-	glReadBuffer(GL_BACK);
-	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-	glReadPixels(0, 0, img.width, img.height, GL_RGBA, GL_UNSIGNED_BYTE, img.data);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glReadBuffer(GL_BACK);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    glReadPixels(0, 0, img.width, img.height, GL_RGBA, GL_UNSIGNED_BYTE, img.data);
 
-	time_t     now = time(0);
-	struct tm  tstruct;
-	tstruct = *localtime(&now);
-	char       time_str[80];
-	strftime(time_str, sizeof(time_str), "%Y-%m-%d_%X", &tstruct);
+    time_t now = time(0);
+    struct tm tstruct;
+    tstruct = *localtime(&now);
+    char time_str[80];
+    strftime(time_str, sizeof(time_str), "%Y-%m-%d_%X", &tstruct);
 
-	StringBuffer<256> path;
-	path += VIAMD_SCREENSHOT_DIR;
-	path += "/screenshot";
-	path += "";
-	path += ".bmp";
+    StringBuffer<256> path;
+    path += VIAMD_SCREENSHOT_DIR;
+    path += "/screenshot";
+    path += "";
+    path += ".bmp";
 
-	bool res = write_image(img, path);
+    bool res = write_image(img, path);
 }
 
 // #representation
@@ -4197,14 +4180,14 @@ static bool handle_selection(ApplicationData* data) {
             const ImVec2 vp_pos = ImGui::GetMainViewport()->Pos;
             const ImVec2 pos0 = (ImVec2(min_p.x, min_p.y) + vp_pos);
             const ImVec2 pos1 = (ImVec2(max_p.x, max_p.y) + vp_pos);
-			const ImU32  fill_col = 0x33333333;
-			const ImU32  line_col = 0x88888888;
+            const ImU32 fill_col = 0x33333333;
+            const ImU32 line_col = 0x88888888;
 
-			ImGui::BeginCanvas("region select");
-			auto dl = ImGui::GetCurrentWindow()->DrawList;
-			dl->AddRectFilled(pos0, pos1, fill_col);
-			dl->AddRect(pos0, pos1, line_col);
-			ImGui::EndCanvas();
+            ImGui::BeginCanvas("region select");
+            auto dl = ImGui::GetCurrentWindow()->DrawList;
+            dl->AddRectFilled(pos0, pos1, fill_col);
+            dl->AddRect(pos0, pos1, line_col);
+            ImGui::EndCanvas();
 
         } else if (data->ctx.input.mouse.clicked[0] || data->ctx.input.mouse.clicked[1]) {
             if (data->picking.idx != NO_PICKING_IDX) {
