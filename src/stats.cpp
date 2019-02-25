@@ -970,6 +970,82 @@ static bool compute_dihedral(Property* prop, const Array<CString> args, const Mo
     return true;
 }
 
+#include "rmsd.h"
+
+static float rmsd(Array<const vec3> ref, Array<const vec3> cur) {
+	ASSERT(ref.size() == cur.size());
+	int32 size = (int32)ref.size();
+	// ugly ugly hacks
+	double* ref_tmp = (double*)TMP_MALLOC(size * sizeof(double) * 3);
+	double* cur_tmp = (double*)TMP_MALLOC(size * sizeof(double) * 3);
+	defer {
+		TMP_FREE(ref_tmp);
+		TMP_FREE(cur_tmp);
+	};
+	for (int64 i = 0; i < size; i++) {
+		ref_tmp[i * 3 + 0] = ref[i].x;
+		ref_tmp[i * 3 + 1] = ref[i].y;
+		ref_tmp[i * 3 + 2] = ref[i].z;
+		cur_tmp[i * 3 + 0] = cur[i].x;
+		cur_tmp[i * 3 + 1] = cur[i].y;
+		cur_tmp[i * 3 + 2] = cur[i].z;
+	}
+
+	double val;
+	fast_rmsd((double(*)[3])ref_tmp, (double(*)[3])cur_tmp, size, &val);
+
+	return (float)val;
+}
+
+static bool compute_rmsd(Property* prop, const Array<CString> args, const MoleculeDynamic& dynamic) {
+	ASSERT(prop);
+	if (args.count != 1) {
+		set_error_message(ctx.current_property, "rmsd expects 1 argument");
+		return false;
+	}
+
+	init_structure_data(&prop->structure_data, 1);
+	if (!extract_args_structures(prop->structure_data, args, dynamic.molecule)) {
+		return false;
+	}
+
+	// @IMPORTANT! Use this instead of dynamic.trajectory.num_frames as that can be changing in a different thread!
+	const int32 num_frames = (int32)prop->avg_data.count;
+	const int32 structure_count = (int32)prop->structure_data[0].structures.count;
+
+	init_instance_data(&prop->instance_data, structure_count, num_frames);
+
+	Array<const vec3> pos;
+	Array<const vec3> ref;
+	vec3 com;
+	float max_val = 0.0f;
+	const float32 scl = 1.f / (float32)structure_count;
+	for (int32 i = 0; i < num_frames; i++) {
+		float sum = 0.0f;
+		for (int32 j = 0; j < structure_count; j++) {
+			if (i == 0) {
+				prop->instance_data[j].data[i] = 0;
+				continue;
+			}
+			ref = extract_positions(prop->structure_data[0].structures[j], get_trajectory_positions(dynamic.trajectory, 0));
+			pos = extract_positions(prop->structure_data[0].structures[j], get_trajectory_positions(dynamic.trajectory, i));
+			const auto val = rmsd(ref, pos);
+			prop->instance_data[j].data[i] = val;
+			sum += val;
+			max_val = math::max(val, max_val);
+		}
+
+		prop->avg_data[i] = sum * scl;
+	}
+
+	prop->total_data_range = { 0.0f, max_val };
+	prop->avg_data_range = compute_range(prop->avg_data);
+	prop->periodic = true;
+	prop->unit_buf = u8"";
+
+	return true;
+}
+
 static DynamicArray<Property*> extract_property_dependencies(Array<Property*> properties, CString expression) {
     DynamicArray<Property*> dependencies;
     for (Property* prop : properties) {
@@ -1162,6 +1238,7 @@ void initialize() {
     ctx.property_func_entries.push_back({COMPUTE_ID("distance"), compute_distance, visualize_structures});
     ctx.property_func_entries.push_back({COMPUTE_ID("angle"), compute_angle, visualize_structures});
     ctx.property_func_entries.push_back({COMPUTE_ID("dihedral"), compute_dihedral, visualize_structures});
+	ctx.property_func_entries.push_back({ COMPUTE_ID("rmsd"), compute_rmsd, visualize_structures });
     ctx.property_func_entries.push_back({COMPUTE_ID("expression"), compute_expression, visualize_dependencies});
 
     ctx.structure_func_entries.push_back({COMPUTE_ID("resname"), structure_match_resname});
@@ -1219,7 +1296,7 @@ bool sync_structure_data_length(Array<StructureData> data) {
         for (int32 i = 0; i < data[0].structures.count; i++) {
             int32 max_structure_count = 0;
             for (const auto& s : data) {
-                int32 c = structure_index_count(s.structures[i]);
+                const int32 c = s.strategy == COM ? 1 : structure_index_count(s.structures[i]);
                 max_structure_count = math::max(max_structure_count, c);
                 if (c > 1 && c != max_structure_count) {
                     set_error_message(ctx.current_property, "Structures matched has different sizes in different arguments, this is not supported");

@@ -1827,16 +1827,15 @@ ImGui::EndGroup();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Selection")) {
-            const ImVec2 button_size = {50, 0};
             static DynamicArray<bool> mask;
             mask.resize(data->mol_data.dynamic.molecule.atom.count);
 
-            if (ImGui::Button("Clear", button_size)) {
+            if (ImGui::MenuItem("Clear Selection")) {
                 memset_array(data->selection.current_selection_mask, false);
                 data->gpu_buffers.dirty.selection = true;
             }
 
-            if (ImGui::Button("Invert", button_size)) {
+            if (ImGui::MenuItem("Invert Selection")) {
                 for (auto& v : data->selection.current_selection_mask) {
                     v = !v;
                 }
@@ -1869,9 +1868,9 @@ ImGui::EndGroup();
                 const bool apply = ImGui::Button("Apply##query") || pressed_enter;
                 if (!query_ok) ImGui::PopDisabled();
 
-                if (ImGui::IsWindowAppearing()) {
-                    ImGui::SetKeyboardFocusHere(-1);
-                }
+                //if (ImGui::IsWindowAppearing()) {
+                //    ImGui::SetKeyboardFocusHere(-1);
+                //}
 
                 const bool show_preview =
                     (ImGui::GetFocusID() == ImGui::GetID("##query")) || (ImGui::GetHoveredID() == ImGui::GetID("##query")) || (ImGui::GetHoveredID() == ImGui::GetID("Apply##query"));
