@@ -1109,7 +1109,63 @@ int main(int, char**) {
 
                 immediate::flush();
             }
-            POP_GPU_SECTION()
+			POP_GPU_SECTION()
+
+			PUSH_GPU_SECTION("Selection") {
+				glDrawBuffer(GL_COLOR_ATTACHMENT3);  // Emission buffer
+				glDisable(GL_DEPTH_TEST);
+				glEnable(GL_STENCIL_TEST);
+				glDepthMask(0);
+				glColorMask(0, 0, 0, 0);
+
+				glStencilMask(0xFF);
+				glClear(GL_STENCIL_BUFFER_BIT);
+				//glStencilFunc(GL_STENCIL)
+				//glStencilOp(GL_STENCIL)
+
+				glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+				glStencilFunc(GL_ALWAYS, 1, 0xFF);
+				glStencilMask(0xFF);
+
+				const uint32 atom_count = (uint32)data.mol_data.dynamic.molecule.atom.count;
+
+				for (const auto& rep : data.representations.buffer) {
+					if (!rep.enabled) continue;
+					switch (rep.type) {
+					case RepresentationType::Vdw:
+						PUSH_GPU_SECTION("Vdw")
+						draw::lean_and_mean::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, data.gpu_buffers.selection, atom_count, data.view.param, rep.radius);
+						POP_GPU_SECTION()
+						break;
+					default:
+						break;
+					}
+				}
+
+				glStencilFunc(GL_NOTEQUAL, 1, 0xFF);
+				glStencilMask(0x00);
+				glColorMask(1, 1, 1, 1);
+
+				for (const auto& rep : data.representations.buffer) {
+					if (!rep.enabled) continue;
+					switch (rep.type) {
+					case RepresentationType::Vdw:
+						PUSH_GPU_SECTION("Vdw")
+						draw::lean_and_mean::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, data.gpu_buffers.selection, atom_count, data.view.param, rep.radius * 1.1f);
+						POP_GPU_SECTION()
+						break;
+					default:
+						break;
+					}
+				}
+
+				glStencilMask(0xFF);
+
+				glDisable(GL_STENCIL_TEST);
+				glEnable(GL_DEPTH_TEST);
+				glDepthMask(1);
+			}
+			POP_GPU_SECTION()
         }
         POP_GPU_SECTION()  // G-buffer
 
@@ -3211,7 +3267,7 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     if (!fbo->pbo_picking.depth[0]) glGenBuffers(2, fbo->pbo_picking.depth);
 
     glBindTexture(GL_TEXTURE_2D, fbo->deferred.depth);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -3287,6 +3343,7 @@ glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo->deferred.fbo);
     if (attach_textures_deferred) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, fbo->deferred.depth, 0);
+		glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_TEXTURE_2D, fbo->deferred.depth, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->deferred.color, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, fbo->deferred.normal, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, fbo->deferred.velocity, 0);
