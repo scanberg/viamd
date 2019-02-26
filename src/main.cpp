@@ -314,6 +314,8 @@ struct ApplicationData {
         float selection_scale = 2.0f;
         vec3 outline_color = vec3(1, 1, 1);
         float outline_scale = 10.0f;
+
+        bool selecting = false;
     } selection;
 
     // --- STATISTICS ---
@@ -726,9 +728,12 @@ int main(int, char**) {
             }
         }
 
+        data.selection.selecting = false;
+
         if (!ImGui::GetIO().WantCaptureMouse) {
             // #selection
             bool selecting = handle_selection(&data);
+            data.selection.selecting |= selecting;
 
             // #camera-control
             if (!selecting) {
@@ -1208,8 +1213,17 @@ int main(int, char**) {
         glDisable(GL_DEPTH_TEST);
         glDepthMask(GL_FALSE);
 
-        glDrawBuffer(GL_COLOR_ATTACHMENT3);  // Emission buffer
         PUSH_GPU_SECTION("Highlight Selection") {
+
+            const bool selection_empty = is_array_zero(data.selection.current_selection_mask.operator Array<const bool>());
+
+            glDrawBuffer(GL_COLOR_ATTACHMENT3);  // emission as intermediate target
+            postprocessing::desaturate_selection(data.fbo.deferred.color, data.fbo.deferred.picking, data.gpu_buffers.selection, data.selection.selecting || !selection_empty);
+
+            glDrawBuffer(GL_COLOR_ATTACHMENT0);
+            postprocessing::blit_texture(data.fbo.deferred.emissive);
+
+            glDrawBuffer(GL_COLOR_ATTACHMENT3);  // Emission buffer
             glEnable(GL_BLEND);
             glBlendFunc(GL_ONE, GL_ONE);
             const vec3 highlight = data.selection.highlight_color * data.selection.highlight_scale;
@@ -1924,7 +1938,7 @@ ImGui::EndGroup();
                 const bool apply = ImGui::Button("Apply##query") || pressed_enter;
                 if (!query_ok) ImGui::PopDisabled();
 
-                //if (ImGui::IsWindowAppearing()) {
+                // if (ImGui::IsWindowAppearing()) {
                 //    ImGui::SetKeyboardFocusHere(-1);
                 //}
 
@@ -2332,13 +2346,13 @@ void draw_context_popup(ApplicationData* data) {
     ASSERT(data);
 
     const bool shift_down = data->ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data->ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
-    if (data->ctx.input.mouse.clicked[1] && !shift_down) {
-        if (!ImGui::GetIO().WantTextInput) {
-            ImGui::OpenPopup("OtherContextPopup");
+    if (data->ctx.input.mouse.clicked[1] && !shift_down && !ImGui::GetIO().WantTextInput) {
+        if (data->selection.right_clicked != -1 && data->mol_data.dynamic) {
+            ImGui::OpenPopup("AtomContextPopup");
         }
     }
 
-    if (ImGui::BeginPopup("OtherContextPopup")) {
+    if (ImGui::BeginPopup("AtomContextPopup")) {
         if (data->selection.right_clicked != -1 && data->mol_data.dynamic) {
             if (ImGui::MenuItem("Recenter Trajectory")) {
                 recenter_trajectory(&data->mol_data.dynamic, data->mol_data.dynamic.molecule.atom.residue_indices[data->selection.right_clicked]);
@@ -3174,7 +3188,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
         const ImVec2 region_x1 = ImGui::GetMousePos();
         const ImVec2 x0 = ImMin(region_x0, region_x1);
         const ImVec2 x1 = ImMax(region_x0, region_x1);
-        const ImU32 fill_col = 0x33333333;
+        const ImU32 fill_col = 0x22222222;
         const ImU32 line_col = 0x88888888;
         ImDrawList* dl = ImGui::GetWindowDrawList();
         dl->AddRectFilled(x0, x1, fill_col);
@@ -4206,37 +4220,38 @@ static bool handle_selection(ApplicationData* data) {
                     ASSERT(false);
             }
 
-            switch (region_mode) {
-                case RegionMode::Append:
-                    for (int64 i = 0; i < N; i++) {
-                        mask[i] = !data->selection.current_selection_mask[i] && mask[i];
-                    }
-                    break;
-                case RegionMode::Remove:
-                    for (int64 i = 0; i < N; i++) {
-                        mask[i] = data->selection.current_selection_mask[i] && !mask[i];
-                    }
-                    break;
-                default:
-                    ASSERT(false);
-            }
+            /*
+switch (region_mode) {
+    case RegionMode::Append:
+        for (int64 i = 0; i < N; i++) {
+            mask[i] = data->selection.current_selection_mask[i] && mask[i];
+        }
+        break;
+    case RegionMode::Remove:
+        for (int64 i = 0; i < N; i++) {
+            mask[i] = data->selection.current_selection_mask[i] && !mask[i];
+        }
+        break;
+    default:
+        ASSERT(false);
+}
+            */
 
             if (!mouse_down) {
                 for (int64 i = 0; i < data->selection.current_selection_mask.size(); i++) {
                     if (region_mode == RegionMode::Append) {
                         data->selection.current_selection_mask[i] |= mask[i];
                     } else if (region_mode == RegionMode::Remove) {
-                        data->selection.current_selection_mask[i] &= mask[i];
+                        data->selection.current_selection_mask[i] &= !mask[i];
                     }
                 }
                 region_select = false;
             }
             // Draw selection window
-            // @TODO: Replace this hack with a screen space quad.
             const ImVec2 vp_pos = ImGui::GetMainViewport()->Pos;
             const ImVec2 pos0 = (ImVec2(min_p.x, min_p.y) + vp_pos);
             const ImVec2 pos1 = (ImVec2(max_p.x, max_p.y) + vp_pos);
-            const ImU32 fill_col = 0x33333333;
+            const ImU32 fill_col = 0x22222222;
             const ImU32 line_col = 0x88888888;
 
             ImGui::BeginCanvas("region select");
@@ -4261,7 +4276,7 @@ static bool handle_selection(ApplicationData* data) {
     }
 
     for (int64 i = 0; i < N; i++) {
-        data->selection.current_highlight_mask[i] |= mask[i];
+        data->selection.current_highlight_mask[i] = mask[i];
     }
     data->gpu_buffers.dirty.selection = true;
 
