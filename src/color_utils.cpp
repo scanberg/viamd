@@ -23,22 +23,22 @@ void color_atoms_residue_index(Array<uint32> dst_atom_colors, Array<const Residu
         memset_array(dst_atom_colors, color, residues[i].atom_idx.beg, residues[i].atom_idx.end - residues[i].atom_idx.beg);
     }
 }
-void color_atoms_chain_id(Array<uint32> dst_atom_colors, Array<const Chain> chains, Array<const Residue> residues) {
+void color_atoms_chain_id(Array<uint32> dst_atom_colors, Array<const Chain> chains) {
     memset_array(dst_atom_colors, 0xffffffff);
     for (const auto& chain : chains) {
         const uint32 color = math::convert_color(color_from_hash(hash::crc32(chain.id.operator CString())));
-        const auto beg_idx = residues[chain.res_idx.beg].atom_idx.beg;
-        const auto end_idx = residues[chain.res_idx.end - 1].atom_idx.end;
+        const auto beg_idx = chain.atom_idx.beg;
+        const auto end_idx = chain.atom_idx.end;
         memset_array(dst_atom_colors, color, beg_idx, end_idx - beg_idx);
     }
 }
-void color_atoms_chain_index(Array<uint32> dst_atom_colors, Array<const Chain> chains, Array<const Residue> residues) {
+void color_atoms_chain_index(Array<uint32> dst_atom_colors, Array<const Chain> chains) {
     memset_array(dst_atom_colors, 0xffffffff);
     for (int64 i = 0; i < chains.count; i++) {
         const uint32 color = math::convert_color(color_from_hash(hash::crc32(i)));
-        const auto beg_idx = residues[chains[i].res_idx.beg].atom_idx.beg;
-        const auto end_idx = residues[chains[i].res_idx.end - 1].atom_idx.end;
-        memset_array(dst_atom_colors, color, beg_idx, end_idx - beg_idx);
+        const auto beg_idx = chains[i].atom_idx.beg;
+        const auto end_idx = chains[i].atom_idx.end;
+        memset_array(dst_atom_colors, color, chains[i].atom_idx);
     }
 }
 

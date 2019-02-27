@@ -154,12 +154,7 @@ struct MainFramebuffer {
     } deferred;
 
     struct {
-        GLuint color = 0;
-        GLuint fbo = 0;
-    } hdr;
-
-    struct {
-        // @NOTE: two of each for ping-pong read / write
+        // @NOTE: two of each for ping-pong read / write (hopefully non blocking reads)
         GLuint color[2] = {0, 0};
         GLuint depth[2] = {0, 0};
     } pbo_picking;
@@ -203,6 +198,7 @@ struct Representation {
     StringBuffer<128> filter = "all";
     RepresentationType type = RepresentationType::Vdw;
     ColorMapping color_mapping = ColorMapping::Cpk;
+    Array<bool> atom_mask{};
     GLuint color_buffer = 0;
 
     bool enabled = true;
@@ -462,6 +458,7 @@ struct ApplicationData {
     // --- REPRESENTATIONS ---
     struct {
         DynamicArray<Representation> buffer{};
+        DynamicArray<bool> atom_visibility_mask{};
         bool show_window = false;
         bool changed = false;
     } representations;
@@ -543,7 +540,7 @@ static void create_screenshot(ApplicationData* data);
 static Representation* create_representation(ApplicationData* data, RepresentationType type = RepresentationType::Vdw, ColorMapping color_mapping = ColorMapping::Cpk, CString filter = "all");
 static Representation* clone_representation(ApplicationData* data, const Representation& rep);
 static void remove_representation(ApplicationData* data, int idx);
-static void update_representation(Representation* rep, const MoleculeDynamic& dynamic);
+static void update_representation(ApplicationData* data, Representation* rep);
 static void reset_representations(ApplicationData* data);
 static void clear_representations(ApplicationData* data);
 
@@ -910,7 +907,7 @@ int main(int, char**) {
             PUSH_CPU_SECTION("Update dynamic representations")
             for (auto& rep : data.representations.buffer) {
                 if (rep.color_mapping == ColorMapping::SecondaryStructure) {
-                    update_representation(&rep, data.mol_data.dynamic);
+                    update_representation(&data, &rep);
                 }
             }
             POP_CPU_SECTION()
@@ -986,10 +983,10 @@ int main(int, char**) {
         }
         POP_GPU_SECTION()
 
-        mat4 view_mat = compute_world_to_view_matrix(data.view.camera);
-        mat4 proj_mat = compute_perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height);
-
         {
+            mat4 view_mat = compute_world_to_view_matrix(data.view.camera);
+            mat4 proj_mat = compute_perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height);
+
             const vec2 res = vec2(data.fbo.width, data.fbo.height);
             vec2 jitter = vec2(0, 0);
             if (data.visuals.temporal_reprojection.enabled && data.visuals.temporal_reprojection.jitter) {
@@ -1000,11 +997,15 @@ int main(int, char**) {
             }
 
             auto& param = data.view.param;
+            param.previous.matrix.proj = param.matrix.proj;
+            param.previous.matrix.view = param.matrix.view;
             param.previous.matrix.view_proj = param.matrix.view_proj;
             param.previous.jitter = param.jitter;
+
             param.matrix.view = view_mat;
             param.matrix.proj = proj_mat;
             param.matrix.view_proj = proj_mat * view_mat;
+
             param.matrix.inverse.view = math::inverse(view_mat);
             param.matrix.inverse.proj = math::inverse(proj_mat);
             param.matrix.inverse.view_proj = math::inverse(param.matrix.view_proj);
@@ -1028,7 +1029,8 @@ int main(int, char**) {
             glDrawBuffers(4, draw_buffers);
             glClearColor(0, 0, 0, 0);
             glClearDepthf(1.f);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glStencilMask(0xFF);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
             // Clear picking buffer
             glDrawBuffer(GL_COLOR_ATTACHMENT4);
@@ -1089,8 +1091,8 @@ int main(int, char**) {
 
             // RENDER DEBUG INFORMATION (WITH DEPTH)
             PUSH_GPU_SECTION("Debug Draw") {
-                immediate::set_view_matrix(view_mat);
-                immediate::set_proj_matrix(proj_mat);
+                immediate::set_view_matrix(data.view.param.matrix.view);
+                immediate::set_proj_matrix(data.view.param.matrix.proj);
                 // immediate::Material plane_mat = immediate::MATERIAL_GLOSSY_WHITE;
                 // plane_mat.f0 = {data.immediate_gfx.material.f0, data.immediate_gfx.material.f0, data.immediate_gfx.material.f0};
                 // plane_mat.smoothness = data.immediate_gfx.material.smoothness;
@@ -1114,65 +1116,106 @@ int main(int, char**) {
 
                 immediate::flush();
             }
-			POP_GPU_SECTION()
-
-			PUSH_GPU_SECTION("Selection") {
-				glDrawBuffer(GL_COLOR_ATTACHMENT3);  // Emission buffer
-				glDisable(GL_DEPTH_TEST);
-				glEnable(GL_STENCIL_TEST);
-				glDepthMask(0);
-				glColorMask(0, 0, 0, 0);
-
-				glStencilMask(0xFF);
-				glClear(GL_STENCIL_BUFFER_BIT);
-				//glStencilFunc(GL_STENCIL)
-				//glStencilOp(GL_STENCIL)
-
-				glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-				glStencilFunc(GL_ALWAYS, 1, 0xFF);
-				glStencilMask(0xFF);
-
-				const uint32 atom_count = (uint32)data.mol_data.dynamic.molecule.atom.count;
-
-				for (const auto& rep : data.representations.buffer) {
-					if (!rep.enabled) continue;
-					switch (rep.type) {
-					case RepresentationType::Vdw:
-						PUSH_GPU_SECTION("Vdw")
-						draw::lean_and_mean::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, data.gpu_buffers.selection, atom_count, data.view.param, rep.radius);
-						POP_GPU_SECTION()
-						break;
-					default:
-						break;
-					}
-				}
-
-				glStencilFunc(GL_NOTEQUAL, 1, 0xFF);
-				glStencilMask(0x00);
-				glColorMask(1, 1, 1, 1);
-
-				for (const auto& rep : data.representations.buffer) {
-					if (!rep.enabled) continue;
-					switch (rep.type) {
-					case RepresentationType::Vdw:
-						PUSH_GPU_SECTION("Vdw")
-						draw::lean_and_mean::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, data.gpu_buffers.selection, atom_count, data.view.param, rep.radius * 1.1f);
-						POP_GPU_SECTION()
-						break;
-					default:
-						break;
-					}
-				}
-
-				glStencilMask(0xFF);
-
-				glDisable(GL_STENCIL_TEST);
-				glEnable(GL_DEPTH_TEST);
-				glDepthMask(1);
-			}
-			POP_GPU_SECTION()
+            POP_GPU_SECTION()
         }
         POP_GPU_SECTION()  // G-buffer
+
+        PUSH_GPU_SECTION("Selection") {
+            const uint32 atom_count = (uint32)data.mol_data.dynamic.molecule.atom.count;
+            glDepthMask(0);
+
+            glDrawBuffer(GL_COLOR_ATTACHMENT3);  // Emission buffer
+            glEnable(GL_DEPTH_TEST);
+            glEnable(GL_STENCIL_TEST);
+
+            {
+                glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
+
+                glColorMask(0, 0, 0, 0);
+                glStencilMask(0xFF);
+                glStencilFunc(GL_ALWAYS, 2, 0xFF);
+
+                // const vec4 fill_color = vec4(0, 0, 10, 0);
+
+                for (const auto& rep : data.representations.buffer) {
+                    if (!rep.enabled) continue;
+                    switch (rep.type) {
+                        case RepresentationType::Vdw:
+                            PUSH_GPU_SECTION("Vdw")
+                            draw::lean_and_mean::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, data.gpu_buffers.selection, atom_count, data.view.param, rep.radius);
+                            POP_GPU_SECTION()
+                            break;
+                        default:
+                            break;
+                    }
+                }
+            }
+
+            {
+                glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+                glDepthFunc(GL_LEQUAL);
+
+                glColorMask(0, 0, 0, 0);
+                glStencilMask(0xFF);
+                glStencilFunc(GL_ALWAYS, 4, 0xFF);
+
+                const vec4 visible_color = vec4(1, 1, 1, 0);
+
+                for (const auto& rep : data.representations.buffer) {
+                    if (!rep.enabled) continue;
+                    switch (rep.type) {
+                        case RepresentationType::Vdw:
+                            PUSH_GPU_SECTION("Vdw")
+                            draw::lean_and_mean::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, data.gpu_buffers.selection, atom_count, data.view.param, rep.radius, visible_color);
+                            POP_GPU_SECTION()
+                            break;
+                        default:
+                            break;
+                    }
+                }
+                glDepthFunc(GL_LESS);
+            }
+
+            glDisable(GL_DEPTH_TEST);
+
+            {
+                glStencilFunc(GL_GREATER, 1, 0xFF);
+                glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
+                glStencilMask(0x00);
+                glColorMask(1, 1, 1, 0);
+
+                const vec4 outline_color = vec4(0, 0.5, 1.0, 0) * 5.0f;
+
+                for (const auto& rep : data.representations.buffer) {
+                    if (!rep.enabled) continue;
+                    switch (rep.type) {
+                        case RepresentationType::Vdw:
+                            PUSH_GPU_SECTION("Vdw")
+                            draw::lean_and_mean::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, data.gpu_buffers.selection, atom_count, data.view.param, rep.radius * 1.2f,
+                                                          outline_color);
+                            POP_GPU_SECTION()
+                            break;
+                        default:
+                            break;
+                    }
+                }
+            }
+
+            const bool any_atom_selected = !is_array_zero(data.selection.current_selection_mask);
+
+            if (any_atom_selected) {
+                glStencilFunc(GL_NOTEQUAL, 4, 0xFF);
+                glStencilMask(0x00);
+                glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+                glDrawBuffer(GL_COLOR_ATTACHMENT0);
+                postprocessing::scale_hsv(data.fbo.deferred.color, vec3(1, 0.15, 1));
+            }
+
+            glDisable(GL_STENCIL_TEST);
+            glEnable(GL_DEPTH_TEST);
+            glDepthMask(1);
+        }
+        POP_GPU_SECTION()
 
         // PICKING
         PUSH_GPU_SECTION("Picking") {
@@ -1213,26 +1256,30 @@ int main(int, char**) {
         glDisable(GL_DEPTH_TEST);
         glDepthMask(GL_FALSE);
 
+#if 0
         PUSH_GPU_SECTION("Highlight Selection") {
 
-            const bool selection_empty = is_array_zero(data.selection.current_selection_mask.operator Array<const bool>());
+            const bool selection_empty = is_array_zero(data.selection.current_selection_mask);
 
-            glDrawBuffer(GL_COLOR_ATTACHMENT3);  // emission as intermediate target
-            postprocessing::desaturate_selection(data.fbo.deferred.color, data.fbo.deferred.picking, data.gpu_buffers.selection, data.selection.selecting || !selection_empty);
+            // glDrawBuffer(GL_COLOR_ATTACHMENT3);  // emission as intermediate target
+            // postprocessing::desaturate_selection(data.fbo.deferred.color, data.fbo.deferred.picking, data.gpu_buffers.selection, data.selection.selecting || !selection_empty);
 
-            glDrawBuffer(GL_COLOR_ATTACHMENT0);
-            postprocessing::blit_texture(data.fbo.deferred.emissive);
+            // glDrawBuffer(GL_COLOR_ATTACHMENT0);
+            // postprocessing::blit_texture(data.fbo.deferred.emissive);
 
-            glDrawBuffer(GL_COLOR_ATTACHMENT3);  // Emission buffer
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_ONE, GL_ONE);
-            const vec3 highlight = data.selection.highlight_color * data.selection.highlight_scale;
-            const vec3 selection = data.selection.selection_color * data.selection.selection_scale;
-            const vec3 outline = data.selection.outline_color * data.selection.outline_scale;
-            postprocessing::highlight_selection(data.fbo.deferred.picking, data.gpu_buffers.selection, highlight, selection, outline);
-            glDisable(GL_BLEND);
+            /*
+glDrawBuffer(GL_COLOR_ATTACHMENT3);  // Emission buffer
+glEnable(GL_BLEND);
+glBlendFunc(GL_ONE, GL_ONE);
+const vec3 highlight = data.selection.highlight_color * data.selection.highlight_scale;
+const vec3 selection = data.selection.selection_color * data.selection.selection_scale;
+const vec3 outline = data.selection.outline_color * data.selection.outline_scale;
+postprocessing::highlight_selection(data.fbo.deferred.picking, data.gpu_buffers.selection, highlight, selection, outline);
+glDisable(GL_BLEND);
+            */
         }
         POP_GPU_SECTION();
+#endif
 
         // Activate backbuffer
         glViewport(0, 0, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
@@ -1278,8 +1325,8 @@ int main(int, char**) {
 
         // DRAW DEBUG GRAPHICS W/O DEPTH
         PUSH_GPU_SECTION("Debug Draw Overlay") {
-            immediate::set_view_matrix(view_mat);
-            immediate::set_proj_matrix(proj_mat);
+            immediate::set_view_matrix(data.view.param.matrix.view);
+            immediate::set_proj_matrix(data.view.param.matrix.proj);
             stats::visualize(data.mol_data.dynamic);
 
             // HYDROGEN BONDS
@@ -1310,8 +1357,8 @@ int main(int, char**) {
         if (data.density_volume.enabled) {
             PUSH_GPU_SECTION("Volume Rendering")
             const float32 scl = 1.f * data.density_volume.density_scale / data.density_volume.texture.max_value;
-            volume::render_volume_texture(data.density_volume.texture.id, data.fbo.deferred.depth, data.density_volume.texture_to_model_matrix, data.density_volume.model_to_world_matrix, view_mat,
-                                          proj_mat, data.density_volume.color, scl);
+            volume::render_volume_texture(data.density_volume.texture.id, data.fbo.deferred.depth, data.density_volume.texture_to_model_matrix, data.density_volume.model_to_world_matrix,
+                                          data.view.param.matrix.view, data.view.param.matrix.proj, data.density_volume.color, scl);
             POP_GPU_SECTION()
         }
 
@@ -2458,7 +2505,7 @@ static void draw_representations_window(ApplicationData* data) {
         ImGui::PopID();
 
         if (recompute_colors) {
-            update_representation(&rep, data->mol_data.dynamic);
+            update_representation(data, &rep);
         }
     }
 
@@ -3264,19 +3311,12 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
         attach_textures_deferred = true;
     }
 
-    bool attach_textures_hdr = false;
-    if (!fbo->hdr.fbo) {
-        glGenFramebuffers(1, &fbo->hdr.fbo);
-        attach_textures_hdr = true;
-    }
-
     if (!fbo->deferred.depth) glGenTextures(1, &fbo->deferred.depth);
     if (!fbo->deferred.color) glGenTextures(1, &fbo->deferred.color);
     if (!fbo->deferred.normal) glGenTextures(1, &fbo->deferred.normal);
     if (!fbo->deferred.velocity) glGenTextures(1, &fbo->deferred.velocity);
     if (!fbo->deferred.emissive) glGenTextures(1, &fbo->deferred.emissive);
     if (!fbo->deferred.picking) glGenTextures(1, &fbo->deferred.picking);
-    if (!fbo->hdr.color) glGenTextures(1, &fbo->hdr.color);
     if (!fbo->pbo_picking.color[0]) glGenBuffers(2, fbo->pbo_picking.color);
     if (!fbo->pbo_picking.depth[0]) glGenBuffers(2, fbo->pbo_picking.depth);
 
@@ -3322,15 +3362,6 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    /*
-glBindTexture(GL_TEXTURE_2D, fbo->hdr.color);
-glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
-glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    */
-
     glBindBuffer(GL_PIXEL_PACK_BUFFER, fbo->pbo_picking.color[0]);
     glBufferData(GL_PIXEL_PACK_BUFFER, 4, 0, GL_DYNAMIC_READ);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
@@ -3357,7 +3388,7 @@ glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo->deferred.fbo);
     if (attach_textures_deferred) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, fbo->deferred.depth, 0);
-		glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_TEXTURE_2D, fbo->deferred.depth, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_TEXTURE_2D, fbo->deferred.depth, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->deferred.color, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, fbo->deferred.normal, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, fbo->deferred.velocity, 0);
@@ -3369,16 +3400,6 @@ glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glClearColor(0, 0, 0, 0);
     glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
 
-    /*
-glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo->hdr.fbo);
-if (attach_textures_hdr) {
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fbo->hdr.color, 0);
-}
-ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
-glDrawBuffers(1, draw_buffers);
-glClear(GL_COLOR_BUFFER_BIT);
-    */
-
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 }
 
@@ -3389,9 +3410,6 @@ static void destroy_framebuffer(MainFramebuffer* fbo) {
     if (fbo->deferred.color) glDeleteTextures(1, &fbo->deferred.color);
     if (fbo->deferred.normal) glDeleteTextures(1, &fbo->deferred.normal);
     if (fbo->deferred.picking) glDeleteTextures(1, &fbo->deferred.picking);
-
-    if (fbo->hdr.fbo) glDeleteFramebuffers(1, &fbo->hdr.fbo);
-    if (fbo->hdr.color) glDeleteTextures(1, &fbo->hdr.color);
 
     if (fbo->pbo_picking.color[0]) glDeleteBuffers(2, fbo->pbo_picking.color);
     if (fbo->pbo_picking.depth[0]) glDeleteBuffers(2, fbo->pbo_picking.depth);
@@ -4015,7 +4033,7 @@ static Representation* create_representation(ApplicationData* data, Representati
     rep.type = type;
     rep.color_mapping = color_mapping;
     rep.filter = filter;
-    update_representation(&rep, data->mol_data.dynamic);
+    update_representation(data, &rep);
     return &rep;
 }
 
@@ -4023,7 +4041,7 @@ static Representation* clone_representation(ApplicationData* data, const Represe
     ASSERT(data);
     Representation& clone = data->representations.buffer.push_back(rep);
     clone.color_buffer = 0;
-    update_representation(&clone, data->mol_data.dynamic);
+    update_representation(data, &clone);
     return &clone;
 }
 
@@ -4032,41 +4050,66 @@ static void remove_representation(ApplicationData* data, int idx) {
     ASSERT(idx < data->representations.buffer.size());
 
     auto& rep = data->representations.buffer[idx];
-    if (!rep.color_buffer) glDeleteBuffers(1, &rep.color_buffer);
+    if (rep.color_buffer) glDeleteBuffers(1, &rep.color_buffer);
+    if (rep.atom_mask) free(&rep.atom_mask);
     data->representations.buffer.remove(&rep);
 }
 
-static void update_representation(Representation* rep, const MoleculeDynamic& dynamic) {
+static void recompute_atom_visibility_mask(ApplicationData* data) {
+    ASSERT(data);
+    const auto N = data->mol_data.dynamic.molecule.atom.count;
+    data->representations.atom_visibility_mask.resize(N);
+    memset_array(data->representations.atom_visibility_mask, false);
+
+    for (const auto& rep : data->representations.buffer) {
+        for (int64 i = 0; i < N; i++) {
+            data->representations.atom_visibility_mask[i] |= rep.atom_mask[i];
+        }
+    }
+}
+
+static void update_representation(ApplicationData* data, Representation* rep) {
+    ASSERT(data);
     ASSERT(rep);
     uint32 static_color = ImGui::ColorConvertFloat4ToU32(vec_cast(rep->static_color));
-    DynamicArray<uint32> colors(dynamic.molecule.atom.count);
+    DynamicArray<uint32> colors(data->mol_data.dynamic.molecule.atom.count);
+    const auto& mol = data->mol_data.dynamic.molecule;
 
     switch (rep->color_mapping) {
         case ColorMapping::Static:
             memset_array(colors, static_color);
             break;
         case ColorMapping::Cpk:
-            color_atoms_cpk(colors, get_elements(dynamic.molecule));
+            color_atoms_cpk(colors, get_elements(mol));
             break;
         case ColorMapping::ResId:
-            color_atoms_residue_id(colors, dynamic.molecule.residues);
+            color_atoms_residue_id(colors, get_residues(mol));
             break;
         case ColorMapping::ResIndex:
-            color_atoms_residue_index(colors, dynamic.molecule.residues);
+            color_atoms_residue_index(colors, get_residues(mol));
             break;
         case ColorMapping::ChainId:
-            color_atoms_chain_id(colors, dynamic.molecule.chains, dynamic.molecule.residues);
+            color_atoms_chain_id(colors, get_chains(mol));
             break;
-        case ColorMapping::SecondaryStructure: {
-            color_atoms_backbone_angles(colors, dynamic.molecule.residues, dynamic.molecule.backbone.sequences, dynamic.molecule.backbone.angles, ramachandran::get_color_image());
-        } break;
+        case ColorMapping::ChainIndex:
+            color_atoms_chain_index(colors, get_chains(mol));
+            break;
+        case ColorMapping::SecondaryStructure:
+            color_atoms_backbone_angles(colors, get_residues(mol), mol.backbone.sequences, mol.backbone.angles, ramachandran::get_color_image());
+            break;
         default:
+            ASSERT(false);
             break;
     }
 
-    DynamicArray<bool> mask(dynamic.molecule.atom.count, false);
-    rep->filter_is_ok = filter::compute_filter_mask(mask, dynamic, rep->filter.buffer);
-    filter::filter_colors(colors, mask);
+    if (rep->atom_mask.size() != mol.atom.count) {
+        free_array(&rep->atom_mask);
+        rep->atom_mask = allocate_array<bool>(mol.atom.count);
+    }
+    rep->filter_is_ok = filter::compute_filter_mask(rep->atom_mask, data->mol_data.dynamic, rep->filter.buffer);
+    filter::filter_colors(colors, rep->atom_mask);
+    recompute_atom_visibility_mask(data);
+
     if (!rep->color_buffer) glGenBuffers(1, &rep->color_buffer);
     glBindBuffer(GL_ARRAY_BUFFER, rep->color_buffer);
     glBufferData(GL_ARRAY_BUFFER, colors.size_in_bytes(), colors.data(), GL_STATIC_DRAW);
@@ -4076,7 +4119,7 @@ static void update_representation(Representation* rep, const MoleculeDynamic& dy
 static void reset_representations(ApplicationData* data) {
     ASSERT(data);
     for (auto& rep : data->representations.buffer) {
-        update_representation(&rep, data->mol_data.dynamic);
+        update_representation(data, &rep);
     }
 }
 
@@ -4201,6 +4244,7 @@ static bool handle_selection(ApplicationData* data) {
             const Array<const vec3> positions = get_positions(data->mol_data.dynamic.molecule);
 
             for (int64 i = 0; i < N; i++) {
+                if (!data->representations.atom_visibility_mask[i]) continue;
                 vec4 p = mvp * vec4(positions[i], 1);
                 p /= p.w;
                 const vec2 c = (vec2(p.x, -p.y) * 0.5f + 0.5f) * res;
