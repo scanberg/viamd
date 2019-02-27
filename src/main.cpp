@@ -87,6 +87,9 @@ constexpr float32 HYDROGEN_BOND_ANGLE_CUTOFF_DEFAULT = 20.f;
 constexpr float32 HYDROGEN_BOND_ANGLE_CUTOFF_MIN = 5.f;
 constexpr float32 HYDROGEN_BOND_ANGLE_CUTOFF_MAX = 90.f;
 
+constexpr float32 BALL_AND_STICK_VDW_SCALE = 0.25f;
+constexpr float32 BALL_AND_STICK_LICORICE_SCALE = 0.5f;
+
 constexpr int32 VOLUME_DOWNSAMPLE_FACTOR = 2;
 
 constexpr int32 SPLINE_SUBDIVISION_COUNT = 16;
@@ -504,6 +507,7 @@ static void reset_view(ApplicationData* data, bool move_camera = false, bool smo
 static float32 compute_avg_ms(float32 dt);
 static PickingData read_picking_data(const MainFramebuffer& fbo, int32 x, int32 y);
 static bool handle_selection(ApplicationData* data);
+static void draw_representations_lean_and_mean(ApplicationData* data, vec4 color = vec4(1,1,1,1), float scale = 1.0f, uint32 mask = 0xFFFFFFFFU);
 
 static void draw_main_menu(ApplicationData* data);
 static void draw_context_popup(ApplicationData* data);
@@ -1068,11 +1072,11 @@ int main(int, char**) {
                     case RepresentationType::BallAndStick:
                         PUSH_GPU_SECTION("Vdw")
                         draw::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.velocity, (int)data.mol_data.dynamic.molecule.atom.count, data.view.param,
-                                       rep.radius * 0.25f);
+                                       rep.radius * BALL_AND_STICK_VDW_SCALE);
                         POP_GPU_SECTION()
                         PUSH_GPU_SECTION("Licorice")
                         draw::draw_licorice(data.gpu_buffers.position, rep.color_buffer, data.gpu_buffers.velocity, data.gpu_buffers.bond, (int)data.mol_data.dynamic.molecule.covalent_bonds.size(),
-                                            data.view.param, rep.radius * 0.4f);
+                                            data.view.param, rep.radius * BALL_AND_STICK_LICORICE_SCALE);
                         POP_GPU_SECTION()
                         break;
                     case RepresentationType::Ribbons:
@@ -1120,6 +1124,9 @@ int main(int, char**) {
         }
         POP_GPU_SECTION()  // G-buffer
 
+		const bool atom_selection_empty = is_array_zero(data.selection.current_selection_mask);
+		const bool atom_highlight_empty = is_array_zero(data.selection.current_highlight_mask);
+
         PUSH_GPU_SECTION("Selection") {
             const uint32 atom_count = (uint32)data.mol_data.dynamic.molecule.atom.count;
             glDepthMask(0);
@@ -1136,19 +1143,7 @@ int main(int, char**) {
                 glStencilFunc(GL_ALWAYS, 2, 0xFF);
 
                 // const vec4 fill_color = vec4(0, 0, 10, 0);
-
-                for (const auto& rep : data.representations.buffer) {
-                    if (!rep.enabled) continue;
-                    switch (rep.type) {
-                        case RepresentationType::Vdw:
-                            PUSH_GPU_SECTION("Vdw")
-                            draw::lean_and_mean::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, data.gpu_buffers.selection, atom_count, data.view.param, rep.radius);
-                            POP_GPU_SECTION()
-                            break;
-                        default:
-                            break;
-                    }
-                }
+				draw_representations_lean_and_mean(&data);
             }
 
             {
@@ -1159,51 +1154,36 @@ int main(int, char**) {
                 glStencilMask(0xFF);
                 glStencilFunc(GL_ALWAYS, 4, 0xFF);
 
-                const vec4 visible_color = vec4(1, 1, 1, 0);
+                //const vec4 visible_color = vec4(1, 1, 1, 0);
+				draw_representations_lean_and_mean(&data);
 
-                for (const auto& rep : data.representations.buffer) {
-                    if (!rep.enabled) continue;
-                    switch (rep.type) {
-                        case RepresentationType::Vdw:
-                            PUSH_GPU_SECTION("Vdw")
-                            draw::lean_and_mean::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, data.gpu_buffers.selection, atom_count, data.view.param, rep.radius, visible_color);
-                            POP_GPU_SECTION()
-                            break;
-                        default:
-                            break;
-                    }
-                }
-                glDepthFunc(GL_LESS);
             }
 
             glDisable(GL_DEPTH_TEST);
 
             {
+				// Highlight
                 glStencilFunc(GL_GREATER, 1, 0xFF);
                 glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
                 glStencilMask(0x00);
                 glColorMask(1, 1, 1, 0);
 
-                const vec4 outline_color = vec4(0, 0.5, 1.0, 0) * 5.0f;
-
-                for (const auto& rep : data.representations.buffer) {
-                    if (!rep.enabled) continue;
-                    switch (rep.type) {
-                        case RepresentationType::Vdw:
-                            PUSH_GPU_SECTION("Vdw")
-                            draw::lean_and_mean::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, data.gpu_buffers.selection, atom_count, data.view.param, rep.radius * 1.2f,
-                                                          outline_color);
-                            POP_GPU_SECTION()
-                            break;
-                        default:
-                            break;
-                    }
-                }
+                const vec4 color = vec4(0, 0.5, 1.0, 0) * 5.0f;
+				draw_representations_lean_and_mean(&data, color, 1.2f, 0x02);
             }
 
-            const bool any_atom_selected = !is_array_zero(data.selection.current_selection_mask);
+			{
+				glStencilFunc(GL_GREATER, 1, 0xFF);
+				glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
+				glStencilMask(0x00);
+				glColorMask(1, 1, 1, 0);
 
-            if (any_atom_selected) {
+				const vec4 color = vec4(1.0, 0.5, 0, 0) * 5.0f;
+				draw_representations_lean_and_mean(&data, color, 1.2f, 0x01);
+			}
+
+
+            if (!atom_selection_empty) {
                 glStencilFunc(GL_NOTEQUAL, 4, 0xFF);
                 glStencilMask(0x00);
                 glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
@@ -1213,6 +1193,7 @@ int main(int, char**) {
 
             glDisable(GL_STENCIL_TEST);
             glEnable(GL_DEPTH_TEST);
+			glDepthFunc(GL_LESS);
             glDepthMask(1);
         }
         POP_GPU_SECTION()
@@ -4385,4 +4366,44 @@ static void create_volume(ApplicationData* data) {
     data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(min_box, max_box);
     data->density_volume.texture_to_model_matrix = volume::compute_texture_to_model_matrix(dim);
     data->density_volume.world_to_texture_matrix = math::inverse(data->density_volume.model_to_world_matrix * data->density_volume.texture_to_model_matrix);
+}
+
+static void draw_representations_lean_and_mean(ApplicationData* data, vec4 color, float scale, uint32 mask) {
+	ASSERT(data);
+	const int32 atom_count = (int32)data->mol_data.dynamic.molecule.atom.count;
+	const int32 bond_count = (int32)data->mol_data.dynamic.molecule.covalent_bonds.size();
+
+	PUSH_GPU_SECTION("Lean and Mean")
+	for (const auto& rep : data->representations.buffer) {
+		if (!rep.enabled) continue;
+		switch (rep.type) {
+		case RepresentationType::Vdw:
+			PUSH_GPU_SECTION("Vdw")
+			draw::lean_and_mean::draw_vdw(data->gpu_buffers.position, data->gpu_buffers.radius, data->gpu_buffers.selection, atom_count, data->view.param, rep.radius * scale, color, mask);
+			POP_GPU_SECTION()
+			break;
+		case RepresentationType::Licorice:
+			PUSH_GPU_SECTION("Licorice")
+			draw::lean_and_mean::draw_licorice(data->gpu_buffers.position, data->gpu_buffers.selection, data->gpu_buffers.bond, bond_count, data->view.param, rep.radius * scale, color, mask);
+			POP_GPU_SECTION()
+			break;
+		case RepresentationType::BallAndStick:
+			PUSH_GPU_SECTION("Vdw")
+			draw::lean_and_mean::draw_vdw(data->gpu_buffers.position, data->gpu_buffers.radius, data->gpu_buffers.selection, atom_count, data->view.param, rep.radius * scale * BALL_AND_STICK_VDW_SCALE, color, mask);
+			POP_GPU_SECTION()
+			PUSH_GPU_SECTION("Licorice")
+			draw::lean_and_mean::draw_licorice(data->gpu_buffers.position, data->gpu_buffers.selection, data->gpu_buffers.bond, bond_count, data->view.param, rep.radius * scale * BALL_AND_STICK_LICORICE_SCALE, color, mask);
+			POP_GPU_SECTION()
+			break;
+		case RepresentationType::Ribbons:
+			PUSH_GPU_SECTION("Ribbons")
+			draw::lean_and_mean::draw_ribbons(data->gpu_buffers.backbone.spline, data->gpu_buffers.backbone.spline_index, data->gpu_buffers.selection, data->gpu_buffers.backbone.num_spline_indices, data->view.param, scale, color, mask);
+			POP_GPU_SECTION()
+			break;
+		default:
+			break;
+		}
+	}
+	POP_GPU_SECTION()
+
 }
