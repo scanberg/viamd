@@ -87,7 +87,7 @@ constexpr float32 HYDROGEN_BOND_ANGLE_CUTOFF_DEFAULT = 20.f;
 constexpr float32 HYDROGEN_BOND_ANGLE_CUTOFF_MIN = 5.f;
 constexpr float32 HYDROGEN_BOND_ANGLE_CUTOFF_MAX = 90.f;
 
-constexpr float32 BALL_AND_STICK_VDW_SCALE = 0.25f;
+constexpr float32 BALL_AND_STICK_VDW_SCALE = 0.30f;
 constexpr float32 BALL_AND_STICK_LICORICE_SCALE = 0.5f;
 
 constexpr int32 VOLUME_DOWNSAMPLE_FACTOR = 2;
@@ -139,6 +139,8 @@ enum class SelectionOperator { Or, And };
 enum class SelectionGrowth { CovalentBond, Radial };
 enum class RepresentationType { Vdw, Licorice, BallAndStick, Ribbons, Cartoon };
 
+enum AtomBit_ { AtomBit_Highlighted = BIT(0), AtomBit_Selected = BIT(1), AtomBit_Visible = BIT(2) };
+
 struct PickingData {
     uint32 idx = NO_PICKING_IDX;
     float32 depth = 1.0f;
@@ -152,6 +154,7 @@ struct MainFramebuffer {
         GLuint normal = 0;
         GLuint velocity = 0;
         GLuint emissive = 0;
+        GLuint post_tonemap = 0;
         GLuint picking = 0;
         GLuint fbo = 0;
     } deferred;
@@ -205,6 +208,7 @@ struct Representation {
     GLuint color_buffer = 0;
 
     bool enabled = true;
+    bool show_in_selection = true;
     bool filter_is_ok = true;
 
     // For ColorMapping::StaticColor mode
@@ -307,12 +311,21 @@ struct ApplicationData {
         DynamicArray<bool> current_highlight_mask{};
         DynamicArray<Selection> stored_selections{};
 
-        vec3 highlight_color = vec3(1, 1, 1);
-        float highlight_scale = 2.0f;
-        vec3 selection_color = vec3(1, 1, 0);
-        float selection_scale = 2.0f;
-        vec3 outline_color = vec3(1, 1, 1);
-        float outline_scale = 10.0f;
+        struct {
+            struct {
+                vec4 fill_color = vec4(1.0f, 1.0f, 1.0f, 0.5f);
+                vec4 outline_color = vec4(1.0f, 0.5f, 0.0f, 0.5f);
+                float outline_scale = 1.1f;
+            } highlight;
+
+            struct {
+                vec4 fill_color = vec4(1.0f, 1.0f, 1.0f, 0.5f);
+                vec4 outline_color = vec4(0.0f, 0.5f, 1.0f, 0.5f);
+                float outline_scale = 1.2f;
+            } selection;
+
+            float non_selected_saturation = 0.25f;
+        } color;
 
         bool selecting = false;
     } selection;
@@ -443,17 +456,17 @@ struct ApplicationData {
 
         struct {
             bool enabled = true;
-            float32 radius = 1.5f;
             vec4 border_color = vec4(0, 0, 0, 1);
-            vec4 fill_color = vec4(1, 1, 1, 1);
+            struct {
+                float32 radius = 1.5f;
+                vec4 fill_color = vec4(1, 1, 1, 1);
+            } base;
+            struct {
+                float32 radius = 3.0f;
+                vec4 selection_color = vec4(0.8f, 1.0f, 0.5f, 1.0f);
+                vec4 highlight_color = vec4(0.8f, 1.0f, 0.5f, 0.5f);
+            } selection;
         } current;
-
-        struct {
-            bool enabled = true;
-            float32 radius = 2.5f;
-            vec4 border_color = vec4(0, 0, 0, 1);
-            vec4 fill_color = vec4(1, 1, 0, 1);
-        } selected;
 
         BackboneAnglesTrajectory backbone_angles{};
     } ramachandran;
@@ -462,8 +475,9 @@ struct ApplicationData {
     struct {
         DynamicArray<Representation> buffer{};
         DynamicArray<bool> atom_visibility_mask{};
+        bool atom_visibility_mask_dirty = false;
         bool show_window = false;
-        bool changed = false;
+        // bool changed = false;
     } representations;
 
     /*
@@ -507,7 +521,7 @@ static void reset_view(ApplicationData* data, bool move_camera = false, bool smo
 static float32 compute_avg_ms(float32 dt);
 static PickingData read_picking_data(const MainFramebuffer& fbo, int32 x, int32 y);
 static bool handle_selection(ApplicationData* data);
-static void draw_representations_lean_and_mean(ApplicationData* data, vec4 color = vec4(1,1,1,1), float scale = 1.0f, uint32 mask = 0xFFFFFFFFU);
+static void draw_representations_lean_and_mean(ApplicationData* data, vec4 color = vec4(1, 1, 1, 1), float scale = 1.0f, uint32 mask = 0xFFFFFFFFU);
 
 static void draw_main_menu(ApplicationData* data);
 static void draw_context_popup(ApplicationData* data);
@@ -547,6 +561,8 @@ static void remove_representation(ApplicationData* data, int idx);
 static void update_representation(ApplicationData* data, Representation* rep);
 static void reset_representations(ApplicationData* data);
 static void clear_representations(ApplicationData* data);
+
+static void recompute_atom_visibility_mask(ApplicationData* data);
 
 // Selections
 static Selection* create_selection(ApplicationData* data, CString name, Array<const bool> atom_mask);
@@ -730,6 +746,8 @@ int main(int, char**) {
         }
 
         data.selection.selecting = false;
+
+        recompute_atom_visibility_mask(&data);
 
         if (!ImGui::GetIO().WantCaptureMouse) {
             // #selection
@@ -1019,7 +1037,7 @@ int main(int, char**) {
             param.resolution = res;
         }
 
-        const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3, GL_COLOR_ATTACHMENT4};
+        const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3, GL_COLOR_ATTACHMENT4, GL_COLOR_ATTACHMENT5};
 
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.deferred.fbo);
         glViewport(0, 0, data.fbo.width, data.fbo.height);
@@ -1029,15 +1047,15 @@ int main(int, char**) {
 
         // Setup fbo and clear textures
         PUSH_GPU_SECTION("Clear G-buffer") {
-            // Clear color+alpha, normal, velocity, emissive and depth
-            glDrawBuffers(4, draw_buffers);
+            // Clear color+alpha, normal, velocity, emissive, post_tonemap and depth
+            glDrawBuffers(5, draw_buffers);
             glClearColor(0, 0, 0, 0);
             glClearDepthf(1.f);
             glStencilMask(0xFF);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
             // Clear picking buffer
-            glDrawBuffer(GL_COLOR_ATTACHMENT4);
+            glDrawBuffer(GL_COLOR_ATTACHMENT5);
             glClearColor(CLEAR_INDEX.x, CLEAR_INDEX.y, CLEAR_INDEX.z, CLEAR_INDEX.w);
             glClear(GL_COLOR_BUFFER_BIT);
         }
@@ -1124,29 +1142,39 @@ int main(int, char**) {
         }
         POP_GPU_SECTION()  // G-buffer
 
-		const bool atom_selection_empty = is_array_zero(data.selection.current_selection_mask);
-		const bool atom_highlight_empty = is_array_zero(data.selection.current_highlight_mask);
-
         PUSH_GPU_SECTION("Selection") {
             const uint32 atom_count = (uint32)data.mol_data.dynamic.molecule.atom.count;
+            const bool atom_selection_empty = is_array_zero(data.selection.current_selection_mask);
+            const bool atom_highlight_empty = is_array_zero(data.selection.current_highlight_mask);
             glDepthMask(0);
 
-            glDrawBuffer(GL_COLOR_ATTACHMENT3);  // Emission buffer
+            glDrawBuffer(GL_COLOR_ATTACHMENT4);  // Post_Tonemap buffer
             glEnable(GL_DEPTH_TEST);
             glEnable(GL_STENCIL_TEST);
 
-            {
+            if (!atom_selection_empty) {
                 glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
 
                 glColorMask(0, 0, 0, 0);
                 glStencilMask(0xFF);
                 glStencilFunc(GL_ALWAYS, 2, 0xFF);
 
-                // const vec4 fill_color = vec4(0, 0, 10, 0);
-				draw_representations_lean_and_mean(&data);
+                const vec4 color = data.selection.color.selection.fill_color;
+                draw_representations_lean_and_mean(&data, color, 1.0f, AtomBit_Selected);
             }
 
-            {
+            if (!atom_highlight_empty) {
+                glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
+
+                glColorMask(0, 0, 0, 0);
+                glStencilMask(0xFF);
+                glStencilFunc(GL_ALWAYS, 2, 0xFF);
+
+                const vec4 color = data.selection.color.highlight.fill_color;
+                draw_representations_lean_and_mean(&data, color, 1.0f, AtomBit_Highlighted);
+            }
+
+            if (!atom_selection_empty || !atom_highlight_empty) {
                 glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
                 glDepthFunc(GL_LEQUAL);
 
@@ -1154,46 +1182,58 @@ int main(int, char**) {
                 glStencilMask(0xFF);
                 glStencilFunc(GL_ALWAYS, 4, 0xFF);
 
-                //const vec4 visible_color = vec4(1, 1, 1, 0);
-				draw_representations_lean_and_mean(&data);
-
+                // const vec4 visible_color = vec4(1, 1, 1, 0);
+                draw_representations_lean_and_mean(&data);
             }
 
             glDisable(GL_DEPTH_TEST);
 
-            {
-				// Highlight
+            if (!atom_selection_empty) {
+                // Selection
                 glStencilFunc(GL_GREATER, 1, 0xFF);
                 glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
                 glStencilMask(0x00);
-                glColorMask(1, 1, 1, 0);
+                glColorMask(1, 1, 1, 1);
 
-                const vec4 color = vec4(0, 0.5, 1.0, 0) * 5.0f;
-				draw_representations_lean_and_mean(&data, color, 1.2f, 0x02);
+                // const vec4 color = vec4(0, 0.5, 1.0, 0) * 5.0f;
+                const vec4 color = data.selection.color.selection.outline_color;
+                const float scale = data.selection.color.selection.outline_scale;
+                draw_representations_lean_and_mean(&data, color, scale, AtomBit_Selected);
             }
 
-			{
-				glStencilFunc(GL_GREATER, 1, 0xFF);
-				glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
-				glStencilMask(0x00);
-				glColorMask(1, 1, 1, 0);
+            if (!atom_highlight_empty) {
+                // Highlight
+                glStencilFunc(GL_GREATER, 1, 0xFF);
+                glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
+                glStencilMask(0x00);
+                glColorMask(1, 1, 1, 1);
 
-				const vec4 color = vec4(1.0, 0.5, 0, 0) * 5.0f;
-				draw_representations_lean_and_mean(&data, color, 1.2f, 0x01);
-			}
-
+                const vec4 color = data.selection.color.highlight.outline_color;
+                const float scale = data.selection.color.highlight.outline_scale;
+                draw_representations_lean_and_mean(&data, color, scale, AtomBit_Highlighted);
+            }
 
             if (!atom_selection_empty) {
                 glStencilFunc(GL_NOTEQUAL, 4, 0xFF);
                 glStencilMask(0x00);
                 glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
                 glDrawBuffer(GL_COLOR_ATTACHMENT0);
-                postprocessing::scale_hsv(data.fbo.deferred.color, vec3(1, 0.15, 1));
+                postprocessing::scale_hsv(data.fbo.deferred.color, vec3(1, data.selection.color.non_selected_saturation, 1));
             }
+
+            /*
+if (!atom_highlight_empty) {
+glStencilFunc(GL_NOTEQUAL, 4, 0xFF);
+glStencilMask(0x00);
+glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+glDrawBuffer(GL_COLOR_ATTACHMENT0);
+postprocessing::scale_hsv(data.fbo.deferred.color, vec3(1, 0.15, 1));
+}
+            */
 
             glDisable(GL_STENCIL_TEST);
             glEnable(GL_DEPTH_TEST);
-			glDepthFunc(GL_LESS);
+            glDepthFunc(GL_LESS);
             glDepthMask(1);
         }
         POP_GPU_SECTION()
@@ -1299,6 +1339,7 @@ glDisable(GL_BLEND);
             desc.input_textures.normal = data.fbo.deferred.normal;
             desc.input_textures.velocity = data.fbo.deferred.velocity;
             desc.input_textures.emissive = data.fbo.deferred.emissive;
+            desc.input_textures.post_tonemap = data.fbo.deferred.post_tonemap;
 
             postprocessing::shade_and_postprocess(desc, data.view.param);
         }
@@ -1331,9 +1372,9 @@ glDisable(GL_BLEND);
         POP_GPU_SECTION()
 
         // Activate backbuffer
-        glViewport(0, 0, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        glDrawBuffer(GL_BACK);
+        // glViewport(0, 0, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
+        // glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        // glDrawBuffer(GL_BACK);
 
         if (data.density_volume.enabled) {
             PUSH_GPU_SECTION("Volume Rendering")
@@ -1512,7 +1553,7 @@ static PickingData read_picking_data(const MainFramebuffer& framebuffer, int32 x
     PickingData data{};
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer.deferred.fbo);
-    glReadBuffer(GL_COLOR_ATTACHMENT4);
+    glReadBuffer(GL_COLOR_ATTACHMENT5);
 
     // Queue async reads from current frame to pixel pack buffer
     glBindBuffer(GL_PIXEL_PACK_BUFFER, framebuffer.pbo_picking.color[frame]);
@@ -1764,6 +1805,17 @@ ImGui::EndMenu();
             ImGui::Separator();
             ImGui::Checkbox("Vsync", &data->ctx.window.vsync);
             ImGui::Separator();
+
+            ImGui::BeginGroup();
+            ImGui::Text("Camera");
+            {
+                float fov = data->view.camera.fov_y * math::RAD_TO_DEG;
+                if (ImGui::SliderFloat("field of view", &fov, 12.5f, 80.0f)) {
+                    data->view.camera.fov_y = math::DEG_TO_RAD * fov;
+                }
+            }
+            ImGui::EndGroup();
+
             ImGui::BeginGroup();
             ImGui::Text("Background");
             ImGui::ColorEdit3("Color", &data->visuals.background.color[0], ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
@@ -1820,23 +1872,27 @@ ImGui::EndMenu();
             ImGui::Separator();
 
             ImGui::BeginGroup();
-            ImGui::PushID("Selection");
-            ImGui::Text("Selection");
-            ImGui::ColorEdit3("Color", &data->selection.selection_color[0], ImGuiColorEditFlags_NoInputs);
-            ImGui::SameLine();
-            ImGui::SliderFloat("Scale", &data->selection.selection_scale, 0.f, 20.f);
+            ImGui::Text("Spatial Selection");
+            ImGui::PushID("spatial");
+            ImGui::ColorEdit4("Selection Fill", &data->selection.color.selection.fill_color[0], ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
+            ImGui::ColorEdit4("Selection Outline", &data->selection.color.selection.outline_color[0], ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
+            ImGui::SliderFloat("Selection Outline Scale", &data->selection.color.selection.outline_scale, 1.01f, 2.0f);
+
+            ImGui::ColorEdit4("Highlight Fill", &data->selection.color.highlight.fill_color[0], ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
+            ImGui::ColorEdit4("Highlight Outline", &data->selection.color.highlight.outline_color[0], ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
+            ImGui::SliderFloat("Highlight Outline Scale", &data->selection.color.highlight.outline_scale, 1.01f, 2.0f);
+
+            ImGui::Spacing();
+            ImGui::SliderFloat("Non selected saturation", &data->selection.color.non_selected_saturation, 0.0f, 1.0f);
             ImGui::PopID();
-            ImGui::PushID("Highlight");
-            ImGui::Text("Highlight");
-            ImGui::ColorEdit3("Color", &data->selection.highlight_color[0], ImGuiColorEditFlags_NoInputs);
-            ImGui::SameLine();
-            ImGui::SliderFloat("Scale", &data->selection.highlight_scale, 0.f, 20.f);
-            ImGui::PopID();
-            ImGui::PushID("Outline");
-            ImGui::Text("Outline");
-            ImGui::ColorEdit3("Color", &data->selection.outline_color[0], ImGuiColorEditFlags_NoInputs);
-            ImGui::SameLine();
-            ImGui::SliderFloat("Scale", &data->selection.outline_scale, 0.f, 20.f);
+            ImGui::EndGroup();
+            ImGui::Separator();
+
+            ImGui::BeginGroup();
+            ImGui::Text("Ramachandran Selection");
+            ImGui::PushID("rama");
+            ImGui::ColorEdit4("Selection Fill", &data->ramachandran.current.selection.selection_color[0], ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
+            ImGui::ColorEdit4("Highlight Fill", &data->ramachandran.current.selection.highlight_color[0], ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
             ImGui::PopID();
             ImGui::EndGroup();
             ImGui::Separator();
@@ -2443,6 +2499,8 @@ static void draw_representations_window(ApplicationData* data) {
         if (ImGui::CollapsingHeader(name)) {
             ImGui::Checkbox("enabled", &rep.enabled);
             ImGui::SameLine();
+            ImGui::Checkbox("show in sel.", &rep.show_in_selection);
+            ImGui::SameLine();
             if (ImGui::DeleteButton("remove")) {
                 remove_representation(data, i);
             }
@@ -2492,8 +2550,8 @@ static void draw_representations_window(ApplicationData* data) {
 
     ImGui::End();
 
-    const auto new_hash = hash::crc64(data->representations.buffer);
-    data->representations.changed = (new_hash != old_hash);
+    // const auto new_hash = hash::crc64(data->representations.buffer);
+    // data->representations.changed = (new_hash != old_hash);
 }
 
 static void draw_property_window(ApplicationData* data) {
@@ -3069,16 +3127,16 @@ static void draw_ramachandran_window(ApplicationData* data) {
         ImGui::Checkbox("Show Current Frame", &data->ramachandran.current.enabled);
         if (data->ramachandran.current.enabled) {
             ImGui::PushID("current");
-            ImGui::SliderFloat("##base_radius", &data->ramachandran.current.radius, 0.5f, 5.f, "base radius %1.1f");
+            ImGui::SliderFloat("##base_radius", &data->ramachandran.current.base.radius, 0.5f, 5.f, "base radius %1.1f");
             // ImGui::SameLine();
             // ImGui::ColorEdit4("base color", (float*)&data->ramachandran.current.fill_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
 
-            ImGui::SliderFloat("##selected_radius", &data->ramachandran.selected.radius, 0.5, 5.f, "selected radius %1.1f");
+            ImGui::SliderFloat("##selected_radius", &data->ramachandran.current.selection.radius, 0.5, 5.f, "selected radius %1.1f");
             // ImGui::SameLine();
             // ImGui::ColorEdit4("selected color", (float*)&data->ramachandran.selected.fill_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
 
-            data->ramachandran.current.radius = math::round(data->ramachandran.current.radius * 2.f) / 2.f;
-            data->ramachandran.selected.radius = math::round(data->ramachandran.selected.radius * 2.f) / 2.f;
+            data->ramachandran.current.base.radius = math::round(data->ramachandran.current.base.radius * 2.f) / 2.f;
+            data->ramachandran.current.selection.radius = math::round(data->ramachandran.current.selection.radius * 2.f) / 2.f;
             // ImGui::ColorEdit4("border color", (float*)&data->ramachandran.current.border_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
             ImGui::PopID();
         }
@@ -3138,11 +3196,11 @@ static void draw_ramachandran_window(ApplicationData* data) {
 
     if (data->ramachandran.current.enabled) {
         const uint32 border_color = math::convert_color(data->ramachandran.current.border_color);
-        const uint32 base_color = math::convert_color(data->ramachandran.current.fill_color);
-        const uint32 selected_color = math::convert_color(vec4(data->selection.selection_color, 1));
-        const uint32 highlight_color = math::convert_color(vec4(data->selection.highlight_color, 1));
-        const float32 base_radius = data->ramachandran.current.radius;
-        const float32 selected_radius = data->ramachandran.selected.radius;
+        const uint32 base_color = math::convert_color(data->ramachandran.current.base.fill_color);
+        const uint32 selected_color = math::convert_color(data->ramachandran.current.selection.selection_color);
+        const uint32 highlight_color = math::convert_color(data->ramachandran.current.selection.highlight_color);
+        const float32 base_radius = data->ramachandran.current.base.radius;
+        const float32 selected_radius = data->ramachandran.current.selection.radius;
 
         for (int64 i = 0; i < backbone_segments.size(); i++) {
             const auto& angle = current_angles[i];
@@ -3297,6 +3355,7 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     if (!fbo->deferred.normal) glGenTextures(1, &fbo->deferred.normal);
     if (!fbo->deferred.velocity) glGenTextures(1, &fbo->deferred.velocity);
     if (!fbo->deferred.emissive) glGenTextures(1, &fbo->deferred.emissive);
+    if (!fbo->deferred.post_tonemap) glGenTextures(1, &fbo->deferred.post_tonemap);
     if (!fbo->deferred.picking) glGenTextures(1, &fbo->deferred.picking);
     if (!fbo->pbo_picking.color[0]) glGenBuffers(2, fbo->pbo_picking.color);
     if (!fbo->pbo_picking.depth[0]) glGenBuffers(2, fbo->pbo_picking.depth);
@@ -3336,6 +3395,13 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+    glBindTexture(GL_TEXTURE_2D, fbo->deferred.post_tonemap);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
     glBindTexture(GL_TEXTURE_2D, fbo->deferred.picking);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -3364,7 +3430,7 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     fbo->width = width;
     fbo->height = height;
 
-    const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3, GL_COLOR_ATTACHMENT4};
+    const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3, GL_COLOR_ATTACHMENT4, GL_COLOR_ATTACHMENT5};
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo->deferred.fbo);
     if (attach_textures_deferred) {
@@ -3374,7 +3440,8 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, fbo->deferred.normal, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, fbo->deferred.velocity, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, fbo->deferred.emissive, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT4, GL_TEXTURE_2D, fbo->deferred.picking, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT4, GL_TEXTURE_2D, fbo->deferred.post_tonemap, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT5, GL_TEXTURE_2D, fbo->deferred.picking, 0);
     }
     ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
     glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
@@ -3390,6 +3457,8 @@ static void destroy_framebuffer(MainFramebuffer* fbo) {
     if (fbo->deferred.depth) glDeleteTextures(1, &fbo->deferred.depth);
     if (fbo->deferred.color) glDeleteTextures(1, &fbo->deferred.color);
     if (fbo->deferred.normal) glDeleteTextures(1, &fbo->deferred.normal);
+    if (fbo->deferred.emissive) glDeleteTextures(1, &fbo->deferred.emissive);
+    if (fbo->deferred.post_tonemap) glDeleteTextures(1, &fbo->deferred.post_tonemap);
     if (fbo->deferred.picking) glDeleteTextures(1, &fbo->deferred.picking);
 
     if (fbo->pbo_picking.color[0]) glDeleteBuffers(2, fbo->pbo_picking.color);
@@ -3442,7 +3511,7 @@ static void init_molecule_buffers(ApplicationData* data) {
                 }
                 control_idx++;
 
-                // @NOTE: For every control point we generate N spline control points
+                // @NOTE: For every 'base' control point we generate N spline control points (for subdivision)
                 if (!last) {
                     for (int32 j = 0; j < SPLINE_SUBDIVISION_COUNT; j++) {
                         spline_index_data.push_back(spline_idx);
@@ -3625,7 +3694,7 @@ void copy_molecule_data_to_buffers(ApplicationData* data) {
         }
 
         for (int64 i = 0; i < N; i++) {
-            sel_gpu[i] = (data->selection.current_selection_mask[i] ? 2 : 0) | (data->selection.current_highlight_mask[i] ? 1 : 0);
+            sel_gpu[i] = (data->selection.current_selection_mask[i] ? 0x2 : 0) | (data->selection.current_highlight_mask[i] ? 0x1 : 0);
         }
         glUnmapBuffer(GL_ARRAY_BUFFER);
     }
@@ -3905,10 +3974,15 @@ static void load_workspace(ApplicationData* data, CString file) {
                     data->view.animation.target_position = pos;
                 }
                 if (compare_n(line, "Rotation=", 9)) {
-                    quat rot = quat(to_vec4(trim(line.substr(9))));
-                    data->view.camera.orientation = rot;
+                    vec4 v = to_vec4(trim(line.substr(9)));
+                    data->view.camera.orientation.x = v.x;
+                    data->view.camera.orientation.y = v.y;
+                    data->view.camera.orientation.z = v.z;
+                    data->view.camera.orientation.w = v.w;
                 }
-                if (compare_n(line, "Distance=", 9)) data->view.trackball_state.distance = to_float(trim(line.substr(9)));
+                if (compare_n(line, "Distance=", 9)) {
+                    data->view.trackball_state.distance = to_float(trim(line.substr(9)));
+                }
             }
         }
     }
@@ -4032,21 +4106,25 @@ static void remove_representation(ApplicationData* data, int idx) {
 
     auto& rep = data->representations.buffer[idx];
     if (rep.color_buffer) glDeleteBuffers(1, &rep.color_buffer);
-    if (rep.atom_mask) free(&rep.atom_mask);
+    if (rep.atom_mask) free_array(&rep.atom_mask);
     data->representations.buffer.remove(&rep);
 }
 
 static void recompute_atom_visibility_mask(ApplicationData* data) {
     ASSERT(data);
+    if (!data->representations.atom_visibility_mask_dirty) return;
+
     const auto N = data->mol_data.dynamic.molecule.atom.count;
     data->representations.atom_visibility_mask.resize(N);
     memset_array(data->representations.atom_visibility_mask, false);
 
     for (const auto& rep : data->representations.buffer) {
         for (int64 i = 0; i < N; i++) {
-            data->representations.atom_visibility_mask[i] |= rep.atom_mask[i];
+            data->representations.atom_visibility_mask[i] = data->representations.atom_visibility_mask[i] || rep.atom_mask[i];
         }
     }
+
+    data->representations.atom_visibility_mask_dirty = false;
 }
 
 static void update_representation(ApplicationData* data, Representation* rep) {
@@ -4089,7 +4167,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
     }
     rep->filter_is_ok = filter::compute_filter_mask(rep->atom_mask, data->mol_data.dynamic, rep->filter.buffer);
     filter::filter_colors(colors, rep->atom_mask);
-    recompute_atom_visibility_mask(data);
+    data->representations.atom_visibility_mask_dirty = true;
 
     if (!rep->color_buffer) glGenBuffers(1, &rep->color_buffer);
     glBindBuffer(GL_ARRAY_BUFFER, rep->color_buffer);
@@ -4369,41 +4447,46 @@ static void create_volume(ApplicationData* data) {
 }
 
 static void draw_representations_lean_and_mean(ApplicationData* data, vec4 color, float scale, uint32 mask) {
-	ASSERT(data);
-	const int32 atom_count = (int32)data->mol_data.dynamic.molecule.atom.count;
-	const int32 bond_count = (int32)data->mol_data.dynamic.molecule.covalent_bonds.size();
+    ASSERT(data);
+    const int32 atom_count = (int32)data->mol_data.dynamic.molecule.atom.count;
+    const int32 bond_count = (int32)data->mol_data.dynamic.molecule.covalent_bonds.size();
 
-	PUSH_GPU_SECTION("Lean and Mean")
-	for (const auto& rep : data->representations.buffer) {
-		if (!rep.enabled) continue;
-		switch (rep.type) {
-		case RepresentationType::Vdw:
-			PUSH_GPU_SECTION("Vdw")
-			draw::lean_and_mean::draw_vdw(data->gpu_buffers.position, data->gpu_buffers.radius, data->gpu_buffers.selection, atom_count, data->view.param, rep.radius * scale, color, mask);
-			POP_GPU_SECTION()
-			break;
-		case RepresentationType::Licorice:
-			PUSH_GPU_SECTION("Licorice")
-			draw::lean_and_mean::draw_licorice(data->gpu_buffers.position, data->gpu_buffers.selection, data->gpu_buffers.bond, bond_count, data->view.param, rep.radius * scale, color, mask);
-			POP_GPU_SECTION()
-			break;
-		case RepresentationType::BallAndStick:
-			PUSH_GPU_SECTION("Vdw")
-			draw::lean_and_mean::draw_vdw(data->gpu_buffers.position, data->gpu_buffers.radius, data->gpu_buffers.selection, atom_count, data->view.param, rep.radius * scale * BALL_AND_STICK_VDW_SCALE, color, mask);
-			POP_GPU_SECTION()
-			PUSH_GPU_SECTION("Licorice")
-			draw::lean_and_mean::draw_licorice(data->gpu_buffers.position, data->gpu_buffers.selection, data->gpu_buffers.bond, bond_count, data->view.param, rep.radius * scale * BALL_AND_STICK_LICORICE_SCALE, color, mask);
-			POP_GPU_SECTION()
-			break;
-		case RepresentationType::Ribbons:
-			PUSH_GPU_SECTION("Ribbons")
-			draw::lean_and_mean::draw_ribbons(data->gpu_buffers.backbone.spline, data->gpu_buffers.backbone.spline_index, data->gpu_buffers.selection, data->gpu_buffers.backbone.num_spline_indices, data->view.param, scale, color, mask);
-			POP_GPU_SECTION()
-			break;
-		default:
-			break;
-		}
-	}
-	POP_GPU_SECTION()
-
+    PUSH_GPU_SECTION("Lean and Mean")
+    for (const auto& rep : data->representations.buffer) {
+        if (!rep.enabled) continue;
+        if (!rep.show_in_selection) continue;
+        switch (rep.type) {
+            case RepresentationType::Vdw:
+                PUSH_GPU_SECTION("Vdw")
+                draw::lean_and_mean::draw_vdw(data->gpu_buffers.position, data->gpu_buffers.radius, rep.color_buffer, data->gpu_buffers.selection, atom_count, data->view.param, rep.radius * scale,
+                                              color, mask);
+                POP_GPU_SECTION()
+                break;
+            case RepresentationType::Licorice:
+                PUSH_GPU_SECTION("Licorice")
+                draw::lean_and_mean::draw_licorice(data->gpu_buffers.position, rep.color_buffer, data->gpu_buffers.selection, data->gpu_buffers.bond, bond_count, data->view.param, rep.radius * scale,
+                                                   color, mask);
+                POP_GPU_SECTION()
+                break;
+            case RepresentationType::BallAndStick:
+                PUSH_GPU_SECTION("Vdw")
+                draw::lean_and_mean::draw_vdw(data->gpu_buffers.position, data->gpu_buffers.radius, rep.color_buffer, data->gpu_buffers.selection, atom_count, data->view.param,
+                                              rep.radius * scale * BALL_AND_STICK_VDW_SCALE, color, mask);
+                POP_GPU_SECTION()
+                PUSH_GPU_SECTION("Licorice")
+                draw::lean_and_mean::draw_licorice(data->gpu_buffers.position, rep.color_buffer, data->gpu_buffers.selection, data->gpu_buffers.bond, bond_count, data->view.param,
+                                                   rep.radius * scale * BALL_AND_STICK_LICORICE_SCALE, color, mask);
+                POP_GPU_SECTION()
+                break;
+            case RepresentationType::Ribbons:
+                PUSH_GPU_SECTION("Ribbons")
+                draw::lean_and_mean::draw_ribbons(data->gpu_buffers.backbone.spline, data->gpu_buffers.backbone.spline_index, rep.color_buffer, data->gpu_buffers.selection,
+                                                  data->gpu_buffers.backbone.num_spline_indices, data->view.param, scale, color, mask);
+                POP_GPU_SECTION()
+                break;
+            default:
+                break;
+        }
+    }
+    POP_GPU_SECTION()
 }
