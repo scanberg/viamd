@@ -2497,7 +2497,9 @@ static void draw_representations_window(ApplicationData* data) {
 
         ImGui::PushID(i);
         if (ImGui::CollapsingHeader(name)) {
-            ImGui::Checkbox("enabled", &rep.enabled);
+            if (ImGui::Checkbox("enabled", &rep.enabled)) {
+                data->representations.atom_visibility_mask_dirty = true;
+            }
             ImGui::SameLine();
             ImGui::Checkbox("show in sel.", &rep.show_in_selection);
             ImGui::SameLine();
@@ -3218,7 +3220,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
             const ImVec2 max_box(math::round(coord.x + radius), math::round(coord.y + radius));
             if (radius > 1.f) {
                 dl->AddRectFilled(min_box, max_box, fill_color);
-                dl->AddRect(min_box, max_box, border_color);
+                dl->AddRect(min_box, max_box, border_color, 0.f, 15, 2.f);  // @TODO: REVERT THIS LATER
             } else {
                 dl->AddRectFilled(min_box, max_box, border_color);
             }
@@ -4119,6 +4121,7 @@ static void recompute_atom_visibility_mask(ApplicationData* data) {
     memset_array(data->representations.atom_visibility_mask, false);
 
     for (const auto& rep : data->representations.buffer) {
+        if (!rep.enabled) continue;
         for (int64 i = 0; i < N; i++) {
             data->representations.atom_visibility_mask[i] = data->representations.atom_visibility_mask[i] || rep.atom_mask[i];
         }
