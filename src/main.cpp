@@ -1146,17 +1146,20 @@ int main(int, char**) {
             const uint32 atom_count = (uint32)data.mol_data.dynamic.molecule.atom.count;
             const bool atom_selection_empty = is_array_zero(data.selection.current_selection_mask);
             const bool atom_highlight_empty = is_array_zero(data.selection.current_highlight_mask);
-            glDepthMask(0);
 
             glDrawBuffer(GL_COLOR_ATTACHMENT4);  // Post_Tonemap buffer
             glEnable(GL_DEPTH_TEST);
             glEnable(GL_STENCIL_TEST);
 
+            glDepthMask(0);
+            glColorMask(0, 0, 0, 0);
+
+
+
             if (!atom_selection_empty) {
                 glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
 
-                glColorMask(0, 0, 0, 0);
-                glStencilMask(0xFF);
+                glStencilMask(0x2);
                 glStencilFunc(GL_ALWAYS, 2, 0xFF);
 
                 const vec4 color = data.selection.color.selection.fill_color;
@@ -1166,34 +1169,33 @@ int main(int, char**) {
             if (!atom_highlight_empty) {
                 glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
 
-                glColorMask(0, 0, 0, 0);
-                glStencilMask(0xFF);
-                glStencilFunc(GL_ALWAYS, 2, 0xFF);
+                glStencilMask(0x4);
+                glStencilFunc(GL_ALWAYS, 4, 0xFF);
 
                 const vec4 color = data.selection.color.highlight.fill_color;
                 draw_representations_lean_and_mean(&data, color, 1.0f, AtomBit_Highlighted);
             }
 
-            if (!atom_selection_empty || !atom_highlight_empty) {
-                glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-                glDepthFunc(GL_LEQUAL);
+			if (!atom_selection_empty || !atom_highlight_empty) {
+				glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+				glDepthFunc(GL_LEQUAL);
 
-                glColorMask(0, 0, 0, 0);
-                glStencilMask(0xFF);
-                glStencilFunc(GL_ALWAYS, 4, 0xFF);
+				glStencilMask(0x1);
+				glStencilFunc(GL_ALWAYS, 1, 0xFF);
 
-                // const vec4 visible_color = vec4(1, 1, 1, 0);
-                draw_representations_lean_and_mean(&data);
-            }
+				// const vec4 visible_color = vec4(1, 1, 1, 0);
+				draw_representations_lean_and_mean(&data);
+			}
 
             glDisable(GL_DEPTH_TEST);
 
+			glStencilMask(0x00);
+			glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+			glColorMask(1, 1, 1, 1);
+
             if (!atom_selection_empty) {
                 // Selection
-                glStencilFunc(GL_GREATER, 1, 0xFF);
-                glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
-                glStencilMask(0x00);
-                glColorMask(1, 1, 1, 1);
+                glStencilFunc(GL_NOTEQUAL, 2, 0x2);
 
                 // const vec4 color = vec4(0, 0.5, 1.0, 0) * 5.0f;
                 const vec4 color = data.selection.color.selection.outline_color;
@@ -1203,10 +1205,7 @@ int main(int, char**) {
 
             if (!atom_highlight_empty) {
                 // Highlight
-                glStencilFunc(GL_GREATER, 1, 0xFF);
-                glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
-                glStencilMask(0x00);
-                glColorMask(1, 1, 1, 1);
+                glStencilFunc(GL_NOTEQUAL, 4, 0x4);
 
                 const vec4 color = data.selection.color.highlight.outline_color;
                 const float scale = data.selection.color.highlight.outline_scale;
@@ -1214,22 +1213,12 @@ int main(int, char**) {
             }
 
             if (!atom_selection_empty) {
-                glStencilFunc(GL_NOTEQUAL, 4, 0xFF);
-                glStencilMask(0x00);
-                glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+                glStencilFunc(GL_NOTEQUAL, 1, 0x1);
+                //glStencilMask(0x00);
+                //glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
                 glDrawBuffer(GL_COLOR_ATTACHMENT0);
                 postprocessing::scale_hsv(data.fbo.deferred.color, vec3(1, data.selection.color.non_selected_saturation, 1));
             }
-
-            /*
-if (!atom_highlight_empty) {
-glStencilFunc(GL_NOTEQUAL, 4, 0xFF);
-glStencilMask(0x00);
-glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-glDrawBuffer(GL_COLOR_ATTACHMENT0);
-postprocessing::scale_hsv(data.fbo.deferred.color, vec3(1, 0.15, 1));
-}
-            */
 
             glDisable(GL_STENCIL_TEST);
             glEnable(GL_DEPTH_TEST);
@@ -3206,7 +3195,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
 
         for (int64 i = 0; i < backbone_segments.size(); i++) {
             const auto& angle = current_angles[i];
-            const auto& seg = backbone_segments[i];
+            //const auto& seg = backbone_segments[i];
             const auto& res = residues[i];
             if (angle.x == 0.f || angle.y == 0.f) continue;
 
@@ -4246,45 +4235,35 @@ static bool handle_selection(ApplicationData* data) {
     const bool shift_down = data->ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data->ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
     const bool mouse_down = data->ctx.input.mouse.down[0] || data->ctx.input.mouse.down[1];
 
-    mask.resize(data->mol_data.dynamic.molecule.atom.count);
+    mask.resize(N);
     memset_array(mask, false);
 
     memset_array(data->selection.current_highlight_mask, false);
+	data->gpu_buffers.dirty.selection = true;
 
-    Range<int32> picking_range = {0, 0};
+    //Range<int32> picking_range = {0, 0};
 
     if (data->picking.idx != NO_PICKING_IDX && !region_select) {
+		ASSERT(0 <= data->picking.idx && data->picking.idx <= N);
+		mask[data->picking.idx] = true;
+
         switch (data->selection.level_mode) {
             case SelectionLevel::Atom:
-                picking_range = {(int32)data->picking.idx, (int32)data->picking.idx + 1};
                 break;
             case SelectionLevel::Residue: {
-                const auto res_idx = data->mol_data.dynamic.molecule.atom.residue_indices[data->picking.idx];
-                if (0 <= res_idx && res_idx < data->mol_data.dynamic.molecule.residues.size()) {
-                    const auto& res = data->mol_data.dynamic.molecule.residues[res_idx];
-                    picking_range = {res.atom_idx.beg, res.atom_idx.end};
-                }
+				expand_mask_to_residue(mask, data->mol_data.dynamic.molecule.residues);
                 break;
             }
             case SelectionLevel::Chain: {
-                const auto res_idx = data->mol_data.dynamic.molecule.atom.residue_indices[data->picking.idx];
-                if (0 <= res_idx && res_idx < data->mol_data.dynamic.molecule.residues.size()) {
-                    const auto chain_idx = data->mol_data.dynamic.molecule.residues[res_idx].chain_idx;
-                    if (0 <= chain_idx && chain_idx < data->mol_data.dynamic.molecule.chains.size()) {
-                        const auto& chain = data->mol_data.dynamic.molecule.chains[chain_idx];
-                        picking_range = {chain.atom_idx.beg, chain.atom_idx.end};
-                    }
-                }
+				expand_mask_to_chain(mask, data->mol_data.dynamic.molecule.chains);
                 break;
             }
             default:
-                assert(false);
+                ASSERT(false);
                 break;
         }
-
-        for (int64 i = picking_range.x; i < picking_range.y; i++) {
-            mask[i] = true;
-        }
+		memcpy(data->selection.current_highlight_mask.data(), mask.data(), mask.size());
+		data->gpu_buffers.dirty.selection = true;
     }
 
     if (shift_down) {
@@ -4326,24 +4305,23 @@ static bool handle_selection(ApplicationData* data) {
                     ASSERT(false);
             }
 
-            /*
-switch (region_mode) {
-    case RegionMode::Append:
-        for (int64 i = 0; i < N; i++) {
-            mask[i] = data->selection.current_selection_mask[i] && mask[i];
-        }
-        break;
-    case RegionMode::Remove:
-        for (int64 i = 0; i < N; i++) {
-            mask[i] = data->selection.current_selection_mask[i] && !mask[i];
-        }
-        break;
-    default:
-        ASSERT(false);
-}
-            */
+			switch (region_mode) {
+				case RegionMode::Append:
+					for (int64 i = 0; i < N; i++) {
+						data->selection.current_highlight_mask[i] = data->selection.current_selection_mask[i] || mask[i];
+					}
+					break;
+				case RegionMode::Remove:
+					for (int64 i = 0; i < N; i++) {
+						data->selection.current_highlight_mask[i] = data->selection.current_selection_mask[i] && !mask[i];
+					}
+					break;
+				default:
+					ASSERT(false);
+			}
 
             if (!mouse_down) {
+				// COMMIT OPERATION
                 for (int64 i = 0; i < data->selection.current_selection_mask.size(); i++) {
                     if (region_mode == RegionMode::Append) {
                         data->selection.current_selection_mask[i] |= mask[i];
@@ -4366,12 +4344,19 @@ switch (region_mode) {
             dl->AddRect(pos0, pos1, line_col);
             ImGui::EndCanvas();
 
+			data->gpu_buffers.dirty.selection = true;
+
         } else if (data->ctx.input.mouse.clicked[0] || data->ctx.input.mouse.clicked[1]) {
             if (data->picking.idx != NO_PICKING_IDX) {
-                const bool val = data->ctx.input.mouse.clicked[0];
-                for (int64 i = picking_range.x; i < picking_range.y; i++) {
-                    data->selection.current_selection_mask[i] = val;
-                }
+                const bool append = data->ctx.input.mouse.clicked[0];
+				for (int64 i = 0; i < N; i++) {
+					if (append) {
+						data->selection.current_selection_mask[i] |= mask[i];
+					}
+					else {
+						data->selection.current_selection_mask[i] &= !mask[i];
+					}
+				}
             } else if (data->ctx.input.mouse.clicked[1]) {
                 // Clear selection
                 memset_array(data->selection.current_selection_mask, false);
@@ -4381,10 +4366,10 @@ switch (region_mode) {
         region_select = false;
     }
 
-    for (int64 i = 0; i < N; i++) {
-        data->selection.current_highlight_mask[i] = mask[i];
-    }
-    data->gpu_buffers.dirty.selection = true;
+    //for (int64 i = 0; i < N; i++) {
+    //    data->selection.current_highlight_mask[i] = mask[i];
+    //}
+    //data->gpu_buffers.dirty.selection = true;
 
     return region_select;
 }

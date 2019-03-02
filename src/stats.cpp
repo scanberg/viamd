@@ -569,47 +569,6 @@ bool structure_match_atom(StructureData* data, const Array<CString> args, const 
     return true;
 }
 
-/*
-bool structure_match_selection {
-    ASSERT(data);
-
-    // Expect args to be  > 0
-    if (args.count == 0) {
-        set_error_message(ctx.current_property, "Expects one or more arguments for atom");
-        return false;
-    }
-
-    for (const auto& arg : args) {
-        IntRange range{0, 0};
-
-        if (is_range(arg)) {
-            if (!extract_range(&range, arg)) {
-                set_error_message(ctx.current_property, "Failed to parse range in argument for atom");
-                return false;
-            }
-            if (range.x == -1) range.x = 1;
-            if (range.y == -1) range.y = (int32)molecule.atom.count;
-        } else {
-            auto id = to_int(arg);
-            if (!id.success) {
-                set_error_message(ctx.current_property, "Failed to parse argument for atom");
-                return false;
-            }
-            range.x = range.y = id;
-        }
-
-        if (range.x < 1 || (int32)molecule.atom.count < range.y) {
-            set_error_message(ctx.current_property, "Index for atom is out of bounds");
-            return false;
-        }
-
-        data->structures.push_back({range.x - 1, range.y});
-    }
-
-    return true;
-}
-*/
-
 bool structure_extract_resatom(StructureData* data, const Array<CString> args, const MoleculeStructure&) {
     ASSERT(data);
     if (args.count != 1) {
