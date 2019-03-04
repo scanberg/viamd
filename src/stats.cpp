@@ -975,6 +975,9 @@ static bool compute_dihedral(Property* prop, const Array<CString> args, const Mo
 static float rmsd(Array<const vec3> ref, Array<const vec3> cur) {
     ASSERT(ref.size() == cur.size());
     int32 size = (int32)ref.size();
+
+    if (size <= 1) return 0.f;
+
     // ugly ugly hacks
     double* ref_tmp = (double*)TMP_MALLOC(size * sizeof(double) * 3);
     double* cur_tmp = (double*)TMP_MALLOC(size * sizeof(double) * 3);
@@ -1017,7 +1020,6 @@ static bool compute_rmsd(Property* prop, const Array<CString> args, const Molecu
 
     Array<const vec3> pos;
     Array<const vec3> ref;
-    vec3 com;
     float max_val = 0.0f;
     const float32 scl = 1.f / (float32)structure_count;
     for (int32 i = 0; i < num_frames; i++) {
