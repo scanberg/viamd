@@ -1229,13 +1229,14 @@ int main(int, char**) {
         // VOLUME RENDERING
         if (data.density_volume.enabled) {
             glDrawBuffer(GL_COLOR_ATTACHMENT4);  // Post_Tonemap buffer
-            glEnable(GL_DEPTH_TEST);
-            glDepthFunc(GL_LESS);
+            glDisable(GL_DEPTH_TEST);
+            //glDepthFunc(GL_LESS);
             glDepthMask(0);
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-            PUSH_GPU_SECTION("Volume Rendering") const float32 scl = 1.f * data.density_volume.density_scale / data.density_volume.texture.max_value;
+            PUSH_GPU_SECTION("Volume Rendering")
+			const float32 scl = 1.f * data.density_volume.density_scale / (data.density_volume.texture.max_value > 0.f ? data.density_volume.texture.max_value : 1.f);
             volume::render_volume_texture(data.density_volume.texture.id, data.fbo.deferred.depth, data.density_volume.texture_to_model_matrix, data.density_volume.model_to_world_matrix,
                                           data.view.param.matrix.view, data.view.param.matrix.proj, data.density_volume.color, scl);
             POP_GPU_SECTION()

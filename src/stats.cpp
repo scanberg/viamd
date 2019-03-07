@@ -227,14 +227,14 @@ void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, con
     if (ctx.properties.count == 0) return;
     const int32 num_frames = (int32)ctx.properties.front()->avg_data.count;
 
-    if (frame_range.beg == 0 && frame_range.end == 0) {
-        frame_range.end = num_frames;
-    }
+    clear_volume(vol);
 
     frame_range.beg = math::clamp(frame_range.beg, 0, num_frames);
     frame_range.end = math::clamp(frame_range.end, 0, num_frames);
 
-    clear_volume(vol);
+	if (frame_range.beg == frame_range.end) {
+		return;
+	}
 
     for (auto prop : ctx.properties) {
         if (!prop->enable_volume) continue;
@@ -1436,21 +1436,20 @@ bool properties_dirty() {
 }
 
 void async_update(const MoleculeDynamic& dynamic, Range<int32> frame_filter, void (*on_finished)(void*), void* usr_data) {
-    if (frame_filter.beg == 0 && frame_filter.end == 0) {
-        frame_filter.end = dynamic.trajectory.num_frames;
-    }
-
     if (!dynamic) return;
     if (dynamic.trajectory.num_frames == 0) return;
+    static Range<int32> prev_frame_filter{-1, -1};
 
-    static Range<int32> prev_frame_filter{0, 0};
+	const bool frame_filter_changed = prev_frame_filter != frame_filter;
+	const bool dirty_props = properties_dirty();
 
-    if ((prev_frame_filter != frame_filter || properties_dirty()) && !ctx.thread_running && !ctx.stop_signal) {
+    if ((frame_filter_changed || dirty_props) && !ctx.thread_running && !ctx.stop_signal) {
         prev_frame_filter = frame_filter;
         ctx.thread_running = true;
         std::thread([&dynamic, frame_filter, on_finished, usr_data]() {
             Histogram tmp_hist;
             init_histogram(&tmp_hist, NUM_BINS);
+			defer{ free_histogram(&tmp_hist); };
             ctx.fraction_done = 0.f;
 
             // @NOTE IMPORTANT: This is the one 'true' frame count which should be used for properties.
@@ -1527,7 +1526,6 @@ void async_update(const MoleculeDynamic& dynamic, Range<int32> frame_filter, voi
                 on_finished(usr_data);
             }
 
-            free_histogram(&tmp_hist);
             ctx.fraction_done = 1.f;
             ctx.thread_running = false;
             ctx.stop_signal = false;
