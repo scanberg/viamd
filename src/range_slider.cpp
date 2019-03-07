@@ -2,7 +2,6 @@
 // Taken from: https://github.com/wasikuss/imgui/commit/a50515ace6d9a62ebcd69817f1da927d31c39bb1
 
 #include "range_slider.h"
-#include <unordered_map>
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui_internal.h>
 
@@ -12,15 +11,12 @@ extern template IMGUI_API float RoundScalarWithFormatT<float, float>(const char*
 extern template IMGUI_API float SliderCalcRatioFromValueT<float, float>(ImGuiDataType data_type, float v, float v_min, float v_max, float power,
                                                                         float linear_zero_pos);
 
-struct RangeSliderState {
-    bool min_grab = false;
-    bool max_grab = false;
-    bool range_grab = false;
-    float v1_diff = 0.f;
-    float v2_diff = 0.f;
+enum RangeSliderGrabState {
+	None,
+	Min,
+	Max,
+	Range
 };
-
-std::unordered_map<ImGuiID, RangeSliderState> range_slider_states;
 
 // ~80% common code with ImGui::SliderBehavior
 bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v2, float v_min, float v_max, float power, const char* format,
@@ -37,7 +33,7 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
 
     const float grab_padding = 2.0f;
     const float slider_sz = is_horizontal ? (frame_bb.GetWidth() - grab_padding * 2.0f) : (frame_bb.GetHeight() - grab_padding * 2.0f);
-    float grab_sz = ImMin(style.GrabMinSize, slider_sz);
+    const float grab_sz = ImMin(style.GrabMinSize, slider_sz);
     const float slider_usable_sz = slider_sz - grab_sz;
     const float slider_usable_pos_min = (is_horizontal ? frame_bb.Min.x : frame_bb.Min.y) + grab_padding + grab_sz * 0.5f;
     const float slider_usable_pos_max = (is_horizontal ? frame_bb.Max.x : frame_bb.Max.y) - grab_padding - grab_sz * 0.5f;
@@ -56,11 +52,8 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
     }
 
     // Read state
-    RangeSliderState state;
-    auto it = range_slider_states.find(id);
-    if (it != range_slider_states.end()) {
-        state = it->second;
-    }
+	RangeSliderGrabState grab_state = (RangeSliderGrabState)ImGui::GetStateStorage()->GetInt(ImGui::GetID("GrabState"));
+	float delta_state = ImGui::GetStateStorage()->GetFloat(ImGui::GetID("DeltaState"));
 
     // Process clicking on the slider
     const float old_v1 = *v1;
@@ -68,7 +61,7 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
     if (g.ActiveId == id) {
         const float mouse_abs_pos = is_horizontal ? g.IO.MousePos.x : g.IO.MousePos.y;
 
-        auto compute_val = [&]() -> float {
+        const auto compute_val = [&]() -> float {
             float clicked_t = (slider_usable_sz > 0.0f) ? ImClamp((mouse_abs_pos - slider_usable_pos_min) / slider_usable_sz, 0.0f, 1.0f) : 0.0f;
             if (!is_horizontal) clicked_t = 1.0f - clicked_t;
 
@@ -112,51 +105,53 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
             float p2 = ImLerp(slider_usable_pos_min, slider_usable_pos_max, t2);
 
             if (fabsf(mouse_abs_pos - p1) < min_dist) {
-                state.min_grab = true;
+				grab_state = RangeSliderGrabState::Min;
             } else if (fabsf(mouse_abs_pos - p2) < min_dist) {
-                state.max_grab = true;
+				grab_state = RangeSliderGrabState::Max;
             } else if (p1 < mouse_abs_pos && mouse_abs_pos < p2) {
-                state.range_grab = true;
-                float val = compute_val();
-                state.v1_diff = *v1 - val;
-                state.v2_diff = *v2 - val;
+				grab_state = RangeSliderGrabState::Range;
+				delta_state = *v1 - compute_val();
             }
         } else if (g.IO.MouseDown[0]) {
-            if (state.min_grab) {
-                *v1 = compute_val();
-            } else if (state.max_grab) {
-                *v2 = compute_val();
-            } else if (state.range_grab) {
-                float val = compute_val();
-                float v_diff = *v2 - *v1;
+			switch (grab_state) {
+				case RangeSliderGrabState::None:
+					break;
+				case RangeSliderGrabState::Min:
+					*v1 = compute_val();
+					break;
+				case RangeSliderGrabState::Max:
+					*v2 = compute_val();
+					break;
+				case RangeSliderGrabState::Range: {
+					const float v_delta = *v2 - *v1;
+					*v1 = compute_val() + delta_state;
+					*v2 = *v1 + v_delta;
+					*v1 = ImClamp(*v1, v_min, v_max);
+					*v2 = ImClamp(*v2, v_min, v_max);
 
-                *v1 = val + state.v1_diff;
-                *v2 = val + state.v2_diff;
-                *v1 = ImClamp(*v1, v_min, v_max);
-                *v2 = ImClamp(*v2, v_min, v_max);
-
-                if (*v1 == v_min) *v2 = *v1 + v_diff;
-                if (*v2 == v_max) *v1 = *v2 - v_diff;
-            }
+					if (*v1 == v_min) *v2 = *v1 + v_delta;
+					if (*v2 == v_max) *v1 = *v2 - v_delta;
+					break;
+				}
+				default:
+					IM_ASSERT(false);
+			}
+			// Ensure *v1 < *v2
             if (*v2 < *v1) {
                 float tmp = *v1;
                 *v1 = *v2;
                 *v2 = tmp;
             }
         } else {
-            state.min_grab = false;
-            state.max_grab = false;
-            state.range_grab = false;
             ClearActiveID();
         }
     } else {
-        state.min_grab = false;
-        state.max_grab = false;
-        state.range_grab = false;
+		grab_state = RangeSliderGrabState::None;
     }
 
     // Store state
-    range_slider_states[id] = state;
+	ImGui::GetStateStorage()->SetInt(ImGui::GetID("GrabState"), grab_state);
+	ImGui::GetStateStorage()->SetFloat(ImGui::GetID("DeltaState"), delta_state);
 
     // Calculate slider grab positioning
     float grab_t = SliderCalcRatioFromValueT<float, float>(ImGuiDataType_Float, *v1, v_min, v_max, power, linear_zero_pos);
@@ -171,7 +166,7 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
     else
         grab_bb1 = ImRect(ImVec2(frame_bb.Min.x + grab_padding, grab_pos - grab_sz * 0.5f),
                           ImVec2(frame_bb.Max.x - grab_padding, grab_pos + grab_sz * 0.5f));
-    window->DrawList->AddRectFilled(grab_bb1.Min, grab_bb1.Max, GetColorU32(state.min_grab ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab),
+    window->DrawList->AddRectFilled(grab_bb1.Min, grab_bb1.Max, GetColorU32(grab_state == RangeSliderGrabState::Min ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab),
                                     style.GrabRounding);
 
     // Calculate slider grab positioning
@@ -187,7 +182,7 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
     else
         grab_bb2 = ImRect(ImVec2(frame_bb.Min.x + grab_padding, grab_pos - grab_sz * 0.5f),
                           ImVec2(frame_bb.Max.x - grab_padding, grab_pos + grab_sz * 0.5f));
-    window->DrawList->AddRectFilled(grab_bb2.Min, grab_bb2.Max, GetColorU32(state.max_grab ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab),
+    window->DrawList->AddRectFilled(grab_bb2.Min, grab_bb2.Max, GetColorU32(grab_state == RangeSliderGrabState::Max ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab),
                                     style.GrabRounding);
 
     ImRect connector(grab_bb1.Min, grab_bb2.Max);
@@ -196,7 +191,7 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
     connector.Max.x -= grab_sz;
     connector.Max.y -= grab_sz * 0.3f;
 
-    window->DrawList->AddRectFilled(connector.Min, connector.Max, GetColorU32(state.range_grab ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab),
+    window->DrawList->AddRectFilled(connector.Min, connector.Max, GetColorU32(grab_state == RangeSliderGrabState::Range ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab),
                                     style.GrabRounding);
 
     return *v1 != old_v1 || *v2 != old_v2;
@@ -227,7 +222,7 @@ bool RangeSliderFloat(const char* label, float* v1, float* v2, float v_min, floa
 
     if (!display_format) display_format = "(%.3f, %.3f)";
 
-    // Tabbing or CTRL-clicking on Slider turns it into an input box
+	// Tabbing or CTRL-clicking on Slider turns it into an input box
     bool start_text_input = false;
     const bool tab_focus_requested = FocusableItemRegister(window, g.ActiveId == id);
     if (tab_focus_requested || (hovered && g.IO.MouseClicked[0])) {
@@ -239,8 +234,12 @@ bool RangeSliderFloat(const char* label, float* v1, float* v2, float v_min, floa
             g.ScalarAsInputTextId = 0;
         }
     }
-    if (start_text_input || (g.ActiveId == id && g.ScalarAsInputTextId == id))
-        return InputScalarAsWidgetReplacement(frame_bb, id, label, ImGuiDataType_Float, v1, "%g");
+	if (start_text_input || (g.ActiveId == id && g.ScalarAsInputTextId == id)) {
+		const bool ret_val = InputScalarAsWidgetReplacement(frame_bb, id, label, ImGuiDataType_Float, v1, "%g");
+		if (ret_val)
+			*v2 = *v1;
+		return ret_val;
+	}
 
     ItemSize(total_bb, style.FramePadding.y);
 
