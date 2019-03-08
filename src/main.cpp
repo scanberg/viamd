@@ -50,12 +50,15 @@
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
 
 #ifdef OS_MAC_OSX
-constexpr Key::Key_t CONSOLE_KEY = Key::KEY_WORLD_1;
+constexpr auto CONSOLE_KEY = Key::KEY_WORLD_1;
 #else  // WIN32 and Linux
 // @TODO: Make sure this is currect for Linux?
-constexpr Key::Key_t CONSOLE_KEY = Key::KEY_GRAVE_ACCENT;
+constexpr auto KEY_CONSOLE = Key::KEY_GRAVE_ACCENT;
 #endif
-constexpr Key::Key_t PLAY_PAUSE_KEY = Key::KEY_SPACE;
+
+constexpr auto KEY_PLAY_PAUSE = Key::KEY_SPACE;
+constexpr auto KEY_SKIP_TO_PREV_FRAME = Key::KEY_LEFT;
+constexpr auto KEY_SKIP_TO_NEXT_FRAME = Key::KEY_RIGHT;
 
 // For cpu profiling
 #define PUSH_CPU_SECTION(lbl) {};
@@ -346,11 +349,13 @@ struct ApplicationData {
     MoleculeBuffers gpu_buffers;
 
     // --- PLAYBACK ---
-    uint64 frame = 0;
-    float64 time = 0.f;  // needs to be double precision for long trajectories
-    float32 frames_per_second = 10.f;
-    bool is_playing = false;
-    PlaybackInterpolationMode interpolation = PlaybackInterpolationMode::CubicPbc;
+    struct {
+        float64 time = 0.f;  // double precision for long trajectories
+        int32 frame = 0;
+        float32 fps = 10.f;
+        PlaybackInterpolationMode interpolation = PlaybackInterpolationMode::CubicPbc;
+        bool is_playing = false;
+    } playback;
 
     // --- TIME LINE FILTERING ---
     struct {
@@ -516,7 +521,6 @@ static bool IsItemActivePreviousFrame() {
 }  // namespace ImGui
 
 static void interpolate_atomic_positions(Array<vec3> dst_pos, const MoleculeTrajectory& traj, float64 time, PlaybackInterpolationMode interpolation_mode);
-static void compute_atomic_velocities(Array<vec3> dst_vel, Array<const vec3> pos, Array<const vec3> old_pos, const vec3& box_ext = vec3(0));
 static void reset_view(ApplicationData* data, bool move_camera = false, bool smooth_transition = false);
 static float32 compute_avg_ms(float32 dt);
 static PickingData read_picking_data(const MainFramebuffer& fbo, int32 x, int32 y);
@@ -715,13 +719,17 @@ int main(int, char**) {
         platform::Coordinate previous_mouse_coord = data.ctx.input.mouse.win_coord;
         platform::update(&data.ctx);
 
+        const int32 num_frames = data.mol_data.dynamic.trajectory ? data.mol_data.dynamic.trajectory.num_frames : 0;
+        const int32 last_frame = math::max(0, num_frames - 1);
+        const float64 max_time = (float64)math::max(0, last_frame);
+
         // Try to fix false move on touch
         if (data.ctx.input.mouse.hit[0]) {
             previous_mouse_coord = data.ctx.input.mouse.win_coord;
         }
 
         // #input
-        if (data.ctx.input.key.hit[CONSOLE_KEY]) {
+        if (data.ctx.input.key.hit[KEY_CONSOLE]) {
             if (data.console.Visible()) {
                 data.console.Hide();
             } else if (!ImGui::GetIO().WantTextInput) {
@@ -736,13 +744,18 @@ int main(int, char**) {
                 volume::initialize();
             }
 
-            if (data.ctx.input.key.hit[PLAY_PAUSE_KEY]) {
-                const int32 num_frames = data.mol_data.dynamic.trajectory ? data.mol_data.dynamic.trajectory.num_frames : 0;
-                const float64 max_time = (float64)math::max(0, num_frames - 1);
-                if (!data.is_playing && data.time == max_time) {
-                    data.time = 0;
+            if (data.ctx.input.key.hit[KEY_PLAY_PAUSE]) {
+                if (!data.playback.is_playing && data.playback.time == max_time) {
+                    data.playback.time = 0;
                 }
-                data.is_playing = !data.is_playing;
+                data.playback.is_playing = !data.playback.is_playing;
+            }
+
+            if (data.ctx.input.key.hit[KEY_SKIP_TO_PREV_FRAME]) {
+                data.playback.time = math::clamp(data.playback.time - 1.0, 0.0, max_time);
+            }
+            if (data.ctx.input.key.hit[KEY_SKIP_TO_NEXT_FRAME]) {
+                data.playback.time = math::clamp(data.playback.time + 1.0, 0.0, max_time);
             }
         }
 
@@ -849,37 +862,36 @@ int main(int, char**) {
         bool time_changed = false;
         bool frame_changed = false;
 
-        if (data.is_playing) {
-            const int32 num_frames = data.mol_data.dynamic.trajectory ? data.mol_data.dynamic.trajectory.num_frames : 0;
-            const float64 max_time = (float64)math::max(0, num_frames - 1);
-            data.time += data.ctx.timing.delta_s * data.frames_per_second;
-            data.time = math::clamp(data.time, 0.0, max_time);
-            if (data.time >= max_time) {
-                data.is_playing = false;
-                data.time = max_time;
+        if (data.playback.is_playing) {
+            data.playback.time += data.ctx.timing.delta_s * data.playback.fps;
+            data.playback.time = math::clamp(data.playback.time, 0.0, max_time);
+            if (data.playback.time >= max_time) {
+                data.playback.is_playing = false;
+                data.playback.time = max_time;
             }
         }
 
+        data.playback.frame = math::clamp((int32)math::round(data.playback.time), 0, last_frame);
+
         {
-            static float64 prev_time = data.time;
-            static int32 prev_frame = (int32)data.time;
+            static auto prev_time = data.playback.time;
+            static auto prev_frame = data.playback.frame;
 
-            if (data.time != prev_time) {
+            if (data.playback.time != prev_time) {
                 time_changed = true;
+                prev_time = data.playback.time;
             }
-            prev_time = data.time;
 
-            int32 frame = (int32)data.time;
-            if (frame != prev_frame) {
+            if (data.playback.frame != prev_frame) {
                 frame_changed = true;
+                prev_frame = data.playback.frame;
             }
-            prev_frame = frame;
         }
 
         if (data.time_filter.dynamic_window) {
-            const float32 max_frame = data.mol_data.dynamic.trajectory ? (float32)data.mol_data.dynamic.trajectory.num_frames : 1.f;
-            data.time_filter.range.min = math::clamp((int32)data.time - data.time_filter.window_extent / 2.f, 0.f, max_frame);
-            data.time_filter.range.max = math::clamp((int32)data.time + data.time_filter.window_extent / 2.f, 0.f, max_frame);
+            const auto half_window_ext = data.time_filter.window_extent * 0.5f;
+            data.time_filter.range.min = math::clamp((float32)data.playback.time - half_window_ext, 0.0f, (float32)max_time);
+            data.time_filter.range.max = math::clamp((float32)data.playback.time + half_window_ext, 0.0f, (float32)max_time);
         }
 
         if (frame_changed) {
@@ -904,11 +916,12 @@ int main(int, char**) {
                 defer { TMP_FREE(old_pos); };
                 memcpy(old_pos, pos.data(), pos.size_in_bytes());
 
-                const int current_frame = math::clamp((int)data.time, 0, math::max(0, data.mol_data.dynamic.trajectory.num_frames - 1));
+                const int current_frame = math::clamp((int)data.playback.time, 0, math::max(0, data.mol_data.dynamic.trajectory.num_frames - 1));
                 const vec3 box_ext = get_trajectory_frame(data.mol_data.dynamic.trajectory, current_frame).box * vec3(1.0f);
 
-                interpolate_atomic_positions(pos, traj, data.time, data.interpolation);
+                interpolate_atomic_positions(pos, traj, data.playback.time, data.playback.interpolation);
                 // compute_atomic_velocities(data.mol_data.atom_velocity, pos, Array<const vec3>(old_pos, pos.size()), box_ext);
+                compute_velocities_pbc(data.mol_data.atom_velocity, pos, Array<const vec3>(old_pos, pos.size()), box_ext);
 #if 0
                 if (data.interpolation != PlaybackInterpolationMode::Nearest) {
                     const auto& box = get_trajectory_frame(data.mol_data.dynamic.trajectory, (int)data.time).box;
@@ -1114,13 +1127,10 @@ int main(int, char**) {
 
             // RENDER DEBUG INFORMATION (WITH DEPTH)
             PUSH_GPU_SECTION("Debug Draw") {
+                glDrawBuffer(GL_COLOR_ATTACHMENT4);  // Post_Tonemap buffer
+
                 immediate::set_view_matrix(data.view.param.matrix.view);
                 immediate::set_proj_matrix(data.view.param.matrix.proj);
-                // immediate::Material plane_mat = immediate::MATERIAL_GLOSSY_WHITE;
-                // plane_mat.f0 = {data.immediate_gfx.material.f0, data.immediate_gfx.material.f0, data.immediate_gfx.material.f0};
-                // plane_mat.smoothness = data.immediate_gfx.material.smoothness;
-                // immediate::set_material(plane_mat);
-                // immediate::draw_plane({-30, -30, -50}, {100, 0, 0}, {0, 0, 100});
 
                 // HYDROGEN BONDS
                 if (data.hydrogen_bonds.enabled && !data.hydrogen_bonds.overlay) {
@@ -1131,9 +1141,8 @@ int main(int, char**) {
                 }
 
                 // SIMULATION BOX
-                if (data.simulation_box.enabled && data.mol_data.dynamic.trajectory.num_frames > 0) {
-                    auto frame_idx = math::clamp((int)data.time, 0, data.mol_data.dynamic.trajectory.num_frames - 1);
-                    auto frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, frame_idx);
+                if (data.simulation_box.enabled && data.mol_data.dynamic.trajectory) {
+                    auto frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, data.playback.frame);
                     immediate::draw_aabb_lines(vec3(0), frame.box * vec3(1), math::convert_color(data.simulation_box.color));
                 }
 
@@ -1230,13 +1239,13 @@ int main(int, char**) {
         if (data.density_volume.enabled) {
             glDrawBuffer(GL_COLOR_ATTACHMENT4);  // Post_Tonemap buffer
             glDisable(GL_DEPTH_TEST);
-            //glDepthFunc(GL_LESS);
+            // glDepthFunc(GL_LESS);
             glDepthMask(0);
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
             PUSH_GPU_SECTION("Volume Rendering")
-			const float32 scl = 1.f * data.density_volume.density_scale / (data.density_volume.texture.max_value > 0.f ? data.density_volume.texture.max_value : 1.f);
+            const float32 scl = 1.f * data.density_volume.density_scale / (data.density_volume.texture.max_value > 0.f ? data.density_volume.texture.max_value : 1.f);
             volume::render_volume_texture(data.density_volume.texture.id, data.fbo.deferred.depth, data.density_volume.texture_to_model_matrix, data.density_volume.model_to_world_matrix,
                                           data.view.param.matrix.view, data.view.param.matrix.proj, data.density_volume.color, scl);
             POP_GPU_SECTION()
@@ -1413,7 +1422,6 @@ glDisable(GL_BLEND);
 
         // Swap buffers
         platform::swap_buffers(&data.ctx);
-        data.frame++;
 
         PUSH_GPU_SECTION("Update Buffers")
         copy_molecule_data_to_buffers(&data);
@@ -1482,23 +1490,6 @@ static void interpolate_atomic_positions(Array<vec3> dst_pos, const MoleculeTraj
             default:
                 break;
         }
-    }
-}
-
-static void compute_atomic_velocities(Array<vec3> dst_vel, Array<const vec3> pos, Array<const vec3> old_pos, const vec3& box_ext) {
-    ASSERT(dst_vel.size() == pos.size());
-    ASSERT(dst_vel.size() == old_pos.size());
-
-    for (int64 i = 0; i < dst_vel.size(); i++) {
-        // De-periodize previous position
-        const vec3 p1 = pos[i];
-        const vec3 p0 = old_pos[i];
-
-        const vec3 delta = p1 - p0;
-        const vec3 signed_mask = sign(delta) * step(box_ext * 0.5f, abs(delta));
-        const vec3 dp_p0 = p0 + box_ext * signed_mask;
-
-        dst_vel[i] = p1 - dp_p0;
     }
 }
 
@@ -2437,7 +2428,7 @@ void draw_context_popup(ApplicationData* data) {
         if (data->selection.right_clicked != -1 && data->mol_data.dynamic) {
             if (ImGui::MenuItem("Recenter Trajectory")) {
                 recenter_trajectory(&data->mol_data.dynamic, data->mol_data.dynamic.molecule.atom.residue_indices[data->selection.right_clicked]);
-                interpolate_atomic_positions(get_positions(data->mol_data.dynamic.molecule), data->mol_data.dynamic.trajectory, data->time, data->interpolation);
+                interpolate_atomic_positions(get_positions(data->mol_data.dynamic.molecule), data->mol_data.dynamic.trajectory, data->playback.time, data->playback.interpolation);
                 data->gpu_buffers.dirty.position = true;
                 ImGui::CloseCurrentPopup();
             }
@@ -2451,23 +2442,23 @@ static void draw_animation_control_window(ApplicationData* data) {
     if (!data->mol_data.dynamic.trajectory) return;
 
     ImGui::Begin("Control");
-    int32 num_frames = data->mol_data.dynamic.trajectory.num_frames;
+    const int32 num_frames = data->mol_data.dynamic.trajectory.num_frames;
     ImGui::Text("Num Frames: %i", num_frames);
-    float32 t = (float)data->time;
-    if (ImGui::SliderFloat("Time", &t, 0, (float)(num_frames - 1))) {
-        data->time = t;
+    float32 t = (float)data->playback.time;
+    if (ImGui::SliderFloat("Time", &t, 0, (float)(math::max(0, num_frames - 1)))) {
+        data->playback.time = t;
     }
-    ImGui::SliderFloat("fps", &data->frames_per_second, 0.1f, 100.f, "%.3f", 4.f);
-    ImGui::Combo("type", (int*)(&data->interpolation), "Nearest\0Linear\0Linear Periodic\0Cubic\0Cubic Periodic\0\0");
-    if (data->is_playing) {
-        if (ImGui::Button("Pause")) data->is_playing = false;
+    ImGui::SliderFloat("fps", &data->playback.fps, 0.1f, 100.f, "%.3f", 4.f);
+    ImGui::Combo("type", (int*)(&data->playback.interpolation), "Nearest\0Linear\0Linear Periodic\0Cubic\0Cubic Periodic\0\0");
+    if (data->playback.is_playing) {
+        if (ImGui::Button("Pause")) data->playback.is_playing = false;
     } else {
-        if (ImGui::Button("Play")) data->is_playing = true;
+        if (ImGui::Button("Play")) data->playback.is_playing = true;
     }
     ImGui::SameLine();
     if (ImGui::Button("Stop")) {
-        data->is_playing = false;
-        data->time = 0.0;
+        data->playback.is_playing = false;
+        data->playback.time = 0.0;
     }
     ImGui::End();
 }
@@ -2864,12 +2855,12 @@ static void draw_timeline_window(ApplicationData* data) {
         if (ImGui::RangeSliderFloat("###selection_range", &data->time_filter.range.beg, &data->time_filter.range.end, 0.f, num_frames)) {
             if (data->time_filter.dynamic_window) {
                 if (data->time_filter.range.x != old_range.x && data->time_filter.range.y != old_range.y) {
-                    data->time = math::lerp(data->time_filter.range.x, data->time_filter.range.y, 0.5f);
+                    data->playback.time = math::lerp(data->time_filter.range.x, data->time_filter.range.y, 0.5f);
                 } else {
                     if (data->time_filter.range.x != old_range.x) {
-                        data->time_filter.window_extent = 2.f * math::abs((float)data->time - data->time_filter.range.x);
+                        data->time_filter.window_extent = 2.f * math::abs((float)data->playback.time - data->time_filter.range.x);
                     } else if (data->time_filter.range.y != old_range.y) {
-                        data->time_filter.window_extent = 2.f * math::abs((float)data->time - data->time_filter.range.y);
+                        data->time_filter.window_extent = 2.f * math::abs((float)data->playback.time - data->time_filter.range.y);
                     }
                 }
             }
@@ -2951,7 +2942,7 @@ static void draw_timeline_window(ApplicationData* data) {
                     }
                 } else if (ImGui::GetIO().MouseDown[0]) {
                     float32 t = ImClamp((ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x), 0.f, 1.f);
-                    data->time = ImLerp(frame_range.x, frame_range.y, t);
+                    data->playback.time = ImLerp(frame_range.x, frame_range.y, t);
                 }
 
                 if (!ImGui::GetIO().MouseDown[0] && !ImGui::IsItemHovered()) {
@@ -2976,7 +2967,7 @@ static void draw_timeline_window(ApplicationData* data) {
             // CURRENT FRAME POSITION
             {
                 constexpr ImU32 CURRENT_LINE_COLOR = 0xaa33ffff;
-                const float32 t = ((float)data->time - frame_range.x) / (frame_range.y - frame_range.x);
+                const float32 t = ((float)data->playback.time - frame_range.x) / (frame_range.y - frame_range.x);
                 const ImVec2 pos0 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t, 0));
                 const ImVec2 pos1 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t, 1));
                 ImGui::GetCurrentWindow()->DrawList->AddLine(pos0, pos1, CURRENT_LINE_COLOR);
@@ -3786,7 +3777,7 @@ static void init_trajectory_data(ApplicationData* data) {
 static void load_molecule_data(ApplicationData* data, CString file) {
     ASSERT(data);
     if (file.count > 0) {
-        data->is_playing = false;
+        data->playback.is_playing = false;
         CString ext = get_file_extension(file);
         LOG_NOTE("Loading molecular data from file '%.*s'...", file.count, file.ptr);
         auto t0 = platform::get_time();
