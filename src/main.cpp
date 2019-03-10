@@ -1134,9 +1134,11 @@ int main(int, char**) {
 
                 // HYDROGEN BONDS
                 if (data.hydrogen_bonds.enabled && !data.hydrogen_bonds.overlay) {
+					const auto& mol = data.mol_data.dynamic.molecule;
                     for (const auto& bond : data.hydrogen_bonds.bonds) {
-                        immediate::draw_line(data.mol_data.dynamic.molecule.atom.positions[bond.acc_idx], data.mol_data.dynamic.molecule.atom.positions[bond.hyd_idx],
-                                             math::convert_color(data.hydrogen_bonds.color));
+						const vec3 pos0 = get_position_xyz(mol, bond.acc_idx);
+						const vec3 pos1 = get_position_xyz(mol, bond.hyd_idx);
+                        immediate::draw_line(pos0, pos1, math::convert_color(data.hydrogen_bonds.color));
                     }
                 }
 
@@ -1439,7 +1441,7 @@ glDisable(GL_BLEND);
     return 0;
 }
 
-static void interpolate_atomic_positions(Array<vec3> dst_pos, const MoleculeTrajectory& traj, float64 time, PlaybackInterpolationMode interpolation_mode) {
+static void interpolate_atomic_positions(MoleculeStructure& mol, const MoleculeTrajectory& traj, float64 time, PlaybackInterpolationMode interpolation_mode) {
     const int last_frame = traj.num_frames - 1;
     time = math::clamp(time, 0.0, float64(last_frame));
 
@@ -1451,7 +1453,12 @@ static void interpolate_atomic_positions(Array<vec3> dst_pos, const MoleculeTraj
     const mat3& box = get_trajectory_frame(traj, prev_frame_1).box;
 
     if (prev_frame_1 == next_frame_1) {
-        copy_trajectory_positions(dst_pos, traj, prev_frame_1);
+		const auto pos_x = get_trajectory_position_x(traj, prev_frame_1);
+		const auto pos_y = get_trajectory_position_y(traj, prev_frame_1);
+		const auto pos_z = get_trajectory_position_z(traj, prev_frame_1);
+		memcpy(mol.atom.position.x, pos_x.data(), pos_x.size_in_bytes());
+		memcpy(mol.atom.position.y, pos_y.data(), pos_y.size_in_bytes());
+		memcpy(mol.atom.position.z, pos_z.data(), pos_z.size_in_bytes());
     } else {
         const float32 t = (float)math::fract(time);
 
@@ -1459,7 +1466,12 @@ static void interpolate_atomic_positions(Array<vec3> dst_pos, const MoleculeTraj
         switch (interpolation_mode) {
             case PlaybackInterpolationMode::Nearest: {
                 const int nearest_frame = math::clamp((int)(time + 0.5), 0, last_frame);
-                copy_trajectory_positions(dst_pos, traj, nearest_frame);
+				const auto pos_x = get_trajectory_position_x(traj, nearest_frame);
+				const auto pos_y = get_trajectory_position_y(traj, nearest_frame);
+				const auto pos_z = get_trajectory_position_z(traj, nearest_frame);
+				memcpy(mol.atom.position.x, pos_x.data(), pos_x.size_in_bytes());
+				memcpy(mol.atom.position.y, pos_y.data(), pos_y.size_in_bytes());
+				memcpy(mol.atom.position.z, pos_z.data(), pos_z.size_in_bytes());
                 break;
             }
             case PlaybackInterpolationMode::Linear: {
@@ -2734,7 +2746,9 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, in
     const Residue& res = mol.residues[res_idx];
     const char* res_id = res.name;
     int local_idx = atom_idx - res.atom_idx.beg;
-    const vec3& pos = mol.atom.positions[atom_idx];
+    const float pos_x = mol.atom.position.x[atom_idx];
+	const float pos_y = mol.atom.position.y[atom_idx];
+	const float pos_z = mol.atom.position.z[atom_idx];
     const char* label = mol.atom.labels[atom_idx];
     const char* elem = element::name(mol.atom.elements[atom_idx]);
     const char* symbol = element::symbol(mol.atom.elements[atom_idx]);
@@ -2755,7 +2769,7 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, in
 
     char buff[256];
     int len = 0;
-    len += snprintf(buff, 256, "atom[%i][%i]: %s %s %s (%.2f, %.2f, %.2f)\n", atom_idx, local_idx, label, elem, symbol, pos.x, pos.y, pos.z);
+    len += snprintf(buff, 256, "atom[%i][%i]: %s %s %s (%.2f, %.2f, %.2f)\n", atom_idx, local_idx, label, elem, symbol, pos_x, pos_y, pos_z);
     len += snprintf(buff + len, 256 - len, "res[%i]: %s\n", res_idx, res_id);
     if (chain_idx) {
         len += snprintf(buff + len, 256 - len, "chain[%i]: %s\n", chain_idx, chain_id);
@@ -3630,7 +3644,9 @@ void copy_molecule_data_to_buffers(ApplicationData* data) {
 
     if (data->gpu_buffers.dirty.position) {
         data->gpu_buffers.dirty.position = false;
-        const vec3* position = data->mol_data.dynamic.molecule.atom.positions;
+        const float* pos_x = data->mol_data.dynamic.molecule.atom.position.x;
+		const float* pos_y = data->mol_data.dynamic.molecule.atom.position.y;
+		const float* pos_z = data->mol_data.dynamic.molecule.atom.position.z;
 
         // Update data inside position buffer
         glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.position);
@@ -3641,11 +3657,11 @@ void copy_molecule_data_to_buffers(ApplicationData* data) {
             return;
         }
 
-        // @NOTE: we cannot do a pure memcpy since the CPU buffer using vec3 can be a m128 with 16-byte alignment.
+        // @NOTE: we cannot do a pure memcpy since the CPU data is SOA
         for (int64 i = 0; i < N; i++) {
-            pos_gpu[i * 3 + 0] = position[i][0];
-            pos_gpu[i * 3 + 1] = position[i][1];
-            pos_gpu[i * 3 + 2] = position[i][2];
+            pos_gpu[i * 3 + 0] = pos_x[i];
+            pos_gpu[i * 3 + 1] = pos_y[i];
+            pos_gpu[i * 3 + 2] = pos_z[i];
         }
         glUnmapBuffer(GL_ARRAY_BUFFER);
     }
@@ -3753,8 +3769,14 @@ static void init_trajectory_data(ApplicationData* data) {
         }
 
         read_next_trajectory_frame(&data->mol_data.dynamic.trajectory);  // read first frame explicitly
-        auto frame_0_pos = get_trajectory_positions(data->mol_data.dynamic.trajectory, 0);
-        memcpy(data->mol_data.dynamic.molecule.atom.positions, frame_0_pos.data(), frame_0_pos.size_in_bytes());
+        const auto pos_x = get_trajectory_position_x(data->mol_data.dynamic.trajectory, 0);
+		const auto pos_y = get_trajectory_position_x(data->mol_data.dynamic.trajectory, 0);
+		const auto pos_z = get_trajectory_position_x(data->mol_data.dynamic.trajectory, 0);
+
+        memcpy(data->mol_data.dynamic.molecule.atom.position.x, pos_x.data(), pos_x.size_in_bytes());
+		memcpy(data->mol_data.dynamic.molecule.atom.position.y, pos_y.data(), pos_y.size_in_bytes());
+		memcpy(data->mol_data.dynamic.molecule.atom.position.z, pos_z.data(), pos_z.size_in_bytes());
+
         data->gpu_buffers.dirty.position = true;
 
         load_trajectory_async(data);
@@ -4281,11 +4303,13 @@ static bool handle_selection(ApplicationData* data) {
         if (region_select) {
             const vec2 res = {data->ctx.window.width, data->ctx.window.height};
             const mat4 mvp = compute_perspective_projection_matrix(data->view.camera, data->ctx.window.width, data->ctx.window.height) * data->view.param.matrix.view;
-            const Array<const vec3> positions = get_positions(data->mol_data.dynamic.molecule);
+			const float* pos_x = data->mol_data.dynamic.molecule.atom.position.x;
+			const float* pos_y = data->mol_data.dynamic.molecule.atom.position.y;
+			const float* pos_z = data->mol_data.dynamic.molecule.atom.position.z;
 
             for (int64 i = 0; i < N; i++) {
                 if (!data->representations.atom_visibility_mask[i]) continue;
-                vec4 p = mvp * vec4(positions[i], 1);
+                vec4 p = mvp * vec4(pos_x[i], pos_y[i], pos_z[i], 1);
                 p /= p.w;
                 const vec2 c = (vec2(p.x, -p.y) * 0.5f + 0.5f) * res;
                 mask[i] = (min_p.x <= c.x && c.x <= max_p.x && min_p.y <= c.y && c.y <= max_p.y);
