@@ -280,11 +280,7 @@ struct ApplicationData {
     } view;
 
     // --- MOLECULAR DATA ---
-    struct {
-        MoleculeDynamic dynamic{};
-        DynamicArray<float> atom_radii{};
-        DynamicArray<vec3> atom_velocity{};
-    } mol_data;
+    MoleculeDynamic dynamic{};
 
     // --- THREAD SYNCHRONIZATION ---
     struct {
@@ -484,14 +480,6 @@ struct ApplicationData {
         bool show_window = false;
         // bool changed = false;
     } representations;
-
-    /*
-struct {
-    spatialhash::Frame frame = {};
-    vec3 cell_ext = vec3(4.0f);  // in Ångström
-    bool dirty = true;
-} spatial_hash;
-    */
 
     // --- CONSOLE ---
     Console console{};
@@ -705,7 +693,7 @@ int main(int, char**) {
     math::generate_halton_sequence(halton_23, ARRAY_SIZE(halton_23), 2, 3);
 
 #ifdef VIAMD_RELEASE
-    allocate_and_parse_pdb_from_string(&data.mol_data.dynamic, CAFFINE_PDB);
+    allocate_and_parse_pdb_from_string(&data.dynamic, CAFFINE_PDB);
     init_molecule_data(&data);
 #else
     load_molecule_data(&data, VIAMD_DATA_DIR "/1af6.pdb");
@@ -719,7 +707,7 @@ int main(int, char**) {
         platform::Coordinate previous_mouse_coord = data.ctx.input.mouse.win_coord;
         platform::update(&data.ctx);
 
-        const int32 num_frames = data.mol_data.dynamic.trajectory ? data.mol_data.dynamic.trajectory.num_frames : 0;
+        const int32 num_frames = data.dynamic.trajectory ? data.dynamic.trajectory.num_frames : 0;
         const int32 last_frame = math::max(0, num_frames - 1);
         const float64 max_time = (float64)math::max(0, last_frame);
 
@@ -827,7 +815,7 @@ int main(int, char**) {
         {
             if (data.density_volume.enabled) {
                 stats::async_update(
-                    data.mol_data.dynamic, {(int32)data.time_filter.range.beg, (int32)data.time_filter.range.end},
+                    data.dynamic, {(int32)data.time_filter.range.beg, (int32)data.time_filter.range.end},
                     [](void* usr_data) {
                         ApplicationData* data = (ApplicationData*)usr_data;
                         data->density_volume.volume_data_mutex.lock();
@@ -840,7 +828,7 @@ int main(int, char**) {
                     },
                     &data);
             } else {
-                stats::async_update(data.mol_data.dynamic, {(int32)data.time_filter.range.beg, (int32)data.time_filter.range.end});
+                stats::async_update(data.dynamic, {(int32)data.time_filter.range.beg, (int32)data.time_filter.range.end});
             }
         }
 
@@ -895,7 +883,7 @@ int main(int, char**) {
         }
 
         if (frame_changed) {
-            if (data.mol_data.dynamic.trajectory) {
+            if (data.dynamic.trajectory) {
                 if (data.time_filter.dynamic_window) {
                     stats::set_all_property_flags(false, true);
                 }
@@ -903,8 +891,8 @@ int main(int, char**) {
         }
 
         if (time_changed) {
-            auto& mol = data.mol_data.dynamic.molecule;
-            auto& traj = data.mol_data.dynamic.trajectory;
+            auto& mol = data.dynamic.molecule;
+            auto& traj = data.dynamic.trajectory;
 
             data.hydrogen_bonds.dirty = true;
             data.gpu_buffers.dirty.backbone = true;
@@ -916,17 +904,17 @@ int main(int, char**) {
                 defer { TMP_FREE(old_pos); };
                 memcpy(old_pos, pos.data(), pos.size_in_bytes());
 
-                const int current_frame = math::clamp((int)data.playback.time, 0, math::max(0, data.mol_data.dynamic.trajectory.num_frames - 1));
-                const vec3 box_ext = get_trajectory_frame(data.mol_data.dynamic.trajectory, current_frame).box * vec3(1.0f);
+                const int current_frame = math::clamp((int)data.playback.time, 0, math::max(0, data.dynamic.trajectory.num_frames - 1));
+                const vec3 box_ext = get_trajectory_frame(data.dynamic.trajectory, current_frame).box * vec3(1.0f);
 
                 interpolate_atomic_positions(pos, traj, data.playback.time, data.playback.interpolation);
-                // compute_atomic_velocities(data.mol_data.atom_velocity, pos, Array<const vec3>(old_pos, pos.size()), box_ext);
-                compute_velocities_pbc(data.mol_data.atom_velocity, pos, Array<const vec3>(old_pos, pos.size()), box_ext);
+                // compute_atomic_velocities(data.atom_velocity, pos, Array<const vec3>(old_pos, pos.size()), box_ext);
+                compute_velocities_pbc(data.atom_velocity, pos, Array<const vec3>(old_pos, pos.size()), box_ext);
 #if 0
                 if (data.interpolation != PlaybackInterpolationMode::Nearest) {
-                    const auto& box = get_trajectory_frame(data.mol_data.dynamic.trajectory, (int)data.time).box;
-                    apply_pbc_residues(get_positions(data.mol_data.dynamic.molecule), data.mol_data.dynamic.molecule.residues, box);
-                    // apply_pbc_chains(get_positions(data.mol_data.dynamic.molecule), data.mol_data.dynamic.molecule.chains, data.mol_data.dynamic.molecule.residues, box);
+                    const auto& box = get_trajectory_frame(data.dynamic.trajectory, (int)data.time).box;
+                    apply_pbc_residues(get_positions(data.dynamic.molecule), data.dynamic.molecule.residues, box);
+                    // apply_pbc_chains(get_positions(data.dynamic.molecule), data.dynamic.molecule.chains, data.dynamic.molecule.residues, box);
                 }
 #endif
 
@@ -948,27 +936,18 @@ int main(int, char**) {
             }
             POP_CPU_SECTION()
 
-#if 0
-			PUSH_CPU_SECTION("Spatial Hash") {
-				if (data.spatial_hash.dirty_flag) {
-					data.spatial_hash.dirty_flag = false;
-					spatialhash::compute_frame(&data.spatial_hash.frame, get_positions(data.mol_data.dynamic.molecule), data.spatial_hash.cell_ext);
-				}
-			}
-			POP_CPU_SECTION()
-#endif
         } else {  // Not time_changed
             // @FIXME: DO THIS ONLY ONCE
             // Clear velocity buffer (once)
-            // zero_array(data.mol_data.atom_velocity);
+            // zero_array(data.atom_velocity);
             // copy_molecule_data_to_buffers(&data);
         }
 
         PUSH_CPU_SECTION("Hydrogen bonds")
         if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.dirty) {
             data.hydrogen_bonds.bonds.clear();
-            hydrogen_bond::compute_bonds(&data.hydrogen_bonds.bonds, data.mol_data.dynamic.molecule.hydrogen_bond.donors, data.mol_data.dynamic.molecule.hydrogen_bond.acceptors,
-                                         get_positions(data.mol_data.dynamic.molecule), data.hydrogen_bonds.distance_cutoff, data.hydrogen_bonds.angle_cutoff * math::DEG_TO_RAD);
+            hydrogen_bond::compute_bonds(&data.hydrogen_bonds.bonds, data.dynamic.molecule.hydrogen_bond.donors, data.dynamic.molecule.hydrogen_bond.acceptors,
+                                         get_positions(data.dynamic.molecule), data.hydrogen_bonds.distance_cutoff, data.hydrogen_bonds.angle_cutoff * math::DEG_TO_RAD);
             data.hydrogen_bonds.dirty = false;
         }
         POP_CPU_SECTION()
@@ -986,8 +965,8 @@ int main(int, char**) {
 
         bool visuals_changed = false;
         {
-            static auto old_hash = hash::crc64(&data.visuals, sizeof(data.visuals));
-            const auto new_hash = hash::crc64(&data.visuals, sizeof(data.visuals));
+            static auto old_hash = hash::meow64(&data.visuals, sizeof(data.visuals));
+            const auto new_hash = hash::meow64(&data.visuals, sizeof(data.visuals));
             visuals_changed = (new_hash != old_hash);
             old_hash = new_hash;
         }
@@ -1091,23 +1070,23 @@ int main(int, char**) {
                 switch (rep.type) {
                     case RepresentationType::Vdw:
                         PUSH_GPU_SECTION("Vdw")
-                        draw::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.velocity, (int)data.mol_data.dynamic.molecule.atom.count, data.view.param,
+                        draw::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.velocity, (int)data.dynamic.molecule.atom.count, data.view.param,
                                        rep.radius);
                         POP_GPU_SECTION()
                         break;
                     case RepresentationType::Licorice:
                         PUSH_GPU_SECTION("Licorice")
-                        draw::draw_licorice(data.gpu_buffers.position, rep.color_buffer, data.gpu_buffers.velocity, data.gpu_buffers.bond, (int)data.mol_data.dynamic.molecule.covalent_bonds.size(),
+                        draw::draw_licorice(data.gpu_buffers.position, rep.color_buffer, data.gpu_buffers.velocity, data.gpu_buffers.bond, (int)data.dynamic.molecule.covalent_bonds.size(),
                                             data.view.param, rep.radius);
                         POP_GPU_SECTION()
                         break;
                     case RepresentationType::BallAndStick:
                         PUSH_GPU_SECTION("Vdw")
-                        draw::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.velocity, (int)data.mol_data.dynamic.molecule.atom.count, data.view.param,
+                        draw::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.velocity, (int)data.dynamic.molecule.atom.count, data.view.param,
                                        rep.radius * BALL_AND_STICK_VDW_SCALE);
                         POP_GPU_SECTION()
                         PUSH_GPU_SECTION("Licorice")
-                        draw::draw_licorice(data.gpu_buffers.position, rep.color_buffer, data.gpu_buffers.velocity, data.gpu_buffers.bond, (int)data.mol_data.dynamic.molecule.covalent_bonds.size(),
+                        draw::draw_licorice(data.gpu_buffers.position, rep.color_buffer, data.gpu_buffers.velocity, data.gpu_buffers.bond, (int)data.dynamic.molecule.covalent_bonds.size(),
                                             data.view.param, rep.radius * BALL_AND_STICK_LICORICE_SCALE);
                         POP_GPU_SECTION()
                         break;
@@ -1134,7 +1113,7 @@ int main(int, char**) {
 
                 // HYDROGEN BONDS
                 if (data.hydrogen_bonds.enabled && !data.hydrogen_bonds.overlay) {
-					const auto& mol = data.mol_data.dynamic.molecule;
+					const auto& mol = data.dynamic.molecule;
                     for (const auto& bond : data.hydrogen_bonds.bonds) {
 						const vec3 pos0 = get_position_xyz(mol, bond.acc_idx);
 						const vec3 pos1 = get_position_xyz(mol, bond.hyd_idx);
@@ -1143,8 +1122,8 @@ int main(int, char**) {
                 }
 
                 // SIMULATION BOX
-                if (data.simulation_box.enabled && data.mol_data.dynamic.trajectory) {
-                    auto frame = get_trajectory_frame(data.mol_data.dynamic.trajectory, data.playback.frame);
+                if (data.simulation_box.enabled && data.dynamic.trajectory) {
+                    auto frame = get_trajectory_frame(data.dynamic.trajectory, data.playback.frame);
                     immediate::draw_aabb_lines(vec3(0), frame.box * vec3(1), math::convert_color(data.simulation_box.color));
                 }
 
@@ -1155,7 +1134,7 @@ int main(int, char**) {
         POP_GPU_SECTION()  // G-buffer
 
         PUSH_GPU_SECTION("Selection") {
-            const uint32 atom_count = (uint32)data.mol_data.dynamic.molecule.atom.count;
+            const uint32 atom_count = (uint32)data.dynamic.molecule.atom.count;
             const bool atom_selection_empty = is_array_zero(data.selection.current_selection_mask);
             const bool atom_highlight_empty = is_array_zero(data.selection.current_highlight_mask);
 
@@ -1274,7 +1253,7 @@ int main(int, char**) {
 
                 if (ref_frame == frame_idx || data.view.param.jitter == vec2(0, 0)) {
                     data.picking = read_picking_data(data.fbo, (int32)math::round(coord.x), (int32)math::round(coord.y));
-                    if (data.picking.idx != NO_PICKING_IDX) data.picking.idx = math::clamp(data.picking.idx, 0U, (uint32)data.mol_data.dynamic.molecule.atom.count - 1U);
+                    if (data.picking.idx != NO_PICKING_IDX) data.picking.idx = math::clamp(data.picking.idx, 0U, (uint32)data.dynamic.molecule.atom.count - 1U);
                     const vec4 viewport(0, 0, data.fbo.width, data.fbo.height);
                     data.picking.world_coord = math::unproject(vec3(coord.x, coord.y, data.picking.depth), data.view.param.matrix.inverse.view_proj, viewport);
                 }
@@ -1365,12 +1344,12 @@ glDisable(GL_BLEND);
         PUSH_GPU_SECTION("Debug Draw Overlay") {
             immediate::set_view_matrix(data.view.param.matrix.view);
             immediate::set_proj_matrix(data.view.param.matrix.proj);
-            stats::visualize(data.mol_data.dynamic);
+            stats::visualize(data.dynamic);
 
             // HYDROGEN BONDS
             if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.overlay) {
                 for (const auto& bond : data.hydrogen_bonds.bonds) {
-                    immediate::draw_line(data.mol_data.dynamic.molecule.atom.positions[bond.acc_idx], data.mol_data.dynamic.molecule.atom.positions[bond.hyd_idx],
+                    immediate::draw_line(data.dynamic.molecule.atom.positions[bond.acc_idx], data.dynamic.molecule.atom.positions[bond.hyd_idx],
                                          math::convert_color(data.hydrogen_bonds.color));
                 }
             }
@@ -1411,7 +1390,7 @@ glDisable(GL_BLEND);
         // ImGui::GetIO().WantCaptureMouse does not work with Menu
         if (!ImGui::IsMouseHoveringAnyWindow()) {
             if (data.picking.idx != NO_PICKING_IDX) {
-                draw_atom_info_window(data.mol_data.dynamic.molecule, data.picking.idx, (int)data.ctx.input.mouse.win_coord.x, (int)data.ctx.input.mouse.win_coord.y);
+                draw_atom_info_window(data.dynamic.molecule, data.picking.idx, (int)data.ctx.input.mouse.win_coord.x, (int)data.ctx.input.mouse.win_coord.y);
             }
         }
 
