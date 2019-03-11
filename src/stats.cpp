@@ -232,17 +232,20 @@ void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, con
     frame_range.beg = math::clamp(frame_range.beg, 0, num_frames);
     frame_range.end = math::clamp(frame_range.end, 0, num_frames);
 
-	if (frame_range.beg == frame_range.end) {
-		return;
-	}
+    if (frame_range.beg == frame_range.end) {
+        return;
+    }
 
     for (auto prop : ctx.properties) {
         if (!prop->enable_volume) continue;
         for (int32 frame_idx = frame_range.beg; frame_idx < frame_range.end; frame_idx++) {
-            const Array<const vec3> atom_positions = get_trajectory_positions(traj, frame_idx);
-            for_each_filtered_property_structure_in_frame(prop, frame_idx, [vol, &atom_positions, &world_to_volume_matrix](const Structure& s) {
+            Array<const float> atom_pos_x = get_trajectory_position_x(traj, frame_idx);
+            Array<const float> atom_pos_y = get_trajectory_position_y(traj, frame_idx);
+            Array<const float> atom_pos_z = get_trajectory_position_z(traj, frame_idx);
+
+            for_each_filtered_property_structure_in_frame(prop, frame_idx, [vol, atom_pos_x, atom_pos_y, atom_pos_z, &world_to_volume_matrix](const Structure& s) {
                 for (int32 i = s.beg_idx; i < s.end_idx; i++) {
-                    const vec4 tc = world_to_volume_matrix * vec4(atom_positions[i], 1);
+                    const vec4 tc = world_to_volume_matrix * vec4(atom_pos_x[i], atom_pos_y[i], atom_pos_z[i], 1);
                     if (tc.x < 0.f || 1.f < tc.x) continue;
                     if (tc.y < 0.f || 1.f < tc.y) continue;
                     if (tc.z < 0.f || 1.f < tc.z) continue;
@@ -480,7 +483,7 @@ bool structure_match_chainid(StructureData* data, const Array<CString> args, con
     for (const auto& chain : molecule.chains) {
         for (const auto& arg : args) {
             if (compare(chain.id, arg)) {
-                data->structures.push_back({get_atom_beg_idx(molecule, chain), get_atom_end_idx(molecule, chain)});
+                data->structures.push_back({chain.atom_idx.beg, chain.atom_idx.end});
                 break;
             }
         }
@@ -523,7 +526,7 @@ bool structure_match_chain(StructureData* data, const Array<CString> args, const
         }
         for (int32 i = range.x - 1; i <= range.y - 1; i++) {
             const auto& chain = molecule.chains[i];
-            data->structures.push_back({get_atom_beg_idx(molecule, chain), get_atom_end_idx(molecule, chain)});
+            data->structures.push_back({chain.atom_idx.beg, chain.atom_idx.end});
         }
     }
 
@@ -628,148 +631,134 @@ static inline int32 structures_index_count(Array<const Structure> structures) {
     return count;
 }
 
-inline Array<const vec3> extract_positions(Structure structure, Array<const vec3> atom_positions) { return atom_positions.subarray(structure.beg_idx, structure.end_idx - structure.beg_idx); }
+template <typename T>
+inline Array<T> extract_structure_data(Structure structure, Array<T> data) {
+    return data.subarray(structure.beg_idx, structure.end_idx - structure.beg_idx);
+}
 
-static inline float multi_distance(Array<const vec3> pos_a, Array<const vec3> pos_b, float* variance = nullptr) {
-    if (pos_a.count == 0 || pos_b.count == 0)
+static inline float multi_distance(const float* a_x, const float* a_y, const float* a_z, int64 count_a, const float* b_x, const float* b_y, const float* b_z, int64 count_b,
+                                   float* variance = nullptr) {
+    if (count_a == 0 || count_b == 0) {
         return 0.f;
-    else if (pos_a.count == 1 && pos_b.count == 1)
-        return math::distance(pos_a[0], pos_b[0]);
-    else {
+    } else if (count_a == 1 && count_b == 1) {
+        const float dx = a_x[0] - b_x[0];
+        const float dy = a_y[0] - b_y[0];
+        const float dz = a_z[0] - b_z[0];
+        return sqrtf(dx * dx + dy * dy + dz * dz);
+    } else {
         float total = 0.f;
-        for (const auto& a : pos_a) {
-            for (const auto& b : pos_b) {
-                total += math::distance(a, b);
+        float* dist = (float*)TMP_MALLOC(count_a * count_b * sizeof(float));
+        defer { TMP_FREE(dist); };
+        for (int64 i = 0; i < count_a; i++) {
+            for (int64 j = 0; j < count_b; j++) {
+                const float dx = a_x[i] - b_x[j];
+                const float dy = a_y[i] - b_y[j];
+                const float dz = a_z[i] - b_z[j];
+                const float d = sqrtf(dx * dx + dy * dy + dz * dz);
+                dist[i * count_b + j] = d;
+                total += d;
             }
         }
-        float count = (float)(pos_a.count * pos_b.count);
+        float count = (float)(count_a * count_b);
         float mean = total / count;
 
         if (variance) {
             *variance = 0.f;
-            for (const auto& a : pos_a) {
-                for (const auto& b : pos_b) {
-                    float x = math::distance(a, b) - mean;
-                    *variance += x * x;
-                }
+            for (int64 i = 0; i < count_a * count_b; i++) {
+                const float x = dist[i] - mean;
+                *variance += x * x;
             }
-            *variance = *variance / count;
         }
-
+        *variance = *variance / count;
         return mean;
     }
 }
 
-static inline float multi_angle(Array<const vec3> pos_a, Array<const vec3> pos_b, Array<const vec3> pos_c, float* variance = nullptr) {
-    if (pos_a.count == 0 || pos_b.count == 0 || pos_c.count == 0)
+static inline float multi_angle(const float* a_x, const float* a_y, const float* a_z, int64 count_a, const float* b_x, const float* b_y, const float* b_z, int64 count_b, const float* c_x,
+                                const float* c_y, const float* c_z, int64 count_c, float* variance = nullptr) {
+    if (count_a || count_b == 0 || count_c == 0)
         return 0.f;
-    else if (pos_a.count == 1 && pos_b.count == 1 && pos_c.count == 1)
-        return math::angle(pos_a[0], pos_b[0], pos_c[0]);
-    else {
+    else if (count_a == 1 && count_b == 1 && count_c == 1) {
+        const vec3 a = {a_x[0], a_y[0], a_z[0]};
+        const vec3 b = {b_x[0], b_y[0], b_z[0]};
+        const vec3 c = {c_x[0], c_y[0], c_z[0]};
+        return math::angle(a, b, c);
+    } else {
         float total = 0.f;
-        for (const auto& a : pos_a) {
-            for (const auto& b : pos_b) {
-                for (const auto& c : pos_c) {
-                    total += math::angle(a, b, c);
+        float* angle = (float*)TMP_MALLOC(count_a * count_b * count_c * sizeof(float));
+        defer { TMP_FREE(angle); };
+        for (int64 i = 0; i < count_a; i++) {
+            for (int64 j = 0; j < count_b; j++) {
+                for (int64 k = 0; k < count_c; k++) {
+                    const vec3 a = {a_x[i], a_y[i], a_z[i]};
+                    const vec3 b = {b_x[j], b_y[j], b_z[j]};
+                    const vec3 c = {c_x[k], c_y[k], c_z[k]};
+                    const float ang = math::angle(a, b, c);
+                    angle[i * count_b * count_c + j * count_c + k] = ang;
+                    total += ang;
                 }
             }
         }
 
-        float count = (float)(pos_a.count * pos_b.count * pos_c.count);
+        float count = (float)(count_a * count_b * count_c);
         float mean = total / count;
 
         if (variance) {
             *variance = 0.f;
-            for (const auto& a : pos_a) {
-                for (const auto& b : pos_b) {
-                    for (const auto& c : pos_c) {
-                        float x = math::angle(a, b, c) - mean;
-                        *variance += x * x;
-                    }
-                }
+            for (int64 i = 0; i < count_a * count_b * count_c; i++) {
+                const float x = angle[i] - mean;
+                *variance += x * x;
             }
-            *variance = *variance / count;
         }
 
+        *variance = *variance / count;
         return mean;
-
-        /*
-if (pos_a.count > 1.f) {
-    for (const auto& p : pos_a) angle += math::angle(p, pos_b[0], pos_c[0]);
-    count = (float)pos_a.count;
-} else if (pos_b.count > 1.f) {
-    for (const auto& p : pos_b) angle += math::angle(pos_a[0], p, pos_c[0]);
-    count = (float)pos_b.count;
-} else if (pos_c.count > 1.f) {
-    for (const auto& p : pos_c) angle += math::angle(pos_a[0], pos_b[0], p);
-    count = (float)pos_c.count;
-} else {
-    // ERROR
-    return 0.f;
-}
-        return angle / count;
-        */
     }
 }
 
-static inline float multi_dihedral(Array<const vec3> pos_a, Array<const vec3> pos_b, Array<const vec3> pos_c, Array<const vec3> pos_d, float* variance = nullptr) {
-    if (pos_a.count == 0 || pos_b.count == 0 || pos_c.count == 0 || pos_d.count == 0)
+static inline float multi_dihedral(const float* a_x, const float* a_y, const float* a_z, int64 count_a, const float* b_x, const float* b_y, const float* b_z, int64 count_b, const float* c_x,
+                                   const float* c_y, const float* c_z, int64 count_c, const float* d_x, const float* d_y, const float* d_z, int64 count_d, float* variance = nullptr) {
+    if (count_a == 0 || count_b == 0 || count_c == 0 || count_d == 0) {
         return 0.f;
-    else if (pos_a.count == 1 && pos_b.count == 1 && pos_c.count == 1 && pos_d.count == 1)
-        return math::dihedral_angle(pos_a[0], pos_b[0], pos_c[0], pos_d[0]);
-    else {
+    } else if (count_a == 1 && count_b == 1 && count_c == 1 && count_d == 1) {
+        const vec3 a = {a_x[0], a_y[0], a_z[0]};
+        const vec3 b = {b_x[0], b_y[0], b_z[0]};
+        const vec3 c = {c_x[0], c_y[0], c_z[0]};
+        const vec3 d = {d_x[0], d_y[0], d_z[0]};
+        return math::dihedral_angle(a, b, c, d);
+    } else {
         float total = 0.f;
-        for (const auto& a : pos_a) {
-            for (const auto& b : pos_b) {
-                for (const auto& c : pos_c) {
-                    for (const auto& d : pos_d) {
-                        float x = math::dihedral_angle(a, b, c, d);
-                        total += x * x;
+        float* dihedral = (float*)TMP_MALLOC(count_a * count_b * count_c * sizeof(float));
+        defer { TMP_FREE(dihedral); };
+        for (int64 i = 0; i < count_a; i++) {
+            for (int64 j = 0; j < count_b; j++) {
+                for (int64 k = 0; k < count_c; k++) {
+                    for (int64 l = 0; l < count_d; l++) {
+                        const vec3 a = {a_x[i], a_y[i], a_z[i]};
+                        const vec3 b = {b_x[j], b_y[j], b_z[j]};
+                        const vec3 c = {c_x[k], c_y[k], c_z[k]};
+                        const vec3 d = {d_x[l], d_y[l], d_z[l]};
+                        const float angle = math::dihedral_angle(a, b, c, d);
+                        dihedral[i * count_b * count_c * count_d + j * count_c * count_d + k * count_d + l] = angle;
+                        total += angle;
                     }
                 }
             }
         }
 
-        float count = (float)(pos_a.count * pos_b.count * pos_c.count);
+        float count = (float)(count_a * count_b * count_c * count_d);
         float mean = total / count;
 
         // @TODO: This is madness, just use a temporary array and reuse the values
         if (variance) {
             *variance = 0.f;
-            for (const auto& a : pos_a) {
-                for (const auto& b : pos_b) {
-                    for (const auto& c : pos_c) {
-                        for (const auto& d : pos_d) {
-                            *variance += math::dihedral_angle(a, b, c, d) - mean;
-                        }
-                    }
-                }
+            for (int64 i = 0; i < count_a * count_b * count_c * count_d; i++) {
+                *variance += dihedral[i] - mean;
             }
             *variance = *variance / count;
         }
 
         return mean;
-
-        /*
-float count;
-if (pos_a.count > 1.f) {
-    for (const auto& p : pos_a) angle += math::dihedral_angle(p, pos_b[0], pos_c[0], pos_d[0]);
-    count = (float)pos_a.count;
-} else if (pos_b.count > 1.f) {
-    for (const auto& p : pos_b) angle += math::dihedral_angle(pos_a[0], p, pos_c[0], pos_d[0]);
-    count = (float)pos_b.count;
-} else if (pos_c.count > 1.f) {
-    for (const auto& p : pos_c) angle += math::dihedral_angle(pos_a[0], pos_b[0], p, pos_d[0]);
-    count = (float)pos_c.count;
-} else if (pos_c.count > 1.f) {
-    for (const auto& p : pos_d) angle += math::dihedral_angle(pos_a[0], pos_b[0], pos_c[0], p);
-    count = (float)pos_d.count;
-} else {
-    // ERROR
-    return 0.f;
-}
-return angle / count;
-        */
     }
 }
 
@@ -800,16 +789,23 @@ static bool compute_distance(Property* prop, const Array<CString> args, const Mo
     init_instance_data(&prop->instance_data, structure_count, num_frames);
 
     const float32 scl = 1.f / (float32)structure_count;
-    Array<const vec3> pos[2];
+    Array<const float> pos_x[2];
+    Array<const float> pos_y[2];
+    Array<const float> pos_z[2];
     vec3 com[2];
     for (int32 i = 0; i < num_frames; i++) {
         float sum = 0.f;
         float var = 0.f;
         for (int32 j = 0; j < structure_count; j++) {
-            pos[0] = extract_positions(prop->structure_data[0].structures[j], get_trajectory_positions(dynamic.trajectory, i));
-            pos[1] = extract_positions(prop->structure_data[1].structures[j], get_trajectory_positions(dynamic.trajectory, i));
+            pos_x[0] = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_x(dynamic.trajectory, i));
+            pos_y[0] = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_y(dynamic.trajectory, i));
+            pos_z[0] = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_z(dynamic.trajectory, i));
+
+            pos_x[1] = extract_structure_data(prop->structure_data[1].structures[j], get_trajectory_position_x(dynamic.trajectory, i));
+            pos_y[1] = extract_structure_data(prop->structure_data[1].structures[j], get_trajectory_position_y(dynamic.trajectory, i));
+            pos_z[1] = extract_structure_data(prop->structure_data[1].structures[j], get_trajectory_position_z(dynamic.trajectory, i));
             if (prop->structure_data[0].strategy == COM) {
-                com[0] = compute_com(pos[0]);
+                com[0] = compute_com(pos_x[0].data(), pos_y[0].data(), pos_z[0].data(), pos_x[0].size());
                 pos[0] = {&com[0], 1};
             }
             if (prop->structure_data[1].strategy == COM) {
@@ -1440,8 +1436,8 @@ void async_update(const MoleculeDynamic& dynamic, Range<int32> frame_filter, voi
     if (dynamic.trajectory.num_frames == 0) return;
     static Range<int32> prev_frame_filter{-1, -1};
 
-	const bool frame_filter_changed = prev_frame_filter != frame_filter;
-	const bool dirty_props = properties_dirty();
+    const bool frame_filter_changed = prev_frame_filter != frame_filter;
+    const bool dirty_props = properties_dirty();
 
     if ((frame_filter_changed || dirty_props) && !ctx.thread_running && !ctx.stop_signal) {
         prev_frame_filter = frame_filter;
@@ -1449,7 +1445,7 @@ void async_update(const MoleculeDynamic& dynamic, Range<int32> frame_filter, voi
         std::thread([&dynamic, frame_filter, on_finished, usr_data]() {
             Histogram tmp_hist;
             init_histogram(&tmp_hist, NUM_BINS);
-			defer{ free_histogram(&tmp_hist); };
+            defer { free_histogram(&tmp_hist); };
             ctx.fraction_done = 0.f;
 
             // @NOTE IMPORTANT: This is the one 'true' frame count which should be used for properties.
