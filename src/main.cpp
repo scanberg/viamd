@@ -508,7 +508,7 @@ static bool IsItemActivePreviousFrame() {
 }
 }  // namespace ImGui
 
-static void interpolate_atomic_positions(Array<vec3> dst_pos, const MoleculeTrajectory& traj, float64 time, PlaybackInterpolationMode interpolation_mode);
+static void interpolate_atomic_positions(MoleculeStructure& mol, const MoleculeTrajectory& traj, float64 time, PlaybackInterpolationMode interpolation_mode);
 static void reset_view(ApplicationData* data, bool move_camera = false, bool smooth_transition = false);
 static float32 compute_avg_ms(float32 dt);
 static PickingData read_picking_data(const MainFramebuffer& fbo, int32 x, int32 y);
@@ -820,7 +820,7 @@ int main(int, char**) {
                         ApplicationData* data = (ApplicationData*)usr_data;
                         data->density_volume.volume_data_mutex.lock();
 
-                        stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix, data->mol_data.dynamic.trajectory,
+                        stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix, data->dynamic.trajectory,
                                                       {(int32)data->time_filter.range.beg, (int32)data->time_filter.range.end});
 
                         data->density_volume.volume_data_mutex.unlock();
@@ -899,17 +899,10 @@ int main(int, char**) {
 
             PUSH_CPU_SECTION("Interpolate Position")
             if (traj) {
-                auto pos = get_positions(mol);
-                vec3* old_pos = (vec3*)TMP_MALLOC(pos.size_in_bytes());
-                defer { TMP_FREE(old_pos); };
-                memcpy(old_pos, pos.data(), pos.size_in_bytes());
-
                 const int current_frame = math::clamp((int)data.playback.time, 0, math::max(0, data.dynamic.trajectory.num_frames - 1));
                 const vec3 box_ext = get_trajectory_frame(data.dynamic.trajectory, current_frame).box * vec3(1.0f);
 
-                interpolate_atomic_positions(pos, traj, data.playback.time, data.playback.interpolation);
-                // compute_atomic_velocities(data.atom_velocity, pos, Array<const vec3>(old_pos, pos.size()), box_ext);
-                compute_velocities_pbc(data.atom_velocity, pos, Array<const vec3>(old_pos, pos.size()), box_ext);
+                interpolate_atomic_positions(mol, traj, data.playback.time, data.playback.interpolation);
 #if 0
                 if (data.interpolation != PlaybackInterpolationMode::Nearest) {
                     const auto& box = get_trajectory_frame(data.dynamic.trajectory, (int)data.time).box;
@@ -923,9 +916,10 @@ int main(int, char**) {
             }
             POP_CPU_SECTION()
 
-            PUSH_CPU_SECTION("Compute backbone angles")
-            zero_array(mol.backbone.angles);
-            compute_backbone_angles(mol.backbone.angles, get_positions(mol), mol.backbone.segments, mol.backbone.sequences);
+			PUSH_CPU_SECTION("Compute backbone angles") {
+				zero_array(mol.backbone.angles);
+				compute_backbone_angles(mol.backbone.angles, mol.backbone.segments, mol.backbone.sequences, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count);
+			}
             POP_CPU_SECTION()
 
             PUSH_CPU_SECTION("Update dynamic representations")
@@ -945,9 +939,12 @@ int main(int, char**) {
 
         PUSH_CPU_SECTION("Hydrogen bonds")
         if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.dirty) {
+			auto& mol = data.dynamic.molecule;
+			auto& traj = data.dynamic.trajectory;
+
             data.hydrogen_bonds.bonds.clear();
-            hydrogen_bond::compute_bonds(&data.hydrogen_bonds.bonds, data.dynamic.molecule.hydrogen_bond.donors, data.dynamic.molecule.hydrogen_bond.acceptors,
-                                         get_positions(data.dynamic.molecule), data.hydrogen_bonds.distance_cutoff, data.hydrogen_bonds.angle_cutoff * math::DEG_TO_RAD);
+			hydrogen_bond::compute_bonds(&data.hydrogen_bonds.bonds, data.dynamic.molecule.hydrogen_bond.donors, data.dynamic.molecule.hydrogen_bond.acceptors,
+				mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count, data.hydrogen_bonds.distance_cutoff, data.hydrogen_bonds.angle_cutoff * math::DEG_TO_RAD);
             data.hydrogen_bonds.dirty = false;
         }
         POP_CPU_SECTION()
@@ -1424,6 +1421,24 @@ static void interpolate_atomic_positions(MoleculeStructure& mol, const MoleculeT
     const int last_frame = traj.num_frames - 1;
     time = math::clamp(time, 0.0, float64(last_frame));
 
+	auto pos_x = get_positions_x(mol);
+	auto pos_y = get_positions_y(mol);
+	auto pos_z = get_positions_z(mol);
+
+	float* old_pos_x = (float*)TMP_ALIGNED_MALLOC(pos_x.size_in_bytes(), 64);
+	float* old_pos_y = (float*)TMP_ALIGNED_MALLOC(pos_y.size_in_bytes(), 64);
+	float* old_pos_z = (float*)TMP_ALIGNED_MALLOC(pos_z.size_in_bytes(), 64);
+
+	defer{
+		TMP_ALIGNED_FREE(old_pos_x);
+		TMP_ALIGNED_FREE(old_pos_y);
+		TMP_ALIGNED_FREE(old_pos_z);
+	};
+
+	memcpy(old_pos_x, pos_x.data(), pos_x.size_in_bytes());
+	memcpy(old_pos_y, pos_y.data(), pos_y.size_in_bytes());
+	memcpy(old_pos_z, pos_z.data(), pos_z.size_in_bytes());
+
     const int frame = (int)time;
     const int prev_frame_2 = math::max(0, frame - 1);
     const int prev_frame_1 = math::max(0, frame);
@@ -1445,36 +1460,60 @@ static void interpolate_atomic_positions(MoleculeStructure& mol, const MoleculeT
         switch (interpolation_mode) {
             case PlaybackInterpolationMode::Nearest: {
                 const int nearest_frame = math::clamp((int)(time + 0.5), 0, last_frame);
-				const auto pos_x = get_trajectory_position_x(traj, nearest_frame);
-				const auto pos_y = get_trajectory_position_y(traj, nearest_frame);
-				const auto pos_z = get_trajectory_position_z(traj, nearest_frame);
-				memcpy(mol.atom.position.x, pos_x.data(), pos_x.size_in_bytes());
-				memcpy(mol.atom.position.y, pos_y.data(), pos_y.size_in_bytes());
-				memcpy(mol.atom.position.z, pos_z.data(), pos_z.size_in_bytes());
+				const auto x = get_trajectory_position_x(traj, nearest_frame);
+				const auto y = get_trajectory_position_y(traj, nearest_frame);
+				const auto z = get_trajectory_position_z(traj, nearest_frame);
+				memcpy(mol.atom.position.x, z.data(), z.size_in_bytes());
+				memcpy(mol.atom.position.y, y.data(), y.size_in_bytes());
+				memcpy(mol.atom.position.z, z.data(), z.size_in_bytes());
                 break;
             }
             case PlaybackInterpolationMode::Linear: {
-                const auto prev = get_trajectory_positions(traj, prev_frame_1);
-                const auto next = get_trajectory_positions(traj, next_frame_1);
-                linear_interpolation(dst_pos, prev, next, t);
+				const auto x0 = get_trajectory_position_x(traj, prev_frame_1);
+				const auto y0 = get_trajectory_position_y(traj, prev_frame_1);
+				const auto z0 = get_trajectory_position_z(traj, prev_frame_1);
+				const auto x1 = get_trajectory_position_x(traj, next_frame_1);
+				const auto y1 = get_trajectory_position_y(traj, next_frame_1);
+				const auto z1 = get_trajectory_position_z(traj, next_frame_1);
+                linear_interpolation(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z,
+									 x0.data(), y0.data(), z0.data(),
+									 x1.data(), y1.data(), z1.data(), mol.atom.count, t);
                 break;
             }
             case PlaybackInterpolationMode::LinearPbc: {
-                const auto prev = get_trajectory_positions(traj, prev_frame_1);
-                const auto next = get_trajectory_positions(traj, next_frame_1);
-                linear_interpolation_periodic(dst_pos, prev, next, t, box);
+				const auto x0 = get_trajectory_position_x(traj, prev_frame_1);
+				const auto y0 = get_trajectory_position_y(traj, prev_frame_1);
+				const auto z0 = get_trajectory_position_z(traj, prev_frame_1);
+				const auto x1 = get_trajectory_position_x(traj, next_frame_1);
+				const auto y1 = get_trajectory_position_y(traj, next_frame_1);
+				const auto z1 = get_trajectory_position_z(traj, next_frame_1);
+                linear_interpolation_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z,
+										 x0.data(), y0.data(), z0.data(),
+										 x1.data(), y1.data(), z1.data(), mol.atom.count, t, box);
                 break;
             }
             case PlaybackInterpolationMode::Cubic: {
-                const Array<const vec3> pos[4] = {get_trajectory_positions(traj, prev_frame_2), get_trajectory_positions(traj, prev_frame_1), get_trajectory_positions(traj, next_frame_1),
-                                                  get_trajectory_positions(traj, next_frame_2)};
-                cubic_interpolation(dst_pos, pos[0], pos[1], pos[2], pos[3], t);
+				const Array<const float> x[4] = { get_trajectory_position_x(traj, prev_frame_2), get_trajectory_position_x(traj, prev_frame_1), get_trajectory_position_x(traj, next_frame_1), get_trajectory_position_x(traj, next_frame_2) };
+				const Array<const float> y[4] = { get_trajectory_position_y(traj, prev_frame_2), get_trajectory_position_y(traj, prev_frame_1), get_trajectory_position_y(traj, next_frame_1), get_trajectory_position_y(traj, next_frame_2) };
+				const Array<const float> z[4] = { get_trajectory_position_z(traj, prev_frame_2), get_trajectory_position_z(traj, prev_frame_1), get_trajectory_position_z(traj, next_frame_1), get_trajectory_position_z(traj, next_frame_2) };
+
+				cubic_interpolation(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z,
+									x[0].data(), y[0].data(), z[0].data(),
+									x[1].data(), y[1].data(), z[1].data(),
+									x[2].data(), y[2].data(), z[2].data(),
+									x[3].data(), y[3].data(), z[3].data(), mol.atom.count, t);
                 break;
             }
             case PlaybackInterpolationMode::CubicPbc: {
-                const Array<const vec3> pos[4] = {get_trajectory_positions(traj, prev_frame_2), get_trajectory_positions(traj, prev_frame_1), get_trajectory_positions(traj, next_frame_1),
-                                                  get_trajectory_positions(traj, next_frame_2)};
-                cubic_interpolation_periodic(dst_pos, pos[0], pos[1], pos[2], pos[3], t, box);
+				const Array<const float> x[4] = { get_trajectory_position_x(traj, prev_frame_2), get_trajectory_position_x(traj, prev_frame_1), get_trajectory_position_x(traj, next_frame_1), get_trajectory_position_x(traj, next_frame_2) };
+				const Array<const float> y[4] = { get_trajectory_position_y(traj, prev_frame_2), get_trajectory_position_y(traj, prev_frame_1), get_trajectory_position_y(traj, next_frame_1), get_trajectory_position_y(traj, next_frame_2) };
+				const Array<const float> z[4] = { get_trajectory_position_z(traj, prev_frame_2), get_trajectory_position_z(traj, prev_frame_1), get_trajectory_position_z(traj, next_frame_1), get_trajectory_position_z(traj, next_frame_2) };
+
+				cubic_interpolation_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z,
+										x[0].data(), y[0].data(), z[0].data(),
+										x[1].data(), y[1].data(), z[1].data(),
+										x[2].data(), y[2].data(), z[2].data(),
+										x[3].data(), y[3].data(), z[3].data(), mol.atom.count, t, box);
                 break;
             }
 
@@ -1505,10 +1544,10 @@ static float32 compute_avg_ms(float32 dt) {
 
 static void reset_view(ApplicationData* data, bool move_camera, bool smooth_transition) {
     ASSERT(data);
-    if (!data->mol_data.dynamic.molecule) return;
+    if (!data->dynamic.molecule) return;
 
     vec3 min_box, max_box;
-    compute_bounding_box(&min_box, &max_box, get_positions(data->mol_data.dynamic.molecule));
+    compute_bounding_box(&min_box, &max_box, get_positions(data->dynamic.molecule));
     vec3 size = max_box - min_box;
     vec3 cent = (min_box + max_box) * 0.5f;
     vec3 pos = cent + size * 3.f;
@@ -1961,7 +2000,7 @@ ImGui::EndGroup();
         }
         if (ImGui::BeginMenu("Selection")) {
             static DynamicArray<bool> mask;
-            mask.resize(data->mol_data.dynamic.molecule.atom.count);
+            mask.resize(data->dynamic.molecule.atom.count);
 
             if (ImGui::MenuItem("Clear Selection")) {
                 memset_array(data->selection.current_selection_mask, false);
@@ -2010,7 +2049,7 @@ ImGui::EndGroup();
 
                 if (show_preview) {
                     if (query_modified) {
-                        query_ok = filter::compute_filter_mask(mask, data->mol_data.dynamic, buf);
+                        query_ok = filter::compute_filter_mask(mask, data->dynamic, buf);
                         if (!query_ok) {
                             memset_array(mask, false);
                         }
@@ -2068,10 +2107,10 @@ ImGui::EndGroup();
 
                     switch (data->selection.grow_mode) {
                         case SelectionGrowth::CovalentBond:
-                            grow_mask_by_covalent_bond(mask, get_covalent_bonds(data->mol_data.dynamic.molecule), (int32)extent);
+                            grow_mask_by_covalent_bond(mask, get_covalent_bonds(data->dynamic.molecule), (int32)extent);
                             break;
                         case SelectionGrowth::Radial:
-                            grow_mask_by_radial_extent(mask, get_positions(data->mol_data.dynamic.molecule), extent);
+                            grow_mask_by_radial_extent(mask, get_positions(data->dynamic.molecule), extent);
                             break;
                         default:
                             ASSERT(false);
@@ -2082,10 +2121,10 @@ ImGui::EndGroup();
                             // No need to expand the mask
                             break;
                         case SelectionLevel::Residue:
-                            expand_mask_to_residue(mask, data->mol_data.dynamic.molecule.residues);
+                            expand_mask_to_residue(mask, data->dynamic.molecule.residues);
                             break;
                         case SelectionLevel::Chain:
-                            expand_mask_to_chain(mask, data->mol_data.dynamic.molecule.chains);
+                            expand_mask_to_chain(mask, data->dynamic.molecule.chains);
                             break;
                         default:
                             ASSERT(false);
@@ -2193,7 +2232,7 @@ void draw_selection_window(ApplicationData* data) {
     if (!data->selection.show_window) return;
 
     static DynamicArray<bool> mask;
-    mask.resize(data->mol_data.dynamic.molecule.atom.count);
+    mask.resize(data->dynamic.molecule.atom.count);
 
     ImGui::Begin("Selection", &data->selection.show_window);
 
@@ -2244,7 +2283,7 @@ void draw_selection_window(ApplicationData* data) {
 
         if (show) {
             if (query_modified) {
-                query_ok = filter::compute_filter_mask(mask, data->mol_data.dynamic, buf);
+                query_ok = filter::compute_filter_mask(mask, data->dynamic, buf);
                 if (!query_ok) {
                     memset_array(mask, false);
                 }
@@ -2316,7 +2355,7 @@ void draw_selection_window(ApplicationData* data) {
 
             if (grow_mode == CovalentBond) {
                 for (int64 i = 0; i < (int64)extent; i++) {
-                    for (const auto& bond : data->mol_data.dynamic.molecule.covalent_bonds) {
+                    for (const auto& bond : data->dynamic.molecule.covalent_bonds) {
                         const int32 idx[2] = {bond.idx[0], bond.idx[1]};
                         if (prev_mask[idx[0]] && !mask[idx[1]]) {
                             mask[idx[1]] = true;
@@ -2327,7 +2366,7 @@ void draw_selection_window(ApplicationData* data) {
                     memcpy(prev_mask.data(), mask.data(), prev_mask.size_in_bytes());
                 }
             } else if (grow_mode == Radial) {
-                const auto positions = get_positions(data->mol_data.dynamic.molecule);
+                const auto positions = get_positions(data->dynamic.molecule);
                 spatialhash::Frame frame = spatialhash::compute_frame(positions, vec3(extent));
                 for (int64 i = 0; i < positions.size(); i++) {
                     if (prev_mask[i]) {
@@ -2344,10 +2383,10 @@ void draw_selection_window(ApplicationData* data) {
                 case SelectionLevel::Atom:
                     break;
                 case SelectionLevel::Residue:
-                    expand_mask_to_residue(mask, data->mol_data.dynamic.molecule.residues);
+                    expand_mask_to_residue(mask, data->dynamic.molecule.residues);
                     break;
                 case SelectionLevel::Chain:
-                    expand_mask_to_chain(mask, data->mol_data.dynamic.molecule.chains);
+                    expand_mask_to_chain(mask, data->dynamic.molecule.chains);
                     break;
                 default:
                     ASSERT(false);
@@ -2410,16 +2449,16 @@ void draw_context_popup(ApplicationData* data) {
 
     const bool shift_down = data->ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data->ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
     if (data->ctx.input.mouse.clicked[1] && !shift_down && !ImGui::GetIO().WantTextInput) {
-        if (data->selection.right_clicked != -1 && data->mol_data.dynamic) {
+        if (data->selection.right_clicked != -1 && data->dynamic) {
             ImGui::OpenPopup("AtomContextPopup");
         }
     }
 
     if (ImGui::BeginPopup("AtomContextPopup")) {
-        if (data->selection.right_clicked != -1 && data->mol_data.dynamic) {
+        if (data->selection.right_clicked != -1 && data->dynamic) {
             if (ImGui::MenuItem("Recenter Trajectory")) {
-                recenter_trajectory(&data->mol_data.dynamic, data->mol_data.dynamic.molecule.atom.residue_indices[data->selection.right_clicked]);
-                interpolate_atomic_positions(get_positions(data->mol_data.dynamic.molecule), data->mol_data.dynamic.trajectory, data->playback.time, data->playback.interpolation);
+                recenter_trajectory(&data->dynamic, data->dynamic.molecule.atom.res_idx[data->selection.right_clicked]);
+                interpolate_atomic_positions(data->dynamic.molecule, data->dynamic.trajectory, data->playback.time, data->playback.interpolation);
                 data->gpu_buffers.dirty.position = true;
                 ImGui::CloseCurrentPopup();
             }
@@ -2430,10 +2469,10 @@ void draw_context_popup(ApplicationData* data) {
 
 static void draw_animation_control_window(ApplicationData* data) {
     ASSERT(data);
-    if (!data->mol_data.dynamic.trajectory) return;
+    if (!data->dynamic.trajectory) return;
 
     ImGui::Begin("Control");
-    const int32 num_frames = data->mol_data.dynamic.trajectory.num_frames;
+    const int32 num_frames = data->dynamic.trajectory.num_frames;
     ImGui::Text("Num Frames: %i", num_frames);
     float32 t = (float)data->playback.time;
     if (ImGui::SliderFloat("Time", &t, 0, (float)(math::max(0, num_frames - 1)))) {
@@ -2585,12 +2624,12 @@ static void draw_property_window(ApplicationData* data) {
         bool paste_buf = false;
 
         if (ImGui::BeginPopup("AtomContextMenu")) {
-            if (data->mol_data.dynamic.molecule) {
+            if (data->dynamic.molecule) {
                 const int32 atom_idx = data->selection.right_clicked;
                 if (atom_idx != -1) {
-                    ASSERT(atom_idx < data->mol_data.dynamic.molecule.atom.count);
-                    const int32 residue_idx = data->mol_data.dynamic.molecule.atom.residue_indices[data->selection.right_clicked];
-                    const int32 chain_idx = data->mol_data.dynamic.molecule.residues[residue_idx].chain_idx;
+                    ASSERT(atom_idx < data->dynamic.molecule.atom.count);
+                    const int32 residue_idx = data->dynamic.molecule.atom.res_idx[data->selection.right_clicked];
+                    const int32 chain_idx = data->dynamic.molecule.residues[residue_idx].chain_idx;
 
                     char buf[buf_len];
 
@@ -2601,7 +2640,7 @@ static void draw_property_window(ApplicationData* data) {
                     }
 
                     if (residue_idx > -1) {
-                        const auto& residue = data->mol_data.dynamic.molecule.residues[residue_idx];
+                        const auto& residue = data->dynamic.molecule.residues[residue_idx];
 
                         snprintf(buf, buf_len, "residue(%i) ", residue_idx + 1);
                         if (ImGui::MenuItem(buf)) {
@@ -2711,7 +2750,7 @@ static void draw_property_window(ApplicationData* data) {
     ImGui::End();
 
     // if (compute_stats) {
-    // stats::compute_stats(data->mol_data.dynamic);
+    // stats::compute_stats(data->dynamic);
     // compute_statistics_async(data);
     //}
 }
@@ -2721,16 +2760,16 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, in
     // @TODO: Assert things and make this failproof
     if (atom_idx < 0 || atom_idx >= mol.atom.count) return;
 
-    int res_idx = mol.atom.residue_indices[atom_idx];
+    int res_idx = mol.atom.res_idx[atom_idx];
     const Residue& res = mol.residues[res_idx];
     const char* res_id = res.name;
     int local_idx = atom_idx - res.atom_idx.beg;
     const float pos_x = mol.atom.position.x[atom_idx];
 	const float pos_y = mol.atom.position.y[atom_idx];
 	const float pos_z = mol.atom.position.z[atom_idx];
-    const char* label = mol.atom.labels[atom_idx];
-    const char* elem = element::name(mol.atom.elements[atom_idx]);
-    const char* symbol = element::symbol(mol.atom.elements[atom_idx]);
+    const char* label = mol.atom.label[atom_idx];
+    const char* elem = element::name(mol.atom.element[atom_idx]);
+    const char* symbol = element::symbol(mol.atom.element[atom_idx]);
 
     int chain_idx = res.chain_idx;
     const char* chain_id = "\0";
@@ -2832,7 +2871,7 @@ static void draw_timeline_window(ApplicationData* data) {
     ImGui::SetNextWindowSize(ImVec2(400, 150), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Timelines", &data->statistics.show_timeline_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
         static float zoom = 1.f;
-        const float num_frames = (float)data->mol_data.dynamic.trajectory.num_frames;
+        const float num_frames = (float)data->dynamic.trajectory.num_frames;
 
         ImGui::Checkbox("Dynamic Framewindow", &data->time_filter.dynamic_window);
         if (data->time_filter.dynamic_window) {
@@ -3091,10 +3130,10 @@ static void draw_distribution_window(ApplicationData* data) {
 }
 
 static void draw_ramachandran_window(ApplicationData* data) {
-    // const int32 num_frames = data->mol_data.dynamic.trajectory ? data->mol_data.dynamic.trajectory.num_frames : 0;
+    // const int32 num_frames = data->dynamic.trajectory ? data->dynamic.trajectory.num_frames : 0;
     // const int32 frame = (int32)data->time;
     const IntRange frame_range = {(int32)data->time_filter.range.x, (int32)data->time_filter.range.y};
-    const auto& mol = data->mol_data.dynamic.molecule;
+    const auto& mol = data->dynamic.molecule;
     Array<const BackboneAngle> trajectory_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame_range.x, frame_range.y - frame_range.x);
     Array<const BackboneAngle> current_angles = mol.backbone.angles;
     Array<const BackboneSegment> backbone_segments = mol.backbone.segments;
@@ -3135,7 +3174,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Fill color for trajectory range");
             }
-            ImGui::RangeSliderFloat("range", &data->time_filter.range.min, &data->time_filter.range.max, 0.f, (float)data->mol_data.dynamic.trajectory.num_frames, "(%.1f, %.1f)");
+            ImGui::RangeSliderFloat("range", &data->time_filter.range.min, &data->time_filter.range.max, 0.f, (float)data->dynamic.trajectory.num_frames, "(%.1f, %.1f)");
             ImGui::PopID();
 
             ramachandran::clear_accumulation_texture();
@@ -3244,7 +3283,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
         ImGui::Text(u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0", angles.x, angles.y);
         if (!region_select && mouse_hover_idx != -1) {
             const auto res_idx = mouse_hover_idx;
-            const auto& res = get_residues(data->mol_data.dynamic.molecule)[res_idx];
+            const auto& res = get_residues(data->dynamic.molecule)[res_idx];
             ImGui::Text("Residue[%lli]: %s", res_idx, res.name.cstr());
             memset_array(data->selection.current_highlight_mask, false);
             memset_array(data->selection.current_highlight_mask.subarray(res.atom_idx), true);
@@ -3450,7 +3489,7 @@ static void destroy_framebuffer(MainFramebuffer* fbo) {
 
 static void init_molecule_buffers(ApplicationData* data) {
     ASSERT(data);
-    const auto& mol = data->mol_data.dynamic.molecule;
+    const auto& mol = data->dynamic.molecule;
 
     DynamicArray<uint32> backbone_index_data;
     DynamicArray<uint32> control_point_index_data;
@@ -3519,6 +3558,7 @@ static void init_molecule_buffers(ApplicationData* data) {
     const int64 num_backbone_segments = backbone_index_data.size() / 6;
     const int64 position_buffer_size = mol.atom.count * 3 * sizeof(float);
     const int64 velocity_buffer_size = mol.atom.count * 3 * sizeof(float);
+	const int64 radius_buffer_size = mol.atom.count * sizeof(float);
     const int64 bond_buffer_size = mol.covalent_bonds.size() * sizeof(uint32) * 2;
     const int64 selection_buffer_size = mol.atom.count * sizeof(uint8);
     const int64 control_point_buffer_size = num_backbone_segments * sizeof(draw::ControlPoint);
@@ -3542,7 +3582,7 @@ static void init_molecule_buffers(ApplicationData* data) {
     glBufferData(GL_ARRAY_BUFFER, velocity_buffer_size, NULL, GL_DYNAMIC_DRAW);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.radius);
-    glBufferData(GL_ARRAY_BUFFER, data->mol_data.atom_radii.size_in_bytes(), data->mol_data.atom_radii.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, radius_buffer_size, mol.atom.radius, GL_STATIC_DRAW);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.bond);
     glBufferData(GL_ARRAY_BUFFER, bond_buffer_size, mol.covalent_bonds.data(), GL_STATIC_DRAW);
@@ -3619,13 +3659,13 @@ static void free_molecule_buffers(ApplicationData* data) {
 
 void copy_molecule_data_to_buffers(ApplicationData* data) {
     ASSERT(data);
-    const auto N = data->mol_data.dynamic.molecule.atom.count;
+    const auto N = data->dynamic.molecule.atom.count;
 
     if (data->gpu_buffers.dirty.position) {
         data->gpu_buffers.dirty.position = false;
-        const float* pos_x = data->mol_data.dynamic.molecule.atom.position.x;
-		const float* pos_y = data->mol_data.dynamic.molecule.atom.position.y;
-		const float* pos_z = data->mol_data.dynamic.molecule.atom.position.z;
+        const float* pos_x = data->dynamic.molecule.atom.position.x;
+		const float* pos_y = data->dynamic.molecule.atom.position.y;
+		const float* pos_z = data->dynamic.molecule.atom.position.z;
 
         // Update data inside position buffer
         glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.position);
@@ -3636,7 +3676,6 @@ void copy_molecule_data_to_buffers(ApplicationData* data) {
             return;
         }
 
-        // @NOTE: we cannot do a pure memcpy since the CPU data is SOA
         for (int64 i = 0; i < N; i++) {
             pos_gpu[i * 3 + 0] = pos_x[i];
             pos_gpu[i * 3 + 1] = pos_y[i];
@@ -3647,7 +3686,9 @@ void copy_molecule_data_to_buffers(ApplicationData* data) {
 
     if (data->gpu_buffers.dirty.velocity) {
         data->gpu_buffers.dirty.velocity = false;
-        const vec3* velocity = data->mol_data.atom_velocity.data();
+		const float* vel_x = data->dynamic.molecule.atom.velocity.x;
+		const float* vel_y = data->dynamic.molecule.atom.velocity.y;
+		const float* vel_z = data->dynamic.molecule.atom.velocity.z;
 
         // Update data inside position buffer
         glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.velocity);
@@ -3658,11 +3699,10 @@ void copy_molecule_data_to_buffers(ApplicationData* data) {
             return;
         }
 
-        // @NOTE: we cannot do a pure memcpy since the CPU buffer using vec3 can be a m128 with 16-byte alignment.
         for (int64 i = 0; i < N; i++) {
-            vel_gpu[i * 3 + 0] = velocity[i][0];
-            vel_gpu[i * 3 + 1] = velocity[i][1];
-            vel_gpu[i * 3 + 2] = velocity[i][2];
+            vel_gpu[i * 3 + 0] = vel_x[i];
+            vel_gpu[i * 3 + 1] = vel_y[i];
+            vel_gpu[i * 3 + 2] = vel_z[i];
         }
         glUnmapBuffer(GL_ARRAY_BUFFER);
     }
@@ -3690,28 +3730,25 @@ void copy_molecule_data_to_buffers(ApplicationData* data) {
 // #moleculedata
 static void free_trajectory_data(ApplicationData* data) {
     ASSERT(data);
-    if (data->mol_data.dynamic.trajectory) {
+    if (data->dynamic.trajectory) {
         data->async.trajectory.sync.signal_stop_and_wait();
         stats::signal_stop_and_wait();
         data->async.backbone_angles.sync.signal_stop_and_wait();
-        close_file_handle(&data->mol_data.dynamic.trajectory);
-        free_trajectory(&data->mol_data.dynamic.trajectory);
+        close_file_handle(&data->dynamic.trajectory);
+        free_trajectory(&data->dynamic.trajectory);
     }
 }
 
 static void free_molecule_data(ApplicationData* data) {
     ASSERT(data);
-    if (data->mol_data.dynamic.molecule) {
+    if (data->dynamic.molecule) {
         data->files.molecule = "";
-        free_molecule_structure(&data->mol_data.dynamic.molecule);
+        free_molecule_structure(&data->dynamic.molecule);
     }
-    if (data->mol_data.dynamic.trajectory) {
+    if (data->dynamic.trajectory) {
         data->files.trajectory = "";
         free_trajectory_data(data);
     }
-    data->mol_data.atom_radii.clear();
-    data->mol_data.atom_velocity.clear();
-
     free_molecule_buffers(data);
     free_backbone_angles_trajectory(&data->ramachandran.backbone_angles);
     data->ramachandran.backbone_angles = {};
@@ -3723,11 +3760,8 @@ static void free_molecule_data(ApplicationData* data) {
 }
 
 static void init_molecule_data(ApplicationData* data) {
-    if (data->mol_data.dynamic.molecule) {
-        const auto atom_count = data->mol_data.dynamic.molecule.atom.count;
-        data->mol_data.atom_radii = compute_atom_radii(get_elements(data->mol_data.dynamic.molecule));
-        data->mol_data.atom_velocity.resize(atom_count);
-        zero_array(data->mol_data.atom_velocity);
+    if (data->dynamic.molecule) {
+        const auto atom_count = data->dynamic.molecule.atom.count;
         data->selection.current_selection_mask.resize(atom_count);
         data->selection.current_highlight_mask.resize(atom_count);
         zero_array(data->selection.current_selection_mask);
@@ -3740,21 +3774,21 @@ static void init_molecule_data(ApplicationData* data) {
 }
 
 static void init_trajectory_data(ApplicationData* data) {
-    if (data->mol_data.dynamic.trajectory) {
-        if (data->mol_data.dynamic.trajectory.num_atoms != data->mol_data.dynamic.molecule.atom.count) {
+    if (data->dynamic.trajectory) {
+        if (data->dynamic.trajectory.num_atoms != data->dynamic.molecule.atom.count) {
             LOG_ERROR("ERROR! The number of atoms in the molecule does not match the number of atoms in the trajectory.");
             free_trajectory_data(data);
             return;
         }
 
-        read_next_trajectory_frame(&data->mol_data.dynamic.trajectory);  // read first frame explicitly
-        const auto pos_x = get_trajectory_position_x(data->mol_data.dynamic.trajectory, 0);
-		const auto pos_y = get_trajectory_position_x(data->mol_data.dynamic.trajectory, 0);
-		const auto pos_z = get_trajectory_position_x(data->mol_data.dynamic.trajectory, 0);
+        read_next_trajectory_frame(&data->dynamic.trajectory);  // read first frame explicitly
+        const auto pos_x = get_trajectory_position_x(data->dynamic.trajectory, 0);
+		const auto pos_y = get_trajectory_position_x(data->dynamic.trajectory, 0);
+		const auto pos_z = get_trajectory_position_x(data->dynamic.trajectory, 0);
 
-        memcpy(data->mol_data.dynamic.molecule.atom.position.x, pos_x.data(), pos_x.size_in_bytes());
-		memcpy(data->mol_data.dynamic.molecule.atom.position.y, pos_y.data(), pos_y.size_in_bytes());
-		memcpy(data->mol_data.dynamic.molecule.atom.position.z, pos_z.data(), pos_z.size_in_bytes());
+        memcpy(data->dynamic.molecule.atom.position.x, pos_x.data(), pos_x.size_in_bytes());
+		memcpy(data->dynamic.molecule.atom.position.y, pos_y.data(), pos_y.size_in_bytes());
+		memcpy(data->dynamic.molecule.atom.position.z, pos_z.data(), pos_z.size_in_bytes());
 
         data->gpu_buffers.dirty.position = true;
 
@@ -3762,16 +3796,16 @@ static void init_trajectory_data(ApplicationData* data) {
 
         create_volume(data);
 #if 1
-        if (data->mol_data.dynamic.trajectory.num_frames > 0) {
-            vec3 box_ext = data->mol_data.dynamic.trajectory.frame_buffer[0].box * vec3(1);
+        if (data->dynamic.trajectory.num_frames > 0) {
+            vec3 box_ext = data->dynamic.trajectory.frame_buffer[0].box * vec3(1);
             init_volume(&data->density_volume.volume, math::max(ivec3(1), ivec3(box_ext) / VOLUME_DOWNSAMPLE_FACTOR));
             data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(vec3(0), box_ext);
             data->density_volume.texture_to_model_matrix = volume::compute_texture_to_model_matrix(data->density_volume.volume.dim);
         }
 #endif
 
-        init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
-        compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
+        init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->dynamic);
+        compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->dynamic);
     }
 }
 
@@ -3784,7 +3818,7 @@ static void load_molecule_data(ApplicationData* data, CString file) {
         auto t0 = platform::get_time();
         if (compare_ignore_case(ext, "pdb")) {
             free_molecule_data(data);
-            if (!allocate_and_load_pdb_from_file(&data->mol_data.dynamic, file)) {
+            if (!allocate_and_load_pdb_from_file(&data->dynamic, file)) {
                 LOG_ERROR("ERROR! Failed to load pdb file.");
             }
             data->files.molecule = file;
@@ -3792,19 +3826,19 @@ static void load_molecule_data(ApplicationData* data, CString file) {
             init_trajectory_data(data);
         } else if (compare_ignore_case(ext, "gro")) {
             free_molecule_data(data);
-            if (!allocate_and_load_gro_from_file(&data->mol_data.dynamic.molecule, file)) {
+            if (!allocate_and_load_gro_from_file(&data->dynamic.molecule, file)) {
                 LOG_ERROR("ERROR! Failed to load gro file.");
                 return;
             }
             data->files.molecule = file;
             init_molecule_data(data);
         } else if (compare_ignore_case(ext, "xtc")) {
-            if (!data->mol_data.dynamic.molecule) {
+            if (!data->dynamic.molecule) {
                 LOG_ERROR("ERROR! Must have molecule structure before trajectory can be loaded.");
                 return;
             }
             free_trajectory_data(data);
-            if (!load_and_allocate_trajectory(&data->mol_data.dynamic.trajectory, file)) {
+            if (!load_and_allocate_trajectory(&data->dynamic.trajectory, file)) {
                 LOG_ERROR("ERROR! Problem loading trajectory.");
                 return;
             }
@@ -3815,9 +3849,9 @@ static void load_molecule_data(ApplicationData* data, CString file) {
         }
         auto t1 = platform::get_time();
         LOG_NOTE("Success! operation took %.3fs.", platform::compute_delta_ms(t0, t1) / 1000.f);
-        LOG_NOTE("Number of chains: %i", (int32)data->mol_data.dynamic.molecule.chains.size());
-        LOG_NOTE("Number of residues: %i", (int32)data->mol_data.dynamic.molecule.residues.size());
-        LOG_NOTE("Number of atoms: %i", (int32)data->mol_data.dynamic.molecule.atom.count);
+        LOG_NOTE("Number of chains: %i", (int32)data->dynamic.molecule.chains.size());
+        LOG_NOTE("Number of residues: %i", (int32)data->dynamic.molecule.residues.size());
+        LOG_NOTE("Number of atoms: %i", (int32)data->dynamic.molecule.atom.count);
     }
 }
 
@@ -4105,7 +4139,7 @@ static void recompute_atom_visibility_mask(ApplicationData* data) {
     ASSERT(data);
     if (!data->representations.atom_visibility_mask_dirty) return;
 
-    const auto N = data->mol_data.dynamic.molecule.atom.count;
+    const auto N = data->dynamic.molecule.atom.count;
     data->representations.atom_visibility_mask.resize(N);
     memset_array(data->representations.atom_visibility_mask, false);
 
@@ -4123,8 +4157,8 @@ static void update_representation(ApplicationData* data, Representation* rep) {
     ASSERT(data);
     ASSERT(rep);
     uint32 static_color = ImGui::ColorConvertFloat4ToU32(vec_cast(rep->static_color));
-    DynamicArray<uint32> colors(data->mol_data.dynamic.molecule.atom.count);
-    const auto& mol = data->mol_data.dynamic.molecule;
+    DynamicArray<uint32> colors(data->dynamic.molecule.atom.count);
+    const auto& mol = data->dynamic.molecule;
 
     switch (rep->color_mapping) {
         case ColorMapping::Static:
@@ -4157,7 +4191,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
         free_array(&rep->atom_mask);
         rep->atom_mask = allocate_array<bool>(mol.atom.count);
     }
-    rep->filter_is_ok = filter::compute_filter_mask(rep->atom_mask, data->mol_data.dynamic, rep->filter.buffer);
+    rep->filter_is_ok = filter::compute_filter_mask(rep->atom_mask, data->dynamic, rep->filter.buffer);
     filter::filter_colors(colors, rep->atom_mask);
     data->representations.atom_visibility_mask_dirty = true;
 
@@ -4231,7 +4265,7 @@ static bool handle_selection(ApplicationData* data) {
     static bool region_select = false;
     static platform::Coordinate x0;
     const platform::Coordinate x1 = data->ctx.input.mouse.win_coord;
-    const int64 N = data->mol_data.dynamic.molecule.atom.count;
+    const int64 N = data->dynamic.molecule.atom.count;
     const bool shift_down = data->ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data->ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
     const bool mouse_down = data->ctx.input.mouse.down[0] || data->ctx.input.mouse.down[1];
 
@@ -4251,11 +4285,11 @@ static bool handle_selection(ApplicationData* data) {
             case SelectionLevel::Atom:
                 break;
             case SelectionLevel::Residue: {
-                expand_mask_to_residue(mask, data->mol_data.dynamic.molecule.residues);
+                expand_mask_to_residue(mask, data->dynamic.molecule.residues);
                 break;
             }
             case SelectionLevel::Chain: {
-                expand_mask_to_chain(mask, data->mol_data.dynamic.molecule.chains);
+                expand_mask_to_chain(mask, data->dynamic.molecule.chains);
                 break;
             }
             default:
@@ -4282,9 +4316,9 @@ static bool handle_selection(ApplicationData* data) {
         if (region_select) {
             const vec2 res = {data->ctx.window.width, data->ctx.window.height};
             const mat4 mvp = compute_perspective_projection_matrix(data->view.camera, data->ctx.window.width, data->ctx.window.height) * data->view.param.matrix.view;
-			const float* pos_x = data->mol_data.dynamic.molecule.atom.position.x;
-			const float* pos_y = data->mol_data.dynamic.molecule.atom.position.y;
-			const float* pos_z = data->mol_data.dynamic.molecule.atom.position.z;
+			const float* pos_x = data->dynamic.molecule.atom.position.x;
+			const float* pos_y = data->dynamic.molecule.atom.position.y;
+			const float* pos_z = data->dynamic.molecule.atom.position.z;
 
             for (int64 i = 0; i < N; i++) {
                 if (!data->representations.atom_visibility_mask[i]) continue;
@@ -4298,10 +4332,10 @@ static bool handle_selection(ApplicationData* data) {
                 case SelectionLevel::Atom:
                     break;
                 case SelectionLevel::Residue:
-                    expand_mask_to_residue(mask, data->mol_data.dynamic.molecule.residues);
+                    expand_mask_to_residue(mask, data->dynamic.molecule.residues);
                     break;
                 case SelectionLevel::Chain:
-                    expand_mask_to_chain(mask, data->mol_data.dynamic.molecule.chains);
+                    expand_mask_to_chain(mask, data->dynamic.molecule.chains);
                     break;
                 default:
                     ASSERT(false);
@@ -4383,12 +4417,12 @@ static void load_trajectory_async(ApplicationData* data) {
         data->async.trajectory.sync.signal_stop_and_wait();
     }
 
-    if (data->mol_data.dynamic.trajectory.file_handle) {
+    if (data->dynamic.trajectory.file_handle) {
         data->async.trajectory.sync.stop_signal = false;
         data->async.trajectory.sync.running = true;
         data->async.trajectory.sync.thread = std::thread([data]() {
-            while (read_next_trajectory_frame(&data->mol_data.dynamic.trajectory)) {
-                data->async.trajectory.fraction = data->mol_data.dynamic.trajectory.num_frames / (float)data->mol_data.dynamic.trajectory.frame_offsets.count;
+            while (read_next_trajectory_frame(&data->dynamic.trajectory)) {
+                data->async.trajectory.fraction = data->dynamic.trajectory.num_frames / (float)data->dynamic.trajectory.frame_offsets.count;
                 if (data->async.trajectory.sync.stop_signal) break;
             }
             data->async.trajectory.sync.running = false;
@@ -4413,7 +4447,7 @@ static void compute_backbone_angles_async(ApplicationData* data) {
             while (data->async.backbone_angles.query_update) {
                 data->async.backbone_angles.query_update = false;
                 data->async.backbone_angles.fraction = 0.5f;
-                compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->mol_data.dynamic);
+                compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->dynamic);
                 if (data->async.backbone_angles.sync.stop_signal) break;
             }
             data->async.backbone_angles.fraction = 1.f;
@@ -4426,7 +4460,7 @@ static void compute_backbone_angles_async(ApplicationData* data) {
 
 static void create_volume(ApplicationData* data) {
     const vec3 min_box = vec3(0);
-    const vec3 max_box = data->mol_data.dynamic.trajectory.num_frames > 0 ? data->mol_data.dynamic.trajectory.frame_buffer[0].box * vec3(1) : vec3(1);
+    const vec3 max_box = data->dynamic.trajectory.num_frames > 0 ? data->dynamic.trajectory.frame_buffer[0].box * vec3(1) : vec3(1);
     const ivec3 dim = math::max(ivec3(1), ivec3(max_box) / VOLUME_DOWNSAMPLE_FACTOR);
     init_volume(&data->density_volume.volume, dim);
     // volume::create_volume_texture(&data->density_volume.texture, dim);
@@ -4437,8 +4471,8 @@ static void create_volume(ApplicationData* data) {
 
 static void draw_representations_lean_and_mean(ApplicationData* data, vec4 color, float scale, uint32 mask) {
     ASSERT(data);
-    const int32 atom_count = (int32)data->mol_data.dynamic.molecule.atom.count;
-    const int32 bond_count = (int32)data->mol_data.dynamic.molecule.covalent_bonds.size();
+    const int32 atom_count = (int32)data->dynamic.molecule.atom.count;
+    const int32 bond_count = (int32)data->dynamic.molecule.covalent_bonds.size();
 
     PUSH_GPU_SECTION("Lean and Mean")
     for (const auto& rep : data->representations.buffer) {

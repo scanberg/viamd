@@ -962,8 +962,8 @@ static bool compute_dihedral(Property* prop, const Array<CString> args, const Mo
 
 #include "rmsd.h"
 
-static float rmsd(const float* ref_x const float* ref_y, const float* ref_z,
-                  const float* cur_x const float* cur_y, const float* cur_z, int64 count) {
+static float rmsd(const float* ref_x, const float* ref_y, const float* ref_z,
+                  const float* cur_x, const float* cur_y, const float* cur_z, int64 count) {
     if (count <= 1) return 0.f;
 
     // ugly ugly hacks
@@ -983,7 +983,7 @@ static float rmsd(const float* ref_x const float* ref_y, const float* ref_z,
     }
 
     double val;
-    fast_rmsd((double(*)[3])ref_tmp, (double(*)[3])cur_tmp, size, &val);
+    fast_rmsd((double(*)[3])ref_tmp, (double(*)[3])cur_tmp, count, &val);
 
     return (float)val;
 }
@@ -1024,7 +1024,7 @@ static bool compute_rmsd(Property* prop, const Array<CString> args, const Molecu
             cur_y = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_y(dynamic.trajectory, i));
             cur_z = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_z(dynamic.trajectory, i));
 
-            prop->instance_data[j].data[i] = rmsd(ref, pos);
+            prop->instance_data[j].data[i] = rmsd(ref_x.data(), ref_y.data(), ref_z.data(), cur_x.data(), cur_y.data(), cur_z.data(), ref_x.size());
         }
     }
 
@@ -1157,62 +1157,74 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
 
     if (prop.structure_data.count == 1) {
         for (const auto& s : prop.structure_data[0].structures) {
-            Array<const vec3> pos = extract_positions(s, get_positions(dynamic.molecule));
+            Array<const float> pos_x = extract_structure_data(s, get_positions_x(dynamic.molecule));
+			Array<const float> pos_y = extract_structure_data(s, get_positions_y(dynamic.molecule));
+			Array<const float> pos_z = extract_structure_data(s, get_positions_z(dynamic.molecule));
+			int64 count = pos_x.size();
+
             if (prop.structure_data[0].strategy == COM) {
-                immediate::draw_point(compute_com(pos));
+                immediate::draw_point(compute_com(pos_x.data(), pos_y.data(), pos_z.data(), count));
             } else {
-                for (const auto& p : pos) {
-                    immediate::draw_point(p);
+				for (int64 i = 0; i < count; i++) {
+					immediate::draw_point({ pos_x[i], pos_y[i], pos_z[i] });
                 }
             }
         }
     } else {
         int32 count = (int32)prop.structure_data[0].structures.count;
-        Array<const vec3> pos_prev;
-        Array<const vec3> pos_next;
+        Array<const float> pos_prev_x;
+		Array<const float> pos_prev_y;
+		Array<const float> pos_prev_z;
+        Array<const float> pos_next_x;
+		Array<const float> pos_next_y;
+		Array<const float> pos_next_z;
         vec3 com_prev(0);
         vec3 com_next(0);
 
         for (int32 i = 0; i < count; i++) {
-            pos_prev = extract_positions(prop.structure_data[0].structures[i], get_positions(dynamic.molecule));
+            pos_prev_x = extract_structure_data(prop.structure_data[0].structures[i], get_positions_x(dynamic.molecule));
+			pos_prev_y = extract_structure_data(prop.structure_data[0].structures[i], get_positions_y(dynamic.molecule));
+			pos_prev_z = extract_structure_data(prop.structure_data[0].structures[i], get_positions_z(dynamic.molecule));
+
             if (prop.structure_data[0].strategy == COM) {
-                com_prev = compute_com(pos_prev);
-                pos_prev = {&com_prev, 1};
+                com_prev = compute_com(pos_prev_x.data(), pos_prev_y.data(), pos_prev_z.data(), pos_prev_x.size());
+                pos_prev_x = { &com_prev.x, 1 };
+				pos_prev_y = { &com_prev.y, 1 };
+				pos_prev_z = { &com_prev.z, 1 };
+
             }
-            for (const auto& p : pos_prev) {
-                immediate::draw_point(p, ctx.style.point_colors[0]);
+			for (int64 j = 0; j < pos_prev_x.size(); j++) {
+				const vec3 p = { pos_prev_x[j], pos_prev_y[j], pos_prev_z[j] };
+				immediate::draw_point(p, ctx.style.point_colors[0]);
             }
             for (int32 j = 1; j < prop.structure_data.count; j++) {
                 const int32 col_idx = j % VisualizationStyle::NUM_COLORS;
-                pos_next = extract_positions(prop.structure_data[j].structures[i], get_positions(dynamic.molecule));
+                pos_next_x = extract_structure_data(prop.structure_data[j].structures[i], get_positions_x(dynamic.molecule));
+				pos_next_y = extract_structure_data(prop.structure_data[j].structures[i], get_positions_y(dynamic.molecule));
+				pos_next_z = extract_structure_data(prop.structure_data[j].structures[i], get_positions_z(dynamic.molecule));
+
                 if (prop.structure_data[j].strategy == COM) {
-                    com_next = compute_com(pos_next);
-                    pos_next = {&com_next, 1};
+					com_next = compute_com(pos_next_x.data(), pos_next_y.data(), pos_next_z.data(), pos_next_x.size());
+					pos_next_x = { &com_next.x, 1 };
+					pos_next_y = { &com_next.y, 1 };
+					pos_next_z = { &com_next.z, 1 };
                 }
-                for (const auto& p : pos_next) {
-                    immediate::draw_point(p, ctx.style.point_colors[col_idx]);
+				for (int64 k = 0; k < pos_next_x.size(); k++) {
+					const vec3 p = { pos_next_x[k], pos_next_y[k], pos_next_z[k] };
+					immediate::draw_point(p, ctx.style.point_colors[col_idx]);
                 }
-                if (pos_prev.count == 1 && pos_next.count == 1) {
-                    immediate::draw_line(pos_prev[0], pos_next[0], ctx.style.line_color);
-                }
-                if (pos_prev.count > 1 && pos_next.count == 1) {
-                    for (const auto& pp : pos_prev) {
-                        immediate::draw_line(pp, pos_next[0]), ctx.style.line_color;
-                    }
-                } else if (pos_next.count > 1 && pos_prev.count == 1) {
-                    for (const auto& pn : pos_next) {
-                        immediate::draw_line(pos_prev[0], pn, ctx.style.line_color);
-                    }
-                } else {
-                    // N^2 :'(
-                    for (const auto& pp : pos_prev) {
-                        for (const auto& pn : pos_next) {
-                            immediate::draw_line(pp, pn, ctx.style.line_color);
-                        }
+
+				for (int64 pi = 0; pi < pos_prev_x.size(); pi++) {
+					const vec3 p0 = { pos_prev_x[pi], pos_prev_y[pi], pos_prev_z[pi] };
+					for (int64 ni = 0; ni < pos_next_x.size(); ni++) {
+						const vec3 p1 = { pos_next_x[pi], pos_next_y[pi], pos_next_z[pi] };
+                        immediate::draw_line(p0, p1, ctx.style.line_color);
                     }
                 }
 
-                pos_prev = pos_next;
+                pos_prev_x = pos_next_x;
+				pos_prev_y = pos_next_y;
+				pos_prev_z = pos_next_z;
                 com_prev = com_next;
             }
         }
