@@ -797,24 +797,22 @@ static bool compute_distance(Property* prop, const Array<CString> args, const Mo
         float sum = 0.f;
         float var = 0.f;
         for (int32 j = 0; j < structure_count; j++) {
-            pos_x[0] = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_x(dynamic.trajectory, i));
-            pos_y[0] = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_y(dynamic.trajectory, i));
-            pos_z[0] = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_z(dynamic.trajectory, i));
+            for (int32 arg = 0; arg < 2; arg++) {
+                pos_x[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_x(dynamic.trajectory, i));
+                pos_y[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_y(dynamic.trajectory, i));
+                pos_z[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_z(dynamic.trajectory, i));
 
-            pos_x[1] = extract_structure_data(prop->structure_data[1].structures[j], get_trajectory_position_x(dynamic.trajectory, i));
-            pos_y[1] = extract_structure_data(prop->structure_data[1].structures[j], get_trajectory_position_y(dynamic.trajectory, i));
-            pos_z[1] = extract_structure_data(prop->structure_data[1].structures[j], get_trajectory_position_z(dynamic.trajectory, i));
-            if (prop->structure_data[0].strategy == COM) {
-                com[0] = compute_com(pos_x[0].data(), pos_y[0].data(), pos_z[0].data(), pos_x[0].size());
-                pos[0] = {&com[0], 1};
-            }
-            if (prop->structure_data[1].strategy == COM) {
-                com[1] = compute_com(pos[1]);
-                pos[1] = {&com[1], 1};
+                if (prop->structure_data[arg].strategy == COM) {
+                    com[arg] = compute_com(pos_x[arg].data(), pos_y[arg].data(), pos_z[arg].data(), pos_x[arg].size());
+                    pos_x[arg] = {&com[0].x, 1};
+                    pos_y[arg] = {&com[0].y, 1};
+                    pos_z[arg] = {&com[0].z, 1};
+                }
             }
 
             float variance = 0.f;
-            prop->instance_data[j].data[i] = multi_distance(pos[0], pos[1], &variance);
+            prop->instance_data[j].data[i] = multi_distance(pos_x[0].data(), pos_y[0].data(), pos_z[0].data(), pos_x[0].size(),
+                                                            pos_x[1].data(), pos_y[1].data(), pos_z[1].data(), pos_x[1].size(), &variance);
             sum += prop->instance_data[j].data[i];
             var += variance;
         }
@@ -855,31 +853,31 @@ static bool compute_angle(Property* prop, const Array<CString> args, const Molec
     init_instance_data(&prop->instance_data, structure_count, num_frames);
 
     const float32 scl = 1.f / (float32)structure_count;
-    Array<const vec3> pos[3];
+    Array<const float> pos_x[3];
+    Array<const float> pos_y[3];
+    Array<const float> pos_z[3];
     vec3 com[3];
     for (int32 i = 0; i < num_frames; i++) {
         float sum = 0.f;
         float var = 0.f;
         for (int32 j = 0; j < structure_count; j++) {
-            pos[0] = extract_positions(prop->structure_data[0].structures[j], get_trajectory_positions(dynamic.trajectory, i));
-            pos[1] = extract_positions(prop->structure_data[1].structures[j], get_trajectory_positions(dynamic.trajectory, i));
-            pos[2] = extract_positions(prop->structure_data[2].structures[j], get_trajectory_positions(dynamic.trajectory, i));
+            for (int32 arg = 0; arg < 3; arg++) {
+                pos_x[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_x(dynamic.trajectory, i));
+                pos_y[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_y(dynamic.trajectory, i));
+                pos_z[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_z(dynamic.trajectory, i));
 
-            if (prop->structure_data[0].strategy == COM) {
-                com[0] = compute_com(pos[0]);
-                pos[0] = {&com[0], 1};
-            }
-            if (prop->structure_data[1].strategy == COM) {
-                com[1] = compute_com(pos[1]);
-                pos[1] = {&com[1], 1};
-            }
-            if (prop->structure_data[2].strategy == COM) {
-                com[2] = compute_com(pos[2]);
-                pos[2] = {&com[2], 1};
+                if (prop->structure_data[arg].strategy == COM) {
+                    com[arg] = compute_com(pos_x[arg].data(), pos_y[arg].data(), pos_z[arg].data(), pos_x[arg].size());
+                    pos_x[arg] = {&com[0].x, 1};
+                    pos_y[arg] = {&com[0].y, 1};
+                    pos_z[arg] = {&com[0].z, 1};
+                }
             }
 
             float variance = 0.f;
-            prop->instance_data[j].data[i] = multi_angle(pos[0], pos[1], pos[2], &variance);
+            prop->instance_data[j].data[i] = multi_angle(pos_x[0].data(), pos_y[0].data(), pos_z[0].data(), pos_x[0].size(),
+                                                         pos_x[1].data(), pos_y[1].data(), pos_z[1].data(), pos_x[1].size(),
+                                                         pos_x[2].data(), pos_y[2].data(), pos_z[2].data(), pos_x[2].size(), &variance);
             sum += prop->instance_data[j].data[i];
             var += variance;
         }
@@ -920,36 +918,32 @@ static bool compute_dihedral(Property* prop, const Array<CString> args, const Mo
     init_instance_data(&prop->instance_data, structure_count, num_frames);
 
     const float32 scl = 1.f / (float32)structure_count;
-    Array<const vec3> pos[4];
+    Array<const float> pos_x[4];
+    Array<const float> pos_y[4];
+    Array<const float> pos_z[4];
     vec3 com[4];
     for (int32 i = 0; i < num_frames; i++) {
         float sum = 0.f;
         float var = 0.f;
         for (int32 j = 0; j < structure_count; j++) {
-            pos[0] = extract_positions(prop->structure_data[0].structures[j], get_trajectory_positions(dynamic.trajectory, i));
-            pos[1] = extract_positions(prop->structure_data[1].structures[j], get_trajectory_positions(dynamic.trajectory, i));
-            pos[2] = extract_positions(prop->structure_data[2].structures[j], get_trajectory_positions(dynamic.trajectory, i));
-            pos[3] = extract_positions(prop->structure_data[3].structures[j], get_trajectory_positions(dynamic.trajectory, i));
+            for (int32 arg = 0; arg < 4; arg++) {
+                pos_x[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_x(dynamic.trajectory, i));
+                pos_y[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_y(dynamic.trajectory, i));
+                pos_z[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_z(dynamic.trajectory, i));
 
-            if (prop->structure_data[0].strategy == COM) {
-                com[0] = compute_com(pos[0]);
-                pos[0] = {&com[0], 1};
-            }
-            if (prop->structure_data[1].strategy == COM) {
-                com[1] = compute_com(pos[1]);
-                pos[1] = {&com[1], 1};
-            }
-            if (prop->structure_data[2].strategy == COM) {
-                com[2] = compute_com(pos[2]);
-                pos[2] = {&com[2], 1};
-            }
-            if (prop->structure_data[3].strategy == COM) {
-                com[3] = compute_com(pos[3]);
-                pos[3] = {&com[3], 1};
+                if (prop->structure_data[arg].strategy == COM) {
+                    com[arg] = compute_com(pos_x[arg].data(), pos_y[arg].data(), pos_z[arg].data(), pos_x[arg].size());
+                    pos_x[arg] = {&com[0].x, 1};
+                    pos_y[arg] = {&com[0].y, 1};
+                    pos_z[arg] = {&com[0].z, 1};
+                }
             }
 
             float variance = 0.f;
-            prop->instance_data[j].data[i] = multi_dihedral(pos[0], pos[1], pos[2], pos[3], &variance);
+            prop->instance_data[j].data[i] = multi_dihedral(pos_x[0].data(), pos_y[0].data(), pos_z[0].data(), pos_x[0].size(),
+                                                            pos_x[1].data(), pos_y[1].data(), pos_z[1].data(), pos_x[1].size(),
+                                                            pos_x[2].data(), pos_y[2].data(), pos_z[2].data(), pos_x[2].size(),
+                                                            pos_x[3].data(), pos_y[3].data(), pos_z[3].data(), pos_x[3].size(), &variance);
             sum += prop->instance_data[j].data[i];
             var += variance;
         }
@@ -968,26 +962,24 @@ static bool compute_dihedral(Property* prop, const Array<CString> args, const Mo
 
 #include "rmsd.h"
 
-static float rmsd(Array<const vec3> ref, Array<const vec3> cur) {
-    ASSERT(ref.size() == cur.size());
-    int32 size = (int32)ref.size();
-
-    if (size <= 1) return 0.f;
+static float rmsd(const float* ref_x const float* ref_y, const float* ref_z,
+                  const float* cur_x const float* cur_y, const float* cur_z, int64 count) {
+    if (count <= 1) return 0.f;
 
     // ugly ugly hacks
-    double* ref_tmp = (double*)TMP_MALLOC(size * sizeof(double) * 3);
-    double* cur_tmp = (double*)TMP_MALLOC(size * sizeof(double) * 3);
+    double* ref_tmp = (double*)TMP_MALLOC(count * sizeof(double) * 3);
+    double* cur_tmp = (double*)TMP_MALLOC(count * sizeof(double) * 3);
     defer {
         TMP_FREE(ref_tmp);
         TMP_FREE(cur_tmp);
     };
-    for (int64 i = 0; i < size; i++) {
-        ref_tmp[i * 3 + 0] = ref[i].x;
-        ref_tmp[i * 3 + 1] = ref[i].y;
-        ref_tmp[i * 3 + 2] = ref[i].z;
-        cur_tmp[i * 3 + 0] = cur[i].x;
-        cur_tmp[i * 3 + 1] = cur[i].y;
-        cur_tmp[i * 3 + 2] = cur[i].z;
+    for (int64 i = 0; i < count; i++) {
+        ref_tmp[i * 3 + 0] = ref_x[i];
+        ref_tmp[i * 3 + 1] = ref_y[i];
+        ref_tmp[i * 3 + 2] = ref_z[i];
+        cur_tmp[i * 3 + 0] = cur_x[i];
+        cur_tmp[i * 3 + 1] = cur_y[i];
+        cur_tmp[i * 3 + 2] = cur_z[i];
     }
 
     double val;
@@ -1014,25 +1006,34 @@ static bool compute_rmsd(Property* prop, const Array<CString> args, const Molecu
 
     init_instance_data(&prop->instance_data, structure_count, num_frames);
 
-    Array<const vec3> pos;
-    Array<const vec3> ref;
+    Array<const float> cur_x;
+    Array<const float> cur_y;
+    Array<const float> cur_z;
+    Array<const float> ref_x;
+    Array<const float> ref_y;
+    Array<const float> ref_z;
     float max_val = 0.0f;
     const float32 scl = 1.f / (float32)structure_count;
-    for (int32 i = 0; i < num_frames; i++) {
-        float sum = 0.0f;
-        for (int32 j = 0; j < structure_count; j++) {
-            if (i == 0) {
-                prop->instance_data[j].data[i] = 0;
-                continue;
-            }
-            ref = extract_positions(prop->structure_data[0].structures[j], get_trajectory_positions(dynamic.trajectory, 0));
-            pos = extract_positions(prop->structure_data[0].structures[j], get_trajectory_positions(dynamic.trajectory, i));
-            const auto val = rmsd(ref, pos);
-            prop->instance_data[j].data[i] = val;
-            sum += val;
-            max_val = math::max(val, max_val);
-        }
+    for (int32 j = 0; j < structure_count; j++) {
+        ref_x = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_x(dynamic.trajectory, 0));
+        ref_y = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_y(dynamic.trajectory, 0));
+        ref_z = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_z(dynamic.trajectory, 0));
+        prop->instance_data[j].data[0] = 0.0f;
+        for (int32 i = 1; i < num_frames; i++) {
+            cur_x = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_x(dynamic.trajectory, i));
+            cur_y = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_y(dynamic.trajectory, i));
+            cur_z = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_z(dynamic.trajectory, i));
 
+            prop->instance_data[j].data[i] = rmsd(ref, pos);
+        }
+    }
+
+    for (int32 i = 0; i < num_frames; i++) {
+        float sum = 0;
+        for (int32 j = 0; j < structure_count; j++) {
+            sum += prop->instance_data[j].data[i];
+            max_val = math::max(prop->instance_data[j].data[i], max_val);
+        }
         prop->avg_data[i] = sum * scl;
     }
 
