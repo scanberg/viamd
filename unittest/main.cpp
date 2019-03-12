@@ -59,8 +59,8 @@ ATOM     24  H13 CSP3    1E      9.801   2.693  -7.994
 
 TEST_CASE("Testing PdbInfo", "[PdbInfo]") {
     const auto t0 = TIME();
-    // String pdb_str = allocate_and_read_textfile(VIAMD_DATA_DIR "/alanine/14ns-300K.pdb");
-    String pdb_str = allocate_and_read_textfile(VIAMD_DATA_DIR "/haofan/for_VIAMD.pdb");
+    String pdb_str = allocate_and_read_textfile(VIAMD_DATA_DIR "/alanine/14ns-300K.pdb");
+    //String pdb_str = allocate_and_read_textfile(VIAMD_DATA_DIR "/haofan/for_VIAMD.pdb");
     defer { free_string(&pdb_str); };
     const auto t1 = TIME();
 

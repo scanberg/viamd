@@ -3773,8 +3773,8 @@ static void init_trajectory_data(ApplicationData* data) {
 
         read_next_trajectory_frame(&data->dynamic.trajectory);  // read first frame explicitly
         const auto pos_x = get_trajectory_position_x(data->dynamic.trajectory, 0);
-        const auto pos_y = get_trajectory_position_x(data->dynamic.trajectory, 0);
-        const auto pos_z = get_trajectory_position_x(data->dynamic.trajectory, 0);
+        const auto pos_y = get_trajectory_position_y(data->dynamic.trajectory, 0);
+        const auto pos_z = get_trajectory_position_z(data->dynamic.trajectory, 0);
 
         memcpy(data->dynamic.molecule.atom.position.x, pos_x.data(), pos_x.size_in_bytes());
         memcpy(data->dynamic.molecule.atom.position.y, pos_y.data(), pos_y.size_in_bytes());
