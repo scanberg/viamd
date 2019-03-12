@@ -1545,9 +1545,10 @@ static float32 compute_avg_ms(float32 dt) {
 static void reset_view(ApplicationData* data, bool move_camera, bool smooth_transition) {
     ASSERT(data);
     if (!data->dynamic.molecule) return;
+    const auto& mol = data->dynamic.molecule;
 
     vec3 min_box, max_box;
-    compute_bounding_box(&min_box, &max_box, get_positions(data->dynamic.molecule));
+    compute_bounding_box(&min_box, &max_box, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count);
     vec3 size = max_box - min_box;
     vec3 cent = (min_box + max_box) * 0.5f;
     vec3 pos = cent + size * 3.f;
@@ -1678,15 +1679,17 @@ void grow_mask_by_covalent_bond(Array<bool> mask, Array<const Bond> bonds, int32
     }
 }
 
-void grow_mask_by_radial_extent(Array<bool> mask, Array<const vec3> positions, float extent) {
+void grow_mask_by_radial_extent(Array<bool> mask, const float* atom_x, const float* atom_y, const float* atom_z, int64 atom_count, float extent) {
     Array<bool> prev_mask = {(bool*)TMP_MALLOC(mask.size_in_bytes()), mask.size()};
     defer { TMP_FREE(prev_mask.data()); };
     memcpy(prev_mask.data(), mask.data(), mask.size_in_bytes());
 
-    spatialhash::Frame frame = spatialhash::compute_frame(positions, vec3(extent));
-    for (int64 i = 0; i < positions.size(); i++) {
+    spatialhash::Frame frame = spatialhash::compute_frame(atom_x, atom_y, atom_z, atom_count, vec3(extent));
+    for (int64 i = 0; i < atom_count; i++) {
         if (prev_mask[i]) {
-            spatialhash::for_each_within(frame, positions[i], extent, [mask = mask.data()](int32 idx, const vec3& pos) {
+            const vec3 pos = {atom_x[i], atom_y[i], atom_z[i]};
+            spatialhash::for_each_within(frame, pos, extent, [mask = mask.data()](int32 idx, const vec3& pos) {
+                UNUSED(pos);
                 if (!mask[idx]) {
                     mask[idx] = true;
                 }
@@ -2109,9 +2112,11 @@ ImGui::EndGroup();
                         case SelectionGrowth::CovalentBond:
                             grow_mask_by_covalent_bond(mask, get_covalent_bonds(data->dynamic.molecule), (int32)extent);
                             break;
-                        case SelectionGrowth::Radial:
-                            grow_mask_by_radial_extent(mask, get_positions(data->dynamic.molecule), extent);
+                        case SelectionGrowth::Radial: {
+                            const auto& mol = data->dynamic.molecule;
+                            grow_mask_by_radial_extent(mask, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count, extent);   
                             break;
+                        }
                         default:
                             ASSERT(false);
                     }

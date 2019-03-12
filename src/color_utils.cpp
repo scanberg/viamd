@@ -13,31 +13,27 @@ void color_atoms_residue_id(Array<uint32> dst_atom_colors, Array<const Residue> 
     memset_array(dst_atom_colors, 0xffffffff);
     for (const auto& res : residues) {
         const uint32 color = math::convert_color(color_from_hash(hash::crc32(res.name.operator CString())));
-        memset_array(dst_atom_colors, color, res.atom_idx.beg, res.atom_idx.end - res.atom_idx.beg);
+        memset_array(dst_atom_colors, color, res.atom_idx);
     }
 }
 void color_atoms_residue_index(Array<uint32> dst_atom_colors, Array<const Residue> residues) {
     memset_array(dst_atom_colors, 0xffffffff);
     for (int64 i = 0; i < residues.count; i++) {
         const uint32 color = math::convert_color(color_from_hash(hash::crc32(i)));
-        memset_array(dst_atom_colors, color, residues[i].atom_idx.beg, residues[i].atom_idx.end - residues[i].atom_idx.beg);
+        memset_array(dst_atom_colors, color, residues[i].atom_idx);
     }
 }
 void color_atoms_chain_id(Array<uint32> dst_atom_colors, Array<const Chain> chains) {
     memset_array(dst_atom_colors, 0xffffffff);
     for (const auto& chain : chains) {
         const uint32 color = math::convert_color(color_from_hash(hash::crc32(chain.id.operator CString())));
-        const auto beg_idx = chain.atom_idx.beg;
-        const auto end_idx = chain.atom_idx.end;
-        memset_array(dst_atom_colors, color, beg_idx, end_idx - beg_idx);
+        memset_array(dst_atom_colors, color, chain.atom_idx);
     }
 }
 void color_atoms_chain_index(Array<uint32> dst_atom_colors, Array<const Chain> chains) {
     memset_array(dst_atom_colors, 0xffffffff);
     for (int64 i = 0; i < chains.count; i++) {
         const uint32 color = math::convert_color(color_from_hash(hash::crc32(i)));
-        const auto beg_idx = chains[i].atom_idx.beg;
-        const auto end_idx = chains[i].atom_idx.end;
         memset_array(dst_atom_colors, color, chains[i].atom_idx);
     }
 }
@@ -65,7 +61,7 @@ void color_atoms_backbone_angles(Array<uint32> dst_atom_colors, Array<const Resi
         for (int64 i = seq.beg + 1; i < seq.end - 1; i++) {
             const vec2 coord = vec2(0, 1) + vec2(1, -1) * (bb_angles[i] * one_over_two_pi + 0.5f);
             const uint32 color = lerp_pixel(color_map, coord);
-            memset_array(dst_atom_colors, color, residues[i].atom_idx.beg, residues[i].atom_idx.end - residues[i].atom_idx.beg);
+            memset_array(dst_atom_colors, color, residues[i].atom_idx);
         }
 
         // Do first and last segment explicitly since it lacks adjacent [next] amino acid to properly compute phi and psi.
@@ -73,13 +69,13 @@ void color_atoms_backbone_angles(Array<uint32> dst_atom_colors, Array<const Resi
             const auto dst_i = seq.beg;
             const auto src_i = math::min(seq.end - 1, dst_i + 1);
             const uint32 color = dst_atom_colors[residues[src_i].atom_idx.beg];  // copy color from previous residue
-            memset_array(dst_atom_colors, color, residues[dst_i].atom_idx.beg, residues[dst_i].atom_idx.end - residues[dst_i].atom_idx.beg);
+            memset_array(dst_atom_colors, color, residues[dst_i].atom_idx);
         }
         {
             const auto dst_i = math::max(0, seq.end - 1);
             const auto src_i = math::max(0, dst_i - 1);
             const uint32 color = dst_atom_colors[residues[src_i].atom_idx.beg];  // copy color from previous residue
-            memset_array(dst_atom_colors, color, residues[dst_i].atom_idx.beg, residues[dst_i].atom_idx.end - residues[dst_i].atom_idx.beg);
+            memset_array(dst_atom_colors, color, residues[dst_i].atom_idx);
         }
     }
 }
