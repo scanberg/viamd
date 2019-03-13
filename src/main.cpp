@@ -513,7 +513,9 @@ static void reset_view(ApplicationData* data, bool move_camera = false, bool smo
 static float32 compute_avg_ms(float32 dt);
 static PickingData read_picking_data(const MainFramebuffer& fbo, int32 x, int32 y);
 static bool handle_selection(ApplicationData* data);
-static void draw_representations_lean_and_mean(ApplicationData* data, vec4 color = vec4(1, 1, 1, 1), float scale = 1.0f, uint32 mask = 0xFFFFFFFFU);
+
+static void draw_representations(const ApplicationData& data);
+static void draw_representations_lean_and_mean(const ApplicationData& data, vec4 color = vec4(1, 1, 1, 1), float scale = 1.0f, uint32 mask = 0xFFFFFFFFU);
 
 static void draw_main_menu(ApplicationData* data);
 static void draw_context_popup(ApplicationData* data);
@@ -1028,7 +1030,7 @@ int main(int, char**) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.deferred.fbo);
         glViewport(0, 0, data.fbo.width, data.fbo.height);
 
-        glDepthMask(GL_TRUE);
+        glDepthMask(1);
         glColorMask(1, 1, 1, 1);
 
         // Setup fbo and clear textures
@@ -1051,78 +1053,52 @@ int main(int, char**) {
         glCullFace(GL_BACK);
 
         glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_LESS);
-        glDepthMask(GL_TRUE);
+		glDepthFunc(GL_LESS);
 
         // Enable all draw buffers
         glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
 
         PUSH_GPU_SECTION("G-Buffer fill") {
-            for (const auto& rep : data.representations.buffer) {
-                if (!rep.enabled) continue;
-                switch (rep.type) {
-                    case RepresentationType::Vdw:
-                        PUSH_GPU_SECTION("Vdw")
-                        draw::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.velocity, (int)data.dynamic.molecule.atom.count, data.view.param,
-                                       rep.radius);
-                        POP_GPU_SECTION()
-                        break;
-                    case RepresentationType::Licorice:
-                        PUSH_GPU_SECTION("Licorice")
-                        draw::draw_licorice(data.gpu_buffers.position, rep.color_buffer, data.gpu_buffers.velocity, data.gpu_buffers.bond, (int)data.dynamic.molecule.covalent_bonds.size(),
-                                            data.view.param, rep.radius);
-                        POP_GPU_SECTION()
-                        break;
-                    case RepresentationType::BallAndStick:
-                        PUSH_GPU_SECTION("Vdw")
-                        draw::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.velocity, (int)data.dynamic.molecule.atom.count, data.view.param,
-                                       rep.radius * BALL_AND_STICK_VDW_SCALE);
-                        POP_GPU_SECTION()
-                        PUSH_GPU_SECTION("Licorice")
-                        draw::draw_licorice(data.gpu_buffers.position, rep.color_buffer, data.gpu_buffers.velocity, data.gpu_buffers.bond, (int)data.dynamic.molecule.covalent_bonds.size(),
-                                            data.view.param, rep.radius * BALL_AND_STICK_LICORICE_SCALE);
-                        POP_GPU_SECTION()
-                        break;
-                    case RepresentationType::Ribbons:
-                        PUSH_GPU_SECTION("Ribbons")
-                        draw::draw_ribbons(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, rep.color_buffer, data.gpu_buffers.velocity,
-                                           data.gpu_buffers.backbone.num_spline_indices, data.view.param);
-                        POP_GPU_SECTION()
-                        break;
-                    case RepresentationType::Cartoon:
-                        PUSH_GPU_SECTION("Cartoon")
-                        draw::draw_cartoon(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, rep.color_buffer, data.gpu_buffers.backbone.num_spline_indices, data.view.param);
-                        POP_GPU_SECTION()
-                        break;
-                }
-            }
+			glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
+			draw_representations(data);
 
-            // RENDER DEBUG INFORMATION (WITH DEPTH)
-            PUSH_GPU_SECTION("Debug Draw") {
-                glDrawBuffer(GL_COLOR_ATTACHMENT4);  // Post_Tonemap buffer
+			// RENDER DEBUG INFORMATION (WITH DEPTH)
+			PUSH_GPU_SECTION("Debug Draw") {
+				glDrawBuffer(GL_COLOR_ATTACHMENT4);  // Post_Tonemap buffer
 
-                immediate::set_view_matrix(data.view.param.matrix.view);
-                immediate::set_proj_matrix(data.view.param.matrix.proj);
+				immediate::set_view_matrix(data.view.param.matrix.view);
+				immediate::set_proj_matrix(data.view.param.matrix.proj);
 
-                // HYDROGEN BONDS
-                if (data.hydrogen_bonds.enabled && !data.hydrogen_bonds.overlay) {
-                    const auto& mol = data.dynamic.molecule;
-                    for (const auto& bond : data.hydrogen_bonds.bonds) {
-                        const vec3 pos0 = get_position_xyz(mol, bond.acc_idx);
-                        const vec3 pos1 = get_position_xyz(mol, bond.hyd_idx);
-                        immediate::draw_line(pos0, pos1, math::convert_color(data.hydrogen_bonds.color));
-                    }
-                }
+				// HYDROGEN BONDS
+				if (data.hydrogen_bonds.enabled && !data.hydrogen_bonds.overlay) {
+					const auto& mol = data.dynamic.molecule;
+					for (const auto& bond : data.hydrogen_bonds.bonds) {
+						const vec3 pos0 = get_position_xyz(mol, bond.acc_idx);
+						const vec3 pos1 = get_position_xyz(mol, bond.hyd_idx);
+						immediate::draw_line(pos0, pos1, math::convert_color(data.hydrogen_bonds.color));
+					}
+				}
 
-                // SIMULATION BOX
-                if (data.simulation_box.enabled && data.dynamic.trajectory) {
-                    auto frame = get_trajectory_frame(data.dynamic.trajectory, data.playback.frame);
-                    immediate::draw_aabb_lines(vec3(0), frame.box * vec3(1), math::convert_color(data.simulation_box.color));
-                }
+				// SIMULATION BOX
+				if (data.simulation_box.enabled && data.dynamic.trajectory) {
+					auto frame = get_trajectory_frame(data.dynamic.trajectory, data.playback.frame);
+					immediate::draw_aabb_wireframe(vec3(0), frame.box * vec3(1), math::convert_color(data.simulation_box.color));
+				}
 
-                immediate::flush();
-            }
-            POP_GPU_SECTION()
+				immediate::flush();
+			}
+			POP_GPU_SECTION()
+
+#if 0
+			PUSH_GPU_SECTION("Blit Static Velocity")
+			glDrawBuffer(GL_COLOR_ATTACHMENT2); // Velocity
+			glDepthMask(0);
+			glDisable(GL_DEPTH_TEST);
+			postprocessing::blit_static_velocity(data.fbo.deferred.depth, data.view.param);
+			glEnable(GL_DEPTH_TEST);
+			glDepthMask(1);
+			POP_GPU_SECTION()
+#endif
         }
         POP_GPU_SECTION()  // G-buffer
 
@@ -1145,7 +1121,7 @@ int main(int, char**) {
                 glStencilFunc(GL_ALWAYS, 2, 0xFF);
 
                 const vec4 color = data.selection.color.selection.fill_color;
-                draw_representations_lean_and_mean(&data, color, 1.0f, AtomBit_Selected);
+                draw_representations_lean_and_mean(data, color, 1.0f, AtomBit_Selected);
             }
 
             if (!atom_highlight_empty) {
@@ -1155,7 +1131,7 @@ int main(int, char**) {
                 glStencilFunc(GL_ALWAYS, 4, 0xFF);
 
                 const vec4 color = data.selection.color.highlight.fill_color;
-                draw_representations_lean_and_mean(&data, color, 1.0f, AtomBit_Highlighted);
+                draw_representations_lean_and_mean(data, color, 1.0f, AtomBit_Highlighted);
             }
 
             if (!atom_selection_empty || !atom_highlight_empty) {
@@ -1166,7 +1142,7 @@ int main(int, char**) {
                 glStencilFunc(GL_ALWAYS, 1, 0xFF);
 
                 // const vec4 visible_color = vec4(1, 1, 1, 0);
-                draw_representations_lean_and_mean(&data);
+                draw_representations_lean_and_mean(data);
             }
 
             glDisable(GL_DEPTH_TEST);
@@ -1182,7 +1158,7 @@ int main(int, char**) {
                 // const vec4 color = vec4(0, 0.5, 1.0, 0) * 5.0f;
                 const vec4 color = data.selection.color.selection.outline_color;
                 const float scale = data.selection.color.selection.outline_scale;
-                draw_representations_lean_and_mean(&data, color, scale, AtomBit_Selected);
+                draw_representations_lean_and_mean(data, color, scale, AtomBit_Selected);
             }
 
             if (!atom_highlight_empty) {
@@ -1191,7 +1167,7 @@ int main(int, char**) {
 
                 const vec4 color = data.selection.color.highlight.outline_color;
                 const float scale = data.selection.color.highlight.outline_scale;
-                draw_representations_lean_and_mean(&data, color, scale, AtomBit_Highlighted);
+                draw_representations_lean_and_mean(data, color, scale, AtomBit_Highlighted);
             }
 
             if (!atom_selection_empty) {
@@ -4459,42 +4435,87 @@ static void create_volume(ApplicationData* data) {
     data->density_volume.world_to_texture_matrix = math::inverse(data->density_volume.model_to_world_matrix * data->density_volume.texture_to_model_matrix);
 }
 
-static void draw_representations_lean_and_mean(ApplicationData* data, vec4 color, float scale, uint32 mask) {
-    ASSERT(data);
-    const int32 atom_count = (int32)data->dynamic.molecule.atom.count;
-    const int32 bond_count = (int32)data->dynamic.molecule.covalent_bonds.size();
+static void draw_representations(const ApplicationData& data) {
+	const int32 atom_count = (int32)data.dynamic.molecule.atom.count;
+	const int32 bond_count = (int32)data.dynamic.molecule.covalent_bonds.size();
+
+	PUSH_GPU_SECTION("Full Detail")
+	for (const auto& rep : data.representations.buffer) {
+		if (!rep.enabled) continue;
+		switch (rep.type) {
+		case RepresentationType::Vdw:
+			PUSH_GPU_SECTION("Vdw")
+				draw::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.velocity, atom_count, data.view.param,
+					rep.radius);
+			POP_GPU_SECTION()
+				break;
+		case RepresentationType::Licorice:
+			PUSH_GPU_SECTION("Licorice")
+				draw::draw_licorice(data.gpu_buffers.position, rep.color_buffer, data.gpu_buffers.velocity, data.gpu_buffers.bond, bond_count,
+					data.view.param, rep.radius);
+			POP_GPU_SECTION()
+				break;
+		case RepresentationType::BallAndStick:
+			PUSH_GPU_SECTION("Vdw")
+				draw::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.velocity, atom_count, data.view.param,
+					rep.radius * BALL_AND_STICK_VDW_SCALE);
+			POP_GPU_SECTION()
+				PUSH_GPU_SECTION("Licorice")
+				draw::draw_licorice(data.gpu_buffers.position, rep.color_buffer, data.gpu_buffers.velocity, data.gpu_buffers.bond, bond_count,
+					data.view.param, rep.radius * BALL_AND_STICK_LICORICE_SCALE);
+			POP_GPU_SECTION()
+				break;
+		case RepresentationType::Ribbons:
+			PUSH_GPU_SECTION("Ribbons")
+				draw::draw_ribbons(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, rep.color_buffer, data.gpu_buffers.velocity,
+					data.gpu_buffers.backbone.num_spline_indices, data.view.param);
+			POP_GPU_SECTION()
+				break;
+		case RepresentationType::Cartoon:
+			PUSH_GPU_SECTION("Cartoon")
+				draw::draw_cartoon(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, rep.color_buffer, data.gpu_buffers.backbone.num_spline_indices, data.view.param);
+			POP_GPU_SECTION()
+				break;
+		}
+	}
+	POP_GPU_SECTION()
+}
+
+static void draw_representations_lean_and_mean(const ApplicationData& data, vec4 color, float scale, uint32 mask) {
+    const int32 atom_count = (int32)data.dynamic.molecule.atom.count;
+    const int32 bond_count = (int32)data.dynamic.molecule.covalent_bonds.size();
 
     PUSH_GPU_SECTION("Lean and Mean")
-    for (const auto& rep : data->representations.buffer) {
+    for (const auto& rep : data.representations.buffer) {
         if (!rep.enabled) continue;
-        if (!rep.show_in_selection) continue;
+        //if (!rep.show_in_selection) continue;
         switch (rep.type) {
             case RepresentationType::Vdw:
                 PUSH_GPU_SECTION("Vdw")
-                draw::lean_and_mean::draw_vdw(data->gpu_buffers.position, data->gpu_buffers.radius, rep.color_buffer, data->gpu_buffers.selection, atom_count, data->view.param, rep.radius * scale,
+                draw::lean_and_mean::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.selection, atom_count, data.view.param, rep.radius * scale,
                                               color, mask);
                 POP_GPU_SECTION()
                 break;
             case RepresentationType::Licorice:
                 PUSH_GPU_SECTION("Licorice")
-                draw::lean_and_mean::draw_licorice(data->gpu_buffers.position, rep.color_buffer, data->gpu_buffers.selection, data->gpu_buffers.bond, bond_count, data->view.param, rep.radius * scale,
+                draw::lean_and_mean::draw_licorice(data.gpu_buffers.position, rep.color_buffer, data.gpu_buffers.selection, data.gpu_buffers.bond, bond_count, data.view.param, rep.radius * scale,
                                                    color, mask);
                 POP_GPU_SECTION()
                 break;
             case RepresentationType::BallAndStick:
                 PUSH_GPU_SECTION("Vdw")
-                draw::lean_and_mean::draw_vdw(data->gpu_buffers.position, data->gpu_buffers.radius, rep.color_buffer, data->gpu_buffers.selection, atom_count, data->view.param,
+                draw::lean_and_mean::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.selection, atom_count, data.view.param,
                                               rep.radius * scale * BALL_AND_STICK_VDW_SCALE, color, mask);
                 POP_GPU_SECTION()
                 PUSH_GPU_SECTION("Licorice")
-                draw::lean_and_mean::draw_licorice(data->gpu_buffers.position, rep.color_buffer, data->gpu_buffers.selection, data->gpu_buffers.bond, bond_count, data->view.param,
+                draw::lean_and_mean::draw_licorice(data.gpu_buffers.position, rep.color_buffer, data.gpu_buffers.selection, data.gpu_buffers.bond, bond_count, data.view.param,
                                                    rep.radius * scale * BALL_AND_STICK_LICORICE_SCALE, color, mask);
                 POP_GPU_SECTION()
                 break;
             case RepresentationType::Ribbons:
                 PUSH_GPU_SECTION("Ribbons")
-                draw::lean_and_mean::draw_ribbons(data->gpu_buffers.backbone.spline, data->gpu_buffers.backbone.spline_index, rep.color_buffer, data->gpu_buffers.selection,
-                                                  data->gpu_buffers.backbone.num_spline_indices, data->view.param, scale, color, mask);
+                draw::lean_and_mean::draw_ribbons(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, rep.color_buffer, data.gpu_buffers.selection,
+                                                  data.gpu_buffers.backbone.num_spline_indices, data.view.param, scale, color, mask);
                 POP_GPU_SECTION()
                 break;
             default:

@@ -700,8 +700,8 @@ static inline float multi_angle(const float* a_x, const float* a_y, const float*
             }
         }
 
-        float count = (float)(count_a * count_b * count_c);
-        float mean = total / count;
+        float count = (float)math::max(1LL, count_a * count_b * count_c);
+		float mean = total / count;
 
         if (variance) {
             *variance = 0.f;
@@ -983,7 +983,7 @@ static float rmsd(const float* ref_x, const float* ref_y, const float* ref_z,
     }
 
     double val;
-    fast_rmsd((double(*)[3])ref_tmp, (double(*)[3])cur_tmp, count, &val);
+    fast_rmsd((double(*)[3])ref_tmp, (double(*)[3])cur_tmp, (int)count, &val);
 
     return (float)val;
 }
