@@ -50,7 +50,7 @@
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
 
 #ifdef OS_MAC_OSX
-constexpr auto CONSOLE_KEY = Key::KEY_WORLD_1;
+constexpr auto KEY_CONSOLE = Key::KEY_WORLD_1;
 #else  // WIN32 and Linux
 // @TODO: Make sure this is currect for Linux?
 constexpr auto KEY_CONSOLE = Key::KEY_GRAVE_ACCENT;
