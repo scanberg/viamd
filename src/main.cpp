@@ -18,6 +18,7 @@
 #include <mol/gro_utils.h>
 
 #include <mol/spatial_hash.h>
+#include <mol/structure_tracking.h>
 
 #include <gfx/molecule_draw.h>
 #include <gfx/immediate_draw_utils.h>
@@ -202,7 +203,6 @@ struct MoleculeBuffers {
 };
 
 struct Representation {
-
     StringBuffer<128> name = "rep";
     StringBuffer<128> filter = "all";
     RepresentationType type = RepresentationType::Vdw;
@@ -231,6 +231,14 @@ struct Representation {
 struct Selection {
     StringBuffer<128> name = "sel";
     Array<bool> atom_mask{};
+};
+
+struct ReferenceFrame {
+	StringBuffer<128> name = "ref";
+	StringBuffer<128> filter = "label CA";
+	Array<bool> atom_mask{};
+	bool active = false;
+	bool filter_is_ok = false;
 };
 
 struct ThreadSyncData {
@@ -481,6 +489,12 @@ struct ApplicationData {
         // bool changed = false;
     } representations;
 
+	// --- REFERENCE FRAME ---
+	struct {
+		DynamicArray<ReferenceFrame> frames{};
+		bool show_window = false;
+	} reference_frame;
+
     // --- CONSOLE ---
     Console console{};
     bool show_console = false;
@@ -565,6 +579,13 @@ static void remove_selection(ApplicationData* data, int idx);
 
 static void reset_selections(ApplicationData* data);
 static void clear_selections(ApplicationData* data);
+
+// Reference frames
+static ReferenceFrame* create_reference_frame(ApplicationData* data, CString name = "ref", CString filter = "label CA");
+static bool remove_reference_frame(ApplicationData* data, ReferenceFrame* ref);
+static void reset_reference_frame(ApplicationData* data);
+static void clear_reference_frames(ApplicationData* data);
+static void update_reference_frame(ApplicationData* data, ReferenceFrame* ref);
 
 static void create_volume(ApplicationData* data);
 
@@ -2011,7 +2032,12 @@ ImGui::EndGroup();
 
                 if (show_preview) {
                     if (query_modified) {
-                        query_ok = filter::compute_filter_mask(mask, data->dynamic, buf);
+						DynamicArray<StoredSelection> sel;
+						for (const auto& s : data->selection.stored_selections) {
+							sel.push_back({ s.name, s.atom_mask });
+						}
+
+                        query_ok = filter::compute_filter_mask(mask, buf, data->dynamic, sel);
                         if (!query_ok) {
                             memset_array(mask, false);
                         }
@@ -2113,7 +2139,7 @@ ImGui::EndGroup();
                 if (disable_new) ImGui::PushDisabled();
                 if (ImGui::Button("Create New")) {
                     char name_buf[64];
-                    snprintf(name_buf, 64, "selection%i", (int)data->selection.stored_selections.size());
+                    snprintf(name_buf, 64, "sel%i", (int)data->selection.stored_selections.size() + 1);
                     create_selection(data, name_buf, data->selection.current_selection_mask);
                 }
                 if (disable_new) ImGui::PopDisabled();
@@ -2538,6 +2564,60 @@ static void draw_representations_window(ApplicationData* data) {
 
     // const auto new_hash = hash::crc64(data->representations.buffer);
     // data->representations.changed = (new_hash != old_hash);
+}
+
+static void draw_reference_frames_window(ApplicationData* data) {
+	const auto old_hash = hash::crc64(data->representations.buffer);
+
+	ImGui::Begin("Reference Frames", &data->representations.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
+	if (ImGui::Button("create new")) {
+		create_reference_frame(data);
+	}
+	ImGui::SameLine();
+	if (ImGui::DeleteButton("remove all")) {
+		clear_reference_frames(data);
+	}
+	ImGui::Spacing();
+	ImGui::Separator();
+	for (int i = 0; i < data->reference_frame.frames.size(); i++) {
+		bool recompute_frame = false;
+		auto& ref = data->reference_frame.frames[i];
+		const float32 item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
+		StringBuffer<128> name;
+		snprintf(name, name.size(), "%s###ID", ref.name.buffer);
+
+		ImGui::PushID(i);
+		if (ImGui::CollapsingHeader(name)) {
+			ImGui::Checkbox("active", &ref.active);
+			ImGui::SameLine();
+			if (ImGui::DeleteButton("remove")) {
+				remove_reference_frame(data, &ref);
+			}
+
+			ImGui::PushItemWidth(item_width);
+			ImGui::InputText("name", ref.name, ref.name.capacity());
+			if (!ref.filter_is_ok) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
+			if (ImGui::InputText("filter", ref.filter, ref.filter.capacity(), ImGuiInputTextFlags_EnterReturnsTrue)) {
+				recompute_frame = true;
+			}
+			//if (ImGui::SliderInt("reference frame idx", ))
+			if (!ref.filter_is_ok) ImGui::PopStyleColor();
+			ImGui::PopItemWidth();
+			ImGui::Spacing();
+			ImGui::Separator();
+		}
+
+		ImGui::PopID();
+
+		if (recompute_frame) {
+			update_reference_frame(data, &ref);
+		}
+	}
+
+	ImGui::End();
+
+	// const auto new_hash = hash::crc64(data->representations.buffer);
+	// data->representations.changed = (new_hash != old_hash);
 }
 
 static void draw_property_window(ApplicationData* data) {
@@ -4157,7 +4237,13 @@ static void update_representation(ApplicationData* data, Representation* rep) {
         free_array(&rep->atom_mask);
         rep->atom_mask = allocate_array<bool>(mol.atom.count);
     }
-    rep->filter_is_ok = filter::compute_filter_mask(rep->atom_mask, data->dynamic, rep->filter.buffer);
+
+	DynamicArray<StoredSelection> sel;
+	for (const auto& s : data->selection.stored_selections) {
+		sel.push_back({ s.name, s.atom_mask });
+	}
+
+    rep->filter_is_ok = filter::compute_filter_mask(rep->atom_mask, rep->filter.buffer, data->dynamic, sel);
     filter::filter_colors(colors, rep->atom_mask);
     data->representations.atom_visibility_mask_dirty = true;
 
@@ -4373,6 +4459,57 @@ static bool handle_selection(ApplicationData* data) {
     // data->gpu_buffers.dirty.selection = true;
 
     return region_select;
+}
+
+// #reference-frame
+static ReferenceFrame* create_reference_frame(ApplicationData* data, CString name, CString filter) {
+	ASSERT(data);
+	ReferenceFrame ref;
+	ref.name = name;
+	ref.filter = filter;
+	ref.atom_mask = allocate_array<bool>(data->selection.current_selection_mask.size());
+	return &data->reference_frame.frames.push_back(ref);
+}
+
+static bool remove_reference_frame(ApplicationData* data, ReferenceFrame* ref) {
+	ASSERT(data);
+	ASSERT(ref);
+	free_array(&ref->atom_mask);
+	data->reference_frame.frames.remove(ref);
+}
+
+static void reset_reference_frame(ApplicationData* data) {
+	ASSERT(data);
+	// @NOTE: What to do here?
+}
+
+static void clear_reference_frames(ApplicationData* data) {
+	ASSERT(data);
+	while (data->reference_frame.frames.size() > 0) {
+		remove_reference_frame(data, &data->reference_frame.frames.back());
+	}
+}
+
+static void update_reference_frame(ApplicationData* data, ReferenceFrame* ref) {
+	ASSERT(data);
+	ASSERT(ref);
+	const auto& mol = data->dynamic.molecule;
+
+	if (ref->atom_mask.size() != mol.atom.count) {
+		free_array(&ref->atom_mask);
+		ref->atom_mask = allocate_array<bool>(mol.atom.count);
+	}
+
+	DynamicArray<StoredSelection> sel;
+	for (const auto& s : data->selection.stored_selections) {
+		sel.push_back({ s.name, s.atom_mask });
+	}
+
+	ref->filter_is_ok = filter::compute_filter_mask(ref->atom_mask, ref->filter, data->dynamic, sel);
+
+	if (ref->filter_is_ok) {
+		
+	}
 }
 
 // #async

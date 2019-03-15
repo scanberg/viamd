@@ -56,7 +56,7 @@ ATOM     24  H13 CSP3    1E      9.801   2.693  -7.994
 
 #include <chrono>
 #define TIME() std::chrono::high_resolution_clock::now()
-#define MILLISEC(x, y) std::chrono::duration_cast<std::chrono::milliseconds>(y - x).count()
+#define MILLISEC(x, y) std::chrono::duration<double, std::milli>(y - x).count()
 
 #if 0
 TEST_CASE("Testing PdbInfo", "[PdbInfo]") {
@@ -96,7 +96,7 @@ TEST_CASE("Structure Tracking", "[StructureTracking]") {
 	const auto t1 = TIME();
 	ASSERT(md);
 
-	printf("Time to load dataset: %.2fms\n", (double)MILLISEC(t0, t1));
+	printf("Time to load dataset: %.2fms\n", MILLISEC(t0, t1));
 	
 	structure_tracking::initialize();
 	filter::initialize();
@@ -107,13 +107,13 @@ TEST_CASE("Structure Tracking", "[StructureTracking]") {
 	REQUIRE(structure_created);
 
 	DynamicArray<bool> atom_mask(md.molecule.atom.count);
-	bool filter_ok = filter::compute_filter_mask(atom_mask, md, "element C");
+	bool filter_ok = filter::compute_filter_mask(atom_mask, "element C", md);
 	REQUIRE(filter_ok);
 
 	const auto t2 = TIME();
 	structure_tracking::compute_tracking_data(id, atom_mask, md.molecule, md.trajectory, 0);
 	const auto t3 = TIME();
-	printf("Time to compute tracking data: %.2fms\n", (double)MILLISEC(t2, t3));
+	printf("Time to compute tracking data: %.2fms\n", MILLISEC(t2, t3));
 
 	free_molecule_structure(&md.molecule);
 	free_trajectory(&md.trajectory);
@@ -122,11 +122,56 @@ TEST_CASE("Structure Tracking", "[StructureTracking]") {
 TEST_CASE("Interpolation", "[Interpolation]") {
 	MoleculeDynamic md;
 	const auto t0 = TIME();
-	allocate_and_load_pdb_from_file(&md, VIAMD_DATA_DIR "/alanine/1us.pdb");
+	allocate_and_load_pdb_from_file(&md, VIAMD_DATA_DIR "/alanine/two4REP-OH_450K.pdb");
 	const auto t1 = TIME();
 	ASSERT(md);
+	printf("Time to load dataset: %.2fms\n", MILLISEC(t0, t1));
+	printf("Num atoms in in dataset %lli\n", md.molecule.atom.count);
 
+	const auto x0 = get_trajectory_position_x(md.trajectory, 100).data();
+	const auto y0 = get_trajectory_position_y(md.trajectory, 100).data();
+	const auto z0 = get_trajectory_position_z(md.trajectory, 100).data();
+	const auto x1 = get_trajectory_position_x(md.trajectory, 101).data();
+	const auto y1 = get_trajectory_position_y(md.trajectory, 101).data();
+	const auto z1 = get_trajectory_position_z(md.trajectory, 101).data();
+	const auto x2 = get_trajectory_position_x(md.trajectory, 102).data();
+	const auto y2 = get_trajectory_position_y(md.trajectory, 102).data();
+	const auto z2 = get_trajectory_position_z(md.trajectory, 102).data();
+	const auto x3 = get_trajectory_position_x(md.trajectory, 103).data();
+	const auto y3 = get_trajectory_position_y(md.trajectory, 103).data();
+	const auto z3 = get_trajectory_position_z(md.trajectory, 103).data();
 
+	auto x = md.molecule.atom.position.x;
+	auto y = md.molecule.atom.position.y;
+	auto z = md.molecule.atom.position.z;
+	const auto atom_count = md.molecule.atom.count;
+	const auto box = get_trajectory_frame(md.trajectory, 101).box;
+
+	const int32 num_iter = 10;
+	const float t = 0.5f;
+	const auto t2 = TIME();
+	for (int32 i = 0; i < num_iter; i++) {
+		cubic_interpolation_pbc_scalar(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, atom_count, 0.5f, box);
+	}
+	const auto t3 = TIME();
+	const auto time_cubic_pbc_scalar = MILLISEC(t2, t3);
+	printf("Time to interpolate cubic pbc (scalar): %.2fms\n", time_cubic_pbc_scalar);
+
+	const auto t4 = TIME();
+	for (int32 i = 0; i < num_iter; i++) {
+		cubic_interpolation_pbc(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, atom_count, 0.5f, box);
+	}
+	const auto t5 = TIME();
+	const auto time_cubic_pbc_128 = MILLISEC(t4, t5);
+	printf("Time to interpolate cubic pbc (128 wide): %.2fms (%.1fx) speedup\n", time_cubic_pbc_128, time_cubic_pbc_scalar / time_cubic_pbc_128);
+
+	const auto t6 = TIME();
+	for (int32 i = 0; i < num_iter; i++) {
+		cubic_interpolation_pbc_256(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, atom_count, 0.5f, box);
+	}
+	const auto t7 = TIME();
+	const auto time_cubic_pbc_256 = MILLISEC(t6, t7);
+	printf("Time to interpolate cubic pbc (256 wide): %.2fms (%.1fx) speedup\n", time_cubic_pbc_256, time_cubic_pbc_scalar / time_cubic_pbc_256);
 
 	free_molecule_structure(&md.molecule);
 	free_trajectory(&md.trajectory);
@@ -167,7 +212,7 @@ TEST_CASE("Testing filter", "[filter]") {
     DynamicArray<bool> mask(md.molecule.atom.count);
 
     SECTION("filter element N") {
-        filter::compute_filter_mask(mask, md, "element N");
+        filter::compute_filter_mask(mask, "element N", md);
         for (int32 i = 0; i < mask.size(); i++) {
             if (i == 0 || i == 4 || i == 16 || i == 17) {
                 REQUIRE(mask[i] == true);
@@ -178,7 +223,7 @@ TEST_CASE("Testing filter", "[filter]") {
     }
 
     SECTION("filter atom 1:10") {
-        filter::compute_filter_mask(mask, md, "atom 1:10");
+        filter::compute_filter_mask(mask, "atom 1:10", md);
         for (int32 i = 0; i < mask.size(); i++) {
             if (0 <= i && i <= 9) {
                 REQUIRE(mask[i] == true);
@@ -189,7 +234,7 @@ TEST_CASE("Testing filter", "[filter]") {
     }
 
     SECTION("filter atom 10:*") {
-        filter::compute_filter_mask(mask, md, "atom 10:*");
+        filter::compute_filter_mask(mask, "atom 10:*", md);
         for (int32 i = 0; i < mask.size(); i++) {
             if (0 <= i && i < 9) {
                 REQUIRE(mask[i] == true);
@@ -200,21 +245,21 @@ TEST_CASE("Testing filter", "[filter]") {
     }
 
     SECTION("filter atom *:*") {
-        filter::compute_filter_mask(mask, md, "atom *:*");
+        filter::compute_filter_mask(mask, "atom *:*", md);
         for (int32 i = 0; i < mask.size(); i++) {
             REQUIRE(mask[i] == true);
         }
     }
 
     SECTION("filter all") {
-        filter::compute_filter_mask(mask, md, "all");
+        filter::compute_filter_mask(mask, "all", md);
         for (int32 i = 0; i < mask.size(); i++) {
             REQUIRE(mask[i] == true);
         }
     }
 
     SECTION("filter not all") {
-        filter::compute_filter_mask(mask, md, "not all");
+        filter::compute_filter_mask(mask, "not all", md);
         for (int32 i = 0; i < mask.size(); i++) {
             REQUIRE(mask[i] == false);
         }
