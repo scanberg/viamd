@@ -17,6 +17,7 @@
 #include <mol/pdb_utils.h>
 #include <mol/gro_utils.h>
 #include <mol/spatial_hash.h>
+#include <mol/structure_tracking.h>
 
 #include <glm/gtx/io.hpp>
 
@@ -57,6 +58,7 @@ ATOM     24  H13 CSP3    1E      9.801   2.693  -7.994
 #define TIME() std::chrono::high_resolution_clock::now()
 #define MILLISEC(x, y) std::chrono::duration_cast<std::chrono::milliseconds>(y - x).count()
 
+#if 0
 TEST_CASE("Testing PdbInfo", "[PdbInfo]") {
     const auto t0 = TIME();
     String pdb_str = allocate_and_read_textfile(VIAMD_DATA_DIR "/alanine/14ns-300K.pdb");
@@ -84,6 +86,50 @@ TEST_CASE("Testing PdbInfo", "[PdbInfo]") {
     printf("Time to extract pdb info: %.2f\n", (double)MILLISEC(t2, t3));
     printf("Time to parse full pdb: %.2f\n", (double)MILLISEC(t4, t5));
     printf("PdbInfo:\n num_atoms: %i \n num_residues: %i \n num_chains: %i \n num_frames: %i \n", info.num_atoms, info.num_residues, info.num_chains, info.num_frames);
+}
+#endif
+
+TEST_CASE("Structure Tracking", "[StructureTracking]") {
+	MoleculeDynamic md;
+	const auto t0 = TIME();
+	allocate_and_load_pdb_from_file(&md, VIAMD_DATA_DIR "/alanine/1us.pdb");
+	const auto t1 = TIME();
+	ASSERT(md);
+
+	printf("Time to load dataset: %.2fms\n", (double)MILLISEC(t0, t1));
+	
+	structure_tracking::initialize();
+	filter::initialize();
+
+	const structure_tracking::ID id = structure_tracking::get_id("structure 1");
+
+	bool structure_created = structure_tracking::create_structure(id);
+	REQUIRE(structure_created);
+
+	DynamicArray<bool> atom_mask(md.molecule.atom.count);
+	bool filter_ok = filter::compute_filter_mask(atom_mask, md, "element C");
+	REQUIRE(filter_ok);
+
+	const auto t2 = TIME();
+	structure_tracking::compute_tracking_data(id, atom_mask, md.molecule, md.trajectory, 0);
+	const auto t3 = TIME();
+	printf("Time to compute tracking data: %.2fms\n", (double)MILLISEC(t2, t3));
+
+	free_molecule_structure(&md.molecule);
+	free_trajectory(&md.trajectory);
+}
+
+TEST_CASE("Interpolation", "[Interpolation]") {
+	MoleculeDynamic md;
+	const auto t0 = TIME();
+	allocate_and_load_pdb_from_file(&md, VIAMD_DATA_DIR "/alanine/1us.pdb");
+	const auto t1 = TIME();
+	ASSERT(md);
+
+
+
+	free_molecule_structure(&md.molecule);
+	free_trajectory(&md.trajectory);
 }
 
 TEST_CASE("Testing DynamicArray", "[DynamicArray]") {
