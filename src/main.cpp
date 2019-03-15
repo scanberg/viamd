@@ -203,7 +203,7 @@ struct MoleculeBuffers {
 };
 
 struct Representation {
-    StringBuffer<128> name = "rep";
+    StringBuffer<64> name = "rep";
     StringBuffer<128> filter = "all";
     RepresentationType type = RepresentationType::Vdw;
     ColorMapping color_mapping = ColorMapping::Cpk;
@@ -229,16 +229,17 @@ struct Representation {
 };
 
 struct Selection {
-    StringBuffer<128> name = "sel";
+    StringBuffer<64> name = "sel";
     Array<bool> atom_mask{};
 };
 
 struct ReferenceFrame {
-	StringBuffer<128> name = "ref";
+	StringBuffer<64> name = "ref";
 	StringBuffer<128> filter = "label CA";
 	Array<bool> atom_mask{};
 	bool active = false;
 	bool filter_is_ok = false;
+	structure_tracking::ID id;
 };
 
 struct ThreadSyncData {
@@ -1978,6 +1979,7 @@ ImGui::EndGroup();
             ImGui::Checkbox("Distributions", &data->statistics.show_distribution_window);
             ImGui::Checkbox("Ramachandran", &data->ramachandran.show_window);
             ImGui::Checkbox("Selection", &data->selection.show_window);
+			ImGui::Checkbox("Reference Frames", &data->reference_frame.show_window);
 
             ImGui::EndMenu();
         }
@@ -4508,7 +4510,7 @@ static void update_reference_frame(ApplicationData* data, ReferenceFrame* ref) {
 	ref->filter_is_ok = filter::compute_filter_mask(ref->atom_mask, ref->filter, data->dynamic, sel);
 
 	if (ref->filter_is_ok) {
-		
+		//structure_tracking::ID id = structure_tracking::create_structure(id);
 	}
 }
 
