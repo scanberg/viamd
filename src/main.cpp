@@ -542,6 +542,7 @@ static void draw_distribution_window(ApplicationData* data);
 static void draw_ramachandran_window(ApplicationData* data);
 static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, int x, int y);
 static void draw_async_info(ApplicationData* data);
+static void draw_reference_frames_window(ApplicationData* data);
 // static void draw_selection_window(ApplicationData* data);
 
 static void init_framebuffer(MainFramebuffer* fbo, int width, int height);
@@ -832,24 +833,22 @@ int main(int, char**) {
         // This needs to happen first (in imgui events) to enable docking of imgui windows
         // ImGui::CreateDockspace();
 
-        {
-            if (data.density_volume.enabled) {
-                stats::async_update(
-                    data.dynamic, {(int32)data.time_filter.range.beg, (int32)data.time_filter.range.end},
-                    [](void* usr_data) {
-                        ApplicationData* data = (ApplicationData*)usr_data;
-                        data->density_volume.volume_data_mutex.lock();
+        if (data.density_volume.enabled) {
+            stats::async_update(
+                data.dynamic, {(int32)data.time_filter.range.beg, (int32)data.time_filter.range.end},
+                [](void* usr_data) {
+                    ApplicationData* data = (ApplicationData*)usr_data;
+                    data->density_volume.volume_data_mutex.lock();
 
-                        stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix, data->dynamic.trajectory,
-                                                      {(int32)data->time_filter.range.beg, (int32)data->time_filter.range.end});
+                    stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix, data->dynamic.trajectory,
+                                                  {(int32)data->time_filter.range.beg, (int32)data->time_filter.range.end});
 
-                        data->density_volume.volume_data_mutex.unlock();
-                        data->density_volume.texture.dirty = true;
-                    },
-                    &data);
-            } else {
-                stats::async_update(data.dynamic, {(int32)data.time_filter.range.beg, (int32)data.time_filter.range.end});
-            }
+                    data->density_volume.volume_data_mutex.unlock();
+                    data->density_volume.texture.dirty = true;
+                },
+                &data);
+        } else {
+            stats::async_update(data.dynamic, {(int32)data.time_filter.range.beg, (int32)data.time_filter.range.end});
         }
 
         // If gpu representation of volume is not up to date, upload data
@@ -982,8 +981,8 @@ int main(int, char**) {
 
         bool visuals_changed = false;
         {
-            static auto old_hash = hash::meow64(&data.visuals, sizeof(data.visuals));
-            const auto new_hash = hash::meow64(&data.visuals, sizeof(data.visuals));
+            static auto old_hash = hash::crc64(&data.visuals, sizeof(data.visuals));
+            const auto new_hash = hash::crc64(&data.visuals, sizeof(data.visuals));
             visuals_changed = (new_hash != old_hash);
             old_hash = new_hash;
         }
@@ -1373,11 +1372,8 @@ glDisable(GL_BLEND);
         if (data.statistics.show_property_window) draw_property_window(&data);
         if (data.statistics.show_timeline_window) draw_timeline_window(&data);
         if (data.statistics.show_distribution_window) draw_distribution_window(&data);
-        // if (data.selection.show_window) draw_selection_window(&data);
-
-        if (data.ramachandran.show_window) {
-            draw_ramachandran_window(&data);
-        }
+        if (data.ramachandran.show_window) draw_ramachandran_window(&data);
+        if (data.reference_frame.show_window) draw_reference_frames_window(&data);
 
         // ImGui::GetIO().WantCaptureMouse does not work with Menu
         if (!ImGui::IsMouseHoveringAnyWindow()) {
@@ -2569,9 +2565,7 @@ static void draw_representations_window(ApplicationData* data) {
 }
 
 static void draw_reference_frames_window(ApplicationData* data) {
-	const auto old_hash = hash::crc64(data->representations.buffer);
-
-	ImGui::Begin("Reference Frames", &data->representations.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
+	ImGui::Begin("Reference Frames", &data->reference_frame.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
 	if (ImGui::Button("create new")) {
 		create_reference_frame(data);
 	}
@@ -2617,9 +2611,6 @@ static void draw_reference_frames_window(ApplicationData* data) {
 	}
 
 	ImGui::End();
-
-	// const auto new_hash = hash::crc64(data->representations.buffer);
-	// data->representations.changed = (new_hash != old_hash);
 }
 
 static void draw_property_window(ApplicationData* data) {

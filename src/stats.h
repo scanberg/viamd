@@ -214,11 +214,14 @@ void compute_density_volume_with_basis(Volume* vol, const MoleculeTrajectory& tr
     for (auto prop : get_properties()) {
         if (!prop->enable_volume) continue;
         for (int32 frame_idx = frame_range.beg; frame_idx < frame_range.end; frame_idx++) {
-            const Array<const vec3> atom_positions = get_trajectory_positions(traj, frame_idx);
+            const Array<const float> pos_x = get_trajectory_position_x(traj, frame_idx);
+            const Array<const float> pos_y = get_trajectory_position_y(traj, frame_idx);
+            const Array<const float> pos_z = get_trajectory_position_z(traj, frame_idx);
             const mat4 world_to_volume_matrix = func(frame_idx);
-            for_each_filtered_property_structure_in_frame(prop, frame_idx, [vol, &atom_positions, &world_to_volume_matrix](const Structure& s) {
+            for_each_filtered_property_structure_in_frame(prop, frame_idx, [vol, &pos_x, &pos_y, &pos_z, &world_to_volume_matrix](const Structure& s) {
                 for (int32 i = s.beg_idx; i < s.end_idx; i++) {
-                    const vec4 tc = math::fract(world_to_volume_matrix * vec4(atom_positions[i], 1));
+                    const vec4 p = {pos_x[i], pos_y[i], pos_z[i], 1.0f};
+                    const vec4 tc = math::fract(world_to_volume_matrix * p);
                     // if (tc.x < 0.f || 1.f < tc.x) continue;
                     // if (tc.y < 0.f || 1.f < tc.y) continue;
                     // if (tc.z < 0.f || 1.f < tc.z) continue;

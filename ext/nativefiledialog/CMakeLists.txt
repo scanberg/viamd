@@ -27,7 +27,7 @@ if(APPLE)
     set(SRC
         ${SRC}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_cocoa.m)
-    set(LIB \"-framework AppKit\")
+    #set(LIB \"-framework AppKit\")
 endif()
 
 if(WIN32)

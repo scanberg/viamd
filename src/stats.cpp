@@ -14,7 +14,6 @@
 #include <stdarg.h>
 #include <new>
 #include <thread>
-#include <mutex>
 #include <tinyexpr.h>
 
 #define COMPUTE_ID(x) (hash::crc64(x))
@@ -1541,10 +1540,6 @@ void async_update(const MoleculeDynamic& dynamic, Range<int32> frame_filter, voi
         }).detach();
     }
 }
-
-// void lock_thread_mutex() { ctx.thread_mutex.lock(); }
-
-// void unlock_thread_mutex() { ctx.thread_mutex.unlock(); }
 
 bool thread_running() { return ctx.thread_running; }
 

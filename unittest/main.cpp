@@ -165,6 +165,7 @@ TEST_CASE("Interpolation", "[Interpolation]") {
 	const auto time_cubic_pbc_128 = MILLISEC(t4, t5);
 	printf("Time to interpolate cubic pbc (128 wide): %.2fms (%.1fx) speedup\n", time_cubic_pbc_128, time_cubic_pbc_scalar / time_cubic_pbc_128);
 
+#if 0
 	const auto t6 = TIME();
 	for (int32 i = 0; i < num_iter; i++) {
 		cubic_interpolation_pbc_256(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, atom_count, 0.5f, box);
@@ -172,6 +173,7 @@ TEST_CASE("Interpolation", "[Interpolation]") {
 	const auto t7 = TIME();
 	const auto time_cubic_pbc_256 = MILLISEC(t6, t7);
 	printf("Time to interpolate cubic pbc (256 wide): %.2fms (%.1fx) speedup\n", time_cubic_pbc_256, time_cubic_pbc_scalar / time_cubic_pbc_256);
+#endif
 
 	free_molecule_structure(&md.molecule);
 	free_trajectory(&md.trajectory);
