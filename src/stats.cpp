@@ -394,7 +394,7 @@ bool structure_match_resname(StructureData* data, const Array<CString> args, con
     for (const auto& res : molecule.residues) {
         for (const auto& arg : args) {
             if (compare(res.name, arg)) {
-                data->structures.push_back({res.atom_idx.beg, res.atom_idx.end});
+                data->structures.push_back({res.atom_range.beg, res.atom_range.end});
                 break;
             }
         }
@@ -420,7 +420,7 @@ bool structure_match_resid(StructureData* data, const Array<CString> args, const
         }
         for (const auto& res : molecule.residues) {
             if (res.id == id) {
-                data->structures.push_back({res.atom_idx.beg, res.atom_idx.end});
+                data->structures.push_back({res.atom_range.beg, res.atom_range.end});
                 break;
             }
         }
@@ -463,7 +463,7 @@ bool structure_match_residue(StructureData* data, const Array<CString> args, con
         }
         for (int32 i = range.x - 1; i < range.y; i++) {
             const auto& res = molecule.residues[i];
-            data->structures.push_back({res.atom_idx.beg, res.atom_idx.end});
+            data->structures.push_back({res.atom_range.beg, res.atom_range.end});
         }
     }
 
@@ -482,7 +482,7 @@ bool structure_match_chainid(StructureData* data, const Array<CString> args, con
     for (const auto& chain : molecule.chains) {
         for (const auto& arg : args) {
             if (compare(chain.id, arg)) {
-                data->structures.push_back({chain.atom_idx.beg, chain.atom_idx.end});
+                data->structures.push_back({chain.atom_range.beg, chain.atom_range.end});
                 break;
             }
         }
@@ -525,7 +525,7 @@ bool structure_match_chain(StructureData* data, const Array<CString> args, const
         }
         for (int32 i = range.x - 1; i <= range.y - 1; i++) {
             const auto& chain = molecule.chains[i];
-            data->structures.push_back({chain.atom_idx.beg, chain.atom_idx.end});
+            data->structures.push_back({chain.atom_range.beg, chain.atom_range.end});
         }
     }
 

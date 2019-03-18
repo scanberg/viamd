@@ -111,7 +111,7 @@ TEST_CASE("Structure Tracking", "[StructureTracking]") {
 	REQUIRE(filter_ok);
 
 	const auto t2 = TIME();
-	structure_tracking::compute_tracking_data(id, atom_mask, md.molecule, md.trajectory, 0);
+	structure_tracking::compute_trajectory_transform_data(id, atom_mask, md, 0);
 	const auto t3 = TIME();
 	printf("Time to compute tracking data: %.2fms\n", MILLISEC(t2, t3));
 
