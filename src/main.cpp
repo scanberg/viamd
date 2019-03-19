@@ -923,8 +923,8 @@ int main(int, char**) {
 
             PUSH_CPU_SECTION("Interpolate Position")
             if (traj) {
-                const int current_frame = math::clamp((int)data.playback.time, 0, math::max(0, data.dynamic.trajectory.num_frames - 1));
-                const vec3 box_ext = get_trajectory_frame(data.dynamic.trajectory, current_frame).box * vec3(1.0f);
+                //const int current_frame = math::clamp((int)data.playback.time, 0, math::max(0, data.dynamic.trajectory.num_frames - 1));
+                //const vec3 box_ext = get_trajectory_frame(data.dynamic.trajectory, current_frame).box * vec3(1.0f);
 
                 interpolate_atomic_positions(&data);
 #if 0
@@ -1128,7 +1128,7 @@ int main(int, char**) {
         POP_GPU_SECTION()  // G-buffer
 
         PUSH_GPU_SECTION("Selection") {
-            const uint32 atom_count = (uint32)data.dynamic.molecule.atom.count;
+            //const uint32 atom_count = (uint32)data.dynamic.molecule.atom.count;
             const bool atom_selection_empty = is_array_zero(data.selection.current_selection_mask);
             const bool atom_highlight_empty = is_array_zero(data.selection.current_highlight_mask);
 
@@ -1545,7 +1545,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 			ref.com = cur_com;
 			ref.basis = transform.rotation;
 
-			//structure_tracking::apply_transform(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count, transform, TransformFlag_Translate);
+			structure_tracking::apply_transform(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count, transform, TransformFlag_All);
 			break;
 		}
 	}
@@ -2198,7 +2198,7 @@ ImGui::EndGroup();
                 if (disable_new) ImGui::PopDisabled();
                 for (int i = 0; i < data->selection.stored_selections.size(); i++) {
                     auto& sel = data->selection.stored_selections[i];
-                    const float32 item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
+                    //const float32 item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
                     StringBuffer<128> name;
                     snprintf(name, name.size(), "%s###ID", sel.name.cstr());
 
@@ -2539,7 +2539,7 @@ static void draw_animation_control_window(ApplicationData* data) {
 }
 
 static void draw_representations_window(ApplicationData* data) {
-    const auto old_hash = hash::crc64(data->representations.buffer);
+    //const auto old_hash = hash::crc64(data->representations.buffer);
 
     ImGui::Begin("Representations", &data->representations.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
     if (ImGui::Button("create new")) {
@@ -3291,7 +3291,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
     static float zoom_factor = 1.0f;
     const float max_c = ImMax(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y);
     const ImVec2 size = ImVec2(max_c, max_c) * zoom_factor;
-    const ImGuiID id = ImGui::GetID("bg");
+    //const ImGuiID id = ImGui::GetID("bg");
 
     ImRect bb(ImGui::GetCurrentWindow()->DC.CursorPos, ImGui::GetCurrentWindow()->DC.CursorPos + size);
     // ImGui::ItemSize(bb);
@@ -3366,7 +3366,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
     if (ImGui::IsItemHovered()) {
 
         if (ImGui::GetIO().KeyCtrl && ImGui::GetIO().MouseWheel != 0.f) {
-            const float old_zoom = zoom_factor;
+            //const float old_zoom = zoom_factor;
             const float new_zoom = ImClamp(zoom_factor - ImGui::GetIO().MouseWheel * 0.1f, 1.0f, 10.0f);
             // ImGui::GetCurrentWindow()->ScrollTarget.x = ImGui::GetCurrentWindow()->Scroll.x * new_zoom / old_zoom;
             zoom_factor = new_zoom;
@@ -4164,16 +4164,6 @@ static void save_workspace(ApplicationData* data, CString file) {
         fprintf(fptr, "\n");
     }
 
-	// SELECTIONS
-	for (const auto& sel : data->selection.stored_selections) {
-
-	}
-
-	// REFERENCE FRAMES
-	for (const auto& ref : data->reference_frame.frames) {
-
-	}
-
     fprintf(fptr, "[RenderSettings]\n");
     fprintf(fptr, "SsaoEnabled=%i\n", data->visuals.ssao.enabled ? 1 : 0);
     fprintf(fptr, "SsaoIntensity=%g\n", data->visuals.ssao.intensity);
@@ -4212,9 +4202,12 @@ void create_screenshot(ApplicationData* data) {
     path += VIAMD_SCREENSHOT_DIR;
     path += "/screenshot";
     path += "";
-    path += ".bmp";
+    path += ".png";
 
-    bool res = write_image(img, path);
+    const bool res = write_image(img, path);
+    if (!res) {
+        LOG_ERROR("An error occured while writing the image.");
+    }
 }
 
 // #representation
