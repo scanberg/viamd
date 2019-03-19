@@ -238,6 +238,7 @@ struct ReferenceFrame {
 	StringBuffer<128> filter = "label CA";
 	Array<bool> atom_mask{};
 	bool active = false;
+	bool show = false;
 	bool filter_is_ok = false;
 	structure_tracking::ID id = 0;
 
@@ -311,7 +312,7 @@ struct ApplicationData {
 
     // --- ATOM SELECTION ---
     struct {
-        bool show_window = false;
+        //bool show_window = false;
         SelectionLevel level_mode = SelectionLevel::Atom;
         SelectionOperator op_mode = SelectionOperator::Or;
         SelectionGrowth grow_mode = SelectionGrowth::CovalentBond;
@@ -657,6 +658,8 @@ int main(int, char**) {
     postprocessing::initialize(data.fbo.width, data.fbo.height);
     LOG_NOTE("Initializing volume...");
     volume::initialize();
+	LOG_NOTE("Initializing structure tracking...");
+	structure_tracking::initialize();
 
     // Setup IMGUI style
     {
@@ -1114,6 +1117,50 @@ int main(int, char**) {
 			}
 			POP_GPU_SECTION()
 
+			PUSH_GPU_SECTION("Debug Draw Overlay") {
+				glDrawBuffer(GL_COLOR_ATTACHMENT4);  // Post_Tonemap buffer
+				glDisable(GL_DEPTH_TEST);
+				glDepthMask(0);
+
+				immediate::set_view_matrix(data.view.param.matrix.view);
+				immediate::set_proj_matrix(data.view.param.matrix.proj);
+				stats::visualize(data.dynamic);
+
+				// HYDROGEN BONDS
+				if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.overlay) {
+					for (const auto& bond : data.hydrogen_bonds.bonds) {
+						const vec3 p0 = get_position_xyz(data.dynamic.molecule, bond.acc_idx);
+						const vec3 p1 = get_position_xyz(data.dynamic.molecule, bond.hyd_idx);
+						immediate::draw_line(p0, p1, math::convert_color(data.hydrogen_bonds.color));
+					}		
+				}
+
+				// REFERENCE FRAME
+				for (const auto& ref : data.reference_frame.frames) {
+					if (ref.show) {
+						mat4 M = mat4(ref.basis);
+						M[3] = vec4(ref.com, 1.0f);
+						immediate::draw_basis(M, 2.0f);
+						break;
+					}
+				}
+
+				immediate::flush();
+
+				PUSH_GPU_SECTION("Draw Control Points")
+				if (data.visuals.spline.draw_control_points) {
+					draw::draw_spline(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index, data.gpu_buffers.backbone.num_control_point_indices, data.view.param);
+				}
+				if (data.visuals.spline.draw_spline) {
+					draw::draw_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices, data.view.param);
+				}
+				POP_GPU_SECTION()
+
+				glEnable(GL_DEPTH_TEST);
+				glDepthMask(1);
+			}
+			POP_GPU_SECTION()
+
 #if 0
 			PUSH_GPU_SECTION("Blit Static Velocity")
 			glDrawBuffer(GL_COLOR_ATTACHMENT2); // Velocity
@@ -1334,50 +1381,6 @@ glDisable(GL_BLEND);
         }
         POP_GPU_SECTION()
 
-        // DRAW DEBUG GRAPHICS W/O DEPTH
-        PUSH_GPU_SECTION("Debug Draw Overlay") {
-            immediate::set_view_matrix(data.view.param.matrix.view);
-            immediate::set_proj_matrix(data.view.param.matrix.proj);
-            stats::visualize(data.dynamic);
-
-            // HYDROGEN BONDS
-            if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.overlay) {
-                for (const auto& bond : data.hydrogen_bonds.bonds) {
-                    const vec3 p0 = get_position_xyz(data.dynamic.molecule, bond.acc_idx);
-                    const vec3 p1 = get_position_xyz(data.dynamic.molecule, bond.hyd_idx);
-                    immediate::draw_line(p0, p1, math::convert_color(data.hydrogen_bonds.color));
-                }
-            }
-
-			// REFERENCE FRAME
-			for (const auto& ref : data.reference_frame.frames) {
-				if (ref.active) {
-					mat4 M = mat4(ref.basis);
-					M[3] = vec4(ref.com, 1.0f);
-					immediate::draw_point(ref.com, immediate::COLOR_CYAN);
-					immediate::draw_basis(M);
-					break;
-				}
-			}
-
-            immediate::flush();
-
-            PUSH_GPU_SECTION("Draw Control Points")
-            if (data.visuals.spline.draw_control_points) {
-                draw::draw_spline(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index, data.gpu_buffers.backbone.num_control_point_indices, data.view.param);
-            }
-            if (data.visuals.spline.draw_spline) {
-                draw::draw_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices, data.view.param);
-            }
-            POP_GPU_SECTION()
-        }
-        POP_GPU_SECTION()
-
-        // Activate backbuffer
-        // glViewport(0, 0, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
-        // glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        // glDrawBuffer(GL_BACK);
-
         // GUI ELEMENTS
         data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, data.ctx.timing.delta_s);
 
@@ -1509,7 +1512,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             ASSERT(false);
     }
 	for (auto& ref : data->reference_frame.frames) {
-		if (ref.active) {
+		if (ref.active || ref.show) {
 			int64 masked_count = 0;
 			for (int64 i = 0; i < ref.atom_mask.size(); i++) {
 				if (ref.atom_mask[i]) masked_count++;
@@ -1537,16 +1540,25 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 
 			const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, masked_count);
 			const vec3 cur_com = compute_com(cur_x, cur_y, cur_z, mass, masked_count);
+			const vec3 box_c = box * vec3(0.5f);
 
-			Transform transform;
-			transform.rotation = structure_tracking::compute_rotation(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, mass, masked_count, cur_com, ref_com);
-			transform.translation = (box * vec3(0.5f) - cur_com);
+			mat4 R = structure_tracking::compute_rotation(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, mass, masked_count, cur_com, ref_com);
+			mat4 T_ori = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-cur_com, 1));
+			mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(box_c, 1));
+			mat4 M = T_box * R * T_ori;
 
-			ref.com = cur_com;
-			ref.basis = transform.rotation;
+			if (ref.active) {
+				ref.com = box_c;
+				ref.basis = mat3(1);
+			}
+			else {
+				ref.com = cur_com;
+				ref.basis = R;
+			}
 
-			structure_tracking::apply_transform(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count, transform, TransformFlag_All);
-			break;
+			if (ref.active) {
+				transform_positions(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count, M);
+			}
 		}
 	}
 
@@ -2029,7 +2041,7 @@ ImGui::EndGroup();
             ImGui::Checkbox("Timelines", &data->statistics.show_timeline_window);
             ImGui::Checkbox("Distributions", &data->statistics.show_distribution_window);
             ImGui::Checkbox("Ramachandran", &data->ramachandran.show_window);
-            ImGui::Checkbox("Selection", &data->selection.show_window);
+            //ImGui::Checkbox("Selection", &data->selection.show_window);
 			ImGui::Checkbox("Reference Frames", &data->reference_frame.show_window);
 
             ImGui::EndMenu();
@@ -2647,6 +2659,8 @@ static void draw_reference_frames_window(ApplicationData* data) {
 					}
 				}
 			}
+			ImGui::SameLine();
+			ImGui::Checkbox("show", &ref.show);
 			ImGui::SameLine();
 			if (ImGui::DeleteButton("remove")) {
 				remove_reference_frame(data, &ref);
@@ -3485,15 +3499,15 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
 
     glBindTexture(GL_TEXTURE_2D, fbo->deferred.depth);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glBindTexture(GL_TEXTURE_2D, fbo->deferred.color);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
@@ -3506,22 +3520,22 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
 
     glBindTexture(GL_TEXTURE_2D, fbo->deferred.velocity);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, width, height, 0, GL_RG, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glBindTexture(GL_TEXTURE_2D, fbo->deferred.emissive);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R11F_G11F_B10F, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glBindTexture(GL_TEXTURE_2D, fbo->deferred.post_tonemap);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
@@ -3891,9 +3905,13 @@ static void init_trajectory_data(ApplicationData* data) {
         memcpy(data->dynamic.molecule.atom.position.y, pos_y.data(), pos_y.size_in_bytes());
         memcpy(data->dynamic.molecule.atom.position.z, pos_z.data(), pos_z.size_in_bytes());
 
+		data->time_filter.range = { 0, (float)data->dynamic.trajectory.num_frames };
         data->gpu_buffers.dirty.position = true;
 
-        load_trajectory_async(data);
+		// @NOTE: Load any frames left
+		if (all_trajectory_frames_read(data->dynamic.trajectory) == false) {
+			load_trajectory_async(data);
+		}
 
         create_volume(data);
 #if 1
@@ -4523,6 +4541,7 @@ static bool handle_selection(ApplicationData* data) {
 static ReferenceFrame* create_reference_frame(ApplicationData* data, CString name, CString filter) {
 	ASSERT(data);
 	ReferenceFrame ref;
+	ref.id = structure_tracking::create_structure();
 	ref.name = name;
 	ref.filter = filter;
 	ref.atom_mask = allocate_array<bool>(data->selection.current_selection_mask.size());
@@ -4584,16 +4603,21 @@ static void load_trajectory_async(ApplicationData* data) {
         data->async.trajectory.sync.stop_signal = false;
         data->async.trajectory.sync.running = true;
         data->async.trajectory.sync.thread = std::thread([data]() {
+			const int32 pre_load_num_frames = data->dynamic.trajectory.num_frames;
             while (read_next_trajectory_frame(&data->dynamic.trajectory)) {
                 data->async.trajectory.fraction = data->dynamic.trajectory.num_frames / (float)data->dynamic.trajectory.frame_offsets.count;
                 if (data->async.trajectory.sync.stop_signal) break;
             }
+			const int32 post_load_num_frames = data->dynamic.trajectory.num_frames;
             data->async.trajectory.sync.running = false;
             data->async.trajectory.sync.stop_signal = false;
 
             // compute_statistics_async(data);
             stats::set_all_property_flags(true, true);
             compute_backbone_angles_async(data);
+			if ((int)data->time_filter.range.beg == 0 && (int)data->time_filter.range.end == pre_load_num_frames) {
+				data->time_filter.range.end = (float)post_load_num_frames;
+			}
         });
         data->async.trajectory.sync.thread.detach();
     }

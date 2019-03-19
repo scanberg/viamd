@@ -101,10 +101,8 @@ TEST_CASE("Structure Tracking", "[StructureTracking]") {
 	structure_tracking::initialize();
 	filter::initialize();
 
-	const structure_tracking::ID id = structure_tracking::get_id("structure 1");
-
-	bool structure_created = structure_tracking::create_structure(id);
-	REQUIRE(structure_created);
+	structure_tracking::ID id = structure_tracking::create_structure();
+	REQUIRE(id != 0);
 
 	DynamicArray<bool> atom_mask(md.molecule.atom.count);
 	bool filter_ok = filter::compute_filter_mask(atom_mask, "element C", md);
