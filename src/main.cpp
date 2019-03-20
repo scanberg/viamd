@@ -978,12 +978,14 @@ int main(int, char**) {
             }
             POP_CPU_SECTION()
 
-        } else {  // Not time_changed
-            // @FIXME: DO THIS ONLY ONCE
-            // Clear velocity buffer (once)
-            // zero_array(data.atom_velocity);
-            // copy_molecule_data_to_buffers(&data);
         }
+
+		{
+			static auto prev_playback_status = data.playback.is_playing;
+			if (data.playback.is_playing != prev_playback_status) {
+				prev_playback_status = data.playback.is_playing;
+			}
+		}
 
         PUSH_CPU_SECTION("Hydrogen bonds")
         if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.dirty) {
