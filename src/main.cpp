@@ -66,14 +66,8 @@ constexpr auto KEY_SKIP_TO_NEXT_FRAME = Key::KEY_RIGHT;
 #define POP_CPU_SECTION() {};
 
 // For gpu profiling
-#define PUSH_GPU_SECTION(lbl)                                                                       \
-    {                                                                                               \
-        if (glPushDebugGroup) glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, GL_KHR_debug, -1, lbl); \
-    }
-#define POP_GPU_SECTION()                       \
-    {                                           \
-        if (glPopDebugGroup) glPopDebugGroup(); \
-    }
+#define PUSH_GPU_SECTION(lbl) {if (glPushDebugGroup) glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, GL_KHR_debug, -1, lbl);}
+#define POP_GPU_SECTION() {if (glPopDebugGroup) glPopDebugGroup();}
 
 constexpr unsigned int NO_PICKING_IDX = 0xFFFFFFFFU;
 constexpr const char* FILE_EXTENSION = "via";
@@ -593,6 +587,7 @@ static bool remove_reference_frame(ApplicationData* data, ReferenceFrame* ref);
 static void reset_reference_frame(ApplicationData* data);
 static void clear_reference_frames(ApplicationData* data);
 static void update_reference_frame(ApplicationData* data, ReferenceFrame* ref);
+static ReferenceFrame* get_active_reference_frame(ApplicationData* data);
 
 static void create_volume(ApplicationData* data);
 
@@ -847,9 +842,21 @@ int main(int, char**) {
                 [](void* usr_data) {
                     ApplicationData* data = (ApplicationData*)usr_data;
                     data->density_volume.volume_data_mutex.lock();
+                    const Range<int32> range = {(int32)data->time_filter.range.beg, (int32)data->time_filter.range.end};
 
-                    stats::compute_density_volume(&data->density_volume.volume, data->density_volume.world_to_texture_matrix, data->dynamic.trajectory,
-                                                  {(int32)data->time_filter.range.beg, (int32)data->time_filter.range.end});
+                    const ReferenceFrame* ref_frame = get_active_reference_frame(data);
+                    if (ref_frame) {
+                        const structure_tracking::ID id = ref_frame->id;
+                        stats::compute_density_volume_with_basis(&data->density_volume.volume, data->dynamic.trajectory, range,
+                            [id](const vec4& world_pos, int32 frame_idx) -> vec4 {
+                                const auto transform = structure_tracking::get_transform_to_target_frame(frame_idx);
+                                // @TODO: Translate rotate translate...
+                            }
+                        );
+                    }
+                    else {
+                        stats::compute_density_volume(&data->density_volume.volume, data->dynamic.trajectory, range, data->density_volume.world_to_texture_matrix);
+                    }
 
                     data->density_volume.volume_data_mutex.unlock();
                     data->density_volume.texture.dirty = true;
@@ -861,6 +868,7 @@ int main(int, char**) {
 
         // If gpu representation of volume is not up to date, upload data
         if (data.density_volume.texture.dirty) {
+            // @NOTE: We need to lock the data here in case the data is changing while doing this.
             if (data.density_volume.volume_data_mutex.try_lock()) {
                 if (data.density_volume.texture.dim != data.density_volume.volume.dim) {
                     data.density_volume.texture.dim = data.density_volume.volume.dim;
@@ -4589,6 +4597,14 @@ static void update_reference_frame(ApplicationData* data, ReferenceFrame* ref) {
 	if (ref->filter_is_ok) {
 		//structure_tracking::ID id = structure_tracking::create_structure(id);
 	}
+}
+
+static ReferenceFrame* get_active_reference_frame(ApplicationData* data) {
+    ASSERT(data);
+    for (auto& ref : data->reference_frame.frames) {
+        if (ref.active) return &ref;
+    }
+    return nullptr;
 }
 
 // #async

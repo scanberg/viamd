@@ -188,10 +188,17 @@ Array<Property*> get_properties();
 Property* find_property(CString name);
 
 // DENSITY VOLUME
-void compute_density_volume(Volume* vol, const mat4& world_to_volume, const MoleculeTrajectory& traj, Range<int32> frame_range);
+void compute_density_volume(Volume* vol, const MoleculeTrajectory& traj, const Range<int32>& frame_range, const mat4& world_to_volume);
 
-template <typename WorldToVolumeFunc>
-void compute_density_volume_with_basis(Volume* vol, const MoleculeTrajectory& traj, Range<int32> frame_range, WorldToVolumeFunc func) {
+
+// @NOTE: Implement this using proper lightweight std::function wrapper which supports lambda,
+// template is kind of obfuscating here
+// the expected definition of the function is:
+//
+// vec4 TransformWorldToVolumeFunc(const vec4& world_coord, int32 frame_idx)
+
+template <typename TransformWorldToVolumeFunc>
+void compute_density_volume_with_basis(Volume* vol, const MoleculeTrajectory& traj, const Range<int32>& frame_range, TransformWorldToVolumeFunc func) {
     ASSERT(vol);
     if (vol->dim.x == 0 || vol->dim.y == 0 || vol->dim.z == 0) {
         LOG_ERROR("One or more volume dimension are zero...");
@@ -212,19 +219,17 @@ void compute_density_volume_with_basis(Volume* vol, const MoleculeTrajectory& tr
     clear_volume(vol);
 
     for (auto prop : get_properties()) {
-        if (!prop->enable_volume) continue;
+        if (!prop->ena ble_volume) continue;
         for (int32 frame_idx = frame_range.beg; frame_idx < frame_range.end; frame_idx++) {
             const Array<const float> pos_x = get_trajectory_position_x(traj, frame_idx);
             const Array<const float> pos_y = get_trajectory_position_y(traj, frame_idx);
             const Array<const float> pos_z = get_trajectory_position_z(traj, frame_idx);
-            const mat4 world_to_volume_matrix = func(frame_idx);
-            for_each_filtered_property_structure_in_frame(prop, frame_idx, [vol, &pos_x, &pos_y, &pos_z, &world_to_volume_matrix](const Structure& s) {
+            //const mat4 world_to_volume_matrix = func(frame_idx);
+            for_each_filtered_property_structure_in_frame(prop, frame_idx, [vol, &pos_x, &pos_y, &pos_z, &func](const Structure& s) {
                 for (int32 i = s.beg_idx; i < s.end_idx; i++) {
-                    const vec4 p = {pos_x[i], pos_y[i], pos_z[i], 1.0f};
-                    const vec4 tc = math::fract(world_to_volume_matrix * p);
-                    // if (tc.x < 0.f || 1.f < tc.x) continue;
-                    // if (tc.y < 0.f || 1.f < tc.y) continue;
-                    // if (tc.z < 0.f || 1.f < tc.z) continue;
+                    const vec4 wc = {pos_x[i], pos_y[i], pos_z[i], 1.0f};
+                    const vec4 vc = func(wc, frame_idx);
+                    const vec4 tc = math::fract(vc); // PBC
                     const ivec3 c = vec3(tc) * (vec3)vol->dim;
                     const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
                     vol->voxel_data[voxel_idx]++;

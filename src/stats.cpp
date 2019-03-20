@@ -216,7 +216,7 @@ inline void shuffle(int32* arr, size_t n) {
     }
 }
 
-void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, const MoleculeTrajectory& traj, Range<int32> frame_range) {
+void compute_density_volume(Volume* vol, const MoleculeTrajectory& traj, const Range<int32>& frame_range, const mat4& world_to_volume_matrix) {
     ASSERT(vol);
     if (vol->dim.x == 0 || vol->dim.y == 0 || vol->dim.z == 0) {
         LOG_ERROR("One or more volume dimension are zero...");
@@ -244,10 +244,8 @@ void compute_density_volume(Volume* vol, const mat4& world_to_volume_matrix, con
 
             for_each_filtered_property_structure_in_frame(prop, frame_idx, [vol, atom_pos_x, atom_pos_y, atom_pos_z, &world_to_volume_matrix](const Structure& s) {
                 for (int32 i = s.beg_idx; i < s.end_idx; i++) {
-                    const vec4 tc = world_to_volume_matrix * vec4(atom_pos_x[i], atom_pos_y[i], atom_pos_z[i], 1);
-                    if (tc.x < 0.f || 1.f < tc.x) continue;
-                    if (tc.y < 0.f || 1.f < tc.y) continue;
-                    if (tc.z < 0.f || 1.f < tc.z) continue;
+                    const vec4 p = {atom_pos_x[i], atom_pos_y[i], atom_pos_z[i], 1};
+                    const vec4 tc = math::fract(world_to_volume_matrix * p);
                     const ivec3 c = vec3(tc) * (vec3)vol->dim;
                     const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
                     vol->voxel_data[voxel_idx]++;
