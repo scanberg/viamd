@@ -216,7 +216,7 @@ inline void shuffle(int32* arr, size_t n) {
     }
 }
 
-void compute_density_volume(Volume* vol, const MoleculeTrajectory& traj, const Range<int32>& frame_range, const mat4& world_to_volume_matrix) {
+void compute_density_volume(Volume* vol, const MoleculeTrajectory& traj, Range<int32> frame_range, const mat4& world_to_volume_matrix) {
     ASSERT(vol);
     if (vol->dim.x == 0 || vol->dim.y == 0 || vol->dim.z == 0) {
         LOG_ERROR("One or more volume dimension are zero...");

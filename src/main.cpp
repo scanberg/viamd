@@ -235,6 +235,7 @@ struct ReferenceFrame {
 	bool show = false;
 	bool filter_is_ok = false;
 	structure_tracking::ID id = 0;
+	int32 target_frame_idx = 0;
 
 	// For debugging
 	vec3 com = {};
@@ -431,6 +432,7 @@ struct ApplicationData {
 
     struct {
         bool enabled = false;
+		bool dirty = true;
         vec3 color = vec3(1, 0, 0);
         float32 density_scale = 1.f;
 
@@ -723,8 +725,12 @@ int main(int, char**) {
     allocate_and_parse_pdb_from_string(&data.dynamic, CAFFINE_PDB);
     init_molecule_data(&data);
 #else
-    load_molecule_data(&data, VIAMD_DATA_DIR "/1ALA-250ns-2500frames.pdb");
-	create_reference_frame(&data, "ref1", "residue 1");
+    load_molecule_data(&data, VIAMD_DATA_DIR "/analytic/test_4_points.pdb");
+	create_reference_frame(&data, "ref1", "resname RES");
+	//stats::create_property("d1", "distance atom(1) atom(4)");
+	data.simulation_box.enabled = true;
+	//data.density_volume.enabled = true;
+	data.reference_frame.frames[0].active = true;
 #endif
     reset_view(&data, true);
     create_representation(&data, RepresentationType::Vdw, ColorMapping::ResId);
@@ -823,7 +829,7 @@ int main(int, char**) {
 
             const vec3 vel = (data.view.animation.target_position - data.view.camera.position) * speed;
             data.view.camera.position += vel * dt;
-#if 1
+#if 0
             ImGui::Begin("Camera Debug Info");
             ImGui::Text("lin vel [%.2f %.2f %.2f]", vel.x, vel.y, vel.z);
             ImGui::Text("lin cur [%.2f %.2f %.2f]", data.view.camera.position.x, data.view.camera.position.y, data.view.camera.position.z);
@@ -836,35 +842,42 @@ int main(int, char**) {
         // This needs to happen first (in imgui events) to enable docking of imgui windows
         // ImGui::CreateDockspace();
 
-        if (data.density_volume.enabled) {
-            stats::async_update(
-                data.dynamic, {(int32)data.time_filter.range.beg, (int32)data.time_filter.range.end},
-                [](void* usr_data) {
-                    ApplicationData* data = (ApplicationData*)usr_data;
-                    data->density_volume.volume_data_mutex.lock();
-                    const Range<int32> range = {(int32)data->time_filter.range.beg, (int32)data->time_filter.range.end};
+        stats::async_update( data.dynamic, {(int32)data.time_filter.range.beg, (int32)data.time_filter.range.end},
+            [](void* usr_data) {
+                ApplicationData* data = (ApplicationData*)usr_data;
+				if (data->density_volume.enabled) {
+					data->density_volume.volume_data_mutex.lock();
+					const Range<int32> range = { (int32)data->time_filter.range.beg, (int32)data->time_filter.range.end };
 
-                    const ReferenceFrame* ref_frame = get_active_reference_frame(data);
-                    if (ref_frame) {
-                        const structure_tracking::ID id = ref_frame->id;
-                        stats::compute_density_volume_with_basis(&data->density_volume.volume, data->dynamic.trajectory, range,
-                            [id](const vec4& world_pos, int32 frame_idx) -> vec4 {
-                                const auto transform = structure_tracking::get_transform_to_target_frame(frame_idx);
-                                // @TODO: Translate rotate translate...
-                            }
-                        );
-                    }
-                    else {
-                        stats::compute_density_volume(&data->density_volume.volume, data->dynamic.trajectory, range, data->density_volume.world_to_texture_matrix);
-                    }
+					const ReferenceFrame* ref_frame = get_active_reference_frame(data);
+					if (ref_frame) {
+						const structure_tracking::ID id = ref_frame->id;
+						stats::compute_density_volume_with_basis(&data->density_volume.volume, data->dynamic.trajectory, range,
+							[id, data](const vec4& world_pos, int32 frame_idx) -> vec4 {
+							const auto transform = structure_tracking::get_transform_to_target_frame(id, frame_idx);
+							const auto box = data->dynamic.trajectory.frame_buffer[frame_idx].box;
+							// @TODO: Translate rotate translate...
 
-                    data->density_volume.volume_data_mutex.unlock();
-                    data->density_volume.texture.dirty = true;
-                },
-                &data);
-        } else {
-            stats::async_update(data.dynamic, {(int32)data.time_filter.range.beg, (int32)data.time_filter.range.end});
-        }
+							const vec3 com = transform.com;
+							const vec3 half_box = box * vec3(0.5f);
+							const mat4 R = transform.rotation;
+							const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-com, 1));
+							const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(half_box, 1));
+							const mat4 M = T_box * R * T_com;
+
+							return data->density_volume.world_to_texture_matrix * M * world_pos;
+						}
+						);
+					}
+					else {
+						stats::compute_density_volume(&data->density_volume.volume, data->dynamic.trajectory, range, data->density_volume.world_to_texture_matrix);
+					}
+					data->density_volume.volume_data_mutex.unlock();
+					data->density_volume.texture.dirty = true;
+				}
+            },
+            &data
+		);
 
         // If gpu representation of volume is not up to date, upload data
         if (data.density_volume.texture.dirty) {
@@ -1182,6 +1195,23 @@ int main(int, char**) {
         }
         POP_GPU_SECTION()  // G-buffer
 
+		// VOLUME RENDERING
+		if (data.density_volume.enabled) {
+			glDrawBuffer(GL_COLOR_ATTACHMENT4);  // Post_Tonemap buffer
+			glDisable(GL_DEPTH_TEST);
+			// glDepthFunc(GL_LESS);
+			glDepthMask(0);
+			glEnable(GL_BLEND);
+			glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+			PUSH_GPU_SECTION("Volume Rendering")
+			const float32 scl = 1.f * data.density_volume.density_scale / (data.density_volume.texture.max_value > 0.f ? data.density_volume.texture.max_value : 1.f);
+			volume::render_volume_texture(data.density_volume.texture.id, data.fbo.deferred.depth, data.density_volume.texture_to_model_matrix, data.density_volume.model_to_world_matrix,
+										  data.view.param.matrix.view, data.view.param.matrix.proj, data.density_volume.color, scl);
+			POP_GPU_SECTION()
+			glDisable(GL_BLEND);
+		}
+
         PUSH_GPU_SECTION("Selection") {
             //const uint32 atom_count = (uint32)data.dynamic.molecule.atom.count;
             const bool atom_selection_empty = is_array_zero(data.selection.current_selection_mask);
@@ -1264,23 +1294,6 @@ int main(int, char**) {
             glDepthMask(1);
         }
         POP_GPU_SECTION()
-
-        // VOLUME RENDERING
-        if (data.density_volume.enabled) {
-            glDrawBuffer(GL_COLOR_ATTACHMENT4);  // Post_Tonemap buffer
-            glDisable(GL_DEPTH_TEST);
-            // glDepthFunc(GL_LESS);
-            glDepthMask(0);
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-            PUSH_GPU_SECTION("Volume Rendering")
-            const float32 scl = 1.f * data.density_volume.density_scale / (data.density_volume.texture.max_value > 0.f ? data.density_volume.texture.max_value : 1.f);
-            volume::render_volume_texture(data.density_volume.texture.id, data.fbo.deferred.depth, data.density_volume.texture_to_model_matrix, data.density_volume.model_to_world_matrix,
-                                          data.view.param.matrix.view, data.view.param.matrix.proj, data.density_volume.color, scl);
-            POP_GPU_SECTION()
-            glDisable(GL_BLEND);
-        }
 
         // PICKING
         PUSH_GPU_SECTION("Picking") {
@@ -4593,9 +4606,8 @@ static void update_reference_frame(ApplicationData* data, ReferenceFrame* ref) {
 	}
 
 	ref->filter_is_ok = filter::compute_filter_mask(ref->atom_mask, ref->filter, data->dynamic, sel);
-
 	if (ref->filter_is_ok) {
-		//structure_tracking::ID id = structure_tracking::create_structure(id);
+		structure_tracking::compute_trajectory_transform_data(ref->id, ref->atom_mask, data->dynamic, ref->target_frame_idx);
 	}
 }
 
