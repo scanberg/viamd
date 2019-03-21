@@ -9,7 +9,9 @@ set(DEF "")
 if(UNIX AND NOT APPLE)
     option(NATIVEFILEDIALOG_USE_GTK "Use GTK for window handling, fallback is Zenity" ON)
     if (NATIVEFILEDIALOG_USE_GTK)
-        include(cmake/FindGTK3.cmake)
+	set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+	message(${CMAKE_MODULE_PATH})
+        #include(cmake/FindGTK3.cmake)
         find_package(GTK3 REQUIRED gtk)
         set(SRC
             ${SRC}

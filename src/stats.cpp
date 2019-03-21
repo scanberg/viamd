@@ -697,7 +697,7 @@ static inline float multi_angle(const float* a_x, const float* a_y, const float*
             }
         }
 
-        float count = (float)math::max(1LL, count_a * count_b * count_c);
+        float count = (float)math::max((int64)1, count_a * count_b * count_c);
 		float mean = total / count;
 
         if (variance) {

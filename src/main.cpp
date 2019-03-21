@@ -2254,7 +2254,7 @@ ImGui::EndGroup();
                     }
 
                     const auto h_id = ImGui::GetHoveredID();
-                    bool show_preview = (h_id == ImGui::GetID(name) || h_id == ImGui::GetID("Activate") || h_id == ImGui::GetID("Remove") || h_id == ImGui::GetID("Clone"));
+                    bool show_preview = (h_id == ImGui::GetID(name.cstr()) || h_id == ImGui::GetID("Activate") || h_id == ImGui::GetID("Remove") || h_id == ImGui::GetID("Clone"));
 
                     ImGui::PopID();
 
