@@ -16,7 +16,7 @@ endif()
 if (MSVC)
 	message(STATUS "MSVC configure was used")
 
-    add_compile_options(/MT /W4 /wd4201 /wd4324 /MP /GR- /fp:fast)
+    add_compile_options(/MT /W4 /wd4201 /wd4324 /MP /GR- /fp:fast /MP)
     add_compile_options_config(RELEASE /Oi /GS-)
     add_compile_options_config(DEBUG /MTd)
 

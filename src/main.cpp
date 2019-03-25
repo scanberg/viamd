@@ -497,6 +497,11 @@ struct ApplicationData {
 		bool show_window = false;
 	} reference_frame;
 
+	struct {
+		int32 reference_frame_idx = -1;
+		bool show_window = false;
+	} shape_space;
+
     // --- CONSOLE ---
     Console console{};
     bool show_console = false;
@@ -544,6 +549,7 @@ static void draw_ramachandran_window(ApplicationData* data);
 static void draw_atom_info_window(const MoleculeStructure& mol, int atom_range, int x, int y);
 static void draw_async_info(ApplicationData* data);
 static void draw_reference_frames_window(ApplicationData* data);
+static void draw_shape_space_window(ApplicationData* data);
 // static void draw_selection_window(ApplicationData* data);
 
 static void init_framebuffer(MainFramebuffer* fbo, int width, int height);
@@ -725,8 +731,8 @@ int main(int, char**) {
     allocate_and_parse_pdb_from_string(&data.dynamic, CAFFINE_PDB);
     init_molecule_data(&data);
 #else
-    load_molecule_data(&data, VIAMD_DATA_DIR "/analytic/test_4_points.pdb");
-	create_reference_frame(&data, "ref1", "resname RES");
+    load_molecule_data(&data, VIAMD_DATA_DIR "/1ALA-250ns-2500frames.pdb");
+	create_reference_frame(&data, "ref1", "residue 1:2");
 	//stats::create_property("d1", "distance atom(1) atom(4)");
 	data.simulation_box.enabled = true;
 	//data.density_volume.enabled = true;
@@ -1416,6 +1422,7 @@ glDisable(GL_BLEND);
         if (data.statistics.show_distribution_window) draw_distribution_window(&data);
         if (data.ramachandran.show_window) draw_ramachandran_window(&data);
         if (data.reference_frame.show_window) draw_reference_frames_window(&data);
+		if (data.shape_space.show_window) draw_shape_space_window(&data);
 
         // ImGui::GetIO().WantCaptureMouse does not work with Menu
         if (!ImGui::IsMouseHoveringAnyWindow()) {
@@ -2235,10 +2242,10 @@ ImGui::EndGroup();
                     auto& sel = data->selection.stored_selections[i];
                     //const float32 item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
                     StringBuffer<128> name;
-                    snprintf(name, name.size(), "%s###ID", sel.name.cstr());
+                    snprintf(name.cstr(), name.size(), "%s###ID", sel.name.cstr());
 
                     ImGui::PushID(i);
-                    if (ImGui::CollapsingHeader(name)) {
+                    if (ImGui::CollapsingHeader(name.cstr())) {
                         if (ImGui::Button("Activate")) {
                             memcpy(data->selection.current_selection_mask.data(), sel.atom_mask.data(), sel.atom_mask.size_in_bytes());
                             data->gpu_buffers.dirty.selection = true;
@@ -2591,10 +2598,10 @@ static void draw_representations_window(ApplicationData* data) {
         auto& rep = data->representations.buffer[i];
         const float32 item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
         StringBuffer<128> name;
-        snprintf(name, name.size(), "%s###ID", rep.name.buffer);
+        snprintf(name.cstr(), name.size(), "%s###ID", rep.name.buffer);
 
         ImGui::PushID(i);
-        if (ImGui::CollapsingHeader(name)) {
+        if (ImGui::CollapsingHeader(name.cstr())) {
             if (ImGui::Checkbox("enabled", &rep.enabled)) {
                 data->representations.atom_visibility_mask_dirty = true;
             }
@@ -2610,9 +2617,9 @@ static void draw_representations_window(ApplicationData* data) {
             }
 
             ImGui::PushItemWidth(item_width);
-            ImGui::InputText("name", rep.name, rep.name.capacity());
+            ImGui::InputText("name", rep.name.cstr(), rep.name.capacity());
             if (!rep.filter_is_ok) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-            if (ImGui::InputText("filter", rep.filter, rep.filter.capacity(), ImGuiInputTextFlags_EnterReturnsTrue)) {
+            if (ImGui::InputText("filter", rep.filter.cstr(), rep.filter.capacity(), ImGuiInputTextFlags_EnterReturnsTrue)) {
                 recompute_colors = true;
             }
             if (!rep.filter_is_ok) ImGui::PopStyleColor();
@@ -2670,10 +2677,10 @@ static void draw_reference_frames_window(ApplicationData* data) {
 		auto& ref = data->reference_frame.frames[i];
 		const float32 item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
 		StringBuffer<128> name;
-		snprintf(name, name.size(), "%s###ID", ref.name.buffer);
+		snprintf(name.cstr(), name.size(), "%s###ID", ref.name.buffer);
 
 		ImGui::PushID(i);
-		if (ImGui::CollapsingHeader(name)) {
+		if (ImGui::CollapsingHeader(name.cstr())) {
 			if (ImGui::Checkbox("active", &ref.active)) {
 				if (ref.active) {
 					for (auto& other : data->reference_frame.frames) {
@@ -2688,11 +2695,17 @@ static void draw_reference_frames_window(ApplicationData* data) {
 			if (ImGui::DeleteButton("remove")) {
 				remove_reference_frame(data, &ref);
 			}
+			ImGui::SameLine();
+			if (ImGui::Button("shape space")) {
+				data->shape_space.show_window = true;
+				data->shape_space.reference_frame_idx = i;
+				draw_shape_space_window(data);
+			}
 
 			ImGui::PushItemWidth(item_width);
-			ImGui::InputText("name", ref.name, ref.name.capacity());
+			ImGui::InputText("name", ref.name.cstr(), ref.name.capacity());
 			if (!ref.filter_is_ok) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-			if (ImGui::InputText("filter", ref.filter, ref.filter.capacity(), ImGuiInputTextFlags_EnterReturnsTrue)) {
+			if (ImGui::InputText("filter", ref.filter.cstr(), ref.filter.capacity(), ImGuiInputTextFlags_EnterReturnsTrue)) {
 				recompute_frame = true;
 			}
 			//if (ImGui::SliderInt("reference frame idx", ))
@@ -2749,7 +2762,7 @@ static void draw_property_window(ApplicationData* data) {
 
         ImGui::PushItemWidth(-1);
         if (!prop->valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-        if (ImGui::InputText("##name", prop->name_buf, prop->name_buf.size(), ImGuiInputTextFlags_EnterReturnsTrue)) {
+        if (ImGui::InputText("##name", prop->name_buf.cstr(), prop->name_buf.size(), ImGuiInputTextFlags_EnterReturnsTrue)) {
             prop->data_dirty = true;
             // compute_stats = true;
         }
@@ -2830,7 +2843,7 @@ static void draw_property_window(ApplicationData* data) {
 
         ImGui::PushItemWidth(-1);
         if (!prop->valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-        if (ImGui::InputText("##args", prop->args_buf, prop->args_buf.size(), ImGuiInputTextFlags_EnterReturnsTrue)) {
+        if (ImGui::InputText("##args", prop->args_buf.cstr(), prop->args_buf.size(), ImGuiInputTextFlags_EnterReturnsTrue)) {
             prop->data_dirty = true;
         }
         if (!prop->valid) ImGui::PopStyleColor();
@@ -2900,12 +2913,12 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_range, 
 
     int res_range = mol.atom.res_idx[atom_range];
     const Residue& res = mol.residues[res_range];
-    const char* res_id = res.name;
+    const char* res_id = res.name.cstr();
     int local_idx = atom_range - res.atom_range.beg;
     const float pos_x = mol.atom.position.x[atom_range];
     const float pos_y = mol.atom.position.y[atom_range];
     const float pos_z = mol.atom.position.z[atom_range];
-    const char* label = mol.atom.label[atom_range];
+    const char* label = mol.atom.label[atom_range].cstr();
     const char* elem = element::name(mol.atom.element[atom_range]);
     const char* symbol = element::symbol(mol.atom.element[atom_range]);
 
@@ -2913,7 +2926,7 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_range, 
     const char* chain_id = "\0";
     if (chain_idx != -1 && mol.chains.size() > 0) {
         const Chain& chain = mol.chains[chain_idx];
-        chain_id = chain.id;
+        chain_id = chain.id.cstr();
         chain_idx = res.chain_idx;
     }
 
@@ -3063,11 +3076,11 @@ static void draw_timeline_window(ApplicationData* data) {
                 display_range.y += 1.f;
             }
             // float32 val = (float)time;
-            ImGuiID id = ImGui::GetID(prop_name);
+            ImGuiID id = ImGui::GetID(prop_name.cstr());
 
             ImGui::PushID(i);
 
-            ImGui::BeginPlot(prop_name, ImVec2(0, plot_height), ImVec2(frame_range.x, frame_range.y), ImVec2(display_range.x, display_range.y), ImGui::LinePlotFlags_AxisX);
+            ImGui::BeginPlot(prop_name.cstr(), ImVec2(0, plot_height), ImVec2(frame_range.x, frame_range.y), ImVec2(display_range.x, display_range.y), ImGui::LinePlotFlags_AxisX);
             const ImRect inner_bb(ImGui::GetItemRectMin() + ImGui::GetStyle().FramePadding, ImGui::GetItemRectMax() - ImGui::GetStyle().FramePadding);
             ImGui::PushClipRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), true);
 
@@ -3498,6 +3511,110 @@ static void draw_ramachandran_window(ApplicationData* data) {
     ImGui::EndChild();
 
     ImGui::End();
+}
+
+
+static void draw_shape_space_window(ApplicationData* data) {
+	const Range<int32> frame_range = { (int32)data->time_filter.range.x, (int32)data->time_filter.range.y };
+	const bool reference_frame_valid = 0 <= data->shape_space.reference_frame_idx && data->shape_space.reference_frame_idx < data->reference_frame.frames.size();
+
+	ImGui::SetNextWindowSizeConstraints(ImVec2(400, 200), ImVec2(10000, 10000));
+	ImGui::Begin("Shape Space", &data->shape_space.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoScrollbar);
+
+	const float max_c = ImMax(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y);
+	const ImVec2 size = ImVec2(max_c, max_c);
+	const ImRect bb(ImGui::GetCurrentWindow()->DC.CursorPos, ImGui::GetCurrentWindow()->DC.CursorPos + size);
+	ImGui::InvisibleButton("bg", bb.Max - bb.Min);
+
+	const ImVec2 a = ImLerp(bb.Min, bb.Max, ImVec2(0.0f, 0.70710678118f));
+	const ImVec2 b = ImLerp(bb.Min, bb.Max, ImVec2(1.0f, 0.70710678118f));
+	const ImVec2 c = ImLerp(bb.Min, bb.Max, ImVec2(0.5f, 0.0f));
+
+	const ImU32 triangle_fill_color = 0x88FFFFFF;
+	const ImU32 triangle_line_color = 0x88000000;
+
+	ImDrawList* dl = ImGui::GetWindowDrawList();
+
+	const ImVec2 mouse_pos = ImGui::GetIO().MousePos;
+	dl->ChannelsSplit(3);
+	dl->ChannelsSetCurrent(0);
+	dl->AddTriangleFilled(a, b, c, triangle_fill_color);
+	dl->AddTriangle(a, b, c, triangle_line_color);
+
+	int64 mouse_hover_idx = -1;
+
+	if (reference_frame_valid) {
+		const uint32 line_color = math::convert_color(data->ramachandran.current.border_color);
+		const uint32 base_color = math::convert_color(data->ramachandran.current.base.fill_color);
+		const uint32 selected_color = math::convert_color(data->ramachandran.current.selection.selection_color);
+		const float32 base_radius = data->ramachandran.current.base.radius;
+		const float32 selected_radius = data->ramachandran.current.selection.radius;
+
+		const structure_tracking::ID id = data->reference_frame.frames[data->shape_space.reference_frame_idx].id;
+		const Array<const float> eigen_value[3] = { structure_tracking::get_eigen_value(id, 0),
+													structure_tracking::get_eigen_value(id, 1),
+													structure_tracking::get_eigen_value(id, 2) };
+		const int32 N = (int32)eigen_value[0].size();
+		const vec2 p[3] = { vec_cast(a), vec_cast(b), vec_cast(c) };
+
+		const auto draw_entries = [&](Range<int32> range, float radius, uint32 fill_color, uint32 line_color) {
+			for (int32 i = range.beg; i < range.end; i++) {
+				const float l1 = eigen_value[0][i];
+				const float l2 = eigen_value[1][i];
+				const float l3 = eigen_value[2][i];
+				const float l_sum = l1 + l2 + l3;
+
+				if (l_sum < 1.0e-6f) continue;
+
+				const float one_over_denom = 1.0f / (l1 + l2 + l3);
+				const float cs = 3.0f * l3 * one_over_denom;
+				const float cl = (l1 - l2) * one_over_denom;
+				const float cp = 2.0f * (l2 - l3) * one_over_denom;
+
+				const vec2& coord = math::barycentric_to_cartesian(p[0], p[1], p[2], { cl, cp, cs });
+
+				const ImVec2 min_box(math::round(coord.x - radius), math::round(coord.y - radius));
+				const ImVec2 max_box(math::round(coord.x + radius), math::round(coord.y + radius));
+				if (radius > 1.f) {
+					dl->AddRectFilled(min_box, max_box, fill_color);
+					dl->AddRect(min_box, max_box, line_color);
+				}
+				else {
+					dl->AddRectFilled(min_box, max_box, line_color);
+				}
+				if (min_box.x <= mouse_pos.x && mouse_pos.x <= max_box.x && min_box.y <= mouse_pos.y && mouse_pos.y <= max_box.y) {
+					mouse_hover_idx = i;
+				}
+			}
+		};
+
+		// Base channel for entries outside of frame_range
+		dl->ChannelsSetCurrent(1);
+		draw_entries({ 0, frame_range.x }, base_radius, base_color, line_color);
+		draw_entries({ frame_range.y, N }, base_radius, base_color, line_color);
+
+		// 'Selected' channel for entries within frame_range
+		dl->ChannelsSetCurrent(2);
+		draw_entries({ frame_range.x, frame_range.y }, selected_radius, selected_color, line_color);
+	}
+
+	dl->ChannelsMerge();
+	dl->ChannelsSetCurrent(0);
+
+	if (ImGui::IsItemHovered()) {
+		const ImVec2 normalized_coord = ((ImGui::GetMousePos() - bb.Min) / (bb.Max - bb.Min) - ImVec2(0.5f, 0.5f)) * ImVec2(1, -1);
+		const ImVec2 angles = normalized_coord * 2.f * 180.f;
+		ImGui::BeginTooltip();
+		ImGui::Text("%.2f, %.2f, %.2f", 0, 0, 0);
+		if (mouse_hover_idx != -1) {
+			ImGui::Text("Frame[%i]", mouse_hover_idx);
+			if (ImGui::GetIO().MouseClicked[0]) {
+				data->playback.time = (float)mouse_hover_idx;
+			}
+		}
+		ImGui::EndTooltip();
+	}
+	ImGui::End();
 }
 
 // #framebuffer
@@ -4089,7 +4206,7 @@ static void load_workspace(ApplicationData* data, CString file) {
     StringBuffer<256> new_trajectory_file;
 
     String txt = allocate_and_read_textfile(file);
-    defer { FREE(txt); };
+    defer { free_string(&txt); };
 
     CString c_txt = txt;
     CString line;
@@ -4169,7 +4286,7 @@ static void load_workspace(ApplicationData* data, CString file) {
 }
 
 static void save_workspace(ApplicationData* data, CString file) {
-    FILE* fptr = fopen(file, "w");
+    FILE* fptr = fopen(file.cstr(), "w");
     if (!fptr) {
         printf("ERROR! Could not save workspace to file '%s'\n", file.beg());
         return;
@@ -4396,7 +4513,7 @@ static void remove_selection(ApplicationData* data, int idx) {
 }
 
 static void reset_selections(ApplicationData* data) {
-    ASSERT(data);
+    //ASSERT(data);
     // @NOTE: What to do here?
 }
 

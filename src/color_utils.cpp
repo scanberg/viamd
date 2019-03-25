@@ -12,7 +12,7 @@ void color_atoms_cpk(Array<uint32> dst_atom_colors, Array<const Element> element
 void color_atoms_residue_id(Array<uint32> dst_atom_colors, Array<const Residue> residues) {
     memset_array(dst_atom_colors, 0xffffffff);
     for (const auto& res : residues) {
-        const uint32 color = math::convert_color(color_from_hash(hash::crc32(res.name.operator CString())));
+        const uint32 color = math::convert_color(color_from_hash(hash::crc32(CString(res.name))));
         memset_array(dst_atom_colors, color, res.atom_range);
     }
 }
@@ -26,7 +26,7 @@ void color_atoms_residue_index(Array<uint32> dst_atom_colors, Array<const Residu
 void color_atoms_chain_id(Array<uint32> dst_atom_colors, Array<const Chain> chains) {
     memset_array(dst_atom_colors, 0xffffffff);
     for (const auto& chain : chains) {
-        const uint32 color = math::convert_color(color_from_hash(hash::crc32(chain.id.operator CString())));
+        const uint32 color = math::convert_color(color_from_hash(hash::crc32(CString(chain.id))));
         memset_array(dst_atom_colors, color, chain.atom_range);
     }
 }
