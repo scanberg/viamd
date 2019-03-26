@@ -89,10 +89,19 @@ TEST_CASE("Testing PdbInfo", "[PdbInfo]") {
 }
 #endif
 
+TEST_CASE("Testing init_dynamic_from_file", "[Pdb]") {
+	MoleculeDynamic md;
+	const auto t0 = TIME();
+	pdb::init_dynamic_from_file(&md, VIAMD_DATA_DIR "/alanine/1ALA-560ns.pdb");
+	const auto t1 = TIME();
+
+	printf("Time to load dataset: %.2f\n", (double)MILLISEC(t0, t1));
+}
+
 TEST_CASE("Structure Tracking", "[StructureTracking]") {
 	MoleculeDynamic md;
 	const auto t0 = TIME();
-	allocate_and_load_pdb_from_file(&md, VIAMD_DATA_DIR "/alanine/1us.pdb");
+	pdb::load_dynamic_from_file(&md, VIAMD_DATA_DIR "/alanine/1us.pdb");
 	const auto t1 = TIME();
 	ASSERT(md);
 
@@ -105,7 +114,7 @@ TEST_CASE("Structure Tracking", "[StructureTracking]") {
 	REQUIRE(id != 0);
 
 	DynamicArray<bool> atom_mask(md.molecule.atom.count);
-	bool filter_ok = filter::compute_filter_mask(atom_mask, "element C", md);
+	bool filter_ok = filter::compute_filter_mask(atom_mask, "element C", md.molecule);
 	REQUIRE(filter_ok);
 
 	const auto t2 = TIME();
@@ -120,7 +129,7 @@ TEST_CASE("Structure Tracking", "[StructureTracking]") {
 TEST_CASE("Interpolation", "[Interpolation]") {
 	MoleculeDynamic md;
 	const auto t0 = TIME();
-	allocate_and_load_pdb_from_file(&md, VIAMD_DATA_DIR "/alanine/two4REP-OH_450K.pdb");
+	pdb::load_dynamic_from_file(&md, VIAMD_DATA_DIR "/alanine/two4REP-OH_450K.pdb");
 	const auto t1 = TIME();
 	ASSERT(md);
 	printf("Time to load dataset: %.2fms\n", MILLISEC(t0, t1));
@@ -196,23 +205,23 @@ TEST_CASE("Testing DynamicArray", "[DynamicArray]") {
 }
 
 TEST_CASE("Testing pdb loader caffine", "[parse_pdb]") {
-    MoleculeDynamic md;
-    allocate_and_parse_pdb_from_string(&md, CAFFINE_PDB);
-    defer { free_molecule_structure(&md.molecule); };
+    MoleculeStructure mol;
+    pdb::load_molecule_from_string(&mol, CAFFINE_PDB);
+    defer { free_molecule_structure(&mol); };
 
-    REQUIRE(md.molecule.atom.count == 24);
+    REQUIRE(mol.atom.count == 24);
 }
 
 TEST_CASE("Testing filter", "[filter]") {
-    MoleculeDynamic md;
-    allocate_and_parse_pdb_from_string(&md, CAFFINE_PDB);
-    defer { free_molecule_structure(&md.molecule); };
+    MoleculeStructure mol;
+    pdb::load_molecule_from_string(&mol, CAFFINE_PDB);
+    defer { free_molecule_structure(&mol); };
 
     filter::initialize();
-    DynamicArray<bool> mask(md.molecule.atom.count);
+    DynamicArray<bool> mask(mol.atom.count);
 
     SECTION("filter element N") {
-        filter::compute_filter_mask(mask, "element N", md);
+        filter::compute_filter_mask(mask, "element N", mol);
         for (int32 i = 0; i < mask.size(); i++) {
             if (i == 0 || i == 4 || i == 16 || i == 17) {
                 REQUIRE(mask[i] == true);
@@ -223,7 +232,7 @@ TEST_CASE("Testing filter", "[filter]") {
     }
 
     SECTION("filter atom 1:10") {
-        filter::compute_filter_mask(mask, "atom 1:10", md);
+        filter::compute_filter_mask(mask, "atom 1:10", mol);
         for (int32 i = 0; i < mask.size(); i++) {
             if (0 <= i && i <= 9) {
                 REQUIRE(mask[i] == true);
@@ -234,7 +243,7 @@ TEST_CASE("Testing filter", "[filter]") {
     }
 
     SECTION("filter atom 10:*") {
-        filter::compute_filter_mask(mask, "atom 10:*", md);
+        filter::compute_filter_mask(mask, "atom 10:*", mol);
         for (int32 i = 0; i < mask.size(); i++) {
             if (0 <= i && i < 9) {
                 REQUIRE(mask[i] == true);
@@ -245,21 +254,21 @@ TEST_CASE("Testing filter", "[filter]") {
     }
 
     SECTION("filter atom *:*") {
-        filter::compute_filter_mask(mask, "atom *:*", md);
+        filter::compute_filter_mask(mask, "atom *:*", mol);
         for (int32 i = 0; i < mask.size(); i++) {
             REQUIRE(mask[i] == true);
         }
     }
 
     SECTION("filter all") {
-        filter::compute_filter_mask(mask, "all", md);
+        filter::compute_filter_mask(mask, "all", mol);
         for (int32 i = 0; i < mask.size(); i++) {
             REQUIRE(mask[i] == true);
         }
     }
 
     SECTION("filter not all") {
-        filter::compute_filter_mask(mask, "not all", md);
+        filter::compute_filter_mask(mask, "not all", mol);
         for (int32 i = 0; i < mask.size(); i++) {
             REQUIRE(mask[i] == false);
         }

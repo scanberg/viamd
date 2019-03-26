@@ -16,6 +16,7 @@
 #include <mol/filter.h>
 #include <mol/pdb_utils.h>
 #include <mol/gro_utils.h>
+#include <mol/xtc_utils.h>
 
 #include <mol/spatial_hash.h>
 #include <mol/structure_tracking.h>
@@ -2077,8 +2078,9 @@ ImGui::EndGroup();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Selection")) {
-            static DynamicArray<bool> mask;
-            mask.resize(data->dynamic.molecule.atom.count);
+			const auto atom_count = data->dynamic.molecule.atom.count;
+			Array<bool> mask = {(bool*)TMP_MALLOC(atom_count * sizeof(bool)), atom_count};
+			defer{ TMP_FREE(mask.ptr); };
 
             if (ImGui::MenuItem("Clear Selection")) {
                 memset_array(data->selection.current_selection_mask, false);
@@ -2132,7 +2134,7 @@ ImGui::EndGroup();
 							sel.push_back({ s.name, s.atom_mask });
 						}
 
-                        query_ok = filter::compute_filter_mask(mask, buf, data->dynamic, sel);
+                        query_ok = filter::compute_filter_mask(mask, buf, data->dynamic.molecule, sel);
                         if (!query_ok) {
                             memset_array(mask, false);
                         }
@@ -4077,7 +4079,7 @@ static void load_molecule_data(ApplicationData* data, CString file) {
         auto t0 = platform::get_time();
         if (compare_ignore_case(ext, "pdb")) {
             free_molecule_data(data);
-            if (!allocate_and_load_pdb_from_file(&data->dynamic, file)) {
+            if (!pdb::load_dynamic_from_file(&data->dynamic, file)) {
                 LOG_ERROR("ERROR! Failed to load pdb file.");
             }
             data->files.molecule = file;
@@ -4085,7 +4087,7 @@ static void load_molecule_data(ApplicationData* data, CString file) {
             init_trajectory_data(data);
         } else if (compare_ignore_case(ext, "gro")) {
             free_molecule_data(data);
-            if (!allocate_and_load_gro_from_file(&data->dynamic.molecule, file)) {
+            if (!gro::load_molecule_from_file(&data->dynamic.molecule, file)) {
                 LOG_ERROR("ERROR! Failed to load gro file.");
                 return;
             }
@@ -4097,7 +4099,7 @@ static void load_molecule_data(ApplicationData* data, CString file) {
                 return;
             }
             free_trajectory_data(data);
-            if (!load_and_allocate_trajectory(&data->dynamic.trajectory, file)) {
+            if (!xtc::init_trajectory(&data->dynamic.trajectory, file)) {
                 LOG_ERROR("ERROR! Problem loading trajectory.");
                 return;
             }
@@ -4459,7 +4461,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
 		sel.push_back({ s.name, s.atom_mask });
 	}
 
-    rep->filter_is_ok = filter::compute_filter_mask(rep->atom_mask, rep->filter.buffer, data->dynamic, sel);
+    rep->filter_is_ok = filter::compute_filter_mask(rep->atom_mask, rep->filter.buffer, data->dynamic.molecule, sel);
     filter::filter_colors(colors, rep->atom_mask);
     data->representations.atom_visibility_mask_dirty = true;
 
@@ -4724,7 +4726,7 @@ static void update_reference_frame(ApplicationData* data, ReferenceFrame* ref) {
 		sel.push_back({ s.name, s.atom_mask });
 	}
 
-	ref->filter_is_ok = filter::compute_filter_mask(ref->atom_mask, ref->filter, data->dynamic, sel);
+	ref->filter_is_ok = filter::compute_filter_mask(ref->atom_mask, ref->filter, data->dynamic.molecule, sel);
 	if (ref->filter_is_ok) {
 		structure_tracking::compute_trajectory_transform_data(ref->id, ref->atom_mask, data->dynamic, ref->target_frame_idx);
 	}
@@ -4746,7 +4748,7 @@ static void load_trajectory_async(ApplicationData* data) {
         data->async.trajectory.sync.signal_stop_and_wait();
     }
 
-    if (data->dynamic.trajectory.file_handle) {
+    if (data->dynamic.trajectory.file.handle) {
         data->async.trajectory.sync.stop_signal = false;
         data->async.trajectory.sync.running = true;
         data->async.trajectory.sync.thread = std::thread([data]() {

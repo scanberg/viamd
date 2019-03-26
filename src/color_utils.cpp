@@ -43,10 +43,10 @@ inline uint32 lerp_pixel(const Image& color_map, const vec2& coords) {
     const int y0 = math::clamp((int32)(coords.y * color_map.height), 0, color_map.height - 1);
     const int x1 = math::min(x0 + 1, color_map.width - 1);
     const int y1 = math::min(y0 + 1, color_map.height - 1);
-    const vec2 f = math::fract(coords);
-    const vec4 cx0 = math::mix(math::convert_color(color_map.data[y0 * color_map.width + x0]), math::convert_color(color_map.data[y0 * color_map.width + x1]), f.x);
-    const vec4 cx1 = math::mix(math::convert_color(color_map.data[y1 * color_map.width + x0]), math::convert_color(color_map.data[y1 * color_map.width + x1]), f.x);
-    return math::convert_color(math::mix(cx0, cx1, f.y));
+    const vec2 t = math::fract(coords);
+    const vec4 cx0 = math::mix(math::convert_color(color_map.data[y0 * color_map.width + x0]), math::convert_color(color_map.data[y0 * color_map.width + x1]), t.x);
+    const vec4 cx1 = math::mix(math::convert_color(color_map.data[y1 * color_map.width + x0]), math::convert_color(color_map.data[y1 * color_map.width + x1]), t.x);
+    return math::convert_color(math::mix(cx0, cx1, t.y));
 }
 
 void color_atoms_backbone_angles(Array<uint32> dst_atom_colors, Array<const Residue> residues, Array<const BackboneSequence> bb_seq, Array<const vec2> bb_angles, const Image& color_map) {
