@@ -6860,3 +6860,8 @@ bool ImGui::TabItemLabelAndCloseButton(ImDrawList* draw_list, const ImRect& bb, 
 
     return close_button_pressed;
 }
+
+
+// Explicit instantiation
+template float ImGui::RoundScalarWithFormatT<float, float>(const char*, ImGuiDataType, float);
+template float ImGui::SliderCalcRatioFromValueT<float, float>(ImGuiDataType, float, float, float, float, float);

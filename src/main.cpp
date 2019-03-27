@@ -3544,6 +3544,7 @@ static void draw_shape_space_window(ApplicationData* data) {
 	dl->AddTriangle(a, b, c, triangle_line_color);
 
 	int64 mouse_hover_idx = -1;
+    vec3  mouse_eigen_val = {0,0,0};
 
 	if (reference_frame_valid) {
 		const uint32 line_color = math::convert_color(data->ramachandran.current.border_color);
@@ -3586,6 +3587,7 @@ static void draw_shape_space_window(ApplicationData* data) {
 				}
 				if (min_box.x <= mouse_pos.x && mouse_pos.x <= max_box.x && min_box.y <= mouse_pos.y && mouse_pos.y <= max_box.y) {
 					mouse_hover_idx = i;
+                    mouse_eigen_val = {l1, l2, l3};
 				}
 			}
 		};
@@ -3607,9 +3609,9 @@ static void draw_shape_space_window(ApplicationData* data) {
 		const ImVec2 normalized_coord = ((ImGui::GetMousePos() - bb.Min) / (bb.Max - bb.Min) - ImVec2(0.5f, 0.5f)) * ImVec2(1, -1);
 		const ImVec2 angles = normalized_coord * 2.f * 180.f;
 		ImGui::BeginTooltip();
-		ImGui::Text("%.2f, %.2f, %.2f", 0, 0, 0);
 		if (mouse_hover_idx != -1) {
 			ImGui::Text("Frame[%i]", mouse_hover_idx);
+            ImGui::Text(u8"\u03BB: (%.2f, %.2f, %.2f)", mouse_eigen_val.x, mouse_eigen_val.y, mouse_eigen_val.z);
 			if (ImGui::GetIO().MouseClicked[0]) {
 				data->playback.time = (float)mouse_hover_idx;
 			}
@@ -4079,7 +4081,8 @@ static void load_molecule_data(ApplicationData* data, CString file) {
         auto t0 = platform::get_time();
         if (compare_ignore_case(ext, "pdb")) {
             free_molecule_data(data);
-            if (!pdb::load_dynamic_from_file(&data->dynamic, file)) {
+            free_trajectory_data(data);
+            if (!pdb::init_dynamic_from_file(&data->dynamic, file)) {
                 LOG_ERROR("ERROR! Failed to load pdb file.");
             }
             data->files.molecule = file;

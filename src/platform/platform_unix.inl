@@ -42,7 +42,8 @@ float compute_delta_ms(Timestamp ts0, Timestamp ts1) {
 
 DynamicArray<DirectoryEntry> list_directory(CString dir_path) {
     struct dirent **files;
-    int n = scandir (dir_path, &files, NULL, alphasort);
+    StringBuffer<256> zstr = dir_path;
+    int n = scandir (zstr.cstr(), &files, NULL, alphasort);
 	DynamicArray<DirectoryEntry> res{};
 
     if (n >= 0) {
@@ -76,7 +77,7 @@ DynamicArray<DirectoryEntry> list_directory(CString dir_path) {
                 entry.type = DirectoryEntry::Unknown;
                 //printf ("%s*\n", ent->d_name);
             }
-            strncpy(entry.name.cstr(), ent->d_name, 512);
+            strncpy(entry.name.cstr(), ent->d_name, entry.name.MaxSize);
 
             res.push_back(entry);
         }

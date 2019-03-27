@@ -101,7 +101,7 @@ TEST_CASE("Testing init_dynamic_from_file", "[Pdb]") {
 TEST_CASE("Structure Tracking", "[StructureTracking]") {
 	MoleculeDynamic md;
 	const auto t0 = TIME();
-	pdb::load_dynamic_from_file(&md, VIAMD_DATA_DIR "/alanine/1us.pdb");
+	pdb::load_dynamic_from_file(&md, VIAMD_DATA_DIR "/alanine/1ALA-560ns.pdb");
 	const auto t1 = TIME();
 	ASSERT(md);
 
@@ -154,31 +154,31 @@ TEST_CASE("Interpolation", "[Interpolation]") {
 	const auto atom_count = md.molecule.atom.count;
 	const auto box = get_trajectory_frame(md.trajectory, 101).box;
 
-	const int32 num_iter = 10;
+	const int32 num_iter = 100;
 	const float t = 0.5f;
 	const auto t2 = TIME();
 	for (int32 i = 0; i < num_iter; i++) {
-		cubic_interpolation_pbc_scalar(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, atom_count, 0.5f, box);
+		cubic_interpolation_pbc_scalar(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, atom_count, t, box);
 	}
 	const auto t3 = TIME();
-	const auto time_cubic_pbc_scalar = MILLISEC(t2, t3);
+	const auto time_cubic_pbc_scalar = MILLISEC(t2, t3) / (double)num_iter;
 	printf("Time to interpolate cubic pbc (scalar): %.2fms\n", time_cubic_pbc_scalar);
 
 	const auto t4 = TIME();
 	for (int32 i = 0; i < num_iter; i++) {
-		cubic_interpolation_pbc(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, atom_count, 0.5f, box);
+		cubic_interpolation_pbc(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, atom_count, t, box);
 	}
 	const auto t5 = TIME();
-	const auto time_cubic_pbc_128 = MILLISEC(t4, t5);
+	const auto time_cubic_pbc_128 = MILLISEC(t4, t5) / (double)num_iter;
 	printf("Time to interpolate cubic pbc (128 wide): %.2fms (%.1fx) speedup\n", time_cubic_pbc_128, time_cubic_pbc_scalar / time_cubic_pbc_128);
 
-#if 0
+#if 1
 	const auto t6 = TIME();
 	for (int32 i = 0; i < num_iter; i++) {
-		cubic_interpolation_pbc_256(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, atom_count, 0.5f, box);
+		cubic_interpolation_pbc_256(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, atom_count, t, box);
 	}
 	const auto t7 = TIME();
-	const auto time_cubic_pbc_256 = MILLISEC(t6, t7);
+	const auto time_cubic_pbc_256 = MILLISEC(t6, t7) / (double)num_iter;
 	printf("Time to interpolate cubic pbc (256 wide): %.2fms (%.1fx) speedup\n", time_cubic_pbc_256, time_cubic_pbc_scalar / time_cubic_pbc_256);
 #endif
 
