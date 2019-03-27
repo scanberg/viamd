@@ -8,6 +8,8 @@
 #include <core/string_utils.h>
 #include <core/volume.h>
 
+#include <core/bitfield.h>
+
 #include <mol/molecule_structure.h>
 #include <mol/molecule_trajectory.h>
 #include <mol/trajectory_utils.h>
@@ -89,6 +91,7 @@ TEST_CASE("Testing PdbInfo", "[PdbInfo]") {
 }
 #endif
 
+/*
 TEST_CASE("Testing init_dynamic_from_file", "[Pdb]") {
 	MoleculeDynamic md;
 	const auto t0 = TIME();
@@ -96,6 +99,21 @@ TEST_CASE("Testing init_dynamic_from_file", "[Pdb]") {
 	const auto t1 = TIME();
 
 	printf("Time to load dataset: %.2f\n", (double)MILLISEC(t0, t1));
+
+	free_molecule_structure(&md.molecule);
+	free_trajectory(&md.trajectory);
+}
+*/
+
+TEST_CASE("Bitfield", "[Bitfield]") {
+	Bitfield field;
+	bitfield::init(&field, 256, false);
+	bitfield::set_bit(field, 2);
+	bitfield::set_bit(field, 3);
+	bitfield::set_bit(field, 5);
+
+	printf("Bitfield: ");
+	bitfield::print(field);
 }
 
 TEST_CASE("Structure Tracking", "[StructureTracking]") {

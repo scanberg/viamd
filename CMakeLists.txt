@@ -49,6 +49,7 @@ add_subdirectory(ext/imgui)
 add_subdirectory(ext/nativefiledialog)
 add_subdirectory(ext/tinyexpr)
 add_subdirectory(ext/mdutils)
+add_subdirectory(ext/base91)
 add_subdirectory(unittest)
 
 file(GLOB PLATFORM_FILES src/platform/*)

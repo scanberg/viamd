@@ -597,12 +597,15 @@ static void reset_reference_frame(ApplicationData* data);
 static void clear_reference_frames(ApplicationData* data);
 static void update_reference_frame(ApplicationData* data, ReferenceFrame* ref);
 static ReferenceFrame* get_active_reference_frame(ApplicationData* data);
+static void dump_reference_frame_eigenvalues_to_file(const ReferenceFrame& ref, CString filename);
 
 static void create_volume(ApplicationData* data);
 
 // Async operations
 static void load_trajectory_async(ApplicationData* data);
 static void compute_backbone_angles_async(ApplicationData* data);
+
+// Temp functionality
 
 int main(int, char**) {
     ApplicationData data;
@@ -737,7 +740,7 @@ int main(int, char**) {
 	//stats::create_property("d1", "distance atom(1) atom(4)");
 	data.simulation_box.enabled = true;
 	//data.density_volume.enabled = true;
-	data.reference_frame.frames[0].active = true;
+	//data.reference_frame.frames[0].active = true;
 #endif
     reset_view(&data, true);
     create_representation(&data, RepresentationType::Vdw, ColorMapping::ResId);
@@ -984,14 +987,12 @@ int main(int, char**) {
                 }
             }
             POP_CPU_SECTION()
-
         }
-
-		{
-			static auto prev_playback_status = data.playback.is_playing;
-			if (data.playback.is_playing != prev_playback_status) {
-				prev_playback_status = data.playback.is_playing;
-			}
+		else {
+			memset(data.dynamic.molecule.atom.velocity.x, 0, data.dynamic.molecule.atom.count * sizeof(float));
+			memset(data.dynamic.molecule.atom.velocity.y, 0, data.dynamic.molecule.atom.count * sizeof(float));
+			memset(data.dynamic.molecule.atom.velocity.z, 0, data.dynamic.molecule.atom.count * sizeof(float));
+			data.gpu_buffers.dirty.velocity = true;
 		}
 
         PUSH_CPU_SECTION("Hydrogen bonds")
@@ -2696,6 +2697,12 @@ static void draw_reference_frames_window(ApplicationData* data) {
 			ImGui::SameLine();
 			if (ImGui::DeleteButton("remove")) {
 				remove_reference_frame(data, &ref);
+			}
+			if (ImGui::Button("dump eigen")) {
+				StringBuffer<256> path = VIAMD_DATA_DIR "/";
+				path += ref.name;
+				path += ".dat";
+				dump_reference_frame_eigenvalues_to_file(ref, path);
 			}
 			ImGui::SameLine();
 			if (ImGui::Button("shape space")) {
@@ -4518,6 +4525,7 @@ static void remove_selection(ApplicationData* data, int idx) {
 }
 
 static void reset_selections(ApplicationData* data) {
+	UNUSED(data);
     //ASSERT(data);
     // @NOTE: What to do here?
 }
@@ -4741,6 +4749,30 @@ static ReferenceFrame* get_active_reference_frame(ApplicationData* data) {
         if (ref.active) return &ref;
     }
     return nullptr;
+}
+
+static void dump_reference_frame_eigenvalues_to_file(const ReferenceFrame& ref, CString filename) {
+	auto ex = structure_tracking::get_eigen_value(ref.id, 0);
+	auto ey = structure_tracking::get_eigen_value(ref.id, 1);
+	auto ez = structure_tracking::get_eigen_value(ref.id, 2);
+
+	if (!ex) {
+		LOG_ERROR("Could not read structure tracking id");
+		return;
+	}
+
+	FILE* file = fopen(filename.cstr(), "wb");
+	defer { fclose(file); };
+
+	if (!file) {
+		LOG_ERROR("Could not open file %s", filename.cstr());
+		return;
+	}
+
+	fprintf(file, "%-8s %-8s %-8s %-8s\n", "frame", "lamda1", "lamda2", "lamda3");
+	for (int32 i = 0; i < (int32)ex.size(); i++) {
+		fprintf(file, "%-8i %-8.3f %-8.3f %-8.3f\n", i, ex[i], ey[i], ez[i]);
+	}
 }
 
 // #async
