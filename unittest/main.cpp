@@ -172,7 +172,7 @@ TEST_CASE("Interpolation", "[Interpolation]") {
 	const auto time_cubic_pbc_128 = MILLISEC(t4, t5) / (double)num_iter;
 	printf("Time to interpolate cubic pbc (128 wide): %.2fms (%.1fx) speedup\n", time_cubic_pbc_128, time_cubic_pbc_scalar / time_cubic_pbc_128);
 
-#if 1
+#ifdef __AVX__
 	const auto t6 = TIME();
 	for (int32 i = 0; i < num_iter; i++) {
 		cubic_interpolation_pbc_256(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, atom_count, t, box);
