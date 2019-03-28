@@ -1,0 +1,64 @@
+[0.6.0] 2006-11-01
+* basE91 encoding/decoding routines restructured to be thread-safe
+* lots of type fixes
+* new core utility is `base91', with a behaviour similar to GNU base64
+* introduce `-w' switch for wrapping encoded output lines after given length
+* long option handling
+* use standard I/O functions for better portability
+* MinGW compatibility code added
+* minor extensions to `make check'
+* Java-tool wraps output lines by default; can be avoided with the `-u' switch
+* license changed to BSD
+
+[0.5.2] 2006-08-25
+* code cleanup
+* encoder for DOS rewritten to be faster and compatible down to Intel 8086
+
+[0.5.1] 2005-10-05
+* Java-b91enc now handles file extensions case insensitively
+* native DOS version of basE91 encoder added
+
+[0.5.0] 2005-06-24
+* ATTENTION: this version breaks backward compatibility because the basE91
+  alphabet was changed to reduce the occurrence of double quotes - sorry, I
+  should have done this long before
+* b91dec is installed as a link to b91enc
+* `-e' option added (complement to `-d')
+* build system should be more portable now
+
+[0.4.2] 2005-05-16
+* AWK basE91 decoder no longer depends on GNU extensions
+* Java byte code removed (distributed separately in a jar file)
+
+[0.4.1] 2005-05-07
+* some code cleanup
+* Java-b91enc can break encoded output to lines of 76 characters (`-b' switch)
+
+[0.4.0] 2005-04-26
+* improved encoder behaviour on stream ends (can save one byte sometimes)
+* allocate buffer memory dynamically; use overlapping buffers
+* new `-m' switch can be used for testing
+* verbose mode extended: `-vv' shows memory statistics
+* `make check' implemented - runs some basic tests
+
+[0.3.1] 2005-04-19
+* b91enc has a verbose mode now (`-v' switch)
+* Java-b91enc accepts command line syntax with only one FILE argument again
+
+[0.3.0] 2005-04-17
+* the code was restructured to allow a more universal use of the basE91 backend
+* version switch changed to `-V' which is more common - sorry for that
+* `make install' is possible now
+* changed Java-b91enc to be a bit more similar to the C version
+* implementation in PHP added
+
+[0.2.3] 2005-04-11
+* man page included (thanks to Kei!)
+* version (-v) switch added
+
+[0.2.2] 2005-04-10
+* fixed a bug in decoder that could result in corrupt output on 64-bit systems
+* Java class files included
+
+[0.2.1] 2005-04-09
+* first public release
