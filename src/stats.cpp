@@ -437,7 +437,7 @@ bool structure_match_residue(StructureData* data, const Array<CString> args, con
     }
 
     for (const auto& arg : args) {
-        IntRange range = {-1, -1};
+        Range<int32> range = {-1, -1};
 
         if (is_range(arg)) {
             if (!extract_range(&range, arg)) {
@@ -499,7 +499,7 @@ bool structure_match_chain(StructureData* data, const Array<CString> args, const
     }
 
     for (const auto& arg : args) {
-        IntRange range{0, 0};
+        Range<int32> range{0, 0};
 
         if (is_range(arg)) {
             if (!extract_range(&range, arg)) {
@@ -540,7 +540,7 @@ bool structure_match_atom(StructureData* data, const Array<CString> args, const 
     }
 
     for (const auto& arg : args) {
-        IntRange range{0, 0};
+        Range<int32> range{0, 0};
 
         if (is_range(arg)) {
             if (!extract_range(&range, arg)) {
@@ -576,7 +576,7 @@ bool structure_extract_resatom(StructureData* data, const Array<CString> args, c
         return false;
     }
 
-    IntRange range{0, 0};
+    Range<int32> range{0, 0};
 
     if (is_range(args[0])) {
         if (!extract_range(&range, args[0])) {

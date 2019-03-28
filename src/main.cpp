@@ -2,6 +2,7 @@
 #include <core/types.h>
 #include <core/hash.h>
 #include <core/log.h>
+#include <core/bitfield.h>
 #include <core/math_utils.h>
 #include <core/camera.h>
 #include <core/camera_utils.h>
@@ -202,7 +203,7 @@ struct Representation {
     StringBuffer<128> filter = "all";
     RepresentationType type = RepresentationType::Vdw;
     ColorMapping color_mapping = ColorMapping::Cpk;
-    Array<bool> atom_mask{};
+    Bitfield atom_mask{};
     GLuint color_buffer = 0;
 
     bool enabled = true;
@@ -225,13 +226,13 @@ struct Representation {
 
 struct Selection {
     StringBuffer<64> name = "sel";
-    Array<bool> atom_mask{};
+	Bitfield atom_mask{};
 };
 
 struct ReferenceFrame {
 	StringBuffer<64> name = "ref";
 	StringBuffer<128> filter = "label CA";
-	Array<bool> atom_mask{};
+	Bitfield atom_mask{};
 	bool active = false;
 	bool show = false;
 	bool filter_is_ok = false;
@@ -316,8 +317,8 @@ struct ApplicationData {
         int32 hovered = -1;
         int32 right_clicked = -1;
 
-        DynamicArray<bool> current_selection_mask{};
-        DynamicArray<bool> current_highlight_mask{};
+        Bitfield current_selection_mask{};
+        Bitfield current_highlight_mask{};
         DynamicArray<Selection> stored_selections{};
 
         struct {
@@ -486,7 +487,7 @@ struct ApplicationData {
     // --- REPRESENTATIONS ---
     struct {
         DynamicArray<Representation> buffer{};
-        DynamicArray<bool> atom_visibility_mask{};
+        Bitfield atom_visibility_mask{};
         bool atom_visibility_mask_dirty = false;
         bool show_window = false;
         // bool changed = false;
@@ -1224,8 +1225,8 @@ int main(int, char**) {
 
         PUSH_GPU_SECTION("Selection") {
             //const uint32 atom_count = (uint32)data.dynamic.molecule.atom.count;
-            const bool atom_selection_empty = is_array_zero(data.selection.current_selection_mask);
-            const bool atom_highlight_empty = is_array_zero(data.selection.current_highlight_mask);
+            const bool atom_selection_empty = !bitfield::any_bit_set(data.selection.current_selection_mask);
+            const bool atom_highlight_empty = !bitfield::any_bit_set(data.selection.current_highlight_mask);
 
             glDrawBuffer(GL_COLOR_ATTACHMENT4);  // Post_Tonemap buffer
             glEnable(GL_DEPTH_TEST);
@@ -1545,11 +1546,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
     }
 	for (auto& ref : data->reference_frame.frames) {
 		if (ref.active || ref.show) {
-			int64 masked_count = 0;
-			for (int64 i = 0; i < ref.atom_mask.size(); i++) {
-				if (ref.atom_mask[i]) masked_count++;
-			}
-
+			const int64 masked_count = bitfield::number_of_bits_set(ref.atom_mask);
 			if (masked_count == 0) break;
 
 			void* mem = TMP_MALLOC(sizeof(float) * 7 * masked_count);
@@ -1737,62 +1734,54 @@ static bool DeleteButton(const char* label, const ImVec2& size) {
 
 }  // namespace ImGui
 
-void grow_mask_by_covalent_bond(Array<bool> mask, Array<const Bond> bonds, int32 extent) {
-    Array<bool> prev_mask = {(bool*)TMP_MALLOC(mask.size_in_bytes()), mask.size()};
+void grow_mask_by_covalent_bond(Bitfield mask, Array<const Bond> bonds, int32 extent) {
+    Bitfield prev_mask = {(Bitfield::ElementType*)TMP_MALLOC(mask.size_in_bytes()), mask.size()};
     defer { TMP_FREE(prev_mask.data()); };
     memcpy(prev_mask.data(), mask.data(), mask.size_in_bytes());
 
     for (int32 i = 0; i < extent; i++) {
         for (const auto& bond : bonds) {
             const int32 idx[2] = {bond.idx[0], bond.idx[1]};
-            if (prev_mask[idx[0]] && !mask[idx[1]]) {
-                mask[idx[1]] = true;
-            } else if (prev_mask[idx[1]] && !mask[idx[0]]) {
-                mask[idx[0]] = true;
+            if (bitfield::get_bit(prev_mask, idx[0]) && !bitfield::get_bit(mask, idx[1])) {
+                bitfield::set_bit(mask, idx[1]);
+            } else if (bitfield::get_bit(prev_mask, idx[1]) && !bitfield::get_bit(mask, idx[0])) {
+                bitfield::set_bit(mask, idx[0]);
             }
         }
         memcpy(prev_mask.data(), mask.data(), prev_mask.size_in_bytes());
     }
 }
 
-void grow_mask_by_radial_extent(Array<bool> mask, const float* atom_x, const float* atom_y, const float* atom_z, int64 atom_count, float extent) {
-    Array<bool> prev_mask = {(bool*)TMP_MALLOC(mask.size_in_bytes()), mask.size()};
+void grow_mask_by_radial_extent(Bitfield mask, const float* atom_x, const float* atom_y, const float* atom_z, int64 atom_count, float extent) {
+    Bitfield prev_mask = {(Bitfield::ElementType*)TMP_MALLOC(mask.size_in_bytes()), mask.size()};
     defer { TMP_FREE(prev_mask.data()); };
     memcpy(prev_mask.data(), mask.data(), mask.size_in_bytes());
 
     spatialhash::Frame frame = spatialhash::compute_frame(atom_x, atom_y, atom_z, atom_count, vec3(extent));
     for (int64 i = 0; i < atom_count; i++) {
-        if (prev_mask[i]) {
+        if (bitfield::get_bit(prev_mask, i)) {
             const vec3 pos = {atom_x[i], atom_y[i], atom_z[i]};
-            spatialhash::for_each_within(frame, pos, extent, [mask = mask.data()](int32 idx, const vec3& pos) {
+            spatialhash::for_each_within(frame, pos, extent, [mask](int32 idx, const vec3& pos) {
                 UNUSED(pos);
-                if (!mask[idx]) {
-                    mask[idx] = true;
-                }
+				bitfield::set_bit(mask, idx);
             });
         }
     }
 }
 
-void expand_mask_to_residue(Array<bool> mask, Array<const Residue> residues) {
+void expand_mask_to_residue(Bitfield mask, Array<const Residue> residues) {
     for (const auto& res : residues) {
-        for (int64 i = res.atom_range.beg; i != res.atom_range.end; i++) {
-            if (mask[i]) {
-                memset_array(mask.subarray(res.atom_range.beg, res.atom_range.end - res.atom_range.beg), true);
-                break;
-            }
-        }
+		if (bitfield::any_bit_set_in_range(mask, res.atom_range)) {
+			bitfield::set_range(mask, res.atom_range);
+		}
     }
 }
 
-void expand_mask_to_chain(Array<bool> mask, Array<const Chain> chains) {
+void expand_mask_to_chain(Bitfield mask, Array<const Chain> chains) {
     for (const auto& chain : chains) {
-        for (int64 i = chain.atom_range.beg; i != chain.atom_range.end; i++) {
-            if (mask[i]) {
-                memset_array(mask.subarray(chain.atom_range.beg, chain.atom_range.end - chain.atom_range.beg), true);
-                break;
-            }
-        }
+		if (bitfield::any_bit_set_in_range(mask, chain.atom_range)) {
+			bitfield::set_range(mask, chain.atom_range);
+		}
     }
 }
 
@@ -2080,18 +2069,16 @@ ImGui::EndGroup();
         }
         if (ImGui::BeginMenu("Selection")) {
 			const auto atom_count = data->dynamic.molecule.atom.count;
-			Array<bool> mask = {(bool*)TMP_MALLOC(atom_count * sizeof(bool)), atom_count};
+			Bitfield mask = {(Bitfield::ElementType*)TMP_MALLOC(atom_count * sizeof(Bitfield::ElementType)), atom_count};
 			defer{ TMP_FREE(mask.ptr); };
 
             if (ImGui::MenuItem("Clear Selection")) {
-                memset_array(data->selection.current_selection_mask, false);
+				bitfield::clear_all(data->selection.current_selection_mask);
                 data->gpu_buffers.dirty.selection = true;
             }
 
             if (ImGui::MenuItem("Invert Selection")) {
-                for (auto& v : data->selection.current_selection_mask) {
-                    v = !v;
-                }
+				bitfield::invert_all(data->selection.current_selection_mask);
                 data->gpu_buffers.dirty.selection = true;
             }
 
@@ -2137,36 +2124,26 @@ ImGui::EndGroup();
 
                         query_ok = filter::compute_filter_mask(mask, buf, data->dynamic.molecule, sel);
                         if (!query_ok) {
-                            memset_array(mask, false);
+							bitfield::clear_all(mask);
                         }
                         data->gpu_buffers.dirty.selection = true;
                     }
 
                     if (query_ok) {
-                        for (int64 i = 0; i < mask.size(); i++) {
-                            const bool mask_val = mask[i];
-                            const bool curr_val = data->selection.current_selection_mask[i];
-
-                            if (data->selection.op_mode == SelectionOperator::And) {
-                                data->selection.current_highlight_mask[i] = curr_val & mask_val;
-                            } else if (data->selection.op_mode == SelectionOperator::Or) {
-                                data->selection.current_highlight_mask[i] = curr_val | mask_val;
-                            }
+                        if (data->selection.op_mode == SelectionOperator::And) {
+							bitfield::and_field(data->selection.current_highlight_mask, data->selection.current_selection_mask, mask);
+                        } else if (data->selection.op_mode == SelectionOperator::Or) {
+							bitfield::or_field(data->selection.current_highlight_mask, data->selection.current_selection_mask, mask);
                         }
                         data->gpu_buffers.dirty.selection = true;
                     }
                 }
 
                 if (apply) {
-                    for (int64 i = 0; i < mask.size(); i++) {
-                        const bool mask_val = mask[i];
-                        const bool curr_val = data->selection.current_selection_mask[i];
-
-                        if (data->selection.op_mode == SelectionOperator::And) {
-                            data->selection.current_selection_mask[i] = curr_val & mask_val;
-                        } else if (data->selection.op_mode == SelectionOperator::Or) {
-                            data->selection.current_selection_mask[i] = curr_val | mask_val;
-                        }
+                    if (data->selection.op_mode == SelectionOperator::And) {
+						bitfield::and_field(data->selection.current_selection_mask, data->selection.current_selection_mask, mask);
+                    } else if (data->selection.op_mode == SelectionOperator::Or) {
+						bitfield::or_field(data->selection.current_selection_mask, data->selection.current_selection_mask, mask);
                     }
                     data->gpu_buffers.dirty.selection = true;
                 }
@@ -2233,7 +2210,7 @@ ImGui::EndGroup();
             // STORED SELECTIONS
             {
                 ImGui::Text("Stored Selections");
-                const bool disable_new = is_array_zero((Array<const bool>)(data->selection.current_selection_mask));
+                const bool disable_new = bitfield::any_bit_set(data->selection.current_selection_mask);
                 if (disable_new) ImGui::PushDisabled();
                 if (ImGui::Button("Create New")) {
                     char name_buf[64];
@@ -3292,14 +3269,14 @@ static void draw_distribution_window(ApplicationData* data) {
 static void draw_ramachandran_window(ApplicationData* data) {
     // const int32 num_frames = data->dynamic.trajectory ? data->dynamic.trajectory.num_frames : 0;
     // const int32 frame = (int32)data->time;
-    const IntRange frame_range = {(int32)data->time_filter.range.x, (int32)data->time_filter.range.y};
+    const Range<int32> frame_range = {(int32)data->time_filter.range.x, (int32)data->time_filter.range.y};
     const auto& mol = data->dynamic.molecule;
     Array<const BackboneAngle> trajectory_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame_range.x, frame_range.y - frame_range.x);
     Array<const BackboneAngle> current_angles = mol.backbone.angles;
     Array<const BackboneSegment> backbone_segments = mol.backbone.segments;
     Array<const Residue> residues = mol.residues;
-    Array<const bool> atom_selection = data->selection.current_selection_mask;
-    Array<const bool> atom_highlight = data->selection.current_highlight_mask;
+    Bitfield atom_selection = data->selection.current_selection_mask;
+    Bitfield atom_highlight = data->selection.current_highlight_mask;
 
     ImGui::SetNextWindowSizeConstraints(ImVec2(400, 200), ImVec2(10000, 10000));
     ImGui::Begin("Ramachandran", &data->ramachandran.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoScrollbar);
@@ -3390,8 +3367,8 @@ static void draw_ramachandran_window(ApplicationData* data) {
             const auto& res = residues[i];
             if (angle.x == 0.f || angle.y == 0.f) continue;
 
-            const auto selected = !is_array_zero(atom_selection.subarray(res.atom_range));
-            const auto highlight = !is_array_zero(atom_highlight.subarray(res.atom_range));
+            const auto selected = bitfield::any_bit_set_in_range(atom_selection, res.atom_range);
+            const auto highlight = bitfield::any_bit_set_in_range(atom_highlight, res.atom_range);
             const auto radius = (highlight || selected) ? selected_radius : base_radius;
             const auto fill_color = highlight ? highlight_color : (selected ? selected_color : base_color);
 
@@ -3445,8 +3422,8 @@ static void draw_ramachandran_window(ApplicationData* data) {
             const auto res_range = mouse_hover_idx;
             const auto& res = get_residues(data->dynamic.molecule)[res_range];
             ImGui::Text("Residue[%lli]: %s", res_range, res.name.cstr());
-            memset_array(data->selection.current_highlight_mask, false);
-            memset_array(data->selection.current_highlight_mask.subarray(res.atom_range), true);
+			bitfield::clear_all(data->selection.current_highlight_mask);
+			bitfield::set_range(data->selection.current_highlight_mask, res.atom_range);
             data->gpu_buffers.dirty.selection = true;
         }
         ImGui::EndTooltip();
@@ -3462,9 +3439,9 @@ static void draw_ramachandran_window(ApplicationData* data) {
         dl->AddRectFilled(x0, x1, fill_col);
         dl->AddRect(x0, x1, line_col);
 
-        static DynamicArray<bool> mask;
-        mask.resize(mol.atom.count);
-        memset_array(mask, false);
+		Bitfield mask;
+		bitfield::init(&mask, mol.atom.count);
+		defer{ bitfield::free(&mask); };
 
         for (int64 i = 0; i < residues.size(); i++) {
             const auto& angle = current_angles[i];
@@ -3473,8 +3450,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
             if (coord.x < x0.x || x1.x < coord.x) continue;
             if (coord.y < x0.y || x1.y < coord.y) continue;
 
-            const auto& seg = backbone_segments[i];
-            mask[seg.ca_idx] = true;
+			bitfield::set_bit(mask, backbone_segments[i].ca_idx);
         }
 
         switch (data->selection.level_mode) {
@@ -3490,35 +3466,27 @@ static void draw_ramachandran_window(ApplicationData* data) {
                 ASSERT(false);
         }
 
-        memset_array(data->selection.current_highlight_mask, false);
+		bitfield::clear_all(data->selection.current_highlight_mask);
 
         if (region_mode == Append) {
-            for (int64 i = 0; i < mask.size(); i++) {
-                data->selection.current_highlight_mask[i] = data->selection.current_selection_mask[i] || mask[i];
-            }
+			bitfield::or_field(data->selection.current_highlight_mask, data->selection.current_selection_mask, mask);
         } else if (region_mode == Remove) {
-            for (int64 i = 0; i < mask.size(); i++) {
-                data->selection.current_highlight_mask[i] = data->selection.current_selection_mask[i] && !mask[i];
-            }
+			bitfield::invert_all(mask);
+			bitfield::and_field(data->selection.current_highlight_mask, data->selection.current_selection_mask, mask);
         }
 
         if (!ImGui::GetIO().KeyShift || !(ImGui::GetIO().MouseDown[0] || ImGui::GetIO().MouseDown[1])) {
             if (region_mode == Append) {
-                for (int64 i = 0; i < mask.size(); i++) {
-                    data->selection.current_selection_mask[i] |= mask[i];
-                }
+				bitfield::or_field(data->selection.current_selection_mask, data->selection.current_selection_mask, mask);
             } else if (region_mode == Remove) {
-                for (int64 i = 0; i < mask.size(); i++) {
-                    data->selection.current_selection_mask[i] &= !mask[i];
-                }
+				// @NOTE: mask has already been inverted
+				bitfield::and_field(data->selection.current_selection_mask, data->selection.current_selection_mask, mask);
             }
             region_select = false;
         }
         data->gpu_buffers.dirty.selection = true;
     }
-
     ImGui::EndChild();
-
     ImGui::End();
 }
 
@@ -3985,7 +3953,9 @@ void copy_molecule_data_to_buffers(ApplicationData* data) {
         }
 
         for (int64 i = 0; i < N; i++) {
-            sel_gpu[i] = (data->selection.current_selection_mask[i] ? 0x2 : 0) | (data->selection.current_highlight_mask[i] ? 0x1 : 0);
+			const bool selection = bitfield::get_bit(data->selection.current_selection_mask, i);
+			const bool highlight = bitfield::get_bit(data->selection.current_highlight_mask, i);
+            sel_gpu[i] = (selection ? 0x2 : 0) | (highlight ? 0x1 : 0);
         }
         glUnmapBuffer(GL_ARRAY_BUFFER);
     }
@@ -4021,17 +3991,15 @@ static void free_molecule_data(ApplicationData* data) {
     data->hydrogen_bonds.bonds.clear();
     data->hydrogen_bonds.dirty = true;
     data->gpu_buffers.dirty.backbone = true;
-    data->selection.current_selection_mask.clear();
-    data->selection.current_highlight_mask.clear();
+	bitfield::clear_all(data->selection.current_selection_mask);
+	bitfield::clear_all(data->selection.current_highlight_mask);
 }
 
 static void init_molecule_data(ApplicationData* data) {
     if (data->dynamic.molecule) {
         const auto atom_count = data->dynamic.molecule.atom.count;
-        data->selection.current_selection_mask.resize(atom_count);
-        data->selection.current_highlight_mask.resize(atom_count);
-        zero_array(data->selection.current_selection_mask);
-        zero_array(data->selection.current_highlight_mask);
+		bitfield::init(&data->selection.current_selection_mask, atom_count);
+		bitfield::init(&data->selection.current_highlight_mask, atom_count);
         init_molecule_buffers(data);
         data->picking.idx = NO_PICKING_IDX;
         data->selection.hovered = -1;
@@ -4405,7 +4373,7 @@ static void remove_representation(ApplicationData* data, int idx) {
 
     auto& rep = data->representations.buffer[idx];
     if (rep.color_buffer) glDeleteBuffers(1, &rep.color_buffer);
-    if (rep.atom_mask) free_array(&rep.atom_mask);
+    if (rep.atom_mask) bitfield::free(&rep.atom_mask);
     data->representations.buffer.remove(&rep);
 }
 
@@ -4413,15 +4381,19 @@ static void recompute_atom_visibility_mask(ApplicationData* data) {
     ASSERT(data);
     if (!data->representations.atom_visibility_mask_dirty) return;
 
+	auto& atom_visibility_mask = data->representations.atom_visibility_mask;
+
     const auto N = data->dynamic.molecule.atom.count;
-    data->representations.atom_visibility_mask.resize(N);
-    memset_array(data->representations.atom_visibility_mask, false);
+	if (N != atom_visibility_mask.size()) {
+		bitfield::init(&atom_visibility_mask, N);
+	}
+	else {
+		bitfield::clear_all(atom_visibility_mask);
+	}
 
     for (const auto& rep : data->representations.buffer) {
         if (!rep.enabled) continue;
-        for (int64 i = 0; i < N; i++) {
-            data->representations.atom_visibility_mask[i] = data->representations.atom_visibility_mask[i] || rep.atom_mask[i];
-        }
+		bitfield::or_field(atom_visibility_mask, atom_visibility_mask, rep.atom_mask);
     }
 
     data->representations.atom_visibility_mask_dirty = false;
@@ -4462,8 +4434,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
     }
 
     if (rep->atom_mask.size() != mol.atom.count) {
-        free_array(&rep->atom_mask);
-        rep->atom_mask = allocate_array<bool>(mol.atom.count);
+		bitfield::init(&rep->atom_mask, mol.atom.count);
     }
 
 	DynamicArray<StoredSelection> sel;
@@ -4472,7 +4443,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
 	}
 
     rep->filter_is_ok = filter::compute_filter_mask(rep->atom_mask, rep->filter.buffer, data->dynamic.molecule, sel);
-    filter::filter_colors(colors, rep->atom_mask);
+    filter_colors(colors, rep->atom_mask);
     data->representations.atom_visibility_mask_dirty = true;
 
     if (!rep->color_buffer) glGenBuffers(1, &rep->color_buffer);
@@ -4496,12 +4467,11 @@ static void clear_representations(ApplicationData* data) {
 }
 
 // #selection
-static Selection* create_selection(ApplicationData* data, CString name, Array<const bool> atom_mask) {
+static Selection* create_selection(ApplicationData* data, CString name, Bitfield atom_mask) {
     ASSERT(data);
     Selection sel;
-    sel.name = name;
-    sel.atom_mask = allocate_array<bool>(data->selection.current_selection_mask.size());
-    memcpy(sel.atom_mask.data(), atom_mask.data(), math::min(sel.atom_mask.size_in_bytes(), atom_mask.size_in_bytes()));
+	sel.name = name;
+	bitfield::init(&sel.atom_mask, atom_mask);
     return &data->selection.stored_selections.push_back(sel);
 }
 
@@ -4509,8 +4479,7 @@ static Selection* clone_selection(ApplicationData* data, const Selection& src) {
     ASSERT(data);
     Selection clone;
     clone.name = src.name;
-    clone.atom_mask = allocate_array<bool>(data->selection.current_selection_mask.size());
-    memcpy(clone.atom_mask.data(), src.atom_mask.data(), math::min(clone.atom_mask.size_in_bytes(), src.atom_mask.size_in_bytes()));
+    bitfield::init(&clone.atom_mask, data->selection.current_selection_mask);
     return &data->selection.stored_selections.push_back(clone);
 }
 
@@ -4520,7 +4489,7 @@ static void remove_selection(ApplicationData* data, int idx) {
         LOG_ERROR("Index [%i] out of range when trying to remove selection", idx);
     }
     auto item = &data->selection.stored_selections[idx];
-    free_array(&item->atom_mask);
+	if (item->atom_mask) bitfield::free(&item->atom_mask);
     data->selection.stored_selections.remove(item);
 }
 
@@ -4542,7 +4511,6 @@ static bool handle_selection(ApplicationData* data) {
     enum class RegionMode { Append, Remove };
 
     static RegionMode region_mode = RegionMode::Append;
-    static DynamicArray<bool> mask = {};
     static bool region_select = false;
     static platform::Coordinate x0;
     const platform::Coordinate x1 = data->ctx.input.mouse.win_coord;
@@ -4550,10 +4518,10 @@ static bool handle_selection(ApplicationData* data) {
     const bool shift_down = data->ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data->ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
     const bool mouse_down = data->ctx.input.mouse.down[0] || data->ctx.input.mouse.down[1];
 
-    mask.resize(N);
-    memset_array(mask, false);
+	Bitfield mask = { (Bitfield::ElementType*)TMP_MALLOC(N * sizeof(Bitfield::ElementType)), N };
+	bitfield::clear_all(mask);
 
-    memset_array(data->selection.current_highlight_mask, false);
+	bitfield::clear_all(data->selection.current_highlight_mask);
     data->gpu_buffers.dirty.selection = true;
 
     // Range<int32> picking_range = {0, 0};
