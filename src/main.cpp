@@ -4528,7 +4528,7 @@ static bool handle_selection(ApplicationData* data) {
 
     if (data->picking.idx != NO_PICKING_IDX && !region_select) {
         ASSERT(0 <= data->picking.idx && data->picking.idx <= N);
-        mask[data->picking.idx] = true;
+        bitfield::set_bit(mask, data->picking.idx);
 
         switch (data->selection.level_mode) {
             case SelectionLevel::Atom:
@@ -4570,7 +4570,7 @@ static bool handle_selection(ApplicationData* data) {
             const float* pos_z = data->dynamic.molecule.atom.position.z;
 
             for (int64 i = 0; i < N; i++) {
-                if (!data->representations.atom_visibility_mask[i]) continue;
+                if (!bitfield::get_bit(data->representations.atom_visibility_mask, i)) continue;
                 vec4 p = mvp * vec4(pos_x[i], pos_y[i], pos_z[i], 1);
                 p /= p.w;
                 const vec2 c = (vec2(p.x, -p.y) * 0.5f + 0.5f) * res;
