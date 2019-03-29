@@ -8,6 +8,19 @@ Visual Interactive Analysis of Molecular Dynamics
 
 ```git clone --recurse-submodules git://github.com/scanberg/viamd.git```
 
+### (Step 1.5: Install dependencies of external libs:) (Only for linux users)
+#### glfw
+- libx11-dev
+- libxrandr-dev
+- libxinerama-dev
+- libxcursor-dev
+
+#### nativefiledialog
+- libgtk3-dev
+- pkgconf
+
+Example for Ubuntu:
+#### sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libgtk3-dev pkgconf
 
 ### Step 2: Configure using CMAKE
 
