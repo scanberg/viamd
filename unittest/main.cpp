@@ -112,8 +112,51 @@ TEST_CASE("Bitfield", "[Bitfield]") {
 	bitfield::set_bit(field, 3);
 	bitfield::set_bit(field, 5);
 
-	printf("Bitfield: ");
+	const auto bits = field.size();
+	const auto bytes = field.size_in_bytes();
+
+	REQUIRE(bits == 256);
+	REQUIRE(bytes == (256 / 8));
+
+	REQUIRE(bitfield::get_bit(field, 2) == true);
+	REQUIRE(bitfield::get_bit(field, 3) == true);
+	REQUIRE(bitfield::get_bit(field, 5) == true);
+
 	bitfield::print(field);
+	printf("\n");
+
+	bitfield::clear_all(field);
+	for (int64 i = 0; i < field.size(); i++) {
+		REQUIRE(bitfield::get_bit(field, i) == false);
+	}
+
+	REQUIRE(bitfield::any_bit_set(field) == false);
+
+	// --- RANGE ----
+	const auto beg = 33;
+	const auto end = 129;
+	bitfield::set_range(field, Range<int>(beg, end));
+
+	bitfield::print(field);
+	printf("\n");
+
+	for (int64 i = 0; i < field.size(); i++) {
+		if (beg <= i && i < end) {
+			REQUIRE(bitfield::get_bit(field, i) == true);
+		}
+		else {
+			REQUIRE(bitfield::get_bit(field, i) == false);
+		}
+	}
+
+	REQUIRE(bitfield::any_bit_set_in_range(field, Range<int>(0, beg)) == false);
+	REQUIRE(bitfield::any_bit_set_in_range(field, Range<int>(beg, end)) == true);
+	REQUIRE(bitfield::all_bits_set_in_range(field, Range<int>(beg, end)) == true);
+	REQUIRE(bitfield::any_bit_set_in_range(field, Range<int>(end, 256)) == false);
+
+	bitfield::print(field);
+	printf("\n");
+
 }
 
 TEST_CASE("Structure Tracking", "[StructureTracking]") {
@@ -131,12 +174,15 @@ TEST_CASE("Structure Tracking", "[StructureTracking]") {
 	structure_tracking::ID id = structure_tracking::create_structure();
 	REQUIRE(id != 0);
 
-	DynamicArray<bool> atom_mask(md.molecule.atom.count);
-	bool filter_ok = filter::compute_filter_mask(atom_mask, "element C", md.molecule);
+	Bitfield mask;
+	bitfield::init(&mask, md.molecule.atom.count);
+	defer{ bitfield::free(&mask); };
+
+	bool filter_ok = filter::compute_filter_mask(mask, "element C", md.molecule);
 	REQUIRE(filter_ok);
 
 	const auto t2 = TIME();
-	structure_tracking::compute_trajectory_transform_data(id, atom_mask, md, 0);
+	structure_tracking::compute_trajectory_transform_data(id, mask, md, 0);
 	const auto t3 = TIME();
 	printf("Time to compute tracking data: %.2fms\n", MILLISEC(t2, t3));
 
@@ -236,15 +282,16 @@ TEST_CASE("Testing filter", "[filter]") {
     defer { free_molecule_structure(&mol); };
 
     filter::initialize();
-    DynamicArray<bool> mask(mol.atom.count);
+	Bitfield mask;
+	bitfield::init(&mask, mol.atom.count);
 
     SECTION("filter element N") {
         filter::compute_filter_mask(mask, "element N", mol);
         for (int32 i = 0; i < mask.size(); i++) {
             if (i == 0 || i == 4 || i == 16 || i == 17) {
-                REQUIRE(mask[i] == true);
+                REQUIRE(bitfield::get_bit(mask, i) == true);
             } else {
-                REQUIRE(mask[i] == false);
+                REQUIRE(bitfield::get_bit(mask, i) == false);
             }
         }
     }
@@ -253,9 +300,9 @@ TEST_CASE("Testing filter", "[filter]") {
         filter::compute_filter_mask(mask, "atom 1:10", mol);
         for (int32 i = 0; i < mask.size(); i++) {
             if (0 <= i && i <= 9) {
-                REQUIRE(mask[i] == true);
+                REQUIRE(bitfield::get_bit(mask, i) == true);
             } else {
-                REQUIRE(mask[i] == false);
+                REQUIRE(bitfield::get_bit(mask, i) == false);
             }
         }
     }
@@ -264,9 +311,9 @@ TEST_CASE("Testing filter", "[filter]") {
         filter::compute_filter_mask(mask, "atom 10:*", mol);
         for (int32 i = 0; i < mask.size(); i++) {
             if (0 <= i && i < 9) {
-                REQUIRE(mask[i] == true);
+                REQUIRE(bitfield::get_bit(mask, i) == true);
             } else {
-                REQUIRE(mask[i] == false);
+                REQUIRE(bitfield::get_bit(mask, i) == false);
             }
         }
     }
@@ -274,21 +321,21 @@ TEST_CASE("Testing filter", "[filter]") {
     SECTION("filter atom *:*") {
         filter::compute_filter_mask(mask, "atom *:*", mol);
         for (int32 i = 0; i < mask.size(); i++) {
-            REQUIRE(mask[i] == true);
+            REQUIRE(bitfield::get_bit(mask, i) == true);
         }
     }
 
     SECTION("filter all") {
         filter::compute_filter_mask(mask, "all", mol);
         for (int32 i = 0; i < mask.size(); i++) {
-            REQUIRE(mask[i] == true);
+            REQUIRE(bitfield::get_bit(mask, i) == true);
         }
     }
 
     SECTION("filter not all") {
         filter::compute_filter_mask(mask, "not all", mol);
         for (int32 i = 0; i < mask.size(); i++) {
-            REQUIRE(mask[i] == false);
+            REQUIRE(bitfield::get_bit(mask, i) == false);
         }
     }
 }

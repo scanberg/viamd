@@ -584,7 +584,7 @@ static void clear_representations(ApplicationData* data);
 static void recompute_atom_visibility_mask(ApplicationData* data);
 
 // Selections
-static Selection* create_selection(ApplicationData* data, CString name, Array<const bool> atom_mask);
+static Selection* create_selection(ApplicationData* data, CString name, const Bitfield);
 static Selection* clone_selection(ApplicationData* data, const Selection& sel);
 static void remove_selection(ApplicationData* data, int idx);
 
@@ -1345,31 +1345,6 @@ int main(int, char**) {
         glDisable(GL_DEPTH_TEST);
         glDepthMask(GL_FALSE);
 
-#if 0
-        PUSH_GPU_SECTION("Highlight Selection") {
-
-            const bool selection_empty = is_array_zero(data.selection.current_selection_mask);
-
-            // glDrawBuffer(GL_COLOR_ATTACHMENT3);  // emission as intermediate target
-            // postprocessing::desaturate_selection(data.fbo.deferred.color, data.fbo.deferred.picking, data.gpu_buffers.selection, data.selection.selecting || !selection_empty);
-
-            // glDrawBuffer(GL_COLOR_ATTACHMENT0);
-            // postprocessing::blit_texture(data.fbo.deferred.emissive);
-
-            /*
-glDrawBuffer(GL_COLOR_ATTACHMENT3);  // Emission buffer
-glEnable(GL_BLEND);
-glBlendFunc(GL_ONE, GL_ONE);
-const vec3 highlight = data.selection.highlight_color * data.selection.highlight_scale;
-const vec3 selection = data.selection.selection_color * data.selection.selection_scale;
-const vec3 outline = data.selection.outline_color * data.selection.outline_scale;
-postprocessing::highlight_selection(data.fbo.deferred.picking, data.gpu_buffers.selection, highlight, selection, outline);
-glDisable(GL_BLEND);
-            */
-        }
-        POP_GPU_SECTION();
-#endif
-
         // Activate backbuffer
         glViewport(0, 0, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
@@ -1782,32 +1757,6 @@ void expand_mask_to_chain(Bitfield mask, Array<const Chain> chains) {
 		if (bitfield::any_bit_set_in_range(mask, chain.atom_range)) {
 			bitfield::set_range(mask, chain.atom_range);
 		}
-    }
-}
-
-void apply_mask(Array<bool> dst_mask, Array<const bool> mask_a, Array<const bool> mask_b, SelectionOperator op) {
-    ASSERT(dst_mask.size() == mask_a.size());
-    ASSERT(dst_mask.size() == mask_b.size());
-
-    switch (op) {
-        case SelectionOperator::Or:
-            for (int64 i = 0; i < dst_mask.size(); i++) {
-                dst_mask[i] = mask_a[i] || mask_b[i];
-            }
-            break;
-        case SelectionOperator::And:
-            for (int64 i = 0; i < dst_mask.size(); i++) {
-                dst_mask[i] = mask_a[i] && mask_b[i];
-            }
-            break;
-        default:
-            ASSERT(false);
-    }
-}
-
-void invert_mask(Array<bool> mask) {
-    for (auto& v : mask) {
-        v = !v;
     }
 }
 
@@ -4382,15 +4331,11 @@ static void recompute_atom_visibility_mask(ApplicationData* data) {
     if (!data->representations.atom_visibility_mask_dirty) return;
 
 	auto& atom_visibility_mask = data->representations.atom_visibility_mask;
-
-    const auto N = data->dynamic.molecule.atom.count;
-	if (N != atom_visibility_mask.size()) {
-		bitfield::init(&atom_visibility_mask, N);
-	}
-	else {
-		bitfield::clear_all(atom_visibility_mask);
+	if (atom_visibility_mask.size() != data->dynamic.molecule.atom.count) {
+		bitfield::init(&atom_visibility_mask, data->dynamic.molecule.atom.count);
 	}
 
+	bitfield::clear_all(atom_visibility_mask);
     for (const auto& rep : data->representations.buffer) {
         if (!rep.enabled) continue;
 		bitfield::or_field(atom_visibility_mask, atom_visibility_mask, rep.atom_mask);
@@ -4545,7 +4490,7 @@ static bool handle_selection(ApplicationData* data) {
                 ASSERT(false);
                 break;
         }
-        memcpy(data->selection.current_highlight_mask.data(), mask.data(), mask.size());
+        memcpy(data->selection.current_highlight_mask.data(), mask.data(), mask.size_in_bytes());
         data->gpu_buffers.dirty.selection = true;
     }
 
@@ -4574,7 +4519,9 @@ static bool handle_selection(ApplicationData* data) {
                 vec4 p = mvp * vec4(pos_x[i], pos_y[i], pos_z[i], 1);
                 p /= p.w;
                 const vec2 c = (vec2(p.x, -p.y) * 0.5f + 0.5f) * res;
-                mask[i] = (min_p.x <= c.x && c.x <= max_p.x && min_p.y <= c.y && c.y <= max_p.y);
+				if (min_p.x <= c.x && c.x <= max_p.x && min_p.y <= c.y && c.y <= max_p.y) {
+					bitfield::set_bit(mask, i);
+				}
             }
 
             switch (data->selection.level_mode) {
@@ -4590,32 +4537,20 @@ static bool handle_selection(ApplicationData* data) {
                     ASSERT(false);
             }
 
-            switch (region_mode) {
-                case RegionMode::Append:
-                    for (int64 i = 0; i < N; i++) {
-                        data->selection.current_highlight_mask[i] = data->selection.current_selection_mask[i] || mask[i];
-                    }
-                    break;
-                case RegionMode::Remove:
-                    for (int64 i = 0; i < N; i++) {
-                        data->selection.current_highlight_mask[i] = data->selection.current_selection_mask[i] && !mask[i];
-                    }
-                    break;
-                default:
-                    ASSERT(false);
-            }
+			Bitfield dst_mask = mouse_down ? data->selection.current_highlight_mask : data->selection.current_selection_mask;
+			Bitfield src_mask = data->selection.current_selection_mask;
 
-            if (!mouse_down) {
-                // COMMIT OPERATION
-                for (int64 i = 0; i < data->selection.current_selection_mask.size(); i++) {
-                    if (region_mode == RegionMode::Append) {
-                        data->selection.current_selection_mask[i] |= mask[i];
-                    } else if (region_mode == RegionMode::Remove) {
-                        data->selection.current_selection_mask[i] &= !mask[i];
-                    }
-                }
-                region_select = false;
-            }
+			if (region_mode == RegionMode::Append) {
+				bitfield::or_field(dst_mask, src_mask, mask);
+			}
+			else if (region_mode == RegionMode::Remove) {
+				bitfield::invert_all(mask);
+				bitfield::and_field(dst_mask, src_mask, mask);
+			}
+			data->gpu_buffers.dirty.selection = true;
+            
+			if (!mouse_down) region_select = false;
+
             // Draw selection window
             const ImVec2 vp_pos = ImGui::GetMainViewport()->Pos;
             const ImVec2 pos0 = (ImVec2(min_p.x, min_p.y) + vp_pos);
@@ -4628,22 +4563,18 @@ static bool handle_selection(ApplicationData* data) {
             dl->AddRectFilled(pos0, pos1, fill_col);
             dl->AddRect(pos0, pos1, line_col);
             ImGui::EndCanvas();
-
-            data->gpu_buffers.dirty.selection = true;
-
         } else if (data->ctx.input.mouse.clicked[0] || data->ctx.input.mouse.clicked[1]) {
             if (data->picking.idx != NO_PICKING_IDX) {
                 const bool append = data->ctx.input.mouse.clicked[0];
-                for (int64 i = 0; i < N; i++) {
-                    if (append) {
-                        data->selection.current_selection_mask[i] |= mask[i];
-                    } else {
-                        data->selection.current_selection_mask[i] &= !mask[i];
-                    }
-                }
+				if (append) {
+					bitfield::or_field(data->selection.current_selection_mask, data->selection.current_selection_mask, mask);
+				}
+				else {
+					bitfield::invert_all(mask);
+					bitfield::and_field(data->selection.current_selection_mask, data->selection.current_selection_mask, mask);
+				}
             } else if (data->ctx.input.mouse.clicked[1]) {
-                // Clear selection
-                memset_array(data->selection.current_selection_mask, false);
+				bitfield::clear_all(data->selection.current_selection_mask);
             }
         }
     } else {
@@ -4665,7 +4596,7 @@ static ReferenceFrame* create_reference_frame(ApplicationData* data, CString nam
 	ref.id = structure_tracking::create_structure();
 	ref.name = name;
 	ref.filter = filter;
-	ref.atom_mask = allocate_array<bool>(data->selection.current_selection_mask.size());
+	bitfield::init(&ref.atom_mask, data->dynamic.molecule.atom.count);
 	update_reference_frame(data, &ref);
 	return &data->reference_frame.frames.push_back(ref);
 }
@@ -4673,7 +4604,7 @@ static ReferenceFrame* create_reference_frame(ApplicationData* data, CString nam
 static bool remove_reference_frame(ApplicationData* data, ReferenceFrame* ref) {
 	ASSERT(data);
 	ASSERT(ref);
-	free_array(&ref->atom_mask);
+	bitfield::free(&ref->atom_mask);
 	data->reference_frame.frames.remove(ref);
 	return true;
 }
@@ -4696,8 +4627,7 @@ static void update_reference_frame(ApplicationData* data, ReferenceFrame* ref) {
 	const auto& mol = data->dynamic.molecule;
 
 	if (ref->atom_mask.size() != mol.atom.count) {
-		free_array(&ref->atom_mask);
-		ref->atom_mask = allocate_array<bool>(mol.atom.count);
+		bitfield::init(&ref->atom_mask, mol.atom.count);
 	}
 
 	DynamicArray<StoredSelection> sel;
