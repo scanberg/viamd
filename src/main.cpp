@@ -4577,16 +4577,12 @@ static bool handle_selection(ApplicationData* data) {
 				bitfield::clear_all(data->selection.current_selection_mask);
             }
         }
+		return true;
     } else {
         region_select = false;
     }
 
-    // for (int64 i = 0; i < N; i++) {
-    //    data->selection.current_highlight_mask[i] = mask[i];
-    //}
-    // data->gpu_buffers.dirty.selection = true;
-
-    return region_select;
+	return false;
 }
 
 // #reference-frame
