@@ -86,7 +86,7 @@ void filter_colors(Array<uint32> colors, Bitfield mask) {
         if (bitfield::get_bit(mask, i))
             colors[i] |= 0xff000000;
         else
-            colors[i] &= ~0xff000000;
+            colors[i] &= 0x00ffffff;
     }
 }
 

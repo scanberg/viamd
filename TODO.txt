@@ -2,12 +2,12 @@ VIAMD
 CONCRETE LIST OF TODOs
 
 Small TODO:
-[ ] Implement Log
+[X] Implement Log
 [ ] Implement Range selection in property (1-N) Asterisk (*)
-[ ] Implement Expression function
+[X] Implement Expression function
 [ ] Implement Filtering
 [ ] Implement Property show/hide in Timeline + Distribution windows
-[ ] Show Simulation Box
+[X] Show Simulation Box
 
 ### Stability ###
     [X] When loading in different thread, make sure the loading is killed when changing datasets.
@@ -61,7 +61,7 @@ Design principles:
     Example Orthodox C++ [https://gist.github.com/bkaradzic/2e39896bc7d8c34e042b]
     C++11 / 14 with minimal dependencies.
     Avoid Templates unless necessary (example: Array might be a candidate for template).
-    No STL, it is bulky and not really needed.
+    Avoid STL, it is bulky and not really needed.
     Maintain interactivity!
     Keep low compile times!
 
@@ -85,7 +85,7 @@ General:
         cross
         operators + - * /
     Array
-    (Allocator) Use Malloc and TmpMalloc for now
+    (Allocators) Use Malloc and TmpMalloc for now
     DynamicArray
     Hash CRC32/64 (Constexpr)
 

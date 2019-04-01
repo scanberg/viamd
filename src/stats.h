@@ -10,8 +10,6 @@
 #include <core/string_utils.h>
 #include <mol/trajectory_utils.h>
 
-//#include <initializer_list>
-
 struct MoleculeDynamic;
 struct MoleculeStructure;
 struct MoleculeTrajectory;

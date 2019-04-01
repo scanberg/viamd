@@ -20,7 +20,6 @@
 #include <mol/xtc_utils.h>
 
 #include <mol/spatial_hash.h>
-#include <mol/structure_tracking.h>
 
 #include <gfx/molecule_draw.h>
 #include <gfx/immediate_draw_utils.h>
@@ -40,13 +39,14 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
-#include <iostream>
+//#include <iostream>
 
 #include "platform/platform.h"
 #include "console.h"
 #include "stats.h"
 #include "ramachandran.h"
 #include "color_utils.h"
+#include "structure_tracking.h"
 
 //#define VIAMD_RELEASE
 
@@ -3530,11 +3530,9 @@ static void draw_shape_space_window(ApplicationData* data) {
 	dl->ChannelsSetCurrent(0);
 
 	if (ImGui::IsItemHovered()) {
-		const ImVec2 normalized_coord = ((ImGui::GetMousePos() - bb.Min) / (bb.Max - bb.Min) - ImVec2(0.5f, 0.5f)) * ImVec2(1, -1);
-		const ImVec2 angles = normalized_coord * 2.f * 180.f;
 		ImGui::BeginTooltip();
 		if (mouse_hover_idx != -1) {
-			ImGui::Text("Frame[%i]", mouse_hover_idx);
+			ImGui::Text("Frame[%i]", (int32)mouse_hover_idx);
             ImGui::Text(u8"\u03BB: (%.2f, %.2f, %.2f)", mouse_eigen_val.x, mouse_eigen_val.y, mouse_eigen_val.z);
 			if (ImGui::GetIO().MouseClicked[0]) {
 				data->playback.time = (float)mouse_hover_idx;
@@ -4607,6 +4605,7 @@ static bool remove_reference_frame(ApplicationData* data, ReferenceFrame* ref) {
 
 static void reset_reference_frame(ApplicationData* data) {
 	ASSERT(data);
+    UNUSED(data);
 	// @NOTE: What to do here?
 }
 

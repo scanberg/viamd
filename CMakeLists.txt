@@ -14,20 +14,12 @@ if (APPLE)
 endif()
 
 if (MSVC)
-	message(STATUS "MSVC configure was used")
-
+    message(STATUS "MSVC configuration was used")
     add_compile_options(/MT /W4 /wd4201 /wd4324 /MP /GR- /fp:fast /MP)
     add_compile_options_config(RELEASE /Oi /GS-)
     add_compile_options_config(DEBUG /MTd)
-
-	#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4 /wd4201 /wd4324 /MP /GR-")
-	#set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MT")
-	#set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /MTd")
-
-	#set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /MT")
-	#set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} /MTd")
 else()
-	message(STATUS "non MSVC configure was used")
+	message(STATUS "non MSVC configuration was used")
     add_compile_options(
         -Wall -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types -mavx -maes
     )
@@ -75,7 +67,6 @@ target_compile_definitions(viamd PRIVATE
 	VIAMD_IMAGE_DIR=\"${RESOURCE_DIR}images\"
 	VIAMD_SCREENSHOT_DIR=\"${RESOURCE_DIR}screenshots\")
 
-#target_compile_options(viamd PRIVATE -W4)
 target_compile_features(viamd PRIVATE cxx_std_17)
 
 target_include_directories(viamd
@@ -84,6 +75,7 @@ target_include_directories(viamd
 #        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/ext/Eigen
 )
 
 target_link_libraries(viamd
