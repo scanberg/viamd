@@ -17,3 +17,8 @@ target_include_directories(imgui
 	PRIVATE
 		${CMAKE_CURRENT_SOURCE_DIR}
 )
+
+if (MSVC)
+    target_compile_options(imgui
+	    PRIVATE /W3 /wd4152)
+endif()

@@ -10,3 +10,8 @@ target_include_directories(tinyexpr
 			${CMAKE_CURRENT_SOURCE_DIR}/;
 		>
 )
+
+if(MSVC)
+	target_compile_options(tinyexpr
+		PRIVATE /W3 /wd4152 /wd4090 /wd4244)
+endif()

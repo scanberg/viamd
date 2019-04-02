@@ -5,6 +5,7 @@ set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_common.c)
 set(LIB "")
 set(INC "")
 set(DEF "")
+set(OPT "")
 
 if(UNIX AND NOT APPLE)
     option(NATIVEFILEDIALOG_USE_GTK "Use GTK for window handling, fallback is Zenity" ON)
@@ -32,11 +33,12 @@ if(APPLE)
     #set(LIB \"-framework AppKit\")
 endif()
 
-if(WIN32)
+if(MSVC)
     set(SRC
         ${SRC}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_win.cpp)
     set(DEF "_CRT_SECURE_NO_WARNINGS")
+	set(OPT "/W3" "/wd4245")
 endif()
 
 add_library(nativefiledialog ${SRC})
@@ -50,7 +52,11 @@ target_include_directories(nativefiledialog
         ${INC}
 )
 
+target_compile_options(nativefiledialog
+	PRIVATE ${OPT})
+
 target_compile_definitions(nativefiledialog
     PRIVATE ${DEF})
 
-target_link_libraries(nativefiledialog ${LIB})
+target_link_libraries(nativefiledialog
+	PRIVATE ${LIB})
