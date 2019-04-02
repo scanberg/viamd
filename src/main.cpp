@@ -2159,7 +2159,7 @@ ImGui::EndGroup();
             // STORED SELECTIONS
             {
                 ImGui::Text("Stored Selections");
-                const bool disable_new = bitfield::any_bit_set(data->selection.current_selection_mask);
+                const bool disable_new = bitfield::any_bit_set(data->selection.current_selection_mask) == false;
                 if (disable_new) ImGui::PushDisabled();
                 if (ImGui::Button("Create New")) {
                     char name_buf[64];
