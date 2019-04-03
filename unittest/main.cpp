@@ -161,7 +161,8 @@ TEST_CASE("Bitfield", "[Bitfield]") {
 TEST_CASE("Interpolation", "[Interpolation]") {
 	MoleculeDynamic md;
 	const auto t0 = TIME();
-	pdb::load_dynamic_from_file(&md, VIAMD_DATA_DIR "/alanine/two4REP-OH_450K.pdb");
+	pdb::load_molecule_from_file(&md.molecule, VIAMD_DATA_DIR "/alanine/two4REP-OH_450K.pdb");
+	pdb::load_trajectory_from_file(&md.trajectory, VIAMD_DATA_DIR "/alanine/two4REP-OH_450K.pdb");
 	const auto t1 = TIME();
 	ASSERT(md);
 	printf("Time to load dataset: %.2fms\n", MILLISEC(t0, t1));

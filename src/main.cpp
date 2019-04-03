@@ -4004,12 +4004,17 @@ static void load_molecule_data(ApplicationData* data, CString file) {
         if (compare_ignore_case(ext, "pdb")) {
             free_molecule_data(data);
             free_trajectory_data(data);
-            if (!pdb::init_dynamic_from_file(&data->dynamic, file)) {
-                LOG_ERROR("ERROR! Failed to load pdb file.");
-            }
+			if (!pdb::load_molecule_from_file(&data->dynamic.molecule, file)) {
+				LOG_ERROR("Failed to load PDB molecule.");
+				return;
+			}
             data->files.molecule = file;
-            init_molecule_data(data);
-            init_trajectory_data(data);
+			init_molecule_data(data);
+
+            if (pdb::init_trajectory_from_file(&data->dynamic.trajectory, file)) {
+				data->files.trajectory = file;
+				init_trajectory_data(data);
+            }
         } else if (compare_ignore_case(ext, "gro")) {
             free_molecule_data(data);
             if (!gro::load_molecule_from_file(&data->dynamic.molecule, file)) {
@@ -4024,10 +4029,11 @@ static void load_molecule_data(ApplicationData* data, CString file) {
                 return;
             }
             free_trajectory_data(data);
-            if (!xtc::init_trajectory(&data->dynamic.trajectory, file)) {
+            if (!xtc::init_trajectory_from_file(&data->dynamic.trajectory, data->dynamic.molecule.atom.count, file)) {
                 LOG_ERROR("ERROR! Problem loading trajectory.");
                 return;
             }
+			data->files.trajectory = file;
             init_trajectory_data(data);
         } else {
             LOG_ERROR("ERROR! file extension is not supported!\n");
