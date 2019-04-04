@@ -4472,8 +4472,9 @@ static bool handle_selection(ApplicationData* data) {
     const bool mouse_down = data->ctx.input.mouse.down[0] || data->ctx.input.mouse.down[1];
 
 	Bitfield mask = { (Bitfield::ElementType*)TMP_MALLOC(N * sizeof(Bitfield::ElementType)), N };
+	defer{ TMP_FREE(mask.ptr); };
+	
 	bitfield::clear_all(mask);
-
 	bitfield::clear_all(data->selection.current_highlight_mask);
     data->gpu_buffers.dirty.selection = true;
 
