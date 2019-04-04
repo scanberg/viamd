@@ -334,7 +334,7 @@ struct ApplicationData {
                 float outline_scale = 1.2f;
             } selection;
 
-            float non_selected_saturation = 0.25f;
+            float selection_saturation = 0.25f;
         } color;
 
         bool selecting = false;
@@ -1291,12 +1291,15 @@ int main(int, char**) {
                 draw_representations_lean_and_mean(data, color, scale, AtomBit_Highlighted);
             }
 
-            if (!atom_selection_empty) {
+            if (!atom_selection_empty || !atom_highlight_empty) {
                 glStencilFunc(GL_NOTEQUAL, 1, 0x1);
                 // glStencilMask(0x00);
                 // glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+
+				const float highlight_saturation = math::mix(data.selection.color.selection_saturation, 1.0f, 0.5f);
+				const float saturation = atom_selection_empty ? highlight_saturation : data.selection.color.selection_saturation;
                 glDrawBuffer(GL_COLOR_ATTACHMENT0);
-                postprocessing::scale_hsv(data.fbo.deferred.color, vec3(1, data.selection.color.non_selected_saturation, 1));
+                postprocessing::scale_hsv(data.fbo.deferred.color, vec3(1, saturation, 1));
             }
 
             glDisable(GL_STENCIL_TEST);
@@ -1596,7 +1599,7 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
     const auto& mol = data->dynamic.molecule;
 
     vec3 min_box, max_box;
-    compute_bounding_box(&min_box, &max_box, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count);
+    compute_bounding_box(min_box, max_box, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count);
     vec3 size = max_box - min_box;
     vec3 cent = (min_box + max_box) * 0.5f;
     vec3 pos = cent + size * 3.f;
@@ -1918,7 +1921,7 @@ ImGui::EndMenu();
             ImGui::SliderFloat("Highlight Outline Scale", &data->selection.color.highlight.outline_scale, 1.01f, 2.0f);
 
             ImGui::Spacing();
-            ImGui::SliderFloat("Non selected saturation", &data->selection.color.non_selected_saturation, 0.0f, 1.0f);
+            ImGui::SliderFloat("Non selected saturation", &data->selection.color.selection_saturation, 0.0f, 1.0f);
             ImGui::PopID();
             ImGui::EndGroup();
             ImGui::Separator();
@@ -4017,6 +4020,7 @@ static void load_molecule_data(ApplicationData* data, CString file) {
             }
         } else if (compare_ignore_case(ext, "gro")) {
             free_molecule_data(data);
+			free_trajectory_data(data);
             if (!gro::load_molecule_from_file(&data->dynamic.molecule, file)) {
                 LOG_ERROR("ERROR! Failed to load gro file.");
                 return;
@@ -4029,7 +4033,7 @@ static void load_molecule_data(ApplicationData* data, CString file) {
                 return;
             }
             free_trajectory_data(data);
-            if (!xtc::init_trajectory_from_file(&data->dynamic.trajectory, data->dynamic.molecule.atom.count, file)) {
+            if (!xtc::init_trajectory_from_file(&data->dynamic.trajectory, (int32)data->dynamic.molecule.atom.count, file)) {
                 LOG_ERROR("ERROR! Problem loading trajectory.");
                 return;
             }
