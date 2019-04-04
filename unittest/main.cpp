@@ -90,20 +90,6 @@ TEST_CASE("Testing PdbInfo", "[PdbInfo]") {
 }
 #endif
 
-/*
-TEST_CASE("Testing init_dynamic_from_file", "[Pdb]") {
-	MoleculeDynamic md;
-	const auto t0 = TIME();
-	pdb::init_dynamic_from_file(&md, VIAMD_DATA_DIR "/alanine/1ALA-560ns.pdb");
-	const auto t1 = TIME();
-
-	printf("Time to load dataset: %.2f\n", (double)MILLISEC(t0, t1));
-
-	free_molecule_structure(&md.molecule);
-	free_trajectory(&md.trajectory);
-}
-*/
-
 TEST_CASE("Bitfield", "[Bitfield]") {
 	Bitfield field;
 	bitfield::init(&field, 256, false);
@@ -156,67 +142,6 @@ TEST_CASE("Bitfield", "[Bitfield]") {
 	bitfield::print(field);
 	printf("\n");
 
-}
-
-TEST_CASE("Interpolation", "[Interpolation]") {
-	MoleculeDynamic md;
-	const auto t0 = TIME();
-	pdb::load_molecule_from_file(&md.molecule, VIAMD_DATA_DIR "/alanine/two4REP-OH_450K.pdb");
-	pdb::load_trajectory_from_file(&md.trajectory, VIAMD_DATA_DIR "/alanine/two4REP-OH_450K.pdb");
-	const auto t1 = TIME();
-	ASSERT(md);
-	printf("Time to load dataset: %.2fms\n", MILLISEC(t0, t1));
-	printf("Num atoms in in dataset %lli\n", md.molecule.atom.count);
-
-	const auto x0 = get_trajectory_position_x(md.trajectory, 100).data();
-	const auto y0 = get_trajectory_position_y(md.trajectory, 100).data();
-	const auto z0 = get_trajectory_position_z(md.trajectory, 100).data();
-	const auto x1 = get_trajectory_position_x(md.trajectory, 101).data();
-	const auto y1 = get_trajectory_position_y(md.trajectory, 101).data();
-	const auto z1 = get_trajectory_position_z(md.trajectory, 101).data();
-	const auto x2 = get_trajectory_position_x(md.trajectory, 102).data();
-	const auto y2 = get_trajectory_position_y(md.trajectory, 102).data();
-	const auto z2 = get_trajectory_position_z(md.trajectory, 102).data();
-	const auto x3 = get_trajectory_position_x(md.trajectory, 103).data();
-	const auto y3 = get_trajectory_position_y(md.trajectory, 103).data();
-	const auto z3 = get_trajectory_position_z(md.trajectory, 103).data();
-
-	auto x = md.molecule.atom.position.x;
-	auto y = md.molecule.atom.position.y;
-	auto z = md.molecule.atom.position.z;
-	const auto atom_count = md.molecule.atom.count;
-	const auto box = get_trajectory_frame(md.trajectory, 101).box;
-
-	const int32 num_iter = 100;
-	const float t = 0.5f;
-	const auto t2 = TIME();
-	for (int32 i = 0; i < num_iter; i++) {
-		cubic_interpolation_pbc_scalar(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, atom_count, t, box);
-	}
-	const auto t3 = TIME();
-	const auto time_cubic_pbc_scalar = MILLISEC(t2, t3) / (double)num_iter;
-	printf("Time to interpolate cubic pbc (scalar): %.2fms\n", time_cubic_pbc_scalar);
-
-	const auto t4 = TIME();
-	for (int32 i = 0; i < num_iter; i++) {
-		cubic_interpolation_pbc(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, atom_count, t, box);
-	}
-	const auto t5 = TIME();
-	const auto time_cubic_pbc_128 = MILLISEC(t4, t5) / (double)num_iter;
-	printf("Time to interpolate cubic pbc (128 wide): %.2fms (%.1fx) speedup\n", time_cubic_pbc_128, time_cubic_pbc_scalar / time_cubic_pbc_128);
-
-#ifdef __AVX__
-	const auto t6 = TIME();
-	for (int32 i = 0; i < num_iter; i++) {
-		cubic_interpolation_pbc_256(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, atom_count, t, box);
-	}
-	const auto t7 = TIME();
-	const auto time_cubic_pbc_256 = MILLISEC(t6, t7) / (double)num_iter;
-	printf("Time to interpolate cubic pbc (256 wide): %.2fms (%.1fx) speedup\n", time_cubic_pbc_256, time_cubic_pbc_scalar / time_cubic_pbc_256);
-#endif
-
-	free_molecule_structure(&md.molecule);
-	free_trajectory(&md.trajectory);
 }
 
 TEST_CASE("Testing DynamicArray", "[DynamicArray]") {

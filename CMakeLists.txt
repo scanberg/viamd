@@ -46,6 +46,7 @@ add_subdirectory(ext/tinyexpr)
 add_subdirectory(ext/mdutils)
 #add_subdirectory(ext/base91)
 add_subdirectory(unittest)
+add_subdirectory(benchmark)
 
 file(GLOB PLATFORM_FILES src/platform/*)
 file(GLOB SRC_FILES src/*)
