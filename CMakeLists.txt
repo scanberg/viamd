@@ -83,6 +83,7 @@ target_include_directories(viamd
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/ext/Eigen
+        ${CMAKE_CURRENT_SOURCE_DIR}/ext/svd3
 )
 
 target_link_libraries(viamd
