@@ -39,7 +39,6 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
-//#include <iostream>
 
 #include "platform/platform.h"
 #include "console.h"
@@ -990,10 +989,14 @@ int main(int, char**) {
             POP_CPU_SECTION()
         }
 		else {
-			memset(data.dynamic.molecule.atom.velocity.x, 0, data.dynamic.molecule.atom.count * sizeof(float));
-			memset(data.dynamic.molecule.atom.velocity.y, 0, data.dynamic.molecule.atom.count * sizeof(float));
-			memset(data.dynamic.molecule.atom.velocity.z, 0, data.dynamic.molecule.atom.count * sizeof(float));
-			data.gpu_buffers.dirty.velocity = true;
+			static auto prev_time = data.playback.time;
+			if (data.playback.time != prev_time) {
+				memset(data.dynamic.molecule.atom.velocity.x, 0, data.dynamic.molecule.atom.count * sizeof(float));
+				memset(data.dynamic.molecule.atom.velocity.y, 0, data.dynamic.molecule.atom.count * sizeof(float));
+				memset(data.dynamic.molecule.atom.velocity.z, 0, data.dynamic.molecule.atom.count * sizeof(float));
+				data.gpu_buffers.dirty.velocity = true;
+			}
+			prev_time = data.playback.time;
 		}
 
         PUSH_CPU_SECTION("Hydrogen bonds")
@@ -1291,13 +1294,11 @@ int main(int, char**) {
                 draw_representations_lean_and_mean(data, color, scale, AtomBit_Highlighted);
             }
 
-            if (!atom_selection_empty || !atom_highlight_empty) {
+            if (!atom_selection_empty) {
                 glStencilFunc(GL_NOTEQUAL, 1, 0x1);
+				const float saturation = data.selection.color.selection_saturation;
                 // glStencilMask(0x00);
                 // glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-
-				const float highlight_saturation = math::mix(data.selection.color.selection_saturation, 1.0f, 0.5f);
-				const float saturation = atom_selection_empty ? highlight_saturation : data.selection.color.selection_saturation;
                 glDrawBuffer(GL_COLOR_ATTACHMENT0);
                 postprocessing::scale_hsv(data.fbo.deferred.color, vec3(1, saturation, 1));
             }
@@ -4027,8 +4028,9 @@ static void load_molecule_data(ApplicationData* data, CString file) {
 				return;
 			}
             data->files.molecule = file;
-			init_molecule_data(data);
+			data->files.trajectory = "";
 
+			init_molecule_data(data);
             if (pdb::init_trajectory_from_file(&data->dynamic.trajectory, file)) {
 				data->files.trajectory = file;
 				init_trajectory_data(data);
@@ -4041,6 +4043,8 @@ static void load_molecule_data(ApplicationData* data, CString file) {
                 return;
             }
             data->files.molecule = file;
+			data->files.trajectory = "";
+
             init_molecule_data(data);
         } else if (compare_ignore_case(ext, "xtc")) {
             if (!data->dynamic.molecule) {
@@ -4201,6 +4205,8 @@ static void load_workspace(ApplicationData* data, CString file) {
                 if (compare_n(line, "SsaoIntensity=", 14)) data->visuals.ssao.intensity = to_float(trim(line.substr(14)));
                 if (compare_n(line, "SsaoRadius=", 11)) data->visuals.ssao.radius = to_float(trim(line.substr(11)));
                 if (compare_n(line, "SsaoBias=", 9)) data->visuals.ssao.bias = to_float(trim(line.substr(9)));
+				if (compare_n(line, "DofEnabled=", 11)) data->visuals.dof.enabled = to_int(trim(line.substr(11))) != 0;
+				if (compare_n(line, "DofFocusScale=", 14)) data->visuals.dof.focus_scale = to_float(trim(line.substr(14)));
             }
         } else if (compare_n(line, "[Camera]", 8)) {
             while (c_txt && c_txt[0] != '[' && (line = extract_line(c_txt))) {
@@ -4280,6 +4286,10 @@ static void save_workspace(ApplicationData* data, CString file) {
     fprintf(fptr, "SsaoRadius=%g\n", data->visuals.ssao.radius);
     fprintf(fptr, "SsaoBias=%g\n", data->visuals.ssao.bias);
     fprintf(fptr, "\n");
+
+	fprintf(fptr, "DofEnabled=%i\n", data->visuals.dof.enabled ? 1 : 0);
+	fprintf(fptr, "DofFocusScale=%g\n", data->visuals.dof.focus_scale);
+	fprintf(fptr, "\n");
 
     fprintf(fptr, "[Camera]\n");
     fprintf(fptr, "Position=%g,%g,%g\n", data->view.camera.position.x, data->view.camera.position.y, data->view.camera.position.z);

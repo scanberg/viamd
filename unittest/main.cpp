@@ -92,7 +92,7 @@ TEST_CASE("Testing PdbInfo", "[PdbInfo]") {
 
 TEST_CASE("Bitfield", "[Bitfield]") {
 	Bitfield field;
-	bitfield::init(&field, 256, false);
+	bitfield::init(&field, 256);
 	bitfield::set_bit(field, 2);
 	bitfield::set_bit(field, 3);
 	bitfield::set_bit(field, 5);
