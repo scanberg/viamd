@@ -2649,6 +2649,21 @@ static void draw_reference_frames_window(ApplicationData* data) {
 			//if (ImGui::SliderInt("reference frame idx", ))
 			if (!ref.filter_is_ok) ImGui::PopStyleColor();
 			ImGui::PopItemWidth();
+
+			ImGui::PushItemWidth(-1);
+			constexpr auto plot_height = 150.0f;
+			const auto rel_data = structure_tracking::get_rel_det(ref.id);
+			const auto abs_data = structure_tracking::get_abs_det(ref.id);
+
+			ImVec2 x_range = { 0.0f, (float)abs_data.size()};
+			ImVec2 y_range = { -1.0f, 2.0f };
+			ImGui::BeginPlot("Determinant", ImVec2(0, plot_height), x_range, y_range);
+			ImGui::PlotValues("relative", rel_data.data(), rel_data.size(), 0xFF5555FF);
+			ImGui::PlotValues("absolute", abs_data.data(), abs_data.size(), 0xFF55FF55);
+			ImGui::EndPlot();
+
+			ImGui::PopItemWidth();
+
 			ImGui::Spacing();
 			ImGui::Separator();
 		}

@@ -37,4 +37,7 @@ const Array<const float> get_eigen_vector_y(ID structure_id, int64 idx);
 const Array<const float> get_eigen_vector_z(ID structure_id, int64 idx);
 const Array<const float> get_eigen_value(ID structure_id, int64 idx);
 
+const Array<const float> get_abs_det(ID structure_id);
+const Array<const float> get_rel_det(ID structure_id);
+
 }  // namespace structure_tracking

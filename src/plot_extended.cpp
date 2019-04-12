@@ -5,12 +5,15 @@
 namespace ImGui {
 
 struct PlotState {
+	struct HoverDataItem {
+		ImVec2 value;
+		ImU32 color;
+	};
+
     ImGuiID id = 0;
-    ImRect inner_bb;
-    ImRect coord_view;
-    // ImVec2* selection_range;
-    // float selection_start;
-    // bool is_selecting = false;
+	ImRect inner_bb = {};
+	ImRect coord_view = {};
+	ImVector<HoverDataItem> hover_data{};
 };
 
 static PlotState ps;
@@ -74,6 +77,7 @@ if (selection_range) {
     ps.inner_bb = inner_bb;
     ps.coord_view = ImRect(ImVec2(x_range.x, y_range.x), ImVec2(x_range.y, y_range.y));
     // ps.selection_range = selection_range;
+	ps.hover_data.clear();
 
     RenderTextClipped(ImVec2(frame_bb.Min.x + style.FramePadding.x, frame_bb.Min.y + style.FramePadding.y), frame_bb.Max, label, NULL, NULL,
                       ImVec2(0.0f, 0.0f));
@@ -85,6 +89,20 @@ static inline ImVec2 compute_frame_coord(ImRect frame, ImVec2 coord) {
     float cx = ImClamp((coord.x - frame.Min.x) / (frame.Max.x - frame.Min.x), 0.f, 1.f);
     float cy = ImClamp((coord.y - frame.Min.y) / (frame.Max.y - frame.Min.y), 0.f, 1.f);
     return {cx, cy};
+}
+
+static inline void PushHoverValues(const ImVec2& val, ImU32 color) {
+	IM_ASSERT(ps.id);
+	ps.hover_data.push_back({ val, color });
+}
+
+static inline ImVec2 GetHoveredValue(const float* value, int count) {
+	IM_ASSERT(ps.id);
+	const auto mouse_pos = GetMousePos();
+	const float t = (mouse_pos.x - ps.inner_bb.Min.x) / (ps.inner_bb.Max.x - ps.inner_bb.Min.x);
+	const int idx = ImClamp((int)(t * (count - 1)), 0, count - 1);
+	const float val = value[idx];
+	return { idx, val };
 }
 
 IMGUI_API void PlotVerticalBars(const float* bar_opacity, int count, ImU32 color) {
@@ -162,42 +180,55 @@ IMGUI_API void PlotVariance(const float* avg, const float* var, int count, float
     }
 }
 
-IMGUI_API void PlotValues(const char* line_label, const float* values, int count, ImU32 line_color) {
+IMGUI_API void PlotValues(const char* line_label, const float* value, int count, ImU32 line_color) {
     (void)line_label;
     if (!ps.id) return;
     ImGuiWindow* window = GetCurrentWindow();
     if (window->SkipItems) return;
     if (count < 2) return;
 
-    ImVec2 prev_c = ImVec2(0, values[0]);
+    ImVec2 prev_c = ImVec2(0, value[0]);
     for (int i = 1; i < count; i++) {
-        ImVec2 next_c = ImVec2((float)i, values[i]);
+        const ImVec2 next_c = ImVec2((float)i, value[i]);
 
         if (prev_c.x < ps.coord_view.Min.x && next_c.x < ps.coord_view.Min.x) continue;
         if (prev_c.y < ps.coord_view.Min.y && next_c.y < ps.coord_view.Min.y) continue;
         if (prev_c.x > ps.coord_view.Max.x && next_c.x > ps.coord_view.Max.x) break;
         if (prev_c.y > ps.coord_view.Max.y && next_c.y > ps.coord_view.Max.y) continue;
 
-        ImVec2 p = compute_frame_coord(ps.coord_view, prev_c);
-        ImVec2 n = compute_frame_coord(ps.coord_view, next_c);
+        const ImVec2 p = compute_frame_coord(ps.coord_view, prev_c);
+        const ImVec2 n = compute_frame_coord(ps.coord_view, next_c);
 
-        ImVec2 pos0 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(p.x, 1.f - p.y));
-        ImVec2 pos1 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(n.x, 1.f - n.y));
+        const ImVec2 pos0 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(p.x, 1.f - p.y));
+        const ImVec2 pos1 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(n.x, 1.f - n.y));
         window->DrawList->AddLine(pos0, pos1, line_color);
 
         prev_c = next_c;
     }
+
+	if (IsItemHovered()) {
+		PushHoverValues(GetHoveredValue(value, count), line_color);
+	}
 }
 
 IMGUI_API void EndPlot() {
     IM_ASSERT(ps.id != 0);
+
+	if (IsItemHovered()) {
+		BeginTooltip();
+		for (const auto& item : ps.hover_data) {
+			TextColored(ImColor(item.color), "[%i]: %.3f\n", (int)item.value.x, item.value.y);
+		}
+		EndTooltip();
+	}
+
     ps.id = 0;
 }
 
-IMGUI_API void DrawHistogram(ImVec2 frame_min, ImVec2 frame_max, const float* values, int count, float max_val, ImU32 color) {
+IMGUI_API void DrawHistogram(ImVec2 frame_min, ImVec2 frame_max, const float* value, int count, float max_val, ImU32 color) {
     if (max_val == 0.f) {
         for (int i = 0; i < count; i++) {
-            max_val = ImMax(max_val, values[i]);
+            max_val = ImMax(max_val, value[i]);
         }
         if (max_val == 0.f) return;
     }
@@ -207,7 +238,7 @@ IMGUI_API void DrawHistogram(ImVec2 frame_min, ImVec2 frame_max, const float* va
     const float y_scl = 1.f / max_val;
     for (int i = 1; i < count; i++) {
         ImVec2 pos0 = ImLerp(frame_min, frame_max, ImVec2((i - 1) * x_scl, 1.f));
-        ImVec2 pos1 = ImLerp(frame_min, frame_max, ImVec2(i * x_scl, 1.f - values[i - 1] * y_scl));
+        ImVec2 pos1 = ImLerp(frame_min, frame_max, ImVec2(i * x_scl, 1.f - value[i - 1] * y_scl));
 
         if (pos1.x >= pos0.x + 2.0f) pos1.x -= 1.0f;
         GetCurrentWindow()->DrawList->AddRectFilled(pos0, pos1, color);
@@ -215,10 +246,10 @@ IMGUI_API void DrawHistogram(ImVec2 frame_min, ImVec2 frame_max, const float* va
     PopClipRect();
 }
 
-IMGUI_API void DrawFilledLine(ImVec2 frame_min, ImVec2 frame_max, const float* values, int count, float max_val, ImU32 line_color, ImU32 fill_color) {
+IMGUI_API void DrawFilledLine(ImVec2 frame_min, ImVec2 frame_max, const float* value, int count, float max_val, ImU32 line_color, ImU32 fill_color) {
     if (max_val == 0.f) {
         for (int i = 0; i < count; i++) {
-            max_val = ImMax(max_val, values[i]);
+            max_val = ImMax(max_val, value[i]);
         }
         if (max_val == 0.f) return;
     }
@@ -227,8 +258,8 @@ IMGUI_API void DrawFilledLine(ImVec2 frame_min, ImVec2 frame_max, const float* v
     const float x_scl = 1.f / (float)(count - 1);
     const float y_scl = 1.f / max_val;
     for (int i = 1; i < count; i++) {
-        ImVec2 pos0 = ImLerp(frame_min, frame_max, ImVec2((i - 1) * x_scl, 1.f - values[i - 1] * y_scl));
-        ImVec2 pos1 = ImLerp(frame_min, frame_max, ImVec2(i * x_scl, 1.f - values[i] * y_scl));
+        ImVec2 pos0 = ImLerp(frame_min, frame_max, ImVec2((i - 1) * x_scl, 1.f - value[i - 1] * y_scl));
+        ImVec2 pos1 = ImLerp(frame_min, frame_max, ImVec2(i * x_scl, 1.f - value[i] * y_scl));
         pos0 = ImVec2(roundf(pos0.x), roundf(pos0.y));
         pos1 = ImVec2(roundf(pos1.x), roundf(pos1.y));
 
@@ -239,7 +270,7 @@ IMGUI_API void DrawFilledLine(ImVec2 frame_min, ImVec2 frame_max, const float* v
     PopClipRect();
 }
 
-IMGUI_API bool PlotHistogram(const char* label, ImVec2 frame_size, const float* values, int count, bool periodic, ImVec2 value_range,
+IMGUI_API bool PlotHistogram(const char* label, ImVec2 frame_size, const float* value, int count, bool periodic, ImVec2 value_range,
                              ImVec2* selection_range) {
     ImGuiWindow* window = GetCurrentWindow();
     if (window->SkipItems) return false;
@@ -319,14 +350,14 @@ IMGUI_API bool PlotHistogram(const char* label, ImVec2 frame_size, const float* 
 
     float max_val = 0.f;
     for (int i = 0; i < count; i++) {
-        max_val = ImMax(max_val, values[i]);
+        max_val = ImMax(max_val, value[i]);
     }
 
     if (max_val == 0.f) return false;
 
     for (int i = 1; i < count; i++) {
         ImVec2 tp0 = ImVec2((i - 1) / (float)(count - 1), 1.f);
-        ImVec2 tp1 = ImVec2(i / (float)(count - 1), 1.f - values[i - 1] / max_val);
+        ImVec2 tp1 = ImVec2(i / (float)(count - 1), 1.f - value[i - 1] / max_val);
 
         ImVec2 pos0 = ImLerp(inner_bb.Min, inner_bb.Max, tp0);
         ImVec2 pos1 = ImLerp(inner_bb.Min, inner_bb.Max, tp1);
@@ -356,7 +387,7 @@ IMGUI_API bool PlotHistogram(const char* label, ImVec2 frame_size, const float* 
     if (IsItemHovered()) {
         window->DrawList->AddLine(ImVec2(ctx.IO.MousePos.x, inner_bb.Min.y), ImVec2(ctx.IO.MousePos.x, inner_bb.Max.y), 0xffffffff);
         float t = (ctx.IO.MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
-        float val = values[ImClamp((int)(t * (count - 1)), 0, count - 1)];
+        float val = value[ImClamp((int)(t * (count - 1)), 0, count - 1)];
         BeginTooltip();
         Text("%.3f: %.3f\n", ImLerp(value_range.x, value_range.y, t), val);
         EndTooltip();
@@ -368,7 +399,7 @@ IMGUI_API bool PlotHistogram(const char* label, ImVec2 frame_size, const float* 
     return modifying;
 }
 
-IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_radius_ratio, const float* values, int count, ImVec2 value_range,
+IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_radius_ratio, const float* value, int count, ImVec2 value_range,
                             ImU32 line_color) {
     ImGuiWindow* window = GetCurrentWindow();
     const ImGuiID id = window->GetID(label);
@@ -403,7 +434,7 @@ IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_r
 
     float max_val = 0.f;
     for (int i = 0; i < count; i++) {
-        max_val = ImMax(max_val, values[i]);
+        max_val = ImMax(max_val, value[i]);
     }
 
     ImVec2 center = ImLerp(inner_bb.Min, inner_bb.Max, 0.5f);
@@ -414,7 +445,7 @@ IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_r
     window->DrawList->AddCircle(center, outer_radius, 0xffffffff, 64);
 
     if (count == 0) return true;
-    const ImVec2 zero_line(center.x, center.y - ImLerp(inner_radius, outer_radius, values[0] / max_val));
+    const ImVec2 zero_line(center.x, center.y - ImLerp(inner_radius, outer_radius, value[0] / max_val));
     const ImVec2 zero_inner(center.x, center.y - inner_radius);
     ImVec2 prev_line = zero_line;
     ImVec2 next_line;
@@ -424,7 +455,7 @@ IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_r
     const float TWO_PI = IM_PI * 2.f;
     for (int i = 1; i < count; i++) {
         float angle = PI_HALF - TWO_PI * (i / (float)count);
-        float radius = ImLerp(inner_radius, outer_radius, values[i] / max_val);
+        float radius = ImLerp(inner_radius, outer_radius, value[i] / max_val);
         next_line = ImVec2(center.x + cosf(angle) * radius, center.y - sinf(angle) * radius);
         next_inner = ImVec2(center.x + cosf(angle) * inner_radius, center.y - sinf(angle) * inner_radius);
         ImVec2 points[4]{prev_inner, prev_line, next_line, next_inner};
@@ -447,7 +478,7 @@ IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_r
             if (a2 < 0) a2 += TWO_PI;
             if (a2 > TWO_PI) a2 -= TWO_PI;
             float t = a2 / TWO_PI;
-            float val = values[ImClamp((int)(t * count), 0, count - 1)] / max_val;
+            float val = value[ImClamp((int)(t * count), 0, count - 1)] / max_val;
 
             ImVec2 inner(center.x + inner_radius * cosf(angle), center.y + inner_radius * sinf(angle));
             ImVec2 outer(center.x + outer_radius * cosf(angle), center.y + outer_radius * sinf(angle));

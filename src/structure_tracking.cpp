@@ -25,6 +25,10 @@ struct Structure {
 			} vector[3];
 			float* value[3] = { nullptr, nullptr, nullptr };
 		} eigen;
+		struct {
+			float* abs = nullptr;
+			float* rel = nullptr;
+		} determinant;
 	} frame_data;
 };
 
@@ -226,35 +230,39 @@ static mat3 compute_pq_matrix(const float* RESTRICT x0, const float* RESTRICT y0
 		Apq[2][2] += mass[i] * p_z * q_z;
 	}
 
-	return Apq;
+	return Apq / (float)(count - 1);
 }
 
-static mat3 compute_qq_matrix(const float* RESTRICT x, const float* RESTRICT y, const float* RESTRICT z, const float* RESTRICT mass,
+// Compute weighted covariance matrix from point data (x,y,z,weight) 
+static mat3 compute_qq_matrix(const float* RESTRICT x, const float* RESTRICT y, const float* RESTRICT z, const float* RESTRICT w,
 						      int64 count, const vec3& com)
 {
 	mat3 Aqq{ 0 };
-
 	for (int64 i = 0; i < count; i++) {
-		// @TODO: Vectorize...
 		const float q_x = x[i] - com.x;
 		const float q_y = y[i] - com.y;
 		const float q_z = z[i] - com.z;
 
-		Aqq[0][0] += mass[i] * q_x * q_x;
-		Aqq[0][1] += mass[i] * q_y * q_x;
-		Aqq[0][2] += mass[i] * q_z * q_x;
-		Aqq[1][0] += mass[i] * q_x * q_y;
-		Aqq[1][1] += mass[i] * q_y * q_y;
-		Aqq[1][2] += mass[i] * q_z * q_y;
-		Aqq[2][0] += mass[i] * q_x * q_z;
-		Aqq[2][1] += mass[i] * q_y * q_z;
-		Aqq[2][2] += mass[i] * q_z * q_z;
+		Aqq[0][0] += w[i] * q_x * q_x;
+		Aqq[0][1] += w[i] * q_y * q_x;
+		Aqq[0][2] += w[i] * q_z * q_x;
+		Aqq[1][0] += w[i] * q_x * q_y;
+		Aqq[1][1] += w[i] * q_y * q_y;
+		Aqq[1][2] += w[i] * q_z * q_y;
+		Aqq[2][0] += w[i] * q_x * q_z;
+		Aqq[2][1] += w[i] * q_y * q_z;
+		Aqq[2][2] += w[i] * q_z * q_z;
 	}
 
-	return Aqq;
+	return Aqq / (float)(count - 1);
 }
 
-static void compute_eigen(const mat3& M, vec3(&vectors)[3], float(&values)[3]) {
+#include <svd3/svd3.h>
+#define MATRIX_ARGUMENTS(M) M[0][0], M[0][1], M[0][2], M[1][0], M[1][1], M[1][2], M[2][0], M[2][1], M[2][2]
+
+static void compute_eigen(const mat3& M, vec3(&vectors)[3], float(&value)[3]) {
+	/*
+	
 	Eigen::Matrix3f A = Eigen::Matrix3f({
 					{M[0][0], M[1][0], M[2][0]},
 					{M[0][1], M[1][1], M[2][1]},
@@ -282,9 +290,26 @@ static void compute_eigen(const mat3& M, vec3(&vectors)[3], float(&values)[3]) {
 	values[0]  = e_val[l0] / e_val[l0];
 	values[1]  = e_val[l1] / e_val[l0];
 	values[2]  = e_val[l2] / e_val[l0];
+	*/
+
+	mat3 U, S, V;
+	svd(MATRIX_ARGUMENTS(M), MATRIX_ARGUMENTS(U), MATRIX_ARGUMENTS(S), MATRIX_ARGUMENTS(V));
+	float max_val = math::max(S[0][0], math::max(S[1][1], S[2][2]));
+	S = S / max_val;
+	const mat3 Ut = glm::transpose(U);
+
+	value[0] = S[0][0];
+	value[1] = S[1][1];
+	value[2] = S[2][2];
+
+	vectors[0] = Ut[0];
+	vectors[1] = Ut[1];
+	vectors[2] = Ut[2];
 }
 
 static mat3 compute_rotation_SVD(const mat3& M) {
+
+	/*
 	Eigen::Matrix3f B_eigen = Eigen::Matrix3f({
 					{M[0][0], M[1][0], M[2][0]},
 					{M[0][1], M[1][1], M[2][1]},
@@ -306,7 +331,14 @@ static mat3 compute_rotation_SVD(const mat3& M) {
 			  A_eigen(1,0), A_eigen(1,1), A_eigen(1,2),
 			  A_eigen(2,0), A_eigen(2,1), A_eigen(2,2) };
 
-	return A;
+			  */
+	mat3 U, S, V;
+	svd(MATRIX_ARGUMENTS(M), MATRIX_ARGUMENTS(U), MATRIX_ARGUMENTS(S), MATRIX_ARGUMENTS(V));
+	vec3 s = { 1, 1, math::determinant(U) * math::determinant(V) };
+	mat3 D = mat3(1);
+	D[2][2] = math::determinant(U) * math::determinant(V);
+
+	return U * D * math::transpose(V);
 }
 
 static mat3 compute_rotation(const mat3& M) {
@@ -341,6 +373,7 @@ static void compute_residual_error(float* RESTRICT out_x, float* RESTRICT out_y,
 	}
 }
 
+#if 0
 // RBF functions
 inline float Wendland_3_1(float r) {
 	const float x = 1.f - r;
@@ -393,11 +426,13 @@ static void compute_rbf_weights(float* RESTRICT out_x, float* RESTRICT out_y, fl
 		out_z[i] = x(i, 2);
 	};
 }
+#endif
 
 static void free_structure_data(Structure* s) {
 	ASSERT(s);
 	if (s->frame_data.transform) FREE(s->frame_data.transform);
 	if (s->frame_data.eigen.vector[0].x) FREE(s->frame_data.eigen.vector[0].x);
+	if (s->frame_data.determinant.abs) FREE(s->frame_data.determinant.abs);
 }
 
 static void init_structure_data(Structure* s, ID id, int32 ref_frame_idx, int32 num_points, int32 num_frames) {
@@ -423,7 +458,9 @@ static void init_structure_data(Structure* s, ID id, int32 ref_frame_idx, int32 
 	s->frame_data.eigen.value[0]	= eigen_data + num_frames * 9;
 	s->frame_data.eigen.value[1]	= eigen_data + num_frames * 10;
 	s->frame_data.eigen.value[2]	= eigen_data + num_frames * 11;
-	
+
+	s->frame_data.determinant.abs = (float*)MALLOC(sizeof(float) * num_frames * 2);
+	s->frame_data.determinant.rel = s->frame_data.determinant.abs + num_frames;
 /*
 	s->data.rbf.radial_cutoff = radial_cutoff;
 	s->data.rbf.weight.x = (float*)MALLOC(sizeof(float) * num_points * num_frames * 3);
@@ -533,9 +570,11 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
 	init_structure_data(s, id, target_frame_idx, num_points, num_frames);
 
 	// Scratch data
-	const auto mem_size = sizeof(float) * num_points * 7;
+	const auto mem_size = sizeof(float) * num_points * 10;
 	void* mem = TMP_MALLOC(mem_size);
 	defer{ TMP_FREE(mem); };
+
+	memset(mem, 0, mem_size);
 
 	float* cur_x = (float*)mem;
 	float* cur_y = cur_x + num_points;
@@ -543,13 +582,19 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
 	float* ref_x = cur_z + num_points;
 	float* ref_y = ref_x + num_points;
 	float* ref_z = ref_y + num_points;
-	float* mass = ref_z + num_points;
+	float* prv_x = ref_z + num_points;
+	float* prv_y = prv_x + num_points;
+	float* prv_z = prv_y + num_points;
+	float* mass = prv_z + num_points;
 
 	extract_data_from_indices(ref_x, get_trajectory_position_x(dynamic.trajectory, target_frame_idx).data(), indices, num_points);
 	extract_data_from_indices(ref_y, get_trajectory_position_y(dynamic.trajectory, target_frame_idx).data(), indices, num_points);
 	extract_data_from_indices(ref_z, get_trajectory_position_z(dynamic.trajectory, target_frame_idx).data(), indices, num_points);
 	extract_data_from_indices(mass, dynamic.molecule.atom.mass, indices, num_points);
 	const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, num_points);
+
+	vec3 prv_com = { 0,0,0 };
+	vec3 cur_com = { 0,0,0 };
 
 	// Set target frame explicitly
 	s->frame_data.transform[target_frame_idx] = { mat3(1), ref_com };
@@ -566,27 +611,38 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
 	s->frame_data.eigen.value[1][target_frame_idx] = 0;
 	s->frame_data.eigen.value[2][target_frame_idx] = 0;
 
+	s->frame_data.determinant.abs[target_frame_idx] = 1.0f;
+	s->frame_data.determinant.rel[target_frame_idx] = 1.0f;
+
 	for (int32 cur_idx = 0; cur_idx < num_frames; cur_idx++) {
 		if (cur_idx == target_frame_idx) continue;
 		extract_data_from_indices(cur_x, get_trajectory_position_x(dynamic.trajectory, cur_idx).data(), indices, num_points);
 		extract_data_from_indices(cur_y, get_trajectory_position_y(dynamic.trajectory, cur_idx).data(), indices, num_points);
 		extract_data_from_indices(cur_z, get_trajectory_position_z(dynamic.trajectory, cur_idx).data(), indices, num_points);
 
-		const vec3 cur_com = compute_com(cur_x, cur_y, cur_z, mass, num_points);
+		memcpy(prv_x, cur_x, num_points * sizeof(float) * 3);
+		prv_com = cur_com;
+
+		cur_com = compute_com(cur_x, cur_y, cur_z, mass, num_points);
 		
 		//float* rbf_x = s->data.rbf.weight.x + i * num_points;
 		//float* rbf_y = s->data.rbf.weight.y + i * num_points;
 		//float* rbf_z = s->data.rbf.weight.z + i * num_points;
 
 		// @NOTE: Compute linear transformation matrix between the two sets of points.
-		const mat3 Apq = compute_pq_matrix(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, mass, num_points, cur_com, ref_com);
-		const mat3 Aqq = compute_qq_matrix(cur_x, cur_y, cur_z, mass, num_points, cur_com);
 
-		const mat3 cur_rot = compute_rotation(Apq);
+		const mat3 abs_mat = compute_pq_matrix(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, mass, num_points, cur_com, ref_com);
+		const mat3 rel_mat = compute_pq_matrix(cur_x, cur_y, cur_z, prv_x, prv_y, prv_z, mass, num_points, cur_com, prv_com);
+		const mat3 covariance_mat = compute_qq_matrix(cur_x, cur_y, cur_z, mass, num_points, cur_com);
+
+		const mat3 cur_rot = compute_rotation(abs_mat);
+
+		const float abs_det = math::determinant(abs_mat / covariance_mat);
+		const float rel_det = math::determinant(rel_mat / covariance_mat);
 
 		vec3 eigen_vectors[3];
 		float eigen_values[3];
-		compute_eigen(Aqq, eigen_vectors, eigen_values);
+		compute_eigen(covariance_mat, eigen_vectors, eigen_values);
 	
 		// @NOTE: Compute residual error between the two sets of points.
 		//compute_residual_error(err_x, err_y, err_z, cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, num_points, *M);
@@ -613,6 +669,8 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
 		s->frame_data.eigen.value[1][cur_idx] = eigen_values[1];
 		s->frame_data.eigen.value[2][cur_idx] = eigen_values[2];
 
+		s->frame_data.determinant.abs[cur_idx] = abs_det;
+		s->frame_data.determinant.rel[cur_idx] = rel_det;
 	}
 
 	return true;
@@ -696,5 +754,24 @@ const Array<const float> get_eigen_value(ID id, int64 idx) {
 	return { s->frame_data.eigen.value[idx], s->num_frames };
 }
 
+const Array<const float> get_abs_det(ID id) {
+	Structure* s = find_structure(id);
+	if (s == nullptr) {
+		LOG_ERROR("Supplied id is not valid.");
+		return {};
+	}
+
+	return { s->frame_data.determinant.abs, s->num_frames };
+}
+
+const Array<const float> get_rel_det(ID id) {
+	Structure* s = find_structure(id);
+	if (s == nullptr) {
+		LOG_ERROR("Supplied id is not valid.");
+		return {};
+	}
+
+	return { s->frame_data.determinant.rel, s->num_frames };
+}
 
 } // namespace structure_tracking
