@@ -1009,8 +1009,7 @@ static bool compute_rmsd(Property* prop, const Array<CString> args, const Molecu
     Array<const float> ref_x;
     Array<const float> ref_y;
     Array<const float> ref_z;
-    float max_val = 0.0f;
-    const float32 scl = 1.f / (float32)structure_count;
+
     for (int32 j = 0; j < structure_count; j++) {
         ref_x = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_x(dynamic.trajectory, 0));
         ref_y = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_y(dynamic.trajectory, 0));
@@ -1025,6 +1024,8 @@ static bool compute_rmsd(Property* prop, const Array<CString> args, const Molecu
         }
     }
 
+    float max_val = 0.0f;
+    const float32 scl = 1.f / (float32)structure_count;
     for (int32 i = 0; i < num_frames; i++) {
         float sum = 0;
         for (int32 j = 0; j < structure_count; j++) {
@@ -1214,7 +1215,7 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
 				for (int64 pi = 0; pi < pos_prev_x.size(); pi++) {
 					const vec3 p0 = { pos_prev_x[pi], pos_prev_y[pi], pos_prev_z[pi] };
 					for (int64 ni = 0; ni < pos_next_x.size(); ni++) {
-						const vec3 p1 = { pos_next_x[pi], pos_next_y[pi], pos_next_z[pi] };
+						const vec3 p1 = { pos_next_x[ni], pos_next_y[ni], pos_next_z[ni] };
                         immediate::draw_line(p0, p1, ctx.style.line_color);
                     }
                 }

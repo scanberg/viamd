@@ -126,6 +126,95 @@ TEST_CASE("Testing DynamicArray", "[DynamicArray]") {
     da1 = func();
 }
 
+TEST_CASE("Molecule Utils", "[molecule_utils]") {
+	MoleculeStructure mol;
+	pdb::load_molecule_from_string(&mol, CAFFINE_PDB);
+	defer{ free_molecule_structure(&mol); };
+
+	SECTION("COM: equal mass") {
+		vec3 ref = { 0,0,0 };
+		for (int64 i = 0; i < mol.atom.count; i++) {
+			ref.x += mol.atom.position.x[i];
+			ref.y += mol.atom.position.y[i];
+			ref.z += mol.atom.position.z[i];
+		}
+		ref /= (float)mol.atom.count;
+
+		const vec3 com = compute_com(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count);
+		
+		REQUIRE(ref.x == Approx(com.x));
+		REQUIRE(ref.y == Approx(com.y));
+		REQUIRE(ref.z == Approx(com.z));
+	}
+
+	SECTION("COM: individual mass") {
+		vec3 ref = { 0,0,0 };
+		float sum = 0.0f;
+		for (int64 i = 0; i < mol.atom.count; i++) {
+			const auto m = mol.atom.mass[i];
+			ref.x += mol.atom.position.x[i] * m;
+			ref.y += mol.atom.position.y[i] * m;
+			ref.z += mol.atom.position.z[i] * m;
+			sum += m;
+		}
+		ref /= sum;
+
+		const vec3 com = compute_com(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.mass, mol.atom.count);
+		
+		REQUIRE(ref.x == Approx(com.x));
+		REQUIRE(ref.y == Approx(com.y));
+		REQUIRE(ref.z == Approx(com.z));
+	}
+
+	SECTION("COM: Element mass LUT") {
+		vec3 ref = { 0,0,0 };
+		float sum = 0.0f;
+		for (int64 i = 0; i < mol.atom.count; i++) {
+			const auto m = element::atomic_mass(mol.atom.element[i]);
+			ref.x += mol.atom.position.x[i] * m;
+			ref.y += mol.atom.position.y[i] * m;
+			ref.z += mol.atom.position.z[i] * m;
+			sum += m;
+		}
+		ref /= sum;
+
+		const vec3 com = compute_com(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.element, mol.atom.count);
+		
+		REQUIRE(ref.x == Approx(com.x));
+		REQUIRE(ref.y == Approx(com.y));
+		REQUIRE(ref.z == Approx(com.z));
+	}
+
+	SECTION("TRANSFORM") {
+		const mat4 matrix = math::mat4_cast(math::angle_axis(math::PI / 4.0f, math::normalize(vec3(1, 1, 1))));
+		
+		void* mem = TMP_MALLOC(mol.atom.count * sizeof(float) * 6);
+		defer { TMP_FREE(mem); };
+		float* ref_x = (float*)mem;
+		float* ref_y = ref_x + mol.atom.count;
+		float* ref_z = ref_y + mol.atom.count;
+		float* x = ref_z + mol.atom.count;
+		float* y = x + mol.atom.count;
+		float* z = y + mol.atom.count;
+
+		memcpy(ref_x, mol.atom.position.x, mol.atom.count * sizeof(float));
+		memcpy(ref_y, mol.atom.position.y, mol.atom.count * sizeof(float));
+		memcpy(ref_z, mol.atom.position.z, mol.atom.count * sizeof(float));
+		memcpy(x, mol.atom.position.x, mol.atom.count * sizeof(float));
+		memcpy(y, mol.atom.position.y, mol.atom.count * sizeof(float));
+		memcpy(z, mol.atom.position.z, mol.atom.count * sizeof(float));
+
+		transform_positions_ref(ref_x, ref_y, ref_z, mol.atom.count, matrix);
+		transform_positions(x, y, z, mol.atom.count, matrix);
+
+		for (int64 i = 0; i < mol.atom.count; i++) {
+			REQUIRE(ref_x[i] == Approx(x[i]));
+			REQUIRE(ref_y[i] == Approx(y[i]));
+			REQUIRE(ref_z[i] == Approx(z[i]));
+		}
+	}
+}
+
 TEST_CASE("Testing pdb loader caffine", "[parse_pdb]") {
     MoleculeStructure mol;
     pdb::load_molecule_from_string(&mol, CAFFINE_PDB);

@@ -528,6 +528,25 @@ static bool IsItemActivePreviousFrame() {
     if (g.ActiveIdPreviousFrame) return g.ActiveIdPreviousFrame == GImGui->CurrentWindow->DC.LastItemId;
     return false;
 }
+
+static void SetWindowScrollY(const char* name, float scroll_y) {
+	if (ImGuiWindow* window = ImGui::FindWindowByName(name)) {
+		// this is a copy of internal SetWindowScrollY() 
+		window->DC.CursorMaxPos.y += window->Scroll.y;
+		window->Scroll.y = scroll_y;
+		window->DC.CursorMaxPos.y -= window->Scroll.y;
+	}
+}
+
+static void SetWindowScrollX(const char* name, float scroll_x) {
+	if (ImGuiWindow* window = ImGui::FindWindowByName(name)) {
+		// this is a copy of internal SetWindowScrollX() 
+		window->DC.CursorMaxPos.x += window->Scroll.x;
+		window->Scroll.x = scroll_x;
+		window->DC.CursorMaxPos.x -= window->Scroll.x;
+	}
+}
+
 }  // namespace ImGui
 
 static void interpolate_atomic_positions(ApplicationData* data);
@@ -1538,13 +1557,13 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 			float* cur_z = cur_y + masked_count;
 			float* mass = cur_z + masked_count;
 
-			extract_data_from_mask(ref_x, get_trajectory_position_x(traj, 0).data(), ref.atom_mask);
-			extract_data_from_mask(ref_y, get_trajectory_position_y(traj, 0).data(), ref.atom_mask);
-			extract_data_from_mask(ref_z, get_trajectory_position_z(traj, 0).data(), ref.atom_mask);
-			extract_data_from_mask(cur_x, mol.atom.position.x, ref.atom_mask);
-			extract_data_from_mask(cur_y, mol.atom.position.y, ref.atom_mask);
-			extract_data_from_mask(cur_z, mol.atom.position.z, ref.atom_mask);
-			extract_data_from_mask(mass, mol.atom.mass, ref.atom_mask);
+			bitfield::extract_data_from_mask(ref_x, get_trajectory_position_x(traj, 0).data(), ref.atom_mask);
+			bitfield::extract_data_from_mask(ref_y, get_trajectory_position_y(traj, 0).data(), ref.atom_mask);
+			bitfield::extract_data_from_mask(ref_z, get_trajectory_position_z(traj, 0).data(), ref.atom_mask);
+			bitfield::extract_data_from_mask(cur_x, mol.atom.position.x, ref.atom_mask);
+			bitfield::extract_data_from_mask(cur_y, mol.atom.position.y, ref.atom_mask);
+			bitfield::extract_data_from_mask(cur_z, mol.atom.position.z, ref.atom_mask);
+			bitfield::extract_data_from_mask(mass, mol.atom.mass, ref.atom_mask);
 
 			const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, masked_count);
 			const vec3 cur_com = compute_com(cur_x, cur_y, cur_z, mass, masked_count);
@@ -2068,14 +2087,12 @@ ImGui::EndGroup();
 				
 				{
 					DynamicArray<StoredSelection> sel;
+					sel.push_back({ "current", data->selection.current_selection_mask });
 					for (const auto& s : data->selection.stored_selections) {
 						sel.push_back({ s.name, s.atom_mask });
 					}
-					sel.push_back({ "current", data->selection.current_selection_mask });
 
-					StringBuffer<256> str = "current ";
-					str += buf;
-					query_ok = filter::compute_filter_mask(mask, str.cstr(), data->dynamic.molecule, sel);
+					query_ok = filter::compute_filter_mask(mask, buf, data->dynamic.molecule, sel);
 					if (!query_ok) {
 						bitfield::clear_all(mask);
 					}
@@ -2668,9 +2685,10 @@ static void draw_reference_frames_window(ApplicationData* data) {
 
 			ImVec2 x_range = { 0.0f, (float)abs_data.size()};
 			ImVec2 y_range = { -1.0f, 2.0f };
-			ImGui::BeginPlot("Determinant", ImVec2(0, plot_height), x_range, y_range);
+			ImGui::BeginPlot("Determinant", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX);
 			ImGui::PlotValues("relative", rel_data.data(), rel_data.size(), 0xFF5555FF);
 			ImGui::PlotValues("absolute", abs_data.data(), abs_data.size(), 0xFF55FF55);
+
 			ImGui::EndPlot();
 
 			ImGui::PopItemWidth();
@@ -2696,7 +2714,8 @@ static void draw_property_window(ApplicationData* data) {
     ImGui::PushID("PROPERTIES");
     ImGui::PushItemWidth(-1);
     // ImGui::Columns(4, "columns", true);
-    ImGui::BeginColumns("columns", 4, ImGuiColumnsFlags_NoPreserveWidths);
+	const ImGuiColorEditFlags flags = 0;// ImGuiColumnsFlags_NoPreserveWidths;
+    ImGui::BeginColumns("columns", 4, flags);
     ImGui::Separator();
 
     if (first_time_shown) {
@@ -2875,8 +2894,8 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_range, 
     // @TODO: Assert things and make this failproof
     if (atom_range < 0 || atom_range >= mol.atom.count) return;
 
-    int res_range = mol.atom.res_idx[atom_range];
-    const Residue& res = mol.residues[res_range];
+    int res_idx = mol.atom.res_idx[atom_range];
+    const Residue& res = mol.residues[res_idx];
     const char* res_id = res.name.cstr();
     int local_idx = atom_range - res.atom_range.beg;
     const float pos_x = mol.atom.position.x[atom_range];
@@ -2894,8 +2913,13 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_range, 
         chain_idx = res.chain_idx;
     }
 
+	int seq_idx = -1;
+	if (mol.backbone.sequences.size() > 0) {
+		seq_idx = res_idx;
+	}
+
     // External indices begin with 1 not 0
-    res_range += 1;
+    res_idx += 1;
     chain_idx += 1;
     atom_range += 1;
     local_idx += 1;
@@ -2903,13 +2927,13 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_range, 
     char buff[256];
     int len = 0;
     len += snprintf(buff, 256, "atom[%i][%i]: %s %s %s (%.2f, %.2f, %.2f)\n", atom_range, local_idx, label, elem, symbol, pos_x, pos_y, pos_z);
-    len += snprintf(buff + len, 256 - len, "res[%i]: %s\n", res_range, res_id);
+    len += snprintf(buff + len, 256 - len, "res[%i]: %s\n", res_idx, res_id);
     if (chain_idx) {
         len += snprintf(buff + len, 256 - len, "chain[%i]: %s\n", chain_idx, chain_id);
     }
 
-    if (res_range < mol.backbone.angles.size() && res_range < mol.backbone.segments.size() && valid_segment(mol.backbone.segments[res_range])) {
-        const auto angles = mol.backbone.angles[res_range] * math::RAD_TO_DEG;
+    if (res_idx < mol.backbone.angles.size() && res_idx < mol.backbone.segments.size() && valid_segment(mol.backbone.segments[res_idx])) {
+        const auto angles = mol.backbone.angles[res_idx] * math::RAD_TO_DEG;
         len += snprintf(buff + len, 256 - len, u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0\n", angles.x, angles.y);
     }
 
@@ -2995,11 +3019,11 @@ static void draw_timeline_window(ApplicationData* data) {
         }
         ImGui::BeginChild("Scroll Region", ImVec2(0, 0), true, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_HorizontalScrollbar);
 
-        const Range<float> frame_range = {0, num_frames};
+        const Range<float> frame_range = {0, num_frames-1};
         auto old_range = data->time_filter.range;
 
         ImGui::PushItemWidth(ImGui::GetWindowContentRegionWidth() * zoom);
-        if (ImGui::RangeSliderFloat("###selection_range", &data->time_filter.range.beg, &data->time_filter.range.end, 0.f, num_frames)) {
+        if (ImGui::RangeSliderFloat("###selection_range", &data->time_filter.range.beg, &data->time_filter.range.end, frame_range.x, frame_range.y)) {
             if (data->time_filter.dynamic_window) {
                 if (data->time_filter.range.x != old_range.x && data->time_filter.range.y != old_range.y) {
                     data->playback.time = math::lerp(data->time_filter.range.x, data->time_filter.range.y, 0.5f);
@@ -3134,11 +3158,14 @@ static void draw_timeline_window(ApplicationData* data) {
                 const float32 max_x = ImGui::GetItemRectMax().x;
                 float32 t = ImClamp((ImGui::GetIO().MousePos.x - min_x) / (max_x - min_x), 0.f, 1.f);
                 int idx = ImClamp((int32)ImLerp(frame_range.x, frame_range.y, t), 0, (int32)prop->avg_data.count - 1);
+				const auto var = prop->std_dev_data[idx];
 
                 ImGui::BeginTooltip();
                 ImGui::Text("%i: %g ", idx, prop->avg_data[idx]);
-                ImGui::SameLine();
-                ImGui::TextColored(ImColor(var_text_color), "(%g)", prop->std_dev_data[idx]);
+				if (var > 0.f) {
+					ImGui::SameLine();
+					ImGui::TextColored(ImColor(var_text_color), "(%g)", var);
+				}
                 ImGui::EndTooltip();
             }
 
@@ -3397,9 +3424,9 @@ static void draw_ramachandran_window(ApplicationData* data) {
         ImGui::BeginTooltip();
         ImGui::Text(u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0", angles.x, angles.y);
         if (!region_select && mouse_hover_idx != -1) {
-            const auto res_range = mouse_hover_idx;
-            const auto& res = get_residues(data->dynamic.molecule)[res_range];
-            ImGui::Text("Residue[%lli]: %s", res_range, res.name.cstr());
+            const auto res_idx = mouse_hover_idx;
+            const auto& res = get_residues(data->dynamic.molecule)[res_idx];
+            ImGui::Text("Residue[%lli]: %s", res_idx, res.name.cstr());
 			bitfield::clear_all(data->selection.current_highlight_mask);
 			bitfield::set_range(data->selection.current_highlight_mask, res.atom_range);
             data->gpu_buffers.dirty.selection = true;

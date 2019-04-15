@@ -38,7 +38,7 @@ struct Entry {
 };
 
 struct Context {
-	uint32 next_hash = 0xdeadf00d;
+	uint32 next_hash = 0xdeadb00b;
 	DynamicArray<Entry> entries{};
 };
 
@@ -163,46 +163,6 @@ static void decompose(const mat3& M, mat3* R, mat3* S) {
 	*R = M * math::inverse(*S);
 }
 
-static mat3 compute_linear_transform(const float* RESTRICT x0, const float* RESTRICT y0, const float* RESTRICT z0,
-								     const float* RESTRICT x1, const float* RESTRICT y1, const float* RESTRICT z1,
-									 const float* RESTRICT mass, int64 count, const vec3& com0, const vec3& com1) {
-	mat3 Apq{ 0 };
-	mat3 Aqq{ 0 };
-
-	for (int64 i = 0; i < count; i++) {
-		// @TODO: Vectorize...
-		const float q_x = x0[i] - com0.x;
-		const float q_y = y0[i] - com0.y;
-		const float q_z = z0[i] - com0.z;
-
-		const float p_x = x1[i] - com1.x;
-		const float p_y = y1[i] - com1.y;
-		const float p_z = z1[i] - com1.z;
-
-		Apq[0][0] += mass[i] * p_x * q_x;
-		Apq[0][1] += mass[i] * p_y * q_x;
-		Apq[0][2] += mass[i] * p_z * q_x;
-		Apq[1][0] += mass[i] * p_x * q_y;
-		Apq[1][1] += mass[i] * p_y * q_y;
-		Apq[1][2] += mass[i] * p_z * q_y;
-		Apq[2][0] += mass[i] * p_x * q_z;
-		Apq[2][1] += mass[i] * p_y * q_z;
-		Apq[2][2] += mass[i] * p_z * q_z;
-
-		Aqq[0][0] += mass[i] * q_x * q_x;
-		Aqq[0][1] += mass[i] * q_y * q_x;
-		Aqq[0][2] += mass[i] * q_z * q_x;
-		Aqq[1][0] += mass[i] * q_x * q_y;
-		Aqq[1][1] += mass[i] * q_y * q_y;
-		Aqq[1][2] += mass[i] * q_z * q_y;
-		Aqq[2][0] += mass[i] * q_x * q_z;
-		Aqq[2][1] += mass[i] * q_y * q_z;
-		Aqq[2][2] += mass[i] * q_z * q_z;
-	}
-
-	return Apq / Aqq;
-}
-
 static mat3 compute_covariance_matrix(const float* x0, const float* y0, const float* z0,
 									  const float* x1, const float* y1, const float* z1,
 									  const float* mass, int64 count, const vec3& com0, const vec3& com1)
@@ -230,60 +190,6 @@ static mat3 compute_covariance_matrix(const float* x0, const float* y0, const fl
 	}
 
 	return A;
-}
-
-static mat3 compute_pq_matrix(const float* RESTRICT x0, const float* RESTRICT y0, const float* RESTRICT z0,
-							  const float* RESTRICT x1, const float* RESTRICT y1, const float* RESTRICT z1,
-							  const float* RESTRICT mass, int64 count, const vec3& com0, const vec3& com1)
-{
-	mat3 Apq{ 0 };
-
-	for (int64 i = 0; i < count; i++) {
-		// @TODO: Vectorize...
-		const float q_x = x0[i] - com0.x;
-		const float q_y = y0[i] - com0.y;
-		const float q_z = z0[i] - com0.z;
-
-		const float p_x = x1[i] - com1.x;
-		const float p_y = y1[i] - com1.y;
-		const float p_z = z1[i] - com1.z;
-
-		Apq[0][0] += mass[i] * p_x * q_x;
-		Apq[0][1] += mass[i] * p_y * q_x;
-		Apq[0][2] += mass[i] * p_z * q_x;
-		Apq[1][0] += mass[i] * p_x * q_y;
-		Apq[1][1] += mass[i] * p_y * q_y;
-		Apq[1][2] += mass[i] * p_z * q_y;
-		Apq[2][0] += mass[i] * p_x * q_z;
-		Apq[2][1] += mass[i] * p_y * q_z;
-		Apq[2][2] += mass[i] * p_z * q_z;
-	}
-
-	return Apq / (float)(count - 1);
-}
-
-// Compute weighted covariance matrix from point data (x,y,z,weight) 
-static mat3 compute_qq_matrix(const float* RESTRICT x, const float* RESTRICT y, const float* RESTRICT z, const float* RESTRICT w,
-						      int64 count, const vec3& com)
-{
-	mat3 Aqq{ 0 };
-	for (int64 i = 0; i < count; i++) {
-		const float q_x = x[i] - com.x;
-		const float q_y = y[i] - com.y;
-		const float q_z = z[i] - com.z;
-
-		Aqq[0][0] += w[i] * q_x * q_x;
-		Aqq[0][1] += w[i] * q_y * q_x;
-		Aqq[0][2] += w[i] * q_z * q_x;
-		Aqq[1][0] += w[i] * q_x * q_y;
-		Aqq[1][1] += w[i] * q_y * q_y;
-		Aqq[1][2] += w[i] * q_z * q_y;
-		Aqq[2][0] += w[i] * q_x * q_z;
-		Aqq[2][1] += w[i] * q_y * q_z;
-		Aqq[2][2] += w[i] * q_z * q_z;
-	}
-
-	return Aqq / (float)(count - 1);
 }
 
 #include <svd3/svd3.h>
@@ -336,40 +242,6 @@ static void compute_eigen(const mat3& M, vec3(&vectors)[3], float(&value)[3]) {
 	vectors[2] = Ut[2];
 }
 
-static mat3 compute_rotation_SVD(const mat3& M) {
-
-	/*
-	Eigen::Matrix3f B_eigen = Eigen::Matrix3f({
-					{M[0][0], M[1][0], M[2][0]},
-					{M[0][1], M[1][1], M[2][1]},
-					{M[0][2], M[1][2], M[2][2]} });
-
-	Eigen::JacobiSVD<Eigen::Matrix3f> svd(B_eigen, Eigen::ComputeFullU | Eigen::ComputeFullV);
-
-	const auto U = svd.matrixU();
-	const auto V = svd.matrixV();
-	auto s = svd.singularValues();
-
-	s[0] = 1;
-	s[1] = 1;
-	s[2] = U.determinant() * V.determinant();
-	const Eigen::Matrix3f D = Eigen::DiagonalMatrix<float, 3, 3>(s[0], s[1], s[2]).toDenseMatrix();
-
-	const auto A_eigen = U * D * V.transpose();
-	mat3 A = {A_eigen(0,0), A_eigen(0,1), A_eigen(0,2),
-			  A_eigen(1,0), A_eigen(1,1), A_eigen(1,2),
-			  A_eigen(2,0), A_eigen(2,1), A_eigen(2,2) };
-
-			  */
-	mat3 U, S, V;
-	svd(MATRIX_ARGUMENTS(M), MATRIX_ARGUMENTS(U), MATRIX_ARGUMENTS(S), MATRIX_ARGUMENTS(V));
-	vec3 s = { 1, 1, math::determinant(U) * math::determinant(V) };
-	mat3 D = mat3(1);
-	D[2][2] = math::determinant(U) * math::determinant(V);
-
-	return U * D * math::transpose(V);
-}
-
 static mat3 compute_rotation(const mat3& M) {
 	mat3 R, S;
 	decompose(M, &R, &S);
@@ -379,8 +251,12 @@ static mat3 compute_rotation(const mat3& M) {
 mat3 compute_rotation(const float* RESTRICT x0, const float* RESTRICT y0, const float* RESTRICT z0,
 					  const float* RESTRICT x1, const float* RESTRICT y1, const float* RESTRICT z1,
 					  const float* RESTRICT mass, int64 count, const vec3& com0, const vec3& com1) {
-	const mat3 M = compute_covariance_matrix(x0, y0, z0, x1, y1, z1, mass, count, com0, com1) / (float)(count - 1);
-	return compute_rotation(M);
+	const mat3 Apq = compute_covariance_matrix(x0, y0, z0, x1, y1, z1, mass, count, com0, com1) / (float)(count - 1);
+	const mat3 Aqq = compute_covariance_matrix(x0, y0, z0, x0, y0, z0, mass, count, com0, com0) / (float)(count - 1);
+
+	const mat3 A = Apq / Aqq;
+	//return A; // Return complete linear transform with skewing and all
+	return compute_rotation(A); // Return rotational part
 }
 
 static void compute_residual_error(float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z,
@@ -518,8 +394,7 @@ void initialize() {
 void shutdown() {
 	if (context) {
 		clear_structures();
-		context->~Context();
-		FREE(context);
+		DELETE(context);
 	}
 }
 
