@@ -1550,10 +1550,10 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 			const vec3 cur_com = compute_com(cur_x, cur_y, cur_z, mass, masked_count);
 			const vec3 box_c = box * vec3(0.5f);
 
-			mat4 R = structure_tracking::compute_rotation(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, mass, masked_count, cur_com, ref_com);
-			mat4 T_ori = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-cur_com, 1));
-			mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(box_c, 1));
-			mat4 M = T_box * R * T_ori;
+			const mat4 R = structure_tracking::compute_rotation(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, mass, masked_count, cur_com, ref_com);
+			const mat4 T_ori = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-cur_com, 1));
+			const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(box_c, 1));
+			const mat4 M = T_box * R * T_ori;
 
 			if (ref.active) {
 				ref.com = box_c;
@@ -1565,7 +1565,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 			}
 
 			if (ref.active) {
-				transform_positions(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count, M);
+				transform_positions_ref(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count, M);
 			}
 		}
 	}
@@ -1714,9 +1714,9 @@ static bool DeleteButton(const char* label, const ImVec2& size) {
 }  // namespace ImGui
 
 void grow_mask_by_covalent_bond(Bitfield mask, Array<const Bond> bonds, int32 extent) {
-    Bitfield prev_mask = {(Bitfield::ElementType*)TMP_MALLOC(mask.size_in_bytes()), mask.size()};
-    defer { TMP_FREE(prev_mask.data()); };
-    memcpy(prev_mask.data(), mask.data(), mask.size_in_bytes());
+	Bitfield prev_mask;
+	bitfield::init(&prev_mask, mask);
+	defer{ bitfield::free(&prev_mask); };
 
     for (int32 i = 0; i < extent; i++) {
         for (const auto& bond : bonds) {
@@ -1732,9 +1732,9 @@ void grow_mask_by_covalent_bond(Bitfield mask, Array<const Bond> bonds, int32 ex
 }
 
 void grow_mask_by_radial_extent(Bitfield mask, const float* atom_x, const float* atom_y, const float* atom_z, int64 atom_count, float extent) {
-    Bitfield prev_mask = {(Bitfield::ElementType*)TMP_MALLOC(mask.size_in_bytes()), mask.size()};
-    defer { TMP_FREE(prev_mask.data()); };
-    memcpy(prev_mask.data(), mask.data(), mask.size_in_bytes());
+	Bitfield prev_mask;
+	bitfield::init(&prev_mask, mask);
+	defer{ bitfield::free(&prev_mask); };
 
     spatialhash::Frame frame = spatialhash::compute_frame(atom_x, atom_y, atom_z, atom_count, vec3(extent));
     for (int64 i = 0; i < atom_count; i++) {
@@ -2022,8 +2022,9 @@ ImGui::EndGroup();
         }
         if (ImGui::BeginMenu("Selection")) {
 			const auto atom_count = data->dynamic.molecule.atom.count;
-			Bitfield mask = {(Bitfield::ElementType*)TMP_MALLOC(atom_count * sizeof(Bitfield::ElementType)), atom_count};
-			defer{ TMP_FREE(mask.ptr); };
+			Bitfield mask;
+			bitfield::init(&mask, atom_count);
+			defer{ bitfield::free(&mask); };
 
             if (ImGui::MenuItem("Clear Selection")) {
 				bitfield::clear_all(data->selection.current_selection_mask);
@@ -2040,7 +2041,6 @@ ImGui::EndGroup();
 
             // MODES
             ImGui::Combo("Level Mode", (int*)(&data->selection.level_mode), "Atom\0Residue\0Chain\0\0");
-            ImGui::Combo("Operator Mode", (int*)(&data->selection.op_mode), "Or\0And\0\0");
 
             ImGui::Spacing();
             ImGui::Separator();
@@ -2053,6 +2053,7 @@ ImGui::EndGroup();
                 ImGui::Text("Query");
                 const auto TEXT_BG_DEFAULT_COLOR = ImGui::ColorConvertFloat4ToU32(ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
                 ImGui::PushStyleColor(ImGuiCol_FrameBg, query_ok ? TEXT_BG_DEFAULT_COLOR : TEXT_BG_ERROR_COLOR);
+				//ImGui::Combo("Mode", (int*)(&data->selection.op_mode), "Or\0And\0\0");
                 const bool query_modified = ImGui::InputText("##query", buf, ARRAY_SIZE(buf), ImGuiInputTextFlags_AutoSelectAll);
                 const bool pressed_enter = ImGui::IsItemActivePreviousFrame() && !ImGui::IsItemActive() && ImGui::IsKeyPressed(ImGui::GetIO().KeyMap[ImGuiKey_Enter]);
                 ImGui::PopStyleColor();
@@ -2064,40 +2065,49 @@ ImGui::EndGroup();
                 // if (ImGui::IsWindowAppearing()) {
                 //    ImGui::SetKeyboardFocusHere(-1);
                 //}
+				
+				{
+					DynamicArray<StoredSelection> sel;
+					for (const auto& s : data->selection.stored_selections) {
+						sel.push_back({ s.name, s.atom_mask });
+					}
+					sel.push_back({ "current", data->selection.current_selection_mask });
+
+					StringBuffer<256> str = "current ";
+					str += buf;
+					query_ok = filter::compute_filter_mask(mask, str.cstr(), data->dynamic.molecule, sel);
+					if (!query_ok) {
+						bitfield::clear_all(mask);
+					}
+					data->gpu_buffers.dirty.selection = true;
+				}
 
                 const bool show_preview =
                     (ImGui::GetFocusID() == ImGui::GetID("##query")) || (ImGui::GetHoveredID() == ImGui::GetID("##query")) || (ImGui::GetHoveredID() == ImGui::GetID("Apply##query"));
 
                 if (show_preview) {
-                    if (query_modified) {
-						DynamicArray<StoredSelection> sel;
-						for (const auto& s : data->selection.stored_selections) {
-							sel.push_back({ s.name, s.atom_mask });
-						}
-
-                        query_ok = filter::compute_filter_mask(mask, buf, data->dynamic.molecule, sel);
-                        if (!query_ok) {
-							bitfield::clear_all(mask);
-                        }
-                        data->gpu_buffers.dirty.selection = true;
-                    }
-
                     if (query_ok) {
+						memcpy(data->selection.current_highlight_mask.data(), mask.data(), mask.size_in_bytes());
+						/*
                         if (data->selection.op_mode == SelectionOperator::And) {
 							bitfield::and_field(data->selection.current_highlight_mask, data->selection.current_selection_mask, mask);
                         } else if (data->selection.op_mode == SelectionOperator::Or) {
 							bitfield::or_field(data->selection.current_highlight_mask, data->selection.current_selection_mask, mask);
                         }
+						*/
                         data->gpu_buffers.dirty.selection = true;
                     }
                 }
 
                 if (apply) {
+					memcpy(data->selection.current_selection_mask.data(), mask.data(), mask.size_in_bytes());
+					/*
                     if (data->selection.op_mode == SelectionOperator::And) {
 						bitfield::and_field(data->selection.current_selection_mask, data->selection.current_selection_mask, mask);
                     } else if (data->selection.op_mode == SelectionOperator::Or) {
 						bitfield::or_field(data->selection.current_selection_mask, data->selection.current_selection_mask, mask);
                     }
+					*/
                     data->gpu_buffers.dirty.selection = true;
                 }
             }
@@ -4496,8 +4506,9 @@ static bool handle_selection(ApplicationData* data) {
     const bool shift_down = data->ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data->ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
     const bool mouse_down = data->ctx.input.mouse.down[0] || data->ctx.input.mouse.down[1];
 
-	Bitfield mask = { (Bitfield::ElementType*)TMP_MALLOC(N * sizeof(Bitfield::ElementType)), N };
-	defer{ TMP_FREE(mask.ptr); };
+	Bitfield mask;
+	bitfield::init(&mask, N);
+	defer{ bitfield::free(&mask); };
 	
 	bitfield::clear_all(mask);
 	bitfield::clear_all(data->selection.current_highlight_mask);

@@ -6,8 +6,9 @@ namespace ImGui {
 
 struct PlotState {
 	struct HoverDataItem {
-		ImVec2 value;
-		ImU32 color;
+		ImVec2 value = { 0,0 };
+		ImU32 color = 0;
+		const char* label = "";
 	};
 
     ImGuiID id = 0;
@@ -91,9 +92,9 @@ static inline ImVec2 compute_frame_coord(ImRect frame, ImVec2 coord) {
     return {cx, cy};
 }
 
-static inline void PushHoverValues(const ImVec2& val, ImU32 color) {
+static inline void PushHoverValues(const ImVec2& val, ImU32 color, const char* label) {
 	IM_ASSERT(ps.id);
-	ps.hover_data.push_back({ val, color });
+	ps.hover_data.push_back({ val, color, label});
 }
 
 static inline ImVec2 GetHoveredValue(const float* value, int count) {
@@ -102,7 +103,7 @@ static inline ImVec2 GetHoveredValue(const float* value, int count) {
 	const float t = (mouse_pos.x - ps.inner_bb.Min.x) / (ps.inner_bb.Max.x - ps.inner_bb.Min.x);
 	const int idx = ImClamp((int)(t * (count - 1)), 0, count - 1);
 	const float val = value[idx];
-	return { idx, val };
+	return { (float)idx, val };
 }
 
 IMGUI_API void PlotVerticalBars(const float* bar_opacity, int count, ImU32 color) {
@@ -207,7 +208,7 @@ IMGUI_API void PlotValues(const char* line_label, const float* value, int count,
     }
 
 	if (IsItemHovered()) {
-		PushHoverValues(GetHoveredValue(value, count), line_color);
+		PushHoverValues(GetHoveredValue(value, count), line_color, line_label);
 	}
 }
 
@@ -217,7 +218,7 @@ IMGUI_API void EndPlot() {
 	if (IsItemHovered()) {
 		BeginTooltip();
 		for (const auto& item : ps.hover_data) {
-			TextColored(ImColor(item.color), "[%i]: %.3f\n", (int)item.value.x, item.value.y);
+			TextColored(ImColor(item.color), "%s [%i]: %.3f\n", item.label, (int)item.value.x, item.value.y);
 		}
 		EndTooltip();
 	}

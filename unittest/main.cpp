@@ -55,57 +55,20 @@ ATOM     23  H12 CSP3    1E      9.437   2.207  -6.309
 ATOM     24  H13 CSP3    1E      9.801   2.693  -7.994
 )";
 
-#include <chrono>
-#define TIME() std::chrono::high_resolution_clock::now()
-#define MILLISEC(x, y) std::chrono::duration<double, std::milli>(y - x).count()
-
-#if 0
-TEST_CASE("Testing PdbInfo", "[PdbInfo]") {
-    const auto t0 = TIME();
-    String pdb_str = allocate_and_read_textfile(VIAMD_DATA_DIR "/alanine/14ns-300K.pdb");
-    //String pdb_str = allocate_and_read_textfile(VIAMD_DATA_DIR "/haofan/for_VIAMD.pdb");
-    defer { free_string(&pdb_str); };
-    const auto t1 = TIME();
-
-    const auto t2 = TIME();
-    PdbInfo info;
-    extract_pdb_info(&info, pdb_str);
-    const auto t3 = TIME();
-
-    const auto t4 = TIME();
-    /*
-    MoleculeDynamic md;
-    allocate_and_parse_pdb_from_string(&md, pdb_str);
-    defer {
-        free_molecule_structure(&md.molecule);
-        free_trajectory(&md.trajectory);
-    };
-    */
-    const auto t5 = TIME();
-
-    printf("Time to load dataset: %.2f\n", (double)MILLISEC(t0, t1));
-    printf("Time to extract pdb info: %.2f\n", (double)MILLISEC(t2, t3));
-    printf("Time to parse full pdb: %.2f\n", (double)MILLISEC(t4, t5));
-    printf("PdbInfo:\n num_atoms: %i \n num_residues: %i \n num_chains: %i \n num_frames: %i \n", info.num_atoms, info.num_residues, info.num_chains, info.num_frames);
-}
-#endif
-
 TEST_CASE("Bitfield", "[Bitfield]") {
 	Bitfield field;
-	bitfield::init(&field, 256);
+	bitfield::init(&field, 257);
 	bitfield::set_bit(field, 2);
 	bitfield::set_bit(field, 3);
 	bitfield::set_bit(field, 5);
 
-	const auto bits = field.size();
-	const auto bytes = field.size_in_bytes();
-
-	REQUIRE(bits == 256);
-	REQUIRE(bytes == (256 / 8));
+	REQUIRE(field.size() == 257);
+	REQUIRE(field.size_in_bytes() == 257 / 8 + (257 % 8 ? 1 : 0));
 
 	REQUIRE(bitfield::get_bit(field, 2) == true);
 	REQUIRE(bitfield::get_bit(field, 3) == true);
 	REQUIRE(bitfield::get_bit(field, 5) == true);
+	REQUIRE(bitfield::number_of_bits_set(field) == 3);
 
 	bitfield::print(field);
 	printf("\n");
@@ -121,6 +84,7 @@ TEST_CASE("Bitfield", "[Bitfield]") {
 	const auto beg = 33;
 	const auto end = 129;
 	bitfield::set_range(field, Range<int>(beg, end));
+	REQUIRE(bitfield::number_of_bits_set(field) == (end - beg));
 
 	bitfield::print(field);
 	printf("\n");

@@ -203,6 +203,35 @@ static mat3 compute_linear_transform(const float* RESTRICT x0, const float* REST
 	return Apq / Aqq;
 }
 
+static mat3 compute_covariance_matrix(const float* x0, const float* y0, const float* z0,
+									  const float* x1, const float* y1, const float* z1,
+									  const float* mass, int64 count, const vec3& com0, const vec3& com1)
+{
+	mat3 A{ 0 };
+	for (int64 i = 0; i < count; i++) {
+		// @TODO: Vectorize...
+		const float q_x = x0[i] - com0.x;
+		const float q_y = y0[i] - com0.y;
+		const float q_z = z0[i] - com0.z;
+
+		const float p_x = x1[i] - com1.x;
+		const float p_y = y1[i] - com1.y;
+		const float p_z = z1[i] - com1.z;
+
+		A[0][0] += mass[i] * p_x * q_x;
+		A[0][1] += mass[i] * p_y * q_x;
+		A[0][2] += mass[i] * p_z * q_x;
+		A[1][0] += mass[i] * p_x * q_y;
+		A[1][1] += mass[i] * p_y * q_y;
+		A[1][2] += mass[i] * p_z * q_y;
+		A[2][0] += mass[i] * p_x * q_z;
+		A[2][1] += mass[i] * p_y * q_z;
+		A[2][2] += mass[i] * p_z * q_z;
+	}
+
+	return A;
+}
+
 static mat3 compute_pq_matrix(const float* RESTRICT x0, const float* RESTRICT y0, const float* RESTRICT z0,
 							  const float* RESTRICT x1, const float* RESTRICT y1, const float* RESTRICT z1,
 							  const float* RESTRICT mass, int64 count, const vec3& com0, const vec3& com1)
@@ -349,10 +378,9 @@ static mat3 compute_rotation(const mat3& M) {
 
 mat3 compute_rotation(const float* RESTRICT x0, const float* RESTRICT y0, const float* RESTRICT z0,
 					  const float* RESTRICT x1, const float* RESTRICT y1, const float* RESTRICT z1,
-					  const float* RESTRICT mass, int64 count, const vec3& com0, const vec3& com1)
-{
-	const mat3 Apq = compute_pq_matrix(x0, y0, z0, x1, y1, z1, mass, count, com0, com1);
-	return compute_rotation(Apq);
+					  const float* RESTRICT mass, int64 count, const vec3& com0, const vec3& com1) {
+	const mat3 M = compute_covariance_matrix(x0, y0, z0, x1, y1, z1, mass, count, com0, com1) / (float)(count - 1);
+	return compute_rotation(M);
 }
 
 static void compute_residual_error(float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z,
@@ -459,8 +487,9 @@ static void init_structure_data(Structure* s, ID id, int32 ref_frame_idx, int32 
 	s->frame_data.eigen.value[1]	= eigen_data + num_frames * 10;
 	s->frame_data.eigen.value[2]	= eigen_data + num_frames * 11;
 
-	s->frame_data.determinant.abs = (float*)MALLOC(sizeof(float) * num_frames * 2);
-	s->frame_data.determinant.rel = s->frame_data.determinant.abs + num_frames;
+	float* det_data = (float*)MALLOC(sizeof(float) * num_frames * 2);
+	s->frame_data.determinant.abs = det_data;
+	s->frame_data.determinant.rel = det_data + num_frames;
 /*
 	s->data.rbf.radial_cutoff = radial_cutoff;
 	s->data.rbf.weight.x = (float*)MALLOC(sizeof(float) * num_points * num_frames * 3);
@@ -631,18 +660,18 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
 
 		// @NOTE: Compute linear transformation matrix between the two sets of points.
 
-		const mat3 abs_mat = compute_pq_matrix(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, mass, num_points, cur_com, ref_com);
-		const mat3 rel_mat = compute_pq_matrix(cur_x, cur_y, cur_z, prv_x, prv_y, prv_z, mass, num_points, cur_com, prv_com);
-		const mat3 covariance_mat = compute_qq_matrix(cur_x, cur_y, cur_z, mass, num_points, cur_com);
+		const mat3 abs_mat = compute_covariance_matrix(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, mass, num_points, cur_com, ref_com);
+		const mat3 rel_mat = compute_covariance_matrix(cur_x, cur_y, cur_z, prv_x, prv_y, prv_z, mass, num_points, cur_com, prv_com);
+		const mat3 cov_mat = compute_covariance_matrix(cur_x, cur_y, cur_z, cur_x, cur_y, cur_z, mass, num_points, cur_com, cur_com);
 
-		const mat3 cur_rot = compute_rotation(abs_mat);
+		const mat3 cur_rot = (abs_mat / cov_mat);
 
-		const float abs_det = math::determinant(abs_mat / covariance_mat);
-		const float rel_det = math::determinant(rel_mat / covariance_mat);
+		const float abs_det = math::determinant(abs_mat / cov_mat);
+		const float rel_det = math::determinant(rel_mat / cov_mat);
 
 		vec3 eigen_vectors[3];
 		float eigen_values[3];
-		compute_eigen(covariance_mat, eigen_vectors, eigen_values);
+		compute_eigen(cov_mat, eigen_vectors, eigen_values);
 	
 		// @NOTE: Compute residual error between the two sets of points.
 		//compute_residual_error(err_x, err_y, err_z, cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, num_points, *M);
