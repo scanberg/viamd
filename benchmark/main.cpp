@@ -54,6 +54,13 @@ int main() {
 	printf("Time to load trajectory: %.2fms\n", MILLISEC(t1_load, t2_load));
 	printf("Loaded trajectory size in RAM: %.2fMB\n", (double)(num_atoms * num_frames * sizeof(float) * 3) / MEGABYTES(1));
 
+	// AOS layout for comparison
+	vec3* xyz = (vec3*)TMP_MALLOC(num_atoms * num_frames * sizeof(vec3));
+	defer{ TMP_FREE(xyz); };
+	for (int32 i = 0; i < num_frames * num_atoms; i++) {
+		xyz[i] = { md.trajectory.position_data.x[i], md.trajectory.position_data.y[i], md.trajectory.position_data.z[i] };
+	}
+
 	SECTION("MEMSET REFERENCE")
 	{
 		const auto num_iter = 100;
@@ -215,6 +222,21 @@ int main() {
 
 		printf("Time (vectorized): %.2fms (%.1fx) speedup\n", time_vec, time_naive / time_vec);
 		printf("Throughput (vectorized): %.2fMB/s\n", throughput_vec / (double)MEGABYTES(1));
+
+		const auto t4 = TIME();
+		for (int32 i = 0; i < num_iter; i++) {
+			for (int32 j = 0; j < size; j++) {
+				vec4 v = { xyz[i], 1.0f };
+				v = M * v;
+				xyz[i] = v;
+			}
+		}
+		const auto t5 = TIME();
+		const auto time_aos = MILLISEC(t4, t5) / (double)num_iter;
+		const auto throughput_aos = size_in_bytes / SECONDS(t4, t5);
+
+		printf("Time (aos): %.2fms (%.1fx) speedup\n", time_aos, time_naive / time_aos);
+		printf("Throughput (aos): %.2fMB/s\n", throughput_aos / (double)MEGABYTES(1));
 	}
 
 	SECTION("COM")
