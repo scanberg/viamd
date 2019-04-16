@@ -154,7 +154,7 @@ static void decompose(const mat3& M, mat3* R, mat3* S) {
 	mat3 AtA = math::transpose(M) * M;
 	mat3 Q, D;
 	diagonalize(AtA, &Q, &D);
-	const float det = math::determinant(AtA); // For debugging
+	//const float det = math::determinant(AtA); // For debugging
 	D[0][0] = sqrtf(D[0][0]);
 	D[1][1] = sqrtf(D[1][1]);
 	D[2][2] = sqrtf(D[2][2]);
