@@ -56,22 +56,23 @@ ATOM     24  H13 CSP3    1E      9.801   2.693  -7.994
 )";
 
 TEST_CASE("Bitfield", "[Bitfield]") {
+	constexpr int size = 257;
 	Bitfield field;
-	bitfield::init(&field, 257);
+	bitfield::init(&field, size);
 	bitfield::set_bit(field, 2);
 	bitfield::set_bit(field, 3);
 	bitfield::set_bit(field, 5);
 
-	REQUIRE(field.size() == 257);
-	REQUIRE(field.size_in_bytes() == 257 / 8 + (257 % 8 ? 1 : 0));
+	REQUIRE(field.size() == size);
+	REQUIRE(field.size_in_bytes() == size / 8 + (size % 8 ? 1 : 0));
 
 	REQUIRE(bitfield::get_bit(field, 2) == true);
 	REQUIRE(bitfield::get_bit(field, 3) == true);
 	REQUIRE(bitfield::get_bit(field, 5) == true);
 	REQUIRE(bitfield::number_of_bits_set(field) == 3);
 
-	bitfield::print(field);
-	printf("\n");
+	//bitfield::print(field);
+	//printf("\n");
 
 	bitfield::clear_all(field);
 	for (int64 i = 0; i < field.size(); i++) {
@@ -86,8 +87,8 @@ TEST_CASE("Bitfield", "[Bitfield]") {
 	bitfield::set_range(field, Range<int>(beg, end));
 	REQUIRE(bitfield::number_of_bits_set(field) == (end - beg));
 
-	bitfield::print(field);
-	printf("\n");
+	//bitfield::print(field);
+	//printf("\n");
 
 	for (int64 i = 0; i < field.size(); i++) {
 		if (beg <= i && i < end) {
@@ -101,10 +102,10 @@ TEST_CASE("Bitfield", "[Bitfield]") {
 	REQUIRE(bitfield::any_bit_set_in_range(field, Range<int>(0, beg)) == false);
 	REQUIRE(bitfield::any_bit_set_in_range(field, Range<int>(beg, end)) == true);
 	REQUIRE(bitfield::all_bits_set_in_range(field, Range<int>(beg, end)) == true);
-	REQUIRE(bitfield::any_bit_set_in_range(field, Range<int>(end, 256)) == false);
+	REQUIRE(bitfield::any_bit_set_in_range(field, Range<int>(end, size)) == false);
 
-	bitfield::print(field);
-	printf("\n");
+	//bitfield::print(field);
+	//printf("\n");
 
 }
 
