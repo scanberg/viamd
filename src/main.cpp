@@ -90,7 +90,6 @@ constexpr float32 BALL_AND_STICK_VDW_SCALE = 0.30f;
 constexpr float32 BALL_AND_STICK_LICORICE_SCALE = 0.5f;
 
 constexpr int32 VOLUME_DOWNSAMPLE_FACTOR = 2;
-
 constexpr int32 SPLINE_SUBDIVISION_COUNT = 16;
 
 #ifdef VIAMD_RELEASE
@@ -139,6 +138,8 @@ enum class SelectionGrowth { CovalentBond, Radial };
 enum class RepresentationType { Vdw, Licorice, BallAndStick, Ribbons, Cartoon };
 
 enum AtomBit_ { AtomBit_Highlighted = BIT(0), AtomBit_Selected = BIT(1), AtomBit_Visible = BIT(2) };
+
+// #struct Structure Declarations
 
 struct PickingData {
     uint32 idx = NO_PICKING_IDX;
@@ -333,7 +334,7 @@ struct ApplicationData {
                 float outline_scale = 1.2f;
             } selection;
 
-            float selection_saturation = 0.25f;
+            float selection_saturation = 0.5f;
         } color;
 
         bool selecting = false;
@@ -388,7 +389,7 @@ struct ApplicationData {
         struct {
             bool enabled = false;
             float32 focus_depth = 0.5f;
-            float32 focus_scale = 1.0f;
+            float32 focus_scale = 10.0f;
         } dof;
 
         struct {
@@ -1195,6 +1196,7 @@ int main(int, char**) {
 						mat4 M = mat4(ref.basis);
 						M[3] = vec4(ref.com, 1.0f);
 						immediate::draw_basis(M, 2.0f);
+						immediate::draw_plane_wireframe(ref.com, M[0], M[1], immediate::COLOR_RED);
 						break;
 					}
 				}
@@ -1580,7 +1582,16 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 			}
 			else {
 				ref.com = cur_com;
-				ref.basis = R;
+				const auto frame = data->playback.frame;
+				const auto v0 = vec3(structure_tracking::get_eigen_vector_x(ref.id, 0)[frame], structure_tracking::get_eigen_vector_y(ref.id, 0)[frame], structure_tracking::get_eigen_vector_z(ref.id, 0)[frame]);
+				const auto v1 = vec3(structure_tracking::get_eigen_vector_x(ref.id, 1)[frame], structure_tracking::get_eigen_vector_y(ref.id, 1)[frame], structure_tracking::get_eigen_vector_z(ref.id, 1)[frame]);
+				const auto v2 = vec3(structure_tracking::get_eigen_vector_x(ref.id, 2)[frame], structure_tracking::get_eigen_vector_y(ref.id, 2)[frame], structure_tracking::get_eigen_vector_z(ref.id, 2)[frame]);
+
+				const auto x = structure_tracking::get_eigen_value(ref.id, 0)[frame];
+				const auto y = structure_tracking::get_eigen_value(ref.id, 1)[frame];
+				const auto z = structure_tracking::get_eigen_value(ref.id, 2)[frame];
+
+				ref.basis = mat3(v0, v1, v2);
 			}
 
 			if (ref.active) {
@@ -1912,7 +1923,7 @@ ImGui::EndMenu();
             ImGui::BeginGroup();
             ImGui::Checkbox("Depth of Field", &data->visuals.dof.enabled);
             if (data->visuals.dof.enabled) {
-                ImGui::SliderFloat("Focus Point", &data->visuals.dof.focus_depth, 0.001f, 200.f);
+                //ImGui::SliderFloat("Focus Point", &data->visuals.dof.focus_depth, 0.001f, 200.f);
                 ImGui::SliderFloat("Focus Scale", &data->visuals.dof.focus_scale, 0.001f, 100.f);
             }
             ImGui::EndGroup();
@@ -2073,13 +2084,16 @@ ImGui::EndGroup();
                 const auto TEXT_BG_DEFAULT_COLOR = ImGui::ColorConvertFloat4ToU32(ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
                 ImGui::PushStyleColor(ImGuiCol_FrameBg, query_ok ? TEXT_BG_DEFAULT_COLOR : TEXT_BG_ERROR_COLOR);
 				//ImGui::Combo("Mode", (int*)(&data->selection.op_mode), "Or\0And\0\0");
-                const bool query_modified = ImGui::InputText("##query", buf, ARRAY_SIZE(buf), ImGuiInputTextFlags_AutoSelectAll);
-                const bool pressed_enter = ImGui::IsItemActivePreviousFrame() && !ImGui::IsItemActive() && ImGui::IsKeyPressed(ImGui::GetIO().KeyMap[ImGuiKey_Enter]);
+                const bool pressed_enter = ImGui::InputText("##query", buf, ARRAY_SIZE(buf), ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue);
                 ImGui::PopStyleColor();
                 // ImGui::SameLine();
                 if (!query_ok) ImGui::PushDisabled();
                 const bool apply = ImGui::Button("Apply##query") || pressed_enter;
                 if (!query_ok) ImGui::PopDisabled();
+
+				if (pressed_enter) {
+					ImGui::SetKeyboardFocusHere(-1);
+				}
 
                 // if (ImGui::IsWindowAppearing()) {
                 //    ImGui::SetKeyboardFocusHere(-1);
@@ -2096,14 +2110,14 @@ ImGui::EndGroup();
 					if (!query_ok) {
 						bitfield::clear_all(mask);
 					}
-					data->gpu_buffers.dirty.selection = true;
+					//data->gpu_buffers.dirty.selection = true;
 				}
 
                 const bool show_preview =
                     (ImGui::GetFocusID() == ImGui::GetID("##query")) || (ImGui::GetHoveredID() == ImGui::GetID("##query")) || (ImGui::GetHoveredID() == ImGui::GetID("Apply##query"));
 
                 if (show_preview) {
-                    if (query_ok) {
+                    //if (query_ok) {
 						memcpy(data->selection.current_highlight_mask.data(), mask.data(), mask.size_in_bytes());
 						/*
                         if (data->selection.op_mode == SelectionOperator::And) {
@@ -2113,7 +2127,7 @@ ImGui::EndGroup();
                         }
 						*/
                         data->gpu_buffers.dirty.selection = true;
-                    }
+                    //}
                 }
 
                 if (apply) {
@@ -2686,8 +2700,8 @@ static void draw_reference_frames_window(ApplicationData* data) {
 			ImVec2 x_range = { 0.0f, (float)abs_data.size()};
 			ImVec2 y_range = { -1.0f, 2.0f };
 			ImGui::BeginPlot("Determinant", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX);
-			ImGui::PlotValues("relative", rel_data.data(), rel_data.size(), 0xFF5555FF);
-			ImGui::PlotValues("absolute", abs_data.data(), abs_data.size(), 0xFF55FF55);
+			ImGui::PlotValues("relative", rel_data.data(), (int)rel_data.size(), 0xFF5555FF);
+			ImGui::PlotValues("absolute", abs_data.data(), (int)abs_data.size(), 0xFF55FF55);
 
 			ImGui::EndPlot();
 
@@ -3521,7 +3535,7 @@ static void draw_shape_space_window(ApplicationData* data) {
 	dl->ChannelsSplit(3);
 	dl->ChannelsSetCurrent(0);
 	dl->AddTriangleFilled(a, b, c, triangle_fill_color);
-	dl->AddTriangle(a, b, c, triangle_line_color);
+	//dl->AddTriangle(a, b, c, triangle_line_color);
 
 	int64 mouse_hover_idx = -1;
     vec3  mouse_eigen_val = {0,0,0};
@@ -3589,11 +3603,12 @@ static void draw_shape_space_window(ApplicationData* data) {
 		ImGui::BeginTooltip();
 		if (mouse_hover_idx != -1) {
 			ImGui::Text("Frame[%i]", (int32)mouse_hover_idx);
-            ImGui::Text(u8"\u03BB: (%.2f, %.2f, %.2f)", mouse_eigen_val.x, mouse_eigen_val.y, mouse_eigen_val.z);
 			if (ImGui::GetIO().MouseClicked[0]) {
 				data->playback.time = (float)mouse_hover_idx;
 			}
 		}
+		ImGui::Text(u8"\u03BB: (%.2f, %.2f, %.2f)", mouse_eigen_val.x, mouse_eigen_val.y, mouse_eigen_val.z);
+
 		ImGui::EndTooltip();
 	}
 	ImGui::End();
@@ -4703,6 +4718,7 @@ static void update_reference_frame(ApplicationData* data, ReferenceFrame* ref) {
 	for (const auto& s : data->selection.stored_selections) {
 		sel.push_back({ s.name, s.atom_mask });
 	}
+	sel.push_back({ "current", data->selection.current_selection_mask });
 
 	ref->filter_is_ok = filter::compute_filter_mask(ref->atom_mask, ref->filter, data->dynamic.molecule, sel);
 	if (ref->filter_is_ok) {
