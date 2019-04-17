@@ -7,7 +7,7 @@ function(add_compile_options_config CONFIG)
     endforeach()
 endfunction()
 
-project(viamd LANGUAGES CXX)
+project(viamd)
 
 option(VIAMD_PROFILE_COMPILE_TIMES ON)
 

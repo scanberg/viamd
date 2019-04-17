@@ -1583,15 +1583,10 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 			else {
 				ref.com = cur_com;
 				const auto frame = data->playback.frame;
-				const auto v0 = vec3(structure_tracking::get_eigen_vector_x(ref.id, 0)[frame], structure_tracking::get_eigen_vector_y(ref.id, 0)[frame], structure_tracking::get_eigen_vector_z(ref.id, 0)[frame]);
-				const auto v1 = vec3(structure_tracking::get_eigen_vector_x(ref.id, 1)[frame], structure_tracking::get_eigen_vector_y(ref.id, 1)[frame], structure_tracking::get_eigen_vector_z(ref.id, 1)[frame]);
-				const auto v2 = vec3(structure_tracking::get_eigen_vector_x(ref.id, 2)[frame], structure_tracking::get_eigen_vector_y(ref.id, 2)[frame], structure_tracking::get_eigen_vector_z(ref.id, 2)[frame]);
+				const auto eigen_vectors = structure_tracking::get_eigen_vectors(ref.id)[frame];
+                const auto eigen_values = structure_tracking::get_eigen_values(ref.id)[frame];
 
-				const auto x = structure_tracking::get_eigen_value(ref.id, 0)[frame];
-				const auto y = structure_tracking::get_eigen_value(ref.id, 1)[frame];
-				const auto z = structure_tracking::get_eigen_value(ref.id, 2)[frame];
-
-				ref.basis = mat3(v0, v1, v2);
+				ref.basis = eigen_vectors;
 			}
 
 			if (ref.active) {
@@ -3548,17 +3543,15 @@ static void draw_shape_space_window(ApplicationData* data) {
 		const float32 selected_radius = data->ramachandran.current.selection.radius;
 
 		const structure_tracking::ID id = data->reference_frame.frames[data->shape_space.reference_frame_idx].id;
-		const Array<const float> eigen_value[3] = { structure_tracking::get_eigen_value(id, 0),
-													structure_tracking::get_eigen_value(id, 1),
-													structure_tracking::get_eigen_value(id, 2) };
-		const int32 N = (int32)eigen_value[0].size();
+		const Array<const vec3> eigen_values = structure_tracking::get_eigen_values(id);
+		const int32 N = (int32)eigen_values.size();
 		const vec2 p[3] = { vec_cast(a), vec_cast(b), vec_cast(c) };
 
 		const auto draw_entries = [&](Range<int32> range, float radius, uint32 fill_color, uint32 line_color) {
 			for (int32 i = range.beg; i < range.end; i++) {
-				const float l1 = eigen_value[0][i];
-				const float l2 = eigen_value[1][i];
-				const float l3 = eigen_value[2][i];
+				const float l1 = eigen_values[i].x;
+				const float l2 = eigen_values[i].y;
+				const float l3 = eigen_values[i].z;
 				const float l_sum = l1 + l2 + l3;
 
 				if (l_sum < 1.0e-6f) continue;
@@ -4735,11 +4728,8 @@ static ReferenceFrame* get_active_reference_frame(ApplicationData* data) {
 }
 
 static void dump_reference_frame_eigenvalues_to_file(const ReferenceFrame& ref, CString filename) {
-	auto ex = structure_tracking::get_eigen_value(ref.id, 0);
-	auto ey = structure_tracking::get_eigen_value(ref.id, 1);
-	auto ez = structure_tracking::get_eigen_value(ref.id, 2);
-
-	if (!ex) {
+	const auto ev = structure_tracking::get_eigen_values(ref.id);
+	if (!ev) {
 		LOG_ERROR("Could not read structure tracking id");
 		return;
 	}
@@ -4753,8 +4743,8 @@ static void dump_reference_frame_eigenvalues_to_file(const ReferenceFrame& ref, 
 	}
 
 	fprintf(file, "%-8s %-8s %-8s %-8s\n", "frame", "lamda1", "lamda2", "lamda3");
-	for (int32 i = 0; i < (int32)ex.size(); i++) {
-		fprintf(file, "%-8i %-8.3f %-8.3f %-8.3f\n", i, ex[i], ey[i], ez[i]);
+	for (int32 i = 0; i < (int32)ev.size(); i++) {
+		fprintf(file, "%-8i %-8.3f %-8.3f %-8.3f\n", i, ev[i].x, ev[i].y, ev[i].z);
 	}
 }
 

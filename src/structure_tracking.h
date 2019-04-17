@@ -32,10 +32,8 @@ bool compute_trajectory_transform_data(ID structure_id, Bitfield atom_mask, cons
 
 const Transform& get_transform_to_target_frame(ID structure_id, int32 source_frame);
 
-const Array<const float> get_eigen_vector_x(ID structure_id, int64 idx);
-const Array<const float> get_eigen_vector_y(ID structure_id, int64 idx);
-const Array<const float> get_eigen_vector_z(ID structure_id, int64 idx);
-const Array<const float> get_eigen_value(ID structure_id, int64 idx);
+const Array<const mat3> get_eigen_vectors(ID structure_id);
+const Array<const vec3> get_eigen_values(ID structure_id);
 
 const Array<const float> get_abs_det(ID structure_id);
 const Array<const float> get_rel_det(ID structure_id);

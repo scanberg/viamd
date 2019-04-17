@@ -18,12 +18,8 @@ struct Structure {
 	struct {
 		Transform* transform = nullptr;
 		struct {
-			struct {
-				float* x = nullptr;
-				float* y = nullptr;
-				float* z = nullptr;
-			} vector[3];
-			float* value[3] = { nullptr, nullptr, nullptr };
+			mat3* vector = nullptr;
+			vec3* value = nullptr;
 		} eigen;
 		struct {
 			float* abs = nullptr;
@@ -335,7 +331,8 @@ static void compute_rbf_weights(float* RESTRICT out_x, float* RESTRICT out_y, fl
 static void free_structure_data(Structure* s) {
 	ASSERT(s);
 	if (s->frame_data.transform) FREE(s->frame_data.transform);
-	if (s->frame_data.eigen.vector[0].x) FREE(s->frame_data.eigen.vector[0].x);
+	if (s->frame_data.eigen.vector) FREE(s->frame_data.eigen.vector);
+	if (s->frame_data.eigen.value) FREE(s->frame_data.eigen.value);
 	if (s->frame_data.determinant.abs) FREE(s->frame_data.determinant.abs);
 }
 
@@ -348,20 +345,8 @@ static void init_structure_data(Structure* s, ID id, int32 ref_frame_idx, int32 
 	s->num_points = num_points;
 
 	s->frame_data.transform = (Transform*)MALLOC(sizeof(Transform) * num_frames);
-
-	float* eigen_data = (float*)MALLOC(sizeof(float) * num_frames * 12);
-	s->frame_data.eigen.vector[0].x = eigen_data + num_frames * 0;
-	s->frame_data.eigen.vector[0].y = eigen_data + num_frames * 1;
-	s->frame_data.eigen.vector[0].z = eigen_data + num_frames * 2;
-	s->frame_data.eigen.vector[1].x = eigen_data + num_frames * 3;
-	s->frame_data.eigen.vector[1].y = eigen_data + num_frames * 4;
-	s->frame_data.eigen.vector[1].z = eigen_data + num_frames * 5;
-	s->frame_data.eigen.vector[2].x = eigen_data + num_frames * 6;
-	s->frame_data.eigen.vector[2].y = eigen_data + num_frames * 7;
-	s->frame_data.eigen.vector[2].z = eigen_data + num_frames * 8;
-	s->frame_data.eigen.value[0]	= eigen_data + num_frames * 9;
-	s->frame_data.eigen.value[1]	= eigen_data + num_frames * 10;
-	s->frame_data.eigen.value[2]	= eigen_data + num_frames * 11;
+	s->frame_data.eigen.vector = (mat3*)MALLOC(sizeof(mat3) * num_frames);
+	s->frame_data.eigen.value = (vec3*)MALLOC(sizeof(vec3) * num_frames);
 
 	float* det_data = (float*)MALLOC(sizeof(float) * num_frames * 2);
 	s->frame_data.determinant.abs = det_data;
@@ -502,19 +487,8 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
 
 	// Set target frame explicitly
 	s->frame_data.transform[target_frame_idx] = { mat3(1), ref_com };
-	s->frame_data.eigen.vector[0].x[target_frame_idx] = 0;
-	s->frame_data.eigen.vector[0].y[target_frame_idx] = 0;
-	s->frame_data.eigen.vector[0].z[target_frame_idx] = 0;
-	s->frame_data.eigen.vector[1].x[target_frame_idx] = 0;
-	s->frame_data.eigen.vector[1].y[target_frame_idx] = 0;
-	s->frame_data.eigen.vector[1].z[target_frame_idx] = 0;
-	s->frame_data.eigen.vector[2].x[target_frame_idx] = 0;
-	s->frame_data.eigen.vector[2].y[target_frame_idx] = 0;
-	s->frame_data.eigen.vector[2].z[target_frame_idx] = 0;
-	s->frame_data.eigen.value[0][target_frame_idx] = 0;
-	s->frame_data.eigen.value[1][target_frame_idx] = 0;
-	s->frame_data.eigen.value[2][target_frame_idx] = 0;
-
+	s->frame_data.eigen.vector[target_frame_idx] = mat3(1);
+	s->frame_data.eigen.value[target_frame_idx] = vec3(1);
 	s->frame_data.determinant.abs[target_frame_idx] = 1.0f;
 	s->frame_data.determinant.rel[target_frame_idx] = 1.0f;
 
@@ -528,12 +502,6 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
 		prv_com = cur_com;
 
 		cur_com = compute_com(cur_x, cur_y, cur_z, mass, num_points);
-		
-		//float* rbf_x = s->data.rbf.weight.x + i * num_points;
-		//float* rbf_y = s->data.rbf.weight.y + i * num_points;
-		//float* rbf_z = s->data.rbf.weight.z + i * num_points;
-
-		// @NOTE: Compute linear transformation matrix between the two sets of points.
 
 		const mat3 abs_mat = compute_covariance_matrix(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, mass, num_points, cur_com, ref_com);
 		const mat3 rel_mat = compute_covariance_matrix(cur_x, cur_y, cur_z, prv_x, prv_y, prv_z, mass, num_points, cur_com, prv_com);
@@ -544,34 +512,10 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
 		const float abs_det = math::determinant(abs_mat / cov_mat);
 		const float rel_det = math::determinant(rel_mat / cov_mat);
 
-		vec3 eigen_vectors[3];
-		float eigen_values[3];
-		compute_eigen(cov_mat, eigen_vectors, eigen_values);
-	
-		// @NOTE: Compute residual error between the two sets of points.
-		//compute_residual_error(err_x, err_y, err_z, cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, num_points, *M);
-
-		// @NOTE: Encode residual error as rbf at reference points
-		//compute_rbf_weights(rbf_x, rbf_y, rbf_z, ref_x, ref_y, ref_z, err_x, err_y, err_z, num_points, rbf_radial_cutoff);
+		compute_eigen(cov_mat, &s->frame_data.eigen.vector[cur_idx][0], &s->frame_data.eigen.value[cur_idx][0]);
 
 		s->frame_data.transform[cur_idx].rotation = cur_rot;
 		s->frame_data.transform[cur_idx].com = cur_com;
-
-		s->frame_data.eigen.vector[0].x[cur_idx] = eigen_vectors[0].x;
-		s->frame_data.eigen.vector[0].y[cur_idx] = eigen_vectors[0].y;
-		s->frame_data.eigen.vector[0].z[cur_idx] = eigen_vectors[0].z;
-
-		s->frame_data.eigen.vector[1].x[cur_idx] = eigen_vectors[1].x;
-		s->frame_data.eigen.vector[1].y[cur_idx] = eigen_vectors[1].y;
-		s->frame_data.eigen.vector[1].z[cur_idx] = eigen_vectors[1].z;
-
-		s->frame_data.eigen.vector[2].x[cur_idx] = eigen_vectors[2].x;
-		s->frame_data.eigen.vector[2].y[cur_idx] = eigen_vectors[2].y;
-		s->frame_data.eigen.vector[2].z[cur_idx] = eigen_vectors[2].z;
-
-		s->frame_data.eigen.value[0][cur_idx] = eigen_values[0];
-		s->frame_data.eigen.value[1][cur_idx] = eigen_values[1];
-		s->frame_data.eigen.value[2][cur_idx] = eigen_values[2];
 
 		s->frame_data.determinant.abs[cur_idx] = abs_det;
 		s->frame_data.determinant.rel[cur_idx] = rel_det;
@@ -598,64 +542,24 @@ const Transform& get_transform_to_target_frame(ID id, int32 source_frame) {
 	return s->frame_data.transform[source_frame];
 }
 
-const Array<const float> get_eigen_vector_x(ID id, int64 idx) {
+const Array<const mat3> get_eigen_vectors(ID id) {
 	Structure* s = find_structure(id);
 	if (s == nullptr) {
 		LOG_ERROR("Supplied id is not valid.");
 		return {};
 	}
 
-	if (idx < 0 || 2 < idx) {
-		LOG_ERROR("Supplied idx[%lli] is out of range [0,2]", idx);
-		return {};
-	}
-
-	return { s->frame_data.eigen.vector[idx].x, s->num_frames };
+	return { s->frame_data.eigen.vectors, s->num_frames };
 }
 
-const Array<const float> get_eigen_vector_y(ID id, int64 idx) {
+const Array<const vec3> get_eigen_values(ID id) {
 	Structure* s = find_structure(id);
 	if (s == nullptr) {
 		LOG_ERROR("Supplied id is not valid.");
 		return {};
 	}
 
-	if (idx < 0 || 2 < idx) {
-		LOG_ERROR("Supplied idx[%lli] is out of range [0,2]", idx);
-		return {};
-	}
-
-	return { s->frame_data.eigen.vector[idx].y, s->num_frames };
-}
-
-const Array<const float> get_eigen_vector_z(ID id, int64 idx) {
-	Structure* s = find_structure(id);
-	if (s == nullptr) {
-		LOG_ERROR("Supplied id is not valid.");
-		return {};
-	}
-
-	if (idx < 0 || 2 < idx) {
-		LOG_ERROR("Supplied idx[%lli] is out of range [0,2]", idx);
-		return {};
-	}
-
-	return { s->frame_data.eigen.vector[idx].z, s->num_frames };
-}
-
-const Array<const float> get_eigen_value(ID id, int64 idx) {
-	Structure* s = find_structure(id);
-	if (s == nullptr) {
-		LOG_ERROR("Supplied id is not valid.");
-		return {};
-	}
-
-	if (idx < 0 || 2 < idx) {
-		LOG_ERROR("Supplied idx[%lli] is out of range [0,2]", idx);
-		return {};
-	}
-
-	return { s->frame_data.eigen.value[idx], s->num_frames };
+	return { s->frame_data.eigen.values, s->num_frames };
 }
 
 const Array<const float> get_abs_det(ID id) {
