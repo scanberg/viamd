@@ -2,7 +2,7 @@
 
 namespace ImGui {
 
-enum LinePlotFlags_ { LinePlotFlags_AxisX = 1 << 0, LinePlotFlags_AxisY = 1 << 1, LinePlotFlags_ShowXVal = 1 << 2, LinePlotFlats_Grid = 1 << 3 };
+enum LinePlotFlags_ { LinePlotFlags_AxisX = 1, LinePlotFlags_AxisY = 2, LinePlotFlags_ShowXVal = 4, LinePlotFlats_Grid = 8 };
 
 typedef int LinePlotFlags;
 

@@ -2704,7 +2704,7 @@ static void draw_reference_frames_window(ApplicationData* data) {
 
                 const ImVec2 x_range = {0.0f, (float)abs_data.size()};
                 const ImVec2 y_range = {-1.0f, 2.0f};
-                ImGui::BeginPlot("Determinant", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX);
+                ImGui::BeginPlot("Determinant", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
                 ImGui::PlotValues("relative", rel_data.data(), (int)rel_data.size(), 0xFF5555FF);
                 ImGui::PlotValues("absolute", abs_data.data(), (int)abs_data.size(), 0xFF55FF55);
                 float x_val;
@@ -2728,7 +2728,7 @@ static void draw_reference_frames_window(ApplicationData* data) {
 
                 const ImVec2 x_range = {0.0f, (float)ev_data.size()};
                 const ImVec2 y_range = {-0.05f, 1.05f};
-                ImGui::BeginPlot("Eigen Values", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX);
+                ImGui::BeginPlot("Eigen Values", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
                 ImGui::PlotValues("0", x, (int)ev_data.size(), 0xFF5555FF);
                 ImGui::PlotValues("1", y, (int)ev_data.size(), 0xFF55FF55);
                 ImGui::PlotValues("2", z, (int)ev_data.size(), 0xFFFF5555);

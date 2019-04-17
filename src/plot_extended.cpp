@@ -85,6 +85,11 @@ if (selection_range) {
         const auto mouse_pos = GetMousePos();
         const float t = (mouse_pos.x - ps.inner_bb.Min.x) / (ps.inner_bb.Max.x - ps.inner_bb.Min.x);
         ps.hovered_x = ImLerp(x_range.x, x_range.y, t);
+
+		if (flags & LinePlotFlags_ShowXVal) {
+            const float x = ImLerp(inner_bb.Min.x, inner_bb.Max.x, t);
+            window->DrawList->AddLine(ImVec2(x, inner_bb.Min.y), ImVec2(x, inner_bb.Max.y), HOVER_LINE_COLOR);
+		}
     }
 
     RenderTextClipped(ImVec2(frame_bb.Min.x + style.FramePadding.x, frame_bb.Min.y + style.FramePadding.y), frame_bb.Max, label, NULL, NULL, ImVec2(0.0f, 0.0f));
@@ -234,8 +239,9 @@ IMGUI_API void EndPlot() {
 
     if (IsItemHovered()) {
         BeginTooltip();
+        Text("[%.2f]\n", ps.hovered_x);
         for (const auto& item : ps.hover_data) {
-            TextColored(ImColor(item.color), "%s [%i]: %.3f\n", item.label, (int)ps.hovered_x, item.value);
+            TextColored(ImColor(item.color), "%s: %.3f\n", item.label, item.value);
         }
         EndTooltip();
     }
