@@ -440,7 +440,7 @@ void clear_structures() {
     context->entries.clear();
 }
 
-void compute_support_point_positions(float* out_x, float* out_y, float* out_z, const mat3& eigen_vectors, const vec3& com) {
+void compute_support_point_positions(float (&out_x)[6], float (&out_y)[6], float (&out_z)[6], const mat3& eigen_vectors, const vec3& com) {
     // clang-format off
     for (int i = 0; i < 3; i++) {
         out_x[i*2 + 0] = com.x + eigen_vectors[i].x;
@@ -453,7 +453,7 @@ void compute_support_point_positions(float* out_x, float* out_y, float* out_z, c
     // clang-format on
 }
 
-void compute_support_point_mass(float* out_m, const vec3& eigen_values, float tot_mass) {
+void compute_support_point_mass(float (&out_m)[6], const vec3& eigen_values, float tot_mass) {
     const float mass_w = tot_mass * 0.01f;
     out_m[0] = out_m[1] = eigen_values[0] * mass_w;
     out_m[2] = out_m[3] = eigen_values[1] * mass_w;
@@ -532,7 +532,7 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
     s->frame_data.determinant.abs[target_frame_idx] = 1.0f;
     s->frame_data.determinant.rel[target_frame_idx] = 1.0f;
 
-    compute_support_point_positions(ref_x + num_points, ref_y + num_points, ref_z + num_points, ref_eigen_vectors, ref_com);
+    compute_support_point_positions((float(&)[6])ref_x[num_points], (float(&)[6])ref_y[num_points], (float(&)[6])ref_z[num_points], ref_eigen_vectors, ref_com);
     compute_support_point_mass(ref_support_point_mass, ref_eigen_values, tot_mass);
 
     for (int32 i = 0; i < num_frames; i++) {
