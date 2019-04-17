@@ -16,6 +16,15 @@ struct Transform {
 namespace structure_tracking {
 typedef uint32 ID;
 
+enum class SupportPoint {
+	Pos_X,
+	Neg_X,
+	Pos_Y,
+	Neg_Y,
+	Pos_Z,
+	Neg_Z
+};
+
 void initialize();
 void shutdown();
 
@@ -37,5 +46,7 @@ const Array<const vec3> get_eigen_values(ID structure_id);
 
 const Array<const float> get_abs_det(ID structure_id);
 const Array<const float> get_rel_det(ID structure_id);
+
+const Array<const vec3> get_support_point(ID structure_id, SupportPoint point);
 
 }  // namespace structure_tracking
