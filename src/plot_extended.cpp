@@ -5,16 +5,17 @@
 namespace ImGui {
 
 struct PlotState {
-	struct HoverDataItem {
-		ImVec2 value = { 0,0 };
-		ImU32 color = 0;
-		const char* label = "";
-	};
+    struct HoverDataItem {
+        float value = 0;
+        ImU32 color = 0;
+        const char* label = "";
+    };
 
     ImGuiID id = 0;
-	ImRect inner_bb = {};
-	ImRect coord_view = {};
-	ImVector<HoverDataItem> hover_data{};
+    ImRect inner_bb = {};
+    ImRect coord_view = {};
+    ImVector<HoverDataItem> hover_data{};
+    float hovered_x = 0.0f;
 };
 
 static PlotState ps;
@@ -78,10 +79,15 @@ if (selection_range) {
     ps.inner_bb = inner_bb;
     ps.coord_view = ImRect(ImVec2(x_range.x, y_range.x), ImVec2(x_range.y, y_range.y));
     // ps.selection_range = selection_range;
-	ps.hover_data.clear();
+    ps.hover_data.clear();
 
-    RenderTextClipped(ImVec2(frame_bb.Min.x + style.FramePadding.x, frame_bb.Min.y + style.FramePadding.y), frame_bb.Max, label, NULL, NULL,
-                      ImVec2(0.0f, 0.0f));
+    if (IsItemHovered()) {
+        const auto mouse_pos = GetMousePos();
+        const float t = (mouse_pos.x - ps.inner_bb.Min.x) / (ps.inner_bb.Max.x - ps.inner_bb.Min.x);
+        ps.hovered_x = ImLerp(x_range.x, x_range.y, t);
+    }
+
+    RenderTextClipped(ImVec2(frame_bb.Min.x + style.FramePadding.x, frame_bb.Min.y + style.FramePadding.y), frame_bb.Max, label, NULL, NULL, ImVec2(0.0f, 0.0f));
 
     // return interacting_x_val;
 }
@@ -92,18 +98,17 @@ static inline ImVec2 compute_frame_coord(ImRect frame, ImVec2 coord) {
     return {cx, cy};
 }
 
-static inline void PushHoverValues(const ImVec2& val, ImU32 color, const char* label) {
-	IM_ASSERT(ps.id);
-	ps.hover_data.push_back({ val, color, label});
+static inline void PushHoverValues(float val, ImU32 color, const char* label) {
+    IM_ASSERT(ps.id);
+    ps.hover_data.push_back({val, color, label});
 }
 
-static inline ImVec2 GetHoveredValue(const float* value, int count) {
-	IM_ASSERT(ps.id);
-	const auto mouse_pos = GetMousePos();
-	const float t = (mouse_pos.x - ps.inner_bb.Min.x) / (ps.inner_bb.Max.x - ps.inner_bb.Min.x);
-	const int idx = ImClamp((int)(t * (count - 1)), 0, count - 1);
-	const float val = value[idx];
-	return { (float)idx, val };
+static inline float GetHoveredValue(const float* value, int count) {
+    IM_ASSERT(ps.id);
+    const auto mouse_pos = GetMousePos();
+    const float t = (mouse_pos.x - ps.inner_bb.Min.x) / (ps.inner_bb.Max.x - ps.inner_bb.Min.x);
+    const int idx = ImClamp((int)(t * (count - 1)), 0, count - 1);
+    return value[idx];
 }
 
 IMGUI_API void PlotVerticalBars(const float* bar_opacity, int count, ImU32 color) {
@@ -166,8 +171,7 @@ IMGUI_API void PlotVariance(const float* avg, const float* var, int count, float
         if ((fill_color & IM_COL32_A_MASK) > 0) {
             int flags = GetCurrentWindow()->DrawList->Flags;
             GetCurrentWindow()->DrawList->Flags &= ~ImDrawListFlags_AntiAliasedFill;
-            GetCurrentWindow()->DrawList->AddQuadFilled(prev_screen_pos_top, prev_screen_pos_btm, next_screen_pos_btm, next_screen_pos_top,
-                                                        fill_color);
+            GetCurrentWindow()->DrawList->AddQuadFilled(prev_screen_pos_top, prev_screen_pos_btm, next_screen_pos_btm, next_screen_pos_top, fill_color);
             GetCurrentWindow()->DrawList->Flags = flags;
         }
         if ((line_color & IM_COL32_A_MASK) > 0) {
@@ -207,22 +211,34 @@ IMGUI_API void PlotValues(const char* line_label, const float* value, int count,
         prev_c = next_c;
     }
 
+    if (IsItemHovered()) {
+        PushHoverValues(GetHoveredValue(value, count), line_color, line_label);
+    }
+}
+
+IMGUI_API bool ClickingAtPlot(float* x_coord) {
+	IM_ASSERT(ps.id != 0); 
 	if (IsItemHovered()) {
-		PushHoverValues(GetHoveredValue(value, count), line_color, line_label);
+        if (GetIO().MouseDown[0]) {
+            if (x_coord) {
+                *x_coord = ps.hovered_x;
+            }
+            return true;
+        }
 	}
+	return false;
 }
 
 IMGUI_API void EndPlot() {
     IM_ASSERT(ps.id != 0);
 
-	if (IsItemHovered()) {
-		BeginTooltip();
-		for (const auto& item : ps.hover_data) {
-			TextColored(ImColor(item.color), "%s [%i]: %.3f\n", item.label, (int)item.value.x, item.value.y);
-		}
-		EndTooltip();
-	}
-
+    if (IsItemHovered()) {
+        BeginTooltip();
+        for (const auto& item : ps.hover_data) {
+            TextColored(ImColor(item.color), "%s [%i]: %.3f\n", item.label, (int)ps.hovered_x, item.value);
+        }
+        EndTooltip();
+    }
     ps.id = 0;
 }
 
@@ -271,8 +287,7 @@ IMGUI_API void DrawFilledLine(ImVec2 frame_min, ImVec2 frame_max, const float* v
     PopClipRect();
 }
 
-IMGUI_API bool PlotHistogram(const char* label, ImVec2 frame_size, const float* value, int count, bool periodic, ImVec2 value_range,
-                             ImVec2* selection_range) {
+IMGUI_API bool PlotHistogram(const char* label, ImVec2 frame_size, const float* value, int count, bool periodic, ImVec2 value_range, ImVec2* selection_range) {
     ImGuiWindow* window = GetCurrentWindow();
     if (window->SkipItems) return false;
     const ImGuiID id = window->GetID(label);
@@ -394,14 +409,12 @@ IMGUI_API bool PlotHistogram(const char* label, ImVec2 frame_size, const float* 
         EndTooltip();
     }
 
-    RenderTextClipped(ImVec2(frame_bb.Min.x + style.FramePadding.x, frame_bb.Min.y + style.FramePadding.y), frame_bb.Max, label, NULL, NULL,
-                      ImVec2(0.0f, 0.0f));
+    RenderTextClipped(ImVec2(frame_bb.Min.x + style.FramePadding.x, frame_bb.Min.y + style.FramePadding.y), frame_bb.Max, label, NULL, NULL, ImVec2(0.0f, 0.0f));
 
     return modifying;
 }
 
-IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_radius_ratio, const float* value, int count, ImVec2 value_range,
-                            ImU32 line_color) {
+IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_radius_ratio, const float* value, int count, ImVec2 value_range, ImU32 line_color) {
     ImGuiWindow* window = GetCurrentWindow();
     const ImGuiID id = window->GetID(label);
     ps.id = id;

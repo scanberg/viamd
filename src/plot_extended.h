@@ -7,13 +7,13 @@ enum LinePlotFlags_ { LinePlotFlags_AxisX = 1 << 0, LinePlotFlags_AxisY = 1 << 1
 typedef int LinePlotFlags;
 
 IMGUI_API void BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, ImVec2 y_range, LinePlotFlags flags = LinePlotFlags_ShowXVal);
+IMGUI_API bool ClickingAtPlot(float* x_coord);
 IMGUI_API void EndPlot();
 
 IMGUI_API void PlotVerticalBars(const float* bar_opacity, int count, ImU32 color);
 IMGUI_API void PlotVariance(const float* avg, const float* var, int count, float var_scl = 1.f, ImU32 line_color = ImColor(1.f, 1.f, 0.2f, 0.3f),
                             ImU32 fill_color = ImColor(1.f, 1.f, 0.2f, 0.1f));
 IMGUI_API void PlotValues(const char* line_label, const float* value, int count, ImU32 line_color = 0xffffffff);
-
 
 IMGUI_API void DrawHistogram(ImVec2 frame_min, ImVec2 frame_max, const float* value, const int count, float max_val = 0.f,
                              ImU32 color = GetColorU32(ImGuiCol_PlotHistogram));
