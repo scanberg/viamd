@@ -512,7 +512,7 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
 		const float abs_det = math::determinant(abs_mat / cov_mat);
 		const float rel_det = math::determinant(rel_mat / cov_mat);
 
-		compute_eigen(cov_mat, &s->frame_data.eigen.vector[cur_idx][0], &s->frame_data.eigen.value[cur_idx][0]);
+		compute_eigen(cov_mat, (vec3(&)[3])s->frame_data.eigen.vector[cur_idx], (float(&)[3])s->frame_data.eigen.value[cur_idx]);
 
 		s->frame_data.transform[cur_idx].rotation = cur_rot;
 		s->frame_data.transform[cur_idx].com = cur_com;
@@ -549,7 +549,7 @@ const Array<const mat3> get_eigen_vectors(ID id) {
 		return {};
 	}
 
-	return { s->frame_data.eigen.vectors, s->num_frames };
+	return { s->frame_data.eigen.vector, s->num_frames };
 }
 
 const Array<const vec3> get_eigen_values(ID id) {
@@ -559,7 +559,7 @@ const Array<const vec3> get_eigen_values(ID id) {
 		return {};
 	}
 
-	return { s->frame_data.eigen.values, s->num_frames };
+	return { s->frame_data.eigen.value, s->num_frames };
 }
 
 const Array<const float> get_abs_det(ID id) {
