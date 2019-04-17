@@ -31,6 +31,22 @@
 
 #define DATASET VIAMD_DATA_DIR"/alanine/two4REP-CH3_450K.pdb"
 
+extern void cubic_interpolation_pbc_scalar(float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z,
+										   const float* RESTRICT in_x0, const float* RESTRICT in_y0, const float* RESTRICT in_z0,
+                                           const float* RESTRICT in_x1, const float* RESTRICT in_y1, const float* RESTRICT in_z1,
+										   const float* RESTRICT in_x2, const float* RESTRICT in_y2, const float* RESTRICT in_z2,
+										   const float* RESTRICT in_x3, const float* RESTRICT in_y3, const float* RESTRICT in_z3,
+										   int64 count, float t, const mat3& sim_box);
+
+extern void cubic_interpolation_pbc_128(float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z, const float* RESTRICT in_x0, const float* RESTRICT in_y0, const float* RESTRICT in_z0,
+                                        const float* RESTRICT in_x1, const float* RESTRICT in_y1, const float* RESTRICT in_z1, const float* RESTRICT in_x2, const float* RESTRICT in_y2,
+                                        const float* RESTRICT in_z2, const float* RESTRICT in_x3, const float* RESTRICT in_y3, const float* RESTRICT in_z3, int64 count, float t, const mat3& sim_box);
+
+extern void cubic_interpolation_pbc_256(float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z, const float* RESTRICT in_x0, const float* RESTRICT in_y0, const float* RESTRICT in_z0,
+                                           const float* RESTRICT in_x1, const float* RESTRICT in_y1, const float* RESTRICT in_z1, const float* RESTRICT in_x2, const float* RESTRICT in_y2,
+                                           const float* RESTRICT in_z2, const float* RESTRICT in_x3, const float* RESTRICT in_y3, const float* RESTRICT in_z3, int64 count, float t,
+                                           const mat3& sim_box);
+
 int main() {
 	MoleculeDynamic md;
 	
@@ -105,7 +121,7 @@ int main() {
 
 		const auto box = get_trajectory_frame(md.trajectory, 101).box;
 
-		const int32 num_iter = 1000;
+		const int32 num_iter = 10000;
 		const float t = 0.5f;
 		const auto size_in_bytes = num_atoms * 12 * sizeof(float) * num_iter;
 
@@ -121,7 +137,7 @@ int main() {
 
 		const auto t2 = TIME();
 		for (int32 i = 0; i < num_iter; i++) {
-			cubic_interpolation_pbc(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, num_atoms, t, box);
+			cubic_interpolation_pbc_128(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, num_atoms, t, box);
 		}
 		const auto t3 = TIME();
 		const auto time_cubic_pbc_128 = MILLISEC(t2, t3) / (double)num_iter;
