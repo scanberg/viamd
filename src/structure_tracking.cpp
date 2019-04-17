@@ -25,6 +25,10 @@ struct Structure {
             float* abs = nullptr;
             float* rel = nullptr;
         } determinant;
+        struct {
+            vec3* pos[6];
+            float* mass[6];
+        } support_point;
     } frame_data;
 };
 
@@ -191,7 +195,6 @@ static mat3 compute_covariance_matrix(const float* x0, const float* y0, const fl
 
 static void compute_eigen(const mat3& M, vec3 (&vectors)[3], float (&value)[3]) {
     /*
-    
     Eigen::Matrix3f A = Eigen::Matrix3f({
                                     {M[0][0], M[1][0], M[2][0]},
                                     {M[0][1], M[1][1], M[2][1]},
@@ -323,12 +326,23 @@ static void compute_rbf_weights(float* RESTRICT out_x, float* RESTRICT out_y, fl
 }
 #endif
 
+/*
+struct SupportFrame {
+    struct {
+        vec3 pos;
+        float mass;
+	} point[6];
+};
+*/
+
 static void free_structure_data(Structure* s) {
     ASSERT(s);
     if (s->frame_data.transform) FREE(s->frame_data.transform);
     if (s->frame_data.eigen.vector) FREE(s->frame_data.eigen.vector);
     if (s->frame_data.eigen.value) FREE(s->frame_data.eigen.value);
     if (s->frame_data.determinant.abs) FREE(s->frame_data.determinant.abs);
+    if (s->frame_data.support_point.pos[0]) FREE(s->frame_data.support_point.pos[0]);
+    if (s->frame_data.support_point.mass[0]) FREE(s->frame_data.support_point.mass[0]);
 }
 
 static void init_structure_data(Structure* s, ID id, int32 ref_frame_idx, int32 num_points, int32 num_frames) {
@@ -343,18 +357,31 @@ static void init_structure_data(Structure* s, ID id, int32 ref_frame_idx, int32 
     s->frame_data.eigen.vector = (mat3*)MALLOC(sizeof(mat3) * num_frames);
     s->frame_data.eigen.value = (vec3*)MALLOC(sizeof(vec3) * num_frames);
 
-    float* det_data = (float*)MALLOC(sizeof(float) * num_frames * 2);
-    s->frame_data.determinant.abs = det_data;
-    s->frame_data.determinant.rel = det_data + num_frames;
-    /*
-            s->data.rbf.radial_cutoff = radial_cutoff;
-            s->data.rbf.weight.x = (float*)MALLOC(sizeof(float) * num_points * num_frames * 3);
-            s->data.rbf.weight.y = s->data.rbf.weight.x + num_points * num_frames;
-            s->data.rbf.weight.z = s->data.rbf.weight.y + num_points * num_frames;
-            s->data.rbf.pos.x = (float*)MALLOC(sizeof(float) * num_points * 3);
-            s->data.rbf.pos.y = s->data.rbf.pos.x + num_points;
-            s->data.rbf.pos.z = s->data.rbf.pos.y + num_points;
-            */
+    {
+        float* data = (float*)MALLOC(sizeof(float) * num_frames * 2);
+        s->frame_data.determinant.abs = data + 0 * num_frames;
+        s->frame_data.determinant.rel = data + 1 * num_frames;
+    }
+
+    {
+        vec3* data = (vec3*)MALLOC(sizeof(vec3) * num_frames * 6);
+        s->frame_data.support_point.pos[0] = data + 0 * num_frames;
+        s->frame_data.support_point.pos[1] = data + 1 * num_frames;
+        s->frame_data.support_point.pos[2] = data + 2 * num_frames;
+        s->frame_data.support_point.pos[3] = data + 3 * num_frames;
+        s->frame_data.support_point.pos[4] = data + 4 * num_frames;
+        s->frame_data.support_point.pos[5] = data + 5 * num_frames;
+    }
+
+    {
+        float* data = (float*)MALLOC(sizeof(float) * num_frames * 6);
+        s->frame_data.support_point.mass[0] = data + 0 * num_frames;
+        s->frame_data.support_point.mass[1] = data + 1 * num_frames;
+        s->frame_data.support_point.mass[2] = data + 2 * num_frames;
+        s->frame_data.support_point.mass[3] = data + 3 * num_frames;
+        s->frame_data.support_point.mass[4] = data + 4 * num_frames;
+        s->frame_data.support_point.mass[5] = data + 5 * num_frames;
+    }
 }
 
 static Structure* find_structure(ID id) {
@@ -413,22 +440,24 @@ void clear_structures() {
     context->entries.clear();
 }
 
-void compute_support_point_positions_and_mass(float* out_x, float* out_y, float* out_z, float* out_m, const mat3& eigen_vectors, const vec3& eigen_values, const vec3& com, float tot_mass) {
-    const float mass_w = tot_mass * 0.1f;
+void compute_support_point_positions(float* out_x, float* out_y, float* out_z, const mat3& eigen_vectors, const vec3& com) {
+    // clang-format off
+    for (int i = 0; i < 3; i++) {
+        out_x[i*2 + 0] = com.x + eigen_vectors[i].x;
+        out_x[i*2 + 1] = com.x - eigen_vectors[i].x;
+        out_y[i*2 + 0] = com.y + eigen_vectors[i].y;
+        out_y[i*2 + 1] = com.y - eigen_vectors[i].y;
+        out_z[i*2 + 0] = com.z + eigen_vectors[i].z;
+        out_z[i*2 + 1] = com.z - eigen_vectors[i].z;
+    }
+    // clang-format on
+}
+
+void compute_support_point_mass(float* out_m, const vec3& eigen_values, float tot_mass) {
+    const float mass_w = tot_mass * 0.01f;
     out_m[0] = out_m[1] = eigen_values[0] * mass_w;
     out_m[2] = out_m[3] = eigen_values[1] * mass_w;
     out_m[4] = out_m[5] = eigen_values[2] * mass_w;
-
-	// clang-format off
-    for (int i = 0; i < 3; i++) {
-        out_x[i*2 + 0] = com.x + eigen_vectors[i*2 + 0].x;
-        out_x[i*2 + 1] = com.x - eigen_vectors[i*2 + 1].x;
-        out_y[i*2 + 0] = com.y + eigen_vectors[i*2 + 0].y;
-        out_y[i*2 + 1] = com.y - eigen_vectors[i*2 + 1].y;
-        out_z[i*2 + 0] = com.z + eigen_vectors[i*2 + 0].z;
-        out_z[i*2 + 1] = com.z - eigen_vectors[i*2 + 1].z;
-    }
-	// clang-format on
 }
 
 bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const MoleculeDynamic& dynamic, int32 target_frame_idx) {
@@ -482,6 +511,7 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
 
     const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, num_points);
 
+    float ref_support_point_mass[6];
     float tot_mass = 0.0f;
     for (int i = 0; i < num_points; i++) {
         tot_mass += mass[i];
@@ -490,24 +520,20 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
     vec3 prv_com = {0, 0, 0};
     vec3 cur_com = {0, 0, 0};
 
-	const mat3 ref_cov_mat = compute_covariance_matrix(ref_x, ref_y, ref_z, ref_x, ref_y, ref_z, mass, num_points, ref_com, ref_com);
-    mat3 eigen_vectors;
-    vec3 eigen_values;
-    compute_eigen(ref_cov_mat, (vec3(&)[3])eigen_vectors, (float(&)[3])eigen_values);
+    const mat3 ref_cov_mat = compute_covariance_matrix(ref_x, ref_y, ref_z, ref_x, ref_y, ref_z, mass, num_points, ref_com, ref_com);
+    mat3 ref_eigen_vectors;
+    vec3 ref_eigen_values;
+    compute_eigen(ref_cov_mat, (vec3(&)[3])ref_eigen_vectors, (float(&)[3])ref_eigen_values);
 
     // Set target frame explicitly
     s->frame_data.transform[target_frame_idx] = {mat3(1), ref_com};
-    s->frame_data.eigen.vector[target_frame_idx] = eigen_vectors;
-    s->frame_data.eigen.value[target_frame_idx] = eigen_values;
+    s->frame_data.eigen.vector[target_frame_idx] = ref_eigen_vectors;
+    s->frame_data.eigen.value[target_frame_idx] = ref_eigen_values;
     s->frame_data.determinant.abs[target_frame_idx] = 1.0f;
     s->frame_data.determinant.rel[target_frame_idx] = 1.0f;
 
-    {
-        float* support_point_x = ref_x + num_points;
-        float* support_point_y = ref_y + num_points;
-        float* support_point_z = ref_z + num_points;
-        float support_point_mass[6];
-    }
+    compute_support_point_positions(ref_x + num_points, ref_y + num_points, ref_z + num_points, ref_eigen_vectors, ref_com);
+    compute_support_point_mass(ref_support_point_mass, ref_eigen_values, tot_mass);
 
     for (int32 i = 0; i < num_frames; i++) {
         if (i == target_frame_idx) continue;
