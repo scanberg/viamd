@@ -9,6 +9,13 @@
 
 namespace structure_tracking {
 
+struct SupportFrame {
+    struct {
+        vec3 pos;
+        float mass;
+    } point[6];
+};
+
 struct Structure {
     ID id = 0;
     int32 ref_frame_idx = 0;
@@ -25,10 +32,7 @@ struct Structure {
             float* abs = nullptr;
             float* rel = nullptr;
         } determinant;
-        struct {
-            vec3* pos[6];
-            float* mass[6];
-        } support_point;
+        SupportFrame* support_frames = nullptr;
     } frame_data;
 };
 
@@ -331,7 +335,7 @@ struct SupportFrame {
     struct {
         vec3 pos;
         float mass;
-	} point[6];
+        } point[6];
 };
 */
 
@@ -341,8 +345,7 @@ static void free_structure_data(Structure* s) {
     if (s->frame_data.eigen.vector) FREE(s->frame_data.eigen.vector);
     if (s->frame_data.eigen.value) FREE(s->frame_data.eigen.value);
     if (s->frame_data.determinant.abs) FREE(s->frame_data.determinant.abs);
-    if (s->frame_data.support_point.pos[0]) FREE(s->frame_data.support_point.pos[0]);
-    if (s->frame_data.support_point.mass[0]) FREE(s->frame_data.support_point.mass[0]);
+    if (s->frame_data.support_frames) FREE(s->frame_data.support_frames);
 }
 
 static void init_structure_data(Structure* s, ID id, int32 ref_frame_idx, int32 num_points, int32 num_frames) {
@@ -363,25 +366,7 @@ static void init_structure_data(Structure* s, ID id, int32 ref_frame_idx, int32 
         s->frame_data.determinant.rel = data + 1 * num_frames;
     }
 
-    {
-        vec3* data = (vec3*)MALLOC(sizeof(vec3) * num_frames * 6);
-        s->frame_data.support_point.pos[0] = data + 0 * num_frames;
-        s->frame_data.support_point.pos[1] = data + 1 * num_frames;
-        s->frame_data.support_point.pos[2] = data + 2 * num_frames;
-        s->frame_data.support_point.pos[3] = data + 3 * num_frames;
-        s->frame_data.support_point.pos[4] = data + 4 * num_frames;
-        s->frame_data.support_point.pos[5] = data + 5 * num_frames;
-    }
-
-    {
-        float* data = (float*)MALLOC(sizeof(float) * num_frames * 6);
-        s->frame_data.support_point.mass[0] = data + 0 * num_frames;
-        s->frame_data.support_point.mass[1] = data + 1 * num_frames;
-        s->frame_data.support_point.mass[2] = data + 2 * num_frames;
-        s->frame_data.support_point.mass[3] = data + 3 * num_frames;
-        s->frame_data.support_point.mass[4] = data + 4 * num_frames;
-        s->frame_data.support_point.mass[5] = data + 5 * num_frames;
-    }
+    s->frame_data.support_frames = (SupportFrame*)MALLOC(sizeof(SupportFrame) * num_frames);
 }
 
 static Structure* find_structure(ID id) {
@@ -440,24 +425,40 @@ void clear_structures() {
     context->entries.clear();
 }
 
-void compute_support_point_positions(float (&out_x)[6], float (&out_y)[6], float (&out_z)[6], const mat3& eigen_vectors, const vec3& com) {
+void compute_support_frame(SupportFrame& frame, const mat3& eigen_vectors, const vec3& eigen_values, const vec3& com, float weight, const SupportFrame* ref = nullptr) {
     // clang-format off
-    for (int i = 0; i < 3; i++) {
-        out_x[i*2 + 0] = com.x + eigen_vectors[i].x;
-        out_x[i*2 + 1] = com.x - eigen_vectors[i].x;
-        out_y[i*2 + 0] = com.y + eigen_vectors[i].y;
-        out_y[i*2 + 1] = com.y - eigen_vectors[i].y;
-        out_z[i*2 + 0] = com.z + eigen_vectors[i].z;
-        out_z[i*2 + 1] = com.z - eigen_vectors[i].z;
-    }
-    // clang-format on
-}
+	vec3 pos[6];
+	float mass[6];
 
-void compute_support_point_mass(float (&out_m)[6], const vec3& eigen_values, float tot_mass) {
-    const float mass_w = tot_mass * 0.01f;
-    out_m[0] = out_m[1] = eigen_values[0] * mass_w;
-    out_m[2] = out_m[3] = eigen_values[1] * mass_w;
-    out_m[4] = out_m[5] = eigen_values[2] * mass_w;
+    for (int i = 0; i < 3; i++) {
+        pos[i + 0] = com + eigen_vectors[i];
+        pos[i + 1] = com - eigen_vectors[i];
+		const float w = weight * eigen_values[i];
+		mass[i + 0] = w;
+		mass[i + 1] = w;
+    }
+
+	if (ref) {
+		DynamicArray<int> avail_points(6);
+		for (int i = 0; i < 6; i++) avail_points[i] = i;
+
+		for (int i = 0; i < 6; i++) {
+			// Find closest matching point in ref
+			float min_d2 = FLT_MAX;
+			int min_idx = 0;
+			for (auto j : avail_points) {
+				const float d2 = math::distance2(frame.point[i].pos, ref->point[j].pos);
+				if (d2 < min_d2) {
+					min_d2 = d2;
+					min_idx = j;
+				}
+			}
+		}
+	}
+	else {
+
+	}
+    // clang-format on
 }
 
 bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const MoleculeDynamic& dynamic, int32 target_frame_idx) {
@@ -504,9 +505,13 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
     float* prv_z = prv_y + tot_points;
     float* mass = prv_z + tot_points;
 
+    bitfield::extract_data_from_mask(cur_x, get_trajectory_position_x(dynamic.trajectory, target_frame_idx).data(), atom_mask);
+    bitfield::extract_data_from_mask(cur_y, get_trajectory_position_y(dynamic.trajectory, target_frame_idx).data(), atom_mask);
+    bitfield::extract_data_from_mask(cur_z, get_trajectory_position_z(dynamic.trajectory, target_frame_idx).data(), atom_mask);
     bitfield::extract_data_from_mask(ref_x, get_trajectory_position_x(dynamic.trajectory, target_frame_idx).data(), atom_mask);
     bitfield::extract_data_from_mask(ref_y, get_trajectory_position_y(dynamic.trajectory, target_frame_idx).data(), atom_mask);
     bitfield::extract_data_from_mask(ref_z, get_trajectory_position_z(dynamic.trajectory, target_frame_idx).data(), atom_mask);
+
     bitfield::extract_data_from_mask(mass, dynamic.molecule.atom.mass, atom_mask);
 
     const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, num_points);
@@ -532,8 +537,8 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
     s->frame_data.determinant.abs[target_frame_idx] = 1.0f;
     s->frame_data.determinant.rel[target_frame_idx] = 1.0f;
 
-    compute_support_point_positions((float(&)[6])ref_x[num_points], (float(&)[6])ref_y[num_points], (float(&)[6])ref_z[num_points], ref_eigen_vectors, ref_com);
-    compute_support_point_mass(ref_support_point_mass, ref_eigen_values, tot_mass);
+    const float support_w = tot_mass * 0.1f;
+    compute_support_frame(s->frame_data.support_frames[target_frame_idx], ref_eigen_vectors, ref_eigen_values, ref_com, support_w);
 
     for (int32 i = 0; i < num_frames; i++) {
         if (i == target_frame_idx) continue;
