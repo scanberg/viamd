@@ -4,17 +4,10 @@
 #include <mol/molecule_utils.h>
 #include <mol/trajectory_utils.h>
 
-#pragma warning(disable : 4127)  // disable warnings about expressions which could be constexpr in Eigen
-#include <Eigen/Eigen>
+//#pragma warning(disable : 4127)  // disable warnings about expressions which could be constexpr in Eigen
+//#include <Eigen/Eigen>
 
 namespace structure_tracking {
-
-struct SupportFrame {
-    struct {
-        vec3 pos;
-        float mass;
-    } point[6];
-};
 
 struct Structure {
     ID id = 0;
@@ -249,8 +242,12 @@ static mat3 compute_rotation(const mat3& M) {
     return R;
 }
 
-mat3 compute_rotation(const float* RESTRICT x0, const float* RESTRICT y0, const float* RESTRICT z0, const float* RESTRICT x1, const float* RESTRICT y1, const float* RESTRICT z1,
-                      const float* RESTRICT mass, int64 count, const vec3& com0, const vec3& com1) {
+// clang-format off
+mat3 compute_rotation(const float* RESTRICT x0, const float* RESTRICT y0, const float* RESTRICT z0,
+					  const float* RESTRICT x1, const float* RESTRICT y1, const float* RESTRICT z1,
+                      const float* RESTRICT mass, int64 count, const vec3& com0, const vec3& com1)
+// clang-format on
+{
     const mat3 Apq = compute_covariance_matrix(x0, y0, z0, x1, y1, z1, mass, count, com0, com1) / (float)(count - 1);
     const mat3 Aqq = compute_covariance_matrix(x0, y0, z0, x0, y0, z0, mass, count, com0, com0) / (float)(count - 1);
 
@@ -259,8 +256,13 @@ mat3 compute_rotation(const float* RESTRICT x0, const float* RESTRICT y0, const 
     return compute_rotation(A);  // Return rotational part
 }
 
-static void compute_residual_error(float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z, const float* RESTRICT src_x, const float* RESTRICT src_y, const float* RESTRICT src_z,
-                                   const float* RESTRICT ref_x, const float* RESTRICT ref_y, const float* RESTRICT ref_z, int64 count, const mat4& matrix) {
+// clang-format off
+static void compute_residual_error(float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z,
+								   const float* RESTRICT src_x, const float* RESTRICT src_y, const float* RESTRICT src_z,
+                                   const float* RESTRICT ref_x, const float* RESTRICT ref_y, const float* RESTRICT ref_z,
+								   int64 count, const mat4& matrix)
+// clang-format on
+{
     for (int32 i = 0; i < count; i++) {
         // @TODO: Vectorize this...
 
@@ -325,17 +327,17 @@ static void compute_rbf_weights(float* RESTRICT out_x, float* RESTRICT out_y, fl
 	for (int32 i = 0; i < N; i++) {
 		out_x[i] = x(i, 0);
 		out_y[i] = x(i, 1);
-		out_z[i] = x(i, 2);
+out_z[i] = x(i, 2);
 	};
 }
 #endif
 
 /*
 struct SupportFrame {
-    struct {
-        vec3 pos;
-        float mass;
-        } point[6];
+        struct {
+                vec3 pos;
+                float mass;
+                } point[6];
 };
 */
 
@@ -425,40 +427,84 @@ void clear_structures() {
     context->entries.clear();
 }
 
-void compute_support_frame(SupportFrame& frame, const mat3& eigen_vectors, const vec3& eigen_values, const vec3& com, float weight, const SupportFrame* ref = nullptr) {
-    // clang-format off
-	vec3 pos[6];
-	float mass[6];
+inline vec3 compute_shape_space_weights(const vec3& eigen_values) {
+    const vec3& l = eigen_values;
+    const float l_sum = l[0] + l[1] + l[2];
+    if (l_sum < 1.0e-6f) return {0, 0, 0};
+
+    const float one_over_denom = 1.0f / l_sum;
+    const float c_lin = (l[0] - l[1]) * one_over_denom;
+    const float c_pla = 2.0f * (l[1] - l[2]) * one_over_denom;
+    const float c_iso = 3.0f * l[2] * one_over_denom;
+
+    return {c_lin, c_pla, c_iso};
+}
+
+inline vec3 compute_weights(const vec3& eigen_values) {
+    const vec3 w = compute_shape_space_weights(eigen_values);
+
+    const vec3 w_lin = w.x * vec3(0.0f, 0.5f, 0.5f);  // Linear case, emphasize weight to the mid and min eigen directions
+    const vec3 w_pla = w.y * vec3(0.0f, 0.0f, 1.0f);  // Planar case, emphasize weight to min eigen directions
+    const vec3 w_iso = w.z * vec3(0.0f, 0.0f, 0.0f);  // Isotropic case, no emphasis on any eigen direction
+
+    return w_lin + w_pla + w_iso;
+}
+
+void compute_support_frame(SupportFrame& frame, const mat3& eigen_vectors, const vec3& eigen_values, const vec3& com, float tot_mass, const SupportFrame* ref = nullptr) {
+    vec3 dir[6];
+    float mass[6];
+    const vec3 axis_weights = compute_weights(eigen_values) * tot_mass;
 
     for (int i = 0; i < 3; i++) {
-        pos[i + 0] = com + eigen_vectors[i];
-        pos[i + 1] = com - eigen_vectors[i];
-		const float w = weight * eigen_values[i];
-		mass[i + 0] = w;
-		mass[i + 1] = w;
+        dir[i * 2 + 0] = eigen_vectors[i];
+        dir[i * 2 + 1] = -eigen_vectors[i];
+        mass[i * 2 + 0] = axis_weights[i];
+        mass[i * 2 + 1] = axis_weights[i];
     }
 
-	if (ref) {
-		DynamicArray<int> avail_points(6);
-		for (int i = 0; i < 6; i++) avail_points[i] = i;
+    if (ref) {
+        DynamicArray<int> avail_idx(6);
+        for (int i = 0; i < 6; i++) avail_idx[i] = i;
 
-		for (int i = 0; i < 6; i++) {
-			// Find closest matching point in ref
-			float min_d2 = FLT_MAX;
-			int min_idx = 0;
-			for (auto j : avail_points) {
-				const float d2 = math::distance2(frame.point[i].pos, ref->point[j].pos);
-				if (d2 < min_d2) {
-					min_d2 = d2;
-					min_idx = j;
-				}
-			}
-		}
-	}
-	else {
+        for (int i = 0; i < 6; i++) {
+            // Find best matching axis in reference support frame
+            float max_d = -FLT_MAX;
+            int max_j = 0;
+            for (int j = 0; j < avail_idx.size(); j++) {
+                const auto idx = avail_idx[j];
+                const float d = math::dot(dir[i], ref->axis[idx].dir);
+                if (d > max_d) {
+                    max_d = d;
+                    max_j = j;
+                }
+            }
+            const auto max_idx = avail_idx[max_j];
+            frame.axis[i].dir = dir[max_idx];
+            frame.axis[i].mass = mass[max_idx];
+            avail_idx[max_j] = avail_idx.back();
+            avail_idx.pop_back();
+        }
+    } else {
+        for (int i = 0; i < 6; i++) {
+            frame.axis[i].dir = dir[i];
+            frame.axis[i].mass = mass[i];
+        }
+    }
+}
 
-	}
-    // clang-format on
+inline void set_stabilization_point_pos(float* RESTRICT x, float* RESTRICT y, float* RESTRICT z, const SupportFrame& frame, const vec3& com) {
+    for (int i = 0; i < 6; i++) {
+        const vec3 p = com + frame.axis[i].dir;
+        x[i] = p.x;
+        y[i] = p.y;
+        z[i] = p.z;
+    }
+}
+
+inline void set_stabilization_point_mass(float* mass, const SupportFrame& frame) {
+    for (int i = 0; i < 6; i++) {
+        mass[i] = frame.axis[i].mass;
+    }
 }
 
 bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const MoleculeDynamic& dynamic, int32 target_frame_idx) {
@@ -516,7 +562,6 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
 
     const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, num_points);
 
-    float ref_support_point_mass[6];
     float tot_mass = 0.0f;
     for (int i = 0; i < num_points; i++) {
         tot_mass += mass[i];
@@ -537,8 +582,10 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
     s->frame_data.determinant.abs[target_frame_idx] = 1.0f;
     s->frame_data.determinant.rel[target_frame_idx] = 1.0f;
 
-    const float support_w = tot_mass * 0.1f;
+    const float support_w = tot_mass * 0.5f;
     compute_support_frame(s->frame_data.support_frames[target_frame_idx], ref_eigen_vectors, ref_eigen_values, ref_com, support_w);
+
+	set_stabilization_point_pos(ref_x + num_points, ref_y + num_points, ref_z + num_points, s->frame_data.support_frames[target_frame_idx], ref_com);
 
     for (int32 i = 0; i < num_frames; i++) {
         if (i == target_frame_idx) continue;
@@ -554,16 +601,22 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
 
         cur_com = compute_com(cur_x, cur_y, cur_z, mass, num_points);
 
-        const mat3 abs_mat = compute_covariance_matrix(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, mass, num_points, cur_com, ref_com);
-        const mat3 rel_mat = compute_covariance_matrix(cur_x, cur_y, cur_z, prv_x, prv_y, prv_z, mass, num_points, cur_com, prv_com);
         const mat3 cov_mat = compute_covariance_matrix(cur_x, cur_y, cur_z, cur_x, cur_y, cur_z, mass, num_points, cur_com, cur_com);
-
-        const mat3 cur_rot = (abs_mat / cov_mat);
-
-        const float abs_det = math::determinant(abs_mat / cov_mat);
-        const float rel_det = math::determinant(rel_mat / cov_mat);
-
         compute_eigen(cov_mat, (vec3(&)[3])s->frame_data.eigen.vector[i], (float(&)[3])s->frame_data.eigen.value[i]);
+        compute_support_frame(s->frame_data.support_frames[i], s->frame_data.eigen.vector[i], s->frame_data.eigen.value[i], cur_com, support_w, &s->frame_data.support_frames[i - 1]);
+
+        set_stabilization_point_pos(cur_x + num_points, cur_y + num_points, cur_z + num_points, s->frame_data.support_frames[i], cur_com);
+        set_stabilization_point_mass(mass + num_points, s->frame_data.support_frames[i]);
+
+        // @NOTE: use tot_points here to include inertia stabilization points
+        const mat3 abs_mat = compute_covariance_matrix(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, mass, tot_points, cur_com, ref_com);
+        const mat3 rel_mat = compute_covariance_matrix(cur_x, cur_y, cur_z, prv_x, prv_y, prv_z, mass, tot_points, cur_com, prv_com);
+        const mat3 new_cov_mat = compute_covariance_matrix(cur_x, cur_y, cur_z, cur_x, cur_y, cur_z, mass, tot_points, cur_com, cur_com);
+
+        const mat3 cur_rot = (abs_mat / new_cov_mat);
+
+        const float abs_det = math::determinant(abs_mat / new_cov_mat);
+        const float rel_det = math::determinant(rel_mat / new_cov_mat);
 
         s->frame_data.transform[i].rotation = cur_rot;
         s->frame_data.transform[i].com = cur_com;
@@ -631,6 +684,16 @@ const Array<const float> get_rel_det(ID id) {
     }
 
     return {s->frame_data.determinant.rel, s->num_frames};
+}
+
+const Array<const SupportFrame> get_support_frames(ID id, SupportAxis axis) {
+    Structure* s = find_structure(id);
+    if (s == nullptr) {
+        LOG_ERROR("Supplied id is not valid.");
+        return {};
+    }
+
+    return {s->frame_data.support_frames, s->num_frames};
 }
 
 }  // namespace structure_tracking

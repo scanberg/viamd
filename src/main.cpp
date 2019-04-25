@@ -1575,16 +1575,18 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             const auto prev = structure_tracking::get_transform_to_target_frame(ref.id, prev_frame_1);
             const auto next = structure_tracking::get_transform_to_target_frame(ref.id, next_frame_1);
 
-            const quat q0 = math::quat_cast(prev.rotation);
-            const quat q1 = math::quat_cast(next.rotation);
-            const quat qr = math::slerp(q0, q1, t);
+            //const quat q0 = math::quat_cast(prev.rotation);
+            //const quat q1 = math::quat_cast(next.rotation);
+            //const quat qr = math::slerp(q0, q1, t);
 
-            const mat4 R = math::mat4_cast(qr);
+            //const mat4 R = math::mat4_cast(qr);
 
-            // const mat4 R = structure_tracking::compute_rotation(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, mass, masked_count, cur_com, ref_com);
+            const mat4 R = structure_tracking::compute_rotation(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, mass, masked_count, cur_com, ref_com);
             const mat4 T_ori = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-cur_com, 1));
             const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(box_c, 1));
             const mat4 M = T_box * R * T_ori;
+
+			const auto support_frames = structure_tracking::get_support_frames(ref.id, SupportAxis::Pos_X);
 
             if (ref.active) {
                 ref.com = box_c;
@@ -1596,6 +1598,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
                 const auto eigen_values = structure_tracking::get_eigen_values(ref.id)[frame];
 
                 ref.basis = eigen_vectors;
+                ref.basis = mat3(support_frames[frame].axis[(int)SupportAxis::Pos_X].dir, support_frames[frame].axis[(int)SupportAxis::Pos_Y].dir, support_frames[frame].axis[(int)SupportAxis::Pos_Z].dir);
             }
 
             if (ref.active) {
@@ -3593,7 +3596,7 @@ static void draw_shape_space_window(ApplicationData* data) {
 
                 if (l_sum < 1.0e-6f) continue;
 
-                const float one_over_denom = 1.0f / (l1 + l2 + l3);
+                const float one_over_denom = 1.0f / l_sum;
                 const float cs = 3.0f * l3 * one_over_denom;
                 const float cl = (l1 - l2) * one_over_denom;
                 const float cp = 2.0f * (l2 - l3) * one_over_denom;
