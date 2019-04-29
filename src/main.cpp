@@ -3547,7 +3547,7 @@ static void draw_shape_space_window(ApplicationData* data) {
     const float max_c = ImMax(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y);
     const ImVec2 size = ImVec2(max_c, max_c);
     const ImRect bb(ImGui::GetCurrentWindow()->DC.CursorPos, ImGui::GetCurrentWindow()->DC.CursorPos + size);
-    ImGui::InvisibleButton("bg", bb.Max - bb.Min);
+    //ImGui::InvisibleButton("bg", bb.Max - bb.Min);
 
     const ImVec2 a = ImLerp(bb.Min, bb.Max, ImVec2(0.0f, 0.70710678118f));
     const ImVec2 b = ImLerp(bb.Min, bb.Max, ImVec2(1.0f, 0.70710678118f));
@@ -3559,65 +3559,63 @@ static void draw_shape_space_window(ApplicationData* data) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
     const ImVec2 mouse_pos = ImGui::GetIO().MousePos;
-    dl->ChannelsSplit(3);
+    dl->ChannelsSplit(4);
     dl->ChannelsSetCurrent(0);
     dl->AddTriangleFilled(a, b, c, triangle_fill_color);
     // dl->AddTriangle(a, b, c, triangle_line_color);
 
-    int64 mouse_hover_idx = -1;
-    vec3 mouse_eigen_val = {0, 0, 0};
+	float32 mouse_hover_d2 = FLT_MAX;
+    int32 mouse_hover_idx = -1;
+    vec3 mouse_hover_ev = {0, 0, 0};
 
     if (reference_frame_valid) {
         const uint32 line_color = math::convert_color(data->ramachandran.current.border_color);
         const uint32 base_color = math::convert_color(data->ramachandran.current.base.fill_color);
         const uint32 selected_color = math::convert_color(data->ramachandran.current.selection.selection_color);
-        const float32 base_radius = data->ramachandran.current.base.radius;
-        const float32 selected_radius = data->ramachandran.current.selection.radius;
+        const uint32 hover_color = 0xFFFFFFFF;
+        constexpr float32 base_radius = 2.5f;
+        constexpr float32 selected_radius = 3.5f;
+        constexpr float32 hover_radius = 5.5f;
 
         const structure_tracking::ID id = data->reference_frame.frames[data->shape_space.reference_frame_idx].id;
         const Array<const vec3> eigen_values = structure_tracking::get_eigen_values(id);
         const int32 N = (int32)eigen_values.size();
         const vec2 p[3] = {vec_cast(a), vec_cast(b), vec_cast(c)};
 
-        const auto draw_entries = [&](Range<int32> range, float radius, uint32 fill_color, uint32 line_color) {
+        const auto compute_shape_space_weights = [](const vec3& ev) -> vec3 {
+            const float l_sum = ev[0] + ev[1] + ev[2];
+            const float one_over_denom = 1.0f / l_sum;
+            const float cs = 3.0f * ev[2] * one_over_denom;
+            const float cl = (ev[0] - ev[1]) * one_over_denom;
+            const float cp = 2.0f * (ev[1] - ev[2]) * one_over_denom;
+            return {cl, cp, cs};
+        };
+
+        const auto draw_range = [&](Range<int32> range, float radius, uint32 fill_color, uint32 line_color) -> void {
             for (int32 i = range.beg; i < range.end; i++) {
-                const float l1 = eigen_values[i].x;
-                const float l2 = eigen_values[i].y;
-                const float l3 = eigen_values[i].z;
-                const float l_sum = l1 + l2 + l3;
+                const ImVec2 coord = vec_cast(math::barycentric_to_cartesian(p[0], p[1], p[2], compute_shape_space_weights(eigen_values[i])));
+                dl->AddCircleFilled(coord, radius, fill_color);
+                dl->AddCircle(coord, radius, line_color);
 
-                if (l_sum < 1.0e-6f) continue;
-
-                const float one_over_denom = 1.0f / l_sum;
-                const float cs = 3.0f * l3 * one_over_denom;
-                const float cl = (l1 - l2) * one_over_denom;
-                const float cp = 2.0f * (l2 - l3) * one_over_denom;
-
-                const vec2& coord = math::barycentric_to_cartesian(p[0], p[1], p[2], {cl, cp, cs});
-
-                const ImVec2 min_box(math::round(coord.x - radius), math::round(coord.y - radius));
-                const ImVec2 max_box(math::round(coord.x + radius), math::round(coord.y + radius));
-                if (radius > 1.f) {
-                    dl->AddRectFilled(min_box, max_box, fill_color);
-                    dl->AddRect(min_box, max_box, line_color);
-                } else {
-                    dl->AddRectFilled(min_box, max_box, line_color);
-                }
-                if (min_box.x <= mouse_pos.x && mouse_pos.x <= max_box.x && min_box.y <= mouse_pos.y && mouse_pos.y <= max_box.y) {
+                const float d2 = ImLengthSqr(coord - mouse_pos);
+                if (d2 < hover_radius * hover_radius && d2 < mouse_hover_d2) {
+					mouse_hover_d2 = d2;
                     mouse_hover_idx = i;
-                    mouse_eigen_val = {l1, l2, l3};
+					mouse_hover_ev = eigen_values[i];
                 }
             }
         };
 
-        // Base channel for entries outside of frame_range
-        dl->ChannelsSetCurrent(1);
-        draw_entries({0, frame_range.x}, base_radius, base_color, line_color);
-        draw_entries({frame_range.y, N}, base_radius, base_color, line_color);
-
-        // 'Selected' channel for entries within frame_range
+		dl->ChannelsSetCurrent(1);
+        draw_range({0, frame_range.x}, base_radius, base_color, line_color);
+        draw_range({frame_range.y, N}, base_radius, base_color, line_color);
         dl->ChannelsSetCurrent(2);
-        draw_entries({frame_range.x, frame_range.y}, selected_radius, selected_color, line_color);
+        draw_range(frame_range, selected_radius, selected_color, line_color);
+		
+        if (mouse_hover_idx != -1) {
+            dl->ChannelsSetCurrent(3);
+            draw_range({mouse_hover_idx, 1}, hover_radius, hover_color, line_color);
+        }
     }
 
     dl->ChannelsMerge();
@@ -3631,7 +3629,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                 data->playback.time = (float)mouse_hover_idx;
             }
         }
-        ImGui::Text(u8"\u03BB: (%.2f, %.2f, %.2f)", mouse_eigen_val.x, mouse_eigen_val.y, mouse_eigen_val.z);
+        ImGui::Text(u8"\u03BB: (%.2f, %.2f, %.2f)", mouse_hover_ev.x, mouse_hover_ev.y, mouse_hover_ev.z);
 
         ImGui::EndTooltip();
     }

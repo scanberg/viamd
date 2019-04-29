@@ -6,6 +6,8 @@ enum LinePlotFlags_ { LinePlotFlags_AxisX = 1, LinePlotFlags_AxisY = 2, LinePlot
 
 typedef int LinePlotFlags;
 
+IMGUI_API ImVec2 ComputeValueRange(const float* data, int count);
+
 IMGUI_API void BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, ImVec2 y_range, LinePlotFlags flags = LinePlotFlags_ShowXVal);
 IMGUI_API bool ClickingAtPlot(float* x_coord);
 IMGUI_API void EndPlot();

@@ -25,6 +25,16 @@ const ImU32 CURRENT_LINE_COLOR = 0xaa33ffff;
 const ImU32 AXIS_COLOR = 0xaaffffff;
 const ImU32 SELECTION_RANGE_COLOR = 0x33bbbbbb;
 
+IMGUI_API ImVec2 ComputeValueRange(const float* data, int count) {
+    if (count <= 0) return {0, 0};
+    ImVec2 range = {FLT_MAX, -FLT_MAX};
+    for (int i = 0; i < count; i++) {
+        range.x = ImMin(range.x, data[i]);
+        range.y = ImMax(range.y, data[i]);
+    }
+    return range;
+}
+
 IMGUI_API void BeginPlot(const char* label, ImVec2 frame_size, ImVec2 x_range, ImVec2 y_range, LinePlotFlags flags) {
     ImGuiWindow* window = GetCurrentWindow();
     const ImGuiID id = window->GetID(label);
@@ -86,10 +96,10 @@ if (selection_range) {
         const float t = (mouse_pos.x - ps.inner_bb.Min.x) / (ps.inner_bb.Max.x - ps.inner_bb.Min.x);
         ps.hovered_x = ImLerp(x_range.x, x_range.y, t);
 
-		if (flags & LinePlotFlags_ShowXVal) {
+        if (flags & LinePlotFlags_ShowXVal) {
             const float x = ImLerp(inner_bb.Min.x, inner_bb.Max.x, t);
             window->DrawList->AddLine(ImVec2(x, inner_bb.Min.y), ImVec2(x, inner_bb.Max.y), HOVER_LINE_COLOR);
-		}
+        }
     }
 
     RenderTextClipped(ImVec2(frame_bb.Min.x + style.FramePadding.x, frame_bb.Min.y + style.FramePadding.y), frame_bb.Max, label, NULL, NULL, ImVec2(0.0f, 0.0f));
@@ -222,16 +232,16 @@ IMGUI_API void PlotValues(const char* line_label, const float* value, int count,
 }
 
 IMGUI_API bool ClickingAtPlot(float* x_coord) {
-	IM_ASSERT(ps.id != 0); 
-	if (IsItemHovered()) {
+    IM_ASSERT(ps.id != 0);
+    if (IsItemHovered()) {
         if (GetIO().MouseDown[0]) {
             if (x_coord) {
                 *x_coord = ps.hovered_x;
             }
             return true;
         }
-	}
-	return false;
+    }
+    return false;
 }
 
 IMGUI_API void EndPlot() {
