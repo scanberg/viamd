@@ -13,7 +13,17 @@ struct Transform {
 	vec3 com = {};
 };
 
-enum class SupportAxis { Pos_X, Neg_X, Pos_Y, Neg_Y, Pos_Z, Neg_Z };
+/*
+typedef int SupportAxis;
+
+enum {
+	SupportAxis_PosX,
+	SupportAxis_NegX,
+	SupportAxis_PosY,
+	SupportAxis_NegY,
+	SupportAxis_PosZ,
+	SupportAxis_NegZ
+};
 
 struct SupportFrame {
     struct {
@@ -21,6 +31,7 @@ struct SupportFrame {
         float mass;
     } axis[6];
 };
+*/
 
 namespace structure_tracking {
 typedef uint32 ID;
@@ -32,6 +43,8 @@ ID create_structure();
 bool remove_structure(ID structure_id);
 
 void clear_structures();
+
+vec3 compute_eigen_values(const float* RESTRICT x, const float* RESTRICT y, const float* RESTRICT z, const float* RESTRICT mass, int64 count);
 
 mat3 compute_rotation(const float* RESTRICT x0, const float* RESTRICT y0, const float* RESTRICT z0,
 					  const float* RESTRICT x1, const float* RESTRICT y1, const float* RESTRICT z1,
@@ -47,6 +60,6 @@ const Array<const vec3> get_eigen_values(ID structure_id);
 const Array<const float> get_abs_det(ID structure_id);
 const Array<const float> get_rel_det(ID structure_id);
 
-const Array<const SupportFrame> get_support_frames(ID structure_id, SupportAxis axis);
+//const Array<const SupportFrame> get_support_frames(ID structure_id);
 
 }  // namespace structure_tracking

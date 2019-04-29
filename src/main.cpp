@@ -1572,36 +1572,28 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             const vec3 cur_com = compute_com(cur_x, cur_y, cur_z, mass, masked_count);
             const vec3 box_c = box * vec3(0.5f);
 
-            const auto prev = structure_tracking::get_transform_to_target_frame(ref.id, prev_frame_1);
-            const auto next = structure_tracking::get_transform_to_target_frame(ref.id, next_frame_1);
-
-            //const quat q0 = math::quat_cast(prev.rotation);
-            //const quat q1 = math::quat_cast(next.rotation);
-            //const quat qr = math::slerp(q0, q1, t);
-
-            //const mat4 R = math::mat4_cast(qr);
-
             const mat4 R = structure_tracking::compute_rotation(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, mass, masked_count, cur_com, ref_com);
+            const mat4 R_inv = math::transpose(R);
             const mat4 T_ori = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-cur_com, 1));
             const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(box_c, 1));
-            const mat4 M = T_box * R * T_ori;
 
-			const auto support_frames = structure_tracking::get_support_frames(ref.id, SupportAxis::Pos_X);
+            // const auto support_frames = structure_tracking::get_support_frames(ref.id);
 
             if (ref.active) {
                 ref.com = box_c;
                 ref.basis = mat3(1);
             } else {
                 ref.com = cur_com;
-                const auto frame = data->playback.frame;
-                const auto eigen_vectors = structure_tracking::get_eigen_vectors(ref.id)[frame];
-                const auto eigen_values = structure_tracking::get_eigen_values(ref.id)[frame];
+                ref.basis = T_box * R * T_ori;
 
-                ref.basis = eigen_vectors;
-                ref.basis = mat3(support_frames[frame].axis[(int)SupportAxis::Pos_X].dir, support_frames[frame].axis[(int)SupportAxis::Pos_Y].dir, support_frames[frame].axis[(int)SupportAxis::Pos_Z].dir);
+                // const auto eigen_vectors = structure_tracking::get_eigen_vectors(ref.id)[frame];
+                // const auto eigen_values = structure_tracking::get_eigen_values(ref.id)[frame];
+                // ref.basis = eigen_vectors;
+                // ref.basis = mat3(support_frames[frame].axis[SupportAxis_PosX].dir, support_frames[frame].axis[SupportAxis_PosY].dir, support_frames[frame].axis[SupportAxis_PosZ].dir);
             }
 
             if (ref.active) {
+                const mat4 M = T_box * R_inv * T_ori;
                 transform_positions_ref(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count, M);
             }
         }
@@ -2723,10 +2715,10 @@ static void draw_reference_frames_window(ApplicationData* data) {
                 float* x = tmp_data + 0 * ev_data.size();
                 float* y = tmp_data + 1 * ev_data.size();
                 float* z = tmp_data + 2 * ev_data.size();
-                for (int64 i = 0; i < ev_data.size(); i++) {
-                    x[i] = ev_data[i].x;
-                    y[i] = ev_data[i].y;
-                    z[i] = ev_data[i].z;
+                for (int64 j = 0; j < ev_data.size(); j++) {
+                    x[j] = ev_data[j].x;
+                    y[j] = ev_data[j].y;
+                    z[j] = ev_data[j].z;
                 }
 
                 const ImVec2 x_range = {0.0f, (float)ev_data.size()};
@@ -2737,7 +2729,7 @@ static void draw_reference_frames_window(ApplicationData* data) {
                 ImGui::PlotValues("2", z, (int)ev_data.size(), 0xFFFF5555);
                 float x_val;
                 if (ImGui::ClickingAtPlot(&x_val)) {
-					data->playback.time = x_val;
+                    data->playback.time = x_val;
                 }
                 ImGui::EndPlot();
             }
