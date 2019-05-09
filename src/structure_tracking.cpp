@@ -18,7 +18,7 @@ struct Structure {
     int32 num_frames = 0;
 
     struct {
-        Transform* transform = nullptr;
+        TransformData transform = {};
         struct {
             mat3* vector = nullptr;
             vec3* value = nullptr;
@@ -27,7 +27,7 @@ struct Structure {
             float* abs = nullptr;
             float* rel = nullptr;
         } determinant;
-        //SupportFrame* support_frames = nullptr;
+        // SupportFrame* support_frames = nullptr;
     } frame_data;
 };
 
@@ -156,10 +156,10 @@ static void decompose(const mat3& M, mat3* R, mat3* S) {
     // const float det = math::determinant(AtA); // For debugging
     D = mat3(sqrtf(D[0][0]), 0, 0, 0, sqrtf(D[1][1]), 0, 0, 0, sqrtf(D[2][2]));
     /*
-	D[0][0] = sqrtf(D[0][0]);
+        D[0][0] = sqrtf(D[0][0]);
     D[1][1] = sqrtf(D[1][1]);
     D[2][2] = sqrtf(D[2][2]);
-	*/
+        */
     // @NOTE: Should one zero every non diagonal element???
     *S = math::transpose(Q) * D * Q;
     *R = M * math::inverse(*S);
@@ -168,8 +168,8 @@ static void decompose(const mat3& M, mat3* R, mat3* S) {
 /*
 // clang-format off
 static mat3 compute_mass_weighted_cross_covariance_matrix(const float* x0, const float* y0, const float* z0, const float* mass0,
-													      const float* x1, const float* y1, const float* z1, const float* mass1,
-														  int64 count, const vec3& com0, const vec3& com1)
+                                                                                                              const float* x1, const float* y1, const float* z1, const float* mass1,
+                                                                                                                  int64 count, const vec3& com0, const vec3& com1)
 // clang-format on
 {
     mat3 A{0};
@@ -393,17 +393,15 @@ vec3 compute_eigen_values(const float* RESTRICT x, const float* RESTRICT y, cons
 }
 
 static mat3 compute_rotation(const mat3& M) {
-	//mat3 R, S;
-    //decompose(M, &R, &S);
-    //return R;
-    
+    // mat3 R, S;
+    // decompose(M, &R, &S);
+    // return R;
+
     mat3 U, S, V;
     compute_svd(M, U, S, V);
 
-	const float d = math::determinant(math::transpose(U) * V);
-    const mat3 D = {1, 0, 0,
-					0, 1, 0,
-					0, 0, d};
+    const float d = math::determinant(math::transpose(U) * V);
+    const mat3 D = {1, 0, 0, 0, 1, 0, 0, 0, d};
     const mat3 R = math::transpose(U) * D * V;
     return R;
 }
@@ -444,7 +442,7 @@ mat3 compute_rotation(const float* x0, const float* y0, const float* z0,
     const mat3 Apq = compute_mass_weighted_cross_covariance_matrix(dx0, dy0, dz0, dx1, dy1, dz1, mass, count);
     const mat3 Aqq = compute_mass_weighted_covariance_matrix(dx0, dy0, dz0, mass, count);
 #else
-	const mat3 Apq = compute_mass_weighted_cross_covariance_matrix(x0, y0, z0, x1, y1, z1, mass, count, com0, com1);
+    const mat3 Apq = compute_mass_weighted_cross_covariance_matrix(x0, y0, z0, x1, y1, z1, mass, count, com0, com1);
     const mat3 Aqq = compute_mass_weighted_covariance_matrix(x0, y0, z0, mass, count);
 #endif
 
@@ -531,11 +529,12 @@ out_z[i] = x(i, 2);
 
 static void free_structure_data(Structure* s) {
     ASSERT(s);
-    if (s->frame_data.transform) FREE(s->frame_data.transform);
+    if (s->frame_data.transform.rotation) FREE(s->frame_data.transform.rotation);
+    if (s->frame_data.transform.com) FREE(s->frame_data.transform.com);
     if (s->frame_data.eigen.vector) FREE(s->frame_data.eigen.vector);
     if (s->frame_data.eigen.value) FREE(s->frame_data.eigen.value);
     if (s->frame_data.determinant.abs) FREE(s->frame_data.determinant.abs);
-    //if (s->frame_data.support_frames) FREE(s->frame_data.support_frames);
+    // if (s->frame_data.support_frames) FREE(s->frame_data.support_frames);
 }
 
 static void init_structure_data(Structure* s, ID id, int32 ref_frame_idx, int32 num_points, int32 num_frames) {
@@ -546,7 +545,8 @@ static void init_structure_data(Structure* s, ID id, int32 ref_frame_idx, int32 
     s->num_frames = num_frames;
     s->num_points = num_points;
 
-    s->frame_data.transform = (Transform*)MALLOC(sizeof(Transform) * num_frames);
+    s->frame_data.transform.rotation = (mat3*)MALLOC(sizeof(mat3) * num_frames);
+    s->frame_data.transform.com = (vec3*)MALLOC(sizeof(vec3) * num_frames);
     s->frame_data.eigen.vector = (mat3*)MALLOC(sizeof(mat3) * num_frames);
     s->frame_data.eigen.value = (vec3*)MALLOC(sizeof(vec3) * num_frames);
 
@@ -556,7 +556,7 @@ static void init_structure_data(Structure* s, ID id, int32 ref_frame_idx, int32 
         s->frame_data.determinant.rel = data + 1 * num_frames;
     }
 
-    //s->frame_data.support_frames = (SupportFrame*)MALLOC(sizeof(SupportFrame) * num_frames);
+    // s->frame_data.support_frames = (SupportFrame*)MALLOC(sizeof(SupportFrame) * num_frames);
 }
 
 static Structure* find_structure(ID id) {
@@ -651,7 +651,9 @@ void compute_support_frame(SupportFrame& frame, const mat3& eigen_vectors, const
         mass[i * 2 + 1] = axis_weights[i];
     }
 
-    
+
+
+
 if (ref) {
     DynamicArray<int> avail_idx = {0, 1, 2, 3, 4, 5};
     for (int i = 0; i < 6; i++) {
@@ -672,7 +674,9 @@ if (ref) {
         avail_idx.swap_back_and_pop(max_it);
     }
 } else
-    
+
+
+
     {
         for (int i = 0; i < 6; i++) {
             frame.axis[i].dir = dir[i];
@@ -696,6 +700,23 @@ inline void set_stabilization_point_mass(float* mass, const SupportFrame& frame)
     }
 }
 */
+
+void smooth_rotation_matrices(mat3* RESTRICT R_out, const mat3* RESTRICT R_in, int N) {
+    constexpr int window = 2;
+    constexpr float w[3] = {0.7, 0.1, 0.05};
+
+    ASSERT(N >= 4);
+
+    R_out[0] = compute_rotation((w[0] + w[1]) * R_in[0] + w[1] * R_in[1] + w[0] * R_in[2]);
+    R_out[1] = compute_rotation((w[1] + w[2]) * R_in[0] + w[0] * R_in[1] + w[1] * R_in[2] + w[2] * R_in[3]);
+
+    for (int i = window; i < N - window; i++) {
+        R_out[i] = compute_rotation(w[2] * R_in[i - 2] + w[1] * R_in[i - 1] + w[0] * R_in[i] + w[1] * R_in[i + 1] + w[2] * R_in[i + 2]);
+    }
+
+    R_out[N - 2] = compute_rotation(w[2] * R_in[N - 4] + w[1] * R_in[N - 3] + w[0] * R_in[N - 2] + (w[1] + w[2]) * R_in[N - 1]);
+    R_out[N - 1] = compute_rotation(w[2] * R_in[N - 3] + w[1] * R_in[N - 2] + (w[0] + w[1]) * R_in[N - 1]);
+}
 
 bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const MoleculeDynamic& dynamic, int32 target_frame_idx) {
     ASSERT(context);
@@ -722,7 +743,7 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
     init_structure_data(s, id, target_frame_idx, num_points, num_frames);
 
     // Scratch data
-    const auto mem_size = sizeof(float) * num_points * 10;
+    const auto mem_size = sizeof(float) * num_points * 10 + sizeof(mat3) * num_frames;
     void* mem = TMP_MALLOC(mem_size);
     defer { TMP_FREE(mem); };
 
@@ -737,7 +758,8 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
     float* prv_x = ref_z + num_points;
     float* prv_y = prv_x + num_points;
     float* prv_z = prv_y + num_points;
-    float* mass  = prv_z + num_points;
+    float* mass = prv_z + num_points;
+    mat3* R = (mat3*)(mass + num_points);
 
     bitfield::extract_data_from_mask(cur_x, get_trajectory_position_x(dynamic.trajectory, target_frame_idx).data(), atom_mask);
     bitfield::extract_data_from_mask(cur_y, get_trajectory_position_y(dynamic.trajectory, target_frame_idx).data(), atom_mask);
@@ -750,7 +772,7 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
 
     const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, num_points);
 
-    //compute_direction_vectors(ref_x, ref_y, ref_z, ref_x, ref_y, ref_z, num_points, ref_com);
+    // compute_direction_vectors(ref_x, ref_y, ref_z, ref_x, ref_y, ref_z, num_points, ref_com);
 
     float tot_mass = 0.0f;
     for (int i = 0; i < num_points; i++) {
@@ -760,15 +782,22 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
     vec3 prv_com = ref_com;
     vec3 cur_com = {0, 0, 0};
 
+#if 0
+    quat prv_q = {};
+    quat cur_q = {};
+#endif
+
     const mat3 ref_cov_mat = compute_mass_weighted_covariance_matrix(ref_x, ref_y, ref_z, mass, num_points, ref_com);
     mat3 ref_eigen_vectors;
     vec3 ref_eigen_values;
     compute_eigen(ref_cov_mat, (vec3(&)[3])ref_eigen_vectors, (float(&)[3])ref_eigen_values);
 
-	memcpy(prv_x, ref_x, num_points * sizeof(float) * 3);
+    memcpy(prv_x, ref_x, num_points * sizeof(float) * 3);
 
     // Set target frame explicitly
-    s->frame_data.transform[target_frame_idx] = {mat3(1), ref_com};
+    R[target_frame_idx] = mat3(1);
+    s->frame_data.transform.rotation[target_frame_idx] = mat3(1);
+    s->frame_data.transform.com[target_frame_idx] = ref_com;
     s->frame_data.eigen.vector[target_frame_idx] = ref_eigen_vectors;
     s->frame_data.eigen.value[target_frame_idx] = ref_eigen_values;
     s->frame_data.determinant.abs[target_frame_idx] = 1.0f;
@@ -780,6 +809,10 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
         // Copy previous
         memcpy(prv_x, cur_x, num_points * sizeof(float) * 3);
         prv_com = cur_com;
+
+#if 0
+        prv_q = cur_q;
+#endif
 
         // Fetch current
         bitfield::extract_data_from_mask(cur_x, get_trajectory_position_x(dynamic.trajectory, i).data(), atom_mask);
@@ -795,35 +828,46 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
         const mat3 abs_rot = compute_rotation(abs_mat);
         const mat3 rel_rot = compute_rotation(rel_mat);
 
+#if 0
+		cur_q = math::quat_cast(abs_rot);
+        if (dot(cur_q, prv_q) < 0.0f) {
+			cur_q = math::conjugate(cur_q);
+            abs_rot = math::mat3_cast(cur_q);
+		}
+#endif
+
+        R[i] = abs_rot;
+
         const float abs_det = math::determinant(abs_mat / cov_mat);
         const float rel_det = math::determinant(rel_mat / cov_mat);
 
         compute_eigen(cov_mat, (vec3(&)[3])s->frame_data.eigen.vector[i], (float(&)[3])s->frame_data.eigen.value[i]);
-        s->frame_data.transform[i].rotation = abs_rot;
-        s->frame_data.transform[i].com = cur_com;
+        s->frame_data.transform.com[i] = cur_com;
         s->frame_data.determinant.abs[i] = abs_det;
         s->frame_data.determinant.rel[i] = rel_det;
     }
 
+	#if 1
+	if (num_frames >= 4) {
+		smooth_rotation_matrices(s->frame_data.transform.rotation, R, num_frames);
+	}
+	#else
+		memcpy(s->frame_data.transform.rotation, R, num_frames * sizeof(mat3));
+	#endif
+
     return true;
 }
 
-const Transform& get_transform_to_target_frame(ID id, int32 source_frame) {
+TransformData get_transform_data(ID id) {
     ASSERT(context);
-    static const Transform invalid_transform{};
 
     Structure* s = find_structure(id);
     if (s == nullptr) {
         LOG_ERROR("Supplied id is not valid.");
-        return invalid_transform;
+        return {};
     }
 
-    if (source_frame < 0 || s->num_frames <= source_frame) {
-        LOG_ERROR("Supplied frame is out of range");
-        return invalid_transform;
-    }
-
-    return s->frame_data.transform[source_frame];
+    return s->frame_data.transform;
 }
 
 const Array<const mat3> get_eigen_vectors(ID id) {

@@ -8,9 +8,9 @@
 
 struct MoleculeDynamic;
 
-struct Transform {
-    mat3 rotation = {};
-	vec3 com = {};
+struct TransformData {
+    mat3* rotation = nullptr;
+	vec3* com = nullptr;
 };
 
 /*
@@ -52,7 +52,7 @@ mat3 compute_rotation(const float* RESTRICT x0, const float* RESTRICT y0, const 
 
 bool compute_trajectory_transform_data(ID structure_id, Bitfield atom_mask, const MoleculeDynamic& dynamic, int32 target_frame_idx = 0);
 
-const Transform& get_transform_to_target_frame(ID structure_id, int32 source_frame);
+TransformData get_transform_data(ID structure_id);
 
 const Array<const mat3> get_eigen_vectors(ID structure_id);
 const Array<const vec3> get_eigen_values(ID structure_id);

@@ -909,13 +909,13 @@ int main(int, char**) {
                                         const structure_tracking::ID id = ref_frame->id;
                                         stats::compute_density_volume_with_basis(&data->density_volume.volume, data->dynamic.trajectory, range,
                                                                                  [id, data](const vec4& world_pos, int32 frame_idx) -> vec4 {
-                                                                                     const auto transform = structure_tracking::get_transform_to_target_frame(id, frame_idx);
+                                                                                     const auto transform_data = structure_tracking::get_transform_data(id);
                                                                                      const auto box = data->dynamic.trajectory.frame_buffer[frame_idx].box;
                                                                                      // @TODO: Translate rotate translate...
 
-                                                                                     const vec3 com = transform.com;
+                                                                                     const vec3 com = transform_data.com[frame_idx];
                                                                                      const vec3 half_box = box * vec3(0.5f);
-                                                                                     const mat4 R = transform.rotation;
+                                                                                     const mat4 R = transform_data.rotation[frame_idx];
                                                                                      const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-com, 1));
                                                                                      const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(half_box, 1));
                                                                                      const mat4 M = T_box * R * T_com;
@@ -1596,11 +1596,17 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             const vec3 current_com = compute_com(current_x, current_y, current_z, weight, masked_count);
             const vec3 box_c = box * vec3(0.5f);
 
-            const mat3 R_frame_to_ref = structure_tracking::get_transform_to_target_frame(ref.id, frame).rotation;
-            const mat3 R_current_to_frame = structure_tracking::compute_rotation(current_x, current_y, current_z, frame_x, frame_y, frame_z, weight, masked_count, current_com, frame_com);
+            const auto transform_data = structure_tracking::get_transform_data(ref.id);
 
-			const mat4 R = R_current_to_frame;
-                //const mat4 R = structure_tracking::compute_rotation(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, weight, masked_count, cur_com, ref_com);
+            const quat q[4] = {math::quat_cast(transform_data.rotation[prev_frame_2]), math::quat_cast(transform_data.rotation[prev_frame_1]), math::quat_cast(transform_data.rotation[next_frame_1]),
+                               math::quat_cast(transform_data.rotation[next_frame_2])};
+
+            const mat4 R = math::mat4_cast(math::slerp(q[1], q[2], t));
+
+            // const mat3 R_frame_to_ref = structure_tracking::get_transform_to_target_frame(ref.id, frame).rotation;
+            // const mat3 R_current_to_frame = structure_tracking::compute_rotation(current_x, current_y, current_z, frame_x, frame_y, frame_z, weight, masked_count, current_com, frame_com);
+
+            // const mat4 R = structure_tracking::compute_rotation(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, weight, masked_count, cur_com, ref_com);
             const mat4 R_inv = math::transpose(R);
             const mat4 T_ori = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-current_com, 1));
             const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(box_c, 1));
@@ -2752,6 +2758,27 @@ static void draw_reference_frames_window(ApplicationData* data) {
                 const ImVec2 x_range = {0.0f, (float)ev_data.size()};
                 const ImVec2 y_range = {-0.05f, 1.05f};
                 ImGui::BeginPlot("Eigen Values", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
+                ImGui::PlotValues("0", x, (int)ev_data.size(), 0xFF5555FF);
+                ImGui::PlotValues("1", y, (int)ev_data.size(), 0xFF55FF55);
+                ImGui::PlotValues("2", z, (int)ev_data.size(), 0xFFFF5555);
+                float x_val;
+                if (ImGui::ClickingAtPlot(&x_val)) {
+                    data->playback.time = x_val;
+                }
+                ImGui::EndPlot();
+            }
+            {
+                const auto num_frames = data->dynamic.trajectory.num_frames;
+                const auto transform_data = structure_tracking::get_transform_data(ref.id);
+                float* tmp_vals = (float*)TMP_MALLOC(num_frames * sizeof(float));
+                tmp_vals[0] = 0.0f;
+                for (int i = 1; i < num_frames; i++) {
+                    quat q0 = math::quat_cast(transform_data.rotation[i - 1]);
+                    quat q1 = math::quat_cast(transform_data.rotation[i]);
+                    tmp_vals[i] = 2.0f * math::acos(math::dot(q0, q1));
+                }
+
+				ImGui::BeginPlot("Eigen Values", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
                 ImGui::PlotValues("0", x, (int)ev_data.size(), 0xFF5555FF);
                 ImGui::PlotValues("1", y, (int)ev_data.size(), 0xFF55FF55);
                 ImGui::PlotValues("2", z, (int)ev_data.size(), 0xFFFF5555);
