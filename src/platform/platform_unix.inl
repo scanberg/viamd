@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <time.h>
 
+/*
 static DynamicArray<CString> curr_filters;
 
 static int filter_func(const struct dirent *dir) {
@@ -12,9 +13,9 @@ static int filter_func(const struct dirent *dir) {
         case DT_LNK:
             {
                 const char *s = dir->d_name;
-                int s_len = strlen(s);
+                const int s_len = strlen(s);
                 for (const auto& f : curr_filters) {
-                    int len = s_len - f.count - 1;
+                    const int len = s_len - f.count - 1;
                     if (len >= 0) {
                         StringBuffer<32> buf;
                         snprintf(buf.cstr(), 32, ".%.*s", (int32)f.length(), f.cstr());
@@ -29,6 +30,7 @@ static int filter_func(const struct dirent *dir) {
 
     return 0;
 }
+*/
 
 Timestamp get_time() {
     timespec t;
@@ -96,7 +98,8 @@ DynamicArray<DirectoryEntry> list_directory(CString dir_path) {
 }
 
 CString get_cwd() {
-    return { getcwd(data.file_system.cwd.cstr(), 512) };
+    getcwd(data.file_system.cwd.cstr(), 512);
+    return { data.file_system.cwd };
 }
 
 void sleep(int32 milliseconds) {
