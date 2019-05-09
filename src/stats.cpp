@@ -223,8 +223,8 @@ void compute_density_volume(Volume* vol, const MoleculeTrajectory& traj, Range<i
         return;
     }
 
-    if (ctx.properties.count == 0) return;
-    const int32 num_frames = (int32)ctx.properties.front()->avg_data.count;
+    if (ctx.properties.size() == 0) return;
+    const int32 num_frames = (int32)ctx.properties.front()->avg_data.size();
 
     clear_volume(vol);
 
@@ -256,7 +256,7 @@ void compute_density_volume(Volume* vol, const MoleculeTrajectory& traj, Range<i
     }
 }
 
-static Range<float> compute_range(Array<float> data) {
+static Range<float> compute_range(Array<const float> data) {
     if (data.count == 0) {
         return {0, 0};
     }
@@ -300,8 +300,8 @@ void set_error_message(Property* prop, const char* fmt, ...) {
 static DynamicArray<CString> extract_arguments(CString str) {
     DynamicArray<CString> args;
 
-    const uint8* beg = str.beg();
-    const uint8* end = str.beg();
+    const auto* beg = str.beg();
+    const auto* end = str.beg();
     int32 count = 0;
 
     while (end < str.end()) {
@@ -324,7 +324,7 @@ static DynamicArray<CString> extract_arguments(CString str) {
 
 static CString extract_command(CString str) {
     str = trim(str);
-    const uint8* ptr = str.beg();
+    const char* ptr = str.beg();
     while (ptr != str.end() && *ptr != '(' && !isspace(*ptr)) ptr++;
     return {str.beg(), ptr};
 }
@@ -346,7 +346,7 @@ bool extract_structures(StructureData* data, CString arg, const MoleculeStructur
     }
 
     // @NOTE: ONLY ALLOW RECURSION FOR FIRST ARGUMENT?
-    if (cmd_args.count > 0 && find_character(cmd_args[0], '(')) {
+    if (cmd_args.size() > 0 && find_character(cmd_args[0], '(')) {
         if (!extract_structures(data, cmd_args[0], molecule)) return false;
         cmd_args = cmd_args.subarray(1);
     }
@@ -364,7 +364,7 @@ bool extract_args_structures(Array<StructureData> data, Array<CString> args, con
 
     int32 max_count = 0;
     for (const auto& s : data) {
-        int32 count = (int32)s.structures.count;
+        int32 count = (int32)s.structures.size();
         if (count == 0) {
             set_error_message(ctx.current_property, "One argument did not match any structures");
             return false;
@@ -780,8 +780,8 @@ static bool compute_distance(Property* prop, const Array<CString> args, const Mo
     }
 
     // @IMPORTANT! Use this instead of dynamic.trajectory.num_frames as that can be changing in a different thread!
-    const int32 num_frames = (int32)prop->avg_data.count;
-    const int32 structure_count = (int32)prop->structure_data[0].structures.count;
+    const int32 num_frames = (int32)prop->avg_data.size();
+    const int32 structure_count = (int32)prop->structure_data[0].structures.size();
 
     init_instance_data(&prop->instance_data, structure_count, num_frames);
 
@@ -815,7 +815,7 @@ static bool compute_distance(Property* prop, const Array<CString> args, const Mo
         }
 
         prop->avg_data[i] = sum * scl;
-        if (var > 0.f) prop->std_dev_data.ptr[i] = math::sqrt(var * scl);
+        if (var > 0.f) prop->std_dev_data.data()[i] = math::sqrt(var * scl);
     }
 
     prop->total_data_range = compute_range(*prop);
@@ -844,8 +844,8 @@ static bool compute_angle(Property* prop, const Array<CString> args, const Molec
     }
 
     // @IMPORTANT! Use this instead of dynamic.trajectory.num_frames as that can be changing in a different thread!
-    const int32 num_frames = (int32)prop->avg_data.count;
-    const int32 structure_count = (int32)prop->structure_data[0].structures.count;
+    const int32 num_frames = (int32)prop->avg_data.size();
+    const int32 structure_count = (int32)prop->structure_data[0].structures.size();
 
     init_instance_data(&prop->instance_data, structure_count, num_frames);
 
@@ -909,8 +909,8 @@ static bool compute_dihedral(Property* prop, const Array<CString> args, const Mo
     }
 
     // @IMPORTANT! Use this instead of dynamic.trajectory.num_frames as that can be changing in a different thread!
-    const int32 num_frames = (int32)prop->avg_data.count;
-    const int32 structure_count = (int32)prop->structure_data[0].structures.count;
+    const int32 num_frames = (int32)prop->avg_data.size();
+    const int32 structure_count = (int32)prop->structure_data[0].structures.size();
 
     init_instance_data(&prop->instance_data, structure_count, num_frames);
 
@@ -998,8 +998,8 @@ static bool compute_rmsd(Property* prop, const Array<CString> args, const Molecu
     }
 
     // @IMPORTANT! Use this instead of dynamic.trajectory.num_frames as that can be changing in a different thread!
-    const int32 num_frames = (int32)prop->avg_data.count;
-    const int32 structure_count = (int32)prop->structure_data[0].structures.count;
+    const int32 num_frames = (int32)prop->avg_data.size();
+    const int32 structure_count = (int32)prop->structure_data[0].structures.size();
 
     init_instance_data(&prop->instance_data, structure_count, num_frames);
 
@@ -1087,7 +1087,7 @@ static bool compute_expression(Property* prop, const Array<CString> args, const 
     // Extract which properties preceedes this property
     Array<Property*> properties = ctx.properties;
     properties.count = 0;
-    for (int i = 0; i < ctx.properties.count; i++) {
+    for (int i = 0; i < ctx.properties.size(); i++) {
         if (prop == ctx.properties[i]) {
             properties.count = i;
             break;
@@ -1096,14 +1096,14 @@ static bool compute_expression(Property* prop, const Array<CString> args, const 
 
     prop->dependencies = extract_property_dependencies(properties, expr_str);
 
-    DynamicArray<double> values(prop->dependencies.count, 0);
+    DynamicArray<double> values(prop->dependencies.size(), 0);
     DynamicArray<te_variable> vars;
-    for (int32 i = 0; i < prop->dependencies.count; i++) {
+    for (int32 i = 0; i < prop->dependencies.size(); i++) {
         vars.push_back({prop->dependencies[i]->name_buf.cstr(), &values[i], 0, 0});
     }
 
     int err;
-    te_expr* expr = te_compile(expr_str.cstr(), vars.ptr, (int32)vars.count, &err);
+    te_expr* expr = te_compile(expr_str.cstr(), vars.data(), (int32)vars.size(), &err);
 
     if (expr) {
         int32 max_instance_count = 0;
@@ -1111,14 +1111,14 @@ static bool compute_expression(Property* prop, const Array<CString> args, const 
             max_instance_count = math::max(max_instance_count, (int32)p->instance_data.count);
         }
 
-        const int32 frame_count = (int32)prop->avg_data.count;
+        const int32 frame_count = (int32)prop->avg_data.size();
         init_instance_data(&prop->instance_data, max_instance_count, frame_count);
 
         float scl = 1.f / (float)max_instance_count;
         for (int32 frame = 0; frame < frame_count; frame++) {
             float val = 0.f;
             for (int32 i = 0; i < max_instance_count; i++) {
-                for (int32 j = 0; j < values.count; j++) {
+                for (int32 j = 0; j < values.size(); j++) {
                     values[j] = 0;
                     if (prop->dependencies[j]->instance_data.count == max_instance_count) {
                         if (frame < prop->dependencies[j]->instance_data[i].data.count) {
@@ -1169,7 +1169,7 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
             }
         }
     } else {
-        int32 count = (int32)prop.structure_data[0].structures.count;
+        int32 count = (int32)prop.structure_data[0].structures.size();
         Array<const float> pos_prev_x;
 		Array<const float> pos_prev_y;
 		Array<const float> pos_prev_z;
@@ -1291,18 +1291,18 @@ bool register_property_command(CString cmd_keyword, PropertyComputeFunc compute_
 bool sync_structure_data_length(Array<StructureData> data) {
     int32 max_count = 0;
     for (const auto& s : data) {
-        max_count = math::max(max_count, (int32)s.structures.count);
+        max_count = math::max(max_count, (int32)s.structures.size());
     }
 
     // Extend and copy data from first element to match multi_count
     for (auto& s : data) {
-        while (s.structures.count < max_count) {
+        while (s.structures.size() < max_count) {
             s.structures.push_back(s.structures.front());
         }
     }
 
     if (data.count > 0) {
-        for (int32 i = 0; i < data[0].structures.count; i++) {
+        for (int32 i = 0; i < data[0].structures.size(); i++) {
             int32 max_structure_count = 0;
             for (const auto& s : data) {
                 const int32 c = s.strategy == COM ? 1 : structure_index_count(s.structures[i]);
@@ -1323,13 +1323,13 @@ static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic
 
     ctx.current_property = prop;
     prop->error_msg_buf = "";
-    if (prop->avg_data.count != num_frames) {
+    if (prop->avg_data.size() != num_frames) {
         prop->avg_data.resize(num_frames);
     }
-    if (prop->std_dev_data.count != num_frames) {
+    if (prop->std_dev_data.size() != num_frames) {
         prop->std_dev_data.resize(num_frames);
     }
-    if (prop->filter_fraction.count != num_frames) {
+    if (prop->filter_fraction.size() != num_frames) {
         prop->filter_fraction.resize(num_frames);
     }
 
@@ -1357,8 +1357,8 @@ static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic
     DynamicArray<CString> args;
 
     // Extract big argument chunks
-    const uint8* beg = (uint8*)prop->args_buf.beg();
-    const uint8* end = (uint8*)prop->args_buf.beg();
+    const char* beg = prop->args_buf.beg();
+    const char* end = prop->args_buf.beg();
     int count = 0;
 
     // Use space separation unless we are inside a parenthesis
@@ -1383,7 +1383,7 @@ static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic
         }
     }
 
-    if (args.count == 0) {
+    if (args.size() == 0) {
         prop->valid = false;
         return false;
     }
@@ -1464,9 +1464,9 @@ void async_update(const MoleculeDynamic& dynamic, Range<int32> frame_filter, voi
             // When dealing with dependencies.
             const int32 num_frames = dynamic.trajectory.num_frames;
 
-            for (int32 i = 0; i < ctx.properties.count; i++) {
+            for (int32 i = 0; i < ctx.properties.size(); i++) {
                 auto p = ctx.properties[i];
-                ctx.fraction_done = (i / (float)ctx.properties.count);
+                ctx.fraction_done = (i / (float)ctx.properties.size());
                 auto filter = p->filter;
 
                 if (p->data_dirty) {
@@ -1492,8 +1492,8 @@ void async_update(const MoleculeDynamic& dynamic, Range<int32> frame_filter, voi
                     clear_histogram(&tmp_hist);
                     tmp_hist.value_range = p->filt_histogram.value_range;
 
-                    int32 beg_idx = math::clamp((int32)frame_filter.x, 0, (int32)p->avg_data.count);
-                    int32 end_idx = math::clamp((int32)frame_filter.y, 0, (int32)p->avg_data.count);
+                    int32 beg_idx = math::clamp((int32)frame_filter.x, 0, (int32)p->avg_data.size());
+                    int32 end_idx = math::clamp((int32)frame_filter.y, 0, (int32)p->avg_data.size());
 
                     if (beg_idx != end_idx) {
                         // Since the data is probably showing, perform the operations on tmp data then copy the results
@@ -1512,7 +1512,7 @@ void async_update(const MoleculeDynamic& dynamic, Range<int32> frame_filter, voi
 
                     // Compute filter fractions for frames
                     if (p->instance_data) {
-                        for (int32 j = 0; j < p->filter_fraction.count; j++) {
+                        for (int32 j = 0; j < p->filter_fraction.size(); j++) {
                             float val = 0.f;
                             for (const auto& inst : p->instance_data) {
                                 if (filter.x <= inst.data[j] && inst.data[j] <= filter.y) {
@@ -1623,9 +1623,9 @@ void remove_all_properties() {
 }
 
 void move_property_up(Property* prop) {
-    if (ctx.properties.count <= 1) return;
+    if (ctx.properties.size() <= 1) return;
     signal_stop_and_wait();
-    for (int32 i = 1; i < (int32)ctx.properties.count; i++) {
+    for (int32 i = 1; i < (int32)ctx.properties.size(); i++) {
         if (ctx.properties[i] == prop) {
             // swap
             Property* tmp = ctx.properties[i - 1];
@@ -1638,9 +1638,9 @@ void move_property_up(Property* prop) {
 }
 
 void move_property_down(Property* prop) {
-    if (ctx.properties.count <= 1) return;
+    if (ctx.properties.size() <= 1) return;
     signal_stop_and_wait();
-    for (int32 i = 0; i < (int32)ctx.properties.count - 1; i++) {
+    for (int32 i = 0; i < (int32)ctx.properties.size() - 1; i++) {
         if (ctx.properties[i] == prop) {
             // swap
             Property* tmp = ctx.properties[i + 1];

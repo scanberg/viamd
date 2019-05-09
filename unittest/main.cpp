@@ -28,7 +28,7 @@
 #define CATCH_CONFIG_MAIN
 #include "catch.hpp"
 
-constexpr const char* CAFFINE_PDB = R"(
+constexpr CString CAFFINE_PDB = R"(
 ATOM      1  N1  BENZ    1       5.040   1.944  -8.324                          
 ATOM      2  C2  BENZ    1       6.469   2.092  -7.915                          
 ATOM      3  C3  BENZ    1       7.431   0.865  -8.072                          
@@ -56,63 +56,68 @@ ATOM     24  H13 CSP3    1E      9.801   2.693  -7.994
 )";
 
 TEST_CASE("Bitfield", "[Bitfield]") {
-	constexpr int size = 257;
-	Bitfield field;
-	bitfield::init(&field, size);
-	bitfield::set_bit(field, 2);
-	bitfield::set_bit(field, 3);
-	bitfield::set_bit(field, 5);
+    constexpr int size = 257;
+    Bitfield field;
+    bitfield::init(&field, size);
+    bitfield::set_bit(field, 2);
+    bitfield::set_bit(field, 3);
+    bitfield::set_bit(field, 5);
 
-	REQUIRE(field.size() == size);
-	REQUIRE(field.size_in_bytes() == size / 8 + (size % 8 ? 1 : 0));
+    REQUIRE(field.size() == size);
+    REQUIRE(field.size_in_bytes() == size / 8 + (size % 8 ? 1 : 0));
 
-	REQUIRE(bitfield::get_bit(field, 2) == true);
-	REQUIRE(bitfield::get_bit(field, 3) == true);
-	REQUIRE(bitfield::get_bit(field, 5) == true);
-	REQUIRE(bitfield::number_of_bits_set(field) == 3);
+    REQUIRE(bitfield::get_bit(field, 2) == true);
+    REQUIRE(bitfield::get_bit(field, 3) == true);
+    REQUIRE(bitfield::get_bit(field, 5) == true);
+    REQUIRE(bitfield::number_of_bits_set(field) == 3);
 
-	//bitfield::print(field);
-	//printf("\n");
+    // bitfield::print(field);
+    // printf("\n");
 
-	bitfield::clear_all(field);
-	for (int64 i = 0; i < field.size(); i++) {
-		REQUIRE(bitfield::get_bit(field, i) == false);
-	}
+    bitfield::clear_all(field);
+    for (int64 i = 0; i < field.size(); i++) {
+        REQUIRE(bitfield::get_bit(field, i) == false);
+    }
 
-	REQUIRE(bitfield::any_bit_set(field) == false);
+    REQUIRE(bitfield::any_bit_set(field) == false);
 
-	// --- RANGE ----
-	const auto beg = 33;
-	const auto end = 129;
-	bitfield::set_range(field, Range<int>(beg, end));
-	REQUIRE(bitfield::number_of_bits_set(field) == (end - beg));
+    // --- RANGE ----
+    const auto beg = 33;
+    const auto end = 129;
+    bitfield::set_range(field, Range<int>(beg, end));
+    REQUIRE(bitfield::number_of_bits_set(field) == (end - beg));
 
-	//bitfield::print(field);
-	//printf("\n");
+    // bitfield::print(field);
+    // printf("\n");
 
-	for (int64 i = 0; i < field.size(); i++) {
-		if (beg <= i && i < end) {
-			REQUIRE(bitfield::get_bit(field, i) == true);
-		}
-		else {
-			REQUIRE(bitfield::get_bit(field, i) == false);
-		}
-	}
+    for (int64 i = 0; i < field.size(); i++) {
+        if (beg <= i && i < end) {
+            REQUIRE(bitfield::get_bit(field, i) == true);
+        } else {
+            REQUIRE(bitfield::get_bit(field, i) == false);
+        }
+    }
 
-	REQUIRE(bitfield::any_bit_set_in_range(field, Range<int>(0, beg)) == false);
-	REQUIRE(bitfield::any_bit_set_in_range(field, Range<int>(beg, end)) == true);
-	REQUIRE(bitfield::all_bits_set_in_range(field, Range<int>(beg, end)) == true);
-	REQUIRE(bitfield::any_bit_set_in_range(field, Range<int>(end, size)) == false);
+    REQUIRE(bitfield::any_bit_set_in_range(field, Range<int>(0, beg)) == false);
+    REQUIRE(bitfield::any_bit_set_in_range(field, Range<int>(beg, end)) == true);
+    REQUIRE(bitfield::all_bits_set_in_range(field, Range<int>(beg, end)) == true);
+    REQUIRE(bitfield::any_bit_set_in_range(field, Range<int>(end, size)) == false);
 
-	//bitfield::print(field);
-	//printf("\n");
+    // bitfield::print(field);
+    // printf("\n");
+}
 
+TEST_CASE("Array", "[Array]") {
+    static constexpr int data[4] = {1, 2, 4, 5};
+    constexpr Array<const int> arr(data);
+    STATIC_ASSERT(arr.size() == 4, "Expected length to be 4");
+	STATIC_ASSERT(arr[2] == 4, "Expected data[2] to be 4");
+
+    constexpr CString cstr = "Cool";
+	STATIC_ASSERT(cstr.size() == 4, "Expected length to be 4");
 }
 
 TEST_CASE("Testing DynamicArray", "[DynamicArray]") {
-    // MoleculeDynamic md;
-    // allocate_and_parse_pdb_from_string(&md, CAFFINE_PDB);
-    // defer { free_molecule_structure(&md.molecule); };
     DynamicArray<int> da1;
     DynamicArray<int> da2;
 
@@ -125,95 +130,97 @@ TEST_CASE("Testing DynamicArray", "[DynamicArray]") {
     };
 
     da1 = func();
+
+	REQUIRE(da1.size() == 3);
 }
 
 TEST_CASE("Molecule Utils", "[molecule_utils]") {
-	MoleculeStructure mol;
-	pdb::load_molecule_from_string(&mol, CAFFINE_PDB);
-	defer{ free_molecule_structure(&mol); };
+    MoleculeStructure mol;
+    pdb::load_molecule_from_string(&mol, CAFFINE_PDB);
+    defer { free_molecule_structure(&mol); };
 
-	SECTION("COM: equal mass") {
-		vec3 ref = { 0,0,0 };
-		for (int64 i = 0; i < mol.atom.count; i++) {
-			ref.x += mol.atom.position.x[i];
-			ref.y += mol.atom.position.y[i];
-			ref.z += mol.atom.position.z[i];
-		}
-		ref /= (float)mol.atom.count;
+    SECTION("COM: equal mass") {
+        vec3 ref = {0, 0, 0};
+        for (int64 i = 0; i < mol.atom.count; i++) {
+            ref.x += mol.atom.position.x[i];
+            ref.y += mol.atom.position.y[i];
+            ref.z += mol.atom.position.z[i];
+        }
+        ref /= (float)mol.atom.count;
 
-		const vec3 com = compute_com(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count);
-		
-		REQUIRE(ref.x == Approx(com.x));
-		REQUIRE(ref.y == Approx(com.y));
-		REQUIRE(ref.z == Approx(com.z));
-	}
+        const vec3 com = compute_com(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count);
 
-	SECTION("COM: individual mass") {
-		vec3 ref = { 0,0,0 };
-		float sum = 0.0f;
-		for (int64 i = 0; i < mol.atom.count; i++) {
-			const auto m = mol.atom.mass[i];
-			ref.x += mol.atom.position.x[i] * m;
-			ref.y += mol.atom.position.y[i] * m;
-			ref.z += mol.atom.position.z[i] * m;
-			sum += m;
-		}
-		ref /= sum;
+        REQUIRE(ref.x == Approx(com.x));
+        REQUIRE(ref.y == Approx(com.y));
+        REQUIRE(ref.z == Approx(com.z));
+    }
 
-		const vec3 com = compute_com(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.mass, mol.atom.count);
-		
-		REQUIRE(ref.x == Approx(com.x));
-		REQUIRE(ref.y == Approx(com.y));
-		REQUIRE(ref.z == Approx(com.z));
-	}
+    SECTION("COM: individual mass") {
+        vec3 ref = {0, 0, 0};
+        float sum = 0.0f;
+        for (int64 i = 0; i < mol.atom.count; i++) {
+            const auto m = mol.atom.mass[i];
+            ref.x += mol.atom.position.x[i] * m;
+            ref.y += mol.atom.position.y[i] * m;
+            ref.z += mol.atom.position.z[i] * m;
+            sum += m;
+        }
+        ref /= sum;
 
-	SECTION("COM: Element mass LUT") {
-		vec3 ref = { 0,0,0 };
-		float sum = 0.0f;
-		for (int64 i = 0; i < mol.atom.count; i++) {
-			const auto m = element::atomic_mass(mol.atom.element[i]);
-			ref.x += mol.atom.position.x[i] * m;
-			ref.y += mol.atom.position.y[i] * m;
-			ref.z += mol.atom.position.z[i] * m;
-			sum += m;
-		}
-		ref /= sum;
+        const vec3 com = compute_com(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.mass, mol.atom.count);
 
-		const vec3 com = compute_com(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.element, mol.atom.count);
-		
-		REQUIRE(ref.x == Approx(com.x));
-		REQUIRE(ref.y == Approx(com.y));
-		REQUIRE(ref.z == Approx(com.z));
-	}
+        REQUIRE(ref.x == Approx(com.x));
+        REQUIRE(ref.y == Approx(com.y));
+        REQUIRE(ref.z == Approx(com.z));
+    }
 
-	SECTION("TRANSFORM") {
-		const mat4 matrix = math::mat4_cast(math::angle_axis(math::PI / 4.0f, math::normalize(vec3(1, 1, 1))));
-		
-		void* mem = TMP_MALLOC(mol.atom.count * sizeof(float) * 6);
-		defer { TMP_FREE(mem); };
-		float* ref_x = (float*)mem;
-		float* ref_y = ref_x + mol.atom.count;
-		float* ref_z = ref_y + mol.atom.count;
-		float* x = ref_z + mol.atom.count;
-		float* y = x + mol.atom.count;
-		float* z = y + mol.atom.count;
+    SECTION("COM: Element mass LUT") {
+        vec3 ref = {0, 0, 0};
+        float sum = 0.0f;
+        for (int64 i = 0; i < mol.atom.count; i++) {
+            const auto m = element::atomic_mass(mol.atom.element[i]);
+            ref.x += mol.atom.position.x[i] * m;
+            ref.y += mol.atom.position.y[i] * m;
+            ref.z += mol.atom.position.z[i] * m;
+            sum += m;
+        }
+        ref /= sum;
 
-		memcpy(ref_x, mol.atom.position.x, mol.atom.count * sizeof(float));
-		memcpy(ref_y, mol.atom.position.y, mol.atom.count * sizeof(float));
-		memcpy(ref_z, mol.atom.position.z, mol.atom.count * sizeof(float));
-		memcpy(x, mol.atom.position.x, mol.atom.count * sizeof(float));
-		memcpy(y, mol.atom.position.y, mol.atom.count * sizeof(float));
-		memcpy(z, mol.atom.position.z, mol.atom.count * sizeof(float));
+        const vec3 com = compute_com(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.element, mol.atom.count);
 
-		transform_positions_ref(ref_x, ref_y, ref_z, mol.atom.count, matrix);
-		transform_positions(x, y, z, mol.atom.count, matrix);
+        REQUIRE(ref.x == Approx(com.x));
+        REQUIRE(ref.y == Approx(com.y));
+        REQUIRE(ref.z == Approx(com.z));
+    }
 
-		for (int64 i = 0; i < mol.atom.count; i++) {
-			REQUIRE(ref_x[i] == Approx(x[i]));
-			REQUIRE(ref_y[i] == Approx(y[i]));
-			REQUIRE(ref_z[i] == Approx(z[i]));
-		}
-	}
+    SECTION("TRANSFORM") {
+        const mat4 matrix = math::mat4_cast(math::angle_axis(math::PI / 4.0f, math::normalize(vec3(1, 1, 1))));
+
+        void* mem = TMP_MALLOC(mol.atom.count * sizeof(float) * 6);
+        defer { TMP_FREE(mem); };
+        float* ref_x = (float*)mem;
+        float* ref_y = ref_x + mol.atom.count;
+        float* ref_z = ref_y + mol.atom.count;
+        float* x = ref_z + mol.atom.count;
+        float* y = x + mol.atom.count;
+        float* z = y + mol.atom.count;
+
+        memcpy(ref_x, mol.atom.position.x, mol.atom.count * sizeof(float));
+        memcpy(ref_y, mol.atom.position.y, mol.atom.count * sizeof(float));
+        memcpy(ref_z, mol.atom.position.z, mol.atom.count * sizeof(float));
+        memcpy(x, mol.atom.position.x, mol.atom.count * sizeof(float));
+        memcpy(y, mol.atom.position.y, mol.atom.count * sizeof(float));
+        memcpy(z, mol.atom.position.z, mol.atom.count * sizeof(float));
+
+        transform_positions_ref(ref_x, ref_y, ref_z, mol.atom.count, matrix);
+        transform_positions(x, y, z, mol.atom.count, matrix);
+
+        for (int64 i = 0; i < mol.atom.count; i++) {
+            REQUIRE(ref_x[i] == Approx(x[i]));
+            REQUIRE(ref_y[i] == Approx(y[i]));
+            REQUIRE(ref_z[i] == Approx(z[i]));
+        }
+    }
 }
 
 TEST_CASE("Testing pdb loader caffine", "[parse_pdb]") {
@@ -230,8 +237,8 @@ TEST_CASE("Testing filter", "[filter]") {
     defer { free_molecule_structure(&mol); };
 
     filter::initialize();
-	Bitfield mask;
-	bitfield::init(&mask, mol.atom.count);
+    Bitfield mask;
+    bitfield::init(&mask, mol.atom.count);
 
     SECTION("filter element N") {
         filter::compute_filter_mask(mask, "element N", mol);

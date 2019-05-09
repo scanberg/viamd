@@ -77,7 +77,7 @@ constexpr auto KEY_SKIP_TO_NEXT_FRAME = Key::KEY_RIGHT;
     }
 
 constexpr unsigned int NO_PICKING_IDX = 0xFFFFFFFFU;
-constexpr const char* FILE_EXTENSION = "via";
+constexpr CString FILE_EXTENSION = "via";
 
 constexpr uint32 DEL_BTN_COLOR = 0xFF1111CC;
 constexpr uint32 DEL_BTN_HOVER_COLOR = 0xFF3333DD;
@@ -394,7 +394,10 @@ struct ApplicationData {
 
         struct {
             bool enabled = false;
-            float32 focus_depth = 0.5f;
+            struct {
+                float32 target = 5.0f;
+                float32 current = 5.0f;
+            } focus_depth;
             float32 focus_scale = 10.0f;
         } dof;
 
@@ -761,6 +764,8 @@ int main(int, char**) {
     allocate_and_parse_pdb_from_string(&data.dynamic, CAFFINE_PDB);
     init_molecule_data(&data);
 #else
+    constexpr CString cool = VIAMD_DATA_DIR "/1ALA-250ns-2500frames.pdb";
+
     load_molecule_data(&data, VIAMD_DATA_DIR "/1ALA-250ns-2500frames.pdb");
     create_reference_frame(&data, "ref1", "residue 1:2");
     // stats::create_property("d1", "distance atom(1) atom(4)");
@@ -848,7 +853,7 @@ int main(int, char**) {
                 }
 
                 if (ImGui::GetIO().MouseDoubleClicked[0]) {
-                    if (data.picking.depth < 1.f) {
+                    if (data.picking.depth < 1.0f) {
                         const vec3 forward = data.view.camera.orientation * vec3(0, 0, 1);
                         const float32 dist = data.view.trackball_state.distance;
                         const vec3 camera_target_pos = data.picking.world_coord + forward * dist;
@@ -856,15 +861,29 @@ int main(int, char**) {
                         data.view.animation.target_position = camera_target_pos;
                     }
                 }
+
+                if (data.picking.depth < 1.0f) {
+                    data.visuals.dof.focus_depth.target = math::distance(data.view.camera.position, data.picking.world_coord);
+                } else {
+                    data.visuals.dof.focus_depth.target = data.view.trackball_state.distance;
+                }
             }
         }
         // #animate-camera
         {
             const float32 dt = math::min(data.ctx.timing.delta_s, 0.033f);
-            const float32 speed = 10.0f;
-
-            const vec3 vel = (data.view.animation.target_position - data.view.camera.position) * speed;
-            data.view.camera.position += vel * dt;
+            {
+                // #camera-translation
+                constexpr float32 speed = 10.0f;
+                const vec3 vel = (data.view.animation.target_position - data.view.camera.position) * speed;
+                data.view.camera.position += vel * dt;
+            }
+            {
+                // #focus-depth
+                constexpr float32 speed = 10.0f;
+                const float32 vel = (data.visuals.dof.focus_depth.target - data.visuals.dof.focus_depth.current) * speed;
+                data.visuals.dof.focus_depth.current += vel * dt;
+            }
 #if 0
             ImGui::Begin("Camera Debug Info");
             ImGui::Text("lin vel [%.2f %.2f %.2f]", vel.x, vel.y, vel.z);
@@ -1391,10 +1410,8 @@ int main(int, char**) {
             desc.tonemapping.exposure = data.visuals.tonemapping.exposure;
             desc.tonemapping.gamma = data.visuals.tonemapping.gamma;
 
-            data.visuals.dof.focus_depth = data.view.trackball_state.distance;
-
             desc.depth_of_field.enabled = data.visuals.dof.enabled;
-            desc.depth_of_field.focus_depth = data.visuals.dof.focus_depth;
+            desc.depth_of_field.focus_depth = data.visuals.dof.focus_depth.current;
             desc.depth_of_field.focus_scale = data.visuals.dof.focus_scale;
 
             desc.temporal_reprojection.enabled = data.visuals.temporal_reprojection.enabled;
@@ -1550,31 +1567,42 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             const int64 masked_count = bitfield::number_of_bits_set(ref.atom_mask);
             if (masked_count == 0) break;
 
-            void* mem = TMP_MALLOC(sizeof(float) * 7 * masked_count);
-            defer { TMP_FREE(mem); };
-            float* ref_x = (float*)mem;
-            float* ref_y = ref_x + masked_count;
-            float* ref_z = ref_y + masked_count;
-            float* cur_x = ref_z + masked_count;
-            float* cur_y = cur_x + masked_count;
-            float* cur_z = cur_y + masked_count;
-            float* mass = cur_z + masked_count;
+            void* w_mem = TMP_MALLOC(sizeof(float) * 1 * masked_count);
+            void* f_mem = TMP_MALLOC(sizeof(float) * 3 * masked_count);
+            void* c_mem = TMP_MALLOC(sizeof(float) * 3 * masked_count);
+            defer {
+                TMP_FREE(w_mem);
+                TMP_FREE(f_mem);
+                TMP_FREE(c_mem);
+            };
 
-            bitfield::extract_data_from_mask(ref_x, get_trajectory_position_x(traj, 0).data(), ref.atom_mask);
-            bitfield::extract_data_from_mask(ref_y, get_trajectory_position_y(traj, 0).data(), ref.atom_mask);
-            bitfield::extract_data_from_mask(ref_z, get_trajectory_position_z(traj, 0).data(), ref.atom_mask);
-            bitfield::extract_data_from_mask(cur_x, mol.atom.position.x, ref.atom_mask);
-            bitfield::extract_data_from_mask(cur_y, mol.atom.position.y, ref.atom_mask);
-            bitfield::extract_data_from_mask(cur_z, mol.atom.position.z, ref.atom_mask);
-            bitfield::extract_data_from_mask(mass, mol.atom.mass, ref.atom_mask);
+            float* weight = (float*)w_mem;
+            float* frame_x = (float*)f_mem;
+            float* frame_y = frame_x + masked_count;
+            float* frame_z = frame_y + masked_count;
+            float* current_x = (float*)c_mem;
+            float* current_y = current_x + masked_count;
+            float* current_z = current_y + masked_count;
 
-            const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, masked_count);
-            const vec3 cur_com = compute_com(cur_x, cur_y, cur_z, mass, masked_count);
+            bitfield::extract_data_from_mask(weight, mol.atom.mass, ref.atom_mask);
+            bitfield::extract_data_from_mask(frame_x, get_trajectory_position_x(traj, 0).data(), ref.atom_mask);
+            bitfield::extract_data_from_mask(frame_y, get_trajectory_position_y(traj, 0).data(), ref.atom_mask);
+            bitfield::extract_data_from_mask(frame_z, get_trajectory_position_z(traj, 0).data(), ref.atom_mask);
+            bitfield::extract_data_from_mask(current_x, mol.atom.position.x, ref.atom_mask);
+            bitfield::extract_data_from_mask(current_y, mol.atom.position.y, ref.atom_mask);
+            bitfield::extract_data_from_mask(current_z, mol.atom.position.z, ref.atom_mask);
+
+            const vec3 frame_com = compute_com(frame_x, frame_y, frame_z, weight, masked_count);
+            const vec3 current_com = compute_com(current_x, current_y, current_z, weight, masked_count);
             const vec3 box_c = box * vec3(0.5f);
 
-            const mat4 R = structure_tracking::compute_rotation(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, mass, masked_count, cur_com, ref_com);
+            const mat3 R_frame_to_ref = structure_tracking::get_transform_to_target_frame(ref.id, frame).rotation;
+            const mat3 R_current_to_frame = structure_tracking::compute_rotation(current_x, current_y, current_z, frame_x, frame_y, frame_z, weight, masked_count, current_com, frame_com);
+
+			const mat4 R = R_current_to_frame;
+                //const mat4 R = structure_tracking::compute_rotation(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, weight, masked_count, cur_com, ref_com);
             const mat4 R_inv = math::transpose(R);
-            const mat4 T_ori = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-cur_com, 1));
+            const mat4 T_ori = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-current_com, 1));
             const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(box_c, 1));
 
             // const auto support_frames = structure_tracking::get_support_frames(ref.id);
@@ -1583,7 +1611,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
                 ref.com = box_c;
                 ref.basis = mat3(1);
             } else {
-                ref.com = cur_com;
+                ref.com = current_com;
                 ref.basis = T_box * R * T_ori;
 
                 // const auto eigen_vectors = structure_tracking::get_eigen_vectors(ref.id)[frame];
@@ -1827,7 +1855,7 @@ static void draw_main_menu(ApplicationData* data) {
                     auto res = platform::file_dialog(platform::FileDialogFlags_Save, {}, FILE_EXTENSION);
                     if (res.result == platform::FileDialogResult::FILE_OK) {
                         if (!get_file_extension(res.path)) {
-                            snprintf(res.path.cstr() + strnlen(res.path.cstr(), res.path.capacity()), res.path.capacity(), ".%s", FILE_EXTENSION);
+                            snprintf(res.path.cstr() + strnlen(res.path.cstr(), res.path.capacity()), res.path.capacity(), ".%s", FILE_EXTENSION.cstr());
                         }
                         save_workspace(data, res.path);
                     }
@@ -1839,7 +1867,7 @@ static void draw_main_menu(ApplicationData* data) {
                 auto res = platform::file_dialog(platform::FileDialogFlags_Save, {}, FILE_EXTENSION);
                 if (res.result == platform::FileDialogResult::FILE_OK) {
                     if (!get_file_extension(res.path)) {
-                        snprintf(res.path.cstr() + strnlen(res.path.cstr(), res.path.capacity()), res.path.capacity(), ".%s", FILE_EXTENSION);
+                        snprintf(res.path.cstr() + strnlen(res.path.cstr(), res.path.capacity()), res.path.capacity(), ".%s", FILE_EXTENSION.cstr());
                     }
                     save_workspace(data, res.path);
                 }
@@ -3116,11 +3144,11 @@ static void draw_timeline_window(ApplicationData* data) {
 
             if (ImGui::IsItemHovered()) ImGui::SetHoveredID(id);
 
-            ImGui::PlotVerticalBars(prop->filter_fraction.ptr, (int32)prop->filter_fraction.count, bar_fill_color);
-            if (prop->std_dev_data.ptr[0] > 0.f) {
-                ImGui::PlotVariance(prop->avg_data.ptr, prop->std_dev_data.ptr, (int32)prop->std_dev_data.count, 1.f, var_line_color, var_fill_color);
+            ImGui::PlotVerticalBars(prop->filter_fraction.data(), (int32)prop->filter_fraction.size(), bar_fill_color);
+            if (prop->std_dev_data.data()[0] > 0.f) {
+                ImGui::PlotVariance(prop->avg_data.data(), prop->std_dev_data.data(), (int32)prop->std_dev_data.size(), 1.f, var_line_color, var_fill_color);
             }
-            ImGui::PlotValues(prop->name_buf.cstr(), prop_data.ptr, (int32)prop_data.count);
+            ImGui::PlotValues(prop->name_buf.cstr(), prop_data.data(), (int32)prop_data.size());
 
             ImGui::PopClipRect();
 
@@ -3199,7 +3227,7 @@ static void draw_timeline_window(ApplicationData* data) {
                 const float32 min_x = ImGui::GetItemRectMin().x;
                 const float32 max_x = ImGui::GetItemRectMax().x;
                 float32 t = ImClamp((ImGui::GetIO().MousePos.x - min_x) / (max_x - min_x), 0.f, 1.f);
-                int idx = ImClamp((int32)ImLerp(frame_range.x, frame_range.y, t), 0, (int32)prop->avg_data.count - 1);
+                int idx = ImClamp((int32)ImLerp(frame_range.x, frame_range.y, t), 0, (int32)prop->avg_data.size() - 1);
                 const auto var = prop->std_dev_data[idx];
 
                 ImGui::BeginTooltip();
@@ -3222,10 +3250,10 @@ static void draw_timeline_window(ApplicationData* data) {
 
         if (ImGui::IsWindowHovered() && ImGui::GetIO().MouseWheel != 0.f && ImGui::GetIO().KeyCtrl) {
             constexpr float32 ZOOM_SCL = 0.24f;
-            float32 pre_coord = ImGui::GetScrollX() + (ImGui::GetIO().MousePos.x - ImGui::GetWindowPos().x) * zoom;
+            const float32 pre_coord = ImGui::GetScrollX() + (ImGui::GetIO().MousePos.x - ImGui::GetWindowPos().x) * zoom;
             zoom = math::clamp(zoom + ZOOM_SCL * ImGui::GetIO().MouseWheel, 1.f, 100.f);
-            float32 post_coord = ImGui::GetScrollX() + (ImGui::GetIO().MousePos.x - ImGui::GetWindowPos().x) * zoom;
-            float32 delta = pre_coord - post_coord;
+            const float32 post_coord = ImGui::GetScrollX() + (ImGui::GetIO().MousePos.x - ImGui::GetWindowPos().x) * zoom;
+            const float32 delta = pre_coord - post_coord;
             ImGui::SetScrollX(ImGui::GetScrollX() - delta);
         }
 
@@ -3547,7 +3575,7 @@ static void draw_shape_space_window(ApplicationData* data) {
     const float max_c = ImMax(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y);
     const ImVec2 size = ImVec2(max_c, max_c);
     const ImRect bb(ImGui::GetCurrentWindow()->DC.CursorPos, ImGui::GetCurrentWindow()->DC.CursorPos + size);
-    //ImGui::InvisibleButton("bg", bb.Max - bb.Min);
+    // ImGui::InvisibleButton("bg", bb.Max - bb.Min);
 
     const ImVec2 a = ImLerp(bb.Min, bb.Max, ImVec2(0.0f, 0.70710678118f));
     const ImVec2 b = ImLerp(bb.Min, bb.Max, ImVec2(1.0f, 0.70710678118f));
@@ -3564,7 +3592,7 @@ static void draw_shape_space_window(ApplicationData* data) {
     dl->AddTriangleFilled(a, b, c, triangle_fill_color);
     // dl->AddTriangle(a, b, c, triangle_line_color);
 
-	float32 mouse_hover_d2 = FLT_MAX;
+    float32 mouse_hover_d2 = FLT_MAX;
     int32 mouse_hover_idx = -1;
     vec3 mouse_hover_ev = {0, 0, 0};
 
@@ -3593,46 +3621,45 @@ static void draw_shape_space_window(ApplicationData* data) {
 
         const auto draw_range = [&](Range<int32> range, float radius, uint32 fill_color, uint32 line_color) -> void {
             for (int32 i = range.beg; i < range.end; i++) {
-                const ImVec2 coord = vec_cast(math::barycentric_to_cartesian(p[0], p[1], p[2], compute_shape_space_weights(eigen_values[i])));
+                const vec3 ev = eigen_values[i];
+                const ImVec2 coord = vec_cast(math::barycentric_to_cartesian(p[0], p[1], p[2], compute_shape_space_weights(ev)));
                 dl->AddCircleFilled(coord, radius, fill_color);
                 dl->AddCircle(coord, radius, line_color);
 
                 const float d2 = ImLengthSqr(coord - mouse_pos);
                 if (d2 < hover_radius * hover_radius && d2 < mouse_hover_d2) {
-					mouse_hover_d2 = d2;
+                    mouse_hover_d2 = d2;
                     mouse_hover_idx = i;
-					mouse_hover_ev = eigen_values[i];
+                    mouse_hover_ev = ev;
                 }
             }
         };
 
-		dl->ChannelsSetCurrent(1);
+        dl->ChannelsSetCurrent(1);
         draw_range({0, frame_range.x}, base_radius, base_color, line_color);
         draw_range({frame_range.y, N}, base_radius, base_color, line_color);
         dl->ChannelsSetCurrent(2);
         draw_range(frame_range, selected_radius, selected_color, line_color);
-		
+
         if (mouse_hover_idx != -1) {
             dl->ChannelsSetCurrent(3);
-            draw_range({mouse_hover_idx, 1}, hover_radius, hover_color, line_color);
+            draw_range({mouse_hover_idx, mouse_hover_idx + 1}, hover_radius, hover_color, line_color);
         }
     }
 
     dl->ChannelsMerge();
     dl->ChannelsSetCurrent(0);
 
-    if (ImGui::IsItemHovered()) {
+    if (mouse_hover_idx != -1) {
         ImGui::BeginTooltip();
-        if (mouse_hover_idx != -1) {
-            ImGui::Text("Frame[%i]", (int32)mouse_hover_idx);
-            if (ImGui::GetIO().MouseClicked[0]) {
-                data->playback.time = (float)mouse_hover_idx;
-            }
+        ImGui::Text("Frame[%i]", (int32)mouse_hover_idx);
+        if (ImGui::GetIO().MouseClicked[0]) {
+            data->playback.time = (float)mouse_hover_idx;
         }
         ImGui::Text(u8"\u03BB: (%.2f, %.2f, %.2f)", mouse_hover_ev.x, mouse_hover_ev.y, mouse_hover_ev.z);
-
         ImGui::EndTooltip();
     }
+
     ImGui::End();
 }
 
@@ -4220,7 +4247,7 @@ static CString get_color_mapping_name(ColorMapping mapping) {
 static vec4 to_vec4(CString txt, const vec4& default_val = vec4(1)) {
     vec4 res = default_val;
     auto tokens = ctokenize(txt, ",");
-    int32 count = (int32)tokens.count < 4 ? (int32)tokens.count : 4;
+    int32 count = (int32)tokens.size() < 4 ? (int32)tokens.size() : 4;
     for (int i = 0; i < count; i++) {
         res[i] = to_float(tokens[i]);
     }

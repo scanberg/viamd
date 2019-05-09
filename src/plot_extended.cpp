@@ -94,7 +94,7 @@ if (selection_range) {
     if (IsItemHovered()) {
         const auto mouse_pos = GetMousePos();
         const float t = (mouse_pos.x - ps.inner_bb.Min.x) / (ps.inner_bb.Max.x - ps.inner_bb.Min.x);
-        ps.hovered_x = ImLerp(x_range.x, x_range.y, t);
+        ps.hovered_x = ImClamp(ImLerp(x_range.x, x_range.y, t), x_range.x, x_range.y);
 
         if (flags & LinePlotFlags_ShowXVal) {
             const float x = ImLerp(inner_bb.Min.x, inner_bb.Max.x, t);

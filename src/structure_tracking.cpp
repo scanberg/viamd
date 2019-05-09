@@ -712,7 +712,7 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
         return false;
     }
 
-    const int num_points = bitfield::number_of_bits_set(atom_mask);
+    const int num_points = (int)bitfield::number_of_bits_set(atom_mask);
     if (num_points == 0) {
         LOG_ERROR("Supplied atom mask is empty.");
         return false;
@@ -757,13 +757,15 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
         tot_mass += mass[i];
     }
 
-    vec3 prv_com = {0, 0, 0};
+    vec3 prv_com = ref_com;
     vec3 cur_com = {0, 0, 0};
 
     const mat3 ref_cov_mat = compute_mass_weighted_covariance_matrix(ref_x, ref_y, ref_z, mass, num_points, ref_com);
     mat3 ref_eigen_vectors;
     vec3 ref_eigen_values;
     compute_eigen(ref_cov_mat, (vec3(&)[3])ref_eigen_vectors, (float(&)[3])ref_eigen_values);
+
+	memcpy(prv_x, ref_x, num_points * sizeof(float) * 3);
 
     // Set target frame explicitly
     s->frame_data.transform[target_frame_idx] = {mat3(1), ref_com};
@@ -786,9 +788,8 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
 
         cur_com = compute_com(cur_x, cur_y, cur_z, mass, num_points);
 
-        // @NOTE: use tot_points here to include inertia stabilization points
         const mat3 abs_mat = compute_mass_weighted_cross_covariance_matrix(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, mass, num_points, cur_com, ref_com);
-        const mat3 rel_mat = compute_mass_weighted_cross_covariance_matrix(cur_x, cur_y, cur_z, prv_x, prv_y, prv_z, mass, num_points, cur_com, prv_com);
+        const mat3 rel_mat = compute_mass_weighted_cross_covariance_matrix(prv_x, prv_y, prv_z, cur_x, cur_y, cur_z, mass, num_points, prv_com, cur_com);
         const mat3 cov_mat = compute_mass_weighted_covariance_matrix(cur_x, cur_y, cur_z, mass, num_points, cur_com);
 
         const mat3 abs_rot = compute_rotation(abs_mat);
