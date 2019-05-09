@@ -764,8 +764,6 @@ int main(int, char**) {
     allocate_and_parse_pdb_from_string(&data.dynamic, CAFFINE_PDB);
     init_molecule_data(&data);
 #else
-    constexpr CString cool = VIAMD_DATA_DIR "/1ALA-250ns-2500frames.pdb";
-
     load_molecule_data(&data, VIAMD_DATA_DIR "/1ALA-250ns-2500frames.pdb");
     create_reference_frame(&data, "ref1", "residue 1:2");
     // stats::create_property("d1", "distance atom(1) atom(4)");
@@ -2544,7 +2542,7 @@ void draw_context_popup(ApplicationData* data) {
         if (data->selection.right_clicked != -1 && data->dynamic) {
 #if 0
             if (ImGui::MenuItem("Recenter Trajectory")) {
-                recenter_trajectory(&data->dynamic, data->dynamic.molecule.atom.res_idx[data->selection.right_clicked]);
+                recenter_trajectory(&data->dynamic, data->dynamic.molecule.atom.x[data->selection.right_clicked]);
                 interpolate_atomic_positions(data->dynamic.molecule, data->dynamic.trajectory, data->playback.time, data->playback.interpolation);
                 data->gpu_buffers.dirty.position = true;
                 ImGui::CloseCurrentPopup();

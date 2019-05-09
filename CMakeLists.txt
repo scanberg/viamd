@@ -7,6 +7,14 @@ function(add_compile_options_config CONFIG)
     endforeach()
 endfunction()
 
+set(OSX_BUNDLE "")
+if (APPLE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.9")
+    if (VIAMD_CREATE_MACOSX_BUNDLE)
+        set(OSX_BUNDLE "MACOSX_BUNDLE")
+    endif()
+endif()
+
 project(viamd)
 
 option(VIAMD_PROFILE_COMPILE_TIMES ON)
@@ -52,14 +60,6 @@ file(GLOB PLATFORM_FILES src/platform/*)
 file(GLOB SRC_FILES src/*)
 
 source_group("platform" FILES ${PLATFORM_FILES})
-
-set(OSX_BUNDLE "")
-if (APPLE)
-	set(CMAKE_OSX_DEPLOYMENT_TARGET "10.9")
-	if (VIAMD_CREATE_MACOSX_BUNDLE)
-		set(OSX_BUNDLE "MACOSX_BUNDLE")
-	endif()
-endif()
 
 add_executable(viamd ${OSX_BUNDLE} ${SRC_FILES} ${PLATFORM_FILES})
 
