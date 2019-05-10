@@ -60,6 +60,8 @@ const Array<const vec3> get_eigen_values(ID structure_id);
 const Array<const float> get_abs_det(ID structure_id);
 const Array<const float> get_rel_det(ID structure_id);
 
+const Array<const float> get_rel_angle(ID structure_id);
+
 //const Array<const SupportFrame> get_support_frames(ID structure_id);
 
 }  // namespace structure_tracking

@@ -245,6 +245,8 @@ struct ReferenceFrame {
     structure_tracking::ID id = 0;
     int32 target_frame_idx = 0;
 
+    int32 frame_interpolation_method = 0;
+
     // For debugging
     vec3 com = {};
     mat3 basis = {};
@@ -1043,7 +1045,7 @@ int main(int, char**) {
             const auto& mol = data.dynamic.molecule;
             data.hydrogen_bonds.bonds.clear();
             hydrogen_bond::compute_bonds(&data.hydrogen_bonds.bonds, mol.hydrogen_bond.donors, mol.hydrogen_bond.acceptors, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z,
-                                         data.hydrogen_bonds.distance_cutoff, data.hydrogen_bonds.angle_cutoff * math::DEG_TO_RAD);
+                                         data.hydrogen_bonds.distance_cutoff, math::deg_to_rad(data.hydrogen_bonds.angle_cutoff));
             data.hydrogen_bonds.dirty = false;
         }
         POP_CPU_SECTION()
@@ -1501,6 +1503,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 
     const float32 t = (float)math::fract(time);
     const int frame = (int)time;
+    const int nearest_frame = math::clamp((int)(time + 0.5), 0, last_frame);
     const int prev_frame_2 = math::max(0, frame - 1);
     const int prev_frame_1 = math::max(0, frame);
     const int next_frame_1 = math::min(frame + 1, last_frame);
@@ -1511,7 +1514,6 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 
     switch (interpolation_mode) {
         case PlaybackInterpolationMode::Nearest: {
-            const int nearest_frame = math::clamp((int)(time + 0.5), 0, last_frame);
             const auto x = get_trajectory_position_x(traj, nearest_frame);
             const auto y = get_trajectory_position_y(traj, nearest_frame);
             const auto z = get_trajectory_position_z(traj, nearest_frame);
@@ -1596,9 +1598,31 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 
             const auto transform_data = structure_tracking::get_transform_data(ref.id);
 
-            const quat q[4] = {math::quat_cast(transform_data.rotation[prev_frame_2]), math::quat_cast(transform_data.rotation[prev_frame_1]), math::quat_cast(transform_data.rotation[next_frame_1]),
-                               math::quat_cast(transform_data.rotation[next_frame_2])};
+            // clang-format off
+			const mat3 rot[4] = { transform_data.rotation[prev_frame_2],
+								  transform_data.rotation[prev_frame_1],
+								  transform_data.rotation[next_frame_1],
+								  transform_data.rotation[next_frame_2] };
 
+            const quat q[4] = { math::quat_cast(rot[0]),
+								math::quat_cast(rot[1]),
+								math::quat_cast(rot[2]),
+								math::quat_cast(rot[3]) };
+
+            const quat qf[4] = { math::dot(q[0], q[1]) < 0.0f ? math::conjugate(q[0]) : q[0],
+								 q[1],
+								 math::dot(q[2], q[1]) < 0.0f ? math::conjugate(q[2]) : q[2],
+								 math::dot(q[3], q[1]) < 0.0f ? math::conjugate(q[3]) : q[3] };
+            // clang-format on
+
+            // mat4 R = {};
+
+            /*
+switch (ref.frame_interpolation_method) {
+    case 0:
+        R = t < 0.5f ? transform_data.rotation[prev_frame_1] : transform_data.rotation[next_frame_1]
+}
+*/
             const mat4 R = math::mat4_cast(math::slerp(q[1], q[2], t));
 
             // const mat3 R_frame_to_ref = structure_tracking::get_transform_to_target_frame(ref.id, frame).rotation;
@@ -1679,8 +1703,8 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
 
 // #picking
 static PickingData read_picking_data(const MainFramebuffer& framebuffer, int32 x, int32 y) {
-    static uint32 frame = 0;
-    uint32 next = (frame + 1) % 2;
+    static uint32 curr = 0;
+    uint32 prev = (curr + 1) % 2;
 
     PickingData data{};
 
@@ -1688,22 +1712,22 @@ static PickingData read_picking_data(const MainFramebuffer& framebuffer, int32 x
     glReadBuffer(GL_COLOR_ATTACHMENT5);
 
     // Queue async reads from current frame to pixel pack buffer
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, framebuffer.pbo_picking.color[frame]);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, framebuffer.pbo_picking.color[curr]);
     glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, 0);
 
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, framebuffer.pbo_picking.depth[frame]);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, framebuffer.pbo_picking.depth[curr]);
     glReadPixels(x, y, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, 0);
 
     // Read values from previous frames pixel pack buffer
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, framebuffer.pbo_picking.color[next]);
-    GLubyte* color = (GLubyte*)glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, framebuffer.pbo_picking.color[prev]);
+    const GLubyte* color = (const GLubyte*)glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
     if (color) {
         data.idx = color[0] + (color[1] << 8) + (color[2] << 16) + (color[3] << 24);
         glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
     }
 
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, framebuffer.pbo_picking.depth[next]);
-    GLfloat* depth = (GLfloat*)glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, framebuffer.pbo_picking.depth[prev]);
+    const GLfloat* depth = (const GLfloat*)glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
     if (depth) {
         data.depth = depth[0];
         glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
@@ -1711,7 +1735,7 @@ static PickingData read_picking_data(const MainFramebuffer& framebuffer, int32 x
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
 
-    frame = next;
+    curr = prev;
     return data;
 }
 
@@ -1883,20 +1907,20 @@ static void draw_main_menu(ApplicationData* data) {
             ImGui::EndMenu();
         }
         /*
-if (ImGui::BeginMenu("Edit")) {
-if (ImGui::MenuItem("Undo", "CTRL+Z")) {
-}
-if (ImGui::MenuItem("Redo", "CTRL+Y", false, false)) {
-}  // Disabled item
-ImGui::Separator();
-if (ImGui::MenuItem("Cut", "CTRL+X")) {
-}
-if (ImGui::MenuItem("Copy", "CTRL+C")) {
-}
-if (ImGui::MenuItem("Paste", "CTRL+V")) {
-}
-ImGui::EndMenu();
-}
+        if (ImGui::BeginMenu("Edit")) {
+        if (ImGui::MenuItem("Undo", "CTRL+Z")) {
+        }
+        if (ImGui::MenuItem("Redo", "CTRL+Y", false, false)) {
+        }  // Disabled item
+        ImGui::Separator();
+        if (ImGui::MenuItem("Cut", "CTRL+X")) {
+        }
+        if (ImGui::MenuItem("Copy", "CTRL+C")) {
+        }
+        if (ImGui::MenuItem("Paste", "CTRL+V")) {
+        }
+        ImGui::EndMenu();
+        }
         */
         if (ImGui::BeginMenu("Visuals")) {
             if (ImGui::Button("Reset View")) {
@@ -1909,9 +1933,9 @@ ImGui::EndMenu();
             ImGui::BeginGroup();
             ImGui::Text("Camera");
             {
-                float fov = data->view.camera.fov_y * math::RAD_TO_DEG;
+                float fov = math::rad_to_deg(data->view.camera.fov_y);
                 if (ImGui::SliderFloat("field of view", &fov, 12.5f, 80.0f)) {
-                    data->view.camera.fov_y = math::DEG_TO_RAD * fov;
+                    data->view.camera.fov_y = math::deg_to_rad(fov);
                 }
             }
             ImGui::EndGroup();
@@ -2721,6 +2745,8 @@ static void draw_reference_frames_window(ApplicationData* data) {
             }
             // if (ImGui::SliderInt("reference frame idx", ))
             if (!ref.filter_is_ok) ImGui::PopStyleColor();
+
+            ImGui::Combo("interpolation method", &ref.frame_interpolation_method, "nearest\0slerp\0squad\00");
             ImGui::PopItemWidth();
 
             ImGui::PushItemWidth(-1);
@@ -2766,20 +2792,11 @@ static void draw_reference_frames_window(ApplicationData* data) {
                 ImGui::EndPlot();
             }
             {
-                const auto num_frames = data->dynamic.trajectory.num_frames;
-                const auto transform_data = structure_tracking::get_transform_data(ref.id);
-                float* tmp_vals = (float*)TMP_MALLOC(num_frames * sizeof(float));
-                tmp_vals[0] = 0.0f;
-                for (int i = 1; i < num_frames; i++) {
-                    quat q0 = math::quat_cast(transform_data.rotation[i - 1]);
-                    quat q1 = math::quat_cast(transform_data.rotation[i]);
-                    tmp_vals[i] = 2.0f * math::acos(math::dot(q0, q1));
-                }
-
-				ImGui::BeginPlot("Eigen Values", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
-                ImGui::PlotValues("0", x, (int)ev_data.size(), 0xFF5555FF);
-                ImGui::PlotValues("1", y, (int)ev_data.size(), 0xFF55FF55);
-                ImGui::PlotValues("2", z, (int)ev_data.size(), 0xFFFF5555);
+                const auto angle_data = structure_tracking::get_rel_angle(ref.id);
+                const ImVec2 x_range = {0.0f, (float)angle_data.size()};
+                const ImVec2 y_range = {-0.05f, 360.0f * 1.05f};
+                ImGui::BeginPlot("Angle", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
+                ImGui::PlotValues("rel", angle_data.data(), angle_data.size(), 0xFFFFFFFF);
                 float x_val;
                 if (ImGui::ClickingAtPlot(&x_val)) {
                     data->playback.time = x_val;
@@ -3028,7 +3045,7 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_range, 
     }
 
     if (res_idx < mol.backbone.angles.size() && res_idx < mol.backbone.segments.size() && valid_segment(mol.backbone.segments[res_idx])) {
-        const auto angles = mol.backbone.angles[res_idx] * math::RAD_TO_DEG;
+        const auto angles = math::rad_to_deg(mol.backbone.angles[res_idx]);
         len += snprintf(buff + len, 256 - len, u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0\n", angles.x, angles.y);
     }
 
@@ -3251,7 +3268,7 @@ static void draw_timeline_window(ApplicationData* data) {
             if (ImGui::GetActiveID() == id || ImGui::GetHoveredID() == id) {
                 const float32 min_x = ImGui::GetItemRectMin().x;
                 const float32 max_x = ImGui::GetItemRectMax().x;
-                float32 t = ImClamp((ImGui::GetIO().MousePos.x - min_x) / (max_x - min_x), 0.f, 1.f);
+                const float32 t = ImClamp((ImGui::GetIO().MousePos.x - min_x) / (max_x - min_x), 0.f, 1.f);
                 int idx = ImClamp((int32)ImLerp(frame_range.x, frame_range.y, t), 0, (int32)prop->avg_data.size() - 1);
                 const auto var = prop->std_dev_data[idx];
 
@@ -3299,8 +3316,7 @@ static void draw_distribution_window(ApplicationData* data) {
     // constexpr float32 RANGE_SLIDER_HEIGHT = 26.f;
     // const float32 plot_height = ImGui::GetContentRegionAvail().y / (float)properties.count - RANGE_SLIDER_HEIGHT;
     const float32 plot_height = 100.f;
-
-    ImVec2 frame_size{ImGui::CalcItemWidth(), plot_height};
+    const ImVec2 frame_size{ImGui::CalcItemWidth(), plot_height};
 
     constexpr uint32 FULL_FILL_COLOR = 0x99cc9e66;
     constexpr uint32 FULL_LINE_COLOR = 0xffcc9e66;
@@ -3375,8 +3391,8 @@ static void draw_ramachandran_window(ApplicationData* data) {
     Array<const BackboneAngle> current_angles = mol.backbone.angles;
     Array<const BackboneSegment> backbone_segments = mol.backbone.segments;
     Array<const Residue> residues = mol.residues;
-    Bitfield atom_selection = data->selection.current_selection_mask;
-    Bitfield atom_highlight = data->selection.current_highlight_mask;
+    Bitfield& atom_selection = data->selection.current_selection_mask;
+    Bitfield& atom_highlight = data->selection.current_highlight_mask;
 
     ImGui::SetNextWindowSizeConstraints(ImVec2(400, 200), ImVec2(10000, 10000));
     ImGui::Begin("Ramachandran", &data->ramachandran.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoScrollbar);
