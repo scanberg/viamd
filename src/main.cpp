@@ -245,8 +245,6 @@ struct ReferenceFrame {
     structure_tracking::ID id = 0;
     int32 target_frame_idx = 0;
 
-    int32 frame_interpolation_method = 0;
-
     // For debugging
     vec3 com = {};
     mat3 basis = {};
@@ -342,7 +340,7 @@ struct ApplicationData {
                 float outline_scale = 1.2f;
             } selection;
 
-            float selection_saturation = 0.5f;
+            float selection_saturation = 0.3f;
         } color;
 
         bool selecting = false;
@@ -608,6 +606,7 @@ static Representation* create_representation(ApplicationData* data, Representati
 static Representation* clone_representation(ApplicationData* data, const Representation& rep);
 static void remove_representation(ApplicationData* data, int idx);
 static void update_representation(ApplicationData* data, Representation* rep);
+static void update_all_representations(ApplicationData* data);
 static void reset_representations(ApplicationData* data);
 static void clear_representations(ApplicationData* data);
 
@@ -828,8 +827,10 @@ int main(int, char**) {
 
         if (!ImGui::GetIO().WantCaptureMouse) {
             // #selection
-            bool selecting = handle_selection(&data);
+            const bool selecting = handle_selection(&data);
             data.selection.selecting |= selecting;
+
+            if (selecting) update_all_representations(&data);
 
             // #camera-control
             if (!selecting) {
@@ -1608,22 +1609,9 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 								math::quat_cast(rot[1]),
 								math::quat_cast(rot[2]),
 								math::quat_cast(rot[3]) };
-
-            const quat qf[4] = { math::dot(q[0], q[1]) < 0.0f ? math::conjugate(q[0]) : q[0],
-								 q[1],
-								 math::dot(q[2], q[1]) < 0.0f ? math::conjugate(q[2]) : q[2],
-								 math::dot(q[3], q[1]) < 0.0f ? math::conjugate(q[3]) : q[3] };
             // clang-format on
 
-            // mat4 R = {};
-
-            /*
-switch (ref.frame_interpolation_method) {
-    case 0:
-        R = t < 0.5f ? transform_data.rotation[prev_frame_1] : transform_data.rotation[next_frame_1]
-}
-*/
-            const mat4 R = math::mat4_cast(math::slerp(q[1], q[2], t));
+            const mat4 R = math::mat4_cast(math::cubic_slerp(q[0], q[1], q[2], q[3], t));
 
             // const mat3 R_frame_to_ref = structure_tracking::get_transform_to_target_frame(ref.id, frame).rotation;
             // const mat3 R_current_to_frame = structure_tracking::compute_rotation(current_x, current_y, current_z, frame_x, frame_y, frame_z, weight, masked_count, current_com, frame_com);
@@ -1833,18 +1821,12 @@ void grow_mask_by_radial_extent(Bitfield mask, const float* atom_x, const float*
     }
 }
 
-void expand_mask_to_residue(Bitfield mask, Array<const Residue> residues) {
-    for (const auto& res : residues) {
-        if (bitfield::any_bit_set_in_range(mask, res.atom_range)) {
-            bitfield::set_range(mask, res.atom_range);
-        }
-    }
-}
-
-void expand_mask_to_chain(Bitfield mask, Array<const Chain> chains) {
-    for (const auto& chain : chains) {
-        if (bitfield::any_bit_set_in_range(mask, chain.atom_range)) {
-            bitfield::set_range(mask, chain.atom_range);
+template <typename AtomRangeOwner>
+void expand_mask(Bitfield mask, Array<AtomRangeOwner> sequences) {
+    for (const auto& seq : sequences) {
+        const AtomRange range = seq.atom_range;
+        if (bitfield::any_bit_set_in_range(mask, range)) {
+            bitfield::set_range(mask, range);
         }
     }
 }
@@ -2162,7 +2144,22 @@ ImGui::EndGroup();
                     }
 
                     query_ok = filter::compute_filter_mask(mask, buf, data->dynamic.molecule, sel);
-                    if (!query_ok) {
+
+                    if (query_ok) {
+                        switch (data->selection.level_mode) {
+                            case SelectionLevel::Atom:
+                                // No need to expand the mask
+                                break;
+                            case SelectionLevel::Residue:
+                                expand_mask(mask, data->dynamic.molecule.residues);
+                                break;
+                            case SelectionLevel::Chain:
+                                expand_mask(mask, data->dynamic.molecule.sequences);
+                                break;
+                            default:
+                                ASSERT(false);
+                        }
+                    } else {
                         bitfield::clear_all(mask);
                     }
                     // data->gpu_buffers.dirty.selection = true;
@@ -2196,6 +2193,7 @@ if (data->selection.op_mode == SelectionOperator::And) {
                     */
                     data->gpu_buffers.dirty.selection = true;
                 }
+                update_all_representations(data);
             }
 
             ImGui::Spacing();
@@ -2209,7 +2207,7 @@ if (data->selection.op_mode == SelectionOperator::And) {
 
                 ImGui::Text("Grow");
                 const bool mode_changed = ImGui::Combo("Mode", (int*)(&data->selection.grow_mode), "Covalent Bond\0Radial\0\0");
-                const bool extent_changed = ImGui::SliderFloat("Extent", &extent, 1.0f, 10.f);
+                const bool extent_changed = ImGui::SliderFloat("Extent", &extent, 1.0f, 16.f);
                 const bool apply = ImGui::Button("Apply##grow");
                 const bool show_preview = mode_changed || extent_changed || (ImGui::GetHoveredID() == ImGui::GetID("Extent")) || (ImGui::GetHoveredID() == ImGui::GetID("Apply##grow")) ||
                                           (ImGui::GetHoveredID() == ImGui::GetID("Mode"));
@@ -2235,10 +2233,10 @@ if (data->selection.op_mode == SelectionOperator::And) {
                             // No need to expand the mask
                             break;
                         case SelectionLevel::Residue:
-                            expand_mask_to_residue(mask, data->dynamic.molecule.residues);
+                            expand_mask(mask, data->dynamic.molecule.residues);
                             break;
                         case SelectionLevel::Chain:
-                            expand_mask_to_chain(mask, data->dynamic.molecule.chains);
+                            expand_mask(mask, data->dynamic.molecule.sequences);
                             break;
                         default:
                             ASSERT(false);
@@ -2250,6 +2248,7 @@ if (data->selection.op_mode == SelectionOperator::And) {
                     if (apply) {
                         memcpy(data->selection.current_selection_mask.data(), mask.data(), mask.size_in_bytes());
                     }
+                    update_all_representations(data);
                 }
             }
 
@@ -2286,6 +2285,7 @@ if (data->selection.op_mode == SelectionOperator::And) {
                         ImGui::SameLine();
                         if (ImGui::Button("Save")) {
                             memcpy(sel.atom_mask.data(), data->selection.current_selection_mask.data(), sel.atom_mask.size_in_bytes());
+                            update_all_representations(data);
                         }
                     }
 
@@ -2746,7 +2746,6 @@ static void draw_reference_frames_window(ApplicationData* data) {
             // if (ImGui::SliderInt("reference frame idx", ))
             if (!ref.filter_is_ok) ImGui::PopStyleColor();
 
-            ImGui::Combo("interpolation method", &ref.frame_interpolation_method, "nearest\0slerp\0squad\00");
             ImGui::PopItemWidth();
 
             ImGui::PushItemWidth(-1);
@@ -3573,10 +3572,10 @@ static void draw_ramachandran_window(ApplicationData* data) {
             case SelectionLevel::Atom:
                 break;
             case SelectionLevel::Residue:
-                expand_mask_to_residue(mask, mol.residues);
+                expand_mask(mask, mol.residues);
                 break;
             case SelectionLevel::Chain:
-                expand_mask_to_chain(mask, mol.chains);
+                expand_mask(mask, mol.sequences);
                 break;
             default:
                 ASSERT(false);
@@ -3601,6 +3600,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
             region_select = false;
         }
         data->gpu_buffers.dirty.selection = true;
+        update_all_representations(data);
     }
     ImGui::EndChild();
     ImGui::End();
@@ -4519,6 +4519,12 @@ static void recompute_atom_visibility_mask(ApplicationData* data) {
     data->representations.atom_visibility_mask_dirty = false;
 }
 
+static void update_all_representations(ApplicationData* data) {
+    for (auto& rep : data->representations.buffer) {
+        update_representation(data, &rep);
+    }
+}
+
 static void update_representation(ApplicationData* data, Representation* rep) {
     ASSERT(data);
     ASSERT(rep);
@@ -4558,6 +4564,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
     }
 
     DynamicArray<StoredSelection> sel;
+    sel.push_back({"current", data->selection.current_selection_mask});
     for (const auto& s : data->selection.stored_selections) {
         sel.push_back({s.name, s.atom_mask});
     }
@@ -4656,11 +4663,11 @@ static bool handle_selection(ApplicationData* data) {
             case SelectionLevel::Atom:
                 break;
             case SelectionLevel::Residue: {
-                expand_mask_to_residue(mask, data->dynamic.molecule.residues);
+                expand_mask(mask, data->dynamic.molecule.residues);
                 break;
             }
             case SelectionLevel::Chain: {
-                expand_mask_to_chain(mask, data->dynamic.molecule.chains);
+                expand_mask(mask, data->dynamic.molecule.chains);
                 break;
             }
             default:
@@ -4705,10 +4712,10 @@ static bool handle_selection(ApplicationData* data) {
                 case SelectionLevel::Atom:
                     break;
                 case SelectionLevel::Residue:
-                    expand_mask_to_residue(mask, data->dynamic.molecule.residues);
+                    expand_mask(mask, data->dynamic.molecule.residues);
                     break;
                 case SelectionLevel::Chain:
-                    expand_mask_to_chain(mask, data->dynamic.molecule.chains);
+                    expand_mask(mask, data->dynamic.molecule.chains);
                     break;
                 default:
                     ASSERT(false);
