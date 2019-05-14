@@ -800,7 +800,7 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
     quat cur_q = {};
 #endif
 
-    quat q_tot = {};
+    quat q_acc = {};
 
     const mat3 ref_cov_mat = compute_mass_weighted_covariance_matrix(ref_x, ref_y, ref_z, mass, num_points, ref_com);
     mat3 ref_eigen_vectors;
@@ -845,24 +845,22 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
         const mat3 rel_rot = extract_rotation(rel_mat);
 
         quat q_del = math::quat_cast(rel_rot);
+        const float angle = math::angle(q_del);
 
-        if (const float angle = math::angle(q_del); angle > math::PI) {
+        if (math::abs(angle) > math::PI) {
             printf("WOAH! big jump (%.2f deg) at between frame %i and %i\n", math::rad_to_deg(angle), i - 1, i);
-            //q_del = math::conjugate(q_del) * q_del;
+            //q_del = -q_del;
         }
 
-        q_tot *= q_del;
-        q_tot = math::normalize(q_tot);
+		//const float dot =
 
-#if 0
-		cur_q = math::quat_cast(abs_rot);
-        if (dot(cur_q, prv_q) < 0.0f) {
-			cur_q = math::conjugate(cur_q);
-            abs_rot = math::mat3_cast(cur_q);
-		}
-#endif
+        q_acc *= q_del;
+        q_acc = math::normalize(q_acc);
 
-        R[i] = math::mat3_cast(math::conjugate(q_tot));  // abs_rot;
+		auto q_abs = math::quat_cast(math::transpose(abs_rot));
+		q_acc = math::nlerp(q_acc, q_abs, 0.1f);
+
+        R[i] = math::mat3_cast(math::conjugate(q_acc));  // abs_rot;
 
         const float abs_det = math::determinant(abs_mat / cov_mat);
         const float rel_det = math::determinant(rel_mat / cov_mat);

@@ -1611,7 +1611,8 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 								math::quat_cast(rot[3]) };
             // clang-format on
 
-            const mat4 R = math::mat4_cast(math::cubic_slerp(q[0], q[1], q[2], q[3], t));
+            const mat4 R = math::mat4_cast(math::cubic_nlerp(q[0], q[1], q[2], q[3], t));
+            //const mat4 R = math::mat4_cast(math::slerp(q[1], q[2], t));
 
             // const mat3 R_frame_to_ref = structure_tracking::get_transform_to_target_frame(ref.id, frame).rotation;
             // const mat3 R_current_to_frame = structure_tracking::compute_rotation(current_x, current_y, current_z, frame_x, frame_y, frame_z, weight, masked_count, current_com, frame_com);
