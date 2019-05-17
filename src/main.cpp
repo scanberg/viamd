@@ -1012,7 +1012,7 @@ int main(int, char**) {
                 }
 #endif
 
-                data.gpu_buffers.dirty.position = true;
+                    data.gpu_buffers.dirty.position = true;
                 data.gpu_buffers.dirty.velocity = true;
             }
             POP_CPU_SECTION()
@@ -1612,7 +1612,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             // clang-format on
 
             const mat4 R = math::mat4_cast(math::cubic_nlerp(q[0], q[1], q[2], q[3], t));
-            //const mat4 R = math::mat4_cast(math::slerp(q[1], q[2], t));
+            // const mat4 R = math::mat4_cast(math::slerp(q[1], q[2], t));
 
             // const mat3 R_frame_to_ref = structure_tracking::get_transform_to_target_frame(ref.id, frame).rotation;
             // const mat3 R_current_to_frame = structure_tracking::compute_rotation(current_x, current_y, current_z, frame_x, frame_y, frame_z, weight, masked_count, current_com, frame_com);
@@ -1640,6 +1640,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             if (ref.active) {
                 const mat4 M = T_box * R_inv * T_ori;
                 transform_positions_ref(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count, M);
+                apply_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.mass, mol.sequences, box);
             }
         }
     }
@@ -2875,7 +2876,7 @@ static void draw_property_window(ApplicationData* data) {
                 if (atom_range != -1) {
                     ASSERT(atom_range < data->dynamic.molecule.atom.count);
                     const int32 residue_idx = data->dynamic.molecule.atom.res_idx[data->selection.right_clicked];
-                    const int32 chain_idx = data->dynamic.molecule.residues[residue_idx].chain_idx;
+                    const int32 chain_idx = data->dynamic.molecule.atom.chain_idx[data->selection.right_clicked];
 
                     char buf[buf_len];
 
@@ -3001,47 +3002,47 @@ static void draw_property_window(ApplicationData* data) {
     //}
 }
 
-static void draw_atom_info_window(const MoleculeStructure& mol, int atom_range, int x, int y) {
+static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, int x, int y) {
 
     // @TODO: Assert things and make this failproof
-    if (atom_range < 0 || atom_range >= mol.atom.count) return;
+    if (atom_idx < 0 || atom_idx >= mol.atom.count) return;
 
-    int res_idx = mol.atom.res_idx[atom_range];
+    int res_idx = mol.atom.res_idx[atom_idx];
     const Residue& res = mol.residues[res_idx];
     const char* res_id = res.name.cstr();
-    int local_idx = atom_range - res.atom_range.beg;
-    const float pos_x = mol.atom.position.x[atom_range];
-    const float pos_y = mol.atom.position.y[atom_range];
-    const float pos_z = mol.atom.position.z[atom_range];
-    const char* label = mol.atom.label[atom_range].cstr();
-    const char* elem = element::name(mol.atom.element[atom_range]);
-    const char* symbol = element::symbol(mol.atom.element[atom_range]);
+    int local_idx = atom_idx - res.atom_range.beg;
+    const float pos_x = mol.atom.position.x[atom_idx];
+    const float pos_y = mol.atom.position.y[atom_idx];
+    const float pos_z = mol.atom.position.z[atom_idx];
+    const char* label = mol.atom.label[atom_idx].cstr();
+    const char* elem = element::name(mol.atom.element[atom_idx]);
+    const char* symbol = element::symbol(mol.atom.element[atom_idx]);
 
-    int chain_idx = res.chain_idx;
+    int chain_idx = mol.atom.chain_idx[atom_idx];
     const char* chain_id = "\0";
     if (chain_idx != -1 && mol.chains.size() > 0) {
         const Chain& chain = mol.chains[chain_idx];
         chain_id = chain.id.cstr();
-        chain_idx = res.chain_idx;
     }
 
-    int seq_idx = -1;
-    if (mol.backbone.sequences.size() > 0) {
-        seq_idx = res_idx;
-    }
+    int seq_idx = mol.atom.seq_idx[atom_idx];
 
     // External indices begin with 1 not 0
     res_idx += 1;
     chain_idx += 1;
-    atom_range += 1;
+    seq_idx += 1;
+    atom_idx += 1;
     local_idx += 1;
 
     char buff[256];
     int len = 0;
-    len += snprintf(buff, 256, "atom[%i][%i]: %s %s %s (%.2f, %.2f, %.2f)\n", atom_range, local_idx, label, elem, symbol, pos_x, pos_y, pos_z);
+    len += snprintf(buff, 256, "atom[%i][%i]: %s %s %s (%.2f, %.2f, %.2f)\n", atom_idx, local_idx, label, elem, symbol, pos_x, pos_y, pos_z);
     len += snprintf(buff + len, 256 - len, "res[%i]: %s\n", res_idx, res_id);
     if (chain_idx) {
         len += snprintf(buff + len, 256 - len, "chain[%i]: %s\n", chain_idx, chain_id);
+    }
+    if (seq_idx) {
+        len += snprintf(buff + len, 256 - len, "seq[%i]\n", seq_idx);
     }
 
     if (res_idx < mol.backbone.angles.size() && res_idx < mol.backbone.segments.size() && valid_segment(mol.backbone.segments[res_idx])) {
