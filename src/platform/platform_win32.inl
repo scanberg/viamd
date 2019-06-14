@@ -25,15 +25,12 @@ DynamicArray<DirectoryEntry> list_directory(CString dir_path) {
     WIN32_FIND_DATA ffd;
     HANDLE h_find = INVALID_HANDLE_VALUE;
 
-    // Copy and make a zero terminated string
-    StringBuffer<MAX_PATH> dir_buf = dir_path;
-
     char dir[MAX_PATH];
-    snprintf(dir, MAX_PATH, "%s\\*", dir_buf.beg());
+    snprintf(dir, MAX_PATH, "%*.s\\*", dir_path.length(), dir_path.cstr());
 
     h_find = FindFirstFile(dir, &ffd);
     if (h_find == INVALID_HANDLE_VALUE) {
-        printf("ERROR! Could not read directory '%s'", dir);
+        LOG_ERROR("Could not read directory '%s'", dir);
         return {};
     }
 

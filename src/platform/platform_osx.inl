@@ -12,7 +12,8 @@ static DynamicArray<DirectoryWatch> s_watched_dirs;
 bool AddDirectoryWatch(CString path_to_watch, void (*callback)(FileEvent)) {
     //Define variables and create a CFArray object containing
      CFString objects containing paths to watch.
-     
+     
+
 
 
 
@@ -21,7 +22,8 @@ bool AddDirectoryWatch(CString path_to_watch, void (*callback)(FileEvent)) {
     CFArrayRef path_array = CFArrayCreate(NULL, (const void **)&path, 1, NULL);
     FSEventStreamRef stream;
     const CFAbsoluteTime latency = 1.0; // Latency in seconds
-    
+    
+
 
 
 
@@ -34,14 +36,16 @@ bool AddDirectoryWatch(CString path_to_watch, void (*callback)(FileEvent)) {
                                  kFSEventStreamEventIdSinceNow,
                                  latency,
                                  kFSEventStreamCreateFlagNone);
-    
+    
+
 
 
 
 
     FSEventStreamScheduleWithRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
     FSEventStreamStart(stream);
-    
+    
+
 
 
 
@@ -52,7 +56,8 @@ bool AddDirectoryWatch(CString path_to_watch, void (*callback)(FileEvent)) {
 bool RemoveWatch(CString path_to_watch) {
     CString dir = get_directory(path_to_watch);
     CString file = get_file(path_to_watch);
-    
+    
+
 
 
 

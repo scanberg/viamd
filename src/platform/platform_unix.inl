@@ -57,7 +57,6 @@ DynamicArray<DirectoryEntry> list_directory(CString dir_path) {
             ent = files[i];
 
             DirectoryEntry entry;
-
             /* Output file name */
             switch (ent->d_type) {
             case DT_REG:
@@ -91,7 +90,7 @@ DynamicArray<DirectoryEntry> list_directory(CString dir_path) {
         free (files);
 
     } else {
-        printf ("Cannot open directory %.*s\n", (int32)dir_path.length(), dir_path.cstr());
+        printf ("Cannot open directory %.*s\n", (int)dir_path.length(), dir_path.cstr());
     }
 
     return res;
