@@ -6,7 +6,7 @@
 #include <core/math_utils.h>
 #include <core/image.h>
 
-enum class ColorMapping { Static, Cpk, ResId, ResIndex, ChainId, ChainIndex, SecondaryStructure };
+enum class ColorMapping { Uniform, Cpk, ResId, ResIndex, ChainId, ChainIndex, SecondaryStructure };
 
 inline vec4 color_from_hash(uint32 hash) {
     constexpr float chroma = 0.8f;
@@ -18,6 +18,7 @@ inline vec4 color_from_hash(uint32 hash) {
     return vec4(rgb, 1);
 }
 
+void color_atoms_uniform(Array<uint32> dst_atom_colors, const vec4& color);
 void color_atoms_cpk(Array<uint32> dst_atom_colors, Array<const Element> elements);
 void color_atoms_residue_id(Array<uint32> dst_atom_colors, Array<const Residue> residues);
 void color_atoms_residue_index(Array<uint32> dst_atom_colors, Array<const Residue> residues);
@@ -28,3 +29,11 @@ void color_atoms_backbone_angles(Array<uint32> dst_atom_colors, Array<const Resi
 
 void filter_colors(Array<uint32> colors, Bitfield mask);
 void desaturate_colors(Array<uint32> colors, Bitfield mask, float scale);
+
+vec3 magma_color_scale(float t);
+vec3 inferno_color_scale(float t);
+vec3 plasma_color_scale(float t);
+vec3 viridis_color_scale(float t);
+
+vec3 orange_color_scale(float t);
+vec3 green_color_scale(float t);
