@@ -231,11 +231,10 @@ bool RangeSliderFloat(const char* label, float* v1, float* v2, float v_min, floa
 
         if (tab_focus_requested || g.IO.KeyCtrl) {
             start_text_input = true;
-            g.ScalarAsInputTextId = 0;
         }
     }
-	if (start_text_input || (g.ActiveId == id && g.ScalarAsInputTextId == id)) {
-		const bool ret_val = InputScalarAsWidgetReplacement(frame_bb, id, label, ImGuiDataType_Float, v1, "%g");
+	if (start_text_input || (g.ActiveId == id && TempInputTextIsActive(id))) {
+        const bool ret_val = TempInputTextScalar(frame_bb, id, label, ImGuiDataType_Float, v1, "%g");
 		if (ret_val)
 			*v2 = *v1;
 		return ret_val;
