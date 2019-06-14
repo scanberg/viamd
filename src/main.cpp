@@ -52,15 +52,16 @@
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
 
 #ifdef OS_MAC_OSX
-constexpr auto KEY_CONSOLE = Key::KEY_WORLD_1;
+constexpr Key::Key_t KEY_CONSOLE = Key::KEY_WORLD_1;
 #else  // WIN32 and Linux
 // @TODO: Make sure this is currect for Linux?
-constexpr auto KEY_CONSOLE = Key::KEY_GRAVE_ACCENT;
+constexpr Key::Key_t KEY_CONSOLE = Key::KEY_GRAVE_ACCENT;
 #endif
 
-constexpr auto KEY_PLAY_PAUSE = Key::KEY_SPACE;
-constexpr auto KEY_SKIP_TO_PREV_FRAME = Key::KEY_LEFT;
-constexpr auto KEY_SKIP_TO_NEXT_FRAME = Key::KEY_RIGHT;
+constexpr Key::Key_t KEY_PLAY_PAUSE = Key::KEY_SPACE;
+constexpr Key::Key_t KEY_SKIP_TO_PREV_FRAME = Key::KEY_LEFT;
+constexpr Key::Key_t KEY_SKIP_TO_NEXT_FRAME = Key::KEY_RIGHT;
+constexpr Key::Key_t KEY_TOGGLE_SCREENSHOT_MODE = Key::KEY_F10;
 
 // For cpu profiling
 #define PUSH_CPU_SECTION(lbl) {};
@@ -216,8 +217,8 @@ struct Representation {
     bool show_in_selection = true;
     bool filter_is_ok = true;
 
-    // For ColorMapping::StaticColor mode
-    vec4 static_color = vec4(1);
+    // User defined color used in uniform mode
+    vec4 uniform_color = vec4(1);
 
     // VDW and Ball & Stick
     float32 radius = 1.f;
@@ -557,6 +558,73 @@ static void SetWindowScrollX(const char* name, float scroll_x) {
     }
 }
 
+// From https://github.com/procedural/gpulib/blob/master/gpulib_imgui.h
+struct ImVec3 {
+    float x, y, z;
+    ImVec3(float _x = 0.0f, float _y = 0.0f, float _z = 0.0f) {
+        x = _x;
+        y = _y;
+        z = _z;
+    }
+};
+
+void imgui_easy_theming(ImVec3 color_for_text, ImVec3 color_for_head, ImVec3 color_for_area, ImVec3 color_for_body, ImVec3 color_for_pops) {
+    ImGuiStyle& style = ImGui::GetStyle();
+
+    style.Colors[ImGuiCol_Text] = ImVec4(color_for_text.x, color_for_text.y, color_for_text.z, 1.00f);
+    style.Colors[ImGuiCol_TextDisabled] = ImVec4(color_for_text.x, color_for_text.y, color_for_text.z, 0.58f);
+    style.Colors[ImGuiCol_WindowBg] = ImVec4(color_for_body.x, color_for_body.y, color_for_body.z, 0.95f);
+    style.Colors[ImGuiCol_ChildWindowBg] = ImVec4(color_for_area.x, color_for_area.y, color_for_area.z, 0.58f);
+    style.Colors[ImGuiCol_Border] = ImVec4(color_for_body.x, color_for_body.y, color_for_body.z, 0.00f);
+    style.Colors[ImGuiCol_BorderShadow] = ImVec4(color_for_body.x, color_for_body.y, color_for_body.z, 0.00f);
+    style.Colors[ImGuiCol_FrameBg] = ImVec4(color_for_area.x, color_for_area.y, color_for_area.z, 1.00f);
+    style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.78f);
+    style.Colors[ImGuiCol_FrameBgActive] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 1.00f);
+    style.Colors[ImGuiCol_TitleBg] = ImVec4(color_for_area.x, color_for_area.y, color_for_area.z, 1.00f);
+    style.Colors[ImGuiCol_TitleBgCollapsed] = ImVec4(color_for_area.x, color_for_area.y, color_for_area.z, 0.75f);
+    style.Colors[ImGuiCol_TitleBgActive] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 1.00f);
+    style.Colors[ImGuiCol_MenuBarBg] = ImVec4(color_for_area.x, color_for_area.y, color_for_area.z, 0.47f);
+    style.Colors[ImGuiCol_ScrollbarBg] = ImVec4(color_for_area.x, color_for_area.y, color_for_area.z, 1.00f);
+    style.Colors[ImGuiCol_ScrollbarGrab] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.21f);
+    style.Colors[ImGuiCol_ScrollbarGrabHovered] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.78f);
+    style.Colors[ImGuiCol_ScrollbarGrabActive] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 1.00f);
+    //style.Colors[ImGuiCol_ComboBg] = ImVec4(color_for_area.x, color_for_area.y, color_for_area.z, 1.00f);
+    style.Colors[ImGuiCol_CheckMark] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.80f);
+    style.Colors[ImGuiCol_SliderGrab] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.50f);
+    style.Colors[ImGuiCol_SliderGrabActive] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 1.00f);
+    style.Colors[ImGuiCol_Button] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.50f);
+    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.86f);
+    style.Colors[ImGuiCol_ButtonActive] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 1.00f);
+    style.Colors[ImGuiCol_Header] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.76f);
+    style.Colors[ImGuiCol_HeaderHovered] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.86f);
+    style.Colors[ImGuiCol_HeaderActive] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 1.00f);
+    style.Colors[ImGuiCol_Column] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.32f);
+    style.Colors[ImGuiCol_ColumnHovered] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.78f);
+    style.Colors[ImGuiCol_ColumnActive] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 1.00f);
+    style.Colors[ImGuiCol_ResizeGrip] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.15f);
+    style.Colors[ImGuiCol_ResizeGripHovered] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.78f);
+    style.Colors[ImGuiCol_ResizeGripActive] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 1.00f);
+	//style.Colors[ImGuiCol_CloseButton] = ImVec4(color_for_text.x, color_for_text.y, color_for_text.z, 0.16f);
+    //style.Colors[ImGuiCol_CloseButtonHovered] = ImVec4(color_for_text.x, color_for_text.y, color_for_text.z, 0.39f);
+    //style.Colors[ImGuiCol_CloseButtonActive] = ImVec4(color_for_text.x, color_for_text.y, color_for_text.z, 1.00f);
+    style.Colors[ImGuiCol_PlotLines] = ImVec4(color_for_text.x, color_for_text.y, color_for_text.z, 0.63f);
+    style.Colors[ImGuiCol_PlotLinesHovered] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 1.00f);
+    style.Colors[ImGuiCol_PlotHistogram] = ImVec4(color_for_text.x, color_for_text.y, color_for_text.z, 0.63f);
+    style.Colors[ImGuiCol_PlotHistogramHovered] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 1.00f);
+    style.Colors[ImGuiCol_TextSelectedBg] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.43f);
+    style.Colors[ImGuiCol_PopupBg] = ImVec4(color_for_pops.x, color_for_pops.y, color_for_pops.z, 0.92f);
+    style.Colors[ImGuiCol_ModalWindowDarkening] = ImVec4(color_for_area.x, color_for_area.y, color_for_area.z, 0.73f);
+}
+
+void SetupImGuiStyle2() {
+    static ImVec3 color_for_text = ImVec3(236.f / 255.f, 240.f / 255.f, 241.f / 255.f);
+    static ImVec3 color_for_head = ImVec3(41.f / 255.f, 128.f / 255.f, 185.f / 255.f);
+    static ImVec3 color_for_area = ImVec3(57.f / 255.f, 79.f / 255.f, 105.f / 255.f);
+    static ImVec3 color_for_body = ImVec3(44.f / 255.f, 62.f / 255.f, 80.f / 255.f);
+    static ImVec3 color_for_pops = ImVec3(33.f / 255.f, 46.f / 255.f, 60.f / 255.f);
+    imgui_easy_theming(color_for_text, color_for_head, color_for_area, color_for_body, color_for_pops);
+}
+
 }  // namespace ImGui
 
 static void interpolate_atomic_positions(ApplicationData* data);
@@ -698,62 +766,8 @@ int main(int, char**) {
     LOG_NOTE("Initializing structure tracking...");
     structure_tracking::initialize();
 
-    // Setup IMGUI style
-    {
-        ImGui::StyleColorsClassic();
-        // ImGui::StyleColorsLight();
-        auto& style = ImGui::GetStyle();
-        style.WindowRounding = 0.0f;
-        style.Colors[ImGuiCol_TitleBgCollapsed] = ImVec4(0.40f, 0.40f, 0.80f, 0.30f);
-
-        /*
-        style.Colors[ImGuiCol_Text] = ImVec4(0.00f, 0.00f, 0.00f, 1.00f);
-        style.Colors[ImGuiCol_TextDisabled] = ImVec4(0.60f, 0.60f, 0.60f, 1.00f);
-        //style.Colors[ImGuiCol_TextHovered] = ImVec4(1.00f, 1.00f, 1.00f, 1.00f);
-        //style.Colors[ImGuiCol_TextActive] = ImVec4(1.00f, 1.00f, 0.00f, 1.00f);
-        style.Colors[ImGuiCol_WindowBg] = ImVec4(0.94f, 0.94f, 0.94f, 1.00f);
-        style.Colors[ImGuiCol_ChildWindowBg] = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
-        style.Colors[ImGuiCol_Border] = ImVec4(0.00f, 0.00f, 0.00f, 0.39f);
-        style.Colors[ImGuiCol_BorderShadow] = ImVec4(1.00f, 1.00f, 1.00f, 0.10f);
-        style.Colors[ImGuiCol_FrameBg] = ImVec4(1.00f, 1.00f, 1.00f, 1.00f);
-        style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.26f, 0.59f, 0.98f, 0.40f);
-        style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.26f, 0.59f, 0.98f, 0.67f);
-        style.Colors[ImGuiCol_TitleBg] = ImVec4(0.96f, 0.96f, 0.96f, 1.00f);
-        style.Colors[ImGuiCol_TitleBgCollapsed] = ImVec4(1.00f, 1.00f, 1.00f, 0.51f);
-        style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.82f, 0.82f, 0.82f, 1.00f);
-        style.Colors[ImGuiCol_MenuBarBg] = ImVec4(0.86f, 0.86f, 0.86f, 1.00f);
-        style.Colors[ImGuiCol_ScrollbarBg] = ImVec4(0.98f, 0.98f, 0.98f, 0.53f);
-        style.Colors[ImGuiCol_ScrollbarGrab] = ImVec4(0.69f, 0.69f, 0.69f, 0.80f);
-        style.Colors[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.49f, 0.49f, 0.49f, 0.80f);
-        style.Colors[ImGuiCol_ScrollbarGrabActive] = ImVec4(0.49f, 0.49f, 0.49f, 1.00f);
-        //style.Colors[ImGuiCol_ComboBg] = ImVec4(0.86f, 0.86f, 0.86f, 0.99f);
-        style.Colors[ImGuiCol_CheckMark] = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
-        style.Colors[ImGuiCol_SliderGrab] = ImVec4(0.26f, 0.59f, 0.98f, 0.78f);
-        style.Colors[ImGuiCol_SliderGrabActive] = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
-        style.Colors[ImGuiCol_Button] = ImVec4(0.26f, 0.59f, 0.98f, 0.40f);
-        style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
-        style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.06f, 0.53f, 0.98f, 1.00f);
-        style.Colors[ImGuiCol_Header] = ImVec4(0.26f, 0.59f, 0.98f, 0.31f);
-        style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.26f, 0.59f, 0.98f, 0.80f);
-        style.Colors[ImGuiCol_HeaderActive] = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
-        style.Colors[ImGuiCol_Column] = ImVec4(0.39f, 0.39f, 0.39f, 1.00f);
-        style.Colors[ImGuiCol_ColumnHovered] = ImVec4(0.26f, 0.59f, 0.98f, 0.78f);
-        style.Colors[ImGuiCol_ColumnActive] = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
-        style.Colors[ImGuiCol_ResizeGrip] = ImVec4(1.00f, 1.00f, 1.00f, 0.00f);
-        style.Colors[ImGuiCol_ResizeGripHovered] = ImVec4(0.26f, 0.59f, 0.98f, 0.67f);
-        style.Colors[ImGuiCol_ResizeGripActive] = ImVec4(0.26f, 0.59f, 0.98f, 0.95f);
-        //style.Colors[ImGuiCol_CloseButton] = ImVec4(0.59f, 0.59f, 0.59f, 0.50f);
-        //style.Colors[ImGuiCol_CloseButtonHovered] = ImVec4(0.98f, 0.39f, 0.36f, 1.00f);
-        //style.Colors[ImGuiCol_CloseButtonActive] = ImVec4(0.98f, 0.39f, 0.36f, 1.00f);
-        style.Colors[ImGuiCol_PlotLines] = ImVec4(0.39f, 0.39f, 0.39f, 1.00f);
-        style.Colors[ImGuiCol_PlotLinesHovered] = ImVec4(1.00f, 0.43f, 0.35f, 1.00f);
-        style.Colors[ImGuiCol_PlotHistogram] = ImVec4(0.90f, 0.70f, 0.00f, 1.00f);
-        style.Colors[ImGuiCol_PlotHistogramHovered] = ImVec4(1.00f, 0.60f, 0.00f, 1.00f);
-        style.Colors[ImGuiCol_TextSelectedBg] = ImVec4(0.26f, 0.59f, 0.98f, 0.35f);
-        //style.Colors[ImGuiCol_TooltipBg] = ImVec4(1.00f, 1.00f, 1.00f, 0.94f);
-        style.Colors[ImGuiCol_ModalWindowDarkening] = ImVec4(0.20f, 0.20f, 0.20f, 0.35f);
-        */
-    }
+    //ImGui::SetupImGuiStyle2();
+	ImGui::StyleColorsLight();
 
     // const vec4 CLEAR_COLOR = vec4(0, 0, 0, 0);
     const vec4 CLEAR_INDEX = vec4(1, 1, 1, 1);
@@ -796,6 +810,20 @@ int main(int, char**) {
                 data.console.Hide();
             } else if (!ImGui::GetIO().WantTextInput) {
                 data.console.Show();
+            }
+        }
+
+        if (data.ctx.input.key.hit[KEY_TOGGLE_SCREENSHOT_MODE]) {
+            static bool screenshot_mode = false;
+            screenshot_mode = !screenshot_mode;
+
+            ImGuiStyle& style = ImGui::GetStyle();
+            if (screenshot_mode) {
+                ImGui::StyleColorsClassic(&style);
+            } else {
+                ImGui::StyleColorsLight(&style);
+                // style.Colors[ImGuiCol_WindowBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+                // style.Colors[ImGuiCol_ChildWindowBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
             }
         }
 
@@ -1012,7 +1040,7 @@ int main(int, char**) {
                 }
 #endif
 
-                    data.gpu_buffers.dirty.position = true;
+                data.gpu_buffers.dirty.position = true;
                 data.gpu_buffers.dirty.velocity = true;
             }
             POP_CPU_SECTION()
@@ -1098,7 +1126,7 @@ int main(int, char**) {
         POP_GPU_SECTION()
 
         {
-            mat4 view_mat = compute_world_to_view_matrix(data.view.camera);
+            const mat4 view_mat = compute_world_to_view_matrix(data.view.camera);
             mat4 proj_mat = compute_perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height);
 
             const vec2 res = vec2(data.fbo.width, data.fbo.height);
@@ -1186,7 +1214,7 @@ int main(int, char**) {
                 // SIMULATION BOX
                 if (data.simulation_box.enabled && data.dynamic.trajectory) {
                     auto frame = get_trajectory_frame(data.dynamic.trajectory, data.playback.frame);
-                    immediate::draw_aabb_wireframe(vec3(0), frame.box * vec3(1), math::convert_color(data.simulation_box.color));
+                    immediate::draw_aabb_wireframe(frame.box * vec3(0.0f), frame.box * vec3(1.0f), math::convert_color(data.simulation_box.color));
                 }
 
                 immediate::flush();
@@ -1563,6 +1591,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
         default:
             ASSERT(false);
     }
+
     for (auto& ref : data->reference_frame.frames) {
         if (ref.active || ref.show) {
             const int64 masked_count = bitfield::number_of_bits_set(ref.atom_mask);
@@ -1611,7 +1640,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 								math::quat_cast(rot[3]) };
             // clang-format on
 
-            const mat4 R = math::mat4_cast(math::cubic_nlerp(q[0], q[1], q[2], q[3], t));
+            const mat4 R = math::mat4_cast(math::cubic_slerp(q[0], q[1], q[2], q[3], t));
             // const mat4 R = math::mat4_cast(math::slerp(q[1], q[2], t));
 
             // const mat3 R_frame_to_ref = structure_tracking::get_transform_to_target_frame(ref.id, frame).rotation;
@@ -1684,7 +1713,7 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
         if (!smooth_transition) data->view.camera.position = pos;
         data->view.animation.target_position = pos;
         data->view.trackball_state.distance = math::length(pos - cent);
-        look_at(&data->view.animation.target_position, &data->view.camera.orientation, cent, vec3(0, 1, 0));
+        data->view.camera.orientation = math::conjugate(math::quat_cast(look_at(data->view.animation.target_position, cent, vec3(0, 1, 0))));
     }
 
     data->view.camera.near_plane = 1.f;
@@ -1740,9 +1769,8 @@ static void CreateDockspace() {
     ImGui::SetNextWindowViewport(viewport->ID);
     ImGui::SetNextWindowBgAlpha(0.0f);
 
-    ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
-    window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
-    window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
+    const ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
@@ -1750,9 +1778,10 @@ static void CreateDockspace() {
     ImGui::Begin("DockspaceWindow", NULL, window_flags);
     ImGui::PopStyleVar(3);
 
-    ImGuiID dockspace_id = ImGui::GetID("Dockspace");
-    ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruDockspace;
-    ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
+    // ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruDockspace;
+    const ImGuiID id = ImGui::GetID("Dockspace");
+    const ImGuiDockNodeFlags flags = ImGuiDockNodeFlags_PassthruCentralNode;
+    ImGui::DockSpace(id, ImVec2(0.0f, 0.0f), flags);
 
     ImGui::End();
 }
@@ -1765,9 +1794,8 @@ static void BeginCanvas(const char* id) {
     ImGui::SetNextWindowViewport(viewport->ID);
     ImGui::SetNextWindowBgAlpha(0.0f);
 
-    ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
-    window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
-    window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoInputs;
+    const ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoInputs;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
@@ -2655,13 +2683,13 @@ static void draw_representations_window(ApplicationData* data) {
             }
             if (!rep.filter_is_ok) ImGui::PopStyleColor();
             ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ball & Stick\0Ribbons\0Cartoon\0\0");
-            if (ImGui::Combo("color mapping", (int*)(&rep.color_mapping), "Static Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0\0")) {
+            if (ImGui::Combo("color mapping", (int*)(&rep.color_mapping), "Uniform Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0\0")) {
                 recompute_colors = true;
             }
             ImGui::PopItemWidth();
-            if (rep.color_mapping == ColorMapping::Static) {
+            if (rep.color_mapping == ColorMapping::Uniform) {
                 ImGui::SameLine();
-                if (ImGui::ColorEdit4("color", (float*)&rep.static_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
+                if (ImGui::ColorEdit4("color", (float*)&rep.uniform_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
                     recompute_colors = true;
                 }
             }
@@ -2797,7 +2825,7 @@ static void draw_reference_frames_window(ApplicationData* data) {
                 const ImVec2 x_range = {0.0f, (float)angle_data.size()};
                 const ImVec2 y_range = {-0.05f, 360.0f * 1.05f};
                 ImGui::BeginPlot("Angle", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
-                ImGui::PlotValues("rel", angle_data.data(), angle_data.size(), 0xFFFFFFFF);
+                ImGui::PlotValues("rel", angle_data.data(), (int)angle_data.size(), 0xFFFFFFFF);
                 float x_val;
                 if (ImGui::ClickingAtPlot(&x_val)) {
                     data->playback.time = x_val;
@@ -3170,14 +3198,14 @@ static void draw_timeline_window(ApplicationData* data) {
             CString prop_name = prop->name_buf;
             auto prop_range = prop->avg_data_range;
             if (!prop_data) continue;
-            float32 pad = math::abs(prop_range.y - prop_range.x) * 0.75f;
+            const float pad = math::abs(prop_range.y - prop_range.x) * 0.75f;
             Range<float> display_range = {prop_range.x - pad, prop_range.y + pad};
             if (display_range.x == display_range.y) {
                 display_range.x -= 1.f;
                 display_range.y += 1.f;
             }
             // float32 val = (float)time;
-            ImGuiID id = ImGui::GetID(prop_name.cstr());
+            const ImGuiID id = ImGui::GetID(prop_name.cstr());
 
             ImGui::PushID(i);
 
@@ -3205,14 +3233,14 @@ static void draw_timeline_window(ApplicationData* data) {
 
             if (ImGui::GetActiveID() == id) {
                 if (ImGui::GetIO().MouseClicked[0] && ImGui::GetIO().KeyCtrl) {
-                    float32 t = (ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
+                    const float t = (ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
                     selection_start = ImLerp(frame_range.x, frame_range.y, t);
                     data->time_filter.range.x = selection_start;
                     data->time_filter.range.y = selection_start;
                     is_selecting = true;
                 } else if (is_selecting) {
-                    float32 t = (ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
-                    float32 v = ImLerp(frame_range.x, frame_range.y, t);
+                    const float t = (ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
+                    const float v = ImLerp(frame_range.x, frame_range.y, t);
                     if (v < data->time_filter.range.x) {
                         data->time_filter.range.x = v;
                     } else if (v > data->time_filter.range.x && v < data->time_filter.range.y) {
@@ -3612,81 +3640,151 @@ static void draw_shape_space_window(ApplicationData* data) {
     const Range<int32> frame_range = {(int32)data->time_filter.range.x, (int32)data->time_filter.range.y};
     const bool reference_frame_valid = 0 <= data->shape_space.reference_frame_idx && data->shape_space.reference_frame_idx < data->reference_frame.frames.size();
 
-    ImGui::SetNextWindowSizeConstraints(ImVec2(400, 200), ImVec2(10000, 10000));
-    ImGui::Begin("Shape Space", &data->shape_space.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoScrollbar);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(200, 200), ImVec2(10000, 10000));
+    ImGui::Begin("Shape Space", &data->shape_space.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
-    const float max_c = ImMax(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y);
-    const ImVec2 size = ImVec2(max_c, max_c);
+    const float height_ratio = 0.86602540f;
+
+    const ImVec2 size = ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().x * height_ratio);
     const ImRect bb(ImGui::GetCurrentWindow()->DC.CursorPos, ImGui::GetCurrentWindow()->DC.CursorPos + size);
+
+    const ImGuiID id = ImGui::GetCurrentWindow()->GetID("canvas");
+    ImGui::ItemAdd(bb, id);
+
+    //ImGui::RenderFrame(bb.Min, bb.Max, ImGui::GetColorU32(ImGuiCol_FrameBg), true, ImGui::GetStyle().FrameRounding);
+
     // ImGui::InvisibleButton("bg", bb.Max - bb.Min);
 
-    const ImVec2 a = ImLerp(bb.Min, bb.Max, ImVec2(0.0f, 0.70710678118f));
-    const ImVec2 b = ImLerp(bb.Min, bb.Max, ImVec2(1.0f, 0.70710678118f));
-    const ImVec2 c = ImLerp(bb.Min, bb.Max, ImVec2(0.5f, 0.0f));
+    const float cube_size_a = 30;
+    const float cube_size_b = 10;
+    const ImU32 cube_face_color_a = 0xCC111111;
+    const ImU32 cube_face_color_b = 0xCC777777;
+    const ImU32 cube_face_color_c = 0xCCCCCCCC;
 
-    const ImU32 triangle_fill_color = 0x88FFFFFF;
-    const ImU32 triangle_line_color = 0x88000000;
+    const ImVec2 tri_pad = {2 * cube_size_a, 2 * cube_size_a};
+    const ImVec2 tri_a = ImLerp(bb.Min + tri_pad, bb.Max - tri_pad, ImVec2(0.0f, 1.0f));
+    const ImVec2 tri_b = ImLerp(bb.Min + tri_pad, bb.Max - tri_pad, ImVec2(1.0f, 1.0f));
+    const ImVec2 tri_c = ImLerp(bb.Min + tri_pad, bb.Max - tri_pad, ImVec2(0.5f, 0.0f));
+
+    const ImVec2 cube_pad = tri_pad * 0.5f;
+    const ImVec2 cube_a = ImLerp(bb.Min + cube_pad, bb.Max - cube_pad, ImVec2(0.0f, 1.0f));
+    const ImVec2 cube_b = ImLerp(bb.Min + cube_pad, bb.Max - cube_pad, ImVec2(1.0f, 1.0f));
+    const ImVec2 cube_c = ImLerp(bb.Min + cube_pad, bb.Max - cube_pad, ImVec2(0.5f, 0.0f));
+
+    const ImU32 tri_fill_color = ImGui::GetColorU32(ImGuiCol_FrameBg);  // 0xAA999999;
+    const ImU32 tri_line_color = ImGui::GetColorU32(ImGuiCol_Border);   // 0xCCBBBBBB;
+    const float tri_line_thickness = 3.0f;
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
-    const ImVec2 mouse_pos = ImGui::GetIO().MousePos;
+    const auto draw_ortho_cube = [dl](float x, float y, float w, float h, float d, uint32 col_a, uint32 col_b, uint32 col_c) {
+        const vec3 f_a[4] = {{0, 0, d}, {w, 0, d}, {w, h, d}, {0, h, d}};
+        const vec3 f_b[4] = {{w, 0, d}, {w, 0, 0}, {w, h, 0}, {w, h, d}};
+        const vec3 f_c[4] = {{0, h, d}, {w, h, d}, {w, h, 0}, {0, h, 0}};
+
+        const mat4 T = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {-0.5f * w, -0.5f * h, -0.5f * d, 1.0f}};
+        const mat4 view_mat = look_at(vec3(1.0f, 0.5f, 1.0f), vec3(0, 0, 0), vec3(0, 1, 0));
+        const mat4 proj_mat = {{1, 0, 0, 0}, {0, -1, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 1}};
+        const mat4 mvp = proj_mat * view_mat * T;
+
+        const vec4 v_a[4] = {mvp * vec4(f_a[0], 1.0f), mvp * vec4(f_a[1], 1.0f), mvp * vec4(f_a[2], 1.0f), mvp * vec4(f_a[3], 1.0f)};
+        const vec4 v_b[4] = {mvp * vec4(f_b[0], 1.0f), mvp * vec4(f_b[1], 1.0f), mvp * vec4(f_b[2], 1.0f), mvp * vec4(f_b[3], 1.0f)};
+        const vec4 v_c[4] = {mvp * vec4(f_c[0], 1.0f), mvp * vec4(f_c[1], 1.0f), mvp * vec4(f_c[2], 1.0f), mvp * vec4(f_c[3], 1.0f)};
+
+        const ImVec2 o = {x, y};
+        const ImVec2 p_a[4] = {o + ImVec2(v_a[0].x, v_a[0].y), o + ImVec2(v_a[1].x, v_a[1].y), o + ImVec2(v_a[2].x, v_a[2].y), o + ImVec2(v_a[3].x, v_a[3].y)};
+        const ImVec2 p_b[4] = {o + ImVec2(v_b[0].x, v_b[0].y), o + ImVec2(v_b[1].x, v_b[1].y), o + ImVec2(v_b[2].x, v_b[2].y), o + ImVec2(v_b[3].x, v_b[3].y)};
+        const ImVec2 p_c[4] = {o + ImVec2(v_c[0].x, v_c[0].y), o + ImVec2(v_c[1].x, v_c[1].y), o + ImVec2(v_c[2].x, v_c[2].y), o + ImVec2(v_c[3].x, v_c[3].y)};
+
+        dl->AddQuadFilled(p_a[0], p_a[1], p_a[2], p_a[3], col_a);
+        dl->AddQuadFilled(p_b[0], p_b[1], p_b[2], p_b[3], col_b);
+        dl->AddQuadFilled(p_c[0], p_c[1], p_c[2], p_c[3], col_c);
+    };
+
     dl->ChannelsSplit(4);
     dl->ChannelsSetCurrent(0);
-    dl->AddTriangleFilled(a, b, c, triangle_fill_color);
-    // dl->AddTriangle(a, b, c, triangle_line_color);
+    dl->AddTriangleFilled(tri_a, tri_b, tri_c, tri_fill_color);
+    dl->AddTriangle(tri_a, tri_b, tri_c, tri_line_color, tri_line_thickness);
 
-    float32 mouse_hover_d2 = FLT_MAX;
-    int32 mouse_hover_idx = -1;
+    draw_ortho_cube(cube_a.x, cube_a.y, cube_size_a * 1.5f, cube_size_b, cube_size_b, cube_face_color_a, cube_face_color_b, cube_face_color_c);
+    draw_ortho_cube(cube_b.x, cube_b.y, cube_size_a * 1.2f, cube_size_b, cube_size_a * 1.2f, cube_face_color_a, cube_face_color_b, cube_face_color_c);
+    draw_ortho_cube(cube_c.x, cube_c.y, cube_size_a, cube_size_a, cube_size_a, cube_face_color_a, cube_face_color_b, cube_face_color_c);
+
+    float mouse_hover_d2 = FLT_MAX;
+    int mouse_hover_idx = -1;
     vec3 mouse_hover_ev = {0, 0, 0};
 
     if (reference_frame_valid) {
-        const uint32 line_color = math::convert_color(data->ramachandran.current.border_color);
-        const uint32 base_color = math::convert_color(data->ramachandran.current.base.fill_color);
-        const uint32 selected_color = math::convert_color(data->ramachandran.current.selection.selection_color);
-        const uint32 hover_color = 0xFFFFFFFF;
-        constexpr float32 base_radius = 2.5f;
-        constexpr float32 selected_radius = 3.5f;
-        constexpr float32 hover_radius = 5.5f;
+        const vec3 base_line_color = {0.25f, 0.25f, 0.25f};
+        const vec3 hover_line_color = {1.0f, 1.0f, 1.0f};
+        const vec3 selected_line_color{1.0f, 1.0f, 0.0f};
+        const float base_line_thickness = 1.0f;
+        const float selected_line_thickness = 2.0f;
+        const float hover_line_thickness = 2.0f;
+        const float base_alpha = 0.15f;
+        const float hover_alpha = 1.0f;
+        const float in_range_alpha = 0.8f;
+        constexpr float base_radius = 4.5f;
+        constexpr float selected_radius = 6.5f;
+        constexpr float hover_radius = 7.5f;
+        constexpr int num_segments = 10;
 
-        const structure_tracking::ID id = data->reference_frame.frames[data->shape_space.reference_frame_idx].id;
-        const Array<const vec3> eigen_values = structure_tracking::get_eigen_values(id);
+        const structure_tracking::ID ref_id = data->reference_frame.frames[data->shape_space.reference_frame_idx].id;
+        const Array<const vec3> eigen_values = structure_tracking::get_eigen_values(ref_id);
         const int32 N = (int32)eigen_values.size();
-        const vec2 p[3] = {vec_cast(a), vec_cast(b), vec_cast(c)};
 
         const auto compute_shape_space_weights = [](const vec3& ev) -> vec3 {
             const float l_sum = ev[0] + ev[1] + ev[2];
             const float one_over_denom = 1.0f / l_sum;
-            const float cs = 3.0f * ev[2] * one_over_denom;
             const float cl = (ev[0] - ev[1]) * one_over_denom;
             const float cp = 2.0f * (ev[1] - ev[2]) * one_over_denom;
+            const float cs = 3.0f * ev[2] * one_over_denom;
             return {cl, cp, cs};
         };
 
-        const auto draw_range = [&](Range<int32> range, float radius, uint32 fill_color, uint32 line_color) -> void {
-            for (int32 i = range.beg; i < range.end; i++) {
-                const vec3 ev = eigen_values[i];
-                const ImVec2 coord = vec_cast(math::barycentric_to_cartesian(p[0], p[1], p[2], compute_shape_space_weights(ev)));
-                dl->AddCircleFilled(coord, radius, fill_color);
-                dl->AddCircle(coord, radius, line_color);
+        const vec2 p[3] = {vec_cast(tri_a), vec_cast(tri_b), vec_cast(tri_c)};
+        for (int32 i = 0; i < N; i++) {
+            const vec3 ev = eigen_values[i];
+            const ImVec2 coord = vec_cast(math::barycentric_to_cartesian(p[0], p[1], p[2], compute_shape_space_weights(ev)));
 
-                const float d2 = ImLengthSqr(coord - mouse_pos);
+            const bool in_range = frame_range.x <= i && i <= frame_range.y;
+            const bool selected = i == data->playback.frame;
+
+            // Draw channel, higher number => later draw
+            int channel = 1 + (int)in_range + (int)selected;
+
+            const float t = (float)i / (float)(N - 1);
+            const vec3 color = green_color_scale(t);
+            const vec3 line_color = selected ? selected_line_color : base_line_color;
+            const float alpha = in_range ? in_range_alpha : base_alpha;
+            const float radius = selected ? selected_radius : base_radius;
+            const float thickness = selected ? selected_line_thickness : base_line_thickness;
+
+            dl->ChannelsSetCurrent(channel);
+            dl->AddCircleFilled(coord, radius, math::convert_color(vec4(color, alpha)), num_segments);
+            dl->AddCircle(coord, radius, math::convert_color(vec4(line_color, alpha)), num_segments, thickness);
+
+            if (ImGui::IsItemHovered()) {
+                const float d2 = ImLengthSqr(coord - ImGui::GetIO().MousePos);
                 if (d2 < hover_radius * hover_radius && d2 < mouse_hover_d2) {
                     mouse_hover_d2 = d2;
                     mouse_hover_idx = i;
                     mouse_hover_ev = ev;
                 }
             }
-        };
-
-        dl->ChannelsSetCurrent(1);
-        draw_range({0, frame_range.x}, base_radius, base_color, line_color);
-        draw_range({frame_range.y, N}, base_radius, base_color, line_color);
-        dl->ChannelsSetCurrent(2);
-        draw_range(frame_range, selected_radius, selected_color, line_color);
+        }
 
         if (mouse_hover_idx != -1) {
+            // Draw hovered explicity
+            const int i = mouse_hover_idx;
+            const vec3 ev = eigen_values[i];
+            const ImVec2 coord = vec_cast(math::barycentric_to_cartesian(p[0], p[1], p[2], compute_shape_space_weights(ev)));
+            const float t = (float)i / (float)(N - 1);
+            const vec3 color = green_color_scale(t);
+
             dl->ChannelsSetCurrent(3);
-            draw_range({mouse_hover_idx, mouse_hover_idx + 1}, hover_radius, hover_color, line_color);
+            dl->AddCircleFilled(coord, hover_radius, math::convert_color(vec4(color, hover_alpha)), num_segments);
+            dl->AddCircle(coord, hover_radius, math::convert_color(vec4(hover_line_color, hover_alpha)), num_segments, hover_line_thickness);
         }
     }
 
@@ -3696,7 +3794,7 @@ static void draw_shape_space_window(ApplicationData* data) {
     if (mouse_hover_idx != -1) {
         ImGui::BeginTooltip();
         ImGui::Text("Frame[%i]", (int32)mouse_hover_idx);
-        if (ImGui::GetIO().MouseClicked[0]) {
+        if (ImGui::GetIO().MouseDown[0]) {
             data->playback.time = (float)mouse_hover_idx;
         }
         ImGui::Text(u8"\u03BB: (%.2f, %.2f, %.2f)", mouse_hover_ev.x, mouse_hover_ev.y, mouse_hover_ev.z);
@@ -4248,8 +4346,8 @@ static CString get_rep_type_name(RepresentationType type) {
 }
 
 static ColorMapping get_color_mapping(CString str) {
-    if (compare(str, "STATIC_COLOR"))
-        return ColorMapping::Static;
+    if (compare(str, "UNIFORM"))
+        return ColorMapping::Uniform;
     else if (compare(str, "CPK"))
         return ColorMapping::Cpk;
     else if (compare(str, "RES_ID"))
@@ -4268,8 +4366,8 @@ static ColorMapping get_color_mapping(CString str) {
 
 static CString get_color_mapping_name(ColorMapping mapping) {
     switch (mapping) {
-        case ColorMapping::Static:
-            return "STATIC_COLOR";
+        case ColorMapping::Uniform:
+            return "UNIFORM";
         case ColorMapping::Cpk:
             return "CPK";
         case ColorMapping::ResId:
@@ -4329,7 +4427,7 @@ static void load_workspace(ApplicationData* data, CString file) {
                     if (compare_n(line, "Type=", 5)) rep->type = get_rep_type(trim(line.substr(5)));
                     if (compare_n(line, "ColorMapping=", 13)) rep->color_mapping = get_color_mapping(trim(line.substr(13)));
                     if (compare_n(line, "Enabled=", 8)) rep->enabled = to_int(trim(line.substr(8))) != 0;
-                    if (compare_n(line, "StaticColor=", 12)) rep->static_color = to_vec4(trim(line.substr(12)));
+                    if (compare_n(line, "StaticColor=", 12)) rep->uniform_color = to_vec4(trim(line.substr(12)));
                     if (compare_n(line, "Radius=", 7)) rep->radius = to_float(trim(line.substr(7)));
                     if (compare_n(line, "Tension=", 8)) rep->tension = to_float(trim(line.substr(8)));
                     if (compare_n(line, "Width=", 6)) rep->width = to_float(trim(line.substr(6)));
@@ -4408,7 +4506,7 @@ static void save_workspace(ApplicationData* data, CString file) {
         fprintf(fptr, "Type=%s\n", get_rep_type_name(rep.type).cstr());
         fprintf(fptr, "ColorMapping=%s\n", get_color_mapping_name(rep.color_mapping).cstr());
         fprintf(fptr, "Enabled=%i\n", (int)rep.enabled);
-        fprintf(fptr, "StaticColor=%g,%g,%g,%g\n", rep.static_color.r, rep.static_color.g, rep.static_color.b, rep.static_color.a);
+        fprintf(fptr, "StaticColor=%g,%g,%g,%g\n", rep.uniform_color.r, rep.uniform_color.g, rep.uniform_color.b, rep.uniform_color.a);
         fprintf(fptr, "Radius=%g\n", rep.radius);
         fprintf(fptr, "Tension=%g\n", rep.tension);
         fprintf(fptr, "Width=%g\n", rep.width);
@@ -4530,13 +4628,13 @@ static void update_all_representations(ApplicationData* data) {
 static void update_representation(ApplicationData* data, Representation* rep) {
     ASSERT(data);
     ASSERT(rep);
-    uint32 static_color = ImGui::ColorConvertFloat4ToU32(vec_cast(rep->static_color));
+
     DynamicArray<uint32> colors(data->dynamic.molecule.atom.count);
     const auto& mol = data->dynamic.molecule;
 
     switch (rep->color_mapping) {
-        case ColorMapping::Static:
-            memset_array(colors, static_color);
+        case ColorMapping::Uniform:
+            color_atoms_uniform(colors, rep->uniform_color);
             break;
         case ColorMapping::Cpk:
             color_atoms_cpk(colors, get_elements(mol));
