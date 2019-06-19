@@ -138,7 +138,7 @@ inline vec4& vec_cast(ImVec4& v) { return *(vec4*)(&v); }
 inline ImVec2& vec_cast(vec2& v) { return *(ImVec2*)(&v); }
 inline vec2& vec_cast(ImVec2& v) { return *(vec2*)(&v); }
 
-enum class PlaybackInterpolationMode { Nearest, Linear, LinearPbc, Cubic, CubicPbc };
+enum class PlaybackInterpolationMode { Nearest, Linear, Cubic };
 enum class SelectionLevel { Atom, Residue, Chain };
 enum class SelectionOperator { Or, And };
 enum class SelectionGrowth { CovalentBond, Radial };
@@ -367,7 +367,7 @@ struct ApplicationData {
         float64 time = 0.f;  // double precision for long trajectories
         int32 frame = 0;
         float32 fps = 10.f;
-        PlaybackInterpolationMode interpolation = PlaybackInterpolationMode::CubicPbc;
+        PlaybackInterpolationMode interpolation = PlaybackInterpolationMode::Cubic;
         bool is_playing = false;
     } playback;
 
@@ -947,7 +947,7 @@ int main(int, char**) {
                                                                                      const mat4 R = transform_data.rotation[frame_idx];
                                                                                      const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-com, 1));
                                                                                      const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(half_box, 1));
-                                                                                     const mat4 M = T_box * R * T_com;
+                                                                                     const mat4 M = T_box * math::transpose(R) * T_com;
 
                                                                                      return data->density_volume.world_to_texture_matrix * M * world_pos;
                                                                                  });
@@ -1513,8 +1513,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
     const auto& traj = data->dynamic.trajectory;
 
     const int last_frame = math::max(0, data->dynamic.trajectory.num_frames - 1);
-    float64 time = math::clamp(data->playback.time, 0.0, float64(last_frame));
-    PlaybackInterpolationMode interpolation_mode = data->playback.interpolation;
+    const float64 time = math::clamp(data->playback.time, 0.0, float64(last_frame));
 
     float* old_pos_x = (float*)TMP_ALIGNED_MALLOC(sizeof(float) * mol.atom.count, 64);
     float* old_pos_y = (float*)TMP_ALIGNED_MALLOC(sizeof(float) * mol.atom.count, 64);
@@ -1539,9 +1538,10 @@ static void interpolate_atomic_positions(ApplicationData* data) {
     const int next_frame_2 = math::min(frame + 2, last_frame);
     const mat3& box = get_trajectory_frame(traj, prev_frame_1).box;
 
-    if (prev_frame_1 == next_frame_1) interpolation_mode = PlaybackInterpolationMode::Nearest;
+    const PlaybackInterpolationMode mode = (prev_frame_1 != next_frame_1) ? data->playback.interpolation : PlaybackInterpolationMode::Nearest;
+    const bool pbc = box != mat3(0, 0, 0, 0, 0, 0, 0, 0, 0);
 
-    switch (interpolation_mode) {
+    switch (mode) {
         case PlaybackInterpolationMode::Nearest: {
             const auto x = get_trajectory_position_x(traj, nearest_frame);
             const auto y = get_trajectory_position_y(traj, nearest_frame);
@@ -1555,14 +1555,11 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             const float* x[2] = {get_trajectory_position_x(traj, prev_frame_1).data(), get_trajectory_position_x(traj, next_frame_1).data()};
             const float* y[2] = {get_trajectory_position_y(traj, prev_frame_1).data(), get_trajectory_position_y(traj, next_frame_1).data()};
             const float* z[2] = {get_trajectory_position_z(traj, prev_frame_1).data(), get_trajectory_position_z(traj, next_frame_1).data()};
-            linear_interpolation(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, x[0], y[0], z[0], x[1], y[1], z[1], mol.atom.count, t);
-            break;
-        }
-        case PlaybackInterpolationMode::LinearPbc: {
-            const float* x[2] = {get_trajectory_position_x(traj, prev_frame_1).data(), get_trajectory_position_x(traj, next_frame_1).data()};
-            const float* y[2] = {get_trajectory_position_y(traj, prev_frame_1).data(), get_trajectory_position_y(traj, next_frame_1).data()};
-            const float* z[2] = {get_trajectory_position_z(traj, prev_frame_1).data(), get_trajectory_position_z(traj, next_frame_1).data()};
-            linear_interpolation_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, x[0], y[0], z[0], x[1], y[1], z[1], mol.atom.count, t, box);
+            if (pbc) {
+                linear_interpolation_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, x[0], y[0], z[0], x[1], y[1], z[1], mol.atom.count, t, box);
+            } else {
+                linear_interpolation(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, x[0], y[0], z[0], x[1], y[1], z[1], mol.atom.count, t);
+            }
             break;
         }
         case PlaybackInterpolationMode::Cubic: {
@@ -1572,22 +1569,13 @@ static void interpolate_atomic_positions(ApplicationData* data) {
                                  get_trajectory_position_y(traj, next_frame_2).data()};
             const float* z[4] = {get_trajectory_position_z(traj, prev_frame_2).data(), get_trajectory_position_z(traj, prev_frame_1).data(), get_trajectory_position_z(traj, next_frame_1).data(),
                                  get_trajectory_position_z(traj, next_frame_2).data()};
-
-            cubic_interpolation(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2], x[3], y[3], z[3], mol.atom.count, t);
+            if (pbc) {
+                cubic_interpolation_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2], x[3], y[3], z[3], mol.atom.count, t, box);
+            } else {
+                cubic_interpolation(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2], x[3], y[3], z[3], mol.atom.count, t);
+            }
             break;
         }
-        case PlaybackInterpolationMode::CubicPbc: {
-            const float* x[4] = {get_trajectory_position_x(traj, prev_frame_2).data(), get_trajectory_position_x(traj, prev_frame_1).data(), get_trajectory_position_x(traj, next_frame_1).data(),
-                                 get_trajectory_position_x(traj, next_frame_2).data()};
-            const float* y[4] = {get_trajectory_position_y(traj, prev_frame_2).data(), get_trajectory_position_y(traj, prev_frame_1).data(), get_trajectory_position_y(traj, next_frame_1).data(),
-                                 get_trajectory_position_y(traj, next_frame_2).data()};
-            const float* z[4] = {get_trajectory_position_z(traj, prev_frame_2).data(), get_trajectory_position_z(traj, prev_frame_1).data(), get_trajectory_position_z(traj, next_frame_1).data(),
-                                 get_trajectory_position_z(traj, next_frame_2).data()};
-
-            cubic_interpolation_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2], x[3], y[3], z[3], mol.atom.count, t, box);
-            break;
-        }
-
         default:
             ASSERT(false);
     }
@@ -1625,33 +1613,33 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             const vec3 frame_com = compute_com(frame_x, frame_y, frame_z, weight, masked_count);
             const vec3 current_com = compute_com(current_x, current_y, current_z, weight, masked_count);
             const vec3 box_c = box * vec3(0.5f);
-
-            const auto transform_data = structure_tracking::get_transform_data(ref.id);
+            const TransformData transform_data = structure_tracking::get_transform_data(ref.id);
 
             // clang-format off
-			const mat3 rot[4] = { transform_data.rotation[prev_frame_2],
-								  transform_data.rotation[prev_frame_1],
-								  transform_data.rotation[next_frame_1],
-								  transform_data.rotation[next_frame_2] };
-
-            const quat q[4] = { math::quat_cast(rot[0]),
-								math::quat_cast(rot[1]),
-								math::quat_cast(rot[2]),
-								math::quat_cast(rot[3]) };
+			const quat q[4] = { math::quat_cast(transform_data.rotation[prev_frame_2]),
+								math::quat_cast(transform_data.rotation[prev_frame_1]),
+								math::quat_cast(transform_data.rotation[next_frame_1]),
+								math::quat_cast(transform_data.rotation[next_frame_2]) };
             // clang-format on
 
-            const mat4 R = math::mat4_cast(math::cubic_slerp(q[0], q[1], q[2], q[3], t));
-            // const mat4 R = math::mat4_cast(math::slerp(q[1], q[2], t));
+            mat4 R;
+            switch (mode) {
+                case PlaybackInterpolationMode::Nearest:
+                    R = transform_data.rotation[nearest_frame];
+                    break;
+                case PlaybackInterpolationMode::Linear:
+                    R = math::mat4_cast(math::nlerp(q[1], q[2], t));
+                    break;
+                case PlaybackInterpolationMode::Cubic:
+                    R = math::mat4_cast(math::cubic_slerp(q[0], q[1], q[2], q[3], t));
+                    break;
+                default:
+                    ASSERT(false);
+            }
 
-            // const mat3 R_frame_to_ref = structure_tracking::get_transform_to_target_frame(ref.id, frame).rotation;
-            // const mat3 R_current_to_frame = structure_tracking::compute_rotation(current_x, current_y, current_z, frame_x, frame_y, frame_z, weight, masked_count, current_com, frame_com);
-
-            // const mat4 R = structure_tracking::compute_rotation(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, weight, masked_count, cur_com, ref_com);
             const mat4 R_inv = math::transpose(R);
             const mat4 T_ori = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-current_com, 1));
             const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(box_c, 1));
-
-            // const auto support_frames = structure_tracking::get_support_frames(ref.id);
 
             if (ref.active) {
                 ref.com = box_c;
@@ -1659,24 +1647,24 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             } else {
                 ref.com = current_com;
                 ref.basis = T_box * R * T_ori;
-
-                // const auto eigen_vectors = structure_tracking::get_eigen_vectors(ref.id)[frame];
-                // const auto eigen_values = structure_tracking::get_eigen_values(ref.id)[frame];
-                // ref.basis = eigen_vectors;
-                // ref.basis = mat3(support_frames[frame].axis[SupportAxis_PosX].dir, support_frames[frame].axis[SupportAxis_PosY].dir, support_frames[frame].axis[SupportAxis_PosZ].dir);
             }
 
             if (ref.active) {
                 const mat4 M = T_box * R_inv * T_ori;
                 transform_positions_ref(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count, M);
-                apply_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.mass, mol.sequences, box);
             }
         }
     }
 
     const float dt = 1.0f;
-    compute_velocities_pbc(mol.atom.velocity.x, mol.atom.velocity.y, mol.atom.velocity.z, old_pos_x, old_pos_y, old_pos_z, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z,
-                           mol.atom.count, dt, box);
+    if (pbc) {
+        // apply_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.mass, mol.sequences, box);
+        compute_velocities_pbc(mol.atom.velocity.x, mol.atom.velocity.y, mol.atom.velocity.z, old_pos_x, old_pos_y, old_pos_z, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z,
+                               mol.atom.count, dt, box);
+    } else {
+        compute_velocities(mol.atom.velocity.x, mol.atom.velocity.y, mol.atom.velocity.z, old_pos_x, old_pos_y, old_pos_z, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z,
+                           mol.atom.count, dt);
+    }
 }
 
 // #misc
@@ -2625,7 +2613,7 @@ static void draw_animation_control_window(ApplicationData* data) {
         data->playback.time = t;
     }
     ImGui::SliderFloat("fps", &data->playback.fps, 0.1f, 100.f, "%.3f", 4.f);
-    ImGui::Combo("type", (int*)(&data->playback.interpolation), "Nearest\0Linear\0Linear Periodic\0Cubic\0Cubic Periodic\0\0");
+    ImGui::Combo("type", (int*)(&data->playback.interpolation), "Nearest\0Linear\0Cubic\0\0");
     if (data->playback.is_playing) {
         if (ImGui::Button("Pause")) data->playback.is_playing = false;
     } else {
