@@ -588,7 +588,7 @@ void imgui_easy_theming(ImVec3 color_for_text, ImVec3 color_for_head, ImVec3 col
     style.Colors[ImGuiCol_ScrollbarGrab] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.21f);
     style.Colors[ImGuiCol_ScrollbarGrabHovered] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.78f);
     style.Colors[ImGuiCol_ScrollbarGrabActive] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 1.00f);
-    //style.Colors[ImGuiCol_ComboBg] = ImVec4(color_for_area.x, color_for_area.y, color_for_area.z, 1.00f);
+    // style.Colors[ImGuiCol_ComboBg] = ImVec4(color_for_area.x, color_for_area.y, color_for_area.z, 1.00f);
     style.Colors[ImGuiCol_CheckMark] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.80f);
     style.Colors[ImGuiCol_SliderGrab] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.50f);
     style.Colors[ImGuiCol_SliderGrabActive] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 1.00f);
@@ -604,9 +604,9 @@ void imgui_easy_theming(ImVec3 color_for_text, ImVec3 color_for_head, ImVec3 col
     style.Colors[ImGuiCol_ResizeGrip] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.15f);
     style.Colors[ImGuiCol_ResizeGripHovered] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 0.78f);
     style.Colors[ImGuiCol_ResizeGripActive] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 1.00f);
-	//style.Colors[ImGuiCol_CloseButton] = ImVec4(color_for_text.x, color_for_text.y, color_for_text.z, 0.16f);
-    //style.Colors[ImGuiCol_CloseButtonHovered] = ImVec4(color_for_text.x, color_for_text.y, color_for_text.z, 0.39f);
-    //style.Colors[ImGuiCol_CloseButtonActive] = ImVec4(color_for_text.x, color_for_text.y, color_for_text.z, 1.00f);
+    // style.Colors[ImGuiCol_CloseButton] = ImVec4(color_for_text.x, color_for_text.y, color_for_text.z, 0.16f);
+    // style.Colors[ImGuiCol_CloseButtonHovered] = ImVec4(color_for_text.x, color_for_text.y, color_for_text.z, 0.39f);
+    // style.Colors[ImGuiCol_CloseButtonActive] = ImVec4(color_for_text.x, color_for_text.y, color_for_text.z, 1.00f);
     style.Colors[ImGuiCol_PlotLines] = ImVec4(color_for_text.x, color_for_text.y, color_for_text.z, 0.63f);
     style.Colors[ImGuiCol_PlotLinesHovered] = ImVec4(color_for_head.x, color_for_head.y, color_for_head.z, 1.00f);
     style.Colors[ImGuiCol_PlotHistogram] = ImVec4(color_for_text.x, color_for_text.y, color_for_text.z, 0.63f);
@@ -766,8 +766,8 @@ int main(int, char**) {
     LOG_NOTE("Initializing structure tracking...");
     structure_tracking::initialize();
 
-    //ImGui::SetupImGuiStyle2();
-	ImGui::StyleColorsLight();
+    // ImGui::SetupImGuiStyle2();
+    ImGui::StyleColorsLight();
 
     // const vec4 CLEAR_COLOR = vec4(0, 0, 0, 0);
     const vec4 CLEAR_INDEX = vec4(1, 1, 1, 1);
@@ -3628,18 +3628,20 @@ static void draw_shape_space_window(ApplicationData* data) {
     const Range<int32> frame_range = {(int32)data->time_filter.range.x, (int32)data->time_filter.range.y};
     const bool reference_frame_valid = 0 <= data->shape_space.reference_frame_idx && data->shape_space.reference_frame_idx < data->reference_frame.frames.size();
 
-    ImGui::SetNextWindowSizeConstraints(ImVec2(200, 200), ImVec2(10000, 10000));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, 0xCCFFFFFF);
+    // ImGui::SetNextWindowSizeConstraints(ImVec2(200, 200), ImVec2(10000, 10000));
     ImGui::Begin("Shape Space", &data->shape_space.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
 
-    const float height_ratio = 0.86602540f;
+    ImGui::PopStyleColor();
 
+    constexpr float height_ratio = 0.86602540f;  // sqrt(3.0f) / 2.0f   base -> height ratio in equilateral triangle
     const ImVec2 size = ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().x * height_ratio);
     const ImRect bb(ImGui::GetCurrentWindow()->DC.CursorPos, ImGui::GetCurrentWindow()->DC.CursorPos + size);
 
     const ImGuiID id = ImGui::GetCurrentWindow()->GetID("canvas");
     ImGui::ItemAdd(bb, id);
 
-    //ImGui::RenderFrame(bb.Min, bb.Max, ImGui::GetColorU32(ImGuiCol_FrameBg), true, ImGui::GetStyle().FrameRounding);
+    // ImGui::RenderFrame(bb.Min, bb.Max, ImGui::GetColorU32(ImGuiCol_FrameBg), true, ImGui::GetStyle().FrameRounding);
 
     // ImGui::InvisibleButton("bg", bb.Max - bb.Min);
 
@@ -3659,8 +3661,8 @@ static void draw_shape_space_window(ApplicationData* data) {
     const ImVec2 cube_b = ImLerp(bb.Min + cube_pad, bb.Max - cube_pad, ImVec2(1.0f, 1.0f));
     const ImVec2 cube_c = ImLerp(bb.Min + cube_pad, bb.Max - cube_pad, ImVec2(0.5f, 0.0f));
 
-    const ImU32 tri_fill_color = ImGui::GetColorU32(ImGuiCol_FrameBg);  // 0xAA999999;
-    const ImU32 tri_line_color = ImGui::GetColorU32(ImGuiCol_Border);   // 0xCCBBBBBB;
+    const ImU32 tri_fill_color = 0x44000000;  // ImGui::GetColorU32(ImGuiCol_FrameBg);  // 0xAA999999;
+    const ImU32 tri_line_color = 0xCC555555;  // ImGui::GetColorU32(ImGuiCol_Border);   // 0xCCBBBBBB;
     const float tri_line_thickness = 3.0f;
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -3703,15 +3705,15 @@ static void draw_shape_space_window(ApplicationData* data) {
     vec3 mouse_hover_ev = {0, 0, 0};
 
     if (reference_frame_valid) {
-        const vec3 base_line_color = {0.25f, 0.25f, 0.25f};
+        const vec3 base_line_color = {0.15f, 0.15f, 0.15f};
         const vec3 hover_line_color = {1.0f, 1.0f, 1.0f};
-        const vec3 selected_line_color{1.0f, 1.0f, 0.0f};
-        const float base_line_thickness = 1.0f;
-        const float selected_line_thickness = 2.0f;
-        const float hover_line_thickness = 2.0f;
-        const float base_alpha = 0.15f;
-        const float hover_alpha = 1.0f;
-        const float in_range_alpha = 0.8f;
+        const vec3 selected_line_color = {1.0f, 1.0f, 0.0f};
+        constexpr float base_line_thickness = 1.0f;
+        constexpr float selected_line_thickness = 3.0f;
+        constexpr float hover_line_thickness = 3.0f;
+        constexpr float base_alpha = 0.15f;
+        constexpr float hover_alpha = 1.0f;
+        constexpr float in_range_alpha = 0.9f;
         constexpr float base_radius = 4.5f;
         constexpr float selected_radius = 6.5f;
         constexpr float hover_radius = 7.5f;
