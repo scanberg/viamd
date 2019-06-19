@@ -370,16 +370,29 @@ static void compute_eigen(const mat3& M, vec3 (&vectors)[3], float (&value)[3]) 
     mat3 U, S, V;
     svd(ARGS(M), ARGS(U), ARGS(S), ARGS(V));
     float max_val = math::max(S[0][0], math::max(S[1][1], S[2][2]));
-    S = S / max_val;
     const mat3 Ut = glm::transpose(U);
 
-    value[0] = S[0][0];
-    value[1] = S[1][1];
-    value[2] = S[2][2];
+    const float e_val[] = {S[0][0] / max_val, S[1][1] / max_val, S[2][2] / max_val};
+    const vec3  e_vec[] = {Ut[0], Ut[1], Ut[2]};
+    int l[3] = {0, 1, 2};
 
-    vectors[0] = Ut[0];
-    vectors[1] = Ut[1];
-    vectors[2] = Ut[2];
+    const auto swap = [](int& x, int& y) {
+        int tmp = x;
+        x = y;
+        y = tmp;
+    };
+
+    if (e_val[l[0]] < e_val[l[1]]) swap(l[0], l[1]);
+    if (e_val[l[1]] < e_val[l[2]]) swap(l[1], l[2]);
+    if (e_val[l[0]] < e_val[l[1]]) swap(l[0], l[1]);
+
+    value[0] = e_val[l[0]];
+    value[1] = e_val[l[1]];
+    value[2] = e_val[l[2]];
+
+    vectors[0] = e_vec[l[0]];
+    vectors[1] = e_vec[l[1]];
+    vectors[2] = e_vec[l[2]];
 }
 
 static void compute_svd(const mat3& A, mat3& U, mat3& S, mat3& V) { svd(ARGS(A), ARGS(U), ARGS(S), ARGS(V)); }
@@ -844,23 +857,16 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
         const mat3 abs_rot = extract_rotation(abs_mat);
         const mat3 rel_rot = extract_rotation(rel_mat);
 
-        quat q_del = math::quat_cast(rel_rot);
-        const float angle = math::angle(q_del);
+        const quat q_del = math::quat_cast(rel_rot);
+        const quat q_abs = math::quat_cast(math::transpose(abs_rot));
 
-        if (math::abs(angle) > math::PI) {
-            printf("WOAH! big jump (%.2f deg) at between frame %i and %i\n", math::rad_to_deg(angle), i - 1, i);
-            //q_del = -q_del;
-        }
+        const quat q_old = q_acc;
+        const quat q_new = math::nlerp(q_acc * q_del, q_abs, 0.1f);
 
-		//const float dot =
-
-        q_acc *= q_del;
-        q_acc = math::normalize(q_acc);
-
-		auto q_abs = math::quat_cast(math::transpose(abs_rot));
-		q_acc = math::nlerp(q_acc, q_abs, 0.1f);
+        q_acc = math::dot(q_old, q_new) > 0.0f ? q_new : -q_new;
 
         R[i] = math::mat3_cast(math::conjugate(q_acc));  // abs_rot;
+        R[i] = abs_rot;
 
         const float abs_det = math::determinant(abs_mat / cov_mat);
         const float rel_det = math::determinant(rel_mat / cov_mat);
