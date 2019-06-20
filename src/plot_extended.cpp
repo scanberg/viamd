@@ -20,7 +20,7 @@ struct PlotState {
 
 static PlotState ps;
 
-const ImU32 HOVER_LINE_COLOR = 0xaaffffff;
+const ImU32 HOVER_LINE_COLOR = 0xaa777777;
 const ImU32 CURRENT_LINE_COLOR = 0xaa33ffff;
 const ImU32 AXIS_COLOR = 0xaaffffff;
 const ImU32 SELECTION_RANGE_COLOR = 0x33bbbbbb;
