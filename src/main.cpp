@@ -244,11 +244,9 @@ struct ReferenceFrame {
     bool show = false;
     bool filter_is_ok = false;
     structure_tracking::ID id = 0;
-    int32 target_frame_idx = 0;
 
     // For debugging
-    vec3 com = {};
-    mat3 basis = {};
+    mat4 basis = {};
 };
 
 struct ThreadSyncData {
@@ -938,13 +936,13 @@ int main(int, char**) {
                                         const structure_tracking::ID id = ref_frame->id;
                                         stats::compute_density_volume_with_basis(&data->density_volume.volume, data->dynamic.trajectory, range,
                                                                                  [id, data](const vec4& world_pos, int32 frame_idx) -> vec4 {
-                                                                                     const auto transform_data = structure_tracking::get_transform_data(id);
+                                                                                     const auto com_data = structure_tracking::get_com(id);
+                                                                                     const auto rot_data = structure_tracking::get_rot_fused(id);
                                                                                      const auto box = data->dynamic.trajectory.frame_buffer[frame_idx].box;
-                                                                                     // @TODO: Translate rotate translate...
 
-                                                                                     const vec3 com = transform_data.com[frame_idx];
+                                                                                     const vec3 com = com_data[frame_idx];
                                                                                      const vec3 half_box = box * vec3(0.5f);
-                                                                                     const mat4 R = transform_data.rotation[frame_idx];
+                                                                                     const mat4 R = math::mat4_cast(rot_data[frame_idx]);
                                                                                      const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-com, 1));
                                                                                      const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(half_box, 1));
                                                                                      const mat4 M = T_box * math::transpose(R) * T_com;
@@ -1242,10 +1240,9 @@ int main(int, char**) {
                 // REFERENCE FRAME
                 for (const auto& ref : data.reference_frame.frames) {
                     if (ref.show) {
-                        mat4 M = mat4(ref.basis);
-                        M[3] = vec4(ref.com, 1.0f);
+                        const mat4 M = ref.basis;
                         immediate::draw_basis(M, 2.0f);
-                        immediate::draw_plane_wireframe(ref.com, M[0], M[1], immediate::COLOR_RED);
+                        immediate::draw_plane_wireframe(M[3], M[0], M[1], immediate::COLOR_RED);
                         break;
                     }
                 }
@@ -1613,19 +1610,19 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             const vec3 frame_com = compute_com(frame_x, frame_y, frame_z, weight, masked_count);
             const vec3 current_com = compute_com(current_x, current_y, current_z, weight, masked_count);
             const vec3 box_c = box * vec3(0.5f);
-            const TransformData transform_data = structure_tracking::get_transform_data(ref.id);
+            const auto rot_data = structure_tracking::get_rot_relative(ref.id);
 
             // clang-format off
-			const quat q[4] = { math::quat_cast(transform_data.rotation[prev_frame_2]),
-								math::quat_cast(transform_data.rotation[prev_frame_1]),
-								math::quat_cast(transform_data.rotation[next_frame_1]),
-								math::quat_cast(transform_data.rotation[next_frame_2]) };
+			const quat q[4] = { rot_data[prev_frame_2],
+								rot_data[prev_frame_1],
+								rot_data[next_frame_1],
+								rot_data[next_frame_2] };
             // clang-format on
 
             mat4 R;
             switch (mode) {
                 case PlaybackInterpolationMode::Nearest:
-                    R = transform_data.rotation[nearest_frame];
+                    R = math::mat4_cast(rot_data[nearest_frame]);
                     break;
                 case PlaybackInterpolationMode::Linear:
                     R = math::mat4_cast(math::nlerp(q[1], q[2], t));
@@ -1642,11 +1639,11 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(box_c, 1));
 
             if (ref.active) {
-                ref.com = box_c;
-                ref.basis = mat3(1);
+                ref.basis = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {box_c, 1}};
             } else {
-                ref.com = current_com;
-                ref.basis = T_box * R * T_ori;
+                // ref.com = current_com;
+                ref.basis = T_box * R;
+                // ref.basis = {R, current_com};
             }
 
             if (ref.active) {
@@ -2775,8 +2772,8 @@ static void draw_reference_frames_window(ApplicationData* data) {
                 const ImVec2 x_range = {0.0f, (float)abs_data.size()};
                 const ImVec2 y_range = {-1.0f, 2.0f};
                 ImGui::BeginPlot("Determinant", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
-                ImGui::PlotValues("relative", rel_data.data(), (int)rel_data.size(), 0xFF5555FF);
-                ImGui::PlotValues("absolute", abs_data.data(), (int)abs_data.size(), 0xFF55FF55);
+                ImGui::PlotValues("absolute", abs_data.data(), (int)abs_data.size(), 0xFF5555FF);
+                ImGui::PlotValues("relative", rel_data.data(), (int)rel_data.size(), 0xFF55FF55);
                 float x_val;
                 if (ImGui::ClickingAtPlot(&x_val)) {
                     data->playback.time = x_val;
@@ -2809,11 +2806,33 @@ static void draw_reference_frames_window(ApplicationData* data) {
                 ImGui::EndPlot();
             }
             {
-                const auto angle_data = structure_tracking::get_rel_angle(ref.id);
-                const ImVec2 x_range = {0.0f, (float)angle_data.size()};
-                const ImVec2 y_range = {-0.05f, 360.0f * 1.05f};
-                ImGui::BeginPlot("Angle", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
-                ImGui::PlotValues("rel", angle_data.data(), (int)angle_data.size(), 0xFFFFFFFF);
+                const auto abs_data = structure_tracking::get_rot_absolute(ref.id);
+                const auto rel_data = structure_tracking::get_rot_relative(ref.id);
+                const auto fus_data = structure_tracking::get_rot_fused(ref.id);
+                const int N = abs_data.size();
+
+                ASSERT(N == rel_data.size());
+                ASSERT(N == fus_data.size());
+
+                float* tmp_data = (float*)TMP_MALLOC(sizeof(float) * N * 3);
+                defer { TMP_FREE(tmp_data); };
+                float* abs_angle = tmp_data + 0 * N;
+                float* rel_angle = tmp_data + 1 * N;
+                float* fus_angle = tmp_data + 2 * N;
+
+                const quat ref_q = {};
+                for (int j = 0; j < N; j++) {
+                    abs_angle[j] = math::rad_to_deg(math::angle(ref_q, abs_data[j]));
+                    rel_angle[j] = math::rad_to_deg(math::angle(ref_q, rel_data[j]));
+                    fus_angle[j] = math::rad_to_deg(math::angle(ref_q, fus_data[j]));
+                }
+
+                const ImVec2 x_range = {0.0f, (float)N};
+                const ImVec2 y_range = {-0.05f, 360.5f};
+                ImGui::BeginPlot("Angle Delta", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
+                ImGui::PlotValues("absolute", abs_angle, N, 0xFF5555FF);
+                ImGui::PlotValues("relative", rel_angle, N, 0xFF55FF55);
+                ImGui::PlotValues("fused", fus_angle, N, 0xFFFF5555);
                 float x_val;
                 if (ImGui::ClickingAtPlot(&x_val)) {
                     data->playback.time = x_val;
@@ -4907,7 +4926,7 @@ static void update_reference_frame(ApplicationData* data, ReferenceFrame* ref) {
 
     ref->filter_is_ok = filter::compute_filter_mask(ref->atom_mask, ref->filter, data->dynamic.molecule, sel);
     if (ref->filter_is_ok) {
-        structure_tracking::compute_trajectory_transform_data(ref->id, ref->atom_mask, data->dynamic, ref->target_frame_idx);
+        structure_tracking::compute_trajectory_transform_data(ref->id, ref->atom_mask, data->dynamic);
     }
 }
 
