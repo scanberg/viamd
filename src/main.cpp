@@ -1642,7 +1642,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
                 ref.basis = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {box_c, 1}};
             } else {
                 // ref.com = current_com;
-                ref.basis = T_box * R;
+                ref.basis = math::inverse(R_inv * T_ori);
                 // ref.basis = {R, current_com};
             }
 
@@ -2808,11 +2808,11 @@ static void draw_reference_frames_window(ApplicationData* data) {
             {
                 const auto abs_data = structure_tracking::get_rot_absolute(ref.id);
                 const auto rel_data = structure_tracking::get_rot_relative(ref.id);
-                const auto fus_data = structure_tracking::get_rot_corrected(ref.id);
+                const auto cor_data = structure_tracking::get_rot_corrected(ref.id);
                 const int N = abs_data.size();
 
                 ASSERT(N == rel_data.size());
-                ASSERT(N == fus_data.size());
+                ASSERT(N == cor_data.size());
 
                 float* tmp_data = (float*)TMP_MALLOC(sizeof(float) * N * 3);
                 defer { TMP_FREE(tmp_data); };
@@ -2820,11 +2820,11 @@ static void draw_reference_frames_window(ApplicationData* data) {
                 float* rel_angle = tmp_data + 1 * N;
                 float* cor_angle = tmp_data + 2 * N;
 
-                const quat ref_q = {};
+                const quat ref_q = {1, 0, 0, 0};
                 for (int j = 0; j < N; j++) {
                     abs_angle[j] = math::rad_to_deg(math::angle(ref_q, abs_data[j]));
                     rel_angle[j] = math::rad_to_deg(math::angle(ref_q, rel_data[j]));
-                    cor_angle[j] = math::rad_to_deg(math::angle(ref_q, fus_data[j]));
+                    cor_angle[j] = math::rad_to_deg(math::angle(ref_q, cor_data[j]));
                 }
 
                 const ImVec2 x_range = {0.0f, (float)N};
