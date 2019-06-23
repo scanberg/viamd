@@ -13,8 +13,6 @@ namespace structure_tracking {
 
 struct Structure {
     ID id = 0;
-    int32 ref_frame_idx = 0;
-    int32 num_points = 0;
     int32 num_frames = 0;
 
     struct {
@@ -23,7 +21,7 @@ struct Structure {
             struct {
                 quat* absolute = nullptr;
                 quat* relative = nullptr;
-                quat* fused = nullptr;
+                quat* corrected = nullptr;
             } rotation;
         } transform;
 
@@ -45,7 +43,7 @@ struct Entry {
 };
 
 struct Context {
-    uint32 next_hash = 0xdeadb00b;
+    uint32 next_hash = 0xdeadf00d;
     DynamicArray<Entry> entries{};
 };
 
@@ -553,7 +551,7 @@ static void free_structure_data(Structure* s) {
     ASSERT(s);
     if (s->frame_data.transform.rotation.absolute) FREE(s->frame_data.transform.rotation.absolute);
     if (s->frame_data.transform.rotation.relative) FREE(s->frame_data.transform.rotation.relative);
-    if (s->frame_data.transform.rotation.fused) FREE(s->frame_data.transform.rotation.fused);
+    if (s->frame_data.transform.rotation.corrected) FREE(s->frame_data.transform.rotation.corrected);
     if (s->frame_data.transform.com) FREE(s->frame_data.transform.com);
     if (s->frame_data.eigen.vector) FREE(s->frame_data.eigen.vector);
     if (s->frame_data.eigen.value) FREE(s->frame_data.eigen.value);
@@ -569,7 +567,7 @@ static void init_structure_data(Structure* s, ID id, int32 num_frames) {
 
     s->frame_data.transform.rotation.absolute = (quat*)MALLOC(sizeof(quat) * num_frames);
     s->frame_data.transform.rotation.relative = (quat*)MALLOC(sizeof(quat) * num_frames);
-    s->frame_data.transform.rotation.fused = (quat*)MALLOC(sizeof(quat) * num_frames);
+    s->frame_data.transform.rotation.corrected = (quat*)MALLOC(sizeof(quat) * num_frames);
     s->frame_data.transform.com = (vec3*)MALLOC(sizeof(vec3) * num_frames);
     s->frame_data.eigen.vector = (mat3*)MALLOC(sizeof(mat3) * num_frames);
     s->frame_data.eigen.value = (vec3*)MALLOC(sizeof(vec3) * num_frames);
@@ -766,7 +764,7 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
     init_structure_data(s, id, num_frames);
 
     // Scratch data
-    const auto mem_size = sizeof(float) * num_points * 10;
+    const auto mem_size = sizeof(float) * num_points * 13;
     void* mem = TMP_MALLOC(mem_size);
     defer { TMP_FREE(mem); };
     memset(mem, 0, mem_size);
@@ -780,7 +778,10 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
     float* prv_x = ref_z + num_points;
     float* prv_y = prv_x + num_points;
     float* prv_z = prv_y + num_points;
-    float* mass = prv_z + num_points;
+    float* cor_x = prv_z + num_points;
+    float* cor_y = cor_x + num_points;
+    float* cor_z = cor_y + num_points;
+    float* mass = cor_z + num_points;
 
     bitfield::extract_data_from_mask(cur_x, get_trajectory_position_x(dynamic.trajectory, 0).data(), atom_mask);
     bitfield::extract_data_from_mask(cur_y, get_trajectory_position_y(dynamic.trajectory, 0).data(), atom_mask);
@@ -803,7 +804,7 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
     vec3 cur_com = {0, 0, 0};
 
     quat q_relative = {1, 0, 0, 0};
-    quat q_fused = {1, 0, 0, 0};
+    quat q_corrected = {1, 0, 0, 0};
 
     const mat3 ref_cov_mat = compute_mass_weighted_covariance_matrix(ref_x, ref_y, ref_z, mass, num_points, ref_com);
     mat3 ref_eigen_vectors;
@@ -815,7 +816,7 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
     // Set first frame explicitly
     s->frame_data.transform.rotation.absolute[0] = {};
     s->frame_data.transform.rotation.relative[0] = {};
-    s->frame_data.transform.rotation.fused[0] = {};
+    s->frame_data.transform.rotation.corrected[0] = {};
     s->frame_data.transform.com[0] = ref_com;
     s->frame_data.eigen.vector[0] = ref_eigen_vectors;
     s->frame_data.eigen.value[0] = ref_eigen_values;
@@ -845,9 +846,9 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
         const quat q_abs = math::quat_cast(math::transpose(abs_rot));
 
         {
-            const quat q_old = q_relative;
-            const quat q_new = q_relative * q_del;
-            q_relative = math::dot(q_old, q_new) > 0.0f ? q_new : -q_new;
+            const quat q_old_rel = q_relative;
+            const quat q_new_rel = q_relative * q_del;
+            q_relative = math::dot(q_old_rel, q_new_rel) > 0.0f ? q_new_rel : -q_new_rel;
 
             #if 0
             const mat4 R = math::mat4_cast(math::conjugate(q_relative));
@@ -855,22 +856,34 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
             const mat4 T2 = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {cur_com, 1}};
             const mat4 M = T2 * R * T1;
 
-            transform_positions(cur_x, cur_y, cur_z, num_points, M);
-            const mat3 cc_mat = compute_mass_weighted_cross_covariance_matrix(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, mass, num_points, cur_com, ref_com);
+            transform_positions_ref(cur_x, cur_y, cur_z, num_points, M);
+            const mat3 err_mat = compute_mass_weighted_cross_covariance_matrix(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, mass, num_points, cur_com, ref_com);
+            const mat3 err_rot = math::inverse(extract_rotation(err_mat));
+            const quat q_err = math::quat_cast(err_rot);
+
+            const mat4 M_corr = T2 * mat4(err_rot) * T1;
+            transform_positions_ref(cur_x, cur_y, cur_z, num_points, M_corr);
+
+            const quat q_old_cor = q_corrected;
+            const quat q_new_cor = q_corrected * q_err;
+            q_corrected = math::dot(q_old_cor, q_new_cor) > 0.0f ? q_new_cor : -q_new_cor;
+
             #endif
         }
+        #if 0
         {
-            const quat q_old = q_fused;
-            const quat q_new = math::nlerp(q_fused * q_del, q_abs, 0.1f);
-            q_fused = math::dot(q_old, q_new) > 0.0f ? q_new : -q_new;
+            const quat q_old = q_corrected;
+            const quat q_new = math::nlerp(q_corrected * q_del, q_abs, 0.1f);
+            q_corrected = math::dot(q_old, q_new) > 0.0f ? q_new : -q_new;
         }
+        #endif
 
         const float abs_det = math::determinant(abs_mat / cov_mat);
         const float rel_det = math::determinant(rel_mat / cov_mat);
 
         s->frame_data.transform.rotation.absolute[i] = q_abs;
         s->frame_data.transform.rotation.relative[i] = math::conjugate(q_relative);
-        s->frame_data.transform.rotation.fused[i] = math::conjugate(q_fused);
+        s->frame_data.transform.rotation.corrected[i] = math::conjugate(q_corrected);
         compute_eigen(cov_mat, (vec3(&)[3])s->frame_data.eigen.vector[i], (float(&)[3])s->frame_data.eigen.value[i]);
         s->frame_data.transform.com[i] = cur_com;
         s->frame_data.determinant.abs[i] = abs_det;
@@ -907,10 +920,10 @@ const Array<const quat> get_rot_relative(ID id) {
     return {};
 }
 
-const Array<const quat> get_rot_fused(ID id) {
+const Array<const quat> get_rot_corrected(ID id) {
     ASSERT(context);
     if (auto* s = find_structure(id)) {
-        return {s->frame_data.transform.rotation.fused, s->num_frames};
+        return {s->frame_data.transform.rotation.corrected, s->num_frames};
     }
     LOG_ERROR("Supplied id is not valid.");
     return {};

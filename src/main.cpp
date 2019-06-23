@@ -937,7 +937,7 @@ int main(int, char**) {
                                         stats::compute_density_volume_with_basis(&data->density_volume.volume, data->dynamic.trajectory, range,
                                                                                  [id, data](const vec4& world_pos, int32 frame_idx) -> vec4 {
                                                                                      const auto com_data = structure_tracking::get_com(id);
-                                                                                     const auto rot_data = structure_tracking::get_rot_fused(id);
+                                                                                     const auto rot_data = structure_tracking::get_rot_corrected(id);
                                                                                      const auto box = data->dynamic.trajectory.frame_buffer[frame_idx].box;
 
                                                                                      const vec3 com = com_data[frame_idx];
@@ -1610,7 +1610,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             const vec3 frame_com = compute_com(frame_x, frame_y, frame_z, weight, masked_count);
             const vec3 current_com = compute_com(current_x, current_y, current_z, weight, masked_count);
             const vec3 box_c = box * vec3(0.5f);
-            const auto rot_data = structure_tracking::get_rot_relative(ref.id);
+            const auto rot_data = structure_tracking::get_rot_corrected(ref.id);
 
             // clang-format off
 			const quat q[4] = { rot_data[prev_frame_2],
@@ -2808,7 +2808,7 @@ static void draw_reference_frames_window(ApplicationData* data) {
             {
                 const auto abs_data = structure_tracking::get_rot_absolute(ref.id);
                 const auto rel_data = structure_tracking::get_rot_relative(ref.id);
-                const auto fus_data = structure_tracking::get_rot_fused(ref.id);
+                const auto fus_data = structure_tracking::get_rot_corrected(ref.id);
                 const int N = abs_data.size();
 
                 ASSERT(N == rel_data.size());
@@ -2818,13 +2818,13 @@ static void draw_reference_frames_window(ApplicationData* data) {
                 defer { TMP_FREE(tmp_data); };
                 float* abs_angle = tmp_data + 0 * N;
                 float* rel_angle = tmp_data + 1 * N;
-                float* fus_angle = tmp_data + 2 * N;
+                float* cor_angle = tmp_data + 2 * N;
 
                 const quat ref_q = {};
                 for (int j = 0; j < N; j++) {
                     abs_angle[j] = math::rad_to_deg(math::angle(ref_q, abs_data[j]));
                     rel_angle[j] = math::rad_to_deg(math::angle(ref_q, rel_data[j]));
-                    fus_angle[j] = math::rad_to_deg(math::angle(ref_q, fus_data[j]));
+                    cor_angle[j] = math::rad_to_deg(math::angle(ref_q, fus_data[j]));
                 }
 
                 const ImVec2 x_range = {0.0f, (float)N};
@@ -2832,7 +2832,7 @@ static void draw_reference_frames_window(ApplicationData* data) {
                 ImGui::BeginPlot("Angle Delta", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
                 ImGui::PlotValues("absolute", abs_angle, N, 0xFF5555FF);
                 ImGui::PlotValues("relative", rel_angle, N, 0xFF55FF55);
-                ImGui::PlotValues("fused", fus_angle, N, 0xFFFF5555);
+                ImGui::PlotValues("corrected", cor_angle, N, 0xFFFF5555);
                 float x_val;
                 if (ImGui::ClickingAtPlot(&x_val)) {
                     data->playback.time = x_val;

@@ -30,7 +30,7 @@ bool compute_trajectory_transform_data(ID structure_id, Bitfield atom_mask, cons
 const Array<const vec3> get_com(ID structure_id);
 const Array<const quat> get_rot_absolute(ID structure_id);
 const Array<const quat> get_rot_relative(ID structure_id);
-const Array<const quat> get_rot_fused(ID structure_id);
+const Array<const quat> get_rot_corrected(ID structure_id);
 
 const Array<const mat3> get_eigen_vectors(ID structure_id);
 const Array<const vec3> get_eigen_values(ID structure_id);
