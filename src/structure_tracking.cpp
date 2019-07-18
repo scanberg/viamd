@@ -210,9 +210,9 @@ static mat3 compute_mass_weighted_cross_covariance_matrix(const float* x0, const
 
 // clang-format off
 static mat3 compute_mass_weighted_cross_covariance_matrix(const float* x0, const float* y0, const float* z0,
-													      const float* x1, const float* y1, const float* z1,
-														  const float* mass,
-														  int64 count, const vec3& com0, const vec3& com1)
+                                                          const float* x1, const float* y1, const float* z1,
+                                                          const float* mass,
+                                                          int64 count, const vec3& com0, const vec3& com1)
 // clang-format on
 {
     mat3 A{0};
@@ -246,8 +246,8 @@ static mat3 compute_mass_weighted_cross_covariance_matrix(const float* x0, const
 
 // clang-format off
 static mat3 compute_mass_weighted_cross_covariance_matrix(const float* x0, const float* y0, const float* z0,
-													      const float* x1, const float* y1, const float* z1,
-														  const float* mass, int64 count)
+                                                          const float* x1, const float* y1, const float* z1,
+                                                          const float* mass, int64 count)
 // clang-format on
 {
     mat3 A{0};
@@ -281,7 +281,7 @@ static mat3 compute_mass_weighted_cross_covariance_matrix(const float* x0, const
 
 // clang-format off
 static mat3 compute_mass_weighted_covariance_matrix(const float* x, const float* y, const float* z,
-													const float* mass, int64 count, const vec3& com)
+                                                    const float* mass, int64 count, const vec3& com)
 // clang-format on
 {
     mat3 A{0};
@@ -310,7 +310,7 @@ static mat3 compute_mass_weighted_covariance_matrix(const float* x, const float*
 
 // clang-format off
 static mat3 compute_mass_weighted_covariance_matrix(const float* x, const float* y, const float* z,
-													const float* mass, int64 count)
+                                                    const float* mass, int64 count)
 // clang-format on
 {
     mat3 A{0};
@@ -428,8 +428,8 @@ static mat3 extract_rotation(const mat3& M) {
 
 // clang-format off
 void compute_direction_vectors(float* out_x, float* out_y, float* out_z,
-							   const float* in_x, const float* in_y, const float* in_z,
-							   int64 count, const vec3& com)
+                               const float* in_x, const float* in_y, const float* in_z,
+                               int64 count, const vec3& com)
 // clang-format on
 {
     for (int64 i = 0; i < count; i++) {
@@ -443,8 +443,8 @@ void compute_direction_vectors(float* out_x, float* out_y, float* out_z,
 
 // clang-format off
 mat3 compute_rotation(const float* x0, const float* y0, const float* z0,
-					  const float* x1, const float* y1, const float* z1,
-					  const float* mass, int64 count, const vec3& com0, const vec3& com1)
+                      const float* x1, const float* y1, const float* z1,
+                      const float* mass, int64 count, const vec3& com0, const vec3& com1)
 // clang-format on
 {
 #ifdef USE_DIRECTION_VECTORS
@@ -473,9 +473,9 @@ mat3 compute_rotation(const float* x0, const float* y0, const float* z0,
 
 // clang-format off
 static void compute_residual_error(float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z,
-								   const float* RESTRICT src_x, const float* RESTRICT src_y, const float* RESTRICT src_z,
+                                   const float* RESTRICT src_x, const float* RESTRICT src_y, const float* RESTRICT src_z,
                                    const float* RESTRICT ref_x, const float* RESTRICT ref_y, const float* RESTRICT ref_z,
-								   int64 count, const mat4& matrix)
+                                   int64 count, const mat4& matrix)
 // clang-format on
 {
     for (int32 i = 0; i < count; i++) {
@@ -495,55 +495,55 @@ static void compute_residual_error(float* RESTRICT out_x, float* RESTRICT out_y,
 #if 0
 // RBF functions
 inline float Wendland_3_1(float r) {
-	const float x = 1.f - r;
-	const float x2 = x * x;
-	return x2 * x2 * (4.f * r + 1.f);
+    const float x = 1.f - r;
+    const float x2 = x * x;
+    return x2 * x2 * (4.f * r + 1.f);
 }
 
 inline float Gaussian(float r) {
-	const float a = 0.5f * r;
-	return math::exp(-a*a);
+    const float a = 0.5f * r;
+    return math::exp(-a*a);
 }
 
 #define RBF_FUNCTION Wendland_3_1
 
 static void compute_rbf_weights(float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z,
-						 const float* RESTRICT in_pos_x, const float* RESTRICT in_pos_y, const float* RESTRICT in_pos_z,
-						 const float* RESTRICT in_val_x, const float* RESTRICT in_val_y, const float* RESTRICT in_val_z,
-						 int64 count, const float radial_cutoff = 10.f) {
+                         const float* RESTRICT in_pos_x, const float* RESTRICT in_pos_y, const float* RESTRICT in_pos_z,
+                         const float* RESTRICT in_val_x, const float* RESTRICT in_val_y, const float* RESTRICT in_val_z,
+                         int64 count, const float radial_cutoff = 10.f) {
 
-	const float d2_max = radial_cutoff * radial_cutoff;
-	const float scl = 1.f / radial_cutoff;
-	const int32 N = (int32)count;
+    const float d2_max = radial_cutoff * radial_cutoff;
+    const float scl = 1.f / radial_cutoff;
+    const int32 N = (int32)count;
 
-	// Create matrix A NxN
-	Eigen::MatrixXf A = Eigen::MatrixXf::Zero(N, N);
-	for (int32 i = 0; i < N; i++) {
-		for (int32 j = 0; j < N; j++) {
-			const float dx = in_pos_x[i] - in_pos_x[j];
-			const float dy = in_pos_y[i] - in_pos_y[j];
-			const float dz = in_pos_z[i] - in_pos_z[j];
-			const float d2 = dx * dx + dy * dy + dz * dz;
-			if (d2 > d2_max) continue;
+    // Create matrix A NxN
+    Eigen::MatrixXf A = Eigen::MatrixXf::Zero(N, N);
+    for (int32 i = 0; i < N; i++) {
+        for (int32 j = 0; j < N; j++) {
+            const float dx = in_pos_x[i] - in_pos_x[j];
+            const float dy = in_pos_y[i] - in_pos_y[j];
+            const float dz = in_pos_z[i] - in_pos_z[j];
+            const float d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 > d2_max) continue;
 
-			const float d = math::sqrt(d2);
-			A(i, j) = RBF_FUNCTION(d * scl);
-		}
-	}
+            const float d = math::sqrt(d2);
+            A(i, j) = RBF_FUNCTION(d * scl);
+        }
+    }
 
-	// Create Vector b
-	Eigen::MatrixXf b = Eigen::MatrixXf::Zero(N, 3);
-	for (int32 i = 0; i < N; i++) {
-		b.row(i) = Eigen::Vector3f(in_val_x[i], in_val_y[i], in_val_z[i]);
-	}
+    // Create Vector b
+    Eigen::MatrixXf b = Eigen::MatrixXf::Zero(N, 3);
+    for (int32 i = 0; i < N; i++) {
+        b.row(i) = Eigen::Vector3f(in_val_x[i], in_val_y[i], in_val_z[i]);
+    }
 
-	Eigen::MatrixXf x = (A.transpose() * A).ldlt().solve(A.transpose() * b);
+    Eigen::MatrixXf x = (A.transpose() * A).ldlt().solve(A.transpose() * b);
 
-	for (int32 i = 0; i < N; i++) {
-		out_x[i] = x(i, 0);
-		out_y[i] = x(i, 1);
+    for (int32 i = 0; i < N; i++) {
+        out_x[i] = x(i, 0);
+        out_y[i] = x(i, 1);
 out_z[i] = x(i, 2);
-	};
+    };
 }
 #endif
 
