@@ -456,6 +456,14 @@ struct ApplicationData {
             float32 max_value = 1.f;
         } texture;
 
+        struct {
+            GLuint id = 0;
+            bool dirty = true;
+            int width = 0;
+            float32 alpha_scale = 1.f;
+            StringBuffer<512> path;
+        } tf;
+
         Volume volume{};
         std::mutex volume_data_mutex{};
 
@@ -975,6 +983,14 @@ int main(int, char**) {
                 data.density_volume.texture.dirty = false;
             }
         }
+        if (data.density_volume.tf.dirty) {
+            if (strnlen(data.density_volume.tf.path.cstr(), data.density_volume.tf.path.size()) > 0) {
+                volume::create_tf_texture(&data.density_volume.tf.id, &data.density_volume.tf.width, data.density_volume.tf.path);
+            } else {
+                volume::create_tf_texture(&data.density_volume.tf.id, &data.density_volume.tf.width, VIAMD_IMAGE_DIR "/tf/default.png");
+            }
+            data.density_volume.tf.dirty = false;
+        }
 
         bool time_changed = false;
         bool frame_changed = false;
@@ -1289,8 +1305,9 @@ int main(int, char**) {
 
             PUSH_GPU_SECTION("Volume Rendering")
             const float32 scl = 1.f * data.density_volume.density_scale / (data.density_volume.texture.max_value > 0.f ? data.density_volume.texture.max_value : 1.f);
-            volume::render_volume_texture(data.density_volume.texture.id, data.fbo.deferred.depth, data.density_volume.texture_to_model_matrix, data.density_volume.model_to_world_matrix,
-                                          data.view.param.matrix.view, data.view.param.matrix.proj, data.density_volume.color, scl);
+            volume::render_volume_texture(data.density_volume.texture.id, data.density_volume.tf.id, data.fbo.deferred.depth, data.density_volume.texture_to_model_matrix,
+                                          data.density_volume.model_to_world_matrix, data.view.param.matrix.view, data.view.param.matrix.proj, data.density_volume.color, scl,
+                                          data.density_volume.tf.alpha_scale);
             POP_GPU_SECTION()
             glDisable(GL_BLEND);
         }
@@ -2107,8 +2124,26 @@ static void draw_main_menu(ApplicationData* data) {
             }
             if (data->density_volume.enabled) {
                 ImGui::PushID("density_volume");
+
+                ImGui::PushID("density_volume_tf");
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+                ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 1.0f));
+                ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.5f);
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.0f, 1.0f));
+                if (ImGui::ImageButton((void*)(intptr_t)data->density_volume.tf.id, ImVec2(250, 20))) {
+                    auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, "png,jpg");
+                    if (res.result == platform::FileDialogResult::FILE_OK) {
+                        data->density_volume.tf.path = res.path;
+                        data->density_volume.tf.dirty = true;
+                    }
+                }
+                ImGui::PopStyleVar(2);
+                ImGui::PopStyleColor(2);
+                ImGui::PopID();
+
                 ImGui::ColorEdit3("Color", (float*)&data->density_volume.color, ImGuiColorEditFlags_NoInputs);
-                ImGui::SliderFloat("Scale", &data->density_volume.density_scale, 0.001f, 10.f, "%.3f", 3.f);
+                ImGui::SliderFloat("Density Scaling", &data->density_volume.density_scale, 0.001f, 10.f, "%.3f", 3.f);
+                ImGui::SliderFloat("Alpha Scaling", &data->density_volume.tf.alpha_scale, 0.001f, 10.f, "%.3f", 3.f);
                 ImGui::PopID();
             }
             ImGui::EndGroup();
