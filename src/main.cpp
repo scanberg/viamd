@@ -1266,14 +1266,14 @@ int main(int, char**) {
             POP_GPU_SECTION()
 
 #if 0
-			PUSH_GPU_SECTION("Blit Static Velocity")
-			glDrawBuffer(GL_COLOR_ATTACHMENT2); // Velocity
-			glDepthMask(0);
-			glDisable(GL_DEPTH_TEST);
-			postprocessing::blit_static_velocity(data.fbo.deferred.depth, data.view.param);
-			glEnable(GL_DEPTH_TEST);
-			glDepthMask(1);
-			POP_GPU_SECTION()
+            PUSH_GPU_SECTION("Blit Static Velocity")
+            glDrawBuffer(GL_COLOR_ATTACHMENT2); // Velocity
+            glDepthMask(0);
+            glDisable(GL_DEPTH_TEST);
+            postprocessing::blit_static_velocity(data.fbo.deferred.depth, data.view.param);
+            glEnable(GL_DEPTH_TEST);
+            glDepthMask(1);
+            POP_GPU_SECTION()
 #endif
         }
         POP_GPU_SECTION()  // G-buffer
@@ -1631,10 +1631,10 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             }
 
             // clang-format off
-			const quat q[4] = { rot_data[prev_frame_2],
-								rot_data[prev_frame_1],
-								rot_data[next_frame_1],
-								rot_data[next_frame_2] };
+            const quat q[4] = { rot_data[prev_frame_2],
+                                rot_data[prev_frame_1],
+                                rot_data[next_frame_1],
+                                rot_data[next_frame_2] };
             // clang-format on
 #else
             Array<const quat> abs_data = structure_tracking::get_rot_absolute(ref.id);
