@@ -50,7 +50,7 @@ static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum s
         LOG_WARNING(message);
     }
     if (severity == GL_DEBUG_SEVERITY_HIGH) {
-        LOG_ERROR("A SEVERE GL ERROR HAS OCCURED!");
+        LOG_ERROR("A SEVERE GL ERROR HAS OCCURED: %s", message);
         abort();
     }
 }
