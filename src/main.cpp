@@ -2109,8 +2109,6 @@ static void draw_main_menu(ApplicationData* data) {
                 ImGui::PopStyleVar(2);
                 ImGui::PopStyleColor(2);
                 ImGui::PopID();
-
-                ImGui::ColorEdit3("Color", (float*)&data->density_volume.color, ImGuiColorEditFlags_NoInputs);
                 ImGui::SliderFloat("Density Scaling", &data->density_volume.density_scale, 0.001f, 10.f, "%.3f", 3.f);
                 ImGui::SliderFloat("Alpha Scaling", &data->density_volume.tf.alpha_scale, 0.001f, 10.f, "%.3f", 3.f);
                 ImGui::PopID();
@@ -4493,6 +4491,18 @@ static void load_workspace(ApplicationData* data, CString file) {
                 if (compare_n(line, "SsaoBias=", 9)) data->visuals.ssao.bias = to_float(trim(line.substr(9)));
                 if (compare_n(line, "DofEnabled=", 11)) data->visuals.dof.enabled = to_int(trim(line.substr(11))) != 0;
                 if (compare_n(line, "DofFocusScale=", 14)) data->visuals.dof.focus_scale = to_float(trim(line.substr(14)));
+
+                if (compare_n(line, "DensityVolumeEnabled=", 21)) data->density_volume.enabled = to_int(trim(line.substr(21))) != 0;
+                if (compare_n(line, "DensityScale=", 13)) data->density_volume.density_scale = to_float(trim(line.substr(13)));
+                if (compare_n(line, "AlphaScale=", 11)) data->density_volume.tf.alpha_scale = to_float(trim(line.substr(11)));
+                if (compare_n(line, "TFFileName=", 11)) {
+                    StringBuffer<512> tfpath = data->density_volume.tf.path;
+                    tfpath = trim(line.substr(11));
+                    if (!compare(tfpath, data->density_volume.tf.path)) {
+                        data->density_volume.tf.path = tfpath;
+                        data->density_volume.tf.dirty = true;
+                    }
+                }
             }
         } else if (compare_n(line, "[Camera]", 8)) {
             while (c_txt && c_txt[0] != '[' && (line = extract_line(c_txt))) {
@@ -4575,6 +4585,12 @@ static void save_workspace(ApplicationData* data, CString file) {
 
     fprintf(fptr, "DofEnabled=%i\n", data->visuals.dof.enabled ? 1 : 0);
     fprintf(fptr, "DofFocusScale=%g\n", data->visuals.dof.focus_scale);
+    fprintf(fptr, "\n");
+
+    fprintf(fptr, "DensityVolumeEnabled=%i\n", data->density_volume.enabled ? 1 : 0);
+    fprintf(fptr, "DensityScale=%g\n", data->density_volume.density_scale);
+    fprintf(fptr, "AlphaScale=%g\n", data->density_volume.tf.alpha_scale);
+    fprintf(fptr, "TFFileName=%s\n", data->density_volume.tf.path.cstr());
     fprintf(fptr, "\n");
 
     fprintf(fptr, "[Camera]\n");
