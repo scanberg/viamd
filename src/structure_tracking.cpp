@@ -819,9 +819,9 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
     memcpy(prv_x, ref_x, num_points * sizeof(float) * 3);
 
     // Set first frame explicitly
-    s->frame_data.transform.rotation.absolute[0] = {};
-    s->frame_data.transform.rotation.relative[0] = {};
-    s->frame_data.transform.rotation.corrected[0] = {};
+    s->frame_data.transform.rotation.absolute[0] = {1, 0, 0, 0};
+    s->frame_data.transform.rotation.relative[0] = {1, 0, 0, 0};
+    s->frame_data.transform.rotation.corrected[0] = {1, 0, 0, 0};
     s->frame_data.transform.com[0] = ref_com;
     s->frame_data.eigen.vector[0] = ref_eigen_vectors;
     s->frame_data.eigen.value[0] = ref_eigen_values;
@@ -848,53 +848,47 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
         const mat3 rel_rot = extract_rotation(rel_mat);
 
         const quat q_del = math::quat_cast(rel_rot);
-        const quat q_abs = math::quat_cast(math::transpose(abs_rot));
+        const quat q_abs = math::quat_cast(abs_rot);
 
-        {
-            const quat q_old = q_relative;
-            const quat q_new = q_relative * q_del;
-            q_relative = math::dot(q_old, q_new) > 0.0f ? q_new : -q_new;
-            q_relative = math::normalize(q_relative);
-        }
-
-        {
-#if 1
-            memcpy(cor_x, ref_x, num_points * sizeof(float) * 3);
-
-            const quat q_old = q_corrected;
-            quat q_new = q_corrected * q_del;
-
-            const mat4 R = math::mat4_cast(q_new);
-            const mat4 T1 = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {-ref_com, 1}};
-            const mat4 T2 = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {ref_com, 1}};
-            const mat4 M = T2 * R * T1;
-
-            transform_positions_ref(cor_x, cor_y, cor_z, num_points, M);
-
-            const mat3 err_mat = compute_mass_weighted_cross_covariance_matrix(cur_x, cur_y, cur_z, cor_x, cor_y, cor_z, mass, num_points, cur_com, ref_com);
-            const mat3 err_rot = extract_rotation(err_mat);
-            const quat q_err = math::quat_cast(err_rot);
-            q_new = q_err * q_new;
-            q_corrected = math::dot(q_old, q_new) > 0.0f ? q_new : -q_new;
-            q_corrected = math::normalize(q_corrected);
-
-            //const mat4 M_corr = T2 * mat4(err_rot) * T1;
-            //transform_positions_ref(cor_x, cor_y, cor_z, num_points, M_corr);
-
-
-#else
-            const quat q_old = q_corrected;
-            const quat q_new = math::nlerp(q_corrected * q_del, q_abs, 0.1f);
-            q_corrected = math::dot(q_old, q_new) > 0.0f ? q_new : -q_new;
-#endif
-        }
+        q_relative = math::normalize(q_relative * q_del);
 
         const float abs_det = math::determinant(abs_mat / cov_mat);
         const float rel_det = math::determinant(rel_mat / cov_mat);
+        const quat q_rel = math::conjugate(q_relative);
+#if 0
+        memcpy(cor_x, ref_x, num_points * sizeof(float) * 3);
+        cor_com = ref_com;
 
-        s->frame_data.transform.rotation.absolute[i] = q_abs;
-        s->frame_data.transform.rotation.relative[i] = q_relative;
-        s->frame_data.transform.rotation.corrected[i] = q_corrected;
+        {
+            const quat old_q = q_corrected;
+            const quat new_q = q_corrected * q_del;
+            q_corrected = math::dot(old_q, new_q) < 0.0f ? -new_q : new_q;
+        }
+
+        {
+            const mat4 R = math::mat4_cast(q_corrected);
+            const mat4 T1 = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {-cor_com, 1}};
+            const mat4 T2 = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {cor_com, 1}};
+            const mat4 M = T2 * R * T1;
+            transform_positions_ref(cor_x, cor_y, cor_z, num_points, M);
+        }
+
+        const mat3 err_mat = compute_mass_weighted_cross_covariance_matrix(cor_x, cor_y, cor_z, cur_x, cur_y, cur_z, mass, num_points, cor_com, cur_com);
+        const mat3 err_rot = extract_rotation(err_mat);
+        const quat q_err = math::inverse(math::normalize(math::quat_cast(err_rot)));
+
+        printf("err angle: %3.3f\n", math::rad_to_deg(math::angle(q_err)));
+
+        q_corrected = math::normalize(q_err * q_corrected);
+        const quat q_cor = q_corrected;
+#else
+        q_corrected = math::nlerp(q_corrected * q_del, math::conjugate(q_abs), 0.5f);
+        const quat q_cor = math::conjugate(q_corrected);
+#endif
+
+        s->frame_data.transform.rotation.absolute[i] = math::dot(s->frame_data.transform.rotation.absolute[i - 1], q_abs) > 0.0f ? q_abs : -q_abs;
+        s->frame_data.transform.rotation.relative[i] = math::dot(s->frame_data.transform.rotation.relative[i - 1], q_rel) > 0.0f ? q_rel : -q_rel;
+        s->frame_data.transform.rotation.corrected[i] = math::dot(s->frame_data.transform.rotation.corrected[i - 1], q_cor) > 0.0f ? q_cor : -q_cor;
         compute_eigen(cov_mat, (vec3(&)[3])s->frame_data.eigen.vector[i], (float(&)[3])s->frame_data.eigen.value[i]);
         s->frame_data.transform.com[i] = cur_com;
         s->frame_data.determinant.abs[i] = abs_det;

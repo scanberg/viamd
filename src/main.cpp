@@ -143,6 +143,7 @@ enum class SelectionLevel { Atom, Residue, Chain };
 enum class SelectionOperator { Or, And };
 enum class SelectionGrowth { CovalentBond, Radial };
 enum class RepresentationType { Vdw, Licorice, BallAndStick, Ribbons, Cartoon };
+enum class TrackingMode { Absolute, Relative, Corrected };
 
 enum AtomBit_ { AtomBit_Highlighted = BIT(0), AtomBit_Selected = BIT(1), AtomBit_Visible = BIT(2) };
 
@@ -244,6 +245,8 @@ struct ReferenceFrame {
     bool show = false;
     bool filter_is_ok = false;
     structure_tracking::ID id = 0;
+    TrackingMode tracking_mode = TrackingMode::Corrected;
+    float rel_abs_blend = 0.5f;
 
     // For debugging
     mat4 basis = {};
@@ -693,7 +696,6 @@ static void reset_reference_frame(ApplicationData* data);
 static void clear_reference_frames(ApplicationData* data);
 static void update_reference_frame(ApplicationData* data, ReferenceFrame* ref);
 static ReferenceFrame* get_active_reference_frame(ApplicationData* data);
-static void dump_reference_frame_eigenvalues_to_file(const ReferenceFrame& ref, CString filename);
 
 static void create_volume(ApplicationData* data);
 
@@ -1610,7 +1612,23 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             const vec3 frame_com = compute_com(frame_x, frame_y, frame_z, weight, masked_count);
             const vec3 current_com = compute_com(current_x, current_y, current_z, weight, masked_count);
             const vec3 box_c = box * vec3(0.5f);
-            const auto rot_data = structure_tracking::get_rot_corrected(ref.id);
+
+#if 0
+            Array<const quat> rot_data;
+            switch (ref.tracking_mode) {
+                case TrackingMode::Absolute:
+                    rot_data = structure_tracking::get_rot_absolute(ref.id);
+                    break;
+                case TrackingMode::Relative:
+                    rot_data = structure_tracking::get_rot_relative(ref.id);
+                    break;
+                case TrackingMode::Corrected:
+                    rot_data = structure_tracking::get_rot_corrected(ref.id);
+                    break;
+                default:
+                    ASSERT(false);
+                    break;
+            }
 
             // clang-format off
 			const quat q[4] = { rot_data[prev_frame_2],
@@ -1618,14 +1636,27 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 								rot_data[next_frame_1],
 								rot_data[next_frame_2] };
             // clang-format on
+#else
+            Array<const quat> abs_data = structure_tracking::get_rot_absolute(ref.id);
+            Array<const quat> rel_data = structure_tracking::get_rot_relative(ref.id);
+
+            // clang-format off
+			const quat q[4] = { math::nlerp(rel_data[prev_frame_2], abs_data[prev_frame_2], ref.rel_abs_blend),
+								math::nlerp(rel_data[prev_frame_1], abs_data[prev_frame_1], ref.rel_abs_blend),
+								math::nlerp(rel_data[next_frame_1], abs_data[next_frame_1], ref.rel_abs_blend),
+								math::nlerp(rel_data[next_frame_2], abs_data[next_frame_2], ref.rel_abs_blend) };
+            // clang-format on
+#endif
+
+
 
             mat4 R;
             switch (mode) {
                 case PlaybackInterpolationMode::Nearest:
-                    R = math::mat4_cast(rot_data[nearest_frame]);
+                    R = math::mat4_cast(t < 0.5f ? q[1] : q[2]);
                     break;
                 case PlaybackInterpolationMode::Linear:
-                    R = math::mat4_cast(math::nlerp(q[1], q[2], t));
+                    R = math::mat4_cast(math::slerp(q[1], q[2], t));
                     break;
                 case PlaybackInterpolationMode::Cubic:
                     R = math::mat4_cast(math::cubic_slerp(q[0], q[1], q[2], q[3], t));
@@ -2739,12 +2770,6 @@ static void draw_reference_frames_window(ApplicationData* data) {
             if (ImGui::DeleteButton("remove")) {
                 remove_reference_frame(data, &ref);
             }
-            if (ImGui::Button("dump eigen")) {
-                StringBuffer<256> path = VIAMD_DATA_DIR "/";
-                path += ref.name;
-                path += ".dat";
-                dump_reference_frame_eigenvalues_to_file(ref, path);
-            }
             ImGui::SameLine();
             if (ImGui::Button("shape space")) {
                 data->shape_space.show_window = true;
@@ -2760,6 +2785,8 @@ static void draw_reference_frames_window(ApplicationData* data) {
             }
             // if (ImGui::SliderInt("reference frame idx", ))
             if (!ref.filter_is_ok) ImGui::PopStyleColor();
+            ImGui::Combo("tracking mode", (int*)(&ref.tracking_mode), "Absolute\0Relative\0Corrected\0\0");
+            ImGui::SliderFloat("rel -> abs", &ref.rel_abs_blend, 0.f, 1.0f);
 
             ImGui::PopItemWidth();
 
@@ -2780,6 +2807,7 @@ static void draw_reference_frames_window(ApplicationData* data) {
                 }
                 ImGui::EndPlot();
             }
+            #if 0
             {
                 const auto ev_data = structure_tracking::get_eigen_values(ref.id);
                 float* tmp_data = (float*)TMP_MALLOC(ev_data.size_in_bytes());
@@ -2805,6 +2833,7 @@ static void draw_reference_frames_window(ApplicationData* data) {
                 }
                 ImGui::EndPlot();
             }
+            #endif
             {
                 const auto abs_data = structure_tracking::get_rot_absolute(ref.id);
                 const auto rel_data = structure_tracking::get_rot_relative(ref.id);
@@ -2830,6 +2859,43 @@ static void draw_reference_frames_window(ApplicationData* data) {
                 const ImVec2 x_range = {0.0f, (float)N};
                 const ImVec2 y_range = {-0.05f, 360.5f};
                 ImGui::BeginPlot("Angle Delta", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
+                ImGui::PlotValues("absolute", abs_angle, N, 0xFF5555FF);
+                ImGui::PlotValues("relative", rel_angle, N, 0xFF55FF55);
+                ImGui::PlotValues("corrected", cor_angle, N, 0xFFFF5555);
+                float x_val;
+                if (ImGui::ClickingAtPlot(&x_val)) {
+                    data->playback.time = x_val;
+                }
+                ImGui::EndPlot();
+            }
+            {
+                const auto abs_data = structure_tracking::get_rot_absolute(ref.id);
+                const auto rel_data = structure_tracking::get_rot_relative(ref.id);
+                const auto cor_data = structure_tracking::get_rot_corrected(ref.id);
+                const int N = abs_data.size();
+                ASSERT(N == rel_data.size());
+                ASSERT(N == cor_data.size());
+
+                float* tmp_data = (float*)TMP_MALLOC(sizeof(float) * N * 3);
+                defer { TMP_FREE(tmp_data); };
+                float* abs_angle = tmp_data + 0 * N;
+                float* rel_angle = tmp_data + 1 * N;
+                float* cor_angle = tmp_data + 2 * N;
+
+                abs_angle[0] = 0.0f;
+                rel_angle[0] = 0.0f;
+                cor_angle[0] = 0.0f;
+                for (int j = 1; j < N; j++) {
+                    abs_angle[j] = abs_angle[j - 1] + math::rad_to_deg(math::angle(abs_data[j - 1], abs_data[j]));
+                    rel_angle[j] = rel_angle[j - 1] + math::rad_to_deg(math::angle(rel_data[j - 1], rel_data[j]));
+                    cor_angle[j] = cor_angle[j - 1] + math::rad_to_deg(math::angle(cor_data[j - 1], cor_data[j]));
+                }
+
+                const float max_val = math::max(math::max(abs_angle[N - 1], rel_angle[N - 1]), cor_angle[N - 1]);
+
+                const ImVec2 x_range = {0.0f, (float)N};
+                const ImVec2 y_range = {0.0f, max_val};
+                ImGui::BeginPlot("Angle Delta Sum", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
                 ImGui::PlotValues("absolute", abs_angle, N, 0xFF5555FF);
                 ImGui::PlotValues("relative", rel_angle, N, 0xFF55FF55);
                 ImGui::PlotValues("corrected", cor_angle, N, 0xFFFF5555);
@@ -4556,7 +4622,7 @@ static void save_workspace(ApplicationData* data, CString file) {
 void create_screenshot(ApplicationData* data) {
     ASSERT(data);
     Image img;
-    init_image(&img, data->fbo.width, data->fbo.height);
+    init_image(img, data->fbo.width, data->fbo.height);
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glReadBuffer(GL_BACK);
@@ -4936,27 +5002,6 @@ static ReferenceFrame* get_active_reference_frame(ApplicationData* data) {
         if (ref.active) return &ref;
     }
     return nullptr;
-}
-
-static void dump_reference_frame_eigenvalues_to_file(const ReferenceFrame& ref, CString filename) {
-    const auto ev = structure_tracking::get_eigen_values(ref.id);
-    if (!ev) {
-        LOG_ERROR("Could not read structure tracking id");
-        return;
-    }
-
-    FILE* file = fopen(filename.cstr(), "wb");
-    defer { fclose(file); };
-
-    if (!file) {
-        LOG_ERROR("Could not open file %s", filename.cstr());
-        return;
-    }
-
-    fprintf(file, "%-8s %-8s %-8s %-8s\n", "frame", "lamda1", "lamda2", "lamda3");
-    for (int32 i = 0; i < (int32)ev.size(); i++) {
-        fprintf(file, "%-8i %-8.3f %-8.3f %-8.3f\n", i, ev[i].x, ev[i].y, ev[i].z);
-    }
 }
 
 // #async
