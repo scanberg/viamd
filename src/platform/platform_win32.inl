@@ -26,7 +26,7 @@ DynamicArray<DirectoryEntry> list_directory(CString dir_path) {
     HANDLE h_find = INVALID_HANDLE_VALUE;
 
     char dir[MAX_PATH];
-    snprintf(dir, MAX_PATH, "%*.s\\*", dir_path.length(), dir_path.cstr());
+    snprintf(dir, MAX_PATH, "%*.s\\*", (int)dir_path.length(), dir_path.cstr());
 
     h_find = FindFirstFile(dir, &ffd);
     if (h_find == INVALID_HANDLE_VALUE) {
