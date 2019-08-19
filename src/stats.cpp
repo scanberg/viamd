@@ -334,7 +334,7 @@ bool extract_structures(StructureData* data, CString arg, const MoleculeStructur
     auto func = find_structure_func(cmd);
 
     if (!func) {
-        set_error_message(ctx.current_property, "Could not identify command: '%s'", make_tmp_str(cmd).cstr());
+        set_error_message(ctx.current_property, "Could not identify command: '%.s'", (int)cmd.length(), cmd.cstr());
         return false;
     }
 
