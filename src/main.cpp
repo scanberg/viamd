@@ -4673,7 +4673,7 @@ static void save_workspace(ApplicationData* data, CString file) {
 void create_screenshot(ApplicationData* data) {
     ASSERT(data);
     Image img;
-    init_image(img, data->fbo.width, data->fbo.height);
+    init_image(&img, data->fbo.width, data->fbo.height);
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glReadBuffer(GL_BACK);
