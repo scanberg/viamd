@@ -934,39 +934,39 @@ int main(int, char**) {
         // This needs to happen first (in imgui events) to enable docking of imgui windows
         // ImGui::CreateDockspace();
 
-        stats::async_update(data.dynamic, {(int32)data.time_filter.range.beg, (int32)data.time_filter.range.end},
-                            [](void* usr_data) {
-                                ApplicationData* data = (ApplicationData*)usr_data;
-                                if (data->density_volume.enabled) {
-                                    data->density_volume.volume_data_mutex.lock();
-                                    const Range<int32> range = {(int32)data->time_filter.range.beg, (int32)data->time_filter.range.end};
+        stats::async_update(
+            data.dynamic, {(int32)data.time_filter.range.beg, (int32)data.time_filter.range.end},
+            [](void* usr_data) {
+                ApplicationData* data = (ApplicationData*)usr_data;
+                if (data->density_volume.enabled) {
+                    data->density_volume.volume_data_mutex.lock();
+                    const Range<int32> range = {(int32)data->time_filter.range.beg, (int32)data->time_filter.range.end};
 
-                                    const ReferenceFrame* ref_frame = get_active_reference_frame(data);
-                                    if (ref_frame) {
-                                        const structure_tracking::ID id = ref_frame->id;
-                                        stats::compute_density_volume_with_basis(&data->density_volume.volume, data->dynamic.trajectory, range,
-                                                                                 [id, data](const vec4& world_pos, int32 frame_idx) -> vec4 {
-                                                                                     const auto com_data = structure_tracking::get_com(id);
-                                                                                     const auto rot_data = structure_tracking::get_rot_corrected(id);
-                                                                                     const auto box = data->dynamic.trajectory.frame_buffer[frame_idx].box;
+                    const ReferenceFrame* ref_frame = get_active_reference_frame(data);
+                    if (ref_frame) {
+                        const structure_tracking::ID id = ref_frame->id;
+                        stats::compute_density_volume_with_basis(&data->density_volume.volume, data->dynamic.trajectory, range, [id, data](const vec4& world_pos, int32 frame_idx) -> vec4 {
+                            const auto com_data = structure_tracking::get_com(id);
+                            const auto rot_data = structure_tracking::get_rot_corrected(id);
+                            const auto box = data->dynamic.trajectory.frame_buffer[frame_idx].box;
 
-                                                                                     const vec3 com = com_data[frame_idx];
-                                                                                     const vec3 half_box = box * vec3(0.5f);
-                                                                                     const mat4 R = math::mat4_cast(rot_data[frame_idx]);
-                                                                                     const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-com, 1));
-                                                                                     const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(half_box, 1));
-                                                                                     const mat4 M = T_box * math::transpose(R) * T_com;
+                            const vec3 com = com_data[frame_idx];
+                            const vec3 half_box = box * vec3(0.5f);
+                            const mat4 R = math::mat4_cast(rot_data[frame_idx]);
+                            const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-com, 1));
+                            const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(half_box, 1));
+                            const mat4 M = T_box * math::transpose(R) * T_com;
 
-                                                                                     return data->density_volume.world_to_texture_matrix * M * world_pos;
-                                                                                 });
-                                    } else {
-                                        stats::compute_density_volume(&data->density_volume.volume, data->dynamic.trajectory, range, data->density_volume.world_to_texture_matrix);
-                                    }
-                                    data->density_volume.volume_data_mutex.unlock();
-                                    data->density_volume.texture.dirty = true;
-                                }
-                            },
-                            &data);
+                            return data->density_volume.world_to_texture_matrix * M * world_pos;
+                        });
+                    } else {
+                        stats::compute_density_volume(&data->density_volume.volume, data->dynamic.trajectory, range, data->density_volume.world_to_texture_matrix);
+                    }
+                    data->density_volume.volume_data_mutex.unlock();
+                    data->density_volume.texture.dirty = true;
+                }
+            },
+            &data);
 
         // If gpu representation of volume is not up to date, upload data
         if (data.density_volume.texture.dirty) {
@@ -1664,8 +1664,6 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 								math::nlerp(rel_data[next_frame_2], abs_data[next_frame_2], ref.rel_abs_blend) };
             // clang-format on
 #endif
-
-
 
             mat4 R;
             switch (mode) {
@@ -2840,7 +2838,7 @@ static void draw_reference_frames_window(ApplicationData* data) {
                 }
                 ImGui::EndPlot();
             }
-            #if 0
+#if 0
             {
                 const auto ev_data = structure_tracking::get_eigen_values(ref.id);
                 float* tmp_data = (float*)TMP_MALLOC(ev_data.size_in_bytes());
@@ -2866,7 +2864,7 @@ static void draw_reference_frames_window(ApplicationData* data) {
                 }
                 ImGui::EndPlot();
             }
-            #endif
+#endif
             {
                 const auto abs_data = structure_tracking::get_rot_absolute(ref.id);
                 const auto rel_data = structure_tracking::get_rot_relative(ref.id);
@@ -3264,12 +3262,16 @@ static void draw_timeline_window(ApplicationData* data) {
             ImGui::SameLine();
             ImGui::SliderFloat("Window Extent", &data->time_filter.window_extent, 1.f, num_frames);
         }
-        ImGui::BeginChild("Scroll Region", ImVec2(0, 0), true, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_HorizontalScrollbar);
+        const float width = ImGui::GetContentRegionAvail().x - ImGui::GetStyle().WindowPadding.x * 2.0f;
+        ImGui::SetNextWindowContentWidth(width * zoom);
+        ImGui::BeginChild("Scroll Region", ImVec2(0.0f, 0.0f), true, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_HorizontalScrollbar);
 
         const Range<float> frame_range = {0, num_frames - 1};
-        auto old_range = data->time_filter.range;
+        const Range<float> old_range = data->time_filter.range;
 
-        ImGui::PushItemWidth(ImGui::GetWindowContentRegionWidth() * zoom);
+        const float cont_min_x = ImGui::GetWindowContentRegionMin().x + ImGui::GetWindowPos().x;
+
+        ImGui::PushItemWidth(-1.0f);
         if (ImGui::RangeSliderFloat("###selection_range", &data->time_filter.range.beg, &data->time_filter.range.end, frame_range.x, frame_range.y)) {
             if (data->time_filter.dynamic_window) {
                 if (data->time_filter.range.x != old_range.x && data->time_filter.range.y != old_range.y) {
@@ -3310,9 +3312,8 @@ static void draw_timeline_window(ApplicationData* data) {
                 display_range.x -= 1.f;
                 display_range.y += 1.f;
             }
-            // float32 val = (float)time;
-            const ImGuiID id = ImGui::GetID(prop_name.cstr());
 
+            const ImGuiID id = ImGui::GetID(prop_name.cstr());
             ImGui::PushID(i);
 
             ImGui::BeginPlot(prop_name.cstr(), ImVec2(0, plot_height), ImVec2(frame_range.x, frame_range.y), ImVec2(display_range.x, display_range.y), ImGui::LinePlotFlags_AxisX);
@@ -3338,14 +3339,13 @@ static void draw_timeline_window(ApplicationData* data) {
             }
 
             if (ImGui::GetActiveID() == id) {
+                const float t = ImClamp((ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x), 0.0f, 1.0f);
                 if (ImGui::GetIO().MouseClicked[0] && ImGui::GetIO().KeyCtrl) {
-                    const float t = (ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
                     selection_start = ImLerp(frame_range.x, frame_range.y, t);
                     data->time_filter.range.x = selection_start;
                     data->time_filter.range.y = selection_start;
                     is_selecting = true;
                 } else if (is_selecting) {
-                    const float t = (ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
                     const float v = ImLerp(frame_range.x, frame_range.y, t);
                     if (v < data->time_filter.range.x) {
                         data->time_filter.range.x = v;
@@ -3359,7 +3359,6 @@ static void draw_timeline_window(ApplicationData* data) {
                         data->time_filter.range.y = v;
                     }
                 } else if (ImGui::GetIO().MouseDown[0]) {
-                    float32 t = ImClamp((ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x), 0.f, 1.f);
                     data->playback.time = ImLerp(frame_range.x, frame_range.y, t);
                 }
 
@@ -3425,16 +3424,22 @@ static void draw_timeline_window(ApplicationData* data) {
             stats::set_all_property_flags(false, true);
         }
 
-        if (ImGui::IsWindowHovered() && ImGui::GetIO().MouseWheel != 0.f && ImGui::GetIO().KeyCtrl) {
-            constexpr float32 ZOOM_SCL = 0.24f;
-            const float32 pre_coord = ImGui::GetScrollX() + (ImGui::GetIO().MousePos.x - ImGui::GetWindowPos().x) * zoom;
-            zoom = math::clamp(zoom + ZOOM_SCL * ImGui::GetIO().MouseWheel, 1.f, 100.f);
-            const float32 post_coord = ImGui::GetScrollX() + (ImGui::GetIO().MousePos.x - ImGui::GetWindowPos().x) * zoom;
-            const float32 delta = pre_coord - post_coord;
-            ImGui::SetScrollX(ImGui::GetScrollX() - delta);
-        }
+        const float x = (ImGui::GetIO().MousePos.x - cont_min_x);
+        if (ImGui::IsWindowHovered()) {
+            const float mouse_wheel_delta = ImGui::GetIO().MouseWheel;
+            if (ImGui::GetIO().KeyCtrl && mouse_wheel_delta != 0.f) {
+                constexpr float ZOOM_SCL = 0.1f;
+                const float old_zoom = zoom;
+                const float new_zoom = math::clamp(zoom + zoom * ZOOM_SCL * mouse_wheel_delta, 1.f, 100.f);
+                const float delta_x = (new_zoom / old_zoom) * x - x;
+                ImGui::SetScrollX(ImGui::GetScrollX() + delta_x);
+                zoom = new_zoom;
+            }
 
-        ImGui::EndChild();
+            if (ImGui::GetIO().KeyShift && ImGui::GetIO().MouseDown[0] && ImGui::GetIO().MouseDelta.x != 0.0f) {
+                ImGui::SetScrollX(ImGui::GetScrollX() - ImGui::GetIO().MouseDelta.x);
+            }
+        }ImGui::EndChild();
     }
 
     ImGui::End();
