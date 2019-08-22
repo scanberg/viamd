@@ -984,7 +984,7 @@ int main(int, char**) {
             }
         }
         if (data.density_volume.tf.dirty) {
-            if (strnlen(data.density_volume.tf.path.cstr(), data.density_volume.tf.path.size()) > 0) {
+            if (data.density_volume.tf.path.length() > 0) {
                 volume::create_tf_texture(&data.density_volume.tf.id, &data.density_volume.tf.width, data.density_volume.tf.path);
             } else {
                 volume::create_tf_texture(&data.density_volume.tf.id, &data.density_volume.tf.width, VIAMD_IMAGE_DIR "/tf/default.png");
@@ -2347,7 +2347,7 @@ if (data->selection.op_mode == SelectionOperator::And) {
                     auto& sel = data->selection.stored_selections[i];
                     // const float32 item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
                     StringBuffer<128> name;
-                    snprintf(name.cstr(), name.size(), "%s###ID", sel.name.cstr());
+                    snprintf(name.cstr(), name.capacity(), "%s###ID", sel.name.cstr());
 
                     ImGui::PushID(i);
                     if (ImGui::CollapsingHeader(name.cstr())) {
@@ -2704,7 +2704,7 @@ static void draw_representations_window(ApplicationData* data) {
         auto& rep = data->representations.buffer[i];
         const float32 item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
         StringBuffer<128> name;
-        snprintf(name.cstr(), name.size(), "%s###ID", rep.name.buffer);
+        snprintf(name.cstr(), name.capacity(), "%s###ID", rep.name.buffer);
 
         ImGui::PushID(i);
         if (ImGui::CollapsingHeader(name.cstr())) {
@@ -2783,7 +2783,7 @@ static void draw_reference_frames_window(ApplicationData* data) {
         auto& ref = data->reference_frame.frames[i];
         const float32 item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
         StringBuffer<128> name;
-        snprintf(name.cstr(), name.size(), "%s###ID", ref.name.buffer);
+        snprintf(name.cstr(), name.capacity(), "%s###ID", ref.name.buffer);
 
         ImGui::PushID(i);
         if (ImGui::CollapsingHeader(name.cstr())) {
@@ -2869,7 +2869,7 @@ static void draw_reference_frames_window(ApplicationData* data) {
                 const auto abs_data = structure_tracking::get_rot_absolute(ref.id);
                 const auto rel_data = structure_tracking::get_rot_relative(ref.id);
                 const auto cor_data = structure_tracking::get_rot_corrected(ref.id);
-                const int N = abs_data.size();
+                const int32 N = (int32)abs_data.size();
 
                 ASSERT(N == rel_data.size());
                 ASSERT(N == cor_data.size());
@@ -2990,7 +2990,7 @@ static void draw_property_window(ApplicationData* data) {
 
         ImGui::PushItemWidth(-1);
         if (!prop->valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-        if (ImGui::InputText("##name", prop->name_buf.cstr(), prop->name_buf.size(), ImGuiInputTextFlags_EnterReturnsTrue)) {
+        if (ImGui::InputText("##name", prop->name_buf.cstr(), prop->name_buf.capacity(), ImGuiInputTextFlags_EnterReturnsTrue)) {
             prop->data_dirty = true;
             // compute_stats = true;
         }
@@ -3071,7 +3071,7 @@ static void draw_property_window(ApplicationData* data) {
 
         ImGui::PushItemWidth(-1);
         if (!prop->valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-        if (ImGui::InputText("##args", prop->args_buf.cstr(), prop->args_buf.size(), ImGuiInputTextFlags_EnterReturnsTrue)) {
+        if (ImGui::InputText("##args", prop->args_buf.cstr(), prop->args_buf.capacity(), ImGuiInputTextFlags_EnterReturnsTrue)) {
             prop->data_dirty = true;
         }
         if (!prop->valid) ImGui::PopStyleColor();
@@ -4500,7 +4500,7 @@ static CString get_color_mapping_name(ColorMapping mapping) {
 
 static vec4 to_vec4(CString txt, const vec4& default_val = vec4(1)) {
     vec4 res = default_val;
-    auto tokens = ctokenize(txt, ",");
+    DynamicArray<CString> tokens = tokenize(txt, ",");
     int32 count = (int32)tokens.size() < 4 ? (int32)tokens.size() : 4;
     for (int i = 0; i < count; i++) {
         res[i] = to_float(tokens[i]);

@@ -334,7 +334,7 @@ bool extract_structures(StructureData* data, CString arg, const MoleculeStructur
     auto func = find_structure_func(cmd);
 
     if (!func) {
-        set_error_message(ctx.current_property, "Could not identify command: '%s'", make_tmp_str(cmd).cstr());
+        set_error_message(ctx.current_property, "Could not identify command: '%.s'", cmd.length(), cmd.cstr());
         return false;
     }
 
@@ -665,8 +665,8 @@ static inline float multi_distance(const float* a_x, const float* a_y, const flo
                 const float x = dist[i] - mean;
                 *variance += x * x;
             }
+            *variance = *variance / count;
         }
-        *variance = *variance / count;
         return mean;
     }
 }
@@ -706,9 +706,9 @@ static inline float multi_angle(const float* a_x, const float* a_y, const float*
                 const float x = angle[i] - mean;
                 *variance += x * x;
             }
+            *variance = *variance / count;
         }
 
-        *variance = *variance / count;
         return mean;
     }
 }
@@ -1073,7 +1073,7 @@ static bool compute_expression(Property* prop, const Array<CString> args, const 
     }
 
     // Concatenate all arguments
-    auto expr_str = make_tmp_str(CString(args.front().beg(), args.back().end()));
+    StringBuffer<1024> expr_str = CString(args.front().beg(), args.back().end());
 
     if (!expr_str) {
         return false;
