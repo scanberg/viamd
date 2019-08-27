@@ -1306,7 +1306,7 @@ int main(int, char**) {
             PUSH_GPU_SECTION("Volume Rendering")
             const float32 scl = 1.f * data.density_volume.density_scale / (data.density_volume.texture.max_value > 0.f ? data.density_volume.texture.max_value : 1.f);
             volume::render_volume_texture(data.density_volume.texture.id, data.density_volume.tf.id, data.fbo.deferred.depth, data.density_volume.texture_to_model_matrix,
-                                          data.density_volume.model_to_world_matrix, data.view.param.matrix.view, data.view.param.matrix.proj, data.density_volume.color, scl,
+                                          data.density_volume.model_to_world_matrix, data.view.param.matrix.view, data.view.param.matrix.proj, scl,
                                           data.density_volume.tf.alpha_scale);
             POP_GPU_SECTION()
             glDisable(GL_BLEND);
