@@ -828,6 +828,9 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
     s->frame_data.determinant.abs[0] = 1.0f;
     s->frame_data.determinant.rel[0] = 1.0f;
 
+    mat3 M = mat3(1);
+    mat3 prv_M = mat3(1);
+
     for (int32 i = 1; i < num_frames; i++) {
         // Copy previous frame data
         memcpy(prv_x, cur_x, num_points * sizeof(float) * 3);
@@ -846,6 +849,16 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
 
         const mat3 abs_rot = extract_rotation(abs_mat);
         const mat3 rel_rot = extract_rotation(rel_mat);
+
+        prv_M = M;
+        M = abs_rot;
+
+        const mat3 D = M * math::inverse(prv_M);
+        const float det = math::determinant(D);
+
+        printf("frame: %i\n", i);
+        printf("M:\n%1.3f %1.3f %1.3f\n%1.3f %1.3f %1.3f\n%1.3f %1.3f %1.3f\n", D[0][0], D[1][0], D[2][0], D[0][1], D[1][1], D[2][1], D[0][2], D[1][2], D[2][2]);
+        printf("det: %.2f\n\n", det);
 
         const quat q_del = math::quat_cast(rel_rot);
         const quat q_abs = math::quat_cast(abs_rot);

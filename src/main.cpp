@@ -250,6 +250,7 @@ struct ReferenceFrame {
 
     // For debugging
     mat4 basis = {};
+    mat4 world_to_reference = {};
 };
 
 struct ThreadSyncData {
@@ -388,8 +389,8 @@ struct ApplicationData {
         } background;
 
         struct {
-            bool enabled = false;
-            float32 intensity = 3.0f;
+            bool enabled = true;
+            float32 intensity = 6.0f;
             float32 radius = 6.0f;
             float32 bias = 0.1f;
         } ssao;
@@ -704,6 +705,7 @@ static void reset_reference_frame(ApplicationData* data);
 static void clear_reference_frames(ApplicationData* data);
 static void update_reference_frame(ApplicationData* data, ReferenceFrame* ref);
 static ReferenceFrame* get_active_reference_frame(ApplicationData* data);
+static Array<const quat> get_rotation_data(const ReferenceFrame& ref);
 
 static void create_volume(ApplicationData* data);
 
@@ -942,12 +944,27 @@ int main(int, char**) {
                     data->density_volume.volume_data_mutex.lock();
                     const Range<int32> range = {(int32)data->time_filter.range.beg, (int32)data->time_filter.range.end};
 
-                    const ReferenceFrame* ref_frame = get_active_reference_frame(data);
-                    if (ref_frame) {
-                        const structure_tracking::ID id = ref_frame->id;
-                        stats::compute_density_volume_with_basis(&data->density_volume.volume, data->dynamic.trajectory, range, [id, data](const vec4& world_pos, int32 frame_idx) -> vec4 {
-                            const auto com_data = structure_tracking::get_com(id);
-                            const auto rot_data = structure_tracking::get_rot_corrected(id);
+                    const ReferenceFrame* ref = get_active_reference_frame(data);
+                    if (ref) {
+                        const structure_tracking::ID id = ref->id;
+                        stats::compute_density_volume_with_basis(&data->density_volume.volume, data->dynamic.trajectory, range, [ref, data](const vec4& world_pos, int32 frame_idx) -> vec4 {
+                            const auto com_data = structure_tracking::get_com(ref->id);
+                            Array<const quat> rot_data;
+                            switch (ref->tracking_mode) {
+                                case TrackingMode::Absolute:
+                                    rot_data = structure_tracking::get_rot_absolute(ref->id);
+                                    break;
+                                case TrackingMode::Relative:
+                                    rot_data = structure_tracking::get_rot_relative(ref->id);
+                                    break;
+                                case TrackingMode::Corrected:
+                                    rot_data = structure_tracking::get_rot_corrected(ref->id);
+                                    break;
+                                default:
+                                    ASSERT(false);
+                                    break;
+                            }
+
                             const auto box = data->dynamic.trajectory.frame_buffer[frame_idx].box;
 
                             const vec3 com = com_data[frame_idx];
@@ -1229,8 +1246,20 @@ int main(int, char**) {
 
                 // SIMULATION BOX
                 if (data.simulation_box.enabled && data.dynamic.trajectory) {
-                    auto frame = get_trajectory_frame(data.dynamic.trajectory, data.playback.frame);
-                    immediate::draw_aabb_wireframe(frame.box * vec3(0.0f), frame.box * vec3(1.0f), math::convert_color(data.simulation_box.color));
+                    const mat3 box = get_trajectory_frame(data.dynamic.trajectory, data.playback.frame).box;
+                    const vec3 min_box = box * vec3(0.0f);
+                    const vec3 max_box = box * vec3(1.0f);
+
+                    const ReferenceFrame* ref = get_active_reference_frame(&data);
+
+                    if (ref) {
+                        immediate::draw_box_wireframe(min_box, max_box, math::inverse(ref->world_to_reference), math::convert_color(data.simulation_box.color));
+                        immediate::draw_box_wireframe(min_box, max_box, immediate::COLOR_GREEN);
+
+                    } else {
+                        immediate::draw_box_wireframe(min_box, max_box, ref->world_to_reference, immediate::COLOR_GREEN);
+                        immediate::draw_box_wireframe(min_box, max_box, math::convert_color(data.simulation_box.color));
+                    }
                 }
 
                 immediate::flush();
@@ -1306,8 +1335,7 @@ int main(int, char**) {
             PUSH_GPU_SECTION("Volume Rendering")
             const float32 scl = 1.f * data.density_volume.density_scale / (data.density_volume.texture.max_value > 0.f ? data.density_volume.texture.max_value : 1.f);
             volume::render_volume_texture(data.density_volume.texture.id, data.density_volume.tf.id, data.fbo.deferred.depth, data.density_volume.texture_to_model_matrix,
-                                          data.density_volume.model_to_world_matrix, data.view.param.matrix.view, data.view.param.matrix.proj, scl,
-                                          data.density_volume.tf.alpha_scale);
+                                          data.density_volume.model_to_world_matrix, data.view.param.matrix.view, data.view.param.matrix.proj, scl, data.density_volume.tf.alpha_scale);
             POP_GPU_SECTION()
             glDisable(GL_BLEND);
         }
@@ -1630,7 +1658,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             const vec3 current_com = compute_com(current_x, current_y, current_z, weight, masked_count);
             const vec3 box_c = box * vec3(0.5f);
 
-#if 0
+#if 1
             Array<const quat> rot_data;
             switch (ref.tracking_mode) {
                 case TrackingMode::Absolute:
@@ -1683,6 +1711,8 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             const mat4 R_inv = math::transpose(R);
             const mat4 T_ori = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-current_com, 1));
             const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(box_c, 1));
+
+            ref.world_to_reference = math::inverse(T_box * R_inv * T_ori);
 
             if (ref.active) {
                 ref.basis = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {box_c, 1}};
@@ -3439,7 +3469,8 @@ static void draw_timeline_window(ApplicationData* data) {
             if (ImGui::GetIO().KeyShift && ImGui::GetIO().MouseDown[0] && ImGui::GetIO().MouseDelta.x != 0.0f) {
                 ImGui::SetScrollX(ImGui::GetScrollX() - ImGui::GetIO().MouseDelta.x);
             }
-        }ImGui::EndChild();
+        }
+        ImGui::EndChild();
     }
 
     ImGui::End();
@@ -5058,6 +5089,25 @@ static ReferenceFrame* get_active_reference_frame(ApplicationData* data) {
         if (ref.active) return &ref;
     }
     return nullptr;
+}
+
+static Array<const quat> get_rotation_data(const ReferenceFrame& ref) {
+    Array<const quat> rot_data;
+    switch (ref.tracking_mode) {
+        case TrackingMode::Absolute:
+            rot_data = structure_tracking::get_rot_absolute(ref.id);
+            break;
+        case TrackingMode::Relative:
+            rot_data = structure_tracking::get_rot_relative(ref.id);
+            break;
+        case TrackingMode::Corrected:
+            rot_data = structure_tracking::get_rot_corrected(ref.id);
+            break;
+        default:
+            ASSERT(false);
+            break;
+    }
+    return rot_data;
 }
 
 // #async
