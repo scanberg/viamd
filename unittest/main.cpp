@@ -111,10 +111,10 @@ TEST_CASE("Array", "[Array]") {
     static constexpr int data[4] = {1, 2, 4, 5};
     constexpr Array<const int> arr(data);
     STATIC_ASSERT(arr.size() == 4, "Expected length to be 4");
-	STATIC_ASSERT(arr[2] == 4, "Expected data[2] to be 4");
+    STATIC_ASSERT(arr[2] == 4, "Expected data[2] to be 4");
 
     constexpr CString cstr = "Cool";
-	STATIC_ASSERT(cstr.size() == 4, "Expected length to be 4");
+    STATIC_ASSERT(cstr.size() == 4, "Expected length to be 4");
 }
 
 TEST_CASE("Testing DynamicArray", "[DynamicArray]") {
@@ -131,7 +131,7 @@ TEST_CASE("Testing DynamicArray", "[DynamicArray]") {
 
     da1 = func();
 
-	REQUIRE(da1.size() == 3);
+    REQUIRE(da1.size() == 3);
 }
 
 TEST_CASE("Molecule Utils", "[molecule_utils]") {
@@ -191,6 +191,28 @@ TEST_CASE("Molecule Utils", "[molecule_utils]") {
         REQUIRE(ref.x == Approx(com.x));
         REQUIRE(ref.y == Approx(com.y));
         REQUIRE(ref.z == Approx(com.z));
+    }
+
+    SECTION("COM Periodic") {
+        MoleculeStructure molecule;
+        init_molecule_structure(&molecule, 10, 9, 1, 1, 1);
+        defer { free_molecule_structure(&molecule); };
+        for (int i = 0; i < 10; i++) {
+            if (i < 5) {
+                molecule.atom.position.x[i] = 5.0f + i * 1.0f;
+            } else {
+                molecule.atom.position.x[i] = -5.0f + i * 1.0f;
+            }
+
+            molecule.atom.position.y[i] = 5.0f;
+            molecule.atom.position.z[i] = 5.0f;
+            molecule.atom.mass[i] = 1.0f;
+        }
+        molecule.sequences[0] = {{0, 1}, {0, 10}};
+
+        const mat3 box = {10, 0, 0, 0, 10, 0, 0, 0, 10};
+        const vec3 com = compute_com_periodic(molecule.atom.position.x, molecule.atom.position.y, molecule.atom.position.z, molecule.atom.mass, molecule.atom.count, box);
+        printf("com: %.2f %.2f %.2f", com.x, com.y, com.z);
     }
 
     SECTION("TRANSFORM") {
