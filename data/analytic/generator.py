@@ -4,8 +4,8 @@ file = open("test_4_points.pdb", "w")
 
 file.write("CRYST1   10.000   10.000   10.000  90.00  90.00  90.00    \n")
 
-frames = 1000
-dt = 0.1
+frames = 2000
+dt = 0.4
 for i in range(0, frames):
     file.write("MODEL     %i\n" % (i))
     for j in range(4):
