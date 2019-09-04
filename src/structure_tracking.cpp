@@ -828,9 +828,6 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
     s->frame_data.determinant.abs[0] = 1.0f;
     s->frame_data.determinant.rel[0] = 1.0f;
 
-    mat3 M = mat3(1);
-    mat3 prv_M = mat3(1);
-
     for (int32 i = 1; i < num_frames; i++) {
         // Copy previous frame data
         memcpy(prv_x, cur_x, num_points * sizeof(float) * 3);
@@ -850,24 +847,19 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
         const mat3 abs_rot = extract_rotation(abs_mat);
         const mat3 rel_rot = extract_rotation(rel_mat);
 
-        prv_M = M;
-        M = abs_rot;
-
-        const mat3 D = M * math::inverse(prv_M);
-        const float det = math::determinant(D);
-
-        printf("frame: %i\n", i);
-        printf("M:\n%1.3f %1.3f %1.3f\n%1.3f %1.3f %1.3f\n%1.3f %1.3f %1.3f\n", D[0][0], D[1][0], D[2][0], D[0][1], D[1][1], D[2][1], D[0][2], D[1][2], D[2][2]);
-        printf("det: %.2f\n\n", det);
-
-        const quat q_del = math::quat_cast(rel_rot);
-        const quat q_abs = math::quat_cast(abs_rot);
+        const quat q_del = math::normalize(math::quat_cast(rel_rot));
+        quat q_abs = math::normalize(math::quat_cast(abs_rot));
 
         q_relative = math::normalize(q_relative * q_del);
+        quat q_rel = math::conjugate(q_relative);
 
         const float abs_det = math::determinant(abs_mat / cov_mat);
         const float rel_det = math::determinant(rel_mat / cov_mat);
-        const quat q_rel = math::conjugate(q_relative);
+
+        // Make sure we take shortest path from previous orientation
+        q_abs = math::dot(s->frame_data.transform.rotation.absolute[i - 1], q_abs) > 0.0f ? q_abs : -q_abs;
+        q_rel = math::dot(s->frame_data.transform.rotation.relative[i - 1], q_rel) > 0.0f ? q_rel : -q_rel;
+
 #if 0
         memcpy(cor_x, ref_x, num_points * sizeof(float) * 3);
         cor_com = ref_com;
@@ -894,14 +886,40 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
 
         q_corrected = math::normalize(q_err * q_corrected);
         const quat q_cor = q_corrected;
-#else
-        q_corrected = math::nlerp(q_corrected * q_del, math::conjugate(q_abs), 0.5f);
+#elif 0
+        // Static Slerp 80% relative, 20% absolute
+        q_corrected = math::normalize(math::slerp(q_corrected * q_del, math::conjugate(q_abs), 0.2f));
         const quat q_cor = math::conjugate(q_corrected);
-#endif
+#elif 1
+        // Dynamic Slerp
+        // absolute contributes with a factor based on the cosine of the angle between the absolute and predicted orientation
+        const quat q_pred = q_corrected * q_del;
+        const quat q_ref = math::conjugate(q_abs);
+        const float d = math::abs(math::dot(q_pred, q_ref));
+        const float t = math::pow(d, 16.0f);
+        q_corrected = math::normalize(math::slerp(q_pred, q_ref, t));
+        quat q_cor = math::conjugate(q_corrected);
+        q_cor = math::dot(s->frame_data.transform.rotation.corrected[i - 1], q_cor) > 0.0f ? q_cor : -q_cor;
 
-        s->frame_data.transform.rotation.absolute[i] = math::dot(s->frame_data.transform.rotation.absolute[i - 1], q_abs) > 0.0f ? q_abs : -q_abs;
-        s->frame_data.transform.rotation.relative[i] = math::dot(s->frame_data.transform.rotation.relative[i - 1], q_rel) > 0.0f ? q_rel : -q_rel;
-        s->frame_data.transform.rotation.corrected[i] = math::dot(s->frame_data.transform.rotation.corrected[i - 1], q_cor) > 0.0f ? q_cor : -q_cor;
+#else
+        // Always go with Shortest path (absolute or prediction)
+        // Result -> Bad
+        const quat q_pred = q_corrected * q_del;
+        const float d_abs = math::dot(q_corrected, q_abs);
+        const float d_pred = math::dot(q_corrected, q_pred);
+
+        if (math::abs(d_abs) > math::abs(d_pred)) {
+            const float sign = math::sign(d_abs);
+            q_corrected = math::normalize(sign * q_abs);
+        } else {
+            const float sign = math::sign(d_pred);
+            q_corrected = math::normalize(sign * q_pred);
+        }
+        const quat q_cor = q_corrected;
+#endif
+        s->frame_data.transform.rotation.absolute[i] = q_abs;
+        s->frame_data.transform.rotation.relative[i] = q_rel;
+        s->frame_data.transform.rotation.corrected[i] = q_cor;
         compute_eigen(cov_mat, (vec3(&)[3])s->frame_data.eigen.vector[i], (float(&)[3])s->frame_data.eigen.value[i]);
         s->frame_data.transform.com[i] = cur_com;
         s->frame_data.determinant.abs[i] = abs_det;
