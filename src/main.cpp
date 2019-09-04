@@ -1257,7 +1257,6 @@ int main(int, char**) {
                         immediate::draw_box_wireframe(min_box, max_box, immediate::COLOR_GREEN);
 
                     } else {
-                        immediate::draw_box_wireframe(min_box, max_box, ref->world_to_reference, immediate::COLOR_GREEN);
                         immediate::draw_box_wireframe(min_box, max_box, math::convert_color(data.simulation_box.color));
                     }
                 }
@@ -1731,7 +1730,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 
     const float dt = 1.0f;
     if (pbc) {
-        // apply_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.mass, mol.sequences, box);
+        //apply_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.mass, mol.sequences, box);
         compute_velocities_pbc(mol.atom.velocity.x, mol.atom.velocity.y, mol.atom.velocity.z, old_pos_x, old_pos_y, old_pos_z, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z,
                                mol.atom.count, dt, box);
     } else {
