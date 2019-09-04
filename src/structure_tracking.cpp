@@ -21,7 +21,7 @@ struct Structure {
             struct {
                 quat* absolute = nullptr;
                 quat* relative = nullptr;
-                quat* corrected = nullptr;
+                quat* hybrid = nullptr;
             } rotation;
         } transform;
 
@@ -30,10 +30,6 @@ struct Structure {
             vec3* value = nullptr;
         } eigen;
 
-        struct {
-            float* abs = nullptr;
-            float* rel = nullptr;
-        } determinant;
     } frame_data;
 };
 
@@ -340,36 +336,6 @@ static mat3 compute_mass_weighted_covariance_matrix(const float* x, const float*
 #define ARGS(M) M[0][0], M[1][0], M[2][0], M[0][1], M[1][1], M[2][1], M[0][2], M[1][2], M[2][2]
 
 static void compute_eigen(const mat3& M, vec3 (&vectors)[3], float (&value)[3]) {
-    /*
-    Eigen::Matrix3f A = Eigen::Matrix3f({
-                                    {M[0][0], M[1][0], M[2][0]},
-                                    {M[0][1], M[1][1], M[2][1]},
-                                    {M[0][2], M[1][2], M[2][2]} });
-
-    Eigen::EigenSolver<Eigen::Matrix3f> es(A);
-
-    const auto swap = [](int& x, int& y) {
-            int tmp = x;
-            x = y;
-            y = tmp;
-    };
-
-    const auto& e_vec = es.eigenvectors().real();
-    const auto& e_val = es.eigenvalues().real();
-
-    int l0 = 0, l1 = 1, l2 = 2;
-    if (e_val[l0] < e_val[l1]) swap(l0, l1);
-    if (e_val[l1] < e_val[l2]) swap(l1, l2);
-    if (e_val[l0] < e_val[l1]) swap(l0, l1);
-
-    vectors[0] = { e_vec(0, l0), e_vec(1, l0), e_vec(2, l0) };
-    vectors[1] = { e_vec(0, l1), e_vec(1, l1), e_vec(2, l1) };
-    vectors[2] = { e_vec(0, l2), e_vec(1, l2), e_vec(2, l2) };
-    values[0]  = e_val[l0] / e_val[l0];
-    values[1]  = e_val[l1] / e_val[l0];
-    values[2]  = e_val[l2] / e_val[l0];
-    */
-
     mat3 U, S, V;
     svd(ARGS(M), ARGS(U), ARGS(S), ARGS(V));
     float max_val = math::max(S[0][0], math::max(S[1][1], S[2][2]));
@@ -551,12 +517,10 @@ static void free_structure_data(Structure* s) {
     ASSERT(s);
     if (s->frame_data.transform.rotation.absolute) FREE(s->frame_data.transform.rotation.absolute);
     if (s->frame_data.transform.rotation.relative) FREE(s->frame_data.transform.rotation.relative);
-    if (s->frame_data.transform.rotation.corrected) FREE(s->frame_data.transform.rotation.corrected);
+    if (s->frame_data.transform.rotation.hybrid) FREE(s->frame_data.transform.rotation.hybrid);
     if (s->frame_data.transform.com) FREE(s->frame_data.transform.com);
     if (s->frame_data.eigen.vector) FREE(s->frame_data.eigen.vector);
     if (s->frame_data.eigen.value) FREE(s->frame_data.eigen.value);
-    if (s->frame_data.determinant.abs) FREE(s->frame_data.determinant.abs);
-    if (s->frame_data.determinant.rel) FREE(s->frame_data.determinant.rel);
 }
 
 static void init_structure_data(Structure* s, ID id, int32 num_frames) {
@@ -567,12 +531,10 @@ static void init_structure_data(Structure* s, ID id, int32 num_frames) {
 
     s->frame_data.transform.rotation.absolute = (quat*)MALLOC(sizeof(quat) * num_frames);
     s->frame_data.transform.rotation.relative = (quat*)MALLOC(sizeof(quat) * num_frames);
-    s->frame_data.transform.rotation.corrected = (quat*)MALLOC(sizeof(quat) * num_frames);
+    s->frame_data.transform.rotation.hybrid = (quat*)MALLOC(sizeof(quat) * num_frames);
     s->frame_data.transform.com = (vec3*)MALLOC(sizeof(vec3) * num_frames);
     s->frame_data.eigen.vector = (mat3*)MALLOC(sizeof(mat3) * num_frames);
     s->frame_data.eigen.value = (vec3*)MALLOC(sizeof(vec3) * num_frames);
-    s->frame_data.determinant.abs = (float*)MALLOC(sizeof(float) * num_frames);
-    s->frame_data.determinant.rel = (float*)MALLOC(sizeof(float) * num_frames);
 }
 
 static Structure* find_structure(ID id) {
@@ -809,7 +771,7 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
     vec3 cur_com = {0, 0, 0};
 
     quat q_relative = {1, 0, 0, 0};
-    quat q_corrected = {1, 0, 0, 0};
+    quat q_hybrid = {1, 0, 0, 0};
 
     const mat3 ref_cov_mat = compute_mass_weighted_covariance_matrix(ref_x, ref_y, ref_z, mass, num_points, ref_com);
     mat3 ref_eigen_vectors;
@@ -821,12 +783,10 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
     // Set first frame explicitly
     s->frame_data.transform.rotation.absolute[0] = {1, 0, 0, 0};
     s->frame_data.transform.rotation.relative[0] = {1, 0, 0, 0};
-    s->frame_data.transform.rotation.corrected[0] = {1, 0, 0, 0};
+    s->frame_data.transform.rotation.hybrid[0] = {1, 0, 0, 0};
     s->frame_data.transform.com[0] = ref_com;
     s->frame_data.eigen.vector[0] = ref_eigen_vectors;
     s->frame_data.eigen.value[0] = ref_eigen_values;
-    s->frame_data.determinant.abs[0] = 1.0f;
-    s->frame_data.determinant.rel[0] = 1.0f;
 
     for (int32 i = 1; i < num_frames; i++) {
         // Copy previous frame data
@@ -853,9 +813,6 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
         q_relative = math::normalize(q_relative * q_del);
         quat q_rel = math::conjugate(q_relative);
 
-        const float abs_det = math::determinant(abs_mat / cov_mat);
-        const float rel_det = math::determinant(rel_mat / cov_mat);
-
         // Make sure we take shortest path from previous orientation
         q_abs = math::dot(s->frame_data.transform.rotation.absolute[i - 1], q_abs) > 0.0f ? q_abs : -q_abs;
         q_rel = math::dot(s->frame_data.transform.rotation.relative[i - 1], q_rel) > 0.0f ? q_rel : -q_rel;
@@ -865,13 +822,13 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
         cor_com = ref_com;
 
         {
-            const quat old_q = q_corrected;
-            const quat new_q = q_corrected * q_del;
-            q_corrected = math::dot(old_q, new_q) < 0.0f ? -new_q : new_q;
+            const quat old_q = q_hybrid;
+            const quat new_q = q_hybrid * q_del;
+            q_hybrid = math::dot(old_q, new_q) < 0.0f ? -new_q : new_q;
         }
 
         {
-            const mat4 R = math::mat4_cast(q_corrected);
+            const mat4 R = math::mat4_cast(q_hybrid);
             const mat4 T1 = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {-cor_com, 1}};
             const mat4 T2 = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {cor_com, 1}};
             const mat4 M = T2 * R * T1;
@@ -884,46 +841,47 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
 
         printf("err angle: %3.3f\n", math::rad_to_deg(math::angle(q_err)));
 
-        q_corrected = math::normalize(q_err * q_corrected);
-        const quat q_cor = q_corrected;
+        q_hybrid = math::normalize(q_err * q_hybrid);
+        const quat q_cor = q_hybrid;
 #elif 0
         // Static Slerp 80% relative, 20% absolute
-        q_corrected = math::normalize(math::slerp(q_corrected * q_del, math::conjugate(q_abs), 0.2f));
-        const quat q_cor = math::conjugate(q_corrected);
+        q_hybrid = math::normalize(math::slerp(q_hybrid * q_del, math::conjugate(q_abs), 0.2f));
+        const quat q_cor = math::conjugate(q_hybrid);
 #elif 1
         // Dynamic Slerp
         // absolute contributes with a factor based on the cosine of the angle between the absolute and predicted orientation
-        const quat q_pred = q_corrected * q_del;
+        const quat q_pred = q_hybrid * q_del;
         const quat q_ref = math::conjugate(q_abs);
         const float d = math::abs(math::dot(q_pred, q_ref));
         const float t = math::pow(d, 16.0f);
-        q_corrected = math::normalize(math::slerp(q_pred, q_ref, t));
-        quat q_cor = math::conjugate(q_corrected);
-        q_cor = math::dot(s->frame_data.transform.rotation.corrected[i - 1], q_cor) > 0.0f ? q_cor : -q_cor;
+        q_hybrid = math::normalize(math::slerp(q_pred, q_ref, t));
+        quat q_cor = math::conjugate(q_hybrid);
+        q_cor = math::dot(s->frame_data.transform.rotation.hybrid[i - 1], q_cor) > 0.0f ? q_cor : -q_cor;
+
+        const float angle = math::rad_to_deg(math::acos(math::dot(q_pred, q_ref)));
+        printf("Angle: %.2f\n", angle);
 
 #else
         // Always go with Shortest path (absolute or prediction)
         // Result -> Bad
-        const quat q_pred = q_corrected * q_del;
-        const float d_abs = math::dot(q_corrected, q_abs);
-        const float d_pred = math::dot(q_corrected, q_pred);
+        const quat q_pred = q_hybrid * q_del;
+        const float d_abs = math::dot(q_hybrid, q_abs);
+        const float d_pred = math::dot(q_hybrid, q_pred);
 
         if (math::abs(d_abs) > math::abs(d_pred)) {
             const float sign = math::sign(d_abs);
-            q_corrected = math::normalize(sign * q_abs);
+            q_hybrid = math::normalize(sign * q_abs);
         } else {
             const float sign = math::sign(d_pred);
-            q_corrected = math::normalize(sign * q_pred);
+            q_hybrid = math::normalize(sign * q_pred);
         }
-        const quat q_cor = q_corrected;
+        const quat q_cor = q_hybrid;
 #endif
         s->frame_data.transform.rotation.absolute[i] = q_abs;
         s->frame_data.transform.rotation.relative[i] = q_rel;
-        s->frame_data.transform.rotation.corrected[i] = q_cor;
+        s->frame_data.transform.rotation.hybrid[i] = q_cor;
         compute_eigen(cov_mat, (vec3(&)[3])s->frame_data.eigen.vector[i], (float(&)[3])s->frame_data.eigen.value[i]);
         s->frame_data.transform.com[i] = cur_com;
-        s->frame_data.determinant.abs[i] = abs_det;
-        s->frame_data.determinant.rel[i] = rel_det;
     }
 
     return true;
@@ -956,10 +914,10 @@ const Array<const quat> get_rot_relative(ID id) {
     return {};
 }
 
-const Array<const quat> get_rot_corrected(ID id) {
+const Array<const quat> get_rot_hybrid(ID id) {
     ASSERT(context);
     if (auto* s = find_structure(id)) {
-        return {s->frame_data.transform.rotation.corrected, s->num_frames};
+        return {s->frame_data.transform.rotation.hybrid, s->num_frames};
     }
     LOG_ERROR("Supplied id is not valid.");
     return {};
@@ -978,24 +936,6 @@ const Array<const vec3> get_eigen_values(ID id) {
     ASSERT(context);
     if (auto* s = find_structure(id)) {
         return {s->frame_data.eigen.value, s->num_frames};
-    }
-    LOG_ERROR("Supplied id is not valid.");
-    return {};
-}
-
-const Array<const float> get_abs_det(ID id) {
-    ASSERT(context);
-    if (auto* s = find_structure(id)) {
-        return {s->frame_data.determinant.abs, s->num_frames};
-    }
-    LOG_ERROR("Supplied id is not valid.");
-    return {};
-}
-
-const Array<const float> get_rel_det(ID id) {
-    ASSERT(context);
-    if (auto* s = find_structure(id)) {
-        return {s->frame_data.determinant.rel, s->num_frames};
     }
     LOG_ERROR("Supplied id is not valid.");
     return {};

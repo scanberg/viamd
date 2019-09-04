@@ -143,7 +143,7 @@ enum class SelectionLevel { Atom, Residue, Chain };
 enum class SelectionOperator { Or, And };
 enum class SelectionGrowth { CovalentBond, Radial };
 enum class RepresentationType { Vdw, Licorice, BallAndStick, Ribbons, Cartoon };
-enum class TrackingMode { Absolute, Relative, Corrected };
+enum class TrackingMode { Absolute, Relative, hybrid };
 
 enum AtomBit_ { AtomBit_Highlighted = BIT(0), AtomBit_Selected = BIT(1), AtomBit_Visible = BIT(2) };
 
@@ -245,7 +245,7 @@ struct ReferenceFrame {
     bool show = false;
     bool filter_is_ok = false;
     structure_tracking::ID id = 0;
-    TrackingMode tracking_mode = TrackingMode::Corrected;
+    TrackingMode tracking_mode = TrackingMode::hybrid;
     float rel_abs_blend = 0.5f;
 
     // For debugging
@@ -957,8 +957,8 @@ int main(int, char**) {
                                 case TrackingMode::Relative:
                                     rot_data = structure_tracking::get_rot_relative(ref->id);
                                     break;
-                                case TrackingMode::Corrected:
-                                    rot_data = structure_tracking::get_rot_corrected(ref->id);
+                                case TrackingMode::hybrid:
+                                    rot_data = structure_tracking::get_rot_hybrid(ref->id);
                                     break;
                                 default:
                                     ASSERT(false);
@@ -1666,8 +1666,8 @@ static void interpolate_atomic_positions(ApplicationData* data) {
                 case TrackingMode::Relative:
                     rot_data = structure_tracking::get_rot_relative(ref.id);
                     break;
-                case TrackingMode::Corrected:
-                    rot_data = structure_tracking::get_rot_corrected(ref.id);
+                case TrackingMode::hybrid:
+                    rot_data = structure_tracking::get_rot_hybrid(ref.id);
                     break;
                 default:
                     ASSERT(false);
@@ -2845,28 +2845,13 @@ static void draw_reference_frames_window(ApplicationData* data) {
             }
             // if (ImGui::SliderInt("reference frame idx", ))
             if (!ref.filter_is_ok) ImGui::PopStyleColor();
-            ImGui::Combo("tracking mode", (int*)(&ref.tracking_mode), "Absolute\0Relative\0Corrected\0\0");
+            ImGui::Combo("tracking mode", (int*)(&ref.tracking_mode), "Absolute\0Relative\0hybrid\0\0");
             ImGui::SliderFloat("rel -> abs", &ref.rel_abs_blend, 0.f, 1.0f);
 
             ImGui::PopItemWidth();
 
             ImGui::PushItemWidth(-1);
             constexpr auto plot_height = 150.0f;
-            {
-                const auto rel_data = structure_tracking::get_rel_det(ref.id);
-                const auto abs_data = structure_tracking::get_abs_det(ref.id);
-
-                const ImVec2 x_range = {0.0f, (float)abs_data.size()};
-                const ImVec2 y_range = {-1.0f, 2.0f};
-                ImGui::BeginPlot("Determinant", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
-                ImGui::PlotValues("absolute", abs_data.data(), (int)abs_data.size(), 0xFF5555FF);
-                ImGui::PlotValues("relative", rel_data.data(), (int)rel_data.size(), 0xFF55FF55);
-                float x_val;
-                if (ImGui::ClickingAtPlot(&x_val)) {
-                    data->playback.time = x_val;
-                }
-                ImGui::EndPlot();
-            }
 #if 0
             {
                 const auto ev_data = structure_tracking::get_eigen_values(ref.id);
@@ -2897,31 +2882,34 @@ static void draw_reference_frames_window(ApplicationData* data) {
             {
                 const auto abs_data = structure_tracking::get_rot_absolute(ref.id);
                 const auto rel_data = structure_tracking::get_rot_relative(ref.id);
-                const auto cor_data = structure_tracking::get_rot_corrected(ref.id);
+                const auto hyb_data = structure_tracking::get_rot_hybrid(ref.id);
                 const int32 N = (int32)abs_data.size();
 
                 ASSERT(N == rel_data.size());
-                ASSERT(N == cor_data.size());
+                ASSERT(N == hyb_data.size());
 
                 float* tmp_data = (float*)TMP_MALLOC(sizeof(float) * N * 3);
                 defer { TMP_FREE(tmp_data); };
                 float* abs_angle = tmp_data + 0 * N;
                 float* rel_angle = tmp_data + 1 * N;
-                float* cor_angle = tmp_data + 2 * N;
+                float* hyb_angle = tmp_data + 2 * N;
 
+                abs_angle[0] = 0.0f;
+                rel_angle[0] = 0.0f;
+                hyb_angle[0] = 0.0f;
                 const quat ref_q = {1, 0, 0, 0};
                 for (int j = 0; j < N; j++) {
                     abs_angle[j] = math::rad_to_deg(math::angle(ref_q, abs_data[j]));
                     rel_angle[j] = math::rad_to_deg(math::angle(ref_q, rel_data[j]));
-                    cor_angle[j] = math::rad_to_deg(math::angle(ref_q, cor_data[j]));
+                    hyb_angle[j] = math::rad_to_deg(math::angle(ref_q, hyb_data[j]));
                 }
 
                 const ImVec2 x_range = {0.0f, (float)N};
                 const ImVec2 y_range = {-0.05f, 360.5f};
-                ImGui::BeginPlot("Angle Delta", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
+                ImGui::BeginPlot("Angle To Ref", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
                 ImGui::PlotValues("absolute", abs_angle, N, 0xFF5555FF);
                 ImGui::PlotValues("relative", rel_angle, N, 0xFF55FF55);
-                ImGui::PlotValues("corrected", cor_angle, N, 0xFFFF5555);
+                ImGui::PlotValues("hybrid", hyb_angle, N, 0xFFFF5555);
                 float x_val;
                 if (ImGui::ClickingAtPlot(&x_val)) {
                     data->playback.time = x_val;
@@ -2931,34 +2919,70 @@ static void draw_reference_frames_window(ApplicationData* data) {
             {
                 const auto abs_data = structure_tracking::get_rot_absolute(ref.id);
                 const auto rel_data = structure_tracking::get_rot_relative(ref.id);
-                const auto cor_data = structure_tracking::get_rot_corrected(ref.id);
-                const int N = abs_data.size();
+                const auto hyb_data = structure_tracking::get_rot_hybrid(ref.id);
+                const int32 N = (int32)abs_data.size();
+
                 ASSERT(N == rel_data.size());
-                ASSERT(N == cor_data.size());
+                ASSERT(N == hyb_data.size());
 
                 float* tmp_data = (float*)TMP_MALLOC(sizeof(float) * N * 3);
                 defer { TMP_FREE(tmp_data); };
                 float* abs_angle = tmp_data + 0 * N;
                 float* rel_angle = tmp_data + 1 * N;
-                float* cor_angle = tmp_data + 2 * N;
+                float* hyb_angle = tmp_data + 2 * N;
 
                 abs_angle[0] = 0.0f;
                 rel_angle[0] = 0.0f;
-                cor_angle[0] = 0.0f;
+                hyb_angle[0] = 0.0f;
+                for (int j = 1; j < N; j++) {
+                    abs_angle[j] = math::rad_to_deg(math::angle(abs_data[j-1], abs_data[j]));
+                    rel_angle[j] = math::rad_to_deg(math::angle(rel_data[j-1], rel_data[j]));
+                    hyb_angle[j] = math::rad_to_deg(math::angle(hyb_data[j-1], hyb_data[j]));
+                }
+
+                const ImVec2 x_range = {0.0f, (float)N};
+                const ImVec2 y_range = {-0.05f, 180.5f};
+                ImGui::BeginPlot("Frame Angle Delta", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
+                ImGui::PlotValues("absolute", abs_angle, N, 0xFF5555FF);
+                ImGui::PlotValues("relative", rel_angle, N, 0xFF55FF55);
+                ImGui::PlotValues("hybrid", hyb_angle, N, 0xFFFF5555);
+                float x_val;
+                if (ImGui::ClickingAtPlot(&x_val)) {
+                    data->playback.time = x_val;
+                }
+                ImGui::EndPlot();
+            }
+            {
+                const auto abs_data = structure_tracking::get_rot_absolute(ref.id);
+                const auto rel_data = structure_tracking::get_rot_relative(ref.id);
+                const auto hyb_data = structure_tracking::get_rot_hybrid(ref.id);
+                const int N = abs_data.size();
+                ASSERT(N == rel_data.size());
+                ASSERT(N == hyb_data.size());
+
+                float* tmp_data = (float*)TMP_MALLOC(sizeof(float) * N * 3);
+                defer { TMP_FREE(tmp_data); };
+                float* abs_angle = tmp_data + 0 * N;
+                float* rel_angle = tmp_data + 1 * N;
+                float* hyb_angle = tmp_data + 2 * N;
+
+                abs_angle[0] = 0.0f;
+                rel_angle[0] = 0.0f;
+                hyb_angle[0] = 0.0f;
                 for (int j = 1; j < N; j++) {
                     abs_angle[j] = abs_angle[j - 1] + math::rad_to_deg(math::angle(abs_data[j - 1], abs_data[j]));
                     rel_angle[j] = rel_angle[j - 1] + math::rad_to_deg(math::angle(rel_data[j - 1], rel_data[j]));
-                    cor_angle[j] = cor_angle[j - 1] + math::rad_to_deg(math::angle(cor_data[j - 1], cor_data[j]));
+                    hyb_angle[j] = hyb_angle[j - 1] + math::rad_to_deg(math::angle(hyb_data[j - 1], hyb_data[j]));
                 }
 
-                const float max_val = math::max(math::max(abs_angle[N - 1], rel_angle[N - 1]), cor_angle[N - 1]);
+                const float max_val = math::max(math::max(abs_angle[N - 1], rel_angle[N - 1]), hyb_angle[N - 1]);
 
                 const ImVec2 x_range = {0.0f, (float)N};
                 const ImVec2 y_range = {0.0f, max_val};
-                ImGui::BeginPlot("Angle Delta Sum", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
+                ImGui::BeginPlot("Accumulated Angle Delta", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
                 ImGui::PlotValues("absolute", abs_angle, N, 0xFF5555FF);
                 ImGui::PlotValues("relative", rel_angle, N, 0xFF55FF55);
-                ImGui::PlotValues("corrected", cor_angle, N, 0xFFFF5555);
+                ImGui::PlotValues("hybrid", hyb_angle, N, 0xFFFF5555);
                 float x_val;
                 if (ImGui::ClickingAtPlot(&x_val)) {
                     data->playback.time = x_val;
@@ -5099,8 +5123,8 @@ static Array<const quat> get_rotation_data(const ReferenceFrame& ref) {
         case TrackingMode::Relative:
             rot_data = structure_tracking::get_rot_relative(ref.id);
             break;
-        case TrackingMode::Corrected:
-            rot_data = structure_tracking::get_rot_corrected(ref.id);
+        case TrackingMode::hybrid:
+            rot_data = structure_tracking::get_rot_hybrid(ref.id);
             break;
         default:
             ASSERT(false);
