@@ -4,7 +4,7 @@
 #include <core/array_types.h>
 #include <core/bitfield.h>
 #include <core/math_utils.h>
-#include <core/image.h>
+#include "image.h"
 
 enum class ColorMapping { Uniform, Cpk, ResId, ResIndex, ChainId, ChainIndex, SecondaryStructure };
 

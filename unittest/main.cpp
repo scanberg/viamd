@@ -1,4 +1,3 @@
-#include <core/gl.h>
 #include <core/types.h>
 #include <core/hash.h>
 #include <core/log.h>
@@ -6,8 +5,7 @@
 #include <core/camera.h>
 #include <core/camera_utils.h>
 #include <core/string_utils.h>
-#include <core/volume.h>
-
+#include <core/spatial_hash.h>
 #include <core/bitfield.h>
 
 #include <mol/molecule_structure.h>
@@ -18,7 +16,6 @@
 #include <mol/filter.h>
 #include <mol/pdb_utils.h>
 #include <mol/gro_utils.h>
-#include <mol/spatial_hash.h>
 
 #include <glm/gtx/io.hpp>
 

@@ -52,16 +52,20 @@ add_subdirectory(ext/imgui)
 add_subdirectory(ext/nativefiledialog)
 add_subdirectory(ext/tinyexpr)
 add_subdirectory(ext/mdutils)
+add_subdirectory(ext/stb)
+add_subdirectory(ext/gl3w)
 #add_subdirectory(ext/base91)
 add_subdirectory(unittest)
 add_subdirectory(benchmark)
 
 file(GLOB PLATFORM_FILES src/platform/*)
 file(GLOB SRC_FILES src/*)
+file(GLOB GFX_FILES src/gfx/*)
 
 source_group("platform" FILES ${PLATFORM_FILES})
+source_group("gfx" FILES ${GFX_FILES})
 
-add_executable(viamd ${OSX_BUNDLE} ${SRC_FILES} ${PLATFORM_FILES})
+add_executable(viamd ${OSX_BUNDLE} ${SRC_FILES} ${PLATFORM_FILES} ${GFX_FILES})
 
 set(RESOURCE_DIR "${PROJECT_SOURCE_DIR}/")
 if (VIAMD_USE_RELATIVE_PATHS)
@@ -77,19 +81,19 @@ target_compile_definitions(viamd PRIVATE
 target_compile_features(viamd PRIVATE cxx_std_17)
 
 target_include_directories(viamd
-#    PUBLIC 
-#        $<INSTALL_INTERFACE:src>    
-#        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/ext/gl3w
         ${CMAKE_CURRENT_SOURCE_DIR}/ext/Eigen
         ${CMAKE_CURRENT_SOURCE_DIR}/ext/svd3
 )
 
 target_link_libraries(viamd
+    gl3w
     glfw
     imgui
     nativefiledialog
 	tinyexpr
     mdutils
+    stb
 )
