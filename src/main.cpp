@@ -2844,7 +2844,6 @@ static void draw_reference_frames_window(ApplicationData* data) {
             // if (ImGui::SliderInt("reference frame idx", ))
             if (!ref.filter_is_ok) ImGui::PopStyleColor();
             ImGui::Combo("tracking mode", (int*)(&ref.tracking_mode), "Absolute\0Relative\0hybrid\0\0");
-            ImGui::SliderFloat("rel -> abs", &ref.rel_abs_blend, 0.f, 1.0f);
 
             ImGui::PopItemWidth();
 
