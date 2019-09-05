@@ -1,8 +1,11 @@
 ﻿#include "platform.h"
-#include <core/gl.h>
+
 #include <core/log.h>
 #include <core/string_utils.h>
+
+#include "gfx/gl.h"
 #include <GLFW/glfw3.h>
+#include <nfd.h>
 #ifdef OS_WINDOWS
 //#undef APIENTRY
 #ifndef WIN32_LEAN_AND_MEAN
@@ -17,10 +20,10 @@
 #include "imgui_impl_opengl3.h"
 //#include "cousine_font.inl"
 #include "droid_sans.inl"
+
+
 #include <stdio.h>
 #include <stdlib.h>
-
-#include <nfd.h>
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
 

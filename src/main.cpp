@@ -1,4 +1,3 @@
-#include <core/gl.h>
 #include <core/types.h>
 #include <core/hash.h>
 #include <core/log.h>
@@ -7,7 +6,7 @@
 #include <core/camera.h>
 #include <core/camera_utils.h>
 #include <core/string_utils.h>
-#include <core/volume.h>
+#include <core/spatial_hash.h>
 
 #include <mol/molecule_structure.h>
 #include <mol/molecule_trajectory.h>
@@ -19,33 +18,33 @@
 #include <mol/gro_utils.h>
 #include <mol/xtc_utils.h>
 
-#include <mol/spatial_hash.h>
-
-#include <gfx/molecule_draw.h>
-#include <gfx/immediate_draw_utils.h>
-#include <gfx/postprocessing_utils.h>
-#include <gfx/volume_utils.h>
-
 #include <imgui.h>
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui_internal.h>
 
-#include <range_slider.h>
-#include <plot_extended.h>
-
 #include <glm/gtx/io.hpp>
 
-#include <stdio.h>
-#include <thread>
-#include <atomic>
-#include <mutex>
+#include "gfx/gl.h"
+#include "gfx/molecule_draw.h"
+#include "gfx/immediate_draw_utils.h"
+#include "gfx/postprocessing_utils.h"
 
+#include "volume.h"
+#include "volume_utils.h"
+
+#include "range_slider.h"
+#include "plot_extended.h"
 #include "platform/platform.h"
 #include "console.h"
 #include "stats.h"
 #include "ramachandran.h"
 #include "color_utils.h"
 #include "structure_tracking.h"
+
+#include <stdio.h>
+#include <thread>
+#include <atomic>
+#include <mutex>
 
 //#define VIAMD_RELEASE
 
@@ -246,7 +245,6 @@ struct ReferenceFrame {
     bool filter_is_ok = false;
     structure_tracking::ID id = 0;
     TrackingMode tracking_mode = TrackingMode::hybrid;
-    float rel_abs_blend = 0.5f;
 
     // For debugging
     mat4 basis = {};

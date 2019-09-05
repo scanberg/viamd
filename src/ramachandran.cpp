@@ -1,9 +1,11 @@
 #include "ramachandran.h"
-#include <core/gl.h>
+
 #include <core/log.h>
 #include <core/math_utils.h>
-#include <core/image.h>
-#include <gfx/gl_utils.h>
+
+#include "gfx/gl.h"
+#include "gfx/gl_utils.h"
+#include "image.h"
 
 namespace ramachandran {
 

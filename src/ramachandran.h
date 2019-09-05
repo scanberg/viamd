@@ -3,8 +3,8 @@
 #include <core/vector_types.h>
 #include <core/array_types.h>
 #include <core/math_utils.h>
-#include <core/image.h>
-// enum class RamachandranConformationClassification { None, BetaHigh, BetaMid, BetaLow, AlphaHigh, AlphaMid, AlphaLow, LeftAlphaHigh, LeftAlphaMid, LeftAlphaLow, PMid, PLow };
+
+#include "image.h"
 
 namespace ramachandran {
 

@@ -3,17 +3,17 @@
 #include <core/common.h>
 #include <core/types.h>
 #include <core/log.h>
-#include <core/volume.h>
 #include <core/array_types.h>
 #include <core/vector_types.h>
 #include <core/math_utils.h>
 #include <core/string_utils.h>
 #include <mol/trajectory_utils.h>
 
+#include "volume.h"
+
 struct MoleculeDynamic;
 struct MoleculeStructure;
 struct MoleculeTrajectory;
-struct Volume;
 
 namespace stats {
 

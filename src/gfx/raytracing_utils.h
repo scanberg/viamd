@@ -3,7 +3,6 @@
 #include "gl.h"
 
 #include <core/array_types.h>
-#include <mol/spatial_hash.h>
 #include <mol/molecule_structure.h>
 
 namespace render {

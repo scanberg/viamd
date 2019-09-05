@@ -1,8 +1,8 @@
 #include "stats.h"
+
 #include <core/math_utils.h>
 #include <core/hash.h>
 #include <core/log.h>
-#include <core/volume.h>
 #include <mol/molecule_structure.h>
 #include <mol/molecule_trajectory.h>
 #include <mol/molecule_dynamic.h>

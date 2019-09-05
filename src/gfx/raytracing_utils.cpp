@@ -1,9 +1,10 @@
-//#define NOMINMAX
-
 #include "raytracing_utils.h"
+
 #include <core/log.h>
-#include <gfx/gl_utils.h>
-#include <gfx/immediate_draw_utils.h>
+#include <core/math_utils.h>
+
+#include "gfx/gl_utils.h"
+#include "gfx/immediate_draw_utils.h"
 
 namespace render {
 
