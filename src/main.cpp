@@ -137,7 +137,7 @@ inline vec4& vec_cast(ImVec4& v) { return *(vec4*)(&v); }
 inline ImVec2& vec_cast(vec2& v) { return *(ImVec2*)(&v); }
 inline vec2& vec_cast(ImVec2& v) { return *(vec2*)(&v); }
 
-enum class PlaybackInterpolationMode { Nearest, Linear, Cubic };
+enum class InterpolationMode { Nearest, Linear, Cubic };
 enum class SelectionLevel { Atom, Residue, Chain };
 enum class SelectionOperator { Or, And };
 enum class SelectionGrowth { CovalentBond, Radial };
@@ -246,9 +246,11 @@ struct ReferenceFrame {
     structure_tracking::ID id = 0;
     TrackingMode tracking_mode = TrackingMode::hybrid;
 
+    mat4 world_to_reference = {};
+    mat4 reference_to_world = {};
+
     // For debugging
     mat4 basis = {};
-    mat4 world_to_reference = {};
 };
 
 struct ThreadSyncData {
@@ -367,7 +369,7 @@ struct ApplicationData {
         float64 time = 0.f;  // double precision for long trajectories
         int32 frame = 0;
         float32 fps = 10.f;
-        PlaybackInterpolationMode interpolation = PlaybackInterpolationMode::Cubic;
+        InterpolationMode interpolation = InterpolationMode::Cubic;
         bool is_playing = false;
     } playback;
 
@@ -701,9 +703,9 @@ static ReferenceFrame* create_reference_frame(ApplicationData* data, CString nam
 static bool remove_reference_frame(ApplicationData* data, ReferenceFrame* ref);
 static void reset_reference_frame(ApplicationData* data);
 static void clear_reference_frames(ApplicationData* data);
-static void update_reference_frame(ApplicationData* data, ReferenceFrame* ref);
+static void compute_reference_frame(ApplicationData* data, ReferenceFrame* ref);
 static ReferenceFrame* get_active_reference_frame(ApplicationData* data);
-static Array<const quat> get_rotation_data(const ReferenceFrame& ref);
+static void update_reference_frames(ApplicationData* data);
 
 static void create_volume(ApplicationData* data);
 
@@ -946,17 +948,22 @@ int main(int, char**) {
                     if (ref) {
                         const structure_tracking::ID id = ref->id;
                         stats::compute_density_volume_with_basis(&data->density_volume.volume, data->dynamic.trajectory, range, [ref, data](const vec4& world_pos, int32 frame_idx) -> vec4 {
-                            const auto com_data = structure_tracking::get_com(ref->id);
-                            Array<const quat> rot_data;
+                            const auto tracking_data = structure_tracking::get_tracking_data(ref->id);
+                            if (!tracking_data) {
+                                LOG_ERROR("Could not find tracking data for supplied id: '%lu'", ref->id);
+                                return {};
+                            }
+                            const vec3* com_data = tracking_data->transform.com;
+                            const quat* rot_data = nullptr;
                             switch (ref->tracking_mode) {
                                 case TrackingMode::Absolute:
-                                    rot_data = structure_tracking::get_rot_absolute(ref->id);
+                                    rot_data = tracking_data->transform.rotation.absolute;
                                     break;
                                 case TrackingMode::Relative:
-                                    rot_data = structure_tracking::get_rot_relative(ref->id);
+                                    rot_data = tracking_data->transform.rotation.relative;
                                     break;
                                 case TrackingMode::hybrid:
-                                    rot_data = structure_tracking::get_rot_hybrid(ref->id);
+                                    rot_data = tracking_data->transform.rotation.hybrid;
                                     break;
                                 default:
                                     ASSERT(false);
@@ -1059,17 +1066,8 @@ int main(int, char**) {
 
             PUSH_CPU_SECTION("Interpolate Position")
             if (traj) {
-                // const int current_frame = math::clamp((int)data.playback.time, 0, math::max(0, data.dynamic.trajectory.num_frames - 1));
-                // const vec3 box_ext = get_trajectory_frame(data.dynamic.trajectory, current_frame).box * vec3(1.0f);
-
                 interpolate_atomic_positions(&data);
-#if 0
-                if (data.interpolation != PlaybackInterpolationMode::Nearest) {
-                    const auto& box = get_trajectory_frame(data.dynamic.trajectory, (int)data.time).box;
-                    apply_pbc_residues(get_positions(data.dynamic.molecule), data.dynamic.molecule.residues, box);
-                    // apply_pbc_chains(get_positions(data.dynamic.molecule), data.dynamic.molecule.chains, data.dynamic.molecule.residues, box);
-                }
-#endif
+                update_reference_frames(&data);
 
                 data.gpu_buffers.dirty.position = true;
                 data.gpu_buffers.dirty.velocity = true;
@@ -1098,6 +1096,12 @@ int main(int, char**) {
                 data.gpu_buffers.dirty.velocity = true;
             }
             prev_time = data.playback.time;
+        }
+
+        if (const ReferenceFrame* ref = get_active_reference_frame(&data)) {
+            // transform(data.dynamic.molecule.atom.position.x, data.dynamic.molecule.atom.position.y, data.dynamic.molecule.atom.position.z, data.dynamic.molecule.atom.count,
+            // ref->reference_to_world); transform(data.dynamic.molecule.atom.velocity.x, data.dynamic.molecule.atom.velocity.y, data.dynamic.molecule.atom.velocity.z,
+            // data.dynamic.molecule.atom.count, ref->reference_to_world, 0.0f);
         }
 
         PUSH_CPU_SECTION("Hydrogen bonds")
@@ -1157,7 +1161,7 @@ int main(int, char**) {
         POP_GPU_SECTION()
 
         {
-            const mat4 view_mat = compute_world_to_view_matrix(data.view.camera);
+            mat4 view_mat = compute_world_to_view_matrix(data.view.camera);
             mat4 proj_mat = compute_perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height);
 
             const vec2 res = vec2(data.fbo.width, data.fbo.height);
@@ -1167,6 +1171,10 @@ int main(int, char**) {
                 i = (++i) % ARRAY_SIZE(halton_23);
                 jitter = halton_23[i] - 0.5f;
                 proj_mat = compute_perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height, jitter.x, jitter.y);
+            }
+
+            if (const ReferenceFrame* ref = get_active_reference_frame(&data)) {
+                view_mat = view_mat * ref->reference_to_world;
             }
 
             auto& param = data.view.param;
@@ -1247,13 +1255,11 @@ int main(int, char**) {
                     const mat3 box = get_trajectory_frame(data.dynamic.trajectory, data.playback.frame).box;
                     const vec3 min_box = box * vec3(0.0f);
                     const vec3 max_box = box * vec3(1.0f);
-
                     const ReferenceFrame* ref = get_active_reference_frame(&data);
 
                     if (ref) {
-                        immediate::draw_box_wireframe(min_box, max_box, math::inverse(ref->world_to_reference), math::convert_color(data.simulation_box.color));
-                        immediate::draw_box_wireframe(min_box, max_box, immediate::COLOR_GREEN);
-
+                        immediate::draw_box_wireframe(min_box, max_box, ref->world_to_reference, math::convert_color(data.simulation_box.color));
+                        immediate::draw_box_wireframe(min_box, max_box, ref->reference_to_world, immediate::COLOR_GREEN);
                     } else {
                         immediate::draw_box_wireframe(min_box, max_box, math::convert_color(data.simulation_box.color));
                     }
@@ -1284,7 +1290,7 @@ int main(int, char**) {
                 // REFERENCE FRAME
                 for (const auto& ref : data.reference_frame.frames) {
                     if (ref.show) {
-                        const mat4 M = ref.basis;
+                        const mat4 M = ref.active ? ref.world_to_reference * ref.basis : ref.basis;
                         immediate::draw_basis(M, 2.0f);
                         immediate::draw_plane_wireframe(M[3], M[0], M[1], immediate::COLOR_RED);
                         break;
@@ -1577,13 +1583,13 @@ static void interpolate_atomic_positions(ApplicationData* data) {
     const int prev_frame_1 = math::max(0, frame);
     const int next_frame_1 = math::min(frame + 1, last_frame);
     const int next_frame_2 = math::min(frame + 2, last_frame);
-    const mat3& box = get_trajectory_frame(traj, prev_frame_1).box;
+    const mat3& box = get_trajectory_frame(traj, frame).box;
 
-    const PlaybackInterpolationMode mode = (prev_frame_1 != next_frame_1) ? data->playback.interpolation : PlaybackInterpolationMode::Nearest;
+    const InterpolationMode mode = (prev_frame_1 != next_frame_1) ? data->playback.interpolation : InterpolationMode::Nearest;
     const bool pbc = box != mat3(0, 0, 0, 0, 0, 0, 0, 0, 0);
 
     switch (mode) {
-        case PlaybackInterpolationMode::Nearest: {
+        case InterpolationMode::Nearest: {
             const auto x = get_trajectory_position_x(traj, nearest_frame);
             const auto y = get_trajectory_position_y(traj, nearest_frame);
             const auto z = get_trajectory_position_z(traj, nearest_frame);
@@ -1592,7 +1598,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             memcpy(mol.atom.position.z, z.data(), z.size_in_bytes());
             break;
         }
-        case PlaybackInterpolationMode::Linear: {
+        case InterpolationMode::Linear: {
             const float* x[2] = {get_trajectory_position_x(traj, prev_frame_1).data(), get_trajectory_position_x(traj, next_frame_1).data()};
             const float* y[2] = {get_trajectory_position_y(traj, prev_frame_1).data(), get_trajectory_position_y(traj, next_frame_1).data()};
             const float* z[2] = {get_trajectory_position_z(traj, prev_frame_1).data(), get_trajectory_position_z(traj, next_frame_1).data()};
@@ -1603,7 +1609,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             }
             break;
         }
-        case PlaybackInterpolationMode::Cubic: {
+        case InterpolationMode::Cubic: {
             const float* x[4] = {get_trajectory_position_x(traj, prev_frame_2).data(), get_trajectory_position_x(traj, prev_frame_1).data(), get_trajectory_position_x(traj, next_frame_1).data(),
                                  get_trajectory_position_x(traj, next_frame_2).data()};
             const float* y[4] = {get_trajectory_position_y(traj, prev_frame_2).data(), get_trajectory_position_y(traj, prev_frame_1).data(), get_trajectory_position_y(traj, next_frame_1).data(),
@@ -1621,114 +1627,9 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             ASSERT(false);
     }
 
-    for (auto& ref : data->reference_frame.frames) {
-        if (ref.active || ref.show) {
-            const int64 masked_count = bitfield::number_of_bits_set(ref.atom_mask);
-            if (masked_count == 0) break;
-
-            void* w_mem = TMP_MALLOC(sizeof(float) * 1 * masked_count);
-            void* f_mem = TMP_MALLOC(sizeof(float) * 3 * masked_count);
-            void* c_mem = TMP_MALLOC(sizeof(float) * 3 * masked_count);
-            defer {
-                TMP_FREE(w_mem);
-                TMP_FREE(f_mem);
-                TMP_FREE(c_mem);
-            };
-
-            float* weight = (float*)w_mem;
-            float* frame_x = (float*)f_mem;
-            float* frame_y = frame_x + masked_count;
-            float* frame_z = frame_y + masked_count;
-            float* current_x = (float*)c_mem;
-            float* current_y = current_x + masked_count;
-            float* current_z = current_y + masked_count;
-
-            bitfield::extract_data_from_mask(weight, mol.atom.mass, ref.atom_mask);
-            bitfield::extract_data_from_mask(frame_x, get_trajectory_position_x(traj, 0).data(), ref.atom_mask);
-            bitfield::extract_data_from_mask(frame_y, get_trajectory_position_y(traj, 0).data(), ref.atom_mask);
-            bitfield::extract_data_from_mask(frame_z, get_trajectory_position_z(traj, 0).data(), ref.atom_mask);
-            bitfield::extract_data_from_mask(current_x, mol.atom.position.x, ref.atom_mask);
-            bitfield::extract_data_from_mask(current_y, mol.atom.position.y, ref.atom_mask);
-            bitfield::extract_data_from_mask(current_z, mol.atom.position.z, ref.atom_mask);
-
-            const vec3 frame_com = compute_com(frame_x, frame_y, frame_z, weight, masked_count);
-            const vec3 current_com = compute_com(current_x, current_y, current_z, weight, masked_count);
-            const vec3 box_c = box * vec3(0.5f);
-
-#if 1
-            Array<const quat> rot_data;
-            switch (ref.tracking_mode) {
-                case TrackingMode::Absolute:
-                    rot_data = structure_tracking::get_rot_absolute(ref.id);
-                    break;
-                case TrackingMode::Relative:
-                    rot_data = structure_tracking::get_rot_relative(ref.id);
-                    break;
-                case TrackingMode::hybrid:
-                    rot_data = structure_tracking::get_rot_hybrid(ref.id);
-                    break;
-                default:
-                    ASSERT(false);
-                    break;
-            }
-
-            // clang-format off
-            const quat q[4] = { rot_data[prev_frame_2],
-                                rot_data[prev_frame_1],
-                                rot_data[next_frame_1],
-                                rot_data[next_frame_2] };
-            // clang-format on
-#else
-            Array<const quat> abs_data = structure_tracking::get_rot_absolute(ref.id);
-            Array<const quat> rel_data = structure_tracking::get_rot_relative(ref.id);
-
-            // clang-format off
-			const quat q[4] = { math::nlerp(rel_data[prev_frame_2], abs_data[prev_frame_2], ref.rel_abs_blend),
-								math::nlerp(rel_data[prev_frame_1], abs_data[prev_frame_1], ref.rel_abs_blend),
-								math::nlerp(rel_data[next_frame_1], abs_data[next_frame_1], ref.rel_abs_blend),
-								math::nlerp(rel_data[next_frame_2], abs_data[next_frame_2], ref.rel_abs_blend) };
-            // clang-format on
-#endif
-
-            mat4 R;
-            switch (mode) {
-                case PlaybackInterpolationMode::Nearest:
-                    R = math::mat4_cast(t < 0.5f ? q[1] : q[2]);
-                    break;
-                case PlaybackInterpolationMode::Linear:
-                    R = math::mat4_cast(math::slerp(q[1], q[2], t));
-                    break;
-                case PlaybackInterpolationMode::Cubic:
-                    R = math::mat4_cast(math::cubic_slerp(q[0], q[1], q[2], q[3], t));
-                    break;
-                default:
-                    ASSERT(false);
-            }
-
-            const mat4 R_inv = math::transpose(R);
-            const mat4 T_ori = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-current_com, 1));
-            const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(box_c, 1));
-
-            ref.world_to_reference = math::inverse(T_box * R_inv * T_ori);
-
-            if (ref.active) {
-                ref.basis = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {box_c, 1}};
-            } else {
-                // ref.com = current_com;
-                ref.basis = math::inverse(R_inv * T_ori);
-                // ref.basis = {R, current_com};
-            }
-
-            if (ref.active) {
-                const mat4 M = T_box * R_inv * T_ori;
-                transform_positions_ref(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count, M);
-            }
-        }
-    }
-
     const float dt = 1.0f;
     if (pbc) {
-        //apply_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.mass, mol.sequences, box);
+        // apply_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.mass, mol.sequences, box);
         compute_velocities_pbc(mol.atom.velocity.x, mol.atom.velocity.y, mol.atom.velocity.z, old_pos_x, old_pos_y, old_pos_z, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z,
                                mol.atom.count, dt, box);
     } else {
@@ -1931,7 +1832,7 @@ static void draw_main_menu(ApplicationData* data) {
             }
             if (ImGui::MenuItem("Load Data", "CTRL+L")) {
                 auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, "pdb,gro,xtc");
-                if (res.result == platform::FileDialogResult::FILE_OK) {
+                if (res.result == platform::FileDialogResult::Ok) {
                     load_molecule_data(data, res.path);
                     if (data->representations.buffer.size() > 0) {
                         reset_representations(data);
@@ -1944,14 +1845,14 @@ static void draw_main_menu(ApplicationData* data) {
             }
             if (ImGui::MenuItem("Open", "CTRL+O")) {
                 auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, FILE_EXTENSION);
-                if (res.result == platform::FileDialogResult::FILE_OK) {
+                if (res.result == platform::FileDialogResult::Ok) {
                     load_workspace(data, res.path);
                 }
             }
             if (ImGui::MenuItem("Save", "CTRL+S")) {
                 if (!data->files.workspace) {
                     auto res = platform::file_dialog(platform::FileDialogFlags_Save, {}, FILE_EXTENSION);
-                    if (res.result == platform::FileDialogResult::FILE_OK) {
+                    if (res.result == platform::FileDialogResult::Ok) {
                         if (!get_file_extension(res.path)) {
                             snprintf(res.path.cstr() + strnlen(res.path.cstr(), res.path.capacity()), res.path.capacity(), ".%s", FILE_EXTENSION.cstr());
                         }
@@ -1963,7 +1864,7 @@ static void draw_main_menu(ApplicationData* data) {
             }
             if (ImGui::MenuItem("Save As")) {
                 auto res = platform::file_dialog(platform::FileDialogFlags_Save, {}, FILE_EXTENSION);
-                if (res.result == platform::FileDialogResult::FILE_OK) {
+                if (res.result == platform::FileDialogResult::Ok) {
                     if (!get_file_extension(res.path)) {
                         snprintf(res.path.cstr() + strnlen(res.path.cstr(), res.path.capacity()), res.path.capacity(), ".%s", FILE_EXTENSION.cstr());
                     }
@@ -2157,7 +2058,7 @@ static void draw_main_menu(ApplicationData* data) {
                 ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.0f, 1.0f));
                 if (ImGui::ImageButton((void*)(intptr_t)data->density_volume.tf.id, ImVec2(250, 20))) {
                     auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, "png,jpg");
-                    if (res.result == platform::FileDialogResult::FILE_OK) {
+                    if (res.result == platform::FileDialogResult::Ok) {
                         data->density_volume.tf.path = res.path;
                         data->density_volume.tf.dirty = true;
                     }
@@ -2876,115 +2777,111 @@ static void draw_reference_frames_window(ApplicationData* data) {
                 ImGui::EndPlot();
             }
 #endif
-            {
-                const auto abs_data = structure_tracking::get_rot_absolute(ref.id);
-                const auto rel_data = structure_tracking::get_rot_relative(ref.id);
-                const auto hyb_data = structure_tracking::get_rot_hybrid(ref.id);
-                const int32 N = (int32)abs_data.size();
+            const auto tracking_data = structure_tracking::get_tracking_data(ref.id);
+            if (tracking_data) {
+                const int32 N = (int32)tracking_data->count;
+                const quat* abs_data = tracking_data->transform.rotation.absolute;
+                const quat* rel_data = tracking_data->transform.rotation.relative;
+                const quat* hyb_data = tracking_data->transform.rotation.hybrid;
 
-                ASSERT(N == rel_data.size());
-                ASSERT(N == hyb_data.size());
-
+                // Scratch data
                 float* tmp_data = (float*)TMP_MALLOC(sizeof(float) * N * 3);
                 defer { TMP_FREE(tmp_data); };
+
                 float* abs_angle = tmp_data + 0 * N;
                 float* rel_angle = tmp_data + 1 * N;
                 float* hyb_angle = tmp_data + 2 * N;
 
-                abs_angle[0] = 0.0f;
-                rel_angle[0] = 0.0f;
-                hyb_angle[0] = 0.0f;
-                const quat ref_q = {1, 0, 0, 0};
-                for (int j = 0; j < N; j++) {
-                    abs_angle[j] = math::rad_to_deg(math::angle(ref_q, abs_data[j]));
-                    rel_angle[j] = math::rad_to_deg(math::angle(ref_q, rel_data[j]));
-                    hyb_angle[j] = math::rad_to_deg(math::angle(ref_q, hyb_data[j]));
+                auto export_to_csv = [abs_angle, rel_angle, hyb_angle, N]() {
+                    auto res = platform::file_dialog(platform::FileDialogFlags_Save, {}, "csv");
+                    if (res.result == platform::FileDialogResult::Ok) {
+                        FILE* file = fopen(res.path.cstr(), "w");
+                        if (file) {
+                            fprintf(file, "time, ABS, REL, HYB\n");
+                            for (int i = 0; i < N; i++) {
+                                fprintf(file, "%i, %.4f, %.4f, %.4f\n", i, abs_angle[i], rel_angle[i], hyb_angle[i]);
+                            }
+                            fclose(file);
+                        }
+                    }
+                };
+
+                {
+                    abs_angle[0] = 0.0f;
+                    rel_angle[0] = 0.0f;
+                    hyb_angle[0] = 0.0f;
+                    const quat ref_q = {1, 0, 0, 0};
+                    for (int j = 0; j < N; j++) {
+                        abs_angle[j] = math::rad_to_deg(math::angle(ref_q, abs_data[j]));
+                        rel_angle[j] = math::rad_to_deg(math::angle(ref_q, rel_data[j]));
+                        hyb_angle[j] = math::rad_to_deg(math::angle(ref_q, hyb_data[j]));
+                    }
+
+                    if (ImGui::Button("Export to CSV##1")) export_to_csv();
+
+                    const ImVec2 x_range = {0.0f, (float)N};
+                    const ImVec2 y_range = {-0.05f, 180.5f};
+                    ImGui::BeginPlot("Angle To Ref", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
+                    ImGui::PlotValues("absolute", abs_angle, N, 0xFF5555FF);
+                    ImGui::PlotValues("relative", rel_angle, N, 0xFF55FF55);
+                    ImGui::PlotValues("hybrid", hyb_angle, N, 0xFFFF5555);
+                    float x_val;
+                    if (ImGui::ClickingAtPlot(&x_val)) {
+                        data->playback.time = x_val;
+                    }
+                    ImGui::EndPlot();
                 }
+                {
+                    abs_angle[0] = 0.0f;
+                    rel_angle[0] = 0.0f;
+                    hyb_angle[0] = 0.0f;
+                    for (int j = 1; j < N; j++) {
+                        abs_angle[j] = math::rad_to_deg(math::angle(abs_data[j - 1], abs_data[j]));
+                        rel_angle[j] = math::rad_to_deg(math::angle(rel_data[j - 1], rel_data[j]));
+                        hyb_angle[j] = math::rad_to_deg(math::angle(hyb_data[j - 1], hyb_data[j]));
+                    }
 
-                const ImVec2 x_range = {0.0f, (float)N};
-                const ImVec2 y_range = {-0.05f, 360.5f};
-                ImGui::BeginPlot("Angle To Ref", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
-                ImGui::PlotValues("absolute", abs_angle, N, 0xFF5555FF);
-                ImGui::PlotValues("relative", rel_angle, N, 0xFF55FF55);
-                ImGui::PlotValues("hybrid", hyb_angle, N, 0xFFFF5555);
-                float x_val;
-                if (ImGui::ClickingAtPlot(&x_val)) {
-                    data->playback.time = x_val;
+                    if (ImGui::Button("Export to CSV##2")) export_to_csv();
+
+                    const ImVec2 x_range = {0.0f, (float)N};
+                    const ImVec2 y_range = {-0.05f, 180.5f};
+                    ImGui::BeginPlot("Frame Angle Delta", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
+                    ImGui::PlotValues("absolute", abs_angle, N, 0xFF5555FF);
+                    ImGui::PlotValues("relative", rel_angle, N, 0xFF55FF55);
+                    ImGui::PlotValues("hybrid", hyb_angle, N, 0xFFFF5555);
+                    float x_val;
+                    if (ImGui::ClickingAtPlot(&x_val)) {
+                        data->playback.time = x_val;
+                    }
+                    ImGui::EndPlot();
                 }
-                ImGui::EndPlot();
-            }
-            {
-                const auto abs_data = structure_tracking::get_rot_absolute(ref.id);
-                const auto rel_data = structure_tracking::get_rot_relative(ref.id);
-                const auto hyb_data = structure_tracking::get_rot_hybrid(ref.id);
-                const int32 N = (int32)abs_data.size();
+                {
+                    abs_angle[0] = 0.0f;
+                    rel_angle[0] = 0.0f;
+                    hyb_angle[0] = 0.0f;
+                    for (int j = 1; j < N; j++) {
+                        abs_angle[j] = abs_angle[j - 1] + math::rad_to_deg(math::angle(abs_data[j - 1], abs_data[j]));
+                        rel_angle[j] = rel_angle[j - 1] + math::rad_to_deg(math::angle(rel_data[j - 1], rel_data[j]));
+                        hyb_angle[j] = hyb_angle[j - 1] + math::rad_to_deg(math::angle(hyb_data[j - 1], hyb_data[j]));
+                    }
 
-                ASSERT(N == rel_data.size());
-                ASSERT(N == hyb_data.size());
+                    if (ImGui::Button("Export to CSV##3")) export_to_csv();
 
-                float* tmp_data = (float*)TMP_MALLOC(sizeof(float) * N * 3);
-                defer { TMP_FREE(tmp_data); };
-                float* abs_angle = tmp_data + 0 * N;
-                float* rel_angle = tmp_data + 1 * N;
-                float* hyb_angle = tmp_data + 2 * N;
-
-                abs_angle[0] = 0.0f;
-                rel_angle[0] = 0.0f;
-                hyb_angle[0] = 0.0f;
-                for (int j = 1; j < N; j++) {
-                    abs_angle[j] = math::rad_to_deg(math::angle(abs_data[j-1], abs_data[j]));
-                    rel_angle[j] = math::rad_to_deg(math::angle(rel_data[j-1], rel_data[j]));
-                    hyb_angle[j] = math::rad_to_deg(math::angle(hyb_data[j-1], hyb_data[j]));
+                    const float max_val = math::max(math::max(abs_angle[N - 1], rel_angle[N - 1]), hyb_angle[N - 1]);
+                    const ImVec2 x_range = {0.0f, (float)N};
+                    const ImVec2 y_range = {0.0f, max_val};
+                    ImGui::BeginPlot("Accumulated Angle Delta", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
+                    ImGui::PlotValues("absolute", abs_angle, N, 0xFF5555FF);
+                    ImGui::PlotValues("relative", rel_angle, N, 0xFF55FF55);
+                    ImGui::PlotValues("hybrid", hyb_angle, N, 0xFFFF5555);
+                    float x_val;
+                    if (ImGui::ClickingAtPlot(&x_val)) {
+                        data->playback.time = x_val;
+                    }
+                    ImGui::EndPlot();
                 }
-
-                const ImVec2 x_range = {0.0f, (float)N};
-                const ImVec2 y_range = {-0.05f, 180.5f};
-                ImGui::BeginPlot("Frame Angle Delta", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
-                ImGui::PlotValues("absolute", abs_angle, N, 0xFF5555FF);
-                ImGui::PlotValues("relative", rel_angle, N, 0xFF55FF55);
-                ImGui::PlotValues("hybrid", hyb_angle, N, 0xFFFF5555);
-                float x_val;
-                if (ImGui::ClickingAtPlot(&x_val)) {
-                    data->playback.time = x_val;
-                }
-                ImGui::EndPlot();
-            }
-            {
-                const auto abs_data = structure_tracking::get_rot_absolute(ref.id);
-                const auto rel_data = structure_tracking::get_rot_relative(ref.id);
-                const auto hyb_data = structure_tracking::get_rot_hybrid(ref.id);
-                const int N = abs_data.size();
-                ASSERT(N == rel_data.size());
-                ASSERT(N == hyb_data.size());
-
-                float* tmp_data = (float*)TMP_MALLOC(sizeof(float) * N * 3);
-                defer { TMP_FREE(tmp_data); };
-                float* abs_angle = tmp_data + 0 * N;
-                float* rel_angle = tmp_data + 1 * N;
-                float* hyb_angle = tmp_data + 2 * N;
-
-                abs_angle[0] = 0.0f;
-                rel_angle[0] = 0.0f;
-                hyb_angle[0] = 0.0f;
-                for (int j = 1; j < N; j++) {
-                    abs_angle[j] = abs_angle[j - 1] + math::rad_to_deg(math::angle(abs_data[j - 1], abs_data[j]));
-                    rel_angle[j] = rel_angle[j - 1] + math::rad_to_deg(math::angle(rel_data[j - 1], rel_data[j]));
-                    hyb_angle[j] = hyb_angle[j - 1] + math::rad_to_deg(math::angle(hyb_data[j - 1], hyb_data[j]));
-                }
-
-                const float max_val = math::max(math::max(abs_angle[N - 1], rel_angle[N - 1]), hyb_angle[N - 1]);
-
-                const ImVec2 x_range = {0.0f, (float)N};
-                const ImVec2 y_range = {0.0f, max_val};
-                ImGui::BeginPlot("Accumulated Angle Delta", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
-                ImGui::PlotValues("absolute", abs_angle, N, 0xFF5555FF);
-                ImGui::PlotValues("relative", rel_angle, N, 0xFF55FF55);
-                ImGui::PlotValues("hybrid", hyb_angle, N, 0xFFFF5555);
-                float x_val;
-                if (ImGui::ClickingAtPlot(&x_val)) {
-                    data->playback.time = x_val;
-                }
-                ImGui::EndPlot();
+            } else {
+                LOG_ERROR("Could not find tracking data for structure '%lu'", ref.id);
             }
             ImGui::PopItemWidth();
 
@@ -2995,7 +2892,7 @@ static void draw_reference_frames_window(ApplicationData* data) {
         ImGui::PopID();
 
         if (recompute_frame) {
-            update_reference_frame(data, &ref);
+            compute_reference_frame(data, &ref);
         }
     }
 
@@ -3894,61 +3791,67 @@ static void draw_shape_space_window(ApplicationData* data) {
         constexpr int num_segments = 10;
 
         const structure_tracking::ID ref_id = data->reference_frame.frames[data->shape_space.reference_frame_idx].id;
-        const Array<const vec3> eigen_values = structure_tracking::get_eigen_values(ref_id);
-        const int32 N = (int32)eigen_values.size();
+        const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(ref_id);
 
-        const auto compute_shape_space_weights = [](const vec3& ev) -> vec3 {
-            const float l_sum = ev[0] + ev[1] + ev[2];
-            const float one_over_denom = 1.0f / l_sum;
-            const float cl = (ev[0] - ev[1]) * one_over_denom;
-            const float cp = 2.0f * (ev[1] - ev[2]) * one_over_denom;
-            const float cs = 3.0f * ev[2] * one_over_denom;
-            return {cl, cp, cs};
-        };
+        if (tracking_data) {
+            const int32 N = (int32)tracking_data->count;
+            const vec3* eigen_values = tracking_data->eigen.value;
 
-        const vec2 p[3] = {vec_cast(tri_a), vec_cast(tri_b), vec_cast(tri_c)};
-        for (int32 i = 0; i < N; i++) {
-            const vec3 ev = eigen_values[i];
-            const ImVec2 coord = vec_cast(math::barycentric_to_cartesian(p[0], p[1], p[2], compute_shape_space_weights(ev)));
+            const auto compute_shape_space_weights = [](const vec3& ev) -> vec3 {
+                const float l_sum = ev[0] + ev[1] + ev[2];
+                const float one_over_denom = 1.0f / l_sum;
+                const float cl = (ev[0] - ev[1]) * one_over_denom;
+                const float cp = 2.0f * (ev[1] - ev[2]) * one_over_denom;
+                const float cs = 3.0f * ev[2] * one_over_denom;
+                return {cl, cp, cs};
+            };
 
-            const bool in_range = frame_range.x <= i && i <= frame_range.y;
-            const bool selected = i == data->playback.frame;
+            const vec2 p[3] = {vec_cast(tri_a), vec_cast(tri_b), vec_cast(tri_c)};
+            for (int32 i = 0; i < N; i++) {
+                const vec3 ev = eigen_values[i];
+                const ImVec2 coord = vec_cast(math::barycentric_to_cartesian(p[0], p[1], p[2], compute_shape_space_weights(ev)));
 
-            // Draw channel, higher number => later draw
-            int channel = 1 + (int)in_range + (int)selected;
+                const bool in_range = frame_range.x <= i && i <= frame_range.y;
+                const bool selected = i == data->playback.frame;
 
-            const float t = (float)i / (float)(N - 1);
-            const vec3 color = green_color_scale(t);
-            const vec3 line_color = selected ? selected_line_color : base_line_color;
-            const float alpha = in_range ? in_range_alpha : base_alpha;
-            const float radius = selected ? selected_radius : base_radius;
-            const float thickness = selected ? selected_line_thickness : base_line_thickness;
+                // Draw channel, higher number => later draw
+                int channel = 1 + (int)in_range + (int)selected;
 
-            dl->ChannelsSetCurrent(channel);
-            dl->AddCircleFilled(coord, radius, math::convert_color(vec4(color, alpha)), num_segments);
-            dl->AddCircle(coord, radius, math::convert_color(vec4(line_color, alpha)), num_segments, thickness);
+                const float t = (float)i / (float)(N - 1);
+                const vec3 color = green_color_scale(t);
+                const vec3 line_color = selected ? selected_line_color : base_line_color;
+                const float alpha = in_range ? in_range_alpha : base_alpha;
+                const float radius = selected ? selected_radius : base_radius;
+                const float thickness = selected ? selected_line_thickness : base_line_thickness;
 
-            if (ImGui::IsItemHovered()) {
-                const float d2 = ImLengthSqr(coord - ImGui::GetIO().MousePos);
-                if (d2 < hover_radius * hover_radius && d2 < mouse_hover_d2) {
-                    mouse_hover_d2 = d2;
-                    mouse_hover_idx = i;
-                    mouse_hover_ev = ev;
+                dl->ChannelsSetCurrent(channel);
+                dl->AddCircleFilled(coord, radius, math::convert_color(vec4(color, alpha)), num_segments);
+                dl->AddCircle(coord, radius, math::convert_color(vec4(line_color, alpha)), num_segments, thickness);
+
+                if (ImGui::IsItemHovered()) {
+                    const float d2 = ImLengthSqr(coord - ImGui::GetIO().MousePos);
+                    if (d2 < hover_radius * hover_radius && d2 < mouse_hover_d2) {
+                        mouse_hover_d2 = d2;
+                        mouse_hover_idx = i;
+                        mouse_hover_ev = ev;
+                    }
                 }
             }
-        }
 
-        if (mouse_hover_idx != -1) {
-            // Draw hovered explicity
-            const int i = mouse_hover_idx;
-            const vec3 ev = eigen_values[i];
-            const ImVec2 coord = vec_cast(math::barycentric_to_cartesian(p[0], p[1], p[2], compute_shape_space_weights(ev)));
-            const float t = (float)i / (float)(N - 1);
-            const vec3 color = green_color_scale(t);
+            if (mouse_hover_idx != -1) {
+                // Draw hovered explicity
+                const int i = mouse_hover_idx;
+                const vec3 ev = eigen_values[i];
+                const ImVec2 coord = vec_cast(math::barycentric_to_cartesian(p[0], p[1], p[2], compute_shape_space_weights(ev)));
+                const float t = (float)i / (float)(N - 1);
+                const vec3 color = green_color_scale(t);
 
-            dl->ChannelsSetCurrent(3);
-            dl->AddCircleFilled(coord, hover_radius, math::convert_color(vec4(color, hover_alpha)), num_segments);
-            dl->AddCircle(coord, hover_radius, math::convert_color(vec4(hover_line_color, hover_alpha)), num_segments, hover_line_thickness);
+                dl->ChannelsSetCurrent(3);
+                dl->AddCircleFilled(coord, hover_radius, math::convert_color(vec4(color, hover_alpha)), num_segments);
+                dl->AddCircle(coord, hover_radius, math::convert_color(vec4(hover_line_color, hover_alpha)), num_segments, hover_line_thickness);
+            }
+        } else {
+            LOG_ERROR("Could not find tracking data for '%lu'", ref_id);
         }
     }
 
@@ -5057,7 +4960,7 @@ static ReferenceFrame* create_reference_frame(ApplicationData* data, CString nam
     ref.name = name;
     ref.filter = filter;
     bitfield::init(&ref.atom_mask, data->dynamic.molecule.atom.count);
-    update_reference_frame(data, &ref);
+    compute_reference_frame(data, &ref);
     return &data->reference_frame.frames.push_back(ref);
 }
 
@@ -5082,7 +4985,7 @@ static void clear_reference_frames(ApplicationData* data) {
     }
 }
 
-static void update_reference_frame(ApplicationData* data, ReferenceFrame* ref) {
+static void compute_reference_frame(ApplicationData* data, ReferenceFrame* ref) {
     ASSERT(data);
     ASSERT(ref);
     const auto& mol = data->dynamic.molecule;
@@ -5111,23 +5014,114 @@ static ReferenceFrame* get_active_reference_frame(ApplicationData* data) {
     return nullptr;
 }
 
-static Array<const quat> get_rotation_data(const ReferenceFrame& ref) {
-    Array<const quat> rot_data;
-    switch (ref.tracking_mode) {
-        case TrackingMode::Absolute:
-            rot_data = structure_tracking::get_rot_absolute(ref.id);
-            break;
-        case TrackingMode::Relative:
-            rot_data = structure_tracking::get_rot_relative(ref.id);
-            break;
-        case TrackingMode::hybrid:
-            rot_data = structure_tracking::get_rot_hybrid(ref.id);
-            break;
-        default:
-            ASSERT(false);
-            break;
+static void update_reference_frames(ApplicationData* data) {
+    ASSERT(data);
+
+    const auto& mol = data->dynamic.molecule;
+    const auto& traj = data->dynamic.trajectory;
+
+    const float64 time = data->playback.time;
+    const int last_frame = math::max(0, traj.num_frames - 1);
+    const float32 t = (float)math::fract(data->playback.time);
+    const int frame = (int)time;
+    const int p2 = math::max(0, frame - 1);
+    const int p1 = math::max(0, frame);
+    const int n1 = math::min(frame + 1, last_frame);
+    const int n2 = math::min(frame + 2, last_frame);
+
+    const mat3 box = get_trajectory_frame(traj, frame).box;
+
+    const InterpolationMode mode = (p1 != n1) ? data->playback.interpolation : InterpolationMode::Nearest;
+
+    for (auto& ref : data->reference_frame.frames) {
+        const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(ref.id);
+        if (tracking_data) {
+            const int64 masked_count = bitfield::number_of_bits_set(ref.atom_mask);
+            if (masked_count == 0) break;
+
+            void* w_mem = TMP_MALLOC(sizeof(float) * 1 * masked_count);
+            void* f_mem = TMP_MALLOC(sizeof(float) * 3 * masked_count);
+            void* c_mem = TMP_MALLOC(sizeof(float) * 3 * masked_count);
+            defer {
+                TMP_FREE(w_mem);
+                TMP_FREE(f_mem);
+                TMP_FREE(c_mem);
+            };
+
+            float* weight = (float*)w_mem;
+            float* frame_x = (float*)f_mem;
+            float* frame_y = frame_x + masked_count;
+            float* frame_z = frame_y + masked_count;
+            float* current_x = (float*)c_mem;
+            float* current_y = current_x + masked_count;
+            float* current_z = current_y + masked_count;
+
+            bitfield::extract_data_from_mask(weight, mol.atom.mass, ref.atom_mask);
+            bitfield::extract_data_from_mask(frame_x, get_trajectory_position_x(traj, 0).data(), ref.atom_mask);
+            bitfield::extract_data_from_mask(frame_y, get_trajectory_position_y(traj, 0).data(), ref.atom_mask);
+            bitfield::extract_data_from_mask(frame_z, get_trajectory_position_z(traj, 0).data(), ref.atom_mask);
+            bitfield::extract_data_from_mask(current_x, mol.atom.position.x, ref.atom_mask);
+            bitfield::extract_data_from_mask(current_y, mol.atom.position.y, ref.atom_mask);
+            bitfield::extract_data_from_mask(current_z, mol.atom.position.z, ref.atom_mask);
+
+            const vec3 frame_com = compute_com(frame_x, frame_y, frame_z, weight, masked_count);
+            const vec3 current_com = compute_com(current_x, current_y, current_z, weight, masked_count);
+            const vec3 box_c = box * vec3(0.5f);
+
+            const quat* rot_data = nullptr;
+            switch (ref.tracking_mode) {
+                case TrackingMode::Absolute:
+                    rot_data = tracking_data->transform.rotation.absolute;
+                    break;
+                case TrackingMode::Relative:
+                    rot_data = tracking_data->transform.rotation.relative;
+                    break;
+                case TrackingMode::hybrid:
+                    rot_data = tracking_data->transform.rotation.hybrid;
+                    break;
+                default:
+                    ASSERT(false);
+                    break;
+            }
+
+            // clang-format off
+            const quat q[4] = { rot_data[p2],
+                                rot_data[p1],
+                                rot_data[n1],
+                                rot_data[n2] };
+            // clang-format on
+
+            mat4 R;
+            switch (mode) {
+                case InterpolationMode::Nearest:
+                    R = math::mat4_cast(t < 0.5f ? q[1] : q[2]);
+                    break;
+                case InterpolationMode::Linear:
+                    R = math::mat4_cast(math::slerp(q[1], q[2], t));
+                    break;
+                case InterpolationMode::Cubic:
+                    R = math::mat4_cast(math::cubic_slerp(q[0], q[1], q[2], q[3], t));
+                    break;
+                default:
+                    ASSERT(false);
+            }
+
+            const mat4 R_inv = math::transpose(R);
+            const mat4 T_ori = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-current_com, 1));
+            const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(box_c, 1));
+
+            ref.reference_to_world = T_box * R_inv * T_ori;
+            ref.world_to_reference = math::inverse(ref.reference_to_world);
+
+            if (ref.active) {
+                ref.basis = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {box_c, 1}};
+            } else {
+                ref.basis = math::inverse(R_inv * T_ori);
+            }
+        } else {
+            LOG_ERROR("Could not find tracking data for '%lu'", ref.id);
+        }
     }
-    return rot_data;
 }
 
 // #async

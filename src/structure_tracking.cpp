@@ -13,24 +13,7 @@ namespace structure_tracking {
 
 struct Structure {
     ID id = 0;
-    int32 num_frames = 0;
-
-    struct {
-        struct {
-            vec3* com = nullptr;
-            struct {
-                quat* absolute = nullptr;
-                quat* relative = nullptr;
-                quat* hybrid = nullptr;
-            } rotation;
-        } transform;
-
-        struct {
-            mat3* vector = nullptr;
-            vec3* value = nullptr;
-        } eigen;
-
-    } frame_data;
+    TrackingData tracking_data;
 };
 
 struct Entry {
@@ -515,27 +498,26 @@ out_z[i] = x(i, 2);
 
 static void free_structure_data(Structure* s) {
     ASSERT(s);
-    if (s->frame_data.transform.rotation.absolute) FREE(s->frame_data.transform.rotation.absolute);
-    if (s->frame_data.transform.rotation.relative) FREE(s->frame_data.transform.rotation.relative);
-    if (s->frame_data.transform.rotation.hybrid) FREE(s->frame_data.transform.rotation.hybrid);
-    if (s->frame_data.transform.com) FREE(s->frame_data.transform.com);
-    if (s->frame_data.eigen.vector) FREE(s->frame_data.eigen.vector);
-    if (s->frame_data.eigen.value) FREE(s->frame_data.eigen.value);
+    if (s->tracking_data.transform.rotation.absolute) FREE(s->tracking_data.transform.rotation.absolute);
+    if (s->tracking_data.transform.rotation.relative) FREE(s->tracking_data.transform.rotation.relative);
+    if (s->tracking_data.transform.rotation.hybrid) FREE(s->tracking_data.transform.rotation.hybrid);
+    if (s->tracking_data.transform.com) FREE(s->tracking_data.transform.com);
+    if (s->tracking_data.eigen.vector) FREE(s->tracking_data.eigen.vector);
+    if (s->tracking_data.eigen.value) FREE(s->tracking_data.eigen.value);
 }
 
 static void init_structure_data(Structure* s, ID id, int32 num_frames) {
     ASSERT(s);
     free_structure_data(s);
     s->id = id;
-    s->num_frames = num_frames;
+    s->tracking_data.count = num_frames;
 
-    s->frame_data.transform.rotation.absolute = (quat*)MALLOC(sizeof(quat) * num_frames);
-    s->frame_data.transform.rotation.relative = (quat*)MALLOC(sizeof(quat) * num_frames);
-    s->frame_data.transform.rotation.hybrid = (quat*)MALLOC(sizeof(quat) * num_frames);
-    s->frame_data.transform.com = (vec3*)MALLOC(sizeof(vec3) * num_frames);
-    s->frame_data.eigen.vector = (mat3*)MALLOC(sizeof(mat3) * num_frames);
-    s->frame_data.eigen.value = (vec3*)MALLOC(sizeof(vec3) * num_frames);
-}
+    s->tracking_data.transform.rotation.absolute = (quat*)MALLOC(sizeof(quat) * num_frames);
+    s->tracking_data.transform.rotation.relative = (quat*)MALLOC(sizeof(quat) * num_frames);
+    s->tracking_data.transform.rotation.hybrid = (quat*)MALLOC(sizeof(quat) * num_frames);
+    s->tracking_data.transform.com = (vec3*)MALLOC(sizeof(vec3) * num_frames);
+    s->tracking_data.eigen.vector = (mat3*)MALLOC(sizeof(mat3) * num_frames);
+    s->tracking_data.eigen.value = (vec3*)MALLOC(sizeof(vec3) * num_frames);}
 
 static Structure* find_structure(ID id) {
     for (const auto& e : context->entries) {
@@ -773,20 +755,15 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
     quat q_relative = {1, 0, 0, 0};
     quat q_hybrid = {1, 0, 0, 0};
 
-    const mat3 ref_cov_mat = compute_mass_weighted_covariance_matrix(ref_x, ref_y, ref_z, mass, num_points, ref_com);
-    mat3 ref_eigen_vectors;
-    vec3 ref_eigen_values;
-    compute_eigen(ref_cov_mat, (vec3(&)[3])ref_eigen_vectors, (float(&)[3])ref_eigen_values);
-
     memcpy(prv_x, ref_x, num_points * sizeof(float) * 3);
 
     // Set first frame explicitly
-    s->frame_data.transform.rotation.absolute[0] = {1, 0, 0, 0};
-    s->frame_data.transform.rotation.relative[0] = {1, 0, 0, 0};
-    s->frame_data.transform.rotation.hybrid[0] = {1, 0, 0, 0};
-    s->frame_data.transform.com[0] = ref_com;
-    s->frame_data.eigen.vector[0] = ref_eigen_vectors;
-    s->frame_data.eigen.value[0] = ref_eigen_values;
+    s->tracking_data.transform.rotation.absolute[0] = {1, 0, 0, 0};
+    s->tracking_data.transform.rotation.relative[0] = {1, 0, 0, 0};
+    s->tracking_data.transform.rotation.hybrid[0] = {1, 0, 0, 0};
+    s->tracking_data.transform.com[0] = ref_com;
+    compute_eigen(compute_mass_weighted_covariance_matrix(ref_x, ref_y, ref_z, mass, num_points, ref_com),
+        (vec3(&)[3])s->tracking_data.eigen.vector[0], (float(&)[3])s->tracking_data.eigen.value[0]);
 
     for (int32 i = 1; i < num_frames; i++) {
         // Copy previous frame data
@@ -814,8 +791,8 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
         quat q_rel = math::conjugate(q_relative);
 
         // Make sure we take shortest path from previous orientation
-        q_abs = math::dot(s->frame_data.transform.rotation.absolute[i - 1], q_abs) > 0.0f ? q_abs : -q_abs;
-        q_rel = math::dot(s->frame_data.transform.rotation.relative[i - 1], q_rel) > 0.0f ? q_rel : -q_rel;
+        q_abs = math::dot(s->tracking_data.transform.rotation.absolute[i - 1], q_abs) > 0.0f ? q_abs : -q_abs;
+        q_rel = math::dot(s->tracking_data.transform.rotation.relative[i - 1], q_rel) > 0.0f ? q_rel : -q_rel;
 
 #if 0
         memcpy(cor_x, ref_x, num_points * sizeof(float) * 3);
@@ -844,11 +821,11 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
         q_hybrid = math::normalize(q_err * q_hybrid);
         const quat q_cor = q_hybrid;
 #elif 0
-        // Static Slerp 80% relative, 20% absolute
+        // Fixed ratio Slerp 80% relative, 20% absolute
         q_hybrid = math::normalize(math::slerp(q_hybrid * q_del, math::conjugate(q_abs), 0.2f));
         const quat q_cor = math::conjugate(q_hybrid);
 #elif 1
-        // Dynamic Slerp
+        // Dynamic ratio Slerp
         // absolute contributes with a factor based on the cosine of the angle between the absolute and predicted orientation
         const quat q_pred = q_hybrid * q_del;
         const quat q_ref = math::conjugate(q_abs);
@@ -856,10 +833,10 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
         const float t = math::pow(d, 16.0f);
         q_hybrid = math::normalize(math::slerp(q_pred, q_ref, t));
         quat q_cor = math::conjugate(q_hybrid);
-        q_cor = math::dot(s->frame_data.transform.rotation.hybrid[i - 1], q_cor) > 0.0f ? q_cor : -q_cor;
+        q_cor = math::dot(s->tracking_data.transform.rotation.hybrid[i - 1], q_cor) > 0.0f ? q_cor : -q_cor;
 
-        const float angle = math::rad_to_deg(math::acos(math::dot(q_pred, q_ref)));
-        printf("Angle: %.2f\n", angle);
+        //const float angle = math::rad_to_deg(math::acos(math::dot(q_pred, q_ref)));
+        //printf("Angle: %.2f\n", angle);
 
 #else
         // Always go with Shortest path (absolute or prediction)
@@ -877,68 +854,24 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
         }
         const quat q_cor = q_hybrid;
 #endif
-        s->frame_data.transform.rotation.absolute[i] = q_abs;
-        s->frame_data.transform.rotation.relative[i] = q_rel;
-        s->frame_data.transform.rotation.hybrid[i] = q_cor;
-        compute_eigen(cov_mat, (vec3(&)[3])s->frame_data.eigen.vector[i], (float(&)[3])s->frame_data.eigen.value[i]);
-        s->frame_data.transform.com[i] = cur_com;
+        s->tracking_data.transform.rotation.absolute[i] = q_abs;
+        s->tracking_data.transform.rotation.relative[i] = q_rel;
+        s->tracking_data.transform.rotation.hybrid[i] = q_cor;
+        s->tracking_data.transform.com[i] = cur_com;
+        compute_eigen(cov_mat, (vec3(&)[3])s->tracking_data.eigen.vector[i], (float(&)[3])s->tracking_data.eigen.value[i]);
     }
 
     return true;
 }
 
-const Array<const vec3> get_com(ID id) {
+const TrackingData* get_tracking_data(ID id) {
     ASSERT(context);
     if (auto* s = find_structure(id)) {
-        return {s->frame_data.transform.com, s->num_frames};
+        return &s->tracking_data;
     }
     LOG_ERROR("Supplied id is not valid.");
-    return {};
+    return nullptr;
 }
 
-const Array<const quat> get_rot_absolute(ID id) {
-    ASSERT(context);
-    if (auto* s = find_structure(id)) {
-        return {s->frame_data.transform.rotation.absolute, s->num_frames};
-    }
-    LOG_ERROR("Supplied id is not valid.");
-    return {};
-}
-
-const Array<const quat> get_rot_relative(ID id) {
-    ASSERT(context);
-    if (auto* s = find_structure(id)) {
-        return {s->frame_data.transform.rotation.relative, s->num_frames};
-    }
-    LOG_ERROR("Supplied id is not valid.");
-    return {};
-}
-
-const Array<const quat> get_rot_hybrid(ID id) {
-    ASSERT(context);
-    if (auto* s = find_structure(id)) {
-        return {s->frame_data.transform.rotation.hybrid, s->num_frames};
-    }
-    LOG_ERROR("Supplied id is not valid.");
-    return {};
-}
-
-const Array<const mat3> get_eigen_vectors(ID id) {
-    ASSERT(context);
-    if (auto* s = find_structure(id)) {
-        return {s->frame_data.eigen.vector, s->num_frames};
-    }
-    LOG_ERROR("Supplied id is not valid.");
-    return {};
-}
-
-const Array<const vec3> get_eigen_values(ID id) {
-    ASSERT(context);
-    if (auto* s = find_structure(id)) {
-        return {s->frame_data.eigen.value, s->num_frames};
-    }
-    LOG_ERROR("Supplied id is not valid.");
-    return {};
-}
 
 }  // namespace structure_tracking
