@@ -186,7 +186,7 @@ int main() {
 
 		const auto t2 = TIME();
 		for (int32 i = 0; i < num_iter; i++) {
-			translate_positions(x, y, z, size, t);
+			translate(x, y, z, size, t);
 		}
 		const auto t3 = TIME();
 		const auto time_vec = MILLISEC(t2, t3) / (double)num_iter;
@@ -228,7 +228,7 @@ int main() {
 
 		const auto t2 = TIME();
 		for (int32 i = 0; i < num_iter; i++) {
-			transform_positions(x, y, z, size, M);
+			transform(x, y, z, size, M);
 		}
 		const auto t3 = TIME();
 		const auto time_vec = MILLISEC(t2, t3) / (double)num_iter;

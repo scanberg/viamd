@@ -100,6 +100,14 @@ TEST_CASE("Bitfield", "[Bitfield]") {
     REQUIRE(bitfield::all_bits_set_in_range(field, Range<int>(beg, end)) == true);
     REQUIRE(bitfield::any_bit_set_in_range(field, Range<int>(end, size)) == false);
 
+    bitfield::clear_all(field);
+    REQUIRE(bitfield::any_bit_set(field) == false);
+    REQUIRE(bitfield::find_next_bit_set(field) == -1);
+
+    bitfield::set_bit(field, 211);
+    REQUIRE(bitfield::find_next_bit_set(field) == 211);
+
+
     // bitfield::print(field);
     // printf("\n");
 }
@@ -231,8 +239,8 @@ TEST_CASE("Molecule Utils", "[molecule_utils]") {
         memcpy(y, mol.atom.position.y, mol.atom.count * sizeof(float));
         memcpy(z, mol.atom.position.z, mol.atom.count * sizeof(float));
 
-        transform_positions_ref(ref_x, ref_y, ref_z, mol.atom.count, matrix);
-        transform_positions(x, y, z, mol.atom.count, matrix);
+        transform_ref(ref_x, ref_y, ref_z, mol.atom.count, matrix);
+        transform(x, y, z, mol.atom.count, matrix);
 
         for (int64 i = 0; i < mol.atom.count; i++) {
             REQUIRE(ref_x[i] == Approx(x[i]));
