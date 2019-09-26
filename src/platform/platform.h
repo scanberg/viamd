@@ -119,7 +119,7 @@ typedef int32 FileDialogFlags;
 enum FileDialogFlags_ { FileDialogFlags_Open = BIT(0), FileDialogFlags_Save = BIT(1), FileDialogFlags_Directory = BIT(2) };
 
 struct FileDialogResult {
-    enum Result { FILE_OK, FILE_CANCEL };
+    enum Result { Ok, Cancel };
     Path path;
     Result result;
 };

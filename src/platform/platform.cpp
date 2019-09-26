@@ -145,7 +145,8 @@ bool initialize(Context* ctx, int32 width, int32 height, const char* title) {
     ImFontConfig config;
     config.OversampleV = 4;
     config.OversampleH = 4;
-    ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)DroidSans_compressed_data, DroidSans_compressed_size, 14.f, &config, ranges);
+    config.RasterizerMultiply = 0.9f;
+    ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)DroidSans_compressed_data, DroidSans_compressed_size, 16.f, &config, ranges);
 
     ImGui_ImplGlfw_InitForOpenGL(window, false);
     ImGui_ImplOpenGL3_Init("#version 150");
@@ -315,12 +316,12 @@ FileDialogResult file_dialog(FileDialogFlags flags, CString default_path, CStrin
     if (result == NFD_OKAY) {
         Path res_path = out_path;
         convert_backslashes(res_path);
-        return {res_path, FileDialogResult::FILE_OK};
+        return {res_path, FileDialogResult::Ok};
     } else if (result == NFD_CANCEL) {
-        return {{}, FileDialogResult::FILE_CANCEL};
+        return {{}, FileDialogResult::Cancel};
     }
     LOG_ERROR("%s\n", NFD_GetError());
-    return {{}, FileDialogResult::FILE_CANCEL};
+    return {{}, FileDialogResult::Cancel};
 }
 
 #ifdef OS_WINDOWS
