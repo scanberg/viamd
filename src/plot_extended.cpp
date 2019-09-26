@@ -108,9 +108,9 @@ if (selection_range) {
 }
 
 static inline ImVec2 compute_frame_coord(ImRect frame, ImVec2 coord) {
-    float cx = ImClamp((coord.x - frame.Min.x) / (frame.Max.x - frame.Min.x), 0.f, 1.f);
-    float cy = ImClamp((coord.y - frame.Min.y) / (frame.Max.y - frame.Min.y), 0.f, 1.f);
-    return {cx, cy};
+    coord = (coord - frame.Min) / frame.GetSize();
+    coord = ImClamp(coord, {0.0f, 0.0f}, {1.0f, 1.0f});
+    return coord;
 }
 
 static inline void PushHoverValues(float val, ImU32 color, const char* label) {
@@ -199,6 +199,55 @@ IMGUI_API void PlotVariance(const float* avg, const float* var, int count, float
         prev_screen_pos_top = {(next_screen_pos_top.x), next_screen_pos_top.y};
     }
 }
+
+/*
+
+// @TODO (Robin): Plot lines with implicit variance using fixed width bins (represent all samples that fall within the same X pixels as one point with a mean -> y-value and a variance -> thickness)
+static void plot_data_as_line_with_implicit_variance_width(ImGuiWindow* window, const float* values, int count, ImU32 line_color) {
+
+    const int width_per_bin = 10;  // in pixels
+    const int num_bins = (int)(ps.coord_view.GetWidth() + 1) / width_per_bin;
+
+    const int beg = (int)ps.coord_view.Min.x;
+    const int end = ImMin(count, (int)ps.coord_view.Max.x + 1);
+    const int num_samples = end - beg;
+    const int samples_per_bin = num_samples / num_bins;
+
+    ImVec2 prev_c = {0, 0};
+    ImVec2 next_c = {0, 0};
+    float prev_v = 0.0f;
+    float next_v = 0.0f;
+    for (int i = 0; i < num_bins; ++i) {
+        float sum = 0.0f;
+        for (int j = 0; j < samples_per_bin; j++) {
+            const int idx = i * samples_per_bin + j;
+            sum += values[idx];
+        }
+        const float mean = sum / samples_per_bin;
+        sum = 0.0f;
+        for (int j = 0; j < samples_per_bin; ++j) {
+            const int idx = i * samples_per_bin + j;
+            const float x = values[idx] - mean;
+            sum += x * x;
+        }
+        const float var = sum / samples_per_bin;
+
+        next_c = {i * samples_per_bin, mean};
+        next_v = var;
+
+        const ImVec2 p = compute_frame_coord(ps.coord_view, prev_c);
+        const ImVec2 n = compute_frame_coord(ps.coord_view, next_c);
+
+        const ImVec2 pos0 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(p.x, 1.f - p.y));
+        const ImVec2 pos1 = ImLerp(ps.inner_bb.Min, ps.inner_bb.Max, ImVec2(n.x, 1.f - n.y));
+
+        const int flags = GetCurrentWindow()->DrawList->Flags;
+        GetCurrentWindow()->DrawList->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+        GetCurrentWindow()->DrawList->AddQuadFilled(pos0 + ImVec2(0, 1), pos0 + ImVec2(), next_screen_pos_btm, next_screen_pos_top, line_color);
+        GetCurrentWindow()->DrawList->Flags = flags;
+    }
+}
+*/
 
 IMGUI_API void PlotValues(const char* line_label, const float* value, int count, ImU32 line_color) {
     (void)line_label;
