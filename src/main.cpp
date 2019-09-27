@@ -77,7 +77,7 @@ constexpr Key::Key_t KEY_TOGGLE_SCREENSHOT_MODE = Key::KEY_F10;
     }
 
 constexpr unsigned int NO_PICKING_IDX = 0xFFFFFFFFU;
-constexpr CString FILE_EXTENSION = "via";
+constexpr CStringView FILE_EXTENSION = "via";
 
 constexpr uint32 DEL_BTN_COLOR = 0xFF1111CC;
 constexpr uint32 DEL_BTN_HOVER_COLOR = 0xFF3333DD;
@@ -671,16 +671,16 @@ static void copy_molecule_data_to_buffers(ApplicationData* data);
 static void init_molecule_data(ApplicationData* data);
 static void init_trajectory_data(ApplicationData* data);
 
-static void load_molecule_data(ApplicationData* data, CString file);
+static void load_molecule_data(ApplicationData* data, CStringView file);
 static void free_molecule_data(ApplicationData* data);
 
-static void load_workspace(ApplicationData* data, CString file);
-static void save_workspace(ApplicationData* data, CString file);
+static void load_workspace(ApplicationData* data, CStringView file);
+static void save_workspace(ApplicationData* data, CStringView file);
 
 static void create_screenshot(ApplicationData* data);
 
 // Representations
-static Representation* create_representation(ApplicationData* data, RepresentationType type = RepresentationType::Vdw, ColorMapping color_mapping = ColorMapping::Cpk, CString filter = "all");
+static Representation* create_representation(ApplicationData* data, RepresentationType type = RepresentationType::Vdw, ColorMapping color_mapping = ColorMapping::Cpk, CStringView filter = "all");
 static Representation* clone_representation(ApplicationData* data, const Representation& rep);
 static void remove_representation(ApplicationData* data, int idx);
 static void update_representation(ApplicationData* data, Representation* rep);
@@ -691,7 +691,7 @@ static void clear_representations(ApplicationData* data);
 static void recompute_atom_visibility_mask(ApplicationData* data);
 
 // Selections
-static Selection* create_selection(ApplicationData* data, CString name, const Bitfield);
+static Selection* create_selection(ApplicationData* data, CStringView name, const Bitfield);
 static Selection* clone_selection(ApplicationData* data, const Selection& sel);
 static void remove_selection(ApplicationData* data, int idx);
 
@@ -699,7 +699,7 @@ static void reset_selections(ApplicationData* data);
 static void clear_selections(ApplicationData* data);
 
 // Reference frames
-static ReferenceFrame* create_reference_frame(ApplicationData* data, CString name = "ref", CString filter = "label CA");
+static ReferenceFrame* create_reference_frame(ApplicationData* data, CStringView name = "ref", CStringView filter = "label CA");
 static bool remove_reference_frame(ApplicationData* data, ReferenceFrame* ref);
 static void reset_reference_frame(ApplicationData* data);
 static void clear_reference_frames(ApplicationData* data);
@@ -720,12 +720,12 @@ int main(int, char**) {
 
     // Init logging
     logging::initialize();
-    logging::register_backend([](CString str, logging::Severity, void*) {
+    logging::register_backend([](CStringView str, logging::Severity, void*) {
         print_string(str);
         printf("\n");
     });
     logging::register_backend(
-        [](CString str, logging::Severity severity, void* usr_data) {
+        [](CStringView str, logging::Severity severity, void* usr_data) {
             const char* modifier = "";
             switch (severity) {
                 case logging::Note:
@@ -1775,7 +1775,7 @@ static bool DeleteButton(const char* label, const ImVec2& size) {
 
 }  // namespace ImGui
 
-void grow_mask_by_covalent_bond(Bitfield mask, Array<const Bond> bonds, int32 extent) {
+void grow_mask_by_covalent_bond(Bitfield mask, ArrayView<const Bond> bonds, int32 extent) {
     Bitfield prev_mask;
     bitfield::init(&prev_mask, mask);
     defer { bitfield::free(&prev_mask); };
@@ -1811,7 +1811,7 @@ void grow_mask_by_radial_extent(Bitfield mask, const float* atom_x, const float*
 }
 
 template <typename AtomRangeOwner>
-void expand_mask(Bitfield mask, Array<AtomRangeOwner> sequences) {
+void expand_mask(Bitfield mask, ArrayView<AtomRangeOwner> sequences) {
     for (const auto& seq : sequences) {
         const AtomRange range = seq.atom_range;
         if (bitfield::any_bit_set_in_range(mask, range)) {
@@ -2466,7 +2466,7 @@ void draw_selection_window(ApplicationData* data) {
         bool show = (ImGui::GetHoveredID() == ImGui::GetID("Extent") || ImGui::GetActiveID() == ImGui::GetID("Extent") || ImGui::GetHoveredID() == ImGui::GetID("Apply"));
 
         if (show) {
-            Array<bool> prev_mask = {(bool*)TMP_MALLOC(mask.size_in_bytes()), mask.size()};
+            ArrayView<bool> prev_mask = {(bool*)TMP_MALLOC(mask.size_in_bytes()), mask.size()};
             defer { TMP_FREE(prev_mask.data()); };
 
             memset_array(mask, false);
@@ -3249,8 +3249,8 @@ static void draw_timeline_window(ApplicationData* data) {
             auto prop = properties[i];
 
             if (!prop->enable_timeline) continue;
-            Array<float> prop_data = prop->avg_data;
-            CString prop_name = prop->name_buf;
+            ArrayView<float> prop_data = prop->avg_data;
+            CStringView prop_name = prop->name_buf;
             auto prop_range = prop->avg_data_range;
             if (!prop_data) continue;
             const float pad = math::abs(prop_range.y - prop_range.x) * 0.75f;
@@ -3350,7 +3350,7 @@ static void draw_timeline_window(ApplicationData* data) {
                 const float32 min_x = ImGui::GetItemRectMin().x;
                 const float32 max_x = ImGui::GetItemRectMax().x;
                 const float32 t = ImClamp((ImGui::GetIO().MousePos.x - min_x) / (max_x - min_x), 0.f, 1.f);
-                int idx = ImClamp((int32)ImLerp(frame_range.x, frame_range.y, t), 0, (int32)prop->avg_data.size() - 1);
+                int idx = ImClamp((int)ImLerp(frame_range.x, frame_range.y, t), 0, (int)prop->avg_data.size() - 1);
                 const auto var = prop->std_dev_data[idx];
 
                 ImGui::BeginTooltip();
@@ -3475,10 +3475,10 @@ static void draw_ramachandran_window(ApplicationData* data) {
     // const int32 frame = (int32)data->time;
     const Range<int32> frame_range = {(int32)data->time_filter.range.x, (int32)data->time_filter.range.y};
     const auto& mol = data->dynamic.molecule;
-    Array<const BackboneAngle> trajectory_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame_range.x, frame_range.y - frame_range.x);
-    Array<const BackboneAngle> current_angles = mol.backbone.angles;
-    Array<const BackboneSegment> backbone_segments = mol.backbone.segments;
-    Array<const Residue> residues = mol.residues;
+    ArrayView<const BackboneAngle> trajectory_angles = get_backbone_angles(data->ramachandran.backbone_angles, frame_range.x, frame_range.y - frame_range.x);
+    ArrayView<const BackboneAngle> current_angles = mol.backbone.angles;
+    ArrayView<const BackboneSegment> backbone_segments = mol.backbone.segments;
+    ArrayView<const Residue> residues = mol.residues;
     Bitfield& atom_selection = data->selection.current_selection_mask;
     Bitfield& atom_highlight = data->selection.current_highlight_mask;
 
@@ -4322,11 +4322,11 @@ static void init_trajectory_data(ApplicationData* data) {
     }
 }
 
-static void load_molecule_data(ApplicationData* data, CString file) {
+static void load_molecule_data(ApplicationData* data, CStringView file) {
     ASSERT(data);
     if (file.count > 0) {
         data->playback.is_playing = false;
-        CString ext = get_file_extension(file);
+        CStringView ext = get_file_extension(file);
         LOG_NOTE("Loading molecular data from file '%.*s'...", file.count, file.ptr);
         auto t0 = platform::get_time();
         if (compare_ignore_case(ext, "pdb")) {
@@ -4380,7 +4380,7 @@ static void load_molecule_data(ApplicationData* data, CString file) {
 }
 
 // ### WORKSPACE ###
-static RepresentationType get_rep_type(CString str) {
+static RepresentationType get_rep_type(CStringView str) {
     if (compare(str, "VDW"))
         return RepresentationType::Vdw;
     else if (compare(str, "LICORICE"))
@@ -4395,7 +4395,7 @@ static RepresentationType get_rep_type(CString str) {
         return RepresentationType::Vdw;
 }
 
-static CString get_rep_type_name(RepresentationType type) {
+static CStringView get_rep_type_name(RepresentationType type) {
     switch (type) {
         case RepresentationType::Vdw:
             return "VDW";
@@ -4412,7 +4412,7 @@ static CString get_rep_type_name(RepresentationType type) {
     }
 }
 
-static ColorMapping get_color_mapping(CString str) {
+static ColorMapping get_color_mapping(CStringView str) {
     if (compare(str, "UNIFORM"))
         return ColorMapping::Uniform;
     else if (compare(str, "CPK"))
@@ -4431,7 +4431,7 @@ static ColorMapping get_color_mapping(CString str) {
         return ColorMapping::Cpk;
 }
 
-static CString get_color_mapping_name(ColorMapping mapping) {
+static CStringView get_color_mapping_name(ColorMapping mapping) {
     switch (mapping) {
         case ColorMapping::Uniform:
             return "UNIFORM";
@@ -4452,9 +4452,9 @@ static CString get_color_mapping_name(ColorMapping mapping) {
     }
 }
 
-static vec4 to_vec4(CString txt, const vec4& default_val = vec4(1)) {
+static vec4 to_vec4(CStringView txt, const vec4& default_val = vec4(1)) {
     vec4 res = default_val;
-    DynamicArray<CString> tokens = tokenize(txt, ",");
+    DynamicArray<CStringView> tokens = tokenize(txt, ",");
     int32 count = (int32)tokens.size() < 4 ? (int32)tokens.size() : 4;
     for (int i = 0; i < count; i++) {
         res[i] = to_float(tokens[i]);
@@ -4462,7 +4462,7 @@ static vec4 to_vec4(CString txt, const vec4& default_val = vec4(1)) {
     return res;
 }
 
-static void load_workspace(ApplicationData* data, CString file) {
+static void load_workspace(ApplicationData* data, CStringView file) {
     ASSERT(data);
     clear_representations(data);
     stats::remove_all_properties();
@@ -4470,11 +4470,11 @@ static void load_workspace(ApplicationData* data, CString file) {
     StringBuffer<256> new_molecule_file;
     StringBuffer<256> new_trajectory_file;
 
-    String txt = allocate_and_read_textfile(file);
+    StringView txt = allocate_and_read_textfile(file);
     defer { free_string(&txt); };
 
-    CString c_txt = txt;
-    CString line;
+    CStringView c_txt = txt;
+    CStringView line;
     while ((line = extract_line(c_txt))) {
         if (compare_n(line, "[Files]", 7)) {
             while (c_txt && c_txt[0] != '[' && (line = extract_line(c_txt))) {
@@ -4564,7 +4564,7 @@ static void load_workspace(ApplicationData* data, CString file) {
     reset_representations(data);
 }
 
-static void save_workspace(ApplicationData* data, CString file) {
+static void save_workspace(ApplicationData* data, CStringView file) {
     FILE* fptr = fopen(file.cstr(), "w");
     if (!fptr) {
         printf("ERROR! Could not save workspace to file '%s'\n", file.beg());
@@ -4658,7 +4658,7 @@ void create_screenshot(ApplicationData* data) {
 }
 
 // #representation
-static Representation* create_representation(ApplicationData* data, RepresentationType type, ColorMapping color_mapping, CString filter) {
+static Representation* create_representation(ApplicationData* data, RepresentationType type, ColorMapping color_mapping, CStringView filter) {
     ASSERT(data);
     Representation& rep = data->representations.buffer.push_back({});
     rep.type = type;
@@ -4779,7 +4779,7 @@ static void clear_representations(ApplicationData* data) {
 }
 
 // #selection
-static Selection* create_selection(ApplicationData* data, CString name, Bitfield atom_mask) {
+static Selection* create_selection(ApplicationData* data, CStringView name, Bitfield atom_mask) {
     ASSERT(data);
     Selection sel;
     sel.name = name;
@@ -4953,7 +4953,7 @@ static bool handle_selection(ApplicationData* data) {
 }
 
 // #reference-frame
-static ReferenceFrame* create_reference_frame(ApplicationData* data, CString name, CString filter) {
+static ReferenceFrame* create_reference_frame(ApplicationData* data, CStringView name, CStringView filter) {
     ASSERT(data);
     ReferenceFrame ref;
     ref.id = structure_tracking::create_structure();
@@ -5139,12 +5139,21 @@ static void load_trajectory_async(ApplicationData* data) {
             const int32 pre_load_num_frames = data->dynamic.trajectory.num_frames;
             while (read_next_trajectory_frame(&data->dynamic.trajectory)) {
                 data->async.trajectory.fraction = data->dynamic.trajectory.num_frames / (float)data->dynamic.trajectory.frame_offsets.count;
+
+                // WHEN FRAME LOADED
+                auto& frame = get_trajectory_frame(data->dynamic.trajectory, data->dynamic.trajectory.num_frames - 1);
+                const auto& mol = data->dynamic.molecule;
+
+                apply_pbc(frame.atom_position.x, frame.atom_position.y, frame.atom_position.z, mol.atom.mass, mol.sequences, frame.box);
+
                 if (data->async.trajectory.sync.stop_signal) break;
             }
             const int32 post_load_num_frames = data->dynamic.trajectory.num_frames;
             data->async.trajectory.sync.running = false;
             data->async.trajectory.sync.stop_signal = false;
-
+            
+            // WHEN TRAJECTORY LOADED
+            
             // compute_statistics_async(data);
             stats::set_all_property_flags(true, true);
             compute_backbone_angles_async(data);

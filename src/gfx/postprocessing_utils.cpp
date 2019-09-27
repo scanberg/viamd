@@ -186,7 +186,7 @@ static struct {
 
 } gl;
 
-static constexpr CString v_shader_src_fs_quad = R"(
+static constexpr CStringView v_shader_src_fs_quad = R"(
 #version 150 core
 
 out vec2 tc;
@@ -201,7 +201,7 @@ void main() {
 }
 )";
 
-static constexpr CString f_shader_src_linearize_depth = R"(
+static constexpr CStringView f_shader_src_linearize_depth = R"(
 #ifndef PERSPECTIVE
 #define PERSPECTIVE 1
 #endif
@@ -226,7 +226,7 @@ void main() {
 }
 )";
 
-static constexpr CString f_shader_src_mip_map_min_depth = R"(
+static constexpr CStringView f_shader_src_mip_map_min_depth = R"(
 uniform sampler2D u_tex_depth;
 
 out vec4 out_frag;
@@ -244,7 +244,7 @@ void main() {
 }
 )";
 
-static bool setup_program(GLuint* program, CString name, CString f_shader_src, CString defines = {}) {
+static bool setup_program(GLuint* program, CStringView name, CStringView f_shader_src, CStringView defines = {}) {
     ASSERT(program);
     constexpr int BUFFER_SIZE = 1024;
     char buffer[BUFFER_SIZE];
@@ -396,8 +396,8 @@ float compute_sharpness(float radius) { return 30.f / math::sqrt(radius); }
 
 void initialize(int width, int height) {
 
-    String f_shader_src_ssao = allocate_and_read_textfile(VIAMD_SHADER_DIR "/ssao/ssao.frag");
-    String f_shader_src_blur = allocate_and_read_textfile(VIAMD_SHADER_DIR "/ssao/blur.frag");
+    StringView f_shader_src_ssao = allocate_and_read_textfile(VIAMD_SHADER_DIR "/ssao/ssao.frag");
+    StringView f_shader_src_blur = allocate_and_read_textfile(VIAMD_SHADER_DIR "/ssao/blur.frag");
     defer {
         free_string(&f_shader_src_ssao);
         free_string(&f_shader_src_blur);
@@ -488,7 +488,7 @@ static struct {
 } highlight;
 
 void initialize() {
-    String f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/highlight.frag");
+    StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/highlight.frag");
     defer { FREE(f_shader_src.cstr()); };
     setup_program(&highlight.program, "highlight", f_shader_src);
     if (!highlight.selection_texture) glGenTextures(1, &highlight.selection_texture);
@@ -515,7 +515,7 @@ static struct {
 } gl;
 
 void initialize() {
-    String f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/scale_hsv.frag");
+    StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/scale_hsv.frag");
     defer { FREE(f_shader_src.cstr()); };
     setup_program(&gl.program, "scale hsv", f_shader_src);
     gl.uniform_loc.texture_color = glGetUniformLocation(gl.program, "u_texture_atom_color");
@@ -541,7 +541,7 @@ static struct {
 } deferred;
 
 void initialize() {
-    String f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/deferred_shading.frag");
+    StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/deferred_shading.frag");
     defer { FREE(f_shader_src.cstr()); };
     setup_program(&deferred.program, "deferred", f_shader_src);
     deferred.uniform_loc.texture_depth = glGetUniformLocation(deferred.program, "u_texture_depth");
@@ -586,7 +586,7 @@ static struct {
 void initialize() {
     {
         // PASSTHROUGH
-        String f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/tonemap/passthrough.frag");
+        StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/tonemap/passthrough.frag");
         defer { free_string(&f_shader_src); };
 
         setup_program(&passthrough.program, "tonemap_passthrough", f_shader_src);
@@ -594,7 +594,7 @@ void initialize() {
     }
     {
         // EXPOSURE GAMMA
-        String f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/tonemap/exposure_gamma.frag");
+        StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/tonemap/exposure_gamma.frag");
         defer { free_string(&f_shader_src); };
 
         setup_program(&exposure_gamma.program, "tonemap_exposure_gamma", f_shader_src);
@@ -604,7 +604,7 @@ void initialize() {
     }
     {
         // UNCHARTED
-        String f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/tonemap/uncharted.frag");
+        StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/tonemap/uncharted.frag");
         defer { free_string(&f_shader_src); };
 
         setup_program(&filmic.program, "tonemap_filmic", f_shader_src);
@@ -625,7 +625,7 @@ void shutdown() {
 namespace dof {
 void initialize(int32 width, int32 height) {
     {
-        String src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/dof/dof_half_res_prepass.frag");
+        StringView src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/dof/dof_half_res_prepass.frag");
         defer { free_string(&src); };
         setup_program(&gl.bokeh_dof.half_res.program, "dof pre-pass", src);
         if (gl.bokeh_dof.half_res.program) {
@@ -660,7 +660,7 @@ void initialize(int32 width, int32 height) {
 
     // DOF
     {
-        String src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/dof/dof.frag");
+        StringView src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/dof/dof.frag");
 		defer{ free_string(&src); };
         if (setup_program(&gl.bokeh_dof.program, "bokeh dof", src)) {
             gl.bokeh_dof.uniform_loc.tex_color = glGetUniformLocation(gl.bokeh_dof.program, "u_half_res");
@@ -680,7 +680,7 @@ void shutdown() {}
 namespace blit {
 static GLuint program = 0;
 static GLint uniform_loc_texture = -1;
-constexpr CString f_shader_src = R"(
+constexpr CStringView f_shader_src = R"(
 #version 150 core
 
 uniform sampler2D u_texture;
@@ -732,22 +732,22 @@ struct {
 
 void initialize(int32 width, int32 height) {
     {
-        String f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/velocity/blit_velocity.frag");
+        StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/velocity/blit_velocity.frag");
         defer { free_string(&f_shader_src); };
         setup_program(&blit_velocity.program, "screen-space velocity", f_shader_src);
 		blit_velocity.uniform_loc.tex_depth = glGetUniformLocation(blit_velocity.program, "u_tex_depth");
         blit_velocity.uniform_loc.curr_clip_to_prev_clip_mat = glGetUniformLocation(blit_velocity.program, "u_curr_clip_to_prev_clip_mat");
     }
     {
-        constexpr CString defines = "#define TILE_SIZE " TOSTRING(VEL_TILE_SIZE);
-        String f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/velocity/blit_tilemax.frag");
+        constexpr CStringView defines = "#define TILE_SIZE " TOSTRING(VEL_TILE_SIZE);
+        StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/velocity/blit_tilemax.frag");
         defer { free_string(&f_shader_src); };
         setup_program(&blit_tilemax.program, "tilemax", f_shader_src, defines);
         blit_tilemax.uniform_loc.tex_vel = glGetUniformLocation(blit_tilemax.program, "u_tex_vel");
         blit_tilemax.uniform_loc.tex_vel_texel_size = glGetUniformLocation(blit_tilemax.program, "u_tex_vel_texel_size");
     }
     {
-        String f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/velocity/blit_neighbormax.frag");
+        StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/velocity/blit_neighbormax.frag");
         defer { free_string(&f_shader_src); };
         setup_program(&blit_neighbormax.program, "neighbormax", f_shader_src);
         blit_neighbormax.uniform_loc.tex_vel = glGetUniformLocation(blit_neighbormax.program, "u_tex_vel");
@@ -805,7 +805,7 @@ void shutdown() {
 namespace temporal {
 void initialize() {
     {
-        String f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/temporal.frag");
+        StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/temporal.frag");
         defer { free_string(&f_shader_src); };
         setup_program(&gl.temporal.with_motion_blur.program, "temporal aa + motion-blur", f_shader_src);
         setup_program(&gl.temporal.no_motion_blur.program, "temporal aa", f_shader_src, "#define USE_MOTION_BLUR 0\n");

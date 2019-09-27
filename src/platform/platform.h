@@ -130,9 +130,9 @@ struct DirectoryEntry {
     Path name;
 };
 
-CString get_cwd();
-DynamicArray<DirectoryEntry> list_directory(CString directory);
-FileDialogResult file_dialog(FileDialogFlags flags, CString default_path = {}, CString filter = {});
+CStringView get_cwd();
+DynamicArray<DirectoryEntry> list_directory(CStringView directory);
+FileDialogResult file_dialog(FileDialogFlags flags, CStringView default_path = {}, CStringView filter = {});
 /*
 bool add_directory_watch(CString directory, DirectoryWatchCallback, void* usr_data = NULL);
 bool remove_directory_watch(CString directory);

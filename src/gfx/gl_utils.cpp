@@ -27,12 +27,12 @@ bool gl::get_program_link_error(char* buffer, int max_length, GLuint program) {
     }
 }
 
-GLuint gl::compile_shader_from_file(CString filename, GLenum type) {
+GLuint gl::compile_shader_from_file(CStringView filename, GLenum type) {
     ASSERT(type == GL_VERTEX_SHADER || type == GL_GEOMETRY_SHADER || type == GL_FRAGMENT_SHADER || type == GL_COMPUTE_SHADER || type == GL_TESS_CONTROL_SHADER || type == GL_TESS_EVALUATION_SHADER);
     constexpr int buffer_size = 1024;
     char buffer[buffer_size];
 
-    String shader_src = allocate_and_read_textfile(filename);
+    StringView shader_src = allocate_and_read_textfile(filename);
     defer { FREE(shader_src.cstr()); };
 
     if (!shader_src) {
@@ -53,7 +53,7 @@ GLuint gl::compile_shader_from_file(CString filename, GLenum type) {
     return shader;
 }
 
-bool gl::attach_link_detach(GLuint program, Array<const GLuint> shaders) {
+bool gl::attach_link_detach(GLuint program, ArrayView<const GLuint> shaders) {
     ASSERT(program);
     constexpr int buffer_size = 1024;
     char buffer[buffer_size];
@@ -76,7 +76,7 @@ bool gl::attach_link_detach(GLuint program, Array<const GLuint> shaders) {
     return true;
 }
 
-bool gl::attach_link_detach_with_transform_feedback(GLuint program, Array<const GLuint> shaders, Array<const char*> varyings, GLenum buffer_capture_mode) {
+bool gl::attach_link_detach_with_transform_feedback(GLuint program, ArrayView<const GLuint> shaders, ArrayView<const char*> varyings, GLenum buffer_capture_mode) {
     ASSERT(program);
     ASSERT(buffer_capture_mode == GL_INTERLEAVED_ATTRIBS || buffer_capture_mode == GL_SEPARATE_ATTRIBS);
 

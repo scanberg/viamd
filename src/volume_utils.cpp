@@ -102,7 +102,7 @@ void free_volume_texture(GLuint texture) {
     if (glIsTexture(texture)) glDeleteTextures(1, &texture);
 }
 
-void create_tf_texture(GLuint* texture, int* width, CString path) {  
+void create_tf_texture(GLuint* texture, int* width, CStringView path) {  
     ASSERT(texture);  
     // load transfer function
     if (*texture == 0 || !glIsTexture(*texture)) {
@@ -151,8 +151,9 @@ return math::inverse(mat4(vec4(scl.x, 0, 0, 0), vec4(0, scl.y, 0, 0), vec4(0, 0,
     */
 }
 
-void save_volume_to_file(const Volume& volume, CString file) {
-    FILE* f = fopen(file, "wb");
+void save_volume_to_file(const Volume& volume, CStringView file) {
+    StringBuffer<512> zstr = file;
+    FILE* f = fopen(zstr.cstr(), "wb");
     defer { fclose(f); };
 
     if (!f) {

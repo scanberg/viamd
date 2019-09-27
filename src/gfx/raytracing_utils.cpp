@@ -499,7 +499,7 @@ inline uint32 accumulate_voxel_color(uint32 current_color, uint32 new_color, flo
     return math::convert_color(c);
 }
 
-void voxelize_spheres_cpu(const GPUVolume& vol, Array<const vec3> atom_pos, Array<const float> atom_radii, Array<const uint32> atom_colors) {
+void voxelize_spheres_cpu(const GPUVolume& vol, ArrayView<const vec3> atom_pos, ArrayView<const float> atom_radii, ArrayView<const uint32> atom_colors) {
     ASSERT(atom_pos.count == atom_radii.count);
     ASSERT(atom_pos.count == atom_colors.count);
     const int32 N = (int32)atom_pos.count;

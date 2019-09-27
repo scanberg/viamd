@@ -41,7 +41,7 @@ void free_image(Image* img) {
     img->data = nullptr;
 }
 
-bool read_image(Image* img, CString filename, int32 requestedChannels) {
+bool read_image(Image* img, CStringView filename, int32 requestedChannels) {
     ASSERT(img);
 
     StringBuffer<512> zstr = filename;
@@ -58,7 +58,7 @@ bool read_image(Image* img, CString filename, int32 requestedChannels) {
     return true;
 }
 
-bool write_image(const Image& img, CString filename) {
+bool write_image(const Image& img, CStringView filename) {
     StringBuffer<512> zstr = filename;
     return stbi_write_bmp(zstr.cstr(), img.width, img.height, img.channels, img.data) != 0;
 }

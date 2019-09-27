@@ -25,7 +25,7 @@
 #define CATCH_CONFIG_MAIN
 #include "catch.hpp"
 
-constexpr CString CAFFINE_PDB = R"(
+constexpr CStringView CAFFINE_PDB = R"(
 ATOM      1  N1  BENZ    1       5.040   1.944  -8.324                          
 ATOM      2  C2  BENZ    1       6.469   2.092  -7.915                          
 ATOM      3  C3  BENZ    1       7.431   0.865  -8.072                          
@@ -114,11 +114,11 @@ TEST_CASE("Bitfield", "[Bitfield]") {
 
 TEST_CASE("Array", "[Array]") {
     static constexpr int data[4] = {1, 2, 4, 5};
-    constexpr Array<const int> arr(data);
+    constexpr ArrayView<const int> arr(data);
     STATIC_ASSERT(arr.size() == 4, "Expected length to be 4");
     STATIC_ASSERT(arr[2] == 4, "Expected data[2] to be 4");
 
-    constexpr CString cstr = "Cool";
+    constexpr CStringView cstr = "Cool";
     STATIC_ASSERT(cstr.size() == 4, "Expected length to be 4");
 }
 

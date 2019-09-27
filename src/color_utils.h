@@ -18,17 +18,18 @@ inline vec4 color_from_hash(uint32 hash) {
     return vec4(rgb, 1);
 }
 
-void color_atoms_uniform(Array<uint32> dst_atom_colors, const vec4& color);
-void color_atoms_cpk(Array<uint32> dst_atom_colors, Array<const Element> elements);
-void color_atoms_residue_id(Array<uint32> dst_atom_colors, Array<const Residue> residues);
-void color_atoms_residue_index(Array<uint32> dst_atom_colors, Array<const Residue> residues);
-void color_atoms_chain_id(Array<uint32> dst_atom_colors, Array<const Chain> chains);
-void color_atoms_chain_index(Array<uint32> dst_atom_colors, Array<const Chain> chains);
+void color_atoms_uniform(ArrayView<uint32> dst_atom_colors, const vec4& color);
+void color_atoms_cpk(ArrayView<uint32> dst_atom_colors, ArrayView<const Element> elements);
+void color_atoms_residue_id(ArrayView<uint32> dst_atom_colors, ArrayView<const Residue> residues);
+void color_atoms_residue_index(ArrayView<uint32> dst_atom_colors, ArrayView<const Residue> residues);
+void color_atoms_chain_id(ArrayView<uint32> dst_atom_colors, ArrayView<const Chain> chains);
+void color_atoms_chain_index(ArrayView<uint32> dst_atom_colors, ArrayView<const Chain> chains);
 
-void color_atoms_backbone_angles(Array<uint32> dst_atom_colors, Array<const Residue> residues, Array<const BackboneSequence> bb_seq, Array<const vec2> bb_angles, const Image& ramachandran_color_map);
+void color_atoms_backbone_angles(ArrayView<uint32> dst_atom_colors, ArrayView<const Residue> residues, ArrayView<const BackboneSequence> bb_seq, ArrayView<const vec2> bb_angles,
+                                 const Image& ramachandran_color_map);
 
-void filter_colors(Array<uint32> colors, Bitfield mask);
-void desaturate_colors(Array<uint32> colors, Bitfield mask, float scale);
+void filter_colors(ArrayView<uint32> colors, Bitfield mask);
+void desaturate_colors(ArrayView<uint32> colors, Bitfield mask, float scale);
 
 vec3 magma_color_scale(float t);
 vec3 inferno_color_scale(float t);

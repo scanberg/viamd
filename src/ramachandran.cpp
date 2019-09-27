@@ -353,7 +353,7 @@ void clear_accumulation_texture() {
     glViewport(last_viewport[0], last_viewport[1], (GLsizei)last_viewport[2], (GLsizei)last_viewport[3]);
 }
 
-void compute_accumulation_texture(Array<const vec2> angles, vec4 color, float radius, float outline) {
+void compute_accumulation_texture(ArrayView<const vec2> angles, vec4 color, float radius, float outline) {
     constexpr float ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
 
     struct Coord {

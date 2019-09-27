@@ -21,7 +21,7 @@ typedef uint64 ID;
 constexpr ID INVALID_ID = 0;
 
 struct Histogram {
-    Array<float> bins = {};
+    ArrayView<float> bins = {};
     Range<float> value_range = {0, 0};
     Range<float> bin_range = {0, 0};
     int32 num_samples = 0;
@@ -43,7 +43,7 @@ struct InstanceData {
     InstanceData(int32 size) { data = allocate_array<float>(size); }
     ~InstanceData() { free_array(&data); }
 
-    Array<float> data;
+    ArrayView<float> data;
 };
 
 /*
@@ -86,8 +86,8 @@ struct Property {
     Histogram full_histogram{};
     Histogram filt_histogram{};
 
-    Array<InstanceData> instance_data{};
-    Array<StructureData> structure_data{};
+    ArrayView<InstanceData> instance_data{};
+    ArrayView<StructureData> structure_data{};
     DynamicArray<Property*> dependencies{};
 };
 
@@ -101,14 +101,14 @@ struct VisualizationStyle {
 // Helper functions
 void set_error_message(Property* prop, const char* fmt, ...);
 
-void init_instance_data(Array<InstanceData>* instance_data, int32 num_instances, int32 num_frames);
-void free_instance_data(Array<InstanceData>* instance_data);
+void init_instance_data(ArrayView<InstanceData>* instance_data, int32 num_instances, int32 num_frames);
+void free_instance_data(ArrayView<InstanceData>* instance_data);
 
-void init_structure_data(Array<StructureData>* structure_data, int32 count);
-bool sync_structure_data_length(Array<StructureData> data);
-bool extract_args_structures(Array<StructureData> data, Array<CString> arg, const MoleculeStructure& structure);
+void init_structure_data(ArrayView<StructureData>* structure_data, int32 count);
+bool sync_structure_data_length(ArrayView<StructureData> data);
+bool extract_args_structures(ArrayView<StructureData> data, ArrayView<CStringView> arg, const MoleculeStructure& structure);
 
-Array<const vec3> extract_positions(Structure structure, Array<const vec3> atom_positions);
+ArrayView<const vec3> extract_positions(Structure structure, ArrayView<const vec3> atom_positions);
 
 template <typename Callback>
 void for_each_filtered_property_structure_in_frame(Property* prop, int32 frame_idx, Callback cb) {
@@ -125,15 +125,15 @@ void for_each_filtered_property_structure_in_frame(Property* prop, int32 frame_i
     }
 }
 
-typedef bool (*PropertyComputeFunc)(Property* prop, const Array<CString> args, const MoleculeDynamic& dynamic);
+typedef bool (*PropertyComputeFunc)(Property* prop, const ArrayView<CStringView> args, const MoleculeDynamic& dynamic);
 typedef bool (*PropertyVisualizeFunc)(const Property& prop, const MoleculeDynamic& dynamic);
 
 // HISTOGRAM
 void init_histogram(Histogram* hist, int32 num_bins);
 void free_histogram(Histogram* hist);
 
-void compute_histogram(Histogram* hist, Array<const float> data);
-void compute_histogram(Histogram* hist, Array<const float> data, Range<float> filter);
+void compute_histogram(Histogram* hist, ArrayView<const float> data);
+void compute_histogram(Histogram* hist, ArrayView<const float> data, Range<float> filter);
 
 void clear_histogram(Histogram* hist);
 void normalize_histogram(Histogram* hist);
@@ -163,14 +163,14 @@ VisualizationStyle* get_style();
 // void compute_property_histograms(Property* prop);
 // void compute_property_histograms(Property* prop, Range frame_filter);
 
-bool register_property_command(CString cmd_keyword, PropertyComputeFunc compute_func, PropertyVisualizeFunc visualize_func);
+bool register_property_command(CStringView cmd_keyword, PropertyComputeFunc compute_func, PropertyVisualizeFunc visualize_func);
 
-Array<CString> get_property_commands();
-Array<CString> get_structure_commands();
-Array<CString> get_property_names();
+ArrayView<CStringView> get_property_commands();
+ArrayView<CStringView> get_structure_commands();
+ArrayView<CStringView> get_property_names();
 
 // PROPERTY
-Property* create_property(CString name = {}, CString args = {});
+Property* create_property(CStringView name = {}, CStringView args = {});
 void remove_property(Property* prop);
 void remove_all_properties();
 void move_property_up(Property* prop);
@@ -182,8 +182,8 @@ void clear_all_properties();
 
 void set_all_property_flags(bool data_dirty, bool filter_dirty);
 
-Array<Property*> get_properties();
-Property* find_property(CString name);
+ArrayView<Property*> get_properties();
+Property* find_property(CStringView name);
 
 // DENSITY VOLUME
 void compute_density_volume(Volume* vol, const MoleculeTrajectory& traj, Range<int32> frame_range, const mat4& world_to_volume);
@@ -219,9 +219,9 @@ void compute_density_volume_with_basis(Volume* vol, const MoleculeTrajectory& tr
     for (auto prop : get_properties()) {
         if (!prop->enable_volume) continue;
         for (int32 frame_idx = frame_range.beg; frame_idx < frame_range.end; frame_idx++) {
-            const Array<const float> pos_x = get_trajectory_position_x(traj, frame_idx);
-            const Array<const float> pos_y = get_trajectory_position_y(traj, frame_idx);
-            const Array<const float> pos_z = get_trajectory_position_z(traj, frame_idx);
+            const ArrayView<const float> pos_x = get_trajectory_position_x(traj, frame_idx);
+            const ArrayView<const float> pos_y = get_trajectory_position_y(traj, frame_idx);
+            const ArrayView<const float> pos_z = get_trajectory_position_z(traj, frame_idx);
             //const mat4 world_to_volume_matrix = func(frame_idx);
             for_each_filtered_property_structure_in_frame(prop, frame_idx, [vol, frame_idx, &pos_x, &pos_y, &pos_z, &func](const Structure& s) {
                 for (int32 i = s.beg_idx; i < s.end_idx; i++) {

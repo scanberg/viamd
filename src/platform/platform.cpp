@@ -295,7 +295,7 @@ void render_imgui(Context* ctx) {
 
 void swap_buffers(Context* ctx) { glfwSwapBuffers((GLFWwindow*)ctx->window.ptr); }
 
-FileDialogResult file_dialog(FileDialogFlags flags, CString default_path, CString filter) {
+FileDialogResult file_dialog(FileDialogFlags flags, CStringView default_path, CStringView filter) {
     // Create zero terminated strings
     Path path_buf = default_path;
     convert_backslashes(path_buf);

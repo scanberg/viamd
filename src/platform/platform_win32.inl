@@ -19,7 +19,7 @@ float compute_delta_ms(Timestamp t0, Timestamp t1) {
     return ms;
 }
 
-DynamicArray<DirectoryEntry> list_directory(CString dir_path) {
+DynamicArray<DirectoryEntry> list_directory(CStringView dir_path) {
     DynamicArray<DirectoryEntry> res;
 
     WIN32_FIND_DATA ffd;
@@ -50,7 +50,7 @@ DynamicArray<DirectoryEntry> list_directory(CString dir_path) {
     return res;
 }
 
-CString get_cwd() {
+CStringView get_cwd() {
     _getcwd(data.file_system.cwd.cstr(), 512);
 	return data.file_system.cwd;
 }
