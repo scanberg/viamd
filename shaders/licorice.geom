@@ -22,8 +22,6 @@ out Fragment {
     flat vec4  capsule_axis_length;
 } out_frag;
 
-
-
 vec4 view_vertices[8];
 vec4 proj_vertices[8];
 
@@ -81,15 +79,15 @@ void main()
     p0 -= a * r;
     p1 += a * r;
 
-    vec3 B = vec3(0,0,1);
-    vec3 A = vec3(1,0,0);
+    const vec3 B = vec3(0,0,1);
+    const vec3 A = vec3(1,0,0);
     vec3 o = get_ortho_vec(a,A,B);
 
     // Declare scratch variables for basis vectors:
     vec3 i,j,k;
 
     // Compute vertices of prismoid:
-    j = a; i = o; k = normalize(cross(i, j)); i = normalize(cross(k, j)); ; i *= r; k *= r;
+    j = a; i = o; k = normalize(cross(i, j)); i = cross(k, j); i *= r; k *= r;
     view_vertices[0] = vec4(p0 + i + k, 1);
     view_vertices[1] = vec4(p0 + i - k, 1);
     view_vertices[2] = vec4(p0 - i - k, 1);

@@ -4,7 +4,6 @@
 #include "view_param.h"
 
 #include <core/types.h>
-#include <core/array_types.h>
 #include <core/vector_types.h>
 #include <mol/molecule_structure.h>
 #include <mol/molecule_utils.h>

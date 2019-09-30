@@ -5144,7 +5144,7 @@ static void load_trajectory_async(ApplicationData* data) {
                 auto& frame = get_trajectory_frame(data->dynamic.trajectory, data->dynamic.trajectory.num_frames - 1);
                 const auto& mol = data->dynamic.molecule;
 
-                apply_pbc(frame.atom_position.x, frame.atom_position.y, frame.atom_position.z, mol.atom.mass, mol.sequences, frame.box);
+                //apply_pbc(frame.atom_position.x, frame.atom_position.y, frame.atom_position.z, mol.atom.mass, mol.sequences, frame.box);
 
                 if (data->async.trajectory.sync.stop_signal) break;
             }
