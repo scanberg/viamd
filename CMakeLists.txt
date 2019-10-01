@@ -23,10 +23,10 @@ if (MSVC)
     message(STATUS "MSVC configuration was used")
     add_compile_options(/MT /W4 /wd4201 /wd4324 /wd26451 /MP /GR- /fp:fast /MP)# /arch:AVX2
 
-if (VIAMD_PROFILE_COMPILE_TIMES)
-	add_compile_options(/Bt+ /d1reportTime /d2cgsummary)
-    add_link_options(/time+)
-endif()
+	if (VIAMD_PROFILE_COMPILE_TIMES)
+		add_compile_options(/Bt+ /d1reportTime /d2cgsummary)
+		add_link_options(/time+)
+	endif()
 	add_compile_options_config(RELEASE /Oi /GS-)
     add_compile_options_config(DEBUG /MTd)
 else()
@@ -34,6 +34,9 @@ else()
     add_compile_options(
         -Wall -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types -mavx -maes
     )
+	if(VIAMD_PROFILE_COMPILE_TIMES)
+		add_compile_options(-ftime-trace)
+	endif()
 	#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types")
 endif()
 
@@ -43,6 +46,7 @@ option(GLFW_BUILD_TESTS OFF)
 option(GLFW_BUILD_DOCS OFF)
 option(GLFW_INSTALL OFF)
 option(GLFW_VULKAN_STATIC OFF)
+set_property(GLOBAL PROPERTY USE_FOLDERS OFF)
 
 option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
 option(VIAMD_USE_RELATIVE_PATHS "Use relative paths for resource directories" OFF)

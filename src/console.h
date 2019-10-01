@@ -2,6 +2,7 @@
 
 #include <core/common.h>
 #include <imgui.h>
+#include <ctype.h>
 
 struct Console {
     char input_buffer[256];

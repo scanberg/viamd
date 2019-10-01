@@ -24,21 +24,19 @@ if(UNIX AND NOT APPLE)
             ${SRC}
             ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_zenity.c)
     endif()
-endif()
-
-if(APPLE)
+elseif(APPLE)
     set(SRC
         ${SRC}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_cocoa.m)
     #set(LIB \"-framework AppKit\")
-endif()
-
-if(MSVC)
+else() #windows
     set(SRC
         ${SRC}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_win.cpp)
-    set(DEF "_CRT_SECURE_NO_WARNINGS")
-	set(OPT "/W3" "/wd4245")
+		set(DEF "_CRT_SECURE_NO_WARNINGS")
+	if(MSVC)
+		set(OPT "/W3" "/wd4245")
+	endif()
 endif()
 
 add_library(nativefiledialog ${SRC})

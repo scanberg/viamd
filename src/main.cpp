@@ -22,8 +22,6 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui_internal.h>
 
-#include <glm/gtx/io.hpp>
-
 #include "gfx/gl.h"
 #include "gfx/molecule_draw.h"
 #include "gfx/immediate_draw_utils.h"
