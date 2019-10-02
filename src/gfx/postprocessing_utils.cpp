@@ -704,29 +704,30 @@ void shutdown() {
 }  // namespace blit
 
 namespace velocity {
-#define VEL_TILE_SIZE 20
+#define VEL_TILE_SIZE 10
 
 struct {
     GLuint program = 0;
     struct {
 		GLint tex_depth = -1;
         GLint curr_clip_to_prev_clip_mat = -1;
+        GLint jitter_uv = -1;
     } uniform_loc;
 } blit_velocity;
 
 struct {
     GLuint program = 0;
     struct {
-        GLint tex_vel;
-        GLint tex_vel_texel_size;
+        GLint tex_vel = -1;
+        GLint tex_vel_texel_size = -1;
     } uniform_loc;
 } blit_tilemax;
 
 struct {
     GLuint program = 0;
     struct {
-        GLint tex_vel;
-        GLint tex_vel_texel_size;
+        GLint tex_vel = -1;
+        GLint tex_vel_texel_size = -1;
     } uniform_loc;
 } blit_neighbormax;
 
@@ -737,6 +738,8 @@ void initialize(int32 width, int32 height) {
         setup_program(&blit_velocity.program, "screen-space velocity", f_shader_src);
 		blit_velocity.uniform_loc.tex_depth = glGetUniformLocation(blit_velocity.program, "u_tex_depth");
         blit_velocity.uniform_loc.curr_clip_to_prev_clip_mat = glGetUniformLocation(blit_velocity.program, "u_curr_clip_to_prev_clip_mat");
+        blit_velocity.uniform_loc.jitter_uv = glGetUniformLocation(blit_velocity.program, "u_jitter_uv");
+
     }
     {
         constexpr CStringView defines = "#define TILE_SIZE " TOSTRING(VEL_TILE_SIZE);
@@ -1219,9 +1222,13 @@ void blit_static_velocity(GLuint depth_tex, const ViewParam& view_param) {
 	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, depth_tex);
 
+    const vec2 res = view_param.resolution;
+    const vec4 jitter_uv = vec4(view_param.jitter / res, view_param.previous.jitter / res);
+
     glUseProgram(velocity::blit_velocity.program);
 	glUniform1i(velocity::blit_velocity.uniform_loc.tex_depth, 0);
     glUniformMatrix4fv(velocity::blit_velocity.uniform_loc.curr_clip_to_prev_clip_mat, 1, GL_FALSE, &curr_clip_to_prev_clip_mat[0][0]);
+    glUniform4fv(velocity::blit_velocity.uniform_loc.jitter_uv, 1, &jitter_uv[0]);
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);

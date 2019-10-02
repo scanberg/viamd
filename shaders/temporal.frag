@@ -127,6 +127,10 @@ float depth_sample_linear(vec2 uv) {
 	return texture(u_tex_linear_depth, uv).x;
 }
 
+vec2 sample_velocity(vec2 uv) {
+	return texture(u_tex_vel, uv).xy;
+}
+
 vec3 find_closest_fragment_3x3(vec2 uv)
 {
 	vec2 dd = abs(u_texel_size.xy);
@@ -253,19 +257,86 @@ vec4 sample_color_motion(sampler2D tex, vec2 uv, vec2 ss_vel)
 	float srand = PDsrand(uv + vec2(u_time, u_time));
 	vec2 vtap = v / taps;
 	vec2 pos0 = uv + vtap * (0.5 * srand);
-	vec4 accu = vec4(0.0);
-	float wsum = 0.0;
+	vec4 accu = sample_color(tex, uv);
+	float wsum = 1.0;
 
 	for (int i = -taps; i <= taps; i++)
 	{
-		float w = 1.0;// box
-		//float w = taps - abs(i) + 1;// triangle
-		//float w = 1.0 / (1 + abs(i));// pointy triangle
-		accu += w * sample_color(tex, pos0 + i * vtap);
-		wsum += w;
+        vec2 uv = pos0 + i * vtap;
+        //float w = 1.0;// box
+        float w = taps - abs(i) + 1;// triangle
+        //float w = 1.0 / (1 + abs(i));// pointy triangle
+        accu += w * sample_color(tex, pos0 + i * vtap);
+        wsum += w;
 	}
 
 	return accu / wsum;
+}
+
+// McGuire2012Blur
+float cone(float d, float t) {
+	return clamp(1.0 - d/t, 0.0, 1.0);
+}
+
+float cylinder(float d, float t) {
+	return 1.0 - smoothstep(0.95*t, 1.05*t, d);
+}
+
+float soft_depth_compare(float z_a, float z_b) {
+	const float SOFT_Z_EXTENT = -0.05;
+	return clamp(1.0 - (z_a - z_b) / SOFT_Z_EXTENT, 0.0, 1.0);
+}
+
+vec2 round_to_nearest(vec2 uv) {
+	return ivec2(uv * u_texel_size.zw) * u_texel_size.xy;
+}
+
+vec4 reconstruct_color(sampler2D color_tex, vec2 uv0, vec2 ss_vel_max)
+{
+    const int taps = 3;// on either side!
+
+    if (length(ss_vel_max) < FLT_EPS) {
+    	return sample_color(color_tex, uv0);
+    }
+
+    float srand = PDsrand(uv0 + vec2(u_time, u_time));
+    vec2 vtap = 0.5 * ss_vel_max / taps;
+    vec2 p0 = uv0 + vtap * (0.5 * srand);
+    float d0 = depth_sample_linear(p0);
+    float v0 = length(sample_velocity(p0));
+    float w = 1.0;
+    float wsum = w;
+    vec4 accu = w * sample_color(color_tex, p0);
+
+    for (int i = 1; i <= taps; i++)
+    {
+        vec2 uv = p0 - i * vtap; // Round to nearest?
+        float d = depth_sample_linear(uv);
+        float v = length(sample_velocity(uv));
+        float f = soft_depth_compare(d0, d);
+        float b = soft_depth_compare(d, d0);
+        float duv = length(uv0 - uv);
+
+        w = f * cone(duv, v) + b * cone(duv, v0) + cylinder(duv, v) * cylinder(duv, v0) * 2.0;
+        wsum += w;
+        accu += w * sample_color(color_tex, uv);
+    }
+
+    for (int i = 1; i <= taps; i++)
+    {
+        vec2 uv = p0 + i * vtap; // Round to nearest?
+        float d = depth_sample_linear(uv);
+        float v = length(sample_velocity(uv));
+        float f = soft_depth_compare(d0, d);
+        float b = soft_depth_compare(d, d0);
+        float duv = length(uv0 - uv);
+
+        w = f * cone(duv, v) + b * cone(duv, v0) + cylinder(duv, v) * cylinder(duv, v0) * 2.0;
+        wsum += w;
+        accu += w * sample_color(color_tex, uv);
+    }
+
+    return accu / wsum;
 }
 
 vec4 temporal_reprojection(vec2 ss_txc, vec2 ss_vel, float vs_dist)
@@ -334,10 +405,10 @@ vec4 temporal_reprojection(vec2 ss_txc, vec2 ss_vel, float vs_dist)
 
 	vec2 ss_offset01 = k_min_max_support * vec2(-u_texel_size.x, u_texel_size.y);
 	vec2 ss_offset11 = k_min_max_support * vec2(u_texel_size.x, u_texel_size.y);
-	vec4 c00 = sample_color(_MainTex, uv - ss_offset11);
-	vec4 c10 = sample_color(_MainTex, uv - ss_offset01);
-	vec4 c01 = sample_color(_MainTex, uv + ss_offset01);
-	vec4 c11 = sample_color(_MainTex, uv + ss_offset11);
+	vec4 c00 = sample_color(u_tex_main, uv - ss_offset11);
+	vec4 c10 = sample_color(u_tex_main, uv - ss_offset01);
+	vec4 c01 = sample_color(u_tex_main, uv + ss_offset01);
+	vec4 c11 = sample_color(u_tex_main, uv + ss_offset11);
 
 	vec4 cmin = min(c00, min(c10, min(c01, c11)));
 	vec4 cmax = max(c00, max(c10, max(c01, c11)));
@@ -412,8 +483,6 @@ void main() {
 	float vs_dist = depth_sample_linear(uv);
 #endif
 
-ss_vel = vec2(0,0);
-
 	// temporal resolve
 	vec4 color_temporal = temporal_reprojection(uv, ss_vel, vs_dist);
 
@@ -428,15 +497,17 @@ ss_vel = vec2(0,0);
 	#endif
 
 	float vel_mag = length(ss_vel * u_texel_size.zw);
-	const float vel_trust_full = 2.0;
-	const float vel_trust_none = 15.0;
+	const float vel_trust_full = 2.0;  // 2.0
+	const float vel_trust_none = 15.0; // 15.0
 	const float vel_trust_span = vel_trust_none - vel_trust_full;
 	float trust = 1.0 - clamp(vel_mag - vel_trust_full, 0.0, vel_trust_span) / vel_trust_span;
 
 	#if UNJITTER_COLORSAMPLES
-		vec4 color_motion = sample_color_motion(u_tex_main, uv - u_jitter_uv.xy, ss_vel);
+	//vec4 color_motion = reconstruct_color(u_tex_main, uv, ss_vel);
+	vec4 color_motion = sample_color_motion(u_tex_main, uv, ss_vel);
 	#else
-		vec4 color_motion = sample_color_motion(u_tex_main, uv, ss_vel);
+	//vec4 color_motion = reconstruct_color(u_tex_main, uv - u_jitter_uv.xy, ss_vel);
+	vec4 color_motion = sample_color_motion(u_tex_main, uv - u_jitter_uv.xy, ss_vel);
 	#endif
 
 	vec4 to_screen = resolve_color(mix(color_motion, color_temporal, trust));
@@ -447,6 +518,7 @@ ss_vel = vec2(0,0);
 	//// NOTE: velocity debug
 	//to_screen.g += 1000.0 * length(ss_vel);
 	//to_screen = vec4(1000.0 * abs(ss_vel), 0.0, 0.0);
+    //to_screen = vec4(ss_vel*1000,0,1);
 
 	out_buff = to_buffer;
 	out_frag = to_screen;

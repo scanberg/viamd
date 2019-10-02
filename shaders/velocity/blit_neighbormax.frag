@@ -2,7 +2,7 @@
 
 #pragma optionNV(unroll all)
 
-#define EXTENT 1
+#define EXTENT 2
 
 uniform sampler2D u_tex_vel;
 uniform vec2 u_tex_vel_texel_size;
