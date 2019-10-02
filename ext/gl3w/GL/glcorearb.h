@@ -35,10 +35,8 @@ extern "C" {
 */
 
 #if defined(_WIN32) && !defined(APIENTRY) && !defined(__CYGWIN__) && !defined(__SCITECH_SNAP__)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN 1
-#endif
-#include <windows.h>
+#define APIENTRY __stdcall
+#define APIENTRY_DEFINED
 #endif
 
 #ifndef APIENTRY
@@ -5666,6 +5664,11 @@ GLAPI void APIENTRY glFramebufferTextureMultiviewOVR (GLenum target, GLenum atta
 #ifndef GL_OVR_multiview2
 #define GL_OVR_multiview2 1
 #endif /* GL_OVR_multiview2 */
+
+#ifdef APIENTRY_DEFINED
+#undef APIENTRY
+#undef APIENTRY_DEFINED
+#endif
 
 #ifdef __cplusplus
 }
