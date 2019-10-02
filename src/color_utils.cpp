@@ -300,6 +300,7 @@ static const vec3 green_data[] = {{0.031373, 0.301961, 0.188235}, {0.039216, 0.4
                                   {0.125490, 0.619608, 0.247059}, {0.211765, 0.701961, 0.309804}, {0.305882, 0.760784, 0.372549}, {0.419608, 0.839216, 0.454902},
                                   {0.556863, 0.901961, 0.564706}, {0.709804, 0.949020, 0.694118}, {0.917647, 1.000000, 0.901961}};
 
+#if 0
 static vec3 lerp_color_scale(const vec3* data, int size, float t) {
     const int N = size - 1;
     const float v = math::clamp(t * N, 0.0f, (float)N);
@@ -308,6 +309,7 @@ static vec3 lerp_color_scale(const vec3* data, int size, float t) {
     const vec3 res = math::mix(data[i0], data[i1], math::fract(v));
     return res;
 }
+#endif
 
 static vec3 lerp_color_scale_in_Lab(const vec3* data, int size, float t) {
     const int N = size - 1;

@@ -69,12 +69,14 @@ static PropertyComputeFunc find_property_compute_func(CStringView cmd) {
     return nullptr;
 }
 
+#if 0
 static PropertyVisualizeFunc find_property_visualize_func(CStringView cmd) {
     auto e = find_property_func_entry(COMPUTE_ID(cmd));
     if (e) return e->visualize_func;
 
     return nullptr;
 }
+#endif
 
 static StructureFuncEntry* find_structure_func_entry(ID hash) {
     for (auto& e : ctx.structure_func_entries) {

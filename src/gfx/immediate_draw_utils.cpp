@@ -214,7 +214,7 @@ void flush() {
     // glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     glUseProgram(program);
-    glLineWidth(2.f);
+    glLineWidth(1.f);
 
     glUniform1f(uniform_loc_point_size, 4.f);
 

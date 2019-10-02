@@ -28,6 +28,7 @@ struct Context {
 
 Context* context = nullptr;
 
+#if 0
 // from here https://stackoverflow.com/questions/4372224/fast-method-for-computing-3x3-symmetric-matrix-spectral-decomposition
 // Slightly modified version of  Stan Melax's code for 3x3 matrix diagonalization (Thanks Stan!)
 // source: http://www.melax.com/diag.html?attredirects=0
@@ -125,13 +126,17 @@ static void Diagonalize(const float (&A)[3][3], float (&Q)[3][3], float (&D)[3][
         q[3] /= mq;
     }
 }
+#endif
 
+#if 0
 static void diagonalize(const mat3& M, mat3* Q, mat3* D) {
     ASSERT(Q);
     ASSERT(D);
     Diagonalize((const float(&)[3][3])M, (float(&)[3][3]) * Q, (float(&)[3][3]) * D);
 }
+#endif
 
+#if 0
 static void decompose(const mat3& M, mat3* R, mat3* S) {
     ASSERT(R);
     ASSERT(S);
@@ -149,6 +154,7 @@ static void decompose(const mat3& M, mat3* R, mat3* S) {
     *S = math::transpose(Q) * D * Q;
     *R = M * math::inverse(*S);
 }
+#endif
 
 /*
 // clang-format off
@@ -223,6 +229,7 @@ static mat3 compute_mass_weighted_cross_covariance_matrix(const float* x0, const
     return A;
 }
 
+#if 0
 // clang-format off
 static mat3 compute_mass_weighted_cross_covariance_matrix(const float* x0, const float* y0, const float* z0,
                                                           const float* x1, const float* y1, const float* z1,
@@ -257,6 +264,7 @@ static mat3 compute_mass_weighted_cross_covariance_matrix(const float* x0, const
 
     return A;
 }
+#endif
 
 // clang-format off
 static mat3 compute_mass_weighted_covariance_matrix(const float* x, const float* y, const float* z,
@@ -420,6 +428,7 @@ mat3 compute_rotation(const float* x0, const float* y0, const float* z0,
     return extract_rotation(A);  // Return rotational part
 }
 
+#if 0
 // clang-format off
 static void compute_residual_error(float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z,
                                    const float* RESTRICT src_x, const float* RESTRICT src_y, const float* RESTRICT src_z,
@@ -440,6 +449,7 @@ static void compute_residual_error(float* RESTRICT out_x, float* RESTRICT out_y,
         out_z[i] = d.z;
     }
 }
+#endif
 
 #if 0
 // RBF functions
