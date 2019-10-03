@@ -5,7 +5,7 @@
 #include <core/vector_types.h>
 
 struct Volume {
-    typedef float VoxelDataType;
+    using VoxelDataType = float;
     ivec3 dim = {0, 0, 0};
     ArrayView<VoxelDataType> voxel_data{};
     Range<float32> voxel_range = {0, 0};

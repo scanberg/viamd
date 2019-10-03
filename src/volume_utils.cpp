@@ -131,7 +131,6 @@ void set_volume_texture_data(GLuint texture, ivec3 dim, void* data) {
     if (glIsTexture(texture)) {
         glBindTexture(GL_TEXTURE_3D, texture);
         glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, dim.x, dim.y, dim.z, GL_RED, GL_FLOAT, data);
-        // glTexImage3D(GL_TEXTURE_3D, 0, GL_R32F, volume.dim.x, volume.dim.y, volume.dim.z, 0, GL_RED, GL_FLOAT, volume.voxel_data.data);
         glBindTexture(GL_TEXTURE_3D, 0);
     }
 }
@@ -178,14 +177,14 @@ void render_volume_texture(GLuint volume_texture, GLuint tf_texture, GLuint dept
     glEnable(GL_CULL_FACE);
     glCullFace(GL_FRONT);
 
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, depth_texture);
+
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_3D, volume_texture);
 
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, tf_texture);
-
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, depth_texture);
 
     glUseProgram(gl.program);
 

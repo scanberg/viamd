@@ -340,8 +340,7 @@ int main() {
 
 		const auto t2 = TIME();
 		for (int32 i = 0; i < num_iter; i++) {
-			vec3 min_box, max_box;
-			compute_bounding_box(min_box, max_box, x, y, z, size);
+			AABB aabb = compute_aabb(x, y, z, size);
 		}
 		const auto t3 = TIME();
 		const auto time_vec = MILLISEC(t2, t3) / (double)num_iter;

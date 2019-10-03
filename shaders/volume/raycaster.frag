@@ -97,10 +97,12 @@ void main() {
     while (t < tEnd) {
         vec3 samplePos = entryPos + t * dir;
 
+        /*
         if (samplePos.y > 0.5) {
             t += tIncr;
             continue;
         }
+        */
 
         float density = texture(u_tex_volume, samplePos).r;
         vec4 srcColor = classify(density * u_scale);

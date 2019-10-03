@@ -46,11 +46,11 @@ vec3 depth_of_field(vec2 tex_coord, float focus_point, float focus_scale) {
 	float center_coc    = get_blur_size(center_depth, focus_point, focus_scale);
 	vec4  color_coc_sum = vec4(center_color, center_coc);
 
-	vec4 noise = srand4(tex_coord + vec2(u_time, u_time) + 0.6959174) * 3.141259265 * 2.0;
+	//vec4 noise = srand4(tex_coord + vec2(u_time, u_time) + 0.6959174) * 3.141259265 * 2.0;
 
 	float contrib_sum   = 1.0;
 	float radius        = RAD_SCALE;
-	float ang           = noise.z * PI;
+	float ang           = 0.0; //noise.z * PI;
 
 	for (; radius < MAX_BLUR_SIZE; ang += GOLDEN_ANGLE)
 	{
@@ -98,5 +98,6 @@ void main() {
 
 	// To hide banding artifacts
 	vec4 noise = srand4(tc + u_time + 0.6959174) / 15.0;
-	out_frag = vec4(dof + noise.xyz, 1);
+	dof += noise.xyz;
+	out_frag = vec4(dof, 1);
 }

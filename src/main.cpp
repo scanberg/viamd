@@ -140,7 +140,7 @@ enum class SelectionLevel { Atom, Residue, Chain };
 enum class SelectionOperator { Or, And };
 enum class SelectionGrowth { CovalentBond, Radial };
 enum class RepresentationType { Vdw, Licorice, BallAndStick, Ribbons, Cartoon };
-enum class TrackingMode { Absolute, Relative, hybrid };
+enum class TrackingMode { Absolute, Relative, Hybrid };
 
 enum AtomBit_ { AtomBit_Highlighted = BIT(0), AtomBit_Selected = BIT(1), AtomBit_Visible = BIT(2) };
 
@@ -242,7 +242,7 @@ struct ReferenceFrame {
     bool show = false;
     bool filter_is_ok = false;
     structure_tracking::ID id = 0;
-    TrackingMode tracking_mode = TrackingMode::hybrid;
+    TrackingMode tracking_mode = TrackingMode::Hybrid;
 
     mat4 world_to_reference = {};
     mat4 reference_to_world = {};
@@ -443,8 +443,11 @@ struct ApplicationData {
     } simulation_box;
 
     struct {
+        bool show_window = false;
         bool enabled = false;
         bool dirty = true;
+        bool enable_density_view = false;
+
         vec3 color = vec3(1, 0, 0);
         float32 density_scale = 1.f;
 
@@ -658,6 +661,7 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_range, 
 static void draw_async_info(ApplicationData* data);
 static void draw_reference_frames_window(ApplicationData* data);
 static void draw_shape_space_window(ApplicationData* data);
+static void draw_density_volume_window(ApplicationData* data);
 // static void draw_selection_window(ApplicationData* data);
 
 static void init_framebuffer(MainFramebuffer* fbo, int width, int height);
@@ -962,7 +966,7 @@ int main(int, char**) {
                                 case TrackingMode::Relative:
                                     rot_data = tracking_data->transform.rotation.relative;
                                     break;
-                                case TrackingMode::hybrid:
+                                case TrackingMode::Hybrid:
                                     rot_data = tracking_data->transform.rotation.hybrid;
                                     break;
                                 default:
@@ -1256,7 +1260,7 @@ int main(int, char**) {
 
                 POP_GPU_SECTION()
             }
-
+#if 0
             PUSH_GPU_SECTION("Blit static velocity") {
                 glDepthMask(0);
                 glDrawBuffer(GL_COLOR_ATTACHMENT2);  // Velocity buffer
@@ -1265,6 +1269,7 @@ int main(int, char**) {
                 glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
             }
             POP_GPU_SECTION()
+#endif
 
             draw_representations(data);
 
@@ -1333,9 +1338,9 @@ int main(int, char**) {
             }
             POP_GPU_SECTION()
 
-#if 0
+#if 1
             PUSH_GPU_SECTION("Blit Static Velocity")
-            glDrawBuffer(GL_COLOR_ATTACHMENT2); // Velocity
+            glDrawBuffer(GL_COLOR_ATTACHMENT2);  // Velocity
             glDepthMask(0);
             glDisable(GL_DEPTH_TEST);
             postprocessing::blit_static_velocity(data.fbo.deferred.depth, data.view.param);
@@ -1361,6 +1366,7 @@ int main(int, char**) {
                                           data.density_volume.model_to_world_matrix, data.view.param.matrix.view, data.view.param.matrix.proj, scl, data.density_volume.tf.alpha_scale);
             POP_GPU_SECTION()
             glDisable(GL_BLEND);
+            glDepthMask(1);
         }
 
         PUSH_GPU_SECTION("Selection") {
@@ -1540,6 +1546,7 @@ int main(int, char**) {
         if (data.ramachandran.show_window) draw_ramachandran_window(&data);
         if (data.reference_frame.show_window) draw_reference_frames_window(&data);
         if (data.shape_space.show_window) draw_shape_space_window(&data);
+        if (data.density_volume.show_window) draw_density_volume_window(&data);
 
         // ImGui::GetIO().WantCaptureMouse does not work with Menu
         if (!ImGui::IsMouseHoveringAnyWindow()) {
@@ -1682,10 +1689,9 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
     if (!data->dynamic.molecule) return;
     const auto& mol = data->dynamic.molecule;
 
-    vec3 min_box, max_box;
-    compute_bounding_box(min_box, max_box, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count);
-    vec3 size = max_box - min_box;
-    vec3 cent = (min_box + max_box) * 0.5f;
+    AABB aabb = compute_aabb(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count);
+    vec3 size = aabb.max - aabb.min;
+    vec3 cent = (aabb.min + aabb.max) * 0.5f;
     vec3 pos = cent + size * 3.f;
 
     if (move_camera) {
@@ -1697,6 +1703,7 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
 
     data->view.camera.near_plane = 1.f;
     data->view.camera.far_plane = math::length(size) * 50.f;
+    data->view.trackball_state.params.max_distance = math::length(size) * 20.0f;
 }
 
 // #picking
@@ -2064,35 +2071,6 @@ static void draw_main_menu(ApplicationData* data) {
                 ImGui::PopID();
             }
             ImGui::EndGroup();
-            ImGui::Separator();
-
-            ImGui::BeginGroup();
-            if (ImGui::Checkbox("Density Volume", &data->density_volume.enabled)) {
-                // if (data->density_volume.enabled) data->density_volume.texture.dirty = true;
-            }
-            if (data->density_volume.enabled) {
-                ImGui::PushID("density_volume");
-
-                ImGui::PushID("density_volume_tf");
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-                ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 1.0f));
-                ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.5f);
-                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.0f, 1.0f));
-                if (ImGui::ImageButton((void*)(intptr_t)data->density_volume.tf.id, ImVec2(250, 20))) {
-                    auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, "png,jpg");
-                    if (res.result == platform::FileDialogResult::Ok) {
-                        data->density_volume.tf.path = res.path;
-                        data->density_volume.tf.dirty = true;
-                    }
-                }
-                ImGui::PopStyleVar(2);
-                ImGui::PopStyleColor(2);
-                ImGui::PopID();
-                ImGui::SliderFloat("Density Scaling", &data->density_volume.density_scale, 0.001f, 10.f, "%.3f", 3.f);
-                ImGui::SliderFloat("Alpha Scaling", &data->density_volume.tf.alpha_scale, 0.001f, 10.f, "%.3f", 3.f);
-                ImGui::PopID();
-            }
-            ImGui::EndGroup();
             /*
 // DEBUG DRAW
 ImGui::BeginGroup();
@@ -2111,6 +2089,7 @@ ImGui::EndGroup();
             ImGui::Checkbox("Ramachandran", &data->ramachandran.show_window);
             // ImGui::Checkbox("Selection", &data->selection.show_window);
             ImGui::Checkbox("Reference Frames", &data->reference_frame.show_window);
+            ImGui::Checkbox("Density Volume", &data->density_volume.show_window);
 
             ImGui::EndMenu();
         }
@@ -3899,6 +3878,163 @@ static void draw_shape_space_window(ApplicationData* data) {
     ImGui::End();
 }
 
+static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const MoleculeTrajectory& traj, const mat4& volume_world_to_texture, const structure_tracking::TrackingData& tracking_data) {
+    ASSERT(vol);
+    for (int64 frame_idx = 0; frame_idx < traj.num_frames; frame_idx++) {
+        const auto& frame = get_trajectory_frame(traj, frame_idx);
+        const mat3 box = frame.box;
+        const vec3 half_box = box * vec3(0.5f);
+        const vec3 com = tracking_data.transform.com[frame_idx];
+        const mat4 R = math::mat4_cast(tracking_data.transform.rotation.hybrid[frame_idx]);
+        const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-com, 1));
+        const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(half_box, 1));
+        // const mat4 M = volume_world_to_texture * math::transpose(R) * T_com;
+        const mat4 M = volume_world_to_texture * T_box * math::transpose(R) * T_com;
+
+        // @TODO: Replace when proper iterators are implemented for bitfield.
+        for (int64 i = 0; i < atom_mask.size(); i++) {
+            if (bitfield::get_bit(atom_mask, i)) {
+                const vec4 wc = {frame.atom_position.x[i], frame.atom_position.y[i], frame.atom_position.z[i], 1.0f};  // world coord
+                const vec4 vc = M * wc;                                                                                // volume coord [0,1]
+                const vec4 tc = math::fract(vc);                                                                       // PBC
+                const ivec3 c = vec3(tc) * vec3(vol->dim - 1);
+                const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
+                vol->voxel_data[voxel_idx]++;
+            }
+        }
+    }
+}
+
+static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const MoleculeTrajectory& traj, const mat4& volume_world_to_texture) {
+    ASSERT(vol);
+    for (int64 frame_idx = 0; frame_idx < traj.num_frames; frame_idx++) {
+        const auto& frame = get_trajectory_frame(traj, frame_idx);
+        const mat3& box = frame.box;
+        const mat4& M = volume_world_to_texture;
+
+        // @TODO: Replace when proper iterators are implemented for bitfield.
+        for (int64 i = 0; i < atom_mask.size(); i++) {
+            if (bitfield::get_bit(atom_mask, i)) {
+                const vec4 wc = {frame.atom_position.x[i], frame.atom_position.y[i], frame.atom_position.z[i], 1.0f};  // world coord
+                const vec4 vc = M * wc;                                                                                // volume coord [0,1]
+                const vec4 tc = math::fract(vc);                                                                       // PBC
+                const ivec3 c = vec3(tc) * (vec3)vol->dim;
+                const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
+                vol->voxel_data[voxel_idx]++;
+            }
+        }
+    }
+}
+
+static void draw_density_volume_window(ApplicationData* data) {
+    ImGui::Begin("Density Volume");
+
+    ImGui::Checkbox("Enabled", &data->density_volume.enabled);
+    if (data->density_volume.enabled) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 1.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.5f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.0f, 1.0f));
+        if (ImGui::ImageButton((void*)(intptr_t)data->density_volume.tf.id, ImVec2(250, 20))) {
+            auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, "png,jpg");
+            if (res.result == platform::FileDialogResult::Ok) {
+                data->density_volume.tf.path = res.path;
+                data->density_volume.tf.dirty = true;
+            }
+        }
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(2);
+        ImGui::PopID();
+        ImGui::SliderFloat("Density Scaling", &data->density_volume.density_scale, 0.001f, 10.f, "%.3f", 3.f);
+        ImGui::SliderFloat("Alpha Scaling", &data->density_volume.tf.alpha_scale, 0.001f, 10.f, "%.3f", 3.f);
+
+        if (ImGui::Button("Compute Aggregate Density")) {
+            ImGui::OpenPopup("Aggregate Density");
+        }
+
+        if (ImGui::BeginPopup("Aggregate Density")) {
+            static char target_buf[128] = {};
+            static char filter_buf[128] = {};
+            bool compute = false;
+
+            compute |= ImGui::InputText("Tracking target", target_buf, 128, ImGuiInputTextFlags_EnterReturnsTrue);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Specify the name of the residue which should be tracked and serve as reference frames for the density computation");
+            }
+            compute |= ImGui::InputText("Density filter", filter_buf, 128, ImGuiInputTextFlags_EnterReturnsTrue);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Speficy a filter for what should be included in the density computation");
+            }
+            compute |= ImGui::Button("Compute");
+
+            if (compute) {
+                Bitfield filter_mask;
+                bitfield::init(&filter_mask, data->dynamic.molecule.atom.count);
+                defer { bitfield::free(&filter_mask); };
+
+                DynamicArray<StoredSelection> sel;
+                sel.push_back({"current", data->selection.current_selection_mask});
+                for (const auto& s : data->selection.stored_selections) {
+                    sel.push_back({s.name, s.atom_mask});
+                }
+
+                const auto residues = get_residues_by_name(data->dynamic.molecule, target_buf);
+                const bool filter_ok = filter::compute_filter_mask(filter_mask, filter_buf, data->dynamic.molecule, sel);
+
+                if (!residues.empty() && filter_ok) {
+                    data->density_volume.volume_data_mutex.lock();
+                    clear_volume(&data->density_volume.volume);
+
+                    const auto& dyn = data->dynamic;
+                    const auto& mol = data->dynamic.molecule;
+                    const auto& traj = data->dynamic.trajectory;
+                    DynamicArray<structure_tracking::ID> tracking_ids;
+                    Bitfield res_mask;
+                    bitfield::init(&res_mask, mol.atom.count);
+                    defer { bitfield::free(&res_mask); };
+
+                    LOG_NOTE("Performing Structure Tracking...");
+                    for (const ResIdx& res_idx : residues) {
+                        LOG_NOTE("%i / %i", (int)(&res_idx - residues.begin()) + 1, (int)residues.size());
+                        const auto& residue = mol.residues[res_idx];
+                        bitfield::clear_all(res_mask);
+                        bitfield::set_range(res_mask, residue.atom_range);
+                        structure_tracking::ID id = structure_tracking::create_structure();
+                        structure_tracking::compute_trajectory_transform_data(id, res_mask, dyn);
+                        tracking_ids.push_back(id);
+                    }
+                    LOG_NOTE("Done!");
+
+                    LOG_NOTE("Performing density aggregation...");
+                    for (const auto& id : tracking_ids) {
+                        LOG_NOTE("%i / %i", (int)(&id - tracking_ids.begin()) + 1, (int)tracking_ids.size());
+                        // @TODO: Align tracked structures by matrix and append that to world_to_texture_matrix
+                        const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(id);
+                        if (tracking_data) {
+                            append_trajectory_density(&data->density_volume.volume, filter_mask, traj, data->density_volume.world_to_texture_matrix, *tracking_data);
+                        } else {
+                            LOG_ERROR("Could not find tracking data for structure: %u", id);
+                        }
+                    }
+
+                    data->density_volume.volume.voxel_range = {data->density_volume.volume.voxel_data[0], data->density_volume.volume.voxel_data[0]};
+                    for (const auto v : data->density_volume.volume.voxel_data) {
+                        if (v < data->density_volume.volume.voxel_range.min) data->density_volume.volume.voxel_range.min = v;
+                        if (v > data->density_volume.volume.voxel_range.max) data->density_volume.volume.voxel_range.max = v;
+                    }
+
+                    LOG_NOTE("Done!");
+                    data->density_volume.texture.dirty = true;
+                    data->density_volume.volume_data_mutex.unlock();
+                }
+            }
+            ImGui::EndPopup();
+        }
+    }
+
+    ImGui::End();
+}
+
 // #framebuffer
 static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     ASSERT(fbo);
@@ -5108,7 +5244,7 @@ static void update_reference_frames(ApplicationData* data) {
                 case TrackingMode::Relative:
                     rot_data = tracking_data->transform.rotation.relative;
                     break;
-                case TrackingMode::hybrid:
+                case TrackingMode::Hybrid:
                     rot_data = tracking_data->transform.rotation.hybrid;
                     break;
                 default:
