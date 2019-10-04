@@ -410,7 +410,7 @@ struct ApplicationData {
 
             struct {
                 bool enabled = true;
-                float32 motion_scale = 0.5f;
+                float32 motion_scale = 1.0f;
             } motion_blur;
         } temporal_reprojection;
 
@@ -465,6 +465,12 @@ struct ApplicationData {
             float32 alpha_scale = 1.f;
             StringBuffer<512> path;
         } tf;
+
+        struct {
+            vec2 x_axis = {0, 1};
+            vec2 y_axis = {0, 1};
+            vec2 z_axis = {0, 1};
+        } clip_planes;
 
         Volume volume{};
         std::mutex volume_data_mutex{};
@@ -662,6 +668,7 @@ static void draw_async_info(ApplicationData* data);
 static void draw_reference_frames_window(ApplicationData* data);
 static void draw_shape_space_window(ApplicationData* data);
 static void draw_density_volume_window(ApplicationData* data);
+static void draw_density_volume_clip_plane_widgets(ApplicationData* data);
 // static void draw_selection_window(ApplicationData* data);
 
 static void init_framebuffer(MainFramebuffer* fbo, int width, int height);
@@ -1260,7 +1267,7 @@ int main(int, char**) {
 
                 POP_GPU_SECTION()
             }
-#if 0
+#if 1
             PUSH_GPU_SECTION("Blit static velocity") {
                 glDepthMask(0);
                 glDrawBuffer(GL_COLOR_ATTACHMENT2);  // Velocity buffer
@@ -1338,7 +1345,7 @@ int main(int, char**) {
             }
             POP_GPU_SECTION()
 
-#if 1
+#if 0
             PUSH_GPU_SECTION("Blit Static Velocity")
             glDrawBuffer(GL_COLOR_ATTACHMENT2);  // Velocity
             glDepthMask(0);
@@ -1516,11 +1523,14 @@ int main(int, char**) {
             desc.depth_of_field.focus_depth = data.visuals.dof.focus_depth.current;
             desc.depth_of_field.focus_scale = data.visuals.dof.focus_scale;
 
+            constexpr float MOTION_BLUR_REFERENCE_DT = 1.0f / 60.0f;
+            const float dt_compensation = MOTION_BLUR_REFERENCE_DT / data.ctx.timing.delta_s;
+            const float motion_scale = data.visuals.temporal_reprojection.motion_blur.motion_scale * dt_compensation;
             desc.temporal_reprojection.enabled = data.visuals.temporal_reprojection.enabled;
             desc.temporal_reprojection.feedback_min = data.visuals.temporal_reprojection.feedback_min;
             desc.temporal_reprojection.feedback_max = data.visuals.temporal_reprojection.feedback_max;
             desc.temporal_reprojection.motion_blur.enabled = data.visuals.temporal_reprojection.motion_blur.enabled;
-            desc.temporal_reprojection.motion_blur.motion_scale = data.visuals.temporal_reprojection.motion_blur.motion_scale;
+            desc.temporal_reprojection.motion_blur.motion_scale = motion_scale;
 
             desc.input_textures.depth = data.fbo.deferred.depth;
             desc.input_textures.color = data.fbo.deferred.color;
@@ -1547,13 +1557,14 @@ int main(int, char**) {
         if (data.reference_frame.show_window) draw_reference_frames_window(&data);
         if (data.shape_space.show_window) draw_shape_space_window(&data);
         if (data.density_volume.show_window) draw_density_volume_window(&data);
+        if (data.density_volume.enabled) draw_density_volume_clip_plane_widgets(&data);
 
-        // ImGui::GetIO().WantCaptureMouse does not work with Menu
-        if (!ImGui::IsMouseHoveringAnyWindow()) {
-            if (data.picking.idx != NO_PICKING_IDX) {
-                draw_atom_info_window(data.dynamic.molecule, data.picking.idx, (int)data.ctx.input.mouse.win_coord.x, (int)data.ctx.input.mouse.win_coord.y);
+            // ImGui::GetIO().WantCaptureMouse does not work with Menu
+            if (!ImGui::IsMouseHoveringAnyWindow()) {
+                if (data.picking.idx != NO_PICKING_IDX) {
+                    draw_atom_info_window(data.dynamic.molecule, data.picking.idx, (int)data.ctx.input.mouse.win_coord.x, (int)data.ctx.input.mouse.win_coord.y);
+                }
             }
-        }
 
         draw_async_info(&data);
         draw_animation_control_window(&data);
@@ -1956,7 +1967,7 @@ static void draw_main_menu(ApplicationData* data) {
                     ImGui::SliderFloat("Feedback Max", &data->visuals.temporal_reprojection.feedback_max, 0.5f, 1.0f);
                     ImGui::Checkbox("Motion Blur", &data->visuals.temporal_reprojection.motion_blur.enabled);
                     if (data->visuals.temporal_reprojection.motion_blur.enabled) {
-                        ImGui::SliderFloat("Motion Scale", &data->visuals.temporal_reprojection.motion_blur.motion_scale, 0.f, 1.0f);
+                        ImGui::SliderFloat("Motion Scale", &data->visuals.temporal_reprojection.motion_blur.motion_scale, 0.f, 1.5f);
                     }
                 }
             }
@@ -3944,7 +3955,7 @@ static void draw_density_volume_window(ApplicationData* data) {
         }
         ImGui::PopStyleVar(2);
         ImGui::PopStyleColor(2);
-        ImGui::PopID();
+        //ImGui::PopID();
         ImGui::SliderFloat("Density Scaling", &data->density_volume.density_scale, 0.001f, 10.f, "%.3f", 3.f);
         ImGui::SliderFloat("Alpha Scaling", &data->density_volume.tf.alpha_scale, 0.001f, 10.f, "%.3f", 3.f);
 
@@ -4033,6 +4044,25 @@ static void draw_density_volume_window(ApplicationData* data) {
     }
 
     ImGui::End();
+}
+
+static void draw_density_volume_clip_plane_widgets(ApplicationData* data) {
+    ASSERT(data);
+    ImGui::BeginCanvas("Volume Clip Plane Widgets");
+    auto win = ImGui::GetCurrentWindow();
+    if (win) {
+        const mat4 M = math::inverse(data->density_volume.world_to_texture_matrix);
+        vec4 x_min_c = M * vec4(data->density_volume.clip_planes.x_axis.x, 0.5f, 0.5f, 1);
+        x_min_c = data->view.param.matrix.view_proj * x_min_c;
+        x_min_c = x_min_c / x_min_c.w;
+        x_min_c = x_min_c * 0.5f + 0.5f;
+        x_min_c.y = 1.0f - x_min_c.y;
+        ImVec2 c = {x_min_c.x * data->view.param.resolution.x, x_min_c.y * data->view.param.resolution.y};
+
+        ImGui::InvisibleButton("x_min", ImVec2(10, 10));
+        win->DrawList->AddCircle(c, 10.0f, 0xFF000000);
+    }
+    ImGui::EndCanvas();
 }
 
 // #framebuffer
