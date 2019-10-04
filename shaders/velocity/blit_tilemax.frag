@@ -27,8 +27,8 @@ void main() {
 				mv = v;
 				mv2 = v2;
 			}
-		}
+		} 
 	}
 
-	out_max_tile_vel = vec4(mv, 0 ,0);
+	out_max_tile_vel = vec4(min(mv, length(u_tex_vel_texel_size) * TILE_SIZE), 0 ,0);
 }
