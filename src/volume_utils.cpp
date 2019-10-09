@@ -2,12 +2,14 @@
 
 #include "image.h"
 #include "gfx/gl_utils.h"
+#include <glm/gtc/type_ptr.hpp>
 
 #include <core/common.h>
 #include <core/log.h>
 #include <core/math_utils.h>
 
 #include <stdio.h>
+#include <algorithm>
 
 namespace volume {
 
@@ -29,6 +31,9 @@ static struct {
         GLint view_to_model_matrix = -1;
         GLint model_to_tex_matrix = -1;
         GLint inv_proj_matrix = -1;
+        GLint iso_enabled = -1;
+        GLint iso_values = -1;
+        GLint iso_colors = -1;
     } uniform_loc;
 } gl;
 
@@ -60,6 +65,9 @@ void initialize() {
     gl.uniform_loc.view_to_model_matrix = glGetUniformLocation(gl.program, "u_view_to_model_mat");
     gl.uniform_loc.model_to_tex_matrix = glGetUniformLocation(gl.program, "u_model_to_tex_mat");
     gl.uniform_loc.inv_proj_matrix = glGetUniformLocation(gl.program, "u_inv_proj_mat");
+    gl.uniform_loc.iso_enabled = glGetUniformLocation(gl.program, "u_iso_enabled");
+    gl.uniform_loc.iso_values = glGetUniformLocation(gl.program, "u_isovalues.values");
+    gl.uniform_loc.iso_colors = glGetUniformLocation(gl.program, "u_isovalues.colors");
 
     if (!gl.vbo) {
         // https://stackoverflow.com/questions/28375338/cube-using-single-gl-triangle-strip
@@ -102,8 +110,8 @@ void free_volume_texture(GLuint texture) {
     if (glIsTexture(texture)) glDeleteTextures(1, &texture);
 }
 
-void create_tf_texture(GLuint* texture, int* width, CStringView path) {  
-    ASSERT(texture);  
+void create_tf_texture(GLuint* texture, int* width, CStringView path) {
+    ASSERT(texture);
     // load transfer function
     if (*texture == 0 || !glIsTexture(*texture)) {
         glGenTextures(1, texture);
@@ -116,7 +124,7 @@ void create_tf_texture(GLuint* texture, int* width, CStringView path) {
             *width = img.width;
         }
         glBindTexture(GL_TEXTURE_2D, *texture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, img.width, 1, 0,  GL_RGBA, GL_UNSIGNED_BYTE, img.data);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, img.width, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, img.data);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -163,7 +171,9 @@ void save_volume_to_file(const Volume& volume, CStringView file) {
 }
 
 void render_volume_texture(GLuint volume_texture, GLuint tf_texture, GLuint depth_texture, const mat4& texture_matrix, const mat4& model_matrix, const mat4& view_matrix, const mat4& proj_matrix,
-                           float density_scale, float alpha_scale) {
+                           float density_scale, float alpha_scale, const IsoSurface& isosurface) {
+    const GLsizei maxIsosurfaceCount = 6; 
+
     GLint viewport[4];
     glGetIntegerv(GL_VIEWPORT, viewport);
 
@@ -198,6 +208,15 @@ void render_volume_texture(GLuint volume_texture, GLuint tf_texture, GLuint dept
     glUniformMatrix4fv(gl.uniform_loc.view_to_model_matrix, 1, GL_FALSE, &view_to_model_matrix[0][0]);
     glUniformMatrix4fv(gl.uniform_loc.model_to_tex_matrix, 1, GL_FALSE, &model_to_tex_matrix[0][0]);
     glUniformMatrix4fv(gl.uniform_loc.inv_proj_matrix, 1, GL_FALSE, &inv_proj_matrix[0][0]);
+
+    const bool renderIsosurface = isosurface.enabled && !isosurface.values.empty();
+    glUniform1i(gl.uniform_loc.iso_enabled, renderIsosurface ? 1 : 0);
+    if (renderIsosurface) {
+        auto values = isosurface.getData();
+        GLsizei numValues = std::min<GLsizei>(maxIsosurfaceCount, static_cast<GLsizei>(values.first.size()));
+        glUniform1fv(gl.uniform_loc.iso_values, numValues, values.first.data());
+        glUniform4fv(gl.uniform_loc.iso_colors, numValues, glm::value_ptr(values.second.front()));
+    }
 
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 42);

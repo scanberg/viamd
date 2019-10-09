@@ -27,6 +27,10 @@
 #include "gfx/immediate_draw_utils.h"
 #include "gfx/postprocessing_utils.h"
 
+#include <glm/gtx/string_cast.hpp>
+#include <glm/gtx/component_wise.hpp>
+#include <glm/gtc/type_ptr.hpp>
+
 #include "volume.h"
 #include "volume_utils.h"
 
@@ -38,11 +42,13 @@
 #include "ramachandran.h"
 #include "color_utils.h"
 #include "structure_tracking.h"
+#include "isosurface.h"
 
 #include <stdio.h>
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <fstream>
 
 //#define VIAMD_RELEASE
 
@@ -474,6 +480,8 @@ struct ApplicationData {
 
         Volume volume{};
         std::mutex volume_data_mutex{};
+
+        IsoSurface isosurface;
 
         mat4 model_to_world_matrix{};
         mat4 texture_to_model_matrix{};
@@ -947,62 +955,62 @@ int main(int, char**) {
         // This needs to happen first (in imgui events) to enable docking of imgui windows
         // ImGui::CreateDockspace();
 
-        stats::async_update(
-            data.dynamic, {(int32)data.time_filter.range.beg, (int32)data.time_filter.range.end},
-            [](void* usr_data) {
-                ApplicationData* data = (ApplicationData*)usr_data;
-                if (data->density_volume.enabled) {
-                    data->density_volume.volume_data_mutex.lock();
-                    const Range<int32> range = {(int32)data->time_filter.range.beg, (int32)data->time_filter.range.end};
+        stats::async_update(data.dynamic, {(int32)data.time_filter.range.beg, (int32)data.time_filter.range.end},
+                            [](void* usr_data) {
+                                ApplicationData* data = (ApplicationData*)usr_data;
+                                if (data->density_volume.enabled) {
+                                    data->density_volume.volume_data_mutex.lock();
+                                    const Range<int32> range = {(int32)data->time_filter.range.beg, (int32)data->time_filter.range.end};
 
-                    const ReferenceFrame* ref = get_active_reference_frame(data);
-                    if (ref) {
-                        const structure_tracking::ID id = ref->id;
-                        stats::compute_density_volume_with_basis(&data->density_volume.volume, data->dynamic.trajectory, range, [ref, data](const vec4& world_pos, int32 frame_idx) -> vec4 {
-                            const auto tracking_data = structure_tracking::get_tracking_data(ref->id);
-                            if (!tracking_data) {
-                                LOG_ERROR("Could not find tracking data for supplied id: '%lu'", ref->id);
-                                return {};
-                            }
-                            const vec3* com_data = tracking_data->transform.com;
-                            const quat* rot_data = nullptr;
-                            switch (ref->tracking_mode) {
-                                case TrackingMode::Absolute:
-                                    rot_data = tracking_data->transform.rotation.absolute;
-                                    break;
-                                case TrackingMode::Relative:
-                                    rot_data = tracking_data->transform.rotation.relative;
-                                    break;
-                                case TrackingMode::Hybrid:
-                                    rot_data = tracking_data->transform.rotation.hybrid;
-                                    break;
-                                default:
-                                    ASSERT(false);
-                                    break;
-                            }
+                                    const ReferenceFrame* ref = get_active_reference_frame(data);
+                                    if (ref) {
+                                        const structure_tracking::ID id = ref->id;
+                                        stats::compute_density_volume_with_basis(&data->density_volume.volume, data->dynamic.trajectory, range,
+                                                                                 [ref, data](const vec4& world_pos, int32 frame_idx) -> vec4 {
+                                                                                     const auto tracking_data = structure_tracking::get_tracking_data(ref->id);
+                                                                                     if (!tracking_data) {
+                                                                                         LOG_ERROR("Could not find tracking data for supplied id: '%lu'", ref->id);
+                                                                                         return {};
+                                                                                     }
+                                                                                     const vec3* com_data = tracking_data->transform.com;
+                                                                                     const quat* rot_data = nullptr;
+                                                                                     switch (ref->tracking_mode) {
+                                                                                         case TrackingMode::Absolute:
+                                                                                             rot_data = tracking_data->transform.rotation.absolute;
+                                                                                             break;
+                                                                                         case TrackingMode::Relative:
+                                                                                             rot_data = tracking_data->transform.rotation.relative;
+                                                                                             break;
+                                                                                         case TrackingMode::Hybrid:
+                                                                                             rot_data = tracking_data->transform.rotation.hybrid;
+                                                                                             break;
+                                                                                         default:
+                                                                                             ASSERT(false);
+                                                                                             break;
+                                                                                     }
 
-                            if (com_data && rot_data) {
-                                const mat3 box = data->dynamic.trajectory.frame_buffer[frame_idx].box;
-                                const vec3 com = com_data[frame_idx];
-                                const vec3 half_box = box * vec3(0.5f);
-                                const mat4 R = math::mat4_cast(rot_data[frame_idx]);
-                                const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-com, 1));
-                                const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(half_box, 1));
-                                const mat4 M = T_box * math::transpose(R) * T_com;
-                                return data->density_volume.world_to_texture_matrix * M * world_pos;
-                            } else {
-                                LOG_ERROR("Could not get com data or rotation data");
-                                return {};
-                            }
-                        });
-                    } else {
-                        stats::compute_density_volume(&data->density_volume.volume, data->dynamic.trajectory, range, data->density_volume.world_to_texture_matrix);
-                    }
-                    data->density_volume.volume_data_mutex.unlock();
-                    data->density_volume.texture.dirty = true;
-                }
-            },
-            &data);
+                                                                                     if (com_data && rot_data) {
+                                                                                         const mat3 box = data->dynamic.trajectory.frame_buffer[frame_idx].box;
+                                                                                         const vec3 com = com_data[frame_idx];
+                                                                                         const vec3 half_box = box * vec3(0.5f);
+                                                                                         const mat4 R = math::mat4_cast(rot_data[frame_idx]);
+                                                                                         const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-com, 1));
+                                                                                         const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(half_box, 1));
+                                                                                         const mat4 M = T_box * math::transpose(R) * T_com;
+                                                                                         return data->density_volume.world_to_texture_matrix * M * world_pos;
+                                                                                     } else {
+                                                                                         LOG_ERROR("Could not get com data or rotation data");
+                                                                                         return {};
+                                                                                     }
+                                                                                 });
+                                    } else {
+                                        stats::compute_density_volume(&data->density_volume.volume, data->dynamic.trajectory, range, data->density_volume.world_to_texture_matrix);
+                                    }
+                                    data->density_volume.volume_data_mutex.unlock();
+                                    data->density_volume.texture.dirty = true;
+                                }
+                            },
+                            &data);
 
         // If gpu representation of volume is not up to date, upload data
         if (data.density_volume.texture.dirty) {
@@ -1370,7 +1378,8 @@ int main(int, char**) {
             PUSH_GPU_SECTION("Volume Rendering")
             const float32 scl = 1.f * data.density_volume.density_scale / (data.density_volume.texture.max_value > 0.f ? data.density_volume.texture.max_value : 1.f);
             volume::render_volume_texture(data.density_volume.texture.id, data.density_volume.tf.id, data.fbo.deferred.depth, data.density_volume.texture_to_model_matrix,
-                                          data.density_volume.model_to_world_matrix, data.view.param.matrix.view, data.view.param.matrix.proj, scl, data.density_volume.tf.alpha_scale);
+                                          data.density_volume.model_to_world_matrix, data.view.param.matrix.view, data.view.param.matrix.proj, scl, data.density_volume.tf.alpha_scale,
+                                          data.density_volume.isosurface);
             POP_GPU_SECTION()
             glDisable(GL_BLEND);
             glDepthMask(1);
@@ -1559,12 +1568,12 @@ int main(int, char**) {
         if (data.density_volume.show_window) draw_density_volume_window(&data);
         if (data.density_volume.enabled) draw_density_volume_clip_plane_widgets(&data);
 
-            // ImGui::GetIO().WantCaptureMouse does not work with Menu
-            if (!ImGui::IsMouseHoveringAnyWindow()) {
-                if (data.picking.idx != NO_PICKING_IDX) {
-                    draw_atom_info_window(data.dynamic.molecule, data.picking.idx, (int)data.ctx.input.mouse.win_coord.x, (int)data.ctx.input.mouse.win_coord.y);
-                }
+        // ImGui::GetIO().WantCaptureMouse does not work with Menu
+        if (!ImGui::IsMouseHoveringAnyWindow()) {
+            if (data.picking.idx != NO_PICKING_IDX) {
+                draw_atom_info_window(data.dynamic.molecule, data.picking.idx, (int)data.ctx.input.mouse.win_coord.x, (int)data.ctx.input.mouse.win_coord.y);
             }
+        }
 
         draw_async_info(&data);
         draw_animation_control_window(&data);
@@ -3955,11 +3964,25 @@ static void draw_density_volume_window(ApplicationData* data) {
         }
         ImGui::PopStyleVar(2);
         ImGui::PopStyleColor(2);
-        //ImGui::PopID();
+        // ImGui::PopID();
         ImGui::SliderFloat("Density Scaling", &data->density_volume.density_scale, 0.001f, 10.f, "%.3f", 3.f);
         ImGui::SliderFloat("Alpha Scaling", &data->density_volume.tf.alpha_scale, 0.001f, 10.f, "%.3f", 3.f);
 
-        if (ImGui::Button("Compute Aggregate Density")) {
+        ImGui::Checkbox("Isosurface Rendering", &data->density_volume.isosurface.enabled);
+        for (size_t i = 0; i < data->density_volume.isosurface.values.size(); ++i) {
+            const std::string valueStr = "Isovalue " + std::to_string(i);
+            const std::string colorStr = "Color " + std::to_string(i);
+            ImGui::SliderFloat(valueStr.c_str(), &data->density_volume.isosurface.values[i].first, 0.0f, 10.f, "%.3f", 3.f);
+            ImGui::ColorEdit4(colorStr.c_str(), glm::value_ptr(data->density_volume.isosurface.values[i].second), ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
+        }
+        if (ImGui::Button("Add Isosurface", ImVec2(250, 20))) {
+            data->density_volume.isosurface.add(0.0f, vec4(0.2f, 0.1f, 0.9f, 1.0f));
+        }
+        if (ImGui::Button("Clear Isosurfaces", ImVec2(250, 20))) {
+            data->density_volume.isosurface.clear();
+        }
+
+        if (ImGui::Button("Compute Aggregate Density", ImVec2(250, 20))) {
             ImGui::OpenPopup("Aggregate Density");
         }
 
@@ -4040,6 +4063,17 @@ static void draw_density_volume_window(ApplicationData* data) {
                 }
             }
             ImGui::EndPopup();
+        }
+        if (ImGui::Button("Export Density...", ImVec2(250, 20))) {
+            auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, "raw");
+            if (res.result == platform::FileDialogResult::Ok) {
+                std::ofstream f;
+                ivec3 dims{data->density_volume.volume.dim};
+                f.open(res.path.cstr(), std::ios::binary);
+                f.write((const char*)data->density_volume.volume.voxel_data.data(), glm::compMul(dims) * sizeof(float));
+                f.close();
+                LOG_NOTE("Wrote density volume %s", glm::to_string(dims).c_str());
+            }
         }
     }
 

@@ -4,6 +4,7 @@
 #include <core/string_types.h>
 
 #include <volume.h>
+#include <isosurface.h>
 #include <gfx/gl.h>
 
 namespace volume {
@@ -33,7 +34,7 @@ void save_volume_to_file(const Volume& volume, CStringView path_to_file);
     - density_scale: global scaling of densities
     - alpha_scale:   global alpha scaling of the transfer function
 */
-void render_volume_texture(GLuint volume_texture, GLuint tf_texture, GLuint depth_texture, const mat4& texture_matrix, const mat4& model_matrix, const mat4& view_matrix,
-                           const mat4& proj_matrix, float density_scale = 1.0f, float alpha_scale = 1.0f);
+void render_volume_texture(GLuint volume_texture, GLuint tf_texture, GLuint depth_texture, const mat4& texture_matrix, const mat4& model_matrix, const mat4& view_matrix, const mat4& proj_matrix,
+                           float density_scale = 1.0f, float alpha_scale = 1.0f, const IsoSurface& isosurface = {});
 
 }  // namespace volume
