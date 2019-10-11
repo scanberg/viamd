@@ -30,10 +30,14 @@ static struct {
         GLint inv_res = -1;
         GLint view_to_model_matrix = -1;
         GLint model_to_tex_matrix = -1;
+        GLint tex_to_view_matrix = -1;
         GLint inv_proj_matrix = -1;
         GLint iso_enabled = -1;
+        GLint iso_maxcount = -1;
         GLint iso_values = -1;
         GLint iso_colors = -1;
+        GLint gradient_spacing_tex_space = -1;
+        GLint gradient_spacing_world_space = -1;
     } uniform_loc;
 } gl;
 
@@ -64,10 +68,14 @@ void initialize() {
     gl.uniform_loc.inv_res = glGetUniformLocation(gl.program, "u_inv_res");
     gl.uniform_loc.view_to_model_matrix = glGetUniformLocation(gl.program, "u_view_to_model_mat");
     gl.uniform_loc.model_to_tex_matrix = glGetUniformLocation(gl.program, "u_model_to_tex_mat");
+    gl.uniform_loc.tex_to_view_matrix = glGetUniformLocation(gl.program, "u_tex_to_view_mat");
     gl.uniform_loc.inv_proj_matrix = glGetUniformLocation(gl.program, "u_inv_proj_mat");
     gl.uniform_loc.iso_enabled = glGetUniformLocation(gl.program, "u_iso_enabled");
+    gl.uniform_loc.iso_maxcount = glGetUniformLocation(gl.program, "u_isovalues.maxcount");
     gl.uniform_loc.iso_values = glGetUniformLocation(gl.program, "u_isovalues.values");
     gl.uniform_loc.iso_colors = glGetUniformLocation(gl.program, "u_isovalues.colors");
+    gl.uniform_loc.gradient_spacing_tex_space = glGetUniformLocation(gl.program, "u_gradient_spacing_tex_space");
+    gl.uniform_loc.gradient_spacing_world_space = glGetUniformLocation(gl.program, "u_gradient_spacing_world_space");
 
     if (!gl.vbo) {
         // https://stackoverflow.com/questions/28375338/cube-using-single-gl-triangle-strip
@@ -171,7 +179,7 @@ void save_volume_to_file(const Volume& volume, CStringView file) {
 }
 
 void render_volume_texture(GLuint volume_texture, GLuint tf_texture, GLuint depth_texture, const mat4& texture_matrix, const mat4& model_matrix, const mat4& view_matrix, const mat4& proj_matrix,
-                           float density_scale, float alpha_scale, const IsoSurface& isosurface) {
+                           float density_scale, float alpha_scale, const IsoSurface& isosurface, const vec3& voxel_spacing) {
     const GLsizei maxIsosurfaceCount = 6; 
 
     GLint viewport[4];
@@ -181,6 +189,7 @@ void render_volume_texture(GLuint volume_texture, GLuint tf_texture, GLuint dept
     const mat4 view_to_model_matrix = math::inverse(model_to_view_matrix);
     const mat4 model_view_proj_matrix = proj_matrix * model_to_view_matrix;
     const mat4 model_to_tex_matrix = math::inverse(texture_matrix);
+    const mat4 tex_to_view_matrix = model_to_view_matrix * texture_matrix;
     const mat4 inv_proj_matrix = math::inverse(proj_matrix);
     const vec2 inv_res = vec2(1.f / (float)(viewport[2]), 1.f / (float)(viewport[3]));
 
@@ -207,6 +216,7 @@ void render_volume_texture(GLuint volume_texture, GLuint tf_texture, GLuint dept
     glUniformMatrix4fv(gl.uniform_loc.model_view_proj_matrix, 1, GL_FALSE, &model_view_proj_matrix[0][0]);
     glUniformMatrix4fv(gl.uniform_loc.view_to_model_matrix, 1, GL_FALSE, &view_to_model_matrix[0][0]);
     glUniformMatrix4fv(gl.uniform_loc.model_to_tex_matrix, 1, GL_FALSE, &model_to_tex_matrix[0][0]);
+    glUniformMatrix4fv(gl.uniform_loc.tex_to_view_matrix, 1, GL_FALSE, &tex_to_view_matrix[0][0]);
     glUniformMatrix4fv(gl.uniform_loc.inv_proj_matrix, 1, GL_FALSE, &inv_proj_matrix[0][0]);
 
     const bool renderIsosurface = isosurface.enabled && !isosurface.values.empty();
@@ -214,8 +224,14 @@ void render_volume_texture(GLuint volume_texture, GLuint tf_texture, GLuint dept
     if (renderIsosurface) {
         auto values = isosurface.getData();
         GLsizei numValues = std::min<GLsizei>(maxIsosurfaceCount, static_cast<GLsizei>(values.first.size()));
+        glUniform1i(gl.uniform_loc.iso_maxcount, static_cast<int>(values.first.size()));
         glUniform1fv(gl.uniform_loc.iso_values, numValues, values.first.data());
         glUniform4fv(gl.uniform_loc.iso_colors, numValues, glm::value_ptr(values.second.front()));
+
+        // used for gradient computation
+        mat3 gradientSpacingTexSpace = glm::mat3(glm::scale(view_to_model_matrix * model_to_tex_matrix, voxel_spacing));
+        glUniformMatrix3fv(gl.uniform_loc.gradient_spacing_tex_space, 1, GL_FALSE, glm::value_ptr(gradientSpacingTexSpace));
+        glUniform3fv(gl.uniform_loc.gradient_spacing_world_space, 1, glm::value_ptr(voxel_spacing));
     }
 
     glBindVertexArray(gl.vao);

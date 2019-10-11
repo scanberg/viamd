@@ -19,6 +19,7 @@
 
 
 struct IsovalueParameters {
+    int maxcount;
     float values[MAX_ISOVALUE_COUNT];
     vec4 colors[MAX_ISOVALUE_COUNT];
 };
@@ -31,9 +32,12 @@ uniform float     u_alpha_scale = 1.0;
 uniform vec2      u_inv_res;
 uniform mat4      u_view_to_model_mat;
 uniform mat4      u_model_to_tex_mat;
+uniform mat4      u_tex_to_view_mat;
 uniform mat4      u_inv_proj_mat;
 uniform int       u_iso_enabled;
 uniform IsovalueParameters u_isovalues;
+uniform mat3      u_gradient_spacing_tex_space;
+uniform vec3      u_gradient_spacing_world_space;
 
 in  vec3 model_pos;
 in  vec3 model_eye;
@@ -43,9 +47,15 @@ out vec4 out_frag;
 
 const float REF_SAMPLING_RATE = 150.0;
 const float ERT_THRESHOLD = 0.99;
-const float samplingRate = 8.0;
+const float samplingRate = 64.0;
 
-vec4 classify(float density) {
+
+float getVoxel(in vec3 samplePos) {
+    return samplePos.x;
+    return texture(u_tex_volume, samplePos).r * u_scale;
+}
+
+vec4 classify(in float density) {
     vec4 c = texture(u_tex_tf, vec2(density, 0.5));
     c.a = clamp(c.a * u_alpha_scale, 0.0, 1.0);
     return c;
@@ -56,6 +66,47 @@ vec4 compositing(in vec4 dstColor, in vec4 srcColor, in float tIncr) {
     // pre-multiplied alpha
     srcColor.rgb *= srcColor.a;
     return dstColor + (1.0 - dstColor.a) * srcColor;
+}
+
+vec3 getGradient(in vec3 samplePos) {
+    vec3 g = vec3(getVoxel(samplePos + u_gradient_spacing_tex_space[0]), 
+                  getVoxel(samplePos + u_gradient_spacing_tex_space[1]),
+                  getVoxel(samplePos + u_gradient_spacing_tex_space[2]));
+    g -= vec3(getVoxel(samplePos - u_gradient_spacing_tex_space[0]), 
+              getVoxel(samplePos - u_gradient_spacing_tex_space[1]),
+              getVoxel(samplePos - u_gradient_spacing_tex_space[2]));
+    return g / (2.0 * u_gradient_spacing_world_space);
+}
+
+const vec3 env_radiance = vec3(1.0);
+const vec3 dir_radiance = vec3(10.0);
+const vec3 L = normalize(vec3(1,1,1));
+const float spec_exp = 100.0;
+
+vec3 lambert(in vec3 radiance) {
+    const float ONE_OVER_PI = 1.0 / 3.1415926535;
+    return radiance * ONE_OVER_PI;
+}
+
+float fresnel(float H_dot_V) {
+    const float n1 = 1.0;
+    const float n2 = 1.5;
+    const float R0 = pow((n1-n2)/(n1+n2), 2);
+
+    return R0 + (1.0 - R0)*pow(1.0 - H_dot_V, 5);
+}
+
+vec3 shade(vec3 color, vec3 V, vec3 N) {
+    vec3 H = normalize(L + V);
+    float H_dot_V = max(0.0, dot(H, V));
+    float N_dot_H = max(0.0, dot(N, H));
+    float N_dot_L = max(0.0, dot(N, L));
+    float fr = fresnel(H_dot_V);
+
+    vec3 diffuse = color.rgb * lambert(env_radiance + N_dot_L * dir_radiance);
+    vec3 specular = fr * (env_radiance + dir_radiance) * pow(N_dot_H, spec_exp);
+
+    return color.rgb * lambert(vec3(N_dot_L + 0.5) * 3.0) + specular;
 }
 
 // Modified version from source found here:
@@ -88,13 +139,6 @@ vec4 depth_to_view_coord(vec2 tc, float depth) {
     vec4 view_coord = u_inv_proj_mat * clip_coord;
     return view_coord / view_coord.w;
 }
-
-/*
-vec4 fetch_voxel(vec3 tc) {
-    float a = min(texture(u_tex_volume, tc).x * u_scale, 1.0);
-    return vec4(mix(vec3(0), u_color, min(a * 10.0, 1.0)), a);
-}
-*/
 
 /**
  * Draws an isosurface if the given isovalue is found along the ray in between the 
@@ -131,18 +175,17 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
         vec3 isopos = rayPosition - raySegmentLen * a * rayDirection;
 
         vec4 isocolor = isosurfaceColor;
-#if defined(SHADING_ENABLED)
-        vec3 gradient = COMPUTE_GRADIENT_FOR_CHANNEL(voxel, volume, volumeParameters, isopos, channel);
+#if defined(SHADING_ENABLED) || 1
+        vec3 gradient = getGradient(isopos);
         gradient = normalize(gradient);
 
+        vec3 isoposView = normalize((u_tex_to_view_mat * vec4(isopos, 1.0)).xyz);
         // two-sided lighting
-        if (dot(gradient, rayDirection) <= 0) {
+        if (dot(gradient, isoposView) <= 0) {
             gradient = -gradient;
         }
+        isocolor.rgb = shade(isocolor.rgb, -isoposView, -gradient);
 
-        vec3 isoposWorld = (volumeParameters.textureToWorld * vec4(isopos, 1.0)).xyz;
-        isocolor.rgb = APPLY_LIGHTING(lighting, isocolor.rgb, isocolor.rgb, vec3(1.0),
-                           isoposWorld, -gradient, toCameraDir);
 #endif // SHADING_ENABLED
 
 #if defined(INCLUDE_DVR)
@@ -180,12 +223,12 @@ vec4 drawIsosurfaces(in vec4 curResult,
 #else // MAX_ISOVALUE_COUNT
     // multiple isosurfaces, need to determine order of traversal
     if (voxel - previousVoxel > 0) {
-        for (int i = 0; i < MAX_ISOVALUE_COUNT; ++i) {
+        for (int i = 0; i < u_isovalues.maxcount; ++i) {
             result = drawIsosurface(result, u_isovalues.values[i], u_isovalues.colors[i],
                 voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr);
         }
     } else {
-        for (int i = MAX_ISOVALUE_COUNT; i > 0; --i) {
+        for (int i = u_isovalues.maxcount; i > 0; --i) {
             result = drawIsosurface(result, u_isovalues.values[i - 1], u_isovalues.colors[i - 1],
                 voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr);
         }
@@ -195,9 +238,6 @@ vec4 drawIsosurfaces(in vec4 curResult,
 }
 
 
-float getVoxel(vec3 samplePos) {
-    return texture(u_tex_volume, samplePos).r * u_scale;
-}
 
 void main() {
     out_frag = vec4(model_pos, 1.0);
@@ -207,6 +247,9 @@ void main() {
     // Do everything in model space
     vec3 ori = model_eye;
     vec3 dir = normalize(model_pos - model_eye);
+
+    //out_frag = vec4(dir * 0.5 + 0.5, 1.0);
+    //return;
 
     float t_entry, t_exit;
     if (!ray_vs_aabb(t_entry, t_exit, ori, dir, vec3(0), vec3(1))) discard;
@@ -227,16 +270,18 @@ void main() {
     float samples = ceil(tEnd / tIncr);
     tIncr = tEnd / samples;
 
-    vec4 result = vec4(0);
     float t = 0.5 * tIncr;
+
+    vec4 result = vec4(0);
     float density = getVoxel(entryPos + t * dir); // need this for isosurface rendering
     while (t < tEnd) {
         vec3 samplePos = entryPos + t * dir;
 
         float prevDensity = density;
-        float density = getVoxel(samplePos);
+        density = getVoxel(samplePos);
 
         if (u_iso_enabled > 0) {
+            tIncr = tEnd / samples;
             result = drawIsosurfaces(result, density, prevDensity, samplePos, dir, t, tIncr);
         } 
 #if defined(INCLUDE_DVR)

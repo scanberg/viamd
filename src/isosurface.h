@@ -7,8 +7,10 @@
 #include <vector>
 
 struct IsoSurface {
+    const size_t maxCount = 6; // Keep in sync with shader!
+
     bool enabled = false;
-    mutable std::vector<std::pair<float, vec4>> values;
+    std::vector<std::pair<float, vec4>> values;
 
     void add(float v, const vec4& color);
     void clear();

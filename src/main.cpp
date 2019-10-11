@@ -486,6 +486,8 @@ struct ApplicationData {
         mat4 model_to_world_matrix{};
         mat4 texture_to_model_matrix{};
         mat4 world_to_texture_matrix{};
+
+        vec3 voxel_spacing{1.0f};
     } density_volume;
 
     // --- RAMACHANDRAN ---
@@ -1379,7 +1381,7 @@ int main(int, char**) {
             const float32 scl = 1.f * data.density_volume.density_scale / (data.density_volume.texture.max_value > 0.f ? data.density_volume.texture.max_value : 1.f);
             volume::render_volume_texture(data.density_volume.texture.id, data.density_volume.tf.id, data.fbo.deferred.depth, data.density_volume.texture_to_model_matrix,
                                           data.density_volume.model_to_world_matrix, data.view.param.matrix.view, data.view.param.matrix.proj, scl, data.density_volume.tf.alpha_scale,
-                                          data.density_volume.isosurface);
+                                          data.density_volume.isosurface, data.density_volume.voxel_spacing);
             POP_GPU_SECTION()
             glDisable(GL_BLEND);
             glDepthMask(1);
@@ -3975,7 +3977,7 @@ static void draw_density_volume_window(ApplicationData* data) {
             ImGui::SliderFloat(valueStr.c_str(), &data->density_volume.isosurface.values[i].first, 0.0f, 10.f, "%.3f", 3.f);
             ImGui::ColorEdit4(colorStr.c_str(), glm::value_ptr(data->density_volume.isosurface.values[i].second), ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
         }
-        if (ImGui::Button("Add Isosurface", ImVec2(250, 20))) {
+        if ((data->density_volume.isosurface.values.size() < data->density_volume.isosurface.maxCount) && ImGui::Button("Add Isosurface", ImVec2(250, 20))) {
             data->density_volume.isosurface.add(0.0f, vec4(0.2f, 0.1f, 0.9f, 1.0f));
         }
         if (ImGui::Button("Clear Isosurfaces", ImVec2(250, 20))) {
@@ -4542,6 +4544,7 @@ static void init_trajectory_data(ApplicationData* data) {
             init_volume(&data->density_volume.volume, math::max(ivec3(1), ivec3(box_ext) / VOLUME_DOWNSAMPLE_FACTOR));
             data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(vec3(0), box_ext);
             data->density_volume.texture_to_model_matrix = volume::compute_texture_to_model_matrix(data->density_volume.volume.dim);
+            data->density_volume.voxel_spacing = box_ext / vec3(data->density_volume.volume.dim);
         }
 #endif
 
@@ -4694,6 +4697,7 @@ static void load_workspace(ApplicationData* data, CStringView file) {
     ASSERT(data);
     clear_representations(data);
     stats::remove_all_properties();
+    data->density_volume.isosurface.clear();
 
     StringBuffer<256> new_molecule_file;
     StringBuffer<256> new_trajectory_file;
@@ -4756,7 +4760,16 @@ static void load_workspace(ApplicationData* data, CStringView file) {
                         data->density_volume.tf.dirty = true;
                     }
                 }
+                if (compare_n(line, "IsoSurfaceRenderingEnabled=", 27)) data->density_volume.isosurface.enabled = to_int(trim(line.substr(27))) != 0;
             }
+        } else if (compare_n(line, "[Isosurface]", 21)) {
+            float isovalue = -1.0f;
+            vec4 isocolor{0.0f};
+            while (c_txt && c_txt[0] != '[' && (line = extract_line(c_txt))) {
+                if (compare_n(line, "Isovalue=", 9)) isovalue = to_float(trim(line.substr(9)));
+                if (compare_n(line, "IsosurfaceColor=", 16)) isocolor = to_vec4(trim(line.substr(16)));
+            }
+            data->density_volume.isosurface.add(isovalue, isocolor);
         } else if (compare_n(line, "[Camera]", 8)) {
             while (c_txt && c_txt[0] != '[' && (line = extract_line(c_txt))) {
                 if (compare_n(line, "Position=", 9)) {
@@ -4844,7 +4857,14 @@ static void save_workspace(ApplicationData* data, CStringView file) {
     fprintf(fptr, "DensityScale=%g\n", data->density_volume.density_scale);
     fprintf(fptr, "AlphaScale=%g\n", data->density_volume.tf.alpha_scale);
     fprintf(fptr, "TFFileName=%s\n", data->density_volume.tf.path.cstr());
+    fprintf(fptr, "IsoSurfaceRenderingEnabled=%i\n", data->density_volume.isosurface.enabled ? 1 : 0);
     fprintf(fptr, "\n");
+
+    for (const auto& elem : data->density_volume.isosurface.values) {
+        fprintf(fptr, "[Isosurface]\n");
+        fprintf(fptr, "Isovalue=%g\n", elem.first);
+        fprintf(fptr, "IsosurfaceColor=%g,%g,%g,%g\n", elem.second.r, elem.second.g, elem.second.b, elem.second.a);
+    }
 
     fprintf(fptr, "[Camera]\n");
     fprintf(fptr, "Position=%g,%g,%g\n", data->view.camera.position.x, data->view.camera.position.y, data->view.camera.position.z);
@@ -5429,6 +5449,7 @@ static void create_volume(ApplicationData* data) {
     data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(min_box, max_box);
     data->density_volume.texture_to_model_matrix = volume::compute_texture_to_model_matrix(dim);
     data->density_volume.world_to_texture_matrix = math::inverse(data->density_volume.model_to_world_matrix * data->density_volume.texture_to_model_matrix);
+    data->density_volume.voxel_spacing = (max_box - min_box) / vec3(data->density_volume.volume.dim);
 }
 
 static void draw_representations(const ApplicationData& data) {
