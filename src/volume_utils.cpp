@@ -29,6 +29,8 @@ static struct {
         GLint view_to_model_matrix = -1;
         GLint model_to_tex_matrix = -1;
         GLint inv_proj_matrix = -1;
+        GLint clip_range_min = -1;
+        GLint clip_range_max = -1;
     } uniform_loc;
 } gl;
 
@@ -60,10 +62,12 @@ void initialize() {
     gl.uniform_loc.view_to_model_matrix = glGetUniformLocation(gl.program, "u_view_to_model_mat");
     gl.uniform_loc.model_to_tex_matrix = glGetUniformLocation(gl.program, "u_model_to_tex_mat");
     gl.uniform_loc.inv_proj_matrix = glGetUniformLocation(gl.program, "u_inv_proj_mat");
+    gl.uniform_loc.clip_range_min = glGetUniformLocation(gl.program, "u_clip_range_min");
+    gl.uniform_loc.clip_range_max = glGetUniformLocation(gl.program, "u_clip_range_max");
 
     if (!gl.vbo) {
         // https://stackoverflow.com/questions/28375338/cube-using-single-gl-triangle-strip
-        constexpr float cube_strip[42] = {0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+        constexpr uint8_t cube_strip[42] = {0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
         glGenBuffers(1, &gl.vbo);
         glBindBuffer(GL_ARRAY_BUFFER, gl.vbo);
         glBufferData(GL_ARRAY_BUFFER, sizeof(cube_strip), cube_strip, GL_STATIC_DRAW);
@@ -75,7 +79,7 @@ void initialize() {
         glBindVertexArray(gl.vao);
         glBindBuffer(GL_ARRAY_BUFFER, gl.vbo);
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (const GLvoid*)0);
+        glVertexAttribPointer(0, 3, GL_UNSIGNED_BYTE, GL_FALSE, 0, (const GLvoid*)0);
         glBindVertexArray(0);
     }
 }
@@ -163,7 +167,7 @@ void save_volume_to_file(const Volume& volume, CStringView file) {
 }
 
 void render_volume_texture(GLuint volume_texture, GLuint tf_texture, GLuint depth_texture, const mat4& texture_matrix, const mat4& model_matrix, const mat4& view_matrix, const mat4& proj_matrix,
-                           float density_scale, float alpha_scale) {
+                           float density_scale, float alpha_scale, const vec3& clip_range_min, const vec3& clip_range_max) {
     GLint viewport[4];
     glGetIntegerv(GL_VIEWPORT, viewport);
 
@@ -194,6 +198,8 @@ void render_volume_texture(GLuint volume_texture, GLuint tf_texture, GLuint dept
     glUniform1f(gl.uniform_loc.scale, density_scale);
     glUniform1f(gl.uniform_loc.alpha_scale, alpha_scale);
     glUniform2fv(gl.uniform_loc.inv_res, 1, &inv_res[0]);
+    glUniform3fv(gl.uniform_loc.clip_range_min, 1, &clip_range_min[0]);
+    glUniform3fv(gl.uniform_loc.clip_range_max, 1, &clip_range_max[0]);
     glUniformMatrix4fv(gl.uniform_loc.model_view_proj_matrix, 1, GL_FALSE, &model_view_proj_matrix[0][0]);
     glUniformMatrix4fv(gl.uniform_loc.view_to_model_matrix, 1, GL_FALSE, &view_to_model_matrix[0][0]);
     glUniformMatrix4fv(gl.uniform_loc.model_to_tex_matrix, 1, GL_FALSE, &model_to_tex_matrix[0][0]);

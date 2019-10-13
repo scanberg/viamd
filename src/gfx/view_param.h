@@ -3,30 +3,25 @@
 #include <core/vector_types.h>
 
 struct ViewParam {
-    struct {
+    struct Block {
         mat4 view;
         mat4 proj;
+        mat4 proj_jittered;
         mat4 view_proj;
+        mat4 view_proj_jittered;
         mat4 norm;
-
-        struct {
-            mat4 view;
-            mat4 proj;
-            mat4 view_proj;
-            mat4 norm;
-        } inverse;
-    } matrix;
-
-    vec2 resolution;
-    vec2 jitter;
+    };
 
     struct {
-        struct {
-            mat4 view;
-            mat4 proj;
-            mat4 view_proj;
-        } matrix;
+        Block current;
+        Block inverse;
+        Block previous;
+    } matrix;
 
-        vec2 jitter;
-    } previous;
+    struct {
+        vec2 current;
+        vec2 previous;
+    } jitter;
+
+    vec2 resolution;
 };

@@ -443,16 +443,16 @@ void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint ato
 
     glUseProgram(vdw::program);
 
-    const mat4 curr_view_to_prev_clip_mat = view_param.previous.matrix.view_proj * view_param.matrix.inverse.view;
+    const mat4 curr_view_to_prev_clip_mat = view_param.matrix.previous.view_proj_jittered * view_param.matrix.inverse.view;
     const vec2 res = view_param.resolution;
-    const vec4 jitter_uv = vec4(view_param.jitter / res, view_param.previous.jitter / res);
+    const vec4 jitter_uv = vec4(view_param.jitter.current / res, view_param.jitter.previous / res);
     static uint32 frame = 0;
     frame++;
 
     // Uniforms
-    glUniformMatrix4fv(vdw::uniform_loc_view_mat, 1, GL_FALSE, &view_param.matrix.view[0][0]);
-    glUniformMatrix4fv(vdw::uniform_loc_proj_mat, 1, GL_FALSE, &view_param.matrix.proj[0][0]);
-    glUniformMatrix4fv(vdw::uniform_loc_inv_proj_mat, 1, GL_FALSE, &view_param.matrix.inverse.proj[0][0]);
+    glUniformMatrix4fv(vdw::uniform_loc_view_mat, 1, GL_FALSE, &view_param.matrix.current.view[0][0]);
+    glUniformMatrix4fv(vdw::uniform_loc_proj_mat, 1, GL_FALSE, &view_param.matrix.current.proj_jittered[0][0]);
+    glUniformMatrix4fv(vdw::uniform_loc_inv_proj_mat, 1, GL_FALSE, &view_param.matrix.inverse.proj_jittered[0][0]);
     glUniformMatrix4fv(vdw::uniform_loc_curr_view_to_prev_clip_mat, 1, GL_FALSE, &curr_view_to_prev_clip_mat[0][0]);
     glUniform1f(vdw::uniform_loc_radius_scale, radius_scale);
     glUniform4fv(vdw::uniform_loc_jitter_uv, 1, &jitter_uv[0]);
@@ -482,13 +482,13 @@ void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, bond_buffer);
 
-    const mat4 curr_view_to_prev_clip_mat = view_param.previous.matrix.view_proj * view_param.matrix.inverse.view;
+    const mat4 curr_view_to_prev_clip_mat = view_param.matrix.previous.view_proj_jittered * view_param.matrix.inverse.view;
     const vec2 res = view_param.resolution;
-    const vec4 jitter_uv = vec4(view_param.jitter / res, view_param.previous.jitter / res);
+    const vec4 jitter_uv = vec4(view_param.jitter.current / res, view_param.jitter.previous / res);
 
     glUseProgram(licorice::program);
-    glUniformMatrix4fv(licorice::uniform_loc_view_mat, 1, GL_FALSE, &view_param.matrix.view[0][0]);
-    glUniformMatrix4fv(licorice::uniform_loc_proj_mat, 1, GL_FALSE, &view_param.matrix.proj[0][0]);
+    glUniformMatrix4fv(licorice::uniform_loc_view_mat, 1, GL_FALSE, &view_param.matrix.current.view[0][0]);
+    glUniformMatrix4fv(licorice::uniform_loc_proj_mat, 1, GL_FALSE, &view_param.matrix.current.proj_jittered[0][0]);
     glUniformMatrix4fv(licorice::uniform_loc_curr_view_to_prev_clip_mat, 1, GL_FALSE, &curr_view_to_prev_clip_mat[0][0]);
     glUniform1f(licorice::uniform_loc_radius, 0.25f * radius_scale);
     glUniform4fv(licorice::uniform_loc_jitter_uv, 1, &jitter_uv[0]);
@@ -576,7 +576,7 @@ void draw_spline(GLuint spline_buffer, GLuint spline_index_buffer, int32 num_spl
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, spline_index_buffer);
 
     glUseProgram(backbone_spline::draw_spline_program);
-    glUniformMatrix4fv(backbone_spline::uniform_loc_view_proj_mat, 1, GL_FALSE, &(view_param.matrix.view_proj)[0][0]);
+    glUniformMatrix4fv(backbone_spline::uniform_loc_view_proj_mat, 1, GL_FALSE, &(view_param.matrix.current.view_proj_jittered)[0][0]);
     glUniform4fv(backbone_spline::uniform_loc_s_color, 1, &math::convert_color(s_color)[0]);
     glUniform4fv(backbone_spline::uniform_loc_v_color, 1, &math::convert_color(v_color)[0]);
     glUniform4fv(backbone_spline::uniform_loc_t_color, 1, &math::convert_color(t_color)[0]);
@@ -612,16 +612,16 @@ void draw_ribbons(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_
     glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, atom_velocity_buffer);
 
     const vec2 res = view_param.resolution;
-    const vec4 jitter_uv = vec4(view_param.jitter / res, view_param.previous.jitter / res);
+    const vec4 jitter_uv = vec4(view_param.jitter.current / res, view_param.jitter.previous / res);
 
     glUseProgram(ribbon::program);
 
     // Uniforms
     glUniform1i(ribbon::uniform_loc_atom_color_buffer, 0);
     glUniform1i(ribbon::uniform_loc_atom_velocity_buffer, 1);
-    glUniformMatrix4fv(ribbon::uniform_loc_normal_mat, 1, GL_FALSE, &view_param.matrix.norm[0][0]);
-    glUniformMatrix4fv(ribbon::uniform_loc_view_proj_mat, 1, GL_FALSE, &view_param.matrix.view_proj[0][0]);
-    glUniformMatrix4fv(ribbon::uniform_loc_prev_view_proj_mat, 1, GL_FALSE, &view_param.previous.matrix.view_proj[0][0]);
+    glUniformMatrix4fv(ribbon::uniform_loc_normal_mat, 1, GL_FALSE, &view_param.matrix.current.norm[0][0]);
+    glUniformMatrix4fv(ribbon::uniform_loc_view_proj_mat, 1, GL_FALSE, &view_param.matrix.current.view_proj_jittered[0][0]);
+    glUniformMatrix4fv(ribbon::uniform_loc_prev_view_proj_mat, 1, GL_FALSE, &view_param.matrix.previous.view_proj_jittered[0][0]);
     glUniform4fv(ribbon::uniform_loc_jitter_uv, 1, &jitter_uv[0]);
 
     glDrawElements(GL_LINE_STRIP, num_spline_indices, GL_UNSIGNED_INT, 0);
@@ -655,8 +655,8 @@ void draw_cartoon(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_
 
     glUseProgram(cartoon::program);
     glUniform1i(cartoon::uniform_loc_atom_color_tex, 0);
-    glUniformMatrix4fv(cartoon::uniform_loc_normal_mat, 1, GL_FALSE, &view_param.matrix.norm[0][0]);
-    glUniformMatrix4fv(cartoon::uniform_loc_view_proj_mat, 1, GL_FALSE, &view_param.matrix.view_proj[0][0]);
+    glUniformMatrix4fv(cartoon::uniform_loc_normal_mat, 1, GL_FALSE, &view_param.matrix.current.norm[0][0]);
+    glUniformMatrix4fv(cartoon::uniform_loc_view_proj_mat, 1, GL_FALSE, &view_param.matrix.current.view_proj_jittered[0][0]);
     glDrawElements(GL_LINE_STRIP, num_spline_indices, GL_UNSIGNED_INT, 0);
     glUseProgram(0);
 
@@ -690,14 +690,14 @@ void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint ato
     glEnableVertexAttribArray(3);
 
     const vec2 res = view_param.resolution;
-    const vec4 jitter_uv = vec4(view_param.jitter / res, view_param.previous.jitter / res);
+    const vec4 jitter_uv = vec4(view_param.jitter.current / res, view_param.jitter.previous / res);
 
     glUseProgram(vdw::program);
 
     // Uniforms
-    glUniformMatrix4fv(vdw::uniform_loc_view_mat, 1, GL_FALSE, &view_param.matrix.view[0][0]);
-    glUniformMatrix4fv(vdw::uniform_loc_proj_mat, 1, GL_FALSE, &view_param.matrix.proj[0][0]);
-    glUniformMatrix4fv(vdw::uniform_loc_inv_proj_mat, 1, GL_FALSE, &view_param.matrix.inverse.proj[0][0]);
+    glUniformMatrix4fv(vdw::uniform_loc_view_mat, 1, GL_FALSE, &view_param.matrix.current.view[0][0]);
+    glUniformMatrix4fv(vdw::uniform_loc_proj_mat, 1, GL_FALSE, &view_param.matrix.current.proj_jittered[0][0]);
+    glUniformMatrix4fv(vdw::uniform_loc_inv_proj_mat, 1, GL_FALSE, &view_param.matrix.inverse.proj_jittered[0][0]);
     glUniform4fv(vdw::uniform_loc_jitter_uv, 1, &jitter_uv[0]);
     glUniform4fv(vdw::uniform_loc_color, 1, &color[0]);
     glUniform1f(vdw::uniform_loc_radius_scale, radius_scale);
@@ -734,8 +734,8 @@ void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, bond_buffer);
 
     glUseProgram(licorice::program);
-    glUniformMatrix4fv(licorice::uniform_loc_view_mat, 1, GL_FALSE, &view_param.matrix.view[0][0]);
-    glUniformMatrix4fv(licorice::uniform_loc_proj_mat, 1, GL_FALSE, &view_param.matrix.proj[0][0]);
+    glUniformMatrix4fv(licorice::uniform_loc_view_mat, 1, GL_FALSE, &view_param.matrix.current.view[0][0]);
+    glUniformMatrix4fv(licorice::uniform_loc_proj_mat, 1, GL_FALSE, &view_param.matrix.current.proj_jittered[0][0]);
     glUniform4fv(licorice::uniform_loc_color, 1, &color[0]);
     glUniform1ui(licorice::uniform_loc_mask, mask);
     glUniform1f(licorice::uniform_loc_radius, 0.25f * radius_scale);
@@ -783,7 +783,7 @@ void draw_ribbons(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_
     const vec2 ribbon_scale = vec2(1.0f, 0.1f) * scale;
 
     // Uniforms
-    glUniformMatrix4fv(ribbon::uniform_loc_view_proj_mat, 1, GL_FALSE, &view_param.matrix.view_proj[0][0]);
+    glUniformMatrix4fv(ribbon::uniform_loc_view_proj_mat, 1, GL_FALSE, &view_param.matrix.current.view_proj_jittered[0][0]);
     glUniform4fv(ribbon::uniform_loc_color, 1, &color[0]);
     glUniform2fv(ribbon::uniform_loc_scale, 1, &ribbon_scale[0]);
     glUniform1ui(ribbon::uniform_loc_mask, mask);

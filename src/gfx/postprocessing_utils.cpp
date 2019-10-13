@@ -1217,13 +1217,13 @@ void apply_tonemapping(GLuint color_tex, Tonemapping tonemapping, float exposure
 }
 
 void blit_static_velocity(GLuint depth_tex, const ViewParam& view_param) {
-    mat4 curr_clip_to_prev_clip_mat = view_param.previous.matrix.view_proj * view_param.matrix.inverse.view_proj;
+    mat4 curr_clip_to_prev_clip_mat = view_param.matrix.previous.view_proj_jittered * view_param.matrix.inverse.view_proj_jittered;
 
 	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, depth_tex);
 
     const vec2 res = view_param.resolution;
-    const vec4 jitter_uv = vec4(view_param.jitter / res, view_param.previous.jitter / res);
+    const vec4 jitter_uv = vec4(view_param.jitter.current / res, view_param.jitter.previous / res);
 
     glUseProgram(velocity::blit_velocity.program);
 	glUniform1i(velocity::blit_velocity.uniform_loc.tex_depth, 0);
@@ -1400,9 +1400,9 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     time = time + 0.016f;
     if (time > 100.f) time -= 100.f;
 
-    const auto near_dist = view_param.matrix.proj[3][2] / (view_param.matrix.proj[2][2] - 1.f);
-    const auto far_dist = (view_param.matrix.proj[2][2] - 1.f) * near_dist / (view_param.matrix.proj[2][2] + 1.f);
-    const auto ortho = is_orthographic_proj_matrix(view_param.matrix.proj);
+    const auto near_dist = view_param.matrix.current.proj[3][2] / (view_param.matrix.current.proj[2][2] - 1.f);
+    const auto far_dist = (view_param.matrix.current.proj[2][2] - 1.f) * near_dist / (view_param.matrix.current.proj[2][2] + 1.f);
+    const auto ortho = is_orthographic_proj_matrix(view_param.matrix.current.proj);
 
     GLint last_fbo;
     GLint last_viewport[4];
@@ -1461,12 +1461,12 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     POP_GPU_SECTION()
 
     PUSH_GPU_SECTION("Shade")
-    shade_deferred(desc.input_textures.depth, desc.input_textures.color, desc.input_textures.normal, view_param.matrix.inverse.proj, time);
+    shade_deferred(desc.input_textures.depth, desc.input_textures.color, desc.input_textures.normal, view_param.matrix.inverse.proj_jittered, time);
     POP_GPU_SECTION()
 
     if (desc.ambient_occlusion.enabled) {
         PUSH_GPU_SECTION("SSAO")
-        apply_ssao(gl.linear_depth.texture, desc.input_textures.normal, view_param.matrix.proj, desc.ambient_occlusion.intensity, desc.ambient_occlusion.radius, desc.ambient_occlusion.bias, time);
+        apply_ssao(gl.linear_depth.texture, desc.input_textures.normal, view_param.matrix.current.proj_jittered, desc.ambient_occlusion.intensity, desc.ambient_occlusion.radius, desc.ambient_occlusion.bias, time);
         POP_GPU_SECTION()
     }
 
@@ -1515,7 +1515,7 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
             PUSH_GPU_SECTION("Temporal AA + Motion Blur")
         else
             PUSH_GPU_SECTION("Temporal AA")
-        apply_temporal_aa(gl.linear_depth.texture, src_texture, desc.input_textures.velocity, gl.velocity.tex_neighbormax, view_param.jitter, view_param.previous.jitter, feedback_min, feedback_max,
+        apply_temporal_aa(gl.linear_depth.texture, src_texture, desc.input_textures.velocity, gl.velocity.tex_neighbormax, view_param.jitter.current, view_param.jitter.previous, feedback_min, feedback_max,
                           motion_scale, time);
         POP_GPU_SECTION()
     }

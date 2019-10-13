@@ -99,7 +99,7 @@ void main() {
 }
 )";
 
-static inline void append_draw_command(Index offset, Index count, GLenum primitive_type) {
+static inline void append_draw_command(Index count, GLenum primitive_type) {
     if (commands.size() > 0 && commands.back().primitive_type == primitive_type) {
         commands.back().count += count;
     } else {
@@ -107,7 +107,9 @@ static inline void append_draw_command(Index offset, Index count, GLenum primiti
         ASSERT(curr_proj_matrix_idx > -1 && "Immediate Mode Proj Matrix not set!");
         // ASSERT(curr_material_idx > -1, "Material not set!");
 
+        const Index offset = indices.size() - count;
         DrawCommand cmd{offset, count, primitive_type, program, curr_view_matrix_idx, curr_proj_matrix_idx};
+
         commands.push_back(cmd);
     }
 }
@@ -190,7 +192,7 @@ void shutdown() {
     if (program) glDeleteProgram(program);
 }
 
-void set_view_matrix(const mat4& model_view_matrix) {
+void set_model_view_matrix(const mat4& model_view_matrix) {
     curr_view_matrix_idx = (int)matrix_stack.size();
     matrix_stack.push_back(model_view_matrix);
 }
@@ -204,10 +206,10 @@ void flush() {
     glBindVertexArray(vao);
 
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), vertices.data(), GL_STREAM_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size_in_bytes(), vertices.data(), GL_STREAM_DRAW);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(Index), indices.data(), GL_STREAM_DRAW);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size_in_bytes(), indices.data(), GL_STREAM_DRAW);
 
     glEnable(GL_PROGRAM_POINT_SIZE);
     // glEnable(GL_BLEND);
@@ -223,6 +225,8 @@ void flush() {
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, default_tex);
+
+    const GLenum index_type = sizeof(Index) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
 
     for (const auto& cmd : commands) {
         bool update_view = false;
@@ -247,7 +251,7 @@ void flush() {
         }
         // @TODO: Enable textures to be bound...
 
-        glDrawElements(cmd.primitive_type, cmd.count, sizeof(Index) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT, reinterpret_cast<const void*>(cmd.offset * sizeof(Index)));
+        glDrawElements(cmd.primitive_type, cmd.count, index_type, (const void*)(cmd.offset * sizeof(Index)));
     }
 
     glBindVertexArray(0);
@@ -274,7 +278,7 @@ void draw_point(const vec3& pos, uint32 color) {
     vertices.push_back({pos, vec3(0, 0, 1), {0, 0}, color});
     indices.push_back(idx);
 
-    append_draw_command(idx, 1, GL_POINTS);
+    append_draw_command(1, GL_POINTS);
 }
 
 void draw_line(const vec3& from, const vec3& to, uint32 color) {
@@ -286,7 +290,7 @@ void draw_line(const vec3& from, const vec3& to, uint32 color) {
     indices.push_back(idx);
     indices.push_back(idx + 1);
 
-    append_draw_command(idx, 2, GL_LINES);
+    append_draw_command(2, GL_LINES);
 }
 
 void draw_triangle(const vec3& p0, const vec3& p1, const vec3& p2, uint32 color) {
@@ -301,7 +305,7 @@ void draw_triangle(const vec3& p0, const vec3& p1, const vec3& p2, uint32 color)
     indices.push_back(idx + 1);
     indices.push_back(idx + 2);
 
-    append_draw_command(idx, 3, GL_TRIANGLES);
+    append_draw_command(3, GL_TRIANGLES);
 }
 
 void draw_plane(const vec3& center, const vec3& vec_u, const vec3& vec_v, uint32 color) {
@@ -320,7 +324,7 @@ void draw_plane(const vec3& center, const vec3& vec_u, const vec3& vec_v, uint32
     indices.push_back(idx + 1);
     indices.push_back(idx + 3);
 
-    append_draw_command(idx, 6, GL_TRIANGLES);
+    append_draw_command(6, GL_TRIANGLES);
 }
 
 void draw_plane_wireframe(const vec3& center, const vec3& vec_u, const vec3& vec_v, uint32 color, int segments_u, int segments_v) {
@@ -424,7 +428,7 @@ void draw_box_wireframe(const vec3& min_box, const vec3& max_box, const mat4& mo
     draw_line(trans + R * vec3(max_box[0], min_box[1], max_box[2]), trans + R * vec3(max_box[0], max_box[1], max_box[2]), color);
     draw_line(trans + R * vec3(min_box[0], max_box[1], max_box[2]), trans + R * vec3(max_box[0], max_box[1], max_box[2]), color);
 
-    // Z min max
+    // Z min to max
     draw_line(trans + R * vec3(min_box[0], min_box[1], min_box[2]), trans + R * vec3(min_box[0], min_box[1], max_box[2]), color);
     draw_line(trans + R * vec3(min_box[0], max_box[1], min_box[2]), trans + R * vec3(min_box[0], max_box[1], max_box[2]), color);
     draw_line(trans + R * vec3(max_box[0], min_box[1], min_box[2]), trans + R * vec3(max_box[0], min_box[1], max_box[2]), color);

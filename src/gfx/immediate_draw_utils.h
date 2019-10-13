@@ -8,7 +8,7 @@ namespace immediate {
 void initialize();
 void shutdown();
 
-void set_view_matrix(const mat4& model_view_mat);
+void set_model_view_matrix(const mat4& model_view_mat);
 void set_proj_matrix(const mat4& proj_mat);
 
 void flush();

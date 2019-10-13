@@ -36,11 +36,11 @@ struct TrackingData {
 
 /*
 vec3 compute_eigen_values(const float* RESTRICT x, const float* RESTRICT y, const float* RESTRICT z, const float* RESTRICT mass, int64 count);
-
-mat3 compute_rotation(const float* RESTRICT x0, const float* RESTRICT y0, const float* RESTRICT z0,
-                                          const float* RESTRICT x1, const float* RESTRICT y1, const float* RESTRICT z1,
-                                          const float* RESTRICT mass, int64 count, const vec3& com0, const vec3& com1);
 */
+mat3 compute_rotation(const float* RESTRICT x0, const float* RESTRICT y0, const float* RESTRICT z0,
+                      const float* RESTRICT x1, const float* RESTRICT y1, const float* RESTRICT z1,
+                      const float* RESTRICT mass, int64 count, const vec3& com0, const vec3& com1);
+
 
 bool compute_trajectory_transform_data(ID structure_id, Bitfield atom_mask, const MoleculeDynamic& dynamic);
 

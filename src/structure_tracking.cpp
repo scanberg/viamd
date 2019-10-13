@@ -420,12 +420,12 @@ mat3 compute_rotation(const float* x0, const float* y0, const float* z0,
     const mat3 Aqq = compute_mass_weighted_covariance_matrix(dx0, dy0, dz0, mass, count);
 #else
     const mat3 Apq = compute_mass_weighted_cross_covariance_matrix(x0, y0, z0, x1, y1, z1, mass, count, com0, com1);
-    const mat3 Aqq = compute_mass_weighted_covariance_matrix(x0, y0, z0, mass, count);
+    //const mat3 Aqq = compute_mass_weighted_covariance_matrix(x0, y0, z0, mass, count);
 #endif
 
-    const mat3 A = Apq;
+    // const mat3 A = Apq;
     // return A; // Return complete linear transform with skewing and all
-    return extract_rotation(A);  // Return rotational part
+    return extract_rotation(Apq);  // Return rotational part
 }
 
 #if 0
