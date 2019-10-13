@@ -51,7 +51,7 @@ inline uint32 lerp_pixel(const Image& color_map, const vec2& coords) {
     return math::convert_color(math::mix(cx0, cx1, t.y));
 }
 
-void color_atoms_backbone_angles(ArrayView<uint32> dst_atom_colors, ArrayView<const Residue> residues, ArrayView<const BackboneSequence> bb_seq, ArrayView<const vec2> bb_angles,
+void color_atoms_backbone_angles(ArrayView<uint32> dst_atom_colors, ArrayView<const Residue> residues, ArrayView<const BackboneSequence> bb_seq, ArrayView<const BackboneAngle> bb_angles,
                                  const Image& color_map) {
     memset_array(dst_atom_colors, 0xffffffff);
 
@@ -62,7 +62,7 @@ void color_atoms_backbone_angles(ArrayView<uint32> dst_atom_colors, ArrayView<co
         if (seq.end - seq.beg < 2) continue;
 
         for (int64 i = seq.beg + 1; i < seq.end - 1; i++) {
-            const vec2 coord = vec2(0, 1) + vec2(1, -1) * (bb_angles[i] * one_over_two_pi + 0.5f);
+            const vec2 coord = vec2(0, 1) + vec2(1, -1) * ((vec2)bb_angles[i] * one_over_two_pi + 0.5f);
             const uint32 color = lerp_pixel(color_map, coord);
             memset_array(dst_atom_colors, color, residues[i].atom_range);
         }
