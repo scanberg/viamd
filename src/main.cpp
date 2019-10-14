@@ -451,10 +451,23 @@ struct ApplicationData {
     struct {
         bool show_window = false;
         bool enabled = false;
-        bool dirty = true;
 
-        vec3 color = vec3(1, 0, 0);
-        float32 density_scale = 1.f;
+        struct {
+            bool enabled = true;
+            float32 density_scale = 1.f;
+            struct {
+                GLuint id = 0;
+                bool dirty = true;
+                int width = 0;
+                float32 alpha_scale = 1.f;
+                StringBuffer<512> path;
+            } tf;
+        } dvr;
+
+        struct {
+            bool enabled = false;
+            IsoSurface isosurfaces;
+        } iso;
 
         struct {
             GLuint id = 0;
@@ -462,14 +475,6 @@ struct ApplicationData {
             ivec3 dim = ivec3(0);
             float32 max_value = 1.f;
         } texture;
-
-        struct {
-            GLuint id = 0;
-            bool dirty = true;
-            int width = 0;
-            float32 alpha_scale = 1.f;
-            StringBuffer<512> path;
-        } tf;
 
         struct {
             vec3 min = {0, 0, 0};
@@ -484,14 +489,10 @@ struct ApplicationData {
         Volume volume{};
         std::mutex volume_data_mutex{};
 
-        IsoSurface isosurface;
-        bool isosurface_enabled = false;
-
         mat4 model_to_world_matrix{};
-        mat4 texture_to_model_matrix{};
-        mat4 world_to_texture_matrix{};
-
+        mat4 world_to_model_matrix{};
         vec3 voxel_spacing{1.0f};
+
     } density_volume;
 
     // --- RAMACHANDRAN ---
@@ -1007,14 +1008,14 @@ int main(int, char**) {
                                 const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-com, 1));
                                 const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(half_box, 1));
                                 const mat4 M = T_box * math::transpose(R) * T_com;
-                                return data->density_volume.world_to_texture_matrix * M * world_pos;
+                                return data->density_volume.world_to_model_matrix * M * world_pos;
                             } else {
                                 LOG_ERROR("Could not get com data or rotation data");
                                 return {};
                             }
                         });
                     } else {
-                        stats::compute_density_volume(&data->density_volume.volume, data->dynamic.trajectory, range, data->density_volume.world_to_texture_matrix);
+                        stats::compute_density_volume(&data->density_volume.volume, data->dynamic.trajectory, range, data->density_volume.world_to_model_matrix);
                     }
                     data->density_volume.volume_data_mutex.unlock();
                     data->density_volume.texture.dirty = true;
@@ -1037,13 +1038,13 @@ int main(int, char**) {
                 data.density_volume.texture.dirty = false;
             }
         }
-        if (data.density_volume.tf.dirty) {
-            if (data.density_volume.tf.path.length() > 0) {
-                volume::create_tf_texture(&data.density_volume.tf.id, &data.density_volume.tf.width, data.density_volume.tf.path);
+        if (data.density_volume.dvr.tf.dirty) {
+            if (data.density_volume.dvr.tf.path.length() > 0) {
+                volume::create_tf_texture(&data.density_volume.dvr.tf.id, &data.density_volume.dvr.tf.width, data.density_volume.dvr.tf.path);
             } else {
-                volume::create_tf_texture(&data.density_volume.tf.id, &data.density_volume.tf.width, VIAMD_IMAGE_DIR "/tf/default.png");
+                volume::create_tf_texture(&data.density_volume.dvr.tf.id, &data.density_volume.dvr.tf.width, VIAMD_IMAGE_DIR "/tf/default.png");
             }
-            data.density_volume.tf.dirty = false;
+            data.density_volume.dvr.tf.dirty = false;
         }
 
         bool time_changed = false;
@@ -1378,13 +1379,17 @@ int main(int, char**) {
             desc.matrix.proj = data.view.param.matrix.current.proj_jittered;
             desc.texture.depth = data.fbo.deferred.depth;
             desc.texture.volume = data.density_volume.texture.id;
-            desc.texture.transfer_function = data.density_volume.tf.id;
-            desc.global_scaling.density = data.density_volume.density_scale;
-            desc.global_scaling.alpha = data.density_volume.tf.alpha_scale;
-            desc.isosurface = data.density_volume.isosurface;
+            desc.texture.transfer_function = data.density_volume.dvr.tf.id;
+            desc.global_scaling.density = data.density_volume.dvr.density_scale;
+            desc.global_scaling.alpha = data.density_volume.dvr.tf.alpha_scale;
+            desc.isosurface = data.density_volume.iso.isosurfaces;
+            desc.isosurface_enabled = data.density_volume.iso.enabled;
+            desc.direct_volume_rendering_enabled = data.density_volume.dvr.enabled;
             desc.clip_planes.min = data.density_volume.clip_planes.min;
             desc.clip_planes.max = data.density_volume.clip_planes.max;
             desc.voxel_spacing = data.density_volume.voxel_spacing;
+
+            volume::render_volume_texture(desc);
 
             POP_GPU_SECTION()
             glDisable(GL_BLEND);
@@ -3954,47 +3959,62 @@ static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const Mol
 }
 
 static void draw_density_volume_window(ApplicationData* data) {
+    const ImVec2 button_size = {250, 20};
     ImGui::Begin("Density Volume");
-
     ImGui::Checkbox("Enabled", &data->density_volume.enabled);
     if (data->density_volume.enabled) {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 1.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.5f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.0f, 1.0f));
-        if (ImGui::ImageButton((void*)(intptr_t)data->density_volume.tf.id, ImVec2(250, 20))) {
-            auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, "png,jpg");
-            if (res.result == platform::FileDialogResult::Ok) {
-                data->density_volume.tf.path = res.path;
-                data->density_volume.tf.dirty = true;
+        ImGui::Separator();
+        ImGui::Checkbox("Direct Volume Rendering", &data->density_volume.dvr.enabled);
+        if (data->density_volume.dvr.enabled) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 1.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.0f, 1.0f));
+            if (ImGui::ImageButton((void*)(intptr_t)data->density_volume.dvr.tf.id, button_size)) {
+                auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, "png,jpg");
+                if (res.result == platform::FileDialogResult::Ok) {
+                    data->density_volume.dvr.tf.path = res.path;
+                    data->density_volume.dvr.tf.dirty = true;
+                }
             }
+            ImGui::PopStyleVar(2);
+            ImGui::PopStyleColor(2);
+
+            ImGui::SliderFloat("Density Scaling", &data->density_volume.dvr.density_scale, 0.001f, 10.f, "%.3f", 3.f);
+            ImGui::SliderFloat("Alpha Scaling", &data->density_volume.dvr.tf.alpha_scale, 0.001f, 10.f, "%.3f", 3.f);
         }
-        ImGui::PopStyleVar(2);
-        ImGui::PopStyleColor(2);
-        // ImGui::PopID();
-        ImGui::SliderFloat("Density Scaling", &data->density_volume.density_scale, 0.001f, 10.f, "%.3f", 3.f);
-        ImGui::SliderFloat("Alpha Scaling", &data->density_volume.tf.alpha_scale, 0.001f, 10.f, "%.3f", 3.f);
 
-        ImGui::Checkbox("Isosurface Rendering", &data->density_volume.isosurface_enabled);
-
-        for (int i = 0; i < data->density_volume.isosurface.count; ++i) {
+        ImGui::Separator();
+        ImGui::Checkbox("Isosurface Rendering", &data->density_volume.iso.enabled);
+        bool sort_surfaces = false;
+        for (int i = 0; i < data->density_volume.iso.isosurfaces.count; ++i) {
             ImGui::PushID(i);
-            ImGui::SliderFloat("Isovalue", &data->density_volume.isosurface.values[i], 0.0f, 10.f, "%.3f", 3.f);
-            ImGui::ColorEdit4("Color", &data->density_volume.isosurface.colors[i][0], ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
+            if (ImGui::SliderFloat("##Isovalue", &data->density_volume.iso.isosurfaces.values[i], 0.0f, 10.f, "%.3f", 3.f)) {
+                sort_surfaces = true;
+            }
+            ImGui::SameLine();
+            ImGui::ColorEdit4("##Color", &data->density_volume.iso.isosurfaces.colors[i][0], ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
             ImGui::PopID();
         }
-        if ((data->density_volume.isosurface.count < data->density_volume.isosurface.MaxCount) && ImGui::Button("Add Isosurface", ImVec2(250, 20))) {
-            insert(data->density_volume.isosurface, 0.0f, {0.2f, 0.1f, 0.9f, 1.0f});
-        }
-        if (ImGui::Button("Clear Isosurfaces", ImVec2(250, 20))) {
-            clear(data->density_volume.isosurface);
+        if (sort_surfaces) {
+            sort(data->density_volume.iso.isosurfaces);
         }
 
-        ImGui::RangeSliderFloat("x-axis clip planes", &data->density_volume.clip_planes.min.x, &data->density_volume.clip_planes.max.y, 0.0f, 1.0f);
-        ImGui::RangeSliderFloat("y-axis clip planes", &data->density_volume.clip_planes.min.x, &data->density_volume.clip_planes.max.y, 0.0f, 1.0f);
-        ImGui::RangeSliderFloat("z-axis clip planes", &data->density_volume.clip_planes.min.x, &data->density_volume.clip_planes.max.y, 0.0f, 1.0f);
+        if ((data->density_volume.iso.isosurfaces.count < data->density_volume.iso.isosurfaces.MaxCount) && ImGui::Button("Add Isosurface", button_size)) {
+            insert(data->density_volume.iso.isosurfaces, 0.0f, {0.2f, 0.1f, 0.9f, 1.0f});
+        }
+        if (ImGui::Button("Clear Isosurfaces", button_size)) {
+            clear(data->density_volume.iso.isosurfaces);
+        }
 
-        if (ImGui::Button("Compute Ensemble Density")) {
+        ImGui::Separator();
+        ImGui::Text("Clip planes");
+        ImGui::RangeSliderFloat("x", &data->density_volume.clip_planes.min.x, &data->density_volume.clip_planes.max.x, 0.0f, 1.0f);
+        ImGui::RangeSliderFloat("y", &data->density_volume.clip_planes.min.y, &data->density_volume.clip_planes.max.y, 0.0f, 1.0f);
+        ImGui::RangeSliderFloat("z", &data->density_volume.clip_planes.min.z, &data->density_volume.clip_planes.max.z, 0.0f, 1.0f);
+
+        ImGui::Separator();
+        if (ImGui::Button("Compute Ensemble Density", button_size)) {
             ImGui::OpenPopup("Ensemble Density");
         }
 
@@ -4120,7 +4140,7 @@ static void draw_density_volume_window(ApplicationData* data) {
 
                             rotation_alignment_matrix = structure_tracking::compute_rotation(x, y, z, ref_x, ref_y, ref_z, mass, count, com, ref_com);
 
-                            const mat4 M = data->density_volume.world_to_texture_matrix;
+                            const mat4 M = data->density_volume.world_to_model_matrix;
                             append_trajectory_density(&data->density_volume.volume, filter_mask, traj, M, rotation_alignment_matrix, *tracking_data);
 
                             structure_tracking::remove_structure(id);
@@ -4756,7 +4776,7 @@ static void load_workspace(ApplicationData* data, CStringView file) {
     ASSERT(data);
     clear_representations(data);
     stats::remove_all_properties();
-    clear(data->density_volume.isosurface);
+    clear(data->density_volume.iso.isosurfaces);
 
     StringBuffer<256> new_molecule_file;
     StringBuffer<256> new_trajectory_file;
@@ -4809,17 +4829,17 @@ static void load_workspace(ApplicationData* data, CStringView file) {
                 if (compare_n(line, "DofFocusScale=", 14)) data->visuals.dof.focus_scale = to_float(trim(line.substr(14)));
 
                 if (compare_n(line, "DensityVolumeEnabled=", 21)) data->density_volume.enabled = to_int(trim(line.substr(21))) != 0;
-                if (compare_n(line, "DensityScale=", 13)) data->density_volume.density_scale = to_float(trim(line.substr(13)));
-                if (compare_n(line, "AlphaScale=", 11)) data->density_volume.tf.alpha_scale = to_float(trim(line.substr(11)));
+                if (compare_n(line, "DensityScale=", 13)) data->density_volume.dvr.density_scale = to_float(trim(line.substr(13)));
+                if (compare_n(line, "AlphaScale=", 11)) data->density_volume.dvr.tf.alpha_scale = to_float(trim(line.substr(11)));
                 if (compare_n(line, "TFFileName=", 11)) {
-                    StringBuffer<512> tfpath = data->density_volume.tf.path;
+                    StringBuffer<512> tfpath = data->density_volume.dvr.tf.path;
                     tfpath = trim(line.substr(11));
-                    if (!compare(tfpath, data->density_volume.tf.path)) {
-                        data->density_volume.tf.path = tfpath;
-                        data->density_volume.tf.dirty = true;
+                    if (!compare(tfpath, data->density_volume.dvr.tf.path)) {
+                        data->density_volume.dvr.tf.path = tfpath;
+                        data->density_volume.dvr.tf.dirty = true;
                     }
                 }
-                if (compare_n(line, "IsoSurfaceRenderingEnabled=", 27)) data->density_volume.isosurface_enabled = to_int(trim(line.substr(27))) != 0;
+                if (compare_n(line, "IsoSurfaceRenderingEnabled=", 27)) data->density_volume.iso.enabled = to_int(trim(line.substr(27))) != 0;
             }
         } else if (compare_n(line, "[Isosurface]", 21)) {
             float isovalue = -1.0f;
@@ -4828,7 +4848,7 @@ static void load_workspace(ApplicationData* data, CStringView file) {
                 if (compare_n(line, "Isovalue=", 9)) isovalue = to_float(trim(line.substr(9)));
                 if (compare_n(line, "IsosurfaceColor=", 16)) isocolor = to_vec4(trim(line.substr(16)));
             }
-            insert(data->density_volume.isosurface, isovalue, isocolor);
+            insert(data->density_volume.iso.isosurfaces, isovalue, isocolor);
         } else if (compare_n(line, "[Camera]", 8)) {
             while (c_txt && c_txt[0] != '[' && (line = extract_line(c_txt))) {
                 if (compare_n(line, "Position=", 9)) {
@@ -4913,15 +4933,15 @@ static void save_workspace(ApplicationData* data, CStringView file) {
     fprintf(fptr, "\n");
 
     fprintf(fptr, "DensityVolumeEnabled=%i\n", data->density_volume.enabled ? 1 : 0);
-    fprintf(fptr, "DensityScale=%g\n", data->density_volume.density_scale);
-    fprintf(fptr, "AlphaScale=%g\n", data->density_volume.tf.alpha_scale);
-    fprintf(fptr, "TFFileName=%s\n", data->density_volume.tf.path.cstr());
-    fprintf(fptr, "IsoSurfaceRenderingEnabled=%i\n", data->density_volume.isosurface_enabled ? 1 : 0);
+    fprintf(fptr, "DensityScale=%g\n", data->density_volume.dvr.density_scale);
+    fprintf(fptr, "AlphaScale=%g\n", data->density_volume.dvr.tf.alpha_scale);
+    fprintf(fptr, "TFFileName=%s\n", data->density_volume.dvr.tf.path.cstr());
+    fprintf(fptr, "IsoSurfaceRenderingEnabled=%i\n", data->density_volume.iso.enabled ? 1 : 0);
     fprintf(fptr, "\n");
 
-    for (int i = 0; i < data->density_volume.isosurface.count; i++) {
-        const auto value = data->density_volume.isosurface.values[i];
-        const auto color = data->density_volume.isosurface.colors[i];
+    for (int i = 0; i < data->density_volume.iso.isosurfaces.count; i++) {
+        const auto value = data->density_volume.iso.isosurfaces.values[i];
+        const auto color = data->density_volume.iso.isosurfaces.colors[i];
         fprintf(fptr, "[Isosurface]\n");
         fprintf(fptr, "Isovalue=%g\n", value);
         fprintf(fptr, "IsosurfaceColor=%g,%g,%g,%g\n", color.r, color.g, color.b, color.a);
@@ -5523,8 +5543,7 @@ static void init_density_volume(ApplicationData* data) {
     data->density_volume.texture.dirty = true;
     data->density_volume.reference_structure = {};
     data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(min_box, max_box);
-    data->density_volume.texture_to_model_matrix = volume::compute_texture_to_model_matrix(dim);
-    data->density_volume.world_to_texture_matrix = math::inverse(data->density_volume.model_to_world_matrix * data->density_volume.texture_to_model_matrix);
+    data->density_volume.world_to_model_matrix = math::inverse(data->density_volume.model_to_world_matrix);
     data->density_volume.voxel_spacing = (max_box - min_box) / vec3(data->density_volume.volume.dim);
 }
 

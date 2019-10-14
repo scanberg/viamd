@@ -63,6 +63,8 @@ struct VolumeRenderDesc {
     IsoSurface isosurface = {};
     bool isosurface_enabled = false;
 
+    bool direct_volume_rendering_enabled = true;
+
     vec3 voxel_spacing = {};
 };
 

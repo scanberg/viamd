@@ -27,7 +27,7 @@ bool gl::get_program_link_error(char* buffer, int max_length, GLuint program) {
     }
 }
 
-GLuint gl::compile_shader_from_file(CStringView filename, GLenum type) {
+GLuint gl::compile_shader_from_file(CStringView filename, GLenum type, CStringView defines) {
     ASSERT(type == GL_VERTEX_SHADER || type == GL_GEOMETRY_SHADER || type == GL_FRAGMENT_SHADER || type == GL_COMPUTE_SHADER || type == GL_TESS_CONTROL_SHADER || type == GL_TESS_EVALUATION_SHADER);
     constexpr int buffer_size = 1024;
     char buffer[buffer_size];
@@ -41,8 +41,18 @@ GLuint gl::compile_shader_from_file(CStringView filename, GLenum type) {
     }
 
     GLuint shader = glCreateShader(type);
-    const char* c_src = shader_src.cstr();
-    glShaderSource(shader, 1, &c_src, 0);
+    if (defines) {
+        CStringView src = shader_src;
+        StringBuffer<64> version_str;
+        if (compare_n(shader_src, "#version", 8)) {
+            version_str = extract_line(src);
+        }
+        const char* sources[5] = {version_str.cstr(), "\n", defines.cstr(), "\n", src.cstr()};
+        glShaderSource(shader, 5, sources, 0);
+    } else {
+        const char* c_src = shader_src.cstr();
+        glShaderSource(shader, 1, &c_src, 0);
+    }
 
     glCompileShader(shader);
     if (gl::get_shader_compile_error(buffer, buffer_size, shader)) {
