@@ -1,29 +1,30 @@
 #include "isosurface.h"
 
-#include <algorithm>
-
-void IsoSurface::add(float v, const vec4& color) { 
-    if (values.size() >= maxCount) return;
-    values.push_back({v, color}); 
+bool insert(IsoSurface& surface, float value, const vec4& color) {
+    if (surface.count >= IsoSurface::MaxCount) return false;
+    surface.values[surface.count] = val;
+    surface.colors[surface.count] = color;
+    ++surface.count;
+    return true;
 }
 
-void IsoSurface::clear() { values.clear(); }
-
-void IsoSurface::sort() {
-    std::sort(values.begin(), values.end(), [](auto& a, auto& b) { return a.first < b.first; });
+void clear(IsoSurface& surface) {
+    surface.colors = {};
+    surface.values = {};
+    surface.count = 0;
 }
 
-std::pair<std::vector<float>, std::vector<vec4>> IsoSurface::getData() const {
-    auto isosurfaces = values;
-    // isovalues need to be sorted in ascending order for the shader
-    std::sort(isosurfaces.begin(), isosurfaces.end(), [](auto& a, auto& b) { return a.first < b.first; });
-    std::pair<std::vector<float>, std::vector<vec4>> result;
-    result.first.reserve(isosurfaces.size());
-    result.second.reserve(isosurfaces.size());
-    for (auto& v : isosurfaces) {
-        result.first.push_back(v.first);
-        result.second.push_back(v.second);
+void sort(IsoSurface& surface) {
+    for (int i = 0; i < surface.count - 1; ++i) {
+        for (int j = i + 1; j < surface.count; ++j) {
+            if (surface.values[j] < surface.values[i]) {
+                const float tmp_val = surface.values[i];
+                const float tmp_col = surface.colors[i];
+                surface.values[i] = surface.values[j];
+                surface.colors[i] = surface.colors[j];
+                surface.values[j] = tmp_val;
+                surface.colors[j] = tmp_col;
+            }
+        }
     }
-
-    return result;
 }

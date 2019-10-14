@@ -746,7 +746,7 @@ for (int32 x = 1; x < dim.x; x++) {
 
 
 void draw_voxelized_scene(const GPUVolume& vol, const mat4& view_mat, const mat4& proj_mat) {
-    immediate::set_view_matrix(view_mat);
+    immediate::set_model_view_matrix(view_mat);
     immediate::set_proj_matrix(proj_mat);
     immediate::set_material(immediate::MATERIAL_ROUGH_BLACK);
 

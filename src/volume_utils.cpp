@@ -16,30 +16,35 @@ namespace volume {
 static struct {
     GLuint vao = 0;
     GLuint vbo = 0;
+    GLuint ubo = 0;
     GLuint program = 0;
-
-    GLuint tfTexture = 0;
-
+    GLuint tf_tex = 0;
+    GLuint uniform_block_index = 0;
     struct {
-        GLint model_view_proj_matrix = -1;
         GLint tex_depth = -1;
         GLint tex_volume = -1;
         GLint tex_tf = -1;
-        GLint scale = -1;
-        GLint alpha_scale = -1;
-        GLint inv_res = -1;
-        GLint view_to_model_matrix = -1;
-        GLint model_to_tex_matrix = -1;
-        GLint tex_to_view_matrix = -1;
-        GLint inv_proj_matrix = -1;
-        GLint iso_enabled = -1;
-        GLint iso_maxcount = -1;
-        GLint iso_values = -1;
-        GLint iso_colors = -1;
-        GLint gradient_spacing_tex_space = -1;
-        GLint gradient_spacing_world_space = -1;
     } uniform_loc;
 } gl;
+
+struct UniformData {
+    mat4 view_to_model_mat;
+    mat4 model_to_view_mat;
+    mat4 inv_proj_mat;
+    mat4 model_view_proj_mat;
+
+    float density_scale = 1.0;
+    float alpha_scale = 1.0;
+    vec2 inv_res;
+
+    IsoSurface isosurface;
+    int isosurface_enabled;
+    float _pad0[1];
+
+    vec3 gradient_spacing_world_space;
+    float _pad1[1];
+    mat3 gradient_spacing_tex_space;
+};
 
 void initialize() {
 
@@ -59,27 +64,14 @@ void initialize() {
     const GLuint shaders[] = {v_shader, f_shader};
     gl::attach_link_detach(gl.program, shaders);
 
-    gl.uniform_loc.model_view_proj_matrix = glGetUniformLocation(gl.program, "u_model_view_proj_mat");
-    gl.uniform_loc.tex_depth = glGetUniformLocation(gl.program, "u_tex_depth");
+    gl.uniform_loc.tex_depth  = glGetUniformLocation(gl.program, "u_tex_depth");
     gl.uniform_loc.tex_volume = glGetUniformLocation(gl.program, "u_tex_volume");
-    gl.uniform_loc.tex_tf = glGetUniformLocation(gl.program, "u_tex_tf");
-    gl.uniform_loc.scale = glGetUniformLocation(gl.program, "u_scale");
-    gl.uniform_loc.alpha_scale = glGetUniformLocation(gl.program, "u_alpha_scale");
-    gl.uniform_loc.inv_res = glGetUniformLocation(gl.program, "u_inv_res");
-    gl.uniform_loc.view_to_model_matrix = glGetUniformLocation(gl.program, "u_view_to_model_mat");
-    gl.uniform_loc.model_to_tex_matrix = glGetUniformLocation(gl.program, "u_model_to_tex_mat");
-    gl.uniform_loc.tex_to_view_matrix = glGetUniformLocation(gl.program, "u_tex_to_view_mat");
-    gl.uniform_loc.inv_proj_matrix = glGetUniformLocation(gl.program, "u_inv_proj_mat");
-    gl.uniform_loc.iso_enabled = glGetUniformLocation(gl.program, "u_iso_enabled");
-    gl.uniform_loc.iso_maxcount = glGetUniformLocation(gl.program, "u_isovalues.maxcount");
-    gl.uniform_loc.iso_values = glGetUniformLocation(gl.program, "u_isovalues.values");
-    gl.uniform_loc.iso_colors = glGetUniformLocation(gl.program, "u_isovalues.colors");
-    gl.uniform_loc.gradient_spacing_tex_space = glGetUniformLocation(gl.program, "u_gradient_spacing_tex_space");
-    gl.uniform_loc.gradient_spacing_world_space = glGetUniformLocation(gl.program, "u_gradient_spacing_world_space");
+    gl.uniform_loc.tex_tf     = glGetUniformLocation(gl.program, "u_tex_tf");
+    gl.uniform_block_index = glGetUniformBlockIndex(gl.program, "UniformData");
 
     if (!gl.vbo) {
         // https://stackoverflow.com/questions/28375338/cube-using-single-gl-triangle-strip
-        constexpr float cube_strip[42] = {0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+        constexpr uint8_t cube_strip[42] = {0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
         glGenBuffers(1, &gl.vbo);
         glBindBuffer(GL_ARRAY_BUFFER, gl.vbo);
         glBufferData(GL_ARRAY_BUFFER, sizeof(cube_strip), cube_strip, GL_STATIC_DRAW);
@@ -91,8 +83,14 @@ void initialize() {
         glBindVertexArray(gl.vao);
         glBindBuffer(GL_ARRAY_BUFFER, gl.vbo);
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (const GLvoid*)0);
+        glVertexAttribPointer(0, 3, GL_UNSIGNED_BYTE, GL_FALSE, 0, (const GLvoid*)0);
         glBindVertexArray(0);
+    }
+
+    if (!gl.ubo) {
+        glGenBuffers(1, &gl.ubo);
+        glBindBuffer(GL_UNIFORM_BUFFER, gl.ubo);
+        glBufferData(GL_UNIFORM_BUFFER, sizeof(UniformData), 0, GL_DYNAMIC_DRAW);
     }
 }
 
@@ -178,61 +176,49 @@ void save_volume_to_file(const Volume& volume, CStringView file) {
     fwrite(volume.voxel_data.data(), 1, volume.voxel_data.size_in_bytes(), f);
 }
 
-void render_volume_texture(GLuint volume_texture, GLuint tf_texture, GLuint depth_texture, const mat4& texture_matrix, const mat4& model_matrix, const mat4& view_matrix, const mat4& proj_matrix,
-                           float density_scale, float alpha_scale, const IsoSurface& isosurface, const vec3& voxel_spacing) {
-    const GLsizei maxIsosurfaceCount = 6; 
-
+void render_volume_texture(const VolumeRenderDesc& desc) {
     GLint viewport[4];
     glGetIntegerv(GL_VIEWPORT, viewport);
 
-    const mat4 model_to_view_matrix = view_matrix * model_matrix;
-    const mat4 view_to_model_matrix = math::inverse(model_to_view_matrix);
-    const mat4 model_view_proj_matrix = proj_matrix * model_to_view_matrix;
-    const mat4 model_to_tex_matrix = math::inverse(texture_matrix);
-    const mat4 tex_to_view_matrix = model_to_view_matrix * texture_matrix;
-    const mat4 inv_proj_matrix = math::inverse(proj_matrix);
-    const vec2 inv_res = vec2(1.f / (float)(viewport[2]), 1.f / (float)(viewport[3]));
+    const mat4 model_to_view_matrix = desc.matrix.view * desc.matrix.model;
+
+    UniformData data;
+    data.view_to_model_mat = math::inverse(model_to_view_matrix);
+    data.model_to_view_mat = model_to_view_matrix;
+    data.inv_proj_mat = math::inverse(desc.matrix.proj);
+    data.model_view_proj_mat = desc.matrix.proj * model_to_view_matrix;
+    data.density_scale = desc.global_scaling.density;
+    data.density_scale = desc.global_scaling.alpha;
+    data.inv_res = vec2(1.f / (float)(viewport[2]), 1.f / (float)(viewport[3]));
+    memcpy(&data.isosurface, &desc.isosurface, sizeof(IsoSurface));
+    data.isosurface_enabled = desc.isosurface_enabled;
+    data.gradient_spacing_world_space = desc.voxel_spacing;
+    data.gradient_spacing_tex_space = mat3(glm::scale(data.view_to_model_mat, desc.voxel_spacing));
+
+    glBindBuffer(GL_UNIFORM_BUFFER, gl.ubo);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(UniformData), &data);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
     glEnable(GL_CULL_FACE);
     glCullFace(GL_FRONT);
 
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, depth_texture);
+    glBindTexture(GL_TEXTURE_2D, desc.texture.depth);
 
     glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_3D, volume_texture);
+    glBindTexture(GL_TEXTURE_3D, desc.texture.volume);
 
     glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, tf_texture);
+    glBindTexture(GL_TEXTURE_2D, desc.texture.transfer_function);
+
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, gl.ubo);
 
     glUseProgram(gl.program);
 
     glUniform1i(gl.uniform_loc.tex_depth, 0);
     glUniform1i(gl.uniform_loc.tex_volume, 1);
     glUniform1i(gl.uniform_loc.tex_tf, 2);
-    glUniform1f(gl.uniform_loc.scale, density_scale);
-    glUniform1f(gl.uniform_loc.alpha_scale, alpha_scale);
-    glUniform2fv(gl.uniform_loc.inv_res, 1, &inv_res[0]);
-    glUniformMatrix4fv(gl.uniform_loc.model_view_proj_matrix, 1, GL_FALSE, &model_view_proj_matrix[0][0]);
-    glUniformMatrix4fv(gl.uniform_loc.view_to_model_matrix, 1, GL_FALSE, &view_to_model_matrix[0][0]);
-    glUniformMatrix4fv(gl.uniform_loc.model_to_tex_matrix, 1, GL_FALSE, &model_to_tex_matrix[0][0]);
-    glUniformMatrix4fv(gl.uniform_loc.tex_to_view_matrix, 1, GL_FALSE, &tex_to_view_matrix[0][0]);
-    glUniformMatrix4fv(gl.uniform_loc.inv_proj_matrix, 1, GL_FALSE, &inv_proj_matrix[0][0]);
-
-    const bool renderIsosurface = isosurface.enabled && !isosurface.values.empty();
-    glUniform1i(gl.uniform_loc.iso_enabled, renderIsosurface ? 1 : 0);
-    if (renderIsosurface) {
-        auto values = isosurface.getData();
-        GLsizei numValues = std::min<GLsizei>(maxIsosurfaceCount, static_cast<GLsizei>(values.first.size()));
-        glUniform1i(gl.uniform_loc.iso_maxcount, static_cast<int>(values.first.size()));
-        glUniform1fv(gl.uniform_loc.iso_values, numValues, values.first.data());
-        glUniform4fv(gl.uniform_loc.iso_colors, numValues, glm::value_ptr(values.second.front()));
-
-        // used for gradient computation
-        mat3 gradientSpacingTexSpace = glm::mat3(glm::scale(view_to_model_matrix * model_to_tex_matrix, voxel_spacing));
-        glUniformMatrix3fv(gl.uniform_loc.gradient_spacing_tex_space, 1, GL_FALSE, glm::value_ptr(gradientSpacingTexSpace));
-        glUniform3fv(gl.uniform_loc.gradient_spacing_world_space, 1, glm::value_ptr(voxel_spacing));
-    }
+    glUniformBlockBinding(gl.program, gl.uniform_block_index, 0);
 
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 42);

@@ -25,18 +25,48 @@ void save_volume_to_file(const Volume& volume, CStringView path_to_file);
     Renders a volumetric texture using OpenGL.
     - volume_texture: An OpenGL 3D texture containing the data.
     - tf_texture:     An OpenGL 1D texture containing the transfer function
-    - depth_texture: An OpenGL 2D texture containing the depth data in the frame (for stopping ray traversal).
-    - texture_matrix: Matrix containing texture to model transformation of the volume.
-    - model_matrix: Matrix containing model to world transformation of the volume, which is assumed to occupy a unit cube [0,1] in its model-space.
-    - view_matrix: Matrix containing world to view transformation of the camera.
-    - proj_matrix: Matrix containing view to clip transformation of the camera.
-    - color: The color of the voxels within the volume
-    - density_scale: global scaling of densities
-    - alpha_scale:   global alpha scaling of the transfer function
+    - depth_texture:  An OpenGL 2D texture containing the depth data in the frame (for stopping ray traversal).
+    - model_matrix:   Matrix containing model to world transformation of the volume, which is assumed to occupy a unit cube [0,1] in its model-space.
+    - view_matrix:    Matrix containing world to view transformation of the camera.
+    - proj_matrix:    Matrix containing view to clip transformation of the camera.
+    - density_scale:  global scaling of density
+    - alpha_scale:    global alpha scaling of the transfer function
     - isosurface:     information on isovalues and associated colors
     - voxel_spacing:  spacing of voxels in world space
+    - clip_range_min: clip planes min x,y,z [0, 1]
+    - clip_range_max: clip planes max x,y,z [0, 1]
 */
-void render_volume_texture(GLuint volume_texture, GLuint tf_texture, GLuint depth_texture, const mat4& texture_matrix, const mat4& model_matrix, const mat4& view_matrix, const mat4& proj_matrix,
-                           float density_scale = 1.0f, float alpha_scale = 1.0f, const IsoSurface& isosurface = {}, const vec3& voxel_spacing = {});
+
+struct VolumeRenderDesc {
+    struct {
+        GLuint volume = 0;
+        GLuint transfer_function = 0;
+        GLuint depth = 0;
+    } texture;
+
+    struct {
+        mat4 model = {};
+        mat4 view = {};
+        mat4 proj = {};
+    } matrix;
+
+    struct {
+        vec3 min = {0, 0, 0};
+        vec3 max = {1, 1, 1};
+    } clip_planes;
+
+    struct {
+        float density = 1.0f;
+        float alpha = 1.0f;
+    } global_scaling;
+
+    IsoSurface isosurface = {};
+    bool isosurface_enabled = false;
+
+    vec3 voxel_spacing = {};
+};
+
+void render_volume_texture(const VolumeRenderDesc& desc);
+
 
 }  // namespace volume

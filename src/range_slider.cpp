@@ -52,8 +52,10 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
     }
 
     // Read state
-	RangeSliderGrabState grab_state = (RangeSliderGrabState)ImGui::GetStateStorage()->GetInt(ImGui::GetID("GrabState"));
-	float delta_state = ImGui::GetStateStorage()->GetFloat(ImGui::GetID("DeltaState"));
+    const auto grab_state_id = id ^ ImGui::GetID("GrabState");
+    const auto delta_state_id = id ^ ImGui::GetID("DeltaState");
+	RangeSliderGrabState grab_state = (RangeSliderGrabState)ImGui::GetStateStorage()->GetInt(grab_state_id);
+	float delta_state = ImGui::GetStateStorage()->GetFloat(delta_state_id);
 
     // Process clicking on the slider
     const float old_v1 = *v1;
@@ -150,8 +152,8 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
     }
 
     // Store state
-	ImGui::GetStateStorage()->SetInt(ImGui::GetID("GrabState"), grab_state);
-	ImGui::GetStateStorage()->SetFloat(ImGui::GetID("DeltaState"), delta_state);
+    ImGui::GetStateStorage()->SetInt(grab_state_id, grab_state);
+	ImGui::GetStateStorage()->SetFloat(delta_state_id, delta_state);
 
     // Calculate slider grab positioning
     float grab_t = SliderCalcRatioFromValueT<float, float>(ImGuiDataType_Float, *v1, v_min, v_max, power, linear_zero_pos);

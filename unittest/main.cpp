@@ -56,9 +56,11 @@ TEST_CASE("Bitfield", "[Bitfield]") {
     constexpr int size = 257;
     Bitfield field;
     bitfield::init(&field, size);
+    defer { bitfield::free(&field); };
     bitfield::set_bit(field, 2);
     bitfield::set_bit(field, 3);
     bitfield::set_bit(field, 5);
+    bitfield::set_bit(field, 255);
 
     REQUIRE(field.size() == size);
     REQUIRE(field.size_in_bytes() == size / 8 + (size % 8 ? 1 : 0));
@@ -66,7 +68,16 @@ TEST_CASE("Bitfield", "[Bitfield]") {
     REQUIRE(bitfield::get_bit(field, 2) == true);
     REQUIRE(bitfield::get_bit(field, 3) == true);
     REQUIRE(bitfield::get_bit(field, 5) == true);
-    REQUIRE(bitfield::number_of_bits_set(field) == 3);
+    REQUIRE(bitfield::get_bit(field, 255) == true);
+    REQUIRE(bitfield::number_of_bits_set(field) == 4);
+
+    REQUIRE(field[2] == true);
+    REQUIRE(field[3] == true);
+    REQUIRE(field[5] == true);
+    REQUIRE(field[255] == true);
+
+    REQUIRE(bitfield::find_first_bit_set(field) == 2);
+    REQUIRE(bitfield::find_last_bit_set(field) == 255);
 
     // bitfield::print(field);
     // printf("\n");
@@ -106,7 +117,6 @@ TEST_CASE("Bitfield", "[Bitfield]") {
 
     bitfield::set_bit(field, 211);
     REQUIRE(bitfield::find_next_bit_set(field) == 211);
-
 
     // bitfield::print(field);
     // printf("\n");
@@ -213,7 +223,7 @@ TEST_CASE("Molecule Utils", "[molecule_utils]") {
             molecule.atom.position.z[i] = 5.0f;
             molecule.atom.mass[i] = 1.0f;
         }
-        molecule.sequences[0] = {{0, 1}, {0, 10}};
+        molecule.sequences[0] = {"", {0, 1}, {0, 10}};
 
         const mat3 box = {10, 0, 0, 0, 10, 0, 0, 0, 10};
         const vec3 com = compute_com_periodic(molecule.atom.position.x, molecule.atom.position.y, molecule.atom.position.z, molecule.atom.mass, molecule.atom.count, box);

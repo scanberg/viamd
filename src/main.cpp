@@ -99,7 +99,7 @@ constexpr float32 HYDROGEN_BOND_ANGLE_CUTOFF_MAX = 90.f;
 constexpr float32 BALL_AND_STICK_VDW_SCALE = 0.30f;
 constexpr float32 BALL_AND_STICK_LICORICE_SCALE = 0.5f;
 
-constexpr int32 VOLUME_DOWNSAMPLE_FACTOR = 2;
+constexpr float32 VOLUME_SAMPLE_FACTOR = 1.0f;
 constexpr int32 SPLINE_SUBDIVISION_COUNT = 16;
 
 #ifdef VIAMD_RELEASE
@@ -452,7 +452,6 @@ struct ApplicationData {
         bool show_window = false;
         bool enabled = false;
         bool dirty = true;
-        bool enable_density_view = false;
 
         vec3 color = vec3(1, 0, 0);
         float32 density_scale = 1.f;
@@ -473,15 +472,20 @@ struct ApplicationData {
         } tf;
 
         struct {
-            vec2 x_axis = {0, 1};
-            vec2 y_axis = {0, 1};
-            vec2 z_axis = {0, 1};
+            vec3 min = {0, 0, 0};
+            vec3 max = {1, 1, 1};
         } clip_planes;
+
+        struct {
+            structure_tracking::ID reference_id = 0;
+            bool enable_view = false;
+        } reference_structure;
 
         Volume volume{};
         std::mutex volume_data_mutex{};
 
         IsoSurface isosurface;
+        bool isosurface_enabled = false;
 
         mat4 model_to_world_matrix{};
         mat4 texture_to_model_matrix{};
@@ -728,7 +732,7 @@ static void compute_reference_frame(ApplicationData* data, ReferenceFrame* ref);
 static ReferenceFrame* get_active_reference_frame(ApplicationData* data);
 static void update_reference_frames(ApplicationData* data);
 
-static void create_volume(ApplicationData* data);
+static void init_density_volume(ApplicationData* data);
 
 // Async operations
 static void load_trajectory_async(ApplicationData* data);
@@ -803,23 +807,27 @@ int main(int, char**) {
     // const vec4 CLEAR_COLOR = vec4(0, 0, 0, 0);
     const vec4 CLEAR_INDEX = vec4(1, 1, 1, 1);
 
-    vec2 halton_23[16];
-    math::generate_halton_sequence(halton_23, ARRAY_SIZE(halton_23), 2, 3);
+    vec2 halton_sequence[16];
+    math::generate_halton_sequence(halton_sequence, ARRAY_SIZE(halton_sequence), 2, 3);
 
 #ifdef VIAMD_RELEASE
     allocate_and_parse_pdb_from_string(&data.dynamic, CAFFINE_PDB);
     init_molecule_data(&data);
 #else
     load_molecule_data(&data, VIAMD_DATA_DIR "/1ALA-250ns-2500frames.pdb");
-    create_reference_frame(&data, "ref1", "residue 1:2");
-    // stats::create_property("d1", "distance atom(1) atom(4)");
+    // load_molecule_data(&data, VIAMD_DATA_DIR "/amyloid/centered.gro");
+    // load_molecule_data(&data, VIAMD_DATA_DIR "/amyloid/centered.xtc");
+
+    // create_reference_frame(&data, "dna", "dna");
+    // create_reference_frame(&data, "de3", "resname DE3");
     data.simulation_box.enabled = true;
-    // data.density_volume.enabled = true;
+    stats::create_property("d1", "distance atom(*) com(atom(*))");
+    data.density_volume.enabled = true;
     // data.reference_frame.frames[0].active = true;
 #endif
     reset_view(&data, true);
     create_representation(&data, RepresentationType::Vdw, ColorMapping::ResId);
-    create_volume(&data);
+    init_density_volume(&data);
 
     // Main loop
     while (!data.ctx.window.should_close) {
@@ -957,62 +965,62 @@ int main(int, char**) {
         // This needs to happen first (in imgui events) to enable docking of imgui windows
         // ImGui::CreateDockspace();
 
-        stats::async_update(data.dynamic, {(int32)data.time_filter.range.beg, (int32)data.time_filter.range.end},
-                            [](void* usr_data) {
-                                ApplicationData* data = (ApplicationData*)usr_data;
-                                if (data->density_volume.enabled) {
-                                    data->density_volume.volume_data_mutex.lock();
-                                    const Range<int32> range = {(int32)data->time_filter.range.beg, (int32)data->time_filter.range.end};
+        stats::async_update(
+            data.dynamic, {(int32)data.time_filter.range.beg, (int32)data.time_filter.range.end},
+            [](void* usr_data) {
+                ApplicationData* data = (ApplicationData*)usr_data;
+                if (data->density_volume.enabled) {
+                    data->density_volume.volume_data_mutex.lock();
+                    const Range<int32> range = {(int32)data->time_filter.range.beg, (int32)data->time_filter.range.end};
 
-                                    const ReferenceFrame* ref = get_active_reference_frame(data);
-                                    if (ref) {
-                                        const structure_tracking::ID id = ref->id;
-                                        stats::compute_density_volume_with_basis(&data->density_volume.volume, data->dynamic.trajectory, range,
-                                                                                 [ref, data](const vec4& world_pos, int32 frame_idx) -> vec4 {
-                                                                                     const auto tracking_data = structure_tracking::get_tracking_data(ref->id);
-                                                                                     if (!tracking_data) {
-                                                                                         LOG_ERROR("Could not find tracking data for supplied id: '%lu'", ref->id);
-                                                                                         return {};
-                                                                                     }
-                                                                                     const vec3* com_data = tracking_data->transform.com;
-                                                                                     const quat* rot_data = nullptr;
-                                                                                     switch (ref->tracking_mode) {
-                                                                                         case TrackingMode::Absolute:
-                                                                                             rot_data = tracking_data->transform.rotation.absolute;
-                                                                                             break;
-                                                                                         case TrackingMode::Relative:
-                                                                                             rot_data = tracking_data->transform.rotation.relative;
-                                                                                             break;
-                                                                                         case TrackingMode::Hybrid:
-                                                                                             rot_data = tracking_data->transform.rotation.hybrid;
-                                                                                             break;
-                                                                                         default:
-                                                                                             ASSERT(false);
-                                                                                             break;
-                                                                                     }
+                    const ReferenceFrame* ref = get_active_reference_frame(data);
+                    if (ref) {
+                        const structure_tracking::ID id = ref->id;
+                        stats::compute_density_volume_with_basis(&data->density_volume.volume, data->dynamic.trajectory, range, [ref, data](const vec4& world_pos, int32 frame_idx) -> vec4 {
+                            const auto tracking_data = structure_tracking::get_tracking_data(ref->id);
+                            if (!tracking_data) {
+                                LOG_ERROR("Could not find tracking data for supplied id: '%lu'", ref->id);
+                                return {};
+                            }
+                            const vec3* com_data = tracking_data->transform.com;
+                            const quat* rot_data = nullptr;
+                            switch (ref->tracking_mode) {
+                                case TrackingMode::Absolute:
+                                    rot_data = tracking_data->transform.rotation.absolute;
+                                    break;
+                                case TrackingMode::Relative:
+                                    rot_data = tracking_data->transform.rotation.relative;
+                                    break;
+                                case TrackingMode::Hybrid:
+                                    rot_data = tracking_data->transform.rotation.hybrid;
+                                    break;
+                                default:
+                                    ASSERT(false);
+                                    break;
+                            }
 
-                                                                                     if (com_data && rot_data) {
-                                                                                         const mat3 box = data->dynamic.trajectory.frame_buffer[frame_idx].box;
-                                                                                         const vec3 com = com_data[frame_idx];
-                                                                                         const vec3 half_box = box * vec3(0.5f);
-                                                                                         const mat4 R = math::mat4_cast(rot_data[frame_idx]);
-                                                                                         const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-com, 1));
-                                                                                         const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(half_box, 1));
-                                                                                         const mat4 M = T_box * math::transpose(R) * T_com;
-                                                                                         return data->density_volume.world_to_texture_matrix * M * world_pos;
-                                                                                     } else {
-                                                                                         LOG_ERROR("Could not get com data or rotation data");
-                                                                                         return {};
-                                                                                     }
-                                                                                 });
-                                    } else {
-                                        stats::compute_density_volume(&data->density_volume.volume, data->dynamic.trajectory, range, data->density_volume.world_to_texture_matrix);
-                                    }
-                                    data->density_volume.volume_data_mutex.unlock();
-                                    data->density_volume.texture.dirty = true;
-                                }
-                            },
-                            &data);
+                            if (com_data && rot_data) {
+                                const mat3 box = data->dynamic.trajectory.frame_buffer[frame_idx].box;
+                                const vec3 com = com_data[frame_idx];
+                                const vec3 half_box = box * vec3(0.5f);
+                                const mat4 R = math::mat4_cast(rot_data[frame_idx]);
+                                const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-com, 1));
+                                const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(half_box, 1));
+                                const mat4 M = T_box * math::transpose(R) * T_com;
+                                return data->density_volume.world_to_texture_matrix * M * world_pos;
+                            } else {
+                                LOG_ERROR("Could not get com data or rotation data");
+                                return {};
+                            }
+                        });
+                    } else {
+                        stats::compute_density_volume(&data->density_volume.volume, data->dynamic.trajectory, range, data->density_volume.world_to_texture_matrix);
+                    }
+                    data->density_volume.volume_data_mutex.unlock();
+                    data->density_volume.texture.dirty = true;
+                }
+            },
+            &data);
 
         // If gpu representation of volume is not up to date, upload data
         if (data.density_volume.texture.dirty) {
@@ -1122,12 +1130,6 @@ int main(int, char**) {
             prev_time = data.playback.time;
         }
 
-        if (const ReferenceFrame* ref = get_active_reference_frame(&data)) {
-            // transform(data.dynamic.molecule.atom.position.x, data.dynamic.molecule.atom.position.y, data.dynamic.molecule.atom.position.z, data.dynamic.molecule.atom.count,
-            // ref->reference_to_world); transform(data.dynamic.molecule.atom.velocity.x, data.dynamic.molecule.atom.velocity.y, data.dynamic.molecule.atom.velocity.z,
-            // data.dynamic.molecule.atom.count, ref->reference_to_world, 0.0f);
-        }
-
         PUSH_CPU_SECTION("Hydrogen bonds")
         if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.dirty) {
             const auto& mol = data.dynamic.molecule;
@@ -1185,39 +1187,38 @@ int main(int, char**) {
         POP_GPU_SECTION()
 
         {
-            mat4 view_mat = compute_world_to_view_matrix(data.view.camera);
-            mat4 proj_mat = compute_perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height);
+            ViewParam& param = data.view.param;
+            param.matrix.previous = param.matrix.current;
+            param.jitter.previous = param.jitter.current;
 
-            const vec2 res = vec2(data.fbo.width, data.fbo.height);
-            vec2 jitter = vec2(0, 0);
+            param.matrix.current.view = compute_world_to_view_matrix(data.view.camera);
+            param.matrix.current.proj = compute_perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height);
+            param.matrix.current.proj_jittered = param.matrix.current.proj;
+
+            param.resolution = vec2(data.fbo.width, data.fbo.height);
             if (data.visuals.temporal_reprojection.enabled && data.visuals.temporal_reprojection.jitter) {
                 static uint32 i = 0;
-                i = (++i) % ARRAY_SIZE(halton_23);
-                jitter = halton_23[i] - 0.5f;
-                proj_mat = compute_perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height, jitter.x, jitter.y);
+                i = (++i) % ARRAY_SIZE(halton_sequence);
+                param.jitter.current = halton_sequence[i] - 0.5f;
+                // param.matrix.current.proj_jittered[3].x = param.jitter.current.x / param.resolution.x;
+                // param.matrix.current.proj_jittered[3].y = param.jitter.current.y / param.resolution.y;
+                param.matrix.current.proj_jittered = compute_perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height, param.jitter.current.x, param.jitter.current.y);
             }
 
             if (const ReferenceFrame* ref = get_active_reference_frame(&data)) {
-                view_mat = view_mat * ref->reference_to_world;
+                param.matrix.current.view = param.matrix.current.view * ref->world_to_reference;
             }
 
-            auto& param = data.view.param;
-            param.previous.matrix.proj = param.matrix.proj;
-            param.previous.matrix.view = param.matrix.view;
-            param.previous.matrix.view_proj = param.matrix.view_proj;
-            param.previous.jitter = param.jitter;
+            param.matrix.current.view_proj = param.matrix.current.proj * param.matrix.current.view;
+            param.matrix.current.view_proj_jittered = param.matrix.current.proj_jittered * param.matrix.current.view;
 
-            param.matrix.view = view_mat;
-            param.matrix.proj = proj_mat;
-            param.matrix.view_proj = proj_mat * view_mat;
+            param.matrix.inverse.view = math::inverse(param.matrix.current.view);
+            param.matrix.inverse.proj = math::inverse(param.matrix.current.proj);
+            param.matrix.inverse.proj_jittered = math::inverse(param.matrix.current.proj_jittered);
+            param.matrix.inverse.view_proj = math::inverse(param.matrix.current.view_proj);
+            param.matrix.inverse.view_proj_jittered = math::inverse(param.matrix.current.view_proj_jittered);
 
-            param.matrix.inverse.view = math::inverse(view_mat);
-            param.matrix.inverse.proj = math::inverse(proj_mat);
-            param.matrix.inverse.view_proj = math::inverse(param.matrix.view_proj);
-            param.matrix.norm = math::transpose(param.matrix.inverse.view);
-
-            param.jitter = jitter;
-            param.resolution = res;
+            param.matrix.current.norm = math::transpose(param.matrix.inverse.view);
         }
 
         const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3, GL_COLOR_ATTACHMENT4, GL_COLOR_ATTACHMENT5};
@@ -1254,48 +1255,39 @@ int main(int, char**) {
         glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
 
         PUSH_GPU_SECTION("G-Buffer fill") {
-            glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
+            // glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
 
             // SIMULATION BOX
             if (data.simulation_box.enabled && data.dynamic.trajectory) {
                 PUSH_GPU_SECTION("Draw Simulation Box")
-                immediate::set_view_matrix(data.view.param.matrix.view);
-                immediate::set_proj_matrix(data.view.param.matrix.proj);
+
+                immediate::set_model_view_matrix(data.view.param.matrix.current.view);
+                immediate::set_proj_matrix(data.view.param.matrix.current.proj_jittered);
 
                 const mat3 box = get_trajectory_frame(data.dynamic.trajectory, data.playback.frame).box;
                 const vec3 min_box = box * vec3(0.0f);
                 const vec3 max_box = box * vec3(1.0f);
-                const ReferenceFrame* ref = get_active_reference_frame(&data);
 
-                if (ref) {
-                    immediate::draw_box_wireframe(min_box, max_box, ref->world_to_reference, math::convert_color(data.simulation_box.color));
-                    immediate::draw_box_wireframe(min_box, max_box, ref->reference_to_world, immediate::COLOR_GREEN);
-                } else {
-                    immediate::draw_box_wireframe(min_box, max_box, math::convert_color(data.simulation_box.color));
+                // Simulation domain
+                immediate::draw_box_wireframe(min_box, max_box, math::convert_color(data.simulation_box.color));
+
+                for (const auto& ref : data.reference_frame.frames) {
+                    if (ref.show) {
+                        immediate::draw_box_wireframe(min_box, max_box, ref.reference_to_world, immediate::COLOR_GREEN);
+                    }
                 }
+
                 immediate::flush();
 
                 POP_GPU_SECTION()
             }
-#if 1
-            PUSH_GPU_SECTION("Blit static velocity") {
-                glDepthMask(0);
-                glDrawBuffer(GL_COLOR_ATTACHMENT2);  // Velocity buffer
-                postprocessing::blit_static_velocity(data.fbo.deferred.depth, data.view.param);
-                glDepthMask(1);
-                glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
-            }
-            POP_GPU_SECTION()
-#endif
-
-            draw_representations(data);
 
             // RENDER DEBUG INFORMATION (WITH DEPTH)
             PUSH_GPU_SECTION("Debug Draw") {
                 glDrawBuffer(GL_COLOR_ATTACHMENT4);  // Post_Tonemap buffer
 
-                immediate::set_view_matrix(data.view.param.matrix.view);
-                immediate::set_proj_matrix(data.view.param.matrix.proj);
+                immediate::set_model_view_matrix(data.view.param.matrix.current.view);
+                immediate::set_proj_matrix(data.view.param.matrix.current.proj);
 
                 // HYDROGEN BONDS
                 if (data.hydrogen_bonds.enabled && !data.hydrogen_bonds.overlay) {
@@ -1316,8 +1308,8 @@ int main(int, char**) {
                 glDisable(GL_DEPTH_TEST);
                 glDepthMask(0);
 
-                immediate::set_view_matrix(data.view.param.matrix.view);
-                immediate::set_proj_matrix(data.view.param.matrix.proj);
+                immediate::set_model_view_matrix(data.view.param.matrix.current.view);
+                immediate::set_proj_matrix(data.view.param.matrix.current.proj);
                 stats::visualize(data.dynamic);
 
                 // HYDROGEN BONDS
@@ -1332,10 +1324,9 @@ int main(int, char**) {
                 // REFERENCE FRAME
                 for (const auto& ref : data.reference_frame.frames) {
                     if (ref.show) {
-                        const mat4 M = ref.active ? ref.world_to_reference * ref.basis : ref.basis;
-                        immediate::draw_basis(M, 2.0f);
-                        immediate::draw_plane_wireframe(M[3], M[0], M[1], immediate::COLOR_RED);
-                        break;
+                        const mat4 B = ref.basis;
+                        immediate::draw_basis(B, 4.0f);
+                        immediate::draw_plane_wireframe(B[3], B[0], B[1], immediate::COLOR_BLACK);
                     }
                 }
 
@@ -1355,16 +1346,19 @@ int main(int, char**) {
             }
             POP_GPU_SECTION()
 
-#if 0
+#if 1
             PUSH_GPU_SECTION("Blit Static Velocity")
             glDrawBuffer(GL_COLOR_ATTACHMENT2);  // Velocity
             glDepthMask(0);
-            glDisable(GL_DEPTH_TEST);
+            // glDisable(GL_DEPTH_TEST);
             postprocessing::blit_static_velocity(data.fbo.deferred.depth, data.view.param);
-            glEnable(GL_DEPTH_TEST);
+            // glEnable(GL_DEPTH_TEST);
             glDepthMask(1);
             POP_GPU_SECTION()
 #endif
+            glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
+
+            draw_representations(data);
         }
         POP_GPU_SECTION()  // G-buffer
 
@@ -1373,18 +1367,29 @@ int main(int, char**) {
             glDrawBuffer(GL_COLOR_ATTACHMENT4);  // Post_Tonemap buffer
             glDisable(GL_DEPTH_TEST);
             // glDepthFunc(GL_LESS);
-            glDepthMask(0);
+            // glDepthMask(1);
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
             PUSH_GPU_SECTION("Volume Rendering")
-            const float32 scl = 1.f * data.density_volume.density_scale / (data.density_volume.texture.max_value > 0.f ? data.density_volume.texture.max_value : 1.f);
-            volume::render_volume_texture(data.density_volume.texture.id, data.density_volume.tf.id, data.fbo.deferred.depth, data.density_volume.texture_to_model_matrix,
-                                          data.density_volume.model_to_world_matrix, data.view.param.matrix.view, data.view.param.matrix.proj, scl, data.density_volume.tf.alpha_scale,
-                                          data.density_volume.isosurface, data.density_volume.voxel_spacing);
+            volume::VolumeRenderDesc desc;
+            desc.matrix.model = data.density_volume.model_to_world_matrix;
+            desc.matrix.view = data.view.param.matrix.current.view;
+            desc.matrix.proj = data.view.param.matrix.current.proj_jittered;
+            desc.texture.depth = data.fbo.deferred.depth;
+            desc.texture.volume = data.density_volume.texture.id;
+            desc.texture.transfer_function = data.density_volume.tf.id;
+            desc.global_scaling.density = data.density_volume.density_scale;
+            desc.global_scaling.alpha = data.density_volume.tf.alpha_scale;
+            desc.isosurface = data.density_volume.isosurface;
+            desc.clip_planes.min = data.density_volume.clip_planes.min;
+            desc.clip_planes.max = data.density_volume.clip_planes.max;
+            desc.voxel_spacing = data.density_volume.voxel_spacing;
+
             POP_GPU_SECTION()
             glDisable(GL_BLEND);
-            glDepthMask(1);
+            glEnable(GL_DEPTH_TEST);
+            // glDepthMask(1);
         }
 
         PUSH_GPU_SECTION("Selection") {
@@ -1489,11 +1494,11 @@ int main(int, char**) {
                     ref_frame = frame_idx;
                 }
 
-                if (ref_frame == frame_idx || data.view.param.jitter == vec2(0, 0)) {
+                if (ref_frame == frame_idx || data.view.param.jitter.current == vec2(0, 0)) {
                     data.picking = read_picking_data(data.fbo, (int32)math::round(coord.x), (int32)math::round(coord.y));
                     if (data.picking.idx != NO_PICKING_IDX) data.picking.idx = math::clamp(data.picking.idx, 0U, (uint32)data.dynamic.molecule.atom.count - 1U);
                     const vec4 viewport(0, 0, data.fbo.width, data.fbo.height);
-                    data.picking.world_coord = math::unproject(vec3(coord.x, coord.y, data.picking.depth), data.view.param.matrix.inverse.view_proj, viewport);
+                    data.picking.world_coord = math::unproject(vec3(coord.x, coord.y, data.picking.depth), data.view.param.matrix.inverse.view_proj_jittered, viewport);
                 }
             }
 
@@ -1678,7 +1683,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 
     const float dt = 1.0f;
     if (pbc) {
-        // apply_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.mass, mol.sequences, box);
+        apply_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.mass, mol.sequences, box);
         compute_velocities_pbc(mol.atom.velocity.x, mol.atom.velocity.y, mol.atom.velocity.z, old_pos_x, old_pos_y, old_pos_z, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z,
                                mol.atom.count, dt, box);
     } else {
@@ -2801,7 +2806,7 @@ static void draw_reference_frames_window(ApplicationData* data) {
             }
 #endif
             const auto tracking_data = structure_tracking::get_tracking_data(ref.id);
-            if (tracking_data) {
+            if (tracking_data && tracking_data->count > 0) {
                 const int32 N = (int32)tracking_data->count;
                 const quat* abs_data = tracking_data->transform.rotation.absolute;
                 const quat* rel_data = tracking_data->transform.rotation.relative;
@@ -2903,8 +2908,6 @@ static void draw_reference_frames_window(ApplicationData* data) {
                     }
                     ImGui::EndPlot();
                 }
-            } else {
-                LOG_ERROR("Could not find tracking data for structure '%lu'", ref.id);
             }
             ImGui::PopItemWidth();
 
@@ -3148,7 +3151,7 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, in
     }
 
     if (res_idx < mol.backbone.angles.size() && res_idx < mol.backbone.segments.size() && valid_segment(mol.backbone.segments[res_idx])) {
-        const auto angles = math::rad_to_deg(mol.backbone.angles[res_idx]);
+        const auto angles = math::rad_to_deg((vec2)mol.backbone.angles[res_idx]);
         len += snprintf(buff + len, 256 - len, u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0\n", angles.x, angles.y);
     }
 
@@ -3572,8 +3575,10 @@ static void draw_ramachandran_window(ApplicationData* data) {
     dl->AddRectFilled(bb.Min, bb.Max, 0xffffffff);
     dl->ChannelsSetCurrent(1);
     dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_gui_texture(), bb.Min, bb.Max);
-    dl->ChannelsSetCurrent(2);
-    dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_accumulation_texture(), bb.Min, bb.Max);
+    if (data->ramachandran.range.enabled) {
+        dl->ChannelsSetCurrent(2);
+        dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_accumulation_texture(), bb.Min, bb.Max);
+    }
     dl->ChannelsSetCurrent(3);
 
     constexpr float32 ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
@@ -3592,14 +3597,14 @@ static void draw_ramachandran_window(ApplicationData* data) {
             const auto& angle = current_angles[i];
             // const auto& seg = backbone_segments[i];
             const auto& res = residues[i];
-            if (angle.x == 0.f || angle.y == 0.f) continue;
+            if (angle.phi == 0.f || angle.psi == 0.f) continue;
 
             const auto selected = bitfield::any_bit_set_in_range(atom_selection, res.atom_range);
             const auto highlight = bitfield::any_bit_set_in_range(atom_highlight, res.atom_range);
             const auto radius = (highlight || selected) ? selected_radius : base_radius;
             const auto fill_color = highlight ? highlight_color : (selected ? selected_color : base_color);
 
-            const ImVec2 coord = ImLerp(bb.Min, bb.Max, ImVec2(angle.x * ONE_OVER_TWO_PI + 0.5f, -angle.y * ONE_OVER_TWO_PI + 0.5f));  // [-PI, PI] -> [0, 1]
+            const ImVec2 coord = ImLerp(bb.Min, bb.Max, ImVec2(angle.phi * ONE_OVER_TWO_PI + 0.5f, -angle.psi * ONE_OVER_TWO_PI + 0.5f));  // [-PI, PI] -> [0, 1]
             const ImVec2 min_box(math::round(coord.x - radius), math::round(coord.y - radius));
             const ImVec2 max_box(math::round(coord.x + radius), math::round(coord.y + radius));
             if (radius > 1.f) {
@@ -3671,8 +3676,8 @@ static void draw_ramachandran_window(ApplicationData* data) {
 
         for (int64 i = 0; i < residues.size(); i++) {
             const auto& angle = current_angles[i];
-            if (angle.x == 0.f || angle.y == 0.f) continue;
-            const ImVec2 coord = ImLerp(bb.Min, bb.Max, ImVec2(angle.x * ONE_OVER_TWO_PI + 0.5f, -angle.y * ONE_OVER_TWO_PI + 0.5f));  // [-PI, PI] -> [0, 1]
+            if (angle.phi == 0.f || angle.psi == 0.f) continue;
+            const ImVec2 coord = ImLerp(bb.Min, bb.Max, ImVec2(angle.phi * ONE_OVER_TWO_PI + 0.5f, -angle.psi * ONE_OVER_TWO_PI + 0.5f));  // [-PI, PI] -> [0, 1]
             if (coord.x < x0.x || x1.x < coord.x) continue;
             if (coord.y < x0.y || x1.y < coord.y) continue;
 
@@ -3719,9 +3724,9 @@ static void draw_ramachandran_window(ApplicationData* data) {
             data->gpu_buffers.dirty.selection = true;
             update_all_representations(data);
         }
-        ImGui::EndChild();
-        ImGui::End();
     }
+    ImGui::EndChild();
+    ImGui::End();
 }
 
 static void draw_shape_space_window(ApplicationData* data) {
@@ -3900,9 +3905,10 @@ static void draw_shape_space_window(ApplicationData* data) {
     ImGui::End();
 }
 
-static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const MoleculeTrajectory& traj, const mat4& volume_world_to_texture, const structure_tracking::TrackingData& tracking_data) {
+static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const MoleculeTrajectory& traj, const mat4& world_to_volume_texture, const mat4& rotation,
+                                      const structure_tracking::TrackingData& tracking_data) {
     ASSERT(vol);
-    for (int64 frame_idx = 0; frame_idx < traj.num_frames; frame_idx++) {
+    for (int frame_idx = 0; frame_idx < traj.num_frames; frame_idx++) {
         const auto& frame = get_trajectory_frame(traj, frame_idx);
         const mat3 box = frame.box;
         const vec3 half_box = box * vec3(0.5f);
@@ -3911,7 +3917,7 @@ static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const Mol
         const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-com, 1));
         const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(half_box, 1));
         // const mat4 M = volume_world_to_texture * math::transpose(R) * T_com;
-        const mat4 M = volume_world_to_texture * T_box * math::transpose(R) * T_com;
+        const mat4 M = world_to_volume_texture * T_box * rotation * math::transpose(R) * T_com;
 
         // @TODO: Replace when proper iterators are implemented for bitfield.
         for (int64 i = 0; i < atom_mask.size(); i++) {
@@ -3927,15 +3933,14 @@ static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const Mol
     }
 }
 
-static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const MoleculeTrajectory& traj, const mat4& volume_world_to_texture) {
+static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const MoleculeTrajectory& traj, const mat4& world_to_volume_texture) {
     ASSERT(vol);
-    for (int64 frame_idx = 0; frame_idx < traj.num_frames; frame_idx++) {
+    for (int frame_idx = 0; frame_idx < traj.num_frames; frame_idx++) {
         const auto& frame = get_trajectory_frame(traj, frame_idx);
-        const mat3& box = frame.box;
-        const mat4& M = volume_world_to_texture;
+        const mat4& M = world_to_volume_texture;
 
         // @TODO: Replace when proper iterators are implemented for bitfield.
-        for (int64 i = 0; i < atom_mask.size(); i++) {
+        for (int i = 0; i < (int)atom_mask.size(); i++) {
             if (bitfield::get_bit(atom_mask, i)) {
                 const vec4 wc = {frame.atom_position.x[i], frame.atom_position.y[i], frame.atom_position.z[i], 1.0f};  // world coord
                 const vec4 vc = M * wc;                                                                                // volume coord [0,1]
@@ -3970,32 +3975,37 @@ static void draw_density_volume_window(ApplicationData* data) {
         ImGui::SliderFloat("Density Scaling", &data->density_volume.density_scale, 0.001f, 10.f, "%.3f", 3.f);
         ImGui::SliderFloat("Alpha Scaling", &data->density_volume.tf.alpha_scale, 0.001f, 10.f, "%.3f", 3.f);
 
-        ImGui::Checkbox("Isosurface Rendering", &data->density_volume.isosurface.enabled);
-        for (size_t i = 0; i < data->density_volume.isosurface.values.size(); ++i) {
-            const std::string valueStr = "Isovalue " + std::to_string(i);
-            const std::string colorStr = "Color " + std::to_string(i);
-            ImGui::SliderFloat(valueStr.c_str(), &data->density_volume.isosurface.values[i].first, 0.0f, 10.f, "%.3f", 3.f);
-            ImGui::ColorEdit4(colorStr.c_str(), glm::value_ptr(data->density_volume.isosurface.values[i].second), ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
+        ImGui::Checkbox("Isosurface Rendering", &data->density_volume.isosurface_enabled);
+
+        for (int i = 0; i < data->density_volume.isosurface.count; ++i) {
+            ImGui::PushID(i);
+            ImGui::SliderFloat("Isovalue", &data->density_volume.isosurface.values[i], 0.0f, 10.f, "%.3f", 3.f);
+            ImGui::ColorEdit4("Color", &data->density_volume.isosurface.colors[i][0], ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
+            ImGui::PopID();
         }
-        if ((data->density_volume.isosurface.values.size() < data->density_volume.isosurface.maxCount) && ImGui::Button("Add Isosurface", ImVec2(250, 20))) {
-            data->density_volume.isosurface.add(0.0f, vec4(0.2f, 0.1f, 0.9f, 1.0f));
+        if ((data->density_volume.isosurface.count < data->density_volume.isosurface.MaxCount) && ImGui::Button("Add Isosurface", ImVec2(250, 20))) {
+            insert(data->density_volume.isosurface, 0.0f, {0.2f, 0.1f, 0.9f, 1.0f});
         }
         if (ImGui::Button("Clear Isosurfaces", ImVec2(250, 20))) {
-            data->density_volume.isosurface.clear();
+            clear(data->density_volume.isosurface);
         }
 
-        if (ImGui::Button("Compute Aggregate Density", ImVec2(250, 20))) {
-            ImGui::OpenPopup("Aggregate Density");
+        ImGui::RangeSliderFloat("x-axis clip planes", &data->density_volume.clip_planes.min.x, &data->density_volume.clip_planes.max.y, 0.0f, 1.0f);
+        ImGui::RangeSliderFloat("y-axis clip planes", &data->density_volume.clip_planes.min.x, &data->density_volume.clip_planes.max.y, 0.0f, 1.0f);
+        ImGui::RangeSliderFloat("z-axis clip planes", &data->density_volume.clip_planes.min.x, &data->density_volume.clip_planes.max.y, 0.0f, 1.0f);
+
+        if (ImGui::Button("Compute Ensemble Density")) {
+            ImGui::OpenPopup("Ensemble Density");
         }
 
-        if (ImGui::BeginPopup("Aggregate Density")) {
-            static char target_buf[128] = {};
+        if (ImGui::BeginPopup("Ensemble Density")) {
+            static char reference_buf[128] = {};
             static char filter_buf[128] = {};
             bool compute = false;
 
-            compute |= ImGui::InputText("Tracking target", target_buf, 128, ImGuiInputTextFlags_EnterReturnsTrue);
+            compute |= ImGui::InputText("Reference structure filter", reference_buf, 128, ImGuiInputTextFlags_EnterReturnsTrue);
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Specify the name of the residue which should be tracked and serve as reference frames for the density computation");
+                ImGui::SetTooltip("Specify the filter of the reference structure for the ensamble. All structure which matches this reference will be included in the ensamble");
             }
             compute |= ImGui::InputText("Density filter", filter_buf, 128, ImGuiInputTextFlags_EnterReturnsTrue);
             if (ImGui::IsItemHovered()) {
@@ -4008,46 +4018,112 @@ static void draw_density_volume_window(ApplicationData* data) {
                 bitfield::init(&filter_mask, data->dynamic.molecule.atom.count);
                 defer { bitfield::free(&filter_mask); };
 
+                Bitfield ref_mask;
+                bitfield::init(&ref_mask, data->dynamic.molecule.atom.count);
+                defer { bitfield::free(&ref_mask); };
+
                 DynamicArray<StoredSelection> sel;
                 sel.push_back({"current", data->selection.current_selection_mask});
                 for (const auto& s : data->selection.stored_selections) {
                     sel.push_back({s.name, s.atom_mask});
                 }
 
-                const auto residues = get_residues_by_name(data->dynamic.molecule, target_buf);
+                const bool ref_ok = filter::compute_filter_mask(ref_mask, reference_buf, data->dynamic.molecule, sel);
                 const bool filter_ok = filter::compute_filter_mask(filter_mask, filter_buf, data->dynamic.molecule, sel);
 
-                if (!residues.empty() && filter_ok) {
-                    data->density_volume.volume_data_mutex.lock();
-                    clear_volume(&data->density_volume.volume);
+                const int32 first_bit = (int32)bitfield::find_first_bit_set(ref_mask);
+                const int32 last_bit = (int32)bitfield::find_last_bit_set(ref_mask);
 
+                if (ref_ok && filter_ok && first_bit != -1 && last_bit != -1) {
                     const auto& dyn = data->dynamic;
                     const auto& mol = data->dynamic.molecule;
                     const auto& traj = data->dynamic.trajectory;
-                    DynamicArray<structure_tracking::ID> tracking_ids;
-                    Bitfield res_mask;
-                    bitfield::init(&res_mask, mol.atom.count);
-                    defer { bitfield::free(&res_mask); };
+
+                    const AtomRange ref_range = {first_bit, last_bit + 1};
+
+                    DynamicArray<AtomRange> ensemble_ranges = find_equivalent_structures(data->dynamic.molecule, ref_range);
+                    create_reference_frame(data, "ensemble reference", reference_buf);
+
+                    data->density_volume.volume_data_mutex.lock();
+                    clear_volume(&data->density_volume.volume);
+
+                    DynamicArray<structure_tracking::ID> ensemble_ids;
+                    DynamicArray<Bitfield> ensemble_masks;
+                    defer {
+                        for (auto& mask : ensemble_masks) {
+                            bitfield::free(&mask);
+                        }
+                    };
 
                     LOG_NOTE("Performing Structure Tracking...");
-                    for (const ResIdx& res_idx : residues) {
-                        LOG_NOTE("%i / %i", (int)(&res_idx - residues.begin()) + 1, (int)residues.size());
-                        const auto& residue = mol.residues[res_idx];
-                        bitfield::clear_all(res_mask);
-                        bitfield::set_range(res_mask, residue.atom_range);
+                    for (const AtomRange& range : ensemble_ranges) {
+                        LOG_NOTE("%i / %i", (int)(&range - ensemble_ranges.begin()) + 1, (int)ensemble_ranges.size());
+
+                        Bitfield mask;
+                        bitfield::init(&mask, mol.atom.count);
+                        ensemble_masks.push_back(mask);
+                        bitfield::clear_all(mask);
+
+                        // @NOTE: Copy bit by bit from the reference mask into the range of the structure
+                        for (int64 i = 0; i < ref_range.size(); i++) {
+                            if (ref_mask[ref_range.beg + i]) {
+                                bitfield::set_bit(mask, range.beg + i);
+                            }
+                        }
+
                         structure_tracking::ID id = structure_tracking::create_structure();
-                        structure_tracking::compute_trajectory_transform_data(id, res_mask, dyn);
-                        tracking_ids.push_back(id);
+                        structure_tracking::compute_trajectory_transform_data(id, mask, dyn);
+                        ensemble_ids.push_back(id);
                     }
                     LOG_NOTE("Done!");
 
-                    LOG_NOTE("Performing density aggregation...");
-                    for (const auto& id : tracking_ids) {
-                        LOG_NOTE("%i / %i", (int)(&id - tracking_ids.begin()) + 1, (int)tracking_ids.size());
-                        // @TODO: Align tracked structures by matrix and append that to world_to_texture_matrix
+                    LOG_NOTE("Performing Density Computation...");
+
+                    const auto count = bitfield::number_of_bits_set(ref_mask);
+                    void* mem = TMP_MALLOC(sizeof(float) * 7 * count);
+                    defer { TMP_FREE(mem); };
+                    ASSERT(mem);
+
+                    float* ref_x = (float*)mem + 0 * count;
+                    float* ref_y = (float*)mem + 1 * count;
+                    float* ref_z = (float*)mem + 2 * count;
+
+                    float* x = (float*)mem + 3 * count;
+                    float* y = (float*)mem + 4 * count;
+                    float* z = (float*)mem + 5 * count;
+
+                    float* mass = (float*)mem + 6 * count;
+
+                    const auto frame0 = get_trajectory_frame(traj, 0);
+                    bitfield::extract_data_from_mask(ref_x, frame0.atom_position.x, ref_mask);
+                    bitfield::extract_data_from_mask(ref_y, frame0.atom_position.y, ref_mask);
+                    bitfield::extract_data_from_mask(ref_z, frame0.atom_position.z, ref_mask);
+                    bitfield::extract_data_from_mask(mass, mol.atom.mass, ref_mask);
+                    const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, count);
+
+                    for (int i = 0; i < (int)ensemble_ranges.size(); i++) {
+                        LOG_NOTE("%i / %i", i + 1, (int)ensemble_ranges.size());
+
+                        const auto id = ensemble_ids[i];
+                        const auto mask = ensemble_masks[i];
+
                         const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(id);
                         if (tracking_data) {
-                            append_trajectory_density(&data->density_volume.volume, filter_mask, traj, data->density_volume.world_to_texture_matrix, *tracking_data);
+                            // @NOTE: Align tracked structures to residue 0
+                            mat4 rotation_alignment_matrix = mat4(1);
+
+                            bitfield::extract_data_from_mask(x, frame0.atom_position.x, mask);
+                            bitfield::extract_data_from_mask(y, frame0.atom_position.y, mask);
+                            bitfield::extract_data_from_mask(z, frame0.atom_position.z, mask);
+
+                            const vec3 com = compute_com(x, y, z, mass, count);
+
+                            rotation_alignment_matrix = structure_tracking::compute_rotation(x, y, z, ref_x, ref_y, ref_z, mass, count, com, ref_com);
+
+                            const mat4 M = data->density_volume.world_to_texture_matrix;
+                            append_trajectory_density(&data->density_volume.volume, filter_mask, traj, M, rotation_alignment_matrix, *tracking_data);
+
+                            structure_tracking::remove_structure(id);
                         } else {
                             LOG_ERROR("Could not find tracking data for structure: %u", id);
                         }
@@ -4082,24 +4158,7 @@ static void draw_density_volume_window(ApplicationData* data) {
     ImGui::End();
 }
 
-static void draw_density_volume_clip_plane_widgets(ApplicationData* data) {
-    ASSERT(data);
-    ImGui::BeginCanvas("Volume Clip Plane Widgets");
-    auto win = ImGui::GetCurrentWindow();
-    if (win) {
-        const mat4 M = math::inverse(data->density_volume.world_to_texture_matrix);
-        vec4 x_min_c = M * vec4(data->density_volume.clip_planes.x_axis.x, 0.5f, 0.5f, 1);
-        x_min_c = data->view.param.matrix.view_proj * x_min_c;
-        x_min_c = x_min_c / x_min_c.w;
-        x_min_c = x_min_c * 0.5f + 0.5f;
-        x_min_c.y = 1.0f - x_min_c.y;
-        ImVec2 c = {x_min_c.x * data->view.param.resolution.x, x_min_c.y * data->view.param.resolution.y};
-
-        ImGui::InvisibleButton("x_min", ImVec2(10, 10));
-        win->DrawList->AddCircle(c, 10.0f, 0xFF000000);
-    }
-    ImGui::EndCanvas();
-}
+static void draw_density_volume_clip_plane_widgets(ApplicationData* data) { ASSERT(data); }
 
 // #framebuffer
 static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
@@ -4537,11 +4596,11 @@ static void init_trajectory_data(ApplicationData* data) {
             load_trajectory_async(data);
         }
 
-        create_volume(data);
-#if 1
+        init_density_volume(data);
+#if 0
         if (data->dynamic.trajectory.num_frames > 0) {
             vec3 box_ext = data->dynamic.trajectory.frame_buffer[0].box * vec3(1);
-            init_volume(&data->density_volume.volume, math::max(ivec3(1), ivec3(box_ext) / VOLUME_DOWNSAMPLE_FACTOR));
+            init_volume(&data->density_volume.volume, math::max(ivec3(1), ivec3(box_ext * VOLUME_SAMPLE_FACTOR)));
             data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(vec3(0), box_ext);
             data->density_volume.texture_to_model_matrix = volume::compute_texture_to_model_matrix(data->density_volume.volume.dim);
             data->density_volume.voxel_spacing = box_ext / vec3(data->density_volume.volume.dim);
@@ -4697,7 +4756,7 @@ static void load_workspace(ApplicationData* data, CStringView file) {
     ASSERT(data);
     clear_representations(data);
     stats::remove_all_properties();
-    data->density_volume.isosurface.clear();
+    clear(data->density_volume.isosurface);
 
     StringBuffer<256> new_molecule_file;
     StringBuffer<256> new_trajectory_file;
@@ -4760,7 +4819,7 @@ static void load_workspace(ApplicationData* data, CStringView file) {
                         data->density_volume.tf.dirty = true;
                     }
                 }
-                if (compare_n(line, "IsoSurfaceRenderingEnabled=", 27)) data->density_volume.isosurface.enabled = to_int(trim(line.substr(27))) != 0;
+                if (compare_n(line, "IsoSurfaceRenderingEnabled=", 27)) data->density_volume.isosurface_enabled = to_int(trim(line.substr(27))) != 0;
             }
         } else if (compare_n(line, "[Isosurface]", 21)) {
             float isovalue = -1.0f;
@@ -4769,7 +4828,7 @@ static void load_workspace(ApplicationData* data, CStringView file) {
                 if (compare_n(line, "Isovalue=", 9)) isovalue = to_float(trim(line.substr(9)));
                 if (compare_n(line, "IsosurfaceColor=", 16)) isocolor = to_vec4(trim(line.substr(16)));
             }
-            data->density_volume.isosurface.add(isovalue, isocolor);
+            insert(data->density_volume.isosurface, isovalue, isocolor);
         } else if (compare_n(line, "[Camera]", 8)) {
             while (c_txt && c_txt[0] != '[' && (line = extract_line(c_txt))) {
                 if (compare_n(line, "Position=", 9)) {
@@ -4857,13 +4916,15 @@ static void save_workspace(ApplicationData* data, CStringView file) {
     fprintf(fptr, "DensityScale=%g\n", data->density_volume.density_scale);
     fprintf(fptr, "AlphaScale=%g\n", data->density_volume.tf.alpha_scale);
     fprintf(fptr, "TFFileName=%s\n", data->density_volume.tf.path.cstr());
-    fprintf(fptr, "IsoSurfaceRenderingEnabled=%i\n", data->density_volume.isosurface.enabled ? 1 : 0);
+    fprintf(fptr, "IsoSurfaceRenderingEnabled=%i\n", data->density_volume.isosurface_enabled ? 1 : 0);
     fprintf(fptr, "\n");
 
-    for (const auto& elem : data->density_volume.isosurface.values) {
+    for (int i = 0; i < data->density_volume.isosurface.count; i++) {
+        const auto value = data->density_volume.isosurface.values[i];
+        const auto color = data->density_volume.isosurface.colors[i];
         fprintf(fptr, "[Isosurface]\n");
-        fprintf(fptr, "Isovalue=%g\n", elem.first);
-        fprintf(fptr, "IsosurfaceColor=%g,%g,%g,%g\n", elem.second.r, elem.second.g, elem.second.b, elem.second.a);
+        fprintf(fptr, "Isovalue=%g\n", value);
+        fprintf(fptr, "IsosurfaceColor=%g,%g,%g,%g\n", color.r, color.g, color.b, color.a);
     }
 
     fprintf(fptr, "[Camera]\n");
@@ -5130,7 +5191,7 @@ static bool handle_selection(ApplicationData* data) {
 
         if (region_select) {
             const vec2 res = {data->ctx.window.width, data->ctx.window.height};
-            const mat4 mvp = compute_perspective_projection_matrix(data->view.camera, data->ctx.window.width, data->ctx.window.height) * data->view.param.matrix.view;
+            const mat4 mvp = data->view.param.matrix.current.view_proj;
             const float* pos_x = data->dynamic.molecule.atom.position.x;
             const float* pos_y = data->dynamic.molecule.atom.position.y;
             const float* pos_z = data->dynamic.molecule.atom.position.z;
@@ -5302,19 +5363,21 @@ static void update_reference_frames(ApplicationData* data) {
 
             float* weight = (float*)w_mem;
             float* frame_x = (float*)f_mem;
-            float* frame_y = frame_x + masked_count;
-            float* frame_z = frame_y + masked_count;
+            float* frame_y = (float*)f_mem + 1 * masked_count;
+            float* frame_z = (float*)f_mem + 2 * masked_count;
             float* current_x = (float*)c_mem;
-            float* current_y = current_x + masked_count;
-            float* current_z = current_y + masked_count;
+            float* current_y = (float*)c_mem + 1 * masked_count;
+            float* current_z = (float*)c_mem + 2 * masked_count;
 
-            bitfield::extract_data_from_mask(weight, mol.atom.mass, ref.atom_mask);
+            int64 count = bitfield::extract_data_from_mask(weight, mol.atom.mass, ref.atom_mask);
             bitfield::extract_data_from_mask(frame_x, get_trajectory_position_x(traj, 0).data(), ref.atom_mask);
             bitfield::extract_data_from_mask(frame_y, get_trajectory_position_y(traj, 0).data(), ref.atom_mask);
             bitfield::extract_data_from_mask(frame_z, get_trajectory_position_z(traj, 0).data(), ref.atom_mask);
             bitfield::extract_data_from_mask(current_x, mol.atom.position.x, ref.atom_mask);
             bitfield::extract_data_from_mask(current_y, mol.atom.position.y, ref.atom_mask);
             bitfield::extract_data_from_mask(current_z, mol.atom.position.z, ref.atom_mask);
+
+            ASSERT(count == masked_count);
 
             const vec3 frame_com = compute_com(frame_x, frame_y, frame_z, weight, masked_count);
             const vec3 current_com = compute_com(current_x, current_y, current_z, weight, masked_count);
@@ -5359,21 +5422,48 @@ static void update_reference_frames(ApplicationData* data) {
             }
 
             const mat4 R_inv = math::transpose(R);
-            const mat4 T_ori = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-current_com, 1));
+            const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-current_com, 1));
             const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(box_c, 1));
 
-            ref.reference_to_world = T_box * R_inv * T_ori;
-            ref.world_to_reference = math::inverse(ref.reference_to_world);
+            const mat4 PCA = tracking_data->eigen.vector[0];
 
-            if (ref.active) {
-                ref.basis = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {box_c, 1}};
-            } else {
-                ref.basis = math::inverse(R_inv * T_ori);
+            if (math::determinant(mat3(PCA)) < 0.0f) {
+                LOG_ERROR("THIS IS BAD!");
             }
+            ref.world_to_reference = T_box * PCA * R_inv * T_com;
+            ref.reference_to_world = math::inverse(ref.world_to_reference);
+
+            // if (ref.active) {
+            //    ref.basis = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {box_c, 1}};
+            //} else {
+            ref.basis = math::inverse(PCA * R_inv * T_com);
+            //}
         } else {
             LOG_ERROR("Could not find tracking data for '%lu'", ref.id);
         }
     }
+}
+
+static void on_trajectory_frame_loaded(ApplicationData* data, int frame_idx) {
+    // WHEN FRAME LOADED
+    const auto& mol = data->dynamic.molecule;
+    auto& frame = get_trajectory_frame(data->dynamic.trajectory, frame_idx);
+    apply_pbc(frame.atom_position.x, frame.atom_position.y, frame.atom_position.z, mol.atom.mass, mol.sequences, frame.box);
+
+    // Possibly update timeline-filter
+    if ((int)data->time_filter.range.end == frame_idx) {
+        data->time_filter.range.end = (float)(frame_idx + 1);
+    }
+}
+
+static void on_trajectory_load_complete(ApplicationData* data) {
+    for (auto& ref : data->reference_frame.frames) {
+        compute_reference_frame(data, &ref);
+    }
+    update_reference_frames(data);
+    // compute_statistics_async(data);
+    stats::set_all_property_flags(true, true);
+    compute_backbone_angles_async(data);
 }
 
 // #async
@@ -5388,31 +5478,15 @@ static void load_trajectory_async(ApplicationData* data) {
         data->async.trajectory.sync.stop_signal = false;
         data->async.trajectory.sync.running = true;
         data->async.trajectory.sync.thread = std::thread([data]() {
-            const int32 pre_load_num_frames = data->dynamic.trajectory.num_frames;
             while (read_next_trajectory_frame(&data->dynamic.trajectory)) {
                 data->async.trajectory.fraction = data->dynamic.trajectory.num_frames / (float)data->dynamic.trajectory.frame_offsets.count;
-
-                // WHEN FRAME LOADED
-#if 0
-                auto& frame = get_trajectory_frame(data->dynamic.trajectory, data->dynamic.trajectory.num_frames - 1);
-                const auto& mol = data->dynamic.molecule;
-                apply_pbc(frame.atom_position.x, frame.atom_position.y, frame.atom_position.z, mol.atom.mass, mol.sequences, frame.box);
-#endif
-
+                on_trajectory_frame_loaded(data, data->dynamic.trajectory.num_frames - 1);
                 if (data->async.trajectory.sync.stop_signal) break;
             }
-            const int32 post_load_num_frames = data->dynamic.trajectory.num_frames;
             data->async.trajectory.sync.running = false;
             data->async.trajectory.sync.stop_signal = false;
 
-            // WHEN TRAJECTORY LOADED
-
-            // compute_statistics_async(data);
-            stats::set_all_property_flags(true, true);
-            compute_backbone_angles_async(data);
-            if ((int)data->time_filter.range.beg == 0 && (int)data->time_filter.range.end == pre_load_num_frames) {
-                data->time_filter.range.end = (float)post_load_num_frames;
-            }
+            on_trajectory_load_complete(data);
         });
         data->async.trajectory.sync.thread.detach();
     }
@@ -5440,12 +5514,14 @@ static void compute_backbone_angles_async(ApplicationData* data) {
     }
 }
 
-static void create_volume(ApplicationData* data) {
+static void init_density_volume(ApplicationData* data) {
     const vec3 min_box = vec3(0);
     const vec3 max_box = data->dynamic.trajectory.num_frames > 0 ? data->dynamic.trajectory.frame_buffer[0].box * vec3(1) : vec3(1);
-    const ivec3 dim = math::max(ivec3(1), ivec3(max_box) / VOLUME_DOWNSAMPLE_FACTOR);
+    const ivec3 dim = math::max(ivec3(1), ivec3(max_box * VOLUME_SAMPLE_FACTOR));
     init_volume(&data->density_volume.volume, dim);
-    // volume::create_volume_texture(&data->density_volume.texture, dim);
+    clear_volume(&data->density_volume.volume);
+    data->density_volume.texture.dirty = true;
+    data->density_volume.reference_structure = {};
     data->density_volume.model_to_world_matrix = volume::compute_model_to_world_matrix(min_box, max_box);
     data->density_volume.texture_to_model_matrix = volume::compute_texture_to_model_matrix(dim);
     data->density_volume.world_to_texture_matrix = math::inverse(data->density_volume.model_to_world_matrix * data->density_volume.texture_to_model_matrix);

@@ -353,7 +353,7 @@ void clear_accumulation_texture() {
     glViewport(last_viewport[0], last_viewport[1], (GLsizei)last_viewport[2], (GLsizei)last_viewport[3]);
 }
 
-void compute_accumulation_texture(ArrayView<const vec2> angles, vec4 color, float radius, float outline) {
+void compute_accumulation_texture(ArrayView<const BackboneAngle> angles, vec4 color, float radius, float outline) {
     constexpr float ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
 
     struct Coord {
@@ -366,8 +366,8 @@ void compute_accumulation_texture(ArrayView<const vec2> angles, vec4 color, floa
 
     int32 count = 0;
     for (const auto& angle : angles) {
-        if (angle.x == 0 || angle.y == 0) continue;
-        vec2 coord = vec2(angle.x, angle.y) * ONE_OVER_TWO_PI + 0.5f;  // [-PI, PI] -> [0, 1]
+        if (angle.phi == 0 || angle.psi == 0) continue;
+        vec2 coord = vec2(angle.phi, angle.psi) * ONE_OVER_TWO_PI + 0.5f;  // [-PI, PI] -> [0, 1]
         coord.y = 1.f - coord.y;
         coords[count].x = (unsigned short)(coord.x * 0xffff);
         coords[count].y = (unsigned short)(coord.y * 0xffff);

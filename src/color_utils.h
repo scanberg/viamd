@@ -25,7 +25,7 @@ void color_atoms_residue_index(ArrayView<uint32> dst_atom_colors, ArrayView<cons
 void color_atoms_chain_id(ArrayView<uint32> dst_atom_colors, ArrayView<const Chain> chains);
 void color_atoms_chain_index(ArrayView<uint32> dst_atom_colors, ArrayView<const Chain> chains);
 
-void color_atoms_backbone_angles(ArrayView<uint32> dst_atom_colors, ArrayView<const Residue> residues, ArrayView<const BackboneSequence> bb_seq, ArrayView<const vec2> bb_angles,
+void color_atoms_backbone_angles(ArrayView<uint32> dst_atom_colors, ArrayView<const Residue> residues, ArrayView<const BackboneSequence> bb_seq, ArrayView<const BackboneAngle> bb_angles,
                                  const Image& ramachandran_color_map);
 
 void filter_colors(ArrayView<uint32> colors, Bitfield mask);

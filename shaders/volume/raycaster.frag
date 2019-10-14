@@ -7,7 +7,7 @@
 #endif
 
 #if !defined MAX_ISOVALUE_COUNT
-#  define MAX_ISOVALUE_COUNT 6
+#  define MAX_ISOVALUE_COUNT 8
 #endif // MAX_ISOVALUE_COUNT
 
 // need to ensure there is always at least one isovalue due to the use of the macro
@@ -24,24 +24,37 @@ struct IsovalueParameters {
     vec4 colors[MAX_ISOVALUE_COUNT];
 };
 
+
 uniform sampler2D u_tex_depth;
 uniform sampler3D u_tex_volume;
 uniform sampler2D u_tex_tf;
-uniform float     u_scale = 1.0;
-uniform float     u_alpha_scale = 1.0;
-uniform vec2      u_inv_res;
-uniform mat4      u_view_to_model_mat;
-uniform mat4      u_model_to_tex_mat;
-uniform mat4      u_tex_to_view_mat;
-uniform mat4      u_inv_proj_mat;
-uniform int       u_iso_enabled;
-uniform IsovalueParameters u_isovalues;
-uniform mat3      u_gradient_spacing_tex_space;
-uniform vec3      u_gradient_spacing_world_space;
+
+layout (std140) uniform UniformData
+{
+    mat4      u_view_to_model_mat;
+    mat4      u_model_to_view_mat;
+    mat4      u_inv_proj_mat;
+    mat4      u_model_view_proj_mat;
+
+    float     u_density_scale = 1.0;
+    float     u_alpha_scale = 1.0;
+    vec2      u_inv_res;
+
+    float     u_isovalues[8];
+    vec4      u_isocolors[8];
+
+    int       u_iso_count;
+    int       u_iso_enabled;
+    float     _pad0[2];
+
+    vec3      u_gradient_spacing_world_space;
+    float     _pad1;
+
+    mat3      u_gradient_spacing_tex_space;
+};
 
 in  vec3 model_pos;
 in  vec3 model_eye;
-in  vec3 color;
 
 out vec4 out_frag;
 
@@ -49,10 +62,9 @@ const float REF_SAMPLING_RATE = 150.0;
 const float ERT_THRESHOLD = 0.99;
 const float samplingRate = 64.0;
 
-
 float getVoxel(in vec3 samplePos) {
     return samplePos.x;
-    return texture(u_tex_volume, samplePos).r * u_scale;
+    return texture(u_tex_volume, samplePos).r * u_density_scale;
 }
 
 vec4 classify(in float density) {
@@ -179,7 +191,7 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
         vec3 gradient = getGradient(isopos);
         gradient = normalize(gradient);
 
-        vec3 isoposView = normalize((u_tex_to_view_mat * vec4(isopos, 1.0)).xyz);
+        vec3 isoposView = normalize((u_model_to_view_mat * vec4(isopos, 1.0)).xyz);
         // two-sided lighting
         if (dot(gradient, isoposView) <= 0) {
             gradient = -gradient;
