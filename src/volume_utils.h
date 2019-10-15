@@ -60,7 +60,7 @@ struct VolumeRenderDesc {
         float alpha = 1.0f;
     } global_scaling;
 
-    IsoSurface isosurface = {};
+    IsoSurfaces isosurface = {};
     bool isosurface_enabled = false;
 
     bool direct_volume_rendering_enabled = true;

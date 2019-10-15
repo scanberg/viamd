@@ -35,13 +35,12 @@ struct UniformData {
     float density_scale = 1.0;
     float alpha_scale = 1.0;
 
-    vec3 clip_plane_min; float _pad0[1];
-    vec3 clip_plane_max; float _pad1[1];
+    vec3 clip_plane_min; float _pad0;
+    vec3 clip_plane_max;
+    float time;
 
-    IsoSurface isosurface; int _pad2[3];
-
-    vec3 gradient_spacing_world_space; float _pad3[1];
-    mat3 gradient_spacing_tex_space;
+    vec3 gradient_spacing_world_space; float _pad1;
+    mat4 gradient_spacing_tex_space;
 };
 
 void initialize() {
@@ -194,6 +193,10 @@ void render_volume_texture(const VolumeRenderDesc& desc) {
 
     const mat4 model_to_view_matrix = desc.matrix.view * desc.matrix.model;
 
+    static float time = 0.0f;
+    time += 1.0f / 60.0f;
+    if (time > 100.0) time -= 100.0f;
+
     UniformData data;
     data.view_to_model_mat = math::inverse(model_to_view_matrix);
     data.model_to_view_mat = model_to_view_matrix;
@@ -204,9 +207,11 @@ void render_volume_texture(const VolumeRenderDesc& desc) {
     data.alpha_scale = desc.global_scaling.alpha;
     data.clip_plane_min = desc.clip_planes.min;
     data.clip_plane_max = desc.clip_planes.max;
-    memcpy(&data.isosurface, &desc.isosurface, sizeof(IsoSurface));
+    data.time = time;
     data.gradient_spacing_world_space = desc.voxel_spacing;
-    data.gradient_spacing_tex_space = mat3(glm::scale(data.view_to_model_mat, desc.voxel_spacing));
+    data.gradient_spacing_tex_space = mat4(glm::scale(data.view_to_model_mat, desc.voxel_spacing));
+
+    constexpr int cool = offsetof(data, gradient_spacing_tex_space);
 
     glBindBuffer(GL_UNIFORM_BUFFER, gl.ubo);
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(UniformData), &data);
@@ -233,12 +238,18 @@ void render_volume_texture(const VolumeRenderDesc& desc) {
     const GLint uniform_loc_tex_volume = glGetUniformLocation(program, "u_tex_volume");
     const GLint uniform_loc_tex_tf = glGetUniformLocation(program, "u_tex_tf");
     const GLint uniform_block_index = glGetUniformBlockIndex(program, "UniformData");
+    const GLint uniform_loc_iso_values = glGetUniformLocation(program, "u_iso.values");
+    const GLint uniform_loc_iso_colors = glGetUniformLocation(program, "u_iso.colors");
+    const GLint uniform_loc_iso_count = glGetUniformLocation(program, "u_iso.count");
 
     glUseProgram(program);
 
     glUniform1i(uniform_loc_tex_depth, 0);
     glUniform1i(uniform_loc_tex_volume, 1);
     glUniform1i(uniform_loc_tex_tf, 2);
+    glUniform1fv(uniform_loc_iso_values, IsoSurfaces::MaxCount, desc.isosurface.values);
+    glUniform4fv(uniform_loc_iso_colors, IsoSurfaces::MaxCount, &desc.isosurface.colors[0][0]);
+    glUniform1i(uniform_loc_iso_count, desc.isosurface.count);
     glUniformBlockBinding(program, uniform_block_index, 0);
 
     glBindVertexArray(gl.vao);

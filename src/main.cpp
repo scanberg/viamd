@@ -466,7 +466,7 @@ struct ApplicationData {
 
         struct {
             bool enabled = false;
-            IsoSurface isosurfaces;
+            IsoSurfaces isosurfaces;
         } iso;
 
         struct {
@@ -822,8 +822,8 @@ int main(int, char**) {
     // create_reference_frame(&data, "dna", "dna");
     // create_reference_frame(&data, "de3", "resname DE3");
     data.simulation_box.enabled = true;
-    stats::create_property("d1", "distance atom(*) com(atom(*))");
-    data.density_volume.enabled = true;
+    //stats::create_property("d1", "distance atom(*) com(atom(*))");
+    //data.density_volume.enabled = true;
     // data.reference_frame.frames[0].active = true;
 #endif
     reset_view(&data, true);
@@ -3119,7 +3119,8 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, in
 
     int res_idx = mol.atom.res_idx[atom_idx];
     const Residue& res = mol.residues[res_idx];
-    const char* res_id = res.name.cstr();
+    const char* res_name = res.name.cstr();
+    const int res_id = res.id;
     int local_idx = atom_idx - res.atom_range.beg;
     const float pos_x = mol.atom.position.x[atom_idx];
     const float pos_y = mol.atom.position.y[atom_idx];
@@ -3147,7 +3148,7 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, in
     char buff[256];
     int len = 0;
     len += snprintf(buff, 256, "atom[%i][%i]: %s %s %s (%.2f, %.2f, %.2f)\n", atom_idx, local_idx, label, elem, symbol, pos_x, pos_y, pos_z);
-    len += snprintf(buff + len, 256 - len, "res[%i]: %s\n", res_idx, res_id);
+    len += snprintf(buff + len, 256 - len, "res[%i]: %s %i\n", res_idx, res_name, res_id);
     if (chain_idx) {
         len += snprintf(buff + len, 256 - len, "chain[%i]: %s\n", chain_idx, chain_id);
     }
@@ -4051,46 +4052,28 @@ static void draw_density_volume_window(ApplicationData* data) {
                 const bool ref_ok = filter::compute_filter_mask(ref_mask, reference_buf, data->dynamic.molecule, sel);
                 const bool filter_ok = filter::compute_filter_mask(filter_mask, filter_buf, data->dynamic.molecule, sel);
 
-                const int32 first_bit = (int32)bitfield::find_first_bit_set(ref_mask);
-                const int32 last_bit = (int32)bitfield::find_last_bit_set(ref_mask);
-
-                if (ref_ok && filter_ok && first_bit != -1 && last_bit != -1) {
+                if (ref_ok && filter_ok) {
                     const auto& dyn = data->dynamic;
                     const auto& mol = data->dynamic.molecule;
                     const auto& traj = data->dynamic.trajectory;
 
-                    const AtomRange ref_range = {first_bit, last_bit + 1};
-
-                    DynamicArray<AtomRange> ensemble_ranges = find_equivalent_structures(data->dynamic.molecule, ref_range);
-                    create_reference_frame(data, "ensemble reference", reference_buf);
-
-                    data->density_volume.volume_data_mutex.lock();
-                    clear_volume(&data->density_volume.volume);
-
-                    DynamicArray<structure_tracking::ID> ensemble_ids;
-                    DynamicArray<Bitfield> ensemble_masks;
+                    DynamicArray<Bitfield> ensemble_masks = find_equivalent_structures(data->dynamic.molecule, ref_mask);
                     defer {
                         for (auto& mask : ensemble_masks) {
                             bitfield::free(&mask);
                         }
                     };
 
+                    create_reference_frame(data, "ensemble reference", reference_buf);
+
+                    data->density_volume.volume_data_mutex.lock();
+                    clear_volume(&data->density_volume.volume);
+
+                    DynamicArray<structure_tracking::ID> ensemble_ids;
+
                     LOG_NOTE("Performing Structure Tracking...");
-                    for (const AtomRange& range : ensemble_ranges) {
-                        LOG_NOTE("%i / %i", (int)(&range - ensemble_ranges.begin()) + 1, (int)ensemble_ranges.size());
-
-                        Bitfield mask;
-                        bitfield::init(&mask, mol.atom.count);
-                        ensemble_masks.push_back(mask);
-                        bitfield::clear_all(mask);
-
-                        // @NOTE: Copy bit by bit from the reference mask into the range of the structure
-                        for (int64 i = 0; i < ref_range.size(); i++) {
-                            if (ref_mask[ref_range.beg + i]) {
-                                bitfield::set_bit(mask, range.beg + i);
-                            }
-                        }
-
+                    for (const auto& mask : ensemble_masks) {
+                        LOG_NOTE("%i / %i", (int)(&mask - ensemble_masks.begin()) + 1, (int)ensemble_masks.size());
                         structure_tracking::ID id = structure_tracking::create_structure();
                         structure_tracking::compute_trajectory_transform_data(id, mask, dyn);
                         ensemble_ids.push_back(id);
@@ -4121,8 +4104,10 @@ static void draw_density_volume_window(ApplicationData* data) {
                     bitfield::extract_data_from_mask(mass, mol.atom.mass, ref_mask);
                     const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, count);
 
-                    for (int i = 0; i < (int)ensemble_ranges.size(); i++) {
-                        LOG_NOTE("%i / %i", i + 1, (int)ensemble_ranges.size());
+                    const mat4 M = data->density_volume.world_to_model_matrix;
+
+                    for (int i = 0; i < (int)ensemble_masks.size(); i++) {
+                        LOG_NOTE("%i / %i", i + 1, (int)ensemble_masks.size());
 
                         const auto id = ensemble_ids[i];
                         const auto mask = ensemble_masks[i];
@@ -4130,32 +4115,30 @@ static void draw_density_volume_window(ApplicationData* data) {
                         const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(id);
                         if (tracking_data) {
                             // @NOTE: Align tracked structures to residue 0
-                            mat4 rotation_alignment_matrix = mat4(1);
-
                             bitfield::extract_data_from_mask(x, frame0.atom_position.x, mask);
                             bitfield::extract_data_from_mask(y, frame0.atom_position.y, mask);
                             bitfield::extract_data_from_mask(z, frame0.atom_position.z, mask);
-
                             const vec3 com = compute_com(x, y, z, mass, count);
-
-                            rotation_alignment_matrix = structure_tracking::compute_rotation(x, y, z, ref_x, ref_y, ref_z, mass, count, com, ref_com);
-
-                            const mat4 M = data->density_volume.world_to_model_matrix;
+                            const mat4 rotation_alignment_matrix = structure_tracking::compute_rotation(x, y, z, ref_x, ref_y, ref_z, mass, count, com, ref_com);
                             append_trajectory_density(&data->density_volume.volume, filter_mask, traj, M, rotation_alignment_matrix, *tracking_data);
-
                             structure_tracking::remove_structure(id);
                         } else {
                             LOG_ERROR("Could not find tracking data for structure: %u", id);
                         }
                     }
 
+                    const float scl = 1.0f / (float)(traj.num_frames);
+
                     data->density_volume.volume.voxel_range = {data->density_volume.volume.voxel_data[0], data->density_volume.volume.voxel_data[0]};
-                    for (const auto v : data->density_volume.volume.voxel_data) {
+                    for (auto& v : data->density_volume.volume.voxel_data) {
                         if (v < data->density_volume.volume.voxel_range.min) data->density_volume.volume.voxel_range.min = v;
                         if (v > data->density_volume.volume.voxel_range.max) data->density_volume.volume.voxel_range.max = v;
+
+                        v *= scl;
                     }
 
                     LOG_NOTE("Done!");
+                    LOG_NOTE("Max density: %.3f", data->density_volume.volume.voxel_range.max);
                     data->density_volume.texture.dirty = true;
                     data->density_volume.volume_data_mutex.unlock();
                 }

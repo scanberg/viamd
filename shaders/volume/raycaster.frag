@@ -1,5 +1,7 @@
 #version 150 core
 
+#define SHADING_ENABLED
+
 #if !defined MAX_ISOVALUE_COUNT
 #  define MAX_ISOVALUE_COUNT 8
 #endif // MAX_ISOVALUE_COUNT
@@ -17,18 +19,19 @@ layout (std140) uniform UniformData
     mat4 u_inv_proj_mat;
     mat4 u_model_view_proj_mat;
 
-    vec2 u_inv_res;
+    vec2  u_inv_res;
     float u_density_scale;
     float u_alpha_scale;
 
-    vec3 u_clip_plane_min;
-    vec3 u_clip_plane_max;
-
-    IsovalueParameters u_iso;
+    vec3  u_clip_plane_min;
+    vec3  u_clip_plane_max;
+    float u_time;
 
     vec3 u_gradient_spacing_world_space;
-    mat3 u_gradient_spacing_tex_space;
+    mat4 u_gradient_spacing_tex_space;
 };
+
+uniform IsovalueParameters u_iso;
 
 uniform sampler2D u_tex_depth;
 uniform sampler3D u_tex_volume;
@@ -44,7 +47,7 @@ const float ERT_THRESHOLD = 0.99;
 const float samplingRate = 8.0;
 
 float getVoxel(in vec3 samplePos) {
-    return samplePos.x;
+    //return samplePos.x;
     return texture(u_tex_volume, samplePos).r * u_density_scale;
 }
 
@@ -62,12 +65,12 @@ vec4 compositing(in vec4 dstColor, in vec4 srcColor, in float tIncr) {
 }
 
 vec3 getGradient(in vec3 samplePos) {
-    vec3 g = vec3(getVoxel(samplePos + u_gradient_spacing_tex_space[0]), 
-                  getVoxel(samplePos + u_gradient_spacing_tex_space[1]),
-                  getVoxel(samplePos + u_gradient_spacing_tex_space[2]));
-    g -= vec3(getVoxel(samplePos - u_gradient_spacing_tex_space[0]), 
-              getVoxel(samplePos - u_gradient_spacing_tex_space[1]),
-              getVoxel(samplePos - u_gradient_spacing_tex_space[2]));
+    vec3 g = vec3(getVoxel(samplePos + u_gradient_spacing_tex_space[0].xyz), 
+                  getVoxel(samplePos + u_gradient_spacing_tex_space[1].xyz),
+                  getVoxel(samplePos + u_gradient_spacing_tex_space[2].xyz));
+    g -= vec3(getVoxel(samplePos - u_gradient_spacing_tex_space[0].xyz), 
+              getVoxel(samplePos - u_gradient_spacing_tex_space[1].xyz),
+              getVoxel(samplePos - u_gradient_spacing_tex_space[2].xyz));
     return g / (2.0 * u_gradient_spacing_world_space);
 }
 
@@ -98,6 +101,8 @@ vec3 shade(vec3 color, vec3 V, vec3 N) {
 
     vec3 diffuse = color.rgb * lambert(env_radiance + N_dot_L * dir_radiance);
     vec3 specular = fr * (env_radiance + dir_radiance) * pow(N_dot_H, spec_exp);
+
+    //if (N_dot_L == 0.0) return vec3(1,0,0);
 
     return color.rgb * lambert(vec3(N_dot_L + 0.5) * 3.0) + specular;
 }
@@ -186,10 +191,10 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
         // apply compositing of volumetric media from last sampling position up till isosurface
         vec4 voxelColor = classify(isovalue);
         if (voxelColor.a > 0) {
-#if defined(SHADING_ENABLED)
-            voxelColor.rgb = APPLY_LIGHTING(lighting, voxelColor.rgb, voxelColor.rgb, vec3(1.0),
-                                       isoposWorld, -gradient, toCameraDir);
-#endif // SHADING_ENABLED
+//#if defined(SHADING_ENABLED)
+//            voxelColor.rgb = APPLY_LIGHTING(lighting, voxelColor.rgb, voxelColor.rgb, vec3(1.0),
+//                                       isoposWorld, -gradient, toCameraDir);
+//#endif // SHADING_ENABLED
 
             result = compositing(result, voxelColor, raySegmentLen - tIncr);
         }
@@ -231,12 +236,19 @@ vec4 drawIsosurfaces(in vec4 curResult,
     return result;
 }
 
+float PDnrand( vec2 n ) {
+    return fract( sin(dot(n.xy, vec2(12.9898, 78.233)))* 43758.5453 );
+}
+
 void main() {
     //float val = mod(gl_FragCoord.x + gl_FragCoord.y, 2.0);
     //if (val > 0.0) discard;
 
     //out_frag = vec4(model_pos, 1.0);
     //out_frag = classify(model_pos.x);
+    //return;
+
+    //out_frag = vec4(vec3(u_iso.count), 1.0);
     //return;
 
     // Do everything in model space
@@ -265,7 +277,8 @@ void main() {
     float samples = ceil(tEnd / tIncr);
     tIncr = tEnd / samples;
 
-    float t = 0.5 * tIncr;
+    float offset = PDnrand(gl_FragCoord.xy + vec2(u_time, u_time));
+    float t = offset * tIncr;
 
     vec4 result = vec4(0);
     float density = getVoxel(entryPos + t * dir); // need this for isosurface rendering
@@ -279,12 +292,14 @@ void main() {
         tIncr = tEnd / samples;
         result = drawIsosurfaces(result, density, prevDensity, samplePos, dir, t, tIncr);
 #endif 
+
 #if defined(INCLUDE_DVR)
         vec4 srcColor = classify(density);
         if (srcColor.a > 0.0) {
             result = compositing(result, srcColor, tIncr);
         }
-#endif // INCLUDE_DVR
+#endif
+
         if (result.a > ERT_THRESHOLD) {
             t = tEnd;
         } else {

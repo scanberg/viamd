@@ -1,18 +1,18 @@
 #include "isosurface.h"
 
-bool insert(IsoSurface& surface, float value, const vec4& color) {
-    if (surface.count >= IsoSurface::MaxCount) return false;
+bool insert(IsoSurfaces& surface, float value, const vec4& color) {
+    if (surface.count >= IsoSurfaces::MaxCount) return false;
     surface.values[surface.count] = value;
     surface.colors[surface.count] = color;
     ++surface.count;
     return true;
 }
 
-void clear(IsoSurface& surface) {
+void clear(IsoSurfaces& surface) {
     surface = {};
 }
 
-void sort(IsoSurface& surface) {
+void sort(IsoSurfaces& surface) {
     for (int i = 0; i < surface.count - 1; ++i) {
         for (int j = i + 1; j < surface.count; ++j) {
             if (surface.values[j] < surface.values[i]) {
