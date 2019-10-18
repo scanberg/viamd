@@ -32,6 +32,8 @@ struct TrackingData {
         mat3* vector = nullptr;
         vec3* value = nullptr;
     } eigen;
+
+    mat3 pca = {};
 };
 
 /*
@@ -42,7 +44,7 @@ mat3 compute_rotation(const float* RESTRICT x0, const float* RESTRICT y0, const 
                       const float* RESTRICT mass, int64 count, const vec3& com0, const vec3& com1);
 
 
-bool compute_trajectory_transform_data(ID structure_id, Bitfield atom_mask, const MoleculeDynamic& dynamic);
+bool compute_trajectory_transform_data(ID structure_id, const MoleculeDynamic& dynamic, Bitfield atom_mask, int64 mask_offset = 0);
 
 const TrackingData* get_tracking_data(ID structure_id);
 

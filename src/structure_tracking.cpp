@@ -697,7 +697,7 @@ void smooth_rotation_matrices(mat3* RESTRICT R_out, const mat3* RESTRICT R_in, i
     R_out[N - 1] = orthogonalize(w[2] * R_in[N - 3] + w[1] * R_in[N - 2] + (w[0] + w[1]) * R_in[N - 1]);
 }
 
-bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const MoleculeDynamic& dynamic) {
+bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bitfield atom_mask, int64 mask_offset) {
     ASSERT(context);
 
     const int32 num_frames = (int32)dynamic.trajectory.num_frames;
@@ -741,14 +741,10 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
 
     float* mass = cor_z + num_points;
 
-    bitfield::extract_data_from_mask(cur_x, get_trajectory_position_x(dynamic.trajectory, 0).data(), atom_mask);
-    bitfield::extract_data_from_mask(cur_y, get_trajectory_position_y(dynamic.trajectory, 0).data(), atom_mask);
-    bitfield::extract_data_from_mask(cur_z, get_trajectory_position_z(dynamic.trajectory, 0).data(), atom_mask);
-    bitfield::extract_data_from_mask(ref_x, get_trajectory_position_x(dynamic.trajectory, 0).data(), atom_mask);
-    bitfield::extract_data_from_mask(ref_y, get_trajectory_position_y(dynamic.trajectory, 0).data(), atom_mask);
-    bitfield::extract_data_from_mask(ref_z, get_trajectory_position_z(dynamic.trajectory, 0).data(), atom_mask);
-
-    bitfield::extract_data_from_mask(mass, dynamic.molecule.atom.mass, atom_mask);
+    bitfield::extract_data_from_mask(ref_x, get_trajectory_position_x(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
+    bitfield::extract_data_from_mask(ref_y, get_trajectory_position_y(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
+    bitfield::extract_data_from_mask(ref_z, get_trajectory_position_z(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
+    bitfield::extract_data_from_mask(mass, dynamic.molecule.atom.mass, atom_mask, mask_offset);
 
     /*
     float tot_mass = 0.0f;
@@ -781,9 +777,9 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
         prv_com = cur_com;
 
         // Fetch current
-        bitfield::extract_data_from_mask(cur_x, get_trajectory_position_x(dynamic.trajectory, i).data(), atom_mask);
-        bitfield::extract_data_from_mask(cur_y, get_trajectory_position_y(dynamic.trajectory, i).data(), atom_mask);
-        bitfield::extract_data_from_mask(cur_z, get_trajectory_position_z(dynamic.trajectory, i).data(), atom_mask);
+        bitfield::extract_data_from_mask(cur_x, get_trajectory_position_x(dynamic.trajectory, i).data(), atom_mask, mask_offset);
+        bitfield::extract_data_from_mask(cur_y, get_trajectory_position_y(dynamic.trajectory, i).data(), atom_mask, mask_offset);
+        bitfield::extract_data_from_mask(cur_z, get_trajectory_position_z(dynamic.trajectory, i).data(), atom_mask, mask_offset);
 
         cur_com = compute_com(cur_x, cur_y, cur_z, mass, num_points);
 
@@ -870,6 +866,23 @@ bool compute_trajectory_transform_data(ID id, Bitfield atom_mask, const Molecule
         s->tracking_data.transform.com[i] = cur_com;
         compute_eigen(cov_mat, (vec3(&)[3])s->tracking_data.eigen.vector[i], (float(&)[3])s->tracking_data.eigen.value[i]);
     }
+
+    const auto ext = get_trajectory_frame(dynamic.trajectory, 0).box * vec3(1,1,1);
+    int i[3] = {0, 1, 2};
+
+    const auto swap = [](int& x, int& y) {
+        int tmp = x;
+        x = y;
+        y = tmp;
+    };
+
+    const mat3 I = mat3(1);
+    if (ext[i[0]] < ext[i[1]]) swap(i[0], i[1]);
+    if (ext[i[1]] < ext[i[2]]) swap(i[1], i[2]);
+    if (ext[i[0]] < ext[i[1]]) swap(i[0], i[1]);
+
+    const mat3 M = mat3(I[i[0]], I[i[1]], I[i[2]]);
+    s->tracking_data.pca = M * s->tracking_data.eigen.vector[0];
 
     return true;
 }

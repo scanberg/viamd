@@ -257,6 +257,13 @@ struct ReferenceFrame {
     mat4 basis = {};
 };
 
+struct EnsembleStructure {
+    int offset = 0;
+    structure_tracking::ID id = 0;
+    mat4 alignment_matrix = {};
+    bool enabled = false;
+};
+
 struct ThreadSyncData {
     std::thread thread{};
     std::atomic<bool> running{false};
@@ -494,6 +501,12 @@ struct ApplicationData {
         vec3 voxel_spacing{1.0f};
 
     } density_volume;
+
+    struct {
+        Bitfield atom_mask;
+        DynamicArray<EnsembleStructure> structures;
+        bool superimpose_structures = false;
+    } ensemble_tracking;
 
     // --- RAMACHANDRAN ---
     struct {
@@ -733,11 +746,15 @@ static void compute_reference_frame(ApplicationData* data, ReferenceFrame* ref);
 static ReferenceFrame* get_active_reference_frame(ApplicationData* data);
 static void update_reference_frames(ApplicationData* data);
 
+static void superimpose_ensemble(ApplicationData* data);
+
 static void init_density_volume(ApplicationData* data);
 
 // Async operations
 static void load_trajectory_async(ApplicationData* data);
 static void compute_backbone_angles_async(ApplicationData* data);
+
+static void on_trajectory_frame_loaded(ApplicationData* data, int frame_idx);
 
 // Temp functionality
 
@@ -818,16 +835,20 @@ int main(int, char**) {
     load_molecule_data(&data, VIAMD_DATA_DIR "/1ALA-250ns-2500frames.pdb");
     // load_molecule_data(&data, VIAMD_DATA_DIR "/amyloid/centered.gro");
     // load_molecule_data(&data, VIAMD_DATA_DIR "/amyloid/centered.xtc");
+    //load_molecule_data(&data, "D:/data/md/6T-water/16-6T-box.gro");
+    //load_molecule_data(&data, "D:/data/md/6T-water/16-6T-box-md-npt.xtc");
 
     // create_reference_frame(&data, "dna", "dna");
-    // create_reference_frame(&data, "de3", "resname DE3");
+    //create_reference_frame(&data, "res16", "residue 16");
     data.simulation_box.enabled = true;
-    //stats::create_property("d1", "distance atom(*) com(atom(*))");
-    //data.density_volume.enabled = true;
+    // stats::create_property("d1", "distance atom(*) com(atom(*))");
+    // data.density_volume.enabled = true;
     // data.reference_frame.frames[0].active = true;
 #endif
     reset_view(&data, true);
-    create_representation(&data, RepresentationType::Vdw, ColorMapping::ResId);
+    create_representation(&data, RepresentationType::Vdw, ColorMapping::ResIndex, "not water");
+    //create_representation(&data, RepresentationType::Vdw, ColorMapping::ResIndex, "residue 16");
+
     init_density_volume(&data);
 
     // Main loop
@@ -1101,6 +1122,10 @@ int main(int, char**) {
             if (traj) {
                 interpolate_atomic_positions(&data);
                 update_reference_frames(&data);
+
+                if (data.ensemble_tracking.superimpose_structures) {
+                    superimpose_ensemble(&data);
+                }
 
                 data.gpu_buffers.dirty.position = true;
                 data.gpu_buffers.dirty.velocity = true;
@@ -2632,7 +2657,7 @@ static void draw_animation_control_window(ApplicationData* data) {
     if (ImGui::SliderFloat("Time", &t, 0, (float)(math::max(0, num_frames - 1)))) {
         data->playback.time = t;
     }
-    ImGui::SliderFloat("fps", &data->playback.fps, 0.1f, 100.f, "%.3f", 4.f);
+    ImGui::SliderFloat("fps", &data->playback.fps, 0.1f, 1000.f, "%.3f", 4.f);
     ImGui::Combo("type", (int*)(&data->playback.interpolation), "Nearest\0Linear\0Cubic\0\0");
     if (data->playback.is_playing) {
         if (ImGui::Button("Pause")) data->playback.is_playing = false;
@@ -4015,11 +4040,16 @@ static void draw_density_volume_window(ApplicationData* data) {
         ImGui::RangeSliderFloat("z", &data->density_volume.clip_planes.min.z, &data->density_volume.clip_planes.max.z, 0.0f, 1.0f);
 
         ImGui::Separator();
-        if (ImGui::Button("Compute Ensemble Density", button_size)) {
-            ImGui::OpenPopup("Ensemble Density");
+        ImGui::Text("Ensemble Density");
+        if (!data->ensemble_tracking.structures.empty()) {
+            ImGui::Checkbox("Superimpose structures", &data->ensemble_tracking.superimpose_structures);
         }
 
-        if (ImGui::BeginPopup("Ensemble Density")) {
+        if (ImGui::Button("Compute New", button_size)) {
+            ImGui::OpenPopup("Ensemble Density Popup");
+        }
+
+        if (ImGui::BeginPopup("Ensemble Density Popup")) {
             static char reference_buf[128] = {};
             static char filter_buf[128] = {};
             bool compute = false;
@@ -4057,94 +4087,121 @@ static void draw_density_volume_window(ApplicationData* data) {
                     const auto& mol = data->dynamic.molecule;
                     const auto& traj = data->dynamic.trajectory;
 
-                    DynamicArray<Bitfield> ensemble_masks = find_equivalent_structures(data->dynamic.molecule, ref_mask);
-                    defer {
-                        for (auto& mask : ensemble_masks) {
-                            bitfield::free(&mask);
+                    Bitfield& ensemble_mask = data->ensemble_tracking.atom_mask;
+                    DynamicArray<EnsembleStructure>& ensemble_structures = data->ensemble_tracking.structures;
+
+                    const auto first_bit = bitfield::find_first_bit_set(ref_mask);
+                    const auto last_bit = bitfield::find_last_bit_set(ref_mask);
+                    if (first_bit == -1 || last_bit == -1) {
+                        LOG_ERROR("Bitfield was empty");
+                        return;
+                    }
+
+                    const auto mask_offset = first_bit;
+                    const auto mask_size = last_bit - first_bit + 1;
+
+                    // @NOTE: Make a smaller 'ensemble' reference mask for the smaller range surrounding the structure of interest
+                    bitfield::init(&ensemble_mask, mask_size);
+                    bitfield::clear_all(ensemble_mask);
+                    for (int i = 0; i < mask_size; i++) {
+                        if (ref_mask[mask_offset + i]) bitfield::set_bit(ensemble_mask, i);
+                    }
+
+                    LOG_NOTE("Matching structures to reference...");
+                    {
+                        DynamicArray<int> ensemble_offsets = find_equivalent_structures(data->dynamic.molecule, ensemble_mask, (int)mask_offset);
+                        if (!ensemble_structures.empty()) {
+                            for (const auto& s : ensemble_structures) {
+                                structure_tracking::remove_structure(s.id);
+                            }
                         }
-                    };
+                        ensemble_structures.clear();
+                        ensemble_structures.push_back({(int)mask_offset, structure_tracking::create_structure(), mat4(1), true});  // Reference structure at index 0
+                        for (const auto& offset : ensemble_offsets) {
+                            ensemble_structures.push_back({(int)offset, structure_tracking::create_structure(), mat4(1), true});
+                        }
+                    }
+                    LOG_NOTE("Done!");
 
                     create_reference_frame(data, "ensemble reference", reference_buf);
 
-                    data->density_volume.volume_data_mutex.lock();
-                    clear_volume(&data->density_volume.volume);
-
-                    DynamicArray<structure_tracking::ID> ensemble_ids;
-
                     LOG_NOTE("Performing Structure Tracking...");
-                    for (const auto& mask : ensemble_masks) {
-                        LOG_NOTE("%i / %i", (int)(&mask - ensemble_masks.begin()) + 1, (int)ensemble_masks.size());
-                        structure_tracking::ID id = structure_tracking::create_structure();
-                        structure_tracking::compute_trajectory_transform_data(id, mask, dyn);
-                        ensemble_ids.push_back(id);
+                    for (auto& structure : ensemble_structures) {
+                        LOG_NOTE("%i / %i", (int)(&structure - ensemble_structures.begin()) + 1, (int)ensemble_structures.size());
+                        structure_tracking::compute_trajectory_transform_data(structure.id, dyn, ensemble_mask, structure.offset);
                     }
                     LOG_NOTE("Done!");
 
-                    LOG_NOTE("Performing Density Computation...");
-
-                    const auto count = bitfield::number_of_bits_set(ref_mask);
-                    void* mem = TMP_MALLOC(sizeof(float) * 7 * count);
+                    const auto atom_count = bitfield::number_of_bits_set(ensemble_mask);
+                    void* mem = TMP_MALLOC(sizeof(float) * 7 * atom_count);
                     defer { TMP_FREE(mem); };
                     ASSERT(mem);
 
-                    float* ref_x = (float*)mem + 0 * count;
-                    float* ref_y = (float*)mem + 1 * count;
-                    float* ref_z = (float*)mem + 2 * count;
+                    float* ref_x = (float*)mem + 0 * atom_count;
+                    float* ref_y = (float*)mem + 1 * atom_count;
+                    float* ref_z = (float*)mem + 2 * atom_count;
 
-                    float* x = (float*)mem + 3 * count;
-                    float* y = (float*)mem + 4 * count;
-                    float* z = (float*)mem + 5 * count;
+                    float* x = (float*)mem + 3 * atom_count;
+                    float* y = (float*)mem + 4 * atom_count;
+                    float* z = (float*)mem + 5 * atom_count;
 
-                    float* mass = (float*)mem + 6 * count;
+                    float* mass = (float*)mem + 6 * atom_count;
 
                     const auto frame0 = get_trajectory_frame(traj, 0);
-                    bitfield::extract_data_from_mask(ref_x, frame0.atom_position.x, ref_mask);
-                    bitfield::extract_data_from_mask(ref_y, frame0.atom_position.y, ref_mask);
-                    bitfield::extract_data_from_mask(ref_z, frame0.atom_position.z, ref_mask);
-                    bitfield::extract_data_from_mask(mass, mol.atom.mass, ref_mask);
-                    const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, count);
+                    bitfield::extract_data_from_mask(ref_x, frame0.atom_position.x, ensemble_mask, ensemble_structures[0].offset);
+                    bitfield::extract_data_from_mask(ref_y, frame0.atom_position.y, ensemble_mask, ensemble_structures[0].offset);
+                    bitfield::extract_data_from_mask(ref_z, frame0.atom_position.z, ensemble_mask, ensemble_structures[0].offset);
+                    bitfield::extract_data_from_mask(mass, mol.atom.mass, ensemble_mask, ensemble_structures[0].offset);
+                    const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, atom_count);
+                    const mat3 PCA = structure_tracking::get_tracking_data(ensemble_structures[0].id)->pca;
 
-                    const mat4 M = data->density_volume.world_to_model_matrix;
+                    ensemble_structures[0].alignment_matrix = PCA;
+                    for (int64 i = 1; i < ensemble_structures.size(); i++) {
+                        auto& structure = ensemble_structures[i];
+                        bitfield::extract_data_from_mask(x, frame0.atom_position.x, ensemble_mask, structure.offset);
+                        bitfield::extract_data_from_mask(y, frame0.atom_position.y, ensemble_mask, structure.offset);
+                        bitfield::extract_data_from_mask(z, frame0.atom_position.z, ensemble_mask, structure.offset);
+                        const vec3 com = compute_com(x, y, z, mass, atom_count);
+                        structure.alignment_matrix = PCA * structure_tracking::compute_rotation(x, y, z, ref_x, ref_y, ref_z, mass, atom_count, com, ref_com);
+                    }
 
-                    for (int i = 0; i < (int)ensemble_masks.size(); i++) {
-                        LOG_NOTE("%i / %i", i + 1, (int)ensemble_masks.size());
+                    if (bitfield::number_of_bits_set(filter_mask) > 0) {
+                        LOG_NOTE("Performing Density Computation...");
+                        data->density_volume.volume_data_mutex.lock();
+                        clear_volume(&data->density_volume.volume);
 
-                        const auto id = ensemble_ids[i];
-                        const auto mask = ensemble_masks[i];
-
-                        const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(id);
-                        if (tracking_data) {
-                            // @NOTE: Align tracked structures to residue 0
-                            bitfield::extract_data_from_mask(x, frame0.atom_position.x, mask);
-                            bitfield::extract_data_from_mask(y, frame0.atom_position.y, mask);
-                            bitfield::extract_data_from_mask(z, frame0.atom_position.z, mask);
-                            const vec3 com = compute_com(x, y, z, mass, count);
-                            const mat4 rotation_alignment_matrix = structure_tracking::compute_rotation(x, y, z, ref_x, ref_y, ref_z, mass, count, com, ref_com);
-                            append_trajectory_density(&data->density_volume.volume, filter_mask, traj, M, rotation_alignment_matrix, *tracking_data);
-                            structure_tracking::remove_structure(id);
-                        } else {
-                            LOG_ERROR("Could not find tracking data for structure: %u", id);
+                        const mat4 M = data->density_volume.world_to_model_matrix;
+                        for (int64 i = 0; i < ensemble_structures.size(); i++) {
+                            LOG_NOTE("%i / %i", (int)i + 1, (int)ensemble_structures.size());
+                            auto& structure = ensemble_structures[i];
+                            const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(structure.id);
+                            if (!tracking_data) {
+                                LOG_ERROR("Could not find tracking data for structure: %u", structure.id);
+                                continue;
+                            }
+                            append_trajectory_density(&data->density_volume.volume, filter_mask, traj, M, structure.alignment_matrix, *tracking_data);
                         }
+
+                        const float scl = 1.0f / (float)(traj.num_frames);
+
+                        data->density_volume.volume.voxel_range = {data->density_volume.volume.voxel_data[0], data->density_volume.volume.voxel_data[0]};
+                        for (auto& v : data->density_volume.volume.voxel_data) {
+                            if (v < data->density_volume.volume.voxel_range.min) data->density_volume.volume.voxel_range.min = v;
+                            if (v > data->density_volume.volume.voxel_range.max) data->density_volume.volume.voxel_range.max = v;
+
+                            v *= scl;
+                        }
+
+                        LOG_NOTE("Done!");
+                        LOG_NOTE("Max density: %.3f", data->density_volume.volume.voxel_range.max);
+                        data->density_volume.texture.dirty = true;
+                        data->density_volume.volume_data_mutex.unlock();
                     }
-
-                    const float scl = 1.0f / (float)(traj.num_frames);
-
-                    data->density_volume.volume.voxel_range = {data->density_volume.volume.voxel_data[0], data->density_volume.volume.voxel_data[0]};
-                    for (auto& v : data->density_volume.volume.voxel_data) {
-                        if (v < data->density_volume.volume.voxel_range.min) data->density_volume.volume.voxel_range.min = v;
-                        if (v > data->density_volume.volume.voxel_range.max) data->density_volume.volume.voxel_range.max = v;
-
-                        v *= scl;
-                    }
-
-                    LOG_NOTE("Done!");
-                    LOG_NOTE("Max density: %.3f", data->density_volume.volume.voxel_range.max);
-                    data->density_volume.texture.dirty = true;
-                    data->density_volume.volume_data_mutex.unlock();
                 }
             }
             ImGui::EndPopup();
         }
+        ImGui::Separator();
         if (ImGui::Button("Export Density...", ImVec2(250, 20))) {
             auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, "raw");
             if (res.result == platform::FileDialogResult::Ok) {
@@ -4583,6 +4640,7 @@ static void init_trajectory_data(ApplicationData* data) {
         }
 
         read_next_trajectory_frame(&data->dynamic.trajectory);  // read first frame explicitly
+        on_trajectory_frame_loaded(data, 0);
         const auto pos_x = get_trajectory_position_x(data->dynamic.trajectory, 0);
         const auto pos_y = get_trajectory_position_y(data->dynamic.trajectory, 0);
         const auto pos_z = get_trajectory_position_z(data->dynamic.trajectory, 0);
@@ -5318,7 +5376,7 @@ static void compute_reference_frame(ApplicationData* data, ReferenceFrame* ref) 
 
     ref->filter_is_ok = filter::compute_filter_mask(ref->atom_mask, ref->filter, data->dynamic.molecule, sel);
     if (ref->filter_is_ok) {
-        structure_tracking::compute_trajectory_transform_data(ref->id, ref->atom_mask, data->dynamic);
+        structure_tracking::compute_trajectory_transform_data(ref->id, data->dynamic, ref->atom_mask);
     }
 }
 
@@ -5428,11 +5486,8 @@ static void update_reference_frames(ApplicationData* data) {
             const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-current_com, 1));
             const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(box_c, 1));
 
-            const mat4 PCA = tracking_data->eigen.vector[0];
+            const mat4 PCA = tracking_data->pca;
 
-            if (math::determinant(mat3(PCA)) < 0.0f) {
-                LOG_ERROR("THIS IS BAD!");
-            }
             ref.world_to_reference = T_box * PCA * R_inv * T_com;
             ref.reference_to_world = math::inverse(ref.world_to_reference);
 
@@ -5443,6 +5498,111 @@ static void update_reference_frames(ApplicationData* data) {
             //}
         } else {
             LOG_ERROR("Could not find tracking data for '%lu'", ref.id);
+        }
+    }
+}
+
+static void superimpose_ensemble(ApplicationData* data) {
+    ASSERT(data);
+
+    const auto& mol = data->dynamic.molecule;
+    const auto& traj = data->dynamic.trajectory;
+
+    const float64 time = data->playback.time;
+    const int last_frame = math::max(0, traj.num_frames - 1);
+    const float32 t = (float)math::fract(data->playback.time);
+    const int frame = (int)time;
+    const int p2 = math::max(0, frame - 1);
+    const int p1 = math::max(0, frame);
+    const int n1 = math::min(frame + 1, last_frame);
+    const int n2 = math::min(frame + 2, last_frame);
+    const mat3 box = get_trajectory_frame(traj, frame).box;
+    const InterpolationMode mode = (p1 != n1) ? data->playback.interpolation : InterpolationMode::Nearest;
+    const Bitfield atom_mask = data->ensemble_tracking.atom_mask;
+
+    for (auto& structure : data->ensemble_tracking.structures) {
+        const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(structure.id);
+        if (tracking_data) {
+
+            const int64 masked_count = bitfield::number_of_bits_set(atom_mask);
+            if (masked_count == 0) break;
+
+            void* w_mem = TMP_MALLOC(sizeof(float) * 1 * masked_count);
+            void* f_mem = TMP_MALLOC(sizeof(float) * 3 * masked_count);
+            void* c_mem = TMP_MALLOC(sizeof(float) * 3 * masked_count);
+            defer {
+                TMP_FREE(w_mem);
+                TMP_FREE(f_mem);
+                TMP_FREE(c_mem);
+            };
+
+            float* weight = (float*)w_mem;
+            float* frame_x = (float*)f_mem;
+            float* frame_y = (float*)f_mem + 1 * masked_count;
+            float* frame_z = (float*)f_mem + 2 * masked_count;
+            float* current_x = (float*)c_mem;
+            float* current_y = (float*)c_mem + 1 * masked_count;
+            float* current_z = (float*)c_mem + 2 * masked_count;
+
+            int64 count = bitfield::extract_data_from_mask(weight, mol.atom.mass, atom_mask);
+            bitfield::extract_data_from_mask(frame_x, get_trajectory_position_x(traj, 0).data(), atom_mask, structure.offset);
+            bitfield::extract_data_from_mask(frame_y, get_trajectory_position_y(traj, 0).data(), atom_mask, structure.offset);
+            bitfield::extract_data_from_mask(frame_z, get_trajectory_position_z(traj, 0).data(), atom_mask, structure.offset);
+            bitfield::extract_data_from_mask(current_x, mol.atom.position.x, atom_mask, structure.offset);
+            bitfield::extract_data_from_mask(current_y, mol.atom.position.y, atom_mask, structure.offset);
+            bitfield::extract_data_from_mask(current_z, mol.atom.position.z, atom_mask, structure.offset);
+
+            const vec3 frame_com = compute_com(frame_x, frame_y, frame_z, weight, masked_count);
+            const vec3 current_com = compute_com(current_x, current_y, current_z, weight, masked_count);
+            const vec3 box_c = box * vec3(0.5f);
+            const quat* rot_data = tracking_data->transform.rotation.hybrid;
+
+            // clang-format off
+            const quat q[4] = { rot_data[p2],
+                                rot_data[p1],
+                                rot_data[n1],
+                                rot_data[n2] };
+            // clang-format on
+
+            mat4 R;
+            switch (mode) {
+                case InterpolationMode::Nearest:
+                    R = math::mat4_cast(t < 0.5f ? q[1] : q[2]);
+                    break;
+                case InterpolationMode::Linear:
+                    R = math::mat4_cast(math::slerp(q[1], q[2], t));
+                    break;
+                case InterpolationMode::Cubic:
+                    R = math::mat4_cast(math::cubic_slerp(q[0], q[1], q[2], q[3], t));
+                    break;
+                default:
+                    ASSERT(false);
+            }
+
+            const mat4 R_inv = math::transpose(R);
+            const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-current_com, 1));
+            const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(box_c, 1));
+
+            // mat4 PCA = tracking_data->eigen.vector[0];
+            // PCA = mat4(1);
+
+            mat4 M = T_box * structure.alignment_matrix * R_inv * T_com;
+
+            for (int64 i = 0; i < atom_mask.size(); i++) {
+                if (atom_mask[i]) {
+                    float& x = mol.atom.position.x[structure.offset + i];
+                    float& y = mol.atom.position.y[structure.offset + i];
+                    float& z = mol.atom.position.z[structure.offset + i];
+                    vec4 v = {x, y, z, 1.0f};
+                    v = M * v;
+                    x = v.x;
+                    y = v.y;
+                    z = v.z;
+                }
+            }
+
+        } else {
+            LOG_ERROR("Could not find tracking data for '%lu'", structure.id);
         }
     }
 }
