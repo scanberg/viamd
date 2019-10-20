@@ -29,20 +29,19 @@ struct TrackingData {
         } rotation;
     } transform;
     struct {
-        mat3* vector = nullptr;
+        mat3* vectors = nullptr;
         vec3* value = nullptr;
     } eigen;
 
+    mat3 simulation_box_aligned_pca = {};
     mat3 pca = {};
 };
 
 /*
 vec3 compute_eigen_values(const float* RESTRICT x, const float* RESTRICT y, const float* RESTRICT z, const float* RESTRICT mass, int64 count);
 */
-mat3 compute_rotation(const float* RESTRICT x0, const float* RESTRICT y0, const float* RESTRICT z0,
-                      const float* RESTRICT x1, const float* RESTRICT y1, const float* RESTRICT z1,
+mat3 compute_rotation(const float* RESTRICT x0, const float* RESTRICT y0, const float* RESTRICT z0, const float* RESTRICT x1, const float* RESTRICT y1, const float* RESTRICT z1,
                       const float* RESTRICT mass, int64 count, const vec3& com0, const vec3& com1);
-
 
 bool compute_trajectory_transform_data(ID structure_id, const MoleculeDynamic& dynamic, Bitfield atom_mask, int64 mask_offset = 0);
 

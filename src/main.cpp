@@ -255,6 +255,7 @@ struct ReferenceFrame {
 
     // For debugging
     mat4 basis = {};
+    mat3 pca = {};
 };
 
 struct EnsembleStructure {
@@ -832,22 +833,22 @@ int main(int, char**) {
     allocate_and_parse_pdb_from_string(&data.dynamic, CAFFINE_PDB);
     init_molecule_data(&data);
 #else
-    load_molecule_data(&data, VIAMD_DATA_DIR "/1ALA-250ns-2500frames.pdb");
+    // load_molecule_data(&data, VIAMD_DATA_DIR "/1ALA-250ns-2500frames.pdb");
     // load_molecule_data(&data, VIAMD_DATA_DIR "/amyloid/centered.gro");
     // load_molecule_data(&data, VIAMD_DATA_DIR "/amyloid/centered.xtc");
-    //load_molecule_data(&data, "D:/data/md/6T-water/16-6T-box.gro");
-    //load_molecule_data(&data, "D:/data/md/6T-water/16-6T-box-md-npt.xtc");
+    load_molecule_data(&data, "D:/md/6T-water/16-6T-box.gro");
+    load_molecule_data(&data, "D:/md/6T-water/16-6T-box-md-npt.xtc");
 
     // create_reference_frame(&data, "dna", "dna");
-    //create_reference_frame(&data, "res16", "residue 16");
+    create_reference_frame(&data, "res16", "residue 16");
     data.simulation_box.enabled = true;
     // stats::create_property("d1", "distance atom(*) com(atom(*))");
     // data.density_volume.enabled = true;
     // data.reference_frame.frames[0].active = true;
 #endif
     reset_view(&data, true);
-    create_representation(&data, RepresentationType::Vdw, ColorMapping::ResIndex, "not water");
-    //create_representation(&data, RepresentationType::Vdw, ColorMapping::ResIndex, "residue 16");
+    // create_representation(&data, RepresentationType::Vdw, ColorMapping::ResIndex, "not water");
+    create_representation(&data, RepresentationType::Vdw, ColorMapping::ResIndex, "residue 16");
 
     init_density_volume(&data);
 
@@ -1080,7 +1081,7 @@ int main(int, char**) {
             }
         }
 
-        data.playback.frame = math::clamp((int32)math::round(data.playback.time), 0, last_frame);
+        data.playback.frame = math::clamp((int)data.playback.time, 0, last_frame);
 
         {
             static auto prev_time = data.playback.time;
@@ -1351,8 +1352,31 @@ int main(int, char**) {
                 for (const auto& ref : data.reference_frame.frames) {
                     if (ref.show) {
                         const mat4 B = ref.basis;
-                        immediate::draw_basis(B, 4.0f);
-                        immediate::draw_plane_wireframe(B[3], B[0], B[1], immediate::COLOR_BLACK);
+                        // immediate::draw_basis(B, 4.0f);
+                        // immediate::draw_plane_wireframe(B[3], B[0], B[1], immediate::COLOR_BLACK);
+
+                        const auto tracking_data = structure_tracking::get_tracking_data(ref.id);
+                        if (ref.id) {
+                            const mat3 pca = ref.pca;
+                            const mat3 M_abs = math::mat3_cast(tracking_data->transform.rotation.absolute[data.playback.frame]);
+                            const mat3 M_rel = math::mat3_cast(tracking_data->transform.rotation.relative[data.playback.frame]);
+                            const vec3 v_src = math::normalize(pca[0]);
+                            const vec3 v_dst = math::normalize(M_abs * math::inverse(M_rel) * pca[0]);
+
+                            float d = math::dot(v_src, v_dst);
+                            const float rot_angle = math::acos(d);
+                            const vec3 rot_axis = math::cross(v_src, v_dst);
+
+                            //immediate::draw_line(B[3], vec3(B[3]) + v_src * 2.0f, immediate::COLOR_BLUE);
+                            //immediate::draw_line(B[3], vec3(B[3]) + v_dst * 2.0f, immediate::COLOR_RED);
+                        }
+
+                        // Align on axis 0:
+
+                        immediate::draw_line(B[3], vec3(B[3]) + ref.pca[0] * 3.0f, immediate::COLOR_RED);
+                        immediate::draw_line(B[3], vec3(B[3]) + ref.pca[1] * 3.0f, immediate::COLOR_GREEN);
+                        immediate::draw_line(B[3], vec3(B[3]) + ref.pca[2] * 3.0f, immediate::COLOR_BLUE);
+
                     }
                 }
 
@@ -4153,7 +4177,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                     bitfield::extract_data_from_mask(ref_z, frame0.atom_position.z, ensemble_mask, ensemble_structures[0].offset);
                     bitfield::extract_data_from_mask(mass, mol.atom.mass, ensemble_mask, ensemble_structures[0].offset);
                     const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, atom_count);
-                    const mat3 PCA = structure_tracking::get_tracking_data(ensemble_structures[0].id)->pca;
+                    const mat3 PCA = structure_tracking::get_tracking_data(ensemble_structures[0].id)->simulation_box_aligned_pca;
 
                     ensemble_structures[0].alignment_matrix = PCA;
                     for (int64 i = 1; i < ensemble_structures.size(); i++) {
@@ -5482,19 +5506,19 @@ static void update_reference_frames(ApplicationData* data) {
                     ASSERT(false);
             }
 
-            const mat4 R_inv = math::transpose(R);
             const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-current_com, 1));
             const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(box_c, 1));
 
-            const mat4 PCA = tracking_data->pca;
+            const mat4 PCA = tracking_data->simulation_box_aligned_pca;
 
-            ref.world_to_reference = T_box * PCA * R_inv * T_com;
+            ref.world_to_reference = T_box * PCA * R * T_com;
             ref.reference_to_world = math::inverse(ref.world_to_reference);
 
             // if (ref.active) {
             //    ref.basis = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {box_c, 1}};
             //} else {
-            ref.basis = math::inverse(PCA * R_inv * T_com);
+            ref.basis = math::inverse(PCA * R * T_com);
+            ref.pca = tracking_data->eigen.vectors[p1];
             //}
         } else {
             LOG_ERROR("Could not find tracking data for '%lu'", ref.id);
@@ -5579,14 +5603,13 @@ static void superimpose_ensemble(ApplicationData* data) {
                     ASSERT(false);
             }
 
-            const mat4 R_inv = math::transpose(R);
             const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-current_com, 1));
             const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(box_c, 1));
 
             // mat4 PCA = tracking_data->eigen.vector[0];
             // PCA = mat4(1);
 
-            mat4 M = T_box * structure.alignment_matrix * R_inv * T_com;
+            mat4 M = T_box * structure.alignment_matrix * R * T_com;
 
             for (int64 i = 0; i < atom_mask.size(); i++) {
                 if (atom_mask[i]) {

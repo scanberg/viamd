@@ -292,7 +292,7 @@ static mat3 compute_mass_weighted_covariance_matrix(const float* x, const float*
         A[2][2] += m * qz * qz;
     }
 
-    return A;
+    return A / mass_sum;
 }
 
 // clang-format off
@@ -330,10 +330,9 @@ static void compute_eigen(const mat3& M, vec3 (&vectors)[3], float (&value)[3]) 
     mat3 U, S, V;
     svd(ARGS(M), ARGS(U), ARGS(S), ARGS(V));
     float max_val = math::max(S[0][0], math::max(S[1][1], S[2][2]));
-    const mat3 Ut = glm::transpose(U);
 
     const float e_val[] = {S[0][0] / max_val, S[1][1] / max_val, S[2][2] / max_val};
-    const vec3 e_vec[] = {Ut[0], Ut[1], Ut[2]};
+    const vec3 e_vec[] = {U[0], U[1], U[2]};
     int l[3] = {0, 1, 2};
 
     const auto swap = [](int& x, int& y) {
@@ -420,7 +419,7 @@ mat3 compute_rotation(const float* x0, const float* y0, const float* z0,
     const mat3 Aqq = compute_mass_weighted_covariance_matrix(dx0, dy0, dz0, mass, count);
 #else
     const mat3 Apq = compute_mass_weighted_cross_covariance_matrix(x0, y0, z0, x1, y1, z1, mass, count, com0, com1);
-    //const mat3 Aqq = compute_mass_weighted_covariance_matrix(x0, y0, z0, mass, count);
+    // const mat3 Aqq = compute_mass_weighted_covariance_matrix(x0, y0, z0, mass, count);
 #endif
 
     // const mat3 A = Apq;
@@ -512,7 +511,7 @@ static void free_structure_data(Structure* s) {
     if (s->tracking_data.transform.rotation.relative) FREE(s->tracking_data.transform.rotation.relative);
     if (s->tracking_data.transform.rotation.hybrid) FREE(s->tracking_data.transform.rotation.hybrid);
     if (s->tracking_data.transform.com) FREE(s->tracking_data.transform.com);
-    if (s->tracking_data.eigen.vector) FREE(s->tracking_data.eigen.vector);
+    if (s->tracking_data.eigen.vectors) FREE(s->tracking_data.eigen.vectors);
     if (s->tracking_data.eigen.value) FREE(s->tracking_data.eigen.value);
 }
 
@@ -526,8 +525,9 @@ static void init_structure_data(Structure* s, ID id, int32 num_frames) {
     s->tracking_data.transform.rotation.relative = (quat*)MALLOC(sizeof(quat) * num_frames);
     s->tracking_data.transform.rotation.hybrid = (quat*)MALLOC(sizeof(quat) * num_frames);
     s->tracking_data.transform.com = (vec3*)MALLOC(sizeof(vec3) * num_frames);
-    s->tracking_data.eigen.vector = (mat3*)MALLOC(sizeof(mat3) * num_frames);
-    s->tracking_data.eigen.value = (vec3*)MALLOC(sizeof(vec3) * num_frames);}
+    s->tracking_data.eigen.vectors = (mat3*)MALLOC(sizeof(mat3) * num_frames);
+    s->tracking_data.eigen.value = (vec3*)MALLOC(sizeof(vec3) * num_frames);
+}
 
 static Structure* find_structure(ID id) {
     for (const auto& e : context->entries) {
@@ -768,8 +768,7 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     s->tracking_data.transform.rotation.relative[0] = {1, 0, 0, 0};
     s->tracking_data.transform.rotation.hybrid[0] = {1, 0, 0, 0};
     s->tracking_data.transform.com[0] = ref_com;
-    compute_eigen(compute_mass_weighted_covariance_matrix(ref_x, ref_y, ref_z, mass, num_points, ref_com),
-        (vec3(&)[3])s->tracking_data.eigen.vector[0], (float(&)[3])s->tracking_data.eigen.value[0]);
+    compute_eigen(compute_mass_weighted_covariance_matrix(ref_x, ref_y, ref_z, mass, num_points, ref_com), (vec3(&)[3])s->tracking_data.eigen.vectors[0], (float(&)[3])s->tracking_data.eigen.value[0]);
 
     for (int32 i = 1; i < num_frames; i++) {
         // Copy previous frame data
@@ -783,9 +782,13 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
 
         cur_com = compute_com(cur_x, cur_y, cur_z, mass, num_points);
 
-        const mat3 abs_mat = compute_mass_weighted_cross_covariance_matrix(cur_x, cur_y, cur_z, ref_x, ref_y, ref_z, mass, num_points, cur_com, ref_com);
+        const mat3 abs_mat = compute_mass_weighted_cross_covariance_matrix(ref_x, ref_y, ref_z, cur_x, cur_y, cur_z, mass, num_points, ref_com, cur_com);
         const mat3 rel_mat = compute_mass_weighted_cross_covariance_matrix(prv_x, prv_y, prv_z, cur_x, cur_y, cur_z, mass, num_points, prv_com, cur_com);
         const mat3 cov_mat = compute_mass_weighted_covariance_matrix(cur_x, cur_y, cur_z, mass, num_points, cur_com);
+
+        mat3 eigen_vectors;
+        vec3 eigen_values;
+        compute_eigen(cov_mat, (vec3(&)[3])eigen_vectors, (float(&)[3])eigen_values);
 
         const mat3 abs_rot = extract_rotation(abs_mat);
         const mat3 rel_rot = extract_rotation(rel_mat);
@@ -793,14 +796,16 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
         const quat q_del = math::normalize(math::quat_cast(rel_rot));
         quat q_abs = math::normalize(math::quat_cast(abs_rot));
 
+        // Concatenate delta to relative transform
         q_relative = math::normalize(q_relative * q_del);
-        quat q_rel = math::conjugate(q_relative);
+        quat q_rel = q_relative;
 
         // Make sure we take shortest path from previous orientation
         q_abs = math::dot(s->tracking_data.transform.rotation.absolute[i - 1], q_abs) > 0.0f ? q_abs : -q_abs;
         q_rel = math::dot(s->tracking_data.transform.rotation.relative[i - 1], q_rel) > 0.0f ? q_rel : -q_rel;
 
 #if 0
+        // Full correction of relative path
         memcpy(cor_x, ref_x, num_points * sizeof(float) * 3);
         cor_com = ref_com;
 
@@ -834,16 +839,40 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
         // Dynamic ratio Slerp
         // absolute contributes with a factor based on the cosine of the angle between the absolute and predicted orientation
         const quat q_pred = q_hybrid * q_del;
-        const quat q_ref = math::conjugate(q_abs);
-        const float d = math::abs(math::dot(q_pred, q_ref));
-        const float t = math::pow(d, 16.0f);
+        const quat q_ref = q_abs;
+        const float d = math::dot(q_pred, q_ref);
+        // const float d = math::dot(q_pred, q_ref) * 0.5f + 0.5f;
+        const float t = math::pow(d, 8.0f);
         q_hybrid = math::normalize(math::slerp(q_pred, q_ref, t));
-        quat q_cor = math::conjugate(q_hybrid);
-        q_cor = math::dot(s->tracking_data.transform.rotation.hybrid[i - 1], q_cor) > 0.0f ? q_cor : -q_cor;
+        quat q_cor = q_hybrid;
+        // quat q_cor = math::conjugate(q_hybrid);
+        // q_cor = math::dot(s->tracking_data.transform.rotation.hybrid[i - 1], q_cor) > 0.0f ? q_cor : -q_cor;
 
-        //const float angle = math::rad_to_deg(math::acos(math::dot(q_pred, q_ref)));
-        //printf("Angle: %.2f\n", angle);
+        // const float angle = math::rad_to_deg(math::acos(math::dot(q_pred, q_ref)));
+        // printf("Angle: %.2f\n", angle);
+#elif 0
+        // Partial correction based on geometric anisotropy
+        const float denom = 1.0f / (eigen_values[0] + eigen_values[1] + eigen_values[2]);
+        const float cl = (eigen_values[0] - eigen_values[1]) * denom;
+        const float cp = 2.0f * (eigen_values[1] - eigen_values[2]) * denom;
+        const float cs = 3.0f * eigen_values[2] * denom;
 
+        const vec3 w = {cl + cp + cs, cp + cs, cs};
+
+        const mat3 pca = eigen_vectors;
+        const mat3 M_abs = math::mat3_cast(q_abs);
+
+        const mat3 M_rel = math::mat3_cast(q_rel);
+        const vec3 v_src = math::normalize(math::inverse(M_rel) * pca[0]);
+        const vec3 v_dst = math::normalize(math::inverse(M_abs) * pca[0]);
+
+        // Align on axis 0:
+        float d = math::dot(v_src, v_dst);
+        const float rot_angle = math::acos(d);
+        const vec3 rot_axis = math::normalize(math::cross(v_src, v_dst));
+        const quat q_corr = math::angle_axis(rot_angle, rot_axis);
+        const quat q = math::normalize(q_corr * q_rel);
+        const quat q_hyb = math::dot(s->tracking_data.transform.rotation.hybrid[i - 1], q) > 0.0f ? q : -q;
 #else
         // Always go with Shortest path (absolute or prediction)
         // Result -> Bad
@@ -862,12 +891,13 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
 #endif
         s->tracking_data.transform.rotation.absolute[i] = q_abs;
         s->tracking_data.transform.rotation.relative[i] = q_rel;
-        s->tracking_data.transform.rotation.hybrid[i] = q_cor;
+        s->tracking_data.transform.rotation.hybrid[i] = q_hyb;
         s->tracking_data.transform.com[i] = cur_com;
-        compute_eigen(cov_mat, (vec3(&)[3])s->tracking_data.eigen.vector[i], (float(&)[3])s->tracking_data.eigen.value[i]);
+        s->tracking_data.eigen.vectors[i] = eigen_vectors;
+        s->tracking_data.eigen.value[i] = eigen_values;
     }
 
-    const auto ext = get_trajectory_frame(dynamic.trajectory, 0).box * vec3(1,1,1);
+    const auto ext = get_trajectory_frame(dynamic.trajectory, 0).box * vec3(1, 1, 1);
     int i[3] = {0, 1, 2};
 
     const auto swap = [](int& x, int& y) {
@@ -882,7 +912,8 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     if (ext[i[0]] < ext[i[1]]) swap(i[0], i[1]);
 
     const mat3 M = mat3(I[i[0]], I[i[1]], I[i[2]]);
-    s->tracking_data.pca = M * s->tracking_data.eigen.vector[0];
+    s->tracking_data.simulation_box_aligned_pca = M * s->tracking_data.eigen.vectors[0];
+    s->tracking_data.pca = s->tracking_data.eigen.vectors[0];
 
     return true;
 }
@@ -895,6 +926,5 @@ const TrackingData* get_tracking_data(ID id) {
     LOG_ERROR("Supplied id is not valid.");
     return nullptr;
 }
-
 
 }  // namespace structure_tracking
