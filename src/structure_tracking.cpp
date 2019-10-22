@@ -6,9 +6,6 @@
 
 #include <svd3/svd3.h>
 
-//#pragma warning(disable : 4127)  // disable warnings about expressions which could be constexpr in Eigen
-//#include <Eigen/Eigen>
-
 namespace structure_tracking {
 
 struct Structure {
@@ -28,297 +25,62 @@ struct Context {
 
 Context* context = nullptr;
 
-#if 0
-// from here https://stackoverflow.com/questions/4372224/fast-method-for-computing-3x3-symmetric-matrix-spectral-decomposition
-// Slightly modified version of  Stan Melax's code for 3x3 matrix diagonalization (Thanks Stan!)
-// source: http://www.melax.com/diag.html?attredirects=0
-static void Diagonalize(const float (&A)[3][3], float (&Q)[3][3], float (&D)[3][3]) {
-    // A must be a symmetric matrix.
-    // returns Q and D such that
-    // Diagonal matrix D = QT * A * Q;  and  A = Q*D*QT
-    const int maxsteps = 24;  // certainly wont need that many.
-    int k0, k1, k2;
-    float o[3], m[3];
-    float q[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-    float jr[4];
-    float sqw, sqx, sqy, sqz;
-    float tmp1, tmp2, mq;
-    float AQ[3][3];
-    float thet, sgn, t, c;
-    for (int i = 0; i < maxsteps; ++i) {
-        // quat to matrix
-        sqx = q[0] * q[0];
-        sqy = q[1] * q[1];
-        sqz = q[2] * q[2];
-        sqw = q[3] * q[3];
-        Q[0][0] = (sqx - sqy - sqz + sqw);
-        Q[1][1] = (-sqx + sqy - sqz + sqw);
-        Q[2][2] = (-sqx - sqy + sqz + sqw);
-        tmp1 = q[0] * q[1];
-        tmp2 = q[2] * q[3];
-        Q[1][0] = 2.0f * (tmp1 + tmp2);
-        Q[0][1] = 2.0f * (tmp1 - tmp2);
-        tmp1 = q[0] * q[2];
-        tmp2 = q[1] * q[3];
-        Q[2][0] = 2.0f * (tmp1 - tmp2);
-        Q[0][2] = 2.0f * (tmp1 + tmp2);
-        tmp1 = q[1] * q[2];
-        tmp2 = q[0] * q[3];
-        Q[2][1] = 2.0f * (tmp1 + tmp2);
-        Q[1][2] = 2.0f * (tmp1 - tmp2);
-
-        // AQ = A * Q
-        AQ[0][0] = Q[0][0] * A[0][0] + Q[1][0] * A[0][1] + Q[2][0] * A[0][2];
-        AQ[0][1] = Q[0][1] * A[0][0] + Q[1][1] * A[0][1] + Q[2][1] * A[0][2];
-        AQ[0][2] = Q[0][2] * A[0][0] + Q[1][2] * A[0][1] + Q[2][2] * A[0][2];
-        AQ[1][0] = Q[0][0] * A[0][1] + Q[1][0] * A[1][1] + Q[2][0] * A[1][2];
-        AQ[1][1] = Q[0][1] * A[0][1] + Q[1][1] * A[1][1] + Q[2][1] * A[1][2];
-        AQ[1][2] = Q[0][2] * A[0][1] + Q[1][2] * A[1][1] + Q[2][2] * A[1][2];
-        AQ[2][0] = Q[0][0] * A[0][2] + Q[1][0] * A[1][2] + Q[2][0] * A[2][2];
-        AQ[2][1] = Q[0][1] * A[0][2] + Q[1][1] * A[1][2] + Q[2][1] * A[2][2];
-        AQ[2][2] = Q[0][2] * A[0][2] + Q[1][2] * A[1][2] + Q[2][2] * A[2][2];
-        // D = Qt * AQ
-        D[0][0] = AQ[0][0] * Q[0][0] + AQ[1][0] * Q[1][0] + AQ[2][0] * Q[2][0];
-        D[0][1] = AQ[0][0] * Q[0][1] + AQ[1][0] * Q[1][1] + AQ[2][0] * Q[2][1];
-        D[0][2] = AQ[0][0] * Q[0][2] + AQ[1][0] * Q[1][2] + AQ[2][0] * Q[2][2];
-        D[1][0] = AQ[0][1] * Q[0][0] + AQ[1][1] * Q[1][0] + AQ[2][1] * Q[2][0];
-        D[1][1] = AQ[0][1] * Q[0][1] + AQ[1][1] * Q[1][1] + AQ[2][1] * Q[2][1];
-        D[1][2] = AQ[0][1] * Q[0][2] + AQ[1][1] * Q[1][2] + AQ[2][1] * Q[2][2];
-        D[2][0] = AQ[0][2] * Q[0][0] + AQ[1][2] * Q[1][0] + AQ[2][2] * Q[2][0];
-        D[2][1] = AQ[0][2] * Q[0][1] + AQ[1][2] * Q[1][1] + AQ[2][2] * Q[2][1];
-        D[2][2] = AQ[0][2] * Q[0][2] + AQ[1][2] * Q[1][2] + AQ[2][2] * Q[2][2];
-        o[0] = D[1][2];
-        o[1] = D[0][2];
-        o[2] = D[0][1];
-        m[0] = fabs(o[0]);
-        m[1] = fabs(o[1]);
-        m[2] = fabs(o[2]);
-
-        k0 = (m[0] > m[1] && m[0] > m[2]) ? 0 : (m[1] > m[2]) ? 1 : 2;  // index of largest element of offdiag
-        k1 = (k0 + 1) % 3;
-        k2 = (k0 + 2) % 3;
-        if (o[k0] == 0.0f) {
-            break;  // diagonal already
-        }
-        thet = (D[k2][k2] - D[k1][k1]) / (2.0f * o[k0]);
-        sgn = (thet > 0.0f) ? 1.0f : -1.0f;
-        thet *= sgn;                                                             // make it positive
-        t = sgn / (thet + ((thet < 1.E6f) ? sqrtf(thet * thet + 1.0f) : thet));  // sign(T)/(|T|+sqrt(T^2+1))
-        c = 1.0f / sqrtf(t * t + 1.0f);                                          //  c= 1/(t^2+1) , t=s/c
-        if (c == 1.0f) {
-            break;  // no room for improvement - reached machine precision.
-        }
-        jr[0] = jr[1] = jr[2] = jr[3] = 0.0f;
-        jr[k0] = sgn * sqrtf((1.0f - c) / 2.0f);  // using 1/2 angle identity sin(a/2) = sqrt((1-cos(a))/2)
-        jr[k0] *= -1.0f;                          // since our quat-to-matrix convention was for v*M instead of M*v
-        jr[3] = sqrtf(1.0f - jr[k0] * jr[k0]);
-        if (jr[3] == 1.0f) {
-            break;  // reached limits of floating point precision
-        }
-        q[0] = (q[3] * jr[0] + q[0] * jr[3] + q[1] * jr[2] - q[2] * jr[1]);
-        q[1] = (q[3] * jr[1] - q[0] * jr[2] + q[1] * jr[3] + q[2] * jr[0]);
-        q[2] = (q[3] * jr[2] + q[0] * jr[1] - q[1] * jr[0] + q[2] * jr[3]);
-        q[3] = (q[3] * jr[3] - q[0] * jr[0] - q[1] * jr[1] - q[2] * jr[2]);
-        mq = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
-        q[0] /= mq;
-        q[1] /= mq;
-        q[2] /= mq;
-        q[3] /= mq;
-    }
-}
-#endif
-
-#if 0
-static void diagonalize(const mat3& M, mat3* Q, mat3* D) {
-    ASSERT(Q);
-    ASSERT(D);
-    Diagonalize((const float(&)[3][3])M, (float(&)[3][3]) * Q, (float(&)[3][3]) * D);
-}
-#endif
-
-#if 0
-static void decompose(const mat3& M, mat3* R, mat3* S) {
-    ASSERT(R);
-    ASSERT(S);
-    mat3 AtA = math::transpose(M) * M;
-    mat3 Q, D;
-    diagonalize(AtA, &Q, &D);
-    // const float det = math::determinant(AtA); // For debugging
-    D = mat3(sqrtf(D[0][0]), 0, 0, 0, sqrtf(D[1][1]), 0, 0, 0, sqrtf(D[2][2]));
-    /*
-        D[0][0] = sqrtf(D[0][0]);
-    D[1][1] = sqrtf(D[1][1]);
-    D[2][2] = sqrtf(D[2][2]);
-        */
-    // @NOTE: Should one zero every non diagonal element???
-    *S = math::transpose(Q) * D * Q;
-    *R = M * math::inverse(*S);
-}
-#endif
-
-/*
 // clang-format off
-static mat3 compute_mass_weighted_cross_covariance_matrix(const float* x0, const float* y0, const float* z0, const float* mass0,
-                                                                                                              const float* x1, const float* y1, const float* z1, const float* mass1,
-                                                                                                                  int64 count, const vec3& com0, const vec3& com1)
+static mat3 compute_weighted_cross_covariance_matrix(const float* x0, const float* y0, const float* z0,
+                                                     const float* x1, const float* y1, const float* z1,
+                                                     const float* weight,
+                                                     int64 count, const vec3& com0 = {0,0,0}, const vec3& com1 = {0,0,0})
 // clang-format on
 {
     mat3 A{0};
-    float mass_sum = 0.0f;
     for (int64 i = 0; i < count; i++) {
         // @TODO: Vectorize...
-        const float qx = x0[i] - com0.x;
-        const float qy = y0[i] - com0.y;
-        const float qz = z0[i] - com0.z;
+        const float px = x0[i] - com0.x;
+        const float py = y0[i] - com0.y;
+        const float pz = z0[i] - com0.z;
 
-        const float px = x1[i] - com1.x;
-        const float py = y1[i] - com1.y;
-        const float pz = z1[i] - com1.z;
+        const float qx = x1[i] - com1.x;
+        const float qy = y1[i] - com1.y;
+        const float qz = z1[i] - com1.z;
 
-        const float m = mass0[i] * mass1[i];
-        mass_sum += m;
+        const float w = weight[i];
 
-        A[0][0] += m * px * qx;
-        A[0][1] += m * py * qx;
-        A[0][2] += m * pz * qx;
-        A[1][0] += m * px * qy;
-        A[1][1] += m * py * qy;
-        A[1][2] += m * pz * qy;
-        A[2][0] += m * px * qz;
-        A[2][1] += m * py * qz;
-        A[2][2] += m * pz * qz;
-    }
-
-    return A;
-}
-*/
-
-// clang-format off
-static mat3 compute_mass_weighted_cross_covariance_matrix(const float* x0, const float* y0, const float* z0,
-                                                          const float* x1, const float* y1, const float* z1,
-                                                          const float* mass,
-                                                          int64 count, const vec3& com0, const vec3& com1)
-// clang-format on
-{
-    mat3 A{0};
-    float mass_sum = 0.0f;
-    for (int64 i = 0; i < count; i++) {
-        // @TODO: Vectorize...
-        const float qx = x0[i] - com0.x;
-        const float qy = y0[i] - com0.y;
-        const float qz = z0[i] - com0.z;
-
-        const float px = x1[i] - com1.x;
-        const float py = y1[i] - com1.y;
-        const float pz = z1[i] - com1.z;
-
-        const float m = mass[i];
-        mass_sum += m;
-
-        A[0][0] += m * px * qx;
-        A[0][1] += m * py * qx;
-        A[0][2] += m * pz * qx;
-        A[1][0] += m * px * qy;
-        A[1][1] += m * py * qy;
-        A[1][2] += m * pz * qy;
-        A[2][0] += m * px * qz;
-        A[2][1] += m * py * qz;
-        A[2][2] += m * pz * qz;
+        A[0][0] += w * px * qx;
+        A[0][1] += w * px * qy;
+        A[0][2] += w * px * qz;
+        A[1][0] += w * py * qx;
+        A[1][1] += w * py * qy;
+        A[1][2] += w * py * qz;
+        A[2][0] += w * pz * qx;
+        A[2][1] += w * pz * qy;
+        A[2][2] += w * pz * qz;
     }
 
     return A;
 }
 
-#if 0
 // clang-format off
-static mat3 compute_mass_weighted_cross_covariance_matrix(const float* x0, const float* y0, const float* z0,
-                                                          const float* x1, const float* y1, const float* z1,
-                                                          const float* mass, int64 count)
+static mat3 compute_weighted_covariance_matrix(const float* x, const float* y, const float* z,
+                                               const float* weight, int64 count, const vec3& com = {0,0,0})
 // clang-format on
 {
     mat3 A{0};
-    float mass_sum = 0.0f;
-    for (int64 i = 0; i < count; i++) {
-        // @TODO: Vectorize...
-        const float qx = x0[i];
-        const float qy = y0[i];
-        const float qz = z0[i];
-
-        const float px = x1[i];
-        const float py = y1[i];
-        const float pz = z1[i];
-
-        const float m = mass[i];
-        mass_sum += m;
-
-        A[0][0] += m * px * qx;
-        A[0][1] += m * py * qx;
-        A[0][2] += m * pz * qx;
-        A[1][0] += m * px * qy;
-        A[1][1] += m * py * qy;
-        A[1][2] += m * pz * qy;
-        A[2][0] += m * px * qz;
-        A[2][1] += m * py * qz;
-        A[2][2] += m * pz * qz;
-    }
-
-    return A;
-}
-#endif
-
-// clang-format off
-static mat3 compute_mass_weighted_covariance_matrix(const float* x, const float* y, const float* z,
-                                                    const float* mass, int64 count, const vec3& com)
-// clang-format on
-{
-    mat3 A{0};
-    float mass_sum = 0.0f;
     for (int64 i = 0; i < count; i++) {
         // @TODO: Vectorize...
         const float qx = x[i] - com.x;
         const float qy = y[i] - com.y;
         const float qz = z[i] - com.z;
-        const float m = mass[i];
-        mass_sum += m;
+        const float w = weight[i];
 
-        A[0][0] += m * qx * qx;
-        A[0][1] += m * qy * qx;
-        A[0][2] += m * qz * qx;
-        A[1][0] += m * qx * qy;
-        A[1][1] += m * qy * qy;
-        A[1][2] += m * qz * qy;
-        A[2][0] += m * qx * qz;
-        A[2][1] += m * qy * qz;
-        A[2][2] += m * qz * qz;
-    }
-
-    return A / mass_sum;
-}
-
-// clang-format off
-static mat3 compute_mass_weighted_covariance_matrix(const float* x, const float* y, const float* z,
-                                                    const float* mass, int64 count)
-// clang-format on
-{
-    mat3 A{0};
-    float mass_sum = 0.0f;
-    for (int64 i = 0; i < count; i++) {
-        // @TODO: Vectorize...
-        const float qx = x[i];
-        const float qy = y[i];
-        const float qz = z[i];
-        const float m = mass[i];
-        mass_sum += m;
-
-        A[0][0] += m * qx * qx;
-        A[0][1] += m * qy * qx;
-        A[0][2] += m * qz * qx;
-        A[1][0] += m * qx * qy;
-        A[1][1] += m * qy * qy;
-        A[1][2] += m * qz * qy;
-        A[2][0] += m * qx * qz;
-        A[2][1] += m * qy * qz;
-        A[2][2] += m * qz * qz;
+        A[0][0] += w * qx * qx;
+        A[0][1] += w * qx * qy;
+        A[0][2] += w * qx * qz;
+        A[1][0] += w * qy * qx;
+        A[1][1] += w * qy * qy;
+        A[1][2] += w * qy * qz;
+        A[2][0] += w * qz * qx;
+        A[2][1] += w * qz * qy;
+        A[2][2] += w * qz * qz;
     }
 
     return A;
@@ -360,7 +122,7 @@ static void compute_svd(const mat3& A, mat3& U, mat3& S, mat3& V) { svd(ARGS(A),
 
 vec3 compute_eigen_values(const float* RESTRICT x, const float* RESTRICT y, const float* RESTRICT z, const float* RESTRICT mass, int64 count) {
     const vec3 com = compute_com(x, y, z, mass, count);
-    const mat3 A = compute_mass_weighted_covariance_matrix(x, y, z, mass, count, com);
+    const mat3 A = compute_weighted_covariance_matrix(x, y, z, mass, count, com);
     vec3 vecs[3];
     vec3 vals;
     compute_eigen(A, vecs, (float(&)[3])vals);
@@ -368,10 +130,6 @@ vec3 compute_eigen_values(const float* RESTRICT x, const float* RESTRICT y, cons
 }
 
 static mat3 extract_rotation(const mat3& M) {
-    // mat3 R, S;
-    // decompose(M, &R, &S);
-    // return R;
-
     mat3 U, S, V;
     compute_svd(M, U, S, V);
 
@@ -415,10 +173,10 @@ mat3 compute_rotation(const float* x0, const float* y0, const float* z0,
     compute_direction_vectors(dx0, dy0, dz0, x0, y0, z0, count, com0);
     compute_direction_vectors(dx1, dy1, dz1, x1, y1, z1, count, com1);
 
-    const mat3 Apq = compute_mass_weighted_cross_covariance_matrix(dx0, dy0, dz0, dx1, dy1, dz1, mass, count);
-    const mat3 Aqq = compute_mass_weighted_covariance_matrix(dx0, dy0, dz0, mass, count);
+    const mat3 Apq = compute_weighted_cross_covariance_matrix(dx0, dy0, dz0, dx1, dy1, dz1, mass, count);
+    const mat3 Aqq = compute_weighted_covariance_matrix(dx0, dy0, dz0, mass, count);
 #else
-    const mat3 Apq = compute_mass_weighted_cross_covariance_matrix(x0, y0, z0, x1, y1, z1, mass, count, com0, com1);
+    const mat3 Apq = compute_weighted_cross_covariance_matrix(x0, y0, z0, x1, y1, z1, mass, count, com0, com1);
     // const mat3 Aqq = compute_mass_weighted_covariance_matrix(x0, y0, z0, mass, count);
 #endif
 
@@ -512,10 +270,14 @@ static void free_structure_data(Structure* s) {
     if (s->tracking_data.transform.rotation.hybrid) FREE(s->tracking_data.transform.rotation.hybrid);
     if (s->tracking_data.transform.com) FREE(s->tracking_data.transform.com);
     if (s->tracking_data.eigen.vectors) FREE(s->tracking_data.eigen.vectors);
-    if (s->tracking_data.eigen.value) FREE(s->tracking_data.eigen.value);
+    if (s->tracking_data.eigen.values) FREE(s->tracking_data.eigen.values);
+    if (s->tracking_data.average_structure.x) FREE(s->tracking_data.average_structure.x);
+    if (s->tracking_data.average_structure.y) FREE(s->tracking_data.average_structure.y);
+    if (s->tracking_data.average_structure.z) FREE(s->tracking_data.average_structure.z);
+    *s = {};
 }
 
-static void init_structure_data(Structure* s, ID id, int32 num_frames) {
+static void init_structure_data(Structure* s, ID id, int32 num_frames, int32 num_atoms) {
     ASSERT(s);
     free_structure_data(s);
     s->id = id;
@@ -526,7 +288,11 @@ static void init_structure_data(Structure* s, ID id, int32 num_frames) {
     s->tracking_data.transform.rotation.hybrid = (quat*)MALLOC(sizeof(quat) * num_frames);
     s->tracking_data.transform.com = (vec3*)MALLOC(sizeof(vec3) * num_frames);
     s->tracking_data.eigen.vectors = (mat3*)MALLOC(sizeof(mat3) * num_frames);
-    s->tracking_data.eigen.value = (vec3*)MALLOC(sizeof(vec3) * num_frames);
+    s->tracking_data.eigen.values = (vec3*)MALLOC(sizeof(vec3) * num_frames);
+    s->tracking_data.average_structure.atom_count = num_atoms;
+    s->tracking_data.average_structure.x = (float*)MALLOC(sizeof(float) * num_atoms);
+    s->tracking_data.average_structure.y = (float*)MALLOC(sizeof(float) * num_atoms);
+    s->tracking_data.average_structure.z = (float*)MALLOC(sizeof(float) * num_atoms);
 }
 
 static Structure* find_structure(ID id) {
@@ -708,38 +474,34 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
         return false;
     }
 
-    const int num_points = (int)bitfield::number_of_bits_set(atom_mask);
-    if (num_points == 0) {
+    const int num_atoms = (int)bitfield::number_of_bits_set(atom_mask);
+    if (num_atoms == 0) {
         LOG_ERROR("Supplied atom mask is empty.");
         return false;
     }
 
     // Allocate memory for all data
-    init_structure_data(s, id, num_frames);
+    init_structure_data(s, id, num_frames, num_atoms);
 
     // Scratch data
-    const auto mem_size = sizeof(float) * num_points * 13;
+    const auto mem_size = sizeof(float) * num_atoms * 13;
     void* mem = TMP_MALLOC(mem_size);
     defer { TMP_FREE(mem); };
     memset(mem, 0, mem_size);
 
-    float* cur_x = (float*)mem;
-    float* cur_y = cur_x + num_points;
-    float* cur_z = cur_y + num_points;
-
-    float* ref_x = cur_z + num_points;
-    float* ref_y = ref_x + num_points;
-    float* ref_z = ref_y + num_points;
-
-    float* prv_x = ref_z + num_points;
-    float* prv_y = prv_x + num_points;
-    float* prv_z = prv_y + num_points;
-
-    float* cor_x = prv_z + num_points;
-    float* cor_y = cor_x + num_points;
-    float* cor_z = cor_y + num_points;
-
-    float* mass = cor_z + num_points;
+    float* cur_x = (float*)mem + 0 * num_atoms;
+    float* cur_y = (float*)mem + 1 * num_atoms;
+    float* cur_z = (float*)mem + 2 * num_atoms;
+    float* ref_x = (float*)mem + 3 * num_atoms;
+    float* ref_y = (float*)mem + 4 * num_atoms;
+    float* ref_z = (float*)mem + 5 * num_atoms;
+    float* prv_x = (float*)mem + 6 * num_atoms;
+    float* prv_y = (float*)mem + 7 * num_atoms;
+    float* prv_z = (float*)mem + 8 * num_atoms;
+    float* cor_x = (float*)mem + 9 * num_atoms;
+    float* cor_y = (float*)mem + 10 * num_atoms;
+    float* cor_z = (float*)mem + 11 * num_atoms;
+    float* mass = (float*)mem + 12 * num_atoms;
 
     bitfield::extract_data_from_mask(ref_x, get_trajectory_position_x(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
     bitfield::extract_data_from_mask(ref_y, get_trajectory_position_y(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
@@ -753,56 +515,119 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     }
     */
 
-    const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, num_points);
+    const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, num_atoms);
     vec3 prv_com = ref_com;
     vec3 cor_com = ref_com;
     vec3 cur_com = {0, 0, 0};
 
+    float* avg_x = s->tracking_data.average_structure.x;
+    float* avg_y = s->tracking_data.average_structure.y;
+    float* avg_z = s->tracking_data.average_structure.z;
+
+    memcpy(avg_x, ref_x, num_atoms * sizeof(float));
+    memcpy(avg_y, ref_y, num_atoms * sizeof(float));
+    memcpy(avg_z, ref_z, num_atoms * sizeof(float));
+    translate(avg_x, avg_y, avg_z, num_atoms, -ref_com);
+
+    // Compute average structure
+    for (int i = 1; i < num_frames; i++) {
+        bitfield::extract_data_from_mask(cur_x, dynamic.trajectory.frame_buffer[i].atom_position.x, atom_mask, mask_offset);
+        bitfield::extract_data_from_mask(cur_y, dynamic.trajectory.frame_buffer[i].atom_position.y, atom_mask, mask_offset);
+        bitfield::extract_data_from_mask(cur_z, dynamic.trajectory.frame_buffer[i].atom_position.z, atom_mask, mask_offset);
+        cur_com = compute_com(cur_x, cur_y, cur_z, num_atoms);
+        translate(cur_x, cur_y, cur_z, num_atoms, -cur_com);
+
+        const mat3 R = extract_rotation(compute_weighted_cross_covariance_matrix(cur_x, cur_y, cur_z, avg_x, avg_y, avg_z, mass, num_atoms));
+        transform(cur_x, cur_y, cur_z, num_atoms, R);
+
+        const float w = 1.0f / (float)(i + 1);
+        for (int j = 0; j < num_atoms; j++) {
+            // Moving average
+            avg_x[j] += (cur_x[j] - avg_x[j]) * w;
+            avg_y[j] += (cur_y[j] - avg_y[j]) * w;
+            avg_z[j] += (cur_z[j] - avg_z[j]) * w;
+        }
+    }
+
+    const mat3 AVG_PCA = compute_eigen_frame(avg_x, avg_y, avg_z, mass, num_atoms).vectors;
+    //    transform(avg_x, avg_y, avg_z, num_atoms, AVG_PCA);
+
     quat q_relative = {1, 0, 0, 0};
     quat q_hybrid = {1, 0, 0, 0};
 
-    memcpy(prv_x, ref_x, num_points * sizeof(float) * 3);
+    memcpy(prv_x, ref_x, num_atoms * sizeof(float) * 3);
 
     // Set first frame explicitly
     s->tracking_data.transform.rotation.absolute[0] = {1, 0, 0, 0};
     s->tracking_data.transform.rotation.relative[0] = {1, 0, 0, 0};
     s->tracking_data.transform.rotation.hybrid[0] = {1, 0, 0, 0};
     s->tracking_data.transform.com[0] = ref_com;
-    compute_eigen(compute_mass_weighted_covariance_matrix(ref_x, ref_y, ref_z, mass, num_points, ref_com), (vec3(&)[3])s->tracking_data.eigen.vectors[0], (float(&)[3])s->tracking_data.eigen.value[0]);
+    compute_eigen(compute_weighted_covariance_matrix(ref_x, ref_y, ref_z, mass, num_atoms, ref_com), (vec3(&)[3])s->tracking_data.eigen.vectors[0], (float(&)[3])s->tracking_data.eigen.values[0]);
 
     for (int32 i = 1; i < num_frames; i++) {
-        // Copy previous frame data
-        memcpy(prv_x, cur_x, num_points * sizeof(float) * 3);
-        prv_com = cur_com;
-
         // Fetch current
-        bitfield::extract_data_from_mask(cur_x, get_trajectory_position_x(dynamic.trajectory, i).data(), atom_mask, mask_offset);
-        bitfield::extract_data_from_mask(cur_y, get_trajectory_position_y(dynamic.trajectory, i).data(), atom_mask, mask_offset);
-        bitfield::extract_data_from_mask(cur_z, get_trajectory_position_z(dynamic.trajectory, i).data(), atom_mask, mask_offset);
+        bitfield::extract_data_from_mask(cur_x, dynamic.trajectory.frame_buffer[i].atom_position.x, atom_mask, mask_offset);
+        bitfield::extract_data_from_mask(cur_y, dynamic.trajectory.frame_buffer[i].atom_position.y, atom_mask, mask_offset);
+        bitfield::extract_data_from_mask(cur_z, dynamic.trajectory.frame_buffer[i].atom_position.z, atom_mask, mask_offset);
 
-        cur_com = compute_com(cur_x, cur_y, cur_z, mass, num_points);
+        cur_com = compute_com(cur_x, cur_y, cur_z, mass, num_atoms);
 
-        const mat3 abs_mat = compute_mass_weighted_cross_covariance_matrix(ref_x, ref_y, ref_z, cur_x, cur_y, cur_z, mass, num_points, ref_com, cur_com);
-        const mat3 rel_mat = compute_mass_weighted_cross_covariance_matrix(prv_x, prv_y, prv_z, cur_x, cur_y, cur_z, mass, num_points, prv_com, cur_com);
-        const mat3 cov_mat = compute_mass_weighted_covariance_matrix(cur_x, cur_y, cur_z, mass, num_points, cur_com);
-
-        mat3 eigen_vectors;
-        vec3 eigen_values;
-        compute_eigen(cov_mat, (vec3(&)[3])eigen_vectors, (float(&)[3])eigen_values);
+        const mat3 abs_mat = compute_weighted_cross_covariance_matrix(ref_x, ref_y, ref_z, cur_x, cur_y, cur_z, mass, num_atoms, ref_com, cur_com);
+        const mat3 rel_mat = compute_weighted_cross_covariance_matrix(prv_x, prv_y, prv_z, cur_x, cur_y, cur_z, mass, num_atoms, prv_com, cur_com);
+        const mat3 cov_mat = compute_weighted_covariance_matrix(cur_x, cur_y, cur_z, mass, num_atoms, cur_com);
 
         const mat3 abs_rot = extract_rotation(abs_mat);
         const mat3 rel_rot = extract_rotation(rel_mat);
 
-        const quat q_del = math::normalize(math::quat_cast(rel_rot));
         quat q_abs = math::normalize(math::quat_cast(abs_rot));
 
         // Concatenate delta to relative transform
+        const quat q_del = math::normalize(math::quat_cast(rel_rot));
         q_relative = math::normalize(q_relative * q_del);
         quat q_rel = q_relative;
 
         // Make sure we take shortest path from previous orientation
         q_abs = math::dot(s->tracking_data.transform.rotation.absolute[i - 1], q_abs) > 0.0f ? q_abs : -q_abs;
         q_rel = math::dot(s->tracking_data.transform.rotation.relative[i - 1], q_rel) > 0.0f ? q_rel : -q_rel;
+
+        mat3 eigen_vectors;
+        vec3 eigen_values;
+        compute_eigen(cov_mat, (vec3(&)[3])eigen_vectors, (float(&)[3])eigen_values);
+        {
+            // @NOTE: ...
+
+            const auto find_max_proj = [](const vec3& ref, ArrayView<vec3> vecs) -> int {
+                int idx = 0;
+                float max = -1.0f;
+                for (int i = 0; i < vecs.size(); ++i) {
+                    const float proj = math::abs(math::dot(ref, vecs[i]));
+                    if (proj > max) {
+                        max = proj;
+                        idx = i;
+                    }
+                }
+                return idx;
+            };
+
+            const mat3 pca = s->tracking_data.eigen.vectors[0];
+            vec3 abs_pca[3] = {math::normalize(math::conjugate(q_abs) * pca[0]), math::normalize(math::conjugate(q_abs) * pca[1]), math::normalize(math::conjugate(q_abs) * pca[2])};
+            /*
+
+            int maj_idx = find_max_proj(eigen_vectors[0], {abs_pca, 3});
+            vec3 maj = abs_pca[maj_idx];
+            abs_pca[maj_idx] = abs_pca[2]; // @NOTE: Swap back
+            
+            int mid_idx = find_max_proj(eigen_vectors[1], {abs_pca, 2});
+            vec3 mid = abs_pca[mid_idx];
+            abs_pca[mid_idx] = abs_pca[1];  // @NOTE: Swap back
+
+            vec3 min = abs_pca[0];
+            */
+
+            eigen_vectors[0] = abs_pca[0];
+            eigen_vectors[1] = abs_pca[1];
+            eigen_vectors[2] = abs_pca[2];
+        }
 
 #if 0
         // Full correction of relative path
@@ -835,7 +660,7 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
         // Fixed ratio Slerp 80% relative, 20% absolute
         q_hybrid = math::normalize(math::slerp(q_hybrid * q_del, math::conjugate(q_abs), 0.2f));
         const quat q_cor = math::conjugate(q_hybrid);
-#elif 1
+#elif 0
         // Dynamic ratio Slerp
         // absolute contributes with a factor based on the cosine of the angle between the absolute and predicted orientation
         const quat q_pred = q_hybrid * q_del;
@@ -850,29 +675,50 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
 
         // const float angle = math::rad_to_deg(math::acos(math::dot(q_pred, q_ref)));
         // printf("Angle: %.2f\n", angle);
-#elif 0
+#elif 1
         // Partial correction based on geometric anisotropy
-        const float denom = 1.0f / (eigen_values[0] + eigen_values[1] + eigen_values[2]);
-        const float cl = (eigen_values[0] - eigen_values[1]) * denom;
-        const float cp = 2.0f * (eigen_values[1] - eigen_values[2]) * denom;
-        const float cs = 3.0f * eigen_values[2] * denom;
+        // Align relative to absolute PCA axes based on shape.
+        // If linear    -> Align with PCA[0]
+        // If planar    -> Align with PCA[0] and PCA[1]
+        // If spherical -> Align with Absolute
+        const vec3 ev = s->tracking_data.eigen.values[0];
+        const float denom = 1.0f / (ev[0] + ev[1] + ev[2]);
+        const float cl = (ev[0] - ev[1]) * denom;
+        const float cp = 2.0f * (ev[1] - ev[2]) * denom;
+        const float cs = 3.0f * ev[2] * denom;
 
-        const vec3 w = {cl + cp + cs, cp + cs, cs};
+        const mat3 pca = s->tracking_data.eigen.vectors[0];
 
-        const mat3 pca = eigen_vectors;
-        const mat3 M_abs = math::mat3_cast(q_abs);
+        quat q = q_hybrid * q_del;
 
-        const mat3 M_rel = math::mat3_cast(q_rel);
-        const vec3 v_src = math::normalize(math::inverse(M_rel) * pca[0]);
-        const vec3 v_dst = math::normalize(math::inverse(M_abs) * pca[0]);
+        const float w0 = cl;
+        const float w1 = cp * math::abs(math::dot(math::conjugate(q_abs) * pca[1], eigen_vectors[1]));
+        const float w2 = 1.0f - w0 - w1;
 
-        // Align on axis 0:
-        float d = math::dot(v_src, v_dst);
-        const float rot_angle = math::acos(d);
-        const vec3 rot_axis = math::normalize(math::cross(v_src, v_dst));
-        const quat q_corr = math::angle_axis(rot_angle, rot_axis);
-        const quat q = math::normalize(q_corr * q_rel);
+        // Align with Major
+        {
+            const vec3 vec = math::normalize(eigen_vectors[0]);
+            const vec3 v_dst = math::normalize(math::conjugate(q) * pca[0]);
+            const vec3 v_src = math::dot(vec, v_dst) > 0.0f ? vec : -vec;
+            const quat q_cor = math::two_direction_vectors(math::normalize(v_src), math::normalize(v_dst));
+            q = math::slerp(q, q * q_cor, w0);
+        }
+
+        // Align with Mid
+        {
+            const vec3 vec = math::normalize(eigen_vectors[1]);
+            const vec3 v_dst = math::normalize(math::conjugate(q) * pca[1]);
+            const vec3 v_src = math::dot(vec, v_dst) > 0.0f ? vec : -vec;
+            const quat q_cor = math::two_direction_vectors(math::normalize(v_src), math::normalize(v_dst));
+            q = math::slerp(q, q * q_cor, w1);
+        }
+
+        // Align with Absolute
+        { q = math::slerp(q, q_abs, w2); }
+
+        q = math::normalize(q);
         const quat q_hyb = math::dot(s->tracking_data.transform.rotation.hybrid[i - 1], q) > 0.0f ? q : -q;
+        q_hybrid = q_hyb;
 #else
         // Always go with Shortest path (absolute or prediction)
         // Result -> Bad
@@ -889,12 +735,17 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
         }
         const quat q_cor = q_hybrid;
 #endif
+        // Store results
         s->tracking_data.transform.rotation.absolute[i] = q_abs;
         s->tracking_data.transform.rotation.relative[i] = q_rel;
         s->tracking_data.transform.rotation.hybrid[i] = q_hyb;
         s->tracking_data.transform.com[i] = cur_com;
         s->tracking_data.eigen.vectors[i] = eigen_vectors;
-        s->tracking_data.eigen.value[i] = eigen_values;
+        s->tracking_data.eigen.values[i] = eigen_values;
+
+        // Copy previous frame data
+        memcpy(prv_x, cur_x, num_atoms * sizeof(float) * 3);
+        prv_com = cur_com;
     }
 
     const auto ext = get_trajectory_frame(dynamic.trajectory, 0).box * vec3(1, 1, 1);
@@ -912,7 +763,7 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     if (ext[i[0]] < ext[i[1]]) swap(i[0], i[1]);
 
     const mat3 M = mat3(I[i[0]], I[i[1]], I[i[2]]);
-    s->tracking_data.simulation_box_aligned_pca = M * s->tracking_data.eigen.vectors[0];
+    s->tracking_data.simulation_box_aligned_pca = M * math::transpose(s->tracking_data.eigen.vectors[0]);
     s->tracking_data.pca = s->tracking_data.eigen.vectors[0];
 
     return true;

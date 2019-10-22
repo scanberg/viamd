@@ -182,6 +182,7 @@ struct MainFramebuffer {
 
 struct MoleculeBuffers {
     GLuint position = 0;
+    GLuint old_position = 0;
     GLuint velocity = 0;
     GLuint radius = 0;
     GLuint selection = 0;
@@ -694,7 +695,7 @@ static void draw_distribution_window(ApplicationData* data);
 static void draw_ramachandran_window(ApplicationData* data);
 static void draw_atom_info_window(const MoleculeStructure& mol, int atom_range, int x, int y);
 static void draw_async_info(ApplicationData* data);
-static void draw_reference_frames_window(ApplicationData* data);
+static void draw_reference_frame_window(ApplicationData* data);
 static void draw_shape_space_window(ApplicationData* data);
 static void draw_density_volume_window(ApplicationData* data);
 static void draw_density_volume_clip_plane_widgets(ApplicationData* data);
@@ -848,7 +849,7 @@ int main(int, char**) {
 #endif
     reset_view(&data, true);
     // create_representation(&data, RepresentationType::Vdw, ColorMapping::ResIndex, "not water");
-    create_representation(&data, RepresentationType::Vdw, ColorMapping::ResIndex, "residue 16");
+    create_representation(&data, RepresentationType::Vdw, ColorMapping::ResIndex, "not water");
 
     init_density_volume(&data);
 
@@ -1128,6 +1129,23 @@ int main(int, char**) {
                     superimpose_ensemble(&data);
                 }
 
+#if 0
+                if (const auto ref = get_active_reference_frame(&data)) {
+                    if (const auto tracking_data = structure_tracking::get_tracking_data(ref->id)) {
+                        const vec3 com = ref->basis[3];
+                        int idx = 0;
+                        for (int i = 0; i < ref->atom_mask.size(); i++) {
+                            if (ref->atom_mask[i]) {
+                                data.dynamic.molecule.atom.position.x[i] = com.x + tracking_data->average_structure.x[idx];
+                                data.dynamic.molecule.atom.position.y[i] = com.y + tracking_data->average_structure.y[idx];
+                                data.dynamic.molecule.atom.position.z[i] = com.z + tracking_data->average_structure.z[idx];
+                                idx++;
+                            }
+                        }
+                    }
+                }
+#endif
+
                 data.gpu_buffers.dirty.position = true;
                 data.gpu_buffers.dirty.velocity = true;
             }
@@ -1211,6 +1229,10 @@ int main(int, char**) {
                                               data.gpu_buffers.backbone.num_control_point_indices);
             }
         }
+        POP_GPU_SECTION()
+
+        PUSH_GPU_SECTION("Update Buffers")
+        copy_molecule_data_to_buffers(&data);
         POP_GPU_SECTION()
 
         {
@@ -1352,31 +1374,17 @@ int main(int, char**) {
                 for (const auto& ref : data.reference_frame.frames) {
                     if (ref.show) {
                         const mat4 B = ref.basis;
-                        // immediate::draw_basis(B, 4.0f);
-                        // immediate::draw_plane_wireframe(B[3], B[0], B[1], immediate::COLOR_BLACK);
 
                         const auto tracking_data = structure_tracking::get_tracking_data(ref.id);
-                        if (ref.id) {
-                            const mat3 pca = ref.pca;
-                            const mat3 M_abs = math::mat3_cast(tracking_data->transform.rotation.absolute[data.playback.frame]);
-                            const mat3 M_rel = math::mat3_cast(tracking_data->transform.rotation.relative[data.playback.frame]);
-                            const vec3 v_src = math::normalize(pca[0]);
-                            const vec3 v_dst = math::normalize(M_abs * math::inverse(M_rel) * pca[0]);
-
-                            float d = math::dot(v_src, v_dst);
-                            const float rot_angle = math::acos(d);
-                            const vec3 rot_axis = math::cross(v_src, v_dst);
-
-                            //immediate::draw_line(B[3], vec3(B[3]) + v_src * 2.0f, immediate::COLOR_BLUE);
-                            //immediate::draw_line(B[3], vec3(B[3]) + v_dst * 2.0f, immediate::COLOR_RED);
+                        if (tracking_data) {
+                            const mat3 pca = tracking_data->eigen.vectors[data.playback.frame];
+                            immediate::draw_line(B[3], vec3(B[3]) + pca[0] * 2.0f, immediate::COLOR_RED);
+                            immediate::draw_line(B[3], vec3(B[3]) + pca[1] * 2.0f, immediate::COLOR_GREEN);
+                            immediate::draw_line(B[3], vec3(B[3]) + pca[2] * 2.0f, immediate::COLOR_BLUE);
                         }
 
-                        // Align on axis 0:
-
-                        immediate::draw_line(B[3], vec3(B[3]) + ref.pca[0] * 3.0f, immediate::COLOR_RED);
-                        immediate::draw_line(B[3], vec3(B[3]) + ref.pca[1] * 3.0f, immediate::COLOR_GREEN);
-                        immediate::draw_line(B[3], vec3(B[3]) + ref.pca[2] * 3.0f, immediate::COLOR_BLUE);
-
+                        //immediate::draw_basis(B, 4.0f);
+                        //immediate::draw_plane_wireframe(B[3], B[0], B[1], immediate::COLOR_BLACK);
                     }
                 }
 
@@ -1624,7 +1632,7 @@ int main(int, char**) {
         if (data.statistics.show_timeline_window) draw_timeline_window(&data);
         if (data.statistics.show_distribution_window) draw_distribution_window(&data);
         if (data.ramachandran.show_window) draw_ramachandran_window(&data);
-        if (data.reference_frame.show_window) draw_reference_frames_window(&data);
+        if (data.reference_frame.show_window) draw_reference_frame_window(&data);
         if (data.shape_space.show_window) draw_shape_space_window(&data);
         if (data.density_volume.show_window) draw_density_volume_window(&data);
         if (data.density_volume.enabled) draw_density_volume_clip_plane_widgets(&data);
@@ -1645,10 +1653,6 @@ int main(int, char**) {
 
         // Swap buffers
         platform::swap_buffers(&data.ctx);
-
-        PUSH_GPU_SECTION("Update Buffers")
-        copy_molecule_data_to_buffers(&data);
-        POP_GPU_SECTION()
     }
 
     data.async.trajectory.sync.signal_stop_and_wait();
@@ -1737,7 +1741,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 
     const float dt = 1.0f;
     if (pbc) {
-        apply_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.mass, mol.sequences, box);
+        // apply_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.mass, mol.sequences, box);
         compute_velocities_pbc(mol.atom.velocity.x, mol.atom.velocity.y, mol.atom.velocity.z, old_pos_x, old_pos_y, old_pos_z, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z,
                                mol.atom.count, dt, box);
     } else {
@@ -2777,7 +2781,7 @@ static void draw_representations_window(ApplicationData* data) {
     // data->representations.changed = (new_hash != old_hash);
 }
 
-static void draw_reference_frames_window(ApplicationData* data) {
+static void draw_reference_frame_window(ApplicationData* data) {
     ImGui::Begin("Reference Frames", &data->reference_frame.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
     if (ImGui::Button("create new")) {
         create_reference_frame(data);
@@ -3863,6 +3867,7 @@ static void draw_shape_space_window(ApplicationData* data) {
     float mouse_hover_d2 = FLT_MAX;
     int mouse_hover_idx = -1;
     vec3 mouse_hover_ev = {0, 0, 0};
+    vec3 mouse_hover_w = {0, 0, 0};
 
     if (reference_frame_valid) {
         const vec3 base_line_color = {0.15f, 0.15f, 0.15f};
@@ -3884,7 +3889,7 @@ static void draw_shape_space_window(ApplicationData* data) {
 
         if (tracking_data) {
             const int32 N = (int32)tracking_data->count;
-            const vec3* eigen_values = tracking_data->eigen.value;
+            const vec3* eigen_values = tracking_data->eigen.values;
 
             const auto compute_shape_space_weights = [](const vec3& ev) -> vec3 {
                 const float l_sum = ev[0] + ev[1] + ev[2];
@@ -3898,7 +3903,8 @@ static void draw_shape_space_window(ApplicationData* data) {
             const vec2 p[3] = {vec_cast(tri_a), vec_cast(tri_b), vec_cast(tri_c)};
             for (int32 i = 0; i < N; i++) {
                 const vec3 ev = eigen_values[i];
-                const ImVec2 coord = vec_cast(math::barycentric_to_cartesian(p[0], p[1], p[2], compute_shape_space_weights(ev)));
+                const vec3 w = compute_shape_space_weights(ev);
+                const ImVec2 coord = vec_cast(math::barycentric_to_cartesian(p[0], p[1], p[2], w));
 
                 const bool in_range = frame_range.x <= i && i <= frame_range.y;
                 const bool selected = i == data->playback.frame;
@@ -3923,6 +3929,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                         mouse_hover_d2 = d2;
                         mouse_hover_idx = i;
                         mouse_hover_ev = ev;
+                        mouse_hover_w = w;
                     }
                 }
             }
@@ -3954,6 +3961,7 @@ static void draw_shape_space_window(ApplicationData* data) {
             data->playback.time = (float)mouse_hover_idx;
         }
         ImGui::Text(u8"\u03BB: (%.2f, %.2f, %.2f)", mouse_hover_ev.x, mouse_hover_ev.y, mouse_hover_ev.z);
+        ImGui::Text(u8"\u03B1: %1.2f, \u03B2: %1.2f, \u03B3: %1.2f", mouse_hover_w.x, mouse_hover_w.y, mouse_hover_w.z);
         ImGui::EndTooltip();
     }
 
@@ -4447,6 +4455,7 @@ static void init_molecule_buffers(ApplicationData* data) {
     const int64 spline_buffer_size = control_point_buffer_size * SPLINE_SUBDIVISION_COUNT;
 
     if (!data->gpu_buffers.position) glGenBuffers(1, &data->gpu_buffers.position);
+    if (!data->gpu_buffers.old_position) glGenBuffers(1, &data->gpu_buffers.old_position);
     if (!data->gpu_buffers.velocity) glGenBuffers(1, &data->gpu_buffers.velocity);
     if (!data->gpu_buffers.radius) glGenBuffers(1, &data->gpu_buffers.radius);
     if (!data->gpu_buffers.bond) glGenBuffers(1, &data->gpu_buffers.bond);
@@ -4458,6 +4467,9 @@ static void init_molecule_buffers(ApplicationData* data) {
     if (!data->gpu_buffers.backbone.spline_index) glGenBuffers(1, &data->gpu_buffers.backbone.spline_index);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.position);
+    glBufferData(GL_ARRAY_BUFFER, position_buffer_size, NULL, GL_DYNAMIC_DRAW);
+
+    glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.old_position);
     glBufferData(GL_ARRAY_BUFFER, position_buffer_size, NULL, GL_DYNAMIC_DRAW);
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.velocity);
@@ -4500,6 +4512,10 @@ static void free_molecule_buffers(ApplicationData* data) {
     if (data->gpu_buffers.position) {
         glDeleteBuffers(1, &data->gpu_buffers.position);
         data->gpu_buffers.position = 0;
+    }
+    if (data->gpu_buffers.old_position) {
+        glDeleteBuffers(1, &data->gpu_buffers.old_position);
+        data->gpu_buffers.old_position = 0;
     }
     if (data->gpu_buffers.velocity) {
         glDeleteBuffers(1, &data->gpu_buffers.velocity);
@@ -5427,8 +5443,6 @@ static void update_reference_frames(ApplicationData* data) {
     const int n1 = math::min(frame + 1, last_frame);
     const int n2 = math::min(frame + 2, last_frame);
 
-    const mat3 box = get_trajectory_frame(traj, frame).box;
-
     const InterpolationMode mode = (p1 != n1) ? data->playback.interpolation : InterpolationMode::Nearest;
 
     for (auto& ref : data->reference_frame.frames) {
@@ -5462,11 +5476,8 @@ static void update_reference_frames(ApplicationData* data) {
             bitfield::extract_data_from_mask(current_y, mol.atom.position.y, ref.atom_mask);
             bitfield::extract_data_from_mask(current_z, mol.atom.position.z, ref.atom_mask);
 
-            ASSERT(count == masked_count);
-
             const vec3 frame_com = compute_com(frame_x, frame_y, frame_z, weight, masked_count);
             const vec3 current_com = compute_com(current_x, current_y, current_z, weight, masked_count);
-            const vec3 box_c = box * vec3(0.5f);
 
             const quat* rot_data = nullptr;
             switch (ref.tracking_mode) {
@@ -5489,18 +5500,27 @@ static void update_reference_frames(ApplicationData* data) {
                                 rot_data[p1],
                                 rot_data[n1],
                                 rot_data[n2] };
+
+            const vec3 box[4] = { get_trajectory_frame(traj, p2).box * vec3(0.5f),
+                                  get_trajectory_frame(traj, p1).box * vec3(0.5f),
+                                  get_trajectory_frame(traj, n1).box * vec3(0.5f),
+                                  get_trajectory_frame(traj, n2).box * vec3(0.5f) };
             // clang-format on
 
+            vec3 box_c;
             mat4 R;
             switch (mode) {
                 case InterpolationMode::Nearest:
                     R = math::mat4_cast(t < 0.5f ? q[1] : q[2]);
+                    box_c = t < 0.5f ? box[1] : box[2];
                     break;
                 case InterpolationMode::Linear:
                     R = math::mat4_cast(math::slerp(q[1], q[2], t));
+                    box_c = math::lerp(box[1], box[2], t);
                     break;
                 case InterpolationMode::Cubic:
                     R = math::mat4_cast(math::cubic_slerp(q[0], q[1], q[2], q[3], t));
+                    box_c = math::cubic_spline(box[0], box[1], box[2], box[3], t);
                     break;
                 default:
                     ASSERT(false);
@@ -5508,6 +5528,7 @@ static void update_reference_frames(ApplicationData* data) {
 
             const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-current_com, 1));
             const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(box_c, 1));
+            const mat4 R_inv = math::transpose(R);
 
             const mat4 PCA = tracking_data->simulation_box_aligned_pca;
 
@@ -5540,7 +5561,7 @@ static void superimpose_ensemble(ApplicationData* data) {
     const int p1 = math::max(0, frame);
     const int n1 = math::min(frame + 1, last_frame);
     const int n2 = math::min(frame + 2, last_frame);
-    const mat3 box = get_trajectory_frame(traj, frame).box;
+
     const InterpolationMode mode = (p1 != n1) ? data->playback.interpolation : InterpolationMode::Nearest;
     const Bitfield atom_mask = data->ensemble_tracking.atom_mask;
 
@@ -5578,7 +5599,6 @@ static void superimpose_ensemble(ApplicationData* data) {
 
             const vec3 frame_com = compute_com(frame_x, frame_y, frame_z, weight, masked_count);
             const vec3 current_com = compute_com(current_x, current_y, current_z, weight, masked_count);
-            const vec3 box_c = box * vec3(0.5f);
             const quat* rot_data = tracking_data->transform.rotation.hybrid;
 
             // clang-format off
@@ -5586,18 +5606,27 @@ static void superimpose_ensemble(ApplicationData* data) {
                                 rot_data[p1],
                                 rot_data[n1],
                                 rot_data[n2] };
+
+            const vec3 box[4] = { get_trajectory_frame(traj, p2).box * vec3(0.5f),
+                                  get_trajectory_frame(traj, p1).box * vec3(0.5f),
+                                  get_trajectory_frame(traj, n1).box * vec3(0.5f),
+                                  get_trajectory_frame(traj, n2).box * vec3(0.5f) };
             // clang-format on
 
+            vec3 box_c;
             mat4 R;
             switch (mode) {
                 case InterpolationMode::Nearest:
                     R = math::mat4_cast(t < 0.5f ? q[1] : q[2]);
+                    box_c = t < 0.5f ? box[1] : box[2];
                     break;
                 case InterpolationMode::Linear:
                     R = math::mat4_cast(math::slerp(q[1], q[2], t));
+                    box_c = math::lerp(box[1], box[2], t);
                     break;
                 case InterpolationMode::Cubic:
                     R = math::mat4_cast(math::cubic_slerp(q[0], q[1], q[2], q[3], t));
+                    box_c = math::cubic_spline(box[0], box[1], box[2], box[3], t);
                     break;
                 default:
                     ASSERT(false);

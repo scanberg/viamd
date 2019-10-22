@@ -30,8 +30,15 @@ struct TrackingData {
     } transform;
     struct {
         mat3* vectors = nullptr;
-        vec3* value = nullptr;
+        vec3* values = nullptr;
     } eigen;
+
+    struct {
+        int atom_count = 0;
+        float* x = nullptr;
+        float* y = nullptr;
+        float* z = nullptr;
+    } average_structure;
 
     mat3 simulation_box_aligned_pca = {};
     mat3 pca = {};
