@@ -508,6 +508,7 @@ struct ApplicationData {
         Bitfield atom_mask;
         DynamicArray<EnsembleStructure> structures;
         bool superimpose_structures = false;
+        TrackingMode tracking_mode = TrackingMode::Hybrid;
     } ensemble_tracking;
 
     // --- RAMACHANDRAN ---
@@ -837,8 +838,10 @@ int main(int, char**) {
     // load_molecule_data(&data, VIAMD_DATA_DIR "/1ALA-250ns-2500frames.pdb");
     // load_molecule_data(&data, VIAMD_DATA_DIR "/amyloid/centered.gro");
     // load_molecule_data(&data, VIAMD_DATA_DIR "/amyloid/centered.xtc");
-    load_molecule_data(&data, "D:/md/6T-water/16-6T-box.gro");
-    load_molecule_data(&data, "D:/md/6T-water/16-6T-box-md-npt.xtc");
+    load_molecule_data(&data, "D:/data/md/6T-water/16-6T-box.gro");
+    load_molecule_data(&data, "D:/data/md/6T-water/16-6T-box-md-npt.xtc");
+    // load_molecule_data(&data, "D:/data/md/p-ftaa-water/p-FTAA-box-sol-ions-em.gro");
+    // load_molecule_data(&data, "D:/data/md/p-ftaa-water/p-FTAA-box-sol-ions-md-npt.xtc");
 
     // create_reference_frame(&data, "dna", "dna");
     create_reference_frame(&data, "res16", "residue 16");
@@ -1383,8 +1386,8 @@ int main(int, char**) {
                             immediate::draw_line(B[3], vec3(B[3]) + pca[2] * 2.0f, immediate::COLOR_BLUE);
                         }
 
-                        //immediate::draw_basis(B, 4.0f);
-                        //immediate::draw_plane_wireframe(B[3], B[0], B[1], immediate::COLOR_BLACK);
+                        // immediate::draw_basis(B, 4.0f);
+                        // immediate::draw_plane_wireframe(B[3], B[0], B[1], immediate::COLOR_BLACK);
                     }
                 }
 
@@ -3980,7 +3983,7 @@ static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const Mol
         const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-com, 1));
         const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(half_box, 1));
         // const mat4 M = volume_world_to_texture * math::transpose(R) * T_com;
-        const mat4 M = world_to_volume_texture * T_box * rotation * math::transpose(R) * T_com;
+        const mat4 M = world_to_volume_texture * T_box * rotation * R * T_com;
 
         // @TODO: Replace when proper iterators are implemented for bitfield.
         for (int64 i = 0; i < atom_mask.size(); i++) {
@@ -4074,7 +4077,8 @@ static void draw_density_volume_window(ApplicationData* data) {
         ImGui::Separator();
         ImGui::Text("Ensemble Density");
         if (!data->ensemble_tracking.structures.empty()) {
-            ImGui::Checkbox("Superimpose structures", &data->ensemble_tracking.superimpose_structures);
+            ImGui::Checkbox("Superimpose ensemble", &data->ensemble_tracking.superimpose_structures);
+            ImGui::Combo("Tracking mode", (int*)(&data->ensemble_tracking.tracking_mode), "Absolute\0Relative\0hybrid\0\0");
         }
 
         if (ImGui::Button("Compute New", button_size)) {
@@ -4186,6 +4190,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                     bitfield::extract_data_from_mask(mass, mol.atom.mass, ensemble_mask, ensemble_structures[0].offset);
                     const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, atom_count);
                     const mat3 PCA = structure_tracking::get_tracking_data(ensemble_structures[0].id)->simulation_box_aligned_pca;
+                    //const mat3 PCA = mat3(1);
 
                     ensemble_structures[0].alignment_matrix = PCA;
                     for (int64 i = 1; i < ensemble_structures.size(); i++) {
@@ -4194,7 +4199,8 @@ static void draw_density_volume_window(ApplicationData* data) {
                         bitfield::extract_data_from_mask(y, frame0.atom_position.y, ensemble_mask, structure.offset);
                         bitfield::extract_data_from_mask(z, frame0.atom_position.z, ensemble_mask, structure.offset);
                         const vec3 com = compute_com(x, y, z, mass, atom_count);
-                        structure.alignment_matrix = PCA * structure_tracking::compute_rotation(x, y, z, ref_x, ref_y, ref_z, mass, atom_count, com, ref_com);
+                        const mat3 R = structure_tracking::compute_rotation(x, y, z, ref_x, ref_y, ref_z, mass, atom_count, com, ref_com);
+                        structure.alignment_matrix = PCA * math::transpose(R);
                     }
 
                     if (bitfield::number_of_bits_set(filter_mask) > 0) {
@@ -4721,6 +4727,7 @@ static void load_molecule_data(ApplicationData* data, CStringView file) {
         LOG_NOTE("Loading molecular data from file '%.*s'...", file.count, file.ptr);
         auto t0 = platform::get_time();
         if (compare_ignore_case(ext, "pdb")) {
+            data->async.trajectory.sync.signal_stop_and_wait();
             free_molecule_data(data);
             free_trajectory_data(data);
             if (!pdb::load_molecule_from_file(&data->dynamic.molecule, file)) {
@@ -4736,6 +4743,7 @@ static void load_molecule_data(ApplicationData* data, CStringView file) {
                 init_trajectory_data(data);
             }
         } else if (compare_ignore_case(ext, "gro")) {
+            data->async.trajectory.sync.signal_stop_and_wait();
             free_molecule_data(data);
             free_trajectory_data(data);
             if (!gro::load_molecule_from_file(&data->dynamic.molecule, file)) {
@@ -4751,6 +4759,7 @@ static void load_molecule_data(ApplicationData* data, CStringView file) {
                 LOG_ERROR("ERROR! Must have molecule structure before trajectory can be loaded.");
                 return;
             }
+            data->async.trajectory.sync.signal_stop_and_wait();
             free_trajectory_data(data);
             if (!xtc::init_trajectory_from_file(&data->dynamic.trajectory, (int32)data->dynamic.molecule.atom.count, file)) {
                 LOG_ERROR("ERROR! Problem loading trajectory.");
@@ -5599,7 +5608,22 @@ static void superimpose_ensemble(ApplicationData* data) {
 
             const vec3 frame_com = compute_com(frame_x, frame_y, frame_z, weight, masked_count);
             const vec3 current_com = compute_com(current_x, current_y, current_z, weight, masked_count);
-            const quat* rot_data = tracking_data->transform.rotation.hybrid;
+
+            const quat* rot_data = nullptr;
+            switch (data->ensemble_tracking.tracking_mode) {
+                case TrackingMode::Absolute:
+                    rot_data = tracking_data->transform.rotation.absolute;
+                    break;
+                case TrackingMode::Relative:
+                    rot_data = tracking_data->transform.rotation.relative;
+                    break;
+                case TrackingMode::Hybrid:
+                    rot_data = tracking_data->transform.rotation.hybrid;
+                    break;
+                default:
+                    ASSERT(false);
+                    break;
+            }
 
             // clang-format off
             const quat q[4] = { rot_data[p2],
@@ -5698,10 +5722,15 @@ static void load_trajectory_async(ApplicationData* data) {
                 on_trajectory_frame_loaded(data, data->dynamic.trajectory.num_frames - 1);
                 if (data->async.trajectory.sync.stop_signal) break;
             }
+
+            // @NOTE: Were we interrupted by user?
+            if (!data->async.trajectory.sync.stop_signal) {
+                on_trajectory_load_complete(data);
+            }
+
+            data->async.trajectory.fraction = 0;
             data->async.trajectory.sync.running = false;
             data->async.trajectory.sync.stop_signal = false;
-
-            on_trajectory_load_complete(data);
         });
         data->async.trajectory.sync.thread.detach();
     }

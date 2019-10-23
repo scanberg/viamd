@@ -681,7 +681,7 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
         // If linear    -> Align with PCA[0]
         // If planar    -> Align with PCA[0] and PCA[1]
         // If spherical -> Align with Absolute
-        const vec3 ev = s->tracking_data.eigen.values[0];
+        const vec3 ev = eigen_values;
         const float denom = 1.0f / (ev[0] + ev[1] + ev[2]);
         const float cl = (ev[0] - ev[1]) * denom;
         const float cp = 2.0f * (ev[1] - ev[2]) * denom;
