@@ -266,6 +266,25 @@ void shutdown() {
 }
 }  // namespace backbone_spline
 
+namespace pbc_view_velocity {
+static GLuint program = 0;
+void initialize() {
+    GLuint v_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/compute_pbc_view_velocity.vert", GL_VERTEX_SHADER);
+    defer {
+        glDeleteShader(v_shader);
+    };
+
+    const GLuint shaders[] = {v_shader};
+    const GLchar* feedback_varyings[] = {"out_view_velocity"};
+    if (!program) program = glCreateProgram();
+    gl::attach_link_detach_with_transform_feedback(program, shaders, feedback_varyings, GL_INTERLEAVED_ATTRIBS);
+}
+
+void shutdown() {
+    if (program) glDeleteProgram(program);
+}
+}  // namespace pbc_view_velocity
+
 namespace lean_and_mean {
 namespace vdw {
 static GLuint program = 0;
@@ -418,11 +437,11 @@ void shutdown() {
     lean_and_mean::ribbon::shutdown();
 }
 
-void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_velocity_buffer, int32 atom_count, const ViewParam& view_param, float radius_scale) {
+void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_view_velocity_buffer, int32 atom_count, const ViewParam& view_param, float radius_scale) {
     ASSERT(glIsBuffer(atom_position_buffer));
     ASSERT(glIsBuffer(atom_radius_buffer));
     ASSERT(glIsBuffer(atom_color_buffer));
-    ASSERT(glIsBuffer(atom_velocity_buffer));
+    ASSERT(glIsBuffer(atom_old_position_buffer));
 
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, atom_position_buffer);
@@ -437,7 +456,7 @@ void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint ato
     glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(AtomColor), (const GLvoid*)0);
     glEnableVertexAttribArray(2);
 
-    glBindBuffer(GL_ARRAY_BUFFER, atom_velocity_buffer);
+    glBindBuffer(GL_ARRAY_BUFFER, atom_view_velocity_buffer);
     glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(AtomVelocity), (const GLvoid*)0);
     glEnableVertexAttribArray(3);
 
@@ -557,6 +576,33 @@ void compute_backbone_spline(GLuint dst_buffer, GLuint control_point_buffer, GLu
     glUseProgram(0);
 
     glDisable(GL_PRIMITIVE_RESTART);
+    glDisable(GL_RASTERIZER_DISCARD);
+}
+
+void compute_pbc_view_velocity(GLuint dst_buffer, GLuint position_buffer, GLuint old_position_buffer, int count, const ViewParam& view_param, const vec3& box_ext) {
+    glEnable(GL_RASTERIZER_DISCARD);
+
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, position_buffer);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(AtomPosition), (const GLvoid*)0);
+
+    glBindBuffer(GL_ARRAY_BUFFER, old_position_buffer);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(AtomPosition), (const GLvoid*)0);
+
+    glUseProgram(pbc_view_velocity::program);
+
+    glUniformMatrix4fv(glGetUniformLocation(pbc_view_velocity::program, "u_view_mat"), 1, GL_FALSE, &view_param.matrix.current.view[0][0]);
+    glUniform3fv(glGetUniformLocation(pbc_view_velocity::program, "u_box_ext"), 1, &box_ext[0]);
+
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, dst_buffer);
+    glBeginTransformFeedback(GL_POINTS);
+    glDrawArrays(GL_POINTS, 0, count);
+    glEndTransformFeedback();
+
+    glUseProgram(0);
+
     glDisable(GL_RASTERIZER_DISCARD);
 }
 

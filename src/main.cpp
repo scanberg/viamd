@@ -455,6 +455,7 @@ struct ApplicationData {
     struct {
         bool enabled = false;
         vec4 color = vec4(0, 0, 0, 0.5);
+        vec3 extent = vec3(0, 0, 0);
     } simulation_box;
 
     struct {
@@ -708,6 +709,8 @@ static void destroy_framebuffer(MainFramebuffer* fbo);
 static void init_molecule_buffers(ApplicationData* data);
 static void free_molecule_buffers(ApplicationData* data);
 
+static void clear_buffer(GLuint buffer);
+static void copy_buffer(GLuint dst_buffer, GLuint src_buffer);
 static void copy_molecule_data_to_buffers(ApplicationData* data);
 
 static void init_molecule_data(ApplicationData* data);
@@ -1170,6 +1173,7 @@ int main(int, char**) {
         } else {
             static auto prev_time = data.playback.time;
             if (data.playback.time != prev_time) {
+                copy_buffer(data.gpu_buffers.old_position, data.gpu_buffers.position);
                 memset(data.dynamic.molecule.atom.velocity.x, 0, data.dynamic.molecule.atom.count * sizeof(float));
                 memset(data.dynamic.molecule.atom.velocity.y, 0, data.dynamic.molecule.atom.count * sizeof(float));
                 memset(data.dynamic.molecule.atom.velocity.z, 0, data.dynamic.molecule.atom.count * sizeof(float));
@@ -1272,6 +1276,10 @@ int main(int, char**) {
 
             param.matrix.current.norm = math::transpose(param.matrix.inverse.view);
         }
+
+        PUSH_GPU_SECTION("Compute View Velocity")
+        draw::compute_pbc_view_velocity(data.gpu_buffers.velocity, data.gpu_buffers.position, data.gpu_buffers.old_position, data.dynamic.molecule.atom.count, data.view.param, data.simulation_box.extent);
+        POP_GPU_SECTION()
 
         const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3, GL_COLOR_ATTACHMENT4, GL_COLOR_ATTACHMENT5};
 
@@ -1698,10 +1706,33 @@ static void interpolate_atomic_positions(ApplicationData* data) {
     const int prev_frame_1 = math::max(0, frame);
     const int next_frame_1 = math::min(frame + 1, last_frame);
     const int next_frame_2 = math::min(frame + 2, last_frame);
-    const mat3& box = get_trajectory_frame(traj, frame).box;
+
+    const mat3 boxes[4] = {
+        get_trajectory_frame(traj, prev_frame_2).box,
+        get_trajectory_frame(traj, prev_frame_1).box,
+        get_trajectory_frame(traj, next_frame_1).box,
+        get_trajectory_frame(traj, next_frame_2).box,
+    };
 
     const InterpolationMode mode = (prev_frame_1 != next_frame_1) ? data->playback.interpolation : InterpolationMode::Nearest;
+
+    mat3 box;
+    switch (mode) {
+        case InterpolationMode::Nearest:
+            box = boxes[1];
+            break;
+        case InterpolationMode::Linear:
+            box = math::lerp(boxes[1], boxes[2], t);
+            break;
+        case InterpolationMode::Cubic:
+            box = math::cubic_spline(boxes[0], boxes[1], boxes[2], boxes[3], t);
+            break;
+        default:
+            ASSERT(false);
+    }
+
     const bool pbc = box != mat3(0, 0, 0, 0, 0, 0, 0, 0, 0);
+    data->simulation_box.extent = box * vec3(1, 1, 1);
 
     switch (mode) {
         case InterpolationMode::Nearest: {
@@ -4190,7 +4221,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                     bitfield::extract_data_from_mask(mass, mol.atom.mass, ensemble_mask, ensemble_structures[0].offset);
                     const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, atom_count);
                     const mat3 PCA = structure_tracking::get_tracking_data(ensemble_structures[0].id)->simulation_box_aligned_pca;
-                    //const mat3 PCA = mat3(1);
+                    // const mat3 PCA = mat3(1);
 
                     ensemble_structures[0].alignment_matrix = PCA;
                     for (int64 i = 1; i < ensemble_structures.size(); i++) {
@@ -4561,6 +4592,24 @@ static void free_molecule_buffers(ApplicationData* data) {
     }
 }
 
+static void clear_buffer(GLuint buffer) {
+    GLint size;
+    glBindBuffer(GL_COPY_WRITE_BUFFER, buffer);
+    glGetBufferParameteriv(GL_COPY_WRITE_BUFFER, GL_BUFFER_SIZE, &size);
+    glBufferSubData(GL_COPY_WRITE_BUFFER, 0, size, NULL);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+}
+
+static void copy_buffer(GLuint dst_buffer, GLuint src_buffer) {
+    GLint size;
+    glBindBuffer(GL_COPY_READ_BUFFER, src_buffer);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, dst_buffer);
+    glGetBufferParameteriv(GL_COPY_READ_BUFFER, GL_BUFFER_SIZE, &size);
+    glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, size);
+    glBindBuffer(GL_COPY_READ_BUFFER, 0);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+}
+
 void copy_molecule_data_to_buffers(ApplicationData* data) {
     ASSERT(data);
     const auto N = data->dynamic.molecule.atom.count;
@@ -4570,6 +4619,9 @@ void copy_molecule_data_to_buffers(ApplicationData* data) {
         const float* pos_x = data->dynamic.molecule.atom.position.x;
         const float* pos_y = data->dynamic.molecule.atom.position.y;
         const float* pos_z = data->dynamic.molecule.atom.position.z;
+
+        // Copy position to old_position
+        copy_buffer(data->gpu_buffers.old_position, data->gpu_buffers.position);
 
         // Update data inside position buffer
         glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.position);
@@ -4594,7 +4646,7 @@ void copy_molecule_data_to_buffers(ApplicationData* data) {
         const float* vel_y = data->dynamic.molecule.atom.velocity.y;
         const float* vel_z = data->dynamic.molecule.atom.velocity.z;
 
-        // Update data inside position buffer
+        // Update data inside velocity buffer
         glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.velocity);
 
         float* vel_gpu = (float*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);

@@ -5,13 +5,12 @@ uniform mat4 u_view_mat;
 uniform mat4 u_proj_mat;
 uniform mat4 u_inv_proj_mat;
 uniform vec4 u_jitter_uv;
-
 uniform float u_radius_scale = 1.0;
 
 layout (location = 0) in vec3  in_position;
 layout (location = 1) in float in_radius;
 layout (location = 2) in vec4  in_color;
-layout (location = 3) in vec3  in_velocity;
+layout (location = 3) in vec3  in_view_velocity;
 
 out VS_GS {
     flat vec4 view_sphere;
@@ -33,6 +32,17 @@ vec4 pack_u32(uint data) {
         (data & uint(0xFF000000)) >> 24) / 255.0;
 }
 
+vec3 de_periodize(vec3 pos, vec3 ref_pos, vec3 ext) {
+    vec3 delta = pos - ref_pos;
+    vec3 signed_mask = sign(delta) * step(ext * 0.5, abs(delta));
+    return pos - full_ext * signed_mask;
+}
+
+vec3 compute_pbc_velocity(vec3 curr, vec3 prev) {
+    prev = de_periodize(prev, curr, u_box_ext);
+    return curr - prev;
+}
+
 // From Inigo Quilez!
 void proj_sphere(in vec4 sphere, 
                  in float fle,
@@ -51,10 +61,10 @@ void proj_sphere(in vec4 sphere,
 }
 
 void main() {
-    vec3 pos = in_position;
     float rad = in_radius * u_radius_scale;
-    vec4 view_coord = u_view_mat * vec4(pos, 1.0);
+    vec4 view_coord = u_view_mat * vec4(in_position, 1.0);
     vec4 view_sphere = vec4(view_coord.xyz, rad);
+    vec4 view_vel = vec4(in_view_velocity, 0);
 
     // Focal length
     float fle = u_proj_mat[1][1];
@@ -80,7 +90,7 @@ void main() {
     //z = cs.z;
 
     out_geom.view_sphere = view_sphere;
-    out_geom.view_velocity = u_view_mat * vec4(in_velocity, 0);
+    out_geom.view_velocity = view_vel;
     out_geom.color = in_color;
     out_geom.picking_color = pack_u32(uint(gl_VertexID));
     out_geom.axis_a = axis_a;
