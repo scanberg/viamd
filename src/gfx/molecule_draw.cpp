@@ -423,6 +423,7 @@ void initialize() {
     lean_and_mean::vdw::initialize();
     lean_and_mean::licorice::initialize();
     lean_and_mean::ribbon::intitialize();
+    pbc_view_velocity::initialize();
 }
 
 void shutdown() {
@@ -435,13 +436,14 @@ void shutdown() {
     lean_and_mean::vdw::shutdown();
     lean_and_mean::licorice::shutdown();
     lean_and_mean::ribbon::shutdown();
+    pbc_view_velocity::shutdown();
 }
 
 void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_view_velocity_buffer, int32 atom_count, const ViewParam& view_param, float radius_scale) {
     ASSERT(glIsBuffer(atom_position_buffer));
     ASSERT(glIsBuffer(atom_radius_buffer));
     ASSERT(glIsBuffer(atom_color_buffer));
-    ASSERT(glIsBuffer(atom_old_position_buffer));
+    ASSERT(glIsBuffer(atom_view_velocity_buffer));
 
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, atom_position_buffer);

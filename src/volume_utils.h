@@ -19,7 +19,7 @@ void set_volume_texture_data(GLuint texture, ivec3 dim, void* data);
 mat4 compute_model_to_world_matrix(const vec3& min_world_aabb, const vec3& max_world_aabb);
 mat4 compute_texture_to_model_matrix(const ivec3& dim);
 
-void save_volume_to_file(const Volume& volume, CStringView path_to_file);
+void write_to_file(const Volume& volume, CStringView path_to_file);
 
 /*
     Renders a volumetric texture using OpenGL.

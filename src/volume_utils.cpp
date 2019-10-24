@@ -173,7 +173,7 @@ return math::inverse(mat4(vec4(scl.x, 0, 0, 0), vec4(0, scl.y, 0, 0), vec4(0, 0,
     */
 }
 
-void save_volume_to_file(const Volume& volume, CStringView file) {
+void write_to_file(const Volume& volume, CStringView file) {
     StringBuffer<512> zstr = file;
     FILE* f = fopen(zstr.cstr(), "wb");
     defer { fclose(f); };

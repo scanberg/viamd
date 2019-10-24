@@ -32,17 +32,6 @@ vec4 pack_u32(uint data) {
         (data & uint(0xFF000000)) >> 24) / 255.0;
 }
 
-vec3 de_periodize(vec3 pos, vec3 ref_pos, vec3 ext) {
-    vec3 delta = pos - ref_pos;
-    vec3 signed_mask = sign(delta) * step(ext * 0.5, abs(delta));
-    return pos - full_ext * signed_mask;
-}
-
-vec3 compute_pbc_velocity(vec3 curr, vec3 prev) {
-    prev = de_periodize(prev, curr, u_box_ext);
-    return curr - prev;
-}
-
 // From Inigo Quilez!
 void proj_sphere(in vec4 sphere, 
                  in float fle,
