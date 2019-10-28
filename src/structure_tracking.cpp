@@ -596,6 +596,7 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
         {
             // @NOTE: ...
 
+#if 0
             const auto find_max_proj = [](const vec3& ref, ArrayView<vec3> vecs) -> int {
                 int idx = 0;
                 float max = -1.0f;
@@ -627,6 +628,7 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
             eigen_vectors[0] = abs_pca[0];
             eigen_vectors[1] = abs_pca[1];
             eigen_vectors[2] = abs_pca[2];
+#endif
         }
 
 #if 0
@@ -681,24 +683,32 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
         // If linear    -> Align with PCA[0]
         // If planar    -> Align with PCA[0] and PCA[1]
         // If spherical -> Align with Absolute
-        const vec3 ev = eigen_values;
+        const mat3 ref_pca = s->tracking_data.eigen.vectors[0];
+        const mat3 cur_pca = eigen_vectors;
+
+        const vec3 ref_ev = s->tracking_data.eigen.values[0];
+        const vec3 cur_ev = eigen_values;
+
+        const vec3 ev = cur_ev;
         const float denom = 1.0f / (ev[0] + ev[1] + ev[2]);
         const float cl = (ev[0] - ev[1]) * denom;
         const float cp = 2.0f * (ev[1] - ev[2]) * denom;
         const float cs = 3.0f * ev[2] * denom;
 
-        const mat3 pca = s->tracking_data.eigen.vectors[0];
-
         quat q = q_hybrid * q_del;
 
+        const quat q_abs_inv = math::conjugate(q_abs);
+
+        const float dp = math::abs(math::dot(q_abs_inv * ref_pca[1], cur_pca[1]));
+
         const float w0 = cl;
-        const float w1 = cp * math::abs(math::dot(math::conjugate(q_abs) * pca[1], eigen_vectors[1]));
+        const float w1 = cp * dp; 
         const float w2 = 1.0f - w0 - w1;
 
         // Align with Major
         {
-            const vec3 vec = math::normalize(eigen_vectors[0]);
-            const vec3 v_dst = math::normalize(math::conjugate(q) * pca[0]);
+            const vec3 vec = q_abs_inv * ref_pca[0];
+            const vec3 v_dst = math::conjugate(q) * ref_pca[0];
             const vec3 v_src = math::dot(vec, v_dst) > 0.0f ? vec : -vec;
             const quat q_cor = math::two_direction_vectors(math::normalize(v_src), math::normalize(v_dst));
             q = math::slerp(q, q * q_cor, w0);
@@ -706,8 +716,8 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
 
         // Align with Mid
         {
-            const vec3 vec = math::normalize(eigen_vectors[1]);
-            const vec3 v_dst = math::normalize(math::conjugate(q) * pca[1]);
+            const vec3 vec = q_abs_inv * ref_pca[1];
+            const vec3 v_dst = math::conjugate(q) * ref_pca[1];
             const vec3 v_src = math::dot(vec, v_dst) > 0.0f ? vec : -vec;
             const quat q_cor = math::two_direction_vectors(math::normalize(v_src), math::normalize(v_dst));
             q = math::slerp(q, q * q_cor, w1);
