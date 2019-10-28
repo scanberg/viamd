@@ -260,6 +260,7 @@ struct EnsembleStructure {
     int offset = 0;
     structure_tracking::ID id = 0;
     mat4 alignment_matrix = {};
+    mat4 world_to_structure = {};
     bool enabled = false;
 };
 
@@ -379,6 +380,7 @@ struct ApplicationData {
         float32 fps = 10.f;
         InterpolationMode interpolation = InterpolationMode::Cubic;
         PlaybackMode mode = PlaybackMode::Stopped;
+        bool apply_pbc = true;
     } playback;
 
     // --- TIME LINE FILTERING ---
@@ -450,7 +452,7 @@ struct ApplicationData {
     struct {
         bool enabled = false;
         vec4 color = vec4(0, 0, 0, 0.5);
-        vec3 extent = vec3(0, 0, 0);
+        mat3 box = mat3(0);
     } simulation_box;
 
     struct {
@@ -819,8 +821,8 @@ int main(int, char**) {
     // load_molecule_data(&data, VIAMD_DATA_DIR "/1ALA-250ns-2500frames.pdb");
     // load_molecule_data(&data, VIAMD_DATA_DIR "/amyloid/centered.gro");
     // load_molecule_data(&data, VIAMD_DATA_DIR "/amyloid/centered.xtc");
-    load_molecule_data(&data, "D:/md/6T-water/16-6T-box.gro");
-    load_molecule_data(&data, "D:/md/6T-water/16-6T-box-md-npt.xtc");
+    load_molecule_data(&data, "D:/data/md/6T-water/16-6T-box.gro");
+    load_molecule_data(&data, "D:/data/md/6T-water/16-6T-box-md-npt.xtc");
     // load_molecule_data(&data, "D:/data/md/p-ftaa-water/p-FTAA-box-sol-ions-em.gro");
     // load_molecule_data(&data, "D:/data/md/p-ftaa-water/p-FTAA-box-sol-ions-md-npt.xtc");
 
@@ -833,7 +835,7 @@ int main(int, char**) {
 #endif
     reset_view(&data, true);
     // create_representation(&data, RepresentationType::Vdw, ColorMapping::ResIndex, "not water");
-    create_representation(&data, RepresentationType::Vdw, ColorMapping::ResIndex, "not water");
+    create_representation(&data, RepresentationType::Vdw, ColorMapping::ResId, "not water");
 
     init_density_volume(&data);
 
@@ -967,6 +969,10 @@ int main(int, char**) {
 
                 if (data.ensemble_tracking.superimpose_structures) {
                     superimpose_ensemble(&data);
+                }
+
+                if (data.playback.apply_pbc) {
+                    apply_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.mass, mol.sequences, data.simulation_box.box);
                 }
 
 #if 0
@@ -1182,8 +1188,8 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             ASSERT(false);
     }
 
-    const bool pbc = box != mat3(0, 0, 0, 0, 0, 0, 0, 0, 0);
-    data->simulation_box.extent = box * vec3(1, 1, 1);
+    const bool pbc = (box == mat3(0));
+    data->simulation_box.box = box;
 
     switch (mode) {
         case InterpolationMode::Nearest: {
@@ -2173,6 +2179,7 @@ static void draw_animation_control_window(ApplicationData* data) {
     ImGui::Begin("Control");
     const int32 num_frames = data->dynamic.trajectory.num_frames;
     ImGui::Text("Num Frames: %i", num_frames);
+    ImGui::Checkbox("Apply post-interpolation pbc", &data->playback.apply_pbc);
     float32 t = (float)data->playback.time;
     if (ImGui::SliderFloat("Time", &t, 0, (float)(math::max(0, num_frames - 1)))) {
         data->playback.time = t;
@@ -3646,9 +3653,9 @@ static void draw_density_volume_window(ApplicationData* data) {
                             }
                         }
                         ensemble_structures.clear();
-                        ensemble_structures.push_back({(int)mask_offset, structure_tracking::create_structure(), mat4(1), true});  // Reference structure at index 0
+                        ensemble_structures.push_back({(int)mask_offset, structure_tracking::create_structure(), mat4(1), mat4(1), true});  // Reference structure at index 0
                         for (const auto& offset : ensemble_offsets) {
-                            ensemble_structures.push_back({(int)offset, structure_tracking::create_structure(), mat4(1), true});
+                            ensemble_structures.push_back({(int)offset, structure_tracking::create_structure(), mat4(1), mat4(1), true});
                         }
                     }
                     LOG_NOTE("Done!");
@@ -4979,7 +4986,7 @@ static void compute_backbone_spline(ApplicationData* data) {
 static void compute_velocity(ApplicationData* data) {
     PUSH_GPU_SECTION("Compute View Velocity")
     draw::compute_pbc_view_velocity(data->gpu_buffers.velocity, data->gpu_buffers.position, data->gpu_buffers.old_position, (int)data->dynamic.molecule.atom.count, data->view.param,
-                                    data->simulation_box.extent);
+                                    data->simulation_box.box * vec3(1,1,1));
     POP_GPU_SECTION()
 }
 
@@ -5622,7 +5629,14 @@ static void superimpose_ensemble(ApplicationData* data) {
     const InterpolationMode mode = (p1 != n1) ? data->playback.interpolation : InterpolationMode::Nearest;
     const Bitfield atom_mask = data->ensemble_tracking.atom_mask;
 
+    Bitfield ensemble_atom_mask;
+    bitfield::init(&ensemble_atom_mask, mol.atom.count);
+    defer { bitfield::free(&ensemble_atom_mask); };
+    bitfield::clear_all(ensemble_atom_mask);
+
     for (auto& structure : data->ensemble_tracking.structures) {
+        const int idx = &structure - data->ensemble_tracking.structures.beg();
+
         const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(structure.id);
         if (tracking_data) {
 
@@ -5710,23 +5724,36 @@ static void superimpose_ensemble(ApplicationData* data) {
             // mat4 PCA = tracking_data->eigen.vector[0];
             // PCA = mat4(1);
 
-            mat4 M = T_box * structure.alignment_matrix * R * T_com;
-
+            structure.world_to_structure = T_box * structure.alignment_matrix * R * T_com;
             for (int64 i = 0; i < atom_mask.size(); i++) {
                 if (atom_mask[i]) {
+                    bitfield::set_bit(ensemble_atom_mask, structure.offset + i);
                     float& x = mol.atom.position.x[structure.offset + i];
                     float& y = mol.atom.position.y[structure.offset + i];
                     float& z = mol.atom.position.z[structure.offset + i];
                     vec4 v = {x, y, z, 1.0f};
-                    v = M * v;
+                    v = structure.world_to_structure * v;
                     x = v.x;
                     y = v.y;
                     z = v.z;
                 }
             }
-
         } else {
             LOG_ERROR("Could not find tracking data for '%lu'", structure.id);
+        }
+    }
+
+    // @NOTE: Modify all non ensemble included atoms with the reference structures transform
+    for (int64 i = 0; i < ensemble_atom_mask.size(); i++) {
+        if (!ensemble_atom_mask[i]) {
+            float& x = mol.atom.position.x[i];
+            float& y = mol.atom.position.y[i];
+            float& z = mol.atom.position.z[i];
+            vec4 v = {x, y, z, 1.0f};
+            v = data->ensemble_tracking.structures[0].world_to_structure * v;
+            x = v.x;
+            y = v.y;
+            z = v.z;
         }
     }
 }
