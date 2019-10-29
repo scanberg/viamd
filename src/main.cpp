@@ -827,7 +827,7 @@ int main(int, char**) {
     // load_molecule_data(&data, "D:/data/md/p-ftaa-water/p-FTAA-box-sol-ions-md-npt.xtc");
 
     // create_reference_frame(&data, "dna", "dna");
-    create_reference_frame(&data, "res16", "residue 16");
+    create_reference_frame(&data, "res1", "residue 1");
     data.simulation_box.enabled = true;
     // stats::create_property("d1", "distance atom(*) com(atom(*))");
     // data.density_volume.enabled = true;
@@ -835,7 +835,7 @@ int main(int, char**) {
 #endif
     reset_view(&data, true);
     // create_representation(&data, RepresentationType::Vdw, ColorMapping::ResIndex, "not water");
-    create_representation(&data, RepresentationType::Vdw, ColorMapping::ResId, "not water");
+    create_representation(&data, RepresentationType::Vdw, ColorMapping::ResId, "residue 1");
 
     init_density_volume(&data);
 
@@ -1530,8 +1530,8 @@ static void draw_main_menu(ApplicationData* data) {
                 ImGui::Checkbox("Temporal Effects", &data->visuals.temporal_reprojection.enabled);
                 if (data->visuals.temporal_reprojection.enabled) {
                     ImGui::Checkbox("Jitter Samples", &data->visuals.temporal_reprojection.jitter);
-                    ImGui::SliderFloat("Feedback Min", &data->visuals.temporal_reprojection.feedback_min, 0.5f, 1.0f);
-                    ImGui::SliderFloat("Feedback Max", &data->visuals.temporal_reprojection.feedback_max, 0.5f, 1.0f);
+                    // ImGui::SliderFloat("Feedback Min", &data->visuals.temporal_reprojection.feedback_min, 0.5f, 1.0f);
+                    // ImGui::SliderFloat("Feedback Max", &data->visuals.temporal_reprojection.feedback_max, 0.5f, 1.0f);
                     ImGui::Checkbox("Motion Blur", &data->visuals.temporal_reprojection.motion_blur.enabled);
                     if (data->visuals.temporal_reprojection.motion_blur.enabled) {
                         ImGui::SliderFloat("Motion Scale", &data->visuals.temporal_reprojection.motion_blur.motion_scale, 0.f, 1.5f);
@@ -2402,16 +2402,16 @@ static void draw_reference_frame_window(ApplicationData* data) {
                     hyb_angle[0] = 0.0f;
                     const quat ref_q = {1, 0, 0, 0};
                     for (int j = 0; j < N; j++) {
-                        abs_angle[j] = math::rad_to_deg(math::angle(ref_q, abs_data[j]));
-                        rel_angle[j] = math::rad_to_deg(math::angle(ref_q, rel_data[j]));
-                        hyb_angle[j] = math::rad_to_deg(math::angle(ref_q, hyb_data[j]));
+                        abs_angle[j] = math::rad_to_deg(math::geodesic_distance(ref_q, abs_data[j]));
+                        rel_angle[j] = math::rad_to_deg(math::geodesic_distance(ref_q, rel_data[j]));
+                        hyb_angle[j] = math::rad_to_deg(math::geodesic_distance(ref_q, hyb_data[j]));
                     }
 
                     if (ImGui::Button("Export to CSV##1")) export_to_csv();
 
                     const ImVec2 x_range = {0.0f, (float)N};
                     const ImVec2 y_range = {-0.05f, 180.5f};
-                    ImGui::BeginPlot("Angle To Ref", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
+                    ImGui::BeginPlot("Distance To Ref", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
                     ImGui::PlotValues("absolute", abs_angle, N, 0xFF5555FF);
                     ImGui::PlotValues("relative", rel_angle, N, 0xFF55FF55);
                     ImGui::PlotValues("hybrid", hyb_angle, N, 0xFFFF5555);
@@ -3473,14 +3473,30 @@ static void draw_shape_space_window(ApplicationData* data) {
 }
 
 static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const MoleculeTrajectory& traj, const mat4& world_to_volume_texture, const mat4& rotation,
-                                      const structure_tracking::TrackingData& tracking_data) {
+                                      const structure_tracking::TrackingData& tracking_data, TrackingMode mode) {
     ASSERT(vol);
+
+    quat* rot_data;
+    switch (mode) {
+        case TrackingMode::Absolute:
+            rot_data = tracking_data.transform.rotation.absolute;
+            break;
+        case TrackingMode::Relative:
+            rot_data = tracking_data.transform.rotation.relative;
+            break;
+        case TrackingMode::Hybrid:
+            rot_data = tracking_data.transform.rotation.hybrid;
+            break;
+        default:
+            ASSERT(false);
+    }
+
     for (int frame_idx = 0; frame_idx < traj.num_frames; frame_idx++) {
         const auto& frame = get_trajectory_frame(traj, frame_idx);
         const mat3 box = frame.box;
         const vec3 half_box = box * vec3(0.5f);
         const vec3 com = tracking_data.transform.com[frame_idx];
-        const mat4 R = math::mat4_cast(tracking_data.transform.rotation.hybrid[frame_idx]);
+        const mat4 R = math::mat4_cast(rot_data[frame_idx]);
         const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-com, 1));
         const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(half_box, 1));
         // const mat4 M = volume_world_to_texture * math::transpose(R) * T_com;
@@ -3718,7 +3734,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                                 LOG_ERROR("Could not find tracking data for structure: %u", structure.id);
                                 continue;
                             }
-                            append_trajectory_density(&data->density_volume.volume, filter_mask, traj, M, structure.alignment_matrix, *tracking_data);
+                            append_trajectory_density(&data->density_volume.volume, filter_mask, traj, M, structure.alignment_matrix, *tracking_data, data->ensemble_tracking.tracking_mode);
                         }
 
                         const float scl = 1.0f / (float)(traj.num_frames);
@@ -4986,7 +5002,7 @@ static void compute_backbone_spline(ApplicationData* data) {
 static void compute_velocity(ApplicationData* data) {
     PUSH_GPU_SECTION("Compute View Velocity")
     draw::compute_pbc_view_velocity(data->gpu_buffers.velocity, data->gpu_buffers.position, data->gpu_buffers.old_position, (int)data->dynamic.molecule.atom.count, data->view.param,
-                                    data->simulation_box.box * vec3(1,1,1));
+                                    data->simulation_box.box * vec3(1, 1, 1));
     POP_GPU_SECTION()
 }
 

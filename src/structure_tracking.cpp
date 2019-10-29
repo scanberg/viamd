@@ -697,30 +697,40 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
 
         quat q = q_hybrid * q_del;
 
-        const quat q_abs_inv = math::conjugate(q_abs);
+        
+        //const float wl = math::pow(1.0f - cs, 8.0f) * math::pow(1.0f - cp, 2.0f);
+        
+        float wl = cl * cp * 4.0f;
+        //wl = wl * pow(bc[0], 4.0) * 16.0;
 
-        const float dp = math::abs(math::dot(q_abs_inv * ref_pca[1], cur_pca[1]));
-
-        const float w0 = cl;
-        const float w1 = cp * dp; 
-        const float w2 = 1.0f - w0 - w1;
-
-        // Align with Major
+        const float w0 = wl;
+        const float w1 = cp;
+        const float w2 = 1.0f - w0;
+        
         {
-            const vec3 vec = q_abs_inv * ref_pca[0];
-            const vec3 v_dst = math::conjugate(q) * ref_pca[0];
-            const vec3 v_src = math::dot(vec, v_dst) > 0.0f ? vec : -vec;
-            const quat q_cor = math::two_direction_vectors(math::normalize(v_src), math::normalize(v_dst));
-            q = math::slerp(q, q * q_cor, w0);
-        }
+            quat q_pca = q;
 
-        // Align with Mid
-        {
-            const vec3 vec = q_abs_inv * ref_pca[1];
-            const vec3 v_dst = math::conjugate(q) * ref_pca[1];
-            const vec3 v_src = math::dot(vec, v_dst) > 0.0f ? vec : -vec;
-            const quat q_cor = math::two_direction_vectors(math::normalize(v_src), math::normalize(v_dst));
-            q = math::slerp(q, q * q_cor, w1);
+            {
+                // Align with Major
+                const vec3 target = ref_pca[0];
+                const vec3 v_src = q_pca * cur_pca[0];
+                const vec3 v_dst = math::dot(target, v_src) > 0.0f ? target : -target;
+                const quat q_cor = math::two_direction_vectors(math::normalize(v_src), math::normalize(v_dst));
+                q_pca = math::slerp(q_pca, q_cor * q_pca, 1.0f);
+            }
+
+            {
+                // Align with Mid
+                const vec3 target = ref_pca[1];
+                const vec3 v_src = q_pca * cur_pca[1];
+                const vec3 v_dst = math::dot(target, v_src) > 0.0f ? target : -target;
+                const quat q_cor = math::two_direction_vectors(math::normalize(v_src), math::normalize(v_dst));
+                q_pca = math::slerp(q_pca, q_cor * q_pca, 1.0f);
+            }
+
+            math::normalize(q_pca);
+
+            q = math::slerp(q, q_pca, w0);
         }
 
         // Align with Absolute
