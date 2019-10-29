@@ -1188,7 +1188,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             ASSERT(false);
     }
 
-    const bool pbc = (box == mat3(0));
+    const bool pbc = (box != mat3(0));
     data->simulation_box.box = box;
 
     switch (mode) {
