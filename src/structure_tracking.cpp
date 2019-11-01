@@ -730,11 +730,11 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
 
             math::normalize(q_pca);
 
-            q = math::slerp(q, q_pca, w0);
+            q = math::slerp(q, q_pca, 1.0f);
         }
 
         // Align with Absolute
-        { q = math::slerp(q, q_abs, w2); }
+        //{ q = math::slerp(q, q_abs, w2); }
 
         q = math::normalize(q);
         const quat q_hyb = math::dot(s->tracking_data.transform.rotation.hybrid[i - 1], q) > 0.0f ? q : -q;
