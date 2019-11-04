@@ -662,22 +662,25 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
         // Fixed ratio Slerp 80% relative, 20% absolute
         q_hybrid = math::normalize(math::slerp(q_hybrid * q_del, math::conjugate(q_abs), 0.2f));
         const quat q_cor = math::conjugate(q_hybrid);
-#elif 0
+#elif 1
         // Dynamic ratio Slerp
         // absolute contributes with a factor based on the cosine of the angle between the absolute and predicted orientation
         const quat q_pred = q_hybrid * q_del;
         const quat q_ref = q_abs;
         const float d = math::dot(q_pred, q_ref);
+        //const float dist = math::geodesic_distance(q_pred, q_ref);
+        //printf("dist: %.3f\n", dist);
         // const float d = math::dot(q_pred, q_ref) * 0.5f + 0.5f;
-        const float t = math::pow(d, 8.0f);
+        const float t = math::pow(d, 16.0f);
         q_hybrid = math::normalize(math::slerp(q_pred, q_ref, t));
-        quat q_cor = q_hybrid;
+        // quat q_cor = q_hybrid;
         // quat q_cor = math::conjugate(q_hybrid);
-        // q_cor = math::dot(s->tracking_data.transform.rotation.hybrid[i - 1], q_cor) > 0.0f ? q_cor : -q_cor;
+        const quat q_hyb = math::dot(s->tracking_data.transform.rotation.hybrid[i - 1], q_hybrid) > 0.0f ? q_hybrid : -q_hybrid;
+        q_hybrid = q_hyb;
 
         // const float angle = math::rad_to_deg(math::acos(math::dot(q_pred, q_ref)));
         // printf("Angle: %.2f\n", angle);
-#elif 1
+#elif 0
         // Partial correction based on geometric anisotropy
         // Align relative to absolute PCA axes based on shape.
         // If linear    -> Align with PCA[0]
@@ -697,16 +700,15 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
 
         quat q = q_hybrid * q_del;
 
-        
-        //const float wl = math::pow(1.0f - cs, 8.0f) * math::pow(1.0f - cp, 2.0f);
-        
+        // const float wl = math::pow(1.0f - cs, 8.0f) * math::pow(1.0f - cp, 2.0f);
+
         float wl = cl * cp * 4.0f;
-        //wl = wl * pow(bc[0], 4.0) * 16.0;
+        // wl = wl * pow(bc[0], 4.0) * 16.0;
 
         const float w0 = wl;
         const float w1 = cp;
         const float w2 = 1.0f - w0;
-        
+
         {
             quat q_pca = q;
 
