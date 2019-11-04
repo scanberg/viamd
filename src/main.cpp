@@ -49,7 +49,10 @@
 #include <atomic>
 #include <mutex>
 
-//#define VIAMD_RELEASE
+#define PICKING_JITTER_HACK 1
+#define DEPERIODIZE_ON_FRAME_LOADED 1
+#define SHOW_IMGUI_DEMO_WINDOW 0
+#define VIAMD_RELEASE 1
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
 
@@ -380,7 +383,7 @@ struct ApplicationData {
         float32 fps = 10.f;
         InterpolationMode interpolation = InterpolationMode::Cubic;
         PlaybackMode mode = PlaybackMode::Stopped;
-        bool apply_pbc = true;
+        bool apply_pbc = false;
     } playback;
 
     // --- TIME LINE FILTERING ---
@@ -810,12 +813,13 @@ int main(int, char**) {
 
     // ImGui::SetupImGuiStyle2();
     ImGui::StyleColorsLight();
+    //ImGui::StyleColorsClassic();
 
     vec2 halton_sequence[16];
     math::generate_halton_sequence(halton_sequence, ARRAY_SIZE(halton_sequence), 2, 3);
 
-#ifdef VIAMD_RELEASE
-    allocate_and_parse_pdb_from_string(&data.dynamic, CAFFINE_PDB);
+#if VIAMD_RELEASE
+    pdb::load_molecule_from_string(&data.dynamic.molecule, CAFFINE_PDB);
     init_molecule_data(&data);
 #else
     // load_molecule_data(&data, VIAMD_DATA_DIR "/1ALA-250ns-2500frames.pdb");
@@ -834,8 +838,8 @@ int main(int, char**) {
     // data.reference_frame.frames[0].active = true;
 #endif
     reset_view(&data, true);
-    // create_representation(&data, RepresentationType::Vdw, ColorMapping::ResIndex, "not water");
-    create_representation(&data, RepresentationType::Vdw, ColorMapping::ResId, "residue 1");
+    create_representation(&data, RepresentationType::Vdw, ColorMapping::ResId, "not water");
+    //create_representation(&data, RepresentationType::Vdw, ColorMapping::ResId, "residue 1");
 
     init_density_volume(&data);
 
@@ -846,6 +850,10 @@ int main(int, char**) {
     // Main loop
     while (!data.ctx.window.should_close) {
         platform::update(&data.ctx);
+
+#if SHOW_IMGUI_DEMO_WINDOW
+        ImGui::ShowDemoWindow();
+#endif
 
         const int32 num_frames = data.dynamic.trajectory ? data.dynamic.trajectory.num_frames : 0;
         const int32 last_frame = math::max(0, num_frames - 1);
@@ -883,7 +891,7 @@ int main(int, char**) {
             }
 
             if (data.ctx.input.key.hit[KEY_PLAY_PAUSE]) {
-                if (data.playback.mode == PlaybackMode::Playing && data.playback.time == max_time) {
+                if (data.playback.mode == PlaybackMode::Stopped && data.playback.time == max_time) {
                     data.playback.time = 0;
                 }
 
@@ -1077,6 +1085,7 @@ int main(int, char**) {
         }
 
         copy_molecule_data_to_buffers(&data);
+        update_properties(&data);
         update_density_volume(&data);
         compute_backbone_spline(&data);
         compute_velocity(&data);
@@ -1139,22 +1148,10 @@ static void interpolate_atomic_positions(ApplicationData* data) {
     const auto& mol = data->dynamic.molecule;
     const auto& traj = data->dynamic.trajectory;
 
+    if (!mol || !traj) return;
+
     const int last_frame = math::max(0, data->dynamic.trajectory.num_frames - 1);
     const float64 time = math::clamp(data->playback.time, 0.0, float64(last_frame));
-
-    float* old_pos_x = (float*)TMP_ALIGNED_MALLOC(sizeof(float) * mol.atom.count, 64);
-    float* old_pos_y = (float*)TMP_ALIGNED_MALLOC(sizeof(float) * mol.atom.count, 64);
-    float* old_pos_z = (float*)TMP_ALIGNED_MALLOC(sizeof(float) * mol.atom.count, 64);
-
-    defer {
-        TMP_ALIGNED_FREE(old_pos_x);
-        TMP_ALIGNED_FREE(old_pos_y);
-        TMP_ALIGNED_FREE(old_pos_z);
-    };
-
-    memcpy(old_pos_x, mol.atom.position.x, sizeof(float) * mol.atom.count);
-    memcpy(old_pos_y, mol.atom.position.y, sizeof(float) * mol.atom.count);
-    memcpy(old_pos_z, mol.atom.position.z, sizeof(float) * mol.atom.count);
 
     const float32 t = (float)math::fract(time);
     const int frame = (int)time;
@@ -1229,18 +1226,6 @@ static void interpolate_atomic_positions(ApplicationData* data) {
         default:
             ASSERT(false);
     }
-
-    /*
-    const float dt = 1.0f;
-    if (pbc) {
-        // apply_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.mass, mol.sequences, box);
-        compute_velocities_pbc(mol.atom.velocity.x, mol.atom.velocity.y, mol.atom.velocity.z, old_pos_x, old_pos_y, old_pos_z, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z,
-                               mol.atom.count, dt, box);
-    } else {
-        compute_velocities(mol.atom.velocity.x, mol.atom.velocity.y, mol.atom.velocity.z, old_pos_x, old_pos_y, old_pos_z, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z,
-                           mol.atom.count, dt);
-    }
-    */
 }
 
 // #misc
@@ -2179,7 +2164,7 @@ static void draw_animation_control_window(ApplicationData* data) {
     ImGui::Begin("Control");
     const int32 num_frames = data->dynamic.trajectory.num_frames;
     ImGui::Text("Num Frames: %i", num_frames);
-    ImGui::Checkbox("Apply post-interpolation pbc", &data->playback.apply_pbc);
+    // ImGui::Checkbox("Apply post-interpolation pbc", &data->playback.apply_pbc);
     float32 t = (float)data->playback.time;
     if (ImGui::SliderFloat("Time", &t, 0, (float)(math::max(0, num_frames - 1)))) {
         data->playback.time = t;
@@ -2833,6 +2818,9 @@ static void draw_timeline_window(ApplicationData* data) {
         static float32 selection_start;
         static bool is_selecting = false;
 
+        auto style = ImGui::GetStyle();
+        ImGui::GetStyleColorVec4(ImGuiCol_PlotLines);
+
         const auto properties = stats::get_properties();
         for (int i = 0; i < (int32)properties.count; i++) {
             auto prop = properties[i];
@@ -2862,7 +2850,7 @@ static void draw_timeline_window(ApplicationData* data) {
             if (prop->std_dev_data.data()[0] > 0.f) {
                 ImGui::PlotVariance(prop->avg_data.data(), prop->std_dev_data.data(), (int32)prop->std_dev_data.size(), 1.f, var_line_color, var_fill_color);
             }
-            ImGui::PlotValues(prop->name_buf.cstr(), prop_data.data(), (int32)prop_data.size());
+            ImGui::PlotValues(prop->name_buf.cstr(), prop_data.data(), (int32)prop_data.size(), ImGui::ColorConvertFloat4ToU32(style.Colors[ImGuiCol_PlotLines]));
 
             ImGui::PopClipRect();
 
@@ -3592,36 +3580,80 @@ static void draw_density_volume_window(ApplicationData* data) {
         ImGui::RangeSliderFloat("z", &data->density_volume.clip_planes.min.z, &data->density_volume.clip_planes.max.z, 0.0f, 1.0f);
 
         ImGui::Separator();
-        ImGui::Text("Ensemble Density");
+        ImGui::Text("Ensemble");
         if (!data->ensemble_tracking.structures.empty()) {
+            static char filter_buf[128] = {};
             ImGui::Checkbox("Superimpose ensemble", &data->ensemble_tracking.superimpose_structures);
             ImGui::Combo("Tracking mode", (int*)(&data->ensemble_tracking.tracking_mode), "Absolute\0Relative\0hybrid\0\0");
-        }
 
-        if (ImGui::Button("Compute New", button_size)) {
-            ImGui::OpenPopup("Ensemble Density Popup");
-        }
-
-        if (ImGui::BeginPopup("Ensemble Density Popup")) {
-            static char reference_buf[128] = {};
-            static char filter_buf[128] = {};
-            bool compute = false;
-
-            compute |= ImGui::InputText("Reference structure filter", reference_buf, 128, ImGuiInputTextFlags_EnterReturnsTrue);
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Specify the filter of the reference structure for the ensamble. All structure which matches this reference will be included in the ensamble");
-            }
-            compute |= ImGui::InputText("Density filter", filter_buf, 128, ImGuiInputTextFlags_EnterReturnsTrue);
+            ImGui::InputText("Density filter", filter_buf, 128, ImGuiInputTextFlags_EnterReturnsTrue);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Speficy a filter for what should be included in the density computation");
             }
-            compute |= ImGui::Button("Compute");
-
-            if (compute) {
+            if (ImGui::Button("Compute Density")) {
                 Bitfield filter_mask;
                 bitfield::init(&filter_mask, data->dynamic.molecule.atom.count);
                 defer { bitfield::free(&filter_mask); };
 
+                DynamicArray<StoredSelection> sel;
+                sel.push_back({"current", data->selection.current_selection_mask});
+                for (const auto& s : data->selection.stored_selections) {
+                    sel.push_back({s.name, s.atom_mask});
+                }
+                const bool filter_ok = filter::compute_filter_mask(filter_mask, filter_buf, data->dynamic.molecule, sel);
+
+                if (bitfield::number_of_bits_set(filter_mask) > 0) {
+                    const auto traj = data->dynamic.trajectory;
+                    const auto ensemble_structures = data->ensemble_tracking.structures;
+
+                    LOG_NOTE("Performing Density Computation...");
+                    data->density_volume.volume_data_mutex.lock();
+                    clear_volume(&data->density_volume.volume);
+
+                    const mat4 M = data->density_volume.world_to_model_matrix;
+                    for (int64 i = 0; i < ensemble_structures.size(); i++) {
+                        LOG_NOTE("%i / %i", (int)i + 1, (int)ensemble_structures.size());
+                        auto& structure = ensemble_structures[i];
+                        const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(structure.id);
+                        if (!tracking_data) {
+                            LOG_ERROR("Could not find tracking data for structure: %u", structure.id);
+                            continue;
+                        }
+                        append_trajectory_density(&data->density_volume.volume, filter_mask, traj, M, structure.alignment_matrix, *tracking_data, data->ensemble_tracking.tracking_mode);
+                    }
+
+                    const float scl = 1.0f / (float)(traj.num_frames);
+
+                    data->density_volume.volume.voxel_range = {data->density_volume.volume.voxel_data[0], data->density_volume.volume.voxel_data[0]};
+                    for (auto& v : data->density_volume.volume.voxel_data) {
+                        if (v < data->density_volume.volume.voxel_range.min) data->density_volume.volume.voxel_range.min = v;
+                        if (v > data->density_volume.volume.voxel_range.max) data->density_volume.volume.voxel_range.max = v;
+
+                        v *= scl;
+                    }
+
+                    LOG_NOTE("Done!");
+                    LOG_NOTE("Max density: %.3f", data->density_volume.volume.voxel_range.max);
+                    data->density_volume.texture.dirty = true;
+                    data->density_volume.volume_data_mutex.unlock();
+                }
+            }
+        }
+
+        if (ImGui::Button("Create Ensemble", button_size)) {
+            ImGui::OpenPopup("Create Ensemble Popup");
+        }
+
+        if (ImGui::BeginPopup("Create Ensemble Popup")) {
+            static char reference_buf[128] = {};
+
+            bool compute = false;
+            compute |= ImGui::InputText("Reference structure filter", reference_buf, 128, ImGuiInputTextFlags_EnterReturnsTrue);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Specify the filter of the reference structure for the ensamble. All structure which matches this reference will be included in the ensamble");
+            }
+            if (ImGui::Button("Create ensemble")) {
+                ImGui::CloseCurrentPopup();
                 Bitfield ref_mask;
                 bitfield::init(&ref_mask, data->dynamic.molecule.atom.count);
                 defer { bitfield::free(&ref_mask); };
@@ -3631,11 +3663,8 @@ static void draw_density_volume_window(ApplicationData* data) {
                 for (const auto& s : data->selection.stored_selections) {
                     sel.push_back({s.name, s.atom_mask});
                 }
-
                 const bool ref_ok = filter::compute_filter_mask(ref_mask, reference_buf, data->dynamic.molecule, sel);
-                const bool filter_ok = filter::compute_filter_mask(filter_mask, filter_buf, data->dynamic.molecule, sel);
-
-                if (ref_ok && filter_ok) {
+                if (ref_ok) {
                     const auto& dyn = data->dynamic;
                     const auto& mol = data->dynamic.molecule;
                     const auto& traj = data->dynamic.trajectory;
@@ -3676,7 +3705,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                     }
                     LOG_NOTE("Done!");
 
-                    create_reference_frame(data, "ensemble reference", reference_buf);
+                    // create_reference_frame(data, "ensemble reference", reference_buf);
 
                     LOG_NOTE("Performing Structure Tracking...");
                     for (auto& structure : ensemble_structures) {
@@ -3685,6 +3714,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                     }
                     LOG_NOTE("Done!");
 
+                    LOG_NOTE("Computing structure Alignment Matrices...");
                     const auto atom_count = bitfield::number_of_bits_set(ensemble_mask);
                     void* mem = TMP_MALLOC(sizeof(float) * 7 * atom_count);
                     defer { TMP_FREE(mem); };
@@ -3711,6 +3741,7 @@ static void draw_density_volume_window(ApplicationData* data) {
 
                     ensemble_structures[0].alignment_matrix = PCA;
                     for (int64 i = 1; i < ensemble_structures.size(); i++) {
+                        LOG_NOTE("%i / %i", (int)(i + 1), (int)ensemble_structures.size());
                         auto& structure = ensemble_structures[i];
                         bitfield::extract_data_from_mask(x, frame0.atom_position.x, ensemble_mask, structure.offset);
                         bitfield::extract_data_from_mask(y, frame0.atom_position.y, ensemble_mask, structure.offset);
@@ -3718,39 +3749,6 @@ static void draw_density_volume_window(ApplicationData* data) {
                         const vec3 com = compute_com(x, y, z, mass, atom_count);
                         const mat3 R = structure_tracking::compute_rotation(x, y, z, ref_x, ref_y, ref_z, mass, atom_count, com, ref_com);
                         structure.alignment_matrix = PCA * math::transpose(R);
-                    }
-
-                    if (bitfield::number_of_bits_set(filter_mask) > 0) {
-                        LOG_NOTE("Performing Density Computation...");
-                        data->density_volume.volume_data_mutex.lock();
-                        clear_volume(&data->density_volume.volume);
-
-                        const mat4 M = data->density_volume.world_to_model_matrix;
-                        for (int64 i = 0; i < ensemble_structures.size(); i++) {
-                            LOG_NOTE("%i / %i", (int)i + 1, (int)ensemble_structures.size());
-                            auto& structure = ensemble_structures[i];
-                            const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(structure.id);
-                            if (!tracking_data) {
-                                LOG_ERROR("Could not find tracking data for structure: %u", structure.id);
-                                continue;
-                            }
-                            append_trajectory_density(&data->density_volume.volume, filter_mask, traj, M, structure.alignment_matrix, *tracking_data, data->ensemble_tracking.tracking_mode);
-                        }
-
-                        const float scl = 1.0f / (float)(traj.num_frames);
-
-                        data->density_volume.volume.voxel_range = {data->density_volume.volume.voxel_data[0], data->density_volume.volume.voxel_data[0]};
-                        for (auto& v : data->density_volume.volume.voxel_data) {
-                            if (v < data->density_volume.volume.voxel_range.min) data->density_volume.volume.voxel_range.min = v;
-                            if (v > data->density_volume.volume.voxel_range.max) data->density_volume.volume.voxel_range.max = v;
-
-                            v *= scl;
-                        }
-
-                        LOG_NOTE("Done!");
-                        LOG_NOTE("Max density: %.3f", data->density_volume.volume.voxel_range.max);
-                        data->density_volume.texture.dirty = true;
-                        data->density_volume.volume_data_mutex.unlock();
                     }
                 }
             }
@@ -4023,6 +4021,9 @@ static void init_molecule_buffers(ApplicationData* data) {
     data->gpu_buffers.dirty.position = true;
     data->gpu_buffers.dirty.selection = true;
     data->gpu_buffers.dirty.backbone = true;
+
+    copy_molecule_data_to_buffers(data);
+    data->gpu_buffers.dirty.position = true;
 }
 
 static void free_molecule_buffers(ApplicationData* data) {
@@ -4091,7 +4092,7 @@ static void copy_buffer(GLuint dst_buffer, GLuint src_buffer) {
     glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
 }
 
-void copy_molecule_data_to_buffers(ApplicationData* data) {
+static void copy_molecule_data_to_buffers(ApplicationData* data) {
     ASSERT(data);
     const auto N = data->dynamic.molecule.atom.count;
 
@@ -4120,31 +4121,6 @@ void copy_molecule_data_to_buffers(ApplicationData* data) {
         }
         glUnmapBuffer(GL_ARRAY_BUFFER);
     }
-
-    /*
-    if (data->gpu_buffers.dirty.velocity) {
-        data->gpu_buffers.dirty.velocity = false;
-        const float* vel_x = data->dynamic.molecule.atom.velocity.x;
-        const float* vel_y = data->dynamic.molecule.atom.velocity.y;
-        const float* vel_z = data->dynamic.molecule.atom.velocity.z;
-
-        // Update data inside velocity buffer
-        glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.velocity);
-
-        float* vel_gpu = (float*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-        if (!vel_gpu) {
-            LOG_ERROR("Could not map velocity buffer");
-            return;
-        }
-
-        for (int64 i = 0; i < N; i++) {
-            vel_gpu[i * 3 + 0] = vel_x[i];
-            vel_gpu[i * 3 + 1] = vel_y[i];
-            vel_gpu[i * 3 + 2] = vel_z[i];
-        }
-        glUnmapBuffer(GL_ARRAY_BUFFER);
-    }
-    */
 
     if (data->gpu_buffers.dirty.selection) {
         data->gpu_buffers.dirty.selection = false;
@@ -4231,7 +4207,10 @@ static void init_trajectory_data(ApplicationData* data) {
         memcpy(data->dynamic.molecule.atom.position.z, pos_z.data(), pos_z.size_in_bytes());
 
         data->time_filter.range = {0, (float)data->dynamic.trajectory.num_frames};
+
         data->gpu_buffers.dirty.position = true;
+        copy_molecule_data_to_buffers(data);
+        copy_buffer(data->gpu_buffers.old_position, data->gpu_buffers.position);
 
         // @NOTE: Load any frames left
         if (all_trajectory_frames_read(data->dynamic.trajectory) == false) {
@@ -4587,27 +4566,40 @@ void create_screenshot(ApplicationData* data) {
     ASSERT(data);
     Image img;
     init_image(&img, data->fbo.width, data->fbo.height);
+    defer { free_image(&img); };
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glReadBuffer(GL_BACK);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glReadPixels(0, 0, img.width, img.height, GL_RGBA, GL_UNSIGNED_BYTE, img.data);
 
-    time_t now = time(0);
-    struct tm tstruct;
-    tstruct = *localtime(&now);
-    char time_str[80];
-    strftime(time_str, sizeof(time_str), "%Y-%m-%d_%X", &tstruct);
+    {
+        // @NOTE: Swap Rows to flip image with respect to y-axis
+        const uint32_t row_byte_size = img.width * sizeof(uint32_t);
+        void* mem = TMP_MALLOC(row_byte_size);
+        defer { TMP_FREE(mem); };
+        uint32_t* row_t = (uint32_t*)mem;
+        for (uint32_t y = 0; y < (uint32_t)img.height; y++) {
+            uint32_t* row_a = img.data + y * img.width;
+            uint32_t* row_b = img.data + (img.height - 1 - y) * img.width;
+            if (row_a != row_b) {
+                memcpy(row_t, row_a, row_byte_size);  // tmp = a;
+                memcpy(row_a, row_b, row_byte_size);  // a = b;
+                memcpy(row_b, row_t, row_byte_size);  // b = tmp;
+            }
+        }
+    }
 
-    StringBuffer<256> path;
-    path += VIAMD_SCREENSHOT_DIR;
-    path += "/screenshot";
-    path += "";
-    path += ".png";
-
-    const bool res = write_image(img, path);
-    if (!res) {
-        LOG_ERROR("An error occured while writing the image.");
+    platform::FileDialogResult file_res = platform::file_dialog(platform::FileDialogFlags_Save, {}, "png");
+    if (file_res.result == platform::FileDialogResult::Ok) {
+        auto ext = get_file_extension(file_res.path);
+        if (!ext) {
+            file_res.path += ".png";
+        }
+        const bool write_res = write_image_png(img, file_res.path);
+        if (!write_res) {
+            LOG_ERROR("An error occured while writing the image.");
+        }
     }
 }
 
@@ -5368,7 +5360,7 @@ static void handle_picking(ApplicationData* data) {
             data->picking.idx = NO_PICKING_IDX;
             data->picking.depth = 1.f;
         } else {
-            /*
+#if PICKING_JITTER_HACK
             static uint32 frame_idx = 0;
             static uint32 ref_frame = 0;
             frame_idx = (frame_idx + 1) % 16;
@@ -5386,12 +5378,13 @@ static void handle_picking(ApplicationData* data) {
                 const vec4 viewport(0, 0, data->fbo.width, data->fbo.height);
                 data->picking.world_coord = math::unproject(vec3(coord.x, coord.y, data->picking.depth), data->view.param.matrix.inverse.view_proj_jittered, viewport);
             }
-            */
+#else
             coord += data->view.param.jitter.current;
             // coord -= 0.5f;
             data->picking = read_picking_data(data->fbo, (int)coord.x, (int)coord.y);
             const vec4 viewport(0, 0, data->fbo.width, data->fbo.height);
             data->picking.world_coord = math::unproject(vec3(coord.x, coord.y, data->picking.depth), data->view.param.matrix.inverse.view_proj_jittered, viewport);
+#endif
         }
 
         data->selection.hovered = -1;
@@ -5776,9 +5769,11 @@ static void superimpose_ensemble(ApplicationData* data) {
 
 static void on_trajectory_frame_loaded(ApplicationData* data, int frame_idx) {
     // WHEN FRAME LOADED
+#if DEPERIODIZE_ON_FRAME_LOADED
     const auto& mol = data->dynamic.molecule;
     auto& frame = get_trajectory_frame(data->dynamic.trajectory, frame_idx);
     apply_pbc(frame.atom_position.x, frame.atom_position.y, frame.atom_position.z, mol.atom.mass, mol.sequences, frame.box);
+#endif
 
     // Possibly update timeline-filter
     if ((int)data->time_filter.range.end == frame_idx) {

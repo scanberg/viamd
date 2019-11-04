@@ -7,7 +7,6 @@ struct Image {
     int32 width = 0;
     int32 height = 0;
     uint32* data = nullptr;
-    int32 channels = 0;
     operator bool() const { return data != nullptr; }
 };
 
@@ -15,7 +14,8 @@ bool init_image(Image* img, int32 width, int32 height);
 bool init_image(Image* img, const Image& other);
 void free_image(Image* img);
 
-bool read_image(Image* img, CStringView filename, int32 requestedChannels = 4);
-bool write_image(const Image& img, CStringView filename);
+bool read_image(Image* img, CStringView filename);
+bool write_image_png(const Image& img, CStringView filename);
+bool write_image_bmp(const Image& img, CStringView filename);
 
 void gaussian_blur(Image* img, int32 kernel_width = 4);
