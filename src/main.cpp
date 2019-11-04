@@ -1,4 +1,5 @@
 #include <core/types.h>
+#include <core/file.h>
 #include <core/hash.h>
 #include <core/log.h>
 #include <core/bitfield.h>
@@ -2370,7 +2371,7 @@ static void draw_reference_frame_window(ApplicationData* data) {
                 auto export_to_csv = [abs_angle, rel_angle, hyb_angle, N]() {
                     auto res = platform::file_dialog(platform::FileDialogFlags_Save, {}, "csv");
                     if (res.result == platform::FileDialogResult::Ok) {
-                        FILE* file = fopen(res.path.cstr(), "w");
+                        FILE* file = fopen(res.path, "w");
                         if (file) {
                             fprintf(file, "time, ABS, REL, HYB\n");
                             for (int i = 0; i < N; i++) {
@@ -4489,7 +4490,7 @@ static void load_workspace(ApplicationData* data, CStringView file) {
 }
 
 static void save_workspace(ApplicationData* data, CStringView file) {
-    FILE* fptr = fopen(file.cstr(), "w");
+    FILE* fptr = fopen(file, "w");
     if (!fptr) {
         printf("ERROR! Could not save workspace to file '%s'\n", file.beg());
         return;
@@ -4838,9 +4839,8 @@ static bool handle_selection(ApplicationData* data) {
 
             for (int64 i = 0; i < N; i++) {
                 if (!bitfield::get_bit(data->representations.atom_visibility_mask, i)) continue;
-                vec4 p = mvp * vec4(pos_x[i], pos_y[i], pos_z[i], 1);
-                p /= p.w;
-                const vec2 c = (vec2(p.x, -p.y) * 0.5f + 0.5f) * res;
+                const vec4 p = mvp * vec4(pos_x[i], pos_y[i], pos_z[i], 1);
+                const vec2 c = (vec2(p.x / p.w, -p.y / p.w) * 0.5f + 0.5f) * res;
                 if (min_p.x <= c.x && c.x <= max_p.x && min_p.y <= c.y && c.y <= max_p.y) {
                     bitfield::set_bit(mask, i);
                 }
@@ -5510,7 +5510,7 @@ static void update_reference_frames(ApplicationData* data) {
     const float64 time = data->playback.time;
     const int last_frame = math::max(0, traj.num_frames - 1);
     const float32 t = (float)math::fract(data->playback.time);
-    const int frame = (int)time;
+    const int frame = math::clamp((int)time, 0, last_frame);
     const int p2 = math::max(0, frame - 1);
     const int p1 = math::max(0, frame);
     const int n1 = math::min(frame + 1, last_frame);
@@ -5629,7 +5629,7 @@ static void superimpose_ensemble(ApplicationData* data) {
     const float64 time = data->playback.time;
     const int last_frame = math::max(0, traj.num_frames - 1);
     const float32 t = (float)math::fract(data->playback.time);
-    const int frame = (int)time;
+    const int frame = math::clamp((int)time, 0, last_frame);
     const int p2 = math::max(0, frame - 1);
     const int p1 = math::max(0, frame);
     const int n1 = math::min(frame + 1, last_frame);
