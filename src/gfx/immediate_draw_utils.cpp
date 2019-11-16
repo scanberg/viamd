@@ -107,7 +107,7 @@ static inline void append_draw_command(Index count, GLenum primitive_type) {
         ASSERT(curr_proj_matrix_idx > -1 && "Immediate Mode Proj Matrix not set!");
         // ASSERT(curr_material_idx > -1, "Material not set!");
 
-        const Index offset = indices.size() - count;
+        const Index offset = (Index)indices.size() - count;
         DrawCommand cmd{offset, count, primitive_type, program, curr_view_matrix_idx, curr_proj_matrix_idx};
 
         commands.push_back(cmd);
