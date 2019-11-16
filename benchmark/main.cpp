@@ -357,7 +357,7 @@ int main() {
 
         const auto t0 = TIME();
         for (int64 i = 0; i < num_iter; i++) {
-            bitfield::extract_data_from_mask(tmp_data, md.molecule.atom.position.x, mask);
+            bitfield::gather_data_from_mask(tmp_data, md.molecule.atom.position.x, mask);
         }
         const auto t1 = TIME();
 

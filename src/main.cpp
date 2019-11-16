@@ -250,7 +250,7 @@ struct ReferenceFrame {
     bool show = false;
     bool filter_is_ok = false;
     structure_tracking::ID id = 0;
-    TrackingMode tracking_mode = TrackingMode::Hybrid;
+    TrackingMode tracking_mode = TrackingMode::Relative;
 
     mat4 world_to_reference = {};
     mat4 reference_to_world = {};
@@ -510,7 +510,7 @@ struct ApplicationData {
         Bitfield atom_mask;
         DynamicArray<EnsembleStructure> structures;
         bool superimpose_structures = false;
-        TrackingMode tracking_mode = TrackingMode::Hybrid;
+        TrackingMode tracking_mode = TrackingMode::Absolute;
     } ensemble_tracking;
 
     // --- RAMACHANDRAN ---
@@ -814,7 +814,7 @@ int main(int, char**) {
 
     // ImGui::SetupImGuiStyle2();
     ImGui::StyleColorsLight();
-    //ImGui::StyleColorsClassic();
+    // ImGui::StyleColorsClassic();
 
     vec2 halton_sequence[16];
     math::generate_halton_sequence(halton_sequence, ARRAY_SIZE(halton_sequence), 2, 3);
@@ -840,7 +840,7 @@ int main(int, char**) {
 #endif
     reset_view(&data, true);
     create_representation(&data, RepresentationType::Vdw, ColorMapping::ResId, "not water");
-    //create_representation(&data, RepresentationType::Vdw, ColorMapping::ResId, "residue 1");
+    // create_representation(&data, RepresentationType::Vdw, ColorMapping::ResId, "residue 1");
 
     init_density_volume(&data);
 
@@ -1506,7 +1506,10 @@ static void draw_main_menu(ApplicationData* data) {
 
             ImGui::BeginGroup();
             ImGui::Text("Background");
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
             ImGui::ColorEdit3("Color", &data->visuals.background.color[0], ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
+            ImGui::PopStyleVar();
+            ImGui::SameLine();
             ImGui::SliderFloat("##Intensity", &data->visuals.background.intensity, 0.f, 100.f);
             ImGui::EndGroup();
             ImGui::Separator();
@@ -1515,7 +1518,7 @@ static void draw_main_menu(ApplicationData* data) {
             {
                 ImGui::Checkbox("Temporal Effects", &data->visuals.temporal_reprojection.enabled);
                 if (data->visuals.temporal_reprojection.enabled) {
-                    ImGui::Checkbox("Jitter Samples", &data->visuals.temporal_reprojection.jitter);
+                    // ImGui::Checkbox("Jitter Samples", &data->visuals.temporal_reprojection.jitter);
                     // ImGui::SliderFloat("Feedback Min", &data->visuals.temporal_reprojection.feedback_min, 0.5f, 1.0f);
                     // ImGui::SliderFloat("Feedback Max", &data->visuals.temporal_reprojection.feedback_max, 0.5f, 1.0f);
                     ImGui::Checkbox("Motion Blur", &data->visuals.temporal_reprojection.motion_blur.enabled);
@@ -1552,13 +1555,14 @@ static void draw_main_menu(ApplicationData* data) {
             ImGui::BeginGroup();
             ImGui::Checkbox("Tonemapping", &data->visuals.tonemapping.enabled);
             if (data->visuals.tonemapping.enabled) {
-                ImGui::Combo("Function", &data->visuals.tonemapping.tonemapper, "Passthrough\0Exposure Gamma\0Filmic\0\0");
+                // ImGui::Combo("Function", &data->visuals.tonemapping.tonemapper, "Passthrough\0Exposure Gamma\0Filmic\0\0");
                 ImGui::SliderFloat("Exposure", &data->visuals.tonemapping.exposure, 0.01f, 10.f);
                 ImGui::SliderFloat("Gamma", &data->visuals.tonemapping.gamma, 1.0f, 3.0f);
             }
             ImGui::EndGroup();
             ImGui::Separator();
 
+            /*
             ImGui::BeginGroup();
             ImGui::Text("Spatial Selection");
             ImGui::PushID("spatial");
@@ -1575,7 +1579,9 @@ static void draw_main_menu(ApplicationData* data) {
             ImGui::PopID();
             ImGui::EndGroup();
             ImGui::Separator();
+            */
 
+            /*
             ImGui::BeginGroup();
             ImGui::Text("Ramachandran Selection");
             ImGui::PushID("rama");
@@ -1590,7 +1596,9 @@ static void draw_main_menu(ApplicationData* data) {
             ImGui::Checkbox("Draw Spline", &data->visuals.spline.draw_spline);
             ImGui::EndGroup();
             ImGui::Separator();
+            */
 
+            /*
             // Property Overlay
             ImGui::BeginGroup();
             ImGui::Text("Property Style");
@@ -1609,6 +1617,7 @@ static void draw_main_menu(ApplicationData* data) {
             if (ImGui::ColorEdit4("LineColor", (float*)&color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) style->line_color = ImColor(color);
             ImGui::EndGroup();
             ImGui::Separator();
+            */
 
             ImGui::BeginGroup();
             ImGui::Checkbox("Hydrogen Bond", &data->hydrogen_bonds.enabled);
@@ -1621,7 +1630,9 @@ static void draw_main_menu(ApplicationData* data) {
                     data->hydrogen_bonds.dirty = true;
                 }
                 ImGui::Checkbox("Overlay", &data->hydrogen_bonds.overlay);
+                ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
                 ImGui::ColorEdit4("Color", (float*)&data->hydrogen_bonds.color, ImGuiColorEditFlags_NoInputs);
+                ImGui::PopStyleVar();
                 ImGui::PopID();
             }
             ImGui::EndGroup();
@@ -1631,7 +1642,9 @@ static void draw_main_menu(ApplicationData* data) {
             ImGui::Checkbox("Simulation Box", &data->simulation_box.enabled);
             if (data->simulation_box.enabled) {
                 ImGui::PushID("simulation_box");
+                ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
                 ImGui::ColorEdit4("Color", (float*)&data->simulation_box.color, ImGuiColorEditFlags_NoInputs);
+                ImGui::PopStyleVar();
                 ImGui::PopID();
             }
             ImGui::EndGroup();
@@ -2140,18 +2153,34 @@ void draw_context_popup(ApplicationData* data) {
 
     if (ImGui::BeginPopup("AtomContextPopup")) {
         if (data->selection.right_clicked != -1 && data->dynamic) {
-            if (ImGui::MenuItem("Recenter Trajectory on Residue")) {
-                Bitfield atom_mask;
-                bitfield::init(&atom_mask, data->dynamic.molecule.atom.count);
-                defer { bitfield::free(&atom_mask); };
+            if (ImGui::BeginMenu("Recenter Trajectory...")) {
+                const int atom_idx = data->selection.right_clicked;
+                AtomRange atom_range = {};
 
-                const auto res_idx = data->dynamic.molecule.atom.res_idx[data->selection.right_clicked];
-                const auto res = data->dynamic.molecule.residues[res_idx];
-                bitfield::set_range(atom_mask, res.atom_range);
-                recenter_trajectory(&data->dynamic, atom_mask);
-                interpolate_atomic_positions(data);
-                data->gpu_buffers.dirty.position = true;
-                ImGui::CloseCurrentPopup();
+                if (ImGui::MenuItem("on Atom")) {
+                    atom_range = {atom_idx, atom_idx + 1};
+                }
+                if (ImGui::MenuItem("on Residue")) {
+                    const auto res_idx = data->dynamic.molecule.atom.res_idx[atom_idx];
+                    atom_range = data->dynamic.molecule.residues[res_idx].atom_range;
+                }
+                if (ImGui::MenuItem("on Sequence")) {
+                    const auto seq_idx = data->dynamic.molecule.atom.seq_idx[atom_idx];
+                    atom_range = data->dynamic.molecule.sequences[seq_idx].atom_range;
+                }
+
+                if (atom_range.size() > 0) {
+                    Bitfield atom_mask;
+                    bitfield::init(&atom_mask, data->dynamic.molecule.atom.count);
+                    defer { bitfield::free(&atom_mask); };
+                    bitfield::set_range(atom_mask, atom_range);
+                    recenter_trajectory(&data->dynamic, atom_mask);
+                    interpolate_atomic_positions(data);
+                    data->gpu_buffers.dirty.position = true;
+                    ImGui::CloseCurrentPopup();
+                }
+
+                ImGui::EndMenu();
             }
         }
         ImGui::EndPopup();
@@ -2320,7 +2349,15 @@ static void draw_reference_frame_window(ApplicationData* data) {
             }
             // if (ImGui::SliderInt("reference frame idx", ))
             if (!ref.filter_is_ok) ImGui::PopStyleColor();
-            ImGui::Combo("tracking mode", (int*)(&ref.tracking_mode), "Absolute\0Relative\0hybrid\0\0");
+            ImGui::Combo("tracking mode", (int*)(&ref.tracking_mode), "Absolute\0Relative\0Hybrid\0\0");
+
+            if (ImGui::Button("Transform trajectory to internal reference frame") && ref.filter_is_ok) {
+                Bitfield mask;
+                bitfield::init(&mask, data->dynamic.molecule.atom.count);
+                defer { bitfield::free(&mask); };
+                filter::compute_filter_mask(mask, ref.filter, data->dynamic.molecule);
+                structure_tracking::transform_to_internal_frame(data->dynamic, mask, 0);
+            }
 
             ImGui::PopItemWidth();
 
@@ -2368,14 +2405,14 @@ static void draw_reference_frame_window(ApplicationData* data) {
                 float* rel_angle = tmp_data + 1 * N;
                 float* hyb_angle = tmp_data + 2 * N;
 
-                auto export_to_csv = [abs_angle, rel_angle, hyb_angle, N]() {
+                auto export_to_csv = [abs_angle, rel_angle, N]() {
                     auto res = platform::file_dialog(platform::FileDialogFlags_Save, {}, "csv");
                     if (res.result == platform::FileDialogResult::Ok) {
                         FILE* file = fopen(res.path, "w");
                         if (file) {
                             fprintf(file, "time, ABS, REL, HYB\n");
                             for (int i = 0; i < N; i++) {
-                                fprintf(file, "%i, %.4f, %.4f, %.4f\n", i, abs_angle[i], rel_angle[i], hyb_angle[i]);
+                                fprintf(file, "%i, %.4f, %.4f\n", i, abs_angle[i], rel_angle[i]);
                             }
                             fclose(file);
                         }
@@ -2438,12 +2475,12 @@ static void draw_reference_frame_window(ApplicationData* data) {
                     for (int j = 1; j < N; j++) {
                         abs_angle[j] = abs_angle[j - 1] + math::rad_to_deg(math::angle(abs_data[j - 1], abs_data[j]));
                         rel_angle[j] = rel_angle[j - 1] + math::rad_to_deg(math::angle(rel_data[j - 1], rel_data[j]));
-                        hyb_angle[j] = hyb_angle[j - 1] + math::rad_to_deg(math::angle(hyb_data[j - 1], hyb_data[j]));
+                        hyb_angle[j] = hyb_angle[j - 1] + math::rad_to_deg(math::angle(rel_data[j - 1], hyb_data[j]));
                     }
 
                     if (ImGui::Button("Export to CSV##3")) export_to_csv();
 
-                    const float max_val = math::max(math::max(abs_angle[N - 1], rel_angle[N - 1]), hyb_angle[N - 1]);
+                    const float max_val = math::max(abs_angle[N - 1], rel_angle[N - 1]);
                     const ImVec2 x_range = {0.0f, (float)N};
                     const ImVec2 y_range = {0.0f, max_val};
                     ImGui::BeginPlot("Accumulated Angle Delta", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
@@ -3473,9 +3510,6 @@ static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const Mol
         case TrackingMode::Relative:
             rot_data = tracking_data.transform.rotation.relative;
             break;
-        case TrackingMode::Hybrid:
-            rot_data = tracking_data.transform.rotation.hybrid;
-            break;
         default:
             ASSERT(false);
     }
@@ -3585,11 +3619,46 @@ static void draw_density_volume_window(ApplicationData* data) {
         if (!data->ensemble_tracking.structures.empty()) {
             static char filter_buf[128] = {};
             ImGui::Checkbox("Superimpose ensemble", &data->ensemble_tracking.superimpose_structures);
-            ImGui::Combo("Tracking mode", (int*)(&data->ensemble_tracking.tracking_mode), "Absolute\0Relative\0hybrid\0\0");
+            ImGui::Combo("Tracking mode", (int*)(&data->ensemble_tracking.tracking_mode), "Absolute\0Relative\0Hybrid\0\0");
 
             ImGui::InputText("Density filter", filter_buf, 128, ImGuiInputTextFlags_EnterReturnsTrue);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Speficy a filter for what should be included in the density computation");
+            }
+            {
+                ImGuiStyle& style = ImGui::GetStyle();
+                const ImVec2 button_sz(32, 32);
+                const int64 button_count = data->ensemble_tracking.structures.size();
+                const float window_visible_x2 = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+                const Bitfield ensemble_mask = data->ensemble_tracking.atom_mask;
+
+                for (int64 i = 0; i < button_count; i++) {
+                    auto& structure = data->ensemble_tracking.structures[i];
+                    char lbl[4];
+                    snprintf(lbl, 4, "%lli", i);
+                    ImGui::PushID(i);
+                    const bool apply_style = structure.enabled;
+                    if (apply_style) ImGui::PushStyleColor(ImGuiCol_Button, style.Colors[ImGuiCol_ButtonActive]);
+                    if (ImGui::Button(lbl, button_sz)) {
+                        structure.enabled = !structure.enabled;
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        auto mask = data->selection.current_highlight_mask;
+                        bitfield::clear_all(mask);
+                        for (int64 j = 0; j < ensemble_mask.size(); ++j) {
+                            if (ensemble_mask[j]) {
+                                bitfield::set_bit(data->selection.current_highlight_mask, structure.offset + j);
+                            }
+                        }
+                        data->gpu_buffers.dirty.selection = true;
+                    }
+                    if (apply_style) ImGui::PopStyleColor();
+
+                    const float last_button_x2 = ImGui::GetItemRectMax().x;
+                    const float next_button_x2 = last_button_x2 + style.ItemSpacing.x + button_sz.x;
+                    if (i + 1 < button_count && next_button_x2 < window_visible_x2) ImGui::SameLine();
+                    ImGui::PopID();
+                }
             }
             if (ImGui::Button("Compute Density")) {
                 Bitfield filter_mask;
@@ -3611,19 +3680,22 @@ static void draw_density_volume_window(ApplicationData* data) {
                     data->density_volume.volume_data_mutex.lock();
                     clear_volume(&data->density_volume.volume);
 
+                    int active_structures = 0;
                     const mat4 M = data->density_volume.world_to_model_matrix;
                     for (int64 i = 0; i < ensemble_structures.size(); i++) {
-                        LOG_NOTE("%i / %i", (int)i + 1, (int)ensemble_structures.size());
                         auto& structure = ensemble_structures[i];
+                        if (!structure.enabled) continue;
+                        LOG_NOTE("%i / %i", (int)i + 1, (int)ensemble_structures.size());
                         const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(structure.id);
                         if (!tracking_data) {
                             LOG_ERROR("Could not find tracking data for structure: %u", structure.id);
                             continue;
                         }
                         append_trajectory_density(&data->density_volume.volume, filter_mask, traj, M, structure.alignment_matrix, *tracking_data, data->ensemble_tracking.tracking_mode);
+                        active_structures += 1;
                     }
 
-                    const float scl = 1.0f / (float)(traj.num_frames);
+                    const float scl = 1.0f / (float)(traj.num_frames * active_structures);
 
                     data->density_volume.volume.voxel_range = {data->density_volume.volume.voxel_data[0], data->density_volume.volume.voxel_data[0]};
                     for (auto& v : data->density_volume.volume.voxel_data) {
@@ -3732,10 +3804,10 @@ static void draw_density_volume_window(ApplicationData* data) {
                     float* mass = (float*)mem + 6 * atom_count;
 
                     const auto frame0 = get_trajectory_frame(traj, 0);
-                    bitfield::extract_data_from_mask(ref_x, frame0.atom_position.x, ensemble_mask, ensemble_structures[0].offset);
-                    bitfield::extract_data_from_mask(ref_y, frame0.atom_position.y, ensemble_mask, ensemble_structures[0].offset);
-                    bitfield::extract_data_from_mask(ref_z, frame0.atom_position.z, ensemble_mask, ensemble_structures[0].offset);
-                    bitfield::extract_data_from_mask(mass, mol.atom.mass, ensemble_mask, ensemble_structures[0].offset);
+                    bitfield::gather_data_from_mask(ref_x, frame0.atom_position.x, ensemble_mask, ensemble_structures[0].offset);
+                    bitfield::gather_data_from_mask(ref_y, frame0.atom_position.y, ensemble_mask, ensemble_structures[0].offset);
+                    bitfield::gather_data_from_mask(ref_z, frame0.atom_position.z, ensemble_mask, ensemble_structures[0].offset);
+                    bitfield::gather_data_from_mask(mass, mol.atom.mass, ensemble_mask, ensemble_structures[0].offset);
                     const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, atom_count);
                     const mat3 PCA = structure_tracking::get_tracking_data(ensemble_structures[0].id)->simulation_box_aligned_pca;
                     // const mat3 PCA = mat3(1);
@@ -3744,9 +3816,9 @@ static void draw_density_volume_window(ApplicationData* data) {
                     for (int64 i = 1; i < ensemble_structures.size(); i++) {
                         LOG_NOTE("%i / %i", (int)(i + 1), (int)ensemble_structures.size());
                         auto& structure = ensemble_structures[i];
-                        bitfield::extract_data_from_mask(x, frame0.atom_position.x, ensemble_mask, structure.offset);
-                        bitfield::extract_data_from_mask(y, frame0.atom_position.y, ensemble_mask, structure.offset);
-                        bitfield::extract_data_from_mask(z, frame0.atom_position.z, ensemble_mask, structure.offset);
+                        bitfield::gather_data_from_mask(x, frame0.atom_position.x, ensemble_mask, structure.offset);
+                        bitfield::gather_data_from_mask(y, frame0.atom_position.y, ensemble_mask, structure.offset);
+                        bitfield::gather_data_from_mask(z, frame0.atom_position.z, ensemble_mask, structure.offset);
                         const vec3 com = compute_com(x, y, z, mass, atom_count);
                         const mat3 R = structure_tracking::compute_rotation(x, y, z, ref_x, ref_y, ref_z, mass, atom_count, com, ref_com);
                         structure.alignment_matrix = PCA * math::transpose(R);
@@ -4574,15 +4646,15 @@ void create_screenshot(ApplicationData* data) {
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glReadPixels(0, 0, img.width, img.height, GL_RGBA, GL_UNSIGNED_BYTE, img.data);
 
+#if 0
     {
         // @NOTE: Swap Rows to flip image with respect to y-axis
         const uint32_t row_byte_size = img.width * sizeof(uint32_t);
-        void* mem = TMP_MALLOC(row_byte_size);
-        defer { TMP_FREE(mem); };
-        uint32_t* row_t = (uint32_t*)mem;
-        for (uint32_t y = 0; y < (uint32_t)img.height; y++) {
-            uint32_t* row_a = img.data + y * img.width;
-            uint32_t* row_b = img.data + (img.height - 1 - y) * img.width;
+        uint32_t* row_t = (uint32_t*)TMP_MALLOC(row_byte_size);
+        defer { TMP_FREE(row_t); };
+        for (uint32_t i = 0; i < (uint32_t)img.height; ++i) {
+            uint32_t* row_a = img.data + i * img.width;
+            uint32_t* row_b = img.data + (img.height - 1 - i) * img.width;
             if (row_a != row_b) {
                 memcpy(row_t, row_a, row_byte_size);  // tmp = a;
                 memcpy(row_a, row_b, row_byte_size);  // a = b;
@@ -4590,6 +4662,7 @@ void create_screenshot(ApplicationData* data) {
             }
         }
     }
+#endif
 
     platform::FileDialogResult file_res = platform::file_dialog(platform::FileDialogFlags_Save, {}, "png");
     if (file_res.result == platform::FileDialogResult::Ok) {
@@ -4833,14 +4906,27 @@ static bool handle_selection(ApplicationData* data) {
         if (region_select) {
             const vec2 res = {data->ctx.window.width, data->ctx.window.height};
             const mat4 mvp = data->view.param.matrix.current.view_proj;
-            const float* pos_x = data->dynamic.molecule.atom.position.x;
-            const float* pos_y = data->dynamic.molecule.atom.position.y;
-            const float* pos_z = data->dynamic.molecule.atom.position.z;
 
             for (int64 i = 0; i < N; i++) {
                 if (!bitfield::get_bit(data->representations.atom_visibility_mask, i)) continue;
-                const vec4 p = mvp * vec4(pos_x[i], pos_y[i], pos_z[i], 1);
+#if 1
+                // @PERF: Do the projection manually. GLM is super slow in doing the matrix vector multiplication on msvc for some reason...
+                const float x = data->dynamic.molecule.atom.position.x[i];
+                const float y = data->dynamic.molecule.atom.position.y[i];
+                const float z = data->dynamic.molecule.atom.position.z[i];
+
+                const float p_x = mvp[0][0] * x + mvp[1][0] * y + mvp[2][0] * z + mvp[3][0];
+                const float p_y = mvp[0][1] * x + mvp[1][1] * y + mvp[2][1] * z + mvp[3][1];
+                const float p_w = mvp[0][3] * x + mvp[1][3] * y + mvp[2][3] * z + mvp[3][3];
+
+                vec2 c;
+                c.x = (p_x / p_w * 0.5f + 0.5f) * res.x;
+                c.y = (-p_y / p_w * 0.5f + 0.5f) * res.y;
+#else
+                // @PERF: WHY IS THIS SO GOD DAMN SLOW ON MSVC???
+                const vec4 p = mvp * vec4(data->dynamic.molecule.atom.position.x[i], data->dynamic.molecule.atom.position.y[i], data->dynamic.molecule.atom.position.z[i], 1);
                 const vec2 c = (vec2(p.x / p.w, -p.y / p.w) * 0.5f + 0.5f) * res;
+#endif
                 if (min_p.x <= c.x && c.x <= max_p.x && min_p.y <= c.y && c.y <= max_p.y) {
                     bitfield::set_bit(mask, i);
                 }
@@ -5292,9 +5378,6 @@ static void update_properties(ApplicationData* data) {
                             case TrackingMode::Relative:
                                 rot_data = tracking_data->transform.rotation.relative;
                                 break;
-                            case TrackingMode::Hybrid:
-                                rot_data = tracking_data->transform.rotation.hybrid;
-                                break;
                             default:
                                 ASSERT(false);
                                 break;
@@ -5541,13 +5624,13 @@ static void update_reference_frames(ApplicationData* data) {
             float* current_y = (float*)c_mem + 1 * masked_count;
             float* current_z = (float*)c_mem + 2 * masked_count;
 
-            int64 count = bitfield::extract_data_from_mask(weight, mol.atom.mass, ref.atom_mask);
-            bitfield::extract_data_from_mask(frame_x, get_trajectory_position_x(traj, 0).data(), ref.atom_mask);
-            bitfield::extract_data_from_mask(frame_y, get_trajectory_position_y(traj, 0).data(), ref.atom_mask);
-            bitfield::extract_data_from_mask(frame_z, get_trajectory_position_z(traj, 0).data(), ref.atom_mask);
-            bitfield::extract_data_from_mask(current_x, mol.atom.position.x, ref.atom_mask);
-            bitfield::extract_data_from_mask(current_y, mol.atom.position.y, ref.atom_mask);
-            bitfield::extract_data_from_mask(current_z, mol.atom.position.z, ref.atom_mask);
+            int64 count = bitfield::gather_data_from_mask(weight, mol.atom.mass, ref.atom_mask);
+            bitfield::gather_data_from_mask(frame_x, get_trajectory_position_x(traj, 0).data(), ref.atom_mask);
+            bitfield::gather_data_from_mask(frame_y, get_trajectory_position_y(traj, 0).data(), ref.atom_mask);
+            bitfield::gather_data_from_mask(frame_z, get_trajectory_position_z(traj, 0).data(), ref.atom_mask);
+            bitfield::gather_data_from_mask(current_x, mol.atom.position.x, ref.atom_mask);
+            bitfield::gather_data_from_mask(current_y, mol.atom.position.y, ref.atom_mask);
+            bitfield::gather_data_from_mask(current_z, mol.atom.position.z, ref.atom_mask);
 
             const vec3 frame_com = compute_com(frame_x, frame_y, frame_z, weight, masked_count);
             const vec3 current_com = compute_com(current_x, current_y, current_z, weight, masked_count);
@@ -5669,13 +5752,13 @@ static void superimpose_ensemble(ApplicationData* data) {
             float* current_y = (float*)c_mem + 1 * masked_count;
             float* current_z = (float*)c_mem + 2 * masked_count;
 
-            int64 count = bitfield::extract_data_from_mask(weight, mol.atom.mass, atom_mask);
-            bitfield::extract_data_from_mask(frame_x, get_trajectory_position_x(traj, 0).data(), atom_mask, structure.offset);
-            bitfield::extract_data_from_mask(frame_y, get_trajectory_position_y(traj, 0).data(), atom_mask, structure.offset);
-            bitfield::extract_data_from_mask(frame_z, get_trajectory_position_z(traj, 0).data(), atom_mask, structure.offset);
-            bitfield::extract_data_from_mask(current_x, mol.atom.position.x, atom_mask, structure.offset);
-            bitfield::extract_data_from_mask(current_y, mol.atom.position.y, atom_mask, structure.offset);
-            bitfield::extract_data_from_mask(current_z, mol.atom.position.z, atom_mask, structure.offset);
+            int64 count = bitfield::gather_data_from_mask(weight, mol.atom.mass, atom_mask);
+            bitfield::gather_data_from_mask(frame_x, get_trajectory_position_x(traj, 0).data(), atom_mask, structure.offset);
+            bitfield::gather_data_from_mask(frame_y, get_trajectory_position_y(traj, 0).data(), atom_mask, structure.offset);
+            bitfield::gather_data_from_mask(frame_z, get_trajectory_position_z(traj, 0).data(), atom_mask, structure.offset);
+            bitfield::gather_data_from_mask(current_x, mol.atom.position.x, atom_mask, structure.offset);
+            bitfield::gather_data_from_mask(current_y, mol.atom.position.y, atom_mask, structure.offset);
+            bitfield::gather_data_from_mask(current_z, mol.atom.position.z, atom_mask, structure.offset);
 
             const vec3 frame_com = compute_com(frame_x, frame_y, frame_z, weight, masked_count);
             const vec3 current_com = compute_com(current_x, current_y, current_z, weight, masked_count);
@@ -5687,9 +5770,6 @@ static void superimpose_ensemble(ApplicationData* data) {
                     break;
                 case TrackingMode::Relative:
                     rot_data = tracking_data->transform.rotation.relative;
-                    break;
-                case TrackingMode::Hybrid:
-                    rot_data = tracking_data->transform.rotation.hybrid;
                     break;
                 default:
                     ASSERT(false);

@@ -26,24 +26,24 @@ struct Context {
 Context* context = nullptr;
 
 // clang-format off
-static mat3 compute_weighted_cross_covariance_matrix(const float* x0, const float* y0, const float* z0,
-                                                     const float* x1, const float* y1, const float* z1,
-                                                     const float* weight,
-                                                     int64 count, const vec3& com0 = {0,0,0}, const vec3& com1 = {0,0,0})
+static dmat3 compute_weighted_cross_covariance_matrix(const float* x0, const float* y0, const float* z0,
+                                                      const float* x1, const float* y1, const float* z1,
+                                                      const float* weight,
+                                                      int64 count, const dvec3& com0 = {0,0,0}, const dvec3& com1 = {0,0,0})
 // clang-format on
 {
-    mat3 A{0};
+    dmat3 A{0};
     for (int64 i = 0; i < count; i++) {
         // @TODO: Vectorize...
-        const float px = x0[i] - com0.x;
-        const float py = y0[i] - com0.y;
-        const float pz = z0[i] - com0.z;
+        const double px = (double)x0[i] - (double)com0.x;
+        const double py = (double)y0[i] - (double)com0.y;
+        const double pz = (double)z0[i] - (double)com0.z;
 
-        const float qx = x1[i] - com1.x;
-        const float qy = y1[i] - com1.y;
-        const float qz = z1[i] - com1.z;
+        const double qx = (double)x1[i] - (double)com1.x;
+        const double qy = (double)y1[i] - (double)com1.y;
+        const double qz = (double)z1[i] - (double)com1.z;
 
-        const float w = weight[i];
+        const double w = weight[i];
 
         A[0][0] += w * px * qx;
         A[0][1] += w * px * qy;
@@ -60,17 +60,17 @@ static mat3 compute_weighted_cross_covariance_matrix(const float* x0, const floa
 }
 
 // clang-format off
-static mat3 compute_weighted_covariance_matrix(const float* x, const float* y, const float* z,
-                                               const float* weight, int64 count, const vec3& com = {0,0,0})
+static dmat3 compute_weighted_covariance_matrix(const float* x, const float* y, const float* z, const float* weight,
+                                                int64 count, const dvec3& com = {0,0,0})
 // clang-format on
 {
-    mat3 A{0};
+    dmat3 A{0};
     for (int64 i = 0; i < count; i++) {
         // @TODO: Vectorize...
-        const float qx = x[i] - com.x;
-        const float qy = y[i] - com.y;
-        const float qz = z[i] - com.z;
-        const float w = weight[i];
+        const double qx = (double)x[i] - (double)com.x;
+        const double qy = (double)y[i] - (double)com.y;
+        const double qz = (double)z[i] - (double)com.z;
+        const double w = (double)weight[i];
 
         A[0][0] += w * qx * qx;
         A[0][1] += w * qx * qy;
@@ -117,6 +117,7 @@ static void compute_eigen(const mat3& M, vec3 (&vectors)[3], float (&value)[3]) 
 }
 
 static void compute_svd(const mat3& A, mat3& U, mat3& S, mat3& V) { svd(ARGS(A), ARGS(U), ARGS(S), ARGS(V)); }
+static void compute_svd(const dmat3& A, dmat3& U, dmat3& S, dmat3& V) { svd(ARGS(A), ARGS(U), ARGS(S), ARGS(V)); }
 
 #undef ARGS
 
@@ -137,6 +138,17 @@ static mat3 extract_rotation(const mat3& M) {
     const float d = math::determinant(V * Ut);
     const mat3 D = {1, 0, 0, 0, 1, 0, 0, 0, d};
     const mat3 R = V * D * Ut;
+    return R;
+}
+
+static dmat3 extract_rotation(const dmat3& M) {
+    dmat3 U, S, V;
+    compute_svd(M, U, S, V);
+
+    const dmat3 Ut = math::transpose(U);
+    const double d = math::determinant(V * Ut);
+    const dmat3 D = {1, 0, 0, 0, 1, 0, 0, 0, d};
+    const dmat3 R = V * D * Ut;
     return R;
 }
 
@@ -498,15 +510,15 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     float* prv_x = (float*)mem + 6 * num_atoms;
     float* prv_y = (float*)mem + 7 * num_atoms;
     float* prv_z = (float*)mem + 8 * num_atoms;
-    float* cor_x = (float*)mem + 9 * num_atoms;
-    float* cor_y = (float*)mem + 10 * num_atoms;
-    float* cor_z = (float*)mem + 11 * num_atoms;
+    float* int_x = (float*)mem + 9 * num_atoms;
+    float* int_y = (float*)mem + 10 * num_atoms;
+    float* int_z = (float*)mem + 11 * num_atoms;
     float* mass = (float*)mem + 12 * num_atoms;
 
-    bitfield::extract_data_from_mask(ref_x, get_trajectory_position_x(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
-    bitfield::extract_data_from_mask(ref_y, get_trajectory_position_y(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
-    bitfield::extract_data_from_mask(ref_z, get_trajectory_position_z(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
-    bitfield::extract_data_from_mask(mass, dynamic.molecule.atom.mass, atom_mask, mask_offset);
+    bitfield::gather_data_from_mask(ref_x, get_trajectory_position_x(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
+    bitfield::gather_data_from_mask(ref_y, get_trajectory_position_y(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
+    bitfield::gather_data_from_mask(ref_z, get_trajectory_position_z(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
+    bitfield::gather_data_from_mask(mass, dynamic.molecule.atom.mass, atom_mask, mask_offset);
 
     /*
     float tot_mass = 0.0f;
@@ -515,10 +527,14 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     }
     */
 
+    memcpy(int_x, ref_x, num_atoms * sizeof(float));
+    memcpy(int_y, ref_y, num_atoms * sizeof(float));
+    memcpy(int_z, ref_z, num_atoms * sizeof(float));
+
     const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, num_atoms);
-    vec3 prv_com = ref_com;
-    vec3 cor_com = ref_com;
-    vec3 cur_com = {0, 0, 0};
+    dvec3 prv_com = ref_com;
+    dvec3 int_com = ref_com;
+    dvec3 cur_com = {0, 0, 0};
 
     float* avg_x = s->tracking_data.average_structure.x;
     float* avg_y = s->tracking_data.average_structure.y;
@@ -531,9 +547,9 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
 
     // Compute average structure
     for (int i = 1; i < num_frames; i++) {
-        bitfield::extract_data_from_mask(cur_x, dynamic.trajectory.frame_buffer[i].atom_position.x, atom_mask, mask_offset);
-        bitfield::extract_data_from_mask(cur_y, dynamic.trajectory.frame_buffer[i].atom_position.y, atom_mask, mask_offset);
-        bitfield::extract_data_from_mask(cur_z, dynamic.trajectory.frame_buffer[i].atom_position.z, atom_mask, mask_offset);
+        bitfield::gather_data_from_mask(cur_x, dynamic.trajectory.frame_buffer[i].atom_position.x, atom_mask, mask_offset);
+        bitfield::gather_data_from_mask(cur_y, dynamic.trajectory.frame_buffer[i].atom_position.y, atom_mask, mask_offset);
+        bitfield::gather_data_from_mask(cur_z, dynamic.trajectory.frame_buffer[i].atom_position.z, atom_mask, mask_offset);
         cur_com = compute_com(cur_x, cur_y, cur_z, num_atoms);
         translate(cur_x, cur_y, cur_z, num_atoms, -cur_com);
 
@@ -560,35 +576,45 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     // Set first frame explicitly
     s->tracking_data.transform.rotation.absolute[0] = {1, 0, 0, 0};
     s->tracking_data.transform.rotation.relative[0] = {1, 0, 0, 0};
-    s->tracking_data.transform.rotation.hybrid[0] = {1, 0, 0, 0};
     s->tracking_data.transform.com[0] = ref_com;
     compute_eigen(compute_weighted_covariance_matrix(ref_x, ref_y, ref_z, mass, num_atoms, ref_com), (vec3(&)[3])s->tracking_data.eigen.vectors[0], (float(&)[3])s->tracking_data.eigen.values[0]);
 
-    for (int32 i = 1; i < num_frames; i++) {
+    for (int32 i = 1; i < num_frames; ++i) {
         // Fetch current
-        bitfield::extract_data_from_mask(cur_x, dynamic.trajectory.frame_buffer[i].atom_position.x, atom_mask, mask_offset);
-        bitfield::extract_data_from_mask(cur_y, dynamic.trajectory.frame_buffer[i].atom_position.y, atom_mask, mask_offset);
-        bitfield::extract_data_from_mask(cur_z, dynamic.trajectory.frame_buffer[i].atom_position.z, atom_mask, mask_offset);
+        bitfield::gather_data_from_mask(cur_x, dynamic.trajectory.frame_buffer[i].atom_position.x, atom_mask, mask_offset);
+        bitfield::gather_data_from_mask(cur_y, dynamic.trajectory.frame_buffer[i].atom_position.y, atom_mask, mask_offset);
+        bitfield::gather_data_from_mask(cur_z, dynamic.trajectory.frame_buffer[i].atom_position.z, atom_mask, mask_offset);
 
-        cur_com = compute_com(cur_x, cur_y, cur_z, mass, num_atoms);
+        //cur_com = compute_com(cur_x, cur_y, cur_z, mass, num_atoms);
 
-        const mat3 abs_mat = compute_weighted_cross_covariance_matrix(ref_x, ref_y, ref_z, cur_x, cur_y, cur_z, mass, num_atoms, ref_com, cur_com);
-        const mat3 rel_mat = compute_weighted_cross_covariance_matrix(prv_x, prv_y, prv_z, cur_x, cur_y, cur_z, mass, num_atoms, prv_com, cur_com);
-        const mat3 cov_mat = compute_weighted_covariance_matrix(cur_x, cur_y, cur_z, mass, num_atoms, cur_com);
+        dvec3 sum_pos = {0, 0, 0};
+        double sum_mass = 0;
+        for (int64 j = 0; j < num_atoms; ++j) {
+            const double m = mass[j];
+            sum_pos.x += (double)cur_x[j] * m;
+            sum_pos.y += (double)cur_y[j] * m;
+            sum_pos.z += (double)cur_z[j] * m;
+            sum_mass += m;
+        }
+        cur_com = sum_pos / sum_mass;
 
-        const mat3 abs_rot = extract_rotation(abs_mat);
-        const mat3 rel_rot = extract_rotation(rel_mat);
+        const dmat3 abs_mat = compute_weighted_cross_covariance_matrix(ref_x, ref_y, ref_z, cur_x, cur_y, cur_z, mass, num_atoms, ref_com, cur_com);
+        // const mat3 rel_mat = compute_weighted_cross_covariance_matrix(prv_x, prv_y, prv_z, cur_x, cur_y, cur_z, mass, num_atoms, prv_com, cur_com);
+        const dmat3 cov_mat = compute_weighted_covariance_matrix(cur_x, cur_y, cur_z, mass, num_atoms, cur_com);
+
+        const dmat3 abs_rot = extract_rotation(abs_mat);
+        // const mat3 rel_rot = extract_rotation(rel_mat);
 
         quat q_abs = math::normalize(math::quat_cast(abs_rot));
 
         // Concatenate delta to relative transform
-        const quat q_del = math::normalize(math::quat_cast(rel_rot));
-        q_relative = math::normalize(q_relative * q_del);
-        quat q_rel = q_relative;
+        // const quat q_del = math::normalize(math::quat_cast(rel_rot));
+        // q_relative = math::normalize(q_relative * q_del);
+        // quat q_rel = q_relative;
 
         // Make sure we take shortest path from previous orientation
         q_abs = math::dot(s->tracking_data.transform.rotation.absolute[i - 1], q_abs) > 0.0f ? q_abs : -q_abs;
-        q_rel = math::dot(s->tracking_data.transform.rotation.relative[i - 1], q_rel) > 0.0f ? q_rel : -q_rel;
+        // q_rel = math::dot(s->tracking_data.transform.rotation.relative[i - 1], q_rel) > 0.0f ? q_rel : -q_rel;
 
         mat3 eigen_vectors;
         vec3 eigen_values;
@@ -650,7 +676,7 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
             transform_positions_ref(cor_x, cor_y, cor_z, num_points, M);
         }
 
-        const mat3 err_mat = compute_mass_weighted_cross_covariance_matrix(cor_x, cor_y, cor_z, cur_x, cur_y, cur_z, mass, num_points, cor_com, cur_com);
+        const mat3 err_mat = compute_mass_weighted_cross_covariance_matrix(cor_x, cor_y, cor_z, cur_x, cur_y, cur_z, mass, num_atoms, cor_com, cur_com);
         const mat3 err_rot = extract_rotation(err_mat);
         const quat q_err = math::inverse(math::normalize(math::quat_cast(err_rot)));
 
@@ -663,23 +689,35 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
         q_hybrid = math::normalize(math::slerp(q_hybrid * q_del, math::conjugate(q_abs), 0.2f));
         const quat q_cor = math::conjugate(q_hybrid);
 #elif 1
-        // Dynamic ratio Slerp
-        // absolute contributes with a factor based on the cosine of the angle between the absolute and predicted orientation
-        const quat q_pred = q_hybrid * q_del;
-        const quat q_ref = q_abs;
-        const float d = math::dot(q_pred, q_ref);
-        //const float dist = math::geodesic_distance(q_pred, q_ref);
-        //printf("dist: %.3f\n", dist);
-        // const float d = math::dot(q_pred, q_ref) * 0.5f + 0.5f;
-        const float t = math::pow(d, 16.0f);
-        q_hybrid = math::normalize(math::slerp(q_pred, q_ref, t));
-        // quat q_cor = q_hybrid;
-        // quat q_cor = math::conjugate(q_hybrid);
-        const quat q_hyb = math::dot(s->tracking_data.transform.rotation.hybrid[i - 1], q_hybrid) > 0.0f ? q_hybrid : -q_hybrid;
-        q_hybrid = q_hyb;
+        // @NOTE: Relative approach from Chevrot et al.
+        // Avoids accumulative error from concatenation of matrices by storing an internal copy of the structure
+        // And modifies that in an iterative fashion
+        const dmat3 rel_mat = compute_weighted_cross_covariance_matrix(int_x, int_y, int_z, cur_x, cur_y, cur_z, mass, num_atoms, int_com, cur_com);
+        const dmat3 rel_rot = extract_rotation(rel_mat);
 
-        // const float angle = math::rad_to_deg(math::acos(math::dot(q_pred, q_ref)));
-        // printf("Angle: %.2f\n", angle);
+        const quat q_relative = math::normalize(math::quat_cast(rel_rot));
+        const quat q_rel = math::dot(s->tracking_data.transform.rotation.relative[i - 1], q_relative) > 0.0f ? q_relative : -q_relative;
+
+        // @NOTE: Update internal representation
+        for (int j = 0; j < num_atoms; j++) {
+            const dvec3 t = cur_com;
+            const dvec3 v = {cur_x[j] - t.x, cur_y[j] - t.y, cur_z[j] - t.z};
+
+#if 1
+            // Matrix multiply
+            int_x[j] = rel_rot[0][0] * v.x + rel_rot[1][0] * v.y + rel_rot[2][0] * v.z + t.x;
+            int_y[j] = rel_rot[0][1] * v.x + rel_rot[1][1] * v.y + rel_rot[2][1] * v.z + t.y;
+            int_z[j] = rel_rot[0][2] * v.x + rel_rot[1][2] * v.y + rel_rot[2][2] * v.z + t.z;
+#else
+            // Quaternion multiply
+            const vec3 p = q_relative * v + t;
+            int_x[j] = p.x;
+            int_y[j] = p.y;
+            int_z[j] = p.z;
+#endif
+        }
+        int_com = cur_com;
+
 #elif 0
         // Partial correction based on geometric anisotropy
         // Align relative to absolute PCA axes based on shape.
@@ -757,6 +795,14 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
         }
         const quat q_cor = q_hybrid;
 #endif
+        // Dynamic ratio Slerp
+        // absolute contributes with a factor based on the cosine of the angle between the absolute and relative orientation
+        const float d = math::dot(q_rel, q_abs);
+        const float t = math::pow(d, 8.0f);
+        q_hybrid = math::normalize(math::slerp(q_rel, q_abs, t));
+        const quat q_hyb = math::dot(s->tracking_data.transform.rotation.hybrid[i - 1], q_hybrid) > 0.0f ? q_hybrid : -q_hybrid;
+        q_hybrid = q_hyb;
+
         // Store results
         s->tracking_data.transform.rotation.absolute[i] = q_abs;
         s->tracking_data.transform.rotation.relative[i] = q_rel;
@@ -789,6 +835,60 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     s->tracking_data.pca = s->tracking_data.eigen.vectors[0];
 
     return true;
+}
+
+void transform_to_internal_frame(MoleculeDynamic& dynamic, Bitfield atom_mask, int64 mask_offset) {
+    // Scratch data
+    const int num_atoms = bitfield::number_of_bits_set(atom_mask);
+    const int num_frames = dynamic.trajectory.num_frames;
+
+    const auto mem_size = sizeof(float) * num_atoms * 7;
+    void* mem = TMP_MALLOC(mem_size);
+    defer { TMP_FREE(mem); };
+    memset(mem, 0, mem_size);
+
+    float* cur_x = (float*)mem + 0 * num_atoms;
+    float* cur_y = (float*)mem + 1 * num_atoms;
+    float* cur_z = (float*)mem + 2 * num_atoms;
+    float* int_x = (float*)mem + 3 * num_atoms;
+    float* int_y = (float*)mem + 4 * num_atoms;
+    float* int_z = (float*)mem + 5 * num_atoms;
+    float* mass = (float*)mem + 6 * num_atoms;
+
+    bitfield::gather_data_from_mask(int_x, get_trajectory_position_x(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
+    bitfield::gather_data_from_mask(int_y, get_trajectory_position_y(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
+    bitfield::gather_data_from_mask(int_z, get_trajectory_position_z(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
+    bitfield::gather_data_from_mask(mass, dynamic.molecule.atom.mass, atom_mask, mask_offset);
+
+    vec3 int_com = compute_com(int_x, int_y, int_z, num_atoms);
+
+    for (int32 i = 1; i < num_frames; i++) {
+        float* pos_x = dynamic.trajectory.frame_buffer[i].atom_position.x;
+        float* pos_y = dynamic.trajectory.frame_buffer[i].atom_position.y;
+        float* pos_z = dynamic.trajectory.frame_buffer[i].atom_position.z;
+
+        // Fetch current
+        bitfield::gather_data_from_mask(cur_x, pos_x, atom_mask, mask_offset);
+        bitfield::gather_data_from_mask(cur_y, pos_y, atom_mask, mask_offset);
+        bitfield::gather_data_from_mask(cur_z, pos_z, atom_mask, mask_offset);
+        const vec3 cur_com = compute_com(cur_x, cur_y, cur_z, mass, num_atoms);
+
+        const mat3 m1 = compute_weighted_cross_covariance_matrix(int_x, int_y, int_z, cur_x, cur_y, cur_z, mass, num_atoms, int_com, cur_com);
+        mat3 r1 = extract_rotation(m1);
+
+        for (int j = 0; j < num_atoms; j++) {
+            const vec3 t = cur_com;
+            const vec3 v = {cur_x[j] - t.x, cur_y[j] - t.y, cur_z[j] - t.z};
+            int_x[j] = r1[0][0] * v.x + r1[1][0] * v.y + r1[2][0] * v.z + t.x;
+            int_y[j] = r1[0][1] * v.x + r1[1][1] * v.y + r1[2][1] * v.z + t.y;
+            int_z[j] = r1[0][2] * v.x + r1[1][2] * v.y + r1[2][2] * v.z + t.z;
+        }
+        int_com = cur_com;
+
+        bitfield::scatter_data_from_mask(pos_x, int_x, atom_mask);
+        bitfield::scatter_data_from_mask(pos_y, int_y, atom_mask);
+        bitfield::scatter_data_from_mask(pos_z, int_z, atom_mask);
+    }
 }
 
 const TrackingData* get_tracking_data(ID id) {
