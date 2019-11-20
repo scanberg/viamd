@@ -48,6 +48,7 @@ const float samplingRate = 8.0;
 
 float getVoxel(in vec3 samplePos) {
     //return samplePos.x;
+    samplePos -= (u_gradient_spacing_tex_space * vec4(0.5, 0.5, 0.5, 0.0)).xyz;
     return texture(u_tex_volume, samplePos).r * u_density_scale;
 }
 
@@ -240,6 +241,10 @@ float PDnrand( vec2 n ) {
     return fract( sin(dot(n.xy, vec2(12.9898, 78.233)))* 43758.5453 );
 }
 
+vec2 PDnrand2( vec2 n ) {
+    return fract( sin(dot(n.xy, vec2(12.9898, 78.233)))* vec2(43758.5453, 28001.8384) );
+}
+
 void main() {
     //float val = mod(gl_FragCoord.x + gl_FragCoord.y, 2.0);
     //if (val > 0.0) discard;
@@ -273,12 +278,13 @@ void main() {
     vec3 entryPos = ori + dir * t_entry;
     float tEnd = t_exit - t_entry;
 
+    vec2 jitter = PDnrand2(gl_FragCoord.xy + vec2(u_time, u_time));
+
     float tIncr = min(tEnd, tEnd / (samplingRate * length(dir * tEnd * textureSize(u_tex_volume, 0))));
     float samples = ceil(tEnd / tIncr);
     tIncr = tEnd / samples;
 
-    float offset = PDnrand(gl_FragCoord.xy + vec2(u_time, u_time));
-    float t = offset * tIncr;
+    float t = jitter.y * tIncr;
 
     vec4 result = vec4(0);
     float density = getVoxel(entryPos + t * dir); // need this for isosurface rendering
