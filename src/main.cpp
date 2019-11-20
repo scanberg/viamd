@@ -28,9 +28,9 @@
 #include "gfx/immediate_draw_utils.h"
 #include "gfx/postprocessing_utils.h"
 
-#include <glm/gtx/string_cast.hpp>
-#include <glm/gtx/component_wise.hpp>
-#include <glm/gtc/type_ptr.hpp>
+//#include <glm/gtx/string_cast.hpp>
+//#include <glm/gtx/component_wise.hpp>
+//#include <glm/gtc/type_ptr.hpp>
 
 #include "volume.h"
 #include "volume_utils.h"

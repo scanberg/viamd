@@ -1,6 +1,7 @@
 #include "structure_tracking.h"
 
 #include <core/log.h>
+#include <core/hash.h>
 #include <mol/molecule_utils.h>
 #include <mol/trajectory_utils.h>
 
