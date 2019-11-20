@@ -2155,6 +2155,10 @@ void draw_selection_window(ApplicationData* data) {
 }
 */
 
+static void highlight_range(ApplicationData* data, AtomRange range) {
+
+}
+
 void draw_context_popup(ApplicationData* data) {
     ASSERT(data);
 
@@ -2173,6 +2177,9 @@ void draw_context_popup(ApplicationData* data) {
 
                 if (ImGui::MenuItem("on Atom")) {
                     atom_range = {atom_idx, atom_idx + 1};
+                }
+                if (ImGui::IsItemHovered()) {
+
                 }
                 if (ImGui::MenuItem("on Residue")) {
                     const auto res_idx = data->dynamic.molecule.atom.res_idx[atom_idx];
@@ -3538,8 +3545,8 @@ static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const Mol
             if (bitfield::get_bit(atom_mask, i)) {
                 const vec4 wc = {frame.atom_position.x[i], frame.atom_position.y[i], frame.atom_position.z[i], 1.0f};  // world coord
                 if (math::distance2(com, vec3(wc)) > radial_cutoff * radial_cutoff) continue;
-                const vec4 vc = M * wc;                                                                                // volume coord [0,1]
-                const vec4 tc = math::fract(vc);                                                                       // PBC
+                const vec4 vc = M * wc;           // volume coord [0,1]
+                const vec4 tc = math::fract(vc);  // PBC
                 const ivec3 c = vec3(tc) * vec3(vol->dim - 1);
                 const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
                 vol->voxel_data[voxel_idx]++;
@@ -3706,18 +3713,16 @@ static void draw_density_volume_window(ApplicationData* data) {
                         active_structures += 1;
                     }
 
-                    const float scl = 1.0f / (float)(traj.num_frames * active_structures);
+                    //const float scl = 1.0f / (float)(traj.num_frames * active_structures);
 
                     data->density_volume.volume.voxel_range = {data->density_volume.volume.voxel_data[0], data->density_volume.volume.voxel_data[0]};
                     for (auto& v : data->density_volume.volume.voxel_data) {
                         if (v < data->density_volume.volume.voxel_range.min) data->density_volume.volume.voxel_range.min = v;
                         if (v > data->density_volume.volume.voxel_range.max) data->density_volume.volume.voxel_range.max = v;
-
-                        v *= scl;
                     }
 
                     LOG_NOTE("Done!");
-                    LOG_NOTE("Max density: %.3f", data->density_volume.volume.voxel_range.max);
+                    LOG_NOTE("Max density: %ui", data->density_volume.volume.voxel_range.max);
                     data->density_volume.texture.dirty = true;
                     data->density_volume.volume_data_mutex.unlock();
                 }
@@ -5426,7 +5431,7 @@ static void update_density_volume(ApplicationData* data) {
                 volume::create_volume_texture(&data->density_volume.texture.id, data->density_volume.texture.dim);
             }
 
-            volume::set_volume_texture_data(data->density_volume.texture.id, data->density_volume.texture.dim, data->density_volume.volume.voxel_data.ptr);
+            volume::set_volume_texture_data(data->density_volume.texture.id, data->density_volume.texture.dim, GL_UNSIGNED_INT, data->density_volume.volume.voxel_data.ptr);
             data->density_volume.volume_data_mutex.unlock();
             data->density_volume.texture.max_value = data->density_volume.volume.voxel_range.y;
             data->density_volume.texture.dirty = false;

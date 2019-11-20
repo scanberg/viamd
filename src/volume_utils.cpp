@@ -150,10 +150,10 @@ void create_tf_texture(GLuint* texture, int* width, CStringView path) {
     }
 }
 
-void set_volume_texture_data(GLuint texture, ivec3 dim, void* data) {
+void set_volume_texture_data(GLuint texture, ivec3 dim, GLenum data_format, void* data) {
     if (glIsTexture(texture)) {
         glBindTexture(GL_TEXTURE_3D, texture);
-        glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, dim.x, dim.y, dim.z, GL_RED, GL_FLOAT, data);
+        glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, dim.x, dim.y, dim.z, GL_RED, data_format, data);
         glBindTexture(GL_TEXTURE_3D, 0);
     }
 }
@@ -211,7 +211,7 @@ void render_volume_texture(const VolumeRenderDesc& desc) {
     data.gradient_spacing_world_space = desc.voxel_spacing;
     data.gradient_spacing_tex_space = mat4(glm::scale(data.view_to_model_mat, desc.voxel_spacing));
 
-    constexpr int cool = offsetof(data, gradient_spacing_tex_space);
+    //constexpr int cool = offsetof(data, gradient_spacing_tex_space);
 
     glBindBuffer(GL_UNIFORM_BUFFER, gl.ubo);
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(UniformData), &data);

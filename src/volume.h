@@ -5,10 +5,10 @@
 #include <core/vector_types.h>
 
 struct Volume {
-    using VoxelDataType = float;
+    using VoxelDataType = uint32_t;
     ivec3 dim = {0, 0, 0};
     ArrayView<VoxelDataType> voxel_data{};
-    Range<float32> voxel_range = {0, 0};
+    Range<VoxelDataType> voxel_range = {0, 0};
 };
 
 void init_volume(Volume* vol, ivec3 dim);
