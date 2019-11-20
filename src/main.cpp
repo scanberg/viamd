@@ -102,7 +102,7 @@ constexpr float32 HYDROGEN_BOND_ANGLE_CUTOFF_MAX = 90.f;
 constexpr float32 BALL_AND_STICK_VDW_SCALE = 0.30f;
 constexpr float32 BALL_AND_STICK_LICORICE_SCALE = 0.5f;
 
-constexpr float32 VOLUME_SAMPLE_FACTOR = 1.0f;
+constexpr float32 VOLUME_SAMPLE_FACTOR = 2.0f;
 constexpr int32 SPLINE_SUBDIVISION_COUNT = 16;
 
 #ifdef VIAMD_RELEASE
@@ -150,7 +150,7 @@ enum class SelectionLevel { Atom, Residue, Chain };
 enum class SelectionOperator { Or, And };
 enum class SelectionGrowth { CovalentBond, Radial };
 enum class RepresentationType { Vdw, Licorice, BallAndStick, Ribbons, Cartoon };
-enum class TrackingMode { Absolute, Relative, Hybrid };
+enum class TrackingMode { Absolute, Relative };
 
 enum AtomBit_ { AtomBit_Highlighted = BIT(0), AtomBit_Selected = BIT(1), AtomBit_Visible = BIT(2) };
 
@@ -908,13 +908,10 @@ int main(int, char**) {
                 }
             }
 
-            if (data.ctx.input.key.hit[KEY_SKIP_TO_PREV_FRAME]) {
+            if (data.ctx.input.key.hit[KEY_SKIP_TO_PREV_FRAME] || data.ctx.input.key.hit[KEY_SKIP_TO_NEXT_FRAME]) {
                 float64 step = data.ctx.input.key.down[Key::KEY_LEFT_CONTROL] ? 10.0 : 1.0;
-                data.playback.time = math::clamp(data.playback.time - step, 0.0, max_time);
-            }
-            if (data.ctx.input.key.hit[KEY_SKIP_TO_NEXT_FRAME]) {
-                float64 step = data.ctx.input.key.down[Key::KEY_LEFT_CONTROL] ? -10.0 : -1.0;
-                data.playback.time = math::clamp(data.playback.time - step, 0.0, max_time);
+                if (data.ctx.input.key.hit[KEY_SKIP_TO_PREV_FRAME]) step = -step;
+                data.playback.time = math::clamp(data.playback.time + step, 0.0, max_time);
             }
         }
 
@@ -1137,8 +1134,25 @@ int main(int, char**) {
     stats::signal_stop_and_wait();
     data.async.backbone_angles.sync.signal_stop_and_wait();
 
-    destroy_framebuffer(&data.fbo);
+    // shutdown subsystems
+    LOG_NOTE("Shutting down immediate draw...");
+    immediate::shutdown();
+    LOG_NOTE("Shutting down molecule draw...");
+    draw::shutdown();
+    LOG_NOTE("Shutting down ramachandran...");
+    ramachandran::shutdown();
+    LOG_NOTE("Shutting down stats...");
+    stats::shutdown();
+    LOG_NOTE("Shutting down filter...");
+    filter::shutdown();
+    LOG_NOTE("Shutting down post processing...");
+    postprocessing::shutdown();
+    LOG_NOTE("Shutting down volume...");
+    volume::shutdown();
+    LOG_NOTE("Shutting down structure tracking...");
+    structure_tracking::shutdown();
 
+    destroy_framebuffer(&data.fbo);
     platform::shutdown(&data.ctx);
 
     return 0;
@@ -2349,7 +2363,7 @@ static void draw_reference_frame_window(ApplicationData* data) {
             }
             // if (ImGui::SliderInt("reference frame idx", ))
             if (!ref.filter_is_ok) ImGui::PopStyleColor();
-            ImGui::Combo("tracking mode", (int*)(&ref.tracking_mode), "Absolute\0Relative\0Hybrid\0\0");
+            ImGui::Combo("tracking mode", (int*)(&ref.tracking_mode), "Absolute\0Relative\0\0");
 
             if (ImGui::Button("Transform trajectory to internal reference frame") && ref.filter_is_ok) {
                 Bitfield mask;
@@ -2395,7 +2409,7 @@ static void draw_reference_frame_window(ApplicationData* data) {
                 const int32 N = (int32)tracking_data->count;
                 const quat* abs_data = tracking_data->transform.rotation.absolute;
                 const quat* rel_data = tracking_data->transform.rotation.relative;
-                const quat* hyb_data = tracking_data->transform.rotation.hybrid;
+                // const quat* hyb_data = tracking_data->transform.rotation.hybrid;
 
                 // Scratch data
                 float* tmp_data = (float*)TMP_MALLOC(sizeof(float) * N * 3);
@@ -2403,16 +2417,16 @@ static void draw_reference_frame_window(ApplicationData* data) {
 
                 float* abs_angle = tmp_data + 0 * N;
                 float* rel_angle = tmp_data + 1 * N;
-                float* hyb_angle = tmp_data + 2 * N;
+                float* del_angle = tmp_data + 2 * N;
 
-                auto export_to_csv = [abs_angle, rel_angle, N]() {
+                auto export_to_csv = [abs_angle, rel_angle, del_angle, N]() {
                     auto res = platform::file_dialog(platform::FileDialogFlags_Save, {}, "csv");
                     if (res.result == platform::FileDialogResult::Ok) {
                         FILE* file = fopen(res.path, "w");
                         if (file) {
-                            fprintf(file, "time, ABS, REL, HYB\n");
+                            fprintf(file, "time, ABS, REL, DEL\n");
                             for (int i = 0; i < N; i++) {
-                                fprintf(file, "%i, %.4f, %.4f\n", i, abs_angle[i], rel_angle[i]);
+                                fprintf(file, "%i, %.4f, %.4f, %.4f\n", i, abs_angle[i], rel_angle[i], del_angle[i]);
                             }
                             fclose(file);
                         }
@@ -2422,12 +2436,12 @@ static void draw_reference_frame_window(ApplicationData* data) {
                 {
                     abs_angle[0] = 0.0f;
                     rel_angle[0] = 0.0f;
-                    hyb_angle[0] = 0.0f;
+                    del_angle[0] = 0.0f;
                     const quat ref_q = {1, 0, 0, 0};
                     for (int j = 0; j < N; j++) {
                         abs_angle[j] = math::rad_to_deg(math::geodesic_distance(ref_q, abs_data[j]));
                         rel_angle[j] = math::rad_to_deg(math::geodesic_distance(ref_q, rel_data[j]));
-                        hyb_angle[j] = math::rad_to_deg(math::geodesic_distance(ref_q, hyb_data[j]));
+                        del_angle[j] = math::rad_to_deg(math::geodesic_distance(abs_data[j], rel_data[j]));
                     }
 
                     if (ImGui::Button("Export to CSV##1")) export_to_csv();
@@ -2437,7 +2451,7 @@ static void draw_reference_frame_window(ApplicationData* data) {
                     ImGui::BeginPlot("Distance To Ref", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
                     ImGui::PlotValues("absolute", abs_angle, N, 0xFF5555FF);
                     ImGui::PlotValues("relative", rel_angle, N, 0xFF55FF55);
-                    ImGui::PlotValues("hybrid", hyb_angle, N, 0xFFFF5555);
+                    ImGui::PlotValues("delta", del_angle, N, 0xFFFF5555);
                     float x_val;
                     if (ImGui::ClickingAtPlot(&x_val)) {
                         data->playback.time = x_val;
@@ -2447,21 +2461,18 @@ static void draw_reference_frame_window(ApplicationData* data) {
                 {
                     abs_angle[0] = 0.0f;
                     rel_angle[0] = 0.0f;
-                    hyb_angle[0] = 0.0f;
                     for (int j = 1; j < N; j++) {
                         abs_angle[j] = math::rad_to_deg(math::angle(abs_data[j - 1], abs_data[j]));
                         rel_angle[j] = math::rad_to_deg(math::angle(rel_data[j - 1], rel_data[j]));
-                        hyb_angle[j] = math::rad_to_deg(math::angle(hyb_data[j - 1], hyb_data[j]));
                     }
 
                     if (ImGui::Button("Export to CSV##2")) export_to_csv();
 
                     const ImVec2 x_range = {0.0f, (float)N};
                     const ImVec2 y_range = {-0.05f, 180.5f};
-                    ImGui::BeginPlot("Frame Angle Delta", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
+                    ImGui::BeginPlot("Preceding Angle Delta", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
                     ImGui::PlotValues("absolute", abs_angle, N, 0xFF5555FF);
                     ImGui::PlotValues("relative", rel_angle, N, 0xFF55FF55);
-                    ImGui::PlotValues("hybrid", hyb_angle, N, 0xFFFF5555);
                     float x_val;
                     if (ImGui::ClickingAtPlot(&x_val)) {
                         data->playback.time = x_val;
@@ -2471,11 +2482,9 @@ static void draw_reference_frame_window(ApplicationData* data) {
                 {
                     abs_angle[0] = 0.0f;
                     rel_angle[0] = 0.0f;
-                    hyb_angle[0] = 0.0f;
                     for (int j = 1; j < N; j++) {
                         abs_angle[j] = abs_angle[j - 1] + math::rad_to_deg(math::angle(abs_data[j - 1], abs_data[j]));
                         rel_angle[j] = rel_angle[j - 1] + math::rad_to_deg(math::angle(rel_data[j - 1], rel_data[j]));
-                        hyb_angle[j] = hyb_angle[j - 1] + math::rad_to_deg(math::angle(rel_data[j - 1], hyb_data[j]));
                     }
 
                     if (ImGui::Button("Export to CSV##3")) export_to_csv();
@@ -2486,7 +2495,6 @@ static void draw_reference_frame_window(ApplicationData* data) {
                     ImGui::BeginPlot("Accumulated Angle Delta", ImVec2(0, plot_height), x_range, y_range, ImGui::LinePlotFlags_AxisX | ImGui::LinePlotFlags_ShowXVal);
                     ImGui::PlotValues("absolute", abs_angle, N, 0xFF5555FF);
                     ImGui::PlotValues("relative", rel_angle, N, 0xFF55FF55);
-                    ImGui::PlotValues("hybrid", hyb_angle, N, 0xFFFF5555);
                     float x_val;
                     if (ImGui::ClickingAtPlot(&x_val)) {
                         data->playback.time = x_val;
@@ -3499,7 +3507,7 @@ static void draw_shape_space_window(ApplicationData* data) {
 }
 
 static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const MoleculeTrajectory& traj, const mat4& world_to_volume_texture, const mat4& rotation,
-                                      const structure_tracking::TrackingData& tracking_data, TrackingMode mode) {
+                                      const structure_tracking::TrackingData& tracking_data, TrackingMode mode, float radial_cutoff) {
     ASSERT(vol);
 
     quat* rot_data;
@@ -3529,6 +3537,7 @@ static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const Mol
         for (int64 i = 0; i < atom_mask.size(); i++) {
             if (bitfield::get_bit(atom_mask, i)) {
                 const vec4 wc = {frame.atom_position.x[i], frame.atom_position.y[i], frame.atom_position.z[i], 1.0f};  // world coord
+                if (math::distance2(com, vec3(wc)) > radial_cutoff * radial_cutoff) continue;
                 const vec4 vc = M * wc;                                                                                // volume coord [0,1]
                 const vec4 tc = math::fract(vc);                                                                       // PBC
                 const ivec3 c = vec3(tc) * vec3(vol->dim - 1);
@@ -3581,7 +3590,7 @@ static void draw_density_volume_window(ApplicationData* data) {
             ImGui::PopStyleVar(2);
             ImGui::PopStyleColor(2);
 
-            ImGui::SliderFloat("Density Scaling", &data->density_volume.dvr.density_scale, 0.001f, 10.f, "%.3f", 3.f);
+            ImGui::SliderFloat("Density Scaling", &data->density_volume.dvr.density_scale, 0.001f, 10000.f, "%.3f", 5.f);
             ImGui::SliderFloat("Alpha Scaling", &data->density_volume.dvr.tf.alpha_scale, 0.001f, 10.f, "%.3f", 3.f);
         }
 
@@ -3619,12 +3628,14 @@ static void draw_density_volume_window(ApplicationData* data) {
         if (!data->ensemble_tracking.structures.empty()) {
             static char filter_buf[128] = {};
             ImGui::Checkbox("Superimpose ensemble", &data->ensemble_tracking.superimpose_structures);
-            ImGui::Combo("Tracking mode", (int*)(&data->ensemble_tracking.tracking_mode), "Absolute\0Relative\0Hybrid\0\0");
+            ImGui::Combo("Tracking mode", (int*)(&data->ensemble_tracking.tracking_mode), "Absolute\0Relative\0\0");
 
             ImGui::InputText("Density filter", filter_buf, 128, ImGuiInputTextFlags_EnterReturnsTrue);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Speficy a filter for what should be included in the density computation");
             }
+            static float cutoff = 10.0f;
+            ImGui::SliderFloat("Radial Cutoff", &cutoff, 1.0f, 100.0f, "%.3f", 2.0f);
             {
                 ImGuiStyle& style = ImGui::GetStyle();
                 const ImVec2 button_sz(32, 32);
@@ -3691,7 +3702,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                             LOG_ERROR("Could not find tracking data for structure: %u", structure.id);
                             continue;
                         }
-                        append_trajectory_density(&data->density_volume.volume, filter_mask, traj, M, structure.alignment_matrix, *tracking_data, data->ensemble_tracking.tracking_mode);
+                        append_trajectory_density(&data->density_volume.volume, filter_mask, traj, M, structure.alignment_matrix, *tracking_data, data->ensemble_tracking.tracking_mode, cutoff);
                         active_structures += 1;
                     }
 
@@ -4646,13 +4657,12 @@ void create_screenshot(ApplicationData* data) {
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glReadPixels(0, 0, img.width, img.height, GL_RGBA, GL_UNSIGNED_BYTE, img.data);
 
-#if 0
     {
         // @NOTE: Swap Rows to flip image with respect to y-axis
         const uint32_t row_byte_size = img.width * sizeof(uint32_t);
         uint32_t* row_t = (uint32_t*)TMP_MALLOC(row_byte_size);
         defer { TMP_FREE(row_t); };
-        for (uint32_t i = 0; i < (uint32_t)img.height; ++i) {
+        for (uint32_t i = 0; i < (uint32_t)img.height / 2; ++i) {
             uint32_t* row_a = img.data + i * img.width;
             uint32_t* row_b = img.data + (img.height - 1 - i) * img.width;
             if (row_a != row_b) {
@@ -4662,7 +4672,6 @@ void create_screenshot(ApplicationData* data) {
             }
         }
     }
-#endif
 
     platform::FileDialogResult file_res = platform::file_dialog(platform::FileDialogFlags_Save, {}, "png");
     if (file_res.result == platform::FileDialogResult::Ok) {
@@ -5642,9 +5651,6 @@ static void update_reference_frames(ApplicationData* data) {
                     break;
                 case TrackingMode::Relative:
                     rot_data = tracking_data->transform.rotation.relative;
-                    break;
-                case TrackingMode::Hybrid:
-                    rot_data = tracking_data->transform.rotation.hybrid;
                     break;
                 default:
                     ASSERT(false);
