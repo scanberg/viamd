@@ -35,11 +35,13 @@ struct UniformData {
     float density_scale = 1.0;
     float alpha_scale = 1.0;
 
-    vec3 clip_plane_min; float _pad0;
+    vec3 clip_plane_min;
+    float _pad0;
     vec3 clip_plane_max;
     float time;
 
-    vec3 gradient_spacing_world_space; float _pad1;
+    vec3 gradient_spacing_world_space;
+    float _pad1;
     mat4 gradient_spacing_tex_space;
 };
 
@@ -117,7 +119,7 @@ void create_volume_texture(GLuint* texture, const ivec3& dim) {
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glTexImage3D(GL_TEXTURE_3D, 0, GL_R16F, dim.x, dim.y, dim.z, 0, GL_RED, GL_FLOAT, nullptr);
+    glTexImage3D(GL_TEXTURE_3D, 0, GL_R8, dim.x, dim.y, dim.z, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
     glBindTexture(GL_TEXTURE_3D, 0);
 }
 
@@ -150,10 +152,37 @@ void create_tf_texture(GLuint* texture, int* width, CStringView path) {
     }
 }
 
-void set_volume_texture_data(GLuint texture, ivec3 dim, GLenum data_format, void* data) {
+void set_volume_texture_data(GLuint texture, ivec3 dim, const uint32_t* data, uint32_t max_value) {
     if (glIsTexture(texture)) {
+        uint8_t* rescaled_data = (uint8_t*)TMP_MALLOC(dim.x * dim.y * dim.z);
+        defer { TMP_FREE(rescaled_data); };
+
+        if (max_value > 0) {
+            const int size = dim.x * dim.y * dim.z;
+            for (int i = 0; i < size; ++i) {
+                rescaled_data[i] = (double)data[i] / (double)max_value * 255;
+            }
+        }
+
         glBindTexture(GL_TEXTURE_3D, texture);
-        glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, dim.x, dim.y, dim.z, GL_RED, data_format, data);
+        glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, dim.x, dim.y, dim.z, GL_RED, GL_UNSIGNED_BYTE, rescaled_data);
+        glBindTexture(GL_TEXTURE_3D, 0);
+    }
+}
+
+void set_volume_texture_data(GLuint texture, ivec3 dim, const float* data, float max_value) {
+    if (glIsTexture(texture)) {
+        uint8_t* rescaled_data = (uint8_t*)TMP_MALLOC(dim.x * dim.y * dim.z);
+        defer { TMP_FREE(rescaled_data); };
+
+        if (max_value > 0) {
+            const int size = dim.x * dim.y * dim.z;
+            for (int i = 0; i < size; ++i) {
+                rescaled_data[i] = (double)data[i] / (double)max_value * 255;
+            }
+        }
+        glBindTexture(GL_TEXTURE_3D, texture);
+        glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, dim.x, dim.y, dim.z, GL_RED, GL_UNSIGNED_BYTE, data);
         glBindTexture(GL_TEXTURE_3D, 0);
     }
 }
@@ -211,7 +240,7 @@ void render_volume_texture(const VolumeRenderDesc& desc) {
     data.gradient_spacing_world_space = desc.voxel_spacing;
     data.gradient_spacing_tex_space = mat4(glm::scale(data.view_to_model_mat, desc.voxel_spacing));
 
-    //constexpr int cool = offsetof(data, gradient_spacing_tex_space);
+    // constexpr int cool = offsetof(data, gradient_spacing_tex_space);
 
     glBindBuffer(GL_UNIFORM_BUFFER, gl.ubo);
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(UniformData), &data);
@@ -231,8 +260,7 @@ void render_volume_texture(const VolumeRenderDesc& desc) {
 
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, gl.ubo);
 
-    const GLuint program = desc.direct_volume_rendering_enabled ?
-        (desc.isosurface_enabled ? gl.program.dvr_and_iso : gl.program.dvr_only) : gl.program.iso_only;
+    const GLuint program = desc.direct_volume_rendering_enabled ? (desc.isosurface_enabled ? gl.program.dvr_and_iso : gl.program.dvr_only) : gl.program.iso_only;
 
     const GLint uniform_loc_tex_depth = glGetUniformLocation(program, "u_tex_depth");
     const GLint uniform_loc_tex_volume = glGetUniformLocation(program, "u_tex_volume");

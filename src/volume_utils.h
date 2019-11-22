@@ -15,7 +15,8 @@ void shutdown();
 void create_volume_texture(GLuint* texture, const ivec3& dim);
 void free_volume_texture(GLuint texture);
 void create_tf_texture(GLuint* texture, int* width, CStringView path_to_file);
-void set_volume_texture_data(GLuint texture, ivec3 dim, GLenum data_format, void* data);
+void set_volume_texture_data(GLuint texture, ivec3 dim, const uint32_t* data, uint32_t max_value);
+void set_volume_texture_data(GLuint texture, ivec3 dim, const float* data, float max_value);
 mat4 compute_model_to_world_matrix(const vec3& min_world_aabb, const vec3& max_world_aabb);
 mat4 compute_texture_to_model_matrix(const ivec3& dim);
 
