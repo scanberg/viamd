@@ -72,12 +72,6 @@ void main() {
     center *= scl;
     center += u_jitter_uv.xy * 0.5;
 
-    // Use center from projection matrix instead to get jitter
-    //vec4 cs = u_proj_mat * (view_coord + vec4(0,0,0,0));
-    //cs /= cs.w;
-    //center = cs.xy;
-    //z = cs.z;
-
     out_geom.view_sphere = view_sphere;
     out_geom.view_velocity = view_vel;
     out_geom.color = in_color;

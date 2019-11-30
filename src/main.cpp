@@ -153,6 +153,7 @@ enum class SelectionOperator { Or, And };
 enum class SelectionGrowth { CovalentBond, Radial };
 enum class RepresentationType { Vdw, Licorice, BallAndStick, Ribbons, Cartoon };
 enum class TrackingMode { Absolute, Relative };
+enum class CameraMode { Perspective, Orthographic };
 
 enum AtomBit_ { AtomBit_Highlighted = BIT(0), AtomBit_Selected = BIT(1), AtomBit_Visible = BIT(2) };
 
@@ -307,6 +308,7 @@ struct ApplicationData {
         Camera camera{};
         TrackballControllerState trackball_state{};
         ViewParam param;
+        CameraMode mode = CameraMode::Perspective;
 
         struct {
             vec3 target_position{};
@@ -1061,7 +1063,11 @@ int main(int, char**) {
             param.jitter.previous = param.jitter.current;
 
             param.matrix.current.view = compute_world_to_view_matrix(data.view.camera);
-            param.matrix.current.proj = compute_perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height);
+            if (data.view.mode == CameraMode::Perspective) {
+                param.matrix.current.proj = compute_perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height);
+            } else {
+                param.matrix.current.proj = compute_orthographic_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height);
+            }
             param.matrix.current.proj_jittered = param.matrix.current.proj;
 
             param.resolution = vec2(data.fbo.width, data.fbo.height);
@@ -1069,7 +1075,16 @@ int main(int, char**) {
                 static uint32 i = 0;
                 i = (++i) % ARRAY_SIZE(halton_sequence);
                 param.jitter.current = halton_sequence[i] - 0.5f;
-                param.matrix.current.proj_jittered = compute_perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height, param.jitter.current.x, param.jitter.current.y);
+                if (data.view.mode == CameraMode::Perspective) {
+                    param.matrix.current.proj_jittered = compute_perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height, param.jitter.current.x, param.jitter.current.y);
+                } else {
+                    const float scale = 0.05f;
+                    const int w = data.fbo.width * scale;
+                    const int h = data.fbo.height * scale;
+                    const float j_x = param.jitter.current.x * scale;
+                    const float j_y = param.jitter.current.y * scale;
+                    param.matrix.current.proj_jittered = compute_orthographic_projection_matrix(data.view.camera, w, h, j_x, j_y);
+                }
             }
 
             if (const ReferenceFrame* ref = get_active_reference_frame(&data)) {
@@ -1517,9 +1532,12 @@ static void draw_main_menu(ApplicationData* data) {
             ImGui::BeginGroup();
             ImGui::Text("Camera");
             {
-                float fov = math::rad_to_deg(data->view.camera.fov_y);
-                if (ImGui::SliderFloat("field of view", &fov, 12.5f, 80.0f)) {
-                    data->view.camera.fov_y = math::deg_to_rad(fov);
+                ImGui::Combo("Mode", (int*)(&data->view.mode), "Perspective\0Orthographic0\0");
+                if (data->view.mode == CameraMode::Perspective) {
+                    float fov = math::rad_to_deg(data->view.camera.fov_y);
+                    if (ImGui::SliderFloat("field of view", &fov, 12.5f, 80.0f)) {
+                        data->view.camera.fov_y = math::deg_to_rad(fov);
+                    }
                 }
             }
             ImGui::EndGroup();
@@ -3553,7 +3571,7 @@ static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const Mol
                 const ivec3 c = vec3(tc) * vec3(vol->dim - 1);
                 const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
                 platform::atomic_fetch_and_add(vol->voxel_data.ptr + voxel_idx, 1);
-                //vol->voxel_data[voxel_idx]++;
+                // vol->voxel_data[voxel_idx]++;
             }
         }
     }
@@ -3734,8 +3752,8 @@ static void draw_density_volume_window(ApplicationData* data) {
                             continue;
                         }
                         append_trajectory_density(&data->density_volume.volume, filter_mask, traj, M, structure.alignment_matrix, *tracking_data, data->ensemble_tracking.tracking_mode, cutoff);
-                        active_structures += 1;
                     }
+                    */
 
                     // const float scl = 1.0f / (float)(traj.num_frames * active_structures);
 
