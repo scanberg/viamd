@@ -316,12 +316,12 @@ FileDialogResult file_dialog(FileDialogFlags flags, CStringView default_path, CS
     if (result == NFD_OKAY) {
         Path res_path = out_path;
         convert_backslashes(res_path);
-        return {res_path, FileDialogResult::Ok};
+        return { FileDialogResult::Ok, res_path };
     } else if (result == NFD_CANCEL) {
-        return {{}, FileDialogResult::Cancel};
+        return { FileDialogResult::Cancel};
     }
     LOG_ERROR("%s\n", NFD_GetError());
-    return {{}, FileDialogResult::Cancel};
+    return {FileDialogResult::Cancel, {}};
 }
 
 #ifdef OS_WINDOWS

@@ -120,14 +120,14 @@ enum FileDialogFlags_ { FileDialogFlags_Open = BIT(0), FileDialogFlags_Save = BI
 
 struct FileDialogResult {
     enum Result { Ok, Cancel };
-    Path path;
     Result result;
+    Path path;
 };
 
 struct DirectoryEntry {
     enum Type { File, Dir, Link, Unknown };
-    Type type;
-    Path name;
+    Type type = Unknown;
+    Path name = {};
 };
 
 CStringView get_cwd();
