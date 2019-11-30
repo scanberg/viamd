@@ -23,6 +23,8 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui_internal.h>
 
+#include <TaskScheduler.h>
+
 #include "gfx/gl.h"
 #include "gfx/molecule_draw.h"
 #include "gfx/immediate_draw_utils.h"
@@ -567,6 +569,8 @@ struct ApplicationData {
     // --- CONSOLE ---
     Console console{};
     bool show_console = false;
+
+    enki::TaskScheduler thread_pool;
 };
 
 // custom ImGui procedures
@@ -811,6 +815,8 @@ int main(int, char**) {
     volume::initialize();
     LOG_NOTE("Initializing structure tracking...");
     structure_tracking::initialize();
+    LOG_NOTE("Initializing task scheduler...");
+    data.thread_pool.Initialize();
 
     // ImGui::SetupImGuiStyle2();
     ImGui::StyleColorsLight();
@@ -3696,9 +3702,28 @@ static void draw_density_volume_window(ApplicationData* data) {
                     data->density_volume.volume_data_mutex.lock();
                     clear_volume(&data->density_volume.volume);
 
-                    int active_structures = 0;
                     const mat4 M = data->density_volume.world_to_model_matrix;
-                    #pragma omp parallel for
+
+                    uint32_t completed_count = 0;
+                    enki::TaskSet task(ensemble_structures.size(), [data, filter_mask, &ensemble_structures, &completed_count](enki::TaskSetPartition range, uint32_t threadnum) {
+                        for (uint32_t i = range.start; i < range.end; ++i) {
+                            auto& structure = ensemble_structures[i];
+                            if (!structure.enabled) continue;
+                            const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(structure.id);
+                            if (!tracking_data) {
+                                LOG_ERROR("Could not find tracking data for structure: %u", structure.id);
+                                continue;
+                            }
+                            append_trajectory_density(&data->density_volume.volume, filter_mask, data->dynamic.trajectory, data->density_volume.world_to_model_matrix, structure.alignment_matrix,
+                                                      *tracking_data, data->ensemble_tracking.tracking_mode, cutoff);
+                            uint32 count = platform::atomic_fetch_and_add(&completed_count, 1) + 1;
+                            LOG_NOTE("%i / %i...", count, ensemble_structures.size());
+                        }
+                    });
+
+                    data->thread_pool.AddTaskSetToPipe(&task);
+                    data->thread_pool.WaitforTask(&task);
+                    /*
                     for (int64 i = 0; i < ensemble_structures.size(); i++) {
                         auto& structure = ensemble_structures[i];
                         if (!structure.enabled) continue;
@@ -5895,7 +5920,7 @@ static void load_trajectory_async(ApplicationData* data) {
         data->async.trajectory.sync.running = true;
         data->async.trajectory.sync.thread = std::thread([data]() {
             while (read_next_trajectory_frame(&data->dynamic.trajectory)) {
-                data->async.trajectory.fraction = data->dynamic.trajectory.num_frames / (float)data->dynamic.trajectory.frame_offsets.count;
+                data->async.trajectory.fraction = data->dynamic.trajectory.num_frames / (float)data->dynamic.trajectory.frame_offsets.size();
                 on_trajectory_frame_loaded(data, data->dynamic.trajectory.num_frames - 1);
                 if (data->async.trajectory.sync.stop_signal) break;
             }

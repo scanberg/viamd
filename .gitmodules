@@ -16,3 +16,6 @@
 [submodule "ext/tinyexpr"]
 	path = ext/tinyexpr
 	url = https://github.com/codeplea/tinyexpr
+[submodule "ext/enkiTS"]
+	path = ext/enkiTS
+	url = https://github.com/dougbinks/enkiTS

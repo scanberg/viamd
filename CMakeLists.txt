@@ -52,6 +52,11 @@ option(GLFW_INSTALL OFF)
 option(GLFW_VULKAN_STATIC OFF)
 set_property(GLOBAL PROPERTY USE_FOLDERS OFF)
 
+option(ENKITS_BUILD_C_INTERFACE OFF)
+option(ENKITS_BUILD_EXAMPLES OFF)
+option(ENKITS_BUILD_SHARED OFF)
+option(ENKITS_INSTALL OFF)
+
 option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
 option(VIAMD_USE_RELATIVE_PATHS "Use relative paths for resource directories" OFF)
 
@@ -62,6 +67,7 @@ add_subdirectory(ext/tinyexpr)
 add_subdirectory(ext/mdutils)
 add_subdirectory(ext/stb)
 add_subdirectory(ext/gl3w)
+add_subdirectory(ext/enkiTS)
 #add_subdirectory(ext/base91)
 add_subdirectory(unittest)
 add_subdirectory(benchmark)
@@ -92,7 +98,7 @@ target_include_directories(viamd
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/ext/gl3w
-        ${CMAKE_CURRENT_SOURCE_DIR}/ext/Eigen
+        ${CMAKE_CURRENT_SOURCE_DIR}/ext/enkiTS/src
 )
 
 target_link_libraries(viamd
@@ -103,4 +109,5 @@ target_link_libraries(viamd
 	tinyexpr
     mdutils
     stb
+    enkiTS
 )
