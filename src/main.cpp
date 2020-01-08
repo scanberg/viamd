@@ -30,10 +30,6 @@
 #include "gfx/immediate_draw_utils.h"
 #include "gfx/postprocessing_utils.h"
 
-//#include <glm/gtx/string_cast.hpp>
-//#include <glm/gtx/component_wise.hpp>
-//#include <glm/gtc/type_ptr.hpp>
-
 #include "volume.h"
 #include "volume_utils.h"
 
@@ -1062,11 +1058,18 @@ int main(int, char**) {
             param.matrix.previous = param.matrix.current;
             param.jitter.previous = param.jitter.current;
 
+            param.clip_planes.near = data.view.camera.near_plane;
+            param.clip_planes.far = data.view.camera.far_plane;
+            param.fov_y = data.view.camera.fov_y;
+
             param.matrix.current.view = compute_world_to_view_matrix(data.view.camera);
             if (data.view.mode == CameraMode::Perspective) {
-                param.matrix.current.proj = compute_perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height);
+                param.matrix.current.proj = perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height);
             } else {
-                param.matrix.current.proj = compute_orthographic_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height);
+                const float aspect_ratio = (float)data.fbo.width / (float)data.fbo.height;
+                const float h = data.view.trackball_state.distance * math::tan(data.view.camera.fov_y * 0.5f);
+                const float w = aspect_ratio * h;
+                param.matrix.current.proj = orthographic_projection_matrix(-w, w, -h, h, data.view.camera.near_plane, data.view.camera.far_plane);
             }
             param.matrix.current.proj_jittered = param.matrix.current.proj;
 
@@ -1076,14 +1079,16 @@ int main(int, char**) {
                 i = (++i) % ARRAY_SIZE(halton_sequence);
                 param.jitter.current = halton_sequence[i] - 0.5f;
                 if (data.view.mode == CameraMode::Perspective) {
-                    param.matrix.current.proj_jittered = compute_perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height, param.jitter.current.x, param.jitter.current.y);
+                    param.matrix.current.proj_jittered = perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height, param.jitter.current.x, param.jitter.current.y);
                 } else {
-                    const float scale = 0.05f;
-                    const int w = data.fbo.width * scale;
-                    const int h = data.fbo.height * scale;
-                    const float j_x = param.jitter.current.x * scale;
-                    const float j_y = param.jitter.current.y * scale;
-                    param.matrix.current.proj_jittered = compute_orthographic_projection_matrix(data.view.camera, w, h, j_x, j_y);
+                    const float aspect_ratio = (float)data.fbo.width / (float)data.fbo.height;
+                    const float h = data.view.trackball_state.distance * math::tan(data.view.camera.fov_y * 0.5f);
+                    const float w = aspect_ratio * h;
+                    const float scale_x = w / data.fbo.width * 2.0f;
+                    const float scale_y = h / data.fbo.height * 2.0f;
+                    const float j_x = param.jitter.current.x * scale_x;
+                    const float j_y = param.jitter.current.y * scale_y;
+                    param.matrix.current.proj_jittered = param.matrix.current.proj = orthographic_projection_matrix(-w + j_x, w + j_x, -h + j_y, h + j_y, data.view.camera.near_plane, data.view.camera.far_plane);
                 }
             }
 
@@ -1532,7 +1537,7 @@ static void draw_main_menu(ApplicationData* data) {
             ImGui::BeginGroup();
             ImGui::Text("Camera");
             {
-                ImGui::Combo("Mode", (int*)(&data->view.mode), "Perspective\0Orthographic0\0");
+                ImGui::Combo("Mode", (int*)(&data->view.mode), "Perspective\0Orthographic\0\0");
                 if (data->view.mode == CameraMode::Perspective) {
                     float fov = math::rad_to_deg(data->view.camera.fov_y);
                     if (ImGui::SliderFloat("field of view", &fov, 12.5f, 80.0f)) {

@@ -7,7 +7,7 @@
 #include <gfx/gl_utils.h>
 #include <mol/molecule_utils.h>
 
-static bool is_orthographic_proj_matrix(const mat4& M) { return math::length2(vec2(M[3])) > 0.0f; }
+static bool is_orthographic_proj_matrix(const mat4& M) { return M[2][3] == 0.0f; }
 
 namespace draw {
 static GLuint vao = 0;
@@ -461,23 +461,41 @@ void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint ato
     const bool ortho = is_orthographic_proj_matrix(view_param.matrix.current.proj);
 
     if (ortho) {
+        glUseProgram(vdw::program_ortho);
+
+        glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_position);
         glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, atom_position_buffer);
-        glUniform1i(glGetUniformLocation(vdw::program_ortho, "u_buf_position"), 0);
 
+        glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_radius);
         glTexBuffer(GL_TEXTURE_BUFFER, GL_R32F, atom_radius_buffer);
-        glUniform1i(glGetUniformLocation(vdw::program_ortho, "u_buf_radius"), 1);
 
+        glActiveTexture(GL_TEXTURE2);
         glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_color);
         glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, atom_color_buffer);
-        glUniform1i(glGetUniformLocation(vdw::program_ortho, "u_buf_color"), 2);
 
+        glActiveTexture(GL_TEXTURE3);
         glBindTexture(GL_TEXTURE_BUFFER, vdw::tex_view_vel);
         glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, atom_view_velocity_buffer);
-        glUniform1i(glGetUniformLocation(vdw::program_ortho, "u_buf_view_velocity"), 3);
 
         glBindBuffer(GL_TEXTURE_BUFFER, 0);
+        glActiveTexture(GL_TEXTURE0);
+
+        // Uniforms
+        glUniform1i(glGetUniformLocation(vdw::program_ortho, "u_buf_position"), 0);
+        glUniform1i(glGetUniformLocation(vdw::program_ortho, "u_buf_radius"), 1);
+        glUniform1i(glGetUniformLocation(vdw::program_ortho, "u_buf_color"), 2);
+        glUniform1i(glGetUniformLocation(vdw::program_ortho, "u_buf_view_velocity"), 3);
+        glUniformMatrix4fv(glGetUniformLocation(vdw::program_ortho, "u_view_mat"), 1, GL_FALSE, &view_param.matrix.current.view[0][0]);
+        glUniformMatrix4fv(glGetUniformLocation(vdw::program_ortho, "u_proj_mat"), 1, GL_FALSE, &view_param.matrix.current.proj_jittered[0][0]);
+        glUniformMatrix4fv(glGetUniformLocation(vdw::program_ortho, "u_curr_view_to_prev_clip_mat"), 1, GL_FALSE, &curr_view_to_prev_clip_mat[0][0]);
+        glUniform1f(glGetUniformLocation(vdw::program_ortho, "u_radius_scale"), radius_scale);
+        glUniform4fv(glGetUniformLocation(vdw::program_ortho, "u_jitter_uv"), 1, &jitter_uv[0]);
+
+        glBindVertexArray(vao);
+        glDrawArrays(GL_TRIANGLES, 0, atom_count * 3);
+        glBindVertexArray(0);
     } else {
         glBindVertexArray(vao);
         glBindBuffer(GL_ARRAY_BUFFER, atom_position_buffer);
