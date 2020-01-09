@@ -23,5 +23,11 @@ struct ViewParam {
         vec2 previous;
     } jitter;
 
+    struct {
+        float near;
+        float far;
+    } clip_planes;
+
+    float fov_y;
     vec2 resolution;
 };

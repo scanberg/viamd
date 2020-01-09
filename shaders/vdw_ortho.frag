@@ -13,6 +13,7 @@ in VS_FS {
     flat vec4 view_velocity;
     flat vec4 picking_color;
     flat vec4 color;
+    smooth vec2 uv;
 } in_frag;
 
 #ifdef GL_EXT_conservative_depth
@@ -32,23 +33,18 @@ vec4 encode_normal (vec3 n) {
 }
 
 void main() {
+    vec2 uv = in_frag.uv;
+    float len2 = dot(uv,uv);
+    if (len2 > 1.0) discard;
+
     vec3 center = in_frag.view_sphere.xyz;
     float radius = in_frag.view_sphere.w;
-    vec3 view_dir = normalize(in_frag.view_coord.xyz);
 
-    vec3 m = -center;
-    vec3 d = view_dir;
-    float r = radius;
-    float b = dot(m, d);
-    float c = dot(m, m) - r*r;
-    float discr = b*b - c;
-    if (discr < 0.0) discard;
-    float t = -b -sqrt(discr);
-
-    vec3 view_coord = d * t;
+    vec3 view_coord = in_frag.view_coord.xyz + vec3(0, 0, radius * (sqrt(1.0 - len2)));
     vec3 view_normal = (view_coord - center) / radius;
     vec3 view_vel = in_frag.view_velocity.xyz;
     vec4 clip_coord = u_proj_mat * vec4(view_coord, 1);
+    clip_coord.xyz /= clip_coord.w;
 
     vec3 prev_view_coord = view_coord - view_vel;
     vec4 prev_clip_coord = u_curr_view_to_prev_clip_mat * vec4(prev_view_coord, 1);
@@ -56,14 +52,14 @@ void main() {
     // Remove jitter from samples to provide the actual velocity
     // This is crucial for the temporal reprojection to work properly
     // Otherwise the velocity will push the samples outside of the "reprojection" region
-    vec2 curr_ndc = clip_coord.xy / clip_coord.w;
+    vec2 curr_ndc = clip_coord.xy;
     vec2 prev_ndc = prev_clip_coord.xy / prev_clip_coord.w;
     vec2 ss_vel = (curr_ndc - prev_ndc) * 0.5 + (u_jitter_uv.xy - u_jitter_uv.zw);
 
     vec4 color = in_frag.color;
     vec4 picking_color = in_frag.picking_color;
 
-    gl_FragDepth = (clip_coord.z / clip_coord.w) * 0.5 + 0.5;
+    gl_FragDepth = clip_coord.z * 0.5 + 0.5;
     out_color_alpha = color;
     out_normal = encode_normal(view_normal);
     out_ss_vel = vec4(ss_vel, 0, 0);

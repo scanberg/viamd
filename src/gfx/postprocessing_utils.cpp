@@ -50,7 +50,6 @@ namespace postprocessing {
 
 static struct {
     GLuint vao = 0;
-    GLuint vbo = 0;
     GLuint v_shader_fs_quad = 0;
     GLuint tex_width = 0;
     GLuint tex_height = 0;
@@ -89,25 +88,12 @@ static struct {
             GLuint texture = 0;
             GLuint program_persp = 0;
             GLuint program_ortho = 0;
-
-            struct {
-                GLint control_buffer = -1;
-                GLint tex_linear_depth = -1;
-                GLint tex_normal = -1;
-                GLint tex_random = -1;
-            } uniform_loc;
         } hbao;
 
         struct {
             GLuint fbo = 0;
             GLuint texture = 0;
             GLuint program = 0;
-            struct {
-                GLint sharpness = -1;
-                GLint inv_res_dir = -1;
-                GLint tex_ao = -1;
-                GLint tex_linear_depth = -1;
-            } uniform_loc;
         } blur;
     } ssao;
 
@@ -211,7 +197,7 @@ uniform vec4 u_clip_info;
 uniform sampler2D u_tex_depth;
 
 float ReconstructCSZ(float d, vec4 clip_info) {
-#ifdef PERSPECTIVE
+#if PERSPECTIVE
     return (clip_info[0] / (d*clip_info[1] + clip_info[2]));
 #else
     return (clip_info[1] + clip_info[2] - d*clip_info[1]);
@@ -287,7 +273,7 @@ static bool setup_program(GLuint* program, CStringView name, CStringView f_shade
     return true;
 }
 
-static bool is_orthographic_proj_matrix(const mat4& proj_mat) { return math::length2(vec2(proj_mat[3])) > 0.f; }
+static bool is_orthographic_proj_matrix(const mat4& proj_mat) { return proj_mat[2][3] == 0.0f; }
 
 namespace ssao {
 #ifndef AO_RANDOM_TEX_SIZE
@@ -328,7 +314,8 @@ void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4& proj_mat
     float proj_scl;
 
     const float* proj_data = &proj_mat[0][0];
-    if (!is_orthographic_proj_matrix(proj_mat)) {
+    const bool ortho = is_orthographic_proj_matrix(proj_mat);
+    if (!ortho) {
         proj_info = vec4(2.0f / (proj_data[4 * 0 + 0]),                          // (x) * (R - L)/N
                          2.0f / (proj_data[4 * 1 + 1]),                          // (y) * (T - B)/N
                          -(1.0f - proj_data[4 * 2 + 0]) / proj_data[4 * 0 + 0],  // L/N
@@ -337,7 +324,6 @@ void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4& proj_mat
 
         // proj_scl = float(height) / (math::tan(fovy * 0.5f) * 2.0f);
         proj_scl = float(height) * proj_data[4 * 1 + 1] * 0.5f;
-        proj_scl = float(height) / (math::tan(math::PI / 8.f) * 2.0f);
     } else {
         proj_info = vec4(2.0f / (proj_data[4 * 0 + 0]),                          // ((x) * R - L)
                          2.0f / (proj_data[4 * 1 + 1]),                          // ((y) * T - B)
@@ -406,16 +392,6 @@ void initialize(int width, int height) {
     setup_program(&gl.ssao.hbao.program_persp, "ssao perspective", f_shader_src_ssao, "#define AO_PERSPECTIVE 1");
     setup_program(&gl.ssao.hbao.program_ortho, "ssao orthographic", f_shader_src_ssao, "#define AO_PERSPECTIVE 0");
     setup_program(&gl.ssao.blur.program, "ssao blur", f_shader_src_blur);
-
-    gl.ssao.hbao.uniform_loc.control_buffer = glGetUniformBlockIndex(gl.ssao.hbao.program_persp, "u_control_buffer");
-    gl.ssao.hbao.uniform_loc.tex_linear_depth = glGetUniformLocation(gl.ssao.hbao.program_persp, "u_tex_linear_depth");
-    gl.ssao.hbao.uniform_loc.tex_normal = glGetUniformLocation(gl.ssao.hbao.program_persp, "u_tex_normal");
-    gl.ssao.hbao.uniform_loc.tex_random = glGetUniformLocation(gl.ssao.hbao.program_persp, "u_tex_random");
-
-    gl.ssao.blur.uniform_loc.sharpness = glGetUniformLocation(gl.ssao.blur.program, "u_sharpness");
-    gl.ssao.blur.uniform_loc.inv_res_dir = glGetUniformLocation(gl.ssao.blur.program, "u_inv_res_dir");
-    gl.ssao.blur.uniform_loc.tex_ao = glGetUniformLocation(gl.ssao.blur.program, "u_tex_ao");
-    gl.ssao.blur.uniform_loc.tex_linear_depth = glGetUniformLocation(gl.ssao.blur.program, "u_tex_linear_depth");
 
     if (!gl.ssao.hbao.fbo) glGenFramebuffers(1, &gl.ssao.hbao.fbo);
     if (!gl.ssao.blur.fbo) glGenFramebuffers(1, &gl.ssao.blur.fbo);
@@ -846,14 +822,6 @@ void initialize(int width, int height) {
     char buffer[BUFFER_SIZE];
 
     if (!gl.vao) glGenVertexArrays(1, &gl.vao);
-    if (!gl.vbo) glGenBuffers(1, &gl.vbo);
-
-    glBindVertexArray(gl.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, gl.vbo);
-    glBufferData(GL_ARRAY_BUFFER, 0, nullptr, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (const GLvoid*)0);
-    glBindVertexArray(0);
 
     if (!gl.v_shader_fs_quad) {
         gl.v_shader_fs_quad = glCreateShader(GL_VERTEX_SHADER);
@@ -968,7 +936,7 @@ void shutdown() {
     blit::shutdown();
 
     if (gl.vao) glDeleteVertexArrays(1, &gl.vao);
-    if (gl.vbo) glDeleteBuffers(1, &gl.vbo);
+    //if (gl.vbo) glDeleteBuffers(1, &gl.vbo);
     if (gl.v_shader_fs_quad) glDeleteShader(gl.v_shader_fs_quad);
 }
 
@@ -1025,10 +993,10 @@ void apply_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4& proj_mat
     glBindTexture(GL_TEXTURE_2D, gl.ssao.tex_random);
 
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, gl.ssao.ubo_hbao_data);
-    glUniformBlockBinding(program, gl.ssao.hbao.uniform_loc.control_buffer, 0);
-    glUniform1i(gl.ssao.hbao.uniform_loc.tex_linear_depth, 0);
-    glUniform1i(gl.ssao.hbao.uniform_loc.tex_normal, 1);
-    glUniform1i(gl.ssao.hbao.uniform_loc.tex_random, 2);
+    glUniformBlockBinding(program, glGetUniformBlockIndex(program, "u_control_buffer"), 0);
+    glUniform1i(glGetUniformLocation(program, "u_tex_linear_depth"), 0);
+    glUniform1i(glGetUniformLocation(program, "u_tex_normal"), 1);
+    glUniform1i(glGetUniformLocation(program, "u_tex_random"), 2);
 
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
@@ -1036,10 +1004,10 @@ void apply_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4& proj_mat
 
     glUseProgram(gl.ssao.blur.program);
 
-    glUniform1i(gl.ssao.blur.uniform_loc.tex_linear_depth, 0);
-    glUniform1i(gl.ssao.blur.uniform_loc.tex_ao, 1);
-    glUniform1f(gl.ssao.blur.uniform_loc.sharpness, sharpness);
-    glUniform2f(gl.ssao.blur.uniform_loc.inv_res_dir, inv_res.x, 0);
+    glUniform1i(glGetUniformLocation(gl.ssao.blur.program, "u_tex_linear_depth"), 0);
+    glUniform1i(glGetUniformLocation(gl.ssao.blur.program, "u_tex_ao"), 1);
+    glUniform1f(glGetUniformLocation(gl.ssao.blur.program, "u_sharpness"), sharpness);
+    glUniform2f(glGetUniformLocation(gl.ssao.blur.program, "u_inv_res_dir"), inv_res.x, 0);
 
     glActiveTexture(GL_TEXTURE1);
 
@@ -1056,7 +1024,7 @@ void apply_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4& proj_mat
     glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, gl.ssao.blur.texture);
-    glUniform2f(gl.ssao.blur.uniform_loc.inv_res_dir, 0, inv_res.y);
+    glUniform2f(glGetUniformLocation(gl.ssao.blur.program, "u_inv_res_dir"), 0, inv_res.y);
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_ZERO, GL_SRC_COLOR);
@@ -1400,8 +1368,8 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     time = time + 0.016f;
     if (time > 100.f) time -= 100.f;
 
-    const auto near_dist = view_param.matrix.current.proj[3][2] / (view_param.matrix.current.proj[2][2] - 1.f);
-    const auto far_dist = (view_param.matrix.current.proj[2][2] - 1.f) * near_dist / (view_param.matrix.current.proj[2][2] + 1.f);
+    const auto near_dist = view_param.clip_planes.near;
+    const auto far_dist = view_param.clip_planes.far;
     const auto ortho = is_orthographic_proj_matrix(view_param.matrix.current.proj);
 
     GLint last_fbo;
