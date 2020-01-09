@@ -337,7 +337,7 @@ ID create_structure() {
     // This is to ensure that no collision happens
     ASSERT(find_structure(id) == nullptr);
 
-    Structure* s = new (MALLOC(sizeof(Structure))) Structure();
+    Structure* s = NEW(Structure);
     context->entries.push_back({id, s});
     return id;
 }
