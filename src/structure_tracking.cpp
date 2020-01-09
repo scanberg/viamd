@@ -30,7 +30,8 @@ Context* context = nullptr;
 static dmat3 compute_weighted_cross_covariance_matrix(const float* x0, const float* y0, const float* z0,
                                                       const float* x1, const float* y1, const float* z1,
                                                       const float* weight,
-                                                      int64 count, const dvec3& com0 = {0,0,0}, const dvec3& com1 = {0,0,0})
+                                                      int64 count,
+                                                      const dvec3& com0 = {0,0,0}, const dvec3& com1 = {0,0,0})
 // clang-format on
 {
     dmat3 A{0};
@@ -61,7 +62,8 @@ static dmat3 compute_weighted_cross_covariance_matrix(const float* x0, const flo
 }
 
 // clang-format off
-static dmat3 compute_weighted_covariance_matrix(const float* x, const float* y, const float* z, const float* weight,
+static dmat3 compute_weighted_covariance_matrix(const float* x, const float* y, const float* z,
+                                                const float* weight,
                                                 int64 count, const dvec3& com = {0,0,0})
 // clang-format on
 {
@@ -508,18 +510,18 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     float* ref_x = (float*)mem + 3 * num_atoms;
     float* ref_y = (float*)mem + 4 * num_atoms;
     float* ref_z = (float*)mem + 5 * num_atoms;
-    float* prv_x = (float*)mem + 6 * num_atoms;
-    float* prv_y = (float*)mem + 7 * num_atoms;
-    float* prv_z = (float*)mem + 8 * num_atoms;
+//    float* prv_x = (float*)mem + 6 * num_atoms;
+//    float* prv_y = (float*)mem + 7 * num_atoms;
+//    float* prv_z = (float*)mem + 8 * num_atoms;
     float* int_x = (float*)mem + 9 * num_atoms;
     float* int_y = (float*)mem + 10 * num_atoms;
     float* int_z = (float*)mem + 11 * num_atoms;
     float* mass = (float*)mem + 12 * num_atoms;
 
-    bitfield::gather_data_from_mask(ref_x, get_trajectory_position_x(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
-    bitfield::gather_data_from_mask(ref_y, get_trajectory_position_y(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
-    bitfield::gather_data_from_mask(ref_z, get_trajectory_position_z(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
-    bitfield::gather_data_from_mask(mass, dynamic.molecule.atom.mass, atom_mask, mask_offset);
+    bitfield::gather_masked(ref_x, get_trajectory_position_x(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
+    bitfield::gather_masked(ref_y, get_trajectory_position_y(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
+    bitfield::gather_masked(ref_z, get_trajectory_position_z(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
+    bitfield::gather_masked(mass, dynamic.molecule.atom.mass, atom_mask, mask_offset);
 
     /*
     float tot_mass = 0.0f;
@@ -533,7 +535,7 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     memcpy(int_z, ref_z, num_atoms * sizeof(float));
 
     const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, num_atoms);
-    dvec3 prv_com = ref_com;
+    //dvec3 prv_com = ref_com;
     dvec3 int_com = ref_com;
     dvec3 cur_com = {0, 0, 0};
 
@@ -548,9 +550,9 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
 
     // Compute average structure
     for (int i = 1; i < num_frames; i++) {
-        bitfield::gather_data_from_mask(cur_x, dynamic.trajectory.frame_buffer[i].atom_position.x, atom_mask, mask_offset);
-        bitfield::gather_data_from_mask(cur_y, dynamic.trajectory.frame_buffer[i].atom_position.y, atom_mask, mask_offset);
-        bitfield::gather_data_from_mask(cur_z, dynamic.trajectory.frame_buffer[i].atom_position.z, atom_mask, mask_offset);
+        bitfield::gather_masked(cur_x, dynamic.trajectory.frame_buffer[i].atom_position.x, atom_mask, mask_offset);
+        bitfield::gather_masked(cur_y, dynamic.trajectory.frame_buffer[i].atom_position.y, atom_mask, mask_offset);
+        bitfield::gather_masked(cur_z, dynamic.trajectory.frame_buffer[i].atom_position.z, atom_mask, mask_offset);
         cur_com = compute_com(cur_x, cur_y, cur_z, num_atoms);
         translate(cur_x, cur_y, cur_z, num_atoms, -cur_com);
 
@@ -572,21 +574,22 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     quat q_relative = {1, 0, 0, 0};
     quat q_hybrid = {1, 0, 0, 0};
 
-    memcpy(prv_x, ref_x, num_atoms * sizeof(float) * 3);
+    //memcpy(prv_x, ref_x, num_atoms * sizeof(float) * 3);
 
     // Set first frame explicitly
     s->tracking_data.transform.rotation.absolute[0] = {1, 0, 0, 0};
     s->tracking_data.transform.rotation.relative[0] = {1, 0, 0, 0};
     s->tracking_data.transform.com[0] = ref_com;
-    compute_eigen(compute_weighted_covariance_matrix(ref_x, ref_y, ref_z, mass, num_atoms, ref_com), (vec3(&)[3])s->tracking_data.eigen.vectors[0], (float(&)[3])s->tracking_data.eigen.values[0]);
+    compute_eigen(compute_weighted_covariance_matrix(ref_x, ref_y, ref_z, mass, num_atoms, ref_com), (vec3(&)[3])s->tracking_data.eigen.vectors[0],
+                  (float(&)[3])s->tracking_data.eigen.values[0]);
 
     for (int32 i = 1; i < num_frames; ++i) {
         // Fetch current
-        bitfield::gather_data_from_mask(cur_x, dynamic.trajectory.frame_buffer[i].atom_position.x, atom_mask, mask_offset);
-        bitfield::gather_data_from_mask(cur_y, dynamic.trajectory.frame_buffer[i].atom_position.y, atom_mask, mask_offset);
-        bitfield::gather_data_from_mask(cur_z, dynamic.trajectory.frame_buffer[i].atom_position.z, atom_mask, mask_offset);
+        bitfield::gather_masked(cur_x, dynamic.trajectory.frame_buffer[i].atom_position.x, atom_mask, mask_offset);
+        bitfield::gather_masked(cur_y, dynamic.trajectory.frame_buffer[i].atom_position.y, atom_mask, mask_offset);
+        bitfield::gather_masked(cur_z, dynamic.trajectory.frame_buffer[i].atom_position.z, atom_mask, mask_offset);
 
-        //cur_com = compute_com(cur_x, cur_y, cur_z, mass, num_atoms);
+        // cur_com = compute_com(cur_x, cur_y, cur_z, mass, num_atoms);
 
         dvec3 sum_pos = {0, 0, 0};
         double sum_mass = 0;
@@ -696,8 +699,8 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
         const dmat3 rel_mat = compute_weighted_cross_covariance_matrix(int_x, int_y, int_z, cur_x, cur_y, cur_z, mass, num_atoms, int_com, cur_com);
         const dmat3 rel_rot = extract_rotation(rel_mat);
 
-        const quat q_relative = math::normalize(math::quat_cast(rel_rot));
-        const quat q_rel = math::dot(s->tracking_data.transform.rotation.relative[i - 1], q_relative) > 0.0f ? q_relative : -q_relative;
+        const quat q = math::normalize(math::quat_cast(rel_rot));
+        const quat q_rel = math::dot(s->tracking_data.transform.rotation.relative[i - 1], q) > 0.0f ? q : -q;
 
         // @NOTE: Update internal representation
         for (int j = 0; j < num_atoms; j++) {
@@ -706,9 +709,9 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
 
 #if 1
             // Matrix multiply
-            int_x[j] = rel_rot[0][0] * v.x + rel_rot[1][0] * v.y + rel_rot[2][0] * v.z + t.x;
-            int_y[j] = rel_rot[0][1] * v.x + rel_rot[1][1] * v.y + rel_rot[2][1] * v.z + t.y;
-            int_z[j] = rel_rot[0][2] * v.x + rel_rot[1][2] * v.y + rel_rot[2][2] * v.z + t.z;
+            int_x[j] = (float)(rel_rot[0][0] * v.x + rel_rot[1][0] * v.y + rel_rot[2][0] * v.z + t.x);
+            int_y[j] = (float)(rel_rot[0][1] * v.x + rel_rot[1][1] * v.y + rel_rot[2][1] * v.z + t.y);
+            int_z[j] = (float)(rel_rot[0][2] * v.x + rel_rot[1][2] * v.y + rel_rot[2][2] * v.z + t.z);
 #else
             // Quaternion multiply
             const vec3 p = q_relative * v + t;
@@ -813,8 +816,8 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
         s->tracking_data.eigen.values[i] = eigen_values;
 
         // Copy previous frame data
-        memcpy(prv_x, cur_x, num_atoms * sizeof(float) * 3);
-        prv_com = cur_com;
+        //memcpy(prv_x, cur_x, num_atoms * sizeof(float) * 3);
+        //prv_com = cur_com;
     }
 
     const auto ext = get_trajectory_frame(dynamic.trajectory, 0).box * vec3(1, 1, 1);
@@ -840,8 +843,8 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
 
 void transform_to_internal_frame(MoleculeDynamic& dynamic, Bitfield atom_mask, int64 mask_offset) {
     // Scratch data
-    const int num_atoms = bitfield::number_of_bits_set(atom_mask);
-    const int num_frames = dynamic.trajectory.num_frames;
+    const int64_t num_atoms  = bitfield::number_of_bits_set(atom_mask);
+    const int64_t num_frames = dynamic.trajectory.num_frames;
 
     const auto mem_size = sizeof(float) * num_atoms * 7;
     void* mem = TMP_MALLOC(mem_size);
@@ -856,10 +859,10 @@ void transform_to_internal_frame(MoleculeDynamic& dynamic, Bitfield atom_mask, i
     float* int_z = (float*)mem + 5 * num_atoms;
     float* mass = (float*)mem + 6 * num_atoms;
 
-    bitfield::gather_data_from_mask(int_x, get_trajectory_position_x(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
-    bitfield::gather_data_from_mask(int_y, get_trajectory_position_y(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
-    bitfield::gather_data_from_mask(int_z, get_trajectory_position_z(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
-    bitfield::gather_data_from_mask(mass, dynamic.molecule.atom.mass, atom_mask, mask_offset);
+    bitfield::gather_masked(int_x, get_trajectory_position_x(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
+    bitfield::gather_masked(int_y, get_trajectory_position_y(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
+    bitfield::gather_masked(int_z, get_trajectory_position_z(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
+    bitfield::gather_masked(mass, dynamic.molecule.atom.mass, atom_mask, mask_offset);
 
     vec3 int_com = compute_com(int_x, int_y, int_z, num_atoms);
 
@@ -869,15 +872,15 @@ void transform_to_internal_frame(MoleculeDynamic& dynamic, Bitfield atom_mask, i
         float* pos_z = dynamic.trajectory.frame_buffer[i].atom_position.z;
 
         // Fetch current
-        bitfield::gather_data_from_mask(cur_x, pos_x, atom_mask, mask_offset);
-        bitfield::gather_data_from_mask(cur_y, pos_y, atom_mask, mask_offset);
-        bitfield::gather_data_from_mask(cur_z, pos_z, atom_mask, mask_offset);
+        bitfield::gather_masked(cur_x, pos_x, atom_mask, mask_offset);
+        bitfield::gather_masked(cur_y, pos_y, atom_mask, mask_offset);
+        bitfield::gather_masked(cur_z, pos_z, atom_mask, mask_offset);
         const vec3 cur_com = compute_com(cur_x, cur_y, cur_z, mass, num_atoms);
 
         const mat3 m1 = compute_weighted_cross_covariance_matrix(int_x, int_y, int_z, cur_x, cur_y, cur_z, mass, num_atoms, int_com, cur_com);
         mat3 r1 = extract_rotation(m1);
 
-        for (int j = 0; j < num_atoms; j++) {
+        for (int64 j = 0; j < num_atoms; j++) {
             const vec3 t = cur_com;
             const vec3 v = {cur_x[j] - t.x, cur_y[j] - t.y, cur_z[j] - t.z};
             int_x[j] = r1[0][0] * v.x + r1[1][0] * v.y + r1[2][0] * v.z + t.x;
@@ -886,9 +889,9 @@ void transform_to_internal_frame(MoleculeDynamic& dynamic, Bitfield atom_mask, i
         }
         int_com = cur_com;
 
-        bitfield::scatter_data_from_mask(pos_x, int_x, atom_mask);
-        bitfield::scatter_data_from_mask(pos_y, int_y, atom_mask);
-        bitfield::scatter_data_from_mask(pos_z, int_z, atom_mask);
+        bitfield::scatter_masked(pos_x, int_x, atom_mask);
+        bitfield::scatter_masked(pos_y, int_y, atom_mask);
+        bitfield::scatter_masked(pos_z, int_z, atom_mask);
     }
 }
 

@@ -7,6 +7,7 @@
 #include <core/common.h>
 #include <core/log.h>
 #include <core/math_utils.h>
+#include <core/file.h>
 
 #include <stdio.h>
 #include <algorithm>
@@ -160,11 +161,16 @@ void set_volume_texture_data(GLuint texture, ivec3 dim, const uint32_t* data, ui
         if (max_value > 0) {
             const int size = dim.x * dim.y * dim.z;
             for (int i = 0; i < size; ++i) {
-                rescaled_data[i] = (double)data[i] / (double)max_value * 255;
+                rescaled_data[i] = (uint8_t)((double)data[i] / (double)max_value * 255);
             }
         }
 
         glBindTexture(GL_TEXTURE_3D, texture);
+        int w, h, d;
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH,  &w);
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &h);
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH,  &d);
+
         glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, dim.x, dim.y, dim.z, GL_RED, GL_UNSIGNED_BYTE, rescaled_data);
         glBindTexture(GL_TEXTURE_3D, 0);
     }
@@ -178,18 +184,23 @@ void set_volume_texture_data(GLuint texture, ivec3 dim, const float* data, float
         if (max_value > 0) {
             const int size = dim.x * dim.y * dim.z;
             for (int i = 0; i < size; ++i) {
-                rescaled_data[i] = (double)data[i] / (double)max_value * 255;
+                rescaled_data[i] = (uint8_t)((double)data[i] / (double)max_value * 255);
             }
         }
         glBindTexture(GL_TEXTURE_3D, texture);
-        glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, dim.x, dim.y, dim.z, GL_RED, GL_UNSIGNED_BYTE, data);
+        glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, dim.x, dim.y, dim.z, GL_RED, GL_UNSIGNED_BYTE, rescaled_data);
         glBindTexture(GL_TEXTURE_3D, 0);
     }
 }
 
 mat4 compute_model_to_world_matrix(const vec3& min_world_aabb, const vec3& max_world_aabb) {
-    vec3 ext = max_world_aabb - min_world_aabb;
+    const vec3 ext = max_world_aabb - min_world_aabb;
     return mat4(vec4(ext.x, 0, 0, 0), vec4(0, ext.y, 0, 0), vec4(0, 0, ext.z, 0), vec4(min_world_aabb, 1));
+}
+
+mat4 compute_world_to_model_matrix(const vec3& min_world_aabb, const vec3& max_world_aabb) {
+    const vec3 ext = max_world_aabb - min_world_aabb;
+    return mat4(vec4(1.0f / ext.x, 0, 0, 0), vec4(0, 1.0f / ext.y, 0, 0), vec4(0, 0, 1.0f / ext.z, 0), vec4(-min_world_aabb, 1));
 }
 
 mat4 compute_texture_to_model_matrix(const ivec3& dim) {
@@ -203,8 +214,7 @@ return math::inverse(mat4(vec4(scl.x, 0, 0, 0), vec4(0, scl.y, 0, 0), vec4(0, 0,
 }
 
 void write_to_file(const Volume& volume, CStringView file) {
-    StringBuffer<512> zstr = file;
-    FILE* f = fopen(zstr.cstr(), "wb");
+    FILE* f = fopen(file, "wb");
     defer { fclose(f); };
 
     if (!f) {
@@ -239,8 +249,6 @@ void render_volume_texture(const VolumeRenderDesc& desc) {
     data.time = time;
     data.gradient_spacing_world_space = desc.voxel_spacing;
     data.gradient_spacing_tex_space = mat4(glm::scale(data.view_to_model_mat, desc.voxel_spacing));
-
-    // constexpr int cool = offsetof(data, gradient_spacing_tex_space);
 
     glBindBuffer(GL_UNIFORM_BUFFER, gl.ubo);
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(UniformData), &data);
