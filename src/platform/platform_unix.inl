@@ -4,8 +4,14 @@
 #include <unistd.h>
 #include <time.h>
 
+int32_t atomic_fetch_and_add(volatile int32_t* ptr, int32_t add) { return __sync_fetch_and_add(ptr, add); }
+uint32_t atomic_fetch_and_add(volatile uint32_t* ptr, uint32_t add) { return __sync_fetch_and_add(ptr, add); }
+
+int64_t atomic_fetch_and_add(volatile int64_t* ptr, int64_t add) { return __sync_fetch_and_add(ptr, add); }
+uint64_t atomic_fetch_and_add(volatile uint64_t* ptr, uint64_t add) { return __sync_fetch_and_add(ptr, add); }
+
 /*
-static DynamicArray<CString> curr_filters;
+static DynamicArray<CStringView> curr_filters;
 
 static int filter_func(const struct dirent *dir) {
     switch (dir->d_type) {
@@ -42,7 +48,7 @@ float compute_delta_ms(Timestamp ts0, Timestamp ts1) {
     return (ts1 - ts0) * 1.0e-6f;
 }
 
-DynamicArray<DirectoryEntry> list_directory(CString dir_path) {
+DynamicArray<DirectoryEntry> list_directory(CStringView dir_path) {
     struct dirent **files;
     StringBuffer<256> zstr = dir_path;
     int n = scandir (zstr.cstr(), &files, NULL, alphasort);
@@ -96,7 +102,7 @@ DynamicArray<DirectoryEntry> list_directory(CString dir_path) {
     return res;
 }
 
-CString get_cwd() {
+CStringView get_cwd() {
     getcwd(data.file_system.cwd.cstr(), 512);
     return { data.file_system.cwd };
 }
