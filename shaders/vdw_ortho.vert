@@ -28,8 +28,7 @@ vec4 pack_u32(uint data) {
 }
 
 const float SQRT_3 = 1.7329598975688772;
-
-uniform vec2 V_OFFSETS[3] = { vec2(-SQRT_3,-1), vec2(SQRT_3,-1), vec2(0,2) };
+const vec2 V_OFFSETS[3] = vec2[3](vec2(-SQRT_3,-1), vec2(SQRT_3,-1), vec2(0,2));
 
 void main() {
     int g_idx = gl_VertexID / 3;
