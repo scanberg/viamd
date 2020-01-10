@@ -50,7 +50,8 @@ void initialize() {
     GLuint v_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/volume/raycaster.vert", GL_VERTEX_SHADER);
     GLuint f_shader_dvr_only = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/volume/raycaster.frag", GL_FRAGMENT_SHADER, "#define INCLUDE_DVR");
     GLuint f_shader_iso_only = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/volume/raycaster.frag", GL_FRAGMENT_SHADER, "#define INCLUDE_ISO");
-    GLuint f_shader_dvr_and_iso = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/volume/raycaster.frag", GL_FRAGMENT_SHADER, "#define INCLUDE_DVR\n#define INCLUDE_ISO");
+    GLuint f_shader_dvr_and_iso =
+        gl::compile_shader_from_file(VIAMD_SHADER_DIR "/volume/raycaster.frag", GL_FRAGMENT_SHADER, "#define INCLUDE_DVR\n#define INCLUDE_ISO");
     defer {
         glDeleteShader(v_shader);
         glDeleteShader(f_shader_dvr_only);
@@ -82,7 +83,8 @@ void initialize() {
 
     if (!gl.vbo) {
         // https://stackoverflow.com/questions/28375338/cube-using-single-gl-triangle-strip
-        constexpr uint8_t cube_strip[42] = {0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+        constexpr uint8_t cube_strip[42] = {0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1,
+                                            0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
         glGenBuffers(1, &gl.vbo);
         glBindBuffer(GL_ARRAY_BUFFER, gl.vbo);
         glBufferData(GL_ARRAY_BUFFER, sizeof(cube_strip), cube_strip, GL_STATIC_DRAW);
@@ -107,26 +109,6 @@ void initialize() {
 }
 
 void shutdown() {}
-
-void create_volume_texture(GLuint* texture, const ivec3& dim) {
-    ASSERT(texture);
-    if (*texture != 0 && glIsTexture(*texture)) {
-        glDeleteTextures(1, texture);
-    }
-    glGenTextures(1, texture);
-    glBindTexture(GL_TEXTURE_3D, *texture);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glTexImage3D(GL_TEXTURE_3D, 0, GL_R8, dim.x, dim.y, dim.z, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
-    glBindTexture(GL_TEXTURE_3D, 0);
-}
-
-void free_volume_texture(GLuint texture) {
-    if (glIsTexture(texture)) glDeleteTextures(1, &texture);
-}
 
 void create_tf_texture(GLuint* texture, int* width, CStringView path) {
     ASSERT(texture);
@@ -153,29 +135,64 @@ void create_tf_texture(GLuint* texture, int* width, CStringView path) {
     }
 }
 
-void set_volume_texture_data(GLuint texture, ivec3 dim, const uint32_t* data, uint32_t max_value) {
+void create_volume_texture(GLuint* texture, const ivec3& dim) {
+    ASSERT(texture);
+
+    if (glIsTexture(*texture)) {
+        ivec3 tex_dim;
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH, &tex_dim.x);
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &tex_dim.y);
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH, &tex_dim.z);
+        if (dim == tex_dim)
+            return;
+        else
+            glDeleteTextures(1, texture);
+    }
+
+    glGenTextures(1, texture);
+    glBindTexture(GL_TEXTURE_3D, *texture);
+    glTexStorage3D(GL_TEXTURE_3D, 1, GL_R8, dim.x, dim.y, dim.z);
+    // glTexImage3D(GL_TEXTURE_3D, 0, GL_R8, dim.x, dim.y, dim.z, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_3D, 0);
+}
+
+void free_volume_texture(GLuint texture) {
+    if (glIsTexture(texture)) glDeleteTextures(1, &texture);
+}
+
+void set_volume_texture_data(GLuint texture, const ivec3& dim, const uint32_t* data, uint32_t max_value) {
     if (glIsTexture(texture)) {
-        uint8_t* rescaled_data = (uint8_t*)TMP_MALLOC(dim.x * dim.y * dim.z);
+        const int64 size = dim.x * dim.y * dim.z;
+        float* rescaled_data = (float*)TMP_MALLOC(size * sizeof(float));
         defer { TMP_FREE(rescaled_data); };
+        ASSERT(rescaled_data);
 
         if (max_value > 0) {
-            const int size = dim.x * dim.y * dim.z;
-            for (int i = 0; i < size; ++i) {
-                rescaled_data[i] = (uint8_t)((double)data[i] / (double)max_value * 255);
+            const float scl = 1.0f / (float)max_value;
+            for (int64 i = 0; i < size; ++i) {
+                rescaled_data[i] = (float)data[i] * scl;
             }
+        } else {
+            memset(rescaled_data, 0, size);
         }
 
         glBindTexture(GL_TEXTURE_3D, texture);
         int w, h, d;
-        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH,  &w);
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH, &w);
         glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &h);
-        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH,  &d);
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH, &d);
 
-        glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, dim.x, dim.y, dim.z, GL_RED, GL_UNSIGNED_BYTE, rescaled_data);
+        glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, dim.x, dim.y, dim.z, GL_RED, GL_FLOAT, rescaled_data);
         glBindTexture(GL_TEXTURE_3D, 0);
     }
 }
 
+/*
 void set_volume_texture_data(GLuint texture, ivec3 dim, const float* data, float max_value) {
     if (glIsTexture(texture)) {
         uint8_t* rescaled_data = (uint8_t*)TMP_MALLOC(dim.x * dim.y * dim.z);
@@ -192,6 +209,7 @@ void set_volume_texture_data(GLuint texture, ivec3 dim, const float* data, float
         glBindTexture(GL_TEXTURE_3D, 0);
     }
 }
+*/
 
 mat4 compute_model_to_world_matrix(const vec3& min_world_aabb, const vec3& max_world_aabb) {
     const vec3 ext = max_world_aabb - min_world_aabb;
@@ -268,7 +286,8 @@ void render_volume_texture(const VolumeRenderDesc& desc) {
 
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, gl.ubo);
 
-    const GLuint program = desc.direct_volume_rendering_enabled ? (desc.isosurface_enabled ? gl.program.dvr_and_iso : gl.program.dvr_only) : gl.program.iso_only;
+    const GLuint program =
+        desc.direct_volume_rendering_enabled ? (desc.isosurface_enabled ? gl.program.dvr_and_iso : gl.program.dvr_only) : gl.program.iso_only;
 
     const GLint uniform_loc_tex_depth = glGetUniformLocation(program, "u_tex_depth");
     const GLint uniform_loc_tex_volume = glGetUniformLocation(program, "u_tex_volume");

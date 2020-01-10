@@ -668,7 +668,7 @@ static void handle_camera_interaction(ApplicationData* data);
 static void handle_camera_animation(ApplicationData* data);
 
 static void update_properties(ApplicationData* data);
-static void update_density_volume(ApplicationData* data);
+static void update_density_volume_texture(ApplicationData* data);
 static void handle_picking(ApplicationData* data);
 static void compute_backbone_spline(ApplicationData* data);
 static void compute_velocity(ApplicationData* data);
@@ -1086,7 +1086,8 @@ int main(int, char**) {
                 i = (++i) % ARRAY_SIZE(halton_sequence);
                 param.jitter.current = halton_sequence[i] - 0.5f;
                 if (data.view.mode == CameraMode::Perspective) {
-                    param.matrix.current.proj_jittered = perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height, param.jitter.current.x, param.jitter.current.y);
+                    param.matrix.current.proj_jittered = perspective_projection_matrix(data.view.camera, data.fbo.width, data.fbo.height,
+                                                                                       param.jitter.current.x, param.jitter.current.y);
                 } else {
                     const float aspect_ratio = (float)data.fbo.width / (float)data.fbo.height;
                     const float h = data.view.trackball_state.distance * math::tan(data.view.camera.fov_y * 0.5f);
@@ -1095,7 +1096,8 @@ int main(int, char**) {
                     const float scale_y = h / data.fbo.height * 2.0f;
                     const float j_x = param.jitter.current.x * scale_x;
                     const float j_y = param.jitter.current.y * scale_y;
-                    param.matrix.current.proj_jittered = param.matrix.current.proj = orthographic_projection_matrix(-w + j_x, w + j_x, -h + j_y, h + j_y, data.view.camera.near_plane, data.view.camera.far_plane);
+                    param.matrix.current.proj_jittered = param.matrix.current.proj =
+                        orthographic_projection_matrix(-w + j_x, w + j_x, -h + j_y, h + j_y, data.view.camera.near_plane, data.view.camera.far_plane);
                 }
             }
 
@@ -1117,7 +1119,7 @@ int main(int, char**) {
 
         copy_molecule_data_to_buffers(&data);
         update_properties(&data);
-        update_density_volume(&data);
+        update_density_volume_texture(&data);
         compute_backbone_spline(&data);
         compute_velocity(&data);
         fill_gbuffer(data);
@@ -3580,9 +3582,8 @@ static void draw_shape_space_window(ApplicationData* data) {
     ImGui::End();
 }
 
-static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const MoleculeTrajectory& traj, const mat4& world_to_volume_texture,
-                                      const mat4& rotation, const structure_tracking::TrackingData& tracking_data, TrackingMode mode,
-                                      float radial_cutoff) {
+static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const MoleculeTrajectory& traj, const mat4& rotation,
+                                      const structure_tracking::TrackingData& tracking_data, TrackingMode mode, float radial_cutoff) {
     ASSERT(vol);
 
     quat* rot_data = nullptr;
@@ -3601,12 +3602,15 @@ static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const Mol
         const auto& frame = get_trajectory_frame(traj, frame_idx);
         const mat3 box = frame.box;
         const vec3 half_box = box * vec3(0.5f);
+        const vec3 min_aabb = box * vec3(0.0f);
+        const vec3 max_aabb = box * vec3(1.0f);
         const vec3 com = tracking_data.transform.com[frame_idx];
         const mat4 R = math::mat4_cast(rot_data[frame_idx]);
         const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-com, 1));
         const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(half_box, 1));
+        const mat4 world_to_model = volume::compute_world_to_model_matrix(min_aabb, max_aabb);
         // const mat4 M = volume_world_to_texture * math::transpose(R) * T_com;
-        const mat4 M = world_to_volume_texture * T_box * rotation * R * T_com;
+        const mat4 M = world_to_model * T_box * rotation * R * T_com;
 
         // @TODO: Replace when proper iterators are implemented for bitfield.
         for (int64 i = 0; i < atom_mask.size(); i++) {
@@ -3704,9 +3708,22 @@ static void draw_density_volume_window(ApplicationData* data) {
         ImGui::Separator();
         ImGui::Text("Resolution Scale");
         {
-            if (ImGui::SliderFloat("Scale", &data->density_volume.resolution_scale, 0.125f, 8.0f, "%.3f", 1.0f)) {
-                const float closest_pow2 = math::pow(2.0f, math::round(math::log(data->density_volume.resolution_scale) / math::log(2.0f)));
-                init_density_volume(data);
+            static float x = 1.0f;
+            if (ImGui::SliderFloat("Scale", &x, 0.125f, 8.0f, "%.3f", 1.0f)) {
+                float rounded_x;
+                float rounded_cur;
+                if (x < 1.0f) {
+                    rounded_x = math::pow(2.0f, math::round(math::log(x) / math::log(2.0f)));
+                    rounded_cur = math::pow(2.0f, math::round(math::log(data->density_volume.resolution_scale) / math::log(2.0f)));
+                } else {
+                    rounded_x = (int)x;
+                    rounded_cur = (int)data->density_volume.resolution_scale;
+                }
+
+                if (rounded_x != rounded_cur) {
+                    data->density_volume.resolution_scale = rounded_x;
+                    init_density_volume(data);
+                }
             }
         }
 
@@ -3729,6 +3746,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                 const int button_count = (int)data->ensemble_tracking.structures.size();
                 const float window_visible_x2 = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
                 const Bitfield ensemble_mask = data->ensemble_tracking.atom_mask;
+                bool begin_popup = false;
 
                 for (int i = 0; i < button_count; i++) {
                     auto& structure = data->ensemble_tracking.structures[i];
@@ -3750,6 +3768,11 @@ static void draw_density_volume_window(ApplicationData* data) {
                         }
                         data->gpu_buffers.dirty.selection = true;
                     }
+
+                    if (ImGui::IsItemClicked(1)) {
+                        begin_popup = true;
+                    }
+
                     if (apply_style) ImGui::PopStyleColor();
 
                     const float last_button_x2 = ImGui::GetItemRectMax().x;
@@ -3757,7 +3780,23 @@ static void draw_density_volume_window(ApplicationData* data) {
                     if (i + 1 < button_count && next_button_x2 < window_visible_x2) ImGui::SameLine();
                     ImGui::PopID();
                 }
+
+                if (begin_popup) ImGui::OpenPopup("EnsemblePopup");
+                if (ImGui::BeginPopup("EnsemblePopup")) {
+                    if (ImGui::MenuItem("Select All")) {
+                        for (auto& item : data->ensemble_tracking.structures) {
+                            item.enabled = true;
+                        }
+                    }
+                    if (ImGui::MenuItem("Deselect All")) {
+                        for (auto& item : data->ensemble_tracking.structures) {
+                            item.enabled = false;
+                        }
+                    }
+                    ImGui::EndPopup();
+                }
             }
+
             if (ImGui::Button("Compute Density")) {
                 Bitfield filter_mask;
                 bitfield::init(&filter_mask, data->dynamic.molecule.atom.count);
@@ -3778,10 +3817,9 @@ static void draw_density_volume_window(ApplicationData* data) {
                     data->density_volume.volume_data_mutex.lock();
                     clear_volume(&data->density_volume.volume);
 
-                    const mat4 M = data->density_volume.world_to_model_matrix;
-
                     uint32_t completed_count = 0;
-                    enki::TaskSet task(ensemble_structures.size(), [data, filter_mask, &ensemble_structures, &completed_count](enki::TaskSetPartition range, uint32_t threadnum) {
+                    enki::TaskSet task(ensemble_structures.size(), [data, filter_mask, &ensemble_structures, &completed_count](
+                                                                       enki::TaskSetPartition range, uint32_t threadnum) {
                         for (uint32_t i = range.start; i < range.end; ++i) {
                             auto& structure = ensemble_structures[i];
                             if (!structure.enabled) continue;
@@ -3790,7 +3828,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                                 LOG_ERROR("Could not find tracking data for structure: %u", structure.id);
                                 continue;
                             }
-                            append_trajectory_density(&data->density_volume.volume, filter_mask, data->dynamic.trajectory, data->density_volume.world_to_model_matrix, structure.alignment_matrix,
+                            append_trajectory_density(&data->density_volume.volume, filter_mask, data->dynamic.trajectory, structure.alignment_matrix,
                                                       *tracking_data, data->ensemble_tracking.tracking_mode, cutoff);
                             uint32 count = platform::atomic_fetch_and_add(&completed_count, 1) + 1;
                             LOG_NOTE("%i / %i...", count, ensemble_structures.size());
@@ -3826,8 +3864,8 @@ static void draw_density_volume_window(ApplicationData* data) {
             compute |= ImGui::InputText("Reference structure filter", reference_buf, 128, ImGuiInputTextFlags_EnterReturnsTrue);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip(
-                    "Specify the filter of the reference structure for the ensamble. All structure which matches this reference will be included in "
-                    "the ensamble");
+                    "Specify the filter of the reference structure for the ensamble. All structure which matches this reference will be included "
+                    "in the ensamble");
             }
             if (ImGui::Button("Create ensemble")) {
                 ImGui::CloseCurrentPopup();
@@ -5505,8 +5543,7 @@ static void update_properties(ApplicationData* data) {
                     const vec3 min_aabb = data->simulation_box.box * vec3(0, 0, 0);
                     const vec3 max_aabb = data->simulation_box.box * vec3(1, 1, 1);
                     const mat4 world_to_model = volume::compute_world_to_model_matrix(min_aabb, max_aabb);
-                    stats::compute_density_volume(&data->density_volume.volume, data->dynamic.trajectory,
-                                                                                               range, world_to_model);
+                    stats::compute_density_volume(&data->density_volume.volume, data->dynamic.trajectory, range, world_to_model);
                 }
                 data->density_volume.volume_data_mutex.unlock();
                 data->density_volume.texture.dirty = true;
@@ -5515,17 +5552,13 @@ static void update_properties(ApplicationData* data) {
         data);
 }
 
-static void update_density_volume(ApplicationData* data) {
+static void update_density_volume_texture(ApplicationData* data) {
     // If gpu representation of volume is not up to date, upload data
     if (data->density_volume.texture.dirty) {
         // @NOTE: We need to lock the data here in case the data is changing while doing this.
         if (data->density_volume.volume_data_mutex.try_lock()) {
-            if (data->density_volume.texture.dim != data->density_volume.volume.dim) {
-                data->density_volume.texture.dim = data->density_volume.volume.dim;
-                volume::create_volume_texture(&data->density_volume.texture.id, data->density_volume.texture.dim);
-            }
-
-            volume::set_volume_texture_data(data->density_volume.texture.id, data->density_volume.texture.dim,
+            volume::create_volume_texture(&data->density_volume.texture.id, data->density_volume.volume.dim);
+            volume::set_volume_texture_data(data->density_volume.texture.id, data->density_volume.volume.dim,
                                             data->density_volume.volume.voxel_data.ptr, data->density_volume.volume.voxel_range.max);
             data->density_volume.volume_data_mutex.unlock();
             data->density_volume.texture.max_value = (float)data->density_volume.volume.voxel_range.y;

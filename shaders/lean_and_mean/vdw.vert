@@ -6,7 +6,6 @@ uniform mat4 u_proj_mat;
 uniform vec4 u_jitter_uv;
 
 uniform float u_radius_scale = 1.0;
-uniform vec4 u_color;
 uniform uint u_mask;
 
 layout (location = 0) in vec3  in_position;
@@ -63,12 +62,6 @@ void main() {
         axis_b *= scl;
         center *= scl;
         center += u_jitter_uv.xy * 0.5;
-
-        // Use center from projection matrix instead to get jitter
-        //vec4 cs = u_proj_mat * (view_coord + vec4(0,0,0,0));
-        //cs /= cs.w;
-        //center = cs.xy;
-        //z = cs.z;
 
         out_geom.view_sphere = view_sphere;
 		out_geom.axis_a = axis_a;
