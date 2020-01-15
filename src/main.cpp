@@ -4705,7 +4705,6 @@ static void save_workspace(ApplicationData* data, CStringView file) {
         return;
     }
 
-    // @TODO: Make relative paths
     fprintf(fptr, "[Files]\n");
     fprintf(fptr, "MoleculeFile=%s\n", data->files.molecule ? get_relative_path(file, data->files.molecule).cstr() : "");
     fprintf(fptr, "TrajectoryFile=%s\n", data->files.trajectory ? get_relative_path(file, data->files.trajectory).cstr() : "");
