@@ -510,9 +510,9 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     float* ref_x = (float*)mem + 3 * num_atoms;
     float* ref_y = (float*)mem + 4 * num_atoms;
     float* ref_z = (float*)mem + 5 * num_atoms;
-//    float* prv_x = (float*)mem + 6 * num_atoms;
-//    float* prv_y = (float*)mem + 7 * num_atoms;
-//    float* prv_z = (float*)mem + 8 * num_atoms;
+    //    float* prv_x = (float*)mem + 6 * num_atoms;
+    //    float* prv_y = (float*)mem + 7 * num_atoms;
+    //    float* prv_z = (float*)mem + 8 * num_atoms;
     float* int_x = (float*)mem + 9 * num_atoms;
     float* int_y = (float*)mem + 10 * num_atoms;
     float* int_z = (float*)mem + 11 * num_atoms;
@@ -535,7 +535,7 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     memcpy(int_z, ref_z, num_atoms * sizeof(float));
 
     const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, num_atoms);
-    //dvec3 prv_com = ref_com;
+    // dvec3 prv_com = ref_com;
     dvec3 int_com = ref_com;
     dvec3 cur_com = {0, 0, 0};
 
@@ -574,7 +574,7 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     quat q_relative = {1, 0, 0, 0};
     quat q_hybrid = {1, 0, 0, 0};
 
-    //memcpy(prv_x, ref_x, num_atoms * sizeof(float) * 3);
+    // memcpy(prv_x, ref_x, num_atoms * sizeof(float) * 3);
 
     // Set first frame explicitly
     s->tracking_data.transform.rotation.absolute[0] = {1, 0, 0, 0};
@@ -583,48 +583,51 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     compute_eigen(compute_weighted_covariance_matrix(ref_x, ref_y, ref_z, mass, num_atoms, ref_com), (vec3(&)[3])s->tracking_data.eigen.vectors[0],
                   (float(&)[3])s->tracking_data.eigen.values[0]);
 
-    for (int32 i = 1; i < num_frames; ++i) {
-        // Fetch current
-        bitfield::gather_masked(cur_x, dynamic.trajectory.frame_buffer[i].atom_position.x, atom_mask, mask_offset);
-        bitfield::gather_masked(cur_y, dynamic.trajectory.frame_buffer[i].atom_position.y, atom_mask, mask_offset);
-        bitfield::gather_masked(cur_z, dynamic.trajectory.frame_buffer[i].atom_position.z, atom_mask, mask_offset);
+    if (num_atoms > 1) {
+        for (int32 i = 1; i < num_frames; ++i) {
+            // Fetch current
+            bitfield::gather_masked(cur_x, dynamic.trajectory.frame_buffer[i].atom_position.x, atom_mask, mask_offset);
+            bitfield::gather_masked(cur_y, dynamic.trajectory.frame_buffer[i].atom_position.y, atom_mask, mask_offset);
+            bitfield::gather_masked(cur_z, dynamic.trajectory.frame_buffer[i].atom_position.z, atom_mask, mask_offset);
 
-        // cur_com = compute_com(cur_x, cur_y, cur_z, mass, num_atoms);
+            // cur_com = compute_com(cur_x, cur_y, cur_z, mass, num_atoms);
 
-        dvec3 sum_pos = {0, 0, 0};
-        double sum_mass = 0;
-        for (int64 j = 0; j < num_atoms; ++j) {
-            const double m = mass[j];
-            sum_pos.x += (double)cur_x[j] * m;
-            sum_pos.y += (double)cur_y[j] * m;
-            sum_pos.z += (double)cur_z[j] * m;
-            sum_mass += m;
-        }
-        cur_com = sum_pos / sum_mass;
+            dvec3 sum_pos = {0, 0, 0};
+            double sum_mass = 0;
+            for (int64 j = 0; j < num_atoms; ++j) {
+                const double m = mass[j];
+                sum_pos.x += (double)cur_x[j] * m;
+                sum_pos.y += (double)cur_y[j] * m;
+                sum_pos.z += (double)cur_z[j] * m;
+                sum_mass += m;
+            }
+            cur_com = sum_pos / sum_mass;
 
-        const dmat3 abs_mat = compute_weighted_cross_covariance_matrix(ref_x, ref_y, ref_z, cur_x, cur_y, cur_z, mass, num_atoms, ref_com, cur_com);
-        // const mat3 rel_mat = compute_weighted_cross_covariance_matrix(prv_x, prv_y, prv_z, cur_x, cur_y, cur_z, mass, num_atoms, prv_com, cur_com);
-        const dmat3 cov_mat = compute_weighted_covariance_matrix(cur_x, cur_y, cur_z, mass, num_atoms, cur_com);
+            const dmat3 abs_mat =
+                compute_weighted_cross_covariance_matrix(ref_x, ref_y, ref_z, cur_x, cur_y, cur_z, mass, num_atoms, ref_com, cur_com);
+            // const mat3 rel_mat = compute_weighted_cross_covariance_matrix(prv_x, prv_y, prv_z, cur_x, cur_y, cur_z, mass, num_atoms, prv_com,
+            // cur_com);
+            const dmat3 cov_mat = compute_weighted_covariance_matrix(cur_x, cur_y, cur_z, mass, num_atoms, cur_com);
 
-        const dmat3 abs_rot = extract_rotation(abs_mat);
-        // const mat3 rel_rot = extract_rotation(rel_mat);
+            const dmat3 abs_rot = extract_rotation(abs_mat);
+            // const mat3 rel_rot = extract_rotation(rel_mat);
 
-        quat q_abs = math::normalize(math::quat_cast(abs_rot));
+            quat q_abs = math::normalize(math::quat_cast(abs_rot));
 
-        // Concatenate delta to relative transform
-        // const quat q_del = math::normalize(math::quat_cast(rel_rot));
-        // q_relative = math::normalize(q_relative * q_del);
-        // quat q_rel = q_relative;
+            // Concatenate delta to relative transform
+            // const quat q_del = math::normalize(math::quat_cast(rel_rot));
+            // q_relative = math::normalize(q_relative * q_del);
+            // quat q_rel = q_relative;
 
-        // Make sure we take shortest path from previous orientation
-        q_abs = math::dot(s->tracking_data.transform.rotation.absolute[i - 1], q_abs) > 0.0f ? q_abs : -q_abs;
-        // q_rel = math::dot(s->tracking_data.transform.rotation.relative[i - 1], q_rel) > 0.0f ? q_rel : -q_rel;
+            // Make sure we take shortest path from previous orientation
+            q_abs = math::dot(s->tracking_data.transform.rotation.absolute[i - 1], q_abs) > 0.0f ? q_abs : -q_abs;
+            // q_rel = math::dot(s->tracking_data.transform.rotation.relative[i - 1], q_rel) > 0.0f ? q_rel : -q_rel;
 
-        mat3 eigen_vectors;
-        vec3 eigen_values;
-        compute_eigen(cov_mat, (vec3(&)[3])eigen_vectors, (float(&)[3])eigen_values);
-        {
-            // @NOTE: ...
+            mat3 eigen_vectors;
+            vec3 eigen_values;
+            compute_eigen(cov_mat, (vec3(&)[3])eigen_vectors, (float(&)[3])eigen_values);
+            {
+                // @NOTE: ...
 
 #if 0
             const auto find_max_proj = [](const vec3& ref, ArrayView<vec3> vecs) -> int {
@@ -659,7 +662,7 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
             eigen_vectors[1] = abs_pca[1];
             eigen_vectors[2] = abs_pca[2];
 #endif
-        }
+            }
 
 #if 0
         // Full correction of relative path
@@ -689,135 +692,151 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
         q_hybrid = math::normalize(q_err * q_hybrid);
         const quat q_cor = q_hybrid;
 #elif 0
-        // Fixed ratio Slerp 80% relative, 20% absolute
-        q_hybrid = math::normalize(math::slerp(q_hybrid * q_del, math::conjugate(q_abs), 0.2f));
-        const quat q_cor = math::conjugate(q_hybrid);
+            // Fixed ratio Slerp 80% relative, 20% absolute
+            q_hybrid = math::normalize(math::slerp(q_hybrid * q_del, math::conjugate(q_abs), 0.2f));
+            const quat q_cor = math::conjugate(q_hybrid);
 #elif 1
-        // @NOTE: Relative approach from Chevrot et al.
-        // Avoids accumulative error from concatenation of matrices by storing an internal copy of the structure
-        // And modifies that in an iterative fashion
-        const dmat3 rel_mat = compute_weighted_cross_covariance_matrix(int_x, int_y, int_z, cur_x, cur_y, cur_z, mass, num_atoms, int_com, cur_com);
-        const dmat3 rel_rot = extract_rotation(rel_mat);
+            // @NOTE: Relative approach from Chevrot et al.
+            // Avoids accumulative error from concatenation of matrices by storing an internal copy of the structure
+            // And modifies that in an iterative fashion
+            const dmat3 rel_mat =
+                compute_weighted_cross_covariance_matrix(int_x, int_y, int_z, cur_x, cur_y, cur_z, mass, num_atoms, int_com, cur_com);
+            const dmat3 rel_rot = extract_rotation(rel_mat);
 
-        const quat q = math::normalize(math::quat_cast(rel_rot));
-        const quat q_rel = math::dot(s->tracking_data.transform.rotation.relative[i - 1], q) > 0.0f ? q : -q;
+            const quat q = math::normalize(math::quat_cast(rel_rot));
+            const quat q_rel = math::dot(s->tracking_data.transform.rotation.relative[i - 1], q) > 0.0f ? q : -q;
 
-        // @NOTE: Update internal representation
-        for (int j = 0; j < num_atoms; j++) {
-            const dvec3 t = cur_com;
-            const dvec3 v = {cur_x[j] - t.x, cur_y[j] - t.y, cur_z[j] - t.z};
+            // @NOTE: Update internal representation
+            for (int j = 0; j < num_atoms; j++) {
+                const dvec3 t = cur_com;
+                const dvec3 v = {cur_x[j] - t.x, cur_y[j] - t.y, cur_z[j] - t.z};
 
 #if 1
-            // Matrix multiply
-            int_x[j] = (float)(rel_rot[0][0] * v.x + rel_rot[1][0] * v.y + rel_rot[2][0] * v.z + t.x);
-            int_y[j] = (float)(rel_rot[0][1] * v.x + rel_rot[1][1] * v.y + rel_rot[2][1] * v.z + t.y);
-            int_z[j] = (float)(rel_rot[0][2] * v.x + rel_rot[1][2] * v.y + rel_rot[2][2] * v.z + t.z);
+                // Matrix multiply
+                int_x[j] = (float)(rel_rot[0][0] * v.x + rel_rot[1][0] * v.y + rel_rot[2][0] * v.z + t.x);
+                int_y[j] = (float)(rel_rot[0][1] * v.x + rel_rot[1][1] * v.y + rel_rot[2][1] * v.z + t.y);
+                int_z[j] = (float)(rel_rot[0][2] * v.x + rel_rot[1][2] * v.y + rel_rot[2][2] * v.z + t.z);
 #else
-            // Quaternion multiply
-            const vec3 p = q_relative * v + t;
-            int_x[j] = p.x;
-            int_y[j] = p.y;
-            int_z[j] = p.z;
+                // Quaternion multiply
+                const vec3 p = q_relative * v + t;
+                int_x[j] = p.x;
+                int_y[j] = p.y;
+                int_z[j] = p.z;
 #endif
-        }
-        int_com = cur_com;
+            }
+            int_com = cur_com;
 
 #elif 0
-        // Partial correction based on geometric anisotropy
-        // Align relative to absolute PCA axes based on shape.
-        // If linear    -> Align with PCA[0]
-        // If planar    -> Align with PCA[0] and PCA[1]
-        // If spherical -> Align with Absolute
-        const mat3 ref_pca = s->tracking_data.eigen.vectors[0];
-        const mat3 cur_pca = eigen_vectors;
+            // Partial correction based on geometric anisotropy
+            // Align relative to absolute PCA axes based on shape.
+            // If linear    -> Align with PCA[0]
+            // If planar    -> Align with PCA[0] and PCA[1]
+            // If spherical -> Align with Absolute
+            const mat3 ref_pca = s->tracking_data.eigen.vectors[0];
+            const mat3 cur_pca = eigen_vectors;
 
-        const vec3 ref_ev = s->tracking_data.eigen.values[0];
-        const vec3 cur_ev = eigen_values;
+            const vec3 ref_ev = s->tracking_data.eigen.values[0];
+            const vec3 cur_ev = eigen_values;
 
-        const vec3 ev = cur_ev;
-        const float denom = 1.0f / (ev[0] + ev[1] + ev[2]);
-        const float cl = (ev[0] - ev[1]) * denom;
-        const float cp = 2.0f * (ev[1] - ev[2]) * denom;
-        const float cs = 3.0f * ev[2] * denom;
+            const vec3 ev = cur_ev;
+            const float denom = 1.0f / (ev[0] + ev[1] + ev[2]);
+            const float cl = (ev[0] - ev[1]) * denom;
+            const float cp = 2.0f * (ev[1] - ev[2]) * denom;
+            const float cs = 3.0f * ev[2] * denom;
 
-        quat q = q_hybrid * q_del;
+            quat q = q_hybrid * q_del;
 
-        // const float wl = math::pow(1.0f - cs, 8.0f) * math::pow(1.0f - cp, 2.0f);
+            // const float wl = math::pow(1.0f - cs, 8.0f) * math::pow(1.0f - cp, 2.0f);
 
-        float wl = cl * cp * 4.0f;
-        // wl = wl * pow(bc[0], 4.0) * 16.0;
+            float wl = cl * cp * 4.0f;
+            // wl = wl * pow(bc[0], 4.0) * 16.0;
 
-        const float w0 = wl;
-        const float w1 = cp;
-        const float w2 = 1.0f - w0;
-
-        {
-            quat q_pca = q;
+            const float w0 = wl;
+            const float w1 = cp;
+            const float w2 = 1.0f - w0;
 
             {
-                // Align with Major
-                const vec3 target = ref_pca[0];
-                const vec3 v_src = q_pca * cur_pca[0];
-                const vec3 v_dst = math::dot(target, v_src) > 0.0f ? target : -target;
-                const quat q_cor = math::two_direction_vectors(math::normalize(v_src), math::normalize(v_dst));
-                q_pca = math::slerp(q_pca, q_cor * q_pca, 1.0f);
+                quat q_pca = q;
+
+                {
+                    // Align with Major
+                    const vec3 target = ref_pca[0];
+                    const vec3 v_src = q_pca * cur_pca[0];
+                    const vec3 v_dst = math::dot(target, v_src) > 0.0f ? target : -target;
+                    const quat q_cor = math::two_direction_vectors(math::normalize(v_src), math::normalize(v_dst));
+                    q_pca = math::slerp(q_pca, q_cor * q_pca, 1.0f);
+                }
+
+                {
+                    // Align with Mid
+                    const vec3 target = ref_pca[1];
+                    const vec3 v_src = q_pca * cur_pca[1];
+                    const vec3 v_dst = math::dot(target, v_src) > 0.0f ? target : -target;
+                    const quat q_cor = math::two_direction_vectors(math::normalize(v_src), math::normalize(v_dst));
+                    q_pca = math::slerp(q_pca, q_cor * q_pca, 1.0f);
+                }
+
+                math::normalize(q_pca);
+
+                q = math::slerp(q, q_pca, 1.0f);
             }
 
-            {
-                // Align with Mid
-                const vec3 target = ref_pca[1];
-                const vec3 v_src = q_pca * cur_pca[1];
-                const vec3 v_dst = math::dot(target, v_src) > 0.0f ? target : -target;
-                const quat q_cor = math::two_direction_vectors(math::normalize(v_src), math::normalize(v_dst));
-                q_pca = math::slerp(q_pca, q_cor * q_pca, 1.0f);
-            }
+            // Align with Absolute
+            //{ q = math::slerp(q, q_abs, w2); }
 
-            math::normalize(q_pca);
-
-            q = math::slerp(q, q_pca, 1.0f);
-        }
-
-        // Align with Absolute
-        //{ q = math::slerp(q, q_abs, w2); }
-
-        q = math::normalize(q);
-        const quat q_hyb = math::dot(s->tracking_data.transform.rotation.hybrid[i - 1], q) > 0.0f ? q : -q;
-        q_hybrid = q_hyb;
+            q = math::normalize(q);
+            const quat q_hyb = math::dot(s->tracking_data.transform.rotation.hybrid[i - 1], q) > 0.0f ? q : -q;
+            q_hybrid = q_hyb;
 #else
-        // Always go with Shortest path (absolute or prediction)
-        // Result -> Bad
-        const quat q_pred = q_hybrid * q_del;
-        const float d_abs = math::dot(q_hybrid, q_abs);
-        const float d_pred = math::dot(q_hybrid, q_pred);
+            // Always go with Shortest path (absolute or prediction)
+            // Result -> Bad
+            const quat q_pred = q_hybrid * q_del;
+            const float d_abs = math::dot(q_hybrid, q_abs);
+            const float d_pred = math::dot(q_hybrid, q_pred);
 
-        if (math::abs(d_abs) > math::abs(d_pred)) {
-            const float sign = math::sign(d_abs);
-            q_hybrid = math::normalize(sign * q_abs);
-        } else {
-            const float sign = math::sign(d_pred);
-            q_hybrid = math::normalize(sign * q_pred);
-        }
-        const quat q_cor = q_hybrid;
+            if (math::abs(d_abs) > math::abs(d_pred)) {
+                const float sign = math::sign(d_abs);
+                q_hybrid = math::normalize(sign * q_abs);
+            } else {
+                const float sign = math::sign(d_pred);
+                q_hybrid = math::normalize(sign * q_pred);
+            }
+            const quat q_cor = q_hybrid;
 #endif
-        // Dynamic ratio Slerp
-        // absolute contributes with a factor based on the cosine of the angle between the absolute and relative orientation
-        const float d = math::dot(q_rel, q_abs);
-        const float t = math::pow(d, 8.0f);
-        q_hybrid = math::normalize(math::slerp(q_rel, q_abs, t));
-        const quat q_hyb = math::dot(s->tracking_data.transform.rotation.hybrid[i - 1], q_hybrid) > 0.0f ? q_hybrid : -q_hybrid;
-        q_hybrid = q_hyb;
+            // Dynamic ratio Slerp
+            // absolute contributes with a factor based on the cosine of the angle between the absolute and relative orientation
+            const float d = math::dot(q_rel, q_abs);
+            const float t = math::pow(d, 8.0f);
+            q_hybrid = math::normalize(math::slerp(q_rel, q_abs, t));
+            const quat q_hyb = math::dot(s->tracking_data.transform.rotation.hybrid[i - 1], q_hybrid) > 0.0f ? q_hybrid : -q_hybrid;
+            q_hybrid = q_hyb;
 
-        // Store results
-        s->tracking_data.transform.rotation.absolute[i] = q_abs;
-        s->tracking_data.transform.rotation.relative[i] = q_rel;
-        s->tracking_data.transform.rotation.hybrid[i] = q_hyb;
-        s->tracking_data.transform.com[i] = cur_com;
-        s->tracking_data.eigen.vectors[i] = eigen_vectors;
-        s->tracking_data.eigen.values[i] = eigen_values;
+            // Store results
+            s->tracking_data.transform.rotation.absolute[i] = q_abs;
+            s->tracking_data.transform.rotation.relative[i] = q_rel;
+            s->tracking_data.transform.rotation.hybrid[i] = q_hyb;
+            s->tracking_data.transform.com[i] = cur_com;
+            s->tracking_data.eigen.vectors[i] = eigen_vectors;
+            s->tracking_data.eigen.values[i] = eigen_values;
 
-        // Copy previous frame data
-        //memcpy(prv_x, cur_x, num_atoms * sizeof(float) * 3);
-        //prv_com = cur_com;
+            // Copy previous frame data
+            // memcpy(prv_x, cur_x, num_atoms * sizeof(float) * 3);
+            // prv_com = cur_com;
+        }
+    } else if (num_atoms == 1) {
+        const int atom_idx = bitfield::find_first_bit_set(atom_mask) + mask_offset;
+        for (int i = 1; i < num_frames; i++) {
+            const float x = dynamic.trajectory.frame_buffer[i].atom_position.x[atom_idx];
+            const float y = dynamic.trajectory.frame_buffer[i].atom_position.y[atom_idx];
+            const float z = dynamic.trajectory.frame_buffer[i].atom_position.z[atom_idx];
+
+            s->tracking_data.transform.rotation.absolute[i] = {1, 0, 0, 0};
+            s->tracking_data.transform.rotation.relative[i] = {1, 0, 0, 0};
+            s->tracking_data.transform.rotation.hybrid[i] = {1, 0, 0, 0};
+            s->tracking_data.transform.com[i] = {x, y, z};
+            s->tracking_data.eigen.vectors[i] = mat3(1);
+            s->tracking_data.eigen.values[i] = {1, 1, 1};
+        }
     }
 
     const auto ext = get_trajectory_frame(dynamic.trajectory, 0).box * vec3(1, 1, 1);
@@ -839,11 +858,11 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     s->tracking_data.pca = s->tracking_data.eigen.vectors[0];
 
     return true;
-}
+}  // namespace structure_tracking
 
 void transform_to_internal_frame(MoleculeDynamic& dynamic, Bitfield atom_mask, int64 mask_offset) {
     // Scratch data
-    const int64_t num_atoms  = bitfield::number_of_bits_set(atom_mask);
+    const int64_t num_atoms = bitfield::number_of_bits_set(atom_mask);
     const int64_t num_frames = dynamic.trajectory.num_frames;
 
     const auto mem_size = sizeof(float) * num_atoms * 7;
