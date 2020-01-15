@@ -3681,24 +3681,22 @@ static void draw_density_volume_window(ApplicationData* data) {
 
         ImGui::Separator();
         ImGui::Checkbox("Isosurface Rendering", &data->density_volume.iso.enabled);
-        bool sort_surfaces = false;
         for (int i = 0; i < data->density_volume.iso.isosurfaces.count; ++i) {
             ImGui::PushID(i);
-            if (ImGui::SliderFloat("##Isovalue", &data->density_volume.iso.isosurfaces.values[i], 0.0f, 10.f, "%.3f", 3.f)) {
-                sort_surfaces = true;
+            ImGui::SliderFloat("##Isovalue", &data->density_volume.iso.isosurfaces.values[i], 0.0f, 10.f, "%.3f", 3.f);
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                sort(data->density_volume.iso.isosurfaces);
             }
             ImGui::SameLine();
             ImGui::ColorEdit4("##Color", &data->density_volume.iso.isosurfaces.colors[i][0],
                               ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float);
             ImGui::PopID();
         }
-        if (sort_surfaces) {
-            sort(data->density_volume.iso.isosurfaces);
-        }
 
         if ((data->density_volume.iso.isosurfaces.count < data->density_volume.iso.isosurfaces.MaxCount) &&
             ImGui::Button("Add Isosurface", button_size)) {
-            insert(data->density_volume.iso.isosurfaces, 0.0f, {0.2f, 0.1f, 0.9f, 1.0f});
+            insert(data->density_volume.iso.isosurfaces, 0.1f, {0.2f, 0.1f, 0.9f, 1.0f});
+            sort(data->density_volume.iso.isosurfaces);
         }
         if (ImGui::Button("Clear Isosurfaces", button_size)) {
             clear(data->density_volume.iso.isosurfaces);
