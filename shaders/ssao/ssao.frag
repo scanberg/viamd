@@ -11,7 +11,7 @@
 #endif
 
 #ifndef AO_NUM_SAMPLES
-#define AO_NUM_SAMPLES 16
+#define AO_NUM_SAMPLES 32
 #endif
 
 struct HBAOData {
@@ -136,14 +136,13 @@ float compute_ao(vec2 full_res_uv, float radius_pixels, vec4 jitter, vec3 view_p
     const float global_mip_offset = -4.3; // -4.3 is recomended in the intel ASSAO implementation
     float mip_offset = log2(radius_pixels) + global_mip_offset;
 
-    const int NUM_SAMPLES = 32;
     float weight_sum = 0.0;
     float ao = 0.0;
 
     //vec2 noise = srand2(full_res_uv + vec2(control.time) + 0.2765672);
     //vec2 cos_sin = vec2(cos(noise.x * 3.1415926535), sin(noise.x * 3.1415026535));
 
-    for (int i = 0; i < NUM_SAMPLES; i++) {
+    for (int i = 0; i < AO_NUM_SAMPLES; i++) {
         vec4 sample = control.sample_pattern[i];
         vec2 uv = rotate_sample(sample.xy, jitter.xy) * jitter.z;
         float weight_scale = sample.z;
@@ -156,7 +155,7 @@ float compute_ao(vec2 full_res_uv, float radius_pixels, vec4 jitter, vec3 view_p
     }
     ao *= control.ao_multiplier / weight_sum;
 
-    return clamp(1.0 - ao, 0, 1);
+    return clamp(1.0 - ao, 0.0, 1.0);
 }
 
 //----------------------------------------------------------------------------------

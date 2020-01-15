@@ -162,7 +162,7 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
 
     // check if the isovalue is lying in between current and previous sample
     // found isosurface if differences between current/prev sample and isovalue have different signs
-    if ((isovalue - currentSample) * (isovalue - prevSample) <= 0) {
+    if ((isovalue - currentSample) * (isovalue - prevSample) < 0) {
 
         // apply linear interpolation between current and previous sample to obtain location of isosurface
         float a = (currentSample - isovalue) / sampleDelta;
@@ -180,9 +180,10 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
         gradient = normalize(gradient);
 
         vec3 isoposView = normalize((u_model_to_view_mat * vec4(isopos, 1.0)).xyz);
+
         // two-sided lighting
-        if (dot(gradient, isoposView) <= 0) {
-            gradient = -gradient;
+        if (dot(gradient, isoposView) < 0.0) {
+            //gradient = -gradient;
         }
         isocolor.rgb = shade(isocolor.rgb, -isoposView, -gradient);
 
@@ -295,7 +296,6 @@ void main() {
         density = getVoxel(samplePos);
 
 #if defined(INCLUDE_ISO)
-        tIncr = tEnd / samples;
         result = drawIsosurfaces(result, density, prevDensity, samplePos, dir, t, tIncr);
 #endif 
 
