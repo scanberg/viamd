@@ -221,14 +221,12 @@ mat4 compute_world_to_model_matrix(const vec3& min_world_aabb, const vec3& max_w
     return mat4(vec4(1.0f / ext.x, 0, 0, 0), vec4(0, 1.0f / ext.y, 0, 0), vec4(0, 0, 1.0f / ext.z, 0), vec4(-min_world_aabb, 1));
 }
 
-mat4 compute_texture_to_model_matrix(const ivec3& dim) {
-    (void)dim;
+mat4 compute_model_to_texture_matrix(const ivec3& dim) {
     return mat4(1);
-    /*
-const vec3 cell_ext = 1.f / vec3(dim);
-const vec3 scl = 1.f + cell_ext;
-return math::inverse(mat4(vec4(scl.x, 0, 0, 0), vec4(0, scl.y, 0, 0), vec4(0, 0, scl.z, 0), vec4(-0.5f * cell_ext, 1.f)));
-    */
+}
+
+mat4 compute_texture_to_model_matrix(const ivec3& dim) {
+    return mat4(1);
 }
 
 void write_to_file(const Volume& volume, CStringView file) {

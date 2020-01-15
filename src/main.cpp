@@ -3598,6 +3598,8 @@ static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const Mol
             ASSERT(false);
     }
 
+    const mat4 model_to_texture = volume::compute_model_to_texture_matrix(vol->dim);
+
     for (int frame_idx = 0; frame_idx < traj.num_frames; frame_idx++) {
         const auto& frame = get_trajectory_frame(traj, frame_idx);
         const mat3 box = frame.box;
@@ -3610,16 +3612,19 @@ static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const Mol
         const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(half_box, 1));
         const mat4 world_to_model = volume::compute_world_to_model_matrix(min_aabb, max_aabb);
         // const mat4 M = volume_world_to_texture * math::transpose(R) * T_com;
-        const mat4 M = world_to_model * T_box * rotation * R * T_com;
+        const mat4 M = model_to_texture * world_to_model * T_box * rotation * R * T_com;
 
         // @TODO: Replace when proper iterators are implemented for bitfield.
         for (int64 i = 0; i < atom_mask.size(); i++) {
             if (bitfield::get_bit(atom_mask, i)) {
                 const vec4 wc = {frame.atom_position.x[i], frame.atom_position.y[i], frame.atom_position.z[i], 1.0f};  // world coord
                 if (math::distance2(com, vec3(wc)) > radial_cutoff * radial_cutoff) continue;
-                const vec4 vc = M * wc;           // volume coord [0,1]
-                const vec4 tc = math::fract(vc);  // PBC
-                const ivec3 c = vec3(tc) * vec3(vol->dim - 1);
+                const vec4 vc = M * wc;  // volume coord [0,1]
+                const vec3 tc = apply_pbc(vec3(vc));
+                const ivec3 c = (ivec3)(tc * vec3(vol->dim - 1) + 0.5f);
+                ASSERT(-1 < c.x && c.x < vol->dim.x);
+                ASSERT(-1 < c.y && c.y < vol->dim.y);
+                ASSERT(-1 < c.z && c.z < vol->dim.z);
                 const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
                 platform::atomic_fetch_and_add(vol->voxel_data.ptr + voxel_idx, 1);
                 // vol->voxel_data[voxel_idx]++;

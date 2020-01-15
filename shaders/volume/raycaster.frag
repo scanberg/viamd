@@ -1,10 +1,14 @@
-#version 150 core
+#version 330 core
 
 #define SHADING_ENABLED
 
 #if !defined MAX_ISOVALUE_COUNT
 #  define MAX_ISOVALUE_COUNT 8
 #endif // MAX_ISOVALUE_COUNT
+
+#if !defined SHOW_ONLY_FIRST_ISO_HITS
+#  define SHOW_ONLY_FIRST_ISO_HITS 0
+#endif
 
 struct IsovalueParameters {
     float values[MAX_ISOVALUE_COUNT];
@@ -48,7 +52,7 @@ const float samplingRate = 8.0;
 
 float getVoxel(in vec3 samplePos) {
     //return samplePos.x;
-    samplePos -= (u_gradient_spacing_tex_space * vec4(0.5, 0.5, 0.5, 0.0)).xyz;
+    //samplePos -= (u_gradient_spacing_tex_space * vec4(-0.5, 0.5, 0.5, 0.0)).xyz;
     return texture(u_tex_volume, samplePos).r * u_density_scale;
 }
 
@@ -156,9 +160,10 @@ vec4 depth_to_view_coord(vec2 tc, float depth) {
 vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColor, 
                     in float currentSample, in float prevSample,
                     in vec3 rayPosition, in vec3 rayDirection, 
-                    in float t, in float raySegmentLen, inout float tIncr) {
+                    in float t, in float raySegmentLen, inout float tIncr, out bool hit) {
     vec4 result = curResult;
     float sampleDelta = (currentSample - prevSample);
+    hit = false;
 
     // check if the isovalue is lying in between current and previous sample
     // found isosurface if differences between current/prev sample and isovalue have different signs
@@ -167,7 +172,10 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
         // apply linear interpolation between current and previous sample to obtain location of isosurface
         float a = (currentSample - isovalue) / sampleDelta;
         // if a == 1, isosurface was already computed for previous sampling position
-        if (a >= 1.0) return result;
+        if (a >= 1.0) {
+            hit = true;
+            return result;
+        }
         
         // adjust length of remaining ray segment
         tIncr = a * raySegmentLen;
@@ -205,6 +213,7 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
         isocolor.rgb *= isocolor.a; // use pre-multiplied alpha
         // blend isosurface color with result accumulated so far
         result += (1.0 - result.a) * isocolor;
+        hit = true;
     }
 
     return result;
@@ -213,25 +222,50 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
 vec4 drawIsosurfaces(in vec4 curResult,
                      in float voxel, in float previousVoxel,
                      in vec3 rayPosition, in vec3 rayDirection,
-                     in float t, inout float tIncr) {
+                     inout float t, inout float tIncr, inout uint iso_surface_hit) {
     // in case of zero isovalues return current color
     vec4 result = curResult;
     float raySegmentLen = tIncr;
+    bool hit;
 
 #if MAX_ISOVALUE_COUNT == 1
+#if SHOW_ONLY_FIRST_ISO_HITS
+    if (iso_surface_hit & 1U) {
+        //t = 1.0e19;
+        return result;
+    }
+#endif
     result = drawIsosurface(result, u_iso.values[0], u_iso.colors[0],
-                            voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr);
+                            voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit);
 #else // MAX_ISOVALUE_COUNT
     // multiple isosurfaces, need to determine order of traversal
     if (voxel - previousVoxel > 0) {
         for (int i = 0; i < u_iso.count; ++i) {
-            result = drawIsosurface(result, u_iso.values[i], u_iso.colors[i],
-                voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr);
+            vec4 res = drawIsosurface(result, u_iso.values[i], u_iso.colors[i],
+                                      voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit);
+#if SHOW_ONLY_FIRST_ISO_HITS
+            if (hit) {
+                uint bit = 1U << uint(i);
+                result = ((iso_surface_hit & bit) == 0U) ? res : result;
+                iso_surface_hit = iso_surface_hit | bit;
+            }
+#else
+            result = res;
+#endif
         }
     } else {
         for (int i = u_iso.count; i > 0; --i) {
-            result = drawIsosurface(result, u_iso.values[i - 1], u_iso.colors[i - 1],
-                voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr);
+            vec4 res = drawIsosurface(result, u_iso.values[i - 1], u_iso.colors[i - 1],
+                                  voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit);
+#if SHOW_ONLY_FIRST_ISO_HITS
+            if (hit) {
+                uint bit = 1U << uint(i);
+                result = ((iso_surface_hit & bit) == 0U) ? res : result;
+                iso_surface_hit = iso_surface_hit | bit;
+            }
+#else
+            result = res;
+#endif
         }
     }
 #endif // MAX_ISOVALUE_COUNT
@@ -280,23 +314,25 @@ void main() {
     float tEnd = t_exit - t_entry;
 
     vec2 jitter = PDnrand2(gl_FragCoord.xy + vec2(u_time, u_time));
+    jitter = vec2(0,0);
 
     float tIncr = min(tEnd, tEnd / (samplingRate * length(dir * tEnd * textureSize(u_tex_volume, 0))));
     float samples = ceil(tEnd / tIncr);
     tIncr = tEnd / samples;
 
-    float t = jitter.y * tIncr;
+    float t = 0.0 * tIncr;
 
     vec4 result = vec4(0);
-    float density = getVoxel(entryPos + t * dir); // need this for isosurface rendering
+    float density = 0.0;
+    uint iso_surface_hit = 0U;
+
     while (t < tEnd) {
         vec3 samplePos = entryPos + t * dir;
-
         float prevDensity = density;
         density = getVoxel(samplePos);
 
 #if defined(INCLUDE_ISO)
-        result = drawIsosurfaces(result, density, prevDensity, samplePos, dir, t, tIncr);
+        result = drawIsosurfaces(result, density, prevDensity, samplePos, dir, t, tIncr, iso_surface_hit);
 #endif 
 
 #if defined(INCLUDE_DVR)
