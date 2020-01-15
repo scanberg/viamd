@@ -15,6 +15,8 @@ bool init_image(Image* img, const Image& other);
 void free_image(Image* img);
 
 bool read_image(Image* img, CStringView filename);
+// @NOTE: quality is between 0-100
+bool write_image_jpg(const Image& img, CStringView filename, int quality);
 bool write_image_png(const Image& img, CStringView filename);
 bool write_image_bmp(const Image& img, CStringView filename);
 

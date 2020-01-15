@@ -4797,15 +4797,22 @@ void create_screenshot(ApplicationData* data) {
         }
     }
 
-    platform::FileDialogResult file_res = platform::file_dialog(platform::FileDialogFlags_Save, {}, "png");
+    platform::FileDialogResult file_res = platform::file_dialog(platform::FileDialogFlags_Save, {}, "jpg;png;bmp");
     if (file_res.result == platform::FileDialogResult::Ok) {
         auto ext = get_file_extension(file_res.path);
         if (!ext) {
-            file_res.path += ".png";
+            file_res.path += ".jpg";
+            ext = "jpg";
         }
-        const bool write_res = write_image_png(img, file_res.path);
-        if (!write_res) {
-            LOG_ERROR("An error occured while writing the image.");
+        if (ext == "jpg") {
+            const int quality = 95;
+            write_image_jpg(img, file_res.path, quality);
+        } else if (ext == "png") {
+            write_image_png(img, file_res.path);
+        } else if (ext == "bmp") {
+            write_image_bmp(img, file_res.path);
+        } else {
+            LOG_ERROR("Supplied image format is not supported");
         }
     }
 }
