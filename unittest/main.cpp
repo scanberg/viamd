@@ -52,6 +52,18 @@ ATOM     23  H12 CSP3    1E      9.437   2.207  -6.309
 ATOM     24  H13 CSP3    1E      9.801   2.693  -7.994
 )";
 
+TEST_CASE("String utils", "[String Utils]") {
+    REQUIRE(to_upper('a') == 'A');
+    REQUIRE(to_upper('b') == 'B');
+    REQUIRE(to_upper('z') == 'Z');
+    REQUIRE(to_upper('6') == '6');
+
+    REQUIRE(to_lower('A') == 'a');
+    REQUIRE(to_lower('B') == 'b');
+    REQUIRE(to_lower('Z') == 'z');
+    REQUIRE(to_lower('6') == '6');
+}
+
 TEST_CASE("Bitfield", "[Bitfield]") {
     constexpr int size = 257;
     Bitfield field;
