@@ -227,8 +227,8 @@ void compute_density_volume_with_basis(Volume* vol, const MoleculeTrajectory& tr
                 for (int32 i = s.beg_idx; i < s.end_idx; i++) {
                     const vec4 wc = {pos_x[i], pos_y[i], pos_z[i], 1.0f};
                     const vec4 vc = func(wc, frame_idx);
-                    const vec4 tc = math::fract(vc); // PBC
-                    const ivec3 c = vec3(tc) * (vec3)vol->dim;
+                    const vec3 tc = apply_pbc((vec3)vc);  // PBC
+                    const ivec3 c = (ivec3)(tc * (vec3)vol->dim + 0.5f);
                     const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
                     vol->voxel_data[voxel_idx]++;
                     vol->voxel_range.y = math::max(vol->voxel_range.y, vol->voxel_data[voxel_idx]);
