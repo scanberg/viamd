@@ -40,7 +40,7 @@ void main() {
     vec4 color = texelFetch(u_buf_color, g_idx).rgba;
     vec3 view_velocity = texelFetch(u_buf_view_velocity, g_idx).xyz;
 
-    float rad = radius * u_radius_scale;
+    float rad = radius * u_radius_scale * step(0.01, color.a);
     vec4 view_position = u_view_mat * vec4(position, 1.0);
     vec4 view_coord = view_position + vec4(uv * rad, 0, 0);
     vec4 view_sphere = vec4(view_position.xyz, rad);
