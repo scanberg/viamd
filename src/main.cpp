@@ -3655,7 +3655,7 @@ static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const Mol
 
 static void draw_density_volume_window(ApplicationData* data) {
     const ImVec2 button_size = {250, 20};
-    ImGui::Begin("Density Volume");
+    ImGui::Begin("Density Volume", &data->density_volume.show_window);
     ImGui::Checkbox("Enabled", &data->density_volume.enabled);
     if (data->density_volume.enabled) {
         ImGui::Separator();
@@ -3927,10 +3927,27 @@ static void draw_density_volume_window(ApplicationData* data) {
                     // create_reference_frame(data, "ensemble reference", reference_buf);
 
                     LOG_NOTE("Performing Structure Tracking...");
+
+                    uint32_t completed_count = 0;
+                    enki::TaskSet task(ensemble_structures.size(), [dyn, ensemble_mask,  &ensemble_structures, &completed_count](
+                                                                    enki::TaskSetPartition range, uint32_t threadnum) {
+                        for (uint32_t i = range.start; i < range.end; ++i) {
+                            auto& structure = ensemble_structures[i];
+                            structure_tracking::compute_trajectory_transform_data(structure.id, dyn, ensemble_mask, structure.offset);
+                            const uint32 count = platform::atomic_fetch_and_add(&completed_count, 1) + 1;
+                            LOG_NOTE("%i / %i...", count, ensemble_structures.size());
+                        }
+                    });
+
+                    data->thread_pool.AddTaskSetToPipe(&task);
+                    data->thread_pool.WaitforTask(&task);
+
+                    /*
                     for (auto& structure : ensemble_structures) {
                         LOG_NOTE("%i / %i", (int)(&structure - ensemble_structures.begin()) + 1, (int)ensemble_structures.size());
-                        structure_tracking::compute_trajectory_transform_data(structure.id, dyn, ensemble_mask, structure.offset);
+
                     }
+                    */
                     LOG_NOTE("Done!");
 
                     LOG_NOTE("Computing structure Alignment Matrices...");
