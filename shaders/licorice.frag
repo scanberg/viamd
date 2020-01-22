@@ -74,8 +74,13 @@ vec4 encode_normal (vec3 n) {
 }
 
 void main() {
+#ifdef ORTHO
+    vec3 ro = vec3(in_frag.view_pos.xy, 0);
+    vec3 rd = vec3(0,0,-1);
+#else
     vec3 ro = vec3(0);
     vec3 rd = normalize(in_frag.view_pos);
+#endif
     vec3 cc = in_frag.capsule_center_radius.xyz;
     float cr = in_frag.capsule_center_radius.w;
     vec3 ca = in_frag.capsule_axis_length.xyz;

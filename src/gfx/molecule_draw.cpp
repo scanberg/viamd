@@ -54,25 +54,37 @@ static void shutdown() {
 }  // namespace vdw
 
 namespace licorice {
-static GLuint program = 0;
+static GLuint program_persp = 0;
+static GLuint program_ortho = 0;
 
 static void initialize() {
     GLuint v_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/licorice.vert", GL_VERTEX_SHADER);
     GLuint g_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/licorice.geom", GL_GEOMETRY_SHADER);
-    GLuint f_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/licorice.frag", GL_FRAGMENT_SHADER);
+    GLuint f_shader_persp = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/licorice.frag", GL_FRAGMENT_SHADER);
+    GLuint f_shader_ortho = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/licorice.frag", GL_FRAGMENT_SHADER, "#define ORTHO");
     defer {
         glDeleteShader(v_shader);
         glDeleteShader(g_shader);
-        glDeleteShader(f_shader);
+        glDeleteShader(f_shader_persp);
+        glDeleteShader(f_shader_ortho);
     };
 
-    if (!program) program = glCreateProgram();
-    const GLuint shaders[] = {v_shader, g_shader, f_shader};
-    gl::attach_link_detach(program, shaders);
+    if (!program_persp) program_persp = glCreateProgram();
+    {
+        const GLuint shaders[] = {v_shader, g_shader, f_shader_persp};
+        gl::attach_link_detach(program_persp, shaders);
+    }
+
+    if (!program_ortho) program_ortho = glCreateProgram();
+    {
+        const GLuint shaders[] = {v_shader, g_shader, f_shader_ortho};
+        gl::attach_link_detach(program_ortho, shaders);
+    }
 }
 
 static void shutdown() {
-    if (program) glDeleteProgram(program);
+    if (program_persp) glDeleteProgram(program_persp);
+    if (program_ortho) glDeleteProgram(program_ortho);
 }
 
 }  // namespace licorice
@@ -140,7 +152,8 @@ void initialize() {
         };
 
         const GLuint shaders[] = {v_shader, g_shader};
-        const GLchar* feedback_varyings[] = {"out_control_point", "out_support_vector_xy", "out_support_vector_z_tangent_vector_x", "out_tangent_vector_yz", "out_classification", "out_atom_index"};
+        const GLchar* feedback_varyings[] = {"out_control_point",     "out_support_vector_xy", "out_support_vector_z_tangent_vector_x",
+                                             "out_tangent_vector_yz", "out_classification",    "out_atom_index"};
         if (!extract_control_points_program) extract_control_points_program = glCreateProgram();
         gl::attach_link_detach_with_transform_feedback(extract_control_points_program, shaders, feedback_varyings, GL_INTERLEAVED_ATTRIBS);
     }
@@ -154,7 +167,8 @@ void initialize() {
         };
 
         const GLuint shaders[] = {v_shader, g_shader};
-        const GLchar* feedback_varyings[] = {"out_control_point", "out_support_vector_xy", "out_support_vector_z_tangent_vector_x", "out_tangent_vector_yz", "out_classification", "out_atom_index"};
+        const GLchar* feedback_varyings[] = {"out_control_point",     "out_support_vector_xy", "out_support_vector_z_tangent_vector_x",
+                                             "out_tangent_vector_yz", "out_classification",    "out_atom_index"};
         if (!compute_spline_program) compute_spline_program = glCreateProgram();
         gl::attach_link_detach_with_transform_feedback(compute_spline_program, shaders, feedback_varyings, GL_INTERLEAVED_ATTRIBS);
     }
@@ -300,7 +314,8 @@ void shutdown() {
     pbc_view_velocity::shutdown();
 }
 
-void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_view_velocity_buffer, int32 atom_count, const ViewParam& view_param, float radius_scale) {
+void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_view_velocity_buffer, int32 atom_count,
+              const ViewParam& view_param, float radius_scale) {
     ASSERT(glIsBuffer(atom_position_buffer));
     ASSERT(glIsBuffer(atom_radius_buffer));
     ASSERT(glIsBuffer(atom_color_buffer));
@@ -385,7 +400,8 @@ void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint ato
     glUseProgram(0);
 }
 
-void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint atom_velocity_buffer, GLuint bond_buffer, int32 bond_count, const ViewParam& view_param, float radius_scale) {
+void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint atom_velocity_buffer, GLuint bond_buffer, int32 bond_count,
+                   const ViewParam& view_param, float radius_scale) {
     glBindVertexArray(vao);
 
     glBindBuffer(GL_ARRAY_BUFFER, atom_position_buffer);
@@ -406,7 +422,8 @@ void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint
     const vec2 res = view_param.resolution;
     const vec4 jitter_uv = vec4(view_param.jitter.current / res, view_param.jitter.previous / res);
 
-    GLuint prog = licorice::program;
+    const bool ortho = is_orthographic_proj_matrix(view_param.matrix.current.proj_jittered);
+    const GLuint prog = ortho ? licorice::program_ortho : licorice::program_persp;
     glUseProgram(prog);
 
     glUniformMatrix4fv(glGetUniformLocation(prog, "u_view_mat"), 1, GL_FALSE, &view_param.matrix.current.view[0][0]);
@@ -422,7 +439,8 @@ void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 }
 
-void compute_backbone_control_points(GLuint dst_buffer, GLuint atom_position_buffer, GLuint backbone_index_buffer, int num_backbone_indices, GLuint ramachandran_tex) {
+void compute_backbone_control_points(GLuint dst_buffer, GLuint atom_position_buffer, GLuint backbone_index_buffer, int num_backbone_indices,
+                                     GLuint ramachandran_tex) {
     glEnable(GL_RASTERIZER_DISCARD);
 
     glBindVertexArray(vao);
@@ -450,7 +468,8 @@ void compute_backbone_control_points(GLuint dst_buffer, GLuint atom_position_buf
     glDisable(GL_RASTERIZER_DISCARD);
 }
 
-void compute_backbone_spline(GLuint dst_buffer, GLuint control_point_buffer, GLuint control_point_index_buffer, int num_control_point_indices, float tension) {
+void compute_backbone_spline(GLuint dst_buffer, GLuint control_point_buffer, GLuint control_point_index_buffer, int num_control_point_indices,
+                             float tension) {
     glEnable(GL_RASTERIZER_DISCARD);
     glEnable(GL_PRIMITIVE_RESTART);
     glPrimitiveRestartIndex(0xFFFFFFFFU);
@@ -483,7 +502,8 @@ void compute_backbone_spline(GLuint dst_buffer, GLuint control_point_buffer, GLu
     glDisable(GL_RASTERIZER_DISCARD);
 }
 
-void compute_pbc_view_velocity(GLuint dst_buffer, GLuint position_buffer, GLuint old_position_buffer, int count, const ViewParam& view_param, const vec3& box_ext) {
+void compute_pbc_view_velocity(GLuint dst_buffer, GLuint position_buffer, GLuint old_position_buffer, int count, const ViewParam& view_param,
+                               const vec3& box_ext) {
     glEnable(GL_RASTERIZER_DISCARD);
 
     glBindVertexArray(vao);
@@ -510,7 +530,8 @@ void compute_pbc_view_velocity(GLuint dst_buffer, GLuint position_buffer, GLuint
     glDisable(GL_RASTERIZER_DISCARD);
 }
 
-void draw_spline(GLuint spline_buffer, GLuint spline_index_buffer, int32 num_spline_indices, const ViewParam& view_param, uint32 s_color, uint32 v_color, uint32 t_color) {
+void draw_spline(GLuint spline_buffer, GLuint spline_index_buffer, int32 num_spline_indices, const ViewParam& view_param, uint32 s_color,
+                 uint32 v_color, uint32 t_color) {
     glEnable(GL_PRIMITIVE_RESTART);
     glPrimitiveRestartIndex(0xFFFFFFFFU);
 
@@ -538,7 +559,8 @@ void draw_spline(GLuint spline_buffer, GLuint spline_index_buffer, int32 num_spl
     glDisable(GL_PRIMITIVE_RESTART);
 }
 
-void draw_ribbons(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_color_buffer, GLuint atom_velocity_buffer, int32 num_spline_indices, const ViewParam& view_param) {
+void draw_ribbons(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_color_buffer, GLuint atom_velocity_buffer, int32 num_spline_indices,
+                  const ViewParam& view_param) {
     glEnable(GL_PRIMITIVE_RESTART);
     glPrimitiveRestartIndex(0xFFFFFFFFU);
 
@@ -573,7 +595,8 @@ void draw_ribbons(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_
     glUniform1i(glGetUniformLocation(ribbon::program, "u_atom_velocity_buffer"), 1);
     glUniformMatrix4fv(glGetUniformLocation(ribbon::program, "u_normal_mat"), 1, GL_FALSE, &view_param.matrix.current.norm[0][0]);
     glUniformMatrix4fv(glGetUniformLocation(ribbon::program, "u_view_proj_mat"), 1, GL_FALSE, &view_param.matrix.current.view_proj_jittered[0][0]);
-    glUniformMatrix4fv(glGetUniformLocation(ribbon::program, "u_prev_view_proj_mat"), 1, GL_FALSE, &view_param.matrix.previous.view_proj_jittered[0][0]);
+    glUniformMatrix4fv(glGetUniformLocation(ribbon::program, "u_prev_view_proj_mat"), 1, GL_FALSE,
+                       &view_param.matrix.previous.view_proj_jittered[0][0]);
     glUniform4fv(glGetUniformLocation(ribbon::program, "u_jitter_uv"), 1, &jitter_uv[0]);
 
     glDrawElements(GL_LINE_STRIP, num_spline_indices, GL_UNSIGNED_INT, 0);
@@ -618,8 +641,8 @@ void draw_cartoon(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_
 
 namespace lean_and_mean {
 
-void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, int32 atom_count, const ViewParam& view_param, float radius_scale, vec4 color,
-              uint32 mask) {
+void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, int32 atom_count,
+              const ViewParam& view_param, float radius_scale, vec4 color, uint32 mask) {
     ASSERT(glIsBuffer(atom_position_buffer));
     ASSERT(glIsBuffer(atom_radius_buffer));
     ASSERT(glIsBuffer(atom_color_buffer));
@@ -665,8 +688,8 @@ void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint ato
     glBindVertexArray(0);
 }
 
-void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, GLuint bond_buffer, int32 bond_count, const ViewParam& view_param, float radius_scale, vec4 color,
-                   uint32 mask) {
+void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, GLuint bond_buffer, int32 bond_count,
+                   const ViewParam& view_param, float radius_scale, vec4 color, uint32 mask) {
     ASSERT(glIsBuffer(atom_position_buffer));
     ASSERT(glIsBuffer(atom_color_buffer));
     ASSERT(glIsBuffer(atom_mask_buffer));
@@ -703,8 +726,8 @@ void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 }
 
-void draw_ribbons(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, int32 num_spline_indices, const ViewParam& view_param, float scale, vec4 color,
-                  uint32 mask) {
+void draw_ribbons(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, int32 num_spline_indices,
+                  const ViewParam& view_param, float scale, vec4 color, uint32 mask) {
     ASSERT(glIsBuffer(spline_buffer));
     ASSERT(glIsBuffer(spline_index_buffer));
     ASSERT(glIsBuffer(atom_color_buffer));
