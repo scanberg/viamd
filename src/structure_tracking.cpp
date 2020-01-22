@@ -61,6 +61,39 @@ static dmat3 compute_weighted_cross_covariance_matrix(const float* x0, const flo
     return A;
 }
 
+// This is stupid
+static dmat3 compute_weighted_cross_covariance_matrix(const double* x0, const double* y0, const double* z0, const float* x1, const float* y1,
+                                                      const float* z1, const float* weight, int64 count, const dvec3& com0 = {0, 0, 0},
+                                                      const dvec3& com1 = {0, 0, 0})
+// clang-format on
+{
+    dmat3 A{0};
+    for (int64 i = 0; i < count; i++) {
+        // @TODO: Vectorize...
+        const double px = (double)x0[i] - (double)com0.x;
+        const double py = (double)y0[i] - (double)com0.y;
+        const double pz = (double)z0[i] - (double)com0.z;
+
+        const double qx = (double)x1[i] - (double)com1.x;
+        const double qy = (double)y1[i] - (double)com1.y;
+        const double qz = (double)z1[i] - (double)com1.z;
+
+        const double w = weight[i];
+
+        A[0][0] += w * px * qx;
+        A[0][1] += w * px * qy;
+        A[0][2] += w * px * qz;
+        A[1][0] += w * py * qx;
+        A[1][1] += w * py * qy;
+        A[1][2] += w * py * qz;
+        A[2][0] += w * pz * qx;
+        A[2][1] += w * pz * qy;
+        A[2][2] += w * pz * qz;
+    }
+
+    return A;
+}
+
 // clang-format off
 static dmat3 compute_weighted_covariance_matrix(const float* x, const float* y, const float* z,
                                                 const float* weight,
@@ -499,24 +532,30 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     init_structure_data(s, id, num_frames, num_atoms);
 
     // Scratch data
-    const auto mem_size = sizeof(float) * num_atoms * 13;
-    void* mem = TMP_MALLOC(mem_size);
-    defer { TMP_FREE(mem); };
-    memset(mem, 0, mem_size);
+    const auto flt_mem_size = sizeof(float) * num_atoms * 7;
+    void* flt_mem = TMP_MALLOC(flt_mem_size);
+    defer { TMP_FREE(flt_mem); };
+    memset(flt_mem, 0, flt_mem_size);
 
-    float* cur_x = (float*)mem + 0 * num_atoms;
-    float* cur_y = (float*)mem + 1 * num_atoms;
-    float* cur_z = (float*)mem + 2 * num_atoms;
-    float* ref_x = (float*)mem + 3 * num_atoms;
-    float* ref_y = (float*)mem + 4 * num_atoms;
-    float* ref_z = (float*)mem + 5 * num_atoms;
+    float* cur_x = (float*)flt_mem + 0 * num_atoms;
+    float* cur_y = (float*)flt_mem + 1 * num_atoms;
+    float* cur_z = (float*)flt_mem + 2 * num_atoms;
+    float* ref_x = (float*)flt_mem + 3 * num_atoms;
+    float* ref_y = (float*)flt_mem + 4 * num_atoms;
+    float* ref_z = (float*)flt_mem + 5 * num_atoms;
+    float* mass = (float*)flt_mem + 6 * num_atoms;
     //    float* prv_x = (float*)mem + 6 * num_atoms;
     //    float* prv_y = (float*)mem + 7 * num_atoms;
     //    float* prv_z = (float*)mem + 8 * num_atoms;
-    float* int_x = (float*)mem + 9 * num_atoms;
-    float* int_y = (float*)mem + 10 * num_atoms;
-    float* int_z = (float*)mem + 11 * num_atoms;
-    float* mass = (float*)mem + 12 * num_atoms;
+
+    const auto dbl_mem_size = sizeof(double) * num_atoms * 3;
+    void* dbl_mem = TMP_MALLOC(dbl_mem_size);
+    defer { TMP_FREE(dbl_mem); };
+    memset(dbl_mem, 0, dbl_mem_size);
+
+    double* int_x = (double*)dbl_mem + 0 * num_atoms;
+    double* int_y = (double*)dbl_mem + 1 * num_atoms;
+    double* int_z = (double*)dbl_mem + 2 * num_atoms;
 
     bitfield::gather_masked(ref_x, get_trajectory_position_x(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
     bitfield::gather_masked(ref_y, get_trajectory_position_y(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
@@ -530,9 +569,11 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     }
     */
 
-    memcpy(int_x, ref_x, num_atoms * sizeof(float));
-    memcpy(int_y, ref_y, num_atoms * sizeof(float));
-    memcpy(int_z, ref_z, num_atoms * sizeof(float));
+    for (int i = 0; i < num_atoms; i++) {
+        int_x[i] = (double)ref_x[i];
+        int_y[i] = (double)ref_y[i];
+        int_z[i] = (double)ref_z[i];
+    }
 
     const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, num_atoms);
     // dvec3 prv_com = ref_com;
@@ -709,13 +750,13 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
             // @NOTE: Update internal representation
             for (int j = 0; j < num_atoms; j++) {
                 const dvec3 t = cur_com;
-                const dvec3 v = {cur_x[j] - t.x, cur_y[j] - t.y, cur_z[j] - t.z};
+                const dvec3 r = {cur_x[j] - t.x, cur_y[j] - t.y, cur_z[j] - t.z};
 
 #if 1
                 // Matrix multiply
-                int_x[j] = (float)(rel_rot[0][0] * v.x + rel_rot[1][0] * v.y + rel_rot[2][0] * v.z + t.x);
-                int_y[j] = (float)(rel_rot[0][1] * v.x + rel_rot[1][1] * v.y + rel_rot[2][1] * v.z + t.y);
-                int_z[j] = (float)(rel_rot[0][2] * v.x + rel_rot[1][2] * v.y + rel_rot[2][2] * v.z + t.z);
+                int_x[j] = rel_rot[0][0] * r.x + rel_rot[1][0] * r.y + rel_rot[2][0] * r.z + t.x;
+                int_y[j] = rel_rot[0][1] * r.x + rel_rot[1][1] * r.y + rel_rot[2][1] * r.z + t.y;
+                int_z[j] = rel_rot[0][2] * r.x + rel_rot[1][2] * r.y + rel_rot[2][2] * r.z + t.z;
 #else
                 // Quaternion multiply
                 const vec3 p = q_relative * v + t;
