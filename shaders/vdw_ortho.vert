@@ -52,7 +52,7 @@ void main() {
     out_vert.view_coord = view_coord;
     out_vert.view_sphere = view_sphere;
     out_vert.view_velocity = view_vel;
-    out_vert.picking_color = pack_u32(uint(gl_VertexID));
+    out_vert.picking_color = pack_u32(uint(g_idx));
     out_vert.color = color;
     out_vert.uv = uv;
 }
