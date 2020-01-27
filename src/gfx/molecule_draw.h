@@ -48,6 +48,38 @@ struct Bond {
     uint32 atom_range[2];
 };
 
+inline void generate_residue_buffer(GLuint* id, int32_t count) {
+    ASSERT(id);
+    if (!*id) glGenBuffers(1, id);
+    glBindBuffer(GL_ARRAY_BUFFER, *id);
+    glBufferData(GL_ARRAY_BUFFER, count * sizeof(int) * 2, NULL, GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+inline void generate_aabb_buffer(GLuint* id, int32_t count) {
+    ASSERT(id);
+    if (!*id) glGenBuffers(1, id);
+    glBindBuffer(GL_ARRAY_BUFFER, *id);
+    glBufferData(GL_ARRAY_BUFFER, count * sizeof(float) * 6, NULL, GL_DYNAMIC_COPY);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+inline void generate_visibility_buffer(GLuint* id, int32_t count) {
+    ASSERT(id);
+    if (!*id) glGenBuffers(1, id);
+    glBindBuffer(GL_ARRAY_BUFFER, *id);
+    glBufferData(GL_ARRAY_BUFFER, count * sizeof(int), nullptr, GL_DYNAMIC_COPY);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+namespace culling {
+void compute_residue_aabbs(GLuint aabb_buffer, GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint residue_buffer, int32_t count);
+void draw_aabbs(GLuint aabb_buffer, const ViewParam& view_param, int32_t count);
+void draw_culled_aabbs(GLuint visibility_buffer, GLuint aabb_buffer, const ViewParam& view_param, int32_t count);
+void cull_aabbs(GLuint visibility_buffer, GLuint aabb_buffer, const ViewParam& view_param, int32_t count);
+
+}  // namespace culling
+
 void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_view_velocity_buffer, int32 atom_count, const ViewParam& view_param,
               float radius_scale = 1.f);
 void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint atom_velocity_buffer, GLuint bond_buffer, int32 bond_count, const ViewParam& view_param, float radius_scale = 1.f);

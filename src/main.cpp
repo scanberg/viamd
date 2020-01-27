@@ -191,6 +191,12 @@ struct MoleculeBuffers {
     GLuint bond = 0;
 
     struct {
+        GLuint residue = 0;
+        GLuint aabb = 0;
+        GLuint visibility = 0;
+    } experimental;
+
+    struct {
         GLuint backbone_segment_index = 0;  // Stores indices to atoms which are needed for control points and support vectors
         GLuint control_point = 0;           // Stores extracted control points[vec3] and support vectors[vec3] before subdivision
         GLuint control_point_index =
@@ -672,8 +678,11 @@ static void update_density_volume_texture(ApplicationData* data);
 static void handle_picking(ApplicationData* data);
 static void compute_backbone_spline(ApplicationData* data);
 static void compute_velocity(ApplicationData* data);
+static void compute_residue_aabbs(ApplicationData* data);
+static void cull_residue_aabbs(ApplicationData* data);
 static void fill_gbuffer(const ApplicationData& data);
 static void do_postprocessing(const ApplicationData& data);
+static void draw_residue_aabbs(const ApplicationData& data);
 
 static void draw_representations(const ApplicationData& data);
 static void draw_representations_lean_and_mean(const ApplicationData& data, vec4 color = vec4(1, 1, 1, 1), float scale = 1.0f,
@@ -1122,7 +1131,9 @@ int main(int, char**) {
         update_density_volume_texture(&data);
         compute_backbone_spline(&data);
         compute_velocity(&data);
+        compute_residue_aabbs(&data);
         fill_gbuffer(data);
+        cull_residue_aabbs(&data);
         handle_picking(&data);
 
         // Activate backbuffer
@@ -3929,8 +3940,8 @@ static void draw_density_volume_window(ApplicationData* data) {
                     LOG_NOTE("Performing Structure Tracking...");
 
                     uint32_t completed_count = 0;
-                    enki::TaskSet task(ensemble_structures.size(), [dyn, ensemble_mask,  &ensemble_structures, &completed_count](
-                                                                    enki::TaskSetPartition range, uint32_t threadnum) {
+                    enki::TaskSet task(ensemble_structures.size(), [dyn, ensemble_mask, &ensemble_structures, &completed_count](
+                                                                       enki::TaskSetPartition range, uint32_t threadnum) {
                         for (uint32_t i = range.start; i < range.end; ++i) {
                             auto& structure = ensemble_structures[i];
                             structure_tracking::compute_trajectory_transform_data(structure.id, dyn, ensemble_mask, structure.offset);
@@ -4253,7 +4264,18 @@ static void init_molecule_buffers(ApplicationData* data) {
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.backbone.spline_index);
     glBufferData(GL_ARRAY_BUFFER, spline_index_data.size_in_bytes(), spline_index_data.data(), GL_STATIC_DRAW);
 
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    // Experimental
+    draw::generate_aabb_buffer(&data->gpu_buffers.experimental.aabb, mol.residues.count);
+    draw::generate_residue_buffer(&data->gpu_buffers.experimental.residue, mol.residues.count);
+    draw::generate_visibility_buffer(&data->gpu_buffers.experimental.visibility, mol.residues.count);
+
+    DynamicArray<ivec2> res_offset_count(mol.residues.count);
+    for (int64_t i = 0; i < mol.residues.count; i++) {
+        res_offset_count[i] = {(int32_t)mol.residues[i].atom_range.beg, (int32_t)mol.residues[i].atom_range.size()};
+    }
+
+    glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.experimental.residue);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, res_offset_count.size_in_bytes(), res_offset_count.data());
 
     data->gpu_buffers.dirty.position = true;
     data->gpu_buffers.dirty.selection = true;
@@ -4261,54 +4283,36 @@ static void init_molecule_buffers(ApplicationData* data) {
 
     copy_molecule_data_to_buffers(data);
     data->gpu_buffers.dirty.position = true;
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
 static void free_molecule_buffers(ApplicationData* data) {
     ASSERT(data);
-    if (data->gpu_buffers.position) {
-        glDeleteBuffers(1, &data->gpu_buffers.position);
-        data->gpu_buffers.position = 0;
-    }
-    if (data->gpu_buffers.old_position) {
-        glDeleteBuffers(1, &data->gpu_buffers.old_position);
-        data->gpu_buffers.old_position = 0;
-    }
-    if (data->gpu_buffers.velocity) {
-        glDeleteBuffers(1, &data->gpu_buffers.velocity);
-        data->gpu_buffers.velocity = 0;
-    }
-    if (data->gpu_buffers.radius) {
-        glDeleteBuffers(1, &data->gpu_buffers.radius);
-        data->gpu_buffers.radius = 0;
-    }
-    if (data->gpu_buffers.selection) {
-        glDeleteBuffers(1, &data->gpu_buffers.selection);
-        data->gpu_buffers.selection = 0;
-    }
-    if (data->gpu_buffers.backbone.backbone_segment_index) {
-        glDeleteBuffers(1, &data->gpu_buffers.backbone.backbone_segment_index);
-        data->gpu_buffers.backbone.backbone_segment_index = 0;
-    }
-    if (data->gpu_buffers.backbone.control_point) {
-        glDeleteBuffers(1, &data->gpu_buffers.backbone.control_point);
-        data->gpu_buffers.backbone.control_point = 0;
-    }
-    if (data->gpu_buffers.backbone.control_point_index) {
-        glDeleteBuffers(1, &data->gpu_buffers.backbone.control_point_index);
-        data->gpu_buffers.backbone.control_point_index = 0;
-    }
-    if (data->gpu_buffers.backbone.spline) {
-        glDeleteBuffers(1, &data->gpu_buffers.backbone.spline);
-        data->gpu_buffers.backbone.spline = 0;
-    }
-    if (data->gpu_buffers.backbone.spline_index) {
-        glDeleteBuffers(1, &data->gpu_buffers.backbone.spline_index);
-        data->gpu_buffers.backbone.spline_index = 0;
-    }
-    if (data->gpu_buffers.bond) {
-        glDeleteBuffers(1, &data->gpu_buffers.bond);
-        data->gpu_buffers.bond = 0;
-    }
+
+    auto free_buffer = [](GLuint& id) {
+        if (id) {
+            glDeleteBuffers(1, &id);
+            id = 0;
+        }
+    };
+
+    free_buffer(data->gpu_buffers.position);
+    free_buffer(data->gpu_buffers.old_position);
+    free_buffer(data->gpu_buffers.velocity);
+    free_buffer(data->gpu_buffers.radius);
+    free_buffer(data->gpu_buffers.selection);
+    free_buffer(data->gpu_buffers.backbone.backbone_segment_index);
+    free_buffer(data->gpu_buffers.backbone.control_point);
+    free_buffer(data->gpu_buffers.backbone.control_point_index);
+    free_buffer(data->gpu_buffers.backbone.spline);
+    free_buffer(data->gpu_buffers.backbone.spline_index);
+    free_buffer(data->gpu_buffers.bond);
+
+    // experimental
+    free_buffer(data->gpu_buffers.experimental.residue);
+    free_buffer(data->gpu_buffers.experimental.aabb);
+    free_buffer(data->gpu_buffers.experimental.visibility);
 }
 
 static void clear_buffer(GLuint buffer) {
@@ -5245,6 +5249,40 @@ static void compute_velocity(ApplicationData* data) {
     POP_GPU_SECTION()
 }
 
+static void compute_residue_aabbs(ApplicationData* data) {
+    PUSH_GPU_SECTION("Compute Residue AABBs")
+    draw::culling::compute_residue_aabbs(data->gpu_buffers.experimental.aabb, data->gpu_buffers.position, data->gpu_buffers.radius,
+                                         data->gpu_buffers.experimental.residue, data->dynamic.molecule.residues.size());
+    POP_GPU_SECTION()
+}
+
+static void cull_residue_aabbs(ApplicationData* data) {
+    PUSH_GPU_SECTION("Cull Residue AABBs")
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glDepthMask(0);
+
+    draw::culling::cull_aabbs(data->gpu_buffers.experimental.visibility, data->gpu_buffers.experimental.aabb, data->view.param,
+                              data->dynamic.molecule.residues.size());
+
+    glDepthMask(1);
+    glDisable(GL_DEPTH_TEST);
+    POP_GPU_SECTION()
+}
+
+static void draw_residue_aabbs(const ApplicationData& data) {
+    PUSH_GPU_SECTION("Draw Residue AABBs")
+
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    // draw::culling::draw_aabbs(data.gpu_buffers.experimental.aabb, data.view.param, data.dynamic.molecule.residues.size());
+    draw::culling::draw_culled_aabbs(data.gpu_buffers.experimental.visibility, data.gpu_buffers.experimental.aabb, data.view.param,
+                                     data.dynamic.molecule.residues.size());
+
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+    POP_GPU_SECTION()
+}
+
 static void fill_gbuffer(const ApplicationData& data) {
     const vec4 CLEAR_INDEX = vec4(1, 1, 1, 1);
     const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2,
@@ -5307,6 +5345,8 @@ static void fill_gbuffer(const ApplicationData& data) {
 
         POP_GPU_SECTION()
     }
+
+    draw_residue_aabbs(data);
 
     // RENDER DEBUG INFORMATION (WITH DEPTH)
     PUSH_GPU_SECTION("Debug Draw") {

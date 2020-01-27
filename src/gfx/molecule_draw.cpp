@@ -1,4 +1,4 @@
-#include "image.h"
+﻿#include "image.h"
 #include "molecule_draw.h"
 
 #include <core/common.h>
@@ -302,6 +302,86 @@ void shutdown() {
 }  // namespace ribbon
 }  // namespace lean_and_mean
 
+namespace culling {
+namespace aabb {
+static GLuint program_compute = 0;
+static GLuint program_draw = 0;
+static GLuint program_cull = 0;
+static GLuint program_fill_draw_cmd = 0;
+static GLuint indirect_cmd_buffer = 0;
+static GLuint indirect_cmd_count = 0;
+
+void intitialize() {
+    {
+        GLuint v_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/culling/compute_aabb.vert", GL_VERTEX_SHADER);
+        defer { glDeleteShader(v_shader); };
+
+        if (!program_compute) program_compute = glCreateProgram();
+        const GLchar* feedback_varyings[] = {"out_aabb_center", "out_aabb_extent"};
+        const GLuint shaders[] = {v_shader};
+        gl::attach_link_detach_with_transform_feedback(program_compute, shaders, feedback_varyings, GL_INTERLEAVED_ATTRIBS);
+    }
+    {
+        GLuint v_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/culling/draw_aabb.vert", GL_VERTEX_SHADER);
+        GLuint g_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/culling/draw_aabb.geom", GL_GEOMETRY_SHADER);
+        GLuint f_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/culling/draw_aabb.frag", GL_FRAGMENT_SHADER);
+        defer {
+            glDeleteShader(v_shader);
+            glDeleteShader(g_shader);
+            glDeleteShader(f_shader);
+        };
+
+        if (!program_draw) program_draw = glCreateProgram();
+        const GLuint shaders[] = {v_shader, g_shader, f_shader};
+        gl::attach_link_detach(program_draw, shaders);
+    }
+    {
+        GLuint v_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/culling/draw_aabb.vert", GL_VERTEX_SHADER);
+        GLuint g_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/culling/draw_aabb.geom", GL_GEOMETRY_SHADER);
+        GLuint f_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/culling/cull_aabb.frag", GL_FRAGMENT_SHADER);
+        defer {
+            glDeleteShader(v_shader);
+            glDeleteShader(g_shader);
+            glDeleteShader(f_shader);
+        };
+
+        if (!program_cull) program_cull = glCreateProgram();
+        const GLuint shaders[] = {v_shader, g_shader, f_shader};
+        gl::attach_link_detach(program_cull, shaders);
+    }
+    {
+        GLuint v_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/culling/fill_indirect_draw_array.vert", GL_VERTEX_SHADER);
+        defer { glDeleteShader(v_shader); };
+
+        if (!program_fill_draw_cmd) program_fill_draw_cmd = glCreateProgram();
+        const GLuint shaders[] = {v_shader};
+        gl::attach_link_detach(program_fill_draw_cmd, shaders);
+    }
+    if (!indirect_cmd_buffer) {
+        glGenBuffers(1, &indirect_cmd_buffer);
+        glBindBuffer(GL_ARRAY_BUFFER, indirect_cmd_buffer);
+        glBufferData(GL_ARRAY_BUFFER, MEGABYTES(1), NULL, GL_DYNAMIC_COPY);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+    if (!indirect_cmd_count) {
+        glGenBuffers(1, &indirect_cmd_count);
+        glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, indirect_cmd_count);
+        glBufferData(GL_ATOMIC_COUNTER_BUFFER, sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
+        glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
+    }
+}
+
+void shutdown() {
+    if (program_compute) glDeleteProgram(program_compute);
+    if (program_draw) glDeleteProgram(program_draw);
+    if (program_cull) glDeleteProgram(program_cull);
+    if (indirect_cmd_buffer) glDeleteBuffers(1, &indirect_cmd_buffer);
+    if (indirect_cmd_count) glDeleteBuffers(1, &indirect_cmd_count);
+}
+
+}  // namespace aabb
+}  // namespace culling
+
 void initialize() {
     if (!vao) glGenVertexArrays(1, &vao);
     if (!tex[0]) glGenTextures(4, tex);
@@ -314,6 +394,7 @@ void initialize() {
     lean_and_mean::licorice::initialize();
     lean_and_mean::ribbon::intitialize();
     pbc_view_velocity::initialize();
+    culling::aabb::intitialize();
 }
 
 void shutdown() {
@@ -328,6 +409,7 @@ void shutdown() {
     lean_and_mean::licorice::shutdown();
     lean_and_mean::ribbon::shutdown();
     pbc_view_velocity::shutdown();
+    culling::aabb::shutdown();
 }
 
 void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_view_velocity_buffer, int32 atom_count,
@@ -705,8 +787,7 @@ void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint ato
         glBindVertexArray(vao);
         glDrawArrays(GL_TRIANGLES, 0, atom_count * 3);
         glBindVertexArray(0);
-    }
-    else {
+    } else {
         glBindVertexArray(vao);
         glBindBuffer(GL_ARRAY_BUFFER, atom_position_buffer);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(AtomPosition), (const GLvoid*)0);
@@ -830,4 +911,179 @@ void draw_ribbons(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_
 }
 
 }  // namespace lean_and_mean
+
+namespace culling {
+void compute_residue_aabbs(GLuint aabb_buffer, GLuint atom_position_buffer, GLuint atom_radii_buffer, GLuint atom_range_buffer, int32_t count) {
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_BUFFER, tex[0]);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, atom_position_buffer);
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_BUFFER, tex[1]);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R32F, atom_radii_buffer);
+
+    glBindVertexArray(vao);
+
+    glBindBuffer(GL_ARRAY_BUFFER, atom_range_buffer);
+    glEnableVertexAttribArray(0);
+    glVertexAttribIPointer(0, 1, GL_INT, 8, 0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribIPointer(1, 1, GL_INT, 8, (const void*)4);
+
+    glUseProgram(aabb::program_compute);
+
+    glUniform1i(glGetUniformLocation(aabb::program_compute, "buf_atom_pos"), 0);
+    glUniform1i(glGetUniformLocation(aabb::program_compute, "buf_atom_rad"), 1);
+
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, aabb_buffer);
+    glBeginTransformFeedback(GL_POINTS);
+    glDrawArrays(GL_POINTS, 0, count);
+    glEndTransformFeedback();
+
+    glUseProgram(0);
+    glBindVertexArray(0);
+}
+
+static void initialize_cmd_buffer(int count) {
+    // Do we need to resize cmd buffer?
+    const int CMD_SIZE = 4;
+    GLint current_size = 0;
+    glBindBuffer(GL_ARRAY_BUFFER, aabb::indirect_cmd_buffer);
+    glGetBufferParameteriv(GL_ARRAY_BUFFER, GL_BUFFER_SIZE, &current_size);
+    const GLsizeiptr required_size = count * CMD_SIZE * sizeof(uint32_t);
+    if (required_size > current_size) {
+        glBufferData(GL_ARRAY_BUFFER, required_size, nullptr, GL_DYNAMIC_COPY);
+    }
+}
+
+static void clear_cmd_count() {
+    glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, aabb::indirect_cmd_count);
+    glClearBufferData(GL_ATOMIC_COUNTER_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, 0);
+    glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
+}
+
+static void fill_cmd_buffer(GLuint visibility_buffer, int count) {
+    initialize_cmd_buffer(count);
+    clear_cmd_count();
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, visibility_buffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, aabb::indirect_cmd_buffer);
+    glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 2, aabb::indirect_cmd_count);
+
+    /*
+    typedef  struct {
+        uint  count;
+        uint  instanceCount;
+        uint  first;
+        uint  baseInstance;
+    } DrawArraysIndirectCommand;
+    */
+    glBindVertexArray(vao);
+
+    // Fill indirect_cmd_buffer
+    glUseProgram(aabb::program_fill_draw_cmd);
+    glDrawArrays(GL_POINTS, 0, count);
+    glUseProgram(0);
+
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+    glBindVertexArray(0);
+}
+
+static void fill_cmd_buffer(GLuint visibility_buffer, GLuint draw_range_buffer, int count) {
+    initialize_cmd_buffer(count);
+
+    glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, aabb::indirect_cmd_count);
+    glClearBufferData(GL_ATOMIC_COUNTER_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, 0);
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, visibility_buffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, aabb::indirect_cmd_buffer);
+    glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 2, aabb::indirect_cmd_count);
+
+    /*
+    typedef  struct {
+        uint  count;
+        uint  instanceCount;
+        uint  first;
+        uint  baseInstance;
+    } DrawArraysIndirectCommand;
+    */
+    glBindVertexArray(vao);
+
+    // Fill indirect_cmd_buffer
+    glUseProgram(aabb::program_fill_draw_cmd);
+    glDrawArrays(GL_POINTS, 0, count);
+    glUseProgram(0);
+
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+    glBindVertexArray(0);
+}
+
+void draw_aabbs(GLuint aabb_buffer, const ViewParam& view_param, int32_t count) {
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, aabb_buffer);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 24, 0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 24, (const void*)12);
+
+    glUseProgram(aabb::program_draw);
+
+    glUniformMatrix4fv(glGetUniformLocation(aabb::program_draw, "u_view_proj_mat"), 1, GL_FALSE, &view_param.matrix.current.view_proj_jittered[0][0]);
+    glDrawArrays(GL_POINTS, 0, count);
+
+    glUseProgram(0);
+    glBindVertexArray(0);
+}
+
+void draw_culled_aabbs(GLuint visibility_buffer, GLuint aabb_buffer, const ViewParam& view_param, GLsizei count) {
+    fill_cmd_buffer(visibility_buffer, count);
+    glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, aabb::indirect_cmd_count);
+    uint32_t draw_size;
+    glGetBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, 4, &draw_size);
+    glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
+
+    printf("visible count %u\n", draw_size);
+
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, aabb_buffer);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 24, 0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 24, (const void*)12);
+
+    glUseProgram(aabb::program_draw);
+    glUniformMatrix4fv(glGetUniformLocation(aabb::program_draw, "u_view_proj_mat"), 1, GL_FALSE, &view_param.matrix.current.view_proj_jittered[0][0]);
+
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, aabb::indirect_cmd_buffer);
+    glMultiDrawArraysIndirect(GL_POINTS, 0, draw_size, 16);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+    glUseProgram(0);
+    glBindVertexArray(0);
+}
+
+void cull_aabbs(GLuint visibility_buffer, GLuint aabb_buffer, const ViewParam& view_param, GLsizei count) {
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, aabb_buffer);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 24, 0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 24, (const void*)12);
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, visibility_buffer);
+    glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32I, GL_RED, GL_INT, 0);
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, visibility_buffer);
+    glUseProgram(aabb::program_cull);
+
+    glUniformMatrix4fv(glGetUniformLocation(aabb::program_cull, "u_view_proj_mat"), 1, GL_FALSE, &view_param.matrix.current.view_proj_jittered[0][0]);
+    glDrawArrays(GL_POINTS, 0, count);
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    glUseProgram(0);
+    glBindVertexArray(0);
+}
+
+}  // namespace culling
 }  // namespace draw
