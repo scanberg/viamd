@@ -52,6 +52,7 @@
 #define DEPERIODIZE_ON_FRAME_LOADED 1
 #define SHOW_IMGUI_DEMO_WINDOW 0
 #define VIAMD_RELEASE 1
+#define EXPERIMENTAL_CULLING 1
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
 
@@ -1131,9 +1132,13 @@ int main(int, char**) {
         update_density_volume_texture(&data);
         compute_backbone_spline(&data);
         compute_velocity(&data);
+#if EXPERIMENTAL_CULLING == 1
         compute_residue_aabbs(&data);
+#endif
         fill_gbuffer(data);
+#if EXPERIMENTAL_CULLING == 1
         cull_residue_aabbs(&data);
+#endif
         handle_picking(&data);
 
         // Activate backbuffer
@@ -5346,11 +5351,11 @@ static void fill_gbuffer(const ApplicationData& data) {
         POP_GPU_SECTION()
     }
 
-    draw_residue_aabbs(data);
-
     // RENDER DEBUG INFORMATION (WITH DEPTH)
     PUSH_GPU_SECTION("Debug Draw") {
         glDrawBuffer(GL_COLOR_ATTACHMENT4);  // Post_Tonemap buffer
+
+        //draw_residue_aabbs(data);
 
         immediate::set_model_view_matrix(data.view.param.matrix.current.view);
         immediate::set_proj_matrix(data.view.param.matrix.current.proj);
@@ -6147,16 +6152,22 @@ static void init_density_volume(ApplicationData* data) {
 
 static void draw_representations(const ApplicationData& data) {
     const int32 atom_count = (int32)data.dynamic.molecule.atom.count;
-    const int32 bond_count = (int32)data.dynamic.molecule.covalent_bonds.size();
+    const int32 bond_count = (int32)data.dynamic.molecule.covalent_bonds.count;
+    const int32 res_count = (int32)data.dynamic.molecule.residues.count;
 
-    PUSH_GPU_SECTION("Full Detail")
-    for (const auto& rep : data.representations.buffer) {
+        PUSH_GPU_SECTION("Full Detail") for (const auto& rep : data.representations.buffer) {
         if (!rep.enabled) continue;
         switch (rep.type) {
             case RepresentationType::Vdw:
                 PUSH_GPU_SECTION("Vdw")
+#if EXPERIMENTAL_CULLING == 1
+                draw::culling::draw_culled_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.velocity,
+                                      data.gpu_buffers.experimental.visibility, data.gpu_buffers.experimental.residue, res_count,
+                                      data.view.param, rep.radius);
+#else
                 draw::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.velocity, atom_count,
                                data.view.param, rep.radius);
+#endif
                 POP_GPU_SECTION()
                 break;
             case RepresentationType::Licorice:

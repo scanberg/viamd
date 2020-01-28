@@ -307,6 +307,7 @@ namespace aabb {
 static GLuint program_compute = 0;
 static GLuint program_draw = 0;
 static GLuint program_cull = 0;
+static GLuint program_fill_draw_multi_arrays_cmd = 0;
 static GLuint program_fill_draw_cmd = 0;
 static GLuint indirect_cmd_buffer = 0;
 static GLuint indirect_cmd_count = 0;
@@ -350,12 +351,20 @@ void intitialize() {
         gl::attach_link_detach(program_cull, shaders);
     }
     {
-        GLuint v_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/culling/fill_indirect_draw_array.vert", GL_VERTEX_SHADER);
+        GLuint v_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/culling/fill_indirect_draw_elements.vert", GL_VERTEX_SHADER);
         defer { glDeleteShader(v_shader); };
 
         if (!program_fill_draw_cmd) program_fill_draw_cmd = glCreateProgram();
         const GLuint shaders[] = {v_shader};
         gl::attach_link_detach(program_fill_draw_cmd, shaders);
+    }
+    {
+        GLuint v_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/culling/fill_indirect_draw_multi_arrays.vert", GL_VERTEX_SHADER);
+        defer { glDeleteShader(v_shader); };
+
+        if (!program_fill_draw_multi_arrays_cmd) program_fill_draw_multi_arrays_cmd = glCreateProgram();
+        const GLuint shaders[] = {v_shader};
+        gl::attach_link_detach(program_fill_draw_multi_arrays_cmd, shaders);
     }
     if (!indirect_cmd_buffer) {
         glGenBuffers(1, &indirect_cmd_buffer);
@@ -962,7 +971,7 @@ static void clear_cmd_count() {
     glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
 }
 
-static void fill_cmd_buffer(GLuint visibility_buffer, int count) {
+static uint32_t fill_cmd_buffer(GLuint visibility_buffer, int count) {
     initialize_cmd_buffer(count);
     clear_cmd_count();
 
@@ -988,13 +997,18 @@ static void fill_cmd_buffer(GLuint visibility_buffer, int count) {
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
     glBindVertexArray(0);
-}
-
-static void fill_cmd_buffer(GLuint visibility_buffer, GLuint draw_range_buffer, int count) {
-    initialize_cmd_buffer(count);
 
     glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, aabb::indirect_cmd_count);
-    glClearBufferData(GL_ATOMIC_COUNTER_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, 0);
+    uint32_t cmd_count;
+    glGetBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, 4, &cmd_count);
+    glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
+
+    return cmd_count;
+}
+
+static uint32_t fill_cmd_buffer(GLuint visibility_buffer, GLuint chunk_buffer, int chunk_count) {
+    initialize_cmd_buffer(chunk_count);
+    clear_cmd_count();
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, visibility_buffer);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, aabb::indirect_cmd_buffer);
@@ -1009,15 +1023,26 @@ static void fill_cmd_buffer(GLuint visibility_buffer, GLuint draw_range_buffer, 
     } DrawArraysIndirectCommand;
     */
     glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, chunk_buffer);
+    glEnableVertexAttribArray(0);
+    glVertexAttribIPointer(0, 1, GL_UNSIGNED_INT, 8, 0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribIPointer(1, 1, GL_UNSIGNED_INT, 8, (const void*)4);
 
     // Fill indirect_cmd_buffer
-    glUseProgram(aabb::program_fill_draw_cmd);
-    glDrawArrays(GL_POINTS, 0, count);
+    glUseProgram(aabb::program_fill_draw_multi_arrays_cmd);
+    glDrawArrays(GL_POINTS, 0, chunk_count);
     glUseProgram(0);
 
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
     glBindVertexArray(0);
+
+    glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, aabb::indirect_cmd_count);
+    uint32_t cmd_count;
+    glGetBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, 4, &cmd_count);
+    glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
+
+    return cmd_count;
 }
 
 void draw_aabbs(GLuint aabb_buffer, const ViewParam& view_param, int32_t count) {
@@ -1044,7 +1069,7 @@ void draw_culled_aabbs(GLuint visibility_buffer, GLuint aabb_buffer, const ViewP
     glGetBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, 4, &draw_size);
     glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
 
-    printf("visible count %u\n", draw_size);
+    // printf("visible count %u\n", draw_size);
 
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, aabb_buffer);
@@ -1083,6 +1108,106 @@ void cull_aabbs(GLuint visibility_buffer, GLuint aabb_buffer, const ViewParam& v
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     glUseProgram(0);
     glBindVertexArray(0);
+}
+
+void draw_vdw_indirect(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_view_velocity_buffer,
+                       GLuint indirect_cmd_buffer, int32 cmd_count, const ViewParam& view_param, float radius_scale) {
+    ASSERT(glIsBuffer(atom_position_buffer));
+    ASSERT(glIsBuffer(atom_radius_buffer));
+    ASSERT(glIsBuffer(atom_color_buffer));
+    ASSERT(glIsBuffer(atom_view_velocity_buffer));
+    ASSERT(glIsBuffer(indirect_cmd_buffer));
+
+    const mat4 curr_view_to_prev_clip_mat = view_param.matrix.previous.view_proj_jittered * view_param.matrix.inverse.view;
+    const vec2 res = view_param.resolution;
+    const vec4 jitter_uv = vec4(view_param.jitter.current / res, view_param.jitter.previous / res);
+    static uint32 frame = 0;
+    frame++;
+
+    const bool ortho = is_orthographic_proj_matrix(view_param.matrix.current.proj);
+    GLuint prog = ortho ? vdw::program_ortho : vdw::program_persp;
+    glUseProgram(prog);
+
+    if (ortho) {
+        /*
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_BUFFER, tex[0]);
+        glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, atom_position_buffer);
+
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_BUFFER, tex[1]);
+        glTexBuffer(GL_TEXTURE_BUFFER, GL_R32F, atom_radius_buffer);
+
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_BUFFER, tex[2]);
+        glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, atom_color_buffer);
+
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_BUFFER, tex[3]);
+        glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, atom_view_velocity_buffer);
+
+        glBindBuffer(GL_TEXTURE_BUFFER, 0);
+        glActiveTexture(GL_TEXTURE0);
+
+        // Uniforms
+        glUniform1i(glGetUniformLocation(prog, "u_buf_position"), 0);
+        glUniform1i(glGetUniformLocation(prog, "u_buf_radius"), 1);
+        glUniform1i(glGetUniformLocation(prog, "u_buf_color"), 2);
+        glUniform1i(glGetUniformLocation(prog, "u_buf_view_velocity"), 3);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "u_view_mat"), 1, GL_FALSE, &view_param.matrix.current.view[0][0]);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "u_proj_mat"), 1, GL_FALSE, &view_param.matrix.current.proj_jittered[0][0]);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "u_curr_view_to_prev_clip_mat"), 1, GL_FALSE, &curr_view_to_prev_clip_mat[0][0]);
+        glUniform1f(glGetUniformLocation(prog, "u_radius_scale"), radius_scale);
+        glUniform4fv(glGetUniformLocation(prog, "u_jitter_uv"), 1, &jitter_uv[0]);
+
+        glBindVertexArray(vao);
+        glDrawArrays(GL_TRIANGLES, 0, atom_count * 3);
+        glBindVertexArray(0);
+        */
+    } else {
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, atom_position_buffer);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(AtomPosition), (const GLvoid*)0);
+        glEnableVertexAttribArray(0);
+
+        glBindBuffer(GL_ARRAY_BUFFER, atom_radius_buffer);
+        glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, sizeof(AtomRadius), (const GLvoid*)0);
+        glEnableVertexAttribArray(1);
+
+        glBindBuffer(GL_ARRAY_BUFFER, atom_color_buffer);
+        glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(AtomColor), (const GLvoid*)0);
+        glEnableVertexAttribArray(2);
+
+        glBindBuffer(GL_ARRAY_BUFFER, atom_view_velocity_buffer);
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(AtomVelocity), (const GLvoid*)0);
+        glEnableVertexAttribArray(3);
+
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+        // Uniforms
+        glUniformMatrix4fv(glGetUniformLocation(prog, "u_view_mat"), 1, GL_FALSE, &view_param.matrix.current.view[0][0]);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "u_proj_mat"), 1, GL_FALSE, &view_param.matrix.current.proj_jittered[0][0]);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "u_inv_proj_mat"), 1, GL_FALSE, &view_param.matrix.inverse.proj_jittered[0][0]);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "u_curr_view_to_prev_clip_mat"), 1, GL_FALSE, &curr_view_to_prev_clip_mat[0][0]);
+        glUniform1f(glGetUniformLocation(prog, "u_radius_scale"), radius_scale);
+        glUniform4fv(glGetUniformLocation(prog, "u_jitter_uv"), 1, &jitter_uv[0]);
+        glUniform1ui(glGetUniformLocation(prog, "u_frame"), frame);
+
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, indirect_cmd_buffer);
+        glMultiDrawArraysIndirect(GL_POINTS, 0, cmd_count, 16);
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+
+        glBindVertexArray(0);
+    }
+    glUseProgram(0);
+}
+
+void draw_culled_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_view_velocity_buffer,
+                     GLuint chunk_visibility_buffer, GLuint chunk_buffer, int32 chunk_count, const ViewParam& view_param, float radius_scale) {
+    const uint32_t cmd_count = fill_cmd_buffer(chunk_visibility_buffer, chunk_buffer, chunk_count);
+
+    draw_vdw_indirect(atom_position_buffer, atom_radius_buffer, atom_color_buffer, atom_view_velocity_buffer, aabb::indirect_cmd_buffer, cmd_count,
+                      view_param, radius_scale);
 }
 
 }  // namespace culling

@@ -1,5 +1,7 @@
 #version 430
 
+// @TODO: This is bogus, this should fill an element index buffer instead.
+
 layout(std430, binding=0) buffer visiblity_buffer {
   int visible[];
 };

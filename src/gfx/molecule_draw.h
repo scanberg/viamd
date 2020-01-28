@@ -78,6 +78,8 @@ void draw_aabbs(GLuint aabb_buffer, const ViewParam& view_param, int32_t count);
 void draw_culled_aabbs(GLuint visibility_buffer, GLuint aabb_buffer, const ViewParam& view_param, int32_t count);
 void cull_aabbs(GLuint visibility_buffer, GLuint aabb_buffer, const ViewParam& view_param, int32_t count);
 
+void draw_culled_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_view_velocity_buffer,
+                     GLuint chunk_visibility_buffer, GLuint chunk_buffer, int32 chunk_count, const ViewParam& view_param, float radius_scale);
 }  // namespace culling
 
 void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_view_velocity_buffer, int32 atom_count, const ViewParam& view_param,
