@@ -106,5 +106,11 @@ void compute_backbone_control_points(GLuint dst_buffer, GLuint atom_position_buf
 void compute_backbone_spline(GLuint dst_buffer, GLuint control_point_buffer, GLuint control_point_index_buffer, int num_control_point_indices, float tension = 0.5);
 void compute_pbc_view_velocity(GLuint dst_buffer, GLuint position_buffer, GLuint old_position_buffer, int count, const ViewParam& view_param, const vec3& box_ext);
 
+namespace sdf {
+
+void compute_vdw_sdf(const float* atom_pos_x, const float* atom_pos_y, const float* atom_pos_z, const float* atom_radius, int32 atom_count);
+void draw_sdf(const ViewParam& view_param);
+
+};
 
 }  // namespace draw

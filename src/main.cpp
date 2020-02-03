@@ -52,7 +52,8 @@
 #define DEPERIODIZE_ON_FRAME_LOADED 1
 #define SHOW_IMGUI_DEMO_WINDOW 0
 #define VIAMD_RELEASE 1
-#define EXPERIMENTAL_CULLING 1
+#define EXPERIMENTAL_CULLING 0
+#define EXPERIMENTAL_SDF 0
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
 
@@ -697,8 +698,9 @@ static void draw_property_window(ApplicationData* data);
 static void draw_timeline_window(ApplicationData* data);
 static void draw_distribution_window(ApplicationData* data);
 static void draw_ramachandran_window(ApplicationData* data);
-static void draw_atom_info_window(const MoleculeStructure& mol, int atom_range, int x, int y);
-static void draw_async_info(ApplicationData* data);
+static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, int x, int y);
+static void draw_molecule_dynamic_info_window(ApplicationData* data);
+static void draw_async_info_window(ApplicationData* data);
 static void draw_reference_frame_window(ApplicationData* data);
 static void draw_shape_space_window(ApplicationData* data);
 static void draw_density_volume_window(ApplicationData* data);
@@ -1148,13 +1150,19 @@ int main(int, char**) {
 
         do_postprocessing(data);
 
+#if EXPERIMENTAL_SDF == 1
+        glDisable(GL_DEPTH_TEST);
+        draw::sdf::draw_sdf(data.view.param);
+#endif
+
         // GUI ELEMENTS
         data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, data.ctx.timing.delta_s);
 
         draw_main_menu(&data);
         draw_context_popup(&data);
-        draw_async_info(&data);
+        draw_async_info_window(&data);
         draw_animation_control_window(&data);
+        draw_molecule_dynamic_info_window(&data);
 
         if (data.representations.show_window) draw_representations_window(&data);
         if (data.statistics.show_property_window) draw_property_window(&data);
@@ -2840,7 +2848,57 @@ ImGui::PopStyleColor();
     */
 }
 
-static void draw_async_info(ApplicationData* data) {
+static void draw_molecule_dynamic_info_window(ApplicationData* data) {
+    ASSERT(data);
+    if (!data->dynamic.molecule) return;
+
+    const ImVec2 win_size = {200, 300};
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->Pos + viewport->Size - win_size);
+    ImGui::SetNextWindowSize(win_size);
+    ImGui::SetNextWindowViewport(viewport->ID);
+    ImGui::SetNextWindowBgAlpha(0.0f);
+
+    const ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+                                          ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                          ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoScrollbar;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
+    ImGui::Begin("##molecule_dynamic_info", NULL, window_flags);
+    {
+        if (const auto& mol = data->dynamic.molecule) {
+            ImGui::Text("MOL");
+            const auto file = get_file(data->files.molecule);
+            if (file) ImGui::Text("\"%.*s\"", file.size(), file.data());
+            ImGui::Text("# atoms: %lli", mol.atom.count);
+            ImGui::Text("# residues: %lli", mol.residues.count);
+            ImGui::Text("# chains: %lli", mol.chains.count);
+            ImGui::Text("# sequences: %lli", mol.sequences.count);
+        }
+        if (const auto& traj = data->dynamic.trajectory) {
+            ImGui::NewLine();
+            ImGui::Text("TRAJ");
+            const auto file = get_file(data->files.trajectory);
+            ImGui::Text("\"%.*s\"", file.size(), file.data());
+            ImGui::Text("# frames: %lli", traj.num_frames);
+        }
+        const int64 selection_count = bitfield::number_of_bits_set(data->selection.current_selection_mask);
+        const int64 highlight_count = bitfield::number_of_bits_set(data->selection.current_highlight_mask);
+        if (selection_count || highlight_count) {
+            ImGui::NewLine();
+            ImGui::Text("SELECTION");
+            ImGui::Text("# atoms selected: %lli", selection_count);
+            ImGui::Text("# atoms highlighted: %lli", highlight_count);
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(4);
+}
+
+static void draw_async_info_window(ApplicationData* data) {
     constexpr float32 WIDTH = 300.f;
     constexpr float32 MARGIN = 10.f;
     constexpr float32 PROGRESS_FRACT = 0.3f;
@@ -3837,6 +3895,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                     clear_volume(&data->density_volume.volume);
 
                     uint32_t completed_count = 0;
+                    auto t0 = platform::get_time();
                     enki::TaskSet task(ensemble_structures.size(), [data, filter_mask, &ensemble_structures, &completed_count](
                                                                        enki::TaskSetPartition range, uint32_t threadnum) {
                         for (uint32_t i = range.start; i < range.end; ++i) {
@@ -3853,9 +3912,9 @@ static void draw_density_volume_window(ApplicationData* data) {
                             LOG_NOTE("%i / %i...", count, ensemble_structures.size());
                         }
                     });
-
                     data->thread_pool.AddTaskSetToPipe(&task);
                     data->thread_pool.WaitforTask(&task);
+                    auto t1 = platform::get_time();
 
                     data->density_volume.volume.voxel_range = {data->density_volume.volume.voxel_data[0], data->density_volume.volume.voxel_data[0]};
                     for (auto& v : data->density_volume.volume.voxel_data) {
@@ -3865,6 +3924,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                     }
 
                     LOG_NOTE("Done!");
+                    LOG_NOTE("Time taken: %.2f ms", platform::compute_delta_ms(t0, t1));
                     LOG_NOTE("Max density: %u", data->density_volume.volume.voxel_range.max);
                     data->density_volume.texture.dirty = true;
                     data->density_volume.volume_data_mutex.unlock();
@@ -3942,65 +4002,69 @@ static void draw_density_volume_window(ApplicationData* data) {
 
                     // create_reference_frame(data, "ensemble reference", reference_buf);
 
-                    LOG_NOTE("Performing Structure Tracking...");
+                    {
+                        LOG_NOTE("Computing Internal Reference Frames...");
+                        auto t0 = platform::get_time();
+                        uint32_t completed_count = 0;
+                        enki::TaskSet task(ensemble_structures.size(), [dyn, ensemble_mask, &ensemble_structures, &completed_count](
+                                                                           enki::TaskSetPartition range, uint32_t threadnum) {
+                            for (uint32_t i = range.start; i < range.end; ++i) {
+                                auto& structure = ensemble_structures[i];
+                                structure_tracking::compute_trajectory_transform_data(structure.id, dyn, ensemble_mask, structure.offset);
+                                const uint32 count = platform::atomic_fetch_and_add(&completed_count, 1) + 1;
+                                LOG_NOTE("%i / %i...", count, ensemble_structures.size());
+                            }
+                        });
 
-                    uint32_t completed_count = 0;
-                    enki::TaskSet task(ensemble_structures.size(), [dyn, ensemble_mask, &ensemble_structures, &completed_count](
-                                                                       enki::TaskSetPartition range, uint32_t threadnum) {
-                        for (uint32_t i = range.start; i < range.end; ++i) {
-                            auto& structure = ensemble_structures[i];
-                            structure_tracking::compute_trajectory_transform_data(structure.id, dyn, ensemble_mask, structure.offset);
-                            const uint32 count = platform::atomic_fetch_and_add(&completed_count, 1) + 1;
-                            LOG_NOTE("%i / %i...", count, ensemble_structures.size());
-                        }
-                    });
+                        data->thread_pool.AddTaskSetToPipe(&task);
+                        data->thread_pool.WaitforTask(&task);
+                        auto t1 = platform::get_time();
 
-                    data->thread_pool.AddTaskSetToPipe(&task);
-                    data->thread_pool.WaitforTask(&task);
-
-                    /*
-                    for (auto& structure : ensemble_structures) {
-                        LOG_NOTE("%i / %i", (int)(&structure - ensemble_structures.begin()) + 1, (int)ensemble_structures.size());
-
+                        LOG_NOTE("Done!");
+                        LOG_NOTE("Time taken: %.2f ms", platform::compute_delta_ms(t0, t1));
                     }
-                    */
-                    LOG_NOTE("Done!");
 
-                    LOG_NOTE("Computing structure Alignment Matrices...");
-                    const auto atom_count = bitfield::number_of_bits_set(ensemble_mask);
-                    void* mem = TMP_MALLOC(sizeof(float) * 7 * atom_count);
-                    defer { TMP_FREE(mem); };
-                    ASSERT(mem);
+                    {
+                        LOG_NOTE("Computing structure Alignment Matrices...");
+                        auto t0 = platform::get_time();
+                        const auto atom_count = bitfield::number_of_bits_set(ensemble_mask);
+                        void* mem = TMP_MALLOC(sizeof(float) * 7 * atom_count);
+                        defer { TMP_FREE(mem); };
+                        ASSERT(mem);
 
-                    float* ref_x = (float*)mem + 0 * atom_count;
-                    float* ref_y = (float*)mem + 1 * atom_count;
-                    float* ref_z = (float*)mem + 2 * atom_count;
+                        float* ref_x = (float*)mem + 0 * atom_count;
+                        float* ref_y = (float*)mem + 1 * atom_count;
+                        float* ref_z = (float*)mem + 2 * atom_count;
 
-                    float* x = (float*)mem + 3 * atom_count;
-                    float* y = (float*)mem + 4 * atom_count;
-                    float* z = (float*)mem + 5 * atom_count;
+                        float* x = (float*)mem + 3 * atom_count;
+                        float* y = (float*)mem + 4 * atom_count;
+                        float* z = (float*)mem + 5 * atom_count;
 
-                    float* mass = (float*)mem + 6 * atom_count;
+                        float* mass = (float*)mem + 6 * atom_count;
 
-                    const auto frame0 = get_trajectory_frame(traj, 0);
-                    bitfield::gather_masked(ref_x, frame0.atom_position.x, ensemble_mask, ensemble_structures[0].offset);
-                    bitfield::gather_masked(ref_y, frame0.atom_position.y, ensemble_mask, ensemble_structures[0].offset);
-                    bitfield::gather_masked(ref_z, frame0.atom_position.z, ensemble_mask, ensemble_structures[0].offset);
-                    bitfield::gather_masked(mass, mol.atom.mass, ensemble_mask, ensemble_structures[0].offset);
-                    const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, atom_count);
-                    const mat3 PCA = structure_tracking::get_tracking_data(ensemble_structures[0].id)->simulation_box_aligned_pca;
-                    // const mat3 PCA = mat3(1);
+                        const auto frame0 = get_trajectory_frame(traj, 0);
+                        bitfield::gather_masked(ref_x, frame0.atom_position.x, ensemble_mask, ensemble_structures[0].offset);
+                        bitfield::gather_masked(ref_y, frame0.atom_position.y, ensemble_mask, ensemble_structures[0].offset);
+                        bitfield::gather_masked(ref_z, frame0.atom_position.z, ensemble_mask, ensemble_structures[0].offset);
+                        bitfield::gather_masked(mass, mol.atom.mass, ensemble_mask, ensemble_structures[0].offset);
+                        const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, atom_count);
+                        const mat3 PCA = structure_tracking::get_tracking_data(ensemble_structures[0].id)->simulation_box_aligned_pca;
+                        // const mat3 PCA = mat3(1);
 
-                    ensemble_structures[0].alignment_matrix = PCA;
-                    for (int64 i = 1; i < ensemble_structures.size(); i++) {
-                        LOG_NOTE("%i / %i", (int)(i + 1), (int)ensemble_structures.size());
-                        auto& structure = ensemble_structures[i];
-                        bitfield::gather_masked(x, frame0.atom_position.x, ensemble_mask, structure.offset);
-                        bitfield::gather_masked(y, frame0.atom_position.y, ensemble_mask, structure.offset);
-                        bitfield::gather_masked(z, frame0.atom_position.z, ensemble_mask, structure.offset);
-                        const vec3 com = compute_com(x, y, z, mass, atom_count);
-                        const mat3 R = structure_tracking::compute_rotation(x, y, z, ref_x, ref_y, ref_z, mass, atom_count, com, ref_com);
-                        structure.alignment_matrix = PCA * math::transpose(R);
+                        ensemble_structures[0].alignment_matrix = PCA;
+                        for (int64 i = 1; i < ensemble_structures.size(); i++) {
+                            // LOG_NOTE("%i / %i", (int)(i + 1), (int)ensemble_structures.size());
+                            auto& structure = ensemble_structures[i];
+                            bitfield::gather_masked(x, frame0.atom_position.x, ensemble_mask, structure.offset);
+                            bitfield::gather_masked(y, frame0.atom_position.y, ensemble_mask, structure.offset);
+                            bitfield::gather_masked(z, frame0.atom_position.z, ensemble_mask, structure.offset);
+                            const vec3 com = compute_com(x, y, z, mass, atom_count);
+                            const mat3 R = structure_tracking::compute_rotation(x, y, z, ref_x, ref_y, ref_z, mass, atom_count, com, ref_com);
+                            structure.alignment_matrix = PCA * math::transpose(R);
+                        }
+                        auto t1 = platform::get_time();
+                        LOG_NOTE("Done!");
+                        LOG_NOTE("Time taken: %.2f ms", platform::compute_delta_ms(t0, t1));
                     }
                 }
             }
@@ -4431,6 +4495,12 @@ static void init_molecule_data(ApplicationData* data) {
         data->picking.idx = NO_PICKING_IDX;
         data->selection.hovered = -1;
         data->selection.right_clicked = -1;
+        const auto& mol = data->dynamic.molecule;
+        LOG_NOTE("Computing VDW sdf...");
+        auto t0 = platform::get_time();
+        draw::sdf::compute_vdw_sdf(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.radius, mol.atom.count);
+        auto t1 = platform::get_time();
+        LOG_NOTE("Done! Time taken: %.2f ms", platform::compute_delta_ms(t0, t1));
     }
 }
 
@@ -5355,7 +5425,7 @@ static void fill_gbuffer(const ApplicationData& data) {
     PUSH_GPU_SECTION("Debug Draw") {
         glDrawBuffer(GL_COLOR_ATTACHMENT4);  // Post_Tonemap buffer
 
-        //draw_residue_aabbs(data);
+        // draw_residue_aabbs(data);
 
         immediate::set_model_view_matrix(data.view.param.matrix.current.view);
         immediate::set_proj_matrix(data.view.param.matrix.current.proj);
@@ -6155,15 +6225,15 @@ static void draw_representations(const ApplicationData& data) {
     const int32 bond_count = (int32)data.dynamic.molecule.covalent_bonds.count;
     const int32 res_count = (int32)data.dynamic.molecule.residues.count;
 
-        PUSH_GPU_SECTION("Full Detail") for (const auto& rep : data.representations.buffer) {
+    PUSH_GPU_SECTION("Full Detail") for (const auto& rep : data.representations.buffer) {
         if (!rep.enabled) continue;
         switch (rep.type) {
             case RepresentationType::Vdw:
                 PUSH_GPU_SECTION("Vdw")
 #if EXPERIMENTAL_CULLING == 1
                 draw::culling::draw_culled_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.velocity,
-                                      data.gpu_buffers.experimental.visibility, data.gpu_buffers.experimental.residue, res_count,
-                                      data.view.param, rep.radius);
+                                               data.gpu_buffers.experimental.visibility, data.gpu_buffers.experimental.residue, res_count,
+                                               data.view.param, rep.radius);
 #else
                 draw::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.velocity, atom_count,
                                data.view.param, rep.radius);

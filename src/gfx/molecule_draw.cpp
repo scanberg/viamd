@@ -4,6 +4,7 @@
 #include <core/common.h>
 #include <core/log.h>
 #include <core/string_utils.h>
+#include <core/spatial_hash.h>
 #include <gfx/gl_utils.h>
 #include <mol/molecule_utils.h>
 
@@ -391,6 +392,67 @@ void shutdown() {
 }  // namespace aabb
 }  // namespace culling
 
+namespace sdf {
+static GLuint program_compute_vdw = 0;
+static GLuint program_draw = 0;
+static GLuint vbo = 0;
+
+static struct {
+    GLuint texture = 0;
+    vec3 min_aabb = {0, 0, 0};
+    vec3 max_aabb = {0, 0, 0};
+    ivec3 dim = {0, 0, 0};
+    vec3 voxel_ext = {0, 0, 0};
+} sdf_volume;
+
+void initialize() {
+    const int DIM = 64;
+    sdf_volume.dim = {DIM, DIM, DIM};
+    if (!sdf_volume.texture) {
+        // @NOTE: Compute log2 (integer version) to find the amount of mipmaps needed
+        int mips = 1;
+        int dim = DIM;
+        while (dim >>= 1) ++mips;
+
+        glGenTextures(1, &sdf_volume.texture);
+        glBindTexture(GL_TEXTURE_3D, sdf_volume.texture);
+        glTexStorage3D(GL_TEXTURE_3D, mips, GL_R8_SNORM, DIM, DIM, DIM);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_3D, 0);
+    }
+
+    if (!vbo) {
+        // https://stackoverflow.com/questions/28375338/cube-using-single-gl-triangle-strip
+        const uint8_t cube_strip[42] = {0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1,
+                                            0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+        glGenBuffers(1, &vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(cube_strip), cube_strip, GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+
+    {
+        GLuint v_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/sdf/raycaster.vert", GL_VERTEX_SHADER);
+        GLuint f_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/sdf/raycaster.frag", GL_FRAGMENT_SHADER);
+        defer {
+            glDeleteShader(v_shader);
+            glDeleteShader(f_shader);
+        };
+
+        if (!program_draw) program_draw = glCreateProgram();
+        const GLuint shaders[] = {v_shader, f_shader};
+        gl::attach_link_detach(program_draw, shaders);
+    }
+}
+
+void shutdown() {}
+
+}  // namespace sdf
+
 void initialize() {
     if (!vao) glGenVertexArrays(1, &vao);
     if (!tex[0]) glGenTextures(4, tex);
@@ -404,6 +466,7 @@ void initialize() {
     lean_and_mean::ribbon::intitialize();
     pbc_view_velocity::initialize();
     culling::aabb::intitialize();
+    sdf::initialize();
 }
 
 void shutdown() {
@@ -419,6 +482,7 @@ void shutdown() {
     lean_and_mean::ribbon::shutdown();
     pbc_view_velocity::shutdown();
     culling::aabb::shutdown();
+    sdf::shutdown();
 }
 
 void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_view_velocity_buffer, int32 atom_count,
@@ -1211,4 +1275,71 @@ void draw_culled_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLu
 }
 
 }  // namespace culling
+
+namespace sdf {
+
+#include <core/spatial_hash.h>
+
+static int8_t encode_distance(float d, float voxel_ext) {
+    const float n = d / (voxel_ext * 4.0f);
+    return (int8_t)math::round(math::clamp(n, -1.0f, 1.0f) * 127.0f);
+}
+
+void compute_vdw_sdf(const float* atom_pos_x, const float* atom_pos_y, const float* atom_pos_z, const float* atom_radius, int32 atom_count) {
+    size_t voxel_count = sdf_volume.dim.x * sdf_volume.dim.y * sdf_volume.dim.z;
+    int8_t* sdf_data = (int8_t*)TMP_MALLOC(voxel_count * sizeof(int8_t));
+    memset(sdf_data, 127, voxel_count);
+
+    AABB aabb = compute_aabb(atom_pos_x, atom_pos_y, atom_pos_z, atom_radius, atom_count);
+    sdf_volume.min_aabb = aabb.min;
+    sdf_volume.max_aabb = aabb.max;
+    sdf_volume.voxel_ext = (aabb.max - aabb.min) / (vec3)sdf_volume.dim;
+
+    const vec3 offset = sdf_volume.min_aabb;
+    const vec3 voxel_ext = sdf_volume.voxel_ext;
+    const float min_voxel_ext = math::min(math::min(voxel_ext.x, voxel_ext.y), voxel_ext.z);
+    const float radius = min_voxel_ext * 4.f + 2.f;
+    const auto frame = spatialhash::compute_frame(atom_pos_x, atom_pos_y, atom_pos_z, atom_count, vec3(radius / 3.0f));
+
+    ivec3 vc;
+    for (vc.z = 0; vc.z < sdf_volume.dim.z; ++vc.z) {
+        for (vc.y = 0; vc.y < sdf_volume.dim.y; ++vc.y) {
+            for (vc.x = 0; vc.x < sdf_volume.dim.x; ++vc.x) {
+                const vec3 voxel_pos = offset + (vec3)vc * voxel_ext;
+                const int32_t idx = vc.z * sdf_volume.dim.x * sdf_volume.dim.y + vc.y * sdf_volume.dim.x + vc.x;
+                int8_t& voxel = sdf_data[idx];
+                spatialhash::for_each_within(frame, voxel_pos, radius,
+                                             [&voxel_pos, atom_radius, radius, min_voxel_ext, &voxel](const int atom_index, const vec3& atom_pos) {
+                                                 float d2 = math::distance2(voxel_pos, atom_pos);
+                                                 if (d2 < radius * radius) {
+                                                     const float surface_dist = math::sqrt(d2) - atom_radius[atom_index];
+                                                     voxel = encode_distance(surface_dist, min_voxel_ext);
+                                                 }
+                                             });
+            }
+        }
+    }
+}
+void draw_sdf(const ViewParam& view_param) {
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_UNSIGNED_BYTE, GL_FALSE, 0, (const void*)0);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_3D, sdf_volume.texture);
+
+    glUseProgram(program_draw);
+
+    glUniformMatrix4fv(glGetUniformLocation(program_draw, "u_model_view_proj_mat"), 1, GL_FALSE, &view_param.matrix.current.view_proj_jittered[0][0]);
+    glUniform4fv(glGetUniformLocation(program_draw, "u_model_eye_pos"), 1, &view_param.matrix.inverse.view[3][0]);
+    glUniform1i(glGetUniformLocation(program_draw, "u_tex_sdf"), 0);
+
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 42);
+    glUseProgram(0);
+
+    glBindVertexArray(0);
+}
+
+}  // namespace sdf
 }  // namespace draw
