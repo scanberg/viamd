@@ -286,7 +286,6 @@ struct ThreadSyncData {
         while (running) {
             platform::sleep(1);
         }
-        // thread.join();
     }
 
     void signal_stop_and_wait() {
@@ -1399,8 +1398,9 @@ static void CreateDockspace() {
     ImGui::SetNextWindowViewport(viewport->ID);
     ImGui::SetNextWindowBgAlpha(0.0f);
 
-    const ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-                                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
+    const ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
+ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+ImGuiWindowFlags_NoNavFocus;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
@@ -4495,12 +4495,14 @@ static void init_molecule_data(ApplicationData* data) {
         data->picking.idx = NO_PICKING_IDX;
         data->selection.hovered = -1;
         data->selection.right_clicked = -1;
+        /*
         const auto& mol = data->dynamic.molecule;
         LOG_NOTE("Computing VDW sdf...");
         auto t0 = platform::get_time();
         draw::sdf::compute_vdw_sdf(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.radius, mol.atom.count);
         auto t1 = platform::get_time();
         LOG_NOTE("Done! Time taken: %.2f ms", platform::compute_delta_ms(t0, t1));
+        */
     }
 }
 
