@@ -45,7 +45,7 @@
 
 #include <stdio.h>
 #include <thread>
-#include <atomic>
+//#include <atomic>
 #include <mutex>
 
 #define PICKING_JITTER_HACK 1
@@ -277,8 +277,8 @@ struct EnsembleStructure {
 
 struct ThreadSyncData {
     std::thread thread{};
-    std::atomic<bool> running{false};
-    std::atomic<bool> stop_signal{false};
+    int32 running = 0;
+    int32 stop_signal = 0;
 
     void signal_stop() { stop_signal = true; }
 
