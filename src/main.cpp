@@ -5241,6 +5241,7 @@ static void handle_camera_interaction(ApplicationData* data) {
         data->view.trackball_state.input.mouse_coord_prev = data->view.trackball_state.input.mouse_coord_curr - mouse_delta;
         data->view.trackball_state.input.screen_size = vec2(data->ctx.window.width, data->ctx.window.height);
         data->view.trackball_state.input.dolly_delta = data->ctx.input.mouse.scroll_delta;
+        data->view.trackball_state.input.fov_y = data->view.camera.fov_y;
 
         {
             vec3 pos = data->view.animation.target_position;
