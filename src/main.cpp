@@ -1129,6 +1129,13 @@ int main(int, char**) {
         }
 
         copy_molecule_data_to_buffers(&data);
+#if EXPERIMENTAL_SDF == 1
+        PUSH_GPU_SECTION("COMPUTE VDW SDF");
+        draw::sdf::compute_vdw_sdf(data.gpu_buffers.position, data.gpu_buffers.radius, data.dynamic.molecule.atom.count,
+                                   data.simulation_box.box * vec3(1, 1, 1));
+        POP_GPU_SECTION();
+#endif
+
         update_properties(&data);
         update_density_volume_texture(&data);
         compute_backbone_spline(&data);
@@ -1150,8 +1157,10 @@ int main(int, char**) {
         do_postprocessing(data);
 
 #if EXPERIMENTAL_SDF == 1
+        /*
         glDisable(GL_DEPTH_TEST);
         draw::sdf::draw_sdf(data.view.param);
+        */
 #endif
 
         // GUI ELEMENTS

@@ -393,9 +393,23 @@ void shutdown() {
 }  // namespace culling
 
 namespace sdf {
+static GLuint program_scan = 0;
 static GLuint program_compute_vdw = 0;
 static GLuint program_draw = 0;
-static GLuint vbo = 0;
+static GLuint cube_vbo = 0;
+
+static struct {
+    GLuint program_bin = 0;
+    GLuint program_scan = 0;
+    GLuint program_compress = 0;
+    GLuint buffer_cell_offset = 0;
+    GLuint buffer_cell_count = 0;
+    GLuint buffer_compressed_sphere = 0;
+
+    ivec3 cell_dim = {0, 0, 0};
+    vec3 cell_ext = {0, 0, 0};
+    int32 sphere_count = 0;
+} spatial_hash;
 
 static struct {
     GLuint texture = 0;
@@ -404,6 +418,8 @@ static struct {
     ivec3 dim = {0, 0, 0};
     vec3 voxel_ext = {0, 0, 0};
 } sdf_volume;
+
+#define SPHERE_BINNING_GROUP_COUNT 256
 
 void initialize() {
     const int DIM = 64;
@@ -425,16 +441,39 @@ void initialize() {
         glBindTexture(GL_TEXTURE_3D, 0);
     }
 
-    if (!vbo) {
+    if (!cube_vbo) {
         // https://stackoverflow.com/questions/28375338/cube-using-single-gl-triangle-strip
         const uint8_t cube_strip[42] = {0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1,
-                                            0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
-        glGenBuffers(1, &vbo);
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+                                        0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+        glGenBuffers(1, &cube_vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, cube_vbo);
         glBufferData(GL_ARRAY_BUFFER, sizeof(cube_strip), cube_strip, GL_STATIC_DRAW);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
 
+    if (!spatial_hash.buffer_cell_offset) {
+        glGenBuffers(1, &spatial_hash.buffer_cell_offset);
+    }
+
+    if (!spatial_hash.buffer_cell_count) {
+        glGenBuffers(1, &spatial_hash.buffer_cell_count);
+    }
+
+    if (!spatial_hash.buffer_compressed_sphere) {
+        glGenBuffers(1, &spatial_hash.buffer_compressed_sphere);
+    }
+
+    {
+        GLuint shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/sdf/bin.comp", GL_COMPUTE_SHADER,
+                                                     "#define GROUP_SIZE " TOSTRING(SPHERE_BINNING_GROUP_COUNT));
+        defer { glDeleteShader(shader); };
+
+        if (!spatial_hash.program_bin) spatial_hash.program_bin = glCreateProgram();
+        const GLuint shaders[] = {shader};
+        gl::attach_link_detach(spatial_hash.program_bin, shaders);
+    }
+
+    /*
     {
         GLuint v_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/sdf/raycaster.vert", GL_VERTEX_SHADER);
         GLuint f_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/sdf/raycaster.frag", GL_FRAGMENT_SHADER);
@@ -447,6 +486,7 @@ void initialize() {
         const GLuint shaders[] = {v_shader, f_shader};
         gl::attach_link_detach(program_draw, shaders);
     }
+    */
 }
 
 void shutdown() {}
@@ -1320,9 +1360,98 @@ void compute_vdw_sdf(const float* atom_pos_x, const float* atom_pos_y, const flo
         }
     }
 }
+
+void init_spatial_hash(const vec3& box_ext, int32 count) {
+    const float PREFERED_CELL_EXT = 2.0f;
+    const float max_ext = math::max(box_ext.x, math::max(box_ext.y, box_ext.z));
+    ivec3 dim = ivec3(box_ext / PREFERED_CELL_EXT) + 1;
+    vec3 ext = box_ext / vec3(dim);
+
+    if (spatial_hash.cell_dim != dim) {
+        spatial_hash.cell_dim = dim;
+        glBindBuffer(GL_ARRAY_BUFFER, spatial_hash.buffer_cell_offset);
+        glBufferData(GL_ARRAY_BUFFER, dim.x * dim.y * dim.z * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
+        glBindBuffer(GL_ARRAY_BUFFER, spatial_hash.buffer_cell_count);
+        glBufferData(GL_ARRAY_BUFFER, dim.x * dim.y * dim.z * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+
+    if (spatial_hash.sphere_count != count) {
+        spatial_hash.sphere_count = count;
+        glBindBuffer(GL_ARRAY_BUFFER, spatial_hash.buffer_compressed_sphere);
+        glBufferData(GL_ARRAY_BUFFER, dim.x * dim.y * dim.z * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+
+    glBindBuffer(GL_ARRAY_BUFFER, spatial_hash.buffer_cell_offset);
+    glClearBufferData(GL_ARRAY_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, 0);
+
+    glBindBuffer(GL_ARRAY_BUFFER, spatial_hash.buffer_cell_count);
+    glClearBufferData(GL_ARRAY_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, 0);
+
+    glBindBuffer(GL_ARRAY_BUFFER, spatial_hash.buffer_compressed_sphere);
+    glClearBufferData(GL_ARRAY_BUFFER, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+int div_up(int x, int div) { return (x + div - 1) / div; }
+
+void bin(GLuint atom_pos_buffer, int32 atom_count) {
+    glUseProgram(sdf::spatial_hash.program_bin);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_BUFFER, tex[0]);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, atom_pos_buffer);
+    glBindImageTexture(0, tex[0], 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_BUFFER, tex[1]);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, spatial_hash.buffer_cell_count);
+    glBindImageTexture(1, tex[1], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32UI);
+
+    const vec3 inv_cell_ext = 1.0f / spatial_hash.cell_ext;
+    glUniform3fv(glGetUniformLocation(spatial_hash.program_bin, "u_inv_cell_ext"), 1, &inv_cell_ext[0]);
+    glUniform3iv(glGetUniformLocation(spatial_hash.program_bin, "u_cell_dim"), 1, &spatial_hash.cell_dim[0]);
+
+    glDispatchCompute(div_up(atom_count, SPHERE_BINNING_GROUP_COUNT), 1, 1);
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    glUseProgram(0);
+}
+
+void scan() {
+    glUseProgram(sdf::spatial_hash.program_scan);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_BUFFER, tex[0]);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, spatial_hash.buffer_cell_offset);
+    glBindImageTexture(0, tex[0], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32UI);
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_BUFFER, tex[1]);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, spatial_hash.buffer_cell_count);
+    glBindImageTexture(1, tex[1], 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32UI);
+
+    int32 count = spatial_hash.cell_dim.x * spatial_hash.cell_dim.y * spatial_hash.cell_dim.z;
+    glDispatchCompute(div_up(count, SPHERE_BINNING_GROUP_COUNT), 1, 1);
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+}
+
+void compress(GLuint atom_pos_buffer, GLuint atom_rad_buffer, int32 atom_count) {
+    glUseProgram(sdf::spatial_hash.program_compress);
+
+
+}
+
+void compute_vdw_sdf(GLuint atom_pos_buffer, GLuint atom_rad_buffer, int32 atom_count, const vec3& box_ext) {
+    init_spatial_hash(box_ext, atom_count);
+
+    bin(atom_pos_buffer, atom_count);
+}
+
 void draw_sdf(const ViewParam& view_param) {
     glBindVertexArray(vao);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, cube_vbo);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_UNSIGNED_BYTE, GL_FALSE, 0, (const void*)0);
 
