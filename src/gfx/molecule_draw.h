@@ -108,10 +108,14 @@ void compute_pbc_view_velocity(GLuint dst_buffer, GLuint position_buffer, GLuint
 
 namespace sdf {
 
-void compute_vdw_sdf(const float* atom_pos_x, const float* atom_pos_y, const float* atom_pos_z, const float* atom_radius, int32 atom_count);
-void compute_vdw_sdf(GLuint atom_pos_buffer, GLuint atom_rad_buffer, int32 atom_count, const vec3& box_ext);
+void compute_vdw_sdf(const float* atom_pos_x, const float* atom_pos_y, const float* atom_pos_z, const float* atom_radius, int32 atom_count, const AABB& aabb);
+void compute_vdw_sdf(GLuint atom_pos_buffer, GLuint atom_rad_buffer, int32 atom_count, const AABB& aabb);
 void draw_sdf(const ViewParam& view_param);
 
 };
+
+namespace scan {
+    void test_scan();
+}
 
 }  // namespace draw

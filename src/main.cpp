@@ -58,16 +58,16 @@
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
 
 #ifdef OS_MAC_OSX
-constexpr Key::Key_t KEY_CONSOLE = Key::KEY_WORLD_1;
+const Key::Key_t KEY_CONSOLE = Key::KEY_WORLD_1;
 #else  // WIN32 and Linux
 // @TODO: Make sure this is currect for Linux?
-constexpr Key::Key_t KEY_CONSOLE = Key::KEY_GRAVE_ACCENT;
+const Key::Key_t KEY_CONSOLE = Key::KEY_GRAVE_ACCENT;
 #endif
 
-constexpr Key::Key_t KEY_PLAY_PAUSE = Key::KEY_SPACE;
-constexpr Key::Key_t KEY_SKIP_TO_PREV_FRAME = Key::KEY_LEFT;
-constexpr Key::Key_t KEY_SKIP_TO_NEXT_FRAME = Key::KEY_RIGHT;
-constexpr Key::Key_t KEY_TOGGLE_SCREENSHOT_MODE = Key::KEY_F10;
+const Key::Key_t KEY_PLAY_PAUSE = Key::KEY_SPACE;
+const Key::Key_t KEY_SKIP_TO_PREV_FRAME = Key::KEY_LEFT;
+const Key::Key_t KEY_SKIP_TO_NEXT_FRAME = Key::KEY_RIGHT;
+const Key::Key_t KEY_TOGGLE_SCREENSHOT_MODE = Key::KEY_F10;
 
 // For cpu profiling
 #define PUSH_CPU_SECTION(lbl) {};
@@ -867,6 +867,10 @@ int main(int, char**) {
     copy_molecule_data_to_buffers(&data);
     copy_buffer(data.gpu_buffers.old_position, data.gpu_buffers.position);
 
+#if EXPERIMENTAL_SDF == 1
+    draw::scan::test_scan();
+#endif
+
     // Main loop
     while (!data.ctx.window.should_close) {
         platform::update(&data.ctx);
@@ -1131,8 +1135,8 @@ int main(int, char**) {
         copy_molecule_data_to_buffers(&data);
 #if EXPERIMENTAL_SDF == 1
         PUSH_GPU_SECTION("COMPUTE VDW SDF");
-        draw::sdf::compute_vdw_sdf(data.gpu_buffers.position, data.gpu_buffers.radius, data.dynamic.molecule.atom.count,
-                                   data.simulation_box.box * vec3(1, 1, 1));
+        const AABB aabb = compute_aabb(data.dynamic.molecule.atom.position.x, data.dynamic.molecule.atom.position.y, data.dynamic.molecule.atom.position.z, data.dynamic.molecule.atom.radius, data.dynamic.molecule.atom.count);
+        draw::sdf::compute_vdw_sdf(data.gpu_buffers.position, data.gpu_buffers.radius, data.dynamic.molecule.atom.count, aabb);
         POP_GPU_SECTION();
 #endif
 

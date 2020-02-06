@@ -1,85 +1,48 @@
-#version 150 core
-#extension GL_ARB_explicit_attrib_location : enable
+#version 430 core
 
-uniform mat4 u_view_mat;
-uniform mat4 u_proj_mat;
-uniform mat4 u_inv_proj_mat;
-uniform vec4 u_jitter_uv;
-uniform float u_radius_scale = 1.0;
+#ifndef GROUP_SIZE
+#define GROUP_SIZE 512
+#endif
 
-layout (location = 0) in vec3  in_position;
-layout (location = 1) in float in_radius;
-layout (location = 2) in vec4  in_color;
-layout (location = 3) in vec3  in_view_velocity;
+layout (local_size_x = GROUP_SIZE) in;
 
-out VS_GS {
-    flat vec4 view_sphere;
-    flat vec4 view_velocity;
-    flat vec4 color;
-    flat vec4 picking_color;
-    flat vec2 axis_a;
-    flat vec2 axis_b;
-    flat vec2 center;
-    flat float z;
-    flat uint atom_idx;
-} out_geom;
+layout (std430, binding = 0) buffer position_buffer {
+    vec3 in_pos[];
+};
+layout (std430, binding = 1) buffer radius_buffer {
+    vec3 in_rad[];
+};
+layout (std430, binding = 2) buffer cell_offset_buffer {
+    uint in_cell_offset[];
+};
+layout (std430, binding = 4) buffer internal_cell_index_buffer {
+    uint in_internal_cell_idx[];
+};
 
-vec4 pack_u32(uint data) {
-    return vec4(
-        (data & uint(0x000000FF)) >> 0,
-        (data & uint(0x0000FF00)) >> 8,
-        (data & uint(0x00FF0000)) >> 16,
-        (data & uint(0xFF000000)) >> 24) / 255.0;
-}
+layout (rgba8,  binding = 0) uniform imageBuffer u_compressed_sphere;
 
-// From Inigo Quilez!
-void proj_sphere(in vec4 sphere, 
-                 in float fle,
-                 out vec2 axis_a,
-                 out vec2 axis_b,
-                 out vec2 center) {
-    vec3  o = sphere.xyz;
-    float r2 = sphere.w*sphere.w;
-    float z2 = o.z*o.z; 
-    float l2 = dot(o,o);
-    
-    // axis
-    axis_a = fle*sqrt(-r2*(r2-l2)/((l2-z2)*(r2-z2)*(r2-z2)))*vec2( o.x,o.y);
-    axis_b = fle*sqrt(-r2*(r2-l2)/((l2-z2)*(r2-z2)*(r2-l2)))*vec2(-o.y,o.x);
-    center = -fle*o.z*o.xy/(z2-r2);
+uniform uint  u_num_elements;
+uniform uvec3 u_cell_dim;
+uniform vec3  u_cell_ext;
+uniform vec3  u_min_aabb;
+uniform vec3  u_inv_cell_ext;
+uniform float u_max_radius;
+
+vec4 compress_sphere(vec4 sphere, uvec3 cell_coord) {
+    vec3 cell_pos = vec3(cell_coord) * u_cell_ext;
+    sphere.xyz = (sphere.xyz - cell_pos) * u_inv_cell_ext;
+    sphere.w = sphere.w / u_max_radius;
+    return sphere;
 }
 
 void main() {
-    float rad = in_radius * u_radius_scale;
-    vec4 view_coord = u_view_mat * vec4(in_position, 1.0);
-    vec4 view_sphere = vec4(view_coord.xyz, rad);
-    vec4 view_vel = vec4(in_view_velocity, 0);
-
-    // Focal length
-    float fle = u_proj_mat[1][1];
-    // 1.0 / aspect_ratio
-    float inv_ar = u_proj_mat[0][0] / u_proj_mat[1][1];
-    // Compute view depth (with bias of radius) 
-    float z = -u_proj_mat[2][2] - u_proj_mat[3][2] / (view_coord.z + rad);
-
-    vec2 axis_a;
-    vec2 axis_b;
-    vec2 center;
-    proj_sphere(view_sphere, fle, axis_a, axis_b, center);
-    vec2 scl = vec2(inv_ar, 1.0);
-    axis_a *= scl;
-    axis_b *= scl;
-    center *= scl;
-    center += u_jitter_uv.xy * 0.5;
-
-    out_geom.view_sphere = view_sphere;
-    out_geom.view_velocity = view_vel;
-    out_geom.color = in_color;
-    out_geom.picking_color = pack_u32(uint(gl_VertexID));
-    out_geom.axis_a = axis_a;
-    out_geom.axis_b = axis_b;
-    out_geom.center = center;
-    //out_geom.inv_aspect_ratio = inv_ar;
-    out_geom.z = z;
-    out_geom.atom_idx = uint(gl_VertexID);
+    uint i = gl_GlobalInvocationID.x;
+    if (i < u_num_elements) {
+        vec4 sphere = vec4(in_pos[i] - u_min_aabb, in_rad[i]);
+        uvec3 cell_coord = uvec3(sphere.xyz * u_inv_cell_ext);
+        uint cell_idx = u_cell_dim.x * u_cell_dim.y * cell_coord.z + u_cell_dim.x * cell_coord.y + cell_coord.x;
+        uint write_idx = in_cell_offset[cell_idx] + in_internal_cell_idx[i];
+        sphere = compress_sphere(sphere, cell_coord);
+        imageStore(u_compressed_sphere, int(write_idx), sphere);
+    }
 }
