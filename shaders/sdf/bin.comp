@@ -6,27 +6,37 @@
 
 layout (local_size_x = GROUP_SIZE) in;
 
-layout (std430, binding = 0) buffer position_buffer {
-	vec3 in_pos[];
+struct Position {
+	float x, y, z;
 };
-layout (std430, binding = 1) buffer internal_cell_index_buffer {
-	uint out_internal_cell_idx[];
+
+layout (std430, binding = 0) readonly buffer position_buffer {
+	Position in_pos[];
 };
-layout (std430, binding = 2) buffer cell_count_buffer {
+layout (std430, binding = 1) writeonly buffer global_cell_index_buffer {
+	uint out_global_cell_idx[];
+};
+layout (std430, binding = 2) writeonly buffer local_cell_index_buffer {
+	uint out_local_cell_idx[];
+};
+layout (std430, binding = 3) buffer cell_count_buffer {
 	uint in_out_cell_count[];
 };
 
-uniform uint  u_num_elements;
-uniform vec3  u_inv_cell_ext;
-uniform vec3  u_min_aabb;
-uniform uvec3 u_cell_dim;
+layout (std140, binding = 0) uniform ubo {
+	vec3  aabb_min;
+	vec3  cell_ext;
+	uvec3 cell_dim;
+	uint  num_spheres;
+};
 
 void main() {
 	uint i = gl_GlobalInvocationID.x;
-    if (i < u_num_elements) {
-    	vec3 pos = in_pos[i] - u_min_aabb;
-    	uvec3 cell_coord = uvec3(pos * u_inv_cell_ext);
-    	uint cell_idx = u_cell_dim.x * u_cell_dim.y * cell_coord.z + u_cell_dim.x * cell_coord.y + cell_coord.x;
-    	out_internal_cell_idx[i] = atomicAdd(in_out_cell_count[cell_idx], 1U);
+    if (i < num_spheres) {
+    	vec3 pos = vec3(in_pos[i].x, in_pos[i].y, in_pos[i].z) - aabb_min;
+    	uvec3 cell_coord = clamp(uvec3(pos / cell_ext), uvec3(0), cell_dim - 1);
+    	uint  cell_idx = cell_dim.x * cell_dim.y * cell_coord.z + cell_dim.x * cell_coord.y + cell_coord.x;
+    	out_global_cell_idx[i] = cell_idx;
+    	out_local_cell_idx[i] = atomicAdd(in_out_cell_count[cell_idx], 1U);
 	}
 }

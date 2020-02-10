@@ -228,7 +228,8 @@ void main()
 
   // Calculate scan
   //uvec4 odata4 = scan4Inclusive(idata4, min(BATCH_SIZE,  (maxidx-idx)*4));
-  uvec4 odata4 = scan4Inclusive(idata4, BATCH_SIZE);
+  //uvec4 odata4 = scan4Inclusive(idata4, BATCH_SIZE);
+  uvec4 odata4 = scan4Exclusive(idata4, BATCH_SIZE);
 
   //Write back
   if (valid) outdata[idx] = odata4;
@@ -263,7 +264,9 @@ void main()
   }
 
   //Calculate scan
-  uvec4 odata4 = scan4Inclusive(idata4, BATCH_SIZE);
+  //uvec4 odata4 = scan4Inclusive(idata4, BATCH_SIZE);
+  uvec4 odata4 = scan4Exclusive(idata4, BATCH_SIZE);
+
 
   //Write back
   if (valid) outdata[idx] = odata4;

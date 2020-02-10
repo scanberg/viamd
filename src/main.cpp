@@ -53,7 +53,7 @@
 #define SHOW_IMGUI_DEMO_WINDOW 0
 #define VIAMD_RELEASE 1
 #define EXPERIMENTAL_CULLING 0
-#define EXPERIMENTAL_SDF 0
+#define EXPERIMENTAL_SDF 1
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
 
@@ -1135,7 +1135,8 @@ int main(int, char**) {
         copy_molecule_data_to_buffers(&data);
 #if EXPERIMENTAL_SDF == 1
         PUSH_GPU_SECTION("COMPUTE VDW SDF");
-        const AABB aabb = compute_aabb(data.dynamic.molecule.atom.position.x, data.dynamic.molecule.atom.position.y, data.dynamic.molecule.atom.position.z, data.dynamic.molecule.atom.radius, data.dynamic.molecule.atom.count);
+        const AABB aabb = compute_aabb(data.dynamic.molecule.atom.position.x, data.dynamic.molecule.atom.position.y,
+                                       data.dynamic.molecule.atom.position.z, data.dynamic.molecule.atom.radius, data.dynamic.molecule.atom.count);
         draw::sdf::compute_vdw_sdf(data.gpu_buffers.position, data.gpu_buffers.radius, data.dynamic.molecule.atom.count, aabb);
         POP_GPU_SECTION();
 #endif
@@ -1150,6 +1151,17 @@ int main(int, char**) {
         fill_gbuffer(data);
 #if EXPERIMENTAL_CULLING == 1
         cull_residue_aabbs(&data);
+#endif
+#if EXPERIMENTAL_SDF == 1
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.deferred.fbo);
+        glViewport(0, 0, data.fbo.width, data.fbo.height);
+        glDrawBuffer(GL_COLOR_ATTACHMENT4);
+        glEnable(GL_DEPTH_TEST);
+        immediate::set_model_view_matrix(data.view.param.matrix.current.view);
+        immediate::set_proj_matrix(data.view.param.matrix.current.proj_jittered);
+        immediate::draw_box_wireframe(aabb.min, aabb.max, immediate::COLOR_BLACK);
+        immediate::flush();
+        glDisable(GL_DEPTH_TEST);
 #endif
         handle_picking(&data);
 

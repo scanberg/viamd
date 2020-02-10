@@ -1,0 +1,55 @@
+#version 430 core
+
+#ifndef GROUP_SIZE
+#define GROUP_SIZE 512
+#endif
+
+layout (local_size_x = GROUP_SIZE) in;
+
+struct Position {
+    float x, y, z;
+};
+
+layout (std430, binding = 0) readonly buffer position_buffer {
+    Position in_pos[];
+};
+layout (std430, binding = 1) readonly buffer radius_buffer {
+    float in_rad[];
+};
+layout (std430, binding = 2) readonly buffer cell_offset_buffer {
+    uint in_cell_offset[];
+};
+layout (std430, binding = 3) readonly buffer global_cell_index_buffer {
+    uint in_global_cell_idx[];
+};
+layout (std430, binding = 4) readonly buffer local_cell_index_buffer {
+    uint in_local_cell_idx[];
+};
+layout (std430, binding = 5) writeonly buffer sphere_buffer {
+    vec4 out_sphere[];
+};
+
+layout (std140,  binding = 0) uniform ubo {
+    vec3  aabb_min;
+    vec3  cell_ext;
+    float max_radius;
+    uint  num_elements;
+};
+
+vec4 compress_sphere(vec4 sphere, vec3 cell_pos) {
+    sphere.xyz = (sphere.xyz - cell_pos) / cell_ext;
+    sphere.w = sphere.w / max_radius;
+    return sphere;
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i < num_elements) {
+        vec4 sphere = vec4(vec3(in_pos[i].x, in_pos[i].y, in_pos[i].z) - aabb_min, in_rad[i]);
+        uint cell_idx = in_global_cell_idx[i];
+        uint dst_idx = in_cell_offset[cell_idx] + in_local_cell_idx[i];
+        //sphere = compress_sphere(sphere, cell_coord);
+        //out_sphere[dst_idx] = sphere;
+        out_sphere[i] = sphere;
+    }
+}
