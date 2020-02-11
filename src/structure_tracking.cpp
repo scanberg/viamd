@@ -548,6 +548,8 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     //    float* prv_y = (float*)mem + 7 * num_atoms;
     //    float* prv_z = (float*)mem + 8 * num_atoms;
 
+    mat3 box = {};
+
     const auto dbl_mem_size = sizeof(double) * num_atoms * 3;
     void* dbl_mem = TMP_MALLOC(dbl_mem_size);
     defer { TMP_FREE(dbl_mem); };
@@ -561,15 +563,17 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     bitfield::gather_masked(ref_y, get_trajectory_position_y(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
     bitfield::gather_masked(ref_z, get_trajectory_position_z(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
     bitfield::gather_masked(mass, dynamic.molecule.atom.mass, atom_mask, mask_offset);
+    box = get_trajectory_frame(dynamic.trajectory, 0).box;
+    apply_pbc(ref_x, ref_y, ref_z,  mass, num_atoms, box);
 
-    /*
-    float tot_mass = 0.0f;
-    for (int i = 0; i < num_points; i++) {
-        tot_mass += mass[i];
-    }
-    */
+        /*
+        float tot_mass = 0.0f;
+        for (int i = 0; i < num_points; i++) {
+            tot_mass += mass[i];
+        }
+        */
 
-    for (int i = 0; i < num_atoms; i++) {
+        for (int i = 0; i < num_atoms; i++) {
         int_x[i] = (double)ref_x[i];
         int_y[i] = (double)ref_y[i];
         int_z[i] = (double)ref_z[i];
@@ -621,6 +625,7 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     s->tracking_data.transform.rotation.absolute[0] = {1, 0, 0, 0};
     s->tracking_data.transform.rotation.relative[0] = {1, 0, 0, 0};
     s->tracking_data.transform.com[0] = ref_com;
+
     compute_eigen(compute_weighted_covariance_matrix(ref_x, ref_y, ref_z, mass, num_atoms, ref_com), (vec3(&)[3])s->tracking_data.eigen.vectors[0],
                   (float(&)[3])s->tracking_data.eigen.values[0]);
 
@@ -630,6 +635,8 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
             bitfield::gather_masked(cur_x, dynamic.trajectory.frame_buffer[i].atom_position.x, atom_mask, mask_offset);
             bitfield::gather_masked(cur_y, dynamic.trajectory.frame_buffer[i].atom_position.y, atom_mask, mask_offset);
             bitfield::gather_masked(cur_z, dynamic.trajectory.frame_buffer[i].atom_position.z, atom_mask, mask_offset);
+            box = get_trajectory_frame(dynamic.trajectory, i).box;
+            apply_pbc(cur_x, cur_y, cur_z, mass, num_atoms, box);
 
             // cur_com = compute_com(cur_x, cur_y, cur_z, mass, num_atoms);
 

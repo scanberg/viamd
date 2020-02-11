@@ -53,7 +53,7 @@
 #define SHOW_IMGUI_DEMO_WINDOW 0
 #define VIAMD_RELEASE 1
 #define EXPERIMENTAL_CULLING 0
-#define EXPERIMENTAL_SDF 1
+#define EXPERIMENTAL_SDF 0
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
 
@@ -554,7 +554,7 @@ struct ApplicationData {
 
     // --- REPRESENTATIONS ---
     struct {
-        DynamicArray<Representation> buffer{};
+        DynamicArray<Representation> buffer = {};
         Bitfield atom_visibility_mask{};
         bool atom_visibility_mask_dirty = false;
         bool show_window = false;
@@ -563,12 +563,12 @@ struct ApplicationData {
 
     // --- REFERENCE FRAME ---
     struct {
-        DynamicArray<ReferenceFrame> frames{};
+        DynamicArray<ReferenceFrame> frames = {};
         bool show_window = false;
     } reference_frame;
 
     struct {
-        int32 reference_frame_idx = -1;
+        int32_t target = 0;
         bool show_window = false;
     } shape_space;
 
@@ -1775,6 +1775,7 @@ ImGui::EndGroup();
             // ImGui::Checkbox("Selection", &data->selection.show_window);
             ImGui::Checkbox("Reference Frames", &data->reference_frame.show_window);
             ImGui::Checkbox("Density Volume", &data->density_volume.show_window);
+            ImGui::Checkbox("Shape Space", &data->shape_space.show_window);
 
             ImGui::EndMenu();
         }
@@ -2452,11 +2453,13 @@ static void draw_reference_frame_window(ApplicationData* data) {
                 remove_reference_frame(data, &ref);
             }
             ImGui::SameLine();
+            /*
             if (ImGui::Button("shape space")) {
                 data->shape_space.show_window = true;
-                data->shape_space.reference_frame_idx = i;
+                data->shape_space.structure_list = {ref.id};
                 draw_shape_space_window(data);
             }
+            */
 
             ImGui::PushItemWidth(item_width);
             ImGui::InputText("name", ref.name.cstr(), ref.name.capacity());
@@ -3499,14 +3502,46 @@ static void draw_ramachandran_window(ApplicationData* data) {
 
 static void draw_shape_space_window(ApplicationData* data) {
     const Range<int32> frame_range = {(int32)data->time_filter.range.x, (int32)data->time_filter.range.y};
-    const bool reference_frame_valid =
-        0 <= data->shape_space.reference_frame_idx && data->shape_space.reference_frame_idx < data->reference_frame.frames.size();
 
     ImGui::PushStyleColor(ImGuiCol_WindowBg, 0xCCFFFFFF);
     // ImGui::SetNextWindowSizeConstraints(ImVec2(200, 200), ImVec2(10000, 10000));
     ImGui::Begin("Shape Space", &data->shape_space.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
-
     ImGui::PopStyleColor();
+
+    const int32 ensemble_count = data->ensemble_tracking.structures.empty() ? 0 : 1;
+    const int32 reference_count = data->reference_frame.frames.size();
+    const int32 count = ensemble_count + reference_count;
+
+    structure_tracking::ID structure_ids[256];
+    int32 num_structure_ids = 0;
+
+    if (count > 0) {
+        StringBuffer<512> buf = {};
+        for (const auto ref_frame : data->reference_frame.frames) {
+            buf += "Reference Frame: ";
+            buf += ref_frame.name;
+            buf += "\0";
+        }
+        if (!data->ensemble_tracking.structures.empty()) {
+            buf += "Ensemble\0";
+        }
+        buf += "\0";
+
+        ImGui::Combo("Target", (int*)(&data->shape_space.target), buf.cstr());
+
+        int i = data->shape_space.target;
+        if (i < reference_count) {
+            structure_ids[0] = data->reference_frame.frames[i].id;
+            num_structure_ids = 1;
+        } else if (i < count) {
+            for (const auto& s : data->ensemble_tracking.structures) {
+                if (s.enabled) {
+                    structure_ids[num_structure_ids] = s.id;
+                    num_structure_ids++;
+                }
+            }
+        }
+    }
 
     constexpr float height_ratio = 0.86602540f;  // sqrt(3.0f) / 2.0f   base -> height ratio in equilateral triangle
     const ImVec2 size = ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().x * height_ratio);
@@ -3582,7 +3617,7 @@ static void draw_shape_space_window(ApplicationData* data) {
     vec3 mouse_hover_ev = {0, 0, 0};
     vec3 mouse_hover_w = {0, 0, 0};
 
-    if (reference_frame_valid) {
+    if (!data->shape_space.target) {
         const vec3 base_line_color = {0.15f, 0.15f, 0.15f};
         const vec3 hover_line_color = {1.0f, 1.0f, 1.0f};
         const vec3 selected_line_color = {1.0f, 1.0f, 0.0f};
@@ -3597,70 +3632,70 @@ static void draw_shape_space_window(ApplicationData* data) {
         constexpr float hover_radius = 7.5f;
         constexpr int num_segments = 10;
 
-        const structure_tracking::ID ref_id = data->reference_frame.frames[data->shape_space.reference_frame_idx].id;
-        const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(ref_id);
+        for (int i = 0; i < num_structure_ids; i++) {
+            const auto id = structure_ids[i];
+            if (const auto* tracking_data = structure_tracking::get_tracking_data(id)) {
+                const int32 N = (int32)tracking_data->count;
+                const vec3* eigen_values = tracking_data->eigen.values;
 
-        if (tracking_data) {
-            const int32 N = (int32)tracking_data->count;
-            const vec3* eigen_values = tracking_data->eigen.values;
+                const auto compute_shape_space_weights = [](const vec3& ev) -> vec3 {
+                    const float l_sum = ev[0] + ev[1] + ev[2];
+                    const float one_over_denom = 1.0f / l_sum;
+                    const float cl = (ev[0] - ev[1]) * one_over_denom;
+                    const float cp = 2.0f * (ev[1] - ev[2]) * one_over_denom;
+                    const float cs = 3.0f * ev[2] * one_over_denom;
+                    return {cl, cp, cs};
+                };
 
-            const auto compute_shape_space_weights = [](const vec3& ev) -> vec3 {
-                const float l_sum = ev[0] + ev[1] + ev[2];
-                const float one_over_denom = 1.0f / l_sum;
-                const float cl = (ev[0] - ev[1]) * one_over_denom;
-                const float cp = 2.0f * (ev[1] - ev[2]) * one_over_denom;
-                const float cs = 3.0f * ev[2] * one_over_denom;
-                return {cl, cp, cs};
-            };
+                const vec2 p[3] = {vec_cast(tri_a), vec_cast(tri_b), vec_cast(tri_c)};
+                for (int32 i = 0; i < N; i++) {
+                    const vec3 ev = eigen_values[i];
+                    const vec3 w = compute_shape_space_weights(ev);
+                    const ImVec2 coord = vec_cast(math::barycentric_to_cartesian(p[0], p[1], p[2], w));
 
-            const vec2 p[3] = {vec_cast(tri_a), vec_cast(tri_b), vec_cast(tri_c)};
-            for (int32 i = 0; i < N; i++) {
-                const vec3 ev = eigen_values[i];
-                const vec3 w = compute_shape_space_weights(ev);
-                const ImVec2 coord = vec_cast(math::barycentric_to_cartesian(p[0], p[1], p[2], w));
+                    const bool in_range = frame_range.x <= i && i <= frame_range.y;
+                    const bool selected = i == data->playback.frame;
 
-                const bool in_range = frame_range.x <= i && i <= frame_range.y;
-                const bool selected = i == data->playback.frame;
+                    // Draw channel, higher number => later draw
+                    int channel = 1 + (int)in_range + (int)selected;
 
-                // Draw channel, higher number => later draw
-                int channel = 1 + (int)in_range + (int)selected;
+                    const float t = (float)i / (float)(N - 1);
+                    const vec3 color = green_color_scale(t);
+                    const vec3 line_color = selected ? selected_line_color : base_line_color;
+                    const float alpha = in_range ? in_range_alpha : base_alpha;
+                    const float radius = selected ? selected_radius : base_radius;
+                    const float thickness = selected ? selected_line_thickness : base_line_thickness;
 
-                const float t = (float)i / (float)(N - 1);
-                const vec3 color = green_color_scale(t);
-                const vec3 line_color = selected ? selected_line_color : base_line_color;
-                const float alpha = in_range ? in_range_alpha : base_alpha;
-                const float radius = selected ? selected_radius : base_radius;
-                const float thickness = selected ? selected_line_thickness : base_line_thickness;
+                    dl->ChannelsSetCurrent(channel);
+                    dl->AddCircleFilled(coord, radius, math::convert_color(vec4(color, alpha)), num_segments);
+                    dl->AddCircle(coord, radius, math::convert_color(vec4(line_color, alpha)), num_segments, thickness);
 
-                dl->ChannelsSetCurrent(channel);
-                dl->AddCircleFilled(coord, radius, math::convert_color(vec4(color, alpha)), num_segments);
-                dl->AddCircle(coord, radius, math::convert_color(vec4(line_color, alpha)), num_segments, thickness);
-
-                if (ImGui::IsItemHovered()) {
-                    const float d2 = ImLengthSqr(coord - ImGui::GetIO().MousePos);
-                    if (d2 < hover_radius * hover_radius && d2 < mouse_hover_d2) {
-                        mouse_hover_d2 = d2;
-                        mouse_hover_idx = i;
-                        mouse_hover_ev = ev;
-                        mouse_hover_w = w;
+                    if (ImGui::IsItemHovered()) {
+                        const float d2 = ImLengthSqr(coord - ImGui::GetIO().MousePos);
+                        if (d2 < hover_radius * hover_radius && d2 < mouse_hover_d2) {
+                            mouse_hover_d2 = d2;
+                            mouse_hover_idx = i;
+                            mouse_hover_ev = ev;
+                            mouse_hover_w = w;
+                        }
                     }
                 }
-            }
 
-            if (mouse_hover_idx != -1) {
-                // Draw hovered explicity
-                const int i = mouse_hover_idx;
-                const vec3 ev = eigen_values[i];
-                const ImVec2 coord = vec_cast(math::barycentric_to_cartesian(p[0], p[1], p[2], compute_shape_space_weights(ev)));
-                const float t = (float)i / (float)(N - 1);
-                const vec3 color = green_color_scale(t);
+                if (mouse_hover_idx != -1) {
+                    // Draw hovered explicity
+                    const int i = mouse_hover_idx;
+                    const vec3 ev = eigen_values[i];
+                    const ImVec2 coord = vec_cast(math::barycentric_to_cartesian(p[0], p[1], p[2], compute_shape_space_weights(ev)));
+                    const float t = (float)i / (float)(N - 1);
+                    const vec3 color = green_color_scale(t);
 
-                dl->ChannelsSetCurrent(3);
-                dl->AddCircleFilled(coord, hover_radius, math::convert_color(vec4(color, hover_alpha)), num_segments);
-                dl->AddCircle(coord, hover_radius, math::convert_color(vec4(hover_line_color, hover_alpha)), num_segments, hover_line_thickness);
+                    dl->ChannelsSetCurrent(3);
+                    dl->AddCircleFilled(coord, hover_radius, math::convert_color(vec4(color, hover_alpha)), num_segments);
+                    dl->AddCircle(coord, hover_radius, math::convert_color(vec4(hover_line_color, hover_alpha)), num_segments, hover_line_thickness);
+                }
+            } else {
+                LOG_ERROR("Could not find tracking data for '%lu'", id);
             }
-        } else {
-            LOG_ERROR("Could not find tracking data for '%lu'", ref_id);
         }
     }
 

@@ -32,8 +32,8 @@ const int MAX_KEYS = 512;
 const int MAX_MOUSE_BUTTONS = 8;
 
 struct Coordinate {
-    float32 x;
-    float32 y;
+    float x;
+    float y;
 };
 
 inline bool operator==(const Coordinate& a, const Coordinate& b) { return a.x == b.x && a.y == b.y; }
@@ -44,15 +44,15 @@ inline Coordinate operator-(const Coordinate& a, const Coordinate& b) { return {
 struct Context {
     struct {
         const char* title;
-        int32 width, height;
+        int width, height;
         bool vsync;
         bool should_close;
         void* ptr;
     } window;
 
     struct {
-        int32 width;
-        int32 height;
+        int width;
+        int height;
     } framebuffer;
 
     struct {
@@ -82,18 +82,18 @@ struct Context {
             Coordinate ndc_coord;  // Normalized device coordinates
 			Coordinate ndc_delta;
 
-            float32 scroll_delta;
+            float scroll_delta;
 
             bool moving;
         } mouse;
     } input;
 
     struct {
-        uint64 delta_ns;
-        uint64 total_ns;
+        uint64_t delta_ns;
+        uint64_t total_ns;
 
-        float32 delta_s;
-        float64 total_s;
+        float delta_s;
+        float total_s;
     } timing;
 };
 
@@ -105,16 +105,15 @@ void render_imgui(Context* ctx);
 void swap_buffers(Context* ctx);
 
 // Timing
-typedef uint64 Timestamp;
+typedef uint64_t Timestamp;
 
-void sleep(int32 milliseconds);
+void sleep(int32_t milliseconds);
 Timestamp get_time();
 float compute_delta_ms(Timestamp t0, Timestamp t1);
 
 // Filesystem
 typedef StringBuffer<512> Path;
-typedef int32 FileDialogFlags;
-// typedef void (*DirectoryWatchCallback)(const DirectoryEntry entry, void* usr_data);
+typedef int32_t FileDialogFlags;
 
 enum FileDialogFlags_ { FileDialogFlags_Open = BIT(0), FileDialogFlags_Save = BIT(1), FileDialogFlags_Directory = BIT(2) };
 
