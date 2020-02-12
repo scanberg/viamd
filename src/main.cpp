@@ -2308,7 +2308,7 @@ static void draw_animation_control_window(ApplicationData* data) {
     ASSERT(data);
     if (!data->dynamic.trajectory) return;
 
-    ImGui::Begin("Control");
+    ImGui::Begin("Animation");
     const int32 num_frames = data->dynamic.trajectory.num_frames;
     ImGui::Text("Num Frames: %i", num_frames);
     // ImGui::Checkbox("Apply post-interpolation pbc", &data->playback.apply_pbc);
@@ -3501,12 +3501,75 @@ static void draw_ramachandran_window(ApplicationData* data) {
 }
 
 static void draw_shape_space_window(ApplicationData* data) {
+    static struct Style {
+        vec4 window_bg = {1.0f, 1.0f, 1.0f, 0.8f};
+
+        struct {
+            vec4 fill_color = {0.0f, 0.0f, 0.0f, 0.03f};
+            vec4 line_color = {0.0f, 0.0f, 0.0f, 0.3f};
+            float line_thickness = 3.0f;
+        } triangle;
+
+        struct Case {
+            vec3 line_color;
+            float alpha;
+            float line_thickness;
+            float radius;
+        };
+        bool use_base_for_all = true;
+        Case base = {{0.15f, 0.15f, 0.15f}, 1.0f, 0.15f, 4.5f};
+        Case hover = {{1.f, 1.f, 1.f}, 3.0f, 1.0f, 7.5f};
+        Case selected = {{1.f, 1.f, 0.f}, 3.0f, 0.9f, 6.5f};
+
+        const int num_segments = 10;
+    } style;
+
     const Range<int32> frame_range = {(int32)data->time_filter.range.x, (int32)data->time_filter.range.y};
 
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, 0xCCFFFFFF);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, math::convert_color(style.window_bg));
     // ImGui::SetNextWindowSizeConstraints(ImVec2(200, 200), ImVec2(10000, 10000));
     ImGui::Begin("Shape Space", &data->shape_space.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
     ImGui::PopStyleColor();
+
+    static bool show_style_window = false;
+    if (ImGui::Button("Style")) show_style_window = !show_style_window;
+
+    if (show_style_window) {
+        ImGui::Begin("Shape Space Style", &show_style_window, ImGuiWindowFlags_NoFocusOnAppearing);
+        ImGui::ColorEdit4("Window BG", &style.window_bg[0]);
+        ImGui::ColorEdit4("Triangle fill color", &style.triangle.fill_color[0]);
+        ImGui::ColorEdit4("Triangle line color", &style.triangle.line_color[0]);
+        ImGui::SliderFloat("Triangle line thickness", &style.triangle.line_thickness, 0.0f, 5.0f);
+        ImGui::Checkbox("Use base for all", &style.use_base_for_all);
+        ImGui::Text("Base");
+        ImGui::PushID(0);
+        ImGui::ColorEdit3("line color", &style.base.line_color[0]);
+        ImGui::SliderFloat("line thickness", &style.base.line_thickness, 0, 1);
+        ImGui::SliderFloat("alpha", &style.base.alpha, 0, 1);
+        ImGui::SliderFloat("radius", &style.base.radius, 0.1f, 10.f);
+        ImGui::Separator();
+        ImGui::PopID();
+        if (!style.use_base_for_all) {
+            ImGui::Text("Hover");
+            ImGui::PushID(1);
+            ImGui::ColorEdit3("line color", &style.hover.line_color[0]);
+            ImGui::SliderFloat("line thickness", &style.hover.line_thickness, 0, 1);
+            ImGui::SliderFloat("alpha", &style.hover.alpha, 0, 1);
+            ImGui::SliderFloat("radius", &style.hover.radius, 0.1f, 10.f);
+            ImGui::Separator();
+            ImGui::PopID();
+            ImGui::PushID(2);
+            ImGui::Text("Selected");
+            ImGui::ColorEdit3("line color", &style.selected.line_color[0]);
+            ImGui::SliderFloat("line thickness", &style.selected.line_thickness, 0, 1);
+            ImGui::SliderFloat("alpha", &style.selected.alpha, 0, 1);
+            ImGui::SliderFloat("radius", &style.selected.radius, 0.1f, 10.f);
+            ImGui::Separator();
+            ImGui::PopID();
+        }
+
+        ImGui::End();
+    }
 
     const int32 ensemble_count = data->ensemble_tracking.structures.empty() ? 0 : 1;
     const int32 reference_count = data->reference_frame.frames.size();
@@ -3520,12 +3583,14 @@ static void draw_shape_space_window(ApplicationData* data) {
         for (const auto ref_frame : data->reference_frame.frames) {
             buf += "Reference Frame: ";
             buf += ref_frame.name;
-            buf += "\0";
         }
         if (!data->ensemble_tracking.structures.empty()) {
-            buf += "Ensemble\0";
+            if (buf.length() == 0) {
+                buf += "Ensemble\0";
+            } else {
+                buf += "\0Ensemble\0";
+            }
         }
-        buf += "\0";
 
         ImGui::Combo("Target", (int*)(&data->shape_space.target), buf.cstr());
 
@@ -3570,10 +3635,6 @@ static void draw_shape_space_window(ApplicationData* data) {
     const ImVec2 cube_b = ImLerp(bb.Min + cube_pad, bb.Max - cube_pad, ImVec2(1.0f, 1.0f));
     const ImVec2 cube_c = ImLerp(bb.Min + cube_pad, bb.Max - cube_pad, ImVec2(0.5f, 0.0f));
 
-    const ImU32 tri_fill_color = 0x44000000;  // ImGui::GetColorU32(ImGuiCol_FrameBg);  // 0xAA999999;
-    const ImU32 tri_line_color = 0xCC555555;  // ImGui::GetColorU32(ImGuiCol_Border);   // 0xCCBBBBBB;
-    const float tri_line_thickness = 3.0f;
-
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
     const auto draw_ortho_cube = [dl](float x, float y, float w, float h, float d, uint32 col_a, uint32 col_b, uint32 col_c) {
@@ -3605,8 +3666,8 @@ static void draw_shape_space_window(ApplicationData* data) {
 
     dl->ChannelsSplit(4);
     dl->ChannelsSetCurrent(0);
-    dl->AddTriangleFilled(tri_a, tri_b, tri_c, tri_fill_color);
-    dl->AddTriangle(tri_a, tri_b, tri_c, tri_line_color, tri_line_thickness);
+    dl->AddTriangleFilled(tri_a, tri_b, tri_c, math::convert_color(style.triangle.fill_color));
+    dl->AddTriangle(tri_a, tri_b, tri_c, math::convert_color(style.triangle.line_color), style.triangle.line_thickness);
 
     draw_ortho_cube(cube_a.x, cube_a.y, cube_size_a * 1.5f, cube_size_b, cube_size_b, cube_face_color_a, cube_face_color_b, cube_face_color_c);
     draw_ortho_cube(cube_b.x, cube_b.y, cube_size_a * 1.2f, cube_size_b, cube_size_a * 1.2f, cube_face_color_a, cube_face_color_b, cube_face_color_c);
@@ -3618,20 +3679,6 @@ static void draw_shape_space_window(ApplicationData* data) {
     vec3 mouse_hover_w = {0, 0, 0};
 
     if (!data->shape_space.target) {
-        const vec3 base_line_color = {0.15f, 0.15f, 0.15f};
-        const vec3 hover_line_color = {1.0f, 1.0f, 1.0f};
-        const vec3 selected_line_color = {1.0f, 1.0f, 0.0f};
-        constexpr float base_line_thickness = 1.0f;
-        constexpr float selected_line_thickness = 3.0f;
-        constexpr float hover_line_thickness = 3.0f;
-        constexpr float base_alpha = 0.15f;
-        constexpr float hover_alpha = 1.0f;
-        constexpr float in_range_alpha = 0.9f;
-        constexpr float base_radius = 4.5f;
-        constexpr float selected_radius = 6.5f;
-        constexpr float hover_radius = 7.5f;
-        constexpr int num_segments = 10;
-
         for (int i = 0; i < num_structure_ids; i++) {
             const auto id = structure_ids[i];
             if (const auto* tracking_data = structure_tracking::get_tracking_data(id)) {
@@ -3653,26 +3700,25 @@ static void draw_shape_space_window(ApplicationData* data) {
                     const vec3 w = compute_shape_space_weights(ev);
                     const ImVec2 coord = vec_cast(math::barycentric_to_cartesian(p[0], p[1], p[2], w));
 
-                    const bool in_range = frame_range.x <= i && i <= frame_range.y;
-                    const bool selected = i == data->playback.frame;
+                    const bool in_range = (frame_range.x <= i && i <= frame_range.y);
+                    const bool selected = (!style.use_base_for_all) && (i == data->playback.frame);
 
                     // Draw channel, higher number => later draw
                     int channel = 1 + (int)in_range + (int)selected;
 
                     const float t = (float)i / (float)(N - 1);
                     const vec3 color = green_color_scale(t);
-                    const vec3 line_color = selected ? selected_line_color : base_line_color;
-                    const float alpha = in_range ? in_range_alpha : base_alpha;
-                    const float radius = selected ? selected_radius : base_radius;
-                    const float thickness = selected ? selected_line_thickness : base_line_thickness;
+
+                    Style::Case s = style.base;
+                    if (!style.use_base_for_all && selected) s = style.selected;
 
                     dl->ChannelsSetCurrent(channel);
-                    dl->AddCircleFilled(coord, radius, math::convert_color(vec4(color, alpha)), num_segments);
-                    dl->AddCircle(coord, radius, math::convert_color(vec4(line_color, alpha)), num_segments, thickness);
+                    dl->AddCircleFilled(coord, s.radius, math::convert_color(vec4(color, s.alpha)), style.num_segments);
+                    dl->AddCircle(coord, s.radius, math::convert_color(vec4(s.line_color, s.alpha)), style.num_segments, s.line_thickness);
 
                     if (ImGui::IsItemHovered()) {
                         const float d2 = ImLengthSqr(coord - ImGui::GetIO().MousePos);
-                        if (d2 < hover_radius * hover_radius && d2 < mouse_hover_d2) {
+                        if (d2 < style.hover.radius * style.hover.radius && d2 < mouse_hover_d2) {
                             mouse_hover_d2 = d2;
                             mouse_hover_idx = i;
                             mouse_hover_ev = ev;
@@ -3690,8 +3736,9 @@ static void draw_shape_space_window(ApplicationData* data) {
                     const vec3 color = green_color_scale(t);
 
                     dl->ChannelsSetCurrent(3);
-                    dl->AddCircleFilled(coord, hover_radius, math::convert_color(vec4(color, hover_alpha)), num_segments);
-                    dl->AddCircle(coord, hover_radius, math::convert_color(vec4(hover_line_color, hover_alpha)), num_segments, hover_line_thickness);
+                    dl->AddCircleFilled(coord, style.hover.radius, math::convert_color(vec4(color, style.hover.alpha)), style.num_segments);
+                    dl->AddCircle(coord, style.hover.radius, math::convert_color(vec4(style.hover.line_color, style.hover.alpha)), style.num_segments,
+                                  style.hover.line_thickness);
                 }
             } else {
                 LOG_ERROR("Could not find tracking data for '%lu'", id);
