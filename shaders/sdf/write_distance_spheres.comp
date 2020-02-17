@@ -22,18 +22,17 @@ layout (std140,  binding = 0) uniform u_block {
     vec3  cell_ext;
     float max_distance;
     uvec3 cell_dim;
+    float search_radius;
 };
 
 shared int min_distance;
 
-/*
-vec4 decompress_sphere(int idx, vec3 cell_pos) {
-    vec4 sphere = imageLoad(u_compressed_sphere, idx);
+vec4 decompress_sphere(uint packed_sphere, vec3 cell_pos) {
+    vec4 sphere = unpackUnorm4x8(packed_sphere);
     sphere.xyz = sphere.xyz * cell_ext + cell_pos;
     sphere.w = sphere.w * max_radius;
     return sphere;
 }
-*/
 
 int encode_distance(float d) {
     // Max distance we encode is distance of 4 voxels
@@ -90,18 +89,20 @@ void main() {
     vec3 voxel_pos = (vec3(voxel_coord) + 0.5) * voxel_ext;
     ivec3 cell_coord = ivec3(voxel_pos / cell_ext);
 
-    float min_d = max_distance * 10;
+    float min_d = max_distance;
 
     ivec3 dim = ivec3(cell_dim);
-    ivec3 min_c = max(cell_coord - 1, ivec3(0));
-    ivec3 max_c = min(cell_coord + 1, dim - 1);
+    ivec3 min_c = max(ivec3((voxel_pos - search_radius) / cell_ext), ivec3(0));
+    ivec3 max_c = min(ivec3((voxel_pos + search_radius) / cell_ext), dim - 1);
     for (int z = min_c.z; z <= max_c.z; z++) {
         for (int y = min_c.y; y <= max_c.y; y++) {
             for (int x = min_c.x; x <= max_c.x; x++) {
                 int cell_idx = dim.x * dim.y * z + dim.x * y + x;
                 uint offset = in_cell_offset[cell_idx];
                 uint count = in_cell_count[cell_idx];
-                for (uint i = offset; i < offset + count; i++) {
+                uint beg = offset;
+                uint end = offset + count;
+                for (uint i = beg; i != end; i++) {
                     vec4 sphere = in_sphere[i];
                     float d = distance(voxel_pos, sphere.xyz) - sphere.w;
                     min_d = min(min_d, d);
@@ -112,5 +113,7 @@ void main() {
     //min_d = encode_distance(distance(voxel_pos, vec3(4.963)));
 
     //imageStore(u_distance_volume, ivec3(voxel_coord), ivec4(min_d));
-    imageStore(u_distance_volume, ivec3(voxel_coord), vec4(min_d));
+    if (min_d < max_distance) {
+        imageStore(u_distance_volume, ivec3(voxel_coord), vec4(min_d));
+    }
 }

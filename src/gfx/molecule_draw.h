@@ -111,6 +111,7 @@ namespace sdf {
 void compute_vdw_sdf(const float* atom_pos_x, const float* atom_pos_y, const float* atom_pos_z, const float* atom_radius, int32 atom_count, const AABB& aabb);
 void compute_vdw_sdf(GLuint atom_pos_buffer, GLuint atom_rad_buffer, int32 atom_count, const AABB& aabb);
 void draw_sdf(const ViewParam& view_param);
+void draw_sdf_debug(const ViewParam& view_param);
 
 };
 

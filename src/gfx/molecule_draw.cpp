@@ -7,6 +7,7 @@
 #include <core/spatial_hash.h>
 #include <gfx/gl_utils.h>
 #include <mol/molecule_utils.h>
+#include <gfx/immediate_draw_utils.h>
 
 #define PUSH_GPU_SECTION(lbl)                                                                       \
     {                                                                                               \
@@ -1506,8 +1507,8 @@ void init_sdf_volume(const AABB& aabb, uvec3 dim) {
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
         glBindTexture(GL_TEXTURE_3D, 0);
     }
-    //const int8_t value = 127;
-    //glClearTexImage(sdf_volume.texture, 0, GL_RED, GL_BYTE, &value);
+    // const int8_t value = 127;
+    // glClearTexImage(sdf_volume.texture, 0, GL_RED, GL_BYTE, &value);
     const float val = 8.0f;
     glClearTexImage(sdf_volume.texture, 0, GL_RED, GL_FLOAT, &val);
 }
@@ -1652,6 +1653,7 @@ void write_sphere_distances(GLuint level, float max_radius) {
         vec3 cell_ext;
         float max_distance;
         uvec3 cell_dim;
+        float search_radius;
     } block;
 
     block.aabb_min = spatial_hash.aabb.min;
@@ -1660,6 +1662,7 @@ void write_sphere_distances(GLuint level, float max_radius) {
     block.cell_ext = calc_voxel_extent(spatial_hash.aabb, spatial_hash.dim);
     block.max_distance = block.voxel_ext.x * 4.0f;
     block.cell_dim = spatial_hash.dim;
+    block.search_radius = block.max_distance + max_radius;
 
     glBindBuffer(GL_UNIFORM_BUFFER, ubo);
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(Block), &block);
@@ -1686,13 +1689,16 @@ void write_sphere_distances(GLuint level, float max_radius) {
 }
 
 void compute_vdw_sdf(const GLuint atom_pos_buffer, const GLuint atom_rad_buffer, int32 atom_count, const AABB& sphere_aabb) {
-    const uint32 max_dim = 256U;
-    const uint32 downsample_factor = 16U;
+    const uint32 max_dim = 128U;
+    const uint32 downsample_factor = 32U;
     const float32 max_radius = 2.0f;
     auto optimal_vol = compute_optimal_sdf_volume(sphere_aabb, max_dim);
+    const vec3 voxel_ext = optimal_vol.aabb.ext() / vec3(optimal_vol.dim);
+    const float32 spatial_hash_radius = (voxel_ext.x * 4.0f + max_radius) / 1.5f; // ????
+    const uvec3 spatial_hash_dim = optimal_vol.aabb.ext() / spatial_hash_radius;
 
     init_sdf_volume(optimal_vol.aabb, optimal_vol.dim);
-    init_spatial_hash(optimal_vol.aabb, optimal_vol.dim / downsample_factor, atom_count);
+    init_spatial_hash(optimal_vol.aabb, spatial_hash_dim, atom_count);
 
     glBindBuffer(GL_UNIFORM_BUFFER, ubo);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo);
@@ -1701,6 +1707,24 @@ void compute_vdw_sdf(const GLuint atom_pos_buffer, const GLuint atom_rad_buffer,
     compute_sphere_offsets();
     write_sorted_spheres(atom_pos_buffer, atom_rad_buffer, atom_count, sphere_aabb, max_radius);
     write_sphere_distances(0, max_radius);
+}
+
+void draw_sdf_debug(const ViewParam& view_param) {
+    immediate::set_model_view_matrix(view_param.matrix.current.view);
+    immediate::set_proj_matrix(view_param.matrix.current.proj_jittered);
+    immediate::draw_box_wireframe(spatial_hash.aabb.min, spatial_hash.aabb.max, immediate::COLOR_CYAN);
+    ivec3 dim = spatial_hash.dim;
+    vec3 ext = spatial_hash.aabb.ext() / vec3(dim);
+    for (int z = 0; z < dim.z; z++) {
+        for (int y = 0; y < dim.y; y++) {
+            for (int x = 0; x < dim.x; x++) {
+                const vec3 min_aabb = spatial_hash.aabb.min + ext * vec3(x, y, z);
+                const vec3 max_aabb = min_aabb + ext;
+                immediate::draw_box_wireframe(min_aabb, max_aabb, immediate::COLOR_BLACK);
+            }
+        }
+    }
+    immediate::flush();
 }
 
 void draw_sdf(const ViewParam& view_param) {

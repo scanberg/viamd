@@ -36,10 +36,10 @@ layout (std140,  binding = 0) uniform ubo {
     uint  num_elements;
 };
 
-vec4 compress_sphere(vec4 sphere, vec3 cell_pos) {
+uint compress_sphere(vec4 sphere, vec3 cell_pos) {
     sphere.xyz = (sphere.xyz - cell_pos) / cell_ext;
     sphere.w = sphere.w / max_radius;
-    return sphere;
+    return packUnorm4x8(sphere);
 }
 
 void main() {

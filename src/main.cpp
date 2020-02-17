@@ -53,7 +53,7 @@
 #define SHOW_IMGUI_DEMO_WINDOW 0
 #define VIAMD_RELEASE 1
 #define EXPERIMENTAL_CULLING 0
-#define EXPERIMENTAL_SDF 0
+#define EXPERIMENTAL_SDF 1
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
 
@@ -1157,10 +1157,7 @@ int main(int, char**) {
         glViewport(0, 0, data.fbo.width, data.fbo.height);
         glDrawBuffer(GL_COLOR_ATTACHMENT4);
         glEnable(GL_DEPTH_TEST);
-        immediate::set_model_view_matrix(data.view.param.matrix.current.view);
-        immediate::set_proj_matrix(data.view.param.matrix.current.proj_jittered);
-        immediate::draw_box_wireframe(aabb.min, aabb.max, immediate::COLOR_BLACK);
-        immediate::flush();
+        //draw::sdf::draw_sdf_debug(data.view.param);
         glDisable(GL_DEPTH_TEST);
 #endif
         handle_picking(&data);
