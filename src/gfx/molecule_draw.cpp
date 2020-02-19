@@ -460,6 +460,7 @@ static void scan(const GLuint input, const GLuint output, GLuint elements);
 namespace sdf {
 
 static GLuint program_draw = 0;
+static GLuint program_create_work_indirect = 0;
 static GLuint program_distance_spheres = 0;
 static GLuint cube_vbo = 0;
 static GLuint ubo = 0;
@@ -476,7 +477,8 @@ static struct {
 
     AABB aabb = {};
     uvec3 dim = {0, 0, 0};
-    uint32 sphere_count = 0;
+    uint32_t sphere_count = 0;
+    uint32_t num_cells = 0;
 } spatial_hash;
 
 static struct {
@@ -547,6 +549,14 @@ void initialize() {
         if (!spatial_hash.program_sort) spatial_hash.program_sort = glCreateProgram();
         const GLuint shaders[] = {shader};
         gl::attach_link_detach(spatial_hash.program_sort, shaders);
+    }
+    {
+        GLuint shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/sdf/fill_populated_voxels_indirect.comp", GL_COMPUTE_SHADER);
+        defer { glDeleteShader(shader); };
+
+        if (!program_create_work_indirect) program_create_work_indirect = glCreateProgram();
+        const GLuint shaders[] = {shader};
+        gl::attach_link_detach(program_create_work_indirect, shaders);
     }
     {
         GLuint shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/sdf/write_distance_spheres.comp", GL_COMPUTE_SHADER);
@@ -620,7 +630,7 @@ void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint ato
     const mat4 curr_view_to_prev_clip_mat = view_param.matrix.previous.view_proj_jittered * view_param.matrix.inverse.view;
     const vec2 res = view_param.resolution;
     const vec4 jitter_uv = vec4(view_param.jitter.current / res, view_param.jitter.previous / res);
-    static uint32 frame = 0;
+    static uint32_t frame = 0;
     frame++;
 
     const bool ortho = is_orthographic_proj_matrix(view_param.matrix.current.proj);
@@ -826,8 +836,8 @@ void compute_pbc_view_velocity(GLuint dst_buffer, GLuint position_buffer, GLuint
     glDisable(GL_RASTERIZER_DISCARD);
 }
 
-void draw_spline(GLuint spline_buffer, GLuint spline_index_buffer, int32 num_spline_indices, const ViewParam& view_param, uint32 s_color,
-                 uint32 v_color, uint32 t_color) {
+void draw_spline(GLuint spline_buffer, GLuint spline_index_buffer, int32 num_spline_indices, const ViewParam& view_param, uint32_t s_color,
+                 uint32_t v_color, uint32_t t_color) {
     glEnable(GL_PRIMITIVE_RESTART);
     glPrimitiveRestartIndex(0xFFFFFFFFU);
 
@@ -938,7 +948,7 @@ void draw_cartoon(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_
 namespace lean_and_mean {
 
 void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, int32 atom_count,
-              const ViewParam& view_param, float radius_scale, vec4 color, uint32 mask) {
+              const ViewParam& view_param, float radius_scale, vec4 color, uint32_t mask) {
     ASSERT(glIsBuffer(atom_position_buffer));
     ASSERT(glIsBuffer(atom_radius_buffer));
     ASSERT(glIsBuffer(atom_color_buffer));
@@ -1021,7 +1031,7 @@ void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint ato
 }
 
 void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, GLuint bond_buffer, int32 bond_count,
-                   const ViewParam& view_param, float radius_scale, vec4 color, uint32 mask) {
+                   const ViewParam& view_param, float radius_scale, vec4 color, uint32_t mask) {
     ASSERT(glIsBuffer(atom_position_buffer));
     ASSERT(glIsBuffer(atom_color_buffer));
     ASSERT(glIsBuffer(atom_mask_buffer));
@@ -1059,7 +1069,7 @@ void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint
 }
 
 void draw_ribbons(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, int32 num_spline_indices,
-                  const ViewParam& view_param, float scale, vec4 color, uint32 mask) {
+                  const ViewParam& view_param, float scale, vec4 color, uint32_t mask) {
     ASSERT(glIsBuffer(spline_buffer));
     ASSERT(glIsBuffer(spline_index_buffer));
     ASSERT(glIsBuffer(atom_color_buffer));
@@ -1310,7 +1320,7 @@ void draw_vdw_indirect(GLuint atom_position_buffer, GLuint atom_radius_buffer, G
     const mat4 curr_view_to_prev_clip_mat = view_param.matrix.previous.view_proj_jittered * view_param.matrix.inverse.view;
     const vec2 res = view_param.resolution;
     const vec4 jitter_uv = vec4(view_param.jitter.current / res, view_param.jitter.previous / res);
-    static uint32 frame = 0;
+    static uint32_t frame = 0;
     frame++;
 
     const bool ortho = is_orthographic_proj_matrix(view_param.matrix.current.proj);
@@ -1415,7 +1425,7 @@ struct OptimalSDFVolume {
     uvec3 dim;
 };
 
-OptimalSDFVolume compute_optimal_sdf_volume(const AABB& aabb, uint32 max_dim) {
+OptimalSDFVolume compute_optimal_sdf_volume(const AABB& aabb, uint32_t max_dim) {
     OptimalSDFVolume vol;
     const vec3 ext = aabb.ext();
     const float max_ext = math::max(ext.x, math::max(ext.y, ext.z));
@@ -1443,63 +1453,31 @@ OptimalSDFVolume compute_optimal_sdf_volume(const AABB& aabb, uint32 max_dim) {
 
 vec3 calc_voxel_extent(const AABB& aabb, const uvec3& dim) { return aabb.ext() / vec3(dim); }
 
-uint32 calc_num_voxels(const uvec3& dim) { return dim.x * dim.y * dim.z; }
+uint32_t calc_num_voxels(const uvec3& dim) { return dim.x * dim.y * dim.z; }
 
 static int8_t encode_distance(float d, float voxel_ext) {
     const float n = d / (voxel_ext * 4.0f);
     return (int8_t)math::round(math::clamp(n, -1.0f, 1.0f) * 127.0f);
 }
 
-void compute_vdw_sdf(const float* atom_pos_x, const float* atom_pos_y, const float* atom_pos_z, const float* atom_radius, int32 atom_count) {
-    size_t voxel_count = sdf_volume.dim.x * sdf_volume.dim.y * sdf_volume.dim.z;
-    int8_t* sdf_data = (int8_t*)TMP_MALLOC(voxel_count * sizeof(int8_t));
-    memset(sdf_data, 127, voxel_count);
+#define SDF_TEXTURE_FORMAT GL_R32F
 
-    AABB aabb = compute_aabb(atom_pos_x, atom_pos_y, atom_pos_z, atom_radius, atom_count);
-    sdf_volume.aabb = aabb;
-
-    const vec3 offset = aabb.min;
-    const vec3 voxel_ext = calc_voxel_extent(sdf_volume.aabb, sdf_volume.dim);
-    const float min_voxel_ext = math::min(math::min(voxel_ext.x, voxel_ext.y), voxel_ext.z);
-    const float radius = min_voxel_ext * 4.f + 2.f;
-    const auto frame = spatialhash::compute_frame(atom_pos_x, atom_pos_y, atom_pos_z, atom_count, vec3(radius / 3.0f));
-
-    uvec3 vc;
-    for (vc.z = 0; vc.z < sdf_volume.dim.z; ++vc.z) {
-        for (vc.y = 0; vc.y < sdf_volume.dim.y; ++vc.y) {
-            for (vc.x = 0; vc.x < sdf_volume.dim.x; ++vc.x) {
-                const vec3 voxel_pos = offset + (vec3)vc * voxel_ext;
-                const uint32_t idx = vc.z * sdf_volume.dim.x * sdf_volume.dim.y + vc.y * sdf_volume.dim.x + vc.x;
-                int8_t& voxel = sdf_data[idx];
-                spatialhash::for_each_within(frame, voxel_pos, radius,
-                                             [&voxel_pos, atom_radius, radius, min_voxel_ext, &voxel](const int atom_index, const vec3& atom_pos) {
-                                                 float d2 = math::distance2(voxel_pos, atom_pos);
-                                                 if (d2 < radius * radius) {
-                                                     const float surface_dist = math::sqrt(d2) - atom_radius[atom_index];
-                                                     voxel = encode_distance(surface_dist, min_voxel_ext);
-                                                 }
-                                             });
-            }
-        }
-    }
-}
-
-void init_sdf_volume(const AABB& aabb, uvec3 dim) {
+void init_sdf_volume(const AABB& aabb, uvec3 dim, float max_val) {
     sdf_volume.aabb = aabb;
     if (sdf_volume.dim != dim) {
         sdf_volume.dim = dim;
 
         // @NOTE: Compute log2 (integer version) to find the amount of mipmaps required
-        uint32 mips = 1;
+        uint32_t mips = 1;
         {
-            uint32 max_dim = math::max(dim.x, math::max(dim.y, dim.z));
+            uint32_t max_dim = math::max(dim.x, math::max(dim.y, dim.z));
             while (max_dim >>= 1) ++mips;
         }
 
         if (sdf_volume.texture) glDeleteTextures(1, &sdf_volume.texture);
         glGenTextures(1, &sdf_volume.texture);
         glBindTexture(GL_TEXTURE_3D, sdf_volume.texture);
-        glTexStorage3D(GL_TEXTURE_3D, mips, GL_R32F, dim.x, dim.y, dim.z);
+        glTexStorage3D(GL_TEXTURE_3D, mips, SDF_TEXTURE_FORMAT, dim.x, dim.y, dim.z);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -1507,24 +1485,26 @@ void init_sdf_volume(const AABB& aabb, uvec3 dim) {
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
         glBindTexture(GL_TEXTURE_3D, 0);
     }
-    // const int8_t value = 127;
-    // glClearTexImage(sdf_volume.texture, 0, GL_RED, GL_BYTE, &value);
-    const float val = 8.0f;
-    glClearTexImage(sdf_volume.texture, 0, GL_RED, GL_FLOAT, &val);
+
+#if SDF_TEXTURE_FORMAT == GL_R32F
+    const float value = 1.0f;
+    glClearTexImage(sdf_volume.texture, 0, GL_RED, GL_FLOAT, &value);
+#else
+    const int8_t value = 127;
+    glClearTexImage(sdf_volume.texture, 0, GL_RED, GL_BYTE, &value);
+
+#endif
 }
 
-void init_spatial_hash(const AABB& aabb, uvec3 dim, uint32 element_count) {
-    // @NOTE: Need to align num cells to an even number of 4 because the scan requires this
-    ASSERT((dim.x * dim.y * dim.z) % 4U == 0);
-
+void init_spatial_hash(const AABB& aabb, uvec3 dim, uint32_t element_count) {
     spatial_hash.aabb = aabb;
     if (spatial_hash.dim != dim) {
         spatial_hash.dim = dim;
-        uint32 cell_count = dim.x * dim.y * dim.z;
+        spatial_hash.num_cells = div_up(dim.x * dim.y * dim.z, 4U) * 4U; // Round upwards to nearest 4, scan requires this alignment since it operates on uvec4
         glBindBuffer(GL_ARRAY_BUFFER, spatial_hash.buffer_cell_offset);
-        glBufferData(GL_ARRAY_BUFFER, cell_count * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
+        glBufferData(GL_ARRAY_BUFFER, spatial_hash.num_cells * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
         glBindBuffer(GL_ARRAY_BUFFER, spatial_hash.buffer_cell_count);
-        glBufferData(GL_ARRAY_BUFFER, cell_count * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
+        glBufferData(GL_ARRAY_BUFFER, spatial_hash.num_cells * sizeof(uint32_t), NULL, GL_DYNAMIC_COPY);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
 
@@ -1552,12 +1532,12 @@ void init_spatial_hash(const AABB& aabb, uvec3 dim, uint32 element_count) {
     glClearBufferData(GL_ARRAY_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, 0);
 
     glBindBuffer(GL_ARRAY_BUFFER, spatial_hash.buffer_sphere);
-    glClearBufferData(GL_ARRAY_BUFFER, GL_RGBA32F, GL_RGBA, GL_FLOAT, 0);
+    glClearBufferData(GL_ARRAY_BUFFER, GL_RGBA32F, GL_RED, GL_FLOAT, 0);
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
-void bin_spheres(const GLuint position_buffer, uint32 count, const AABB& sphere_aabb) {
+void bin_spheres(const GLuint position_buffer, uint32_t count, const AABB& sphere_aabb) {
     PUSH_GPU_SECTION("Sphere Binning")
     glUseProgram(spatial_hash.program_bin);
 
@@ -1567,7 +1547,7 @@ void bin_spheres(const GLuint position_buffer, uint32 count, const AABB& sphere_
         vec3 cell_ext;
         float _p1;
         uvec3 cell_dim;
-        uint32 num_spheres;
+        uint32_t num_spheres;
     } block;
 
     block.aabb_min = spatial_hash.aabb.min;
@@ -1579,9 +1559,8 @@ void bin_spheres(const GLuint position_buffer, uint32 count, const AABB& sphere_
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(Block), &block);
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, position_buffer);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, spatial_hash.buffer_global_cell_idx);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, spatial_hash.buffer_local_cell_idx);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, spatial_hash.buffer_cell_count);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, spatial_hash.buffer_local_cell_idx);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, spatial_hash.buffer_cell_count);
     glUniformBlockBinding(spatial_hash.program_bin, 0, 0);
 
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
@@ -1594,12 +1573,12 @@ void bin_spheres(const GLuint position_buffer, uint32 count, const AABB& sphere_
 
 void compute_sphere_offsets() {
     PUSH_GPU_SECTION("Compute Spatial Hash Offsets")
-    scan::scan(spatial_hash.buffer_cell_count, spatial_hash.buffer_cell_offset, calc_num_voxels(spatial_hash.dim));
+    scan::scan(spatial_hash.buffer_cell_count, spatial_hash.buffer_cell_offset, spatial_hash.num_cells);
     POP_GPU_SECTION()
 }
 
 void write_sorted_spheres(const GLuint position_buffer, const GLuint radius_buffer, int32 count, const AABB& sphere_aabb, float max_radius) {
-    PUSH_GPU_SECTION("Compress Spheres")
+    PUSH_GPU_SECTION("Sort Spheres")
     glUseProgram(spatial_hash.program_sort);
 
     struct Block {
@@ -1607,12 +1586,14 @@ void write_sorted_spheres(const GLuint position_buffer, const GLuint radius_buff
         float p0;
         vec3 cell_ext;
         float max_radius;
-        uint32 num_elements;
+        uvec3 cell_dim;
+        uint32_t num_elements;
     } block;
 
     block.aabb_min = spatial_hash.aabb.min;
     block.cell_ext = calc_voxel_extent(spatial_hash.aabb, spatial_hash.dim);
     block.max_radius = max_radius;
+    block.cell_dim = spatial_hash.dim;
     block.num_elements = count;
 
     glBindBuffer(GL_UNIFORM_BUFFER, ubo);
@@ -1621,17 +1602,10 @@ void write_sorted_spheres(const GLuint position_buffer, const GLuint radius_buff
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, position_buffer);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, radius_buffer);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, spatial_hash.buffer_cell_offset);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, spatial_hash.buffer_global_cell_idx);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, spatial_hash.buffer_cell_count);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, spatial_hash.buffer_local_cell_idx);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, spatial_hash.buffer_sphere);
     glUniformBlockBinding(spatial_hash.program_sort, 0, 0);
-
-    /*
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_BUFFER, tex[0]);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, spatial_hash.buffer_compressed_sphere);
-    glBindImageTexture(0, tex[0], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
-    */
 
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     int num_groups = div_up(count, SPHERE_WRITE_COMPRESSED_GROUP_COUNT);
@@ -1639,6 +1613,20 @@ void write_sorted_spheres(const GLuint position_buffer, const GLuint radius_buff
 
     glUseProgram(0);
     POP_GPU_SECTION()
+}
+
+void probe_work() {
+    PUSH_GPU_SECTION("Create Work Indirect");
+   // glUseProgram(program_create_work_indirect);
+
+    struct Block {
+        vec3 voxel_ext;
+        vec3 cell_ext;
+        uvec3 cell_dim;
+        float search_radius;
+    } block;
+
+    POP_GPU_SECTION();
 }
 
 void write_sphere_distances(GLuint level, float max_radius) {
@@ -1672,15 +1660,13 @@ void write_sphere_distances(GLuint level, float max_radius) {
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, spatial_hash.buffer_sphere);
     glUniformBlockBinding(program_distance_spheres, 0, 0);
 
-    /*
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_BUFFER, tex[0]);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, spatial_hash.buffer_compressed_sphere);
-    glBindImageTexture(0, tex[0], 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
-    */
+#if SDF_TEXTURE_FORMAT == GL_R32F
     glBindImageTexture(0, sdf_volume.texture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
+#else
+    glBindImageTexture(0, sdf_volume.texture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R8_SNORM);
+#endif
 
-    uvec3 group_size = {3, 3, 3};
+
     uvec3 num_groups = sdf_volume.dim / 8U;
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     glDispatchCompute(num_groups.x, num_groups.y, num_groups.z);
@@ -1689,15 +1675,15 @@ void write_sphere_distances(GLuint level, float max_radius) {
 }
 
 void compute_vdw_sdf(const GLuint atom_pos_buffer, const GLuint atom_rad_buffer, int32 atom_count, const AABB& sphere_aabb) {
-    const uint32 max_dim = 128U;
-    const uint32 downsample_factor = 32U;
+    const uint32_t max_dim = 128U;
+    const uint32_t downsample_factor = 32U;
     const float32 max_radius = 2.0f;
     auto optimal_vol = compute_optimal_sdf_volume(sphere_aabb, max_dim);
     const vec3 voxel_ext = optimal_vol.aabb.ext() / vec3(optimal_vol.dim);
-    const float32 spatial_hash_radius = (voxel_ext.x * 4.0f + max_radius) / 1.5f; // ????
+    const float32 spatial_hash_radius = (voxel_ext.x * 4.0f + max_radius) / 1.5f;  // @NOTE: ~search diameter / 3.0 according to nvidias presentation
     const uvec3 spatial_hash_dim = optimal_vol.aabb.ext() / spatial_hash_radius;
 
-    init_sdf_volume(optimal_vol.aabb, optimal_vol.dim);
+    init_sdf_volume(optimal_vol.aabb, optimal_vol.dim, 1.0f);
     init_spatial_hash(optimal_vol.aabb, spatial_hash_dim, atom_count);
 
     glBindBuffer(GL_UNIFORM_BUFFER, ubo);
@@ -1705,8 +1691,72 @@ void compute_vdw_sdf(const GLuint atom_pos_buffer, const GLuint atom_rad_buffer,
 
     bin_spheres(atom_pos_buffer, atom_count, sphere_aabb);
     compute_sphere_offsets();
+    probe_work();
     write_sorted_spheres(atom_pos_buffer, atom_rad_buffer, atom_count, sphere_aabb, max_radius);
+
+    #if 0
+    {
+        const uint32_t num_cells = spatial_hash.cell_count;
+        uint32_t* cell_offset_data = (uint32_t*)MALLOC(num_cells * sizeof(uint32_t));
+        uint32_t* cell_count_data = (uint32_t*)MALLOC(num_cells * sizeof(uint32_t));
+        vec3* pos_data = (vec3*)MALLOC(atom_count * sizeof(vec3));
+        vec4* sphere_data = (vec4*)MALLOC(atom_count * sizeof(vec4));
+        defer {
+            FREE(cell_offset_data);
+            FREE(cell_count_data);
+            FREE(pos_data);
+            FREE(sphere_data);
+        };
+
+        glBindBuffer(GL_ARRAY_BUFFER, spatial_hash.buffer_cell_offset);
+        glGetBufferSubData(GL_ARRAY_BUFFER, 0, num_cells * sizeof(uint32_t), cell_offset_data);
+
+        glBindBuffer(GL_ARRAY_BUFFER, spatial_hash.buffer_cell_count);
+        glGetBufferSubData(GL_ARRAY_BUFFER, 0, num_cells * sizeof(uint32_t), cell_count_data);
+
+        glBindBuffer(GL_ARRAY_BUFFER, atom_pos_buffer);
+        glGetBufferSubData(GL_ARRAY_BUFFER, 0, atom_count * sizeof(vec3), pos_data);
+
+        glBindBuffer(GL_ARRAY_BUFFER, spatial_hash.buffer_sphere);
+        glGetBufferSubData(GL_ARRAY_BUFFER, 0, atom_count * sizeof(vec4), sphere_data);
+        printf("DONE!");
+    }
+    #endif
+
     write_sphere_distances(0, max_radius);
+}
+
+void compute_vdw_sdf(const float* atom_pos_x, const float* atom_pos_y, const float* atom_pos_z, const float* atom_radius, int32 atom_count, const AABB& aabb) {
+    const uint32_t max_dim = 128U;
+    const uint32_t downsample_factor = 32U;
+    const float32 max_radius = 2.0f;
+    
+    auto optimal = compute_optimal_sdf_volume(aabb, max_dim);
+
+    const vec3 voxel_ext = optimal.aabb.ext() / vec3(optimal.dim);
+    const float32 spatial_hash_radius = (voxel_ext.x * 4.0f + max_radius) / 1.5f;  // ????
+    const auto frame = spatialhash::compute_frame(atom_pos_x, atom_pos_y, atom_pos_z, atom_count, vec3(spatial_hash_radius), optimal.aabb.min, optimal.aabb.max);
+    printf("cool");
+    /*
+    uvec3 vc;
+    for (vc.z = 0; vc.z < sdf_volume.dim.z; ++vc.z) {
+        for (vc.y = 0; vc.y < sdf_volume.dim.y; ++vc.y) {
+            for (vc.x = 0; vc.x < sdf_volume.dim.x; ++vc.x) {
+                const vec3 voxel_pos = offset + (vec3)vc * voxel_ext;
+                const uint32_t idx = vc.z * sdf_volume.dim.x * sdf_volume.dim.y + vc.y * sdf_volume.dim.x + vc.x;
+                int8_t& voxel = sdf_data[idx];
+                spatialhash::for_each_within(frame, voxel_pos, radius,
+                                             [&voxel_pos, atom_radius, radius, min_voxel_ext, &voxel](const int atom_index, const vec3& atom_pos) {
+                                                 float d2 = math::distance2(voxel_pos, atom_pos);
+                                                 if (d2 < radius * radius) {
+                                                     const float surface_dist = math::sqrt(d2) - atom_radius[atom_index];
+                                                     voxel = encode_distance(surface_dist, min_voxel_ext);
+                                                 }
+                                             });
+            }
+        }
+    }
+    */
 }
 
 void draw_sdf_debug(const ViewParam& view_param) {
@@ -1759,25 +1809,6 @@ static const size_t BATCH_ELEMENTS = GROUPSIZE * 4;
 
 inline static GLuint snapdiv(GLuint input, GLuint align) { return (input + align - 1) / align; }
 
-/*
-static size_t get_offset_size(GLuint elements) {
-    GLuint groups = snapdiv(elements, BATCH_ELEMENTS);
-
-    if (groups == 1) return 0;
-
-    GLuint groupcombines = snapdiv(groups, BATCH_ELEMENTS);
-    size_t size = groupcombines * BATCH_ELEMENTS * sizeof(GLuint);
-
-    if (groupcombines > 1) {
-        // add another layer
-        GLuint combines = snapdiv(groupcombines, BATCH_ELEMENTS);
-        size += combines * BATCH_ELEMENTS * sizeof(GLuint);
-    }
-
-    return GLsizei(size);
-}
-*/
-
 static void scan(const GLuint input, const GLuint output, GLuint elements) {
     PUSH_GPU_SECTION("Scan")
     ASSERT((elements % 4) == 0);
@@ -1802,6 +1833,7 @@ static void scan(const GLuint input, const GLuint output, GLuint elements) {
         glUseProgram(program.offsets);
         glUniform1ui(0, elements);
 
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, input);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, output);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, offset_buffer);
 
@@ -1809,6 +1841,12 @@ static void scan(const GLuint input, const GLuint output, GLuint elements) {
 
         ASSERT(groupcombines <= max_work_group_count[0]);
         glDispatchCompute(groupcombines, 1, 1);
+
+        if (groupcombines > 1) {
+            ASSERT(false);
+            // @TODO: Compute offsets for groups tier 2,
+            // This is only required when elements exceed 2048 * 2048 = ‭4 194 304‬
+        }
 
         glUseProgram(program.combine);
         glUniform1ui(0, elements);
@@ -1821,10 +1859,6 @@ static void scan(const GLuint input, const GLuint output, GLuint elements) {
         GLuint groups = snapdiv(elements, GROUPSIZE);
         ASSERT(groups < max_work_group_count[0]);
         glDispatchCompute(groups, 1, 1);
-
-        if (groupcombines > 1) {
-            ASSERT(false);
-        }
     }
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0);
@@ -1833,7 +1867,7 @@ static void scan(const GLuint input, const GLuint output, GLuint elements) {
 }
 
 void test_scan() {
-    const size_t count = 1000;
+    const size_t count = 10000;
 
     GLuint buffers[2];
     glGenBuffers(2, buffers);
@@ -1845,7 +1879,7 @@ void test_scan() {
     if (ptr) {
         uint32_t* data = (uint32_t*)ptr;
         for (size_t i = 0; i < count; i++) {
-            data[i] = 1;
+            data[i] = i % 10 == 0 ? 1 : 0;
         }
         glUnmapBuffer(GL_ARRAY_BUFFER);
     }

@@ -38,6 +38,7 @@
 #define THREADBLOCK_SIZE  512
 #define BATCH_SIZE        (THREADBLOCK_SIZE*4)
 
+#define EXCLUSIVE_SCAN
 
 uniform uint numElements;
 
@@ -228,8 +229,11 @@ void main()
 
   // Calculate scan
   //uvec4 odata4 = scan4Inclusive(idata4, min(BATCH_SIZE,  (maxidx-idx)*4));
-  //uvec4 odata4 = scan4Inclusive(idata4, BATCH_SIZE);
+#ifdef EXCLUSIVE_SCAN
   uvec4 odata4 = scan4Exclusive(idata4, BATCH_SIZE);
+#else
+  uvec4 odata4 = scan4Inclusive(idata4, BATCH_SIZE);
+#endif
 
   //Write back
   if (valid) outdata[idx] = odata4;
@@ -237,6 +241,12 @@ void main()
 #endif
 
 #if TASK == TASK_OFFSETS
+
+#ifdef EXCLUSIVE_SCAN
+layout (std430, binding=2) buffer rawBuffer {
+  uint rawdata[];
+};
+#endif
 
 layout (std430, binding=1) buffer inputBuffer {
   uint indata[];
@@ -259,14 +269,15 @@ void main()
     uint readIdx = startIdx + (i+1)*BATCH_SIZE - 1u;
     if ( readIdx < numElements ){
       idata4[i] = indata[readIdx];
+#ifdef EXCLUSIVE_SCAN
+      idata4[i] += rawdata[readIdx];
+#endif
       valid = true;
     }
   }
 
   //Calculate scan
-  //uvec4 odata4 = scan4Inclusive(idata4, BATCH_SIZE);
-  uvec4 odata4 = scan4Exclusive(idata4, BATCH_SIZE);
-
+  uvec4 odata4 = scan4Inclusive(idata4, BATCH_SIZE);
 
   //Write back
   if (valid) outdata[idx] = odata4;

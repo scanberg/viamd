@@ -1,0 +1,21 @@
+#version 430 core
+
+layout (local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout (std430, binding = 0) readonly buffer cell_offset_buffer {
+    uint in_cell_offset[];
+};
+layout (std430, binding = 1) readonly buffer cell_count_buffer {
+    uint in_cell_count[];
+};
+layout (std430, binding = 3) writeonly buffer work_buffer {
+    uint voxel_idx;
+};
+
+
+layout (std140,  binding = 0) uniform u_block {
+    vec3 voxel_ext;
+};
+
+void main() {
+}
