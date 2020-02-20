@@ -1438,7 +1438,7 @@ OptimalSDFVolume compute_optimal_sdf_volume(const AABB& aabb, uint32_t max_dim) 
         while (ext[i] < half_ext) {
             out_ext[i] = half_ext;
             out_dim[i] = out_dim[i] >> 2;
-            half_ext = half_ext * 0.5;
+            half_ext = half_ext * 0.5f;
         }
     }
 
@@ -1451,9 +1451,9 @@ OptimalSDFVolume compute_optimal_sdf_volume(const AABB& aabb, uint32_t max_dim) 
     return vol;
 }
 
-vec3 calc_voxel_extent(const AABB& aabb, const uvec3& dim) { return aabb.ext() / vec3(dim); }
+static vec3 calc_voxel_extent(const AABB& aabb, const uvec3& dim) { return aabb.ext() / vec3(dim); }
 
-uint32_t calc_num_voxels(const uvec3& dim) { return dim.x * dim.y * dim.z; }
+static uint32 calc_num_voxels(const uvec3& dim) { return dim.x * dim.y * dim.z; }
 
 static int8_t encode_distance(float d, float voxel_ext) {
     const float n = d / (voxel_ext * 4.0f);
@@ -1724,39 +1724,6 @@ void compute_vdw_sdf(const GLuint atom_pos_buffer, const GLuint atom_rad_buffer,
     #endif
 
     write_sphere_distances(0, max_radius);
-}
-
-void compute_vdw_sdf(const float* atom_pos_x, const float* atom_pos_y, const float* atom_pos_z, const float* atom_radius, int32 atom_count, const AABB& aabb) {
-    const uint32_t max_dim = 128U;
-    const uint32_t downsample_factor = 32U;
-    const float32 max_radius = 2.0f;
-    
-    auto optimal = compute_optimal_sdf_volume(aabb, max_dim);
-
-    const vec3 voxel_ext = optimal.aabb.ext() / vec3(optimal.dim);
-    const float32 spatial_hash_radius = (voxel_ext.x * 4.0f + max_radius) / 1.5f;  // ????
-    const auto frame = spatialhash::compute_frame(atom_pos_x, atom_pos_y, atom_pos_z, atom_count, vec3(spatial_hash_radius), optimal.aabb.min, optimal.aabb.max);
-    printf("cool");
-    /*
-    uvec3 vc;
-    for (vc.z = 0; vc.z < sdf_volume.dim.z; ++vc.z) {
-        for (vc.y = 0; vc.y < sdf_volume.dim.y; ++vc.y) {
-            for (vc.x = 0; vc.x < sdf_volume.dim.x; ++vc.x) {
-                const vec3 voxel_pos = offset + (vec3)vc * voxel_ext;
-                const uint32_t idx = vc.z * sdf_volume.dim.x * sdf_volume.dim.y + vc.y * sdf_volume.dim.x + vc.x;
-                int8_t& voxel = sdf_data[idx];
-                spatialhash::for_each_within(frame, voxel_pos, radius,
-                                             [&voxel_pos, atom_radius, radius, min_voxel_ext, &voxel](const int atom_index, const vec3& atom_pos) {
-                                                 float d2 = math::distance2(voxel_pos, atom_pos);
-                                                 if (d2 < radius * radius) {
-                                                     const float surface_dist = math::sqrt(d2) - atom_radius[atom_index];
-                                                     voxel = encode_distance(surface_dist, min_voxel_ext);
-                                                 }
-                                             });
-            }
-        }
-    }
-    */
 }
 
 void draw_sdf_debug(const ViewParam& view_param) {

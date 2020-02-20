@@ -107,8 +107,6 @@ void compute_backbone_spline(GLuint dst_buffer, GLuint control_point_buffer, GLu
 void compute_pbc_view_velocity(GLuint dst_buffer, GLuint position_buffer, GLuint old_position_buffer, int count, const ViewParam& view_param, const vec3& box_ext);
 
 namespace sdf {
-
-void compute_vdw_sdf(const float* atom_pos_x, const float* atom_pos_y, const float* atom_pos_z, const float* atom_radius, int32 atom_count, const AABB& aabb);
 void compute_vdw_sdf(GLuint atom_pos_buffer, GLuint atom_rad_buffer, int32 atom_count, const AABB& aabb);
 void draw_sdf(const ViewParam& view_param);
 void draw_sdf_debug(const ViewParam& view_param);

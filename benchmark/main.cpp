@@ -2,8 +2,6 @@
 #include <core/hash.h>
 #include <core/log.h>
 #include <core/math_utils.h>
-#include <core/camera.h>
-#include <core/camera_utils.h>
 #include <core/string_utils.h>
 #include <core/bitfield.h>
 #include <core/spatial_hash.h>
@@ -17,7 +15,8 @@
 #include <mol/pdb_utils.h>
 #include <mol/gro_utils.h>
 
-#include <glm/gtx/io.hpp>
+
+//#include <glm/gtx/io.hpp>
 
 #include <chrono>
 #define TIME() std::chrono::high_resolution_clock::now()

@@ -4,8 +4,6 @@
 #include <core/log.h>
 #include <core/bitfield.h>
 #include <core/math_utils.h>
-#include <core/camera.h>
-#include <core/camera_utils.h>
 #include <core/string_utils.h>
 #include <core/spatial_hash.h>
 
@@ -26,6 +24,8 @@
 #include <TaskScheduler.h>
 
 #include "gfx/gl.h"
+#include "gfx/camera.h"
+#include "gfx/camera_utils.h"
 #include "gfx/molecule_draw.h"
 #include "gfx/immediate_draw_utils.h"
 #include "gfx/postprocessing_utils.h"
@@ -883,16 +883,16 @@ int main(int, char**) {
         const int32 last_frame = math::max(0, num_frames - 1);
         const float64 max_time = (float64)math::max(0, last_frame);
 
-        if (!ImGui::GetIO().WantCaptureKeyboard) {
-            // #input
-            if (data.ctx.input.key.hit[KEY_CONSOLE]) {
-                if (data.console.Visible()) {
-                    data.console.Hide();
-                } else if (!ImGui::GetIO().WantTextInput) {
-                    data.console.Show();
-                }
+        // #input
+        if (data.ctx.input.key.hit[KEY_CONSOLE]) {
+            if (data.console.Visible()) {
+                data.console.Hide();
+            } else if (!ImGui::GetIO().WantTextInput) {
+                data.console.Show();
             }
+        }
 
+        if (!ImGui::GetIO().WantCaptureKeyboard) {
             if (data.ctx.input.key.hit[KEY_TOGGLE_SCREENSHOT_MODE]) {
                 static bool screenshot_mode = false;
                 screenshot_mode = !screenshot_mode;
@@ -1158,7 +1158,7 @@ int main(int, char**) {
         glViewport(0, 0, data.fbo.width, data.fbo.height);
         glDrawBuffer(GL_COLOR_ATTACHMENT4);
         glEnable(GL_DEPTH_TEST);
-        //draw::sdf::draw_sdf_debug(data.view.param);
+        // draw::sdf::draw_sdf_debug(data.view.param);
         glDisable(GL_DEPTH_TEST);
 #endif
         handle_picking(&data);
