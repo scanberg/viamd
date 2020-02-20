@@ -4,7 +4,7 @@
 #define GROUP_SIZE 512
 #endif
 
-//#define USE_COMPRESSED_SPHERES
+#define USE_COMPRESSED_SPHERES
 
 layout (local_size_x = GROUP_SIZE) in;
 

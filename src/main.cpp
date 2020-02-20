@@ -45,7 +45,6 @@
 
 #include <stdio.h>
 #include <thread>
-//#include <atomic>
 #include <mutex>
 
 #define PICKING_JITTER_HACK 1
@@ -53,7 +52,7 @@
 #define SHOW_IMGUI_DEMO_WINDOW 0
 #define VIAMD_RELEASE 1
 #define EXPERIMENTAL_CULLING 0
-#define EXPERIMENTAL_SDF 1
+#define EXPERIMENTAL_SDF 0
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
 
@@ -1137,8 +1136,13 @@ int main(int, char**) {
         PUSH_GPU_SECTION("COMPUTE VDW SDF");
         const AABB aabb = compute_aabb(data.dynamic.molecule.atom.position.x, data.dynamic.molecule.atom.position.y,
                                        data.dynamic.molecule.atom.position.z, data.dynamic.molecule.atom.radius, data.dynamic.molecule.atom.count);
-        draw::sdf::compute_vdw_sdf(data.gpu_buffers.position, data.gpu_buffers.radius, data.dynamic.molecule.atom.count, aabb);
-        //draw::sdf::compute_vdw_sdf(data.dynamic.molecule.atom.position.x, data.dynamic.molecule.atom.position.y, data.dynamic.molecule.atom.position.z, data.dynamic.molecule.atom.radius, data.dynamic.molecule.atom.count, aabb);
+        float max_radius = 0.0f;
+        for (int64 i = 0; i < data.dynamic.molecule.atom.count; i++) {
+            max_radius = math::max(data.dynamic.molecule.atom.radius[i], max_radius);
+        }
+        draw::sdf::compute_vdw_sdf(data.gpu_buffers.position, data.gpu_buffers.radius, data.dynamic.molecule.atom.count, aabb, max_radius);
+        // draw::sdf::compute_vdw_sdf(data.dynamic.molecule.atom.position.x, data.dynamic.molecule.atom.position.y,
+        // data.dynamic.molecule.atom.position.z, data.dynamic.molecule.atom.radius, data.dynamic.molecule.atom.count, aabb);
         POP_GPU_SECTION();
 #endif
 

@@ -1,8 +1,8 @@
 #version 430 core
 
-//#define USE_COMPRESSED_SPHERES
+#define USE_COMPRESSED_SPHERES
 
-layout (local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+layout (local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
 
 layout (std430, binding = 0) readonly buffer cell_offset_buffer {
     uint in_cell_offset[];
@@ -18,7 +18,7 @@ layout (std430, binding = 2) readonly buffer sphere_buffer {
 #endif
 };
 
-layout (r32f, binding = 0) uniform image3D u_distance_volume;
+layout (r8_snorm, binding = 0) uniform image3D u_distance_volume;
 
 layout (std140,  binding = 0) uniform u_block {
     vec3  aabb_min;
@@ -37,11 +37,6 @@ vec4 decompress_sphere(uint compressed_sphere, vec3 cell_pos) {
     sphere.xyz = sphere.xyz * cell_ext + cell_pos;
     sphere.w = sphere.w * max_radius;
     return sphere;
-}
-
-int encode_distance(float d) {
-    // Max distance we encode is distance of 4 voxels
-    return int(clamp(d / max_distance, -1.0, 1.0) * 127);
 }
 
 /*
@@ -112,9 +107,11 @@ void main() {
                 uint beg = offset;
                 uint end = offset + count;
                 for (uint i = beg; i != end; i++) {
-                    vec4 sphere = in_sphere[i];
-#ifdef USE_COMPRESSED_SPHERES                    
-                    sphere = decompress_sphere(sphere, cell_pos);
+                    vec4 sphere;
+#ifdef USE_COMPRESSED_SPHERES
+                    sphere = decompress_sphere(in_sphere[i], cell_pos);
+#else
+                    sphere = in_sphere[i];
 #endif                    
                     float d = distance(voxel_pos, sphere.xyz) - sphere.w;
                     min_d = min(min_d, d);
@@ -132,3 +129,59 @@ void main() {
         imageStore(u_distance_volume, ivec3(voxel_coord), vec4(d));
     }
 }
+
+shared vec4 spheres[64];
+shared uint num_spheres;
+
+#if 0
+void main() {
+    uvec3 local_idx = gl_LocalInvocationID;
+    uvec3 voxel_coord = gl_GlobalInvocationID;
+
+
+    num_spheres = 0;
+
+    // Position is relative to AABB
+    vec3 voxel_pos = (vec3(voxel_coord) + 0.5) * voxel_ext;
+
+    float min_d = max_distance;
+    float radius = search_radius;
+
+    ivec3 dim = ivec3(cell_dim);
+    ivec3 min_c = max(ivec3((voxel_pos - radius) / cell_ext), ivec3(0));
+    ivec3 max_c = min(ivec3((voxel_pos + radius) / cell_ext), dim - 1);
+    for (int z = min_c.z; z <= max_c.z; z++) {
+        for (int y = min_c.y; y <= max_c.y; y++) {
+            for (int x = min_c.x; x <= max_c.x; x++) {
+                int cell_idx = dim.x * dim.y * z + dim.x * y + x;
+#ifdef USE_COMPRESSED_SPHERES
+                vec3 cell_pos = vec3(x,y,z) * cell_ext;
+#endif
+                uint offset = in_cell_offset[cell_idx];
+                uint count = in_cell_count[cell_idx];
+                uint beg = offset;
+                uint end = offset + count;
+                for (uint i = beg; i != end; i++) {
+                    vec4 sphere;
+#ifdef USE_COMPRESSED_SPHERES
+                    sphere = decompress_sphere(in_sphere[i], cell_pos);
+#else
+                    sphere = in_sphere[i];
+#endif                    
+                    float d = distance(voxel_pos, sphere.xyz) - sphere.w;
+                    min_d = min(min_d, d);
+                }
+            }
+        }
+    }
+    //min_d = encode_distance(distance(voxel_pos, vec3(4.963)));
+
+    //imageStore(u_distance_volume, ivec3(voxel_coord), ivec4(min_d));
+    if (min_d < max_distance) {
+        float d = min_d / max_distance;
+        //d = 0.5;
+        //int d = encode_distance(min_d);
+        imageStore(u_distance_volume, ivec3(voxel_coord), vec4(d));
+    }
+}
+#endif
