@@ -13,7 +13,9 @@ if(UNIX AND NOT APPLE)
 	set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 	message(${CMAKE_MODULE_PATH})
         #include(cmake/FindGTK3.cmake)
-        find_package(GTK3 REQUIRED gtk)
+        #find_package(GTK3 REQUIRED gtk)
+        FIND_PACKAGE(PkgConfig REQUIRED)
+        PKG_CHECK_MODULES(GTK3 REQUIRED gtk)
         set(SRC
             ${SRC}
             ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_gtk.c)
@@ -25,10 +27,11 @@ if(UNIX AND NOT APPLE)
             ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_zenity.c)
     endif()
 elseif(APPLE)
+    find_library(APPKIT_LIBRARY AppKit)
     set(SRC
         ${SRC}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_cocoa.m)
-    #set(LIB \"-framework AppKit\")
+    set(LIB ${APPKIT_LIBRARY})
 else() #windows
     set(SRC
         ${SRC}
