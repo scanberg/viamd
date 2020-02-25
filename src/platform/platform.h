@@ -98,7 +98,7 @@ struct Context {
 };
 
 // Context
-bool initialize(Context* ctx, int32 width, int32 height, const char* title);
+bool initialize(Context* ctx, i32 width, i32 height, const char* title);
 void shutdown(Context* ctx);
 void update(Context* ctx);
 void render_imgui(Context* ctx);

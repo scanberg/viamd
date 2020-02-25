@@ -15,9 +15,6 @@
 #include <mol/pdb_utils.h>
 #include <mol/gro_utils.h>
 
-
-//#include <glm/gtx/io.hpp>
-
 #include <chrono>
 #define TIME() std::chrono::high_resolution_clock::now()
 #define NANOSEC(x, y) std::chrono::duration<double, std::nano>(y - x).count()
@@ -30,16 +27,16 @@
 
 extern void cubic_interpolation_pbc_scalar(float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z, const float* RESTRICT in_x0, const float* RESTRICT in_y0, const float* RESTRICT in_z0,
                                            const float* RESTRICT in_x1, const float* RESTRICT in_y1, const float* RESTRICT in_z1, const float* RESTRICT in_x2, const float* RESTRICT in_y2,
-                                           const float* RESTRICT in_z2, const float* RESTRICT in_x3, const float* RESTRICT in_y3, const float* RESTRICT in_z3, int64 count, float t,
+                                           const float* RESTRICT in_z2, const float* RESTRICT in_x3, const float* RESTRICT in_y3, const float* RESTRICT in_z3, i64 count, float t,
                                            const mat3& sim_box);
 
 extern void cubic_interpolation_pbc_128(float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z, const float* RESTRICT in_x0, const float* RESTRICT in_y0, const float* RESTRICT in_z0,
                                         const float* RESTRICT in_x1, const float* RESTRICT in_y1, const float* RESTRICT in_z1, const float* RESTRICT in_x2, const float* RESTRICT in_y2,
-                                        const float* RESTRICT in_z2, const float* RESTRICT in_x3, const float* RESTRICT in_y3, const float* RESTRICT in_z3, int64 count, float t, const mat3& sim_box);
+                                        const float* RESTRICT in_z2, const float* RESTRICT in_x3, const float* RESTRICT in_y3, const float* RESTRICT in_z3, i64 count, float t, const mat3& sim_box);
 
 extern void cubic_interpolation_pbc_256(float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z, const float* RESTRICT in_x0, const float* RESTRICT in_y0, const float* RESTRICT in_z0,
                                         const float* RESTRICT in_x1, const float* RESTRICT in_y1, const float* RESTRICT in_z1, const float* RESTRICT in_x2, const float* RESTRICT in_y2,
-                                        const float* RESTRICT in_z2, const float* RESTRICT in_x3, const float* RESTRICT in_y3, const float* RESTRICT in_z3, int64 count, float t, const mat3& sim_box);
+                                        const float* RESTRICT in_z2, const float* RESTRICT in_x3, const float* RESTRICT in_y3, const float* RESTRICT in_z3, i64 count, float t, const mat3& sim_box);
 
 int main() {
     MoleculeDynamic md;
@@ -58,8 +55,8 @@ int main() {
         return 1;
     }
 
-    const int32 num_atoms = (int32)md.molecule.atom.count;
-    const int32 num_frames = (int32)md.trajectory.num_frames;
+    const i32 num_atoms = (i32)md.molecule.atom.count;
+    const i32 num_frames = (i32)md.trajectory.num_frames;
 
     printf("Dataset loaded successfully: %s\nnum_atoms: %i\nnum_frames: %i\n", DATASET, num_atoms, num_frames);
     printf("Time to load molecule: %.2fms\n", MILLISEC(t0_load, t1_load));
@@ -69,7 +66,7 @@ int main() {
     // AOS layout for comparison
     vec3* xyz = (vec3*)TMP_MALLOC(num_atoms * num_frames * sizeof(vec3));
     defer { TMP_FREE(xyz); };
-    for (int32 i = 0; i < num_frames * num_atoms; i++) {
+    for (i32 i = 0; i < num_frames * num_atoms; i++) {
         xyz[i] = {md.trajectory.position_data.x[i], md.trajectory.position_data.y[i], md.trajectory.position_data.z[i]};
     }
 
@@ -83,7 +80,7 @@ int main() {
         const auto size = num_atoms * num_frames;
         const auto size_in_bytes = size * sizeof(float) * 3 * num_iter;
 
-        for (int32 i = 0; i < num_iter; i++) {
+        for (i32 i = 0; i < num_iter; i++) {
             memset(x, 0, size * sizeof(float));
             memset(y, 0, size * sizeof(float));
             memset(z, 0, size * sizeof(float));
@@ -116,12 +113,12 @@ int main() {
 
         const auto box = get_trajectory_frame(md.trajectory, 101).box;
 
-        const int32 num_iter = 10000;
+        const i32 num_iter = 10000;
         const float t = 0.5f;
         const auto size_in_bytes = num_atoms * 12 * sizeof(float) * num_iter;
 
         const auto t0 = TIME();
-        for (int32 i = 0; i < num_iter; i++) {
+        for (i32 i = 0; i < num_iter; i++) {
             cubic_interpolation_pbc_scalar(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, num_atoms, t, box);
         }
         const auto t1 = TIME();
@@ -131,7 +128,7 @@ int main() {
         printf("Throughput (scalar): %.2fMB/s\n", throughput_scalar / MEGABYTES(1));
 
         const auto t2 = TIME();
-        for (int32 i = 0; i < num_iter; i++) {
+        for (i32 i = 0; i < num_iter; i++) {
             cubic_interpolation_pbc_128(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, num_atoms, t, box);
         }
         const auto t3 = TIME();
@@ -166,8 +163,8 @@ int main() {
         const vec3 t = {1, 2, 3};
 
         const auto t0 = TIME();
-        for (int32 i = 0; i < num_iter; i++) {
-            for (int32 j = 0; j < size; j++) {
+        for (i32 i = 0; i < num_iter; i++) {
+            for (i32 j = 0; j < size; j++) {
                 x[j] += t.x;
                 y[j] += t.y;
                 z[j] += t.z;
@@ -180,7 +177,7 @@ int main() {
         printf("Throughput (naive): %.2fMB/s\n", throughput_naive / (double)MEGABYTES(1));
 
         const auto t2 = TIME();
-        for (int32 i = 0; i < num_iter; i++) {
+        for (i32 i = 0; i < num_iter; i++) {
             translate(x, y, z, size, t);
         }
         const auto t3 = TIME();
@@ -202,8 +199,8 @@ int main() {
         const auto size_in_bytes = size * sizeof(float) * 3 * num_iter;
 
         const auto t0 = TIME();
-        for (int32 i = 0; i < num_iter; i++) {
-            for (int32 j = 0; j < size; j++) {
+        for (i32 i = 0; i < num_iter; i++) {
+            for (i32 j = 0; j < size; j++) {
                 const float v_x = x[j];
                 const float v_y = y[j];
                 const float v_z = z[j];
@@ -221,7 +218,7 @@ int main() {
         printf("Throughput (naive): %.2fMB/s\n", throughput_naive / (double)MEGABYTES(1));
 
         const auto t2 = TIME();
-        for (int32 i = 0; i < num_iter; i++) {
+        for (i32 i = 0; i < num_iter; i++) {
             transform(x, y, z, size, M);
         }
         const auto t3 = TIME();
@@ -232,8 +229,8 @@ int main() {
         printf("Throughput (vectorized): %.2fMB/s\n", throughput_vec / (double)MEGABYTES(1));
 
         const auto t4 = TIME();
-        for (int32 i = 0; i < num_iter; i++) {
-            for (int32 j = 0; j < size; j++) {
+        for (i32 i = 0; i < num_iter; i++) {
+            for (i32 j = 0; j < size; j++) {
                 vec4 v = {xyz[i], 1.0f};
                 v = M * v;
                 xyz[i] = v;
@@ -260,11 +257,11 @@ int main() {
         float com_x = 0.0f;
         float com_y = 0.0f;
         float com_z = 0.0f;
-        for (int32 i = 0; i < num_iter; i++) {
+        for (i32 i = 0; i < num_iter; i++) {
             com_x = 0.0f;
             com_y = 0.0f;
             com_z = 0.0f;
-            for (int32 j = 0; j < size; j++) {
+            for (i32 j = 0; j < size; j++) {
                 com_x += x[j];
                 com_y += y[j];
                 com_z += z[j];
@@ -282,7 +279,7 @@ int main() {
         printf("Throughput (naive): %.2fMB/s\n", throughput_naive / (double)MEGABYTES(1));
 
         const auto t2 = TIME();
-        for (int32 i = 0; i < num_iter; i++) {
+        for (i32 i = 0; i < num_iter; i++) {
             vec3 com = compute_com(x, y, z, size);
         }
         const auto t3 = TIME();
@@ -305,10 +302,10 @@ int main() {
 
         const auto t0 = TIME();
         vec3 min, max;
-        for (int32 i = 0; i < num_iter; i++) {
+        for (i32 i = 0; i < num_iter; i++) {
             min = {x[0], y[0], z[0]};
             max = {x[0], y[0], z[0]};
-            for (int32 j = 1; j < size; j++) {
+            for (i32 j = 1; j < size; j++) {
                 const float v_x = x[j];
                 const float v_y = y[j];
                 const float v_z = z[j];
@@ -331,7 +328,7 @@ int main() {
         printf("Throughput (naive): %.2fMB/s\n", throughput_naive / (double)MEGABYTES(1));
 
         const auto t2 = TIME();
-        for (int32 i = 0; i < num_iter; i++) {
+        for (i32 i = 0; i < num_iter; i++) {
             AABB aabb = compute_aabb(x, y, z, size);
         }
         const auto t3 = TIME();
@@ -355,7 +352,7 @@ int main() {
         const auto size_in_bytes = size * sizeof(float) * num_iter;
 
         const auto t0 = TIME();
-        for (int64 i = 0; i < num_iter; i++) {
+        for (i64 i = 0; i < num_iter; i++) {
             bitfield::gather_masked(tmp_data, md.molecule.atom.position.x, mask);
         }
         const auto t1 = TIME();

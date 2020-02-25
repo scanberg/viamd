@@ -22,9 +22,9 @@ void shutdown();
 void init_volume(GPUVolume* vol, ivec3 res, vec3 min_box, vec3 max_box);
 void free_volume(GPUVolume* vol);
 
-void voxelize_spheres_cpu(const GPUVolume& vol, ArrayView<const vec3> atom_pos, ArrayView<const float> atom_radii, ArrayView<const uint32> atom_color);
+void voxelize_spheres_cpu(const GPUVolume& vol, Array<const vec3> atom_pos, Array<const float> atom_radii, Array<const u32> atom_color);
 
-void voxelize_spheres_gpu(const GPUVolume& vol, GLuint position_radius_buffer, GLuint color_buffer, int32 num_spheres);
+void voxelize_spheres_gpu(const GPUVolume& vol, GLuint position_radius_buffer, GLuint color_buffer, i32 num_spheres);
 
 void illuminate_voxels_omnidirectional_constant(const GPUVolume& vol, const vec3& intensity);
 

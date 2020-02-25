@@ -20,65 +20,32 @@ struct Entry {
 };
 
 struct Context {
-    uint32 next_hash = 0xdeadf00d;
+    u32 next_hash = 0xdeadf00d;
     DynamicArray<Entry> entries{};
 };
 
 Context* context = nullptr;
 
 // clang-format off
-static dmat3 compute_weighted_cross_covariance_matrix(const float* x0, const float* y0, const float* z0,
-                                                      const float* x1, const float* y1, const float* z1,
-                                                      const float* weight,
-                                                      int64 count,
-                                                      const dvec3& com0 = {0,0,0}, const dvec3& com1 = {0,0,0})
+static mat3 compute_weighted_cross_covariance_matrix(const float* x0, const float* y0, const float* z0,
+                                                     const float* x1, const float* y1, const float* z1,
+                                                     const float* weight,
+                                                     i64 count,
+                                                     const vec3& com0 = {0,0,0}, const vec3& com1 = {0,0,0})
 // clang-format on
 {
-    dmat3 A{0};
-    for (int64 i = 0; i < count; i++) {
+    mat3 A{0};
+    for (i64 i = 0; i < count; i++) {
         // @TODO: Vectorize...
-        const double px = (double)x0[i] - (double)com0.x;
-        const double py = (double)y0[i] - (double)com0.y;
-        const double pz = (double)z0[i] - (double)com0.z;
+        const float px = x0[i] - com0.x;
+        const float py = y0[i] - com0.y;
+        const float pz = z0[i] - com0.z;
 
-        const double qx = (double)x1[i] - (double)com1.x;
-        const double qy = (double)y1[i] - (double)com1.y;
-        const double qz = (double)z1[i] - (double)com1.z;
+        const float qx = x1[i] - com1.x;
+        const float qy = y1[i] - com1.y;
+        const float qz = z1[i] - com1.z;
 
-        const double w = weight[i];
-
-        A[0][0] += w * px * qx;
-        A[0][1] += w * px * qy;
-        A[0][2] += w * px * qz;
-        A[1][0] += w * py * qx;
-        A[1][1] += w * py * qy;
-        A[1][2] += w * py * qz;
-        A[2][0] += w * pz * qx;
-        A[2][1] += w * pz * qy;
-        A[2][2] += w * pz * qz;
-    }
-
-    return A;
-}
-
-// This is stupid
-static dmat3 compute_weighted_cross_covariance_matrix(const double* x0, const double* y0, const double* z0, const float* x1, const float* y1,
-                                                      const float* z1, const float* weight, int64 count, const dvec3& com0 = {0, 0, 0},
-                                                      const dvec3& com1 = {0, 0, 0})
-// clang-format on
-{
-    dmat3 A{0};
-    for (int64 i = 0; i < count; i++) {
-        // @TODO: Vectorize...
-        const double px = (double)x0[i] - (double)com0.x;
-        const double py = (double)y0[i] - (double)com0.y;
-        const double pz = (double)z0[i] - (double)com0.z;
-
-        const double qx = (double)x1[i] - (double)com1.x;
-        const double qy = (double)y1[i] - (double)com1.y;
-        const double qz = (double)z1[i] - (double)com1.z;
-
-        const double w = weight[i];
+        const float w = weight[i];
 
         A[0][0] += w * px * qx;
         A[0][1] += w * px * qy;
@@ -95,18 +62,18 @@ static dmat3 compute_weighted_cross_covariance_matrix(const double* x0, const do
 }
 
 // clang-format off
-static dmat3 compute_weighted_covariance_matrix(const float* x, const float* y, const float* z,
-                                                const float* weight,
-                                                int64 count, const dvec3& com = {0,0,0})
+static mat3 compute_weighted_covariance_matrix(const float* x, const float* y, const float* z,
+                                               const float* weight,
+                                               i64 count, const dvec3& com = {0,0,0})
 // clang-format on
 {
-    dmat3 A{0};
-    for (int64 i = 0; i < count; i++) {
+    mat3 A{0};
+    for (i64 i = 0; i < count; i++) {
         // @TODO: Vectorize...
-        const double qx = (double)x[i] - (double)com.x;
-        const double qy = (double)y[i] - (double)com.y;
-        const double qz = (double)z[i] - (double)com.z;
-        const double w = (double)weight[i];
+        const float qx = x[i] - com.x;
+        const float qy = y[i] - com.y;
+        const float qz = z[i] - com.z;
+        const float w = weight[i];
 
         A[0][0] += w * qx * qx;
         A[0][1] += w * qx * qy;
@@ -157,7 +124,7 @@ static void compute_svd(const dmat3& A, dmat3& U, dmat3& S, dmat3& V) { svd(ARGS
 
 #undef ARGS
 
-vec3 compute_eigen_values(const float* RESTRICT x, const float* RESTRICT y, const float* RESTRICT z, const float* RESTRICT mass, int64 count) {
+vec3 compute_eigen_values(const float* RESTRICT x, const float* RESTRICT y, const float* RESTRICT z, const float* RESTRICT mass, i64 count) {
     const vec3 com = compute_com(x, y, z, mass, count);
     const mat3 A = compute_weighted_covariance_matrix(x, y, z, mass, count, com);
     vec3 vecs[3];
@@ -177,59 +144,13 @@ static mat3 extract_rotation(const mat3& M) {
     return R;
 }
 
-static dmat3 extract_rotation(const dmat3& M) {
-    dmat3 U, S, V;
-    compute_svd(M, U, S, V);
-
-    const dmat3 Ut = math::transpose(U);
-    const double d = math::determinant(V * Ut);
-    const dmat3 D = {1, 0, 0, 0, 1, 0, 0, 0, d};
-    const dmat3 R = V * D * Ut;
-    return R;
-}
-
-// clang-format off
-void compute_direction_vectors(float* out_x, float* out_y, float* out_z,
-                               const float* in_x, const float* in_y, const float* in_z,
-                               int64 count, const vec3& com)
-// clang-format on
-{
-    for (int64 i = 0; i < count; i++) {
-        const vec3 v = vec3(in_x[i], in_y[i], in_z[i]) - com;
-        const vec3 dir = math::normalize(v);
-        out_x[i] = dir.x;
-        out_y[i] = dir.y;
-        out_z[i] = dir.z;
-    }
-}
-
 // clang-format off
 mat3 compute_rotation(const float* x0, const float* y0, const float* z0,
                       const float* x1, const float* y1, const float* z1,
-                      const float* mass, int64 count, const vec3& com0, const vec3& com1)
+                      const float* mass, i64 count, const vec3& com0, const vec3& com1)
 // clang-format on
 {
-#ifdef USE_DIRECTION_VECTORS
-    void* tmp_mem = TMP_MALLOC(count * sizeof(float) * 6);
-    float* dx0 = (float*)tmp_mem;
-    float* dy0 = (float*)dx0 + count;
-    float* dz0 = (float*)dy0 + count;
-    float* dx1 = (float*)dz0 + count;
-    float* dy1 = (float*)dx1 + count;
-    float* dz1 = (float*)dy1 + count;
-
-    compute_direction_vectors(dx0, dy0, dz0, x0, y0, z0, count, com0);
-    compute_direction_vectors(dx1, dy1, dz1, x1, y1, z1, count, com1);
-
-    const mat3 Apq = compute_weighted_cross_covariance_matrix(dx0, dy0, dz0, dx1, dy1, dz1, mass, count);
-    const mat3 Aqq = compute_weighted_covariance_matrix(dx0, dy0, dz0, mass, count);
-#else
     const mat3 Apq = compute_weighted_cross_covariance_matrix(x0, y0, z0, x1, y1, z1, mass, count, com0, com1);
-    // const mat3 Aqq = compute_mass_weighted_covariance_matrix(x0, y0, z0, mass, count);
-#endif
-
-    // const mat3 A = Apq;
-    // return A; // Return complete linear transform with skewing and all
     return extract_rotation(Apq);  // Return rotational part
 }
 
@@ -325,7 +246,7 @@ static void free_structure_data(Structure* s) {
     *s = {};
 }
 
-static void init_structure_data(Structure* s, ID id, int32 num_frames, int32 num_atoms) {
+static void init_structure_data(Structure* s, ID id, i32 num_frames, i32 num_atoms) {
     ASSERT(s);
     free_structure_data(s);
     s->id = id;
@@ -422,99 +343,12 @@ inline vec3 compute_weights(const vec3& eigen_values) {
     return w_lin + w_pla + w_iso;
 }
 
-/*
-void compute_support_frame(SupportFrame& frame, const mat3& eigen_vectors, const vec3& eigen_values, const vec3& com, float tot_mass, const SupportFrame* ref = nullptr) {
-    vec3 dir[6];
-    float mass[6];
-    const vec3 axis_weights = compute_weights(eigen_values) * tot_mass;
-
-    for (int i = 0; i < 3; i++) {
-        dir[i * 2 + 0] = eigen_vectors[i];
-        dir[i * 2 + 1] = -eigen_vectors[i];
-        mass[i * 2 + 0] = axis_weights[i];
-        mass[i * 2 + 1] = axis_weights[i];
-    }
-
-
-
-
-if (ref) {
-    DynamicArray<int> avail_idx = {0, 1, 2, 3, 4, 5};
-    for (int i = 0; i < 6; i++) {
-        // Find best matching axis in reference support frame
-        float max_d = -FLT_MAX;
-        int* max_it = 0;
-        for (auto& j : avail_idx) {
-            const float d = math::dot(dir[i], ref->axis[j].dir);
-            if (d > max_d) {
-                max_d = d;
-                max_it = &j;
-            }
-                    }
-        ASSERT(max_it != 0);
-        const auto max_idx = *max_it;
-        frame.axis[i].dir = dir[max_idx];
-        frame.axis[i].mass = mass[max_idx];
-        avail_idx.swap_back_and_pop(max_it);
-    }
-} else
-
-
-
-    {
-        for (int i = 0; i < 6; i++) {
-            frame.axis[i].dir = dir[i];
-            frame.axis[i].mass = mass[i];
-        }
-    }
-}
-
-inline void set_stabilization_point_pos(float* RESTRICT x, float* RESTRICT y, float* RESTRICT z, const SupportFrame& frame, const vec3& com) {
-    for (int i = 0; i < 6; i++) {
-        const vec3 p = com + frame.axis[i].dir;
-        x[i] = p.x;
-        y[i] = p.y;
-        z[i] = p.z;
-    }
-}
-
-inline void set_stabilization_point_mass(float* mass, const SupportFrame& frame) {
-    for (int i = 0; i < 6; i++) {
-        mass[i] = frame.axis[i].mass;
-    }
-}
-*/
-
 #endif
 
-static inline mat3 orthogonalize(const mat3& M) {
-    mat3 U, S, V;
-    compute_svd(M, U, S, V);
-    return U * math::transpose(V);
-}
-
-void smooth_rotation_matrices(mat3* RESTRICT R_out, const mat3* RESTRICT R_in, int N) {
-    constexpr int window = 2;
-    // constexpr float w[3] = {0.7, 0.1, 0.05};
-    constexpr float w[3] = {0.2, 0.2, 0.2};
-
-    ASSERT(N >= 4);
-
-    R_out[0] = orthogonalize((w[0] + w[1]) * R_in[0] + w[1] * R_in[1] + w[0] * R_in[2]);
-    R_out[1] = orthogonalize((w[1] + w[2]) * R_in[0] + w[0] * R_in[1] + w[1] * R_in[2] + w[2] * R_in[3]);
-
-    for (int i = window; i < N - window; i++) {
-        R_out[i] = orthogonalize(w[2] * R_in[i - 2] + w[1] * R_in[i - 1] + w[0] * R_in[i] + w[1] * R_in[i + 1] + w[2] * R_in[i + 2]);
-    }
-
-    R_out[N - 2] = orthogonalize(w[2] * R_in[N - 4] + w[1] * R_in[N - 3] + w[0] * R_in[N - 2] + (w[1] + w[2]) * R_in[N - 1]);
-    R_out[N - 1] = orthogonalize(w[2] * R_in[N - 3] + w[1] * R_in[N - 2] + (w[0] + w[1]) * R_in[N - 1]);
-}
-
-bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bitfield atom_mask, int64 mask_offset) {
+bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bitfield atom_mask, i64 mask_offset) {
     ASSERT(context);
 
-    const int32 num_frames = (int32)dynamic.trajectory.num_frames;
+    const i32 num_frames = (i32)dynamic.trajectory.num_frames;
 
     Structure* s = find_structure(id);
     if (s == nullptr) {
@@ -532,7 +366,7 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     init_structure_data(s, id, num_frames, num_atoms);
 
     // Scratch data
-    const auto flt_mem_size = sizeof(float) * num_atoms * 7;
+    const auto flt_mem_size = sizeof(float) * num_atoms * 10;
     void* flt_mem = TMP_MALLOC(flt_mem_size);
     defer { TMP_FREE(flt_mem); };
     memset(flt_mem, 0, flt_mem_size);
@@ -543,21 +377,12 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     float* ref_x = (float*)flt_mem + 3 * num_atoms;
     float* ref_y = (float*)flt_mem + 4 * num_atoms;
     float* ref_z = (float*)flt_mem + 5 * num_atoms;
-    float* mass = (float*)flt_mem + 6 * num_atoms;
-    //    float* prv_x = (float*)mem + 6 * num_atoms;
-    //    float* prv_y = (float*)mem + 7 * num_atoms;
-    //    float* prv_z = (float*)mem + 8 * num_atoms;
+    float* int_x = (float*)flt_mem + 6 * num_atoms;
+    float* int_y = (float*)flt_mem + 7 * num_atoms;
+    float* int_z = (float*)flt_mem + 8 * num_atoms;
+    float* mass  = (float*)flt_mem + 9 * num_atoms;
 
     mat3 box = {};
-
-    const auto dbl_mem_size = sizeof(double) * num_atoms * 3;
-    void* dbl_mem = TMP_MALLOC(dbl_mem_size);
-    defer { TMP_FREE(dbl_mem); };
-    memset(dbl_mem, 0, dbl_mem_size);
-
-    double* int_x = (double*)dbl_mem + 0 * num_atoms;
-    double* int_y = (double*)dbl_mem + 1 * num_atoms;
-    double* int_z = (double*)dbl_mem + 2 * num_atoms;
 
     bitfield::gather_masked(ref_x, get_trajectory_position_x(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
     bitfield::gather_masked(ref_y, get_trajectory_position_y(dynamic.trajectory, 0).data(), atom_mask, mask_offset);
@@ -566,23 +391,12 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     box = get_trajectory_frame(dynamic.trajectory, 0).box;
     apply_pbc(ref_x, ref_y, ref_z,  mass, num_atoms, box);
 
-        /*
-        float tot_mass = 0.0f;
-        for (int i = 0; i < num_points; i++) {
-            tot_mass += mass[i];
-        }
-        */
-
-        for (int i = 0; i < num_atoms; i++) {
-        int_x[i] = (double)ref_x[i];
-        int_y[i] = (double)ref_y[i];
-        int_z[i] = (double)ref_z[i];
-    }
+    memcpy(int_x, ref_x, num_atoms * sizeof(float) * 3);
 
     const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, num_atoms);
     // dvec3 prv_com = ref_com;
-    dvec3 int_com = ref_com;
-    dvec3 cur_com = {0, 0, 0};
+    vec3 int_com = ref_com;
+    vec3 cur_com = {0, 0, 0};
 
     float* avg_x = s->tracking_data.average_structure.x;
     float* avg_y = s->tracking_data.average_structure.y;
@@ -613,8 +427,8 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
         }
     }
 
-    const mat3 AVG_PCA = compute_eigen_frame(avg_x, avg_y, avg_z, mass, num_atoms).vectors;
-    //    transform(avg_x, avg_y, avg_z, num_atoms, AVG_PCA);
+    // const mat3 AVG_PCA = compute_eigen_frame(avg_x, avg_y, avg_z, mass, num_atoms).vectors;
+    // transform(avg_x, avg_y, avg_z, num_atoms, AVG_PCA);
 
     quat q_relative = {1, 0, 0, 0};
     quat q_hybrid = {1, 0, 0, 0};
@@ -630,7 +444,7 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
                   (float(&)[3])s->tracking_data.eigen.values[0]);
 
     if (num_atoms > 1) {
-        for (int32 i = 1; i < num_frames; ++i) {
+        for (i32 i = 1; i < num_frames; ++i) {
             // Fetch current
             bitfield::gather_masked(cur_x, dynamic.trajectory.frame_buffer[i].atom_position.x, atom_mask, mask_offset);
             bitfield::gather_masked(cur_y, dynamic.trajectory.frame_buffer[i].atom_position.y, atom_mask, mask_offset);
@@ -642,7 +456,7 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
 
             dvec3 sum_pos = {0, 0, 0};
             double sum_mass = 0;
-            for (int64 j = 0; j < num_atoms; ++j) {
+            for (i64 j = 0; j < num_atoms; ++j) {
                 const double m = mass[j];
                 sum_pos.x += (double)cur_x[j] * m;
                 sum_pos.y += (double)cur_y[j] * m;
@@ -678,7 +492,7 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
                 // @NOTE: ...
 
 #if 0
-            const auto find_max_proj = [](const vec3& ref, ArrayView<vec3> vecs) -> int {
+            const auto find_max_proj = [](const vec3& ref, Array<vec3> vecs) -> int {
                 int idx = 0;
                 float max = -1.0f;
                 for (int i = 0; i < vecs.size(); ++i) {
@@ -908,7 +722,7 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     return true;
 }  // namespace structure_tracking
 
-void transform_to_internal_frame(MoleculeDynamic& dynamic, Bitfield atom_mask, int64 mask_offset) {
+void transform_to_internal_frame(MoleculeDynamic& dynamic, Bitfield atom_mask, i64 mask_offset) {
     // Scratch data
     const int64_t num_atoms = bitfield::number_of_bits_set(atom_mask);
     const int64_t num_frames = dynamic.trajectory.num_frames;
@@ -933,7 +747,7 @@ void transform_to_internal_frame(MoleculeDynamic& dynamic, Bitfield atom_mask, i
 
     vec3 int_com = compute_com(int_x, int_y, int_z, num_atoms);
 
-    for (int32 i = 1; i < num_frames; i++) {
+    for (i32 i = 1; i < num_frames; i++) {
         float* pos_x = dynamic.trajectory.frame_buffer[i].atom_position.x;
         float* pos_y = dynamic.trajectory.frame_buffer[i].atom_position.y;
         float* pos_z = dynamic.trajectory.frame_buffer[i].atom_position.z;
@@ -947,7 +761,7 @@ void transform_to_internal_frame(MoleculeDynamic& dynamic, Bitfield atom_mask, i
         const mat3 m1 = compute_weighted_cross_covariance_matrix(int_x, int_y, int_z, cur_x, cur_y, cur_z, mass, num_atoms, int_com, cur_com);
         mat3 r1 = extract_rotation(m1);
 
-        for (int64 j = 0; j < num_atoms; j++) {
+        for (i64 j = 0; j < num_atoms; j++) {
             const vec3 t = cur_com;
             const vec3 v = {cur_x[j] - t.x, cur_y[j] - t.y, cur_z[j] - t.z};
             int_x[j] = r1[0][0] * v.x + r1[1][0] * v.y + r1[2][0] * v.z + t.x;

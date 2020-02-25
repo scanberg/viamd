@@ -93,7 +93,7 @@ TEST_CASE("Bitfield", "[Bitfield]") {
     // printf("\n");
 
     bitfield::clear_all(field);
-    for (int64 i = 0; i < field.size(); i++) {
+    for (i64 i = 0; i < field.size(); i++) {
         REQUIRE(bitfield::get_bit(field, i) == false);
     }
 
@@ -108,7 +108,7 @@ TEST_CASE("Bitfield", "[Bitfield]") {
     // bitfield::print(field);
     // printf("\n");
 
-    for (int64 i = 0; i < field.size(); i++) {
+    for (i64 i = 0; i < field.size(); i++) {
         if (beg <= i && i < end) {
             REQUIRE(bitfield::get_bit(field, i) == true);
         } else {
@@ -134,7 +134,7 @@ TEST_CASE("Bitfield", "[Bitfield]") {
 
 TEST_CASE("Array", "[Array]") {
     static constexpr int data[4] = {1, 2, 4, 5};
-    constexpr ArrayView<const int> arr(data);
+    constexpr Array<const int> arr(data);
     STATIC_ASSERT(arr.size() == 4, "Expected length to be 4");
     STATIC_ASSERT(arr[2] == 4, "Expected data[2] to be 4");
 
@@ -166,7 +166,7 @@ TEST_CASE("Molecule Utils", "[molecule_utils]") {
 
     SECTION("COM: equal mass") {
         vec3 ref = {0, 0, 0};
-        for (int64 i = 0; i < mol.atom.count; i++) {
+        for (i64 i = 0; i < mol.atom.count; i++) {
             ref.x += mol.atom.position.x[i];
             ref.y += mol.atom.position.y[i];
             ref.z += mol.atom.position.z[i];
@@ -183,7 +183,7 @@ TEST_CASE("Molecule Utils", "[molecule_utils]") {
     SECTION("COM: individual mass") {
         vec3 ref = {0, 0, 0};
         float sum = 0.0f;
-        for (int64 i = 0; i < mol.atom.count; i++) {
+        for (i64 i = 0; i < mol.atom.count; i++) {
             const auto m = mol.atom.mass[i];
             ref.x += mol.atom.position.x[i] * m;
             ref.y += mol.atom.position.y[i] * m;
@@ -202,7 +202,7 @@ TEST_CASE("Molecule Utils", "[molecule_utils]") {
     SECTION("COM: Element mass LUT") {
         vec3 ref = {0, 0, 0};
         float sum = 0.0f;
-        for (int64 i = 0; i < mol.atom.count; i++) {
+        for (i64 i = 0; i < mol.atom.count; i++) {
             const auto m = element::atomic_mass(mol.atom.element[i]);
             ref.x += mol.atom.position.x[i] * m;
             ref.y += mol.atom.position.y[i] * m;
@@ -233,7 +233,7 @@ TEST_CASE("Molecule Utils", "[molecule_utils]") {
             molecule.atom.position.z[i] = 5.0f;
             molecule.atom.mass[i] = 1.0f;
         }
-        molecule.sequences[0] = {"", {0, 1}, {0, 10}};
+        molecule.sequences[0] = {{0, 1}, {0, 10}};
 
         const mat3 box = {10, 0, 0, 0, 10, 0, 0, 0, 10};
         const vec3 com = compute_com_periodic(molecule.atom.position.x, molecule.atom.position.y, molecule.atom.position.z, molecule.atom.mass, molecule.atom.count, box);
@@ -262,7 +262,7 @@ TEST_CASE("Molecule Utils", "[molecule_utils]") {
         transform_ref(ref_x, ref_y, ref_z, mol.atom.count, matrix);
         transform(x, y, z, mol.atom.count, matrix);
 
-        for (int64 i = 0; i < mol.atom.count; i++) {
+        for (i64 i = 0; i < mol.atom.count; i++) {
             REQUIRE(ref_x[i] == Approx(x[i]));
             REQUIRE(ref_y[i] == Approx(y[i]));
             REQUIRE(ref_z[i] == Approx(z[i]));
@@ -289,7 +289,7 @@ TEST_CASE("Testing filter", "[filter]") {
 
     SECTION("filter element N") {
         filter::compute_filter_mask(mask, "element N", mol);
-        for (int32 i = 0; i < mask.size(); i++) {
+        for (i32 i = 0; i < mask.size(); i++) {
             if (i == 0 || i == 4 || i == 16 || i == 17) {
                 REQUIRE(bitfield::get_bit(mask, i) == true);
             } else {
@@ -300,7 +300,7 @@ TEST_CASE("Testing filter", "[filter]") {
 
     SECTION("filter atom 1:10") {
         filter::compute_filter_mask(mask, "atom 1:10", mol);
-        for (int32 i = 0; i < mask.size(); i++) {
+        for (i32 i = 0; i < mask.size(); i++) {
             if (0 <= i && i <= 9) {
                 REQUIRE(bitfield::get_bit(mask, i) == true);
             } else {
@@ -311,7 +311,7 @@ TEST_CASE("Testing filter", "[filter]") {
 
     SECTION("filter atom 10:*") {
         filter::compute_filter_mask(mask, "atom 10:*", mol);
-        for (int32 i = 0; i < mask.size(); i++) {
+        for (i32 i = 0; i < mask.size(); i++) {
             if (0 <= i && i < 9) {
                 REQUIRE(bitfield::get_bit(mask, i) == false);
             } else {

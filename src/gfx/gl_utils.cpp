@@ -36,7 +36,7 @@ GLuint gl::compile_shader_from_file(CStringView filename, GLenum type, CStringVi
     defer { FREE(shader_src.cstr()); };
 
     if (!shader_src) {
-        LOG_ERROR("Could not load shader from file %.*s\n", (int32)filename.size(), filename.cstr());
+        LOG_ERROR("Could not load shader from file %.*s\n", (i32)filename.size(), filename.cstr());
         return 0;
     }
 
@@ -56,14 +56,14 @@ GLuint gl::compile_shader_from_file(CStringView filename, GLenum type, CStringVi
 
     glCompileShader(shader);
     if (gl::get_shader_compile_error(buffer, buffer_size, shader)) {
-        LOG_ERROR("Compiling shader (%.*s):\n%s\n", (int32)filename.size(), filename.cstr(), buffer);
+        LOG_ERROR("Compiling shader (%.*s):\n%s\n", (i32)filename.size(), filename.cstr(), buffer);
         return 0;
     }
 
     return shader;
 }
 
-bool gl::attach_link_detach(GLuint program, ArrayView<const GLuint> shaders) {
+bool gl::attach_link_detach(GLuint program, Array<const GLuint> shaders) {
     ASSERT(program);
     constexpr int buffer_size = 1024;
     char buffer[buffer_size];
@@ -86,7 +86,7 @@ bool gl::attach_link_detach(GLuint program, ArrayView<const GLuint> shaders) {
     return true;
 }
 
-bool gl::attach_link_detach_with_transform_feedback(GLuint program, ArrayView<const GLuint> shaders, ArrayView<const char*> varyings, GLenum buffer_capture_mode) {
+bool gl::attach_link_detach_with_transform_feedback(GLuint program, Array<const GLuint> shaders, Array<const char*> varyings, GLenum buffer_capture_mode) {
     ASSERT(program);
     ASSERT(buffer_capture_mode == GL_INTERLEAVED_ATTRIBS || buffer_capture_mode == GL_SEPARATE_ATTRIBS);
 

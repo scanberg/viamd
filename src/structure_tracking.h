@@ -7,7 +7,7 @@
 struct MoleculeDynamic;
 
 namespace structure_tracking {
-typedef uint32 ID;
+typedef u32 ID;
 
 void initialize();
 void shutdown();
@@ -17,7 +17,7 @@ bool remove_structure(ID structure_id);
 void clear_structures();
 
 struct TrackingData {
-    int64 count = 0;
+    i64 count = 0;
     struct {
         vec3* com = nullptr;
         struct {
@@ -46,11 +46,11 @@ struct TrackingData {
 vec3 compute_eigen_values(const float* RESTRICT x, const float* RESTRICT y, const float* RESTRICT z, const float* RESTRICT mass, int64 count);
 */
 mat3 compute_rotation(const float* RESTRICT x0, const float* RESTRICT y0, const float* RESTRICT z0, const float* RESTRICT x1, const float* RESTRICT y1, const float* RESTRICT z1,
-                      const float* RESTRICT mass, int64 count, const vec3& com0, const vec3& com1);
+                      const float* RESTRICT mass, i64 count, const vec3& com0, const vec3& com1);
 
-bool compute_trajectory_transform_data(ID structure_id, const MoleculeDynamic& dynamic, Bitfield atom_mask, int64 mask_offset = 0);
+bool compute_trajectory_transform_data(ID structure_id, const MoleculeDynamic& dynamic, Bitfield atom_mask, i64 mask_offset = 0);
 
-void transform_to_internal_frame(MoleculeDynamic& dynamic, Bitfield atom_mask, int64 mask_offset);
+void transform_to_internal_frame(MoleculeDynamic& dynamic, Bitfield atom_mask, i64 mask_offset);
 
 const TrackingData* get_tracking_data(ID structure_id);
 

@@ -89,7 +89,7 @@ static void key_callback(GLFWwindow* window, int key, int scancode, int action, 
 
 static void char_callback(GLFWwindow* window, unsigned int c) { ImGui_ImplGlfw_CharCallback(window, c); }
 
-bool initialize(Context* ctx, int32 width, int32 height, const char* title) {
+bool initialize(Context* ctx, i32 width, i32 height, const char* title) {
     if (!glfwInit()) {
         // TODO Throw critical error
         error_callback(1, "Error while initializing glfw.");

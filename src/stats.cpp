@@ -17,11 +17,11 @@
 #include <tinyexpr.h>
 
 #define COMPUTE_ID(x) (hash::crc64(x))
-constexpr int32 NUM_BINS = 128;
+constexpr i32 NUM_BINS = 128;
 
 namespace stats {
 
-typedef bool (*StructureFunc)(StructureData* data, const ArrayView<CStringView> args, const MoleculeStructure& molecule);
+typedef bool (*StructureFunc)(StructureData* data, const Array<CStringView> args, const MoleculeStructure& molecule);
 
 struct PropertyFuncEntry {
     ID hash = INVALID_ID;
@@ -94,7 +94,7 @@ static StructureFunc find_structure_func(CStringView cmd) {
     return nullptr;
 }
 
-void free_structure_data(ArrayView<StructureData>* structure_data) {
+void free_structure_data(Array<StructureData>* structure_data) {
     ASSERT(structure_data);
     if (structure_data) {
         for (auto& s : *structure_data) {
@@ -104,7 +104,7 @@ void free_structure_data(ArrayView<StructureData>* structure_data) {
     }
 }
 
-void init_instance_data(ArrayView<InstanceData>* instance_data, int32 num_instances, int32 num_frames) {
+void init_instance_data(Array<InstanceData>* instance_data, i32 num_instances, i32 num_frames) {
     ASSERT(instance_data);
     free_instance_data(instance_data);
 
@@ -114,9 +114,9 @@ void init_instance_data(ArrayView<InstanceData>* instance_data, int32 num_instan
     }
 }
 
-void free_instance_data(ArrayView<InstanceData>* instance_data) {
+void free_instance_data(Array<InstanceData>* instance_data) {
     ASSERT(instance_data);
-    static int32 count = 0;
+    static i32 count = 0;
     count++;
     if (instance_data->ptr) {
         for (auto& inst : *instance_data) {
@@ -126,7 +126,7 @@ void free_instance_data(ArrayView<InstanceData>* instance_data) {
     free_array(instance_data);
 }
 
-void init_structure_data(ArrayView<StructureData>* structure_data, int32 count) {
+void init_structure_data(Array<StructureData>* structure_data, i32 count) {
     ASSERT(count > 0);
     ASSERT(structure_data);
     free_structure_data(structure_data);
@@ -137,7 +137,7 @@ void init_structure_data(ArrayView<StructureData>* structure_data, int32 count) 
 }
 
 // HISTOGRAMS
-void init_histogram(Histogram* hist, int32 num_bins) {
+void init_histogram(Histogram* hist, i32 num_bins) {
     ASSERT(hist);
     free_array(&hist->bins);
     hist->bins = allocate_array<float>(num_bins);
@@ -151,29 +151,29 @@ void free_histogram(Histogram* hist) {
     free_array(&hist->bins);
 }
 
-void compute_histogram(Histogram* hist, ArrayView<const float> data) {
+void compute_histogram(Histogram* hist, Array<const float> data) {
     ASSERT(hist);
-    const int32 num_bins = (int32)hist->bins.count;
+    const i32 num_bins = (i32)hist->bins.count;
     const float scl = num_bins / (hist->value_range.end - hist->value_range.beg);
     for (auto v : data) {
-        int32 bin_idx = math::clamp((int32)((v - hist->value_range.beg) * scl), 0, num_bins - 1);
+        i32 bin_idx = math::clamp((i32)((v - hist->value_range.beg) * scl), 0, num_bins - 1);
         hist->bins[bin_idx]++;
     }
-    hist->num_samples += (int32)data.count;
+    hist->num_samples += (i32)data.count;
 }
 
-void compute_histogram(Histogram* hist, ArrayView<const float> data, Range<float> filter) {
+void compute_histogram(Histogram* hist, Array<const float> data, Range<float> filter) {
     ASSERT(hist);
-    const int32 num_bins = (int32)hist->bins.count;
+    const i32 num_bins = (i32)hist->bins.count;
     const float scl = num_bins / (hist->value_range.end - hist->value_range.beg);
     for (auto v : data) {
         if (filter.min <= v && v <= filter.max) {
-            int32 bin_idx = math::clamp((int32)((v - hist->value_range.beg) * scl), 0, num_bins - 1);
+            i32 bin_idx = math::clamp((i32)((v - hist->value_range.beg) * scl), 0, num_bins - 1);
             hist->bins[bin_idx]++;
             // hist->num_samples++;
         }
     }
-    hist->num_samples += (int32)data.count;
+    hist->num_samples += (i32)data.count;
 }
 
 void clear_histogram(Histogram* hist) {
@@ -185,12 +185,12 @@ void clear_histogram(Histogram* hist) {
     hist->num_samples = 0;
 }
 
-void normalize_histogram(Histogram* hist, int32 num_samples) {
+void normalize_histogram(Histogram* hist, i32 num_samples) {
     hist->bin_range = {0, 0};
     const float bin_scl = 1.f / (float)num_samples;
     for (auto& b : hist->bins) {
         b *= bin_scl;
-        hist->bin_range.y = math::max(hist->bin_range.end, b);
+        hist->bin_range.end = math::max(hist->bin_range.end, b);
     }
 }
 
@@ -206,19 +206,19 @@ inline bool point_in_aabb(const vec3& p, const vec3& min_box, const vec3& max_bo
 Only effective if N is much smaller than RAND_MAX;
 if this may not be the case, use a better random
 number generator. */
-inline void shuffle(int32* arr, size_t n) {
+inline void shuffle(i32* arr, size_t n) {
     if (n > 1) {
         size_t i;
         for (i = 0; i < n - 1; i++) {
             size_t j = i + rand() / (RAND_MAX / (n - i) + 1);
-            int32 t = arr[j];
+            i32 t = arr[j];
             arr[j] = arr[i];
             arr[i] = t;
         }
     }
 }
 
-void compute_density_volume(Volume* vol, const MoleculeTrajectory& traj, Range<int32> frame_range, const mat4& world_to_volume_matrix) {
+void compute_density_volume(Volume* vol, const MoleculeTrajectory& traj, Range<i32> frame_range, const mat4& world_to_volume_matrix) {
     ASSERT(vol);
     if (vol->dim.x == 0 || vol->dim.y == 0 || vol->dim.z == 0) {
         LOG_ERROR("One or more volume dimension are zero...");
@@ -226,7 +226,7 @@ void compute_density_volume(Volume* vol, const MoleculeTrajectory& traj, Range<i
     }
 
     if (ctx.properties.size() == 0) return;
-    const int32 num_frames = (int32)ctx.properties.front()->avg_data.size();
+    const i32 num_frames = (i32)ctx.properties.front()->avg_data.size();
 
     clear_volume(vol);
 
@@ -239,17 +239,17 @@ void compute_density_volume(Volume* vol, const MoleculeTrajectory& traj, Range<i
 
     for (auto prop : ctx.properties) {
         if (!prop->enable_volume) continue;
-        for (int32 frame_idx = frame_range.beg; frame_idx < frame_range.end; frame_idx++) {
-            ArrayView<const float> atom_pos_x = get_trajectory_position_x(traj, frame_idx);
-            ArrayView<const float> atom_pos_y = get_trajectory_position_y(traj, frame_idx);
-            ArrayView<const float> atom_pos_z = get_trajectory_position_z(traj, frame_idx);
+        for (i32 frame_idx = frame_range.beg; frame_idx < frame_range.end; frame_idx++) {
+            Array<const float> atom_pos_x = get_trajectory_position_x(traj, frame_idx);
+            Array<const float> atom_pos_y = get_trajectory_position_y(traj, frame_idx);
+            Array<const float> atom_pos_z = get_trajectory_position_z(traj, frame_idx);
 
             for_each_filtered_property_structure_in_frame(prop, frame_idx, [vol, atom_pos_x, atom_pos_y, atom_pos_z, &world_to_volume_matrix](const Structure& s) {
-                for (int32 i = s.beg_idx; i < s.end_idx; i++) {
+                for (i32 i = s.beg_idx; i < s.end_idx; i++) {
                     const vec4 p = {atom_pos_x[i], atom_pos_y[i], atom_pos_z[i], 1};
                     const vec4 tc = math::fract(world_to_volume_matrix * p);
                     const ivec3 c = vec3(tc) * (vec3)vol->dim;
-                    const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
+                    const i32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
                     vol->voxel_data[voxel_idx]++;
                     vol->voxel_range.end = math::max(vol->voxel_range.end, vol->voxel_data[voxel_idx]);
                 }
@@ -258,7 +258,7 @@ void compute_density_volume(Volume* vol, const MoleculeTrajectory& traj, Range<i
     }
 }
 
-static Range<float> compute_range(ArrayView<const float> data) {
+static Range<float> compute_range(Array<const float> data) {
     if (data.count == 0) {
         return {0, 0};
     }
@@ -273,7 +273,7 @@ static Range<float> compute_range(ArrayView<const float> data) {
 static Range<float> compute_range(const Property& prop) {
     Range<float> range{0, 0};
     if (prop.instance_data) {
-        for (int32 i = 0; i < prop.instance_data.count; i++) {
+        for (i32 i = 0; i < prop.instance_data.count; i++) {
             auto r = compute_range(prop.instance_data[i].data);
             if (i == 0)
                 range = r;
@@ -304,7 +304,7 @@ static DynamicArray<CStringView> extract_arguments(CStringView str) {
 
     const auto* beg = str.beg();
     const auto* end = str.beg();
-    int32 count = 0;
+    i32 count = 0;
 
     while (end < str.end()) {
         if (*end == '(')
@@ -357,16 +357,16 @@ bool extract_structures(StructureData* data, CStringView arg, const MoleculeStru
     return true;
 }
 
-bool extract_args_structures(ArrayView<StructureData> data, ArrayView<CStringView> args, const MoleculeStructure& molecule) {
+bool extract_args_structures(Array<StructureData> data, Array<CStringView> args, const MoleculeStructure& molecule) {
     ASSERT(data.count == args.count);
 
     for (int i = 0; i < data.count; i++) {
         if (!extract_structures(&data[i], args[i], molecule)) return false;
     }
 
-    int32 max_count = 0;
+    i32 max_count = 0;
     for (const auto& s : data) {
-        int32 count = (int32)s.structures.size();
+        i32 count = (i32)s.structures.size();
         if (count == 0) {
             set_error_message(ctx.current_property, "One argument did not match any structures");
             return false;
@@ -382,7 +382,7 @@ bool extract_args_structures(ArrayView<StructureData> data, ArrayView<CStringVie
     return true;
 }
 
-bool structure_match_resname(StructureData* data, const ArrayView<CStringView> args, const MoleculeStructure& molecule) {
+bool structure_match_resname(StructureData* data, const Array<CStringView> args, const MoleculeStructure& molecule) {
     ASSERT(data);
 
     // Expect args.count to be > 0
@@ -403,7 +403,7 @@ bool structure_match_resname(StructureData* data, const ArrayView<CStringView> a
     return true;
 }
 
-bool structure_match_resid(StructureData* data, const ArrayView<CStringView> args, const MoleculeStructure& molecule) {
+bool structure_match_resid(StructureData* data, const Array<CStringView> args, const MoleculeStructure& molecule) {
     ASSERT(data);
 
     // Expect args to be  > 0
@@ -429,7 +429,7 @@ bool structure_match_resid(StructureData* data, const ArrayView<CStringView> arg
     return true;
 }
 
-bool structure_match_residue(StructureData* data, const ArrayView<CStringView> args, const MoleculeStructure& molecule) {
+bool structure_match_residue(StructureData* data, const Array<CStringView> args, const MoleculeStructure& molecule) {
     ASSERT(data);
 
     // Expect args to be  > 0
@@ -439,29 +439,29 @@ bool structure_match_residue(StructureData* data, const ArrayView<CStringView> a
     }
 
     for (const auto& arg : args) {
-        Range<int32> range = {-1, -1};
+        Range<i32> range = {-1, -1};
 
         if (is_range(arg)) {
             if (!extract_range(&range, arg)) {
                 set_error_message(ctx.current_property, "Failed to parse range in argument for residue");
                 return false;
             }
-            if (range.x == -1) range.x = 1;
-            if (range.y == -1) range.y = (int32)molecule.residues.count;
+            if (range.beg == -1) range.end = 1;
+            if (range.beg == -1) range.end = (i32)molecule.residues.count;
         } else {
             auto id = to_int(arg);
             if (!id.success) {
                 set_error_message(ctx.current_property, "Failed to parse argument for residue");
                 return false;
             }
-            range.x = range.y = id;
+            range.beg = range.end = id;
         }
 
-        if (range.x < 1 || (int32)molecule.residues.count < range.y) {
+        if (range.end < 1 || (i32)molecule.residues.count < range.end) {
             set_error_message(ctx.current_property, "Index for residue is out of bounds");
             return false;
         }
-        for (int32 i = range.x - 1; i < range.y; i++) {
+        for (i32 i = range.beg - 1; i < range.end; i++) {
             const auto& res = molecule.residues[i];
             data->structures.push_back({res.atom_range.beg, res.atom_range.end});
         }
@@ -470,7 +470,7 @@ bool structure_match_residue(StructureData* data, const ArrayView<CStringView> a
     return true;
 }
 
-bool structure_match_chainid(StructureData* data, const ArrayView<CStringView> args, const MoleculeStructure& molecule) {
+bool structure_match_chainid(StructureData* data, const Array<CStringView> args, const MoleculeStructure& molecule) {
     ASSERT(data);
 
     // Expect args.count to be > 0
@@ -491,7 +491,7 @@ bool structure_match_chainid(StructureData* data, const ArrayView<CStringView> a
     return true;
 }
 
-bool structure_match_chain(StructureData* data, const ArrayView<CStringView> args, const MoleculeStructure& molecule) {
+bool structure_match_chain(StructureData* data, const Array<CStringView> args, const MoleculeStructure& molecule) {
     ASSERT(data);
 
     // Expect args to be  > 0
@@ -501,29 +501,29 @@ bool structure_match_chain(StructureData* data, const ArrayView<CStringView> arg
     }
 
     for (const auto& arg : args) {
-        Range<int32> range{0, 0};
+        Range<i32> range{0, 0};
 
         if (is_range(arg)) {
             if (!extract_range(&range, arg)) {
                 set_error_message(ctx.current_property, "Failed to parse range in argument for chain");
                 return false;
             }
-            if (range.x == -1) range.x = 1;
-            if (range.y == -1) range.y = (int32)molecule.chains.count;
+            if (range.beg == -1) range.end = 1;
+            if (range.beg == -1) range.end = (i32)molecule.chains.count;
         } else {
             auto id = to_int(arg);
             if (!id.success) {
                 set_error_message(ctx.current_property, "Failed to parse argument for chain");
                 return false;
             }
-            range.x = range.y = id;
+            range.beg = range.end = id;
         }
 
-        if (range.x < 1 || (int32)molecule.chains.count < range.y) {
+        if (range.beg < 1 || (i32)molecule.chains.count < range.end) {
             set_error_message(ctx.current_property, "Index for chain is out of bounds");
             return false;
         }
-        for (int32 i = range.x - 1; i <= range.y - 1; i++) {
+        for (i32 i = range.beg - 1; i <= range.end - 1; i++) {
             const auto& chain = molecule.chains[i];
             data->structures.push_back({chain.atom_range.beg, chain.atom_range.end});
         }
@@ -532,7 +532,7 @@ bool structure_match_chain(StructureData* data, const ArrayView<CStringView> arg
     return true;
 }
 
-bool structure_match_atom(StructureData* data, const ArrayView<CStringView> args, const MoleculeStructure& molecule) {
+bool structure_match_atom(StructureData* data, const Array<CStringView> args, const MoleculeStructure& molecule) {
     ASSERT(data);
 
     // Expect args to be  > 0
@@ -542,43 +542,43 @@ bool structure_match_atom(StructureData* data, const ArrayView<CStringView> args
     }
 
     for (const auto& arg : args) {
-        Range<int32> range{0, 0};
+        Range<i32> range{0, 0};
 
         if (is_range(arg)) {
             if (!extract_range(&range, arg)) {
                 set_error_message(ctx.current_property, "Failed to parse range in argument for atom");
                 return false;
             }
-            if (range.x == -1) range.x = 1;
-            if (range.y == -1) range.y = (int32)molecule.atom.count;
+            if (range.beg == -1) range.beg = 1;
+            if (range.end == -1) range.end = (i32)molecule.atom.count;
         } else {
             auto id = to_int(arg);
             if (!id.success) {
                 set_error_message(ctx.current_property, "Failed to parse argument for atom");
                 return false;
             }
-            range.x = range.y = id;
+            range.beg = range.end = id;
         }
 
-        if (range.x < 1 || (int32)molecule.atom.count < range.y) {
+        if (range.beg < 1 || (i32)molecule.atom.count < range.end) {
             set_error_message(ctx.current_property, "Index for atom is out of bounds");
             return false;
         }
 
-        data->structures.push_back({range.x - 1, range.y});
+        data->structures.push_back({range.beg - 1, range.end});
     }
 
     return true;
 }
 
-bool structure_extract_resatom(StructureData* data, const ArrayView<CStringView> args, const MoleculeStructure&) {
+bool structure_extract_resatom(StructureData* data, const Array<CStringView> args, const MoleculeStructure&) {
     ASSERT(data);
     if (args.count != 1) {
         set_error_message(ctx.current_property, "resatom requires exactly 1 argument");
         return false;
     }
 
-    Range<int32> range{0, 0};
+    Range<i32> range{0, 0};
 
     if (is_range(args[0])) {
         if (!extract_range(&range, args[0])) {
@@ -591,14 +591,14 @@ bool structure_extract_resatom(StructureData* data, const ArrayView<CStringView>
             set_error_message(ctx.current_property, "Failed to parse argument for resatom");
             return false;
         }
-        range.x = range.y = id;
+        range.beg = range.end = id;
     }
 
     for (auto& s : data->structures) {
-        int32 count = s.end_idx - s.beg_idx;
+        i32 count = s.end_idx - s.beg_idx;
 
-        int32 s_first = (range.x == -1) ? 1 : range.x;
-        int32 s_last = (range.y == -1) ? count : range.y;
+        i32 s_first = (range.beg == -1) ? 1 : range.beg;
+        i32 s_last = (range.end == -1) ? count : range.end;
 
         if (count < 0 || s_first < 1 || count < s_last) {
             set_error_message(ctx.current_property, "restom: Index is out of range for structure");
@@ -613,17 +613,17 @@ bool structure_extract_resatom(StructureData* data, const ArrayView<CStringView>
     return true;
 }
 
-bool structure_apply_aggregation_strategy_com(StructureData* data, const ArrayView<CStringView>, const MoleculeStructure&) {
+bool structure_apply_aggregation_strategy_com(StructureData* data, const Array<CStringView>, const MoleculeStructure&) {
     ASSERT(data);
     data->strategy = AggregationStrategy::COM;
     return true;
 }
 
 // Helper funcs
-static inline int32 structure_index_count(Structure s) { return s.end_idx - s.beg_idx; }
+static inline i32 structure_index_count(Structure s) { return s.end_idx - s.beg_idx; }
 
-static inline int32 structures_index_count(ArrayView<const Structure> structures) {
-    int32 count = 0;
+static inline i32 structures_index_count(Array<const Structure> structures) {
+    i32 count = 0;
     for (const auto& s : structures) {
         count += structure_index_count(s);
     }
@@ -631,11 +631,11 @@ static inline int32 structures_index_count(ArrayView<const Structure> structures
 }
 
 template <typename T>
-inline ArrayView<T> extract_structure_data(Structure structure, ArrayView<T> data) {
+inline Array<T> extract_structure_data(Structure structure, Array<T> data) {
     return data.subarray(structure.beg_idx, structure.end_idx - structure.beg_idx);
 }
 
-static inline float multi_distance(const float* a_x, const float* a_y, const float* a_z, int64 count_a, const float* b_x, const float* b_y, const float* b_z, int64 count_b,
+static inline float multi_distance(const float* a_x, const float* a_y, const float* a_z, i64 count_a, const float* b_x, const float* b_y, const float* b_z, i64 count_b,
                                    float* variance = nullptr) {
     if (count_a == 0 || count_b == 0) {
         return 0.f;
@@ -648,8 +648,8 @@ static inline float multi_distance(const float* a_x, const float* a_y, const flo
         float total = 0.f;
         float* dist = (float*)TMP_MALLOC(count_a * count_b * sizeof(float));
         defer { TMP_FREE(dist); };
-        for (int64 i = 0; i < count_a; i++) {
-            for (int64 j = 0; j < count_b; j++) {
+        for (i64 i = 0; i < count_a; i++) {
+            for (i64 j = 0; j < count_b; j++) {
                 const float dx = a_x[i] - b_x[j];
                 const float dy = a_y[i] - b_y[j];
                 const float dz = a_z[i] - b_z[j];
@@ -663,7 +663,7 @@ static inline float multi_distance(const float* a_x, const float* a_y, const flo
 
         if (variance) {
             *variance = 0.f;
-            for (int64 i = 0; i < count_a * count_b; i++) {
+            for (i64 i = 0; i < count_a * count_b; i++) {
                 const float x = dist[i] - mean;
                 *variance += x * x;
             }
@@ -673,8 +673,8 @@ static inline float multi_distance(const float* a_x, const float* a_y, const flo
     }
 }
 
-static inline float multi_angle(const float* a_x, const float* a_y, const float* a_z, int64 count_a, const float* b_x, const float* b_y, const float* b_z, int64 count_b, const float* c_x,
-                                const float* c_y, const float* c_z, int64 count_c, float* variance = nullptr) {
+static inline float multi_angle(const float* a_x, const float* a_y, const float* a_z, i64 count_a, const float* b_x, const float* b_y, const float* b_z, i64 count_b, const float* c_x,
+                                const float* c_y, const float* c_z, i64 count_c, float* variance = nullptr) {
     if (count_a || count_b == 0 || count_c == 0)
         return 0.f;
     else if (count_a == 1 && count_b == 1 && count_c == 1) {
@@ -686,9 +686,9 @@ static inline float multi_angle(const float* a_x, const float* a_y, const float*
         float total = 0.f;
         float* angle = (float*)TMP_MALLOC(count_a * count_b * count_c * sizeof(float));
         defer { TMP_FREE(angle); };
-        for (int64 i = 0; i < count_a; i++) {
-            for (int64 j = 0; j < count_b; j++) {
-                for (int64 k = 0; k < count_c; k++) {
+        for (i64 i = 0; i < count_a; i++) {
+            for (i64 j = 0; j < count_b; j++) {
+                for (i64 k = 0; k < count_c; k++) {
                     const vec3 a = {a_x[i], a_y[i], a_z[i]};
                     const vec3 b = {b_x[j], b_y[j], b_z[j]};
                     const vec3 c = {c_x[k], c_y[k], c_z[k]};
@@ -699,12 +699,12 @@ static inline float multi_angle(const float* a_x, const float* a_y, const float*
             }
         }
 
-        float count = (float)math::max((int64)1, count_a * count_b * count_c);
+        float count = (float)math::max((i64)1, count_a * count_b * count_c);
 		float mean = total / count;
 
         if (variance) {
             *variance = 0.f;
-            for (int64 i = 0; i < count_a * count_b * count_c; i++) {
+            for (i64 i = 0; i < count_a * count_b * count_c; i++) {
                 const float x = angle[i] - mean;
                 *variance += x * x;
             }
@@ -715,8 +715,8 @@ static inline float multi_angle(const float* a_x, const float* a_y, const float*
     }
 }
 
-static inline float multi_dihedral(const float* a_x, const float* a_y, const float* a_z, int64 count_a, const float* b_x, const float* b_y, const float* b_z, int64 count_b, const float* c_x,
-                                   const float* c_y, const float* c_z, int64 count_c, const float* d_x, const float* d_y, const float* d_z, int64 count_d, float* variance = nullptr) {
+static inline float multi_dihedral(const float* a_x, const float* a_y, const float* a_z, i64 count_a, const float* b_x, const float* b_y, const float* b_z, i64 count_b, const float* c_x,
+                                   const float* c_y, const float* c_z, i64 count_c, const float* d_x, const float* d_y, const float* d_z, i64 count_d, float* variance = nullptr) {
     if (count_a == 0 || count_b == 0 || count_c == 0 || count_d == 0) {
         return 0.f;
     } else if (count_a == 1 && count_b == 1 && count_c == 1 && count_d == 1) {
@@ -729,10 +729,10 @@ static inline float multi_dihedral(const float* a_x, const float* a_y, const flo
         float total = 0.f;
         float* dihedral = (float*)TMP_MALLOC(count_a * count_b * count_c * sizeof(float));
         defer { TMP_FREE(dihedral); };
-        for (int64 i = 0; i < count_a; i++) {
-            for (int64 j = 0; j < count_b; j++) {
-                for (int64 k = 0; k < count_c; k++) {
-                    for (int64 l = 0; l < count_d; l++) {
+        for (i64 i = 0; i < count_a; i++) {
+            for (i64 j = 0; j < count_b; j++) {
+                for (i64 k = 0; k < count_c; k++) {
+                    for (i64 l = 0; l < count_d; l++) {
                         const vec3 a = {a_x[i], a_y[i], a_z[i]};
                         const vec3 b = {b_x[j], b_y[j], b_z[j]};
                         const vec3 c = {c_x[k], c_y[k], c_z[k]};
@@ -751,7 +751,7 @@ static inline float multi_dihedral(const float* a_x, const float* a_y, const flo
         // @TODO: This is madness, just use a temporary array and reuse the values
         if (variance) {
             *variance = 0.f;
-            for (int64 i = 0; i < count_a * count_b * count_c * count_d; i++) {
+            for (i64 i = 0; i < count_a * count_b * count_c * count_d; i++) {
                 *variance += dihedral[i] - mean;
             }
             *variance = *variance / count;
@@ -761,7 +761,7 @@ static inline float multi_dihedral(const float* a_x, const float* a_y, const flo
     }
 }
 
-static bool compute_distance(Property* prop, const ArrayView<CStringView> args, const MoleculeDynamic& dynamic) {
+static bool compute_distance(Property* prop, const Array<CStringView> args, const MoleculeDynamic& dynamic) {
     ASSERT(prop);
     if (args.count != 2) {
         set_error_message(ctx.current_property, "distance expects 2 arguments");
@@ -782,21 +782,21 @@ static bool compute_distance(Property* prop, const ArrayView<CStringView> args, 
     }
 
     // @IMPORTANT! Use this instead of dynamic.trajectory.num_frames as that can be changing in a different thread!
-    const int32 num_frames = (int32)prop->avg_data.size();
-    const int32 structure_count = (int32)prop->structure_data[0].structures.size();
+    const i32 num_frames = (i32)prop->avg_data.size();
+    const i32 structure_count = (i32)prop->structure_data[0].structures.size();
 
     init_instance_data(&prop->instance_data, structure_count, num_frames);
 
-    const float32 scl = 1.f / (float32)structure_count;
-    ArrayView<const float> pos_x[2];
-    ArrayView<const float> pos_y[2];
-    ArrayView<const float> pos_z[2];
+    const f32 scl = 1.f / (f32)structure_count;
+    Array<const float> pos_x[2];
+    Array<const float> pos_y[2];
+    Array<const float> pos_z[2];
     vec3 com[2];
-    for (int32 i = 0; i < num_frames; i++) {
+    for (i32 i = 0; i < num_frames; i++) {
         float sum = 0.f;
         float var = 0.f;
-        for (int32 j = 0; j < structure_count; j++) {
-            for (int32 arg = 0; arg < 2; arg++) {
+        for (i32 j = 0; j < structure_count; j++) {
+            for (i32 arg = 0; arg < 2; arg++) {
                 pos_x[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_x(dynamic.trajectory, i));
                 pos_y[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_y(dynamic.trajectory, i));
                 pos_z[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_z(dynamic.trajectory, i));
@@ -828,7 +828,7 @@ static bool compute_distance(Property* prop, const ArrayView<CStringView> args, 
     return true;
 }
 
-static bool compute_angle(Property* prop, const ArrayView<CStringView> args, const MoleculeDynamic& dynamic) {
+static bool compute_angle(Property* prop, const Array<CStringView> args, const MoleculeDynamic& dynamic) {
     ASSERT(prop);
     if (args.count != 3) {
         set_error_message(ctx.current_property, "angle expects 3 arguments");
@@ -846,21 +846,21 @@ static bool compute_angle(Property* prop, const ArrayView<CStringView> args, con
     }
 
     // @IMPORTANT! Use this instead of dynamic.trajectory.num_frames as that can be changing in a different thread!
-    const int32 num_frames = (int32)prop->avg_data.size();
-    const int32 structure_count = (int32)prop->structure_data[0].structures.size();
+    const i32 num_frames = (i32)prop->avg_data.size();
+    const i32 structure_count = (i32)prop->structure_data[0].structures.size();
 
     init_instance_data(&prop->instance_data, structure_count, num_frames);
 
-    const float32 scl = 1.f / (float32)structure_count;
-    ArrayView<const float> pos_x[3];
-    ArrayView<const float> pos_y[3];
-    ArrayView<const float> pos_z[3];
+    const f32 scl = 1.f / (f32)structure_count;
+    Array<const float> pos_x[3];
+    Array<const float> pos_y[3];
+    Array<const float> pos_z[3];
     vec3 com[3];
-    for (int32 i = 0; i < num_frames; i++) {
+    for (i32 i = 0; i < num_frames; i++) {
         float sum = 0.f;
         float var = 0.f;
-        for (int32 j = 0; j < structure_count; j++) {
-            for (int32 arg = 0; arg < 3; arg++) {
+        for (i32 j = 0; j < structure_count; j++) {
+            for (i32 arg = 0; arg < 3; arg++) {
                 pos_x[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_x(dynamic.trajectory, i));
                 pos_y[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_y(dynamic.trajectory, i));
                 pos_z[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_z(dynamic.trajectory, i));
@@ -893,7 +893,7 @@ static bool compute_angle(Property* prop, const ArrayView<CStringView> args, con
     return true;
 }
 
-static bool compute_dihedral(Property* prop, const ArrayView<CStringView> args, const MoleculeDynamic& dynamic) {
+static bool compute_dihedral(Property* prop, const Array<CStringView> args, const MoleculeDynamic& dynamic) {
     ASSERT(prop);
     if (args.count != 4) {
         set_error_message(ctx.current_property, "dihedral expects 4 arguments");
@@ -911,21 +911,21 @@ static bool compute_dihedral(Property* prop, const ArrayView<CStringView> args, 
     }
 
     // @IMPORTANT! Use this instead of dynamic.trajectory.num_frames as that can be changing in a different thread!
-    const int32 num_frames = (int32)prop->avg_data.size();
-    const int32 structure_count = (int32)prop->structure_data[0].structures.size();
+    const i32 num_frames = (i32)prop->avg_data.size();
+    const i32 structure_count = (i32)prop->structure_data[0].structures.size();
 
     init_instance_data(&prop->instance_data, structure_count, num_frames);
 
-    const float32 scl = 1.f / (float32)structure_count;
-    ArrayView<const float> pos_x[4];
-    ArrayView<const float> pos_y[4];
-    ArrayView<const float> pos_z[4];
+    const f32 scl = 1.f / (f32)structure_count;
+    Array<const float> pos_x[4];
+    Array<const float> pos_y[4];
+    Array<const float> pos_z[4];
     vec3 com[4];
-    for (int32 i = 0; i < num_frames; i++) {
+    for (i32 i = 0; i < num_frames; i++) {
         float sum = 0.f;
         float var = 0.f;
-        for (int32 j = 0; j < structure_count; j++) {
-            for (int32 arg = 0; arg < 4; arg++) {
+        for (i32 j = 0; j < structure_count; j++) {
+            for (i32 arg = 0; arg < 4; arg++) {
                 pos_x[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_x(dynamic.trajectory, i));
                 pos_y[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_y(dynamic.trajectory, i));
                 pos_z[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_z(dynamic.trajectory, i));
@@ -962,7 +962,7 @@ static bool compute_dihedral(Property* prop, const ArrayView<CStringView> args, 
 #include "rmsd.h"
 
 static float rmsd(const float* ref_x, const float* ref_y, const float* ref_z,
-                  const float* cur_x, const float* cur_y, const float* cur_z, int64 count) {
+                  const float* cur_x, const float* cur_y, const float* cur_z, i64 count) {
     if (count <= 1) return 0.f;
 
     // ugly ugly hacks
@@ -972,7 +972,7 @@ static float rmsd(const float* ref_x, const float* ref_y, const float* ref_z,
         TMP_FREE(ref_tmp);
         TMP_FREE(cur_tmp);
     };
-    for (int64 i = 0; i < count; i++) {
+    for (i64 i = 0; i < count; i++) {
         ref_tmp[i * 3 + 0] = ref_x[i];
         ref_tmp[i * 3 + 1] = ref_y[i];
         ref_tmp[i * 3 + 2] = ref_z[i];
@@ -987,7 +987,7 @@ static float rmsd(const float* ref_x, const float* ref_y, const float* ref_z,
     return (float)val;
 }
 
-static bool compute_rmsd(Property* prop, const ArrayView<CStringView> args, const MoleculeDynamic& dynamic) {
+static bool compute_rmsd(Property* prop, const Array<CStringView> args, const MoleculeDynamic& dynamic) {
     ASSERT(prop);
     if (args.count != 1) {
         set_error_message(ctx.current_property, "rmsd expects 1 argument");
@@ -1000,24 +1000,24 @@ static bool compute_rmsd(Property* prop, const ArrayView<CStringView> args, cons
     }
 
     // @IMPORTANT! Use this instead of dynamic.trajectory.num_frames as that can be changing in a different thread!
-    const int32 num_frames = (int32)prop->avg_data.size();
-    const int32 structure_count = (int32)prop->structure_data[0].structures.size();
+    const i32 num_frames = (i32)prop->avg_data.size();
+    const i32 structure_count = (i32)prop->structure_data[0].structures.size();
 
     init_instance_data(&prop->instance_data, structure_count, num_frames);
 
-    ArrayView<const float> cur_x;
-    ArrayView<const float> cur_y;
-    ArrayView<const float> cur_z;
-    ArrayView<const float> ref_x;
-    ArrayView<const float> ref_y;
-    ArrayView<const float> ref_z;
+    Array<const float> cur_x;
+    Array<const float> cur_y;
+    Array<const float> cur_z;
+    Array<const float> ref_x;
+    Array<const float> ref_y;
+    Array<const float> ref_z;
 
-    for (int32 j = 0; j < structure_count; j++) {
+    for (i32 j = 0; j < structure_count; j++) {
         ref_x = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_x(dynamic.trajectory, 0));
         ref_y = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_y(dynamic.trajectory, 0));
         ref_z = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_z(dynamic.trajectory, 0));
         prop->instance_data[j].data[0] = 0.0f;
-        for (int32 i = 1; i < num_frames; i++) {
+        for (i32 i = 1; i < num_frames; i++) {
             cur_x = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_x(dynamic.trajectory, i));
             cur_y = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_y(dynamic.trajectory, i));
             cur_z = extract_structure_data(prop->structure_data[0].structures[j], get_trajectory_position_z(dynamic.trajectory, i));
@@ -1027,10 +1027,10 @@ static bool compute_rmsd(Property* prop, const ArrayView<CStringView> args, cons
     }
 
     float max_val = 0.0f;
-    const float32 scl = 1.f / (float32)structure_count;
-    for (int32 i = 0; i < num_frames; i++) {
+    const f32 scl = 1.f / (f32)structure_count;
+    for (i32 i = 0; i < num_frames; i++) {
         float sum = 0;
-        for (int32 j = 0; j < structure_count; j++) {
+        for (i32 j = 0; j < structure_count; j++) {
             sum += prop->instance_data[j].data[i];
             max_val = math::max(prop->instance_data[j].data[i], max_val);
         }
@@ -1045,7 +1045,7 @@ static bool compute_rmsd(Property* prop, const ArrayView<CStringView> args, cons
     return true;
 }
 
-static DynamicArray<Property*> extract_property_dependencies(ArrayView<Property*> properties, CStringView expression) {
+static DynamicArray<Property*> extract_property_dependencies(Array<Property*> properties, CStringView expression) {
     DynamicArray<Property*> dependencies;
     for (Property* prop : properties) {
         if (!prop->valid) continue;
@@ -1067,7 +1067,7 @@ static DynamicArray<Property*> extract_property_dependencies(ArrayView<Property*
     return dependencies;
 }
 
-static bool compute_expression(Property* prop, const ArrayView<CStringView> args, const MoleculeDynamic&) {
+static bool compute_expression(Property* prop, const Array<CStringView> args, const MoleculeDynamic&) {
     ASSERT(prop);
     if (args.count == 0) {
         set_error_message(ctx.current_property, "expression expects 1 or more arguments");
@@ -1087,7 +1087,7 @@ static bool compute_expression(Property* prop, const ArrayView<CStringView> args
     }
 
     // Extract which properties preceedes this property
-    ArrayView<Property*> properties = ctx.properties;
+    Array<Property*> properties = ctx.properties;
     properties.count = 0;
     for (int i = 0; i < ctx.properties.size(); i++) {
         if (prop == ctx.properties[i]) {
@@ -1100,27 +1100,27 @@ static bool compute_expression(Property* prop, const ArrayView<CStringView> args
 
     DynamicArray<double> values(prop->dependencies.size(), 0);
     DynamicArray<te_variable> vars;
-    for (int32 i = 0; i < prop->dependencies.size(); i++) {
+    for (i32 i = 0; i < prop->dependencies.size(); i++) {
         vars.push_back({prop->dependencies[i]->name_buf.cstr(), &values[i], 0, 0});
     }
 
     int err;
-    te_expr* expr = te_compile(expr_str.cstr(), vars.data(), (int32)vars.size(), &err);
+    te_expr* expr = te_compile(expr_str.cstr(), vars.data(), (i32)vars.size(), &err);
 
     if (expr) {
-        int32 max_instance_count = 0;
+        i32 max_instance_count = 0;
         for (auto* p : prop->dependencies) {
-            max_instance_count = math::max(max_instance_count, (int32)p->instance_data.count);
+            max_instance_count = math::max(max_instance_count, (i32)p->instance_data.count);
         }
 
-        const int32 frame_count = (int32)prop->avg_data.size();
+        const i32 frame_count = (i32)prop->avg_data.size();
         init_instance_data(&prop->instance_data, max_instance_count, frame_count);
 
         float scl = 1.f / (float)max_instance_count;
-        for (int32 frame = 0; frame < frame_count; frame++) {
+        for (i32 frame = 0; frame < frame_count; frame++) {
             float val = 0.f;
-            for (int32 i = 0; i < max_instance_count; i++) {
-                for (int32 j = 0; j < values.size(); j++) {
+            for (i32 i = 0; i < max_instance_count; i++) {
+                for (i32 j = 0; j < values.size(); j++) {
                     values[j] = 0;
                     if (prop->dependencies[j]->instance_data.count == max_instance_count) {
                         if (frame < prop->dependencies[j]->instance_data[i].data.count) {
@@ -1157,31 +1157,31 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
 
     if (prop.structure_data.count == 1) {
         for (const auto& s : prop.structure_data[0].structures) {
-            ArrayView<const float> pos_x = extract_structure_data(s, get_positions_x(dynamic.molecule));
-			ArrayView<const float> pos_y = extract_structure_data(s, get_positions_y(dynamic.molecule));
-			ArrayView<const float> pos_z = extract_structure_data(s, get_positions_z(dynamic.molecule));
-			int64 count = pos_x.size();
+            Array<const float> pos_x = extract_structure_data(s, get_positions_x(dynamic.molecule));
+			Array<const float> pos_y = extract_structure_data(s, get_positions_y(dynamic.molecule));
+			Array<const float> pos_z = extract_structure_data(s, get_positions_z(dynamic.molecule));
+			i64 count = pos_x.size();
 
             if (prop.structure_data[0].strategy == COM) {
                 immediate::draw_point(compute_com(pos_x.data(), pos_y.data(), pos_z.data(), count));
             } else {
-				for (int64 i = 0; i < count; i++) {
+				for (i64 i = 0; i < count; i++) {
 					immediate::draw_point({ pos_x[i], pos_y[i], pos_z[i] });
                 }
             }
         }
     } else {
-        int32 count = (int32)prop.structure_data[0].structures.size();
-        ArrayView<const float> pos_prev_x;
-		ArrayView<const float> pos_prev_y;
-		ArrayView<const float> pos_prev_z;
-        ArrayView<const float> pos_next_x;
-		ArrayView<const float> pos_next_y;
-		ArrayView<const float> pos_next_z;
+        i32 count = (i32)prop.structure_data[0].structures.size();
+        Array<const float> pos_prev_x;
+		Array<const float> pos_prev_y;
+		Array<const float> pos_prev_z;
+        Array<const float> pos_next_x;
+		Array<const float> pos_next_y;
+		Array<const float> pos_next_z;
         vec3 com_prev(0);
         vec3 com_next(0);
 
-        for (int32 i = 0; i < count; i++) {
+        for (i32 i = 0; i < count; i++) {
             pos_prev_x = extract_structure_data(prop.structure_data[0].structures[i], get_positions_x(dynamic.molecule));
 			pos_prev_y = extract_structure_data(prop.structure_data[0].structures[i], get_positions_y(dynamic.molecule));
 			pos_prev_z = extract_structure_data(prop.structure_data[0].structures[i], get_positions_z(dynamic.molecule));
@@ -1193,12 +1193,12 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
 				pos_prev_z = { &com_prev.z, 1 };
 
             }
-			for (int64 j = 0; j < pos_prev_x.size(); j++) {
+			for (i64 j = 0; j < pos_prev_x.size(); j++) {
 				const vec3 p = { pos_prev_x[j], pos_prev_y[j], pos_prev_z[j] };
 				immediate::draw_point(p, ctx.style.point_colors[0]);
             }
-            for (int32 j = 1; j < prop.structure_data.count; j++) {
-                const int32 col_idx = j % VisualizationStyle::NUM_COLORS;
+            for (i32 j = 1; j < prop.structure_data.count; j++) {
+                const i32 col_idx = j % VisualizationStyle::NUM_COLORS;
                 pos_next_x = extract_structure_data(prop.structure_data[j].structures[i], get_positions_x(dynamic.molecule));
 				pos_next_y = extract_structure_data(prop.structure_data[j].structures[i], get_positions_y(dynamic.molecule));
 				pos_next_z = extract_structure_data(prop.structure_data[j].structures[i], get_positions_z(dynamic.molecule));
@@ -1209,14 +1209,14 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
 					pos_next_y = { &com_next.y, 1 };
 					pos_next_z = { &com_next.z, 1 };
                 }
-				for (int64 k = 0; k < pos_next_x.size(); k++) {
+				for (i64 k = 0; k < pos_next_x.size(); k++) {
 					const vec3 p = { pos_next_x[k], pos_next_y[k], pos_next_z[k] };
 					immediate::draw_point(p, ctx.style.point_colors[col_idx]);
                 }
 
-				for (int64 pi = 0; pi < pos_prev_x.size(); pi++) {
+				for (i64 pi = 0; pi < pos_prev_x.size(); pi++) {
 					const vec3 p0 = { pos_prev_x[pi], pos_prev_y[pi], pos_prev_z[pi] };
-					for (int64 ni = 0; ni < pos_next_x.size(); ni++) {
+					for (i64 ni = 0; ni < pos_next_x.size(); ni++) {
 						const vec3 p1 = { pos_next_x[ni], pos_next_y[ni], pos_next_z[ni] };
                         immediate::draw_line(p0, p1, ctx.style.line_color);
                     }
@@ -1290,10 +1290,10 @@ bool register_property_command(CStringView cmd_keyword, PropertyComputeFunc comp
     return true;
 }
 
-bool sync_structure_data_length(ArrayView<StructureData> data) {
-    int32 max_count = 0;
+bool sync_structure_data_length(Array<StructureData> data) {
+    i32 max_count = 0;
     for (const auto& s : data) {
-        max_count = math::max(max_count, (int32)s.structures.size());
+        max_count = math::max(max_count, (i32)s.structures.size());
     }
 
     // Extend and copy data from first element to match multi_count
@@ -1304,10 +1304,10 @@ bool sync_structure_data_length(ArrayView<StructureData> data) {
     }
 
     if (data.count > 0) {
-        for (int32 i = 0; i < data[0].structures.size(); i++) {
-            int32 max_structure_count = 0;
+        for (i32 i = 0; i < data[0].structures.size(); i++) {
+            i32 max_structure_count = 0;
             for (const auto& s : data) {
-                const int32 c = s.strategy == COM ? 1 : structure_index_count(s.structures[i]);
+                const i32 c = s.strategy == COM ? 1 : structure_index_count(s.structures[i]);
                 max_structure_count = math::max(max_structure_count, c);
                 if (c > 1 && c != max_structure_count) {
                     set_error_message(ctx.current_property, "Structures matched has different sizes in different arguments, this is not supported");
@@ -1320,7 +1320,7 @@ bool sync_structure_data_length(ArrayView<StructureData> data) {
     return true;
 }
 
-static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic, int32 num_frames) {
+static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic, i32 num_frames) {
     ASSERT(prop);
 
     ctx.current_property = prop;
@@ -1410,7 +1410,7 @@ static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic
         if (prop->std_dev_data[0] == 0.f) {
             // Compute std dev of instances
             const float scl = 1.f / (float)prop->instance_data.count;
-            for (int32 i = 0; i < num_frames; i++) {
+            for (i32 i = 0; i < num_frames; i++) {
                 float sum = 0.f;
                 for (const auto& inst : prop->instance_data) {
                     float x = inst.data[i] - prop->avg_data[i];
@@ -1444,10 +1444,10 @@ bool properties_dirty() {
     return false;
 }
 
-void async_update(const MoleculeDynamic& dynamic, Range<int32> frame_filter, void (*on_finished)(void*), void* usr_data) {
+void async_update(const MoleculeDynamic& dynamic, Range<i32> frame_filter, void (*on_finished)(void*), void* usr_data) {
     if (!dynamic) return;
     if (dynamic.trajectory.num_frames == 0) return;
-    static Range<int32> prev_frame_filter{-1, -1};
+    static Range<i32> prev_frame_filter{-1, -1};
 
     const bool frame_filter_changed = prev_frame_filter != frame_filter;
     const bool dirty_props = properties_dirty();
@@ -1464,9 +1464,9 @@ void async_update(const MoleculeDynamic& dynamic, Range<int32> frame_filter, voi
             // @NOTE IMPORTANT: This is the one 'true' frame count which should be used for properties.
             // It is important that this is used so that all properties data lengths are in sync
             // When dealing with dependencies.
-            const int32 num_frames = dynamic.trajectory.num_frames;
+            const i32 num_frames = dynamic.trajectory.num_frames;
 
-            for (int32 i = 0; i < ctx.properties.size(); i++) {
+            for (i32 i = 0; i < ctx.properties.size(); i++) {
                 auto p = ctx.properties[i];
                 ctx.fraction_done = (i / (float)ctx.properties.size());
                 auto filter = p->filter;
@@ -1494,8 +1494,8 @@ void async_update(const MoleculeDynamic& dynamic, Range<int32> frame_filter, voi
                     clear_histogram(&tmp_hist);
                     tmp_hist.value_range = p->filt_histogram.value_range;
 
-                    int32 beg_idx = math::clamp((int32)frame_filter.x, 0, (int32)p->avg_data.size());
-                    int32 end_idx = math::clamp((int32)frame_filter.y, 0, (int32)p->avg_data.size());
+                    i32 beg_idx = math::clamp((i32)frame_filter.beg, 0, (i32)p->avg_data.size());
+                    i32 end_idx = math::clamp((i32)frame_filter.end, 0, (i32)p->avg_data.size());
 
                     if (beg_idx != end_idx) {
                         // Since the data is probably showing, perform the operations on tmp data then copy the results
@@ -1514,10 +1514,10 @@ void async_update(const MoleculeDynamic& dynamic, Range<int32> frame_filter, voi
 
                     // Compute filter fractions for frames
                     if (p->instance_data) {
-                        for (int32 j = 0; j < p->filter_fraction.size(); j++) {
+                        for (i32 j = 0; j < p->filter_fraction.size(); j++) {
                             float val = 0.f;
                             for (const auto& inst : p->instance_data) {
-                                if (filter.x <= inst.data[j] && inst.data[j] <= filter.y) {
+                                if (filter.beg <= inst.data[j] && inst.data[j] <= filter.end) {
                                     val += 1.f;
                                 }
                             }
@@ -1627,7 +1627,7 @@ void remove_all_properties() {
 void move_property_up(Property* prop) {
     if (ctx.properties.size() <= 1) return;
     signal_stop_and_wait();
-    for (int32 i = 1; i < (int32)ctx.properties.size(); i++) {
+    for (i32 i = 1; i < (i32)ctx.properties.size(); i++) {
         if (ctx.properties[i] == prop) {
             // swap
             Property* tmp = ctx.properties[i - 1];
@@ -1642,7 +1642,7 @@ void move_property_up(Property* prop) {
 void move_property_down(Property* prop) {
     if (ctx.properties.size() <= 1) return;
     signal_stop_and_wait();
-    for (int32 i = 0; i < (int32)ctx.properties.size() - 1; i++) {
+    for (i32 i = 0; i < (i32)ctx.properties.size() - 1; i++) {
         if (ctx.properties[i] == prop) {
             // swap
             Property* tmp = ctx.properties[i + 1];
@@ -1654,7 +1654,7 @@ void move_property_down(Property* prop) {
     ctx.stop_signal = false;
 }
 
-ArrayView<Property*> get_properties() { return ctx.properties; }
+Array<Property*> get_properties() { return ctx.properties; }
 
 Property* find_property(CStringView name) {
     for (auto p : ctx.properties) {

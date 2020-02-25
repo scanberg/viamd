@@ -620,7 +620,7 @@ void shutdown() {
     scan::shutdown();
 }
 
-void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_view_velocity_buffer, int32 atom_count,
+void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_view_velocity_buffer, i32 atom_count,
               const ViewParam& view_param, float radius_scale) {
     ASSERT(glIsBuffer(atom_position_buffer));
     ASSERT(glIsBuffer(atom_radius_buffer));
@@ -706,7 +706,7 @@ void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint ato
     glUseProgram(0);
 }
 
-void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint atom_velocity_buffer, GLuint bond_buffer, int32 bond_count,
+void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint atom_velocity_buffer, GLuint bond_buffer, i32 bond_count,
                    const ViewParam& view_param, float radius_scale) {
     glBindVertexArray(vao);
 
@@ -836,7 +836,7 @@ void compute_pbc_view_velocity(GLuint dst_buffer, GLuint position_buffer, GLuint
     glDisable(GL_RASTERIZER_DISCARD);
 }
 
-void draw_spline(GLuint spline_buffer, GLuint spline_index_buffer, int32 num_spline_indices, const ViewParam& view_param, uint32_t s_color,
+void draw_spline(GLuint spline_buffer, GLuint spline_index_buffer, i32 num_spline_indices, const ViewParam& view_param, uint32_t s_color,
                  uint32_t v_color, uint32_t t_color) {
     glEnable(GL_PRIMITIVE_RESTART);
     glPrimitiveRestartIndex(0xFFFFFFFFU);
@@ -865,7 +865,7 @@ void draw_spline(GLuint spline_buffer, GLuint spline_index_buffer, int32 num_spl
     glDisable(GL_PRIMITIVE_RESTART);
 }
 
-void draw_ribbons(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_color_buffer, GLuint atom_velocity_buffer, int32 num_spline_indices,
+void draw_ribbons(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_color_buffer, GLuint atom_velocity_buffer, i32 num_spline_indices,
                   const ViewParam& view_param) {
     glEnable(GL_PRIMITIVE_RESTART);
     glPrimitiveRestartIndex(0xFFFFFFFFU);
@@ -911,7 +911,7 @@ void draw_ribbons(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_
     glDisable(GL_PRIMITIVE_RESTART);
 }
 
-void draw_cartoon(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_color_buffer, int32 num_spline_indices, const ViewParam& view_param) {
+void draw_cartoon(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_color_buffer, i32 num_spline_indices, const ViewParam& view_param) {
     glEnable(GL_PRIMITIVE_RESTART);
     glPrimitiveRestartIndex(0xFFFFFFFFU);
 
@@ -947,7 +947,7 @@ void draw_cartoon(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_
 
 namespace lean_and_mean {
 
-void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, int32 atom_count,
+void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, i32 atom_count,
               const ViewParam& view_param, float radius_scale, vec4 color, uint32_t mask) {
     ASSERT(glIsBuffer(atom_position_buffer));
     ASSERT(glIsBuffer(atom_radius_buffer));
@@ -1030,7 +1030,7 @@ void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint ato
     glUseProgram(0);
 }
 
-void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, GLuint bond_buffer, int32 bond_count,
+void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, GLuint bond_buffer, i32 bond_count,
                    const ViewParam& view_param, float radius_scale, vec4 color, uint32_t mask) {
     ASSERT(glIsBuffer(atom_position_buffer));
     ASSERT(glIsBuffer(atom_color_buffer));
@@ -1068,7 +1068,7 @@ void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 }
 
-void draw_ribbons(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, int32 num_spline_indices,
+void draw_ribbons(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, i32 num_spline_indices,
                   const ViewParam& view_param, float scale, vec4 color, uint32_t mask) {
     ASSERT(glIsBuffer(spline_buffer));
     ASSERT(glIsBuffer(spline_index_buffer));
@@ -1310,7 +1310,7 @@ void cull_aabbs(GLuint visibility_buffer, GLuint aabb_buffer, const ViewParam& v
 }
 
 void draw_vdw_indirect(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_view_velocity_buffer,
-                       GLuint indirect_cmd_buffer, int32 cmd_count, const ViewParam& view_param, float radius_scale) {
+                       GLuint indirect_cmd_buffer, i32 cmd_count, const ViewParam& view_param, float radius_scale) {
     ASSERT(glIsBuffer(atom_position_buffer));
     ASSERT(glIsBuffer(atom_radius_buffer));
     ASSERT(glIsBuffer(atom_color_buffer));
@@ -1402,7 +1402,7 @@ void draw_vdw_indirect(GLuint atom_position_buffer, GLuint atom_radius_buffer, G
 }
 
 void draw_culled_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_view_velocity_buffer,
-                     GLuint chunk_visibility_buffer, GLuint chunk_buffer, int32 chunk_count, const ViewParam& view_param, float radius_scale) {
+                     GLuint chunk_visibility_buffer, GLuint chunk_buffer, i32 chunk_count, const ViewParam& view_param, float radius_scale) {
     const uint32_t cmd_count = fill_cmd_buffer(chunk_visibility_buffer, chunk_buffer, chunk_count);
 
     draw_vdw_indirect(atom_position_buffer, atom_radius_buffer, atom_color_buffer, atom_view_velocity_buffer, aabb::indirect_cmd_buffer, cmd_count,
@@ -1453,7 +1453,7 @@ OptimalSDFVolume compute_optimal_sdf_volume(const AABB& aabb, uint32_t max_dim) 
 
 static vec3 calc_voxel_extent(const AABB& aabb, const uvec3& dim) { return aabb.ext() / vec3(dim); }
 
-static uint32 calc_num_voxels(const uvec3& dim) { return dim.x * dim.y * dim.z; }
+static u32 calc_num_voxels(const uvec3& dim) { return dim.x * dim.y * dim.z; }
 
 static int8_t encode_distance(float d, float voxel_ext) {
     const float n = d / (voxel_ext * 4.0f);
@@ -1567,7 +1567,7 @@ void bin_spheres(const GLuint position_buffer, uint32_t count, const AABB& spher
     glUniformBlockBinding(spatial_hash.program_bin, 0, 0);
 
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-    int num_groups = div_up(count, (uint32)SPHERE_BINNING_GROUP_COUNT);
+    int num_groups = div_up(count, (u32)SPHERE_BINNING_GROUP_COUNT);
     glDispatchCompute(num_groups, 1, 1);
 
     glUseProgram(0);
@@ -1580,7 +1580,7 @@ void compute_sphere_offsets() {
     POP_GPU_SECTION()
 }
 
-void write_sorted_spheres(const GLuint position_buffer, const GLuint radius_buffer, int32 count, const AABB& sphere_aabb, float max_radius) {
+void write_sorted_spheres(const GLuint position_buffer, const GLuint radius_buffer, i32 count, const AABB& sphere_aabb, float max_radius) {
     PUSH_GPU_SECTION("Sort Spheres")
     glUseProgram(spatial_hash.program_sort);
 
@@ -1676,15 +1676,15 @@ void write_sphere_distances(GLuint level, float max_sphere_radius, float max_dis
     POP_GPU_SECTION();
 }
 
-void compute_vdw_sdf(const GLuint atom_pos_buffer, const GLuint atom_rad_buffer, int32 atom_count, const AABB& sphere_aabb, float max_sphere_radius) {
+void compute_vdw_sdf(const GLuint atom_pos_buffer, const GLuint atom_rad_buffer, i32 atom_count, const AABB& sphere_aabb, float max_sphere_radius) {
     const uint32_t max_dim = 128U;
     const uint32_t downsample_factor = 32U;
     //const float32 max_sphere_radius = 2.0f;
 
     auto optimal_vol = compute_optimal_sdf_volume(sphere_aabb, max_dim);
     const vec3 voxel_ext = optimal_vol.aabb.ext() / vec3(optimal_vol.dim);
-    const float32 max_distance = voxel_ext.x * 1.0f;
-    const float32 spatial_hash_radius = (max_distance + max_sphere_radius) / 1.5f;  // @NOTE: ~search diameter / 3.0 according to nvidias presentation
+    const f32 max_distance = voxel_ext.x * 1.0f;
+    const f32 spatial_hash_radius = (max_distance + max_sphere_radius) / 1.5f;  // @NOTE: ~search diameter / 3.0 according to nvidias presentation
     const uvec3 spatial_hash_dim = optimal_vol.aabb.ext() / spatial_hash_radius;
 
     init_sdf_volume(optimal_vol.aabb, optimal_vol.dim, 1.0f);

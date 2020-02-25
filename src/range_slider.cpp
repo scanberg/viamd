@@ -11,7 +11,7 @@ extern template IMGUI_API float RoundScalarWithFormatT<float, float>(const char*
 extern template IMGUI_API float SliderCalcRatioFromValueT<float, float>(ImGuiDataType data_type, float v, float v_min, float v_max, float power,
                                                                         float linear_zero_pos);
 
-enum RangeSliderGrabState {
+enum class RangeSliderGrabState {
 	None,
 	Min,
 	Max,
@@ -152,7 +152,7 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
     }
 
     // Store state
-    ImGui::GetStateStorage()->SetInt(grab_state_id, grab_state);
+    ImGui::GetStateStorage()->SetInt(grab_state_id, (int)grab_state);
 	ImGui::GetStateStorage()->SetFloat(delta_state_id, delta_state);
 
     // Calculate slider grab positioning

@@ -3,11 +3,106 @@
 #include <core/log.h>
 #include <core/math_utils.h>
 
+#include <mol/molecule_dynamic.h>
+#include <mol/molecule_utils.h>
+#include <mol/trajectory_utils.h>
+
 #include "gfx/gl.h"
 #include "gfx/gl_utils.h"
 #include "image.h"
 
+struct Coord {
+    unsigned short x, y;
+};
+
+struct BackboneAnglesTrajectory {
+    i32 num_segments = 0;
+    i32 num_frames = 0;
+    Array<BackboneAngle> angle_data{};
+};
+
+static inline Array<BackboneAngle> get_frame_backbone_angles(BackboneAnglesTrajectory& backbone_angle_traj, int frame_index) {
+    if (backbone_angle_traj.angle_data.count == 0 || backbone_angle_traj.num_segments == 0) return {};
+    ASSERT(frame_index < backbone_angle_traj.angle_data.count / backbone_angle_traj.num_segments);
+    return Array<BackboneAngle>(&backbone_angle_traj.angle_data[frame_index * backbone_angle_traj.num_segments], backbone_angle_traj.num_segments);
+}
+
+static inline Array<BackboneAngle> get_range_backbone_angles(BackboneAnglesTrajectory& backbone_angle_traj, Range<i32> range) {
+    if (backbone_angle_traj.angle_data.count == 0 || backbone_angle_traj.num_segments == 0) return {};
+    ASSERT(range.beg < backbone_angle_traj.num_frames);
+    ASSERT(range.end <= backbone_angle_traj.num_frames);
+    return backbone_angle_traj.angle_data.subarray(range.beg * backbone_angle_traj.num_segments,
+                                                                           range.ext() * backbone_angle_traj.num_segments);
+}
+
+static inline i32 get_backbone_angles_trajectory_current_frame_count(const BackboneAnglesTrajectory& backbone_angle_traj) {
+    if (backbone_angle_traj.angle_data.count == 0 || backbone_angle_traj.num_segments == 0) return 0;
+    return (i32)backbone_angle_traj.angle_data.count / backbone_angle_traj.num_segments;
+}
+
+static inline Array<BackboneAngle> get_backbone_angles(BackboneAnglesTrajectory& backbone_angle_traj, int frame_index, Chain chain) {
+    return get_frame_backbone_angles(backbone_angle_traj, frame_index).subarray(chain.res_range);
+}
+
+static void init_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const MoleculeDynamic& dynamic) {
+    ASSERT(data);
+    if (!dynamic.molecule || !dynamic.trajectory) return;
+
+    if (data->angle_data) {
+        FREE(data->angle_data.ptr);
+    }
+
+    i32 alloc_count = (i32)dynamic.molecule.backbone.segments.count * (i32)dynamic.trajectory.frame_buffer.count;
+    data->num_segments = (i32)dynamic.molecule.backbone.segments.count;
+    data->num_frames = 0;
+    data->angle_data = {(BackboneAngle*)CALLOC(alloc_count, sizeof(BackboneAngle)), alloc_count};
+}
+
+static void free_backbone_angles_trajectory(BackboneAnglesTrajectory* data) {
+    ASSERT(data);
+    if (data->angle_data) {
+        FREE(data->angle_data.ptr);
+        *data = {};
+    }
+}
+
+static void compute_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const MoleculeDynamic& dynamic) {
+    ASSERT(dynamic);
+    if (dynamic.trajectory.num_frames == 0 || dynamic.molecule.backbone.segments.count == 0) return;
+
+    //@NOTE: Trajectory may be loading while this is taking place, therefore read num_frames once and stick to that
+    const i32 traj_num_frames = dynamic.trajectory.num_frames;
+
+    // @NOTE: If we are up to date, no need to compute anything
+    if (traj_num_frames == data->num_frames) {
+        return;
+    }
+
+    // @TODO: parallelize?
+    // @NOTE: Only compute data for indices which are new
+    for (i32 f_idx = data->num_frames; f_idx < traj_num_frames; f_idx++) {
+        auto pos_x = get_trajectory_position_x(dynamic.trajectory, f_idx).data();
+        auto pos_y = get_trajectory_position_y(dynamic.trajectory, f_idx).data();
+        auto pos_z = get_trajectory_position_z(dynamic.trajectory, f_idx).data();
+
+        Array<BackboneAngle> frame_angles = get_frame_backbone_angles(*data, f_idx);
+        for (const auto& bb_seq : dynamic.molecule.backbone.sequences) {
+            auto bb_segments = get_backbone(dynamic.molecule, bb_seq);
+            auto bb_angles = frame_angles.subarray(bb_seq);
+
+            if (bb_segments.size() < 2) {
+                memset(bb_angles.ptr, 0, bb_angles.size_in_bytes());
+            } else {
+                compute_backbone_angles(bb_angles.data(), bb_segments.data(), pos_x, pos_y, pos_z, bb_segments.size());
+            }
+        }
+    }
+    data->num_frames = traj_num_frames;  // update current count
+}
+
 namespace ramachandran {
+
+static BackboneAnglesTrajectory traj_angles = {};
 
 // Accumulation texture data
 constexpr int acc_width = 1024;
@@ -104,18 +199,18 @@ void init_map(Image* img, GLuint tex, const ColorMap& color_map, int blur_level)
 
     init_image(img, src_img);
 
-    constexpr uint32 IN_BACKGROUND = 0xFFFFFFFF;
-    constexpr uint32 IN_ALPHA_HIGH = 0xFF0000FF;
-    constexpr uint32 IN_ALPHA_MID = 0xFF7F7FFF;
-    constexpr uint32 IN_BETA_HIGH = 0xFFFF0000;
-    constexpr uint32 IN_BETA_MID = 0xFFFF7F7F;
-    constexpr uint32 IN_LEFT_ALPHA_HIGH = 0xFF00FF00;
-    constexpr uint32 IN_LEFT_ALPHA_MID = 0xFF7FFF7F;
-    constexpr uint32 IN_P_MID = 0xFF7FFFFF;
+    constexpr u32 IN_BACKGROUND = 0xFFFFFFFF;
+    constexpr u32 IN_ALPHA_HIGH = 0xFF0000FF;
+    constexpr u32 IN_ALPHA_MID = 0xFF7F7FFF;
+    constexpr u32 IN_BETA_HIGH = 0xFFFF0000;
+    constexpr u32 IN_BETA_MID = 0xFFFF7F7F;
+    constexpr u32 IN_LEFT_ALPHA_HIGH = 0xFF00FF00;
+    constexpr u32 IN_LEFT_ALPHA_MID = 0xFF7FFF7F;
+    constexpr u32 IN_P_MID = 0xFF7FFFFF;
 
     for (int i = 0; i < src_img.width * src_img.height; i++) {
-        const uint32 in_color = src_img.data[i];
-        uint32& out_color = img->data[i];
+        const u32 in_color = src_img.data[i];
+        u32& out_color = img->data[i];
         switch (in_color) {
             case IN_BACKGROUND:
                 out_color = math::convert_color(color_map.region_color[Region_None]);
@@ -157,7 +252,13 @@ void init_gui_map(const ColorMap& color_map, int blur_level) { init_map(&gui_img
 void init_segmentation_map(const ColorMap& color_map, int blur_level) { init_map(&seg_img, seg_tex, color_map, blur_level); }
 void init_color_map(const ColorMap& color_map, int blur_level) { init_map(&col_img, col_tex, color_map, blur_level); }
 
-void initialize() {
+void initialize(const MoleculeDynamic& dynamic) {
+
+    if (dynamic) {
+        init_backbone_angles_trajectory(&traj_angles, dynamic);
+        compute_backbone_angles_trajectory(&traj_angles, dynamic);
+    }
+
     if (!read_image(&src_img, VIAMD_IMAGE_DIR "/ramachandran.bmp")) {
         LOG_ERROR("Could not read ramachandran map!");
         return;
@@ -317,6 +418,9 @@ void initialize() {
 
     if (!vbo) {
         glGenBuffers(1, &vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, traj_angles.angle_data.size() * sizeof(Coord), NULL, GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
 
     if (!ibo) {
@@ -329,6 +433,8 @@ void initialize() {
 }
 
 void shutdown() {
+    free_backbone_angles_trajectory(&traj_angles);
+
     if (seg_tex) glDeleteTextures(1, &seg_tex);
     if (acc_tex) glDeleteTextures(1, &acc_tex);
     if (col_tex) glDeleteTextures(1, &col_tex);
@@ -353,19 +459,19 @@ void clear_accumulation_texture() {
     glViewport(last_viewport[0], last_viewport[1], (GLsizei)last_viewport[2], (GLsizei)last_viewport[3]);
 }
 
-void compute_accumulation_texture(ArrayView<const BackboneAngle> angles, vec4 color, float radius, float outline) {
+void compute_accumulation_texture(Range<i32> frame_range, vec4 color, float radius, float outline) {
     constexpr float ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
 
-    struct Coord {
-        unsigned short x, y;
-    };
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    void* ptr = glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+    if (!ptr) {
+        LOG_ERROR("Could not map angle buffer");
+        return;
+    }
 
-    // Use fast scratch memory here
-    Coord* coords = (Coord*)TMP_MALLOC((angles.count) * sizeof(Coord));
-    defer { TMP_FREE(coords); };
-
-    int32 count = 0;
-    for (const auto& angle : angles) {
+    Coord* coords = (Coord*)ptr;
+    i32 count = 0;
+    for (const auto& angle : get_range_backbone_angles(traj_angles, frame_range)) {
         if (angle.phi == 0 || angle.psi == 0) continue;
         vec2 coord = vec2(angle.phi, angle.psi) * ONE_OVER_TWO_PI + 0.5f;  // [-PI, PI] -> [0, 1]
         coord.y = 1.f - coord.y;
@@ -374,8 +480,7 @@ void compute_accumulation_texture(ArrayView<const BackboneAngle> angles, vec4 co
         count++;
     }
 
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, count * sizeof(Coord), coords, GL_STREAM_DRAW);
+    glUnmapBuffer(GL_ARRAY_BUFFER);
 
     // Backup GL state
     GLint last_polygon_mode[2];

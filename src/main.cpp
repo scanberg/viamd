@@ -21,7 +21,7 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui_internal.h>
 
-#include <TaskScheduler.h>
+//#include <TaskScheduler.h>
 
 #include "gfx/gl.h"
 #include "gfx/camera.h"
@@ -42,6 +42,7 @@
 #include "color_utils.h"
 #include "structure_tracking.h"
 #include "isosurface.h"
+#include "task_system.h"
 
 #include <stdio.h>
 #include <thread>
@@ -85,23 +86,23 @@ const Key::Key_t KEY_TOGGLE_SCREENSHOT_MODE = Key::KEY_F10;
 constexpr unsigned int NO_PICKING_IDX = 0xFFFFFFFFU;
 constexpr CStringView FILE_EXTENSION = "via";
 
-constexpr uint32 DEL_BTN_COLOR = 0xFF1111CC;
-constexpr uint32 DEL_BTN_HOVER_COLOR = 0xFF3333DD;
-constexpr uint32 DEL_BTN_ACTIVE_COLOR = 0xFF5555FF;
-constexpr uint32 TEXT_BG_ERROR_COLOR = 0xAA222299;
+constexpr u32 DEL_BTN_COLOR = 0xFF1111CC;
+constexpr u32 DEL_BTN_HOVER_COLOR = 0xFF3333DD;
+constexpr u32 DEL_BTN_ACTIVE_COLOR = 0xFF5555FF;
+constexpr u32 TEXT_BG_ERROR_COLOR = 0xAA222299;
 
-constexpr float32 HYDROGEN_BOND_DISTANCE_CUTOFF_DEFAULT = 3.0f;
-constexpr float32 HYDROGEN_BOND_DISTANCE_CUTOFF_MIN = 0.1f;
-constexpr float32 HYDROGEN_BOND_DISTANCE_CUTOFF_MAX = 12.0f;
+constexpr f32 HYDROGEN_BOND_DISTANCE_CUTOFF_DEFAULT = 3.0f;
+constexpr f32 HYDROGEN_BOND_DISTANCE_CUTOFF_MIN = 0.1f;
+constexpr f32 HYDROGEN_BOND_DISTANCE_CUTOFF_MAX = 12.0f;
 
-constexpr float32 HYDROGEN_BOND_ANGLE_CUTOFF_DEFAULT = 20.f;
-constexpr float32 HYDROGEN_BOND_ANGLE_CUTOFF_MIN = 5.f;
-constexpr float32 HYDROGEN_BOND_ANGLE_CUTOFF_MAX = 90.f;
+constexpr f32 HYDROGEN_BOND_ANGLE_CUTOFF_DEFAULT = 20.f;
+constexpr f32 HYDROGEN_BOND_ANGLE_CUTOFF_MIN = 5.f;
+constexpr f32 HYDROGEN_BOND_ANGLE_CUTOFF_MAX = 90.f;
 
-constexpr float32 BALL_AND_STICK_VDW_SCALE = 0.30f;
-constexpr float32 BALL_AND_STICK_LICORICE_SCALE = 0.5f;
+constexpr f32 BALL_AND_STICK_VDW_SCALE = 0.30f;
+constexpr f32 BALL_AND_STICK_LICORICE_SCALE = 0.5f;
 
-constexpr int32 SPLINE_SUBDIVISION_COUNT = 16;
+constexpr i32 SPLINE_SUBDIVISION_COUNT = 16;
 
 #ifdef VIAMD_RELEASE
 constexpr const char* CAFFINE_PDB = R"(
@@ -156,8 +157,8 @@ enum AtomBit_ { AtomBit_Highlighted = BIT(0), AtomBit_Selected = BIT(1), AtomBit
 // #struct Structure Declarations
 
 struct PickingData {
-    uint32 idx = NO_PICKING_IDX;
-    float32 depth = 1.0f;
+    u32 idx = NO_PICKING_IDX;
+    f32 depth = 1.0f;
     vec3 world_coord = {0, 0, 0};
 };
 
@@ -205,9 +206,9 @@ struct MoleculeBuffers {
         GLuint spline = 0;        // Stores subdivided spline data control points[vec3] + support vector[vec3]
         GLuint spline_index = 0;  // Stores draw element indices to render splines (each chain separated by restart-index 0xFFFFFFFFU).
 
-        int32 num_backbone_segment_indices = 0;
-        int32 num_control_point_indices = 0;
-        int32 num_spline_indices = 0;
+        i32 num_backbone_segment_indices = 0;
+        i32 num_control_point_indices = 0;
+        i32 num_spline_indices = 0;
     } backbone;
 
     struct {
@@ -233,14 +234,14 @@ struct Representation {
     vec4 uniform_color = vec4(1);
 
     // VDW and Ball & Stick
-    float32 radius = 1.f;
+    f32 radius = 1.f;
 
     // Ball & Stick and Licorice, Ribbons, Cartoon
-    float32 thickness = 1.f;
+    f32 thickness = 1.f;
 
     // Ribbons, Cartoon
-    float32 tension = 0.5f;
-    float32 width = 1.f;
+    f32 tension = 0.5f;
+    f32 width = 1.f;
 };
 
 struct Selection {
@@ -276,8 +277,8 @@ struct EnsembleStructure {
 
 struct ThreadSyncData {
     std::thread thread{};
-    int32 running = 0;
-    int32 stop_signal = 0;
+    i32 running = 0;
+    i32 stop_signal = 0;
 
     void signal_stop() { stop_signal = true; }
 
@@ -325,12 +326,12 @@ struct ApplicationData {
     struct {
         struct {
             ThreadSyncData sync{};
-            float32 fraction = 0.f;
+            f32 fraction = 0.f;
         } trajectory;
 
         struct {
             ThreadSyncData sync{};
-            float32 fraction = 0.f;
+            f32 fraction = 0.f;
             bool query_update = false;
         } backbone_angles;
     } async;
@@ -342,8 +343,8 @@ struct ApplicationData {
         SelectionOperator op_mode = SelectionOperator::Or;
         SelectionGrowth grow_mode = SelectionGrowth::CovalentBond;
 
-        int32 hovered = -1;
-        int32 right_clicked = -1;
+        i32 hovered = -1;
+        i32 right_clicked = -1;
 
         Bitfield current_selection_mask{};
         Bitfield current_highlight_mask{};
@@ -385,9 +386,9 @@ struct ApplicationData {
 
     // --- PLAYBACK ---
     struct {
-        float64 time = 0.f;  // double precision for long trajectories
-        int32 frame = 0;
-        float32 fps = 10.f;
+        f64 time = 0.f;  // double precision for long trajectories
+        i32 frame = 0;
+        f32 fps = 10.f;
         InterpolationMode interpolation = InterpolationMode::Cubic;
         PlaybackMode mode = PlaybackMode::Stopped;
         bool apply_pbc = false;
@@ -410,37 +411,37 @@ struct ApplicationData {
 
         struct {
             bool enabled = true;
-            float32 intensity = 6.0f;
-            float32 radius = 6.0f;
-            float32 bias = 0.1f;
+            f32 intensity = 6.0f;
+            f32 radius = 6.0f;
+            f32 bias = 0.1f;
         } ssao;
 
         struct {
             bool enabled = false;
             struct {
-                float32 target = 5.0f;
-                float32 current = 5.0f;
+                f32 target = 5.0f;
+                f32 current = 5.0f;
             } focus_depth;
-            float32 focus_scale = 10.0f;
+            f32 focus_scale = 10.0f;
         } dof;
 
         struct {
             bool enabled = true;
             bool jitter = true;
-            float32 feedback_min = 0.88f;
-            float32 feedback_max = 0.97f;
+            f32 feedback_min = 0.88f;
+            f32 feedback_max = 0.97f;
 
             struct {
                 bool enabled = true;
-                float32 motion_scale = 1.0f;
+                f32 motion_scale = 1.0f;
             } motion_blur;
         } temporal_reprojection;
 
         struct {
             bool enabled = true;
             postprocessing::Tonemapping tonemapper = postprocessing::Tonemapping_Filmic;
-            float32 exposure = 1.f;
-            float32 gamma = 2.2;
+            f32 exposure = 1.f;
+            f32 gamma = 2.2;
         } tonemapping;
 
         struct {
@@ -454,8 +455,8 @@ struct ApplicationData {
         bool dirty = true;
         bool overlay = false;
         vec4 color = vec4(1, 0, 1, 1);
-        float32 distance_cutoff = HYDROGEN_BOND_DISTANCE_CUTOFF_DEFAULT;  // In Ångström
-        float32 angle_cutoff = HYDROGEN_BOND_ANGLE_CUTOFF_DEFAULT;        // In Degrees
+        f32 distance_cutoff = HYDROGEN_BOND_DISTANCE_CUTOFF_DEFAULT;  // In Ångström
+        f32 angle_cutoff = HYDROGEN_BOND_ANGLE_CUTOFF_DEFAULT;        // In Degrees
         DynamicArray<HydrogenBond> bonds{};
     } hydrogen_bonds;
 
@@ -471,12 +472,12 @@ struct ApplicationData {
 
         struct {
             bool enabled = true;
-            float32 density_scale = 1.f;
+            f32 density_scale = 1.f;
             struct {
                 GLuint id = 0;
                 bool dirty = true;
                 int width = 0;
-                float32 alpha_scale = 1.f;
+                f32 alpha_scale = 1.f;
                 StringBuffer<512> path;
             } tf;
         } dvr;
@@ -490,7 +491,7 @@ struct ApplicationData {
             GLuint id = 0;
             bool dirty = false;
             ivec3 dim = ivec3(0);
-            float32 max_value = 1.f;
+            f32 max_value = 1.f;
         } texture;
 
         struct {
@@ -523,14 +524,14 @@ struct ApplicationData {
     // --- RAMACHANDRAN ---
     struct {
         bool show_window = false;
-        int frame_range_min = 0;
-        int frame_range_max = 0;
+        //int frame_range_min = 0;
+        //int frame_range_max = 0;
 
         ramachandran::ColorMap color_map{};
 
         struct {
             bool enabled = false;
-            float32 radius = 0.2f;
+            f32 radius = 0.2f;
             vec4 color = vec4(0, 0, 0, 1);
         } range;
 
@@ -538,17 +539,17 @@ struct ApplicationData {
             bool enabled = true;
             vec4 border_color = vec4(0, 0, 0, 1);
             struct {
-                float32 radius = 1.5f;
+                f32 radius = 1.5f;
                 vec4 fill_color = vec4(1, 1, 1, 1);
             } base;
             struct {
-                float32 radius = 3.0f;
+                f32 radius = 3.0f;
                 vec4 selection_color = vec4(0.8f, 1.0f, 0.5f, 1.0f);
                 vec4 highlight_color = vec4(0.8f, 1.0f, 0.5f, 0.5f);
             } selection;
         } current;
 
-        BackboneAnglesTrajectory backbone_angles{};
+        // BackboneAnglesTrajectory backbone_angles{};
     } ramachandran;
 
     // --- REPRESENTATIONS ---
@@ -575,7 +576,7 @@ struct ApplicationData {
     Console console{};
     bool show_console = false;
 
-    enki::TaskScheduler thread_pool;
+    // enki::TaskScheduler thread_pool;
 };
 
 // custom ImGui procedures
@@ -665,8 +666,8 @@ void SetupImGuiStyle2() {
 static vec3 compute_simulation_box_ext(const ApplicationData& data);
 static void interpolate_atomic_positions(ApplicationData* data);
 static void reset_view(ApplicationData* data, bool move_camera = false, bool smooth_transition = false);
-static float32 compute_avg_ms(float32 dt);
-static PickingData read_picking_data(const MainFramebuffer& fbo, int32 x, int32 y);
+static f32 compute_avg_ms(f32 dt);
+static PickingData read_picking_data(const MainFramebuffer& fbo, i32 x, i32 y);
 
 static bool handle_selection(ApplicationData* data);
 // static void handle_animation(ApplicationData* data);
@@ -686,7 +687,7 @@ static void draw_residue_aabbs(const ApplicationData& data);
 
 static void draw_representations(const ApplicationData& data);
 static void draw_representations_lean_and_mean(const ApplicationData& data, vec4 color = vec4(1, 1, 1, 1), float scale = 1.0f,
-                                               uint32 mask = 0xFFFFFFFFU);
+                                               u32 mask = 0xFFFFFFFFU);
 
 static void draw_main_menu(ApplicationData* data);
 static void draw_context_popup(ApplicationData* data);
@@ -698,7 +699,7 @@ static void draw_distribution_window(ApplicationData* data);
 static void draw_ramachandran_window(ApplicationData* data);
 static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, int x, int y);
 static void draw_molecule_dynamic_info_window(ApplicationData* data);
-static void draw_async_info_window(ApplicationData* data);
+static void draw_async_task_window(ApplicationData* data);
 static void draw_reference_frame_window(ApplicationData* data);
 static void draw_shape_space_window(ApplicationData* data);
 static void draw_density_volume_window(ApplicationData* data);
@@ -816,7 +817,7 @@ int main(int, char**) {
     LOG_NOTE("Initializing molecule draw...");
     draw::initialize();
     LOG_NOTE("Initializing ramachandran...");
-    ramachandran::initialize();
+    ramachandran::initialize(data.dynamic);
     LOG_NOTE("Initializing stats...");
     stats::initialize();
     LOG_NOTE("Initializing filter...");
@@ -827,8 +828,10 @@ int main(int, char**) {
     volume::initialize();
     LOG_NOTE("Initializing structure tracking...");
     structure_tracking::initialize();
-    LOG_NOTE("Initializing task scheduler...");
-    data.thread_pool.Initialize();
+    // LOG_NOTE("Initializing task scheduler...");
+    // data.thread_pool.Initialize();
+    LOG_NOTE("Initializing task system...");
+    task_system::initialize();
 
     // ImGui::SetupImGuiStyle2();
     ImGui::StyleColorsLight();
@@ -878,9 +881,9 @@ int main(int, char**) {
         ImGui::ShowDemoWindow();
 #endif
 
-        const int32 num_frames = data.dynamic.trajectory ? data.dynamic.trajectory.num_frames : 0;
-        const int32 last_frame = math::max(0, num_frames - 1);
-        const float64 max_time = (float64)math::max(0, last_frame);
+        const i32 num_frames = data.dynamic.trajectory ? data.dynamic.trajectory.num_frames : 0;
+        const i32 last_frame = math::max(0, num_frames - 1);
+        const f64 max_time = (f64)math::max(0, last_frame);
 
         // #input
         if (data.ctx.input.key.hit[KEY_CONSOLE]) {
@@ -931,7 +934,7 @@ int main(int, char**) {
             }
 
             if (data.ctx.input.key.hit[KEY_SKIP_TO_PREV_FRAME] || data.ctx.input.key.hit[KEY_SKIP_TO_NEXT_FRAME]) {
-                float64 step = data.ctx.input.key.down[Key::KEY_LEFT_CONTROL] ? 10.0 : 1.0;
+                f64 step = data.ctx.input.key.down[Key::KEY_LEFT_CONTROL] ? 10.0 : 1.0;
                 if (data.ctx.input.key.hit[KEY_SKIP_TO_PREV_FRAME]) step = -step;
                 data.playback.time = math::clamp(data.playback.time + step, 0.0, max_time);
             }
@@ -975,8 +978,8 @@ int main(int, char**) {
 
         if (data.time_filter.dynamic_window) {
             const auto half_window_ext = data.time_filter.window_extent * 0.5f;
-            data.time_filter.range.min = math::clamp((float32)data.playback.time - half_window_ext, 0.0f, (float32)max_time);
-            data.time_filter.range.max = math::clamp((float32)data.playback.time + half_window_ext, 0.0f, (float32)max_time);
+            data.time_filter.range.min = math::clamp((f32)data.playback.time - half_window_ext, 0.0f, (f32)max_time);
+            data.time_filter.range.max = math::clamp((f32)data.playback.time + half_window_ext, 0.0f, (f32)max_time);
 
             if (frame_changed && data.dynamic.trajectory) {
                 stats::set_all_property_flags(false, true);
@@ -1026,8 +1029,11 @@ int main(int, char**) {
 
             PUSH_CPU_SECTION("Compute backbone angles") {
                 zero_array(mol.backbone.angles);
-                compute_backbone_angles(mol.backbone.angles, mol.backbone.segments, mol.backbone.sequences, mol.atom.position.x, mol.atom.position.y,
-                                        mol.atom.position.z);
+                for (const auto& bb_seq : mol.backbone.sequences) {
+                    auto segments = get_backbone(mol, bb_seq);
+                    compute_backbone_angles(mol.backbone.angles.data(), segments.data(), mol.atom.position.x, mol.atom.position.y,
+                                            mol.atom.position.z, segments.size());
+                }
             }
             POP_CPU_SECTION()
 
@@ -1057,8 +1063,8 @@ int main(int, char**) {
         POP_CPU_SECTION()
 
         if (data.async.trajectory.sync.running) {
-            constexpr float32 TICK_INTERVAL_SEC = 3.f;
-            static float32 time = 0.f;
+            constexpr f32 TICK_INTERVAL_SEC = 3.f;
+            static f32 time = 0.f;
             time += data.ctx.timing.delta_s;
             if (time > TICK_INTERVAL_SEC) {
                 time = 0.f;
@@ -1096,7 +1102,7 @@ int main(int, char**) {
 
             param.resolution = vec2(data.fbo.width, data.fbo.height);
             if (data.visuals.temporal_reprojection.enabled && data.visuals.temporal_reprojection.jitter) {
-                static uint32 i = 0;
+                static u32 i = 0;
                 i = (++i) % ARRAY_SIZE(halton_sequence);
                 param.jitter.current = halton_sequence[i] - 0.5f;
                 if (data.view.mode == CameraMode::Perspective) {
@@ -1186,7 +1192,7 @@ int main(int, char**) {
 
         draw_main_menu(&data);
         draw_context_popup(&data);
-        draw_async_info_window(&data);
+        draw_async_task_window(&data);
         draw_animation_control_window(&data);
         draw_molecule_dynamic_info_window(&data);
 
@@ -1213,6 +1219,8 @@ int main(int, char**) {
 
         // Swap buffers
         platform::swap_buffers(&data.ctx);
+
+        task_system::clear_completed_tasks();
     }
 
     data.async.trajectory.sync.signal_stop_and_wait();
@@ -1236,6 +1244,8 @@ int main(int, char**) {
     volume::shutdown();
     LOG_NOTE("Shutting down structure tracking...");
     structure_tracking::shutdown();
+    LOG_NOTE("Shutting down task system...");
+    task_system::shutdown();
 
     destroy_framebuffer(&data.fbo);
     platform::shutdown(&data.ctx);
@@ -1251,9 +1261,9 @@ static void interpolate_atomic_positions(ApplicationData* data) {
     if (!mol || !traj) return;
 
     const int last_frame = math::max(0, data->dynamic.trajectory.num_frames - 1);
-    const float64 time = math::clamp(data->playback.time, 0.0, float64(last_frame));
+    const f64 time = math::clamp(data->playback.time, 0.0, f64(last_frame));
 
-    const float32 t = (float)math::fract(time);
+    const f32 t = (float)math::fract(time);
     const int frame = (int)time;
     const int nearest_frame = math::clamp((int)(time + 0.5), 0, last_frame);
     const int prev_frame_2 = math::max(0, frame - 1);
@@ -1333,12 +1343,12 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 }
 
 // #misc
-static float32 compute_avg_ms(float32 dt) {
+static f32 compute_avg_ms(f32 dt) {
     // @NOTE: Perhaps this can be done with a simple running mean?
-    constexpr float32 interval = 0.5f;
-    static float32 avg = 0.f;
+    constexpr f32 interval = 0.5f;
+    static f32 avg = 0.f;
     static int num_frames = 0;
-    static float32 t = 0;
+    static f32 t = 0;
     t += dt;
     num_frames++;
 
@@ -1374,9 +1384,9 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
 }
 
 // #picking
-static PickingData read_picking_data(const MainFramebuffer& framebuffer, int32 x, int32 y) {
-    static uint32 curr = 0;
-    uint32 prev = (curr + 1) % 2;
+static PickingData read_picking_data(const MainFramebuffer& framebuffer, i32 x, i32 y) {
+    static u32 curr = 0;
+    u32 prev = (curr + 1) % 2;
 
     PickingData data{};
 
@@ -1475,14 +1485,14 @@ static bool DeleteButton(const char* label, const ImVec2& size) {
 
 }  // namespace ImGui
 
-void grow_mask_by_covalent_bond(Bitfield mask, ArrayView<const Bond> bonds, int32 extent) {
+void grow_mask_by_covalent_bond(Bitfield mask, Array<const Bond> bonds, i32 extent) {
     Bitfield prev_mask;
     bitfield::init(&prev_mask, mask);
     defer { bitfield::free(&prev_mask); };
 
-    for (int32 i = 0; i < extent; i++) {
+    for (i32 i = 0; i < extent; i++) {
         for (const auto& bond : bonds) {
-            const int32 idx[2] = {bond.idx[0], bond.idx[1]};
+            const i32 idx[2] = {bond.idx[0], bond.idx[1]};
             if (bitfield::get_bit(prev_mask, idx[0]) && !bitfield::get_bit(mask, idx[1])) {
                 bitfield::set_bit(mask, idx[1]);
             } else if (bitfield::get_bit(prev_mask, idx[1]) && !bitfield::get_bit(mask, idx[0])) {
@@ -1493,16 +1503,16 @@ void grow_mask_by_covalent_bond(Bitfield mask, ArrayView<const Bond> bonds, int3
     }
 }
 
-void grow_mask_by_radial_extent(Bitfield mask, const float* atom_x, const float* atom_y, const float* atom_z, int64 atom_count, float extent) {
+void grow_mask_by_radial_extent(Bitfield mask, const float* atom_x, const float* atom_y, const float* atom_z, i64 atom_count, float extent) {
     Bitfield prev_mask;
     bitfield::init(&prev_mask, mask);
     defer { bitfield::free(&prev_mask); };
 
     spatialhash::Frame frame = spatialhash::compute_frame(atom_x, atom_y, atom_z, atom_count, vec3(extent));
-    for (int64 i = 0; i < atom_count; i++) {
+    for (i64 i = 0; i < atom_count; i++) {
         if (bitfield::get_bit(prev_mask, i)) {
             const vec3 pos = {atom_x[i], atom_y[i], atom_z[i]};
-            spatialhash::for_each_within(frame, pos, extent, [mask](int32 idx, const vec3& pos) {
+            spatialhash::for_each_within(frame, pos, extent, [mask](i32 idx, const vec3& pos) {
                 UNUSED(pos);
                 bitfield::set_bit(mask, idx);
             });
@@ -1511,7 +1521,7 @@ void grow_mask_by_radial_extent(Bitfield mask, const float* atom_x, const float*
 }
 
 template <typename AtomRangeOwner>
-void expand_mask(Bitfield mask, ArrayView<AtomRangeOwner> sequences) {
+void expand_mask(Bitfield mask, Array<AtomRangeOwner> sequences) {
     for (const auto& seq : sequences) {
         const AtomRange range = seq.atom_range;
         if (bitfield::any_bit_set_in_range(mask, range)) {
@@ -1912,7 +1922,7 @@ if (data->selection.op_mode == SelectionOperator::And) {
 
                     switch (data->selection.grow_mode) {
                         case SelectionGrowth::CovalentBond:
-                            grow_mask_by_covalent_bond(mask, get_covalent_bonds(data->dynamic.molecule), (int32)extent);
+                            grow_mask_by_covalent_bond(mask, get_covalent_bonds(data->dynamic.molecule), (i32)extent);
                             break;
                         case SelectionGrowth::Radial: {
                             const auto& mol = data->dynamic.molecule;
@@ -2006,7 +2016,7 @@ if (data->selection.op_mode == SelectionOperator::And) {
         }
         {
             // Fps counter
-            const float32 ms = compute_avg_ms(data->ctx.timing.delta_s);
+            const f32 ms = compute_avg_ms(data->ctx.timing.delta_s);
             char fps_buf[32];
             snprintf(fps_buf, 32, "%.2f ms (%.1f fps)", ms, 1000.f / ms);
             const float w = ImGui::CalcTextSize(fps_buf).x;
@@ -2158,7 +2168,7 @@ ImGui::IsKeyPressed(ImGui::GetIO().KeyMap[ImGuiKey_Enter]); ImGui::PopStyleColor
 ImGui::GetID("Apply"));
 
         if (show) {
-            ArrayView<bool> prev_mask = {(bool*)TMP_MALLOC(mask.size_in_bytes()), mask.size()};
+            Array<bool> prev_mask = {(bool*)TMP_MALLOC(mask.size_in_bytes()), mask.size()};
             defer { TMP_FREE(prev_mask.data()); };
 
             memset_array(mask, false);
@@ -2288,7 +2298,7 @@ void draw_context_popup(ApplicationData* data) {
                     atom_range = data->dynamic.molecule.sequences[seq_idx].atom_range;
                 }
 
-                if (atom_range.size() > 0) {
+                if (atom_range.ext() > 0) {
                     Bitfield atom_mask;
                     bitfield::init(&atom_mask, data->dynamic.molecule.atom.count);
                     defer { bitfield::free(&atom_mask); };
@@ -2311,10 +2321,10 @@ static void draw_animation_control_window(ApplicationData* data) {
     if (!data->dynamic.trajectory) return;
 
     ImGui::Begin("Animation");
-    const int32 num_frames = data->dynamic.trajectory.num_frames;
+    const i32 num_frames = data->dynamic.trajectory.num_frames;
     ImGui::Text("Num Frames: %i", num_frames);
     // ImGui::Checkbox("Apply post-interpolation pbc", &data->playback.apply_pbc);
-    float32 t = (float)data->playback.time;
+    f32 t = (float)data->playback.time;
     if (ImGui::SliderFloat("Time", &t, 0, (float)(math::max(0, num_frames - 1)))) {
         data->playback.time = t;
     }
@@ -2354,7 +2364,7 @@ static void draw_representations_window(ApplicationData* data) {
     for (int i = 0; i < data->representations.buffer.size(); i++) {
         bool recompute_colors = false;
         auto& rep = data->representations.buffer[i];
-        const float32 item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
+        const f32 item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
         StringBuffer<128> name;
         snprintf(name.cstr(), name.capacity(), "%s###ID", rep.name.buffer);
 
@@ -2434,7 +2444,7 @@ static void draw_reference_frame_window(ApplicationData* data) {
     for (int i = 0; i < data->reference_frame.frames.size(); i++) {
         bool recompute_frame = false;
         auto& ref = data->reference_frame.frames[i];
-        const float32 item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
+        const f32 item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
         StringBuffer<128> name;
         snprintf(name.cstr(), name.capacity(), "%s###ID", ref.name.buffer);
 
@@ -2514,7 +2524,7 @@ static void draw_reference_frame_window(ApplicationData* data) {
 #endif
             const auto tracking_data = structure_tracking::get_tracking_data(ref.id);
             if (tracking_data && tracking_data->count > 0) {
-                const int32 N = (int32)tracking_data->count;
+                const i32 N = (i32)tracking_data->count;
                 const quat* abs_data = tracking_data->transform.rotation.absolute;
                 const quat* rel_data = tracking_data->transform.rotation.relative;
                 // const quat* hyb_data = tracking_data->transform.rotation.hybrid;
@@ -2659,7 +2669,7 @@ static void draw_property_window(ApplicationData* data) {
     // bool compute_stats = false;
 
     auto properties = stats::get_properties();
-    for (int32 i = 0; i < (int32)properties.count; i++) {
+    for (i32 i = 0; i < (i32)properties.count; i++) {
         auto prop = properties[i];
 
         ImGui::Separator();
@@ -2681,11 +2691,11 @@ static void draw_property_window(ApplicationData* data) {
 
         if (ImGui::BeginPopup("AtomContextMenu")) {
             if (data->dynamic.molecule) {
-                const int32 atom_range = data->selection.right_clicked;
+                const i32 atom_range = data->selection.right_clicked;
                 if (atom_range != -1) {
                     ASSERT(atom_range < data->dynamic.molecule.atom.count);
-                    const int32 residue_idx = data->dynamic.molecule.atom.res_idx[data->selection.right_clicked];
-                    const int32 chain_idx = data->dynamic.molecule.atom.chain_idx[data->selection.right_clicked];
+                    const i32 residue_idx = data->dynamic.molecule.atom.res_idx[data->selection.right_clicked];
+                    const i32 chain_idx = data->dynamic.molecule.atom.chain_idx[data->selection.right_clicked];
 
                     char buf[buf_len];
 
@@ -2915,8 +2925,8 @@ static void draw_molecule_dynamic_info_window(ApplicationData* data) {
             ImGui::Text("\"%.*s\"", file.size(), file.data());
             ImGui::Text("# frames: %lli", traj.num_frames);
         }
-        const int64 selection_count = bitfield::number_of_bits_set(data->selection.current_selection_mask);
-        const int64 highlight_count = bitfield::number_of_bits_set(data->selection.current_highlight_mask);
+        const i64 selection_count = bitfield::number_of_bits_set(data->selection.current_selection_mask);
+        const i64 highlight_count = bitfield::number_of_bits_set(data->selection.current_highlight_mask);
         if (selection_count || highlight_count) {
             ImGui::NewLine();
             ImGui::Text("SELECTION");
@@ -2928,16 +2938,20 @@ static void draw_molecule_dynamic_info_window(ApplicationData* data) {
     ImGui::PopStyleVar(4);
 }
 
-static void draw_async_info_window(ApplicationData* data) {
-    constexpr float32 WIDTH = 300.f;
-    constexpr float32 MARGIN = 10.f;
-    constexpr float32 PROGRESS_FRACT = 0.3f;
+static void draw_async_task_window(ApplicationData* data) {
+    constexpr f32 WIDTH = 300.f;
+    constexpr f32 MARGIN = 10.f;
+    constexpr f32 PROGRESS_FRACT = 0.3f;
 
-    float32 traj_fract = data->async.trajectory.fraction;
-    float32 angle_fract = data->async.backbone_angles.fraction;
-    float32 stats_fract = stats::fraction_done();
+    const f32 traj_fract = data->async.trajectory.fraction;
+    const f32 angle_fract = data->async.backbone_angles.fraction;
+    const f32 stats_fract = stats::fraction_done();
 
-    if ((0.f < traj_fract && traj_fract < 1.f) || (0.f < angle_fract && angle_fract < 1.f) || (0.f < stats_fract && stats_fract < 1.f)) {
+    const u32 num_tasks = task_system::get_num_tasks();
+    task_system::TaskID* tasks = task_system::get_tasks();
+
+    if ((0.f < traj_fract && traj_fract < 1.f) || (0.f < angle_fract && angle_fract < 1.f) ||
+        (0.f < stats_fract && stats_fract < 1.f || num_tasks > 0)) {
 
         ImGuiViewport* viewport = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(viewport->Pos + ImVec2(data->ctx.window.width - WIDTH - MARGIN,
@@ -2975,6 +2989,19 @@ static void draw_async_info_window(ApplicationData* data) {
             ImGui::Text("Computing Statistics");
         }
 
+        for (u32 i = 0; i < num_tasks; i++) {
+            const auto id = tasks[i];
+            const f32 fract = task_system::get_task_fraction_complete(id);
+            snprintf(buf, 32, "%.1f%%", fract * 100.f);
+            ImGui::ProgressBar(fract, ImVec2(ImGui::GetWindowContentRegionWidth() * PROGRESS_FRACT, 0), buf);
+            ImGui::SameLine();
+            ImGui::Text(task_system::get_task_label(id));
+            ImGui::SameLine();
+            if (ImGui::Button("X")) {
+                task_system::interrupt_task(id);
+            }
+        }
+
         ImGui::End();
         ImGui::PopStyleColor();
     }
@@ -3002,15 +3029,16 @@ static void draw_timeline_window(ApplicationData* data) {
         const float cont_min_x = ImGui::GetWindowContentRegionMin().x + ImGui::GetWindowPos().x;
 
         ImGui::PushItemWidth(-1.0f);
-        if (ImGui::RangeSliderFloat("###selection_range", &data->time_filter.range.beg, &data->time_filter.range.end, frame_range.x, frame_range.y)) {
+        if (ImGui::RangeSliderFloat("###selection_range", &data->time_filter.range.beg, &data->time_filter.range.end, frame_range.beg,
+                                    frame_range.end)) {
             if (data->time_filter.dynamic_window) {
-                if (data->time_filter.range.x != old_range.x && data->time_filter.range.y != old_range.y) {
-                    data->playback.time = math::lerp(data->time_filter.range.x, data->time_filter.range.y, 0.5f);
+                if (data->time_filter.range != old_range) {
+                    data->playback.time = math::lerp(data->time_filter.range.beg, data->time_filter.range.end, 0.5f);
                 } else {
-                    if (data->time_filter.range.x != old_range.x) {
-                        data->time_filter.window_extent = 2.f * math::abs((float)data->playback.time - data->time_filter.range.x);
-                    } else if (data->time_filter.range.y != old_range.y) {
-                        data->time_filter.window_extent = 2.f * math::abs((float)data->playback.time - data->time_filter.range.y);
+                    if (data->time_filter.range.beg != old_range.beg) {
+                        data->time_filter.window_extent = 2.f * math::abs((float)data->playback.time - data->time_filter.range.beg);
+                    } else if (data->time_filter.range.end != old_range.end) {
+                        data->time_filter.window_extent = 2.f * math::abs((float)data->playback.time - data->time_filter.range.end);
                     }
                 }
             }
@@ -3018,50 +3046,50 @@ static void draw_timeline_window(ApplicationData* data) {
 
         // const int32 prop_count = stats::get_property_count();
         // const float32 plot_height = ImGui::GetContentRegionAvail().y / (float)prop_count;
-        const float32 plot_height = 100.f;
-        const uint32 bar_fill_color = ImColor(1.f, 1.f, 1.f, 0.25f);
-        const uint32 var_fill_color = ImColor(1.f, 1.f, 0.3f, 0.1f);
-        const uint32 var_line_color = ImColor(1.f, 1.f, 0.3f, 0.3f);
-        const uint32 var_text_color = ImColor(1.f, 1.f, 0.3f, 0.5f);
+        const f32 plot_height = 100.f;
+        const u32 bar_fill_color = ImColor(1.f, 1.f, 1.f, 0.25f);
+        const u32 var_fill_color = ImColor(1.f, 1.f, 0.3f, 0.1f);
+        const u32 var_line_color = ImColor(1.f, 1.f, 0.3f, 0.3f);
+        const u32 var_text_color = ImColor(1.f, 1.f, 0.3f, 0.5f);
 
-        static float32 selection_start;
+        static f32 selection_start;
         static bool is_selecting = false;
 
         auto style = ImGui::GetStyle();
         ImGui::GetStyleColorVec4(ImGuiCol_PlotLines);
 
         const auto properties = stats::get_properties();
-        for (int i = 0; i < (int32)properties.count; i++) {
+        for (int i = 0; i < (i32)properties.count; i++) {
             auto prop = properties[i];
 
             if (!prop->enable_timeline) continue;
-            ArrayView<float> prop_data = prop->avg_data;
+            Array<float> prop_data = prop->avg_data;
             CStringView prop_name = prop->name_buf;
             auto prop_range = prop->avg_data_range;
             if (!prop_data) continue;
-            const float pad = math::abs(prop_range.y - prop_range.x) * 0.75f;
-            Range<float> display_range = {prop_range.x - pad, prop_range.y + pad};
-            if (display_range.x == display_range.y) {
-                display_range.x -= 1.f;
-                display_range.y += 1.f;
+            const float pad = math::abs(prop_range.end - prop_range.beg) * 0.75f;
+            Range<float> display_range = {prop_range.beg - pad, prop_range.end + pad};
+            if (display_range.beg == display_range.end) {
+                display_range.beg -= 1.f;
+                display_range.end += 1.f;
             }
 
             const ImGuiID id = ImGui::GetID(prop_name.cstr());
             ImGui::PushID(i);
 
-            ImGui::BeginPlot(prop_name.cstr(), ImVec2(0, plot_height), ImVec2(frame_range.x, frame_range.y), ImVec2(display_range.x, display_range.y),
-                             ImGui::LinePlotFlags_AxisX);
+            ImGui::BeginPlot(prop_name.cstr(), ImVec2(0, plot_height), ImVec2(frame_range.beg, frame_range.end),
+                             ImVec2(display_range.beg, display_range.end), ImGui::LinePlotFlags_AxisX);
             const ImRect inner_bb(ImGui::GetItemRectMin() + ImGui::GetStyle().FramePadding, ImGui::GetItemRectMax() - ImGui::GetStyle().FramePadding);
             ImGui::PushClipRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), true);
 
             if (ImGui::IsItemHovered()) ImGui::SetHoveredID(id);
 
-            ImGui::PlotVerticalBars(prop->filter_fraction.data(), (int32)prop->filter_fraction.size(), bar_fill_color);
+            ImGui::PlotVerticalBars(prop->filter_fraction.data(), (i32)prop->filter_fraction.size(), bar_fill_color);
             if (prop->std_dev_data.data()[0] > 0.f) {
-                ImGui::PlotVariance(prop->avg_data.data(), prop->std_dev_data.data(), (int32)prop->std_dev_data.size(), 1.f, var_line_color,
+                ImGui::PlotVariance(prop->avg_data.data(), prop->std_dev_data.data(), (i32)prop->std_dev_data.size(), 1.f, var_line_color,
                                     var_fill_color);
             }
-            ImGui::PlotValues(prop->name_buf.cstr(), prop_data.data(), (int32)prop_data.size(),
+            ImGui::PlotValues(prop->name_buf.cstr(), prop_data.data(), (i32)prop_data.size(),
                               ImGui::ColorConvertFloat4ToU32(style.Colors[ImGuiCol_PlotLines]));
 
             ImGui::PopClipRect();
@@ -3077,25 +3105,25 @@ static void draw_timeline_window(ApplicationData* data) {
             if (ImGui::GetActiveID() == id) {
                 const float t = ImClamp((ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x), 0.0f, 1.0f);
                 if (ImGui::GetIO().MouseClicked[0] && ImGui::GetIO().KeyCtrl) {
-                    selection_start = ImLerp(frame_range.x, frame_range.y, t);
-                    data->time_filter.range.x = selection_start;
-                    data->time_filter.range.y = selection_start;
+                    selection_start = ImLerp(frame_range.beg, frame_range.end, t);
+                    data->time_filter.range.beg = selection_start;
+                    data->time_filter.range.end = selection_start;
                     is_selecting = true;
                 } else if (is_selecting) {
-                    const float v = ImLerp(frame_range.x, frame_range.y, t);
-                    if (v < data->time_filter.range.x) {
-                        data->time_filter.range.x = v;
-                    } else if (v > data->time_filter.range.x && v < data->time_filter.range.y) {
+                    const float v = ImLerp(frame_range.beg, frame_range.end, t);
+                    if (v < data->time_filter.range.beg) {
+                        data->time_filter.range.beg = v;
+                    } else if (v > data->time_filter.range.beg && v < data->time_filter.range.end) {
                         if (selection_start < v) {
-                            data->time_filter.range.y = v;
+                            data->time_filter.range.end = v;
                         } else {
-                            data->time_filter.range.x = v;
+                            data->time_filter.range.beg = v;
                         }
-                    } else if (v > data->time_filter.range.y) {
-                        data->time_filter.range.y = v;
+                    } else if (v > data->time_filter.range.end) {
+                        data->time_filter.range.end = v;
                     }
                 } else if (ImGui::GetIO().MouseDown[0]) {
-                    data->playback.time = ImLerp(frame_range.x, frame_range.y, t);
+                    data->playback.time = ImLerp(frame_range.beg, frame_range.end, t);
                 }
 
                 if (!ImGui::GetIO().MouseDown[0] && !ImGui::IsItemHovered()) {
@@ -3104,14 +3132,14 @@ static void draw_timeline_window(ApplicationData* data) {
                 }
             }
 
-            data->time_filter.range.x = ImClamp(data->time_filter.range.x, frame_range.x, frame_range.y);
-            data->time_filter.range.y = ImClamp(data->time_filter.range.y, frame_range.x, frame_range.y);
+            data->time_filter.range.beg = ImClamp(data->time_filter.range.beg, frame_range.beg, frame_range.end);
+            data->time_filter.range.end = ImClamp(data->time_filter.range.end, frame_range.beg, frame_range.end);
 
             // SELECTION RANGE
             {
                 constexpr ImU32 SELECTION_RANGE_COLOR = 0x55bbbbbb;
-                const float32 t0 = (data->time_filter.range.x - frame_range.x) / (frame_range.y - frame_range.x);
-                const float32 t1 = (data->time_filter.range.y - frame_range.x) / (frame_range.y - frame_range.x);
+                const f32 t0 = (data->time_filter.range.beg - frame_range.beg) / frame_range.ext();
+                const f32 t1 = (data->time_filter.range.end - frame_range.beg) / frame_range.ext();
                 const ImVec2 pos0 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t0, 0));
                 const ImVec2 pos1 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t1, 1));
                 ImGui::GetCurrentWindow()->DrawList->AddRectFilled(pos0, pos1, SELECTION_RANGE_COLOR);
@@ -3120,7 +3148,7 @@ static void draw_timeline_window(ApplicationData* data) {
             // CURRENT FRAME POSITION
             {
                 constexpr ImU32 CURRENT_LINE_COLOR = 0xaa33ffff;
-                const float32 t = ((float)data->playback.time - frame_range.x) / (frame_range.y - frame_range.x);
+                const f32 t = ((float)data->playback.time - frame_range.beg) / frame_range.ext();
                 const ImVec2 pos0 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t, 0));
                 const ImVec2 pos1 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t, 1));
                 ImGui::GetCurrentWindow()->DrawList->AddLine(pos0, pos1, CURRENT_LINE_COLOR);
@@ -3136,17 +3164,17 @@ static void draw_timeline_window(ApplicationData* data) {
 
             // TOOLTIP
             if (ImGui::GetActiveID() == id || ImGui::GetHoveredID() == id) {
-                const float32 min_x = ImGui::GetItemRectMin().x;
-                const float32 max_x = ImGui::GetItemRectMax().x;
-                const float32 t = ImClamp((ImGui::GetIO().MousePos.x - min_x) / (max_x - min_x), 0.f, 1.f);
-                int idx = ImClamp((int)ImLerp(frame_range.x, frame_range.y, t), 0, (int)prop->avg_data.size() - 1);
-                const auto var = prop->std_dev_data[idx];
+                const f32 min_x = ImGui::GetItemRectMin().x;
+                const f32 max_x = ImGui::GetItemRectMax().x;
+                const f32 t = ImClamp((ImGui::GetIO().MousePos.x - min_x) / (max_x - min_x), 0.f, 1.f);
+                i32 idx = ImClamp((i32)ImLerp(frame_range.beg, frame_range.end, t), 0, (i32)prop->avg_data.size() - 1);
+                const f32 value = prop->std_dev_data[idx];
 
                 ImGui::BeginTooltip();
                 ImGui::Text("%i: %g ", idx, prop->avg_data[idx]);
-                if (var > 0.f) {
+                if (value > 0.f) {
                     ImGui::SameLine();
-                    ImGui::TextColored(ImColor(var_text_color), "(%g)", var);
+                    ImGui::TextColored(ImColor(var_text_color), "(%g)", value);
                 }
                 ImGui::EndTooltip();
             }
@@ -3192,19 +3220,19 @@ static void draw_distribution_window(ApplicationData* data) {
     const auto properties = stats::get_properties();
     // constexpr float32 RANGE_SLIDER_HEIGHT = 26.f;
     // const float32 plot_height = ImGui::GetContentRegionAvail().y / (float)properties.count - RANGE_SLIDER_HEIGHT;
-    const float32 plot_height = 100.f;
+    const f32 plot_height = 100.f;
     const ImVec2 frame_size{ImGui::CalcItemWidth(), plot_height};
 
-    constexpr uint32 FULL_FILL_COLOR = 0x99cc9e66;
-    constexpr uint32 FULL_LINE_COLOR = 0xffcc9e66;
-    constexpr uint32 FULL_TEXT_COLOR = 0xffcc9e66;
+    constexpr u32 FULL_FILL_COLOR = 0x99cc9e66;
+    constexpr u32 FULL_LINE_COLOR = 0xffcc9e66;
+    constexpr u32 FULL_TEXT_COLOR = 0xffcc9e66;
 
-    constexpr uint32 FILT_FILL_COLOR = 0x3333ffff;
-    constexpr uint32 FILT_LINE_COLOR = 0xaa33ffff;
-    constexpr uint32 FILT_TEXT_COLOR = 0xaa33ffff;
+    constexpr u32 FILT_FILL_COLOR = 0x3333ffff;
+    constexpr u32 FILT_LINE_COLOR = 0xaa33ffff;
+    constexpr u32 FILT_TEXT_COLOR = 0xaa33ffff;
     constexpr ImU32 SELECTION_RANGE_COLOR = 0x55bbbbbb;
 
-    for (int32 i = 0; i < (int32)properties.count; i++) {
+    for (i32 i = 0; i < (i32)properties.count; i++) {
         stats::Property* prop = properties[i];
         if (!prop->enable_distribution) continue;
         ImGui::PushID(i);
@@ -3218,18 +3246,18 @@ static void draw_distribution_window(ApplicationData* data) {
 
             // const float32 max_val = math::max(prop->full_histogram.bin_range.y, prop->filt_histogram.bin_range.y);
             ImGui::PushClipRect(inner_bb.Min, inner_bb.Max, true);
-            const float32 max_val = prop->full_histogram.bin_range.y * 1.5f;
-            ImGui::DrawFilledLine(inner_bb.Min, inner_bb.Max, prop->full_histogram.bins.ptr, (int32)prop->full_histogram.bins.count, max_val,
+            const f32 max_val = prop->full_histogram.bin_range.end * 1.5f;
+            ImGui::DrawFilledLine(inner_bb.Min, inner_bb.Max, prop->full_histogram.bins.ptr, (i32)prop->full_histogram.bins.count, max_val,
                                   FULL_LINE_COLOR, FULL_FILL_COLOR);
 
-            ImGui::DrawFilledLine(inner_bb.Min, inner_bb.Max, prop->filt_histogram.bins.ptr, (int32)prop->filt_histogram.bins.count, max_val,
+            ImGui::DrawFilledLine(inner_bb.Min, inner_bb.Max, prop->filt_histogram.bins.ptr, (i32)prop->filt_histogram.bins.count, max_val,
                                   FILT_LINE_COLOR, FILT_FILL_COLOR);
             // ImGui::PopClipRect();
 
             // SELECTION RANGE
             {
-                const float32 t0 = (prop->filter.x - prop->total_data_range.x) / (prop->total_data_range.y - prop->total_data_range.x);
-                const float32 t1 = (prop->filter.y - prop->total_data_range.x) / (prop->total_data_range.y - prop->total_data_range.x);
+                const f32 t0 = (prop->filter.beg - prop->total_data_range.beg) / (prop->total_data_range.ext());
+                const f32 t1 = (prop->filter.end - prop->total_data_range.beg) / (prop->total_data_range.ext());
                 const ImVec2 pos0 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t0, 0));
                 const ImVec2 pos1 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t1, 1));
                 ImGui::GetCurrentWindow()->DrawList->AddRectFilled(pos0, pos1, SELECTION_RANGE_COLOR);
@@ -3240,19 +3268,19 @@ static void draw_distribution_window(ApplicationData* data) {
             if (ImGui::IsItemHovered()) {
                 window->DrawList->AddLine(ImVec2(ImGui::GetIO().MousePos.x, inner_bb.Min.y), ImVec2(ImGui::GetIO().MousePos.x, inner_bb.Max.y),
                                           0xffffffff);
-                float32 t = (ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
-                int32 count = (int32)prop->full_histogram.bins.count;
-                int32 idx = ImClamp((int32)(t * (count - 1)), 0, count - 1);
-                float32 full_val = prop->full_histogram.bins.ptr[idx];
-                float32 filt_val = prop->filt_histogram.bins.ptr[idx];
+                const f32 t = (ImGui::GetIO().MousePos.x - inner_bb.Min.x) / (inner_bb.Max.x - inner_bb.Min.x);
+                const i32 count = (i32)prop->full_histogram.bins.count;
+                const i32 idx = ImClamp((i32)(t * (count - 1)), 0, count - 1);
+                const f32 full_val = prop->full_histogram.bins.ptr[idx];
+                const f32 filt_val = prop->filt_histogram.bins.ptr[idx];
                 ImGui::BeginTooltip();
-                ImGui::Text("%.3f:", ImLerp(prop->filt_histogram.value_range.x, prop->filt_histogram.value_range.y, t));
+                ImGui::Text("%.3f:", ImLerp(prop->filt_histogram.value_range.beg, prop->filt_histogram.value_range.end, t));
                 ImGui::TextColored(ImColor(FULL_TEXT_COLOR), "%g", full_val * 100.f);
                 ImGui::TextColored(ImColor(FILT_TEXT_COLOR), "%g", filt_val * 100.f);
                 ImGui::EndTooltip();
             }
 
-            if (ImGui::RangeSliderFloat("##filter", &prop->filter.x, &prop->filter.y, prop->total_data_range.x, prop->total_data_range.y)) {
+            if (ImGui::RangeSliderFloat("##filter", &prop->filter.beg, &prop->filter.end, prop->total_data_range.beg, prop->total_data_range.end)) {
                 prop->filter_dirty = true;
             }
         }
@@ -3265,13 +3293,12 @@ static void draw_distribution_window(ApplicationData* data) {
 static void draw_ramachandran_window(ApplicationData* data) {
     // const int32 num_frames = data->dynamic.trajectory ? data->dynamic.trajectory.num_frames : 0;
     // const int32 frame = (int32)data->time;
-    const Range<int32> frame_range = {(int32)data->time_filter.range.x, (int32)data->time_filter.range.y};
+    const Range<i32> frame_range = data->time_filter.range;
     const auto& mol = data->dynamic.molecule;
-    ArrayView<const BackboneAngle> trajectory_angles =
-        get_backbone_angles(data->ramachandran.backbone_angles, frame_range.x, frame_range.y - frame_range.x);
-    ArrayView<const BackboneAngle> current_angles = mol.backbone.angles;
-    ArrayView<const BackboneSegment> backbone_segments = mol.backbone.segments;
-    ArrayView<const Residue> residues = mol.residues;
+    // Array<const BackboneAngle> trajectory_angles = get_backbone_angles(traj_angles, frame_range.beg, frame_range.ext());
+    Array<const BackboneAngle> current_angles = mol.backbone.angles;
+    Array<const BackboneSegment> backbone_segments = mol.backbone.segments;
+    Array<const Residue> residues = mol.residues;
     Bitfield& atom_selection = data->selection.current_selection_mask;
     Bitfield& atom_highlight = data->selection.current_highlight_mask;
 
@@ -3311,12 +3338,12 @@ static void draw_ramachandran_window(ApplicationData* data) {
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Fill color for trajectory range");
             }
-            ImGui::RangeSliderFloat("range", &data->time_filter.range.min, &data->time_filter.range.max, 0.f,
-                                    (float)data->dynamic.trajectory.num_frames, "(%.1f, %.1f)");
+            // ImGui::RangeSliderFloat("range", &data->time_filter.range.min, &data->time_filter.range.max, 0.f,
+            //                        (float)data->dynamic.trajectory.num_frames, "(%.1f, %.1f)");
             ImGui::PopID();
 
             ramachandran::clear_accumulation_texture();
-            ramachandran::compute_accumulation_texture(trajectory_angles, data->ramachandran.range.color, data->ramachandran.range.radius);
+            ramachandran::compute_accumulation_texture(frame_range, data->ramachandran.range.color, data->ramachandran.range.radius);
         }
     }
     ImGui::EndColumns();
@@ -3352,19 +3379,19 @@ static void draw_ramachandran_window(ApplicationData* data) {
     }
     dl->ChannelsSetCurrent(3);
 
-    constexpr float32 ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
+    constexpr f32 ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
 
-    int64 mouse_hover_idx = -1;
+    i64 mouse_hover_idx = -1;
 
     if (data->ramachandran.current.enabled) {
-        const uint32 border_color = math::convert_color(data->ramachandran.current.border_color);
-        const uint32 base_color = math::convert_color(data->ramachandran.current.base.fill_color);
-        const uint32 selected_color = math::convert_color(data->ramachandran.current.selection.selection_color);
-        const uint32 highlight_color = math::convert_color(data->ramachandran.current.selection.highlight_color);
-        const float32 base_radius = data->ramachandran.current.base.radius;
-        const float32 selected_radius = data->ramachandran.current.selection.radius;
+        const u32 border_color = math::convert_color(data->ramachandran.current.border_color);
+        const u32 base_color = math::convert_color(data->ramachandran.current.base.fill_color);
+        const u32 selected_color = math::convert_color(data->ramachandran.current.selection.selection_color);
+        const u32 highlight_color = math::convert_color(data->ramachandran.current.selection.highlight_color);
+        const f32 base_radius = data->ramachandran.current.base.radius;
+        const f32 selected_radius = data->ramachandran.current.selection.radius;
 
-        for (int64 i = 0; i < backbone_segments.size(); i++) {
+        for (i64 i = 0; i < backbone_segments.size(); i++) {
             const auto& angle = current_angles[i];
             // const auto& seg = backbone_segments[i];
             const auto& res = residues[i];
@@ -3446,7 +3473,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
         bitfield::init(&mask, mol.atom.count);
         defer { bitfield::free(&mask); };
 
-        for (int64 i = 0; i < residues.size(); i++) {
+        for (i64 i = 0; i < residues.size(); i++) {
             const auto& angle = current_angles[i];
             if (angle.phi == 0.f || angle.psi == 0.f) continue;
             const ImVec2 coord =
@@ -3526,7 +3553,7 @@ static void draw_shape_space_window(ApplicationData* data) {
         const int num_segments = 10;
     } style;
 
-    const Range<int32> frame_range = {(int32)data->time_filter.range.x, (int32)data->time_filter.range.y};
+    const Range<i32> frame_range = data->time_filter.range;
 
     ImGui::PushStyleColor(ImGuiCol_WindowBg, math::convert_color(style.window_bg));
     // ImGui::SetNextWindowSizeConstraints(ImVec2(200, 200), ImVec2(10000, 10000));
@@ -3573,12 +3600,12 @@ static void draw_shape_space_window(ApplicationData* data) {
         ImGui::End();
     }
 
-    const int32 ensemble_count = data->ensemble_tracking.structures.empty() ? 0 : 1;
-    const int32 reference_count = data->reference_frame.frames.size();
-    const int32 count = ensemble_count + reference_count;
+    const i32 ensemble_count = data->ensemble_tracking.structures.empty() ? 0 : 1;
+    const i32 reference_count = data->reference_frame.frames.size();
+    const i32 count = ensemble_count + reference_count;
 
     structure_tracking::ID structure_ids[256];
-    int32 num_structure_ids = 0;
+    i32 num_structure_ids = 0;
 
     if (count > 0) {
         StringBuffer<512> buf = {};
@@ -3639,7 +3666,7 @@ static void draw_shape_space_window(ApplicationData* data) {
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
-    const auto draw_ortho_cube = [dl](float x, float y, float w, float h, float d, uint32 col_a, uint32 col_b, uint32 col_c) {
+    const auto draw_ortho_cube = [dl](float x, float y, float w, float h, float d, u32 col_a, u32 col_b, u32 col_c) {
         const vec3 f_a[4] = {{0, 0, d}, {w, 0, d}, {w, h, d}, {0, h, d}};
         const vec3 f_b[4] = {{w, 0, d}, {w, 0, 0}, {w, h, 0}, {w, h, d}};
         const vec3 f_c[4] = {{0, h, d}, {w, h, d}, {w, h, 0}, {0, h, 0}};
@@ -3684,7 +3711,7 @@ static void draw_shape_space_window(ApplicationData* data) {
         for (int i = 0; i < num_structure_ids; i++) {
             const auto id = structure_ids[i];
             if (const auto* tracking_data = structure_tracking::get_tracking_data(id)) {
-                const int32 N = (int32)tracking_data->count;
+                const i32 N = (i32)tracking_data->count;
                 const vec3* eigen_values = tracking_data->eigen.values;
 
                 const auto compute_shape_space_weights = [](const vec3& ev) -> vec3 {
@@ -3697,12 +3724,12 @@ static void draw_shape_space_window(ApplicationData* data) {
                 };
 
                 const vec2 p[3] = {vec_cast(tri_a), vec_cast(tri_b), vec_cast(tri_c)};
-                for (int32 i = 0; i < N; i++) {
+                for (i32 i = 0; i < N; i++) {
                     const vec3 ev = eigen_values[i];
                     const vec3 w = compute_shape_space_weights(ev);
                     const ImVec2 coord = vec_cast(math::barycentric_to_cartesian(p[0], p[1], p[2], w));
 
-                    const bool in_range = (frame_range.x <= i && i <= frame_range.y);
+                    const bool in_range = (frame_range.beg <= i && i <= frame_range.end);
                     const bool selected = (!style.use_base_for_all) && (i == data->playback.frame);
 
                     // Draw channel, higher number => later draw
@@ -3753,7 +3780,7 @@ static void draw_shape_space_window(ApplicationData* data) {
 
     if (mouse_hover_idx != -1) {
         ImGui::BeginTooltip();
-        ImGui::Text("Frame[%i]", (int32)mouse_hover_idx);
+        ImGui::Text("Frame[%i]", (i32)mouse_hover_idx);
         if (ImGui::GetIO().MouseDown[0]) {
             data->playback.time = (float)mouse_hover_idx;
         }
@@ -3783,6 +3810,8 @@ static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const Mol
 
     const mat4 model_to_texture = volume::compute_model_to_texture_matrix(vol->dim);
 
+    const float cutoff_squared = radial_cutoff * radial_cutoff;
+
     for (int frame_idx = 0; frame_idx < traj.num_frames; frame_idx++) {
         const auto& frame = get_trajectory_frame(traj, frame_idx);
         const mat3 box = frame.box;
@@ -3798,17 +3827,17 @@ static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const Mol
         const mat4 M = model_to_texture * world_to_model * T_box * rotation * R * T_com;
 
         // @TODO: Replace when proper iterators are implemented for bitfield.
-        for (int64 i = 0; i < atom_mask.size(); i++) {
+        for (i64 i = 0; i < atom_mask.size(); i++) {
             if (bitfield::get_bit(atom_mask, i)) {
                 const vec4 wc = {frame.atom_position.x[i], frame.atom_position.y[i], frame.atom_position.z[i], 1.0f};  // world coord
-                if (math::distance2(com, vec3(wc)) > radial_cutoff * radial_cutoff) continue;
+                if (math::distance2(com, vec3(wc)) > cutoff_squared) continue;
                 const vec4 vc = M * wc;  // volume coord [0,1]
                 const vec3 tc = apply_pbc(vec3(vc));
                 const ivec3 c = (ivec3)(tc * vec3(vol->dim - 1) + 0.5f);
                 ASSERT(-1 < c.x && c.x < vol->dim.x);
                 ASSERT(-1 < c.y && c.y < vol->dim.y);
                 ASSERT(-1 < c.z && c.z < vol->dim.z);
-                const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
+                const i32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
                 platform::atomic_fetch_and_add(vol->voxel_data.ptr + voxel_idx, 1);
                 // vol->voxel_data[voxel_idx]++;
             }
@@ -3829,7 +3858,7 @@ static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const Mol
                 const vec4 vc = M * wc;                                                                                // volume coord [0,1]
                 const vec4 tc = math::fract(vc);                                                                       // PBC
                 const ivec3 c = vec3(tc) * (vec3)vol->dim;
-                const int32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
+                const i32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
                 vol->voxel_data[voxel_idx]++;
             }
         }
@@ -3894,16 +3923,16 @@ static void draw_density_volume_window(ApplicationData* data) {
         ImGui::Separator();
         ImGui::Text("Resolution Scale");
         {
-            static float x = 1.0f;
+            static f32 x = 1.0f;
             if (ImGui::SliderFloat("Scale", &x, 0.125f, 8.0f, "%.3f", 1.0f)) {
-                float rounded_x;
-                float rounded_cur;
+                f32 rounded_x;
+                f32 rounded_cur;
                 if (x < 1.0f) {
                     rounded_x = math::pow(2.0f, math::round(math::log(x) / math::log(2.0f)));
                     rounded_cur = math::pow(2.0f, math::round(math::log(data->density_volume.resolution_scale) / math::log(2.0f)));
                 } else {
-                    rounded_x = (int)x;
-                    rounded_cur = (int)data->density_volume.resolution_scale;
+                    rounded_x = math::floor(x);
+                    rounded_cur = math::floor(data->density_volume.resolution_scale);
                 }
 
                 if (rounded_x != rounded_cur) {
@@ -3947,7 +3976,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                     if (ImGui::IsItemHovered()) {
                         auto mask = data->selection.current_highlight_mask;
                         bitfield::clear_all(mask);
-                        for (int64 j = 0; j < ensemble_mask.size(); ++j) {
+                        for (i64 j = 0; j < ensemble_mask.size(); ++j) {
                             if (ensemble_mask[j]) {
                                 bitfield::set_bit(data->selection.current_highlight_mask, structure.offset + j);
                             }
@@ -3984,60 +4013,59 @@ static void draw_density_volume_window(ApplicationData* data) {
             }
 
             if (ImGui::Button("Compute Density")) {
-                Bitfield filter_mask;
-                bitfield::init(&filter_mask, data->dynamic.molecule.atom.count);
-                defer { bitfield::free(&filter_mask); };
+                task_system::create_task("Big Density", 1, [data](task_system::TaskSetRange range, task_system::TaskData task_data) {
+                    Bitfield filter_mask;
+                    bitfield::init(&filter_mask, data->dynamic.molecule.atom.count);
+                    defer { bitfield::free(&filter_mask); };
 
-                DynamicArray<StoredSelection> sel;
-                sel.push_back({"current", data->selection.current_selection_mask});
-                for (const auto& s : data->selection.stored_selections) {
-                    sel.push_back({s.name, s.atom_mask});
-                }
-                const bool filter_ok = filter::compute_filter_mask(filter_mask, filter_buf, data->dynamic.molecule, sel);
-
-                if (bitfield::number_of_bits_set(filter_mask) > 0) {
-                    const auto traj = data->dynamic.trajectory;
-                    const auto ensemble_structures = data->ensemble_tracking.structures;
-
-                    LOG_NOTE("Performing Density Computation...");
-                    data->density_volume.volume_data_mutex.lock();
-                    clear_volume(&data->density_volume.volume);
-
-                    uint32_t completed_count = 0;
-                    auto t0 = platform::get_time();
-                    enki::TaskSet task(ensemble_structures.size(), [data, filter_mask, &ensemble_structures, &completed_count](
-                                                                       enki::TaskSetPartition range, uint32_t threadnum) {
-                        for (uint32_t i = range.start; i < range.end; ++i) {
-                            auto& structure = ensemble_structures[i];
-                            if (!structure.enabled) continue;
-                            const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(structure.id);
-                            if (!tracking_data) {
-                                LOG_ERROR("Could not find tracking data for structure: %u", structure.id);
-                                continue;
-                            }
-                            append_trajectory_density(&data->density_volume.volume, filter_mask, data->dynamic.trajectory, structure.alignment_matrix,
-                                                      *tracking_data, data->ensemble_tracking.tracking_mode, cutoff);
-                            uint32 count = platform::atomic_fetch_and_add(&completed_count, 1) + 1;
-                            LOG_NOTE("%i / %i...", count, ensemble_structures.size());
-                        }
-                    });
-                    data->thread_pool.AddTaskSetToPipe(&task);
-                    data->thread_pool.WaitforTask(&task);
-                    auto t1 = platform::get_time();
-
-                    data->density_volume.volume.voxel_range = {data->density_volume.volume.voxel_data[0], data->density_volume.volume.voxel_data[0]};
-                    for (auto& v : data->density_volume.volume.voxel_data) {
-                        if (v < data->density_volume.volume.voxel_range.min) data->density_volume.volume.voxel_range.min = v;
-                        if (v > data->density_volume.volume.voxel_range.max) data->density_volume.volume.voxel_range.max = v;
-                        // v *= scl;
+                    DynamicArray<StoredSelection> sel;
+                    sel.push_back({"current", data->selection.current_selection_mask});
+                    for (const auto& s : data->selection.stored_selections) {
+                        sel.push_back({s.name, s.atom_mask});
                     }
+                    const bool filter_ok = filter::compute_filter_mask(filter_mask, filter_buf, data->dynamic.molecule, sel);
 
-                    LOG_NOTE("Done!");
-                    LOG_NOTE("Time taken: %.2f ms", platform::compute_delta_ms(t0, t1));
-                    LOG_NOTE("Max density: %u", data->density_volume.volume.voxel_range.max);
-                    data->density_volume.texture.dirty = true;
-                    data->density_volume.volume_data_mutex.unlock();
-                }
+                    if (bitfield::number_of_bits_set(filter_mask) > 0) {
+                        const auto traj = data->dynamic.trajectory;
+                        const auto ensemble_structures = data->ensemble_tracking.structures;
+
+                        data->density_volume.volume_data_mutex.lock();
+                        clear_volume(&data->density_volume.volume);
+
+                        auto t0 = platform::get_time();
+                        task_system::TaskID task = task_system::create_task(
+                            "Small Density", ensemble_structures.size(),
+                            [data, filter_mask, &ensemble_structures](task_system::TaskSetRange range, task_system::TaskData task_data) {
+                                for (uint32_t i = range.beg; i < range.end; ++i) {
+                                    auto& structure = ensemble_structures[i];
+                                    if (!structure.enabled) continue;
+                                    const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(structure.id);
+                                    if (!tracking_data) {
+                                        // LOG_ERROR("Could not find tracking data for structure: %u", structure.id);
+                                        continue;
+                                    }
+                                    append_trajectory_density(&data->density_volume.volume, filter_mask, data->dynamic.trajectory,
+                                                              structure.alignment_matrix, *tracking_data, data->ensemble_tracking.tracking_mode,
+                                                              cutoff);
+                                }
+                            });
+                        task_system::wait_for_task(task);
+                        auto t1 = platform::get_time();
+
+                        data->density_volume.volume.voxel_range = {data->density_volume.volume.voxel_data[0],
+                                                                   data->density_volume.volume.voxel_data[0]};
+                        for (auto& v : data->density_volume.volume.voxel_data) {
+                            if (v < data->density_volume.volume.voxel_range.min) data->density_volume.volume.voxel_range.min = v;
+                            if (v > data->density_volume.volume.voxel_range.max) data->density_volume.volume.voxel_range.max = v;
+                        }
+
+                        LOG_NOTE("Done!");
+                        LOG_NOTE("Time taken: %.2f ms", platform::compute_delta_ms(t0, t1));
+                        LOG_NOTE("Max density: %u", data->density_volume.volume.voxel_range.max);
+                        data->density_volume.texture.dirty = true;
+                        data->density_volume.volume_data_mutex.unlock();
+                    }
+                });
             }
         }
 
@@ -4115,18 +4143,31 @@ static void draw_density_volume_window(ApplicationData* data) {
                         LOG_NOTE("Computing Internal Reference Frames...");
                         auto t0 = platform::get_time();
                         uint32_t completed_count = 0;
+                        task_system::TaskID task = task_system::create_task(
+                            "Computing Internal Reference Frames...", ensemble_structures.size(),
+                            [ dyn, ensemble_mask, &ensemble_structures, &completed_count ](task_system::TaskSetRange range, task_system::TaskData task_data) {
+                                for (uint32_t i = range.beg; i < range.end; ++i) {
+                                    auto& structure = ensemble_structures[i];
+                                    structure_tracking::compute_trajectory_transform_data(structure.id, dyn, ensemble_mask, structure.offset);
+                                    const u32 count = platform::atomic_fetch_and_add(&completed_count, 1) + 1;
+                                    LOG_NOTE("%i / %i...", count, ensemble_structures.size());
+                                }
+                            });
+                        /*
                         enki::TaskSet task(ensemble_structures.size(), [dyn, ensemble_mask, &ensemble_structures, &completed_count](
                                                                            enki::TaskSetPartition range, uint32_t threadnum) {
                             for (uint32_t i = range.start; i < range.end; ++i) {
                                 auto& structure = ensemble_structures[i];
                                 structure_tracking::compute_trajectory_transform_data(structure.id, dyn, ensemble_mask, structure.offset);
-                                const uint32 count = platform::atomic_fetch_and_add(&completed_count, 1) + 1;
+                                const u32 count = platform::atomic_fetch_and_add(&completed_count, 1) + 1;
                                 LOG_NOTE("%i / %i...", count, ensemble_structures.size());
                             }
                         });
 
                         data->thread_pool.AddTaskSetToPipe(&task);
                         data->thread_pool.WaitforTask(&task);
+                        */
+                        task_system::wait_for_task(task);
                         auto t1 = platform::get_time();
 
                         LOG_NOTE("Done!");
@@ -4161,7 +4202,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                         // const mat3 PCA = mat3(1);
 
                         ensemble_structures[0].alignment_matrix = PCA;
-                        for (int64 i = 1; i < ensemble_structures.size(); i++) {
+                        for (i64 i = 1; i < ensemble_structures.size(); i++) {
                             // LOG_NOTE("%i / %i", (int)(i + 1), (int)ensemble_structures.size());
                             auto& structure = ensemble_structures[i];
                             bitfield::gather_masked(x, frame0.atom_position.x, ensemble_mask, structure.offset);
@@ -4324,16 +4365,16 @@ static void init_molecule_buffers(ApplicationData* data) {
     ASSERT(data);
     const auto& mol = data->dynamic.molecule;
 
-    DynamicArray<uint32> backbone_index_data;
-    DynamicArray<uint32> control_point_index_data;
-    DynamicArray<uint32> spline_index_data;
+    DynamicArray<u32> backbone_index_data;
+    DynamicArray<u32> control_point_index_data;
+    DynamicArray<u32> spline_index_data;
 
     {
-        int32 control_idx = 0;
-        int32 spline_idx = 0;
+        i32 control_idx = 0;
+        i32 spline_idx = 0;
         for (const auto& seq : mol.backbone.sequences) {
             const auto backbone = get_backbone(mol, seq);
-            const int32 count = (int32)backbone.size();
+            const i32 count = (i32)backbone.size();
 
             /*
                 // These indices are needed to compute the backbone angles
@@ -4341,7 +4382,7 @@ static void init_molecule_buffers(ApplicationData* data) {
                                 psi = math::dihedral_angle(n_idx[i], ca_idx[i], c_idx[i], n_idx[i+1]);
             */
 
-            for (int32 i = 0; i < count; i++) {
+            for (i32 i = 0; i < count; i++) {
                 const bool first = (i == 0);
                 const bool last = (i == count - 1);
 
@@ -4368,7 +4409,7 @@ static void init_molecule_buffers(ApplicationData* data) {
 
                 // @NOTE: For every 'base' control point we generate N spline control points (for subdivision)
                 if (!last) {
-                    for (int32 j = 0; j < SPLINE_SUBDIVISION_COUNT; j++) {
+                    for (i32 j = 0; j < SPLINE_SUBDIVISION_COUNT; j++) {
                         spline_index_data.push_back(spline_idx);
                         spline_idx++;
                     }
@@ -4380,22 +4421,22 @@ static void init_molecule_buffers(ApplicationData* data) {
         }
     }
 
-    data->gpu_buffers.backbone.num_backbone_segment_indices = (int32)backbone_index_data.size();
-    data->gpu_buffers.backbone.num_control_point_indices = (int32)control_point_index_data.size();
-    data->gpu_buffers.backbone.num_spline_indices = (int32)spline_index_data.size();
+    data->gpu_buffers.backbone.num_backbone_segment_indices = (i32)backbone_index_data.size();
+    data->gpu_buffers.backbone.num_control_point_indices = (i32)control_point_index_data.size();
+    data->gpu_buffers.backbone.num_spline_indices = (i32)spline_index_data.size();
 
-    LOG_NOTE("num backbone segment indices: %i", (int32)backbone_index_data.size());
-    LOG_NOTE("num control point indices: %i", (int32)control_point_index_data.size());
-    LOG_NOTE("num spline indices: %i", (int32)spline_index_data.size());
+    LOG_NOTE("num backbone segment indices: %i", (i32)backbone_index_data.size());
+    LOG_NOTE("num control point indices: %i", (i32)control_point_index_data.size());
+    LOG_NOTE("num spline indices: %i", (i32)spline_index_data.size());
 
-    const int64 num_backbone_segments = backbone_index_data.size() / 6;
-    const int64 position_buffer_size = mol.atom.count * 3 * sizeof(float);
-    const int64 velocity_buffer_size = mol.atom.count * 3 * sizeof(float);
-    const int64 radius_buffer_size = mol.atom.count * sizeof(float);
-    const int64 bond_buffer_size = mol.covalent_bonds.size() * sizeof(uint32) * 2;
-    const int64 selection_buffer_size = mol.atom.count * sizeof(uint8);
-    const int64 control_point_buffer_size = num_backbone_segments * sizeof(draw::ControlPoint);
-    const int64 spline_buffer_size = control_point_buffer_size * SPLINE_SUBDIVISION_COUNT;
+    const i64 num_backbone_segments = backbone_index_data.size() / 6;
+    const i64 position_buffer_size = mol.atom.count * 3 * sizeof(float);
+    const i64 velocity_buffer_size = mol.atom.count * 3 * sizeof(float);
+    const i64 radius_buffer_size = mol.atom.count * sizeof(float);
+    const i64 bond_buffer_size = mol.covalent_bonds.size() * sizeof(u32) * 2;
+    const i64 selection_buffer_size = mol.atom.count * sizeof(u8);
+    const i64 control_point_buffer_size = num_backbone_segments * sizeof(draw::ControlPoint);
+    const i64 spline_buffer_size = control_point_buffer_size * SPLINE_SUBDIVISION_COUNT;
 
     if (!data->gpu_buffers.position) glGenBuffers(1, &data->gpu_buffers.position);
     if (!data->gpu_buffers.old_position) glGenBuffers(1, &data->gpu_buffers.old_position);
@@ -4449,7 +4490,7 @@ static void init_molecule_buffers(ApplicationData* data) {
 
     DynamicArray<ivec2> res_offset_count(mol.residues.count);
     for (int64_t i = 0; i < mol.residues.count; i++) {
-        res_offset_count[i] = {(int32_t)mol.residues[i].atom_range.beg, (int32_t)mol.residues[i].atom_range.size()};
+        res_offset_count[i] = {(int32_t)mol.residues[i].atom_range.beg, (int32_t)mol.residues[i].atom_range.ext()};
     }
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.experimental.residue);
@@ -4533,7 +4574,7 @@ static void copy_molecule_data_to_buffers(ApplicationData* data) {
             return;
         }
 
-        for (int64 i = 0; i < N; i++) {
+        for (i64 i = 0; i < N; i++) {
             pos_gpu[i * 3 + 0] = pos_x[i];
             pos_gpu[i * 3 + 1] = pos_y[i];
             pos_gpu[i * 3 + 2] = pos_z[i];
@@ -4545,14 +4586,14 @@ static void copy_molecule_data_to_buffers(ApplicationData* data) {
         data->gpu_buffers.dirty.selection = false;
 
         glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.selection);
-        uint8* sel_gpu = (uint8*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+        u8* sel_gpu = (u8*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
 
         if (!sel_gpu) {
             LOG_ERROR("Could not map selection buffer");
             return;
         }
 
-        for (int64 i = 0; i < N; i++) {
+        for (i64 i = 0; i < N; i++) {
             const bool selection = bitfield::get_bit(data->selection.current_selection_mask, i);
             const bool highlight = bitfield::get_bit(data->selection.current_highlight_mask, i);
             sel_gpu[i] = (selection ? 0x2 : 0) | (highlight ? 0x1 : 0);
@@ -4586,8 +4627,8 @@ static void free_molecule_data(ApplicationData* data) {
         free_trajectory_data(data);
     }
     free_molecule_buffers(data);
-    free_backbone_angles_trajectory(&data->ramachandran.backbone_angles);
-    data->ramachandran.backbone_angles = {};
+    // free_backbone_angles_trajectory(&data->ramachandran.backbone_angles);
+    // data->ramachandran.backbone_angles = {};
     data->hydrogen_bonds.bonds.clear();
     data->hydrogen_bonds.dirty = true;
     data->gpu_buffers.dirty.backbone = true;
@@ -4646,8 +4687,8 @@ static void init_trajectory_data(ApplicationData* data) {
         }
 
         init_density_volume(data);
-        init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->dynamic);
-        compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->dynamic);
+        // init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->dynamic);
+        // compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->dynamic);
     }
 }
 
@@ -4692,7 +4733,7 @@ static void load_molecule_data(ApplicationData* data, CStringView file) {
             }
             data->async.trajectory.sync.signal_stop_and_wait();
             free_trajectory_data(data);
-            if (!xtc::init_trajectory_from_file(&data->dynamic.trajectory, (int32)data->dynamic.molecule.atom.count, file)) {
+            if (!xtc::init_trajectory_from_file(&data->dynamic.trajectory, (i32)data->dynamic.molecule.atom.count, file)) {
                 LOG_ERROR("ERROR! Problem loading trajectory.");
                 return;
             }
@@ -4704,9 +4745,9 @@ static void load_molecule_data(ApplicationData* data, CStringView file) {
         }
         auto t1 = platform::get_time();
         LOG_NOTE("Success! operation took %.3fs.", platform::compute_delta_ms(t0, t1) / 1000.f);
-        LOG_NOTE("Number of chains: %i", (int32)data->dynamic.molecule.chains.size());
-        LOG_NOTE("Number of residues: %i", (int32)data->dynamic.molecule.residues.size());
-        LOG_NOTE("Number of atoms: %i", (int32)data->dynamic.molecule.atom.count);
+        LOG_NOTE("Number of chains: %i", (i32)data->dynamic.molecule.chains.size());
+        LOG_NOTE("Number of residues: %i", (i32)data->dynamic.molecule.residues.size());
+        LOG_NOTE("Number of atoms: %i", (i32)data->dynamic.molecule.atom.count);
     }
 }
 
@@ -4786,7 +4827,7 @@ static CStringView get_color_mapping_name(ColorMapping mapping) {
 static vec4 to_vec4(CStringView txt, const vec4& default_val = vec4(1)) {
     vec4 res = default_val;
     DynamicArray<CStringView> tokens = tokenize(txt, ",");
-    int32 count = (int32)tokens.size() < 4 ? (int32)tokens.size() : 4;
+    i32 count = (i32)tokens.size() < 4 ? (i32)tokens.size() : 4;
     for (int i = 0; i < count; i++) {
         res[i] = to_float(tokens[i]);
     }
@@ -4925,7 +4966,7 @@ static void save_workspace(ApplicationData* data, CStringView file) {
         fprintf(fptr, "Type=%s\n", get_rep_type_name(rep.type).cstr());
         fprintf(fptr, "ColorMapping=%s\n", get_color_mapping_name(rep.color_mapping).cstr());
         fprintf(fptr, "Enabled=%i\n", (int)rep.enabled);
-        fprintf(fptr, "StaticColor=%g,%g,%g,%g\n", rep.uniform_color.r, rep.uniform_color.g, rep.uniform_color.b, rep.uniform_color.a);
+        fprintf(fptr, "StaticColor=%g,%g,%g,%g\n", rep.uniform_color.x, rep.uniform_color.y, rep.uniform_color.z, rep.uniform_color.w);
         fprintf(fptr, "Radius=%g\n", rep.radius);
         fprintf(fptr, "Tension=%g\n", rep.tension);
         fprintf(fptr, "Width=%g\n", rep.width);
@@ -4964,7 +5005,7 @@ static void save_workspace(ApplicationData* data, CStringView file) {
         const auto color = data->density_volume.iso.isosurfaces.colors[i];
         fprintf(fptr, "[Isosurface]\n");
         fprintf(fptr, "Isovalue=%g\n", value);
-        fprintf(fptr, "IsosurfaceColor=%g,%g,%g,%g\n", color.r, color.g, color.b, color.a);
+        fprintf(fptr, "IsosurfaceColor=%g,%g,%g,%g\n", color.x, color.y, color.z, color.w);
     }
 
     fprintf(fptr, "[Camera]\n");
@@ -5086,7 +5127,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
     void* mem = TMP_MALLOC(data->dynamic.molecule.atom.count * sizeof(uint32_t));
     defer { TMP_FREE(mem); };
 
-    ArrayView<uint32_t> colors((uint32_t*)mem, data->dynamic.molecule.atom.count);
+    Array<uint32_t> colors((uint32_t*)mem, data->dynamic.molecule.atom.count);
     const auto& mol = data->dynamic.molecule;
 
     switch (rep->color_mapping) {
@@ -5146,7 +5187,7 @@ static void reset_representations(ApplicationData* data) {
 static void clear_representations(ApplicationData* data) {
     ASSERT(data);
     while (data->representations.buffer.size() > 0) {
-        remove_representation(data, (int32)data->representations.buffer.size() - 1);
+        remove_representation(data, (i32)data->representations.buffer.size() - 1);
     }
 }
 
@@ -5202,7 +5243,7 @@ static bool handle_selection(ApplicationData* data) {
     static bool region_select = false;
     static platform::Coordinate x0;
     const platform::Coordinate x1 = data->ctx.input.mouse.win_coord;
-    const int64 N = data->dynamic.molecule.atom.count;
+    const i64 N = data->dynamic.molecule.atom.count;
     const bool shift_down = data->ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data->ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
     const bool mouse_down = data->ctx.input.mouse.down[0] || data->ctx.input.mouse.down[1];
 
@@ -5256,7 +5297,7 @@ static bool handle_selection(ApplicationData* data) {
             const vec2 res = {data->ctx.window.width, data->ctx.window.height};
             const mat4 mvp = data->view.param.matrix.current.view_proj;
 
-            for (int64 i = 0; i < N; i++) {
+            for (i64 i = 0; i < N; i++) {
                 if (!bitfield::get_bit(data->representations.atom_visibility_mask, i)) continue;
 #if 1
                 // @PERF: Do the projection manually. GLM is super slow in doing the matrix vector multiplication on msvc for some reason...
@@ -5368,7 +5409,7 @@ static void handle_camera_interaction(ApplicationData* data) {
         if (ImGui::GetIO().MouseDoubleClicked[0]) {
             if (data->picking.depth < 1.0f) {
                 const vec3 forward = data->view.camera.orientation * vec3(0, 0, 1);
-                const float32 dist = data->view.trackball_state.distance;
+                const f32 dist = data->view.trackball_state.distance;
                 data->view.animation.target_position = data->picking.world_coord + forward * dist;
             }
         }
@@ -5382,17 +5423,17 @@ static void handle_camera_interaction(ApplicationData* data) {
 }
 
 static void handle_camera_animation(ApplicationData* data) {
-    const float32 dt = math::min(data->ctx.timing.delta_s, 0.033f);
+    const f32 dt = math::min(data->ctx.timing.delta_s, 0.033f);
     {
         // #camera-translation
-        constexpr float32 speed = 10.0f;
+        constexpr f32 speed = 10.0f;
         const vec3 vel = (data->view.animation.target_position - data->view.camera.position) * speed;
         data->view.camera.position += vel * dt;
     }
     {
         // #focus-depth
-        constexpr float32 speed = 10.0f;
-        const float32 vel = (data->visuals.dof.focus_depth.target - data->visuals.dof.focus_depth.current) * speed;
+        constexpr f32 speed = 10.0f;
+        const f32 vel = (data->visuals.dof.focus_depth.target - data->visuals.dof.focus_depth.current) * speed;
         data->visuals.dof.focus_depth.current += vel * dt;
     }
 #if 0
@@ -5746,18 +5787,18 @@ static void fill_gbuffer(const ApplicationData& data) {
 static void update_properties(ApplicationData* data) {
     // @NOTE: This is stupid and should be updated
     stats::async_update(
-        data->dynamic, {(int32)data->time_filter.range.beg, (int32)data->time_filter.range.end},
+        data->dynamic, {(i32)data->time_filter.range.beg, (i32)data->time_filter.range.end},
         [](void* usr_data) {
             ApplicationData* data = (ApplicationData*)usr_data;
             if (data->density_volume.enabled) {
                 data->density_volume.volume_data_mutex.lock();
-                const Range<int32> range = {(int32)data->time_filter.range.beg, (int32)data->time_filter.range.end};
+                const Range<i32> range = {(i32)data->time_filter.range.beg, (i32)data->time_filter.range.end};
 
                 const ReferenceFrame* ref = get_active_reference_frame(data);
                 if (ref) {
                     const structure_tracking::ID id = ref->id;
                     stats::compute_density_volume_with_basis(
-                        &data->density_volume.volume, data->dynamic.trajectory, range, [ref, data](const vec4& world_pos, int32 frame_idx) -> vec4 {
+                        &data->density_volume.volume, data->dynamic.trajectory, range, [ref, data](const vec4& world_pos, i32 frame_idx) -> vec4 {
                             const auto tracking_data = structure_tracking::get_tracking_data(ref->id);
                             if (!tracking_data) {
                                 LOG_ERROR("Could not find tracking data for supplied id: '%lu'", ref->id);
@@ -5814,7 +5855,7 @@ static void update_density_volume_texture(ApplicationData* data) {
             volume::set_volume_texture_data(data->density_volume.texture.id, data->density_volume.volume.dim,
                                             data->density_volume.volume.voxel_data.ptr, data->density_volume.volume.voxel_range.max);
             data->density_volume.volume_data_mutex.unlock();
-            data->density_volume.texture.max_value = (float)data->density_volume.volume.voxel_range.y;
+            data->density_volume.texture.max_value = (float)data->density_volume.volume.voxel_range.end;
             data->density_volume.texture.dirty = false;
         }
     }
@@ -5839,8 +5880,8 @@ static void handle_picking(ApplicationData* data) {
             data->picking.depth = 1.f;
         } else {
 #if PICKING_JITTER_HACK
-            static uint32 frame_idx = 0;
-            static uint32 ref_frame = 0;
+            static u32 frame_idx = 0;
+            static u32 ref_frame = 0;
             frame_idx = (frame_idx + 1) % 16;
             // @NOTE: If we have jittering applied, we cannot? retreive the original pixel value (without the jitter)
             // Solution, pick one reference frame out of the jittering sequence and use that one...
@@ -5851,9 +5892,9 @@ static void handle_picking(ApplicationData* data) {
             }
 
             if (ref_frame == frame_idx || data->view.param.jitter.current == vec2(0, 0)) {
-                data->picking = read_picking_data(data->fbo, (int32)math::round(coord.x), (int32)math::round(coord.y));
+                data->picking = read_picking_data(data->fbo, (i32)math::round(coord.x), (i32)math::round(coord.y));
                 if (data->picking.idx != NO_PICKING_IDX)
-                    data->picking.idx = math::clamp(data->picking.idx, 0U, (uint32)data->dynamic.molecule.atom.count - 1U);
+                    data->picking.idx = math::clamp(data->picking.idx, 0U, (u32)data->dynamic.molecule.atom.count - 1U);
                 const vec4 viewport(0, 0, data->fbo.width, data->fbo.height);
                 data->picking.world_coord =
                     math::unproject(vec3(coord.x, coord.y, data->picking.depth), data->view.param.matrix.inverse.view_proj_jittered, viewport);
@@ -5988,9 +6029,9 @@ static void update_reference_frames(ApplicationData* data) {
     const auto& mol = data->dynamic.molecule;
     const auto& traj = data->dynamic.trajectory;
 
-    const float64 time = data->playback.time;
+    const f64 time = data->playback.time;
     const int last_frame = math::max(0, traj.num_frames - 1);
-    const float32 t = (float)math::fract(data->playback.time);
+    const f32 t = (float)math::fract(data->playback.time);
     const int frame = math::clamp((int)time, 0, last_frame);
     const int p2 = math::max(0, frame - 1);
     const int p1 = math::max(0, frame);
@@ -6002,7 +6043,7 @@ static void update_reference_frames(ApplicationData* data) {
     for (auto& ref : data->reference_frame.frames) {
         const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(ref.id);
         if (tracking_data) {
-            const int64 masked_count = bitfield::number_of_bits_set(ref.atom_mask);
+            const i64 masked_count = bitfield::number_of_bits_set(ref.atom_mask);
             if (masked_count == 0) break;
 
             void* w_mem = TMP_MALLOC(sizeof(float) * 1 * masked_count);
@@ -6104,9 +6145,9 @@ static void superimpose_ensemble(ApplicationData* data) {
     const auto& mol = data->dynamic.molecule;
     const auto& traj = data->dynamic.trajectory;
 
-    const float64 time = data->playback.time;
+    const f64 time = data->playback.time;
     const int last_frame = math::max(0, traj.num_frames - 1);
-    const float32 t = (float)math::fract(data->playback.time);
+    const f32 t = (float)math::fract(data->playback.time);
     const int frame = math::clamp((int)time, 0, last_frame);
     const int p2 = math::max(0, frame - 1);
     const int p1 = math::max(0, frame);
@@ -6127,7 +6168,7 @@ static void superimpose_ensemble(ApplicationData* data) {
         const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(structure.id);
         if (tracking_data) {
 
-            const int64 masked_count = bitfield::number_of_bits_set(atom_mask);
+            const i64 masked_count = bitfield::number_of_bits_set(atom_mask);
             if (masked_count == 0) break;
 
             void* w_mem = TMP_MALLOC(sizeof(float) * 1 * masked_count);
@@ -6209,7 +6250,7 @@ static void superimpose_ensemble(ApplicationData* data) {
             // PCA = mat4(1);
 
             structure.world_to_structure = T_box * structure.alignment_matrix * R * T_com;
-            for (int64 i = 0; i < atom_mask.size(); i++) {
+            for (i64 i = 0; i < atom_mask.size(); i++) {
                 if (atom_mask[i]) {
                     bitfield::set_bit(ensemble_atom_mask, structure.offset + i);
                     float& x = mol.atom.position.x[structure.offset + i];
@@ -6228,7 +6269,7 @@ static void superimpose_ensemble(ApplicationData* data) {
     }
 
     // @NOTE: Modify all non ensemble included atoms with the reference structures transform
-    for (int64 i = 0; i < ensemble_atom_mask.size(); i++) {
+    for (i64 i = 0; i < ensemble_atom_mask.size(); i++) {
         if (!ensemble_atom_mask[i]) {
             float& x = mol.atom.position.x[i];
             float& y = mol.atom.position.y[i];
@@ -6269,6 +6310,27 @@ static void on_trajectory_load_complete(ApplicationData* data) {
 // #async
 static void load_trajectory_async(ApplicationData* data) {
     ASSERT(data);
+
+    static task_system::TaskID id = 0;
+
+    // Wait for task to complete if already running
+    if (id != 0) {
+        task_system::interrupt_and_wait(id);
+    }
+
+    id = task_system::create_task("Loading Trajectory", [data](task_system::TaskSetRange range, task_system::TaskData task_data) {
+        while (read_next_trajectory_frame(&data->dynamic.trajectory)) {
+            // data->async.trajectory.fraction = data->dynamic.trajectory.num_frames / (float)data->dynamic.trajectory.frame_offsets.size();
+            on_trajectory_frame_loaded(data, data->dynamic.trajectory.num_frames - 1);
+            if (task_data.interrupt) break;
+        }
+
+        if (!task_data.interrupt) {
+            on_trajectory_load_complete(data);
+        }
+    });
+
+    /*
     // Wait for thread to finish if already running
     if (data->async.trajectory.sync.running) {
         data->async.trajectory.sync.signal_stop_and_wait();
@@ -6295,6 +6357,7 @@ static void load_trajectory_async(ApplicationData* data) {
         });
         data->async.trajectory.sync.thread.detach();
     }
+    */
 }
 
 static void compute_backbone_angles_async(ApplicationData* data) {
@@ -6308,7 +6371,8 @@ static void compute_backbone_angles_async(ApplicationData* data) {
             while (data->async.backbone_angles.query_update) {
                 data->async.backbone_angles.query_update = false;
                 data->async.backbone_angles.fraction = 0.5f;
-                compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->dynamic);
+                // compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->dynamic);
+                ramachandran::initialize(data->dynamic);
                 if (data->async.backbone_angles.sync.stop_signal) break;
             }
             data->async.backbone_angles.fraction = 1.f;
@@ -6333,9 +6397,9 @@ static void init_density_volume(ApplicationData* data) {
 }
 
 static void draw_representations(const ApplicationData& data) {
-    const int32 atom_count = (int32)data.dynamic.molecule.atom.count;
-    const int32 bond_count = (int32)data.dynamic.molecule.covalent_bonds.count;
-    const int32 res_count = (int32)data.dynamic.molecule.residues.count;
+    const i32 atom_count = (i32)data.dynamic.molecule.atom.count;
+    const i32 bond_count = (i32)data.dynamic.molecule.covalent_bonds.count;
+    const i32 res_count = (i32)data.dynamic.molecule.residues.count;
 
     PUSH_GPU_SECTION("Full Detail") for (const auto& rep : data.representations.buffer) {
         if (!rep.enabled) continue;
@@ -6385,9 +6449,9 @@ static void draw_representations(const ApplicationData& data) {
     POP_GPU_SECTION()
 }
 
-static void draw_representations_lean_and_mean(const ApplicationData& data, vec4 color, float scale, uint32 mask) {
-    const int32 atom_count = (int32)data.dynamic.molecule.atom.count;
-    const int32 bond_count = (int32)data.dynamic.molecule.covalent_bonds.size();
+static void draw_representations_lean_and_mean(const ApplicationData& data, vec4 color, float scale, u32 mask) {
+    const i32 atom_count = (i32)data.dynamic.molecule.atom.count;
+    const i32 bond_count = (i32)data.dynamic.molecule.covalent_bonds.size();
 
     PUSH_GPU_SECTION("Lean and Mean")
     for (const auto& rep : data.representations.buffer) {

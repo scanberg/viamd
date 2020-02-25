@@ -18,10 +18,10 @@ void shutdown();
 // This is packed for 32-bit alignment because transform feedback only outputs full 32-bit types, so the real output is packed into uint32s.
 struct ControlPoint {
     float position[3];
-    int16 support_vector[3];
-    int16 tangent_vector[3];
-    uint8 classification[4];  // classification probabilities: Coil, Sheet, Helix etc.
-    uint32 atom_index;
+    i16 support_vector[3];
+    i16 tangent_vector[3];
+    u8 classification[4];  // classification probabilities: Coil, Sheet, Helix etc.
+    u32 atom_index;
 };
 
 struct AtomPosition {
@@ -33,7 +33,7 @@ struct AtomRadius {
 };
 
 struct AtomColor {
-    uint8 r, g, b, a;
+    u8 r, g, b, a;
 };
 
 struct AtomVelocity {
@@ -41,11 +41,11 @@ struct AtomVelocity {
 };
 
 struct AtomMask {
-    uint8 mask;
+    u8 mask;
 };
 
 struct Bond {
-    uint32 atom_range[2];
+    u32 atom_range[2];
 };
 
 inline void generate_residue_buffer(GLuint* id, int32_t count) {
@@ -79,24 +79,24 @@ void draw_culled_aabbs(GLuint visibility_buffer, GLuint aabb_buffer, const ViewP
 void cull_aabbs(GLuint visibility_buffer, GLuint aabb_buffer, const ViewParam& view_param, int32_t count);
 
 void draw_culled_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_view_velocity_buffer,
-                     GLuint chunk_visibility_buffer, GLuint chunk_buffer, int32 chunk_count, const ViewParam& view_param, float radius_scale);
+                     GLuint chunk_visibility_buffer, GLuint chunk_buffer, i32 chunk_count, const ViewParam& view_param, float radius_scale);
 }  // namespace culling
 
-void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_view_velocity_buffer, int32 atom_count, const ViewParam& view_param,
+void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_view_velocity_buffer, i32 atom_count, const ViewParam& view_param,
               float radius_scale = 1.f);
-void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint atom_velocity_buffer, GLuint bond_buffer, int32 bond_count, const ViewParam& view_param, float radius_scale = 1.f);
-void draw_ribbons(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_color_buffer, GLuint atom_velocity_buffer, int32 num_spline_indices, const ViewParam& view_param);
-void draw_cartoon(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_color_buffer, int32 num_spline_indices, const ViewParam& view_param);
-void draw_spline(GLuint spline_buffer, GLuint spline_index_buffer, int32 num_spline_indices, const ViewParam& view_param, uint32 s_color = 0xFF00FF00, uint32 v_color = 0xFF0000FF,
-                 uint32 t_color = 0xFFFF0000);
+void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint atom_velocity_buffer, GLuint bond_buffer, i32 bond_count, const ViewParam& view_param, float radius_scale = 1.f);
+void draw_ribbons(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_color_buffer, GLuint atom_velocity_buffer, i32 num_spline_indices, const ViewParam& view_param);
+void draw_cartoon(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_color_buffer, i32 num_spline_indices, const ViewParam& view_param);
+void draw_spline(GLuint spline_buffer, GLuint spline_index_buffer, i32 num_spline_indices, const ViewParam& view_param, u32 s_color = 0xFF00FF00, u32 v_color = 0xFF0000FF,
+                 u32 t_color = 0xFFFF0000);
 
 namespace lean_and_mean {
-void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, int32 atom_count, const ViewParam& view_param, float radius_scale = 1.f,
-              vec4 color = vec4(1, 1, 1, 1), uint32 mask = 0xFFFFFFFFU);
-void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, GLuint bond_buffer, int32 bond_count, const ViewParam& view_param, float radius_scale = 1.f,
-                   vec4 color = vec4(1, 1, 1, 1), uint32 mask = 0xFFFFFFFFU);
-void draw_ribbons(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, int32 num_spline_indices, const ViewParam& view_param, float scale = 1.f,
-                  vec4 color = vec4(1, 1, 1, 1), uint32 mask = 0xFFFFFFFFU);
+void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, i32 atom_count, const ViewParam& view_param, float radius_scale = 1.f,
+              vec4 color = vec4(1, 1, 1, 1), u32 mask = 0xFFFFFFFFU);
+void draw_licorice(GLuint atom_position_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, GLuint bond_buffer, i32 bond_count, const ViewParam& view_param, float radius_scale = 1.f,
+                   vec4 color = vec4(1, 1, 1, 1), u32 mask = 0xFFFFFFFFU);
+void draw_ribbons(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_color_buffer, GLuint atom_mask_buffer, i32 num_spline_indices, const ViewParam& view_param, float scale = 1.f,
+                  vec4 color = vec4(1, 1, 1, 1), u32 mask = 0xFFFFFFFFU);
 
 // void draw_ribbons(GLuint spline_buffer, GLuint spline_index_buffer, int32 num_spline_indices, const ViewParam& view_param);
 // void draw_cartoon(GLuint spline_buffer, GLuint spline_index_buffer, GLuint atom_color_buffer, int32 num_spline_indices, const ViewParam& view_param);
@@ -107,7 +107,7 @@ void compute_backbone_spline(GLuint dst_buffer, GLuint control_point_buffer, GLu
 void compute_pbc_view_velocity(GLuint dst_buffer, GLuint position_buffer, GLuint old_position_buffer, int count, const ViewParam& view_param, const vec3& box_ext);
 
 namespace sdf {
-void compute_vdw_sdf(GLuint atom_pos_buffer, GLuint atom_rad_buffer, int32 atom_count, const AABB& aabb, float max_sphere_radius);
+void compute_vdw_sdf(GLuint atom_pos_buffer, GLuint atom_rad_buffer, i32 atom_count, const AABB& aabb, float max_sphere_radius);
 void draw_sdf(const ViewParam& view_param);
 void draw_sdf_debug(const ViewParam& view_param);
 

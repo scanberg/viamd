@@ -72,14 +72,19 @@ mat4 perspective_projection_matrix(const Camera& camera, int width, int height, 
     return frustum(xm * cn, xp * cn, ym * cn, yp * cn, cn, cf);
 }
 
-// @TODO: This is messed up... what values should one use to control the zoomlevel?
-mat4 orthographic_projection_matrix(float left, float right, float bottom, float top) {
-    mat4 M{1};
+mat4 orthographic_projection_matrix(float l, float r, float b, float t) {
+    mat4 M{};
+    M[0][0] = 2.0f / (r - l);
+    M[1][1] = 2.0f / (t - b);
+    M[2][2] = -1.0f;
+    M[3][0] = -(r + l) / (r - l);
+    M[3][1] = -(t + b) / (t - b);
+    M[3][3] = 1.0f;
     return M;
 }
 
 mat4 orthographic_projection_matrix(float l, float r, float b, float t, float n, float f) {
-    mat4 M{1};
+    mat4 M{};
     M[0][0] = 2.0f / (r - l);
     M[1][1] = 2.0f / (t - b);
     M[2][2] = -2.0f / (f - n);
@@ -94,13 +99,12 @@ mat3 look_at(const vec3& look_from, const vec3& look_at, const vec3& look_up) {
     const vec3 f(math::normalize(look_at - look_from));
     const vec3 s(math::normalize(math::cross(f, look_up)));
     const vec3 u(math::cross(s, f));
-
 	const mat4 M = {{s.x, u.x, -f.x, 0.0f}, {s.y, u.y, -f.y, 0.0f}, {s.z, u.z, -f.z, 0.0f}, {-math::dot(s, look_from), -math::dot(u, look_from), math::dot(f, look_from), 1.0f}};
     return M;
 }
 
 static inline float project_to_sphere(float r, vec2 v) {
-    float d = math::length(v);
+    const float d = math::length(v);
     if (d < r * 0.70710678118654752440f) {
         // On sphere
         return math::sqrt(r * r - d * d);

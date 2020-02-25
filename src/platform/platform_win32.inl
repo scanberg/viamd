@@ -61,4 +61,4 @@ CStringView get_cwd() {
 	return data.file_system.cwd;
 }
 
-void sleep(int32 milliseconds) { Sleep(milliseconds); }
+void sleep(i32 milliseconds) { Sleep(milliseconds); }

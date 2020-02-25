@@ -167,14 +167,14 @@ void free_volume_texture(GLuint texture) {
 
 void set_volume_texture_data(GLuint texture, const ivec3& dim, const uint32_t* data, uint32_t max_value) {
     if (glIsTexture(texture)) {
-        const int64 size = dim.x * dim.y * dim.z;
+        const i64 size = dim.x * dim.y * dim.z;
         float* rescaled_data = (float*)TMP_MALLOC(size * sizeof(float));
         defer { TMP_FREE(rescaled_data); };
         ASSERT(rescaled_data);
 
         if (max_value > 0) {
             const float scl = 1.0f / (float)max_value;
-            for (int64 i = 0; i < size; ++i) {
+            for (i64 i = 0; i < size; ++i) {
                 rescaled_data[i] = (float)data[i] * scl;
             }
         } else {

@@ -13,10 +13,10 @@ struct Vertex {
     vec3 position = {0, 0, 0};
     vec3 normal = {0, 0, 1};
     vec2 uv = {0, 0};
-    uint32 color = DEFAULT_COLOR;
+    u32 color = DEFAULT_COLOR;
 };
 
-using Index = uint32;
+using Index = u32;
 
 struct DrawCommand {
     Index offset;
@@ -100,7 +100,7 @@ void main() {
 )";
 
 static inline void append_draw_command(Index count, GLenum primitive_type) {
-    const uint32 max_size = (sizeof(Index) == 2 ? 0xFFFFU : 0xFFFFFFFFU);
+    const u32 max_size = (sizeof(Index) == 2 ? 0xFFFFU : 0xFFFFFFFFU);
     ASSERT(indices.size() + count < max_size);
     if (commands.size() > 0 && commands.back().primitive_type == primitive_type) {
         commands.back().count += count;
@@ -173,7 +173,7 @@ void initialize() {
 
     glBindVertexArray(0);
 
-    constexpr uint32 pixel_data = 0xffffffff;
+    constexpr u32 pixel_data = 0xffffffff;
     if (!default_tex) glGenTextures(1, &default_tex);
     glBindTexture(GL_TEXTURE_2D, default_tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, &pixel_data);
@@ -274,7 +274,7 @@ void flush() {
 }
 
 // PRIMITIVES
-void draw_point(const vec3& pos, uint32 color) {
+void draw_point(const vec3& pos, u32 color) {
     const Index idx = (Index)vertices.size();
 
     vertices.push_back({pos, vec3(0, 0, 1), {0, 0}, color});
@@ -283,7 +283,7 @@ void draw_point(const vec3& pos, uint32 color) {
     append_draw_command(1, GL_POINTS);
 }
 
-void draw_line(const vec3& from, const vec3& to, uint32 color) {
+void draw_line(const vec3& from, const vec3& to, u32 color) {
     const Index idx = (Index)vertices.size();
 
     vertices.push_back({from, {0, 0, 1}, {0, 0}, color});
@@ -295,7 +295,7 @@ void draw_line(const vec3& from, const vec3& to, uint32 color) {
     append_draw_command(2, GL_LINES);
 }
 
-void draw_triangle(const vec3& p0, const vec3& p1, const vec3& p2, uint32 color) {
+void draw_triangle(const vec3& p0, const vec3& p1, const vec3& p2, u32 color) {
     const Index idx = (Index)vertices.size();
     const vec3 normal = math::normalize(math::cross(p1 - p0, p2 - p0));
 
@@ -310,7 +310,7 @@ void draw_triangle(const vec3& p0, const vec3& p1, const vec3& p2, uint32 color)
     append_draw_command(3, GL_TRIANGLES);
 }
 
-void draw_plane(const vec3& center, const vec3& vec_u, const vec3& vec_v, uint32 color) {
+void draw_plane(const vec3& center, const vec3& vec_u, const vec3& vec_v, u32 color) {
     const Index idx = (Index)vertices.size();
     const vec3 normal = math::normalize(math::cross(vec_u, vec_v));
 
@@ -329,7 +329,7 @@ void draw_plane(const vec3& center, const vec3& vec_u, const vec3& vec_v, uint32
     append_draw_command(6, GL_TRIANGLES);
 }
 
-void draw_plane_wireframe(const vec3& center, const vec3& vec_u, const vec3& vec_v, uint32 color, int segments_u, int segments_v) {
+void draw_plane_wireframe(const vec3& center, const vec3& vec_u, const vec3& vec_v, u32 color, int segments_u, int segments_v) {
     ASSERT(segments_u > 0);
     ASSERT(segments_v > 0);
 
@@ -393,7 +393,7 @@ void draw_aabb(const vec3& min_box, const vec3& max_box) {
 }
 */
 
-void draw_box_wireframe(const vec3& min_box, const vec3& max_box, uint32 color) {
+void draw_box_wireframe(const vec3& min_box, const vec3& max_box, u32 color) {
     // Z = min
     draw_line(vec3(min_box[0], min_box[1], min_box[2]), vec3(max_box[0], min_box[1], min_box[2]), color);
     draw_line(vec3(min_box[0], min_box[1], min_box[2]), vec3(min_box[0], max_box[1], min_box[2]), color);
@@ -413,7 +413,7 @@ void draw_box_wireframe(const vec3& min_box, const vec3& max_box, uint32 color) 
     draw_line(vec3(max_box[0], max_box[1], min_box[2]), vec3(max_box[0], max_box[1], max_box[2]), color);
 }
 
-void draw_box_wireframe(const vec3& min_box, const vec3& max_box, const mat4& model_matrix, uint32 color) {
+void draw_box_wireframe(const vec3& min_box, const vec3& max_box, const mat4& model_matrix, u32 color) {
 
     const mat3 R = mat3(model_matrix);
     const vec3 trans = model_matrix[3];
@@ -436,7 +436,7 @@ void draw_box_wireframe(const vec3& min_box, const vec3& max_box, const mat4& mo
     draw_line(trans + R * vec3(max_box[0], max_box[1], min_box[2]), trans + R * vec3(max_box[0], max_box[1], max_box[2]), color);
 }
 
-void draw_basis(const mat4& basis, const float scale, uint32 x_color, uint32 y_color, uint32 z_color) {
+void draw_basis(const mat4& basis, const float scale, u32 x_color, u32 y_color, u32 z_color) {
     const vec3 o = vec3(basis[3]);
     const vec3 x = o + vec3(basis[0]) * scale;
     const vec3 y = o + vec3(basis[1]) * scale;

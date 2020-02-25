@@ -5,7 +5,7 @@ void init_volume(Volume* vol, ivec3 dim) {
     if (vol->voxel_data) {
         free_array(&vol->voxel_data);
     }
-    int32 count = dim.x * dim.y * dim.z;
+    i32 count = dim.x * dim.y * dim.z;
     ASSERT(count > 0);
     vol->voxel_data = allocate_array<Volume::VoxelDataType>(count);
     vol->dim = dim;

@@ -492,29 +492,29 @@ inline int compute_voxel_idx(const ivec3& res, const ivec3& coord) { return coor
 
 inline int compute_voxel_idx(const GPUVolume& data, const vec3& coord) { return compute_voxel_idx(data.resolution, compute_voxel_coord(data, coord)); }
 
-inline uint32 accumulate_voxel_color(uint32 current_color, uint32 new_color, float counter) {
+inline u32 accumulate_voxel_color(u32 current_color, u32 new_color, float counter) {
     vec4 c = math::convert_color(current_color);
     vec4 n = math::convert_color(new_color);
     c = (counter * c + n) / (counter + 1.f);
     return math::convert_color(c);
 }
 
-void voxelize_spheres_cpu(const GPUVolume& vol, ArrayView<const vec3> atom_pos, ArrayView<const float> atom_radii, ArrayView<const uint32> atom_colors) {
+void voxelize_spheres_cpu(const GPUVolume& vol, Array<const vec3> atom_pos, Array<const float> atom_radii, Array<const u32> atom_colors) {
     ASSERT(atom_pos.count == atom_radii.count);
     ASSERT(atom_pos.count == atom_colors.count);
-    const int32 N = (int32)atom_pos.count;
+    const i32 N = (i32)atom_pos.count;
 
-    const int32 voxel_count = vol.resolution.x * vol.resolution.y * vol.resolution.z;
+    const i32 voxel_count = vol.resolution.x * vol.resolution.y * vol.resolution.z;
     if (voxel_count == 0) {
         LOG_WARNING("Volume resolution is zero on one or more axes.");
         return;
     }
 
-    DynamicArray<uint32> voxel_data(voxel_count);
+    DynamicArray<u32> voxel_data(voxel_count);
     // For running mean
     DynamicArray<float> voxel_counter(voxel_data.size(), 1);
 
-    for (int32 i = 0; i < N; i++) {
+    for (i32 i = 0; i < N; i++) {
         const auto& pos = atom_pos[i];
         const auto& rad = atom_radii[i];
         const auto& col = atom_colors[i];
@@ -543,7 +543,7 @@ void voxelize_spheres_cpu(const GPUVolume& vol, ArrayView<const vec3> atom_pos, 
     // Apply crude lambert illumination model
     for (auto& v : voxel_data) {
         vec4 c = math::convert_color(v);
-        v = math::convert_color(vec4(vec3(c) / math::PI, c.a));
+        v = math::convert_color(vec4(vec3(c) / math::PI, c.w));
     }
 
     glBindTexture(GL_TEXTURE_3D, vol.texture_id);
@@ -552,7 +552,7 @@ void voxelize_spheres_cpu(const GPUVolume& vol, ArrayView<const vec3> atom_pos, 
     glBindTexture(GL_TEXTURE_3D, 0);
 }
 
-void voxelize_spheres_gpu(const GPUVolume& vol, GLuint position_radius_buffer, GLuint color_buffer, int32 num_spheres) {
+void voxelize_spheres_gpu(const GPUVolume& vol, GLuint position_radius_buffer, GLuint color_buffer, i32 num_spheres) {
     if (!voxelize::gl.program) {
         LOG_WARNING("sphere_binning program is not compiled");
         return;
@@ -565,7 +565,7 @@ void voxelize_spheres_gpu(const GPUVolume& vol, GLuint position_radius_buffer, G
     glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, sizeof(vec4), nullptr);
     glEnableVertexAttribArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, color_buffer);
-    glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(uint32), nullptr);
+    glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(u32), nullptr);
     glEnableVertexAttribArray(1);
 
     glUseProgram(voxelize::gl.program);

@@ -3,19 +3,20 @@
 #include <core/vector_types.h>
 #include <core/array_types.h>
 #include <core/math_utils.h>
-#include <mol/molecule_structure.h>
 
 #include "image.h"
 
+struct MoleculeDynamic;
+
 namespace ramachandran {
 
-void initialize();
+void initialize(const MoleculeDynamic& dynamic);
 void shutdown();
 
 // Accumulation texture
 void clear_accumulation_texture();
 // Radius is given as percentage of normalized texture space coordinates (1.0 = 1% of texture width and height)
-void compute_accumulation_texture(ArrayView<const BackboneAngle> angles, vec4 color, float radius = 1.f, float outline = 0.f);
+void compute_accumulation_texture(Range<i32> frame_Range, vec4 color, float radius = 1.f, float outline = 0.f);
 
 enum Region_ { Region_None, Region_AlphaHigh, Region_AlphaMid, Region_BetaHigh, Region_BetaMid, Region_LeftAlphaHigh, Region_LeftAlphaMid, Region_PMid };
 
@@ -51,9 +52,9 @@ const Image& get_gui_image();
 const Image& get_segmentation_image();
 const Image& get_color_image();
 
-uint32 get_accumulation_texture();
-uint32 get_gui_texture();
-uint32 get_segmentation_texture();
-uint32 get_color_texture();
+u32 get_accumulation_texture();
+u32 get_gui_texture();
+u32 get_segmentation_texture();
+u32 get_color_texture();
 
 }  // namespace ramachandran

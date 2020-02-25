@@ -7,12 +7,12 @@
 #include <stb_image.h>
 #include <stb_image_write.h>
 
-bool init_image(Image* img, int32 width, int32 height) {
+bool init_image(Image* img, i32 width, i32 height) {
     ASSERT(img);
     ASSERT(width > 0);
     ASSERT(height > 0);
 
-    uint32* data = (uint32*)MALLOC(width * height * sizeof(uint32));
+    u32* data = (u32*)MALLOC(width * height * sizeof(u32));
     if (!data) return false;
 
     free_image(img);
@@ -29,7 +29,7 @@ bool init_image(Image* img, const Image& other) {
     if (!init_image(img, other.width, other.height)) {
         return false;
     }
-    memcpy(img->data, other.data, other.width * other.height * sizeof(uint32));
+    memcpy(img->data, other.data, other.width * other.height * sizeof(u32));
     return true;
 }
 
@@ -48,13 +48,13 @@ bool read_image(Image* img, CStringView filename) {
 
     StringBuffer<512> zstr = filename;
     int x, y, channels;
-    uint8* data = stbi_load(zstr.cstr(), &x, &y, &channels, 4);
+    u8* data = stbi_load(zstr.cstr(), &x, &y, &channels, 4);
     if (!data) return false;
 
     free_image(img);
     img->width = x;
     img->height = y;
-    img->data = (uint32*)data;
+    img->data = (u32*)data;
 
     return true;
 }
@@ -82,7 +82,7 @@ bool write_image_jpg(const Image& img, CStringView filename, int quality) {
 bool write_image_png(const Image& img, CStringView filename) {
     FILE* file = open_file(filename);
     defer { fclose(file); };
-    return file && stbi_write_png_to_func(write_func, file, img.width, img.height, 4, img.data, img.width * sizeof(uint32)) != 0;
+    return file && stbi_write_png_to_func(write_func, file, img.width, img.height, 4, img.data, img.width * sizeof(u32)) != 0;
 }
 
 bool write_image_bmp(const Image& img, CStringView filename) {
@@ -108,7 +108,7 @@ void boxes_for_gauss_3(int* box_w, int n, float sigma) {  // standard deviation,
     for (int i = 0; i < n; i++) box_w[i] = (i < m ? wl : wu);
 }
 
-void box_blur_h(uint32* src, uint32* dst, int w, int h, int r) {
+void box_blur_h(u32* src, u32* dst, int w, int h, int r) {
     float iarr = 1.f / (r + r + 1);
     for (int i = 0; i < h; i++) {
         int ti = i * w;
@@ -134,7 +134,7 @@ void box_blur_h(uint32* src, uint32* dst, int w, int h, int r) {
     }
 }
 
-void box_blur_v(uint32* src, uint32* dst, int w, int h, int r) {
+void box_blur_v(u32* src, u32* dst, int w, int h, int r) {
     float iarr = 1.f / (r + r + 1);
     for (int i = 0; i < w; i++) {
         int ti = i;
@@ -166,7 +166,7 @@ void box_blur_v(uint32* src, uint32* dst, int w, int h, int r) {
     }
 }
 
-void box_blur(uint32* data_in, uint32* data_out, int32 w, int32 h, int32 r) {
+void box_blur(u32* data_in, u32* data_out, i32 w, i32 h, i32 r) {
     ASSERT(data_in);
     ASSERT(data_out);
 
@@ -174,16 +174,16 @@ void box_blur(uint32* data_in, uint32* data_out, int32 w, int32 h, int32 r) {
     box_blur_v(data_in, data_out, w, h, r);
 }
 
-void gaussian_blur(Image* img, int32 radius) {
+void gaussian_blur(Image* img, i32 radius) {
     ASSERT(img);
     const int w = img->width;
     const int h = img->height;
 
     int box_w[3];
     boxes_for_gauss_3(box_w, 3, (float)radius);
-    uint32* tmp_data = (uint32*)TMP_MALLOC(img->width * img->height * sizeof(uint32));
+    u32* tmp_data = (u32*)TMP_MALLOC(img->width * img->height * sizeof(u32));
     ASSERT(tmp_data);
-    memcpy(tmp_data, img->data, w * h * sizeof(uint32));
+    memcpy(tmp_data, img->data, w * h * sizeof(u32));
 
     box_blur(tmp_data, img->data, w, h, box_w[0] / 2);
     box_blur(img->data, tmp_data, w, h, box_w[1] / 2);

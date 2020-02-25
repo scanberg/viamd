@@ -7,7 +7,7 @@
 struct Volume {
     using VoxelDataType = uint32_t;
     ivec3 dim = {0, 0, 0};
-    ArrayView<VoxelDataType> voxel_data{};
+    Array<VoxelDataType> voxel_data{};
     Range<VoxelDataType> voxel_range = {0, 0};
 };
 

@@ -3,46 +3,46 @@
 #include <mol/molecule_structure.h>
 #include "color_utils.h"
 
-void color_atoms_uniform(ArrayView<uint32> dst_atom_colors, const vec4& color) { memset_array(dst_atom_colors, math::convert_color(color)); }
+void color_atoms_uniform(Array<u32> dst_atom_colors, const vec4& color) { memset_array(dst_atom_colors, math::convert_color(color)); }
 
-void color_atoms_cpk(ArrayView<uint32> dst_atom_colors, ArrayView<const Element> elements) {
-    for (int64 i = 0; i < dst_atom_colors.count; i++) {
+void color_atoms_cpk(Array<u32> dst_atom_colors, Array<const Element> elements) {
+    for (i64 i = 0; i < dst_atom_colors.count; i++) {
         dst_atom_colors[i] = element::color(elements[i]);
     }
 }
 
-void color_atoms_residue_id(ArrayView<uint32> dst_atom_colors, ArrayView<const Residue> residues) {
+void color_atoms_residue_id(Array<u32> dst_atom_colors, Array<const Residue> residues) {
     memset_array(dst_atom_colors, 0xffffffff);
     for (const auto& res : residues) {
-        const uint32 color = math::convert_color(color_from_hash(hash::crc32(CStringView(res.name))));
+        const u32 color = math::convert_color(color_from_hash(hash::crc32(CStringView(res.name))));
         memset_array(dst_atom_colors, color, res.atom_range);
     }
 }
-void color_atoms_residue_index(ArrayView<uint32> dst_atom_colors, ArrayView<const Residue> residues) {
+void color_atoms_residue_index(Array<u32> dst_atom_colors, Array<const Residue> residues) {
     memset_array(dst_atom_colors, 0xffffffff);
-    for (int64 i = 0; i < residues.count; i++) {
-        const uint32 color = math::convert_color(color_from_hash(hash::crc32(i)));
+    for (i64 i = 0; i < residues.count; i++) {
+        const u32 color = math::convert_color(color_from_hash(hash::crc32(i)));
         memset_array(dst_atom_colors, color, residues[i].atom_range);
     }
 }
-void color_atoms_chain_id(ArrayView<uint32> dst_atom_colors, ArrayView<const Chain> chains) {
+void color_atoms_chain_id(Array<u32> dst_atom_colors, Array<const Chain> chains) {
     memset_array(dst_atom_colors, 0xffffffff);
     for (const auto& chain : chains) {
-        const uint32 color = math::convert_color(color_from_hash(hash::crc32(CStringView(chain.id))));
+        const u32 color = math::convert_color(color_from_hash(hash::crc32(CStringView(chain.id))));
         memset_array(dst_atom_colors, color, chain.atom_range);
     }
 }
-void color_atoms_chain_index(ArrayView<uint32> dst_atom_colors, ArrayView<const Chain> chains) {
+void color_atoms_chain_index(Array<u32> dst_atom_colors, Array<const Chain> chains) {
     memset_array(dst_atom_colors, 0xffffffff);
-    for (int64 i = 0; i < chains.count; i++) {
-        const uint32 color = math::convert_color(color_from_hash(hash::crc32(i)));
+    for (i64 i = 0; i < chains.count; i++) {
+        const u32 color = math::convert_color(color_from_hash(hash::crc32(i)));
         memset_array(dst_atom_colors, color, chains[i].atom_range);
     }
 }
 
-inline uint32 lerp_pixel(const Image& color_map, const vec2& coords) {
-    const int x0 = math::clamp((int32)(coords.x * color_map.width), 0, color_map.width - 1);
-    const int y0 = math::clamp((int32)(coords.y * color_map.height), 0, color_map.height - 1);
+inline u32 lerp_pixel(const Image& color_map, const vec2& coords) {
+    const int x0 = math::clamp((i32)(coords.x * color_map.width), 0, color_map.width - 1);
+    const int y0 = math::clamp((i32)(coords.y * color_map.height), 0, color_map.height - 1);
     const int x1 = math::min(x0 + 1, color_map.width - 1);
     const int y1 = math::min(y0 + 1, color_map.height - 1);
     const vec2 t = math::fract(coords);
@@ -51,7 +51,7 @@ inline uint32 lerp_pixel(const Image& color_map, const vec2& coords) {
     return math::convert_color(math::mix(cx0, cx1, t.y));
 }
 
-void color_atoms_backbone_angles(ArrayView<uint32> dst_atom_colors, ArrayView<const Residue> residues, ArrayView<const BackboneSequence> bb_seq, ArrayView<const BackboneAngle> bb_angles,
+void color_atoms_backbone_angles(Array<u32> dst_atom_colors, Array<const Residue> residues, Array<const BackboneSequence> bb_seq, Array<const BackboneAngle> bb_angles,
                                  const Image& color_map) {
     memset_array(dst_atom_colors, 0xffffffff);
 
@@ -61,9 +61,9 @@ void color_atoms_backbone_angles(ArrayView<uint32> dst_atom_colors, ArrayView<co
     for (const auto& seq : bb_seq) {
         if (seq.end - seq.beg < 2) continue;
 
-        for (int64 i = seq.beg + 1; i < seq.end - 1; i++) {
+        for (i64 i = seq.beg + 1; i < seq.end - 1; i++) {
             const vec2 coord = vec2(0, 1) + vec2(1, -1) * ((vec2)bb_angles[i] * one_over_two_pi + 0.5f);
-            const uint32 color = lerp_pixel(color_map, coord);
+            const u32 color = lerp_pixel(color_map, coord);
             memset_array(dst_atom_colors, color, residues[i].atom_range);
         }
 
@@ -71,19 +71,19 @@ void color_atoms_backbone_angles(ArrayView<uint32> dst_atom_colors, ArrayView<co
         {
             const auto dst_i = seq.beg;
             const auto src_i = math::min(seq.end - 1, dst_i + 1);
-            const uint32 color = dst_atom_colors[residues[src_i].atom_range.beg];  // copy color from previous residue
+            const u32 color = dst_atom_colors[residues[src_i].atom_range.beg];  // copy color from previous residue
             memset_array(dst_atom_colors, color, residues[dst_i].atom_range);
         }
         {
             const auto dst_i = math::max(0, seq.end - 1);
             const auto src_i = math::max(0, dst_i - 1);
-            const uint32 color = dst_atom_colors[residues[src_i].atom_range.beg];  // copy color from previous residue
+            const u32 color = dst_atom_colors[residues[src_i].atom_range.beg];  // copy color from previous residue
             memset_array(dst_atom_colors, color, residues[dst_i].atom_range);
         }
     }
 }
 
-void filter_colors(ArrayView<uint32> colors, Bitfield mask) {
+void filter_colors(Array<u32> colors, Bitfield mask) {
     ASSERT(colors.size() == mask.size());
     for (int i = 0; i < colors.count; i++) {
         if (bitfield::get_bit(mask, i))
@@ -93,7 +93,7 @@ void filter_colors(ArrayView<uint32> colors, Bitfield mask) {
     }
 }
 
-void desaturate_colors(ArrayView<uint32> colors, Bitfield mask, float scale) {
+void desaturate_colors(Array<u32> colors, Bitfield mask, float scale) {
     ASSERT(colors.size() == mask.size());
     for (int i = 0; i < colors.count; i++) {
         if (!bitfield::get_bit(mask, i)) continue;
@@ -101,7 +101,7 @@ void desaturate_colors(ArrayView<uint32> colors, Bitfield mask, float scale) {
         vec4 rgba = math::convert_color(colors[i]);
         vec3 hsv = math::rgb_to_hsv((vec3)rgba);
         hsv.y *= scale;
-        rgba = vec4(math::hsv_to_rgb(hsv), rgba.a);
+        rgba = vec4(math::hsv_to_rgb(hsv), rgba.w);
         colors[i] = math::convert_color(rgba);
     }
 }

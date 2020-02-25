@@ -64,8 +64,8 @@ static struct {
         GLuint fbo = 0;
         GLuint tex_tilemax = 0;
         GLuint tex_neighbormax = 0;
-        int32 tex_width = 0;
-        int32 tex_height = 0;
+        i32 tex_width = 0;
+        i32 tex_height = 0;
     } velocity;
 
     struct {
@@ -599,7 +599,7 @@ void shutdown() {
 }  // namespace tonemapping
 
 namespace dof {
-void initialize(int32 width, int32 height) {
+void initialize(i32 width, i32 height) {
     {
         StringView src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/dof/dof_half_res_prepass.frag");
         defer { free_string(&src); };
@@ -707,7 +707,7 @@ struct {
     } uniform_loc;
 } blit_neighbormax;
 
-void initialize(int32 width, int32 height) {
+void initialize(i32 width, i32 height) {
     {
         StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/velocity/blit_velocity.frag");
         defer { free_string(&f_shader_src); };
@@ -1424,7 +1424,7 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     glViewport(0, 0, gl.tex_width, gl.tex_height);
 
     PUSH_GPU_SECTION("Clear HDR")
-    glClearColor(desc.background.intensity.r, desc.background.intensity.g, desc.background.intensity.b, 1.f);
+    glClearColor(desc.background.intensity.x, desc.background.intensity.y, desc.background.intensity.z, 1.f);
     glClear(GL_COLOR_BUFFER_BIT);
     POP_GPU_SECTION()
 
