@@ -16,15 +16,14 @@ struct Vertex {
     uint32 color = DEFAULT_COLOR;
 };
 
-using Index = uint32;
+using Index = uint16_t;
 
 struct DrawCommand {
-    Index offset;
-    Index count;
+    uint32_t offset = 0;
+    uint32_t count = 0;
+    int32_t view_matrix_idx = -1;
+    int32_t proj_matrix_idx = -1;
     GLenum primitive_type;
-    GLuint program;
-    int view_matrix_idx = -1;
-    int proj_matrix_idx = -1;
 };
 
 static DynamicArray<mat4> matrix_stack;
@@ -45,8 +44,8 @@ static GLint uniform_loc_normal_matrix = -1;
 static GLint uniform_loc_uv_scale = -1;
 static GLint uniform_loc_point_size = -1;
 
-static int curr_view_matrix_idx = -1;
-static int curr_proj_matrix_idx = -1;
+static int32_t curr_view_matrix_idx = -1;
+static int32_t curr_proj_matrix_idx = -1;
 
 static const char* v_shader_src = R"(
 #version 150 core
@@ -99,21 +98,33 @@ void main() {
 }
 )";
 
-static inline void append_draw_command(Index count, GLenum primitive_type) {
-    const uint32 max_size = (sizeof(Index) == 2 ? 0xFFFFU : 0xFFFFFFFFU);
-    ASSERT(indices.size() + count < max_size);
-    if (commands.size() > 0 && commands.back().primitive_type == primitive_type) {
-        commands.back().count += count;
-    } else {
-        ASSERT(curr_view_matrix_idx > -1 && "Immediate Mode View Matrix not set!");
-        ASSERT(curr_proj_matrix_idx > -1 && "Immediate Mode Proj Matrix not set!");
-        // ASSERT(curr_material_idx > -1, "Material not set!");
+static inline void append_draw_command(uint32_t count, GLenum primitive_type) {
+    const uint32_t max_size = (sizeof(Index) == 2 ? 0xFFFFU : 0xFFFFFFFFU);
 
-        const Index offset = (Index)indices.size() - count;
-        DrawCommand cmd{offset, count, primitive_type, program, curr_view_matrix_idx, curr_proj_matrix_idx};
+    // Can we append data to previous draw command?
+    if (commands.size() > 0 &&
+        commands.back().primitive_type == primitive_type &&
+        commands.back().view_matrix_idx == curr_view_matrix_idx &&
+        commands.back().proj_matrix_idx == curr_proj_matrix_idx) {
 
-        commands.push_back(cmd);
+        uint32_t capacity = max_size - commands.back().count;
+
+        if (count < capacity) {
+            commands.back().count += count;
+            return;
+        }
+        else {
+            commands.back().count += capacity;
+            count -= capacity;
+        }
     }
+    ASSERT(curr_view_matrix_idx > -1 && "Immediate Mode View Matrix not set!");
+    ASSERT(curr_proj_matrix_idx > -1 && "Immediate Mode Proj Matrix not set!");
+
+    const uint32_t offset = (uint32_t)indices.size() - count;
+    DrawCommand cmd {offset, count, curr_view_matrix_idx, curr_proj_matrix_idx, primitive_type};
+    
+    commands.push_back(cmd);
 }
 
 void initialize() {
