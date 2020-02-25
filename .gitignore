@@ -16,10 +16,6 @@
 *.dylib
 *.dll
 
-# Fortran module files
-*.mod
-*.smod
-
 # Compiled Static libraries
 *.lai
 *.la
@@ -31,4 +27,9 @@
 *.out
 *.app
 
+# Settings file
+*.ini
+
+# Folders
 build/
+.vscode/

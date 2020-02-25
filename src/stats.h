@@ -7,6 +7,7 @@
 #include <core/vector_types.h>
 #include <core/math_utils.h>
 #include <core/string_utils.h>
+#include <mol/molecule_utils.h>
 #include <mol/trajectory_utils.h>
 
 #include "volume.h"

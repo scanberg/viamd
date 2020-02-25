@@ -23,6 +23,8 @@ static bool is_orthographic_proj_matrix(const mat4& M) { return M[2][3] == 0.0f;
 namespace draw {
 static GLuint vao = 0;
 static GLuint tex[4] = {};
+static GLint major_version = 0;
+static GLint minor_version = 0;
 
 namespace vdw {
 static GLuint program_persp = 0;
@@ -587,8 +589,16 @@ void shutdown() {}
 }  // namespace sdf
 
 void initialize() {
+    if (!major_version) glGetIntegerv(GL_MAJOR_VERSION, &major_version);
+    if (!minor_version) glGetIntegerv(GL_MINOR_VERSION, &minor_version);
     if (!vao) glGenVertexArrays(1, &vao);
     if (!tex[0]) glGenTextures(4, tex);
+
+    if (major_version < 3 && minor_version < 3) {
+        LOG_ERROR("Molecule draw requires version OpenGL 3.3 or higher.");
+        return;
+    }
+
     vdw::initialize();
     licorice::initialize();
     ribbon::intitialize();
@@ -598,9 +608,12 @@ void initialize() {
     lean_and_mean::licorice::initialize();
     lean_and_mean::ribbon::intitialize();
     pbc_view_velocity::initialize();
-    culling::aabb::intitialize();
-    sdf::initialize();
-    scan::initialize();
+
+    if (major_version >= 4 && minor_version >= 3) {
+        culling::aabb::intitialize();
+        sdf::initialize();
+        scan::initialize();
+    }
 }
 
 void shutdown() {
