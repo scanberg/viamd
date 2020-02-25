@@ -28,18 +28,18 @@
 
 #define DATASET VIAMD_DATA_DIR "/alanine/two4REP-CH3_450K.pdb"
 
-extern void cubic_interpolation_pbc_scalar(float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z, const float* RESTRICT in_x0, const float* RESTRICT in_y0, const float* RESTRICT in_z0,
-                                           const float* RESTRICT in_x1, const float* RESTRICT in_y1, const float* RESTRICT in_z1, const float* RESTRICT in_x2, const float* RESTRICT in_y2,
-                                           const float* RESTRICT in_z2, const float* RESTRICT in_x3, const float* RESTRICT in_y3, const float* RESTRICT in_z3, int64 count, float t,
+extern void cubic_interpolation_pbc_scalar(float* out_x, float* out_y, float* out_z, const float* in_x0, const float* in_y0, const float* in_z0,
+                                           const float* in_x1, const float* in_y1, const float* in_z1, const float* in_x2, const float* in_y2,
+                                           const float* in_z2, const float* in_x3, const float* in_y3, const float* in_z3, int64 count, float t,
                                            const mat3& sim_box);
 
-extern void cubic_interpolation_pbc_128(float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z, const float* RESTRICT in_x0, const float* RESTRICT in_y0, const float* RESTRICT in_z0,
-                                        const float* RESTRICT in_x1, const float* RESTRICT in_y1, const float* RESTRICT in_z1, const float* RESTRICT in_x2, const float* RESTRICT in_y2,
-                                        const float* RESTRICT in_z2, const float* RESTRICT in_x3, const float* RESTRICT in_y3, const float* RESTRICT in_z3, int64 count, float t, const mat3& sim_box);
+extern void cubic_interpolation_pbc_128(float* out_x, float* out_y, float* out_z, const float* in_x0, const float* in_y0, const float* in_z0,
+                                        const float* in_x1, const float* in_y1, const float* in_z1, const float* in_x2, const float* in_y2,
+                                        const float* in_z2, const float* in_x3, const float* in_y3, const float* in_z3, int64 count, float t, const mat3& sim_box);
 
-extern void cubic_interpolation_pbc_256(float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z, const float* RESTRICT in_x0, const float* RESTRICT in_y0, const float* RESTRICT in_z0,
-                                        const float* RESTRICT in_x1, const float* RESTRICT in_y1, const float* RESTRICT in_z1, const float* RESTRICT in_x2, const float* RESTRICT in_y2,
-                                        const float* RESTRICT in_z2, const float* RESTRICT in_x3, const float* RESTRICT in_y3, const float* RESTRICT in_z3, int64 count, float t, const mat3& sim_box);
+extern void cubic_interpolation_pbc_256(float* out_x, float* out_y, float* out_z, const float* in_x0, const float* in_y0, const float* in_z0,
+                                        const float* in_x1, const float* in_y1, const float* in_z1, const float* in_x2, const float* in_y2,
+                                        const float* in_z2, const float* in_x3, const float* in_y3, const float* in_z3, int64 count, float t, const mat3& sim_box);
 
 int main() {
     MoleculeDynamic md;
@@ -132,26 +132,13 @@ int main() {
 
         const auto t2 = TIME();
         for (int32 i = 0; i < num_iter; i++) {
-            cubic_interpolation_pbc_128(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, num_atoms, t, box);
+            cubic_interpolation_pbc(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, num_atoms, t, box);
         }
         const auto t3 = TIME();
-        const auto time_cubic_pbc_128 = MILLISEC(t2, t3) / (double)num_iter;
-        const auto throughput_128 = size_in_bytes / SECONDS(t2, t3);
-        printf("Time (128-bit): %.2fms (%.1fx) speedup\n", time_cubic_pbc_128, time_cubic_pbc_scalar / time_cubic_pbc_128);
-        printf("Throughput (128-bit): %.2fMB/s\n", throughput_128 / MEGABYTES(1));
-
-#ifdef __AVX__
-        const auto t4 = TIME();
-        for (int32 i = 0; i < num_iter; i++) {
-            cubic_interpolation_pbc_256(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, num_atoms, t, box);
-        }
-        const auto t5 = TIME();
-        const auto time_cubic_pbc_256 = MILLISEC(t4, t5) / (double)num_iter;
-        const auto throughput_256 = size_in_bytes / SECONDS(t4, t5);
-        printf("Time (256-bit): %.2fms (%.1fx) speedup\n", time_cubic_pbc_256, time_cubic_pbc_scalar / time_cubic_pbc_256);
-        printf("Throughput (256-bit): %.2fMB/s\n", throughput_256 / MEGABYTES(1));
-
-#endif
+        const auto time_cubic_pbc_vectorized = MILLISEC(t2, t3) / (double)num_iter;
+        const auto throughput_vectorized = size_in_bytes / SECONDS(t2, t3);
+        printf("Time (vectorized): %.2fms (%.1fx) speedup\n", time_cubic_pbc_vectorized, time_cubic_pbc_scalar / time_cubic_pbc_vectorized);
+        printf("Throughput (vectorized): %.2fMB/s\n", throughput_vectorized / MEGABYTES(1));
     }
 
     SECTION("TRANSLATE") {
