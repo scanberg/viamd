@@ -25,6 +25,11 @@
 
 #define DATASET VIAMD_DATA_DIR "/alanine/two4REP-CH3_450K.pdb"
 
+extern void cubic_interpolation_pbc_scalar(float* out_x, float* out_y, float* out_z, const float* in_x0, const float* in_y0, const float* in_z0,
+                                           const float* in_x1, const float* in_y1, const float* in_z1, const float* in_x2, const float* in_y2,
+                                           const float* in_z2, const float* in_x3, const float* in_y3, const float* in_z3, i64 count, float t,
+                                           const mat3& sim_box);
+
 int main() {
     MoleculeDynamic md;
 
@@ -116,7 +121,7 @@ int main() {
 
         const auto t2 = TIME();
 
-        for (int32 i = 0; i < num_iter; i++) {
+        for (i32 i = 0; i < num_iter; i++) {
             cubic_interpolation_pbc(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, num_atoms, t, box);
         }
         const auto t3 = TIME();

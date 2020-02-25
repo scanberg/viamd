@@ -98,15 +98,9 @@ void main() {
 }
 )";
 
-static inline void append_draw_command(Index count, GLenum primitive_type) {
+static inline void append_draw_command(u32 count, GLenum primitive_type) {
     const u32 max_size = (sizeof(Index) == 2 ? 0xFFFFU : 0xFFFFFFFFU);
     ASSERT(indices.size() + count < max_size);
-    if (commands.size() > 0 && commands.back().primitive_type == primitive_type) {
-        commands.back().count += count;
-    } else {
-        ASSERT(curr_view_matrix_idx > -1 && "Immediate Mode View Matrix not set!");
-        ASSERT(curr_proj_matrix_idx > -1 && "Immediate Mode Proj Matrix not set!");
-        // ASSERT(curr_material_idx > -1, "Material not set!");
     // Can we append data to previous draw command?
     if (commands.size() > 0 &&
         commands.back().primitive_type == primitive_type &&

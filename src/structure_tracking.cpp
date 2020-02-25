@@ -394,7 +394,6 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     memcpy(int_x, ref_x, num_atoms * sizeof(float) * 3);
 
     const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, num_atoms);
-    // dvec3 prv_com = ref_com;
     vec3 int_com = ref_com;
     vec3 cur_com = {0, 0, 0};
 
@@ -454,24 +453,24 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
 
             // cur_com = compute_com(cur_x, cur_y, cur_z, mass, num_atoms);
 
-            dvec3 sum_pos = {0, 0, 0};
-            double sum_mass = 0;
+            vec3 sum_pos = {0, 0, 0};
+            float sum_mass = 0;
             for (i64 j = 0; j < num_atoms; ++j) {
-                const double m = mass[j];
-                sum_pos.x += (double)cur_x[j] * m;
-                sum_pos.y += (double)cur_y[j] * m;
-                sum_pos.z += (double)cur_z[j] * m;
+                const float m = mass[j];
+                sum_pos.x += cur_x[j] * m;
+                sum_pos.y += cur_y[j] * m;
+                sum_pos.z += cur_z[j] * m;
                 sum_mass += m;
             }
             cur_com = sum_pos / sum_mass;
 
-            const dmat3 abs_mat =
+            const mat3 abs_mat =
                 compute_weighted_cross_covariance_matrix(ref_x, ref_y, ref_z, cur_x, cur_y, cur_z, mass, num_atoms, ref_com, cur_com);
             // const mat3 rel_mat = compute_weighted_cross_covariance_matrix(prv_x, prv_y, prv_z, cur_x, cur_y, cur_z, mass, num_atoms, prv_com,
             // cur_com);
-            const dmat3 cov_mat = compute_weighted_covariance_matrix(cur_x, cur_y, cur_z, mass, num_atoms, cur_com);
+            const mat3 cov_mat = compute_weighted_covariance_matrix(cur_x, cur_y, cur_z, mass, num_atoms, cur_com);
 
-            const dmat3 abs_rot = extract_rotation(abs_mat);
+            const mat3 abs_rot = extract_rotation(abs_mat);
             // const mat3 rel_rot = extract_rotation(rel_mat);
 
             quat q_abs = math::normalize(math::quat_cast(abs_rot));
@@ -561,9 +560,9 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
             // @NOTE: Relative approach from Chevrot et al.
             // Avoids accumulative error from concatenation of matrices by storing an internal copy of the structure
             // And modifies that in an iterative fashion
-            const dmat3 rel_mat =
+            const mat3 rel_mat =
                 compute_weighted_cross_covariance_matrix(int_x, int_y, int_z, cur_x, cur_y, cur_z, mass, num_atoms, int_com, cur_com);
-            const dmat3 rel_rot = extract_rotation(rel_mat);
+            const mat3 rel_rot = extract_rotation(rel_mat);
 
             const quat q = math::normalize(math::quat_cast(rel_rot));
             const quat q_rel = math::dot(s->tracking_data.transform.rotation.relative[i - 1], q) > 0.0f ? q : -q;

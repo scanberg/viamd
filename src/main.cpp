@@ -575,8 +575,6 @@ struct ApplicationData {
     // --- CONSOLE ---
     Console console{};
     bool show_console = false;
-
-    // enki::TaskScheduler thread_pool;
 };
 
 // custom ImGui procedures
