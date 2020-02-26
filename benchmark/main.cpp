@@ -15,6 +15,8 @@
 #include <mol/pdb_utils.h>
 #include <mol/gro_utils.h>
 
+#include <stdio.h>
+
 #include <chrono>
 #define TIME() std::chrono::high_resolution_clock::now()
 #define NANOSEC(x, y) std::chrono::duration<double, std::nano>(y - x).count()

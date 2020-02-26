@@ -144,7 +144,7 @@ const char* get_task_label(TaskID id) {
     Task* task = get_task(id);
     if (!task) {
         LOG_ERROR("Invalid id");
-        return false;
+        return NULL;
     }
 
     return task->m_label;
