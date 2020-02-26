@@ -29,7 +29,9 @@
 
 # Settings file
 *.ini
+CMakeSettings.json
 
 # Folders
 build/
 .vscode/
+.vs/
