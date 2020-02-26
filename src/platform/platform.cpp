@@ -271,7 +271,7 @@ void update(Context* ctx) {
 
     double t = glfwGetTime();
     data.internal_ctx.timing.delta_s = (float)(t - data.internal_ctx.timing.total_s);
-    data.internal_ctx.timing.total_s = t;
+    data.internal_ctx.timing.total_s = (float)t;
 
     memcpy(ctx, &data.internal_ctx, sizeof(Context));
 }

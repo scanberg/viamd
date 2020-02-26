@@ -64,7 +64,7 @@ static mat3 compute_weighted_cross_covariance_matrix(const float* x0, const floa
 // clang-format off
 static mat3 compute_weighted_covariance_matrix(const float* x, const float* y, const float* z,
                                                const float* weight,
-                                               i64 count, const dvec3& com = {0,0,0})
+                                               i64 count, const vec3& com = {0,0,0})
 // clang-format on
 {
     mat3 A{0};
@@ -569,8 +569,8 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
 
             // @NOTE: Update internal representation
             for (int j = 0; j < num_atoms; j++) {
-                const dvec3 t = cur_com;
-                const dvec3 r = {cur_x[j] - t.x, cur_y[j] - t.y, cur_z[j] - t.z};
+                const vec3 t = cur_com;
+                const vec3 r = {cur_x[j] - t.x, cur_y[j] - t.y, cur_z[j] - t.z};
 
 #if 1
                 // Matrix multiply
@@ -685,7 +685,7 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
             // prv_com = cur_com;
         }
     } else if (num_atoms == 1) {
-        const int atom_idx = bitfield::find_first_bit_set(atom_mask) + mask_offset;
+        const i64 atom_idx = bitfield::find_first_bit_set(atom_mask) + mask_offset;
         for (int i = 1; i < num_frames; i++) {
             const float x = dynamic.trajectory.frame_buffer[i].atom_position.x[atom_idx];
             const float y = dynamic.trajectory.frame_buffer[i].atom_position.y[atom_idx];

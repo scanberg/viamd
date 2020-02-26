@@ -3,7 +3,7 @@
 #include <core/common.h>
 #include <core/log.h>
 
-namespace task_system {
+namespace task {
 
 constexpr uint32_t MAX_TASKS = 32;
 constexpr uint32_t LABEL_SIZE = 64;
@@ -186,7 +186,7 @@ void interrupt_task(TaskID id) {
         return;
     }
 
-    task->m_interrupt = 1;
+    task->m_interrupt = true;
 }
 
 void interrupt_and_wait(TaskID id) {
@@ -196,7 +196,7 @@ void interrupt_and_wait(TaskID id) {
         return;
     }
 
-    task->m_interrupt = 1;
+    task->m_interrupt = true;
     ts.WaitforTask(task);
 }
 

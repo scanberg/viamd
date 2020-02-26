@@ -1,8 +1,10 @@
+#pragma once
+
 #include <stdint.h>
 #include <functional>
 #include <atomic>
 
-namespace task_system {
+namespace task {
 
 struct TaskSetRange {
     uint32_t beg;
@@ -37,4 +39,4 @@ void interrupt_task(TaskID);
 void interrupt_and_wait(TaskID);
 
 
-}  // namespace task_system
+}  // namespace task

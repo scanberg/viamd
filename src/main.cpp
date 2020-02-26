@@ -275,6 +275,7 @@ struct EnsembleStructure {
     bool enabled = false;
 };
 
+/*
 struct ThreadSyncData {
     std::thread thread{};
     i32 running = 0;
@@ -293,6 +294,7 @@ struct ThreadSyncData {
         wait_until_finished();
     }
 };
+*/
 
 struct ApplicationData {
     // --- PLATFORM ---
@@ -322,19 +324,10 @@ struct ApplicationData {
     // --- MOLECULAR DATA ---
     MoleculeDynamic dynamic{};
 
-    // --- THREAD SYNCHRONIZATION ---
+    // --- ASYNC TASKS HANDLES ---
     struct {
-        struct {
-            ThreadSyncData sync{};
-            f32 fraction = 0.f;
-        } trajectory;
-
-        struct {
-            ThreadSyncData sync{};
-            f32 fraction = 0.f;
-            bool query_update = false;
-        } backbone_angles;
-    } async;
+        task::TaskID load_trajectory;
+    } tasks;
 
     // --- ATOM SELECTION ---
     struct {
@@ -524,8 +517,8 @@ struct ApplicationData {
     // --- RAMACHANDRAN ---
     struct {
         bool show_window = false;
-        //int frame_range_min = 0;
-        //int frame_range_max = 0;
+        // int frame_range_min = 0;
+        // int frame_range_max = 0;
 
         ramachandran::ColorMap color_map{};
 
@@ -568,7 +561,7 @@ struct ApplicationData {
     } reference_frame;
 
     struct {
-        int32_t target = 0;
+        i32 target = 0;
         bool show_window = false;
     } shape_space;
 
@@ -760,13 +753,13 @@ static void init_density_volume(ApplicationData* data);
 
 // Async operations
 static void load_trajectory_async(ApplicationData* data);
-static void compute_backbone_angles_async(ApplicationData* data);
 
 static void on_trajectory_frame_loaded(ApplicationData* data, int frame_idx);
+static void on_trajectory_load_complete(ApplicationData* data);
 
-// Temp functionality
+    // Temp functionality
 
-int main(int, char**) {
+    int main(int, char**) {
     ApplicationData data;
 
     // Init logging
@@ -829,7 +822,7 @@ int main(int, char**) {
     // LOG_NOTE("Initializing task scheduler...");
     // data.thread_pool.Initialize();
     LOG_NOTE("Initializing task system...");
-    task_system::initialize();
+    task::initialize();
 
     // ImGui::SetupImGuiStyle2();
     ImGui::StyleColorsLight();
@@ -1060,17 +1053,6 @@ int main(int, char**) {
         }
         POP_CPU_SECTION()
 
-        if (data.async.trajectory.sync.running) {
-            constexpr f32 TICK_INTERVAL_SEC = 3.f;
-            static f32 time = 0.f;
-            time += data.ctx.timing.delta_s;
-            if (time > TICK_INTERVAL_SEC) {
-                time = 0.f;
-                stats::set_all_property_flags(true, true);
-                compute_backbone_angles_async(&data);
-            }
-        }
-
         // Resize Framebuffer
         if ((data.fbo.width != data.ctx.framebuffer.width || data.fbo.height != data.ctx.framebuffer.height) &&
             (data.ctx.framebuffer.width != 0 && data.ctx.framebuffer.height != 0)) {
@@ -1218,12 +1200,10 @@ int main(int, char**) {
         // Swap buffers
         platform::swap_buffers(&data.ctx);
 
-        task_system::clear_completed_tasks();
+        task::clear_completed_tasks();
     }
 
-    data.async.trajectory.sync.signal_stop_and_wait();
     stats::signal_stop_and_wait();
-    data.async.backbone_angles.sync.signal_stop_and_wait();
 
     // shutdown subsystems
     LOG_NOTE("Shutting down immediate draw...");
@@ -1243,7 +1223,7 @@ int main(int, char**) {
     LOG_NOTE("Shutting down structure tracking...");
     structure_tracking::shutdown();
     LOG_NOTE("Shutting down task system...");
-    task_system::shutdown();
+    task::shutdown();
 
     destroy_framebuffer(&data.fbo);
     platform::shutdown(&data.ctx);
@@ -1310,6 +1290,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             const float* x[2] = {get_trajectory_position_x(traj, prev_frame_1).data(), get_trajectory_position_x(traj, next_frame_1).data()};
             const float* y[2] = {get_trajectory_position_y(traj, prev_frame_1).data(), get_trajectory_position_y(traj, next_frame_1).data()};
             const float* z[2] = {get_trajectory_position_z(traj, prev_frame_1).data(), get_trajectory_position_z(traj, next_frame_1).data()};
+
             if (pbc) {
                 linear_interpolation_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, x[0], y[0], z[0], x[1], y[1], z[1],
                                          mol.atom.count, t, box);
@@ -1317,6 +1298,7 @@ static void interpolate_atomic_positions(ApplicationData* data) {
                 linear_interpolation(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, x[0], y[0], z[0], x[1], y[1], z[1],
                                      mol.atom.count, t);
             }
+
             break;
         }
         case InterpolationMode::Cubic: {
@@ -2939,17 +2921,14 @@ static void draw_molecule_dynamic_info_window(ApplicationData* data) {
 static void draw_async_task_window(ApplicationData* data) {
     constexpr f32 WIDTH = 300.f;
     constexpr f32 MARGIN = 10.f;
-    constexpr f32 PROGRESS_FRACT = 0.3f;
+    constexpr f32 PROGRESSBAR_WIDTH_FRACT = 0.3f;
 
-    const f32 traj_fract = data->async.trajectory.fraction;
-    const f32 angle_fract = data->async.backbone_angles.fraction;
     const f32 stats_fract = stats::fraction_done();
 
-    const u32 num_tasks = task_system::get_num_tasks();
-    task_system::TaskID* tasks = task_system::get_tasks();
+    const u32 num_tasks = task::get_num_tasks();
+    task::TaskID* tasks = task::get_tasks();
 
-    if ((0.f < traj_fract && traj_fract < 1.f) || (0.f < angle_fract && angle_fract < 1.f) ||
-        (0.f < stats_fract && stats_fract < 1.f || num_tasks > 0)) {
+    if ((0.f < stats_fract && stats_fract < 1.f || num_tasks > 0)) {
 
         ImGuiViewport* viewport = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(viewport->Pos + ImVec2(data->ctx.window.width - WIDTH - MARGIN,
@@ -2961,42 +2940,23 @@ static void draw_async_task_window(ApplicationData* data) {
                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing);
 
         char buf[32];
-        if (0.f < traj_fract && traj_fract < 1.f) {
-            snprintf(buf, 32, "%.1f%%", traj_fract * 100.f);
-            ImGui::ProgressBar(traj_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * PROGRESS_FRACT, 0), buf);
-            ImGui::SameLine();
-            ImGui::Text("Reading Trajectory");
-            ImGui::SameLine();
-            if (ImGui::Button("X")) {
-                data->async.trajectory.sync.signal_stop_and_wait();
-                compute_backbone_angles_async(data);
-                // compute_statistics_async(data);
-                data->async.trajectory.fraction = 0.f;
-            }
-        }
-        if (0.f < angle_fract && angle_fract < 1.f) {
-            snprintf(buf, 32, "%.1f%%", angle_fract * 100.f);
-            ImGui::ProgressBar(angle_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * PROGRESS_FRACT, 0), buf);
-            ImGui::SameLine();
-            ImGui::Text("Computing Backbone Angles");
-        }
         if (0.f < stats_fract && stats_fract < 1.f) {
             snprintf(buf, 32, "%.1f%%", stats_fract * 100.f);
-            ImGui::ProgressBar(stats_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * PROGRESS_FRACT, 0), buf);
+            ImGui::ProgressBar(stats_fract, ImVec2(ImGui::GetWindowContentRegionWidth() * PROGRESSBAR_WIDTH_FRACT, 0), buf);
             ImGui::SameLine();
             ImGui::Text("Computing Statistics");
         }
 
         for (u32 i = 0; i < num_tasks; i++) {
             const auto id = tasks[i];
-            const f32 fract = task_system::get_task_fraction_complete(id);
+            const f32 fract = task::get_task_fraction_complete(id);
             snprintf(buf, 32, "%.1f%%", fract * 100.f);
-            ImGui::ProgressBar(fract, ImVec2(ImGui::GetWindowContentRegionWidth() * PROGRESS_FRACT, 0), buf);
+            ImGui::ProgressBar(fract, ImVec2(ImGui::GetWindowContentRegionWidth() * PROGRESSBAR_WIDTH_FRACT, 0), buf);
             ImGui::SameLine();
-            ImGui::Text(task_system::get_task_label(id));
+            ImGui::Text(task::get_task_label(id));
             ImGui::SameLine();
             if (ImGui::Button("X")) {
-                task_system::interrupt_task(id);
+                task::interrupt_task(id);
             }
         }
 
@@ -3341,7 +3301,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
             ImGui::PopID();
 
             ramachandran::clear_accumulation_texture();
-            ramachandran::compute_accumulation_texture(frame_range, data->ramachandran.range.color, data->ramachandran.range.radius);
+            ramachandran::render_accumulation_texture(frame_range, data->ramachandran.range.color, data->ramachandran.range.radius);
         }
     }
     ImGui::EndColumns();
@@ -3599,10 +3559,10 @@ static void draw_shape_space_window(ApplicationData* data) {
     }
 
     const i32 ensemble_count = data->ensemble_tracking.structures.empty() ? 0 : 1;
-    const i32 reference_count = data->reference_frame.frames.size();
+    const i32 reference_count = (i32)data->reference_frame.frames.size();
     const i32 count = ensemble_count + reference_count;
 
-    structure_tracking::ID structure_ids[256];
+    structure_tracking::ID structure_ids[512];
     i32 num_structure_ids = 0;
 
     if (count > 0) {
@@ -3706,9 +3666,9 @@ static void draw_shape_space_window(ApplicationData* data) {
     vec3 mouse_hover_w = {0, 0, 0};
 
     if (!data->shape_space.target) {
-        for (int i = 0; i < num_structure_ids; i++) {
-            const auto id = structure_ids[i];
-            if (const auto* tracking_data = structure_tracking::get_tracking_data(id)) {
+        for (int j = 0; j < num_structure_ids; j++) {
+            const auto structure_id = structure_ids[j];
+            if (const auto* tracking_data = structure_tracking::get_tracking_data(structure_id)) {
                 const i32 N = (i32)tracking_data->count;
                 const vec3* eigen_values = tracking_data->eigen.values;
 
@@ -3768,7 +3728,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                                   style.hover.line_thickness);
                 }
             } else {
-                LOG_ERROR("Could not find tracking data for '%lu'", id);
+                LOG_ERROR("Could not find tracking data for '%lu'", structure_id);
             }
         }
     }
@@ -3825,6 +3785,19 @@ static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const Mol
         const mat4 M = model_to_texture * world_to_model * T_box * rotation * R * T_com;
 
         // @TODO: Replace when proper iterators are implemented for bitfield.
+        bitfield::for_each_bit_set(atom_mask, [&frame, &M, &com, cutoff_squared, &vol](i64 i) {
+            const vec4 wc = {frame.atom_position.x[i], frame.atom_position.y[i], frame.atom_position.z[i], 1.0f};  // world coord
+            if (math::distance2(com, vec3(wc)) > cutoff_squared) return;
+            const vec4 vc = M * wc;  // volume coord [0,1]
+            const vec3 tc = apply_pbc(vec3(vc));
+            const ivec3 c = (ivec3)(tc * vec3(vol->dim - 1) + 0.5f);
+            ASSERT(-1 < c.x && c.x < vol->dim.x);
+            ASSERT(-1 < c.y && c.y < vol->dim.y);
+            ASSERT(-1 < c.z && c.z < vol->dim.z);
+            const i32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
+            platform::atomic_fetch_and_add(vol->voxel_data.ptr + voxel_idx, 1);
+        });
+        /*
         for (i64 i = 0; i < atom_mask.size(); i++) {
             if (bitfield::get_bit(atom_mask, i)) {
                 const vec4 wc = {frame.atom_position.x[i], frame.atom_position.y[i], frame.atom_position.z[i], 1.0f};  // world coord
@@ -3840,6 +3813,7 @@ static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const Mol
                 // vol->voxel_data[voxel_idx]++;
             }
         }
+        */
     }
 }
 
@@ -4011,7 +3985,7 @@ static void draw_density_volume_window(ApplicationData* data) {
             }
 
             if (ImGui::Button("Compute Density")) {
-                task_system::create_task("Big Density", 1, [data](task_system::TaskSetRange range, task_system::TaskData task_data) {
+                task::create_task("Big Density", [data](task::TaskSetRange, task::TaskData) {
                     Bitfield filter_mask;
                     bitfield::init(&filter_mask, data->dynamic.molecule.atom.count);
                     defer { bitfield::free(&filter_mask); };
@@ -4031,10 +4005,10 @@ static void draw_density_volume_window(ApplicationData* data) {
                         clear_volume(&data->density_volume.volume);
 
                         auto t0 = platform::get_time();
-                        task_system::TaskID task = task_system::create_task(
-                            "Small Density", ensemble_structures.size(),
-                            [data, filter_mask, &ensemble_structures](task_system::TaskSetRange range, task_system::TaskData task_data) {
-                                for (uint32_t i = range.beg; i < range.end; ++i) {
+                        task::TaskID task = task::create_task(
+                            "Small Density", (u32)ensemble_structures.size(),
+                            [data, filter_mask, &ensemble_structures](task::TaskSetRange range, task::TaskData) {
+                                for (u32 i = range.beg; i < range.end; ++i) {
                                     auto& structure = ensemble_structures[i];
                                     if (!structure.enabled) continue;
                                     const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(structure.id);
@@ -4047,7 +4021,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                                                               cutoff);
                                 }
                             });
-                        task_system::wait_for_task(task);
+                        task::wait_for_task(task);
                         auto t1 = platform::get_time();
 
                         data->density_volume.volume.voxel_range = {data->density_volume.volume.voxel_data[0],
@@ -4135,37 +4109,20 @@ static void draw_density_volume_window(ApplicationData* data) {
                     }
                     LOG_NOTE("Done!");
 
-                    // create_reference_frame(data, "ensemble reference", reference_buf);
-
                     {
                         LOG_NOTE("Computing Internal Reference Frames...");
                         auto t0 = platform::get_time();
-                        uint32_t completed_count = 0;
-                        task_system::TaskID task = task_system::create_task(
-                            "Computing Internal Reference Frames...", ensemble_structures.size(),
-                            [ dyn, ensemble_mask, &ensemble_structures, &completed_count ](task_system::TaskSetRange range, task_system::TaskData task_data) {
-                                for (uint32_t i = range.beg; i < range.end; ++i) {
+                        u32 completed_count = 0;
+                        task::TaskID task = task::create_task(
+                            "Computing Internal Reference Frames...", (u32)ensemble_structures.size(),
+                            [dyn, ensemble_mask, &ensemble_structures, &completed_count](task::TaskSetRange range, task::TaskData) {
+                                for (u32 i = range.beg; i < range.end; ++i) {
                                     auto& structure = ensemble_structures[i];
                                     structure_tracking::compute_trajectory_transform_data(structure.id, dyn, ensemble_mask, structure.offset);
                                     const u32 count = platform::atomic_fetch_and_add(&completed_count, 1) + 1;
-                                    LOG_NOTE("%i / %i...", count, ensemble_structures.size());
                                 }
                             });
-                        /*
-                        enki::TaskSet task(ensemble_structures.size(), [dyn, ensemble_mask, &ensemble_structures, &completed_count](
-                                                                           enki::TaskSetPartition range, uint32_t threadnum) {
-                            for (uint32_t i = range.start; i < range.end; ++i) {
-                                auto& structure = ensemble_structures[i];
-                                structure_tracking::compute_trajectory_transform_data(structure.id, dyn, ensemble_mask, structure.offset);
-                                const u32 count = platform::atomic_fetch_and_add(&completed_count, 1) + 1;
-                                LOG_NOTE("%i / %i...", count, ensemble_structures.size());
-                            }
-                        });
-
-                        data->thread_pool.AddTaskSetToPipe(&task);
-                        data->thread_pool.WaitforTask(&task);
-                        */
-                        task_system::wait_for_task(task);
+                        task::wait_for_task(task);
                         auto t1 = platform::get_time();
 
                         LOG_NOTE("Done!");
@@ -4197,11 +4154,9 @@ static void draw_density_volume_window(ApplicationData* data) {
                         bitfield::gather_masked(mass, mol.atom.mass, ensemble_mask, ensemble_structures[0].offset);
                         const vec3 ref_com = compute_com(ref_x, ref_y, ref_z, mass, atom_count);
                         const mat3 PCA = structure_tracking::get_tracking_data(ensemble_structures[0].id)->simulation_box_aligned_pca;
-                        // const mat3 PCA = mat3(1);
 
                         ensemble_structures[0].alignment_matrix = PCA;
                         for (i64 i = 1; i < ensemble_structures.size(); i++) {
-                            // LOG_NOTE("%i / %i", (int)(i + 1), (int)ensemble_structures.size());
                             auto& structure = ensemble_structures[i];
                             bitfield::gather_masked(x, frame0.atom_position.x, ensemble_mask, structure.offset);
                             bitfield::gather_masked(y, frame0.atom_position.y, ensemble_mask, structure.offset);
@@ -4482,13 +4437,13 @@ static void init_molecule_buffers(ApplicationData* data) {
     glBufferData(GL_ARRAY_BUFFER, spline_index_data.size_in_bytes(), spline_index_data.data(), GL_STATIC_DRAW);
 
     // Experimental
-    draw::generate_aabb_buffer(&data->gpu_buffers.experimental.aabb, mol.residues.count);
-    draw::generate_residue_buffer(&data->gpu_buffers.experimental.residue, mol.residues.count);
-    draw::generate_visibility_buffer(&data->gpu_buffers.experimental.visibility, mol.residues.count);
+    draw::generate_aabb_buffer(&data->gpu_buffers.experimental.aabb, (i32)mol.residues.count);
+    draw::generate_residue_buffer(&data->gpu_buffers.experimental.residue, (i32)mol.residues.count);
+    draw::generate_visibility_buffer(&data->gpu_buffers.experimental.visibility, (i32)mol.residues.count);
 
     DynamicArray<ivec2> res_offset_count(mol.residues.count);
-    for (int64_t i = 0; i < mol.residues.count; i++) {
-        res_offset_count[i] = {(int32_t)mol.residues[i].atom_range.beg, (int32_t)mol.residues[i].atom_range.ext()};
+    for (i64 i = 0; i < mol.residues.count; i++) {
+        res_offset_count[i] = {(i32)mol.residues[i].atom_range.beg, (i32)mol.residues[i].atom_range.ext()};
     }
 
     glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.experimental.residue);
@@ -4606,9 +4561,8 @@ static void copy_molecule_data_to_buffers(ApplicationData* data) {
 static void free_trajectory_data(ApplicationData* data) {
     ASSERT(data);
     if (data->dynamic.trajectory) {
-        data->async.trajectory.sync.signal_stop_and_wait();
+        if (data->tasks.load_trajectory) task::interrupt_and_wait(data->tasks.load_trajectory);
         stats::signal_stop_and_wait();
-        data->async.backbone_angles.sync.signal_stop_and_wait();
         close_file_handle(&data->dynamic.trajectory);
         free_trajectory(&data->dynamic.trajectory);
     }
@@ -4625,8 +4579,6 @@ static void free_molecule_data(ApplicationData* data) {
         free_trajectory_data(data);
     }
     free_molecule_buffers(data);
-    // free_backbone_angles_trajectory(&data->ramachandran.backbone_angles);
-    // data->ramachandran.backbone_angles = {};
     data->hydrogen_bonds.bonds.clear();
     data->hydrogen_bonds.dirty = true;
     data->gpu_buffers.dirty.backbone = true;
@@ -4690,6 +4642,13 @@ static void init_trajectory_data(ApplicationData* data) {
     }
 }
 
+static void interrupt_async_tasks(ApplicationData* data) {
+    if (data->tasks.load_trajectory) {
+        task::interrupt_task(data->tasks.load_trajectory);
+    }
+    task::wait_for_task(data->tasks.load_trajectory);
+}
+
 static void load_molecule_data(ApplicationData* data, CStringView file) {
     ASSERT(data);
     if (file.size() > 0) {
@@ -4697,7 +4656,7 @@ static void load_molecule_data(ApplicationData* data, CStringView file) {
         LOG_NOTE("Loading molecular data from file '%.*s'...", file.count, file.ptr);
         auto t0 = platform::get_time();
         if (compare_ignore_case(ext, "pdb")) {
-            data->async.trajectory.sync.signal_stop_and_wait();
+            interrupt_async_tasks(data);
             free_molecule_data(data);
             free_trajectory_data(data);
             if (!pdb::load_molecule_from_file(&data->dynamic.molecule, file)) {
@@ -4713,7 +4672,7 @@ static void load_molecule_data(ApplicationData* data, CStringView file) {
                 init_trajectory_data(data);
             }
         } else if (compare_ignore_case(ext, "gro")) {
-            data->async.trajectory.sync.signal_stop_and_wait();
+            interrupt_async_tasks(data);
             free_molecule_data(data);
             free_trajectory_data(data);
             if (!gro::load_molecule_from_file(&data->dynamic.molecule, file)) {
@@ -4729,10 +4688,10 @@ static void load_molecule_data(ApplicationData* data, CStringView file) {
                 LOG_ERROR("ERROR! Must have molecule structure before trajectory can be loaded.");
                 return;
             }
-            data->async.trajectory.sync.signal_stop_and_wait();
+            interrupt_async_tasks(data);
             free_trajectory_data(data);
             if (!xtc::init_trajectory_from_file(&data->dynamic.trajectory, (i32)data->dynamic.molecule.atom.count, file)) {
-                LOG_ERROR("ERROR! Problem loading trajectory.");
+                LOG_ERROR("ERROR! Problem loading XTC trajectory.");
                 return;
             }
             data->files.trajectory = file;
@@ -5031,12 +4990,12 @@ void create_screenshot(ApplicationData* data) {
 
     {
         // @NOTE: Swap Rows to flip image with respect to y-axis
-        const uint32_t row_byte_size = img.width * sizeof(uint32_t);
-        uint32_t* row_t = (uint32_t*)TMP_MALLOC(row_byte_size);
+        const u32 row_byte_size = img.width * sizeof(u32);
+        u32* row_t = (u32*)TMP_MALLOC(row_byte_size);
         defer { TMP_FREE(row_t); };
-        for (uint32_t i = 0; i < (uint32_t)img.height / 2; ++i) {
-            uint32_t* row_a = img.data + i * img.width;
-            uint32_t* row_b = img.data + (img.height - 1 - i) * img.width;
+        for (u32 i = 0; i < (u32)img.height / 2; ++i) {
+            u32* row_a = img.data + i * img.width;
+            u32* row_b = img.data + (img.height - 1 - i) * img.width;
             if (row_a != row_b) {
                 memcpy(row_t, row_a, row_byte_size);  // tmp = a;
                 memcpy(row_a, row_b, row_byte_size);  // a = b;
@@ -5122,10 +5081,10 @@ static void update_representation(ApplicationData* data, Representation* rep) {
     ASSERT(data);
     ASSERT(rep);
 
-    void* mem = TMP_MALLOC(data->dynamic.molecule.atom.count * sizeof(uint32_t));
+    void* mem = TMP_MALLOC(data->dynamic.molecule.atom.count * sizeof(u32));
     defer { TMP_FREE(mem); };
 
-    Array<uint32_t> colors((uint32_t*)mem, data->dynamic.molecule.atom.count);
+    Array<u32> colors((u32*)mem, data->dynamic.molecule.atom.count);
     const auto& mol = data->dynamic.molecule;
 
     switch (rep->color_mapping) {
@@ -5478,7 +5437,7 @@ static void compute_velocity(ApplicationData* data) {
 static void compute_residue_aabbs(ApplicationData* data) {
     PUSH_GPU_SECTION("Compute Residue AABBs")
     draw::culling::compute_residue_aabbs(data->gpu_buffers.experimental.aabb, data->gpu_buffers.position, data->gpu_buffers.radius,
-                                         data->gpu_buffers.experimental.residue, data->dynamic.molecule.residues.size());
+                                         data->gpu_buffers.experimental.residue, (i32)data->dynamic.molecule.residues.size());
     POP_GPU_SECTION()
 }
 
@@ -5489,7 +5448,7 @@ static void cull_residue_aabbs(ApplicationData* data) {
     glDepthMask(0);
 
     draw::culling::cull_aabbs(data->gpu_buffers.experimental.visibility, data->gpu_buffers.experimental.aabb, data->view.param,
-                              data->dynamic.molecule.residues.size());
+                              (i32)data->dynamic.molecule.residues.size());
 
     glDepthMask(1);
     glDisable(GL_DEPTH_TEST);
@@ -5502,7 +5461,7 @@ static void draw_residue_aabbs(const ApplicationData& data) {
     glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     // draw::culling::draw_aabbs(data.gpu_buffers.experimental.aabb, data.view.param, data.dynamic.molecule.residues.size());
     draw::culling::draw_culled_aabbs(data.gpu_buffers.experimental.visibility, data.gpu_buffers.experimental.aabb, data.view.param,
-                                     data.dynamic.molecule.residues.size());
+                                     (i32)data.dynamic.molecule.residues.size());
 
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
@@ -6300,23 +6259,20 @@ static void on_trajectory_load_complete(ApplicationData* data) {
         compute_reference_frame(data, &ref);
     }
     update_reference_frames(data);
-    // compute_statistics_async(data);
     stats::set_all_property_flags(true, true);
-    compute_backbone_angles_async(data);
+    ramachandran::initialize(data->dynamic);
 }
 
 // #async
 static void load_trajectory_async(ApplicationData* data) {
     ASSERT(data);
 
-    static task_system::TaskID id = 0;
-
     // Wait for task to complete if already running
-    if (id != 0) {
-        task_system::interrupt_and_wait(id);
+    if (data->tasks.load_trajectory != 0) {
+        task::interrupt_and_wait(data->tasks.load_trajectory);
     }
 
-    id = task_system::create_task("Loading Trajectory", [data](task_system::TaskSetRange range, task_system::TaskData task_data) {
+    data->tasks.load_trajectory = task::create_task("Loading Trajectory", [data](task::TaskSetRange, task::TaskData task_data) {
         while (read_next_trajectory_frame(&data->dynamic.trajectory)) {
             // data->async.trajectory.fraction = data->dynamic.trajectory.num_frames / (float)data->dynamic.trajectory.frame_offsets.size();
             on_trajectory_frame_loaded(data, data->dynamic.trajectory.num_frames - 1);
@@ -6326,59 +6282,8 @@ static void load_trajectory_async(ApplicationData* data) {
         if (!task_data.interrupt) {
             on_trajectory_load_complete(data);
         }
+        data->tasks.load_trajectory = 0;
     });
-
-    /*
-    // Wait for thread to finish if already running
-    if (data->async.trajectory.sync.running) {
-        data->async.trajectory.sync.signal_stop_and_wait();
-    }
-
-    if (data->dynamic.trajectory.file.handle) {
-        data->async.trajectory.sync.stop_signal = false;
-        data->async.trajectory.sync.running = true;
-        data->async.trajectory.sync.thread = std::thread([data]() {
-            while (read_next_trajectory_frame(&data->dynamic.trajectory)) {
-                data->async.trajectory.fraction = data->dynamic.trajectory.num_frames / (float)data->dynamic.trajectory.frame_offsets.size();
-                on_trajectory_frame_loaded(data, data->dynamic.trajectory.num_frames - 1);
-                if (data->async.trajectory.sync.stop_signal) break;
-            }
-
-            // @NOTE: Were we interrupted by user?
-            if (!data->async.trajectory.sync.stop_signal) {
-                on_trajectory_load_complete(data);
-            }
-
-            data->async.trajectory.fraction = 0;
-            data->async.trajectory.sync.running = false;
-            data->async.trajectory.sync.stop_signal = false;
-        });
-        data->async.trajectory.sync.thread.detach();
-    }
-    */
-}
-
-static void compute_backbone_angles_async(ApplicationData* data) {
-    ASSERT(data);
-    data->async.backbone_angles.query_update = true;
-    if (data->async.backbone_angles.sync.running == false) {
-        data->async.backbone_angles.sync.running = true;
-
-        data->async.backbone_angles.sync.thread = std::thread([data]() {
-            data->async.backbone_angles.fraction = 0.0f;
-            while (data->async.backbone_angles.query_update) {
-                data->async.backbone_angles.query_update = false;
-                data->async.backbone_angles.fraction = 0.5f;
-                // compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->dynamic);
-                ramachandran::initialize(data->dynamic);
-                if (data->async.backbone_angles.sync.stop_signal) break;
-            }
-            data->async.backbone_angles.fraction = 1.f;
-            data->async.backbone_angles.sync.running = false;
-            data->async.backbone_angles.sync.stop_signal = false;
-        });
-        data->async.backbone_angles.sync.thread.detach();
-    }
 }
 
 static void init_density_volume(ApplicationData* data) {
