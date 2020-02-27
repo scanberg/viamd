@@ -348,7 +348,7 @@ TEST_CASE("Testing filter", "[filter]") {
 
 TEST_CASE("Testing string_utils", "[string_utils]") {
     SECTION("find pattern") {
-        auto matches = find_pattern_offsets("test.txt", "Kalle");
-        REQUIRE(matches.size() > 0);
+        auto matches = find_pattern_offsets(UNITTEST_DATA_DIR"/test.txt", "KALLE");
+        REQUIRE(matches.size() == 4);
     }
 }

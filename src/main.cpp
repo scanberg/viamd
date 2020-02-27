@@ -757,9 +757,9 @@ static void load_trajectory_async(ApplicationData* data);
 static void on_trajectory_frame_loaded(ApplicationData* data, int frame_idx);
 static void on_trajectory_load_complete(ApplicationData* data);
 
-    // Temp functionality
+// Temp functionality
 
-    int main(int, char**) {
+int main(int, char**) {
     ApplicationData data;
 
     // Init logging
@@ -4614,6 +4614,7 @@ static void init_trajectory_data(ApplicationData* data) {
             return;
         }
 
+        /*
         read_next_trajectory_frame(&data->dynamic.trajectory);  // read first frame explicitly
         on_trajectory_frame_loaded(data, 0);
         const auto pos_x = get_trajectory_position_x(data->dynamic.trajectory, 0);
@@ -4623,6 +4624,7 @@ static void init_trajectory_data(ApplicationData* data) {
         memcpy(data->dynamic.molecule.atom.position.x, pos_x.data(), pos_x.size_in_bytes());
         memcpy(data->dynamic.molecule.atom.position.y, pos_y.data(), pos_y.size_in_bytes());
         memcpy(data->dynamic.molecule.atom.position.z, pos_z.data(), pos_z.size_in_bytes());
+        */
 
         data->simulation_box.box = get_trajectory_frame(data->dynamic.trajectory, 0).box;
         data->time_filter.range = {0, (float)data->dynamic.trajectory.num_frames};
@@ -4651,26 +4653,39 @@ static void interrupt_async_tasks(ApplicationData* data) {
 
 static void load_molecule_data(ApplicationData* data, CStringView file) {
     ASSERT(data);
+
+    bool (*mol_loader)(MoleculeStructure * mol, CStringView filename) = 0;
+    DynamicArray<i64> (*traj_offset_loader)(CStringView filename) = 0;
+    bool (*traj_frame_loader)(TrajectoryFrame * frame, i32 num_atoms, Array<u8> raw_data) = 0;
+
+    DynamicArray<i64> frame_offsets{};
+
     if (file.size() > 0) {
         CStringView ext = get_file_extension(file);
         LOG_NOTE("Loading molecular data from file '%.*s'...", file.count, file.ptr);
         auto t0 = platform::get_time();
         if (compare_ignore_case(ext, "pdb")) {
-            interrupt_async_tasks(data);
-            free_molecule_data(data);
-            free_trajectory_data(data);
-            if (!pdb::load_molecule_from_file(&data->dynamic.molecule, file)) {
-                LOG_ERROR("Failed to load PDB molecule.");
-                return;
-            }
-            data->files.molecule = file;
-            data->files.trajectory = "";
+            mol_loader = pdb::load_molecule_from_file;
+            traj_offset_loader = pdb::read_frame_offsets;
+            traj_frame_loader = pdb::extract_trajectory_frame;
+            /*
+                interrupt_async_tasks(data);
+                free_molecule_data(data);
+                free_trajectory_data(data);
+                if (!pdb::load_molecule_from_file(&data->dynamic.molecule, file)) {
+                    LOG_ERROR("Failed to load PDB molecule.");
+                    return;
+                }
+                data->files.molecule = file;
+                data->files.trajectory = "";
 
-            init_molecule_data(data);
-            if (pdb::init_trajectory_from_file(&data->dynamic.trajectory, file)) {
-                data->files.trajectory = file;
-                init_trajectory_data(data);
-            }
+                init_molecule_data(data);
+
+                if (pdb::init_trajectory_from_file(&data->dynamic.trajectory, file)) {
+                    data->files.trajectory = file;
+                    init_trajectory_data(data);
+                }
+                */
         } else if (compare_ignore_case(ext, "gro")) {
             interrupt_async_tasks(data);
             free_molecule_data(data);
@@ -4699,6 +4714,101 @@ static void load_molecule_data(ApplicationData* data, CStringView file) {
         } else {
             LOG_ERROR("ERROR! file extension is not supported!\n");
             return;
+        }
+
+        if (mol_loader || traj_offset_loader) {
+            interrupt_async_tasks(data);
+        }
+
+        if (mol_loader) {
+            free_molecule_data(data);
+            free_trajectory_data(data);
+
+            if (!mol_loader(&data->dynamic.molecule, file)) {
+                LOG_ERROR("ERROR! Failed to load molecule file.");
+                return;
+            }
+
+            data->files.molecule = file;
+            data->files.trajectory = "";
+            init_molecule_data(data);
+        }
+
+        if (data->dynamic.molecule && traj_offset_loader) {
+            free_trajectory_data(data);
+
+            if ((frame_offsets = traj_offset_loader(file)).empty()) {
+                LOG_ERROR("ERROR! Failed to load trajectory offsets.");
+                return;
+            }
+
+            data->files.trajectory = file;
+            init_trajectory(&data->dynamic.trajectory, data->dynamic.molecule.atom.count, frame_offsets.size());
+        }
+
+        if (frame_offsets.size() > 0 && traj_frame_loader) {
+            FILE* f = fopen(file, "rb");
+            //defer { fclose(f); };
+            if (!f) {
+                LOG_ERROR("Failed to load trajecory frames.");
+                return;
+            }
+
+            task::create_task("Reading Trajectory Frame Data", [traj_frame_loader, f, data, frame_offsets](task::TaskSetRange, task::TaskData) {
+                constexpr int batch_size = 64;
+                i32 num_frames = (i32)frame_offsets.size() - 1;  // frame_offsets include the end
+
+                i64 max_batch_bytes = 0;
+                for (i32 i = 0; i < num_frames; i += batch_size) {
+                    int batch_beg = i;
+                    int batch_end = math::min(num_frames, i + batch_size);
+                    const i64 batch_bytes = frame_offsets[batch_end] - frame_offsets[batch_beg];
+                    max_batch_bytes = math::max(max_batch_bytes, batch_bytes);
+                }
+
+                void* mem = TMP_MALLOC(max_batch_bytes);
+                defer { TMP_FREE(mem); };
+
+                for (i32 i = 0; i < num_frames; i += batch_size) {
+                    int batch_beg = i;
+                    int batch_end = math::min(num_frames, i + batch_size);
+                    int batch_ext = batch_end - batch_beg;
+
+                    const i64 batch_bytes = frame_offsets[batch_end] - frame_offsets[batch_beg];
+                    fseeki64(f, frame_offsets[batch_beg], SEEK_SET);
+                    fread(mem, 1, batch_bytes, f);
+
+                    task::TaskID id = task::create_task(
+                        "Extracting Trajectory Frames", batch_ext,
+                        [traj_frame_loader, data, &frame_offsets, mem, batch_offset = batch_beg](task::TaskSetRange range, task::TaskData) {
+                            for (u32 i = batch_offset + range.beg; i < batch_offset + range.end; i++) {
+                                const i64 size = frame_offsets[i + 1] - frame_offsets[i];
+                                const i64 mem_offset = frame_offsets[i] - frame_offsets[batch_offset];
+                                auto& frame = get_trajectory_frame(data->dynamic.trajectory, i);
+                                traj_frame_loader(&frame, data->dynamic.trajectory.num_atoms, {(u8*)mem + mem_offset, size});
+                                on_trajectory_frame_loaded(data, i);
+                            }
+                        });
+
+                    task::wait_for_task(id);
+                }
+
+                fclose(f);
+                init_trajectory_data(data);
+            });
+
+            /*
+            for (i32 i = 0; i < num_frames; i++) {
+                i64 size = frame_offsets[i + 1] - frame_offsets[i];
+                fseeki64(f, frame_offsets[i], SEEK_SET);
+                fread(mem, 1, size, f);
+                auto& frame = get_trajectory_frame(data->dynamic.trajectory, i);
+                traj_frame_loader(&frame, data->dynamic.trajectory.num_atoms, {(u8*)mem, size});
+                on_trajectory_frame_loaded(data, i);
+            }
+
+            init_trajectory_data(data);
+            */
         }
         auto t1 = platform::get_time();
         LOG_NOTE("Success! operation took %.3fs.", platform::compute_delta_ms(t0, t1) / 1000.f);
