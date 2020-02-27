@@ -69,8 +69,7 @@ int main() {
     }
 
     SECTION("MEMSET REFERENCE") {
-        const auto num_iter = 100;
-        const auto t0 = TIME();
+        const auto num_iter = 1000;
 
         const auto x = md.trajectory.position_data.x;
         const auto y = md.trajectory.position_data.y;
@@ -78,12 +77,46 @@ int main() {
         const auto size = num_atoms * num_frames;
         const auto size_in_bytes = size * sizeof(float) * 3 * num_iter;
 
+        const auto t0 = TIME();
         for (i32 i = 0; i < num_iter; i++) {
             memset(x, 0, size * sizeof(float));
             memset(y, 0, size * sizeof(float));
             memset(z, 0, size * sizeof(float));
         }
         const auto t1 = TIME();
+        const auto time_naive = MILLISEC(t0, t1) / (double)num_iter;
+        const auto throughput_naive = size_in_bytes / SECONDS(t0, t1);
+        printf("Time: %.2fms\n", time_naive);
+        printf("Throughput: %.2fMB/s\n", throughput_naive / (double)MEGABYTES(1));
+    }
+
+    SECTION("MEMREAD REFERENCE") {
+        const auto num_iter = 1000;
+
+        const auto x = md.trajectory.position_data.x;
+        const auto y = md.trajectory.position_data.y;
+        const auto z = md.trajectory.position_data.z;
+        const auto size = num_atoms * num_frames;
+        const auto size_in_bytes = size * sizeof(float) * 3 * num_iter;
+
+        float acc_x = 0.0f;
+        float acc_y = 0.0f;
+        float acc_z = 0.0f;
+
+        const auto t0 = TIME();
+        for (i32 i = 0; i < num_iter; i++) {
+            acc_x = 0.0f;
+            acc_y = 0.0f;
+            acc_z = 0.0f;
+            for (i32 j = 0; j < size; j++) {
+                acc_x += x[j];
+                acc_y += y[j];
+                acc_z += z[j];
+            }
+        }
+        const auto t1 = TIME();
+        printf("x,y,z: %1.1f, %1.1f, %1.1f\n", acc_x, acc_y, acc_z);
+
         const auto time_naive = MILLISEC(t0, t1) / (double)num_iter;
         const auto throughput_naive = size_in_bytes / SECONDS(t0, t1);
         printf("Time: %.2fms\n", time_naive);
