@@ -237,7 +237,7 @@ TEST_CASE("Molecule Utils", "[molecule_utils]") {
 
         const mat3 box = {10, 0, 0, 0, 10, 0, 0, 0, 10};
         const vec3 com = compute_com_periodic(molecule.atom.position.x, molecule.atom.position.y, molecule.atom.position.z, molecule.atom.mass, molecule.atom.count, box);
-        printf("com: %.2f %.2f %.2f", com.x, com.y, com.z);
+        printf("com: %.2f %.2f %.2f\n", com.x, com.y, com.z);
     }
 
     SECTION("TRANSFORM") {
@@ -343,5 +343,12 @@ TEST_CASE("Testing filter", "[filter]") {
     SECTION("filter residue *") {
         filter::compute_filter_mask(mask, "residue *", mol);
         REQUIRE(bitfield::all_bits_set(mask) == true);
+    }
+}
+
+TEST_CASE("Testing string_utils", "[string_utils]") {
+    SECTION("find pattern") {
+        auto matches = find_pattern_offsets("test.txt", "Kalle");
+        REQUIRE(matches.size() > 0);
     }
 }

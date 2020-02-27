@@ -46,13 +46,17 @@ int main() {
 
     if (!res_mol || !res_traj) {
         printf("Could not load dataset: %s\n", DATASET);
-        return 1;
+        printf("Allocating dummy dataset\n");
+        init_trajectory(&md.trajectory, 10000, 1000);
+    }
+    else {
+        printf("Dataset loaded successfully: %s\n", DATASET);
     }
 
-    const i32 num_atoms = (i32)md.molecule.atom.count;
+    const i32 num_atoms = (i32)md.trajectory.num_atoms;
     const i32 num_frames = (i32)md.trajectory.num_frames;
 
-    printf("Dataset loaded successfully: %s\nnum_atoms: %i\nnum_frames: %i\n", DATASET, num_atoms, num_frames);
+    printf("num_atoms: %i\nnum_frames: %i\n", num_atoms, num_frames);
     printf("Time to load molecule: %.2fms\n", MILLISEC(t0_load, t1_load));
     printf("Time to load trajectory: %.2fms\n", MILLISEC(t1_load, t2_load));
     printf("Loaded trajectory size in RAM: %.2fMB\n", (double)(num_atoms * num_frames * sizeof(float) * 3) / MEGABYTES(1));
