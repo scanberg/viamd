@@ -11,10 +11,10 @@ constexpr uint32_t LABEL_SIZE = 64;
 class Task : public enki::ITaskSet {
 public:
     Task() = default;
-    Task(TaskSetFunction func_, const char* lbl) : m_function(func_), m_set_completed(0), m_interrupt(false) {
+    Task(TaskSetFunction func_, TaskCompleteFunction complete_, const char* lbl) : m_function(func_), m_complete(complete_), m_set_completed(0), m_interrupt(false) {
         strncpy(m_label, lbl, LABEL_SIZE);
     }
-    Task(uint32_t set_size_, TaskSetFunction func_, const char* lbl) : ITaskSet(set_size_), m_function(func_), m_set_completed(0), m_interrupt(false) {
+    Task(uint32_t set_size_, TaskSetFunction func_, TaskCompleteFunction complete_, const char* lbl) : ITaskSet(set_size_), m_function(func_), m_complete(complete_), m_set_completed(0), m_interrupt(false) {
         strncpy(m_label, lbl, LABEL_SIZE);
     }
 
@@ -26,6 +26,7 @@ public:
     }
 
     TaskSetFunction m_function;
+    TaskCompleteFunction m_complete;
     std::atomic<uint32_t> m_set_completed;
     std::atomic<bool> m_interrupt;
     char m_label[LABEL_SIZE] = {};
@@ -102,7 +103,7 @@ void clear_completed_tasks() {
     }
 }
 
-TaskID create_task(const char* label, TaskSetFunction func) {
+TaskID create_task(const char* label, TaskSetFunction func, TaskCompleteFunction complete) {
     if (free.empty()) {
         LOG_ERROR("Task queue is full! Cannot create task");
         return 0;
@@ -114,14 +115,14 @@ TaskID create_task(const char* label, TaskSetFunction func) {
 
     Task* task = get_task(id);
     ASSERT(task);
-    PLACEMENT_NEW(task) Task(1, func, label);
+    PLACEMENT_NEW(task) Task(1, func, complete, label);
 
     ts.AddTaskSetToPipe(task);
 
     return id;
 }
 
-TaskID create_task(const char* label, uint32_t size, TaskSetFunction func) {
+TaskID create_task(const char* label, uint32_t size, TaskSetFunction func, TaskCompleteFunction complete) {
     if (free.empty()) {
         LOG_ERROR("Task queue is full! Cannot create task");
         return 0;
@@ -133,7 +134,7 @@ TaskID create_task(const char* label, uint32_t size, TaskSetFunction func) {
 
     Task* task = get_task(id);
     ASSERT(task);
-    PLACEMENT_NEW(task) Task(size, func, label);
+    PLACEMENT_NEW(task) Task(size, func, complete, label);
 
     ts.AddTaskSetToPipe(task);
 

@@ -17,6 +17,7 @@ struct TaskData {
 };
 
 typedef std::function<void(TaskSetRange range, TaskData data)> TaskSetFunction;
+typedef std::function<void(TaskData data)> TaskCompleteFunction;
 
 using TaskID = uint32_t;
 
@@ -28,8 +29,8 @@ TaskID* get_tasks();
 
 void clear_completed_tasks();
 
-TaskID create_task(const char* label, TaskSetFunction func);
-TaskID create_task(const char* label, uint32_t size, TaskSetFunction func);
+TaskID create_task(const char* label, TaskSetFunction func, TaskCompleteFunction complete = NULL);
+TaskID create_task(const char* label, uint32_t size, TaskSetFunction func, TaskCompleteFunction complete = NULL);
 
 bool get_task_complete(TaskID);
 const char* get_task_label(TaskID);
