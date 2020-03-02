@@ -11,7 +11,7 @@ struct MoleculeDynamic;
 
 namespace ramachandran {
 
-task::TaskID initialize(const MoleculeDynamic& dynamic);
+task_system::ID initialize(const MoleculeDynamic& dynamic);
 void shutdown();
 
 // Accumulation texture

@@ -46,7 +46,7 @@ static inline Array<BackboneAngle> get_backbone_angles(BackboneAnglesTrajectory&
 
 static void init_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const MoleculeDynamic& dynamic);
 static void free_backbone_angles_trajectory(BackboneAnglesTrajectory* data);
-static task::TaskID compute_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const MoleculeDynamic& dynamic);
+static task_system::ID compute_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const MoleculeDynamic& dynamic);
 
 namespace ramachandran {
 
@@ -200,8 +200,8 @@ void init_gui_map(const ColorMap& color_map, int blur_level) { init_map(&gui_img
 void init_segmentation_map(const ColorMap& color_map, int blur_level) { init_map(&seg_img, seg_tex, color_map, blur_level); }
 void init_color_map(const ColorMap& color_map, int blur_level) { init_map(&col_img, col_tex, color_map, blur_level); }
 
-task::TaskID initialize(const MoleculeDynamic& dynamic) {
-    task::TaskID id = 0;
+task_system::ID initialize(const MoleculeDynamic& dynamic) {
+    task_system::ID id = 0;
 
     if (dynamic) {
         init_backbone_angles_trajectory(&traj_angles, dynamic);
@@ -297,43 +297,28 @@ task::TaskID initialize(const MoleculeDynamic& dynamic) {
         init_color_map(col_color_map, 4);
     }
 
-    constexpr int BUFFER_SIZE = 1024;
-    char buffer[BUFFER_SIZE];
+    if (!program) {
+        constexpr int BUFFER_SIZE = 1024;
+        char buffer[BUFFER_SIZE];
 
-    GLuint v_shader = glCreateShader(GL_VERTEX_SHADER);
-    GLuint f_shader = glCreateShader(GL_FRAGMENT_SHADER);
-    defer {
-        glDeleteShader(v_shader);
-        glDeleteShader(f_shader);
-    };
-    glShaderSource(v_shader, 1, &v_shader_src, 0);
-    glShaderSource(f_shader, 1, &f_shader_src, 0);
+        GLuint v_shader = gl::compile_shader_from_source(v_shader_src, GL_VERTEX_SHADER);
+        GLuint f_shader = gl::compile_shader_from_source(f_shader_src, GL_FRAGMENT_SHADER);
+        defer {
+            glDeleteShader(v_shader);
+            glDeleteShader(f_shader);
+        };
 
-    glCompileShader(v_shader);
-    if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
-        LOG_ERROR("Compiling ramachandran vertex shader:\n%s\n", buffer);
-    }
-    glCompileShader(f_shader);
-    if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
-        LOG_ERROR("Compiling ramachandran fragment shader:\n%s\n", buffer);
-    }
+        program = glCreateProgram();
+        const GLuint shaders[] = {v_shader, f_shader};
+        gl::attach_link_detach(program, shaders);
 
-    program = glCreateProgram();
-    glAttachShader(program, v_shader);
-    glAttachShader(program, f_shader);
-    glLinkProgram(program);
-    if (gl::get_program_link_error(buffer, BUFFER_SIZE, program)) {
-        LOG_ERROR("Linking ramachandran program:\n%s\n", buffer);
+        uniform_loc_coord_tex = glGetUniformLocation(program, "u_coord_tex");
+        uniform_loc_instance_offset = glGetUniformLocation(program, "u_instance_offset");
+        uniform_loc_radius = glGetUniformLocation(program, "u_radius");
+        uniform_loc_color = glGetUniformLocation(program, "u_color");
+        uniform_loc_outline = glGetUniformLocation(program, "u_outline");
     }
 
-    glDetachShader(program, v_shader);
-    glDetachShader(program, f_shader);
-
-    uniform_loc_coord_tex = glGetUniformLocation(program, "u_coord_tex");
-    uniform_loc_instance_offset = glGetUniformLocation(program, "u_instance_offset");
-    uniform_loc_radius = glGetUniformLocation(program, "u_radius");
-    uniform_loc_color = glGetUniformLocation(program, "u_color");
-    uniform_loc_outline = glGetUniformLocation(program, "u_outline");
 
     if (!acc_tex) {
         glGenTextures(1, &acc_tex);
@@ -542,12 +527,12 @@ static void free_backbone_angles_trajectory(BackboneAnglesTrajectory* data) {
     }
 }
 
-static task::TaskID compute_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const MoleculeDynamic& dynamic) {
+static task_system::ID compute_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const MoleculeDynamic& dynamic) {
     ASSERT(dynamic);
     if (dynamic.trajectory.num_frames == 0 || dynamic.molecule.backbone.segments.count == 0) return 0;
 
-    task::TaskID id = task::create_task(
-        "Backbone Angles Trajectory", dynamic.trajectory.num_frames, [data, &dynamic](task::TaskSetRange range, task::TaskData) {
+    task_system::ID id = task_system::create_task(
+        "Backbone Angles Trajectory", dynamic.trajectory.num_frames, [data, &dynamic](task_system::TaskSetRange range, task_system::TaskData) {
             for (u32 f_idx = range.beg; f_idx < range.end; f_idx++) {
                 auto pos_x = get_trajectory_position_x(dynamic.trajectory, f_idx).data();
                 auto pos_y = get_trajectory_position_y(dynamic.trajectory, f_idx).data();

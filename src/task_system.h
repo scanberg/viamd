@@ -4,7 +4,7 @@
 #include <functional>
 #include <atomic>
 
-namespace task {
+namespace task_system {
 
 struct TaskSetRange {
     uint32_t beg;
@@ -17,27 +17,27 @@ struct TaskData {
 };
 
 typedef std::function<void(TaskSetRange range, TaskData data)> TaskSetFunction;
-typedef std::function<void(TaskData data)> TaskCompleteFunction;
 
-using TaskID = uint32_t;
+using ID = uint32_t;
 
 void initialize();
 void shutdown();
 
+uint32_t get_num_threads();
 uint32_t get_num_tasks();
-TaskID* get_tasks();
+ID* get_tasks();
 
 void clear_completed_tasks();
 
-TaskID create_task(const char* label, TaskSetFunction func, TaskCompleteFunction complete = NULL);
-TaskID create_task(const char* label, uint32_t size, TaskSetFunction func, TaskCompleteFunction complete = NULL);
+ID create_task(const char* label, TaskSetFunction func);
+ID create_task(const char* label, uint32_t size, TaskSetFunction func);
 
-bool get_task_complete(TaskID);
-const char* get_task_label(TaskID);
-float get_task_fraction_complete(TaskID);
-void wait_for_task(TaskID);
-void interrupt_task(TaskID);
-void interrupt_and_wait(TaskID);
+bool get_task_complete(ID);
+const char* get_task_label(ID);
+float get_task_fraction_complete(ID);
+void wait_for_task(ID);
+void interrupt_task(ID);
+void interrupt_and_wait(ID);
 
 
-}  // namespace task
+}  // namespace task_system

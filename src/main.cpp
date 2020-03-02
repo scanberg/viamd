@@ -43,6 +43,7 @@
 #include "structure_tracking.h"
 #include "isosurface.h"
 #include "task_system.h"
+#include "trajectory_loader.h"
 
 #include <stdio.h>
 #include <thread>
@@ -54,8 +55,6 @@
 #define VIAMD_RELEASE 1
 #define EXPERIMENTAL_CULLING 0
 #define EXPERIMENTAL_SDF 0
-
-#define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
 
 #ifdef OS_MAC_OSX
 const Key::Key_t KEY_CONSOLE = Key::KEY_WORLD_1;
@@ -326,7 +325,7 @@ struct ApplicationData {
 
     // --- ASYNC TASKS HANDLES ---
     struct {
-        task::TaskID load_trajectory;
+        task_system::ID load_trajectory;
     } tasks;
 
     // --- ATOM SELECTION ---
@@ -710,8 +709,8 @@ static void copy_molecule_data_to_buffers(ApplicationData* data);
 static void init_molecule_data(ApplicationData* data);
 static void init_trajectory_data(ApplicationData* data);
 
-static void load_molecule_data(ApplicationData* data, CStringView file);
-static void free_molecule_data(ApplicationData* data);
+static bool load_dataset_from_file(ApplicationData* data, CStringView file);
+static void free_dataset(ApplicationData* data);
 
 static void load_workspace(ApplicationData* data, CStringView file);
 static void save_workspace(ApplicationData* data, CStringView file);
@@ -752,9 +751,9 @@ static void superimpose_ensemble(ApplicationData* data);
 static void init_density_volume(ApplicationData* data);
 
 // Async operations
-static void load_trajectory_async(ApplicationData* data);
+// static void load_trajectory_async(ApplicationData* data);
 
-static void on_trajectory_frame_loaded(ApplicationData* data, int frame_idx);
+// static void on_trajectory_frame_loaded(ApplicationData* data, int frame_idx);
 static void on_trajectory_load_complete(ApplicationData* data);
 
 // Temp functionality
@@ -819,10 +818,10 @@ int main(int, char**) {
     volume::initialize();
     LOG_NOTE("Initializing structure tracking...");
     structure_tracking::initialize();
-    // LOG_NOTE("Initializing task scheduler...");
+    // LOG_NOTE("Initializing task_system scheduler...");
     // data.thread_pool.Initialize();
     LOG_NOTE("Initializing task system...");
-    task::initialize();
+    task_system::initialize();
 
     // ImGui::SetupImGuiStyle2();
     ImGui::StyleColorsLight();
@@ -835,13 +834,13 @@ int main(int, char**) {
     pdb::load_molecule_from_string(&data.dynamic.molecule, CAFFINE_PDB);
     init_molecule_data(&data);
 #else
-    // load_molecule_data(&data, VIAMD_DATA_DIR "/1ALA-250ns-2500frames.pdb");
-    // load_molecule_data(&data, VIAMD_DATA_DIR "/amyloid/centered.gro");
-    // load_molecule_data(&data, VIAMD_DATA_DIR "/amyloid/centered.xtc");
-    load_molecule_data(&data, "D:/data/md/6T-water/16-6T-box.gro");
-    load_molecule_data(&data, "D:/data/md/6T-water/16-6T-box-md-npt.xtc");
-    // load_molecule_data(&data, "D:/data/md/p-ftaa-water/p-FTAA-box-sol-ions-em.gro");
-    // load_molecule_data(&data, "D:/data/md/p-ftaa-water/p-FTAA-box-sol-ions-md-npt.xtc");
+    // load_dataset_from_file(&data, VIAMD_DATA_DIR "/1ALA-250ns-2500frames.pdb");
+    // load_dataset_from_file(&data, VIAMD_DATA_DIR "/amyloid/centered.gro");
+    // load_dataset_from_file(&data, VIAMD_DATA_DIR "/amyloid/centered.xtc");
+    load_dataset_from_file(&data, "D:/data/md/6T-water/16-6T-box.gro");
+    load_dataset_from_file(&data, "D:/data/md/6T-water/16-6T-box-md-npt.xtc");
+    // load_dataset_from_file(&data, "D:/data/md/p-ftaa-water/p-FTAA-box-sol-ions-em.gro");
+    // load_dataset_from_file(&data, "D:/data/md/p-ftaa-water/p-FTAA-box-sol-ions-md-npt.xtc");
 
     // create_reference_frame(&data, "dna", "dna");
     create_reference_frame(&data, "res1", "residue 1");
@@ -1200,7 +1199,7 @@ int main(int, char**) {
         // Swap buffers
         platform::swap_buffers(&data.ctx);
 
-        task::clear_completed_tasks();
+        task_system::clear_completed_tasks();
     }
 
     stats::signal_stop_and_wait();
@@ -1223,7 +1222,7 @@ int main(int, char**) {
     LOG_NOTE("Shutting down structure tracking...");
     structure_tracking::shutdown();
     LOG_NOTE("Shutting down task system...");
-    task::shutdown();
+    task_system::shutdown();
 
     destroy_framebuffer(&data.fbo);
     platform::shutdown(&data.ctx);
@@ -1520,7 +1519,7 @@ static void draw_main_menu(ApplicationData* data) {
             if (ImGui::MenuItem("Load Data", "CTRL+L")) {
                 auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, "pdb,gro,xtc");
                 if (res.result == platform::FileDialogResult::Ok) {
-                    load_molecule_data(data, res.path);
+                    load_dataset_from_file(data, res.path);
                     if (data->representations.buffer.size() > 0) {
                         reset_representations(data);
                     } else {
@@ -2925,8 +2924,8 @@ static void draw_async_task_window(ApplicationData* data) {
 
     const f32 stats_fract = stats::fraction_done();
 
-    const u32 num_tasks = task::get_num_tasks();
-    task::TaskID* tasks = task::get_tasks();
+    const u32 num_tasks = task_system::get_num_tasks();
+    task_system::ID* tasks = task_system::get_tasks();
 
     if ((0.f < stats_fract && stats_fract < 1.f || num_tasks > 0)) {
 
@@ -2949,14 +2948,14 @@ static void draw_async_task_window(ApplicationData* data) {
 
         for (u32 i = 0; i < num_tasks; i++) {
             const auto id = tasks[i];
-            const f32 fract = task::get_task_fraction_complete(id);
+            const f32 fract = task_system::get_task_fraction_complete(id);
             snprintf(buf, 32, "%.1f%%", fract * 100.f);
             ImGui::ProgressBar(fract, ImVec2(ImGui::GetWindowContentRegionWidth() * PROGRESSBAR_WIDTH_FRACT, 0), buf);
             ImGui::SameLine();
-            ImGui::Text(task::get_task_label(id));
+            ImGui::Text(task_system::get_task_label(id));
             ImGui::SameLine();
             if (ImGui::Button("X")) {
-                task::interrupt_task(id);
+                task_system::interrupt_task(id);
             }
         }
 
@@ -3985,7 +3984,7 @@ static void draw_density_volume_window(ApplicationData* data) {
             }
 
             if (ImGui::Button("Compute Density")) {
-                task::create_task("Big Density", [data](task::TaskSetRange, task::TaskData) {
+                task_system::create_task("Big Density", [data](task_system::TaskSetRange, task_system::TaskData) {
                     Bitfield filter_mask;
                     bitfield::init(&filter_mask, data->dynamic.molecule.atom.count);
                     defer { bitfield::free(&filter_mask); };
@@ -4005,9 +4004,9 @@ static void draw_density_volume_window(ApplicationData* data) {
                         clear_volume(&data->density_volume.volume);
 
                         auto t0 = platform::get_time();
-                        task::TaskID task = task::create_task(
+                        task_system::ID task_system = task_system::create_task(
                             "Small Density", (u32)ensemble_structures.size(),
-                            [data, filter_mask, &ensemble_structures](task::TaskSetRange range, task::TaskData) {
+                            [data, filter_mask, &ensemble_structures](task_system::TaskSetRange range, task_system::TaskData) {
                                 for (u32 i = range.beg; i < range.end; ++i) {
                                     auto& structure = ensemble_structures[i];
                                     if (!structure.enabled) continue;
@@ -4021,7 +4020,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                                                               cutoff);
                                 }
                             });
-                        task::wait_for_task(task);
+                        task_system::wait_for_task(task_system);
                         auto t1 = platform::get_time();
 
                         data->density_volume.volume.voxel_range = {data->density_volume.volume.voxel_data[0],
@@ -4113,16 +4112,16 @@ static void draw_density_volume_window(ApplicationData* data) {
                         LOG_NOTE("Computing Internal Reference Frames...");
                         auto t0 = platform::get_time();
                         u32 completed_count = 0;
-                        task::TaskID task = task::create_task(
+                        task_system::ID task_system = task_system::create_task(
                             "Computing Internal Reference Frames...", (u32)ensemble_structures.size(),
-                            [dyn, ensemble_mask, &ensemble_structures, &completed_count](task::TaskSetRange range, task::TaskData) {
+                            [dyn, ensemble_mask, &ensemble_structures, &completed_count](task_system::TaskSetRange range, task_system::TaskData) {
                                 for (u32 i = range.beg; i < range.end; ++i) {
                                     auto& structure = ensemble_structures[i];
                                     structure_tracking::compute_trajectory_transform_data(structure.id, dyn, ensemble_mask, structure.offset);
                                     const u32 count = platform::atomic_fetch_and_add(&completed_count, 1) + 1;
                                 }
                             });
-                        task::wait_for_task(task);
+                        task_system::wait_for_task(task_system);
                         auto t1 = platform::get_time();
 
                         LOG_NOTE("Done!");
@@ -4561,9 +4560,9 @@ static void copy_molecule_data_to_buffers(ApplicationData* data) {
 static void free_trajectory_data(ApplicationData* data) {
     ASSERT(data);
     if (data->dynamic.trajectory) {
-        if (data->tasks.load_trajectory) task::interrupt_and_wait(data->tasks.load_trajectory);
+        if (data->tasks.load_trajectory) task_system::interrupt_and_wait(data->tasks.load_trajectory);
         stats::signal_stop_and_wait();
-        close_file_handle(&data->dynamic.trajectory);
+        // close_file_handle(&data->dynamic.trajectory);
         free_trajectory(&data->dynamic.trajectory);
     }
 }
@@ -4608,214 +4607,93 @@ static void init_molecule_data(ApplicationData* data) {
 
 static void init_trajectory_data(ApplicationData* data) {
     if (data->dynamic.trajectory) {
-        if (data->dynamic.trajectory.num_atoms != data->dynamic.molecule.atom.count) {
-            LOG_ERROR("ERROR! The number of atoms in the molecule does not match the number of atoms in the trajectory.");
-            free_trajectory_data(data);
-            return;
-        }
+        data->time_filter.range = {0, (float)data->dynamic.trajectory.num_frames};
+        data->playback.time = math::clamp(data->playback.time, (f64)data->time_filter.range.min, (f64)data->time_filter.range.max);
+        data->playback.frame = math::clamp((i32)data->playback.time, 0, data->dynamic.trajectory.num_frames);
+        i32 frame = data->playback.frame;
 
-        /*
-        read_next_trajectory_frame(&data->dynamic.trajectory);  // read first frame explicitly
-        on_trajectory_frame_loaded(data, 0);
-        const auto pos_x = get_trajectory_position_x(data->dynamic.trajectory, 0);
-        const auto pos_y = get_trajectory_position_y(data->dynamic.trajectory, 0);
-        const auto pos_z = get_trajectory_position_z(data->dynamic.trajectory, 0);
+        data->simulation_box.box = get_trajectory_frame(data->dynamic.trajectory, data->playback.frame).box;
+        const Array<float> pos_x = get_trajectory_position_x(data->dynamic.trajectory, frame);
+        const Array<float> pos_y = get_trajectory_position_y(data->dynamic.trajectory, frame);
+        const Array<float> pos_z = get_trajectory_position_z(data->dynamic.trajectory, frame);
 
         memcpy(data->dynamic.molecule.atom.position.x, pos_x.data(), pos_x.size_in_bytes());
         memcpy(data->dynamic.molecule.atom.position.y, pos_y.data(), pos_y.size_in_bytes());
         memcpy(data->dynamic.molecule.atom.position.z, pos_z.data(), pos_z.size_in_bytes());
-        */
-
-        data->simulation_box.box = get_trajectory_frame(data->dynamic.trajectory, 0).box;
-        data->time_filter.range = {0, (float)data->dynamic.trajectory.num_frames};
 
         data->gpu_buffers.dirty.position = true;
         copy_molecule_data_to_buffers(data);
         copy_buffer(data->gpu_buffers.old_position, data->gpu_buffers.position);
 
-        // @NOTE: Load any frames left
-        if (all_trajectory_frames_read(data->dynamic.trajectory) == false) {
-            load_trajectory_async(data);
-        }
-
         init_density_volume(data);
-        // init_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->dynamic);
-        // compute_backbone_angles_trajectory(&data->ramachandran.backbone_angles, data->dynamic);
     }
 }
 
 static void interrupt_async_tasks(ApplicationData* data) {
     if (data->tasks.load_trajectory) {
-        task::interrupt_task(data->tasks.load_trajectory);
+        task_system::interrupt_task(data->tasks.load_trajectory);
     }
-    task::wait_for_task(data->tasks.load_trajectory);
+    task_system::wait_for_task(data->tasks.load_trajectory);
+    data->tasks.load_trajectory = 0;
 }
 
-static void load_molecule_data(ApplicationData* data, CStringView file) {
-    ASSERT(data);
+static bool load_trajectory_data(ApplicationData* data, CStringView filename) {
+    interrupt_async_tasks(data);
+    free_trajectory_data(data);
+    data->files.trajectory = filename;
 
-    bool (*mol_loader)(MoleculeStructure * mol, CStringView filename) = 0;
-    DynamicArray<i64> (*traj_offset_loader)(CStringView filename) = 0;
-    bool (*traj_frame_loader)(TrajectoryFrame * frame, i32 num_atoms, Array<u8> raw_data) = 0;
-
-    DynamicArray<i64> frame_offsets{};
-
-    if (file.size() > 0) {
-        CStringView ext = get_file_extension(file);
-        LOG_NOTE("Loading molecular data from file '%.*s'...", file.count, file.ptr);
-        auto t0 = platform::get_time();
-        if (compare_ignore_case(ext, "pdb")) {
-            mol_loader = pdb::load_molecule_from_file;
-            traj_offset_loader = pdb::read_frame_offsets;
-            traj_frame_loader = pdb::extract_trajectory_frame;
-            /*
-                interrupt_async_tasks(data);
-                free_molecule_data(data);
-                free_trajectory_data(data);
-                if (!pdb::load_molecule_from_file(&data->dynamic.molecule, file)) {
-                    LOG_ERROR("Failed to load PDB molecule.");
-                    return;
-                }
-                data->files.molecule = file;
-                data->files.trajectory = "";
-
-                init_molecule_data(data);
-
-                if (pdb::init_trajectory_from_file(&data->dynamic.trajectory, file)) {
-                    data->files.trajectory = file;
-                    init_trajectory_data(data);
-                }
-                */
-        } else if (compare_ignore_case(ext, "gro")) {
-            interrupt_async_tasks(data);
-            free_molecule_data(data);
+    LOG_NOTE("Attempting to load trajectory data from file '%.*s", filename.count, filename.ptr);
+    data->tasks.load_trajectory = task_system::create_task("Loading trajectory", [data](task_system::TaskSetRange, task_system::TaskData) {
+        if (!load::traj::load_trajectory(&data->dynamic.trajectory, (i32)data->dynamic.molecule.atom.count, data->files.trajectory)) {
+            LOG_ERROR("Failed to load trajectory");
             free_trajectory_data(data);
-            if (!gro::load_molecule_from_file(&data->dynamic.molecule, file)) {
-                LOG_ERROR("ERROR! Failed to load gro file.");
-                return;
-            }
-            data->files.molecule = file;
             data->files.trajectory = "";
-
-            init_molecule_data(data);
-        } else if (compare_ignore_case(ext, "xtc")) {
-            if (!data->dynamic.molecule) {
-                LOG_ERROR("ERROR! Must have molecule structure before trajectory can be loaded.");
-                return;
-            }
-            interrupt_async_tasks(data);
-            free_trajectory_data(data);
-            if (!xtc::init_trajectory_from_file(&data->dynamic.trajectory, (i32)data->dynamic.molecule.atom.count, file)) {
-                LOG_ERROR("ERROR! Problem loading XTC trajectory.");
-                return;
-            }
-            data->files.trajectory = file;
-            init_trajectory_data(data);
-        } else {
-            LOG_ERROR("ERROR! file extension is not supported!\n");
             return;
         }
+        init_trajectory_data(data);
+        on_trajectory_load_complete(data);
+    });
+    return true;
+}
 
-        if (mol_loader || traj_offset_loader) {
+static bool load_dataset_from_file(ApplicationData* data, CStringView filename) {
+    ASSERT(data);
+
+    if (filename) {
+        if (load::mol::is_extension_supported(filename)) {
             interrupt_async_tasks(data);
-        }
-
-        if (mol_loader) {
             free_molecule_data(data);
             free_trajectory_data(data);
-
-            if (!mol_loader(&data->dynamic.molecule, file)) {
-                LOG_ERROR("ERROR! Failed to load molecule file.");
-                return;
-            }
-
-            data->files.molecule = file;
+            data->files.molecule = filename;
             data->files.trajectory = "";
+
+            LOG_NOTE("Attempting to load molecular data from file '%.*s'", filename.count, filename.ptr);
+            if (!load::mol::load_molecule(&data->dynamic.molecule, filename)) {
+                LOG_ERROR("Failed to load molecular data");
+                data->files.molecule = "";
+                return false;
+            }
             init_molecule_data(data);
-        }
 
-        if (data->dynamic.molecule && traj_offset_loader) {
-            free_trajectory_data(data);
-
-            if ((frame_offsets = traj_offset_loader(file)).empty()) {
-                LOG_ERROR("ERROR! Failed to load trajectory offsets.");
-                return;
+            // @NOTE: Some files contain both atomic coordinates and trajectory
+            i32 num_frames = 0;
+            if (load::traj::is_extension_supported(filename) &&
+                load::traj::read_num_frames(&num_frames, filename) && num_frames > 1) {
+                // @TODO: Halt here and query user if this is actual frames or individual models of a larger assembly.
+                return load_trajectory_data(data, filename);
             }
-
-            data->files.trajectory = file;
-            init_trajectory(&data->dynamic.trajectory, data->dynamic.molecule.atom.count, frame_offsets.size());
-        }
-
-        if (frame_offsets.size() > 0 && traj_frame_loader) {
-            FILE* f = fopen(file, "rb");
-            //defer { fclose(f); };
-            if (!f) {
-                LOG_ERROR("Failed to load trajecory frames.");
-                return;
+            return true;
+        } else if (load::traj::is_extension_supported(filename)) {
+            if (!data->dynamic.molecule) {
+                LOG_ERROR("Before loading a trajectory a molecular data needs to be present");
+                return false;
             }
-
-            task::create_task("Reading Trajectory Frame Data", [traj_frame_loader, f, data, frame_offsets](task::TaskSetRange, task::TaskData) {
-                constexpr int batch_size = 64;
-                i32 num_frames = (i32)frame_offsets.size() - 1;  // frame_offsets include the end
-
-                i64 max_batch_bytes = 0;
-                for (i32 i = 0; i < num_frames; i += batch_size) {
-                    int batch_beg = i;
-                    int batch_end = math::min(num_frames, i + batch_size);
-                    const i64 batch_bytes = frame_offsets[batch_end] - frame_offsets[batch_beg];
-                    max_batch_bytes = math::max(max_batch_bytes, batch_bytes);
-                }
-
-                void* mem = TMP_MALLOC(max_batch_bytes);
-                defer { TMP_FREE(mem); };
-
-                for (i32 i = 0; i < num_frames; i += batch_size) {
-                    int batch_beg = i;
-                    int batch_end = math::min(num_frames, i + batch_size);
-                    int batch_ext = batch_end - batch_beg;
-
-                    const i64 batch_bytes = frame_offsets[batch_end] - frame_offsets[batch_beg];
-                    fseeki64(f, frame_offsets[batch_beg], SEEK_SET);
-                    fread(mem, 1, batch_bytes, f);
-
-                    task::TaskID id = task::create_task(
-                        "Extracting Trajectory Frames", batch_ext,
-                        [traj_frame_loader, data, &frame_offsets, mem, batch_offset = batch_beg](task::TaskSetRange range, task::TaskData) {
-                            for (u32 i = batch_offset + range.beg; i < batch_offset + range.end; i++) {
-                                const i64 size = frame_offsets[i + 1] - frame_offsets[i];
-                                const i64 mem_offset = frame_offsets[i] - frame_offsets[batch_offset];
-                                auto& frame = get_trajectory_frame(data->dynamic.trajectory, i);
-                                traj_frame_loader(&frame, data->dynamic.trajectory.num_atoms, {(u8*)mem + mem_offset, size});
-                                on_trajectory_frame_loaded(data, i);
-                            }
-                        });
-
-                    task::wait_for_task(id);
-                }
-
-                fclose(f);
-                init_trajectory_data(data);
-            });
-
-            /*
-            for (i32 i = 0; i < num_frames; i++) {
-                i64 size = frame_offsets[i + 1] - frame_offsets[i];
-                fseeki64(f, frame_offsets[i], SEEK_SET);
-                fread(mem, 1, size, f);
-                auto& frame = get_trajectory_frame(data->dynamic.trajectory, i);
-                traj_frame_loader(&frame, data->dynamic.trajectory.num_atoms, {(u8*)mem, size});
-                on_trajectory_frame_loaded(data, i);
-            }
-
-            init_trajectory_data(data);
-            */
+            return load_trajectory_data(data, filename);
+        } else {
+            LOG_ERROR("File extension not supported");
         }
-        auto t1 = platform::get_time();
-        LOG_NOTE("Success! operation took %.3fs.", platform::compute_delta_ms(t0, t1) / 1000.f);
-        LOG_NOTE("Number of chains: %i", (i32)data->dynamic.molecule.chains.size());
-        LOG_NOTE("Number of residues: %i", (i32)data->dynamic.molecule.residues.size());
-        LOG_NOTE("Number of atoms: %i", (i32)data->dynamic.molecule.atom.count);
     }
+    return false;
 }
 
 // ### WORKSPACE ###
@@ -5001,11 +4879,11 @@ static void load_workspace(ApplicationData* data, CStringView file) {
     data->files.workspace = file;
 
     if (!compare(new_molecule_file, data->files.molecule) && new_molecule_file) {
-        load_molecule_data(data, new_molecule_file);
+        load_dataset_from_file(data, new_molecule_file);
     }
 
     if (!compare(new_trajectory_file, data->files.trajectory) && new_trajectory_file) {
-        load_molecule_data(data, new_trajectory_file);
+        load_dataset_from_file(data, new_trajectory_file);
     }
 
     data->playback = {};
@@ -5366,7 +5244,7 @@ static bool handle_selection(ApplicationData* data) {
 
             for (i64 i = 0; i < N; i++) {
                 if (!bitfield::get_bit(data->representations.atom_visibility_mask, i)) continue;
-#if 1
+
                 // @PERF: Do the projection manually. GLM is super slow in doing the matrix vector multiplication on msvc for some reason...
                 const float x = data->dynamic.molecule.atom.position.x[i];
                 const float y = data->dynamic.molecule.atom.position.y[i];
@@ -5379,12 +5257,7 @@ static bool handle_selection(ApplicationData* data) {
                 vec2 c;
                 c.x = (p_x / p_w * 0.5f + 0.5f) * res.x;
                 c.y = (-p_y / p_w * 0.5f + 0.5f) * res.y;
-#else
-                // @PERF: WHY IS THIS SO GOD DAMN SLOW ON MSVC???
-                const vec4 p = mvp * vec4(data->dynamic.molecule.atom.position.x[i], data->dynamic.molecule.atom.position.y[i],
-                                          data->dynamic.molecule.atom.position.z[i], 1);
-                const vec2 c = (vec2(p.x / p.w, -p.y / p.w) * 0.5f + 0.5f) * res;
-#endif
+
                 if (min_p.x <= c.x && c.x <= max_p.x && min_p.y <= c.y && c.y <= max_p.y) {
                     bitfield::set_bit(mask, i);
                 }
@@ -5735,6 +5608,8 @@ static void fill_gbuffer(const ApplicationData& data) {
         PUSH_GPU_SECTION("Volume Rendering")
 
         glDrawBuffer(GL_COLOR_ATTACHMENT4);  // Post_Tonemap buffer
+
+        glDepthMask(0);
         glDisable(GL_DEPTH_TEST);
 
         glEnable(GL_BLEND);
@@ -5762,6 +5637,7 @@ static void fill_gbuffer(const ApplicationData& data) {
 
         glDisable(GL_BLEND);
         glEnable(GL_DEPTH_TEST);
+        glDepthMask(1);
 
         POP_GPU_SECTION()
     }
@@ -6350,20 +6226,6 @@ static void superimpose_ensemble(ApplicationData* data) {
     }
 }
 
-static void on_trajectory_frame_loaded(ApplicationData* data, int frame_idx) {
-    // WHEN FRAME LOADED
-#if DEPERIODIZE_ON_FRAME_LOADED
-    const auto& mol = data->dynamic.molecule;
-    auto& frame = get_trajectory_frame(data->dynamic.trajectory, frame_idx);
-    apply_pbc(frame.atom_position.x, frame.atom_position.y, frame.atom_position.z, mol.atom.mass, mol.sequences, frame.box);
-#endif
-
-    // Possibly update timeline-filter
-    if ((int)data->time_filter.range.end == frame_idx) {
-        data->time_filter.range.end = (float)(frame_idx + 1);
-    }
-}
-
 static void on_trajectory_load_complete(ApplicationData* data) {
     for (auto& ref : data->reference_frame.frames) {
         compute_reference_frame(data, &ref);
@@ -6371,29 +6233,6 @@ static void on_trajectory_load_complete(ApplicationData* data) {
     update_reference_frames(data);
     stats::set_all_property_flags(true, true);
     ramachandran::initialize(data->dynamic);
-}
-
-// #async
-static void load_trajectory_async(ApplicationData* data) {
-    ASSERT(data);
-
-    // Wait for task to complete if already running
-    if (data->tasks.load_trajectory != 0) {
-        task::interrupt_and_wait(data->tasks.load_trajectory);
-    }
-
-    data->tasks.load_trajectory = task::create_task("Loading Trajectory", [data](task::TaskSetRange, task::TaskData task_data) {
-        while (read_next_trajectory_frame(&data->dynamic.trajectory)) {
-            // data->async.trajectory.fraction = data->dynamic.trajectory.num_frames / (float)data->dynamic.trajectory.frame_offsets.size();
-            on_trajectory_frame_loaded(data, data->dynamic.trajectory.num_frames - 1);
-            if (task_data.interrupt) break;
-        }
-
-        if (!task_data.interrupt) {
-            on_trajectory_load_complete(data);
-        }
-        data->tasks.load_trajectory = 0;
-    });
 }
 
 static void init_density_volume(ApplicationData* data) {

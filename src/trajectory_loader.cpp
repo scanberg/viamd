@@ -1,95 +1,163 @@
 #include "trajectory_loader.h"
-#include <core/hash.h>
+#include <core/common.h>
+#include <core/log.h>
+#include <core/file.h>
+#include <core/math_utils.h>
+#include <core/string_types.h>
 #include <mol/xtc_utils.h>
 #include <mol/pdb_utils.h>
 #include <mol/gro_utils.h>
+#include <mol/trajectory_utils.h>
+
+#include "task_system.h"
 
 struct MoleculeLoader {
-    u64 id;
+    CStringView id;
     bool (*read_molecule)(MoleculeStructure* mol, CStringView filename);
 };
 
-static constexpr MoleculeLoader mol_loaders[] {
-    {hash::crc64("pdb"), pdb::load_molecule_from_file},
-    {hash::crc64("gro"), gro::load_molecule_from_file},
+static constexpr MoleculeLoader mol_loaders[]{
+    {"pdb", pdb::load_molecule_from_file},
+    {"gro", gro::load_molecule_from_file},
 };
 
 struct TrajectoryLoader {
-    u64 id;
-    i32 (*read_num_frames)(CStringView filename);
-    DynamicArray<i64> (*read_frame_offsets)(CStringView filename);
-    //bool (*read_data)(Array<u8> dst, i64 offset, i64 size, CStringView filename);
+    CStringView id;
+    bool (*read_num_frames)(i32* num_frames, CStringView filename);
+    bool (*read_simulation_box)(mat3* sim_box, CStringView filename);
+    bool (*read_frame_bytes)(FrameBytes* frame_bytes, CStringView filename);
     bool (*extract_frame)(TrajectoryFrame* frame, i32 num_atoms, Array<u8> data);
+    // void (*post_init)(MoleculeTrajectory* traj, CStringView filename) = 0;
 };
 
-static constexpr TrajectoryLoader traj_loaders[] {
-    {hash::crc64("xtc"), xtc::read_num_frames, xtc::read_frame_offsets, xtc::decompress_trajectory_frame},
-    {hash::crc64("pdb"), pdb::read_num_frames, pdb::read_frame_offsets, pdb::extract_trajectory_frame},
+static constexpr TrajectoryLoader traj_loaders[]{
+    {"xtc", xtc::read_trajectory_num_frames, NULL, xtc::read_trajectory_frame_bytes, xtc::decompress_trajectory_frame},
+    {"pdb", pdb::read_trajectory_num_frames, pdb::read_trajectory_simulation_box, pdb::read_trajectory_frame_bytes, pdb::extract_trajectory_frame},
 };
 
 namespace load {
 
 namespace mol {
-static MoleculeLoader* get_loader(CStringView extension) {
-    StringBuffer<8> ext = extension;
-    for (char* c : ext) {
-        *c = to_lower(*c);
-    }
-    u64 id = hash::crc64(ext);
-    for (int i = 0; i < ARRAY_SIZE(mol_loaders); i++) {
-        if (id == mol_loaders[i].id) {
-            return &mol_loaders[i];
+static const MoleculeLoader* get_loader(CStringView extension) {
+    for (const auto& loader : mol_loaders) {
+        if (compare_ignore_case(extension, loader.id)) {
+            return &loader;
         }
     }
     return NULL;
 }
 
-bool load_molecule(MoleculeStructure* mol, CStringView filename) {
-    MoleculeLoader* loader = get_loader(get_file_extension(filename));
-    if (loader) {
-        return loader->read_molecule(mol, filename);
-    }
-    LOG_ERROR("Could not find loader for file '%.*s'", filename.length(), filename.beg());
-    return false;
-}
+bool is_extension_supported(CStringView filename) { return get_loader(get_file_extension(filename)) != NULL; }
 
-task::TaskID load_molecule_async(MoleculeStructure* mol, CStringView filename) {
-    MoleculeLoader* loader = get_loader(get_file_extension(filename));
-    if (loader) {
-        task::TaskID id = task::create_task("Loading Molecule", [mol, CStringBuffer<256> file = filename, loader](task::TaskSetRange, task::TaskData){
-            loader->read_molecule(mol, file);
-        });
-        return id;
+bool load_molecule(MoleculeStructure* mol, CStringView filename) {
+    const MoleculeLoader* loader = get_loader(get_file_extension(filename));
+    if (!loader) {
+        LOG_ERROR("Could not find loader for file '%.*s'", filename.length(), filename.beg());
+        return false;
     }
-    LOG_ERROR("Could not find loader for file '%.*s'", filename.length(), filename.beg());
-    return 0;
+    return loader->read_molecule(mol, filename);
 }
 
 }  // namespace mol
 
 namespace traj {
-static TrajectoryLoader* get_loader(CStringView extension) {
-    StringBuffer<8> ext = extension;
-    for (char* c : ext) {
-        *c = to_lower(*c);
-    }
-    u64 id = hash::crc64(ext);
-    for (int i = 0; i < ARRAY_SIZE(traj_loaders); i++) {
-        if (id == traj_loaders[i].id) {
-            return &traj_loaders[i];
+static const TrajectoryLoader* get_loader(CStringView extension) {
+    for (const auto& loader : traj_loaders) {
+        if (compare_ignore_case(extension, loader.id)) {
+            return &loader;
         }
     }
     return NULL;
 }
 
-bool load_trajectory(MoleculeTrajectory* traj, CStringView filename) {
+bool is_extension_supported(CStringView filename) { return get_loader(get_file_extension(filename)) != NULL; }
 
+bool read_num_frames(i32* num_frames, CStringView filename) {
+    const TrajectoryLoader* loader = get_loader(get_file_extension(filename));
+    if (!loader) {
+        LOG_ERROR("Could not find loader for file '%.*s'", filename.length(), filename.beg());
+        return false;
+    }
+    return loader->read_num_frames(num_frames, filename);
 }
 
-task::TaskID load_trajectory_async(MoleculeTrajectory* traj, CStringView filename) {
+bool load_trajectory(MoleculeTrajectory* traj, i32 num_atoms, CStringView filename) {
+    const TrajectoryLoader* loader = get_loader(get_file_extension(filename));
+    if (!loader) {
+        LOG_ERROR("Could not find loader for file '%.*s'", filename.length(), filename.beg());
+        return false;
+    }
 
+    if (num_atoms <= 0) {
+        LOG_ERROR("A trajectory needs a positive number of atoms supplied to be matched against molecule structure");
+        return false;
+    }
+
+    FILE* file = fopen(filename, "rb");
+    defer { fclose(file); };
+    if (!file) {
+        LOG_ERROR("Could not open file '%.*s'", filename.length(), filename.beg());
+        return false;
+    }
+
+    i32 num_frames = 0;
+    if (!loader->read_num_frames(&num_frames, filename)) {
+        LOG_ERROR("Could not read number of frames");
+        return false;
+    }
+
+    mat3 sim_box = {};
+    if (loader->read_simulation_box && !loader->read_simulation_box(&sim_box, filename)) {
+        LOG_ERROR("Could not read simulation box");
+        return false;
+    }
+    ASSERT(num_frames > 0);
+    init_trajectory(traj, num_atoms, num_frames, 1.0f, sim_box);
+
+    FrameBytes* frame_bytes = (FrameBytes*)TMP_MALLOC(num_frames * sizeof(frame_bytes));
+    defer { TMP_FREE(frame_bytes); };
+
+    if (!loader->read_frame_bytes(frame_bytes, filename)) {
+        LOG_ERROR("Could not read frame bytes");
+        return false;
+    }
+
+    constexpr i32 batch_size = 64;
+    i64 max_batch_bytes = 0;
+    for (i32 i = 0; i < num_frames; i += batch_size) {
+        int batch_beg = i;
+        int batch_end = math::min(num_frames, i + batch_size);
+        const i64 batch_bytes = frame_bytes[batch_end - 1].offset + frame_bytes[batch_end - 1].extent - frame_bytes[batch_beg].offset;
+        max_batch_bytes = math::max(max_batch_bytes, batch_bytes);
+    }
+
+    void* mem = TMP_MALLOC(max_batch_bytes);
+    defer { TMP_FREE(mem); };
+
+    for (i32 i = 0; i < num_frames; i += batch_size) {
+        int batch_beg = i;
+        int batch_end = math::min(num_frames, i + batch_size);
+        int batch_ext = batch_end - batch_beg;
+
+        const i64 batch_bytes = frame_bytes[batch_end - 1].offset + frame_bytes[batch_end - 1].extent - frame_bytes[batch_beg].offset;
+        fseeki64(file, frame_bytes[batch_beg].offset, SEEK_SET);
+        fread(mem, 1, batch_bytes, file);
+
+        task_system::ID id = task_system::create_task(
+            "Extracting Trajectory Frames", batch_ext,
+            [traj, loader, num_atoms, frame_bytes, mem, batch_offset = batch_beg](task_system::TaskSetRange range, task_system::TaskData) {
+                for (u32 i = batch_offset + range.beg; i < batch_offset + range.end; i++) {
+                    const i64 mem_offset = frame_bytes[i].offset - frame_bytes[batch_offset].offset;
+                    auto& frame = get_trajectory_frame(*traj, i);
+                    loader->extract_frame(&frame, num_atoms, {(u8*)mem + mem_offset, (i64)frame_bytes[i].extent});
+                }
+            });
+        task_system::wait_for_task(id);
+        task_system::clear_completed_tasks();  // @TODO: REMOVE THIS WHEN CALLBACKS ARE AVAILABLE SO TASKS CAN BE FREED AND PUT BACK INTO THE QUEUE
+    }
+    return true;
 }
 
 }  // namespace traj
 
-}  // namespace task
+}  // namespace load
