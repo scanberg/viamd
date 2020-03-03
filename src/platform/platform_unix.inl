@@ -4,12 +4,6 @@
 #include <unistd.h>
 #include <time.h>
 
-int32_t atomic_fetch_and_add(volatile int32_t* ptr, int32_t add) { return __sync_fetch_and_add(ptr, add); }
-uint32_t atomic_fetch_and_add(volatile uint32_t* ptr, uint32_t add) { return __sync_fetch_and_add(ptr, add); }
-
-int64_t atomic_fetch_and_add(volatile int64_t* ptr, int64_t add) { return __sync_fetch_and_add(ptr, add); }
-uint64_t atomic_fetch_and_add(volatile uint64_t* ptr, uint64_t add) { return __sync_fetch_and_add(ptr, add); }
-
 /*
 static DynamicArray<CStringView> curr_filters;
 

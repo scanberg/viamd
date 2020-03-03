@@ -2,6 +2,51 @@
 #include <TaskScheduler.h>
 #include <core/common.h>
 #include <core/log.h>
+#include <core/sync.h>
+
+template <typename T, uint32_t N>
+struct LIFO {
+    T data[N] = {};
+    uint32_t count = 0;
+
+    bool enqueue(const T& item) {
+        if (count == N) return false;
+        data[count] = item;
+        count++;
+        return true;
+    }
+
+    bool dequeue(T& item) {
+        if (count == 0) return false;
+        item = data[count - 1];
+        count--;
+        return true;
+    }
+
+    bool pop() {
+        if (count == 0) return false;
+        --count;
+        return true;
+    }
+
+    const T& back() const { return data[count - 1]; }
+    T& back() { return data[count - 1]; }
+
+    void clear() { count = 0; }
+    bool empty() const { return count == 0; }
+    uint32_t size() const { return count; }
+
+    const T* begin() const { return data; }
+    const T* end() const { return data + count; }
+
+    T* begin() { return data; }
+    T* end() { return data + count; }
+
+    T& operator[](size_t i) { return data[i]; }
+    const T& operator[](size_t i) const { return data[i]; }
+
+    operator Array<T>() const { return {data, count}; }
+};
 
 namespace task_system {
 
@@ -11,10 +56,9 @@ constexpr uint32_t LABEL_SIZE = 64;
 class Task : public enki::ITaskSet {
 public:
     Task() = default;
-    Task(TaskSetFunction func_, const char* lbl) : m_function(func_), m_set_completed(0), m_interrupt(false) {
-        strncpy(m_label, lbl, LABEL_SIZE);
-    }
-    Task(uint32_t set_size_, TaskSetFunction func_, const char* lbl) : ITaskSet(set_size_), m_function(func_), m_set_completed(0), m_interrupt(false) {
+    Task(TaskSetFunction func_, const char* lbl) : m_function(func_), m_set_completed(0), m_interrupt(false) { strncpy(m_label, lbl, LABEL_SIZE); }
+    Task(uint32_t set_size_, TaskSetFunction func_, const char* lbl)
+        : ITaskSet(set_size_), m_function(func_), m_set_completed(0), m_interrupt(false) {
         strncpy(m_label, lbl, LABEL_SIZE);
     }
 
@@ -36,7 +80,7 @@ static enki::TaskScheduler ts{};
 
 static LIFO<ID, MAX_TASKS> free = {};
 static LIFO<ID, MAX_TASKS> used = {};
-static Task task_data[MAX_TASKS] {};
+static Task task_data[MAX_TASKS]{};
 
 static Task* get_task(ID id) {
     const uint32_t idx = id - base_id;
@@ -46,15 +90,12 @@ static Task* get_task(ID id) {
 
 void initialize() {
     ts.Initialize();
-
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
-        free.push(base_id + i);
+        free.enqueue(base_id + i);
     }
 }
 
-void shutdown() {
-    ts.WaitforAllAndShutdown();
-}
+void shutdown() { ts.WaitforAllAndShutdown(); }
 
 uint32_t get_num_threads() { return (uint32_t)ts.GetNumTaskThreads(); }
 
@@ -67,7 +108,7 @@ void clear_completed_tasks() {
         const ID id = used[i];
         const uint32_t idx = id - base_id;
         if (task_data[idx].GetIsComplete()) {
-            free.push(id);
+            free.enqueue(id);
             used[i] = used.back();
             used.pop();
         } else {
@@ -84,7 +125,7 @@ ID create_task(const char* label, TaskSetFunction func) {
 
     const ID id = free.back();
     free.pop();
-    used.push(id);
+    used.enqueue(id);
 
     Task* task_system = get_task(id);
     ASSERT(task_system);
@@ -103,7 +144,7 @@ ID create_task(const char* label, uint32_t size, TaskSetFunction func) {
 
     const ID id = free.back();
     free.pop();
-    used.push(id);
+    used.enqueue(id);
 
     Task* task_system = get_task(id);
     ASSERT(task_system);
@@ -140,7 +181,7 @@ float get_task_fraction_complete(ID id) {
         LOG_ERROR("Invalid id");
         return 0.0f;
     }
-    return (float)task_system->m_set_completed / (float) task_system->m_SetSize;
+    return (float)task_system->m_set_completed / (float)task_system->m_SetSize;
 }
 
 void wait_for_task(ID id) {

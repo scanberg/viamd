@@ -6,6 +6,7 @@
 #include <core/math_utils.h>
 #include <core/string_utils.h>
 #include <core/spatial_hash.h>
+#include <core/sync.h>
 
 #include <mol/molecule_structure.h>
 #include <mol/molecule_trajectory.h>
@@ -3794,7 +3795,7 @@ static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const Mol
             ASSERT(-1 < c.y && c.y < vol->dim.y);
             ASSERT(-1 < c.z && c.z < vol->dim.z);
             const i32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
-            platform::atomic_fetch_and_add(vol->voxel_data.ptr + voxel_idx, 1);
+            atomic_fetch_and_add(vol->voxel_data.ptr + voxel_idx, 1);
         });
         /*
         for (i64 i = 0; i < atom_mask.size(); i++) {
@@ -4116,9 +4117,8 @@ static void draw_density_volume_window(ApplicationData* data) {
                             "Computing Internal Reference Frames...", (u32)ensemble_structures.size(),
                             [dyn, ensemble_mask, &ensemble_structures, &completed_count](task_system::TaskSetRange range, task_system::TaskData) {
                                 for (u32 i = range.beg; i < range.end; ++i) {
-                                    auto& structure = ensemble_structures[i];
-                                    structure_tracking::compute_trajectory_transform_data(structure.id, dyn, ensemble_mask, structure.offset);
-                                    const u32 count = platform::atomic_fetch_and_add(&completed_count, 1) + 1;
+                                    structure_tracking::compute_trajectory_transform_data(ensemble_structures[i].id, dyn, ensemble_mask,
+                                                                                          ensemble_structures[i].offset);
                                 }
                             });
                         task_system::wait_for_task(task_system);
@@ -4644,12 +4644,15 @@ static bool load_trajectory_data(ApplicationData* data, CStringView filename) {
 
     LOG_NOTE("Attempting to load trajectory data from file '%.*s", filename.count, filename.ptr);
     data->tasks.load_trajectory = task_system::create_task("Loading trajectory", [data](task_system::TaskSetRange, task_system::TaskData) {
+        const auto t0 = platform::get_time();
         if (!load::traj::load_trajectory(&data->dynamic.trajectory, (i32)data->dynamic.molecule.atom.count, data->files.trajectory)) {
             LOG_ERROR("Failed to load trajectory");
             free_trajectory_data(data);
             data->files.trajectory = "";
             return;
         }
+        const auto t1 = platform::get_time();
+        LOG_NOTE("Trajectory loaded in %.2f seconds", platform::compute_delta_ms(t0, t1) / 1000.0f);
         init_trajectory_data(data);
         on_trajectory_load_complete(data);
     });
@@ -4677,8 +4680,7 @@ static bool load_dataset_from_file(ApplicationData* data, CStringView filename) 
 
             // @NOTE: Some files contain both atomic coordinates and trajectory
             i32 num_frames = 0;
-            if (load::traj::is_extension_supported(filename) &&
-                load::traj::read_num_frames(&num_frames, filename) && num_frames > 1) {
+            if (load::traj::is_extension_supported(filename) && load::traj::read_num_frames(&num_frames, filename) && num_frames > 1) {
                 // @TODO: Halt here and query user if this is actual frames or individual models of a larger assembly.
                 return load_trajectory_data(data, filename);
             }

@@ -133,13 +133,6 @@ CStringView get_cwd();
 DynamicArray<DirectoryEntry> list_directory(CStringView directory);
 FileDialogResult file_dialog(FileDialogFlags flags, CStringView default_path = {}, CStringView filter = {});
 
-// Atomic operations
-int32_t atomic_fetch_and_add(volatile int32_t* ptr, int32_t add);
-uint32_t atomic_fetch_and_add(volatile uint32_t* ptr, uint32_t add);
-
-int64_t atomic_fetch_and_add(volatile int64_t* ptr, int64_t add);
-uint64_t atomic_fetch_and_add(volatile uint64_t* ptr, uint64_t add);
-
 /*
 bool add_directory_watch(CString directory, DirectoryWatchCallback, void* usr_data = NULL);
 bool remove_directory_watch(CString directory);

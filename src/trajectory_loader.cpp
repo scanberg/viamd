@@ -122,17 +122,16 @@ bool load_trajectory(MoleculeTrajectory* traj, i32 num_atoms, CStringView filena
         return false;
     }
 
-    constexpr i32 batch_size = 64;
-    i64 max_batch_bytes = 0;
-    for (i32 i = 0; i < num_frames; i += batch_size) {
-        int batch_beg = i;
-        int batch_end = math::min(num_frames, i + batch_size);
-        const i64 batch_bytes = frame_bytes[batch_end - 1].offset + frame_bytes[batch_end - 1].extent - frame_bytes[batch_beg].offset;
-        max_batch_bytes = math::max(max_batch_bytes, batch_bytes);
+    constexpr u64 read_buffer_size = MEGABYTES(128);
+    void* mem = TMP_MALLOC(read_buffer_size);
+    defer { TMP_FREE(mem); };
+
+    u64 max_frame_bytes = 0;
+    for (i32 i = 0; i < num_frames; i++) {
+        max_frame_bytes = math::max(max_frame_bytes, frame_bytes[i].extent);
     }
 
-    void* mem = TMP_MALLOC(max_batch_bytes);
-    defer { TMP_FREE(mem); };
+    const i32 batch_size = (i32)(read_buffer_size / max_frame_bytes);
 
     for (i32 i = 0; i < num_frames; i += batch_size) {
         int batch_beg = i;
