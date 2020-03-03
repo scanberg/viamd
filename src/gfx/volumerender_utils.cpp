@@ -1,4 +1,4 @@
-#include "volume_utils.h"
+#include "volumerender_utils.h"
 
 #include "image.h"
 #include "gfx/gl_utils.h"
@@ -36,9 +36,9 @@ struct UniformData {
     float density_scale = 1.0;
     float alpha_scale = 1.0;
 
-    vec3 clip_plane_min;
+    vec3 clip_volume_min;
     float _pad0;
-    vec3 clip_plane_max;
+    vec3 clip_volume_max;
     float time;
 
     vec3 gradient_spacing_world_space;
@@ -260,8 +260,8 @@ void render_volume_texture(const VolumeRenderDesc& desc) {
     data.inv_res = vec2(1.f / (float)(viewport[2]), 1.f / (float)(viewport[3]));
     data.density_scale = desc.global_scaling.density;
     data.alpha_scale = desc.global_scaling.alpha;
-    data.clip_plane_min = desc.clip_planes.min;
-    data.clip_plane_max = desc.clip_planes.max;
+    data.clip_volume_min = desc.clip_volume.min;
+    data.clip_volume_max = desc.clip_volume.max;
     data.time = time;
     data.gradient_spacing_world_space = desc.voxel_spacing;
     data.gradient_spacing_tex_space = mat4(glm::scale(data.view_to_model_mat, desc.voxel_spacing));

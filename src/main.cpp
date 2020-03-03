@@ -30,10 +30,10 @@
 #include "gfx/molecule_draw.h"
 #include "gfx/immediate_draw_utils.h"
 #include "gfx/postprocessing_utils.h"
+#include "gfx/volumerender_utils.h"
+#include "gfx/conetracing_utils.h"
 
 #include "volume.h"
-#include "volume_utils.h"
-
 #include "range_slider.h"
 #include "plot_extended.h"
 #include "platform/platform.h"
@@ -508,6 +508,11 @@ struct ApplicationData {
     } density_volume;
 
     struct {
+        cone_trace::GPUVolume vol;
+        float scaling = 1.0f;
+    } occupancy_volume;
+
+    struct {
         Bitfield atom_mask;
         DynamicArray<EnsembleStructure> structures;
         bool superimpose_structures = false;
@@ -673,7 +678,7 @@ static void compute_velocity(ApplicationData* data);
 static void compute_residue_aabbs(ApplicationData* data);
 static void cull_residue_aabbs(ApplicationData* data);
 static void fill_gbuffer(const ApplicationData& data);
-static void do_postprocessing(const ApplicationData& data);
+static void apply_postprocessing(const ApplicationData& data);
 static void draw_residue_aabbs(const ApplicationData& data);
 
 static void draw_representations(const ApplicationData& data);
@@ -817,10 +822,10 @@ int main(int, char**) {
     postprocessing::initialize(data.fbo.width, data.fbo.height);
     LOG_NOTE("Initializing volume...");
     volume::initialize();
+    LOG_NOTE("Initializing cone tracing...");
+    cone_trace::initialize();
     LOG_NOTE("Initializing structure tracking...");
     structure_tracking::initialize();
-    // LOG_NOTE("Initializing task_system scheduler...");
-    // data.thread_pool.Initialize();
     LOG_NOTE("Initializing task system...");
     task_system::initialize();
 
@@ -859,6 +864,16 @@ int main(int, char**) {
     interpolate_atomic_positions(&data);
     copy_molecule_data_to_buffers(&data);
     copy_buffer(data.gpu_buffers.old_position, data.gpu_buffers.position);
+
+    AABB box = compute_aabb(data.dynamic.molecule.atom.position.x, data.dynamic.molecule.atom.position.y, data.dynamic.molecule.atom.position.z,
+                            data.dynamic.molecule.atom.radius, data.dynamic.molecule.atom.count);
+    cone_trace::init_occlusion_volume(&data.occupancy_volume.vol, ivec3(32), box.min, box.max);
+
+    if (data.occupancy_volume.vol.texture_id) {
+        cone_trace::compute_occupancy_volume(data.occupancy_volume.vol, data.dynamic.molecule.atom.position.x, data.dynamic.molecule.atom.position.y,
+                                             data.dynamic.molecule.atom.position.z, data.dynamic.molecule.atom.radius,
+                                             data.dynamic.molecule.atom.count);
+    }
 
 #if EXPERIMENTAL_SDF == 1
     draw::scan::test_scan();
@@ -905,6 +920,7 @@ int main(int, char**) {
                 draw::initialize();
                 postprocessing::initialize(data.fbo.width, data.fbo.height);
                 volume::initialize();
+                cone_trace::initialize();
             }
 
             if (data.ctx.input.key.hit[KEY_PLAY_PAUSE]) {
@@ -995,6 +1011,11 @@ int main(int, char**) {
 
                 if (data.playback.apply_pbc) {
                     apply_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.mass, mol.sequences, data.simulation_box.box);
+                }
+
+                if (data.occupancy_volume.vol.texture_id) {
+                    cone_trace::compute_occupancy_volume(data.occupancy_volume.vol, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z,
+                                                         mol.atom.radius, mol.atom.count);
                 }
 
 #if 0
@@ -1158,8 +1179,9 @@ int main(int, char**) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         glDrawBuffer(GL_BACK);
 
-        do_postprocessing(data);
+        apply_postprocessing(data);
 
+        cone_trace::render_directional_occlusion(data.fbo.deferred.depth, data.fbo.deferred.normal, data.occupancy_volume.vol, data.view.param.matrix.current.view, data.view.param.matrix.current.proj, 1.0f);
 #if EXPERIMENTAL_SDF == 1
         /*
         glDisable(GL_DEPTH_TEST);
@@ -1220,6 +1242,8 @@ int main(int, char**) {
     postprocessing::shutdown();
     LOG_NOTE("Shutting down volume...");
     volume::shutdown();
+    LOG_NOTE("Shutting down cone tracing...");
+    cone_trace::shutdown();
     LOG_NOTE("Shutting down structure tracking...");
     structure_tracking::shutdown();
     LOG_NOTE("Shutting down task system...");
@@ -4626,6 +4650,7 @@ static void init_trajectory_data(ApplicationData* data) {
         copy_buffer(data->gpu_buffers.old_position, data->gpu_buffers.position);
 
         init_density_volume(data);
+        cone_trace::init_occlusion_volume(&data->occupancy_volume.vol, ivec3(32), vec3(0, 0, 0), data->simulation_box.box * vec3(1, 1, 1));
     }
 }
 
@@ -5631,8 +5656,8 @@ static void fill_gbuffer(const ApplicationData& data) {
         desc.isosurface = data.density_volume.iso.isosurfaces;
         desc.isosurface_enabled = data.density_volume.iso.enabled;
         desc.direct_volume_rendering_enabled = data.density_volume.dvr.enabled;
-        desc.clip_planes.min = data.density_volume.clip_planes.min;
-        desc.clip_planes.max = data.density_volume.clip_planes.max;
+        desc.clip_volume.min = data.density_volume.clip_planes.min;
+        desc.clip_volume.max = data.density_volume.clip_planes.max;
         desc.voxel_spacing = data.density_volume.voxel_spacing;
 
         volume::render_volume_texture(desc);
@@ -5864,7 +5889,7 @@ static void handle_picking(ApplicationData* data) {
     }
     POP_CPU_SECTION()
 }
-static void do_postprocessing(const ApplicationData& data) {
+static void apply_postprocessing(const ApplicationData& data) {
     PUSH_GPU_SECTION("Postprocessing")
     postprocessing::Descriptor desc;
 
