@@ -53,7 +53,7 @@
 #define PICKING_JITTER_HACK 1
 #define DEPERIODIZE_ON_FRAME_LOADED 1
 #define SHOW_IMGUI_DEMO_WINDOW 0
-#define VIAMD_RELEASE 1
+#define VIAMD_RELEASE 0
 #define EXPERIMENTAL_CULLING 0
 #define EXPERIMENTAL_SDF 0
 
@@ -410,6 +410,12 @@ struct ApplicationData {
         } ssao;
 
         struct {
+            bool enabled = true;
+            f32 intensity = 1.0f;
+            f32 voxel_ext = 1.0f;
+        } cone_traced_ao;
+
+        struct {
             bool enabled = false;
             struct {
                 f32 target = 5.0f;
@@ -509,7 +515,7 @@ struct ApplicationData {
 
     struct {
         cone_trace::GPUVolume vol;
-        float scaling = 1.0f;
+        std::mutex vol_mutex{};
     } occupancy_volume;
 
     struct {
@@ -680,6 +686,7 @@ static void cull_residue_aabbs(ApplicationData* data);
 static void fill_gbuffer(const ApplicationData& data);
 static void apply_postprocessing(const ApplicationData& data);
 static void draw_residue_aabbs(const ApplicationData& data);
+static void init_occupancy_volume(ApplicationData* data);
 
 static void draw_representations(const ApplicationData& data);
 static void draw_representations_lean_and_mean(const ApplicationData& data, vec4 color = vec4(1, 1, 1, 1), float scale = 1.0f,
@@ -840,17 +847,18 @@ int main(int, char**) {
     pdb::load_molecule_from_string(&data.dynamic.molecule, CAFFINE_PDB);
     init_molecule_data(&data);
 #else
+    load_dataset_from_file(&data, "D:/data/3u75.pdb");
     // load_dataset_from_file(&data, VIAMD_DATA_DIR "/1ALA-250ns-2500frames.pdb");
     // load_dataset_from_file(&data, VIAMD_DATA_DIR "/amyloid/centered.gro");
     // load_dataset_from_file(&data, VIAMD_DATA_DIR "/amyloid/centered.xtc");
-    load_dataset_from_file(&data, "D:/data/md/6T-water/16-6T-box.gro");
-    load_dataset_from_file(&data, "D:/data/md/6T-water/16-6T-box-md-npt.xtc");
+    // load_dataset_from_file(&data, "D:/data/md/6T-water/16-6T-box.gro");
+    // load_dataset_from_file(&data, "D:/data/md/6T-water/16-6T-box-md-npt.xtc");
     // load_dataset_from_file(&data, "D:/data/md/p-ftaa-water/p-FTAA-box-sol-ions-em.gro");
     // load_dataset_from_file(&data, "D:/data/md/p-ftaa-water/p-FTAA-box-sol-ions-md-npt.xtc");
 
     // create_reference_frame(&data, "dna", "dna");
-    create_reference_frame(&data, "res1", "residue 1");
-    data.simulation_box.enabled = true;
+    // create_reference_frame(&data, "res1", "residue 1");
+    // data.simulation_box.enabled = true;
     // stats::create_property("d1", "distance atom(*) com(atom(*))");
     // data.density_volume.enabled = true;
     // data.reference_frame.frames[0].active = true;
@@ -865,15 +873,7 @@ int main(int, char**) {
     copy_molecule_data_to_buffers(&data);
     copy_buffer(data.gpu_buffers.old_position, data.gpu_buffers.position);
 
-    AABB box = compute_aabb(data.dynamic.molecule.atom.position.x, data.dynamic.molecule.atom.position.y, data.dynamic.molecule.atom.position.z,
-                            data.dynamic.molecule.atom.radius, data.dynamic.molecule.atom.count);
-    cone_trace::init_occlusion_volume(&data.occupancy_volume.vol, ivec3(32), box.min, box.max);
-
-    if (data.occupancy_volume.vol.texture_id) {
-        cone_trace::compute_occupancy_volume(data.occupancy_volume.vol, data.dynamic.molecule.atom.position.x, data.dynamic.molecule.atom.position.y,
-                                             data.dynamic.molecule.atom.position.z, data.dynamic.molecule.atom.radius,
-                                             data.dynamic.molecule.atom.count);
-    }
+    init_occupancy_volume(&data);
 
 #if EXPERIMENTAL_SDF == 1
     draw::scan::test_scan();
@@ -1013,10 +1013,7 @@ int main(int, char**) {
                     apply_pbc(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.mass, mol.sequences, data.simulation_box.box);
                 }
 
-                if (data.occupancy_volume.vol.texture_id) {
-                    cone_trace::compute_occupancy_volume(data.occupancy_volume.vol, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z,
-                                                         mol.atom.radius, mol.atom.count);
-                }
+                init_occupancy_volume(&data);
 
 #if 0
                 if (const auto ref = get_active_reference_frame(&data)) {
@@ -1164,6 +1161,15 @@ int main(int, char**) {
 #if EXPERIMENTAL_CULLING == 1
         cull_residue_aabbs(&data);
 #endif
+        if (data.visuals.cone_traced_ao.enabled) {
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.deferred.fbo);
+            glViewport(0, 0, data.fbo.width, data.fbo.height);
+            glDrawBuffer(GL_COLOR_ATTACHMENT0);  // Modify to color buffer
+            cone_trace::render_directional_occlusion(data.fbo.deferred.depth, data.fbo.deferred.normal, data.occupancy_volume.vol,
+                                                     data.view.param.matrix.current.view, data.view.param.matrix.current.proj,
+                                                     data.visuals.cone_traced_ao.intensity);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        }
 #if EXPERIMENTAL_SDF == 1
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.deferred.fbo);
         glViewport(0, 0, data.fbo.width, data.fbo.height);
@@ -1175,13 +1181,13 @@ int main(int, char**) {
         handle_picking(&data);
 
         // Activate backbuffer
-        glViewport(0, 0, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
+        glDisable(GL_DEPTH_TEST);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glViewport(0, 0, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
         glDrawBuffer(GL_BACK);
+        glClear(GL_COLOR_BUFFER_BIT);
 
         apply_postprocessing(data);
-
-        cone_trace::render_directional_occlusion(data.fbo.deferred.depth, data.fbo.deferred.normal, data.occupancy_volume.vol, data.view.param.matrix.current.view, data.view.param.matrix.current.proj, 1.0f);
 #if EXPERIMENTAL_SDF == 1
         /*
         glDisable(GL_DEPTH_TEST);
@@ -1420,6 +1426,7 @@ static PickingData read_picking_data(const MainFramebuffer& framebuffer, i32 x, 
         glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
     }
 
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     POP_GPU_SECTION()
 
@@ -1655,12 +1662,25 @@ static void draw_main_menu(ApplicationData* data) {
 
             // SSAO
             ImGui::BeginGroup();
+            ImGui::PushID("SSAO");
             ImGui::Checkbox("SSAO", &data->visuals.ssao.enabled);
             if (data->visuals.ssao.enabled) {
                 ImGui::SliderFloat("Intensity", &data->visuals.ssao.intensity, 0.5f, 12.f);
                 ImGui::SliderFloat("Radius", &data->visuals.ssao.radius, 1.f, 30.f);
                 ImGui::SliderFloat("Bias", &data->visuals.ssao.bias, 0.0f, 1.0f);
             }
+            ImGui::PopID();
+            ImGui::EndGroup();
+            ImGui::Separator();
+
+            // Cone Trace
+            ImGui::BeginGroup();
+            ImGui::PushID("Cone Trace");
+            ImGui::Checkbox("Cone Traced AO", &data->visuals.cone_traced_ao.enabled);
+            if (data->visuals.cone_traced_ao.enabled) {
+                ImGui::SliderFloat("Intensity", &data->visuals.cone_traced_ao.intensity, 0.01f, 5.f);
+            }
+            ImGui::PopID();
             ImGui::EndGroup();
             ImGui::Separator();
 
@@ -4650,7 +4670,6 @@ static void init_trajectory_data(ApplicationData* data) {
         copy_buffer(data->gpu_buffers.old_position, data->gpu_buffers.position);
 
         init_density_volume(data);
-        cone_trace::init_occlusion_volume(&data->occupancy_volume.vol, ivec3(32), vec3(0, 0, 0), data->simulation_box.box * vec3(1, 1, 1));
     }
 }
 
@@ -4666,6 +4685,8 @@ static bool load_trajectory_data(ApplicationData* data, CStringView filename) {
     interrupt_async_tasks(data);
     free_trajectory_data(data);
     data->files.trajectory = filename;
+    data->playback.time = 0;
+    data->playback.frame = 0;
 
     LOG_NOTE("Attempting to load trajectory data from file '%.*s", filename.count, filename.ptr);
     data->tasks.load_trajectory = task_system::create_task("Loading trajectory", [data](task_system::TaskSetRange, task_system::TaskData) {
@@ -5476,6 +5497,21 @@ static void draw_residue_aabbs(const ApplicationData& data) {
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
     POP_GPU_SECTION()
+}
+
+static void init_occupancy_volume(ApplicationData* data) {
+
+    const AABB box = compute_aabb(data->dynamic.molecule.atom.position.x, data->dynamic.molecule.atom.position.y, data->dynamic.molecule.atom.position.z,
+                                  data->dynamic.molecule.atom.radius, data->dynamic.molecule.atom.count);
+    cone_trace::init_occlusion_volume(&data->occupancy_volume.vol, box.min, box.max);
+
+    data->occupancy_volume.vol_mutex.lock();
+    if (data->occupancy_volume.vol.texture_id) {
+        cone_trace::compute_occupancy_volume(data->occupancy_volume.vol, data->dynamic.molecule.atom.position.x,
+                                             data->dynamic.molecule.atom.position.y, data->dynamic.molecule.atom.position.z,
+                                             data->dynamic.molecule.atom.radius, data->dynamic.molecule.atom.count);
+    }
+    data->occupancy_volume.vol_mutex.unlock();
 }
 
 static void fill_gbuffer(const ApplicationData& data) {

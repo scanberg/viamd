@@ -446,19 +446,19 @@ static GLuint program = 0;
 
 void initialize() {
     if (!program) {
-        GLuint v_shader = gl::compile_shader_from_source(v_shader_fs_quad_src, GL_VERTEX_SHADER);
-        GLuint f_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/cone_tracing/directional_occlusion.frag", GL_FRAGMENT_SHADER);
-
         program = glCreateProgram();
-        const GLuint shaders[] = {v_shader, f_shader};
-        gl::attach_link_detach(program, shaders);
     }
+    GLuint v_shader = gl::compile_shader_from_source(v_shader_fs_quad_src, GL_VERTEX_SHADER);
+    GLuint f_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/cone_tracing/directional_occlusion.frag", GL_FRAGMENT_SHADER);
+
+    const GLuint shaders[] = {v_shader, f_shader};
+    gl::attach_link_detach(program, shaders);
 }
 
 void shutdown() {
     if (program) glDeleteProgram(program);
 }
-}
+}  // namespace directional_occlusion
 
 void initialize(int version_major, int version_minor) {
     if (!vao) glGenVertexArrays(1, &vao);
@@ -503,12 +503,54 @@ void init_rgba_volume(GPUVolume* vol, ivec3 res, vec3 min_box, vec3 max_box) {
     }
 }
 
-void init_occlusion_volume(GPUVolume* vol, ivec3 res, vec3 min_box, vec3 max_box) {
+u32 floor_power_of_two(u32 v) {
+    u32 r = 0;
+    while (v >>= 1) {
+        r++;
+    }
+    return 1 << r;
+}
+
+u32 ceil_power_of_two(u32 x) {
+    x--;
+    x |= x >> 1;
+    x |= x >> 2;
+    x |= x >> 4;
+    x |= x >> 8;
+    x |= x >> 16;
+    x++;
+    return x;
+}
+
+void init_occlusion_volume(GPUVolume* vol, vec3 min_box, vec3 max_box, float voxel_ext_target) {
     ASSERT(vol);
-    if (!vol->texture_id) glGenTextures(1, &vol->texture_id);
+
+    if (min_box == max_box) {
+        return;
+    }
+
+    const float voxel_ext = voxel_ext_target;
+    const vec3 ext = (max_box - min_box);
+    const float max_ext = math::max(ext.x, math::max(ext.y, ext.z));
+    int dim = ceil_power_of_two(max_ext / voxel_ext_target);
+    ivec3 res = math::max(ivec3(dim), ivec3(1));
+
+    for (int i = 0; i < 3; i++) {
+        float half_ext = max_ext * 0.5f;
+        while (ext[i] < half_ext && res[i] > 1) {
+            res[i] /= 2;
+            half_ext *= 0.5f;
+        }
+    }
+
+    const vec3 center = (min_box + max_box) * 0.5f;
+    const vec3 half_ext = vec3(res) * voxel_ext * 0.5f;
+    min_box = center - half_ext;
+    max_box = center + half_ext;
+
     vol->min_box = min_box;
     vol->max_box = max_box;
-    vol->voxel_ext = (max_box - min_box) / vec3(res);
+    vol->voxel_ext = vec3(voxel_ext);
 
     if (res != vol->resolution) {
         // @NOTE: Compute log2 (integer version) to find the amount of mipmaps required
@@ -517,15 +559,19 @@ void init_occlusion_volume(GPUVolume* vol, ivec3 res, vec3 min_box, vec3 max_box
             int max_dim = math::max(res.x, math::max(res.y, res.z));
             while (max_dim >>= 1) ++mips;
         }
-        vol->resolution = res;
+        if (vol->texture_id) glDeleteTextures(1, &vol->texture_id);
+        glGenTextures(1, &vol->texture_id);
         glBindTexture(GL_TEXTURE_3D, vol->texture_id);
+        glTexStorage3D(GL_TEXTURE_3D, mips, GL_R8, res.x, res.y, res.z);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_BASE_LEVEL, 0);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAX_LEVEL, mips - 1);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_BORDER);
-        glTexStorage3D(GL_TEXTURE_3D, mips, GL_R8, res.x, res.y, res.z);
         glBindTexture(GL_TEXTURE_3D, 0);
+        vol->resolution = res;
     }
 }
 
@@ -821,36 +867,65 @@ void draw_voxelized_scene(const GPUVolume& vol, const mat4& view_mat, const mat4
 }
 */
 
-void compute_occupancy_volume(const GPUVolume& vol, const f32* atom_x, const f32* atom_y, const f32* atom_z, const f32* atom_radius, i32 num_atoms) {
+void compute_occupancy_volume(const GPUVolume& vol, const f32* atom_x, const f32* atom_y, const f32* atom_z, const f32* atom_r, i32 num_atoms) {
     const i32 voxel_count = vol.resolution.x * vol.resolution.y * vol.resolution.z;
     if (voxel_count == 0) {
         LOG_WARNING("Volume resolution is zero on one or more axes");
         return;
     }
-    
+
     glClearTexImage(vol.texture_id, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
 
-    const float inv_voxel_volume = vol.voxel_ext.x * vol.voxel_ext.y * vol.voxel_ext.z;
+    const float inv_voxel_volume = 1.0f / (vol.voxel_ext.x * vol.voxel_ext.y * vol.voxel_ext.z);
+    u32* voxel_data = (u32*)TMP_MALLOC(sizeof(u32) * voxel_count);
+    defer { TMP_FREE(voxel_data); };
+    memset(voxel_data, 0, sizeof(u32) * voxel_count);
 
-    DynamicArray<u32> voxel_data(voxel_count);
+    struct Data {
+        u32* vol_data;
+        ivec3 vol_dim;
+        const float inv_voxel_volume;
+        const float *atom_x, *atom_y, *atom_z, *atom_r;
+    };
+
+    Data data = {voxel_data, vol.resolution, inv_voxel_volume, atom_x, atom_y, atom_z, atom_r};
+
+#if 0
     task_system::ID id = task_system::create_task(
         "Computing occupancy", num_atoms,
-        [inv_voxel_volume, &voxel_data, &vol, atom_x, atom_y, atom_z, atom_radius](task_system::TaskSetRange range, task_system::TaskData) {
+        [voxel_data, atom_x, atom_y, atom_z, atom_r, &vol, inv_voxel_volume](task_system::TaskSetRange range, task_system::TaskData) {
             // We assume atom radius <<< voxel extent and just increment the bin
             constexpr float sphere_vol_scl = (4.0f / 3.0f) * math::PI;
             for (uint32_t i = range.beg; i < range.end; i++) {
                 const vec3 pos = {atom_x[i], atom_y[i], atom_z[i]};
                 const int idx = compute_voxel_idx(vol, pos);
-                const float r = atom_radius[i];
+                const float r = atom_r[i];
                 const float sphere_vol = sphere_vol_scl * r * r * r;
                 const u32 occ = (sphere_vol * inv_voxel_volume * 0xFFFFFFFFU);
                 atomic_fetch_and_add(&voxel_data[idx], occ);
             }
         });
     task_system::wait_for_task(id);
+#else 
+    constexpr float sphere_vol_scl = (4.0f / 3.0f) * math::PI;
+    for (i32 i = 0; i < num_atoms; i++) {
+        const vec3 pos = {atom_x[i], atom_y[i], atom_z[i]};
+        const int idx = compute_voxel_idx(vol, pos);
+        const float r = atom_r[i];
+        const float sphere_vol = sphere_vol_scl * r * r * r;
+        const float fract = sphere_vol * inv_voxel_volume;
+        const u32 occ = (fract * 0xFFFFFFFFU);
+        voxel_data[idx] += occ;
+    }
+#endif
 
+    int w, h, d;
     glBindTexture(GL_TEXTURE_3D, vol.texture_id);
-    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, vol.resolution.x, vol.resolution.y, vol.resolution.z, GL_RED, GL_UNSIGNED_INT, voxel_data.data());
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH, &w);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &h);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH, &d);
+
+    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, vol.resolution.x, vol.resolution.y, vol.resolution.z, GL_RED, GL_UNSIGNED_INT, voxel_data);
     glGenerateMipmap(GL_TEXTURE_3D);
     glBindTexture(GL_TEXTURE_3D, 0);
 }
@@ -906,6 +981,13 @@ void render_directional_occlusion(GLuint depth_tex, GLuint normal_tex, const GPU
     glColorMask(1, 1, 1, 1);
     glDepthMask(GL_TRUE);
     glEnable(GL_DEPTH_TEST);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_3D, 0);
 }
 
 void cone_trace_scene(GLuint depth_tex, GLuint normal_tex, GLuint color_alpha_tex, GLuint f0_smoothness_tex, const GPUVolume& vol,

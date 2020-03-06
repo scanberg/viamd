@@ -22,7 +22,7 @@ option(VIAMD_ENABLE_OPENMP OFF)
 
 if (MSVC)
     message(STATUS "MSVC configuration was used")
-    add_compile_options(/MT /W4 /wd4201 /wd4324 /wd26451 /MP /GR- /fp:fast /MP)# /arch:AVX2
+    add_compile_options(/MT /W4 /wd4201 /wd4324 /wd26451 /MP /GR- /fp:fast /MP /arch:AVX)# /arch:AVX2
 
 	if (VIAMD_PROFILE_COMPILE_TIMES)
 		add_compile_options(/Bt+ /d1reportTime /d2cgsummary)
