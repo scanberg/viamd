@@ -51,7 +51,7 @@
 #include <mutex>
 
 #define PICKING_JITTER_HACK 1
-#define DEPERIODIZE_ON_FRAME_LOADED 1
+#define DEPERIODIZE_ON_LOAD 1
 #define SHOW_IMGUI_DEMO_WINDOW 0
 #define VIAMD_RELEASE 0
 #define EXPERIMENTAL_CULLING 0
@@ -5301,9 +5301,8 @@ static bool handle_selection(ApplicationData* data) {
                     bitfield::set_bit(mask, i);
                 }
             });
-            //for (i64 i = 0; i < N; i++) {
+            // for (i64 i = 0; i < N; i++) {
             //    if (!bitfield::get_bit(data->representations.atom_visibility_mask, i)) continue;
-
 
             //}
 
@@ -5497,8 +5496,8 @@ static void draw_residue_aabbs(const ApplicationData& data) {
 
 static void init_occupancy_volume(ApplicationData* data) {
 
-    const AABB box = compute_aabb(data->dynamic.molecule.atom.position.x, data->dynamic.molecule.atom.position.y, data->dynamic.molecule.atom.position.z,
-                                  data->dynamic.molecule.atom.radius, data->dynamic.molecule.atom.count);
+    const AABB box = compute_aabb(data->dynamic.molecule.atom.position.x, data->dynamic.molecule.atom.position.y,
+                                  data->dynamic.molecule.atom.position.z, data->dynamic.molecule.atom.radius, data->dynamic.molecule.atom.count);
     cone_trace::init_occlusion_volume(&data->occupancy_volume.vol, box.min, box.max);
 
     data->occupancy_volume.vol_mutex.lock();
@@ -6286,6 +6285,21 @@ static void superimpose_ensemble(ApplicationData* data) {
 }
 
 static void on_trajectory_load_complete(ApplicationData* data) {
+#if DEPERIODIZE_ON_LOAD
+    if (data->dynamic.trajectory) {
+        auto id = task_system::create_task("De-periodizing trajectory", data->dynamic.trajectory.num_frames,
+                                           [data](task_system::TaskSetRange range, task_system::TaskData) {
+                                               auto& mol = data->dynamic.molecule;
+                                               auto& traj = data->dynamic.trajectory;
+                                               for (u32 i = range.beg; i < range.end; i++) {
+                                                   auto& frame = get_trajectory_frame(traj, i);
+                                                   apply_pbc(frame.atom_position.x, frame.atom_position.y, frame.atom_position.z, mol.atom.mass,
+                                                             mol.sequences.data(), mol.sequences.size(), frame.box);
+                                               }
+                                           });
+        task_system::wait_for_task(id);
+    }
+#endif
     for (auto& ref : data->reference_frame.frames) {
         compute_reference_frame(data, &ref);
     }
