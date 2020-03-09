@@ -890,7 +890,7 @@ void compute_occupancy_volume(const GPUVolume& vol, const f32* atom_x, const f32
 
     Data data = {voxel_data, vol.resolution, inv_voxel_volume, atom_x, atom_y, atom_z, atom_r};
 
-#if 0
+#if 1
     task_system::ID id = task_system::create_task(
         "Computing occupancy", num_atoms,
         [voxel_data, atom_x, atom_y, atom_z, atom_r, &vol, inv_voxel_volume](task_system::TaskSetRange range, task_system::TaskData) {
@@ -918,6 +918,50 @@ void compute_occupancy_volume(const GPUVolume& vol, const f32* atom_x, const f32
         voxel_data[idx] += occ;
     }
 #endif
+
+    int w, h, d;
+    glBindTexture(GL_TEXTURE_3D, vol.texture_id);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH, &w);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &h);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH, &d);
+
+    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, vol.resolution.x, vol.resolution.y, vol.resolution.z, GL_RED, GL_UNSIGNED_INT, voxel_data);
+    glGenerateMipmap(GL_TEXTURE_3D);
+    glBindTexture(GL_TEXTURE_3D, 0);
+}
+
+void compute_occupancy_volume(const GPUVolume& vol, const f32* atom_x, const f32* atom_y, const f32* atom_z, const f32* atom_r, Bitfield atom_mask) {
+    const i32 voxel_count = vol.resolution.x * vol.resolution.y * vol.resolution.z;
+    if (voxel_count == 0) {
+        LOG_WARNING("Volume resolution is zero on one or more axes");
+        return;
+    }
+
+    glClearTexImage(vol.texture_id, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+
+    const float inv_voxel_volume = 1.0f / (vol.voxel_ext.x * vol.voxel_ext.y * vol.voxel_ext.z);
+    u32* voxel_data = (u32*)TMP_CALLOC(voxel_count, sizeof(u32));
+    defer { TMP_FREE(voxel_data); };
+    memset(voxel_data, 0, sizeof(u32) * voxel_count);
+
+    struct Data {
+        u32* vol_data;
+        ivec3 vol_dim;
+        const float inv_voxel_volume;
+        const float *atom_x, *atom_y, *atom_z, *atom_r;
+    };
+
+    bitfield::for_each_bit_set(atom_mask, [atom_x, atom_y, atom_z, atom_r, inv_voxel_volume, voxel_data, &vol](i64 i) {
+        constexpr float sphere_vol_scl = (4.0f / 3.0f) * math::PI;
+        const vec3 pos = {atom_x[i], atom_y[i], atom_z[i]};
+        const int idx = compute_voxel_idx(vol, pos);
+        const float r = atom_r[i];
+        const float sphere_vol = sphere_vol_scl * r * r * r;
+        const float fract = sphere_vol * inv_voxel_volume;
+        const u32 occ = (fract * 0xFFFFFFFFU);
+        voxel_data[idx] += occ;
+
+    });
 
     int w, h, d;
     glBindTexture(GL_TEXTURE_3D, vol.texture_id);

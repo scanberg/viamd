@@ -5509,7 +5509,7 @@ static void init_occupancy_volume(ApplicationData* data) {
     if (data->occupancy_volume.vol.texture_id) {
         cone_trace::compute_occupancy_volume(data->occupancy_volume.vol, data->dynamic.molecule.atom.position.x,
                                              data->dynamic.molecule.atom.position.y, data->dynamic.molecule.atom.position.z,
-                                             data->dynamic.molecule.atom.radius, data->dynamic.molecule.atom.count);
+                                             data->dynamic.molecule.atom.radius, data->representations.atom_visibility_mask);
     }
     data->occupancy_volume.vol_mutex.unlock();
 }
