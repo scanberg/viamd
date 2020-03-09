@@ -26,6 +26,8 @@
 #include <core/array_types.h>
 #include <core/string_types.h>
 
+#include "IconsFontAwesome5.h"
+
 namespace platform {
 
 const int MAX_KEYS = 512;

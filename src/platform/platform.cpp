@@ -19,8 +19,9 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 //#include "cousine_font.inl"
-#include "droid_sans.inl"
 
+#include "droid_sans.inl"
+#include "fa_regular.inl"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,10 +37,10 @@ static struct {
     } file_system;
 } data;
 
-
 static void error_callback(int error, const char* description) { LOG_ERROR("%d: %s\n", error, description); }
 
-static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
+static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message,
+                                 const void* userParam) {
     (void)source;
     (void)type;
     (void)id;
@@ -133,18 +134,31 @@ bool initialize(Context* ctx, i32 width, i32 height, const char* title) {
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoTaskBarIcons;
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoMerge;
     io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;
-    //io.ConfigDockingWithShift = true;
-	io.ConfigWindowsMoveFromTitleBarOnly = true;
+    // io.ConfigDockingWithShift = true;
+    io.ConfigWindowsMoveFromTitleBarOnly = true;
 
     // default range is 0x0020 - 0x00FF.
-    // In our case we BAKE ALL!
-    // @TODO: reduce this to only the used characters... for some release...
-    static const ImWchar ranges[] = {0x0020, 0xFFFF, 0};
-    ImFontConfig config;
-    config.OversampleV = 4;
-    config.OversampleH = 4;
-    config.RasterizerMultiply = 0.9f;
-    ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)DroidSans_compressed_data, DroidSans_compressed_size, 16.f, &config, ranges);
+    // Added some greek letters
+    {
+        static const ImWchar ranges[] = {0x0020, 0x00FF, 0x03C6, 0x03C8, 0};
+        ImFontConfig config;
+        config.OversampleV = 4;
+        config.OversampleH = 4;
+        config.RasterizerMultiply = 0.9f;
+        config.PixelSnapH = true;
+        ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)DroidSans_compressed_data, DroidSans_compressed_size, 16.f, &config, ranges);
+    }
+    {
+        // ICONS
+        static const ImWchar ranges[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
+        ImFontConfig config;
+        config.OversampleV = 4;
+        config.OversampleH = 4;
+        config.RasterizerMultiply = 0.9f;
+        config.MergeMode = true;
+        config.PixelSnapH = true;
+        ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)fa_regular_compressed_data, fa_regular_compressed_size, 16.f, &config, ranges);
+    }
 
     ImGui_ImplGlfw_InitForOpenGL(window, false);
     ImGui_ImplOpenGL3_Init("#version 150");
@@ -314,9 +328,9 @@ FileDialogResult file_dialog(FileDialogFlags flags, CStringView default_path, CS
     if (result == NFD_OKAY) {
         Path res_path = out_path;
         convert_backslashes(res_path);
-        return { FileDialogResult::Ok, res_path };
+        return {FileDialogResult::Ok, res_path};
     } else if (result == NFD_CANCEL) {
-        return { FileDialogResult::Cancel};
+        return {FileDialogResult::Cancel};
     }
     LOG_ERROR("%s\n", NFD_GetError());
     return {FileDialogResult::Cancel, {}};

@@ -560,9 +560,7 @@ struct ApplicationData {
     struct {
         DynamicArray<Representation> buffer = {};
         Bitfield atom_visibility_mask{};
-        bool atom_visibility_mask_dirty = false;
         bool show_window = false;
-        // bool changed = false;
     } representations;
 
     // --- REFERENCE FRAME ---
@@ -847,7 +845,7 @@ int main(int, char**) {
     pdb::load_molecule_from_string(&data.dynamic.molecule, CAFFINE_PDB);
     init_molecule_data(&data);
 #else
-    load_dataset_from_file(&data, "D:/data/3u75.pdb");
+    load_dataset_from_file(&data, "D:/data/1aon.pdb");
     // load_dataset_from_file(&data, VIAMD_DATA_DIR "/1ALA-250ns-2500frames.pdb");
     // load_dataset_from_file(&data, VIAMD_DATA_DIR "/amyloid/centered.gro");
     // load_dataset_from_file(&data, VIAMD_DATA_DIR "/amyloid/centered.xtc");
@@ -946,8 +944,6 @@ int main(int, char**) {
                 data.playback.time = math::clamp(data.playback.time + step, 0.0, max_time);
             }
         }
-
-        recompute_atom_visibility_mask(&data);
 
         data.selection.selecting = false;
         if (!ImGui::GetIO().WantCaptureMouse) {
@@ -2352,20 +2348,20 @@ static void draw_animation_control_window(ApplicationData* data) {
     if (ImGui::SliderFloat("Time", &t, 0, (float)(math::max(0, num_frames - 1)))) {
         data->playback.time = t;
     }
-    ImGui::SliderFloat("fps", &data->playback.fps, 0.1f, 1000.f, "%.3f", 4.f);
-    ImGui::Combo("type", (int*)(&data->playback.interpolation), "Nearest\0Linear\0Cubic\0\0");
+    ImGui::SliderFloat("FPS", &data->playback.fps, 0.1f, 1000.f, "%.3f", 4.f);
+    ImGui::Combo("Interpolation", (int*)(&data->playback.interpolation), "Nearest\0Linear\0Cubic\0\0");
     switch (data->playback.mode) {
         case PlaybackMode::Playing:
-            if (ImGui::Button("Pause")) data->playback.mode = PlaybackMode::Stopped;
+            if (ImGui::Button(ICON_FA_PAUSE)) data->playback.mode = PlaybackMode::Stopped;
             break;
         case PlaybackMode::Stopped:
-            if (ImGui::Button("Play")) data->playback.mode = PlaybackMode::Playing;
+            if (ImGui::Button(ICON_FA_PLAY)) data->playback.mode = PlaybackMode::Playing;
             break;
         default:
             ASSERT(false);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Stop")) {
+    if (ImGui::Button(ICON_FA_STOP)) {
         data->playback.mode = PlaybackMode::Stopped;
         data->playback.time = 0.0;
     }
@@ -2395,7 +2391,7 @@ static void draw_representations_window(ApplicationData* data) {
         ImGui::PushID(i);
         if (ImGui::CollapsingHeader(name.cstr())) {
             if (ImGui::Checkbox("enabled", &rep.enabled)) {
-                data->representations.atom_visibility_mask_dirty = true;
+                recompute_atom_visibility_mask(data);
             }
             ImGui::SameLine();
             ImGui::Checkbox("show in sel.", &rep.show_in_selection);
@@ -5091,7 +5087,6 @@ static void remove_representation(ApplicationData* data, int idx) {
 
 static void recompute_atom_visibility_mask(ApplicationData* data) {
     ASSERT(data);
-    if (!data->representations.atom_visibility_mask_dirty) return;
 
     auto& atom_visibility_mask = data->representations.atom_visibility_mask;
     if (atom_visibility_mask.size() != data->dynamic.molecule.atom.count) {
@@ -5103,8 +5098,6 @@ static void recompute_atom_visibility_mask(ApplicationData* data) {
         if (!rep.enabled) continue;
         bitfield::or_field(atom_visibility_mask, atom_visibility_mask, rep.atom_mask);
     }
-
-    data->representations.atom_visibility_mask_dirty = false;
 }
 
 static void update_all_representations(ApplicationData* data) {
@@ -5162,7 +5155,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
 
     rep->filter_is_ok = filter::compute_filter_mask(rep->atom_mask, rep->filter.buffer, data->dynamic.molecule, sel);
     filter_colors(colors, rep->atom_mask);
-    data->representations.atom_visibility_mask_dirty = true;
+    recompute_atom_visibility_mask(data);
 
     if (!rep->color_buffer) glGenBuffers(1, &rep->color_buffer);
     glBindBuffer(GL_ARRAY_BUFFER, rep->color_buffer);
@@ -5290,9 +5283,7 @@ static bool handle_selection(ApplicationData* data) {
             const vec2 res = {data->ctx.window.width, data->ctx.window.height};
             const mat4 mvp = data->view.param.matrix.current.view_proj;
 
-            for (i64 i = 0; i < N; i++) {
-                if (!bitfield::get_bit(data->representations.atom_visibility_mask, i)) continue;
-
+            bitfield::for_each_bit_set(data->representations.atom_visibility_mask, [data, &mvp, &res, &min_p, &max_p, &mask](i64 i) {
                 // @PERF: Do the projection manually. GLM is super slow in doing the matrix vector multiplication on msvc for some reason...
                 const float x = data->dynamic.molecule.atom.position.x[i];
                 const float y = data->dynamic.molecule.atom.position.y[i];
@@ -5309,7 +5300,12 @@ static bool handle_selection(ApplicationData* data) {
                 if (min_p.x <= c.x && c.x <= max_p.x && min_p.y <= c.y && c.y <= max_p.y) {
                     bitfield::set_bit(mask, i);
                 }
-            }
+            });
+            //for (i64 i = 0; i < N; i++) {
+            //    if (!bitfield::get_bit(data->representations.atom_visibility_mask, i)) continue;
+
+
+            //}
 
             switch (data->selection.level_mode) {
                 case SelectionLevel::Atom:
