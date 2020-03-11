@@ -19,14 +19,13 @@ inline vec4 color_from_hash(u32 hash) {
 }
 
 void color_atoms_uniform(Array<u32> dst_atom_colors, const vec4& color);
-void color_atoms_cpk(Array<u32> dst_atom_colors, Array<const Element> elements);
-void color_atoms_residue_id(Array<u32> dst_atom_colors, Array<const Residue> residues);
-void color_atoms_residue_index(Array<u32> dst_atom_colors, Array<const Residue> residues);
-void color_atoms_chain_id(Array<u32> dst_atom_colors, Array<const Chain> chains);
-void color_atoms_chain_index(Array<u32> dst_atom_colors, Array<const Chain> chains);
+void color_atoms_cpk(Array<u32> dst_atom_colors, const MoleculeStructure& mol);
+void color_atoms_residue_id(Array<u32> dst_atom_colors, const MoleculeStructure& mol);
+void color_atoms_residue_index(Array<u32> dst_atom_colors, const MoleculeStructure& mol);
+void color_atoms_chain_id(Array<u32> dst_atom_colors, const MoleculeStructure& mol);
+void color_atoms_chain_index(Array<u32> dst_atom_colors, const MoleculeStructure& mol);
 
-void color_atoms_backbone_angles(Array<u32> dst_atom_colors, Array<const Residue> residues, Array<const BackboneSequence> bb_seq, Array<const BackboneAngle> bb_angles,
-                                 const Image& ramachandran_color_map);
+void color_atoms_backbone_angles(Array<u32> dst_atom_colors, const MoleculeStructure& mol, const Image& ramachandran_color_map);
 
 void filter_colors(Array<u32> colors, Bitfield mask);
 void desaturate_colors(Array<u32> colors, Bitfield mask, float scale);

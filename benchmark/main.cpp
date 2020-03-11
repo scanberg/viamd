@@ -125,23 +125,14 @@ int main() {
 
     SECTION("CUBIC INTERPOLATION PBC");
     {
-        const auto x0 = get_trajectory_position_x(md.trajectory, 100).data();
-        const auto y0 = get_trajectory_position_y(md.trajectory, 100).data();
-        const auto z0 = get_trajectory_position_z(md.trajectory, 100).data();
-        const auto x1 = get_trajectory_position_x(md.trajectory, 101).data();
-        const auto y1 = get_trajectory_position_y(md.trajectory, 101).data();
-        const auto z1 = get_trajectory_position_z(md.trajectory, 101).data();
-        const auto x2 = get_trajectory_position_x(md.trajectory, 102).data();
-        const auto y2 = get_trajectory_position_y(md.trajectory, 102).data();
-        const auto z2 = get_trajectory_position_z(md.trajectory, 102).data();
-        const auto x3 = get_trajectory_position_x(md.trajectory, 103).data();
-        const auto y3 = get_trajectory_position_y(md.trajectory, 103).data();
-        const auto z3 = get_trajectory_position_z(md.trajectory, 103).data();
+        const soa_vec3 in_pos[4] = {
+            md.trajectory.frame_buffer[100].atom_position,
+            md.trajectory.frame_buffer[101].atom_position,
+            md.trajectory.frame_buffer[102].atom_position,
+            md.trajectory.frame_buffer[103].atom_position
+        };
 
-        auto x = md.molecule.atom.position.x;
-        auto y = md.molecule.atom.position.y;
-        auto z = md.molecule.atom.position.z;
-
+        soa_vec3 out_pos = md.molecule.atom.position;
         const auto box = get_trajectory_frame(md.trajectory, 101).box;
 
         const i32 num_iter = 10000;
@@ -150,7 +141,7 @@ int main() {
 
         const auto t0 = TIME();
         for (i32 i = 0; i < num_iter; i++) {
-            cubic_interpolation_pbc_scalar(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, num_atoms, t, box);
+            cubic_interpolation_pbc_scalar(out_pos, in_pos, num_atoms, t, box);
         }
         const auto t1 = TIME();
         const auto time_cubic_pbc_scalar = MILLISEC(t0, t1) / (double)num_iter;
@@ -299,7 +290,7 @@ int main() {
 
         const auto t2 = TIME();
         for (i32 i = 0; i < num_iter; i++) {
-            vec3 com = compute_com(x, y, z, size);
+            vec3 com = compute_com({x, y, z}, size);
         }
         const auto t3 = TIME();
         const auto time_vec = MILLISEC(t2, t3) / (double)num_iter;
