@@ -40,8 +40,8 @@ static inline i32 get_backbone_angles_trajectory_current_frame_count(const Backb
     return (i32)backbone_angle_traj.angle_data.count / backbone_angle_traj.num_segments;
 }
 
-static inline Array<BackboneAngle> get_backbone_angles(BackboneAnglesTrajectory& backbone_angle_traj, int frame_index, Chain chain) {
-    return get_frame_backbone_angles(backbone_angle_traj, frame_index).subarray(chain.res_range);
+static inline Array<BackboneAngle> get_backbone_angles(BackboneAnglesTrajectory& backbone_angle_traj, int frame_index, AtomRange range) {
+    return get_frame_backbone_angles(backbone_angle_traj, frame_index).subarray(range);
 }
 
 static void init_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const MoleculeDynamic& dynamic);
@@ -298,9 +298,6 @@ task_system::ID initialize(const MoleculeDynamic& dynamic) {
     }
 
     if (!program) {
-        constexpr int BUFFER_SIZE = 1024;
-        char buffer[BUFFER_SIZE];
-
         GLuint v_shader = gl::compile_shader_from_source(v_shader_src, GL_VERTEX_SHADER);
         GLuint f_shader = gl::compile_shader_from_source(f_shader_src, GL_FRAGMENT_SHADER);
         defer {
@@ -513,8 +510,8 @@ static void init_backbone_angles_trajectory(BackboneAnglesTrajectory* data, cons
         FREE(data->angle_data.ptr);
     }
 
-    i32 alloc_count = (i32)dynamic.molecule.backbone.segments.count * (i32)dynamic.trajectory.frame_buffer.count;
-    data->num_segments = (i32)dynamic.molecule.backbone.segments.count;
+    i32 alloc_count = (i32)dynamic.molecule.backbone.segment.count * (i32)dynamic.trajectory.frame_buffer.count;
+    data->num_segments = (i32)dynamic.molecule.backbone.segment.count;
     data->num_frames = 0;
     data->angle_data = {(BackboneAngle*)CALLOC(alloc_count, sizeof(BackboneAngle)), alloc_count};
 }
@@ -529,24 +526,22 @@ static void free_backbone_angles_trajectory(BackboneAnglesTrajectory* data) {
 
 static task_system::ID compute_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const MoleculeDynamic& dynamic) {
     ASSERT(dynamic);
-    if (dynamic.trajectory.num_frames == 0 || dynamic.molecule.backbone.segments.count == 0) return 0;
+    if (dynamic.trajectory.num_frames == 0 || dynamic.molecule.backbone.segment.count == 0) return 0;
 
     task_system::ID id = task_system::create_task(
         "Backbone Angles Trajectory", dynamic.trajectory.num_frames, [data, &dynamic](task_system::TaskSetRange range, task_system::TaskData) {
             for (u32 f_idx = range.beg; f_idx < range.end; f_idx++) {
-                auto pos_x = get_trajectory_position_x(dynamic.trajectory, f_idx).data();
-                auto pos_y = get_trajectory_position_y(dynamic.trajectory, f_idx).data();
-                auto pos_z = get_trajectory_position_z(dynamic.trajectory, f_idx).data();
+                const soa_vec3 pos = get_trajectory_positions(dynamic.trajectory, f_idx);
 
                 Array<BackboneAngle> frame_angles = get_frame_backbone_angles(*data, f_idx);
-                for (const auto& bb_seq : dynamic.molecule.backbone.sequences) {
-                    auto bb_segments = get_backbone(dynamic.molecule, bb_seq);
-                    auto bb_angles = frame_angles.subarray(bb_seq);
+                for (const auto& bb_seq : get_backbone_sequences(dynamic.molecule)) {
+                    auto bb_seg = get_backbone_segments(dynamic.molecule, bb_seq);
+                    auto bb_ang = frame_angles.subarray(bb_seq);
 
-                    if (bb_segments.size() < 2) {
-                        memset(bb_angles.ptr, 0, bb_angles.size_in_bytes());
+                    if (bb_seg.size() < 2) {
+                        memset(bb_ang.data(), 0, bb_ang.size_in_bytes());
                     } else {
-                        compute_backbone_angles(bb_angles.data(), bb_segments.data(), pos_x, pos_y, pos_z, bb_segments.size());
+                        compute_backbone_angles(bb_ang.data(), pos, bb_seg.data(), bb_seg.size());
                     }
                 }
             }

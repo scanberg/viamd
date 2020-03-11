@@ -1035,7 +1035,7 @@ int main(int, char**) {
             PUSH_CPU_SECTION("Compute backbone angles")
             for (const auto& seq : get_backbone_sequences(mol)) {
                 auto segments = get_backbone_segments(mol, seq);
-                compute_backbone_angles(get_backbone_angles(mol, seq), mol.atom.position, segments, segments.size());
+                compute_backbone_angles(get_backbone_angles(mol, seq).data(), mol.atom.position, segments.data(), segments.size());
             }
             POP_CPU_SECTION()
 
@@ -2906,7 +2906,7 @@ static void draw_molecule_dynamic_info_window(ApplicationData* data) {
         if (const auto& mol = data->dynamic.molecule) {
             ImGui::Text("MOL");
             const auto file = get_file(data->files.molecule);
-            if (file) ImGui::Text("\"%.*s\"", file.size(), file.data());
+            if (file) ImGui::Text("\"%.*s\"", (i32)file.size(), file.data());
             ImGui::Text("# atoms: %lli", mol.atom.count);
             ImGui::Text("# residues: %lli", mol.residue.count);
             ImGui::Text("# chains: %lli", mol.chain.count);
@@ -2915,8 +2915,8 @@ static void draw_molecule_dynamic_info_window(ApplicationData* data) {
             ImGui::NewLine();
             ImGui::Text("TRAJ");
             const auto file = get_file(data->files.trajectory);
-            ImGui::Text("\"%.*s\"", file.size(), file.data());
-            ImGui::Text("# frames: %lli", traj.num_frames);
+            ImGui::Text("\"%.*s\"", (i32)file.size(), file.data());
+            ImGui::Text("# frames: %i", traj.num_frames);
         }
         const i64 selection_count = bitfield::number_of_bits_set(data->selection.current_selection_mask);
         const i64 highlight_count = bitfield::number_of_bits_set(data->selection.current_highlight_mask);
@@ -2941,7 +2941,7 @@ static void draw_async_task_window(ApplicationData* data) {
     const u32 num_tasks = task_system::get_num_tasks();
     task_system::ID* tasks = task_system::get_tasks();
 
-    if ((0.f < stats_fract && stats_fract < 1.f || num_tasks > 0)) {
+    if (((0.f < stats_fract) && (stats_fract < 1.f)) || (num_tasks > 0)) {
 
         ImGuiViewport* viewport = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(viewport->Pos + ImVec2(data->ctx.window.width - WIDTH - MARGIN,
@@ -2966,7 +2966,7 @@ static void draw_async_task_window(ApplicationData* data) {
             snprintf(buf, 32, "%.1f%%", fract * 100.f);
             ImGui::ProgressBar(fract, ImVec2(ImGui::GetWindowContentRegionWidth() * PROGRESSBAR_WIDTH_FRACT, 0), buf);
             ImGui::SameLine();
-            ImGui::Text(task_system::get_task_label(id));
+            ImGui::Text("%s", task_system::get_task_label(id));
             ImGui::SameLine();
             if (ImGui::Button("X")) {
                 task_system::interrupt_task(id);
@@ -4006,10 +4006,9 @@ static void draw_density_volume_window(ApplicationData* data) {
                     for (const auto& s : data->selection.stored_selections) {
                         sel.push_back({s.name, s.atom_mask});
                     }
-                    const bool filter_ok = filter::compute_filter_mask(filter_mask, filter_buf, data->dynamic.molecule, sel);
+                    //const bool filter_ok = filter::compute_filter_mask(filter_mask, filter_buf, data->dynamic.molecule, sel);
 
                     if (bitfield::number_of_bits_set(filter_mask) > 0) {
-                        const auto traj = data->dynamic.trajectory;
                         const auto ensemble_structures = data->ensemble_tracking.structures;
 
                         data->density_volume.volume_data_mutex.lock();
@@ -4123,10 +4122,9 @@ static void draw_density_volume_window(ApplicationData* data) {
                     {
                         LOG_NOTE("Computing Internal Reference Frames...");
                         auto t0 = platform::get_time();
-                        u32 completed_count = 0;
                         task_system::ID task_system = task_system::create_task(
                             "Computing Internal Reference Frames...", (u32)ensemble_structures.size(),
-                            [dyn, ensemble_mask, &ensemble_structures, &completed_count](task_system::TaskSetRange range, task_system::TaskData) {
+                            [dyn, ensemble_mask, &ensemble_structures](task_system::TaskSetRange range, task_system::TaskData) {
                                 for (u32 i = range.beg; i < range.end; ++i) {
                                     structure_tracking::compute_trajectory_transform_data(ensemble_structures[i].id, dyn, ensemble_mask,
                                                                                           ensemble_structures[i].offset);
@@ -5092,22 +5090,22 @@ static void update_representation(ApplicationData* data, Representation* rep) {
             color_atoms_uniform(colors, rep->uniform_color);
             break;
         case ColorMapping::Cpk:
-            color_atoms_cpk(colors, get_elements(mol));
+            color_atoms_cpk(colors, mol);
             break;
         case ColorMapping::ResId:
-            color_atoms_residue_id(colors, get_residue_ids(mol));
+            color_atoms_residue_id(colors, mol);
             break;
         case ColorMapping::ResIndex:
-            color_atoms_residue_index(colors, get_residues(mol));
+            color_atoms_residue_index(colors, mol);
             break;
         case ColorMapping::ChainId:
-            color_atoms_chain_id(colors, get_chains(mol));
+            color_atoms_chain_id(colors, mol);
             break;
         case ColorMapping::ChainIndex:
-            color_atoms_chain_index(colors, get_chains(mol));
+            color_atoms_chain_index(colors, mol);
             break;
         case ColorMapping::SecondaryStructure:
-            color_atoms_backbone_angles(colors, get_residues(mol), mol.backbone.sequences, mol.backbone.angles, ramachandran::get_color_image());
+            color_atoms_backbone_angles(colors, mol, ramachandran::get_color_image());
             break;
         default:
             ASSERT(false);
@@ -5222,11 +5220,11 @@ static bool handle_selection(ApplicationData* data) {
             case SelectionLevel::Atom:
                 break;
             case SelectionLevel::Residue: {
-                expand_mask(mask, data->dynamic.molecule.residues);
+                expand_mask(mask, data->dynamic.molecule.residue.atom_range, data->dynamic.molecule.residue.count);
                 break;
             }
             case SelectionLevel::Chain: {
-                expand_mask(mask, data->dynamic.molecule.chains);
+                expand_mask(mask, data->dynamic.molecule.chain.atom_range, data->dynamic.molecule.chain.count);
                 break;
             }
             default:
@@ -5281,10 +5279,10 @@ static bool handle_selection(ApplicationData* data) {
                 case SelectionLevel::Atom:
                     break;
                 case SelectionLevel::Residue:
-                    expand_mask(mask, data->dynamic.molecule.residues);
+                    expand_mask(mask, data->dynamic.molecule.residue.atom_range, data->dynamic.molecule.residue.count);
                     break;
                 case SelectionLevel::Chain:
-                    expand_mask(mask, data->dynamic.molecule.chains);
+                    expand_mask(mask, data->dynamic.molecule.chain.atom_range, data->dynamic.molecule.residue.count);
                     break;
                 default:
                     ASSERT(false);
@@ -5434,7 +5432,7 @@ static void compute_velocity(ApplicationData* data) {
 static void compute_residue_aabbs(ApplicationData* data) {
     PUSH_GPU_SECTION("Compute Residue AABBs")
     draw::culling::compute_residue_aabbs(data->gpu_buffers.experimental.aabb, data->gpu_buffers.position, data->gpu_buffers.radius,
-                                         data->gpu_buffers.experimental.residue, (i32)data->dynamic.molecule.residues.size());
+                                         data->gpu_buffers.experimental.residue, (i32)data->dynamic.molecule.residue.count);
     POP_GPU_SECTION()
 }
 
@@ -5445,7 +5443,7 @@ static void cull_residue_aabbs(ApplicationData* data) {
     glDepthMask(0);
 
     draw::culling::cull_aabbs(data->gpu_buffers.experimental.visibility, data->gpu_buffers.experimental.aabb, data->view.param,
-                              (i32)data->dynamic.molecule.residues.size());
+                              (i32)data->dynamic.molecule.residue.count);
 
     glDepthMask(1);
     glDisable(GL_DEPTH_TEST);
@@ -5458,7 +5456,7 @@ static void draw_residue_aabbs(const ApplicationData& data) {
     glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     // draw::culling::draw_aabbs(data.gpu_buffers.experimental.aabb, data.view.param, data.dynamic.molecule.residues.size());
     draw::culling::draw_culled_aabbs(data.gpu_buffers.experimental.visibility, data.gpu_buffers.experimental.aabb, data.view.param,
-                                     (i32)data.dynamic.molecule.residues.size());
+                                     (i32)data.dynamic.molecule.residue.count);
 
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
@@ -5466,9 +5464,7 @@ static void draw_residue_aabbs(const ApplicationData& data) {
 }
 
 static void init_occupancy_volume(ApplicationData* data) {
-
-    const AABB box = compute_aabb(data->dynamic.molecule.atom.position.x, data->dynamic.molecule.atom.position.y,
-                                  data->dynamic.molecule.atom.position.z, data->dynamic.molecule.atom.radius, data->dynamic.molecule.atom.count);
+    const AABB box = compute_aabb(data->dynamic.molecule.atom.position, data->dynamic.molecule.atom.radius, data->dynamic.molecule.atom.count);
     cone_trace::init_occlusion_volume(&data->occupancy_volume.vol, box.min, box.max);
 
     data->occupancy_volume.vol_mutex.lock();
@@ -5556,8 +5552,8 @@ static void fill_gbuffer(const ApplicationData& data) {
         if (data.hydrogen_bonds.enabled && !data.hydrogen_bonds.overlay) {
             const auto& mol = data.dynamic.molecule;
             for (const auto& bond : data.hydrogen_bonds.bonds) {
-                const vec3 pos0 = get_position_xyz(mol, bond.acc_idx);
-                const vec3 pos1 = get_position_xyz(mol, bond.hyd_idx);
+                const vec3 pos0 = get_atom_position(mol, bond.acc_idx);
+                const vec3 pos1 = get_atom_position(mol, bond.hyd_idx);
                 immediate::draw_line(pos0, pos1, math::convert_color(data.hydrogen_bonds.color));
             }
         }
@@ -5578,8 +5574,8 @@ static void fill_gbuffer(const ApplicationData& data) {
         // HYDROGEN BONDS
         if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.overlay) {
             for (const auto& bond : data.hydrogen_bonds.bonds) {
-                const vec3 p0 = get_position_xyz(data.dynamic.molecule, bond.acc_idx);
-                const vec3 p1 = get_position_xyz(data.dynamic.molecule, bond.hyd_idx);
+                const vec3 p0 = get_atom_position(data.dynamic.molecule, bond.acc_idx);
+                const vec3 p1 = get_atom_position(data.dynamic.molecule, bond.hyd_idx);
                 immediate::draw_line(p0, p1, math::convert_color(data.hydrogen_bonds.color));
             }
         }
@@ -5768,7 +5764,6 @@ static void update_properties(ApplicationData* data) {
 
                 const ReferenceFrame* ref = get_active_reference_frame(data);
                 if (ref) {
-                    const structure_tracking::ID id = ref->id;
                     stats::compute_density_volume_with_basis(
                         &data->density_volume.volume, data->dynamic.trajectory, range, [ref, data](const vec4& world_pos, i32 frame_idx) -> vec4 {
                             const auto tracking_data = structure_tracking::get_tracking_data(ref->id);
@@ -6043,8 +6038,8 @@ static void update_reference_frames(ApplicationData* data) {
             bitfield::gather_masked(current_y, mol.atom.position.y, ref.atom_mask);
             bitfield::gather_masked(current_z, mol.atom.position.z, ref.atom_mask);
 
-            const vec3 frame_com = compute_com(frame_x, frame_y, frame_z, weight, masked_count);
-            const vec3 current_com = compute_com(current_x, current_y, current_z, weight, masked_count);
+            //const vec3 frame_com = compute_com({frame_x, frame_y, frame_z}, weight, masked_count);
+            const vec3 current_com = compute_com({current_x, current_y, current_z}, weight, masked_count);
 
             const quat* rot_data = nullptr;
             switch (ref.tracking_mode) {
@@ -6092,7 +6087,7 @@ static void update_reference_frames(ApplicationData* data) {
 
             const mat4 T_com = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(-current_com, 1));
             const mat4 T_box = mat4(vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(box_c, 1));
-            const mat4 R_inv = math::transpose(R);
+            //const mat4 R_inv = math::transpose(R);
 
             const mat4 PCA = tracking_data->simulation_box_aligned_pca;
 
@@ -6135,7 +6130,7 @@ static void superimpose_ensemble(ApplicationData* data) {
     bitfield::clear_all(ensemble_atom_mask);
 
     for (auto& structure : data->ensemble_tracking.structures) {
-        const int idx = (int)(&structure - data->ensemble_tracking.structures.beg());
+        //const int idx = (int)(&structure - data->ensemble_tracking.structures.beg());
 
         const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(structure.id);
         if (tracking_data) {
@@ -6168,8 +6163,8 @@ static void superimpose_ensemble(ApplicationData* data) {
             bitfield::gather_masked(current_y, mol.atom.position.y, atom_mask, structure.offset);
             bitfield::gather_masked(current_z, mol.atom.position.z, atom_mask, structure.offset);
 
-            const vec3 frame_com = compute_com(frame_x, frame_y, frame_z, weight, masked_count);
-            const vec3 current_com = compute_com(current_x, current_y, current_z, weight, masked_count);
+            //const vec3 frame_com = compute_com({frame_x, frame_y, frame_z}, weight, masked_count);
+            const vec3 current_com = compute_com({current_x, current_y, current_z}, weight, masked_count);
 
             const quat* rot_data = nullptr;
             switch (data->ensemble_tracking.tracking_mode) {
@@ -6264,8 +6259,7 @@ static void on_trajectory_load_complete(ApplicationData* data) {
                                                auto& traj = data->dynamic.trajectory;
                                                for (u32 i = range.beg; i < range.end; i++) {
                                                    auto& frame = get_trajectory_frame(traj, i);
-                                                   apply_pbc(frame.atom_position.x, frame.atom_position.y, frame.atom_position.z, mol.atom.mass,
-                                                             mol.sequences.data(), mol.sequences.size(), frame.box);
+                                                   apply_pbc(frame.atom_position, mol.atom.mass, mol.chain.atom_range, mol.chain.count, frame.box);
                                                }
                                            });
         task_system::wait_for_task(id);
@@ -6294,8 +6288,8 @@ static void init_density_volume(ApplicationData* data) {
 
 static void draw_representations(const ApplicationData& data) {
     const i32 atom_count = (i32)data.dynamic.molecule.atom.count;
-    const i32 bond_count = (i32)data.dynamic.molecule.covalent_bonds.count;
-    const i32 res_count = (i32)data.dynamic.molecule.residues.count;
+    const i32 bond_count = (i32)data.dynamic.molecule.covalent_bond.count;
+    //const i32 res_count = (i32)data.dynamic.molecule.residue.count;
 
     PUSH_GPU_SECTION("Full Detail") for (const auto& rep : data.representations.buffer) {
         if (!rep.enabled) continue;
@@ -6347,7 +6341,7 @@ static void draw_representations(const ApplicationData& data) {
 
 static void draw_representations_lean_and_mean(const ApplicationData& data, vec4 color, float scale, u32 mask) {
     const i32 atom_count = (i32)data.dynamic.molecule.atom.count;
-    const i32 bond_count = (i32)data.dynamic.molecule.covalent_bonds.size();
+    const i32 bond_count = (i32)data.dynamic.molecule.covalent_bond.count;
 
     PUSH_GPU_SECTION("Lean and Mean")
     for (const auto& rep : data.representations.buffer) {

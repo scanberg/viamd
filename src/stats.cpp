@@ -382,7 +382,7 @@ bool extract_args_structures(Array<StructureData> data, Array<CStringView> args,
     return true;
 }
 
-bool structure_match_resname(StructureData* data, const Array<CStringView> args, const MoleculeStructure& molecule) {
+bool structure_match_resname(StructureData* data, const Array<CStringView> args, const MoleculeStructure& mol) {
     ASSERT(data);
 
     // Expect args.count to be > 0
@@ -391,19 +391,18 @@ bool structure_match_resname(StructureData* data, const Array<CStringView> args,
         return false;
     }
 
-    for (const auto& res : molecule.residues) {
+    for (i64 i = 0; i < mol.residue.count; i++) {
         for (const auto& arg : args) {
-            if (compare(res.name, arg)) {
-                data->structures.push_back({res.atom_range.beg, res.atom_range.end});
+            if (compare(mol.residue.name[i], arg)) {
+                data->structures.push_back({mol.residue.atom_range[i].beg, mol.residue.atom_range[i].end});
                 break;
             }
         }
     }
-
     return true;
 }
 
-bool structure_match_resid(StructureData* data, const Array<CStringView> args, const MoleculeStructure& molecule) {
+bool structure_match_resid(StructureData* data, const Array<CStringView> args, const MoleculeStructure& mol) {
     ASSERT(data);
 
     // Expect args to be  > 0
@@ -418,9 +417,9 @@ bool structure_match_resid(StructureData* data, const Array<CStringView> args, c
             set_error_message(ctx.current_property, "Failed to parse argument for resid");
             return false;
         }
-        for (const auto& res : molecule.residues) {
-            if (res.id == id) {
-                data->structures.push_back({res.atom_range.beg, res.atom_range.end});
+        for (i64 i = 0; i < mol.residue.count; i++) {
+            if (mol.residue.id[i] == id) {
+                data->structures.push_back({mol.residue.atom_range[i].beg, mol.residue.atom_range[i].end});
                 break;
             }
         }
@@ -429,7 +428,7 @@ bool structure_match_resid(StructureData* data, const Array<CStringView> args, c
     return true;
 }
 
-bool structure_match_residue(StructureData* data, const Array<CStringView> args, const MoleculeStructure& molecule) {
+bool structure_match_residue(StructureData* data, const Array<CStringView> args, const MoleculeStructure& mol) {
     ASSERT(data);
 
     // Expect args to be  > 0
@@ -447,7 +446,7 @@ bool structure_match_residue(StructureData* data, const Array<CStringView> args,
                 return false;
             }
             if (range.beg == -1) range.end = 1;
-            if (range.beg == -1) range.end = (i32)molecule.residues.count;
+            if (range.beg == -1) range.end = (i32)mol.residue.count;
         } else {
             auto id = to_int(arg);
             if (!id.success) {
@@ -457,20 +456,19 @@ bool structure_match_residue(StructureData* data, const Array<CStringView> args,
             range.beg = range.end = id;
         }
 
-        if (range.end < 1 || (i32)molecule.residues.count < range.end) {
+        if (range.end < 1 || (i32)mol.residue.count < range.end) {
             set_error_message(ctx.current_property, "Index for residue is out of bounds");
             return false;
         }
         for (i32 i = range.beg - 1; i < range.end; i++) {
-            const auto& res = molecule.residues[i];
-            data->structures.push_back({res.atom_range.beg, res.atom_range.end});
+            data->structures.push_back({mol.residue.atom_range[i].beg, mol.residue.atom_range[i].end});
         }
     }
 
     return true;
 }
 
-bool structure_match_chainid(StructureData* data, const Array<CStringView> args, const MoleculeStructure& molecule) {
+bool structure_match_chainid(StructureData* data, const Array<CStringView> args, const MoleculeStructure& mol) {
     ASSERT(data);
 
     // Expect args.count to be > 0
@@ -479,10 +477,10 @@ bool structure_match_chainid(StructureData* data, const Array<CStringView> args,
         return false;
     }
 
-    for (const auto& chain : molecule.chains) {
+    for (i64 i = 0; i < mol.chain.count; i++) {
         for (const auto& arg : args) {
-            if (compare(chain.id, arg)) {
-                data->structures.push_back({chain.atom_range.beg, chain.atom_range.end});
+            if (compare(mol.chain.id[i], arg)) {
+                data->structures.push_back({mol.chain.atom_range[i].beg, mol.chain.atom_range[i].end});
                 break;
             }
         }
@@ -491,7 +489,7 @@ bool structure_match_chainid(StructureData* data, const Array<CStringView> args,
     return true;
 }
 
-bool structure_match_chain(StructureData* data, const Array<CStringView> args, const MoleculeStructure& molecule) {
+bool structure_match_chain(StructureData* data, const Array<CStringView> args, const MoleculeStructure& mol) {
     ASSERT(data);
 
     // Expect args to be  > 0
@@ -509,7 +507,7 @@ bool structure_match_chain(StructureData* data, const Array<CStringView> args, c
                 return false;
             }
             if (range.beg == -1) range.end = 1;
-            if (range.beg == -1) range.end = (i32)molecule.chains.count;
+            if (range.beg == -1) range.end = (i32)mol.chain.count;
         } else {
             auto id = to_int(arg);
             if (!id.success) {
@@ -519,20 +517,19 @@ bool structure_match_chain(StructureData* data, const Array<CStringView> args, c
             range.beg = range.end = id;
         }
 
-        if (range.beg < 1 || (i32)molecule.chains.count < range.end) {
+        if (range.beg < 1 || (i32)mol.chain.count < range.end) {
             set_error_message(ctx.current_property, "Index for chain is out of bounds");
             return false;
         }
         for (i32 i = range.beg - 1; i <= range.end - 1; i++) {
-            const auto& chain = molecule.chains[i];
-            data->structures.push_back({chain.atom_range.beg, chain.atom_range.end});
+            data->structures.push_back({mol.chain.atom_range[i].beg, mol.chain.atom_range[i].end});
         }
     }
 
     return true;
 }
 
-bool structure_match_atom(StructureData* data, const Array<CStringView> args, const MoleculeStructure& molecule) {
+bool structure_match_atom(StructureData* data, const Array<CStringView> args, const MoleculeStructure& mol) {
     ASSERT(data);
 
     // Expect args to be  > 0
@@ -550,7 +547,7 @@ bool structure_match_atom(StructureData* data, const Array<CStringView> args, co
                 return false;
             }
             if (range.beg == -1) range.beg = 1;
-            if (range.end == -1) range.end = (i32)molecule.atom.count;
+            if (range.end == -1) range.end = (i32)mol.atom.count;
         } else {
             auto id = to_int(arg);
             if (!id.success) {
@@ -560,7 +557,7 @@ bool structure_match_atom(StructureData* data, const Array<CStringView> args, co
             range.beg = range.end = id;
         }
 
-        if (range.beg < 1 || (i32)molecule.atom.count < range.end) {
+        if (range.beg < 1 || (i32)mol.atom.count < range.end) {
             set_error_message(ctx.current_property, "Index for atom is out of bounds");
             return false;
         }
@@ -797,12 +794,15 @@ static bool compute_distance(Property* prop, const Array<CStringView> args, cons
         float var = 0.f;
         for (i32 j = 0; j < structure_count; j++) {
             for (i32 arg = 0; arg < 2; arg++) {
-                pos_x[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_x(dynamic.trajectory, i));
-                pos_y[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_y(dynamic.trajectory, i));
-                pos_z[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_z(dynamic.trajectory, i));
+                auto structure = prop->structure_data[arg].structures[j];
+                auto ext = structure.end_idx - structure.beg_idx;
+                pos_x[arg] = extract_structure_data(structure, get_trajectory_position_x(dynamic.trajectory, i));
+                pos_y[arg] = extract_structure_data(structure, get_trajectory_position_y(dynamic.trajectory, i));
+                pos_z[arg] = extract_structure_data(structure, get_trajectory_position_z(dynamic.trajectory, i));
 
                 if (prop->structure_data[arg].strategy == COM) {
-                    com[arg] = compute_com(pos_x[arg].data(), pos_y[arg].data(), pos_z[arg].data(), pos_x[arg].size());
+                    const soa_vec3 pos = {pos_x[arg].data(), pos_y[arg].data(), pos_z[arg].data()};
+                    com[arg] = compute_com(pos, ext);
                     pos_x[arg] = {&com[0].x, 1};
                     pos_y[arg] = {&com[0].y, 1};
                     pos_z[arg] = {&com[0].z, 1};
@@ -866,7 +866,7 @@ static bool compute_angle(Property* prop, const Array<CStringView> args, const M
                 pos_z[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_z(dynamic.trajectory, i));
 
                 if (prop->structure_data[arg].strategy == COM) {
-                    com[arg] = compute_com(pos_x[arg].data(), pos_y[arg].data(), pos_z[arg].data(), pos_x[arg].size());
+                    com[arg] = compute_com({pos_x[arg].data(), pos_y[arg].data(), pos_z[arg].data()}, pos_x[arg].size());
                     pos_x[arg] = {&com[0].x, 1};
                     pos_y[arg] = {&com[0].y, 1};
                     pos_z[arg] = {&com[0].z, 1};
@@ -931,7 +931,7 @@ static bool compute_dihedral(Property* prop, const Array<CStringView> args, cons
                 pos_z[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_z(dynamic.trajectory, i));
 
                 if (prop->structure_data[arg].strategy == COM) {
-                    com[arg] = compute_com(pos_x[arg].data(), pos_y[arg].data(), pos_z[arg].data(), pos_x[arg].size());
+                    com[arg] = compute_com({pos_x[arg].data(), pos_y[arg].data(), pos_z[arg].data()}, pos_x[arg].size());
                     pos_x[arg] = {&com[0].x, 1};
                     pos_y[arg] = {&com[0].y, 1};
                     pos_z[arg] = {&com[0].z, 1};
@@ -1163,7 +1163,7 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
 			i64 count = pos_x.size();
 
             if (prop.structure_data[0].strategy == COM) {
-                immediate::draw_point(compute_com(pos_x.data(), pos_y.data(), pos_z.data(), count));
+                immediate::draw_point(compute_com({pos_x.data(), pos_y.data(), pos_z.data()}, count));
             } else {
 				for (i64 i = 0; i < count; i++) {
 					immediate::draw_point({ pos_x[i], pos_y[i], pos_z[i] });
@@ -1187,7 +1187,7 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
 			pos_prev_z = extract_structure_data(prop.structure_data[0].structures[i], get_positions_z(dynamic.molecule));
 
             if (prop.structure_data[0].strategy == COM) {
-                com_prev = compute_com(pos_prev_x.data(), pos_prev_y.data(), pos_prev_z.data(), pos_prev_x.size());
+                com_prev = compute_com({pos_prev_x.data(), pos_prev_y.data(), pos_prev_z.data()}, pos_prev_x.size());
                 pos_prev_x = { &com_prev.x, 1 };
 				pos_prev_y = { &com_prev.y, 1 };
 				pos_prev_z = { &com_prev.z, 1 };
@@ -1204,7 +1204,7 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
 				pos_next_z = extract_structure_data(prop.structure_data[j].structures[i], get_positions_z(dynamic.molecule));
 
                 if (prop.structure_data[j].strategy == COM) {
-					com_next = compute_com(pos_next_x.data(), pos_next_y.data(), pos_next_z.data(), pos_next_x.size());
+					com_next = compute_com({pos_next_x.data(), pos_next_y.data(), pos_next_z.data()}, pos_next_x.size());
 					pos_next_x = { &com_next.x, 1 };
 					pos_next_y = { &com_next.y, 1 };
 					pos_next_z = { &com_next.z, 1 };
