@@ -21,7 +21,7 @@
 //#include "cousine_font.inl"
 
 #include "droid_sans.inl"
-#include "fa_regular.inl"
+#include "fa_solid.inl"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -142,8 +142,8 @@ bool initialize(Context* ctx, i32 width, i32 height, const char* title) {
     {
         static const ImWchar ranges[] = {0x0020, 0x00FF, 0x03C6, 0x03C8, 0};
         ImFontConfig config;
-        config.OversampleV = 4;
-        config.OversampleH = 4;
+        config.OversampleV = 1;
+        config.OversampleH = 1;
         config.RasterizerMultiply = 0.9f;
         config.PixelSnapH = true;
         ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)DroidSans_compressed_data, DroidSans_compressed_size, 16.f, &config, ranges);
@@ -152,12 +152,12 @@ bool initialize(Context* ctx, i32 width, i32 height, const char* title) {
         // ICONS
         static const ImWchar ranges[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
         ImFontConfig config;
-        config.OversampleV = 4;
-        config.OversampleH = 4;
+        config.OversampleV = 1;
+        config.OversampleH = 1;
         config.RasterizerMultiply = 0.9f;
         config.MergeMode = true;
         config.PixelSnapH = true;
-        ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)fa_regular_compressed_data, fa_regular_compressed_size, 16.f, &config, ranges);
+        ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)fa_solid_compressed_data, fa_solid_compressed_size, 14.f, &config, ranges);
     }
 
     ImGui_ImplGlfw_InitForOpenGL(window, false);
