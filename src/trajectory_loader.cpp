@@ -9,7 +9,7 @@
 #include <mol/gro_utils.h>
 #include <mol/trajectory_utils.h>
 
-#include "task_system.h"
+#include <task_system.h>
 
 struct MoleculeLoader {
     CStringView id;
@@ -142,7 +142,7 @@ bool load_trajectory(MoleculeTrajectory* traj, i32 num_atoms, CStringView filena
         fseeki64(file, frame_bytes[batch_beg].offset, SEEK_SET);
         fread(mem, 1, batch_bytes, file);
 
-        task_system::ID id = task_system::create_task(
+        task_system::ID id = task_system::pool::enqueue(
             "Extracting Trajectory Frames", batch_ext,
             [traj, loader, num_atoms, frame_bytes, mem, batch_offset = batch_beg](task_system::TaskSetRange range, task_system::TaskData) {
                 for (u32 i = batch_offset + range.beg; i < batch_offset + range.end; i++) {
@@ -151,8 +151,8 @@ bool load_trajectory(MoleculeTrajectory* traj, i32 num_atoms, CStringView filena
                     loader->extract_frame(&frame, num_atoms, {(u8*)mem + mem_offset, (i64)frame_bytes[i].extent});
                 }
             });
-        task_system::wait_for_task(id);
-        task_system::clear_completed_tasks();  // @TODO: REMOVE THIS WHEN CALLBACKS ARE AVAILABLE SO TASKS CAN BE FREED AND PUT BACK INTO THE QUEUE
+        task_system::pool::wait_for_task(id);
+        //task_system::clear_completed_tasks();  // @TODO: REMOVE THIS WHEN CALLBACKS ARE AVAILABLE SO TASKS CAN BE FREED AND PUT BACK INTO THE QUEUE
     }
     return true;
 }
