@@ -801,8 +801,7 @@ static bool compute_distance(Property* prop, const Array<CStringView> args, cons
                 pos_z[arg] = extract_structure_data(structure, get_trajectory_position_z(dynamic.trajectory, i));
 
                 if (prop->structure_data[arg].strategy == COM) {
-                    const soa_vec3 pos = {pos_x[arg].data(), pos_y[arg].data(), pos_z[arg].data()};
-                    com[arg] = compute_com(pos, ext);
+                    com[arg] = compute_com(pos_x[arg].data(), pos_y[arg].data(), pos_z[arg].data(), ext);
                     pos_x[arg] = {&com[0].x, 1};
                     pos_y[arg] = {&com[0].y, 1};
                     pos_z[arg] = {&com[0].z, 1};
@@ -866,7 +865,7 @@ static bool compute_angle(Property* prop, const Array<CStringView> args, const M
                 pos_z[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_z(dynamic.trajectory, i));
 
                 if (prop->structure_data[arg].strategy == COM) {
-                    com[arg] = compute_com({pos_x[arg].data(), pos_y[arg].data(), pos_z[arg].data()}, pos_x[arg].size());
+                    com[arg] = compute_com(pos_x[arg].data(), pos_y[arg].data(), pos_z[arg].data(), pos_x[arg].size());
                     pos_x[arg] = {&com[0].x, 1};
                     pos_y[arg] = {&com[0].y, 1};
                     pos_z[arg] = {&com[0].z, 1};
@@ -931,7 +930,7 @@ static bool compute_dihedral(Property* prop, const Array<CStringView> args, cons
                 pos_z[arg] = extract_structure_data(prop->structure_data[arg].structures[j], get_trajectory_position_z(dynamic.trajectory, i));
 
                 if (prop->structure_data[arg].strategy == COM) {
-                    com[arg] = compute_com({pos_x[arg].data(), pos_y[arg].data(), pos_z[arg].data()}, pos_x[arg].size());
+                    com[arg] = compute_com(pos_x[arg].data(), pos_y[arg].data(), pos_z[arg].data(), pos_x[arg].size());
                     pos_x[arg] = {&com[0].x, 1};
                     pos_y[arg] = {&com[0].y, 1};
                     pos_z[arg] = {&com[0].z, 1};
@@ -1049,7 +1048,7 @@ static DynamicArray<Property*> extract_property_dependencies(Array<Property*> pr
     DynamicArray<Property*> dependencies;
     for (Property* prop : properties) {
         if (!prop->valid) continue;
-        CStringView match = find_string(expression, prop->name_buf);
+        CStringView match = find_pattern_in_string(expression, prop->name_buf);
         if (match) {
             if (match.beg() != expression.beg()) {
                 char pre_char = *(match.beg() - 1);
@@ -1157,13 +1156,13 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
 
     if (prop.structure_data.count == 1) {
         for (const auto& s : prop.structure_data[0].structures) {
-            Array<const float> pos_x = extract_structure_data(s, get_positions_x(dynamic.molecule));
-			Array<const float> pos_y = extract_structure_data(s, get_positions_y(dynamic.molecule));
-			Array<const float> pos_z = extract_structure_data(s, get_positions_z(dynamic.molecule));
+            Array<const float> pos_x = extract_structure_data(s, get_atom_positions_x(dynamic.molecule));
+			Array<const float> pos_y = extract_structure_data(s, get_atom_positions_y(dynamic.molecule));
+			Array<const float> pos_z = extract_structure_data(s, get_atom_positions_z(dynamic.molecule));
 			i64 count = pos_x.size();
 
             if (prop.structure_data[0].strategy == COM) {
-                immediate::draw_point(compute_com({pos_x.data(), pos_y.data(), pos_z.data()}, count));
+                immediate::draw_point(compute_com(pos_x.data(), pos_y.data(), pos_z.data(), count));
             } else {
 				for (i64 i = 0; i < count; i++) {
 					immediate::draw_point({ pos_x[i], pos_y[i], pos_z[i] });
@@ -1182,12 +1181,12 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
         vec3 com_next(0);
 
         for (i32 i = 0; i < count; i++) {
-            pos_prev_x = extract_structure_data(prop.structure_data[0].structures[i], get_positions_x(dynamic.molecule));
-			pos_prev_y = extract_structure_data(prop.structure_data[0].structures[i], get_positions_y(dynamic.molecule));
-			pos_prev_z = extract_structure_data(prop.structure_data[0].structures[i], get_positions_z(dynamic.molecule));
+            pos_prev_x = extract_structure_data(prop.structure_data[0].structures[i], get_atom_positions_x(dynamic.molecule));
+			pos_prev_y = extract_structure_data(prop.structure_data[0].structures[i], get_atom_positions_y(dynamic.molecule));
+			pos_prev_z = extract_structure_data(prop.structure_data[0].structures[i], get_atom_positions_z(dynamic.molecule));
 
             if (prop.structure_data[0].strategy == COM) {
-                com_prev = compute_com({pos_prev_x.data(), pos_prev_y.data(), pos_prev_z.data()}, pos_prev_x.size());
+                com_prev = compute_com(pos_prev_x.data(), pos_prev_y.data(), pos_prev_z.data(), pos_prev_x.size());
                 pos_prev_x = { &com_prev.x, 1 };
 				pos_prev_y = { &com_prev.y, 1 };
 				pos_prev_z = { &com_prev.z, 1 };
@@ -1199,12 +1198,12 @@ static bool visualize_structures(const Property& prop, const MoleculeDynamic& dy
             }
             for (i32 j = 1; j < prop.structure_data.count; j++) {
                 const i32 col_idx = j % VisualizationStyle::NUM_COLORS;
-                pos_next_x = extract_structure_data(prop.structure_data[j].structures[i], get_positions_x(dynamic.molecule));
-				pos_next_y = extract_structure_data(prop.structure_data[j].structures[i], get_positions_y(dynamic.molecule));
-				pos_next_z = extract_structure_data(prop.structure_data[j].structures[i], get_positions_z(dynamic.molecule));
+                pos_next_x = extract_structure_data(prop.structure_data[j].structures[i], get_atom_positions_x(dynamic.molecule));
+				pos_next_y = extract_structure_data(prop.structure_data[j].structures[i], get_atom_positions_y(dynamic.molecule));
+				pos_next_z = extract_structure_data(prop.structure_data[j].structures[i], get_atom_positions_z(dynamic.molecule));
 
                 if (prop.structure_data[j].strategy == COM) {
-					com_next = compute_com({pos_next_x.data(), pos_next_y.data(), pos_next_z.data()}, pos_next_x.size());
+					com_next = compute_com(pos_next_x.data(), pos_next_y.data(), pos_next_z.data(), pos_next_x.size());
 					pos_next_x = { &com_next.x, 1 };
 					pos_next_y = { &com_next.y, 1 };
 					pos_next_z = { &com_next.z, 1 };
