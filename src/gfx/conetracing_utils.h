@@ -38,6 +38,6 @@ void cone_trace_scene(GLuint depth_tex, GLuint normal_tex, GLuint color_alpha_te
                       const mat4& proj_mat, float indirect_diffuse_scale, float indirect_specular_scale, float ambient_occlusion_scale);
 
 void render_directional_occlusion(GLuint depth_tex, GLuint normal_tex, const GPUVolume& vol, const mat4& view_mat, const mat4& proj_mat,
-                                  float occlusion_scale);
+                                  float occlusion_scale, float step_scale);
 
 }  // namespace render

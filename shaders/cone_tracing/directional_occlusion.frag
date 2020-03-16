@@ -18,20 +18,19 @@ uniform ivec3 u_voxel_dimensions;
 uniform float u_voxel_extent;
 
 // Scaling factors
-uniform float u_directional_occlusion_scale = 1.f;
-uniform float u_cone_angle = 0.08;
+uniform float u_occlusion_scale = 1.0;
+uniform float u_step_scale = 2.0;
 
 // View parameters
 uniform mat4 u_inv_view_mat;
 uniform mat4 u_inv_view_proj_mat;
 uniform vec3 u_world_space_camera;
 
-const float MAX_DIST = 1000.0;
-
+#if 1
 // 6 60 degree cone
 const int NUM_CONES = 6;
 const vec3 cone_directions[6] = vec3[]
-(                            vec3(0, 1, 0),
+(                           vec3(0, 1, 0),
                             vec3(0, 0.5, 0.866025),
                             vec3(0.823639, 0.5, 0.267617),
                             vec3(0.509037, 0.5, -0.700629),
@@ -40,18 +39,42 @@ const vec3 cone_directions[6] = vec3[]
                             );
 const float cone_weights[6] = float[](0.25, 0.15, 0.15, 0.15, 0.15, 0.15);
 const float tan_half_angle = 0.577;
+#else
+// 5 90 degree cones
+const int NUM_CONES = 5;
+const vec3 cone_directions[5] = vec3[]
+(                           vec3(0, 1, 0),
+                            vec3(0, 0.707, 0.707),
+                            vec3(0, 0.707, -0.707),
+                            vec3(0.707, 0.707, 0),
+                            vec3(-0.707, 0.707, 0)
+                            );
+const float cone_weights[5] = float[](0.28, 0.18, 0.18, 0.18, 0.18);
+const float tan_half_angle = 1.0;
+#endif
 
-// // 5 90 degree cones
-// const int NUM_CONES = 5;
-// const vec3 cone_directions[5] = vec3[]
-// (                            vec3(0, 1, 0),
-//                             vec3(0, 0.707, 0.707),
-//                             vec3(0, 0.707, -0.707),
-//                             vec3(0.707, 0.707, 0),
-//                             vec3(-0.707, 0.707, 0)
-//                             );
-// const float cone_weights[5] = float[](0.28, 0.18, 0.18, 0.18, 0.18);
-// const float tan_half_angle = 1.0;
+bool ray_vs_aabb(out float t_entry, out float t_exit, in vec3 ori, in vec3 dir, in vec3 min_box, in vec3 max_box) {
+    vec3 dir_frac = 1.0 / dir;
+
+    vec3 tv_1 = (min_box - ori) * dir_frac;
+    vec3 tv_2 = (max_box - ori) * dir_frac;
+
+    vec3 tv_min = min(tv_1, tv_2);
+    vec3 tv_max = max(tv_1, tv_2); 
+
+    float t_min = max(max(tv_min.x, tv_min.y), tv_min.z);
+    float t_max = min(min(tv_max.x, tv_max.y), tv_max.z);
+
+    if (t_max < 0 || t_min > t_max) {
+        return false;
+    }
+
+    t_entry = t_min;
+    t_exit  = t_max;
+
+    return true;
+} 
+
 
 float sample_volume(vec3 world_position, float lod) {
     vec3 tc = (world_position - u_voxel_grid_world_min) / (u_voxel_grid_world_size);
@@ -66,17 +89,24 @@ float cone_trace(in vec3 world_position, in vec3 world_normal, in vec3 direction
     float dist = u_voxel_extent;
     vec3 start_pos = world_position + world_normal * dist;
 
-    while(dist < MAX_DIST) {
+    float t_entry, t_exit;
+    //if (!ray_vs_aabb(t_entry, t_exit, start_pos, world_normal, u_voxel_grid_world_min, u_voxel_grid_world_min + u_voxel_grid_world_size)) {
+    //    return 0;
+    //}
+
+    for (int i = 0; i < 10; i++) {
         // smallest sample diameter possible is the voxel size
         float diameter = max(u_voxel_extent, 2.0 * tan_half_angle * dist);
         float lod_level = log2(diameter / u_voxel_extent);
         float sample = sample_volume(start_pos + dist * direction, lod_level);
+        sample = 1.0 - pow(1.0 - sample, diameter * u_step_scale);
 
         float a = (1.0 - alpha);
         alpha += a * sample;
         occlusion += (a * sample) / (1.0 + 0.03 * diameter);
 
-        dist += diameter * 0.5; // faster but misses more voxels
+        dist += diameter * u_step_scale;
+        //if (dist > t_exit) break;
     }
 
     return occlusion;
@@ -116,10 +146,9 @@ mat3 compute_ON_basis(in vec3 v1) {
 float compute_directional_occlusion(vec3 P, vec3 V, vec3 N) {
     // Single 90 degree cone
     //float tan_half_angle = 1.0;
-    //return cone_trace(P, N, N, tan_half_angle);
+    //return 1.0 - cone_trace(P, N, N, tan_half_angle);
 
     mat3 tangent_to_world = compute_ON_basis(N);
-
     float occlusion = 0.0;
     for (int i = 0; i < NUM_CONES; i++) {
         occlusion += cone_trace(P, N, tangent_to_world * cone_directions[i], tan_half_angle) * cone_weights[i];
@@ -142,5 +171,5 @@ void main() {
 
     float ao = clamp(compute_directional_occlusion(P, V, N), 0.0, 1.0);
 
-    frag_color = vec4(vec3(pow(ao, u_directional_occlusion_scale)), 1);
+    frag_color = vec4(vec3(pow(ao, u_occlusion_scale)), 1);
 }

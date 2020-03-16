@@ -533,7 +533,7 @@ void init_occlusion_volume(GPUVolume* vol, vec3 min_box, vec3 max_box, float vox
     const vec3 ext = (max_box - min_box);
     const float max_ext = math::max(ext.x, math::max(ext.y, ext.z));
     int dim = ceil_power_of_two(max_ext / voxel_ext_target);
-    ivec3 res = math::max(ivec3(dim), ivec3(1));
+    ivec3 res = math::clamp(ivec3(dim), ivec3(1), ivec3(256));
 
     for (int i = 0; i < 3; i++) {
         float half_ext = max_ext * 0.5f;
@@ -891,7 +891,7 @@ void compute_occupancy_volume(const GPUVolume& vol, const f32* atom_x, const f32
     Data data = {voxel_data, vol.resolution, inv_voxel_volume, atom_x, atom_y, atom_z, atom_r};
 
 #if 1
-    task_system::ID id = task_system::create_task(
+    task_system::ID id = task_system::pool::enqueue(
         "Computing occupancy", num_atoms,
         [voxel_data, atom_x, atom_y, atom_z, atom_r, &vol, inv_voxel_volume](task_system::TaskSetRange range, task_system::TaskData) {
             // We assume atom radius <<< voxel extent and just increment the bin
@@ -905,7 +905,7 @@ void compute_occupancy_volume(const GPUVolume& vol, const f32* atom_x, const f32
                 atomic_fetch_and_add(&voxel_data[idx], occ);
             }
         });
-    task_system::wait_for_task(id);
+    task_system::pool::wait_for_task(id);
 #else 
     constexpr float sphere_vol_scl = (4.0f / 3.0f) * math::PI;
     for (i32 i = 0; i < num_atoms; i++) {
@@ -942,7 +942,7 @@ void compute_occupancy_volume(const GPUVolume& vol, const f32* atom_x, const f32
     const float inv_voxel_volume = 1.0f / (vol.voxel_ext.x * vol.voxel_ext.y * vol.voxel_ext.z);
     u32* voxel_data = (u32*)TMP_CALLOC(voxel_count, sizeof(u32));
     defer { TMP_FREE(voxel_data); };
-    memset(voxel_data, 0, sizeof(u32) * voxel_count);
+    //memset(voxel_data, 0, sizeof(u32) * voxel_count);
 
     struct Data {
         u32* vol_data;
@@ -975,15 +975,13 @@ void compute_occupancy_volume(const GPUVolume& vol, const f32* atom_x, const f32
 }
 
 void render_directional_occlusion(GLuint depth_tex, GLuint normal_tex, const GPUVolume& vol, const mat4& view_mat, const mat4& proj_mat,
-                                  float occlusion_scale) {
+                                  float occlusion_scale, float step_scale) {
     const mat4 inv_view_proj_mat = math::inverse(proj_mat * view_mat);
     const mat4 inv_view_mat = math::inverse(view_mat);
     const vec3 world_space_camera = inv_view_mat * vec4(0, 0, 0, 1);
     const vec3 voxel_grid_min = vol.min_box;
     const vec3 voxel_grid_ext = vol.max_box - vol.min_box;
     float voxel_ext = math::max(math::max(vol.voxel_ext.x, vol.voxel_ext.y), vol.voxel_ext.z);
-
-    // const float cone_angle = 0.07;  // 0.2 = 22.6 degrees, 0.1 = 11.4 degrees, 0.07 = 8 degrees angle
 
     GLuint program = directional_occlusion::program;
     glUseProgram(program);
@@ -996,7 +994,8 @@ void render_directional_occlusion(GLuint depth_tex, GLuint normal_tex, const GPU
     glUniform3fv(glGetUniformLocation(program, "u_voxel_grid_world_size"), 1, &voxel_grid_ext[0]);
     glUniform3iv(glGetUniformLocation(program, "u_voxel_dimensions"), 1, &vol.resolution[0]);
     glUniform1f(glGetUniformLocation(program, "u_voxel_extent"), voxel_ext);
-    glUniform1f(glGetUniformLocation(program, "u_directional_occlusion_scale"), occlusion_scale);
+    glUniform1f(glGetUniformLocation(program, "u_occlusion_scale"), occlusion_scale);
+    glUniform1f(glGetUniformLocation(program, "u_step_scale"), step_scale);
     glUniformMatrix4fv(glGetUniformLocation(program, "u_inv_view_mat"), 1, GL_FALSE, &inv_view_mat[0][0]);
     glUniformMatrix4fv(glGetUniformLocation(program, "u_inv_view_proj_mat"), 1, GL_FALSE, &inv_view_proj_mat[0][0]);
     glUniform3fv(glGetUniformLocation(program, "u_world_space_camera"), 1, &world_space_camera[0]);
