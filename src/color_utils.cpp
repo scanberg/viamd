@@ -35,7 +35,10 @@ void color_atoms_chain_id(Array<u32> dst_atom_colors, const MoleculeStructure& m
 void color_atoms_chain_index(Array<u32> dst_atom_colors, const MoleculeStructure& mol) {
     memset_array(dst_atom_colors, 0xffffffff);
     for (i64 i = 0; i < mol.chain.count; i++) {
-        const u32 color = math::convert_color(color_from_hash(hash::crc32(i)));
+        const float hue = (float)i / (float)mol.chain.count;
+        const float sat = 0.8f;
+        const float val = 1.0f;
+        const u32 color = math::convert_color(vec4(math::hsv_to_rgb({hue, sat, val}), 1.0f));
         memset_array(dst_atom_colors, color, mol.chain.atom_range[i]);
     }
 }

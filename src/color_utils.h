@@ -10,7 +10,7 @@ enum class ColorMapping { Uniform, Cpk, ResId, ResIndex, ChainId, ChainIndex, Se
 
 inline vec4 color_from_hash(u32 hash) {
     constexpr float chroma = 0.8f;
-    constexpr float luminance = 0.90f;
+    constexpr float luminance = 1.0f;
     constexpr u32 mod = 21;
     const float hue = (hash % mod) / (float)mod;
     const vec3 rgb = math::hcl_to_rgb(vec3(hue, chroma, luminance));
