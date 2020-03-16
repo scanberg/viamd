@@ -23,6 +23,8 @@
 #define CATCH_CONFIG_MAIN
 #include "catch.hpp"
 
+extern void transform_ref(soa_vec3 in_out, i64 count, const mat4& transformation, float w_comp = 1);
+
 constexpr CStringView CAFFINE_PDB = R"(
 ATOM      1  N1  BENZ    1       5.040   1.944  -8.324                          
 ATOM      2  C2  BENZ    1       6.469   2.092  -7.915                          
@@ -173,7 +175,7 @@ TEST_CASE("Molecule Utils", "[molecule_utils]") {
         }
         ref /= (float)mol.atom.count;
 
-        const vec3 com = compute_com(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.count);
+        const vec3 com = compute_com(mol.atom.position, mol.atom.count);
 
         REQUIRE(ref.x == Approx(com.x));
         REQUIRE(ref.y == Approx(com.y));
@@ -192,26 +194,7 @@ TEST_CASE("Molecule Utils", "[molecule_utils]") {
         }
         ref /= sum;
 
-        const vec3 com = compute_com(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.mass, mol.atom.count);
-
-        REQUIRE(ref.x == Approx(com.x));
-        REQUIRE(ref.y == Approx(com.y));
-        REQUIRE(ref.z == Approx(com.z));
-    }
-
-    SECTION("COM: Element mass LUT") {
-        vec3 ref = {0, 0, 0};
-        float sum = 0.0f;
-        for (i64 i = 0; i < mol.atom.count; i++) {
-            const auto m = element::atomic_mass(mol.atom.element[i]);
-            ref.x += mol.atom.position.x[i] * m;
-            ref.y += mol.atom.position.y[i] * m;
-            ref.z += mol.atom.position.z[i] * m;
-            sum += m;
-        }
-        ref /= sum;
-
-        const vec3 com = compute_com(mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, mol.atom.element, mol.atom.count);
+        const vec3 com = compute_com(mol.atom.position, mol.atom.mass, mol.atom.count);
 
         REQUIRE(ref.x == Approx(com.x));
         REQUIRE(ref.y == Approx(com.y));
@@ -219,9 +202,15 @@ TEST_CASE("Molecule Utils", "[molecule_utils]") {
     }
 
     SECTION("COM Periodic") {
+        MoleculeStructureDescriptor desc;
+        desc.num_atoms = 10;
+        desc.num_residues = 4;
+        desc.num_chains = 1;
+        
         MoleculeStructure molecule;
-        init_molecule_structure(&molecule, 10, 9, 1, 1, 1);
+        init_molecule_structure(&molecule, desc);
         defer { free_molecule_structure(&molecule); };
+
         for (int i = 0; i < 10; i++) {
             if (i < 5) {
                 molecule.atom.position.x[i] = 5.0f + i * 1.0f;
@@ -233,10 +222,16 @@ TEST_CASE("Molecule Utils", "[molecule_utils]") {
             molecule.atom.position.z[i] = 5.0f;
             molecule.atom.mass[i] = 1.0f;
         }
-        molecule.sequences[0] = {{0, 1}, {0, 10}};
+        molecule.residue.atom_range[0] = {0, 3};
+        molecule.residue.atom_range[1] = {3, 5};
+        molecule.residue.atom_range[2] = {5, 8};
+        molecule.residue.atom_range[3] = {8, 10};
+
+        molecule.chain.atom_range[0] = {0, 10};
+        molecule.chain.residue_range[0] = {0, 4};
 
         const mat3 box = {10, 0, 0, 0, 10, 0, 0, 0, 10};
-        const vec3 com = compute_com_periodic(molecule.atom.position.x, molecule.atom.position.y, molecule.atom.position.z, molecule.atom.mass, molecule.atom.count, box);
+        const vec3 com = compute_com_periodic(molecule.atom.position, molecule.atom.mass, molecule.atom.count, box);
         printf("com: %.2f %.2f %.2f\n", com.x, com.y, com.z);
     }
 
@@ -245,27 +240,29 @@ TEST_CASE("Molecule Utils", "[molecule_utils]") {
 
         void* mem = TMP_MALLOC(mol.atom.count * sizeof(float) * 6);
         defer { TMP_FREE(mem); };
-        float* ref_x = (float*)mem;
-        float* ref_y = ref_x + mol.atom.count;
-        float* ref_z = ref_y + mol.atom.count;
-        float* x = ref_z + mol.atom.count;
-        float* y = x + mol.atom.count;
-        float* z = y + mol.atom.count;
+        soa_vec3 ref = {
+            (float*)mem + 0 * mol.atom.count,
+            (float*)mem + 1 * mol.atom.count,
+            (float*)mem + 2 * mol.atom.count };
+        soa_vec3 pos = {
+            (float*)mem + 3 * mol.atom.count,
+            (float*)mem + 4 * mol.atom.count,
+            (float*)mem + 5 * mol.atom.count };
 
-        memcpy(ref_x, mol.atom.position.x, mol.atom.count * sizeof(float));
-        memcpy(ref_y, mol.atom.position.y, mol.atom.count * sizeof(float));
-        memcpy(ref_z, mol.atom.position.z, mol.atom.count * sizeof(float));
-        memcpy(x, mol.atom.position.x, mol.atom.count * sizeof(float));
-        memcpy(y, mol.atom.position.y, mol.atom.count * sizeof(float));
-        memcpy(z, mol.atom.position.z, mol.atom.count * sizeof(float));
+        memcpy(ref.x, mol.atom.position.x, mol.atom.count * sizeof(float));
+        memcpy(ref.y, mol.atom.position.y, mol.atom.count * sizeof(float));
+        memcpy(ref.z, mol.atom.position.z, mol.atom.count * sizeof(float));
+        memcpy(pos.x, mol.atom.position.x, mol.atom.count * sizeof(float));
+        memcpy(pos.y, mol.atom.position.y, mol.atom.count * sizeof(float));
+        memcpy(pos.z, mol.atom.position.z, mol.atom.count * sizeof(float));
 
-        transform_ref(ref_x, ref_y, ref_z, mol.atom.count, matrix);
-        transform(x, y, z, mol.atom.count, matrix);
+        transform_ref(ref, mol.atom.count, matrix);
+        transform(pos, mol.atom.count, matrix);
 
         for (i64 i = 0; i < mol.atom.count; i++) {
-            REQUIRE(ref_x[i] == Approx(x[i]));
-            REQUIRE(ref_y[i] == Approx(y[i]));
-            REQUIRE(ref_z[i] == Approx(z[i]));
+            REQUIRE(ref.x[i] == Approx(pos.x[i]));
+            REQUIRE(ref.y[i] == Approx(pos.y[i]));
+            REQUIRE(ref.z[i] == Approx(pos.z[i]));
         }
     }
 }
