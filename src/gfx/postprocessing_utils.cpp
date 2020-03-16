@@ -23,13 +23,14 @@
   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 -----------------------------------------------------------------------*/
 
-// Shaders for HBAO are taken from nVidias examples and are copyright protected as stated above
+// Shaders for HBAO are based on nVidias examples and are copyright protected as stated above
 
 #include "postprocessing_utils.h"
 #include <core/types.h>
 #include <core/common.h>
 #include <core/log.h>
 #include <core/math_utils.h>
+#include <core/string_utils.h>
 #include <gfx/gl_utils.h>
 #include <stdio.h>
 
@@ -381,7 +382,6 @@ void initialize_rnd_tex(GLuint rnd_tex) {
 float compute_sharpness(float radius) { return 30.f / math::sqrt(radius); }
 
 void initialize(int width, int height) {
-
     StringView f_shader_src_ssao = allocate_and_read_textfile(VIAMD_SHADER_DIR "/ssao/ssao.frag");
     StringView f_shader_src_blur = allocate_and_read_textfile(VIAMD_SHADER_DIR "/ssao/blur.frag");
     defer {
@@ -817,6 +817,48 @@ void initialize() {
 void shutdown() {}
 };  // namespace temporal
 
+namespace sharpen {
+static GLuint program = 0;
+void initialize() {
+    constexpr CStringView f_shader_src_sharpen = R"(
+    #version 150 core
+
+    uniform sampler2D u_tex;
+    out vec4 out_frag;
+
+    void main() {
+        vec3 cc = texelFetch(u_tex, ivec2(gl_FragCoord.xy), 0).rgb;
+        vec3 cl = texelFetch(u_tex, ivec2(gl_FragCoord.xy) + ivec2(-1, 0), 0).rgb;
+        vec3 ct = texelFetch(u_tex, ivec2(gl_FragCoord.xy) + ivec2( 0, 1), 0).rgb;
+        vec3 cr = texelFetch(u_tex, ivec2(gl_FragCoord.xy) + ivec2( 1, 0), 0).rgb;
+        vec3 cb = texelFetch(u_tex, ivec2(gl_FragCoord.xy) + ivec2( 0,-1), 0).rgb;
+
+        const float weight[2] = float[2](1.4, -0.1);
+        out_frag = vec4(vec3(weight[0] * cc + weight[1] * (cl + ct + cr + cb)), 1.0);
+    }
+    )";
+    setup_program(&program, "sharpen", f_shader_src_sharpen);
+}
+
+void sharpen(GLuint in_texture) {
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, in_texture);
+
+    glUseProgram(program);
+    glUniform1i(glGetUniformLocation(sharpen::program, "u_tex"), 0);
+
+    glBindVertexArray(gl.vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+
+    glUseProgram(0);
+}
+
+void shutdown() {
+    if (program) glDeleteProgram(program);
+}
+}
+
 void initialize(int width, int height) {
     constexpr int BUFFER_SIZE = 1024;
     char buffer[BUFFER_SIZE];
@@ -922,6 +964,7 @@ void initialize(int width, int height) {
     tonemapping::initialize();
     temporal::initialize();
     blit::initialize();
+    sharpen::initialize();
 }
 
 void shutdown() {
@@ -934,6 +977,7 @@ void shutdown() {
     tonemapping::shutdown();
     temporal::shutdown();
     blit::shutdown();
+    sharpen::shutdown();
 
     if (gl.vao) glDeleteVertexArrays(1, &gl.vao);
     //if (gl.vbo) glDeleteBuffers(1, &gl.vbo);
@@ -1455,6 +1499,30 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
         POP_GPU_SECTION()
     }
 
+    if (desc.temporal_reprojection.enabled) {
+        swap_target();
+        glDrawBuffer(dst_buffer);
+        const float feedback_min = desc.temporal_reprojection.feedback_min;
+        const float feedback_max = desc.temporal_reprojection.feedback_max;
+        const float motion_scale = desc.temporal_reprojection.motion_blur.enabled ? desc.temporal_reprojection.motion_blur.motion_scale : 0.f;
+        if (motion_scale != 0.f)
+            PUSH_GPU_SECTION("Temporal AA + Motion Blur")
+        else
+            PUSH_GPU_SECTION("Temporal AA")
+
+        apply_temporal_aa(gl.linear_depth.texture, src_texture, desc.input_textures.velocity, gl.velocity.tex_neighbormax, view_param.jitter.current, view_param.jitter.previous, feedback_min, feedback_max,
+            motion_scale, time);
+        POP_GPU_SECTION()
+
+#if 1
+        PUSH_GPU_SECTION("Sharpen")
+        swap_target();
+        glDrawBuffer(dst_buffer);
+        sharpen::sharpen(src_texture);
+        POP_GPU_SECTION()
+#endif
+    }
+
     PUSH_GPU_SECTION("Tonemapping") {
         swap_target();
         glDrawBuffer(dst_buffer);
@@ -1470,21 +1538,6 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         blit_texture(desc.input_textures.post_tonemap);
         glDisable(GL_BLEND);
-        POP_GPU_SECTION()
-    }
-
-    if (desc.temporal_reprojection.enabled) {
-        swap_target();
-        glDrawBuffer(dst_buffer);
-        const float feedback_min = desc.temporal_reprojection.feedback_min;
-        const float feedback_max = desc.temporal_reprojection.feedback_max;
-        const float motion_scale = desc.temporal_reprojection.motion_blur.enabled ? desc.temporal_reprojection.motion_blur.motion_scale : 0.f;
-        if (motion_scale != 0.f)
-            PUSH_GPU_SECTION("Temporal AA + Motion Blur")
-        else
-            PUSH_GPU_SECTION("Temporal AA")
-        apply_temporal_aa(gl.linear_depth.texture, src_texture, desc.input_textures.velocity, gl.velocity.tex_neighbormax, view_param.jitter.current, view_param.jitter.previous, feedback_min, feedback_max,
-                          motion_scale, time);
         POP_GPU_SECTION()
     }
 
