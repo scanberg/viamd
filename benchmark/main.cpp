@@ -27,10 +27,7 @@
 
 #define DATASET VIAMD_DATA_DIR "/alanine/two4REP-CH3_450K.pdb"
 
-extern void cubic_interpolation_pbc_scalar(float* out_x, float* out_y, float* out_z, const float* in_x0, const float* in_y0, const float* in_z0,
-                                           const float* in_x1, const float* in_y1, const float* in_z1, const float* in_x2, const float* in_y2,
-                                           const float* in_z2, const float* in_x3, const float* in_y3, const float* in_z3, i64 count, float t,
-                                           const mat3& sim_box);
+extern void cubic_interpolation_pbc_ref(soa_vec3 out_pos, const soa_vec3 in_pos[4], i64 count, float t, const mat3& sim_box);
 
 int main() {
     MoleculeDynamic md;
@@ -141,7 +138,7 @@ int main() {
 
         const auto t0 = TIME();
         for (i32 i = 0; i < num_iter; i++) {
-            cubic_interpolation_pbc_scalar(out_pos, in_pos, num_atoms, t, box);
+            cubic_interpolation_pbc_ref(out_pos, in_pos, num_atoms, t, box);
         }
         const auto t1 = TIME();
         const auto time_cubic_pbc_scalar = MILLISEC(t0, t1) / (double)num_iter;
@@ -152,7 +149,7 @@ int main() {
         const auto t2 = TIME();
 
         for (i32 i = 0; i < num_iter; i++) {
-            cubic_interpolation_pbc(x, y, z, x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, num_atoms, t, box);
+            cubic_interpolation_pbc(out_pos, in_pos, num_atoms, t, box);
         }
         const auto t3 = TIME();
         const auto time_cubic_pbc_vectorized = MILLISEC(t2, t3) / (double)num_iter;
@@ -164,9 +161,7 @@ int main() {
     SECTION("TRANSLATE") {
         const auto num_iter = 100;
 
-        const auto x = md.trajectory.position_data.x;
-        const auto y = md.trajectory.position_data.y;
-        const auto z = md.trajectory.position_data.z;
+        const auto pos = md.trajectory.position_data;
         const auto size = num_atoms * num_frames;
         const auto size_in_bytes = size * sizeof(float) * 3 * num_iter;
 
@@ -175,9 +170,9 @@ int main() {
         const auto t0 = TIME();
         for (i32 i = 0; i < num_iter; i++) {
             for (i32 j = 0; j < size; j++) {
-                x[j] += t.x;
-                y[j] += t.y;
-                z[j] += t.z;
+                pos.x[j] += t.x;
+                pos.y[j] += t.y;
+                pos.z[j] += t.z;
             }
         }
         const auto t1 = TIME();
@@ -188,7 +183,7 @@ int main() {
 
         const auto t2 = TIME();
         for (i32 i = 0; i < num_iter; i++) {
-            translate(x, y, z, size, t);
+            translate(pos, size, t);
         }
         const auto t3 = TIME();
         const auto time_vec = MILLISEC(t2, t3) / (double)num_iter;
@@ -202,23 +197,21 @@ int main() {
         const auto num_iter = 100;
         mat4 M = mat4(1);
 
-        const auto x = md.trajectory.position_data.x;
-        const auto y = md.trajectory.position_data.y;
-        const auto z = md.trajectory.position_data.z;
+        const auto pos = md.trajectory.position_data;
         const auto size = num_atoms * num_frames;
         const auto size_in_bytes = size * sizeof(float) * 3 * num_iter;
 
         const auto t0 = TIME();
         for (i32 i = 0; i < num_iter; i++) {
             for (i32 j = 0; j < size; j++) {
-                const float v_x = x[j];
-                const float v_y = y[j];
-                const float v_z = z[j];
+                const float v_x = pos.x[j];
+                const float v_y = pos.y[j];
+                const float v_z = pos.z[j];
                 const float v_w = 1.0f;
 
-                x[j] = v_x * M[0][0] + v_y * M[1][0] + v_z * M[2][0] + v_w * M[3][0];
-                y[j] = v_x * M[0][1] + v_y * M[1][1] + v_z * M[2][1] + v_w * M[3][1];
-                z[j] = v_x * M[0][2] + v_y * M[1][2] + v_z * M[2][2] + v_w * M[3][2];
+                pos.x[j] = v_x * M[0][0] + v_y * M[1][0] + v_z * M[2][0] + v_w * M[3][0];
+                pos.y[j] = v_x * M[0][1] + v_y * M[1][1] + v_z * M[2][1] + v_w * M[3][1];
+                pos.z[j] = v_x * M[0][2] + v_y * M[1][2] + v_z * M[2][2] + v_w * M[3][2];
             }
         }
         const auto t1 = TIME();
@@ -229,7 +222,7 @@ int main() {
 
         const auto t2 = TIME();
         for (i32 i = 0; i < num_iter; i++) {
-            transform(x, y, z, size, M);
+            transform(pos, size, M);
         }
         const auto t3 = TIME();
         const auto time_vec = MILLISEC(t2, t3) / (double)num_iter;
@@ -256,10 +249,7 @@ int main() {
 
     SECTION("COM") {
         const auto num_iter = 100;
-
-        const auto x = md.trajectory.position_data.x;
-        const auto y = md.trajectory.position_data.y;
-        const auto z = md.trajectory.position_data.z;
+        const auto pos = md.trajectory.position_data;
         const auto size = num_atoms * num_frames;
         const auto size_in_bytes = size * sizeof(float) * 3 * num_iter;
 
@@ -272,9 +262,9 @@ int main() {
             com_y = 0.0f;
             com_z = 0.0f;
             for (i32 j = 0; j < size; j++) {
-                com_x += x[j];
-                com_y += y[j];
-                com_z += z[j];
+                com_x += pos.x[j];
+                com_y += pos.y[j];
+                com_z += pos.z[j];
             }
             com_x /= (float)size;
             com_y /= (float)size;
@@ -290,7 +280,7 @@ int main() {
 
         const auto t2 = TIME();
         for (i32 i = 0; i < num_iter; i++) {
-            vec3 com = compute_com({x, y, z}, size);
+            vec3 com = compute_com(pos, size);
         }
         const auto t3 = TIME();
         const auto time_vec = MILLISEC(t2, t3) / (double)num_iter;
@@ -339,7 +329,7 @@ int main() {
 
         const auto t2 = TIME();
         for (i32 i = 0; i < num_iter; i++) {
-            AABB aabb = compute_aabb(x, y, z, size);
+            AABB aabb = compute_aabb({x, y, z}, size);
         }
         const auto t3 = TIME();
         const auto time_vec = MILLISEC(t2, t3) / (double)num_iter;
