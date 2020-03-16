@@ -29,6 +29,10 @@ static GLint minor_version = 0;
 namespace vdw {
 static GLuint program_persp = 0;
 static GLuint program_ortho = 0;
+static GLuint program_depth_prepass = 0;
+
+static GLuint vbo_icosa = 0;
+static GLuint ibo_icosa = 0;
 
 static void initialize() {
     {
@@ -56,6 +60,44 @@ static void initialize() {
         if (!program_ortho) program_ortho = glCreateProgram();
         const GLuint shaders[] = {v_shader, f_shader};
         gl::attach_link_detach(program_ortho, shaders);
+    }
+    {
+        GLuint shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/vdw_depth_prepass.vert", GL_VERTEX_SHADER);
+        defer { glDeleteShader(shader); };
+
+        if (!program_depth_prepass) program_depth_prepass = glCreateProgram();
+        gl::attach_link_detach(program_depth_prepass, {&shader, 1});
+    }
+    {
+        constexpr float X = .525731112119133606;
+        constexpr float Z = .850650808352039932;
+        constexpr GLfloat vertices[12][3] = 
+        {    
+            {-X, 0.0, Z}, {X, 0.0, Z}, {-X, 0.0, -Z}, {X, 0.0, -Z},    
+            {0.0, Z, X}, {0.0, Z, -X}, {0.0, -Z, X}, {0.0, -Z, -X},    
+            {Z, X, 0.0}, {-Z, X, 0.0}, {Z, -X, 0.0}, {-Z, -X, 0.0} 
+        };
+
+        constexpr GLubyte indices[20][3] = 
+        { 
+            {0,4,1},  {0,9,4},  {9,5,4},  {4,5,8},  {4,8,1},    
+            {8,10,1}, {8,3,10}, {5,3,8},  {5,2,3},  {2,7,3},    
+            {7,10,3}, {7,6,10}, {7,11,6}, {11,0,6}, {0,1,6}, 
+            {6,1,10}, {9,0,11}, {9,11,2}, {9,2,5},  {7,2,11} 
+        };
+
+        if (!vbo_icosa) {
+            glGenBuffers(1, &vbo_icosa);
+            glBindBuffer(GL_ARRAY_BUFFER, vbo_icosa);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+        }
+        if (!ibo_icosa) {
+            glGenBuffers(1, &ibo_icosa);
+            glBindBuffer(GL_ARRAY_BUFFER, ibo_icosa);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+        }
     }
 }
 
@@ -591,13 +633,14 @@ void shutdown() {}
 void initialize() {
     if (!major_version) glGetIntegerv(GL_MAJOR_VERSION, &major_version);
     if (!minor_version) glGetIntegerv(GL_MINOR_VERSION, &minor_version);
-    if (!vao) glGenVertexArrays(1, &vao);
-    if (!tex[0]) glGenTextures(4, tex);
 
     if (major_version < 3 && minor_version < 3) {
         LOG_ERROR("Molecule draw requires version OpenGL 3.3 or higher.");
         return;
     }
+
+    if (!vao) glGenVertexArrays(1, &vao);
+    if (!tex[0]) glGenTextures(4, tex);
 
     vdw::initialize();
     licorice::initialize();
@@ -645,6 +688,44 @@ void draw_vdw(GLuint atom_position_buffer, GLuint atom_radius_buffer, GLuint ato
     const vec4 jitter_uv = vec4(view_param.jitter.current / res, view_param.jitter.previous / res);
     static uint32_t frame = 0;
     frame++;
+
+    // Depth pre-pass
+#if 0
+    {
+        PUSH_GPU_SECTION("VDW PREPASS")
+        const GLuint prog = vdw::program_depth_prepass;
+        const mat4 mvp_mat = view_param.matrix.current.view_proj_jittered;
+
+        glUseProgram(prog);
+
+        glUniform1i(glGetUniformLocation(prog, "u_buf_pos"), 0);
+        glUniform1i(glGetUniformLocation(prog, "u_buf_rad"), 1);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "u_mvp_mat"), 1, GL_FALSE, &mvp_mat[0][0]);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_BUFFER, tex[0]);
+        glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, atom_position_buffer);
+    
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_BUFFER, tex[1]);
+        glTexBuffer(GL_TEXTURE_BUFFER, GL_R32F, atom_radius_buffer);
+
+        glBindVertexArray(vao);
+        glEnableVertexAttribArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, vdw::vbo_icosa);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(vec3), (const GLvoid*)0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, vdw::ibo_icosa);
+
+        glDepthFunc(GL_LESS);
+        glColorMask(0, 0, 0, 0); // Output nothing but depth
+        glDepthMask(1);
+
+        glDrawElementsInstanced(GL_TRIANGLES, 60, GL_UNSIGNED_BYTE, 0, atom_count);
+
+        glColorMask(1, 1, 1, 1);
+        POP_GPU_SECTION()
+    }
+#endif
 
     const bool ortho = is_orthographic_proj_matrix(view_param.matrix.current.proj);
     GLuint prog = ortho ? vdw::program_ortho : vdw::program_persp;
