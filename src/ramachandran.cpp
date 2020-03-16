@@ -200,12 +200,16 @@ void init_gui_map(const ColorMap& color_map, int blur_level) { init_map(&gui_img
 void init_segmentation_map(const ColorMap& color_map, int blur_level) { init_map(&seg_img, seg_tex, color_map, blur_level); }
 void init_color_map(const ColorMap& color_map, int blur_level) { init_map(&col_img, col_tex, color_map, blur_level); }
 
+static void update_vbo();
+
 task_system::ID initialize(const MoleculeDynamic& dynamic) {
-    task_system::ID id = 0;
+    task_system::ID id = task_system::INVALID_ID;
 
     if (dynamic) {
         init_backbone_angles_trajectory(&traj_angles, dynamic);
         id = compute_backbone_angles_trajectory(&traj_angles, dynamic);
+        task_system::pool::wait_for_task(id);
+        update_vbo();
     }
 
     if (!read_image(&src_img, VIAMD_IMAGE_DIR "/ramachandran.bmp")) {
@@ -347,13 +351,6 @@ task_system::ID initialize(const MoleculeDynamic& dynamic) {
         glGenVertexArrays(1, &vao);
     }
 
-    if (!vbo) {
-        glGenBuffers(1, &vbo);
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferData(GL_ARRAY_BUFFER, traj_angles.angle_data.size() * sizeof(Coord), NULL, GL_STATIC_DRAW);
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
-    }
-
     if (!ibo) {
         constexpr unsigned char data[4] = {0, 1, 2, 3};
         glGenBuffers(1, &ibo);
@@ -415,6 +412,9 @@ void render_accumulation_texture(Range<i32> frame_range, vec4 color, float radiu
     GLboolean last_enable_depth_test = glIsEnabled(GL_DEPTH_TEST);
     GLboolean last_enable_scissor_test = glIsEnabled(GL_SCISSOR_TEST);
 
+    const GLint offset = frame_range.beg * traj_angles.num_segments;
+    const GLsizei count = (GLsizei)frame_range.ext();
+
     // RENDER TO ACCUMULATION TEXTURE
     glViewport(0, 0, acc_width, acc_height);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
@@ -437,7 +437,7 @@ void render_accumulation_texture(Range<i32> frame_range, vec4 color, float radiu
 
     // Draw
     glUniform1f(uniform_loc_radius, radius * 0.01f);
-    glUniform1i(uniform_loc_instance_offset, 0);
+    glUniform1i(uniform_loc_instance_offset, offset);
     glUniform4fv(uniform_loc_color, 1, &color[0]);
     glUniform1f(uniform_loc_outline, outline);
 
@@ -445,11 +445,7 @@ void render_accumulation_texture(Range<i32> frame_range, vec4 color, float radiu
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
 
-    GLint base_vertex = frame_range.beg * traj_angles.num_segments;
-    GLsizei count = (GLsizei)frame_range.ext();
-
-    //glDrawElementsInstanced(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_BYTE, 0, count);
-    glDrawElementsInstancedBaseVertex(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_BYTE, 0, count, base_vertex);
+    glDrawElementsInstanced(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_BYTE, 0, count);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
     glUseProgram(0);
@@ -479,7 +475,13 @@ void render_accumulation_texture(Range<i32> frame_range, vec4 color, float radiu
 }
 
 void update_vbo() {
+    if (!vbo) {
+        glGenBuffers(1, &vbo);
+    }
+
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, traj_angles.angle_data.size() * sizeof(Coord), NULL, GL_STATIC_DRAW);
+
     void* ptr = glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
     if (!ptr) {
         LOG_ERROR("Could not map angle buffer");
@@ -498,6 +500,7 @@ void update_vbo() {
     }
 
     glUnmapBuffer(GL_ARRAY_BUFFER);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
 }  // namespace ramachandran
@@ -526,13 +529,12 @@ static void free_backbone_angles_trajectory(BackboneAnglesTrajectory* data) {
 
 static task_system::ID compute_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const MoleculeDynamic& dynamic) {
     ASSERT(dynamic);
-    if (dynamic.trajectory.num_frames == 0 || dynamic.molecule.backbone.segment.count == 0) return 0;
+    if (dynamic.trajectory.num_frames == 0 || dynamic.molecule.backbone.segment.count == 0) return task_system::INVALID_ID;
 
-    task_system::ID id = task_system::create_task(
+    task_system::ID compute_task = task_system::pool::enqueue(
         "Backbone Angles Trajectory", dynamic.trajectory.num_frames, [data, &dynamic](task_system::TaskSetRange range, task_system::TaskData) {
             for (u32 f_idx = range.beg; f_idx < range.end; f_idx++) {
                 const soa_vec3 pos = get_trajectory_positions(dynamic.trajectory, f_idx);
-
                 Array<BackboneAngle> frame_angles = get_frame_backbone_angles(*data, f_idx);
                 for (const auto& bb_seq : get_backbone_sequences(dynamic.molecule)) {
                     auto bb_seg = get_backbone_segments(dynamic.molecule, bb_seq);
@@ -547,5 +549,5 @@ static task_system::ID compute_backbone_angles_trajectory(BackboneAnglesTrajecto
             }
         });
 
-    return id;
+    return compute_task;
 }
