@@ -50,7 +50,7 @@ struct LIFO {
 
 namespace task_system {
 
-constexpr uint32_t MAX_TASKS = 32;
+constexpr uint32_t MAX_TASKS = 256;
 constexpr uint32_t LABEL_SIZE = 64;
 
 class Task : public enki::ITaskSet {
@@ -70,43 +70,88 @@ public:
     }
 
     TaskSetFunction m_function = nullptr;
+    enki::Dependency m_dependency = {};
     std::atomic<uint32_t> m_set_completed = 0;
     std::atomic<bool> m_interrupt = false;
     char m_label[LABEL_SIZE] = {};
 };
 
-constexpr ID base_id = 0xdeadb00b;
+class MainTask : public enki::IPinnedTask {
+public:
+    MainTask() = default;
+    MainTask(MainFunction func, const char* lbl) : m_function(func) { strncpy(m_label, lbl, LABEL_SIZE); }
+    virtual void Execute() final {
+        m_function();
+    }
+    MainFunction m_function = nullptr;
+    char m_label[LABEL_SIZE] = {};
+};
+
+constexpr ID base_id = {0xdeadb00b};
 static enki::TaskScheduler ts{};
 
-static LIFO<ID, MAX_TASKS> free = {};
-static LIFO<ID, MAX_TASKS> used = {};
-static Task task_data[MAX_TASKS]{};
+namespace main {
+static std::mutex mutex;
+static MainTask task_data[MAX_TASKS]{};
+static std::atomic_uint32_t task_count = 0;
+}
 
-static Task* get_task(ID id) {
-    const uint32_t idx = id - base_id;
-    if (idx < 0 || MAX_TASKS <= idx) return nullptr;
-    return &task_data[idx];
+namespace pool {
+static std::mutex mutex;
+static LIFO<ID, MAX_TASKS> free {};
+static LIFO<ID, MAX_TASKS> used {};
+static Task task_data[MAX_TASKS] {};
+void clear_completed_tasks();
 }
 
 void initialize() {
     ts.Initialize();
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
-        free.enqueue(base_id + i);
+        pool::free.enqueue({base_id.id + i});
     }
 }
-
 void shutdown() { ts.WaitforAllAndShutdown(); }
 
+namespace main {
+
+bool enqueue(const char* label, MainFunction func) {
+    uint32_t idx = task_count++;
+    if (idx >= MAX_TASKS) return false;
+
+    mutex.lock();
+    MainTask* task = &task_data[idx];
+    PLACEMENT_NEW(task) MainTask(func, label);
+    ts.AddPinnedTask(task);
+    mutex.unlock();
+}
+
+void run_tasks() {
+    mutex.lock();
+    ts.RunPinnedTasks();
+    task_count = 0;
+    mutex.unlock();
+    pool::clear_completed_tasks();
+}
+
+}
+
+namespace pool {
+
+static Task* get_task(ID id) {
+    const uint32_t idx = id.id - base_id.id;
+    if (idx < 0 || MAX_TASKS <= idx) return nullptr;
+    return &task_data[idx];
+}
+
 uint32_t get_num_threads() { return (uint32_t)ts.GetNumTaskThreads(); }
-
 uint32_t get_num_tasks() { return (uint32_t)used.size(); }
-
 ID* get_tasks() { return used.data; }
 
 void clear_completed_tasks() {
+    mutex.lock();
     for (uint32_t i = 0; i < used.size();) {
         const ID id = used[i];
-        const uint32_t idx = id - base_id;
+        const uint32_t idx = id.id - base_id.id;
         if (task_data[idx].GetIsComplete()) {
             free.enqueue(id);
             used[i] = used.back();
@@ -115,104 +160,90 @@ void clear_completed_tasks() {
             i++;
         }
     }
+    mutex.unlock();
 }
 
-ID create_task(const char* label, TaskSetFunction func) {
+ID enqueue(const char* label, uint32_t size, TaskSetFunction func) {
     if (free.empty()) {
         LOG_ERROR("Task queue is full! Cannot create task");
-        return 0;
+        return INVALID_ID;
     }
 
+    mutex.lock();
     const ID id = free.back();
     free.pop();
     used.enqueue(id);
+    mutex.unlock();
 
-    Task* task_system = get_task(id);
-    ASSERT(task_system);
-    PLACEMENT_NEW(task_system) Task(1, func, label);
+    Task* task = get_task(id);
+    ASSERT(task);
+    PLACEMENT_NEW(task) Task(size, func, label);
 
-    ts.AddTaskSetToPipe(task_system);
-
-    return id;
-}
-
-ID create_task(const char* label, uint32_t size, TaskSetFunction func) {
-    if (free.empty()) {
-        LOG_ERROR("Task queue is full! Cannot create task");
-        return 0;
-    }
-
-    const ID id = free.back();
-    free.pop();
-    used.enqueue(id);
-
-    Task* task_system = get_task(id);
-    ASSERT(task_system);
-    PLACEMENT_NEW(task_system) Task(size, func, label);
-
-    ts.AddTaskSetToPipe(task_system);
+    ts.AddTaskSetToPipe(task);
 
     return id;
 }
 
 const char* get_task_label(ID id) {
-    Task* task_system = get_task(id);
-    if (!task_system) {
+    Task* task = get_task(id);
+    if (!task) {
         LOG_ERROR("Invalid id");
         return NULL;
     }
 
-    return task_system->m_label;
+    return task->m_label;
 }
 
 bool get_task_complete(ID id) {
-    Task* task_system = get_task(id);
-    if (!task_system) {
+    Task* task = get_task(id);
+    if (!task) {
         LOG_ERROR("Invalid id");
         return false;
     }
 
-    return task_system->GetIsComplete();
+    return task->GetIsComplete();
 }
 
 float get_task_fraction_complete(ID id) {
-    Task* task_system = get_task(id);
-    if (!task_system) {
+    Task* task = get_task(id);
+    if (!task) {
         LOG_ERROR("Invalid id");
         return 0.0f;
     }
-    return (float)task_system->m_set_completed / (float)task_system->m_SetSize;
+    return (float)task->m_set_completed / (float)task->m_SetSize;
 }
 
 void wait_for_task(ID id) {
-    Task* task_system = get_task(id);
-    if (!task_system) {
+    Task* task = get_task(id);
+    if (!task) {
         LOG_ERROR("Invalid id");
         return;
     }
 
-    ts.WaitforTask(task_system);
+    ts.WaitforTask(task);
 }
 
 void interrupt_task(ID id) {
-    Task* task_system = get_task(id);
-    if (!task_system) {
+    Task* task = get_task(id);
+    if (!task) {
         LOG_ERROR("Invalid id");
         return;
     }
 
-    task_system->m_interrupt = true;
+    task->m_interrupt = true;
 }
 
 void interrupt_and_wait(ID id) {
-    Task* task_system = get_task(id);
-    if (!task_system) {
+    Task* task = get_task(id);
+    if (!task) {
         LOG_ERROR("Invalid id");
         return;
     }
 
-    task_system->m_interrupt = true;
-    ts.WaitforTask(task_system);
+    task->m_interrupt = true;
+    ts.WaitforTask(task);
 }
+}
+
 
 };  // namespace task_system

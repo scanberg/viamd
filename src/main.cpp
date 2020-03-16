@@ -1221,7 +1221,7 @@ int main(int, char**) {
         // Swap buffers
         platform::swap_buffers(&data.ctx);
 
-        task_system::clear_completed_tasks();
+        task_system::main::run_tasks();
     }
 
     stats::signal_stop_and_wait();
@@ -2938,8 +2938,8 @@ static void draw_async_task_window(ApplicationData* data) {
 
     const f32 stats_fract = stats::fraction_done();
 
-    const u32 num_tasks = task_system::get_num_tasks();
-    task_system::ID* tasks = task_system::get_tasks();
+    const u32 num_tasks = task_system::pool::get_num_tasks();
+    task_system::ID* tasks = task_system::pool::get_tasks();
 
     if (((0.f < stats_fract) && (stats_fract < 1.f)) || (num_tasks > 0)) {
 
@@ -2962,14 +2962,14 @@ static void draw_async_task_window(ApplicationData* data) {
 
         for (u32 i = 0; i < num_tasks; i++) {
             const auto id = tasks[i];
-            const f32 fract = task_system::get_task_fraction_complete(id);
+            const f32 fract = task_system::pool::get_task_fraction_complete(id);
             snprintf(buf, 32, "%.1f%%", fract * 100.f);
             ImGui::ProgressBar(fract, ImVec2(ImGui::GetWindowContentRegionWidth() * PROGRESSBAR_WIDTH_FRACT, 0), buf);
             ImGui::SameLine();
-            ImGui::Text("%s", task_system::get_task_label(id));
+            ImGui::Text("%s", task_system::pool::get_task_label(id));
             ImGui::SameLine();
             if (ImGui::Button("X")) {
-                task_system::interrupt_task(id);
+                task_system::pool::interrupt_task(id);
             }
         }
 
@@ -3996,7 +3996,7 @@ static void draw_density_volume_window(ApplicationData* data) {
             }
 
             if (ImGui::Button("Compute Density")) {
-                task_system::create_task("Big Density", [data](task_system::TaskSetRange, task_system::TaskData) {
+                task_system::ID id = task_system::pool::enqueue("Big Density", 1, [data](task_system::TaskSetRange, task_system::TaskData) {
                     Bitfield filter_mask;
                     bitfield::init(&filter_mask, data->dynamic.molecule.atom.count);
                     defer { bitfield::free(&filter_mask); };
@@ -4015,7 +4015,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                         clear_volume(&data->density_volume.volume);
 
                         auto t0 = platform::get_time();
-                        task_system::ID task_system = task_system::create_task(
+                        task_system::ID id = task_system::pool::enqueue(
                             "Small Density", (u32)ensemble_structures.size(),
                             [data, filter_mask, &ensemble_structures](task_system::TaskSetRange range, task_system::TaskData) {
                                 for (u32 i = range.beg; i < range.end; ++i) {
@@ -4031,7 +4031,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                                                               cutoff);
                                 }
                             });
-                        task_system::wait_for_task(task_system);
+                        task_system::pool::wait_for_task(id);
                         auto t1 = platform::get_time();
 
                         data->density_volume.volume.voxel_range = {data->density_volume.volume.voxel_data[0],
@@ -4122,7 +4122,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                     {
                         LOG_NOTE("Computing Internal Reference Frames...");
                         auto t0 = platform::get_time();
-                        task_system::ID task_system = task_system::create_task(
+                        task_system::ID id = task_system::pool::enqueue(
                             "Computing Internal Reference Frames...", (u32)ensemble_structures.size(),
                             [dyn, ensemble_mask, &ensemble_structures](task_system::TaskSetRange range, task_system::TaskData) {
                                 for (u32 i = range.beg; i < range.end; ++i) {
@@ -4130,7 +4130,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                                                                                           ensemble_structures[i].offset);
                                 }
                             });
-                        task_system::wait_for_task(task_system);
+                        task_system::pool::wait_for_task(id);
                         auto t1 = platform::get_time();
 
                         LOG_NOTE("Done!");
@@ -4569,7 +4569,7 @@ static void copy_molecule_data_to_buffers(ApplicationData* data) {
 static void free_trajectory_data(ApplicationData* data) {
     ASSERT(data);
     if (data->dynamic.trajectory) {
-        if (data->tasks.load_trajectory) task_system::interrupt_and_wait(data->tasks.load_trajectory);
+        if (data->tasks.load_trajectory.id != 0) task_system::pool::interrupt_and_wait(data->tasks.load_trajectory);
         stats::signal_stop_and_wait();
         // close_file_handle(&data->dynamic.trajectory);
         free_trajectory(&data->dynamic.trajectory);
