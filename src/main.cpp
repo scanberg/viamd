@@ -982,6 +982,7 @@ int main(int, char**) {
         data.playback.frame = new_frame;
 
         {
+            time_changed = false;
             static auto prev_time = data.playback.time;
             if (data.playback.time != prev_time) {
                 time_changed = true;
