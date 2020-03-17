@@ -142,16 +142,16 @@ bool load_trajectory(MoleculeTrajectory* traj, i32 num_atoms, CStringView filena
         fseeki64(file, frame_bytes[batch_beg].offset, SEEK_SET);
         fread(mem, 1, batch_bytes, file);
 
-        task_system::ID id = task_system::pool::enqueue(
+        task_system::ID id = task_system::enqueue_pool(
             "Extracting Trajectory Frames", batch_ext,
-            [traj, loader, num_atoms, frame_bytes, mem, batch_offset = batch_beg](task_system::TaskSetRange range, task_system::TaskData) {
+            [traj, loader, num_atoms, frame_bytes, mem, batch_offset = batch_beg](task_system::TaskSetRange range) {
                 for (u32 i = batch_offset + range.beg; i < batch_offset + range.end; i++) {
                     const i64 mem_offset = frame_bytes[i].offset - frame_bytes[batch_offset].offset;
                     auto& frame = get_trajectory_frame(*traj, i);
                     loader->extract_frame(&frame, num_atoms, {(u8*)mem + mem_offset, (i64)frame_bytes[i].extent});
                 }
             });
-        task_system::pool::wait_for_task(id);
+        task_system::wait_for_task(id);
         //task_system::clear_completed_tasks();  // @TODO: REMOVE THIS WHEN CALLBACKS ARE AVAILABLE SO TASKS CAN BE FREED AND PUT BACK INTO THE QUEUE
     }
     return true;

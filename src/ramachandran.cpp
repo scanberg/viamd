@@ -208,7 +208,7 @@ task_system::ID initialize(const MoleculeDynamic& dynamic) {
     if (dynamic) {
         init_backbone_angles_trajectory(&traj_angles, dynamic);
         id = compute_backbone_angles_trajectory(&traj_angles, dynamic);
-        task_system::pool::wait_for_task(id);
+        task_system::wait_for_task(id);
         update_vbo();
     }
 
@@ -475,6 +475,8 @@ void render_accumulation_texture(Range<i32> frame_range, vec4 color, float radiu
 }
 
 void update_vbo() {
+    if (traj_angles.angle_data.size() == 0) return;
+
     if (!vbo) {
         glGenBuffers(1, &vbo);
     }
@@ -531,8 +533,8 @@ static task_system::ID compute_backbone_angles_trajectory(BackboneAnglesTrajecto
     ASSERT(dynamic);
     if (dynamic.trajectory.num_frames == 0 || dynamic.molecule.backbone.segment.count == 0) return task_system::INVALID_ID;
 
-    task_system::ID compute_task = task_system::pool::enqueue(
-        "Backbone Angles Trajectory", dynamic.trajectory.num_frames, [data, &dynamic](task_system::TaskSetRange range, task_system::TaskData) {
+    task_system::ID compute_task = task_system::enqueue_pool(
+        "Backbone Angles Trajectory", dynamic.trajectory.num_frames, [data, &dynamic](task_system::TaskSetRange range) {
             for (u32 f_idx = range.beg; f_idx < range.end; f_idx++) {
                 const soa_vec3 pos = get_trajectory_positions(dynamic.trajectory, f_idx);
                 Array<BackboneAngle> frame_angles = get_frame_backbone_angles(*data, f_idx);

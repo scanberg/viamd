@@ -24,8 +24,8 @@ void init_rgba_volume(GPUVolume* vol, ivec3 res, vec3 min_box, vec3 max_box);
 void init_occlusion_volume(GPUVolume* vol, vec3 min_box, vec3 max_box, float voxel_ext_target = 4.0f);
 void free_volume(GPUVolume* vol);
 
-void compute_occupancy_volume(const GPUVolume& vol, const f32* atom_x, const f32* atom_y, const f32* atom_z, const f32* atom_r, i32 num_atoms);
-void compute_occupancy_volume(const GPUVolume& vol, const f32* atom_x, const f32* atom_y, const f32* atom_z, const f32* atom_r, Bitfield atom_mask);
+void compute_occupancy_volume(const GPUVolume& vol, const soa_vec3 atom_pos, const f32* atom_radius, i32 num_atoms);
+void compute_occupancy_volume(const GPUVolume& vol, const soa_vec3 atom_pos, const f32* atom_radius, Bitfield atom_mask);
 
 void voxelize_spheres_cpu(const GPUVolume& vol, const f32* atom_x, const f32* atom_y, const f32* atom_z, const f32* atom_r, const f32* atom_color, i32 num_atoms);
 void voxelize_spheres_gpu(const GPUVolume& vol, GLuint position_radius_buffer, GLuint color_buffer, i32 num_spheres);

@@ -11,13 +11,8 @@ struct TaskSetRange {
     uint32_t end;
 };
 
-struct TaskData {
-    uint32_t threadnum;
-    std::atomic_bool& interrupt;
-};
-
-typedef std::function<void()> MainFunction;
-typedef std::function<void(TaskSetRange range, TaskData data)> TaskSetFunction;
+typedef std::function<void()> Task;
+typedef std::function<void(TaskSetRange range)> TaskSet;
 
 struct ID {
     uint32_t id;
@@ -28,16 +23,12 @@ constexpr ID INVALID_ID = {0};
 void initialize();
 void shutdown();
 
-namespace main {
 // This is to generate tasks for the main thread (render thread)
-bool enqueue(const char* label, MainFunction func);
-void run_tasks();
-}
-
-namespace pool {
+bool enqueue_main(const char* label, Task task);
+void run_main_tasks();
 
 // This is to generate tasks for the thread-pool (async operations)
-ID enqueue(const char* label, uint32_t size, TaskSetFunction func);
+ID enqueue_pool(const char* label, uint32_t size, TaskSet task_set, TaskSet on_complete = nullptr);
 
 uint32_t get_num_threads();
 uint32_t get_num_tasks();
@@ -50,8 +41,5 @@ float get_task_fraction_complete(ID);
 void wait_for_task(ID);
 void interrupt_task(ID);
 void interrupt_and_wait(ID);
-}
-
-
 
 }  // namespace task_system
