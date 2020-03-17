@@ -3805,7 +3805,7 @@ static void append_trajectory_density(Volume* vol, Bitfield atom_mask, const Mol
             ASSERT(-1 < c.z && c.z < vol->dim.z);
             const i32 voxel_idx = c.z * vol->dim.x * vol->dim.y + c.y * vol->dim.x + c.x;
             atomic_uint32_t* voxel_ptr = (atomic_uint32_t*)(vol->voxel_data.ptr + voxel_idx);
-            atomic_fetch_add(voxel_ptr, 1);
+            atomic_fetch_add(voxel_ptr, 1U);
         });
         /*
         for (i64 i = 0; i < atom_mask.size(); i++) {
