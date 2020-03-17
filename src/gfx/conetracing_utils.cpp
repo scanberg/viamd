@@ -532,7 +532,7 @@ void init_occlusion_volume(GPUVolume* vol, vec3 min_box, vec3 max_box, float vox
     const float voxel_ext = voxel_ext_target;
     const vec3 ext = (max_box - min_box);
     const float max_ext = math::max(ext.x, math::max(ext.y, ext.z));
-    int dim = ceil_power_of_two(max_ext / voxel_ext_target);
+    i32 dim = (i32)ceil_power_of_two(max_ext / voxel_ext_target);
     ivec3 res = math::clamp(ivec3(dim), ivec3(1), ivec3(256));
 
     for (int i = 0; i < 3; i++) {
