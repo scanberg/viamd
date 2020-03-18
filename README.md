@@ -32,11 +32,11 @@ https://cmake.org/
 
 ## Binaries
 
-https://github.com/scanberg/viamd/releases/download/v0.7a/viamd_0.7a_osx.zip
+https://github.com/scanberg/viamd/releases/download/v0.1a/viamd_0.1a_osx.zip
 
-https://github.com/scanberg/viamd/releases/download/v0.7a/viamd_0.7a_win64.zip
+https://github.com/scanberg/viamd/releases/download/v0.1a/viamd_0.1a_win64.zip
 
-https://github.com/scanberg/viamd/releases/download/v0.7a/viamd_0.7a_linux.zip
+https://github.com/scanberg/viamd/releases/download/v0.1a/viamd_0.1a_linux.zip
 
 ## Acknowledgements
 
