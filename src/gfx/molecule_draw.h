@@ -18,8 +18,8 @@ void shutdown();
 // This is packed for 32-bit alignment because transform feedback only outputs full 32-bit types, so the real output is packed into uint32s.
 struct ControlPoint {
     float position[3];
-    i16 support_vector[3];
-    i16 tangent_vector[3];
+    i16 support_vector[3]; // unit direction vector
+    i16 tangent_vector[3]; // unit direction vector
     u8 classification[4];  // classification probabilities: Coil, Sheet, Helix etc.
     u32 atom_index;
 };
