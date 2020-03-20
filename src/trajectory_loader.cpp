@@ -8,6 +8,7 @@
 #include <mol/pdb_utils.h>
 #include <mol/gro_utils.h>
 #include <mol/trajectory_utils.h>
+#include <mol/molecule_utils.h>
 
 #include <task_system.h>
 
@@ -150,9 +151,14 @@ bool load_trajectory(MoleculeTrajectory* traj, i32 num_atoms, CStringView filena
                     auto& frame = get_trajectory_frame(*traj, i);
                     loader->extract_frame(&frame, num_atoms, {(u8*)mem + mem_offset, (i64)frame_bytes[i].extent});
                 }
+            },
+            [traj, num_atoms, batch_offset = batch_beg](task_system::TaskSetRange range) {
+                for (u32 i = batch_offset + range.beg; i < batch_offset + range.end; i++) {
+                    auto& frame = get_trajectory_frame(*traj, i);
+                    apply_pbc(frame.atom_position, num_atoms, frame.box);
+                }
             });
         task_system::wait_for_task(id);
-        //task_system::clear_completed_tasks();  // @TODO: REMOVE THIS WHEN CALLBACKS ARE AVAILABLE SO TASKS CAN BE FREED AND PUT BACK INTO THE QUEUE
     }
     return true;
 }
