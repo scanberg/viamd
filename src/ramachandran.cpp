@@ -13,7 +13,7 @@
 #include "task_system.h"
 
 struct Coord {
-    unsigned short x, y;
+    i16 x, y;
 };
 
 struct BackboneAnglesTrajectory {
@@ -67,7 +67,6 @@ static GLuint fbo = 0;
 static GLuint program = 0;
 
 static GLuint vao = 0;
-static GLuint ibo = 0;
 static GLuint vbo = 0;
 
 static GLint uniform_loc_coord_tex = -1;
@@ -94,19 +93,13 @@ const Image& get_color_image() { return col_img; }
 constexpr const char* v_shader_src = R"(
 #version 150 core
 
-uniform int u_instance_offset = 0;
-uniform samplerBuffer u_tex_coord;
 uniform float u_radius;
-out vec2 uv;
+
+in vec2 pos;
 
 void main() {
-	int VID = gl_VertexID;
-	int IID = gl_InstanceID + u_instance_offset;
-
-	vec2 coord = texelFetch(u_tex_coord, IID).xy;
-	uv = vec2(VID / 2, VID % 2) * 2.0 - 1.0; 
-
-	gl_Position = vec4(coord * 2.0 - 1.0 + uv * u_radius, 0, 1);
+	gl_PointSize = u_radius * 2.0;
+	gl_Position = vec4(pos, 0, 1);
 }
 )";
 
@@ -116,7 +109,7 @@ constexpr const char* f_shader_src = R"(
 
 uniform vec4 u_color;
 uniform float u_outline;
-in vec2 uv;
+
 out vec4 out_frag;
 
 float step_dist(float edge, float dist) {
@@ -127,6 +120,7 @@ float step_dist(float edge, float dist) {
 }
 
 void main() {
+    vec2 uv = gl_PointCoord.xy * 2.0 - 1.0;
 	float dist = sqrt(dot(uv, uv));
 	if (u_outline > 0) {
 		vec4 inner_color = u_color.rgba;
@@ -351,14 +345,6 @@ task_system::ID initialize(const MoleculeDynamic& dynamic) {
         glGenVertexArrays(1, &vao);
     }
 
-    if (!ibo) {
-        constexpr unsigned char data[4] = {0, 1, 2, 3};
-        glGenBuffers(1, &ibo);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, 4, data, GL_STATIC_DRAW);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-    }
-
     return id;
 }
 
@@ -413,7 +399,7 @@ void render_accumulation_texture(Range<i32> frame_range, vec4 color, float radiu
     GLboolean last_enable_scissor_test = glIsEnabled(GL_SCISSOR_TEST);
 
     const GLint offset = frame_range.beg * traj_angles.num_segments;
-    const GLsizei count = (GLsizei)frame_range.ext();
+    const GLsizei count = (GLsizei)frame_range.ext() * traj_angles.num_segments;
 
     // RENDER TO ACCUMULATION TEXTURE
     glViewport(0, 0, acc_width, acc_height);
@@ -426,6 +412,7 @@ void render_accumulation_texture(Range<i32> frame_range, vec4 color, float radiu
     glDisable(GL_CULL_FACE);
     glDisable(GL_DEPTH_TEST);
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glEnable(GL_PROGRAM_POINT_SIZE);
 
     // Texture 0
     glActiveTexture(GL_TEXTURE0);
@@ -436,20 +423,25 @@ void render_accumulation_texture(Range<i32> frame_range, vec4 color, float radiu
     glUniform1i(uniform_loc_coord_tex, 0);
 
     // Draw
-    glUniform1f(uniform_loc_radius, radius * 0.01f);
+    glUniform1f(uniform_loc_radius, radius);
     glUniform1i(uniform_loc_instance_offset, offset);
     glUniform4fv(uniform_loc_color, 1, &color[0]);
     glUniform1f(uniform_loc_outline, outline);
 
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+    glVertexAttribPointer(0, 2, GL_SHORT, GL_TRUE, sizeof(Coord), (const GLvoid*)0);
+    glEnableVertexAttribArray(0);
 
-    glDrawElementsInstanced(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_BYTE, 0, count);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    glDrawArrays(GL_POINTS, offset, count);
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
 
     glUseProgram(0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+    glDisable(GL_PROGRAM_POINT_SIZE);
 
     // Restore modified GL state
     glBlendEquationSeparate(last_blend_equation_rgb, last_blend_equation_alpha);
@@ -491,14 +483,14 @@ void update_vbo() {
     }
 
     Coord* coords = (Coord*)ptr;
-    constexpr float ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
+    constexpr float ONE_OVER_PI = 1.f / math::PI;
     for (i64 i = 0; i < traj_angles.angle_data.size(); i++) {
         const BackboneAngle& angle = traj_angles.angle_data[i];
         if (angle.phi == 0 || angle.psi == 0) continue;
-        vec2 coord = vec2(angle.phi, angle.psi) * ONE_OVER_TWO_PI + 0.5f;  // [-PI, PI] -> [0, 1]
+        vec2 coord = vec2(angle.phi, angle.psi) * ONE_OVER_PI;  // [-PI, PI] -> [-1, 1]
         coord.y = 1.f - coord.y;
-        coords[i].x = (unsigned short)(coord.x * 0xffff);
-        coords[i].y = (unsigned short)(coord.y * 0xffff);
+        coords[i].x = (short)(coord.x * 32767);
+        coords[i].y = (short)(coord.y * 32767);
     }
 
     glUnmapBuffer(GL_ARRAY_BUFFER);
