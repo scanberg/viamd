@@ -2693,15 +2693,15 @@ static void draw_property_window(ApplicationData* data) {
 
         if (ImGui::BeginPopup("AtomContextMenu")) {
             if (data->dynamic.molecule) {
-                const i32 atom_range = data->selection.right_clicked;
-                if (atom_range != -1) {
+                const i32 atom_idx = data->selection.right_clicked;
+                if (atom_idx != -1) {
                     ASSERT(atom_range < data->dynamic.molecule.atom.count);
-                    const i32 residue_idx = data->dynamic.molecule.atom.res_idx[data->selection.right_clicked];
-                    const i32 chain_idx = data->dynamic.molecule.atom.chain_idx[data->selection.right_clicked];
+                    const i32 residue_idx = data->dynamic.molecule.atom.res_idx[atom_idx];
+                    const i32 chain_idx = data->dynamic.molecule.atom.chain_idx[atom_idx];
 
                     char buf[buf_len];
 
-                    snprintf(buf, buf_len, "atom(%i) ", data->selection.right_clicked + 1);
+                    snprintf(buf, buf_len, "atom(%i) ", atom_idx + 1);
                     if (ImGui::MenuItem(buf)) {
                         memcpy(key_buf, buf, buf_len);
                         paste_buf = true;
@@ -2725,12 +2725,13 @@ static void draw_property_window(ApplicationData* data) {
                         }
 
                         if (ImGui::BeginMenu("resatom...")) {
-                            snprintf(buf, buf_len, "resatom(resid(%i), %i) ", mol.residue.id[residue_idx], atom_range + 1);
+                            const AtomIdx local_idx = atom_idx + 1 - mol.residue.atom_range[residue_idx].beg;
+                            snprintf(buf, buf_len, "resatom(resid(%i), %i) ", mol.residue.id[residue_idx], local_idx);
                             if (ImGui::MenuItem(buf)) {
                                 memcpy(key_buf, buf, buf_len);
                                 paste_buf = true;
                             }
-                            snprintf(buf, buf_len, "resatom(resname(%s), %i) ", mol.residue.name[residue_idx].cstr(), atom_range + 1);
+                            snprintf(buf, buf_len, "resatom(resname(%s), %i) ", mol.residue.name[residue_idx].cstr(), local_idx);
                             if (ImGui::MenuItem(buf)) {
                                 memcpy(key_buf, buf, buf_len);
                                 paste_buf = true;
