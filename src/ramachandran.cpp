@@ -107,17 +107,10 @@ uniform vec4 u_color;
 
 out vec4 out_frag;
 
-float step_dist(float edge, float dist) {
-	float factor = 1.0; // <-- value can be played around with a bit
-	float mask = step(edge, dist);
-	float step_w = factor * length(vec2(dFdx(mask), dFdy(mask)));
-	return smoothstep(-step_w/2.0, step_w/2.0, mask);
-}
-
 void main() {
     vec2 uv = gl_PointCoord.xy * 2.0 - 1.0;
 	float dist2 = dot(uv, uv);
-	float falloff = max(0, 1.0 - dist2);
+	float falloff = max(0.0, 1.0 - dist2);
     out_frag = vec4(u_color.rgb, u_color.a * falloff);
 }
 )";
@@ -395,9 +388,12 @@ void render_accumulation_texture(Range<i32> frame_range, vec4 color, float radiu
 
     glUseProgram(program);
 
+    const float rad = math::max(radius, 0.5f);
+    const vec4  col = color * vec4(1.0f, 1.0f, 1.0f, 1.0f - (rad - radius));
+
     // Draw
-    glUniform1f(uniform_loc_radius, radius);
-    glUniform4fv(uniform_loc_color, 1, &color[0]);
+    glUniform1f(uniform_loc_radius, rad);
+    glUniform4fv(uniform_loc_color, 1, &col[0]);
 
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
@@ -459,7 +455,7 @@ void update_vbo() {
         const BackboneAngle& angle = traj_angles.angle_data[i];
         if (angle.phi == 0 || angle.psi == 0) continue;
         vec2 coord = vec2(angle.phi, -angle.psi) * ONE_OVER_PI;  // [-PI, PI] -> [-1, 1]
-        //coord.y = 1.f - coord.y;
+        //coord = (vec2(ivec2(coord * vec2(acc_width / 2, acc_height / 2)))) / vec2(acc_width / 2, acc_height / 2);
         coords[i].x = (short)(coord.x * INT16_MAX); 
         coords[i].y = (short)(coord.y * INT16_MAX);
     }
