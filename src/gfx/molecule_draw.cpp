@@ -1515,8 +1515,8 @@ T div_up(T x, T div) {
 }
 
 struct OptimalSDFVolume {
-    AABB aabb;
-    uvec3 dim;
+    AABB aabb {};
+    uvec3 dim {};
 };
 
 OptimalSDFVolume compute_optimal_sdf_volume(const AABB& aabb, uint32_t max_dim) {
