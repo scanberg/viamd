@@ -559,6 +559,14 @@ static struct {
     } uniform_loc;
 } filmic;
 
+static struct {
+    GLuint program_forward = 0;
+    GLuint program_inverse = 0;
+    struct {
+        GLint texture = -1;
+    } uniform_loc;
+} fast_reversible;
+
 void initialize() {
     {
         // PASSTHROUGH
@@ -588,12 +596,23 @@ void initialize() {
         filmic.uniform_loc.exposure = glGetUniformLocation(filmic.program, "u_exposure");
         filmic.uniform_loc.gamma = glGetUniformLocation(filmic.program, "u_gamma");
     }
+    {
+        // Fast Reversible (For AA) (Credits to Brian Karis: http://graphicrants.blogspot.com/2013/12/tone-mapping.html)
+        StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/tonemap/fast_reversible.frag");
+        defer { free_string(&f_shader_src); };
+
+        setup_program(&fast_reversible.program_forward, "tonemap_fast_reversible", f_shader_src, "#define USE_INVERSE 0");
+        fast_reversible.uniform_loc.texture = glGetUniformLocation(fast_reversible.program_forward, "u_texture");
+        setup_program(&fast_reversible.program_inverse, "tonemap_fast_reversible", f_shader_src, "#define USE_INVERSE 1");
+    }
 }
 
 void shutdown() {
     if (passthrough.program) glDeleteProgram(passthrough.program);
     if (exposure_gamma.program) glDeleteProgram(exposure_gamma.program);
     if (filmic.program) glDeleteProgram(filmic.program);
+    if (fast_reversible.program_forward) glDeleteProgram(fast_reversible.program_forward);
+    if (fast_reversible.program_inverse) glDeleteProgram(fast_reversible.program_inverse);
 }
 
 }  // namespace tonemapping
@@ -1228,6 +1247,36 @@ void apply_tonemapping(GLuint color_tex, Tonemapping tonemapping, float exposure
     glUseProgram(0);
 }
 
+void apply_aa_tonemapping(GLuint color_tex) {
+    ASSERT(glIsTexture(color_tex));
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, color_tex);
+
+    glUseProgram(tonemapping::fast_reversible.program_forward);
+    glUniform1i(tonemapping::fast_reversible.uniform_loc.texture, 0);
+
+    glBindVertexArray(gl.vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glUseProgram(0);
+}
+
+void apply_inverse_aa_tonemapping(GLuint color_tex) {
+    ASSERT(glIsTexture(color_tex));
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, color_tex);
+
+    glUseProgram(tonemapping::fast_reversible.program_inverse);
+    glUniform1i(tonemapping::fast_reversible.uniform_loc.texture, 0);
+
+    glBindVertexArray(gl.vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glUseProgram(0);
+}
+
 void blit_static_velocity(GLuint depth_tex, const ViewParam& view_param) {
     mat4 curr_clip_to_prev_clip_mat = view_param.matrix.previous.view_proj_jittered * view_param.matrix.inverse.view_proj_jittered;
 
@@ -1491,15 +1540,13 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
         POP_GPU_SECTION()
     }
 
-    if (desc.depth_of_field.enabled) {
+    if (desc.temporal_reprojection.enabled) {
+#if 0   
         swap_target();
         glDrawBuffer(dst_buffer);
-        PUSH_GPU_SECTION("DOF")
-        apply_dof(gl.linear_depth.texture, src_texture, desc.depth_of_field.focus_depth, desc.depth_of_field.focus_scale, time);
-        POP_GPU_SECTION()
-    }
+        apply_aa_tonemapping(src_texture);
+#endif
 
-    if (desc.temporal_reprojection.enabled) {
         swap_target();
         glDrawBuffer(dst_buffer);
         const float feedback_min = desc.temporal_reprojection.feedback_min;
@@ -1510,17 +1557,31 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
         else
             PUSH_GPU_SECTION("Temporal AA")
 
-        apply_temporal_aa(gl.linear_depth.texture, src_texture, desc.input_textures.velocity, gl.velocity.tex_neighbormax, view_param.jitter.current, view_param.jitter.previous, feedback_min, feedback_max,
-            motion_scale, time);
+            apply_temporal_aa(gl.linear_depth.texture, src_texture, desc.input_textures.velocity, gl.velocity.tex_neighbormax, view_param.jitter.current, view_param.jitter.previous, feedback_min, feedback_max,
+                motion_scale, time);
         POP_GPU_SECTION()
+
+#if 0
+            swap_target();
+        glDrawBuffer(dst_buffer);
+        apply_inverse_aa_tonemapping(src_texture);
+#endif
 
 #if 1
         PUSH_GPU_SECTION("Sharpen")
-        swap_target();
+            swap_target();
         glDrawBuffer(dst_buffer);
         sharpen::sharpen(src_texture);
         POP_GPU_SECTION()
 #endif
+    }
+
+    if (desc.depth_of_field.enabled) {
+        swap_target();
+        glDrawBuffer(dst_buffer);
+        PUSH_GPU_SECTION("DOF")
+        apply_dof(gl.linear_depth.texture, src_texture, desc.depth_of_field.focus_depth, desc.depth_of_field.focus_scale, time);
+        POP_GPU_SECTION()
     }
 
     PUSH_GPU_SECTION("Tonemapping") {
