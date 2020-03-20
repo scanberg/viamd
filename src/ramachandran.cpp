@@ -61,7 +61,6 @@ static GLuint seg_tex = 0;
 static GLuint acc_tex = 0;
 static GLuint col_tex = 0;
 
-static GLuint coord_tex = 0;
 static GLuint coord_buf = 0;
 static GLuint fbo = 0;
 static GLuint program = 0;
@@ -69,11 +68,8 @@ static GLuint program = 0;
 static GLuint vao = 0;
 static GLuint vbo = 0;
 
-static GLint uniform_loc_coord_tex = -1;
-static GLint uniform_loc_instance_offset = -1;
 static GLint uniform_loc_radius = -1;
 static GLint uniform_loc_color = -1;
-static GLint uniform_loc_outline = -1;
 
 static Image src_img = {};  // This is the unmodified source image (Ramachandran plot)
 static Image gui_img = {};  // Visual representation which is used in gui-elements
@@ -108,7 +104,6 @@ constexpr const char* f_shader_src = R"(
 #version 150 core
 
 uniform vec4 u_color;
-uniform float u_outline;
 
 out vec4 out_frag;
 
@@ -121,16 +116,9 @@ float step_dist(float edge, float dist) {
 
 void main() {
     vec2 uv = gl_PointCoord.xy * 2.0 - 1.0;
-	float dist = sqrt(dot(uv, uv));
-	if (u_outline > 0) {
-		vec4 inner_color = u_color.rgba;
-		vec4 rim_color = vec4(0,0,0,1);
-		vec4 outer_color = vec4(0,0,0,0);
-		out_frag = mix(inner_color, mix(rim_color, outer_color, step_dist(1.0, dist)), step_dist(1.0 - u_outline, dist));
-	} else {
-		float falloff = max(0, 1.0 - dist);
-		out_frag = vec4(u_color.rgb, u_color.a * falloff);	
-	}
+	float dist2 = dot(uv, uv);
+	float falloff = max(0, 1.0 - dist2);
+    out_frag = vec4(u_color.rgb, u_color.a * falloff);
 }
 )";
 
@@ -307,11 +295,8 @@ task_system::ID initialize(const MoleculeDynamic& dynamic) {
         const GLuint shaders[] = {v_shader, f_shader};
         gl::attach_link_detach(program, shaders);
 
-        uniform_loc_coord_tex = glGetUniformLocation(program, "u_coord_tex");
-        uniform_loc_instance_offset = glGetUniformLocation(program, "u_instance_offset");
         uniform_loc_radius = glGetUniformLocation(program, "u_radius");
         uniform_loc_color = glGetUniformLocation(program, "u_color");
-        uniform_loc_outline = glGetUniformLocation(program, "u_outline");
     }
 
 
@@ -328,10 +313,6 @@ task_system::ID initialize(const MoleculeDynamic& dynamic) {
 
     if (!coord_buf) {
         glGenBuffers(1, &coord_buf);
-    }
-
-    if (!coord_tex) {
-        glGenTextures(1, &coord_tex);
     }
 
     if (!fbo) {
@@ -355,7 +336,6 @@ void shutdown() {
     if (acc_tex) glDeleteTextures(1, &acc_tex);
     if (col_tex) glDeleteTextures(1, &col_tex);
     if (coord_buf) glDeleteBuffers(1, &coord_buf);
-    if (coord_tex) glDeleteTextures(1, &coord_tex);
     if (fbo) glDeleteFramebuffers(1, &fbo);
     if (vbo) glDeleteBuffers(1, &vbo);
     if (vbo) glDeleteVertexArrays(1, &vao);
@@ -375,7 +355,7 @@ void clear_accumulation_texture() {
     glViewport(last_viewport[0], last_viewport[1], (GLsizei)last_viewport[2], (GLsizei)last_viewport[3]);
 }
 
-void render_accumulation_texture(Range<i32> frame_range, vec4 color, float radius, float outline) {
+void render_accumulation_texture(Range<i32> frame_range, vec4 color, float radius) {
     // Backup GL state
     GLint last_polygon_mode[2];
     glGetIntegerv(GL_POLYGON_MODE, last_polygon_mode);
@@ -411,22 +391,13 @@ void render_accumulation_texture(Range<i32> frame_range, vec4 color, float radiu
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glDisable(GL_CULL_FACE);
     glDisable(GL_DEPTH_TEST);
-    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     glEnable(GL_PROGRAM_POINT_SIZE);
 
-    // Texture 0
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_BUFFER, coord_tex);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_RG16, vbo);
-
     glUseProgram(program);
-    glUniform1i(uniform_loc_coord_tex, 0);
 
     // Draw
     glUniform1f(uniform_loc_radius, radius);
-    glUniform1i(uniform_loc_instance_offset, offset);
     glUniform4fv(uniform_loc_color, 1, &color[0]);
-    glUniform1f(uniform_loc_outline, outline);
 
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
@@ -487,10 +458,10 @@ void update_vbo() {
     for (i64 i = 0; i < traj_angles.angle_data.size(); i++) {
         const BackboneAngle& angle = traj_angles.angle_data[i];
         if (angle.phi == 0 || angle.psi == 0) continue;
-        vec2 coord = vec2(angle.phi, angle.psi) * ONE_OVER_PI;  // [-PI, PI] -> [-1, 1]
-        coord.y = 1.f - coord.y;
-        coords[i].x = (short)(coord.x * 32767);
-        coords[i].y = (short)(coord.y * 32767);
+        vec2 coord = vec2(angle.phi, -angle.psi) * ONE_OVER_PI;  // [-PI, PI] -> [-1, 1]
+        //coord.y = 1.f - coord.y;
+        coords[i].x = (short)(coord.x * INT16_MAX); 
+        coords[i].y = (short)(coord.y * INT16_MAX);
     }
 
     glUnmapBuffer(GL_ARRAY_BUFFER);
