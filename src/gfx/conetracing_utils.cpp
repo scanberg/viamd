@@ -532,7 +532,7 @@ void init_occlusion_volume(GPUVolume* vol, vec3 min_box, vec3 max_box, float vox
     const float voxel_ext = voxel_ext_target;
     const vec3 ext = (max_box - min_box);
     const float max_ext = math::max(ext.x, math::max(ext.y, ext.z));
-    i32 dim = (i32)ceil_power_of_two(max_ext / voxel_ext_target);
+    i32 dim = (i32)ceil_power_of_two((u32)(max_ext / voxel_ext_target));
     ivec3 res = math::clamp(ivec3(dim), ivec3(1), ivec3(256));
 
     for (int i = 0; i < 3; i++) {
@@ -888,7 +888,7 @@ void compute_occupancy_volume(const GPUVolume& vol, const soa_vec3 atom_pos, con
                 const int idx = compute_voxel_idx(vol, {atom_pos.x[i], atom_pos.y[i], atom_pos.z[i]});
                 const float r = atom_rad[i];
                 const float sphere_vol = sphere_vol_scl * r * r * r;
-                const u32 occ = (sphere_vol * inv_voxel_volume * 0xFFFFFFFFU);
+                const u32 occ = (u32)(sphere_vol * inv_voxel_volume * 0xFFFFFFFFU);
                 atomic_fetch_add(&voxel_data[idx], occ);
             }
         });
@@ -924,7 +924,7 @@ void compute_occupancy_volume(const GPUVolume& vol, const soa_vec3 atom_pos, con
     defer { TMP_FREE(voxel_data); };
 
     task_system::ID id = task_system::enqueue_pool(
-        "Computing occupancy", atom_mask.size(),
+        "Computing occupancy", (u32)atom_mask.size(),
         [voxel_data, atom_pos, atom_rad, atom_mask, &vol, inv_voxel_volume](task_system::TaskSetRange range) {
             // We assume atom radius <<< voxel extent and just increment the bin
             constexpr float sphere_vol_scl = (4.0f / 3.0f) * math::PI;
@@ -933,7 +933,7 @@ void compute_occupancy_volume(const GPUVolume& vol, const soa_vec3 atom_pos, con
                     const int idx = compute_voxel_idx(vol, {atom_pos.x[i], atom_pos.y[i], atom_pos.z[i]});
                     const float r = atom_rad[i];
                     const float sphere_vol = sphere_vol_scl * r * r * r;
-                    const u32 occ = (sphere_vol * inv_voxel_volume * 0xFFFFFFFFU);
+                    const u32 occ = (u32)(sphere_vol * inv_voxel_volume * 0xFFFFFFFFU);
                     atomic_fetch_add(&voxel_data[idx], occ);
                 }
             }
