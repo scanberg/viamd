@@ -1,21 +1,57 @@
-name: C/C++ CI
+name: build_and_test
 
-on:
-  push:
-    branches: [ master ]
-  pull_request:
-    branches: [ master ]
+on: [push]
 
 jobs:
-  build:
-
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v2
-    - name: configure
-      run: ./cmake .
-    - name: make
-      run: make
-    - name: make check
-      run: make check
+    windows:
+        runs-on: windows-latest
+        steps:
+        - uses: actions/checkout@v2
+        - name: prepare
+          run: |
+            git submodule update --init --recursive
+        - name: cmake
+          run: |
+            cmake .
+        - name: build
+          run: |
+            cmake --build . --config Release -- /nologo /verbosity:minimal /maxcpucount:4
+        - name: unittest
+          run: |
+            cd unittest/Release
+            ./unittests
+    mac:
+        runs-on: macos-latest
+        steps:
+        - uses: actions/checkout@v2
+        - name: prepare
+          run: |
+            git submodule update --init --recursive
+        - name: cmake
+          run: |
+            cmake .
+        - name: build
+          run: |
+            make -j 4
+        - name: unittest
+          run: |
+            cd unittest
+            ./unittests
+    linux:
+        runs-on: ubuntu-latest
+        steps:
+        - uses: actions/checkout@v2
+        - name: prepare
+          run: |
+            git submodule update --init --recursive
+            sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libgtk-3-dev pkgconf
+        - name: cmake
+          run: |
+            cmake .
+        - name: build
+          run: |
+            make -j 4
+        - name: unittest
+          run: |
+            cd unittest
+            ./unittests

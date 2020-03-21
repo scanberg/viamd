@@ -1,6 +1,9 @@
 # viamd
 Visual Interactive Analysis of Molecular Dynamics
 
+## Status
+![build_and_test](https://github.com/scanberg/viamd/workflows/build_and_test/badge.svg?branch=master)
+
 ## Building
 ### Step 1: Clone the repository:
 
@@ -20,7 +23,7 @@ Visual Interactive Analysis of Molecular Dynamics
 - pkgconf
 
 Example for Ubuntu:
-#### sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libgtk3-dev pkgconf
+#### sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libgtk-3-dev pkgconf
 
 ### Step 2: Configure using CMAKE
 

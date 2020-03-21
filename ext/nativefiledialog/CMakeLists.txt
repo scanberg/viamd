@@ -15,7 +15,7 @@ if(UNIX AND NOT APPLE)
         #include(cmake/FindGTK3.cmake)
         #find_package(GTK3 REQUIRED gtk)
         FIND_PACKAGE(PkgConfig REQUIRED)
-        PKG_CHECK_MODULES(GTK3 REQUIRED gtk)
+        PKG_CHECK_MODULES(GTK3 REQUIRED gtk+-3.0)
         set(SRC
             ${SRC}
             ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_gtk.c)
