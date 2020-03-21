@@ -43,6 +43,9 @@ https://github.com/scanberg/viamd/releases/download/v0.1a/viamd_0.1a_linux.zip
 ## Acknowledgements
 
 https://github.com/ocornut/imgui
+
 https://github.com/glfw/glfw
+
 https://github.com/skaslev/gl3w
+
 https://github.com/codeplea/tinyexpr
