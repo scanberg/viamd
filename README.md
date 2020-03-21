@@ -34,19 +34,15 @@ https://cmake.org/
 ### Step 4: Profit?
 
 ## Binaries
+(OLD, AVOID THESE, BUILD FROM SCRATCH UNTIL I GET SOME WORKING DISTRIBUTION AUTOMATION IN PLACE)
 
 https://github.com/scanberg/viamd/releases/download/v0.1a/viamd_0.1a_osx.zip
-
 https://github.com/scanberg/viamd/releases/download/v0.1a/viamd_0.1a_win64.zip
-
 https://github.com/scanberg/viamd/releases/download/v0.1a/viamd_0.1a_linux.zip
 
 ## Acknowledgements
 
 https://github.com/ocornut/imgui
-
 https://github.com/glfw/glfw
-
 https://github.com/skaslev/gl3w
-
 https://github.com/codeplea/tinyexpr
