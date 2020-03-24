@@ -80,8 +80,8 @@ const Key::Key_t KEY_TOGGLE_SCREENSHOT_MODE = Key::KEY_F10;
         if (glPopDebugGroup) glPopDebugGroup(); \
     }
 
-constexpr unsigned int NO_PICKING_IDX = 0xFFFFFFFFU;
-constexpr CStringView FILE_EXTENSION = "via";
+constexpr CStringView FILE_EXTENSION = "via"; 
+constexpr u32 NO_PICKING_IDX = 0xFFFFFFFFU;
 
 constexpr u32 DEL_BTN_COLOR = 0xFF1111CC;
 constexpr u32 DEL_BTN_HOVER_COLOR = 0xFF3333DD;
@@ -140,6 +140,12 @@ inline vec4& vec_cast(ImVec4& v) { return *(vec4*)(&v); }
 inline ImVec2& vec_cast(vec2& v) { return *(ImVec2*)(&v); }
 inline vec2& vec_cast(ImVec2& v) { return *(vec2*)(&v); }
 
+static inline bool operator == (const ImVec2& lhs, const ImVec2& rhs) { return lhs.x == rhs.x && lhs.y == rhs.y; }
+static inline bool operator != (const ImVec2& lhs, const ImVec2& rhs) { return !(lhs == rhs); }
+
+static inline bool operator == (const ImVec4& lhs, const ImVec4& rhs) { return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z && lhs.w == rhs.w; }
+static inline bool operator != (const ImVec4& lhs, const ImVec4& rhs) { return !(lhs == rhs); }
+
 enum class PlaybackMode { Stopped, Playing };
 enum class InterpolationMode { Nearest, Linear, Cubic };
 enum class SelectionLevel { Atom, Residue, Chain };
@@ -172,7 +178,8 @@ struct MainFramebuffer {
     } deferred;
 
     struct {
-        // @NOTE: two of each for ping-pong read / write (hopefully non blocking reads)
+        // @NOTE: Two of each for ping-pong read / write (hopefully non blocking reads)
+        // This means that we read with one frames latency
         GLuint color[2] = {0, 0};
         GLuint depth[2] = {0, 0};
     } pbo_picking;
@@ -651,12 +658,6 @@ void init_theme() {
 }
 
 }  // namespace ImGui
-
-static inline bool operator == (const ImVec2& lhs, const ImVec2& rhs) { return lhs.x == rhs.x && lhs.y == rhs.y; }
-static inline bool operator != (const ImVec2& lhs, const ImVec2& rhs) { return !(lhs == rhs); }
-
-static inline bool operator == (const ImVec4& lhs, const ImVec4& rhs) { return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z && lhs.w == rhs.w; }
-static inline bool operator != (const ImVec4& lhs, const ImVec4& rhs) { return !(lhs == rhs); }
 
 static vec3 compute_simulation_box_ext(const ApplicationData& data);
 static void interpolate_atomic_positions(ApplicationData* data);
