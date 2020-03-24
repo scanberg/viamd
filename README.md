@@ -2,7 +2,7 @@
 Visual Interactive Analysis of Molecular Dynamics
 
 ## Status
-![build_and_test](https://github.com/scanberg/viamd/workflows/build_and_test/badge.svg?branch=master)
+[![build_and_test](https://github.com/scanberg/viamd/workflows/build_and_test/badge.svg?branch=master)](http://github.com/scanberg/viamd/workflows/build_and_test)
 
 ## Building
 ### Step 1: Clone the repository:
