@@ -887,7 +887,7 @@ static bool compute_angle(Property* prop, const Array<CStringView> args, const M
     prop->total_data_range = {0, math::PI};
     prop->avg_data_range = compute_range(prop->avg_data);
     prop->periodic = true;
-    prop->unit_buf = u8"°";
+    prop->unit_buf = (const char*)u8"°";
 
     return true;
 }
@@ -953,7 +953,7 @@ static bool compute_dihedral(Property* prop, const Array<CStringView> args, cons
     prop->total_data_range = {-math::PI, math::PI};
     prop->avg_data_range = compute_range(prop->avg_data);
     prop->periodic = true;
-    prop->unit_buf = u8"°";
+    prop->unit_buf = (const char*)u8"°";
 
     return true;
 }
@@ -1039,7 +1039,7 @@ static bool compute_rmsd(Property* prop, const Array<CStringView> args, const Mo
     prop->total_data_range = {0.0f, max_val};
     prop->avg_data_range = compute_range(prop->avg_data);
     prop->periodic = true;
-    prop->unit_buf = u8"";
+    prop->unit_buf = "";
 
     return true;
 }

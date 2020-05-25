@@ -65,10 +65,10 @@ add_subdirectory(ext/imgui)
 add_subdirectory(ext/nativefiledialog)
 add_subdirectory(ext/tinyexpr)
 add_subdirectory(ext/mdutils)
+add_subdirectory(ext/mold)
 add_subdirectory(ext/stb)
 add_subdirectory(ext/gl3w)
 add_subdirectory(ext/enkiTS)
-#add_subdirectory(ext/base91)
 add_subdirectory(unittest)
 add_subdirectory(benchmark)
 
@@ -92,7 +92,7 @@ target_compile_definitions(viamd PRIVATE
 	VIAMD_IMAGE_DIR=\"${RESOURCE_DIR}images\"
 	VIAMD_SCREENSHOT_DIR=\"${RESOURCE_DIR}screenshots\")
 
-target_compile_features(viamd PRIVATE cxx_std_17)
+target_compile_features(viamd PRIVATE cxx_std_20)
 
 target_include_directories(viamd
     PRIVATE
@@ -108,6 +108,7 @@ target_link_libraries(viamd
     nativefiledialog
 	tinyexpr
     mdutils
+    mold
     stb
     enkiTS
 )

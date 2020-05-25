@@ -19,6 +19,7 @@ struct ViewParam {
     } matrix;
 
     struct {
+        vec2 next;
         vec2 current;
         vec2 previous;
     } jitter;

@@ -151,12 +151,6 @@ bool load_trajectory(MoleculeTrajectory* traj, i32 num_atoms, CStringView filena
                     auto& frame = get_trajectory_frame(*traj, i);
                     loader->extract_frame(&frame, num_atoms, {(u8*)mem + mem_offset, (i64)frame_bytes[i].extent});
                 }
-            },
-            [traj, num_atoms, batch_offset = batch_beg](task_system::TaskSetRange range) {
-                for (u32 i = batch_offset + range.beg; i < batch_offset + range.end; i++) {
-                    auto& frame = get_trajectory_frame(*traj, i);
-                    apply_pbc(frame.atom_position, num_atoms, frame.box);
-                }
             });
         task_system::wait_for_task(id);
     }

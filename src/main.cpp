@@ -18,6 +18,9 @@
 #include <mol/gro_utils.h>
 #include <mol/xtc_utils.h>
 
+#include <mold_util.h>
+#include <mold_draw.h>
+
 #include <imgui.h>
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui_internal.h>
@@ -53,6 +56,8 @@
 #define VIAMD_RELEASE 1
 #define EXPERIMENTAL_CULLING 0
 #define EXPERIMENTAL_SDF 0
+#define EXPERIMENTAL_CONE_TRACED_AO 0
+#define USE_MOLD 0
 
 #ifdef OS_MAC_OSX
 const Key::Key_t KEY_CONSOLE = Key::KEY_WORLD_1;
@@ -99,7 +104,7 @@ constexpr f32 HYDROGEN_BOND_ANGLE_CUTOFF_MAX = 90.f;
 constexpr f32 BALL_AND_STICK_VDW_SCALE = 0.30f;
 constexpr f32 BALL_AND_STICK_LICORICE_SCALE = 0.5f;
 
-constexpr i32 SPLINE_SUBDIVISION_COUNT = 8;
+constexpr i32 SPLINE_SUBDIVISION_COUNT = 16;
 
 #ifdef VIAMD_RELEASE
 constexpr const char* CAFFINE_PDB = R"(
@@ -149,7 +154,7 @@ static inline bool operator != (const ImVec4& lhs, const ImVec4& rhs) { return !
 enum class PlaybackMode { Stopped, Playing };
 enum class InterpolationMode { Nearest, Linear, Cubic };
 enum class SelectionLevel { Atom, Residue, Chain };
-enum class SelectionOperator { Or, And };
+enum class SelectionOperator { Or, And, Replace, Clear };
 enum class SelectionGrowth { CovalentBond, Radial };
 enum class RepresentationType { Vdw, Licorice, BallAndStick, Ribbons, Cartoon };
 enum class TrackingMode { Absolute, Relative };
@@ -163,6 +168,7 @@ struct PickingData {
     u32 idx = NO_PICKING_IDX;
     f32 depth = 1.0f;
     vec3 world_coord = {0, 0, 0};
+    vec2 screen_coord = {0, 0};
 };
 
 struct MainFramebuffer {
@@ -228,6 +234,9 @@ struct Representation {
     RepresentationType type = RepresentationType::Vdw;
     ColorMapping color_mapping = ColorMapping::Cpk;
     Bitfield atom_mask{};
+#if USE_MOLD
+    mold_draw_rep mold_rep{};
+#endif
     GLuint color_buffer = 0;
 
     bool enabled = true;
@@ -332,6 +341,14 @@ struct ApplicationData {
     // --- MOLECULAR DATA ---
     MoleculeDynamic dynamic{};
 
+#if USE_MOLD
+    // --- MOLD DATA ---
+    struct {
+        mold_draw_ctx ctx = {0};
+        mold_draw_mol mol = {0};
+    } mold;
+#endif
+
     // --- ASYNC TASKS HANDLES ---
     struct {
         task_system::ID load_trajectory;
@@ -417,11 +434,13 @@ struct ApplicationData {
             f32 bias = 0.1f;
         } ssao;
 
+#if EXPERIMENTAL_CONE_TRACED_AO == 1
         struct {
             bool enabled = true;
             f32 intensity = 1.0f;
             f32 step_scale = 1.0f;
         } cone_traced_ao;
+#endif
 
         struct {
             bool enabled = false;
@@ -521,10 +540,12 @@ struct ApplicationData {
 
     } density_volume;
 
+#if EXPERIMENTAL_CONE_TRACED_AO == 1
     struct {
         cone_trace::GPUVolume vol;
         std::mutex vol_mutex{};
     } occupancy_volume;
+#endif
 
     struct {
         Bitfield atom_mask;
@@ -551,11 +572,11 @@ struct ApplicationData {
             bool enabled = true;
             vec4 border_color = vec4(0, 0, 0, 1);
             struct {
-                f32 radius = 1.5f;
+                f32 radius = 2.5f;
                 vec4 fill_color = vec4(0.75f, 0.75f, 0.75f, 1);
             } base;
             struct {
-                f32 radius = 2.0f;
+                f32 radius = 3.5f;
                 vec4 selection_color = vec4(0.8f, 1.0f, 0.5f, 1.0f);
                 vec4 highlight_color = vec4(0.8f, 1.0f, 0.5f, 0.5f);
             } selection;
@@ -605,7 +626,7 @@ static void PopDisabled() {
 
 void init_theme() {
     ImVec4* colors = ImGui::GetStyle().Colors;
-    colors[ImGuiCol_Text]                   = ImVec4(0.90f, 0.90f, 0.90f, 1.00f);
+    colors[ImGuiCol_Text]                   = ImVec4(1.00f, 1.00f, 1.00f, 1.00f);
     colors[ImGuiCol_TextDisabled]           = ImVec4(0.60f, 0.60f, 0.60f, 1.00f);
     colors[ImGuiCol_WindowBg]               = ImVec4(0.00f, 0.00f, 0.00f, 0.67f);
     colors[ImGuiCol_ChildBg]                = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
@@ -628,7 +649,7 @@ void init_theme() {
     colors[ImGuiCol_SliderGrabActive]       = ImVec4(0.82f, 0.82f, 0.82f, 0.60f);
     colors[ImGuiCol_Button]                 = ImVec4(0.64f, 0.64f, 0.64f, 0.62f);
     colors[ImGuiCol_ButtonHovered]          = ImVec4(0.72f, 0.72f, 0.72f, 0.79f);
-    colors[ImGuiCol_ButtonActive]           = ImVec4(0.80f, 0.80f, 0.81f, 1.00f);
+    colors[ImGuiCol_ButtonActive]           = ImVec4(0.80f, 0.80f, 0.81f, 0.85f);
     colors[ImGuiCol_Header]                 = ImVec4(0.64f, 0.64f, 0.64f, 0.45f);
     colors[ImGuiCol_HeaderHovered]          = ImVec4(0.65f, 0.65f, 0.65f, 0.80f);
     colors[ImGuiCol_HeaderActive]           = ImVec4(0.85f, 0.85f, 0.85f, 0.80f);
@@ -659,7 +680,7 @@ void init_theme() {
 
 }  // namespace ImGui
 
-static vec3 compute_simulation_box_ext(const ApplicationData& data);
+//static vec3 compute_simulation_box_ext(const ApplicationData& data);
 static void interpolate_atomic_positions(ApplicationData* data);
 static void update_view_param(ApplicationData* data);
 static void reset_view(ApplicationData* data, bool move_camera = false, bool smooth_transition = false);
@@ -678,10 +699,13 @@ static void compute_backbone_spline(ApplicationData* data);
 static void compute_velocity(ApplicationData* data);
 static void compute_residue_aabbs(ApplicationData* data);
 static void cull_residue_aabbs(ApplicationData* data);
-static void fill_gbuffer(const ApplicationData& data);
+static void fill_gbuffer(ApplicationData* data);
 static void apply_postprocessing(const ApplicationData& data);
 static void draw_residue_aabbs(const ApplicationData& data);
+
+#if EXPERIMENTAL_CONE_TRACED_AO
 static void init_occupancy_volume(ApplicationData* data);
+#endif
 
 static void draw_representations(const ApplicationData& data);
 static void draw_representations_lean_and_mean(const ApplicationData& data, vec4 color = vec4(1, 1, 1, 1), float scale = 1.0f,
@@ -718,7 +742,7 @@ static void init_molecule_data(ApplicationData* data);
 static void init_trajectory_data(ApplicationData* data);
 
 static bool load_dataset_from_file(ApplicationData* data, CStringView file);
-static void free_dataset(ApplicationData* data);
+//static void free_dataset(ApplicationData* data);
 
 static void load_workspace(ApplicationData* data, CStringView file);
 static void save_workspace(ApplicationData* data, CStringView file);
@@ -732,6 +756,8 @@ static Representation* clone_representation(ApplicationData* data, const Represe
 static void remove_representation(ApplicationData* data, int idx);
 static void update_representation(ApplicationData* data, Representation* rep);
 static void update_all_representations(ApplicationData* data);
+static void init_representation(ApplicationData* data, Representation* rep);
+static void init_all_representations(ApplicationData* data);
 static void reset_representations(ApplicationData* data);
 static void clear_representations(ApplicationData* data);
 
@@ -744,6 +770,83 @@ static void remove_selection(ApplicationData* data, int idx);
 
 static void reset_selections(ApplicationData* data);
 static void clear_selections(ApplicationData* data);
+
+static void modify_field(Bitfield field, const Bitfield mask, SelectionOperator op) {
+    switch(op) {
+    case SelectionOperator::Or:
+        bitfield::or_field(field, field, mask);
+        break;
+    case SelectionOperator::And:
+        bitfield::and_field(field, field, mask);
+        break;
+    case SelectionOperator::Replace:
+        bitfield::copy(field, mask);
+        break;
+    default:
+        ASSERT(false);
+    }
+}
+
+template <typename Int>
+static void modify_field(Bitfield field, Range<Int> range, SelectionOperator op) {
+    switch(op) {
+    case SelectionOperator::Or:
+        bitfield::set_range(field, range);
+        break;
+    case SelectionOperator::And:
+        bitfield::clear_range(field, Range<Int>(0, range.beg));
+        bitfield::clear_range(field, Range<Int>(range.end, field.size()));
+        break;
+    case SelectionOperator::Replace:
+        bitfield::clear_all(field);
+        bitfield::set_range(field, range);
+        break;
+    case SelectionOperator::Clear:
+        bitfield::clear_range(field, range);
+        break;
+    default:
+        ASSERT(false);
+    }
+}
+
+static void clear_highlight(ApplicationData* data) {
+    ASSERT(data);
+    bitfield::clear_all(data->selection.current_highlight_mask);
+    data->gpu_buffers.dirty.selection = true;
+}
+
+static void modify_highlight(ApplicationData* data, const Bitfield atom_mask, SelectionOperator op = SelectionOperator::Replace) {
+    ASSERT(data);
+    modify_field(data->selection.current_highlight_mask, atom_mask, op);
+    data->gpu_buffers.dirty.selection = true;
+}
+
+template <typename Int>
+static void modify_highlight(ApplicationData* data, const Range<Int> range, SelectionOperator op = SelectionOperator::Replace) {
+    ASSERT(data);
+    modify_field(data->selection.current_highlight_mask, range, op);
+    data->gpu_buffers.dirty.selection = true;
+}
+
+static void clear_selection(ApplicationData* data) {
+    ASSERT(data);
+    bitfield::clear_all(data->selection.current_selection_mask);
+    data->gpu_buffers.dirty.selection = true;
+}
+
+static void modify_selection(ApplicationData* data, const Bitfield atom_mask, SelectionOperator op = SelectionOperator::Replace) {
+    ASSERT(data);
+    modify_field(data->selection.current_selection_mask, atom_mask, op);
+    data->gpu_buffers.dirty.selection = true;
+}
+
+template <typename Int>
+static void modify_selection(ApplicationData* data, const Range<Int> range, SelectionOperator op = SelectionOperator::Replace) {
+    ASSERT(data);
+    modify_field(data->selection.current_selection_mask, range, op);
+    data->gpu_buffers.dirty.selection = true;
+}
+
 
 // Reference frames
 static ReferenceFrame* create_reference_frame(ApplicationData* data, CStringView name = "ref", CStringView filter = "label CA");
@@ -763,8 +866,6 @@ static void init_density_volume(ApplicationData* data);
 
 // static void on_trajectory_frame_loaded(ApplicationData* data, int frame_idx);
 static void on_trajectory_load_complete(ApplicationData* data);
-
-// Temp functionality
 
 int main(int, char**) {
     ApplicationData data;
@@ -826,12 +927,20 @@ int main(int, char**) {
     postprocessing::initialize(data.fbo.width, data.fbo.height);
     LOG_NOTE("Initializing volume...");
     volume::initialize();
+#if EXPERIMENTAL_CONE_TRACED_AO == 1
     LOG_NOTE("Initializing cone tracing...");
     cone_trace::initialize();
+#endif
     LOG_NOTE("Initializing structure tracking...");
     structure_tracking::initialize();
     LOG_NOTE("Initializing task system...");
     task_system::initialize();
+
+#if USE_MOLD
+    if (mold_draw_ctx_init(&data.mold.ctx) != MOLD_DRAW_SUCCESS) {
+        LOG_ERROR("Could not create mold draw context:\n%s", mold_draw_get_error_str());
+    }   
+#endif
 
     // ImGui::SetupImGuiStyle2();
     // ImGui::StyleColorsLight();
@@ -842,9 +951,9 @@ int main(int, char**) {
     pdb::load_molecule_from_string(&data.dynamic.molecule, CAFFINE_PDB);
     init_molecule_data(&data);
 #else
-    // load_dataset_from_file(&data, "D:/data/1aon.pdb");
-    load_dataset_from_file(&data, VIAMD_DATA_DIR "/1ALA-250ns-2500frames.pdb");
-    // load_dataset_from_file(&data, VIAMD_DATA_DIR "/amyloid/centered.gro");
+    //load_dataset_from_file(&data, "D:/data/1aon.pdb");
+    load_dataset_from_file(&data, "D:/data/md/alanine/1ALA-560ns.pdb");
+    //load_dataset_from_file(&data,  "D:/data/md/amyloid-PFT/centered.gro");
     // load_dataset_from_file(&data, VIAMD_DATA_DIR "/amyloid/centered.xtc");
     // load_dataset_from_file(&data, "D:/data/md/6T-water/16-6T-box.gro");
     // load_dataset_from_file(&data, "D:/data/md/6T-water/16-6T-box-md-npt.xtc");
@@ -869,7 +978,9 @@ int main(int, char**) {
     copy_molecule_data_to_buffers(&data);
     copy_buffer(data.gpu_buffers.old_position, data.gpu_buffers.position);
 
+#if EXPERIMENTAL_CONE_TRACED_AO == 1
     init_occupancy_volume(&data);
+#endif
 
 #if EXPERIMENTAL_SDF == 1
     draw::scan::test_scan();
@@ -921,7 +1032,13 @@ int main(int, char**) {
                 draw::initialize();
                 postprocessing::initialize(data.fbo.width, data.fbo.height);
                 volume::initialize();
+#if EXPERIMENTAL_CONE_TRACED_AO == 1
                 cone_trace::initialize();
+#endif
+#if USE_MOLD == 1
+                mold_draw_ctx_free(&data.mold.ctx);
+                mold_draw_ctx_init(&data.mold.ctx);
+#endif
             }
 
             if (data.ctx.input.key.hit[KEY_PLAY_PAUSE]) {
@@ -961,6 +1078,23 @@ int main(int, char**) {
 
         handle_camera_interaction(&data);
         handle_camera_animation(&data);
+
+        {
+#if 0
+            char highlight[256] = {0};
+            char selection[256] = {0};
+            const i64 count = (data.dynamic.molecule.atom.count < 256) ? data.dynamic.molecule.atom.count : 256;
+            for (i64 i = 0; i < count; ++i) {
+                highlight[i] = bitfield::get_bit(data.selection.current_highlight_mask, i) ? '1' : '0';
+                selection[i] = bitfield::get_bit(data.selection.current_selection_mask, i) ? '1' : '0';
+            }
+            ImGui::Begin("CRAP");
+            ImGui::Text("Selection dirty: %i", (int)data.gpu_buffers.dirty.selection);
+            ImGui::Text("Highlight: %s",highlight);
+            ImGui::Text("Selection: %s",selection);
+            ImGui::End();
+#endif
+        }
 
         // This needs to happen first (in imgui events) to enable docking of imgui windows
         // ImGui::CreateDockspace();
@@ -1014,18 +1148,76 @@ int main(int, char**) {
                     apply_pbc(mol.atom.position, mol.residue.atom_range, mol.residue.count, data.simulation_box.box);
                 }
 
+#if EXPERIMENTAL_CONE_TRACED_AO
                 if (data.visuals.cone_traced_ao.enabled) {
                     init_occupancy_volume(&data);
                 }
+#endif
+
+#if USE_MOLD == 1
+                mold_draw_mol_set_atom_position(&data.mold.mol, 0, (u32)mol.atom.count, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, 0);
+
+                {
+                    const char** atom_names = (const char**)TMP_MALLOC(mol.atom.count * sizeof(const char**));
+                    uint8_t* secondary_structure = (uint8_t*)TMP_MALLOC(mol.residue.count * sizeof(uint8_t));
+                    mold_backbone_atoms* residue_bb_atoms = (mold_backbone_atoms*)TMP_MALLOC(mol.residue.count * sizeof(mold_backbone_atoms));
+                    defer {
+                        TMP_FREE(atom_names);
+                        TMP_FREE(secondary_structure);
+                        TMP_FREE(residue_bb_atoms);
+                    };
+
+                    for (int64_t i = 0; i < mol.atom.count; ++i) {
+                        atom_names[i] = mol.atom.label[i].cstr();
+                    }
+
+                    {
+                        mold_util_backbone_args args = {
+                            .backbone_atoms = residue_bb_atoms,
+                            .atom = {
+                                .count = (uint32_t)mol.atom.count,
+                                .name = atom_names,
+                        },
+                        .residue = {
+                                .count = (uint32_t)mol.residue.count,
+                                .atom_range = (const mold_range*)mol.residue.atom_range,
+                        }
+                        };
+                        mold_util_extract_backbone(&args);
+                    }
+
+                    {
+                        mold_util_secondary_structure_args args = {
+                            .secondary_structure = secondary_structure,
+                            .atom = {
+                                .x = mol.atom.position.x,
+                                .y = mol.atom.position.y,
+                                .z = mol.atom.position.z,
+                        },
+                        .residue = {
+                                .count = (uint32_t)mol.residue.count,
+                                //.atom_range = (const mold_range*)mol.residue.atom_range,
+                                .backbone_atoms = residue_bb_atoms,
+                        },
+                        .chain = {
+                                .count = (uint32_t)mol.chain.count,
+                                .residue_range = (const mold_range*)mol.chain.residue_range,
+                        }
+                        };
+                        molt_util_extract_secondary_structure(&args);
+                        mold_draw_mol_set_residue_secondary_structure(&data.mold.mol, 0, (u32)mol.residue.count, secondary_structure, 0);
+                    }
+                }
+#endif
 
                 data.gpu_buffers.dirty.position = true;
             }
             POP_CPU_SECTION()
 
             PUSH_CPU_SECTION("Compute backbone angles")
-            for (const auto& seq : get_backbone_sequences(mol)) {
-                auto segments = get_backbone_segments(mol, seq);
-                compute_backbone_angles(get_backbone_angles(mol, seq).data(), mol.atom.position, segments.data(), segments.size());
+            for (i64 i = 0; i < mol.chain.count; ++i) {
+                const auto bb_atoms = get_residue_backbone_atoms(mol, i);
+                compute_backbone_angles(get_residue_backbone_angles(mol, i).data(), mol.atom.position, bb_atoms.data(), bb_atoms.size());
             }
             POP_CPU_SECTION()
 
@@ -1083,10 +1275,11 @@ int main(int, char**) {
 #if EXPERIMENTAL_CULLING == 1
         compute_residue_aabbs(&data);
 #endif
-        fill_gbuffer(data);
+        fill_gbuffer(&data);
 #if EXPERIMENTAL_CULLING == 1
         cull_residue_aabbs(&data);
 #endif
+#if EXPERIMENTAL_CONE_TRACED_AO == 1
         if (data.visuals.cone_traced_ao.enabled) {
             PUSH_GPU_SECTION("Cone-Trace AO")
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.deferred.fbo);
@@ -1098,6 +1291,7 @@ int main(int, char**) {
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
             POP_GPU_SECTION()
         }
+#endif
 #if EXPERIMENTAL_SDF == 1
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.deferred.fbo);
         glViewport(0, 0, data.fbo.width, data.fbo.height);
@@ -1176,8 +1370,10 @@ int main(int, char**) {
     postprocessing::shutdown();
     LOG_NOTE("Shutting down volume...");
     volume::shutdown();
+#if EXPERIMENTAL_CONE_TRACED_AO == 1
     LOG_NOTE("Shutting down cone tracing...");
     cone_trace::shutdown();
+#endif
     LOG_NOTE("Shutting down structure tracking...");
     structure_tracking::shutdown();
     LOG_NOTE("Shutting down task system...");
@@ -1313,6 +1509,7 @@ static void update_view_param(ApplicationData* data) {
     if (data->visuals.temporal_reprojection.enabled && data->visuals.temporal_reprojection.jitter) {
         static u32 i = 0;
         i = (++i) % ARRAY_SIZE(data->view.jitter.sequence);
+        param.jitter.next    = data->view.jitter.sequence[(i + 1) % ARRAY_SIZE(data->view.jitter.sequence)] - 0.5f;
         param.jitter.current = data->view.jitter.sequence[i] - 0.5f;
         if (data->view.mode == CameraMode::Perspective) {
             param.matrix.current.proj_jittered = perspective_projection_matrix(data->view.camera, data->fbo.width, data->fbo.height,
@@ -1369,9 +1566,10 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
 }
 
 // #picking
-static PickingData read_picking_data(const MainFramebuffer& framebuffer, i32 x, i32 y) {
-    static u32 curr = 0;
-    u32 prev = (curr + 1) % 2;
+static PickingData read_picking_data(const MainFramebuffer& framebuffer, i32 x, i32 y) {    
+    static u32 frame = 0;
+    u32 curr = (frame + 0) % 2;
+    u32 prev = (frame + 1) % 2;
 
     PickingData data{};
 
@@ -1405,7 +1603,7 @@ static PickingData read_picking_data(const MainFramebuffer& framebuffer, i32 x, 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     POP_GPU_SECTION()
 
-    curr = prev;
+    ++frame;
     return data;
 }
 
@@ -1526,9 +1724,10 @@ static void draw_main_menu(ApplicationData* data) {
                 if (res.result == platform::FileDialogResult::Ok) {
                     load_dataset_from_file(data, res.path);
                     if (data->representations.buffer.size() > 0) {
-                        reset_representations(data);
+                        init_all_representations(data);
+                        update_all_representations(data);
                     } else {
-                        create_representation(data);
+                        create_representation(data); // Create default representation
                     }
                     data->playback = {};
                     stats::clear_all_properties();
@@ -1646,6 +1845,7 @@ static void draw_main_menu(ApplicationData* data) {
             ImGui::EndGroup();
             ImGui::Separator();
 
+#if EXPERIMENTAL_CONE_TRACED_AO == 1
             // Cone Trace
             ImGui::BeginGroup();
             ImGui::PushID("Cone Trace");
@@ -1657,6 +1857,7 @@ static void draw_main_menu(ApplicationData* data) {
             ImGui::PopID();
             ImGui::EndGroup();
             ImGui::Separator();
+#endif
 
             // DOF
             ImGui::BeginGroup();
@@ -2329,16 +2530,16 @@ static void draw_animation_control_window(ApplicationData* data) {
     ImGui::Combo("Interpolation", (int*)(&data->playback.interpolation), "Nearest\0Linear\0Cubic\0\0");
     switch (data->playback.mode) {
         case PlaybackMode::Playing:
-            if (ImGui::Button(ICON_FA_PAUSE)) data->playback.mode = PlaybackMode::Stopped;
+            if (ImGui::Button((const char*)ICON_FA_PAUSE)) data->playback.mode = PlaybackMode::Stopped;
             break;
         case PlaybackMode::Stopped:
-            if (ImGui::Button(ICON_FA_PLAY)) data->playback.mode = PlaybackMode::Playing;
+            if (ImGui::Button((const char*)ICON_FA_PLAY)) data->playback.mode = PlaybackMode::Playing;
             break;
         default:
             ASSERT(false);
     }
     ImGui::SameLine();
-    if (ImGui::Button(ICON_FA_STOP)) {
+    if (ImGui::Button((const char*)ICON_FA_STOP)) {
         data->playback.mode = PlaybackMode::Stopped;
         data->playback.time = 0.0;
     }
@@ -2359,7 +2560,8 @@ static void draw_representations_window(ApplicationData* data) {
     ImGui::Spacing();
     ImGui::Separator();
     for (int i = 0; i < data->representations.buffer.size(); i++) {
-        bool recompute_colors = false;
+        bool update_args = false;
+        bool update_color = false;
         auto& rep = data->representations.buffer[i];
         const f32 item_width = math::clamp(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
         StringBuffer<128> name;
@@ -2385,29 +2587,32 @@ static void draw_representations_window(ApplicationData* data) {
             ImGui::InputText("name", rep.name.cstr(), rep.name.capacity());
             if (!rep.filter_is_ok) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
             if (ImGui::InputText("filter", rep.filter.cstr(), rep.filter.capacity(), ImGuiInputTextFlags_EnterReturnsTrue)) {
-                recompute_colors = true;
+                update_color = true;
             }
             if (!rep.filter_is_ok) ImGui::PopStyleColor();
-            ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ball & Stick\0Ribbons\0Cartoon\0\0");
+            if (ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ball & Stick\0Ribbons\0Cartoon\0\0")) {
+                update_args = true;
+                
+            }
             if (ImGui::Combo("color mapping", (int*)(&rep.color_mapping),
                              "Uniform Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0\0")) {
-                recompute_colors = true;
+                update_color = true;
             }
             ImGui::PopItemWidth();
             if (rep.color_mapping == ColorMapping::Uniform) {
                 ImGui::SameLine();
                 if (ImGui::ColorEdit4("color", (float*)&rep.uniform_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
-                    recompute_colors = true;
+                    update_color = true;
                 }
             }
             ImGui::PushItemWidth(item_width);
             if (rep.type == RepresentationType::Vdw || rep.type == RepresentationType::Licorice) {
-                ImGui::SliderFloat("radii scale", &rep.radius, 0.1f, 2.f);
+                if (ImGui::SliderFloat("radii scale", &rep.radius, 0.1f, 2.f)) update_args = true;
             }
             if (rep.type == RepresentationType::Ribbons) {
-                ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f);
-                ImGui::SliderFloat("spline width", &rep.width, 0.1f, 2.f);
-                ImGui::SliderFloat("spline thickness", &rep.thickness, 0.1f, 2.f);
+                if (ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f)) update_args = true;
+                if (ImGui::SliderFloat("spline width", &rep.width, 0.1f, 2.f)) update_args = true;
+                if (ImGui::SliderFloat("spline thickness", &rep.thickness, 0.1f, 2.f)) update_args = true;
             }
             ImGui::PopItemWidth();
             ImGui::Spacing();
@@ -2415,8 +2620,37 @@ static void draw_representations_window(ApplicationData* data) {
         }
 
         ImGui::PopID();
+#if USE_MOLD
+        if (update_args) {
+            mold_draw_rep_type type = MOLD_DRAW_REP_DEFAULT;
+            mold_draw_rep_args args = {};
+            switch(rep.type) {
+            case RepresentationType::Vdw:
+                type = MOLD_DRAW_REP_SPACE_FILL;
+                args.space_fill.radius_scale = rep.radius;
+                break;
+            case RepresentationType::Licorice:
+                type = MOLD_DRAW_REP_LICORICE;
+                args.licorice.radius = rep.radius * 0.5f;
+                break;
+            case RepresentationType::Ribbons:
+                type = MOLD_DRAW_REP_RIBBONS;
+                args.ribbons.width_scale = rep.width;
+                args.ribbons.thickness_scale = rep.thickness;
+                break;
+            case RepresentationType::Cartoon:
+                type = MOLD_DRAW_REP_CARTOON;
+                args.cartoon.width_scale = rep.width;
+                args.cartoon.thickness_scale = rep.thickness;
+                break;
+            default: break;
+            }
 
-        if (recompute_colors) {
+            mold_draw_rep_set_type_and_args(&rep.mold_rep, type, args);
+        }
+#endif
+
+        if (update_color) {
             update_representation(data, &rep);
         }
     }
@@ -2855,7 +3089,7 @@ static void draw_atom_info_window(const MoleculeStructure& mol, int atom_idx, in
 
     /*
     // @TODO: REIMPLEMENT THIS
-    if (res_idx < mol.backbone.segment.angleangles.size() && res_idx < mol.backbone.segments.size() && valid_segment(mol.backbone.segments[res_idx])) {
+    if (res_idx < mol.backbone.segment.angleangles.size() && res_idx < mol.backbone.segments.size() && valid_backbone_atoms(mol.backbone.segments[res_idx])) {
         const auto angles = math::rad_to_deg((vec2)mol.backbone.angles[res_idx]);
         len += snprintf(buff + len, 256 - len, u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0\n", angles.x, angles.y);
     }
@@ -3263,9 +3497,8 @@ static void draw_ramachandran_window(ApplicationData* data) {
     // const int32 frame = (int32)data->time;
     const Range<i32> frame_range = data->time_filter.range;
     const auto& mol = data->dynamic.molecule;
-    // Array<const BackboneAngle> trajectory_angles = get_backbone_angles(traj_angles, frame_range.beg, frame_range.ext());
-    Array<const BackboneAngle> current_angles = {mol.backbone.segment.angle, mol.backbone.segment.count};
-    Array<const BackboneSegment> backbone_segments = {mol.backbone.segment.segment, mol.backbone.segment.count};
+    Array<const BackboneAngle> backbone_angles = get_residue_backbone_angles(mol);
+    Array<const BackboneAtoms> backbone_atoms  = get_residue_backbone_atoms(mol);
     Bitfield& atom_selection = data->selection.current_selection_mask;
     Bitfield& atom_highlight = data->selection.current_highlight_mask;
 
@@ -3312,31 +3545,35 @@ static void draw_ramachandran_window(ApplicationData* data) {
         const f32 base_radius = data->ramachandran.current.base.radius;
         const f32 selected_radius = data->ramachandran.current.selection.radius;
 
-        for (i64 i = 0; i < backbone_segments.size(); i++) {
-            const auto& seg = backbone_segments[i];
-            const auto& angle = current_angles[i];
-            // const auto& seg = backbone_segments[i];
-            if (angle.phi == 0.f || angle.psi == 0.f) continue;
+        for (i64 ci = 0; ci < mol.chain.count; ++ci) {
+            const auto range = mol.chain.residue_range[ci];
+            for (i64 i = range.beg; i < range.end; i++) {
+                const auto& atoms = backbone_atoms[i];
+                const auto& angle = backbone_angles[i];
+                // const auto& seg = backbone_segments[i];
+                if (angle.phi == 0.f || angle.psi == 0.f) continue;
 
-            const auto selected = bitfield::any_bit_set_in_range(atom_selection, mol.residue.atom_range[seg.res_idx]);
-            const auto highlight = bitfield::any_bit_set_in_range(atom_highlight, mol.residue.atom_range[seg.res_idx]);
-            const auto radius = ((highlight || selected) ? selected_radius : base_radius) * zoom_factor;
-            const auto fill_color = highlight ? highlight_color : (selected ? selected_color : base_color);
+                const auto selected  = bitfield::any_bit_set_in_range(atom_selection, mol.residue.atom_range[i]);
+                const auto highlight = bitfield::any_bit_set_in_range(atom_highlight, mol.residue.atom_range[i]);
+                const auto radius = ((highlight || selected) ? selected_radius : base_radius) * zoom_factor;
+                const auto fill_color = selected ? selected_color : (highlight ? highlight_color : base_color);
 
-            const ImVec2 coord =
-                ImLerp(bb.Min, bb.Max, ImVec2(angle.phi * ONE_OVER_TWO_PI + 0.5f, -angle.psi * ONE_OVER_TWO_PI + 0.5f));  // [-PI, PI] -> [0, 1]
-            const ImVec2 min_box(math::round(coord.x - radius), math::round(coord.y - radius));
-            const ImVec2 max_box(math::round(coord.x + radius), math::round(coord.y + radius));
-            if (radius > 1.f) {
-                dl->AddRectFilled(min_box, max_box, fill_color);
-                dl->AddRect(min_box, max_box, border_color, 0.f, 15, 1.f);
-            } else {
-                dl->AddRectFilled(min_box, max_box, border_color);
-            }
-            if (min_box.x <= mouse_pos.x && mouse_pos.x <= max_box.x && min_box.y <= mouse_pos.y && mouse_pos.y <= max_box.y) {
-                mouse_hover_idx = i;
+                const ImVec2 coord =
+                    ImLerp(bb.Min, bb.Max, ImVec2(angle.phi * ONE_OVER_TWO_PI + 0.5f, -angle.psi * ONE_OVER_TWO_PI + 0.5f));  // [-PI, PI] -> [0, 1]
+                const ImVec2 min_box(math::round(coord.x - radius), math::round(coord.y - radius));
+                const ImVec2 max_box(math::round(coord.x + radius), math::round(coord.y + radius));
+                if (radius > 1.f) {
+                    dl->AddRectFilled(min_box, max_box, fill_color);
+                    dl->AddRect(min_box, max_box, border_color, 0.f, 15, 1.f);
+                } else {
+                    dl->AddRectFilled(min_box, max_box, border_color);
+                }
+                if (min_box.x <= mouse_pos.x && mouse_pos.x <= max_box.x && min_box.y <= mouse_pos.y && mouse_pos.y <= max_box.y) {
+                    mouse_hover_idx = i;
+                }
             }
         }
+
     }
 
     const auto cx = math::round(math::mix(bb.Min.x, bb.Max.x, 0.5f));
@@ -3352,48 +3589,48 @@ static void draw_ramachandran_window(ApplicationData* data) {
     static Mode region_mode = Mode::Append;
     const ImVec2 region_x1 = ImGui::GetMousePos();
 
+    const bool mouse_hit     = (data->ctx.input.mouse.hit[0] || data->ctx.input.mouse.hit[1]);
+    const bool mouse_down    = (data->ctx.input.mouse.down[0] || data->ctx.input.mouse.down[1]);
+    const bool mouse_clicked = (data->ctx.input.mouse.clicked[0] || data->ctx.input.mouse.clicked[1]);
+
     const bool shift_down = ImGui::GetIO().KeyShift;
 
     if (ImGui::IsItemHovered()) {
-        if (shift_down && (data->ctx.input.mouse.hit[0] || data->ctx.input.mouse.hit[1])) {
-            region_x0 = ImGui::GetIO().MousePos;
-            region_mode = data->ctx.input.mouse.hit[0] ? Mode::Append : Mode::Remove;
-        }
-
-        if (shift_down && (data->ctx.input.mouse.down[0] || data->ctx.input.mouse.down[1]) && region_x1 != region_x0) {
-            region_select = true;
-        }
-
-        if (shift_down && !region_select) {
-            if (data->ctx.input.mouse.clicked[0]) {
-                if (mouse_hover_idx != -1) {
-                    const ResIdx res_idx = mol.backbone.segment.segment[mouse_hover_idx].res_idx;
-                    const bool append = ImGui::GetIO().MouseClicked[0];
-                    if (append) {
-                        bitfield::set_range(data->selection.current_selection_mask, mol.residue.atom_range[res_idx]);
-                    } else {
-                        bitfield::clear_range(data->selection.current_selection_mask, mol.residue.atom_range[res_idx]);
-                    }
-                    data->gpu_buffers.dirty.selection = true;
-                }
-            } else if (data->ctx.input.mouse.clicked[1]) {
-                bitfield::clear_all(data->selection.current_selection_mask);
-                data->gpu_buffers.dirty.selection = true;
-            }
-        }
+        clear_highlight(data);
+        //bitfield::clear_all(data->selection.current_highlight_mask);
+        //data->gpu_buffers.dirty.selection = true;
 
         const ImVec2 normalized_coord = ((ImGui::GetMousePos() - bb.Min) / (bb.Max - bb.Min) - ImVec2(0.5f, 0.5f)) * ImVec2(1, -1);
         const ImVec2 angles = normalized_coord * 2.f * 180.f;
         ImGui::BeginTooltip();
-        ImGui::Text(u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0", angles.x, angles.y);
+        ImGui::Text((const char*)u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0", angles.x, angles.y);
         if (!region_select && mouse_hover_idx != -1) {
-            const ResIdx res_idx = mol.backbone.segment.segment[mouse_hover_idx].res_idx;
+            const ResIdx res_idx = mouse_hover_idx;
             ImGui::Text("Residue[%i]: %s", res_idx, mol.residue.name[res_idx].cstr());
-            bitfield::clear_all(data->selection.current_highlight_mask);
-            bitfield::set_range(data->selection.current_highlight_mask, mol.residue.atom_range[res_idx]);
-            data->gpu_buffers.dirty.selection = true;
+            modify_highlight(data, mol.residue.atom_range[res_idx], SelectionOperator::Replace);
         }
         ImGui::EndTooltip();
+
+        if (shift_down && mouse_hit) {
+            region_x0 = ImGui::GetIO().MousePos;
+            region_mode = data->ctx.input.mouse.hit[0] ? Mode::Append : Mode::Remove;
+        }
+
+        if (shift_down && mouse_down && region_x1 != region_x0) {
+            region_select = true;
+        }
+
+        if (shift_down && !region_select && mouse_clicked) {
+            if (mouse_hover_idx != -1) {
+                const ResIdx res_idx = mouse_hover_idx;
+                const bool append = data->ctx.input.mouse.clicked[0];
+                SelectionOperator op = append ? SelectionOperator::Or : SelectionOperator::Clear;                
+                modify_selection(data, mol.residue.atom_range[res_idx], op);
+            } else if (data->ctx.input.mouse.clicked[1]) {
+                bitfield::clear_all(data->selection.current_highlight_mask);
+                bitfield::clear_all(data->selection.current_selection_mask);
+            }
+        }
     }
 
     if (region_select) {
@@ -3404,39 +3641,44 @@ static void draw_ramachandran_window(ApplicationData* data) {
         dl->AddRectFilled(x0, x1, fill_col);
         dl->AddRect(x0, x1, line_col);
 
-        bitfield::clear_all(data->selection.current_highlight_mask);
+        //bitfield::clear_all(data->selection.current_highlight_mask);
+        //clear_highlight(data);
 
-        for (i64 i = 0; i < current_angles.size(); i++) {
-            const auto& angle = current_angles[i];
-            if (angle.phi == 0.f || angle.psi == 0.f) continue;
-            const ImVec2 coord =
-                ImLerp(bb.Min, bb.Max, ImVec2(angle.phi * ONE_OVER_TWO_PI + 0.5f, -angle.psi * ONE_OVER_TWO_PI + 0.5f));  // [-PI, PI] -> [0, 1]
-            if (coord.x < x0.x || x1.x < coord.x) continue;
-            if (coord.y < x0.y || x1.y < coord.y) continue;
+        for (const auto res_range : get_chain_residue_ranges(mol)) {
+            for (i64 i = res_range.beg; i < res_range.end; ++i) {
+                const auto& angle = backbone_angles[i];
+                if (angle.phi == 0.f || angle.psi == 0.f) continue;
+                const ImVec2 coord =
+                    ImLerp(bb.Min, bb.Max, ImVec2(angle.phi * ONE_OVER_TWO_PI + 0.5f, -angle.psi * ONE_OVER_TWO_PI + 0.5f));  // [-PI, PI] -> [0, 1]
+                if (coord.x < x0.x || x1.x < coord.x) continue;
+                if (coord.y < x0.y || x1.y < coord.y) continue;
             
-            bitfield::set_range(data->selection.current_highlight_mask, mol.residue.atom_range[backbone_segments[i].res_idx]);
+                modify_highlight(data, mol.residue.atom_range[i], SelectionOperator::Or);
+                //bitfield::set_range(data->selection.current_highlight_mask, mol.residue.atom_range[i]);
+            }
         }
         
-        if (region_mode == Mode::Append) {
-            // Nothing!
-        } else {
+        if (region_mode == Mode::Remove) {
             bitfield::and_not_field(data->selection.current_highlight_mask, data->selection.current_selection_mask, data->selection.current_highlight_mask);
-        }        
+        }
 
         if (!shift_down || !(data->ctx.input.mouse.down[0] || data->ctx.input.mouse.down[1])) {
             // Commit range to selection
             if (region_mode == Mode::Append) {
-                bitfield::or_field(data->selection.current_selection_mask, data->selection.current_selection_mask, data->selection.current_highlight_mask);
+                //bitfield::or_field(data->selection.current_selection_mask, data->selection.current_selection_mask, data->selection.current_highlight_mask);
+                modify_selection(data, data->selection.current_highlight_mask, SelectionOperator::Or);
             } else {
-                bitfield::copy(data->selection.current_selection_mask, data->selection.current_highlight_mask);
+                modify_selection(data, data->selection.current_highlight_mask, SelectionOperator::Replace);
+                //bitfield::copy(data->selection.current_selection_mask, data->selection.current_highlight_mask);
             }
+            //bitfield::clear_all(data->selection.current_highlight_mask);)
             region_select = false;
         }
-        data->gpu_buffers.dirty.selection = true;
+        //data->gpu_buffers.dirty.selection = true;
     }
 
-    // ZOOM
     if (ImGui::IsItemHovered()) {
+        // ZOOM
         if (ImGui::GetIO().KeyCtrl && ImGui::GetIO().MouseWheel != 0.f) {
             const ImVec2 pos = (ImGui::GetIO().MousePos - cont_min);
             const float mouse_wheel_delta = ImGui::GetIO().MouseWheel;
@@ -3451,7 +3693,8 @@ static void draw_ramachandran_window(ApplicationData* data) {
             }
         }
 
-        if (!region_select && zoom_factor > 1.0f && ImGui::GetIO().MouseDown[0] && ImGui::GetIO().MouseDelta != ImVec2(0,0)) {
+        // PAN
+        if (!shift_down && zoom_factor > 1.0f && ImGui::GetIO().MouseDown[1] && ImGui::GetIO().MouseDelta != ImVec2(0,0)) {
             ImGui::SetScrollX(ImGui::GetScrollX() - ImGui::GetIO().MouseDelta.x);
             ImGui::SetScrollY(ImGui::GetScrollY() - ImGui::GetIO().MouseDelta.y);
         }
@@ -3760,8 +4003,8 @@ static void draw_shape_space_window(ApplicationData* data) {
         if (ImGui::GetIO().MouseDown[0]) {
             data->playback.time = (float)mouse_hover_idx;
         }
-        ImGui::Text(u8"\u03BB: (%.2f, %.2f, %.2f)", mouse_hover_ev.x, mouse_hover_ev.y, mouse_hover_ev.z);
-        ImGui::Text(u8"\u03B1: %1.2f, \u03B2: %1.2f, \u03B3: %1.2f", mouse_hover_w.x, mouse_hover_w.y, mouse_hover_w.z);
+        ImGui::Text((const char*)u8"\u03BB: (%.2f, %.2f, %.2f)", mouse_hover_ev.x, mouse_hover_ev.y, mouse_hover_ev.z);
+        ImGui::Text((const char*)u8"\u03B1: %1.2f, \u03B2: %1.2f, \u03B3: %1.2f", mouse_hover_w.x, mouse_hover_w.y, mouse_hover_w.z);
         ImGui::EndTooltip();
     }
 
@@ -3940,7 +4183,21 @@ static void draw_density_volume_window(ApplicationData* data) {
             ImGui::Checkbox("Superimpose ensemble", &data->ensemble_tracking.superimpose_structures);
             ImGui::Combo("Tracking mode", (int*)(&data->ensemble_tracking.tracking_mode), "Absolute\0Relative\0\0");
 
-            ImGui::InputText("Density filter", filter_buf, 128, ImGuiInputTextFlags_EnterReturnsTrue);
+            if (ImGui::InputText("Density filter", filter_buf, 128, ImGuiInputTextFlags_EnterReturnsTrue)) {
+                Bitfield filter_mask;
+                bitfield::init(&filter_mask, data->dynamic.molecule.atom.count);
+                defer { bitfield::free(&filter_mask); };
+
+                DynamicArray<StoredSelection> sel;
+                sel.push_back({"current", data->selection.current_selection_mask});
+                for (const auto& s : data->selection.stored_selections) {
+                    sel.push_back({s.name, s.atom_mask});
+                }
+                const bool filter_ok = filter::compute_filter_mask(filter_mask, filter_buf, data->dynamic.molecule, sel);
+                if (filter_ok) {
+                    modify_highlight(data, filter_mask, SelectionOperator::Replace);
+                }
+            }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Speficy a filter for what should be included in the density computation");
             }
@@ -3969,7 +4226,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                         bitfield::clear_all(mask);
                         for (i64 j = 0; j < ensemble_mask.size(); ++j) {
                             if (ensemble_mask[j]) {
-                                bitfield::set_bit(data->selection.current_highlight_mask, structure.offset + j);
+                                bitfield::set_bit(mask, structure.offset + j);
                             }
                         }
                         data->gpu_buffers.dirty.selection = true;
@@ -4014,9 +4271,9 @@ static void draw_density_volume_window(ApplicationData* data) {
                     for (const auto& s : data->selection.stored_selections) {
                         sel.push_back({s.name, s.atom_mask});
                     }
-                    //const bool filter_ok = filter::compute_filter_mask(filter_mask, filter_buf, data->dynamic.molecule, sel);
+                    const bool filter_ok = filter::compute_filter_mask(filter_mask, filter_buf, data->dynamic.molecule, sel);
 
-                    if (bitfield::number_of_bits_set(filter_mask) > 0) {
+                    if (filter_ok && bitfield::number_of_bits_set(filter_mask) > 0) {
                         const auto ensemble_structures = data->ensemble_tracking.structures;
 
                         data->density_volume.volume_data_mutex.lock();
@@ -4061,6 +4318,12 @@ static void draw_density_volume_window(ApplicationData* data) {
 
         if (ImGui::Button("Create Ensemble", button_size)) {
             ImGui::OpenPopup("Create Ensemble Popup");
+        }
+
+        if (ImGui::Button("Clear Ensemble", button_size)) {
+            data->ensemble_tracking.structures.clear();
+            data->ensemble_tracking.superimpose_structures = false;
+            bitfield::clear_all(data->ensemble_tracking.atom_mask);
         }
 
         if (ImGui::BeginPopup("Create Ensemble Popup")) {
@@ -4274,19 +4537,19 @@ static void init_framebuffer(MainFramebuffer* fbo, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glBindBuffer(GL_PIXEL_PACK_BUFFER, fbo->pbo_picking.color[0]);
-    glBufferData(GL_PIXEL_PACK_BUFFER, 4, 0, GL_DYNAMIC_READ);
+    glBufferData(GL_PIXEL_PACK_BUFFER, 4, NULL, GL_DYNAMIC_READ);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 
     glBindBuffer(GL_PIXEL_PACK_BUFFER, fbo->pbo_picking.color[1]);
-    glBufferData(GL_PIXEL_PACK_BUFFER, 4, 0, GL_DYNAMIC_READ);
+    glBufferData(GL_PIXEL_PACK_BUFFER, 4, NULL, GL_DYNAMIC_READ);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 
     glBindBuffer(GL_PIXEL_PACK_BUFFER, fbo->pbo_picking.depth[0]);
-    glBufferData(GL_PIXEL_PACK_BUFFER, 4, 0, GL_DYNAMIC_READ);
+    glBufferData(GL_PIXEL_PACK_BUFFER, 4, NULL, GL_DYNAMIC_READ);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 
     glBindBuffer(GL_PIXEL_PACK_BUFFER, fbo->pbo_picking.depth[1]);
-    glBufferData(GL_PIXEL_PACK_BUFFER, 4, 0, GL_DYNAMIC_READ);
+    glBufferData(GL_PIXEL_PACK_BUFFER, 4, NULL, GL_DYNAMIC_READ);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -4341,8 +4604,9 @@ static void init_molecule_buffers(ApplicationData* data) {
     {
         i32 control_idx = 0;
         i32 spline_idx = 0;
-        for (const auto& seq : get_backbone_sequences(mol)) {
-            const auto backbone = get_backbone_segments(mol, seq);
+        for (i64 ci = 0; ci < mol.chain.count; ++ci) {
+            const auto range = mol.chain.residue_range[ci];
+            const auto backbone = Array<const BackboneAtoms>(mol.residue.backbone.atoms + range.beg, range.ext());
             const i32 count = (i32)backbone.size();
 
             /*
@@ -4554,16 +4818,16 @@ static void copy_molecule_data_to_buffers(ApplicationData* data) {
 
         glBindBuffer(GL_ARRAY_BUFFER, data->gpu_buffers.selection);
         u8* sel_gpu = (u8*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-
         if (!sel_gpu) {
             LOG_ERROR("Could not map selection buffer");
             return;
         }
 
         for (i64 i = 0; i < N; i++) {
-            const bool selection = bitfield::get_bit(data->selection.current_selection_mask, i);
-            const bool highlight = bitfield::get_bit(data->selection.current_highlight_mask, i);
-            sel_gpu[i] = (selection ? 0x2 : 0) | (highlight ? 0x1 : 0);
+            u8 flags = 0;
+            flags |= bitfield::get_bit(data->selection.current_highlight_mask, i) ? 0x1 : 0;
+            flags |= bitfield::get_bit(data->selection.current_selection_mask, i) ? 0x2 : 0;
+            sel_gpu[i] = flags;
         }
         glUnmapBuffer(GL_ARRAY_BUFFER);
     }
@@ -4617,6 +4881,86 @@ static void init_molecule_data(ApplicationData* data) {
         data->picking.idx = NO_PICKING_IDX;
         data->selection.hovered = -1;
         data->selection.right_clicked = -1;
+
+#if USE_MOLD
+
+        const auto& mol = data->dynamic.molecule;
+
+        const char** atom_names = (const char**)TMP_MALLOC(data->dynamic.molecule.atom.count * sizeof(const char**));
+        //uint8_t* secondary_structure = (uint8_t*)TMP_MALLOC(data->dynamic.molecule.residue.count * sizeof(uint8_t));
+        //mold_backbone_atoms* residue_bb_atoms = (mold_backbone_atoms*)TMP_MALLOC(data->dynamic.molecule.residue.count * sizeof(mold_backbone_atoms));
+        defer {
+            TMP_FREE(atom_names);
+            //TMP_FREE(secondary_structure);
+            //TMP_FREE(residue_bb_atoms);
+        };
+
+        for (int64_t i = 0; i < data->dynamic.molecule.atom.count; ++i) {
+            atom_names[i] = data->dynamic.molecule.atom.label[i].cstr();
+        }
+
+        {
+            mold_util_backbone_args args = {
+                .backbone_atoms = (mold_backbone_atoms*)mol.residue.backbone.atoms,
+                .atom = {
+                    .count = (uint32_t)mol.atom.count,
+                    .name = atom_names,
+                },
+                .residue = {
+                    .count = (uint32_t)mol.residue.count,
+                    .atom_range = (const mold_range*)mol.residue.atom_range,
+                }
+            };
+            mold_util_extract_backbone(&args);
+        }
+
+        {
+            mold_util_secondary_structure_args args = {
+                .secondary_structure = (mold_secondary_structure*)mol.residue.backbone.secondary_structure,
+                .atom = {
+                    .x = mol.atom.position.x,
+                    .y = mol.atom.position.y,
+                    .z = mol.atom.position.z, 
+                },
+                .residue = {
+                    .count = (uint32_t)mol.residue.count,
+                    //.atom_range = (const mold_range*)mol.residue.atom_range,
+                    .backbone_atoms = (const mold_backbone_atoms*)mol.residue.backbone.atoms,
+                },
+                .chain = {
+                    .count = (uint32_t)mol.chain.count,
+                    .residue_range = (const mold_range*)mol.chain.residue_range,
+                }
+            };
+            molt_util_extract_secondary_structure(&args);
+        }
+
+        mold_draw_mol_desc desc = {
+            .atom = {
+                .count = (uint32_t)mol.atom.count,
+                .x = mol.atom.position.x,
+                .y = mol.atom.position.y,
+                .z = mol.atom.position.z,
+                .radius = mol.atom.radius
+            },
+            .bond = {
+                .count = (uint32_t)mol.covalent_bond.count,
+                .atom_bond = (const mold_bond*)mol.covalent_bond.bond
+            },
+            .residue = {
+                .count = (uint32_t)mol.residue.count,
+                .atom_range = (const mold_range*)mol.residue.atom_range,
+                .backbone_atoms = (const mold_backbone_atoms*)mol.residue.backbone.atoms,
+                .secondary_structure = (const mold_secondary_structure*)mol.residue.backbone.secondary_structure
+            },
+            .chain = {
+                .count = (uint32_t)mol.chain.count,
+                .residue_range = (const mold_range*)mol.chain.residue_range
+            }
+        };
+        mold_draw_mol_init(&data->mold.mol, &desc);
+#endif
+
         /*
         const auto& mol = data->dynamic.molecule;
         LOG_NOTE("Computing VDW sdf...");
@@ -4654,7 +4998,6 @@ static void init_trajectory_data(ApplicationData* data) {
 static void on_trajectory_load_complete(ApplicationData* data) {
 #if DEPERIODIZE_ON_LOAD
     if (data->dynamic.trajectory) {
-        /*
         task_system::ID id = task_system::enqueue_pool("De-periodizing trajectory", data->dynamic.trajectory.num_frames,
             [data](task_system::TaskSetRange range) {
                 auto& mol = data->dynamic.molecule;
@@ -4666,7 +5009,6 @@ static void on_trajectory_load_complete(ApplicationData* data) {
                 }
             });
         task_system::wait_for_task(id);
-        */
         task_system::enqueue_main("Load Complete Tasks",
             [data]() {
                 init_trajectory_data(data);
@@ -4935,7 +5277,8 @@ static void load_workspace(ApplicationData* data, CStringView file) {
 
     data->playback = {};
     reset_view(data, false, true);
-    reset_representations(data);
+    init_all_representations(data);
+    update_all_representations(data);
 }
 
 static void save_workspace(ApplicationData* data, CStringView file) {
@@ -5065,7 +5408,8 @@ static Representation* create_representation(ApplicationData* data, Representati
     Representation& rep = data->representations.buffer.push_back({});
     rep.type = type;
     rep.color_mapping = color_mapping;
-    rep.filter = filter;
+    rep.filter = filter;   
+    init_representation(data, &rep);
     update_representation(data, &rep);
     return &rep;
 }
@@ -5074,6 +5418,7 @@ static Representation* clone_representation(ApplicationData* data, const Represe
     ASSERT(data);
     Representation& clone = data->representations.buffer.push_back(rep);
     clone.color_buffer = 0;
+    init_representation(data, &clone);
     update_representation(data, &clone);
     return &clone;
 }
@@ -5085,6 +5430,9 @@ static void remove_representation(ApplicationData* data, int idx) {
     auto& rep = data->representations.buffer[idx];
     if (rep.color_buffer) glDeleteBuffers(1, &rep.color_buffer);
     if (rep.atom_mask) bitfield::free(&rep.atom_mask);
+#if USE_MOLD
+    mold_draw_rep_free(&rep.mold_rep);
+#endif
     data->representations.buffer.remove(&rep);
 }
 
@@ -5139,15 +5487,11 @@ static void update_representation(ApplicationData* data, Representation* rep) {
             color_atoms_chain_index(colors, mol);
             break;
         case ColorMapping::SecondaryStructure:
-            color_atoms_backbone_angles(colors, mol, ramachandran::get_color_image());
+            color_atoms_secondary_structure(colors, mol);
             break;
         default:
             ASSERT(false);
             break;
-    }
-
-    if (rep->atom_mask.size() != mol.atom.count) {
-        bitfield::init(&rep->atom_mask, mol.atom.count);
     }
 
     DynamicArray<StoredSelection> sel;
@@ -5160,10 +5504,57 @@ static void update_representation(ApplicationData* data, Representation* rep) {
     filter_colors(colors, rep->atom_mask);
     data->representations.atom_visibility_mask_dirty = true;
 
+#if USE_MOLD
+    {
+        mold_draw_rep_type type = MOLD_DRAW_REP_DEFAULT;
+        mold_draw_rep_args args = {};
+        switch(rep->type) {
+        case RepresentationType::Vdw:
+            type = MOLD_DRAW_REP_SPACE_FILL;
+            args.space_fill.radius_scale = rep->radius;
+            break;
+        case RepresentationType::Licorice:
+            type = MOLD_DRAW_REP_LICORICE;
+            args.licorice.radius = rep->radius * 0.5f;
+            break;
+        case RepresentationType::Ribbons:
+            type = MOLD_DRAW_REP_RIBBONS;
+            args.ribbons.width_scale = rep->width;
+            args.ribbons.thickness_scale = rep->thickness;
+            break;
+        case RepresentationType::Cartoon:
+            type = MOLD_DRAW_REP_CARTOON;
+            args.cartoon.width_scale = rep->width;
+            args.cartoon.thickness_scale = rep->thickness;
+            break;
+        default: break;
+        }
+
+        mold_draw_rep_set_type_and_args(&rep->mold_rep, type, args);
+        mold_draw_rep_set_color(&rep->mold_rep, 0, (uint32_t)mol.atom.count, colors.data(), 0);
+    }
+#endif
+
     if (!rep->color_buffer) glGenBuffers(1, &rep->color_buffer);
     glBindBuffer(GL_ARRAY_BUFFER, rep->color_buffer);
     glBufferData(GL_ARRAY_BUFFER, colors.size_in_bytes(), colors.data(), GL_STATIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+static void init_representation(ApplicationData* data, Representation* rep) {
+#if USE_MOLD
+    mold_draw_rep_init(&rep->mold_rep, &data->mold.mol);
+#endif
+
+    if (rep->atom_mask.size() != data->dynamic.molecule.atom.count) {
+        bitfield::init(&rep->atom_mask, data->dynamic.molecule.atom.count);
+    }
+}
+
+static void init_all_representations(ApplicationData* data) {
+    for (auto& rep : data->representations.buffer) {
+        init_representation(data, &rep);
+    }
 }
 
 static void reset_representations(ApplicationData* data) {
@@ -5243,7 +5634,7 @@ static bool handle_selection(ApplicationData* data) {
     bitfield::clear_all(mask);
     bitfield::clear_all(data->selection.current_highlight_mask);
     data->gpu_buffers.dirty.selection = true;
-
+        
     // Range<int32> picking_range = {0, 0};
 
     if (data->picking.idx != NO_PICKING_IDX && !region_select) {
@@ -5286,6 +5677,24 @@ static bool handle_selection(ApplicationData* data) {
             const vec2 res = {data->ctx.window.width, data->ctx.window.height};
             const mat4 mvp = data->view.param.matrix.current.view_proj;
 
+            for (i64 i = 0; i < data->dynamic.molecule.atom.count; ++i) {
+                const float x = data->dynamic.molecule.atom.position.x[i];
+                const float y = data->dynamic.molecule.atom.position.y[i];
+                const float z = data->dynamic.molecule.atom.position.z[i];
+
+                const float p_x = mvp[0][0] * x + mvp[1][0] * y + mvp[2][0] * z + mvp[3][0];
+                const float p_y = mvp[0][1] * x + mvp[1][1] * y + mvp[2][1] * z + mvp[3][1];
+                const float p_w = mvp[0][3] * x + mvp[1][3] * y + mvp[2][3] * z + mvp[3][3];
+
+                vec2 c;
+                c.x = (p_x / p_w * 0.5f + 0.5f) * res.x;
+                c.y = (-p_y / p_w * 0.5f + 0.5f) * res.y;
+
+                if (min_p.x <= c.x && c.x <= max_p.x && min_p.y <= c.y && c.y <= max_p.y) {
+                    bitfield::set_bit(mask, i);
+                }
+            }
+            /*
             bitfield::for_each_bit_set(data->representations.atom_visibility_mask, [data, &mvp, &res, &min_p, &max_p, &mask](i64 i) {
                 // @PERF: Do the projection manually. GLM is super slow in doing the matrix vector multiplication on msvc for some reason...
                 const float x = data->dynamic.molecule.atom.position.x[i];
@@ -5304,6 +5713,7 @@ static bool handle_selection(ApplicationData* data) {
                     bitfield::set_bit(mask, i);
                 }
             });
+            */
             // for (i64 i = 0; i < N; i++) {
             //    if (!bitfield::get_bit(data->representations.atom_visibility_mask, i)) continue;
 
@@ -5501,6 +5911,7 @@ static void draw_residue_aabbs(const ApplicationData& data) {
     POP_GPU_SECTION()
 }
 
+#if EXPERIMENTAL_CONE_TRACED_AO == 1
 static void init_occupancy_volume(ApplicationData* data) {
     const AABB box = compute_aabb(data->dynamic.molecule.atom.position, data->dynamic.molecule.atom.radius, data->dynamic.molecule.atom.count);
     cone_trace::init_occlusion_volume(&data->occupancy_volume.vol, box.min, box.max, 8.0f);
@@ -5512,14 +5923,15 @@ static void init_occupancy_volume(ApplicationData* data) {
     }
     //data->occupancy_volume.vol_mutex.unlock();
 }
+#endif
 
-static void fill_gbuffer(const ApplicationData& data) {
+static void fill_gbuffer(ApplicationData* data) {
     const vec4 CLEAR_INDEX = vec4(1, 1, 1, 1);
     const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2,
                                    GL_COLOR_ATTACHMENT3, GL_COLOR_ATTACHMENT4, GL_COLOR_ATTACHMENT5};
 
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.fbo.deferred.fbo);
-    glViewport(0, 0, data.fbo.width, data.fbo.height);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data->fbo.deferred.fbo);
+    glViewport(0, 0, data->fbo.width, data->fbo.height);
 
     glDepthMask(1);
     glColorMask(1, 1, 1, 1);
@@ -5552,20 +5964,20 @@ static void fill_gbuffer(const ApplicationData& data) {
     PUSH_GPU_SECTION("G-Buffer fill")
 
     // SIMULATION BOX
-    if (data.simulation_box.enabled && data.dynamic.trajectory) {
+    if (data->simulation_box.enabled && data->dynamic.trajectory) {
         PUSH_GPU_SECTION("Draw Simulation Box")
 
-        immediate::set_model_view_matrix(data.view.param.matrix.current.view);
-        immediate::set_proj_matrix(data.view.param.matrix.current.proj_jittered);
+        immediate::set_model_view_matrix(data->view.param.matrix.current.view);
+        immediate::set_proj_matrix(data->view.param.matrix.current.proj_jittered);
 
-        const mat3 box = get_trajectory_frame(data.dynamic.trajectory, data.playback.frame).box;
+        const mat3 box = get_trajectory_frame(data->dynamic.trajectory, data->playback.frame).box;
         const vec3 min_box = box * vec3(0.0f);
         const vec3 max_box = box * vec3(1.0f);
 
         // Simulation domain
-        immediate::draw_box_wireframe(min_box, max_box, math::convert_color(data.simulation_box.color));
+        immediate::draw_box_wireframe(min_box, max_box, math::convert_color(data->simulation_box.color));
 
-        for (const auto& ref : data.reference_frame.frames) {
+        for (const auto& ref : data->reference_frame.frames) {
             if (ref.show) {
                 immediate::draw_box_wireframe(min_box, max_box, ref.reference_to_world, immediate::COLOR_GREEN);
             }
@@ -5582,16 +5994,16 @@ static void fill_gbuffer(const ApplicationData& data) {
 
         // draw_residue_aabbs(data);
 
-        immediate::set_model_view_matrix(data.view.param.matrix.current.view);
-        immediate::set_proj_matrix(data.view.param.matrix.current.proj);
+        immediate::set_model_view_matrix(data->view.param.matrix.current.view);
+        immediate::set_proj_matrix(data->view.param.matrix.current.proj);
 
         // HYDROGEN BONDS
-        if (data.hydrogen_bonds.enabled && !data.hydrogen_bonds.overlay) {
-            const auto& mol = data.dynamic.molecule;
-            for (const auto& bond : data.hydrogen_bonds.bonds) {
+        if (data->hydrogen_bonds.enabled && !data->hydrogen_bonds.overlay) {
+            const auto& mol = data->dynamic.molecule;
+            for (const auto& bond : data->hydrogen_bonds.bonds) {
                 const vec3 pos0 = get_atom_position(mol, bond.acc_idx);
                 const vec3 pos1 = get_atom_position(mol, bond.hyd_idx);
-                immediate::draw_line(pos0, pos1, math::convert_color(data.hydrogen_bonds.color));
+                immediate::draw_line(pos0, pos1, math::convert_color(data->hydrogen_bonds.color));
             }
         }
 
@@ -5604,27 +6016,27 @@ static void fill_gbuffer(const ApplicationData& data) {
         glDisable(GL_DEPTH_TEST);
         glDepthMask(0);
 
-        immediate::set_model_view_matrix(data.view.param.matrix.current.view);
-        immediate::set_proj_matrix(data.view.param.matrix.current.proj);
-        stats::visualize(data.dynamic);
+        immediate::set_model_view_matrix(data->view.param.matrix.current.view);
+        immediate::set_proj_matrix(data->view.param.matrix.current.proj);
+        stats::visualize(data->dynamic);
 
         // HYDROGEN BONDS
-        if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.overlay) {
-            for (const auto& bond : data.hydrogen_bonds.bonds) {
-                const vec3 p0 = get_atom_position(data.dynamic.molecule, bond.acc_idx);
-                const vec3 p1 = get_atom_position(data.dynamic.molecule, bond.hyd_idx);
-                immediate::draw_line(p0, p1, math::convert_color(data.hydrogen_bonds.color));
+        if (data->hydrogen_bonds.enabled && data->hydrogen_bonds.overlay) {
+            for (const auto& bond : data->hydrogen_bonds.bonds) {
+                const vec3 p0 = get_atom_position(data->dynamic.molecule, bond.acc_idx);
+                const vec3 p1 = get_atom_position(data->dynamic.molecule, bond.hyd_idx);
+                immediate::draw_line(p0, p1, math::convert_color(data->hydrogen_bonds.color));
             }
         }
 
         // REFERENCE FRAME
-        for (const auto& ref : data.reference_frame.frames) {
+        for (const auto& ref : data->reference_frame.frames) {
             if (ref.show) {
                 const mat4 B = ref.basis;
 
                 const auto tracking_data = structure_tracking::get_tracking_data(ref.id);
                 if (tracking_data) {
-                    const mat3 pca = tracking_data->eigen.vectors[data.playback.frame];
+                    const mat3 pca = tracking_data->eigen.vectors[data->playback.frame];
                     immediate::draw_line(B[3], vec3(B[3]) + pca[0] * 2.0f, immediate::COLOR_RED);
                     immediate::draw_line(B[3], vec3(B[3]) + pca[1] * 2.0f, immediate::COLOR_GREEN);
                     immediate::draw_line(B[3], vec3(B[3]) + pca[2] * 2.0f, immediate::COLOR_BLUE);
@@ -5638,13 +6050,13 @@ static void fill_gbuffer(const ApplicationData& data) {
         immediate::flush();
 
         PUSH_GPU_SECTION("Draw Control Points")
-        if (data.visuals.spline.draw_control_points) {
-            draw::draw_spline(data.gpu_buffers.backbone.control_point, data.gpu_buffers.backbone.control_point_index,
-                              data.gpu_buffers.backbone.num_control_point_indices, data.view.param);
+        if (data->visuals.spline.draw_control_points) {
+            draw::draw_spline(data->gpu_buffers.backbone.control_point, data->gpu_buffers.backbone.control_point_index,
+                              data->gpu_buffers.backbone.num_control_point_indices, data->view.param);
         }
-        if (data.visuals.spline.draw_spline) {
-            draw::draw_spline(data.gpu_buffers.backbone.spline, data.gpu_buffers.backbone.spline_index, data.gpu_buffers.backbone.num_spline_indices,
-                              data.view.param);
+        if (data->visuals.spline.draw_spline) {
+            draw::draw_spline(data->gpu_buffers.backbone.spline, data->gpu_buffers.backbone.spline_index, data->gpu_buffers.backbone.num_spline_indices,
+                              data->view.param);
         }
         POP_GPU_SECTION()
 
@@ -5657,16 +6069,16 @@ static void fill_gbuffer(const ApplicationData& data) {
     PUSH_GPU_SECTION("Blit Static Velocity")
     glDrawBuffer(GL_COLOR_ATTACHMENT2);
     glDepthMask(0);
-    postprocessing::blit_static_velocity(data.fbo.deferred.depth, data.view.param);
+    postprocessing::blit_static_velocity(data->fbo.deferred.depth, data->view.param);
     glDepthMask(1);
     POP_GPU_SECTION()
 
     // DRAW REPRESENTATIONS
     glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
-    draw_representations(data);
+    draw_representations(*data);
 
     // VOLUME RENDERING
-    if (data.density_volume.enabled) {
+    if (data->density_volume.enabled) {
         PUSH_GPU_SECTION("Volume Rendering")
 
         glDrawBuffer(GL_COLOR_ATTACHMENT4);  // Post_Tonemap buffer
@@ -5678,22 +6090,22 @@ static void fill_gbuffer(const ApplicationData& data) {
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
         volume::VolumeRenderDesc desc;
-        const vec3 min_aabb = data.simulation_box.box * vec3(0, 0, 0);
-        const vec3 max_aabb = data.simulation_box.box * vec3(1, 1, 1);
+        const vec3 min_aabb = data->simulation_box.box * vec3(0, 0, 0);
+        const vec3 max_aabb = data->simulation_box.box * vec3(1, 1, 1);
         desc.matrix.model = volume::compute_model_to_world_matrix(min_aabb, max_aabb);
-        desc.matrix.view = data.view.param.matrix.current.view;
-        desc.matrix.proj = data.view.param.matrix.current.proj_jittered;
-        desc.texture.depth = data.fbo.deferred.depth;
-        desc.texture.volume = data.density_volume.texture.id;
-        desc.texture.transfer_function = data.density_volume.dvr.tf.id;
-        desc.global_scaling.density = data.density_volume.dvr.density_scale;
-        desc.global_scaling.alpha = data.density_volume.dvr.tf.alpha_scale;
-        desc.isosurface = data.density_volume.iso.isosurfaces;
-        desc.isosurface_enabled = data.density_volume.iso.enabled;
-        desc.direct_volume_rendering_enabled = data.density_volume.dvr.enabled;
-        desc.clip_volume.min = data.density_volume.clip_planes.min;
-        desc.clip_volume.max = data.density_volume.clip_planes.max;
-        desc.voxel_spacing = data.density_volume.voxel_spacing;
+        desc.matrix.view = data->view.param.matrix.current.view;
+        desc.matrix.proj = data->view.param.matrix.current.proj_jittered;
+        desc.texture.depth = data->fbo.deferred.depth;
+        desc.texture.volume = data->density_volume.texture.id;
+        desc.texture.transfer_function = data->density_volume.dvr.tf.id;
+        desc.global_scaling.density = data->density_volume.dvr.density_scale;
+        desc.global_scaling.alpha = data->density_volume.dvr.tf.alpha_scale;
+        desc.isosurface = data->density_volume.iso.isosurfaces;
+        desc.isosurface_enabled = data->density_volume.iso.enabled;
+        desc.direct_volume_rendering_enabled = data->density_volume.dvr.enabled;
+        desc.clip_volume.min = data->density_volume.clip_planes.min;
+        desc.clip_volume.max = data->density_volume.clip_planes.max;
+        desc.voxel_spacing = data->density_volume.voxel_spacing;
 
         volume::render_volume_texture(desc);
 
@@ -5706,45 +6118,40 @@ static void fill_gbuffer(const ApplicationData& data) {
 
     {
         PUSH_GPU_SECTION("Selection")
-        const bool atom_selection_empty = !bitfield::any_bit_set(data.selection.current_selection_mask);
-        const bool atom_highlight_empty = !bitfield::any_bit_set(data.selection.current_highlight_mask);
+        const bool atom_selection_empty = !bitfield::any_bit_set(data->selection.current_selection_mask);
+        const bool atom_highlight_empty = !bitfield::any_bit_set(data->selection.current_highlight_mask);
+
+        glDepthMask(0);
+        glColorMask(0, 0, 0, 0);
 
         glDrawBuffer(GL_COLOR_ATTACHMENT4);  // Post_Tonemap buffer
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_STENCIL_TEST);
 
-        glDepthMask(0);
-        glColorMask(0, 0, 0, 0);
+        glDepthFunc(GL_EQUAL);
+        glStencilFunc(GL_ALWAYS, 0xFF, 0xFF);
 
-        if (!atom_selection_empty) {
+        if (!atom_highlight_empty)
+        {
             glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
-
-            glStencilMask(0x2);
-            glStencilFunc(GL_ALWAYS, 2, 0xFF);
-
-            const vec4 color = data.selection.color.selection.fill_color;
-            draw_representations_lean_and_mean(data, color, 1.0f, AtomBit_Selected);
-        }
-
-        if (!atom_highlight_empty) {
-            glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
-
             glStencilMask(0x4);
-            glStencilFunc(GL_ALWAYS, 4, 0xFF);
-
-            const vec4 color = data.selection.color.highlight.fill_color;
-            draw_representations_lean_and_mean(data, color, 1.0f, AtomBit_Highlighted);
+            draw_representations_lean_and_mean(*data, vec4(1,1,1,1), 1.0f, AtomBit_Highlighted);
         }
 
-        if (!atom_selection_empty || !atom_highlight_empty) {
+        if (!atom_selection_empty)
+        {
+            glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
+            glStencilMask(0x2);
+            draw_representations_lean_and_mean(*data, vec4(1,1,1,1), 1.0f, AtomBit_Selected);
+        }
+        
+        if (!atom_selection_empty || !atom_highlight_empty)
+        {
             glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-            glDepthFunc(GL_LEQUAL);
-
             glStencilMask(0x1);
-            glStencilFunc(GL_ALWAYS, 1, 0xFF);
-
-            draw_representations_lean_and_mean(data);
+            draw_representations_lean_and_mean(*data, vec4(1,1,1,1), 1.0f, AtomBit_Highlighted | AtomBit_Selected);
         }
+        
 
         glDisable(GL_DEPTH_TEST);
 
@@ -5756,25 +6163,27 @@ static void fill_gbuffer(const ApplicationData& data) {
             // Selection
             glStencilFunc(GL_NOTEQUAL, 2, 0x2);
 
-            const vec4 color = data.selection.color.selection.outline_color;
-            const float scale = data.selection.color.selection.outline_scale;
-            draw_representations_lean_and_mean(data, color, scale, AtomBit_Selected);
+            const vec4 color = data->selection.color.selection.outline_color;
+            const float scale = data->selection.color.selection.outline_scale;
+            draw_representations_lean_and_mean(*data, color, scale, AtomBit_Selected);
         }
 
         if (!atom_highlight_empty) {
             // Highlight
             glStencilFunc(GL_NOTEQUAL, 4, 0x4);
 
-            const vec4 color = data.selection.color.highlight.outline_color;
-            const float scale = data.selection.color.highlight.outline_scale;
-            draw_representations_lean_and_mean(data, color, scale, AtomBit_Highlighted);
+            const vec4 color = data->selection.color.highlight.outline_color;
+            const float scale = data->selection.color.highlight.outline_scale;
+            draw_representations_lean_and_mean(*data, color, scale, AtomBit_Highlighted);
         }
 
         if (!atom_selection_empty) {
-            glStencilFunc(GL_NOTEQUAL, 1, 0x1);
-            const float saturation = data.selection.color.selection_saturation;
+            PUSH_GPU_SECTION("DESATURATE")
+            glStencilFunc(GL_NOTEQUAL, 1, 1);
+            const float saturation = data->selection.color.selection_saturation;
             glDrawBuffer(GL_COLOR_ATTACHMENT0);
-            postprocessing::scale_hsv(data.fbo.deferred.color, vec3(1, saturation, 1));
+            postprocessing::scale_hsv(data->fbo.deferred.color, vec3(1, saturation, 1));
+            POP_GPU_SECTION()
         }
 
         glDisable(GL_STENCIL_TEST);
@@ -5876,9 +6285,7 @@ static void update_density_volume_texture(ApplicationData* data) {
 
 static void handle_picking(ApplicationData* data) {
     PUSH_CPU_SECTION("PICKING") {
-        const auto ndc = data->ctx.input.mouse.ndc_coord;
-        vec2 coord = vec2(ndc.x, ndc.y) * 0.5f + 0.5f;
-        coord *= vec2(data->fbo.width - 1, data->fbo.height - 1);
+        vec2 coord = {data->ctx.input.mouse.win_coord.x, (float)data->fbo.height - data->ctx.input.mouse.win_coord.y};
         if (coord.x < 0.f || coord.x >= (float)data->fbo.width || coord.y < 0.f || coord.y >= (float)data->fbo.height) {
             data->picking.idx = NO_PICKING_IDX;
             data->picking.depth = 1.f;
@@ -5904,15 +6311,14 @@ static void handle_picking(ApplicationData* data) {
                     math::unproject(vec3(coord.x, coord.y, data->picking.depth), data->view.param.matrix.inverse.view_proj_jittered, viewport);
             }
 #else
-            coord += data->view.param.jitter.current;
-            // coord -= 0.5f;
+            //coord -= data->view.param.jitter.current * 2.0f;
+            //coord += 0.5f;
             data->picking = read_picking_data(data->fbo, (int)coord.x, (int)coord.y);
             const vec4 viewport(0, 0, data->fbo.width, data->fbo.height);
             data->picking.world_coord =
                 math::unproject(vec3(coord.x, coord.y, data->picking.depth), data->view.param.matrix.inverse.view_proj_jittered, viewport);
 #endif
         }
-
         data->selection.hovered = -1;
         if (data->picking.idx != NO_PICKING_IDX) {
             data->selection.hovered = data->picking.idx;
@@ -6301,6 +6707,33 @@ static void init_density_volume(ApplicationData* data) {
 }
 
 static void draw_representations(const ApplicationData& data) {
+#if USE_MOLD
+    const mold_draw_rep* rep_data[32] = { 0 };
+    const u32 rep_count = math::min((u32)ARRAY_SIZE(rep_data), (u32)data.representations.buffer.size());
+    for (i64 i = 0; i < rep_count; i++) {
+        rep_data[i] = &data.representations.buffer[i].mold_rep;
+    }
+
+    mold_draw_rendertarget render_target;
+    render_target.width = data.fbo.width;
+    render_target.height = data.fbo.height;
+    render_target.texture_depth = data.fbo.deferred.depth;
+    render_target.texture_color = data.fbo.deferred.color;
+    render_target.texture_atom_index = data.fbo.deferred.picking;
+    render_target.texture_view_normal = data.fbo.deferred.normal;
+    render_target.texture_view_velocity = data.fbo.deferred.velocity;
+
+    mold_draw_desc cmd;
+    cmd.representation.data = rep_data;
+    cmd.representation.count = rep_count;
+    cmd.render_target = &render_target;
+    cmd.view_transform.model_view_matrix = &data.view.param.matrix.current.view[0][0];
+    cmd.view_transform.projection_matrix = &data.view.param.matrix.current.proj_jittered[0][0];
+    cmd.view_transform.prev_model_view_matrix = &data.view.param.matrix.previous.view[0][0];
+    cmd.view_transform.prev_projection_matrix = &data.view.param.matrix.previous.proj_jittered[0][0];
+
+    mold_draw(&data.mold.ctx, &cmd);
+#else
     const i32 atom_count = (i32)data.dynamic.molecule.atom.count;
     const i32 bond_count = (i32)data.dynamic.molecule.covalent_bond.count;
     //const i32 res_count = (i32)data.dynamic.molecule.residue.count;
@@ -6312,7 +6745,7 @@ static void draw_representations(const ApplicationData& data) {
                 PUSH_GPU_SECTION("Vdw")
 #if EXPERIMENTAL_CULLING == 1
                 draw::culling::draw_culled_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.velocity,
-                                               data.gpu_buffers.experimental.visibility, data.gpu_buffers.experimental.residue, res_count,
+                                               data.gpu_buffers.experimental.visibility, data.gpu_buffers.experimental.residue, data.dynamic.molecule.residue.count,
                                                data.view.param, rep.radius);
 #else
                 draw::draw_vdw(data.gpu_buffers.position, data.gpu_buffers.radius, rep.color_buffer, data.gpu_buffers.velocity, atom_count,
@@ -6351,6 +6784,7 @@ static void draw_representations(const ApplicationData& data) {
         }
     }
     POP_GPU_SECTION()
+#endif
 }
 
 static void draw_representations_lean_and_mean(const ApplicationData& data, vec4 color, float scale, u32 mask) {

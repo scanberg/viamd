@@ -24,6 +24,7 @@ void color_atoms_residue_id(Array<u32> dst_atom_colors, const MoleculeStructure&
 void color_atoms_residue_index(Array<u32> dst_atom_colors, const MoleculeStructure& mol);
 void color_atoms_chain_id(Array<u32> dst_atom_colors, const MoleculeStructure& mol);
 void color_atoms_chain_index(Array<u32> dst_atom_colors, const MoleculeStructure& mol);
+void color_atoms_secondary_structure(Array<u32> dst_atom_colors, const MoleculeStructure& mol);
 
 void color_atoms_backbone_angles(Array<u32> dst_atom_colors, const MoleculeStructure& mol, const Image& ramachandran_color_map);
 
