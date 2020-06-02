@@ -19,3 +19,6 @@
 [submodule "ext/enkiTS"]
 	path = ext/enkiTS
 	url = https://github.com/dougbinks/enkiTS
+[submodule "ext/mold"]
+	path = ext/mold
+	url = https://github.com/scanberg/mold
