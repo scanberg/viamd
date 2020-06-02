@@ -52,12 +52,9 @@ void color_atoms_secondary_structure(Array<u32> dst_atom_colors, const MoleculeS
     memset_array(dst_atom_colors, color_unknown);
     if (mol.residue.backbone.secondary_structure) {
         for (i64 i = 0; i < mol.residue.count; i++) {
-            const auto ss = mol.residue.backbone.secondary_structure[i];
-            u32 color = color_unknown;
-            if (ss == SecondaryStructure::Coil)       color = color_coil;
-            else if (ss == SecondaryStructure::Helix) color = color_helix;
-            else if (ss == SecondaryStructure::Sheet) color = color_sheet;
-            memset_array(dst_atom_colors, color, mol.residue.atom_range[i]);
+            const auto w = math::convert_color((u32)mol.residue.backbone.secondary_structure[i]);
+            const auto color = w[0] * math::convert_color(color_coil) + w[1] * math::convert_color(color_helix) + w[2] * math::convert_color(color_sheet);
+            memset_array(dst_atom_colors, math::convert_color(color), mol.residue.atom_range[i]);
         }
     }
 }

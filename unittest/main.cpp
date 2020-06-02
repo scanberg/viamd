@@ -358,3 +358,47 @@ TEST_CASE("Testing string_utils", "[string_utils]") {
         REQUIRE(matches.size() == 4);
     }
 }
+
+#include <core/lru_cache.h>
+TEST_CASE("Testing lru_cache", "[cache]") {
+    SECTION("Cool") {
+        Cache<int, int, 4> cache;
+
+        cache.put(-1, -1);
+        cache.put(-2, -2);
+        cache.put(-3, -3);
+        cache.put(-4, -4);
+
+        {
+            int arr[4] = {0,0,1,2};
+            for (int i = 0; i < 4; ++i) {
+                cache.get(arr[i]);
+            }
+            for (int i = 0; i < 4; ++i) {
+                if (cache.find(arr[i]) == -1) {
+                    int* dst = cache.reserve(arr[i]);
+                    *dst = arr[i];
+                }
+            }
+        }
+        {
+            int arr[4] = {0,1,2,3};
+            for (int i = 0; i < 4; ++i) {
+                cache.get(arr[i]);
+            }
+            for (int i = 0; i < 4; ++i) {
+                if (cache.find(arr[i]) == -1) {
+                    int* dst = cache.reserve(arr[i]);
+                    *dst = arr[i];
+                }
+            }
+        }
+    }
+}
+
+#include <mold_filter.h>
+TEST_CASE("Testing mold filter", "[mold_filter]") {
+    SECTION("filter") {
+    
+    }
+}

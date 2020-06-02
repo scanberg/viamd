@@ -7,6 +7,7 @@
 #include <core/string_utils.h>
 #include <core/spatial_hash.h>
 #include <core/sync.h>
+#include <core/lru_cache.h>
 
 #include <mol/molecule_structure.h>
 #include <mol/molecule_trajectory.h>
@@ -20,6 +21,7 @@
 
 #include <mold_util.h>
 #include <mold_draw.h>
+#include <mold_filter.h>
 
 #include <imgui.h>
 #define IMGUI_DEFINE_MATH_OPERATORS
@@ -53,11 +55,11 @@
 #define PICKING_JITTER_HACK 1
 #define DEPERIODIZE_ON_LOAD 1
 #define SHOW_IMGUI_DEMO_WINDOW 0
-#define VIAMD_RELEASE 1
+#define VIAMD_RELEASE 0
 #define EXPERIMENTAL_CULLING 0
 #define EXPERIMENTAL_SDF 0
 #define EXPERIMENTAL_CONE_TRACED_AO 0
-#define USE_MOLD 0
+#define USE_MOLD 1
 
 #ifdef OS_MAC_OSX
 const Key::Key_t KEY_CONSOLE = Key::KEY_WORLD_1;
@@ -288,26 +290,52 @@ struct EnsembleStructure {
     bool enabled = false;
 };
 
-/*
-struct ThreadSyncData {
-    std::thread thread{};
-    i32 running = 0;
-    i32 stop_signal = 0;
+// This is essentially a cache for computing per frame properties
+// The need for this is because some properties needs to be interpolated in order to be represented properly.
+// If we would naively compute the properties based on the interpolated positions of atoms, we would end up with results that
+// are not true to the underlying data. Therefore we extract and compute properties for the actual frames surrounding the current timestep
+// Then we interpolate the properties using the real values within the frames. Interpolation is never actually true to the underlying data,
+// But this approach is atleast not as bad.
+//
+// To interpolate the properties, we need a sufficiently large context (in frames) to allow for the interpolation.
+// The frame idx holds the indices of the 'cached' frames
 
-    void signal_stop() { stop_signal = true; }
+template <typename T, int CacheSize>
+struct FrameCache {
+    DynamicArray<T> data = {};
+    Cache<i32, T*, CacheSize> cache = {};
 
-    void wait_until_finished() {
-        while (running) {
-            platform::sleep(1);
+    void init(int size) {
+        data.resize(CacheSize * size);
+        memset(data.data(), 0, data.size_in_bytes());
+        cache.clear();
+        for (int i = 0; i < CacheSize; ++i) {
+            cache.put(-i - 1, data.data() + size * i);
         }
     }
 
-    void signal_stop_and_wait() {
-        signal_stop();
-        wait_until_finished();
+    T* get(int frame_idx) {
+        T** ptr = cache.get(frame_idx);
+        return ptr ? *ptr : nullptr;
+    }
+
+    template <typename LoadCallback>
+    void load_frames(i32 count, const i32* frames, LoadCallback cb) {
+        for (i32 i = 0; i < count; ++i) {
+            cache.get(frames[i]);
+        }
+        for (i32 i = 0; i < count; ++i) {
+            if (cache.find(frames[i]) == -1) {
+                T* ptr = *cache.reserve(frames[i]);
+                cb(ptr, frames[i]);
+            }
+        }
+
+        for(i32 i = 0; i < count; ++i) {
+            ASSERT(cache.find(frames[i]) != -1);
+        }
     }
 };
-*/
 
 struct ApplicationData {
     // --- PLATFORM ---
@@ -402,7 +430,7 @@ struct ApplicationData {
     // --- MOLECULE GPU BUFFERS ---
     MoleculeBuffers gpu_buffers;
 
-    // --- PLAYBACK ---
+    // --- ANIMATION ---
     struct {
         f64 time = 0.f;  // double precision for long trajectories
         i32 frame = 0;
@@ -410,7 +438,13 @@ struct ApplicationData {
         InterpolationMode interpolation = InterpolationMode::Cubic;
         PlaybackMode mode = PlaybackMode::Stopped;
         bool apply_pbc = false;
-    } playback;
+    } animation;
+
+    // --- FRAME CACHE ---
+    struct {
+        FrameCache<SecondaryStructure, 4> secondary_structure {};
+        FrameCache<BackboneAngle, 4> backbone_angle {};
+    } frame_cache;
 
     // --- TIME LINE FILTERING ---
     struct {
@@ -681,7 +715,8 @@ void init_theme() {
 }  // namespace ImGui
 
 //static vec3 compute_simulation_box_ext(const ApplicationData& data);
-static void interpolate_atomic_positions(ApplicationData* data);
+static void update_frame_cache(ApplicationData* data, int num_frames, const int* frames);
+static void interpolate_atomic_properties(ApplicationData* data);
 static void update_view_param(ApplicationData* data);
 static void reset_view(ApplicationData* data, bool move_camera = false, bool smooth_transition = false);
 static f32 compute_avg_ms(f32 dt);
@@ -950,6 +985,7 @@ int main(int, char**) {
 #if VIAMD_RELEASE
     pdb::load_molecule_from_string(&data.dynamic.molecule, CAFFINE_PDB);
     init_molecule_data(&data);
+    create_representation(&data);
 #else
     //load_dataset_from_file(&data, "D:/data/1aon.pdb");
     load_dataset_from_file(&data, "D:/data/md/alanine/1ALA-560ns.pdb");
@@ -966,15 +1002,15 @@ int main(int, char**) {
     // stats::create_property("d1", "distance atom(*) com(atom(*))");
     // data.density_volume.enabled = true;
     // data.reference_frame.frames[0].active = true;
+    create_representation(&data, RepresentationType::Cartoon, ColorMapping::SecondaryStructure, "protein");
 #endif
     reset_view(&data, true);
-    create_representation(&data, RepresentationType::Vdw, ColorMapping::ResId, "not water");
     recompute_atom_visibility_mask(&data);
     // create_representation(&data, RepresentationType::Vdw, ColorMapping::ResId, "residue 1");
 
     init_density_volume(&data);
 
-    interpolate_atomic_positions(&data);
+    interpolate_atomic_properties(&data);
     copy_molecule_data_to_buffers(&data);
     copy_buffer(data.gpu_buffers.old_position, data.gpu_buffers.position);
 
@@ -1042,16 +1078,16 @@ int main(int, char**) {
             }
 
             if (data.ctx.input.key.hit[KEY_PLAY_PAUSE]) {
-                if (data.playback.mode == PlaybackMode::Stopped && data.playback.time == max_time) {
-                    data.playback.time = 0;
+                if (data.animation.mode == PlaybackMode::Stopped && data.animation.time == max_time) {
+                    data.animation.time = 0;
                 }
 
-                switch (data.playback.mode) {
+                switch (data.animation.mode) {
                     case PlaybackMode::Playing:
-                        data.playback.mode = PlaybackMode::Stopped;
+                        data.animation.mode = PlaybackMode::Stopped;
                         break;
                     case PlaybackMode::Stopped:
-                        data.playback.mode = PlaybackMode::Playing;
+                        data.animation.mode = PlaybackMode::Playing;
                         break;
                     default:
                         ASSERT(false);
@@ -1061,7 +1097,7 @@ int main(int, char**) {
             if (data.ctx.input.key.hit[KEY_SKIP_TO_PREV_FRAME] || data.ctx.input.key.hit[KEY_SKIP_TO_NEXT_FRAME]) {
                 f64 step = data.ctx.input.key.down[Key::KEY_LEFT_CONTROL] ? 10.0 : 1.0;
                 if (data.ctx.input.key.hit[KEY_SKIP_TO_PREV_FRAME]) step = -step;
-                data.playback.time = math::clamp(data.playback.time + step, 0.0, max_time);
+                data.animation.time = math::clamp(data.animation.time + step, 0.0, max_time);
             }
         }
 
@@ -1099,32 +1135,32 @@ int main(int, char**) {
         // This needs to happen first (in imgui events) to enable docking of imgui windows
         // ImGui::CreateDockspace();
 
-        if (data.playback.mode == PlaybackMode::Playing) {
-            data.playback.time += data.ctx.timing.delta_s * data.playback.fps;
-            data.playback.time = math::clamp(data.playback.time, 0.0, max_time);
-            if (data.playback.time >= max_time) {
-                data.playback.mode = PlaybackMode::Stopped;
-                data.playback.time = max_time;
+        if (data.animation.mode == PlaybackMode::Playing) {
+            data.animation.time += data.ctx.timing.delta_s * data.animation.fps;
+            data.animation.time = math::clamp(data.animation.time, 0.0, max_time);
+            if (data.animation.time >= max_time) {
+                data.animation.mode = PlaybackMode::Stopped;
+                data.animation.time = max_time;
             }
         }
 
-        const int new_frame = math::clamp((int)(data.playback.time + 0.5f), 0, last_frame);
-        const bool frame_changed = new_frame != data.playback.frame;
-        data.playback.frame = new_frame;
+        const int new_frame = math::clamp((int)(data.animation.time + 0.5f), 0, last_frame);
+        const bool frame_changed = new_frame != data.animation.frame;
+        data.animation.frame = new_frame;
 
         {
             time_changed = false;
-            static auto prev_time = data.playback.time;
-            if (data.playback.time != prev_time) {
+            static auto prev_time = data.animation.time;
+            if (data.animation.time != prev_time) {
                 time_changed = true;
-                prev_time = data.playback.time;
+                prev_time = data.animation.time;
             }
         }
 
         if (data.time_filter.dynamic_window) {
             const auto half_window_ext = data.time_filter.window_extent * 0.5f;
-            data.time_filter.range.min = math::clamp((f32)data.playback.time - half_window_ext, 0.0f, (f32)max_time);
-            data.time_filter.range.max = math::clamp((f32)data.playback.time + half_window_ext, 0.0f, (f32)max_time);
+            data.time_filter.range.min = math::clamp((f32)data.animation.time - half_window_ext, 0.0f, (f32)max_time);
+            data.time_filter.range.max = math::clamp((f32)data.animation.time + half_window_ext, 0.0f, (f32)max_time);
 
             if (frame_changed && data.dynamic.trajectory) {
                 stats::set_all_property_flags(false, true);
@@ -1137,14 +1173,14 @@ int main(int, char**) {
 
             PUSH_CPU_SECTION("Interpolate Position")
             if (traj) {
-                interpolate_atomic_positions(&data);
+                interpolate_atomic_properties(&data);
                 update_reference_frames(&data);
 
                 if (data.ensemble_tracking.superimpose_structures) {
                     superimpose_ensemble(&data);
                 }
 
-                if (data.playback.apply_pbc) {
+                if (data.animation.apply_pbc) {
                     apply_pbc(mol.atom.position, mol.residue.atom_range, mol.residue.count, data.simulation_box.box);
                 }
 
@@ -1153,71 +1189,7 @@ int main(int, char**) {
                     init_occupancy_volume(&data);
                 }
 #endif
-
-#if USE_MOLD == 1
-                mold_draw_mol_set_atom_position(&data.mold.mol, 0, (u32)mol.atom.count, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, 0);
-
-                {
-                    const char** atom_names = (const char**)TMP_MALLOC(mol.atom.count * sizeof(const char**));
-                    uint8_t* secondary_structure = (uint8_t*)TMP_MALLOC(mol.residue.count * sizeof(uint8_t));
-                    mold_backbone_atoms* residue_bb_atoms = (mold_backbone_atoms*)TMP_MALLOC(mol.residue.count * sizeof(mold_backbone_atoms));
-                    defer {
-                        TMP_FREE(atom_names);
-                        TMP_FREE(secondary_structure);
-                        TMP_FREE(residue_bb_atoms);
-                    };
-
-                    for (int64_t i = 0; i < mol.atom.count; ++i) {
-                        atom_names[i] = mol.atom.label[i].cstr();
-                    }
-
-                    {
-                        mold_util_backbone_args args = {
-                            .backbone_atoms = residue_bb_atoms,
-                            .atom = {
-                                .count = (uint32_t)mol.atom.count,
-                                .name = atom_names,
-                        },
-                        .residue = {
-                                .count = (uint32_t)mol.residue.count,
-                                .atom_range = (const mold_range*)mol.residue.atom_range,
-                        }
-                        };
-                        mold_util_extract_backbone(&args);
-                    }
-
-                    {
-                        mold_util_secondary_structure_args args = {
-                            .secondary_structure = secondary_structure,
-                            .atom = {
-                                .x = mol.atom.position.x,
-                                .y = mol.atom.position.y,
-                                .z = mol.atom.position.z,
-                        },
-                        .residue = {
-                                .count = (uint32_t)mol.residue.count,
-                                //.atom_range = (const mold_range*)mol.residue.atom_range,
-                                .backbone_atoms = residue_bb_atoms,
-                        },
-                        .chain = {
-                                .count = (uint32_t)mol.chain.count,
-                                .residue_range = (const mold_range*)mol.chain.residue_range,
-                        }
-                        };
-                        molt_util_extract_secondary_structure(&args);
-                        mold_draw_mol_set_residue_secondary_structure(&data.mold.mol, 0, (u32)mol.residue.count, secondary_structure, 0);
-                    }
-                }
-#endif
-
                 data.gpu_buffers.dirty.position = true;
-            }
-            POP_CPU_SECTION()
-
-            PUSH_CPU_SECTION("Compute backbone angles")
-            for (i64 i = 0; i < mol.chain.count; ++i) {
-                const auto bb_atoms = get_residue_backbone_atoms(mol, i);
-                compute_backbone_angles(get_residue_backbone_angles(mol, i).data(), mol.atom.position, bb_atoms.data(), bb_atoms.size());
             }
             POP_CPU_SECTION()
 
@@ -1229,11 +1201,11 @@ int main(int, char**) {
             }
             POP_CPU_SECTION()
         } else {
-            static auto prev_time = data.playback.time;
-            if (data.playback.time != prev_time) {
+            static auto prev_time = data.animation.time;
+            if (data.animation.time != prev_time) {
                 copy_buffer(data.gpu_buffers.old_position, data.gpu_buffers.position);
             }
-            prev_time = data.playback.time;
+            prev_time = data.animation.time;
         }
 
         PUSH_CPU_SECTION("Hydrogen bonds")
@@ -1385,7 +1357,53 @@ int main(int, char**) {
     return 0;
 }
 
-static void interpolate_atomic_positions(ApplicationData* data) {
+static void init_frame_cache(ApplicationData* data) {
+    ASSERT(data);
+    const auto& mol = data->dynamic.molecule;
+    if (!mol) return;
+
+    data->frame_cache.secondary_structure.init(mol.residue.count);
+    data->frame_cache.backbone_angle.init(mol.residue.count);
+ }
+
+static void update_frame_cache(ApplicationData* data, int num_frames, const int* frames) {
+    ASSERT(data);
+    const auto& mol  = data->dynamic.molecule;
+    const auto& traj = data->dynamic.trajectory;
+    if (!mol || !traj) return;
+
+    data->frame_cache.secondary_structure.load_frames(num_frames, frames, [&mol, &traj](SecondaryStructure* dst, i32 i) {
+        auto pos = get_trajectory_positions(traj, i);
+        mold_util_secondary_structure_args args = {
+            .secondary_structure = (mold_secondary_structure*)dst,
+            .atom = {
+                .x = pos.x,
+                .y = pos.y,
+                .z = pos.z,
+        },
+        .residue = {
+                .count = (uint32_t)mol.residue.count,
+                .backbone_atoms = (const mold_backbone_atoms*)mol.residue.backbone.atoms,
+        },
+        .chain = {
+                .count = (uint32_t)mol.chain.count,
+                .residue_range = (const mold_range*)mol.chain.residue_range,
+        }
+        };
+        molt_util_extract_secondary_structure(&args);
+    });
+
+    data->frame_cache.backbone_angle.load_frames(num_frames, frames, [&mol, &traj](BackboneAngle* dst, i32 i) {
+        auto pos = get_trajectory_positions(traj, i);
+        for (i64 i = 0; i < mol.chain.count; ++i) {
+            const auto bb_atoms = get_residue_backbone_atoms(mol, i);
+            const auto bb_range = mol.chain.residue_range[i];
+            compute_backbone_angles(dst + bb_range.beg, pos, bb_atoms.data(), bb_atoms.size());
+        }
+    });
+}
+
+static void interpolate_atomic_properties(ApplicationData* data) {
     ASSERT(data);
     const auto& mol = data->dynamic.molecule;
     const auto& traj = data->dynamic.trajectory;
@@ -1393,24 +1411,29 @@ static void interpolate_atomic_positions(ApplicationData* data) {
     if (!mol || !traj) return;
 
     const int last_frame = math::max(0, data->dynamic.trajectory.num_frames - 1);
-    const f64 time = math::clamp(data->playback.time, 0.0, f64(last_frame));
+    const f64 time = math::clamp(data->animation.time, 0.0, f64(last_frame));
 
     const f32 t = (float)math::fract(time);
     const int frame = (int)time;
     const int nearest_frame = math::clamp((int)(time + 0.5), 0, last_frame);
-    const int prev_frame_2 = math::max(0, frame - 1);
-    const int prev_frame_1 = math::max(0, frame);
-    const int next_frame_1 = math::min(frame + 1, last_frame);
-    const int next_frame_2 = math::min(frame + 2, last_frame);
 
-    const mat3 boxes[4] = {
-        get_trajectory_frame(traj, prev_frame_2).box,
-        get_trajectory_frame(traj, prev_frame_1).box,
-        get_trajectory_frame(traj, next_frame_1).box,
-        get_trajectory_frame(traj, next_frame_2).box,
+    const int frames[4] = {
+        math::max(0, frame - 1),
+        math::max(0, frame),
+        math::min(frame + 1, last_frame),
+        math::min(frame + 2, last_frame)
     };
 
-    const InterpolationMode mode = (prev_frame_1 != next_frame_1) ? data->playback.interpolation : InterpolationMode::Nearest;
+    update_frame_cache(data, 4, frames);
+
+    const mat3 boxes[4] = {
+        get_trajectory_frame(traj, frames[0]).box,
+        get_trajectory_frame(traj, frames[1]).box,
+        get_trajectory_frame(traj, frames[2]).box,
+        get_trajectory_frame(traj, frames[3]).box,
+    };
+
+    const InterpolationMode mode = (frames[1] != frames[2]) ? data->animation.interpolation : InterpolationMode::Nearest;
 
     mat3 box;
     switch (mode) {
@@ -1432,17 +1455,15 @@ static void interpolate_atomic_positions(ApplicationData* data) {
 
     switch (mode) {
         case InterpolationMode::Nearest: {
-            const auto x = get_trajectory_position_x(traj, nearest_frame);
-            const auto y = get_trajectory_position_y(traj, nearest_frame);
-            const auto z = get_trajectory_position_z(traj, nearest_frame);
-            memcpy(mol.atom.position.x, x.data(), x.size_in_bytes());
-            memcpy(mol.atom.position.y, y.data(), y.size_in_bytes());
-            memcpy(mol.atom.position.z, z.data(), z.size_in_bytes());
+            const soa_vec3 in_pos = get_trajectory_positions(traj, nearest_frame);
+            const size_t bytes = mol.atom.count * sizeof(float);
+            memcpy(mol.atom.position.x, in_pos.x, bytes);
+            memcpy(mol.atom.position.y, in_pos.y, bytes);
+            memcpy(mol.atom.position.z, in_pos.z, bytes);
             break;
         }
         case InterpolationMode::Linear: {
-            const soa_vec3 in_pos[2] = {get_trajectory_positions(traj, prev_frame_1), get_trajectory_positions(traj, next_frame_1)};
-
+            const soa_vec3 in_pos[2] = {get_trajectory_positions(traj, frames[1]), get_trajectory_positions(traj, frames[2])};
             if (pbc) {
                 linear_interpolation_pbc(mol.atom.position, in_pos, mol.atom.count, t, box);
             } else {
@@ -1452,8 +1473,8 @@ static void interpolate_atomic_positions(ApplicationData* data) {
             break;
         }
         case InterpolationMode::Cubic: {
-            const soa_vec3 in_pos[4] = {get_trajectory_positions(traj, prev_frame_2), get_trajectory_positions(traj, prev_frame_1),
-                                        get_trajectory_positions(traj, next_frame_1), get_trajectory_positions(traj, next_frame_2)};
+            const soa_vec3 in_pos[4] = {get_trajectory_positions(traj, frames[0]), get_trajectory_positions(traj, frames[1]),
+                                        get_trajectory_positions(traj, frames[2]), get_trajectory_positions(traj, frames[3])};
             if (pbc) {
                 cubic_interpolation_pbc(mol.atom.position, in_pos, mol.atom.count, t, box);
             } else {
@@ -1464,11 +1485,109 @@ static void interpolate_atomic_positions(ApplicationData* data) {
         default:
             ASSERT(false);
     }
+
+    if (mol.residue.backbone.angle) {
+        switch (mode) {
+        case InterpolationMode::Nearest: {
+            const BackboneAngle* src_angle = data->frame_cache.backbone_angle.get(nearest_frame);
+            const size_t bytes = mol.residue.count * sizeof(BackboneAngle);
+            memcpy(mol.residue.backbone.angle, src_angle, bytes);
+            break;
+        }
+        case InterpolationMode::Linear: {
+            const BackboneAngle* src_angles[2] = {
+                data->frame_cache.backbone_angle.get(frames[1]),
+                data->frame_cache.backbone_angle.get(frames[2])
+            };
+            for (int i = 0; i < mol.chain.count; ++i) {
+                auto dst_angles = get_residue_backbone_angles(mol, i);
+                auto res_range = mol.chain.residue_range[i];
+                for (int j = res_range.beg; j < res_range.end; ++j) {
+                    const vec2 angle = math::lerp((vec2)src_angles[0][j], (vec2)src_angles[1][j], t);
+                    mol.residue.backbone.angle[j] = {angle.x, angle.y};
+                }
+            }
+            break;
+        }
+        case InterpolationMode::Cubic: {
+            const BackboneAngle* src_angles[4] = {
+                data->frame_cache.backbone_angle.get(frames[0]),
+                data->frame_cache.backbone_angle.get(frames[1]),
+                data->frame_cache.backbone_angle.get(frames[2]),
+                data->frame_cache.backbone_angle.get(frames[3])
+            };
+            for (int i = 0; i < mol.chain.count; ++i) {
+                auto dst_angles = get_residue_backbone_angles(mol, i);
+                auto res_range = mol.chain.residue_range[i];
+                for (int j = res_range.beg; j < res_range.end; ++j) {
+                    const vec2 angle = math::cubic_spline((vec2)src_angles[0][j], (vec2)src_angles[1][j], (vec2)src_angles[2][j], (vec2)src_angles[3][j], t);
+                    mol.residue.backbone.angle[j] = {angle.x, angle.y};
+                }
+            }
+            break;
+        }
+        default:
+            ASSERT(false);
+        }
+    }
+
+    #if USE_MOLD == 1
+    if (mol.residue.backbone.secondary_structure) {
+        switch (mode) {
+        case InterpolationMode::Nearest: {
+            const SecondaryStructure* ss = data->frame_cache.secondary_structure.get(nearest_frame);
+            const size_t bytes = mol.residue.count * sizeof(SecondaryStructure);
+            memcpy(mol.residue.backbone.secondary_structure, ss, bytes);
+            break;
+        }
+        case InterpolationMode::Linear: {
+            const SecondaryStructure* ss[2] = {
+                data->frame_cache.secondary_structure.get(frames[1]),
+                data->frame_cache.secondary_structure.get(frames[2])
+            };
+            for (int i = 0; i < mol.residue.count; ++i) {
+                const vec4 ss_f[2] = {
+                    math::convert_color((u32)ss[0][i]),
+                    math::convert_color((u32)ss[1][i]),
+                };
+                const vec4 ss_res = math::lerp(ss_f[0], ss_f[1], t);
+                mol.residue.backbone.secondary_structure[i] = (SecondaryStructure)math::convert_color(ss_res);
+            }
+            break;
+        }
+        case InterpolationMode::Cubic: {
+            const SecondaryStructure* ss[4] = {
+                data->frame_cache.secondary_structure.get(frames[0]),
+                data->frame_cache.secondary_structure.get(frames[1]),
+                data->frame_cache.secondary_structure.get(frames[2]),
+                data->frame_cache.secondary_structure.get(frames[3])
+            };
+            for (int i = 0; i < mol.residue.count; ++i) {
+                const vec4 ss_f[4] = {
+                    math::convert_color((u32)ss[0][i]),
+                    math::convert_color((u32)ss[1][i]),
+                    math::convert_color((u32)ss[2][i]),
+                    math::convert_color((u32)ss[3][i]),
+                };
+                const vec4 ss_res = math::cubic_spline(ss_f[0], ss_f[1], ss_f[2], ss_f[3], t);
+                mol.residue.backbone.secondary_structure[i] = (SecondaryStructure)math::convert_color(ss_res);
+            }
+            break;
+        
+        }
+        default:
+            ASSERT(false);
+        }
+    }
+
+    mold_draw_mol_set_atom_position(&data->mold.mol, 0, (u32)mol.atom.count, mol.atom.position.x, mol.atom.position.y, mol.atom.position.z, 0);
+    mold_draw_mol_set_residue_secondary_structure(&data->mold.mol, 0, (u32)mol.residue.count, (const mold_secondary_structure*)mol.residue.backbone.secondary_structure, 0);
+    #endif
+
 }
 
 // #misc
 static f32 compute_avg_ms(f32 dt) {
-    // @NOTE: Perhaps this can be done with a simple running mean?
     constexpr f32 interval = 0.5f;
     static f32 avg = 0.f;
     static int num_frames = 0;
@@ -1729,7 +1848,7 @@ static void draw_main_menu(ApplicationData* data) {
                     } else {
                         create_representation(data); // Create default representation
                     }
-                    data->playback = {};
+                    data->animation = {};
                     stats::clear_all_properties();
                     reset_view(data, true);
                 }
@@ -2499,7 +2618,7 @@ void draw_context_popup(ApplicationData* data) {
 
                 if (atom_range.ext() > 0) {
                     recenter_trajectory(&data->dynamic, atom_range);
-                    interpolate_atomic_positions(data);
+                    interpolate_atomic_properties(data);
                     data->gpu_buffers.dirty.position = true;
                     ImGui::CloseCurrentPopup();
                 }
@@ -2518,30 +2637,30 @@ static void draw_animation_control_window(ApplicationData* data) {
     ImGui::Begin("Animation");
     const i32 num_frames = data->dynamic.trajectory.num_frames;
     ImGui::Text("Num Frames: %i", num_frames);
-    // ImGui::Checkbox("Apply post-interpolation pbc", &data->playback.apply_pbc);
-    f32 t = (float)data->playback.time;
+    // ImGui::Checkbox("Apply post-interpolation pbc", &data->animation.apply_pbc);
+    f32 t = (float)data->animation.time;
     if (ImGui::SliderFloat("Time", &t, 0, (float)(math::max(0, num_frames - 1)))) {
-        data->playback.time = t;
+        data->animation.time = t;
     }
-    ImGui::SliderFloat("Speed", &data->playback.fps, 0.1f, 1000.f, "%.3f", 4.f);
+    ImGui::SliderFloat("Speed", &data->animation.fps, 0.1f, 1000.f, "%.3f", 4.f);
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Animation Speed in Frames Per Second");
     }
-    ImGui::Combo("Interpolation", (int*)(&data->playback.interpolation), "Nearest\0Linear\0Cubic\0\0");
-    switch (data->playback.mode) {
+    ImGui::Combo("Interpolation", (int*)(&data->animation.interpolation), "Nearest\0Linear\0Cubic\0\0");
+    switch (data->animation.mode) {
         case PlaybackMode::Playing:
-            if (ImGui::Button((const char*)ICON_FA_PAUSE)) data->playback.mode = PlaybackMode::Stopped;
+            if (ImGui::Button((const char*)ICON_FA_PAUSE)) data->animation.mode = PlaybackMode::Stopped;
             break;
         case PlaybackMode::Stopped:
-            if (ImGui::Button((const char*)ICON_FA_PLAY)) data->playback.mode = PlaybackMode::Playing;
+            if (ImGui::Button((const char*)ICON_FA_PLAY)) data->animation.mode = PlaybackMode::Playing;
             break;
         default:
             ASSERT(false);
     }
     ImGui::SameLine();
     if (ImGui::Button((const char*)ICON_FA_STOP)) {
-        data->playback.mode = PlaybackMode::Stopped;
-        data->playback.time = 0.0;
+        data->animation.mode = PlaybackMode::Stopped;
+        data->animation.time = 0.0;
     }
     ImGui::End();
 }
@@ -2748,7 +2867,7 @@ static void draw_reference_frame_window(ApplicationData* data) {
                 ImGui::PlotValues("2", z, (int)ev_data.size(), 0xFFFF5555);
                 float x_val;
                 if (ImGui::ClickingAtPlot(&x_val)) {
-                    data->playback.time = x_val;
+                    data->animation.time = x_val;
                 }
                 ImGui::EndPlot();
             }
@@ -2804,7 +2923,7 @@ static void draw_reference_frame_window(ApplicationData* data) {
                     ImGui::PlotValues("delta", del_angle, N, 0xFFFF5555);
                     float x_val;
                     if (ImGui::ClickingAtPlot(&x_val)) {
-                        data->playback.time = x_val;
+                        data->animation.time = x_val;
                     }
                     ImGui::EndPlot();
                 }
@@ -2826,7 +2945,7 @@ static void draw_reference_frame_window(ApplicationData* data) {
                     ImGui::PlotValues("relative", rel_angle, N, 0xFF55FF55);
                     float x_val;
                     if (ImGui::ClickingAtPlot(&x_val)) {
-                        data->playback.time = x_val;
+                        data->animation.time = x_val;
                     }
                     ImGui::EndPlot();
                 }
@@ -2849,7 +2968,7 @@ static void draw_reference_frame_window(ApplicationData* data) {
                     ImGui::PlotValues("relative", rel_angle, N, 0xFF55FF55);
                     float x_val;
                     if (ImGui::ClickingAtPlot(&x_val)) {
-                        data->playback.time = x_val;
+                        data->animation.time = x_val;
                     }
                     ImGui::EndPlot();
                 }
@@ -3235,12 +3354,12 @@ static void draw_timeline_window(ApplicationData* data) {
                                     frame_range.end)) {
             if (data->time_filter.dynamic_window) {
                 if (data->time_filter.range != old_range) {
-                    data->playback.time = math::lerp(data->time_filter.range.beg, data->time_filter.range.end, 0.5f);
+                    data->animation.time = math::lerp(data->time_filter.range.beg, data->time_filter.range.end, 0.5f);
                 } else {
                     if (data->time_filter.range.beg != old_range.beg) {
-                        data->time_filter.window_extent = 2.f * math::abs((float)data->playback.time - data->time_filter.range.beg);
+                        data->time_filter.window_extent = 2.f * math::abs((float)data->animation.time - data->time_filter.range.beg);
                     } else if (data->time_filter.range.end != old_range.end) {
-                        data->time_filter.window_extent = 2.f * math::abs((float)data->playback.time - data->time_filter.range.end);
+                        data->time_filter.window_extent = 2.f * math::abs((float)data->animation.time - data->time_filter.range.end);
                     }
                 }
             }
@@ -3325,7 +3444,7 @@ static void draw_timeline_window(ApplicationData* data) {
                         data->time_filter.range.end = v;
                     }
                 } else if (ImGui::GetIO().MouseDown[0]) {
-                    data->playback.time = ImLerp(frame_range.beg, frame_range.end, t);
+                    data->animation.time = ImLerp(frame_range.beg, frame_range.end, t);
                 }
 
                 if (!ImGui::GetIO().MouseDown[0] && !ImGui::IsItemHovered()) {
@@ -3350,7 +3469,7 @@ static void draw_timeline_window(ApplicationData* data) {
             // CURRENT FRAME POSITION
             {
                 constexpr ImU32 CURRENT_LINE_COLOR = 0xaa33ffff;
-                const f32 t = ((float)data->playback.time - frame_range.beg) / frame_range.ext();
+                const f32 t = ((float)data->animation.time - frame_range.beg) / frame_range.ext();
                 const ImVec2 pos0 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t, 0));
                 const ImVec2 pos1 = ImLerp(inner_bb.Min, inner_bb.Max, ImVec2(t, 1));
                 ImGui::GetCurrentWindow()->DrawList->AddLine(pos0, pos1, CURRENT_LINE_COLOR);
@@ -3949,7 +4068,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                     const ImVec2 coord = vec_cast(math::barycentric_to_cartesian(p[0], p[1], p[2], w));
 
                     const bool in_range = (frame_range.beg <= i && i <= frame_range.end);
-                    const bool selected = (!style.use_base_for_all) && (i == data->playback.frame);
+                    const bool selected = (!style.use_base_for_all) && (i == data->animation.frame);
 
                     // Draw channel, higher number => later draw
                     int channel = 1 + (int)in_range + (int)selected;
@@ -4001,7 +4120,7 @@ static void draw_shape_space_window(ApplicationData* data) {
         ImGui::BeginTooltip();
         ImGui::Text("Frame[%i]", (i32)mouse_hover_idx);
         if (ImGui::GetIO().MouseDown[0]) {
-            data->playback.time = (float)mouse_hover_idx;
+            data->animation.time = (float)mouse_hover_idx;
         }
         ImGui::Text((const char*)u8"\u03BB: (%.2f, %.2f, %.2f)", mouse_hover_ev.x, mouse_hover_ev.y, mouse_hover_ev.z);
         ImGui::Text((const char*)u8"\u03B1: %1.2f, \u03B2: %1.2f, \u03B3: %1.2f", mouse_hover_w.x, mouse_hover_w.y, mouse_hover_w.z);
@@ -4882,57 +5001,52 @@ static void init_molecule_data(ApplicationData* data) {
         data->selection.hovered = -1;
         data->selection.right_clicked = -1;
 
+        init_frame_cache(data);
 #if USE_MOLD
-
         const auto& mol = data->dynamic.molecule;
 
-        const char** atom_names = (const char**)TMP_MALLOC(data->dynamic.molecule.atom.count * sizeof(const char**));
-        //uint8_t* secondary_structure = (uint8_t*)TMP_MALLOC(data->dynamic.molecule.residue.count * sizeof(uint8_t));
-        //mold_backbone_atoms* residue_bb_atoms = (mold_backbone_atoms*)TMP_MALLOC(data->dynamic.molecule.residue.count * sizeof(mold_backbone_atoms));
-        defer {
-            TMP_FREE(atom_names);
-            //TMP_FREE(secondary_structure);
-            //TMP_FREE(residue_bb_atoms);
-        };
+        if (mol.chain.count > 0) {
+            const char** atom_names = (const char**)TMP_MALLOC(mol.atom.count * sizeof(const char**));
+            defer { TMP_FREE(atom_names); };
+            for (int64_t i = 0; i < mol.atom.count; ++i) {
+                atom_names[i] = mol.atom.label[i].cstr();
+            }
 
-        for (int64_t i = 0; i < data->dynamic.molecule.atom.count; ++i) {
-            atom_names[i] = data->dynamic.molecule.atom.label[i].cstr();
-        }
+            {
+                mold_util_backbone_args args = {
+                    .backbone_atoms = (mold_backbone_atoms*)mol.residue.backbone.atoms,
+                    .atom = {
+                        .count = (uint32_t)mol.atom.count,
+                        .name = atom_names,
+                    },
+                    .residue = {
+                        .count = (uint32_t)mol.residue.count,
+                        .atom_range = (const mold_range*)mol.residue.atom_range,
+                    }
+                };
+                mold_util_extract_backbone(&args);
+            }
 
-        {
-            mold_util_backbone_args args = {
-                .backbone_atoms = (mold_backbone_atoms*)mol.residue.backbone.atoms,
-                .atom = {
-                    .count = (uint32_t)mol.atom.count,
-                    .name = atom_names,
-                },
-                .residue = {
-                    .count = (uint32_t)mol.residue.count,
-                    .atom_range = (const mold_range*)mol.residue.atom_range,
-                }
-            };
-            mold_util_extract_backbone(&args);
-        }
-
-        {
-            mold_util_secondary_structure_args args = {
-                .secondary_structure = (mold_secondary_structure*)mol.residue.backbone.secondary_structure,
-                .atom = {
-                    .x = mol.atom.position.x,
-                    .y = mol.atom.position.y,
-                    .z = mol.atom.position.z, 
-                },
-                .residue = {
-                    .count = (uint32_t)mol.residue.count,
-                    //.atom_range = (const mold_range*)mol.residue.atom_range,
-                    .backbone_atoms = (const mold_backbone_atoms*)mol.residue.backbone.atoms,
-                },
-                .chain = {
-                    .count = (uint32_t)mol.chain.count,
-                    .residue_range = (const mold_range*)mol.chain.residue_range,
-                }
-            };
-            molt_util_extract_secondary_structure(&args);
+            {
+                mold_util_secondary_structure_args args = {
+                    .secondary_structure = (mold_secondary_structure*)mol.residue.backbone.secondary_structure,
+                    .atom = {
+                        .x = mol.atom.position.x,
+                        .y = mol.atom.position.y,
+                        .z = mol.atom.position.z, 
+                    },
+                    .residue = {
+                        .count = (uint32_t)mol.residue.count,
+                        //.atom_range = (const mold_range*)mol.residue.atom_range,
+                        .backbone_atoms = (const mold_backbone_atoms*)mol.residue.backbone.atoms,
+                    },
+                    .chain = {
+                        .count = (uint32_t)mol.chain.count,
+                        .residue_range = (const mold_range*)mol.chain.residue_range,
+                    }
+                };
+                molt_util_extract_secondary_structure(&args);
+            }
         }
 
         mold_draw_mol_desc desc = {
@@ -4975,11 +5089,11 @@ static void init_molecule_data(ApplicationData* data) {
 static void init_trajectory_data(ApplicationData* data) {
     if (data->dynamic.trajectory) {
         data->time_filter.range = {0, (float)data->dynamic.trajectory.num_frames};
-        data->playback.time = math::clamp(data->playback.time, (f64)data->time_filter.range.min, (f64)data->time_filter.range.max);
-        data->playback.frame = math::clamp((i32)data->playback.time, 0, data->dynamic.trajectory.num_frames);
-        i32 frame = data->playback.frame;
+        data->animation.time = math::clamp(data->animation.time, (f64)data->time_filter.range.min, (f64)data->time_filter.range.max);
+        data->animation.frame = math::clamp((i32)data->animation.time, 0, data->dynamic.trajectory.num_frames - 1);
+        i32 frame = data->animation.frame;
 
-        data->simulation_box.box = get_trajectory_frame(data->dynamic.trajectory, data->playback.frame).box;
+        data->simulation_box.box = get_trajectory_frame(data->dynamic.trajectory, data->animation.frame).box;
         soa_vec3 pos = get_trajectory_positions(data->dynamic.trajectory, frame);
 
         const i64 copy_size = data->dynamic.molecule.atom.count * sizeof(float);
@@ -4996,8 +5110,17 @@ static void init_trajectory_data(ApplicationData* data) {
 }
 
 static void on_trajectory_load_complete(ApplicationData* data) {
-#if DEPERIODIZE_ON_LOAD
     if (data->dynamic.trajectory) {
+        auto load_complete = [data]() {
+            init_trajectory_data(data);
+            for (auto& ref : data->reference_frame.frames) {
+                compute_reference_frame(data, &ref);
+            }
+            update_reference_frames(data);
+            stats::set_all_property_flags(true, true);
+            ramachandran::initialize(data->dynamic); 
+        };
+#if DEPERIODIZE_ON_LOAD
         task_system::ID id = task_system::enqueue_pool("De-periodizing trajectory", data->dynamic.trajectory.num_frames,
             [data](task_system::TaskSetRange range) {
                 auto& mol = data->dynamic.molecule;
@@ -5009,26 +5132,19 @@ static void on_trajectory_load_complete(ApplicationData* data) {
                 }
             });
         task_system::wait_for_task(id);
-        task_system::enqueue_main("Load Complete Tasks",
-            [data]() {
-                init_trajectory_data(data);
-                for (auto& ref : data->reference_frame.frames) {
-                    compute_reference_frame(data, &ref);
-                }
-                update_reference_frames(data);
-                stats::set_all_property_flags(true, true);
-                ramachandran::initialize(data->dynamic); 
-            });
-    }
+        task_system::enqueue_main("Load Complete Tasks", load_complete);
+#else
+        load_complete();
 #endif
+    }
 }
 
 static bool load_trajectory_data(ApplicationData* data, CStringView filename) {
     interrupt_async_tasks(data);
     free_trajectory_data(data);
     data->files.trajectory = filename;
-    data->playback.time = 0;
-    data->playback.frame = 0;
+    data->animation.time = 0;
+    data->animation.frame = 0;
 
     LOG_NOTE("Attempting to load trajectory data from file '%.*s", filename.count, filename.ptr);
     data->tasks.load_trajectory = task_system::enqueue_pool("Loading trajectory", 1, [data](task_system::TaskSetRange) {
@@ -5275,7 +5391,7 @@ static void load_workspace(ApplicationData* data, CStringView file) {
         load_dataset_from_file(data, new_trajectory_file);
     }
 
-    data->playback = {};
+    data->animation = {};
     reset_view(data, false, true);
     init_all_representations(data);
     update_all_representations(data);
@@ -5499,6 +5615,8 @@ static void update_representation(ApplicationData* data, Representation* rep) {
     for (const auto& s : data->selection.stored_selections) {
         sel.push_back({s.name, s.atom_mask});
     }
+
+    //mold_filter* filter = mold_filter_create(rep->filter.buffer, )
 
     rep->filter_is_ok = filter::compute_filter_mask(rep->atom_mask, rep->filter.buffer, data->dynamic.molecule, sel);
     filter_colors(colors, rep->atom_mask);
@@ -5970,7 +6088,7 @@ static void fill_gbuffer(ApplicationData* data) {
         immediate::set_model_view_matrix(data->view.param.matrix.current.view);
         immediate::set_proj_matrix(data->view.param.matrix.current.proj_jittered);
 
-        const mat3 box = get_trajectory_frame(data->dynamic.trajectory, data->playback.frame).box;
+        const mat3 box = get_trajectory_frame(data->dynamic.trajectory, data->animation.frame).box;
         const vec3 min_box = box * vec3(0.0f);
         const vec3 max_box = box * vec3(1.0f);
 
@@ -6036,7 +6154,7 @@ static void fill_gbuffer(ApplicationData* data) {
 
                 const auto tracking_data = structure_tracking::get_tracking_data(ref.id);
                 if (tracking_data) {
-                    const mat3 pca = tracking_data->eigen.vectors[data->playback.frame];
+                    const mat3 pca = tracking_data->eigen.vectors[data->animation.frame];
                     immediate::draw_line(B[3], vec3(B[3]) + pca[0] * 2.0f, immediate::COLOR_RED);
                     immediate::draw_line(B[3], vec3(B[3]) + pca[1] * 2.0f, immediate::COLOR_GREEN);
                     immediate::draw_line(B[3], vec3(B[3]) + pca[2] * 2.0f, immediate::COLOR_BLUE);
@@ -6439,16 +6557,16 @@ static void update_reference_frames(ApplicationData* data) {
     const auto& mol = data->dynamic.molecule;
     const auto& traj = data->dynamic.trajectory;
 
-    const f64 time = data->playback.time;
+    const f64 time = data->animation.time;
     const int last_frame = math::max(0, traj.num_frames - 1);
-    const f32 t = (float)math::fract(data->playback.time);
+    const f32 t = (float)math::fract(data->animation.time);
     const int frame = math::clamp((int)time, 0, last_frame);
     const int p2 = math::max(0, frame - 1);
     const int p1 = math::max(0, frame);
     const int n1 = math::min(frame + 1, last_frame);
     const int n2 = math::min(frame + 2, last_frame);
 
-    const InterpolationMode mode = (p1 != n1) ? data->playback.interpolation : InterpolationMode::Nearest;
+    const InterpolationMode mode = (p1 != n1) ? data->animation.interpolation : InterpolationMode::Nearest;
 
     for (auto& ref : data->reference_frame.frames) {
         const structure_tracking::TrackingData* tracking_data = structure_tracking::get_tracking_data(ref.id);
@@ -6555,16 +6673,16 @@ static void superimpose_ensemble(ApplicationData* data) {
     const auto& mol = data->dynamic.molecule;
     const auto& traj = data->dynamic.trajectory;
 
-    const f64 time = data->playback.time;
+    const f64 time = data->animation.time;
     const int last_frame = math::max(0, traj.num_frames - 1);
-    const f32 t = (float)math::fract(data->playback.time);
+    const f32 t = (float)math::fract(data->animation.time);
     const int frame = math::clamp((int)time, 0, last_frame);
     const int p2 = math::max(0, frame - 1);
     const int p1 = math::max(0, frame);
     const int n1 = math::min(frame + 1, last_frame);
     const int n2 = math::min(frame + 2, last_frame);
 
-    const InterpolationMode mode = (p1 != n1) ? data->playback.interpolation : InterpolationMode::Nearest;
+    const InterpolationMode mode = (p1 != n1) ? data->animation.interpolation : InterpolationMode::Nearest;
     const Bitfield atom_mask = data->ensemble_tracking.atom_mask;
 
     Bitfield ensemble_atom_mask;
@@ -6714,25 +6832,32 @@ static void draw_representations(const ApplicationData& data) {
         rep_data[i] = &data.representations.buffer[i].mold_rep;
     }
 
-    mold_draw_rendertarget render_target;
-    render_target.width = data.fbo.width;
-    render_target.height = data.fbo.height;
-    render_target.texture_depth = data.fbo.deferred.depth;
-    render_target.texture_color = data.fbo.deferred.color;
-    render_target.texture_atom_index = data.fbo.deferred.picking;
-    render_target.texture_view_normal = data.fbo.deferred.normal;
-    render_target.texture_view_velocity = data.fbo.deferred.velocity;
+    mold_draw_rendertarget render_target = {
+        .width = (u32)data.fbo.width,
+        .height = (u32)data.fbo.height,
+        .texture_depth = data.fbo.deferred.depth,
+        .texture_color = data.fbo.deferred.color,
+        .texture_atom_index = data.fbo.deferred.picking,
+        .texture_view_normal = data.fbo.deferred.normal,
+        .texture_view_velocity = data.fbo.deferred.velocity,
+    };
 
-    mold_draw_desc cmd;
-    cmd.representation.data = rep_data;
-    cmd.representation.count = rep_count;
-    cmd.render_target = &render_target;
-    cmd.view_transform.model_view_matrix = &data.view.param.matrix.current.view[0][0];
-    cmd.view_transform.projection_matrix = &data.view.param.matrix.current.proj_jittered[0][0];
-    cmd.view_transform.prev_model_view_matrix = &data.view.param.matrix.previous.view[0][0];
-    cmd.view_transform.prev_projection_matrix = &data.view.param.matrix.previous.proj_jittered[0][0];
+    mold_draw_desc desc = {
+        .representation = {
+            .count = rep_count,
+            .data = rep_data,
+        },
+        .view_transform = {
+            .model_view_matrix = &data.view.param.matrix.current.view[0][0],
+            .projection_matrix = &data.view.param.matrix.current.proj_jittered[0][0],
+            // These two are for temporal anti-aliasing reprojection
+            .prev_model_view_matrix = &data.view.param.matrix.previous.view[0][0],
+            .prev_projection_matrix = &data.view.param.matrix.previous.proj_jittered[0][0],
+        },
+        .render_target = &render_target,
+    };
 
-    mold_draw(&data.mold.ctx, &cmd);
+    mold_draw(&data.mold.ctx, &desc);
 #else
     const i32 atom_count = (i32)data.dynamic.molecule.atom.count;
     const i32 bond_count = (i32)data.dynamic.molecule.covalent_bond.count;
@@ -6788,6 +6913,41 @@ static void draw_representations(const ApplicationData& data) {
 }
 
 static void draw_representations_lean_and_mean(const ApplicationData& data, vec4 color, float scale, u32 mask) {
+#if 0
+    const mold_draw_rep* rep_data[32] = { 0 };
+    const u32 rep_count = math::min((u32)ARRAY_SIZE(rep_data), (u32)data.representations.buffer.size());
+    for (i64 i = 0; i < rep_count; i++) {
+        rep_data[i] = &data.representations.buffer[i].mold_rep;
+    }
+
+    mold_draw_rendertarget render_target = {
+        .width = (u32)data.fbo.width,
+        .height = (u32)data.fbo.height,
+        .texture_depth = data.fbo.deferred.depth,
+        .texture_color = data.fbo.deferred.color,
+        .texture_atom_index = data.fbo.deferred.picking,
+        .texture_view_normal = data.fbo.deferred.normal,
+        .texture_view_velocity = data.fbo.deferred.velocity,
+    };
+
+    mold_draw_desc desc = {
+        .representation = {
+            .count = rep_count,
+            .data = rep_data,
+        },
+        .view_transform = {
+            .model_view_matrix = &data.view.param.matrix.current.view[0][0],
+            .projection_matrix = &data.view.param.matrix.current.proj_jittered[0][0],
+            // These two are for temporal anti-aliasing reprojection
+            .prev_model_view_matrix = &data.view.param.matrix.previous.view[0][0],
+            .prev_projection_matrix = &data.view.param.matrix.previous.proj_jittered[0][0],
+        },
+        .render_target = &render_target,
+        .mol_mask = mask,
+    };
+
+    mold_draw(&data.mold.ctx, &desc);
+#else
     const i32 atom_count = (i32)data.dynamic.molecule.atom.count;
     const i32 bond_count = (i32)data.dynamic.molecule.covalent_bond.count;
 
@@ -6830,4 +6990,5 @@ static void draw_representations_lean_and_mean(const ApplicationData& data, vec4
         }
     }
     POP_GPU_SECTION()
+#endif
 }
