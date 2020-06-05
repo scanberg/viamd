@@ -20,7 +20,7 @@ struct ControlPoint {
     float position[3];
     i16 support_vector[3]; // unit direction vector
     i16 tangent_vector[3]; // unit direction vector
-    u8 classification[4];  // classification probabilities: Coil, Sheet, Helix etc.
+    u8 classification[4];  // classification fractions: Coil, Sheet, Helix etc.
     u32 atom_index;
 };
 

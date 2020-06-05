@@ -43,6 +43,22 @@ void color_atoms_chain_index(Array<u32> dst_atom_colors, const MoleculeStructure
     }
 }
 
+void color_atoms_secondary_structure(Array<u32> dst_atom_colors, const MoleculeStructure& mol) {
+    const u32 color_unknown = 0x22222222;
+    const u32 color_coil    = 0xDDDDDDDD;
+    const u32 color_helix   = 0xFF22DD22;
+    const u32 color_sheet   = 0xFFDD2222;
+
+    memset_array(dst_atom_colors, color_unknown);
+    if (mol.residue.backbone.secondary_structure) {
+        for (i64 i = 0; i < mol.residue.count; i++) {
+            const auto w = math::convert_color((u32)mol.residue.backbone.secondary_structure[i]);
+            const auto color = w[0] * math::convert_color(color_coil) + w[1] * math::convert_color(color_helix) + w[2] * math::convert_color(color_sheet);
+            memset_array(dst_atom_colors, math::convert_color(color), mol.residue.atom_range[i]);
+        }
+    }
+}
+
 inline u32 lerp_pixel(const Image& color_map, const vec2& coords) {
     const int x0 = math::clamp((i32)(coords.x * color_map.width), 0, color_map.width - 1);
     const int y0 = math::clamp((i32)(coords.y * color_map.height), 0, color_map.height - 1);
@@ -62,27 +78,24 @@ void color_atoms_backbone_angles(Array<u32> dst_atom_colors, const MoleculeStruc
     if (color_map.width == 0 || color_map.height == 0) return;
     const float one_over_two_pi = 1.f / (2.f * math::PI);
 
-    for (const auto& seq : get_backbone_sequences(mol)) {
+    for (i64 ci = 0; ci < mol.chain.count; ++ci) {
+        const auto seq = mol.chain.residue_range[ci];
         if (seq.ext() < 2) continue;
 
         for (i64 i = seq.beg + 1; i < seq.end - 1; i++) {
-            const vec2 coord = vec2(0, 1) + vec2(1, -1) * ((vec2)mol.backbone.segment.angle[i] * one_over_two_pi + 0.5f);
+            const vec2 coord = vec2(0, 1) + vec2(1, -1) * ((vec2)mol.residue.backbone.angle[i] * one_over_two_pi + 0.5f);
             const u32 color = lerp_pixel(color_map, coord);
-            memset_array(dst_atom_colors, color, mol.residue.atom_range[mol.backbone.segment.segment[i].res_idx]);
+            memset_array(dst_atom_colors, color, mol.residue.atom_range[i]);
         }
 
-        // Do first and last segment explicitly since it lacks adjacent [next] amino acid to properly compute phi and psi.
+        // Do first and last segment explicitly since it lacks adjacent [prev/next] amino acid to properly compute phi and psi.
         {
-            const auto dst_i = seq.beg;
-            const auto src_i = math::min(seq.end - 1, dst_i + 1);
-            const u32 color = dst_atom_colors[mol.residue.atom_range[mol.backbone.segment.segment[src_i].res_idx].beg];  // copy color from previous residue
-            memset_array(dst_atom_colors, color, mol.residue.atom_range[mol.backbone.segment.segment[dst_i].res_idx]);
+            const u32 color = dst_atom_colors[mol.residue.atom_range[seq.beg + 1].beg];
+            memset_array(dst_atom_colors, color, mol.residue.atom_range[seq.beg]);
         }
         {
-            const auto dst_i = math::max(0, seq.end - 1);
-            const auto src_i = math::max(0, dst_i - 1);
-            const u32 color = dst_atom_colors[mol.residue.atom_range[mol.backbone.segment.segment[src_i].res_idx].beg];  // copy color from previous residue
-            memset_array(dst_atom_colors, color, mol.residue.atom_range[mol.backbone.segment.segment[dst_i].res_idx]);
+            const u32 color = dst_atom_colors[mol.residue.atom_range[seq.end - 2].beg];  // copy color from previous residue
+            memset_array(dst_atom_colors, color, mol.residue.atom_range[seq.end - 1]);
         }
     }
 }

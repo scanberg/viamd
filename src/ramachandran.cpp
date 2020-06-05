@@ -468,14 +468,14 @@ void update_vbo() {
 
 static void init_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const MoleculeDynamic& dynamic) {
     ASSERT(data);
-    if (!dynamic.molecule || !dynamic.trajectory) return;
+    if (!dynamic.molecule || !dynamic.molecule.residue.backbone.atoms || !dynamic.trajectory) return;
 
     if (data->angle_data) {
         FREE(data->angle_data.ptr);
     }
 
-    i32 alloc_count = (i32)dynamic.molecule.backbone.segment.count * (i32)dynamic.trajectory.frame_buffer.count;
-    data->num_segments = (i32)dynamic.molecule.backbone.segment.count;
+    i32 alloc_count = (i32)dynamic.molecule.residue.count * (i32)dynamic.trajectory.frame_buffer.count;
+    data->num_segments = (i32)dynamic.molecule.chain.count;
     data->num_frames = 0;
     data->angle_data = {(BackboneAngle*)CALLOC(alloc_count, sizeof(BackboneAngle)), alloc_count};
 }
@@ -490,21 +490,21 @@ static void free_backbone_angles_trajectory(BackboneAnglesTrajectory* data) {
 
 static task_system::ID compute_backbone_angles_trajectory(BackboneAnglesTrajectory* data, const MoleculeDynamic& dynamic) {
     ASSERT(dynamic);
-    if (dynamic.trajectory.num_frames == 0 || dynamic.molecule.backbone.segment.count == 0) return task_system::INVALID_ID;
+    if (dynamic.trajectory.num_frames == 0 || !dynamic.molecule.residue.backbone.angle) return task_system::INVALID_ID;
 
     task_system::ID compute_task = task_system::enqueue_pool(
         "Backbone Angles Trajectory", dynamic.trajectory.num_frames, [data, &dynamic](task_system::TaskSetRange range) {
             for (u32 f_idx = range.beg; f_idx < range.end; f_idx++) {
                 const soa_vec3 pos = get_trajectory_positions(dynamic.trajectory, f_idx);
                 Array<BackboneAngle> frame_angles = get_frame_backbone_angles(*data, f_idx);
-                for (const auto& bb_seq : get_backbone_sequences(dynamic.molecule)) {
-                    auto bb_seg = get_backbone_segments(dynamic.molecule, bb_seq);
-                    auto bb_ang = frame_angles.subarray(bb_seq);
-
-                    if (bb_seg.size() < 2) {
-                        memset(bb_ang.data(), 0, bb_ang.size_in_bytes());
+                for (i64 ci = 0; ci < dynamic.molecule.chain.count; ++ci) {
+                    const auto bb_range = dynamic.molecule.chain.residue_range[ci];
+                    const auto bb_seg = dynamic.molecule.residue.backbone.atoms + bb_range.beg;
+                    auto bb_ang = frame_angles.data() + bb_range.beg;
+                    if (bb_range.ext() < 2) {
+                        *bb_ang = {};
                     } else {
-                        compute_backbone_angles(bb_ang.data(), pos, bb_seg.data(), bb_seg.size());
+                        compute_backbone_angles(bb_ang, pos, bb_seg, bb_range.ext());
                     }
                 }
             }

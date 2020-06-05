@@ -96,10 +96,10 @@ bool initialize(Context* ctx, i32 width, i32 height, const char* title) {
     }
     glfwSetErrorCallback(error_callback);
 
+#ifdef OS_MAC_OSX
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-#ifdef OS_MAC_OSX
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
     GLFWwindow* window = glfwCreateWindow(width, height, title, NULL, NULL);

@@ -57,6 +57,11 @@ static struct {
 
     struct {
         GLuint fbo = 0;
+        GLuint tex_rgba8 = 0;
+    } tmp;
+
+    struct {
+        GLuint fbo = 0;
         GLuint tex_color[2] = {0, 0};
         GLuint tex_temporal_buffer[2] = {0, 0};  // These are dedicated and cannot be use as intermediate buffers by other shaders
     } targets;
@@ -673,9 +678,11 @@ void shutdown() {}
 }  // namespace dof
 
 namespace blit {
-static GLuint program = 0;
+static GLuint program_tex = 0;
+static GLuint program_col = 0;
 static GLint uniform_loc_texture = -1;
-constexpr CStringView f_shader_src = R"(
+static GLint uniform_loc_color = -1;
+constexpr CStringView f_shader_src_tex = R"(
 #version 150 core
 
 uniform sampler2D u_texture;
@@ -688,13 +695,110 @@ void main() {
 }
 )";
 
+constexpr CStringView f_shader_src_col = R"(
+#version 150 core
+
+uniform vec4 u_color;
+out vec4 out_frag;
+
+void main() {
+	out_frag = u_color;
+}
+)";
+
 void initialize() {
-    if (!program) setup_program(&program, "render_texture", f_shader_src);
-    uniform_loc_texture = glGetUniformLocation(program, "u_texture");
+    if (!program_tex) setup_program(&program_tex, "blit texture", f_shader_src_tex);
+    uniform_loc_texture = glGetUniformLocation(program_tex, "u_texture");
+
+    if (!program_col) setup_program(&program_col, "blit color", f_shader_src_col);
+    uniform_loc_color = glGetUniformLocation(program_col, "u_color");
 }
 
 void shutdown() {
-    if (program) glDeleteProgram(program);
+    if (program_tex) glDeleteProgram(program_tex);
+    if (program_col) glDeleteProgram(program_col);
+}
+}  // namespace blit
+
+namespace blur {
+static GLuint program_gaussian = 0;
+static GLuint program_box = 0;
+static GLint uniform_loc_texture = -1;
+static GLint uniform_loc_inv_res_dir = -1;
+
+constexpr CStringView f_shader_src_gaussian = R"(
+#version 150 core
+
+#define KERNEL_RADIUS 5
+
+uniform sampler2D u_texture;
+uniform vec2      u_inv_res_dir;
+
+in vec2 tc;
+out vec4 out_frag;
+
+float blur_weight(float r) {
+    const float sigma = KERNEL_RADIUS * 0.5;
+    const float falloff = 1.0 / (2.0*sigma*sigma);
+    float w = exp2(-r*r*falloff);
+    return w;
+}
+
+void main() {
+    vec2 uv = tc;
+    vec4  c_tot = texture(u_texture, uv);
+    float w_tot = 1.0;
+
+    for (float r = 1; r <= KERNEL_RADIUS; ++r) {
+        float w = blur_weight(r);
+        vec4  c = texture(u_texture, uv + u_inv_res_dir * r);
+        c_tot += c * w;
+        w_tot += w;
+    }
+    for (float r = 1; r <= KERNEL_RADIUS; ++r) {
+        float w = blur_weight(r);
+        vec4  c = texture(u_texture, uv - u_inv_res_dir * r);
+        c_tot += c * w;
+        w_tot += w;
+    }
+
+    out_frag = c_tot / w_tot;
+}
+)";
+
+constexpr CStringView f_shader_src_box = R"(
+#version 150 core
+
+uniform sampler2D u_texture;
+out vec4 out_frag;
+
+void main() {
+    vec4 c = vec4(0);
+    c += texelFetch(u_texture, ivec2(gl_FragCoord.xy) + ivec2(-1, -1), 0);
+    c += texelFetch(u_texture, ivec2(gl_FragCoord.xy) + ivec2( 0, -1), 0);
+    c += texelFetch(u_texture, ivec2(gl_FragCoord.xy) + ivec2(+1, -1), 0);
+    c += texelFetch(u_texture, ivec2(gl_FragCoord.xy) + ivec2(-1,  0), 0);
+    c += texelFetch(u_texture, ivec2(gl_FragCoord.xy) + ivec2( 0,  0), 0);
+    c += texelFetch(u_texture, ivec2(gl_FragCoord.xy) + ivec2(+1,  0), 0);
+    c += texelFetch(u_texture, ivec2(gl_FragCoord.xy) + ivec2(-1, +1), 0);
+    c += texelFetch(u_texture, ivec2(gl_FragCoord.xy) + ivec2( 0, +1), 0);
+    c += texelFetch(u_texture, ivec2(gl_FragCoord.xy) + ivec2(+1, +1), 0);
+
+    out_frag = c / 9.0;
+}
+)";
+
+void initialize() {
+    if (!program_gaussian) setup_program(&program_gaussian, "blur", f_shader_src_gaussian);
+    uniform_loc_texture = glGetUniformLocation(program_gaussian, "u_texture");
+    uniform_loc_inv_res_dir = glGetUniformLocation(program_gaussian, "u_inv_res_dir");
+
+    if (!program_box) setup_program(&program_box, "blur", f_shader_src_box);
+}
+
+void shutdown() {
+    if (program_gaussian) glDeleteProgram(program_gaussian);
+    if (program_box) glDeleteProgram(program_box);
 }
 }  // namespace blit
 
@@ -971,6 +1075,21 @@ void initialize(int width, int height) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     }
 
+    if (!gl.tmp.fbo) {
+        glGenFramebuffers(1, &gl.tmp.fbo);
+    }
+
+    if (!gl.tmp.tex_rgba8) {
+        glGenTextures(1, &gl.tmp.tex_rgba8);
+        glBindTexture(GL_TEXTURE_2D, gl.tmp.tex_rgba8);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
     gl.tex_width = width;
     gl.tex_height = height;
 
@@ -983,6 +1102,7 @@ void initialize(int width, int height) {
     tonemapping::initialize();
     temporal::initialize();
     blit::initialize();
+    blur::initialize();
     sharpen::initialize();
 }
 
@@ -996,11 +1116,14 @@ void shutdown() {
     tonemapping::shutdown();
     temporal::shutdown();
     blit::shutdown();
+    blur::shutdown();
     sharpen::shutdown();
 
     if (gl.vao) glDeleteVertexArrays(1, &gl.vao);
     //if (gl.vbo) glDeleteBuffers(1, &gl.vbo);
     if (gl.v_shader_fs_quad) glDeleteShader(gl.v_shader_fs_quad);
+    if (gl.tmp.fbo) glDeleteFramebuffers(1, &gl.tmp.fbo);
+    if (gl.tmp.tex_rgba8) glDeleteTextures(1, &gl.tmp.tex_rgba8);
 }
 
 void compute_linear_depth(GLuint depth_tex, float near_plane, float far_plane, bool orthographic = false) {
@@ -1440,7 +1563,7 @@ void scale_hsv(GLuint color_tex, vec3 hsv_scale) {
 
 void blit_texture(GLuint tex) {
     ASSERT(glIsTexture(tex));
-    glUseProgram(blit::program);
+    glUseProgram(blit::program_tex);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, tex);
     glUniform1i(blit::uniform_loc_texture, 0);
@@ -1448,6 +1571,109 @@ void blit_texture(GLuint tex) {
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
     glUseProgram(0);
+}
+
+void blit_color(vec4 color) {
+    glUseProgram(blit::program_col);
+    glUniform4fv(blit::uniform_loc_color, 1, &color[0]);
+    glBindVertexArray(gl.vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glUseProgram(0);
+}
+
+void blur_texture_gaussian(GLuint tex, int num_passes) {
+    ASSERT(glIsTexture(tex));
+    ASSERT(num_passes > 0);
+
+    GLint last_fbo;
+    GLint last_viewport[4];
+    GLint last_draw_buffer[8];
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fbo);
+    glGetIntegerv(GL_VIEWPORT, last_viewport);
+    for (int i = 0; i < 8; ++i) glGetIntegerv(GL_DRAW_BUFFER0 + i, &last_draw_buffer[i]);
+
+    GLint w, h;
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
+
+    glBindVertexArray(gl.vao);
+
+    glUseProgram(blur::program_gaussian);
+    glUniform1i(blur::uniform_loc_texture, 0);
+
+    glViewport(0, 0, w, h);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.tmp.fbo);
+
+    for (int i = 0; i < num_passes; ++i) {
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.tmp.tex_rgba8, 0);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        glUniform2f(blur::uniform_loc_inv_res_dir, 1.0f / w, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        glBindTexture(GL_TEXTURE_2D, gl.tmp.tex_rgba8);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        glUniform2f(blur::uniform_loc_inv_res_dir, 0.0f, 1.0f / h);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+
+    glUseProgram(0);
+    glBindVertexArray(0);
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, last_fbo);
+    glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
+    for (int i = 0; i < 8; ++i) glDrawBuffers(8, (GLenum*)last_draw_buffer);
+}
+
+void blur_texture_box(GLuint tex, int num_passes) {
+    ASSERT(glIsTexture(tex));
+    ASSERT(num_passes > 0);
+
+    GLint last_fbo;
+    GLint last_viewport[4];
+    GLint last_draw_buffer[8];
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fbo);
+    glGetIntegerv(GL_VIEWPORT, last_viewport);
+    for (int i = 0; i < 8; ++i) glGetIntegerv(GL_DRAW_BUFFER0 + i, &last_draw_buffer[i]);
+
+    GLint w, h;
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
+
+    glBindVertexArray(gl.vao);
+
+    glUseProgram(blur::program_box);
+
+    glViewport(0, 0, w, h);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.tmp.fbo);
+
+    for (int i = 0; i < num_passes; ++i) {
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.tmp.tex_rgba8, 0);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        glBindTexture(GL_TEXTURE_2D, gl.tmp.tex_rgba8);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+
+    glUseProgram(0);
+    glBindVertexArray(0);
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, last_fbo);
+    glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
+    for (int i = 0; i < 8; ++i) glDrawBuffers(8, (GLenum*)last_draw_buffer);
 }
 
 void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) {
@@ -1527,21 +1753,12 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
 
     if (desc.ambient_occlusion.enabled) {
         PUSH_GPU_SECTION("SSAO")
-        apply_ssao(gl.linear_depth.texture, desc.input_textures.normal, view_param.matrix.current.proj_jittered, desc.ambient_occlusion.intensity, desc.ambient_occlusion.radius, desc.ambient_occlusion.bias, time);
-        POP_GPU_SECTION()
-    }
-
-    if (desc.input_textures.emissive) {
-        PUSH_GPU_SECTION("Add Emissive")
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ONE, GL_ONE);
-        blit_texture(desc.input_textures.emissive);
-        glDisable(GL_BLEND);
+            apply_ssao(gl.linear_depth.texture, desc.input_textures.normal, view_param.matrix.current.proj_jittered, desc.ambient_occlusion.intensity, desc.ambient_occlusion.radius, desc.ambient_occlusion.bias, time);
         POP_GPU_SECTION()
     }
 
     if (desc.temporal_reprojection.enabled) {
-#if 0   
+#if 0
         swap_target();
         glDrawBuffer(dst_buffer);
         apply_aa_tonemapping(src_texture);
@@ -1569,11 +1786,20 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
 
 #if 1
         PUSH_GPU_SECTION("Sharpen")
-            swap_target();
+        swap_target();
         glDrawBuffer(dst_buffer);
         sharpen::sharpen(src_texture);
         POP_GPU_SECTION()
 #endif
+    }
+
+    if (desc.input_textures.emissive) {
+        PUSH_GPU_SECTION("Add Emissive")
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+        blit_texture(desc.input_textures.emissive);
+        glDisable(GL_BLEND);
+        POP_GPU_SECTION()
     }
 
     if (desc.depth_of_field.enabled) {

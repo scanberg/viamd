@@ -73,23 +73,32 @@ TEST_CASE("Bitfield", "[Bitfield]") {
     bitfield::set_bit(field, 3);
     bitfield::set_bit(field, 5);
     bitfield::set_bit(field, 255);
+    bitfield::set_bit(field, 256);
 
-    REQUIRE(field.size() == size);
-    REQUIRE(field.size_in_bytes() == size / 8 + (size % 8 ? 1 : 0));
+    {
+        auto s = field.size();
+        REQUIRE(s == size);
+    }
+
+    {
+        //REQUIRE(field.size_in_bytes() == size / 8 + (size % 8 ? 1 : 0));
+    }
 
     REQUIRE(bitfield::get_bit(field, 2) == true);
     REQUIRE(bitfield::get_bit(field, 3) == true);
     REQUIRE(bitfield::get_bit(field, 5) == true);
     REQUIRE(bitfield::get_bit(field, 255) == true);
-    REQUIRE(bitfield::number_of_bits_set(field) == 4);
+    REQUIRE(bitfield::get_bit(field, 256) == true);
+    REQUIRE(bitfield::number_of_bits_set(field) == 5);
 
     REQUIRE(field[2] == true);
     REQUIRE(field[3] == true);
     REQUIRE(field[5] == true);
     REQUIRE(field[255] == true);
+    REQUIRE(field[256] == true);
 
     REQUIRE(bitfield::find_first_bit_set(field) == 2);
-    REQUIRE(bitfield::find_last_bit_set(field) == 255);
+    REQUIRE(bitfield::find_last_bit_set(field) == 256);
 
     // bitfield::print(field);
     // printf("\n");
@@ -347,5 +356,82 @@ TEST_CASE("Testing string_utils", "[string_utils]") {
     SECTION("find pattern") {
         auto matches = find_patterns_in_file(UNITTEST_DATA_DIR"/test.txt", "KALLE");
         REQUIRE(matches.size() == 4);
+    }
+}
+
+#include <core/lru_cache.h>
+
+template <typename Key, typename Type>
+void print_lru_cache_matrix(const LRU_Cache_8<Key, Type>& cache) {
+    for (int col = 0; col < 8; ++col) {
+        for (int row = 0; row < 8; ++row) {
+            uint64_t idx = col * 8 + row;
+            uint64_t bit = 1ULL << idx;
+            printf("%i ", uint64_t((cache.ref_matrix & bit) != 0));
+        }
+        printf("\n");
+    }
+    printf("\n");
+}
+
+template <typename Key, typename Type>
+void print_lru_cache_matrix(const LRU_Cache_4<Key, Type>& cache) {
+    for (int col = 0; col < 4; ++col) {
+        for (int row = 0; row < 4; ++row) {
+            uint16_t idx = col * 4 + row;
+            uint16_t bit = 1U << idx;
+            printf("%i ", uint16_t((cache.ref_matrix & bit) != 0));
+        }
+        printf("\n");
+    }
+    printf("\n");
+}
+
+TEST_CASE("Testing lru_cache", "[cache]") {
+    SECTION("Cool") {
+        LRU_Cache_4<int, int> cache;
+        print_lru_cache_matrix(cache);
+
+        cache.set_lru_idx(3);
+        print_lru_cache_matrix(cache);
+        cache.set_lru_idx(1);
+        print_lru_cache_matrix(cache);
+        cache.set_lru_idx(0);
+        print_lru_cache_matrix(cache);
+
+        cache.put(-1, -1);
+
+        print_lru_cache_matrix(cache);
+        cache.put(-2, -2);
+        print_lru_cache_matrix(cache);
+        cache.put(-3, -3);
+        print_lru_cache_matrix(cache);
+        cache.put(-4, -4);
+        print_lru_cache_matrix(cache);
+
+        {
+            int arr[4] = {0,0,1,2};
+            for (int i = 0; i < 4; ++i) {
+                cache.get(arr[i]);
+            }
+            for (int i = 0; i < 4; ++i) {
+                if (cache.find(arr[i]) == -1) {
+                    int* dst = cache.reserve(arr[i]);
+                    *dst = arr[i];
+                }
+            }
+        }
+        {
+            int arr[4] = {0,1,2,3};
+            for (int i = 0; i < 4; ++i) {
+                cache.get(arr[i]);
+            }
+            for (int i = 0; i < 4; ++i) {
+                if (cache.find(arr[i]) == -1) {
+                    int* dst = cache.reserve(arr[i]);
+                    *dst = arr[i];
+                }
+            }
+        }
     }
 }

@@ -23,7 +23,7 @@ out VS_GS {
 
 // From Inigo Quilez!
 void proj_sphere(in vec4 sphere, 
-                 in float fle,
+                 in vec2 fle,
                  out vec2 axis_a,
                  out vec2 axis_b,
                  out vec2 center) {
@@ -31,10 +31,11 @@ void proj_sphere(in vec4 sphere,
     float r2 = sphere.w*sphere.w;
     float z2 = o.z*o.z; 
     float l2 = dot(o,o);
+    float c = -r2*(r2-l2)/((l2-z2)*(r2-z2));
     
     // axis
-    axis_a = fle*sqrt(-r2*(r2-l2)/((l2-z2)*(r2-z2)*(r2-z2)))*vec2( o.x,o.y);
-    axis_b = fle*sqrt(-r2*(r2-l2)/((l2-z2)*(r2-z2)*(r2-l2)))*vec2(-o.y,o.x);
+    axis_a = fle*sqrt(c/(r2-z2)) * vec2( o.x,o.y);
+    axis_b = fle*sqrt(c/(r2-l2)) * vec2(-o.y,o.x);
     center = -fle*o.z*o.xy/(z2-r2);
 }
 
@@ -49,18 +50,16 @@ void main() {
         vec4 view_coord = u_view_mat * vec4(pos, 1.0);
         vec4 view_sphere = vec4(view_coord.xyz, rad);
 
-		float fle = u_proj_mat[1][1]; // Focal length
-		float inv_ar = u_proj_mat[0][0] / u_proj_mat[1][1]; // 1.0 / aspect_ratio
-		float z = -u_proj_mat[2][2] - u_proj_mat[3][2] / (view_coord.z + rad); // Compute view depth (with bias of radius) 
+        // Focal length
+        vec2 fle = vec2(u_proj_mat[0][0], u_proj_mat[1][1]);
 
-		vec2 axis_a;
-		vec2 axis_b;
-		vec2 center;
-		proj_sphere(view_sphere, fle, axis_a, axis_b, center);
-		vec2 scl = vec2(inv_ar, 1.0);
-        axis_a *= scl;
-        axis_b *= scl;
-        center *= scl;
+        // Compute view depth (with bias of radius) 
+        float z = -u_proj_mat[2][2] - u_proj_mat[3][2] / (view_coord.z + rad);
+
+        vec2 axis_a;
+        vec2 axis_b;
+        vec2 center;
+        proj_sphere(view_sphere, fle, axis_a, axis_b, center);
         center += u_jitter_uv.xy * 0.5;
 
         out_geom.view_sphere = view_sphere;
