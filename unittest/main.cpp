@@ -360,14 +360,54 @@ TEST_CASE("Testing string_utils", "[string_utils]") {
 }
 
 #include <core/lru_cache.h>
+
+template <typename Key, typename Type>
+void print_lru_cache_matrix(const LRU_Cache_8<Key, Type>& cache) {
+    for (int col = 0; col < 8; ++col) {
+        for (int row = 0; row < 8; ++row) {
+            uint64_t idx = col * 8 + row;
+            uint64_t bit = 1ULL << idx;
+            printf("%i ", uint64_t((cache.ref_matrix & bit) != 0));
+        }
+        printf("\n");
+    }
+    printf("\n");
+}
+
+template <typename Key, typename Type>
+void print_lru_cache_matrix(const LRU_Cache_4<Key, Type>& cache) {
+    for (int col = 0; col < 4; ++col) {
+        for (int row = 0; row < 4; ++row) {
+            uint16_t idx = col * 4 + row;
+            uint16_t bit = 1U << idx;
+            printf("%i ", uint16_t((cache.ref_matrix & bit) != 0));
+        }
+        printf("\n");
+    }
+    printf("\n");
+}
+
 TEST_CASE("Testing lru_cache", "[cache]") {
     SECTION("Cool") {
-        Cache<int, int, 4> cache;
+        LRU_Cache_4<int, int> cache;
+        print_lru_cache_matrix(cache);
+
+        cache.set_lru_idx(3);
+        print_lru_cache_matrix(cache);
+        cache.set_lru_idx(1);
+        print_lru_cache_matrix(cache);
+        cache.set_lru_idx(0);
+        print_lru_cache_matrix(cache);
 
         cache.put(-1, -1);
+
+        print_lru_cache_matrix(cache);
         cache.put(-2, -2);
+        print_lru_cache_matrix(cache);
         cache.put(-3, -3);
+        print_lru_cache_matrix(cache);
         cache.put(-4, -4);
+        print_lru_cache_matrix(cache);
 
         {
             int arr[4] = {0,0,1,2};
@@ -393,12 +433,5 @@ TEST_CASE("Testing lru_cache", "[cache]") {
                 }
             }
         }
-    }
-}
-
-#include <mold_filter.h>
-TEST_CASE("Testing mold filter", "[mold_filter]") {
-    SECTION("filter") {
-    
     }
 }
