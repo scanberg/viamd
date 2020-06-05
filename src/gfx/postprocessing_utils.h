@@ -79,5 +79,10 @@ void scale_hsv(GLuint color_tex, vec3 hsv_scale);
 // void apply_tonemapping(GLuint color_tex, Tonemapping tonemapping, float exposure = 1.0f, float gamma = 2.2f);
 // void apply_temporal_aa(GLuint depth_tex, GLuint color_tex, GLuint velocity_tex, const ViewParam& param);
 void blit_texture(GLuint tex);
+void blit_color(vec4 color);
+
+void blur_texture_gaussian(GLuint tex, int num_passes = 1);
+void blur_texture_box(GLuint tex, int num_passes = 1);
+
 
 }  // namespace postprocessing
