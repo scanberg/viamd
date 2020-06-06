@@ -92,7 +92,7 @@ target_compile_definitions(viamd PRIVATE
 	VIAMD_IMAGE_DIR=\"${RESOURCE_DIR}images\"
 	VIAMD_SCREENSHOT_DIR=\"${RESOURCE_DIR}screenshots\")
 
-target_compile_features(viamd PRIVATE cxx_std_20)
+target_compile_features(viamd PRIVATE cxx_std_17)
 
 target_include_directories(viamd
     PRIVATE

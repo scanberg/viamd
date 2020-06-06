@@ -7224,3 +7224,5 @@ bool ImGui::TabItemLabelAndCloseButton(ImDrawList* draw_list, const ImRect& bb, 
 
     return close_button_pressed;
 }
+
+template float ImGui::SliderCalcRatioFromValueT<float, float>(int, float, float, float, float, float);

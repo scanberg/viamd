@@ -393,6 +393,8 @@ void initialize(int width, int height) {
         free_string(&f_shader_src_ssao);
         free_string(&f_shader_src_blur);
     };
+    ASSERT(f_shader_src_ssao);
+    ASSERT(f_shader_src_blur);
 
     setup_program(&gl.ssao.hbao.program_persp, "ssao perspective", f_shader_src_ssao, "#define AO_PERSPECTIVE 1");
     setup_program(&gl.ssao.hbao.program_ortho, "ssao orthographic", f_shader_src_ssao, "#define AO_PERSPECTIVE 0");
