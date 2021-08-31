@@ -16,10 +16,10 @@ jobs:
         - name: build
           run: |
             cmake --build . --config Release -- /nologo /verbosity:minimal /maxcpucount:4
-        - name: unittest
-          run: |
-            cd unittest/Release
-            ./unittests
+#        - name: unittest
+#          run: |
+#            cd unittest/Release
+#            ./unittests
     mac:
         runs-on: macos-latest
         steps:
@@ -33,10 +33,10 @@ jobs:
         - name: build
           run: |
             make -j 4
-        - name: unittest
-          run: |
-            cd unittest
-            ./unittests
+#        - name: unittest
+#          run: |
+#            cd unittest
+#            ./unittests
     linux:
         runs-on: ubuntu-latest
         steps:
@@ -51,7 +51,7 @@ jobs:
         - name: build
           run: |
             make -j 4
-        - name: unittest
-          run: |
-            cd unittest
-            ./unittests
+#        - name: unittest
+#          run: |
+#            cd unittest
+#            ./unittests
