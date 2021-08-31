@@ -1689,8 +1689,8 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     time = time + 0.016f;
     if (time > 100.f) time -= 100.f;
 
-    const auto near_dist = view_param.clip_planes.near;
-    const auto far_dist = view_param.clip_planes.far;
+    const auto near_dist = view_param.clip_volume.near;
+    const auto far_dist = view_param.clip_volume.far;
     const auto ortho = is_orthographic_proj_matrix(view_param.matrix.current.proj);
 
     GLint last_fbo;

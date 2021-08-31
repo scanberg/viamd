@@ -27,7 +27,7 @@ struct ViewParam {
     struct {
         float near;
         float far;
-    } clip_planes;
+    } clip_volume;
 
     float fov_y;
     vec2 resolution;

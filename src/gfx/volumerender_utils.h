@@ -12,17 +12,22 @@ namespace volume {
 void initialize();
 void shutdown();
 
-void free_volume_texture(GLuint texture);
-void create_tf_texture(GLuint* texture, int* width, CStringView path_to_file);
-void create_volume_texture(GLuint* texture, const ivec3& dim);
-void set_volume_texture_data(GLuint texture, const ivec3& dim, const uint32_t* data, uint32_t max_value);
-//void set_volume_texture_data(GLuint texture, const ivec3& dim, const float* data, float max_value);
+//bool init_tf_texture(GLuint* texture, int* width, CStringView path_to_file);
+bool init_texture_2D(GLuint* texture, int width, int height, GLenum format);
+bool init_texture_3D(GLuint* texture, int width, int height, int depth, GLenum format);
+
+bool free_texture(GLuint* texture);
+
+// We assume you set the entire data for the texture
+bool set_texture_2D_data(GLuint texture, const void* data, GLenum format);
+bool set_texture_3D_data(GLuint texture, const void* data, GLenum format);
+
 mat4 compute_model_to_world_matrix(const vec3& min_world_aabb, const vec3& max_world_aabb);
 mat4 compute_world_to_model_matrix(const vec3& min_world_aabb, const vec3& max_world_aabb);
 mat4 compute_texture_to_model_matrix(const ivec3& dim);
 mat4 compute_model_to_texture_matrix(const ivec3& dim);
 
-void write_to_file(const Volume& volume, CStringView path_to_file);
+void write_volume_to_file(const float* data, int64_t dim_x, int64_t dim_y, int64_t dim_z, CStringView path_to_file);
 
 /*
     Renders a volumetric texture using OpenGL.
@@ -39,7 +44,13 @@ void write_to_file(const Volume& volume, CStringView path_to_file);
     - clip_volume:    define a subvolume (min, max)[0-1] which represents the visible portion of the volume
 */
 
-struct VolumeRenderDesc {
+struct RenderDesc {
+    struct {
+        GLuint texture;
+        int width;
+        int height;
+    } render_target;
+
     struct {
         GLuint volume = 0;
         GLuint transfer_function = 0;
@@ -64,13 +75,13 @@ struct VolumeRenderDesc {
 
     IsoSurfaces isosurface = {};
     bool isosurface_enabled = false;
-
     bool direct_volume_rendering_enabled = true;
+    bool bounding_box_enabled = false;
 
     vec3 voxel_spacing = {};
 };
 
-void render_volume_texture(const VolumeRenderDesc& desc);
+void render_volume(const RenderDesc& desc);
 
 
 }  // namespace volume

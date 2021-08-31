@@ -1,3 +1,7 @@
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+
 #include "task_system.h"
 #include <TaskScheduler.h>
 #include <core/common.h>

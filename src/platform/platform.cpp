@@ -20,8 +20,11 @@
 #include "imgui_impl_opengl3.h"
 //#include "cousine_font.inl"
 
-#include "droid_sans.inl"
+//#include "droid_sans.inl"
+#include "droid_sans_mono.inl"
 #include "fa_solid.inl"
+
+#include <implot.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -88,7 +91,7 @@ static void key_callback(GLFWwindow* window, int key, int scancode, int action, 
 
 static void char_callback(GLFWwindow* window, unsigned int c) { ImGui_ImplGlfw_CharCallback(window, c); }
 
-bool initialize(Context* ctx, i32 width, i32 height, const char* title) {
+bool initialize(Context* ctx, i64 width, i64 height, const char* title) {
     if (!glfwInit()) {
         // TODO Throw critical error
         error_callback(1, "Error while initializing glfw.");
@@ -102,7 +105,7 @@ bool initialize(Context* ctx, i32 width, i32 height, const char* title) {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
-    GLFWwindow* window = glfwCreateWindow(width, height, title, NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow((int)width, (int)height, title, NULL, NULL);
     if (!window) {
         error_callback(2, "Could not create glfw window.");
         return false;
@@ -126,11 +129,12 @@ bool initialize(Context* ctx, i32 width, i32 height, const char* title) {
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    ImPlot::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;  // Enable Keyboard Controls
     // io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
-    // io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;  // Enable Docking
-    // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;  // Enable Multi-Viewport / Platform Windows
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;  // Enable Docking
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;  // Enable Multi-Viewport / Platform Windows
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoTaskBarIcons;
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoMerge;
     io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;
@@ -139,6 +143,7 @@ bool initialize(Context* ctx, i32 width, i32 height, const char* title) {
 
     // default range is 0x0020 - 0x00FF.
     // Added some greek letters
+    /*
     {
         static const ImWchar ranges[] = {0x0020, 0x00FF, 0x03C6, 0x03C8, 0};
         ImFontConfig config;
@@ -147,6 +152,16 @@ bool initialize(Context* ctx, i32 width, i32 height, const char* title) {
         config.RasterizerMultiply = 0.9f;
         config.PixelSnapH = true;
         ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)DroidSans_compressed_data, DroidSans_compressed_size, 16.f, &config, ranges);
+    }
+    */
+    {
+        static const ImWchar ranges[] = {0x0020, 0x00FF, 0x03C6, 0x03C8, 0};
+        ImFontConfig config;
+        config.OversampleV = 1;
+        config.OversampleH = 3;
+        config.RasterizerMultiply = 1.f;
+        config.PixelSnapH = true;
+        ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)droid_sans_mono_compressed_data, droid_sans_mono_compressed_size, 16.f, &config, ranges);
     }
     {
         // ICONS
@@ -165,8 +180,8 @@ bool initialize(Context* ctx, i32 width, i32 height, const char* title) {
 
     data.internal_ctx.window.ptr = window;
     data.internal_ctx.window.title = title;
-    data.internal_ctx.window.width = width;
-    data.internal_ctx.window.height = height;
+    data.internal_ctx.window.width = (int)width;
+    data.internal_ctx.window.height = (int)height;
     data.internal_ctx.window.vsync = true;
 
     int w, h;
@@ -200,6 +215,7 @@ bool initialize(Context* ctx, i32 width, i32 height, const char* title) {
 void shutdown(Context* ctx) {
     glfwDestroyWindow((GLFWwindow*)data.internal_ctx.window.ptr);
     ImGui_ImplGlfw_Shutdown();
+    ImPlot::DestroyContext();
     ImGui::DestroyContext();
     glfwTerminate();
 
@@ -282,8 +298,8 @@ void update(Context* ctx) {
     }
 
     double t = glfwGetTime();
-    data.internal_ctx.timing.delta_s = (float)(t - data.internal_ctx.timing.total_s);
-    data.internal_ctx.timing.total_s = (float)t;
+    data.internal_ctx.timing.delta_s = (t - data.internal_ctx.timing.total_s);
+    data.internal_ctx.timing.total_s = t;
 
     memcpy(ctx, &data.internal_ctx, sizeof(Context));
 }
@@ -330,7 +346,7 @@ FileDialogResult file_dialog(FileDialogFlags flags, CStringView default_path, CS
         convert_backslashes(res_path);
         return {FileDialogResult::Ok, res_path};
     } else if (result == NFD_CANCEL) {
-        return {FileDialogResult::Cancel};
+        return {FileDialogResult::Cancel, {}};
     }
     LOG_ERROR("%s\n", NFD_GetError());
     return {FileDialogResult::Cancel, {}};

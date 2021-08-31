@@ -8,12 +8,12 @@
 
 #include <mol/molecule_structure.h>
 #include <mol/molecule_trajectory.h>
-#include <mol/trajectory_utils.h>
+//#include <mol/trajectory_utils.h>
 #include <mol/molecule_utils.h>
-#include <mol/hydrogen_bond.h>
-#include <mol/filter.h>
-#include <mol/pdb_utils.h>
-#include <mol/gro_utils.h>
+//#include <mol/hydrogen_bond.h>
+//#include <mol/filter.h>
+//#include <mol/pdb_utils.h>
+//#include <mol/gro_utils.h>
 
 #include <stdio.h>
 
@@ -32,14 +32,17 @@ extern void cubic_interpolation_pbc_ref(soa_vec3 out_pos, const soa_vec3 in_pos[
 int main() {
     MoleculeDynamic md;
 
-    filter::initialize();
+//    filter::initialize();
 
+    /*
     SECTION("Load Data")
     const auto t0_load = TIME();
     bool res_mol = pdb::load_molecule_from_file(&md.molecule, DATASET);
     const auto t1_load = TIME();
     bool res_traj = pdb::load_trajectory_from_file(&md.trajectory, DATASET);
     const auto t2_load = TIME();
+
+    */
 
     if (!res_mol || !res_traj) {
         printf("Could not load dataset: %s\n", DATASET);

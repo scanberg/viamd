@@ -1,4 +1,8 @@
 //#include <Windows.h>
+
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
+#endif
 #include <direct.h>
 #pragma comment(lib, "User32.lib")
 
@@ -8,15 +12,26 @@ Timestamp get_time() {
     return t.QuadPart;
 }
 
-float compute_delta_ms(Timestamp t0, Timestamp t1) {
+double compute_delta_ms(Timestamp t0, Timestamp t1) {
     LARGE_INTEGER start, stop, elapsed, frequency;
     QueryPerformanceFrequency(&frequency);
     start.QuadPart = t0;
     stop.QuadPart = t1;
     elapsed.QuadPart = stop.QuadPart - start.QuadPart;
     elapsed.QuadPart *= 1000;
-    float ms = (float)((double)elapsed.QuadPart / (double)frequency.QuadPart);
+    double ms = ((double)elapsed.QuadPart / (double)frequency.QuadPart);
     return ms;
+}
+
+double compute_delta_s(Timestamp t0, Timestamp t1) {
+    LARGE_INTEGER start, stop, elapsed, frequency;
+    QueryPerformanceFrequency(&frequency);
+    start.QuadPart = t0;
+    stop.QuadPart = t1;
+    elapsed.QuadPart = stop.QuadPart - start.QuadPart;
+    elapsed.QuadPart *= 1000000;
+    double s = ((double)elapsed.QuadPart / (double)frequency.QuadPart);
+    return s;
 }
 
 DynamicArray<DirectoryEntry> list_directory(CStringView dir_path) {
@@ -55,4 +70,4 @@ CStringView get_cwd() {
 	return data.file_system.cwd;
 }
 
-void sleep(i32 milliseconds) { Sleep(milliseconds); }
+void sleep(i64 milliseconds) { Sleep((i32)milliseconds); }

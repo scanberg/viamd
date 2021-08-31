@@ -2,6 +2,7 @@
 
 #include "image.h"
 #include "gfx/gl_utils.h"
+#include "gfx/immediate_draw_utils.h"
 #include <glm/gtc/type_ptr.hpp>
 
 #include <core/common.h>
@@ -18,6 +19,7 @@ static struct {
     GLuint vao = 0;
     GLuint vbo = 0;
     GLuint ubo = 0;
+    GLuint fbo = 0;
 
     struct {
         GLuint dvr_only = 0;
@@ -106,6 +108,10 @@ void initialize() {
         glBufferData(GL_UNIFORM_BUFFER, sizeof(UniformData), 0, GL_DYNAMIC_DRAW);
         glBindBuffer(GL_UNIFORM_BUFFER, 0);
     }
+
+    if (!gl.fbo) {
+        glGenFramebuffers(1, &gl.fbo);
+    }
 }
 
 void shutdown() {}
@@ -128,30 +134,63 @@ void create_tf_texture(GLuint* texture, int* width, CStringView path) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glBindTexture(GL_TEXTURE_2D, 0);
     } else {
         LOG_WARNING("could not read TF ('%.s')", path.length(), path.cstr());
     }
 }
 
-void create_volume_texture(GLuint* texture, const ivec3& dim) {
+bool init_texture_2D(GLuint* texture, int width, int height, GLenum format) {
     ASSERT(texture);
+    ASSERT(GL_RGBA8);
 
     if (glIsTexture(*texture)) {
-        ivec3 tex_dim;
-        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH, &tex_dim.x);
-        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &tex_dim.y);
-        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH, &tex_dim.z);
-        if (dim == tex_dim)
-            return;
+        int x, y, fmt;
+        glBindTexture(GL_TEXTURE_2D, *texture);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH,  &x);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &y);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &fmt);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        if (width == x && width == y && format == fmt)
+            return true;
+        else
+            glDeleteTextures(1, texture);
+    }
+
+    glGenTextures(1, texture);
+    glBindTexture(GL_TEXTURE_2D, *texture);
+    glTexStorage2D(GL_TEXTURE_2D, 1, format, width, height);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    return true;
+}
+
+bool init_texture_3D(GLuint* texture, int width, int height, int depth, GLenum format) {
+    ASSERT(texture);
+    ASSERT(format == GL_R32F || format == GL_R8);
+
+    if (glIsTexture(*texture)) {
+        int x, y, z, fmt;
+        glBindTexture(GL_TEXTURE_3D, *texture);
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH,  &x);
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &y);
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH,  &z);
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_INTERNAL_FORMAT, &fmt);
+        glBindTexture(GL_TEXTURE_3D, 0);
+        if (width == x && width == y && width == z && format == fmt)
+            return true;
         else
             glDeleteTextures(1, texture);
     }
 
     glGenTextures(1, texture);
     glBindTexture(GL_TEXTURE_3D, *texture);
-    glTexStorage3D(GL_TEXTURE_3D, 1, GL_R8, dim.x, dim.y, dim.z);
+    glTexStorage3D(GL_TEXTURE_3D, 1, format, width, height, depth);
     // glTexImage3D(GL_TEXTURE_3D, 0, GL_R8, dim.x, dim.y, dim.z, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -159,37 +198,65 @@ void create_volume_texture(GLuint* texture, const ivec3& dim) {
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_3D, 0);
+
+    return true;
 }
 
-void free_volume_texture(GLuint texture) {
-    if (glIsTexture(texture)) glDeleteTextures(1, &texture);
+bool free_texture(GLuint* texture) {
+    if (!glIsTexture(*texture)) return false;
+    glDeleteTextures(1, texture);
+    *texture = 0;
+    return true;
 }
 
-void set_volume_texture_data(GLuint texture, const ivec3& dim, const uint32_t* data, uint32_t max_value) {
-    if (glIsTexture(texture)) {
-        const i64 size = dim.x * dim.y * dim.z;
-        float* rescaled_data = (float*)TMP_MALLOC(size * sizeof(float));
-        defer { TMP_FREE(rescaled_data); };
-        ASSERT(rescaled_data);
+bool set_texture_2D_data(GLuint texture, const void* data, GLenum format) {
+    if (!glIsTexture(texture)) return false;
 
-        if (max_value > 0) {
-            const float scl = 1.0f / (float)max_value;
-            for (i64 i = 0; i < size; ++i) {
-                rescaled_data[i] = (float)data[i] * scl;
-            }
-        } else {
-            memset(rescaled_data, 0, size);
-        }
+    GLenum pixel_channel = 0;
+    GLenum pixel_type = 0;
 
-        glBindTexture(GL_TEXTURE_3D, texture);
-        int w, h, d;
-        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH, &w);
-        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &h);
-        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH, &d);
-
-        glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, dim.x, dim.y, dim.z, GL_RED, GL_FLOAT, rescaled_data);
-        glBindTexture(GL_TEXTURE_3D, 0);
+    if (format == GL_RGBA8) {
+        pixel_channel = GL_RGBA;
+        pixel_type = GL_UNSIGNED_BYTE;
     }
+
+    if (pixel_channel == 0 || pixel_type == 0) return false;
+
+    glBindTexture(GL_TEXTURE_2D, texture);
+    int w, h;
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
+
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, pixel_channel, pixel_type, data);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    return true;
+}
+
+
+bool set_texture_3D_data(GLuint texture, const void* data, GLenum format) {
+    if (!glIsTexture(texture)) return false;
+
+    GLenum pixel_channel = 0;
+    GLenum pixel_type = 0;
+
+    if (format == GL_R32F) {
+        pixel_channel = GL_RED;
+        pixel_type = GL_FLOAT;
+    }
+
+    if (pixel_channel == 0 || pixel_type == 0) return false;
+
+    glBindTexture(GL_TEXTURE_3D, texture);
+    int w, h, d;
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH, &w);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &h);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH, &d);
+
+    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, w, h, d, pixel_channel, pixel_type, data);
+    glBindTexture(GL_TEXTURE_3D, 0);
+
+    return true;
 }
 
 /*
@@ -222,10 +289,12 @@ mat4 compute_world_to_model_matrix(const vec3& min_world_aabb, const vec3& max_w
 }
 
 mat4 compute_model_to_texture_matrix(const ivec3& dim) {
+    (void)dim;
     return mat4(1);
 }
 
 mat4 compute_texture_to_model_matrix(const ivec3& dim) {
+    (void)dim;
     return mat4(1);
 }
 
@@ -240,11 +309,23 @@ void write_to_file(const Volume& volume, CStringView file) {
     fwrite(volume.voxel_data.data(), 1, volume.voxel_data.size_in_bytes(), f);
 }
 
-void render_volume_texture(const VolumeRenderDesc& desc) {
-    if (!desc.direct_volume_rendering_enabled && !desc.isosurface_enabled) return;
+void render_volume(const RenderDesc& desc) {
+    if (!desc.direct_volume_rendering_enabled && !desc.isosurface_enabled && !desc.bounding_box_enabled) return;
 
-    GLint viewport[4];
-    glGetIntegerv(GL_VIEWPORT, viewport);
+    GLint bound_fbo;
+    GLint bound_viewport[4];
+    GLint bound_draw_buffer[8] = {0};
+    GLint bound_draw_buffer_count = 0;
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &bound_fbo);
+    glGetIntegerv(GL_VIEWPORT, bound_viewport);
+    for (int i = 0; i < 8; ++i) {
+        glGetIntegerv(GL_DRAW_BUFFER0 + i, &bound_draw_buffer[i]);
+        // @NOTE: Assume that its tightly packed and if we stumple upon a zero draw buffer index, we enterpret that as the 'end'
+        if (bound_draw_buffer[i] == GL_NONE) {
+            bound_draw_buffer_count = i;
+            break;
+        }
+    }
 
     const mat4 model_to_view_matrix = desc.matrix.view * desc.matrix.model;
 
@@ -252,12 +333,37 @@ void render_volume_texture(const VolumeRenderDesc& desc) {
     time += 1.0f / 60.0f;
     if (time > 100.0) time -= 100.0f;
 
+    if (desc.render_target.texture) {
+        ASSERT(glIsTexture(desc.render_target.texture));
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.fbo);
+        // We don't need a depth buffer to render the volume
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, desc.render_target.texture, 0);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        glViewport(0, 0, desc.render_target.width, desc.render_target.height);
+    }
+
+    glClearColor(1,1,1,1);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    if (desc.bounding_box_enabled) {
+        const vec3 min_box = {0,0,0};
+        const vec3 max_box = {1,1,1};
+
+        immediate::set_model_view_matrix(model_to_view_matrix);
+        immediate::set_proj_matrix(desc.matrix.proj);
+
+        immediate::draw_box_wireframe(desc.clip_volume.min, desc.clip_volume.max, immediate::COLOR_RED);
+        immediate::draw_box_wireframe(min_box, max_box, immediate::COLOR_BLACK);
+
+        immediate::flush();
+    }
+
     UniformData data;
     data.view_to_model_mat = math::inverse(model_to_view_matrix);
     data.model_to_view_mat = model_to_view_matrix;
     data.inv_proj_mat = math::inverse(desc.matrix.proj);
     data.model_view_proj_mat = desc.matrix.proj * model_to_view_matrix;
-    data.inv_res = vec2(1.f / (float)(viewport[2]), 1.f / (float)(viewport[3]));
+    data.inv_res = vec2(1.f / (float)(desc.render_target.width), 1.f / (float)(desc.render_target.height));
     data.density_scale = desc.global_scaling.density;
     data.alpha_scale = desc.global_scaling.alpha;
     data.clip_volume_min = desc.clip_volume.min;
@@ -272,6 +378,9 @@ void render_volume_texture(const VolumeRenderDesc& desc) {
 
     glEnable(GL_CULL_FACE);
     glCullFace(GL_FRONT);
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, desc.texture.depth);
@@ -312,6 +421,12 @@ void render_volume_texture(const VolumeRenderDesc& desc) {
     glUseProgram(0);
 
     glDisable(GL_CULL_FACE);
+    glDisable(GL_BLEND);
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bound_fbo);
+    glViewport(bound_viewport[0], bound_viewport[1], bound_viewport[2], bound_viewport[3]);
+    glDrawBuffers(bound_draw_buffer_count, (GLenum*)bound_draw_buffer);
+
 }
 
 }  // namespace volume

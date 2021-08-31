@@ -15,38 +15,21 @@
 - Load Trajectory Button
 - Supply time between frames
 
-## Trajectory Explorer ##
-- Change label of window
+## Animation ##
 - Show time and frames (total number)
-- If stopped at last frame, click on play to start from beginning
 
 ## Menu and Windows ##
 - Add Help
 - Add Hierarchical info of dataset (chains, residues, atoms, element types what ever)
 
 ## Navigation ##
-- Double click -> Center on atom [X]
-- Use animation [X]
-
-## Representation ##
-- Fix Bugs
-- Range should be :, Examples: 1:10, 10:*, *
-- Filter
-    - Backbone [ ]
-    - Water    [x]
+- Animate rotation
+- Smooth rotation overall
 
 ## Properties ##
-- distance
-- angle
-- dihedral
 - rdf
-- rmsd
 
-- com
-- resatom(residues, idx)
-- atom(int)
-- resname(string)
-
+- Fix GUI, the god damn columns are messed up
 - Fix bug with range based selection
 - <span style="color:red">Visualization (Show cloud)</span>
 - <span style="color:red">Coloring (Color cloud based on property value)</span>
@@ -65,11 +48,11 @@ time    asd     asd.1     asd.2       a1
 
 
 ## Distributions ##
-- Periodicity Selection
+- CTRL + CLICK AND DRAG = SELECT RANGE
+- Periodic Selection
 - Value??? Assert this for all types
 - Add Units
-- Export to ascii table
-
+- Export to table data
 
 ## Volume ##
 Intersection of filtered properties
@@ -79,10 +62,10 @@ Fix computation assert validity
 Compute per shown frame
 
 ## Ramachandran ##
-- Fix size of image
-- Show Zero on axis (center lines)
-- Show values of X and Y axis
-- Show phi and psi on axis
-- Filter (Same as representation)
-- Make nicer over all
 - Statistics (How many in each bin)
+- Make aggregate distribution for selection / highlight?
+- Follow color scheme (Blue is selected) (Yellow is highlight)
+
+
+## Selection ##
+- Fix selection of hidden particles (However, do show hidden selections??)

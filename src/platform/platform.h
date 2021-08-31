@@ -94,28 +94,29 @@ struct Context {
         uint64_t delta_ns;
         uint64_t total_ns;
 
-        float delta_s;
-        float total_s;
+        double delta_s;
+        double total_s;
     } timing;
 };
 
 // Context
-bool initialize(Context* ctx, i32 width, i32 height, const char* title);
+bool initialize(Context* ctx, i64 width, i64 height, const char* title);
 void shutdown(Context* ctx);
 void update(Context* ctx);
 void render_imgui(Context* ctx);
 void swap_buffers(Context* ctx);
 
 // Timing
-typedef uint64_t Timestamp;
+typedef u64 Timestamp;
 
-void sleep(int32_t milliseconds);
+void sleep(i64 milliseconds);
 Timestamp get_time();
-float compute_delta_ms(Timestamp t0, Timestamp t1);
+double compute_delta_ms(Timestamp t0, Timestamp t1);
+double compute_delta_s(Timestamp t0, Timestamp t1);
 
 // Filesystem
 typedef StringBuffer<512> Path;
-typedef int32_t FileDialogFlags;
+typedef u32 FileDialogFlags;
 
 enum FileDialogFlags_ { FileDialogFlags_Open = BIT(0), FileDialogFlags_Save = BIT(1), FileDialogFlags_Directory = BIT(2) };
 

@@ -1,60 +1,68 @@
+#include "color_utils.h"
+
 #include <core/array_types.h>
 #include <core/hash.h>
-#include <mol/molecule_structure.h>
-#include "color_utils.h"
+#include <md_molecule.h>
+#include <md_util.h>
 
 void color_atoms_uniform(Array<u32> dst_atom_colors, const vec4& color) { memset_array(dst_atom_colors, math::convert_color(color)); }
 
-void color_atoms_cpk(Array<u32> dst_atom_colors, const MoleculeStructure& mol) {
+void color_atoms_cpk(Array<u32> dst_atom_colors, const md_molecule_t& mol) {
     for (i64 i = 0; i < dst_atom_colors.count; i++) {
-        dst_atom_colors[i] = element::color(mol.atom.element[i]);
+        dst_atom_colors[i] = md_util_element_cpk_color(mol.atom.element[i]);
     }
 }
 
-void color_atoms_residue_id(Array<u32> dst_atom_colors, const MoleculeStructure& mol) {
+void color_atoms_residue_id(Array<u32> dst_atom_colors, const md_molecule_t& mol) {
     memset_array(dst_atom_colors, 0xffffffff);
     for (i64 i = 0; i < mol.residue.count; i++) {
         const u32 color = math::convert_color(color_from_hash(hash::crc32(CStringView(mol.residue.name[i]))));
-        memset_array(dst_atom_colors, color, mol.residue.atom_range[i]);
+        Range<int> atom_range = { mol.residue.atom_range[i].beg, mol.residue.atom_range[i].end };
+        memset_array(dst_atom_colors, color, atom_range);
     }
 }
-void color_atoms_residue_index(Array<u32> dst_atom_colors, const MoleculeStructure& mol) {
+void color_atoms_residue_index(Array<u32> dst_atom_colors, const md_molecule_t& mol) {
     memset_array(dst_atom_colors, 0xffffffff);
     for (i64 i = 0; i < mol.residue.count; i++) {
         const u32 color = math::convert_color(color_from_hash(hash::crc32(i)));
-        memset_array(dst_atom_colors, color, mol.residue.atom_range[i]);
+        Range<int> atom_range = { mol.residue.atom_range[i].beg, mol.residue.atom_range[i].end };
+        memset_array(dst_atom_colors, color, atom_range);
     }
 }
-void color_atoms_chain_id(Array<u32> dst_atom_colors, const MoleculeStructure& mol) {
+void color_atoms_chain_id(Array<u32> dst_atom_colors, const md_molecule_t& mol) {
     memset_array(dst_atom_colors, 0xffffffff);
     for (i64 i = 0; i < mol.chain.count; i++) {
         const u32 color = math::convert_color(color_from_hash(hash::crc32(CStringView(mol.chain.id[i]))));
-        memset_array(dst_atom_colors, color, mol.chain.atom_range[i]);
+        Range<int> atom_range = { mol.chain.atom_range[i].beg, mol.chain.atom_range[i].end };
+        memset_array(dst_atom_colors, color, atom_range);
     }
 }
-void color_atoms_chain_index(Array<u32> dst_atom_colors, const MoleculeStructure& mol) {
+void color_atoms_chain_index(Array<u32> dst_atom_colors, const md_molecule_t& mol) {
     memset_array(dst_atom_colors, 0xffffffff);
     for (i64 i = 0; i < mol.chain.count; i++) {
         const float hue = (float)i / (float)mol.chain.count;
         const float sat = 0.8f;
         const float val = 1.0f;
         const u32 color = math::convert_color(vec4(math::hsv_to_rgb({hue, sat, val}), 1.0f));
-        memset_array(dst_atom_colors, color, mol.chain.atom_range[i]);
+        Range<int> atom_range = { mol.chain.atom_range[i].beg, mol.chain.atom_range[i].end };
+        memset_array(dst_atom_colors, color, atom_range);
     }
 }
 
-void color_atoms_secondary_structure(Array<u32> dst_atom_colors, const MoleculeStructure& mol) {
+void color_atoms_secondary_structure(Array<u32> dst_atom_colors, const md_molecule_t& mol) {
     const u32 color_unknown = 0x22222222;
     const u32 color_coil    = 0xDDDDDDDD;
     const u32 color_helix   = 0xFF22DD22;
     const u32 color_sheet   = 0xFFDD2222;
 
     memset_array(dst_atom_colors, color_unknown);
-    if (mol.residue.backbone.secondary_structure) {
-        for (i64 i = 0; i < mol.residue.count; i++) {
-            const auto w = math::convert_color((u32)mol.residue.backbone.secondary_structure[i]);
+    if (mol.backbone.secondary_structure) {
+        for (i64 i = 0; i < mol.backbone.count; i++) {
+            const auto w = math::convert_color((u32)mol.backbone.secondary_structure[i]);
             const auto color = w[0] * math::convert_color(color_coil) + w[1] * math::convert_color(color_helix) + w[2] * math::convert_color(color_sheet);
-            memset_array(dst_atom_colors, math::convert_color(color), mol.residue.atom_range[i]);
+            md_residue_idx_t res_idx = mol.backbone.residue_idx[i];
+            Range<int> atom_range = { mol.residue.atom_range[res_idx].beg, mol.residue.atom_range[res_idx].end };
+            memset_array(dst_atom_colors, math::convert_color(color), atom_range);
         }
     }
 }
@@ -72,32 +80,32 @@ inline u32 lerp_pixel(const Image& color_map, const vec2& coords) {
     return math::convert_color(math::mix(cx0, cx1, t.y));
 }
 
-void color_atoms_backbone_angles(Array<u32> dst_atom_colors, const MoleculeStructure& mol, const Image& color_map) {
+void color_atoms_backbone_angles(Array<u32> dst_atom_colors, const md_molecule_t& mol, const Image& color_map) {
     memset_array(dst_atom_colors, 0xffffffff);
 
     if (color_map.width == 0 || color_map.height == 0) return;
     const float one_over_two_pi = 1.f / (2.f * math::PI);
 
-    for (i64 ci = 0; ci < mol.chain.count; ++ci) {
-        const auto seq = mol.chain.residue_range[ci];
-        if (seq.ext() < 2) continue;
-
-        for (i64 i = seq.beg + 1; i < seq.end - 1; i++) {
-            const vec2 coord = vec2(0, 1) + vec2(1, -1) * ((vec2)mol.residue.backbone.angle[i] * one_over_two_pi + 0.5f);
-            const u32 color = lerp_pixel(color_map, coord);
-            memset_array(dst_atom_colors, color, mol.residue.atom_range[i]);
-        }
-
-        // Do first and last segment explicitly since it lacks adjacent [prev/next] amino acid to properly compute phi and psi.
-        {
-            const u32 color = dst_atom_colors[mol.residue.atom_range[seq.beg + 1].beg];
-            memset_array(dst_atom_colors, color, mol.residue.atom_range[seq.beg]);
-        }
-        {
-            const u32 color = dst_atom_colors[mol.residue.atom_range[seq.end - 2].beg];  // copy color from previous residue
-            memset_array(dst_atom_colors, color, mol.residue.atom_range[seq.end - 1]);
-        }
+    for (i64 i = 0; i < mol.backbone.count; ++i) {
+        const vec2 angle = { mol.backbone.angle[i].phi, mol.backbone.angle[i].psi };
+        const vec2 coord = vec2(0, 1) + vec2(1, -1) * (angle * one_over_two_pi + 0.5f);
+        const u32 color = lerp_pixel(color_map, coord);
+        const md_residue_idx_t res_idx = mol.backbone.residue_idx[i];
+        Range<int> atom_range = {mol.residue.atom_range[res_idx].beg, mol.residue.atom_range[res_idx].end};
+        memset_array(dst_atom_colors, color, atom_range);
     }
+
+    /*
+    // Do first and last segment explicitly since it lacks adjacent [prev/next] amino acid to properly compute phi and psi.
+    {
+        const u32 color = dst_atom_colors[mol.residue.atom_range[seq.beg + 1].beg];
+        memset_array(dst_atom_colors, color, mol.residue.atom_range[seq.beg]);
+    }
+    {
+        const u32 color = dst_atom_colors[mol.residue.atom_range[seq.end - 2].beg];  // copy color from previous residue
+        memset_array(dst_atom_colors, color, mol.residue.atom_range[seq.end - 1]);
+    }
+    */
 }
 
 void filter_colors(Array<u32> colors, Bitfield mask) {
@@ -433,3 +441,26 @@ vec3 viridis_color_scale(float t) { return lerp_color_scale_in_Lab(viridis_data,
 
 vec3 orange_color_scale(float t) { return lerp_color_scale_in_Lab(orange_data, 21, t); }
 vec3 green_color_scale(float t) { return lerp_color_scale_in_Lab(green_data, 11, t); }
+
+static uint32_t qual_color_scale[] = {
+0xffc7d38d,
+0xffb3ffff,
+0xffdababe,
+0xff7280fb,
+0xffd3b180,
+0xff62b4fd,
+0xff69deb3,
+0xffe5cdfc,
+0xffd9d9d9,
+0xffbd80bc,
+0xffc5ebcc,
+0xff6fedff
+};
+
+vec4 qualitative_color_scale(int idx) {
+    ASSERT(idx >= 0);
+    if (idx >= ARRAY_SIZE(qual_color_scale)) {
+        return color_from_hash(idx);
+    }
+    return math::convert_color(qual_color_scale[idx]);
+}

@@ -8,8 +8,9 @@
 namespace ImGui {
 
 extern template IMGUI_API float RoundScalarWithFormatT<float, float>(const char* format, ImGuiDataType data_type, float v);
-extern template IMGUI_API float SliderCalcRatioFromValueT<float, float>(ImGuiDataType data_type, float v, float v_min, float v_max, float power,
-                                                                        float linear_zero_pos);
+//extern template IMGUI_API float SliderCalcRatioFromValueT<float, float>(ImGuiDataType data_type, float v, float v_min, float v_max, float power, float linear_zero_pos);
+
+extern template IMGUI_API float ScaleRatioFromValueT<float, float, float>(ImGuiDataType data_type, float t, float v_min, float v_max, bool is_logarithmic, float logarithmic_zero_epsilon, float zero_deadzone_halfsize);
 
 enum class RangeSliderGrabState {
 	None,
@@ -98,11 +99,14 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
         if (g.IO.MouseClicked[0]) {
             const float min_dist = 4.f;
 
-            float t1 = SliderCalcRatioFromValueT<float, float>(ImGuiDataType_Float, *v1, v_min, v_max, power, linear_zero_pos);
+            //float t1 = SliderCalcRatioFromValueT<float, float>(ImGuiDataType_Float, *v1, v_min, v_max, power, linear_zero_pos);
+            float t1 = ScaleRatioFromValueT<float, float, float>(ImGuiDataType_Float, *v1, v_min, v_max, false, 0.0f, 0.0f);
             if (!is_horizontal) t1 = 1.0f - t1;
             float p1 = ImLerp(slider_usable_pos_min, slider_usable_pos_max, t1);
 
-            float t2 = SliderCalcRatioFromValueT<float, float>(ImGuiDataType_Float, *v2, v_min, v_max, power, linear_zero_pos);
+            //float t2 = SliderCalcRatioFromValueT<float, float>(ImGuiDataType_Float, *v2, v_min, v_max, power, linear_zero_pos);
+            float t2 = ScaleRatioFromValueT<float, float, float>(ImGuiDataType_Float, *v1, v_min, v_max, false, 0.0f, 0.0f);
+
             if (!is_horizontal) t2 = 1.0f - t2;
             float p2 = ImLerp(slider_usable_pos_min, slider_usable_pos_max, t2);
 
@@ -156,7 +160,9 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
 	ImGui::GetStateStorage()->SetFloat(delta_state_id, delta_state);
 
     // Calculate slider grab positioning
-    float grab_t = SliderCalcRatioFromValueT<float, float>(ImGuiDataType_Float, *v1, v_min, v_max, power, linear_zero_pos);
+    //float grab_t = SliderCalcRatioFromValueT<float, float>(ImGuiDataType_Float, *v1, v_min, v_max, power, linear_zero_pos);
+    float grab_t = ScaleRatioFromValueT<float, float, float>(ImGuiDataType_Float, *v1, v_min, v_max, false, 0.0f, 0.0f);
+
 
     // Draw
     if (!is_horizontal) grab_t = 1.0f - grab_t;
@@ -172,7 +178,8 @@ bool RangeSliderBehavior(const ImRect& frame_bb, ImGuiID id, float* v1, float* v
                                     style.GrabRounding);
 
     // Calculate slider grab positioning
-    grab_t = SliderCalcRatioFromValueT<float, float>(ImGuiDataType_Float, *v2, v_min, v_max, power, linear_zero_pos);
+    //grab_t = SliderCalcRatioFromValueT<float, float>(ImGuiDataType_Float, *v2, v_min, v_max, power, linear_zero_pos);
+    grab_t = ScaleRatioFromValueT<float, float, float>(ImGuiDataType_Float, *v2, v_min, v_max, false, 0.0f, 0.0f);
 
     // Draw
     if (!is_horizontal) grab_t = 1.0f - grab_t;
@@ -226,7 +233,8 @@ bool RangeSliderFloat(const char* label, float* v1, float* v2, float v_min, floa
 
 	// Tabbing or CTRL-clicking on Slider turns it into an input box
     bool start_text_input = false;
-    const bool tab_focus_requested = FocusableItemRegister(window, g.ActiveId == id);
+    //const bool tab_focus_requested = FocusableItemRegister(window, g.ActiveId == id);
+    const bool tab_focus_requested = (GetItemStatusFlags() & ImGuiItemStatusFlags_Focused) != 0;
     if (tab_focus_requested || (hovered && g.IO.MouseClicked[0])) {
         SetActiveID(id, window);
         FocusWindow(window);
@@ -235,12 +243,15 @@ bool RangeSliderFloat(const char* label, float* v1, float* v2, float v_min, floa
             start_text_input = true;
         }
     }
-	if (start_text_input || (g.ActiveId == id && TempInputTextIsActive(id))) {
+    
+    /*
+	if (start_text_input || (g.ActiveId == id && TempInputIsActive(id))) {
         const bool ret_val = TempInputTextScalar(frame_bb, id, label, ImGuiDataType_Float, v1, "%g");
 		if (ret_val)
 			*v2 = *v1;
 		return ret_val;
 	}
+    */
 
     ItemSize(total_bb, style.FramePadding.y);
 

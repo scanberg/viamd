@@ -57,9 +57,9 @@ vec3 lambert(in vec3 radiance) {
 
 vec3 shade(vec3 color, vec3 V, vec3 N) {
     vec3 H = normalize(L + V);
-    float H_dot_V = max(0.0, dot(H, V));
-    float N_dot_H = max(0.0, dot(N, H));
-    float N_dot_L = max(0.0, dot(N, L));
+    float H_dot_V = clamp(dot(H, V), 0.0, 1.0);
+    float N_dot_H = clamp(dot(N, H), 0.0, 1.0);
+    float N_dot_L = clamp(dot(N, L), 0.0, 1.0);
     float fr = fresnel(H_dot_V);
 
     vec3 diffuse = color.rgb * lambert(env_radiance + N_dot_L * dir_radiance);
@@ -84,7 +84,6 @@ void main() {
     vec3 N = normal;
     vec3 V = -normalize(view_coord.xyz);
     vec3 result = shade(color.rgb, V, N);
-    //result = N;
 
     out_frag = vec4(result, color.a);
 }

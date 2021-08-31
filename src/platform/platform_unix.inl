@@ -38,8 +38,12 @@ Timestamp get_time() {
     return t.tv_sec * 1000000000 + t.tv_nsec;
 }
 
-float compute_delta_ms(Timestamp ts0, Timestamp ts1) {
-    return (ts1 - ts0) * 1.0e-6f;
+double compute_delta_ms(Timestamp ts0, Timestamp ts1) {
+    return (ts1 - ts0) * 1.0e-6;
+}
+
+double compute_delta_s(Timestamp ts0, Timestamp ts1) {
+    return (ts1 - ts0) * 1.0e-9;
 }
 
 DynamicArray<DirectoryEntry> list_directory(CStringView dir_path) {
@@ -101,6 +105,6 @@ CStringView get_cwd() {
     return { data.file_system.cwd };
 }
 
-void sleep(int32_t milliseconds) {
+void sleep(i64 milliseconds) {
 	usleep(milliseconds * 1000);
 }

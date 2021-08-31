@@ -15,6 +15,9 @@
 #include <mol/pdb_utils.h>
 #include <mol/gro_utils.h>
 
+#include <ext/svd3/svd3/svd3.h>
+#include <ext/svd3/svd3.h>
+
 //#include <glm/gtx/io.hpp>
 
 #ifdef __clang__
@@ -359,6 +362,21 @@ TEST_CASE("Testing string_utils", "[string_utils]") {
     }
 }
 
+TEST_CASE("Testing svd", "[svd]") {
+    mat3 M = {1,2,3, 4,5,6, 7,8,9};
+    mat3 U, S, V;
+    
+    svd(M[0][0], M[0][1], M[0][2], M[1][0], M[1][1], M[1][2], M[2][0], M[2][1], M[2][2],
+        U[0][0], U[0][1], U[0][2], U[1][0], U[1][1], U[1][2], U[2][0], U[2][1], U[2][2],
+        S[0][0], S[0][1], S[0][2], S[1][0], S[1][1], S[1][2], S[2][0], S[2][1], S[2][2],
+        V[0][0], V[0][1], V[0][2], V[1][0], V[1][1], V[1][2], V[2][0], V[2][1], V[2][2]);
+
+    mat3 U1, S1, V1;
+    svd((float(*)[3])&M, (float(*)[3])&U1, (float(*)[3])&S1, (float(*)[3])&V1);
+
+    int cool = 1;
+}
+
 #include <core/lru_cache.h>
 
 template <typename Key, typename Type>
@@ -367,7 +385,7 @@ void print_lru_cache_matrix(const LRU_Cache_8<Key, Type>& cache) {
         for (int row = 0; row < 8; ++row) {
             uint64_t idx = col * 8 + row;
             uint64_t bit = 1ULL << idx;
-            printf("%i ", uint64_t((cache.ref_matrix & bit) != 0));
+            printf("%lli ", uint64_t((cache.ref_matrix & bit) != 0));
         }
         printf("\n");
     }
@@ -376,8 +394,8 @@ void print_lru_cache_matrix(const LRU_Cache_8<Key, Type>& cache) {
 
 template <typename Key, typename Type>
 void print_lru_cache_matrix(const LRU_Cache_4<Key, Type>& cache) {
-    for (int col = 0; col < 4; ++col) {
-        for (int row = 0; row < 4; ++row) {
+    for (uint16_t col = 0; col < 4; ++col) {
+        for (uint16_t row = 0; row < 4; ++row) {
             uint16_t idx = col * 4 + row;
             uint16_t bit = 1U << idx;
             printf("%i ", uint16_t((cache.ref_matrix & bit) != 0));
@@ -389,24 +407,32 @@ void print_lru_cache_matrix(const LRU_Cache_4<Key, Type>& cache) {
 
 TEST_CASE("Testing lru_cache", "[cache]") {
     SECTION("Cool") {
-        LRU_Cache_4<int, int> cache;
+        LRU_Cache_8<int, int> cache;
         print_lru_cache_matrix(cache);
 
-        cache.set_lru_idx(3);
-        print_lru_cache_matrix(cache);
-        cache.set_lru_idx(1);
-        print_lru_cache_matrix(cache);
-        cache.set_lru_idx(0);
+        cache.mark_lru_idx(3);
+        printf("Setting lru idx 3\n");
+        printf("LRU index is: %i\n", cache.get_lru_idx());
         print_lru_cache_matrix(cache);
 
-        cache.put(-1, -1);
+        cache.mark_lru_idx(1);
+        printf("Setting lru idx 1\n");
+        printf("LRU index is: %i\n", cache.get_lru_idx());
+        print_lru_cache_matrix(cache);
+
+        cache.mark_lru_idx(0);
+        printf("Setting lru idx 0\n");
+        printf("LRU index is: %i\n", cache.get_lru_idx());
+        print_lru_cache_matrix(cache);
+
+        cache.set(-1, -1);
 
         print_lru_cache_matrix(cache);
-        cache.put(-2, -2);
+        cache.set(-2, -2);
         print_lru_cache_matrix(cache);
-        cache.put(-3, -3);
+        cache.set(-3, -3);
         print_lru_cache_matrix(cache);
-        cache.put(-4, -4);
+        cache.set(-4, -4);
         print_lru_cache_matrix(cache);
 
         {

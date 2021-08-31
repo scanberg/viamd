@@ -3,21 +3,20 @@
 #include <core/vector_types.h>
 #include <core/array_types.h>
 #include <core/math_utils.h>
+#include <mol/molecule_structure.h>
 
 #include "image.h"
-#include "task_system.h"
-
-struct MoleculeDynamic;
 
 namespace ramachandran {
 
-task_system::ID initialize(const MoleculeDynamic& dynamic);
+bool initialize();
 void shutdown();
 
 // Accumulation texture
 void clear_accumulation_texture();
+
 // Radius is given as percentage of normalized texture space coordinates (1.0 = 1% of texture width and height)
-void render_accumulation_texture(Range<i32> frame_Range, vec4 color, float radius = 1.f);
+void render_accumulation_texture(Range<i32> frame_range, vec4 color, float radius = 1.f);
 
 enum Region_ { Region_None, Region_AlphaHigh, Region_AlphaMid, Region_BetaHigh, Region_BetaMid, Region_LeftAlphaHigh, Region_LeftAlphaMid, Region_PMid };
 
@@ -45,6 +44,7 @@ struct ColorMap {
     vec4 region_color[8] = {default_colors::BACKGROUND, default_colors::ALPHA_HIGH, default_colors::ALPHA_MID, default_colors::BETA_HIGH, default_colors::BETA_MID, default_colors::LEFT_ALPHA_HIGH, default_colors::LEFT_ALPHA_MID, default_colors::P_MID};
 };
 
+bool init_vbo(Array<const BackboneAngle> angle_data, int64_t angle_stride);
 void init_gui_map(const ColorMap& color_map = {}, int blur_level = 2);
 void init_segmentation_map(const ColorMap& color_map = {}, int blur_level = 2);
 void init_color_map(const ColorMap& color_map = {}, int blur_level = 2);

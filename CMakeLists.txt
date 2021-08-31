@@ -17,20 +17,18 @@ endif()
 
 project(viamd)
 
+option(VIAMD_USE_RELATIVE_PATHS OFF)
 option(VIAMD_PROFILE_COMPILE_TIMES OFF)
-option(VIAMD_ENABLE_OPENMP OFF)
 
 if (MSVC)
     message(STATUS "MSVC configuration was used")
-    add_compile_options(/MT /W4 /wd4201 /wd4324 /wd26451 /MP /GR- /fp:fast /MP /arch:AVX)# /arch:AVX2
+    add_compile_options(/MT /W4 /wd4201 /wd4324 /wd26451 /MP /GR- /fp:fast /arch:AVX)# /arch:AVX2
 
-	if (VIAMD_PROFILE_COMPILE_TIMES)
-		add_compile_options(/Bt+ /d1reportTime /d2cgsummary)
-		add_link_options(/time+)
+	if (VIAMD_PROFILE_COMPILE_TIMES)	
+        add_compile_options(/d2cgsummary)
+		#add_compile_options(/Bt+ /d1reportTime /d2cgsummary)
+		#add_link_options(/time+)
 	endif()
-    if (VIAMD_ENABLE_OPENMP)
-        add_compile_options(/openmp)
-    endif()
 	add_compile_options_config(RELEASE /Oi /GS-)
     add_compile_options_config(DEBUG /MTd)
 else()
@@ -38,7 +36,7 @@ else()
     add_compile_options(
         -Wall -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types -mavx #-maes
     )
-	if(VIAMD_PROFILE_COMPILE_TIMES)
+	if (VIAMD_PROFILE_COMPILE_TIMES)
 		add_compile_options(-ftime-trace)
 	endif()
 	#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types")
@@ -63,14 +61,16 @@ option(VIAMD_USE_RELATIVE_PATHS "Use relative paths for resource directories" OF
 add_subdirectory(ext/glfw)
 add_subdirectory(ext/imgui)
 add_subdirectory(ext/nativefiledialog)
-add_subdirectory(ext/tinyexpr)
+#add_subdirectory(ext/tinyexpr)
 add_subdirectory(ext/mdutils)
 add_subdirectory(ext/mold)
 add_subdirectory(ext/stb)
 add_subdirectory(ext/gl3w)
 add_subdirectory(ext/enkiTS)
-add_subdirectory(unittest)
-add_subdirectory(benchmark)
+add_subdirectory(ext/ImGuiColorTextEdit)
+add_subdirectory(ext/implot)
+#add_subdirectory(unittest)
+#add_subdirectory(benchmark)
 
 file(GLOB PLATFORM_FILES src/platform/*)
 file(GLOB SRC_FILES src/*)
@@ -81,9 +81,29 @@ source_group("gfx" FILES ${GFX_FILES})
 
 add_executable(viamd ${OSX_BUNDLE} ${SRC_FILES} ${PLATFORM_FILES} ${GFX_FILES})
 
-set(RESOURCE_DIR "${PROJECT_SOURCE_DIR}/")
+set(RESOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/")
 if (VIAMD_USE_RELATIVE_PATHS)
     set(RESOURCE_DIR "")
+
+	# COPY RESOURCE FILES TO EXECUTABLE DIRECTORY TO KEEP RELATIVE PATH
+    # CANNOT COPY ENTIRE DIRECTORY -> WILL REMOVE ANY EXISTING DIRECTORY
+    file(GLOB_RECURSE COPY_FILES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} shaders/* images/*)
+
+    foreach(FILENAME ${COPY_FILES})
+    set(SRC "${CMAKE_CURRENT_SOURCE_DIR}/${FILENAME}")
+    set(DST "${CMAKE_BINARY_DIR}/$<CONFIG>/${FILENAME}")
+
+    add_custom_command(
+        TARGET viamd POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy ${SRC} ${DST}
+        )
+    endforeach(FILENAME)
+
+	# COPY SHADER FILES TO EXECUTABLE DIRECTORY TO KEEP RELATIVE PATH
+	#add_custom_command(
+	#		TARGET viamd POST_BUILD
+	#		COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/shaders ${CMAKE_BINARY_DIR}/$<CONFIG>/shaders
+    #       COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/images ${CMAKE_BINARY_DIR}/$<CONFIG>/images)
 endif()
 
 target_compile_definitions(viamd PRIVATE
@@ -92,7 +112,7 @@ target_compile_definitions(viamd PRIVATE
 	VIAMD_IMAGE_DIR=\"${RESOURCE_DIR}images\"
 	VIAMD_SCREENSHOT_DIR=\"${RESOURCE_DIR}screenshots\")
 
-target_compile_features(viamd PRIVATE cxx_std_17)
+target_compile_features(viamd PRIVATE cxx_std_20)
 
 target_include_directories(viamd
     PRIVATE
@@ -106,9 +126,11 @@ target_link_libraries(viamd
     glfw
     imgui
     nativefiledialog
-	tinyexpr
+	#tinyexpr
     mdutils
     mold
     stb
     enkiTS
+    ImGuiColorTextEdit
+    implot
 )

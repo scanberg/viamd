@@ -40,7 +40,7 @@ static vec4 projection_extents(const Camera& camera, int width, int height, floa
     return vec4(half_w, half_h, jitter_x, jitter_y);
 }
 
-mat4 compute_view_to_world_matrix(const Camera& camera) {
+mat4 camera_view_to_world_matrix(const Camera& camera) {
     auto m = math::mat4_cast(camera.orientation);
     m[3] = vec4(camera.orientation * camera.position, 1);
     return m;
@@ -48,18 +48,18 @@ mat4 compute_view_to_world_matrix(const Camera& camera) {
     // return t * r;
 }
 
-mat4 compute_world_to_view_matrix(const Camera& camera) {
+mat4 camera_world_to_view_matrix(const Camera& camera) {
     const mat4 R = glm::mat4_cast(glm::conjugate(camera.orientation));
     const mat4 T = glm::translate(mat4(1), -camera.position);
     return R * T;
 }
 
-mat4 perspective_projection_matrix(const Camera& camera, int width, int height) {
+mat4 camera_perspective_projection_matrix(const Camera& camera, int width, int height) {
     const float aspect_ratio = (float)width / (float)height;
     return perspective(camera.fov_y, aspect_ratio, camera.near_plane, camera.far_plane);
 }
 
-mat4 perspective_projection_matrix(const Camera& camera, int width, int height, float texel_offset_x, float texel_offset_y) {
+mat4 camera_perspective_projection_matrix(const Camera& camera, int width, int height, float texel_offset_x, float texel_offset_y) {
     const vec4 ext = projection_extents(camera, width, height, texel_offset_x, texel_offset_y);
 
     const float cn = camera.near_plane;
@@ -72,7 +72,7 @@ mat4 perspective_projection_matrix(const Camera& camera, int width, int height, 
     return frustum(xm * cn, xp * cn, ym * cn, yp * cn, cn, cf);
 }
 
-mat4 orthographic_projection_matrix(float l, float r, float b, float t) {
+mat4 camera_orthographic_projection_matrix(float l, float r, float b, float t) {
     mat4 M{};
     M[0][0] = 2.0f / (r - l);
     M[1][1] = 2.0f / (t - b);
@@ -83,7 +83,7 @@ mat4 orthographic_projection_matrix(float l, float r, float b, float t) {
     return M;
 }
 
-mat4 orthographic_projection_matrix(float l, float r, float b, float t, float n, float f) {
+mat4 camera_orthographic_projection_matrix(float l, float r, float b, float t, float n, float f) {
     mat4 M{};
     M[0][0] = 2.0f / (r - l);
     M[1][1] = 2.0f / (t - b);
@@ -137,40 +137,40 @@ void camera_trackball(Camera* camera, vec2 prev_ndc, vec2 curr_ndc) {
 
 void camera_move(Camera* camera, vec3 vec) {
     ASSERT(camera);
-    const mat3 m = compute_view_to_world_matrix(*camera);
+    const mat3 m = camera_view_to_world_matrix(*camera);
     camera->position += m * vec;
 }
 
-bool camera_controller_trackball(vec3* position, quat* orientation, TrackballControllerState* state, TrackballFlags flags) {
+bool camera_controller_trackball(vec3* position, quat* orientation, float* distance, TrackballControllerInput input, TrackballControllerParam param, TrackballFlags flags) {
     ASSERT(position);
     ASSERT(orientation);
-    ASSERT(state);
+    ASSERT(distance);
 
-    const vec2 half_res = state->input.screen_size * 0.5f;
-    const vec2 ndc_prev = (vec2(state->input.mouse_coord_prev.x, state->input.screen_size.y - state->input.mouse_coord_prev.y) - half_res) / half_res;
-    const vec2 ndc_curr = (vec2(state->input.mouse_coord_curr.x, state->input.screen_size.y - state->input.mouse_coord_curr.y) - half_res) / half_res;
-    const vec2 mouse_coord_delta = state->input.mouse_coord_curr - state->input.mouse_coord_prev;
+    const vec2 half_res = input.screen_size * 0.5f;
+    const vec2 ndc_prev = (vec2(input.mouse_coord_prev.x, input.screen_size.y - input.mouse_coord_prev.y) - half_res) / half_res;
+    const vec2 ndc_curr = (vec2(input.mouse_coord_curr.x, input.screen_size.y - input.mouse_coord_curr.y) - half_res) / half_res;
+    const vec2 mouse_coord_delta = input.mouse_coord_curr - input.mouse_coord_prev;
     const bool mouse_move = mouse_coord_delta != vec2(0, 0);
 
-    if (state->input.rotate_button && mouse_move) {
+    if (input.rotate_button && mouse_move) {
         const quat q = trackball(ndc_prev, ndc_curr);
-        const vec3 look_at = *position - *orientation * vec3(0, 0, state->distance);
+        const vec3 look_at = *position - *orientation * vec3(0, 0, *distance);
         *orientation = glm::normalize(*orientation * q);
-        *position = look_at + *orientation * vec3(0, 0, state->distance);
+        *position = look_at + *orientation * vec3(0, 0, *distance);
         if (flags & TrackballFlags_RotateReturnsTrue) return true;
-    } else if (state->input.pan_button && mouse_move) {
-        const float aspect_ratio = state->input.screen_size.x / state->input.screen_size.y;
-        const float scl = math::tan(state->input.fov_y * 0.5f);
+    } else if (input.pan_button && mouse_move) {
+        const float aspect_ratio = input.screen_size.x / input.screen_size.y;
+        const float scl = math::tan(input.fov_y * 0.5f);
         const vec2 delta = (ndc_curr - ndc_prev) * vec2(1, -1) * vec2(aspect_ratio * scl, scl);
-        const vec3 move = *orientation * vec3(-delta.x, delta.y, 0) * math::pow(state->distance * state->params.pan_scale, state->params.pan_exponent);
+        const vec3 move = *orientation * vec3(-delta.x, delta.y, 0) * math::pow(*distance * param.pan_scale, param.pan_exponent);
         *position += move;
         if (flags & TrackballFlags_PanReturnsTrue) return true;
-    } else if ((state->input.dolly_button && mouse_move) || state->input.dolly_delta != 0.f) {
-        float delta = -(state->input.mouse_coord_curr.y - state->input.mouse_coord_prev.y) * math::pow(state->distance * state->params.dolly_drag_scale, state->params.dolly_drag_exponent);
-        delta -= state->input.dolly_delta * math::pow(state->distance * state->params.dolly_delta_scale, state->params.dolly_delta_exponent);
-        const vec3 look_at = *position - *orientation * vec3(0, 0, state->distance);
-        state->distance = math::clamp(state->distance + delta, state->params.min_distance, state->params.max_distance);
-        *position = look_at + *orientation * vec3(0, 0, state->distance);
+    } else if ((input.dolly_button && mouse_move) || input.dolly_delta != 0.f) {
+        float delta = -(input.mouse_coord_curr.y - input.mouse_coord_prev.y) * math::pow(*distance * param.dolly_drag_scale, param.dolly_drag_exponent);
+        delta -= input.dolly_delta * math::pow(*distance * param.dolly_delta_scale, param.dolly_delta_exponent);
+        const vec3 look_at = *position - *orientation * vec3(0, 0, *distance);
+        *distance = math::clamp(*distance + delta, param.min_distance, param.max_distance);
+        *position = look_at + *orientation * vec3(0, 0, *distance);
         if (flags & TrackballFlags_DollyReturnsTrue) return true;
     }
     return false;

@@ -2,12 +2,7 @@ VIAMD
 CONCRETE LIST OF TODOs
 
 Small TODO:
-[X] Implement Log
-[ ] Implement Range selection in property (1-N) Asterisk (*)
-[X] Implement Expression function
-[ ] Implement Filtering
 [ ] Implement Property show/hide in Timeline + Distribution windows
-[X] Show Simulation Box
 
 ### Stability ###
     [X] When loading in different thread, make sure the loading is killed when changing datasets.
@@ -123,13 +118,6 @@ Trajectory:
         Another thread decompresses frames into trajectory
     Load trejectory in different thread but make the results immediately visible.
 
-Representations:
-    --- Port VDW
-    --- Port Licorice
-        --- Fix precision errors in Licorice
-    --- Port Ribbons
-        Fix Orientation problems
-
 Rendering:
     ShaderLoading
     Camera (Perspective / Orto)
@@ -141,12 +129,3 @@ Rendering:
     PBR
     Implicit Rendering?
         Surface?
-
-Statistics:
-    ComputeHistogram
-    (ComputeAbsorptionSpectrum)
-    ComputeDensityVolume
-    Port GUI
-        Histograms Plots
-        Timelines
-        RangeSliders (Bugfixes)
