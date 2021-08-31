@@ -31,14 +31,10 @@ https://cmake.org/
 
 ### Step 3: Build!
 
-### Step 4: Profit?
+### Step 4: Run
 
 ## Binaries
-(OLD, AVOID THESE, BUILD FROM SCRATCH UNTIL I GET SOME WORKING DISTRIBUTION AUTOMATION IN PLACE)
-
-https://github.com/scanberg/viamd/releases/download/v0.1a/viamd_0.1a_osx.zip
-https://github.com/scanberg/viamd/releases/download/v0.1a/viamd_0.1a_win64.zip
-https://github.com/scanberg/viamd/releases/download/v0.1a/viamd_0.1a_linux.zip
+New version comming soon. The aim is to provide this for Windows x64 and Linux x64 (Tested on Ubuntu).
 
 ## Acknowledgements
 
@@ -48,4 +44,6 @@ https://github.com/glfw/glfw
 
 https://github.com/skaslev/gl3w
 
-https://github.com/codeplea/tinyexpr
+https://github.com/epezent/implot
+
+https://github.com/BalazsJako/ImGuiColorTextEdit
