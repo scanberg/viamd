@@ -1,5 +1,7 @@
 ### NATIVEFILEDIALOG ###
 project(nativefiledialoglib LANGUAGES C)
+
+cmake_minimum_required(VERSION 3.10)
                   
 set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_common.c)
 set(LIB "")
@@ -14,13 +16,18 @@ if(UNIX AND NOT APPLE)
 	message(${CMAKE_MODULE_PATH})
         #include(cmake/FindGTK3.cmake)
         #find_package(GTK3 REQUIRED gtk)
-        FIND_PACKAGE(PkgConfig REQUIRED)
-        PKG_CHECK_MODULES(GTK3 REQUIRED gtk+-3.0)
+        find_package(PkgConfig REQUIRED)
+        
+        #PKG_CHECK_MODULES(GTK REQUIRED gtk+-3.0)
+        #pkg_check_modules(GTK REQUIRED gtk+-3.0)
+        find_package(GTK3 3.0 REQUIRED gtk)
+
         set(SRC
             ${SRC}
             ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_gtk.c)
         set(INC ${GTK3_INCLUDE_DIRS})
         set(LIB ${GTK3_LIBRARIES})
+        set(DEF ${GTK3_CFLAGS_OTHER})
     else()
         set(SRC
             ${SRC}
