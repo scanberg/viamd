@@ -4,18 +4,9 @@
 [submodule "ext/imgui"]
 	path = ext/imgui
 	url = https://github.com/ocornut/imgui.git
-[submodule "ext/glm"]
-	path = ext/glm
-	url = https://github.com/g-truc/glm
 [submodule "ext/gl3w"]
 	path = ext/gl3w
 	url = https://github.com/skaslev/gl3w
-[submodule "ext/mdutils"]
-	path = ext/mdutils
-	url = https://github.com/scanberg/mdutils
-[submodule "ext/tinyexpr"]
-	path = ext/tinyexpr
-	url = https://github.com/codeplea/tinyexpr
 [submodule "ext/enkiTS"]
 	path = ext/enkiTS
 	url = https://github.com/dougbinks/enkiTS
