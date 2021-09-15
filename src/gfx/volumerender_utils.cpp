@@ -3,15 +3,14 @@
 #include "image.h"
 #include "gfx/gl_utils.h"
 #include "gfx/immediate_draw_utils.h"
-#include <glm/gtc/type_ptr.hpp>
+#include "color_utils.h"
 
-#include <core/common.h>
-#include <core/log.h>
-#include <core/math_utils.h>
-#include <core/file.h>
+#include <core/md_common.h>
+#include <core/md_log.h>
+#include <core/md_file.h>
+#include <core/md_vec_math.h>
 
-#include <stdio.h>
-#include <algorithm>
+#include <imgui.h>
 
 namespace volume {
 
@@ -29,23 +28,23 @@ static struct {
 } gl;
 
 struct UniformData {
-    mat4 view_to_model_mat;
-    mat4 model_to_view_mat;
-    mat4 inv_proj_mat;
-    mat4 model_view_proj_mat;
+    mat4_t view_to_model_mat;
+    mat4_t model_to_view_mat;
+    mat4_t inv_proj_mat;
+    mat4_t model_view_proj_mat;
 
-    vec2 inv_res;
+    vec2_t inv_res;
     float density_scale = 1.0;
     float alpha_scale = 1.0;
 
-    vec3 clip_volume_min;
+    vec3_t clip_volume_min;
     float _pad0;
-    vec3 clip_volume_max;
+    vec3_t clip_volume_max;
     float time;
 
-    vec3 gradient_spacing_world_space;
+    vec3_t gradient_spacing_world_space;
     float _pad1;
-    mat4 gradient_spacing_tex_space;
+    mat4_t gradient_spacing_tex_space;
 };
 
 void initialize() {
@@ -62,7 +61,7 @@ void initialize() {
     };
 
     if (v_shader == 0u || f_shader_dvr_only == 0u || f_shader_iso_only == 0u || f_shader_dvr_and_iso == 0u) {
-        LOG_WARNING("shader compilation failed, shader program for raycasting will not be updated");
+        md_print(MD_LOG_TYPE_ERROR, "shader compilation failed, shader program for raycasting will not be updated");
         return;
     }
 
@@ -72,15 +71,15 @@ void initialize() {
 
     {
         const GLuint shaders[] = {v_shader, f_shader_dvr_only};
-        gl::attach_link_detach(gl.program.dvr_only, shaders);
+        gl::attach_link_detach(gl.program.dvr_only, shaders, ARRAY_SIZE(shaders));
     }
     {
         const GLuint shaders[] = {v_shader, f_shader_iso_only};
-        gl::attach_link_detach(gl.program.iso_only, shaders);
+        gl::attach_link_detach(gl.program.iso_only, shaders, ARRAY_SIZE(shaders));
     }
     {
         const GLuint shaders[] = {v_shader, f_shader_dvr_and_iso};
-        gl::attach_link_detach(gl.program.dvr_and_iso, shaders);
+        gl::attach_link_detach(gl.program.dvr_and_iso, shaders, ARRAY_SIZE(shaders));
     }
 
     if (!gl.vbo) {
@@ -116,6 +115,7 @@ void initialize() {
 
 void shutdown() {}
 
+/*
 void create_tf_texture(GLuint* texture, int* width, CStringView path) {
     ASSERT(texture);
     // load transfer function
@@ -137,127 +137,12 @@ void create_tf_texture(GLuint* texture, int* width, CStringView path) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glBindTexture(GL_TEXTURE_2D, 0);
     } else {
-        LOG_WARNING("could not read TF ('%.s')", path.length(), path.cstr());
+        md_printf(MD_LOG_TYPE_ERROR, "could not read TF ('%.s')", path.length(), path.cstr());
     }
 }
-
-bool init_texture_2D(GLuint* texture, int width, int height, GLenum format) {
-    ASSERT(texture);
-    ASSERT(GL_RGBA8);
-
-    if (glIsTexture(*texture)) {
-        int x, y, fmt;
-        glBindTexture(GL_TEXTURE_2D, *texture);
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH,  &x);
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &y);
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &fmt);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        if (width == x && width == y && format == fmt)
-            return true;
-        else
-            glDeleteTextures(1, texture);
-    }
-
-    glGenTextures(1, texture);
-    glBindTexture(GL_TEXTURE_2D, *texture);
-    glTexStorage2D(GL_TEXTURE_2D, 1, format, width, height);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    return true;
-}
-
-bool init_texture_3D(GLuint* texture, int width, int height, int depth, GLenum format) {
-    ASSERT(texture);
-    ASSERT(format == GL_R32F || format == GL_R8);
-
-    if (glIsTexture(*texture)) {
-        int x, y, z, fmt;
-        glBindTexture(GL_TEXTURE_3D, *texture);
-        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH,  &x);
-        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &y);
-        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH,  &z);
-        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_INTERNAL_FORMAT, &fmt);
-        glBindTexture(GL_TEXTURE_3D, 0);
-        if (width == x && width == y && width == z && format == fmt)
-            return true;
-        else
-            glDeleteTextures(1, texture);
-    }
-
-    glGenTextures(1, texture);
-    glBindTexture(GL_TEXTURE_3D, *texture);
-    glTexStorage3D(GL_TEXTURE_3D, 1, format, width, height, depth);
-    // glTexImage3D(GL_TEXTURE_3D, 0, GL_R8, dim.x, dim.y, dim.z, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_3D, 0);
-
-    return true;
-}
-
-bool free_texture(GLuint* texture) {
-    if (!glIsTexture(*texture)) return false;
-    glDeleteTextures(1, texture);
-    *texture = 0;
-    return true;
-}
-
-bool set_texture_2D_data(GLuint texture, const void* data, GLenum format) {
-    if (!glIsTexture(texture)) return false;
-
-    GLenum pixel_channel = 0;
-    GLenum pixel_type = 0;
-
-    if (format == GL_RGBA8) {
-        pixel_channel = GL_RGBA;
-        pixel_type = GL_UNSIGNED_BYTE;
-    }
-
-    if (pixel_channel == 0 || pixel_type == 0) return false;
-
-    glBindTexture(GL_TEXTURE_2D, texture);
-    int w, h;
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
-
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, pixel_channel, pixel_type, data);
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    return true;
-}
+*/
 
 
-bool set_texture_3D_data(GLuint texture, const void* data, GLenum format) {
-    if (!glIsTexture(texture)) return false;
-
-    GLenum pixel_channel = 0;
-    GLenum pixel_type = 0;
-
-    if (format == GL_R32F) {
-        pixel_channel = GL_RED;
-        pixel_type = GL_FLOAT;
-    }
-
-    if (pixel_channel == 0 || pixel_type == 0) return false;
-
-    glBindTexture(GL_TEXTURE_3D, texture);
-    int w, h, d;
-    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH, &w);
-    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &h);
-    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH, &d);
-
-    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, w, h, d, pixel_channel, pixel_type, data);
-    glBindTexture(GL_TEXTURE_3D, 0);
-
-    return true;
-}
 
 /*
 void set_volume_texture_data(GLuint texture, ivec3 dim, const float* data, float max_value) {
@@ -278,39 +163,54 @@ void set_volume_texture_data(GLuint texture, ivec3 dim, const float* data, float
 }
 */
 
-mat4 compute_model_to_world_matrix(const vec3& min_world_aabb, const vec3& max_world_aabb) {
-    const vec3 ext = max_world_aabb - min_world_aabb;
-    return mat4(vec4(ext.x, 0, 0, 0), vec4(0, ext.y, 0, 0), vec4(0, 0, ext.z, 0), vec4(min_world_aabb, 1));
+mat4_t compute_model_to_world_matrix(vec3_t min_world_aabb, vec3_t max_world_aabb) {
+    vec3_t ext = max_world_aabb - min_world_aabb;
+    vec3_t off = min_world_aabb;
+    return {
+        .col = {
+            {ext.x, 0, 0, 0},
+            {0, ext.y, 0, 0},
+            {0, 0, ext.z, 0},
+            {off.x, off.y, off.z, 1},
+        }
+    };
 }
 
-mat4 compute_world_to_model_matrix(const vec3& min_world_aabb, const vec3& max_world_aabb) {
-    const vec3 ext = max_world_aabb - min_world_aabb;
-    return mat4(vec4(1.0f / ext.x, 0, 0, 0), vec4(0, 1.0f / ext.y, 0, 0), vec4(0, 0, 1.0f / ext.z, 0), vec4(-min_world_aabb, 1));
+mat4_t compute_world_to_model_matrix(vec3_t min_world_aabb, vec3_t max_world_aabb) {
+    vec3_t ext = max_world_aabb - min_world_aabb;
+    vec3_t off = min_world_aabb;
+    return {
+        .col = {
+            {1.0f / ext.x, 0, 0, 0},
+            {0, 1.0f / ext.y, 0, 0},
+            {0, 0, 1.0f / ext.z, 0},
+            {-off.x, -off.y, -off.z, 1},
+        }
+    };
 }
 
-mat4 compute_model_to_texture_matrix(const ivec3& dim) {
-    (void)dim;
-    return mat4(1);
+mat4_t compute_model_to_texture_matrix(int dim_x, int dim_y, int dim_z) {
+    return mat4_ident();
 }
 
-mat4 compute_texture_to_model_matrix(const ivec3& dim) {
-    (void)dim;
-    return mat4(1);
+mat4_t compute_texture_to_model_matrix(int dim_x, int dim_y, int dim_z) {
+    return mat4_ident();
 }
 
-void write_to_file(const Volume& volume, CStringView file) {
-    FILE* f = fopen(file, "wb");
-    defer { fclose(f); };
+bool write_volume_to_file(const float* data, int64_t dim_x, int64_t dim_y, int64_t dim_z, str_t path_to_file) {
+    md_file_o* file = md_file_open(path_to_file, MD_FILE_WRITE | MD_FILE_BINARY);
 
-    if (!f) {
-        LOG_ERROR("Could not open file %s", file);
-        return;
+    if (!file) {
+        md_printf(MD_LOG_TYPE_ERROR, "Failed to write volume to file, could not open file %.*s", path_to_file.len, path_to_file.ptr);
+        return false;
     }
-    fwrite(volume.voxel_data.data(), 1, volume.voxel_data.size_in_bytes(), f);
+
+    md_file_write(file, data, dim_x * dim_y * dim_z * sizeof(float));
+    md_file_close(file);
 }
 
 void render_volume(const RenderDesc& desc) {
-    if (!desc.direct_volume_rendering_enabled && !desc.isosurface_enabled && !desc.bounding_box_enabled) return;
+    if (!desc.direct_volume_rendering_enabled && !desc.isosurface_enabled && !desc.bounding_box.enabled) return;
 
     GLint bound_fbo;
     GLint bound_viewport[4];
@@ -327,7 +227,7 @@ void render_volume(const RenderDesc& desc) {
         }
     }
 
-    const mat4 model_to_view_matrix = desc.matrix.view * desc.matrix.model;
+    const mat4_t model_to_view_matrix = mat4_mul(desc.matrix.view, desc.matrix.model);
 
     static float time = 0.0f;
     time += 1.0f / 60.0f;
@@ -342,35 +242,19 @@ void render_volume(const RenderDesc& desc) {
         glViewport(0, 0, desc.render_target.width, desc.render_target.height);
     }
 
-    glClearColor(1,1,1,1);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    if (desc.bounding_box_enabled) {
-        const vec3 min_box = {0,0,0};
-        const vec3 max_box = {1,1,1};
-
-        immediate::set_model_view_matrix(model_to_view_matrix);
-        immediate::set_proj_matrix(desc.matrix.proj);
-
-        immediate::draw_box_wireframe(desc.clip_volume.min, desc.clip_volume.max, immediate::COLOR_RED);
-        immediate::draw_box_wireframe(min_box, max_box, immediate::COLOR_BLACK);
-
-        immediate::flush();
-    }
-
     UniformData data;
-    data.view_to_model_mat = math::inverse(model_to_view_matrix);
+    data.view_to_model_mat = mat4_inverse(model_to_view_matrix);
     data.model_to_view_mat = model_to_view_matrix;
-    data.inv_proj_mat = math::inverse(desc.matrix.proj);
+    data.inv_proj_mat = mat4_inverse(desc.matrix.proj);
     data.model_view_proj_mat = desc.matrix.proj * model_to_view_matrix;
-    data.inv_res = vec2(1.f / (float)(desc.render_target.width), 1.f / (float)(desc.render_target.height));
+    data.inv_res = {1.f / (float)(desc.render_target.width), 1.f / (float)(desc.render_target.height)};
     data.density_scale = desc.global_scaling.density;
     data.alpha_scale = desc.global_scaling.alpha;
     data.clip_volume_min = desc.clip_volume.min;
     data.clip_volume_max = desc.clip_volume.max;
     data.time = time;
     data.gradient_spacing_world_space = desc.voxel_spacing;
-    data.gradient_spacing_tex_space = mat4(glm::scale(data.view_to_model_mat, desc.voxel_spacing));
+    data.gradient_spacing_tex_space = data.view_to_model_mat * mat4_scale(desc.voxel_spacing.x, desc.voxel_spacing.y, desc.voxel_spacing.z);
 
     glBindBuffer(GL_UNIFORM_BUFFER, gl.ubo);
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(UniformData), &data);
@@ -406,11 +290,16 @@ void render_volume(const RenderDesc& desc) {
 
     glUseProgram(program);
 
+    vec4_t colors[desc.isosurface.MaxCount];
+    for (int i = 0; i < ARRAY_SIZE(colors); ++i) {
+        colors[i] = convert_color(desc.isosurface.colors[i]);
+    }
+
     glUniform1i(uniform_loc_tex_depth, 0);
     glUniform1i(uniform_loc_tex_volume, 1);
     glUniform1i(uniform_loc_tex_tf, 2);
     glUniform1fv(uniform_loc_iso_values, IsoSurfaces::MaxCount, desc.isosurface.values);
-    glUniform4fv(uniform_loc_iso_colors, IsoSurfaces::MaxCount, &desc.isosurface.colors[0][0]);
+    glUniform4fv(uniform_loc_iso_colors, IsoSurfaces::MaxCount, &colors[0].x);
     glUniform1i(uniform_loc_iso_count, desc.isosurface.count);
     glUniformBlockBinding(program, uniform_block_index, 0);
 

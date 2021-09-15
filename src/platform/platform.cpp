@@ -1,7 +1,9 @@
 ﻿#include "platform.h"
 
-#include <core/log.h>
-#include <core/string_utils.h>
+//#include <core/log.h>
+//#include <core/string_utils.h>
+#include <core/md_log.h>
+#include <core/md_common.h>
 
 #include "gfx/gl.h"
 #include <GLFW/glfw3.h>
@@ -36,11 +38,11 @@ static struct {
     Context internal_ctx{};
 
     struct {
-        Path cwd{};
+        char cwd[512] = {0};
     } file_system;
 } data;
 
-static void error_callback(int error, const char* description) { LOG_ERROR("%d: %s\n", error, description); }
+static void error_callback(int error, const char* description) { md_printf(MD_LOG_TYPE_ERROR, "%d: %s\n", error, description); }
 
 static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message,
                                  const void* userParam) {
@@ -52,10 +54,10 @@ static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum s
     (void)userParam;
 
     if (severity > GL_DEBUG_SEVERITY_LOW) {
-        LOG_WARNING(message);
+        md_print(MD_LOG_TYPE_INFO, message);
     }
     if (severity == GL_DEBUG_SEVERITY_HIGH) {
-        LOG_ERROR("A SEVERE GL ERROR HAS OCCURED: %s", message);
+        md_printf(MD_LOG_TYPE_ERROR, "A SEVERE GL ERROR HAS OCCURED: %s", message);
         abort();
     }
 }
@@ -91,7 +93,7 @@ static void key_callback(GLFWwindow* window, int key, int scancode, int action, 
 
 static void char_callback(GLFWwindow* window, unsigned int c) { ImGui_ImplGlfw_CharCallback(window, c); }
 
-bool initialize(Context* ctx, i64 width, i64 height, const char* title) {
+bool initialize(Context* ctx, int64_t width, int64_t height, const char* title) {
     if (!glfwInit()) {
         // TODO Throw critical error
         error_callback(1, "Error while initializing glfw.");
@@ -323,33 +325,39 @@ void render_imgui(Context* ctx) {
 
 void swap_buffers(Context* ctx) { glfwSwapBuffers((GLFWwindow*)ctx->window.ptr); }
 
-FileDialogResult file_dialog(FileDialogFlags flags, CStringView default_path, CStringView filter) {
+FileDialogResult file_dialog(FileDialogFlags flags, str_t path, str_t filter) {
     // Create zero terminated strings
-    Path path_buf = default_path;
-    convert_backslashes(path_buf);
-    StringBuffer<256> filter_buf = filter;
+    char path_buf[512] = {0};
+    char filter_buf[512] = {0};
+
+    strncpy(path_buf, path.ptr, MIN(ARRAY_SIZE(path_buf)-1, path.len));
+    strncpy(filter_buf, filter.ptr, MIN(ARRAY_SIZE(filter_buf)-1, filter.len));
 
     nfdchar_t* out_path = NULL;
     nfdresult_t result = NFD_ERROR;
 
     if (flags & FileDialogFlags_Open) {
-        result = NFD_OpenDialog(filter_buf.cstr(), path_buf.cstr(), &out_path);
+        result = NFD_OpenDialog(filter_buf, path_buf, &out_path);
     } else if (flags & FileDialogFlags_Save) {
-        result = NFD_SaveDialog(filter_buf.cstr(), path_buf.cstr(), &out_path);
+        result = NFD_SaveDialog(filter_buf, path_buf, &out_path);
     }
-    defer {
-        if (out_path) free(out_path);
-    };
+
+    FileDialogResult res = {};
 
     if (result == NFD_OKAY) {
-        Path res_path = out_path;
-        convert_backslashes(res_path);
-        return {FileDialogResult::Ok, res_path};
+        strncpy(res.path, out_path, ARRAY_SIZE(res.path)-1);
+        res.path_len = strnlen(res.path, ARRAY_SIZE(res.path));
+        convert_backslashes(res.path, ARRAY_SIZE(res.path));
+        goto done;
     } else if (result == NFD_CANCEL) {
-        return {FileDialogResult::Cancel, {}};
+        res.result = FileDialogResult::Cancel;
+        goto done;
     }
-    LOG_ERROR("%s\n", NFD_GetError());
-    return {FileDialogResult::Cancel, {}};
+    md_printf(MD_LOG_TYPE_ERROR, "%s\n", NFD_GetError());
+
+done:
+    if (out_path) free(out_path);
+    return res;
 }
 
 #ifdef OS_WINDOWS

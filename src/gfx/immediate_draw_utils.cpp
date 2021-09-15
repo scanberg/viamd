@@ -2,21 +2,21 @@
 #include "gl_utils.h"
 #include "immediate_draw_utils.h"
 
-#include <core/types.h>
-#include <core/array_types.h>
-#include <core/log.h>
-#include <core/math_utils.h>
+#include <core/md_common.h>
+#include <core/md_array.inl>
+#include <core/md_allocator.h>
+#include <core/md_log.h>
 
 namespace immediate {
 
 struct Vertex {
-    vec3 position = {0, 0, 0};
-    vec3 normal = {0, 0, 1};
-    vec2 uv = {0, 0};
-    u32 color = DEFAULT_COLOR;
+    vec3_t position = {0, 0, 0};
+    vec3_t normal = {0, 0, 1};
+    vec2_t uv = {0, 0};
+    uint32_t color = DEFAULT_COLOR;
 };
 
-using Index = u16;
+using Index = uint16_t;
 
 struct DrawCommand {
     uint32_t offset = 0;
@@ -26,11 +26,11 @@ struct DrawCommand {
     GLenum primitive_type;
 };
 
-static DynamicArray<mat4> matrix_stack;
+static mat4_t* matrix_stack;
 
-static DynamicArray<DrawCommand> commands;
-static DynamicArray<Vertex> vertices;
-static DynamicArray<Index> indices;
+static DrawCommand* commands;
+static Vertex* vertices;
+static Index* indices;
 
 static GLuint vbo = 0;
 static GLuint ibo = 0;
@@ -98,33 +98,33 @@ void main() {
 }
 )";
 
-static inline void append_draw_command(u32 count, GLenum primitive_type) {
-    const u32 max_size = (sizeof(Index) == 2 ? 0xFFFFU : 0xFFFFFFFFU);
-    ASSERT(indices.size() + count < max_size);
+static inline void append_draw_command(uint32_t count, GLenum primitive_type) {
+    const uint32_t max_size = (sizeof(Index) == 2 ? 0xFFFFU : 0xFFFFFFFFU);
+    ASSERT(md_array_size(indices) + count < max_size);
     // Can we append data to previous draw command?
-    if (commands.size() > 0 &&
-        commands.back().primitive_type == primitive_type &&
-        commands.back().view_matrix_idx == curr_view_matrix_idx &&
-        commands.back().proj_matrix_idx == curr_proj_matrix_idx) {
-
-        uint32_t capacity = max_size - commands.back().count;
+    DrawCommand* last_cmd = md_array_last(commands);
+    if (last_cmd &&
+        last_cmd->primitive_type == primitive_type &&
+        last_cmd->view_matrix_idx == curr_view_matrix_idx &&
+        last_cmd->proj_matrix_idx == curr_proj_matrix_idx) {
+        uint32_t capacity = max_size - last_cmd->count;
 
         if (count < capacity) {
-            commands.back().count += count;
+            last_cmd->count += count;
             return;
         }
         else {
-            commands.back().count += capacity;
+            last_cmd->count += capacity;
             count -= capacity;
         }
     }
     ASSERT(curr_view_matrix_idx > -1 && "Immediate Mode View Matrix not set!");
     ASSERT(curr_proj_matrix_idx > -1 && "Immediate Mode Proj Matrix not set!");
 
-    const uint32_t offset = (uint32_t)indices.size() - count;
+    const uint32_t offset = (uint32_t)md_array_size(indices) - count;
     DrawCommand cmd {offset, count, curr_view_matrix_idx, curr_proj_matrix_idx, primitive_type};
     
-    commands.push_back(cmd);
+    md_array_push(commands, cmd, default_allocator);
 }
 
 void initialize() {
@@ -137,11 +137,11 @@ void initialize() {
     glShaderSource(f_shader, 1, &f_shader_src, 0);
     glCompileShader(v_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
-        LOG_ERROR("Error while compiling immediate vertex shader:\n%s\n", buffer);
+        md_printf(MD_LOG_TYPE_ERROR, "Error while compiling immediate vertex shader:\n%s\n", buffer);
     }
     glCompileShader(f_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
-        LOG_ERROR("Error while compiling immediate fragment shader:\n%s\n", buffer);
+        md_printf(MD_LOG_TYPE_ERROR, "Error while compiling immediate fragment shader:\n%s\n", buffer);
     }
 
     program = glCreateProgram();
@@ -149,7 +149,7 @@ void initialize() {
     glAttachShader(program, f_shader);
     glLinkProgram(program);
     if (gl::get_program_link_error(buffer, BUFFER_SIZE, program)) {
-        LOG_ERROR("Error while linking immediate program:\n%s\n", buffer);
+        md_printf(MD_LOG_TYPE_ERROR, "Error while linking immediate program:\n%s\n", buffer);
     }
 
     glDetachShader(program, v_shader);
@@ -184,7 +184,7 @@ void initialize() {
 
     glBindVertexArray(0);
 
-    constexpr u32 pixel_data = 0xffffffff;
+    constexpr uint32_t pixel_data = 0xffffffff;
     if (!default_tex) glGenTextures(1, &default_tex);
     glBindTexture(GL_TEXTURE_2D, default_tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, &pixel_data);
@@ -194,8 +194,8 @@ void initialize() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    vertices.reserve(100000);
-    indices.reserve(100000);
+    md_array_ensure(vertices, 100000, default_allocator);
+    md_array_ensure(indices,  100000, default_allocator);
 }
 
 void shutdown() {
@@ -205,24 +205,24 @@ void shutdown() {
     if (program) glDeleteProgram(program);
 }
 
-void set_model_view_matrix(const mat4& model_view_matrix) {
-    curr_view_matrix_idx = (int)matrix_stack.size();
-    matrix_stack.push_back(model_view_matrix);
+void set_model_view_matrix(mat4_t model_view_matrix) {
+    curr_view_matrix_idx = (int)md_array_size(matrix_stack);
+    md_array_push(matrix_stack, model_view_matrix, default_allocator);
 }
 
-void set_proj_matrix(const mat4& proj_matrix) {
-    curr_proj_matrix_idx = (int)matrix_stack.size();
-    matrix_stack.push_back(proj_matrix);
+void set_proj_matrix(mat4_t proj_matrix) {
+    curr_proj_matrix_idx = (int)md_array_size(matrix_stack);
+    md_array_push(matrix_stack, proj_matrix, default_allocator);
 }
 
 void flush() {
     glBindVertexArray(vao);
 
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, vertices.size_in_bytes(), vertices.data(), GL_STREAM_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, md_array_bytes(vertices), vertices, GL_STREAM_DRAW);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size_in_bytes(), indices.data(), GL_STREAM_DRAW);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, md_array_bytes(indices), indices, GL_STREAM_DRAW);
 
     glEnable(GL_PROGRAM_POINT_SIZE);
     // glEnable(GL_BLEND);
@@ -241,7 +241,8 @@ void flush() {
 
     const GLenum index_type = sizeof(Index) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
 
-    for (const auto& cmd : commands) {
+    for (int64_t i = 0; i < md_array_size(commands); ++i) {
+        const auto& cmd = commands[i];
         bool update_view = false;
         bool update_mvp = false;
         if (cmd.view_matrix_idx != current_view_matrix_idx) {
@@ -255,12 +256,12 @@ void flush() {
         }
 
         if (update_view) {
-            mat3 normal_matrix = mat3(math::transpose(math::inverse(matrix_stack[cmd.view_matrix_idx])));
-            glUniformMatrix3fv(uniform_loc_normal_matrix, 1, GL_FALSE, &normal_matrix[0][0]);
+            mat3_t normal_matrix = mat3_from_mat4(mat4_transpose(mat4_inverse(matrix_stack[cmd.view_matrix_idx])));
+            glUniformMatrix3fv(uniform_loc_normal_matrix, 1, GL_FALSE, &normal_matrix.elem[0][0]);
         }
         if (update_mvp) {
-            mat4 mvp_matrix = matrix_stack[cmd.proj_matrix_idx] * matrix_stack[cmd.view_matrix_idx];
-            glUniformMatrix4fv(uniform_loc_mvp_matrix, 1, GL_FALSE, &mvp_matrix[0][0]);
+            mat4_t mvp_matrix = mat4_mul(matrix_stack[cmd.proj_matrix_idx], matrix_stack[cmd.view_matrix_idx]);
+            glUniformMatrix4fv(uniform_loc_mvp_matrix, 1, GL_FALSE, &mvp_matrix.elem[0][0]);
         }
         // @TODO: Enable textures to be bound...
 
@@ -276,96 +277,101 @@ void flush() {
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
-    vertices.clear();
-    indices.clear();
-    commands.clear();
-    matrix_stack.clear();
+    md_array_shrink(vertices, 0);
+    md_array_shrink(indices,  0);
+    md_array_shrink(commands, 0);
+    md_array_shrink(matrix_stack, 0);
     curr_view_matrix_idx = -1;
     curr_proj_matrix_idx = -1;
 }
 
 // PRIMITIVES
-void draw_point(const vec3& pos, u32 color) {
-    const Index idx = (Index)vertices.size();
+void draw_point(vec3_t pos, uint32_t color) {
+    const Index idx = (Index)md_array_size(vertices);
 
-    vertices.push_back({pos, vec3(0, 0, 1), {0, 0}, color});
-    indices.push_back(idx);
+    Vertex v = {pos, {0, 0, 1}, {0, 0}, color};
+    md_array_push(vertices, v, default_allocator);
+    md_array_push(indices, idx, default_allocator);
 
     append_draw_command(1, GL_POINTS);
 }
 
-void draw_line(const vec3& from, const vec3& to, u32 color) {
-    const Index idx = (Index)vertices.size();
+void draw_line(vec3_t from, vec3_t to, uint32_t color) {
+    const Index idx = (Index)md_array_size(vertices);
 
-    vertices.push_back({from, {0, 0, 1}, {0, 0}, color});
-    vertices.push_back({to, {0, 0, 1}, {0, 1}, color});
+    Vertex v[2] = {
+        {from, {0, 0, 1}, {0, 0}, color},
+        {to,   {0, 0, 1}, {0, 0}, color}
+    };
+    md_array_push_array(vertices, v, 2, default_allocator);
 
-    indices.push_back(idx);
-    indices.push_back(idx + 1);
+    md_array_push(indices, idx + 0, default_allocator);
+    md_array_push(indices, idx + 1, default_allocator);
 
     append_draw_command(2, GL_LINES);
 }
 
-void draw_triangle(const vec3& p0, const vec3& p1, const vec3& p2, u32 color) {
-    const Index idx = (Index)vertices.size();
-    const vec3 normal = math::normalize(math::cross(p1 - p0, p2 - p0));
+void draw_triangle(vec3_t p0, vec3_t p1, vec3_t p2, uint32_t color) {
+    const Index idx = (Index)md_array_size(vertices);
+    const vec3_t normal = vec3_normalize(vec3_cross(vec3_sub(p1, p0), vec3_sub(p2, p0)));
 
-    vertices.push_back({p0, normal, {0, 0}, color});
-    vertices.push_back({p1, normal, {1, 0}, color});
-    vertices.push_back({p2, normal, {0, 1}, color});
+    Vertex v[3] = {
+        {p0, normal, {0, 0}, color},
+        {p1, normal, {0, 0}, color},
+        {p2, normal, {0, 0}, color},
+    };
+    md_array_push_array(vertices, v, 3, default_allocator);
 
-    indices.push_back(idx);
-    indices.push_back(idx + 1);
-    indices.push_back(idx + 2);
+    md_array_push(indices, idx + 0, default_allocator);
+    md_array_push(indices, idx + 1, default_allocator);
+    md_array_push(indices, idx + 2, default_allocator);
 
     append_draw_command(3, GL_TRIANGLES);
 }
 
-void draw_plane(const vec3& center, const vec3& vec_u, const vec3& vec_v, u32 color) {
-    const Index idx = (Index)vertices.size();
-    const vec3 normal = math::normalize(math::cross(vec_u, vec_v));
+void draw_plane(vec3_t center, vec3_t u, vec3_t v, uint32_t color) {
+    const Index idx = (Index)md_array_size(vertices);
+    const vec3_t normal = vec3_normalize(vec3_cross(u, v));
 
-    vertices.push_back({{center - vec_u + vec_v}, normal, {0, 1}, color});
-    vertices.push_back({{center - vec_u - vec_v}, normal, {0, 0}, color});
-    vertices.push_back({{center + vec_u + vec_v}, normal, {1, 1}, color});
-    vertices.push_back({{center + vec_u - vec_v}, normal, {1, 0}, color});
+    Vertex vert[4] = {
+        {vec3_sub(center, vec3_add(u, v)), normal, {0, 1}, color},
+        {vec3_sub(center, vec3_sub(u, v)), normal, {0, 0}, color},
+        {vec3_add(center, vec3_add(u, v)), normal, {1, 1}, color},
+        {vec3_add(center, vec3_sub(u, v)), normal, {1, 0}, color},
+    };
+    md_array_push_array(vertices, vert, 4, default_allocator);
 
-    indices.push_back(idx);
-    indices.push_back(idx + 1);
-    indices.push_back(idx + 2);
-    indices.push_back(idx + 2);
-    indices.push_back(idx + 1);
-    indices.push_back(idx + 3);
+    md_array_push(indices, idx + 0, default_allocator);
+    md_array_push(indices, idx + 1, default_allocator);
+    md_array_push(indices, idx + 2, default_allocator);
+    md_array_push(indices, idx + 2, default_allocator);
+    md_array_push(indices, idx + 1, default_allocator);
+    md_array_push(indices, idx + 3, default_allocator);
 
     append_draw_command(6, GL_TRIANGLES);
 }
 
-void draw_plane_wireframe(const vec3& center, const vec3& vec_u, const vec3& vec_v, u32 color, int segments_u, int segments_v) {
+void draw_plane_wireframe(vec3_t center, vec3_t vec_u, vec3_t vec_v, uint32_t color, int segments_u, int segments_v) {
     ASSERT(segments_u > 0);
     ASSERT(segments_v > 0);
 
-    const vec3 normal = math::normalize(math::cross(vec_u, vec_v));
-
-    vertices.push_back({{center - vec_u + vec_v}, normal, {0, 1}, color});
-    vertices.push_back({{center - vec_u - vec_v}, normal, {0, 0}, color});
-    vertices.push_back({{center + vec_u + vec_v}, normal, {1, 1}, color});
-    vertices.push_back({{center + vec_u - vec_v}, normal, {1, 0}, color});
+    const vec3_t normal = vec3_normalize(vec3_cross(vec_u, vec_v));
 
     for (int i = 0; i <= segments_u; i++) {
         const float t = -1.0f + 2.0f * ((float)i / (float)segments_u);
-        const vec3 u = vec_u * t;
-        draw_line(center - vec_v + u, center + vec_v + u, color);
+        const vec3_t u = vec3_mul_f(vec_u, t);
+        draw_line(vec3_sub(center, vec3_add(vec_v, u)), vec3_add(center, vec3_add(vec_v, u)), color);
     }
 
     for (int i = 0; i <= segments_v; i++) {
         const float t = -1.0f + 2.0f * ((float)i / (float)segments_v);
-        const vec3 v = vec_v * t;
-        draw_line(center - vec_u + v, center + vec_u + v, color);
+        const vec3_t v = vec3_mul_f(vec_v, t);
+        draw_line(vec3_sub(center, vec3_add(vec_u, v)), vec3_add(center, vec3_add(vec_u, v)), color);
     }
 }
 
 /*
-void draw_aabb(const vec3& min_box, const vec3& max_box) {
+void draw_aabb(vec3_t min_box, vec3_t max_box) {
     const Index idx = (Index)vertices.count;
     const vec3 normal = {0, 0, 1};
 
@@ -404,54 +410,53 @@ void draw_aabb(const vec3& min_box, const vec3& max_box) {
 }
 */
 
-void draw_box_wireframe(const vec3& min_box, const vec3& max_box, u32 color) {
+void draw_box_wireframe(vec3_t min_box, vec3_t max_box, uint32_t color) {
     // Z = min
-    draw_line(vec3(min_box[0], min_box[1], min_box[2]), vec3(max_box[0], min_box[1], min_box[2]), color);
-    draw_line(vec3(min_box[0], min_box[1], min_box[2]), vec3(min_box[0], max_box[1], min_box[2]), color);
-    draw_line(vec3(max_box[0], min_box[1], min_box[2]), vec3(max_box[0], max_box[1], min_box[2]), color);
-    draw_line(vec3(min_box[0], max_box[1], min_box[2]), vec3(max_box[0], max_box[1], min_box[2]), color);
+    draw_line(vec3_t(min_box.elem[0], min_box.elem[1], min_box.elem[2]), vec3_t(max_box.elem[0], min_box.elem[1], min_box.elem[2]), color);
+    draw_line(vec3_t(min_box.elem[0], min_box.elem[1], min_box.elem[2]), vec3_t(min_box.elem[0], max_box.elem[1], min_box.elem[2]), color);
+    draw_line(vec3_t(max_box.elem[0], min_box.elem[1], min_box.elem[2]), vec3_t(max_box.elem[0], max_box.elem[1], min_box.elem[2]), color);
+    draw_line(vec3_t(min_box.elem[0], max_box.elem[1], min_box.elem[2]), vec3_t(max_box.elem[0], max_box.elem[1], min_box.elem[2]), color);
 
     // Z = max
-    draw_line(vec3(min_box[0], min_box[1], max_box[2]), vec3(max_box[0], min_box[1], max_box[2]), color);
-    draw_line(vec3(min_box[0], min_box[1], max_box[2]), vec3(min_box[0], max_box[1], max_box[2]), color);
-    draw_line(vec3(max_box[0], min_box[1], max_box[2]), vec3(max_box[0], max_box[1], max_box[2]), color);
-    draw_line(vec3(min_box[0], max_box[1], max_box[2]), vec3(max_box[0], max_box[1], max_box[2]), color);
+    draw_line(vec3_t(min_box.elem[0], min_box.elem[1], max_box.elem[2]), vec3_t(max_box.elem[0], min_box.elem[1], max_box.elem[2]), color);
+    draw_line(vec3_t(min_box.elem[0], min_box.elem[1], max_box.elem[2]), vec3_t(min_box.elem[0], max_box.elem[1], max_box.elem[2]), color);
+    draw_line(vec3_t(max_box.elem[0], min_box.elem[1], max_box.elem[2]), vec3_t(max_box.elem[0], max_box.elem[1], max_box.elem[2]), color);
+    draw_line(vec3_t(min_box.elem[0], max_box.elem[1], max_box.elem[2]), vec3_t(max_box.elem[0], max_box.elem[1], max_box.elem[2]), color);
 
     // Z min max
-    draw_line(vec3(min_box[0], min_box[1], min_box[2]), vec3(min_box[0], min_box[1], max_box[2]), color);
-    draw_line(vec3(min_box[0], max_box[1], min_box[2]), vec3(min_box[0], max_box[1], max_box[2]), color);
-    draw_line(vec3(max_box[0], min_box[1], min_box[2]), vec3(max_box[0], min_box[1], max_box[2]), color);
-    draw_line(vec3(max_box[0], max_box[1], min_box[2]), vec3(max_box[0], max_box[1], max_box[2]), color);
+    draw_line(vec3_t(min_box.elem[0], min_box.elem[1], min_box.elem[2]), vec3_t(min_box.elem[0], min_box.elem[1], max_box.elem[2]), color);
+    draw_line(vec3_t(min_box.elem[0], max_box.elem[1], min_box.elem[2]), vec3_t(min_box.elem[0], max_box.elem[1], max_box.elem[2]), color);
+    draw_line(vec3_t(max_box.elem[0], min_box.elem[1], min_box.elem[2]), vec3_t(max_box.elem[0], min_box.elem[1], max_box.elem[2]), color);
+    draw_line(vec3_t(max_box.elem[0], max_box.elem[1], min_box.elem[2]), vec3_t(max_box.elem[0], max_box.elem[1], max_box.elem[2]), color);
 }
 
-void draw_box_wireframe(const vec3& min_box, const vec3& max_box, const mat4& model_matrix, u32 color) {
-
-    const mat3 R = mat3(model_matrix);
-    const vec3 trans = model_matrix[3];
+void draw_box_wireframe(vec3_t min_box, vec3_t max_box, mat4_t model_matrix, uint32_t color) {
+    const mat3_t R = mat3_from_mat4(model_matrix);
+    const vec3_t trans = vec3_from_vec4(model_matrix.col[3]);
     // Z = min
-    draw_line(trans + R * vec3(min_box[0], min_box[1], min_box[2]), trans + R * vec3(max_box[0], min_box[1], min_box[2]), color);
-    draw_line(trans + R * vec3(min_box[0], min_box[1], min_box[2]), trans + R * vec3(min_box[0], max_box[1], min_box[2]), color);
-    draw_line(trans + R * vec3(max_box[0], min_box[1], min_box[2]), trans + R * vec3(max_box[0], max_box[1], min_box[2]), color);
-    draw_line(trans + R * vec3(min_box[0], max_box[1], min_box[2]), trans + R * vec3(max_box[0], max_box[1], min_box[2]), color);
-
-    // Z = max
-    draw_line(trans + R * vec3(min_box[0], min_box[1], max_box[2]), trans + R * vec3(max_box[0], min_box[1], max_box[2]), color);
-    draw_line(trans + R * vec3(min_box[0], min_box[1], max_box[2]), trans + R * vec3(min_box[0], max_box[1], max_box[2]), color);
-    draw_line(trans + R * vec3(max_box[0], min_box[1], max_box[2]), trans + R * vec3(max_box[0], max_box[1], max_box[2]), color);
-    draw_line(trans + R * vec3(min_box[0], max_box[1], max_box[2]), trans + R * vec3(max_box[0], max_box[1], max_box[2]), color);
-
-    // Z min to max
-    draw_line(trans + R * vec3(min_box[0], min_box[1], min_box[2]), trans + R * vec3(min_box[0], min_box[1], max_box[2]), color);
-    draw_line(trans + R * vec3(min_box[0], max_box[1], min_box[2]), trans + R * vec3(min_box[0], max_box[1], max_box[2]), color);
-    draw_line(trans + R * vec3(max_box[0], min_box[1], min_box[2]), trans + R * vec3(max_box[0], min_box[1], max_box[2]), color);
-    draw_line(trans + R * vec3(max_box[0], max_box[1], min_box[2]), trans + R * vec3(max_box[0], max_box[1], max_box[2]), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], min_box.elem[1], min_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], min_box.elem[1], min_box.elem[2]))), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], min_box.elem[1], min_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], max_box.elem[1], min_box.elem[2]))), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], min_box.elem[1], min_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], max_box.elem[1], min_box.elem[2]))), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], max_box.elem[1], min_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], max_box.elem[1], min_box.elem[2]))), color);
+                                                                                                                                                                    
+    // Z = max                                                                                                                                                      
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], min_box.elem[1], max_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], min_box.elem[1], max_box.elem[2]))), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], min_box.elem[1], max_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], max_box.elem[1], max_box.elem[2]))), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], min_box.elem[1], max_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], max_box.elem[1], max_box.elem[2]))), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], max_box.elem[1], max_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], max_box.elem[1], max_box.elem[2]))), color);
+                                                                                                                                                                     
+    // Z min to max                                                                                                                                                 
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], min_box.elem[1], min_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], min_box.elem[1], max_box.elem[2]))), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], max_box.elem[1], min_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], max_box.elem[1], max_box.elem[2]))), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], min_box.elem[1], min_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], min_box.elem[1], max_box.elem[2]))), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], max_box.elem[1], min_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], max_box.elem[1], max_box.elem[2]))), color);
 }
 
-void draw_basis(const mat4& basis, const float scale, u32 x_color, u32 y_color, u32 z_color) {
-    const vec3 o = vec3(basis[3]);
-    const vec3 x = o + vec3(basis[0]) * scale;
-    const vec3 y = o + vec3(basis[1]) * scale;
-    const vec3 z = o + vec3(basis[2]) * scale;
+void draw_basis(mat4_t basis, const float scale, uint32_t x_color, uint32_t y_color, uint32_t z_color) {
+    const vec3_t o = vec3_from_vec4(basis.col[3]);
+    const vec3_t x = vec3_add(o, vec3_mul_f(vec3_from_vec4(basis.col[0]), scale));
+    const vec3_t y = vec3_add(o, vec3_mul_f(vec3_from_vec4(basis.col[1]), scale));
+    const vec3_t z = vec3_add(o, vec3_mul_f(vec3_from_vec4(basis.col[2]), scale));
 
     draw_line(o, x, x_color);
     draw_line(o, y, y_color);

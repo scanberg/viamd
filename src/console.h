@@ -1,6 +1,6 @@
 #pragma once
 
-#include <core/common.h>
+//#include <core/common.h>
 #include <imgui.h>
 #include <ctype.h>
 
@@ -58,6 +58,7 @@ struct Console {
     static char* Strdup(const char* str) {
         size_t len = strlen(str) + 1;
         void* buff = malloc(len);
+        ASSERT(buff);
         return (char*)memcpy(buff, (const void*)str, len);
     }
 

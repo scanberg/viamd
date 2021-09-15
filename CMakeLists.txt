@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.10)
 
 # add_compile_options_config(<CONFIG> <option> ...)
 function(add_compile_options_config CONFIG)
@@ -61,16 +61,15 @@ option(VIAMD_USE_RELATIVE_PATHS "Use relative paths for resource directories" OF
 add_subdirectory(ext/glfw)
 add_subdirectory(ext/imgui)
 add_subdirectory(ext/nativefiledialog)
-#add_subdirectory(ext/tinyexpr)
-add_subdirectory(ext/mdutils)
+#add_subdirectory(ext/mdutils)
 add_subdirectory(ext/mold)
 add_subdirectory(ext/stb)
 add_subdirectory(ext/gl3w)
 add_subdirectory(ext/enkiTS)
 add_subdirectory(ext/ImGuiColorTextEdit)
 add_subdirectory(ext/implot)
+add_subdirectory(ext/atomic_queue)
 #add_subdirectory(unittest)
-#add_subdirectory(benchmark)
 
 file(GLOB PLATFORM_FILES src/platform/*)
 file(GLOB SRC_FILES src/*)
@@ -87,7 +86,7 @@ if (VIAMD_USE_RELATIVE_PATHS)
 
 	# COPY RESOURCE FILES TO EXECUTABLE DIRECTORY TO KEEP RELATIVE PATH
     # CANNOT COPY ENTIRE DIRECTORY -> WILL REMOVE ANY EXISTING DIRECTORY
-    file(GLOB_RECURSE COPY_FILES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} shaders/* images/*)
+    file(GLOB_RECURSE COPY_FILES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} shaders/* images/* datasets/*)
 
     foreach(FILENAME ${COPY_FILES})
     set(SRC "${CMAKE_CURRENT_SOURCE_DIR}/${FILENAME}")
@@ -107,7 +106,7 @@ if (VIAMD_USE_RELATIVE_PATHS)
 endif()
 
 target_compile_definitions(viamd PRIVATE
-	VIAMD_DATA_DIR=\"${RESOURCE_DIR}data\"
+	VIAMD_DATASET_DIR=\"${RESOURCE_DIR}datasets\"
 	VIAMD_SHADER_DIR=\"${RESOURCE_DIR}shaders\"
 	VIAMD_IMAGE_DIR=\"${RESOURCE_DIR}images\"
 	VIAMD_SCREENSHOT_DIR=\"${RESOURCE_DIR}screenshots\")
@@ -126,11 +125,11 @@ target_link_libraries(viamd
     glfw
     imgui
     nativefiledialog
-	#tinyexpr
-    mdutils
+    #mdutils
     mold
     stb
     enkiTS
     ImGuiColorTextEdit
     implot
+    atomic_queue
 )

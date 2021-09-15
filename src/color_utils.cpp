@@ -1,133 +1,191 @@
 #include "color_utils.h"
 
-#include <core/array_types.h>
-#include <core/hash.h>
+//#include <core/array_types.h>
+//#include <core/hash.h>
+#include <core/md_bitop.h>
 #include <md_molecule.h>
 #include <md_util.h>
 
-void color_atoms_uniform(Array<u32> dst_atom_colors, const vec4& color) { memset_array(dst_atom_colors, math::convert_color(color)); }
+#include <string.h>
 
-void color_atoms_cpk(Array<u32> dst_atom_colors, const md_molecule_t& mol) {
-    for (i64 i = 0; i < dst_atom_colors.count; i++) {
-        dst_atom_colors[i] = md_util_element_cpk_color(mol.atom.element[i]);
+/*
+https://github.com/LordJZ/consthash
+The MIT License(MIT)
+
+Copyright(c) 2015
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files(the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions :
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
+static uint32_t constexpr crc32_tab[] = {
+    0x00000000, 0x77073096, 0xee0e612c, 0x990951ba, 0x076dc419, 0x706af48f, 0xe963a535, 0x9e6495a3, 0x0edb8832, 0x79dcb8a4, 0xe0d5e91e, 0x97d2d988, 0x09b64c2b, 0x7eb17cbd, 0xe7b82d07, 0x90bf1d91,
+    0x1db71064, 0x6ab020f2, 0xf3b97148, 0x84be41de, 0x1adad47d, 0x6ddde4eb, 0xf4d4b551, 0x83d385c7, 0x136c9856, 0x646ba8c0, 0xfd62f97a, 0x8a65c9ec, 0x14015c4f, 0x63066cd9, 0xfa0f3d63, 0x8d080df5,
+    0x3b6e20c8, 0x4c69105e, 0xd56041e4, 0xa2677172, 0x3c03e4d1, 0x4b04d447, 0xd20d85fd, 0xa50ab56b, 0x35b5a8fa, 0x42b2986c, 0xdbbbc9d6, 0xacbcf940, 0x32d86ce3, 0x45df5c75, 0xdcd60dcf, 0xabd13d59,
+    0x26d930ac, 0x51de003a, 0xc8d75180, 0xbfd06116, 0x21b4f4b5, 0x56b3c423, 0xcfba9599, 0xb8bda50f, 0x2802b89e, 0x5f058808, 0xc60cd9b2, 0xb10be924, 0x2f6f7c87, 0x58684c11, 0xc1611dab, 0xb6662d3d,
+    0x76dc4190, 0x01db7106, 0x98d220bc, 0xefd5102a, 0x71b18589, 0x06b6b51f, 0x9fbfe4a5, 0xe8b8d433, 0x7807c9a2, 0x0f00f934, 0x9609a88e, 0xe10e9818, 0x7f6a0dbb, 0x086d3d2d, 0x91646c97, 0xe6635c01,
+    0x6b6b51f4, 0x1c6c6162, 0x856530d8, 0xf262004e, 0x6c0695ed, 0x1b01a57b, 0x8208f4c1, 0xf50fc457, 0x65b0d9c6, 0x12b7e950, 0x8bbeb8ea, 0xfcb9887c, 0x62dd1ddf, 0x15da2d49, 0x8cd37cf3, 0xfbd44c65,
+    0x4db26158, 0x3ab551ce, 0xa3bc0074, 0xd4bb30e2, 0x4adfa541, 0x3dd895d7, 0xa4d1c46d, 0xd3d6f4fb, 0x4369e96a, 0x346ed9fc, 0xad678846, 0xda60b8d0, 0x44042d73, 0x33031de5, 0xaa0a4c5f, 0xdd0d7cc9,
+    0x5005713c, 0x270241aa, 0xbe0b1010, 0xc90c2086, 0x5768b525, 0x206f85b3, 0xb966d409, 0xce61e49f, 0x5edef90e, 0x29d9c998, 0xb0d09822, 0xc7d7a8b4, 0x59b33d17, 0x2eb40d81, 0xb7bd5c3b, 0xc0ba6cad,
+    0xedb88320, 0x9abfb3b6, 0x03b6e20c, 0x74b1d29a, 0xead54739, 0x9dd277af, 0x04db2615, 0x73dc1683, 0xe3630b12, 0x94643b84, 0x0d6d6a3e, 0x7a6a5aa8, 0xe40ecf0b, 0x9309ff9d, 0x0a00ae27, 0x7d079eb1,
+    0xf00f9344, 0x8708a3d2, 0x1e01f268, 0x6906c2fe, 0xf762575d, 0x806567cb, 0x196c3671, 0x6e6b06e7, 0xfed41b76, 0x89d32be0, 0x10da7a5a, 0x67dd4acc, 0xf9b9df6f, 0x8ebeeff9, 0x17b7be43, 0x60b08ed5,
+    0xd6d6a3e8, 0xa1d1937e, 0x38d8c2c4, 0x4fdff252, 0xd1bb67f1, 0xa6bc5767, 0x3fb506dd, 0x48b2364b, 0xd80d2bda, 0xaf0a1b4c, 0x36034af6, 0x41047a60, 0xdf60efc3, 0xa867df55, 0x316e8eef, 0x4669be79,
+    0xcb61b38c, 0xbc66831a, 0x256fd2a0, 0x5268e236, 0xcc0c7795, 0xbb0b4703, 0x220216b9, 0x5505262f, 0xc5ba3bbe, 0xb2bd0b28, 0x2bb45a92, 0x5cb36a04, 0xc2d7ffa7, 0xb5d0cf31, 0x2cd99e8b, 0x5bdeae1d,
+    0x9b64c2b0, 0xec63f226, 0x756aa39c, 0x026d930a, 0x9c0906a9, 0xeb0e363f, 0x72076785, 0x05005713, 0x95bf4a82, 0xe2b87a14, 0x7bb12bae, 0x0cb61b38, 0x92d28e9b, 0xe5d5be0d, 0x7cdcefb7, 0x0bdbdf21,
+    0x86d3d2d4, 0xf1d4e242, 0x68ddb3f8, 0x1fda836e, 0x81be16cd, 0xf6b9265b, 0x6fb077e1, 0x18b74777, 0x88085ae6, 0xff0f6a70, 0x66063bca, 0x11010b5c, 0x8f659eff, 0xf862ae69, 0x616bffd3, 0x166ccf45,
+    0xa00ae278, 0xd70dd2ee, 0x4e048354, 0x3903b3c2, 0xa7672661, 0xd06016f7, 0x4969474d, 0x3e6e77db, 0xaed16a4a, 0xd9d65adc, 0x40df0b66, 0x37d83bf0, 0xa9bcae53, 0xdebb9ec5, 0x47b2cf7f, 0x30b5ffe9,
+    0xbdbdf21c, 0xcabac28a, 0x53b39330, 0x24b4a3a6, 0xbad03605, 0xcdd70693, 0x54de5729, 0x23d967bf, 0xb3667a2e, 0xc4614ab8, 0x5d681b02, 0x2a6f2b94, 0xb40bbe37, 0xc30c8ea1, 0x5a05df1b, 0x2d02ef8d};
+
+constexpr uint32_t crc32impl(uint32_t prevCrc, const char* str, size_t size) { return !size ? prevCrc : crc32impl((prevCrc >> 8) ^ crc32_tab[(prevCrc ^ *str) & 0xff], str + 1, size - 1); }
+
+constexpr uint32_t crc32(const char* ptr, size_t size) { return crc32impl(0xffffffff, ptr, size) ^ 0xffffffff; }
+
+static inline void set_colors(uint32_t* colors, int64_t count, uint32_t color) {
+    for (int64_t i = 0; i < count; ++i) {
+        colors[i] = color;
     }
 }
 
-void color_atoms_residue_id(Array<u32> dst_atom_colors, const md_molecule_t& mol) {
-    memset_array(dst_atom_colors, 0xffffffff);
-    for (i64 i = 0; i < mol.residue.count; i++) {
-        const u32 color = math::convert_color(color_from_hash(hash::crc32(CStringView(mol.residue.name[i]))));
-        Range<int> atom_range = { mol.residue.atom_range[i].beg, mol.residue.atom_range[i].end };
-        memset_array(dst_atom_colors, color, atom_range);
+void color_atoms_uniform(uint32_t* colors, int64_t count, vec4_t color) {
+    set_colors(colors, count, convert_color(color));
+}
+
+void color_atoms_cpk(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
+    for (int64_t i = 0; i < count; i++) {
+        colors[i] = md_util_element_cpk_color(mol.atom.element[i]);
     }
 }
-void color_atoms_residue_index(Array<u32> dst_atom_colors, const md_molecule_t& mol) {
-    memset_array(dst_atom_colors, 0xffffffff);
-    for (i64 i = 0; i < mol.residue.count; i++) {
-        const u32 color = math::convert_color(color_from_hash(hash::crc32(i)));
-        Range<int> atom_range = { mol.residue.atom_range[i].beg, mol.residue.atom_range[i].end };
-        memset_array(dst_atom_colors, color, atom_range);
+
+void color_atoms_residue_id(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
+    set_colors(colors, count, 0xFFFFFFFFU);
+    for (int64_t i = 0; i < mol.residue.count; i++) {
+        const uint32_t color = convert_color(color_from_hash(crc32(mol.residue.name[i], strlen(mol.residue.name[i]))));
+        set_colors(colors + mol.residue.atom_range[i].beg, mol.residue.atom_range[i].end - mol.residue.atom_range[i].beg, color);
     }
 }
-void color_atoms_chain_id(Array<u32> dst_atom_colors, const md_molecule_t& mol) {
-    memset_array(dst_atom_colors, 0xffffffff);
-    for (i64 i = 0; i < mol.chain.count; i++) {
-        const u32 color = math::convert_color(color_from_hash(hash::crc32(CStringView(mol.chain.id[i]))));
-        Range<int> atom_range = { mol.chain.atom_range[i].beg, mol.chain.atom_range[i].end };
-        memset_array(dst_atom_colors, color, atom_range);
+void color_atoms_residue_index(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
+    set_colors(colors, count, 0xFFFFFFFFU);
+    for (int64_t i = 0; i < mol.residue.count; i++) {
+        const uint32_t color = convert_color(color_from_hash(crc32((char*)&i, sizeof(i))));
+        set_colors(colors + mol.residue.atom_range[i].beg, mol.residue.atom_range[i].end - mol.residue.atom_range[i].beg, color);
     }
 }
-void color_atoms_chain_index(Array<u32> dst_atom_colors, const md_molecule_t& mol) {
-    memset_array(dst_atom_colors, 0xffffffff);
-    for (i64 i = 0; i < mol.chain.count; i++) {
+void color_atoms_chain_id(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
+    set_colors(colors, count, 0xFFFFFFFFU);
+    for (int64_t i = 0; i < mol.chain.count; i++) {
+        const uint32_t color = convert_color(color_from_hash(crc32(mol.chain.id[i], strlen(mol.chain.id[i]))));
+        set_colors(colors + mol.chain.atom_range[i].beg, mol.chain.atom_range[i].end - mol.chain.atom_range[i].beg, color);
+    }
+}
+void color_atoms_chain_index(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
+    set_colors(colors, count, 0xFFFFFFFFU);
+    for (int64_t i = 0; i < mol.chain.count; i++) {
         const float hue = (float)i / (float)mol.chain.count;
         const float sat = 0.8f;
         const float val = 1.0f;
-        const u32 color = math::convert_color(vec4(math::hsv_to_rgb({hue, sat, val}), 1.0f));
-        Range<int> atom_range = { mol.chain.atom_range[i].beg, mol.chain.atom_range[i].end };
-        memset_array(dst_atom_colors, color, atom_range);
+        const uint32_t color = convert_color(vec4_from_vec3(hsv_to_rgb({hue, sat, val}), 1.0f));
+        set_colors(colors + mol.chain.atom_range[i].beg, mol.chain.atom_range[i].end - mol.chain.atom_range[i].beg, color);
     }
 }
 
-void color_atoms_secondary_structure(Array<u32> dst_atom_colors, const md_molecule_t& mol) {
-    const u32 color_unknown = 0x22222222;
-    const u32 color_coil    = 0xDDDDDDDD;
-    const u32 color_helix   = 0xFF22DD22;
-    const u32 color_sheet   = 0xFFDD2222;
+void color_atoms_secondary_structure(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
+    const uint32_t color_unknown = 0x22222222;
+    const uint32_t color_coil    = 0xDDDDDDDD;
+    const uint32_t color_helix   = 0xFF22DD22;
+    const uint32_t color_sheet   = 0xFFDD2222;
 
-    memset_array(dst_atom_colors, color_unknown);
+    set_colors(colors, count, color_unknown);
     if (mol.backbone.secondary_structure) {
-        for (i64 i = 0; i < mol.backbone.count; i++) {
-            const auto w = math::convert_color((u32)mol.backbone.secondary_structure[i]);
-            const auto color = w[0] * math::convert_color(color_coil) + w[1] * math::convert_color(color_helix) + w[2] * math::convert_color(color_sheet);
+        for (int64_t i = 0; i < mol.backbone.count; i++) {
+            const auto w = convert_color((uint32_t)mol.backbone.secondary_structure[i]);
+            const auto color = w.x * convert_color(color_coil) + w.y * convert_color(color_helix) + w.z * convert_color(color_sheet);
             md_residue_idx_t res_idx = mol.backbone.residue_idx[i];
-            Range<int> atom_range = { mol.residue.atom_range[res_idx].beg, mol.residue.atom_range[res_idx].end };
-            memset_array(dst_atom_colors, math::convert_color(color), atom_range);
+            set_colors(colors + mol.residue.atom_range[res_idx].beg, mol.residue.atom_range[res_idx].end - mol.residue.atom_range[res_idx].beg, convert_color(color));
         }
     }
 }
 
-inline u32 lerp_pixel(const Image& color_map, const vec2& coords) {
-    const int x0 = math::clamp((i32)(coords.x * color_map.width), 0, color_map.width - 1);
-    const int y0 = math::clamp((i32)(coords.y * color_map.height), 0, color_map.height - 1);
-    const int x1 = math::min(x0 + 1, color_map.width - 1);
-    const int y1 = math::min(y0 + 1, color_map.height - 1);
-    const vec2 t = math::fract(coords);
-    const vec4 cx0 = math::mix(math::convert_color(color_map.data[y0 * color_map.width + x0]),
-                               math::convert_color(color_map.data[y0 * color_map.width + x1]), t.x);
-    const vec4 cx1 = math::mix(math::convert_color(color_map.data[y1 * color_map.width + x0]),
-                               math::convert_color(color_map.data[y1 * color_map.width + x1]), t.x);
-    return math::convert_color(math::mix(cx0, cx1, t.y));
+inline uint32_t lerp_pixel(const image_t& color_map, vec2_t coords) {
+    const int x0 = CLAMP((int32_t)(coords.x * color_map.width),  0, color_map.width - 1);
+    const int y0 = CLAMP((int32_t)(coords.y * color_map.height), 0, color_map.height - 1);
+    const int x1 = MIN(x0 + 1, color_map.width - 1);
+    const int y1 = MIN(y0 + 1, color_map.height - 1);
+    const vec2_t t = vec2_fract(coords);
+    const vec4_t cx0 = vec4_lerp(convert_color(color_map.data[y0 * color_map.width + x0]),
+                               convert_color(color_map.data[y0 * color_map.width + x1]), t.x);
+    const vec4_t cx1 = vec4_lerp(convert_color(color_map.data[y1 * color_map.width + x0]),
+                               convert_color(color_map.data[y1 * color_map.width + x1]), t.x);
+    return convert_color(vec4_lerp(cx0, cx1, t.y));
 }
 
-void color_atoms_backbone_angles(Array<u32> dst_atom_colors, const md_molecule_t& mol, const Image& color_map) {
-    memset_array(dst_atom_colors, 0xffffffff);
+void color_atoms_backbone_angles(uint32_t* colors, int64_t count, const md_molecule_t& mol, const image_t& color_map) {
+    set_colors(colors, count, 0xFFFFFFFFU);
 
     if (color_map.width == 0 || color_map.height == 0) return;
-    const float one_over_two_pi = 1.f / (2.f * math::PI);
+    const float one_over_two_pi = 1.f / (2.f * 3.1415926535f);
 
-    for (i64 i = 0; i < mol.backbone.count; ++i) {
-        const vec2 angle = { mol.backbone.angle[i].phi, mol.backbone.angle[i].psi };
-        const vec2 coord = vec2(0, 1) + vec2(1, -1) * (angle * one_over_two_pi + 0.5f);
-        const u32 color = lerp_pixel(color_map, coord);
+    for (int64_t i = 0; i < mol.backbone.count; ++i) {
+        const vec2_t angle = { mol.backbone.angle[i].phi, mol.backbone.angle[i].psi };
+        const vec2_t coord = vec2_t{0, 1} + vec2_t{1, -1} * (angle * one_over_two_pi + 0.5f);
+        const uint32_t color = lerp_pixel(color_map, coord);
         const md_residue_idx_t res_idx = mol.backbone.residue_idx[i];
-        Range<int> atom_range = {mol.residue.atom_range[res_idx].beg, mol.residue.atom_range[res_idx].end};
-        memset_array(dst_atom_colors, color, atom_range);
+        set_colors(colors + mol.residue.atom_range[res_idx].beg, mol.residue.atom_range[res_idx].end - mol.residue.atom_range[res_idx].beg, color);
     }
 
     /*
     // Do first and last segment explicitly since it lacks adjacent [prev/next] amino acid to properly compute phi and psi.
     {
-        const u32 color = dst_atom_colors[mol.residue.atom_range[seq.beg + 1].beg];
+        const uint32_t color = dst_atom_colors[mol.residue.atom_range[seq.beg + 1].beg];
         memset_array(dst_atom_colors, color, mol.residue.atom_range[seq.beg]);
     }
     {
-        const u32 color = dst_atom_colors[mol.residue.atom_range[seq.end - 2].beg];  // copy color from previous residue
+        const uint32_t color = dst_atom_colors[mol.residue.atom_range[seq.end - 2].beg];  // copy color from previous residue
         memset_array(dst_atom_colors, color, mol.residue.atom_range[seq.end - 1]);
     }
     */
 }
 
-void filter_colors(Array<u32> colors, Bitfield mask) {
-    ASSERT(colors.size() == mask.size());
-    for (int i = 0; i < colors.count; i++) {
-        if (bitfield::get_bit(mask, i))
-            colors[i] |= 0xff000000;
-        else
-            colors[i] &= 0x00ffffff;
+void filter_colors(uint32_t* colors, int64_t num_colors, const md_exp_bitfield_t* mask) {
+    int64_t beg_bit = mask->beg_bit;
+    int64_t end_bit = mask->end_bit;
+
+    for (int64_t i = 0; i < beg_bit; ++i) {
+        colors[i] &= 0x00FFFFFFU;
+    }
+    for (int64_t i = beg_bit; i < end_bit; ++i) {
+        const uint32_t m = md_bitfield_test_bit(mask, i) ? 0xFFFFFFFFU : 0x00FFFFFFU;
+        colors[i] &= m;
+    }
+    for (int64_t i = end_bit; i < num_colors; ++i) {
+        colors[i] &= 0x00FFFFFFU;
     }
 }
 
-void desaturate_colors(Array<u32> colors, Bitfield mask, float scale) {
-    ASSERT(colors.size() == mask.size());
-    for (int i = 0; i < colors.count; i++) {
-        if (!bitfield::get_bit(mask, i)) continue;
-
-        vec4 rgba = math::convert_color(colors[i]);
-        vec3 hsv = math::rgb_to_hsv((vec3)rgba);
+void desaturate_colors(uint32_t* colors, const md_exp_bitfield_t* mask, float scale) {
+    int64_t beg_bit = mask->beg_bit;
+    int64_t end_bit = mask->end_bit;
+    while (beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) {
+        int64_t i = beg_bit - 1;
+        vec4_t rgba = convert_color(colors[i]);
+        vec3_t hsv = rgb_to_hsv(vec3_from_vec4(rgba));
         hsv.y *= scale;
-        rgba = vec4(math::hsv_to_rgb(hsv), rgba.w);
-        colors[i] = math::convert_color(rgba);
+        rgba = vec4_from_vec3(hsv_to_rgb(hsv), rgba.w);
+        colors[i] = convert_color(rgba);
     }
 }
 
@@ -135,7 +193,7 @@ void desaturate_colors(Array<u32> colors, Bitfield mask, float scale) {
 // and (in the case of viridis) Eric Firing.
 // Found here https://github.com/BIDS/colormap/blob/master/colormaps.py
 
-static const vec3 magma_data[] = {
+static const vec3_t magma_data[] = {
     {0.001462, 0.000466, 0.013866}, {0.002258, 0.001295, 0.018331}, {0.003279, 0.002305, 0.023708}, {0.004512, 0.003490, 0.029965},
     {0.005950, 0.004843, 0.037130}, {0.007588, 0.006356, 0.044973}, {0.009426, 0.008022, 0.052844}, {0.011465, 0.009828, 0.060750},
     {0.013708, 0.011771, 0.068667}, {0.016156, 0.013840, 0.076603}, {0.018815, 0.016026, 0.084584}, {0.021692, 0.018320, 0.092610},
@@ -201,7 +259,7 @@ static const vec3 magma_data[] = {
     {0.989434, 0.941470, 0.697519}, {0.989077, 0.948604, 0.704863}, {0.988717, 0.955742, 0.712242}, {0.988367, 0.962878, 0.719649},
     {0.988033, 0.970012, 0.727077}, {0.987691, 0.977154, 0.734536}, {0.987387, 0.984288, 0.742002}, {0.987053, 0.991438, 0.749504}};
 
-static const vec3 inferno_data[] = {
+static const vec3_t inferno_data[] = {
     {0.001462, 0.000466, 0.013866}, {0.002267, 0.001270, 0.018570}, {0.003299, 0.002249, 0.024239}, {0.004547, 0.003392, 0.030909},
     {0.006006, 0.004692, 0.038558}, {0.007676, 0.006136, 0.046836}, {0.009561, 0.007713, 0.055143}, {0.011663, 0.009417, 0.063460},
     {0.013995, 0.011225, 0.071862}, {0.016561, 0.013136, 0.080282}, {0.019373, 0.015133, 0.088767}, {0.022447, 0.017199, 0.097327},
@@ -267,7 +325,7 @@ static const vec3 inferno_data[] = {
     {0.954529, 0.965896, 0.540361}, {0.957896, 0.971003, 0.556275}, {0.961812, 0.975924, 0.571925}, {0.966249, 0.980678, 0.587206},
     {0.971162, 0.985282, 0.602154}, {0.976511, 0.989753, 0.616760}, {0.982257, 0.994109, 0.631017}, {0.988362, 0.998364, 0.644924}};
 
-static const vec3 plasma_data[] = {
+static const vec3_t plasma_data[] = {
     {0.050383, 0.029803, 0.527975}, {0.063536, 0.028426, 0.533124}, {0.075353, 0.027206, 0.538007}, {0.086222, 0.026125, 0.542658},
     {0.096379, 0.025165, 0.547103}, {0.105980, 0.024309, 0.551368}, {0.115124, 0.023556, 0.555468}, {0.123903, 0.022878, 0.559423},
     {0.132381, 0.022258, 0.563250}, {0.140603, 0.021687, 0.566959}, {0.148607, 0.021154, 0.570562}, {0.156421, 0.020651, 0.574065},
@@ -333,7 +391,7 @@ static const vec3 plasma_data[] = {
     {0.956808, 0.928152, 0.152409}, {0.954287, 0.934908, 0.152921}, {0.951726, 0.941671, 0.152925}, {0.949151, 0.948435, 0.152178},
     {0.946602, 0.955190, 0.150328}, {0.944152, 0.961916, 0.146861}, {0.941896, 0.968590, 0.140956}, {0.940015, 0.975158, 0.131326}};
 
-static const vec3 viridis_data[] = {
+static const vec3_t viridis_data[] = {
     {0.267004, 0.004874, 0.329415}, {0.268510, 0.009605, 0.335427}, {0.269944, 0.014625, 0.341379}, {0.271305, 0.019942, 0.347269},
     {0.272594, 0.025563, 0.353093}, {0.273809, 0.031497, 0.358853}, {0.274952, 0.037752, 0.364543}, {0.276022, 0.044167, 0.370164},
     {0.277018, 0.050344, 0.375715}, {0.277941, 0.056324, 0.381191}, {0.278791, 0.062145, 0.386592}, {0.279566, 0.067836, 0.391917},
@@ -399,7 +457,7 @@ static const vec3 viridis_data[] = {
     {0.926106, 0.897330, 0.104071}, {0.935904, 0.898570, 0.108131}, {0.945636, 0.899815, 0.112838}, {0.955300, 0.901065, 0.118128},
     {0.964894, 0.902323, 0.123941}, {0.974417, 0.903590, 0.130215}, {0.983868, 0.904867, 0.136897}, {0.993248, 0.906157, 0.143936}};
 
-static const vec3 orange_data[] = {{0.819608, 0.376471, 0.376471}, {0.839216, 0.376471, 0.352941}, {0.858824, 0.380392, 0.325490},
+static const vec3_t orange_data[] = {{0.819608, 0.376471, 0.376471}, {0.839216, 0.376471, 0.352941}, {0.858824, 0.380392, 0.325490},
                                    {0.858824, 0.384314, 0.301961}, {0.870588, 0.396078, 0.278431}, {0.870588, 0.407843, 0.250980},
                                    {0.878431, 0.423529, 0.227451}, {0.878431, 0.435294, 0.211765}, {0.890196, 0.462745, 0.196078},
                                    {0.890196, 0.486275, 0.176471}, {0.901961, 0.513725, 0.152941}, {0.901961, 0.549020, 0.196078},
@@ -407,7 +465,7 @@ static const vec3 orange_data[] = {{0.819608, 0.376471, 0.376471}, {0.839216, 0.
                                    {0.941176, 0.729412, 0.450980}, {0.949020, 0.768627, 0.513725}, {0.960784, 0.811765, 0.584314},
                                    {0.968627, 0.854902, 0.670588}, {0.980392, 0.909804, 0.784314}, {1.000000, 0.980392, 0.941176}};
 
-static const vec3 green_data[] = {{0.031373, 0.301961, 0.188235}, {0.039216, 0.400000, 0.219608}, {0.039216, 0.478431, 0.223529},
+static const vec3_t green_data[] = {{0.031373, 0.301961, 0.188235}, {0.039216, 0.400000, 0.219608}, {0.039216, 0.478431, 0.223529},
                                   {0.066667, 0.549020, 0.227451}, {0.125490, 0.619608, 0.247059}, {0.211765, 0.701961, 0.309804},
                                   {0.305882, 0.760784, 0.372549}, {0.419608, 0.839216, 0.454902}, {0.556863, 0.901961, 0.564706},
                                   {0.709804, 0.949020, 0.694118}, {0.917647, 1.000000, 0.901961}};
@@ -423,24 +481,24 @@ static vec3 lerp_color_scale(const vec3* data, int size, float t) {
 }
 #endif
 
-static vec3 lerp_color_scale_in_Lab(const vec3* data, int size, float t) {
+static vec3_t lerp_color_scale_in_Lab(const vec3_t* data, int size, float t) {
     const int N = size - 1;
-    const float v = math::clamp(t * N, 0.0f, (float)N);
-    const int i0 = math::max((int)v, 0);
-    const int i1 = math::min(i0 + 1, N);
-    const vec3 lab0 = math::rgb_to_Lab(data[i0]);
-    const vec3 lab1 = math::rgb_to_Lab(data[i1]);
-    const vec3 res = math::Lab_to_rgb(math::mix(lab0, lab1, math::fract(v)));
+    const float v = CLAMP(t * N, 0.0f, (float)N);
+    const int i0 = MAX((int)v, 0);
+    const int i1 = MIN(i0 + 1, N);
+    const vec3_t lab0 = rgb_to_Lab(data[i0]);
+    const vec3_t lab1 = rgb_to_Lab(data[i1]);
+    const vec3_t res  = Lab_to_rgb(vec3_lerp(lab0, lab1, fractf(v)));
     return res;
 }
 
-vec3 magma_color_scale(float t) { return lerp_color_scale_in_Lab(magma_data, 256, t); }
-vec3 inferno_color_scale(float t) { return lerp_color_scale_in_Lab(inferno_data, 256, t); }
-vec3 plasma_color_scale(float t) { return lerp_color_scale_in_Lab(plasma_data, 256, t); }
-vec3 viridis_color_scale(float t) { return lerp_color_scale_in_Lab(viridis_data, 256, t); }
+vec3_t magma_color_scale(float t) { return lerp_color_scale_in_Lab(magma_data, 256, t); }
+vec3_t inferno_color_scale(float t) { return lerp_color_scale_in_Lab(inferno_data, 256, t); }
+vec3_t plasma_color_scale(float t) { return lerp_color_scale_in_Lab(plasma_data, 256, t); }
+vec3_t viridis_color_scale(float t) { return lerp_color_scale_in_Lab(viridis_data, 256, t); }
 
-vec3 orange_color_scale(float t) { return lerp_color_scale_in_Lab(orange_data, 21, t); }
-vec3 green_color_scale(float t) { return lerp_color_scale_in_Lab(green_data, 11, t); }
+vec3_t orange_color_scale(float t) { return lerp_color_scale_in_Lab(orange_data, 21, t); }
+vec3_t green_color_scale(float t) { return lerp_color_scale_in_Lab(green_data, 11, t); }
 
 static uint32_t qual_color_scale[] = {
 0xffc7d38d,
@@ -457,10 +515,10 @@ static uint32_t qual_color_scale[] = {
 0xff6fedff
 };
 
-vec4 qualitative_color_scale(int idx) {
+vec4_t qualitative_color_scale(int idx) {
     ASSERT(idx >= 0);
     if (idx >= ARRAY_SIZE(qual_color_scale)) {
         return color_from_hash(idx);
     }
-    return math::convert_color(qual_color_scale[idx]);
+    return convert_color(qual_color_scale[idx]);
 }

@@ -92,7 +92,8 @@ vec3 decode_normal(vec2 enc) {
 }
 
 vec3 fetch_view_normal(vec2 uv) {
-    vec2 enc = textureLod(u_tex_normal, uv, 0).xy;
+    vec2 enc = texelFetch(u_tex_normal, ivec2(gl_FragCoord.xy), 0).xy;
+    //vec2 enc = textureLod(u_tex_normal, uv, 0).xy;
     vec3 n = decode_normal(enc);
     return n * vec3(1,1,-1);
 }

@@ -4,67 +4,38 @@
 
 #include "task_system.h"
 #include <TaskScheduler.h>
-#include <core/common.h>
-#include <core/log.h>
-#include <core/sync.h>
+#include <core/md_common.h>
+#include <core/md_log.h>
 
-template <typename T, uint32_t N>
-struct LIFO {
-    T data[N] = {};
-    uint32_t count = 0;
+#include <string.h>
 
-    bool enqueue(const T& item) {
-        if (count == N) {
-            return false;
-        }
-        data[count] = item;
-        count++;
-
-        return true;
-    }
-
-    bool dequeue(T& item) {
-        if (count == 0) return false;
-        item = data[count - 1];
-        count--;
-        return true;
-    }
-
-    bool pop() {
-        if (count == 0) return false;
-        --count;
-        return true;
-    }
-
-    const T& back() const { return data[count - 1]; }
-    T& back() { return data[count - 1]; }
-
-    void clear() { count = 0; }
-    bool empty() const { return count == 0; }
-    uint32_t size() const { return count; }
-
-    const T* begin() const { return data; }
-    const T* end() const { return data + count; }
-
-    T* begin() { return data; }
-    T* end() { return data + count; }
-
-    T& operator[](size_t i) { return data[i]; }
-    const T& operator[](size_t i) const { return data[i]; }
-
-    operator Array<T>() const { return {data, count}; }
-};
+// Blatantly stolen from ImGui (thanks Omar!)
+struct NewDummy {};
+inline void* operator new(size_t, NewDummy, void* ptr) { return ptr; }
+inline void  operator delete(void*, NewDummy, void*)   {} // This is only required so we can use the symetrical new()
+#define PLACEMENT_NEW(_PTR)					new(NewDummy(), _PTR)
 
 namespace task_system {
 
 constexpr uint32_t MAX_TASKS = 256;
 constexpr uint32_t LABEL_SIZE = 64;
 
+namespace main {
+    static atomic_queue::AtomicQueue<uint32_t, MAX_TASKS, 0xFFFFFFFF> free_slots;
+}
+
+class PoolTask;
+
+namespace pool {
+    static atomic_queue::AtomicQueue<uint32_t, MAX_TASKS, 0xFFFFFFFF> free_slots;
+    uint32_t get_slot_idx(PoolTask* task);
+}
+
 class PoolTask : public enki::ITaskSet {
 public:
     PoolTask() = default;
     PoolTask(uint32_t set_size_, TaskSet func_, const char* lbl_ = "")
-        : ITaskSet(set_size_), m_set_func(func_), m_set_completed(0), m_interrupt(false) {
+        : ITaskSet(set_size_), m_set_func(func_), m_set_completed(0), m_interrupt(false), m_running(true) {
         strncpy(m_label, lbl_, LABEL_SIZE);
     }
 
@@ -76,6 +47,16 @@ public:
             m_set_func({range.start, range.end});
         }
         m_set_completed += (range.end - range.start);
+        if (m_set_completed == m_SetSize) {
+            uint32_t slot_idx = pool::get_slot_idx(this);
+            ASSERT(0 <= slot_idx && slot_idx < MAX_TASKS);
+            m_running = false;
+            pool::free_slots.push(slot_idx);
+        }
+    }
+
+    bool Running() {
+        return m_running;
     }
 
     TaskSet m_set_func = nullptr;
@@ -83,68 +64,71 @@ public:
     std::atomic_uint32_t m_set_completed = 0;
     std::atomic_bool m_interrupt = false;
     char m_label[LABEL_SIZE] = {};
+    bool m_running = false;
 };
 
 class MainTask : public enki::IPinnedTask {
 public:
     MainTask() = default;
-    MainTask(Task func, const char* lbl) : m_function(func) { strncpy(m_label, lbl, LABEL_SIZE); }
+    MainTask(Task func, const char* lbl) : m_function(func), m_running(true) { strncpy(m_label, lbl, LABEL_SIZE); }
     virtual void Execute() final {
         m_function();
+        m_running = false;
     }
+
+    bool Running() {
+        return m_running;
+    }
+
     Task m_function = nullptr;
     char m_label[LABEL_SIZE] = {};
+    bool m_running = false;
 };
+
+namespace main {
+    static MainTask task_data[MAX_TASKS];
+}
+
+namespace pool {
+    static PoolTask task_data[MAX_TASKS];
+
+    // These are not kept in exact sync, as that would be very costly.
+    // This list is filled in upon request
+    static uint32_t num_running_tasks;
+    static ID running_tasks[MAX_TASKS];
+
+    uint32_t get_slot_idx(PoolTask* task) {
+        return (uint32_t)(task - task_data);
+    }
+}
 
 constexpr ID base_id = {0xdeadb00b};
 static enki::TaskScheduler ts{};
 
-namespace main {
-static std::mutex mutex;
-static MainTask task_data[MAX_TASKS];
-static std::atomic_uint32_t task_count = 0;
-}
-
-namespace pool {
-static std::mutex mutex;
-static LIFO<ID, MAX_TASKS> free {};
-static LIFO<ID, MAX_TASKS> used {};
-static PoolTask task_data[MAX_TASKS];
-
-}
-void clear_completed_tasks();
-
 void initialize() {
     ts.Initialize();
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
-        pool::free.enqueue({base_id.id + i});
+        pool::free_slots.push(i);
     }
 }
+
 void shutdown() { ts.WaitforAllAndShutdown(); }
 
 bool enqueue_main(const char* label, Task func) {
     using namespace main;
-    uint32_t idx = task_count++;
-    if (idx >= MAX_TASKS) return false;
-
-    mutex.lock();
+    uint32_t idx = main::free_slots.pop();
     MainTask* task = &task_data[idx];
     PLACEMENT_NEW(task) MainTask(func, label);
     ts.AddPinnedTask(task);
-    mutex.unlock();
     return true;
 }
 
 void run_main_tasks() {
     using namespace main;
-    mutex.lock();
     ts.RunPinnedTasks();
-    task_count = 0;
-    mutex.unlock();
-    clear_completed_tasks();
 }
 
-static PoolTask* get_task(ID id) {
+static inline PoolTask* get_task(ID id) {
     using namespace pool;
     const uint32_t idx = id.id - base_id.id;
     if (idx < 0 || MAX_TASKS <= idx) return nullptr;
@@ -152,46 +136,32 @@ static PoolTask* get_task(ID id) {
 }
 
 uint32_t get_num_threads() { return (uint32_t)ts.GetNumTaskThreads(); }
-uint32_t get_num_tasks() { return (uint32_t)pool::used.size(); }
-ID* get_tasks() { return pool::used.data; }
+uint32_t get_num_tasks() { return (uint32_t)(pool::free_slots.capacity() - pool::free_slots.was_size()); }
 
-void clear_completed_tasks() {
-    using namespace pool;
-    mutex.lock();
-    for (uint32_t i = 0; i < used.size();) {
-        const ID id = used[i];
-        const uint32_t idx = id.id - base_id.id;
-        if (task_data[idx].GetIsComplete()) {
-            free.enqueue(id);
-            used.dequeue(used[i]);
-        } else {
-            i++;
+uint32_t get_tasks(ID** ids) {
+    pool::num_running_tasks = 0;
+    for (uint32_t i = 0; i < MAX_TASKS; ++i) {
+        if (pool::task_data[i].Running()) {
+            ID id = {base_id.id + i};
+            pool::running_tasks[pool::num_running_tasks++] = id;
         }
     }
-    mutex.unlock();
+    *ids = pool::running_tasks;
+    return pool::num_running_tasks;
 }
 
 ID enqueue_pool(const char* label, uint32_t size, TaskSet func, TaskSet on_complete) {
     using namespace pool;
     const uint32_t num_tasks = (on_complete != nullptr) ? 2 : 1;
 
-    mutex.lock();
-    if (free.size() < num_tasks) {
-        LOG_ERROR("Task queue is full! Cannot create task");
-        mutex.unlock();
-        return INVALID_ID;
-    }
-
-    ID set_id = INVALID_ID;
-    free.dequeue(set_id);
-    used.enqueue(set_id);
+    uint32_t set_idx = free_slots.pop();
+    ID set_id = {base_id.id + set_idx};
 
     ID com_id = INVALID_ID;
     if (num_tasks > 1) {
-        free.dequeue(com_id);
-        used.enqueue(com_id);
+        uint32_t com_idx = free_slots.pop();
+        com_id = {base_id.id + com_idx};
     }
-    mutex.unlock();
 
     PoolTask* set_task = get_task(set_id);
     ASSERT(set_task);
@@ -213,7 +183,7 @@ const char* get_task_label(ID id) {
 
     PoolTask* task = get_task(id);
     if (!task) {
-        LOG_ERROR("Invalid id");
+        md_print(MD_LOG_TYPE_ERROR, "Invalid id");
         return NULL;
     }
 
@@ -225,7 +195,7 @@ bool get_task_complete(ID id) {
 
     PoolTask* task = get_task(id);
     if (!task) {
-        LOG_ERROR("Invalid id");
+        md_print(MD_LOG_TYPE_ERROR, "Invalid id");
         return false;
     }
 
@@ -237,7 +207,7 @@ float get_task_fraction_complete(ID id) {
 
     PoolTask* task = get_task(id);
     if (!task) {
-        LOG_ERROR("Invalid id");
+        md_print(MD_LOG_TYPE_ERROR, "Invalid id");
         return 0.0f;
     }
     return (float)task->m_set_completed / (float)task->m_SetSize;
@@ -248,7 +218,7 @@ void wait_for_task(ID id) {
 
     PoolTask* task = get_task(id);
     if (!task) {
-        LOG_ERROR("Invalid id");
+        md_print(MD_LOG_TYPE_ERROR, "Invalid id");
         return;
     }
 
@@ -260,7 +230,7 @@ void interrupt_task(ID id) {
 
     PoolTask* task = get_task(id);
     if (!task) {
-        LOG_ERROR("Invalid id");
+        md_print(MD_LOG_TYPE_ERROR, "Invalid id");
         return;
     }
 
@@ -272,7 +242,7 @@ void interrupt_and_wait(ID id) {
 
     PoolTask* task = get_task(id);
     if (!task) {
-        LOG_ERROR("Invalid id");
+        md_print(MD_LOG_TYPE_ERROR, "Invalid id");
         return;
     }
 

@@ -1,9 +1,8 @@
 #pragma once
 
-#include <core/types.h>
-#include <core/string_types.h>
+#include <core/md_vec_math.h>
+#include <core/md_str.h>
 
-#include <volume.h>
 #include <isosurface.h>
 #include <gfx/gl.h>
 
@@ -12,22 +11,12 @@ namespace volume {
 void initialize();
 void shutdown();
 
-//bool init_tf_texture(GLuint* texture, int* width, CStringView path_to_file);
-bool init_texture_2D(GLuint* texture, int width, int height, GLenum format);
-bool init_texture_3D(GLuint* texture, int width, int height, int depth, GLenum format);
+mat4_t compute_model_to_world_matrix(vec3_t min_world_aabb, vec3_t max_world_aabb);
+mat4_t compute_world_to_model_matrix(vec3_t min_world_aabb, vec3_t max_world_aabb);
+mat4_t compute_texture_to_model_matrix(int dim_x, int dim_y, int dim_z);
+mat4_t compute_model_to_texture_matrix(int dim_x, int dim_y, int dim_z);
 
-bool free_texture(GLuint* texture);
-
-// We assume you set the entire data for the texture
-bool set_texture_2D_data(GLuint texture, const void* data, GLenum format);
-bool set_texture_3D_data(GLuint texture, const void* data, GLenum format);
-
-mat4 compute_model_to_world_matrix(const vec3& min_world_aabb, const vec3& max_world_aabb);
-mat4 compute_world_to_model_matrix(const vec3& min_world_aabb, const vec3& max_world_aabb);
-mat4 compute_texture_to_model_matrix(const ivec3& dim);
-mat4 compute_model_to_texture_matrix(const ivec3& dim);
-
-void write_volume_to_file(const float* data, int64_t dim_x, int64_t dim_y, int64_t dim_z, CStringView path_to_file);
+bool write_volume_to_file(const float* data, int64_t dim_x, int64_t dim_y, int64_t dim_z, str_t path_to_file);
 
 /*
     Renders a volumetric texture using OpenGL.
@@ -41,7 +30,7 @@ void write_volume_to_file(const float* data, int64_t dim_x, int64_t dim_y, int64
     - alpha_scale:    global alpha scaling of the transfer function
     - isosurface:     information on isovalues and associated colors
     - voxel_spacing:  spacing of voxels in world space
-    - clip_volume:    define a subvolume (min, max)[0-1] which represents the visible portion of the volume
+    - clip_planes:    define a subvolume (min, max)[0-1] which represents the visible portion of the volume
 */
 
 struct RenderDesc {
@@ -58,15 +47,20 @@ struct RenderDesc {
     } texture;
 
     struct {
-        mat4 model = {};
-        mat4 view = {};
-        mat4 proj = {};
+        mat4_t model = {};
+        mat4_t view = {};
+        mat4_t proj = {};
     } matrix;
 
     struct {
-        vec3 min = {0, 0, 0};
-        vec3 max = {1, 1, 1};
+        vec3_t min = {0, 0, 0};
+        vec3_t max = {1, 1, 1};
     } clip_volume;
+
+    struct {
+        vec4_t color = {0, 0, 0, 1};
+        bool enabled = true;
+    } bounding_box;
 
     struct {
         float density = 1.0f;
@@ -76,9 +70,8 @@ struct RenderDesc {
     IsoSurfaces isosurface = {};
     bool isosurface_enabled = false;
     bool direct_volume_rendering_enabled = true;
-    bool bounding_box_enabled = false;
 
-    vec3 voxel_spacing = {};
+    vec3_t voxel_spacing = {};
 };
 
 void render_volume(const RenderDesc& desc);

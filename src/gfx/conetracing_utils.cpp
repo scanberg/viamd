@@ -1,13 +1,17 @@
 #include "conetracing_utils.h"
 
-#include <core/log.h>
-#include <core/math_utils.h>
-#include <core/sync.h>
+#include <core/md_allocator.h>
+#include <core/md_log.h>
+#include <core/md_vec_math.h>
+#include <core/md_sync.h>
 
 #include "gfx/gl_utils.h"
 #include "gfx/immediate_draw_utils.h"
 
+#include "color_utils.h"
 #include "task_system.h"
+
+#include <atomic>
 
 namespace cone_trace {
 
@@ -21,7 +25,7 @@ out vec2 uv;
 
 void main() {
 	uint idx = uint(gl_VertexID) % 3U;
-	gl_Position = vec4(
+	gl_Position = vec4_t(
 		(float( idx     &1U)) * 4.0 - 1.0,
 		(float((idx>>1U)&1U)) * 4.0 - 1.0,
 		0, 1.0);
@@ -45,34 +49,34 @@ static struct {
 static const char* v_shader_src = R"(
 #version 430 core
 
-uniform ivec3 u_volume_dim;
-uniform vec3 u_volume_min;
-uniform vec3 u_voxel_ext;
+uniform ivec3_t u_volume_dim;
+uniform vec3_t u_volume_min;
+uniform vec3_t u_voxel_ext;
 layout(binding=0, rgba8) uniform image3D u_tex_volume;
 
-in vec4 sphere;
-in vec4 color;
+in vec4_t sphere;
+in vec4_t color;
 
-ivec3 compute_voxel_coord(vec3 coord) {
-    return clamp(ivec3((coord - u_volume_min) / u_voxel_ext), ivec3(0), u_volume_dim - 1);
+ivec3_t compute_voxel_coord(vec3_t coord) {
+    return clamp(ivec3_t((coord - u_volume_min) / u_voxel_ext), ivec3_t(0), u_volume_dim - 1);
 }
 
 void main() {
 	if (color.a == 0.0) discard;
 
-	ivec3 coord = ivec3((sphere.xyz - u_volume_min) / u_voxel_ext);
-	vec3 pos = sphere.xyz;
+	ivec3_t coord = ivec3_t((sphere.xyz - u_volume_min) / u_voxel_ext);
+	vec3_t pos = sphere.xyz;
     float r2 = sphere.w * sphere.w;
-    ivec3 min_cc = compute_voxel_coord(sphere.xyz - vec3(sphere.w));
-    ivec3 max_cc = compute_voxel_coord(sphere.xyz + vec3(sphere.w));
-    ivec3 cc;
+    ivec3_t min_cc = compute_voxel_coord(sphere.xyz - vec3_t(sphere.w));
+    ivec3_t max_cc = compute_voxel_coord(sphere.xyz + vec3_t(sphere.w));
+    ivec3_t cc;
     for (cc.z = min_cc.z; cc.z <= max_cc.z; cc.z++) {
         for (cc.y = min_cc.y; cc.y <= max_cc.y; cc.y++) {
             for (cc.x = min_cc.x; cc.x <= max_cc.x; cc.x++) {
-                vec3 min_voxel = u_volume_min + vec3(cc) * u_voxel_ext;
-                vec3 max_voxel = min_voxel + u_voxel_ext;
-                vec3 clamped_pos = clamp(pos, min_voxel, max_voxel);
-                vec3 d = clamped_pos - pos;
+                vec3_t min_voxel = u_volume_min + vec3_t(cc) * u_voxel_ext;
+                vec3_t max_voxel = min_voxel + u_voxel_ext;
+                vec3_t clamped_pos = clamp(pos, min_voxel, max_voxel);
+                vec3_t d = clamped_pos - pos;
 
                 if (dot(d, d) < r2) {
 					imageStore(u_tex_volume, cc, color);
@@ -94,14 +98,14 @@ static void initialize(int version_major, int version_minor) {
 
             glCompileShader(v_shader);
             if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
-                LOG_ERROR("Compiling sphere binning vertex shader:\n%s\n", buffer);
+                md_printf(MD_LOG_TYPE_ERROR, "Compiling sphere binning vertex shader:\n%s\n", buffer);
             }
 
             gl.program = glCreateProgram();
             glAttachShader(gl.program, v_shader);
             glLinkProgram(gl.program);
             if (gl::get_program_link_error(buffer, BUFFER_SIZE, gl.program)) {
-                LOG_ERROR("Linking sphere binning program:\n%s\n", buffer);
+                md_printf(MD_LOG_TYPE_ERROR, "Linking sphere binning program:\n%s\n", buffer);
             }
             glDetachShader(gl.program, v_shader);
             glDeleteShader(v_shader);
@@ -111,7 +115,7 @@ static void initialize(int version_major, int version_minor) {
             gl.uniform_location.voxel_ext = glGetUniformLocation(gl.program, "u_voxel_ext");
             gl.uniform_location.tex_volume = glGetUniformLocation(gl.program, "u_tex_volume");
         } else {
-            LOG_NOTE("Sphere binning shader requires OpenGL 4.3");
+            md_print(MD_LOG_TYPE_INFO, "Sphere binning shader requires OpenGL 4.3");
         }
     }
 
@@ -165,7 +169,7 @@ static const char* f_shader_src = R"(
 #version 330 core
 
 in vec2 uv;
-out vec4 frag_color;
+out vec4_t frag_color;
 
 // Textures
 uniform sampler2D u_depth_texture;
@@ -175,9 +179,9 @@ uniform sampler2D u_f0_smoothness_texture;
 
 // Voxel stuff
 uniform sampler3D u_voxel_texture;
-uniform vec3 u_voxel_grid_world_size;
-uniform vec3 u_voxel_grid_world_min;
-uniform ivec3 u_voxel_dimensions;
+uniform vec3_t u_voxel_grid_world_size;
+uniform vec3_t u_voxel_grid_world_min;
+uniform ivec3_t u_voxel_dimensions;
 uniform float u_voxel_extent;
 
 // Scaling factors
@@ -187,61 +191,61 @@ uniform float u_ambient_occlusion_scale = 1.f;
 uniform float u_cone_angle = 0.08;
 
 // View parameters
-uniform mat4 u_inv_view_mat;
-uniform mat4 u_inv_view_proj_mat;
-uniform vec3 u_world_space_camera;
+uniform mat4_t u_inv_view_mat;
+uniform mat4_t u_inv_view_proj_mat;
+uniform vec3_t u_world_space_camera;
 
 const float MAX_DIST = 1000.0;
 const float ALPHA_THRESH = 0.95;
 
 // 6 60 degree cone
 const int NUM_CONES = 6;
-const vec3 cone_directions[6] = vec3[]
-(                            vec3(0, 1, 0),
-                            vec3(0, 0.5, 0.866025),
-                            vec3(0.823639, 0.5, 0.267617),
-                            vec3(0.509037, 0.5, -0.700629),
-                            vec3(-0.509037, 0.5, -0.700629),
-                            vec3(-0.823639, 0.5, 0.267617)
+const vec3_t cone_directions[6] = vec3[]
+(                            vec3_t(0, 1, 0),
+                            vec3_t(0, 0.5, 0.866025),
+                            vec3_t(0.823639, 0.5, 0.267617),
+                            vec3_t(0.509037, 0.5, -0.700629),
+                            vec3_t(-0.509037, 0.5, -0.700629),
+                            vec3_t(-0.823639, 0.5, 0.267617)
                             );
 const float cone_weights[6] = float[](0.25, 0.15, 0.15, 0.15, 0.15, 0.15);
 
 // // 5 90 degree cones
 // const int NUM_CONES = 5;
-// vec3 coneDirections[5] = vec3[]
-// (                            vec3(0, 1, 0),
-//                             vec3(0, 0.707, 0.707),
-//                             vec3(0, 0.707, -0.707),
-//                             vec3(0.707, 0.707, 0),
-//                             vec3(-0.707, 0.707, 0)
+// vec3_t coneDirections[5] = vec3[]
+// (                            vec3_t(0, 1, 0),
+//                             vec3_t(0, 0.707, 0.707),
+//                             vec3_t(0, 0.707, -0.707),
+//                             vec3_t(0.707, 0.707, 0),
+//                             vec3_t(-0.707, 0.707, 0)
 //                             );
 // float coneWeights[5] = float[](0.28, 0.18, 0.18, 0.18, 0.18);
 
-vec4 sample_voxels(vec3 world_position, float lod) {
-    vec3 tc = (world_position - u_voxel_grid_world_min) / (u_voxel_grid_world_size);
-    //vec3 d = tc - vec3(0.5);
-    //if (dot(d,d) > 1) return vec4(0,0,0,1);
-	//tc = tc + vec3(0.5) / vec3(u_voxel_dimensions);
+vec4_t sample_voxels(vec3_t world_position, float lod) {
+    vec3_t tc = (world_position - u_voxel_grid_world_min) / (u_voxel_grid_world_size);
+    //vec3_t d = tc - vec3_t(0.5);
+    //if (dot(d,d) > 1) return vec4_t(0,0,0,1);
+	//tc = tc + vec3_t(0.5) / vec3_t(u_voxel_dimensions);
     return textureLod(u_voxel_texture, tc, lod);
 }
 
 // Third argument to say how long between steps?
-vec4 cone_trace(vec3 world_position, vec3 world_normal, vec3 direction, float tan_half_angle, out float occlusion) {
+vec4_t cone_trace(vec3_t world_position, vec3_t world_normal, vec3_t direction, float tan_half_angle, out float occlusion) {
     
     // lod level 0 mipmap is full size, level 1 is half that size and so on
     float lod = 0.0;
-    vec4 rgba = vec4(0);
+    vec4_t rgba = vec4_t(0);
     occlusion = 0.0;
 
     float dist = u_voxel_extent; // Start one voxel away to avoid self occlusion
-    vec3 start_pos = world_position + world_normal * u_voxel_extent; // Plus move away slightly in the normal direction to avoid
+    vec3_t start_pos = world_position + world_normal * u_voxel_extent; // Plus move away slightly in the normal direction to avoid
                                                                      // self occlusion in flat surfaces
 
     while(dist < MAX_DIST && rgba.a < ALPHA_THRESH) {
         // smallest sample diameter possible is the voxel size
         float diameter = max(u_voxel_extent, 2.0 * tan_half_angle * dist);
         float lod_level = log2(diameter / u_voxel_extent);
-        vec4 voxel_color = sample_voxels(start_pos + dist * direction, lod_level);
+        vec4_t voxel_color = sample_voxels(start_pos + dist * direction, lod_level);
 		//if (voxel_color.a < 0) break;
 
         // front-to-back compositing
@@ -256,8 +260,8 @@ vec4 cone_trace(vec3 world_position, vec3 world_normal, vec3 direction, float ta
     return rgba;
 }
 
-vec4 indirect_light(in vec3 world_position, in vec3 world_normal, in mat3 tangent_to_world, out float occlusion_out) {
-    vec4 color = vec4(0);
+vec4_t indirect_light(in vec3_t world_position, in vec3_t world_normal, in mat3 tangent_to_world, out float occlusion_out) {
+    vec4_t color = vec4_t(0);
     occlusion_out = 0.0;
 
     for(int i = 0; i < NUM_CONES; i++) {
@@ -273,69 +277,69 @@ vec4 indirect_light(in vec3 world_position, in vec3 world_normal, in mat3 tangen
     return color;
 }
 
-mat3 compute_ON_basis(in vec3 v1) {
-    vec3 v0;
-    vec3 v2;
-    float d0 = dot(vec3(1,0,0), v1);
-    float d1 = dot(vec3(0,0,1), v1);
+mat3 compute_ON_basis(in vec3_t v1) {
+    vec3_t v0;
+    vec3_t v2;
+    float d0 = dot(vec3_t(1,0,0), v1);
+    float d1 = dot(vec3_t(0,0,1), v1);
     if (d0 < d1) {
-        v0 = normalize(vec3(1,0,0) - v1 * d0);
+        v0 = normalize(vec3_t(1,0,0) - v1 * d0);
     } else {
-        v0 = normalize(vec3(0,0,1) - v1 * d1);
+        v0 = normalize(vec3_t(0,0,1) - v1 * d1);
     }
     v2 = cross(v0, v1);
     return mat3(v0, v1, v2);
 }
 
-vec4 depth_to_world_coord(vec2 tex_coord, float depth) {
-    vec4 clip_coord = vec4(vec3(tex_coord, depth) * 2.0 - 1.0, 1.0);
-    vec4 world_coord = u_inv_view_proj_mat * clip_coord;
+vec4_t depth_to_world_coord(vec2 tex_coord, float depth) {
+    vec4_t clip_coord = vec4_t(vec3_t(tex_coord, depth) * 2.0 - 1.0, 1.0);
+    vec4_t world_coord = u_inv_view_proj_mat * clip_coord;
     return world_coord / world_coord.w;
 }
 
 // https://aras-p.info/texts/CompactNormalStorage.html
-vec3 decode_normal(vec2 enc) {
+vec3_t decode_normal(vec2 enc) {
     vec2 fenc = enc*4-2;
     float f = dot(fenc,fenc);
     float g = sqrt(1-f/4.0);
-    vec3 n;
+    vec3_t n;
     n.xy = fenc*g;
     n.z = 1-f/2.0;
     return n;
 }
 
-vec3 fresnel(vec3 f0, float H_dot_V) {
+vec3_t fresnel(vec3_t f0, float H_dot_V) {
     //const float n1 = 1.0;
     //const float n2 = 1.5;
     //const float R0 = pow((n1-n2)/(n1+n2), 2);
     return f0 + (1.0 - f0) * pow(1.0 - H_dot_V, 5.0);
 }
 
-vec3 shade(vec3 albedo, float alpha, vec3 f0, float smoothness, vec3 P, vec3 V, vec3 N) {
+vec3_t shade(vec3_t albedo, float alpha, vec3_t f0, float smoothness, vec3_t P, vec3_t V, vec3_t N) {
 	const float PI_QUARTER = 3.14159265 * 0.25;
-    const vec3 env_radiance = vec3(0.5);
-    const vec3 dir_radiance = vec3(0.5);
-    const vec3 L = normalize(vec3(1));
+    const vec3_t env_radiance = vec3_t(0.5);
+    const vec3_t dir_radiance = vec3_t(0.5);
+    const vec3_t L = normalize(vec3_t(1));
     const float spec_exp = 10.0;
 
     mat3 tangent_to_world = compute_ON_basis(N);
 
     float N_dot_V = max(0.0, -dot(N, V));
-    vec3 R = -V + 2.0 * dot(N, V) * N;
-    vec3 H = normalize(L + V);
+    vec3_t R = -V + 2.0 * dot(N, V) * N;
+    vec3_t H = normalize(L + V);
     float H_dot_V = max(0.0, dot(H, V));
     float N_dot_H = max(0.0, dot(N, H));
     float N_dot_L = max(0.0, dot(N, L));
-    vec3 fresnel_direct = fresnel(f0, H_dot_V);
-    vec3 fresnel_indirect = fresnel(f0, N_dot_V);
+    vec3_t fresnel_direct = fresnel(f0, H_dot_V);
+    vec3_t fresnel_indirect = fresnel(f0, N_dot_V);
 	float tan_half_angle = tan(mix(PI_QUARTER, 0.0, smoothness));
 
     float diffuse_occlusion;
-    vec3 direct_diffuse = env_radiance + N_dot_L * dir_radiance;
-    vec3 indirect_diffuse = indirect_light(P, N, tangent_to_world, diffuse_occlusion).rgb;
+    vec3_t direct_diffuse = env_radiance + N_dot_L * dir_radiance;
+    vec3_t indirect_diffuse = indirect_light(P, N, tangent_to_world, diffuse_occlusion).rgb;
 
     float transmissive_occlusion;
-    vec3 transmissive = vec3(0);
+    vec3_t transmissive = vec3_t(0);
     //alpha = 0.1;
     //if (alpha < 1.0) {
     //    transmissive = cone_trace(P, N, -V, tan_half_angle, transmissive_occlusion).rgb;
@@ -345,10 +349,10 @@ vec3 shade(vec3 albedo, float alpha, vec3 f0, float smoothness, vec3 P, vec3 V, 
     //}
 
     float specular_occlusion;
-    vec3 direct_specular = dir_radiance * pow(N_dot_H, spec_exp);
-    vec3 indirect_specular = cone_trace(P, N, R, tan_half_angle, specular_occlusion).rgb;
+    vec3_t direct_specular = dir_radiance * pow(N_dot_H, spec_exp);
+    vec3_t indirect_specular = cone_trace(P, N, R, tan_half_angle, specular_occlusion).rgb;
 
-	vec3 result = vec3(0);
+	vec3_t result = vec3_t(0);
 	result += albedo * (direct_diffuse + u_indirect_diffuse_scale * indirect_diffuse) * pow(diffuse_occlusion, u_ambient_occlusion_scale * 0.5);
 	result += direct_specular * fresnel_direct + u_indirect_specular_scale * indirect_specular * fresnel_indirect;
     result += transmissive;
@@ -361,22 +365,22 @@ void main() {
 	if (depth == 1.0) discard;
 
     vec2 encoded_normal = texture(u_normal_texture, uv).rg;
-	vec4 albedo_alpha = texture(u_color_alpha_texture, uv);
-	vec4 f0_smoothness = texture(u_f0_smoothness_texture, uv);
-	vec3 albedo = albedo_alpha.rgb;
+	vec4_t albedo_alpha = texture(u_color_alpha_texture, uv);
+	vec4_t f0_smoothness = texture(u_f0_smoothness_texture, uv);
+	vec3_t albedo = albedo_alpha.rgb;
 	float alpha = albedo_alpha.a;
-	vec3 f0 = f0_smoothness.rgb;
+	vec3_t f0 = f0_smoothness.rgb;
 	float smoothness = f0_smoothness.a;
 
-    vec3 world_position = depth_to_world_coord(uv, depth).xyz;
-    vec3 world_normal = mat3(u_inv_view_mat) * decode_normal(encoded_normal);
-    vec3 world_eye = u_world_space_camera;
+    vec3_t world_position = depth_to_world_coord(uv, depth).xyz;
+    vec3_t world_normal = mat3(u_inv_view_mat) * decode_normal(encoded_normal);
+    vec3_t world_eye = u_world_space_camera;
 
-	vec3 P = world_position;
-	vec3 V = normalize(world_eye - world_position);
-	vec3 N = world_normal;
+	vec3_t P = world_position;
+	vec3_t V = normalize(world_eye - world_position);
+	vec3_t N = world_normal;
 
-    frag_color = vec4(shade(albedo, alpha, f0, smoothness, P, V, N), 1);
+    frag_color = vec4_t(shade(albedo, alpha, f0, smoothness, P, V, N), 1);
 }
 )";
 
@@ -392,12 +396,12 @@ static void initialize() {
 
     glCompileShader(v_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
-        LOG_ERROR("Compiling cone_tracing vertex shader:\n%s\n", buffer);
+        md_printf(MD_LOG_TYPE_ERROR,"Compiling cone_tracing vertex shader:\n%s\n", buffer);
     }
 
     glCompileShader(f_shader);
     if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
-        LOG_ERROR("Compiling cone_tracing fragment shader:\n%s\n", buffer);
+        md_printf(MD_LOG_TYPE_ERROR,"Compiling cone_tracing fragment shader:\n%s\n", buffer);
     }
 
     gl.program = glCreateProgram();
@@ -405,7 +409,7 @@ static void initialize() {
     glAttachShader(gl.program, f_shader);
     glLinkProgram(gl.program);
     if (gl::get_program_link_error(buffer, BUFFER_SIZE, gl.program)) {
-        LOG_ERROR("Linking cone_tracing program:\n%s\n", buffer);
+        md_printf(MD_LOG_TYPE_ERROR,"Linking cone_tracing program:\n%s\n", buffer);
     }
 
     glDetachShader(gl.program, v_shader);
@@ -452,7 +456,7 @@ void initialize() {
     GLuint f_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/cone_tracing/directional_occlusion.frag", GL_FRAGMENT_SHADER);
 
     const GLuint shaders[] = {v_shader, f_shader};
-    gl::attach_link_detach(program, shaders);
+    gl::attach_link_detach(program, shaders, ARRAY_SIZE(shaders));
 }
 
 void shutdown() {
@@ -482,15 +486,17 @@ void shutdown() {
     directional_occlusion::shutdown();
 }
 
-void init_rgba_volume(GPUVolume* vol, ivec3 res, vec3 min_box, vec3 max_box) {
+void init_rgba_volume(GPUVolume* vol, int res_x, int res_y, int res_z, vec3_t min_box, vec3_t max_box) {
     ASSERT(vol);
     if (!vol->texture_id) glGenTextures(1, &vol->texture_id);
     vol->min_box = min_box;
     vol->max_box = max_box;
-    vol->voxel_ext = (max_box - min_box) / vec3(res);
+    vol->voxel_ext = (max_box - min_box) / vec3_t(res_x, res_y, res_z);
 
-    if (res != vol->resolution) {
-        vol->resolution = res;
+    if (res_x != vol->res_x || res_y != vol->res_y || res_z != vol->res_z) {
+        vol->res_x = res_x;
+        vol->res_y = res_y;
+        vol->res_z = res_z;
         glBindTexture(GL_TEXTURE_3D, vol->texture_id);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -498,20 +504,20 @@ void init_rgba_volume(GPUVolume* vol, ivec3 res, vec3 min_box, vec3 max_box) {
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_BORDER);
         // glTexStorage3D(GL_TEXTURE_3D, 4, GL_RGBA8, res.x, res.y, res.z);
-        glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, res.x, res.y, res.z, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, res_x, res_y, res_z, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         glBindTexture(GL_TEXTURE_3D, 0);
     }
 }
 
-u32 floor_power_of_two(u32 v) {
-    u32 r = 0;
+uint32_t floor_power_of_two(uint32_t v) {
+    uint32_t r = 0;
     while (v >>= 1) {
         r++;
     }
     return 1 << r;
 }
 
-u32 ceil_power_of_two(u32 x) {
+uint32_t ceil_power_of_two(uint32_t x) {
     x--;
     x |= x >> 1;
     x |= x >> 2;
@@ -522,7 +528,7 @@ u32 ceil_power_of_two(u32 x) {
     return x;
 }
 
-void init_occlusion_volume(GPUVolume* vol, vec3 min_box, vec3 max_box, float voxel_ext_target) {
+void init_occlusion_volume(GPUVolume* vol, vec3_t min_box, vec3_t max_box, float voxel_ext_target) {
     ASSERT(vol);
 
     if (min_box == max_box) {
@@ -530,39 +536,39 @@ void init_occlusion_volume(GPUVolume* vol, vec3 min_box, vec3 max_box, float vox
     }
 
     const float voxel_ext = voxel_ext_target;
-    const vec3 ext = (max_box - min_box);
-    const float max_ext = math::max(ext.x, math::max(ext.y, ext.z));
-    i32 dim = (i32)ceil_power_of_two((u32)(max_ext / voxel_ext_target));
-    ivec3 res = math::clamp(ivec3(dim), ivec3(1), ivec3(256));
+    const vec3_t ext = (max_box - min_box);
+    const float max_ext = MAX(ext.x, MAX(ext.y, ext.z));
+    int32_t dim = (int32_t)CLAMP(ceil_power_of_two((uint32_t)(max_ext / voxel_ext_target)), 1, 256);
+    int res[3] = {dim, dim, dim};
 
     for (int i = 0; i < 3; i++) {
         float half_ext = max_ext * 0.5f;
-        while (ext[i] < half_ext && res[i] > 1) {
+        while (ext[i] < half_ext && dim > 1) {
             res[i] /= 2;
             half_ext *= 0.5f;
         }
     }
 
-    const vec3 center = (min_box + max_box) * 0.5f;
-    const vec3 half_ext = vec3(res) * voxel_ext * 0.5f;
+    const vec3_t center = (min_box + max_box) * 0.5f;
+    const vec3_t half_ext = vec3_t(res[0], res[1], res[2]) * voxel_ext * 0.5f;
     min_box = center - half_ext;
     max_box = center + half_ext;
 
     vol->min_box = min_box;
     vol->max_box = max_box;
-    vol->voxel_ext = vec3(voxel_ext);
+    vol->voxel_ext = vec3_t(voxel_ext);
 
-    if (res != vol->resolution) {
+    if (res[0] != vol->res_x || res[1] != vol->res_y || res[2] != vol->res_z) {
         // @NOTE: Compute log2 (integer version) to find the amount of mipmaps required
         int mips = 1;
         {
-            int max_dim = math::max(res.x, math::max(res.y, res.z));
+            int max_dim = MAX(res[0], MAX(res[1], res[2]));
             while (max_dim >>= 1) ++mips;
         }
         if (vol->texture_id) glDeleteTextures(1, &vol->texture_id);
         glGenTextures(1, &vol->texture_id);
         glBindTexture(GL_TEXTURE_3D, vol->texture_id);
-        glTexStorage3D(GL_TEXTURE_3D, mips, GL_R8, res.x, res.y, res.z);
+        glTexStorage3D(GL_TEXTURE_3D, mips, GL_R8, res[0], res[1], res[2]);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_BASE_LEVEL, 0);
@@ -571,7 +577,9 @@ void init_occlusion_volume(GPUVolume* vol, vec3 min_box, vec3 max_box, float vox
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_BORDER);
         glBindTexture(GL_TEXTURE_3D, 0);
-        vol->resolution = res;
+        vol->res_x = res[0];
+        vol->res_y = res[1];
+        vol->res_z = res[2];
     }
 }
 
@@ -582,58 +590,68 @@ void free_volume(GPUVolume* vol) {
     }
 }
 
-inline ivec3 compute_voxel_coord(const GPUVolume& data, const vec3& coord) {
-    return math::clamp(ivec3((coord - data.min_box) / data.voxel_ext), ivec3(0), data.resolution - 1);
+struct ivec3_t {
+    int x, y, z;
+};
+
+inline ivec3_t compute_voxel_coord(const GPUVolume& data, const vec3_t& coord) {
+    ivec3_t c;
+    c.x = CLAMP(((coord.x - data.min_box.x) / data.voxel_ext.x), 0, data.res_x - 1);
+    c.y = CLAMP(((coord.y - data.min_box.y) / data.voxel_ext.y), 0, data.res_y - 1);
+    c.z = CLAMP(((coord.z - data.min_box.z) / data.voxel_ext.z), 0, data.res_z - 1);
+    return c;
 }
 
-inline int compute_voxel_idx(const ivec3& res, const ivec3& coord) { return coord.z * res.x * res.y + coord.y * res.x + coord.x; }
+inline int compute_voxel_idx(const ivec3_t& res, const ivec3_t& coord) { return coord.z * res.x * res.y + coord.y * res.x + coord.x; }
 
-inline int compute_voxel_idx(const GPUVolume& data, const vec3& coord) {
-    return compute_voxel_idx(data.resolution, compute_voxel_coord(data, coord));
+inline int compute_voxel_idx(const GPUVolume& data, const vec3_t& coord) {
+    return compute_voxel_idx({data.res_x, data.res_y, data.res_z}, compute_voxel_coord(data, coord));
 }
 
-inline u32 accumulate_voxel_color(u32 current_color, u32 new_color, float counter) {
-    vec4 c = math::convert_color(current_color);
-    vec4 n = math::convert_color(new_color);
+inline uint32_t accumulate_voxel_color(uint32_t current_color, uint32_t new_color, float counter) {
+    vec4_t c = convert_color(current_color);
+    vec4_t n = convert_color(new_color);
     c = (counter * c + n) / (counter + 1.f);
-    return math::convert_color(c);
+    return convert_color(c);
 }
 
-void voxelize_spheres_cpu(const GPUVolume& vol, Array<const vec3> atom_pos, Array<const float> atom_radii, Array<const u32> atom_colors) {
-    ASSERT(atom_pos.count == atom_radii.count);
-    ASSERT(atom_pos.count == atom_colors.count);
-    const i32 N = (i32)atom_pos.count;
-
-    const i32 voxel_count = vol.resolution.x * vol.resolution.y * vol.resolution.z;
+void voxelize_spheres_cpu(const GPUVolume& vol, const float* x, const float* y, const float* z, const float* r, const uint32_t* colors, int64_t count) {
+    const int32_t voxel_count = vol.res_x * vol.res_y * vol.res_z;
     if (voxel_count == 0) {
-        LOG_WARNING("Volume resolution is zero on one or more axes.");
+        md_print(MD_LOG_TYPE_ERROR, "Volume resolution is zero on one or more axes.");
         return;
     }
 
-    DynamicArray<u32> voxel_data(voxel_count);
-    // For running mean
-    DynamicArray<float> voxel_counter(voxel_data.size(), 1);
+    uint32_t* voxel_data = (uint32_t*)md_alloc(default_allocator, voxel_count * sizeof(uint32_t));
+    float* voxel_counter = (float*)md_alloc(default_allocator, voxel_count * sizeof(float));
+    defer {
+        md_free(default_allocator, voxel_counter, voxel_count * sizeof(float));
+        md_free(default_allocator, voxel_data, voxel_count * sizeof(uint32_t));
+    };
 
-    for (i32 i = 0; i < N; i++) {
-        const auto& pos = atom_pos[i];
-        const auto& rad = atom_radii[i];
-        const auto& col = atom_colors[i];
-        const float r2 = rad * rad;
-        ivec3 min_cc = compute_voxel_coord(vol, pos - rad);
-        ivec3 max_cc = compute_voxel_coord(vol, pos + rad);
-        ivec3 cc;
+    ivec3_t vol_res = {vol.res_x, vol.res_y, vol.res_z};
+
+
+    for (int64_t i = 0; i < count; i++) {
+        vec3_t pos = {x[i], y[i], z[i]};
+        float radius = r[i];
+        uint32_t color = colors[i];
+        const float r2 = radius * radius;
+        ivec3_t min_cc = compute_voxel_coord(vol, pos - radius);
+        ivec3_t max_cc = compute_voxel_coord(vol, pos + radius);
+        ivec3_t cc;
         for (cc.z = min_cc.z; cc.z <= max_cc.z; cc.z++) {
             for (cc.y = min_cc.y; cc.y <= max_cc.y; cc.y++) {
                 for (cc.x = min_cc.x; cc.x <= max_cc.x; cc.x++) {
-                    vec3 min_voxel = vol.min_box + vec3(cc) * vol.voxel_ext;
-                    vec3 max_voxel = min_voxel + vol.voxel_ext;
-                    vec3 clamped_pos = math::clamp(pos, min_voxel, max_voxel);
-                    vec3 d = clamped_pos - pos;
+                    vec3_t min_voxel = vol.min_box + vec3_t(cc.x, cc.y, cc.z) * vol.voxel_ext;
+                    vec3_t max_voxel = min_voxel + vol.voxel_ext;
+                    vec3_t clamped_pos = vec3_clamp(pos, min_voxel, max_voxel);
+                    vec3_t d = clamped_pos - pos;
 
-                    if (dot(d, d) < r2) {
-                        int voxel_idx = compute_voxel_idx(vol.resolution, cc);
-                        voxel_data[voxel_idx] = accumulate_voxel_color(voxel_data[voxel_idx], col, voxel_counter[voxel_idx]);
-                        voxel_counter[voxel_idx]++;
+                    if (vec3_dot(d, d) < r2) {
+                        int voxel_idx = compute_voxel_idx(vol_res, cc);
+                        voxel_data[voxel_idx] = accumulate_voxel_color(voxel_data[voxel_idx], color, voxel_counter[voxel_idx] + 1);
+                        voxel_counter[voxel_idx] += 1;
                     }
                 }
             }
@@ -641,20 +659,20 @@ void voxelize_spheres_cpu(const GPUVolume& vol, Array<const vec3> atom_pos, Arra
     }
 
     // Apply crude lambert illumination model
-    for (auto& v : voxel_data) {
-        vec4 c = math::convert_color(v);
-        v = math::convert_color(vec4(vec3(c) / math::PI, c.w));
+    for (int32_t i = 0; i < voxel_count; ++i) {
+        vec4_t c = convert_color(voxel_data[i]);
+        voxel_data[i] = convert_color(vec4_from_vec3(vec3_from_vec4(c) / 3.1415926535f, c.w));
     }
 
     glBindTexture(GL_TEXTURE_3D, vol.texture_id);
-    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, vol.resolution.x, vol.resolution.y, vol.resolution.z, GL_RGBA, GL_UNSIGNED_BYTE, voxel_data.data());
+    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, vol.res_x, vol.res_y, vol.res_z, GL_RGBA, GL_UNSIGNED_BYTE, voxel_data);
     glGenerateMipmap(GL_TEXTURE_3D);
     glBindTexture(GL_TEXTURE_3D, 0);
 }
 
-void voxelize_spheres_gpu(const GPUVolume& vol, GLuint position_radius_buffer, GLuint color_buffer, i32 num_spheres) {
+void voxelize_spheres_gpu(const GPUVolume& vol, GLuint position_radius_buffer, GLuint color_buffer, int32_t num_spheres) {
     if (!voxelize::gl.program) {
-        LOG_WARNING("sphere_binning program is not compiled");
+        md_print(MD_LOG_TYPE_ERROR, "sphere_binning program is not compiled");
         return;
     }
 
@@ -662,14 +680,14 @@ void voxelize_spheres_gpu(const GPUVolume& vol, GLuint position_radius_buffer, G
 
     glBindVertexArray(voxelize::gl.vao);
     glBindBuffer(GL_ARRAY_BUFFER, position_radius_buffer);
-    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, sizeof(vec4), nullptr);
+    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, sizeof(vec4_t), nullptr);
     glEnableVertexAttribArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, color_buffer);
-    glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(u32), nullptr);
+    glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(uint32_t), nullptr);
     glEnableVertexAttribArray(1);
 
     glUseProgram(voxelize::gl.program);
-    glUniform3iv(voxelize::gl.uniform_location.volume_dim, 1, &vol.resolution[0]);
+    glUniform3i(voxelize::gl.uniform_location.volume_dim, vol.res_x, vol.res_y, vol.res_z);
     glUniform3fv(voxelize::gl.uniform_location.volume_min, 1, &vol.min_box[0]);
     glUniform3fv(voxelize::gl.uniform_location.voxel_ext, 1, &vol.voxel_ext[0]);
     glUniform1i(voxelize::gl.uniform_location.tex_volume, 0);
@@ -703,9 +721,9 @@ void illuminate_voxels_directional_constant(Array<vec3> light_voxels, Array<cons
     const auto dim = cone_trace::volume.dim;
     const bool positive = direction % 2 == 0;
 
-    ivec3 step = {1, 1, 1};
-    ivec3 beg_idx = {0, 0, 0};
-    ivec3 end_idx = dim;
+    ivec3_t step = {1, 1, 1};
+    ivec3_t beg_idx = {0, 0, 0};
+    ivec3_t end_idx = dim;
 
     switch (direction) {
         case POSITIVE_X:
@@ -729,7 +747,7 @@ void illuminate_voxels_directional_constant(Array<vec3> light_voxels, Array<cons
                     for (int32 y = beg_idx.y; y != end_idx.y; y += step.y) {
                         const int32 src_vol_idx = z * dim.y * dim.x + y * dim.x + (x - step.x);
                         const int32 dst_vol_idx = z * dim.y * dim.x + y * dim.x + x;
-                        const vec4 voxel_rgba = math::convert_color(rgba_voxels[src_vol_idx]);
+                        const vec4_t voxel_rgba = math::convert_color(rgba_voxels[src_vol_idx]);
                         light_voxels[dst_vol_idx] += (1.f - voxel_rgba.a) * light_voxels[src_vol_idx];
                     }
                 }
@@ -756,7 +774,7 @@ void illuminate_voxels_directional_constant(Array<vec3> light_voxels, Array<cons
                     for (int32 x = beg_idx.x; x != end_idx.x; x += step.x) {
                         const int32 src_vol_idx = z * dim.y * dim.x + (y - step.y) * dim.x + x;
                         const int32 dst_vol_idx = z * dim.y * dim.x + y * dim.x + x;
-                        const vec4 voxel_rgba = math::convert_color(rgba_voxels[src_vol_idx]);
+                        const vec4_t voxel_rgba = math::convert_color(rgba_voxels[src_vol_idx]);
                         light_voxels[dst_vol_idx] += (1.f - voxel_rgba.a) * light_voxels[src_vol_idx];
                     }
                 }
@@ -783,7 +801,7 @@ void illuminate_voxels_directional_constant(Array<vec3> light_voxels, Array<cons
                     for (int32 x = beg_idx.x; x != end_idx.x; x += step.x) {
                         const int32 src_vol_idx = (z - step.z) * dim.y * dim.x + y * dim.x + x;
                         const int32 dst_vol_idx = z * dim.y * dim.x + y * dim.x + x;
-                        const vec4 voxel_rgba = math::convert_color(rgba_voxels[src_vol_idx]);
+                        const vec4_t voxel_rgba = math::convert_color(rgba_voxels[src_vol_idx]);
                         light_voxels[dst_vol_idx] += (1.f - voxel_rgba.a) * light_voxels[src_vol_idx];
                     }
                 }
@@ -794,13 +812,13 @@ void illuminate_voxels_directional_constant(Array<vec3> light_voxels, Array<cons
 
 void illuminate_voxels_omnidirectional_constant(const vec3& intensity) {
     auto dim = cone_trace::volume.dim;
-    DynamicArray<vec3> light_vol(cone_trace::volume.voxel_data.size(), vec3(0));
+    DynamicArray<vec3> light_vol(cone_trace::volume.voxel_data.size(), vec3_t(0));
     illuminate_voxels_directional_constant(light_vol, cone_trace::volume.voxel_data, dim, POSITIVE_X, intensity);
     illuminate_voxels_directional_constant(light_vol, cone_trace::volume.voxel_data, dim, NEGATIVE_X, intensity);
 
     for (int32 i = 0; i < light_vol.count; i++) {
-        vec4 voxel_rgba = math::convert_color(cone_trace::volume.voxel_data[i]);
-        voxel_rgba *= vec4(light_vol[i], 1.f);
+        vec4_t voxel_rgba = math::convert_color(cone_trace::volume.voxel_data[i]);
+        voxel_rgba *= vec4_t(light_vol[i], 1.f);
         cone_trace::volume.voxel_data[i] = math::convert_color(voxel_rgba);
     }
     // illuminate_voxels_directional_constant(NEGATIVE_X, intensity);
@@ -811,9 +829,9 @@ void illuminate_voxels_omnidirectional_constant(const vec3& intensity) {
     // illuminate_voxels_directional_constant(NEGATIVE_Z, intensity);
 
 // X-direction sweep plane
-    DynamicArray<vec4> plane_slice_zy[2] = {
-            { cone_trace::volume.dim.y * cone_trace::volume.dim.z, vec4(intensity, 0) },
-            { cone_trace::volume.dim.y * cone_trace::volume.dim.z, vec4(intensity, 0) }
+    DynamicArray<vec4_t> plane_slice_zy[2] = {
+            { cone_trace::volume.dim.y * cone_trace::volume.dim.z, vec4_t(intensity, 0) },
+            { cone_trace::volume.dim.y * cone_trace::volume.dim.z, vec4_t(intensity, 0) }
     };
 
     int curr_plane = 0;
@@ -828,13 +846,13 @@ for (int32 x = 1; x < dim.x; x++) {
                             const int32 plane_idx = z * dim.y + y;
                             const int32 src_vol_idx = z * dim.y * dim.x + y * dim.x + (x - 1);
                             const int32 dst_vol_idx = z * dim.y * dim.x + y * dim.x + x;
-                            const vec4 voxel_rgba = math::convert_color(voxels[src_vol_idx]);
-                            const vec4& src_light_voxel = plane_slice_zy[prev_plane][plane_idx];
-                            vec4& dst_light_voxel = plane_slice_zy[curr_plane][plane_idx];
+                            const vec4_t voxel_rgba = math::convert_color(voxels[src_vol_idx]);
+                            const vec4_t& src_light_voxel = plane_slice_zy[prev_plane][plane_idx];
+                            vec4_t& dst_light_voxel = plane_slice_zy[curr_plane][plane_idx];
 
                             dst_light_voxel = (1.f - voxel_rgba.a) * src_light_voxel;
-                            vec4 dst_rgba = math::convert_color(voxels[dst_vol_idx]);
-                            dst_rgba = vec4(vec3(dst_rgba) * vec3(dst_light_voxel), dst_rgba.a);
+                            vec4_t dst_rgba = math::convert_color(voxels[dst_vol_idx]);
+                            dst_rgba = vec4_t(vec3_t(dst_rgba) * vec3_t(dst_light_voxel), dst_rgba.a);
                             voxels[dst_vol_idx] = math::convert_color(dst_rgba);
                             prev_plane = (prev_plane + 1) % 2;
                             curr_plane = (curr_plane + 1) % 2;
@@ -845,18 +863,18 @@ for (int32 x = 1; x < dim.x; x++) {
 }
 
 
-void draw_voxelized_scene(const GPUVolume& vol, const mat4& view_mat, const mat4& proj_mat) {
+void draw_voxelized_scene(const GPUVolume& vol, const mat4_t& view_mat, const mat4_t& proj_mat) {
     immediate::set_model_view_matrix(view_mat);
     immediate::set_proj_matrix(proj_mat);
     immediate::set_material(immediate::MATERIAL_ROUGH_BLACK);
 
-    for (int32 z = 0; z < vol.resolution.z; z++) {
-        for (int32 y = 0; y < vol.resolution.y; y++) {
-            for (int32 x = 0; x < vol.resolution.x; x++) {
-                int32 i = compute_voxel_idx(volume.dim, ivec3(x, y, z));
+    for (int32 z = 0; z < vol.res_z; z++) {
+        for (int32 y = 0; y < vol.res_y; y++) {
+            for (int32 x = 0; x < vol.res_x; x++) {
+                int32 i = compute_voxel_idx(volume.dim, ivec3_t(x, y, z));
                 if (cone_trace::volume.voxel_data[i] > 0) {
-                    vec3 min_box = cone_trace::volume.min_box + vec3(x, y, z) * cone_trace::volume.voxel_ext;
-                    vec3 max_box = min_box + cone_trace::volume.voxel_ext;
+                    vec3_t min_box = cone_trace::volume.min_box + vec3_t(x, y, z) * cone_trace::volume.voxel_ext;
+                    vec3_t max_box = min_box + cone_trace::volume.voxel_ext;
                     immediate::draw_aabb_lines(min_box, max_box);
                 }
             }
@@ -867,93 +885,59 @@ void draw_voxelized_scene(const GPUVolume& vol, const mat4& view_mat, const mat4
 }
 */
 
-void compute_occupancy_volume(const GPUVolume& vol, const soa_vec3 atom_pos, const f32* atom_rad, i32 num_atoms) {
-    const i32 voxel_count = vol.resolution.x * vol.resolution.y * vol.resolution.z;
+void compute_occupancy_volume(const GPUVolume& vol, const float* x, const float* y, const float* z, const float* r, int64_t count) {
+    const int32_t voxel_count = vol.res_x * vol.res_y * vol.res_z;
     if (voxel_count == 0) {
-        LOG_WARNING("Volume resolution is zero on one or more axes");
+        md_print(MD_LOG_TYPE_ERROR, "Volume resolution is zero on one or more axes");
         return;
     }
 
     const float inv_voxel_volume = 1.0f / (vol.voxel_ext.x * vol.voxel_ext.y * vol.voxel_ext.z);
-    atomic_uint32_t* voxel_data = (atomic_uint32_t*)TMP_CALLOC(voxel_count, sizeof(atomic_uint32_t));
-    defer { TMP_FREE(voxel_data); };
+    std::atomic_uint32_t* voxel_data = (std::atomic_uint32_t*)md_alloc(default_allocator, voxel_count * sizeof(std::atomic_uint32_t));
+    defer { md_free(default_allocator, voxel_data, voxel_count * sizeof(std::atomic_uint32_t)); };
 
 #if 1
     task_system::ID id = task_system::enqueue_pool(
-        "Computing occupancy", num_atoms,
-        [voxel_data, atom_pos, atom_rad, &vol, inv_voxel_volume](task_system::TaskSetRange range) {
+        "Computing occupancy", (uint32_t)count,
+        [voxel_data, x, y, z, r, &vol, inv_voxel_volume](task_system::TaskSetRange range) {
             // We assume atom radius <<< voxel extent and just increment the bin
-            constexpr float sphere_vol_scl = (4.0f / 3.0f) * math::PI;
-            for (u32 i = range.beg; i < range.end; i++) {
-                const int idx = compute_voxel_idx(vol, {atom_pos.x[i], atom_pos.y[i], atom_pos.z[i]});
-                const float r = atom_rad[i];
-                const float sphere_vol = sphere_vol_scl * r * r * r;
-                const u32 occ = (u32)(sphere_vol * inv_voxel_volume * 0xFFFFFFFFU);
+            constexpr float sphere_vol_scl = (4.0f / 3.0f) * 3.1415926535f;
+            for (uint32_t i = range.beg; i < range.end; i++) {
+                const int idx = compute_voxel_idx(vol, {x[i], y[i], z[i]});
+                const float rad = r[i];
+                const float sphere_vol = sphere_vol_scl * rad * rad * rad;
+                const uint32_t occ = (uint32_t)(sphere_vol * inv_voxel_volume * 0xFFFFFFFFU);
                 atomic_fetch_add(&voxel_data[idx], occ);
             }
         });
     task_system::wait_for_task(id);
 #else 
     constexpr float sphere_vol_scl = (4.0f / 3.0f) * math::PI;
-    for (i32 i = 0; i < num_atoms; i++) {
-        const vec3 pos = {atom_x[i], atom_y[i], atom_z[i]};
+    for (int32_t i = 0; i < num_atoms; i++) {
+        const vec3_t pos = {atom_x[i], atom_y[i], atom_z[i]};
         const int idx = compute_voxel_idx(vol, pos);
         const float r = atom_r[i];
         const float sphere_vol = sphere_vol_scl * r * r * r;
         const float fract = sphere_vol * inv_voxel_volume;
-        const u32 occ = (fract * 0xFFFFFFFFU);
+        const uint32_t occ = (fract * 0xFFFFFFFFU);
         voxel_data[idx] += occ;
     }
 #endif
 
     glBindTexture(GL_TEXTURE_3D, vol.texture_id);
-    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, vol.resolution.x, vol.resolution.y, vol.resolution.z, GL_RED, GL_UNSIGNED_INT, voxel_data);
+    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, vol.res_x, vol.res_y, vol.res_z, GL_RED, GL_UNSIGNED_INT, voxel_data);
     glGenerateMipmap(GL_TEXTURE_3D);
     glBindTexture(GL_TEXTURE_3D, 0);
 }
 
-void compute_occupancy_volume(const GPUVolume& vol, const soa_vec3 atom_pos, const f32* atom_rad, Bitfield atom_mask) {
-    const i32 voxel_count = vol.resolution.x * vol.resolution.y * vol.resolution.z;
-    if (voxel_count == 0) {
-        LOG_WARNING("Volume resolution is zero on one or more axes");
-        return;
-    }
-
-    const float inv_voxel_volume = 1.0f / (vol.voxel_ext.x * vol.voxel_ext.y * vol.voxel_ext.z);
-    atomic_uint32_t* voxel_data = (atomic_uint32_t*)TMP_CALLOC(voxel_count, sizeof(atomic_uint32_t));
-    defer { TMP_FREE(voxel_data); };
-
-    task_system::ID id = task_system::enqueue_pool(
-        "Computing occupancy", (u32)atom_mask.size(),
-        [voxel_data, atom_pos, atom_rad, atom_mask, &vol, inv_voxel_volume](task_system::TaskSetRange range) {
-            // We assume atom radius <<< voxel extent and just increment the bin
-            constexpr float sphere_vol_scl = (4.0f / 3.0f) * math::PI;
-            for (u32 i = range.beg; i < range.end; i++) {
-                if (bitfield::get_bit(atom_mask, i)) {
-                    const int idx = compute_voxel_idx(vol, {atom_pos.x[i], atom_pos.y[i], atom_pos.z[i]});
-                    const float r = atom_rad[i];
-                    const float sphere_vol = sphere_vol_scl * r * r * r;
-                    const u32 occ = (u32)(sphere_vol * inv_voxel_volume * 0xFFFFFFFFU);
-                    atomic_fetch_add(&voxel_data[idx], occ);
-                }
-            }
-        });
-    task_system::wait_for_task(id);
-
-    glBindTexture(GL_TEXTURE_3D, vol.texture_id);
-    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, vol.resolution.x, vol.resolution.y, vol.resolution.z, GL_RED, GL_UNSIGNED_INT, voxel_data);
-    glGenerateMipmap(GL_TEXTURE_3D);
-    glBindTexture(GL_TEXTURE_3D, 0);
-}
-
-void render_directional_occlusion(GLuint depth_tex, GLuint normal_tex, const GPUVolume& vol, const mat4& view_mat, const mat4& proj_mat,
+void render_directional_occlusion(GLuint depth_tex, GLuint normal_tex, const GPUVolume& vol, const mat4_t& view_mat, const mat4_t& proj_mat,
                                   float occlusion_scale, float step_scale) {
-    const mat4 inv_view_proj_mat = math::inverse(proj_mat * view_mat);
-    const mat4 inv_view_mat = math::inverse(view_mat);
-    const vec3 world_space_camera = inv_view_mat * vec4(0, 0, 0, 1);
-    const vec3 voxel_grid_min = vol.min_box;
-    const vec3 voxel_grid_ext = vol.max_box - vol.min_box;
-    float voxel_ext = math::max(math::max(vol.voxel_ext.x, vol.voxel_ext.y), vol.voxel_ext.z);
+    const mat4_t inv_view_proj_mat = mat4_inverse(proj_mat * view_mat);
+    const mat4_t inv_view_mat = mat4_inverse(view_mat);
+    const vec3_t world_space_camera = mat4_mul_vec3(inv_view_mat, vec3_t(0,0,0), 1);
+    const vec3_t voxel_grid_min = vol.min_box;
+    const vec3_t voxel_grid_ext = vol.max_box - vol.min_box;
+    float voxel_ext = MAX(MAX(vol.voxel_ext.x, vol.voxel_ext.y), vol.voxel_ext.z);
 
     GLuint program = directional_occlusion::program;
     glUseProgram(program);
@@ -964,7 +948,7 @@ void render_directional_occlusion(GLuint depth_tex, GLuint normal_tex, const GPU
 
     glUniform3fv(glGetUniformLocation(program, "u_voxel_grid_world_min"), 1, &voxel_grid_min[0]);
     glUniform3fv(glGetUniformLocation(program, "u_voxel_grid_world_size"), 1, &voxel_grid_ext[0]);
-    glUniform3iv(glGetUniformLocation(program, "u_voxel_dimensions"), 1, &vol.resolution[0]);
+    glUniform3i(glGetUniformLocation(program, "u_voxel_dimensions"), vol.res_x, vol.res_y, vol.res_z);
     glUniform1f(glGetUniformLocation(program, "u_voxel_extent"), voxel_ext);
     glUniform1f(glGetUniformLocation(program, "u_occlusion_scale"), occlusion_scale);
     glUniform1f(glGetUniformLocation(program, "u_step_scale"), step_scale);
@@ -1006,16 +990,16 @@ void render_directional_occlusion(GLuint depth_tex, GLuint normal_tex, const GPU
 }
 
 void cone_trace_scene(GLuint depth_tex, GLuint normal_tex, GLuint color_alpha_tex, GLuint f0_smoothness_tex, const GPUVolume& vol,
-                      const mat4& view_mat, const mat4& proj_mat, float indirect_diffuse_scale, float indirect_specular_scale,
+                      const mat4_t& view_mat, const mat4_t& proj_mat, float indirect_diffuse_scale, float indirect_specular_scale,
                       float ambient_occlusion_scale) {
 
-    mat4 inv_view_proj_mat = math::inverse(proj_mat * view_mat);
-    mat4 inv_view_mat = math::inverse(view_mat);
-    vec3 world_space_camera = inv_view_mat * vec4(0, 0, 0, 1);
+    mat4_t inv_view_proj_mat = mat4_inverse(proj_mat * view_mat);
+    mat4_t inv_view_mat = mat4_inverse(view_mat);
+    vec3_t world_space_camera = mat4_mul_vec3(inv_view_mat, vec3_t(0, 0, 0), 1);
     // printf("cam: %.2f %.2f %.2f\n", world_space_camera.x, world_space_camera.y, world_space_camera.z);
-    vec3 voxel_grid_min = vol.min_box;
-    vec3 voxel_grid_ext = vol.max_box - vol.min_box;
-    float voxel_ext = math::max(math::max(vol.voxel_ext.x, vol.voxel_ext.y), vol.voxel_ext.z);
+    vec3_t voxel_grid_min = vol.min_box;
+    vec3_t voxel_grid_ext = vol.max_box - vol.min_box;
+    float voxel_ext = MAX(MAX(vol.voxel_ext.x, vol.voxel_ext.y), vol.voxel_ext.z);
 
     // const float cone_angle = 0.07;  // 0.2 = 22.6 degrees, 0.1 = 11.4 degrees, 0.07 = 8 degrees angle
 
@@ -1028,7 +1012,7 @@ void cone_trace_scene(GLuint depth_tex, GLuint normal_tex, GLuint color_alpha_te
     glUniform1i(cone_trace::gl.uniform_location.voxel_tex, 4);
     glUniform3fv(cone_trace::gl.uniform_location.voxel_grid_min, 1, &voxel_grid_min[0]);
     glUniform3fv(cone_trace::gl.uniform_location.voxel_grid_size, 1, &voxel_grid_ext[0]);
-    glUniform3iv(cone_trace::gl.uniform_location.voxel_dimensions, 1, &vol.resolution[0]);
+    glUniform3i(cone_trace::gl.uniform_location.voxel_dimensions, vol.res_x, vol.res_y, vol.res_z);
     glUniform1f(cone_trace::gl.uniform_location.voxel_extent, voxel_ext);
     glUniform1f(cone_trace::gl.uniform_location.indirect_diffuse_scale, indirect_diffuse_scale);
     glUniform1f(cone_trace::gl.uniform_location.indirect_specular_scale, indirect_specular_scale);

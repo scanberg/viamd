@@ -1,15 +1,25 @@
 #pragma once
 
-#include <core/string_types.h>
 #include "gl.h"
 
 namespace gl {
 
 bool get_shader_compile_error(char* buffer, int max_length, GLuint shader);
 bool get_program_link_error(char* buffer, int max_length, GLuint program);
-GLuint compile_shader_from_source(CStringView source, GLenum shader_type, CStringView defines = {});
-GLuint compile_shader_from_file(CStringView filename, GLenum shader_type, CStringView defines = {});
-bool attach_link_detach(GLuint program, Array<const GLuint> shaders);
-bool attach_link_detach_with_transform_feedback(GLuint program, Array<const GLuint> shaders, Array<const char*> varyings, GLenum buffer_capture_mode);
+GLuint compile_shader_from_source(const char* source, GLenum shader_type, const char* defines = NULL);
+GLuint compile_shader_from_file(const char* filename, GLenum shader_type, const char* defines = NULL);
+bool attach_link_detach(GLuint program, const GLuint shaders[], int num_shaders);
+bool attach_link_detach_with_transform_feedback(GLuint program, const GLuint shaders[], int num_shaders, const char* varyings[], int num_varyings, GLenum buffer_capture_mode);
+
+
+bool init_texture_2D(GLuint* texture, int width, int height, GLenum format);
+bool init_texture_3D(GLuint* texture, int width, int height, int depth, GLenum format);
+
+bool free_texture(GLuint* texture);
+
+// We assume you set the entire data for the texture
+bool set_texture_2D_data(GLuint texture, const void* data, GLenum format);
+bool set_texture_3D_data(GLuint texture, const void* data, GLenum format);
+
 
 }  // namespace gl

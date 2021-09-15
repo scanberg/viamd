@@ -1,6 +1,5 @@
 #pragma once
 
-#include <stdint.h>
 #include <core/md_str.h>
 
 struct md_allocator_i;
@@ -22,11 +21,6 @@ namespace traj {
 
     bool open_file(md_trajectory_i* traj, str_t filename, const md_molecule_t* mol, md_allocator_i* alloc);
     bool close(md_trajectory_i* traj);
-
-    // Loads data from trajectory frames.
-    // If the frame does not reside in the cache, then the data is loaded from disk and
-    bool load_trajectory_frame_box(const md_trajectory_i* traj, float* box[3][3], int64_t frame_idx);
-    bool load_trajectory_frame_coords(const md_trajectory_i* traj, float* x, float* y, float* z, int64_t atom_count, int64_t frame_idx);
 }
 
 }  // namespace load

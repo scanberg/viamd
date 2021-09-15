@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 #include <functional>
-#include <atomic>
+#include <atomic_queue.h>
 
 namespace task_system {
 
@@ -23,7 +23,7 @@ constexpr ID INVALID_ID = {0};
 void initialize();
 void shutdown();
 
-// This is to generate tasks for the main thread (render thread)
+// This is to generate tasks for the main thread ("render" thread)
 bool enqueue_main(const char* label, Task task);
 void run_main_tasks();
 
@@ -31,8 +31,7 @@ void run_main_tasks();
 ID enqueue_pool(const char* label, uint32_t size, TaskSet task_set, TaskSet on_complete = nullptr);
 
 uint32_t get_num_threads();
-uint32_t get_num_tasks();
-ID* get_tasks();
+uint32_t get_tasks(ID** task_ids);
 
 bool get_task_complete(ID);
 const char* get_task_label(ID);

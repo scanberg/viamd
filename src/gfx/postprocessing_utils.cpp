@@ -26,13 +26,20 @@
 // Shaders for HBAO are based on nVidias examples and are copyright protected as stated above
 
 #include "postprocessing_utils.h"
-#include <core/types.h>
-#include <core/common.h>
-#include <core/log.h>
-#include <core/math_utils.h>
-#include <core/string_utils.h>
+
+//#include <core/types.h>
+//#include <core/common.h>
+//#include <core/log.h>
+//#include <core/math_utils.h>
+//#include <core/string_utils.h>
+
+#include <core/md_str.h>
+#include <core/md_log.h>
 #include <gfx/gl_utils.h>
+#include <random_util.h>
 #include <stdio.h>
+#include <string.h>
+#include <float.h>
 
 #define PUSH_GPU_SECTION(lbl)                                                                       \
     {                                                                                               \
@@ -70,8 +77,8 @@ static struct {
         GLuint fbo = 0;
         GLuint tex_tilemax = 0;
         GLuint tex_neighbormax = 0;
-        i32 tex_width = 0;
-        i32 tex_height = 0;
+        int32_t tex_width = 0;
+        int32_t tex_height = 0;
     } velocity;
 
     struct {
@@ -178,10 +185,12 @@ static struct {
 
 } gl;
 
-static constexpr CStringView v_shader_src_fs_quad = R"(
+static constexpr const char* v_shader_src_fs_quad = R"(
 #version 150 core
 
 out vec2 tc;
+
+uniform vec2 u_tc_scl = vec2(1,1);
 
 void main() {
 	uint idx = uint(gl_VertexID) % 3U;
@@ -189,11 +198,11 @@ void main() {
 		(float( idx     &1U)) * 4.0 - 1.0,
 		(float((idx>>1U)&1U)) * 4.0 - 1.0,
 		0, 1.0);
-	tc = gl_Position.xy * 0.5 + 0.5;
+	tc = (gl_Position.xy * 0.5 + 0.5) * u_tc_scl;
 }
 )";
 
-static constexpr CStringView f_shader_src_linearize_depth = R"(
+static constexpr const char* f_shader_src_linearize_depth = R"(
 #ifndef PERSPECTIVE
 #define PERSPECTIVE 1
 #endif
@@ -218,7 +227,7 @@ void main() {
 }
 )";
 
-static constexpr CStringView f_shader_src_mip_map_min_depth = R"(
+static constexpr const char* f_shader_src_mip_map_min_depth = R"(
 uniform sampler2D u_tex_depth;
 
 out vec4 out_frag;
@@ -236,50 +245,57 @@ void main() {
 }
 )";
 
-static bool setup_program(GLuint* program, CStringView name, CStringView f_shader_src, CStringView defines = {}) {
-    ASSERT(program);
-    constexpr int BUFFER_SIZE = 1024;
-    char buffer[BUFFER_SIZE];
+static GLuint setup_program_from_source(const char* name, const char* f_shader_src, const char* defines = {}) {
+    GLuint f_shader = gl::compile_shader_from_source(f_shader_src, GL_FRAGMENT_SHADER, defines);
+    GLuint program = 0;
 
-    auto f_shader = glCreateShader(GL_FRAGMENT_SHADER);
-    if (defines) {
-        StringBuffer<64> version_str;
-        if (compare_n(f_shader_src, "#version", 8)) {
-            version_str = extract_line(f_shader_src);
+    if (f_shader) {
+        char buffer[1024];
+        program = glCreateProgram();
+
+        glAttachShader(program, gl.v_shader_fs_quad);
+        glAttachShader(program, f_shader);
+        glLinkProgram(program);
+        if (gl::get_program_link_error(buffer, sizeof(buffer), program)) {
+            md_printf(MD_LOG_TYPE_ERROR, "Error while linking %s program:\n%s", name, buffer);
+            glDeleteProgram(program);
+            return 0;
         }
-        const char* sources[5] = {version_str.cstr(), "\n", defines.cstr(), "\n", f_shader_src.cstr()};
-        glShaderSource(f_shader, 5, sources, 0);
-    } else {
-        const char* sources[1] = {f_shader_src.cstr()};
-        glShaderSource(f_shader, 1, sources, 0);
+
+        glDetachShader(program, gl.v_shader_fs_quad);
+        glDetachShader(program, f_shader);
+        glDeleteShader(f_shader);
     }
 
-    glCompileShader(f_shader);
-    if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
-        LOG_ERROR("Error while compiling %s shader:\n%s", name, buffer);
-        return false;
-    }
-
-    if (!*program) {
-        *program = glCreateProgram();
-    }
-
-    glAttachShader(*program, gl.v_shader_fs_quad);
-    glAttachShader(*program, f_shader);
-    glLinkProgram(*program);
-    if (gl::get_program_link_error(buffer, BUFFER_SIZE, *program)) {
-        LOG_ERROR("Error while linking %s program:\n%s", name, buffer);
-        return false;
-    }
-
-    glDetachShader(*program, gl.v_shader_fs_quad);
-    glDetachShader(*program, f_shader);
-    glDeleteShader(f_shader);
-
-    return true;
+    return program;
 }
 
-static bool is_orthographic_proj_matrix(const mat4& proj_mat) { return proj_mat[2][3] == 0.0f; }
+static GLuint setup_program_from_file(const char* name, const char* filename, const char* defines = 0) {
+    GLuint f_shader = gl::compile_shader_from_file(filename, GL_FRAGMENT_SHADER, defines);
+    GLuint program = 0;
+
+    if (f_shader) {
+        char buffer[1024];
+        program = glCreateProgram();
+
+        glAttachShader(program, gl.v_shader_fs_quad);
+        glAttachShader(program, f_shader);
+        glLinkProgram(program);
+        if (gl::get_program_link_error(buffer, sizeof(buffer), program)) {
+            md_printf(MD_LOG_TYPE_ERROR, "Error while linking %s program:\n%s", name, buffer);
+            glDeleteProgram(program);
+            return 0;
+        }
+
+        glDetachShader(program, gl.v_shader_fs_quad);
+        glDetachShader(program, f_shader);
+        glDeleteShader(f_shader);
+    }
+
+    return program;
+}
+
+static bool is_orthographic_proj_matrix(const mat4_t& proj_mat) { return proj_mat.elem[2][3] == 0.0f; }
 
 namespace ssao {
 #ifndef AO_RANDOM_TEX_SIZE
@@ -294,14 +310,14 @@ struct HBAOData {
 
     float ao_multiplier;
     float pow_exponent;
-    vec2 inv_full_res;
+    vec2_t inv_full_res;
 
-    vec4 proj_info;
+    vec4_t proj_info;
 
-    vec4 sample_pattern[32];
+    vec4_t sample_pattern[32];
 };
 
-void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4& proj_mat, float intensity, float radius, float bias, float time) {
+void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4_t& proj_mat, float intensity, float radius, float bias, float time) {
     ASSERT(ubo);
 
     // From intel ASSAO
@@ -316,13 +332,13 @@ void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4& proj_mat
         -0.15064627, -0.14949332, 0.600000, -1.896062, 0.53180975,  -0.35210401, 0.600000, -0.758838, 0.41487166,  0.81442589,  0.600000, -0.505648, -0.24106961, -0.32721516, 0.600000, -1.665244};
     constexpr float METERS_TO_VIEWSPACE = 1.f;
 
-    vec4 proj_info;
+    vec4_t proj_info;
     float proj_scl;
 
-    const float* proj_data = &proj_mat[0][0];
+    const float* proj_data = &proj_mat.elem[0][0];
     const bool ortho = is_orthographic_proj_matrix(proj_mat);
     if (!ortho) {
-        proj_info = vec4(2.0f / (proj_data[4 * 0 + 0]),                          // (x) * (R - L)/N
+        proj_info = vec4_t(2.0f / (proj_data[4 * 0 + 0]),                          // (x) * (R - L)/N
                          2.0f / (proj_data[4 * 1 + 1]),                          // (y) * (T - B)/N
                          -(1.0f - proj_data[4 * 2 + 0]) / proj_data[4 * 0 + 0],  // L/N
                          -(1.0f + proj_data[4 * 2 + 1]) / proj_data[4 * 1 + 1]   // B/N
@@ -331,12 +347,12 @@ void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4& proj_mat
         // proj_scl = float(height) / (math::tan(fovy * 0.5f) * 2.0f);
         proj_scl = float(height) * proj_data[4 * 1 + 1] * 0.5f;
     } else {
-        proj_info = vec4(2.0f / (proj_data[4 * 0 + 0]),                          // ((x) * R - L)
+        proj_info = vec4_t(2.0f / (proj_data[4 * 0 + 0]),                          // ((x) * R - L)
                          2.0f / (proj_data[4 * 1 + 1]),                          // ((y) * T - B)
                          -(1.0f + proj_data[4 * 3 + 0]) / proj_data[4 * 0 + 0],  // L
                          -(1.0f - proj_data[4 * 3 + 1]) / proj_data[4 * 1 + 1]   // B
         );
-        proj_scl = float(height) / proj_info[1];
+        proj_scl = float(height) / proj_info.y;
     }
 
     float r = radius * METERS_TO_VIEWSPACE;
@@ -344,11 +360,11 @@ void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4& proj_mat
     HBAOData data;
     data.radius_to_screen = r * 0.5f * proj_scl;
     data.neg_inv_r2 = -1.f / (r * r);
-    data.n_dot_v_bias = math::clamp(bias, 0.f, 1.f - math::EPSILON);
+    data.n_dot_v_bias = CLAMP(bias, 0.f, 1.f - FLT_EPSILON);
     data.time = time;
     data.ao_multiplier = 1.f / (1.f - data.n_dot_v_bias);
-    data.pow_exponent = math::max(intensity, 0.f);
-    data.inv_full_res = vec2(1.f / float(width), 1.f / float(height));
+    data.pow_exponent = MAX(intensity, 0.f);
+    data.inv_full_res = vec2_t(1.f / float(width), 1.f / float(height));
     data.proj_info = proj_info;
     memcpy(&data.sample_pattern, SAMPLE_PATTERN, sizeof(SAMPLE_PATTERN));
 
@@ -361,17 +377,17 @@ void initialize_rnd_tex(GLuint rnd_tex) {
     constexpr int buffer_size = AO_RANDOM_TEX_SIZE * AO_RANDOM_TEX_SIZE;
     signed short buffer[buffer_size * 4];
 
-    vec2 rnd_vals[buffer_size];
-    math::generate_halton_sequence(rnd_vals, buffer_size, 2, 3);
+    vec2_t rnd_vals[buffer_size];
+    generate_halton_sequence(rnd_vals, buffer_size, 2, 3);
 
     for (int i = 0; i < buffer_size; i++) {
 #define SCALE ((1 << 15))
         float rand1 = rnd_vals[i].x;
         float rand2 = rnd_vals[i].y;
-        float angle = 2.f * math::PI * rand1;
+        float angle = 2.f * 3.1415926535f * rand1;
 
-        buffer[i * 4 + 0] = (signed short)(SCALE * math::cos(angle));
-        buffer[i * 4 + 1] = (signed short)(SCALE * math::sin(angle));
+        buffer[i * 4 + 0] = (signed short)(SCALE * cosf(angle));
+        buffer[i * 4 + 1] = (signed short)(SCALE * sinf(angle));
         buffer[i * 4 + 2] = (signed short)(SCALE * rand2);
         buffer[i * 4 + 3] = (signed short)(SCALE * 0);
 #undef SCALE
@@ -384,21 +400,12 @@ void initialize_rnd_tex(GLuint rnd_tex) {
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-float compute_sharpness(float radius) { return 30.f / math::sqrt(radius); }
+float compute_sharpness(float radius) { return 30.f / sqrtf(radius); }
 
 void initialize(int width, int height) {
-    StringView f_shader_src_ssao = allocate_and_read_textfile(VIAMD_SHADER_DIR "/ssao/ssao.frag");
-    StringView f_shader_src_blur = allocate_and_read_textfile(VIAMD_SHADER_DIR "/ssao/blur.frag");
-    defer {
-        free_string(&f_shader_src_ssao);
-        free_string(&f_shader_src_blur);
-    };
-    ASSERT(f_shader_src_ssao);
-    ASSERT(f_shader_src_blur);
-
-    setup_program(&gl.ssao.hbao.program_persp, "ssao perspective", f_shader_src_ssao, "#define AO_PERSPECTIVE 1");
-    setup_program(&gl.ssao.hbao.program_ortho, "ssao orthographic", f_shader_src_ssao, "#define AO_PERSPECTIVE 0");
-    setup_program(&gl.ssao.blur.program, "ssao blur", f_shader_src_blur);
+    gl.ssao.hbao.program_persp = setup_program_from_file("ssao persp", VIAMD_SHADER_DIR "/ssao/ssao.frag", "#define AO_PERSPECTIVE 1");
+    gl.ssao.hbao.program_ortho = setup_program_from_file("ssao ortho", VIAMD_SHADER_DIR "/ssao/ssao.frag", "#define AO_PERSPECTIVE 0");
+    gl.ssao.blur.program       = setup_program_from_file("ssao blur",  VIAMD_SHADER_DIR "/ssao/blur.frag");
 
     if (!gl.ssao.hbao.fbo) glGenFramebuffers(1, &gl.ssao.hbao.fbo);
     if (!gl.ssao.blur.fbo) glGenFramebuffers(1, &gl.ssao.blur.fbo);
@@ -471,9 +478,7 @@ static struct {
 } highlight;
 
 void initialize() {
-    StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/highlight.frag");
-    defer { FREE(f_shader_src.cstr()); };
-    setup_program(&highlight.program, "highlight", f_shader_src);
+    highlight.program = setup_program_from_file("highlight", VIAMD_SHADER_DIR "/highlight.frag");
     if (!highlight.selection_texture) glGenTextures(1, &highlight.selection_texture);
     highlight.uniform_loc.texture_atom_idx = glGetUniformLocation(highlight.program, "u_texture_atom_idx");
     highlight.uniform_loc.buffer_selection = glGetUniformLocation(highlight.program, "u_buffer_selection");
@@ -498,9 +503,7 @@ static struct {
 } gl;
 
 void initialize() {
-    StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/scale_hsv.frag");
-    defer { FREE(f_shader_src.cstr()); };
-    setup_program(&gl.program, "scale hsv", f_shader_src);
+    gl.program = setup_program_from_file("scale hsv", VIAMD_SHADER_DIR "/scale_hsv.frag");
     gl.uniform_loc.texture_color = glGetUniformLocation(gl.program, "u_texture_atom_color");
     gl.uniform_loc.hsv_scale = glGetUniformLocation(gl.program, "u_hsv_scale");
 }
@@ -524,9 +527,7 @@ static struct {
 } deferred;
 
 void initialize() {
-    StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/deferred_shading.frag");
-    defer { FREE(f_shader_src.cstr()); };
-    setup_program(&deferred.program, "deferred", f_shader_src);
+    deferred.program = setup_program_from_file("deferred shading", VIAMD_SHADER_DIR "/deferred_shading.frag");
     deferred.uniform_loc.texture_depth = glGetUniformLocation(deferred.program, "u_texture_depth");
     deferred.uniform_loc.texture_color = glGetUniformLocation(deferred.program, "u_texture_color");
     deferred.uniform_loc.texture_normal = glGetUniformLocation(deferred.program, "u_texture_normal");
@@ -577,40 +578,28 @@ static struct {
 void initialize() {
     {
         // PASSTHROUGH
-        StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/tonemap/passthrough.frag");
-        defer { free_string(&f_shader_src); };
-
-        setup_program(&passthrough.program, "tonemap_passthrough", f_shader_src);
+        passthrough.program = setup_program_from_file("Passthrough", VIAMD_SHADER_DIR "/tonemap/passthrough.frag");
         passthrough.uniform_loc.texture = glGetUniformLocation(passthrough.program, "u_texture");
     }
     {
         // EXPOSURE GAMMA
-        StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/tonemap/exposure_gamma.frag");
-        defer { free_string(&f_shader_src); };
-
-        setup_program(&exposure_gamma.program, "tonemap_exposure_gamma", f_shader_src);
+        exposure_gamma.program = setup_program_from_file("Exposure Gamma", VIAMD_SHADER_DIR "/tonemap/exposure_gamma.frag");
         exposure_gamma.uniform_loc.texture = glGetUniformLocation(exposure_gamma.program, "u_texture");
         exposure_gamma.uniform_loc.exposure = glGetUniformLocation(exposure_gamma.program, "u_exposure");
         exposure_gamma.uniform_loc.gamma = glGetUniformLocation(exposure_gamma.program, "u_gamma");
     }
     {
         // UNCHARTED
-        StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/tonemap/uncharted.frag");
-        defer { free_string(&f_shader_src); };
-
-        setup_program(&filmic.program, "tonemap_filmic", f_shader_src);
+        filmic.program = setup_program_from_file("Filmic", VIAMD_SHADER_DIR "/tonemap/uncharted.frag");
         filmic.uniform_loc.texture = glGetUniformLocation(filmic.program, "u_texture");
         filmic.uniform_loc.exposure = glGetUniformLocation(filmic.program, "u_exposure");
         filmic.uniform_loc.gamma = glGetUniformLocation(filmic.program, "u_gamma");
     }
     {
         // Fast Reversible (For AA) (Credits to Brian Karis: http://graphicrants.blogspot.com/2013/12/tone-mapping.html)
-        StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/tonemap/fast_reversible.frag");
-        defer { free_string(&f_shader_src); };
-
-        setup_program(&fast_reversible.program_forward, "tonemap_fast_reversible", f_shader_src, "#define USE_INVERSE 0");
+        fast_reversible.program_forward = setup_program_from_file("Fast Reversible", VIAMD_SHADER_DIR "/tonemap/fast_reversible.frag", "#define USE_INVERSE 0");
+        fast_reversible.program_inverse = setup_program_from_file("Fast Reversible", VIAMD_SHADER_DIR "/tonemap/fast_reversible.frag", "#define USE_INVERSE 1");
         fast_reversible.uniform_loc.texture = glGetUniformLocation(fast_reversible.program_forward, "u_texture");
-        setup_program(&fast_reversible.program_inverse, "tonemap_fast_reversible", f_shader_src, "#define USE_INVERSE 1");
     }
 }
 
@@ -625,11 +614,9 @@ void shutdown() {
 }  // namespace tonemapping
 
 namespace dof {
-void initialize(i32 width, i32 height) {
+void initialize(int32_t width, int32_t height) {
     {
-        StringView src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/dof/dof_half_res_prepass.frag");
-        defer { free_string(&src); };
-        setup_program(&gl.bokeh_dof.half_res.program, "dof pre-pass", src);
+        gl.bokeh_dof.half_res.program = setup_program_from_file("DOF prepass", VIAMD_SHADER_DIR "/dof/dof_half_res_prepass.frag");
         if (gl.bokeh_dof.half_res.program) {
             gl.bokeh_dof.half_res.uniform_loc.tex_depth = glGetUniformLocation(gl.bokeh_dof.half_res.program, "u_tex_depth");
             gl.bokeh_dof.half_res.uniform_loc.tex_color = glGetUniformLocation(gl.bokeh_dof.half_res.program, "u_tex_color");
@@ -655,16 +642,15 @@ void initialize(i32 width, i32 height) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.bokeh_dof.half_res.tex.color_coc, 0);
         GLenum status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
         if (status != GL_FRAMEBUFFER_COMPLETE) {
-            LOG_ERROR("Something went wrong");
+            md_print(MD_LOG_TYPE_ERROR, "Something went wrong when generating framebuffer for DOF");
         }
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     }
 
     // DOF
     {
-        StringView src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/dof/dof.frag");
-		defer{ free_string(&src); };
-        if (setup_program(&gl.bokeh_dof.program, "bokeh dof", src)) {
+        gl.bokeh_dof.program = setup_program_from_file("Bokeh DOF", VIAMD_SHADER_DIR "/dof/dof.frag");
+        if (gl.bokeh_dof.program) {
             gl.bokeh_dof.uniform_loc.tex_color = glGetUniformLocation(gl.bokeh_dof.program, "u_half_res");
             gl.bokeh_dof.uniform_loc.tex_color = glGetUniformLocation(gl.bokeh_dof.program, "u_tex_color");
             gl.bokeh_dof.uniform_loc.tex_depth = glGetUniformLocation(gl.bokeh_dof.program, "u_tex_depth");
@@ -684,20 +670,19 @@ static GLuint program_tex = 0;
 static GLuint program_col = 0;
 static GLint uniform_loc_texture = -1;
 static GLint uniform_loc_color = -1;
-constexpr CStringView f_shader_src_tex = R"(
+constexpr const char* f_shader_src_tex = R"(
 #version 150 core
 
 uniform sampler2D u_texture;
 
-in vec2 tc;
 out vec4 out_frag;
 
 void main() {
-	out_frag = texture(u_texture, tc);
+    out_frag = texelFetch(u_texture, ivec2(gl_FragCoord.xy), 0);
 }
 )";
 
-constexpr CStringView f_shader_src_col = R"(
+constexpr const char* f_shader_src_col = R"(
 #version 150 core
 
 uniform vec4 u_color;
@@ -709,10 +694,10 @@ void main() {
 )";
 
 void initialize() {
-    if (!program_tex) setup_program(&program_tex, "blit texture", f_shader_src_tex);
+    program_tex = setup_program_from_source("blit texture", f_shader_src_tex);
     uniform_loc_texture = glGetUniformLocation(program_tex, "u_texture");
 
-    if (!program_col) setup_program(&program_col, "blit color", f_shader_src_col);
+    program_col = setup_program_from_source("blit color", f_shader_src_col);
     uniform_loc_color = glGetUniformLocation(program_col, "u_color");
 }
 
@@ -728,7 +713,7 @@ static GLuint program_box = 0;
 static GLint uniform_loc_texture = -1;
 static GLint uniform_loc_inv_res_dir = -1;
 
-constexpr CStringView f_shader_src_gaussian = R"(
+constexpr const char* f_shader_src_gaussian = R"(
 #version 150 core
 
 #define KERNEL_RADIUS 5
@@ -768,7 +753,7 @@ void main() {
 }
 )";
 
-constexpr CStringView f_shader_src_box = R"(
+constexpr const char* f_shader_src_box = R"(
 #version 150 core
 
 uniform sampler2D u_texture;
@@ -791,11 +776,11 @@ void main() {
 )";
 
 void initialize() {
-    if (!program_gaussian) setup_program(&program_gaussian, "blur", f_shader_src_gaussian);
+    program_gaussian = setup_program_from_source("gaussian blur", f_shader_src_gaussian);
     uniform_loc_texture = glGetUniformLocation(program_gaussian, "u_texture");
     uniform_loc_inv_res_dir = glGetUniformLocation(program_gaussian, "u_inv_res_dir");
 
-    if (!program_box) setup_program(&program_box, "blur", f_shader_src_box);
+    program_box = setup_program_from_source("box blur", f_shader_src_box);
 }
 
 void shutdown() {
@@ -832,28 +817,26 @@ struct {
     } uniform_loc;
 } blit_neighbormax;
 
-void initialize(i32 width, i32 height) {
+void initialize(int32_t width, int32_t height) {
     {
-        StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/velocity/blit_velocity.frag");
-        defer { free_string(&f_shader_src); };
-        setup_program(&blit_velocity.program, "screen-space velocity", f_shader_src);
+        blit_velocity.program = setup_program_from_file("screen-space velocity", VIAMD_SHADER_DIR "/velocity/blit_velocity.frag");
 		blit_velocity.uniform_loc.tex_depth = glGetUniformLocation(blit_velocity.program, "u_tex_depth");
         blit_velocity.uniform_loc.curr_clip_to_prev_clip_mat = glGetUniformLocation(blit_velocity.program, "u_curr_clip_to_prev_clip_mat");
         blit_velocity.uniform_loc.jitter_uv = glGetUniformLocation(blit_velocity.program, "u_jitter_uv");
 
     }
     {
-        constexpr CStringView defines = "#define TILE_SIZE " TOSTRING(VEL_TILE_SIZE);
-        StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/velocity/blit_tilemax.frag");
-        defer { free_string(&f_shader_src); };
-        setup_program(&blit_tilemax.program, "tilemax", f_shader_src, defines);
+#define STRINGIFY(x) #x
+#define TOSTRING(x) STRINGIFY(x)
+        const char* defines = "#define TILE_SIZE " TOSTRING(VEL_TILE_SIZE);
+        blit_tilemax.program = setup_program_from_file("tilemax", VIAMD_SHADER_DIR "/velocity/blit_tilemax.frag", defines);
         blit_tilemax.uniform_loc.tex_vel = glGetUniformLocation(blit_tilemax.program, "u_tex_vel");
         blit_tilemax.uniform_loc.tex_vel_texel_size = glGetUniformLocation(blit_tilemax.program, "u_tex_vel_texel_size");
+#undef STRINGIFY
+#undef TOSTRING
     }
     {
-        StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/velocity/blit_neighbormax.frag");
-        defer { free_string(&f_shader_src); };
-        setup_program(&blit_neighbormax.program, "neighbormax", f_shader_src);
+        blit_neighbormax.program = setup_program_from_file("neighbormax", VIAMD_SHADER_DIR "/velocity/blit_neighbormax.frag");
         blit_neighbormax.uniform_loc.tex_vel = glGetUniformLocation(blit_neighbormax.program, "u_tex_vel");
         blit_neighbormax.uniform_loc.tex_vel_texel_size = glGetUniformLocation(blit_neighbormax.program, "u_tex_vel_texel_size");
     }
@@ -892,7 +875,7 @@ void initialize(i32 width, i32 height) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.velocity.tex_neighbormax, 0);
         GLenum status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
         if (status != GL_FRAMEBUFFER_COMPLETE) {
-            LOG_ERROR("Something went wrong");
+            md_print(MD_LOG_TYPE_ERROR, "Something went wrong in creating framebuffer for velocity");
         }
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     }
@@ -909,10 +892,8 @@ void shutdown() {
 namespace temporal {
 void initialize() {
     {
-        StringView f_shader_src = allocate_and_read_textfile(VIAMD_SHADER_DIR "/temporal.frag");
-        defer { free_string(&f_shader_src); };
-        setup_program(&gl.temporal.with_motion_blur.program, "temporal aa + motion-blur", f_shader_src);
-        setup_program(&gl.temporal.no_motion_blur.program, "temporal aa", f_shader_src, "#define USE_MOTION_BLUR 0\n");
+        gl.temporal.with_motion_blur.program = setup_program_from_file("temporal aa + motion-blur", VIAMD_SHADER_DIR "/temporal.frag");
+        gl.temporal.no_motion_blur.program   = setup_program_from_file("temporal aa", VIAMD_SHADER_DIR "/temporal.frag", "#define USE_MOTION_BLUR 0\n");
 
         gl.temporal.with_motion_blur.uniform_loc.tex_linear_depth = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_tex_linear_depth");
         gl.temporal.with_motion_blur.uniform_loc.tex_main = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_tex_main");
@@ -945,7 +926,7 @@ void shutdown() {}
 namespace sharpen {
 static GLuint program = 0;
 void initialize() {
-    constexpr CStringView f_shader_src_sharpen = R"(
+    constexpr const char* f_shader_src_sharpen = R"(
     #version 150 core
 
     uniform sampler2D u_tex;
@@ -962,7 +943,7 @@ void initialize() {
         out_frag = vec4(vec3(weight[0] * cc + weight[1] * (cl + ct + cr + cb)), 1.0);
     }
     )";
-    setup_program(&program, "sharpen", f_shader_src_sharpen);
+    program = setup_program_from_source("sharpen", f_shader_src_sharpen);
 }
 
 void sharpen(GLuint in_texture) {
@@ -985,24 +966,14 @@ void shutdown() {
 }
 
 void initialize(int width, int height) {
-    constexpr int BUFFER_SIZE = 1024;
-    char buffer[BUFFER_SIZE];
-
     if (!gl.vao) glGenVertexArrays(1, &gl.vao);
 
-    if (!gl.v_shader_fs_quad) {
-        gl.v_shader_fs_quad = glCreateShader(GL_VERTEX_SHADER);
-        const char* src[] = {v_shader_src_fs_quad.cstr()};
-        glShaderSource(gl.v_shader_fs_quad, 1, src, 0);
-        glCompileShader(gl.v_shader_fs_quad);
-        if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, gl.v_shader_fs_quad)) {
-            LOG_ERROR("Error while compiling postprocessing fs-quad vertex shader:\n%s", buffer);
-        }
-    }
+    gl.v_shader_fs_quad = gl::compile_shader_from_source(v_shader_src_fs_quad, GL_VERTEX_SHADER);
 
     // LINEARIZE DEPTH
-    if (!gl.linear_depth.program_persp) setup_program(&gl.linear_depth.program_persp, "linearize depth persp", f_shader_src_linearize_depth, "#version 150 core\n#define PERSPECTIVE 1");
-    if (!gl.linear_depth.program_ortho) setup_program(&gl.linear_depth.program_ortho, "linearize depth ortho", f_shader_src_linearize_depth, "#version 150 core\n#define PERSPECTIVE 0");
+
+    gl.linear_depth.program_persp = setup_program_from_source("linearize depth persp", f_shader_src_linearize_depth, "#version 150 core\n#define PERSPECTIVE 1");
+    gl.linear_depth.program_ortho = setup_program_from_source("linearize depth ortho", f_shader_src_linearize_depth, "#version 150 core\n#define PERSPECTIVE 0");
 
     if (!gl.linear_depth.texture) glGenTextures(1, &gl.linear_depth.texture);
     glBindTexture(GL_TEXTURE_2D, gl.linear_depth.texture);
@@ -1019,7 +990,7 @@ void initialize(int width, int height) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.linear_depth.texture, 0);
         GLenum status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
         if (status != GL_FRAMEBUFFER_COMPLETE) {
-            LOG_ERROR("Something went wrong");
+            md_print(MD_LOG_TYPE_ERROR, "Something went wrong in creating framebuffer for depth linearization");
         }
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     }
@@ -1068,7 +1039,7 @@ void initialize(int width, int height) {
 
         GLenum status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
         if (status != GL_FRAMEBUFFER_COMPLETE) {
-            LOG_ERROR("Something went wrong");
+            md_print(MD_LOG_TYPE_ERROR, "Something went wrong in creating framebuffer for targets");
         }
 
         GLenum buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3};
@@ -1129,7 +1100,7 @@ void shutdown() {
 }
 
 void compute_linear_depth(GLuint depth_tex, float near_plane, float far_plane, bool orthographic = false) {
-    const vec4 clip_info(near_plane * far_plane, near_plane - far_plane, far_plane, 0);
+    const vec4_t clip_info(near_plane * far_plane, near_plane - far_plane, far_plane, 0);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, depth_tex);
@@ -1139,7 +1110,7 @@ void compute_linear_depth(GLuint depth_tex, float near_plane, float far_plane, b
     else
         glUseProgram(gl.linear_depth.program_persp);
     glUniform1i(gl.linear_depth.uniform_loc.tex_depth, 0);
-    glUniform4fv(gl.linear_depth.uniform_loc.clip_info, 1, &clip_info[0]);
+    glUniform4fv(gl.linear_depth.uniform_loc.clip_info, 1, &clip_info.x);
 
     // ASSUME THAT THE APPROPRIATE FS_QUAD VAO IS BOUND
     glBindVertexArray(gl.vao);
@@ -1147,25 +1118,33 @@ void compute_linear_depth(GLuint depth_tex, float near_plane, float far_plane, b
     glBindVertexArray(0);
 }
 
-void apply_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4& proj_matrix, float intensity, float radius, float bias, float time) {
+void apply_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj_matrix, float intensity, float radius, float bias, float time) {
     ASSERT(glIsTexture(linear_depth_tex));
     ASSERT(glIsTexture(normal_tex));
 
     const bool ortho = is_orthographic_proj_matrix(proj_matrix);
     const float sharpness = ssao::compute_sharpness(radius);
-    const vec2 inv_res = vec2(1.f / gl.tex_width, 1.f / gl.tex_height);
 
     GLint last_fbo;
     GLint last_viewport[4];
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fbo);
     glGetIntegerv(GL_VIEWPORT, last_viewport);
 
+    int width = last_viewport[2];
+    int height = last_viewport[3];
+
+    const vec2_t inv_res = vec2_t(1.f / gl.tex_width, 1.f / gl.tex_height);
+
     glBindVertexArray(gl.vao);
 
-    ssao::setup_ubo_hbao_data(gl.ssao.ubo_hbao_data, gl.tex_width, gl.tex_height, proj_matrix, intensity, radius, bias, time);
+    ssao::setup_ubo_hbao_data(gl.ssao.ubo_hbao_data, width, height, proj_matrix, intensity, radius, bias, time);
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.ssao.hbao.fbo);
     glViewport(0, 0, gl.tex_width, gl.tex_height);
+    glClearColor(1,1,1,1);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glViewport(0, 0, width, height);
 
     // RENDER HBAO
     GLuint program = ortho ? gl.ssao.hbao.program_ortho : gl.ssao.hbao.program_persp;
@@ -1186,6 +1165,9 @@ void apply_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4& proj_mat
     glUniform1i(glGetUniformLocation(program, "u_tex_normal"), 1);
     glUniform1i(glGetUniformLocation(program, "u_tex_random"), 2);
 
+    glUniform2f(glGetUniformLocation(program, "u_tc_scl"), (float)width/(float)gl.tex_width, (float)height/(float)gl.tex_height);
+    //glUniform2f(glGetUniformLocation(program, "u_tc_scl"), (float)gl.tex_width/(float)width, (float)gl.tex_height/(float)height);
+
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
     POP_GPU_SECTION()
@@ -1197,11 +1179,18 @@ void apply_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4& proj_mat
     glUniform1f(glGetUniformLocation(gl.ssao.blur.program, "u_sharpness"), sharpness);
     glUniform2f(glGetUniformLocation(gl.ssao.blur.program, "u_inv_res_dir"), inv_res.x, 0);
 
+    glUniform2f(glGetUniformLocation(gl.ssao.blur.program, "u_tc_scl"), (float)width/(float)gl.tex_width, (float)height/(float)gl.tex_height);
+
+    //glUniform2f(glGetUniformLocation(gl.ssao.blur.program, "u_tc_scl"), (float)gl.tex_width/(float)width, (float)gl.tex_height/(float)height);
+
     glActiveTexture(GL_TEXTURE1);
 
     // BLUR FIRST
     PUSH_GPU_SECTION("BLUR 1st")
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.ssao.blur.fbo);
+    glViewport(0, 0, width, height);
+    glClearColor(0,0,0,0);
+    glClear(GL_COLOR_BUFFER_BIT);
     glBindTexture(GL_TEXTURE_2D, gl.ssao.hbao.texture);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     POP_GPU_SECTION()
@@ -1213,6 +1202,7 @@ void apply_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4& proj_mat
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, gl.ssao.blur.texture);
     glUniform2f(glGetUniformLocation(gl.ssao.blur.program, "u_inv_res_dir"), 0, inv_res.y);
+
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_ZERO, GL_SRC_COLOR);
@@ -1228,7 +1218,7 @@ void apply_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4& proj_mat
     POP_GPU_SECTION()
 }
 
-void shade_deferred(GLuint depth_tex, GLuint color_tex, GLuint normal_tex, const mat4& inv_proj_matrix, float time) {
+void shade_deferred(GLuint depth_tex, GLuint color_tex, GLuint normal_tex, const mat4_t& inv_proj_matrix, float time) {
     ASSERT(glIsTexture(depth_tex));
     ASSERT(glIsTexture(color_tex));
     ASSERT(glIsTexture(normal_tex));
@@ -1244,7 +1234,7 @@ void shade_deferred(GLuint depth_tex, GLuint color_tex, GLuint normal_tex, const
     glUniform1i(deferred::deferred.uniform_loc.texture_depth, 0);
     glUniform1i(deferred::deferred.uniform_loc.texture_color, 1);
     glUniform1i(deferred::deferred.uniform_loc.texture_normal, 2);
-    glUniformMatrix4fv(deferred::deferred.uniform_loc.inv_proj_mat, 1, GL_FALSE, &inv_proj_matrix[0][0]);
+    glUniformMatrix4fv(deferred::deferred.uniform_loc.inv_proj_mat, 1, GL_FALSE, &inv_proj_matrix.elem[0][0]);
     glUniform1f(deferred::deferred.uniform_loc.time, time);
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -1252,7 +1242,7 @@ void shade_deferred(GLuint depth_tex, GLuint color_tex, GLuint normal_tex, const
     glUseProgram(0);
 }
 
-void highlight_selection(GLuint atom_idx_tex, GLuint selection_buffer, const vec3& highlight, const vec3& selection, const vec3& outline) {
+void highlight_selection(GLuint atom_idx_tex, GLuint selection_buffer, const vec3_t& highlight, const vec3_t& selection, const vec3_t& outline) {
     ASSERT(glIsTexture(atom_idx_tex));
     ASSERT(glIsBuffer(selection_buffer));
 
@@ -1266,9 +1256,9 @@ void highlight_selection(GLuint atom_idx_tex, GLuint selection_buffer, const vec
     glUseProgram(highlight::highlight.program);
     glUniform1i(highlight::highlight.uniform_loc.texture_atom_idx, 0);
     glUniform1i(highlight::highlight.uniform_loc.buffer_selection, 1);
-    glUniform3fv(highlight::highlight.uniform_loc.highlight, 1, &highlight[0]);
-    glUniform3fv(highlight::highlight.uniform_loc.selection, 1, &selection[0]);
-    glUniform3fv(highlight::highlight.uniform_loc.outline, 1, &outline[0]);
+    glUniform3fv(highlight::highlight.uniform_loc.highlight, 1, &highlight.x);
+    glUniform3fv(highlight::highlight.uniform_loc.selection, 1, &selection.x);
+    glUniform3fv(highlight::highlight.uniform_loc.outline, 1, &outline.x);
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
@@ -1308,7 +1298,7 @@ void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_point, flo
     ASSERT(glIsTexture(linear_depth_tex));
     ASSERT(glIsTexture(color_tex));
 
-    const vec2 pixel_size = vec2(1.f / gl.tex_width, 1.f / gl.tex_height);
+    const vec2_t pixel_size = vec2_t(1.f / gl.tex_width, 1.f / gl.tex_height);
 
     GLint last_fbo;
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fbo);
@@ -1403,18 +1393,20 @@ void apply_inverse_aa_tonemapping(GLuint color_tex) {
 }
 
 void blit_static_velocity(GLuint depth_tex, const ViewParam& view_param) {
-    mat4 curr_clip_to_prev_clip_mat = view_param.matrix.previous.view_proj_jittered * view_param.matrix.inverse.view_proj_jittered;
+    mat4_t curr_clip_to_prev_clip_mat = view_param.matrix.previous.view_proj_jittered * view_param.matrix.inverse.view_proj_jittered;
 
 	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, depth_tex);
 
-    const vec2 res = view_param.resolution;
-    const vec4 jitter_uv = vec4(view_param.jitter.current / res, view_param.jitter.previous / res);
+    const vec2_t res = view_param.resolution;
+    const vec2_t jitter_uv_cur = view_param.jitter.current / res;
+    const vec2_t jitter_uv_prev = view_param.jitter.previous / res;
+    const vec4_t jitter_uv = vec4_t(jitter_uv_cur.x, jitter_uv_cur.y, jitter_uv_prev.x, jitter_uv_prev.y);
 
     glUseProgram(velocity::blit_velocity.program);
 	glUniform1i(velocity::blit_velocity.uniform_loc.tex_depth, 0);
-    glUniformMatrix4fv(velocity::blit_velocity.uniform_loc.curr_clip_to_prev_clip_mat, 1, GL_FALSE, &curr_clip_to_prev_clip_mat[0][0]);
-    glUniform4fv(velocity::blit_velocity.uniform_loc.jitter_uv, 1, &jitter_uv[0]);
+    glUniformMatrix4fv(velocity::blit_velocity.uniform_loc.curr_clip_to_prev_clip_mat, 1, GL_FALSE, &curr_clip_to_prev_clip_mat.elem[0][0]);
+    glUniform4fv(velocity::blit_velocity.uniform_loc.jitter_uv, 1, &jitter_uv.x);
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
@@ -1423,14 +1415,14 @@ void blit_static_velocity(GLuint depth_tex, const ViewParam& view_param) {
 
 void blit_tilemax(GLuint velocity_tex, int tex_width, int tex_height) {
     ASSERT(glIsTexture(velocity_tex));
-    const vec2 texel_size = {1.f / tex_width, 1.f / tex_height};
+    const vec2_t texel_size = {1.f / tex_width, 1.f / tex_height};
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, velocity_tex);
 
     glUseProgram(velocity::blit_tilemax.program);
     glUniform1i(velocity::blit_tilemax.uniform_loc.tex_vel, 0);
-    glUniform2fv(velocity::blit_tilemax.uniform_loc.tex_vel_texel_size, 1, &texel_size[0]);
+    glUniform2fv(velocity::blit_tilemax.uniform_loc.tex_vel_texel_size, 1, &texel_size.x);
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
@@ -1439,21 +1431,21 @@ void blit_tilemax(GLuint velocity_tex, int tex_width, int tex_height) {
 
 void blit_neighbormax(GLuint velocity_tex, int tex_width, int tex_height) {
     ASSERT(glIsTexture(velocity_tex));
-    const vec2 texel_size = {1.f / tex_width, 1.f / tex_height};
+    const vec2_t texel_size = {1.f / tex_width, 1.f / tex_height};
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, velocity_tex);
 
     glUseProgram(velocity::blit_neighbormax.program);
     glUniform1i(velocity::blit_neighbormax.uniform_loc.tex_vel, 0);
-    glUniform2fv(velocity::blit_neighbormax.uniform_loc.tex_vel_texel_size, 1, &texel_size[0]);
+    glUniform2fv(velocity::blit_neighbormax.uniform_loc.tex_vel_texel_size, 1, &texel_size.x);
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
     glUseProgram(0);
 }
 
-void apply_temporal_aa(GLuint linear_depth_tex, GLuint color_tex, GLuint velocity_tex, GLuint velocity_neighbormax_tex, const vec2& curr_jitter, const vec2& prev_jitter, float feedback_min,
+void apply_temporal_aa(GLuint linear_depth_tex, GLuint color_tex, GLuint velocity_tex, GLuint velocity_neighbormax_tex, const vec2_t& curr_jitter, const vec2_t& prev_jitter, float feedback_min,
                        float feedback_max, float motion_scale, float time) {
     ASSERT(glIsTexture(linear_depth_tex));
     ASSERT(glIsTexture(color_tex));
@@ -1466,9 +1458,12 @@ void apply_temporal_aa(GLuint linear_depth_tex, GLuint color_tex, GLuint velocit
     const int dst_buf = target;
     const int src_buf = (target + 1) % 2;
 
-    const vec2 res = {gl.tex_width, gl.tex_height};
-    const vec4 texel_size = vec4(1.f / res, res);
-    const vec4 jitter_uv = vec4(curr_jitter / res, prev_jitter / res);
+    const vec2_t res = {(float)gl.tex_width, (float)gl.tex_height};
+    const vec2_t inv_res = 1.0f / res;
+    const vec4_t texel_size = vec4_t(inv_res.x, inv_res.y, res.x, res.y);
+    const vec2_t jitter_uv_curr = curr_jitter / res;
+    const vec2_t jitter_uv_prev = prev_jitter / res;
+    const vec4_t jitter_uv = vec4_t(jitter_uv_curr.x, jitter_uv_curr.y, jitter_uv_prev.x, jitter_uv_prev.y);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, linear_depth_tex);
@@ -1490,7 +1485,7 @@ void apply_temporal_aa(GLuint linear_depth_tex, GLuint color_tex, GLuint velocit
 
     GLenum draw_buffers[2];
     draw_buffers[0] = GL_COLOR_ATTACHMENT2 + dst_buf;  // tex_temporal_buffer[0 or 1]
-    draw_buffers[1] = bound_buffer;                    // assume that this is part of the same fbo
+    draw_buffers[1] = bound_buffer;                    // assume that this is part of the same gbuffer
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.targets.fbo);
     glViewport(0, 0, gl.tex_width, gl.tex_height);
@@ -1505,8 +1500,8 @@ void apply_temporal_aa(GLuint linear_depth_tex, GLuint color_tex, GLuint velocit
         glUniform1i(gl.temporal.with_motion_blur.uniform_loc.tex_vel, 3);
         glUniform1i(gl.temporal.with_motion_blur.uniform_loc.tex_vel_neighbormax, 4);
 
-        glUniform4fv(gl.temporal.with_motion_blur.uniform_loc.texel_size, 1, &texel_size[0]);
-        glUniform4fv(gl.temporal.with_motion_blur.uniform_loc.jitter_uv, 1, &jitter_uv[0]);
+        glUniform4fv(gl.temporal.with_motion_blur.uniform_loc.texel_size, 1, &texel_size.x);
+        glUniform4fv(gl.temporal.with_motion_blur.uniform_loc.jitter_uv, 1, &jitter_uv.x);
         glUniform1f(gl.temporal.with_motion_blur.uniform_loc.time, time);
         glUniform1f(gl.temporal.with_motion_blur.uniform_loc.feedback_min, feedback_min);
         glUniform1f(gl.temporal.with_motion_blur.uniform_loc.feedback_max, feedback_max);
@@ -1519,8 +1514,8 @@ void apply_temporal_aa(GLuint linear_depth_tex, GLuint color_tex, GLuint velocit
         glUniform1i(gl.temporal.no_motion_blur.uniform_loc.tex_prev, 2);
         glUniform1i(gl.temporal.no_motion_blur.uniform_loc.tex_vel, 3);
 
-        glUniform4fv(gl.temporal.no_motion_blur.uniform_loc.texel_size, 1, &texel_size[0]);
-        glUniform4fv(gl.temporal.no_motion_blur.uniform_loc.jitter_uv, 1, &jitter_uv[0]);
+        glUniform4fv(gl.temporal.no_motion_blur.uniform_loc.texel_size, 1, &texel_size.x);
+        glUniform4fv(gl.temporal.no_motion_blur.uniform_loc.jitter_uv, 1, &jitter_uv.x);
         glUniform1f(gl.temporal.no_motion_blur.uniform_loc.time, time);
         glUniform1f(gl.temporal.no_motion_blur.uniform_loc.feedback_min, feedback_min);
         glUniform1f(gl.temporal.no_motion_blur.uniform_loc.feedback_max, feedback_max);
@@ -1533,7 +1528,7 @@ void apply_temporal_aa(GLuint linear_depth_tex, GLuint color_tex, GLuint velocit
     glUseProgram(0);
 }
 
-void scale_hsv(GLuint color_tex, vec3 hsv_scale) {
+void scale_hsv(GLuint color_tex, vec3_t hsv_scale) {
     GLint last_fbo;
     GLint last_viewport[4];
     GLint last_draw_buffer;
@@ -1550,7 +1545,7 @@ void scale_hsv(GLuint color_tex, vec3 hsv_scale) {
 
     glUseProgram(hsv::gl.program);
     glUniform1i(hsv::gl.uniform_loc.texture_color, 0);
-    glUniform3fv(hsv::gl.uniform_loc.hsv_scale, 1, &hsv_scale[0]);
+    glUniform3fv(hsv::gl.uniform_loc.hsv_scale, 1, &hsv_scale.x);
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
@@ -1575,9 +1570,9 @@ void blit_texture(GLuint tex) {
     glUseProgram(0);
 }
 
-void blit_color(vec4 color) {
+void blit_color(vec4_t color) {
     glUseProgram(blit::program_col);
-    glUniform4fv(blit::uniform_loc_color, 1, &color[0]);
+    glUniform4fv(blit::uniform_loc_color, 1, &color.x);
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
@@ -1682,15 +1677,17 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     ASSERT(glIsTexture(desc.input_textures.depth));
     ASSERT(glIsTexture(desc.input_textures.color));
     ASSERT(glIsTexture(desc.input_textures.normal));
-    ASSERT(glIsTexture(desc.input_textures.velocity));
+    if (desc.temporal_reprojection.enabled) {
+        ASSERT(glIsTexture(desc.input_textures.velocity));
+    }
 
     // For seeding noise
     static float time = 0.f;
     time = time + 0.016f;
     if (time > 100.f) time -= 100.f;
 
-    const auto near_dist = view_param.clip_volume.near;
-    const auto far_dist = view_param.clip_volume.far;
+    const auto near_dist = view_param.clip_planes.near;
+    const auto far_dist = view_param.clip_planes.far;
     const auto ortho = is_orthographic_proj_matrix(view_param.matrix.current.proj);
 
     GLint last_fbo;
@@ -1700,11 +1697,23 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     glGetIntegerv(GL_VIEWPORT, last_viewport);
     glGetIntegerv(GL_DRAW_BUFFER, &last_draw_buffer);
 
-    glViewport(0, 0, gl.tex_width, gl.tex_height);
+    int width = last_viewport[2];
+    int height = last_viewport[3];
+
+    if (width > gl.tex_width || height > gl.tex_height) {
+        initialize(width, height);
+    }
+
+    //glViewport(0, 0, gl.tex_width, gl.tex_height);
+    glViewport(0, 0, width, height);
     glBindVertexArray(gl.vao);
 
     PUSH_GPU_SECTION("Linearize Depth") {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo);
+        glViewport(0, 0, gl.tex_width, gl.tex_height);
+        glClearColor(far_dist,0,0,0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glViewport(0, 0, width, height);
         compute_linear_depth(desc.input_textures.depth, near_dist, far_dist, ortho);
     }
     POP_GPU_SECTION()
@@ -1742,7 +1751,8 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.targets.fbo);
     glDrawBuffer(dst_buffer);
-    glViewport(0, 0, gl.tex_width, gl.tex_height);
+    //glViewport(0, 0, gl.tex_width, gl.tex_height);
+    glViewport(0, 0, width, height);
 
     PUSH_GPU_SECTION("Clear HDR")
     glClearColor(desc.background.intensity.x, desc.background.intensity.y, desc.background.intensity.z, 1.f);
@@ -1781,7 +1791,7 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
         POP_GPU_SECTION()
 
 #if 0
-            swap_target();
+        swap_target();
         glDrawBuffer(dst_buffer);
         apply_inverse_aa_tonemapping(src_texture);
 #endif
@@ -1836,8 +1846,10 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     glDrawBuffer(last_draw_buffer);
 
     swap_target();
+    glDepthMask(0);
     blit_texture(src_texture);
 
+    glDepthMask(1);
     glColorMask(1, 1, 1, 1);
 }
 

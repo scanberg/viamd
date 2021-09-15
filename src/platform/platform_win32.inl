@@ -34,6 +34,7 @@ double compute_delta_s(Timestamp t0, Timestamp t1) {
     return s;
 }
 
+/*
 DynamicArray<DirectoryEntry> list_directory(CStringView dir_path) {
     DynamicArray<DirectoryEntry> res;
 
@@ -69,5 +70,6 @@ CStringView get_cwd() {
     _getcwd(data.file_system.cwd.cstr(), 512);
 	return data.file_system.cwd;
 }
+*/
 
-void sleep(i64 milliseconds) { Sleep((i32)milliseconds); }
+void sleep(int64_t milliseconds) { Sleep((int32_t)milliseconds); }

@@ -21,10 +21,11 @@
 #endif
 
 #include "keys.h"
-#include <core/common.h>
-#include <core/types.h>
-#include <core/array_types.h>
-#include <core/string_types.h>
+//#include <core/common.h>
+//#include <core/types.h>
+//#include <core/array_types.h>
+//#include <core/string_types.h>
+#include <core/md_str.h>
 
 #include "IconsFontAwesome5.h"
 
@@ -100,41 +101,43 @@ struct Context {
 };
 
 // Context
-bool initialize(Context* ctx, i64 width, i64 height, const char* title);
+bool initialize(Context* ctx, int64_t width, int64_t height, const char* title);
 void shutdown(Context* ctx);
 void update(Context* ctx);
 void render_imgui(Context* ctx);
 void swap_buffers(Context* ctx);
 
 // Timing
-typedef u64 Timestamp;
+typedef uint64_t Timestamp;
 
-void sleep(i64 milliseconds);
+void sleep(int64_t milliseconds);
 Timestamp get_time();
 double compute_delta_ms(Timestamp t0, Timestamp t1);
 double compute_delta_s(Timestamp t0, Timestamp t1);
 
 // Filesystem
-typedef StringBuffer<512> Path;
-typedef u32 FileDialogFlags;
+typedef uint32_t FileDialogFlags;
 
-enum FileDialogFlags_ { FileDialogFlags_Open = BIT(0), FileDialogFlags_Save = BIT(1), FileDialogFlags_Directory = BIT(2) };
+enum FileDialogFlags_ { FileDialogFlags_Open = 0x1, FileDialogFlags_Save = 0x2, FileDialogFlags_Directory = 0x4 };
 
 struct FileDialogResult {
     enum Result { Ok, Cancel };
     Result result;
-    Path path;
+    int64_t path_len;
+    char path[512];
 };
 
+/*
 struct DirectoryEntry {
     enum Type { File, Dir, Link, Unknown };
     Type type = Unknown;
     Path name = {};
 };
 
-CStringView get_cwd();
+str_t get_cwd();
 DynamicArray<DirectoryEntry> list_directory(CStringView directory);
-FileDialogResult file_dialog(FileDialogFlags flags, CStringView default_path = {}, CStringView filter = {});
+*/
+FileDialogResult file_dialog(FileDialogFlags flags, str_t default_path = {}, str_t filter = {});
 
 /*
 bool add_directory_watch(CString directory, DirectoryWatchCallback, void* usr_data = NULL);
