@@ -1075,8 +1075,8 @@ int main(int, char**) {
                 md_script_eval_interrupt(&data.mold.script.filt_eval);
 
                 // Try aquire 2 semaphores
-                if ( md_semaphore_try_aquire(&data.mold.script.semaphore) &&
-                    // md_semaphore_try_aquire(&data.mold.script.semaphore)
+                if ( md_semaphore_try_aquire(&data.mold.script.semaphore)
+                    // && md_semaphore_try_aquire(&data.mold.script.semaphore)
                     ) {
                     // Now we hold all resources for the script
                     data.mold.script.compile_ir = false;
@@ -1141,7 +1141,7 @@ int main(int, char**) {
                 md_script_eval_interrupt(&data.mold.script.full_eval);
             } else if (md_semaphore_try_aquire(&data.mold.script.semaphore)) {
                 data.mold.script.evaluate_full = false;
-                data.tasks.evaluate_full = task_system::enqueue_pool("Eval Full", 1, [&data](task_system::TaskSetRange range) {
+                data.tasks.evaluate_full = task_system::enqueue_pool("Eval Full", 1, [&data](task_system::TaskSetRange) {
                     md_script_eval_args_t args = {
                         .ir = &data.mold.script.ir,
                         .mol = &data.mold.mol,
@@ -1165,7 +1165,7 @@ int main(int, char**) {
                 md_script_eval_interrupt(&data.mold.script.filt_eval);
             } else if (md_semaphore_try_aquire(&data.mold.script.semaphore)) {
                 data.mold.script.evaluate_filt = false;
-                data.tasks.evaluate_filt = task_system::enqueue_pool("Eval Filt", 1, [&data](task_system::TaskSetRange range) {
+                data.tasks.evaluate_filt = task_system::enqueue_pool("Eval Filt", 1, [&data](task_system::TaskSetRange) {
                     int64_t beg_frame = CLAMP((int64_t)data.timeline.filter.min, 0, data.mold.traj.num_frames);
                     int64_t end_frame = CLAMP((int64_t)data.timeline.filter.max, 0, data.mold.traj.num_frames);
                     end_frame = MAX(beg_frame + 1, end_frame);
@@ -1455,8 +1455,7 @@ static void interpolate_atomic_properties(ApplicationData* data) {
         switch (mode) {
         case InterpolationMode::Nearest: {
             const md_backbone_angles_t* src_angle = t < 0.5f ? src_angles[1] : src_angles[2];
-            const size_t bytes = mol.backbone.count * sizeof(md_backbone_angles_t);
-            memcpy(mol.backbone.angle, src_angle, bytes);
+            memcpy(mol.backbone.angle, src_angle, mol.backbone.count * sizeof(md_backbone_angles_t));
             break;
         }
         case InterpolationMode::Linear: {
@@ -1491,8 +1490,7 @@ static void interpolate_atomic_properties(ApplicationData* data) {
         switch (mode) {
         case InterpolationMode::Nearest: {
             const md_secondary_structure_t* ss = t < 0.5f ? src_ss[1] : src_ss[2];
-            const size_t bytes = mol.backbone.count * sizeof(md_secondary_structure_t);
-            memcpy(mol.backbone.secondary_structure, ss, bytes);
+            memcpy(mol.backbone.secondary_structure, ss, mol.backbone.count * sizeof(md_secondary_structure_t));
             break;
         }
         case InterpolationMode::Linear: {
@@ -2566,7 +2564,7 @@ void draw_property_menu_widgets(PropertyItem* items, int num_items) {
     ImU32 col_txt_dis       = ImGui::GetColorU32(ImGuiCol_TextDisabled);
     // render each legend item
     float sum_label_width = 0;
-    bool any_item_hovered = false;
+    //bool any_item_hovered = false;
     for (int i = 0; i < num_items; ++i) {
         const char* label       = items[i].lbl.cstr();
         const float label_width = ImGui::CalcTextSize(label, NULL, true).x;
@@ -3062,8 +3060,8 @@ static void draw_distribution_window(ApplicationData* data) {
         }
 
         ImPlotAxisFlags axis_flags = 0;
-        ImPlotAxisFlags axis_flags_x = 0;
-        ImPlotAxisFlags axis_flags_y = 0;
+        ImPlotAxisFlags axis_flags_x = axis_flags | 0;
+        ImPlotAxisFlags axis_flags_y = axis_flags | 0;
         ImPlotFlags flags = ImPlotFlags_AntiAliased;
 
         // The distribution properties are always computed as histograms with a resolution of 1024
