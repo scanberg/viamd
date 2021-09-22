@@ -15,6 +15,7 @@
 #include <md_trajectory.h>
 #include <md_frame_cache.h>
 
+#include <core/md_sync.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_stack_allocator.h>
@@ -69,6 +70,7 @@
 #define VIAMD_RELEASE 0
 #define EXPERIMENTAL_CONE_TRACED_AO 0
 #define USE_MOLD 1
+#define COMPILATION_TIME_DELAY_IN_SECONDS 1.5
 
 #ifdef OS_MAC_OSX
 const Key::Key_t KEY_CONSOLE = Key::KEY_WORLD_1;
@@ -98,10 +100,10 @@ const Key::Key_t KEY_TOGGLE_SCREENSHOT_MODE = Key::KEY_F10;
 
 constexpr str_t FILE_EXTENSION = make_cstr("via"); 
 constexpr uint32_t INVALID_PICKING_IDX = ~0U;
-constexpr uint32_t DEL_BTN_COLOR = 0xFF1111CC;
-constexpr uint32_t DEL_BTN_HOVER_COLOR = 0xFF3333DD;
-constexpr uint32_t DEL_BTN_ACTIVE_COLOR = 0xFF5555FF;
+
 constexpr uint32_t TEXT_BG_ERROR_COLOR = 0xAA222299;
+
+constexpr uint32_t PROPERTY_COLORS[] = {4293119554, 4290017311, 4287291314, 4281114675, 4288256763, 4280031971, 4285513725, 4278222847, 4292260554, 4288298346, 4288282623, 4280834481};
 
 #ifdef VIAMD_RELEASE
 constexpr const char* CAFFINE_PDB = R"(
@@ -285,22 +287,34 @@ struct ApplicationData {
 
     // --- MOLD DATA ---
     struct {
-        md_gl_context_t       gl_ctx = {0};
-        md_gl_molecule_t      gl_mol = {0};
+        md_gl_context_t     gl_ctx = {0};
+        md_gl_molecule_t    gl_mol = {0};
         md_molecule_t       mol = {0};
         md_trajectory_i     traj = {0};
         md_frame_cache_t    frame_cache = {0};
 
         struct {
             md_script_ir_t    ir = {0};
-            md_script_eval_result_t eval = {0};
+            md_script_eval_t  full_eval = {0};
+            md_script_eval_t  filt_eval = {0};
+
+            md_exp_bitfield_t frame_mask = {0};
+
+            md_semaphore_t semaphore = {0};
+
+            bool compile_ir = false;
+            bool evaluate_full = false;
+            bool evaluate_filt = false;
+            double time_since_last_change = 0.0;
         } script;
         uint32_t dirty_buffers = {0};
     } mold;
 
     // --- ASYNC TASKS HANDLES ---
     struct {
-        task_system::ID load_trajectory;
+        task_system::ID prefetch_trajectory = task_system::INVALID_ID;
+        task_system::ID evaluate_full = task_system::INVALID_ID;
+        task_system::ID evaluate_filt = task_system::INVALID_ID;
     } tasks;
 
     // --- ATOM SELECTION ---
@@ -359,14 +373,22 @@ struct ApplicationData {
         bool apply_pbc = false;
     } animation;
 
-    // --- TIME LINE FILTERING ---
+    // --- TIMELINE---
     struct {
-        bool enabled = true;
-        double range_min = 0;
-        double range_max = 0;
-        bool dynamic_window = false;
-        float window_extent = 10.f;
-    } time_filter;
+        struct {
+            bool enabled = true;
+            double min = 0;
+            double max = 0;
+            
+            bool temporal_window = false;
+            float window_extent = 10.f;
+        } filter;
+
+        struct {
+            double min = 0;
+            double max = 1;
+        } view_range;
+    } timeline;
 
     // --- VISUALS ---
     struct {
@@ -500,7 +522,7 @@ struct ApplicationData {
 
         bool show_bounding_box = true;
         bool show_reference_structures = true;
-        bool show_single_reference = false;
+        bool show_reference_ensemble = false;
         bool show_target_atoms = false;
 
         md_gl_representation_t* gl_reps = 0;
@@ -583,90 +605,14 @@ struct ApplicationData {
     } trajectory_data;
 };
 
-// custom ImGui procedures
-namespace ImGui {
-static bool DeleteButton(const char* label, const ImVec2& size = ImVec2(0, 0));
-static void CreateDockspace();
-static void BeginCanvas(const char* id);
-static void EndCanvas();
-static void PushDisabled() {
-    ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
-    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
-}
-static void PopDisabled() {
-    ImGui::PopItemFlag();
-    ImGui::PopStyleVar();
-}
+struct PropertyItem {
+    StrBuf<32> lbl;
+    uint32_t col;
+    int idx;
+    bool show;
+};
 
-static bool ColorEdit3Minimal(const char* label, float color[3]) {
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
-    bool result = ImGui::ColorEdit3(label, color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_Float);
-    ImGui::PopStyleVar();
-    return result;
-}
-
-static bool ColorEdit4Minimal(const char* label, float color[4]) {
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
-    bool result = ImGui::ColorEdit4(label, color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_Float);
-    ImGui::PopStyleVar();
-    return result;
-}
-
-void init_theme() {
-    ImVec4* colors = ImGui::GetStyle().Colors;
-    colors[ImGuiCol_Text]                   = ImVec4(1.00f, 1.00f, 1.00f, 1.00f);
-    colors[ImGuiCol_TextDisabled]           = ImVec4(0.60f, 0.60f, 0.60f, 1.00f);
-    colors[ImGuiCol_WindowBg]               = ImVec4(0.00f, 0.00f, 0.00f, 0.67f);
-    colors[ImGuiCol_ChildBg]                = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
-    colors[ImGuiCol_PopupBg]                = ImVec4(0.11f, 0.11f, 0.14f, 0.92f);
-    colors[ImGuiCol_Border]                 = ImVec4(0.50f, 0.50f, 0.50f, 0.50f);
-    colors[ImGuiCol_BorderShadow]           = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
-    colors[ImGuiCol_FrameBg]                = ImVec4(0.43f, 0.43f, 0.43f, 0.39f);
-    colors[ImGuiCol_FrameBgHovered]         = ImVec4(0.70f, 0.70f, 0.70f, 0.40f);
-    colors[ImGuiCol_FrameBgActive]          = ImVec4(0.65f, 0.65f, 0.65f, 0.69f);
-    colors[ImGuiCol_TitleBg]                = ImVec4(0.07f, 0.07f, 0.07f, 0.83f);
-    colors[ImGuiCol_TitleBgActive]          = ImVec4(0.00f, 0.00f, 0.00f, 0.87f);
-    colors[ImGuiCol_TitleBgCollapsed]       = ImVec4(0.00f, 0.00f, 0.00f, 0.20f);
-    colors[ImGuiCol_MenuBarBg]              = ImVec4(0.55f, 0.55f, 0.55f, 0.80f);
-    colors[ImGuiCol_ScrollbarBg]            = ImVec4(0.21f, 0.21f, 0.21f, 0.60f);
-    colors[ImGuiCol_ScrollbarGrab]          = ImVec4(0.83f, 0.83f, 0.83f, 0.30f);
-    colors[ImGuiCol_ScrollbarGrabHovered]   = ImVec4(0.83f, 0.83f, 0.83f, 0.40f);
-    colors[ImGuiCol_ScrollbarGrabActive]    = ImVec4(0.81f, 0.81f, 0.81f, 0.60f);
-    colors[ImGuiCol_CheckMark]              = ImVec4(0.90f, 0.90f, 0.90f, 0.50f);
-    colors[ImGuiCol_SliderGrab]             = ImVec4(1.00f, 1.00f, 1.00f, 0.30f);
-    colors[ImGuiCol_SliderGrabActive]       = ImVec4(0.82f, 0.82f, 0.82f, 0.60f);
-    colors[ImGuiCol_Button]                 = ImVec4(0.64f, 0.64f, 0.64f, 0.62f);
-    colors[ImGuiCol_ButtonHovered]          = ImVec4(0.72f, 0.72f, 0.72f, 0.79f);
-    colors[ImGuiCol_ButtonActive]           = ImVec4(0.80f, 0.80f, 0.81f, 0.85f);
-    colors[ImGuiCol_Header]                 = ImVec4(0.64f, 0.64f, 0.64f, 0.45f);
-    colors[ImGuiCol_HeaderHovered]          = ImVec4(0.65f, 0.65f, 0.65f, 0.80f);
-    colors[ImGuiCol_HeaderActive]           = ImVec4(0.85f, 0.85f, 0.85f, 0.80f);
-    colors[ImGuiCol_Separator]              = ImVec4(0.50f, 0.50f, 0.50f, 1.00f);
-    colors[ImGuiCol_SeparatorHovered]       = ImVec4(0.71f, 0.71f, 0.71f, 1.00f);
-    colors[ImGuiCol_SeparatorActive]        = ImVec4(0.90f, 0.90f, 0.90f, 1.00f);
-    colors[ImGuiCol_ResizeGrip]             = ImVec4(1.00f, 1.00f, 1.00f, 0.16f);
-    colors[ImGuiCol_ResizeGripHovered]      = ImVec4(1.00f, 1.00f, 1.00f, 0.47f);
-    colors[ImGuiCol_ResizeGripActive]       = ImVec4(1.00f, 0.96f, 1.00f, 0.63f);
-    colors[ImGuiCol_Tab]                    = ImVec4(0.56f, 0.56f, 0.56f, 0.78f);
-    colors[ImGuiCol_TabHovered]             = ImVec4(0.87f, 0.87f, 0.87f, 0.80f);
-    colors[ImGuiCol_TabActive]              = ImVec4(0.73f, 0.73f, 0.73f, 0.84f);
-    colors[ImGuiCol_TabUnfocused]           = ImVec4(0.57f, 0.57f, 0.57f, 0.82f);
-    colors[ImGuiCol_TabUnfocusedActive]     = ImVec4(0.65f, 0.65f, 0.65f, 0.84f);
-    colors[ImGuiCol_DockingPreview]         = ImVec4(0.90f, 0.90f, 0.90f, 0.31f);
-    colors[ImGuiCol_DockingEmptyBg]         = ImVec4(0.20f, 0.20f, 0.20f, 1.00f);
-    colors[ImGuiCol_PlotLines]              = ImVec4(1.00f, 1.00f, 1.00f, 1.00f);
-    colors[ImGuiCol_PlotLinesHovered]       = ImVec4(0.90f, 0.70f, 0.00f, 1.00f);
-    colors[ImGuiCol_PlotHistogram]          = ImVec4(0.90f, 0.70f, 0.00f, 1.00f);
-    colors[ImGuiCol_PlotHistogramHovered]   = ImVec4(1.00f, 0.60f, 0.00f, 1.00f);
-    colors[ImGuiCol_TextSelectedBg]         = ImVec4(0.00f, 0.00f, 1.00f, 0.35f);
-    colors[ImGuiCol_DragDropTarget]         = ImVec4(1.00f, 1.00f, 0.00f, 0.90f);
-    colors[ImGuiCol_NavHighlight]           = ImVec4(0.45f, 0.45f, 0.90f, 0.80f);
-    colors[ImGuiCol_NavWindowingHighlight]  = ImVec4(1.00f, 1.00f, 1.00f, 0.70f);
-    colors[ImGuiCol_NavWindowingDimBg]      = ImVec4(0.80f, 0.80f, 0.80f, 0.20f);
-    colors[ImGuiCol_ModalWindowDimBg]       = ImVec4(0.20f, 0.20f, 0.20f, 0.35f);
-}
-
-}  // namespace ImGui
+//static void postprocess_frame(md_frame_data_t* frame, void* user_data);
 
 static void interpolate_atomic_properties(ApplicationData* data);
 static void update_view_param(ApplicationData* data);
@@ -708,7 +654,7 @@ static void draw_async_task_window(ApplicationData* data);
 //static void draw_reference_frame_window(ApplicationData* data);
 //static void draw_shape_space_window(ApplicationData* data);
 static void draw_volume_window(ApplicationData* data);
-static void draw_script_editor_window(ApplicationData* data);
+static void draw_property_editor_window(ApplicationData* data);
 static void draw_dataset_window(ApplicationData* data);
 // static void draw_density_volume_clip_plane_widgets(ApplicationData* data);
 // static void draw_selection_window(ApplicationData* data);
@@ -846,6 +792,9 @@ int main(int, char**) {
     md_bitfield_init(&data.selection.current_selection_mask, persistent_allocator);
     md_bitfield_init(&data.selection.current_highlight_mask, persistent_allocator);
     md_bitfield_init(&data.representations.atom_visibility_mask, persistent_allocator);
+    md_bitfield_init(&data.mold.script.frame_mask, persistent_allocator);
+
+    md_semaphore_init(&data.mold.script.semaphore, 1);
 
     md_logger_i logger = {
         .inst = (md_logger_o*)&data.console,
@@ -908,7 +857,7 @@ int main(int, char**) {
 
     load_dataset_from_file(&data, make_cstr(VIAMD_DATASET_DIR "/1ALA-500.pdb"));
     create_representation(&data, RepresentationType::Vdw, ColorMapping::Cpk, make_cstr("protein"));
-    data.script.editor.SetText("d1 = distance(10,30);\na1 = angle(1,2,3) in resname(\"ALA\");\nv = sdf(resname(\"ALA\")[2:10], element('H'), 10.0);");
+    data.script.editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(1,2,3) in resname(\"ALA\");\nv = sdf(s1, element('H'), 10.0);");
 
     reset_view(&data, true);
     recompute_atom_visibility_mask(&data);
@@ -1045,10 +994,15 @@ int main(int, char**) {
             }
         }
 
-        if (data.time_filter.dynamic_window) {
-            const auto half_window_ext = data.time_filter.window_extent * 0.5f;
-            data.time_filter.range_min = CLAMP(data.animation.time - half_window_ext, 0.0, max_time);
-            data.time_filter.range_max = CLAMP(data.animation.time + half_window_ext, 0.0, max_time);
+        if (data.timeline.filter.temporal_window) {
+            double pre_min = data.timeline.filter.min;
+            double pre_max = data.timeline.filter.max;
+            const auto half_window_ext = data.timeline.filter.window_extent * 0.5f;
+            data.timeline.filter.min = CLAMP(data.animation.time - half_window_ext, 0.0, max_time);
+            data.timeline.filter.max = CLAMP(data.animation.time + half_window_ext, 0.0, max_time);
+            if (data.timeline.filter.min != pre_min || data.timeline.filter.max != pre_max) {
+                data.mold.script.evaluate_filt = true;
+            }
         }
 
         if (time_changed) {
@@ -1108,6 +1062,130 @@ int main(int, char**) {
             if (!time_stopped) {
                 time_stopped = true;
                 data.mold.dirty_buffers |= MolBit_DirtyPosition;
+            }
+        }
+
+        if (data.mold.script.compile_ir) {
+            data.mold.script.time_since_last_change += data.ctx.timing.delta_s;
+
+            if (data.mold.script.time_since_last_change > COMPILATION_TIME_DELAY_IN_SECONDS) {
+                // We cannot recompile while it is evaluating.
+                // Need to interrupt and wait for tasks to finish.
+                md_script_eval_interrupt(&data.mold.script.full_eval);
+                md_script_eval_interrupt(&data.mold.script.filt_eval);
+
+                // Try aquire 2 semaphores
+                if ( md_semaphore_try_aquire(&data.mold.script.semaphore) &&
+                    // md_semaphore_try_aquire(&data.mold.script.semaphore)
+                    ) {
+                    // Now we hold all resources for the script
+                    data.mold.script.compile_ir = false;
+                    data.mold.script.time_since_last_change = 0;
+
+                    TextEditor& editor = data.script.editor;
+
+                    std::string src = editor.GetText();
+                    str_t str = {.ptr = src.data(), .len = (int64_t)src.length()};
+                    md_script_ir_compile_args_t args = {
+                        .src = str,
+                        .mol = &data.mold.mol,
+                        .alloc = default_allocator,
+                    };
+
+                    editor.ClearMarkers();
+                    editor.ClearErrorMarkers();
+
+                    if (md_script_ir_compile(&data.mold.script.ir, args)) {
+                        data.mold.script.evaluate_full = true;
+                        data.mold.script.evaluate_filt = true;
+                    }
+
+                    // Before we release the compute-dogs we want to allocate the data for the evaluations
+                    md_script_eval_alloc(&data.mold.script.full_eval, data.mold.traj.num_frames, &data.mold.script.ir, persistent_allocator);
+                    md_script_eval_alloc(&data.mold.script.filt_eval, data.mold.traj.num_frames, &data.mold.script.ir, persistent_allocator);
+
+                    md_semaphore_release(&data.mold.script.semaphore);
+                    //md_semaphore_release(&data.mold.script.semaphore);
+
+                    TextEditor::ErrorMarkers markers;
+                    const int64_t num_errors = data.mold.script.ir.num_errors;
+                    if (num_errors) {
+                        const md_script_error_t* errors = data.mold.script.ir.errors;
+                        for (int64_t i = 0; i < num_errors; ++i) {
+                            std::string err_str(errors[i].error.ptr, errors[i].error.len);
+                            std::pair<int, std::string> pair = {errors[i].line, err_str};
+                            markers.insert(pair);
+                        }
+                    }
+                    editor.SetErrorMarkers(markers);
+
+                    for (int64_t i = 0; i < data.mold.script.ir.num_tokens; ++i) {
+                        const md_script_token_t& tok = data.mold.script.ir.tokens[i];
+                        TextEditor::Marker marker = {0};
+                        marker.begCol = tok.col_beg;
+                        marker.endCol = tok.col_end;
+                        marker.bgColor = ImVec4(1,1,1,0.5);
+                        marker.depth = tok.depth;
+                        marker.line = tok.line;
+                        marker.onlyShowBgOnMouseOver = true;
+                        marker.text = std::string(tok.text.ptr, tok.text.len);
+                        marker.payload = (void*)tok.vis_token;
+                        editor.AddMarker(marker);
+                    }    
+                }
+            }
+        }
+
+        if (data.mold.script.evaluate_full) {
+            if (data.tasks.evaluate_full.id != 0) {
+                md_script_eval_interrupt(&data.mold.script.full_eval);
+            } else if (md_semaphore_try_aquire(&data.mold.script.semaphore)) {
+                data.mold.script.evaluate_full = false;
+                data.tasks.evaluate_full = task_system::enqueue_pool("Eval Full", 1, [&data](task_system::TaskSetRange range) {
+                    md_script_eval_args_t args = {
+                        .ir = &data.mold.script.ir,
+                        .mol = &data.mold.mol,
+                        .traj = &data.mold.traj,
+                        .frame_cache = &data.mold.frame_cache,
+                        .filter_mask = NULL,
+                    };
+
+                    md_script_eval_compute(&data.mold.script.full_eval, args);
+
+                    task_system::enqueue_main("Eval Complete", [&data]() {
+                        data.tasks.evaluate_full.id = 0;
+                        md_semaphore_release(&data.mold.script.semaphore);
+                    });
+                });
+            }
+        }
+
+        if (data.mold.script.evaluate_filt) {
+            if (data.tasks.evaluate_filt.id != 0) {
+                md_script_eval_interrupt(&data.mold.script.filt_eval);
+            } else if (md_semaphore_try_aquire(&data.mold.script.semaphore)) {
+                data.mold.script.evaluate_filt = false;
+                data.tasks.evaluate_filt = task_system::enqueue_pool("Eval Filt", 1, [&data](task_system::TaskSetRange range) {
+                    int64_t beg_frame = CLAMP((int64_t)data.timeline.filter.min, 0, data.mold.traj.num_frames);
+                    int64_t end_frame = CLAMP((int64_t)data.timeline.filter.max, 0, data.mold.traj.num_frames);
+                    end_frame = MAX(beg_frame + 1, end_frame);
+                    md_bitfield_clear(&data.mold.script.frame_mask);
+                    md_bitfield_set_range(&data.mold.script.frame_mask, beg_frame, end_frame);
+
+                    md_script_eval_args_t args = {
+                        .ir = &data.mold.script.ir,
+                        .mol = &data.mold.mol,
+                        .traj = &data.mold.traj,
+                        .frame_cache = &data.mold.frame_cache,
+                        .filter_mask = &data.mold.script.frame_mask
+                    };
+
+                    md_script_eval_compute(&data.mold.script.filt_eval, args);
+                    task_system::enqueue_main("Eval Complete", [&data]() {
+                        data.tasks.evaluate_filt.id = 0;
+                        md_semaphore_release(&data.mold.script.semaphore);
+                    });
+                });
             }
         }
 
@@ -1179,7 +1257,7 @@ int main(int, char**) {
         //if (data.ramachandran.show_window) draw_ramachandran_window(&data);
         //if (data.shape_space.show_window) draw_shape_space_window(&data);
         if (data.density_volume.show_window) draw_volume_window(&data);
-        if (data.script.show_editor) draw_script_editor_window(&data);
+        if (data.script.show_editor) draw_property_editor_window(&data);
         if (data.dataset.show_window) draw_dataset_window(&data);
 
         // @NOTE: ImGui::GetIO().WantCaptureMouse does not work with Menu
@@ -1276,13 +1354,13 @@ static void interpolate_atomic_properties(ApplicationData* data) {
     mat3_t box = {};
     switch (mode) {
         case InterpolationMode::Nearest:
-            md_frame_cache_load_frame_data(&data->mold.frame_cache, nearest_frame, mol.atom.x, mol.atom.y, mol.atom.z, box.elem, NULL);
+            md_frame_cache_load_frame_data(&data->mold.frame_cache, nearest_frame, mol.atom.x, mol.atom.y, mol.atom.z, box.elem, NULL, NULL, NULL);
             //load::traj::load_trajectory_frame_box(traj_ptr, (float*(*)[3])&box, nearest_frame);
             break;
         case InterpolationMode::Linear:
         {
-            md_frame_cache_load_frame_data(&data->mold.frame_cache, frames[1], x[0], y[0], z[0], boxes[0].elem, NULL);
-            md_frame_cache_load_frame_data(&data->mold.frame_cache, frames[2], x[1], y[1], z[1], boxes[1].elem, NULL);
+            md_frame_cache_load_frame_data(&data->mold.frame_cache, frames[1], x[0], y[0], z[0], boxes[0].elem, NULL, NULL, NULL);
+            md_frame_cache_load_frame_data(&data->mold.frame_cache, frames[2], x[1], y[1], z[1], boxes[1].elem, NULL, NULL, NULL);
 
             box = lerp(boxes[0], boxes[1], t);
 
@@ -1316,10 +1394,10 @@ static void interpolate_atomic_properties(ApplicationData* data) {
             break;
         case InterpolationMode::Cubic:
         {
-            md_frame_cache_load_frame_data(&data->mold.frame_cache, frames[0], x[0], y[0], z[0], boxes[0].elem, NULL);
-            md_frame_cache_load_frame_data(&data->mold.frame_cache, frames[1], x[1], y[1], z[1], boxes[1].elem, NULL);
-            md_frame_cache_load_frame_data(&data->mold.frame_cache, frames[2], x[2], y[2], z[2], boxes[2].elem, NULL);
-            md_frame_cache_load_frame_data(&data->mold.frame_cache, frames[3], x[3], y[3], z[3], boxes[3].elem, NULL);
+            md_frame_cache_load_frame_data(&data->mold.frame_cache, frames[0], x[0], y[0], z[0], boxes[0].elem, NULL, NULL, NULL);
+            md_frame_cache_load_frame_data(&data->mold.frame_cache, frames[1], x[1], y[1], z[1], boxes[1].elem, NULL, NULL, NULL);
+            md_frame_cache_load_frame_data(&data->mold.frame_cache, frames[2], x[2], y[2], z[2], boxes[2].elem, NULL, NULL, NULL);
+            md_frame_cache_load_frame_data(&data->mold.frame_cache, frames[3], x[3], y[3], z[3], boxes[3].elem, NULL, NULL, NULL);
 
             box = cubic_spline(boxes[0], boxes[1], boxes[2], boxes[3], t);
 
@@ -1606,66 +1684,6 @@ static void compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, con
         aabb_max->z = MAX(aabb_max->z, z[i]);
     }
 }
-
-// #imgui
-namespace ImGui {
-
-static void CreateDockspace() {
-    // Invisible dockspace
-    ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->Pos);
-    ImGui::SetNextWindowSize(viewport->Size);
-    ImGui::SetNextWindowViewport(viewport->ID);
-    ImGui::SetNextWindowBgAlpha(0.0f);
-
-    const ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
-ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
-ImGuiWindowFlags_NoNavFocus;
-
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::Begin("DockspaceWindow", NULL, window_flags);
-    ImGui::PopStyleVar(3);
-
-    // ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruDockspace;
-    const ImGuiID id = ImGui::GetID("Dockspace");
-    const ImGuiDockNodeFlags flags = ImGuiDockNodeFlags_PassthruCentralNode;
-    ImGui::DockSpace(id, ImVec2(0.0f, 0.0f), flags);
-
-    ImGui::End();
-}
-
-static void BeginCanvas(const char* id) {
-    // Invisible Canvas
-    ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->Pos);
-    ImGui::SetNextWindowSize(viewport->Size);
-    ImGui::SetNextWindowViewport(viewport->ID);
-    ImGui::SetNextWindowBgAlpha(0.0f);
-
-    const ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
-                                          ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                                          ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoInputs;
-
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::Begin(id, NULL, window_flags);
-    ImGui::PopStyleVar(3);
-}
-
-static void EndCanvas() { ImGui::End(); }
-
-static bool DeleteButton(const char* label, const ImVec2& size) {
-    PushStyleColor(ImGuiCol_Button, DEL_BTN_COLOR);
-    PushStyleColor(ImGuiCol_ButtonHovered, DEL_BTN_HOVER_COLOR);
-    PushStyleColor(ImGuiCol_ButtonActive, DEL_BTN_ACTIVE_COLOR);
-    defer { PopStyleColor(3); };
-    return ImGui::Button(label, size);
-}
-
-}  // namespace ImGui
 
 static void grow_mask_by_covalent_bond(md_exp_bitfield_t* mask, md_bond_t* bonds, int64_t num_bonds, int64_t extent) {
     md_exp_bitfield_t prev_mask;
@@ -2233,7 +2251,7 @@ static void draw_animation_control_window(ApplicationData* data) {
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Animation Speed in Frames Per Second");
     }
-    if (ImGui::Combo("Interpolation", (int*)(&data->animation.interpolation), "Nearest\0Linear\0Cubic\0\0")) {
+    if (ImGui::Combo("Interp.", (int*)(&data->animation.interpolation), "Nearest\0Linear\0Cubic\0\0")) {
         interpolate_atomic_properties(data);
     }
     ImGui::Checkbox("Apply PBC", &data->animation.apply_pbc);
@@ -2532,12 +2550,158 @@ static void draw_async_task_window(ApplicationData* data) {
     }
 }
 
+void draw_property_menu_widgets(PropertyItem* items, int num_items) {
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    ASSERT(draw_list);
+    ImVec2 pos = ImGui::GetWindowPos();
+
+    ImGuiIO& IO = ImGui::GetIO();
+    // vars
+    const ImVec2 pad = {5,5};
+    const ImVec2 spacing = {5,0};
+    const float txt_ht      = ImGui::GetTextLineHeight();
+    const float icon_size   = txt_ht;
+    const float icon_shrink = 2;
+    ImU32 col_txt           = ImGui::GetColorU32(ImGuiCol_Text);
+    ImU32 col_txt_dis       = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    // render each legend item
+    float sum_label_width = 0;
+    bool any_item_hovered = false;
+    for (int i = 0; i < num_items; ++i) {
+        const char* label       = items[i].lbl.cstr();
+        const float label_width = ImGui::CalcTextSize(label, NULL, true).x;
+        const ImVec2 top_left   = pos + pad + ImVec2(0, i * (txt_ht + spacing.y));
+        sum_label_width        += label_width;
+        ImRect icon_bb;
+        icon_bb.Min = top_left + ImVec2(icon_shrink,icon_shrink);
+        icon_bb.Max = top_left + ImVec2(icon_size - icon_shrink, icon_size - icon_shrink);
+        ImRect label_bb;
+        label_bb.Min = top_left;
+        label_bb.Max = top_left + ImVec2(label_width + icon_size, icon_size);
+        ImU32 col_txt_hl;
+        ImU32 col_item = ImAlphaU32(items[i].col,1);
+
+        bool icon_hov = false;
+        bool icon_hld = false;
+        ImGui::PushID(i);
+        uint32_t id = ImGui::GetID("btn");
+        ImGui::ItemAdd(label_bb, id);
+        bool icon_clk = ImGui::ButtonBehavior(icon_bb, id, &icon_hov, &icon_hld);
+        ImGui::PopID();
+        if (icon_clk)
+            items[i].show = !items[i].show;
+
+        if (icon_hov || label_bb.Contains(IO.MousePos)) {
+            col_txt_hl = ImMixU32(col_txt, col_item, 64);
+        }
+        else {
+            col_txt_hl = ImGui::GetColorU32(col_txt);
+        }
+        ImU32 col_icon;
+        if (icon_hld)
+            col_icon = items[i].show ? ImAlphaU32(col_item,0.5f) : ImGui::GetColorU32(ImGuiCol_TextDisabled, 0.5f);
+        else if (icon_hov)
+            col_icon = items[i].show ? ImAlphaU32(col_item,0.75f) : ImGui::GetColorU32(ImGuiCol_TextDisabled, 0.75f);
+        else
+            col_icon = items[i].show ? col_item : col_txt_dis;
+
+        draw_list->AddRectFilled(icon_bb.Min, icon_bb.Max, col_icon, 1);
+        const char* text_display_end = ImGui::FindRenderedTextEnd(label, NULL);
+        if (label != text_display_end)
+            draw_list->AddText(top_left + ImVec2(icon_size, 0), items[i].show ? col_txt_hl  : col_txt_dis, label, text_display_end);
+    }
+}
+
+// #timeline
 static void draw_timeline_window(ApplicationData* data) {
     ASSERT(data);
     ImGui::SetNextWindowSize(ImVec2(600, 300), ImGuiCond_FirstUseEver);
 
-    if (ImGui::Begin("Temporal", &data->statistics.show_timeline_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+    if (ImGui::Begin("Temporal", &data->statistics.show_timeline_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
 
+        double pre_filter_min = data->timeline.filter.min;
+        double pre_filter_max = data->timeline.filter.max;
+
+        static PropertyItem s_props[32] = {};
+        static int s_num_props = 0;
+        static uint64_t s_fingerprint = 0;
+
+        int num_time_values = (int)data->mold.traj.num_frames;
+        float* time_values = (float*)md_alloc(frame_allocator, num_time_values * sizeof(float));
+        defer {
+            md_free(frame_allocator, time_values, num_time_values * sizeof(float));
+        };
+        for (int64_t i = 0; i < num_time_values; ++i) {
+            //time_values[i] = (float)i / (float)(num_time_values - 1);
+            time_values[i] = (float)i;
+        }
+
+        const double max_time_value = num_time_values > 0 ? time_values[num_time_values - 1] : 1.0;
+
+        if (s_fingerprint != data->mold.script.full_eval.fingerprint) {
+            PropertyItem new_props[ARRAY_SIZE(s_props)] = {};
+            int num_new_props = 0;
+
+            md_script_property_t* props = data->mold.script.full_eval.properties;
+            for (int64_t i = 0; i < data->mold.script.full_eval.num_properties; ++i) {
+                if (props[i].type != MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) continue;
+
+                bool show = true;
+                for (int64_t j = 0; j < s_num_props; ++j) {
+                    if (compare_str(props[i].ident, s_props[j].lbl)) {
+                        show = s_props[j].show;
+                    }
+                }
+                PropertyItem p = {
+                    .lbl = props[i].ident,
+                    .col = PROPERTY_COLORS[i % ARRAY_SIZE(PROPERTY_COLORS)],
+                    .idx = (int)i,
+                    .show = show
+                };
+
+                new_props[num_new_props++] = p;
+            }
+            
+            memcpy(s_props, new_props, sizeof(new_props));
+            s_num_props = num_new_props;
+        }
+
+        if (ImGui::BeginMenuBar())
+        {
+            if (ImGui::BeginMenu("Properties")) {
+                //draw_property_menu_widgets(s_props, s_num_props);
+                
+                if (s_num_props) {
+                    for (int i = 0; i < s_num_props; ++i) {
+                        ImPlot::ItemIcon(s_props[i].col); ImGui::SameLine();
+                        ImGui::Selectable(s_props[i].lbl.cstr(), &s_props[i].show, 0, ImVec2(50, 0));
+                    }
+                } else {
+                    ImGui::Text("No properties to show.");
+                }
+                
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Filter")) {
+                ImGui::Checkbox("Enabled", &data->timeline.filter.enabled);
+                if (data->timeline.filter.enabled) {
+                    ImGui::Checkbox("Temporal Window", &data->timeline.filter.temporal_window);
+                    if (data->timeline.filter.temporal_window) {
+                        ImGui::SliderFloat("Extent", &data->timeline.filter.window_extent, 1.0f, (float)max_time_value);
+                    }
+                }
+
+                ImGui::EndMenu();
+            }
+
+            ImGui::EndMenuBar();
+        }
+
+        if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
+            data->animation.mode = data->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
+        }
+
+        /*
         // convenience struct to manage DND items; do this however you like
         struct DndItem {
             char    label[16] = {};
@@ -2550,147 +2714,261 @@ static void draw_timeline_window(ApplicationData* data) {
 
         static DndItem  dnd[32];
         int             num_dnd = 0;
+        */
 
         // This is for the time stamps along the x-axis.
         // If we don't have any specific time points for the frames, we just use the indices as time points.
 
-        int num_time_values = (int)data->mold.traj.num_frames;
-        float* time_values = (float*)md_alloc(frame_allocator, num_time_values * sizeof(float));
-        defer {
-            md_free(frame_allocator, time_values, num_time_values * sizeof(float));
-        };
-        for (int64_t i = 0; i < num_time_values; ++i) {
-            //time_values[i] = (float)i / (float)(num_time_values - 1);
-            time_values[i] = (float)i;
-        }
 
-        ASSERT(num_time_values > 0);
-        const double max_time_value = time_values[num_time_values - 1];
 
-        for (int64_t i = 0; i < data->mold.script.eval.num_properties; i++) {
-            auto& prop = data->mold.script.eval.properties[i];
-            if (prop.type != MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) continue;
+        if (num_time_values > 0) {
 
-            ASSERT(num_dnd < ARRAY_SIZE(dnd));
-            int idx = num_dnd++;
-            dnd[idx] = {
-                .label = {0},
-                .num_values = prop.data.aggregate ? (int)prop.data.aggregate->num_values : (int)prop.data.num_values,
-                .values = prop.data.aggregate ? prop.data.aggregate->mean : prop.data.values,
-                .variance = prop.data.aggregate ? prop.data.aggregate->variance : NULL,
-                .color = vec_cast(qualitative_color_scale(idx)),
-                .plot = dnd[idx].plot
-            };
-            const size_t cpy_size = ARRAY_SIZE(dnd[num_dnd-1].label) < prop.ident.len ? ARRAY_SIZE(dnd[num_dnd-1].label) : prop.ident.len;
-            strncpy(dnd[num_dnd-1].label, prop.ident.ptr, cpy_size);
-        }
+            /*
+            for (int64_t i = 0; i < data->mold.script.full_eval.num_properties; i++) {
+                auto& prop = data->mold.script.full_eval.properties[i];
+                if (prop.type != MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) continue;
 
-        // child window to serve as initial source for our DND items
-        ImGui::BeginChild("DND_LEFT",ImVec2(100,-1));
-        if (ImGui::Button("Reset", ImVec2(100, 0))) {
-            for (int i = 0; i < num_dnd; ++i)
-                dnd[i].plot = 0;
-        }
-        for (int k = 0; k < num_dnd; ++k) {
-            if (dnd[k].plot > 0)
-                continue;
-            ImPlot::ItemIcon(dnd[k].color); ImGui::SameLine();
-            ImGui::Selectable(dnd[k].label, false, 0, ImVec2(100, 0));
-            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
-                ImGui::SetDragDropPayload("MY_DND", &k, sizeof(int));
-                ImPlot::ItemIcon(dnd[k].color); ImGui::SameLine();
-                ImGui::TextUnformatted(dnd[k].label);
-                ImGui::EndDragDropSource();
+                ASSERT(num_dnd < ARRAY_SIZE(dnd));
+                int idx = num_dnd++;
+                dnd[idx] = {
+                    .label = {0},
+                    .num_values = prop.data.aggregate ? (int)prop.data.aggregate->num_values : (int)prop.data.num_values,
+                    .values = prop.data.aggregate ? prop.data.aggregate->mean : prop.data.values,
+                    .variance = prop.data.aggregate ? prop.data.aggregate->variance : NULL,
+                    .color = vec_cast(qualitative_color_scale(idx)),
+                    .plot = dnd[idx].plot
+                };
+                const size_t cpy_size = ARRAY_SIZE(dnd[num_dnd-1].label) < prop.ident.len ? ARRAY_SIZE(dnd[num_dnd-1].label) : prop.ident.len;
+                strncpy(dnd[num_dnd-1].label, prop.ident.ptr, cpy_size);
             }
-        }
-        ImGui::EndChild();
-        
-        if (ImGui::BeginDragDropTarget()) {
-            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MY_DND")) {
-                int i = *(int*)payload->Data;
-                dnd[i].plot = 0;
+            */
+
+            /*
+            // child window to serve as initial source for our DND items
+            ImGui::BeginChild("DND_LEFT",ImVec2(100,-1));
+            if (ImGui::Button("Reset", ImVec2(100, 0))) {
+                for (int i = 0; i < num_dnd; ++i)
+                    dnd[i].plot = 0;
             }
-            ImGui::EndDragDropTarget();
-        }
-
-        ImGui::SameLine();
-        ImGui::BeginChild("DND_RIGHT",ImVec2(-1,-1));
-        
-        ImPlotAxisFlags axis_flags = 0;
-        ImPlotAxisFlags axis_flags_x = axis_flags;
-        ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit;
-        ImPlotFlags flags = ImPlotFlags_AntiAliased;
-
-        static bool need_refit = false;
-        if (need_refit) {
-            ImPlot::FitNextPlotAxes();
-            need_refit = false;
-        }
-
-        bool pop_item_flags = false;
-        if (ImGui::GetIO().KeyCtrl) {
-            ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
-            pop_item_flags = true;
-        }
-
-        if (ImPlot::BeginPlot("##Timeline", NULL, NULL, ImVec2(-1,-1), flags, axis_flags_x, axis_flags_y)) {
-
-            ImPlotPlot* plot = ImPlot::GetCurrentPlot();
-            plot->XAxis.Range.Min = MAX(plot->XAxis.Range.Min, 0);
-            plot->XAxis.Range.Max = MIN(plot->XAxis.Range.Max, max_time_value);
-
-            ImPlot::DragRangeX("Time Filter", &data->time_filter.range_min, &data->time_filter.range_max);
-
             for (int k = 0; k < num_dnd; ++k) {
-                if (dnd[k].plot == 1 && dnd[k].num_values > 0) {
-                    ASSERT(dnd[k].num_values == num_time_values);
-                    ImPlot::SetNextLineStyle(dnd[k].color);
-                    ImPlot::PlotLine(dnd[k].label, time_values, dnd[k].values, dnd[k].num_values);
-                    // allow legend item labels to be DND sources
-                    if (ImPlot::BeginDragDropSourceItem(dnd[k].label)) {
+                if (dnd[k].plot > 0)
+                    continue;
+                ImPlot::ItemIcon(dnd[k].color); ImGui::SameLine();
+                ImGui::Selectable(dnd[k].label, false, 0, ImVec2(100, 0));
+                if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
+                    ImGui::SetDragDropPayload("MY_DND", &k, sizeof(int));
+                    ImPlot::ItemIcon(dnd[k].color); ImGui::SameLine();
+                    ImGui::TextUnformatted(dnd[k].label);
+                    ImGui::EndDragDropSource();
+                }
+            }
+            ImGui::EndChild();
+            */
+        
+            /*
+            if (ImGui::BeginDragDropTarget()) {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MY_DND")) {
+                    int i = *(int*)payload->Data;
+                    dnd[i].plot = 0;
+                }
+                ImGui::EndDragDropTarget();
+            }
+            */
+
+            //ImGui::SameLine();
+            //ImGui::BeginChild("DND_RIGHT",ImVec2(-1,-1));
+        
+            ImPlotAxisFlags axis_flags = 0;
+            ImPlotAxisFlags axis_flags_x = axis_flags;
+            ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit;
+            ImPlotFlags flags = ImPlotFlags_AntiAliased;
+    /*
+            static bool need_refit = false;
+            if (need_refit) {
+                ImPlot::FitNextPlotAxes();
+                need_refit = false;
+            }
+            */
+
+            static double x_min = 0;
+            static double x_max = 1;
+
+            ImPlotInputMap old_map = ImPlot::GetInputMap();
+
+            ImPlotInputMap& map = ImPlot::GetInputMap();
+            //map.BoxSelectButton = 0;
+            //map.BoxSelectCancelButton = 0;
+            //map.BoxSelectMod = 0;
+            //map.PanMod
+            map.PanButton = ImGuiMouseButton_Right;
+            map.BoxSelectButton = ImGuiMouseButton_Right;
+            map.BoxSelectCancelButton = ImGuiMouseButton_Left;
+            map.BoxSelectMod = ImGuiKeyModFlags_Shift;
+            map.QueryButton = -1;
+            map.QueryMod = -1;
+            map.QueryToggleMod = -1;
+            map.ContextMenuButton = -1;
+            map.FitButton = ImGuiMouseButton_Right;
+
+            const int64_t num_props = data->mold.script.full_eval.num_properties;
+
+            static bool is_dragging = false;
+            static bool is_selecting = false;
+
+            if (!ImGui::IsMouseDown(0)) {
+                is_dragging = false;
+                is_selecting = false;
+            }
+
+            data->timeline.view_range.min = MAX(data->timeline.view_range.min, 0);
+            data->timeline.view_range.max = MIN(data->timeline.view_range.max, num_time_values);
+
+            if (num_props == 0) {
+                ImPlot::LinkNextPlotLimits(&data->timeline.view_range.min, &data->timeline.view_range.max, 0, 0);
+                if (ImPlot::BeginPlot("##Timeline", NULL, NULL, ImVec2(-1,150), flags, axis_flags_x, axis_flags_y)) {
+                    ImPlot::DragRangeX("Time Filter", &data->timeline.filter.min, &data->timeline.filter.max, 0, max_time_value);
+                    ImPlot::DragLineX("Current Time", &data->animation.time, true, ImVec4(1,1,0,1));
+                    ImPlot::EndPlot();
+                }
+            }
+            else {
+                for (int64_t i = 0; i < s_num_props; ++i) {
+                    if (s_props[i].show == false) continue;
+                    const md_script_property_t& prop = data->mold.script.full_eval.properties[s_props[i].idx];
+
+                    ImGui::PushID(i);
+                    ImPlot::LinkNextPlotLimits(&data->timeline.view_range.min, &data->timeline.view_range.max, 0, 0);
+                    if (ImPlot::BeginPlot("##Timeline", NULL, NULL, ImVec2(-1,150), flags, axis_flags_x, axis_flags_y)) {
+
+
+                        if (ImGui::IsItemHovered() && ImGui::IsItemActive()) {
+                            double x = ImPlot::GetPlotMousePos().x;
+                            if (is_dragging) {
+                                data->animation.time = x;
+                            }
+                            else if (is_selecting) {
+                                data->timeline.filter.max = CLAMP(x, data->timeline.filter.min, max_time_value);
+                            }
+                            else if (ImGui::IsMouseDown(0)) {
+                                switch (ImGui::GetIO().KeyMods) {
+                                case ImGuiKeyModFlags_Ctrl:
+                                    is_dragging = true;
+                                    break;
+                                case ImGuiKeyModFlags_Shift:
+                                    if (!data->timeline.filter.temporal_window) {
+                                        is_selecting = true;
+                                        data->timeline.filter.min = CLAMP(x, 0, max_time_value);
+                                    }
+                                    break;
+                                default:
+                                    break;
+                                };
+                            }
+                        }
+
+                        ImPlotPlot* plot = ImPlot::GetCurrentPlot();
+                        plot->XAxis.Range.Min = MAX(plot->XAxis.Range.Min, 0);
+                        plot->XAxis.Range.Max = MIN(plot->XAxis.Range.Max, max_time_value);
+
+                        if (data->timeline.filter.enabled) {
+                            const bool disabled = data->timeline.filter.temporal_window || is_selecting;
+                            if (disabled) ImGui::PushDisabled();
+                            ImPlot::DragRangeX("Time Filter", &data->timeline.filter.min, &data->timeline.filter.max, 0, max_time_value);
+                            if (disabled) ImGui::PopDisabled();
+                        }
+
+                        ImVec4 prop_col = ImGui::ColorConvertU32ToFloat4(s_props[i].col);
+                        ImPlot::SetNextLineStyle(prop_col);
+
+                        if (prop.data.aggregate) {
+                            ASSERT(num_time_values == prop.data.aggregate->num_values);
+
+                            struct ShadedData {
+                                float* x_vals;
+                                float* y_mean;
+                                float* y_variance;
+                            } user_data = {
+                                .x_vals = time_values,
+                                .y_mean = prop.data.aggregate->mean,
+                                .y_variance = prop.data.aggregate->variance
+                            };
+                            ImPlot::SetNextFillStyle(prop_col, 0.2f);
+                            ImPlot::PlotShadedG(prop.ident.ptr,
+                                [](void* payload, int idx) -> ImPlotPoint {
+                                    ShadedData* data = (ShadedData*)payload;
+                                    return ImPlotPoint(data->x_vals[idx], data->y_mean[idx] - data->y_variance[idx]);
+                                },
+                                &user_data,
+                                [](void* payload, int idx) -> ImPlotPoint {
+                                    ShadedData* data = (ShadedData*)payload;
+                                    return ImPlotPoint(data->x_vals[idx], data->y_mean[idx] + data->y_variance[idx]);
+                                },
+                                &user_data,
+                                prop.data.aggregate->num_values);
+
+                            
+                            ImPlot::PlotLine(prop.ident.ptr, time_values, prop.data.aggregate->mean, prop.data.aggregate->num_values);
+                        } else {
+                            ASSERT(num_time_values == prop.data.num_values);
+                            ImPlot::PlotLine(prop.ident.ptr, time_values, prop.data.values, prop.data.num_values);
+                        }
+
+                        /*
+                        for (int k = 0; k < num_dnd; ++k) {
+                        if (dnd[k].plot == 1 && dnd[k].num_values > 0) {
+                        ASSERT(dnd[k].num_values == num_time_values);
+                        ImPlot::SetNextLineStyle(dnd[k].color);
+                        ImPlot::PlotLine(dnd[k].label, time_values, dnd[k].values, dnd[k].num_values);
+                        // allow legend item labels to be DND sources
+                        if (ImPlot::BeginDragDropSourceItem(dnd[k].label)) {
                         ImGui::SetDragDropPayload("MY_DND", &k, sizeof(int));
                         ImPlot::ItemIcon(dnd[k].color); ImGui::SameLine();
                         ImGui::TextUnformatted(dnd[k].label);
                         ImPlot::EndDragDropSource();
+                        }
+                        }
+                        }
+                        */
+
+                        ImPlot::DragLineX("Current Time", &data->animation.time, true, ImVec4(1,1,0,1));
+
+                        /*
+                        // allow the main plot area to be a DND target
+                        if (ImPlot::BeginDragDropTarget()) {
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MY_DND")) {
+                        int i = *(int*)payload->Data;
+                        dnd[i].plot = 1;
+                        need_refit = true;
+                        }
+                        ImPlot::EndDragDropTarget();
+                        }
+
+                        // allow the legend to be a DND target
+                        if (ImPlot::BeginDragDropTargetLegend()) {
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MY_DND")) {
+                        int i = *(int*)payload->Data;
+                        dnd[i].plot = 1;
+                        need_refit = true;
+                        }
+                        ImPlot::EndDragDropTarget();
+                        }
+                        */
+
+                        ImPlot::EndPlot();
                     }
+                    ImGui::PopID();
                 }
             }
 
-            ImPlot::DragLineX("Current Time", &data->animation.time, true, ImVec4(1,1,0,1));
-
-            // allow the main plot area to be a DND target
-            if (ImPlot::BeginDragDropTarget()) {
-                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MY_DND")) {
-                    int i = *(int*)payload->Data;
-                    dnd[i].plot = 1;
-                    need_refit = true;
-                }
-                ImPlot::EndDragDropTarget();
-            }
-
-            // allow the legend to be a DND target
-            if (ImPlot::BeginDragDropTargetLegend()) {
-                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MY_DND")) {
-                    int i = *(int*)payload->Data;
-                    dnd[i].plot = 1;
-                    need_refit = true;
-                }
-                ImPlot::EndDragDropTarget();
-            }
-
-            if (ImPlot::IsPlotQueried()) {
-                ImPlotLimits limits = ImPlot::GetPlotQuery();
-                printf("%.3f %.3f\n", limits.X.Min, limits.X.Max);
-            }
-
-            ImPlot::EndPlot();
-
+            ImPlot::GetInputMap() = old_map;
 
         }
 
-        if (pop_item_flags) ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+        //ImGui::EndChild();
 
-        ImGui::EndChild();
+        if (data->timeline.filter.min != pre_filter_min || data->timeline.filter.max != pre_filter_max) {
+            data->mold.script.evaluate_filt = true;
+        }
     }
     ImGui::End();
 }
@@ -2713,29 +2991,91 @@ static void compute_histogram(float* bins, int num_bins, float min_bin_val, floa
 
 static void draw_distribution_window(ApplicationData* data) {
     ImGui::SetNextWindowSize(ImVec2(200, 300), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Distributions", &data->statistics.show_distribution_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+    if (ImGui::Begin("Distributions", &data->statistics.show_distribution_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
         const int MIN_NUM_BINS = 8;
         const int MAX_NUM_BINS = 1024;
 
-        static int num_bins = 32;
+        static PropertyItem s_props[32] = {};
+        static int s_num_props = 0;
+        static uint64_t s_fingerprint = 0;
+        static int num_bins = 128;
 
-        if (ImGui::SliderInt("Bins", &num_bins, MIN_NUM_BINS, MAX_NUM_BINS, "%d", ImGuiSliderFlags_Logarithmic)) {
-            const int up   = next_power_of_two32(num_bins);
-            const int down = up / 2;
-            num_bins = abs(num_bins - down) < abs(num_bins - up) ? down : up;
+        if (s_fingerprint != data->mold.script.full_eval.fingerprint) {
+            PropertyItem new_props[ARRAY_SIZE(s_props)] = {};
+            int num_new_props = 0;
+
+            md_script_property_t* props = data->mold.script.full_eval.properties;
+            for (int64_t i = 0; i < data->mold.script.full_eval.num_properties; ++i) {
+                if (props[i].type != MD_SCRIPT_PROPERTY_TYPE_TEMPORAL && props[i].type != MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION) continue;
+
+                bool show = true;
+                for (int64_t j = 0; j < s_num_props; ++j) {
+                    if (compare_str(props[i].ident, s_props[j].lbl)) {
+                        show = s_props[j].show;
+                    }
+                }
+                PropertyItem p = {
+                    .lbl = props[i].ident,
+                    .col = PROPERTY_COLORS[i % ARRAY_SIZE(PROPERTY_COLORS)],
+                    .idx = (int)i,
+                    .show = show
+                };
+
+                new_props[num_new_props++] = p;
+            }
+
+            memcpy(s_props, new_props, sizeof(new_props));
+            s_num_props = num_new_props;
+        }
+
+        if (ImGui::BeginMenuBar())
+        {
+            if (ImGui::BeginMenu("Properties")) {
+                //draw_property_menu_widgets(s_props, s_num_props);
+
+                if (s_num_props) {
+                    for (int i = 0; i < s_num_props; ++i) {
+                        ImPlot::ItemIcon(s_props[i].col); ImGui::SameLine();
+                        ImGui::Selectable(s_props[i].lbl.cstr(), &s_props[i].show, 0, ImVec2(50, 0));
+                    }
+                } else {
+                    ImGui::Text("No properties to show.");
+                }
+
+                ImGui::EndMenu();
+            }
+
+            if (ImGui::BeginMenu("Bins")) {
+                if (ImGui::SliderInt("##bins", &num_bins, MIN_NUM_BINS, MAX_NUM_BINS, "%d", ImGuiSliderFlags_Logarithmic)) {
+                    const int up   = next_power_of_two32(num_bins);
+                    const int down = up / 2;
+                    num_bins = abs(num_bins - down) < abs(num_bins - up) ? down : up;
+                }
+                ImGui::EndMenu();
+            }
+
+            ImGui::EndMenuBar();
+        }
+
+        if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
+            data->animation.mode = data->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
         }
 
         ImPlotAxisFlags axis_flags = 0;
-        ImPlotAxisFlags axis_flags_x = axis_flags | ImPlotAxisFlags_AutoFit;
-        ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit;
+        ImPlotAxisFlags axis_flags_x = 0;
+        ImPlotAxisFlags axis_flags_y = 0;
         ImPlotFlags flags = ImPlotFlags_AntiAliased;
 
         // The distribution properties are always computed as histograms with a resolution of 1024
         // If we have a different number of bins for our visualization, we need to recompute the bins
-        float* bins = (float*)md_alloc(frame_allocator, num_bins);
+        float* bins = (float*)md_alloc(frame_allocator, num_bins * sizeof(float));
+        float* filtered_bins = (float*)md_alloc(frame_allocator, num_bins * sizeof(float));
 
-        for (int i = 0; i < (int)data->mold.script.eval.num_properties; ++i) {
-            md_script_property_t& prop = data->mold.script.eval.properties[i];
+        for (int i = 0; i < s_num_props; ++i) {
+            if (s_props[i].show == false) continue;
+            md_script_property_t& prop = data->mold.script.full_eval.properties[s_props[i].idx];
+            md_script_property_t& filt_prop = data->mold.script.filt_eval.properties[s_props[i].idx];
+
             if (prop.type != MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION && prop.type != MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) continue;
 
             float min_x = prop.data.min_range[0];
@@ -2744,6 +3084,7 @@ static void draw_distribution_window(ApplicationData* data) {
             float max_y = prop.data.max_value;
             float range_x = max_x - min_x;
             float* draw_bins = 0;
+            float* draw_filtered_bins = 0;
 
             if (prop.type == MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION) {
                 if (num_bins != prop.data.num_values) {
@@ -2765,27 +3106,33 @@ static void draw_distribution_window(ApplicationData* data) {
                 }
             }
             else if (prop.type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
-                compute_histogram(bins, num_bins, prop.data.min_value, prop.data.max_value, prop.data.values, prop.data.num_values);
+                compute_histogram(bins, num_bins, min_x, max_x, prop.data.values, prop.data.num_values);
                 draw_bins = bins;
+
+                if (data->timeline.filter.enabled) {
+                    compute_histogram(filtered_bins, num_bins, min_x, max_x, filt_prop.data.values, filt_prop.data.num_values);
+                    draw_filtered_bins = filtered_bins;
+                }
             }
 
-            min_y = FLT_MAX;
-            max_y = -FLT_MAX;
-            for (int i = 0; i < num_bins; ++i) {
-                min_y = MIN(min_y, bins[i]);
-                max_y = MAX(max_y, bins[i]);
+            if (draw_bins) {
+                min_y = FLT_MAX;
+                max_y = -FLT_MAX;
+                for (int j = 0; j < num_bins; ++j) {
+                    min_y = MIN(min_y, draw_bins[j]);
+                    max_y = MAX(max_y, draw_bins[j]);
+                }
             }
 
             char label[16] = {0};
             strncpy(label, prop.ident.ptr, MIN(ARRAY_SIZE(label) - 1, prop.ident.len));
             
             ImGui::PushID(i);
-            const double bar_width = (max_x - min_x) / num_bins;
+            const double bar_width = (max_x - min_x) / (num_bins-1);
             const double bar_off = min_x;
-            const double bar_scl = (max_x - min_x) / num_bins;
+            const double bar_scl = (max_x - min_x) / (num_bins-1);
 
-            const double limit_pad = (max_x - min_x) / MIN_NUM_BINS;
-            ImPlot::SetNextPlotLimits(min_x - limit_pad, max_x + limit_pad, 0, max_y * 1.1, ImGuiCond_Always);
+            ImPlot::SetNextPlotLimits(min_x, max_x, 0, max_y * 1.1, ImGuiCond_Always);
 
             if (ImPlot::BeginPlot(label, 0, 0, ImVec2(-1,150), flags, axis_flags_x, axis_flags_y)) {
                 //ImPlot::SetNextFillStyle(vec_cast(qualitative_color_scale(i)), 0.5f);
@@ -2799,7 +3146,7 @@ static void draw_distribution_window(ApplicationData* data) {
                 } plot_data = {
                     .offset = bar_off,
                     .scale = bar_scl,
-                    .bars = draw_bins,
+                    .bars = 0,
                     .num_bars = num_bins
                 };
 
@@ -2808,9 +3155,19 @@ static void draw_distribution_window(ApplicationData* data) {
                     return ImPlotPoint(idx * pd->scale + pd->offset, (double)pd->bars[idx]);
                 };
 
-                ImPlot::SetNextFillStyle(ImVec4(0,0,0,-1), 0.5f);
+                plot_data.bars = draw_bins;
+                ImPlot::SetNextFillStyle(ImVec4(0,0,0,-1), 1.0f);
                 ImPlot::SetNextLineStyle(ImVec4(0,0,0,0), 0);
                 ImPlot::PlotBarsG(label, getter, &plot_data, num_bins, bar_width);
+
+                if (draw_filtered_bins) {
+                    char buf[64];
+                    snprintf(buf, sizeof(buf), "%s filt", label);
+                    plot_data.bars = draw_filtered_bins;
+                    ImPlot::SetNextFillStyle(ImVec4(1,1,0,1), 0.3f);
+                    ImPlot::SetNextLineStyle(ImVec4(0,0,0,0), 0);
+                    ImPlot::PlotBarsG(buf, getter, &plot_data, num_bins, bar_width);
+                }
                 //ImPlot::PlotHistogram(label, prop.data.values, prop.data.num_values, bins, false, false, range);
                 ImPlot::EndPlot();
             }
@@ -2828,7 +3185,7 @@ static void draw_shapespace_window(ApplicationData* data) {
 static void draw_ramachandran_window(ApplicationData* data) {
     // const int32 num_frames = data->mold.traj ? data->mold.traj.num_frames : 0;
     // const int32 frame = (int32)data->time;
-    const Range<int32_t> frame_range = data->time_filter.range;
+    const Range<int32_t> frame_range = data->timeline.range;
     const auto& mol = data->mold.mol;
     //Array<const BackboneAngle> backbone_angles = get_residue_backbone_angles(mol);
     //Array<const BackboneAtoms> backbone_atoms  = get_residue_backbone_atoms(mol);
@@ -3056,6 +3413,9 @@ static void draw_volume_window(ApplicationData* data) {
                 }
                 ImGui::EndMenu();
             }
+            if (ImGui::BeginMenu("Property")) {
+                ImGui::EndMenu();
+            }
             if (ImGui::BeginMenu("DVR")) {
                 ImGui::Checkbox("Enabled", &data->density_volume.dvr.enabled);
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
@@ -3109,24 +3469,15 @@ static void draw_volume_window(ApplicationData* data) {
                 ImGui::RangeSliderFloat("z", &data->density_volume.clip_volume.min.z, &data->density_volume.clip_volume.max.z, 0.0f, 1.0f);
                 ImGui::EndMenu();
             }
-
-            /*if (ImGui::BeginMenu("Scale")) {
-                static int res_scale = 1;
-                if (ImGui::SliderInt("Scale", &res_scale, 1, 8)) {
-
-                }
-                ImGui::EndMenu();
-            }
-            */
             if (ImGui::BeginMenu("Visualize")) {
                 ImGui::Checkbox("Bounding Box", &data->density_volume.show_bounding_box);
                 if (data->density_volume.show_bounding_box) {
                     ImGui::SameLine();
                     ImGui::ColorEdit4Minimal("Color", data->density_volume.bounding_box_color.elem);
                 }
-                ImGui::Checkbox("Reference Structures", &data->density_volume.show_reference_structures);
+                ImGui::Checkbox("Reference Structure", &data->density_volume.show_reference_structures);
                 if (data->density_volume.show_reference_structures) {
-                    ImGui::Checkbox("Show Only Single Reference", &data->density_volume.show_single_reference);
+                    ImGui::Checkbox("Show Superimposed Structures", &data->density_volume.show_reference_ensemble);
                 }
                 ImGui::EndMenu();
             }
@@ -3148,20 +3499,21 @@ static void draw_volume_window(ApplicationData* data) {
         int  combo_prop_idx[32] = {0};
         int  combo_size = 0;
 
-        for (int64_t i = 0; i < data->mold.script.eval.num_properties; ++i) {
-            md_script_property_t* prop = &data->mold.script.eval.properties[i];
+        for (int64_t i = 0; i < data->mold.script.full_eval.num_properties; ++i) {
+            md_script_property_t* prop = &data->mold.script.full_eval.properties[i];
             if (prop->type == MD_SCRIPT_PROPERTY_TYPE_VOLUME && prop->data.values) {
                 combo_buf_len += snprintf(combo_buf + combo_buf_len, ARRAY_SIZE(combo_buf) - combo_buf_len, "%.*s\0", (int)prop->ident.len, prop->ident.ptr);
-
+                combo_buf_len += 1; // Apparently snprintf does not print the final \0
                 ASSERT(combo_size < ARRAY_SIZE(combo_prop_idx));
                 combo_prop_idx[combo_size] = (int)i;
                 combo_size += 1;
             }
         }
 
+        static uint64_t s_fingerprint = 0;
         static md_script_property_t* curr_prop = NULL;
-        md_script_property_t* prop = NULL;
 
+        md_script_property_t* prop = NULL;
         if (combo_size > 0) {
             static int curr_idx = 0;
             curr_idx = CLAMP(curr_idx, 0, combo_size - 1);
@@ -3170,7 +3522,18 @@ static void draw_volume_window(ApplicationData* data) {
                 ImGui::Combo("Volume", &curr_idx, combo_buf);
             }
             int prop_idx = combo_prop_idx[curr_idx];
-            prop = &data->mold.script.eval.properties[prop_idx];
+            prop = &data->mold.script.full_eval.properties[prop_idx];
+        }
+
+        bool update_representations = false;
+        if (curr_prop != prop) {
+            curr_prop = prop;
+            update_representations = true;
+        }
+
+        if (s_fingerprint != data->mold.script.full_eval.fingerprint) {
+            s_fingerprint = data->mold.script.full_eval.fingerprint;
+            update_representations = true;
         }
 
         // Canvas
@@ -3236,6 +3599,10 @@ static void draw_volume_window(ApplicationData* data) {
         mat4_t view_mat = camera_world_to_view_matrix(data->density_volume.camera);
         mat4_t proj_mat = camera_perspective_projection_matrix(data->density_volume.camera, (int)canvas_sz.x, (int)canvas_sz.y);
 
+        clear_gbuffer(&gbuf);
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE);
+
         if (prop) {
             md_script_visualization_t vis = {0};
             md_script_visualization_args_t args = {
@@ -3255,7 +3622,7 @@ static void draw_volume_window(ApplicationData* data) {
 
             int64_t num_reps = vis.sdf.count;
 
-            if (curr_prop != prop) {
+            if (update_representations) {
                 if (!data->density_volume.volume_texture.id) {
                     gl::init_texture_3D(&data->density_volume.volume_texture.id, prop->data.dim[0], prop->data.dim[1], prop->data.dim[2], GL_R32F);
                     data->density_volume.volume_texture.dim_x = prop->data.dim[0];
@@ -3264,7 +3631,6 @@ static void draw_volume_window(ApplicationData* data) {
                     data->density_volume.volume_texture.max_value = prop->data.max_value;
                 }
                 gl::set_texture_3D_data(data->density_volume.volume_texture.id, prop->data.values, GL_R32F);
-                curr_prop = prop;
 
                 if (data->density_volume.gl_reps) {
                     // Only free those required
@@ -3289,12 +3655,8 @@ static void draw_volume_window(ApplicationData* data) {
                 }
             }
 
-            clear_gbuffer(&gbuf);
-            glEnable(GL_DEPTH_TEST);
-            glDepthMask(GL_TRUE);
-
             if (data->density_volume.show_reference_structures) {
-                num_reps = data->density_volume.show_single_reference ? 1 : num_reps;
+                num_reps = data->density_volume.show_reference_ensemble ? num_reps : 1;
 
                 md_gl_rendertarget_t render_target = {
                     .width = (uint32_t)canvas_sz.x,
@@ -3336,94 +3698,94 @@ static void draw_volume_window(ApplicationData* data) {
                         draw_atom_info_window(*data, pd.idx);
                     }
                 }
-
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.deferred.fbo);
-                glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
-                glViewport(0, 0, gbuf.width, gbuf.height);
-
-                PUSH_GPU_SECTION("Postprocessing")
-                postprocessing::Descriptor desc = {
-                    .background {
-                        .intensity = data->visuals.background.color * data->visuals.background.intensity,
-                    },
-                    .bloom = {
-                        .enabled = false,
-                    },
-                    .tonemapping = {
-                        .enabled = data->visuals.tonemapping.enabled,
-                        .mode = data->visuals.tonemapping.tonemapper,
-                        .exposure = data->visuals.tonemapping.exposure,
-                        .gamma = data->visuals.tonemapping.gamma,
-                    },
-                    .ambient_occlusion = {
-                        .enabled = data->visuals.ssao.enabled,
-                        .radius = data->visuals.ssao.radius,
-                        .intensity = data->visuals.ssao.intensity,
-                        .bias = data->visuals.ssao.bias,
-                    },
-                    .depth_of_field = {
-                        .enabled = data->visuals.dof.enabled,
-                        .focus_depth = data->visuals.dof.focus_depth.current,
-                        .focus_scale = data->visuals.dof.focus_scale,
-                    },
-                    .temporal_reprojection = {
-                        .enabled = false,
-                    },
-                    .input_textures = {
-                        .depth = gbuf.deferred.depth,
-                        .color = gbuf.deferred.color,
-                        .normal = gbuf.deferred.normal,
-                        .velocity = gbuf.deferred.velocity,
-                    }
-                };
-
-                ViewParam param = {
-                    .matrix = {
-                        .current = {
-                            .view = view_mat,
-                            .proj = proj_mat,
-                            .proj_jittered = proj_mat,
-                            .view_proj = mat4_mul(proj_mat, view_mat),
-                            .view_proj_jittered = mat4_mul(proj_mat, view_mat),
-                            .norm = view_mat,
-                        },
-                        .inverse = {
-                            .proj = mat4_inverse(proj_mat),
-                            .proj_jittered = mat4_inverse(proj_mat),
-                        }
-                    },
-                    .clip_planes = {
-                        .near = data->density_volume.camera.near_plane,
-                        .far = data->density_volume.camera.far_plane,
-                    },
-                    .fov_y = data->density_volume.camera.fov_y,
-                    .resolution = {canvas_sz.x, canvas_sz.y}
-                };
-
-                postprocessing::shade_and_postprocess(desc, param);
-                POP_GPU_SECTION()
-
-                glEnable(GL_DEPTH_TEST);
-                glDepthMask(GL_TRUE);
-
-                if (data->density_volume.show_bounding_box) {
-                    const vec3_t min_box = {0,0,0};
-                    const vec3_t max_box = {1,1,1};
-
-                    immediate::set_model_view_matrix(mat4_mul(view_mat, model_mat));
-                    immediate::set_proj_matrix(proj_mat);
-
-                    uint32_t box_color = convert_color(data->density_volume.bounding_box_color);
-                    uint32_t clip_color = convert_color(data->density_volume.clip_volume_color);
-                    immediate::draw_box_wireframe(min_box, max_box, box_color);
-                    immediate::draw_box_wireframe(data->density_volume.clip_volume.min, data->density_volume.clip_volume.max, clip_color);
-
-                    immediate::flush();
-                }
             }
         }
 
-        volume::RenderDesc desc = {
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.deferred.fbo);
+        glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
+        glViewport(0, 0, gbuf.width, gbuf.height);
+
+        PUSH_GPU_SECTION("Postprocessing")
+            postprocessing::Descriptor postprocess_desc = {
+            .background {
+                .intensity = data->visuals.background.color * data->visuals.background.intensity,
+            },
+            .bloom = {
+                .enabled = false,
+            },
+            .tonemapping = {
+                .enabled = data->visuals.tonemapping.enabled,
+                .mode = data->visuals.tonemapping.tonemapper,
+                .exposure = data->visuals.tonemapping.exposure,
+                .gamma = data->visuals.tonemapping.gamma,
+            },
+            .ambient_occlusion = {
+                .enabled = data->visuals.ssao.enabled,
+                .radius = data->visuals.ssao.radius,
+                .intensity = data->visuals.ssao.intensity,
+                .bias = data->visuals.ssao.bias,
+            },
+            .depth_of_field = {
+                .enabled = data->visuals.dof.enabled,
+                .focus_depth = data->visuals.dof.focus_depth.current,
+                .focus_scale = data->visuals.dof.focus_scale,
+            },
+            .temporal_reprojection = {
+                .enabled = false,
+            },
+            .input_textures = {
+                .depth = gbuf.deferred.depth,
+                .color = gbuf.deferred.color,
+                .normal = gbuf.deferred.normal,
+                .velocity = gbuf.deferred.velocity,
+            }
+        };
+
+        ViewParam view_param = {
+            .matrix = {
+                .current = {
+                .view = view_mat,
+                .proj = proj_mat,
+                .proj_jittered = proj_mat,
+                .view_proj = mat4_mul(proj_mat, view_mat),
+                .view_proj_jittered = mat4_mul(proj_mat, view_mat),
+                .norm = view_mat,
+            },
+            .inverse = {
+                .proj = mat4_inverse(proj_mat),
+                .proj_jittered = mat4_inverse(proj_mat),
+            }
+            },
+                .clip_planes = {
+                .near = data->density_volume.camera.near_plane,
+                .far = data->density_volume.camera.far_plane,
+            },
+            .fov_y = data->density_volume.camera.fov_y,
+            .resolution = {canvas_sz.x, canvas_sz.y}
+        };
+
+        postprocessing::shade_and_postprocess(postprocess_desc, view_param);
+        POP_GPU_SECTION()
+
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE);
+
+        if (data->density_volume.show_bounding_box) {
+            const vec3_t min_box = {0,0,0};
+            const vec3_t max_box = {1,1,1};
+
+            immediate::set_model_view_matrix(mat4_mul(view_mat, model_mat));
+            immediate::set_proj_matrix(proj_mat);
+
+            uint32_t box_color = convert_color(data->density_volume.bounding_box_color);
+            uint32_t clip_color = convert_color(data->density_volume.clip_volume_color);
+            immediate::draw_box_wireframe(min_box, max_box, box_color);
+            immediate::draw_box_wireframe(data->density_volume.clip_volume.min, data->density_volume.clip_volume.max, clip_color);
+
+            immediate::flush();
+        }
+
+        volume::RenderDesc vol_desc = {
             .render_target = {
                 .texture = gbuf.deferred.post_tonemap,
                 .width   = gbuf.width,
@@ -3457,7 +3819,7 @@ static void draw_volume_window(ApplicationData* data) {
 
             .voxel_spacing = data->density_volume.voxel_spacing
         };
-        volume::render_volume(desc);
+        volume::render_volume(vol_desc);
 
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         glDrawBuffer(GL_BACK);
@@ -3487,180 +3849,125 @@ static void draw_dataset_window(ApplicationData* data) {
     ImGui::End();
 }
 
-static void compile_script_in_editor(ApplicationData* data) {
-    TextEditor& editor = data->script.editor;
-
-    std::string src = editor.GetText();
-    str_t str = {.ptr = src.data(), .len = (int64_t)src.length()};
-    md_script_ir_compile_args_t args = {
-        .src = str,
-        .mol = &data->mold.mol,
-        .alloc = default_allocator,
-    };
-    md_script_ir_compile(&data->mold.script.ir, args);
-
-    TextEditor::ErrorMarkers markers;
-    const int64_t num_errors = data->mold.script.ir.num_errors;
-    if (num_errors) {
-        const md_script_error_t* errors = data->mold.script.ir.errors;
-        for (int64_t i = 0; i < num_errors; ++i) {
-            std::string err_str(errors[i].error.ptr, errors[i].error.len);
-            std::pair<int, std::string> pair = {errors[i].line, err_str};
-            markers.insert(pair);
-        }
-    }
-    editor.SetErrorMarkers(markers);
-
-    //md_script_tokens_init(&data->mold.script.tokens, data->mold.script.ir, persistent_allocator);
-}
-
-static void draw_script_editor_window(ApplicationData* data) {
+static void draw_property_editor_window(ApplicationData* data) {
     ASSERT(data);
 
     TextEditor& editor = data->script.editor;
 
-    ImGui::Begin("Script Editor", &data->script.show_editor, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_MenuBar);
-    ImGui::SetWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
-    if (ImGui::BeginMenuBar())
-    {
-        if (ImGui::BeginMenu("File"))
+    if (ImGui::Begin("Property Editor", &data->script.show_editor, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_MenuBar)) {
+        ImGui::SetWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
+        if (ImGui::BeginMenuBar())
         {
-            if (ImGui::MenuItem("Save"))
+            if (ImGui::BeginMenu("File"))
             {
-                auto textToSave = editor.GetText();
-                /// save text....
+                if (ImGui::MenuItem("Save"))
+                {
+                    auto textToSave = editor.GetText();
+                    /// save text....
+                }
+                ImGui::EndMenu();
             }
-            ImGui::EndMenu();
-        }
-        if (ImGui::BeginMenu("Edit"))
-        {
-            bool ro = editor.IsReadOnly();
-            if (ImGui::MenuItem("Read-only mode", nullptr, &ro))
-                editor.SetReadOnly(ro);
-            ImGui::Separator();
+            if (ImGui::BeginMenu("Edit"))
+            {
+                bool ro = editor.IsReadOnly();
+                if (ImGui::MenuItem("Read-only mode", nullptr, &ro))
+                    editor.SetReadOnly(ro);
+                ImGui::Separator();
 
-            if (ImGui::MenuItem("Undo", "ALT-Backspace", nullptr, !ro && editor.CanUndo()))
-                editor.Undo();
-            if (ImGui::MenuItem("Redo", "Ctrl-Y", nullptr, !ro && editor.CanRedo()))
-                editor.Redo();
+                if (ImGui::MenuItem("Undo", "ALT-Backspace", nullptr, !ro && editor.CanUndo()))
+                    editor.Undo();
+                if (ImGui::MenuItem("Redo", "Ctrl-Y", nullptr, !ro && editor.CanRedo()))
+                    editor.Redo();
 
-            ImGui::Separator();
+                ImGui::Separator();
 
-            if (ImGui::MenuItem("Copy", "Ctrl-C", nullptr, editor.HasSelection()))
-                editor.Copy();
-            if (ImGui::MenuItem("Cut", "Ctrl-X", nullptr, !ro && editor.HasSelection()))
-                editor.Cut();
-            if (ImGui::MenuItem("Delete", "Del", nullptr, !ro && editor.HasSelection()))
-                editor.Delete();
-            if (ImGui::MenuItem("Paste", "Ctrl-V", nullptr, !ro && ImGui::GetClipboardText() != nullptr))
-                editor.Paste();
+                if (ImGui::MenuItem("Copy", "Ctrl-C", nullptr, editor.HasSelection()))
+                    editor.Copy();
+                if (ImGui::MenuItem("Cut", "Ctrl-X", nullptr, !ro && editor.HasSelection()))
+                    editor.Cut();
+                if (ImGui::MenuItem("Delete", "Del", nullptr, !ro && editor.HasSelection()))
+                    editor.Delete();
+                if (ImGui::MenuItem("Paste", "Ctrl-V", nullptr, !ro && ImGui::GetClipboardText() != nullptr))
+                    editor.Paste();
 
-            ImGui::Separator();
+                ImGui::Separator();
 
-            if (ImGui::MenuItem("Select all", nullptr, nullptr))
-                editor.SetSelection(TextEditor::Coordinates(), TextEditor::Coordinates(editor.GetTotalLines(), 0));
+                if (ImGui::MenuItem("Select all", nullptr, nullptr))
+                    editor.SetSelection(TextEditor::Coordinates(), TextEditor::Coordinates(editor.GetTotalLines(), 0));
 
-            ImGui::EndMenu();
-        }
+                ImGui::EndMenu();
+            }
 
-        if (ImGui::BeginMenu("View"))
-        {
-            if (ImGui::MenuItem("Dark palette"))
-                editor.SetPalette(TextEditor::GetDarkPalette());
-            if (ImGui::MenuItem("Light palette"))
-                editor.SetPalette(TextEditor::GetLightPalette());
-            if (ImGui::MenuItem("Retro blue palette"))
-                editor.SetPalette(TextEditor::GetRetroBluePalette());
-            ImGui::EndMenu();
+            if (ImGui::BeginMenu("View"))
+            {
+                if (ImGui::MenuItem("Dark palette"))
+                    editor.SetPalette(TextEditor::GetDarkPalette());
+                if (ImGui::MenuItem("Light palette"))
+                    editor.SetPalette(TextEditor::GetLightPalette());
+                if (ImGui::MenuItem("Retro blue palette"))
+                    editor.SetPalette(TextEditor::GetRetroBluePalette());
+                ImGui::EndMenu();
+            }
+
+            ImGui::EndMenuBar();
         }
 
         if (editor.IsTextChanged()) {
-            compile_script_in_editor(data);
+            data->mold.script.compile_ir = true;
+            data->mold.script.time_since_last_change = 0;
         }
 
-        if (ImGui::MenuItem("Evaluate")) {
-            md_script_eval_args_t args = {
+        editor.Render("TextEditor");
+
+        const TextEditor::Marker* hovered_marker = editor.GetHoveredMarker();
+        if (hovered_marker) {
+            md_script_visualization_t vis = {0};
+            md_script_visualization_init(&vis, {
+                .token = (const md_script_vis_token_t*)hovered_marker->payload,
                 .ir = &data->mold.script.ir,
                 .mol = &data->mold.mol,
                 .traj = &data->mold.traj,
                 .frame_cache = &data->mold.frame_cache,
-                .frame_mask = 0,
-                .alloc = default_allocator
-            };
-            if (md_script_eval(&data->mold.script.eval, args)) {
-                md_print(MD_LOG_TYPE_INFO, "Evaluation successful");
-            } else {
-                md_print(MD_LOG_TYPE_INFO, "Evaluation failed");
+                .alloc = frame_allocator,
+            });
+
+            immediate::set_model_view_matrix(data->view.param.matrix.current.view);
+            immediate::set_proj_matrix(data->view.param.matrix.current.proj_jittered);
+
+            const vec3_t* vertices = (const vec3_t*)vis.vertex.pos;
+            glDisable(GL_CULL_FACE);
+
+            for (int64_t i = 0; i < vis.point.count; ++i) {
+                ASSERT(vis.point.idx);
+                uint16_t idx = vis.point.idx[i];
+                immediate::draw_point(vertices[idx]);
             }
+
+            for (int64_t i = 0; i < vis.line.count; ++i) {
+                ASSERT(vis.line.idx);
+                uint16_t idx[2] = { vis.line.idx[i * 2 + 0], vis.line.idx[i * 2 + 1] };
+                immediate::draw_line(vertices[idx[0]], vertices[idx[1]]);
+            }
+
+            for (int64_t i = 0; i < vis.triangle.count; ++i) {
+                ASSERT(vis.triangle.idx);
+                uint16_t idx[3] = { vis.triangle.idx[i * 3 + 0], vis.triangle.idx[i * 3 + 1], vis.triangle.idx[i * 3 + 2] };
+                immediate::draw_triangle(vertices[idx[0]], vertices[idx[1]], vertices[idx[2]], 0x3300FFFF);
+            }
+
+            immediate::flush();
+
+            glEnable(GL_CULL_FACE);
+
+            if (!md_bitfield_empty(&vis.atom_mask)) {
+                md_bitfield_copy(&data->selection.current_highlight_mask, &vis.atom_mask);
+                data->mold.dirty_buffers |= MolBit_DirtyFlags;
+            }
+            md_script_visualization_free(&vis);
         }
-        ImGui::EndMenuBar();
+
+        ImGui::End();
     }
-
-    editor.ClearMarkers();
-    for (int64_t i = 0; i < data->mold.script.ir.num_tokens; ++i) {
-        const md_script_token_t& tok = data->mold.script.ir.tokens[i];
-        TextEditor::Marker marker = {0};
-        marker.begCol = tok.col_beg;
-        marker.endCol = tok.col_end;
-        marker.bgColor = ImVec4(1,1,1,0.5);
-        marker.depth = tok.depth;
-        marker.line = tok.line;
-        marker.onlyShowBgOnMouseOver = true;
-        marker.text = std::string(tok.text.ptr, tok.text.len);
-        marker.payload = (void*)tok.vis_token;
-        editor.AddMarker(marker);
-    }    
-
-    editor.Render("TextEditor");
-
-    const TextEditor::Marker* hovered_marker = editor.GetHoveredMarker();
-    if (hovered_marker) {
-        md_script_visualization_t vis = {0};
-        md_script_visualization_init(&vis, {
-            .token = (const md_script_vis_token_t*)hovered_marker->payload,
-            .ir = &data->mold.script.ir,
-            .mol = &data->mold.mol,
-            .traj = &data->mold.traj,
-            .frame_cache = &data->mold.frame_cache,
-            .alloc = frame_allocator,
-        });
-
-        immediate::set_model_view_matrix(data->view.param.matrix.current.view);
-        immediate::set_proj_matrix(data->view.param.matrix.current.proj_jittered);
-
-        const vec3_t* vertices = (const vec3_t*)vis.vertex.pos;
-        glDisable(GL_CULL_FACE);
-
-        for (int64_t i = 0; i < vis.point.count; ++i) {
-            ASSERT(vis.point.idx);
-            uint16_t idx = vis.point.idx[i];
-            immediate::draw_point(vertices[idx]);
-        }
-
-        for (int64_t i = 0; i < vis.line.count; ++i) {
-            ASSERT(vis.line.idx);
-            uint16_t idx[2] = { vis.line.idx[i * 2 + 0], vis.line.idx[i * 2 + 1] };
-            immediate::draw_line(vertices[idx[0]], vertices[idx[1]]);
-        }
-
-        for (int64_t i = 0; i < vis.triangle.count; ++i) {
-            ASSERT(vis.triangle.idx);
-            uint16_t idx[3] = { vis.triangle.idx[i * 3 + 0], vis.triangle.idx[i * 3 + 1], vis.triangle.idx[i * 3 + 2] };
-            immediate::draw_triangle(vertices[idx[0]], vertices[idx[1]], vertices[idx[2]], 0x3300FFFF);
-        }
-
-        immediate::flush();
-
-        glEnable(GL_CULL_FACE);
-
-        if (!md_bitfield_empty(&vis.atom_mask)) {
-            md_bitfield_copy(&data->selection.current_highlight_mask, &vis.atom_mask);
-            data->mold.dirty_buffers |= MolBit_DirtyFlags;
-        }
-        md_script_visualization_free(&vis);
-    }
-
-    ImGui::End();
 
 }
 
@@ -3814,35 +4121,52 @@ static void update_md_buffers(ApplicationData* data) {
 }
 
 static void interrupt_async_tasks(ApplicationData* data) {
-    if (data->tasks.load_trajectory.id != 0) {
-        task_system::interrupt_task(data->tasks.load_trajectory);
+    if (data->tasks.prefetch_trajectory.id != 0) {
+        task_system::interrupt_task(data->tasks.prefetch_trajectory);
     }
-    task_system::wait_for_task(data->tasks.load_trajectory);
-    data->tasks.load_trajectory.id = 0;
+
+    if (data->tasks.evaluate_full.id != 0) {
+        md_script_eval_interrupt(&data->mold.script.full_eval);
+        task_system::interrupt_task(data->tasks.evaluate_full);
+    }
+
+    if (data->tasks.evaluate_filt.id != 0) {
+        md_script_eval_interrupt(&data->mold.script.filt_eval);
+        task_system::interrupt_task(data->tasks.evaluate_filt);
+    }
+
+    task_system::wait_for_task(data->tasks.evaluate_full);
+    task_system::wait_for_task(data->tasks.evaluate_filt);
+
+    data->tasks.evaluate_full.id = 0;
+    data->tasks.evaluate_filt.id = 0;
 }
 
 // #moleculedata
 static void free_trajectory_data(ApplicationData* data) {
     ASSERT(data);
+    interrupt_async_tasks(data);
+
     if (data->mold.traj.num_frames) {
         md_frame_cache_free(&data->mold.frame_cache);
-        if (data->tasks.load_trajectory.id != 0) task_system::interrupt_and_wait(data->tasks.load_trajectory);
         load::traj::close(&data->mold.traj);
     }
 }
 
 static void free_molecule_data(ApplicationData* data) {
     ASSERT(data);
+    interrupt_async_tasks(data);
+
     if (data->mold.mol.atom.count) {
         data->files.molecule = "";
         load::mol::free(&data->mold.mol);
     }
-    if (data->mold.traj.num_atoms) {
-        data->files.trajectory = "";
-        load::traj::close(&data->mold.traj);
-    }
+    free_trajectory_data(data);
+
     md_bitfield_clear(&data->selection.current_selection_mask);
     md_bitfield_clear(&data->selection.current_highlight_mask);
+    md_script_ir_free(&data->mold.script.ir);
+    md_script_eval_free(&data->mold.script.full_eval);
 }
 
 static void init_molecule_data(ApplicationData* data) {
@@ -3882,21 +4206,25 @@ static void init_molecule_data(ApplicationData* data) {
 
         init_all_representations(data);
         update_all_representations(data);
-        compile_script_in_editor(data);
+        data->mold.script.compile_ir = true;
     }
 }
 
 static void init_trajectory_data(ApplicationData* data) {
     if (data->mold.traj.num_frames) {
-        md_frame_cache_init(&data->mold.frame_cache, &data->mold.traj, persistent_allocator, data->mold.traj.num_frames);
+        md_frame_cache_init(&data->mold.frame_cache, &data->mold.traj, persistent_allocator, 0);
 
-        data->time_filter.range_min = 0;
-        data->time_filter.range_max = (double)data->mold.traj.num_frames;
-        data->animation.time = CLAMP(data->animation.time, (double)data->time_filter.range_min, (double)data->time_filter.range_max);
-        data->animation.frame = CLAMP((int32_t)data->animation.time, 0, (int32_t)data->mold.traj.num_frames - 1);
+        const double min_time = 0;
+        const double max_time = (double)data->mold.traj.num_frames;
+
+        data->timeline.view_range = {min_time, max_time};
+        data->timeline.filter.min = min_time;
+        data->timeline.filter.max = max_time;
+        data->animation.time = CLAMP(data->animation.time, min_time, max_time);
+        data->animation.frame = CLAMP((int32_t)data->animation.time, (int32_t)min_time, (int32_t)max_time - 1);
         int32_t frame = data->animation.frame;
 
-        md_frame_cache_load_frame_data(&data->mold.frame_cache, frame, data->mold.mol.atom.x, data->mold.mol.atom.y, data->mold.mol.atom.z, data->simulation_box.box.elem, NULL);
+        md_frame_cache_load_frame_data(&data->mold.frame_cache, frame, data->mold.mol.atom.x, data->mold.mol.atom.y, data->mold.mol.atom.z, data->simulation_box.box.elem, NULL, NULL, NULL);
         data->mold.dirty_buffers |= MolBit_DirtyPosition;
 
         update_md_buffers(data);
@@ -3912,137 +4240,123 @@ static void init_trajectory_data(ApplicationData* data) {
                 md_array_resize(data->trajectory_data.backbone_angles.data, data->mold.mol.backbone.count * data->mold.traj.num_frames, persistent_allocator);
         }
         
-#define NUM_FRAME_SLOTS 32
+        // This is the number of slots we have to work with in parallel.
+        // This number should ideally be more than the number of cores available.
+        // We pre-allocate the number of slots * max frame data size, so don't go bananas here if you want to save some on memory.
         task_system::enqueue_pool("Preloading frames", 1, [data](task_system::TaskSetRange range)
             {
+#define NUM_FRAME_SLOTS 64
                 const int64_t slot_size = data->mold.traj.max_frame_data_size;
                 void* slot_mem = md_alloc(default_allocator, slot_size * NUM_FRAME_SLOTS);
 
-                struct UserData {
-                    int64_t slot_size;
-                    void* slots[NUM_FRAME_SLOTS];
-                    atomic_queue::AtomicQueue<uint32_t, NUM_FRAME_SLOTS, 0xFFFFFFFF> slot_queue;
-                    ApplicationData* data;
-                };
-
-                UserData user_data = {
-                    .slot_size = slot_size,
-                    .slots = {0},
-                    .slot_queue = {},
-                    .data = data,
-                };
+                void* slots[NUM_FRAME_SLOTS];
+                atomic_queue::AtomicQueue<uint32_t, NUM_FRAME_SLOTS, 0xFFFFFFFF> slot_queue;
 
                 for (uint32_t i = 0; i < NUM_FRAME_SLOTS; ++i) {
-                    user_data.slots[i] = (char*)slot_mem + i * slot_size;
-                    user_data.slot_queue.push(i);
+                    slots[i] = (char*)slot_mem + i * slot_size;
+                    slot_queue.push(i);
                 }
 
-                md_frame_cache_fetch_frame_range(&data->mold.frame_cache, 0, data->mold.traj.num_frames, [](md_trajectory_i* traj, int64_t frame_idx, md_frame_data_t* frame_data, md_frame_cache_lock_t* lock, void* udata)
-                    {
-                        UserData* user_data = (UserData*)udata;
+                // Iterate over all frames and load the raw data, then spawn a task for each frame
+                for (uint32_t i = 0; i < data->mold.traj.num_frames; ++i) {
+                    uint32_t slot_idx = slot_queue.pop();
+                    ASSERT(slot_idx < NUM_FRAME_SLOTS);
 
-                        uint32_t slot_idx = user_data->slot_queue.pop();
-                        ASSERT(slot_idx < NUM_FRAME_SLOTS);
-                        void* frame_mem = user_data->slots[slot_idx];
-                        const int64_t frame_size = traj->extract_frame_data(traj->inst, frame_idx, NULL);
-                        traj->extract_frame_data(traj->inst, frame_idx, frame_mem);
+                    void* frame_mem = slots[slot_idx];
+                    const int64_t frame_size = data->mold.traj.extract_frame_data(data->mold.traj.inst, i, NULL);
+                    data->mold.traj.extract_frame_data(data->mold.traj.inst, i, frame_mem);
 
-                        auto id = task_system::enqueue_pool("##Decode frame", 1, [traj, user_data, frame_mem, frame_size, frame_data, frame_idx, lock, slot_idx](task_system::TaskSetRange range) {
-                            md_trajectory_frame_header_t header;
-                            traj->decode_frame_header(traj->inst, frame_mem, frame_size, &header);
-                            traj->decode_frame_coords(traj->inst, frame_mem, frame_size, frame_data->x, frame_data->y, frame_data->z, frame_data->num_atoms);
+                    // Spawn task: Load, Decode and postprocess
+                    //printf("Spawning task to decode frame %i\n", i);
+                    auto id = task_system::enqueue_pool("##Decode frame", 1, [slot_idx, frame_mem, frame_size, frame_idx = i, &slot_queue, slots, data](task_system::TaskSetRange)
+                        {
+                            md_frame_data_t* frame_data;
+                            md_frame_cache_lock_t* lock;
+                            if (md_frame_cache_reserve_frame(&data->mold.frame_cache, frame_idx, &frame_data, &lock)) {
+                                md_trajectory_frame_header_t header;
+                                data->mold.traj.decode_frame_header(data->mold.traj.inst, frame_mem, frame_size, &header);
+                                data->mold.traj.decode_frame_coords(data->mold.traj.inst, frame_mem, frame_size, frame_data->x, frame_data->y, frame_data->z, frame_data->num_atoms);
+                                // Free the data slot directly here
+                                slot_queue.push(slot_idx);
 
-                            memcpy(frame_data->box, header.box, sizeof(frame_data->box));
-
-                            md_molecule_t& mol = user_data->data->mold.mol;
-                            ApplicationData* data = user_data->data;
-
-                            // POSTPROCESS FRAME UPON LOADED INTO CACHE
-
-                            md_util_apply_pbc_args_t args = {
-                                .atom {
-                                    .count = frame_data->num_atoms,
-                                    .x = frame_data->x,
-                                    .y = frame_data->y,
-                                    .z = frame_data->z,
-                                },
-                                .residue = {
-                                    .count = mol.residue.count,
-                                    .atom_range = mol.residue.atom_range,
-                                },
-                                .chain = {
-                                    .count = mol.chain.count,
-                                    .residue_range = mol.chain.residue_range,
-                                }
-                            };
-                            memcpy(args.pbc.box, frame_data->box, sizeof(args.pbc.box));
-                            md_util_apply_pbc(frame_data->x, frame_data->y, frame_data->z, frame_data->num_atoms, args);
-
-                            if (mol.backbone.count > 0) {
-                                md_util_backbone_angle_args_t bb_args = {
-                                    .atom = {
+                                memcpy(frame_data->box, header.box, sizeof(frame_data->box));
+                                
+                                // deperiodize
+                                const md_molecule_t& mol = data->mold.mol;
+                                md_util_apply_pbc_args_t args = {
+                                    .atom {
                                         .count = mol.atom.count,
                                         .x = frame_data->x,
                                         .y = frame_data->y,
                                         .z = frame_data->z,
-                                    },
-                                    .backbone = {
-                                        .count = mol.backbone.count,
-                                        .atoms = mol.backbone.atoms,
-                                    },
-                                    .chain = {
+                                },
+                                .residue = {
+                                        .count = mol.residue.count,
+                                        .atom_range = mol.residue.atom_range,
+                                },
+                                .chain = {
                                         .count = mol.chain.count,
-                                        .backbone_range = mol.chain.backbone_range,
-                                    }
+                                        .residue_range = mol.chain.residue_range,
+                                }
                                 };
-                                md_util_compute_backbone_angles(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &bb_args);
+                                memcpy(args.pbc.box, frame_data->box, sizeof(args.pbc.box));
+                                md_util_apply_pbc(frame_data->x, frame_data->y, frame_data->z, mol.atom.count, args);
 
-                                md_util_secondary_structure_args_t ss_args = {
-                                    .atom = {
-                                        .count = data->mold.mol.atom.count,
-                                        .x = frame_data->x,
-                                        .y = frame_data->y,
-                                        .z = frame_data->z,
+                                if (mol.backbone.count > 0) {
+                                    md_util_backbone_angle_args_t bb_args = {
+                                        .atom = {
+                                            .count = mol.atom.count,
+                                            .x = frame_data->x,
+                                            .y = frame_data->y,
+                                            .z = frame_data->z,
                                     },
                                     .backbone = {
-                                        .count = mol.backbone.count,
-                                        .atoms = mol.backbone.atoms,
+                                            .count = mol.backbone.count,
+                                            .atoms = mol.backbone.atoms,
                                     },
                                     .chain = {
-                                        .count = data->mold.mol.chain.count,
-                                        .backbone_range = data->mold.mol.chain.backbone_range,
+                                            .count = mol.chain.count,
+                                            .backbone_range = mol.chain.backbone_range,
                                     }
-                                };
-                                md_util_compute_secondary_structure(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &ss_args);
+                                    };
+                                    md_util_compute_backbone_angles(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &bb_args);
+
+                                    md_util_secondary_structure_args_t ss_args = {
+                                        .atom = {
+                                            .count = data->mold.mol.atom.count,
+                                            .x = frame_data->x,
+                                            .y = frame_data->y,
+                                            .z = frame_data->z,
+                                    },
+                                    .backbone = {
+                                            .count = mol.backbone.count,
+                                            .atoms = mol.backbone.atoms,
+                                    },
+                                    .chain = {
+                                            .count = data->mold.mol.chain.count,
+                                            .backbone_range = data->mold.mol.chain.backbone_range,
+                                    }
+                                    };
+                                    md_util_compute_secondary_structure(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &ss_args);
+                                }
+
+                                md_frame_cache_release_frame_lock(lock);
+                            } else {
+                                slot_queue.push(slot_idx);
                             }
-
-                            md_frame_cache_release_frame_lock(lock);
-                            user_data->slot_queue.push(slot_idx);
-                        });
-
-
-                    }, &user_data);
-
-                while (!user_data.slot_queue.was_full()) {
-                    _mm_pause();
+                            //printf("Finished decoding frame %i\n", frame_idx);
+                        }
+                    );
+                }
+                
+                //printf("Sitting back waiting for tasks to complete...\n");
+                while (!slot_queue.was_full()) {
+                    _mm_pause(); // Back off for a bit
                 }
 
                 md_free(default_allocator, slot_mem, slot_size * NUM_FRAME_SLOTS);
-            });
 #undef NUM_FRAME_SLOTS
-    }
-}
-
-static void on_trajectory_load_complete(ApplicationData* data) {
-    if (data->mold.traj.num_frames) {
-        init_trajectory_data(data);
-        //update_all_representations(data);
-
-        //stats::set_all_property_flags(true, true);
-
-        //Array<const BackboneAngle> angle_data = {(BackboneAngle*)data->trajectory_data.backbone_angles.data, data->trajectory_data.backbone_angles.count};
-        //int64_t angle_stride = data->trajectory_data.backbone_angles.stride;
-        //ramachandran::init_vbo(angle_data, angle_stride);
+            });
     }
 }
 
@@ -4054,7 +4368,7 @@ static bool load_trajectory_data(ApplicationData* data, str_t filename) {
     data->animation.frame = 0;
 
     if (load::traj::open_file(&data->mold.traj, filename, &data->mold.mol, default_allocator)) {
-        on_trajectory_load_complete(data);
+        init_trajectory_data(data);
         return true;
     }
 
@@ -4541,8 +4855,8 @@ static void update_representation(ApplicationData* data, Representation* rep) {
     }
 
     rep->filter_is_valid = filter_expression(*data, rep->filter, &rep->atom_mask);
+    filter_colors(colors, mol.atom.count, &rep->atom_mask);
 
-    //filter_colors(colors, &rep->atom_mask);
     data->representations.atom_visibility_mask_dirty = true;
 
     {
@@ -4661,8 +4975,6 @@ static bool handle_selection(ApplicationData* data) {
 
     md_bitfield_clear(&data->selection.current_highlight_mask);
     data->mold.dirty_buffers |= MolBit_DirtyFlags;
-        
-    // Range<int32> picking_range = {0, 0};
 
     if (data->picking.idx != INVALID_PICKING_IDX && !region_select) {
         ASSERT(0 <= data->picking.idx && data->picking.idx <= N);
@@ -4709,19 +5021,13 @@ static bool handle_selection(ApplicationData* data) {
             int64_t end_bit = vis_mask->end_bit;
             while ((beg_bit = md_bitfield_scan(vis_mask, beg_bit, end_bit)) != 0) {
                 int64_t i = beg_bit - 1;
-                const float x = data->mold.mol.atom.x[i];
-                const float y = data->mold.mol.atom.y[i];
-                const float z = data->mold.mol.atom.z[i];
-
-                const float p_x = mvp[0][0] * x + mvp[1][0] * y + mvp[2][0] * z + mvp[3][0];
-                const float p_y = mvp[0][1] * x + mvp[1][1] * y + mvp[2][1] * z + mvp[3][1];
-                const float p_w = mvp[0][3] * x + mvp[1][3] * y + mvp[2][3] * z + mvp[3][3];
+                vec4_t p =  {data->mold.mol.atom.x[i], data->mold.mol.atom.y[i], data->mold.mol.atom.z[i], 1.0f};
+                p = mat4_mul_vec4(mvp, p);
 
                 vec2_t c = {
-                    (p_x / p_w * 0.5f + 0.5f) * res.x,
-                    (-p_y / p_w * 0.5f + 0.5f) * res.y
+                    (p.x / p.w * 0.5f + 0.5f) * res.x,
+                    (-p.y / p.w * 0.5f + 0.5f) * res.y
                 };
-
 
                 if (min_p.x <= c.x && c.x <= max_p.x && min_p.y <= c.y && c.y <= max_p.y) {
                     md_bitfield_set_bit(&mask, i);

@@ -1,7 +1,23 @@
 #include <implot.h>
 
 namespace ImPlot {
-// Shows a draggable vertical guide range between two x-values. #col defaults to ImGuiCol_Text.
-IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_max, bool show_label = true, const ImVec4& line_col = IMPLOT_AUTO_COL, const ImVec4& range_col = IMPLOT_AUTO_COL, float line_thickness = 1);
+
+typedef int ImPlotDragRangeFlags;          // -> enum ImPlotBin_
+
+                                // Options for plots (see BeginPlot).
+enum ImPlotDragRangeFlags_ {
+    ImPlotDragRangeFlags_None = 0,          // default
+    ImPlotDragRangeFlags_Periodic = 1 << 0, // the range is periodic and should wrap around the min and max values.
+    ImPlotDragRangeFlags_NoLabel  = 1 << 1, // do not display any label
+};
+
+struct ImPlotDragRangeStyle {
+    ImVec4 line_col = IMPLOT_AUTO_COL;
+    ImVec4 range_col = IMPLOT_AUTO_COL;
+    ImVec4 scrollbar_col = IMPLOT_AUTO_COL;
+    float line_thickness = 1;
+};
+
+IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_max, double min_value, double max_value, ImPlotDragRangeFlags flags = 0, const ImPlotDragRangeStyle& style = ImPlotDragRangeStyle());
 
 }  // namespace ImPlot

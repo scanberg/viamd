@@ -207,6 +207,7 @@ bool write_volume_to_file(const float* data, int64_t dim_x, int64_t dim_y, int64
 
     md_file_write(file, data, dim_x * dim_y * dim_z * sizeof(float));
     md_file_close(file);
+    return true;
 }
 
 void render_volume(const RenderDesc& desc) {

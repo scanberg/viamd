@@ -215,6 +215,7 @@ public:
 	}
 	const Marker* GetHoveredMarker() const { return mHoveredMarker; }
 
+	void ClearErrorMarkers() { mErrorMarkers.clear(); }
 	void SetErrorMarkers(const ErrorMarkers& aMarkers) { mErrorMarkers = aMarkers; }
 	void SetBreakpoints(const Breakpoints& aBreakpoints) { mBreakpoints = aBreakpoints; }
 

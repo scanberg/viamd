@@ -1,8 +1,21 @@
+#ifndef  _CRT_SECURE_NO_WARNINGS
+#define  _CRT_SECURE_NO_WARNINGS
+#endif // ! _CRT_SECURE_NO_WARNINGS
+
 #include "image.h"
 
 #include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_log.h>
+#include <core/md_file.h>
+
+#define STBI_MALLOC(sz)                     md_alloc(default_temp_allocator, sz)
+#define STBI_REALLOC_SIZED(p,oldsz,newsz)   md_realloc(default_temp_allocator, p, oldsz, newsz)
+#define STBI_FREE(p)                        {}
+
+#define STBIW_MALLOC(sz)                     md_alloc(default_temp_allocator, sz)
+#define STBIW_REALLOC_SIZED(p,oldsz,newsz)   md_realloc(default_temp_allocator, p, oldsz, newsz)
+#define STBIW_FREE(p)                        {}
 
 #include <stb_image.h>
 #include <stb_image_write.h>
@@ -22,7 +35,7 @@ bool init_image(image_t* img, int32_t width, int32_t height, md_allocator_i* all
         ASSERT(false);
     }
 
-    uint32_t* data = (uint32_t*)md_alloc(default_allocator, width * height * sizeof(uint32_t));
+    uint32_t* data = (uint32_t*)md_alloc(alloc, width * height * sizeof(uint32_t));
     if (!data) return false;
 
     img->width = width;
@@ -61,12 +74,15 @@ bool read_image(image_t* img, const char* filename, md_allocator_i* alloc) {
     }
 
     int x, y, channels;
-    uint8_t* data = stbi_load(filename, &x, &y, &channels, 4);
-    if (!data) return false;
+    uint8_t* tmp_data = stbi_load(filename, &x, &y, &channels, 4);
+    if (!tmp_data) return false;
+
+    void *img_data = md_alloc(alloc, x * y * 4);
+    memcpy(img_data, tmp_data, x * y * 4);
 
     img->width = x;
     img->height = y;
-    img->data = (uint32_t*)data;
+    img->data = (uint32_t*)img_data;
 
     return true;
 }

@@ -311,6 +311,7 @@ struct ImPlotInputMap {
     ImGuiKeyModFlags QueryToggleMod;        // Ctrl     when held, active box selections turn into queries
     ImGuiKeyModFlags HorizontalMod;         // Alt      expands active box selection/query horizontally to plot edge when held
     ImGuiKeyModFlags VerticalMod;           // Shift    expands active box selection/query vertically to plot edge when held
+    ImGuiKeyModFlags ZoomMod;               // none     optional modifier that must be held for zooming
     IMPLOT_API ImPlotInputMap();
 };
 

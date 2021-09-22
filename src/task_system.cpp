@@ -22,6 +22,7 @@ constexpr uint32_t LABEL_SIZE = 64;
 
 namespace main {
     static atomic_queue::AtomicQueue<uint32_t, MAX_TASKS, 0xFFFFFFFF> free_slots;
+    static atomic_queue::AtomicQueue<uint32_t, MAX_TASKS, 0xFFFFFFFF> used_slots;
 }
 
 class PoolTask;
@@ -110,6 +111,10 @@ void initialize() {
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
         pool::free_slots.push(i);
     }
+
+    for (uint32_t i = 0; i < MAX_TASKS; i++) {
+        main::free_slots.push(i);
+    }
 }
 
 void shutdown() { ts.WaitforAllAndShutdown(); }
@@ -117,6 +122,7 @@ void shutdown() { ts.WaitforAllAndShutdown(); }
 bool enqueue_main(const char* label, Task func) {
     using namespace main;
     uint32_t idx = main::free_slots.pop();
+    main::used_slots.push(idx);
     MainTask* task = &task_data[idx];
     PLACEMENT_NEW(task) MainTask(func, label);
     ts.AddPinnedTask(task);
@@ -124,8 +130,11 @@ bool enqueue_main(const char* label, Task func) {
 }
 
 void run_main_tasks() {
-    using namespace main;
     ts.RunPinnedTasks();
+    while (!main::used_slots.was_empty()) {
+        uint32_t idx = main::used_slots.pop();
+        main::free_slots.push(idx);
+    }
 }
 
 static inline PoolTask* get_task(ID id) {

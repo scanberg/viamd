@@ -104,6 +104,7 @@ ImPlotInputMap::ImPlotInputMap() {
     QueryToggleMod        = ImGuiKeyModFlags_Ctrl;
     HorizontalMod         = ImGuiKeyModFlags_Alt;
     VerticalMod           = ImGuiKeyModFlags_Shift;
+    ZoomMod               = ImGuiKeyModFlags_None;
 }
 
 ImPlotStyle::ImPlotStyle() {
@@ -1450,7 +1451,7 @@ void HandlePlotInput(ImPlotPlot& plot) {
         }
     }
     // start drag
-    if (!drag_in_progress && plot.FrameHovered && IO.MouseClicked[gp.InputMap.PanButton] && ImHasFlag(IO.KeyMods, gp.InputMap.PanMod) && !plot.Selecting && !plot.Items.Legend.Hovered && !hov_query && !plot.DraggingQuery) {
+    if (!drag_in_progress && plot.FrameHovered && IO.MouseClicked[gp.InputMap.PanButton] && (IO.KeyMods == gp.InputMap.PanMod) && !plot.Selecting && !plot.Items.Legend.Hovered && !hov_query && !plot.DraggingQuery) {
         if (plot.XAxis.AllHovered) {
             plot.XAxis.Dragging = true;
         }
@@ -1463,7 +1464,7 @@ void HandlePlotInput(ImPlotPlot& plot) {
 
     // SCROLL INPUT -----------------------------------------------------------
 
-    if (plot.FrameHovered && (plot.XAxis.AllHovered || any_hov_y_axis_region) && IO.MouseWheel != 0) {
+    if (plot.FrameHovered && (plot.XAxis.AllHovered || any_hov_y_axis_region) && IO.MouseWheel != 0 && ImHasFlag(IO.KeyMods, gp.InputMap.ZoomMod)) {
         UpdateTransformCache();
         float zoom_rate = IMPLOT_ZOOM_RATE;
         if (IO.MouseWheel > 0)

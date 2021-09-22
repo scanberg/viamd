@@ -3,10 +3,10 @@
 
 namespace ImPlot {
 
-IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_max, bool show_label, const ImVec4& line_col, const ImVec4& fill_col, float line_thickness) {
+IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_max, double min_value, double max_value, ImPlotDragRangeFlags flags, const ImPlotDragRangeStyle& style) {
     ImPlotContext& gp = *GImPlot;
     IM_ASSERT_USER_ERROR(gp.CurrentPlot != NULL, "DragRangeX() needs to be called between BeginPlot() and EndPlot()!");
-    const float grab_size = ImMax(5.0f, line_thickness);
+    const float grab_size = ImMax(5.0f, style.line_thickness);
     float yt = gp.CurrentPlot->PlotRect.Min.y;
     float yb = gp.CurrentPlot->PlotRect.Max.y;
     float x_min = IM_ROUND(PlotToPixels(*x_range_min,0).x);
@@ -21,7 +21,7 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
         ImGui::PushID(i);
         char buff[64];
         snprintf(buff, sizeof(buff), "%s %s", id, i == 0 ? "min" : "max");
-        if (DragLineX(buff, x_range[i], show_label, line_col, line_thickness)) dragging = i + 1;
+        if (DragLineX(buff, x_range[i], !(flags & ImPlotDragRangeFlags_NoLabel), style.line_col, style.line_thickness)) dragging = i + 1;
         ImGui::PopID();
     }
 
@@ -46,7 +46,8 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
             ImVec2 old_cursor_pos = ImGui::GetCursorScreenPos();
             ImVec2 new_cursor_pos = ImVec2(x_min, yb - drag_bar_height);
             ImGui::GetCurrentWindow()->DC.CursorPos = new_cursor_pos;
-            ImGui::InvisibleButton(id, ImVec2(x_max - x_min, drag_bar_height));
+            const float btn_width = ImMax(x_max - x_min, 1.0f);
+            ImGui::InvisibleButton(id, ImVec2(btn_width, drag_bar_height));
             ImGui::GetCurrentWindow()->DC.CursorPos = old_cursor_pos;
             bar_hovered = ImGui::IsItemHovered();
             bar_active = ImGui::IsItemActive();
@@ -77,7 +78,7 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
         }
     }
 
-    ImVec4 range_color = IsColorAuto(fill_col) ? ImGui::GetStyleColorVec4(ImGuiCol_ScrollbarBg) : fill_col;
+    ImVec4 range_color = IsColorAuto(style.range_col) ? ImGui::GetStyleColorVec4(ImGuiCol_ScrollbarBg) : style.range_col;
     ImVec4 bar_color = ImGui::GetStyleColorVec4(ImGuiCol_ScrollbarGrab);
 
     ImDrawList& DrawList = *GetPlotDrawList();
@@ -89,7 +90,7 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
     if (bar_hovered || bar_active) {
         gp.CurrentPlot->PlotHovered = false;
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-        if (show_label) {
+        if (!ImHasFlag(flags, ImPlotDragRangeFlags_NoLabel)) {
             char min_buff[32];
             char max_buff[32];
             char buff[64];
@@ -97,7 +98,7 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
             LabelAxisValue(gp.CurrentPlot->XAxis, gp.XTicks, *x_range_min, min_buff, sizeof(min_buff));
             LabelAxisValue(gp.CurrentPlot->XAxis, gp.XTicks, *x_range_max, max_buff, sizeof(max_buff));
             snprintf(buff, sizeof(buff), "[%s, %s]", min_buff, max_buff);
-            ImVec4 color = IsColorAuto(line_col) ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : line_col;
+            ImVec4 color = IsColorAuto(style.line_col) ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : style.line_col;
             ImU32  col32 = ImGui::ColorConvertFloat4ToU32(color);
             gp.Annotations.Append(ImVec2(x,yb),ImVec2(0,0),col32,CalcTextColor(color),true,"%s = %s", id, buff);
         }
