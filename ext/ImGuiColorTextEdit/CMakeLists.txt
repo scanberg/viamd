@@ -16,4 +16,6 @@ target_include_directories(ImGuiColorTextEdit
 		${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+target_compile_features(ImGuiColorTextEdit PRIVATE cxx_std_11)
+
 target_link_libraries(ImGuiColorTextEdit imgui)

@@ -39,7 +39,7 @@ static vec4_t projection_extents(const Camera& camera, int width, int height, fl
     const float jitter_y = texel_size_y * texel_offset_y;
 
     // xy = frustum extents at distance 1, zw = jitter at distance 1
-    return vec4_t(half_w, half_h, jitter_x, jitter_y);
+    return {half_w, half_h, jitter_x, jitter_y};
 }
 
 mat4_t camera_view_to_world_matrix(const Camera& camera) {
@@ -100,7 +100,7 @@ mat4_t look_at(vec3_t look_from, vec3_t look_at, vec3_t look_up) {
     const vec3_t s = vec3_normalize(vec3_cross(f, look_up));
     const vec3_t u = vec3_cross(s, f);
 	const mat4_t M = {
-        .col {
+        .col = {
             {s.x, u.x, -f.x, 0.0f},
             {s.y, u.y, -f.y, 0.0f},
             {s.z, u.z, -f.z, 0.0f},
@@ -124,7 +124,7 @@ static inline float project_to_sphere(float r, vec2_t v) {
 
 static inline quat_t trackball(vec2_t prev_ndc, vec2_t curr_ndc) {
     static const float TRACKBALLSIZE = 0.8f;
-    if (vec2_dot(curr_ndc - prev_ndc, curr_ndc - prev_ndc) == 0.f) return quat_t(1, 0, 0, 0);
+    if (vec2_dot(curr_ndc - prev_ndc, curr_ndc - prev_ndc) == 0.f) return quat_t{1, 0, 0, 0};
 
     const vec3_t p1 = vec3_from_vec2(prev_ndc, project_to_sphere(TRACKBALLSIZE, prev_ndc));
     const vec3_t p2 = vec3_from_vec2(curr_ndc, project_to_sphere(TRACKBALLSIZE, curr_ndc));
@@ -153,30 +153,30 @@ bool camera_controller_trackball(vec3_t* position, quat_t* orientation, float* d
     ASSERT(distance);
 
     const vec2_t half_res = input.screen_size * 0.5f;
-    const vec2_t ndc_prev = (vec2_t(input.mouse_coord_prev.x, input.screen_size.y - input.mouse_coord_prev.y) - half_res) / half_res;
-    const vec2_t ndc_curr = (vec2_t(input.mouse_coord_curr.x, input.screen_size.y - input.mouse_coord_curr.y) - half_res) / half_res;
+    const vec2_t ndc_prev = (vec2_t{input.mouse_coord_prev.x, input.screen_size.y - input.mouse_coord_prev.y} - half_res) / half_res;
+    const vec2_t ndc_curr = (vec2_t{input.mouse_coord_curr.x, input.screen_size.y - input.mouse_coord_curr.y} - half_res) / half_res;
     const vec2_t mouse_coord_delta = input.mouse_coord_curr - input.mouse_coord_prev;
-    const bool mouse_move = mouse_coord_delta != vec2_t(0, 0);
+    const bool mouse_move = mouse_coord_delta != vec2_t{0, 0};
 
     if (input.rotate_button && mouse_move) {
         const quat_t q = trackball(ndc_prev, ndc_curr);
-        const vec3_t look_at = *position - *orientation * vec3_t(0, 0, *distance);
+        const vec3_t look_at = *position - *orientation * vec3_t{0, 0, *distance};
         *orientation = quat_normalize(*orientation * q);
-        *position = look_at + *orientation * vec3_t(0, 0, *distance);
+        *position = look_at + *orientation * vec3_t{0, 0, *distance};
         if (flags & TrackballFlags_RotateReturnsTrue) return true;
     } else if (input.pan_button && mouse_move) {
         const float aspect_ratio = input.screen_size.x / input.screen_size.y;
         const float scl = tanf(input.fov_y * 0.5f);
-        const vec2_t delta = (ndc_curr - ndc_prev) * vec2_t(1, -1) * vec2_t(aspect_ratio * scl, scl);
-        const vec3_t move = *orientation * vec3_t(-delta.x, delta.y, 0) * powf(*distance * param.pan_scale, param.pan_exponent);
+        const vec2_t delta = (ndc_curr - ndc_prev) * vec2_t{1, -1} * vec2_t{aspect_ratio * scl, scl};
+        const vec3_t move = *orientation * vec3_t{-delta.x, delta.y, 0} * powf(*distance * param.pan_scale, param.pan_exponent);
         *position = *position + move;
         if (flags & TrackballFlags_PanReturnsTrue) return true;
     } else if ((input.dolly_button && mouse_move) || input.dolly_delta != 0.f) {
         float delta = -(input.mouse_coord_curr.y - input.mouse_coord_prev.y) * powf(*distance * param.dolly_drag_scale, param.dolly_drag_exponent);
         delta -= input.dolly_delta * powf(*distance * param.dolly_delta_scale, param.dolly_delta_exponent);
-        const vec3_t look_at = *position - *orientation * vec3_t(0, 0, *distance);
+        const vec3_t look_at = *position - *orientation * vec3_t{0, 0, *distance};
         *distance = CLAMP(*distance + delta, param.min_distance, param.max_distance);
-        *position = look_at + *orientation * vec3_t(0, 0, *distance);
+        *position = look_at + *orientation * vec3_t{0, 0, *distance};
         if (flags & TrackballFlags_DollyReturnsTrue) return true;
     }
     return false;

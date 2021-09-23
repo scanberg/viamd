@@ -491,7 +491,7 @@ void init_rgba_volume(GPUVolume* vol, int res_x, int res_y, int res_z, vec3_t mi
     if (!vol->texture_id) glGenTextures(1, &vol->texture_id);
     vol->min_box = min_box;
     vol->max_box = max_box;
-    vol->voxel_ext = (max_box - min_box) / vec3_t(res_x, res_y, res_z);
+    vol->voxel_ext = (max_box - min_box) / vec3_t{(float)res_x, (float)res_y, (float)res_z};
 
     if (res_x != vol->res_x || res_y != vol->res_y || res_z != vol->res_z) {
         vol->res_x = res_x;
@@ -550,13 +550,13 @@ void init_occlusion_volume(GPUVolume* vol, vec3_t min_box, vec3_t max_box, float
     }
 
     const vec3_t center = (min_box + max_box) * 0.5f;
-    const vec3_t half_ext = vec3_t(res[0], res[1], res[2]) * voxel_ext * 0.5f;
+    const vec3_t half_ext = vec3_t{(float)res[0], (float)res[1], (float)res[2]} * voxel_ext * 0.5f;
     min_box = center - half_ext;
     max_box = center + half_ext;
 
     vol->min_box = min_box;
     vol->max_box = max_box;
-    vol->voxel_ext = vec3_t(voxel_ext);
+    vol->voxel_ext = vec3_t{voxel_ext, voxel_ext, voxel_ext};
 
     if (res[0] != vol->res_x || res[1] != vol->res_y || res[2] != vol->res_z) {
         // @NOTE: Compute log2 (integer version) to find the amount of mipmaps required
@@ -643,7 +643,7 @@ void voxelize_spheres_cpu(const GPUVolume& vol, const float* x, const float* y, 
         for (cc.z = min_cc.z; cc.z <= max_cc.z; cc.z++) {
             for (cc.y = min_cc.y; cc.y <= max_cc.y; cc.y++) {
                 for (cc.x = min_cc.x; cc.x <= max_cc.x; cc.x++) {
-                    vec3_t min_voxel = vol.min_box + vec3_t(cc.x, cc.y, cc.z) * vol.voxel_ext;
+                    vec3_t min_voxel = vol.min_box + vec3_t{(float)cc.x, (float)cc.y, (float)cc.z} * vol.voxel_ext;
                     vec3_t max_voxel = min_voxel + vol.voxel_ext;
                     vec3_t clamped_pos = vec3_clamp(pos, min_voxel, max_voxel);
                     vec3_t d = clamped_pos - pos;
@@ -934,7 +934,7 @@ void render_directional_occlusion(GLuint depth_tex, GLuint normal_tex, const GPU
                                   float occlusion_scale, float step_scale) {
     const mat4_t inv_view_proj_mat = mat4_inverse(proj_mat * view_mat);
     const mat4_t inv_view_mat = mat4_inverse(view_mat);
-    const vec3_t world_space_camera = mat4_mul_vec3(inv_view_mat, vec3_t(0,0,0), 1);
+    const vec3_t world_space_camera = mat4_mul_vec3(inv_view_mat, {0,0,0}, 1);
     const vec3_t voxel_grid_min = vol.min_box;
     const vec3_t voxel_grid_ext = vol.max_box - vol.min_box;
     float voxel_ext = MAX(MAX(vol.voxel_ext.x, vol.voxel_ext.y), vol.voxel_ext.z);
@@ -995,7 +995,7 @@ void cone_trace_scene(GLuint depth_tex, GLuint normal_tex, GLuint color_alpha_te
 
     mat4_t inv_view_proj_mat = mat4_inverse(proj_mat * view_mat);
     mat4_t inv_view_mat = mat4_inverse(view_mat);
-    vec3_t world_space_camera = mat4_mul_vec3(inv_view_mat, vec3_t(0, 0, 0), 1);
+    vec3_t world_space_camera = mat4_mul_vec3(inv_view_mat, {0, 0, 0}, 1);
     // printf("cam: %.2f %.2f %.2f\n", world_space_camera.x, world_space_camera.y, world_space_camera.z);
     vec3_t voxel_grid_min = vol.min_box;
     vec3_t voxel_grid_ext = vol.max_box - vol.min_box;

@@ -39,7 +39,7 @@ inline vec3_t hcl_to_rgb(vec3_t HCL) {
     constexpr float HCLmaxL = 0.530454533953517f;  // == exp(HCLgamma / HCLy0) - 0.5
     constexpr float PI = 3.1415926535f;
 
-    vec3_t RGB = vec3_t{0};
+    vec3_t RGB = vec3_t{};
     if (HCL.z != 0) {
         float H = HCL.x;
         float C = HCL.y;

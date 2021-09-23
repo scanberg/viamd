@@ -1,3 +1,4 @@
+
 cmake_minimum_required(VERSION 3.10)
 
 # add_compile_options_config(<CONFIG> <option> ...)
@@ -17,7 +18,7 @@ endif()
 
 project(viamd)
 
-option(VIAMD_USE_RELATIVE_PATHS OFF)
+option(VIAMD_USE_RELATIVE_PATHS ON)
 option(VIAMD_PROFILE_COMPILE_TIMES OFF)
 
 if (MSVC)
@@ -34,12 +35,12 @@ if (MSVC)
 else()
 	message(STATUS "non MSVC configuration was used")
     add_compile_options(
-        -Wall -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types -mavx #-maes
+        -Wall -Wno-unused-function -Wno-unused-parameter -Wextra -Wno-missing-braces -Wno-gnu-anonymous-struct -Wno-nested-anon-types -mavx #-maes
     )
 	if (VIAMD_PROFILE_COMPILE_TIMES)
 		add_compile_options(-ftime-trace)
 	endif()
-	#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types")
+	#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wno-c99-extensions -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types")
 endif()
 
 option(BUILD_SHARED_LIBS OFF)
@@ -71,14 +72,14 @@ add_subdirectory(ext/implot)
 add_subdirectory(ext/atomic_queue)
 #add_subdirectory(unittest)
 
-file(GLOB PLATFORM_FILES src/platform/*)
+file(GLOB APP_FILES src/application/*)
 file(GLOB SRC_FILES src/*)
 file(GLOB GFX_FILES src/gfx/*)
 
-source_group("platform" FILES ${PLATFORM_FILES})
+source_group("app" FILES ${APP_FILES})
 source_group("gfx" FILES ${GFX_FILES})
 
-add_executable(viamd ${OSX_BUNDLE} ${SRC_FILES} ${PLATFORM_FILES} ${GFX_FILES})
+add_executable(viamd ${OSX_BUNDLE} ${SRC_FILES} ${APP_FILES} ${GFX_FILES})
 
 set(RESOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/")
 if (VIAMD_USE_RELATIVE_PATHS)
@@ -111,7 +112,7 @@ target_compile_definitions(viamd PRIVATE
 	VIAMD_IMAGE_DIR=\"${RESOURCE_DIR}images\"
 	VIAMD_SCREENSHOT_DIR=\"${RESOURCE_DIR}screenshots\")
 
-target_compile_features(viamd PRIVATE cxx_std_20)
+target_compile_features(viamd PRIVATE cxx_std_17)
 
 target_include_directories(viamd
     PRIVATE
@@ -125,7 +126,6 @@ target_link_libraries(viamd
     glfw
     imgui
     nativefiledialog
-    #mdutils
     mold
     stb
     enkiTS

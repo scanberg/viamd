@@ -2,18 +2,15 @@
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 
-#include "platform.h"
+#include "application.h"
 
-//#include <core/log.h>
-//#include <core/string_utils.h>
 #include <core/md_log.h>
 #include <core/md_common.h>
 
 #include "gfx/gl.h"
 #include <GLFW/glfw3.h>
 #include <nfd.h>
-#ifdef OS_WINDOWS
-//#undef APIENTRY
+#if MD_PLATFORM_WINDOWS
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN 1
 #endif
@@ -24,8 +21,9 @@
 #include <imgui.h>
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
-//#include "cousine_font.inl"
 
+// Compressed fonts
+//#include "cousine_font.inl"
 //#include "droid_sans.inl"
 #include "droid_sans_mono.inl"
 #include "fa_solid.inl"
@@ -35,15 +33,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-namespace platform {
+namespace application {
 
 // Data
 static struct {
     Context internal_ctx{};
-
-    struct {
-        char cwd[512] = {0};
-    } file_system;
 } data;
 
 static void error_callback(int error, const char* description) { md_printf(MD_LOG_TYPE_ERROR, "%d: %s\n", error, description); }
@@ -105,7 +99,7 @@ bool initialize(Context* ctx, int64_t width, int64_t height, const char* title) 
     }
     glfwSetErrorCallback(error_callback);
 
-#ifdef OS_MAC_OSX
+#if MD_PLATFORM_OSX
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -364,12 +358,4 @@ done:
     return res;
 }
 
-#ifdef OS_WINDOWS
-#include "platform_win32.inl"
-#elif defined OS_MAC_OSX
-#include "platform_osx.inl"
-#elif defined OS_LINUX
-#include "platform_linux.inl"
-#endif
-
-}  // namespace platform
+}  // namespace application

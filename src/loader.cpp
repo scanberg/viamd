@@ -100,7 +100,7 @@ bool is_extension_supported(str_t filename) {
 bool load_string_pdb(md_molecule_t* mol, str_t string, md_allocator_i* alloc) {
     ASSERT(mol);
     ASSERT(alloc);
-    md_pdb_data_t data = {0};
+    md_pdb_data_t data = {};
     defer { md_pdb_data_free(&data, alloc); };
     if (md_pdb_data_parse_str(string, &data, alloc) && md_pdb_molecule_init(mol, &data, alloc)) {
         LoadedMolecule obj = {
@@ -118,7 +118,7 @@ bool load_string_pdb(md_molecule_t* mol, str_t string, md_allocator_i* alloc) {
 bool load_string_gro(md_molecule_t* mol, str_t string, md_allocator_i* alloc) {
     ASSERT(mol);
     ASSERT(alloc);
-    md_gro_data_t data = {0};
+    md_gro_data_t data = {};
     defer { md_gro_data_free(&data, alloc); };
     if (md_gro_data_parse_str(string, &data, alloc) && md_gro_molecule_init(mol, &data, alloc)) {
         LoadedMolecule obj = {
@@ -138,14 +138,14 @@ bool load_file(md_molecule_t* mol, str_t filename, md_allocator_i* alloc) {
     ASSERT(alloc);
     str_t ext = extract_ext(filename);
     if (compare_str_cstr(ext, "pdb")) {
-        md_pdb_data_t data = {0};
+        md_pdb_data_t data = {};
         defer { md_pdb_data_free(&data, alloc); };
         if (md_pdb_data_parse_file(filename, &data, alloc) && md_pdb_molecule_init(mol, &data, alloc)) {
             goto success;
         }
     }
     else if (compare_str_cstr(ext, "gro")) {
-        md_gro_data_t data = {0};
+        md_gro_data_t data = {};
         defer { md_gro_data_free(&data, alloc); };
         if (md_gro_data_parse_file(filename, &data, alloc) && md_gro_molecule_init(mol, &data, alloc)) {
             goto success;

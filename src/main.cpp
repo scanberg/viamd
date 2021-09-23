@@ -24,6 +24,7 @@
 #include <core/md_simd.h>
 #include <core/md_file.h>
 #include <core/md_array.inl>
+#include <core/md_os.h>
 
 #include <imgui.h>
 #define IMGUI_DEFINE_MATH_OPERATORS
@@ -50,7 +51,7 @@
 #include "imgui_widgets.h"
 #include "implot_widgets.h"
 //#include "plot_extended.h"
-#include "platform/platform.h"
+#include "application/application.h"
 #include "console.h"
 //#include "ramachandran.h"
 #include "color_utils.h"
@@ -62,7 +63,7 @@
 
 #include <atomic_queue.h>
 #include <stdio.h>
-#include <filesystem>
+//#include <filesystem>
 
 #define PICKING_JITTER_HACK 0
 #define DEPERIODIZE_ON_LOAD 1
@@ -257,8 +258,8 @@ struct Selection {
 };
 
 struct ApplicationData {
-    // --- PLATFORM ---
-    platform::Context ctx {};
+    // --- APPLICATION ---
+    application::Context ctx {};
 
     // --- FILES ---
     // for keeping track of open files
@@ -287,20 +288,20 @@ struct ApplicationData {
 
     // --- MOLD DATA ---
     struct {
-        md_gl_context_t     gl_ctx = {0};
-        md_gl_molecule_t    gl_mol = {0};
-        md_molecule_t       mol = {0};
-        md_trajectory_i     traj = {0};
-        md_frame_cache_t    frame_cache = {0};
+        md_gl_context_t     gl_ctx = {};
+        md_gl_molecule_t    gl_mol = {};
+        md_molecule_t       mol = {};
+        md_trajectory_i     traj = {};
+        md_frame_cache_t    frame_cache = {};
 
         struct {
-            md_script_ir_t    ir = {0};
-            md_script_eval_t  full_eval = {0};
-            md_script_eval_t  filt_eval = {0};
+            md_script_ir_t    ir = {};
+            md_script_eval_t  full_eval = {};
+            md_script_eval_t  filt_eval = {};
 
-            md_exp_bitfield_t frame_mask = {0};
+            md_exp_bitfield_t frame_mask = {};
 
-            md_semaphore_t semaphore = {0};
+            md_semaphore_t semaphore = {};
 
             bool compile_ir = false;
             bool evaluate_full = false;
@@ -821,7 +822,7 @@ int main(int, char**) {
 
     // Init platform
     md_print(MD_LOG_TYPE_INFO, "Initializing GL...");
-    if (!platform::initialize(&data.ctx, 1920, 1080, "VIAMD")) {
+    if (!application::initialize(&data.ctx, 1920, 1080, "VIAMD")) {
         md_print(MD_LOG_TYPE_ERROR, "Could not initialize platform layer... terminating\n");
         return -1;
     }
@@ -856,7 +857,7 @@ int main(int, char**) {
     data.script.editor.SetPalette(TextEditor::GetDarkPalette());
 
     load_dataset_from_file(&data, make_cstr(VIAMD_DATASET_DIR "/1ALA-500.pdb"));
-    create_representation(&data, RepresentationType::Vdw, ColorMapping::Cpk, make_cstr("protein"));
+    create_representation(&data, RepresentationType::Vdw, ColorMapping::Cpk, make_cstr("all"));
     data.script.editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(1,2,3) in resname(\"ALA\");\nv = sdf(s1, element('H'), 10.0);");
 
     reset_view(&data, true);
@@ -881,7 +882,7 @@ int main(int, char**) {
 
     // Main loop
     while (!data.ctx.window.should_close) {
-        platform::update(&data.ctx);
+        application::update(&data.ctx);
 
 #if SHOW_IMGUI_DEMO_WINDOW
         ImGui::ShowDemoWindow();
@@ -1268,11 +1269,11 @@ int main(int, char**) {
         }
 
         PUSH_GPU_SECTION("Imgui render")
-        platform::render_imgui(&data.ctx);
+        application::render_imgui(&data.ctx);
         POP_GPU_SECTION()
 
         // Swap buffers
-        platform::swap_buffers(&data.ctx);
+        application::swap_buffers(&data.ctx);
 
         task_system::run_main_tasks();
 
@@ -1297,7 +1298,7 @@ int main(int, char**) {
     task_system::shutdown();
 
     destroy_gbuffer(&data.gbuffer);
-    platform::shutdown(&data.ctx);
+    application::shutdown(&data.ctx);
 
     return 0;
 }
@@ -1766,8 +1767,8 @@ static void draw_main_menu(ApplicationData* data) {
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("Load Data", "CTRL+L")) {
-                auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, make_cstr("pdb,gro,xtc"));
-                if (res.result == platform::FileDialogResult::Ok) {
+                auto res = application::file_dialog(application::FileDialogFlags_Open, {}, make_cstr("pdb,gro,xtc"));
+                if (res.result == application::FileDialogResult::Ok) {
                     load_dataset_from_file(data, str_from_cstr(res.path));
                     if (!data->representations.buffer) {
                         create_representation(data); // Create default representation
@@ -1777,15 +1778,15 @@ static void draw_main_menu(ApplicationData* data) {
                 }
             }
             if (ImGui::MenuItem("Open Workspace", "CTRL+O")) {
-                auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, FILE_EXTENSION);
-                if (res.result == platform::FileDialogResult::Ok) {
+                auto res = application::file_dialog(application::FileDialogFlags_Open, {}, FILE_EXTENSION);
+                if (res.result == application::FileDialogResult::Ok) {
                     load_workspace(data, str_from_cstr(res.path));
                 }
             }
             if (ImGui::MenuItem("Save Workspace", "CTRL+S")) {
                 if (!data->files.workspace) {
-                    auto res = platform::file_dialog(platform::FileDialogFlags_Save, {}, FILE_EXTENSION);
-                    if (res.result == platform::FileDialogResult::Ok) {
+                    auto res = application::file_dialog(application::FileDialogFlags_Save, {}, FILE_EXTENSION);
+                    if (res.result == application::FileDialogResult::Ok) {
                         str_t ext = extract_ext(str_from_cstr(res.path));
                         if (!ext.len) {
                             snprintf(res.path + res.path_len, ARRAY_SIZE(res.path) - res.path_len, "%.*s", (uint32_t)FILE_EXTENSION.len, FILE_EXTENSION.ptr);
@@ -1797,8 +1798,8 @@ static void draw_main_menu(ApplicationData* data) {
                 }
             }
             if (ImGui::MenuItem("Save As")) {
-                auto res = platform::file_dialog(platform::FileDialogFlags_Save, {}, FILE_EXTENSION);
-                if (res.result == platform::FileDialogResult::Ok) {
+                auto res = application::file_dialog(application::FileDialogFlags_Save, {}, FILE_EXTENSION);
+                if (res.result == application::FileDialogResult::Ok) {
                     str_t ext = extract_ext(str_from_cstr(res.path));
                     if (!ext.len) {
                         snprintf(res.path + res.path_len, (size_t)(ARRAY_SIZE(res.path) - res.path_len), "%.*s", (uint32_t)FILE_EXTENSION.len, FILE_EXTENSION.ptr);
@@ -3403,8 +3404,8 @@ static void draw_volume_window(ApplicationData* data) {
         {
             if (ImGui::BeginMenu("File")) {
                 if (ImGui::MenuItem("Export volume")) {
-                    auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, make_cstr("raw"));
-                    if (res.result == platform::FileDialogResult::Ok) {
+                    auto res = application::file_dialog(application::FileDialogFlags_Open, {}, make_cstr("raw"));
+                    if (res.result == application::FileDialogResult::Ok) {
                         //volume::write_to_file(data->density_volume.volume, res.path);
                         md_print(MD_LOG_TYPE_INFO, "Wrote density volume");
                     }
@@ -3421,8 +3422,8 @@ static void draw_volume_window(ApplicationData* data) {
                 ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
                 ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.0f, 1.0f));
                 if (ImGui::ImageButton((void*)(intptr_t)data->density_volume.dvr.tf.id, button_size)) {
-                    auto res = platform::file_dialog(platform::FileDialogFlags_Open, {}, make_cstr("png,jpg"));
-                    if (res.result == platform::FileDialogResult::Ok) {
+                    auto res = application::file_dialog(application::FileDialogFlags_Open, {}, make_cstr("png,jpg"));
+                    if (res.result == application::FileDialogResult::Ok) {
                         data->density_volume.dvr.tf.path = res.path;
                         data->density_volume.dvr.tf.dirty = true;
                     }
@@ -3602,7 +3603,7 @@ static void draw_volume_window(ApplicationData* data) {
         glDepthMask(GL_TRUE);
 
         if (prop) {
-            md_script_visualization_t vis = {0};
+            md_script_visualization_t vis = {};
             md_script_visualization_args_t args = {
                 .token = prop->vis_token,
                 .ir = &data->mold.script.ir,
@@ -3705,7 +3706,7 @@ static void draw_volume_window(ApplicationData* data) {
 
         PUSH_GPU_SECTION("Postprocessing")
             postprocessing::Descriptor postprocess_desc = {
-            .background {
+            .background = {
                 .intensity = data->visuals.background.color * data->visuals.background.intensity,
             },
             .bloom = {
@@ -4282,7 +4283,7 @@ static void init_trajectory_data(ApplicationData* data) {
                                 // deperiodize
                                 const md_molecule_t& mol = data->mold.mol;
                                 md_util_apply_pbc_args_t args = {
-                                    .atom {
+                                    .atom = {
                                         .count = mol.atom.count,
                                         .x = frame_data->x,
                                         .y = frame_data->y,
@@ -4513,14 +4514,20 @@ static void load_workspace(ApplicationData* data, str_t file) {
         if (compare_str_cstr_n(line, "[Files]", 7)) {
             while (c_txt.len && c_txt[0] != '[' && (extract_line(&line, &c_txt))) {
                 if (compare_str_cstr_n(line, "MoleculeFile=", 13)) {
-                    std::filesystem::path path(file.ptr);
-                    path += trim_whitespace(substr(line, 13)).ptr;
-                    new_molecule_file = std::filesystem::canonical(path).string().c_str();
+                    //std::filesystem::path path(file.ptr);
+                    //path += trim_whitespace(substr(line, 13)).ptr;
+                    //new_molecule_file = std::filesystem::canonical(path).string().c_str();
+                    StrBuf<512> buf = file;
+                    buf += trim_whitespace(substr(line, 13));
+                    new_molecule_file = md_os_path_make_canonical(buf, default_temp_allocator);
                 }
                 if (compare_str_cstr_n(line, "TrajectoryFile=", 15)) {
-                    std::filesystem::path path(file.ptr);
-                    path += trim_whitespace(substr(line, 15)).ptr;
-                    new_trajectory_file = std::filesystem::canonical(path).string().c_str();
+                    //std::filesystem::path path(file.ptr);
+                    //path += trim_whitespace(substr(line, 15)).ptr;
+                    //new_trajectory_file = std::filesystem::canonical(path).string().c_str();
+                    StrBuf<512> buf = file;
+                    buf += trim_whitespace(substr(line, 15));
+                    new_trajectory_file = md_os_path_make_canonical(buf, default_temp_allocator);
                 }
             }
         } else if (compare_str_cstr_n(line, "[Representation]", 16)) {
@@ -4625,26 +4632,28 @@ static void save_workspace(ApplicationData* data, str_t filename) {
 
     FILE* fptr = (FILE*)file;
 
-    std::string rel_mol_path;
-    std::string rel_traj_path;
+    str_t rel_mol_path = {};
+    str_t rel_traj_path = {};
 
     if (data->files.molecule) {
-        std::filesystem::path basep(filename.ptr);
-        std::filesystem::path filep(data->files.molecule.cstr());
-        std::filesystem::path relp = filep.lexically_relative(basep);
-        rel_mol_path = relp.string();
+        //std::filesystem::path basep(filename.ptr);
+        //std::filesystem::path filep(data->files.molecule.cstr());
+        //std::filesystem::path relp = filep.lexically_relative(basep);
+        //rel_mol_path = relp.string();
+        rel_mol_path = md_os_path_make_relative(filename, data->files.molecule, default_temp_allocator);
     }
 
     if (data->files.trajectory) {
-        std::filesystem::path basep(filename.ptr);
-        std::filesystem::path filep(data->files.trajectory.cstr());
-        std::filesystem::path relp = filep.lexically_relative(basep);
-        rel_traj_path = relp.string();
+        //std::filesystem::path basep(filename.ptr);
+        //std::filesystem::path filep(data->files.trajectory.cstr());
+        //std::filesystem::path relp = filep.lexically_relative(basep);
+        //rel_traj_path = relp.string();
+        rel_traj_path = md_os_path_make_relative(filename, data->files.trajectory, default_temp_allocator);
     }
 
     fprintf(fptr, "[Files]\n");
-    fprintf(fptr, "MoleculeFile=%s\n", rel_mol_path.empty() ? "" : rel_mol_path.c_str());
-    fprintf(fptr, "TrajectoryFile=%s\n", rel_traj_path.empty() ? "" : rel_traj_path.c_str());
+    fprintf(fptr, "MoleculeFile=%.*s\n", (int)rel_mol_path.len, rel_mol_path.ptr);
+    fprintf(fptr, "TrajectoryFile=%.*s\n", (int)rel_traj_path.len, rel_traj_path.ptr);
     fprintf(fptr, "\n");
 
     // REPRESENTATIONS
@@ -4741,8 +4750,8 @@ void create_screenshot(ApplicationData* data) {
         }
     }
 
-    platform::FileDialogResult file_res = platform::file_dialog(platform::FileDialogFlags_Save, {}, make_cstr("jpg;png;bmp"));
-    if (file_res.result == platform::FileDialogResult::Ok) {
+    application::FileDialogResult file_res = application::file_dialog(application::FileDialogFlags_Save, {}, make_cstr("jpg;png;bmp"));
+    if (file_res.result == application::FileDialogResult::Ok) {
         str_t ext = extract_ext({file_res.path, file_res.path_len});
         if (ext.ptr == NULL) {
             snprintf(file_res.path + file_res.path_len, ARRAY_SIZE(file_res.path) - file_res.path_len, ".jpg");
@@ -4961,8 +4970,8 @@ static bool handle_selection(ApplicationData* data) {
 
     static RegionMode region_mode = RegionMode::Append;
     static bool region_select = false;
-    static platform::Coordinate x0;
-    const platform::Coordinate x1 = data->ctx.input.mouse.win_coord;
+    static application::Coordinate x0;
+    const application::Coordinate x1 = data->ctx.input.mouse.win_coord;
     const int64_t N = data->mold.mol.atom.count;
     const bool shift_down = data->ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data->ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
     const bool mouse_down = data->ctx.input.mouse.down[0] || data->ctx.input.mouse.down[1];
@@ -5372,7 +5381,7 @@ static void handle_picking(ApplicationData* data) {
             //coord -= data->view.param.jitter.current * 2.0f;
             //coord += 0.5f;
             data->picking = read_picking_data(&data->gbuffer, (int)coord.x, (int)coord.y);
-            const vec4_t viewport(0, 0, data->gbuffer.width, data->gbuffer.height);
+            const vec4_t viewport = {0, 0, (float)data->gbuffer.width, (float)data->gbuffer.height};
             data->picking.world_coord = mat4_unproject({coord.x, coord.y, data->picking.depth}, data->view.param.matrix.inverse.view_proj_jittered, viewport);
 #endif
         }

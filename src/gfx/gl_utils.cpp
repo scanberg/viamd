@@ -7,8 +7,6 @@
 
 #include "gl_utils.h"
 
-static GLuint fbo = 0;
-
 bool gl::get_shader_compile_error(char* buffer, int max_length, GLuint shader) {
     GLint success = 0;
     glGetShaderiv(shader, GL_COMPILE_STATUS, &success);

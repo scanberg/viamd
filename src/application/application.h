@@ -1,48 +1,19 @@
 #pragma once
 
-/*
-@TODO:
-        - Fix delta time computation for unix systems, this is not correct at al
-        - Implement directory watch (+file watch) for different systems (win32, osx and linux)
-        - Make sure that filters work with all systems for file_dialog
-*/
-
-#ifdef __APPLE__
-#include "TargetConditionals.h"
-#ifdef TARGET_OS_MAC
-#define OS_MAC_OSX
-#endif
-#elif defined _WIN32 || defined _WIN64
-#define OS_WINDOWS
-#elif defined __linux__
-#define OS_LINUX
-#else
-#error
-#endif
-
 #include "keys.h"
-//#include <core/common.h>
-//#include <core/types.h>
-//#include <core/array_types.h>
-//#include <core/string_types.h>
+
+#include <core/md_platform.h>
 #include <core/md_str.h>
+#include <core/md_vec_math.h>
 
 #include "IconsFontAwesome5.h"
 
-namespace platform {
+namespace application {
 
 const int MAX_KEYS = 512;
 const int MAX_MOUSE_BUTTONS = 8;
 
-struct Coordinate {
-    float x;
-    float y;
-};
-
-inline bool operator==(const Coordinate& a, const Coordinate& b) { return a.x == b.x && a.y == b.y; }
-inline bool operator!=(const Coordinate& a, const Coordinate& b) { return a.x != b.x || a.y != b.y; }
-inline Coordinate operator+(const Coordinate& a, const Coordinate& b) { return {a.x + b.x, a.y + b.y}; }
-inline Coordinate operator-(const Coordinate& a, const Coordinate& b) { return {a.x - b.x, a.y - b.y}; }
+typedef vec2_t Coordinate;
 
 struct Context {
     struct {
@@ -107,15 +78,7 @@ void update(Context* ctx);
 void render_imgui(Context* ctx);
 void swap_buffers(Context* ctx);
 
-// Timing
-typedef uint64_t Timestamp;
-
-void sleep(int64_t milliseconds);
-Timestamp get_time();
-double compute_delta_ms(Timestamp t0, Timestamp t1);
-double compute_delta_s(Timestamp t0, Timestamp t1);
-
-// Filesystem
+// File Dialog
 typedef uint32_t FileDialogFlags;
 
 enum FileDialogFlags_ { FileDialogFlags_Open = 0x1, FileDialogFlags_Save = 0x2, FileDialogFlags_Directory = 0x4 };
@@ -127,20 +90,6 @@ struct FileDialogResult {
     char path[512];
 };
 
-/*
-struct DirectoryEntry {
-    enum Type { File, Dir, Link, Unknown };
-    Type type = Unknown;
-    Path name = {};
-};
-
-str_t get_cwd();
-DynamicArray<DirectoryEntry> list_directory(CStringView directory);
-*/
 FileDialogResult file_dialog(FileDialogFlags flags, str_t default_path = {}, str_t filter = {});
 
-/*
-bool add_directory_watch(CString directory, DirectoryWatchCallback, void* usr_data = NULL);
-bool remove_directory_watch(CString directory);
-*/
-}  // namespace platform
+}  // namespace application

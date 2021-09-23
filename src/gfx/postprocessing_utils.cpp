@@ -338,20 +338,22 @@ void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4_t& proj_m
     const float* proj_data = &proj_mat.elem[0][0];
     const bool ortho = is_orthographic_proj_matrix(proj_mat);
     if (!ortho) {
-        proj_info = vec4_t(2.0f / (proj_data[4 * 0 + 0]),                          // (x) * (R - L)/N
-                         2.0f / (proj_data[4 * 1 + 1]),                          // (y) * (T - B)/N
-                         -(1.0f - proj_data[4 * 2 + 0]) / proj_data[4 * 0 + 0],  // L/N
-                         -(1.0f + proj_data[4 * 2 + 1]) / proj_data[4 * 1 + 1]   // B/N
-        );
+        proj_info = {
+            2.0f / (proj_data[4 * 0 + 0]),                          // (x) * (R - L)/N
+            2.0f / (proj_data[4 * 1 + 1]),                          // (y) * (T - B)/N
+            -(1.0f - proj_data[4 * 2 + 0]) / proj_data[4 * 0 + 0],  // L/N
+            -(1.0f + proj_data[4 * 2 + 1]) / proj_data[4 * 1 + 1]   // B/N
+        };
 
         // proj_scl = float(height) / (math::tan(fovy * 0.5f) * 2.0f);
         proj_scl = float(height) * proj_data[4 * 1 + 1] * 0.5f;
     } else {
-        proj_info = vec4_t(2.0f / (proj_data[4 * 0 + 0]),                          // ((x) * R - L)
-                         2.0f / (proj_data[4 * 1 + 1]),                          // ((y) * T - B)
-                         -(1.0f + proj_data[4 * 3 + 0]) / proj_data[4 * 0 + 0],  // L
-                         -(1.0f - proj_data[4 * 3 + 1]) / proj_data[4 * 1 + 1]   // B
-        );
+        proj_info = {
+            2.0f / (proj_data[4 * 0 + 0]),                          // ((x) * R - L)
+            2.0f / (proj_data[4 * 1 + 1]),                          // ((y) * T - B)
+            -(1.0f + proj_data[4 * 3 + 0]) / proj_data[4 * 0 + 0],  // L
+            -(1.0f - proj_data[4 * 3 + 1]) / proj_data[4 * 1 + 1]   // B
+        };
         proj_scl = float(height) / proj_info.y;
     }
 
@@ -364,7 +366,7 @@ void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4_t& proj_m
     data.time = time;
     data.ao_multiplier = 1.f / (1.f - data.n_dot_v_bias);
     data.pow_exponent = MAX(intensity, 0.f);
-    data.inv_full_res = vec2_t(1.f / float(width), 1.f / float(height));
+    data.inv_full_res = {1.f / float(width), 1.f / float(height)};
     data.proj_info = proj_info;
     memcpy(&data.sample_pattern, SAMPLE_PATTERN, sizeof(SAMPLE_PATTERN));
 
@@ -1100,7 +1102,7 @@ void shutdown() {
 }
 
 void compute_linear_depth(GLuint depth_tex, float near_plane, float far_plane, bool orthographic = false) {
-    const vec4_t clip_info(near_plane * far_plane, near_plane - far_plane, far_plane, 0);
+    const vec4_t clip_info {near_plane * far_plane, near_plane - far_plane, far_plane, 0};
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, depth_tex);
@@ -1133,7 +1135,7 @@ void apply_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj_m
     int width = last_viewport[2];
     int height = last_viewport[3];
 
-    const vec2_t inv_res = vec2_t(1.f / gl.tex_width, 1.f / gl.tex_height);
+    const vec2_t inv_res = vec2_t{1.f / gl.tex_width, 1.f / gl.tex_height};
 
     glBindVertexArray(gl.vao);
 
@@ -1298,7 +1300,7 @@ void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_point, flo
     ASSERT(glIsTexture(linear_depth_tex));
     ASSERT(glIsTexture(color_tex));
 
-    const vec2_t pixel_size = vec2_t(1.f / gl.tex_width, 1.f / gl.tex_height);
+    const vec2_t pixel_size = vec2_t{1.f / gl.tex_width, 1.f / gl.tex_height};
 
     GLint last_fbo;
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fbo);
@@ -1401,7 +1403,7 @@ void blit_static_velocity(GLuint depth_tex, const ViewParam& view_param) {
     const vec2_t res = view_param.resolution;
     const vec2_t jitter_uv_cur = view_param.jitter.current / res;
     const vec2_t jitter_uv_prev = view_param.jitter.previous / res;
-    const vec4_t jitter_uv = vec4_t(jitter_uv_cur.x, jitter_uv_cur.y, jitter_uv_prev.x, jitter_uv_prev.y);
+    const vec4_t jitter_uv = {jitter_uv_cur.x, jitter_uv_cur.y, jitter_uv_prev.x, jitter_uv_prev.y};
 
     glUseProgram(velocity::blit_velocity.program);
 	glUniform1i(velocity::blit_velocity.uniform_loc.tex_depth, 0);
@@ -1460,10 +1462,10 @@ void apply_temporal_aa(GLuint linear_depth_tex, GLuint color_tex, GLuint velocit
 
     const vec2_t res = {(float)gl.tex_width, (float)gl.tex_height};
     const vec2_t inv_res = 1.0f / res;
-    const vec4_t texel_size = vec4_t(inv_res.x, inv_res.y, res.x, res.y);
+    const vec4_t texel_size = vec4_t{inv_res.x, inv_res.y, res.x, res.y};
     const vec2_t jitter_uv_curr = curr_jitter / res;
     const vec2_t jitter_uv_prev = prev_jitter / res;
-    const vec4_t jitter_uv = vec4_t(jitter_uv_curr.x, jitter_uv_curr.y, jitter_uv_prev.x, jitter_uv_prev.y);
+    const vec4_t jitter_uv = vec4_t{jitter_uv_curr.x, jitter_uv_curr.y, jitter_uv_prev.x, jitter_uv_prev.y};
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, linear_depth_tex);

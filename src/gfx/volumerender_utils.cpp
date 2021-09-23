@@ -291,7 +291,7 @@ void render_volume(const RenderDesc& desc) {
 
     glUseProgram(program);
 
-    vec4_t colors[desc.isosurface.MaxCount];
+    vec4_t colors[IsoSurfaces::MaxCount];
     for (int i = 0; i < ARRAY_SIZE(colors); ++i) {
         colors[i] = convert_color(desc.isosurface.colors[i]);
     }

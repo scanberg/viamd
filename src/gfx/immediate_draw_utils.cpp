@@ -412,44 +412,44 @@ void draw_aabb(vec3_t min_box, vec3_t max_box) {
 
 void draw_box_wireframe(vec3_t min_box, vec3_t max_box, uint32_t color) {
     // Z = min
-    draw_line(vec3_t(min_box.elem[0], min_box.elem[1], min_box.elem[2]), vec3_t(max_box.elem[0], min_box.elem[1], min_box.elem[2]), color);
-    draw_line(vec3_t(min_box.elem[0], min_box.elem[1], min_box.elem[2]), vec3_t(min_box.elem[0], max_box.elem[1], min_box.elem[2]), color);
-    draw_line(vec3_t(max_box.elem[0], min_box.elem[1], min_box.elem[2]), vec3_t(max_box.elem[0], max_box.elem[1], min_box.elem[2]), color);
-    draw_line(vec3_t(min_box.elem[0], max_box.elem[1], min_box.elem[2]), vec3_t(max_box.elem[0], max_box.elem[1], min_box.elem[2]), color);
+    draw_line(vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]}, vec3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]}, color);
+    draw_line(vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]}, vec3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]}, color);
+    draw_line(vec3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]}, vec3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]}, color);
+    draw_line(vec3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]}, vec3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]}, color);
 
     // Z = max
-    draw_line(vec3_t(min_box.elem[0], min_box.elem[1], max_box.elem[2]), vec3_t(max_box.elem[0], min_box.elem[1], max_box.elem[2]), color);
-    draw_line(vec3_t(min_box.elem[0], min_box.elem[1], max_box.elem[2]), vec3_t(min_box.elem[0], max_box.elem[1], max_box.elem[2]), color);
-    draw_line(vec3_t(max_box.elem[0], min_box.elem[1], max_box.elem[2]), vec3_t(max_box.elem[0], max_box.elem[1], max_box.elem[2]), color);
-    draw_line(vec3_t(min_box.elem[0], max_box.elem[1], max_box.elem[2]), vec3_t(max_box.elem[0], max_box.elem[1], max_box.elem[2]), color);
+    draw_line(vec3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]}, vec3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]}, color);
+    draw_line(vec3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]}, vec3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
+    draw_line(vec3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]}, vec3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
+    draw_line(vec3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]}, vec3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
 
     // Z min max
-    draw_line(vec3_t(min_box.elem[0], min_box.elem[1], min_box.elem[2]), vec3_t(min_box.elem[0], min_box.elem[1], max_box.elem[2]), color);
-    draw_line(vec3_t(min_box.elem[0], max_box.elem[1], min_box.elem[2]), vec3_t(min_box.elem[0], max_box.elem[1], max_box.elem[2]), color);
-    draw_line(vec3_t(max_box.elem[0], min_box.elem[1], min_box.elem[2]), vec3_t(max_box.elem[0], min_box.elem[1], max_box.elem[2]), color);
-    draw_line(vec3_t(max_box.elem[0], max_box.elem[1], min_box.elem[2]), vec3_t(max_box.elem[0], max_box.elem[1], max_box.elem[2]), color);
+    draw_line(vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]}, vec3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]}, color);
+    draw_line(vec3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]}, vec3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
+    draw_line(vec3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]}, vec3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]}, color);
+    draw_line(vec3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]}, vec3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
 }
 
 void draw_box_wireframe(vec3_t min_box, vec3_t max_box, mat4_t model_matrix, uint32_t color) {
     const mat3_t R = mat3_from_mat4(model_matrix);
     const vec3_t trans = vec3_from_vec4(model_matrix.col[3]);
     // Z = min
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], min_box.elem[1], min_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], min_box.elem[1], min_box.elem[2]))), color);
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], min_box.elem[1], min_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], max_box.elem[1], min_box.elem[2]))), color);
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], min_box.elem[1], min_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], max_box.elem[1], min_box.elem[2]))), color);
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], max_box.elem[1], min_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], max_box.elem[1], min_box.elem[2]))), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]})), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]})), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]})), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]})), color);
                                                                                                                                                                     
     // Z = max                                                                                                                                                      
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], min_box.elem[1], max_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], min_box.elem[1], max_box.elem[2]))), color);
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], min_box.elem[1], max_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], max_box.elem[1], max_box.elem[2]))), color);
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], min_box.elem[1], max_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], max_box.elem[1], max_box.elem[2]))), color);
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], max_box.elem[1], max_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], max_box.elem[1], max_box.elem[2]))), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]})), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
                                                                                                                                                                      
     // Z min to max                                                                                                                                                 
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], min_box.elem[1], min_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], min_box.elem[1], max_box.elem[2]))), color);
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], max_box.elem[1], min_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(min_box.elem[0], max_box.elem[1], max_box.elem[2]))), color);
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], min_box.elem[1], min_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], min_box.elem[1], max_box.elem[2]))), color);
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], max_box.elem[1], min_box.elem[2]))), vec3_add(trans, mat3_mul_vec3(R, vec3_t(max_box.elem[0], max_box.elem[1], max_box.elem[2]))), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]})), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]})), color);
+    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
 }
 
 void draw_basis(mat4_t basis, const float scale, uint32_t x_color, uint32_t y_color, uint32_t z_color) {
