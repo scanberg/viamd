@@ -1,7 +1,7 @@
 # viamd
 Visual Interactive Analysis of Molecular Dynamics
 
-<img src="https://github.com/scanberg/viamd/wiki/img/viamd_environment.png" alt="viamd" width="300"/>
+<img src="https://github.com/scanberg/viamd/wiki/img/viamd_environment.png" alt="viamd" width="500"/>
 
 ## Status
 [![build_and_test](https://github.com/scanberg/viamd/workflows/build_and_test/badge.svg?branch=master)](https://github.com/scanberg/viamd/actions)
