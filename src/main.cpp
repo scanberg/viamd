@@ -2825,7 +2825,9 @@ static void draw_timeline_window(ApplicationData* data) {
             if (num_props == 0) {
                 ImPlot::LinkNextPlotLimits(&data->timeline.view_range.min, &data->timeline.view_range.max, 0, 0);
                 if (ImPlot::BeginPlot("##Timeline", NULL, NULL, ImVec2(-1,150), flags, axis_flags_x, axis_flags_y)) {
-                    ImPlot::DragRangeX("Time Filter", &data->timeline.filter.min, &data->timeline.filter.max, 0, max_time_value);
+                    if (data->timeline.filter.enabled) {
+                        ImPlot::DragRangeX("Time Filter", &data->timeline.filter.min, &data->timeline.filter.max, 0, max_time_value);
+                    }
                     ImPlot::DragLineX("Current Time", &data->animation.time, true, ImVec4(1,1,0,1));
                     ImPlot::EndPlot();
                 }
@@ -2965,7 +2967,8 @@ static void draw_timeline_window(ApplicationData* data) {
 
         //ImGui::EndChild();
 
-        if (data->timeline.filter.min != pre_filter_min || data->timeline.filter.max != pre_filter_max) {
+        
+        if (data->timeline.filter.enabled && data->timeline.filter.min != pre_filter_min || data->timeline.filter.max != pre_filter_max) {
             data->mold.script.evaluate_filt = true;
         }
     }
