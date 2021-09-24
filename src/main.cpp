@@ -1,9 +1,11 @@
-//#include <core/spatial_hash.h>
-
 #include <core/md_compiler.h>
 
-#define _CRT_SECURE_NO_WARNINGS
 #if MD_COMPILER_MSVC
+
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+
 #pragma warning( disable : 26812 4244 )
 #endif
 
@@ -39,7 +41,6 @@
 #include "gfx/gl_utils.h"
 #include "gfx/camera.h"
 #include "gfx/camera_utils.h"
-//#include "gfx/molecule_draw.h"
 #include "gfx/immediate_draw_utils.h"
 #include "gfx/postprocessing_utils.h"
 #include "gfx/volumerender_utils.h"
@@ -47,23 +48,17 @@
 
 #include "string_util.h"
 #include "random_util.h"
-//#include "volume.h"
 #include "imgui_widgets.h"
 #include "implot_widgets.h"
-//#include "plot_extended.h"
 #include "application/application.h"
 #include "console.h"
-//#include "ramachandran.h"
 #include "color_utils.h"
 #include "isosurface.h"
 #include "task_system.h"
 #include "loader.h"
 
-//#include "spatial_hash.h"
-
 #include <atomic_queue.h>
 #include <stdio.h>
-//#include <filesystem>
 
 #define PICKING_JITTER_HACK 0
 #define DEPERIODIZE_ON_LOAD 1
@@ -264,9 +259,9 @@ struct ApplicationData {
     // --- FILES ---
     // for keeping track of open files
     struct {
-        StrBuf<256> molecule{};
-        StrBuf<256> trajectory{};
-        StrBuf<256> workspace{};
+        StrBuf<512> molecule{};
+        StrBuf<512> trajectory{};
+        StrBuf<512> workspace{};
     } files;
 
     // --- CAMERA ---
@@ -2969,7 +2964,7 @@ static void draw_timeline_window(ApplicationData* data) {
         //ImGui::EndChild();
 
         
-        if (data->timeline.filter.enabled && data->timeline.filter.min != pre_filter_min || data->timeline.filter.max != pre_filter_max) {
+        if (data->timeline.filter.enabled && (data->timeline.filter.min != pre_filter_min || data->timeline.filter.max != pre_filter_max)) {
             data->mold.script.evaluate_filt = true;
         }
     }
@@ -3505,9 +3500,9 @@ static void draw_volume_window(ApplicationData* data) {
         for (int64_t i = 0; i < data->mold.script.full_eval.num_properties; ++i) {
             md_script_property_t* prop = &data->mold.script.full_eval.properties[i];
             if (prop->type == MD_SCRIPT_PROPERTY_TYPE_VOLUME && prop->data.values) {
-                combo_buf_len += snprintf(combo_buf + combo_buf_len, ARRAY_SIZE(combo_buf) - combo_buf_len, "%.*s\0", (int)prop->ident.len, prop->ident.ptr);
+                combo_buf_len += snprintf(combo_buf + combo_buf_len, ARRAY_SIZE(combo_buf) - combo_buf_len, "%.*s", (int)prop->ident.len, prop->ident.ptr);
                 combo_buf_len += 1; // Apparently snprintf does not print the final \0
-                ASSERT(combo_size < ARRAY_SIZE(combo_prop_idx));
+                ASSERT(combo_size < (int)ARRAY_SIZE(combo_prop_idx));
                 combo_prop_idx[combo_size] = (int)i;
                 combo_size += 1;
             }
@@ -4250,14 +4245,14 @@ static void init_trajectory_data(ApplicationData* data) {
         task_system::enqueue_pool("Preloading frames", 1, [data, num_frames](task_system::TaskSetRange)
             {
                 timestamp_t t0 = md_os_time_current();
-#define NUM_FRAME_SLOTS 64
+#define NUM_SLOTS 64
                 const int64_t slot_size = md_trajectory_max_frame_data_size(&data->mold.traj);
-                void* slot_mem = md_alloc(default_allocator, slot_size * NUM_FRAME_SLOTS);
+                void* slot_mem = md_alloc(default_allocator, slot_size * NUM_SLOTS);
 
-                void* slots[NUM_FRAME_SLOTS];
-                atomic_queue::AtomicQueue<uint32_t, NUM_FRAME_SLOTS, 0xFFFFFFFF> slot_queue;
+                void* slots[NUM_SLOTS];
+                atomic_queue::AtomicQueue<uint32_t, NUM_SLOTS, 0xFFFFFFFF> slot_queue;
 
-                for (uint32_t i = 0; i < NUM_FRAME_SLOTS; ++i) {
+                for (uint32_t i = 0; i < NUM_SLOTS; ++i) {
                     slots[i] = (char*)slot_mem + i * slot_size;
                     slot_queue.push(i);
                 }
@@ -4265,7 +4260,7 @@ static void init_trajectory_data(ApplicationData* data) {
                 // Iterate over all frames and load the raw data, then spawn a task for each frame
                 for (uint32_t i = 0; i < num_frames; ++i) {
                     uint32_t slot_idx = slot_queue.pop();
-                    ASSERT(slot_idx < NUM_FRAME_SLOTS);
+                    ASSERT(slot_idx < NUM_SLOTS);
 
                     void* frame_mem = slots[slot_idx];
                     const int64_t frame_size = data->mold.traj.extract_frame_data(data->mold.traj.inst, i, NULL);
@@ -4273,7 +4268,7 @@ static void init_trajectory_data(ApplicationData* data) {
 
                     // Spawn task: Load, Decode and postprocess
                     //printf("Spawning task to decode frame %i\n", i);
-                    auto id = task_system::enqueue_pool("##Decode frame", 1, [slot_idx, frame_mem, frame_size, frame_idx = i, &slot_queue, slots, data](task_system::TaskSetRange)
+                    auto id = task_system::enqueue_pool("##Decode frame", 1, [slot_idx, frame_mem, frame_size, frame_idx = i, &slot_queue, data](task_system::TaskSetRange)
                         {
                             md_frame_data_t* frame_data;
                             md_frame_cache_lock_t* lock;
@@ -4359,11 +4354,11 @@ static void init_trajectory_data(ApplicationData* data) {
                     _mm_pause(); // Back off for a bit
                 }
 
-                md_free(default_allocator, slot_mem, slot_size * NUM_FRAME_SLOTS);
+                md_free(default_allocator, slot_mem, slot_size * NUM_SLOTS);
 
                 timestamp_t t1 = md_os_time_current();
                 md_printf(MD_LOG_TYPE_INFO, "Frame preload took %.2f seconds", md_os_time_delta_in_s(t0, t1));
-#undef NUM_FRAME_SLOTS
+#undef NUM_SLOTS
             });
     }
 }

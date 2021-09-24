@@ -6,6 +6,7 @@
 
 #include <core/md_log.h>
 #include <core/md_common.h>
+#include <core/md_allocator.h>
 
 #include "gfx/gl.h"
 #include <GLFW/glfw3.h>
@@ -324,21 +325,24 @@ void render_imgui(Context* ctx) {
 void swap_buffers(Context* ctx) { glfwSwapBuffers((GLFWwindow*)ctx->window.ptr); }
 
 FileDialogResult file_dialog(FileDialogFlags flags, str_t path, str_t filter) {
-    // Create zero terminated strings
-    char path_buf[512] = {0};
-    char filter_buf[512] = {0};
+    ASSERT(path.len >= 0);
+    ASSERT(filter.len >= 0);
 
-    strncpy(path_buf, path.ptr, MIN(ARRAY_SIZE(path_buf)-1, path.len));
-    strncpy(filter_buf, filter.ptr, MIN(ARRAY_SIZE(filter_buf)-1, filter.len));
+    // Create zero terminated strings
+    path = copy_str(path, default_temp_allocator);
+    filter = copy_str(filter, default_temp_allocator);
 
     nfdchar_t* out_path = NULL;
     nfdresult_t result = NFD_ERROR;
 
     if (flags & FileDialogFlags_Open) {
-        result = NFD_OpenDialog(filter_buf, path_buf, &out_path);
+        result = NFD_OpenDialog(filter.ptr, path.ptr, &out_path);
     } else if (flags & FileDialogFlags_Save) {
-        result = NFD_SaveDialog(filter_buf, path_buf, &out_path);
+        result = NFD_SaveDialog(filter.ptr, path.ptr, &out_path);
     }
+
+    free_str(path, default_temp_allocator);
+    free_str(filter, default_temp_allocator);
 
     FileDialogResult res = {};
 

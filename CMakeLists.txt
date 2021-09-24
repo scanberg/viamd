@@ -35,7 +35,7 @@ if (MSVC)
 else()
 	message(STATUS "non MSVC configuration was used")
     add_compile_options(
-        -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -Wno-missing-braces -Wno-missing-field-initializers -mavx #-maes
+        -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -Wno-missing-braces -Wno-missing-field-initializers -march=native #-maes
     )
 	if (VIAMD_PROFILE_COMPILE_TIMES)
 		add_compile_options(-ftime-trace)
@@ -62,7 +62,6 @@ option(VIAMD_USE_RELATIVE_PATHS "Use relative paths for resource directories" OF
 add_subdirectory(ext/glfw)
 add_subdirectory(ext/imgui)
 add_subdirectory(ext/nativefiledialog)
-#add_subdirectory(ext/mdutils)
 add_subdirectory(ext/mold)
 add_subdirectory(ext/stb)
 add_subdirectory(ext/gl3w)
@@ -70,7 +69,6 @@ add_subdirectory(ext/enkiTS)
 add_subdirectory(ext/ImGuiColorTextEdit)
 add_subdirectory(ext/implot)
 add_subdirectory(ext/atomic_queue)
-#add_subdirectory(unittest)
 
 file(GLOB APP_FILES src/application/*)
 file(GLOB SRC_FILES src/*)

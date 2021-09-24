@@ -81,7 +81,11 @@ void swap_buffers(Context* ctx);
 // File Dialog
 typedef uint32_t FileDialogFlags;
 
-enum FileDialogFlags_ { FileDialogFlags_Open = 0x1, FileDialogFlags_Save = 0x2, FileDialogFlags_Directory = 0x4 };
+enum FileDialogFlags_ {
+    FileDialogFlags_Open = 0x1,
+    FileDialogFlags_Save = 0x2,
+    FileDialogFlags_Directory = 0x4
+};
 
 struct FileDialogResult {
     enum Result { Ok, Cancel };
