@@ -1,6 +1,8 @@
 # viamd
 Visual Interactive Analysis of Molecular Dynamics
 
+![Environment](https://github.com/scanberg/viamd/wiki/img/viamd_environment.png)
+
 ## Status
 [![build_and_test](https://github.com/scanberg/viamd/workflows/build_and_test/badge.svg?branch=master)](https://github.com/scanberg/viamd/actions)
 
