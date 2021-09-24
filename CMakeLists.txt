@@ -35,7 +35,7 @@ if (MSVC)
 else()
 	message(STATUS "non MSVC configuration was used")
     add_compile_options(
-        -Wall -Wno-unused-function -Wno-unused-parameter -Wextra -Wno-missing-braces -Wno-gnu-anonymous-struct -Wno-nested-anon-types -mavx #-maes
+        -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -Wno-missing-braces -Wno-missing-field-initializers -mavx #-maes
     )
 	if (VIAMD_PROFILE_COMPILE_TIMES)
 		add_compile_options(-ftime-trace)

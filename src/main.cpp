@@ -889,8 +889,8 @@ int main(int, char**) {
         ImPlot::ShowDemoWindow();
 #endif
 
-        const int32_t num_frames = (int32_t)traj.num_frames;
-        const int32_t last_frame = MAX(0, num_frames - 1);
+        const int64_t num_frames = md_trajectory_num_frames(&traj);
+        const int64_t last_frame = MAX(0, num_frames - 1);
         const double max_time = (double)MAX(0, last_frame);
 
         // #input
@@ -1011,7 +1011,7 @@ int main(int, char**) {
             //data.hydrogen_bonds.dirty = true;
 
             PUSH_CPU_SECTION("Interpolate Position")
-            if (traj.num_frames) {
+            if (md_trajectory_num_frames(&traj)) {
                 interpolate_atomic_properties(&data);
                 //update_reference_frames(&data);
 
@@ -1102,8 +1102,8 @@ int main(int, char**) {
                     }
 
                     // Before we release the compute-dogs we want to allocate the data for the evaluations
-                    md_script_eval_alloc(&data.mold.script.full_eval, data.mold.traj.num_frames, &data.mold.script.ir, persistent_allocator);
-                    md_script_eval_alloc(&data.mold.script.filt_eval, data.mold.traj.num_frames, &data.mold.script.ir, persistent_allocator);
+                    md_script_eval_alloc(&data.mold.script.full_eval, num_frames, &data.mold.script.ir, persistent_allocator);
+                    md_script_eval_alloc(&data.mold.script.filt_eval, num_frames, &data.mold.script.ir, persistent_allocator);
 
                     md_semaphore_release(&data.mold.script.semaphore);
                     //md_semaphore_release(&data.mold.script.semaphore);
@@ -1167,8 +1167,9 @@ int main(int, char**) {
             } else if (md_semaphore_try_aquire(&data.mold.script.semaphore)) {
                 data.mold.script.evaluate_filt = false;
                 data.tasks.evaluate_filt = task_system::enqueue_pool("Eval Filt", 1, [&data](task_system::TaskSetRange) {
-                    int64_t beg_frame = CLAMP((int64_t)data.timeline.filter.min, 0, data.mold.traj.num_frames);
-                    int64_t end_frame = CLAMP((int64_t)data.timeline.filter.max, 0, data.mold.traj.num_frames);
+                    int64_t num_frames = md_trajectory_num_frames(&data.mold.traj);
+                    int64_t beg_frame = CLAMP((int64_t)data.timeline.filter.min, 0, num_frames);
+                    int64_t end_frame = CLAMP((int64_t)data.timeline.filter.max, 0, num_frames);
                     end_frame = MAX(beg_frame + 1, end_frame);
                     md_bitfield_clear(&data.mold.script.frame_mask);
                     md_bitfield_set_range(&data.mold.script.frame_mask, beg_frame, end_frame);
@@ -1308,9 +1309,9 @@ static void interpolate_atomic_properties(ApplicationData* data) {
     const auto& mol = data->mold.mol;
     const auto& traj = data->mold.traj;
 
-    if (!mol.atom.count || !traj.num_frames) return;
+    if (!mol.atom.count || !md_trajectory_num_frames(&traj)) return;
 
-    const int64_t last_frame = MAX(0LL, traj.num_frames - 1);
+    const int64_t last_frame = MAX(0LL, md_trajectory_num_frames(&traj) - 1);
     const double time = CLAMP(data->animation.time, 0.0, double(last_frame));
 
     const float t = (float)fractf(time);
@@ -2189,7 +2190,7 @@ if (data->selection.op_mode == SelectionOperator::And) {
 void draw_context_popup(ApplicationData* data) {
     ASSERT(data);
 
-    bool valid_dynamic = data->mold.mol.atom.count && data->mold.traj.num_frames;
+    bool valid_dynamic = data->mold.mol.atom.count && md_trajectory_num_frames(&data->mold.traj);
 
     const bool shift_down = data->ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data->ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
     if (data->ctx.input.mouse.clicked[1] && !shift_down && !ImGui::GetIO().WantTextInput) {
@@ -2235,11 +2236,11 @@ void draw_context_popup(ApplicationData* data) {
 
 static void draw_animation_control_window(ApplicationData* data) {
     ASSERT(data);
-    if (!data->mold.traj.num_frames) return;
+    int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
+    if (num_frames == 0) return;
 
     ImGui::Begin("Animation");
-    const int32_t num_frames = (int32_t)data->mold.traj.num_frames;
-    ImGui::Text("Num Frames: %i", num_frames);
+    ImGui::Text("Num Frames: %lli", num_frames);
     // ImGui::Checkbox("Apply post-interpolation pbc", &data->animation.apply_pbc);
     float t = (float)data->animation.time;
     if (ImGui::SliderFloat("Time", &t, 0, (float)(MAX(0, num_frames - 1)))) {
@@ -2485,12 +2486,12 @@ static void draw_molecule_dynamic_info_window(ApplicationData* data) {
             ImGui::Text("# residues: %lli", mol.residue.count);
             ImGui::Text("# chains: %lli", mol.chain.count);
         }
-        if (traj.num_frames) {
+        if (md_trajectory_num_frames(&traj)) {
             ImGui::NewLine();
             ImGui::Text("TRAJ");
             const auto file = extract_file(data->files.trajectory);
             ImGui::Text("\"%.*s\"", (int32_t)file.len, file.ptr);
-            ImGui::Text("# frames: %i", traj.num_frames);
+            ImGui::Text("# frames: %i", md_trajectory_num_frames(&traj));
         }
         const int64_t selection_count = md_bitfield_popcount(&data->selection.current_selection_mask);
         const int64_t highlight_count = md_bitfield_popcount(&data->selection.current_highlight_mask);
@@ -2625,7 +2626,7 @@ static void draw_timeline_window(ApplicationData* data) {
         static int s_num_props = 0;
         static uint64_t s_fingerprint = 0;
 
-        int num_time_values = (int)data->mold.traj.num_frames;
+        int num_time_values = (int)md_trajectory_num_frames(&data->mold.traj);
         float* time_values = (float*)md_alloc(frame_allocator, num_time_values * sizeof(float));
         defer {
             md_free(frame_allocator, time_values, num_time_values * sizeof(float));
@@ -3084,7 +3085,7 @@ static void draw_distribution_window(ApplicationData* data) {
             float max_x = prop.data.max_range[0];
             float min_y = prop.data.min_value;
             float max_y = prop.data.max_value;
-            float range_x = max_x - min_x;
+            //float range_x = max_x - min_x;
             float* draw_bins = 0;
             float* draw_filtered_bins = 0;
 
@@ -3185,7 +3186,7 @@ static void draw_shapespace_window(ApplicationData* data) {
 
 #if 0
 static void draw_ramachandran_window(ApplicationData* data) {
-    // const int32 num_frames = data->mold.traj ? data->mold.traj.num_frames : 0;
+    // const int32 num_frames = data->mold.traj ? data->mold.md_trajectory_num_frames(&traj) : 0;
     // const int32 frame = (int32)data->time;
     const Range<int32_t> frame_range = data->timeline.range;
     const auto& mol = data->mold.mol;
@@ -3844,8 +3845,8 @@ static void draw_dataset_window(ApplicationData* data) {
     if (traj_file.len) {
         ImGui::Separator();
         ImGui::Text("Trajectory data: %.*s", (int)traj_file.len, traj_file.ptr);
-        ImGui::Text("Num frames:    %9lli", data->mold.traj.num_frames);
-        ImGui::Text("Num atoms:     %9lli", data->mold.traj.num_atoms);
+        ImGui::Text("Num frames:    %9lli", md_trajectory_num_frames(&data->mold.traj));
+        ImGui::Text("Num atoms:     %9lli", md_trajectory_num_atoms(&data->mold.traj));
     }
 
     ImGui::End();
@@ -4149,7 +4150,7 @@ static void free_trajectory_data(ApplicationData* data) {
     ASSERT(data);
     interrupt_async_tasks(data);
 
-    if (data->mold.traj.num_frames) {
+    if (md_trajectory_num_frames(&data->mold.traj)) {
         md_frame_cache_free(&data->mold.frame_cache);
         load::traj::close(&data->mold.traj);
     }
@@ -4213,11 +4214,12 @@ static void init_molecule_data(ApplicationData* data) {
 }
 
 static void init_trajectory_data(ApplicationData* data) {
-    if (data->mold.traj.num_frames) {
+    int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
+    if (num_frames) {
         md_frame_cache_init(&data->mold.frame_cache, &data->mold.traj, persistent_allocator, 0);
 
         const double min_time = 0;
-        const double max_time = (double)data->mold.traj.num_frames;
+        const double max_time = (double)num_frames;
 
         data->timeline.view_range = {min_time, max_time};
         data->timeline.filter.min = min_time;
@@ -4234,21 +4236,22 @@ static void init_trajectory_data(ApplicationData* data) {
 
         if (data->mold.mol.backbone.count > 0) {
             data->trajectory_data.secondary_structure.stride = data->mold.mol.backbone.count;
-            data->trajectory_data.secondary_structure.count = data->mold.mol.backbone.count * data->mold.traj.num_frames;
-            md_array_resize(data->trajectory_data.secondary_structure.data, data->mold.mol.backbone.count * data->mold.traj.num_frames, persistent_allocator);
+            data->trajectory_data.secondary_structure.count = data->mold.mol.backbone.count * num_frames;
+            md_array_resize(data->trajectory_data.secondary_structure.data, data->mold.mol.backbone.count * num_frames, persistent_allocator);
 
             data->trajectory_data.backbone_angles.stride = data->mold.mol.backbone.count,
-                data->trajectory_data.backbone_angles.count = data->mold.mol.backbone.count * data->mold.traj.num_frames,
-                md_array_resize(data->trajectory_data.backbone_angles.data, data->mold.mol.backbone.count * data->mold.traj.num_frames, persistent_allocator);
+                data->trajectory_data.backbone_angles.count = data->mold.mol.backbone.count * num_frames,
+                md_array_resize(data->trajectory_data.backbone_angles.data, data->mold.mol.backbone.count * num_frames, persistent_allocator);
         }
         
         // This is the number of slots we have to work with in parallel.
         // This number should ideally be more than the number of cores available.
         // We pre-allocate the number of slots * max frame data size, so don't go bananas here if you want to save some on memory.
-        task_system::enqueue_pool("Preloading frames", 1, [data](task_system::TaskSetRange range)
+        task_system::enqueue_pool("Preloading frames", 1, [data, num_frames](task_system::TaskSetRange)
             {
+                timestamp_t t0 = md_os_time_current();
 #define NUM_FRAME_SLOTS 64
-                const int64_t slot_size = data->mold.traj.max_frame_data_size;
+                const int64_t slot_size = md_trajectory_max_frame_data_size(&data->mold.traj);
                 void* slot_mem = md_alloc(default_allocator, slot_size * NUM_FRAME_SLOTS);
 
                 void* slots[NUM_FRAME_SLOTS];
@@ -4260,7 +4263,7 @@ static void init_trajectory_data(ApplicationData* data) {
                 }
 
                 // Iterate over all frames and load the raw data, then spawn a task for each frame
-                for (uint32_t i = 0; i < data->mold.traj.num_frames; ++i) {
+                for (uint32_t i = 0; i < num_frames; ++i) {
                     uint32_t slot_idx = slot_queue.pop();
                     ASSERT(slot_idx < NUM_FRAME_SLOTS);
 
@@ -4276,8 +4279,8 @@ static void init_trajectory_data(ApplicationData* data) {
                             md_frame_cache_lock_t* lock;
                             if (md_frame_cache_reserve_frame(&data->mold.frame_cache, frame_idx, &frame_data, &lock)) {
                                 md_trajectory_frame_header_t header;
-                                data->mold.traj.decode_frame_header(data->mold.traj.inst, frame_mem, frame_size, &header);
-                                data->mold.traj.decode_frame_coords(data->mold.traj.inst, frame_mem, frame_size, frame_data->x, frame_data->y, frame_data->z, frame_data->num_atoms);
+                                data->mold.traj.decode_frame_data(data->mold.traj.inst, frame_mem, frame_size, &header, frame_data->x, frame_data->y, frame_data->z);
+
                                 // Free the data slot directly here
                                 slot_queue.push(slot_idx);
 
@@ -4291,15 +4294,15 @@ static void init_trajectory_data(ApplicationData* data) {
                                         .x = frame_data->x,
                                         .y = frame_data->y,
                                         .z = frame_data->z,
-                                },
-                                .residue = {
-                                        .count = mol.residue.count,
-                                        .atom_range = mol.residue.atom_range,
-                                },
-                                .chain = {
-                                        .count = mol.chain.count,
-                                        .residue_range = mol.chain.residue_range,
-                                }
+                                    },
+                                    .residue = {
+                                            .count = mol.residue.count,
+                                            .atom_range = mol.residue.atom_range,
+                                    },
+                                    .chain = {
+                                            .count = mol.chain.count,
+                                            .residue_range = mol.chain.residue_range,
+                                    }
                                 };
                                 memcpy(args.pbc.box, frame_data->box, sizeof(args.pbc.box));
                                 md_util_apply_pbc(frame_data->x, frame_data->y, frame_data->z, mol.atom.count, args);
@@ -4311,15 +4314,15 @@ static void init_trajectory_data(ApplicationData* data) {
                                             .x = frame_data->x,
                                             .y = frame_data->y,
                                             .z = frame_data->z,
-                                    },
-                                    .backbone = {
-                                            .count = mol.backbone.count,
-                                            .atoms = mol.backbone.atoms,
-                                    },
-                                    .chain = {
-                                            .count = mol.chain.count,
-                                            .backbone_range = mol.chain.backbone_range,
-                                    }
+                                        },
+                                        .backbone = {
+                                                .count = mol.backbone.count,
+                                                .atoms = mol.backbone.atoms,
+                                        },
+                                        .chain = {
+                                                .count = mol.chain.count,
+                                                .backbone_range = mol.chain.backbone_range,
+                                        }
                                     };
                                     md_util_compute_backbone_angles(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &bb_args);
 
@@ -4329,15 +4332,15 @@ static void init_trajectory_data(ApplicationData* data) {
                                             .x = frame_data->x,
                                             .y = frame_data->y,
                                             .z = frame_data->z,
-                                    },
-                                    .backbone = {
-                                            .count = mol.backbone.count,
-                                            .atoms = mol.backbone.atoms,
-                                    },
-                                    .chain = {
-                                            .count = data->mold.mol.chain.count,
-                                            .backbone_range = data->mold.mol.chain.backbone_range,
-                                    }
+                                        },
+                                        .backbone = {
+                                                .count = mol.backbone.count,
+                                                .atoms = mol.backbone.atoms,
+                                        },
+                                        .chain = {
+                                                .count = data->mold.mol.chain.count,
+                                                .backbone_range = data->mold.mol.chain.backbone_range,
+                                        }
                                     };
                                     md_util_compute_secondary_structure(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &ss_args);
                                 }
@@ -4357,6 +4360,9 @@ static void init_trajectory_data(ApplicationData* data) {
                 }
 
                 md_free(default_allocator, slot_mem, slot_size * NUM_FRAME_SLOTS);
+
+                timestamp_t t1 = md_os_time_current();
+                md_printf(MD_LOG_TYPE_INFO, "Frame preload took %.2f seconds", md_os_time_delta_in_s(t0, t1));
 #undef NUM_FRAME_SLOTS
             });
     }
