@@ -15,7 +15,6 @@
 #include <md_script.h>
 #include <md_molecule.h>
 #include <md_trajectory.h>
-#include <md_frame_cache.h>
 
 #include <core/md_sync.h>
 #include <core/md_allocator.h>
@@ -98,37 +97,7 @@ constexpr str_t FILE_EXTENSION = make_cstr("via");
 constexpr uint32_t INVALID_PICKING_IDX = ~0U;
 
 constexpr uint32_t TEXT_BG_ERROR_COLOR = 0xAA222299;
-
 constexpr uint32_t PROPERTY_COLORS[] = {4293119554, 4290017311, 4287291314, 4281114675, 4288256763, 4280031971, 4285513725, 4278222847, 4292260554, 4288298346, 4288282623, 4280834481};
-
-#ifdef VIAMD_RELEASE
-constexpr const char* CAFFINE_PDB = R"(
-ATOM      1  N1  BENZ    1       5.040   1.944  -8.324                          
-ATOM      2  C2  BENZ    1       6.469   2.092  -7.915                          
-ATOM      3  C3  BENZ    1       7.431   0.865  -8.072                          
-ATOM      4  C4  BENZ    1       6.916  -0.391  -8.544                          
-ATOM      5  N5  BENZ    1       5.532  -0.541  -8.901                          
-ATOM      6  C6  BENZ    1       4.590   0.523  -8.394                          
-ATOM      7  C11 BENZ    1       4.045   3.041  -8.005                          
-ATOM      8  H111BENZ    1       4.453   4.038  -8.264                          
-ATOM      9  H112BENZ    1       3.101   2.907  -8.570                          
-ATOM     10  H113BENZ    1       3.795   3.050  -6.926                          
-ATOM     11  O21 BENZ    1       6.879   3.181  -7.503
-ATOM     12  C51 BENZ    1       4.907  -1.659  -9.696
-ATOM     13  H511BENZ    1       4.397  -1.273 -10.599                          
-ATOM     14  H512BENZ    1       5.669  -2.391 -10.028                          
-ATOM     15  H513BENZ    1       4.161  -2.209  -9.089
-ATOM     16  O61 BENZ    1       3.470   0.208  -7.986                          
-ATOM     17  N1  NSP3    1B      8.807   0.809  -7.799
-ATOM     18  N1  NSP3    1C      7.982  -1.285  -8.604
-ATOM     19  C1  CSP3    1D      9.015  -0.500  -8.152                          
-ATOM     20  H1  CSP3    1D     10.007  -0.926  -8.079                          
-ATOM     21  C1  CSP3    1E      9.756   1.835  -7.299                          
-ATOM     22  H11 CSP3    1E     10.776   1.419  -7.199                          
-ATOM     23  H12 CSP3    1E      9.437   2.207  -6.309                          
-ATOM     24  H13 CSP3    1E      9.801   2.693  -7.994
-)";
-#endif
 
 inline const ImVec4& vec_cast(const vec4_t& v) { return *(const ImVec4*)(&v); }
 inline const vec4_t& vec_cast(const ImVec4& v) { return *(const vec4_t*)(&v); }
@@ -287,7 +256,6 @@ struct ApplicationData {
         md_gl_molecule_t    gl_mol = {};
         md_molecule_t       mol = {};
         md_trajectory_i     traj = {};
-        md_frame_cache_t    frame_cache = {};
 
         struct {
             md_script_ir_t    ir = {};
@@ -1142,7 +1110,6 @@ int main(int, char**) {
                         .ir = &data.mold.script.ir,
                         .mol = &data.mold.mol,
                         .traj = &data.mold.traj,
-                        .frame_cache = &data.mold.frame_cache,
                         .filter_mask = NULL,
                     };
 
@@ -1173,7 +1140,6 @@ int main(int, char**) {
                         .ir = &data.mold.script.ir,
                         .mol = &data.mold.mol,
                         .traj = &data.mold.traj,
-                        .frame_cache = &data.mold.frame_cache,
                         .filter_mask = &data.mold.script.frame_mask
                     };
 
@@ -1351,13 +1317,21 @@ static void interpolate_atomic_properties(ApplicationData* data) {
     mat3_t box = {};
     switch (mode) {
         case InterpolationMode::Nearest:
-            md_frame_cache_load_frame_data(&data->mold.frame_cache, nearest_frame, mol.atom.x, mol.atom.y, mol.atom.z, box.elem, NULL, NULL, NULL);
-            //load::traj::load_trajectory_frame_box(traj_ptr, (float*(*)[3])&box, nearest_frame);
+        {
+            md_trajectory_frame_header_t header = {0};
+            md_trajectory_load_frame(&data->mold.traj, nearest_frame, &header, mol.atom.x, mol.atom.y, mol.atom.z);
+            memcpy(&box, header.box, sizeof(box));
             break;
+        }
         case InterpolationMode::Linear:
         {
-            md_frame_cache_load_frame_data(&data->mold.frame_cache, frames[1], x[0], y[0], z[0], boxes[0].elem, NULL, NULL, NULL);
-            md_frame_cache_load_frame_data(&data->mold.frame_cache, frames[2], x[1], y[1], z[1], boxes[1].elem, NULL, NULL, NULL);
+            md_trajectory_frame_header_t header[2] = {0};
+
+            md_trajectory_load_frame(&data->mold.traj, frames[1], &header[0], x[0], y[0], z[0]);
+            md_trajectory_load_frame(&data->mold.traj, frames[2], &header[1], x[1], y[1], z[1]);
+
+            memcpy(&boxes[0], header[0].box, sizeof(boxes[0]));
+            memcpy(&boxes[1], header[1].box, sizeof(boxes[1]));
 
             box = lerp(boxes[0], boxes[1], t);
 
@@ -1391,10 +1365,17 @@ static void interpolate_atomic_properties(ApplicationData* data) {
             break;
         case InterpolationMode::Cubic:
         {
-            md_frame_cache_load_frame_data(&data->mold.frame_cache, frames[0], x[0], y[0], z[0], boxes[0].elem, NULL, NULL, NULL);
-            md_frame_cache_load_frame_data(&data->mold.frame_cache, frames[1], x[1], y[1], z[1], boxes[1].elem, NULL, NULL, NULL);
-            md_frame_cache_load_frame_data(&data->mold.frame_cache, frames[2], x[2], y[2], z[2], boxes[2].elem, NULL, NULL, NULL);
-            md_frame_cache_load_frame_data(&data->mold.frame_cache, frames[3], x[3], y[3], z[3], boxes[3].elem, NULL, NULL, NULL);
+            md_trajectory_frame_header_t header[4] = {0};
+
+            md_trajectory_load_frame(&data->mold.traj, frames[0], &header[0], x[0], y[0], z[0]);
+            md_trajectory_load_frame(&data->mold.traj, frames[1], &header[1], x[1], y[1], z[1]);
+            md_trajectory_load_frame(&data->mold.traj, frames[2], &header[2], x[2], y[2], z[2]);
+            md_trajectory_load_frame(&data->mold.traj, frames[3], &header[3], x[3], y[3], z[3]);
+
+            memcpy(&boxes[0], header[0].box, sizeof(boxes[0]));
+            memcpy(&boxes[1], header[1].box, sizeof(boxes[1]));
+            memcpy(&boxes[2], header[2].box, sizeof(boxes[2]));
+            memcpy(&boxes[3], header[3].box, sizeof(boxes[3]));
 
             box = cubic_spline(boxes[0], boxes[1], boxes[2], boxes[3], t);
 
@@ -3608,7 +3589,6 @@ static void draw_volume_window(ApplicationData* data) {
                 .ir = &data->mold.script.ir,
                 .mol = &data->mold.mol,
                 .traj = &data->mold.traj,
-                .frame_cache = &data->mold.frame_cache,
                 .alloc = frame_allocator,
             };
             md_script_visualization_init(&vis, args);
@@ -3925,7 +3905,6 @@ static void draw_property_editor_window(ApplicationData* data) {
                 .ir = &data->mold.script.ir,
                 .mol = &data->mold.mol,
                 .traj = &data->mold.traj,
-                .frame_cache = &data->mold.frame_cache,
                 .alloc = frame_allocator,
             });
 
@@ -4146,7 +4125,6 @@ static void free_trajectory_data(ApplicationData* data) {
     interrupt_async_tasks(data);
 
     if (md_trajectory_num_frames(&data->mold.traj)) {
-        md_frame_cache_free(&data->mold.frame_cache);
         load::traj::close(&data->mold.traj);
     }
 }
@@ -4211,8 +4189,6 @@ static void init_molecule_data(ApplicationData* data) {
 static void init_trajectory_data(ApplicationData* data) {
     int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
     if (num_frames) {
-        md_frame_cache_init(&data->mold.frame_cache, &data->mold.traj, persistent_allocator, 0);
-
         const double min_time = 0;
         const double max_time = (double)num_frames;
 
@@ -4221,9 +4197,11 @@ static void init_trajectory_data(ApplicationData* data) {
         data->timeline.filter.max = max_time;
         data->animation.time = CLAMP(data->animation.time, min_time, max_time);
         data->animation.frame = CLAMP((int32_t)data->animation.time, (int32_t)min_time, (int32_t)max_time - 1);
-        int32_t frame = data->animation.frame;
+        int32_t frame_idx = data->animation.frame;
 
-        md_frame_cache_load_frame_data(&data->mold.frame_cache, frame, data->mold.mol.atom.x, data->mold.mol.atom.y, data->mold.mol.atom.z, data->simulation_box.box.elem, NULL, NULL, NULL);
+        md_trajectory_frame_header_t header;
+        md_trajectory_load_frame(&data->mold.traj, frame_idx, &header, data->mold.mol.atom.x, data->mold.mol.atom.y, data->mold.mol.atom.z);
+        memcpy(&data->simulation_box.box, header.box, sizeof(header.box));
         data->mold.dirty_buffers |= MolBit_DirtyPosition;
 
         update_md_buffers(data);
@@ -4238,128 +4216,6 @@ static void init_trajectory_data(ApplicationData* data) {
                 data->trajectory_data.backbone_angles.count = data->mold.mol.backbone.count * num_frames,
                 md_array_resize(data->trajectory_data.backbone_angles.data, data->mold.mol.backbone.count * num_frames, persistent_allocator);
         }
-        
-        // This is the number of slots we have to work with in parallel.
-        // This number should ideally be more than the number of cores available.
-        // We pre-allocate the number of slots * max frame data size, so don't go bananas here if you want to save some on memory.
-        task_system::enqueue_pool("Preloading frames", 1, [data, num_frames](task_system::TaskSetRange)
-            {
-                timestamp_t t0 = md_os_time_current();
-#define NUM_SLOTS 64
-                const int64_t slot_size = md_trajectory_max_frame_data_size(&data->mold.traj);
-                void* slot_mem = md_alloc(default_allocator, slot_size * NUM_SLOTS);
-
-                void* slots[NUM_SLOTS];
-                atomic_queue::AtomicQueue<uint32_t, NUM_SLOTS, 0xFFFFFFFF> slot_queue;
-
-                for (uint32_t i = 0; i < NUM_SLOTS; ++i) {
-                    slots[i] = (char*)slot_mem + i * slot_size;
-                    slot_queue.push(i);
-                }
-
-                // Iterate over all frames and load the raw data, then spawn a task for each frame
-                for (uint32_t i = 0; i < num_frames; ++i) {
-                    uint32_t slot_idx = slot_queue.pop();
-                    ASSERT(slot_idx < NUM_SLOTS);
-
-                    void* frame_mem = slots[slot_idx];
-                    const int64_t frame_size = data->mold.traj.extract_frame_data(data->mold.traj.inst, i, NULL);
-                    data->mold.traj.extract_frame_data(data->mold.traj.inst, i, frame_mem);
-
-                    // Spawn task: Load, Decode and postprocess
-                    //printf("Spawning task to decode frame %i\n", i);
-                    auto id = task_system::enqueue_pool("##Decode frame", 1, [slot_idx, frame_mem, frame_size, frame_idx = i, &slot_queue, data](task_system::TaskSetRange)
-                        {
-                            md_frame_data_t* frame_data;
-                            md_frame_cache_lock_t* lock;
-                            if (md_frame_cache_reserve_frame(&data->mold.frame_cache, frame_idx, &frame_data, &lock)) {
-                                md_trajectory_frame_header_t header;
-                                data->mold.traj.decode_frame_data(data->mold.traj.inst, frame_mem, frame_size, &header, frame_data->x, frame_data->y, frame_data->z);
-
-                                // Free the data slot directly here
-                                slot_queue.push(slot_idx);
-
-                                memcpy(frame_data->box, header.box, sizeof(frame_data->box));
-                                
-                                // deperiodize
-                                const md_molecule_t& mol = data->mold.mol;
-                                md_util_apply_pbc_args_t args = {
-                                    .atom = {
-                                        .count = mol.atom.count,
-                                        .x = frame_data->x,
-                                        .y = frame_data->y,
-                                        .z = frame_data->z,
-                                    },
-                                    .residue = {
-                                            .count = mol.residue.count,
-                                            .atom_range = mol.residue.atom_range,
-                                    },
-                                    .chain = {
-                                            .count = mol.chain.count,
-                                            .residue_range = mol.chain.residue_range,
-                                    }
-                                };
-                                memcpy(args.pbc.box, frame_data->box, sizeof(args.pbc.box));
-                                md_util_apply_pbc(frame_data->x, frame_data->y, frame_data->z, mol.atom.count, args);
-
-                                if (mol.backbone.count > 0) {
-                                    md_util_backbone_angle_args_t bb_args = {
-                                        .atom = {
-                                            .count = mol.atom.count,
-                                            .x = frame_data->x,
-                                            .y = frame_data->y,
-                                            .z = frame_data->z,
-                                        },
-                                        .backbone = {
-                                                .count = mol.backbone.count,
-                                                .atoms = mol.backbone.atoms,
-                                        },
-                                        .chain = {
-                                                .count = mol.chain.count,
-                                                .backbone_range = mol.chain.backbone_range,
-                                        }
-                                    };
-                                    md_util_compute_backbone_angles(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &bb_args);
-
-                                    md_util_secondary_structure_args_t ss_args = {
-                                        .atom = {
-                                            .count = data->mold.mol.atom.count,
-                                            .x = frame_data->x,
-                                            .y = frame_data->y,
-                                            .z = frame_data->z,
-                                        },
-                                        .backbone = {
-                                                .count = mol.backbone.count,
-                                                .atoms = mol.backbone.atoms,
-                                        },
-                                        .chain = {
-                                                .count = data->mold.mol.chain.count,
-                                                .backbone_range = data->mold.mol.chain.backbone_range,
-                                        }
-                                    };
-                                    md_util_compute_secondary_structure(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &ss_args);
-                                }
-
-                                md_frame_cache_release_frame_lock(lock);
-                            } else {
-                                slot_queue.push(slot_idx);
-                            }
-                            //printf("Finished decoding frame %i\n", frame_idx);
-                        }
-                    );
-                }
-                
-                //printf("Sitting back waiting for tasks to complete...\n");
-                while (!slot_queue.was_full()) {
-                    _mm_pause(); // Back off for a bit
-                }
-
-                md_free(default_allocator, slot_mem, slot_size * NUM_SLOTS);
-
-                timestamp_t t1 = md_os_time_current();
-                md_printf(MD_LOG_TYPE_INFO, "Frame preload took %.2f seconds", md_os_time_delta_in_s(t0, t1));
-#undef NUM_SLOTS
-            });
     }
 }
 

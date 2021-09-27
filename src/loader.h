@@ -5,6 +5,7 @@
 struct md_allocator_i;
 struct md_molecule_t;
 struct md_trajectory_i;
+struct md_frame_cache_t;
 
 namespace load {
 namespace mol {

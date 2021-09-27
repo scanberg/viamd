@@ -517,7 +517,7 @@ static uint32_t qual_color_scale[] = {
 
 vec4_t qualitative_color_scale(int idx) {
     ASSERT(idx >= 0);
-    if (idx >= ARRAY_SIZE(qual_color_scale)) {
+    if (idx >= (int)ARRAY_SIZE(qual_color_scale)) {
         return color_from_hash(idx);
     }
     return convert_color(qual_color_scale[idx]);

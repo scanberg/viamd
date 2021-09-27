@@ -1702,7 +1702,7 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     int width = last_viewport[2];
     int height = last_viewport[3];
 
-    if (width > gl.tex_width || height > gl.tex_height) {
+    if (width > (int)gl.tex_width || height > (int)gl.tex_height) {
         initialize(width, height);
     }
 
