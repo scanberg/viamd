@@ -739,7 +739,7 @@ static void modify_selection(ApplicationData* data, md_range_t range, SelectionO
 
 static void on_trajectory_load_complete(ApplicationData* data);
 
-// Global allocators for application
+// Global data for application
 static md_allocator_i* frame_allocator = 0;
 static md_allocator_i* persistent_allocator = default_allocator;
 
@@ -1766,7 +1766,7 @@ static void draw_main_menu(ApplicationData* data) {
                     if (res.result == application::FileDialogResult::Ok) {
                         str_t ext = extract_ext(str_from_cstr(res.path));
                         if (!ext.len) {
-                            snprintf(res.path + res.path_len, ARRAY_SIZE(res.path) - res.path_len, "%.*s", (uint32_t)FILE_EXTENSION.len, FILE_EXTENSION.ptr);
+                            snprintf(res.path + res.path_len, ARRAY_SIZE(res.path) - res.path_len, ".%.*s", (uint32_t)FILE_EXTENSION.len, FILE_EXTENSION.ptr);
                         }
                         save_workspace(data, str_from_cstr(res.path));
                     }
@@ -4222,11 +4222,12 @@ static void init_trajectory_data(ApplicationData* data) {
 static bool load_trajectory_data(ApplicationData* data, str_t filename) {
     interrupt_async_tasks(data);
     free_trajectory_data(data);
-    data->files.trajectory = filename;
+    data->files.trajectory = "";
     data->animation.time = 0;
     data->animation.frame = 0;
 
     if (load::traj::open_file(&data->mold.traj, filename, &data->mold.mol, default_allocator)) {
+        data->files.trajectory = filename;
         init_trajectory_data(data);
         return true;
     }
@@ -4357,10 +4358,334 @@ static vec4_t parse_vec4(str_t txt, vec4_t default_val = {1,1,1,1}) {
     return res;
 }
 
+enum SerializationType {
+    SerializationType_Invalid,
+    SerializationType_Bool,
+    SerializationType_String,
+    SerializationType_Float,
+    SerializationType_Double,
+    SerializationType_Int,
+    SerializationType_Vec3,
+    SerializationType_Vec4,
+    SerializationType_Path,
+    // Custom types
+    SerializationType_Script,
+};
+
+struct SerializationObject {
+    const char* group;
+    const char* label;
+    SerializationType type;
+    size_t struct_byte_offset;
+    size_t capacity = 0;
+};
+
+SerializationObject serialization_targets[] = {
+    {"[Files]", "MoleculeFile",             SerializationType_Path,     offsetof(ApplicationData, ApplicationData::files.molecule),     sizeof(ApplicationData::files.molecule)},
+    {"[Files]", "TrajectoryFile",           SerializationType_Path,     offsetof(ApplicationData, ApplicationData::files.trajectory),   sizeof(ApplicationData::files.trajectory)},
+    
+    {"[Animation]", "Time",                 SerializationType_Double,   offsetof(ApplicationData, ApplicationData::animation.time)},
+    {"[Animation]", "Fps",                  SerializationType_Float,    offsetof(ApplicationData, ApplicationData::animation.fps)},
+    {"[Animation]", "Interpolation",        SerializationType_Int,      offsetof(ApplicationData, ApplicationData::animation.interpolation)},
+
+    {"[RenderSettings]", "SsaoEnabled",     SerializationType_Bool,     offsetof(ApplicationData, ApplicationData::visuals.ssao.enabled)},
+    {"[RenderSettings]", "SsaoIntensity",   SerializationType_Float,    offsetof(ApplicationData, ApplicationData::visuals.ssao.intensity)},
+    {"[RenderSettings]", "SsaoRadius",      SerializationType_Float,    offsetof(ApplicationData, ApplicationData::visuals.ssao.radius)},
+    {"[RenderSettings]", "SsaoBias",        SerializationType_Float,    offsetof(ApplicationData, ApplicationData::visuals.ssao.bias)},
+    {"[RenderSettings]", "DofEnabled",      SerializationType_Bool,     offsetof(ApplicationData, ApplicationData::visuals.dof.enabled)},
+    {"[RenderSettings]", "DofFocusScale",   SerializationType_Bool,     offsetof(ApplicationData, ApplicationData::visuals.dof.focus_scale)},
+
+    {"[Camera]", "Position",                SerializationType_Vec3,     offsetof(ApplicationData, ApplicationData::view.camera.position)},
+    {"[Camera]", "Rotation",                SerializationType_Vec4,     offsetof(ApplicationData, ApplicationData::view.camera.orientation)},
+    {"[Camera]", "Distance",                SerializationType_Float,    offsetof(ApplicationData, ApplicationData::view.camera.focus_distance)},
+
+    {"[Representation]", "Name",            SerializationType_String,   offsetof(Representation, Representation::name),     sizeof(Representation::name)},
+    {"[Representation]", "Filter",          SerializationType_String,   offsetof(Representation, Representation::filter),   sizeof(Representation::filter)},
+    {"[Representation]", "Enabled",         SerializationType_Bool,     offsetof(Representation, Representation::enabled)},
+    {"[Representation]", "Type",            SerializationType_Int,      offsetof(Representation, Representation::type)},
+    {"[Representation]", "ColorMapping",    SerializationType_Int,      offsetof(Representation, Representation::color_mapping)},
+    {"[Representation]", "StaticColor",     SerializationType_Vec4,     offsetof(Representation, Representation::uniform_color)},
+    {"[Representation]", "Radius",          SerializationType_Float,    offsetof(Representation, Representation::radius)},
+    {"[Representation]", "Tension",         SerializationType_Float,    offsetof(Representation, Representation::tension)},
+    {"[Representation]", "Width",           SerializationType_Float,    offsetof(Representation, Representation::width)},
+    {"[Representation]", "Thickness",       SerializationType_Float,    offsetof(Representation, Representation::thickness)},
+
+    {"[Script]", "Text",                    SerializationType_Script,   0},
+};
+
+#define COMPARE(str, ref) (compare_str_cstr_n(str, ref"", sizeof(ref) - 1))
+#define EXTRACT(str, ref) (compare_str_cstr_n(str, ref"", sizeof(ref) - 1) && (line = trim_whitespace(substr(line, sizeof(ref) - 1))).len > 0)
+#define EXTRACT_PARAM_LINE(line, txt) (c_txt.len && c_txt[0] != '[' && (extract_line(&line, &c_txt)))
+
+static SerializationObject* find_serialization_target(str_t group, str_t label) {
+    for (int i = 0; i < ARRAY_SIZE(serialization_targets); ++i) {
+        if (compare_str_cstr(group, serialization_targets[i].group) && compare_str_cstr(label, serialization_targets[i].label)) {
+            return &serialization_targets[i];
+        }
+    }
+    return NULL;
+}
+
+static void load_workspace(ApplicationData* data, str_t filename) {
+    str_t txt = load_textfile(filename, frame_allocator);
+    defer { free_str(txt, frame_allocator); };
+
+    if (!txt.len) {
+        md_printf(MD_LOG_TYPE_ERROR, "Could not open workspace file: '%.*s", (int)filename.len, filename.ptr);
+        return;
+    }
+
+    // Reset and clear things
+    clear_representations(data);
+    data->script.editor.SetText("");
+
+    data->animation = {};
+    reset_view(data, false, true);
+
+    StrBuf<512> old_molecule_file   = data->files.molecule;
+    StrBuf<512> old_trajectory_file = data->files.trajectory;
+
+    str_t group = {0};
+    int group_idx = -1;
+    int rep_idx = -1;
+
+    str_t c_txt = txt;
+    str_t line = {};
+
+    while (extract_line(&line, &c_txt)) {
+        line = trim_whitespace(line);
+        if (line[0] == '[') {
+            group = line;
+            group_idx += 1;
+        } else {
+            int64_t loc = find_char(line, '=');
+            if (loc != -1) {
+                str_t label = trim_whitespace(substr(line, 0, loc));
+                str_t arg   = trim_whitespace(substr(line, loc + 1));
+                SerializationObject* target = find_serialization_target(group, label);
+                if (target) {
+                    char* ptr = 0;
+                    if (compare_str_cstr(group, "[Representation]")) {
+                        if (rep_idx != group_idx) {
+                            rep_idx = group_idx;
+                            Representation* rep = create_representation(data);
+                        }
+                        ptr = (char*)md_array_last(data->representations.buffer);
+                    } else {
+                        ptr = (char*)data;
+                    }
+
+                    switch (target->type) {
+                    case SerializationType_Bool:
+                    {
+                        bool value = parse_int(arg) != 0;
+                        *(bool*)(ptr + target->struct_byte_offset) = value;
+                        break;
+                    }
+                    case SerializationType_String:
+                    {
+                        size_t copy_len = MIN(target->capacity - 1, arg.len);
+                        memcpy(ptr + target->struct_byte_offset, arg.ptr, copy_len);
+                        (ptr + target->struct_byte_offset)[copy_len] = '\0';
+                        break;
+                    }
+                    case SerializationType_Float:
+                    {
+                        float value = (float)parse_float(arg);
+                        *(float*)(ptr + target->struct_byte_offset) = value;
+                        break;
+                    }
+                    case SerializationType_Double:
+                    {
+                        double value = parse_float(arg);
+                        *(double*)(ptr + target->struct_byte_offset) = value;
+                        break;
+                    }
+                    case SerializationType_Int:
+                    {
+                        int value = (int)parse_int(arg);
+                        *(int*)(ptr + target->struct_byte_offset) = value;
+                        break;
+                    }
+                    case SerializationType_Vec3:
+                    {
+                        vec3_t value = vec3_from_vec4(parse_vec4(arg));
+                        *(vec3_t*)(ptr + target->struct_byte_offset) = value;
+                        break;
+                    }
+                    case SerializationType_Vec4:
+                    {
+                        vec4_t value = parse_vec4(arg);
+                        *(vec4_t*)(ptr + target->struct_byte_offset) = value;
+                        break;
+                    }
+                    case SerializationType_Path:
+                    {
+                        StrBuf<512> path = extract_path_without_file(filename);
+                        path += arg;
+                        str_t can_path = md_os_path_make_canonical(path, frame_allocator);
+                        if (can_path.ptr && can_path.len > 0) {
+                            size_t copy_len = MIN(target->capacity - 1, can_path.len);
+                            memcpy(ptr + target->struct_byte_offset, can_path.ptr, copy_len);
+                            (ptr + target->struct_byte_offset)[copy_len] = '\0';
+                        }
+                        break;
+                    }
+                    case SerializationType_Script:
+                    {
+                        // Script ends up last, so we just parse to the end of file here and use that as our text
+                        std::string str(arg.beg(), txt.end() - arg.beg());
+                        data->script.editor.SetText(str);
+                        c_txt.ptr = c_txt.end();
+                        c_txt.len = 0;
+                        break;
+                    }
+                    case SerializationType_Invalid: // fallthrough
+                    default:
+                        ASSERT(false);
+                    }
+                } else {
+                    md_printf(MD_LOG_TYPE_ERROR, "Could not recognize serialization target '%.*s' in group '%.*s,", (int)label.len, label.ptr, (int)group.len, group.ptr);
+                }
+            }
+        }
+    }
+    data->view.animation.target_position = data->view.camera.position;
+
+    data->files.workspace = filename;
+
+    StrBuf<512> new_molecule_file   = data->files.molecule;
+    StrBuf<512> new_trajectory_file = data->files.trajectory;
+
+    if (!compare_str(old_molecule_file, new_molecule_file) && new_molecule_file) {
+        if (load_dataset_from_file(data, new_molecule_file)) {
+            init_all_representations(data);
+            update_all_representations(data);
+        }
+    }
+
+    if (!compare_str(old_trajectory_file, new_trajectory_file) && new_trajectory_file) {
+        load_dataset_from_file(data, new_trajectory_file);
+    }
+}
+
+static void write_entry(FILE* file, SerializationObject target, const void* ptr, str_t filename) {
+    fprintf(file, "%s=", target.label);
+
+    switch (target.type) {
+    case SerializationType_Bool:
+    {
+        bool value = *(bool*)((const char*)ptr + target.struct_byte_offset) != 0;
+        fprintf(file, "%i\n", value ? 1 : 0);
+        break;
+    }
+    case SerializationType_String:
+    {
+        const char* str = (const char*)((const char*)ptr + target.struct_byte_offset);
+        int len = strnlen(str, target.capacity);
+        fprintf(file, "%.*s\n", len, str);
+        break;
+    }
+    case SerializationType_Float:
+    {
+        float value = *(float*)((const char*)ptr + target.struct_byte_offset);
+        fprintf(file, "%g\n", value);
+        break;
+    }
+    case SerializationType_Double:
+    {
+        double value = *(double*)((const char*)ptr + target.struct_byte_offset);
+        fprintf(file, "%g\n", value);
+        break;
+    }
+    case SerializationType_Int:
+    {
+        int value = *(int*)((const char*)ptr + target.struct_byte_offset);
+        fprintf(file, "%i\n", value);
+        break;
+    }
+    case SerializationType_Vec3:
+    {
+        vec3_t value = *(vec3_t*)((const char*)ptr + target.struct_byte_offset);
+        fprintf(file, "%g,%g,%g\n", value.x, value.y, value.z);
+        break;
+    }
+    case SerializationType_Vec4:
+    {
+        vec4_t value = *(vec4_t*)((const char*)ptr + target.struct_byte_offset);
+        fprintf(file, "%g,%g,%g,%g\n", value.x, value.y, value.z, value.w);
+        break;
+    }
+    case SerializationType_Path:
+    {
+        const char* str = (const char*)((const char*)ptr + target.struct_byte_offset);
+        int len = strnlen(str, target.capacity);
+
+        // Make this sucker relative
+        str_t rel_path = md_os_path_make_relative(filename, {str, len}, frame_allocator);
+        if (rel_path.ptr && rel_path.len) {
+            fprintf(file, "%.*s\n", (int)rel_path.len, rel_path.ptr);
+        }     
+        break;
+    }
+    case SerializationType_Script:
+    {
+        ApplicationData* data = (ApplicationData*)ptr;
+        std::string str = data->script.editor.GetText();
+        fprintf(file, "%s", str.c_str());
+        break;
+    }
+    case SerializationType_Invalid: // fallthrough
+    default:
+        ASSERT(false);
+    }
+}
+
+static void save_workspace(ApplicationData* data, str_t filename) {
+    md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
+
+    if (!file) {
+        md_printf(MD_LOG_TYPE_ERROR, "Could not open workspace file: '%.*s", (int)filename.len, filename.ptr);
+        return;
+    }
+    defer { md_file_close(file); };
+
+    const char* curr_group = "";
+
+    for (int i = 0; i < ARRAY_SIZE(serialization_targets); ++i) {
+        const char* group = serialization_targets[i].group;
+
+        if (strcmp(group, curr_group) != 0) {
+            fprintf((FILE*)file, "\n%s\n", group);
+            curr_group = group;
+        }
+
+        if (strcmp(group, "[Representation]") == 0) {
+            // Special case for this since it is an array quantity, iterate over all representations then all subfields marked with group [Representation]
+            const int num_rep = (int)md_array_size(data->representations.buffer);
+
+            int beg_rep_i = i;
+            int end_rep_i = i + 1;
+            while (end_rep_i < ARRAY_SIZE(serialization_targets) && strcmp(serialization_targets[end_rep_i].group, "[Representation]") == 0) {
+                end_rep_i += 1;
+            }
+            for (int rep_idx = 0; rep_idx < num_rep; ++rep_idx) {
+                const Representation* rep = &data->representations.buffer[rep_idx];
+                for (int j = beg_rep_i; j < end_rep_i; ++j) {
+                    write_entry((FILE*)file, serialization_targets[j], rep, filename);
+                }
+            }
+            i = end_rep_i - 1;
+        } else {
+            write_entry((FILE*)file, serialization_targets[i], data, filename);
+        }
+    }
+}
+
+#if 0
 static void load_workspace(ApplicationData* data, str_t file) {
     ASSERT(data);
     clear_representations(data);
-    //stats::remove_all_properties();
     //clear(data->density_volume.iso.isosurfaces);
 
     StrBuf<512> new_molecule_file;
@@ -4371,39 +4696,33 @@ static void load_workspace(ApplicationData* data, str_t file) {
 
     str_t c_txt = txt, line = {};
     while (extract_line(&line, &c_txt)) {
-        if (compare_str_cstr_n(line, "[Files]", 7)) {
-            while (c_txt.len && c_txt[0] != '[' && (extract_line(&line, &c_txt))) {
-                if (compare_str_cstr_n(line, "MoleculeFile=", 13)) {
-                    //std::filesystem::path path(file.ptr);
-                    //path += trim_whitespace(substr(line, 13)).ptr;
-                    //new_molecule_file = std::filesystem::canonical(path).string().c_str();
+        if (COMPARE(line, "[Files]")) {
+            while (EXTRACT_PARAM_LINE(line, c_txt)) {
+                if (EXTRACT(line, "MoleculeFile=")) {
                     StrBuf<512> buf = file;
-                    buf += trim_whitespace(substr(line, 13));
+                    buf += line;
                     new_molecule_file = md_os_path_make_canonical(buf, default_temp_allocator);
                 }
-                if (compare_str_cstr_n(line, "TrajectoryFile=", 15)) {
-                    //std::filesystem::path path(file.ptr);
-                    //path += trim_whitespace(substr(line, 15)).ptr;
-                    //new_trajectory_file = std::filesystem::canonical(path).string().c_str();
+                if (EXTRACT(line, "TrajectoryFile=")) {
                     StrBuf<512> buf = file;
-                    buf += trim_whitespace(substr(line, 15));
+                    buf += line;
                     new_trajectory_file = md_os_path_make_canonical(buf, default_temp_allocator);
                 }
             }
-        } else if (compare_str_cstr_n(line, "[Representation]", 16)) {
+        } else if (COMPARE(line, "[Representation]")) {
             Representation* rep = create_representation(data);
             if (rep) {
-                while (c_txt.len && c_txt[0] != '[' && (extract_line(&line, &c_txt))) {
-                    if (compare_str_cstr_n(line, "Name=", 5)) rep->name = trim_whitespace(substr(line,5));
-                    if (compare_str_cstr_n(line, "Filter=", 7)) rep->filter = trim_whitespace(substr(line,7));
-                    if (compare_str_cstr_n(line, "Type=", 5)) rep->type = get_rep_type(trim_whitespace(substr(line,5)));
-                    if (compare_str_cstr_n(line, "ColorMapping=", 13)) rep->color_mapping = get_color_mapping(trim_whitespace(substr(line,13)));
-                    if (compare_str_cstr_n(line, "Enabled=", 8)) rep->enabled = parse_int(trim_whitespace(substr(line,8))) != 0;
-                    if (compare_str_cstr_n(line, "StaticColor=", 12)) rep->uniform_color = parse_vec4(trim_whitespace(substr(line,12)));
-                    if (compare_str_cstr_n(line, "Radius=", 7)) rep->radius = parse_float(trim_whitespace(substr(line,7)));
-                    if (compare_str_cstr_n(line, "Tension=", 8)) rep->tension = parse_float(trim_whitespace(substr(line,8)));
-                    if (compare_str_cstr_n(line, "Width=", 6)) rep->width = parse_float(trim_whitespace(substr(line,6)));
-                    if (compare_str_cstr_n(line, "Thickness=", 10)) rep->thickness = parse_float(trim_whitespace(substr(line,10)));
+                while (EXTRACT_PARAM_LINE(line, c_txt)) {
+                    if (EXTRACT(line, "Name="))         rep->name           = line;
+                    if (EXTRACT(line, "Filter="))       rep->filter         = line;
+                    if (EXTRACT(line, "Type="))         rep->type           = get_rep_type(line);
+                    if (EXTRACT(line, "ColorMapping=")) rep->color_mapping  = get_color_mapping(line);
+                    if (EXTRACT(line, "Enabled="))      rep->enabled        = parse_int(line) != 0;
+                    if (EXTRACT(line, "StaticColor="))  rep->uniform_color  = parse_vec4(line);
+                    if (EXTRACT(line, "Radius="))       rep->radius         = parse_float(line);
+                    if (EXTRACT(line, "Tension="))      rep->tension        = parse_float(line);
+                    if (EXTRACT(line, "Width="))        rep->width          = parse_float(line);
+                    if (EXTRACT(line, "Thickness="))    rep->thickness      = parse_float(line);
                 }
             }
         /*} else if (compare_str_cstr_n(line, "[Property]", 10)) {
@@ -4414,14 +4733,14 @@ static void load_workspace(ApplicationData* data, str_t file) {
             }
             //stats::create_property(name, args);
             */
-        } else if (compare_str_cstr_n(line, "[RenderSettings]", 16)) {
-            while (c_txt.len && c_txt[0] != '[' && (extract_line(&line, &c_txt))) {
-                if (compare_str_cstr_n(line, "SsaoEnabled=", 12)) data->visuals.ssao.enabled = parse_int(trim_whitespace(substr(line,12))) != 0;
-                if (compare_str_cstr_n(line, "SsaoIntensity=", 14)) data->visuals.ssao.intensity = parse_float(trim_whitespace(substr(line,14)));
-                if (compare_str_cstr_n(line, "SsaoRadius=", 11)) data->visuals.ssao.radius = parse_float(trim_whitespace(substr(line,11)));
-                if (compare_str_cstr_n(line, "SsaoBias=", 9)) data->visuals.ssao.bias = parse_float(trim_whitespace(substr(line,9)));
-                if (compare_str_cstr_n(line, "DofEnabled=", 11)) data->visuals.dof.enabled = parse_int(trim_whitespace(substr(line,11))) != 0;
-                if (compare_str_cstr_n(line, "DofFocusScale=", 14)) data->visuals.dof.focus_scale = parse_float(trim_whitespace(substr(line,14)));
+        } else if (COMPARE(line, "[RenderSettings]")) {
+            while (EXTRACT_PARAM_LINE(line, c_txt)) {
+                if (EXTRACT(line, "SsaoEnabled="))      data->visuals.ssao.enabled      = parse_int(line) != 0;
+                if (EXTRACT(line, "SsaoIntensity="))    data->visuals.ssao.intensity    = parse_float(line);
+                if (EXTRACT(line, "SsaoRadius="))       data->visuals.ssao.radius       = parse_float(line);
+                if (EXTRACT(line, "SsaoBias="))         data->visuals.ssao.bias         = parse_float(line);
+                if (EXTRACT(line, "DofEnabled="))       data->visuals.dof.enabled       = parse_int(line) != 0;
+                if (EXTRACT(line, "DofFocusScale="))    data->visuals.dof.focus_scale   = parse_float(line);
 
                 /*
                 if (compare_str_cstr_n(line, "DensityVolumeEnabled=", 21)) data->density_volume.enabled = parse_int(trim_whitespace(substr(line,21))) != 0;
@@ -4582,6 +4901,7 @@ static void save_workspace(ApplicationData* data, str_t filename) {
 
     data->files.workspace = filename;
 }
+#endif
 
 void create_screenshot(ApplicationData* data) {
     ASSERT(data);

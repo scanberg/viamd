@@ -85,7 +85,17 @@ static inline LoadedTrajectory* alloc_loaded_trajectory(uint64_t key) {
 static inline void remove_loaded_trajectory(uint64_t key) {
     for (int64_t i = 0; i < num_loaded_trajectories; ++i) {
         if (loaded_trajectories[i].key == key) {
-            memcpy(&loaded_trajectories[i], &loaded_trajectories[--num_loaded_trajectories], sizeof(LoadedTrajectory));
+            md_frame_cache_free(&loaded_trajectories[i].cache);
+            if (compare_str_cstr(loaded_trajectories[i].extension, "pdb")) {
+                md_pdb_trajectory_close(&loaded_trajectories[i].traj);
+            }
+            else if (compare_str_cstr(loaded_trajectories[i].extension, "xtc")) {
+                md_xtc_trajectory_close(&loaded_trajectories[i].traj);
+            }
+            else {
+                ASSERT(false);
+            }
+            loaded_trajectories[i] = loaded_trajectories[--num_loaded_trajectories];
             return;
         }
     }
@@ -261,7 +271,7 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, int64
 
     if (result) {
         const int64_t num_atoms = frame_data->header.num_atoms;
-        if (header) memcpy(header, &frame_data->header, sizeof(md_trajectory_header_t));
+        if (header) *header = frame_data->header;
         if (x) memcpy(x, frame_data->x, sizeof(float) * num_atoms);
         if (y) memcpy(y, frame_data->y, sizeof(float) * num_atoms);
         if (z) memcpy(z, frame_data->z, sizeof(float) * num_atoms);
@@ -450,18 +460,12 @@ bool close(md_trajectory_i* traj) {
 
     LoadedTrajectory* loaded_traj = find_loaded_trajectory((uint64_t)traj);
     if (loaded_traj) {
-        str_t ext = loaded_traj->extension;
         remove_loaded_trajectory(loaded_traj->key);
-
-        if (compare_str_cstr(ext, "pdb")) {
-            return md_pdb_trajectory_close(traj);
-        }
-        else if (compare_str_cstr(ext, "xtc")) {
-            return md_xtc_trajectory_close(traj);
-        }
-        ASSERT(false);
+        memset(traj, 0, sizeof(md_trajectory_i));
+        return true;
     }
     md_print(MD_LOG_TYPE_ERROR, "Attempting to free trajectory which was not loaded with loader");
+    ASSERT(false);
     return false;
 }
 
