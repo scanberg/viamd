@@ -73,10 +73,13 @@ static inline LoadedTrajectory* find_loaded_trajectory(uint64_t key) {
     return nullptr;
 }
 
-static inline void add_loaded_trajectory(LoadedTrajectory traj) {
-    ASSERT(!find_loaded_trajectory(traj.key));
+static inline LoadedTrajectory* alloc_loaded_trajectory(uint64_t key) {
+    ASSERT(find_loaded_trajectory(key) == NULL);
     ASSERT(num_loaded_trajectories < (int64_t)ARRAY_SIZE(loaded_trajectories));
-    loaded_trajectories[num_loaded_trajectories++] = traj;
+    LoadedTrajectory* traj = &loaded_trajectories[num_loaded_trajectories++];
+    memset(traj, 0, sizeof(LoadedTrajectory));
+    traj->key = key;
+    return traj;
 }
 
 static inline void remove_loaded_trajectory(uint64_t key) {
@@ -201,7 +204,12 @@ bool is_extension_supported(str_t filename) {
     return false;
 }
 
-int64_t fetch_frame_data(struct md_trajectory_o* inst, int64_t idx, void* data_ptr) {
+bool get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header) {
+    LoadedTrajectory* loaded_traj = (LoadedTrajectory*)inst;
+    return md_trajectory_get_header(&loaded_traj->traj, header);
+}
+
+int64_t fetch_frame_data(struct md_trajectory_o*, int64_t idx, void* data_ptr) {
     if (data_ptr) {
         *((int64_t*)data_ptr) = idx;
     }
@@ -213,13 +221,14 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, int64
     ASSERT(loaded_traj);
     ASSERT(data_size == sizeof(int64_t));
 
-    int64_t idx = (int64_t)data_ptr;
+    int64_t idx = *((int64_t*)data_ptr);
     ASSERT(0 <= idx && idx < md_trajectory_num_frames(&loaded_traj->traj));
 
     md_frame_data_t* frame_data;
-    md_frame_cache_lock_t* lock;
+    md_frame_cache_lock_t* lock = 0;
     bool result = true;
-    if (md_frame_cache_reserve_frame(&loaded_traj->cache, idx, &frame_data, &lock)) {
+    bool in_cache = md_frame_cache_find_or_reserve(&loaded_traj->cache, idx, &frame_data, &lock);
+    if (!in_cache) {
         const int64_t frame_data_size = md_trajectory_fetch_frame_data(&loaded_traj->traj, idx, 0);
         void* frame_data_ptr = md_alloc(default_temp_allocator, frame_data_size);
         md_trajectory_fetch_frame_data(&loaded_traj->traj, idx, frame_data_ptr);
@@ -258,7 +267,9 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, int64
         if (z) memcpy(z, frame_data->z, sizeof(float) * num_atoms);
     }
 
-    md_frame_cache_release_frame_lock(lock);
+    if (lock) {
+        md_frame_cache_release_frame_lock(lock);
+    }
 
     return result;
 }
@@ -415,24 +426,22 @@ bool open_file(md_trajectory_i* traj, str_t filename, const md_molecule_t* mol, 
     return false;
 
 success:
-    LoadedTrajectory obj = {
-        .key = (uint64_t)traj,
-        .extension = {ext.ptr, ext.len},
-        .mol = mol,
-        .traj = internal_traj,
-        .cache = {0},
-        .alloc = alloc,
-    };
+    LoadedTrajectory* inst = alloc_loaded_trajectory((uint64_t)traj);
+    inst->extension = ext;
+    inst->mol = mol;
+    inst->traj = internal_traj;
+    inst->cache = {0};
+    inst->alloc = alloc;
     
-    md_frame_cache_init(&obj.cache, &obj.traj, alloc, MEGABYTES(512));
+    md_frame_cache_init(&inst->cache, &inst->traj, alloc, md_trajectory_num_frames(&internal_traj));
 
     // We only overload load frame and decode frame data to apply PBC upon loading data
-    *traj = obj.traj;
+    traj->inst = (struct md_trajectory_o*)inst;
+    traj->get_header = get_header;
     traj->load_frame = load_frame;
     traj->fetch_frame_data = fetch_frame_data;
     traj->decode_frame_data = decode_frame_data;
     
-    add_loaded_trajectory(obj);
     return true;
 }
 
