@@ -20,7 +20,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_stack_allocator.h>
-#include <core/md_pool_allocator.h>
+#include <core/md_tracking_allocator.h>
 #include <core/md_log.h>
 #include <core/md_simd.h>
 #include <core/md_file.h>
@@ -1053,7 +1053,7 @@ int main(int, char**) {
                     md_script_ir_compile_args_t args = {
                         .src = str,
                         .mol = &data.mold.mol,
-                        .alloc = default_allocator,
+                        .alloc = persistent_allocator,
                     };
 
                     editor.ClearMarkers();
@@ -1709,8 +1709,11 @@ static void expand_mask(md_exp_bitfield_t* mask, const md_range_t ranges[], int6
 }
 
 static bool filter_expression(const ApplicationData& data, str_t expr, md_exp_bitfield_t* mask) {
+    if (data.mold.mol.atom.count == 0) return false;
+
     md_filter_stored_selection_t stored_sel[64] = {0};
     int64_t                      stored_sel_count = 0;
+
     /*
     * // @TODO: Reimplement selections with md_exp_bitfield type
     for (const auto& s : data.selection.stored_selections) {
@@ -1726,7 +1729,9 @@ static bool filter_expression(const ApplicationData& data, str_t expr, md_exp_bi
     
     
     md_filter_context_t ctx {
+        .ir = &data.mold.script.ir,
         .mol = &data.mold.mol,
+        .alloc = frame_allocator,
         .selection = {
             .count = stored_sel_count,
             .ptr = stored_sel,
@@ -4226,7 +4231,7 @@ static bool load_trajectory_data(ApplicationData* data, str_t filename) {
     data->animation.time = 0;
     data->animation.frame = 0;
 
-    if (load::traj::open_file(&data->mold.traj, filename, &data->mold.mol, default_allocator)) {
+    if (load::traj::open_file(&data->mold.traj, filename, &data->mold.mol, persistent_allocator)) {
         data->files.trajectory = filename;
         init_trajectory_data(data);
         return true;
@@ -4247,7 +4252,7 @@ static bool load_dataset_from_file(ApplicationData* data, str_t filename) {
             data->files.trajectory = "";
 
             md_printf(MD_LOG_TYPE_INFO, "Attempting to load molecular data from file '%.*s'", filename.len, filename.ptr);
-            if (!load::mol::load_file(&data->mold.mol, filename, default_allocator)) {
+            if (!load::mol::load_file(&data->mold.mol, filename, persistent_allocator)) {
                 md_print(MD_LOG_TYPE_ERROR, "Failed to load molecular data");
                 data->files.molecule = "";
                 return false;
@@ -4670,6 +4675,7 @@ static void save_workspace(ApplicationData* data, str_t filename) {
                 end_rep_i += 1;
             }
             for (int rep_idx = 0; rep_idx < num_rep; ++rep_idx) {
+                fprintf((FILE*)file, "\n%s\n", group);
                 const Representation* rep = &data->representations.buffer[rep_idx];
                 for (int j = beg_rep_i; j < end_rep_i; ++j) {
                     write_entry((FILE*)file, serialization_targets[j], rep, filename);
@@ -5078,7 +5084,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
 
 static void init_representation(ApplicationData* data, Representation* rep) {
     md_gl_representation_init(&rep->md_rep, &data->mold.gl_mol);
-    md_bitfield_init(&rep->atom_mask, default_allocator);
+    md_bitfield_init(&rep->atom_mask, persistent_allocator);
 }
 
 static void init_all_representations(ApplicationData* data) {
@@ -5148,11 +5154,13 @@ static bool handle_selection(ApplicationData* data) {
     ASSERT(data);
     enum class RegionMode { Append, Remove };
 
+    const int64_t N = data->mold.mol.atom.count;
+    if (N <= 0) return false;
+
     static RegionMode region_mode = RegionMode::Append;
     static bool region_select = false;
     static application::Coordinate x0;
     const application::Coordinate x1 = data->ctx.input.mouse.win_coord;
-    const int64_t N = data->mold.mol.atom.count;
     const bool shift_down = data->ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data->ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
     const bool mouse_down = data->ctx.input.mouse.down[0] || data->ctx.input.mouse.down[1];
 
