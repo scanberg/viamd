@@ -1,0 +1,22 @@
+name: Windows (MSVC 19?)
+
+on: [push]
+
+jobs:
+    ci:
+        runs-on: windows-2022
+        steps:
+        - uses: actions/checkout@v2
+        - name: prepare
+          run: |
+            git submodule update --init --recursive
+        - name: cmake
+          run: |
+            cmake .
+        - name: build
+          run: |
+            cmake --build . --config Release -- /nologo /verbosity:minimal /maxcpucount:4
+#        - name: unittest
+#          run: |
+#            cd unittest/Release
+#            ./unittests

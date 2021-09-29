@@ -1,0 +1,23 @@
+name: Ubuntu 20.04 CI (GCC 9)
+
+on: [push]
+
+jobs:
+    ci:
+        runs-on: ubuntu-20.04
+        steps:
+        - uses: actions/checkout@v2
+        - name: prepare
+          run: |
+            git submodule update --init --recursive
+            sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libgtk-3-dev pkgconf
+        - name: cmake
+          run: |
+            cmake .
+        - name: build
+          run: |
+            make -j 4
+#        - name: unittest
+#          run: |
+#            cd unittest
+#            ./unittests

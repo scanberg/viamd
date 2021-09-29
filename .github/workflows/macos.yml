@@ -1,0 +1,22 @@
+name: MacOS (Clang)
+
+on: [push]
+
+jobs:
+    ci:
+        runs-on: macos-latest
+        steps:
+        - uses: actions/checkout@v2
+        - name: prepare
+          run: |
+            git submodule update --init --recursive
+        - name: cmake
+          run: |
+            cmake .
+        - name: build
+          run: |
+            make -j 4
+#        - name: unittest
+#          run: |
+#            cd unittest
+#            ./unittests
