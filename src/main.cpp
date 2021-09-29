@@ -2797,8 +2797,6 @@ static void draw_timeline_window(ApplicationData* data) {
             map.ContextMenuButton = -1;
             map.FitButton = ImGuiMouseButton_Right;
 
-            const int64_t num_props = data->mold.script.full_eval.num_properties;
-
             static bool is_dragging = false;
             static bool is_selecting = false;
 
@@ -2810,7 +2808,7 @@ static void draw_timeline_window(ApplicationData* data) {
             data->timeline.view_range.min = MAX(data->timeline.view_range.min, 0);
             data->timeline.view_range.max = MIN(data->timeline.view_range.max, num_time_values);
 
-            if (num_props == 0) {
+            if (s_num_props == 0) {
                 ImPlot::LinkNextPlotLimits(&data->timeline.view_range.min, &data->timeline.view_range.max, 0, 0);
                 if (ImPlot::BeginPlot("##Timeline", NULL, NULL, ImVec2(-1,150), flags, axis_flags_x, axis_flags_y)) {
                     if (data->timeline.filter.enabled) {
@@ -4233,7 +4231,7 @@ static void init_trajectory_data(ApplicationData* data) {
             if (data->tasks.backbone_computations.id != 0) {
                 task_system::interrupt_and_wait(data->tasks.backbone_computations); // This should never happen
             }
-            data->tasks.backbone_computations = task_system::enqueue_pool("Perform backbone operations", (uint32_t)num_frames, [data](task_system::TaskSetRange range)
+            data->tasks.backbone_computations = task_system::enqueue_pool("Backbone operations", (uint32_t)num_frames, [data](task_system::TaskSetRange range)
                 {
                     const auto& mol = data->mold.mol;
                     const int64_t stride = ROUND_UP(mol.atom.count, md_simd_width);

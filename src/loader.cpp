@@ -289,7 +289,15 @@ bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_h
     return decode_frame_data(inst, frame_data, sizeof(int64_t), header, x, y, z);
 }
 
-void launch_prefetch_job() {
+void launch_prefetch_job(md_trajectory_i* traj) {
+    uint32_t num_frames = (uint32_t)md_trajectory_num_frames(traj);
+    if (!num_frames) return;
+
+    task_system::enqueue_pool("prefetch frames", num_frames, [traj](task_system::TaskSetRange range) {
+        for (uint32_t i = range.beg; i < range.end; ++i) {
+            md_trajectory_load_frame(traj, i, 0, 0, 0, 0);
+        }
+    });
     #if 0
 #define NUM_SLOTS 64
 
@@ -451,6 +459,8 @@ success:
     traj->load_frame = load_frame;
     traj->fetch_frame_data = fetch_frame_data;
     traj->decode_frame_data = decode_frame_data;
+
+    launch_prefetch_job(traj);
     
     return true;
 }
