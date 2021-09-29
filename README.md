@@ -4,7 +4,11 @@ Visual Interactive Analysis of Molecular Dynamics
 <img src="https://github.com/scanberg/viamd/wiki/img/viamd_environment.png" alt="viamd" width="500"/>
 
 ## Status
-[![build_and_test](https://github.com/scanberg/viamd/workflows/build_and_test/badge.svg?branch=master)](https://github.com/scanberg/viamd/actions)
+[![Windows (MSVC 19)](https://github.com/scanberg/viamd/actions/workflows/windows.yml/badge.svg?branch=master)](https://github.com/scanberg/viamd/actions/workflows/windows.yml)
+[![Ubuntu 20.04 (GCC 9)](https://github.com/scanberg/viamd/actions/workflows/ubuntu20.yml/badge.svg)](https://github.com/scanberg/viamd/actions/workflows/ubuntu20.yml)
+[![MacOS (Clang)](https://github.com/scanberg/viamd/actions/workflows/macos.yml/badge.svg)](https://github.com/scanberg/viamd/actions/workflows/macos.yml)
+
+
 
 ## Building
 ### Step 1: Clone the repository:
