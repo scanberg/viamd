@@ -1,4 +1,4 @@
-name: Windows (MSVC 19?)
+name: Windows (MSVC)
 
 on: [push]
 
