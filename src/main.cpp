@@ -741,7 +741,13 @@ static void on_trajectory_load_complete(ApplicationData* data);
 
 // Global data for application
 static md_allocator_i* frame_allocator = 0;
+#if MD_DEBUG
+static md_allocator_i* persistent_allocator = md_tracking_allocator_create(default_allocator);
+#elif MD_RELEASE
 static md_allocator_i* persistent_allocator = default_allocator;
+#else
+    
+#endif
 
 int main(int, char**) {
     const int64_t stack_size = MEGABYTES(64);
@@ -4220,6 +4226,60 @@ static void init_trajectory_data(ApplicationData* data) {
             data->trajectory_data.backbone_angles.stride = data->mold.mol.backbone.count,
                 data->trajectory_data.backbone_angles.count = data->mold.mol.backbone.count * num_frames,
                 md_array_resize(data->trajectory_data.backbone_angles.data, data->mold.mol.backbone.count * num_frames, persistent_allocator);
+
+            // Launch work to compute the values
+            auto id = task_system::enqueue_pool("Perform backbone operations", (uint32_t)num_frames, [data](task_system::TaskSetRange range)
+                {
+                    const auto& mol = data->mold.mol;
+                    const int64_t stride = ROUND_UP(mol.atom.count, md_simd_width);
+                    const int64_t bytes = stride * sizeof(float) * 3;
+                    float* coords = (float*)md_alloc(persistent_allocator, bytes);
+                    defer { md_free(persistent_allocator, coords, bytes); };
+                    float* x = coords + stride * 0;
+                    float* y = coords + stride * 1;
+                    float* z = coords + stride * 2;
+
+
+                    for (uint32_t frame_idx = range.beg; frame_idx < range.end; ++frame_idx) {
+                        md_trajectory_load_frame(&data->mold.traj, frame_idx, NULL, x, y, z);
+
+                        md_util_backbone_angle_args_t bb_args = {
+                            .atom = {
+                                .count = mol.atom.count,
+                                .x = x,
+                                .y = y,
+                                .z = z,
+                            },
+                            .backbone = {
+                                .count = mol.backbone.count,
+                                .atoms = mol.backbone.atoms,
+                            },
+                            .chain = {
+                                .count = mol.chain.count,
+                                .backbone_range = mol.chain.backbone_range,
+                            }
+                        };
+                        md_util_compute_backbone_angles(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &bb_args);
+
+                        md_util_secondary_structure_args_t ss_args = {
+                            .atom = {
+                                .count = data->mold.mol.atom.count,
+                                .x = x,
+                                .y = y,
+                                .z = z,
+                            },
+                            .backbone = {
+                                .count = mol.backbone.count,
+                                .atoms = mol.backbone.atoms,
+                            },
+                            .chain = {
+                                .count = data->mold.mol.chain.count,
+                                .backbone_range = data->mold.mol.chain.backbone_range,
+                            }
+                        };
+                        md_util_compute_secondary_structure(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &ss_args);
+                    }
+                });
         }
     }
 }
