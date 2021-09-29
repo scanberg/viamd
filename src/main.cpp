@@ -276,7 +276,7 @@ struct ApplicationData {
 
     // --- ASYNC TASKS HANDLES ---
     struct {
-        task_system::ID prefetch_trajectory = task_system::INVALID_ID;
+        task_system::ID backbone_computations = task_system::INVALID_ID;
         task_system::ID evaluate_full = task_system::INVALID_ID;
         task_system::ID evaluate_filt = task_system::INVALID_ID;
     } tasks;
@@ -4109,8 +4109,8 @@ static void update_md_buffers(ApplicationData* data) {
 }
 
 static void interrupt_async_tasks(ApplicationData* data) {
-    if (data->tasks.prefetch_trajectory.id != 0) {
-        task_system::interrupt_task(data->tasks.prefetch_trajectory);
+    if (data->tasks.backbone_computations.id != 0) {
+        task_system::interrupt_task(data->tasks.backbone_computations);
     }
 
     if (data->tasks.evaluate_full.id != 0) {
@@ -4123,9 +4123,11 @@ static void interrupt_async_tasks(ApplicationData* data) {
         task_system::interrupt_task(data->tasks.evaluate_filt);
     }
 
+    task_system::wait_for_task(data->tasks.backbone_computations);
     task_system::wait_for_task(data->tasks.evaluate_full);
     task_system::wait_for_task(data->tasks.evaluate_filt);
 
+    data->tasks.backbone_computations.id = 0;
     data->tasks.evaluate_full.id = 0;
     data->tasks.evaluate_filt.id = 0;
 }
@@ -4228,7 +4230,10 @@ static void init_trajectory_data(ApplicationData* data) {
                 md_array_resize(data->trajectory_data.backbone_angles.data, data->mold.mol.backbone.count * num_frames, persistent_allocator);
 
             // Launch work to compute the values
-            auto id = task_system::enqueue_pool("Perform backbone operations", (uint32_t)num_frames, [data](task_system::TaskSetRange range)
+            if (data->tasks.backbone_computations.id != 0) {
+                task_system::interrupt_and_wait(data->tasks.backbone_computations); // This should never happen
+            }
+            data->tasks.backbone_computations = task_system::enqueue_pool("Perform backbone operations", (uint32_t)num_frames, [data](task_system::TaskSetRange range)
                 {
                     const auto& mol = data->mold.mol;
                     const int64_t stride = ROUND_UP(mol.atom.count, md_simd_width);
@@ -4238,7 +4243,6 @@ static void init_trajectory_data(ApplicationData* data) {
                     float* x = coords + stride * 0;
                     float* y = coords + stride * 1;
                     float* z = coords + stride * 2;
-
 
                     for (uint32_t frame_idx = range.beg; frame_idx < range.end; ++frame_idx) {
                         md_trajectory_load_frame(&data->mold.traj, frame_idx, NULL, x, y, z);
