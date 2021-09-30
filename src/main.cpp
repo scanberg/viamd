@@ -3051,7 +3051,7 @@ static void draw_distribution_window(ApplicationData* data) {
 
         ImPlotAxisFlags axis_flags = 0;
         ImPlotAxisFlags axis_flags_x = axis_flags | 0;
-        ImPlotAxisFlags axis_flags_y = axis_flags | 0;
+        ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_NoTickLabels;
         ImPlotFlags flags = ImPlotFlags_AntiAliased;
 
         // The distribution properties are always computed as histograms with a resolution of 1024
