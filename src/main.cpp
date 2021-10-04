@@ -65,7 +65,7 @@
 #define VIAMD_RELEASE 0
 #define EXPERIMENTAL_CONE_TRACED_AO 0
 #define USE_MOLD 1
-#define COMPILATION_TIME_DELAY_IN_SECONDS 1.5
+#define COMPILATION_TIME_DELAY_IN_SECONDS 1.0
 
 #ifdef OS_MAC_OSX
 const Key::Key_t KEY_CONSOLE = Key::KEY_WORLD_1;
@@ -221,6 +221,44 @@ struct Selection {
     md_exp_bitfield_t atom_mask{};
 };
 
+// This is viamd's representation of a property
+struct DisplayProperty {
+    enum ShowIn {
+        ShowIn_Timeline = 1,
+        ShowIn_Distribution = 2,
+        ShowIn_Volume = 4
+    };
+
+    struct Range {
+        float min = 0;
+        float max = 0;
+    };
+
+    struct Histogram {
+        float bin[1024] = {};
+        Range value_range = {};
+    };
+
+    StrBuf<32> lbl = "";
+    uint32_t col = 0xFFFFFFFFU;
+
+    md_script_property_t* full_prop = NULL;
+    md_script_property_t* filt_prop = NULL;
+
+    uint64_t full_prop_fingerprint = 0;
+    uint64_t filt_prop_fingerprint = 0;
+
+    uint32_t possible_display_mask = 0;
+    uint32_t current_display_mask = 0;
+
+    Range value_filter = {};
+    Range frame_filter = {};
+
+    Histogram full_hist = {};
+    Histogram filt_hist = {};
+};
+
+
 struct ApplicationData {
     // --- APPLICATION ---
     application::Context ctx {};
@@ -273,6 +311,8 @@ struct ApplicationData {
         } script;
         uint32_t dirty_buffers = {0};
     } mold;
+
+    DisplayProperty* display_properties = 0;
 
     // --- ASYNC TASKS HANDLES ---
     struct {
@@ -361,7 +401,7 @@ struct ApplicationData {
             float intensity = 24.f;
         } background;
 
-        struct {
+        struct { 
             bool enabled = true;
             float intensity = 6.0f;
             float radius = 6.0f;
@@ -569,14 +609,10 @@ struct ApplicationData {
     } trajectory_data;
 };
 
-struct PropertyItem {
-    StrBuf<32> lbl;
-    uint32_t col;
-    int idx;
-    bool show;
-};
-
 //static void postprocess_frame(md_frame_data_t* frame, void* user_data);
+
+
+static void update_properties(DisplayProperty** prop_items, md_script_property_t* full_props, md_script_property_t* filt_props, int64_t num_props);
 
 static void interpolate_atomic_properties(ApplicationData* data);
 static void update_view_param(ApplicationData* data);
@@ -764,7 +800,7 @@ int main(int, char**) {
     md_bitfield_init(&data.representations.atom_visibility_mask, persistent_allocator);
     md_bitfield_init(&data.mold.script.frame_mask, persistent_allocator);
 
-    md_semaphore_init(&data.mold.script.semaphore, 1);
+    md_semaphore_init(&data.mold.script.semaphore, 2);
 
     md_logger_i logger = {
         .inst = (md_logger_o*)&data.console,
@@ -977,18 +1013,10 @@ int main(int, char**) {
 
         if (time_changed) {
             time_stopped = false;
-            //data.hydrogen_bonds.dirty = true;
 
             PUSH_CPU_SECTION("Interpolate Position")
             if (md_trajectory_num_frames(&traj)) {
                 interpolate_atomic_properties(&data);
-                //update_reference_frames(&data);
-
-                /*
-                if (data.ensemble_tracking.superimpose_structures) {
-                    superimpose_ensemble(&data);
-                }
-                */
 
                 if (data.animation.apply_pbc) {
                     md_util_apply_pbc_args_t args = {
@@ -1045,10 +1073,9 @@ int main(int, char**) {
                 md_script_eval_interrupt(&data.mold.script.filt_eval);
 
                 // Try aquire 2 semaphores
-                if ( md_semaphore_try_aquire(&data.mold.script.semaphore)
-                    // && md_semaphore_try_aquire(&data.mold.script.semaphore)
-                    ) {
-                    // Now we hold all resources for the script
+                if (md_semaphore_try_aquire(&data.mold.script.semaphore) &&
+                    md_semaphore_try_aquire(&data.mold.script.semaphore)) {
+                    // Now we hold all semaphores for the script
                     data.mold.script.compile_ir = false;
                     data.mold.script.time_since_last_change = 0;
 
@@ -1065,17 +1092,23 @@ int main(int, char**) {
                     editor.ClearMarkers();
                     editor.ClearErrorMarkers();
 
-                    if (md_script_ir_compile(&data.mold.script.ir, args)) {
+                    bool result = md_script_ir_compile(&data.mold.script.ir, args);
+
+                    // Before we release the compute-dogs we want to allocate the data for the evaluations
+                    md_script_eval_init(&data.mold.script.full_eval, num_frames, &data.mold.script.ir, persistent_allocator);
+                    md_script_eval_init(&data.mold.script.filt_eval, num_frames, &data.mold.script.ir, persistent_allocator);
+
+                    const int64_t num_props = data.mold.script.filt_eval.num_properties;
+                    ASSERT(data.mold.script.filt_eval.num_properties == num_props);
+                    update_properties(&data.display_properties, data.mold.script.full_eval.properties, data.mold.script.filt_eval.properties, num_props);
+
+                    if (result) {
                         data.mold.script.evaluate_full = true;
                         data.mold.script.evaluate_filt = true;
                     }
 
-                    // Before we release the compute-dogs we want to allocate the data for the evaluations
-                    md_script_eval_alloc(&data.mold.script.full_eval, num_frames, &data.mold.script.ir, persistent_allocator);
-                    md_script_eval_alloc(&data.mold.script.filt_eval, num_frames, &data.mold.script.ir, persistent_allocator);
-
                     md_semaphore_release(&data.mold.script.semaphore);
-                    //md_semaphore_release(&data.mold.script.semaphore);
+                    md_semaphore_release(&data.mold.script.semaphore);
 
                     TextEditor::ErrorMarkers markers;
                     const int64_t num_errors = data.mold.script.ir.num_errors;
@@ -1121,10 +1154,8 @@ int main(int, char**) {
 
                     md_script_eval_compute(&data.mold.script.full_eval, args);
 
-                    task_system::enqueue_main("Eval Complete", [&data]() {
-                        data.tasks.evaluate_full.id = 0;
-                        md_semaphore_release(&data.mold.script.semaphore);
-                    });
+                    data.tasks.evaluate_full.id = 0;
+                    md_semaphore_release(&data.mold.script.semaphore);
                 });
             }
         }
@@ -1150,10 +1181,9 @@ int main(int, char**) {
                     };
 
                     md_script_eval_compute(&data.mold.script.filt_eval, args);
-                    task_system::enqueue_main("Eval Complete", [&data]() {
-                        data.tasks.evaluate_filt.id = 0;
-                        md_semaphore_release(&data.mold.script.semaphore);
-                    });
+
+                    data.tasks.evaluate_filt.id = 0;
+                    md_semaphore_release(&data.mold.script.semaphore);
                 });
             }
         }
@@ -1269,6 +1299,62 @@ int main(int, char**) {
     application::shutdown(&data.ctx);
 
     return 0;
+}
+
+static void update_properties(DisplayProperty** prop_items, md_script_property_t* full_props, md_script_property_t* filt_props, int64_t num_props) {
+    ASSERT(prop_items);
+    if (num_props > 0) {
+        ASSERT(full_props);
+        ASSERT(filt_props);
+    }
+
+    DisplayProperty* new_items = 0;
+    DisplayProperty* old_items = *prop_items;
+
+    for (int64_t i = 0; i < num_props; ++i) {
+        uint32_t possible_display_mask = 0;
+        switch (full_props[i].type) {
+        case MD_SCRIPT_PROPERTY_TYPE_TEMPORAL:
+            possible_display_mask = DisplayProperty::ShowIn_Timeline | DisplayProperty::ShowIn_Distribution;
+            break;
+        case MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION:
+            possible_display_mask = DisplayProperty::ShowIn_Distribution;
+            break;
+        case MD_SCRIPT_PROPERTY_TYPE_VOLUME:
+            possible_display_mask = DisplayProperty::ShowIn_Volume;
+            break;
+        case MD_SCRIPT_PROPERTY_TYPE_NONE:
+        default:
+            ASSERT(false);
+        }
+
+        DisplayProperty item;
+        item.lbl = full_props[i].ident;
+        item.col = PROPERTY_COLORS[i % ARRAY_SIZE(PROPERTY_COLORS)];
+        item.frame_filter = {0, 0};
+        item.value_filter = {0, 0};
+        item.full_prop = &full_props[i];
+        item.filt_prop = &filt_props[i];
+        item.full_prop_fingerprint = 0;
+        item.filt_prop_fingerprint = 0;
+        item.possible_display_mask = possible_display_mask;
+        item.current_display_mask = possible_display_mask;
+
+        for (int64_t j = 0; j < md_array_size(old_items); ++j) {
+            if (compare_str(item.lbl, old_items[j].lbl)) {
+                // Copy relevant parameters from existing item which we want to be persistent
+                item.frame_filter = old_items[j].frame_filter;
+                item.value_filter = old_items[j].value_filter;
+                item.current_display_mask = old_items[j].current_display_mask & possible_display_mask;
+                item.full_prop_fingerprint = old_items[j].full_prop_fingerprint;
+                item.filt_prop_fingerprint = old_items[j].filt_prop_fingerprint;
+            }
+        }
+        md_array_push(new_items, item, frame_allocator);
+    }
+
+    md_array_resize(*prop_items, md_array_size(new_items), persistent_allocator);
+    memcpy(*prop_items, new_items, md_array_size(new_items) * sizeof(DisplayProperty));
 }
 
 static void interpolate_atomic_properties(ApplicationData* data) {
@@ -1399,21 +1485,21 @@ static void interpolate_atomic_properties(ApplicationData* data) {
                         .y = y[0],
                         .z = z[0],
                     },
-                            {
-                                .x = x[1],
-                                .y = y[1],
-                                .z = z[1],
-                            },
-                            {
-                                .x = x[2],
-                                .y = y[2],
-                                .z = z[2],
-                            },
-                            {
-                                .x = x[3],
-                                .y = y[3],
-                                .z = z[3],
-                            },
+                    {
+                        .x = x[1],
+                        .y = y[1],
+                        .z = z[1],
+                    },
+                    {
+                        .x = x[2],
+                        .y = y[2],
+                        .z = z[2],
+                    },
+                    {
+                        .x = x[3],
+                        .y = y[3],
+                        .z = z[3],
+                    },
                 },
                 },
                 .pbc = {0}, // memcpy this afterwards
@@ -2537,7 +2623,30 @@ static void draw_async_task_window(ApplicationData* data) {
     }
 }
 
-void draw_property_menu_widgets(PropertyItem* items, int num_items) {
+
+bool draw_property_menu_widgets(DisplayProperty* props, int64_t num_props, uint32_t prop_mask) {
+    bool changed = false;
+    int64_t num_candidates = 0;
+
+    for (int64_t i = 0; i < num_props; ++i) {
+        DisplayProperty& prop = props[i];
+        if (prop.possible_display_mask & prop_mask) {
+            num_candidates += 1;
+            ImPlot::ItemIcon(prop.col); ImGui::SameLine();
+            bool show = prop.current_display_mask & prop_mask;
+            changed = changed || ImGui::Selectable(prop.lbl.cstr(), &show, 0, ImVec2(50,0));
+            if (show)
+                prop.current_display_mask |= prop_mask;
+            else
+                prop.current_display_mask &= ~prop_mask;
+        }
+    }
+    
+    if (num_candidates == 0) {
+        ImGui::Text("No properties to show.");
+    }
+    return changed;
+    /*
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
     ASSERT(draw_list);
     ImVec2 pos = ImGui::GetWindowPos();
@@ -2597,6 +2706,112 @@ void draw_property_menu_widgets(PropertyItem* items, int num_items) {
         if (label != text_display_end)
             draw_list->AddText(top_left + ImVec2(icon_size, 0), items[i].show ? col_txt_hl  : col_txt_dis, label, text_display_end);
     }
+    */
+}
+
+struct TimelineArgs {
+    const char* lbl;
+    uint32_t col;
+
+    struct {
+        int count;
+        const float* x;
+        const float* y;
+        const float* y_variance;
+    } values;
+
+    struct {
+        double* min;
+        double* max;
+    } view_range;
+
+    struct {
+        bool* is_dragging;
+        bool* is_selecting;
+    } input;
+
+    struct {
+        bool show;
+        bool enabled;
+
+        double* beg;
+        double* end;
+
+        double min;
+        double max;
+    } filter;
+
+    double* time;
+};
+
+bool draw_property_timeline(const TimelineArgs& args) {
+    const ImPlotAxisFlags axis_flags = 0;
+    const ImPlotAxisFlags axis_flags_x = axis_flags;
+    const ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit;
+    const ImPlotFlags flags = ImPlotFlags_AntiAliased;
+
+    ImPlot::LinkNextPlotLimits(args.view_range.min, args.view_range.max, 0, 0);
+    if (ImPlot::BeginPlot("##Timeline", NULL, NULL, ImVec2(-1,150), flags, axis_flags_x, axis_flags_y)) {
+
+        bool hovered = ImGui::IsItemHovered();
+        bool active = ImGui::IsItemActive();
+
+        if (args.filter.show) {
+            if (!args.filter.enabled) ImGui::PushDisabled();
+            ImPlot::DragRangeX("Time Filter", args.filter.beg, args.filter.end, args.filter.min, args.filter.max);
+            if (!args.filter.enabled) ImGui::PopDisabled();
+        }
+
+        ImVec4 line_col = ImGui::ColorConvertU32ToFloat4(args.col);
+        ImPlot::SetNextLineStyle(line_col);
+
+        if (args.values.y_variance) {
+            char lbl[32] = "";
+
+            snprintf(lbl, sizeof(lbl), "%s (mean)", args.lbl);
+            ImPlot::PlotLine(lbl, args.values.x, args.values.y, args.values.count);
+
+            ImPlot::SetNextFillStyle(line_col, 0.2f);
+            snprintf(lbl, sizeof(lbl), "%s (variance)", args.lbl);
+            ImPlot::PlotShadedG(lbl,
+                [](void* payload, int idx) -> ImPlotPoint {
+                    TimelineArgs* args = (TimelineArgs*)payload;
+                    return ImPlotPoint(args->values.x[idx], args->values.y[idx] - args->values.y_variance[idx]);
+                },
+                (void*)&args,
+                [](void* payload, int idx) -> ImPlotPoint {
+                    TimelineArgs* args = (TimelineArgs*)payload;
+                    return ImPlotPoint(args->values.x[idx], args->values.y[idx] + args->values.y_variance[idx]);
+                },
+                (void*)&args,
+                args.values.count
+            );
+        } 
+        else {
+            ImPlot::PlotLine(args.lbl, args.values.x, args.values.y, args.values.count);
+        }
+        
+        if (*args.input.is_dragging) {
+            *args.time = ImPlot::GetPlotMousePos().x;
+        }
+        else if (*args.input.is_selecting) {
+            *args.filter.end = MAX(ImPlot::GetPlotMousePos().x, *args.filter.beg);
+        }
+        else if ((active || hovered) && ImGui::IsMouseDown(0)) {
+            if (ImGui::GetIO().KeyMods == ImGuiKeyModFlags_Ctrl) {
+                *args.input.is_dragging = true;
+            }
+            else if (ImGui::GetIO().KeyMods == ImGuiKeyModFlags_Shift && args.filter.show) {
+                *args.input.is_selecting = true;
+                *args.filter.beg = ImPlot::GetPlotMousePos().x;
+            };
+        }
+
+        ImPlot::DragLineX("Current Time", args.time, true, ImVec4(1,1,0,1));
+        ImPlot::EndPlot();
+    }
+
+    return true;
 }
 
 // #timeline
@@ -2609,64 +2824,21 @@ static void draw_timeline_window(ApplicationData* data) {
         double pre_filter_min = data->timeline.filter.min;
         double pre_filter_max = data->timeline.filter.max;
 
-        static PropertyItem s_props[32] = {};
-        static int s_num_props = 0;
-        static uint64_t s_fingerprint = 0;
-
-        int num_time_values = (int)md_trajectory_num_frames(&data->mold.traj);
-        float* time_values = (float*)md_alloc(frame_allocator, num_time_values * sizeof(float));
+        int num_x_values = (int)md_trajectory_num_frames(&data->mold.traj);
+        float* x_values = (float*)md_alloc(frame_allocator, num_x_values * sizeof(float));
         defer {
-            md_free(frame_allocator, time_values, num_time_values * sizeof(float));
+            md_free(frame_allocator, x_values, num_x_values * sizeof(float));
         };
-        for (int64_t i = 0; i < num_time_values; ++i) {
-            //time_values[i] = (float)i / (float)(num_time_values - 1);
-            time_values[i] = (float)i;
+        for (int64_t i = 0; i < num_x_values; ++i) {
+            x_values[i] = (float)i;
         }
 
-        const double max_time_value = num_time_values > 0 ? time_values[num_time_values - 1] : 1.0;
-
-        if (s_fingerprint != data->mold.script.full_eval.fingerprint) {
-            PropertyItem new_props[ARRAY_SIZE(s_props)] = {};
-            int num_new_props = 0;
-
-            md_script_property_t* props = data->mold.script.full_eval.properties;
-            for (int64_t i = 0; i < data->mold.script.full_eval.num_properties; ++i) {
-                if (props[i].type != MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) continue;
-
-                bool show = true;
-                for (int64_t j = 0; j < s_num_props; ++j) {
-                    if (compare_str(props[i].ident, s_props[j].lbl)) {
-                        show = s_props[j].show;
-                    }
-                }
-                PropertyItem p = {
-                    .lbl = props[i].ident,
-                    .col = PROPERTY_COLORS[i % ARRAY_SIZE(PROPERTY_COLORS)],
-                    .idx = (int)i,
-                    .show = show
-                };
-
-                new_props[num_new_props++] = p;
-            }
-            
-            memcpy(s_props, new_props, sizeof(new_props));
-            s_num_props = num_new_props;
-        }
+        const double max_x_value = num_x_values > 0 ? x_values[num_x_values - 1] : 1.0;
 
         if (ImGui::BeginMenuBar())
         {
             if (ImGui::BeginMenu("Properties")) {
-                //draw_property_menu_widgets(s_props, s_num_props);
-                
-                if (s_num_props) {
-                    for (int i = 0; i < s_num_props; ++i) {
-                        ImPlot::ItemIcon(s_props[i].col); ImGui::SameLine();
-                        ImGui::Selectable(s_props[i].lbl.cstr(), &s_props[i].show, 0, ImVec2(50, 0));
-                    }
-                } else {
-                    ImGui::Text("No properties to show.");
-                }
-                
+                draw_property_menu_widgets(data->display_properties, md_array_size(data->display_properties), DisplayProperty::ShowIn_Timeline);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Filter")) {
@@ -2674,13 +2846,11 @@ static void draw_timeline_window(ApplicationData* data) {
                 if (data->timeline.filter.enabled) {
                     ImGui::Checkbox("Temporal Window", &data->timeline.filter.temporal_window);
                     if (data->timeline.filter.temporal_window) {
-                        ImGui::SliderFloat("Extent", &data->timeline.filter.window_extent, 1.0f, (float)max_time_value);
+                        ImGui::SliderFloat("Extent", &data->timeline.filter.window_extent, 1.0f, (float)max_x_value);
                     }
                 }
-
                 ImGui::EndMenu();
             }
-
             ImGui::EndMenuBar();
         }
 
@@ -2688,98 +2858,8 @@ static void draw_timeline_window(ApplicationData* data) {
             data->animation.mode = data->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
         }
 
-        /*
-        // convenience struct to manage DND items; do this however you like
-        struct DndItem {
-            char    label[16] = {};
-            int     num_values = 0;
-            float*  values = NULL;
-            float*  variance = NULL;
-            ImVec4  color = {};
-            int     plot = 0;
-        };
 
-        static DndItem  dnd[32];
-        int             num_dnd = 0;
-        */
-
-        // This is for the time stamps along the x-axis.
-        // If we don't have any specific time points for the frames, we just use the indices as time points.
-
-
-
-        if (num_time_values > 0) {
-
-            /*
-            for (int64_t i = 0; i < data->mold.script.full_eval.num_properties; i++) {
-                auto& prop = data->mold.script.full_eval.properties[i];
-                if (prop.type != MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) continue;
-
-                ASSERT(num_dnd < ARRAY_SIZE(dnd));
-                int idx = num_dnd++;
-                dnd[idx] = {
-                    .label = {0},
-                    .num_values = prop.data.aggregate ? (int)prop.data.aggregate->num_values : (int)prop.data.num_values,
-                    .values = prop.data.aggregate ? prop.data.aggregate->mean : prop.data.values,
-                    .variance = prop.data.aggregate ? prop.data.aggregate->variance : NULL,
-                    .color = vec_cast(qualitative_color_scale(idx)),
-                    .plot = dnd[idx].plot
-                };
-                const size_t cpy_size = ARRAY_SIZE(dnd[num_dnd-1].label) < prop.ident.len ? ARRAY_SIZE(dnd[num_dnd-1].label) : prop.ident.len;
-                strncpy(dnd[num_dnd-1].label, prop.ident.ptr, cpy_size);
-            }
-            */
-
-            /*
-            // child window to serve as initial source for our DND items
-            ImGui::BeginChild("DND_LEFT",ImVec2(100,-1));
-            if (ImGui::Button("Reset", ImVec2(100, 0))) {
-                for (int i = 0; i < num_dnd; ++i)
-                    dnd[i].plot = 0;
-            }
-            for (int k = 0; k < num_dnd; ++k) {
-                if (dnd[k].plot > 0)
-                    continue;
-                ImPlot::ItemIcon(dnd[k].color); ImGui::SameLine();
-                ImGui::Selectable(dnd[k].label, false, 0, ImVec2(100, 0));
-                if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
-                    ImGui::SetDragDropPayload("MY_DND", &k, sizeof(int));
-                    ImPlot::ItemIcon(dnd[k].color); ImGui::SameLine();
-                    ImGui::TextUnformatted(dnd[k].label);
-                    ImGui::EndDragDropSource();
-                }
-            }
-            ImGui::EndChild();
-            */
-        
-            /*
-            if (ImGui::BeginDragDropTarget()) {
-                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MY_DND")) {
-                    int i = *(int*)payload->Data;
-                    dnd[i].plot = 0;
-                }
-                ImGui::EndDragDropTarget();
-            }
-            */
-
-            //ImGui::SameLine();
-            //ImGui::BeginChild("DND_RIGHT",ImVec2(-1,-1));
-        
-            ImPlotAxisFlags axis_flags = 0;
-            ImPlotAxisFlags axis_flags_x = axis_flags;
-            ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit;
-            ImPlotFlags flags = ImPlotFlags_AntiAliased;
-    /*
-            static bool need_refit = false;
-            if (need_refit) {
-                ImPlot::FitNextPlotAxes();
-                need_refit = false;
-            }
-            */
-
-            static double x_min = 0;
-            static double x_max = 1;
-
+        if (num_x_values > 0) {
             ImPlotInputMap old_map = ImPlot::GetInputMap();
 
             ImPlotInputMap& map = ImPlot::GetInputMap();
@@ -2805,154 +2885,82 @@ static void draw_timeline_window(ApplicationData* data) {
                 is_selecting = false;
             }
 
+            int64_t num_props = md_array_size(data->display_properties);
+
+            TimelineArgs args = {
+                .lbl = "##Empty",
+                .col = 0xFFFFFFFF,
+                .values = {
+                    .count = 0,
+                    .x = NULL,
+                    .y = NULL,
+                    .y_variance = NULL,
+                },
+                .view_range = {
+                    &data->timeline.view_range.min,
+                    &data->timeline.view_range.max,
+                },
+                .input = {
+                    .is_dragging = &is_dragging,
+                    .is_selecting = &is_selecting,
+                },
+                .filter = {
+                    .show = data->timeline.filter.enabled,
+                    .enabled = data->timeline.filter.temporal_window == false,
+                    .beg = &data->timeline.filter.min,
+                    .end = &data->timeline.filter.max,
+                    .min = 0,
+                    .max = max_x_value,
+                },
+                .time = &data->animation.time
+            };
+
+            int64_t num_shown_plots = 0;
+            for (int64_t i = 0; i < num_props; ++i) {
+                DisplayProperty& prop = data->display_properties[i];
+                if ((prop.current_display_mask & DisplayProperty::ShowIn_Timeline) == 0) continue;
+
+                ASSERT(prop.full_prop);
+                ASSERT(prop.filt_prop);
+
+                const float* y_values = NULL;
+                const float* y_variance = NULL;
+                int num_y_values = 0;
+                    
+                if (prop.full_prop->data.aggregate) {
+                    y_values = prop.full_prop->data.aggregate->mean;
+                    y_variance = prop.full_prop->data.aggregate->variance;
+                    num_y_values = prop.full_prop->data.aggregate->num_values;
+                } else {
+                    y_values = prop.full_prop->data.values;
+                    num_y_values = prop.full_prop->data.num_values;
+                }
+                    
+                ASSERT(num_y_values == num_x_values);
+
+                ImGui::PushID(i);
+                args.lbl = prop.lbl.cstr();
+                args.col = prop.col;
+                args.values = {
+                    .count = num_y_values,
+                    .x = x_values,
+                    .y = y_values,
+                    .y_variance = y_variance,
+                };
+                draw_property_timeline(args);
+                ImGui::PopID();
+
+                num_shown_plots += 1;
+            }
+            if (num_shown_plots == 0) {
+                draw_property_timeline(args);
+            }
+
             data->timeline.view_range.min = MAX(data->timeline.view_range.min, 0);
-            data->timeline.view_range.max = MIN(data->timeline.view_range.max, num_time_values);
-
-            if (s_num_props == 0) {
-                ImPlot::LinkNextPlotLimits(&data->timeline.view_range.min, &data->timeline.view_range.max, 0, 0);
-                if (ImPlot::BeginPlot("##Timeline", NULL, NULL, ImVec2(-1,150), flags, axis_flags_x, axis_flags_y)) {
-                    if (data->timeline.filter.enabled) {
-                        ImPlot::DragRangeX("Time Filter", &data->timeline.filter.min, &data->timeline.filter.max, 0, max_time_value);
-                    }
-                    ImPlot::DragLineX("Current Time", &data->animation.time, true, ImVec4(1,1,0,1));
-                    ImPlot::EndPlot();
-                }
-            }
-            else {
-                for (int64_t i = 0; i < s_num_props; ++i) {
-                    if (s_props[i].show == false) continue;
-                    const md_script_property_t& prop = data->mold.script.full_eval.properties[s_props[i].idx];
-
-                    ImGui::PushID(i);
-                    ImPlot::LinkNextPlotLimits(&data->timeline.view_range.min, &data->timeline.view_range.max, 0, 0);
-                    if (ImPlot::BeginPlot("##Timeline", NULL, NULL, ImVec2(-1,150), flags, axis_flags_x, axis_flags_y)) {
-
-
-                        if (ImGui::IsItemHovered() && ImGui::IsItemActive()) {
-                            double x = ImPlot::GetPlotMousePos().x;
-                            if (is_dragging) {
-                                data->animation.time = x;
-                            }
-                            else if (is_selecting) {
-                                data->timeline.filter.max = CLAMP(x, data->timeline.filter.min, max_time_value);
-                            }
-                            else if (ImGui::IsMouseDown(0)) {
-                                switch (ImGui::GetIO().KeyMods) {
-                                case ImGuiKeyModFlags_Ctrl:
-                                    is_dragging = true;
-                                    break;
-                                case ImGuiKeyModFlags_Shift:
-                                    if (!data->timeline.filter.temporal_window) {
-                                        is_selecting = true;
-                                        data->timeline.filter.min = CLAMP(x, 0, max_time_value);
-                                    }
-                                    break;
-                                default:
-                                    break;
-                                };
-                            }
-                        }
-
-                        ImPlotPlot* plot = ImPlot::GetCurrentPlot();
-                        plot->XAxis.Range.Min = MAX(plot->XAxis.Range.Min, 0);
-                        plot->XAxis.Range.Max = MIN(plot->XAxis.Range.Max, max_time_value);
-
-                        if (data->timeline.filter.enabled) {
-                            const bool disabled = data->timeline.filter.temporal_window || is_selecting;
-                            if (disabled) ImGui::PushDisabled();
-                            ImPlot::DragRangeX("Time Filter", &data->timeline.filter.min, &data->timeline.filter.max, 0, max_time_value);
-                            if (disabled) ImGui::PopDisabled();
-                        }
-
-                        ImVec4 prop_col = ImGui::ColorConvertU32ToFloat4(s_props[i].col);
-                        ImPlot::SetNextLineStyle(prop_col);
-
-                        if (prop.data.aggregate) {
-                            ASSERT(num_time_values == prop.data.aggregate->num_values);
-
-                            struct ShadedData {
-                                float* x_vals;
-                                float* y_mean;
-                                float* y_variance;
-                            } user_data = {
-                                .x_vals = time_values,
-                                .y_mean = prop.data.aggregate->mean,
-                                .y_variance = prop.data.aggregate->variance
-                            };
-                            ImPlot::SetNextFillStyle(prop_col, 0.2f);
-                            ImPlot::PlotShadedG(prop.ident.ptr,
-                                [](void* payload, int idx) -> ImPlotPoint {
-                                    ShadedData* data = (ShadedData*)payload;
-                                    return ImPlotPoint(data->x_vals[idx], data->y_mean[idx] - data->y_variance[idx]);
-                                },
-                                &user_data,
-                                [](void* payload, int idx) -> ImPlotPoint {
-                                    ShadedData* data = (ShadedData*)payload;
-                                    return ImPlotPoint(data->x_vals[idx], data->y_mean[idx] + data->y_variance[idx]);
-                                },
-                                &user_data,
-                                prop.data.aggregate->num_values);
-
-                            
-                            ImPlot::PlotLine(prop.ident.ptr, time_values, prop.data.aggregate->mean, prop.data.aggregate->num_values);
-                        } else {
-                            ASSERT(num_time_values == prop.data.num_values);
-                            ImPlot::PlotLine(prop.ident.ptr, time_values, prop.data.values, prop.data.num_values);
-                        }
-
-                        /*
-                        for (int k = 0; k < num_dnd; ++k) {
-                        if (dnd[k].plot == 1 && dnd[k].num_values > 0) {
-                        ASSERT(dnd[k].num_values == num_time_values);
-                        ImPlot::SetNextLineStyle(dnd[k].color);
-                        ImPlot::PlotLine(dnd[k].label, time_values, dnd[k].values, dnd[k].num_values);
-                        // allow legend item labels to be DND sources
-                        if (ImPlot::BeginDragDropSourceItem(dnd[k].label)) {
-                        ImGui::SetDragDropPayload("MY_DND", &k, sizeof(int));
-                        ImPlot::ItemIcon(dnd[k].color); ImGui::SameLine();
-                        ImGui::TextUnformatted(dnd[k].label);
-                        ImPlot::EndDragDropSource();
-                        }
-                        }
-                        }
-                        */
-
-                        ImPlot::DragLineX("Current Time", &data->animation.time, true, ImVec4(1,1,0,1));
-
-                        /*
-                        // allow the main plot area to be a DND target
-                        if (ImPlot::BeginDragDropTarget()) {
-                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MY_DND")) {
-                        int i = *(int*)payload->Data;
-                        dnd[i].plot = 1;
-                        need_refit = true;
-                        }
-                        ImPlot::EndDragDropTarget();
-                        }
-
-                        // allow the legend to be a DND target
-                        if (ImPlot::BeginDragDropTargetLegend()) {
-                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MY_DND")) {
-                        int i = *(int*)payload->Data;
-                        dnd[i].plot = 1;
-                        need_refit = true;
-                        }
-                        ImPlot::EndDragDropTarget();
-                        }
-                        */
-
-                        ImPlot::EndPlot();
-                    }
-                    ImGui::PopID();
-                }
-            }
+            data->timeline.view_range.max = MIN(data->timeline.view_range.max, max_x_value);
 
             ImPlot::GetInputMap() = old_map;
-
         }
-
-        //ImGui::EndChild();
-
         
         if (data->timeline.filter.enabled && (data->timeline.filter.min != pre_filter_min || data->timeline.filter.max != pre_filter_max)) {
             data->mold.script.evaluate_filt = true;
@@ -2964,16 +2972,12 @@ static void draw_timeline_window(ApplicationData* data) {
 static void compute_histogram(float* bins, int num_bins, float min_bin_val, float max_bin_val, const float* values, int num_values) {
     memset(bins, 0, sizeof(float) * num_bins);
 
-    float bin_range = max_bin_val - min_bin_val;
-    float inv_range = 1.0f / bin_range;
+    const float bin_range = max_bin_val - min_bin_val;
+    const float inv_range = 1.0f / bin_range;
+    const float scl = 1.0f / num_values;
     for (int i = 0; i < num_values; ++i) {
         int idx = CLAMP((int)(((values[i] - min_bin_val) * inv_range) * num_bins), 0, num_bins - 1);
-        bins[idx] += 1;
-    }
-
-    const float scl = 1.0f / num_values;
-    for (int i = 0; i < num_bins; ++i) {
-        bins[i] *= scl;
+        bins[idx] += scl;
     }
 }
 
@@ -2981,55 +2985,13 @@ static void draw_distribution_window(ApplicationData* data) {
     ImGui::SetNextWindowSize(ImVec2(200, 300), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Distributions", &data->statistics.show_distribution_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
         const int MIN_NUM_BINS = 8;
-        const int MAX_NUM_BINS = 1024;
-
-        static PropertyItem s_props[32] = {};
-        static int s_num_props = 0;
-        static uint64_t s_fingerprint = 0;
-        static int num_bins = 128;
-
-        if (s_fingerprint != data->mold.script.full_eval.fingerprint) {
-            PropertyItem new_props[ARRAY_SIZE(s_props)] = {};
-            int num_new_props = 0;
-
-            md_script_property_t* props = data->mold.script.full_eval.properties;
-            for (int64_t i = 0; i < data->mold.script.full_eval.num_properties; ++i) {
-                if (props[i].type != MD_SCRIPT_PROPERTY_TYPE_TEMPORAL && props[i].type != MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION) continue;
-
-                bool show = true;
-                for (int64_t j = 0; j < s_num_props; ++j) {
-                    if (compare_str(props[i].ident, s_props[j].lbl)) {
-                        show = s_props[j].show;
-                    }
-                }
-                PropertyItem p = {
-                    .lbl = props[i].ident,
-                    .col = PROPERTY_COLORS[i % ARRAY_SIZE(PROPERTY_COLORS)],
-                    .idx = (int)i,
-                    .show = show
-                };
-
-                new_props[num_new_props++] = p;
-            }
-
-            memcpy(s_props, new_props, sizeof(new_props));
-            s_num_props = num_new_props;
-        }
+        const int MAX_NUM_BINS = 256;
+        static int num_bins = 64;
 
         if (ImGui::BeginMenuBar())
         {
             if (ImGui::BeginMenu("Properties")) {
-                //draw_property_menu_widgets(s_props, s_num_props);
-
-                if (s_num_props) {
-                    for (int i = 0; i < s_num_props; ++i) {
-                        ImPlot::ItemIcon(s_props[i].col); ImGui::SameLine();
-                        ImGui::Selectable(s_props[i].lbl.cstr(), &s_props[i].show, 0, ImVec2(50, 0));
-                    }
-                } else {
-                    ImGui::Text("No properties to show.");
-                }
-
+                draw_property_menu_widgets(data->display_properties, md_array_size(data->display_properties), DisplayProperty::ShowIn_Distribution);
                 ImGui::EndMenu();
             }
 
@@ -3059,42 +3021,43 @@ static void draw_distribution_window(ApplicationData* data) {
         float* bins = (float*)md_alloc(frame_allocator, num_bins * sizeof(float));
         float* filtered_bins = (float*)md_alloc(frame_allocator, num_bins * sizeof(float));
 
-        for (int i = 0; i < s_num_props; ++i) {
-            if (s_props[i].show == false) continue;
-            md_script_property_t& prop = data->mold.script.full_eval.properties[s_props[i].idx];
-            md_script_property_t& filt_prop = data->mold.script.filt_eval.properties[s_props[i].idx];
+        int num_props = (int)md_array_size(data->display_properties);
+        for (int i = 0; i < num_props; ++i) {
+            DisplayProperty& prop = data->display_properties[i];
+            if ((prop.current_display_mask & DisplayProperty::ShowIn_Distribution) == 0) continue;
 
-            if (prop.type != MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION && prop.type != MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) continue;
+            md_script_property_t& full_prop = *prop.full_prop;
+            md_script_property_t& filt_prop = *prop.filt_prop;
 
-            float min_x = prop.data.min_range[0];
-            float max_x = prop.data.max_range[0];
-            float min_y = prop.data.min_value;
-            float max_y = prop.data.max_value;
+            float min_x = full_prop.data.min_range[0];
+            float max_x = full_prop.data.max_range[0];
+            float min_y = full_prop.data.min_value;
+            float max_y = full_prop.data.max_value;
             //float range_x = max_x - min_x;
             float* draw_bins = 0;
             float* draw_filtered_bins = 0;
 
-            if (prop.type == MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION) {
-                if (num_bins != prop.data.num_values) {
+            if (full_prop.type == MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION) {
+                if (num_bins != full_prop.data.num_values) {
                     memset(bins, 0, num_bins * sizeof(float));
 
                     // Downsample bins
-                    const int factor = (int)prop.data.num_values / num_bins;
+                    const int factor = (int)full_prop.data.num_values / num_bins;
                     ASSERT(factor > 1);
 
-                    for (int64_t j = 0; j < prop.data.num_values; ++j) {
+                    for (int64_t j = 0; j < full_prop.data.num_values; ++j) {
                         int idx = j / factor;
-                        bins[idx] += prop.data.values[j];
+                        bins[idx] += full_prop.data.values[j];
                     }
 
                     draw_bins = bins;
                 }
                 else {
-                    draw_bins = prop.data.values;
+                    draw_bins = full_prop.data.values;
                 }
             }
-            else if (prop.type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
-                compute_histogram(bins, num_bins, min_x, max_x, prop.data.values, prop.data.num_values);
+            else if (full_prop.type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
+                compute_histogram(bins, num_bins, min_x, max_x, full_prop.data.values, full_prop.data.num_values);
                 draw_bins = bins;
 
                 if (data->timeline.filter.enabled) {
@@ -3111,9 +3074,6 @@ static void draw_distribution_window(ApplicationData* data) {
                     max_y = MAX(max_y, draw_bins[j]);
                 }
             }
-
-            char label[16] = {0};
-            strncpy(label, prop.ident.ptr, MIN(ARRAY_SIZE(label) - 1, prop.ident.len));
             
             ImGui::PushID(i);
             const double bar_width = (max_x - min_x) / (num_bins-1);
@@ -3122,7 +3082,7 @@ static void draw_distribution_window(ApplicationData* data) {
 
             ImPlot::SetNextPlotLimits(min_x, max_x, 0, max_y * 1.1, ImGuiCond_Always);
 
-            if (ImPlot::BeginPlot(label, 0, 0, ImVec2(-1,150), flags, axis_flags_x, axis_flags_y)) {
+            if (ImPlot::BeginPlot(prop.lbl.cstr(), 0, 0, ImVec2(-1,150), flags, axis_flags_x, axis_flags_y)) {
                 //ImPlot::SetNextFillStyle(vec_cast(qualitative_color_scale(i)), 0.5f);
                 //ImPlot::PlotBars(label, draw_bins, num_bins, bar_width, bar_off);
 
@@ -3146,15 +3106,13 @@ static void draw_distribution_window(ApplicationData* data) {
                 plot_data.bars = draw_bins;
                 ImPlot::SetNextFillStyle(ImVec4(0,0,0,-1), 1.0f);
                 ImPlot::SetNextLineStyle(ImVec4(0,0,0,0), 0);
-                ImPlot::PlotBarsG(label, getter, &plot_data, num_bins, bar_width);
+                ImPlot::PlotBarsG("full", getter, &plot_data, num_bins, bar_width);
 
                 if (draw_filtered_bins) {
-                    char buf[64];
-                    snprintf(buf, sizeof(buf), "%s filt", label);
                     plot_data.bars = draw_filtered_bins;
                     ImPlot::SetNextFillStyle(ImVec4(1,1,0,1), 0.3f);
                     ImPlot::SetNextLineStyle(ImVec4(0,0,0,0), 0);
-                    ImPlot::PlotBarsG(buf, getter, &plot_data, num_bins, bar_width);
+                    ImPlot::PlotBarsG("filt", getter, &plot_data, num_bins, bar_width);
                 }
                 //ImPlot::PlotHistogram(label, prop.data.values, prop.data.num_values, bins, false, false, range);
                 ImPlot::EndPlot();
@@ -3388,20 +3346,12 @@ static void draw_volume_window(ApplicationData* data) {
     ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Density Volume", &data->density_volume.show_window, ImGuiWindowFlags_MenuBar)) {
         const ImVec2 button_size = {160, 20};
+        bool property_selection_changed = false;
 
         if (ImGui::BeginMenuBar())
         {
-            if (ImGui::BeginMenu("File")) {
-                if (ImGui::MenuItem("Export volume")) {
-                    auto res = application::file_dialog(application::FileDialogFlags_Open, {}, make_cstr("raw"));
-                    if (res.result == application::FileDialogResult::Ok) {
-                        //volume::write_to_file(data->density_volume.volume, res.path);
-                        md_print(MD_LOG_TYPE_INFO, "Wrote density volume");
-                    }
-                }
-                ImGui::EndMenu();
-            }
             if (ImGui::BeginMenu("Property")) {
+                property_selection_changed = draw_property_menu_widgets(data->display_properties, md_array_size(data->display_properties), DisplayProperty::ShowIn_Volume);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("DVR")) {
@@ -3469,6 +3419,16 @@ static void draw_volume_window(ApplicationData* data) {
                 }
                 ImGui::EndMenu();
             }
+            if (ImGui::BeginMenu("Export")) {
+                if (ImGui::MenuItem("Dat + Raw")) {
+                    auto res = application::file_dialog(application::FileDialogFlags_Open, {}, make_cstr("dat"));
+                    if (res.result == application::FileDialogResult::Ok) {
+                        //volume::write_to_file(data->density_volume.volume, res.path);
+                        md_print(MD_LOG_TYPE_INFO, "Wrote density volume");
+                    }
+                }
+                ImGui::EndMenu();
+            }
 
             ImGui::EndMenuBar();
         }
@@ -3482,45 +3442,25 @@ static void draw_volume_window(ApplicationData* data) {
             }
         }
 
-        char combo_buf[512] = {0};
-        int  combo_buf_len = 0;
-        int  combo_prop_idx[32] = {0};
-        int  combo_size = 0;
+        bool update_representations = property_selection_changed;
+        md_script_property_t* prop = 0;
+        uint64_t fingerprint = 0;
 
-        for (int64_t i = 0; i < data->mold.script.full_eval.num_properties; ++i) {
-            md_script_property_t* prop = &data->mold.script.full_eval.properties[i];
-            if (prop->type == MD_SCRIPT_PROPERTY_TYPE_VOLUME && prop->data.values) {
-                combo_buf_len += snprintf(combo_buf + combo_buf_len, ARRAY_SIZE(combo_buf) - combo_buf_len, "%.*s", (int)prop->ident.len, prop->ident.ptr);
-                combo_buf_len += 1; // Apparently snprintf does not print the final \0
-                ASSERT(combo_size < (int)ARRAY_SIZE(combo_prop_idx));
-                combo_prop_idx[combo_size] = (int)i;
-                combo_size += 1;
+        for (int64_t i = 0; i < md_array_size(data->display_properties); ++i) {
+            if (data->display_properties[i].current_display_mask & DisplayProperty::ShowIn_Volume) {
+                if (data->timeline.filter.enabled) {
+                    prop = data->display_properties[i].filt_prop;
+                    fingerprint = data->mold.script.filt_eval.fingerprint;
+                } else {
+                    prop = data->display_properties[i].full_prop;
+                    fingerprint = data->mold.script.full_eval.fingerprint;
+                }
             }
         }
 
         static uint64_t s_fingerprint = 0;
-        static md_script_property_t* curr_prop = NULL;
-
-        md_script_property_t* prop = NULL;
-        if (combo_size > 0) {
-            static int curr_idx = 0;
-            curr_idx = CLAMP(curr_idx, 0, combo_size - 1);
-            if (combo_buf[0] != '\0') {
-                ImGui::SetNextItemWidth(-1);
-                ImGui::Combo("Volume", &curr_idx, combo_buf);
-            }
-            int prop_idx = combo_prop_idx[curr_idx];
-            prop = &data->mold.script.full_eval.properties[prop_idx];
-        }
-
-        bool update_representations = false;
-        if (curr_prop != prop) {
-            curr_prop = prop;
-            update_representations = true;
-        }
-
-        if (s_fingerprint != data->mold.script.full_eval.fingerprint) {
-            s_fingerprint = data->mold.script.full_eval.fingerprint;
+        if (s_fingerprint != fingerprint) {
+            s_fingerprint = fingerprint;
             update_representations = true;
         }
 
@@ -3531,12 +3471,11 @@ static void draw_volume_window(ApplicationData* data) {
         if (canvas_sz.x < 50.0f) canvas_sz.x = 50.0f;
         if (canvas_sz.y < 50.0f) canvas_sz.y = 50.0f;
         ImVec2 canvas_p1 = ImVec2(canvas_p0.x + canvas_sz.x, canvas_p0.y + canvas_sz.y);
-        // 
+        
         // Draw border and background color
         ImGuiIO& io = ImGui::GetIO();
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
         draw_list->AddImage((ImTextureID)data->density_volume.fbo.deferred.post_tonemap, canvas_p0, canvas_p1, {0,1}, {1,0});
-        //draw_list->AddRectFilled(canvas_p0, canvas_p1, IM_COL32(50, 50, 50, 255));
         draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(50, 50, 50, 255));
 
         // This will catch our interactions
@@ -3566,7 +3505,7 @@ static void draw_volume_window(ApplicationData* data) {
 
         static TrackballControllerParam param = {
             .min_distance = 1.0,
-            .max_distance = 100.0,
+            .max_distance = 1000.0,
         };
         vec2_t delta = {data->ctx.input.mouse.win_delta.x, data->ctx.input.mouse.win_delta.y};
         vec2_t curr = {mouse_pos_in_canvas.x, mouse_pos_in_canvas.y};
