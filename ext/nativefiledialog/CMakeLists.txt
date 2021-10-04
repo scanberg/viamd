@@ -10,7 +10,7 @@ set(DEF "")
 set(OPT "")
 
 if(UNIX AND NOT APPLE)
-    option(NATIVEFILEDIALOG_USE_GTK "Use GTK for window handling, fallback is Zenity" ON)
+    option(NATIVEFILEDIALOG_USE_GTK "Use GTK for window handling, fallback is Zenity" OFF)
     if (NATIVEFILEDIALOG_USE_GTK)
 	set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 	message(${CMAKE_MODULE_PATH})
