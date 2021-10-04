@@ -139,7 +139,7 @@ bool load_string_gro(md_molecule_t* mol, str_t string, md_allocator_i* alloc) {
     ASSERT(alloc);
     md_gro_data_t data = {};
     defer { md_gro_data_free(&data, alloc); };
-    if (md_gro_data_parse_str(string, &data, alloc) && md_gro_molecule_init(mol, &data, alloc)) {
+    if (md_gro_data_parse_str(&data, string, alloc) && md_gro_molecule_init(mol, &data, alloc)) {
         LoadedMolecule obj = {
             .key = (uint64_t)mol,
             .extension = "gro",
@@ -166,7 +166,7 @@ bool load_file(md_molecule_t* mol, str_t filename, md_allocator_i* alloc) {
     else if (compare_str_cstr(ext, "gro")) {
         md_gro_data_t data = {};
         defer { md_gro_data_free(&data, alloc); };
-        if (md_gro_data_parse_file(filename, &data, alloc) && md_gro_molecule_init(mol, &data, alloc)) {
+        if (md_gro_data_parse_file(&data, filename, alloc) && md_gro_molecule_init(mol, &data, alloc)) {
             goto success;
         }
     }
