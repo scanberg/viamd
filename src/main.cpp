@@ -354,14 +354,6 @@ struct ApplicationData {
         bool selecting = false;
     } selection;
 
-    // --- STATISTICS ---
-    struct {
-        bool show_timeline_window = false;
-        bool show_distribution_window = false;
-        bool show_volume_window = false;
-
-    } statistics;
-
     // --- FRAMEBUFFER ---
     GBuffer gbuffer {};
 
@@ -392,7 +384,72 @@ struct ApplicationData {
             double min = 0;
             double max = 1;
         } view_range;
+        bool show_window;
     } timeline;
+
+    // --- DISTRIBUTIONS ---
+    struct {
+        struct {
+            bool enabled = false;
+        } filter;
+        bool show_window = false;
+    } distributions;
+
+    struct {
+        bool show_window = false;
+        bool enabled = false;
+
+        struct {
+            bool enabled = true;
+            float density_scale = 1.f;
+            struct {
+                GLuint id = 0;
+                bool dirty = true;
+                int width = 0;
+                float alpha_scale = 1.f;
+                StrBuf<512> path = VIAMD_IMAGE_DIR "/tf/tf.png";
+            } tf;
+        } dvr;
+
+        struct {
+            bool enabled = false;
+            IsoSurfaces isosurfaces;
+        } iso;
+
+        struct {
+            GLuint id = 0;
+            bool dirty = false;
+            int dim_x = 0;
+            int dim_y = 0;
+            int dim_z = 0;
+            float max_value = 1.f;
+        } volume_texture;
+
+        GBuffer fbo = {0};
+
+        struct {
+            vec3_t min = {0, 0, 0};
+            vec3_t max = {1, 1, 1};
+        } clip_volume;
+
+        // mat4 model_to_world_matrix{};
+        // mat4 world_to_model_matrix{};
+        vec3_t voxel_spacing{1.0f};
+        float resolution_scale = 2.0f;
+
+        vec4_t clip_volume_color = {1,0,0,1};
+        vec4_t bounding_box_color = {0,0,0,1};
+
+        bool show_bounding_box = true;
+        bool show_reference_structures = true;
+        bool show_reference_ensemble = false;
+        bool show_target_atoms = false;
+
+        md_gl_representation_t* gl_reps = 0;
+
+        Camera camera = {};
+
+    } density_volume;
 
     // --- VISUALS ---
     struct {
@@ -467,73 +524,6 @@ struct ApplicationData {
         vec4_t color = {0, 0, 0, 0.5f};
         mat3_t box = {0};
     } simulation_box;
-
-    struct {
-        bool show_window = false;
-        bool enabled = false;
-
-        struct {
-            bool enabled = true;
-            float density_scale = 1.f;
-            struct {
-                GLuint id = 0;
-                bool dirty = true;
-                int width = 0;
-                float alpha_scale = 1.f;
-                StrBuf<512> path = VIAMD_IMAGE_DIR "/tf/tf.png";
-            } tf;
-        } dvr;
-
-        struct {
-            bool enabled = false;
-            IsoSurfaces isosurfaces;
-        } iso;
-
-        struct {
-            GLuint id = 0;
-            bool dirty = false;
-            int dim_x = 0;
-            int dim_y = 0;
-            int dim_z = 0;
-            float max_value = 1.f;
-        } volume_texture;
-
-        GBuffer fbo = {0};
-        /*
-        struct {
-            int dim_x = 0;
-            int dim_y = 0;
-            GLuint gbuffer = 0;
-            GLuint depth_tex = 0;
-            GLuint color_tex = 0;
-            GLuint normal_tex = 0;
-            GLuint picking_tex = 0;
-        } render_target;
-        */
-
-        struct {
-            vec3_t min = {0, 0, 0};
-            vec3_t max = {1, 1, 1};
-        } clip_volume;
-
-        // mat4 model_to_world_matrix{};
-        // mat4 world_to_model_matrix{};
-        vec3_t voxel_spacing{1.0f};
-        float resolution_scale = 2.0f;
-
-        vec4_t clip_volume_color = {1,0,0,1};
-        vec4_t bounding_box_color = {0,0,0,1};
-
-        bool show_bounding_box = true;
-        bool show_reference_structures = true;
-        bool show_reference_ensemble = false;
-        bool show_target_atoms = false;
-
-        md_gl_representation_t* gl_reps = 0;
-
-        Camera camera = {};
-
-    } density_volume;
 
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
     struct {
@@ -653,7 +643,7 @@ static void draw_molecule_dynamic_info_window(ApplicationData* data);
 static void draw_async_task_window(ApplicationData* data);
 //static void draw_reference_frame_window(ApplicationData* data);
 //static void draw_shape_space_window(ApplicationData* data);
-static void draw_volume_window(ApplicationData* data);
+static void draw_density_volume_window(ApplicationData* data);
 static void draw_property_editor_window(ApplicationData* data);
 static void draw_dataset_window(ApplicationData* data);
 // static void draw_density_volume_clip_plane_widgets(ApplicationData* data);
@@ -1251,11 +1241,11 @@ int main(int, char**) {
         clear_highlight(&data);
 
         if (data.representations.show_window) draw_representations_window(&data);
-        if (data.statistics.show_timeline_window) draw_timeline_window(&data);
-        if (data.statistics.show_distribution_window) draw_distribution_window(&data);
+        if (data.timeline.show_window) draw_timeline_window(&data);
+        if (data.distributions.show_window) draw_distribution_window(&data);
+        if (data.density_volume.show_window) draw_density_volume_window(&data);
         //if (data.ramachandran.show_window) draw_ramachandran_window(&data);
         //if (data.shape_space.show_window) draw_shape_space_window(&data);
-        if (data.density_volume.show_window) draw_volume_window(&data);
         if (data.script.show_editor) draw_property_editor_window(&data);
         if (data.dataset.show_window) draw_dataset_window(&data);
 
@@ -1332,7 +1322,7 @@ static void update_properties(DisplayProperty** prop_items, md_script_property_t
         item.lbl = full_props[i].ident;
         item.col = PROPERTY_COLORS[i % ARRAY_SIZE(PROPERTY_COLORS)];
         item.frame_filter = {0, 0};
-        item.value_filter = {0, 0};
+        item.value_filter = {full_props[i].data.min_range[0], full_props[i].data.max_range[0]};
         item.full_prop = &full_props[i];
         item.filt_prop = &filt_props[i];
         item.full_prop_fingerprint = 0;
@@ -2016,10 +2006,10 @@ ImGui::EndGroup();
         }
         if (ImGui::BeginMenu("Windows")) {
             ImGui::Checkbox("Representations", &data->representations.show_window);
-            ImGui::Checkbox("Timelines", &data->statistics.show_timeline_window);
-            ImGui::Checkbox("Distributions", &data->statistics.show_distribution_window);
-            //ImGui::Checkbox("Ramachandran", &data->ramachandran.show_window);
+            ImGui::Checkbox("Timelines", &data->timeline.show_window);
+            ImGui::Checkbox("Distributions", &data->distributions.show_window);
             ImGui::Checkbox("Density Volumes", &data->density_volume.show_window);
+            //ImGui::Checkbox("Ramachandran", &data->ramachandran.show_window);
             //ImGui::Checkbox("Shape Space", &data->shape_space.show_window);
             ImGui::Checkbox("Dataset", &data->dataset.show_window);
 
@@ -2819,7 +2809,7 @@ static void draw_timeline_window(ApplicationData* data) {
     ASSERT(data);
     ImGui::SetNextWindowSize(ImVec2(600, 300), ImGuiCond_FirstUseEver);
 
-    if (ImGui::Begin("Temporal", &data->statistics.show_timeline_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
+    if (ImGui::Begin("Temporal", &data->timeline.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
 
         double pre_filter_min = data->timeline.filter.min;
         double pre_filter_max = data->timeline.filter.max;
@@ -2983,7 +2973,7 @@ static void compute_histogram(float* bins, int num_bins, float min_bin_val, floa
 
 static void draw_distribution_window(ApplicationData* data) {
     ImGui::SetNextWindowSize(ImVec2(200, 300), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Distributions", &data->statistics.show_distribution_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
+    if (ImGui::Begin("Distributions", &data->distributions.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
         const int MIN_NUM_BINS = 8;
         const int MAX_NUM_BINS = 256;
         static int num_bins = 64;
@@ -3001,6 +2991,11 @@ static void draw_distribution_window(ApplicationData* data) {
                     const int down = up / 2;
                     num_bins = abs(num_bins - down) < abs(num_bins - up) ? down : up;
                 }
+                ImGui::EndMenu();
+            }
+
+            if (ImGui::BeginMenu("Filter")) {
+                ImGui::Checkbox("Enabled", &data->distributions.filter.enabled);
                 ImGui::EndMenu();
             }
 
@@ -3085,6 +3080,14 @@ static void draw_distribution_window(ApplicationData* data) {
             if (ImPlot::BeginPlot(prop.lbl.cstr(), 0, 0, ImVec2(-1,150), flags, axis_flags_x, axis_flags_y)) {
                 //ImPlot::SetNextFillStyle(vec_cast(qualitative_color_scale(i)), 0.5f);
                 //ImPlot::PlotBars(label, draw_bins, num_bins, bar_width, bar_off);
+
+                if (data->distributions.filter.enabled) {
+                    double beg = prop.value_filter.min;
+                    double end = prop.value_filter.max;
+                    ImPlot::DragRangeX("filter", &beg, &end, min_x, max_x);
+                    prop.value_filter.min = beg;
+                    prop.value_filter.max = end;
+                }
 
                 struct PlotData {
                     double offset;
@@ -3342,7 +3345,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
 }
 #endif
 
-static void draw_volume_window(ApplicationData* data) {
+static void draw_density_volume_window(ApplicationData* data) {
     ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Density Volume", &data->density_volume.show_window, ImGuiWindowFlags_MenuBar)) {
         const ImVec2 button_size = {160, 20};
