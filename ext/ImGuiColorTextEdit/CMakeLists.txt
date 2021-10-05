@@ -18,4 +18,4 @@ target_include_directories(ImGuiColorTextEdit
 
 target_compile_features(ImGuiColorTextEdit PRIVATE cxx_std_11)
 
-target_link_libraries(ImGuiColorTextEdit imgui)
+target_link_libraries(ImGuiColorTextEdit PRIVATE imgui ${VIAMD_STDLIBS})

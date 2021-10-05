@@ -67,4 +67,4 @@ target_compile_definitions(nativefiledialog
     PRIVATE ${DEF})
 
 target_link_libraries(nativefiledialog
-	PRIVATE ${LIB})
+	PRIVATE ${LIB} ${VIAMD_STDLIBS})

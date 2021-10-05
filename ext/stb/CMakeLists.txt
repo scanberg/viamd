@@ -21,6 +21,8 @@ target_include_directories(stb
 		${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+target_link_libraries(stb PRIVATE ${VIAMD_STDLIBS})
+
 if(MSVC)
 	target_compile_options(stb
 		PRIVATE /W3 /wd4100)

@@ -20,8 +20,11 @@ target_include_directories(imgui
 )
 
 target_compile_features(imgui PRIVATE cxx_std_11)
+target_link_libraries(imgui PRIVATE ${VIAMD_STDLIBS})
 
 if (MSVC)
     target_compile_options(imgui
 	    PRIVATE /W3 /wd4152)
 endif()
+
+

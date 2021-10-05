@@ -43,21 +43,31 @@ else()
 	#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wno-c99-extensions -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types")
 endif()
 
+set_property(GLOBAL PROPERTY USE_FOLDERS OFF)
+
 option(BUILD_SHARED_LIBS OFF)
 option(GLFW_BUILD_EXAMPLES OFF)
 option(GLFW_BUILD_TESTS OFF)
 option(GLFW_BUILD_DOCS OFF)
 option(GLFW_INSTALL OFF)
 option(GLFW_VULKAN_STATIC OFF)
-set_property(GLOBAL PROPERTY USE_FOLDERS OFF)
-
 option(ENKITS_BUILD_C_INTERFACE OFF)
 option(ENKITS_BUILD_EXAMPLES OFF)
 option(ENKITS_BUILD_SHARED OFF)
 option(ENKITS_INSTALL OFF)
-
 option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
 option(VIAMD_USE_RELATIVE_PATHS "Use relative paths for resource directories" OFF)
+option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ON)
+
+if (VIAMD_LINK_STDLIB_STATIC)
+    set(VIAMD_STDLIBS "")
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        set(VIAMD_STDLIBS "-static-libgcc -static-libstdc++")
+    endif()
+    set(glfw_LIBRARIES ${VIAMD_STDLIBS})
+endif()
+
 
 add_subdirectory(ext/glfw)
 add_subdirectory(ext/imgui)
@@ -104,6 +114,8 @@ if (VIAMD_USE_RELATIVE_PATHS)
     #       COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/images ${CMAKE_BINARY_DIR}/$<CONFIG>/images)
 endif()
 
+
+
 target_compile_definitions(viamd PRIVATE
 	VIAMD_DATASET_DIR=\"${RESOURCE_DIR}datasets\"
 	VIAMD_SHADER_DIR=\"${RESOURCE_DIR}shaders\"
@@ -134,4 +146,5 @@ target_link_libraries(viamd
     ImGuiColorTextEdit
     implot
     atomic_queue
+    ${VIAMD_STDLIBS}
 )

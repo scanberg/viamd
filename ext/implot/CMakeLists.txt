@@ -19,4 +19,4 @@ target_include_directories(implot
 		${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-target_link_libraries(implot imgui)
+target_link_libraries(implot PRIVATE imgui ${VIAMD_STDLIBS})
