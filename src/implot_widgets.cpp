@@ -16,29 +16,30 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
         return false;
 
     int dragging = 0;
-    double* x_range[2] = {x_range_min, x_range_max};
-    for (int i = 0; i < 2; ++i) {
+    bool active = false;
+    bool hovered = false;
+
+    double* x_range[2] = {x_range_max, x_range_min};
+    for (int i = 0; i < 2; ++i) { 
         ImGui::PushID(i);
-        char buff[64];
-        snprintf(buff, sizeof(buff), "%s %s", id, i == 0 ? "min" : "max");
-        if (DragLineX(buff, x_range[i], !(flags & ImPlotDragRangeFlags_NoLabel), style.line_col, style.line_thickness)) dragging = i + 1;
+        if (DragLineX("##line", x_range[i], false, style.line_col, style.line_thickness)) dragging = i + 1;
+        active |= ImGui::IsItemActive();
+        hovered |= ImGui::IsItemHovered();
         ImGui::PopID();
     }
 
     //float len = gp.Style.MajorTickLen.x;
     const float drag_bar_height = 15;
 
-    bool bar_active = false;
-    bool bar_hovered = false;
     if (!gp.CurrentPlot->Selecting && !gp.CurrentPlot->Querying) {
         if (dragging) {
-            if (dragging == 1) {
-                if (*x_range_min > *x_range_max - 1) {
-                    *x_range_min = *x_range_max - 1;
+            if (dragging == 2) {
+                if (*x_range_min > *x_range_max) {
+                    *x_range_min = *x_range_max;
                 }
             } else {
-                if (*x_range_max < *x_range_min + 1) {
-                    *x_range_max = *x_range_min + 1;
+                if (*x_range_max < *x_range_min) {
+                    *x_range_max = *x_range_min;
                 }
             }
         }
@@ -49,8 +50,8 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
             const float btn_width = ImMax(x_max - x_min, 1.0f);
             ImGui::InvisibleButton(id, ImVec2(btn_width, drag_bar_height));
             ImGui::GetCurrentWindow()->DC.CursorPos = old_cursor_pos;
-            bar_hovered = ImGui::IsItemHovered();
-            bar_active = ImGui::IsItemActive();
+            hovered |= ImGui::IsItemHovered();
+            active |= ImGui::IsItemActive();
             if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0)) {
                 const float delta = ImGui::GetIO().MouseDelta.x;
                 double x_min_temp = PlotToPixels(*x_range_min, 0).x;
@@ -87,7 +88,7 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
     DrawList.AddRectFilled(ImVec2(x_min+1, yb), ImVec2(x_max-1, yb-drag_bar_height), ImGui::ColorConvertFloat4ToU32(bar_color));
     PopPlotClipRect();
 
-    if (bar_hovered || bar_active) {
+    if (hovered || active) {
         gp.CurrentPlot->PlotHovered = false;
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
         if (!ImHasFlag(flags, ImPlotDragRangeFlags_NoLabel)) {

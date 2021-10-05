@@ -60,11 +60,8 @@
 #include <stdio.h>
 
 #define PICKING_JITTER_HACK 0
-#define DEPERIODIZE_ON_LOAD 1
 #define SHOW_IMGUI_DEMO_WINDOW 0
-#define VIAMD_RELEASE 0
 #define EXPERIMENTAL_CONE_TRACED_AO 0
-#define USE_MOLD 1
 #define COMPILATION_TIME_DELAY_IN_SECONDS 1.0
 
 #ifdef OS_MAC_OSX
@@ -230,8 +227,8 @@ struct DisplayProperty {
     };
 
     struct Range {
-        float min = 0;
-        float max = 0;
+        float beg = 0;
+        float end = 0;
     };
 
     struct Histogram {
@@ -2412,7 +2409,6 @@ static void draw_representations_window(ApplicationData* data) {
         }
 
         ImGui::PopID();
-#if USE_MOLD
         if (update_args) {
             md_gl_representation_type_t type = MD_GL_REP_DEFAULT;
             md_gl_representation_args_t args = {};
@@ -2440,7 +2436,6 @@ static void draw_representations_window(ApplicationData* data) {
 
             md_gl_representation_set_type_and_args(&rep.md_rep, type, args);
         }
-#endif
 
         if (update_color) {
             update_representation(data, &rep);
@@ -2702,12 +2697,16 @@ bool draw_property_menu_widgets(DisplayProperty* props, int64_t num_props, uint3
 struct TimelineArgs {
     const char* lbl;
     uint32_t col;
+    int plot_height;
 
     struct {
         int count;
         const float* x;
         const float* y;
         const float* y_variance;
+
+        float min_y;
+        float max_y;
     } values;
 
     struct {
@@ -2731,6 +2730,12 @@ struct TimelineArgs {
         double max;
     } filter;
 
+    struct {
+        bool enabled;
+        double min;
+        double max;
+    } value_filter;
+
     double* time;
 };
 
@@ -2741,10 +2746,22 @@ bool draw_property_timeline(const TimelineArgs& args) {
     const ImPlotFlags flags = ImPlotFlags_AntiAliased;
 
     ImPlot::LinkNextPlotLimits(args.view_range.min, args.view_range.max, 0, 0);
-    if (ImPlot::BeginPlot("##Timeline", NULL, NULL, ImVec2(-1,150), flags, axis_flags_x, axis_flags_y)) {
+    if (ImPlot::BeginPlot("##Timeline", NULL, NULL, ImVec2(-1,args.plot_height), flags, axis_flags_x, axis_flags_y)) {
 
         bool hovered = ImGui::IsItemHovered();
         bool active = ImGui::IsItemActive();
+
+        if (args.value_filter.enabled) {
+            float* y_vals = (float*)md_alloc(frame_allocator, args.values.count * sizeof(float));
+            for (int i = 0; i < args.values.count; ++i) {
+                float val = args.values.y[i];
+                y_vals[i] = (args.value_filter.min < val && val < args.value_filter.max) ? args.values.max_y : -INFINITY;
+            }
+
+            const ImVec4 filter_frame_color = ImVec4(1,1,1,1);
+            ImPlot::SetNextFillStyle(filter_frame_color, 0.15f);
+            ImPlot::PlotShaded("##value_filter", args.values.x, y_vals, args.values.count, -INFINITY);
+        }
 
         if (args.filter.show) {
             if (!args.filter.enabled) ImGui::PushDisabled();
@@ -2811,6 +2828,10 @@ static void draw_timeline_window(ApplicationData* data) {
 
     if (ImGui::Begin("Temporal", &data->timeline.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
 
+        constexpr int MIN_PLOT_HEIGHT = 10;
+        constexpr int MAX_PLOT_HEIGHT = 1000;
+        static int plot_height = 150;
+
         double pre_filter_min = data->timeline.filter.min;
         double pre_filter_max = data->timeline.filter.max;
 
@@ -2839,6 +2860,10 @@ static void draw_timeline_window(ApplicationData* data) {
                         ImGui::SliderFloat("Extent", &data->timeline.filter.window_extent, 1.0f, (float)max_x_value);
                     }
                 }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Settings")) {
+                ImGui::SliderInt("Plot Height", &plot_height, MIN_PLOT_HEIGHT, MAX_PLOT_HEIGHT);
                 ImGui::EndMenu();
             }
             ImGui::EndMenuBar();
@@ -2880,6 +2905,7 @@ static void draw_timeline_window(ApplicationData* data) {
             TimelineArgs args = {
                 .lbl = "##Empty",
                 .col = 0xFFFFFFFF,
+                .plot_height = plot_height,
                 .values = {
                     .count = 0,
                     .x = NULL,
@@ -2936,6 +2962,13 @@ static void draw_timeline_window(ApplicationData* data) {
                     .x = x_values,
                     .y = y_values,
                     .y_variance = y_variance,
+                    .min_y = prop.full_prop->data.min_value,
+                    .max_y = prop.full_prop->data.max_value
+                };
+                args.value_filter = {
+                    .enabled = data->distributions.filter.enabled,
+                    .min = prop.value_filter.beg,
+                    .max = prop.value_filter.end
                 };
                 draw_property_timeline(args);
                 ImGui::PopID();
@@ -2971,6 +3004,7 @@ static void compute_histogram(float* bins, int num_bins, float min_bin_val, floa
     }
 }
 
+// #distribution_window
 static void draw_distribution_window(ApplicationData* data) {
     ImGui::SetNextWindowSize(ImVec2(200, 300), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Distributions", &data->distributions.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
@@ -3081,13 +3115,8 @@ static void draw_distribution_window(ApplicationData* data) {
                 //ImPlot::SetNextFillStyle(vec_cast(qualitative_color_scale(i)), 0.5f);
                 //ImPlot::PlotBars(label, draw_bins, num_bins, bar_width, bar_off);
 
-                if (data->distributions.filter.enabled) {
-                    double beg = prop.value_filter.min;
-                    double end = prop.value_filter.max;
-                    ImPlot::DragRangeX("filter", &beg, &end, min_x, max_x);
-                    prop.value_filter.min = beg;
-                    prop.value_filter.max = end;
-                }
+                bool is_active = ImGui::IsItemActive();
+                bool is_hovered = ImGui::IsItemHovered();
 
                 struct PlotData {
                     double offset;
@@ -3118,6 +3147,22 @@ static void draw_distribution_window(ApplicationData* data) {
                     ImPlot::PlotBarsG("filt", getter, &plot_data, num_bins, bar_width);
                 }
                 //ImPlot::PlotHistogram(label, prop.data.values, prop.data.num_values, bins, false, false, range);
+
+                if (data->distributions.filter.enabled) {
+                    if ((is_active || is_hovered) && ImGui::IsMouseClicked(0)) {
+                        if (ImGui::GetIO().KeyMods == ImGuiKeyModFlags_Shift) {
+                            prop.value_filter.beg = ImPlot::GetPlotMousePos().x;
+                            prop.value_filter.end = ImPlot::GetPlotMousePos().x;
+                        };
+                    }
+
+                    double beg = prop.value_filter.beg;
+                    double end = prop.value_filter.end;
+                    ImPlot::DragRangeX("filter", &beg, &end, min_x, max_x);
+                    prop.value_filter.beg = beg;
+                    prop.value_filter.end = end;
+                }
+
                 ImPlot::EndPlot();
             }
             ImGui::PopID();
