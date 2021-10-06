@@ -255,6 +255,10 @@ struct DisplayProperty {
     Histogram filt_hist = {};
 };
 
+struct AtomElementMapping {
+    char lbl[8] = "";
+    md_element_t elem = 0;
+};
 
 struct ApplicationData {
     // --- APPLICATION ---
@@ -314,6 +318,7 @@ struct ApplicationData {
     // --- ASYNC TASKS HANDLES ---
     struct {
         task_system::ID backbone_computations = task_system::INVALID_ID;
+        task_system::ID prefetch_frames = task_system::INVALID_ID;
         task_system::ID evaluate_full = task_system::INVALID_ID;
         task_system::ID evaluate_filt = task_system::INVALID_ID;
     } tasks;
@@ -575,6 +580,7 @@ struct ApplicationData {
 
     struct {
         bool show_window = false;
+        AtomElementMapping* atom_element_remappings = 0;
     } dataset;
 
     struct {
@@ -2247,24 +2253,63 @@ if (data->selection.op_mode == SelectionOperator::And) {
     if (new_clicked) ImGui::OpenPopup("Warning New");
 }
 
+void remap_atom_elem(ApplicationData* data, str_t lbl, md_element_t new_elem) {
+    for (int64_t i = 0; i < data->mold.mol.atom.count; ++i) {
+        if (compare_str_cstr(lbl, data->mold.mol.atom.name[i])) {
+            data->mold.mol.atom.element[i] = new_elem;
+        }
+    }
+    update_all_representations(data);
+}
+
 void draw_context_popup(ApplicationData* data) {
     ASSERT(data);
 
-    bool valid_dynamic = data->mold.mol.atom.count && md_trajectory_num_frames(&data->mold.traj);
-
     const bool shift_down = data->ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data->ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
     if (data->ctx.input.mouse.clicked[1] && !shift_down && !ImGui::GetIO().WantTextInput) {
-        if (data->selection.right_clicked != -1 && valid_dynamic) {
+        if (data->selection.right_clicked != -1 && data->mold.mol.atom.count) {
             ImGui::OpenPopup("AtomContextPopup");
         }
     }
 
     if (ImGui::BeginPopup("AtomContextPopup")) {
-        /*
-        if (data->selection.right_clicked != -1 && valid_dynamic) {
+        if (data->selection.right_clicked != -1) {
+            if (ImGui::BeginMenu("Remap Atom Element")) {
+                int idx = data->mold.mol.atom.element[data->selection.right_clicked];
+                if (0 <= idx && idx < data->mold.mol.atom.count) {
+                    static char input_buf[32] = "";
+                    str_t lbl = {data->mold.mol.atom.name[idx], strlen(data->mold.mol.atom.name[idx])};
+                    md_element_t elem = data->mold.mol.atom.element[idx];
+                    str_t name = md_util_element_name(elem);
+                    str_t sym  = md_util_element_symbol(elem);
+
+                    ImGui::Text("Current Element: %.*s (%.*s)", (int)name.len, name.ptr, (int)sym.len, sym.ptr);
+
+                    str_t elem_str = {input_buf, (int64_t)strnlen(input_buf, sizeof(input_buf))};
+                    md_element_t new_elem = md_util_lookup_element(elem_str);
+                    const bool is_valid = new_elem != 0;
+
+                    if (!is_valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
+                    ImGui::InputText("Symbol", input_buf, sizeof(input_buf));
+                    if (!is_valid) ImGui::PopStyleColor();
+                    str_t new_name = md_util_element_name(new_elem);
+                    str_t new_sym  = md_util_element_symbol(new_elem);
+                    ImGui::Text("New Element: %.*s (%.*s)", (int)new_name.len, new_name.ptr, (int)new_sym.len, new_sym.ptr);
+                    if (!is_valid) ImGui::PushDisabled();
+                    if (ImGui::Button("Apply") && is_valid) {
+                        remap_atom_elem(data, lbl, new_elem);
+                        ImGui::CloseCurrentPopup();
+                    }
+                    if (!is_valid) ImGui::PopDisabled();
+                }
+
+                ImGui::EndMenu();
+            }
+        }
+        if (data->selection.right_clicked != -1 && md_trajectory_num_frames(&data->mold.traj)) {
             if (ImGui::BeginMenu("Recenter Trajectory...")) {
                 const int atom_idx = data->selection.right_clicked;
-                AtomRange atom_range = {};
+                md_range_t atom_range = {0,0};
 
                 if (ImGui::MenuItem("on Atom")) {
                     atom_range = {atom_idx, atom_idx + 1};
@@ -2280,8 +2325,12 @@ void draw_context_popup(ApplicationData* data) {
                     atom_range = data->mold.mol.chain.atom_range[chain_idx];
                 }
 
-                if (atom_range.ext() > 0) {
-                    recenter_trajectory(&data->dynamic, atom_range);
+                if (atom_range.beg != atom_range.end) {
+                    md_exp_bitfield_t bf = {0};
+                    md_bitfield_init(&bf, frame_allocator);
+                    md_bitfield_set_range(&bf, atom_range.beg, atom_range.end);
+                    load::traj::set_recenter_target(&data->mold.traj, &bf);
+                    load::traj::clear_cache(&data->mold.traj);
                     interpolate_atomic_properties(data);
                     ImGui::CloseCurrentPopup();
                 }
@@ -2289,7 +2338,6 @@ void draw_context_popup(ApplicationData* data) {
                 ImGui::EndMenu();
             }
         }
-        */
         ImGui::EndPopup();
     }
 }
@@ -4184,6 +4232,134 @@ static void init_molecule_data(ApplicationData* data) {
     }
 }
 
+static void launch_prefetch_job(md_trajectory_i* traj) {
+    uint32_t num_frames = (uint32_t)md_trajectory_num_frames(traj);
+    if (!num_frames) return;
+
+
+#if 0
+#define NUM_SLOTS 64
+
+    // This is the number of slots we have to work with in parallel.
+    // This number should ideally be more than the number of cores available.
+    // We pre-allocate the number of slots * max frame data size, so don't go bananas here if you want to save some on memory.
+    task_system::enqueue_pool("Preloading frames", 1, [data, num_frames](task_system::TaskSetRange)
+        {
+            timestamp_t t0 = md_os_time_current();
+            const int64_t slot_size = md_trajectory_max_frame_data_size(&data->mold.traj);
+            void* slot_mem = md_alloc(default_allocator, slot_size * NUM_SLOTS);
+
+            void* slots[NUM_SLOTS];
+            atomic_queue::AtomicQueue<uint32_t, NUM_SLOTS, 0xFFFFFFFF> slot_queue;
+
+            for (uint32_t i = 0; i < NUM_SLOTS; ++i) {
+                slots[i] = (char*)slot_mem + i * slot_size;
+                slot_queue.push(i);
+            }
+
+            // Iterate over all frames and load the raw data, then spawn a task for each frame
+            for (uint32_t i = 0; i < num_frames; ++i) {
+                uint32_t slot_idx = slot_queue.pop();
+                ASSERT(slot_idx < NUM_SLOTS);
+
+                void* frame_mem = slots[slot_idx];
+                const int64_t frame_size = data->mold.traj.fetch_frame_data(data->mold.traj.inst, i, NULL);
+                data->mold.traj.fetch_frame_data(data->mold.traj.inst, i, frame_mem);
+
+                // Spawn task: Load, Decode and postprocess
+                //printf("Spawning task to decode frame %i\n", i);
+                auto id = task_system::enqueue_pool("##Decode frame", 1, [slot_idx, frame_mem, frame_size, frame_idx = i, &slot_queue, data](task_system::TaskSetRange)
+                    {
+                        md_frame_data_t* frame_data;
+                        md_frame_cache_lock_t* lock;
+                        if (md_frame_cache_reserve_frame(&data->mold.frame_cache, frame_idx, &frame_data, &lock)) {
+                            data->mold.traj.decode_frame_data(data->mold.traj.inst, frame_mem, frame_size, &frame_data->header, frame_data->x, frame_data->y, frame_data->z);
+
+                            // Free the data slot directly here
+                            slot_queue.push(slot_idx);
+
+                            // deperiodize
+                            const md_molecule_t& mol = data->mold.mol;
+                            md_util_apply_pbc_args_t args = {
+                                .atom = {
+                                    .count = mol.atom.count,
+                                    .x = frame_data->x,
+                                    .y = frame_data->y,
+                                    .z = frame_data->z,
+                            },
+                            .residue = {
+                                    .count = mol.residue.count,
+                                    .atom_range = mol.residue.atom_range,
+                            },
+                            .chain = {
+                                    .count = mol.chain.count,
+                                    .residue_range = mol.chain.residue_range,
+                            }
+                            };
+                            memcpy(args.pbc.box, frame_data->header.box, sizeof(args.pbc.box));
+                            md_util_apply_pbc(frame_data->x, frame_data->y, frame_data->z, mol.atom.count, args);
+
+                            if (mol.backbone.count > 0) {
+                                md_util_backbone_angle_args_t bb_args = {
+                                    .atom = {
+                                        .count = mol.atom.count,
+                                        .x = frame_data->x,
+                                        .y = frame_data->y,
+                                        .z = frame_data->z,
+                                },
+                                .backbone = {
+                                        .count = mol.backbone.count,
+                                        .atoms = mol.backbone.atoms,
+                                },
+                                .chain = {
+                                        .count = mol.chain.count,
+                                        .backbone_range = mol.chain.backbone_range,
+                                }
+                                };
+                                md_util_compute_backbone_angles(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &bb_args);
+
+                                md_util_secondary_structure_args_t ss_args = {
+                                    .atom = {
+                                        .count = data->mold.mol.atom.count,
+                                        .x = frame_data->x,
+                                        .y = frame_data->y,
+                                        .z = frame_data->z,
+                                },
+                                .backbone = {
+                                        .count = mol.backbone.count,
+                                        .atoms = mol.backbone.atoms,
+                                },
+                                .chain = {
+                                        .count = data->mold.mol.chain.count,
+                                        .backbone_range = data->mold.mol.chain.backbone_range,
+                                }
+                                };
+                                md_util_compute_secondary_structure(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &ss_args);
+                            }
+
+                            md_frame_cache_release_frame_lock(lock);
+                        } else {
+                            slot_queue.push(slot_idx);
+                        }
+                        //printf("Finished decoding frame %i\n", frame_idx);
+                    }
+                );
+            }
+
+            //printf("Sitting back waiting for tasks to complete...\n");
+            while (!slot_queue.was_full()) {
+                _mm_pause(); // Back off for a bit
+            }
+
+            md_free(default_allocator, slot_mem, slot_size * NUM_SLOTS);
+
+            timestamp_t t1 = md_os_time_current();
+            md_printf(MD_LOG_TYPE_INFO, "Frame preload took %.2f seconds", md_os_time_delta_in_s(t0, t1));
+        });
+#undef NUM_SLOTS
+#endif
+}
+
 static void init_trajectory_data(ApplicationData* data) {
     int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
     if (num_frames) {
@@ -4214,11 +4390,21 @@ static void init_trajectory_data(ApplicationData* data) {
                 data->trajectory_data.backbone_angles.count = data->mold.mol.backbone.count * num_frames,
                 md_array_resize(data->trajectory_data.backbone_angles.data, data->mold.mol.backbone.count * num_frames, persistent_allocator);
 
+            // Launch work to prefetch frames
+            if (data->tasks.prefetch_frames.id != 0) {
+                task_system::interrupt_and_wait(data->tasks.prefetch_frames); // This should never happen
+            }
+            data->tasks.backbone_computations = task_system::enqueue_pool("Prefetch Frames", num_frames, [traj = &data->mold.traj](task_system::TaskSetRange range) {
+                for (uint32_t i = range.beg; i < range.end; ++i) {
+                    md_trajectory_load_frame(traj, i, 0, 0, 0, 0);
+                }
+            });
+
             // Launch work to compute the values
             if (data->tasks.backbone_computations.id != 0) {
                 task_system::interrupt_and_wait(data->tasks.backbone_computations); // This should never happen
             }
-            data->tasks.backbone_computations = task_system::enqueue_pool("Backbone operations", (uint32_t)num_frames, [data](task_system::TaskSetRange range)
+            data->tasks.backbone_computations = task_system::enqueue_pool("Backbone Operations", (uint32_t)num_frames, [data](task_system::TaskSetRange range)
                 {
                     const auto& mol = data->mold.mol;
                     const int64_t stride = ROUND_UP(mol.atom.count, md_simd_width);

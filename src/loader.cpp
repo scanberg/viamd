@@ -1,15 +1,10 @@
 #include "loader.h"
-//#include <core/common.h>
-//#include <core/log.h>
-//#include <core/file.h>
-//#include <core/string_types.h>
-//#include <core/string_utils.h>
-//#include <core/sync.h>
 
 #include <core/md_allocator.h>
 #include <core/md_array.inl>
 #include <core/md_log.h>
 #include <core/md_simd.h>
+#include <core/md_bitfield.h>
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_xtc.h>
@@ -35,6 +30,7 @@ struct LoadedTrajectory {
     md_trajectory_i traj;
     md_frame_cache_t cache;
     md_allocator_i* alloc;
+    md_exp_bitfield_t recenter_target;
 };
 
 static LoadedMolecule loaded_molecules[8] = {};
@@ -246,6 +242,42 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, int64
         result = md_trajectory_decode_frame_data(&loaded_traj->traj, frame_data_ptr, frame_data_size, &frame_data->header, frame_data->x, frame_data->y, frame_data->z);
 
         if (result) {
+            // If we have a recenter target, then compute and apply that transformation
+            if (!md_bitfield_empty(&loaded_traj->recenter_target)) {
+                int64_t count = md_bitfield_popcount(&loaded_traj->recenter_target);
+                if (count > 0) {
+                    // Allocate data for substructure
+                    int64_t stride = ROUND_UP(count, md_simd_width);
+                    float* mem = (float*)md_alloc(default_temp_allocator, stride * 4 * sizeof(float));
+                    float* tmp_x = mem + 0 * stride;
+                    float* tmp_y = mem + 1 * stride;
+                    float* tmp_z = mem + 2 * stride;
+                    float* tmp_w = mem + 3 * stride;
+
+                    // Extract fields for substructure
+                    int64_t dst_idx = 0;
+                    int64_t beg_bit = loaded_traj->recenter_target.beg_bit;
+                    int64_t end_bit = loaded_traj->recenter_target.end_bit;
+                    while ((beg_bit = md_bitfield_scan(&loaded_traj->recenter_target, beg_bit, end_bit)) != 0) {
+                        int64_t src_idx = beg_bit - 1;
+                        tmp_x[dst_idx] = frame_data->x[src_idx];
+                        tmp_y[dst_idx] = frame_data->y[src_idx];
+                        tmp_z[dst_idx] = frame_data->z[src_idx];
+                        tmp_w[dst_idx] = loaded_traj->mol->atom.mass[src_idx];
+                    }
+
+                    // Compute deperiodized com for substructure
+                    vec3_t com = md_util_compute_periodic_com(tmp_x, tmp_y, tmp_z, tmp_w, count, frame_data->header.box);
+
+                    // Translate all
+                    for (int64_t i = 0; i < frame_data->header.num_atoms; ++i) {
+                        frame_data->x[i] -= com.x;
+                        frame_data->y[i] -= com.y;
+                        frame_data->z[i] -= com.z;
+                    }
+                }
+            }
+
             // Deperiodize
             const md_molecule_t& mol = *loaded_traj->mol;
             md_util_apply_pbc_args_t args = {
@@ -289,138 +321,6 @@ bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_h
     return decode_frame_data(inst, frame_data, sizeof(int64_t), header, x, y, z);
 }
 
-void launch_prefetch_job(md_trajectory_i* traj) {
-    uint32_t num_frames = (uint32_t)md_trajectory_num_frames(traj);
-    if (!num_frames) return;
-
-    task_system::enqueue_pool("prefetch frames", num_frames, [traj](task_system::TaskSetRange range) {
-        for (uint32_t i = range.beg; i < range.end; ++i) {
-            md_trajectory_load_frame(traj, i, 0, 0, 0, 0);
-        }
-    });
-    #if 0
-#define NUM_SLOTS 64
-
-    // This is the number of slots we have to work with in parallel.
-    // This number should ideally be more than the number of cores available.
-    // We pre-allocate the number of slots * max frame data size, so don't go bananas here if you want to save some on memory.
-    task_system::enqueue_pool("Preloading frames", 1, [data, num_frames](task_system::TaskSetRange)
-        {
-            timestamp_t t0 = md_os_time_current();
-            const int64_t slot_size = md_trajectory_max_frame_data_size(&data->mold.traj);
-            void* slot_mem = md_alloc(default_allocator, slot_size * NUM_SLOTS);
-
-            void* slots[NUM_SLOTS];
-            atomic_queue::AtomicQueue<uint32_t, NUM_SLOTS, 0xFFFFFFFF> slot_queue;
-
-            for (uint32_t i = 0; i < NUM_SLOTS; ++i) {
-                slots[i] = (char*)slot_mem + i * slot_size;
-                slot_queue.push(i);
-            }
-
-            // Iterate over all frames and load the raw data, then spawn a task for each frame
-            for (uint32_t i = 0; i < num_frames; ++i) {
-                uint32_t slot_idx = slot_queue.pop();
-                ASSERT(slot_idx < NUM_SLOTS);
-
-                void* frame_mem = slots[slot_idx];
-                const int64_t frame_size = data->mold.traj.fetch_frame_data(data->mold.traj.inst, i, NULL);
-                data->mold.traj.fetch_frame_data(data->mold.traj.inst, i, frame_mem);
-
-                // Spawn task: Load, Decode and postprocess
-                //printf("Spawning task to decode frame %i\n", i);
-                auto id = task_system::enqueue_pool("##Decode frame", 1, [slot_idx, frame_mem, frame_size, frame_idx = i, &slot_queue, data](task_system::TaskSetRange)
-                    {
-                        md_frame_data_t* frame_data;
-                        md_frame_cache_lock_t* lock;
-                        if (md_frame_cache_reserve_frame(&data->mold.frame_cache, frame_idx, &frame_data, &lock)) {
-                            data->mold.traj.decode_frame_data(data->mold.traj.inst, frame_mem, frame_size, &frame_data->header, frame_data->x, frame_data->y, frame_data->z);
-
-                            // Free the data slot directly here
-                            slot_queue.push(slot_idx);
-                            
-                            // deperiodize
-                            const md_molecule_t& mol = data->mold.mol;
-                            md_util_apply_pbc_args_t args = {
-                                .atom = {
-                                    .count = mol.atom.count,
-                                    .x = frame_data->x,
-                                    .y = frame_data->y,
-                                    .z = frame_data->z,
-                                },
-                                .residue = {
-                                        .count = mol.residue.count,
-                                        .atom_range = mol.residue.atom_range,
-                                },
-                                .chain = {
-                                        .count = mol.chain.count,
-                                        .residue_range = mol.chain.residue_range,
-                                }
-                            };
-                            memcpy(args.pbc.box, frame_data->header.box, sizeof(args.pbc.box));
-                            md_util_apply_pbc(frame_data->x, frame_data->y, frame_data->z, mol.atom.count, args);
-
-                            if (mol.backbone.count > 0) {
-                                md_util_backbone_angle_args_t bb_args = {
-                                    .atom = {
-                                        .count = mol.atom.count,
-                                        .x = frame_data->x,
-                                        .y = frame_data->y,
-                                        .z = frame_data->z,
-                                    },
-                                    .backbone = {
-                                            .count = mol.backbone.count,
-                                            .atoms = mol.backbone.atoms,
-                                    },
-                                    .chain = {
-                                            .count = mol.chain.count,
-                                            .backbone_range = mol.chain.backbone_range,
-                                    }
-                                };
-                                md_util_compute_backbone_angles(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &bb_args);
-
-                                md_util_secondary_structure_args_t ss_args = {
-                                    .atom = {
-                                        .count = data->mold.mol.atom.count,
-                                        .x = frame_data->x,
-                                        .y = frame_data->y,
-                                        .z = frame_data->z,
-                                    },
-                                    .backbone = {
-                                            .count = mol.backbone.count,
-                                            .atoms = mol.backbone.atoms,
-                                    },
-                                    .chain = {
-                                            .count = data->mold.mol.chain.count,
-                                            .backbone_range = data->mold.mol.chain.backbone_range,
-                                    }
-                                };
-                                md_util_compute_secondary_structure(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &ss_args);
-                            }
-
-                            md_frame_cache_release_frame_lock(lock);
-                        } else {
-                            slot_queue.push(slot_idx);
-                        }
-                        //printf("Finished decoding frame %i\n", frame_idx);
-                    }
-                );
-            }
-            
-            //printf("Sitting back waiting for tasks to complete...\n");
-            while (!slot_queue.was_full()) {
-                _mm_pause(); // Back off for a bit
-            }
-
-            md_free(default_allocator, slot_mem, slot_size * NUM_SLOTS);
-
-            timestamp_t t1 = md_os_time_current();
-            md_printf(MD_LOG_TYPE_INFO, "Frame preload took %.2f seconds", md_os_time_delta_in_s(t0, t1));
-        });
-#undef NUM_SLOTS
-#endif
-}
-
 bool open_file(md_trajectory_i* traj, str_t filename, const md_molecule_t* mol, md_allocator_i* alloc) {
     ASSERT(traj);
     ASSERT(mol);
@@ -449,9 +349,11 @@ success:
     inst->mol = mol;
     inst->traj = internal_traj;
     inst->cache = {0};
+    inst->recenter_target = {0};
     inst->alloc = alloc;
     
     md_frame_cache_init(&inst->cache, &inst->traj, alloc, md_trajectory_num_frames(&internal_traj));
+    md_bitfield_init(&inst->recenter_target, alloc);
 
     // We only overload load frame and decode frame data to apply PBC upon loading data
     traj->inst = (struct md_trajectory_o*)inst;
@@ -459,8 +361,6 @@ success:
     traj->load_frame = load_frame;
     traj->fetch_frame_data = fetch_frame_data;
     traj->decode_frame_data = decode_frame_data;
-
-    launch_prefetch_job(traj);
     
     return true;
 }
@@ -476,6 +376,35 @@ bool close(md_trajectory_i* traj) {
     }
     md_print(MD_LOG_TYPE_ERROR, "Attempting to free trajectory which was not loaded with loader");
     ASSERT(false);
+    return false;
+}
+
+bool set_recenter_target(md_trajectory_i* traj, const md_exp_bitfield_t* atom_mask) {
+    ASSERT(traj);
+
+    LoadedTrajectory* loaded_traj = find_loaded_trajectory((uint64_t)traj);
+    if (loaded_traj) {
+        if (atom_mask) {
+            md_bitfield_copy(&loaded_traj->recenter_target, atom_mask);
+        }
+        else {
+            md_bitfield_clear(&loaded_traj->recenter_target);
+        }
+        return true;
+    }
+    md_print(MD_LOG_TYPE_ERROR, "Supplied trajectory was not loaded with loader");
+    return false;
+}
+
+bool clear_cache(md_trajectory_i* traj) {
+    ASSERT(traj);
+
+    LoadedTrajectory* loaded_traj = find_loaded_trajectory((uint64_t)traj);
+    if (loaded_traj) {
+        md_frame_cache_clear(&loaded_traj->cache);
+        return true;
+    }
+    md_print(MD_LOG_TYPE_ERROR, "Supplied trajectory was not loaded with loader");
     return false;
 }
 
