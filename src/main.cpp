@@ -64,7 +64,7 @@
 #define EXPERIMENTAL_CONE_TRACED_AO 0
 #define COMPILATION_TIME_DELAY_IN_SECONDS 1.0
 
-#ifdef OS_MAC_OSX
+#if MD_PLATFORM_OSX
 const Key::Key_t KEY_CONSOLE = Key::KEY_WORLD_1;
 #else  // WIN32 and Linux
 // @TODO: Make sure this is currect for Linux?
@@ -979,7 +979,7 @@ int main(int, char**) {
         }
 
         const int new_frame = CLAMP((int)(data.animation.time + 0.5f), 0, last_frame);
-        const bool frame_changed = new_frame != data.animation.frame;
+        //const bool frame_changed = new_frame != data.animation.frame;
         data.animation.frame = new_frame;
 
         {
@@ -2019,7 +2019,7 @@ ImGui::EndGroup();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Selection")) {
-            const auto atom_count = data->mold.mol.atom.count;
+            //const auto atom_count = data->mold.mol.atom.count;
             md_exp_bitfield_t mask;
             md_bitfield_init(&mask, frame_allocator);
             defer { md_bitfield_free(&mask); };
@@ -2278,7 +2278,7 @@ void draw_context_popup(ApplicationData* data) {
                 int idx = data->mold.mol.atom.element[data->selection.right_clicked];
                 if (0 <= idx && idx < data->mold.mol.atom.count) {
                     static char input_buf[32] = "";
-                    str_t lbl = {data->mold.mol.atom.name[idx], strlen(data->mold.mol.atom.name[idx])};
+                    str_t lbl = {data->mold.mol.atom.name[idx], (int64_t)strlen(data->mold.mol.atom.name[idx])};
                     md_element_t elem = data->mold.mol.atom.element[idx];
                     str_t name = md_util_element_name(elem);
                     str_t sym  = md_util_element_symbol(elem);
@@ -2597,7 +2597,7 @@ static void draw_molecule_dynamic_info_window(ApplicationData* data) {
             ImGui::Text("TRAJ");
             const auto file = extract_file(data->files.trajectory);
             ImGui::Text("\"%.*s\"", (int32_t)file.len, file.ptr);
-            ImGui::Text("# frames: %i", md_trajectory_num_frames(&traj));
+            ImGui::Text("# frames: %lli", md_trajectory_num_frames(&traj));
         }
         const int64_t selection_count = md_bitfield_popcount(&data->selection.current_selection_mask);
         const int64_t highlight_count = md_bitfield_popcount(&data->selection.current_highlight_mask);
@@ -3571,7 +3571,7 @@ static void draw_density_volume_window(ApplicationData* data) {
         // Draw border and background color
         ImGuiIO& io = ImGui::GetIO();
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
-        draw_list->AddImage((ImTextureID)data->density_volume.fbo.deferred.post_tonemap, canvas_p0, canvas_p1, {0,1}, {1,0});
+        draw_list->AddImage((ImTextureID)(uint64_t)data->density_volume.fbo.deferred.post_tonemap, canvas_p0, canvas_p1, {0,1}, {1,0});
         draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(50, 50, 50, 255));
 
         // This will catch our interactions
@@ -4658,7 +4658,7 @@ SerializationObject serialization_targets[] = {
 #define EXTRACT_PARAM_LINE(line, txt) (c_txt.len && c_txt[0] != '[' && (extract_line(&line, &c_txt)))
 
 static SerializationObject* find_serialization_target(str_t group, str_t label) {
-    for (int i = 0; i < ARRAY_SIZE(serialization_targets); ++i) {
+    for (int64_t i = 0; i < (int64_t)ARRAY_SIZE(serialization_targets); ++i) {
         if (compare_str_cstr(group, serialization_targets[i].group) && compare_str_cstr(label, serialization_targets[i].label)) {
             return &serialization_targets[i];
         }
@@ -4708,7 +4708,7 @@ static void load_workspace(ApplicationData* data, str_t filename) {
                     if (compare_str_cstr(group, "[Representation]")) {
                         if (rep_idx != group_idx) {
                             rep_idx = group_idx;
-                            Representation* rep = create_representation(data);
+                            create_representation(data);
                         }
                         ptr = (char*)md_array_last(data->representations.buffer);
                     } else {
@@ -4724,7 +4724,7 @@ static void load_workspace(ApplicationData* data, str_t filename) {
                     }
                     case SerializationType_String:
                     {
-                        size_t copy_len = MIN(target->capacity - 1, arg.len);
+                        size_t copy_len = MIN(target->capacity - 1, (size_t)arg.len);
                         memcpy(ptr + target->struct_byte_offset, arg.ptr, copy_len);
                         (ptr + target->struct_byte_offset)[copy_len] = '\0';
                         break;
@@ -4765,7 +4765,7 @@ static void load_workspace(ApplicationData* data, str_t filename) {
                         path += arg;
                         str_t can_path = md_os_path_make_canonical(path, frame_allocator);
                         if (can_path.ptr && can_path.len > 0) {
-                            size_t copy_len = MIN(target->capacity - 1, can_path.len);
+                            size_t copy_len = MIN(target->capacity - 1, (size_t)can_path.len);
                             memcpy(ptr + target->struct_byte_offset, can_path.ptr, copy_len);
                             (ptr + target->struct_byte_offset)[copy_len] = '\0';
                         }
@@ -4892,7 +4892,7 @@ static void save_workspace(ApplicationData* data, str_t filename) {
 
     const char* curr_group = "";
 
-    for (int i = 0; i < ARRAY_SIZE(serialization_targets); ++i) {
+    for (int64_t i = 0; i < (int64_t)ARRAY_SIZE(serialization_targets); ++i) {
         const char* group = serialization_targets[i].group;
 
         if (strcmp(group, curr_group) != 0) {
@@ -4902,17 +4902,17 @@ static void save_workspace(ApplicationData* data, str_t filename) {
 
         if (strcmp(group, "[Representation]") == 0) {
             // Special case for this since it is an array quantity, iterate over all representations then all subfields marked with group [Representation]
-            const int num_rep = (int)md_array_size(data->representations.buffer);
+            const int64_t num_rep = md_array_size(data->representations.buffer);
 
-            int beg_rep_i = i;
-            int end_rep_i = i + 1;
-            while (end_rep_i < ARRAY_SIZE(serialization_targets) && strcmp(serialization_targets[end_rep_i].group, "[Representation]") == 0) {
+            int64_t beg_rep_i = i;
+            int64_t end_rep_i = i + 1;
+            while (end_rep_i < (int64_t)ARRAY_SIZE(serialization_targets) && strcmp(serialization_targets[end_rep_i].group, "[Representation]") == 0) {
                 end_rep_i += 1;
             }
-            for (int rep_idx = 0; rep_idx < num_rep; ++rep_idx) {
+            for (int64_t rep_idx = 0; rep_idx < num_rep; ++rep_idx) {
                 fprintf((FILE*)file, "\n%s\n", group);
                 const Representation* rep = &data->representations.buffer[rep_idx];
-                for (int j = beg_rep_i; j < end_rep_i; ++j) {
+                for (int64_t j = beg_rep_i; j < end_rep_i; ++j) {
                     write_entry((FILE*)file, serialization_targets[j], rep, filename);
                 }
             }

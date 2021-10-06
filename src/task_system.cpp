@@ -140,7 +140,7 @@ void run_main_tasks() {
 static inline PoolTask* get_task(ID id) {
     using namespace pool;
     const uint32_t idx = id.id - base_id.id;
-    if (idx < 0 || MAX_TASKS <= idx) return nullptr;
+    if (MAX_TASKS <= idx) return nullptr;
     return &task_data[idx];
 }
 

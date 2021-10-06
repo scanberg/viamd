@@ -269,11 +269,13 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, int64
                     // Compute deperiodized com for substructure
                     vec3_t com = md_util_compute_periodic_com(tmp_x, tmp_y, tmp_z, tmp_w, count, frame_data->header.box);
 
+                    vec3_t ext = {frame_data->header.box[0][0], frame_data->header.box[1][1], frame_data->header.box[2][2]};
                     // Translate all
+                    vec3_t trans = ext * 0.5f - com;
                     for (int64_t i = 0; i < frame_data->header.num_atoms; ++i) {
-                        frame_data->x[i] -= com.x;
-                        frame_data->y[i] -= com.y;
-                        frame_data->z[i] -= com.z;
+                        frame_data->x[i] += trans.x;
+                        frame_data->y[i] += trans.y;
+                        frame_data->z[i] += trans.z;
                     }
                 }
             }

@@ -227,6 +227,7 @@ void main() {
 }
 )";
 
+/*
 static constexpr const char* f_shader_src_mip_map_min_depth = R"(
 uniform sampler2D u_tex_depth;
 
@@ -244,6 +245,7 @@ void main() {
 	out_frag = vec4(min(dmin0, dmin1));
 }
 )";
+*/
 
 static GLuint setup_program_from_source(const char* name, const char* f_shader_src, const char* defines = {}) {
     GLuint f_shader = gl::compile_shader_from_source(f_shader_src, GL_FRAGMENT_SHADER, defines);

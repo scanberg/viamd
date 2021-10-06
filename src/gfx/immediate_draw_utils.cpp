@@ -355,7 +355,7 @@ void draw_plane_wireframe(vec3_t center, vec3_t vec_u, vec3_t vec_v, uint32_t co
     ASSERT(segments_u > 0);
     ASSERT(segments_v > 0);
 
-    const vec3_t normal = vec3_normalize(vec3_cross(vec_u, vec_v));
+    //const vec3_t normal = vec3_normalize(vec3_cross(vec_u, vec_v));
 
     for (int i = 0; i <= segments_u; i++) {
         const float t = -1.0f + 2.0f * ((float)i / (float)segments_u);
