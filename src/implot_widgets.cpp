@@ -65,12 +65,12 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
 
                 double x_diff = *x_range_max - *x_range_min;
 
-                if (*x_range_min < gp.CurrentPlot->XAxis.Range.Min) {
-                    *x_range_min = gp.CurrentPlot->XAxis.Range.Min;
+                if (*x_range_min < min_value) {
+                    *x_range_min = min_value;
                     *x_range_max = *x_range_min + x_diff;
                 }
-                if (*x_range_max > gp.CurrentPlot->XAxis.Range.Max) {
-                    *x_range_max = gp.CurrentPlot->XAxis.Range.Max;
+                if (*x_range_max > max_value) {
+                    *x_range_max = max_value;
                     *x_range_min = *x_range_max - x_diff;
                 }
 

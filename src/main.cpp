@@ -187,6 +187,8 @@ struct GBuffer {
 struct Representation {
     StrBuf<64> name = "rep";
     StrBuf<256> filter = "all";
+    StrBuf<256> error = "";
+
     RepresentationType type = RepresentationType::Vdw;
     ColorMapping color_mapping = ColorMapping::Cpk;
     md_exp_bitfield_t atom_mask{};
@@ -194,8 +196,9 @@ struct Representation {
 
     bool enabled = true;
     bool show_in_selection = true;
-    bool filter_is_valid = true;
+    bool filter_is_valid = false;
     bool filter_is_dynamic = false;
+    bool dynamic_reevaluation = false;
 
     uint32_t flags = 0;
 
@@ -364,7 +367,6 @@ struct ApplicationData {
     // --- ANIMATION ---
     struct {
         double time = 0.f;  // double precision for long trajectories
-        int32_t frame = 0;
         float fps = 10.f;
         InterpolationMode interpolation = InterpolationMode::Cubic;
         PlaybackMode mode = PlaybackMode::Stopped;
@@ -386,7 +388,11 @@ struct ApplicationData {
             double min = 0;
             double max = 1;
         } view_range;
-        bool show_window;
+
+        // Holds the timestamps for each frame
+        float* x_values = 0;
+
+        bool show_window = false;
     } timeline;
 
     // --- DISTRIBUTIONS ---
@@ -691,7 +697,7 @@ static void remove_selection(ApplicationData* data, int idx);
 static void reset_selections(ApplicationData* data);
 static void clear_selections(ApplicationData* data);
 
-static bool filter_expression(const ApplicationData& data, str_t expr, md_exp_bitfield_t* mask);
+static bool filter_expression(const ApplicationData& data, str_t expr, md_exp_bitfield_t* mask, bool* is_dynamic, char* error_str, int64_t error_cap);
 
 static void modify_field(md_exp_bitfield_t* bf, const md_exp_bitfield_t* mask, SelectionOperator op) {
     switch(op) {
@@ -927,8 +933,12 @@ int main(int, char**) {
             }
 
             if (data.ctx.input.key.hit[KEY_PLAY_PAUSE]) {
-                if (data.animation.mode == PlaybackMode::Stopped && data.animation.time == max_time) {
-                    data.animation.time = 0;
+                if (data.animation.mode == PlaybackMode::Stopped) {
+                    if (data.animation.time == max_time && data.animation.fps > 0) {
+                        data.animation.time = 0;
+                    } else if (data.animation.time == 0 && data.animation.fps < 0) {
+                        data.animation.time = max_time;
+                    }
                 }
 
                 switch (data.animation.mode) {
@@ -977,10 +987,6 @@ int main(int, char**) {
                 data.animation.time = max_time;
             }
         }
-
-        const int new_frame = CLAMP((int)(data.animation.time + 0.5f), 0, last_frame);
-        //const bool frame_changed = new_frame != data.animation.frame;
-        data.animation.frame = new_frame;
 
         {
             static auto prev_time = data.animation.time;
@@ -1044,7 +1050,7 @@ int main(int, char**) {
             for (int64_t i = 0; i < md_array_size(data.representations.buffer); ++i) {
                 auto& rep = data.representations.buffer[i];
                 if (!rep.enabled) continue;
-                if (rep.filter_is_dynamic || rep.color_mapping == ColorMapping::SecondaryStructure) {
+                if (rep.dynamic_reevaluation || rep.color_mapping == ColorMapping::SecondaryStructure) {
                     update_representation(&data, &rep);
                 }
             }
@@ -1160,7 +1166,7 @@ int main(int, char**) {
                 data.mold.script.evaluate_filt = false;
                 data.tasks.evaluate_filt = task_system::enqueue_pool("Eval Filt", 1, [&data](task_system::TaskSetRange) {
                     int64_t num_frames = md_trajectory_num_frames(&data.mold.traj);
-                    int64_t beg_frame = CLAMP((int64_t)data.timeline.filter.min, 0, num_frames);
+                    int64_t beg_frame = CLAMP((int64_t)data.timeline.filter.min, 0, num_frames-1);
                     int64_t end_frame = CLAMP((int64_t)data.timeline.filter.max, 0, num_frames);
                     end_frame = MAX(beg_frame + 1, end_frame);
                     md_bitfield_clear(&data.mold.script.frame_mask);
@@ -1793,7 +1799,7 @@ static void expand_mask(md_exp_bitfield_t* mask, const md_range_t ranges[], int6
     }
 }
 
-static bool filter_expression(const ApplicationData& data, str_t expr, md_exp_bitfield_t* mask) {
+static bool filter_expression(const ApplicationData& data, str_t expr, md_exp_bitfield_t* mask, bool* is_dynamic = NULL, char* error_str = NULL, int64_t error_cap = 0) {
     if (data.mold.mol.atom.count == 0) return false;
 
     md_filter_stored_selection_t stored_sel[64] = {0};
@@ -1823,7 +1829,13 @@ static bool filter_expression(const ApplicationData& data, str_t expr, md_exp_bi
         }
     };
 
-    return md_filter_evaluate(expr, mask, ctx);
+    md_filter_additional_info_t info {
+        .is_dynamic = is_dynamic,
+        .error_buf = error_str,
+        .error_cap = error_cap,
+    };
+
+    return md_filter_evaluate(expr, mask, &ctx, &info);
 }
 
 // ### DRAW WINDOWS ###
@@ -2275,7 +2287,7 @@ void draw_context_popup(ApplicationData* data) {
     if (ImGui::BeginPopup("AtomContextPopup")) {
         if (data->selection.right_clicked != -1) {
             if (ImGui::BeginMenu("Remap Atom Element")) {
-                int idx = data->mold.mol.atom.element[data->selection.right_clicked];
+                int idx = data->selection.right_clicked;
                 if (0 <= idx && idx < data->mold.mol.atom.count) {
                     static char input_buf[32] = "";
                     str_t lbl = {data->mold.mol.atom.name[idx], (int64_t)strlen(data->mold.mol.atom.name[idx])};
@@ -2308,20 +2320,20 @@ void draw_context_popup(ApplicationData* data) {
         }
         if (data->selection.right_clicked != -1 && md_trajectory_num_frames(&data->mold.traj)) {
             if (ImGui::BeginMenu("Recenter Trajectory...")) {
-                const int atom_idx = data->selection.right_clicked;
+                const int idx = data->selection.right_clicked;
                 md_range_t atom_range = {0,0};
 
                 if (ImGui::MenuItem("on Atom")) {
-                    atom_range = {atom_idx, atom_idx + 1};
+                    atom_range = {idx, idx + 1};
                 }
                 if (ImGui::IsItemHovered()) {
                 }
                 if (ImGui::MenuItem("on Residue")) {
-                    const auto res_idx = data->mold.mol.atom.residue_idx[atom_idx];
+                    const auto res_idx = data->mold.mol.atom.residue_idx[idx];
                     atom_range = data->mold.mol.residue.atom_range[res_idx];
                 }
                 if (ImGui::MenuItem("on Chain")) {
-                    const auto chain_idx = data->mold.mol.atom.chain_idx[atom_idx];
+                    const auto chain_idx = data->mold.mol.atom.chain_idx[idx];
                     atom_range = data->mold.mol.chain.atom_range[chain_idx];
                 }
 
@@ -2355,12 +2367,15 @@ static void draw_animation_control_window(ApplicationData* data) {
         data->animation.time = t;
     }
     //ImGui::SliderFloat("Speed", &data->animation.fps, 0.1f, 1000.f, "%.3f", 4.f);
-    ImGui::SliderFloat("Speed", &data->animation.fps, 0.1f, 1000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
+    ImGui::SliderFloat("Speed", &data->animation.fps, -1000.0f, 1000.f, "%.2f", ImGuiSliderFlags_Logarithmic);
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Animation Speed in Frames Per Second");
     }
     if (ImGui::Combo("Interp.", (int*)(&data->animation.interpolation), "Nearest\0Linear\0Cubic\0\0")) {
         interpolate_atomic_properties(data);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Interpolation Method for Atom Positions");
     }
     ImGui::Checkbox("Apply PBC", &data->animation.apply_pbc);
     switch (data->animation.mode) {
@@ -2382,8 +2397,6 @@ static void draw_animation_control_window(ApplicationData* data) {
 }
 
 static void draw_representations_window(ApplicationData* data) {
-    // const auto old_hash = hash::crc64(data->representations.buffer);
-
     ImGui::Begin("Representations", &data->representations.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
     if (ImGui::Button("create new")) {
         create_representation(data);
@@ -2395,7 +2408,7 @@ static void draw_representations_window(ApplicationData* data) {
     ImGui::Spacing();
     ImGui::Separator();
     for (int i = 0; i < (int)md_array_size(data->representations.buffer); i++) {
-        bool update_args = false;
+        bool update_visual_rep = false;
         bool update_color = false;
         auto& rep = data->representations.buffer[i];
         const float item_width = CLAMP(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
@@ -2421,14 +2434,24 @@ static void draw_representations_window(ApplicationData* data) {
             ImGui::PushItemWidth(item_width);
             ImGui::InputText("name", rep.name.cstr(), rep.name.capacity());
             if (!rep.filter_is_valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-            if (ImGui::InputText("filter", rep.filter.cstr(), rep.filter.capacity(), ImGuiInputTextFlags_EnterReturnsTrue)) {
+            if (ImGui::InputText("filter", rep.filter.cstr(), rep.filter.capacity())) {
                 update_color = true;
             }
+            if (ImGui::IsItemHovered() && !rep.filter_is_valid) {
+                ImGui::SetTooltip(rep.error.cstr());
+            }
             if (!rep.filter_is_valid) ImGui::PopStyleColor();
-            ImGui::SameLine();
-            ImGui::Checkbox("dynamic", &rep.filter_is_dynamic);
+            if (rep.filter_is_dynamic) {
+                ImGui::Checkbox("auto-update", &rep.dynamic_reevaluation);
+                if (!rep.dynamic_reevaluation) {
+                    ImGui::SameLine();
+                    if (ImGui::Button("update")) update_color = true;
+                }
+            } else {
+                rep.dynamic_reevaluation = false;
+            }
             if (ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0Cartoon\0\0")) {
-                update_args = true;
+                update_visual_rep = true;
                 
             }
             if (ImGui::Combo("color mapping", (int*)(&rep.color_mapping),
@@ -2437,19 +2460,18 @@ static void draw_representations_window(ApplicationData* data) {
             }
             ImGui::PopItemWidth();
             if (rep.color_mapping == ColorMapping::Uniform) {
-                ImGui::SameLine();
                 if (ImGui::ColorEdit4("color", (float*)&rep.uniform_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
                     update_color = true;
                 }
             }
             ImGui::PushItemWidth(item_width);
             if (rep.type == RepresentationType::Vdw || rep.type == RepresentationType::Licorice) {
-                if (ImGui::SliderFloat("radii scale", &rep.radius, 0.1f, 2.f)) update_args = true;
+                if (ImGui::SliderFloat("radii scale", &rep.radius, 0.1f, 2.f)) update_visual_rep = true;
             }
             if (rep.type == RepresentationType::Ribbons) {
-                if (ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f)) update_args = true;
-                if (ImGui::SliderFloat("spline width", &rep.width, 0.1f, 2.f)) update_args = true;
-                if (ImGui::SliderFloat("spline thickness", &rep.thickness, 0.1f, 2.f)) update_args = true;
+                if (ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f)) update_visual_rep = true;
+                if (ImGui::SliderFloat("spline width", &rep.width, 0.1f, 2.f)) update_visual_rep = true;
+                if (ImGui::SliderFloat("spline thickness", &rep.thickness, 0.1f, 2.f)) update_visual_rep = true;
             }
             ImGui::PopItemWidth();
             ImGui::Spacing();
@@ -2457,7 +2479,7 @@ static void draw_representations_window(ApplicationData* data) {
         }
 
         ImGui::PopID();
-        if (update_args) {
+        if (update_visual_rep) {
             md_gl_representation_type_t type = MD_GL_REP_DEFAULT;
             md_gl_representation_args_t args = {};
             switch(rep.type) {
@@ -2815,6 +2837,8 @@ bool draw_property_timeline(const TimelineArgs& args) {
             if (!args.filter.enabled) ImGui::PushDisabled();
             ImPlot::DragRangeX("Time Filter", args.filter.beg, args.filter.end, args.filter.min, args.filter.max);
             if (!args.filter.enabled) ImGui::PopDisabled();
+            *args.filter.beg = CLAMP(*args.filter.beg, args.filter.min, args.filter.max);
+            *args.filter.end = CLAMP(*args.filter.end, args.filter.min, args.filter.max);
         }
 
         ImVec4 line_col = ImGui::ColorConvertU32ToFloat4(args.col);
@@ -2862,7 +2886,9 @@ bool draw_property_timeline(const TimelineArgs& args) {
             };
         }
 
-        ImPlot::DragLineX("Current Time", args.time, true, ImVec4(1,1,0,1));
+        if (ImPlot::DragLineX("Current Time", args.time, true, ImVec4(1,1,0,1))) {
+            *args.time = CLAMP(*args.time, args.filter.min, args.filter.max);
+        }
         ImPlot::EndPlot();
     }
 
@@ -2883,16 +2909,10 @@ static void draw_timeline_window(ApplicationData* data) {
         double pre_filter_min = data->timeline.filter.min;
         double pre_filter_max = data->timeline.filter.max;
 
-        int num_x_values = (int)md_trajectory_num_frames(&data->mold.traj);
-        float* x_values = (float*)md_alloc(frame_allocator, num_x_values * sizeof(float));
-        defer {
-            md_free(frame_allocator, x_values, num_x_values * sizeof(float));
-        };
-        for (int64_t i = 0; i < num_x_values; ++i) {
-            x_values[i] = (float)i;
-        }
-
-        const double max_x_value = num_x_values > 0 ? x_values[num_x_values - 1] : 1.0;
+        float* x_values = data->timeline.x_values;
+        const int num_x_values = md_array_size(data->timeline.x_values);
+        const float min_x_value = num_x_values > 0 ? x_values[0] : 0.0f;
+        const float max_x_value = num_x_values > 0 ? x_values[num_x_values - 1] : 1.0f;
 
         if (ImGui::BeginMenuBar())
         {
@@ -2905,7 +2925,7 @@ static void draw_timeline_window(ApplicationData* data) {
                 if (data->timeline.filter.enabled) {
                     ImGui::Checkbox("Temporal Window", &data->timeline.filter.temporal_window);
                     if (data->timeline.filter.temporal_window) {
-                        ImGui::SliderFloat("Extent", &data->timeline.filter.window_extent, 1.0f, (float)max_x_value);
+                        ImGui::SliderFloat("Extent", &data->timeline.filter.window_extent, 1.0f, max_x_value * 0.5f);
                     }
                 }
                 ImGui::EndMenu();
@@ -2950,6 +2970,12 @@ static void draw_timeline_window(ApplicationData* data) {
 
             int64_t num_props = md_array_size(data->display_properties);
 
+            // Create a temporary 'time' representation of the filters min and max value
+            // The visualization uses time units while we store 'frame' units
+            const double frame_scl = num_x_values > 0 ? 1.0f / (double)num_x_values : 1.0;
+            double filter_beg = lerp<double,double>(min_x_value, max_x_value, data->timeline.filter.min * frame_scl);
+            double filter_end = lerp<double,double>(min_x_value, max_x_value, data->timeline.filter.max * frame_scl);
+
             TimelineArgs args = {
                 .lbl = "##Empty",
                 .col = 0xFFFFFFFF,
@@ -2971,8 +2997,8 @@ static void draw_timeline_window(ApplicationData* data) {
                 .filter = {
                     .show = data->timeline.filter.enabled,
                     .enabled = data->timeline.filter.temporal_window == false,
-                    .beg = &data->timeline.filter.min,
-                    .end = &data->timeline.filter.max,
+                    .beg = &filter_beg,
+                    .end = &filter_end,
                     .min = 0,
                     .max = max_x_value,
                 },
@@ -3026,6 +3052,11 @@ static void draw_timeline_window(ApplicationData* data) {
             if (num_shown_plots == 0) {
                 draw_property_timeline(args);
             }
+
+            // Convert back from time units to frame units
+            const double time_scl = num_x_values > 0 ? 1.0 / (double)(max_x_value - min_x_value) : 1.0;
+            data->timeline.filter.min = lerp<double,double>(0, num_x_values, (filter_beg - min_x_value) * time_scl);
+            data->timeline.filter.max = lerp<double,double>(0, num_x_values, (filter_end - min_x_value) * time_scl);
 
             data->timeline.view_range.min = MAX(data->timeline.view_range.min, 0);
             data->timeline.view_range.max = MIN(data->timeline.view_range.max, max_x_value);
@@ -4173,6 +4204,7 @@ static void free_trajectory_data(ApplicationData* data) {
     if (md_trajectory_num_frames(&data->mold.traj)) {
         load::traj::close(&data->mold.traj);
     }
+    md_array_resize(data->timeline.x_values, 0, persistent_allocator);
 }
 
 static void free_molecule_data(ApplicationData* data) {
@@ -4362,16 +4394,37 @@ static void launch_prefetch_job(md_trajectory_i* traj) {
 
 static void init_trajectory_data(ApplicationData* data) {
     int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
-    if (num_frames) {
-        const double min_time = 0;
-        const double max_time = (double)num_frames;
+    if (num_frames > 0) {
+        int64_t min_frame = 0;
+        int64_t max_frame = num_frames - 1;
+        double min_time = 0;
+        double max_time = 0;
+        {
+            md_trajectory_frame_header_t header;
+            md_trajectory_load_frame(&data->mold.traj, min_frame, &header, 0, 0, 0);
+            min_time = header.timestamp;
+        }
+
+        {
+            md_trajectory_frame_header_t header;
+            md_trajectory_load_frame(&data->mold.traj, max_frame, &header, 0, 0, 0);
+            max_time = header.timestamp;
+        }
 
         data->timeline.view_range = {min_time, max_time};
-        data->timeline.filter.min = min_time;
-        data->timeline.filter.max = max_time;
+        data->timeline.filter.min = min_frame;
+        data->timeline.filter.max = max_frame;
+
+        md_array_resize(data->timeline.x_values, num_frames, persistent_allocator);
+        for (int64_t i = 0; i < num_frames; ++i) {
+            // We estimate the time values to grow linearly between min_time and max_time
+            // This will be updated to an exact value later when prefetching the frames
+            double t = i / (double)max_frame;
+            data->timeline.x_values[i] = lerp(min_time, max_time, t);
+        }
+
         data->animation.time = CLAMP(data->animation.time, min_time, max_time);
-        data->animation.frame = CLAMP((int32_t)data->animation.time, (int32_t)min_time, (int32_t)max_time - 1);
-        int32_t frame_idx = data->animation.frame;
+        int64_t frame_idx = CLAMP((int64_t)(data->animation.time + 0.5), 0, max_frame);
 
         md_trajectory_frame_header_t header;
         md_trajectory_load_frame(&data->mold.traj, frame_idx, &header, data->mold.mol.atom.x, data->mold.mol.atom.y, data->mold.mol.atom.z);
@@ -4394,9 +4447,11 @@ static void init_trajectory_data(ApplicationData* data) {
             if (data->tasks.prefetch_frames.id != 0) {
                 task_system::interrupt_and_wait(data->tasks.prefetch_frames); // This should never happen
             }
-            data->tasks.backbone_computations = task_system::enqueue_pool("Prefetch Frames", num_frames, [traj = &data->mold.traj](task_system::TaskSetRange range) {
+            data->tasks.prefetch_frames = task_system::enqueue_pool("Prefetch Frames", num_frames, [data](task_system::TaskSetRange range) {
                 for (uint32_t i = range.beg; i < range.end; ++i) {
-                    md_trajectory_load_frame(traj, i, 0, 0, 0, 0);
+                    md_trajectory_frame_header_t header;
+                    md_trajectory_load_frame(&data->mold.traj, i, &header, 0, 0, 0);
+                    data->timeline.x_values[i] = header.timestamp;
                 }
             });
 
@@ -4464,7 +4519,6 @@ static bool load_trajectory_data(ApplicationData* data, str_t filename) {
     free_trajectory_data(data);
     data->files.trajectory = "";
     data->animation.time = 0;
-    data->animation.frame = 0;
 
     if (load::traj::open_file(&data->mold.traj, filename, &data->mold.mol, persistent_allocator)) {
         data->files.trajectory = filename;
@@ -4822,7 +4876,7 @@ static void write_entry(FILE* file, SerializationObject target, const void* ptr,
     case SerializationType_String:
     {
         const char* str = (const char*)((const char*)ptr + target.struct_byte_offset);
-        int len = strnlen(str, target.capacity);
+        int len = (int)strnlen(str, target.capacity);
         fprintf(file, "%.*s\n", len, str);
         break;
     }
@@ -4859,7 +4913,7 @@ static void write_entry(FILE* file, SerializationObject target, const void* ptr,
     case SerializationType_Path:
     {
         const char* str = (const char*)((const char*)ptr + target.struct_byte_offset);
-        int len = strnlen(str, target.capacity);
+        int len = (int)strnlen(str, target.capacity);
 
         // Make this sucker relative
         str_t rel_path = md_os_path_make_relative(filename, {str, len}, frame_allocator);
@@ -5282,12 +5336,11 @@ static void update_representation(ApplicationData* data, Representation* rep) {
             break;
     }
 
-    rep->filter_is_valid = filter_expression(*data, rep->filter, &rep->atom_mask);
-    filter_colors(colors, mol.atom.count, &rep->atom_mask);
+    rep->filter_is_valid = filter_expression(*data, rep->filter, &rep->atom_mask, &rep->filter_is_dynamic, rep->error.beg(), rep->error.capacity());
+    if (rep->filter_is_valid) {
+        filter_colors(colors, mol.atom.count, &rep->atom_mask);
+        data->representations.atom_visibility_mask_dirty = true;
 
-    data->representations.atom_visibility_mask_dirty = true;
-
-    {
         md_gl_representation_type_t type = MD_GL_REP_DEFAULT;
         md_gl_representation_args_t args = {};
         switch(rep->type) {

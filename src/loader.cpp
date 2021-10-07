@@ -264,6 +264,7 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, int64
                         tmp_y[dst_idx] = frame_data->y[src_idx];
                         tmp_z[dst_idx] = frame_data->z[src_idx];
                         tmp_w[dst_idx] = loaded_traj->mol->atom.mass[src_idx];
+                        dst_idx += 1;
                     }
 
                     // Compute deperiodized com for substructure

@@ -34,8 +34,8 @@ struct UniformData {
     mat4_t model_view_proj_mat;
 
     vec2_t inv_res;
-    float density_scale = 1.0;
-    float alpha_scale = 1.0;
+    float density_scale;
+    float alpha_scale;
 
     vec3_t clip_volume_min;
     float _pad0;
@@ -190,10 +190,16 @@ mat4_t compute_world_to_model_matrix(vec3_t min_world_aabb, vec3_t max_world_aab
 }
 
 mat4_t compute_model_to_texture_matrix(int dim_x, int dim_y, int dim_z) {
+    (void)dim_x;
+    (void)dim_y;
+    (void)dim_z;
     return mat4_ident();
 }
 
 mat4_t compute_texture_to_model_matrix(int dim_x, int dim_y, int dim_z) {
+    (void)dim_x;
+    (void)dim_y;
+    (void)dim_z;
     return mat4_ident();
 }
 
