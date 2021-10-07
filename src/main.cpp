@@ -4011,8 +4011,8 @@ static void draw_property_editor_window(ApplicationData* data) {
 
             glEnable(GL_CULL_FACE);
 
-            if (!md_bitfield_empty(&vis.atom_mask)) {
-                md_bitfield_copy(&data->selection.current_highlight_mask, &vis.atom_mask);
+            if (!md_bitfield_empty(vis.atom_mask)) {
+                md_bitfield_copy(&data->selection.current_highlight_mask, vis.atom_mask);
                 data->mold.dirty_buffers |= MolBit_DirtyFlags;
             }
             md_script_visualization_free(&vis);
