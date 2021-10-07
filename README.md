@@ -25,7 +25,7 @@ Visual Interactive Analysis of Molecular Dynamics
 - libxcursor-dev
 
 #### nativefiledialog
-- libgtk-3-dev
+- libgtk-3-dev (optional, fallback is Zenity)
 - pkgconf
 
 Example for Ubuntu:
