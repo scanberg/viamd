@@ -1204,7 +1204,7 @@ int main(int, char**) {
             }
         }
 
-        if (data.mold.script.evaluate_filt) {
+        if (data.timeline.filter.enabled && data.mold.script.evaluate_filt) {
             if (data.tasks.evaluate_filt.id != 0) {
                 md_script_eval_interrupt(&data.mold.script.filt_eval);
             } else if (md_semaphore_try_aquire(&data.mold.script.semaphore)) {
@@ -4052,7 +4052,7 @@ static void draw_script_editor_window(ApplicationData* data) {
             for (int64_t i = 0; i < vis.line.count; ++i) {
                 ASSERT(vis.line.idx);
                 uint16_t idx[2] = { vis.line.idx[i * 2 + 0], vis.line.idx[i * 2 + 1] };
-                immediate::draw_line(vertices[idx[0]], vertices[idx[1]]);
+                immediate::draw_line(vertices[idx[0]], vertices[idx[1]], immediate::COLOR_CYAN);
             }
 
             for (int64_t i = 0; i < vis.triangle.count; ++i) {
