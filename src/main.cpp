@@ -60,7 +60,7 @@
 #include <stdio.h>
 
 #define PICKING_JITTER_HACK 0
-#define SHOW_IMGUI_DEMO_WINDOW 0
+#define SHOW_IMGUI_DEMO_WINDOW 1
 #define EXPERIMENTAL_CONE_TRACED_AO 0
 #define COMPILATION_TIME_DELAY_IN_SECONDS 1.0
 
@@ -185,9 +185,11 @@ struct GBuffer {
 };
 
 struct Representation {
-    StrBuf<64> name = "rep";
-    StrBuf<256> filter = "all";
-    StrBuf<256> error = "";
+    StrBuf<32> name = "rep";
+    StrBuf<256> filt = "all";
+    StrBuf<256> prop = "";
+    StrBuf<256> filt_error = "";
+    StrBuf<256> prop_error = "";
 
     RepresentationType type = RepresentationType::Vdw;
     ColorMapping color_mapping = ColorMapping::Cpk;
@@ -196,14 +198,22 @@ struct Representation {
 
     bool enabled = true;
     bool show_in_selection = true;
-    bool filter_is_valid = false;
-    bool filter_is_dynamic = false;
-    bool dynamic_reevaluation = false;
+    bool filt_is_valid = false;
+    bool filt_is_dynamic = false;
+    bool dynamic_evaluation = false;
+    bool prop_is_valid = false;
 
     uint32_t flags = 0;
 
     // User defined color used in uniform mode
     vec4_t uniform_color = vec4_t{1,1,1,1};
+
+    // For colormapping the property
+    ImPlotColormap color_map = ImPlotColormap_Plasma;
+    float map_beg = 0;
+    float map_end = 1;
+    float map_min = 0;
+    float map_max = 1;
 
     // VDW and Ball & Stick
     float radius = 1.f;
@@ -366,7 +376,7 @@ struct ApplicationData {
 
     // --- ANIMATION ---
     struct {
-        double time = 0.f;  // double precision for long trajectories
+        double frame = 0.f;  // double precision for long trajectories
         float fps = 10.f;
         InterpolationMode interpolation = InterpolationMode::Cubic;
         PlaybackMode mode = PlaybackMode::Stopped;
@@ -377,16 +387,16 @@ struct ApplicationData {
     struct {
         struct {
             bool enabled = true;
-            double min = 0;
-            double max = 0;
+            int  beg_frame = 0;
+            int  end_frame = 1;
             
             bool temporal_window = false;
-            float window_extent = 10.f;
+            int  window_extent = 10;
         } filter;
 
         struct {
-            double min = 0;
-            double max = 1;
+            double beg_x = 0;
+            double end_x = 1;
         } view_range;
 
         // Holds the timestamps for each frame
@@ -610,6 +620,52 @@ struct ApplicationData {
 
 //static void postprocess_frame(md_frame_data_t* frame, void* user_data);
 
+static double frame_to_time(double frame, const ApplicationData& data) {
+    int64_t num_frames = md_array_size(data.timeline.x_values);
+    ASSERT(num_frames);
+    int64_t f0 = CLAMP((int64_t)frame, 0, num_frames - 1);
+    int64_t f1 = CLAMP((int64_t)frame + 1, 0, num_frames - 1);
+    return lerp(data.timeline.x_values[f0], data.timeline.x_values[f1], fract(frame));
+}
+
+static double time_to_frame(double time, const ApplicationData& data) {
+    int64_t num_frames = md_array_size(data.timeline.x_values);
+    ASSERT(num_frames);
+    // Try to map time t back into frame
+
+    double beg = data.timeline.x_values[0];
+    double end = data.timeline.x_values[num_frames - 1];
+    time = CLAMP(time, beg, end);
+
+    double frame_est = ((time - beg) / (end-beg)) * (num_frames - 1);
+    frame_est = CLAMP(frame_est, 0, num_frames - 1);
+
+    int64_t prev_frame_idx = CLAMP((int64_t)frame_est,     0, num_frames - 1);
+    int64_t next_frame_idx = CLAMP((int64_t)frame_est + 1, 0, num_frames - 1);
+
+    if (time < (double)data.timeline.x_values[prev_frame_idx]) {
+        // Do linear search down
+        for (prev_frame_idx = prev_frame_idx - 1; prev_frame_idx >= 0; --prev_frame_idx) {
+            next_frame_idx = prev_frame_idx + 1;
+            if ((double)data.timeline.x_values[prev_frame_idx] <= time && time <= (double)data.timeline.x_values[next_frame_idx])
+                break;
+        }
+    }
+    else if (time > (double)data.timeline.x_values[next_frame_idx]) {
+        // Do linear search up
+        for (next_frame_idx = next_frame_idx + 1; next_frame_idx < num_frames; ++next_frame_idx) {
+            prev_frame_idx = next_frame_idx - 1;
+            if ((double)data.timeline.x_values[prev_frame_idx] <= time && time <= (double)data.timeline.x_values[next_frame_idx])
+                break;
+        }
+    }
+
+    // Compute true fraction
+    double t = (time - (double)data.timeline.x_values[prev_frame_idx]) / ((double)data.timeline.x_values[next_frame_idx] - (double)data.timeline.x_values[prev_frame_idx]);
+    t = CLAMP(t, 0.0, 1.0);
+
+    return (double)prev_frame_idx + t;
+}
 
 static void update_properties(DisplayProperty** prop_items, md_script_property_t* full_props, md_script_property_t* filt_props, int64_t num_props);
 
@@ -653,7 +709,7 @@ static void draw_async_task_window(ApplicationData* data);
 //static void draw_reference_frame_window(ApplicationData* data);
 //static void draw_shape_space_window(ApplicationData* data);
 static void draw_density_volume_window(ApplicationData* data);
-static void draw_property_editor_window(ApplicationData* data);
+static void draw_script_editor_window(ApplicationData* data);
 static void draw_dataset_window(ApplicationData* data);
 // static void draw_density_volume_clip_plane_widgets(ApplicationData* data);
 // static void draw_selection_window(ApplicationData* data);
@@ -895,7 +951,7 @@ int main(int, char**) {
 
         const int64_t num_frames = md_trajectory_num_frames(&traj);
         const int64_t last_frame = MAX(0, num_frames - 1);
-        const double max_time = (double)MAX(0, last_frame);
+        const double max_frame = (double)MAX(0, last_frame);
 
         // #input
         if (data.ctx.input.key.hit[KEY_CONSOLE]) {
@@ -934,10 +990,10 @@ int main(int, char**) {
 
             if (data.ctx.input.key.hit[KEY_PLAY_PAUSE]) {
                 if (data.animation.mode == PlaybackMode::Stopped) {
-                    if (data.animation.time == max_time && data.animation.fps > 0) {
-                        data.animation.time = 0;
-                    } else if (data.animation.time == 0 && data.animation.fps < 0) {
-                        data.animation.time = max_time;
+                    if (data.animation.frame == max_frame && data.animation.fps > 0) {
+                        data.animation.frame = 0;
+                    } else if (data.animation.frame == 0 && data.animation.fps < 0) {
+                        data.animation.frame = max_frame;
                     }
                 }
 
@@ -958,7 +1014,7 @@ int main(int, char**) {
             if (data.ctx.input.key.hit[KEY_SKIP_TO_PREV_FRAME] || data.ctx.input.key.hit[KEY_SKIP_TO_NEXT_FRAME]) {
                 double step = data.ctx.input.key.down[Key::KEY_LEFT_CONTROL] ? 10.0 : 1.0;
                 if (data.ctx.input.key.hit[KEY_SKIP_TO_PREV_FRAME]) step = -step;
-                data.animation.time = CLAMP(data.animation.time + step, 0.0, max_time);
+                data.animation.frame = CLAMP(data.animation.frame + step, 0.0, max_frame);
             }
         }
 
@@ -980,19 +1036,19 @@ int main(int, char**) {
         ImGui::CreateDockspace();
 
         if (data.animation.mode == PlaybackMode::Playing) {
-            data.animation.time += data.ctx.timing.delta_s * data.animation.fps;
-            data.animation.time = CLAMP(data.animation.time, 0.0, max_time);
-            if (data.animation.time >= max_time) {
+            data.animation.frame += data.ctx.timing.delta_s * data.animation.fps;
+            data.animation.frame = CLAMP(data.animation.frame, 0.0, max_frame);
+            if (data.animation.frame >= max_frame) {
                 data.animation.mode = PlaybackMode::Stopped;
-                data.animation.time = max_time;
+                data.animation.frame = max_frame;
             }
         }
 
         {
-            static auto prev_time = data.animation.time;
-            if (data.animation.time != prev_time) {
+            static auto prev_frame = data.animation.frame;
+            if (data.animation.frame != prev_frame) {
                 time_changed = true;
-                prev_time = data.animation.time;
+                prev_frame = data.animation.frame;
             }
             else {
                 time_changed = false;
@@ -1000,12 +1056,12 @@ int main(int, char**) {
         }
 
         if (data.timeline.filter.temporal_window) {
-            double pre_min = data.timeline.filter.min;
-            double pre_max = data.timeline.filter.max;
+            int pre_beg = data.timeline.filter.beg_frame;
+            int pre_end = data.timeline.filter.end_frame;
             const auto half_window_ext = data.timeline.filter.window_extent * 0.5f;
-            data.timeline.filter.min = CLAMP(data.animation.time - half_window_ext, 0.0, max_time);
-            data.timeline.filter.max = CLAMP(data.animation.time + half_window_ext, 0.0, max_time);
-            if (data.timeline.filter.min != pre_min || data.timeline.filter.max != pre_max) {
+            data.timeline.filter.beg_frame = (int)CLAMP(data.animation.frame - half_window_ext, 0.0, max_frame);
+            data.timeline.filter.end_frame = (int)CLAMP(data.animation.frame + half_window_ext, 0.0, max_frame);
+            if (data.timeline.filter.beg_frame != pre_beg || data.timeline.filter.end_frame != pre_end) {
                 data.mold.script.evaluate_filt = true;
             }
         }
@@ -1050,7 +1106,7 @@ int main(int, char**) {
             for (int64_t i = 0; i < md_array_size(data.representations.buffer); ++i) {
                 auto& rep = data.representations.buffer[i];
                 if (!rep.enabled) continue;
-                if (rep.dynamic_reevaluation || rep.color_mapping == ColorMapping::SecondaryStructure) {
+                if (rep.dynamic_evaluation || rep.color_mapping == ColorMapping::SecondaryStructure) {
                     update_representation(&data, &rep);
                 }
             }
@@ -1072,68 +1128,64 @@ int main(int, char**) {
                 md_script_eval_interrupt(&data.mold.script.filt_eval);
 
                 // Try aquire 2 semaphores
-                if (md_semaphore_try_aquire(&data.mold.script.semaphore) &&
-                    md_semaphore_try_aquire(&data.mold.script.semaphore)) {
-                    // Now we hold all semaphores for the script
-                    data.mold.script.compile_ir = false;
-                    data.mold.script.time_since_last_change = 0;
+                if (md_semaphore_try_aquire(&data.mold.script.semaphore)) {
+                    if (md_semaphore_try_aquire(&data.mold.script.semaphore)) {
+                        // Now we hold all semaphores for the script
+                        data.mold.script.compile_ir = false;
+                        data.mold.script.time_since_last_change = 0;
 
-                    TextEditor& editor = data.script.editor;
+                        TextEditor& editor = data.script.editor;
 
-                    std::string src = editor.GetText();
-                    str_t str = {.ptr = src.data(), .len = (int64_t)src.length()};
-                    md_script_ir_compile_args_t args = {
-                        .src = str,
-                        .mol = &data.mold.mol,
-                        .alloc = persistent_allocator,
-                    };
+                        std::string src = editor.GetText();
+                        str_t src_str = {.ptr = src.data(), .len = (int64_t)src.length()};
 
-                    editor.ClearMarkers();
-                    editor.ClearErrorMarkers();
+                        editor.ClearMarkers();
+                        editor.ClearErrorMarkers();
 
-                    bool result = md_script_ir_compile(&data.mold.script.ir, args);
+                        bool result = md_script_ir_compile(&data.mold.script.ir, src_str, &data.mold.mol, persistent_allocator, NULL);
 
-                    // Before we release the compute-dogs we want to allocate the data for the evaluations
-                    md_script_eval_init(&data.mold.script.full_eval, num_frames, &data.mold.script.ir, persistent_allocator);
-                    md_script_eval_init(&data.mold.script.filt_eval, num_frames, &data.mold.script.ir, persistent_allocator);
+                        // Before we release the compute-dogs we want to allocate the data for the evaluations
+                        md_script_eval_init(&data.mold.script.full_eval, num_frames, &data.mold.script.ir, persistent_allocator);
+                        md_script_eval_init(&data.mold.script.filt_eval, num_frames, &data.mold.script.ir, persistent_allocator);
 
-                    const int64_t num_props = data.mold.script.filt_eval.num_properties;
-                    ASSERT(data.mold.script.filt_eval.num_properties == num_props);
-                    update_properties(&data.display_properties, data.mold.script.full_eval.properties, data.mold.script.filt_eval.properties, num_props);
+                        const int64_t num_props = data.mold.script.filt_eval.num_properties;
+                        ASSERT(data.mold.script.filt_eval.num_properties == num_props);
+                        update_properties(&data.display_properties, data.mold.script.full_eval.properties, data.mold.script.filt_eval.properties, num_props);
 
-                    if (result) {
-                        data.mold.script.evaluate_full = true;
-                        data.mold.script.evaluate_filt = true;
-                    }
-
-                    md_semaphore_release(&data.mold.script.semaphore);
-                    md_semaphore_release(&data.mold.script.semaphore);
-
-                    TextEditor::ErrorMarkers markers;
-                    const int64_t num_errors = data.mold.script.ir.num_errors;
-                    if (num_errors) {
-                        const md_script_error_t* errors = data.mold.script.ir.errors;
-                        for (int64_t i = 0; i < num_errors; ++i) {
-                            std::string err_str(errors[i].error.ptr, errors[i].error.len);
-                            std::pair<int, std::string> pair = {errors[i].line, err_str};
-                            markers.insert(pair);
+                        if (result) {
+                            data.mold.script.evaluate_full = true;
+                            data.mold.script.evaluate_filt = true;
                         }
-                    }
-                    editor.SetErrorMarkers(markers);
 
-                    for (int64_t i = 0; i < data.mold.script.ir.num_tokens; ++i) {
-                        const md_script_token_t& tok = data.mold.script.ir.tokens[i];
-                        TextEditor::Marker marker = {0};
-                        marker.begCol = tok.col_beg;
-                        marker.endCol = tok.col_end;
-                        marker.bgColor = ImVec4(1,1,1,0.5);
-                        marker.depth = tok.depth;
-                        marker.line = tok.line;
-                        marker.onlyShowBgOnMouseOver = true;
-                        marker.text = std::string(tok.text.ptr, tok.text.len);
-                        marker.payload = (void*)tok.vis_token;
-                        editor.AddMarker(marker);
-                    }    
+                        TextEditor::ErrorMarkers markers;
+                        const int64_t num_errors = data.mold.script.ir.num_errors;
+                        if (num_errors) {
+                            const md_script_error_t* errors = data.mold.script.ir.errors;
+                            for (int64_t i = 0; i < num_errors; ++i) {
+                                std::string err_str(errors[i].error.ptr, errors[i].error.len);
+                                std::pair<int, std::string> pair = {errors[i].line, err_str};
+                                markers.insert(pair);
+                            }
+                        }
+                        editor.SetErrorMarkers(markers);
+
+                        for (int64_t i = 0; i < data.mold.script.ir.num_tokens; ++i) {
+                            const md_script_token_t& tok = data.mold.script.ir.tokens[i];
+                            TextEditor::Marker marker = {0};
+                            marker.begCol = tok.col_beg;
+                            marker.endCol = tok.col_end;
+                            marker.bgColor = ImVec4(1,1,1,0.5);
+                            marker.depth = tok.depth;
+                            marker.line = tok.line;
+                            marker.onlyShowBgOnMouseOver = true;
+                            marker.text = std::string(tok.text.ptr, tok.text.len);
+                            marker.payload = (void*)tok.vis_token;
+                            editor.AddMarker(marker);
+                        }
+
+                        md_semaphore_release(&data.mold.script.semaphore);
+                    }
+                    md_semaphore_release(&data.mold.script.semaphore);
                 }
             }
         }
@@ -1144,14 +1196,7 @@ int main(int, char**) {
             } else if (md_semaphore_try_aquire(&data.mold.script.semaphore)) {
                 data.mold.script.evaluate_full = false;
                 data.tasks.evaluate_full = task_system::enqueue_pool("Eval Full", 1, [&data](task_system::TaskSetRange) {
-                    md_script_eval_args_t args = {
-                        .ir = &data.mold.script.ir,
-                        .mol = &data.mold.mol,
-                        .traj = &data.mold.traj,
-                        .filter_mask = NULL,
-                    };
-
-                    md_script_eval_compute(&data.mold.script.full_eval, args);
+                    md_script_eval_compute(&data.mold.script.full_eval, &data.mold.script.ir, &data.mold.mol, &data.mold.traj, NULL);
 
                     data.tasks.evaluate_full.id = 0;
                     md_semaphore_release(&data.mold.script.semaphore);
@@ -1166,20 +1211,13 @@ int main(int, char**) {
                 data.mold.script.evaluate_filt = false;
                 data.tasks.evaluate_filt = task_system::enqueue_pool("Eval Filt", 1, [&data](task_system::TaskSetRange) {
                     int64_t num_frames = md_trajectory_num_frames(&data.mold.traj);
-                    int64_t beg_frame = CLAMP((int64_t)data.timeline.filter.min, 0, num_frames-1);
-                    int64_t end_frame = CLAMP((int64_t)data.timeline.filter.max, 0, num_frames);
+                    int32_t beg_frame = CLAMP((int64_t)data.timeline.filter.beg_frame, 0, num_frames-1);
+                    int32_t end_frame = CLAMP((int64_t)data.timeline.filter.end_frame, 0, num_frames);
                     end_frame = MAX(beg_frame + 1, end_frame);
                     md_bitfield_clear(&data.mold.script.frame_mask);
                     md_bitfield_set_range(&data.mold.script.frame_mask, beg_frame, end_frame);
 
-                    md_script_eval_args_t args = {
-                        .ir = &data.mold.script.ir,
-                        .mol = &data.mold.mol,
-                        .traj = &data.mold.traj,
-                        .filter_mask = &data.mold.script.frame_mask
-                    };
-
-                    md_script_eval_compute(&data.mold.script.filt_eval, args);
+                    md_script_eval_compute(&data.mold.script.filt_eval, &data.mold.script.ir, &data.mold.mol, &data.mold.traj, &data.mold.script.frame_mask);
 
                     data.tasks.evaluate_filt.id = 0;
                     md_semaphore_release(&data.mold.script.semaphore);
@@ -1255,7 +1293,7 @@ int main(int, char**) {
         if (data.density_volume.show_window) draw_density_volume_window(&data);
         //if (data.ramachandran.show_window) draw_ramachandran_window(&data);
         //if (data.shape_space.show_window) draw_shape_space_window(&data);
-        if (data.script.show_editor) draw_property_editor_window(&data);
+        if (data.script.show_editor) draw_script_editor_window(&data);
         if (data.dataset.show_window) draw_dataset_window(&data);
 
         // @NOTE: ImGui::GetIO().WantCaptureMouse does not work with Menu
@@ -1364,7 +1402,8 @@ static void interpolate_atomic_properties(ApplicationData* data) {
     if (!mol.atom.count || !md_trajectory_num_frames(&traj)) return;
 
     const int64_t last_frame = MAX(0LL, md_trajectory_num_frames(&traj) - 1);
-    const double time = CLAMP(data->animation.time, 0.0, double(last_frame));
+    // This is not actually time, but the fractional frame representation
+    const double time = CLAMP(data->animation.frame, 0.0, double(last_frame));
 
     const float t = (float)fractf(time);
     const int64_t frame = (int64_t)time;
@@ -1800,33 +1839,12 @@ static void expand_mask(md_exp_bitfield_t* mask, const md_range_t ranges[], int6
 }
 
 static bool filter_expression(const ApplicationData& data, str_t expr, md_exp_bitfield_t* mask, bool* is_dynamic = NULL, char* error_str = NULL, int64_t error_cap = 0) {
-    if (data.mold.mol.atom.count == 0) return false;
-
-    md_filter_stored_selection_t stored_sel[64] = {0};
-    int64_t                      stored_sel_count = 0;
-
-    /*
-    * // @TODO: Reimplement selections with md_exp_bitfield type
-    for (const auto& s : data.selection.stored_selections) {
-        md_filter_stored_selection_t sel = {
-            .ident = {.ptr = s.name.cstr(), .len = s.name.length() },
-            .bitfield = {.bits = (uint64_t*)s.atom_mask.data(), .num_bits = s.atom_mask.size() }
-        };
-        stored_sel[stored_sel_count++] = sel;
-        if (stored_sel_count == ARRAY_SIZE(stored_sel)) break;
-    }
-    */
-
-    
+    if (data.mold.mol.atom.count == 0) return false;    
     
     md_filter_context_t ctx {
         .ir = &data.mold.script.ir,
         .mol = &data.mold.mol,
         .alloc = frame_allocator,
-        .selection = {
-            .count = stored_sel_count,
-            .ptr = stored_sel,
-        }
     };
 
     md_filter_additional_info_t info {
@@ -2356,18 +2374,27 @@ void draw_context_popup(ApplicationData* data) {
 
 static void draw_animation_control_window(ApplicationData* data) {
     ASSERT(data);
-    int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
+    int num_frames = (int)md_trajectory_num_frames(&data->mold.traj);
     if (num_frames == 0) return;
+
+    ASSERT(data->timeline.x_values);
+    ASSERT(md_array_size(data->timeline.x_values) == num_frames);
 
     ImGui::Begin("Animation");
     ImGui::Text("Num Frames: %lli", num_frames);
-    // ImGui::Checkbox("Apply post-interpolation pbc", &data->animation.apply_pbc);
-    float t = (float)data->animation.time;
-    if (ImGui::SliderFloat("Time", &t, 0, (float)(MAX(0, num_frames - 1)))) {
-        data->animation.time = t;
+
+    double t   = frame_to_time(data->animation.frame, *data);
+    double min = data->timeline.x_values[0];
+    double max = data->timeline.x_values[num_frames - 1];
+    if (ImGui::SliderScalar("Time", ImGuiDataType_Double, &t, &min, &max, "%.2f")) {
+        data->animation.frame = time_to_frame(t, *data);
     }
+    /*
+    if (ImGui::SliderFloat("Time", &t, data->timeline.x_values[0], data->timeline.x_values[num_frames - 1])) {
+    }
+    */
     //ImGui::SliderFloat("Speed", &data->animation.fps, 0.1f, 1000.f, "%.3f", 4.f);
-    ImGui::SliderFloat("Speed", &data->animation.fps, -1000.0f, 1000.f, "%.2f", ImGuiSliderFlags_Logarithmic);
+    ImGui::SliderFloat("Speed", &data->animation.fps, -200.0f, 200.f, "%.2f", ImGuiSliderFlags_Logarithmic);
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Animation Speed in Frames Per Second");
     }
@@ -2391,7 +2418,7 @@ static void draw_animation_control_window(ApplicationData* data) {
     ImGui::SameLine();
     if (ImGui::Button((const char*)ICON_FA_STOP)) {
         data->animation.mode = PlaybackMode::Stopped;
-        data->animation.time = 0.0;
+        data->animation.frame = 0.0;
     }
     ImGui::End();
 }
@@ -2433,30 +2460,54 @@ static void draw_representations_window(ApplicationData* data) {
 
             ImGui::PushItemWidth(item_width);
             ImGui::InputText("name", rep.name.cstr(), rep.name.capacity());
-            if (!rep.filter_is_valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-            if (ImGui::InputText("filter", rep.filter.cstr(), rep.filter.capacity())) {
+            if (!rep.filt_is_valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
+            if (ImGui::InputText("filter", rep.filt.cstr(), rep.filt.capacity())) {
                 update_color = true;
             }
-            if (ImGui::IsItemHovered() && !rep.filter_is_valid) {
-                ImGui::SetTooltip(rep.error.cstr());
+            if (ImGui::IsItemHovered() && !rep.filt_is_valid) {
+                ImGui::SetTooltip(rep.filt_error.cstr());
             }
-            if (!rep.filter_is_valid) ImGui::PopStyleColor();
-            if (rep.filter_is_dynamic) {
-                ImGui::Checkbox("auto-update", &rep.dynamic_reevaluation);
-                if (!rep.dynamic_reevaluation) {
+            if (!rep.filt_is_valid) ImGui::PopStyleColor();
+            if (rep.filt_is_dynamic) {
+                ImGui::Checkbox("auto-update", &rep.dynamic_evaluation);
+                if (!rep.dynamic_evaluation) {
                     ImGui::SameLine();
                     if (ImGui::Button("update")) update_color = true;
                 }
             } else {
-                rep.dynamic_reevaluation = false;
+                rep.dynamic_evaluation = false;
             }
-            if (ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0Cartoon\0\0")) {
+            if (ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0Cartoon\0")) {
                 update_visual_rep = true;
                 
             }
-            if (ImGui::Combo("color mapping", (int*)(&rep.color_mapping),
-                             "Uniform Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0\0")) {
+            if (ImGui::Combo("color", (int*)(&rep.color_mapping),
+                             "Uniform Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0Property\0")) {
                 update_color = true;
+            }
+            if (rep.color_mapping == ColorMapping::Property) {
+                if (!rep.prop_is_valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
+                if (ImGui::InputText("property", rep.prop.cstr(), rep.prop.capacity())) {
+                    update_color = true;
+                }
+                if (ImGui::IsItemHovered() && !rep.prop_is_valid) {
+                    ImGui::SetTooltip(rep.prop_error.cstr());
+                }
+                if (!rep.prop_is_valid) ImGui::PopStyleColor();
+                
+                if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.color_map), ImVec2(item_width,0), rep.color_map)) {
+                    ImGui::OpenPopup("Color Map Selector");
+                }
+                ImGui::DragFloatRange2("Min / Max",&rep.map_beg, &rep.map_end, 0.01f, rep.map_min, rep.map_max);
+                if (ImGui::BeginPopup("Color Map Selector")) {
+                    for (int map = 0; map < ImPlot::GetColormapCount(); ++map) {
+                        if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), ImVec2(item_width,0), map)) {
+                            rep.color_map = map;
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                    ImGui::EndPopup();
+                }
             }
             ImGui::PopItemWidth();
             if (rep.color_mapping == ColorMapping::Uniform) {
@@ -2844,30 +2895,34 @@ bool draw_property_timeline(const TimelineArgs& args) {
         ImVec4 line_col = ImGui::ColorConvertU32ToFloat4(args.col);
         ImPlot::SetNextLineStyle(line_col);
 
-        if (args.values.y_variance) {
-            char lbl[32] = "";
+        if (args.values.count > 0) {
+            ASSERT(args.values.x);
+            ASSERT(args.values.y);
+            if (args.values.y_variance) {
+                char lbl[32] = "";
 
-            snprintf(lbl, sizeof(lbl), "%s (mean)", args.lbl);
-            ImPlot::PlotLine(lbl, args.values.x, args.values.y, args.values.count);
+                snprintf(lbl, sizeof(lbl), "%s (mean)", args.lbl);
+                ImPlot::PlotLine(lbl, args.values.x, args.values.y, args.values.count);
 
-            ImPlot::SetNextFillStyle(line_col, 0.2f);
-            snprintf(lbl, sizeof(lbl), "%s (variance)", args.lbl);
-            ImPlot::PlotShadedG(lbl,
-                [](void* payload, int idx) -> ImPlotPoint {
-                    TimelineArgs* args = (TimelineArgs*)payload;
-                    return ImPlotPoint(args->values.x[idx], args->values.y[idx] - args->values.y_variance[idx]);
-                },
-                (void*)&args,
-                [](void* payload, int idx) -> ImPlotPoint {
-                    TimelineArgs* args = (TimelineArgs*)payload;
-                    return ImPlotPoint(args->values.x[idx], args->values.y[idx] + args->values.y_variance[idx]);
-                },
-                (void*)&args,
-                args.values.count
-            );
-        } 
-        else {
-            ImPlot::PlotLine(args.lbl, args.values.x, args.values.y, args.values.count);
+                ImPlot::SetNextFillStyle(line_col, 0.2f);
+                snprintf(lbl, sizeof(lbl), "%s (variance)", args.lbl);
+                ImPlot::PlotShadedG(lbl,
+                    [](void* payload, int idx) -> ImPlotPoint {
+                        TimelineArgs* args = (TimelineArgs*)payload;
+                        return ImPlotPoint(args->values.x[idx], args->values.y[idx] - args->values.y_variance[idx]);
+                    },
+                    (void*)&args,
+                    [](void* payload, int idx) -> ImPlotPoint {
+                        TimelineArgs* args = (TimelineArgs*)payload;
+                        return ImPlotPoint(args->values.x[idx], args->values.y[idx] + args->values.y_variance[idx]);
+                    },
+                    (void*)&args,
+                    args.values.count
+                );
+            } 
+            else {
+                ImPlot::PlotLine(args.lbl, args.values.x, args.values.y, args.values.count);
+            }
         }
         
         if (*args.input.is_dragging) {
@@ -2906,10 +2961,10 @@ static void draw_timeline_window(ApplicationData* data) {
         constexpr int MAX_PLOT_HEIGHT = 1000;
         static int plot_height = 150;
 
-        double pre_filter_min = data->timeline.filter.min;
-        double pre_filter_max = data->timeline.filter.max;
+        int pre_filter_min = data->timeline.filter.beg_frame;
+        int pre_filter_max = data->timeline.filter.end_frame;
 
-        float* x_values = data->timeline.x_values;
+        const float* x_values = data->timeline.x_values;
         const int num_x_values = md_array_size(data->timeline.x_values);
         const float min_x_value = num_x_values > 0 ? x_values[0] : 0.0f;
         const float max_x_value = num_x_values > 0 ? x_values[num_x_values - 1] : 1.0f;
@@ -2925,7 +2980,7 @@ static void draw_timeline_window(ApplicationData* data) {
                 if (data->timeline.filter.enabled) {
                     ImGui::Checkbox("Temporal Window", &data->timeline.filter.temporal_window);
                     if (data->timeline.filter.temporal_window) {
-                        ImGui::SliderFloat("Extent", &data->timeline.filter.window_extent, 1.0f, max_x_value * 0.5f);
+                        ImGui::SliderInt("Extent", &data->timeline.filter.window_extent, 1, num_x_values / 2);
                     }
                 }
                 ImGui::EndMenu();
@@ -2972,9 +3027,9 @@ static void draw_timeline_window(ApplicationData* data) {
 
             // Create a temporary 'time' representation of the filters min and max value
             // The visualization uses time units while we store 'frame' units
-            const double frame_scl = num_x_values > 0 ? 1.0f / (double)num_x_values : 1.0;
-            double filter_beg = lerp<double,double>(min_x_value, max_x_value, data->timeline.filter.min * frame_scl);
-            double filter_end = lerp<double,double>(min_x_value, max_x_value, data->timeline.filter.max * frame_scl);
+            double filter_beg = frame_to_time((double)data->timeline.filter.beg_frame, *data);
+            double filter_end = frame_to_time((double)data->timeline.filter.end_frame, *data);
+            double time = frame_to_time(data->animation.frame, *data);
 
             TimelineArgs args = {
                 .lbl = "##Empty",
@@ -2987,8 +3042,8 @@ static void draw_timeline_window(ApplicationData* data) {
                     .y_variance = NULL,
                 },
                 .view_range = {
-                    &data->timeline.view_range.min,
-                    &data->timeline.view_range.max,
+                    &data->timeline.view_range.beg_x,
+                    &data->timeline.view_range.end_x,
                 },
                 .input = {
                     .is_dragging = &is_dragging,
@@ -2999,10 +3054,10 @@ static void draw_timeline_window(ApplicationData* data) {
                     .enabled = data->timeline.filter.temporal_window == false,
                     .beg = &filter_beg,
                     .end = &filter_end,
-                    .min = 0,
+                    .min = min_x_value,
                     .max = max_x_value,
                 },
-                .time = &data->animation.time
+                .time = &time
             };
 
             int64_t num_shown_plots = 0;
@@ -3053,18 +3108,17 @@ static void draw_timeline_window(ApplicationData* data) {
                 draw_property_timeline(args);
             }
 
-            // Convert back from time units to frame units
-            const double time_scl = num_x_values > 0 ? 1.0 / (double)(max_x_value - min_x_value) : 1.0;
-            data->timeline.filter.min = lerp<double,double>(0, num_x_values, (filter_beg - min_x_value) * time_scl);
-            data->timeline.filter.max = lerp<double,double>(0, num_x_values, (filter_end - min_x_value) * time_scl);
+            data->animation.frame = time_to_frame(time, *data);
+            data->timeline.filter.beg_frame = (int)time_to_frame(filter_beg, *data);
+            data->timeline.filter.end_frame = (int)time_to_frame(filter_end, *data);
 
-            data->timeline.view_range.min = MAX(data->timeline.view_range.min, 0);
-            data->timeline.view_range.max = MIN(data->timeline.view_range.max, max_x_value);
+            data->timeline.view_range.beg_x = CLAMP(data->timeline.view_range.beg_x, min_x_value, max_x_value);
+            data->timeline.view_range.end_x = CLAMP(data->timeline.view_range.end_x, min_x_value, max_x_value);
 
             ImPlot::GetInputMap() = old_map;
         }
         
-        if (data->timeline.filter.enabled && (data->timeline.filter.min != pre_filter_min || data->timeline.filter.max != pre_filter_max)) {
+        if (data->timeline.filter.enabled && (data->timeline.filter.beg_frame != pre_filter_min || data->timeline.filter.end_frame != pre_filter_max)) {
             data->mold.script.evaluate_filt = true;
         }
     }
@@ -3902,12 +3956,12 @@ static void draw_dataset_window(ApplicationData* data) {
     ImGui::End();
 }
 
-static void draw_property_editor_window(ApplicationData* data) {
+static void draw_script_editor_window(ApplicationData* data) {
     ASSERT(data);
 
     TextEditor& editor = data->script.editor;
 
-    if (ImGui::Begin("Property Editor", &data->script.show_editor, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_MenuBar)) {
+    if (ImGui::Begin("Script Editor", &data->script.show_editor, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_MenuBar)) {
         ImGui::SetWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
         if (ImGui::BeginMenuBar())
         {
@@ -4412,8 +4466,8 @@ static void init_trajectory_data(ApplicationData* data) {
         }
 
         data->timeline.view_range = {min_time, max_time};
-        data->timeline.filter.min = min_frame;
-        data->timeline.filter.max = max_frame;
+        data->timeline.filter.beg_frame = min_frame;
+        data->timeline.filter.end_frame = max_frame;
 
         md_array_resize(data->timeline.x_values, num_frames, persistent_allocator);
         for (int64_t i = 0; i < num_frames; ++i) {
@@ -4423,8 +4477,8 @@ static void init_trajectory_data(ApplicationData* data) {
             data->timeline.x_values[i] = lerp(min_time, max_time, t);
         }
 
-        data->animation.time = CLAMP(data->animation.time, min_time, max_time);
-        int64_t frame_idx = CLAMP((int64_t)(data->animation.time + 0.5), 0, max_frame);
+        data->animation.frame = CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
+        int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, max_frame);
 
         md_trajectory_frame_header_t header;
         md_trajectory_load_frame(&data->mold.traj, frame_idx, &header, data->mold.mol.atom.x, data->mold.mol.atom.y, data->mold.mol.atom.z);
@@ -4518,7 +4572,7 @@ static bool load_trajectory_data(ApplicationData* data, str_t filename) {
     interrupt_async_tasks(data);
     free_trajectory_data(data);
     data->files.trajectory = "";
-    data->animation.time = 0;
+    data->animation.frame = 0;
 
     if (load::traj::open_file(&data->mold.traj, filename, &data->mold.mol, persistent_allocator)) {
         data->files.trajectory = filename;
@@ -4678,7 +4732,7 @@ SerializationObject serialization_targets[] = {
     {"[Files]", "MoleculeFile",             SerializationType_Path,     offsetof(ApplicationData, files.molecule),    sizeof(ApplicationData::files.molecule)},
     {"[Files]", "TrajectoryFile",           SerializationType_Path,     offsetof(ApplicationData, files.trajectory),   sizeof(ApplicationData::files.trajectory)},
     
-    {"[Animation]", "Time",                 SerializationType_Double,   offsetof(ApplicationData, animation.time)},
+    {"[Animation]", "Frame",                SerializationType_Double,   offsetof(ApplicationData, animation.frame)},
     {"[Animation]", "Fps",                  SerializationType_Float,    offsetof(ApplicationData, animation.fps)},
     {"[Animation]", "Interpolation",        SerializationType_Int,      offsetof(ApplicationData, animation.interpolation)},
 
@@ -4694,7 +4748,7 @@ SerializationObject serialization_targets[] = {
     {"[Camera]", "Distance",                SerializationType_Float,    offsetof(ApplicationData, view.camera.focus_distance)},
 
     {"[Representation]", "Name",            SerializationType_String,   offsetof(Representation, name),     sizeof(Representation::name)},
-    {"[Representation]", "Filter",          SerializationType_String,   offsetof(Representation, filter),   sizeof(Representation::filter)},
+    {"[Representation]", "Filter",          SerializationType_String,   offsetof(Representation, filt),     sizeof(Representation::filt)},
     {"[Representation]", "Enabled",         SerializationType_Bool,     offsetof(Representation, enabled)},
     {"[Representation]", "Type",            SerializationType_Int,      offsetof(Representation, type)},
     {"[Representation]", "ColorMapping",    SerializationType_Int,      offsetof(Representation, color_mapping)},
@@ -4977,227 +5031,6 @@ static void save_workspace(ApplicationData* data, str_t filename) {
     }
 }
 
-#if 0
-static void load_workspace(ApplicationData* data, str_t file) {
-    ASSERT(data);
-    clear_representations(data);
-    //clear(data->density_volume.iso.isosurfaces);
-
-    StrBuf<512> new_molecule_file;
-    StrBuf<512> new_trajectory_file;
-
-    str_t txt = load_textfile(file, frame_allocator);
-    defer { free_str(txt, frame_allocator); };
-
-    str_t c_txt = txt, line = {};
-    while (extract_line(&line, &c_txt)) {
-        if (COMPARE(line, "[Files]")) {
-            while (EXTRACT_PARAM_LINE(line, c_txt)) {
-                if (EXTRACT(line, "MoleculeFile=")) {
-                    StrBuf<512> buf = file;
-                    buf += line;
-                    new_molecule_file = md_os_path_make_canonical(buf, default_temp_allocator);
-                }
-                if (EXTRACT(line, "TrajectoryFile=")) {
-                    StrBuf<512> buf = file;
-                    buf += line;
-                    new_trajectory_file = md_os_path_make_canonical(buf, default_temp_allocator);
-                }
-            }
-        } else if (COMPARE(line, "[Representation]")) {
-            Representation* rep = create_representation(data);
-            if (rep) {
-                while (EXTRACT_PARAM_LINE(line, c_txt)) {
-                    if (EXTRACT(line, "Name="))         rep->name           = line;
-                    if (EXTRACT(line, "Filter="))       rep->filter         = line;
-                    if (EXTRACT(line, "Type="))         rep->type           = get_rep_type(line);
-                    if (EXTRACT(line, "ColorMapping=")) rep->color_mapping  = get_color_mapping(line);
-                    if (EXTRACT(line, "Enabled="))      rep->enabled        = parse_int(line) != 0;
-                    if (EXTRACT(line, "StaticColor="))  rep->uniform_color  = parse_vec4(line);
-                    if (EXTRACT(line, "Radius="))       rep->radius         = parse_float(line);
-                    if (EXTRACT(line, "Tension="))      rep->tension        = parse_float(line);
-                    if (EXTRACT(line, "Width="))        rep->width          = parse_float(line);
-                    if (EXTRACT(line, "Thickness="))    rep->thickness      = parse_float(line);
-                }
-            }
-        /*} else if (compare_str_cstr_n(line, "[Property]", 10)) {
-            StrBuf<256> name, args;
-            while (c_txt && c_txt[0] != '[' && (line = extract_line(c_txt))) {
-                if (compare_str_cstr_n(line, "Name=", 5)) name = trim_whitespace(substr(line,5));
-                if (compare_str_cstr_n(line, "Args=", 5)) args = trim_whitespace(substr(line,5));
-            }
-            //stats::create_property(name, args);
-            */
-        } else if (COMPARE(line, "[RenderSettings]")) {
-            while (EXTRACT_PARAM_LINE(line, c_txt)) {
-                if (EXTRACT(line, "SsaoEnabled="))      data->visuals.ssao.enabled      = parse_int(line) != 0;
-                if (EXTRACT(line, "SsaoIntensity="))    data->visuals.ssao.intensity    = parse_float(line);
-                if (EXTRACT(line, "SsaoRadius="))       data->visuals.ssao.radius       = parse_float(line);
-                if (EXTRACT(line, "SsaoBias="))         data->visuals.ssao.bias         = parse_float(line);
-                if (EXTRACT(line, "DofEnabled="))       data->visuals.dof.enabled       = parse_int(line) != 0;
-                if (EXTRACT(line, "DofFocusScale="))    data->visuals.dof.focus_scale   = parse_float(line);
-
-                /*
-                if (compare_str_cstr_n(line, "DensityVolumeEnabled=", 21)) data->density_volume.enabled = parse_int(trim_whitespace(substr(line,21))) != 0;
-                if (compare_str_cstr_n(line, "DensityScale=", 13)) data->density_volume.dvr.density_scale = parse_float(trim_whitespace(substr(line,13)));
-                if (compare_str_cstr_n(line, "AlphaScale=", 11)) data->density_volume.dvr.tf.alpha_scale = parse_float(trim_whitespace(substr(line,11)));
-                if (compare_str_cstr_n(line, "TFFileName=", 11)) {
-                    CStringView tfpath = trim_whitespace(substr(line,11));
-                    if (!compare(tfpath, data->density_volume.dvr.tf.path)) {
-                        data->density_volume.dvr.tf.path = tfpath;
-                        data->density_volume.dvr.tf.dirty = true;
-                    }
-                }
-                if (compare_str_cstr_n(line, "IsoSurfaceRenderingEnabled=", 27)) data->density_volume.iso.enabled = parse_int(trim_whitespace(substr(line,27))) != 0;
-                */
-            }
-        /*} else if (compare_str_cstr_n(line, "[Isosurface]", 21)) {
-            float isovalue = -1.0f;
-            vec4_t isocolor{0.0f};
-            while (c_txt && c_txt[0] != '[' && (line = extract_line(c_txt))) {
-                if (compare_str_cstr_n(line, "Isovalue=", 9)) isovalue = parse_float(trim_whitespace(substr(line,9)));
-                if (compare_str_cstr_n(line, "IsosurfaceColor=", 16)) isocolor = parse_vec4(trim_whitespace(substr(line,16)));
-            }
-            insert(data->density_volume.iso.isosurfaces, isovalue, isocolor);
-            */
-        } else if (compare_str_cstr_n(line, "[Camera]", 8)) {
-            while (c_txt.len && c_txt[0] != '[' && (extract_line(&line, &c_txt))) {
-                if (compare_str_cstr_n(line, "Position=", 9)) {
-                    vec3_t pos = vec3_from_vec4(parse_vec4(trim_whitespace(substr(line,9))));
-                    data->view.camera.position = pos;
-                    data->view.animation.target_position = pos;
-                }
-                if (compare_str_cstr_n(line, "Rotation=", 9)) {
-                    vec4_t v = parse_vec4(trim_whitespace(substr(line, 9,-1)));
-                    data->view.camera.orientation.x = v.x;
-                    data->view.camera.orientation.y = v.y;
-                    data->view.camera.orientation.z = v.z;
-                    data->view.camera.orientation.w = v.w;
-                }
-                if (compare_str_cstr_n(line, "Distance=", 9)) {
-                    data->view.camera.focus_distance = parse_float(trim_whitespace(substr(line,9)));
-                }
-            }
-        }
-    }
-
-    data->files.workspace = file;
-
-    if (!compare_str(new_molecule_file, data->files.molecule) && new_molecule_file) {
-        load_dataset_from_file(data, new_molecule_file);
-    }
-
-    if (!compare_str(new_trajectory_file, data->files.trajectory) && new_trajectory_file) {
-        load_dataset_from_file(data, new_trajectory_file);
-    }
-
-    data->animation = {};
-    reset_view(data, false, true);
-    init_all_representations(data);
-    update_all_representations(data);
-}
-
-static void save_workspace(ApplicationData* data, str_t filename) {
-    md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
-    if (!file) {
-        md_printf(MD_LOG_TYPE_ERROR, "ERROR! Could not save workspace to file '%.*s'\n", (int)filename.len, filename.ptr);
-        return;
-    }
-
-    FILE* fptr = (FILE*)file;
-
-    str_t rel_mol_path = {};
-    str_t rel_traj_path = {};
-
-    if (data->files.molecule) {
-        //std::filesystem::path basep(filename.ptr);
-        //std::filesystem::path filep(data->files.molecule.cstr());
-        //std::filesystem::path relp = filep.lexically_relative(basep);
-        //rel_mol_path = relp.string();
-        rel_mol_path = md_os_path_make_relative(filename, data->files.molecule, default_temp_allocator);
-    }
-
-    if (data->files.trajectory) {
-        //std::filesystem::path basep(filename.ptr);
-        //std::filesystem::path filep(data->files.trajectory.cstr());
-        //std::filesystem::path relp = filep.lexically_relative(basep);
-        //rel_traj_path = relp.string();
-        rel_traj_path = md_os_path_make_relative(filename, data->files.trajectory, default_temp_allocator);
-    }
-
-    fprintf(fptr, "[Files]\n");
-    fprintf(fptr, "MoleculeFile=%.*s\n", (int)rel_mol_path.len, rel_mol_path.ptr);
-    fprintf(fptr, "TrajectoryFile=%.*s\n", (int)rel_traj_path.len, rel_traj_path.ptr);
-    fprintf(fptr, "\n");
-
-    // REPRESENTATIONS
-    for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
-        auto& rep = data->representations.buffer[i];
-        fprintf(fptr, "[Representation]\n");
-        fprintf(fptr, "Name=%s\n", rep.name.cstr());
-        fprintf(fptr, "Filter=%s\n", rep.filter.cstr());
-        fprintf(fptr, "Type=%s\n", get_rep_type_name(rep.type).ptr);
-        fprintf(fptr, "ColorMapping=%s\n", get_color_mapping_name(rep.color_mapping).ptr);
-        fprintf(fptr, "Enabled=%i\n", (int)rep.enabled);
-        fprintf(fptr, "StaticColor=%g,%g,%g,%g\n", rep.uniform_color.x, rep.uniform_color.y, rep.uniform_color.z, rep.uniform_color.w);
-        fprintf(fptr, "Radius=%g\n", rep.radius);
-        fprintf(fptr, "Tension=%g\n", rep.tension);
-        fprintf(fptr, "Width=%g\n", rep.width);
-        fprintf(fptr, "Thickness=%g\n", rep.thickness);
-        fprintf(fptr, "\n");
-    }
-
-    // PROPERTIES
-    /*
-    for (const auto prop : stats::get_properties()) {
-        fprintf(fptr, "[Property]\n");
-        fprintf(fptr, "Name=%s\n", prop->name_buf.cstr());
-        fprintf(fptr, "Args=%s\n", prop->args_buf.cstr());
-        fprintf(fptr, "\n");
-    }
-    */
-
-    fprintf(fptr, "[RenderSettings]\n");
-    fprintf(fptr, "SsaoEnabled=%i\n", data->visuals.ssao.enabled ? 1 : 0);
-    fprintf(fptr, "SsaoIntensity=%g\n", data->visuals.ssao.intensity);
-    fprintf(fptr, "SsaoRadius=%g\n", data->visuals.ssao.radius);
-    fprintf(fptr, "SsaoBias=%g\n", data->visuals.ssao.bias);
-    fprintf(fptr, "\n");
-
-    fprintf(fptr, "DofEnabled=%i\n", data->visuals.dof.enabled ? 1 : 0);
-    fprintf(fptr, "DofFocusScale=%g\n", data->visuals.dof.focus_scale);
-    fprintf(fptr, "\n");
-
-    /*
-    fprintf(fptr, "DensityVolumeEnabled=%i\n", data->density_volume.enabled ? 1 : 0);
-    fprintf(fptr, "DensityScale=%g\n", data->density_volume.dvr.density_scale);
-    fprintf(fptr, "AlphaScale=%g\n", data->density_volume.dvr.tf.alpha_scale);
-    fprintf(fptr, "TFFileName=%s\n", data->density_volume.dvr.tf.path.cstr());
-    fprintf(fptr, "IsoSurfaceRenderingEnabled=%i\n", data->density_volume.iso.enabled ? 1 : 0);
-    fprintf(fptr, "\n");
-
-    for (int i = 0; i < data->density_volume.iso.isosurfaces.count; i++) {
-        const auto value = data->density_volume.iso.isosurfaces.values[i];
-        const auto color = data->density_volume.iso.isosurfaces.colors[i];
-        fprintf(fptr, "[Isosurface]\n");
-        fprintf(fptr, "Isovalue=%g\n", value);
-        fprintf(fptr, "IsosurfaceColor=%g,%g,%g,%g\n", color.x, color.y, color.z, color.w);
-    }
-    */
-
-    fprintf(fptr, "[Camera]\n");
-    fprintf(fptr, "Position=%g,%g,%g\n", data->view.camera.position.x, data->view.camera.position.y, data->view.camera.position.z);
-    fprintf(fptr, "Rotation=%g,%g,%g,%g\n", data->view.camera.orientation.x, data->view.camera.orientation.y, data->view.camera.orientation.z,
-            data->view.camera.orientation.w);
-    fprintf(fptr, "Distance=%g\n", data->view.camera.focus_distance);
-    fprintf(fptr, "\n");
-
-    fclose(fptr);
-
-    data->files.workspace = filename;
-}
-#endif
-
 void create_screenshot(ApplicationData* data) {
     ASSERT(data);
     image_t img;
@@ -5251,7 +5084,7 @@ static Representation* create_representation(ApplicationData* data, Representati
     Representation rep;
     rep.type = type;
     rep.color_mapping = color_mapping;
-    rep.filter = filter;   
+    rep.filt = filter;   
     init_representation(data, &rep);
     update_representation(data, &rep);
     return md_array_push(data->representations.buffer, rep, persistent_allocator);
@@ -5309,6 +5142,11 @@ static void update_representation(ApplicationData* data, Representation* rep) {
 
     const auto& mol = data->mold.mol;
 
+    md_script_property_t prop = {0};
+    if (rep->color_mapping == ColorMapping::Property) {
+        //rep->prop_is_valid = md_script_compile_and_eval_property(&prop, rep->prop, &data->mold.mol, frame_allocator, &data->mold.script.ir, rep->prop_error.beg(), rep->prop_error.capacity());
+    }
+
     switch (rep->color_mapping) {
         case ColorMapping::Uniform:
             color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
@@ -5331,13 +5169,18 @@ static void update_representation(ApplicationData* data, Representation* rep) {
         case ColorMapping::SecondaryStructure:
             color_atoms_secondary_structure(colors, mol.atom.count, mol);
             break;
+        case ColorMapping::Property:
+            // @TODO: Map colors accordingly
+            color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
+            break;
         default:
             ASSERT(false);
             break;
     }
 
-    rep->filter_is_valid = filter_expression(*data, rep->filter, &rep->atom_mask, &rep->filter_is_dynamic, rep->error.beg(), rep->error.capacity());
-    if (rep->filter_is_valid) {
+    rep->filt_is_valid = filter_expression(*data, rep->filt, &rep->atom_mask, &rep->filt_is_dynamic, rep->filt_error.beg(), rep->filt_error.capacity());
+
+    if (rep->filt_is_valid) {
         filter_colors(colors, mol.atom.count, &rep->atom_mask);
         data->representations.atom_visibility_mask_dirty = true;
 
