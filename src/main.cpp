@@ -187,9 +187,9 @@ struct GBuffer {
 struct Representation {
     StrBuf<32> name = "rep";
     StrBuf<256> filt = "all";
-    StrBuf<256> prop = "";
+    //StrBuf<256> prop = "";
     StrBuf<256> filt_error = "";
-    StrBuf<256> prop_error = "";
+    //StrBuf<256> prop_error = "";
 
     RepresentationType type = RepresentationType::Vdw;
     ColorMapping color_mapping = ColorMapping::Cpk;
@@ -201,7 +201,7 @@ struct Representation {
     bool filt_is_valid = false;
     bool filt_is_dynamic = false;
     bool dynamic_evaluation = false;
-    bool prop_is_valid = false;
+    //bool prop_is_valid = false;
 
     uint32_t flags = 0;
 
@@ -217,6 +217,8 @@ struct Representation {
 
     // VDW and Ball & Stick
     float radius = 1.f;
+
+    md_script_property_t* prop = NULL;
 
     // Ball & Stick and Licorice, Ribbons, Cartoon
     float thickness = 1.f;
@@ -2473,15 +2475,6 @@ static void draw_representations_window(ApplicationData* data) {
                 ImGui::SetTooltip("%s", rep.filt_error.cstr());
             }
             if (!rep.filt_is_valid) ImGui::PopStyleColor();
-            if (rep.filt_is_dynamic) {
-                ImGui::Checkbox("auto-update", &rep.dynamic_evaluation);
-                if (!rep.dynamic_evaluation) {
-                    ImGui::SameLine();
-                    if (ImGui::Button("update")) update_color = true;
-                }
-            } else {
-                rep.dynamic_evaluation = false;
-            }
             if (ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0Cartoon\0")) {
                 update_visual_rep = true;
                 
@@ -2491,6 +2484,7 @@ static void draw_representations_window(ApplicationData* data) {
                 update_color = true;
             }
             if (rep.color_mapping == ColorMapping::Property) {
+                /*
                 if (!rep.prop_is_valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
                 if (ImGui::InputText("property", rep.prop.cstr(), rep.prop.capacity())) {
                     update_color = true;
@@ -2499,20 +2493,56 @@ static void draw_representations_window(ApplicationData* data) {
                     ImGui::SetTooltip("%s", rep.prop_error.cstr());
                 }
                 if (!rep.prop_is_valid) ImGui::PopStyleColor();
-                
-                if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.color_map), ImVec2(item_width,0), rep.color_map)) {
-                    ImGui::OpenPopup("Color Map Selector");
-                }
-                ImGui::DragFloatRange2("Min / Max",&rep.map_beg, &rep.map_end, 0.01f, rep.map_min, rep.map_max);
-                if (ImGui::BeginPopup("Color Map Selector")) {
-                    for (int map = 0; map < ImPlot::GetColormapCount(); ++map) {
-                        if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), ImVec2(item_width,0), map)) {
-                            rep.color_map = map;
-                            ImGui::CloseCurrentPopup();
-                        }
+                */
+
+                static int prop_idx = 0;
+                md_script_property_t* props[32] = {0};
+                int num_props = 0;
+                for (int64_t j = 0; j < md_array_size(data->display_properties); ++j) {
+                    if (data->display_properties[j].full_prop->type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
+                        props[num_props++] = data->display_properties[j].full_prop;
                     }
-                    ImGui::EndPopup();
                 }
+
+                rep.prop = NULL;
+                if (num_props > 0) {
+                    prop_idx = CLAMP(prop_idx, 0, num_props-1);
+                    if (ImGui::BeginCombo("Prop", props[prop_idx]->ident.ptr)) {
+                        for (int j = 0; j < num_props; ++j) {
+                            if (ImGui::Selectable(props[j]->ident.ptr, prop_idx == i)) {
+                                prop_idx = j;
+                                rep.map_beg = props[j]->data.min_value;
+                                rep.map_end = props[j]->data.max_value;
+                                update_color = true;
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                    rep.prop = props[prop_idx];
+
+                    if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.color_map), ImVec2(item_width,0), rep.color_map)) {
+                        ImGui::OpenPopup("Color Map Selector");
+                    }
+                    ImGui::DragFloatRange2("Min / Max",&rep.map_beg, &rep.map_end, 0.01f, rep.prop->data.min_value, rep.prop->data.max_value);
+                    if (ImGui::BeginPopup("Color Map Selector")) {
+                        for (int map = 0; map < ImPlot::GetColormapCount(); ++map) {
+                            if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), ImVec2(item_width,0), map)) {
+                                rep.color_map = map;
+                                ImGui::CloseCurrentPopup();
+                            }
+                        }
+                        ImGui::EndPopup();
+                    }
+                }
+            }
+            if (rep.filt_is_dynamic || rep.color_mapping == ColorMapping::Property) {
+                ImGui::Checkbox("auto-update", &rep.dynamic_evaluation);
+                if (!rep.dynamic_evaluation) {
+                    ImGui::SameLine();
+                    if (ImGui::Button("update")) update_color = true;
+                }
+            } else {
+                rep.dynamic_evaluation = false;
             }
             ImGui::PopItemWidth();
             if (rep.color_mapping == ColorMapping::Uniform) {
@@ -5176,7 +5206,26 @@ static void update_representation(ApplicationData* data, Representation* rep) {
             break;
         case ColorMapping::Property:
             // @TODO: Map colors accordingly
-            color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
+            //color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
+            if (rep->prop) {
+                const float* values = 0;
+                int num_values = 0;
+                if (rep->prop->data.aggregate) {
+                    values = rep->prop->data.aggregate->mean;
+                    num_values = rep->prop->data.aggregate->num_values;
+                } else {
+                    values = rep->prop->data.values;
+                    num_values = rep->prop->data.num_values;
+                }
+                int i0 = CLAMP((int)data->animation.frame + 0, 0, rep->prop->data.num_values - 1);
+                int i1 = CLAMP((int)data->animation.frame + 1, 0, rep->prop->data.num_values - 1);
+                float value = lerpf(values[i0], values[i1], fractf((float)data->animation.frame));
+                float t = CLAMP((value - rep->map_beg) / (rep->map_end - rep->map_beg), 0, 1);
+                ImVec4 color = ImPlot::SampleColormap(t, rep->color_map);
+                color_atoms_uniform(colors, mol.atom.count, vec_cast(color));
+            } else {
+                color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
+            }
             break;
         default:
             ASSERT(false);
