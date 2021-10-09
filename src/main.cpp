@@ -5431,7 +5431,11 @@ static bool handle_selection(ApplicationData* data) {
             md_exp_bitfield_t* src_mask = &data->selection.current_selection_mask;
 
             if (region_mode == RegionMode::Append) {
-                md_bitfield_or(dst_mask, src_mask, &mask);
+                if (dst_mask == src_mask) {
+                    md_bitfield_or_inplace(dst_mask, &mask);
+                } else {
+                    md_bitfield_or(dst_mask, src_mask, &mask);
+                }
             } else if (region_mode == RegionMode::Remove) {
                 md_bitfield_not_inplace(&mask, 0, N);
                 if (dst_mask == src_mask) {
