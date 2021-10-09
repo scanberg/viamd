@@ -637,6 +637,7 @@ static double time_to_frame(double time, const ApplicationData& data) {
     double end = data.timeline.x_values[num_frames - 1];
     time = CLAMP(time, beg, end);
 
+    // Estimate the frame
     double frame_est = ((time - beg) / (end-beg)) * (num_frames - 1);
     frame_est = CLAMP(frame_est, 0, num_frames - 1);
 
@@ -644,7 +645,7 @@ static double time_to_frame(double time, const ApplicationData& data) {
     int64_t next_frame_idx = CLAMP((int64_t)frame_est + 1, 0, num_frames - 1);
 
     if (time < (double)data.timeline.x_values[prev_frame_idx]) {
-        // Do linear search down
+        // Linear search down
         for (prev_frame_idx = prev_frame_idx - 1; prev_frame_idx >= 0; --prev_frame_idx) {
             next_frame_idx = prev_frame_idx + 1;
             if ((double)data.timeline.x_values[prev_frame_idx] <= time && time <= (double)data.timeline.x_values[next_frame_idx])
@@ -652,7 +653,7 @@ static double time_to_frame(double time, const ApplicationData& data) {
         }
     }
     else if (time > (double)data.timeline.x_values[next_frame_idx]) {
-        // Do linear search up
+        // Linear search up
         for (next_frame_idx = next_frame_idx + 1; next_frame_idx < num_frames; ++next_frame_idx) {
             prev_frame_idx = next_frame_idx - 1;
             if ((double)data.timeline.x_values[prev_frame_idx] <= time && time <= (double)data.timeline.x_values[next_frame_idx])
@@ -660,10 +661,11 @@ static double time_to_frame(double time, const ApplicationData& data) {
         }
     }
 
-    // Compute true fraction
+    // Compute true fraction between timestamps
     double t = (time - (double)data.timeline.x_values[prev_frame_idx]) / ((double)data.timeline.x_values[next_frame_idx] - (double)data.timeline.x_values[prev_frame_idx]);
     t = CLAMP(t, 0.0, 1.0);
 
+    // Compose frame value (base + fraction)
     return (double)prev_frame_idx + t;
 }
 
@@ -2339,33 +2341,35 @@ void draw_context_popup(ApplicationData* data) {
         if (data->selection.right_clicked != -1 && md_trajectory_num_frames(&data->mold.traj)) {
             if (ImGui::BeginMenu("Recenter Trajectory...")) {
                 const int idx = data->selection.right_clicked;
-                md_range_t atom_range = {0,0};
+
+                md_exp_bitfield_t mask = {0};
+                md_bitfield_init(&mask, frame_allocator);
 
                 if (ImGui::MenuItem("on Atom")) {
-                    atom_range = {idx, idx + 1};
-                }
-                if (ImGui::IsItemHovered()) {
+                    md_bitfield_set_bit(&mask, idx);
                 }
                 if (ImGui::MenuItem("on Residue")) {
                     const auto res_idx = data->mold.mol.atom.residue_idx[idx];
-                    atom_range = data->mold.mol.residue.atom_range[res_idx];
+                    const auto range = data->mold.mol.residue.atom_range[res_idx];
+                    md_bitfield_set_range(&mask, range.beg, range.end);
                 }
                 if (ImGui::MenuItem("on Chain")) {
                     const auto chain_idx = data->mold.mol.atom.chain_idx[idx];
-                    atom_range = data->mold.mol.chain.atom_range[chain_idx];
+                    const auto range = data->mold.mol.chain.atom_range[chain_idx];
+                    md_bitfield_set_range(&mask, range.beg, range.end);
                 }
-
-                if (atom_range.beg != atom_range.end) {
-                    md_exp_bitfield_t bf = {0};
-                    md_bitfield_init(&bf, frame_allocator);
-                    md_bitfield_set_range(&bf, atom_range.beg, atom_range.end);
-                    load::traj::set_recenter_target(&data->mold.traj, &bf);
+                if (md_bitfield_popcount(&data->selection.current_selection_mask) > 0) {
+                    if (ImGui::MenuItem("on Selection")) {
+                        md_bitfield_copy(&mask, &data->selection.current_selection_mask);
+                    }
+                }
+                if (!md_bitfield_empty(&mask)) {
+                    load::traj::set_recenter_target(&data->mold.traj, &mask);
                     load::traj::clear_cache(&data->mold.traj);
                     interpolate_atomic_properties(data);
                     md_gl_molecule_update_atom_previous_position(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
                     ImGui::CloseCurrentPopup();
                 }
-
                 ImGui::EndMenu();
             }
         }
@@ -2466,7 +2470,7 @@ static void draw_representations_window(ApplicationData* data) {
                 update_color = true;
             }
             if (ImGui::IsItemHovered() && !rep.filt_is_valid) {
-                ImGui::SetTooltip(rep.filt_error.cstr());
+                ImGui::SetTooltip("%s", rep.filt_error.cstr());
             }
             if (!rep.filt_is_valid) ImGui::PopStyleColor();
             if (rep.filt_is_dynamic) {
@@ -2492,7 +2496,7 @@ static void draw_representations_window(ApplicationData* data) {
                     update_color = true;
                 }
                 if (ImGui::IsItemHovered() && !rep.prop_is_valid) {
-                    ImGui::SetTooltip(rep.prop_error.cstr());
+                    ImGui::SetTooltip("%s", rep.prop_error.cstr());
                 }
                 if (!rep.prop_is_valid) ImGui::PopStyleColor();
                 
