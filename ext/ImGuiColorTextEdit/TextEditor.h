@@ -266,6 +266,9 @@ public:
 	void InsertText(const std::string& aValue);
 	void InsertText(const char* aValue);
 
+	void AppendText(const std::string& aValue);
+	void AppendText(const char* aValue);
+
 	void MoveUp(int aAmount = 1, bool aSelect = false);
 	void MoveDown(int aAmount = 1, bool aSelect = false);
 	void MoveLeft(int aAmount = 1, bool aSelect = false, bool aWordMode = false);

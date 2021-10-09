@@ -1572,6 +1572,27 @@ void TextEditor::InsertText(const char * aValue)
 	Colorize(start.mLine - 1, totalLines + 2);
 }
 
+void TextEditor::AppendText(const std::string & aValue)
+{
+	AppendText(aValue.c_str());
+}
+
+void TextEditor::AppendText(const char * aValue)
+{
+	if (aValue == nullptr)
+		return;
+
+	Coordinates pos = SanitizeCoordinates(Coordinates(INT_MAX, INT_MAX));
+	auto start = std::min(pos, mState.mSelectionStart);
+	int totalLines = pos.mLine - start.mLine;
+
+	totalLines += InsertTextAt(pos, aValue);
+
+	SetSelection(pos, pos);
+	SetCursorPosition(pos);
+	Colorize(start.mLine - 1, totalLines + 2);
+}
+
 void TextEditor::DeleteSelection()
 {
 	assert(mState.mSelectionEnd >= mState.mSelectionStart);

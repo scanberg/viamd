@@ -154,6 +154,10 @@ enum RepBit_ {
 
 // #struct Structure Declarations
 
+struct SingleSelectionSequence {
+    int32_t idx[4] = {-1, -1, -1, -1};
+};
+
 struct PickingData {
     uint32_t idx = INVALID_PICKING_IDX;
     float depth = 1.0f;
@@ -347,6 +351,7 @@ struct ApplicationData {
 
         int32_t hovered = -1;
         int32_t right_clicked = -1;
+        SingleSelectionSequence single_selection_sequence;
 
         md_exp_bitfield_t current_selection_mask{};
         md_exp_bitfield_t current_highlight_mask{};
@@ -669,6 +674,54 @@ static double time_to_frame(double time, const ApplicationData& data) {
 
     // Compose frame value (base + fraction)
     return (double)prev_frame_idx + t;
+}
+
+static void single_selection_sequence_clear(SingleSelectionSequence* seq) {
+    ASSERT(seq);
+    for (int64_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
+        seq->idx[i] = -1;
+    }
+}
+
+static void single_selection_sequence_push_back(SingleSelectionSequence* seq, int32_t idx) {
+    ASSERT(seq);
+    for (int64_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
+        if (seq->idx[i] == -1) {
+            seq->idx[i] = idx;
+            break;
+        }
+    }
+}
+
+static void single_selection_sequence_pop_back(SingleSelectionSequence* seq) {
+    ASSERT(seq);
+    int64_t i = 0;
+    for (; i < ARRAY_SIZE(seq->idx); ++i) {
+        if (seq->idx[i] == -1) break;
+    }
+    if (i > 0) {
+        seq->idx[i-1] = -1;
+    }
+}
+
+static int32_t single_selection_sequence_last(const SingleSelectionSequence* seq) {
+    ASSERT(seq);
+    int64_t i = 0;
+    for (; i < ARRAY_SIZE(seq->idx); ++i) {
+        if (seq->idx[i] == -1) break;
+    }
+    if (i > 0) {
+        return seq->idx[i-1];
+    }
+    return -1;
+}
+
+static int64_t single_selection_sequence_count(const SingleSelectionSequence* seq) {
+    int64_t i = 0;
+    for (; i < ARRAY_SIZE(seq->idx); ++i) {
+        if (seq->idx[i] == -1) break;
+    }
+    return i;
 }
 
 static void launch_prefetch_job(ApplicationData* data);
@@ -2028,9 +2081,8 @@ static void draw_main_menu(ApplicationData* data) {
             ImGui::BeginGroup();
             ImGui::Checkbox("Simulation Box", &data->simulation_box.enabled);
             if (data->simulation_box.enabled) {
-                ImGui::PushID("simulation_box");
-                ImGui::ColorEdit4Minimal("Color", data->simulation_box.color.elem);
-                ImGui::PopID();
+                ImGui::SameLine();
+                ImGui::ColorEdit4Minimal("##Box-Color", data->simulation_box.color.elem);
             }
             ImGui::EndGroup();
             /*
@@ -2301,14 +2353,165 @@ void remap_atom_elem(ApplicationData* data, str_t lbl, md_element_t new_elem) {
 void draw_context_popup(ApplicationData* data) {
     ASSERT(data);
 
-    const bool shift_down = data->ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data->ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
+    if (!data->mold.mol.atom.count) return;
+
+    const bool shift_down = ImGui::GetIO().KeyShift;
+    const int64_t sss_count = single_selection_sequence_count(&data->selection.single_selection_sequence);
+    const int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
+
     if (data->ctx.input.mouse.clicked[1] && !shift_down && !ImGui::GetIO().WantTextInput) {
-        if (data->selection.right_clicked != -1 && data->mold.mol.atom.count) {
+        if (data->selection.right_clicked != -1 || sss_count > 1) {
             ImGui::OpenPopup("AtomContextPopup");
         }
     }
 
+    /*
+    if (ImGui::Begin("SSS windows")) {
+        ImGui::Text("sel_seq = %i,%i,%i,%i",
+            data->selection.single_selection_sequence.idx[0],
+            data->selection.single_selection_sequence.idx[1],
+            data->selection.single_selection_sequence.idx[2],
+            data->selection.single_selection_sequence.idx[3]);
+        ImGui::End();
+    }
+    */
+
     if (ImGui::BeginPopup("AtomContextPopup")) {
+        
+        if (sss_count > 1) {
+            if (ImGui::BeginMenu("Create Property")) {
+                char ident[128] = "prop";
+                char buf[128] = "";
+                ImGui::InputText("##identifier", ident, sizeof(ident));
+
+                if (sss_count == 2) {
+                    int32_t idx[2] = {data->selection.single_selection_sequence.idx[0], data->selection.single_selection_sequence.idx[1]};
+
+                    snprintf(buf, sizeof(buf), "%s = distance(%i, %i);", ident, idx[0]+1, idx[1]+1);
+                    if (ImGui::MenuItem(buf)) {
+                        data->script.editor.AppendText("\n");
+                        data->script.editor.AppendText(buf);
+                        ImGui::CloseCurrentPopup();
+                    }
+
+                    if (data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[1]]) {
+                        int32_t res_idx = data->mold.mol.atom.residue_idx[idx[0]];
+                        idx[0] -= data->mold.mol.residue.atom_range[res_idx].beg;
+                        idx[1] -= data->mold.mol.residue.atom_range[res_idx].beg;
+
+                        snprintf(buf, sizeof(buf), "%s = distance(%i, %i) in residue(%i);", ident, idx[0]+1, idx[1]+1, res_idx+1);
+                        if (ImGui::MenuItem(buf)) {
+                            data->script.editor.AppendText("\n");
+                            data->script.editor.AppendText(buf);
+                            ImGui::CloseCurrentPopup();
+                        }
+
+                        int32_t resid = data->mold.mol.residue.id[idx[0]];
+                        snprintf(buf, sizeof(buf), "%s = distance(%i, %i) in resid(%i);", ident, idx[0]+1, idx[1]+1, resid);
+                        if (ImGui::MenuItem(buf)) {
+                            data->script.editor.AppendText("\n");
+                            data->script.editor.AppendText(buf);
+                            ImGui::CloseCurrentPopup();
+                        }
+
+                        const char* resname = data->mold.mol.residue.name[res_idx];
+                        snprintf(buf, sizeof(buf), "%s = distance(%i, %i) in resname(%s);", ident, idx[0]+1, idx[1]+1, resname);
+                        if (ImGui::MenuItem(buf)) {
+                            data->script.editor.AppendText("\n");
+                            data->script.editor.AppendText(buf);
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                }
+                else if(sss_count == 3) {
+                    int32_t idx[3] = {data->selection.single_selection_sequence.idx[0], data->selection.single_selection_sequence.idx[1], data->selection.single_selection_sequence.idx[2]};
+
+                    snprintf(buf, sizeof(buf), "%s = angle(%i, %i, %i);", ident, idx[0]+1, idx[1]+1, idx[2]+1);
+                    if (ImGui::MenuItem(buf)) {
+                        data->script.editor.AppendText("\n");
+                        data->script.editor.AppendText(buf);
+                        ImGui::CloseCurrentPopup();
+                    }
+
+                    if (data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[1]] &&
+                        data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[2]]) {
+
+                        int32_t res_idx = data->mold.mol.atom.residue_idx[idx[0]];
+                        idx[0] -= data->mold.mol.residue.atom_range[res_idx].beg;
+                        idx[1] -= data->mold.mol.residue.atom_range[res_idx].beg;
+                        idx[2] -= data->mold.mol.residue.atom_range[res_idx].beg;
+
+                        snprintf(buf, sizeof(buf), "%s = angle(%i, %i, %i) in residue(%i);", ident, idx[0]+1, idx[1]+1, idx[2]+1, res_idx+1);
+                        if (ImGui::MenuItem(buf)) {
+                            data->script.editor.AppendText("\n");
+                            data->script.editor.AppendText(buf);
+                            ImGui::CloseCurrentPopup();
+                        }
+
+                        int32_t resid = data->mold.mol.residue.id[idx[0]];
+                        snprintf(buf, sizeof(buf), "%s = angle(%i, %i, %i) in resid(%i);", ident, idx[0]+1, idx[1]+1, idx[2]+1, resid);
+                        if (ImGui::MenuItem(buf)) {
+                            data->script.editor.AppendText("\n");
+                            data->script.editor.AppendText(buf);
+                            ImGui::CloseCurrentPopup();
+                        }
+
+                        const char* resname = data->mold.mol.residue.name[res_idx];
+                        snprintf(buf, sizeof(buf), "%s = angle(%i, %i, %i) in resname(%s);", ident, idx[0]+1, idx[1]+1, idx[2]+1, resname);
+                        if (ImGui::MenuItem(buf)) {
+                            data->script.editor.AppendText("\n");
+                            data->script.editor.AppendText(buf);
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                }
+                else if(sss_count == 4) {
+                    int32_t idx[4] = {data->selection.single_selection_sequence.idx[0], data->selection.single_selection_sequence.idx[1], data->selection.single_selection_sequence.idx[2], data->selection.single_selection_sequence.idx[3]};
+
+                    snprintf(buf, sizeof(buf), "%s = dihedral(%i, %i, %i, %i);", ident, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1);
+                    if (ImGui::MenuItem(buf)) {
+                        data->script.editor.AppendText("\n");
+                        data->script.editor.AppendText(buf);
+                        ImGui::CloseCurrentPopup();
+                    }
+
+                    if (data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[1]] &&
+                        data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[2]] &&
+                        data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[3]]) {
+
+                        int32_t res_idx = data->mold.mol.atom.residue_idx[idx[0]];
+                        idx[0] -= data->mold.mol.residue.atom_range[res_idx].beg;
+                        idx[1] -= data->mold.mol.residue.atom_range[res_idx].beg;
+                        idx[2] -= data->mold.mol.residue.atom_range[res_idx].beg;
+                        idx[3] -= data->mold.mol.residue.atom_range[res_idx].beg;
+
+                        snprintf(buf, sizeof(buf), "%s = dihedral(%i, %i, %i, %i) in residue(%i);", ident, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, res_idx+1);
+                        if (ImGui::MenuItem(buf)) {
+                            data->script.editor.AppendText("\n");
+                            data->script.editor.AppendText(buf);
+                            ImGui::CloseCurrentPopup();
+                        }
+
+                        int32_t resid = data->mold.mol.residue.id[idx[0]];
+                        snprintf(buf, sizeof(buf), "%s = dihedral(%i, %i, %i, %i) in resid(%i);", ident, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, resid);
+                        if (ImGui::MenuItem(buf)) {
+                            data->script.editor.AppendText("\n");
+                            data->script.editor.AppendText(buf);
+                            ImGui::CloseCurrentPopup();
+                        }
+
+                        const char* resname = data->mold.mol.residue.name[res_idx];
+                        snprintf(buf, sizeof(buf), "%s = dihedral(%i, %i, %i, %i) in resname(%s);", ident, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, resname);
+                        if (ImGui::MenuItem(buf)) {
+                            data->script.editor.AppendText("\n");
+                            data->script.editor.AppendText(buf);
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                }
+                ImGui::EndMenu();
+            }
+        }
         if (data->selection.right_clicked != -1) {
             if (ImGui::BeginMenu("Remap Atom Element")) {
                 int idx = data->selection.right_clicked;
@@ -2342,7 +2545,7 @@ void draw_context_popup(ApplicationData* data) {
                 ImGui::EndMenu();
             }
         }
-        if (data->selection.right_clicked != -1 && md_trajectory_num_frames(&data->mold.traj)) {
+        if (data->selection.right_clicked != -1 && num_frames > 0) {
             if (ImGui::BeginMenu("Recenter Trajectory...")) {
                 const int idx = data->selection.right_clicked;
 
@@ -5369,7 +5572,7 @@ static bool handle_selection(ApplicationData* data) {
     static bool region_select = false;
     static application::Coordinate x0;
     const application::Coordinate x1 = data->ctx.input.mouse.win_coord;
-    const bool shift_down = data->ctx.input.key.down[Key::KEY_LEFT_SHIFT] || data->ctx.input.key.down[Key::KEY_RIGHT_SHIFT];
+    const bool shift_down = ImGui::GetIO().KeyShift;
     const bool mouse_down = data->ctx.input.mouse.down[0] || data->ctx.input.mouse.down[1];
 
     md_exp_bitfield_t mask;
@@ -5487,13 +5690,25 @@ static bool handle_selection(ApplicationData* data) {
             if (data->picking.idx != INVALID_PICKING_IDX) {
                 const bool append = data->ctx.input.mouse.clicked[0];
                 if (append) {
+                    if (data->selection.level_mode == SelectionLevel::Atom && data->picking.idx != -1) {
+                        single_selection_sequence_push_back(&data->selection.single_selection_sequence, data->picking.idx);
+                    }
                     md_bitfield_or_inplace(&data->selection.current_selection_mask, &mask);
                 } else {
                     md_bitfield_not_inplace(&mask, 0, N);
                     md_bitfield_and_inplace(&data->selection.current_selection_mask, &mask);
+
+                    if (data->selection.level_mode == SelectionLevel::Atom && data->picking.idx != -1) {
+                        if (single_selection_sequence_last(&data->selection.single_selection_sequence) == data->picking.idx) {
+                            single_selection_sequence_pop_back(&data->selection.single_selection_sequence);
+                        } else {
+                            single_selection_sequence_clear(&data->selection.single_selection_sequence);
+                        }
+                    }
                 }
             } else if (data->ctx.input.mouse.clicked[1]) {
                 md_bitfield_clear(&data->selection.current_selection_mask);
+                single_selection_sequence_clear(&data->selection.single_selection_sequence);
             }
         }
         return true;
@@ -5620,7 +5835,7 @@ static void fill_gbuffer(ApplicationData* data) {
     PUSH_GPU_SECTION("G-Buffer fill")
 
     // SIMULATION BOX
-        if (data->simulation_box.enabled && data->simulation_box.box != mat3_t{0}) {
+    if (data->simulation_box.enabled && data->simulation_box.box != mat3_t{0}) {
         PUSH_GPU_SECTION("Draw Simulation Box")
 
         immediate::set_model_view_matrix(data->view.param.matrix.current.view);
