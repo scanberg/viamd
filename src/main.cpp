@@ -2362,6 +2362,7 @@ void draw_context_popup(ApplicationData* data) {
                     load::traj::set_recenter_target(&data->mold.traj, &bf);
                     load::traj::clear_cache(&data->mold.traj);
                     interpolate_atomic_properties(data);
+                    md_gl_molecule_update_atom_previous_position(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
                     ImGui::CloseCurrentPopup();
                 }
 
@@ -5119,7 +5120,7 @@ static void recompute_atom_visibility_mask(ApplicationData* data) {
     for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
         auto& rep = data->representations.buffer[i];
         if (!rep.enabled) continue;
-        md_bitfield_or(&mask, &mask, &rep.atom_mask);
+        md_bitfield_or_inplace(&mask, &rep.atom_mask);
     }
 
     data->mold.dirty_buffers |= MolBit_DirtyFlags;
