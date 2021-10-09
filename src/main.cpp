@@ -1283,13 +1283,13 @@ int main(int, char**) {
         // GUI ELEMENTS
         data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, (float)data.ctx.timing.delta_s);
 
+        clear_highlight(&data);
+
         draw_main_menu(&data);
         draw_context_popup(&data);
         draw_async_task_window(&data);
         draw_animation_control_window(&data);
         draw_molecule_dynamic_info_window(&data);
-
-        clear_highlight(&data);
 
         if (data.representations.show_window) draw_representations_window(&data);
         if (data.timeline.show_window) draw_timeline_window(&data);
@@ -1306,6 +1306,7 @@ int main(int, char**) {
                 draw_atom_info_window(data, data.picking.idx);
             }
         }
+
 
         PUSH_GPU_SECTION("Imgui render")
         application::render_imgui(&data.ctx);
@@ -1483,11 +1484,11 @@ static void interpolate_atomic_properties(ApplicationData* data) {
                         .y = y[0],
                         .z = z[0],
                     },
-                            {
-                                .x = x[1],
-                                .y = y[1],
-                                .z = z[1],
-                            }
+                    {
+                        .x = x[1],
+                        .y = y[1],
+                        .z = z[1],
+                    }
                 },
                 },
                 .pbc = {0}, // memcpy this afterwards
@@ -2346,31 +2347,49 @@ void draw_context_popup(ApplicationData* data) {
 
                 md_exp_bitfield_t mask = {0};
                 md_bitfield_init(&mask, frame_allocator);
+                bool apply = false;
 
-                if (ImGui::MenuItem("on Atom")) {
+                apply |= ImGui::MenuItem("on Atom");
+                if (ImGui::IsItemHovered()) {
                     md_bitfield_set_bit(&mask, idx);
                 }
-                if (ImGui::MenuItem("on Residue")) {
+
+                apply |= ImGui::MenuItem("on Residue");
+                if (ImGui::IsItemHovered()) {
                     const auto res_idx = data->mold.mol.atom.residue_idx[idx];
                     const auto range = data->mold.mol.residue.atom_range[res_idx];
                     md_bitfield_set_range(&mask, range.beg, range.end);
                 }
-                if (ImGui::MenuItem("on Chain")) {
-                    const auto chain_idx = data->mold.mol.atom.chain_idx[idx];
-                    const auto range = data->mold.mol.chain.atom_range[chain_idx];
-                    md_bitfield_set_range(&mask, range.beg, range.end);
+
+                if (data->mold.mol.atom.chain_idx && data->mold.mol.atom.chain_idx[idx] != -1) {
+                    apply |= ImGui::MenuItem("on Chain");
+                    if (ImGui::IsItemHovered()) {
+                        const auto chain_idx = data->mold.mol.atom.chain_idx[idx];
+                        const auto range = data->mold.mol.chain.atom_range[chain_idx];
+                        md_bitfield_set_range(&mask, range.beg, range.end);
+                    }
                 }
+
                 if (md_bitfield_popcount(&data->selection.current_selection_mask) > 0) {
-                    if (ImGui::MenuItem("on Selection")) {
+                    apply |= ImGui::MenuItem("on Selection");
+                    if (ImGui::IsItemHovered()) {
                         md_bitfield_copy(&mask, &data->selection.current_selection_mask);
                     }
                 }
+
                 if (!md_bitfield_empty(&mask)) {
-                    load::traj::set_recenter_target(&data->mold.traj, &mask);
-                    load::traj::clear_cache(&data->mold.traj);
-                    interpolate_atomic_properties(data);
-                    md_gl_molecule_update_atom_previous_position(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
-                    ImGui::CloseCurrentPopup();
+                    md_bitfield_copy(&data->selection.current_highlight_mask, &mask);
+                    data->mold.dirty_buffers |= MolBit_DirtyFlags;
+
+                    if (apply) {
+                        load::traj::set_recenter_target(&data->mold.traj, &mask);
+                        load::traj::clear_cache(&data->mold.traj);
+                        interpolate_atomic_properties(data);
+                        data->mold.dirty_buffers |= MolBit_DirtyPosition;
+                        update_md_buffers(data);
+                        md_gl_molecule_update_atom_previous_position(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
+                        ImGui::CloseCurrentPopup();
+                    }
                 }
                 ImGui::EndMenu();
             }
