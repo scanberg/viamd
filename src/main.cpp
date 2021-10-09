@@ -758,10 +758,10 @@ static bool filter_expression(const ApplicationData& data, str_t expr, md_exp_bi
 static void modify_field(md_exp_bitfield_t* bf, const md_exp_bitfield_t* mask, SelectionOperator op) {
     switch(op) {
     case SelectionOperator::Or:
-        md_bitfield_or(bf, bf, mask);
+        md_bitfield_or_inplace(bf, mask);
         break;
     case SelectionOperator::And:
-        md_bitfield_and(bf, bf, mask);
+        md_bitfield_and_inplace(bf, mask);
         break;
     case SelectionOperator::Replace:
         md_bitfield_copy(bf, mask);
@@ -2381,7 +2381,7 @@ static void draw_animation_control_window(ApplicationData* data) {
     ASSERT(md_array_size(data->timeline.x_values) == num_frames);
 
     ImGui::Begin("Animation");
-    ImGui::Text("Num Frames: %lli", num_frames);
+    ImGui::Text("Num Frames: %i", num_frames);
 
     double t   = frame_to_time(data->animation.frame, *data);
     double min = data->timeline.x_values[0];
@@ -5142,10 +5142,10 @@ static void update_representation(ApplicationData* data, Representation* rep) {
 
     const auto& mol = data->mold.mol;
 
-    md_script_property_t prop = {0};
-    if (rep->color_mapping == ColorMapping::Property) {
+    //md_script_property_t prop = {0};
+    //if (rep->color_mapping == ColorMapping::Property) {
         //rep->prop_is_valid = md_script_compile_and_eval_property(&prop, rep->prop, &data->mold.mol, frame_allocator, &data->mold.script.ir, rep->prop_error.beg(), rep->prop_error.capacity());
-    }
+    //}
 
     switch (rep->color_mapping) {
         case ColorMapping::Uniform:
@@ -5379,8 +5379,12 @@ static bool handle_selection(ApplicationData* data) {
             if (region_mode == RegionMode::Append) {
                 md_bitfield_or(dst_mask, src_mask, &mask);
             } else if (region_mode == RegionMode::Remove) {
-                md_bitfield_not(&mask, &mask, 0, N);
-                md_bitfield_and(dst_mask, src_mask, &mask);
+                md_bitfield_not_inplace(&mask, 0, N);
+                if (dst_mask == src_mask) {
+                    md_bitfield_and_inplace(dst_mask, &mask);
+                } else {
+                    md_bitfield_and(dst_mask, src_mask, &mask);
+                }
             }
             data->mold.dirty_buffers |= MolBit_DirtyFlags;
 
@@ -5402,10 +5406,10 @@ static bool handle_selection(ApplicationData* data) {
             if (data->picking.idx != INVALID_PICKING_IDX) {
                 const bool append = data->ctx.input.mouse.clicked[0];
                 if (append) {
-                    md_bitfield_or(&data->selection.current_selection_mask, &data->selection.current_selection_mask, &mask);
+                    md_bitfield_or_inplace(&data->selection.current_selection_mask, &mask);
                 } else {
-                    md_bitfield_not(&mask, &mask, 0, N);
-                    md_bitfield_and(&data->selection.current_selection_mask, &data->selection.current_selection_mask, &mask);
+                    md_bitfield_not_inplace(&mask, 0, N);
+                    md_bitfield_and_inplace(&data->selection.current_selection_mask, &mask);
                 }
             } else if (data->ctx.input.mouse.clicked[1]) {
                 md_bitfield_clear(&data->selection.current_selection_mask);
