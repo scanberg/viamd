@@ -671,6 +671,7 @@ static double time_to_frame(double time, const ApplicationData& data) {
     return (double)prev_frame_idx + t;
 }
 
+static void launch_prefetch_job(ApplicationData* data);
 static void update_properties(DisplayProperty** prop_items, md_script_property_t* full_props, md_script_property_t* filt_props, int64_t num_props);
 
 static void interpolate_atomic_properties(ApplicationData* data);
@@ -2384,6 +2385,7 @@ void draw_context_popup(ApplicationData* data) {
                     if (apply) {
                         load::traj::set_recenter_target(&data->mold.traj, &mask);
                         load::traj::clear_cache(&data->mold.traj);
+                        launch_prefetch_job(data);
                         interpolate_atomic_properties(data);
                         data->mold.dirty_buffers |= MolBit_DirtyPosition;
                         update_md_buffers(data);
@@ -4372,9 +4374,20 @@ static void init_molecule_data(ApplicationData* data) {
     }
 }
 
-static void launch_prefetch_job(md_trajectory_i* traj) {
-    uint32_t num_frames = (uint32_t)md_trajectory_num_frames(traj);
+static void launch_prefetch_job(ApplicationData* data) {
+    uint32_t num_frames = (uint32_t)md_trajectory_num_frames(&data->mold.traj);
     if (!num_frames) return;
+
+    if (data->tasks.prefetch_frames.id != 0) {
+        task_system::interrupt_and_wait(data->tasks.prefetch_frames); // This should never happen
+    }
+    data->tasks.prefetch_frames = task_system::enqueue_pool("Prefetch Frames", num_frames, [data](task_system::TaskSetRange range) {
+        for (uint32_t i = range.beg; i < range.end; ++i) {
+            md_trajectory_frame_header_t header;
+            md_trajectory_load_frame(&data->mold.traj, i, &header, 0, 0, 0);
+            data->timeline.x_values[i] = header.timestamp;
+        }
+    });
 
 
 #if 0
@@ -4552,16 +4565,7 @@ static void init_trajectory_data(ApplicationData* data) {
                 md_array_resize(data->trajectory_data.backbone_angles.data, data->mold.mol.backbone.count * num_frames, persistent_allocator);
 
             // Launch work to prefetch frames
-            if (data->tasks.prefetch_frames.id != 0) {
-                task_system::interrupt_and_wait(data->tasks.prefetch_frames); // This should never happen
-            }
-            data->tasks.prefetch_frames = task_system::enqueue_pool("Prefetch Frames", num_frames, [data](task_system::TaskSetRange range) {
-                for (uint32_t i = range.beg; i < range.end; ++i) {
-                    md_trajectory_frame_header_t header;
-                    md_trajectory_load_frame(&data->mold.traj, i, &header, 0, 0, 0);
-                    data->timeline.x_values[i] = header.timestamp;
-                }
-            });
+            launch_prefetch_job(data);
 
             // Launch work to compute the values
             if (data->tasks.backbone_computations.id != 0) {
