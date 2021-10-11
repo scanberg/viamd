@@ -60,9 +60,10 @@
 #include <stdio.h>
 
 #define PICKING_JITTER_HACK 0
-#define SHOW_IMGUI_DEMO_WINDOW 1
+#define SHOW_IMGUI_DEMO_WINDOW 0
 #define EXPERIMENTAL_CONE_TRACED_AO 0
 #define COMPILATION_TIME_DELAY_IN_SECONDS 1.0
+#define IR_SEMAPHORE_MAX_COUNT 3
 
 #if MD_PLATFORM_OSX
 const Key::Key_t KEY_CONSOLE = Key::KEY_WORLD_1;
@@ -320,10 +321,12 @@ struct ApplicationData {
             md_script_eval_t  full_eval = {};
             md_script_eval_t  filt_eval = {};
 
+            // Semaphore to control access to IR
+            md_semaphore_t ir_semaphore = {};
+
             md_exp_bitfield_t frame_mask = {};
 
-            md_semaphore_t semaphore = {};
-
+            bool ir_is_valid = false;
             bool compile_ir = false;
             bool evaluate_full = false;
             bool evaluate_filt = false;
@@ -397,8 +400,10 @@ struct ApplicationData {
             int  beg_frame = 0;
             int  end_frame = 1;
             
-            bool temporal_window = false;
-            int  window_extent = 10;
+            struct {
+                bool enabled = false;
+                int extent_in_frames = 10;
+            } temporal_window;
         } filter;
 
         struct {
@@ -585,6 +590,16 @@ struct ApplicationData {
     } ramachandran;
     */
 
+    struct {
+        bool show_window = false;
+        bool input_valid = false;
+        StrBuf<256> input = "";
+        StrBuf<256> err_text = "";
+        vec2_t*   point_pos = 0;
+        uint32_t* point_col = 0;
+        md_script_eval_t  eval = {};
+    } shape_space;
+
     // --- REPRESENTATIONS ---
     struct {
         Representation* buffer = {};
@@ -765,7 +780,7 @@ static void draw_atom_info_window(const ApplicationData& data, int atom_idx);
 static void draw_molecule_dynamic_info_window(ApplicationData* data);
 static void draw_async_task_window(ApplicationData* data);
 //static void draw_reference_frame_window(ApplicationData* data);
-//static void draw_shape_space_window(ApplicationData* data);
+static void draw_shape_space_window(ApplicationData* data);
 static void draw_density_volume_window(ApplicationData* data);
 static void draw_script_editor_window(ApplicationData* data);
 static void draw_dataset_window(ApplicationData* data);
@@ -913,7 +928,7 @@ int main(int, char**) {
     md_bitfield_init(&data.representations.atom_visibility_mask, persistent_allocator);
     md_bitfield_init(&data.mold.script.frame_mask, persistent_allocator);
 
-    md_semaphore_init(&data.mold.script.semaphore, 2);
+    md_semaphore_init(&data.mold.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT);
 
     md_logger_i logger = {
         .inst = (md_logger_o*)&data.console,
@@ -1113,13 +1128,13 @@ int main(int, char**) {
             }
         }
 
-        if (data.timeline.filter.temporal_window) {
+        if (data.timeline.filter.temporal_window.enabled) {
             int pre_beg = data.timeline.filter.beg_frame;
             int pre_end = data.timeline.filter.end_frame;
-            const auto half_window_ext = data.timeline.filter.window_extent * 0.5f;
+            const auto half_window_ext = data.timeline.filter.temporal_window.extent_in_frames * 0.5;
             data.timeline.filter.beg_frame = (int)CLAMP(data.animation.frame - half_window_ext, 0.0, max_frame);
             data.timeline.filter.end_frame = (int)CLAMP(data.animation.frame + half_window_ext, 0.0, max_frame);
-            if (data.timeline.filter.beg_frame != pre_beg || data.timeline.filter.end_frame != pre_end) {
+            if (data.mold.script.ir_is_valid && data.timeline.filter.beg_frame != pre_beg || data.timeline.filter.end_frame != pre_end) {
                 data.mold.script.evaluate_filt = true;
             }
         }
@@ -1185,36 +1200,34 @@ int main(int, char**) {
                 md_script_eval_interrupt(&data.mold.script.full_eval);
                 md_script_eval_interrupt(&data.mold.script.filt_eval);
 
-                // Try aquire 2 semaphores
-                if (md_semaphore_try_aquire(&data.mold.script.semaphore)) {
-                    if (md_semaphore_try_aquire(&data.mold.script.semaphore)) {
-                        // Now we hold all semaphores for the script
-                        data.mold.script.compile_ir = false;
-                        data.mold.script.time_since_last_change = 0;
+                // Try aquire all semaphores
+                if (md_semaphore_try_aquire_n(&data.mold.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT)) {
+                    // Now we hold all semaphores for the script
+                    data.mold.script.compile_ir = false;
+                    data.mold.script.time_since_last_change = 0;
 
-                        TextEditor& editor = data.script.editor;
+                    TextEditor& editor = data.script.editor;
 
-                        std::string src = editor.GetText();
-                        str_t src_str = {.ptr = src.data(), .len = (int64_t)src.length()};
+                    std::string src = editor.GetText();
+                    str_t src_str = {.ptr = src.data(), .len = (int64_t)src.length()};
 
-                        editor.ClearMarkers();
-                        editor.ClearErrorMarkers();
+                    editor.ClearMarkers();
+                    editor.ClearErrorMarkers();
 
-                        bool result = md_script_ir_compile(&data.mold.script.ir, src_str, &data.mold.mol, persistent_allocator, NULL);
+                    data.mold.script.ir_is_valid = md_script_ir_compile(&data.mold.script.ir, src_str, &data.mold.mol, persistent_allocator, NULL);
 
-                        // Before we release the compute-dogs we want to allocate the data for the evaluations
-                        md_script_eval_init(&data.mold.script.full_eval, num_frames, &data.mold.script.ir, persistent_allocator);
-                        md_script_eval_init(&data.mold.script.filt_eval, num_frames, &data.mold.script.ir, persistent_allocator);
+                    // Before we release the compute-dogs we want to allocate the data for the evaluations
+                    md_script_eval_init(&data.mold.script.full_eval, num_frames, &data.mold.script.ir, persistent_allocator);
+                    md_script_eval_init(&data.mold.script.filt_eval, num_frames, &data.mold.script.ir, persistent_allocator);
 
-                        const int64_t num_props = data.mold.script.filt_eval.num_properties;
-                        ASSERT(data.mold.script.filt_eval.num_properties == num_props);
-                        update_properties(&data.display_properties, data.mold.script.full_eval.properties, data.mold.script.filt_eval.properties, num_props);
+                    const int64_t num_props = data.mold.script.filt_eval.num_properties;
+                    ASSERT(data.mold.script.filt_eval.num_properties == num_props);
+                    update_properties(&data.display_properties, data.mold.script.full_eval.properties, data.mold.script.filt_eval.properties, num_props);
 
-                        if (result) {
-                            data.mold.script.evaluate_full = true;
-                            data.mold.script.evaluate_filt = true;
-                        }
-
+                    if (data.mold.script.ir_is_valid) {
+                        data.mold.script.evaluate_full = true;
+                        data.mold.script.evaluate_filt = true;
+                    } else {
                         TextEditor::ErrorMarkers markers;
                         const int64_t num_errors = data.mold.script.ir.num_errors;
                         if (num_errors) {
@@ -1226,24 +1239,23 @@ int main(int, char**) {
                             }
                         }
                         editor.SetErrorMarkers(markers);
-
-                        for (int64_t i = 0; i < data.mold.script.ir.num_tokens; ++i) {
-                            const md_script_token_t& tok = data.mold.script.ir.tokens[i];
-                            TextEditor::Marker marker = {0};
-                            marker.begCol = tok.col_beg;
-                            marker.endCol = tok.col_end;
-                            marker.bgColor = ImVec4(1,1,1,0.5);
-                            marker.depth = tok.depth;
-                            marker.line = tok.line;
-                            marker.onlyShowBgOnMouseOver = true;
-                            marker.text = std::string(tok.text.ptr, tok.text.len);
-                            marker.payload = (void*)tok.vis_token;
-                            editor.AddMarker(marker);
-                        }
-
-                        md_semaphore_release(&data.mold.script.semaphore);
                     }
-                    md_semaphore_release(&data.mold.script.semaphore);
+
+                    for (int64_t i = 0; i < data.mold.script.ir.num_tokens; ++i) {
+                        const md_script_token_t& tok = data.mold.script.ir.tokens[i];
+                        TextEditor::Marker marker = {0};
+                        marker.begCol = tok.col_beg;
+                        marker.endCol = tok.col_end;
+                        marker.bgColor = ImVec4(1,1,1,0.5);
+                        marker.depth = tok.depth;
+                        marker.line = tok.line;
+                        marker.onlyShowBgOnMouseOver = true;
+                        marker.text = std::string(tok.text.ptr, tok.text.len);
+                        marker.payload = (void*)tok.vis_token;
+                        editor.AddMarker(marker);
+                    }
+
+                    md_semaphore_release_n(&data.mold.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT);
                 }
             }
         }
@@ -1251,13 +1263,13 @@ int main(int, char**) {
         if (data.mold.script.evaluate_full) {
             if (data.tasks.evaluate_full.id != 0) {
                 md_script_eval_interrupt(&data.mold.script.full_eval);
-            } else if (md_semaphore_try_aquire(&data.mold.script.semaphore)) {
+            } else if (data.mold.script.ir_is_valid && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
                 data.mold.script.evaluate_full = false;
                 data.tasks.evaluate_full = task_system::enqueue_pool("Eval Full", 1, [&data](task_system::TaskSetRange) {
                     md_script_eval_compute(&data.mold.script.full_eval, &data.mold.script.ir, &data.mold.mol, &data.mold.traj, NULL);
 
                     data.tasks.evaluate_full.id = 0;
-                    md_semaphore_release(&data.mold.script.semaphore);
+                    md_semaphore_release(&data.mold.script.ir_semaphore);
                 });
             }
         }
@@ -1265,7 +1277,7 @@ int main(int, char**) {
         if (data.timeline.filter.enabled && data.mold.script.evaluate_filt) {
             if (data.tasks.evaluate_filt.id != 0) {
                 md_script_eval_interrupt(&data.mold.script.filt_eval);
-            } else if (md_semaphore_try_aquire(&data.mold.script.semaphore)) {
+            } else if (data.mold.script.ir_is_valid && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
                 data.mold.script.evaluate_filt = false;
                 data.tasks.evaluate_filt = task_system::enqueue_pool("Eval Filt", 1, [&data](task_system::TaskSetRange) {
                     int64_t num_frames = md_trajectory_num_frames(&data.mold.traj);
@@ -1278,7 +1290,7 @@ int main(int, char**) {
                     md_script_eval_compute(&data.mold.script.filt_eval, &data.mold.script.ir, &data.mold.mol, &data.mold.traj, &data.mold.script.frame_mask);
 
                     data.tasks.evaluate_filt.id = 0;
-                    md_semaphore_release(&data.mold.script.semaphore);
+                    md_semaphore_release(&data.mold.script.ir_semaphore);
                 });
             }
         }
@@ -1350,7 +1362,7 @@ int main(int, char**) {
         if (data.distributions.show_window) draw_distribution_window(&data);
         if (data.density_volume.show_window) draw_density_volume_window(&data);
         //if (data.ramachandran.show_window) draw_ramachandran_window(&data);
-        //if (data.shape_space.show_window) draw_shape_space_window(&data);
+        if (data.shape_space.show_window) draw_shape_space_window(&data);
         if (data.script.show_editor) draw_script_editor_window(&data);
         if (data.dataset.show_window) draw_dataset_window(&data);
 
@@ -3237,9 +3249,9 @@ static void draw_timeline_window(ApplicationData* data) {
             if (ImGui::BeginMenu("Filter")) {
                 ImGui::Checkbox("Enabled", &data->timeline.filter.enabled);
                 if (data->timeline.filter.enabled) {
-                    ImGui::Checkbox("Temporal Window", &data->timeline.filter.temporal_window);
-                    if (data->timeline.filter.temporal_window) {
-                        ImGui::SliderInt("Extent", &data->timeline.filter.window_extent, 1, num_x_values / 2);
+                    ImGui::Checkbox("Temporal Window", &data->timeline.filter.temporal_window.enabled);
+                    if (data->timeline.filter.temporal_window.enabled) {
+                        ImGui::SliderInt("Extent", &data->timeline.filter.temporal_window.extent_in_frames, 1, num_x_values / 2);
                     }
                 }
                 ImGui::EndMenu();
@@ -3310,7 +3322,7 @@ static void draw_timeline_window(ApplicationData* data) {
                 },
                 .filter = {
                     .show = data->timeline.filter.enabled,
-                    .enabled = data->timeline.filter.temporal_window == false,
+                    .enabled = data->timeline.filter.temporal_window.enabled == false,
                     .beg = &filter_beg,
                     .end = &filter_end,
                     .min = min_x_value,
@@ -3563,8 +3575,55 @@ static void draw_distribution_window(ApplicationData* data) {
     ImGui::End();
 }
 
-static void draw_shapespace_window(ApplicationData* data) {
-    
+static void draw_shape_space_window(ApplicationData* data) {
+    if (ImGui::Begin("Shape Space", &data->shape_space.show_window)) {
+        bool evaluate = false;
+        if (!data->shape_space.input_valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
+        evaluate |= ImGui::InputText("input", data->shape_space.input.beg(), data->shape_space.input.capacity());
+        if (!data->shape_space.input_valid) ImGui::PopStyleColor();
+
+        ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_AntiAliased;
+        if (ImPlot::BeginPlot("##Shape Space Plot", 0, 0, ImVec2(-1,-1), flags)) {
+            ImVec2 p0 = ImPlot::PlotToPixels(ImPlotPoint(0.0f, 0.0f));
+            ImVec2 p1 = ImPlot::PlotToPixels(ImPlotPoint(1.0f, 0.0f));
+            ImVec2 p2 = ImPlot::PlotToPixels(ImPlotPoint(0.5f, 0.86602540378f));
+            ImPlot::PushPlotClipRect();
+            ImPlot::GetPlotDrawList()->AddTriangleFilled(p0, p1, p2, IM_COL32_WHITE);
+            ImPlot::GetPlotDrawList()->AddTriangle(p0, p1, p2, IM_COL32_BLACK);
+            ImPlot::PopPlotClipRect();
+
+            ImPlot::EndPlot();
+        }
+        ImGui::End();
+
+        if (evaluate) {
+            data->shape_space.input_valid = false;
+            const int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
+            if (num_frames > 0) {
+                if (md_semaphore_try_aquire(&data->mold.script.ir_semaphore)) {
+                    md_script_ir_t ir = {0};
+                    if (md_script_ir_compile(&ir, data->shape_space.input, &data->mold.mol, default_allocator, &data->mold.script.ir)) {
+                        data->shape_space.input_valid = true;
+                        md_script_eval_init(&data->shape_space.eval, num_frames, &ir, persistent_allocator);
+                        task_system::enqueue_pool("Eval Shape Space", 1, [data, &ir](task_system::TaskSetRange) {
+                            md_script_eval_compute(&data->shape_space.eval, &ir, &data->mold.mol, &data->mold.traj, NULL);
+                            md_script_ir_free(&ir);
+                            md_semaphore_release(&data->mold.script.ir_semaphore);
+                        });
+                    } else {
+                        md_semaphore_release(&data->mold.script.ir_semaphore);
+                        int len = 0;
+                        for (int64_t i = 0; i < ir.num_errors; ++i) {
+                            len += snprintf(data->shape_space.err_text.beg() + len, MAX(0, (int)data->shape_space.err_text.capacity() - len), "%.*s ", (int)ir.errors->error.len, ir.errors->error.ptr);
+                        }
+                        md_script_ir_free(&ir);
+                    }
+                }
+            } else {
+                snprintf(data->shape_space.err_text.beg(), data->shape_space.err_text.capacity(), "Missing trajectory for evaluating expression");
+            }
+        }
+    }
 }
 
 #if 0
