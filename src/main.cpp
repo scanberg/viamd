@@ -3604,103 +3604,98 @@ static void draw_shape_space_window(ApplicationData* data) {
             ImPlot::GetPlotDrawList()->AddTriangle(p0, p1, p2, IM_COL32_BLACK);
             ImPlot::PopPlotClipRect();
 
-            struct UserData {
-                ApplicationData* app_data;
-                ImVec2 p[3];
-            } user_data = {
-                data,
-                {p0, p1, p2}
-            };
-
             auto getter = [](void* user_data, int idx) -> ImPlotPoint {
-                const UserData* data = (UserData*)user_data;
-                const vec3_t* coords = data->app_data->shape_space.coordinates;
-                const ImVec2* p = data->p;
+                const vec3_t* coords = (vec3_t*)user_data;
+                const ImVec2 p[3] = {{0,0}, {1,0}, {0.5,0.86602540378f}};
 
                 ImVec2 pos = p[0] * coords[idx][0] + p[1] * coords[idx][1] + p[2] * coords[idx][2];
                 return {pos.x, pos.y};
             };
 
+            ImPlot::PushStyleColor(ImPlotCol_MarkerFill, ImVec4(1,0,0,1));
+            ImPlot::PushStyleColor(ImPlotCol_MarkerOutline, ImVec4(0,0,0,1));
             for (int64_t i = 0; i < md_array_size(data->shape_space.coordinates); ++i) {
-                //vec3_t* coordinates = data->shape_space.coordinates;
-
-                ImPlot::PlotScatterG("##Coords", getter, &user_data, (int)md_array_size(data->shape_space.coordinates));
+                vec3_t* coordinates = data->shape_space.coordinates;
+                ImPlot::PlotScatterG("##Coords", getter, coordinates, (int)md_array_size(data->shape_space.coordinates));
             }
+            ImPlot::PopStyleColor(2);
 
             ImPlot::EndPlot();
         }
-        ImGui::End();
+    }
+    ImGui::End();
 
-        if (data->shape_space.evaluate) {
-            data->shape_space.input_valid = false;
-            const int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
-            if (num_frames > 0) {
-                if (data->tasks.evaluate_shape_space.id != 0) {
-                    task_system::interrupt_and_wait(data->tasks.evaluate_shape_space);
-                    data->tasks.evaluate_shape_space.id = 0;
-                }
-                if (md_semaphore_try_aquire(&data->mold.script.ir_semaphore)) {
-                    data->shape_space.evaluate = false;
-                    data->shape_space.num_structures = 0;
-                    data->shape_space.num_frames = 0;
-
-                    md_filter_result_t result = {0};
-                    if (md_filter_evaluate(&result, data->shape_space.input, &data->mold.mol, &data->mold.script.ir, default_allocator)) {
-                        data->shape_space.input_valid = true;
-                        data->shape_space.num_structures = (int32_t)result.num_bitfields;
-                        data->shape_space.num_frames = (int32_t)num_frames;
-                        if (data->shape_space.num_structures > 0) {
-                            md_array_ensure(data->shape_space.coordinates, data->shape_space.num_frames * data->shape_space.num_structures, persistent_allocator);
-                            md_array_shrink(data->shape_space.coordinates, 0);
-
-                            data->tasks.evaluate_shape_space = task_system::enqueue_pool("Eval Shape Space", (uint32_t)num_frames, [data, result](task_system::TaskSetRange frame_range) mutable {
-                                int64_t stride = ROUND_UP(data->mold.mol.atom.count, md_simd_width);
-                                float* coords = (float*)md_alloc(default_allocator, stride * 3 * sizeof(float));
-                                float* x = coords + stride * 0;
-                                float* y = coords + stride * 1;
-                                float* z = coords + stride * 2;
-                                for (uint32_t frame_idx = frame_range.beg; frame_idx < frame_range.end; ++frame_idx) {
-                                    md_trajectory_load_frame(&data->mold.traj, frame_idx, NULL, x, y, z);
-                                    vec3_t* xyz = 0;
-                                    for (int64_t i = 0; i < result.num_bitfields; ++i) {
-                                        md_array_ensure(xyz, md_bitfield_popcount(&result.bitfields[i]), default_allocator);
-                                        int64_t beg_bit = result.bitfields[i].beg_bit;
-                                        int64_t end_bit = result.bitfields[i].end_bit;
-                                        int64_t count = 0;
-                                        vec3_t com = {0,0,0};
-                                        while ((beg_bit = md_bitfield_scan(&result.bitfields[i], beg_bit, end_bit)) != 0) {
-                                            int64_t src_idx = beg_bit - 1;
-                                            vec3_t p = {x[src_idx], y[src_idx], z[src_idx]};
-                                            com = com + p;
-                                            xyz[count++] = p;
-                                        }
-                                        com = com / (float)count;
-                                        vec3_t eigen_vals;
-                                        mat3_t eigen_vecs;
-                                        mat3_eigen(mat3_covariance_matrix_vec3(xyz, com, count), eigen_vecs.col, eigen_vals.elem);
-                                        float scl = 1.0f / (eigen_vals.x + eigen_vals.y + eigen_vals.z);
-                                        vec3_t w = { (eigen_vals[0] - eigen_vals[1]) * scl, 2.0f * (eigen_vals[1] - eigen_vals[2]) * scl, 3.0f * eigen_vals[2] * scl };
-                                        md_array_push(data->shape_space.coordinates, w, persistent_allocator);
-                                    }
-                                    md_array_free(xyz, default_allocator);
-                                }
-                                md_filter_free(&result, default_allocator);
-                            });
-                        } else {
-                            snprintf(data->shape_space.err_text.beg(), data->shape_space.err_text.capacity(), "Expression did not evaluate into any bitfields");
-                        }
-                    } else {
-                        snprintf(data->shape_space.err_text.beg(), data->shape_space.err_text.capacity(), "%s", result.error_buf);
-                        md_filter_free(&result, default_allocator);
-                    }
-                    md_semaphore_release(&data->mold.script.ir_semaphore);
-                }
-            } else {
-                data->shape_space.evaluate = false;
-                snprintf(data->shape_space.err_text.beg(), data->shape_space.err_text.capacity(), "Missing trajectory for evaluating expression");
+    if (data->shape_space.evaluate) {
+        data->shape_space.input_valid = false;
+        const int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
+        if (num_frames > 0) {
+            if (data->tasks.evaluate_shape_space.id != 0) {
+                task_system::interrupt_and_wait(data->tasks.evaluate_shape_space);
+                data->tasks.evaluate_shape_space.id = 0;
             }
+            if (md_semaphore_try_aquire(&data->mold.script.ir_semaphore)) {
+                data->shape_space.evaluate = false;
+                data->shape_space.num_structures = 0;
+                data->shape_space.num_frames = 0;
+
+                md_filter_result_t result = {0};
+                if (md_filter_evaluate(&result, data->shape_space.input, &data->mold.mol, &data->mold.script.ir, default_allocator)) {
+                    data->shape_space.input_valid = true;
+                    data->shape_space.num_structures = (int32_t)result.num_bitfields;
+                    data->shape_space.num_frames = (int32_t)num_frames;
+                    if (data->shape_space.num_structures > 0) {
+                        md_array_ensure(data->shape_space.coordinates, data->shape_space.num_frames * data->shape_space.num_structures, persistent_allocator);
+                        md_array_shrink(data->shape_space.coordinates, 0);
+
+                        data->tasks.evaluate_shape_space = task_system::enqueue_pool("Eval Shape Space", (uint32_t)num_frames, [data, result](task_system::TaskSetRange frame_range) mutable {
+                            int64_t stride = ROUND_UP(data->mold.mol.atom.count, md_simd_width);
+                            float* coords = (float*)md_alloc(default_allocator, stride * 3 * sizeof(float));
+                            float* x = coords + stride * 0;
+                            float* y = coords + stride * 1;
+                            float* z = coords + stride * 2;
+                            for (uint32_t frame_idx = frame_range.beg; frame_idx < frame_range.end; ++frame_idx) {
+                                md_trajectory_load_frame(&data->mold.traj, frame_idx, NULL, x, y, z);
+                                vec3_t* xyz = 0;
+                                for (int64_t i = 0; i < result.num_bitfields; ++i) {
+                                    md_array_ensure(xyz, md_bitfield_popcount(&result.bitfields[i]), default_allocator);
+                                    int64_t beg_bit = result.bitfields[i].beg_bit;
+                                    int64_t end_bit = result.bitfields[i].end_bit;
+                                    int64_t count = 0;
+                                    vec3_t com = {0,0,0};
+                                    while ((beg_bit = md_bitfield_scan(&result.bitfields[i], beg_bit, end_bit)) != 0) {
+                                        int64_t src_idx = beg_bit - 1;
+                                        vec3_t p = {x[src_idx], y[src_idx], z[src_idx]};
+                                        com = com + p;
+                                        xyz[count++] = p;
+                                    }
+                                    com = com / (float)count;
+                                    vec3_t eigen_vals;
+                                    mat3_t eigen_vecs;
+                                    mat3_eigen(mat3_covariance_matrix_vec3(xyz, com, count), eigen_vecs.col, eigen_vals.elem);
+                                    float scl = 1.0f / (eigen_vals.x + eigen_vals.y + eigen_vals.z);
+                                    vec3_t w = { (eigen_vals[0] - eigen_vals[1]) * scl, 2.0f * (eigen_vals[1] - eigen_vals[2]) * scl, 3.0f * eigen_vals[2] * scl };
+                                    md_array_push(data->shape_space.coordinates, w, persistent_allocator);
+                                }
+                                md_array_free(xyz, default_allocator);
+                            }
+                        }, [result](task_system::TaskSetRange) mutable {
+                            md_filter_free(&result, default_allocator);
+                        });
+                    } else {
+                        snprintf(data->shape_space.err_text.beg(), data->shape_space.err_text.capacity(), "Expression did not evaluate into any bitfields");
+                    }
+                } else {
+                    snprintf(data->shape_space.err_text.beg(), data->shape_space.err_text.capacity(), "%s", result.error_buf);
+                    //md_filter_free(&result, default_allocator);
+                }
+                md_semaphore_release(&data->mold.script.ir_semaphore);
+            }
+        } else {
+            data->shape_space.evaluate = false;
+            snprintf(data->shape_space.err_text.beg(), data->shape_space.err_text.capacity(), "Missing trajectory for evaluating expression");
         }
     }
+
 }
 
 #if 0
