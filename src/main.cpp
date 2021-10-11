@@ -343,6 +343,7 @@ struct ApplicationData {
         task_system::ID prefetch_frames = task_system::INVALID_ID;
         task_system::ID evaluate_full = task_system::INVALID_ID;
         task_system::ID evaluate_filt = task_system::INVALID_ID;
+        task_system::ID evaluate_shape_space = task_system::INVALID_ID;
     } tasks;
 
     // --- ATOM SELECTION ---
@@ -593,10 +594,12 @@ struct ApplicationData {
     struct {
         bool show_window = false;
         bool input_valid = false;
+        bool evaluate    = false;
         StrBuf<256> input = "";
         StrBuf<256> err_text = "";
-        vec2_t*   point_pos = 0;
-        uint32_t* point_col = 0;
+        int32_t num_structures = 0;
+        int32_t num_frames = 0;
+        vec3_t* coordinates = 0;
         md_script_eval_t  eval = {};
     } shape_space;
 
@@ -740,6 +743,7 @@ static int64_t single_selection_sequence_count(const SingleSelectionSequence* se
 }
 
 static void launch_prefetch_job(ApplicationData* data);
+static void clear_properties(DisplayProperty** prop_items);
 static void update_properties(DisplayProperty** prop_items, md_script_property_t* full_props, md_script_property_t* filt_props, int64_t num_props);
 
 static void interpolate_atomic_properties(ApplicationData* data);
@@ -826,7 +830,7 @@ static void remove_selection(ApplicationData* data, int idx);
 static void reset_selections(ApplicationData* data);
 static void clear_selections(ApplicationData* data);
 
-static bool filter_expression(const ApplicationData& data, str_t expr, md_exp_bitfield_t* mask, bool* is_dynamic, char* error_str, int64_t error_cap);
+static bool filter_expression(ApplicationData* data, str_t expr, md_exp_bitfield_t* mask, bool* is_dynamic, char* error_str, int64_t error_cap);
 
 static void modify_field(md_exp_bitfield_t* bf, const md_exp_bitfield_t* mask, SelectionOperator op) {
     switch(op) {
@@ -1909,22 +1913,31 @@ static void expand_mask(md_exp_bitfield_t* mask, const md_range_t ranges[], int6
     }
 }
 
-static bool filter_expression(const ApplicationData& data, str_t expr, md_exp_bitfield_t* mask, bool* is_dynamic = NULL, char* error_str = NULL, int64_t error_cap = 0) {
-    if (data.mold.mol.atom.count == 0) return false;    
+static bool filter_expression(ApplicationData* data, str_t expr, md_exp_bitfield_t* mask, bool* is_dynamic = NULL, char* error_str = NULL, int64_t error_cap = 0) {
+    if (data->mold.mol.atom.count == 0) return false;    
     
-    md_filter_context_t ctx {
-        .ir = &data.mold.script.ir,
-        .mol = &data.mold.mol,
-        .alloc = frame_allocator,
-    };
+    md_filter_result_t res;
+    bool success = false;
 
-    md_filter_additional_info_t info {
-        .is_dynamic = is_dynamic,
-        .error_buf = error_str,
-        .error_cap = error_cap,
-    };
+    md_semaphore_aquire(&data->mold.script.ir_semaphore);
+    if (md_filter_evaluate(&res, expr, &data->mold.mol, &data->mold.script.ir, frame_allocator)) {
+        if (error_str) {
+            snprintf(error_str, error_cap, "%s", res.error_buf);
+        }
+        if (is_dynamic) {
+            *is_dynamic = res.is_dynamic;
+        }
+        if (mask) {
+            md_bitfield_clear(mask);
+            for (int64_t i = 0; i < res.num_bitfields; ++i) {
+                md_bitfield_or_inplace(mask, &res.bitfields[i]);
+            }
+        }
+        success = true;
+    }
+    md_semaphore_release(&data->mold.script.ir_semaphore);
 
-    return md_filter_evaluate(expr, mask, &ctx, &info);
+    return success;
 }
 
 // ### DRAW WINDOWS ###
@@ -2113,7 +2126,7 @@ ImGui::EndGroup();
             ImGui::Checkbox("Distributions", &data->distributions.show_window);
             ImGui::Checkbox("Density Volumes", &data->density_volume.show_window);
             //ImGui::Checkbox("Ramachandran", &data->ramachandran.show_window);
-            //ImGui::Checkbox("Shape Space", &data->shape_space.show_window);
+            ImGui::Checkbox("Shape Space", &data->shape_space.show_window);
             ImGui::Checkbox("Dataset", &data->dataset.show_window);
 
             ImGui::EndMenu();
@@ -2169,7 +2182,7 @@ ImGui::EndGroup();
                 //}
 
                 {
-                    query_ok = filter_expression(*data, str_from_cstr(buf), &mask);
+                    query_ok = filter_expression(data, str_from_cstr(buf), &mask);
 
                     if (query_ok) {
                         switch (data->selection.level_mode) {
@@ -3577,9 +3590,8 @@ static void draw_distribution_window(ApplicationData* data) {
 
 static void draw_shape_space_window(ApplicationData* data) {
     if (ImGui::Begin("Shape Space", &data->shape_space.show_window)) {
-        bool evaluate = false;
         if (!data->shape_space.input_valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-        evaluate |= ImGui::InputText("input", data->shape_space.input.beg(), data->shape_space.input.capacity());
+        data->shape_space.evaluate |= ImGui::InputText("input", data->shape_space.input.beg(), data->shape_space.input.capacity());
         if (!data->shape_space.input_valid) ImGui::PopStyleColor();
 
         ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_AntiAliased;
@@ -3592,34 +3604,99 @@ static void draw_shape_space_window(ApplicationData* data) {
             ImPlot::GetPlotDrawList()->AddTriangle(p0, p1, p2, IM_COL32_BLACK);
             ImPlot::PopPlotClipRect();
 
+            struct UserData {
+                ApplicationData* app_data;
+                ImVec2 p[3];
+            } user_data = {
+                data,
+                {p0, p1, p2}
+            };
+
+            auto getter = [](void* user_data, int idx) -> ImPlotPoint {
+                const UserData* data = (UserData*)user_data;
+                const vec3_t* coords = data->app_data->shape_space.coordinates;
+                const ImVec2* p = data->p;
+
+                ImVec2 pos = p[0] * coords[idx][0] + p[1] * coords[idx][1] + p[2] * coords[idx][2];
+                return {pos.x, pos.y};
+            };
+
+            for (int64_t i = 0; i < md_array_size(data->shape_space.coordinates); ++i) {
+                //vec3_t* coordinates = data->shape_space.coordinates;
+
+                ImPlot::PlotScatterG("##Coords", getter, &user_data, (int)md_array_size(data->shape_space.coordinates));
+            }
+
             ImPlot::EndPlot();
         }
         ImGui::End();
 
-        if (evaluate) {
+        if (data->shape_space.evaluate) {
             data->shape_space.input_valid = false;
             const int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
             if (num_frames > 0) {
+                if (data->tasks.evaluate_shape_space.id != 0) {
+                    task_system::interrupt_and_wait(data->tasks.evaluate_shape_space);
+                    data->tasks.evaluate_shape_space.id = 0;
+                }
                 if (md_semaphore_try_aquire(&data->mold.script.ir_semaphore)) {
-                    md_script_ir_t ir = {0};
-                    if (md_script_ir_compile(&ir, data->shape_space.input, &data->mold.mol, default_allocator, &data->mold.script.ir)) {
+                    data->shape_space.evaluate = false;
+                    data->shape_space.num_structures = 0;
+                    data->shape_space.num_frames = 0;
+
+                    md_filter_result_t result = {0};
+                    if (md_filter_evaluate(&result, data->shape_space.input, &data->mold.mol, &data->mold.script.ir, default_allocator)) {
                         data->shape_space.input_valid = true;
-                        md_script_eval_init(&data->shape_space.eval, num_frames, &ir, persistent_allocator);
-                        task_system::enqueue_pool("Eval Shape Space", 1, [data, &ir](task_system::TaskSetRange) {
-                            md_script_eval_compute(&data->shape_space.eval, &ir, &data->mold.mol, &data->mold.traj, NULL);
-                            md_script_ir_free(&ir);
-                            md_semaphore_release(&data->mold.script.ir_semaphore);
-                        });
-                    } else {
-                        md_semaphore_release(&data->mold.script.ir_semaphore);
-                        int len = 0;
-                        for (int64_t i = 0; i < ir.num_errors; ++i) {
-                            len += snprintf(data->shape_space.err_text.beg() + len, MAX(0, (int)data->shape_space.err_text.capacity() - len), "%.*s ", (int)ir.errors->error.len, ir.errors->error.ptr);
+                        data->shape_space.num_structures = (int32_t)result.num_bitfields;
+                        data->shape_space.num_frames = (int32_t)num_frames;
+                        if (data->shape_space.num_structures > 0) {
+                            md_array_ensure(data->shape_space.coordinates, data->shape_space.num_frames * data->shape_space.num_structures, persistent_allocator);
+                            md_array_shrink(data->shape_space.coordinates, 0);
+
+                            data->tasks.evaluate_shape_space = task_system::enqueue_pool("Eval Shape Space", (uint32_t)num_frames, [data, result](task_system::TaskSetRange frame_range) mutable {
+                                int64_t stride = ROUND_UP(data->mold.mol.atom.count, md_simd_width);
+                                float* coords = (float*)md_alloc(default_allocator, stride * 3 * sizeof(float));
+                                float* x = coords + stride * 0;
+                                float* y = coords + stride * 1;
+                                float* z = coords + stride * 2;
+                                for (uint32_t frame_idx = frame_range.beg; frame_idx < frame_range.end; ++frame_idx) {
+                                    md_trajectory_load_frame(&data->mold.traj, frame_idx, NULL, x, y, z);
+                                    vec3_t* xyz = 0;
+                                    for (int64_t i = 0; i < result.num_bitfields; ++i) {
+                                        md_array_ensure(xyz, md_bitfield_popcount(&result.bitfields[i]), default_allocator);
+                                        int64_t beg_bit = result.bitfields[i].beg_bit;
+                                        int64_t end_bit = result.bitfields[i].end_bit;
+                                        int64_t count = 0;
+                                        vec3_t com = {0,0,0};
+                                        while ((beg_bit = md_bitfield_scan(&result.bitfields[i], beg_bit, end_bit)) != 0) {
+                                            int64_t src_idx = beg_bit - 1;
+                                            vec3_t p = {x[src_idx], y[src_idx], z[src_idx]};
+                                            com = com + p;
+                                            xyz[count++] = p;
+                                        }
+                                        com = com / (float)count;
+                                        vec3_t eigen_vals;
+                                        mat3_t eigen_vecs;
+                                        mat3_eigen(mat3_covariance_matrix_vec3(xyz, com, count), eigen_vecs.col, eigen_vals.elem);
+                                        float scl = 1.0f / (eigen_vals.x + eigen_vals.y + eigen_vals.z);
+                                        vec3_t w = { (eigen_vals[0] - eigen_vals[1]) * scl, 2.0f * (eigen_vals[1] - eigen_vals[2]) * scl, 3.0f * eigen_vals[2] * scl };
+                                        md_array_push(data->shape_space.coordinates, w, persistent_allocator);
+                                    }
+                                    md_array_free(xyz, default_allocator);
+                                }
+                                md_filter_free(&result, default_allocator);
+                            });
+                        } else {
+                            snprintf(data->shape_space.err_text.beg(), data->shape_space.err_text.capacity(), "Expression did not evaluate into any bitfields");
                         }
-                        md_script_ir_free(&ir);
+                    } else {
+                        snprintf(data->shape_space.err_text.beg(), data->shape_space.err_text.capacity(), "%s", result.error_buf);
+                        md_filter_free(&result, default_allocator);
                     }
+                    md_semaphore_release(&data->mold.script.ir_semaphore);
                 }
             } else {
+                data->shape_space.evaluate = false;
                 snprintf(data->shape_space.err_text.beg(), data->shape_space.err_text.capacity(), "Missing trajectory for evaluating expression");
             }
         }
@@ -4568,7 +4645,7 @@ static void interrupt_async_tasks(ApplicationData* data) {
     data->tasks.evaluate_filt.id = 0;
 }
 
-// #moleculedata
+// #trajectorydata
 static void free_trajectory_data(ApplicationData* data) {
     ASSERT(data);
     interrupt_async_tasks(data);
@@ -4577,8 +4654,139 @@ static void free_trajectory_data(ApplicationData* data) {
         load::traj::close(&data->mold.traj);
     }
     md_array_resize(data->timeline.x_values, 0, persistent_allocator);
+    md_array_resize(data->display_properties, 0, persistent_allocator);
 }
 
+
+static void init_trajectory_data(ApplicationData* data) {
+    int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
+    if (num_frames > 0) {
+        int64_t min_frame = 0;
+        int64_t max_frame = num_frames - 1;
+        double min_time = 0;
+        double max_time = 0;
+        {
+            md_trajectory_frame_header_t header;
+            md_trajectory_load_frame(&data->mold.traj, min_frame, &header, 0, 0, 0);
+            min_time = header.timestamp;
+        }
+
+        {
+            md_trajectory_frame_header_t header;
+            md_trajectory_load_frame(&data->mold.traj, max_frame, &header, 0, 0, 0);
+            max_time = header.timestamp;
+        }
+
+        data->timeline.view_range = {min_time, max_time};
+        data->timeline.filter.beg_frame = min_frame;
+        data->timeline.filter.end_frame = max_frame;
+
+        md_array_resize(data->timeline.x_values, num_frames, persistent_allocator);
+        for (int64_t i = 0; i < num_frames; ++i) {
+            // We estimate the time values to grow linearly between min_time and max_time
+            // This will be updated to an exact value later when prefetching the frames
+            double t = i / (double)max_frame;
+            data->timeline.x_values[i] = lerp(min_time, max_time, t);
+        }
+
+        data->animation.frame = CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
+        int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, max_frame);
+
+        md_trajectory_frame_header_t header;
+        md_trajectory_load_frame(&data->mold.traj, frame_idx, &header, data->mold.mol.atom.x, data->mold.mol.atom.y, data->mold.mol.atom.z);
+        memcpy(&data->simulation_box.box, header.box, sizeof(header.box));
+        data->mold.dirty_buffers |= MolBit_DirtyPosition;
+
+        update_md_buffers(data);
+        md_gl_molecule_update_atom_previous_position(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
+
+        if (data->mold.mol.backbone.count > 0) {
+            data->trajectory_data.secondary_structure.stride = data->mold.mol.backbone.count;
+            data->trajectory_data.secondary_structure.count = data->mold.mol.backbone.count * num_frames;
+            md_array_resize(data->trajectory_data.secondary_structure.data, data->mold.mol.backbone.count * num_frames, persistent_allocator);
+
+            data->trajectory_data.backbone_angles.stride = data->mold.mol.backbone.count,
+                data->trajectory_data.backbone_angles.count = data->mold.mol.backbone.count * num_frames,
+                md_array_resize(data->trajectory_data.backbone_angles.data, data->mold.mol.backbone.count * num_frames, persistent_allocator);
+
+            // Launch work to prefetch frames
+            launch_prefetch_job(data);
+
+            // Launch work to compute the values
+            if (data->tasks.backbone_computations.id != 0) {
+                task_system::interrupt_and_wait(data->tasks.backbone_computations); // This should never happen
+            }
+            data->tasks.backbone_computations = task_system::enqueue_pool("Backbone Operations", (uint32_t)num_frames, [data](task_system::TaskSetRange range)
+                {
+                    const auto& mol = data->mold.mol;
+                    const int64_t stride = ROUND_UP(mol.atom.count, md_simd_width);
+                    const int64_t bytes = stride * sizeof(float) * 3;
+                    float* coords = (float*)md_alloc(persistent_allocator, bytes);
+                    defer { md_free(persistent_allocator, coords, bytes); };
+                    float* x = coords + stride * 0;
+                    float* y = coords + stride * 1;
+                    float* z = coords + stride * 2;
+
+                    for (uint32_t frame_idx = range.beg; frame_idx < range.end; ++frame_idx) {
+                        md_trajectory_load_frame(&data->mold.traj, frame_idx, NULL, x, y, z);
+
+                        md_util_backbone_angle_args_t bb_args = {
+                            .atom = {
+                                .count = mol.atom.count,
+                                .x = x,
+                                .y = y,
+                                .z = z,
+                        },
+                        .backbone = {
+                                .count = mol.backbone.count,
+                                .atoms = mol.backbone.atoms,
+                        },
+                        .chain = {
+                                .count = mol.chain.count,
+                                .backbone_range = mol.chain.backbone_range,
+                        }
+                        };
+                        md_util_compute_backbone_angles(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &bb_args);
+
+                        md_util_secondary_structure_args_t ss_args = {
+                            .atom = {
+                                .count = data->mold.mol.atom.count,
+                                .x = x,
+                                .y = y,
+                                .z = z,
+                        },
+                        .backbone = {
+                                .count = mol.backbone.count,
+                                .atoms = mol.backbone.atoms,
+                        },
+                        .chain = {
+                                .count = data->mold.mol.chain.count,
+                                .backbone_range = data->mold.mol.chain.backbone_range,
+                        }
+                        };
+                        md_util_compute_secondary_structure(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &ss_args);
+                    }
+                });
+        }
+    }
+}
+
+static bool load_trajectory_data(ApplicationData* data, str_t filename) {
+    interrupt_async_tasks(data);
+    free_trajectory_data(data);
+    data->files.trajectory = "";
+    data->animation.frame = 0;
+
+    if (load::traj::open_file(&data->mold.traj, filename, &data->mold.mol, persistent_allocator)) {
+        data->files.trajectory = filename;
+        init_trajectory_data(data);
+        return true;
+    }
+
+    return false;
+}
+
+// #moleculedata
 static void free_molecule_data(ApplicationData* data) {
     ASSERT(data);
     interrupt_async_tasks(data);
@@ -4773,134 +4981,6 @@ static void launch_prefetch_job(ApplicationData* data) {
         });
 #undef NUM_SLOTS
 #endif
-}
-
-static void init_trajectory_data(ApplicationData* data) {
-    int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
-    if (num_frames > 0) {
-        int64_t min_frame = 0;
-        int64_t max_frame = num_frames - 1;
-        double min_time = 0;
-        double max_time = 0;
-        {
-            md_trajectory_frame_header_t header;
-            md_trajectory_load_frame(&data->mold.traj, min_frame, &header, 0, 0, 0);
-            min_time = header.timestamp;
-        }
-
-        {
-            md_trajectory_frame_header_t header;
-            md_trajectory_load_frame(&data->mold.traj, max_frame, &header, 0, 0, 0);
-            max_time = header.timestamp;
-        }
-
-        data->timeline.view_range = {min_time, max_time};
-        data->timeline.filter.beg_frame = min_frame;
-        data->timeline.filter.end_frame = max_frame;
-
-        md_array_resize(data->timeline.x_values, num_frames, persistent_allocator);
-        for (int64_t i = 0; i < num_frames; ++i) {
-            // We estimate the time values to grow linearly between min_time and max_time
-            // This will be updated to an exact value later when prefetching the frames
-            double t = i / (double)max_frame;
-            data->timeline.x_values[i] = lerp(min_time, max_time, t);
-        }
-
-        data->animation.frame = CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
-        int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, max_frame);
-
-        md_trajectory_frame_header_t header;
-        md_trajectory_load_frame(&data->mold.traj, frame_idx, &header, data->mold.mol.atom.x, data->mold.mol.atom.y, data->mold.mol.atom.z);
-        memcpy(&data->simulation_box.box, header.box, sizeof(header.box));
-        data->mold.dirty_buffers |= MolBit_DirtyPosition;
-
-        update_md_buffers(data);
-        md_gl_molecule_update_atom_previous_position(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
-
-        if (data->mold.mol.backbone.count > 0) {
-            data->trajectory_data.secondary_structure.stride = data->mold.mol.backbone.count;
-            data->trajectory_data.secondary_structure.count = data->mold.mol.backbone.count * num_frames;
-            md_array_resize(data->trajectory_data.secondary_structure.data, data->mold.mol.backbone.count * num_frames, persistent_allocator);
-
-            data->trajectory_data.backbone_angles.stride = data->mold.mol.backbone.count,
-                data->trajectory_data.backbone_angles.count = data->mold.mol.backbone.count * num_frames,
-                md_array_resize(data->trajectory_data.backbone_angles.data, data->mold.mol.backbone.count * num_frames, persistent_allocator);
-
-            // Launch work to prefetch frames
-            launch_prefetch_job(data);
-
-            // Launch work to compute the values
-            if (data->tasks.backbone_computations.id != 0) {
-                task_system::interrupt_and_wait(data->tasks.backbone_computations); // This should never happen
-            }
-            data->tasks.backbone_computations = task_system::enqueue_pool("Backbone Operations", (uint32_t)num_frames, [data](task_system::TaskSetRange range)
-                {
-                    const auto& mol = data->mold.mol;
-                    const int64_t stride = ROUND_UP(mol.atom.count, md_simd_width);
-                    const int64_t bytes = stride * sizeof(float) * 3;
-                    float* coords = (float*)md_alloc(persistent_allocator, bytes);
-                    defer { md_free(persistent_allocator, coords, bytes); };
-                    float* x = coords + stride * 0;
-                    float* y = coords + stride * 1;
-                    float* z = coords + stride * 2;
-
-                    for (uint32_t frame_idx = range.beg; frame_idx < range.end; ++frame_idx) {
-                        md_trajectory_load_frame(&data->mold.traj, frame_idx, NULL, x, y, z);
-
-                        md_util_backbone_angle_args_t bb_args = {
-                            .atom = {
-                                .count = mol.atom.count,
-                                .x = x,
-                                .y = y,
-                                .z = z,
-                            },
-                            .backbone = {
-                                .count = mol.backbone.count,
-                                .atoms = mol.backbone.atoms,
-                            },
-                            .chain = {
-                                .count = mol.chain.count,
-                                .backbone_range = mol.chain.backbone_range,
-                            }
-                        };
-                        md_util_compute_backbone_angles(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &bb_args);
-
-                        md_util_secondary_structure_args_t ss_args = {
-                            .atom = {
-                                .count = data->mold.mol.atom.count,
-                                .x = x,
-                                .y = y,
-                                .z = z,
-                            },
-                            .backbone = {
-                                .count = mol.backbone.count,
-                                .atoms = mol.backbone.atoms,
-                            },
-                            .chain = {
-                                .count = data->mold.mol.chain.count,
-                                .backbone_range = data->mold.mol.chain.backbone_range,
-                            }
-                        };
-                        md_util_compute_secondary_structure(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &ss_args);
-                    }
-                });
-        }
-    }
-}
-
-static bool load_trajectory_data(ApplicationData* data, str_t filename) {
-    interrupt_async_tasks(data);
-    free_trajectory_data(data);
-    data->files.trajectory = "";
-    data->animation.frame = 0;
-
-    if (load::traj::open_file(&data->mold.traj, filename, &data->mold.mol, persistent_allocator)) {
-        data->files.trajectory = filename;
-        init_trajectory_data(data);
-        return true;
-    }
-
-    return false;
 }
 
 static bool load_dataset_from_file(ApplicationData* data, str_t filename) {
@@ -5517,7 +5597,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
             break;
     }
 
-    rep->filt_is_valid = filter_expression(*data, rep->filt, &rep->atom_mask, &rep->filt_is_dynamic, rep->filt_error.beg(), rep->filt_error.capacity());
+    rep->filt_is_valid = filter_expression(data, rep->filt, &rep->atom_mask, &rep->filt_is_dynamic, rep->filt_error.beg(), rep->filt_error.capacity());
 
     if (rep->filt_is_valid) {
         filter_colors(colors, mol.atom.count, &rep->atom_mask);
@@ -5758,7 +5838,7 @@ static bool handle_selection(ApplicationData* data) {
                     md_bitfield_and_inplace(&data->selection.current_selection_mask, &mask);
 
                     if (data->selection.level_mode == SelectionLevel::Atom && data->picking.idx != -1) {
-                        if (single_selection_sequence_last(&data->selection.single_selection_sequence) == data->picking.idx) {
+                        if (single_selection_sequence_last(&data->selection.single_selection_sequence) == (int32_t)data->picking.idx) {
                             single_selection_sequence_pop_back(&data->selection.single_selection_sequence);
                         } else {
                             single_selection_sequence_clear(&data->selection.single_selection_sequence);
