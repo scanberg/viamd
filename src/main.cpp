@@ -3690,6 +3690,7 @@ static void draw_shape_space_window(ApplicationData* data) {
             const float MAX_D2 = 0.0001f * scl * scl;
 
             ImPlot::PushStyleVar(ImPlotStyleVar_MarkerSize, data->shape_space.marker_size);
+            ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_Square);
             for (int32_t i = 0; i < data->shape_space.num_structures; ++i) {
                 int32_t offset = data->shape_space.num_frames * i;
                 vec2_t* coordinates = data->shape_space.coords + offset;
@@ -3719,9 +3720,10 @@ static void draw_shape_space_window(ApplicationData* data) {
                     }
                 }
             }
-            ImPlot::PopStyleVar();
+            ImPlot::PopStyleVar(2);
 
             // Redraw hovered index
+            ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_Square);
             ImPlot::PushStyleVar(ImPlotStyleVar_MarkerSize, data->shape_space.marker_size * 1.1f);
             ImPlot::PushStyleColor(ImPlotCol_MarkerOutline, ImVec4(1,1,1,1));
             if (hovered_structure_idx != -1) {
@@ -3748,11 +3750,8 @@ static void draw_shape_space_window(ApplicationData* data) {
                     data->animation.frame = frame_idx;
                 }
             }
-
             ImPlot::PopStyleColor();
-            ImPlot::PopStyleVar();
-
-
+            ImPlot::PopStyleVar(2);
 
             ImPlot::EndPlot();
         }
@@ -4054,6 +4053,10 @@ static void draw_density_volume_window(ApplicationData* data) {
     if (ImGui::Begin("Density Volume", &data->density_volume.show_window, ImGuiWindowFlags_MenuBar)) {
         const ImVec2 button_size = {160, 20};
         bool property_selection_changed = false;
+
+        if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
+            data->animation.mode = data->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
+        }
 
         if (ImGui::BeginMenuBar())
         {
