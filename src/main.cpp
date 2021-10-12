@@ -328,6 +328,7 @@ struct ApplicationData {
 
             bool ir_is_valid = false;
             bool compile_ir = false;
+            bool eval_init = false;
             bool evaluate_full = false;
             bool evaluate_filt = false;
             double time_since_last_change = 0.0;
@@ -592,15 +593,20 @@ struct ApplicationData {
     */
 
     struct {
+        StrBuf<256> input = "all";
+        StrBuf<256> err_text = "";
+        md_filter_result_t result = {0};
+        bool evaluate    = true;
         bool show_window = false;
         bool input_valid = false;
-        bool evaluate    = false;
-        StrBuf<256> input = "";
-        StrBuf<256> err_text = "";
-        int32_t num_structures = 0;
-        int32_t num_frames = 0;
-        vec3_t* coordinates = 0;
-        md_script_eval_t  eval = {};
+
+        // coords and weights should be of size num_frames * num_structures
+        int32_t num_frames;
+        int32_t num_structures;
+        vec3_t* weights = 0;
+        vec2_t* coords = 0;
+
+        float marker_size = 1.4f;
     } shape_space;
 
     // --- REPRESENTATIONS ---
@@ -1220,15 +1226,8 @@ int main(int, char**) {
 
                     data.mold.script.ir_is_valid = md_script_ir_compile(&data.mold.script.ir, src_str, &data.mold.mol, persistent_allocator, NULL);
 
-                    // Before we release the compute-dogs we want to allocate the data for the evaluations
-                    md_script_eval_init(&data.mold.script.full_eval, num_frames, &data.mold.script.ir, persistent_allocator);
-                    md_script_eval_init(&data.mold.script.filt_eval, num_frames, &data.mold.script.ir, persistent_allocator);
-
-                    const int64_t num_props = data.mold.script.filt_eval.num_properties;
-                    ASSERT(data.mold.script.filt_eval.num_properties == num_props);
-                    update_properties(&data.display_properties, data.mold.script.full_eval.properties, data.mold.script.filt_eval.properties, num_props);
-
                     if (data.mold.script.ir_is_valid) {
+                        data.mold.script.eval_init = true;
                         data.mold.script.evaluate_full = true;
                         data.mold.script.evaluate_filt = true;
                     } else {
@@ -1264,38 +1263,49 @@ int main(int, char**) {
             }
         }
 
-        if (data.mold.script.evaluate_full) {
-            if (data.tasks.evaluate_full.id != 0) {
-                md_script_eval_interrupt(&data.mold.script.full_eval);
-            } else if (data.mold.script.ir_is_valid && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
-                data.mold.script.evaluate_full = false;
-                data.tasks.evaluate_full = task_system::enqueue_pool("Eval Full", 1, [&data](task_system::TaskSetRange) {
-                    md_script_eval_compute(&data.mold.script.full_eval, &data.mold.script.ir, &data.mold.mol, &data.mold.traj, NULL);
-
-                    data.tasks.evaluate_full.id = 0;
-                    md_semaphore_release(&data.mold.script.ir_semaphore);
-                });
+        if (num_frames > 0) {
+            if (data.mold.script.eval_init) {
+                data.mold.script.eval_init = false;
+                md_script_eval_init(&data.mold.script.full_eval, num_frames, &data.mold.script.ir, persistent_allocator);
+                md_script_eval_init(&data.mold.script.filt_eval, num_frames, &data.mold.script.ir, persistent_allocator);
+                const int64_t num_props = data.mold.script.full_eval.num_properties;
+                ASSERT(data.mold.script.filt_eval.num_properties == num_props);
+                update_properties(&data.display_properties, data.mold.script.full_eval.properties, data.mold.script.filt_eval.properties, num_props);
             }
-        }
 
-        if (data.timeline.filter.enabled && data.mold.script.evaluate_filt) {
-            if (data.tasks.evaluate_filt.id != 0) {
-                md_script_eval_interrupt(&data.mold.script.filt_eval);
-            } else if (data.mold.script.ir_is_valid && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
-                data.mold.script.evaluate_filt = false;
-                data.tasks.evaluate_filt = task_system::enqueue_pool("Eval Filt", 1, [&data](task_system::TaskSetRange) {
-                    int64_t num_frames = md_trajectory_num_frames(&data.mold.traj);
-                    int32_t beg_frame = CLAMP((int64_t)data.timeline.filter.beg_frame, 0, num_frames-1);
-                    int32_t end_frame = CLAMP((int64_t)data.timeline.filter.end_frame, 0, num_frames);
-                    end_frame = MAX(beg_frame + 1, end_frame);
-                    md_bitfield_clear(&data.mold.script.frame_mask);
-                    md_bitfield_set_range(&data.mold.script.frame_mask, beg_frame, end_frame);
+            if (data.mold.script.evaluate_full) {
+                if (data.tasks.evaluate_full.id != 0) {
+                    md_script_eval_interrupt(&data.mold.script.full_eval);
+                } else if (data.mold.script.ir_is_valid && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
+                    data.mold.script.evaluate_full = false;
+                    data.tasks.evaluate_full = task_system::enqueue_pool("Eval Full", 1, [&data](task_system::TaskSetRange) {
+                        md_script_eval_compute(&data.mold.script.full_eval, &data.mold.script.ir, &data.mold.mol, &data.mold.traj, NULL);
 
-                    md_script_eval_compute(&data.mold.script.filt_eval, &data.mold.script.ir, &data.mold.mol, &data.mold.traj, &data.mold.script.frame_mask);
+                        data.tasks.evaluate_full.id = 0;
+                        md_semaphore_release(&data.mold.script.ir_semaphore);
+                    });
+                }
+            }
 
-                    data.tasks.evaluate_filt.id = 0;
-                    md_semaphore_release(&data.mold.script.ir_semaphore);
-                });
+            if (data.timeline.filter.enabled && data.mold.script.evaluate_filt) {
+                if (data.tasks.evaluate_filt.id != 0) {
+                    md_script_eval_interrupt(&data.mold.script.filt_eval);
+                } else if (data.mold.script.ir_is_valid && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
+                    data.mold.script.evaluate_filt = false;
+                    data.tasks.evaluate_filt = task_system::enqueue_pool("Eval Filt", 1, [&data](task_system::TaskSetRange) {
+                        int64_t num_frames = md_trajectory_num_frames(&data.mold.traj);
+                        int32_t beg_frame = CLAMP((int64_t)data.timeline.filter.beg_frame, 0, num_frames-1);
+                        int32_t end_frame = CLAMP((int64_t)data.timeline.filter.end_frame, 0, num_frames);
+                        end_frame = MAX(beg_frame + 1, end_frame);
+                        md_bitfield_clear(&data.mold.script.frame_mask);
+                        md_bitfield_set_range(&data.mold.script.frame_mask, beg_frame, end_frame);
+
+                        md_script_eval_compute(&data.mold.script.filt_eval, &data.mold.script.ir, &data.mold.mol, &data.mold.traj, &data.mold.script.frame_mask);
+
+                        data.tasks.evaluate_filt.id = 0;
+                        md_semaphore_release(&data.mold.script.ir_semaphore);
+                    });
+                }
             }
         }
 
@@ -3144,7 +3154,7 @@ struct TimelineArgs {
     double* time;
 };
 
-bool draw_property_timeline(const TimelineArgs& args) {
+bool draw_property_timeline(const ApplicationData& data, const TimelineArgs& args) {
     const ImPlotAxisFlags axis_flags = 0;
     const ImPlotAxisFlags axis_flags_x = axis_flags;
     const ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit;
@@ -3152,8 +3162,6 @@ bool draw_property_timeline(const TimelineArgs& args) {
 
     ImPlot::LinkNextPlotLimits(args.view_range.min, args.view_range.max, 0, 0);
     if (ImPlot::BeginPlot("##Timeline", NULL, NULL, ImVec2(-1,args.plot_height), flags, axis_flags_x, axis_flags_y)) {
-
-        bool hovered = ImGui::IsItemHovered();
         bool active = ImGui::IsItemActive();
 
         if (args.value_filter.enabled) {
@@ -3215,14 +3223,40 @@ bool draw_property_timeline(const TimelineArgs& args) {
         else if (*args.input.is_selecting) {
             *args.filter.end = MAX(ImPlot::GetPlotMousePos().x, *args.filter.beg);
         }
-        else if ((active || hovered) && ImGui::IsMouseDown(0)) {
-            if (ImGui::GetIO().KeyMods == ImGuiKeyModFlags_Ctrl) {
-                *args.input.is_dragging = true;
+        else if (ImPlot::IsPlotHovered()) {
+            if (active && ImGui::IsMouseDown(0)) {           
+                if (ImGui::GetIO().KeyMods == ImGuiKeyModFlags_Shift && args.filter.show) {
+                    *args.input.is_selecting = true;
+                    *args.filter.beg = ImPlot::GetPlotMousePos().x;
+                } else {
+                    *args.input.is_dragging = true;
+                }
+            } else {
+                ImPlotPoint plot_pos = ImPlot::GetPlotMousePos();
+                ImVec2 screen_pos = ImPlot::PlotToPixels(plot_pos);
+                ImVec2 p0 = {screen_pos.x, ImPlot::GetPlotPos().y};
+                ImVec2 p1 = {screen_pos.x, ImPlot::GetPlotPos().y + ImPlot::GetPlotSize().y};
+                ImPlot::PushPlotClipRect();
+                ImPlot::GetPlotDrawList()->AddLine(p0, p1, IM_COL32(255, 255, 255, 60));
+                ImPlot::PopPlotClipRect();
+
+                char buf[128] = "";
+                int len = 0;
+
+                double time = plot_pos.x;
+                int32_t frame_idx = CLAMP((int)(time_to_frame(time, data) + 0.5), 0, md_array_size(data.timeline.x_values)-1);
+                len += snprintf(buf + len, sizeof(buf) - len, "frame: %i, time: %.2f", frame_idx, time);
+
+                if (0 <= frame_idx && frame_idx < args.values.count) {
+                    if (args.values.y) {
+                        len += snprintf(buf + len, sizeof(buf) - len, ", value: %.2f", args.values.y[frame_idx]);
+                    }
+                    if (args.values.y_variance) {
+                        len += snprintf(buf + len, sizeof(buf) - len, ", variance: %.2f", args.values.y_variance[frame_idx]);
+                    }
+                }
+                ImGui::SetTooltip("%.*s", len, buf);
             }
-            else if (ImGui::GetIO().KeyMods == ImGuiKeyModFlags_Shift && args.filter.show) {
-                *args.input.is_selecting = true;
-                *args.filter.beg = ImPlot::GetPlotMousePos().x;
-            };
         }
 
         if (ImPlot::DragLineX("Current Time", args.time, true, ImVec4(1,1,0,1))) {
@@ -3383,13 +3417,13 @@ static void draw_timeline_window(ApplicationData* data) {
                     .min = prop.value_filter.beg,
                     .max = prop.value_filter.end
                 };
-                draw_property_timeline(args);
+                draw_property_timeline(*data, args);
                 ImGui::PopID();
 
                 num_shown_plots += 1;
             }
             if (num_shown_plots == 0) {
-                draw_property_timeline(args);
+                draw_property_timeline(*data, args);
             }
 
             data->animation.frame = time_to_frame(time, *data);
@@ -3589,36 +3623,136 @@ static void draw_distribution_window(ApplicationData* data) {
 }
 
 static void draw_shape_space_window(ApplicationData* data) {
-    if (ImGui::Begin("Shape Space", &data->shape_space.show_window)) {
-        if (!data->shape_space.input_valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-        data->shape_space.evaluate |= ImGui::InputText("input", data->shape_space.input.beg(), data->shape_space.input.capacity());
-        if (!data->shape_space.input_valid) ImGui::PopStyleColor();
+    if (ImGui::Begin("Shape Space", &data->shape_space.show_window, ImGuiWindowFlags_MenuBar)) {
+        if (ImGui::BeginMenuBar()) {
+            if (ImGui::BeginMenu("Settings")) {
+                const float marker_min_size =  0.01f;
+                const float marker_max_size = 10.0f;
+                ImGui::SliderFloat("Marker Size", &data->shape_space.marker_size, marker_min_size, marker_max_size);
+                ImGui::EndMenu();
+            }
+            ImGui::EndMenuBar();
+        }
 
-        ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_AntiAliased;
-        if (ImPlot::BeginPlot("##Shape Space Plot", 0, 0, ImVec2(-1,-1), flags)) {
+        const float item_width = MAX(ImGui::GetWindowContentRegionWidth(), 150.f);
+        ImGui::PushItemWidth(item_width);
+        if (!data->shape_space.input_valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
+        data->shape_space.evaluate |= ImGui::InputText("##input", data->shape_space.input.beg(), data->shape_space.input.capacity());
+        if (!data->shape_space.input_valid) ImGui::PopStyleColor();
+        ImGui::PopItemWidth();
+        if (ImGui::IsItemHovered()) {
+            if (data->shape_space.input_valid) {
+                md_bitfield_clear(&data->selection.current_highlight_mask);
+                for (int64_t i = 0; i < data->shape_space.result.num_bitfields; ++i) {
+                    md_bitfield_or_inplace(&data->selection.current_highlight_mask, &data->shape_space.result.bitfields[i]);
+                }
+            } else if (data->shape_space.err_text[0] != '\0') {
+                ImGui::SetTooltip("%s", data->shape_space.err_text.cstr());
+            }
+        }
+
+        ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_AntiAliased | ImPlotFlags_NoMenus | ImPlotFlags_NoMousePos;
+        ImPlotAxisFlags axis_flags = ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks;
+
+        const float x_reset[2] = {-0.025, 1.025};
+        const float y_reset[2] = {-0.025, 0.891};
+        ImPlot::SetNextPlotLimits(x_reset[0], x_reset[1], y_reset[0], y_reset[1], ImGuiCond_Once);
+
+        if (ImPlot::BeginPlot("##Shape Space Plot", 0, 0, ImVec2(-1,-1), flags, axis_flags, axis_flags)) {
             ImVec2 p0 = ImPlot::PlotToPixels(ImPlotPoint(0.0f, 0.0f));
             ImVec2 p1 = ImPlot::PlotToPixels(ImPlotPoint(1.0f, 0.0f));
             ImVec2 p2 = ImPlot::PlotToPixels(ImPlotPoint(0.5f, 0.86602540378f));
             ImPlot::PushPlotClipRect();
-            ImPlot::GetPlotDrawList()->AddTriangleFilled(p0, p1, p2, IM_COL32_WHITE);
-            ImPlot::GetPlotDrawList()->AddTriangle(p0, p1, p2, IM_COL32_BLACK);
+            ImPlot::GetPlotDrawList()->AddTriangleFilled(p0, p1, p2, IM_COL32(255,255,255,20));
+            ImPlot::GetPlotDrawList()->AddTriangle(p0, p1, p2, IM_COL32(255,255,255,50));
             ImPlot::PopPlotClipRect();
 
-            auto getter = [](void* user_data, int idx) -> ImPlotPoint {
-                const vec3_t* coords = (vec3_t*)user_data;
-                const ImVec2 p[3] = {{0,0}, {1,0}, {0.5,0.86602540378f}};
+            ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_Square);
+            ImPlot::PushStyleColor(ImPlotCol_MarkerFill, ImVec4(0,0,0,0));
+            ImPlot::PushStyleColor(ImPlotCol_MarkerOutline, ImVec4(0,0,0,0));
+            ImPlot::PlotScatter("##Hidden reset helper", x_reset, y_reset, 2);
+            ImPlot::PopStyleColor(2);
+            ImPlot::PopStyleVar();
 
-                ImVec2 pos = p[0] * coords[idx][0] + p[1] * coords[idx][1] + p[2] * coords[idx][2];
-                return {pos.x, pos.y};
+            auto getter = [](void* user_data, int idx) -> ImPlotPoint {
+                const vec2_t* coords = (vec2_t*)user_data;
+                return {coords[idx].x, coords[idx].y};
             };
 
-            ImPlot::PushStyleColor(ImPlotCol_MarkerFill, ImVec4(1,0,0,1));
-            ImPlot::PushStyleColor(ImPlotCol_MarkerOutline, ImVec4(0,0,0,1));
-            for (int64_t i = 0; i < md_array_size(data->shape_space.coordinates); ++i) {
-                vec3_t* coordinates = data->shape_space.coordinates;
-                ImPlot::PlotScatterG("##Coords", getter, coordinates, (int)md_array_size(data->shape_space.coordinates));
+            int32_t hovered_structure_idx = -1;
+            int32_t hovered_point_idx = -1;
+            float   hovered_point_min_dist = FLT_MAX;
+
+            vec2_t mouse_coord = {(float)ImPlot::GetPlotMousePos().x, (float)ImPlot::GetPlotMousePos().y};
+
+            ImPlotLimits lim = ImPlot::GetPlotLimits();
+            const float scl = (float)lim.X.Max - (float)lim.X.Min;
+            const float MAX_D2 = 0.0001f * scl * scl;
+
+            ImPlot::PushStyleVar(ImPlotStyleVar_MarkerSize, data->shape_space.marker_size);
+            for (int32_t i = 0; i < data->shape_space.num_structures; ++i) {
+                int32_t offset = data->shape_space.num_frames * i;
+                vec2_t* coordinates = data->shape_space.coords + offset;
+                char buf[32] = "";
+                if (data->shape_space.num_structures == 1) {
+                    snprintf(buf, sizeof(buf), "##%i", i+1);
+                } else {
+                    snprintf(buf, sizeof(buf), "%i", i+1);
+                }
+                ImPlot::PlotScatterG(buf, getter, coordinates, data->shape_space.num_frames);
+
+                auto item = ImPlot::GetItem(buf);
+                if (item) {
+                    if (item->LegendHovered) {
+                        hovered_structure_idx = i;
+                    }
+
+                    if (item->Show) {
+                        for (int32_t j = 0; j < data->shape_space.num_frames; ++j ) {
+                            vec2_t delta = mouse_coord - data->shape_space.coords[offset + j];
+                            float d2 = vec2_dot(delta, delta);
+                            if (d2 < MAX_D2 && d2 < hovered_point_min_dist) {
+                                hovered_point_min_dist = d2;
+                                hovered_point_idx = offset + j;
+                            }
+                        }
+                    }
+                }
             }
-            ImPlot::PopStyleColor(2);
+            ImPlot::PopStyleVar();
+
+            // Redraw hovered index
+            ImPlot::PushStyleVar(ImPlotStyleVar_MarkerSize, data->shape_space.marker_size * 1.1f);
+            ImPlot::PushStyleColor(ImPlotCol_MarkerOutline, ImVec4(1,1,1,1));
+            if (hovered_structure_idx != -1) {
+                vec2_t* coordinates = data->shape_space.coords + data->shape_space.num_frames * hovered_structure_idx;
+                ImPlot::PlotScatterG("##hovered structure", getter, coordinates, data->shape_space.num_frames);
+                md_bitfield_copy(&data->selection.current_highlight_mask, &data->shape_space.result.bitfields[hovered_structure_idx]);
+                data->mold.dirty_buffers |= MolBit_DirtyFlags;
+            }
+            if (hovered_point_idx != -1) {
+                vec2_t* coordinates = data->shape_space.coords + hovered_point_idx;
+                ImPlot::PlotScatterG("##hovered idx", getter, coordinates, 1);
+                char buf[128] = "";
+                int len = 0;
+                int32_t structure_idx = hovered_point_idx / data->shape_space.num_frames + 1;
+                int32_t frame_idx = hovered_point_idx % data->shape_space.num_frames;
+                vec3_t w = data->shape_space.weights[hovered_point_idx];
+                if (data->shape_space.num_structures > 1) {
+                    len += snprintf(buf, sizeof(buf), "Structure: %i, ", structure_idx);
+                }
+                len += snprintf(buf + len, sizeof(buf) - len, "Frame: %i, Weight(l,p,s): (%.2f, %.2f, %.2f)", frame_idx, w.x, w.y, w.z);
+                ImGui::SetTooltip(buf);
+
+                if (ImGui::IsWindowFocused() && ImPlot::IsPlotHovered() && ImGui::GetIO().MouseReleased[0]) {
+                    data->animation.frame = frame_idx;
+                }
+            }
+
+            ImPlot::PopStyleColor();
+            ImPlot::PopStyleVar();
+
+
 
             ImPlot::EndPlot();
         }
@@ -3635,58 +3769,60 @@ static void draw_shape_space_window(ApplicationData* data) {
             }
             if (md_semaphore_try_aquire(&data->mold.script.ir_semaphore)) {
                 data->shape_space.evaluate = false;
-                data->shape_space.num_structures = 0;
-                data->shape_space.num_frames = 0;
+                md_array_shrink(data->shape_space.coords, 0);
+                md_array_shrink(data->shape_space.weights, 0);
 
-                md_filter_result_t result = {0};
-                if (md_filter_evaluate(&result, data->shape_space.input, &data->mold.mol, &data->mold.script.ir, default_allocator)) {
+                md_filter_free(&data->shape_space.result, default_allocator);
+                if (md_filter_evaluate(&data->shape_space.result, data->shape_space.input, &data->mold.mol, &data->mold.script.ir, default_allocator)) {
                     data->shape_space.input_valid = true;
-                    data->shape_space.num_structures = (int32_t)result.num_bitfields;
-                    data->shape_space.num_frames = (int32_t)num_frames;
+                    data->shape_space.num_structures = (int32_t)data->shape_space.result.num_bitfields;
                     if (data->shape_space.num_structures > 0) {
-                        md_array_ensure(data->shape_space.coordinates, data->shape_space.num_frames * data->shape_space.num_structures, persistent_allocator);
-                        md_array_shrink(data->shape_space.coordinates, 0);
+                        data->shape_space.num_frames = (int32_t)num_frames;
+                        md_array_resize(data->shape_space.coords, num_frames * data->shape_space.num_structures, persistent_allocator);
+                        md_array_resize(data->shape_space.weights, num_frames * data->shape_space.num_structures, persistent_allocator);
 
-                        data->tasks.evaluate_shape_space = task_system::enqueue_pool("Eval Shape Space", (uint32_t)num_frames, [data, result](task_system::TaskSetRange frame_range) mutable {
+                        data->tasks.evaluate_shape_space = task_system::enqueue_pool("Eval Shape Space", (uint32_t)num_frames, [data](task_system::TaskSetRange frame_range) mutable {
                             int64_t stride = ROUND_UP(data->mold.mol.atom.count, md_simd_width);
                             float* coords = (float*)md_alloc(default_allocator, stride * 3 * sizeof(float));
                             float* x = coords + stride * 0;
                             float* y = coords + stride * 1;
                             float* z = coords + stride * 2;
+
+                            const vec2_t p[3] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 0.86602540378f}};
+
                             for (uint32_t frame_idx = frame_range.beg; frame_idx < frame_range.end; ++frame_idx) {
                                 md_trajectory_load_frame(&data->mold.traj, frame_idx, NULL, x, y, z);
                                 vec3_t* xyz = 0;
-                                for (int64_t i = 0; i < result.num_bitfields; ++i) {
-                                    md_array_ensure(xyz, md_bitfield_popcount(&result.bitfields[i]), default_allocator);
-                                    int64_t beg_bit = result.bitfields[i].beg_bit;
-                                    int64_t end_bit = result.bitfields[i].end_bit;
+                                for (int64_t i = 0; i < data->shape_space.result.num_bitfields; ++i) {
+                                    md_array_ensure(xyz, md_bitfield_popcount(&data->shape_space.result.bitfields[i]), default_allocator);
+                                    int64_t beg_bit = data->shape_space.result.bitfields[i].beg_bit;
+                                    int64_t end_bit = data->shape_space.result.bitfields[i].end_bit;
                                     int64_t count = 0;
                                     vec3_t com = {0,0,0};
-                                    while ((beg_bit = md_bitfield_scan(&result.bitfields[i], beg_bit, end_bit)) != 0) {
+                                    while ((beg_bit = md_bitfield_scan(&data->shape_space.result.bitfields[i], beg_bit, end_bit)) != 0) {
                                         int64_t src_idx = beg_bit - 1;
-                                        vec3_t p = {x[src_idx], y[src_idx], z[src_idx]};
-                                        com = com + p;
-                                        xyz[count++] = p;
+                                        vec3_t pos = {x[src_idx], y[src_idx], z[src_idx]};
+                                        com = com + pos;
+                                        xyz[count++] = pos;
                                     }
                                     com = com / (float)count;
                                     vec3_t eigen_vals;
                                     mat3_t eigen_vecs;
                                     mat3_eigen(mat3_covariance_matrix_vec3(xyz, com, count), eigen_vecs.col, eigen_vals.elem);
                                     float scl = 1.0f / (eigen_vals.x + eigen_vals.y + eigen_vals.z);
+                                    int64_t dst_idx = data->shape_space.num_frames * i + frame_idx;
                                     vec3_t w = { (eigen_vals[0] - eigen_vals[1]) * scl, 2.0f * (eigen_vals[1] - eigen_vals[2]) * scl, 3.0f * eigen_vals[2] * scl };
-                                    md_array_push(data->shape_space.coordinates, w, persistent_allocator);
+                                    data->shape_space.weights[dst_idx] = w;
+                                    data->shape_space.coords[dst_idx] = p[0] * w[0] + p[1] * w[1] + p[2] * w[2];
                                 }
                                 md_array_free(xyz, default_allocator);
                             }
-                        }, [result](task_system::TaskSetRange) mutable {
-                            md_filter_free(&result, default_allocator);
                         });
                     } else {
                         snprintf(data->shape_space.err_text.beg(), data->shape_space.err_text.capacity(), "Expression did not evaluate into any bitfields");
                     }
                 } else {
-                    snprintf(data->shape_space.err_text.beg(), data->shape_space.err_text.capacity(), "%s", result.error_buf);
-                    //md_filter_free(&result, default_allocator);
+                    snprintf(data->shape_space.err_text.beg(), data->shape_space.err_text.capacity(), "%s", data->shape_space.result.error_buf);
                 }
                 md_semaphore_release(&data->mold.script.ir_semaphore);
             }
@@ -4648,8 +4784,14 @@ static void free_trajectory_data(ApplicationData* data) {
     if (md_trajectory_num_frames(&data->mold.traj)) {
         load::traj::close(&data->mold.traj);
     }
-    md_array_resize(data->timeline.x_values, 0, persistent_allocator);
-    md_array_resize(data->display_properties, 0, persistent_allocator);
+    md_array_shrink(data->timeline.x_values,  0);
+    md_array_shrink(data->display_properties, 0);
+
+    data->shape_space.input_valid = false;
+    data->shape_space.num_frames = 0;
+    data->shape_space.num_structures = 0;
+    md_array_shrink(data->shape_space.weights, 0);
+    md_array_shrink(data->shape_space.coords, 0);
 }
 
 
@@ -4675,6 +4817,8 @@ static void init_trajectory_data(ApplicationData* data) {
         data->timeline.view_range = {min_time, max_time};
         data->timeline.filter.beg_frame = min_frame;
         data->timeline.filter.end_frame = max_frame;
+
+        data->shape_space.evaluate = true;
 
         md_array_resize(data->timeline.x_values, num_frames, persistent_allocator);
         for (int64_t i = 0; i < num_frames; ++i) {
@@ -4711,57 +4855,56 @@ static void init_trajectory_data(ApplicationData* data) {
             if (data->tasks.backbone_computations.id != 0) {
                 task_system::interrupt_and_wait(data->tasks.backbone_computations); // This should never happen
             }
-            data->tasks.backbone_computations = task_system::enqueue_pool("Backbone Operations", (uint32_t)num_frames, [data](task_system::TaskSetRange range)
-                {
-                    const auto& mol = data->mold.mol;
-                    const int64_t stride = ROUND_UP(mol.atom.count, md_simd_width);
-                    const int64_t bytes = stride * sizeof(float) * 3;
-                    float* coords = (float*)md_alloc(persistent_allocator, bytes);
-                    defer { md_free(persistent_allocator, coords, bytes); };
-                    float* x = coords + stride * 0;
-                    float* y = coords + stride * 1;
-                    float* z = coords + stride * 2;
+            data->tasks.backbone_computations = task_system::enqueue_pool("Backbone Operations", (uint32_t)num_frames, [data](task_system::TaskSetRange range) {
+                const auto& mol = data->mold.mol;
+                const int64_t stride = ROUND_UP(mol.atom.count, md_simd_width);
+                const int64_t bytes = stride * sizeof(float) * 3;
+                float* coords = (float*)md_alloc(persistent_allocator, bytes);
+                defer { md_free(persistent_allocator, coords, bytes); };
+                float* x = coords + stride * 0;
+                float* y = coords + stride * 1;
+                float* z = coords + stride * 2;
 
-                    for (uint32_t frame_idx = range.beg; frame_idx < range.end; ++frame_idx) {
-                        md_trajectory_load_frame(&data->mold.traj, frame_idx, NULL, x, y, z);
+                for (uint32_t frame_idx = range.beg; frame_idx < range.end; ++frame_idx) {
+                    md_trajectory_load_frame(&data->mold.traj, frame_idx, NULL, x, y, z);
 
-                        md_util_backbone_angle_args_t bb_args = {
-                            .atom = {
-                                .count = mol.atom.count,
-                                .x = x,
-                                .y = y,
-                                .z = z,
+                    md_util_backbone_angle_args_t bb_args = {
+                        .atom = {
+                            .count = mol.atom.count,
+                            .x = x,
+                            .y = y,
+                            .z = z,
                         },
                         .backbone = {
-                                .count = mol.backbone.count,
-                                .atoms = mol.backbone.atoms,
+                            .count = mol.backbone.count,
+                            .atoms = mol.backbone.atoms,
                         },
                         .chain = {
-                                .count = mol.chain.count,
-                                .backbone_range = mol.chain.backbone_range,
+                            .count = mol.chain.count,
+                            .backbone_range = mol.chain.backbone_range,
                         }
-                        };
-                        md_util_compute_backbone_angles(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &bb_args);
+                    };
+                    md_util_compute_backbone_angles(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &bb_args);
 
-                        md_util_secondary_structure_args_t ss_args = {
-                            .atom = {
-                                .count = data->mold.mol.atom.count,
-                                .x = x,
-                                .y = y,
-                                .z = z,
+                    md_util_secondary_structure_args_t ss_args = {
+                        .atom = {
+                            .count = data->mold.mol.atom.count,
+                            .x = x,
+                            .y = y,
+                            .z = z,
                         },
                         .backbone = {
-                                .count = mol.backbone.count,
-                                .atoms = mol.backbone.atoms,
+                            .count = mol.backbone.count,
+                            .atoms = mol.backbone.atoms,
                         },
                         .chain = {
-                                .count = data->mold.mol.chain.count,
-                                .backbone_range = data->mold.mol.chain.backbone_range,
+                            .count = data->mold.mol.chain.count,
+                            .backbone_range = data->mold.mol.chain.backbone_range,
                         }
-                        };
-                        md_util_compute_secondary_structure(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &ss_args);
-                    }
-                });
+                    };
+                    md_util_compute_secondary_structure(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &ss_args);
+                }
+            });
         }
     }
 }
