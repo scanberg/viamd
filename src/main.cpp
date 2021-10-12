@@ -126,7 +126,7 @@ enum class InterpolationMode { Nearest, Linear, Cubic };
 enum class SelectionLevel { Atom, Residue, Chain };
 enum class SelectionOperator { Or, And, Replace, Clear };
 enum class SelectionGrowth { CovalentBond, Radial };
-enum class RepresentationType { Vdw, Licorice, Ribbons, Cartoon };
+enum class RepresentationType { SpaceFill, Licorice, Ribbons, Cartoon };
 enum class TrackingMode { Absolute, Relative };
 enum class CameraMode { Perspective, Orthographic };
 
@@ -196,7 +196,7 @@ struct Representation {
     StrBuf<256> filt_error = "";
     //StrBuf<256> prop_error = "";
 
-    RepresentationType type = RepresentationType::Vdw;
+    RepresentationType type = RepresentationType::SpaceFill;
     ColorMapping color_mapping = ColorMapping::Cpk;
     md_exp_bitfield_t atom_mask{};
     md_gl_representation_t md_rep{};
@@ -816,7 +816,7 @@ static void save_workspace(ApplicationData* data, str_t file);
 static void create_screenshot(ApplicationData* data);
 
 // Representations
-static Representation* create_representation(ApplicationData* data, RepresentationType type = RepresentationType::Vdw,
+static Representation* create_representation(ApplicationData* data, RepresentationType type = RepresentationType::SpaceFill,
                                              ColorMapping color_mapping = ColorMapping::Cpk, str_t filter = make_cstr("all"));
 static Representation* clone_representation(ApplicationData* data, const Representation& rep);
 static void remove_representation(ApplicationData* data, int idx);
@@ -1000,7 +1000,7 @@ int main(int, char**) {
     data.script.editor.SetPalette(TextEditor::GetDarkPalette());
 
     load_dataset_from_file(&data, make_cstr(VIAMD_DATASET_DIR "/1ALA-500.pdb"));
-    create_representation(&data, RepresentationType::Vdw, ColorMapping::Cpk, make_cstr("all"));
+    create_representation(&data, RepresentationType::SpaceFill, ColorMapping::Cpk, make_cstr("all"));
     data.script.editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(1,2,3) in resname(\"ALA\");\nv = sdf(s1, element('H'), 10.0);");
 
     reset_view(&data, true);
@@ -2810,7 +2810,7 @@ static void draw_representations_window(ApplicationData* data) {
                 }
             }
             ImGui::PushItemWidth(item_width);
-            if (rep.type == RepresentationType::Vdw || rep.type == RepresentationType::Licorice) {
+            if (rep.type == RepresentationType::SpaceFill || rep.type == RepresentationType::Licorice) {
                 if (ImGui::SliderFloat("radii scale", &rep.radius, 0.1f, 2.f)) update_visual_rep = true;
             }
             if (rep.type == RepresentationType::Ribbons) {
@@ -2828,7 +2828,7 @@ static void draw_representations_window(ApplicationData* data) {
             md_gl_representation_type_t type = MD_GL_REP_DEFAULT;
             md_gl_representation_args_t args = {};
             switch(rep.type) {
-            case RepresentationType::Vdw:
+            case RepresentationType::SpaceFill:
                 type = MD_GL_REP_SPACE_FILL;
                 args.space_fill.radius_scale = rep.radius;
                 break;
@@ -3157,7 +3157,7 @@ struct TimelineArgs {
 bool draw_property_timeline(const ApplicationData& data, const TimelineArgs& args) {
     const ImPlotAxisFlags axis_flags = 0;
     const ImPlotAxisFlags axis_flags_x = axis_flags;
-    const ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit;
+    const ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit | ImPlotAxisFlags_NoLabel |ImPlotAxisFlags_NoTickLabels;
     const ImPlotFlags flags = ImPlotFlags_AntiAliased;
 
     ImPlot::LinkNextPlotLimits(args.view_range.min, args.view_range.max, 0, 0);
@@ -3693,6 +3693,11 @@ static void draw_shape_space_window(ApplicationData* data) {
             ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_Square);
             for (int32_t i = 0; i < data->shape_space.num_structures; ++i) {
                 int32_t offset = data->shape_space.num_frames * i;
+                int32_t count  = data->shape_space.num_frames;
+                if (data->timeline.filter.enabled) {
+                    offset += data->timeline.filter.beg_frame;
+                    count = MAX(data->timeline.filter.end_frame - data->timeline.filter.beg_frame, 0);
+                }
                 vec2_t* coordinates = data->shape_space.coords + offset;
                 char buf[32] = "";
                 if (data->shape_space.num_structures == 1) {
@@ -3700,7 +3705,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                 } else {
                     snprintf(buf, sizeof(buf), "%i", i+1);
                 }
-                ImPlot::PlotScatterG(buf, getter, coordinates, data->shape_space.num_frames);
+                ImPlot::PlotScatterG(buf, getter, coordinates, count);
 
                 auto item = ImPlot::GetItem(buf);
                 if (item) {
@@ -3709,12 +3714,12 @@ static void draw_shape_space_window(ApplicationData* data) {
                     }
 
                     if (item->Show) {
-                        for (int32_t j = 0; j < data->shape_space.num_frames; ++j ) {
-                            vec2_t delta = mouse_coord - data->shape_space.coords[offset + j];
+                        for (int32_t j = offset; j < offset + count; ++j ) {
+                            vec2_t delta = mouse_coord - data->shape_space.coords[j];
                             float d2 = vec2_dot(delta, delta);
                             if (d2 < MAX_D2 && d2 < hovered_point_min_dist) {
                                 hovered_point_min_dist = d2;
-                                hovered_point_idx = offset + j;
+                                hovered_point_idx = j;
                             }
                         }
                     }
@@ -3727,8 +3732,14 @@ static void draw_shape_space_window(ApplicationData* data) {
             ImPlot::PushStyleVar(ImPlotStyleVar_MarkerSize, data->shape_space.marker_size * 1.1f);
             ImPlot::PushStyleColor(ImPlotCol_MarkerOutline, ImVec4(1,1,1,1));
             if (hovered_structure_idx != -1) {
-                vec2_t* coordinates = data->shape_space.coords + data->shape_space.num_frames * hovered_structure_idx;
-                ImPlot::PlotScatterG("##hovered structure", getter, coordinates, data->shape_space.num_frames);
+                int32_t offset = data->shape_space.num_frames * hovered_structure_idx;
+                int32_t count  = data->shape_space.num_frames;
+                if (data->timeline.filter.enabled) {
+                    offset += data->timeline.filter.beg_frame;
+                    count = MAX(data->timeline.filter.end_frame - data->timeline.filter.beg_frame, 0);
+                }
+                vec2_t* coordinates = data->shape_space.coords + offset;
+                ImPlot::PlotScatterG("##hovered structure", getter, coordinates, count);
                 md_bitfield_copy(&data->selection.current_highlight_mask, &data->shape_space.result.bitfields[hovered_structure_idx]);
                 data->mold.dirty_buffers |= MolBit_DirtyFlags;
             }
@@ -5164,24 +5175,24 @@ static bool load_dataset_from_file(ApplicationData* data, str_t filename) {
 
 // ### WORKSPACE ###
 static RepresentationType get_rep_type(str_t str) {
-    if (compare_str_cstr(str, "VDW"))
-        return RepresentationType::Vdw;
+    if (compare_str_cstr(str, "SPACE_FILL"))
+        return RepresentationType::SpaceFill;
     else if (compare_str_cstr(str, "LICORICE"))
         return RepresentationType::Licorice;
     else if (compare_str_cstr(str, "BALL_AND_STICK"))    // Ball and stick is removed for now
-        return RepresentationType::Vdw;
+        return RepresentationType::SpaceFill;
     else if (compare_str_cstr(str, "RIBBONS"))
         return RepresentationType::Ribbons;
     else if (compare_str_cstr(str, "CARTOON"))
         return RepresentationType::Cartoon;
     else
-        return RepresentationType::Vdw;
+        return RepresentationType::SpaceFill;
 }
 
 static str_t get_rep_type_name(RepresentationType type) {
     switch (type) {
-        case RepresentationType::Vdw:
-            return make_cstr("VDW");
+        case RepresentationType::SpaceFill:
+            return make_cstr("SPACE_FILL");
         case RepresentationType::Licorice:
             return make_cstr("LICORICE");
         /*case RepresentationType::BallAndStick:
@@ -5747,7 +5758,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
         md_gl_representation_type_t type = MD_GL_REP_DEFAULT;
         md_gl_representation_args_t args = {};
         switch(rep->type) {
-        case RepresentationType::Vdw:
+        case RepresentationType::SpaceFill:
             type = MD_GL_REP_SPACE_FILL;
             args.space_fill.radius_scale = rep->radius;
             break;
