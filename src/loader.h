@@ -16,6 +16,8 @@ namespace mol {
     bool load_string_gro(md_molecule_t* mol, str_t string, md_allocator_i* alloc);
     bool load_file(md_molecule_t* mol, str_t filename, md_allocator_i* alloc);
     bool free(md_molecule_t* mol);
+
+    md_allocator_i* get_internal_allocator(md_molecule_t* mol);
 }
 
 namespace traj {

@@ -198,6 +198,22 @@ bool free(md_molecule_t* mol) {
     return false;
 }
 
+md_allocator_i* get_internal_allocator(md_molecule_t* mol) {
+    LoadedMolecule* loaded_mol = find_loaded_molecule((uint64_t)mol);
+    if (loaded_mol) {
+        str_t ext = loaded_mol->extension;
+        if (compare_str_cstr(ext, "pdb")) {
+            return md_pdb_molecule_internal_allocator(mol);
+        }
+        else if (compare_str_cstr(ext, "gro")) {
+            return md_gro_molecule_internal_allocator(mol);
+        }
+        ASSERT(false);
+    }
+    md_print(MD_LOG_TYPE_ERROR, "Attempting to get allocator for molecule which was not loaded with loader");
+    return NULL;
+}
+
 }  // namespace mol
 
 namespace traj {
@@ -241,13 +257,15 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, int64
 
         result = md_trajectory_decode_frame_data(&loaded_traj->traj, frame_data_ptr, frame_data_size, &frame_data->header, frame_data->x, frame_data->y, frame_data->z);
 
+        bool have_box = (frame_data->header.box[0][0] + frame_data->header.box[1][1] + frame_data->header.box[2][2]) > 0;
+
         if (result) {
             // If we have a recenter target, then compute and apply that transformation
             if (!md_bitfield_empty(&loaded_traj->recenter_target)) {
                 int64_t count = md_bitfield_popcount(&loaded_traj->recenter_target);
                 if (count > 0) {
                     // Allocate data for substructure
-                    int64_t stride = ROUND_UP(count, md_simd_width);
+                    int64_t stride = ROUND_UP(count, md_simd_widthf);
                     float* mem = (float*)md_alloc(default_temp_allocator, stride * 4 * sizeof(float));
                     float* tmp_x = mem + 0 * stride;
                     float* tmp_y = mem + 1 * stride;
@@ -268,9 +286,18 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, int64
                     }
 
                     // Compute deperiodized com for substructure
-                    vec3_t com = md_util_compute_periodic_com(tmp_x, tmp_y, tmp_z, tmp_w, count, frame_data->header.box);
+                    vec3_t com;
+                    if (have_box)
+                        com = md_util_compute_periodic_com(tmp_x, tmp_y, tmp_z, tmp_w, count, frame_data->header.box);
+                    else {
+                        com = md_util_compute_com(tmp_x, tmp_y, tmp_z, tmp_w, count);
+                    }
 
-                    vec3_t ext = {frame_data->header.box[0][0], frame_data->header.box[1][1], frame_data->header.box[2][2]};
+                    vec3_t ext = {0,0,0};
+                    if (have_box) {
+                        ext = {frame_data->header.box[0][0], frame_data->header.box[1][1], frame_data->header.box[2][2]};
+                    }
+
                     // Translate all
                     vec3_t trans = ext * 0.5f - com;
                     for (int64_t i = 0; i < frame_data->header.num_atoms; ++i) {
@@ -282,25 +309,27 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, int64
             }
 
             // Deperiodize
-            const md_molecule_t& mol = *loaded_traj->mol;
-            md_util_apply_pbc_args_t args = {
-                .atom = {
-                    .count = mol.atom.count,
-                    .x = frame_data->x,
-                    .y = frame_data->y,
-                    .z = frame_data->z,
-                },
-                .residue = {
-                        .count = mol.residue.count,
-                        .atom_range = mol.residue.atom_range,
-                },
-                .chain = {
-                        .count = mol.chain.count,
-                        .residue_range = mol.chain.residue_range,
-                }
-            };
-            memcpy(args.pbc.box, frame_data->header.box, sizeof(args.pbc.box));
-            md_util_apply_pbc(frame_data->x, frame_data->y, frame_data->z, mol.atom.count, args);
+            if (have_box) {
+                const md_molecule_t& mol = *loaded_traj->mol;
+                md_util_apply_pbc_args_t args = {
+                    .atom = {
+                        .count = mol.atom.count,
+                        .x = frame_data->x,
+                        .y = frame_data->y,
+                        .z = frame_data->z,
+                    },
+                    .residue = {
+                            .count = mol.residue.count,
+                            .atom_range = mol.residue.atom_range,
+                    },
+                    .chain = {
+                            .count = mol.chain.count,
+                            .residue_range = mol.chain.residue_range,
+                    }
+                };
+                memcpy(args.pbc.box, frame_data->header.box, sizeof(args.pbc.box));
+                md_util_apply_pbc(frame_data->x, frame_data->y, frame_data->z, mol.atom.count, args);
+            }
         }
     }
 

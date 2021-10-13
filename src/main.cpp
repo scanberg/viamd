@@ -143,9 +143,11 @@ enum AtomBit_ {
 };
 
 enum MolBit_ {
-    MolBit_DirtyPosition            = 0x1,
-    MolBit_DirtySecondaryStructure  = 0x2,
-    MolBit_DirtyFlags               = 0x4
+    MolBit_DirtyPosition            = 0x01,
+    MolBit_DirtyRadius              = 0x02,
+    MolBit_DirtySecondaryStructure  = 0x04,
+    MolBit_DirtyFlags               = 0x08,
+    MolBit_DirtyBonds               = 0x10,
 };
 
 enum RepBit_ {
@@ -311,6 +313,8 @@ struct ApplicationData {
 
     // --- MOLD DATA ---
     struct {
+        md_allocator_i*     mol_alloc = NULL;
+
         md_gl_context_t     gl_ctx = {};
         md_gl_molecule_t    gl_mol = {};
         md_molecule_t       mol = {};
@@ -1503,7 +1507,7 @@ static void interpolate_atomic_properties(ApplicationData* data) {
 
     mat3_t boxes[4] = {};
 
-    int64_t stride = ROUND_UP(mol.atom.count, md_simd_width);    // The interploation uses SIMD vectorization without bounds, so we make sure there is no overlap between the data segments
+    int64_t stride = ROUND_UP(mol.atom.count, md_simd_widthf);    // The interploation uses SIMD vectorization without bounds, so we make sure there is no overlap between the data segments
     int64_t bytes = stride * sizeof(float) * 3 * 4;
     void* mem = md_alloc(frame_allocator, bytes);
     defer { md_free(frame_allocator, mem, bytes); };
@@ -2377,10 +2381,33 @@ if (data->selection.op_mode == SelectionOperator::And) {
 }
 
 void remap_atom_elem(ApplicationData* data, str_t lbl, md_element_t new_elem) {
+    float new_radius = md_util_element_vdw_radius(new_elem);
     for (int64_t i = 0; i < data->mold.mol.atom.count; ++i) {
         if (compare_str_cstr(lbl, data->mold.mol.atom.name[i])) {
             data->mold.mol.atom.element[i] = new_elem;
+            data->mold.mol.atom.radius[i] = new_radius;
+            data->mold.dirty_buffers |= MolBit_DirtyRadius;
         }
+
+        auto& mol = data->mold.mol;
+        md_util_covalent_bond_args_t args = {
+            .atom = {
+                .count = mol.atom.count,
+                .x = mol.atom.x,
+                .y = mol.atom.y,
+                .z = mol.atom.z,
+                .element = mol.atom.element,
+            },
+            .residue = {
+                .count = mol.residue.count,
+                .atom_range = mol.residue.atom_range,
+                .internal_bond_range = mol.residue.internal_covalent_bond_range,
+                .complete_bond_range = mol.residue.complete_covalent_bond_range,
+            }
+        };
+        mol.covalent_bond.bond = md_util_extract_covalent_bonds(&args, data->mold.mol_alloc);
+        mol.covalent_bond.count = md_array_size(mol.covalent_bond.bond);
+        data->mold.dirty_buffers |= MolBit_DirtyBonds;
     }
     update_all_representations(data);
 }
@@ -2393,6 +2420,7 @@ void draw_context_popup(ApplicationData* data) {
     const bool shift_down = ImGui::GetIO().KeyShift;
     const int64_t sss_count = single_selection_sequence_count(&data->selection.single_selection_sequence);
     const int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
+    const int64_t num_atoms_selected = md_bitfield_popcount(&data->selection.current_selection_mask);
 
     if (data->ctx.input.mouse.clicked[1] && !shift_down && !ImGui::GetIO().WantTextInput) {
         if (data->selection.right_clicked != -1 || sss_count > 1) {
@@ -2547,7 +2575,7 @@ void draw_context_popup(ApplicationData* data) {
                 ImGui::EndMenu();
             }
         }
-        if (data->selection.right_clicked != -1) {
+        if (data->selection.right_clicked != -1 && num_atoms_selected == 0) {
             if (ImGui::BeginMenu("Remap Atom Element")) {
                 int idx = data->selection.right_clicked;
                 if (0 <= idx && idx < data->mold.mol.atom.count) {
@@ -2609,7 +2637,7 @@ void draw_context_popup(ApplicationData* data) {
                     }
                 }
 
-                if (md_bitfield_popcount(&data->selection.current_selection_mask) > 0) {
+                if (num_atoms_selected > 0) {
                     apply |= ImGui::MenuItem("on Selection");
                     if (ImGui::IsItemHovered()) {
                         md_bitfield_copy(&mask, &data->selection.current_selection_mask);
@@ -3792,7 +3820,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                         md_array_resize(data->shape_space.weights, num_frames * data->shape_space.num_structures, persistent_allocator);
 
                         data->tasks.evaluate_shape_space = task_system::enqueue_pool("Eval Shape Space", (uint32_t)num_frames, [data](task_system::TaskSetRange frame_range) mutable {
-                            int64_t stride = ROUND_UP(data->mold.mol.atom.count, md_simd_width);
+                            int64_t stride = ROUND_UP(data->mold.mol.atom.count, md_simd_widthf);
                             float* coords = (float*)md_alloc(default_allocator, stride * 3 * sizeof(float));
                             float* x = coords + stride * 0;
                             float* y = coords + stride * 1;
@@ -4744,6 +4772,10 @@ static void update_md_buffers(ApplicationData* data) {
         md_gl_molecule_set_atom_position(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
     }
 
+    if (data->mold.dirty_buffers & MolBit_DirtyRadius) {
+        md_gl_molecule_set_atom_radius(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.radius, 0);
+    }
+
     if (data->mold.dirty_buffers & MolBit_DirtyFlags) {
         if (data->mold.mol.atom.flags) {
             for (int64_t i = 0; i < mol.atom.count; i++) {
@@ -4755,6 +4787,10 @@ static void update_md_buffers(ApplicationData* data) {
             }
             md_gl_molecule_set_atom_flags(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.flags, 0);
         }
+    }
+
+    if (data->mold.dirty_buffers & MolBit_DirtyBonds) {
+        md_gl_molecule_set_covalent_bonds(&data->mold.gl_mol, 0, (uint32_t)mol.covalent_bond.count, mol.covalent_bond.bond, 0);
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtySecondaryStructure) {
@@ -4798,6 +4834,7 @@ static void free_trajectory_data(ApplicationData* data) {
     if (md_trajectory_num_frames(&data->mold.traj)) {
         load::traj::close(&data->mold.traj);
     }
+    memset(data->simulation_box.box.elem, 0, sizeof(mat3_t));
     md_array_shrink(data->timeline.x_values,  0);
     md_array_shrink(data->display_properties, 0);
 
@@ -4871,7 +4908,7 @@ static void init_trajectory_data(ApplicationData* data) {
             }
             data->tasks.backbone_computations = task_system::enqueue_pool("Backbone Operations", (uint32_t)num_frames, [data](task_system::TaskSetRange range) {
                 const auto& mol = data->mold.mol;
-                const int64_t stride = ROUND_UP(mol.atom.count, md_simd_width);
+                const int64_t stride = ROUND_UP(mol.atom.count, md_simd_widthf);
                 const int64_t bytes = stride * sizeof(float) * 3;
                 float* coords = (float*)md_alloc(persistent_allocator, bytes);
                 defer { md_free(persistent_allocator, coords, bytes); };
@@ -4946,6 +4983,7 @@ static void free_molecule_data(ApplicationData* data) {
     if (data->mold.mol.atom.count) {
         data->files.molecule = "";
         load::mol::free(&data->mold.mol);
+        data->mold.mol_alloc = NULL;
     }
     free_trajectory_data(data);
 
@@ -4957,6 +4995,7 @@ static void free_molecule_data(ApplicationData* data) {
 
 static void init_molecule_data(ApplicationData* data) {
     if (data->mold.mol.atom.count) {
+        data->mold.mol_alloc = load::mol::get_internal_allocator(&data->mold.mol);
         const auto& mol = data->mold.mol;
         data->picking.idx = INVALID_PICKING_IDX;
         data->selection.hovered = -1;
