@@ -2508,12 +2508,14 @@ void draw_context_popup(ApplicationData* data) {
             }
         }
         if (data->selection.right_clicked != -1 && num_atoms_selected == 0) {
-            if (ImGui::BeginMenu("Remap Atom Element")) {
-                int idx = data->selection.right_clicked;
-                if (0 <= idx && idx < data->mold.mol.atom.count) {
+            int idx = data->selection.right_clicked;
+            if (0 <= idx && idx < data->mold.mol.atom.count) {
+                char label[64] = "";
+                snprintf(label, sizeof(label), "Remap Element for '%s'", data->mold.mol.atom.name[idx]);
+                if (ImGui::BeginMenu(label)) {
                     static char input_buf[32] = "";
-                    str_t lbl = {data->mold.mol.atom.name[idx], (int64_t)strlen(data->mold.mol.atom.name[idx])};
                     md_element_t elem = data->mold.mol.atom.element[idx];
+                    str_t lbl = {data->mold.mol.atom.name[idx], (int64_t)strlen(data->mold.mol.atom.name[idx])};
                     str_t name = md_util_element_name(elem);
                     str_t sym  = md_util_element_symbol(elem);
 
@@ -2524,7 +2526,7 @@ void draw_context_popup(ApplicationData* data) {
                     const bool is_valid = new_elem != 0;
 
                     if (!is_valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-                    ImGui::InputText("Symbol", input_buf, sizeof(input_buf));
+                    ImGui::InputText("##Symbol", input_buf, sizeof(input_buf));
                     if (!is_valid) ImGui::PopStyleColor();
                     str_t new_name = md_util_element_name(new_elem);
                     str_t new_sym  = md_util_element_symbol(new_elem);
@@ -2536,9 +2538,8 @@ void draw_context_popup(ApplicationData* data) {
                         ImGui::CloseCurrentPopup();
                     }
                     if (!is_valid) ImGui::PopDisabled();
+                    ImGui::EndMenu();
                 }
-
-                ImGui::EndMenu();
             }
         }
         if (data->selection.right_clicked != -1 && num_frames > 0) {
@@ -5733,6 +5734,8 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     if (new_trajectory_file.len) {
         load_dataset_from_file(data, new_trajectory_file);
     }
+
+    apply_atom_elem_mappings(data);
 }
 
 static void write_entry(FILE* file, SerializationObject target, const void* ptr, str_t filename) {
