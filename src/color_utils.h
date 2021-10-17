@@ -172,7 +172,7 @@ inline uint32_t convert_color(vec4_t color) {
     return u32_from_vec4(color);
 }
 
-void color_atoms_uniform(uint32_t* colors, int64_t count, vec4_t uniform_color);
+void color_atoms_uniform(uint32_t* colors, int64_t count, vec4_t uniform_color, const md_exp_bitfield_t* mask = NULL);
 void color_atoms_cpk(uint32_t* colors, int64_t count, const md_molecule_t& mol);
 void color_atoms_residue_id(uint32_t* colors, int64_t count, const md_molecule_t& mol);
 void color_atoms_residue_index(uint32_t* colors, int64_t count, const md_molecule_t& mol);
