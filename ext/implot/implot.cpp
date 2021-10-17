@@ -3355,6 +3355,7 @@ bool DragLineX(const char* id, double* value, bool show_label, const ImVec4& col
         return false;
     float len = gp.Style.MajorTickLen.x;
     ImVec4 color = IsColorAuto(col) ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : col;
+    color.w *= ImGui::GetStyle().Alpha;
     ImU32 col32 = ImGui::ColorConvertFloat4ToU32(color);
     ImDrawList& DrawList = *GetPlotDrawList();
     PushPlotClipRect();
