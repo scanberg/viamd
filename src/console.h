@@ -22,7 +22,6 @@ struct Console {
         commands.push_back("HELP");
         commands.push_back("HISTORY");
         commands.push_back("CLEAR");
-        commands.push_back("CLASSIFY");  // "classify" is here to provide an example of "C"+[tab] completing to "CL" and displaying matches.
     }
     ~Console() {
         ClearLog();
@@ -82,7 +81,7 @@ struct Console {
 
     void Draw(const char* title, int width, int height, float dt) {
         constexpr int WINDOW_FLAGS =
-            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal;
+            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal | ImGuiWindowFlags_NoDocking;
 
         float console_width = (float)width;
         float console_height = (float)height * 0.25f;
@@ -109,8 +108,10 @@ struct Console {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.f);
 
         ImGuiViewport* vp = ImGui::GetMainViewport();
+
         ImGui::SetNextWindowSize(ImVec2(console_width, console_height));
         ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + y_pos));
+        ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
         ImGui::Begin(title, &visible, WINDOW_FLAGS);
 
         const float footer_height_to_reserve = ImGui::GetStyle().ItemSpacing.y + ImGui::GetFrameHeightWithSpacing();              // 1 separator, 1 input text
