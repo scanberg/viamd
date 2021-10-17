@@ -26,6 +26,7 @@
 #include <core/md_file.h>
 #include <core/md_array.inl>
 #include <core/md_os.h>
+#include <core/md_spatial_hash.h>
 
 #include <imgui.h>
 #define IMGUI_DEFINE_MATH_OPERATORS
@@ -76,6 +77,7 @@ const Key::Key_t KEY_PLAY_PAUSE = Key::KEY_SPACE;
 const Key::Key_t KEY_SKIP_TO_PREV_FRAME = Key::KEY_LEFT;
 const Key::Key_t KEY_SKIP_TO_NEXT_FRAME = Key::KEY_RIGHT;
 const Key::Key_t KEY_TOGGLE_SCREENSHOT_MODE = Key::KEY_F10;
+const Key::Key_t KEY_SHOW_DEBUG_WINDOW = Key::KEY_F12;
 
 // For cpu profiling
 #define PUSH_CPU_SECTION(lbl) {};
@@ -278,7 +280,7 @@ struct DisplayProperty {
 };
 
 struct AtomElementMapping {
-    char lbl[8] = "";
+    StrBuf<31> lbl = "";
     md_element_t elem = 0;
 };
 
@@ -353,10 +355,7 @@ struct ApplicationData {
 
     // --- ATOM SELECTION ---
     struct {
-        // bool show_window = false;
-        SelectionLevel level_mode = SelectionLevel::Atom;
-        SelectionOperator op_mode = SelectionOperator::Or;
-        SelectionGrowth grow_mode = SelectionGrowth::CovalentBond;
+        SelectionLevel granularity = SelectionLevel::Atom;
 
         int32_t hovered = -1;
         int32_t right_clicked = -1;
@@ -383,6 +382,23 @@ struct ApplicationData {
         } color;
 
         bool selecting = false;
+
+        struct {
+            char buf[256] = "";
+            char err_buf[256] = "";
+            md_exp_bitfield_t mask = {0};
+            bool query_ok = false;
+            bool query_invalid = true;
+            bool show_window = false;
+        } query;
+
+        struct {
+            md_exp_bitfield_t mask = {0};
+            SelectionGrowth mode = SelectionGrowth::CovalentBond;
+            float extent = 0;
+            bool mask_invalid = true;
+            bool show_window = false;
+        } grow;
     } selection;
 
     // --- FRAMEBUFFER ---
@@ -403,12 +419,12 @@ struct ApplicationData {
     struct {
         struct {
             bool enabled = true;
-            int  beg_frame = 0;
-            int  end_frame = 1;
+            double beg_frame = 0;
+            double end_frame = 1;
             
             struct {
                 bool enabled = false;
-                int extent_in_frames = 10;
+                double extent_in_frames = 10;
             } temporal_window;
         } filter;
 
@@ -482,6 +498,8 @@ struct ApplicationData {
         bool show_target_atoms = false;
 
         md_gl_representation_t* gl_reps = 0;
+        mat4_t* rep_model_mats = 0;
+        mat4_t model_mat = {0};
 
         Camera camera = {};
 
@@ -615,8 +633,8 @@ struct ApplicationData {
 
     // --- REPRESENTATIONS ---
     struct {
-        Representation* buffer = {};
-        md_exp_bitfield_t atom_visibility_mask{};
+        Representation* buffer = 0;
+        md_exp_bitfield_t atom_visibility_mask = {0};
         bool atom_visibility_mask_dirty = false;
         bool show_window = false;
     } representations;
@@ -651,6 +669,8 @@ struct ApplicationData {
             md_backbone_angles_t* data = NULL;
         } backbone_angles;
     } trajectory_data;
+
+    bool show_debug_window = false;
 };
 
 //static void postprocess_frame(md_frame_data_t* frame, void* user_data);
@@ -784,6 +804,8 @@ static void draw_representations_lean_and_mean(ApplicationData* data, uint32_t m
 
 static void draw_main_menu(ApplicationData* data);
 static void draw_context_popup(ApplicationData* data);
+static void draw_selection_query_window(ApplicationData* data);
+static void draw_selection_grow_window(ApplicationData* data);
 static void draw_animation_control_window(ApplicationData* data);
 static void draw_representations_window(ApplicationData* data);
 //static void draw_property_window(ApplicationData* data);
@@ -798,6 +820,7 @@ static void draw_shape_space_window(ApplicationData* data);
 static void draw_density_volume_window(ApplicationData* data);
 static void draw_script_editor_window(ApplicationData* data);
 static void draw_dataset_window(ApplicationData* data);
+static void draw_debug_window(ApplicationData* data);
 // static void draw_density_volume_clip_plane_widgets(ApplicationData* data);
 // static void draw_selection_window(ApplicationData* data);
 
@@ -939,6 +962,9 @@ int main(int, char**) {
 
     md_bitfield_init(&data.selection.current_selection_mask, persistent_allocator);
     md_bitfield_init(&data.selection.current_highlight_mask, persistent_allocator);
+    md_bitfield_init(&data.selection.query.mask, persistent_allocator);
+    md_bitfield_init(&data.selection.grow.mask, persistent_allocator);
+
     md_bitfield_init(&data.representations.atom_visibility_mask, persistent_allocator);
     md_bitfield_init(&data.mold.script.frame_mask, persistent_allocator);
 
@@ -1000,6 +1026,16 @@ int main(int, char**) {
 
     ImGui::init_theme();
 
+    const ImU32 dihedral_colors[] = {
+        IM_COL32(255,  0,255,255),
+        IM_COL32(0,    0,255,255),
+        IM_COL32(255,255,255,255),
+        IM_COL32(255,  0,  0,255),
+        IM_COL32(255,  0,255,255)
+    };
+
+    ImPlot::AddColormap("Dihedral", dihedral_colors, ARRAY_SIZE(dihedral_colors), false);
+
     data.script.editor.SetLanguageDefinition(TextEditor::LanguageDefinition::VIAMD());
     data.script.editor.SetPalette(TextEditor::GetDarkPalette());
 
@@ -1047,6 +1083,10 @@ int main(int, char**) {
             } else if (!ImGui::GetIO().WantTextInput) {
                 data.console.Show();
             }
+        }
+
+        if (data.ctx.input.key.hit[KEY_SHOW_DEBUG_WINDOW]) {
+            data.show_debug_window = true;
         }
 
         if (!ImGui::GetIO().WantCaptureKeyboard) {
@@ -1143,11 +1183,11 @@ int main(int, char**) {
         }
 
         if (data.timeline.filter.temporal_window.enabled) {
-            int pre_beg = data.timeline.filter.beg_frame;
-            int pre_end = data.timeline.filter.end_frame;
-            const auto half_window_ext = data.timeline.filter.temporal_window.extent_in_frames * 0.5;
-            data.timeline.filter.beg_frame = (int)CLAMP(data.animation.frame - half_window_ext, 0.0, max_frame);
-            data.timeline.filter.end_frame = (int)CLAMP(data.animation.frame + half_window_ext, 0.0, max_frame);
+            const double pre_beg = data.timeline.filter.beg_frame;
+            const double pre_end = data.timeline.filter.end_frame;
+            const double half_window_ext = data.timeline.filter.temporal_window.extent_in_frames * 0.5;
+            data.timeline.filter.beg_frame = CLAMP(data.animation.frame - half_window_ext, 0.0, max_frame);
+            data.timeline.filter.end_frame = CLAMP(data.animation.frame + half_window_ext, 0.0, max_frame);
             if (data.mold.script.ir_is_valid && data.timeline.filter.beg_frame != pre_beg || data.timeline.filter.end_frame != pre_end) {
                 data.mold.script.evaluate_filt = true;
             }
@@ -1383,6 +1423,10 @@ int main(int, char**) {
         if (data.shape_space.show_window) draw_shape_space_window(&data);
         if (data.script.show_editor) draw_script_editor_window(&data);
         if (data.dataset.show_window) draw_dataset_window(&data);
+        if (data.selection.query.show_window) draw_selection_query_window(&data);
+        if (data.selection.grow.show_window) draw_selection_grow_window(&data);
+        if (data.show_debug_window) draw_debug_window(&data);
+
 
         // @NOTE: ImGui::GetIO().WantCaptureMouse does not work with Menu
         if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
@@ -1449,7 +1493,7 @@ static void update_properties(DisplayProperty** prop_items, md_script_property_t
         case MD_SCRIPT_PROPERTY_TYPE_VOLUME:
             possible_display_mask = DisplayProperty::ShowIn_Volume;
             break;
-        case MD_SCRIPT_PROPERTY_TYPE_NONE:
+        case MD_SCRIPT_PROPERTY_TYPE_INVALID:
         default:
             ASSERT(false);
         }
@@ -1883,7 +1927,6 @@ static void compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, con
 static void grow_mask_by_covalent_bond(md_exp_bitfield_t* mask, md_bond_t* bonds, int64_t num_bonds, int64_t extent) {
     md_exp_bitfield_t prev_mask;
     md_bitfield_init(&prev_mask, frame_allocator);
-    md_bitfield_copy(&prev_mask, mask);        
     defer { md_bitfield_free(&prev_mask); };
 
     for (int64_t i = 0; i < extent; i++) {
@@ -1900,24 +1943,30 @@ static void grow_mask_by_covalent_bond(md_exp_bitfield_t* mask, md_bond_t* bonds
     }
 }
 
-/*
-static void grow_mask_by_radial_extent(Bitfield mask, const float* atom_x, const float* atom_y, const float* atom_z, int64_t atom_count, float extent) {
-    Bitfield prev_mask;
-    bitfield::init(&prev_mask, mask);
-    defer { bitfield::free(&prev_mask); };
+static void grow_mask_by_radial_extent(md_exp_bitfield_t* dst_mask, const md_exp_bitfield_t* src_mask, const float* x, const float* y, const float* z, int64_t count, float ext) {
+    if (ext > 0.0f) {
+        const float cell_ext = CLAMP(ext / 3.0f, 3.0f, 12.0f);
+        md_spatial_hash_t ctx = {0};
+        md_spatial_hash_init(&ctx, x, y, z, count, ext, frame_allocator);
+        defer { md_spatial_hash_free(&ctx, frame_allocator); };
 
-    spatialhash::Frame frame = spatialhash::compute_frame(atom_x, atom_y, atom_z, atom_count, vec3_t(extent));
-    for (int64_t i = 0; i < atom_count; i++) {
-        if (bitfield::get_bit(prev_mask, i)) {
-            const vec3_t pos = {atom_x[i], atom_y[i], atom_z[i]};
-            spatialhash::for_each_within(frame, pos, extent, [mask](int32_t idx, const vec3_t& pos) {
-                UNUSED(pos);
-                bitfield::set_bit(mask, idx);
-            });
+        md_bitfield_clear(dst_mask);
+
+        int64_t beg_bit = src_mask->beg_bit;
+        int64_t end_bit = src_mask->end_bit;
+        while ((beg_bit = md_bitfield_scan(src_mask, beg_bit, end_bit)) != 0) {
+            int64_t i = beg_bit - 1;
+            vec4_t pos_rad = {x[i], y[i], z[i], ext};
+            md_spatial_hash_query(&ctx, pos_rad, [](uint32_t idx, vec3_t, void* user_data) -> bool {
+                md_exp_bitfield_t* mask = (md_exp_bitfield_t*)user_data;
+                md_bitfield_set_bit(mask, (int64_t)idx);
+                return true;
+            }, dst_mask);
         }
+    } else {
+        md_bitfield_copy(dst_mask, src_mask);
     }
 }
-*/
 
 static void expand_mask(md_exp_bitfield_t* mask, const md_range_t ranges[], int64_t num_ranges) {
     for (int64_t i = 0; i < num_ranges; i++) {
@@ -1930,14 +1979,11 @@ static void expand_mask(md_exp_bitfield_t* mask, const md_range_t ranges[], int6
 static bool filter_expression(ApplicationData* data, str_t expr, md_exp_bitfield_t* mask, bool* is_dynamic = NULL, char* error_str = NULL, int64_t error_cap = 0) {
     if (data->mold.mol.atom.count == 0) return false;    
     
-    md_filter_result_t res;
+    md_filter_result_t res = {0};
     bool success = false;
 
     md_semaphore_aquire(&data->mold.script.ir_semaphore);
     if (md_filter_evaluate(&res, expr, &data->mold.mol, &data->mold.script.ir, frame_allocator)) {
-        if (error_str) {
-            snprintf(error_str, error_cap, "%s", res.error_buf);
-        }
         if (is_dynamic) {
             *is_dynamic = res.is_dynamic;
         }
@@ -1948,6 +1994,10 @@ static bool filter_expression(ApplicationData* data, str_t expr, md_exp_bitfield
             }
         }
         success = true;
+    } else {
+        if (error_str) {
+            snprintf(error_str, error_cap, "%s", res.error_buf);
+        }
     }
     md_semaphore_release(&data->mold.script.ir_semaphore);
 
@@ -2146,216 +2196,71 @@ ImGui::EndGroup();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Selection")) {
-            //const auto atom_count = data->mold.mol.atom.count;
-            md_exp_bitfield_t mask;
-            md_bitfield_init(&mask, frame_allocator);
-            defer { md_bitfield_free(&mask); };
-
-            if (ImGui::MenuItem("Clear Selection")) {
-                md_bitfield_clear(&data->selection.current_selection_mask);
+            ImGui::Combo("Granularity", (int*)(&data->selection.granularity), "Atom\0Residue\0Chain\0\0");
+            int64_t num_selected_atoms = md_bitfield_popcount(&data->selection.current_selection_mask);
+            if (num_selected_atoms == 0) ImGui::PushDisabled();
+            if (ImGui::MenuItem("Invert")) {
+                md_bitfield_not_inplace(&data->selection.current_selection_mask, 0, data->mold.mol.atom.count);
                 data->mold.dirty_buffers |= MolBit_DirtyFlags;
             }
+            if (ImGui::MenuItem("Grow"))  data->selection.grow.show_window = true;
+            if (num_selected_atoms == 0) ImGui::PopDisabled();
 
-            if (ImGui::MenuItem("Invert Selection")) {
-                md_bitfield_clear(&data->selection.current_selection_mask);
-                data->mold.dirty_buffers |= MolBit_DirtyFlags;
-            }
-
-            ImGui::Spacing();
-            ImGui::Separator();
-
-            // MODES
-            ImGui::Combo("Level Mode", (int*)(&data->selection.level_mode), "Atom\0Residue\0Chain\0\0");
-
-            ImGui::Spacing();
-            ImGui::Separator();
-
-            // QUERY
-            {
-                static char buf[256] = {0};
-                static bool query_ok = false;
-
-                ImGui::Text("Query");
-                const auto TEXT_BG_DEFAULT_COLOR = ImGui::ColorConvertFloat4ToU32(ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
-                ImGui::PushStyleColor(ImGuiCol_FrameBg, query_ok ? TEXT_BG_DEFAULT_COLOR : TEXT_BG_ERROR_COLOR);
-                // ImGui::Combo("Mode", (int*)(&data->selection.op_mode), "Or\0And\0\0");
-                const bool pressed_enter =
-                    ImGui::InputText("##query", buf, ARRAY_SIZE(buf), ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue);
-                ImGui::PopStyleColor();
-                // ImGui::SameLine();
-                if (!query_ok) ImGui::PushDisabled();
-                const bool apply = ImGui::Button("Apply##query") || pressed_enter;
-                if (!query_ok) ImGui::PopDisabled();
-
-                if (pressed_enter) {
-                    ImGui::SetKeyboardFocusHere(-1);
-                }
-
-                // if (ImGui::IsWindowAppearing()) {
-                //    ImGui::SetKeyboardFocusHere(-1);
-                //}
-
-                {
-                    query_ok = filter_expression(data, str_from_cstr(buf), &mask);
-
-                    if (query_ok) {
-                        switch (data->selection.level_mode) {
-                            case SelectionLevel::Atom:
-                                // No need to expand the mask
-                                break;
-                            case SelectionLevel::Residue:
-                                expand_mask(&mask, data->mold.mol.residue.atom_range, data->mold.mol.residue.count);
-                                break;
-                            case SelectionLevel::Chain:
-                                expand_mask(&mask, data->mold.mol.chain.atom_range, data->mold.mol.chain.count);
-                                break;
-                            default:
-                                ASSERT(false);
-                        }
-                    } else {
-                        md_bitfield_clear(&mask);
-                    }
-                    // data->mold.dirty_buffers |= MolBit_DirtyFlags;
-                }
-
-                const bool show_preview = (ImGui::GetFocusID() == ImGui::GetID("##query")) || (ImGui::GetHoveredID() == ImGui::GetID("##query")) ||
-                                          (ImGui::GetHoveredID() == ImGui::GetID("Apply##query"));
-
-                if (show_preview) {
-                    md_bitfield_copy(&data->selection.current_highlight_mask, &mask);
-                    // if (query_ok) {
-                    //memcpy(data->selection.current_highlight_mask.data(), mask.data(), mask.size_in_bytes());
-                    /*
-if (data->selection.op_mode == SelectionOperator::And) {
-                            bitfield::and_field(data->selection.current_highlight_mask, data->selection.current_selection_mask, mask);
-} else if (data->selection.op_mode == SelectionOperator::Or) {
-                            bitfield::or_field(data->selection.current_highlight_mask, data->selection.current_selection_mask, mask);
-}
-                    */
-                    data->mold.dirty_buffers |= MolBit_DirtyFlags;
-                    //}
-                }
-
-                if (apply) {
-                    md_bitfield_copy(&data->selection.current_selection_mask, &mask);
-
-                    //memcpy(data->selection.current_selection_mask.data(), mask.data(), mask.size_in_bytes());
-                    /*
-if (data->selection.op_mode == SelectionOperator::And) {
-                            bitfield::and_field(data->selection.current_selection_mask, data->selection.current_selection_mask, mask);
-} else if (data->selection.op_mode == SelectionOperator::Or) {
-                            bitfield::or_field(data->selection.current_selection_mask, data->selection.current_selection_mask, mask);
-}
-                    */
-                    data->mold.dirty_buffers |= MolBit_DirtyFlags;
-                }
-                update_all_representations(data);
-            }
-
-            ImGui::Spacing();
-            ImGui::Separator();
-
-            // GROW
-            {
-                // static bool pos_dir = true;
-                // static bool neg_dir = true;
-                static float extent = 1.f;
-
-                ImGui::Text("Grow");
-                const bool mode_changed = ImGui::Combo("Mode", (int*)(&data->selection.grow_mode), "Covalent Bond\0Radial\0\0");
-                const bool extent_changed = ImGui::SliderFloat("Extent", &extent, 1.0f, 16.f);
-                const bool apply = ImGui::Button("Apply##grow");
-                const bool show_preview = mode_changed || extent_changed || (ImGui::GetHoveredID() == ImGui::GetID("Extent")) ||
-                                          (ImGui::GetHoveredID() == ImGui::GetID("Apply##grow")) || (ImGui::GetHoveredID() == ImGui::GetID("Mode"));
-
-                if (show_preview) {
-                    md_bitfield_copy(&mask, &data->selection.current_selection_mask);
-
-                    switch (data->selection.grow_mode) {
-                        case SelectionGrowth::CovalentBond:
-                            grow_mask_by_covalent_bond(&mask, data->mold.mol.covalent_bond.bond, data->mold.mol.covalent_bond.count, (int64_t)extent);
-                            break;
-                        case SelectionGrowth::Radial: {
-                            //const auto& mol = data->mold.mol;
-                            //grow_mask_by_radial_extent(mask, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, extent);
-                            break;
-                        }
-                        default:
-                            ASSERT(false);
-                    }
-
-                    switch (data->selection.level_mode) {
-                        case SelectionLevel::Atom:
-                            // No need to expand the mask
-                            break;
-                        case SelectionLevel::Residue:
-                            expand_mask(&mask, data->mold.mol.residue.atom_range, data->mold.mol.residue.count);
-                            break;
-                        case SelectionLevel::Chain:
-                            expand_mask(&mask, data->mold.mol.chain.atom_range, data->mold.mol.chain.count);
-                            break;
-                        default:
-                            ASSERT(false);
-                    }
-
-                    md_bitfield_copy(&data->selection.current_highlight_mask, &mask);
-                    data->mold.dirty_buffers |= MolBit_DirtyFlags;
-
-                    if (apply) {
-                        md_bitfield_copy(&data->selection.current_selection_mask, &mask);
-                    }
-                    update_all_representations(data);
-                }
-            }
+            if (ImGui::MenuItem("Query")) data->selection.query.show_window = true;
 
             ImGui::Spacing();
             ImGui::Separator();
 
             // STORED SELECTIONS
             {
+                ImGui::PushItemFlag(ImGuiItemFlags_SelectableDontClosePopup, true);
                 ImGui::Text("Stored Selections");
                 const bool disable_new = md_bitfield_popcount(&data->selection.current_selection_mask) == 0;
                 if (disable_new) ImGui::PushDisabled();
                 if (ImGui::Button("Create New")) {
                     char name_buf[64];
-                    snprintf(name_buf, 64, "sel%lli", md_array_size(data->selection.stored_selections) + 1);
+                    snprintf(name_buf, sizeof(name_buf), "sel%lli", md_array_size(data->selection.stored_selections) + 1);
                     create_selection(data, str_from_cstr(name_buf), &data->selection.current_selection_mask);
                 }
                 if (disable_new) ImGui::PopDisabled();
-                for (int i = 0; i < (int)md_array_size(data->selection.stored_selections); i++) {
+
+                const int num_selections = (int)md_array_size(data->selection.stored_selections);
+                static int selected_idx = -1;                
+                for (int i = 0; i < num_selections; i++) {
                     auto& sel = data->selection.stored_selections[i];
-                    // const float32 item_width = CLAMP(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
-                    StrBuf<128> name;
-                    snprintf(name.cstr(), name.capacity(), "%s###ID", sel.name.cstr());
 
                     ImGui::PushID(i);
-                    if (ImGui::CollapsingHeader(name.cstr())) {
-                        if (ImGui::Button("Activate")) {
-                            md_bitfield_copy(&data->selection.current_selection_mask, &sel.atom_mask);
-                            data->mold.dirty_buffers |= MolBit_DirtyFlags;
-                        }
-                        ImGui::SameLine();
-                        if (ImGui::DeleteButton("Remove")) {
-                            remove_selection(data, i);
-                        }
-                        ImGui::SameLine();
-                        if (ImGui::Button("Save")) {
-                            md_bitfield_copy(&sel.atom_mask, &data->selection.current_selection_mask);
-                            update_all_representations(data);
+                    if (ImGui::Selectable(sel.name.cstr(), selected_idx == i)) {
+                        if (selected_idx == i) {
+                            selected_idx = -1;
+                        } else {
+                            selected_idx = i;
                         }
                     }
-
-                    const auto h_id = ImGui::GetHoveredID();
-                    bool show_preview = (h_id == ImGui::GetID(name.cstr()) || h_id == ImGui::GetID("Activate") || h_id == ImGui::GetID("Remove") ||
-                                         h_id == ImGui::GetID("Clone"));
-
-                    ImGui::PopID();
-
-                    if (show_preview) {
+                    if (ImGui::IsItemHovered()) {
                         md_bitfield_copy(&data->selection.current_highlight_mask, &sel.atom_mask);
                         data->mold.dirty_buffers |= MolBit_DirtyFlags;
                     }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Update")) {
+
+                    }
+                    ImGui::PopID();
                 }
+
+                if (-1 < selected_idx && selected_idx < num_selections) {
+                    auto& sel = data->selection.stored_selections[selected_idx];
+                    if (ImGui::Button("Update")) {
+                        md_bitfield_copy(&sel.atom_mask, &data->selection.current_selection_mask);
+                        update_all_representations(data);
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::DeleteButton("Remove")) {
+                        remove_selection(data, selected_idx);
+                        selected_idx = -1;
+                    }
+                }
+                ImGui::PopItemFlag();
             }
             ImGui::EndMenu();
         }
@@ -2380,38 +2285,67 @@ if (data->selection.op_mode == SelectionOperator::And) {
     if (new_clicked) ImGui::OpenPopup("Warning New");
 }
 
-void remap_atom_elem(ApplicationData* data, str_t lbl, md_element_t new_elem) {
-    float new_radius = md_util_element_vdw_radius(new_elem);
-    for (int64_t i = 0; i < data->mold.mol.atom.count; ++i) {
-        if (compare_str_cstr(lbl, data->mold.mol.atom.name[i])) {
-            data->mold.mol.atom.element[i] = new_elem;
-            data->mold.mol.atom.radius[i] = new_radius;
-            data->mold.dirty_buffers |= MolBit_DirtyRadius;
-        }
+void clear_atom_elem_mappings(ApplicationData* data) {
+    md_array_shrink(data->dataset.atom_element_remappings, 0);
+}
 
-        auto& mol = data->mold.mol;
-        md_util_covalent_bond_args_t args = {
-            .atom = {
-                .count = mol.atom.count,
-                .x = mol.atom.x,
-                .y = mol.atom.y,
-                .z = mol.atom.z,
-                .element = mol.atom.element,
-            },
-            .residue = {
-                .count = mol.residue.count,
-                .atom_range = mol.residue.atom_range,
-                .internal_bond_range = mol.residue.internal_covalent_bond_range,
-                .complete_bond_range = mol.residue.complete_covalent_bond_range,
-            }
-        };
-        mol.covalent_bond.bond = md_util_extract_covalent_bonds(&args, data->mold.mol_alloc);
-        mol.covalent_bond.count = md_array_size(mol.covalent_bond.bond);
-        data->mold.dirty_buffers |= MolBit_DirtyBonds;
+AtomElementMapping* add_atom_elem_mapping(ApplicationData* data, str_t lbl, md_element_t elem) {
+    // Check if we already have a mapping for the label -> overwrite
+    int64_t i = 0;
+    for (; i < md_array_size(data->dataset.atom_element_remappings); ++i) {
+        if (compare_str(lbl, data->dataset.atom_element_remappings[i].lbl)) break;
     }
+    if (i == md_array_size(data->dataset.atom_element_remappings)) {
+        AtomElementMapping mapping = {
+            .lbl = lbl,
+            .elem = elem,
+        };
+        return md_array_push(data->dataset.atom_element_remappings, mapping, persistent_allocator);
+    } else {
+        data->dataset.atom_element_remappings[i].elem = elem;
+        return &data->dataset.atom_element_remappings[i];
+    }
+}
+
+void apply_atom_elem_mappings(ApplicationData* data) {
+    for (int64_t j = 0; j < md_array_size(data->dataset.atom_element_remappings); ++j) {
+        str_t lbl = data->dataset.atom_element_remappings[j].lbl;
+        md_element_t elem = data->dataset.atom_element_remappings[j].elem;
+        float radius = md_util_element_vdw_radius(elem);
+
+        for (int64_t i = 0; i < data->mold.mol.atom.count; ++i) {
+            if (compare_str_cstr(lbl, data->mold.mol.atom.name[i])) {
+                data->mold.mol.atom.element[i] = elem;
+                data->mold.mol.atom.radius[i] = radius;
+                data->mold.dirty_buffers |= MolBit_DirtyRadius;
+            }
+        }
+    }
+
+    auto& mol = data->mold.mol;
+    md_util_covalent_bond_args_t args = {
+        .atom = {
+            .count = mol.atom.count,
+            .x = mol.atom.x,
+            .y = mol.atom.y,
+            .z = mol.atom.z,
+            .element = mol.atom.element,
+        },
+        .residue = {
+            .count = mol.residue.count,
+            .atom_range = mol.residue.atom_range,
+            .internal_bond_range = mol.residue.internal_covalent_bond_range,
+            .complete_bond_range = mol.residue.complete_covalent_bond_range,
+        }
+    };
+    mol.covalent_bond.bond = md_util_extract_covalent_bonds(&args, data->mold.mol_alloc);
+    mol.covalent_bond.count = md_array_size(mol.covalent_bond.bond);
+    data->mold.dirty_buffers |= MolBit_DirtyBonds;
+
     update_all_representations(data);
 }
 
+// # context_menu
 void draw_context_popup(ApplicationData* data) {
     ASSERT(data);
 
@@ -2423,12 +2357,11 @@ void draw_context_popup(ApplicationData* data) {
     const int64_t num_atoms_selected = md_bitfield_popcount(&data->selection.current_selection_mask);
 
     if (data->ctx.input.mouse.clicked[1] && !shift_down && !ImGui::GetIO().WantTextInput) {
-        if (data->selection.right_clicked != -1 || sss_count > 1) {
-            ImGui::OpenPopup("AtomContextPopup");
-        }
+        ImGui::OpenPopup("AtomContextPopup");
     }
 
-    /*
+#if 0
+    // FOR DEBUGGING
     if (ImGui::Begin("SSS windows")) {
         ImGui::Text("sel_seq = %i,%i,%i,%i",
             data->selection.single_selection_sequence.idx[0],
@@ -2437,10 +2370,9 @@ void draw_context_popup(ApplicationData* data) {
             data->selection.single_selection_sequence.idx[3]);
         ImGui::End();
     }
-    */
+#endif
 
     if (ImGui::BeginPopup("AtomContextPopup")) {
-        
         if (sss_count > 1) {
             if (ImGui::BeginMenu("Create Property")) {
                 char ident[128] = "prop";
@@ -2599,7 +2531,8 @@ void draw_context_popup(ApplicationData* data) {
                     ImGui::Text("New Element: %.*s (%.*s)", (int)new_name.len, new_name.ptr, (int)new_sym.len, new_sym.ptr);
                     if (!is_valid) ImGui::PushDisabled();
                     if (ImGui::Button("Apply") && is_valid) {
-                        remap_atom_elem(data, lbl, new_elem);
+                        add_atom_elem_mapping(data, lbl, new_elem);
+                        apply_atom_elem_mappings(data);
                         ImGui::CloseCurrentPopup();
                     }
                     if (!is_valid) ImGui::PopDisabled();
@@ -2662,8 +2595,153 @@ void draw_context_popup(ApplicationData* data) {
                 ImGui::EndMenu();
             }
         }
+        if (ImGui::BeginMenu("Selection")) {
+            if (num_atoms_selected > 0) {
+                if (ImGui::MenuItem("Invert")) {
+                    md_bitfield_not_inplace(&data->selection.current_selection_mask, 0, data->mold.mol.atom.count);
+                    ImGui::CloseCurrentPopup();
+                }
+                if (ImGui::MenuItem("Grow")) {
+                    data->selection.grow.show_window = true;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            if (ImGui::MenuItem("Query")) {
+                data->selection.query.show_window = true;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndMenu();
+        }
         ImGui::EndPopup();
     }
+}
+
+
+static void draw_selection_grow_window(ApplicationData* data) {
+    ImGui::SetNextWindowSize(ImVec2(300,120), ImGuiCond_Always);
+    if (ImGui::Begin("Selection Grow", &data->selection.grow.show_window, ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse)) {
+        ImGui::PushItemWidth(-1);
+        const bool mode_changed = ImGui::Combo("##Mode", (int*)(&data->selection.grow.mode), "Covalent Bond\0Radial\0\0");
+        const bool extent_changed = ImGui::SliderFloat("##Extent", &data->selection.grow.extent, 1.0f, 20.f);
+        ImGui::PopItemWidth();
+        const bool apply = ImGui::Button("Apply");
+
+        data->selection.grow.mask_invalid |= (mode_changed || extent_changed);
+
+        if (data->selection.grow.mask_invalid) {
+            data->selection.grow.mask_invalid = false;
+            switch (data->selection.grow.mode) {
+            case SelectionGrowth::CovalentBond:
+                md_bitfield_copy(&data->selection.grow.mask, &data->selection.current_selection_mask);
+                grow_mask_by_covalent_bond(&data->selection.grow.mask, data->mold.mol.covalent_bond.bond, data->mold.mol.covalent_bond.count, (int64_t)data->selection.grow.extent);
+                break;
+            case SelectionGrowth::Radial: {
+                const auto& mol = data->mold.mol;
+                grow_mask_by_radial_extent(&data->selection.grow.mask, &data->selection.current_selection_mask, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, data->selection.grow.extent);
+                break;
+            }
+            default:
+                ASSERT(false);
+            }
+
+            switch (data->selection.granularity) {
+            case SelectionLevel::Atom:
+                // No need to expand the mask
+                break;
+            case SelectionLevel::Residue:
+                expand_mask(&data->selection.grow.mask, data->mold.mol.residue.atom_range, data->mold.mol.residue.count);
+                break;
+            case SelectionLevel::Chain:
+                expand_mask(&data->selection.grow.mask, data->mold.mol.chain.atom_range, data->mold.mol.chain.count);
+                break;
+            default:
+                ASSERT(false);
+            }
+        }
+
+        const bool show_preview =   (ImGui::GetHoveredID() == ImGui::GetID("##Extent")) ||
+                                    (ImGui::GetActiveID()  == ImGui::GetID("##Extent")) ||
+                                    (ImGui::GetHoveredID() == ImGui::GetID("Apply"));
+
+        if (show_preview) {
+            md_bitfield_copy(&data->selection.current_highlight_mask, &data->selection.grow.mask);
+            data->mold.dirty_buffers |= MolBit_DirtyFlags;
+        }
+        if (apply) {
+            md_bitfield_copy(&data->selection.current_selection_mask, &data->selection.grow.mask);
+            data->selection.grow.show_window = false;
+        }
+    }
+    ImGui::End();
+}
+
+static void draw_selection_query_window(ApplicationData* data) {
+    ImGui::SetNextWindowSize(ImVec2(300,100), ImGuiCond_Always);
+    if (ImGui::Begin("Selection Query", &data->selection.query.show_window, ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse)) {
+
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            data->selection.query.show_window = false;
+            return;
+        }
+
+        ImGui::PushItemWidth(-1);
+        if (!data->selection.query.query_ok) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
+        bool apply = ImGui::InputText("##query", data->selection.query.buf, sizeof(data->selection.query.buf), ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue);
+        if (!data->selection.query.query_ok) ImGui::PopStyleColor();
+        ImGui::PopItemWidth();
+
+        data->selection.query.query_invalid |= ImGui::IsItemEdited();
+        bool preview = ImGui::IsItemActive() || ImGui::IsItemHovered();
+
+        if (ImGui::IsWindowAppearing()) {
+            ImGui::SetKeyboardFocusHere(-1);
+        }
+
+        if (!data->selection.query.query_ok && data->selection.query.err_buf[0] != '\0' && ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s", data->selection.query.err_buf);
+        }
+
+        if (!data->selection.query.query_ok) ImGui::PushDisabled();
+        apply |= ImGui::Button("Apply");
+        if (!data->selection.query.query_ok) ImGui::PopDisabled();
+
+        preview |= ImGui::IsItemHovered();
+
+        if (data->selection.query.query_invalid) {
+            data->selection.query.query_invalid = false;
+            data->selection.query.query_ok = filter_expression(data, str_from_cstr(data->selection.query.buf), &data->selection.query.mask, NULL, data->selection.query.err_buf, sizeof(data->selection.query.err_buf));
+
+            if (data->selection.query.query_ok) {
+                switch (data->selection.granularity) {
+                case SelectionLevel::Atom:
+                    // No need to expand the mask
+                    break;
+                case SelectionLevel::Residue:
+                    expand_mask(&data->selection.query.mask, data->mold.mol.residue.atom_range, data->mold.mol.residue.count);
+                    break;
+                case SelectionLevel::Chain:
+                    expand_mask(&data->selection.query.mask, data->mold.mol.chain.atom_range, data->mold.mol.chain.count);
+                    break;
+                default:
+                    ASSERT(false);
+                }
+            } else {
+                md_bitfield_clear(&data->selection.query.mask);
+            }
+        }
+
+        if (preview) {
+            md_bitfield_copy(&data->selection.current_highlight_mask, &data->selection.query.mask);
+            data->mold.dirty_buffers |= MolBit_DirtyFlags;
+        }
+
+        if (apply && data->selection.query.query_ok) {
+            md_bitfield_copy(&data->selection.current_selection_mask, &data->selection.query.mask);
+            data->mold.dirty_buffers |= MolBit_DirtyFlags;
+            data->selection.query.show_window = false;
+        }
+    }
+    ImGui::End();
 }
 
 static void draw_animation_control_window(ApplicationData* data) {
@@ -3253,9 +3331,11 @@ bool draw_property_timeline(const ApplicationData& data, const TimelineArgs& arg
         }
         else if (ImPlot::IsPlotHovered()) {
             if (active && ImGui::IsMouseDown(0)) {           
-                if (ImGui::GetIO().KeyMods == ImGuiKeyModFlags_Shift && args.filter.show) {
-                    *args.input.is_selecting = true;
-                    *args.filter.beg = ImPlot::GetPlotMousePos().x;
+                if (ImGui::GetIO().KeyMods == ImGuiKeyModFlags_Shift) {
+                    if (args.filter.show && args.filter.enabled) {
+                        *args.input.is_selecting = true;
+                        *args.filter.beg = ImPlot::GetPlotMousePos().x;
+                    }
                 } else {
                     *args.input.is_dragging = true;
                 }
@@ -3307,8 +3387,8 @@ static void draw_timeline_window(ApplicationData* data) {
         constexpr int MAX_PLOT_HEIGHT = 1000;
         static int plot_height = 150;
 
-        int pre_filter_min = data->timeline.filter.beg_frame;
-        int pre_filter_max = data->timeline.filter.end_frame;
+        double pre_filter_min = data->timeline.filter.beg_frame;
+        double pre_filter_max = data->timeline.filter.end_frame;
 
         const float* x_values = data->timeline.x_values;
         const int num_x_values = md_array_size(data->timeline.x_values);
@@ -3326,7 +3406,10 @@ static void draw_timeline_window(ApplicationData* data) {
                 if (data->timeline.filter.enabled) {
                     ImGui::Checkbox("Temporal Window", &data->timeline.filter.temporal_window.enabled);
                     if (data->timeline.filter.temporal_window.enabled) {
-                        ImGui::SliderInt("Extent", &data->timeline.filter.temporal_window.extent_in_frames, 1, num_x_values / 2);
+                        const double extent_min = 1.0;
+                        const double extent_max = num_x_values / 2.0;
+                        ImGui::SliderScalar("Extent", ImGuiDataType_Double, &data->timeline.filter.temporal_window.extent_in_frames, &extent_min, &extent_max, "%.1f");
+                        //ImGui::Slider("Extent", &data->timeline.filter.temporal_window.extent_in_frames, 1, num_x_values / 2);
                     }
                 }
                 ImGui::EndMenu();
@@ -3373,9 +3456,11 @@ static void draw_timeline_window(ApplicationData* data) {
 
             // Create a temporary 'time' representation of the filters min and max value
             // The visualization uses time units while we store 'frame' units
-            double filter_beg = frame_to_time((double)data->timeline.filter.beg_frame, *data);
-            double filter_end = frame_to_time((double)data->timeline.filter.end_frame, *data);
+            double filter_beg = frame_to_time(data->timeline.filter.beg_frame, *data);
+            double filter_end = frame_to_time(data->timeline.filter.end_frame, *data);
             double time = frame_to_time(data->animation.frame, *data);
+            double view_beg = data->timeline.view_range.beg_x;
+            double view_end = data->timeline.view_range.end_x;
 
             TimelineArgs args = {
                 .lbl = "##Empty",
@@ -3388,8 +3473,8 @@ static void draw_timeline_window(ApplicationData* data) {
                     .y_variance = NULL,
                 },
                 .view_range = {
-                    &data->timeline.view_range.beg_x,
-                    &data->timeline.view_range.end_x,
+                    &view_beg,
+                    &view_end,
                 },
                 .input = {
                     .is_dragging = &is_dragging,
@@ -3455,11 +3540,10 @@ static void draw_timeline_window(ApplicationData* data) {
             }
 
             data->animation.frame = time_to_frame(time, *data);
-            data->timeline.filter.beg_frame = (int)time_to_frame(filter_beg, *data);
-            data->timeline.filter.end_frame = (int)time_to_frame(filter_end, *data);
-
-            data->timeline.view_range.beg_x = CLAMP(data->timeline.view_range.beg_x, min_x_value, max_x_value);
-            data->timeline.view_range.end_x = CLAMP(data->timeline.view_range.end_x, min_x_value, max_x_value);
+            data->timeline.filter.beg_frame = time_to_frame(filter_beg, *data);
+            data->timeline.filter.end_frame = time_to_frame(filter_end, *data);
+            data->timeline.view_range.beg_x = CLAMP(view_beg, min_x_value, max_x_value);
+            data->timeline.view_range.end_x = CLAMP(view_end, min_x_value, max_x_value);
 
             ImPlot::GetInputMap() = old_map;
         }
@@ -3776,11 +3860,13 @@ static void draw_shape_space_window(ApplicationData* data) {
                 ImPlot::PlotScatterG("##hovered idx", getter, coordinates, 1);
                 char buf[128] = "";
                 int len = 0;
-                int32_t structure_idx = hovered_point_idx / data->shape_space.num_frames + 1;
+                int32_t structure_idx = hovered_point_idx / data->shape_space.num_frames;
                 int32_t frame_idx = hovered_point_idx % data->shape_space.num_frames;
                 vec3_t w = data->shape_space.weights[hovered_point_idx];
                 if (data->shape_space.num_structures > 1) {
-                    len += snprintf(buf, sizeof(buf), "Structure: %i, ", structure_idx);
+                    len += snprintf(buf, sizeof(buf), "Structure: %i, ", structure_idx + 1);
+                    md_bitfield_copy(&data->selection.current_highlight_mask, &data->shape_space.result.bitfields[structure_idx]);
+                    data->mold.dirty_buffers |= MolBit_DirtyFlags;
                 }
                 len += snprintf(buf + len, sizeof(buf) - len, "Frame: %i, Weight(l,p,s): (%.2f, %.2f, %.2f)", frame_idx, w.x, w.y, w.z);
                 ImGui::SetTooltip(buf);
@@ -4191,6 +4277,7 @@ static void draw_density_volume_window(ApplicationData* data) {
             }
         }
 
+        bool update_volume = property_selection_changed;
         bool update_representations = property_selection_changed;
         md_script_property_t* prop = 0;
         uint64_t fingerprint = 0;
@@ -4210,6 +4297,12 @@ static void draw_density_volume_window(ApplicationData* data) {
         static uint64_t s_fingerprint = 0;
         if (s_fingerprint != fingerprint) {
             s_fingerprint = fingerprint;
+            update_volume = true;
+        }
+
+        static double s_frame = 0;
+        if (s_frame != data->animation.frame) {
+            s_frame = data->animation.frame;
             update_representations = true;
         }
 
@@ -4271,7 +4364,6 @@ static void draw_density_volume_window(ApplicationData* data) {
         };
         camera_controller_trackball(&data->density_volume.camera.position, &data->density_volume.camera.orientation, &data->density_volume.camera.focus_distance, input, param);
 
-        mat4_t model_mat = volume::compute_model_to_world_matrix({0,0,0}, {1,1,1});
         mat4_t view_mat = camera_world_to_view_matrix(data->density_volume.camera);
         mat4_t proj_mat = camera_perspective_projection_matrix(data->density_volume.camera, (int)canvas_sz.x, (int)canvas_sz.y);
 
@@ -4279,25 +4371,9 @@ static void draw_density_volume_window(ApplicationData* data) {
         glEnable(GL_DEPTH_TEST);
         glDepthMask(GL_TRUE);
 
-        if (prop) {
-            md_script_visualization_t vis = {};
-            md_script_visualization_args_t args = {
-                .token = prop->vis_token,
-                .ir = &data->mold.script.ir,
-                .mol = &data->mold.mol,
-                .traj = &data->mold.traj,
-                .alloc = frame_allocator,
-            };
-            md_script_visualization_init(&vis, args);
-
-            const float s = vis.sdf.extent;
-            vec3_t min_aabb = {-s, -s, -s};
-            vec3_t max_aabb = {s, s, s};
-            model_mat = volume::compute_model_to_world_matrix(min_aabb, max_aabb);
-
-            int64_t num_reps = vis.sdf.count;
-
-            if (update_representations) {
+        if (update_volume) {
+            data->density_volume.model_mat = volume::compute_model_to_world_matrix({0,0,0}, {1,1,1});
+            if (prop) {
                 if (!data->density_volume.volume_texture.id) {
                     gl::init_texture_3D(&data->density_volume.volume_texture.id, prop->data.dim[0], prop->data.dim[1], prop->data.dim[2], GL_R32F);
                     data->density_volume.volume_texture.dim_x = prop->data.dim[0];
@@ -4306,6 +4382,33 @@ static void draw_density_volume_window(ApplicationData* data) {
                     data->density_volume.volume_texture.max_value = prop->data.max_value;
                 }
                 gl::set_texture_3D_data(data->density_volume.volume_texture.id, prop->data.values, GL_R32F);
+            }
+        }
+
+        if (update_representations) {
+            if (prop) {
+                int64_t num_reps = 0;
+
+                md_semaphore_aquire(&data->mold.script.ir_semaphore);
+                md_script_visualization_t vis = {};
+                md_script_visualization_args_t args = {
+                    .token = prop->vis_token,
+                    .ir = &data->mold.script.ir,
+                    .mol = &data->mold.mol,
+                    .traj = &data->mold.traj,
+                    .alloc = frame_allocator,
+                    .flags = MD_SCRIPT_VISUALIZE_SDF
+                };
+                if (md_script_visualization_init(&vis, args)) {
+                    if (vis.sdf.extent) {
+                        const float s = vis.sdf.extent;
+                        vec3_t min_aabb = {-s, -s, -s};
+                        vec3_t max_aabb = {s, s, s};
+                        data->density_volume.model_mat = volume::compute_model_to_world_matrix(min_aabb, max_aabb);
+                    }
+                    num_reps = vis.sdf.count;
+                }
+                md_semaphore_release(&data->mold.script.ir_semaphore);
 
                 if (data->density_volume.gl_reps) {
                     // Only free those required
@@ -4314,6 +4417,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                     }
                 }
                 md_array_resize(data->density_volume.gl_reps, num_reps, persistent_allocator);
+                md_array_resize(data->density_volume.rep_model_mats, num_reps, persistent_allocator);
 
                 const int64_t num_colors = data->mold.mol.atom.count;
                 uint32_t* colors = (uint32_t*)md_alloc(frame_allocator, sizeof(uint32_t) * num_colors);
@@ -4327,10 +4431,12 @@ static void draw_density_volume_window(ApplicationData* data) {
                             .radius_scale = 1.0f
                         }
                     });
+                    data->density_volume.rep_model_mats[i] = vis.sdf.matrices[i];
                 }
             }
 
-            if (data->density_volume.show_reference_structures) {
+            int64_t num_reps = md_array_size(data->density_volume.gl_reps);
+            if (num_reps > 0 && data->density_volume.show_reference_structures) {
                 num_reps = data->density_volume.show_reference_ensemble ? num_reps : 1;
 
                 md_gl_rendertarget_t render_target = {
@@ -4348,29 +4454,31 @@ static void draw_density_volume_window(ApplicationData* data) {
 
                 for (int64_t i = 0; i < num_reps; ++i) {
                     reps[i] = &data->density_volume.gl_reps[i];
-                    mats[i] = &vis.sdf.matrices[i].elem[0][0];
+                    mats[i] = &data->density_volume.rep_model_mats[i].elem[0][0];
                 }
 
-                md_gl_draw_args_t draw_args = {
-                    .representation = {
-                        .count = (uint32_t)num_reps,
-                        .data = reps,
-                        .model_matrix = mats,
-                    },
-                    .view_transform = {
-                        .view_matrix = &view_mat.elem[0][0],
-                        .projection_matrix = &proj_mat.elem[0][0],
-                    },
-                    .render_target = &render_target,
-                };
+                if (num_reps) {
+                    md_gl_draw_args_t draw_args = {
+                        .representation = {
+                            .count = (uint32_t)num_reps,
+                            .data = reps,
+                            .model_matrix = mats,
+                        },
+                        .view_transform = {
+                                .view_matrix = &view_mat.elem[0][0],
+                                .projection_matrix = &proj_mat.elem[0][0],
+                        },
+                        .render_target = &render_target,
+                    };
 
-                md_gl_draw(&data->mold.gl_ctx, &draw_args);
+                    md_gl_draw(&data->mold.gl_ctx, &draw_args);
 
-                if (is_hovered) {
-                    vec2_t coord = {mouse_pos_in_canvas.x, (float)gbuf.height - mouse_pos_in_canvas.y};
-                    PickingData pd = read_picking_data(&gbuf, (int)coord.x, (int)coord.y);
-                    if (pd.idx != INVALID_PICKING_IDX) {
-                        draw_atom_info_window(*data, pd.idx);
+                    if (is_hovered) {
+                        vec2_t coord = {mouse_pos_in_canvas.x, (float)gbuf.height - mouse_pos_in_canvas.y};
+                        PickingData pd = read_picking_data(&gbuf, (int)coord.x, (int)coord.y);
+                        if (pd.idx != INVALID_PICKING_IDX) {
+                            draw_atom_info_window(*data, pd.idx);
+                        }
                     }
                 }
             }
@@ -4449,7 +4557,7 @@ static void draw_density_volume_window(ApplicationData* data) {
             const vec3_t min_box = {0,0,0};
             const vec3_t max_box = {1,1,1};
 
-            immediate::set_model_view_matrix(mat4_mul(view_mat, model_mat));
+            immediate::set_model_view_matrix(mat4_mul(view_mat, data->density_volume.model_mat));
             immediate::set_proj_matrix(proj_mat);
 
             uint32_t box_color = convert_color(data->density_volume.bounding_box_color);
@@ -4472,7 +4580,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                 .depth = gbuf.deferred.depth,
             },
             .matrix = {
-                .model = model_mat,
+                .model = data->density_volume.model_mat,
                 .view = view_mat,
                 .proj = proj_mat
             },
@@ -4504,25 +4612,50 @@ static void draw_density_volume_window(ApplicationData* data) {
 }
 
 static void draw_dataset_window(ApplicationData* data) {
-    ImGui::Begin("Dataset", &data->dataset.show_window);
-    ImGui::SetWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
+    ASSERT(data);
 
-    str_t mol_file = data->files.molecule;
-    ImGui::Text("Molecular data: %.*s", (int)mol_file.len, mol_file.ptr);
-    ImGui::Text("Num atoms:    %9lli", data->mold.mol.atom.count);
-    ImGui::Text("Num residues: %9lli", data->mold.mol.residue.count);
-    ImGui::Text("Num chains:   %9lli", data->mold.mol.chain.count);
+    ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Dataset", &data->dataset.show_window)) {
+        str_t mol_file = data->files.molecule;
+        ImGui::Text("Molecular data: %.*s", (int)mol_file.len, mol_file.ptr);
+        ImGui::Text("Num atoms:    %9lli", data->mold.mol.atom.count);
+        ImGui::Text("Num residues: %9lli", data->mold.mol.residue.count);
+        ImGui::Text("Num chains:   %9lli", data->mold.mol.chain.count);
 
-    str_t traj_file = data->files.trajectory;
-    if (traj_file.len) {
-        ImGui::Separator();
-        ImGui::Text("Trajectory data: %.*s", (int)traj_file.len, traj_file.ptr);
-        ImGui::Text("Num frames:    %9lli", md_trajectory_num_frames(&data->mold.traj));
-        ImGui::Text("Num atoms:     %9lli", md_trajectory_num_atoms(&data->mold.traj));
+        str_t traj_file = data->files.trajectory;
+        if (traj_file.len) {
+            ImGui::Separator();
+            ImGui::Text("Trajectory data: %.*s", (int)traj_file.len, traj_file.ptr);
+            ImGui::Text("Num frames:    %9lli", md_trajectory_num_frames(&data->mold.traj));
+            ImGui::Text("Num atoms:     %9lli", md_trajectory_num_atoms(&data->mold.traj));
+        }
+
+        int64_t num_mappings = md_array_size(data->dataset.atom_element_remappings);
+        if (num_mappings) {
+            ImGui::Separator();
+            ImGui::Text("Atom element mappings, label -> element");
+            for (int64_t i = 0; i < num_mappings; ++i) {
+                const auto& mapping = data->dataset.atom_element_remappings[i];
+                ImGui::Text("%s -> %s (%s)", mapping.lbl.cstr(), md_util_element_name(mapping.elem).ptr, md_util_element_symbol(mapping.elem).ptr);
+            }
+        }
     }
-
     ImGui::End();
 }
+
+static void draw_debug_window(ApplicationData* data) {
+    ASSERT(data);
+
+    ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Debug", &data->show_debug_window)) {
+        int32_t sema_count = 0;
+        if (md_semaphore_query_count(&data->mold.script.ir_semaphore, &sema_count)) {
+            ImGui::Text("Script IR semaphore count: %i", sema_count);
+        }
+    }
+    ImGui::End();
+}
+
 
 static void draw_script_editor_window(ApplicationData* data) {
     ASSERT(data);
@@ -5177,8 +5310,15 @@ static void launch_prefetch_job(ApplicationData* data) {
 static bool load_dataset_from_file(ApplicationData* data, str_t filename) {
     ASSERT(data);
 
+    filename = md_os_path_make_canonical(filename, frame_allocator);
+
     if (filename.len) {
         if (load::mol::is_extension_supported(filename)) {
+            if (compare_str(data->files.molecule, filename)) {
+                // Same as loaded file
+                return true;
+            }
+
             interrupt_async_tasks(data);
             free_molecule_data(data);
             free_trajectory_data(data);
@@ -5204,6 +5344,12 @@ static bool load_dataset_from_file(ApplicationData* data, str_t filename) {
                 md_print(MD_LOG_TYPE_ERROR, "Before loading a trajectory, molecular data needs to be present");
                 return false;
             }
+
+            if (compare_str(data->files.trajectory, filename)) {
+                // Same as loaded file
+                return true;
+            }
+
             return load_trajectory_data(data, filename);
         } else {
             md_print(MD_LOG_TYPE_ERROR, "File extension not supported");
@@ -5303,7 +5449,10 @@ enum SerializationType {
     SerializationType_String,
     SerializationType_Float,
     SerializationType_Double,
-    SerializationType_Int,
+    SerializationType_Int8,
+    SerializationType_Int16,
+    SerializationType_Int32,
+    SerializationType_Int64,
     SerializationType_Vec3,
     SerializationType_Vec4,
     SerializationType_Path,
@@ -5319,13 +5468,20 @@ struct SerializationObject {
     size_t capacity = 0;
 };
 
+struct SerializationArray {
+    const char* group;
+    size_t array_byte_offset;
+    size_t element_byte_size;
+    void* (*create_item_func)(ApplicationData* data);
+};
+
 SerializationObject serialization_targets[] = {
     {"[Files]", "MoleculeFile",             SerializationType_Path,     offsetof(ApplicationData, files.molecule),    sizeof(ApplicationData::files.molecule)},
     {"[Files]", "TrajectoryFile",           SerializationType_Path,     offsetof(ApplicationData, files.trajectory),   sizeof(ApplicationData::files.trajectory)},
     
     {"[Animation]", "Frame",                SerializationType_Double,   offsetof(ApplicationData, animation.frame)},
     {"[Animation]", "Fps",                  SerializationType_Float,    offsetof(ApplicationData, animation.fps)},
-    {"[Animation]", "Interpolation",        SerializationType_Int,      offsetof(ApplicationData, animation.interpolation)},
+    {"[Animation]", "Interpolation",        SerializationType_Int32,    offsetof(ApplicationData, animation.interpolation)},
 
     {"[RenderSettings]", "SsaoEnabled",     SerializationType_Bool,     offsetof(ApplicationData, visuals.ssao.enabled)},
     {"[RenderSettings]", "SsaoIntensity",   SerializationType_Float,    offsetof(ApplicationData, visuals.ssao.intensity)},
@@ -5341,28 +5497,168 @@ SerializationObject serialization_targets[] = {
     {"[Representation]", "Name",            SerializationType_String,   offsetof(Representation, name),     sizeof(Representation::name)},
     {"[Representation]", "Filter",          SerializationType_String,   offsetof(Representation, filt),     sizeof(Representation::filt)},
     {"[Representation]", "Enabled",         SerializationType_Bool,     offsetof(Representation, enabled)},
-    {"[Representation]", "Type",            SerializationType_Int,      offsetof(Representation, type)},
-    {"[Representation]", "ColorMapping",    SerializationType_Int,      offsetof(Representation, color_mapping)},
+    {"[Representation]", "Type",            SerializationType_Int32,    offsetof(Representation, type)},
+    {"[Representation]", "ColorMapping",    SerializationType_Int32,    offsetof(Representation, color_mapping)},
     {"[Representation]", "StaticColor",     SerializationType_Vec4,     offsetof(Representation, uniform_color)},
     {"[Representation]", "Radius",          SerializationType_Float,    offsetof(Representation, radius)},
     {"[Representation]", "Tension",         SerializationType_Float,    offsetof(Representation, tension)},
     {"[Representation]", "Width",           SerializationType_Float,    offsetof(Representation, width)},
     {"[Representation]", "Thickness",       SerializationType_Float,    offsetof(Representation, thickness)},
 
+    {"[AtomElementMapping]", "Label",       SerializationType_String,   offsetof(AtomElementMapping, lbl),  sizeof(AtomElementMapping::lbl)},
+    {"[AtomElementMapping]", "Element",     SerializationType_Int8,     offsetof(AtomElementMapping, elem)},
+
     {"[Script]", "Text",                    SerializationType_Script,   0},
+};
+
+void* serialize_create_rep(ApplicationData* data) {
+    return (void*)create_representation(data);
+}
+
+void* serialize_create_atom_elem_mapping(ApplicationData* data) {
+    AtomElementMapping mapping = {};
+    return md_array_push(data->dataset.atom_element_remappings, mapping, persistent_allocator);
+}
+
+SerializationArray serialization_array_groups[] = {
+    {"[Representation]",        offsetof(ApplicationData, representations.buffer),          sizeof(Representation),     serialize_create_rep},
+    {"[AtomElementMapping]",    offsetof(ApplicationData, dataset.atom_element_remappings), sizeof(AtomElementMapping), serialize_create_atom_elem_mapping},
 };
 
 #define COMPARE(str, ref) (compare_str_cstr_n(str, ref"", sizeof(ref) - 1))
 #define EXTRACT(str, ref) (compare_str_cstr_n(str, ref"", sizeof(ref) - 1) && (line = trim_whitespace(substr(line, sizeof(ref) - 1))).len > 0)
 #define EXTRACT_PARAM_LINE(line, txt) (c_txt.len && c_txt[0] != '[' && (extract_line(&line, &c_txt)))
 
-static SerializationObject* find_serialization_target(str_t group, str_t label) {
+static const SerializationObject* find_serialization_target(str_t group, str_t label) {
     for (int64_t i = 0; i < (int64_t)ARRAY_SIZE(serialization_targets); ++i) {
         if (compare_str_cstr(group, serialization_targets[i].group) && compare_str_cstr(label, serialization_targets[i].label)) {
             return &serialization_targets[i];
         }
     }
     return NULL;
+}
+
+static const SerializationArray* find_serialization_array_group(str_t group) {
+    for (int64_t i = 0; i < ARRAY_SIZE(serialization_array_groups); ++i) {
+        if (compare_str_cstr(group, serialization_array_groups[i].group)) {
+            return &serialization_array_groups[i];
+        }
+    }
+    return NULL;
+}
+
+static void deserialize_object(const SerializationObject* target, char* ptr, str_t* buf, str_t filename) {
+    str_t line;
+    if (extract_line(&line, buf)) {
+        str_t arg = trim_whitespace(line);
+
+        switch (target->type) {
+        case SerializationType_Bool:
+        {
+            bool value = parse_int(arg) != 0;
+            *(bool*)(ptr + target->struct_byte_offset) = value;
+            break;
+        }
+        case SerializationType_String:
+        {
+            size_t copy_len = MIN(target->capacity - 1, (size_t)arg.len);
+            memcpy(ptr + target->struct_byte_offset, arg.ptr, copy_len);
+            (ptr + target->struct_byte_offset)[copy_len] = '\0';
+            break;
+        }
+        case SerializationType_Float:
+        {
+            float value = (float)parse_float(arg);
+            *(float*)(ptr + target->struct_byte_offset) = value;
+            break;
+        }
+        case SerializationType_Double:
+        {
+            double value = parse_float(arg);
+            *(double*)(ptr + target->struct_byte_offset) = value;
+            break;
+        }
+        case SerializationType_Int8:
+        {
+            int8_t value = (int8_t)parse_int(arg);
+            *(int8_t*)(ptr + target->struct_byte_offset) = value;
+            break;
+        }
+        case SerializationType_Int16:
+        {
+            int16_t value = (int16_t)parse_int(arg);
+            *(int16_t*)(ptr + target->struct_byte_offset) = value;
+            break;
+        }
+        case SerializationType_Int32:
+        {
+            int32_t value = (int32_t)parse_int(arg);
+            *(int32_t*)(ptr + target->struct_byte_offset) = value;
+            break;
+        }
+        case SerializationType_Int64:
+        {
+            int64_t value = (int64_t)parse_int(arg);
+            *(int64_t*)(ptr + target->struct_byte_offset) = value;
+            break;
+        }
+        case SerializationType_Vec3:
+        {
+            vec3_t value = vec3_from_vec4(parse_vec4(arg));
+            *(vec3_t*)(ptr + target->struct_byte_offset) = value;
+            break;
+        }
+        case SerializationType_Vec4:
+        {
+            vec4_t value = parse_vec4(arg);
+            *(vec4_t*)(ptr + target->struct_byte_offset) = value;
+            break;
+        }
+        case SerializationType_Path:
+        {
+            StrBuf<512> path = extract_path_without_file(filename);
+            path += arg;
+            str_t can_path = md_os_path_make_canonical(path, frame_allocator);
+            if (can_path.ptr && can_path.len > 0) {
+                size_t copy_len = MIN(target->capacity - 1, (size_t)can_path.len);
+                memcpy(ptr + target->struct_byte_offset, can_path.ptr, copy_len);
+                (ptr + target->struct_byte_offset)[copy_len] = '\0';
+            }
+            break;
+        }
+        case SerializationType_Script:
+        {
+            // Script starts with """
+            // and ends with """
+            str_t token = make_cstr("\"\"\"");
+            if (compare_str_n(arg, token, 3)) {
+                // Roll back buf to arg + 3
+                const char* beg = arg.ptr + 3;
+                buf->len = buf->end() - beg;
+                buf->ptr = beg;
+                const char* end = str_find_str(*buf, token).ptr;
+                if (end) {
+                    std::string str(beg, end - beg);
+                    ApplicationData* data = (ApplicationData*)ptr;
+                    data->script.editor.SetText(str);
+                    const char* pos = end + 3;
+                    buf->len = buf->end() - pos;
+                    buf->ptr = pos;
+                    break;
+                } else {
+                    md_print(MD_LOG_TYPE_ERROR, "Malformed end token for script");
+                    return;
+                }
+            } else {
+                md_print(MD_LOG_TYPE_ERROR, "Malformed start token for script");
+                return;
+            }
+        }
+        case SerializationType_Invalid: // fallthrough
+        default:
+            ASSERT(false);
+        }
+    }
 }
 
 static void load_workspace(ApplicationData* data, str_t filename) {
@@ -5381,108 +5677,37 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     data->animation = {};
     reset_view(data, false, true);
 
-    StrBuf<512> old_molecule_file   = data->files.molecule;
-    StrBuf<512> old_trajectory_file = data->files.trajectory;
-
     str_t group = {0};
-    int group_idx = -1;
-    int rep_idx = -1;
-
     str_t c_txt = txt;
     str_t line = {};
+
+    str_t cur_molecule_file = copy_str(data->files.molecule, frame_allocator);
+    str_t cur_trajectory_file = copy_str(data->files.trajectory, frame_allocator);
+
+    const SerializationArray* arr_group = NULL;
+    void* ptr = 0;
 
     while (extract_line(&line, &c_txt)) {
         line = trim_whitespace(line);
         if (line[0] == '[') {
             group = line;
-            group_idx += 1;
+            arr_group = find_serialization_array_group(group);
+            if (arr_group) {
+                ptr = arr_group->create_item_func(data);
+            } else {
+                ptr = data;
+            }
         } else {
             int64_t loc = find_char(line, '=');
             if (loc != -1) {
                 str_t label = trim_whitespace(substr(line, 0, loc));
-                str_t arg   = trim_whitespace(substr(line, loc + 1));
-                SerializationObject* target = find_serialization_target(group, label);
+                const SerializationObject* target = find_serialization_target(group, label);
                 if (target) {
-                    char* ptr = 0;
-                    if (compare_str_cstr(group, "[Representation]")) {
-                        if (rep_idx != group_idx) {
-                            rep_idx = group_idx;
-                            create_representation(data);
-                        }
-                        ptr = (char*)md_array_last(data->representations.buffer);
-                    } else {
-                        ptr = (char*)data;
-                    }
-
-                    switch (target->type) {
-                    case SerializationType_Bool:
-                    {
-                        bool value = parse_int(arg) != 0;
-                        *(bool*)(ptr + target->struct_byte_offset) = value;
-                        break;
-                    }
-                    case SerializationType_String:
-                    {
-                        size_t copy_len = MIN(target->capacity - 1, (size_t)arg.len);
-                        memcpy(ptr + target->struct_byte_offset, arg.ptr, copy_len);
-                        (ptr + target->struct_byte_offset)[copy_len] = '\0';
-                        break;
-                    }
-                    case SerializationType_Float:
-                    {
-                        float value = (float)parse_float(arg);
-                        *(float*)(ptr + target->struct_byte_offset) = value;
-                        break;
-                    }
-                    case SerializationType_Double:
-                    {
-                        double value = parse_float(arg);
-                        *(double*)(ptr + target->struct_byte_offset) = value;
-                        break;
-                    }
-                    case SerializationType_Int:
-                    {
-                        int value = (int)parse_int(arg);
-                        *(int*)(ptr + target->struct_byte_offset) = value;
-                        break;
-                    }
-                    case SerializationType_Vec3:
-                    {
-                        vec3_t value = vec3_from_vec4(parse_vec4(arg));
-                        *(vec3_t*)(ptr + target->struct_byte_offset) = value;
-                        break;
-                    }
-                    case SerializationType_Vec4:
-                    {
-                        vec4_t value = parse_vec4(arg);
-                        *(vec4_t*)(ptr + target->struct_byte_offset) = value;
-                        break;
-                    }
-                    case SerializationType_Path:
-                    {
-                        StrBuf<512> path = extract_path_without_file(filename);
-                        path += arg;
-                        str_t can_path = md_os_path_make_canonical(path, frame_allocator);
-                        if (can_path.ptr && can_path.len > 0) {
-                            size_t copy_len = MIN(target->capacity - 1, (size_t)can_path.len);
-                            memcpy(ptr + target->struct_byte_offset, can_path.ptr, copy_len);
-                            (ptr + target->struct_byte_offset)[copy_len] = '\0';
-                        }
-                        break;
-                    }
-                    case SerializationType_Script:
-                    {
-                        // Script ends up last, so we just parse to the end of file here and use that as our text
-                        std::string str(arg.beg(), txt.end() - arg.beg());
-                        data->script.editor.SetText(str);
-                        c_txt.ptr = c_txt.end();
-                        c_txt.len = 0;
-                        break;
-                    }
-                    case SerializationType_Invalid: // fallthrough
-                    default:
-                        ASSERT(false);
-                    }
+                    // Move read pointer back 'loc+1' => after '='.
+                    const char* pos = line.ptr + loc + 1;
+                    c_txt.len = c_txt.end() - pos;
+                    c_txt.ptr = pos;
+                    deserialize_object(target, (char*)ptr, &c_txt, filename);
                 } else {
                     md_printf(MD_LOG_TYPE_ERROR, "Could not recognize serialization target '%.*s' in group '%.*s,", (int)label.len, label.ptr, (int)group.len, group.ptr);
                 }
@@ -5490,20 +5715,22 @@ static void load_workspace(ApplicationData* data, str_t filename) {
         }
     }
     data->view.animation.target_position = data->view.camera.position;
-
     data->files.workspace = filename;
 
-    StrBuf<512> new_molecule_file   = data->files.molecule;
-    StrBuf<512> new_trajectory_file = data->files.trajectory;
+    str_t new_molecule_file = copy_str(data->files.molecule, frame_allocator);
+    str_t new_trajectory_file = copy_str(data->files.trajectory, frame_allocator);
 
-    if (!compare_str(old_molecule_file, new_molecule_file) && new_molecule_file) {
-        if (load_dataset_from_file(data, new_molecule_file)) {
-            init_all_representations(data);
-            update_all_representations(data);
-        }
+    // When we de-serialize we overwrite the two following paths, even though they are not loaded.
+    // So we copy them back to their original values.
+    data->files.molecule = cur_molecule_file;
+    data->files.trajectory = cur_trajectory_file;
+
+    if (new_molecule_file.len && load_dataset_from_file(data, new_molecule_file)) {
+        init_all_representations(data);
+        update_all_representations(data);
     }
 
-    if (!compare_str(old_trajectory_file, new_trajectory_file) && new_trajectory_file) {
+    if (new_trajectory_file.len) {
         load_dataset_from_file(data, new_trajectory_file);
     }
 }
@@ -5537,9 +5764,27 @@ static void write_entry(FILE* file, SerializationObject target, const void* ptr,
         fprintf(file, "%g\n", value);
         break;
     }
-    case SerializationType_Int:
+    case SerializationType_Int8:
     {
-        int value = *(int*)((const char*)ptr + target.struct_byte_offset);
+        int32_t value = *(int8_t*)((const char*)ptr + target.struct_byte_offset);
+        fprintf(file, "%i\n", value);
+        break;
+    }
+    case SerializationType_Int16:
+    {
+        int32_t value = *(int16_t*)((const char*)ptr + target.struct_byte_offset);
+        fprintf(file, "%i\n", value);
+        break;
+    }
+    case SerializationType_Int32:
+    {
+        int32_t value = *(int32_t*)((const char*)ptr + target.struct_byte_offset);
+        fprintf(file, "%i\n", value);
+        break;
+    }
+    case SerializationType_Int64:
+    {
+        int32_t value = *(int64_t*)((const char*)ptr + target.struct_byte_offset);
         fprintf(file, "%i\n", value);
         break;
     }
@@ -5571,7 +5816,7 @@ static void write_entry(FILE* file, SerializationObject target, const void* ptr,
     {
         ApplicationData* data = (ApplicationData*)ptr;
         std::string str = data->script.editor.GetText();
-        fprintf(file, "%s", str.c_str());
+        fprintf(file, "\"\"\"%s\"\"\"", str.c_str());
         break;
     }
     case SerializationType_Invalid: // fallthrough
@@ -5594,29 +5839,36 @@ static void save_workspace(ApplicationData* data, str_t filename) {
     for (int64_t i = 0; i < (int64_t)ARRAY_SIZE(serialization_targets); ++i) {
         const char* group = serialization_targets[i].group;
 
-        if (strcmp(group, curr_group) != 0) {
-            fprintf((FILE*)file, "\n%s\n", group);
-            curr_group = group;
-        }
+        const SerializationArray* arr_group = find_serialization_array_group({group, (int64_t)strlen(group)});
+        if (arr_group) {
+            // Special case for this since it is an array quantity, iterate over all array items then all serialization subfields marked with group
+            const void* arr = *((const void**)((char*)data + arr_group->array_byte_offset));
+            const int64_t arr_size = md_array_size(arr);
 
-        if (strcmp(group, "[Representation]") == 0) {
-            // Special case for this since it is an array quantity, iterate over all representations then all subfields marked with group [Representation]
-            const int64_t num_rep = md_array_size(data->representations.buffer);
-
-            int64_t beg_rep_i = i;
-            int64_t end_rep_i = i + 1;
-            while (end_rep_i < (int64_t)ARRAY_SIZE(serialization_targets) && strcmp(serialization_targets[end_rep_i].group, "[Representation]") == 0) {
-                end_rep_i += 1;
+            int64_t beg_field_i = i;
+            int64_t end_field_i = i + 1;
+            while (end_field_i < (int64_t)ARRAY_SIZE(serialization_targets) && strcmp(serialization_targets[end_field_i].group, group) == 0) {
+                end_field_i += 1;
             }
-            for (int64_t rep_idx = 0; rep_idx < num_rep; ++rep_idx) {
+            // Iterate over all array elements
+            for (int64_t arr_idx = 0; arr_idx < arr_size; ++arr_idx) {
+                // Write group
                 fprintf((FILE*)file, "\n%s\n", group);
-                const Representation* rep = &data->representations.buffer[rep_idx];
-                for (int64_t j = beg_rep_i; j < end_rep_i; ++j) {
-                    write_entry((FILE*)file, serialization_targets[j], rep, filename);
+
+                // Write all fields for item
+                const void* item_ptr = (const char*)arr + arr_idx * arr_group->element_byte_size;
+                for (int64_t j = beg_field_i; j < end_field_i; ++j) {
+                    write_entry((FILE*)file, serialization_targets[j], item_ptr, filename);
                 }
             }
-            i = end_rep_i - 1;
-        } else {
+            i = end_field_i - 1;
+        }
+        else {
+            if (strcmp(group, curr_group) != 0) {
+                fprintf((FILE*)file, "\n%s\n", group);
+                curr_group = group;
+            }
+
             write_entry((FILE*)file, serialization_targets[i], data, filename);
         }
     }
@@ -5764,21 +6016,45 @@ static void update_representation(ApplicationData* data, Representation* rep) {
             // @TODO: Map colors accordingly
             //color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
             if (rep->prop) {
-                const float* values = 0;
-                int num_values = 0;
+                color_atoms_uniform(colors, mol.atom.count, {1,1,1,1});
+                const float* values = rep->prop->data.values;
+                const int num_values = (int)rep->prop->data.num_values;
                 if (rep->prop->data.aggregate) {
-                    values = rep->prop->data.aggregate->mean;
-                    num_values = rep->prop->data.aggregate->num_values;
+                    const int dim = rep->prop->data.dim[0];
+                    md_script_visualization_args_t args = {
+                        .token = rep->prop->vis_token,
+                        .ir = &data->mold.script.ir,
+                        .mol = &data->mold.mol,
+                        .traj = NULL,
+                        .alloc = frame_allocator,
+                        .flags = MD_SCRIPT_VISUALIZE_ATOMS
+                    };
+                    md_script_visualization_t vis = {0};
+                    if (md_script_visualization_init(&vis, args)) {
+                        if (dim == (int)md_array_size(vis.structures.atom_masks)) {
+                            int i0 = CLAMP((int)data->animation.frame + 0, 0, rep->prop->data.num_values / dim - 1);
+                            int i1 = CLAMP((int)data->animation.frame + 1, 0, rep->prop->data.num_values / dim - 1);
+                            float frame_fract = fractf((float)data->animation.frame);
+
+                            md_exp_bitfield_t mask = {0};
+                            md_bitfield_init(&mask, frame_allocator);
+                            for (int i = 0; i < dim; ++i) {
+                                md_bitfield_and(&mask, &rep->atom_mask, &vis.structures.atom_masks[i]);
+                                float value = lerpf(values[i0 * dim + i], values[i1 * dim + i], frame_fract);
+                                float t = CLAMP((value - rep->map_beg) / (rep->map_end - rep->map_beg), 0, 1);
+                                ImVec4 color = ImPlot::SampleColormap(t, rep->color_map);
+                                color_atoms_uniform(colors, mol.atom.count, vec_cast(color), &mask);
+                            }
+                        }
+                    }
                 } else {
-                    values = rep->prop->data.values;
-                    num_values = rep->prop->data.num_values;
+                    int i0 = CLAMP((int)data->animation.frame + 0, 0, rep->prop->data.num_values - 1);
+                    int i1 = CLAMP((int)data->animation.frame + 1, 0, rep->prop->data.num_values - 1);
+                    float value = lerpf(values[i0], values[i1], fractf((float)data->animation.frame));
+                    float t = CLAMP((value - rep->map_beg) / (rep->map_end - rep->map_beg), 0, 1);
+                    ImVec4 color = ImPlot::SampleColormap(t, rep->color_map);
+                    color_atoms_uniform(colors, mol.atom.count, vec_cast(color));
                 }
-                int i0 = CLAMP((int)data->animation.frame + 0, 0, rep->prop->data.num_values - 1);
-                int i1 = CLAMP((int)data->animation.frame + 1, 0, rep->prop->data.num_values - 1);
-                float value = lerpf(values[i0], values[i1], fractf((float)data->animation.frame));
-                float t = CLAMP((value - rep->map_beg) / (rep->map_end - rep->map_beg), 0, 1);
-                ImVec4 color = ImPlot::SampleColormap(t, rep->color_map);
-                color_atoms_uniform(colors, mol.atom.count, vec_cast(color));
             } else {
                 color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
             }
@@ -5916,7 +6192,7 @@ static bool handle_selection(ApplicationData* data) {
         ASSERT(0 <= data->picking.idx && data->picking.idx <= N);
         md_bitfield_set_bit(&mask, data->picking.idx);
 
-        switch (data->selection.level_mode) {
+        switch (data->selection.granularity) {
             case SelectionLevel::Atom:
                 break;
             case SelectionLevel::Residue: {
@@ -5970,7 +6246,7 @@ static bool handle_selection(ApplicationData* data) {
                 }
             }
 
-            switch (data->selection.level_mode) {
+            switch (data->selection.granularity) {
                 case SelectionLevel::Atom:
                     break;
                 case SelectionLevel::Residue:
@@ -6020,7 +6296,7 @@ static bool handle_selection(ApplicationData* data) {
             if (data->picking.idx != INVALID_PICKING_IDX) {
                 const bool append = data->ctx.input.mouse.clicked[0];
                 if (append) {
-                    if (data->selection.level_mode == SelectionLevel::Atom && data->picking.idx != -1) {
+                    if (data->selection.granularity == SelectionLevel::Atom && data->picking.idx != -1) {
                         single_selection_sequence_push_back(&data->selection.single_selection_sequence, data->picking.idx);
                     }
                     md_bitfield_or_inplace(&data->selection.current_selection_mask, &mask);
@@ -6028,7 +6304,7 @@ static bool handle_selection(ApplicationData* data) {
                     md_bitfield_not_inplace(&mask, 0, N);
                     md_bitfield_and_inplace(&data->selection.current_selection_mask, &mask);
 
-                    if (data->selection.level_mode == SelectionLevel::Atom && data->picking.idx != -1) {
+                    if (data->selection.granularity == SelectionLevel::Atom && data->picking.idx != -1) {
                         if (single_selection_sequence_last(&data->selection.single_selection_sequence) == (int32_t)data->picking.idx) {
                             single_selection_sequence_pop_back(&data->selection.single_selection_sequence);
                         } else {
