@@ -45,19 +45,27 @@ endif()
 
 set_property(GLOBAL PROPERTY USE_FOLDERS OFF)
 
+# GLOBAL OPTIONS
 option(BUILD_SHARED_LIBS OFF)
+option(USE_MSVC_RUNTIME_LIBRARY_DLL OFF)
+
+# VIAMD OPTIONS
+option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
+option(VIAMD_USE_RELATIVE_PATHS "Use relative paths for resource directories" OFF)
+option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ON)
+
+# GLFW OPTIONS
 option(GLFW_BUILD_EXAMPLES OFF)
 option(GLFW_BUILD_TESTS OFF)
 option(GLFW_BUILD_DOCS OFF)
 option(GLFW_INSTALL OFF)
 option(GLFW_VULKAN_STATIC OFF)
+
+# ENKI OPTIONS
 option(ENKITS_BUILD_C_INTERFACE OFF)
 option(ENKITS_BUILD_EXAMPLES OFF)
 option(ENKITS_BUILD_SHARED OFF)
 option(ENKITS_INSTALL OFF)
-option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
-option(VIAMD_USE_RELATIVE_PATHS "Use relative paths for resource directories" OFF)
-option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ON)
 
 if (VIAMD_LINK_STDLIB_STATIC)
     set(VIAMD_STDLIBS "")
