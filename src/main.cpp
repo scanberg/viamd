@@ -1188,7 +1188,7 @@ int main(int, char**) {
             const double half_window_ext = data.timeline.filter.temporal_window.extent_in_frames * 0.5;
             data.timeline.filter.beg_frame = CLAMP(data.animation.frame - half_window_ext, 0.0, max_frame);
             data.timeline.filter.end_frame = CLAMP(data.animation.frame + half_window_ext, 0.0, max_frame);
-            if (data.mold.script.ir_is_valid && data.timeline.filter.beg_frame != pre_beg || data.timeline.filter.end_frame != pre_end) {
+            if (data.mold.script.ir_is_valid && (data.timeline.filter.beg_frame != pre_beg || data.timeline.filter.end_frame != pre_end)) {
                 data.mold.script.evaluate_filt = true;
             }
         }
@@ -3870,7 +3870,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                     data->mold.dirty_buffers |= MolBit_DirtyFlags;
                 }
                 len += snprintf(buf + len, sizeof(buf) - len, "Frame: %i, Weight(l,p,s): (%.2f, %.2f, %.2f)", frame_idx, w.x, w.y, w.z);
-                ImGui::SetTooltip(buf);
+                ImGui::SetTooltip("%s", buf);
 
                 if (ImGui::IsWindowFocused() && ImPlot::IsPlotHovered() && ImGui::GetIO().MouseReleased[0]) {
                     data->animation.frame = frame_idx;
@@ -6313,7 +6313,7 @@ static bool handle_selection(ApplicationData* data) {
             if (data->picking.idx != INVALID_PICKING_IDX) {
                 const bool append = data->ctx.input.mouse.clicked[0];
                 if (append) {
-                    if (data->selection.granularity == SelectionLevel::Atom && data->picking.idx != -1) {
+                    if (data->selection.granularity == SelectionLevel::Atom && data->picking.idx != ~0U) {
                         single_selection_sequence_push_back(&data->selection.single_selection_sequence, data->picking.idx);
                     }
                     md_bitfield_or_inplace(&data->selection.current_selection_mask, &mask);
@@ -6321,7 +6321,7 @@ static bool handle_selection(ApplicationData* data) {
                     md_bitfield_not_inplace(&mask, 0, N);
                     md_bitfield_and_inplace(&data->selection.current_selection_mask, &mask);
 
-                    if (data->selection.granularity == SelectionLevel::Atom && data->picking.idx != -1) {
+                    if (data->selection.granularity == SelectionLevel::Atom && data->picking.idx != ~0U) {
                         if (single_selection_sequence_last(&data->selection.single_selection_sequence) == (int32_t)data->picking.idx) {
                             single_selection_sequence_pop_back(&data->selection.single_selection_sequence);
                         } else {
