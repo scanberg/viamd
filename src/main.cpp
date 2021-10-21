@@ -77,7 +77,7 @@ const Key::Key_t KEY_PLAY_PAUSE = Key::KEY_SPACE;
 const Key::Key_t KEY_SKIP_TO_PREV_FRAME = Key::KEY_LEFT;
 const Key::Key_t KEY_SKIP_TO_NEXT_FRAME = Key::KEY_RIGHT;
 const Key::Key_t KEY_TOGGLE_SCREENSHOT_MODE = Key::KEY_F10;
-const Key::Key_t KEY_SHOW_DEBUG_WINDOW = Key::KEY_F12;
+const Key::Key_t KEY_SHOW_DEBUG_WINDOW = Key::KEY_F11;
 
 // For cpu profiling
 #define PUSH_CPU_SECTION(lbl) {};
@@ -5459,6 +5459,7 @@ enum SerializationType {
     SerializationType_Path,
     // Custom types
     SerializationType_Script,
+    SerializationType_Bitfield,
 };
 
 struct SerializationObject {
@@ -5510,6 +5511,9 @@ SerializationObject serialization_targets[] = {
     {"[AtomElementMapping]", "Element",     SerializationType_Int8,     offsetof(AtomElementMapping, elem)},
 
     {"[Script]", "Text",                    SerializationType_Script,   0},
+
+    {"[Selection]", "Label",                SerializationType_String,   offsetof(Selection, name), sizeof(Selection::name)},
+    {"[Selection]", "Mask",                 SerializationType_Bitfield, offsetof(Selection, atom_mask)},
 };
 
 void* serialize_create_rep(ApplicationData* data) {
@@ -5521,9 +5525,15 @@ void* serialize_create_atom_elem_mapping(ApplicationData* data) {
     return md_array_push(data->dataset.atom_element_remappings, mapping, persistent_allocator);
 }
 
+void* serialize_create_selection(ApplicationData* data) {
+    Selection sel = {};
+    return md_array_push(data->selection.stored_selections, sel, persistent_allocator);
+}
+
 SerializationArray serialization_array_groups[] = {
     {"[Representation]",        offsetof(ApplicationData, representations.buffer),          sizeof(Representation),     serialize_create_rep},
     {"[AtomElementMapping]",    offsetof(ApplicationData, dataset.atom_element_remappings), sizeof(AtomElementMapping), serialize_create_atom_elem_mapping},
+    {"[Selection]",             offsetof(ApplicationData, selection.stored_selections),     sizeof(Selection),          serialize_create_selection},
 };
 
 #define COMPARE(str, ref) (compare_str_cstr_n(str, ref"", sizeof(ref) - 1))
@@ -5632,9 +5642,9 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
             // Script starts with """
             // and ends with """
             str_t token = make_cstr("\"\"\"");
-            if (compare_str_n(arg, token, 3)) {
+            if (compare_str_n(arg, token, token.len)) {
                 // Roll back buf to arg + 3
-                const char* beg = arg.ptr + 3;
+                const char* beg = arg.ptr + token.len;
                 buf->len = buf->end() - beg;
                 buf->ptr = beg;
                 const char* end = str_find_str(*buf, token).ptr;
@@ -5642,7 +5652,8 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
                     std::string str(beg, end - beg);
                     ApplicationData* data = (ApplicationData*)ptr;
                     data->script.editor.SetText(str);
-                    const char* pos = end + 3;
+                    // Set buf pointer to after token
+                    const char* pos = end + token.len;
                     buf->len = buf->end() - pos;
                     buf->ptr = pos;
                     break;
@@ -5848,23 +5859,26 @@ static void save_workspace(ApplicationData* data, str_t filename) {
             const void* arr = *((const void**)((char*)data + arr_group->array_byte_offset));
             const int64_t arr_size = md_array_size(arr);
 
-            int64_t beg_field_i = i;
-            int64_t end_field_i = i + 1;
-            while (end_field_i < (int64_t)ARRAY_SIZE(serialization_targets) && strcmp(serialization_targets[end_field_i].group, group) == 0) {
-                end_field_i += 1;
-            }
-            // Iterate over all array elements
-            for (int64_t arr_idx = 0; arr_idx < arr_size; ++arr_idx) {
-                // Write group
-                fprintf((FILE*)file, "\n%s\n", group);
-
-                // Write all fields for item
-                const void* item_ptr = (const char*)arr + arr_idx * arr_group->element_byte_size;
-                for (int64_t j = beg_field_i; j < end_field_i; ++j) {
-                    write_entry((FILE*)file, serialization_targets[j], item_ptr, filename);
+            if (arr_size) {
+                int64_t beg_field_i = i;
+                int64_t end_field_i = i + 1;
+                while (end_field_i < (int64_t)ARRAY_SIZE(serialization_targets) && strcmp(serialization_targets[end_field_i].group, group) == 0) {
+                    end_field_i += 1;
                 }
+                // Iterate over all array elements
+                for (int64_t arr_idx = 0; arr_idx < arr_size; ++arr_idx) {
+                    // Write group
+                    fprintf((FILE*)file, "\n%s\n", group);
+
+                    // Write all fields for item
+                    const void* item_ptr = (const char*)arr + arr_idx * arr_group->element_byte_size;
+                    for (int64_t j = beg_field_i; j < end_field_i; ++j) {
+                        write_entry((FILE*)file, serialization_targets[j], item_ptr, filename);
+                    }
+                }
+                i = end_field_i - 1;
             }
-            i = end_field_i - 1;
+
         }
         else {
             if (strcmp(group, curr_group) != 0) {
