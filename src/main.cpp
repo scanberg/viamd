@@ -1947,7 +1947,7 @@ static void grow_mask_by_radial_extent(md_exp_bitfield_t* dst_mask, const md_exp
     if (ext > 0.0f) {
         const float cell_ext = CLAMP(ext / 3.0f, 3.0f, 12.0f);
         md_spatial_hash_t ctx = {0};
-        md_spatial_hash_init(&ctx, x, y, z, count, ext, frame_allocator);
+        md_spatial_hash_init(&ctx, x, y, z, count, cell_ext, frame_allocator);
         defer { md_spatial_hash_free(&ctx, frame_allocator); };
 
         md_bitfield_clear(dst_mask);
