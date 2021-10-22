@@ -2213,7 +2213,7 @@ ImGui::EndGroup();
 
             // STORED SELECTIONS
             {
-                ImGui::PushItemFlag(ImGuiItemFlags_SelectableDontClosePopup, true);
+                //ImGui::PushItemFlag(ImGuiItemFlags_SelectableDontClosePopup, true);
                 ImGui::Text("Stored Selections");
                 const bool disable_new = md_bitfield_popcount(&data->selection.current_selection_mask) == 0;
                 if (disable_new) ImGui::PushDisabled();
@@ -2225,17 +2225,14 @@ ImGui::EndGroup();
                 if (disable_new) ImGui::PopDisabled();
 
                 const int num_selections = (int)md_array_size(data->selection.stored_selections);
-                static int selected_idx = -1;                
                 for (int i = 0; i < num_selections; i++) {
                     auto& sel = data->selection.stored_selections[i];
 
                     ImGui::PushID(i);
-                    if (ImGui::Selectable(sel.name.cstr(), selected_idx == i)) {
-                        if (selected_idx == i) {
-                            selected_idx = -1;
-                        } else {
-                            selected_idx = i;
-                        }
+                    ImGui::InputText("##label", sel.name.beg(), sel.name.capacity());
+                    if (ImGui::Selectable(sel.name.cstr(), false, 0, ImVec2(0, 15))) {
+                        md_bitfield_copy(&data->selection.current_selection_mask, &sel.atom_mask);
+                        update_all_representations(data);
                     }
                     if (ImGui::IsItemHovered()) {
                         md_bitfield_copy(&data->selection.current_highlight_mask, &sel.atom_mask);
@@ -2243,24 +2240,17 @@ ImGui::EndGroup();
                     }
                     ImGui::SameLine();
                     if (ImGui::Button("Update")) {
-
-                    }
-                    ImGui::PopID();
-                }
-
-                if (-1 < selected_idx && selected_idx < num_selections) {
-                    auto& sel = data->selection.stored_selections[selected_idx];
-                    if (ImGui::Button("Update")) {
                         md_bitfield_copy(&sel.atom_mask, &data->selection.current_selection_mask);
                         update_all_representations(data);
                     }
                     ImGui::SameLine();
                     if (ImGui::DeleteButton("Remove")) {
-                        remove_selection(data, selected_idx);
-                        selected_idx = -1;
+                        remove_selection(data, i);
                     }
+                    ImGui::PopID();
                 }
-                ImGui::PopItemFlag();
+
+                //ImGui::PopItemFlag();
             }
             ImGui::EndMenu();
         }
@@ -5527,6 +5517,7 @@ void* serialize_create_atom_elem_mapping(ApplicationData* data) {
 
 void* serialize_create_selection(ApplicationData* data) {
     Selection sel = {};
+    md_bitfield_init(&sel.atom_mask, persistent_allocator);
     return md_array_push(data->selection.stored_selections, sel, persistent_allocator);
 }
 
@@ -5663,6 +5654,38 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
                 }
             } else {
                 md_print(MD_LOG_TYPE_ERROR, "Malformed start token for script");
+                return;
+            }
+        }
+        case SerializationType_Bitfield:
+        {
+            // Bitfield starts with ###
+            // and ends with ###
+            str_t token = make_cstr("###");
+            if (compare_str_n(arg, token, token.len)) {
+                // Roll back buf to arg + 3
+                const char* beg = arg.ptr + token.len;
+                buf->len = buf->end() - beg;
+                buf->ptr = beg;
+                const char* end = str_find_str(*buf, token).ptr;
+                if (end) {
+                    md_exp_bitfield_t* bf = (md_exp_bitfield_t*)(ptr + target->struct_byte_offset);
+                    if (!md_bitfield_deserialize(bf, beg, end-beg)) {
+                        md_print(MD_LOG_TYPE_ERROR, "Failed to deserialize bitfield");
+                        md_bitfield_clear(bf);
+                        return;
+                    }
+                    // Set buf pointer to after token
+                    const char* pos = end + token.len;
+                    buf->len = buf->end() - pos;
+                    buf->ptr = pos;
+                    break;
+                } else {
+                    md_print(MD_LOG_TYPE_ERROR, "Malformed end token for bitfield");
+                    return;
+                }
+            } else {
+                md_print(MD_LOG_TYPE_ERROR, "Malformed start token for bitfield");
                 return;
             }
         }
@@ -5830,7 +5853,18 @@ static void write_entry(FILE* file, SerializationObject target, const void* ptr,
     {
         ApplicationData* data = (ApplicationData*)ptr;
         std::string str = data->script.editor.GetText();
-        fprintf(file, "\"\"\"%s\"\"\"", str.c_str());
+        fprintf(file, "\"\"\"%s\"\"\"\n", str.c_str());
+        break;
+    }
+    case SerializationType_Bitfield:
+    {
+        const md_exp_bitfield_t* bf = (const md_exp_bitfield_t*)((const char*)ptr + target.struct_byte_offset);
+        int64_t mem_bytes = md_bitfield_serialize_size_in_bytes(bf);
+        void* mem = md_alloc(frame_allocator, mem_bytes);
+        int64_t bytes = md_bitfield_serialize(mem, bf);
+        fprintf(file, "###");
+        fwrite(mem, 1, bytes, file);
+        fprintf(file, "###\n");
         break;
     }
     case SerializationType_Invalid: // fallthrough
