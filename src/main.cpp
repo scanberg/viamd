@@ -2004,6 +2004,21 @@ static bool filter_expression(ApplicationData* data, str_t expr, md_exp_bitfield
     return success;
 }
 
+static bool valid_identifier(str_t str) {
+    if (!str.ptr) return false;
+    if (!str.len) return false;
+
+    const char* beg = str.ptr;
+    const char* end = str.ptr + str.len;
+
+    if (!is_alpha(*beg) && *beg != '_') return false;
+    for (const char* c = beg + 1; c < end; ++c) {
+        if (!is_alpha(*c) && (*c != '_') && !is_digit(*c)) return false;
+    }
+
+    return true;
+}
+
 // ### DRAW WINDOWS ###
 static void draw_main_menu(ApplicationData* data) {
     ASSERT(data);
@@ -2215,39 +2230,57 @@ ImGui::EndGroup();
             {
                 //ImGui::PushItemFlag(ImGuiItemFlags_SelectableDontClosePopup, true);
                 ImGui::Text("Stored Selections");
-                const bool disable_new = md_bitfield_popcount(&data->selection.current_selection_mask) == 0;
-                if (disable_new) ImGui::PushDisabled();
-                if (ImGui::Button("Create New")) {
-                    char name_buf[64];
-                    snprintf(name_buf, sizeof(name_buf), "sel%lli", md_array_size(data->selection.stored_selections) + 1);
-                    create_selection(data, str_from_cstr(name_buf), &data->selection.current_selection_mask);
-                }
-                if (disable_new) ImGui::PopDisabled();
-
-                const int num_selections = (int)md_array_size(data->selection.stored_selections);
-                for (int i = 0; i < num_selections; i++) {
+                for (int i = 0; i < (int)md_array_size(data->selection.stored_selections); i++) {
                     auto& sel = data->selection.stored_selections[i];
+                    bool is_valid = valid_identifier(sel.name);
+                    char err_buf[64] = "";
+                    if (!is_valid) {
+                        snprintf(err_buf, sizeof(err_buf), "'%s' is not a valid identifier.", sel.name.cstr());
+                    }
+
+                    for (int j = 0; j < i; ++j) {
+                        if (compare_str(sel.name, data->selection.stored_selections[j].name)) {
+                            is_valid = false;
+                            snprintf(err_buf, sizeof(err_buf), "identifier '%s' is already taken.", sel.name.cstr());
+                            break;
+                        }
+                    }
 
                     ImGui::PushID(i);
+                    if (!is_valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
                     ImGui::InputText("##label", sel.name.beg(), sel.name.capacity());
-                    if (ImGui::Selectable(sel.name.cstr(), false, 0, ImVec2(0, 15))) {
+                    if (!is_valid) ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered() && !is_valid && err_buf[0] != '\0') {
+                        ImGui::SetTooltip("%s", err_buf);
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Load")) {
                         md_bitfield_copy(&data->selection.current_selection_mask, &sel.atom_mask);
                         update_all_representations(data);
                     }
                     if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Load the stored selection into the active selection");
                         md_bitfield_copy(&data->selection.current_highlight_mask, &sel.atom_mask);
                         data->mold.dirty_buffers |= MolBit_DirtyFlags;
                     }
                     ImGui::SameLine();
-                    if (ImGui::Button("Update")) {
+                    if (ImGui::Button("Store")) {
+                        ImGui::SetTooltip("Store the active selection into the stored selection");
                         md_bitfield_copy(&sel.atom_mask, &data->selection.current_selection_mask);
                         update_all_representations(data);
                     }
                     ImGui::SameLine();
                     if (ImGui::DeleteButton("Remove")) {
+                        ImGui::SetTooltip("Remove the stored selection");
                         remove_selection(data, i);
                     }
                     ImGui::PopID();
+                }
+
+                if (ImGui::Button("Create New")) {
+                    char name_buf[64];
+                    snprintf(name_buf, sizeof(name_buf), "sel%lli", md_array_size(data->selection.stored_selections) + 1);
+                    create_selection(data, str_from_cstr(name_buf), &data->selection.current_selection_mask);
                 }
 
                 //ImGui::PopItemFlag();
