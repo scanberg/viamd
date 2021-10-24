@@ -27,6 +27,7 @@
 #include <core/md_array.inl>
 #include <core/md_os.h>
 #include <core/md_spatial_hash.h>
+#include <core/md_base64.h>
 
 #include <imgui.h>
 #define IMGUI_DEFINE_MATH_OPERATORS
@@ -2228,6 +2229,8 @@ ImGui::EndGroup();
 
             // STORED SELECTIONS
             {
+                // @NOTE(Robin): This ImGui ItemFlag can be used to force the menu to remain open after buttons are pressed.
+                // Leave it here as a comment if we feel that it is needed in the future
                 //ImGui::PushItemFlag(ImGuiItemFlags_SelectableDontClosePopup, true);
                 ImGui::Text("Stored Selections");
                 for (int i = 0; i < (int)md_array_size(data->selection.stored_selections); i++) {
@@ -5702,8 +5705,10 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
                 buf->ptr = beg;
                 const char* end = str_find_str(*buf, token).ptr;
                 if (end) {
+                    void* base64_data = md_alloc(frame_allocator, md_base64_decode_size_in_bytes(end-beg));
+                    int64_t base64_size = md_base64_decode(base64_data, beg, end-beg);
                     md_exp_bitfield_t* bf = (md_exp_bitfield_t*)(ptr + target->struct_byte_offset);
-                    if (!md_bitfield_deserialize(bf, beg, end-beg)) {
+                    if (!base64_size || !md_bitfield_deserialize(bf, base64_data, base64_size)) {
                         md_print(MD_LOG_TYPE_ERROR, "Failed to deserialize bitfield");
                         md_bitfield_clear(bf);
                         return;
@@ -5892,12 +5897,15 @@ static void write_entry(FILE* file, SerializationObject target, const void* ptr,
     case SerializationType_Bitfield:
     {
         const md_exp_bitfield_t* bf = (const md_exp_bitfield_t*)((const char*)ptr + target.struct_byte_offset);
-        int64_t mem_bytes = md_bitfield_serialize_size_in_bytes(bf);
-        void* mem = md_alloc(frame_allocator, mem_bytes);
-        int64_t bytes = md_bitfield_serialize(mem, bf);
-        fprintf(file, "###");
-        fwrite(mem, 1, bytes, file);
-        fprintf(file, "###\n");
+        void* serialized_data = md_alloc(frame_allocator, md_bitfield_serialize_size_in_bytes(bf));
+        int64_t serialized_size = md_bitfield_serialize(serialized_data, bf);
+        if (serialized_size) {
+            char* base64_data = (char*)md_alloc(frame_allocator, md_base64_encode_size_in_bytes(serialized_size));
+            int64_t base64_size = md_base64_encode(base64_data, serialized_data, serialized_size);
+            if (base64_size) {
+                fprintf(file, "###%.*s###\n", (int)base64_size, base64_data);
+            }
+        }
         break;
     }
     case SerializationType_Invalid: // fallthrough
