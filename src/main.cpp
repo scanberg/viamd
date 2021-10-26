@@ -1067,6 +1067,9 @@ int main(int, char**) {
     // Main loop
     while (!data.ctx.window.should_close) {
         application::update(&data.ctx);
+        
+        // This needs to happen first (in imgui events) to enable docking of imgui windows
+        ImGui::CreateDockspace();
 
 #if SHOW_IMGUI_DEMO_WINDOW
         ImGui::ShowDemoWindow();
@@ -1160,8 +1163,6 @@ int main(int, char**) {
         handle_camera_interaction(&data);
         handle_camera_animation(&data);
 
-        // This needs to happen first (in imgui events) to enable docking of imgui windows
-        ImGui::CreateDockspace();
 
         if (data.animation.mode == PlaybackMode::Playing) {
             data.animation.frame += data.ctx.timing.delta_s * data.animation.fps;
@@ -1375,9 +1376,6 @@ int main(int, char**) {
         update_view_param(&data);
         update_md_buffers(&data);
 
-        //update_properties(&data);
-        //update_density_volume_texture(&data);
-
         clear_gbuffer(&data.gbuffer);
         fill_gbuffer(&data);
 
@@ -1405,17 +1403,9 @@ int main(int, char**) {
 
         apply_postprocessing(data);
 
-        // GUI ELEMENTS
-        data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, (float)data.ctx.timing.delta_s);
-
         clear_highlight(&data);
 
-        draw_main_menu(&data);
-        draw_context_popup(&data);
-        draw_async_task_window(&data);
-        draw_animation_control_window(&data);
-        draw_molecule_dynamic_info_window(&data);
-
+        // GUI
         if (data.representations.show_window) draw_representations_window(&data);
         if (data.timeline.show_window) draw_timeline_window(&data);
         if (data.distributions.show_window) draw_distribution_window(&data);
@@ -1427,8 +1417,6 @@ int main(int, char**) {
         if (data.selection.query.show_window) draw_selection_query_window(&data);
         if (data.selection.grow.show_window) draw_selection_grow_window(&data);
         if (data.show_debug_window) draw_debug_window(&data);
-
-
         // @NOTE: ImGui::GetIO().WantCaptureMouse does not work with Menu
         if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
             if (data.picking.idx != INVALID_PICKING_IDX) {
@@ -1436,6 +1424,12 @@ int main(int, char**) {
             }
         }
 
+        data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, (float)data.ctx.timing.delta_s);
+        draw_main_menu(&data);
+        draw_context_popup(&data);
+        draw_async_task_window(&data);
+        draw_animation_control_window(&data);
+        draw_molecule_dynamic_info_window(&data);
 
         PUSH_GPU_SECTION("Imgui render")
         application::render_imgui(&data.ctx);
@@ -2779,45 +2773,41 @@ static void draw_animation_control_window(ApplicationData* data) {
     ASSERT(data->timeline.x_values);
     ASSERT(md_array_size(data->timeline.x_values) == num_frames);
 
-    ImGui::Begin("Animation");
-    ImGui::Text("Num Frames: %i", num_frames);
+    if (ImGui::Begin("Animation")) {
+        ImGui::Text("Num Frames: %i", num_frames);
 
-    double t   = frame_to_time(data->animation.frame, *data);
-    double min = data->timeline.x_values[0];
-    double max = data->timeline.x_values[num_frames - 1];
-    if (ImGui::SliderScalar("Time", ImGuiDataType_Double, &t, &min, &max, "%.2f")) {
-        data->animation.frame = time_to_frame(t, *data);
-    }
-    /*
-    if (ImGui::SliderFloat("Time", &t, data->timeline.x_values[0], data->timeline.x_values[num_frames - 1])) {
-    }
-    */
-    //ImGui::SliderFloat("Speed", &data->animation.fps, 0.1f, 1000.f, "%.3f", 4.f);
-    ImGui::SliderFloat("Speed", &data->animation.fps, -200.0f, 200.f, "%.2f", ImGuiSliderFlags_Logarithmic);
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Animation Speed in Frames Per Second");
-    }
-    if (ImGui::Combo("Interp.", (int*)(&data->animation.interpolation), "Nearest\0Linear\0Cubic\0\0")) {
-        interpolate_atomic_properties(data);
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Interpolation Method for Atom Positions");
-    }
-    ImGui::Checkbox("Apply PBC", &data->animation.apply_pbc);
-    switch (data->animation.mode) {
-        case PlaybackMode::Playing:
-            if (ImGui::Button((const char*)ICON_FA_PAUSE)) data->animation.mode = PlaybackMode::Stopped;
-            break;
-        case PlaybackMode::Stopped:
-            if (ImGui::Button((const char*)ICON_FA_PLAY)) data->animation.mode = PlaybackMode::Playing;
-            break;
-        default:
-            ASSERT(false);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button((const char*)ICON_FA_STOP)) {
-        data->animation.mode = PlaybackMode::Stopped;
-        data->animation.frame = 0.0;
+        double t   = frame_to_time(data->animation.frame, *data);
+        double min = data->timeline.x_values[0];
+        double max = data->timeline.x_values[num_frames - 1];
+        if (ImGui::SliderScalar("Time", ImGuiDataType_Double, &t, &min, &max, "%.2f")) {
+            data->animation.frame = time_to_frame(t, *data);
+        }
+        ImGui::SliderFloat("Speed", &data->animation.fps, -200.0f, 200.f, "%.2f", ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Animation Speed in Frames Per Second");
+        }
+        if (ImGui::Combo("Interp.", (int*)(&data->animation.interpolation), "Nearest\0Linear\0Cubic\0\0")) {
+            interpolate_atomic_properties(data);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Interpolation Method for Atom Positions");
+        }
+        ImGui::Checkbox("Apply PBC", &data->animation.apply_pbc);
+        switch (data->animation.mode) {
+            case PlaybackMode::Playing:
+                if (ImGui::Button((const char*)ICON_FA_PAUSE)) data->animation.mode = PlaybackMode::Stopped;
+                break;
+            case PlaybackMode::Stopped:
+                if (ImGui::Button((const char*)ICON_FA_PLAY)) data->animation.mode = PlaybackMode::Playing;
+                break;
+            default:
+                ASSERT(false);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button((const char*)ICON_FA_STOP)) {
+            data->animation.mode = PlaybackMode::Stopped;
+            data->animation.frame = 0.0;
+        }
     }
     ImGui::End();
 }
@@ -3157,21 +3147,30 @@ static void draw_async_task_window(ApplicationData* data) {
 }
 
 
-bool draw_property_menu_widgets(DisplayProperty* props, int64_t num_props, uint32_t prop_mask) {
+bool draw_property_menu_widgets(DisplayProperty* props, int64_t num_props, uint32_t prop_mask, bool multi_selection = true) {
     bool changed = false;
     int64_t num_candidates = 0;
+    int64_t selected_index = -1;
 
     for (int64_t i = 0; i < num_props; ++i) {
         DisplayProperty& prop = props[i];
         if (prop.possible_display_mask & prop_mask) {
             num_candidates += 1;
             ImPlot::ItemIcon(prop.col); ImGui::SameLine();
-            bool show = prop.current_display_mask & prop_mask;
-            changed = changed || ImGui::Selectable(prop.lbl.cstr(), &show, 0, ImVec2(50,0));
-            if (show)
-                prop.current_display_mask |= prop_mask;
-            else
-                prop.current_display_mask &= ~prop_mask;
+            if (ImGui::Selectable(prop.lbl.cstr(), prop.current_display_mask & prop_mask, 0, ImVec2(50,0))) {
+                prop.current_display_mask ^= prop_mask;     // Toggle
+                changed = true;
+                if (prop.current_display_mask & prop_mask) {
+                    selected_index = i;
+                }
+            }
+        }
+    }
+
+    if (selected_index != -1 && !multi_selection) {
+        for (int64_t i = 0; i < num_props; ++i) {
+            if (i == selected_index) continue;
+            props[i].current_display_mask &= ~prop_mask;    // Clear
         }
     }
     
@@ -4213,7 +4212,7 @@ static void draw_density_volume_window(ApplicationData* data) {
         if (ImGui::BeginMenuBar())
         {
             if (ImGui::BeginMenu("Property")) {
-                property_selection_changed = draw_property_menu_widgets(data->display_properties, md_array_size(data->display_properties), DisplayProperty::ShowIn_Volume);
+                property_selection_changed = draw_property_menu_widgets(data->display_properties, md_array_size(data->display_properties), DisplayProperty::ShowIn_Volume, false);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("DVR")) {
@@ -4325,6 +4324,7 @@ static void draw_density_volume_window(ApplicationData* data) {
         if (s_fingerprint != fingerprint) {
             s_fingerprint = fingerprint;
             update_volume = true;
+            update_representations = true;
         }
 
         static double s_frame = 0;
@@ -4461,121 +4461,121 @@ static void draw_density_volume_window(ApplicationData* data) {
                     data->density_volume.rep_model_mats[i] = vis.sdf.matrices[i];
                 }
             }
-
-            int64_t num_reps = md_array_size(data->density_volume.gl_reps);
-            if (num_reps > 0 && data->density_volume.show_reference_structures) {
-                num_reps = data->density_volume.show_reference_ensemble ? num_reps : 1;
-
-                md_gl_rendertarget_t render_target = {
-                    .width = (uint32_t)canvas_sz.x,
-                    .height = (uint32_t)canvas_sz.y,
-                    .texture_depth = gbuf.deferred.depth,
-                    .texture_color = gbuf.deferred.color,
-                    .texture_atom_index  = gbuf.deferred.picking,
-                    .texture_view_normal = gbuf.deferred.normal,
-                    .texture_view_velocity = gbuf.deferred.velocity,
-                };
-
-                const md_gl_representation_t** reps = (const md_gl_representation_t**)md_alloc(frame_allocator, num_reps * sizeof(void*));
-                const float** mats = (const float**)md_alloc(frame_allocator, num_reps * sizeof(void*));
-
-                for (int64_t i = 0; i < num_reps; ++i) {
-                    reps[i] = &data->density_volume.gl_reps[i];
-                    mats[i] = &data->density_volume.rep_model_mats[i].elem[0][0];
-                }
-
-                if (num_reps) {
-                    md_gl_draw_args_t draw_args = {
-                        .representation = {
-                            .count = (uint32_t)num_reps,
-                            .data = reps,
-                            .model_matrix = mats,
-                        },
-                        .view_transform = {
-                                .view_matrix = &view_mat.elem[0][0],
-                                .projection_matrix = &proj_mat.elem[0][0],
-                        },
-                        .render_target = &render_target,
-                    };
-
-                    md_gl_draw(&data->mold.gl_ctx, &draw_args);
-
-                    if (is_hovered) {
-                        vec2_t coord = {mouse_pos_in_canvas.x, (float)gbuf.height - mouse_pos_in_canvas.y};
-                        PickingData pd = read_picking_data(&gbuf, (int)coord.x, (int)coord.y);
-                        if (pd.idx != INVALID_PICKING_IDX) {
-                            draw_atom_info_window(*data, pd.idx);
-                        }
-                    }
-                }
-            }
         }
 
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.deferred.fbo);
         glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
         glViewport(0, 0, gbuf.width, gbuf.height);
+        glClearColor(1,1,1,1);
+        glClear(GL_COLOR_BUFFER_BIT);
 
-        PUSH_GPU_SECTION("Postprocessing")
-            postprocessing::Descriptor postprocess_desc = {
-            .background = {
-                .intensity = data->visuals.background.color * data->visuals.background.intensity,
+        int64_t num_reps = md_array_size(data->density_volume.gl_reps);
+        if (prop && data->density_volume.show_reference_structures && num_reps > 0) {
+            num_reps = data->density_volume.show_reference_ensemble ? num_reps : 1;
+
+            md_gl_rendertarget_t render_target = {
+                .width = (uint32_t)canvas_sz.x,
+                .height = (uint32_t)canvas_sz.y,
+                .texture_depth = gbuf.deferred.depth,
+                .texture_color = gbuf.deferred.color,
+                .texture_atom_index  = gbuf.deferred.picking,
+                .texture_view_normal = gbuf.deferred.normal,
+                .texture_view_velocity = gbuf.deferred.velocity,
+            };
+
+            const md_gl_representation_t** reps = (const md_gl_representation_t**)md_alloc(frame_allocator, num_reps * sizeof(void*));
+            const float** mats = (const float**)md_alloc(frame_allocator, num_reps * sizeof(void*));
+
+            for (int64_t i = 0; i < num_reps; ++i) {
+                reps[i] = &data->density_volume.gl_reps[i];
+                mats[i] = &data->density_volume.rep_model_mats[i].elem[0][0];
+            }
+
+            md_gl_draw_args_t draw_args = {
+                .representation = {
+                    .count = (uint32_t)num_reps,
+                    .data = reps,
+                    .model_matrix = mats,
+                },
+                .view_transform = {
+                    .view_matrix = &view_mat.elem[0][0],
+                    .projection_matrix = &proj_mat.elem[0][0],
+                },
+                .render_target = &render_target,
+            };
+
+            md_gl_draw(&data->mold.gl_ctx, &draw_args);
+
+            if (is_hovered) {
+                vec2_t coord = {mouse_pos_in_canvas.x, (float)gbuf.height - mouse_pos_in_canvas.y};
+                PickingData pd = read_picking_data(&gbuf, (int)coord.x, (int)coord.y);
+                if (pd.idx != INVALID_PICKING_IDX) {
+                    draw_atom_info_window(*data, pd.idx);
+                }
+            }
+
+            PUSH_GPU_SECTION("Postprocessing")
+                postprocessing::Descriptor postprocess_desc = {
+                .background = {
+                        .intensity = data->visuals.background.color * data->visuals.background.intensity,
             },
             .bloom = {
-                .enabled = false,
+                        .enabled = false,
             },
             .tonemapping = {
-                .enabled = data->visuals.tonemapping.enabled,
-                .mode = data->visuals.tonemapping.tonemapper,
-                .exposure = data->visuals.tonemapping.exposure,
-                .gamma = data->visuals.tonemapping.gamma,
+                        .enabled = data->visuals.tonemapping.enabled,
+                        .mode = data->visuals.tonemapping.tonemapper,
+                        .exposure = data->visuals.tonemapping.exposure,
+                        .gamma = data->visuals.tonemapping.gamma,
             },
             .ambient_occlusion = {
-                .enabled = data->visuals.ssao.enabled,
-                .radius = data->visuals.ssao.radius,
-                .intensity = data->visuals.ssao.intensity,
-                .bias = data->visuals.ssao.bias,
+                        .enabled = data->visuals.ssao.enabled,
+                        .radius = data->visuals.ssao.radius,
+                        .intensity = data->visuals.ssao.intensity,
+                        .bias = data->visuals.ssao.bias,
             },
             .depth_of_field = {
-                .enabled = data->visuals.dof.enabled,
-                .focus_depth = data->visuals.dof.focus_depth.current,
-                .focus_scale = data->visuals.dof.focus_scale,
+                        .enabled = data->visuals.dof.enabled,
+                        .focus_depth = data->visuals.dof.focus_depth.current,
+                        .focus_scale = data->visuals.dof.focus_scale,
             },
             .temporal_reprojection = {
-                .enabled = false,
+                        .enabled = false,
             },
             .input_textures = {
-                .depth = gbuf.deferred.depth,
-                .color = gbuf.deferred.color,
-                .normal = gbuf.deferred.normal,
-                .velocity = gbuf.deferred.velocity,
+                        .depth = gbuf.deferred.depth,
+                        .color = gbuf.deferred.color,
+                        .normal = gbuf.deferred.normal,
+                        .velocity = gbuf.deferred.velocity,
             }
-        };
+            };
 
-        ViewParam view_param = {
-            .matrix = {
-                .current = {
-                .view = view_mat,
-                .proj = proj_mat,
-                .proj_jittered = proj_mat,
-                .view_proj = mat4_mul(proj_mat, view_mat),
-                .view_proj_jittered = mat4_mul(proj_mat, view_mat),
-                .norm = view_mat,
+            ViewParam view_param = {
+                .matrix = {
+                    .current = {
+                    .view = view_mat,
+                    .proj = proj_mat,
+                    .proj_jittered = proj_mat,
+                    .view_proj = mat4_mul(proj_mat, view_mat),
+                    .view_proj_jittered = mat4_mul(proj_mat, view_mat),
+                    .norm = view_mat,
             },
             .inverse = {
-                .proj = mat4_inverse(proj_mat),
-                .proj_jittered = mat4_inverse(proj_mat),
+                    .proj = mat4_inverse(proj_mat),
+                    .proj_jittered = mat4_inverse(proj_mat),
             }
             },
                 .clip_planes = {
-                .near = data->density_volume.camera.near_plane,
-                .far = data->density_volume.camera.far_plane,
+                    .near = data->density_volume.camera.near_plane,
+                    .far = data->density_volume.camera.far_plane,
             },
             .fov_y = data->density_volume.camera.fov_y,
             .resolution = {canvas_sz.x, canvas_sz.y}
-        };
+            };
 
-        postprocessing::shade_and_postprocess(postprocess_desc, view_param);
-        POP_GPU_SECTION()
+            postprocessing::shade_and_postprocess(postprocess_desc, view_param);
+            POP_GPU_SECTION()
+        }
 
         glEnable(GL_DEPTH_TEST);
         glDepthMask(GL_TRUE);
@@ -4595,41 +4595,43 @@ static void draw_density_volume_window(ApplicationData* data) {
             immediate::flush();
         }
 
-        volume::RenderDesc vol_desc = {
-            .render_target = {
-                .texture = gbuf.deferred.post_tonemap,
-                .width   = gbuf.width,
-                .height  = gbuf.height,
-            },
-            .texture = {
-                .volume = data->density_volume.volume_texture.id,
-                .transfer_function = data->density_volume.dvr.tf.id,
-                .depth = gbuf.deferred.depth,
-            },
-            .matrix = {
-                .model = data->density_volume.model_mat,
-                .view = view_mat,
-                .proj = proj_mat
-            },
-            .clip_volume = {
+        if (prop) {
+            volume::RenderDesc vol_desc = {
+                .render_target = {
+                    .texture = gbuf.deferred.post_tonemap,
+                    .width   = gbuf.width,
+                    .height  = gbuf.height,
+                },
+                .texture = {
+                    .volume = data->density_volume.volume_texture.id,
+                    .transfer_function = data->density_volume.dvr.tf.id,
+                    .depth = gbuf.deferred.depth,
+                },
+                .matrix = {
+                    .model = data->density_volume.model_mat,
+                    .view = view_mat,
+                    .proj = proj_mat
+                },
+                .clip_volume = {
                     .min = data->density_volume.clip_volume.min,
                     .max = data->density_volume.clip_volume.max
-            },
-            .bounding_box = {
-                .color = data->density_volume.bounding_box_color,
-                .enabled = data->density_volume.show_bounding_box,
-            },
-            .global_scaling = {
-                .density = data->density_volume.dvr.density_scale,
-                .alpha = data->density_volume.dvr.tf.alpha_scale
-            },
-            .isosurface = data->density_volume.iso.isosurfaces,
-            .isosurface_enabled = data->density_volume.iso.enabled,
-            .direct_volume_rendering_enabled = data->density_volume.dvr.enabled,
+                },
+                .bounding_box = {
+                    .color = data->density_volume.bounding_box_color,
+                    .enabled = data->density_volume.show_bounding_box,
+                },
+                .global_scaling = {
+                    .density = data->density_volume.dvr.density_scale,
+                    .alpha = data->density_volume.dvr.tf.alpha_scale
+                },
+                .isosurface = data->density_volume.iso.isosurfaces,
+                .isosurface_enabled = data->density_volume.iso.enabled,
+                .direct_volume_rendering_enabled = data->density_volume.dvr.enabled,
 
-            .voxel_spacing = data->density_volume.voxel_spacing
-        };
-        volume::render_volume(vol_desc);
+                .voxel_spacing = data->density_volume.voxel_spacing
+            };
+            volume::render_volume(vol_desc);
+        }
 
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         glDrawBuffer(GL_BACK);
