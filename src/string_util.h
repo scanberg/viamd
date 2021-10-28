@@ -149,6 +149,11 @@ struct StrBuf {
 
     StrBuf& operator+=(str_t txt);
 
+    template <int64_t N>
+    constexpr StrBuf& operator+=(const char (&cstr)[N]) noexcept {
+        return *this += str_t{cstr, N};
+    }
+
     constexpr char operator[](int64_t i) const noexcept {
         ASSERT(0 <= i && i < Size);
         return buf[i];

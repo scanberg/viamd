@@ -672,9 +672,34 @@ struct ApplicationData {
     } trajectory_data;
 
     bool show_debug_window = false;
+    bool show_property_export_window = false;
 };
 
 //static void postprocess_frame(md_frame_data_t* frame, void* user_data);
+
+static void compute_histogram(float* bins, int num_bins, float min_bin_val, float max_bin_val, const float* values, int num_values) {
+    memset(bins, 0, sizeof(float) * num_bins);
+
+    const float bin_range = max_bin_val - min_bin_val;
+    const float inv_range = 1.0f / bin_range;
+    const float scl = 1.0f / num_values;
+    for (int i = 0; i < num_values; ++i) {
+        if (values[i] < min_bin_val || max_bin_val < values[i]) continue;
+        int idx = CLAMP((int)(((values[i] - min_bin_val) * inv_range) * num_bins), 0, num_bins - 1);
+        bins[idx] += scl;
+    }
+}
+
+static void downsample_histogram(float* dst_bins, int num_dst_bins, const float* src_bins, int num_src_bins) {
+    ASSERT(num_dst_bins <= num_src_bins);
+
+    memset(dst_bins, 0, sizeof(float) * num_dst_bins);
+    const int factor = MAX(1, num_src_bins / num_dst_bins);
+    //const float scl = 1.0f / factor;
+    for (int j = 0; j < num_src_bins; ++j) {
+        dst_bins[j / factor] += src_bins[j];
+    }
+}
 
 static double frame_to_time(double frame, const ApplicationData& data) {
     int64_t num_frames = md_array_size(data.timeline.x_values);
@@ -775,7 +800,8 @@ static int64_t single_selection_sequence_count(const SingleSelectionSequence* se
 
 static void launch_prefetch_job(ApplicationData* data);
 static void clear_properties(DisplayProperty** prop_items);
-static void update_properties(DisplayProperty** prop_items, md_script_property_t* full_props, md_script_property_t* filt_props, int64_t num_props);
+static void init_display_properties(DisplayProperty** prop_items, md_script_property_t* full_props, md_script_property_t* filt_props, int64_t num_props);
+static void update_display_properties(ApplicationData* data);
 
 static void interpolate_atomic_properties(ApplicationData* data);
 static void update_view_param(ApplicationData* data);
@@ -789,7 +815,7 @@ static bool handle_selection(ApplicationData* data);
 static void handle_camera_interaction(ApplicationData* data);
 static void handle_camera_animation(ApplicationData* data);
 
-//static void update_properties(ApplicationData* data);
+//static void init_display_properties(ApplicationData* data);
 //static void update_density_volume_texture(ApplicationData* data);
 static void handle_picking(ApplicationData* data);
 
@@ -822,6 +848,7 @@ static void draw_density_volume_window(ApplicationData* data);
 static void draw_script_editor_window(ApplicationData* data);
 static void draw_dataset_window(ApplicationData* data);
 static void draw_debug_window(ApplicationData* data);
+static void draw_property_export_window(ApplicationData* data);
 // static void draw_density_volume_clip_plane_widgets(ApplicationData* data);
 // static void draw_selection_window(ApplicationData* data);
 
@@ -1316,7 +1343,7 @@ int main(int, char**) {
                 md_script_eval_init(&data.mold.script.filt_eval, num_frames, &data.mold.script.ir, persistent_allocator);
                 const int64_t num_props = data.mold.script.full_eval.num_properties;
                 ASSERT(data.mold.script.filt_eval.num_properties == num_props);
-                update_properties(&data.display_properties, data.mold.script.full_eval.properties, data.mold.script.filt_eval.properties, num_props);
+                init_display_properties(&data.display_properties, data.mold.script.full_eval.properties, data.mold.script.filt_eval.properties, num_props);
             }
 
             if (data.mold.script.evaluate_full) {
@@ -1373,6 +1400,7 @@ int main(int, char**) {
             postprocessing::initialize(data.gbuffer.width, data.gbuffer.height);
         }
 
+        update_display_properties(&data);
         update_view_param(&data);
         update_md_buffers(&data);
 
@@ -1416,6 +1444,7 @@ int main(int, char**) {
         if (data.dataset.show_window) draw_dataset_window(&data);
         if (data.selection.query.show_window) draw_selection_query_window(&data);
         if (data.selection.grow.show_window) draw_selection_grow_window(&data);
+        if (data.show_property_export_window) draw_property_export_window(&data);
         if (data.show_debug_window) draw_debug_window(&data);
         // @NOTE: ImGui::GetIO().WantCaptureMouse does not work with Menu
         if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
@@ -1423,6 +1452,7 @@ int main(int, char**) {
                 draw_atom_info_window(data, data.picking.idx);
             }
         }
+
 
         data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, (float)data.ctx.timing.delta_s);
         draw_main_menu(&data);
@@ -1466,7 +1496,7 @@ int main(int, char**) {
     return 0;
 }
 
-static void update_properties(DisplayProperty** prop_items, md_script_property_t* full_props, md_script_property_t* filt_props, int64_t num_props) {
+static void init_display_properties(DisplayProperty** prop_items, md_script_property_t* full_props, md_script_property_t* filt_props, int64_t num_props) {
     ASSERT(prop_items);
     if (num_props > 0) {
         ASSERT(full_props);
@@ -1520,6 +1550,36 @@ static void update_properties(DisplayProperty** prop_items, md_script_property_t
 
     md_array_resize(*prop_items, md_array_size(new_items), persistent_allocator);
     memcpy(*prop_items, new_items, md_array_size(new_items) * sizeof(DisplayProperty));
+}
+
+static void update_display_properties(ApplicationData* data) {
+    ASSERT(data);
+    DisplayProperty* disp_props = data->display_properties;
+    for (int64_t i = 0; i < md_array_size(disp_props); ++i) {
+        if (disp_props[i].full_prop_fingerprint != disp_props[i].full_prop->data.fingerprint) {
+            disp_props[i].full_prop_fingerprint = disp_props[i].full_prop->data.fingerprint;
+            const md_script_property_t* p = disp_props[i].full_prop;
+            if (p->type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
+                DisplayProperty::Histogram& hist = disp_props[i].full_hist;
+                hist.value_range = {p->data.min_range[0], p->data.max_range[0]};
+                compute_histogram(hist.bin, ARRAY_SIZE(hist.bin), hist.value_range.beg, hist.value_range.end, p->data.values, p->data.num_values);
+            }
+        }
+
+        if (disp_props[i].filt_prop_fingerprint != disp_props[i].filt_prop->data.fingerprint) {
+            disp_props[i].filt_prop_fingerprint = disp_props[i].filt_prop->data.fingerprint;
+            const md_script_property_t* p = disp_props[i].full_prop;
+            if (p->type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
+                DisplayProperty::Histogram& hist = disp_props[i].filt_hist;
+                // We copy the full range here since we want the histograms to align on the x-axis
+                // This also implys that we have a dependency to the full property, since we can only now the full range of values when full_prop has been completely evaluated.
+                hist.value_range = disp_props[i].full_hist.value_range;
+                int offset = (int)data->timeline.filter.beg_frame * p->data.dim[0];
+                int length = ((int)data->timeline.filter.end_frame - (int)data->timeline.filter.beg_frame) * p->data.dim[0];
+                compute_histogram(hist.bin, ARRAY_SIZE(hist.bin), hist.value_range.beg, hist.value_range.end, p->data.values + offset, length);
+            }
+        }
+    }
 }
 
 static void interpolate_atomic_properties(ApplicationData* data) {
@@ -2095,7 +2155,7 @@ static void draw_main_menu(ApplicationData* data) {
             ImGui::BeginGroup();
             ImGui::Text("Camera");
             {
-                ImGui::Combo("Mode", (int*)(&data->view.mode), "Perspective\0Orthographic\0\0");
+                ImGui::Combo("Mode", (int*)(&data->view.mode), "Perspective\0Orthographic\0");
                 if (data->view.mode == CameraMode::Perspective) {
                     float fov = rad_to_deg(data->view.camera.fov_y);
                     if (ImGui::SliderFloat("field of view", &fov, 12.5f, 80.0f)) {
@@ -3581,18 +3641,6 @@ static void draw_timeline_window(ApplicationData* data) {
     ImGui::End();
 }
 
-static void compute_histogram(float* bins, int num_bins, float min_bin_val, float max_bin_val, const float* values, int num_values) {
-    memset(bins, 0, sizeof(float) * num_bins);
-
-    const float bin_range = max_bin_val - min_bin_val;
-    const float inv_range = 1.0f / bin_range;
-    const float scl = 1.0f / num_values;
-    for (int i = 0; i < num_values; ++i) {
-        int idx = CLAMP((int)(((values[i] - min_bin_val) * inv_range) * num_bins), 0, num_bins - 1);
-        bins[idx] += scl;
-    }
-}
-
 // #distribution_window
 static void draw_distribution_window(ApplicationData* data) {
     ImGui::SetNextWindowSize(ImVec2(200, 300), ImGuiCond_FirstUseEver);
@@ -3651,46 +3699,28 @@ static void draw_distribution_window(ApplicationData* data) {
             float max_x = full_prop.data.max_range[0];
             float min_y = full_prop.data.min_value;
             float max_y = full_prop.data.max_value;
-            //float range_x = max_x - min_x;
-            float* draw_bins = 0;
-            float* draw_filtered_bins = 0;
+            const float* full_src = 0;
+            const float* filt_src = 0;
+            int num_values_src = 0;
 
             if (full_prop.type == MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION) {
-                if (num_bins != full_prop.data.num_values) {
-                    memset(bins, 0, num_bins * sizeof(float));
-
-                    // Downsample bins
-                    const int factor = (int)full_prop.data.num_values / num_bins;
-                    ASSERT(factor > 1);
-
-                    for (int64_t j = 0; j < full_prop.data.num_values; ++j) {
-                        int idx = j / factor;
-                        bins[idx] += full_prop.data.values[j];
-                    }
-
-                    draw_bins = bins;
-                }
-                else {
-                    draw_bins = full_prop.data.values;
-                }
-            }
-            else if (full_prop.type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
-                compute_histogram(bins, num_bins, min_x, max_x, full_prop.data.values, full_prop.data.num_values);
-                draw_bins = bins;
-
-                if (data->timeline.filter.enabled) {
-                    compute_histogram(filtered_bins, num_bins, min_x, max_x, filt_prop.data.values, filt_prop.data.num_values);
-                    draw_filtered_bins = filtered_bins;
-                }
+                full_src = full_prop.data.values;
+                filt_src = filt_prop.data.values;
+                num_values_src = full_prop.data.num_values;
+            } else if (full_prop.type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
+                full_src = prop.full_hist.bin;
+                filt_src = prop.filt_hist.bin;
+                num_values_src = ARRAY_SIZE(prop.full_hist.bin);
             }
 
-            if (draw_bins) {
-                min_y = FLT_MAX;
-                max_y = -FLT_MAX;
-                for (int j = 0; j < num_bins; ++j) {
-                    min_y = MIN(min_y, draw_bins[j]);
-                    max_y = MAX(max_y, draw_bins[j]);
-                }
+            // Downsample bins
+            downsample_histogram(bins, num_bins, full_src, num_values_src);
+            downsample_histogram(filtered_bins, num_bins, filt_src, num_values_src);
+
+            min_y = 0;
+            max_y = 0;
+            for (int64_t j = 0; j < num_bins; ++j) {
+                max_y = MAX(max_y, bins[j]);
             }
             
             ImGui::PushID(i);
@@ -3710,7 +3740,7 @@ static void draw_distribution_window(ApplicationData* data) {
                 struct PlotData {
                     double offset;
                     double scale;
-                    float* bars;
+                    const float* bars;
                     int num_bars;
                 } plot_data = {
                     .offset = bar_off,
@@ -3724,13 +3754,13 @@ static void draw_distribution_window(ApplicationData* data) {
                     return ImPlotPoint(idx * pd->scale + pd->offset, (double)pd->bars[idx]);
                 };
 
-                plot_data.bars = draw_bins;
+                plot_data.bars = bins;
                 ImPlot::SetNextFillStyle(ImVec4(0,0,0,-1), 1.0f);
                 ImPlot::SetNextLineStyle(ImVec4(0,0,0,0), 0);
                 ImPlot::PlotBarsG("full", getter, &plot_data, num_bins, bar_width);
 
-                if (draw_filtered_bins) {
-                    plot_data.bars = draw_filtered_bins;
+                if (data->timeline.filter.enabled) {
+                    plot_data.bars = filtered_bins;
                     ImPlot::SetNextFillStyle(ImVec4(1,1,0,1), 0.3f);
                     ImPlot::SetNextLineStyle(ImVec4(0,0,0,0), 0);
                     ImPlot::PlotBarsG("filt", getter, &plot_data, num_bins, bar_width);
@@ -4280,16 +4310,6 @@ static void draw_density_volume_window(ApplicationData* data) {
                 }
                 ImGui::EndMenu();
             }
-            if (ImGui::BeginMenu("Export")) {
-                if (ImGui::MenuItem("Dat + Raw")) {
-                    auto res = application::file_dialog(application::FileDialogFlags_Open, {}, make_cstr("dat"));
-                    if (res.result == application::FileDialogResult::Ok) {
-                        //volume::write_to_file(data->density_volume.volume, res.path);
-                        md_print(MD_LOG_TYPE_INFO, "Wrote density volume");
-                    }
-                }
-                ImGui::EndMenu();
-            }
 
             ImGui::EndMenuBar();
         }
@@ -4312,10 +4332,10 @@ static void draw_density_volume_window(ApplicationData* data) {
             if (data->display_properties[i].current_display_mask & DisplayProperty::ShowIn_Volume) {
                 if (data->timeline.filter.enabled) {
                     prop = data->display_properties[i].filt_prop;
-                    fingerprint = data->mold.script.filt_eval.fingerprint;
+                    fingerprint = data->display_properties[i].filt_prop->data.fingerprint;
                 } else {
                     prop = data->display_properties[i].full_prop;
-                    fingerprint = data->mold.script.full_eval.fingerprint;
+                    fingerprint = data->display_properties[i].full_prop->data.fingerprint;
                 }
             }
         }
@@ -4695,17 +4715,36 @@ static void draw_script_editor_window(ApplicationData* data) {
         ImGui::SetWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
         if (ImGui::BeginMenuBar())
         {
-            if (ImGui::BeginMenu("File"))
-            {
-                if (ImGui::MenuItem("Save"))
-                {
+            if (ImGui::BeginMenu("File")) {
+                if (ImGui::MenuItem("Load")) {
+                    application::FileDialogResult file_result = application::file_dialog(application::FileDialogFlags_Open, {}, make_cstr("txt"));
+                    if (file_result.result == application::FileDialogResult::Ok) {
+                        str_t txt = load_textfile({file_result.path, file_result.path_len}, default_allocator);
+                        defer { free_str(txt, default_allocator); };
+                        std::string str(txt.ptr, txt.len);
+                        editor.SetText(str);
+                    }
+                }
+                if (ImGui::MenuItem("Save")) {
                     auto textToSave = editor.GetText();
-                    /// save text....
+                    application::FileDialogResult file_result = application::file_dialog(application::FileDialogFlags_Open, {}, make_cstr("txt"));
+                    if (file_result.result == application::FileDialogResult::Ok) {
+                        StrBuf<1024> path = str_t{file_result.path, file_result.path_len};
+                        if (str_empty(extract_ext(path))) {
+                            path += ".txt";
+                        }
+                        md_file_o* file = md_file_open(path, MD_FILE_WRITE);
+                        if (file) {
+                            md_file_write(file, textToSave.c_str(), textToSave.length());
+                            md_file_close(file);
+                        } else {
+                            md_printf(MD_LOG_TYPE_ERROR, "Failed to open file '%s' for saving script", path.cstr());
+                        }
+                    }
                 }
                 ImGui::EndMenu();
             }
-            if (ImGui::BeginMenu("Edit"))
-            {
+            if (ImGui::BeginMenu("Edit")) {
                 bool ro = editor.IsReadOnly();
                 if (ImGui::MenuItem("Read-only mode", nullptr, &ro))
                     editor.SetReadOnly(ro);
@@ -4735,8 +4774,7 @@ static void draw_script_editor_window(ApplicationData* data) {
                 ImGui::EndMenu();
             }
 
-            if (ImGui::BeginMenu("View"))
-            {
+            if (ImGui::BeginMenu("View")) {
                 if (ImGui::MenuItem("Dark palette"))
                     editor.SetPalette(TextEditor::GetDarkPalette());
                 if (ImGui::MenuItem("Light palette"))
@@ -4744,6 +4782,9 @@ static void draw_script_editor_window(ApplicationData* data) {
                 if (ImGui::MenuItem("Retro blue palette"))
                     editor.SetPalette(TextEditor::GetRetroBluePalette());
                 ImGui::EndMenu();
+            }
+            if (ImGui::MenuItem("Export")) {
+                data->show_property_export_window = true;
             }
 
             ImGui::EndMenuBar();
@@ -4802,9 +4843,418 @@ static void draw_script_editor_window(ApplicationData* data) {
             md_script_visualization_free(&vis);
         }
 
-        ImGui::End();
+    }
+    ImGui::End();
+}
+
+static bool export_xvg(const float* column_data[], const char* column_labels[], int num_columns, int num_rows, str_t filename) {
+    ASSERT(column_data);
+    ASSERT(column_labels);
+    ASSERT(num_columns >= 0);
+    ASSERT(num_rows >= 0);
+
+    md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
+    if (!file) {
+        md_printf(MD_LOG_TYPE_ERROR, "Failed to open file '%.*s' to write data.", (int)filename.len, filename.ptr);
+        return false;
+    }    
+
+    time_t t;
+    struct tm* info;
+    time(&t);
+    info = localtime(&t);
+
+    // Print Header
+    md_file_printf(file, "# This file was created %s\n", asctime(info));
+    md_file_printf(file, "# Created by:\n");
+    md_file_printf(file, "# VIAMD \n");
+
+    // Print Legend Meta
+    md_file_printf(file, "@    title \"VIAMD Properties\"\n");
+    md_file_printf(file, "@    xaxis  label \"Time\"\n");
+    md_file_printf(file, "@TYPE xy\n");
+    md_file_printf(file, "@ view 0.15, 0.15, 0.75, 0.85\n");
+    md_file_printf(file, "@ legend on\n");
+    md_file_printf(file, "@ legend box on\n");
+    md_file_printf(file, "@ legend loctype view\n");
+    md_file_printf(file, "@ legend 0.78, 0.8\n");
+    md_file_printf(file, "@ legend length 2\n");
+
+    for (int j = 0; j < num_columns; ++j) {
+        md_file_printf(file, "@ s%i legend \"%s\"\n", j, column_labels[j]);
     }
 
+    for (int i = 0; i < num_rows; ++i) {
+        for (int j = 0; j < num_columns; ++j) {
+            md_file_printf(file, "%12.6f ", column_data[j][i]);
+        }
+        md_file_printf(file, "\n");
+    }
+
+    md_file_close(file);
+    return true;
+}
+
+static bool export_csv(const float* column_data[], const char* column_labels[], int num_columns, int num_rows, str_t filename) {
+    ASSERT(column_data);
+    ASSERT(column_labels);
+    ASSERT(num_columns >= 0);
+    ASSERT(num_rows >= 0);
+
+    md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
+    if (!file) {
+        md_printf(MD_LOG_TYPE_ERROR, "Failed to open file '%.*s' to write data.", (int)filename.len, filename.ptr);
+        return false;
+    }
+    
+    for (int i = 0; i < num_columns; ++i) {
+        md_file_printf(file, "%s,", column_labels[i]);
+    }
+    md_file_printf(file, "\n");
+
+    for (int i = 0; i < num_rows; ++i) {
+        for (int j = 0; j < num_columns; ++j) {
+            md_file_printf(file, "%.6g,", column_data[j][i]);
+        }
+        md_file_printf(file, "\n");
+    }
+
+    md_file_close(file);
+    return true;
+}
+
+static bool export_cube(const ApplicationData& data, const md_script_property_t* prop, str_t filename) {
+    // @NOTE: First we need to extract some meta data for the cube format, we need the atom indices/bits for any SDF
+    // And the origin + extent of the volume in spatial coordinates (Ångström)
+
+    // Copy mol and replace with initial coords
+    md_molecule_t mol = data.mold.mol;
+
+    int64_t stride = ROUND_UP(data.mold.mol.atom.count, md_simd_widthf);
+    float* coords = (float*)md_alloc(frame_allocator, stride * sizeof(float) * 3);
+    mol.atom.x = coords + stride * 0;
+    mol.atom.y = coords + stride * 1;
+    mol.atom.z = coords + stride * 2;
+
+    md_trajectory_load_frame(&data.mold.traj, 0, NULL, mol.atom.x, mol.atom.y, mol.atom.z);
+
+    md_script_visualization_args_t args = {
+        .token = prop->vis_token,
+        .ir = &data.mold.script.ir,
+        .mol = &data.mold.mol,
+        .traj = &data.mold.traj,
+        .alloc = frame_allocator,
+        .flags = MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_SDF,
+    };
+    md_script_visualization_t vis = {0};
+    if (md_script_visualization_init(&vis, args)) {
+
+        md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
+        if (!file) {
+            md_printf(MD_LOG_TYPE_ERROR, "Failed to open file '%.*s' in order to write to it.", (int)filename.len, filename.ptr);
+            return false;
+        }
+
+        // Two comment lines
+        md_file_printf(file, "EXPORTED DENSITY VOLUME FROM VIAMD, UNITS IN BOHR\n");
+        md_file_printf(file, "OUTER LOOP: X, MIDDLE LOOP: Y, INNER LOOP: Z\n");
+
+        if (vis.sdf.count > 0) {
+            const float angstrom_to_bohr = (float)(1.0 / 0.529177210903);
+
+            // transformation matrix from world to volume
+            const mat4_t M = vis.sdf.matrices[0];
+            const md_exp_bitfield_t* bf = &vis.sdf.structures[0];
+            const int num_atoms = (int)md_bitfield_popcount(bf);
+            const int vol_dim[3] = {prop->data.dim[0], prop->data.dim[1], prop->data.dim[2]};
+            const double extent = vis.sdf.extent * angstrom_to_bohr;
+            const double voxel_ext[3] = {
+                (double)extent / (double)prop->data.dim[0],
+                (double)extent / (double)prop->data.dim[1],
+                (double)extent / (double)prop->data.dim[2],
+            };
+
+            const double half_ext = extent * 0.5;
+
+            md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", num_atoms, -half_ext, -half_ext, -half_ext);
+            md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol_dim[0], voxel_ext[0], 0, 0);
+            md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol_dim[1], 0, voxel_ext[1], 0);
+            md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol_dim[2], 0, 0, voxel_ext[2]);
+
+            int64_t beg_bit = bf->beg_bit;
+            int64_t end_bit = bf->end_bit;
+            while ((beg_bit = md_bitfield_scan(bf, beg_bit, end_bit)) != 0) {
+                int64_t i = beg_bit - 1;
+                vec3_t coord = {mol.atom.x[i], mol.atom.y[i], mol.atom.z[i]};
+                coord = mat4_mul_vec3(M, coord, 1.0f);
+                md_element_t elem = mol.atom.element[i];
+                md_file_printf(file, "%5i %12.6f %12.6f %12.6f %12.6f\n", elem, (float)elem, coord.x, coord.y, coord.z);
+            }
+
+            //md_file_printf(file, "%5i %5i\n", 1, 1);
+
+            // Write density data
+            int count = 0;
+            for (int x = 0; x < vol_dim[0]; ++x) {
+                for (int y = 0; y < vol_dim[1]; ++y) {
+                    for (int z = 0; z < vol_dim[2]; ++z) {
+                        int idx = z * vol_dim[0] * vol_dim[1] + y * vol_dim[0] + x;
+                        float val = prop->data.values[idx];
+                        md_file_printf(file, " %12.6E", val);
+                        if (++count % 6 == 0) md_file_printf(file, "\n");
+                    }
+                }
+            }
+        }
+
+        md_file_close(file);
+    } else {
+        md_print(MD_LOG_TYPE_ERROR, "Failed to visualize volume for export.");
+        return false;
+    }
+
+    return true;
+}
+
+#define APPEND_BUF(buf, len, fmt, ...) (len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), fmt, ##__VA_ARGS__) + 1)
+
+static void draw_property_export_window(ApplicationData* data) {
+    ASSERT(data);
+
+    enum ExportType {
+        Temporal = 0,
+        Distribution,
+        DensityVolume
+    };
+
+    struct ExportFormat {
+        str_t label;
+        str_t extension;
+    };
+
+    ExportFormat table_formats[] {
+        {make_cstr("XVG"), make_cstr("xvg")},
+        {make_cstr("CSV"), make_cstr("csv")}
+    };
+
+    ExportFormat volume_formats[] {
+        {make_cstr("Gaussian Cube"), make_cstr("cube")},
+        //{make_cstr("DAT + RAW"), make_cstr("dat")},
+    };
+
+    if (ImGui::Begin("Property Export", &data->show_property_export_window)) {
+        static ExportType type = Temporal;
+        ImGui::PushItemWidth(200);
+        ImGui::Combo("Data Type", (int*)(&type), "Temporal\0Distribution\0Density Volume\0");
+        ImGui::Separator();
+        if (type == Temporal || type == Distribution) {
+            static int format = 0;
+            static int col_options[16] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+            static int num_columns = 4;
+            static int values_option = 0;
+            static int num_bins = 64;
+            static bool temporal_filter = false;
+
+            const int MIN_NUM_BINS = 8;
+            const int MAX_NUM_BINS = 1024;
+
+            struct ColData {
+                const char* label;
+                const float* values;
+                int num_values;
+                int dim;
+            };
+
+            ColData* col_data = 0;
+            if (type == Temporal) {
+                ColData time_data = {"Time", data->timeline.x_values, (int)md_array_size(data->timeline.x_values), 1};
+                md_array_push(col_data, time_data, frame_allocator);
+                for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
+                    const DisplayProperty& dp = data->display_properties[i];
+                    if (dp.full_prop->type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
+                        ColData prop_data = {dp.lbl.cstr(), dp.full_prop->data.values, (int)dp.full_prop->data.num_values, dp.full_prop->data.dim[0]};
+                        md_array_push(col_data, prop_data, frame_allocator);
+                    }
+                }
+            } else if (type == Distribution) {
+                for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
+                    const DisplayProperty& dp = data->display_properties[i];
+                    if (dp.full_prop->type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
+                        ColData prop_data = {dp.lbl.cstr(), dp.full_hist.bin, ARRAY_SIZE(dp.full_hist.bin), 1};
+                        md_array_push(col_data, prop_data, frame_allocator);
+                        if (data->timeline.filter.enabled) {
+                            str_t lbl = alloc_printf(frame_allocator, "%.*s(filt)", (int)dp.lbl.length(), dp.lbl.cstr());
+                            ColData filt_data = {lbl.ptr, dp.filt_hist.bin, ARRAY_SIZE(dp.filt_hist.bin), 1};
+                            md_array_push(col_data, filt_data, frame_allocator);
+                        }
+                    } else if (dp.full_prop->type == MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION) {
+                        ColData prop_data = {dp.lbl.cstr(), dp.full_prop->data.values, (int)dp.full_prop->data.num_values, dp.full_prop->data.dim[0]};
+                        md_array_push(col_data, prop_data, frame_allocator);
+                        if (data->timeline.filter.enabled) {
+                            str_t lbl = alloc_printf(frame_allocator, "%.*s(filt)", (int)dp.lbl.length(), dp.lbl.cstr());
+                            ColData filt_data = {lbl.ptr, dp.filt_prop->data.values, (int)dp.filt_prop->data.num_values, dp.filt_prop->data.dim[0]};
+                            md_array_push(col_data, filt_data, frame_allocator);
+                        }
+                    }
+                }
+            }
+
+            ImGui::Text("Column Layout");
+            ImGui::SliderInt("Num Columns", &num_columns, 1, ARRAY_SIZE(col_options));
+
+            int num_col_data = (int)md_array_size(col_data);
+            if (ImGui::BeginTable("Columns", num_columns, ImGuiTableFlags_Borders)) {
+                for (int i = 0; i < num_columns; ++i) {
+                    ImGui::TableNextColumn();
+                    ImGui::PushItemWidth(-1);
+                    ImGui::PushID(i);
+                    const char* preview = (0 <= col_options[i] && col_options[i] < num_col_data) ? col_data[col_options[i]].label : "";
+                    if (ImGui::BeginCombo("##col", preview)) {
+                        if (ImGui::Selectable("", col_options[i] == -1)) {
+                            col_options[i] = -1;
+                        }
+                        for (int j = 0; j < num_col_data; ++j) {
+                            ImGui::PushID(j);
+                            if (ImGui::Selectable(col_data[j].label, col_options[i] == j)) {
+                                col_options[i] = j;
+                            }
+                            ImGui::PopID();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::EndTable();
+            }
+
+            if (type == Distribution) {
+                if (ImGui::SliderInt("Num Bins", &num_bins, MIN_NUM_BINS, MAX_NUM_BINS, "%d", ImGuiSliderFlags_Logarithmic)) {
+                    const int up   = next_power_of_two32(num_bins);
+                    const int down = up / 2;
+                    num_bins = abs(num_bins - down) < abs(num_bins - up) ? down : up;
+                }
+            }
+
+            ImGui::Separator();
+            ImGui::Text("File format");
+            ImGui::Combo("##Export Format", (int*)(&format), "XVG\0CSV\0");
+            if (ImGui::Button("Export")) {
+                application::FileDialogResult file_dialog = application::file_dialog(application::FileDialogFlags_Save, {}, table_formats[format].extension);
+                if (file_dialog.result == application::FileDialogResult::Ok) {
+                    StrBuf<1024> path = str_t{file_dialog.path, file_dialog.path_len};
+                    if (str_empty(extract_ext(path))) {
+                        path += ".";
+                        path += table_formats[format].extension;
+                    }
+
+                    const float** column_data = 0;
+                    const char** column_labels = 0;
+                    for (int i = 0; i < num_columns; ++i) {
+                        int idx = col_options[i];
+                        if (0 <= idx && idx < num_col_data) {
+                            ASSERT(col_data[idx].dim >= 1);
+                            if (type == Temporal) {
+                                for (int j = 0; j < col_data[idx].dim; ++j) {
+                                    int stride = col_data[idx].num_values / col_data[idx].dim;
+                                    md_array_push(column_data, col_data[idx].values + stride * j, frame_allocator);
+                                    if (col_data[idx].dim == 1) {
+                                        md_array_push(column_labels, col_data[idx].label, frame_allocator);
+                                    } else {
+                                        str_t lbl = alloc_printf(frame_allocator, "%s[%i]", col_data[idx].label, j);
+                                        md_array_push(column_labels, lbl.ptr, frame_allocator);
+                                    }
+                                }
+                            } else if (type == Distribution) {
+                                float* bins = (float*)md_alloc(frame_allocator, num_bins * sizeof(float));
+                                downsample_histogram(bins, num_bins, col_data[idx].values, col_data[idx].num_values);
+                                md_array_push(column_data, bins, frame_allocator);
+                                md_array_push(column_labels, col_data[idx].label, frame_allocator);
+                            }
+                        }
+                    }
+
+                    int num_rows = (type == Distribution) ? num_bins : md_trajectory_num_frames(&data->mold.traj);
+
+                    switch (format) {
+                    case 0:
+                        export_xvg(column_data, column_labels, md_array_size(column_data), num_rows, path);
+                        break;
+                    case 1:
+                        export_csv(column_data, column_labels, md_array_size(column_data), num_rows, path);
+                        break;
+                    default:
+                        ASSERT(false);
+                    }
+                }
+            }
+        }
+        else if (type == DensityVolume) {
+            static int format = 0;
+            static int prop_idx = 0;
+            static bool temporal_filter = false;
+            const DisplayProperty** props = 0;
+
+            for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
+                if (data->display_properties[i].full_prop->type == MD_SCRIPT_PROPERTY_TYPE_VOLUME) {
+                    md_array_push(props, &data->display_properties[i], frame_allocator);
+                }
+            }
+
+            const int num_props = (int)md_array_size(props);
+            if (num_props > 0) {
+                prop_idx = CLAMP(prop_idx, 0, num_props);
+                if (ImGui::BeginCombo("Source", props[prop_idx]->lbl.cstr())) {
+                    for (int i = 0; i < num_props; ++i) {
+                        if (ImGui::Selectable(props[i]->lbl.cstr(), prop_idx == i)) {
+                            prop_idx = i;
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+
+                if (data->timeline.filter.enabled) {
+                    ImGui::SameLine();
+                    ImGui::Checkbox("Use Temporal Filter", &temporal_filter);
+                } else {
+                    temporal_filter = false;
+                }
+
+                format = CLAMP(format, 0, ARRAY_SIZE(volume_formats));
+                if (ImGui::BeginCombo("Format", volume_formats[format].label.ptr)) {
+                    for (int i = 0; i < (int)ARRAY_SIZE(volume_formats); ++i) {
+                        if (ImGui::Selectable(volume_formats[i].label.ptr, format == i)) format = i;
+                    }
+                    ImGui::EndCombo();
+                }
+
+                if (ImGui::Button("Export")) {
+                    application::FileDialogResult file_dialog = application::file_dialog(application::FileDialogFlags_Save, {}, volume_formats[format].extension);
+                    if (file_dialog.result == application::FileDialogResult::Ok) {
+                        StrBuf<1024> path = str_t{file_dialog.path, file_dialog.path_len};
+                        if (str_empty(extract_ext(path))) {
+                            path += ".";
+                            path += volume_formats[format].extension;
+                        }
+                        switch (format) {
+                        case 0:
+                            export_cube(*data, temporal_filter ? props[prop_idx]->filt_prop : props[prop_idx]->filt_prop, path);
+                            break;
+                        case 1:
+                            // @TODO: Export dat + raw
+                            break;
+                        default:
+                            ASSERT(false);
+                        }
+                    }
+                }
+            }
+        }
+        else {
+            ASSERT(false);
+        }
+        ImGui::PopItemWidth();
+    }
+    ImGui::End();
 }
 
 // static void draw_density_volume_clip_plane_widgets(ApplicationData* data) { ASSERT(data); }

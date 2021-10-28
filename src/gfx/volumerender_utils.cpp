@@ -203,19 +203,6 @@ mat4_t compute_texture_to_model_matrix(int dim_x, int dim_y, int dim_z) {
     return mat4_ident();
 }
 
-bool write_volume_to_file(const float* data, int64_t dim_x, int64_t dim_y, int64_t dim_z, str_t path_to_file) {
-    md_file_o* file = md_file_open(path_to_file, MD_FILE_WRITE | MD_FILE_BINARY);
-
-    if (!file) {
-        md_printf(MD_LOG_TYPE_ERROR, "Failed to write volume to file, could not open file %.*s", path_to_file.len, path_to_file.ptr);
-        return false;
-    }
-
-    md_file_write(file, data, dim_x * dim_y * dim_z * sizeof(float));
-    md_file_close(file);
-    return true;
-}
-
 void render_volume(const RenderDesc& desc) {
     if (!desc.direct_volume_rendering_enabled && !desc.isosurface_enabled && !desc.bounding_box.enabled) return;
 
