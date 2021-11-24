@@ -57,9 +57,17 @@
 #include "isosurface.h"
 #include "task_system.h"
 #include "loader.h"
+#include "ramachandran.h"
 
-#include <atomic_queue.h>
 #include <stdio.h>
+
+#ifndef PI
+#define PI 3.141592653589793
+#endif
+
+#ifndef TWO_PI
+#define TWO_PI 2.0 * PI
+#endif
 
 #define PICKING_JITTER_HACK 0
 #define SHOW_IMGUI_DEMO_WINDOW 0
@@ -124,10 +132,14 @@ static inline float deg_to_rad(float x) {
     return x * 3.1415926535f / 180.0f;
 }
 
+static inline uint64_t generate_fingerprint() {
+    return md_os_time_current();
+}
+
 enum class PlaybackMode { Stopped, Playing };
 enum class InterpolationMode { Nearest, Linear, Cubic };
 enum class SelectionLevel { Atom, Residue, Chain };
-enum class SelectionOperator { Or, And, Replace, Clear };
+enum class SelectionOperator { Or, And, AndNot, Set, Clear };
 enum class SelectionGrowth { CovalentBond, Radial };
 enum class RepresentationType { SpaceFill, Licorice, Ribbons, Cartoon };
 enum class TrackingMode { Absolute, Relative };
@@ -194,11 +206,20 @@ struct GBuffer {
     int height = 0;
 };
 
+
+
 struct Representation {
+    struct PropertyColorMapping {
+        StrBuf<32> ident = ""; // property identifier
+        ImPlotColormap colormap = 0;
+        float range_min = 0;
+        float range_max = 0;
+    };
+
     StrBuf<32> name = "rep";
     StrBuf<256> filt = "all";
-    //StrBuf<256> prop = "";
     StrBuf<256> filt_error = "";
+    //StrBuf<256> prop = "";
     //StrBuf<256> prop_error = "";
 
     RepresentationType type = RepresentationType::SpaceFill;
@@ -228,14 +249,17 @@ struct Representation {
     // VDW and Ball & Stick
     float radius = 1.f;
 
-    md_script_property_t* prop = NULL;
-
     // Ball & Stick and Licorice, Ribbons, Cartoon
     float thickness = 1.f;
 
     // Ribbons, Cartoon
     float tension = 0.5f;
     float width = 1.f;
+
+    // Property color mapping
+    PropertyColorMapping prop_mapping[8] = {};
+
+    md_script_property_t* prop = NULL;
 };
 
 struct Selection {
@@ -292,9 +316,9 @@ struct ApplicationData {
     // --- FILES ---
     // for keeping track of open files
     struct {
-        StrBuf<512> molecule{};
-        StrBuf<512> trajectory{};
-        StrBuf<512> workspace{};
+        StrBuf<1024> molecule{};
+        StrBuf<1024> trajectory{};
+        StrBuf<1024> workspace{};
     } files;
 
     // --- CAMERA ---
@@ -351,7 +375,8 @@ struct ApplicationData {
         task_system::ID prefetch_frames = task_system::INVALID_ID;
         task_system::ID evaluate_full = task_system::INVALID_ID;
         task_system::ID evaluate_filt = task_system::INVALID_ID;
-        task_system::ID evaluate_shape_space = task_system::INVALID_ID;
+        task_system::ID shape_space_evaluate = task_system::INVALID_ID;
+        task_system::ID ramachandran_compute_density = task_system::INVALID_ID;
     } tasks;
 
     // --- ATOM SELECTION ---
@@ -427,6 +452,8 @@ struct ApplicationData {
                 bool enabled = false;
                 double extent_in_frames = 10;
             } temporal_window;
+
+            uint64_t fingerprint;
         } filter;
 
         struct {
@@ -586,42 +613,40 @@ struct ApplicationData {
         std::mutex vol_mutex{};
     } occupancy_volume;
 #endif
-    /*
+    
     // --- RAMACHANDRAN ---
     struct {
+        StrBuf<256> input = "all";
+        StrBuf<256> err_buf = "";
+
+        bool evaluate = true;
+        bool input_valid = false;
         bool show_window = false;
 
-        ramachandran::ColorMap color_map{};
+        uint64_t backbone_fingerprint = 0;
+        uint64_t filter_fingerprint = 0;
+
+        rama_data_t data = {0};
+        uint32_t* rama_type_indices[4] = {0};
 
         struct {
-            bool enabled = false;
-            float radius = 0.2f;
-            vec4_t color = vec4_t(0, 0, 0, 1);
-        } range;
+            vec4_t border_color     = vec4_t(0.0f, 0.0f, 0.0f, 1.0f);
+            vec4_t base_color       = vec4_t(0.9f, 0.9f, 0.9f, 0.9f);
+            vec4_t selection_color  = vec4_t(0.5f, 0.5f, 0.8f, 0.9f);
+            vec4_t highlight_color  = vec4_t(0.8f, 0.8f, 0.5f, 0.9f);
+            float base_radius = 4.5f;
+            float selected_radius = 6.5f;
+        } style;
 
-        struct {
-            bool enabled = true;
-            vec4_t border_color = vec4_t(0, 0, 0, 1);
-            struct {
-                float radius = 2.5f;
-                vec4_t fill_color = vec4_t(0.75f, 0.75f, 0.75f, 1);
-            } base;
-            struct {
-                float radius = 3.5f;
-                vec4_t selection_color = vec4_t(0.8f, 1.0f, 0.5f, 1.0f);
-                vec4_t highlight_color = vec4_t(0.8f, 1.0f, 0.5f, 0.5f);
-            } selection;
-        } current;
     } ramachandran;
-    */
 
     struct {
         StrBuf<256> input = "all";
         StrBuf<256> err_text = "";
         md_filter_result_t result = {0};
         bool evaluate    = true;
-        bool show_window = false;
         bool input_valid = false;
+        bool show_window = false;
 
         // coords and weights should be of size num_frames * num_structures
         int32_t num_frames;
@@ -654,20 +679,24 @@ struct ApplicationData {
     } dataset;
 
     struct {
+        /*
         struct {
             // Data is packed, no need for stride
             int64_t count = 0;
             float* data = NULL;
         } timestamp;
+        */
         struct {
             int64_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
             int64_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
             md_secondary_structure_t* data = NULL;
+            uint64_t fingerprint = 0;
         } secondary_structure;
         struct {
             int64_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
             int64_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
             md_backbone_angles_t* data = NULL;
+            uint64_t fingerprint = 0;
         } backbone_angles;
     } trajectory_data;
 
@@ -799,7 +828,7 @@ static int64_t single_selection_sequence_count(const SingleSelectionSequence* se
 }
 
 static void launch_prefetch_job(ApplicationData* data);
-static void clear_properties(DisplayProperty** prop_items);
+
 static void init_display_properties(DisplayProperty** prop_items, md_script_property_t* full_props, md_script_property_t* filt_props, int64_t num_props);
 static void update_display_properties(ApplicationData* data);
 
@@ -838,7 +867,7 @@ static void draw_representations_window(ApplicationData* data);
 //static void draw_property_window(ApplicationData* data);
 static void draw_timeline_window(ApplicationData* data);
 static void draw_distribution_window(ApplicationData* data);
-//static void draw_ramachandran_window(ApplicationData* data);
+static void draw_ramachandran_window(ApplicationData* data);
 static void draw_atom_info_window(const ApplicationData& data, int atom_idx);
 static void draw_molecule_dynamic_info_window(ApplicationData* data);
 static void draw_async_task_window(ApplicationData* data);
@@ -901,7 +930,10 @@ static void modify_field(md_exp_bitfield_t* bf, const md_exp_bitfield_t* mask, S
     case SelectionOperator::And:
         md_bitfield_and_inplace(bf, mask);
         break;
-    case SelectionOperator::Replace:
+    case SelectionOperator::AndNot:
+        md_bitfield_andnot_inplace(bf, mask);
+        break;
+    case SelectionOperator::Set:
         md_bitfield_copy(bf, mask);
         break;
     default:
@@ -918,7 +950,10 @@ static void modify_field(md_exp_bitfield_t* bf, md_range_t range, SelectionOpera
         md_bitfield_clear_range(bf, 0, range.beg);
         md_bitfield_clear_range(bf, range.end, bf->end_bit);
         break;
-    case SelectionOperator::Replace:
+    case SelectionOperator::AndNot:
+        md_bitfield_clear_range(bf, range.beg, range.end);
+        break;
+    case SelectionOperator::Set:
         md_bitfield_clear(bf);
         md_bitfield_set_range(bf, range.beg, range.end);
         break;
@@ -936,13 +971,13 @@ static void clear_highlight(ApplicationData* data) {
     data->mold.dirty_buffers |= MolBit_DirtyFlags;
 }
 
-static void modify_highlight(ApplicationData* data, md_exp_bitfield_t* mask, SelectionOperator op = SelectionOperator::Replace) {
+static void modify_highlight(ApplicationData* data, md_exp_bitfield_t* mask, SelectionOperator op = SelectionOperator::Set) {
     ASSERT(data);
     modify_field(&data->selection.current_highlight_mask, mask, op);
     data->mold.dirty_buffers |= MolBit_DirtyFlags;
 }
 
-static void modify_highlight(ApplicationData* data, md_range_t range, SelectionOperator op = SelectionOperator::Replace) {
+static void modify_highlight(ApplicationData* data, md_range_t range, SelectionOperator op = SelectionOperator::Set) {
     ASSERT(data);
     modify_field(&data->selection.current_highlight_mask, range, op);
     data->mold.dirty_buffers |= MolBit_DirtyFlags;
@@ -954,13 +989,13 @@ static void clear_selection(ApplicationData* data) {
     data->mold.dirty_buffers |= MolBit_DirtyFlags;
 }
 
-static void modify_selection(ApplicationData* data, md_exp_bitfield_t* atom_mask, SelectionOperator op = SelectionOperator::Replace) {
+static void modify_selection(ApplicationData* data, md_exp_bitfield_t* atom_mask, SelectionOperator op = SelectionOperator::Set) {
     ASSERT(data);
     modify_field(&data->selection.current_selection_mask, atom_mask, op);
     data->mold.dirty_buffers |= MolBit_DirtyFlags;
 }
 
-static void modify_selection(ApplicationData* data, md_range_t range, SelectionOperator op = SelectionOperator::Replace) {
+static void modify_selection(ApplicationData* data, md_range_t range, SelectionOperator op = SelectionOperator::Set) {
     ASSERT(data);
     modify_field(&data->selection.current_selection_mask, range, op);
     data->mold.dirty_buffers |= MolBit_DirtyFlags;
@@ -1038,7 +1073,7 @@ int main(int, char**) {
     md_print(MD_LOG_TYPE_INFO, "Initializing immediate draw...");
     immediate::initialize();
     //md_print(MD_LOG_TYPE_INFO, "Initializing ramachandran...");
-    //ramachandran::initialize();
+    ramachandran::initialize();
     md_print(MD_LOG_TYPE_INFO, "Initializing post processing...");
     postprocessing::initialize(data.gbuffer.width, data.gbuffer.height);
     md_print(MD_LOG_TYPE_INFO, "Initializing volume...");
@@ -1054,6 +1089,7 @@ int main(int, char**) {
 
     ImGui::init_theme();
 
+    /*
     const ImU32 dihedral_colors[] = {
         IM_COL32(255,  0,255,255),
         IM_COL32(0,    0,255,255),
@@ -1063,6 +1099,7 @@ int main(int, char**) {
     };
 
     ImPlot::AddColormap("Dihedral", dihedral_colors, ARRAY_SIZE(dihedral_colors), false);
+    */
 
     data.script.editor.SetLanguageDefinition(TextEditor::LanguageDefinition::VIAMD());
     data.script.editor.SetPalette(TextEditor::GetDarkPalette());
@@ -1190,7 +1227,6 @@ int main(int, char**) {
         handle_camera_interaction(&data);
         handle_camera_animation(&data);
 
-
         if (data.animation.mode == PlaybackMode::Playing) {
             data.animation.frame += data.ctx.timing.delta_s * data.animation.fps;
             data.animation.frame = CLAMP(data.animation.frame, 0.0, max_frame);
@@ -1219,6 +1255,16 @@ int main(int, char**) {
             data.timeline.filter.end_frame = CLAMP(data.animation.frame + half_window_ext, 0.0, max_frame);
             if (data.mold.script.ir_is_valid && (data.timeline.filter.beg_frame != pre_beg || data.timeline.filter.end_frame != pre_end)) {
                 data.mold.script.evaluate_filt = true;
+            }
+        }
+
+        if (data.timeline.filter.enabled) {
+            static auto prev_filter_beg = data.timeline.filter.beg_frame;
+            static auto prev_filter_end = data.timeline.filter.end_frame;
+            if (data.timeline.filter.beg_frame != prev_filter_beg || data.timeline.filter.end_frame != prev_filter_end) {
+                prev_filter_beg = data.timeline.filter.beg_frame;
+                prev_filter_end = data.timeline.filter.end_frame;
+                data.timeline.filter.fingerprint = generate_fingerprint();
             }
         }
 
@@ -1347,36 +1393,34 @@ int main(int, char**) {
             }
 
             if (data.mold.script.evaluate_full) {
-                if (data.tasks.evaluate_full.id != 0) {
+                if (task_system::task_is_running(data.tasks.evaluate_full)) {
                     md_script_eval_interrupt(&data.mold.script.full_eval);
                 } else if (data.mold.script.ir_is_valid && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
                     data.mold.script.evaluate_full = false;
-                    data.tasks.evaluate_full = task_system::enqueue_pool("Eval Full", 1, [&data](task_system::TaskSetRange) {
-                        md_script_eval_compute(&data.mold.script.full_eval, &data.mold.script.ir, &data.mold.mol, &data.mold.traj, NULL);
-
-                        data.tasks.evaluate_full.id = 0;
-                        md_semaphore_release(&data.mold.script.ir_semaphore);
+                    data.tasks.evaluate_full = task_system::pool_enqueue("Eval Full", &data, [](void* user_data) {
+                        ApplicationData* data = (ApplicationData*)user_data;
+                        md_script_eval_compute(&data->mold.script.full_eval, &data->mold.script.ir, &data->mold.mol, &data->mold.traj, NULL);
+                        md_semaphore_release(&data->mold.script.ir_semaphore);
                     });
                 }
             }
 
             if (data.timeline.filter.enabled && data.mold.script.evaluate_filt) {
-                if (data.tasks.evaluate_filt.id != 0) {
+                if (task_system::task_is_running(data.tasks.evaluate_filt)) {
                     md_script_eval_interrupt(&data.mold.script.filt_eval);
                 } else if (data.mold.script.ir_is_valid && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
                     data.mold.script.evaluate_filt = false;
-                    data.tasks.evaluate_filt = task_system::enqueue_pool("Eval Filt", 1, [&data](task_system::TaskSetRange) {
-                        int64_t num_frames = md_trajectory_num_frames(&data.mold.traj);
-                        int32_t beg_frame = CLAMP((int64_t)data.timeline.filter.beg_frame, 0, num_frames-1);
-                        int32_t end_frame = CLAMP((int64_t)data.timeline.filter.end_frame, 0, num_frames);
+                    data.tasks.evaluate_filt = task_system::pool_enqueue("Eval Filt", &data, [](void* user_data) {
+                        ApplicationData* data = (ApplicationData*)user_data;
+                        int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
+                        int32_t beg_frame = CLAMP((int64_t)data->timeline.filter.beg_frame, 0, num_frames-1);
+                        int32_t end_frame = CLAMP((int64_t)data->timeline.filter.end_frame, 0, num_frames);
                         end_frame = MAX(beg_frame + 1, end_frame);
-                        md_bitfield_clear(&data.mold.script.frame_mask);
-                        md_bitfield_set_range(&data.mold.script.frame_mask, beg_frame, end_frame);
+                        md_bitfield_clear(&data->mold.script.frame_mask);
+                        md_bitfield_set_range(&data->mold.script.frame_mask, beg_frame, end_frame);
 
-                        md_script_eval_compute(&data.mold.script.filt_eval, &data.mold.script.ir, &data.mold.mol, &data.mold.traj, &data.mold.script.frame_mask);
-
-                        data.tasks.evaluate_filt.id = 0;
-                        md_semaphore_release(&data.mold.script.ir_semaphore);
+                        md_script_eval_compute(&data->mold.script.filt_eval, &data->mold.script.ir, &data->mold.mol, &data->mold.traj, &data->mold.script.frame_mask);
+                        md_semaphore_release(&data->mold.script.ir_semaphore);
                     });
                 }
             }
@@ -1403,6 +1447,61 @@ int main(int, char**) {
         update_display_properties(&data);
         update_view_param(&data);
         update_md_buffers(&data);
+
+        if (data.ramachandran.backbone_fingerprint != data.trajectory_data.backbone_angles.fingerprint) {
+            data.ramachandran.backbone_fingerprint = data.trajectory_data.backbone_angles.fingerprint;
+
+            md_array_shrink(data.ramachandran.rama_type_indices[0], 0);
+            md_array_shrink(data.ramachandran.rama_type_indices[1], 0);
+            md_array_shrink(data.ramachandran.rama_type_indices[2], 0);
+            md_array_shrink(data.ramachandran.rama_type_indices[3], 0);
+
+            for (uint32_t i = 0; i < (uint32_t)md_array_size(data.mold.mol.backbone.ramachandran_type); ++i) {
+                switch (data.mold.mol.backbone.ramachandran_type[i]) {
+                case MD_RAMACHANDRAN_TYPE_GENERAL: md_array_push(data.ramachandran.rama_type_indices[0], i, persistent_allocator); break;
+                case MD_RAMACHANDRAN_TYPE_GLYCINE: md_array_push(data.ramachandran.rama_type_indices[1], i, persistent_allocator); break;
+                case MD_RAMACHANDRAN_TYPE_PROLINE: md_array_push(data.ramachandran.rama_type_indices[2], i, persistent_allocator); break;
+                case MD_RAMACHANDRAN_TYPE_PREPROL: md_array_push(data.ramachandran.rama_type_indices[3], i, persistent_allocator); break;
+                default: break;
+                }
+            }
+
+            const uint32_t* indices[4] = {
+                data.ramachandran.rama_type_indices[0],
+                data.ramachandran.rama_type_indices[1],
+                data.ramachandran.rama_type_indices[2],
+                data.ramachandran.rama_type_indices[3],
+            };
+
+            const uint32_t frame_beg = 0;
+            const uint32_t frame_end = (uint32_t)num_frames;
+            const uint32_t frame_stride = (uint32_t)data.trajectory_data.backbone_angles.stride;
+
+            rama_init(&data.ramachandran.data);
+            rama_rep_compute_density(&data.ramachandran.data.full, data.trajectory_data.backbone_angles.data, indices, frame_beg, frame_end, frame_stride);
+        }
+
+        if (data.ramachandran.filter_fingerprint != data.timeline.filter.fingerprint) {
+            if (!task_system::task_is_running(data.tasks.ramachandran_compute_density)) {
+                data.ramachandran.filter_fingerprint = data.timeline.filter.fingerprint;
+
+                const uint32_t* indices[4] = {
+                    data.ramachandran.rama_type_indices[0],
+                    data.ramachandran.rama_type_indices[1],
+                    data.ramachandran.rama_type_indices[2],
+                    data.ramachandran.rama_type_indices[3],
+                };
+
+                const uint32_t frame_beg = (uint32_t)data.timeline.filter.beg_frame;
+                const uint32_t frame_end = (uint32_t)data.timeline.filter.end_frame;
+                const uint32_t frame_stride = (uint32_t)data.trajectory_data.backbone_angles.stride;
+
+                data.tasks.ramachandran_compute_density = rama_rep_compute_density(&data.ramachandran.data.filt, data.trajectory_data.backbone_angles.data, indices, frame_beg, frame_end, frame_stride);
+            }
+            else {
+                task_system::task_interrupt(data.tasks.ramachandran_compute_density);
+            }
+        }
 
         clear_gbuffer(&data.gbuffer);
         fill_gbuffer(&data);
@@ -1438,7 +1537,7 @@ int main(int, char**) {
         if (data.timeline.show_window) draw_timeline_window(&data);
         if (data.distributions.show_window) draw_distribution_window(&data);
         if (data.density_volume.show_window) draw_density_volume_window(&data);
-        //if (data.ramachandran.show_window) draw_ramachandran_window(&data);
+        if (data.ramachandran.show_window) draw_ramachandran_window(&data);
         if (data.shape_space.show_window) draw_shape_space_window(&data);
         if (data.script.show_editor) draw_script_editor_window(&data);
         if (data.dataset.show_window) draw_dataset_window(&data);
@@ -1468,7 +1567,7 @@ int main(int, char**) {
         // Swap buffers
         application::swap_buffers(&data.ctx);
 
-        task_system::run_main_tasks();
+        task_system::main_execute_tasks();
 
         // Reset frame allocator
         md_stack_allocator_reset(&stack_alloc);
@@ -1477,8 +1576,8 @@ int main(int, char**) {
     // shutdown subsystems
     md_print(MD_LOG_TYPE_INFO, "Shutting down immediate draw...");
     immediate::shutdown();
-    //md_print(MD_LOG_TYPE_INFO, "Shutting down ramachandran...");
-    //ramachandran::shutdown();
+    md_print(MD_LOG_TYPE_INFO, "Shutting down ramachandran...");
+    ramachandran::shutdown();
     md_print(MD_LOG_TYPE_INFO, "Shutting down post processing...");
     postprocessing::shutdown();
     md_print(MD_LOG_TYPE_INFO, "Shutting down volume...");
@@ -1756,17 +1855,34 @@ static void interpolate_atomic_properties(ApplicationData* data) {
         }
         case InterpolationMode::Linear: {
             for (int64_t i = 0; i < mol.backbone.count; ++i) {
-                float phi = lerp(src_angles[1][i].phi, src_angles[2][i].phi, t);
-                float psi = lerp(src_angles[1][i].psi, src_angles[2][i].psi, t);
-                mol.backbone.angle[i] = {phi, psi};
+                float phi[2] = {src_angles[1][i].phi, src_angles[2][i].phi};
+                float psi[2] = {src_angles[1][i].psi, src_angles[2][i].psi};
+
+                phi[1] = deperiodizef(phi[1], phi[0], TWO_PI);
+                psi[1] = deperiodizef(psi[1], psi[0], TWO_PI);
+
+                float final_phi = lerp(phi[0], phi[1], t);
+                float final_psi = lerp(psi[0], psi[1], t);
+                mol.backbone.angle[i] = {deperiodizef(final_phi, 0, TWO_PI), deperiodizef(final_psi, 0, TWO_PI)};
             }
             break;
         }
         case InterpolationMode::Cubic: {
             for (int64_t i = 0; i < mol.backbone.count; ++i) {
-                float phi = cubic_spline(src_angles[0][i].phi, src_angles[1][i].phi, src_angles[2][i].phi, src_angles[3][i].phi, t);
-                float psi = cubic_spline(src_angles[0][i].psi, src_angles[1][i].psi, src_angles[2][i].psi, src_angles[3][i].psi, t);
-                mol.backbone.angle[i] = {phi, psi};
+                float phi[4] = {src_angles[0][i].phi, src_angles[1][i].phi, src_angles[2][i].phi, src_angles[3][i].phi};
+                float psi[4] = {src_angles[0][i].psi, src_angles[1][i].psi, src_angles[2][i].psi, src_angles[3][i].psi};
+
+                phi[0] = deperiodizef(phi[0], phi[1], TWO_PI);
+                phi[2] = deperiodizef(phi[2], phi[1], TWO_PI);
+                phi[3] = deperiodizef(phi[3], phi[2], TWO_PI);
+
+                psi[0] = deperiodizef(psi[0], psi[1], TWO_PI);
+                psi[2] = deperiodizef(psi[2], psi[1], TWO_PI);
+                psi[3] = deperiodizef(psi[3], psi[2], TWO_PI);
+
+                float final_phi = cubic_spline(phi[0], phi[1], phi[2], phi[3], t);
+                float final_psi = cubic_spline(psi[0], psi[1], psi[2], psi[3], t);
+                mol.backbone.angle[i] = {deperiodizef(final_phi, 0, TWO_PI), deperiodizef(final_psi, 0, TWO_PI)};
             }
             break;
         }
@@ -2001,9 +2117,20 @@ static void grow_mask_by_covalent_bond(md_exp_bitfield_t* mask, md_bond_t* bonds
 static void grow_mask_by_radial_extent(md_exp_bitfield_t* dst_mask, const md_exp_bitfield_t* src_mask, const float* x, const float* y, const float* z, int64_t count, float ext) {
     if (ext > 0.0f) {
         const float cell_ext = CLAMP(ext / 3.0f, 3.0f, 12.0f);
+        md_spatial_hash_args_t args = {
+            .coords = {
+                .count = count,
+                .x = x,
+                .y = y,
+                .z = z
+            },
+            .cell_ext = cell_ext,
+            .alloc = frame_allocator,
+            .temp_alloc = frame_allocator,
+        };
         md_spatial_hash_t ctx = {0};
-        md_spatial_hash_init(&ctx, x, y, z, count, cell_ext, frame_allocator);
-        defer { md_spatial_hash_free(&ctx, frame_allocator); };
+        md_spatial_hash_init(&ctx, &args);
+        defer { md_spatial_hash_free(&ctx); };
 
         md_bitfield_clear(dst_mask);
 
@@ -2011,8 +2138,9 @@ static void grow_mask_by_radial_extent(md_exp_bitfield_t* dst_mask, const md_exp
         int64_t end_bit = src_mask->end_bit;
         while ((beg_bit = md_bitfield_scan(src_mask, beg_bit, end_bit)) != 0) {
             int64_t i = beg_bit - 1;
-            vec4_t pos_rad = {x[i], y[i], z[i], ext};
-            md_spatial_hash_query(&ctx, pos_rad, [](uint32_t idx, vec3_t, void* user_data) -> bool {
+            vec3_t pos = {x[i], y[i], z[i]};
+            float  rad = ext;
+            md_spatial_hash_query(&ctx, pos, rad, [](uint32_t idx, vec3_t, void* user_data) -> bool {
                 md_exp_bitfield_t* mask = (md_exp_bitfield_t*)user_data;
                 md_bitfield_set_bit(mask, (int64_t)idx);
                 return true;
@@ -2259,7 +2387,7 @@ ImGui::EndGroup();
             ImGui::Checkbox("Timelines", &data->timeline.show_window);
             ImGui::Checkbox("Distributions", &data->distributions.show_window);
             ImGui::Checkbox("Density Volumes", &data->density_volume.show_window);
-            //ImGui::Checkbox("Ramachandran", &data->ramachandran.show_window);
+            ImGui::Checkbox("Ramachandran", &data->ramachandran.show_window);
             ImGui::Checkbox("Shape Space", &data->shape_space.show_window);
             ImGui::Checkbox("Dataset", &data->dataset.show_window);
 
@@ -2304,12 +2432,7 @@ ImGui::EndGroup();
                     }
 
                     ImGui::PushID(i);
-                    if (!is_valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-                    ImGui::InputText("##label", sel.name.beg(), sel.name.capacity());
-                    if (!is_valid) ImGui::PopStyleColor();
-                    if (ImGui::IsItemHovered() && !is_valid && err_buf[0] != '\0') {
-                        ImGui::SetTooltip("%s", err_buf);
-                    }
+                    ImGui::InputQuery("##label", sel.name.beg(), sel.name.capacity(), is_valid, err_buf);
                     ImGui::SameLine();
                     if (ImGui::Button("Load")) {
                         md_bitfield_copy(&data->selection.current_selection_mask, &sel.atom_mask);
@@ -2435,8 +2558,8 @@ void draw_context_popup(ApplicationData* data) {
     const int64_t sss_count = single_selection_sequence_count(&data->selection.single_selection_sequence);
     const int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
     const int64_t num_atoms_selected = md_bitfield_popcount(&data->selection.current_selection_mask);
-
-    if (data->ctx.input.mouse.clicked[1] && !shift_down && !ImGui::GetIO().WantTextInput) {
+    
+    if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) && data->ctx.input.mouse.clicked[1] && !shift_down && !ImGui::GetIO().WantTextInput) {
         ImGui::OpenPopup("AtomContextPopup");
     }
 
@@ -2490,7 +2613,7 @@ void draw_context_popup(ApplicationData* data) {
                         }
 
                         const char* resname = data->mold.mol.residue.name[res_idx];
-                        snprintf(buf, sizeof(buf), "%s = distance(%i, %i) in resname(%s);", ident, idx[0]+1, idx[1]+1, resname);
+                        snprintf(buf, sizeof(buf), "%s = distance(%i, %i) in resname(\"%s\");", ident, idx[0]+1, idx[1]+1, resname);
                         if (ImGui::MenuItem(buf)) {
                             data->script.editor.AppendText("\n");
                             data->script.editor.AppendText(buf);
@@ -2532,7 +2655,7 @@ void draw_context_popup(ApplicationData* data) {
                         }
 
                         const char* resname = data->mold.mol.residue.name[res_idx];
-                        snprintf(buf, sizeof(buf), "%s = angle(%i, %i, %i) in resname(%s);", ident, idx[0]+1, idx[1]+1, idx[2]+1, resname);
+                        snprintf(buf, sizeof(buf), "%s = angle(%i, %i, %i) in resname(\"%s\");", ident, idx[0]+1, idx[1]+1, idx[2]+1, resname);
                         if (ImGui::MenuItem(buf)) {
                             data->script.editor.AppendText("\n");
                             data->script.editor.AppendText(buf);
@@ -2576,7 +2699,7 @@ void draw_context_popup(ApplicationData* data) {
                         }
 
                         const char* resname = data->mold.mol.residue.name[res_idx];
-                        snprintf(buf, sizeof(buf), "%s = dihedral(%i, %i, %i, %i) in resname(%s);", ident, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, resname);
+                        snprintf(buf, sizeof(buf), "%s = dihedral(%i, %i, %i, %i) in resname(\"%s\");", ident, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, resname);
                         if (ImGui::MenuItem(buf)) {
                             data->script.editor.AppendText("\n");
                             data->script.editor.AppendText(buf);
@@ -2605,9 +2728,7 @@ void draw_context_popup(ApplicationData* data) {
                     md_element_t new_elem = md_util_lookup_element(elem_str);
                     const bool is_valid = new_elem != 0;
 
-                    if (!is_valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-                    ImGui::InputText("##Symbol", input_buf, sizeof(input_buf));
-                    if (!is_valid) ImGui::PopStyleColor();
+                    ImGui::InputQuery("##Symbol", input_buf, sizeof(input_buf), is_valid, "Cannot recognize Element symbol");
                     str_t new_name = md_util_element_name(new_elem);
                     str_t new_sym  = md_util_element_symbol(new_elem);
                     ImGui::Text("New Element: %.*s (%.*s)", (int)new_name.len, new_name.ptr, (int)new_sym.len, new_sym.ptr);
@@ -2766,9 +2887,7 @@ static void draw_selection_query_window(ApplicationData* data) {
         }
 
         ImGui::PushItemWidth(-1);
-        if (!data->selection.query.query_ok) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-        bool apply = ImGui::InputText("##query", data->selection.query.buf, sizeof(data->selection.query.buf), ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue);
-        if (!data->selection.query.query_ok) ImGui::PopStyleColor();
+        bool apply = ImGui::InputQuery("##query", data->selection.query.buf, sizeof(data->selection.query.buf), data->selection.query.query_ok, data->selection.query.err_buf, ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue);
         ImGui::PopItemWidth();
 
         data->selection.query.query_invalid |= ImGui::IsItemEdited();
@@ -2776,10 +2895,6 @@ static void draw_selection_query_window(ApplicationData* data) {
 
         if (ImGui::IsWindowAppearing()) {
             ImGui::SetKeyboardFocusHere(-1);
-        }
-
-        if (!data->selection.query.query_ok && data->selection.query.err_buf[0] != '\0' && ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("%s", data->selection.query.err_buf);
         }
 
         if (!data->selection.query.query_ok) ImGui::PushDisabled();
@@ -2909,17 +3024,9 @@ static void draw_representations_window(ApplicationData* data) {
 
             ImGui::PushItemWidth(item_width);
             ImGui::InputText("name", rep.name.cstr(), rep.name.capacity());
-            if (!rep.filt_is_valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-            if (ImGui::InputText("filter", rep.filt.cstr(), rep.filt.capacity())) {
-                update_color = true;
-            }
-            if (ImGui::IsItemHovered() && !rep.filt_is_valid) {
-                ImGui::SetTooltip("%s", rep.filt_error.cstr());
-            }
-            if (!rep.filt_is_valid) ImGui::PopStyleColor();
+            update_color |= ImGui::InputQuery("filter", rep.filt.beg(), rep.filt.capacity(), rep.filt_is_valid, rep.filt_error.cstr());
             if (ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0Cartoon\0")) {
                 update_visual_rep = true;
-                
             }
             if (ImGui::Combo("color", (int*)(&rep.color_mapping),
                              "Uniform Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0Property\0")) {
@@ -3169,11 +3276,8 @@ static void draw_async_task_window(ApplicationData* data) {
 
     //const float stats_fract = stats::fraction_done();
 
-    task_system::ID* tasks = 0;
-    const uint32_t num_tasks = task_system::get_tasks(&tasks);
-
-    if (num_tasks) {
-
+    task_system::ID* tasks = task_system::pool_running_tasks(frame_allocator);
+    if (tasks) {
         ImGuiViewport* viewport = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(viewport->Pos + ImVec2(data->ctx.window.width - WIDTH - MARGIN,
                                                        ImGui::GetCurrentContext()->FontBaseSize + ImGui::GetStyle().FramePadding.y * 2.f + MARGIN));
@@ -3184,20 +3288,20 @@ static void draw_async_task_window(ApplicationData* data) {
                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing);
 
         char buf[32];
-        for (uint32_t i = 0; i < MIN(num_tasks, 8); i++) {
+        for (uint32_t i = 0; i < MIN((uint32_t)md_array_size(tasks), 8); i++) {
             const auto id = tasks[i];
-            const char* label = task_system::get_task_label(id);
-            const float fract = task_system::get_task_fraction_complete(id);
+            const char* label = task_system::task_label(id);
+            const float fract = task_system::task_fraction_complete(id);
 
-            if (!label || (label[0] == '#' && label[1] == '#')) continue;
+            if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
 
             snprintf(buf, 32, "%.1f%%", fract * 100.f);
             ImGui::ProgressBar(fract, ImVec2(ImGui::GetWindowContentRegionWidth() * PROGRESSBAR_WIDTH_FRACT, 0), buf);
             ImGui::SameLine();
             ImGui::Text("%s", label);
             ImGui::SameLine();
-            if (ImGui::Button("X")) {
-                task_system::interrupt_task(id);
+            if (ImGui::Button("X", ImVec2(20,20))) {
+                task_system::task_interrupt(id);
             }
         }
 
@@ -3352,8 +3456,11 @@ bool draw_property_timeline(const ApplicationData& data, const TimelineArgs& arg
     const ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit | ImPlotAxisFlags_NoLabel |ImPlotAxisFlags_NoTickLabels;
     const ImPlotFlags flags = ImPlotFlags_AntiAliased;
 
-    ImPlot::LinkNextPlotLimits(args.view_range.min, args.view_range.max, 0, 0);
-    if (ImPlot::BeginPlot("##Timeline", NULL, NULL, ImVec2(-1,args.plot_height), flags, axis_flags_x, axis_flags_y)) {
+    if (ImPlot::BeginPlot("##Timeline", ImVec2(-1,args.plot_height), flags)) {
+        ImPlot::SetupAxisLinks(ImAxis_X1, args.view_range.min, args.view_range.max);
+        ImPlot::SetupAxes(0, 0, axis_flags_x, axis_flags_y);
+        ImPlot::SetupFinish();
+
         bool active = ImGui::IsItemActive();
 
         if (args.value_filter.enabled) {
@@ -3416,7 +3523,7 @@ bool draw_property_timeline(const ApplicationData& data, const TimelineArgs& arg
             *args.filter.end = MAX(ImPlot::GetPlotMousePos().x, *args.filter.beg);
         }
         else if (ImPlot::IsPlotHovered()) {
-            if (active && ImGui::IsMouseDown(0)) {           
+            if (ImGui::IsMouseDown(0)) {           
                 if (ImGui::GetIO().KeyMods == ImGuiKeyModFlags_Shift) {
                     if (args.filter.show && args.filter.enabled) {
                         *args.input.is_selecting = true;
@@ -3453,8 +3560,11 @@ bool draw_property_timeline(const ApplicationData& data, const TimelineArgs& arg
             }
         }
 
-        if (ImPlot::DragLineX("Current Time", args.time, true, ImVec4(1,1,0,1))) {
+        if (ImPlot::DragLineX(0, args.time, ImVec4(1,1,0,1))) {
             *args.time = CLAMP(*args.time, args.filter.min, args.filter.max);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Current Time: %f", *args.time);
         }
         ImPlot::EndPlot();
     }
@@ -3516,19 +3626,12 @@ static void draw_timeline_window(ApplicationData* data) {
             ImPlotInputMap old_map = ImPlot::GetInputMap();
 
             ImPlotInputMap& map = ImPlot::GetInputMap();
-            //map.BoxSelectButton = 0;
-            //map.BoxSelectCancelButton = 0;
-            //map.BoxSelectMod = 0;
-            //map.PanMod
-            map.PanButton = ImGuiMouseButton_Right;
-            map.BoxSelectButton = ImGuiMouseButton_Right;
-            map.BoxSelectCancelButton = ImGuiMouseButton_Left;
-            map.BoxSelectMod = ImGuiKeyModFlags_Shift;
-            map.QueryButton = -1;
-            map.QueryMod = -1;
-            map.QueryToggleMod = -1;
-            map.ContextMenuButton = -1;
-            map.FitButton = ImGuiMouseButton_Right;
+            map.Pan = ImGuiMouseButton_Right;
+            map.Select = ImGuiMouseButton_Right;
+            map.SelectCancel = ImGuiMouseButton_Left;
+            map.SelectMod = ImGuiKeyModFlags_Shift;
+            map.Menu = -1;
+            map.Fit = ImGuiMouseButton_Right;
 
             static bool is_dragging = false;
             static bool is_selecting = false;
@@ -3728,11 +3831,10 @@ static void draw_distribution_window(ApplicationData* data) {
             const double bar_off = min_x;
             const double bar_scl = (max_x - min_x) / (num_bins-1);
 
-            ImPlot::SetNextPlotLimits(min_x, max_x, 0, max_y * 1.1, ImGuiCond_Always);
-
-            if (ImPlot::BeginPlot(prop.lbl.cstr(), 0, 0, ImVec2(-1,150), flags, axis_flags_x, axis_flags_y)) {
-                //ImPlot::SetNextFillStyle(vec_cast(qualitative_color_scale(i)), 0.5f);
-                //ImPlot::PlotBars(label, draw_bins, num_bins, bar_width, bar_off);
+            if (ImPlot::BeginPlot(prop.lbl.cstr(), ImVec2(-1,150), flags)) {
+                ImPlot::SetupAxesLimits(min_x, max_x, 0, max_y * 1.1, ImGuiCond_Always);
+                ImPlot::SetupAxes(0, 0, axis_flags_x, axis_flags_y);
+                ImPlot::SetupFinish();
 
                 bool is_active = ImGui::IsItemActive();
                 bool is_hovered = ImGui::IsItemHovered();
@@ -3804,9 +3906,7 @@ static void draw_shape_space_window(ApplicationData* data) {
 
         const float item_width = MAX(ImGui::GetWindowContentRegionWidth(), 150.f);
         ImGui::PushItemWidth(item_width);
-        if (!data->shape_space.input_valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-        data->shape_space.evaluate |= ImGui::InputText("##input", data->shape_space.input.beg(), data->shape_space.input.capacity());
-        if (!data->shape_space.input_valid) ImGui::PopStyleColor();
+        data->shape_space.evaluate |= ImGui::InputQuery("##input", data->shape_space.input.beg(), data->shape_space.input.capacity(), data->shape_space.input_valid);
         ImGui::PopItemWidth();
         if (ImGui::IsItemHovered()) {
             if (data->shape_space.input_valid) {
@@ -3819,14 +3919,17 @@ static void draw_shape_space_window(ApplicationData* data) {
             }
         }
 
-        ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_AntiAliased | ImPlotFlags_NoMenus | ImPlotFlags_NoMousePos;
+        ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_AntiAliased | ImPlotFlags_NoMenus;
         ImPlotAxisFlags axis_flags = ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks;
 
         const float x_reset[2] = {-0.025, 1.025};
         const float y_reset[2] = {-0.025, 0.891};
-        ImPlot::SetNextPlotLimits(x_reset[0], x_reset[1], y_reset[0], y_reset[1], ImGuiCond_Once);
 
-        if (ImPlot::BeginPlot("##Shape Space Plot", 0, 0, ImVec2(-1,-1), flags, axis_flags, axis_flags)) {
+        if (ImPlot::BeginPlot("##Shape Space Plot", ImVec2(-1,-1), flags)) {
+            ImPlot::SetupAxesLimits(x_reset[0], x_reset[1], y_reset[0], y_reset[1], ImGuiCond_Once);
+            ImPlot::SetupAxes(0, 0, axis_flags, axis_flags);
+            ImPlot::SetupFinish();
+
             ImVec2 p0 = ImPlot::PlotToPixels(ImPlotPoint(0.0f, 0.0f));
             ImVec2 p1 = ImPlot::PlotToPixels(ImPlotPoint(1.0f, 0.0f));
             ImVec2 p2 = ImPlot::PlotToPixels(ImPlotPoint(0.5f, 0.86602540378f));
@@ -3853,7 +3956,7 @@ static void draw_shape_space_window(ApplicationData* data) {
 
             vec2_t mouse_coord = {(float)ImPlot::GetPlotMousePos().x, (float)ImPlot::GetPlotMousePos().y};
 
-            ImPlotLimits lim = ImPlot::GetPlotLimits();
+            ImPlotRect lim = ImPlot::GetPlotLimits();
             const float scl = (float)lim.X.Max - (float)lim.X.Min;
             const float MAX_D2 = 0.0001f * scl * scl;
 
@@ -3943,9 +4046,8 @@ static void draw_shape_space_window(ApplicationData* data) {
         data->shape_space.input_valid = false;
         const int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
         if (num_frames > 0) {
-            if (data->tasks.evaluate_shape_space.id != 0) {
-                task_system::interrupt_and_wait(data->tasks.evaluate_shape_space);
-                data->tasks.evaluate_shape_space.id = 0;
+            if (task_system::task_is_running(data->tasks.shape_space_evaluate)) {
+                task_system::task_interrupt_and_wait_for(data->tasks.shape_space_evaluate);
             }
             if (md_semaphore_try_aquire(&data->mold.script.ir_semaphore)) {
                 data->shape_space.evaluate = false;
@@ -3961,7 +4063,8 @@ static void draw_shape_space_window(ApplicationData* data) {
                         md_array_resize(data->shape_space.coords, num_frames * data->shape_space.num_structures, persistent_allocator);
                         md_array_resize(data->shape_space.weights, num_frames * data->shape_space.num_structures, persistent_allocator);
 
-                        data->tasks.evaluate_shape_space = task_system::enqueue_pool("Eval Shape Space", (uint32_t)num_frames, [data](task_system::TaskSetRange frame_range) mutable {
+                        data->tasks.shape_space_evaluate = task_system::pool_enqueue("Eval Shape Space", data, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+                            ApplicationData* data = (ApplicationData*)user_data;
                             int64_t stride = ROUND_UP(data->mold.mol.atom.count, md_simd_widthf);
                             float* coords = (float*)md_alloc(default_allocator, stride * 3 * sizeof(float));
                             float* x = coords + stride * 0;
@@ -3970,7 +4073,7 @@ static void draw_shape_space_window(ApplicationData* data) {
 
                             const vec2_t p[3] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 0.86602540378f}};
 
-                            for (uint32_t frame_idx = frame_range.beg; frame_idx < frame_range.end; ++frame_idx) {
+                            for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
                                 md_trajectory_load_frame(&data->mold.traj, frame_idx, NULL, x, y, z);
                                 vec3_t* xyz = 0;
                                 for (int64_t i = 0; i < data->shape_space.result.num_bitfields; ++i) {
@@ -4011,223 +4114,439 @@ static void draw_shape_space_window(ApplicationData* data) {
             snprintf(data->shape_space.err_text.beg(), data->shape_space.err_text.capacity(), "Missing trajectory for evaluating expression");
         }
     }
-
 }
 
-#if 0
 static void draw_ramachandran_window(ApplicationData* data) {
-    // const int32 num_frames = data->mold.traj ? data->mold.md_trajectory_num_frames(&traj) : 0;
-    // const int32 frame = (int32)data->time;
-    const Range<int32_t> frame_range = data->timeline.range;
-    const auto& mol = data->mold.mol;
-    //Array<const BackboneAngle> backbone_angles = get_residue_backbone_angles(mol);
-    //Array<const BackboneAtoms> backbone_atoms  = get_residue_backbone_atoms(mol);
-    Bitfield& atom_selection = data->selection.current_selection_mask;
-    Bitfield& atom_highlight = data->selection.current_highlight_mask;
+    if (ImGui::Begin("Ramachandran", &data->ramachandran.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_MenuBar)) {
 
-    ImGui::SetNextWindowSizeConstraints(ImVec2(400, 200), ImVec2(10000, 10000));
-    ImGui::Begin("Ramachandran", &data->ramachandran.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoScrollbar);
-
-    const float w = ImGui::GetContentRegionAvailWidth();
-
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::BeginChild("canvas", ImVec2(w, w), true, ImGuiWindowFlags_AlwaysHorizontalScrollbar | ImGuiWindowFlags_AlwaysVerticalScrollbar);
-    ImGui::PopStyleVar(1);
-
-    static float zoom_factor = 1.0f;
-    const float max_c = ImGui::GetContentRegionAvail().x;
-    const ImVec2 cont_min = ImGui::GetWindowContentRegionMin() + ImGui::GetWindowPos();
-    const ImVec2 size = ImVec2(max_c, max_c) * zoom_factor;
-
-    ImRect bb(ImGui::GetCurrentWindow()->DC.CursorPos, ImGui::GetCurrentWindow()->DC.CursorPos + size);
-    ImGui::InvisibleButton("bg", bb.GetSize());
-
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-
-    const ImVec2 mouse_pos = ImGui::GetMousePos();
-    dl->ChannelsSplit(4);
-    dl->ChannelsSetCurrent(0);
-    dl->AddRectFilled(bb.Min, bb.Max, 0xffffffff);
-    dl->ChannelsSetCurrent(1);
-    dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_gui_texture(), bb.Min, bb.Max);
-    if (data->ramachandran.range.enabled) {
-        dl->ChannelsSetCurrent(2);
-        dl->AddImage((ImTextureID)(intptr_t)ramachandran::get_accumulation_texture(), bb.Min, bb.Max);
-    }
-    dl->ChannelsSetCurrent(3);
-
-    constexpr float ONE_OVER_TWO_PI = 1.f / (2.f * math::PI);
-
-    int64_t mouse_hover_idx = -1;
-
-    if (data->ramachandran.current.enabled) {
-        const uint32_t border_color = convert_color(data->ramachandran.current.border_color);
-        const uint32_t base_color = convert_color(data->ramachandran.current.base.fill_color);
-        const uint32_t selected_color = convert_color(data->ramachandran.current.selection.selection_color);
-        const uint32_t highlight_color = convert_color(data->ramachandran.current.selection.highlight_color);
-        const float base_radius = data->ramachandran.current.base.radius;
-        const float selected_radius = data->ramachandran.current.selection.radius;
-
-        for (int64_t ci = 0; ci < mol.chain.count; ++ci) {
-            const auto range = mol.chain.backbone_range[ci];
-            for (int64_t i = range.beg; i < range.end; i++) {
-                const auto& angle = mol.backbone.angle[i];
-                if (angle.phi == 0.f || angle.psi == 0.f) continue;
-
-                Range<int> atom_range = { mol.residue.atom_range[i].beg, mol.residue.atom_range[i].end };
-
-                const auto selected  = bitfield::any_bit_set_in_range(atom_selection, atom_range);
-                const auto highlight = bitfield::any_bit_set_in_range(atom_highlight, atom_range);
-                const auto radius = ((highlight || selected) ? selected_radius : base_radius) * zoom_factor;
-                const auto fill_color = selected ? selected_color : (highlight ? highlight_color : base_color);
-
-                const ImVec2 coord =
-                    ImLerp(bb.Min, bb.Max, ImVec2(angle.phi * ONE_OVER_TWO_PI + 0.5f, -angle.psi * ONE_OVER_TWO_PI + 0.5f));  // [-PI, PI] -> [0, 1]
-                const ImVec2 min_box(math::round(coord.x - radius), math::round(coord.y - radius));
-                const ImVec2 max_box(math::round(coord.x + radius), math::round(coord.y + radius));
-                if (radius > 1.f) {
-                    dl->AddRectFilled(min_box, max_box, fill_color);
-                    dl->AddRect(min_box, max_box, border_color, 0.f, 15, 1.f);
-                } else {
-                    dl->AddRectFilled(min_box, max_box, border_color);
-                }
-                if (min_box.x <= mouse_pos.x && mouse_pos.x <= max_box.x && min_box.y <= mouse_pos.y && mouse_pos.y <= max_box.y) {
-                    mouse_hover_idx = i;
-                }
-            }
-        }
-    }
-
-    const auto cx = math::round(math::mix(bb.Min.x, bb.Max.x, 0.5f));
-    const auto cy = math::round(math::mix(bb.Min.y, bb.Max.y, 0.5f));
-    dl->AddLine(ImVec2(cx, bb.Min.y), ImVec2(cx, bb.Max.y), 0xff000000, 0.5f);
-    dl->AddLine(ImVec2(bb.Min.x, cy), ImVec2(bb.Max.x, cy), 0xff000000, 0.5f);
-    dl->ChannelsMerge();
-    dl->ChannelsSetCurrent(0);
-
-    enum class Mode { Append, Remove };
-    static ImVec2 region_x0 = {0, 0};
-    static bool region_select = false;
-    static Mode region_mode = Mode::Append;
-    const ImVec2 region_x1 = ImGui::GetMousePos();
-
-    const bool mouse_hit     = (data->ctx.input.mouse.hit[0] || data->ctx.input.mouse.hit[1]);
-    const bool mouse_down    = (data->ctx.input.mouse.down[0] || data->ctx.input.mouse.down[1]);
-    const bool mouse_clicked = (data->ctx.input.mouse.clicked[0] || data->ctx.input.mouse.clicked[1]);
-
-    const bool shift_down = ImGui::GetIO().KeyShift;
-
-    if (ImGui::IsItemHovered()) {
-        clear_highlight(data);
-        //bitfield::clear_all(data->selection.current_highlight_mask);
-        //data->mold.dirty_buffers |= MolBit_DirtyFlags;
-
-        const ImVec2 normalized_coord = ((ImGui::GetMousePos() - bb.Min) / (bb.Max - bb.Min) - ImVec2(0.5f, 0.5f)) * ImVec2(1, -1);
-        const ImVec2 angles = normalized_coord * 2.f * 180.f;
-        ImGui::BeginTooltip();
-        ImGui::Text((const char*)u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0", angles.x, angles.y);
-        if (!region_select && mouse_hover_idx != -1) {
-            const ResIdx res_idx = (ResIdx)mouse_hover_idx;
-            const Range<int> atom_range = { mol.residue.atom_range[res_idx].beg, mol.residue.atom_range[res_idx].end };
-            ImGui::Text("Residue[%i]: %s", res_idx, mol.residue.name[res_idx]);
-            modify_highlight(data, atom_range, SelectionOperator::Replace);
-        }
-        ImGui::EndTooltip();
-
-        if (shift_down && mouse_hit) {
-            region_x0 = ImGui::GetIO().MousePos;
-            region_mode = data->ctx.input.mouse.hit[0] ? Mode::Append : Mode::Remove;
-        }
-
-        if (shift_down && mouse_down && region_x1 != region_x0) {
-            region_select = true;
-        }
-
-        if (shift_down && !region_select && mouse_clicked) {
-            if (mouse_hover_idx != -1) {
-                const ResIdx res_idx = (ResIdx)mouse_hover_idx;
-                const Range<int> atom_range = { mol.residue.atom_range[res_idx].beg, mol.residue.atom_range[res_idx].end };
-                const bool append = data->ctx.input.mouse.clicked[0];
-                SelectionOperator op = append ? SelectionOperator::Or : SelectionOperator::Clear;                
-                modify_selection(data, atom_range, op);
-            } else if (data->ctx.input.mouse.clicked[1]) {
-                bitfield::clear_all(data->selection.current_highlight_mask);
-                bitfield::clear_all(data->selection.current_selection_mask);
-            }
-        }
-    }
-
-    if (region_select) {
-        const ImVec2 x0 = ImMin(region_x0, region_x1);
-        const ImVec2 x1 = ImMax(region_x0, region_x1);
-        const ImU32 fill_col = 0x22222222;
-        const ImU32 line_col = 0x88888888;
-        dl->AddRectFilled(x0, x1, fill_col);
-        dl->AddRect(x0, x1, line_col);
-
-        //bitfield::clear_all(data->selection.current_highlight_mask);
-        //clear_highlight(data);
-
-        for (int64_t i = 0; i < mol.backbone.count; ++i) {
-            const auto& angle = mol.backbone.angle[i];
-            if (angle.phi == 0.f || angle.psi == 0.f) continue;
-            const ImVec2 coord =
-                ImLerp(bb.Min, bb.Max, ImVec2(angle.phi * ONE_OVER_TWO_PI + 0.5f, -angle.psi * ONE_OVER_TWO_PI + 0.5f));  // [-PI, PI] -> [0, 1]
-            if (coord.x < x0.x || x1.x < coord.x) continue;
-            if (coord.y < x0.y || x1.y < coord.y) continue;
-            
-            const Range<int> atom_range = { mol.residue.atom_range[i].beg, mol.residue.atom_range[i].end };
-            modify_highlight(data, atom_range, SelectionOperator::Or);
-            //bitfield::set_range(data->selection.current_highlight_mask, mol.residue.atom_range[i]);
-        }
+        static ImPlotRect selection_rect;
+        static SelectionOperator op = SelectionOperator::Or;
+        static bool is_selecting[4] = {false, false, false, false};
         
-        if (region_mode == Mode::Remove) {
-            bitfield::and_not_field(data->selection.current_highlight_mask, data->selection.current_selection_mask, data->selection.current_highlight_mask);
-        }
+        static float ref_alpha  = 0.8f;
+        static float full_alpha = 0.8f;
+        static float filt_alpha = 0.8f;
 
-        if (!shift_down || !(data->ctx.input.mouse.down[0] || data->ctx.input.mouse.down[1])) {
-            // Commit range to selection
-            if (region_mode == Mode::Append) {
-                //bitfield::or_field(data->selection.current_selection_mask, data->selection.current_selection_mask, data->selection.current_highlight_mask);
-                modify_selection(data, data->selection.current_highlight_mask, SelectionOperator::Or);
-            } else {
-                modify_selection(data, data->selection.current_highlight_mask, SelectionOperator::Replace);
-                //bitfield::copy(data->selection.current_selection_mask, data->selection.current_highlight_mask);
+        const char* plot_labels[4] = {"General", "Glycine", "Proline", "Pre-Proline"};
+
+        static ImPlotColormap colormap[2] = { ImPlotColormap_Hot, ImPlotColormap_Hot };
+        static vec2_t colormap_range[2] = { {0, 1}, {0, 1} };
+
+        const char* headers[2] = { "Full Trajectory", "Filtered Trajectory" };
+        const char* option_label[2] = { "Colormap", "Isovalues" };
+        static int option[2] = { 0,0 };
+
+        static int view_option = 0;
+
+        if (ImGui::BeginMenuBar()) {
+            if (ImGui::BeginMenu("Settings")) {
+                ImGui::ColorEdit4("current color", data->ramachandran.style.base_color.elem);
+                ImGui::SliderFloat("current radius", &data->ramachandran.style.base_radius, 1.0f, 10.0f);
+
+                for (int i = 0; i < 2; ++i) {
+                    if (ImGui::BeginCombo(headers[i], option_label[option[i]])) {
+                        if (ImGui::Selectable(option_label[0], option[i] == 0)) option[i] = 0;
+                        if (ImGui::Selectable(option_label[1], option[i] == 1)) option[i] = 1;
+                        ImGui::EndCombo();
+                    }
+                    ImPlot::ColorMapSelection(headers[i], &colormap[i], &colormap_range[i].x, &colormap_range[i].y);
+                }
+                ImGui::EndMenu();
             }
-            //bitfield::clear_all(data->selection.current_highlight_mask);)
-            region_select = false;
-        }
-        //data->mold.dirty_buffers |= MolBit_DirtyFlags;
-    }
-
-    if (ImGui::IsItemHovered()) {
-        // ZOOM
-        if (ImGui::GetIO().KeyCtrl && ImGui::GetIO().MouseWheel != 0.f) {
-            const ImVec2 pos = (ImGui::GetIO().MousePos - cont_min);
-            const float mouse_wheel_delta = ImGui::GetIO().MouseWheel;
-            if (ImGui::GetIO().KeyCtrl && mouse_wheel_delta != 0.f) {
-                constexpr float ZOOM_SCL = 0.1f;
-                const float old_zoom = zoom_factor;
-                const float new_zoom = CLAMP(zoom_factor + zoom_factor * ZOOM_SCL * mouse_wheel_delta, 1.f, 10.f);
-                const ImVec2 delta = pos * (new_zoom / old_zoom) - pos;
-                ImGui::SetScrollX(ImGui::GetScrollX() + delta.x);
-                ImGui::SetScrollY(ImGui::GetScrollY() + delta.y);
-                zoom_factor = new_zoom;
+            if (ImGui::BeginMenu("View")) {
+                if (ImGui::Selectable("Side-By-Side", view_option == 0)) view_option = 0;
+                if (ImGui::Selectable("General",      view_option == 1)) view_option = 1;
+                if (ImGui::Selectable("Glycine",      view_option == 2)) view_option = 2;
+                if (ImGui::Selectable("Proline",      view_option == 3)) view_option = 3;
+                if (ImGui::Selectable("Preproline",   view_option == 4)) view_option = 4;
+                ImGui::EndMenu();
             }
+            ImGui::EndMenuBar();
         }
 
-        // PAN
-        if (!shift_down && zoom_factor > 1.0f && ImGui::GetIO().MouseDown[1] && ImGui::GetIO().MouseDelta != ImVec2(0,0)) {
-            ImGui::SetScrollX(ImGui::GetScrollX() - ImGui::GetIO().MouseDelta.x);
-            ImGui::SetScrollY(ImGui::GetScrollY() - ImGui::GetIO().MouseDelta.y);
+        const int plot_offset = MAX(0, view_option - 1);
+        const int plot_cols = (view_option == 0) ? 2 : 1;
+        const int plot_rows = (view_option == 0) ? 2 : 1;
+        const int num_plots = plot_cols * plot_rows;
+
+        const md_range_t frame_range = {(int32_t)data->timeline.filter.beg_frame, (int32_t)data->timeline.filter.end_frame};
+        const auto& mol = data->mold.mol;
+        const float min_ext = -180.0f;
+        const float max_ext =  180.0f;
+
+        const uint32_t rama_ref_col  = ImColor(1.0f, 1.0f, 1.0f, ref_alpha);
+        const uint32_t rama_full_col = ImColor(1.0f, 1.0f, 1.0f, full_alpha);
+        const uint32_t rama_filt_col = ImColor(1.0f, 1.0f, 1.0f, filt_alpha);
+
+        md_exp_bitfield_t* atom_selection = &data->selection.current_selection_mask;
+        md_exp_bitfield_t* atom_highlight = &data->selection.current_highlight_mask;
+
+        const float reset[2] = {min_ext, max_ext};
+        const char* x_lbl = (const char*)(u8"φ");
+        const char* y_lbl = (const char*)(u8"ψ");
+
+        const ImPlotFlags flags          = ImPlotFlags_Equal | ImPlotFlags_AntiAliased | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect;
+        const ImPlotFlags subplotflags   = ImPlotSubplotFlags_NoResize | ImPlotSubplotFlags_NoMenus;
+        const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_Foreground | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels;
+
+        ImPlotInputMap& map = ImPlot::GetInputMap();
+        map.OverrideMod = ImGuiKeyModFlags_Shift;
+
+        static ImPlotRect viewrect = {min_ext, min_ext, max_ext, max_ext};
+
+        auto formatter = [](double value, char* buff, int size, void* user_data) {
+            value = deperiodize(value, 0, 360.0);
+            snprintf(buff, size, "%g", value);
+        };
+
+        md_ramachandran_type_t plot_types[4] = { MD_RAMACHANDRAN_TYPE_GENERAL, MD_RAMACHANDRAN_TYPE_GLYCINE, MD_RAMACHANDRAN_TYPE_PROLINE, MD_RAMACHANDRAN_TYPE_PREPROL};
+
+        if (ImPlot::BeginSubplots("##Ramaplots", plot_rows, plot_cols, ImVec2(-1, -1), subplotflags | ImPlotSubplotFlags_ShareItems)) {
+
+            for (int plot_idx = plot_offset; plot_idx < plot_offset + num_plots; ++plot_idx) {
+                if (ImPlot::BeginPlot(plot_labels[plot_idx], ImVec2(), flags)) {
+                    ImPlotPoint view_mid = { (viewrect.X.Min + viewrect.X.Max) * 0.5, (viewrect.Y.Min + viewrect.Y.Max) * 0.5 };
+
+                    ImPlot::SetupAxesLimits(min_ext, max_ext, min_ext, max_ext, ImPlotCond_Once);
+                    ImPlot::SetupAxisLinks(ImAxis_X1, &viewrect.X.Min, &viewrect.X.Max);
+                    ImPlot::SetupAxisLinks(ImAxis_Y1, &viewrect.Y.Min, &viewrect.Y.Max);
+                    ImPlot::SetupAxes(x_lbl, y_lbl, axis_flags, axis_flags);
+                    ImPlot::SetupAxisFormat(ImAxis_X1, formatter);
+                    ImPlot::SetupAxisFormat(ImAxis_Y1, formatter);
+
+                    ImPlot::SetupFinish();
+
+                    viewrect = ImPlot::GetPlotLimits();
+
+                    ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_Square);
+                    ImPlot::PushStyleColor(ImPlotCol_MarkerFill, ImVec4(0,0,0,0));
+                    ImPlot::PushStyleColor(ImPlotCol_MarkerOutline, ImVec4(0,0,0,0));
+                    ImPlot::PlotScatter("##Hidden reset helper", reset, reset, 2);
+                    ImPlot::PopStyleColor(2);
+                    ImPlot::PopStyleVar();
+
+                    ImPlot::PlotDummy("Reference");
+                    ImPlot::PlotDummy("Full");
+                    ImPlot::PlotDummy("Filtered");
+                    ImPlot::PlotDummy("Current");
+
+                    bool show_ref  = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(0)->Show;
+                    bool show_full = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(1)->Show;
+                    bool show_filt = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(2)->Show;
+                    bool show_curr = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(3)->Show;
+
+                    if (show_ref || show_full || show_filt) {
+                        ImPlot::PushPlotClipRect();
+                        ImDrawList* dl = ImPlot::GetPlotDrawList();
+
+                        if (show_ref)  dl->AddImage((ImTextureID)(intptr_t)data->ramachandran.data.ref.iso_tex[plot_idx],  ImPlot::PlotToPixels(viewrect.Min()), ImPlot::PlotToPixels(viewrect.Max()), {0,0}, {1,1}, rama_ref_col);
+                        if (show_full) dl->AddImage((ImTextureID)(intptr_t)data->ramachandran.data.full.map_tex[plot_idx], ImPlot::PlotToPixels(viewrect.Min()), ImPlot::PlotToPixels(viewrect.Max()), {0,0}, {1,1}, rama_full_col);
+                        if (show_filt) dl->AddImage((ImTextureID)(intptr_t)data->ramachandran.data.filt.map_tex[plot_idx], ImPlot::PlotToPixels(viewrect.Min()), ImPlot::PlotToPixels(viewrect.Max()), {0,0}, {1,1}, rama_filt_col);
+
+                        ImPlot::PopPlotClipRect();
+                    }
+
+                    bool hovered = ImPlot::IsPlotHovered();
+                    bool shift   = ImGui::GetIO().KeyShift;
+                    ImPlotPoint mouse_coord = ImPlot::GetPlotMousePos();
+
+                    if (is_selecting[plot_idx]) {
+                        modify_highlight(data, &data->selection.current_selection_mask, SelectionOperator::Set);
+                        selection_rect.X.Max = mouse_coord.x;
+                        selection_rect.Y.Max = mouse_coord.y;
+
+                        ImPlot::DragRect(0, &selection_rect.X.Min, &selection_rect.Y.Min, &selection_rect.X.Max, &selection_rect.Y.Max, ImVec4(0,0,0,0.5f), ImPlotDragToolFlags_NoInputs);
+
+                        if (!shift) {
+                            is_selecting[plot_idx] = false;
+                        }
+                    } else if (hovered && shift && (ImGui::IsMouseClicked(0) || ImGui::IsMouseClicked(1))) {
+                        is_selecting[plot_idx] = true;
+                        selection_rect = ImPlotRect(mouse_coord.x, mouse_coord.x, mouse_coord.y, mouse_coord.y);
+                        op = ImGui::IsMouseClicked(0) ? SelectionOperator::Or : SelectionOperator::AndNot;
+                    }
+
+                    const double cut_d2 = fabs(ImPlot::PixelsToPlot(9,0).x - ImPlot::PixelsToPlot(0,0).x);
+                    double min_d2 = DBL_MAX;
+                    int64_t mouse_hover_idx = -1;
+
+                    if (show_curr) {
+                        const uint32_t* indices = data->ramachandran.rama_type_indices[plot_idx];
+
+                        double min_x = MIN(selection_rect.X.Min, selection_rect.X.Max);
+                        double max_x = MAX(selection_rect.X.Min, selection_rect.X.Max);
+                        double min_y = MIN(selection_rect.Y.Min, selection_rect.Y.Max);
+                        double max_y = MAX(selection_rect.Y.Min, selection_rect.Y.Max);
+
+                        double ref_x = (min_x + max_x) * 0.5;
+                        double ref_y = (min_y + max_y) * 0.5;
+
+                        mouse_coord.x = deperiodize(mouse_coord.x, ref_x, 360.0);
+                        mouse_coord.y = deperiodize(mouse_coord.y, ref_y, 360.0);
+
+                        for (int64_t i = 0; i < md_array_size(indices); ++i) {
+                            uint32_t idx = indices[i];
+
+                            if (mol.backbone.angle[idx].phi == 0 && mol.backbone.angle[idx].psi == 0) continue;
+
+                            ImPlotPoint coord = ImPlotPoint(rad_to_deg(mol.backbone.angle[idx].phi), rad_to_deg(mol.backbone.angle[idx].psi));
+                            coord.x = deperiodize(coord.x, ref_x, 360.0);
+                            coord.y = deperiodize(coord.y, ref_y, 360.0);
+                            
+                            if (is_selecting[plot_idx]) {
+                                if (min_x <= coord.x && coord.x <= max_x && min_y <= coord.y && coord.y <= max_y) {
+                                    md_residue_idx_t res_idx = mol.backbone.residue_idx[idx];
+                                    if (res_idx < mol.residue.count) {
+                                        modify_highlight(data, mol.residue.atom_range[res_idx], op);
+                                    }
+                                }
+                            }
+                            double d2 = (coord.x - mouse_coord.x) * (coord.x - mouse_coord.x) + (coord.y - mouse_coord.y) * (coord.y - mouse_coord.y);
+                            if (d2 < cut_d2 && d2 < min_d2) {
+                                min_d2 = d2;
+                                mouse_hover_idx = idx;
+                            }
+                        }
+
+                        if (mouse_hover_idx != -1) {
+                            md_residue_idx_t res_idx = mol.backbone.residue_idx[mouse_hover_idx];
+                            if (res_idx < mol.residue.count) {
+                                modify_highlight(data, mol.residue.atom_range[res_idx], SelectionOperator::Or);
+                            }
+                        }
+
+                        uint32_t* selection_indices = 0;
+                        uint32_t* highlight_indices = 0;
+
+                        for (uint32_t i = 0; i < (uint32_t)md_array_size(indices); ++i) {
+                            uint32_t idx = indices[i];
+                            if (mol.backbone.angle[idx].phi == 0 && mol.backbone.angle[idx].psi == 0) continue;
+
+                            int64_t atom_idx = mol.backbone.atoms[idx].ca;
+                            if (md_bitfield_test_bit(&data->selection.current_highlight_mask, atom_idx)) {
+                                md_array_push(highlight_indices, idx, frame_allocator);
+                            }
+
+                            if (md_bitfield_test_bit(&data->selection.current_selection_mask, atom_idx)) {
+                                md_array_push(selection_indices, idx, frame_allocator);
+                            }
+                        }
+
+                        struct UserData {
+                            const vec2_t* coords;
+                            const uint32_t* indices;
+                            ImPlotPoint     view_center; // We use this to deperiodize the coordinates
+                        };
+
+                        auto index_getter = [](void* user_data, int i) -> ImPlotPoint {
+                            const UserData* data = (UserData*)user_data;
+                            uint32_t idx = data->indices[i];
+
+                            if (data->coords[idx].x == 0 && data->coords[idx].y == 0) {
+                                return { INFINITY, INFINITY }; // Hide by INF!
+                            }
+
+                            float x = deperiodizef(rad_to_deg(data->coords[idx].x), data->view_center.x, 360.0f);
+                            float y = deperiodizef(rad_to_deg(data->coords[idx].y), data->view_center.y, 360.0f);
+                            return { x, y };
+                        };
+
+                        ImPlot::SetNextMarkerStyle(ImPlotMarker_Square, data->ramachandran.style.base_radius, vec_cast(data->ramachandran.style.base_color), 1.2f, vec_cast(data->ramachandran.style.border_color));
+                        ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1));
+                        if (md_array_size(indices) > 0) {
+                            UserData user_data = { (const vec2_t*)(mol.backbone.angle), indices, view_mid };
+                            ImPlot::PlotScatterG("Current", index_getter, &user_data, (int)md_array_size(indices));
+                        }
+
+                        if (md_array_size(selection_indices) > 0) {
+                            UserData user_data = { (const vec2_t*)(mol.backbone.angle), selection_indices, view_mid };
+                            ImPlot::SetNextMarkerStyle(ImPlotMarker_Square, data->ramachandran.style.base_radius + 1, vec_cast(data->ramachandran.style.selection_color), 2.0f, vec_cast(data->ramachandran.style.border_color));
+                            ImPlot::PlotScatterG("##Selection", index_getter, &user_data, (int)md_array_size(selection_indices));
+                        }
+
+                        if (md_array_size(highlight_indices) > 0) {
+                            UserData user_data = { (const vec2_t*)(mol.backbone.angle), highlight_indices, view_mid };
+                            ImPlot::SetNextMarkerStyle(ImPlotMarker_Square, data->ramachandran.style.base_radius + 1, vec_cast(data->ramachandran.style.highlight_color), 2.0f, vec_cast(data->ramachandran.style.border_color));
+                            ImPlot::PlotScatterG("##Highlight", index_getter, &user_data, (int)md_array_size(highlight_indices));
+                        }
+                    }
+
+                    if (is_selecting[plot_idx]) {
+                        if (ImGui::IsMouseReleased(0) || ImGui::IsMouseReleased(1)) {
+                            is_selecting[plot_idx] = false;
+                            auto size = selection_rect.Size();
+                            if (size.x == 0 && size.y == 0 && ImGui::IsMouseReleased(1)) {
+                                clear_selection(data);
+                            }
+                            else {
+                                modify_selection(data, &data->selection.current_highlight_mask, SelectionOperator::Set);
+                            }
+                        }
+                    }
+
+                    ImPlot::EndPlot();
+                }
+            }
+
+            if (viewrect.X.Max < viewrect.X.Min) {
+                ImSwap(viewrect.X.Min, viewrect.X.Max);
+            }
+            if (viewrect.Y.Max < viewrect.Y.Min) {
+                ImSwap(viewrect.Y.Min, viewrect.Y.Max);
+            }
+
+            double ratio = viewrect.Size().x / viewrect.Size().y;
+            double mid_x = (viewrect.X.Min + viewrect.X.Max) * 0.5;
+            double mid_y = (viewrect.Y.Min + viewrect.Y.Max) * 0.5;
+
+            if (viewrect.Size().x > 360) {
+                viewrect.X.Min = mid_x - 180;
+                viewrect.X.Max = mid_x + 180;
+                viewrect.Y.Min = mid_y - 0.5 * viewrect.Size().x / ratio;
+                viewrect.Y.Max = mid_y + 0.5 * viewrect.Size().x / ratio;
+            } else if (viewrect.Size().x < 10) {
+                viewrect.X.Min = mid_x - 5;
+                viewrect.X.Max = mid_x + 5;
+                viewrect.Y.Min = mid_y - 0.5 * viewrect.Size().x / ratio;
+                viewrect.Y.Max = mid_y + 0.5 * viewrect.Size().x / ratio;
+            }
+
+            if (viewrect.Size().y > 360) {
+                viewrect.Y.Min = mid_y - 180;
+                viewrect.Y.Max = mid_y + 180;
+                viewrect.X.Min = mid_x - 0.5 * viewrect.Size().y * ratio;
+                viewrect.X.Max = mid_x + 0.5 * viewrect.Size().y * ratio;
+            } else if (viewrect.Size().y < 10) {
+                viewrect.Y.Min = mid_y - 5;
+                viewrect.Y.Max = mid_y + 5;
+                viewrect.X.Min = mid_x - 0.5 * viewrect.Size().y * ratio;
+                viewrect.X.Max = mid_x + 0.5 * viewrect.Size().y * ratio;
+            }
+
+            ImPlot::EndSubplots();
         }
+
+        vec4_t viewport = { (float)viewrect.X.Min / 180.0f, (float)viewrect.Y.Min / 180.0f, (float)viewrect.X.Max / 180.0f, (float)viewrect.Y.Max / 180.0f };
+        viewport = viewport * 0.5f + 0.5f;
+
+        // Fill in colors based on active color_map
+        uint32_t colors[2][32] = { 0 };
+        uint32_t num_colors[2] = { 0 };
+        for (uint32_t idx = 0; idx < 2; ++idx) {
+            num_colors[idx] = ImPlot::GetColormapSize(colormap[idx]);
+            for (uint32_t i = 0; i < num_colors[idx]; ++i) {
+                colors[idx][i] = ImPlot::GetColormapColorU32(i, colormap[idx]);
+            }
+            // Mask off the first color to be transparent
+            colors[idx][0] = colors[idx][0] & 0x00FFFFFFU;
+        }
+
+        rama_colormap_t full_colormaps[4] = {
+            {
+                .colors = colors[0],
+                .count = num_colors[0],
+                .min_value = colormap_range[0].x,
+                .max_value = colormap_range[0].y,
+            },
+            {
+                .colors = colors[0],
+                .count = num_colors[0],
+                .min_value = colormap_range[0].x,
+                .max_value = colormap_range[0].y,
+            },            
+            {
+                .colors = colors[0],
+                .count = num_colors[0],
+                .min_value = colormap_range[0].x,
+                .max_value = colormap_range[0].y,
+            },
+            {
+                .colors = colors[0],
+                .count = num_colors[0],
+                .min_value = colormap_range[0].x,
+                .max_value = colormap_range[0].y,
+            },
+        };
+
+        rama_colormap_t filt_colormaps[4] = {
+            {
+                .colors = colors[1],
+                .count = num_colors[1],
+                .min_value = colormap_range[1].x,
+                .max_value = colormap_range[1].y,
+            },
+            {
+                .colors = colors[1],
+                .count = num_colors[1],
+                .min_value = colormap_range[1].x,
+                .max_value = colormap_range[1].y,
+            },
+            {
+                .colors = colors[1],
+                .count = num_colors[1],
+                .min_value = colormap_range[1].x,
+                .max_value = colormap_range[1].y,
+            },
+            {
+                .colors = colors[1],
+                .count = num_colors[1],
+                .min_value = colormap_range[1].x,
+                .max_value = colormap_range[1].y,
+            },
+        };
+
+        const float iso_values[4][3] = {
+            {0, 0.0005, 0.02},
+            {0, 0.002,  0.02},
+            {0, 0.002,  0.02},
+            {0, 0.002,  0.02}
+        };
+
+        const uint32_t iso_colors[4][3] = {
+            {0x00FFFFFF, 0xFFFFE8B3, 0xFFFFD97F},
+            {0x00FFFFFF, 0xFFC5E8FF, 0xFF7FCCFF},
+            {0x00FFFFFF, 0xFFC5FFD0, 0xFF8CFF7F},
+            {0x00FFFFFF, 0xFFFFE8B3, 0xFFFFD97F}
+        };
+
+        const rama_isomap_t isomaps[4] = {
+            {
+                .values = iso_values[0],
+                .colors = iso_colors[0],
+                .count = 3
+            },
+            {
+                .values = iso_values[1],
+                .colors = iso_colors[1],
+                .count = 3
+            },
+            {
+                .values = iso_values[2],
+                .colors = iso_colors[2],
+                .count = 3
+            },
+            {
+                .values = iso_values[3],
+                .colors = iso_colors[3],
+                .count = 3
+            },
+        };
+
+        PUSH_GPU_SECTION("RENDER RAMA");
+        //rama_rep_render_map(&data->ramachandran.data.ref, viewport.elem, colormaps);
+        rama_rep_render_iso(&data->ramachandran.data.ref, viewport.elem, isomaps);
+
+        rama_rep_render_map(&data->ramachandran.data.full, viewport.elem, full_colormaps);
+        rama_rep_render_iso(&data->ramachandran.data.full, viewport.elem, isomaps);
+
+        rama_rep_render_map(&data->ramachandran.data.filt, viewport.elem, filt_colormaps);
+        rama_rep_render_iso(&data->ramachandran.data.filt, viewport.elem, isomaps);
+        POP_GPU_SECTION();
+
+        ImPlot::MapInputDefault();
     }
-
-    ImGui::EndChild();
-
     ImGui::End();
 }
-#endif
 
 static void draw_density_volume_window(ApplicationData* data) {
     ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
@@ -5415,27 +5734,14 @@ static void update_md_buffers(ApplicationData* data) {
 }
 
 static void interrupt_async_tasks(ApplicationData* data) {
-    if (data->tasks.backbone_computations.id != 0) {
-        task_system::interrupt_task(data->tasks.backbone_computations);
-    }
+    task_system::pool_interrupt_running_tasks();
 
-    if (data->tasks.evaluate_full.id != 0) {
-        md_script_eval_interrupt(&data->mold.script.full_eval);
-        task_system::interrupt_task(data->tasks.evaluate_full);
-    }
-
-    if (data->tasks.evaluate_filt.id != 0) {
-        md_script_eval_interrupt(&data->mold.script.filt_eval);
-        task_system::interrupt_task(data->tasks.evaluate_filt);
-    }
-
-    task_system::wait_for_task(data->tasks.backbone_computations);
-    task_system::wait_for_task(data->tasks.evaluate_full);
-    task_system::wait_for_task(data->tasks.evaluate_filt);
-
-    data->tasks.backbone_computations.id = 0;
-    data->tasks.evaluate_full.id = 0;
-    data->tasks.evaluate_filt.id = 0;
+    task_system::task_wait_for(data->tasks.backbone_computations);
+    task_system::task_wait_for(data->tasks.evaluate_full);
+    task_system::task_wait_for(data->tasks.evaluate_filt);
+    task_system::task_wait_for(data->tasks.prefetch_frames);
+    task_system::task_wait_for(data->tasks.ramachandran_compute_density);
+    task_system::task_wait_for(data->tasks.shape_space_evaluate);
 }
 
 // #trajectorydata
@@ -5465,14 +5771,14 @@ static void init_trajectory_data(ApplicationData* data) {
         int64_t max_frame = num_frames - 1;
         double min_time = 0;
         double max_time = 0;
+        md_trajectory_frame_header_t header;
+
         {
-            md_trajectory_frame_header_t header;
             md_trajectory_load_frame(&data->mold.traj, min_frame, &header, 0, 0, 0);
             min_time = header.timestamp;
         }
 
         {
-            md_trajectory_frame_header_t header;
             md_trajectory_load_frame(&data->mold.traj, max_frame, &header, 0, 0, 0);
             max_time = header.timestamp;
         }
@@ -5494,7 +5800,6 @@ static void init_trajectory_data(ApplicationData* data) {
         data->animation.frame = CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
         int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, max_frame);
 
-        md_trajectory_frame_header_t header;
         md_trajectory_load_frame(&data->mold.traj, frame_idx, &header, data->mold.mol.atom.x, data->mold.mol.atom.y, data->mold.mol.atom.z);
         memcpy(&data->simulation_box.box, header.box, sizeof(header.box));
         data->mold.dirty_buffers |= MolBit_DirtyPosition;
@@ -5502,23 +5807,24 @@ static void init_trajectory_data(ApplicationData* data) {
         update_md_buffers(data);
         md_gl_molecule_update_atom_previous_position(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
 
+        // Prefetch frames
+        launch_prefetch_job(data);
+
         if (data->mold.mol.backbone.count > 0) {
             data->trajectory_data.secondary_structure.stride = data->mold.mol.backbone.count;
             data->trajectory_data.secondary_structure.count = data->mold.mol.backbone.count * num_frames;
             md_array_resize(data->trajectory_data.secondary_structure.data, data->mold.mol.backbone.count * num_frames, persistent_allocator);
+            memset(data->trajectory_data.secondary_structure.data, 0, md_array_size(data->trajectory_data.secondary_structure.data) * sizeof (md_secondary_structure_t));
 
-            data->trajectory_data.backbone_angles.stride = data->mold.mol.backbone.count,
-                data->trajectory_data.backbone_angles.count = data->mold.mol.backbone.count * num_frames,
-                md_array_resize(data->trajectory_data.backbone_angles.data, data->mold.mol.backbone.count * num_frames, persistent_allocator);
-
-            // Launch work to prefetch frames
-            launch_prefetch_job(data);
+            data->trajectory_data.backbone_angles.stride = data->mold.mol.backbone.count;
+            data->trajectory_data.backbone_angles.count = data->mold.mol.backbone.count * num_frames;
+            md_array_resize(data->trajectory_data.backbone_angles.data, data->mold.mol.backbone.count * num_frames, persistent_allocator);
+            memset(data->trajectory_data.backbone_angles.data, 0, md_array_size(data->trajectory_data.backbone_angles.data) * sizeof (md_backbone_angles_t));
 
             // Launch work to compute the values
-            if (data->tasks.backbone_computations.id != 0) {
-                task_system::interrupt_and_wait(data->tasks.backbone_computations); // This should never happen
-            }
-            data->tasks.backbone_computations = task_system::enqueue_pool("Backbone Operations", (uint32_t)num_frames, [data](task_system::TaskSetRange range) {
+            task_system::task_interrupt_and_wait_for(data->tasks.backbone_computations);
+            data->tasks.backbone_computations = task_system::pool_enqueue("Backbone Operations", data, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+                ApplicationData* data = (ApplicationData*)user_data;
                 const auto& mol = data->mold.mol;
                 const int64_t stride = ROUND_UP(mol.atom.count, md_simd_widthf);
                 const int64_t bytes = stride * sizeof(float) * 3;
@@ -5528,7 +5834,7 @@ static void init_trajectory_data(ApplicationData* data) {
                 float* y = coords + stride * 1;
                 float* z = coords + stride * 2;
 
-                for (uint32_t frame_idx = range.beg; frame_idx < range.end; ++frame_idx) {
+                for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
                     md_trajectory_load_frame(&data->mold.traj, frame_idx, NULL, x, y, z);
 
                     md_util_backbone_angle_args_t bb_args = {
@@ -5547,7 +5853,7 @@ static void init_trajectory_data(ApplicationData* data) {
                             .backbone_range = mol.chain.backbone_range,
                         }
                     };
-                    md_util_compute_backbone_angles(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &bb_args);
+                    md_util_backbone_angles_compute(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &bb_args);
 
                     md_util_secondary_structure_args_t ss_args = {
                         .atom = {
@@ -5565,9 +5871,13 @@ static void init_trajectory_data(ApplicationData* data) {
                             .backbone_range = data->mold.mol.chain.backbone_range,
                         }
                     };
-                    md_util_compute_secondary_structure(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &ss_args);
+                    md_util_backbone_secondary_structure_compute(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &ss_args);
                 }
-            });
+                }, [](void* user_data) {
+                    ApplicationData* data = (ApplicationData*)user_data;
+                    data->trajectory_data.backbone_angles.fingerprint = generate_fingerprint();
+                    data->trajectory_data.secondary_structure.fingerprint = generate_fingerprint();
+                });
         }
     }
 }
@@ -5651,17 +5961,15 @@ static void launch_prefetch_job(ApplicationData* data) {
     uint32_t num_frames = (uint32_t)md_trajectory_num_frames(&data->mold.traj);
     if (!num_frames) return;
 
-    if (data->tasks.prefetch_frames.id != 0) {
-        task_system::interrupt_and_wait(data->tasks.prefetch_frames); // This should never happen
-    }
-    data->tasks.prefetch_frames = task_system::enqueue_pool("Prefetch Frames", num_frames, [data](task_system::TaskSetRange range) {
-        for (uint32_t i = range.beg; i < range.end; ++i) {
+    task_system::task_interrupt_and_wait_for(data->tasks.prefetch_frames);
+    data->tasks.prefetch_frames = task_system::pool_enqueue("Prefetch Frames", data, num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+        ApplicationData* data = (ApplicationData*)user_data;
+        for (uint32_t i = range_beg; i < range_end; ++i) {
             md_trajectory_frame_header_t header;
             md_trajectory_load_frame(&data->mold.traj, i, &header, 0, 0, 0);
             data->timeline.x_values[i] = header.timestamp;
         }
     });
-
 
 #if 0
 #define NUM_SLOTS 64
@@ -5669,7 +5977,7 @@ static void launch_prefetch_job(ApplicationData* data) {
     // This is the number of slots we have to work with in parallel.
     // This number should ideally be more than the number of cores available.
     // We pre-allocate the number of slots * max frame data size, so don't go bananas here if you want to save some on memory.
-    task_system::enqueue_pool("Preloading frames", 1, [data, num_frames](task_system::TaskSetRange)
+    task_system::pool_enqueue("Preloading frames", 1, [data, num_frames](task_system::TaskSetRange)
         {
             timestamp_t t0 = md_os_time_current();
             const int64_t slot_size = md_trajectory_max_frame_data_size(&data->mold.traj);
@@ -5694,7 +6002,7 @@ static void launch_prefetch_job(ApplicationData* data) {
 
                 // Spawn task: Load, Decode and postprocess
                 //printf("Spawning task to decode frame %i\n", i);
-                auto id = task_system::enqueue_pool("##Decode frame", 1, [slot_idx, frame_mem, frame_size, frame_idx = i, &slot_queue, data](task_system::TaskSetRange)
+                auto id = task_system::pool_enqueue("##Decode frame", 1, [slot_idx, frame_mem, frame_size, frame_idx = i, &slot_queue, data](task_system::TaskSetRange)
                     {
                         md_frame_data_t* frame_data;
                         md_frame_cache_lock_t* lock;

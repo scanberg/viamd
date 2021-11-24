@@ -20,4 +20,6 @@ struct ImPlotDragRangeStyle {
 
 IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_max, double min_value, double max_value, ImPlotDragRangeFlags flags = 0, const ImPlotDragRangeStyle& style = ImPlotDragRangeStyle());
 
+IMPLOT_API bool ColorMapSelection(const char* id, ImPlotColormap* idx, float* cur_range_min, float* cur_range_max, float min = 0, float max = 0, ImVec2 size = ImVec2(150,0));
+
 }  // namespace ImPlot

@@ -596,9 +596,9 @@ struct ivec3_t {
 
 inline ivec3_t compute_voxel_coord(const GPUVolume& data, const vec3_t& coord) {
     ivec3_t c;
-    c.x = CLAMP(((coord.x - data.min_box.x) / data.voxel_ext.x), 0, data.res_x - 1);
-    c.y = CLAMP(((coord.y - data.min_box.y) / data.voxel_ext.y), 0, data.res_y - 1);
-    c.z = CLAMP(((coord.z - data.min_box.z) / data.voxel_ext.z), 0, data.res_z - 1);
+    c.x = CLAMP((int)((coord.x - data.min_box.x) / data.voxel_ext.x), 0, data.res_x - 1);
+    c.y = CLAMP((int)((coord.y - data.min_box.y) / data.voxel_ext.y), 0, data.res_y - 1);
+    c.z = CLAMP((int)((coord.z - data.min_box.z) / data.voxel_ext.z), 0, data.res_z - 1);
     return c;
 }
 
@@ -885,7 +885,7 @@ void draw_voxelized_scene(const GPUVolume& vol, const mat4_t& view_mat, const ma
 }
 */
 
-void compute_occupancy_volume(const GPUVolume& vol, const float* x, const float* y, const float* z, const float* r, int64_t count) {
+void compute_occupancy_volume(const GPUVolume& vol, const float* x, const float* y, const float* z, const float* rad, int64_t count) {
     const int32_t voxel_count = vol.res_x * vol.res_y * vol.res_z;
     if (voxel_count == 0) {
         md_print(MD_LOG_TYPE_ERROR, "Volume resolution is zero on one or more axes");
@@ -896,8 +896,8 @@ void compute_occupancy_volume(const GPUVolume& vol, const float* x, const float*
     std::atomic_uint32_t* voxel_data = (std::atomic_uint32_t*)md_alloc(default_allocator, voxel_count * sizeof(std::atomic_uint32_t));
     defer { md_free(default_allocator, voxel_data, voxel_count * sizeof(std::atomic_uint32_t)); };
 
-#if 1
-    task_system::ID id = task_system::enqueue_pool(
+#if 0
+    task_system::ID id = task_system::pool_enqueue(
         "Computing occupancy", (uint32_t)count,
         [voxel_data, x, y, z, r, &vol, inv_voxel_volume](task_system::TaskSetRange range) {
             // We assume atom radius <<< voxel extent and just increment the bin
@@ -912,11 +912,11 @@ void compute_occupancy_volume(const GPUVolume& vol, const float* x, const float*
         });
     task_system::wait_for_task(id);
 #else 
-    constexpr float sphere_vol_scl = (4.0f / 3.0f) * math::PI;
-    for (int32_t i = 0; i < num_atoms; i++) {
-        const vec3_t pos = {atom_x[i], atom_y[i], atom_z[i]};
+    constexpr float sphere_vol_scl = (4.0f / 3.0f) * 3.1415926535f;
+    for (int32_t i = 0; i < count; i++) {
+        const vec3_t pos = {x[i], y[i], z[i]};
         const int idx = compute_voxel_idx(vol, pos);
-        const float r = atom_r[i];
+        const float r = rad[i];
         const float sphere_vol = sphere_vol_scl * r * r * r;
         const float fract = sphere_vol * inv_voxel_volume;
         const uint32_t occ = (fract * 0xFFFFFFFFU);

@@ -21,21 +21,21 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
 
     //double* x_range[2] = {x_range_max, x_range_min};
     if ((gp.CurrentPlot->PlotRect.Min.x - grab_size / 2) < x_min && x_min < (gp.CurrentPlot->PlotRect.Max.x + grab_size / 2))  {
-        if (DragLineX("##line_min", x_range_min, false, style.line_col, style.line_thickness)) dragging = 1;
-        active |= ImGui::IsItemActive();
-        hovered |= ImGui::IsItemHovered();
+        if (DragLineX(ImGui::GetID("min"), x_range_min, style.line_col, style.line_thickness)) dragging = 1;
+        //active |= ImGui::IsItemActive();
+        //hovered |= ImGui::IsItemHovered();
     }
     if ((gp.CurrentPlot->PlotRect.Min.x - grab_size / 2) < x_max && x_max < (gp.CurrentPlot->PlotRect.Max.x + grab_size / 2))  {
-        if (DragLineX("##line_max", x_range_max, false, style.line_col, style.line_thickness)) dragging = 2;
-        active |= ImGui::IsItemActive();
-        hovered |= ImGui::IsItemHovered();
+        if (DragLineX(ImGui::GetID("max"), x_range_max, style.line_col, style.line_thickness)) dragging = 2;
+        //active |= ImGui::IsItemActive();
+        //hovered |= ImGui::IsItemHovered();
     }
 
     //float len = gp.Style.MajorTickLen.x;
     const float drag_bar_height = 15;
 
     if (!(ImGui::GetItemFlags() & ImGuiItemFlags_Disabled)) {
-        if (!gp.CurrentPlot->Selecting && !gp.CurrentPlot->Querying) {
+        if (!gp.CurrentPlot->Selecting) {
             if (dragging) {
                 if (dragging == 2) {
                     if (*x_range_min > *x_range_max) {
@@ -97,15 +97,15 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
     PopPlotClipRect();
 
     if (hovered || active) {
-        gp.CurrentPlot->PlotHovered = false;
+        gp.CurrentPlot->Hovered = false;
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
         if (!ImHasFlag(flags, ImPlotDragRangeFlags_NoLabel)) {
             char min_buff[32];
             char max_buff[32];
             char buff[64];
             float x  = IM_ROUND(PlotToPixels((*x_range_max + *x_range_min) * 0.5, 0).x);
-            LabelAxisValue(gp.CurrentPlot->XAxis, gp.XTicks, *x_range_min, min_buff, sizeof(min_buff));
-            LabelAxisValue(gp.CurrentPlot->XAxis, gp.XTicks, *x_range_max, max_buff, sizeof(max_buff));
+            LabelAxisValue(gp.CurrentPlot->XAxis(0), *x_range_min, min_buff, sizeof(min_buff));
+            LabelAxisValue(gp.CurrentPlot->XAxis(0), *x_range_max, max_buff, sizeof(max_buff));
             snprintf(buff, sizeof(buff), "[%s, %s]", min_buff, max_buff);
             ImVec4 color = IsColorAuto(style.line_col) ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : style.line_col;
             ImU32  col32 = ImGui::ColorConvertFloat4ToU32(color);
@@ -114,6 +114,37 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
     }
 
     return dragging;
+}
+
+IMPLOT_API bool ColorMapSelection(const char* id, ImPlotColormap* idx, float* cur_range_min, float* cur_range_max, float min, float max, ImVec2 size) {
+    IM_ASSERT(id);
+    IM_ASSERT(idx);
+    IM_ASSERT(cur_range_min);
+    IM_ASSERT(cur_range_max);
+
+    bool value = false;
+
+    ImGui::PushID(ImGui::GetID(id));
+    if (ImPlot::ColormapButton(ImPlot::GetColormapName(*idx), size, *idx)) {
+        ImGui::OpenPopup("Color Map Selector");
+    }
+    ImGui::SameLine();
+    if (id && id[0] != '#' && id[1] != '#')
+        ImGui::Text("%s", id);
+    value |= ImGui::DragFloatRange2("Min / Max", cur_range_min, cur_range_max, 1.0f, min, max);
+    if (ImGui::BeginPopup("Color Map Selector")) {
+        for (int map = 0; map < ImPlot::GetColormapCount(); ++map) {
+            if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), size, map)) {
+                *idx = map;
+                value = true;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+
+    return value;
 }
 
 }  // namespace ImGui

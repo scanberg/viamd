@@ -1,44 +1,44 @@
 #pragma once
 
 #include <stdint.h>
-#include <functional>
-#include <atomic_queue.h>
+
+struct md_allocator_i;
 
 namespace task_system {
 
-struct TaskSetRange {
-    uint32_t beg;
-    uint32_t end;
-};
+typedef uint64_t ID;
+constexpr ID INVALID_ID = 0;
 
-typedef std::function<void()> Task;
-typedef std::function<void(TaskSetRange range)> TaskSet;
-
-struct ID {
-    uint32_t id;
-};
-
-constexpr ID INVALID_ID = {0};
+typedef void (*execute_fn)(void* user_data);
+typedef void (*execute_range_fn)(uint32_t range_beg, uint32_t range_end, void* user_data);
 
 void initialize();
 void shutdown();
 
 // This is to generate tasks for the main thread ("render" thread)
-bool enqueue_main(const char* label, Task task);
-void run_main_tasks();
+bool main_enqueue(const char* label, void* user_data, execute_fn task);
+
+// Call once per frame at some approriate time
+void main_execute_tasks();
 
 // This is to generate tasks for the thread-pool (async operations)
-ID enqueue_pool(const char* label, uint32_t size, TaskSet task_set, TaskSet on_complete = nullptr);
+ID pool_enqueue(const char* label, void* user_data, execute_fn task, execute_fn on_complete = NULL);
+ID pool_enqueue(const char* label, void* user_data, uint32_t range_size, execute_range_fn range_task, execute_fn on_complete = NULL);
 
-uint32_t get_num_threads();
-uint32_t get_tasks(ID** task_ids);
+uint32_t pool_num_threads();
 
-bool get_task_complete(ID);
-const char* get_task_label(ID);
-float get_task_fraction_complete(ID);
+// These do not really reflect the 'current' state since that is illdefined. But rather what the state was at the time of the function call.
+void pool_interrupt_running_tasks();
+ID*  pool_running_tasks(md_allocator_i* alloc);
 
-void wait_for_task(ID);
-void interrupt_task(ID);
-void interrupt_and_wait(ID);
+// These are safe to call with an invalid id, in such case, they will just return some 'zero' default value
+bool        task_is_running(ID);
+const char* task_label(ID);
+float       task_fraction_complete(ID);
+
+// These are safe to call with an invalid id, and in such case, they do nothing
+void task_wait_for(ID);
+void task_interrupt(ID);
+void task_interrupt_and_wait_for(ID);
 
 }  // namespace task_system
