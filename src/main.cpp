@@ -630,10 +630,10 @@ struct ApplicationData {
         uint32_t* rama_type_indices[4] = {0};
 
         struct {
-            vec4_t border_color     = vec4_t(0.0f, 0.0f, 0.0f, 1.0f);
-            vec4_t base_color       = vec4_t(0.9f, 0.9f, 0.9f, 0.9f);
-            vec4_t selection_color  = vec4_t(0.5f, 0.5f, 0.8f, 0.9f);
-            vec4_t highlight_color  = vec4_t(0.8f, 0.8f, 0.5f, 0.9f);
+            vec4_t border_color     = {0.0f, 0.0f, 0.0f, 1.0f};
+            vec4_t base_color       = {0.9f, 0.9f, 0.9f, 0.9f};
+            vec4_t selection_color  = {0.5f, 0.5f, 0.8f, 0.9f};
+            vec4_t highlight_color  = {0.8f, 0.8f, 0.5f, 0.9f};
             float base_radius = 4.5f;
             float selected_radius = 6.5f;
         } style;
@@ -2578,8 +2578,8 @@ void draw_context_popup(ApplicationData* data) {
     if (ImGui::BeginPopup("AtomContextPopup")) {
         if (sss_count > 1) {
             if (ImGui::BeginMenu("Create Property")) {
-                char ident[128] = "prop";
-                char buf[128] = "";
+                char ident[32] = "prop";
+                char buf[256] = "";
                 ImGui::InputText("##identifier", ident, sizeof(ident));
 
                 if (sss_count == 2) {
@@ -3522,7 +3522,7 @@ bool draw_property_timeline(const ApplicationData& data, const TimelineArgs& arg
         else if (*args.input.is_selecting) {
             *args.filter.end = MAX(ImPlot::GetPlotMousePos().x, *args.filter.beg);
         }
-        else if (ImPlot::IsPlotHovered()) {
+        else if (active && ImPlot::IsPlotHovered()) {
             if (ImGui::IsMouseDown(0)) {           
                 if (ImGui::GetIO().KeyMods == ImGuiKeyModFlags_Shift) {
                     if (args.filter.show && args.filter.enabled) {
@@ -3800,7 +3800,6 @@ static void draw_distribution_window(ApplicationData* data) {
 
             float min_x = full_prop.data.min_range[0];
             float max_x = full_prop.data.max_range[0];
-            float min_y = full_prop.data.min_value;
             float max_y = full_prop.data.max_value;
             const float* full_src = 0;
             const float* filt_src = 0;
@@ -3820,7 +3819,6 @@ static void draw_distribution_window(ApplicationData* data) {
             downsample_histogram(bins, num_bins, full_src, num_values_src);
             downsample_histogram(filtered_bins, num_bins, filt_src, num_values_src);
 
-            min_y = 0;
             max_y = 0;
             for (int64_t j = 0; j < num_bins; ++j) {
                 max_y = MAX(max_y, bins[j]);
@@ -4169,7 +4167,6 @@ static void draw_ramachandran_window(ApplicationData* data) {
         const int plot_rows = (view_option == 0) ? 2 : 1;
         const int num_plots = plot_cols * plot_rows;
 
-        const md_range_t frame_range = {(int32_t)data->timeline.filter.beg_frame, (int32_t)data->timeline.filter.end_frame};
         const auto& mol = data->mold.mol;
         const float min_ext = -180.0f;
         const float max_ext =  180.0f;
@@ -5370,9 +5367,7 @@ static void draw_property_export_window(ApplicationData* data) {
             static int format = 0;
             static int col_options[16] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
             static int num_columns = 4;
-            static int values_option = 0;
             static int num_bins = 64;
-            static bool temporal_filter = false;
 
             const int MIN_NUM_BINS = 8;
             const int MAX_NUM_BINS = 1024;
@@ -6870,7 +6865,6 @@ static void update_representation(ApplicationData* data, Representation* rep) {
             if (rep->prop) {
                 color_atoms_uniform(colors, mol.atom.count, {1,1,1,1});
                 const float* values = rep->prop->data.values;
-                const int num_values = (int)rep->prop->data.num_values;
                 if (rep->prop->data.aggregate) {
                     const int dim = rep->prop->data.dim[0];
                     md_script_visualization_args_t args = {
@@ -7041,7 +7035,7 @@ static bool handle_selection(ApplicationData* data) {
     data->mold.dirty_buffers |= MolBit_DirtyFlags;
 
     if (data->picking.idx != INVALID_PICKING_IDX && !region_select) {
-        ASSERT(0 <= data->picking.idx && data->picking.idx <= N);
+        ASSERT(data->picking.idx <= N);
         md_bitfield_set_bit(&mask, data->picking.idx);
 
         switch (data->selection.granularity) {

@@ -23,7 +23,7 @@ option(VIAMD_PROFILE_COMPILE_TIMES OFF)
 
 if (MSVC)
     message(STATUS "MSVC configuration was used")
-    add_compile_options(/MT /W4 /wd4201 /wd4324 /wd26451 /MP /GR- /fp:fast /arch:AVX)# /arch:AVX2
+    add_compile_options(/MT /W4 /wd4201 /wd4324 /wd26451 /MP /GR- /fp:fast /arch:AVX)
 
 	if (VIAMD_PROFILE_COMPILE_TIMES)	
         add_compile_options(/d2cgsummary)
@@ -34,13 +34,10 @@ if (MSVC)
     add_compile_options_config(DEBUG /MTd /ZI)
 else()
 	message(STATUS "non MSVC configuration was used")
-    add_compile_options(
-        -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -Wno-missing-braces -Wno-missing-field-initializers -march=native #-maes
-    )
+    add_compile_options(-Wall -Wextra -Wno-unused-function -Wno-unused-parameter -Wno-missing-braces -Wno-missing-field-initializers -march=native)
 	if (VIAMD_PROFILE_COMPILE_TIMES)
 		add_compile_options(-ftime-trace)
 	endif()
-	#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wno-c99-extensions -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types")
 endif()
 
 set_property(GLOBAL PROPERTY USE_FOLDERS OFF)

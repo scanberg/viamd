@@ -73,7 +73,7 @@ static inline LoadedTrajectory* alloc_loaded_trajectory(uint64_t key) {
     ASSERT(find_loaded_trajectory(key) == NULL);
     ASSERT(num_loaded_trajectories < (int64_t)ARRAY_SIZE(loaded_trajectories));
     LoadedTrajectory* traj = &loaded_trajectories[num_loaded_trajectories++];
-    memset(traj, 0, sizeof(LoadedTrajectory));
+    *traj = {0}; // Clear
     traj->key = key;
     return traj;
 }

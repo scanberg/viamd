@@ -22,8 +22,8 @@ bool main_enqueue(const char* label, void* user_data, execute_fn task);
 void main_execute_tasks();
 
 // This is to generate tasks for the thread-pool (async operations)
-ID pool_enqueue(const char* label, void* user_data, execute_fn task, execute_fn on_complete = NULL);
-ID pool_enqueue(const char* label, void* user_data, uint32_t range_size, execute_range_fn range_task, execute_fn on_complete = NULL);
+ID pool_enqueue(const char* label, void* user_data, execute_fn task, execute_fn on_complete = 0);
+ID pool_enqueue(const char* label, void* user_data, uint32_t range_size, execute_range_fn range_task, execute_fn on_complete = 0);
 
 uint32_t pool_num_threads();
 
