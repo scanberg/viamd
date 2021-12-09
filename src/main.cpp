@@ -2473,6 +2473,22 @@ ImGui::EndGroup();
             }
             ImGui::EndMenu();
         }
+        if (ImGui::BeginMenu("Configure")) {
+            ImGuiIO& io = ImGui::GetIO();
+            ImFont* font_current = ImGui::GetFont();
+            if (ImGui::BeginCombo("Font", font_current->GetDebugName()))
+            {
+                for (int n = 0; n < io.Fonts->Fonts.Size; n++) {
+                    ImFont* font = io.Fonts->Fonts[n];
+                    ImGui::PushID((void*)font);
+                    if (ImGui::Selectable(font->GetDebugName(), font == font_current))
+                        io.FontDefault = font;
+                    ImGui::PopID();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::EndMenu();
+        }
         {
             // Fps counter
             const double ms = compute_avg_ms(data->ctx.timing.delta_s);

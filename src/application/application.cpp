@@ -155,26 +155,31 @@ bool initialize(Context* ctx, int64_t width, int64_t height, const char* title) 
         ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)DroidSans_compressed_data, DroidSans_compressed_size, 16.f, &config, ranges);
     }
     */
-    {
-        static const ImWchar ranges[] = {0x0020, 0x00FF, 0x03C6, 0x03C8, 0};
+    const ImWchar ranges_characters[] = {0x0020, 0x00FF, 0x03C6, 0x03C8, 0};
+    const ImWchar ranges_icons[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
+    const float scaling_factors[] = {1.0, 1.5};
+    const char* font_names[] = {"Default Size Droid Sans", "Large Size Droid Sans"};
+
+    for (int i = 0; i < ARRAY_SIZE(scaling_factors); ++i) {
         ImFontConfig config;
+        snprintf(config.Name, sizeof(config.Name), "%s", font_names[i]);
         config.OversampleV = 1;
         config.OversampleH = 3;
-        config.RasterizerMultiply = 1.f;
         config.PixelSnapH = true;
-        ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)droid_sans_mono_compressed_data, droid_sans_mono_compressed_size, 16.f, &config, ranges);
-    }
-    {
+
+        const float scl = scaling_factors[i];
+
+        // CHARACTERS
+        config.RasterizerMultiply = 1.f;
+        ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)droid_sans_mono_compressed_data, droid_sans_mono_compressed_size, 16 * scl, &config, ranges_characters);
+
         // ICONS
-        static const ImWchar ranges[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
-        ImFontConfig config;
-        config.OversampleV = 1;
-        config.OversampleH = 1;
         config.RasterizerMultiply = 0.9f;
         config.MergeMode = true;
-        config.PixelSnapH = true;
-        ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)fa_solid_compressed_data, fa_solid_compressed_size, 14.f, &config, ranges);
+        ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)fa_solid_compressed_data, fa_solid_compressed_size, 14 * scl, &config, ranges_icons);
     }
+
+    io.Fonts->Build();
 
     ImGui_ImplGlfw_InitForOpenGL(window, false);
     ImGui_ImplOpenGL3_Init("#version 150");
