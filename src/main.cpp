@@ -376,7 +376,8 @@ struct ApplicationData {
         task_system::ID evaluate_full = task_system::INVALID_ID;
         task_system::ID evaluate_filt = task_system::INVALID_ID;
         task_system::ID shape_space_evaluate = task_system::INVALID_ID;
-        task_system::ID ramachandran_compute_density = task_system::INVALID_ID;
+        task_system::ID ramachandran_compute_full_density = task_system::INVALID_ID;
+        task_system::ID ramachandran_compute_filt_density = task_system::INVALID_ID;
     } tasks;
 
     // --- ATOM SELECTION ---
@@ -453,7 +454,7 @@ struct ApplicationData {
                 double extent_in_frames = 10;
             } temporal_window;
 
-            uint64_t fingerprint;
+            uint64_t fingerprint = 0;
         } filter;
 
         struct {
@@ -624,7 +625,8 @@ struct ApplicationData {
         bool show_window = false;
 
         uint64_t backbone_fingerprint = 0;
-        uint64_t filter_fingerprint = 0;
+        uint64_t full_fingerprint = 0;
+        uint64_t filt_fingerprint = 0;
 
         rama_data_t data = {0};
         uint32_t* rama_type_indices[4] = {0};
@@ -864,22 +866,18 @@ static void draw_selection_query_window(ApplicationData* data);
 static void draw_selection_grow_window(ApplicationData* data);
 static void draw_animation_control_window(ApplicationData* data);
 static void draw_representations_window(ApplicationData* data);
-//static void draw_property_window(ApplicationData* data);
 static void draw_timeline_window(ApplicationData* data);
 static void draw_distribution_window(ApplicationData* data);
 static void draw_ramachandran_window(ApplicationData* data);
 static void draw_atom_info_window(const ApplicationData& data, int atom_idx);
 static void draw_molecule_dynamic_info_window(ApplicationData* data);
 static void draw_async_task_window(ApplicationData* data);
-//static void draw_reference_frame_window(ApplicationData* data);
 static void draw_shape_space_window(ApplicationData* data);
 static void draw_density_volume_window(ApplicationData* data);
 static void draw_script_editor_window(ApplicationData* data);
 static void draw_dataset_window(ApplicationData* data);
 static void draw_debug_window(ApplicationData* data);
 static void draw_property_export_window(ApplicationData* data);
-// static void draw_density_volume_clip_plane_widgets(ApplicationData* data);
-// static void draw_selection_window(ApplicationData* data);
 
 static void clear_gbuffer(GBuffer* gbuf);
 static void init_gbuffer(GBuffer* gbuf, int width, int height);
@@ -892,7 +890,6 @@ static void init_molecule_data(ApplicationData* data);
 static void init_trajectory_data(ApplicationData* data);
 
 static bool load_dataset_from_file(ApplicationData* data, str_t file);
-//static void free_dataset(ApplicationData* data);
 
 static void load_workspace(ApplicationData* data, str_t file);
 static void save_workspace(ApplicationData* data, str_t file);
@@ -916,9 +913,6 @@ static void recompute_atom_visibility_mask(ApplicationData* data);
 static Selection* create_selection(ApplicationData* data, str_t name, md_exp_bitfield_t* bf);
 static Selection* clone_selection(ApplicationData* data, const Selection& sel);
 static void remove_selection(ApplicationData* data, int idx);
-
-static void reset_selections(ApplicationData* data);
-static void clear_selections(ApplicationData* data);
 
 static bool filter_expression(ApplicationData* data, str_t expr, md_exp_bitfield_t* mask, bool* is_dynamic, char* error_str, int64_t error_cap);
 
@@ -965,30 +959,6 @@ static void modify_field(md_exp_bitfield_t* bf, md_range_t range, SelectionOpera
     }
 }
 
-static void clear_highlight(ApplicationData* data) {
-    ASSERT(data);
-    md_bitfield_clear(&data->selection.current_highlight_mask);
-    data->mold.dirty_buffers |= MolBit_DirtyFlags;
-}
-
-static void modify_highlight(ApplicationData* data, md_exp_bitfield_t* mask, SelectionOperator op = SelectionOperator::Set) {
-    ASSERT(data);
-    modify_field(&data->selection.current_highlight_mask, mask, op);
-    data->mold.dirty_buffers |= MolBit_DirtyFlags;
-}
-
-static void modify_highlight(ApplicationData* data, md_range_t range, SelectionOperator op = SelectionOperator::Set) {
-    ASSERT(data);
-    modify_field(&data->selection.current_highlight_mask, range, op);
-    data->mold.dirty_buffers |= MolBit_DirtyFlags;
-}
-
-static void clear_selection(ApplicationData* data) {
-    ASSERT(data);
-    md_bitfield_clear(&data->selection.current_selection_mask);
-    data->mold.dirty_buffers |= MolBit_DirtyFlags;
-}
-
 static void modify_selection(ApplicationData* data, md_exp_bitfield_t* atom_mask, SelectionOperator op = SelectionOperator::Set) {
     ASSERT(data);
     modify_field(&data->selection.current_selection_mask, atom_mask, op);
@@ -1001,8 +971,6 @@ static void modify_selection(ApplicationData* data, md_range_t range, SelectionO
     data->mold.dirty_buffers |= MolBit_DirtyFlags;
 }
 
-static void on_trajectory_load_complete(ApplicationData* data);
-
 // Global data for application
 static md_allocator_i* frame_allocator = 0;
 #if MD_DEBUG
@@ -1014,7 +982,7 @@ static md_allocator_i* persistent_allocator = default_allocator;
 #endif
 
 int main(int, char**) {
-    const int64_t stack_size = MEGABYTES(64);
+    const int64_t stack_size = MEGABYTES(128);
     void* stack_mem = md_alloc(default_allocator, stack_size);
     md_stack_allocator_t stack_alloc {};
     md_stack_allocator_init(&stack_alloc, stack_mem, stack_size);
@@ -1035,7 +1003,7 @@ int main(int, char**) {
 
     md_logger_i logger = {
         .inst = (md_logger_o*)&data.console,
-        .log = [](struct md_logger_o* inst, enum md_log_type log_type, const char* msg) {
+        .log = [](struct md_logger_o* inst, md_log_type_t log_type, const char* msg) {
             const char* modifier = "";
             switch (log_type) {
             case MD_LOG_TYPE_DEBUG:
@@ -1089,18 +1057,6 @@ int main(int, char**) {
 
     ImGui::init_theme();
 
-    /*
-    const ImU32 dihedral_colors[] = {
-        IM_COL32(255,  0,255,255),
-        IM_COL32(0,    0,255,255),
-        IM_COL32(255,255,255,255),
-        IM_COL32(255,  0,  0,255),
-        IM_COL32(255,  0,255,255)
-    };
-
-    ImPlot::AddColormap("Dihedral", dihedral_colors, ARRAY_SIZE(dihedral_colors), false);
-    */
-
     data.script.editor.SetLanguageDefinition(TextEditor::LanguageDefinition::VIAMD());
     data.script.editor.SetPalette(TextEditor::GetDarkPalette());
 
@@ -1109,10 +1065,10 @@ int main(int, char**) {
     data.script.editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(1,2,3) in resname(\"ALA\");\nv = sdf(s1, element('H'), 10.0);");
 
     reset_view(&data, true);
-    recompute_atom_visibility_mask(&data);
-
-    //init_density_volume(&data);
+    recompute_atom_visibility_mask(&data);    
     interpolate_atomic_properties(&data);
+
+    rama_init(&data.ramachandran.data);
 
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
     init_occupancy_volume(&data);
@@ -1143,6 +1099,35 @@ int main(int, char**) {
         const int64_t num_frames = md_trajectory_num_frames(&traj);
         const int64_t last_frame = MAX(0, num_frames - 1);
         const double max_frame = (double)MAX(0, last_frame);
+
+        md_bitfield_clear(&data.selection.current_highlight_mask);
+
+        // GUI
+        if (data.representations.show_window) draw_representations_window(&data);
+        if (data.timeline.show_window) draw_timeline_window(&data);
+        if (data.distributions.show_window) draw_distribution_window(&data);
+        if (data.density_volume.show_window) draw_density_volume_window(&data);
+        if (data.ramachandran.show_window) draw_ramachandran_window(&data);
+        if (data.shape_space.show_window) draw_shape_space_window(&data);
+        if (data.script.show_editor) draw_script_editor_window(&data);
+        if (data.dataset.show_window) draw_dataset_window(&data);
+        if (data.selection.query.show_window) draw_selection_query_window(&data);
+        if (data.selection.grow.show_window) draw_selection_grow_window(&data);
+        if (data.show_property_export_window) draw_property_export_window(&data);
+        if (data.show_debug_window) draw_debug_window(&data);
+        // @NOTE: ImGui::GetIO().WantCaptureMouse does not work with Menu
+        if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
+            if (data.picking.idx != INVALID_PICKING_IDX) {
+                draw_atom_info_window(data, data.picking.idx);
+            }
+        }
+
+        data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, (float)data.ctx.timing.delta_s);
+        draw_main_menu(&data);
+        draw_context_popup(&data);
+        draw_async_task_window(&data);
+        draw_animation_control_window(&data);
+        draw_molecule_dynamic_info_window(&data);
 
         // #input
         if (data.ctx.input.key.hit[KEY_CONSOLE]) {
@@ -1175,6 +1160,7 @@ int main(int, char**) {
             if (data.ctx.input.key.hit[Key::KEY_F5]) {
                 md_print(MD_LOG_TYPE_INFO, "Recompiling shaders and re-initializing volume");
                 postprocessing::initialize(data.gbuffer.width, data.gbuffer.height);
+                ramachandran::initialize();
                 volume::initialize();
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
                 cone_trace::initialize();
@@ -1397,8 +1383,7 @@ int main(int, char**) {
                     md_script_eval_interrupt(&data.mold.script.full_eval);
                 } else if (data.mold.script.ir_is_valid && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
                     data.mold.script.evaluate_full = false;
-                    data.tasks.evaluate_full = task_system::pool_enqueue("Eval Full", &data, [](void* user_data) {
-                        ApplicationData* data = (ApplicationData*)user_data;
+                    data.tasks.evaluate_full = task_system::pool_enqueue("Eval Full", [data = &data]() {
                         md_script_eval_compute(&data->mold.script.full_eval, &data->mold.script.ir, &data->mold.mol, &data->mold.traj, NULL);
                         md_semaphore_release(&data->mold.script.ir_semaphore);
                     });
@@ -1410,8 +1395,7 @@ int main(int, char**) {
                     md_script_eval_interrupt(&data.mold.script.filt_eval);
                 } else if (data.mold.script.ir_is_valid && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
                     data.mold.script.evaluate_filt = false;
-                    data.tasks.evaluate_filt = task_system::pool_enqueue("Eval Filt", &data, [](void* user_data) {
-                        ApplicationData* data = (ApplicationData*)user_data;
+                    data.tasks.evaluate_filt = task_system::pool_enqueue("Eval Filt", [data = &data]() {
                         int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
                         int32_t beg_frame = CLAMP((int64_t)data->timeline.filter.beg_frame, 0, num_frames-1);
                         int32_t end_frame = CLAMP((int64_t)data->timeline.filter.end_frame, 0, num_frames);
@@ -1425,6 +1409,7 @@ int main(int, char**) {
                 }
             }
         }
+
 
 #if 0
         PUSH_CPU_SECTION("Hydrogen bonds")
@@ -1444,9 +1429,9 @@ int main(int, char**) {
             postprocessing::initialize(data.gbuffer.width, data.gbuffer.height);
         }
 
+        update_md_buffers(&data);
         update_display_properties(&data);
         update_view_param(&data);
-        update_md_buffers(&data);
 
         if (data.ramachandran.backbone_fingerprint != data.trajectory_data.backbone_angles.fingerprint) {
             data.ramachandran.backbone_fingerprint = data.trajectory_data.backbone_angles.fingerprint;
@@ -1465,25 +1450,31 @@ int main(int, char**) {
                 default: break;
                 }
             }
-
-            const uint32_t* indices[4] = {
-                data.ramachandran.rama_type_indices[0],
-                data.ramachandran.rama_type_indices[1],
-                data.ramachandran.rama_type_indices[2],
-                data.ramachandran.rama_type_indices[3],
-            };
-
-            const uint32_t frame_beg = 0;
-            const uint32_t frame_end = (uint32_t)num_frames;
-            const uint32_t frame_stride = (uint32_t)data.trajectory_data.backbone_angles.stride;
-
-            rama_init(&data.ramachandran.data);
-            rama_rep_compute_density(&data.ramachandran.data.full, data.trajectory_data.backbone_angles.data, indices, frame_beg, frame_end, frame_stride);
         }
 
-        if (data.ramachandran.filter_fingerprint != data.timeline.filter.fingerprint) {
-            if (!task_system::task_is_running(data.tasks.ramachandran_compute_density)) {
-                data.ramachandran.filter_fingerprint = data.timeline.filter.fingerprint;
+        if (data.ramachandran.full_fingerprint != data.trajectory_data.backbone_angles.fingerprint) {
+            if (!task_system::task_is_running(data.tasks.ramachandran_compute_full_density)) {
+                data.ramachandran.full_fingerprint = data.trajectory_data.backbone_angles.fingerprint;
+                const uint32_t* indices[4] = {
+                    data.ramachandran.rama_type_indices[0],
+                    data.ramachandran.rama_type_indices[1],
+                    data.ramachandran.rama_type_indices[2],
+                    data.ramachandran.rama_type_indices[3],
+                };
+
+                const uint32_t frame_beg = 0;
+                const uint32_t frame_end = (uint32_t)num_frames;
+                const uint32_t frame_stride = (uint32_t)data.trajectory_data.backbone_angles.stride;
+
+                data.tasks.ramachandran_compute_full_density = rama_rep_compute_density(&data.ramachandran.data.full, data.trajectory_data.backbone_angles.data, indices, frame_beg, frame_end, frame_stride);
+            } else {
+                task_system::task_interrupt(data.tasks.ramachandran_compute_full_density);
+            }
+        }
+
+        if (data.ramachandran.filt_fingerprint != data.timeline.filter.fingerprint) {
+            if (!task_system::task_is_running(data.tasks.ramachandran_compute_filt_density)) {
+                data.ramachandran.filt_fingerprint = data.timeline.filter.fingerprint;
 
                 const uint32_t* indices[4] = {
                     data.ramachandran.rama_type_indices[0],
@@ -1496,10 +1487,10 @@ int main(int, char**) {
                 const uint32_t frame_end = (uint32_t)data.timeline.filter.end_frame;
                 const uint32_t frame_stride = (uint32_t)data.trajectory_data.backbone_angles.stride;
 
-                data.tasks.ramachandran_compute_density = rama_rep_compute_density(&data.ramachandran.data.filt, data.trajectory_data.backbone_angles.data, indices, frame_beg, frame_end, frame_stride);
+                data.tasks.ramachandran_compute_filt_density = rama_rep_compute_density(&data.ramachandran.data.filt, data.trajectory_data.backbone_angles.data, indices, frame_beg, frame_end, frame_stride);
             }
             else {
-                task_system::task_interrupt(data.tasks.ramachandran_compute_density);
+                task_system::task_interrupt(data.tasks.ramachandran_compute_filt_density);
             }
         }
 
@@ -1519,6 +1510,7 @@ int main(int, char**) {
             POP_GPU_SECTION()
         }
 #endif
+
         handle_picking(&data);
 
         // Activate backbuffer
@@ -1530,35 +1522,6 @@ int main(int, char**) {
 
         apply_postprocessing(data);
 
-        clear_highlight(&data);
-
-        // GUI
-        if (data.representations.show_window) draw_representations_window(&data);
-        if (data.timeline.show_window) draw_timeline_window(&data);
-        if (data.distributions.show_window) draw_distribution_window(&data);
-        if (data.density_volume.show_window) draw_density_volume_window(&data);
-        if (data.ramachandran.show_window) draw_ramachandran_window(&data);
-        if (data.shape_space.show_window) draw_shape_space_window(&data);
-        if (data.script.show_editor) draw_script_editor_window(&data);
-        if (data.dataset.show_window) draw_dataset_window(&data);
-        if (data.selection.query.show_window) draw_selection_query_window(&data);
-        if (data.selection.grow.show_window) draw_selection_grow_window(&data);
-        if (data.show_property_export_window) draw_property_export_window(&data);
-        if (data.show_debug_window) draw_debug_window(&data);
-        // @NOTE: ImGui::GetIO().WantCaptureMouse does not work with Menu
-        if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
-            if (data.picking.idx != INVALID_PICKING_IDX) {
-                draw_atom_info_window(data, data.picking.idx);
-            }
-        }
-
-
-        data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, (float)data.ctx.timing.delta_s);
-        draw_main_menu(&data);
-        draw_context_popup(&data);
-        draw_async_task_window(&data);
-        draw_animation_control_window(&data);
-        draw_molecule_dynamic_info_window(&data);
 
         PUSH_GPU_SECTION("Imgui render")
         application::render_imgui(&data.ctx);
@@ -1567,7 +1530,7 @@ int main(int, char**) {
         // Swap buffers
         application::swap_buffers(&data.ctx);
 
-        task_system::main_execute_tasks();
+        task_system::execute_tasks();
 
         // Reset frame allocator
         md_stack_allocator_reset(&stack_alloc);
@@ -3881,7 +3844,6 @@ static void draw_distribution_window(ApplicationData* data) {
                     ImPlot::SetNextLineStyle(ImVec4(0,0,0,0), 0);
                     ImPlot::PlotBarsG("filt", getter, &plot_data, num_bins, bar_width);
                 }
-                //ImPlot::PlotHistogram(label, prop.data.values, prop.data.num_values, bins, false, false, range);
 
                 if (data->distributions.filter.enabled) {
                     if ((is_active || is_hovered) && ImGui::IsMouseClicked(0)) {
@@ -4077,8 +4039,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                         md_array_resize(data->shape_space.coords, num_frames * data->shape_space.num_structures, persistent_allocator);
                         md_array_resize(data->shape_space.weights, num_frames * data->shape_space.num_structures, persistent_allocator);
 
-                        data->tasks.shape_space_evaluate = task_system::pool_enqueue("Eval Shape Space", data, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
-                            ApplicationData* data = (ApplicationData*)user_data;
+                        data->tasks.shape_space_evaluate = task_system::pool_enqueue("Eval Shape Space", (uint32_t)num_frames, [data](uint32_t range_beg, uint32_t range_end) {
                             int64_t stride = ROUND_UP(data->mold.mol.atom.count, md_simd_widthf);
                             float* coords = (float*)md_alloc(default_allocator, stride * 3 * sizeof(float));
                             float* x = coords + stride * 0;
@@ -4132,90 +4093,105 @@ static void draw_shape_space_window(ApplicationData* data) {
 
 static void draw_ramachandran_window(ApplicationData* data) {
     if (ImGui::Begin("Ramachandran", &data->ramachandran.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_MenuBar)) {
+        enum RamachandranDisplayMode {
+            IsoLevels,
+            IsoLines,
+            Colormap,
+        };
+
+        constexpr const char* plot_labels[4] = {"General", "Glycine", "Proline", "Pre-Proline"};
+        constexpr const char* headers[3] = { "Reference", "Full Trajectory", "Filtered Trajectory" };
+        constexpr const char* option_label[3] = { "IsoLevels", "IsoLines", "Colormap" };
+
+        constexpr const float min_ext = -180.0f;
+        constexpr const float max_ext = 180.0f;
+        constexpr const float reset_coords[2] = { min_ext, max_ext };
+        constexpr const char* x_lbl = "\xc2\xb0\xcf\x86";   // utf8 Degree Phi
+        constexpr const char* y_lbl = "\xc2\xb0\xcf\x88";   // utf8 Degree Psi
+
+        constexpr const ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_AntiAliased | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect;
+        constexpr const ImPlotFlags subplotflags = ImPlotSubplotFlags_NoResize | ImPlotSubplotFlags_NoMenus;
+        constexpr const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_Foreground | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels;
 
         static ImPlotRect selection_rect;
         static SelectionOperator op = SelectionOperator::Or;
         static bool is_selecting[4] = {false, false, false, false};
         
-        static float ref_alpha  = 0.8f;
-        static float full_alpha = 0.8f;
-        static float filt_alpha = 0.8f;
+        static float ref_alpha  = 0.85f;
+        static float full_alpha = 0.85f;
+        static float filt_alpha = 0.85f;
 
-        const char* plot_labels[4] = {"General", "Glycine", "Proline", "Pre-Proline"};
+        static RamachandranDisplayMode display_mode[3] = { IsoLevels, IsoLines, IsoLines };
+        static ImPlotColormap colormap[3] = { ImPlotColormap_Hot, ImPlotColormap_Plasma, ImPlotColormap_Viridis };
+        static vec4_t isoline_colors[3]   = { {1,1,1,1}, {1,1,1,1}, {1,1,1,1} };
 
-        static ImPlotColormap colormap[2] = { ImPlotColormap_Hot, ImPlotColormap_Hot };
-        static vec2_t colormap_range[2] = { {0, 1}, {0, 1} };
+        static int layout_mode = 0;
 
-        const char* headers[2] = { "Full Trajectory", "Filtered Trajectory" };
-        const char* option_label[2] = { "Colormap", "Isovalues" };
-        static int option[2] = { 0,0 };
-
-        static int view_option = 0;
+        static ImPlotRect viewrect = ImPlotRect(min_ext, max_ext, min_ext, max_ext);
+        if (viewrect.Size().x < 1) {
+            viewrect.X.Max = viewrect.X.Min + 1;
+        }
+        if (viewrect.Size().y < 1) {
+            viewrect.Y.Max = viewrect.Y.Min + 1;
+        }
 
         if (ImGui::BeginMenuBar()) {
-            if (ImGui::BeginMenu("Settings")) {
-                ImGui::ColorEdit4("current color", data->ramachandran.style.base_color.elem);
-                ImGui::SliderFloat("current radius", &data->ramachandran.style.base_radius, 1.0f, 10.0f);
-
-                for (int i = 0; i < 2; ++i) {
-                    if (ImGui::BeginCombo(headers[i], option_label[option[i]])) {
-                        if (ImGui::Selectable(option_label[0], option[i] == 0)) option[i] = 0;
-                        if (ImGui::Selectable(option_label[1], option[i] == 1)) option[i] = 1;
+            if (ImGui::BeginMenu("Display")) {
+                ImGui::Text("Current");
+                ImGui::SliderFloat("##Size", &data->ramachandran.style.base_radius, 1.0f, 10.0f);
+                ImGui::SameLine();
+                ImGui::ColorEdit4Minimal("##Color", data->ramachandran.style.base_color.elem);
+                ImGui::Separator();
+                ImGui::Text("Layers");
+                for (int i = 0; i < 3; ++i) {
+                    ImGui::PushID(i);
+                    if (ImGui::BeginCombo(headers[i], option_label[display_mode[i]])) {
+                        if (ImGui::Selectable(option_label[IsoLevels], display_mode[i] == IsoLevels)) display_mode[i] = IsoLevels;
+                        if (ImGui::Selectable(option_label[IsoLines],  display_mode[i] == IsoLines))  display_mode[i] = IsoLines;
+                        if (ImGui::Selectable(option_label[Colormap],  display_mode[i] == Colormap))  display_mode[i] = Colormap;
                         ImGui::EndCombo();
                     }
-                    ImPlot::ColorMapSelection(headers[i], &colormap[i], &colormap_range[i].x, &colormap_range[i].y);
+                    if (display_mode[i] == Colormap) {
+                        ImPlot::ColorMapSelection("##Colormap", &colormap[i]);
+                    } else if (display_mode[i] == IsoLines) {
+                        ImGui::ColorEdit4Minimal("##IsoLineColor", isoline_colors[i].elem);
+                    }
+                    ImGui::PopID();
                 }
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("View")) {
-                if (ImGui::Selectable("Side-By-Side", view_option == 0)) view_option = 0;
-                if (ImGui::Selectable("General",      view_option == 1)) view_option = 1;
-                if (ImGui::Selectable("Glycine",      view_option == 2)) view_option = 2;
-                if (ImGui::Selectable("Proline",      view_option == 3)) view_option = 3;
-                if (ImGui::Selectable("Preproline",   view_option == 4)) view_option = 4;
+                if (ImGui::Selectable("Side-By-Side", layout_mode == 0)) layout_mode = 0;
+                if (ImGui::Selectable("General",      layout_mode == 1)) layout_mode = 1;
+                if (ImGui::Selectable("Glycine",      layout_mode == 2)) layout_mode = 2;
+                if (ImGui::Selectable("Proline",      layout_mode == 3)) layout_mode = 3;
+                if (ImGui::Selectable("Preproline",   layout_mode == 4)) layout_mode = 4;
                 ImGui::EndMenu();
             }
             ImGui::EndMenuBar();
         }
 
-        const int plot_offset = MAX(0, view_option - 1);
-        const int plot_cols = (view_option == 0) ? 2 : 1;
-        const int plot_rows = (view_option == 0) ? 2 : 1;
-        const int num_plots = plot_cols * plot_rows;
-
         const auto& mol = data->mold.mol;
-        const float min_ext = -180.0f;
-        const float max_ext =  180.0f;
+        md_exp_bitfield_t* selection_mask = &data->selection.current_selection_mask;
+        md_exp_bitfield_t* highlight_mask = &data->selection.current_highlight_mask;
 
-        const uint32_t rama_ref_col  = ImColor(1.0f, 1.0f, 1.0f, ref_alpha);
-        const uint32_t rama_full_col = ImColor(1.0f, 1.0f, 1.0f, full_alpha);
-        const uint32_t rama_filt_col = ImColor(1.0f, 1.0f, 1.0f, filt_alpha);
-
-        md_exp_bitfield_t* atom_selection = &data->selection.current_selection_mask;
-        md_exp_bitfield_t* atom_highlight = &data->selection.current_highlight_mask;
-
-        const float reset[2] = {min_ext, max_ext};
-        const char* x_lbl = (const char*)(u8"φ");
-        const char* y_lbl = (const char*)(u8"ψ");
-
-        const ImPlotFlags flags          = ImPlotFlags_Equal | ImPlotFlags_AntiAliased | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect;
-        const ImPlotFlags subplotflags   = ImPlotSubplotFlags_NoResize | ImPlotSubplotFlags_NoMenus;
-        const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_Foreground | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels;
+        const int plot_offset = MAX(0, layout_mode - 1);
+        const int plot_cols = (layout_mode == 0) ? 2 : 1;
+        const int plot_rows = (layout_mode == 0) ? 2 : 1;
+        const int num_plots = plot_cols * plot_rows;
 
         ImPlotInputMap& map = ImPlot::GetInputMap();
         map.OverrideMod = ImGuiKeyModFlags_Shift;
 
-        static ImPlotRect viewrect = {min_ext, min_ext, max_ext, max_ext};
-
         auto formatter = [](double value, char* buff, int size, void* user_data) {
+            const char* suffix = (const char*)user_data;
             value = deperiodize(value, 0, 360.0);
-            snprintf(buff, size, "%g", value);
+            snprintf(buff, size, "%g%s", value, suffix);
         };
 
-        md_ramachandran_type_t plot_types[4] = { MD_RAMACHANDRAN_TYPE_GENERAL, MD_RAMACHANDRAN_TYPE_GLYCINE, MD_RAMACHANDRAN_TYPE_PROLINE, MD_RAMACHANDRAN_TYPE_PREPROL};
+        ImVec2 plot_size = {0,0};
 
         if (ImPlot::BeginSubplots("##Ramaplots", plot_rows, plot_cols, ImVec2(-1, -1), subplotflags | ImPlotSubplotFlags_ShareItems)) {
-
             for (int plot_idx = plot_offset; plot_idx < plot_offset + num_plots; ++plot_idx) {
                 if (ImPlot::BeginPlot(plot_labels[plot_idx], ImVec2(), flags)) {
                     ImPlotPoint view_mid = { (viewrect.X.Min + viewrect.X.Max) * 0.5, (viewrect.Y.Min + viewrect.Y.Max) * 0.5 };
@@ -4224,8 +4200,8 @@ static void draw_ramachandran_window(ApplicationData* data) {
                     ImPlot::SetupAxisLinks(ImAxis_X1, &viewrect.X.Min, &viewrect.X.Max);
                     ImPlot::SetupAxisLinks(ImAxis_Y1, &viewrect.Y.Min, &viewrect.Y.Max);
                     ImPlot::SetupAxes(x_lbl, y_lbl, axis_flags, axis_flags);
-                    ImPlot::SetupAxisFormat(ImAxis_X1, formatter);
-                    ImPlot::SetupAxisFormat(ImAxis_Y1, formatter);
+                    ImPlot::SetupAxisFormat(ImAxis_X1, formatter, (void*)x_lbl);
+                    ImPlot::SetupAxisFormat(ImAxis_Y1, formatter, (void*)y_lbl);
 
                     ImPlot::SetupFinish();
 
@@ -4234,7 +4210,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
                     ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_Square);
                     ImPlot::PushStyleColor(ImPlotCol_MarkerFill, ImVec4(0,0,0,0));
                     ImPlot::PushStyleColor(ImPlotCol_MarkerOutline, ImVec4(0,0,0,0));
-                    ImPlot::PlotScatter("##Hidden reset helper", reset, reset, 2);
+                    ImPlot::PlotScatter("##Hidden reset helper", reset_coords, reset_coords, 2);
                     ImPlot::PopStyleColor(2);
                     ImPlot::PopStyleVar();
 
@@ -4243,32 +4219,44 @@ static void draw_ramachandran_window(ApplicationData* data) {
                     ImPlot::PlotDummy("Filtered");
                     ImPlot::PlotDummy("Current");
 
+                    ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(3)->Color = 0xFFFFFFFF;
+
                     bool show_ref  = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(0)->Show;
                     bool show_full = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(1)->Show;
                     bool show_filt = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(2)->Show;
                     bool show_curr = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(3)->Show;
 
+                    ImVec2 plot_min = ImPlot::PlotToPixels(viewrect.Min());
+                    ImVec2 plot_max = ImPlot::PlotToPixels(viewrect.Max());
+                    plot_size = { fabsf(plot_max.x - plot_min.x), fabsf(plot_max.y - plot_min.y) };
+
                     if (show_ref || show_full || show_filt) {
                         ImPlot::PushPlotClipRect();
                         ImDrawList* dl = ImPlot::GetPlotDrawList();
 
-                        if (show_ref)  dl->AddImage((ImTextureID)(intptr_t)data->ramachandran.data.ref.iso_tex[plot_idx],  ImPlot::PlotToPixels(viewrect.Min()), ImPlot::PlotToPixels(viewrect.Max()), {0,0}, {1,1}, rama_ref_col);
-                        if (show_full) dl->AddImage((ImTextureID)(intptr_t)data->ramachandran.data.full.map_tex[plot_idx], ImPlot::PlotToPixels(viewrect.Min()), ImPlot::PlotToPixels(viewrect.Max()), {0,0}, {1,1}, rama_full_col);
-                        if (show_filt) dl->AddImage((ImTextureID)(intptr_t)data->ramachandran.data.filt.map_tex[plot_idx], ImPlot::PlotToPixels(viewrect.Min()), ImPlot::PlotToPixels(viewrect.Max()), {0,0}, {1,1}, rama_filt_col);
+                        const uint32_t ref_tex  = display_mode[0] == Colormap ? data->ramachandran.data.ref.map_tex[plot_idx]  : data->ramachandran.data.ref.iso_tex[plot_idx];
+                        const uint32_t full_tex = display_mode[1] == Colormap ? data->ramachandran.data.full.map_tex[plot_idx] : data->ramachandran.data.full.iso_tex[plot_idx];
+                        const uint32_t filt_tex = display_mode[2] == Colormap ? data->ramachandran.data.filt.map_tex[plot_idx] : data->ramachandran.data.filt.iso_tex[plot_idx];
+
+                        if (show_ref)  dl->AddImage((ImTextureID)(intptr_t)ref_tex,  plot_min, plot_max, {0,0}, {1,1}, ImColor(1.0f, 1.0f, 1.0f, ref_alpha));
+                        if (show_full) dl->AddImage((ImTextureID)(intptr_t)full_tex, plot_min, plot_max, {0,0}, {1,1}, ImColor(1.0f, 1.0f, 1.0f, full_alpha));
+                        if (show_filt) dl->AddImage((ImTextureID)(intptr_t)filt_tex, plot_min, plot_max, {0,0}, {1,1}, ImColor(1.0f, 1.0f, 1.0f, filt_alpha));
 
                         ImPlot::PopPlotClipRect();
                     }
 
-                    bool hovered = ImPlot::IsPlotHovered();
-                    bool shift   = ImGui::GetIO().KeyShift;
+                    const bool hovered = ImPlot::IsPlotHovered();
+                    const bool shift   = ImGui::GetIO().KeyShift;
                     ImPlotPoint mouse_coord = ImPlot::GetPlotMousePos();
 
                     if (is_selecting[plot_idx]) {
-                        modify_highlight(data, &data->selection.current_selection_mask, SelectionOperator::Set);
+                        data->mold.dirty_buffers |= MolBit_DirtyFlags;
                         selection_rect.X.Max = mouse_coord.x;
                         selection_rect.Y.Max = mouse_coord.y;
-
-                        ImPlot::DragRect(0, &selection_rect.X.Min, &selection_rect.Y.Min, &selection_rect.X.Max, &selection_rect.Y.Max, ImVec4(0,0,0,0.5f), ImPlotDragToolFlags_NoInputs);
+                        if (selection_rect.Size().x != 0 && selection_rect.Size().y != 0) {
+                            md_bitfield_copy(highlight_mask, selection_mask);
+                            ImPlot::DragRect(0, &selection_rect.X.Min, &selection_rect.Y.Min, &selection_rect.X.Max, &selection_rect.Y.Max, ImVec4(0,0,0,0.5f), ImPlotDragToolFlags_NoInputs);
+                        }
 
                         if (!shift) {
                             is_selecting[plot_idx] = false;
@@ -4310,21 +4298,23 @@ static void draw_ramachandran_window(ApplicationData* data) {
                                 if (min_x <= coord.x && coord.x <= max_x && min_y <= coord.y && coord.y <= max_y) {
                                     md_residue_idx_t res_idx = mol.backbone.residue_idx[idx];
                                     if (res_idx < mol.residue.count) {
-                                        modify_highlight(data, mol.residue.atom_range[res_idx], op);
+                                        modify_field(highlight_mask, mol.residue.atom_range[res_idx], op);
                                     }
                                 }
                             }
-                            double d2 = (coord.x - mouse_coord.x) * (coord.x - mouse_coord.x) + (coord.y - mouse_coord.y) * (coord.y - mouse_coord.y);
-                            if (d2 < cut_d2 && d2 < min_d2) {
-                                min_d2 = d2;
-                                mouse_hover_idx = idx;
+                            if (hovered) {
+                                double d2 = (coord.x - mouse_coord.x) * (coord.x - mouse_coord.x) + (coord.y - mouse_coord.y) * (coord.y - mouse_coord.y);
+                                if (d2 < cut_d2 && d2 < min_d2) {
+                                    min_d2 = d2;
+                                    mouse_hover_idx = idx;
+                                }
                             }
                         }
 
                         if (mouse_hover_idx != -1) {
                             md_residue_idx_t res_idx = mol.backbone.residue_idx[mouse_hover_idx];
                             if (res_idx < mol.residue.count) {
-                                modify_highlight(data, mol.residue.atom_range[res_idx], SelectionOperator::Or);
+                                modify_field(highlight_mask, mol.residue.atom_range[res_idx], SelectionOperator::Or);
                             }
                         }
 
@@ -4336,11 +4326,11 @@ static void draw_ramachandran_window(ApplicationData* data) {
                             if (mol.backbone.angle[idx].phi == 0 && mol.backbone.angle[idx].psi == 0) continue;
 
                             int64_t atom_idx = mol.backbone.atoms[idx].ca;
-                            if (md_bitfield_test_bit(&data->selection.current_highlight_mask, atom_idx)) {
+                            if (md_bitfield_test_bit(highlight_mask, atom_idx)) {
                                 md_array_push(highlight_indices, idx, frame_allocator);
                             }
 
-                            if (md_bitfield_test_bit(&data->selection.current_selection_mask, atom_idx)) {
+                            if (md_bitfield_test_bit(selection_mask, atom_idx)) {
                                 md_array_push(selection_indices, idx, frame_allocator);
                             }
                         }
@@ -4384,17 +4374,24 @@ static void draw_ramachandran_window(ApplicationData* data) {
                         }
                     }
 
-                    if (is_selecting[plot_idx]) {
-                        if (ImGui::IsMouseReleased(0) || ImGui::IsMouseReleased(1)) {
+                    if (ImGui::IsMouseReleased(0) || ImGui::IsMouseReleased(1)) {
+                        if (is_selecting[plot_idx]) {
                             is_selecting[plot_idx] = false;
                             auto size = selection_rect.Size();
-                            if (size.x == 0 && size.y == 0 && ImGui::IsMouseReleased(1)) {
-                                clear_selection(data);
+                            if (size.x == 0 && size.y == 0) {
+                                if (mouse_hover_idx != -1) {
+                                    modify_field(selection_mask, highlight_mask, op);
+                                } else {
+                                    if (ImGui::IsMouseReleased(1)) {
+                                        md_bitfield_clear(selection_mask);
+                                    }
+                                }
                             }
                             else {
-                                modify_selection(data, &data->selection.current_highlight_mask, SelectionOperator::Set);
+                                // Commit whatever is in the highlight mask
+                                modify_field(selection_mask, highlight_mask, SelectionOperator::Set);
                             }
-                        }
+                        } 
                     }
 
                     ImPlot::EndPlot();
@@ -4442,118 +4439,140 @@ static void draw_ramachandran_window(ApplicationData* data) {
         vec4_t viewport = { (float)viewrect.X.Min / 180.0f, (float)viewrect.Y.Min / 180.0f, (float)viewrect.X.Max / 180.0f, (float)viewrect.Y.Max / 180.0f };
         viewport = viewport * 0.5f + 0.5f;
 
-        // Fill in colors based on active color_map
-        uint32_t colors[2][32] = { 0 };
-        uint32_t num_colors[2] = { 0 };
-        for (uint32_t idx = 0; idx < 2; ++idx) {
-            num_colors[idx] = ImPlot::GetColormapSize(colormap[idx]);
-            for (uint32_t i = 0; i < num_colors[idx]; ++i) {
-                colors[idx][i] = ImPlot::GetColormapColorU32(i, colormap[idx]);
-            }
-            // Mask off the first color to be transparent
-            colors[idx][0] = colors[idx][0] & 0x00FFFFFFU;
-        }
+        const float* ref_sum = data->ramachandran.data.ref.den_sum;
+        const float* full_sum = data->ramachandran.data.full.den_sum;
+        const float* filt_sum = data->ramachandran.data.filt.den_sum;
 
-        rama_colormap_t full_colormaps[4] = {
-            {
-                .colors = colors[0],
-                .count = num_colors[0],
-                .min_value = colormap_range[0].x,
-                .max_value = colormap_range[0].y,
-            },
-            {
-                .colors = colors[0],
-                .count = num_colors[0],
-                .min_value = colormap_range[0].x,
-                .max_value = colormap_range[0].y,
-            },            
-            {
-                .colors = colors[0],
-                .count = num_colors[0],
-                .min_value = colormap_range[0].x,
-                .max_value = colormap_range[0].y,
-            },
-            {
-                .colors = colors[0],
-                .count = num_colors[0],
-                .min_value = colormap_range[0].x,
-                .max_value = colormap_range[0].y,
-            },
-        };
-
-        rama_colormap_t filt_colormaps[4] = {
-            {
-                .colors = colors[1],
-                .count = num_colors[1],
-                .min_value = colormap_range[1].x,
-                .max_value = colormap_range[1].y,
-            },
-            {
-                .colors = colors[1],
-                .count = num_colors[1],
-                .min_value = colormap_range[1].x,
-                .max_value = colormap_range[1].y,
-            },
-            {
-                .colors = colors[1],
-                .count = num_colors[1],
-                .min_value = colormap_range[1].x,
-                .max_value = colormap_range[1].y,
-            },
-            {
-                .colors = colors[1],
-                .count = num_colors[1],
-                .min_value = colormap_range[1].x,
-                .max_value = colormap_range[1].y,
-            },
-        };
-
-        const float iso_values[4][3] = {
+        const float ref_iso_values[4][3] = {
             {0, 0.0005, 0.02},
-            {0, 0.002,  0.02},
-            {0, 0.002,  0.02},
-            {0, 0.002,  0.02}
+            {0, 0.0020, 0.02},
+            {0, 0.0020, 0.02},
+            {0, 0.0020, 0.02},
         };
 
-        const uint32_t iso_colors[4][3] = {
-            {0x00FFFFFF, 0xFFFFE8B3, 0xFFFFD97F},
-            {0x00FFFFFF, 0xFFC5E8FF, 0xFF7FCCFF},
-            {0x00FFFFFF, 0xFFC5FFD0, 0xFF8CFF7F},
-            {0x00FFFFFF, 0xFFFFE8B3, 0xFFFFD97F}
-        };
-
-        const rama_isomap_t isomaps[4] = {
-            {
-                .values = iso_values[0],
-                .colors = iso_colors[0],
-                .count = 3
-            },
-            {
-                .values = iso_values[1],
-                .colors = iso_colors[1],
-                .count = 3
-            },
-            {
-                .values = iso_values[2],
-                .colors = iso_colors[2],
-                .count = 3
-            },
-            {
-                .values = iso_values[3],
-                .colors = iso_colors[3],
-                .count = 3
-            },
+        const uint32_t ref_iso_level_colors[4][3] = {
+            {0x00000000, 0xFFFFE8B3, 0xFFFFD97F},
+            {0x00000000, 0xFFC5E8FF, 0xFF7FCCFF},
+            {0x00000000, 0xFFC5FFD0, 0xFF8CFF7F},
+            {0x00000000, 0xFFFFE8B3, 0xFFFFD97F}
         };
 
         PUSH_GPU_SECTION("RENDER RAMA");
-        //rama_rep_render_map(&data->ramachandran.data.ref, viewport.elem, colormaps);
-        rama_rep_render_iso(&data->ramachandran.data.ref, viewport.elem, isomaps);
 
-        rama_rep_render_map(&data->ramachandran.data.full, viewport.elem, full_colormaps);
-        rama_rep_render_iso(&data->ramachandran.data.full, viewport.elem, isomaps);
+        uint32_t tex_dim = (uint32_t)MAX(plot_size.x, plot_size.y);
 
-        rama_rep_render_map(&data->ramachandran.data.filt, viewport.elem, filt_colormaps);
-        rama_rep_render_iso(&data->ramachandran.data.filt, viewport.elem, isomaps);
+        rama_rep_t* reps[3] = {
+            &data->ramachandran.data.ref,
+            &data->ramachandran.data.full,
+            &data->ramachandran.data.filt
+        };
+
+        const float scl[3][4] = {
+            { 1.0f, 1.0f, 1.0f, 1.0f },
+            { full_sum[0] / ref_sum[0], full_sum[1] / ref_sum[1], full_sum[2] / ref_sum[2], full_sum[3] / ref_sum[3] },
+            { filt_sum[0] / ref_sum[0], filt_sum[1] / ref_sum[1], filt_sum[2] / ref_sum[2], filt_sum[3] / ref_sum[3] },
+        };
+
+        for (int i = 0; i < 3; ++i) {
+            if (display_mode[i] == IsoLevels || display_mode[i] == IsoLines) {
+                const uint32_t count = 3;
+                uint32_t colors[4][count] = {0};
+                uint32_t lines[4][count] = {0};
+                float values[4][count] = {0};
+
+                memcpy(values, ref_iso_values, sizeof(ref_iso_values));
+                for (int j = 0; j < count; ++j) {
+                    values[0][j] *= MAX(scl[i][0], FLT_EPSILON);
+                    values[1][j] *= MAX(scl[i][1], FLT_EPSILON);
+                    values[2][j] *= MAX(scl[i][2], FLT_EPSILON);
+                    values[3][j] *= MAX(scl[i][3], FLT_EPSILON);
+                }
+
+                if (display_mode[i] == IsoLevels) {
+                    memcpy(colors, ref_iso_level_colors, sizeof(colors));
+                    memcpy(lines,  ref_iso_level_colors, sizeof(lines));
+                }
+                else {
+                    uint32_t line_colors[3] = {
+                        0,
+                        convert_color(vec4_from_vec3(hcl_to_rgb(rgb_to_hcl(vec3_from_vec4(isoline_colors[i])) * vec3_t { 1.0f, 0.5f, 1.0f }), isoline_colors[i].w)),
+                        convert_color(vec4_from_vec3(hcl_to_rgb(rgb_to_hcl(vec3_from_vec4(isoline_colors[i])) * vec3_t { 1.0f, 1.0f, 1.0f }), isoline_colors[i].w))
+                    };
+                    for (int j = 0; j < 4; ++j) {
+                        lines[j][0] = line_colors[0];
+                        lines[j][1] = line_colors[1];
+                        lines[j][2] = line_colors[2];
+                    }
+                }
+
+                rama_isomap_t maps[4] = {
+                    {
+                        .values = values[0],
+                        .level_colors = colors[0],
+                        .contour_colors = lines[0],
+                        .count = count,
+                    },
+                    {
+                        .values = values[1],
+                        .level_colors = colors[1],
+                        .contour_colors = lines[1],
+                        .count = count,
+                    },
+                    {
+                        .values = values[2],
+                        .level_colors = colors[2],
+                        .contour_colors = lines[2],
+                        .count = count,
+                    },
+                    {
+                        .values = values[3],
+                        .level_colors = colors[3],
+                        .contour_colors = lines[3],
+                        .count = count,
+                    },
+                };
+
+                rama_rep_render_iso(reps[i], viewport.elem, maps, tex_dim);
+            } else if (display_mode[i] == Colormap){
+                // Fill in colors based on active color_map
+                uint32_t colors[32] = {0};
+                uint32_t num_colors = ImPlot::GetColormapSize(colormap[i]);
+                for (uint32_t j = 0; j < num_colors; ++j) {
+                    colors[j] = ImPlot::GetColormapColorU32(j, colormap[i]);
+                }
+                // Mask off the first color to be transparent
+                colors[0] = colors[0] & 0x00FFFFFFU;
+
+                rama_colormap_t maps[4] = {
+                    {
+                        .colors = colors,
+                        .count = num_colors,
+                        .min_value = 0,
+                        .max_value = 0.5f * scl[i][0],
+                    },
+                    {
+                        .colors = colors,
+                        .count = num_colors,
+                        .min_value = 0,
+                        .max_value = 0.5f * scl[i][1],
+                    },
+                    {
+                        .colors = colors,
+                        .count = num_colors,
+                        .min_value = 0,
+                        .max_value = 0.5f * scl[i][2],
+                    },
+                    {
+                        .colors = colors,
+                        .count = num_colors,
+                        .min_value = 0,
+                        .max_value = 0.5f * scl[i][3],
+                    },
+                };
+                rama_rep_render_map(reps[i], viewport.elem, maps, tex_dim);
+            }
+        }
+
         POP_GPU_SECTION();
 
         ImPlot::MapInputDefault();
@@ -5371,7 +5390,6 @@ static void draw_property_export_window(ApplicationData* data) {
 
     ExportFormat volume_formats[] {
         {make_cstr("Gaussian Cube"), make_cstr("cube")},
-        //{make_cstr("DAT + RAW"), make_cstr("dat")},
     };
 
     if (ImGui::Begin("Property Export", &data->show_property_export_window)) {
@@ -5587,8 +5605,6 @@ static void draw_property_export_window(ApplicationData* data) {
     ImGui::End();
 }
 
-// static void draw_density_volume_clip_plane_widgets(ApplicationData* data) { ASSERT(data); }
-
 // #gbuffer
 static void init_gbuffer(GBuffer* gbuf, int width, int height) {
     ASSERT(gbuf);
@@ -5751,7 +5767,8 @@ static void interrupt_async_tasks(ApplicationData* data) {
     task_system::task_wait_for(data->tasks.evaluate_full);
     task_system::task_wait_for(data->tasks.evaluate_filt);
     task_system::task_wait_for(data->tasks.prefetch_frames);
-    task_system::task_wait_for(data->tasks.ramachandran_compute_density);
+    task_system::task_wait_for(data->tasks.ramachandran_compute_full_density);
+    task_system::task_wait_for(data->tasks.ramachandran_compute_filt_density);
     task_system::task_wait_for(data->tasks.shape_space_evaluate);
 }
 
@@ -5834,8 +5851,8 @@ static void init_trajectory_data(ApplicationData* data) {
 
             // Launch work to compute the values
             task_system::task_interrupt_and_wait_for(data->tasks.backbone_computations);
-            data->tasks.backbone_computations = task_system::pool_enqueue("Backbone Operations", data, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
-                ApplicationData* data = (ApplicationData*)user_data;
+
+            data->tasks.backbone_computations = task_system::pool_enqueue("Backbone Operations", (uint32_t)num_frames, [data](uint32_t range_beg, uint32_t range_end) {
                 const auto& mol = data->mold.mol;
                 const int64_t stride = ROUND_UP(mol.atom.count, md_simd_widthf);
                 const int64_t bytes = stride * sizeof(float) * 3;
@@ -5884,11 +5901,12 @@ static void init_trajectory_data(ApplicationData* data) {
                     };
                     md_util_backbone_secondary_structure_compute(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &ss_args);
                 }
-                }, [](void* user_data) {
-                    ApplicationData* data = (ApplicationData*)user_data;
-                    data->trajectory_data.backbone_angles.fingerprint = generate_fingerprint();
-                    data->trajectory_data.secondary_structure.fingerprint = generate_fingerprint();
-                });
+            });
+
+            task_system::main_enqueue("Update Trajectory Data", [data]() {
+                data->trajectory_data.backbone_angles.fingerprint = generate_fingerprint();
+                data->trajectory_data.secondary_structure.fingerprint = generate_fingerprint();
+            }, data->tasks.backbone_computations);
         }
     }
 }
@@ -5973,8 +5991,7 @@ static void launch_prefetch_job(ApplicationData* data) {
     if (!num_frames) return;
 
     task_system::task_interrupt_and_wait_for(data->tasks.prefetch_frames);
-    data->tasks.prefetch_frames = task_system::pool_enqueue("Prefetch Frames", data, num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
-        ApplicationData* data = (ApplicationData*)user_data;
+    data->tasks.prefetch_frames = task_system::pool_enqueue("Prefetch Frames", num_frames, [data](uint32_t range_beg, uint32_t range_end) {
         for (uint32_t i = range_beg; i < range_end; ++i) {
             md_trajectory_frame_header_t header;
             md_trajectory_load_frame(&data->mold.traj, i, &header, 0, 0, 0);
@@ -7013,21 +7030,6 @@ static void remove_selection(ApplicationData* data, int idx) {
     data->selection.stored_selections[idx] = *md_array_last(data->selection.stored_selections);
     md_array_pop(data->selection.stored_selections);
 }
-
-#if 0
-static void reset_selections(ApplicationData* data) {
-    UNUSED(data);
-    // ASSERT(data);
-    // @NOTE: What to do here?
-}
-
-static void clear_selections(ApplicationData* data) {
-    ASSERT(data);
-    while (data->selection.stored_selections.size() > 0) {
-        remove_selection(data, (int32)data->selection.stored_selections.size() - 1);
-    }
-}
-#endif
 
 static bool handle_selection(ApplicationData* data) {
     ASSERT(data);

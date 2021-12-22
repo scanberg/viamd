@@ -18,8 +18,10 @@
 #include "task_system.h"
 
 #include <string.h>
+#include <stdlib.h>
 
-static const uint32_t tex_dim = 512;
+static const uint32_t density_tex_dim = 512;
+static const uint32_t tex_dim = 1024;
 
 typedef double density_map_t[180][180];
 
@@ -45,17 +47,17 @@ namespace iso {
     static GLint uniform_loc_viewport = -1;
     static GLint uniform_loc_inv_res = -1;
     static GLint uniform_loc_iso_values = -1;
-    static GLint uniform_loc_iso_colors = -1;
+    static GLint uniform_loc_iso_level_colors = -1;
+    static GLint uniform_loc_iso_contour_colors = -1;
     static GLint uniform_loc_iso_offset = -1;
     static GLint uniform_loc_iso_length = -1;
+    static GLint uniform_loc_iso_contour_line_scale = -1;
 }
 
 namespace blur {
     static GLuint program = 0;
     static GLuint tex = 0;
     static GLint uniform_loc_tex = -1;
-    static GLint uniform_loc_weights = -1;
-    static GLint uniform_loc_num_weights = -1;
     static GLint uniform_loc_inv_res = -1;
     static GLint uniform_loc_step = -1;
 }
@@ -72,25 +74,27 @@ void main() {
 }
 )";
 
-constexpr const char* f_shader_gaussian_blur_src = R"(
+constexpr const char* f_shader_box_blur_src = R"(
 #version 330 core
 
 layout(location = 0) out vec4 out_frag;
 
 uniform sampler2D u_tex;
 
-uniform float u_weights[16];
-uniform int   u_num_weights;
 uniform vec2  u_inv_res;
 uniform vec2  u_step;
+
+#define KERNEL_RAD 8
 
 void main() {
     vec2 coord = vec2(gl_FragCoord.xy) * u_inv_res;
 
     out_frag = vec4(0,0,0,0);
-    for (int i = -u_num_weights + 1; i < u_num_weights; ++i) {
-        out_frag += texture(u_tex, coord + u_step * i) * u_weights[abs(i)];
+    for (int i = -KERNEL_RAD; i <= KERNEL_RAD; ++i) {
+        out_frag += texture(u_tex, coord + u_step * i);
     }
+
+    out_frag /= float(KERNEL_RAD * 2);
 }
 )";
 
@@ -148,23 +152,44 @@ uniform sampler2D u_tex_den;
 uniform vec4 u_viewport;
 uniform vec2 u_inv_res;
 
-uniform float u_iso_values[64];
-uniform vec4  u_iso_colors[64];
+uniform float u_iso_values[32];
+uniform vec4  u_iso_level_colors[32];
+uniform vec4  u_iso_contour_colors[32];
 uniform uint  u_iso_offset[4];
 uniform uint  u_iso_length[4];
+uniform float u_iso_contour_line_scale;
 
 vec4 map_density(float val, uint idx) {
-    vec4 color = vec4(0,0,0,0);
+    vec4 base = vec4(0,0,0,0);
+    vec4 contour = vec4(0,0,0,0);
     uint offset = u_iso_offset[idx];
     uint length = u_iso_length[idx];
 
-    for (uint i = 0U; i < length; ++i) {
-        if (val >= u_iso_values[offset + i]) {
-            color = u_iso_colors[offset + i];
-        }
+    uint i = offset;
+    for (; i < offset + length - 1U; ++i) {
+        if (u_iso_values[i] <= val && val < u_iso_values[i + 1U]) break;
     }
 
-    return color;
+    uint i0 = i;
+    uint i1 = min(i + 1U, offset + length - 1U);
+
+    // We interpolate the colors between index i and i + 1
+    float v0 = u_iso_values[i0];
+    float v1 = u_iso_values[i1];
+
+    vec4 b0 = u_iso_level_colors[i0];
+    vec4 b1 = u_iso_level_colors[i1];
+
+    float dv = fwidth(val);
+    float band = dv * 2.0 * u_iso_contour_line_scale;
+    base = mix(b0, b1, smoothstep(v1 - band, v1 + band, val));
+
+    for (uint i = offset; i < offset + length; ++i) {
+        float  v = u_iso_values[i]; 
+        contour += u_iso_contour_colors[i] * smoothstep(v - band, v, val) * (1.0 - smoothstep(v, v + band, val));
+    }
+
+    return contour + base * (1.0 - contour.a);
 }
 
 void main() {
@@ -192,28 +217,22 @@ double bspline(double p0, double p1, double p2, double p3, double s) {
     return p0 * b3(s + 1.0) + p1 * b3(s) + p2 * b3(s - 1.0) + p3 * b3(s - 2.0);
 }
 
+static inline double sample_map(const double map[180][180], int x, int y) {
+    x += ((int)(x < 0) - (int)(x > 179)) * 180;
+    y += ((int)(y < 0) - (int)(y > 179)) * 180;
+    return map[x][y];
+}
+
 static inline double lerp_sample(const double map[180][180], double x, double y) {
     int i_x[2] = { (int)x, (int)x + 1};
     int i_y[2] = { (int)y, (int)y + 1};
-
-    if (i_x[0] < 0)   i_x[0] += 180;
-    if (i_x[0] > 179) i_x[0] -= 180;
-
-    if (i_x[1] < 0)   i_x[1] += 180;
-    if (i_x[1] > 179) i_x[1] -= 180;
-
-    if (i_y[0] < 0)   i_y[0] += 180;
-    if (i_y[0] > 179) i_y[0] -= 180;
-
-    if (i_y[1] < 0)   i_y[1] += 180;
-    if (i_y[1] > 179) i_y[1] -= 180;
 
     double t_x = x - (int)x;
     double t_y = y - (int)y;
 
     double dy[2] = {
-        lerp(map[i_x[0]][i_y[0]], map[i_x[1]][i_y[0]], t_x),
-        lerp(map[i_x[0]][i_y[1]], map[i_x[1]][i_y[1]], t_x)
+        lerp(sample_map(map, i_x[0], i_y[0]), sample_map(map, i_x[1], i_y[0]), t_x),
+        lerp(sample_map(map, i_x[0], i_y[1]), sample_map(map, i_x[1], i_y[1]), t_x)
     };
 
     return lerp (dy[0], dy[1], t_y);
@@ -225,18 +244,36 @@ static inline double gauss_sample(const double map[180][180], int x, int y) {
     const int k_size = 9;
     for (int xx = 0; xx < k_size; ++xx) {
         int ix = x - k_size/2 + xx;
-        if (ix < 0) ix += 180;
-        else if (ix >= 180) ix -= 180;
         double k_x = w[abs(xx - k_size / 2)];
         for (int yy = 0; yy < k_size; ++yy) {
             double k_y = w[abs(yy - k_size / 2)];
             int iy = y - k_size/2 + yy;
-            if (iy < 0) iy += 180;
-            else if (iy >= 180) iy -= 180;
-            d += map[ix][iy] * k_x * k_y;
+            d += sample_map(map, x, y) * k_x * k_y;
         }
     }
     return d;
+}
+
+static inline double box_blur(double map[180][180]) {
+    const int KERNEL_RADIUS = 3;
+    double tmp[180] = {0};
+    for (int y = 0; y < 180; ++y) {
+        for (int x = 0; x < 180; ++x) {
+            tmp[x] = sample_map(map, x - 2, y) + sample_map(map, x - 1, y) + sample_map(map, x, y) + sample_map(map, x + 1, y) + sample_map(map, x + 2, y);
+        }
+        for (int x = 0; x < 180; ++x) {
+            map[x][y] = tmp[x] * 0.2;
+        }
+    }
+
+    for (int x = 0; x < 180; ++x) {
+        for (int y = 0; y < 180; ++y) {
+            tmp[x] = sample_map(map, x, y - 2) + sample_map(map, x, y - 1) + sample_map(map, x, y) + sample_map(map, x, y + 1) + sample_map(map, x, y + 2);
+        }
+        for (int y = 0; y < 180; ++y) {
+            map[x][y] = tmp[y] * 0.2;
+        }
+    }
 }
 
 static inline double gauss_sample_map(const double map[180][180], double x, double y) {
@@ -296,14 +333,16 @@ void initialize() {
         iso::uniform_loc_viewport   = glGetUniformLocation(iso::program, "u_viewport");
         iso::uniform_loc_inv_res    = glGetUniformLocation(iso::program, "u_inv_res");
         iso::uniform_loc_iso_values = glGetUniformLocation(iso::program, "u_iso_values");
-        iso::uniform_loc_iso_colors = glGetUniformLocation(iso::program, "u_iso_colors");
+        iso::uniform_loc_iso_level_colors = glGetUniformLocation(iso::program, "u_iso_level_colors");
+        iso::uniform_loc_iso_contour_colors = glGetUniformLocation(iso::program, "u_iso_contour_colors");
         iso::uniform_loc_iso_offset = glGetUniformLocation(iso::program, "u_iso_offset");
         iso::uniform_loc_iso_length = glGetUniformLocation(iso::program, "u_iso_length");
+        iso::uniform_loc_iso_contour_line_scale = glGetUniformLocation(iso::program, "u_iso_contour_line_scale");
     }
 
     if (!blur::program) {
         GLuint v_shader = gl::compile_shader_from_source(v_fs_quad_src, GL_VERTEX_SHADER);
-        GLuint f_shader = gl::compile_shader_from_source(f_shader_gaussian_blur_src, GL_FRAGMENT_SHADER);
+        GLuint f_shader = gl::compile_shader_from_source(f_shader_box_blur_src, GL_FRAGMENT_SHADER);
         defer {
             glDeleteShader(v_shader);
             glDeleteShader(f_shader);
@@ -314,8 +353,6 @@ void initialize() {
         gl::attach_link_detach(blur::program, shaders, ARRAY_SIZE(shaders));
 
         blur::uniform_loc_tex         = glGetUniformLocation(blur::program, "u_tex");
-        blur::uniform_loc_weights     = glGetUniformLocation(blur::program, "u_weights");
-        blur::uniform_loc_num_weights = glGetUniformLocation(blur::program, "u_num_weights");
         blur::uniform_loc_inv_res     = glGetUniformLocation(blur::program, "u_inv_res");
         blur::uniform_loc_step        = glGetUniformLocation(blur::program, "u_step");
     }
@@ -327,7 +364,7 @@ void initialize() {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, tex_dim, tex_dim);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, density_tex_dim, density_tex_dim);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
@@ -360,9 +397,7 @@ static void blur_density(uint32_t density_tex, uint32_t num_passes) {
     glDisable(GL_CULL_FACE);
     glDisable(GL_DEPTH_TEST);
 
-    const float weights[] = { 252 / 1024.0f, 210 / 1024.0f, 120 / 1024.0f, 45 / 1024.0f, 10 / 1024.0f, 1 / 1024.0f };
-
-    glViewport(0, 0, tex_dim, tex_dim);
+    glViewport(0, 0, density_tex_dim, density_tex_dim);
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ramachandran::fbo);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
@@ -371,11 +406,9 @@ static void blur_density(uint32_t density_tex, uint32_t num_passes) {
 
     glUseProgram(ramachandran::blur::program);
 
-    const float one_over_dim = 1.0f / tex_dim;
+    const float one_over_dim = 1.0f / density_tex_dim;
 
     glUniform1i(ramachandran::blur::uniform_loc_tex, 0);
-    glUniform1fv(ramachandran::blur::uniform_loc_weights, ARRAY_SIZE(weights), weights);
-    glUniform1i(ramachandran::blur::uniform_loc_num_weights, ARRAY_SIZE(weights));
     glUniform2f(ramachandran::blur::uniform_loc_inv_res, one_over_dim, one_over_dim);
 
     glActiveTexture(GL_TEXTURE0);
@@ -415,6 +448,8 @@ static void blur_density(uint32_t density_tex, uint32_t num_passes) {
 }
 
 static void init_rama_rep(rama_rep_t* rep) {
+    ASSERT(rep);
+
     glGenTextures(1, &rep->den_tex);
     glGenTextures(4, rep->map_tex);
     glGenTextures(4, rep->iso_tex);
@@ -424,14 +459,15 @@ static void init_rama_rep(rama_rep_t* rep) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, tex_dim, tex_dim);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, density_tex_dim, density_tex_dim);
+
 
     for (int i = 0; i < 4; ++i) {
         glBindTexture(GL_TEXTURE_2D, rep->map_tex[i]);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
         glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, tex_dim, tex_dim);
     }
 
@@ -439,10 +475,12 @@ static void init_rama_rep(rama_rep_t* rep) {
         glBindTexture(GL_TEXTURE_2D, rep->iso_tex[i]);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
         glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, tex_dim, tex_dim);
     }
+
+    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 static void free_rama_rep(rama_rep_t* rep) {
@@ -464,9 +502,6 @@ bool rama_free(rama_data_t* data) {
 
 bool rama_init(rama_data_t* data) {
     ASSERT(data);
-
-    rama_free(data);
-    memset(data, 0, sizeof(rama_data_t));
     
     const density_map_t* densities[4] = {
         &density_gen,
@@ -479,28 +514,53 @@ bool rama_init(rama_data_t* data) {
     init_rama_rep(&data->full);
     init_rama_rep(&data->filt);
 
-    const int64_t mem_size = sizeof(float) * tex_dim * tex_dim * 4;
+    const int64_t mem_size = sizeof(float) * density_tex_dim * density_tex_dim * 4;
     float* density_map = (float*)md_alloc(default_allocator, mem_size);
     defer { md_free(default_allocator, density_map, mem_size); };
 
     // Create reference densities since these never change
-    // Resample reference textures into a nicer power of two texture format using cubic bspline upsampling
+    // Resample reference textures into a nicer power of two texture format using some upsampling scheme
 
-    for (int y = 0; y < tex_dim; ++y) {
-        double v = 1.0 - (y / (double)(tex_dim - 1));
-        for (int x = 0; x < tex_dim; ++x) {
-            double u = (x / (double)(tex_dim - 1));
-            int idx = 4 * (y * tex_dim + x);
-            density_map[idx + 0] = (float)ramachandran::gauss_sample_map(*densities[0], u, v);
-            density_map[idx + 1] = (float)ramachandran::gauss_sample_map(*densities[1], u, v);
-            density_map[idx + 2] = (float)ramachandran::gauss_sample_map(*densities[2], u, v);
-            density_map[idx + 3] = (float)ramachandran::gauss_sample_map(*densities[3], u, v);
+    double ref_sum[4] = {0};
+
+    for (int y = 0; y < 180; ++y) {
+        for (int x = 0; x < 180; ++x) {
+            ref_sum[0] += (*densities[0])[y][x];
+            ref_sum[1] += (*densities[1])[y][x];
+            ref_sum[2] += (*densities[2])[y][x];
+            ref_sum[3] += (*densities[3])[y][x];
         }
     }
 
+    double density_sum[4] = {0};
+
+    for (int y = 0; y < density_tex_dim; ++y) {
+        double v = (y / (double)(density_tex_dim - 1));
+        for (int x = 0; x < density_tex_dim; ++x) {
+            double u = (x / (double)(density_tex_dim - 1));
+            int idx = 4 * (y * density_tex_dim + x);
+            density_map[idx + 0] = (float)ramachandran::linear_sample_map(*densities[0], u, v);
+            density_map[idx + 1] = (float)ramachandran::linear_sample_map(*densities[1], u, v);
+            density_map[idx + 2] = (float)ramachandran::linear_sample_map(*densities[2], u, v);
+            density_map[idx + 3] = (float)ramachandran::linear_sample_map(*densities[3], u, v);
+
+            density_sum[0] += density_map[idx + 0];
+            density_sum[1] += density_map[idx + 1];
+            density_sum[2] += density_map[idx + 2];
+            density_sum[3] += density_map[idx + 3];
+        }
+    }
+
+    data->ref.den_sum[0] = (float)density_sum[0];
+    data->ref.den_sum[1] = (float)density_sum[1];
+    data->ref.den_sum[2] = (float)density_sum[2];
+    data->ref.den_sum[3] = (float)density_sum[3];
+
     glBindTexture(GL_TEXTURE_2D, data->ref.den_tex);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, tex_dim, tex_dim, GL_RGBA, GL_FLOAT, density_map);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, density_tex_dim, density_tex_dim, GL_RGBA, GL_FLOAT, density_map);
     glBindTexture(GL_TEXTURE_2D, 0);
+
+    blur_density(data->ref.den_tex, 2);
 
     return true;
 }
@@ -516,65 +576,149 @@ struct UserData {
 };
 
 task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angles_t* angles, const uint32_t* rama_type_indices[4], uint32_t frame_beg, uint32_t frame_end, uint32_t frame_stride) {
-    const int64_t tex_size = sizeof(float) * tex_dim * tex_dim * 4;
+
+    const int64_t tex_size = sizeof(float) * density_tex_dim * density_tex_dim * 4;
     float* density_tex = (float*)md_alloc(default_allocator, tex_size);
     memset(density_tex, 0, tex_size);
 
-    UserData* user_data = (UserData*)md_alloc(default_allocator, sizeof(UserData));
-    user_data->density_tex = density_tex;
-    user_data->rep = rep;
-    user_data->angles = angles;
-    memcpy(user_data->type_indices, rama_type_indices, 4 * sizeof(uint32_t*));
-    user_data->frame_beg = frame_beg;
-    user_data->frame_end = frame_end;
-    user_data->frame_stride = frame_stride;
+    UserData user_data = {
+        .density_tex = density_tex,
+        .rep = rep,
+        .angles = angles,
+        .frame_beg = frame_beg,
+        .frame_end = frame_end,
+        .frame_stride = frame_stride,
+    };
 
-    task_system::ID id = task_system::pool_enqueue("Compute rama density", user_data, [](void* user_data) {
-        UserData* data = (UserData*)user_data;
+    memcpy(user_data.type_indices, rama_type_indices, 4 * sizeof(uint32_t*));
 
+    task_system::ID id = task_system::pool_enqueue("Compute rama density", [data = user_data]() {
         const float scl = 1.0 / (2.0 * 3.14159265357989);
 
-        const uint32_t frame_beg = data->frame_beg;
-        const uint32_t frame_end = data->frame_end;
-        const uint32_t frame_stride = data->frame_stride;
-        const md_backbone_angles_t* angles = data->angles;
+        const uint32_t frame_beg = data.frame_beg;
+        const uint32_t frame_end = data.frame_end;
+        const uint32_t frame_stride = data.frame_stride;
+        const md_backbone_angles_t* angles = data.angles;
 
         for (uint32_t f = frame_beg; f < frame_end; ++f) {
             for (uint32_t c = 0; c < 4; ++c) {
-                const uint32_t* indices = data->type_indices[c];
-                const uint32_t num_indices = (uint32_t)md_array_size(data->type_indices[c]);
+                const uint32_t* indices = data.type_indices[c];
+                const uint32_t num_indices = (uint32_t)md_array_size(data.type_indices[c]);
                 if (num_indices) {
                     for (uint32_t i = 0; i < num_indices; ++i) {
                         uint32_t idx = f * frame_stride + indices[i];
                         if ((angles[idx].phi == 0 && angles[idx].psi == 0)) continue;
                         float u = angles[idx].phi * scl + 0.5f;
-                        float v = 1.0f - (angles[idx].psi * scl + 0.5f);
-                        uint32_t x = (uint32_t)(u * tex_dim) & (tex_dim - 1);
-                        uint32_t y = (uint32_t)(v * tex_dim) & (tex_dim - 1);
-                        data->density_tex[4 * (y * tex_dim + x) + c] += 1.0f;
+                        float v = angles[idx].psi * scl + 0.5f;
+                        uint32_t x = (uint32_t)(u * density_tex_dim) & (density_tex_dim - 1);
+                        uint32_t y = (uint32_t)(v * density_tex_dim) & (density_tex_dim - 1);
+                        data.density_tex[4 * (y * density_tex_dim + x) + c] += 1.0f;
                     }
                 }
             }
         }
-    },
-    [](void* user_data) {
-        task_system::main_enqueue("Update rama texture", user_data, [](void* user_data) {
-            UserData* data = (UserData*)user_data;
-            glBindTexture(GL_TEXTURE_2D, data->rep->den_tex);
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, tex_dim, tex_dim, GL_RGBA, GL_FLOAT, data->density_tex);
-            glBindTexture(GL_TEXTURE_2D, 0);
-
-            blur_density(data->rep->den_tex, 16);
-
-            md_free(default_allocator, data->density_tex, sizeof(float) * tex_dim * tex_dim * 4);
-            md_free(default_allocator, data, sizeof(UserData));
-        });
     });
+
+    task_system::main_enqueue("Update rama texture", [data = user_data]() {
+        glBindTexture(GL_TEXTURE_2D, data.rep->den_tex);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, density_tex_dim, density_tex_dim, GL_RGBA, GL_FLOAT, data.density_tex);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        // GPU Blur
+        blur_density(data.rep->den_tex, 8);
+
+        // Download to compute density sum ._. not ideal...
+        glBindTexture(GL_TEXTURE_2D, data.rep->den_tex);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, data.density_tex);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        // Accumulate as double
+        double density_sum[4] = { 0 };
+        float  density_max[4] = { 0 };
+
+        for (uint32_t i = 0; i < density_tex_dim * density_tex_dim; ++i) {
+            density_sum[0] += data.density_tex[i * 4 + 0];
+            density_sum[1] += data.density_tex[i * 4 + 1];
+            density_sum[2] += data.density_tex[i * 4 + 2];
+            density_sum[3] += data.density_tex[i * 4 + 3];
+
+            density_max[0] = MAX(density_max[0], data.density_tex[i * 4 + 0]);
+            density_max[1] = MAX(density_max[1], data.density_tex[i * 4 + 1]);
+            density_max[2] = MAX(density_max[2], data.density_tex[i * 4 + 2]);
+            density_max[3] = MAX(density_max[3], data.density_tex[i * 4 + 3]);
+        }
+
+        // Store as float
+        data.rep->den_sum[0] = (float)density_sum[0];
+        data.rep->den_sum[1] = (float)density_sum[1];
+        data.rep->den_sum[2] = (float)density_sum[2];
+        data.rep->den_sum[3] = (float)density_sum[3];
+
+        md_free(default_allocator, data.density_tex, sizeof(float) * density_tex_dim * density_tex_dim * 4);
+    }, id);
 
     return id;
 }
 
-void rama_rep_render_map(rama_rep_t* rep, const float viewport[4], const rama_colormap_t colormap[4]) {
+static int compare_float(const void* a, const void* b) {
+    float va = *(const float*)a;
+    float vb = *(const float*)b;
+
+    if (va < vb) return -1;
+    if (va > vb) return  1;
+    return 0;
+}
+
+/*
+bool rama_rep_compute_density_levels(float* out_levels[4], const rama_rep_t* rep, const float* percentiles, int64_t num_percentiles) {
+    ASSERT(out_levels);
+    ASSERT(rep);
+    ASSERT(percentiles);
+
+    const int64_t N = density_tex_dim * density_tex_dim;
+    const int64_t mem_size = N * 8 * sizeof(float);
+    float* density_map = (float*)md_alloc(default_allocator, mem_size);
+    defer { md_free(default_allocator, density_map, mem_size); };
+
+    float* channel[4] = {
+        density_map + N * 4,
+        density_map + N * 5,
+        density_map + N * 6,
+        density_map + N * 7,
+    };
+
+    glBindTexture(GL_TEXTURE_2D, rep->den_tex);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, density_map);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    for (int64_t i = 0; i < N; ++i) {
+        channel[0][i] = density_map[4 * i + 0];
+        channel[1][i] = density_map[4 * i + 1];
+        channel[2][i] = density_map[4 * i + 2];
+        channel[3][i] = density_map[4 * i + 3];
+    }
+
+    qsort(channel[0], N, sizeof(float), compare_float);
+    qsort(channel[1], N, sizeof(float), compare_float);
+    qsort(channel[2], N, sizeof(float), compare_float);
+    qsort(channel[3], N, sizeof(float), compare_float);
+
+    for (int64_t i = 0; i < num_percentiles; ++i) {
+        int64_t idx0 = CLAMP((int64_t)(percentiles[i] * N) + 0, 0, N - 1);
+        int64_t idx1 = CLAMP((int64_t)(percentiles[i] * N) + 1, 0, N - 1);
+        out_levels[0][i] = lerp(channel[0][idx0], channel[0][idx1], 0.5);
+        out_levels[1][i] = lerp(channel[1][idx0], channel[1][idx1], 0.5);
+        out_levels[2][i] = lerp(channel[2][idx0], channel[2][idx1], 0.5);
+        out_levels[3][i] = lerp(channel[3][idx0], channel[3][idx1], 0.5);
+    }
+
+    return true;
+}
+*/
+
+void rama_rep_render_map(rama_rep_t* rep, const float viewport[4], const rama_colormap_t colormap[4], uint32_t display_res) {
+    (void)display_res;
+
     glDisable(GL_BLEND);
     glDisable(GL_CULL_FACE);
     glDisable(GL_DEPTH_TEST);
@@ -628,7 +772,7 @@ void rama_rep_render_map(rama_rep_t* rep, const float viewport[4], const rama_co
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 }
 
-void rama_rep_render_iso(rama_rep_t* rep, const float viewport[4], const rama_isomap_t isomap[4]) {
+void rama_rep_render_iso(rama_rep_t* rep, const float viewport[4], const rama_isomap_t isomap[4], uint32_t display_res) {
     glDisable(GL_BLEND);
     glDisable(GL_CULL_FACE);
     glDisable(GL_DEPTH_TEST);
@@ -647,21 +791,38 @@ void rama_rep_render_iso(rama_rep_t* rep, const float viewport[4], const rama_is
 
     vec4_t vp = {viewport[0], viewport[1], viewport[2] - viewport[0], viewport[3] - viewport[1]};
 
+    const uint32_t cap = 32;
     uint32_t offset[4]  = {0};
     uint32_t length[4]  = {0};
-    vec4_t   colors[64] = {0};
-    float    values[64] = {0};
+    vec4_t   level_colors[cap] = {0};
+    vec4_t   contour_colors[cap] = {0};
+    float    values[cap] = {0};
 
     uint32_t idx = 0;
     for (uint32_t i = 0; i < 4; ++i) {
         offset[i] = idx;
         length[i] = isomap[i].count;
-        for (uint32_t j = 0; j < isomap[i].count; ++j) {
-            colors[idx] = vec4_from_u32(isomap[i].colors[j]);
+        for (uint32_t j = 0; j < MIN(isomap[i].count, cap); ++j) {
+            if (isomap[i].level_colors) {
+                level_colors[idx] = vec4_from_u32(isomap[i].level_colors[j]);
+            }
+            if (isomap[i].contour_colors) {
+                contour_colors[idx] = vec4_from_u32(isomap[i].contour_colors[j]);
+            }
             values[idx] = isomap[i].values[j];
             idx += 1;
         }
     }
+
+    if (display_res == 0) {
+        display_res = tex_dim;
+    }
+
+    if (display_res > tex_dim) {
+        display_res = tex_dim;
+    }
+
+    float contour_line_scale = (float)tex_dim / (float)display_res;
 
     glUseProgram(ramachandran::iso::program);
 
@@ -670,9 +831,11 @@ void rama_rep_render_iso(rama_rep_t* rep, const float viewport[4], const rama_is
     glUniform2f (ramachandran::iso::uniform_loc_inv_res, 1.0f / tex_dim, 1.0f / tex_dim);
     glUniform4fv(ramachandran::iso::uniform_loc_viewport, 1, vp.elem);
     glUniform1fv(ramachandran::iso::uniform_loc_iso_values, ARRAY_SIZE(values), values);
-    glUniform4fv(ramachandran::iso::uniform_loc_iso_colors, ARRAY_SIZE(colors), colors[0].elem);
+    glUniform4fv(ramachandran::iso::uniform_loc_iso_level_colors, ARRAY_SIZE(level_colors), level_colors[0].elem);
+    glUniform4fv(ramachandran::iso::uniform_loc_iso_contour_colors, ARRAY_SIZE(contour_colors), contour_colors[0].elem);
     glUniform1uiv(ramachandran::iso::uniform_loc_iso_offset, ARRAY_SIZE(offset), offset);
     glUniform1uiv(ramachandran::iso::uniform_loc_iso_length, ARRAY_SIZE(length), length);
+    glUniform1f(ramachandran::iso::uniform_loc_iso_contour_line_scale, contour_line_scale);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, rep->den_tex);

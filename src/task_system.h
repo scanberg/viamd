@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <functional>
 
 struct md_allocator_i;
 
@@ -9,21 +10,22 @@ namespace task_system {
 typedef uint64_t ID;
 constexpr ID INVALID_ID = 0;
 
-typedef void (*execute_fn)(void* user_data);
-typedef void (*execute_range_fn)(uint32_t range_beg, uint32_t range_end, void* user_data);
+using execute_fn = std::function<void()>;
+using execute_range_fn = std::function<void(uint32_t, uint32_t)>;
 
 void initialize();
 void shutdown();
 
-// This is to generate tasks for the main thread ("render" thread)
-bool main_enqueue(const char* label, void* user_data, execute_fn task);
+// Call once per frame at some approriate time, if there are items in the main queue, the main thread will be stalled.
+// Pool tasks will not stall the main thread.
+void execute_tasks();
 
-// Call once per frame at some approriate time
-void main_execute_tasks();
+// This is to generate tasks for the main thread ("render" thread)
+ID main_enqueue(const char* label, execute_fn task, ID dependency = 0);
 
 // This is to generate tasks for the thread-pool (async operations)
-ID pool_enqueue(const char* label, void* user_data, execute_fn task, execute_fn on_complete = 0);
-ID pool_enqueue(const char* label, void* user_data, uint32_t range_size, execute_range_fn range_task, execute_fn on_complete = 0);
+ID pool_enqueue(const char* label, execute_fn task, ID dependency = 0);
+ID pool_enqueue(const char* label, uint32_t range_size, execute_range_fn range_task, ID dependency = 0);
 
 uint32_t pool_num_threads();
 
