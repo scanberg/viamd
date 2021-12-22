@@ -169,8 +169,8 @@ constexpr inline vec4_t convert_color(uint32_t rgba) {
 }
 
 constexpr inline uint32_t convert_color(vec4_t color) {
-    uint32_t out;
-    out =  ((uint32_t)(CLAMP(color.x, 0.0f, 1.0f) * 255.0f + 0.5f)) << 0;
+    uint32_t out = 0;
+    out |= ((uint32_t)(CLAMP(color.x, 0.0f, 1.0f) * 255.0f + 0.5f)) << 0;
     out |= ((uint32_t)(CLAMP(color.y, 0.0f, 1.0f) * 255.0f + 0.5f)) << 8;
     out |= ((uint32_t)(CLAMP(color.z, 0.0f, 1.0f) * 255.0f + 0.5f)) << 16;
     out |= ((uint32_t)(CLAMP(color.w, 0.0f, 1.0f) * 255.0f + 0.5f)) << 24;

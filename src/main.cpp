@@ -4473,7 +4473,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
             { filt_sum[0] / ref_sum[0], filt_sum[1] / ref_sum[1], filt_sum[2] / ref_sum[2], filt_sum[3] / ref_sum[3] },
         };
 
-        for (int i = 0; i < 3; ++i) {
+        for (uint32_t i = 0; i < 3; ++i) {
             if (display_mode[i] == IsoLevels || display_mode[i] == IsoLines) {
                 const uint32_t count = 3;
                 uint32_t colors[4][count] = {0};
@@ -4481,7 +4481,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
                 float values[4][count] = {0};
 
                 memcpy(values, ref_iso_values, sizeof(ref_iso_values));
-                for (int j = 0; j < count; ++j) {
+                for (uint32_t j = 0; j < count; ++j) {
                     values[0][j] *= MAX(scl[i][0], FLT_EPSILON);
                     values[1][j] *= MAX(scl[i][1], FLT_EPSILON);
                     values[2][j] *= MAX(scl[i][2], FLT_EPSILON);
