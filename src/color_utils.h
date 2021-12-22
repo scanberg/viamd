@@ -33,7 +33,7 @@ inline vec3_t hsv_to_rgb(vec3_t c) {
     return c.z * vec3_lerp(vec3_t{K.x, K.x, K.x}, vec3_clamp_f(p - vec3_t{K.x, K.x, K.x}, 0.0f, 1.0f), c.y);
 }
 
-inline vec3_t hcl_to_rgb(vec3_t HCL) {
+constexpr inline vec3_t hcl_to_rgb(vec3_t HCL) {
     constexpr float HCLgamma = 3;
     constexpr float HCLy0 = 100;
     constexpr float HCLmaxL = 0.530454533953517f;  // == exp(HCLgamma / HCLy0) - 0.5
@@ -164,12 +164,17 @@ inline vec4_t color_from_hash(uint32_t hash) {
     return vec4_from_vec3(rgb, 1);
 }
 
-inline vec4_t convert_color(uint32_t rgba) {
-    return vec4_from_u32(rgba);
+constexpr inline vec4_t convert_color(uint32_t rgba) {
+    return { (float)((rgba >> 0) & 0xFF) / 255.f, (float)((rgba >> 8) & 0xFF) / 255.f, (float)((rgba >> 16) & 0xFF) / 255.f, (float)((rgba >> 24) & 0xFF) / 255.f };
 }
 
-inline uint32_t convert_color(vec4_t color) {
-    return u32_from_vec4(color);
+constexpr inline uint32_t convert_color(vec4_t color) {
+    uint32_t out;
+    out =  ((uint32_t)(CLAMP(color.x, 0.0f, 1.0f) * 255.0f + 0.5f)) << 0;
+    out |= ((uint32_t)(CLAMP(color.y, 0.0f, 1.0f) * 255.0f + 0.5f)) << 8;
+    out |= ((uint32_t)(CLAMP(color.z, 0.0f, 1.0f) * 255.0f + 0.5f)) << 16;
+    out |= ((uint32_t)(CLAMP(color.w, 0.0f, 1.0f) * 255.0f + 0.5f)) << 24;
+    return out;
 }
 
 void color_atoms_uniform(uint32_t* colors, int64_t count, vec4_t uniform_color, const md_exp_bitfield_t* mask = NULL);
