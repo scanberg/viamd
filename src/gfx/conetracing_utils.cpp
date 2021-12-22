@@ -919,7 +919,7 @@ void compute_occupancy_volume(const GPUVolume& vol, const float* x, const float*
         const float r = rad[i];
         const float sphere_vol = sphere_vol_scl * r * r * r;
         const float fract = sphere_vol * inv_voxel_volume;
-        const uint32_t occ = (fract * 0xFFFFFFFFU);
+        const uint32_t occ = uint32_t(fract * 0xFFFFFFFFU);
         voxel_data[idx] += occ;
     }
 #endif
