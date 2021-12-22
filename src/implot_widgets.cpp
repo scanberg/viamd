@@ -22,13 +22,12 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
     //double* x_range[2] = {x_range_max, x_range_min};
     if ((gp.CurrentPlot->PlotRect.Min.x - grab_size / 2) < x_min && x_min < (gp.CurrentPlot->PlotRect.Max.x + grab_size / 2))  {
         if (DragLineX(ImGui::GetID("min"), x_range_min, style.line_col, style.line_thickness)) dragging = 1;
-        //active |= ImGui::IsItemActive();
-        //hovered |= ImGui::IsItemHovered();
+        *x_range_min = ImClamp(*x_range_min, min_value, max_value);
+
     }
     if ((gp.CurrentPlot->PlotRect.Min.x - grab_size / 2) < x_max && x_max < (gp.CurrentPlot->PlotRect.Max.x + grab_size / 2))  {
         if (DragLineX(ImGui::GetID("max"), x_range_max, style.line_col, style.line_thickness)) dragging = 2;
-        //active |= ImGui::IsItemActive();
-        //hovered |= ImGui::IsItemHovered();
+        *x_range_max = ImClamp(*x_range_max, min_value, max_value);
     }
 
     //float len = gp.Style.MajorTickLen.x;
@@ -114,6 +113,33 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
     }
 
     return dragging;
+}
+
+IMPLOT_API bool ColorMapSelection(const char* id, ImPlotColormap* idx, ImVec2 size) {
+    IM_ASSERT(id);
+    IM_ASSERT(idx);
+
+    bool value = false;
+
+    ImGui::PushID(ImGui::GetID(id));
+    if (ImPlot::ColormapButton(ImPlot::GetColormapName(*idx), size, *idx)) {
+        ImGui::OpenPopup("Color Map Selector");
+    }
+    if (id && id[0] != '#' && id[1] != '#')
+        ImGui::Text("%s", id);
+    if (ImGui::BeginPopup("Color Map Selector")) {
+        for (int map = 0; map < ImPlot::GetColormapCount(); ++map) {
+            if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), size, map)) {
+                *idx = map;
+                value = true;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+
+    return value;
 }
 
 IMPLOT_API bool ColorMapSelection(const char* id, ImPlotColormap* idx, float* cur_range_min, float* cur_range_max, float min, float max, ImVec2 size) {
