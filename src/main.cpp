@@ -75,19 +75,6 @@
 #define COMPILATION_TIME_DELAY_IN_SECONDS 1.0
 #define IR_SEMAPHORE_MAX_COUNT 3
 
-#if MD_PLATFORM_OSX
-const Key::Key_t KEY_CONSOLE = Key::KEY_WORLD_1;
-#else  // WIN32 and Linux
-// @TODO: Make sure this is currect for Linux?
-const Key::Key_t KEY_CONSOLE = Key::KEY_GRAVE_ACCENT;
-#endif
-
-const Key::Key_t KEY_PLAY_PAUSE = Key::KEY_SPACE;
-const Key::Key_t KEY_SKIP_TO_PREV_FRAME = Key::KEY_LEFT;
-const Key::Key_t KEY_SKIP_TO_NEXT_FRAME = Key::KEY_RIGHT;
-const Key::Key_t KEY_TOGGLE_SCREENSHOT_MODE = Key::KEY_F10;
-const Key::Key_t KEY_SHOW_DEBUG_WINDOW = Key::KEY_F11;
-
 // For cpu profiling
 #define PUSH_CPU_SECTION(lbl) {};
 #define POP_CPU_SECTION() {};
@@ -101,6 +88,57 @@ const Key::Key_t KEY_SHOW_DEBUG_WINDOW = Key::KEY_F11;
 {                                           \
     if (glPopDebugGroup) glPopDebugGroup(); \
 }
+
+#if MD_PLATFORM_OSX
+const Key::Key_t KEY_CONSOLE = Key::KEY_WORLD_1;
+#else  // WIN32 and Linux
+// @TODO: Make sure this is currect for Linux?
+const Key::Key_t KEY_CONSOLE = Key::KEY_GRAVE_ACCENT;
+#endif
+
+constexpr const char* shader_output_snippet = R"(
+layout(location = 0) out vec4 out_color;
+layout(location = 1) out vec4 out_normal;
+layout(location = 2) out vec4 out_velocity;
+layout(location = 3) out vec4 out_atom_index;
+
+vec2 encode_normal (vec3 n) {
+   float p = sqrt(n.z * 8 + 8);
+   return n.xy / p + 0.5;
+}
+
+vec4 encode_index(uint index) {
+    return vec4(
+        (index & 0x000000FFU) >> 0U,
+        (index & 0x0000FF00U) >> 8U,
+        (index & 0x00FF0000U) >> 16U,
+        (index & 0xFF000000U) >> 24U) / 255.0;
+}
+
+vec2 compute_ss_vel(vec3 view_coord, vec3 view_vel) {
+    vec3 prev_view_coord = view_coord - view_vel;
+    vec4 prev_clip_coord = u_curr_view_to_prev_clip * vec4(prev_view_coord, 1);
+
+    vec4 clip_coord = u_view_to_clip * vec4(view_coord, 1);
+    vec2 curr_ndc = clip_coord.xy / clip_coord.w;
+    vec2 prev_ndc = prev_clip_coord.xy / prev_clip_coord.w;
+    vec2 ss_vel = (curr_ndc - prev_ndc) * 0.5 + (u_jitter_uv.xy - u_jitter_uv.zw);
+    return ss_vel;
+}
+
+void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint atom_index) {
+   out_color  = color;
+   out_normal = vec4(encode_normal(view_normal), 0, 0);
+   out_velocity = vec4(compute_ss_vel(view_coord, view_vel), 0, 0);
+   out_atom_index = encode_index(atom_index);
+}
+)";
+
+constexpr Key::Key_t KEY_PLAY_PAUSE = Key::KEY_SPACE;
+constexpr Key::Key_t KEY_SKIP_TO_PREV_FRAME = Key::KEY_LEFT;
+constexpr Key::Key_t KEY_SKIP_TO_NEXT_FRAME = Key::KEY_RIGHT;
+constexpr Key::Key_t KEY_TOGGLE_SCREENSHOT_MODE = Key::KEY_F10;
+constexpr Key::Key_t KEY_SHOW_DEBUG_WINDOW = Key::KEY_F11;
 
 constexpr str_t FILE_EXTENSION = make_cstr("via"); 
 constexpr uint32_t INVALID_PICKING_IDX = ~0U;
@@ -148,8 +186,8 @@ enum class CameraMode { Perspective, Orthographic };
 #define GL_COLOR_ATTACHMENT_COLOR        GL_COLOR_ATTACHMENT0
 #define GL_COLOR_ATTACHMENT_NORMAL       GL_COLOR_ATTACHMENT1
 #define GL_COLOR_ATTACHMENT_VELOCITY     GL_COLOR_ATTACHMENT2
-#define GL_COLOR_ATTACHMENT_POST_TONEMAP GL_COLOR_ATTACHMENT3
-#define GL_COLOR_ATTACHMENT_PICKING      GL_COLOR_ATTACHMENT4
+#define GL_COLOR_ATTACHMENT_PICKING      GL_COLOR_ATTACHMENT3
+#define GL_COLOR_ATTACHMENT_POST_TONEMAP GL_COLOR_ATTACHMENT4
 
 enum AtomBit_ {
     AtomBit_Highlighted = 0x1,
@@ -342,7 +380,7 @@ struct ApplicationData {
     struct {
         md_allocator_i*     mol_alloc = NULL;
 
-        md_gl_context_t     gl_ctx = {};
+        md_gl_shaders_t     gl_shaders = {};
         md_gl_molecule_t    gl_mol = {};
         md_molecule_t       mol = {};
         md_trajectory_i     traj = {};
@@ -1053,7 +1091,8 @@ int main(int, char**) {
     md_print(MD_LOG_TYPE_INFO, "Initializing task system...");
     task_system::initialize();
 
-    md_gl_context_init(&data.mold.gl_ctx);
+    md_gl_initialize();
+    md_gl_shaders_init(&data.mold.gl_shaders, shader_output_snippet);
 
     ImGui::init_theme();
 
@@ -1062,7 +1101,7 @@ int main(int, char**) {
 
     load_dataset_from_file(&data, make_cstr(VIAMD_DATASET_DIR "/1ALA-500.pdb"));
     create_representation(&data, RepresentationType::SpaceFill, ColorMapping::Cpk, make_cstr("all"));
-    data.script.editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(1,2,3) in resname(\"ALA\");\nv = sdf(s1, element('H'), 10.0);");
+    data.script.editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(1,2,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);");
 
     reset_view(&data, true);
     recompute_atom_visibility_mask(&data);    
@@ -1165,8 +1204,8 @@ int main(int, char**) {
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
                 cone_trace::initialize();
 #endif
-                md_gl_context_free(&data.mold.gl_ctx);
-                md_gl_context_init(&data.mold.gl_ctx);
+                md_gl_shaders_free(&data.mold.gl_shaders);
+                md_gl_shaders_init(&data.mold.gl_shaders, shader_output_snippet);
             }
 
             if (data.ctx.input.key.hit[KEY_PLAY_PAUSE]) {
@@ -2769,7 +2808,7 @@ void draw_context_popup(ApplicationData* data) {
                         interpolate_atomic_properties(data);
                         data->mold.dirty_buffers |= MolBit_DirtyPosition;
                         update_md_buffers(data);
-                        md_gl_molecule_update_atom_previous_position(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
+                        md_gl_molecule_zero_velocity(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
                         ImGui::CloseCurrentPopup();
                     }
                 }
@@ -3780,6 +3819,8 @@ static void draw_distribution_window(ApplicationData* data) {
             float min_x = full_prop.data.min_range[0];
             float max_x = full_prop.data.max_range[0];
             float max_y = full_prop.data.max_value;
+            max_x = MAX(max_x, min_x + FLT_EPSILON);
+
             const float* full_src = 0;
             const float* filt_src = 0;
             int num_values_src = 0;
@@ -4844,16 +4885,6 @@ static void draw_density_volume_window(ApplicationData* data) {
         if (prop && data->density_volume.show_reference_structures && num_reps > 0) {
             num_reps = data->density_volume.show_reference_ensemble ? num_reps : 1;
 
-            md_gl_rendertarget_t render_target = {
-                .width = (uint32_t)canvas_sz.x,
-                .height = (uint32_t)canvas_sz.y,
-                .texture_depth = gbuf.deferred.depth,
-                .texture_color = gbuf.deferred.color,
-                .texture_atom_index  = gbuf.deferred.picking,
-                .texture_view_normal = gbuf.deferred.normal,
-                .texture_view_velocity = gbuf.deferred.velocity,
-            };
-
             const md_gl_representation_t** reps = (const md_gl_representation_t**)md_alloc(frame_allocator, num_reps * sizeof(void*));
             const float** mats = (const float**)md_alloc(frame_allocator, num_reps * sizeof(void*));
 
@@ -4863,6 +4894,7 @@ static void draw_density_volume_window(ApplicationData* data) {
             }
 
             md_gl_draw_args_t draw_args = {
+                .shaders = &data->mold.gl_shaders,
                 .representation = {
                     .count = (uint32_t)num_reps,
                     .data = reps,
@@ -4872,10 +4904,9 @@ static void draw_density_volume_window(ApplicationData* data) {
                     .view_matrix = &view_mat.elem[0][0],
                     .projection_matrix = &proj_mat.elem[0][0],
                 },
-                .render_target = &render_target,
             };
 
-            md_gl_draw(&data->mold.gl_ctx, &draw_args);
+            md_gl_draw(&draw_args);
 
             if (is_hovered) {
                 vec2_t coord = {mouse_pos_in_canvas.x, (float)gbuf.height - mouse_pos_in_canvas.y};
@@ -5726,8 +5757,9 @@ static void update_md_buffers(ApplicationData* data) {
     const auto& mol = data->mold.mol;
 
     if (data->mold.dirty_buffers & MolBit_DirtyPosition) {
-        md_gl_molecule_update_atom_previous_position(&data->mold.gl_mol);
+        const vec3_t pbc_ext = data->simulation_box.box * vec3_t{1,1,1};
         md_gl_molecule_set_atom_position(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
+        md_gl_molecule_compute_velocity(&data->mold.gl_mol, pbc_ext.elem);
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyRadius) {
@@ -5833,7 +5865,7 @@ static void init_trajectory_data(ApplicationData* data) {
         data->mold.dirty_buffers |= MolBit_DirtyPosition;
 
         update_md_buffers(data);
-        md_gl_molecule_update_atom_previous_position(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
+        md_gl_molecule_zero_velocity(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
 
         // Prefetch frames
         launch_prefetch_job(data);
@@ -5955,9 +5987,11 @@ static void init_molecule_data(ApplicationData* data) {
         md_gl_molecule_desc_t desc = {
             .atom = {
                 .count = (uint32_t)mol.atom.count,
-                .x = mol.atom.x,
-                .y = mol.atom.y,
-                .z = mol.atom.z,
+                .pos = {
+                    .x = mol.atom.x,
+                    .y = mol.atom.y,
+                    .z = mol.atom.z,
+                },
                 .radius = mol.atom.radius
             },
             .covalent_bond = {
@@ -7290,7 +7324,7 @@ static void clear_gbuffer(GBuffer* gbuffer) {
 
 static void fill_gbuffer(ApplicationData* data) {
     const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
-        GL_COLOR_ATTACHMENT_POST_TONEMAP, GL_COLOR_ATTACHMENT_PICKING};
+        GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_POST_TONEMAP };
 
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
@@ -7535,17 +7569,8 @@ static void draw_representations(ApplicationData* data) {
         if (rep_count == ARRAY_SIZE(rep_data)) break;
     }
 
-    md_gl_rendertarget_t render_target = {
-        .width = (uint32_t)data->gbuffer.width,
-        .height = (uint32_t)data->gbuffer.height,
-        .texture_depth = data->gbuffer.deferred.depth,
-        .texture_color = data->gbuffer.deferred.color,
-        .texture_atom_index = data->gbuffer.deferred.picking,
-        .texture_view_normal = data->gbuffer.deferred.normal,
-        .texture_view_velocity = data->gbuffer.deferred.velocity,
-    };
-
-    md_gl_draw_args_t desc = {
+    md_gl_draw_args_t args = {
+        .shaders = &data->mold.gl_shaders,
         .representation = {
             .count = rep_count,
             .data = rep_data,
@@ -7557,10 +7582,9 @@ static void draw_representations(ApplicationData* data) {
             .prev_view_matrix = &data->view.param.matrix.previous.view.elem[0][0],
             .prev_projection_matrix = &data->view.param.matrix.previous.proj_jittered.elem[0][0],
         },
-        .render_target = &render_target,
     };
 
-    md_gl_draw(&data->mold.gl_ctx, &desc);
+    md_gl_draw(&args);
 }
 
 static void draw_representations_lean_and_mean(ApplicationData* data, uint32_t mask) {
@@ -7574,13 +7598,8 @@ static void draw_representations_lean_and_mean(ApplicationData* data, uint32_t m
         if (rep_count == ARRAY_SIZE(rep_data)) break;
     }
 
-    md_gl_rendertarget_t render_target = {
-        .width = (uint32_t)data->gbuffer.width,
-        .height = (uint32_t)data->gbuffer.height,
-        .texture_depth = data->gbuffer.deferred.depth,
-    };
-
-    md_gl_draw_args_t desc = {
+    md_gl_draw_args_t args = {
+        .shaders = &data->mold.gl_shaders,
         .representation = {
             .count = rep_count,
             .data = rep_data,
@@ -7592,9 +7611,8 @@ static void draw_representations_lean_and_mean(ApplicationData* data, uint32_t m
             //.prev_model_view_matrix = &data->view.param.matrix.previous.view[0][0],
             //.prev_projection_matrix = &data->view.param.matrix.previous.proj_jittered[0][0],
         },
-        .render_target = &render_target,
         .atom_mask = mask,
     };
 
-    md_gl_draw(&data->mold.gl_ctx, &desc);
+    md_gl_draw(&args);
 }
