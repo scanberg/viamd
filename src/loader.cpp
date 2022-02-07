@@ -82,15 +82,7 @@ static inline void remove_loaded_trajectory(uint64_t key) {
     for (int64_t i = 0; i < num_loaded_trajectories; ++i) {
         if (loaded_trajectories[i].key == key) {
             md_frame_cache_free(&loaded_trajectories[i].cache);
-            if (compare_str_cstr(loaded_trajectories[i].extension, "pdb")) {
-                md_pdb_trajectory_close(&loaded_trajectories[i].traj);
-            }
-            else if (compare_str_cstr(loaded_trajectories[i].extension, "xtc")) {
-                md_xtc_trajectory_close(&loaded_trajectories[i].traj);
-            }
-            else {
-                ASSERT(false);
-            }
+            md_trajectory_free(&loaded_trajectories[i].traj);
             loaded_trajectories[i] = loaded_trajectories[--num_loaded_trajectories];
             return;
         }
