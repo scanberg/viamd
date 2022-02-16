@@ -4818,6 +4818,11 @@ static void draw_density_volume_window(ApplicationData* data) {
         mat4_t proj_mat = camera_perspective_projection_matrix(data->density_volume.camera, (int)canvas_sz.x, (int)canvas_sz.y);
 
         clear_gbuffer(&gbuf);
+
+        glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
+        glClearColor(1, 1, 1, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+
         glEnable(GL_DEPTH_TEST);
         glDepthMask(GL_TRUE);
 
@@ -4886,11 +4891,18 @@ static void draw_density_volume_window(ApplicationData* data) {
             }
         }
 
+        const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
+            GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_POST_TONEMAP };
+
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.deferred.fbo);
-        glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
+        glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
         glViewport(0, 0, gbuf.width, gbuf.height);
-        glClearColor(1,1,1,1);
-        glClear(GL_COLOR_BUFFER_BIT);
 
         int64_t num_reps = md_array_size(data->density_volume.gl_reps);
         if (prop && data->density_volume.show_reference_structures && num_reps > 0) {
@@ -4927,40 +4939,42 @@ static void draw_density_volume_window(ApplicationData* data) {
                 }
             }
 
+            glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
+
             PUSH_GPU_SECTION("Postprocessing")
                 postprocessing::Descriptor postprocess_desc = {
                 .background = {
                         .intensity = data->visuals.background.color * data->visuals.background.intensity,
-            },
-            .bloom = {
-                        .enabled = false,
-            },
-            .tonemapping = {
-                        .enabled = data->visuals.tonemapping.enabled,
-                        .mode = data->visuals.tonemapping.tonemapper,
-                        .exposure = data->visuals.tonemapping.exposure,
-                        .gamma = data->visuals.tonemapping.gamma,
-            },
-            .ambient_occlusion = {
-                        .enabled = data->visuals.ssao.enabled,
-                        .radius = data->visuals.ssao.radius,
-                        .intensity = data->visuals.ssao.intensity,
-                        .bias = data->visuals.ssao.bias,
-            },
-            .depth_of_field = {
-                        .enabled = data->visuals.dof.enabled,
-                        .focus_depth = data->visuals.dof.focus_depth.current,
-                        .focus_scale = data->visuals.dof.focus_scale,
-            },
-            .temporal_reprojection = {
-                        .enabled = false,
-            },
-            .input_textures = {
-                        .depth = gbuf.deferred.depth,
-                        .color = gbuf.deferred.color,
-                        .normal = gbuf.deferred.normal,
-                        .velocity = gbuf.deferred.velocity,
-            }
+                },
+                .bloom = {
+                            .enabled = false,
+                },
+                .tonemapping = {
+                            .enabled = data->visuals.tonemapping.enabled,
+                            .mode = data->visuals.tonemapping.tonemapper,
+                            .exposure = data->visuals.tonemapping.exposure,
+                            .gamma = data->visuals.tonemapping.gamma,
+                },
+                .ambient_occlusion = {
+                            .enabled = data->visuals.ssao.enabled,
+                            .radius = data->visuals.ssao.radius,
+                            .intensity = data->visuals.ssao.intensity,
+                            .bias = data->visuals.ssao.bias,
+                },
+                .depth_of_field = {
+                            .enabled = data->visuals.dof.enabled,
+                            .focus_depth = data->visuals.dof.focus_depth.current,
+                            .focus_scale = data->visuals.dof.focus_scale,
+                },
+                .temporal_reprojection = {
+                            .enabled = false,
+                },
+                .input_textures = {
+                            .depth = gbuf.deferred.depth,
+                            .color = gbuf.deferred.color,
+                            .normal = gbuf.deferred.normal,
+                            .velocity = gbuf.deferred.velocity,
+                }
             };
 
             ViewParam view_param = {
@@ -4972,24 +4986,25 @@ static void draw_density_volume_window(ApplicationData* data) {
                     .view_proj = mat4_mul(proj_mat, view_mat),
                     .view_proj_jittered = mat4_mul(proj_mat, view_mat),
                     .norm = view_mat,
-            },
-            .inverse = {
-                    .proj = mat4_inverse(proj_mat),
-                    .proj_jittered = mat4_inverse(proj_mat),
-            }
-            },
-                .clip_planes = {
-                    .near = data->density_volume.camera.near_plane,
-                    .far = data->density_volume.camera.far_plane,
-            },
-            .fov_y = data->density_volume.camera.fov_y,
-            .resolution = {canvas_sz.x, canvas_sz.y}
+                },
+                .inverse = {
+                        .proj = mat4_inverse(proj_mat),
+                        .proj_jittered = mat4_inverse(proj_mat),
+                }
+                },
+                    .clip_planes = {
+                        .near = data->density_volume.camera.near_plane,
+                        .far = data->density_volume.camera.far_plane,
+                },
+                .fov_y = data->density_volume.camera.fov_y,
+                .resolution = {canvas_sz.x, canvas_sz.y}
             };
 
             postprocessing::shade_and_postprocess(postprocess_desc, view_param);
             POP_GPU_SECTION()
         }
 
+        glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
         glEnable(GL_DEPTH_TEST);
         glDepthMask(GL_TRUE);
 
