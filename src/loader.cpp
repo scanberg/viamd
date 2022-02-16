@@ -19,15 +19,14 @@
 
 struct LoadedMolecule {
     uint64_t key;
-    StrBuf<8> extension;
     md_allocator_i* alloc;
 };
 
 struct LoadedTrajectory {
     uint64_t key;
-    StrBuf<8> extension;
     const md_molecule_t* mol;
-    md_trajectory_i traj;
+    md_trajectory_api* api;
+    md_trajectory_i* traj;
     md_frame_cache_t cache;
     md_allocator_i* alloc;
     md_exp_bitfield_t recenter_target;
@@ -82,7 +81,8 @@ static inline void remove_loaded_trajectory(uint64_t key) {
     for (int64_t i = 0; i < num_loaded_trajectories; ++i) {
         if (loaded_trajectories[i].key == key) {
             md_frame_cache_free(&loaded_trajectories[i].cache);
-            md_trajectory_free(&loaded_trajectories[i].traj);
+            loaded_trajectories[i].api->destroy(loaded_trajectories[i].traj);
+            // Swap back and pop
             loaded_trajectories[i] = loaded_trajectories[--num_loaded_trajectories];
             return;
         }
@@ -94,115 +94,10 @@ namespace load {
 
 namespace mol {
 
-bool is_extension_supported(str_t filename) {
-    
+md_molecule_api* get_api(str_t filename) {
     str_t ext = extract_ext(filename);
-    if (compare_str_cstr(ext, "pdb")) return true;
-    if (compare_str_cstr(ext, "gro")) return true;
-
-    return false;
-}
-
-
-bool load_string_pdb(md_molecule_t* mol, str_t string, md_allocator_i* alloc) {
-    ASSERT(mol);
-    ASSERT(alloc);
-    md_pdb_data_t data = {};
-    defer { md_pdb_data_free(&data, alloc); };
-    if (md_pdb_data_parse_str(string, &data, alloc) && md_pdb_molecule_init(mol, &data, alloc)) {
-        LoadedMolecule obj = {
-            .key = (uint64_t)mol,
-            .extension = "pdb",
-            .alloc = alloc
-        };
-
-        add_loaded_molecule(obj);
-        return true;
-    }
-    return false;
-}
-
-bool load_string_gro(md_molecule_t* mol, str_t string, md_allocator_i* alloc) {
-    ASSERT(mol);
-    ASSERT(alloc);
-    md_gro_data_t data = {};
-    defer { md_gro_data_free(&data, alloc); };
-    if (md_gro_data_parse_str(&data, string, alloc) && md_gro_molecule_init(mol, &data, alloc)) {
-        LoadedMolecule obj = {
-            .key = (uint64_t)mol,
-            .extension = "gro",
-            .alloc = alloc
-        };
-
-        add_loaded_molecule(obj);
-        return true;
-    }
-    return false;
-}
-
-bool load_file(md_molecule_t* mol, str_t filename, md_allocator_i* alloc) {
-    ASSERT(mol);
-    ASSERT(alloc);
-    str_t ext = extract_ext(filename);
-    if (compare_str_cstr(ext, "pdb")) {
-        md_pdb_data_t data = {};
-        defer { md_pdb_data_free(&data, alloc); };
-        if (md_pdb_data_parse_file(filename, &data, alloc) && md_pdb_molecule_init(mol, &data, alloc)) {
-            goto success;
-        }
-    }
-    else if (compare_str_cstr(ext, "gro")) {
-        md_gro_data_t data = {};
-        defer { md_gro_data_free(&data, alloc); };
-        if (md_gro_data_parse_file(&data, filename, alloc) && md_gro_molecule_init(mol, &data, alloc)) {
-            goto success;
-        }
-    }
-
-    md_printf(MD_LOG_TYPE_ERROR, "Unsupported file extension: '%.*s'", filename.len, filename.ptr);
-    return false;
-
-success:
-    LoadedMolecule obj = {
-        .key = (uint64_t)mol,
-        .extension = {ext.ptr, ext.len},
-        .alloc = alloc
-    };
-    add_loaded_molecule(obj);
-    return true;
-}
-
-bool free(md_molecule_t* mol) {
-    LoadedMolecule* loaded_mol = find_loaded_molecule((uint64_t)mol);
-    if (loaded_mol) {
-        str_t ext = loaded_mol->extension;
-        md_allocator_i* alloc = loaded_mol->alloc;
-        remove_loaded_molecule((uint64_t)mol);
-        if (compare_str_cstr(ext, "pdb")) {
-            return md_pdb_molecule_free(mol, alloc);
-        }
-        else if (compare_str_cstr(ext, "gro")) {
-            return md_gro_molecule_free(mol, alloc);
-        }
-        ASSERT(false);
-    }
-    md_print(MD_LOG_TYPE_ERROR, "Attempting to free molecule which was not loaded with loader");
-    return false;
-}
-
-md_allocator_i* get_internal_allocator(md_molecule_t* mol) {
-    LoadedMolecule* loaded_mol = find_loaded_molecule((uint64_t)mol);
-    if (loaded_mol) {
-        str_t ext = loaded_mol->extension;
-        if (compare_str_cstr(ext, "pdb")) {
-            return md_pdb_molecule_internal_allocator(mol);
-        }
-        else if (compare_str_cstr(ext, "gro")) {
-            return md_gro_molecule_internal_allocator(mol);
-        }
-        ASSERT(false);
-    }
-    md_print(MD_LOG_TYPE_ERROR, "Attempting to get allocator for molecule which was not loaded with loader");
+    if (compare_str_cstr(ext, "pdb")) return md_pdb_molecule_api();
+    if (compare_str_cstr(ext, "gro")) return md_gro_molecule_api();
     return NULL;
 }
 
@@ -210,17 +105,16 @@ md_allocator_i* get_internal_allocator(md_molecule_t* mol) {
 
 namespace traj {
 
-bool is_extension_supported(str_t filename) {
+md_trajectory_api* get_api(str_t filename) {
     str_t ext = extract_ext(filename);
-    if (compare_str_cstr(ext, "pdb")) return true;
-    if (compare_str_cstr(ext, "xtc")) return true;
-
-    return false;
+    if (compare_str_cstr(ext, "pdb")) return md_pdb_trajectory_api();
+    if (compare_str_cstr(ext, "xtc")) return md_xtc_trajectory_api();
+    return NULL;
 }
 
 bool get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header) {
     LoadedTrajectory* loaded_traj = (LoadedTrajectory*)inst;
-    return md_trajectory_get_header(&loaded_traj->traj, header);
+    return md_trajectory_get_header(loaded_traj->traj, header);
 }
 
 int64_t fetch_frame_data(struct md_trajectory_o*, int64_t idx, void* data_ptr) {
@@ -236,18 +130,18 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, int64
     ASSERT(data_size == sizeof(int64_t));
 
     int64_t idx = *((int64_t*)data_ptr);
-    ASSERT(0 <= idx && idx < md_trajectory_num_frames(&loaded_traj->traj));
+    ASSERT(0 <= idx && idx < md_trajectory_num_frames(loaded_traj->traj));
 
     md_frame_data_t* frame_data;
     md_frame_cache_lock_t* lock = 0;
     bool result = true;
     bool in_cache = md_frame_cache_find_or_reserve(&loaded_traj->cache, idx, &frame_data, &lock);
     if (!in_cache) {
-        const int64_t frame_data_size = md_trajectory_fetch_frame_data(&loaded_traj->traj, idx, 0);
+        const int64_t frame_data_size = md_trajectory_fetch_frame_data(loaded_traj->traj, idx, 0);
         void* frame_data_ptr = md_alloc(default_temp_allocator, frame_data_size);
-        md_trajectory_fetch_frame_data(&loaded_traj->traj, idx, frame_data_ptr);
+        md_trajectory_fetch_frame_data(loaded_traj->traj, idx, frame_data_ptr);
 
-        result = md_trajectory_decode_frame_data(&loaded_traj->traj, frame_data_ptr, frame_data_size, &frame_data->header, frame_data->x, frame_data->y, frame_data->z);
+        result = md_trajectory_decode_frame_data(loaded_traj->traj, frame_data_ptr, frame_data_size, &frame_data->header, frame_data->x, frame_data->y, frame_data->z);
 
         bool have_box = (frame_data->header.box[0][0] + frame_data->header.box[1][1] + frame_data->header.box[2][2]) > 0;
 
@@ -345,38 +239,33 @@ bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_h
     return decode_frame_data(inst, frame_data, sizeof(int64_t), header, x, y, z);
 }
 
-bool open_file(md_trajectory_i* traj, str_t filename, const md_molecule_t* mol, md_allocator_i* alloc) {
-    ASSERT(traj);
+md_trajectory_i* open_file(str_t filename, const md_molecule_t* mol, md_allocator_i* alloc) {
     ASSERT(mol);
     ASSERT(alloc);
 
-    md_trajectory_i internal_traj = {0};
-
-    str_t ext = extract_ext(filename);
-    if (compare_str_cstr(ext, "pdb")) {
-        if (md_pdb_trajectory_open(&internal_traj, filename, alloc)) {
-            goto success;
-        }
-    }
-    else if (compare_str_cstr(ext, "xtc")) {
-        if (md_xtc_trajectory_open(&internal_traj, filename, alloc)) {
-            goto success;
-        }
+    md_trajectory_api* api = get_api(filename);
+    if (!api) {
+        md_printf(MD_LOG_TYPE_ERROR, "Unsupported file extension: '%.*s'", filename.len, filename.ptr);
+        return NULL;
     }
 
-    md_printf(MD_LOG_TYPE_ERROR, "Unsupported file extension: '%.*s'", filename.len, filename.ptr);
-    return false;
+    md_trajectory_i* internal_traj = api->create(filename, alloc);
+    if (!internal_traj) {
+        return NULL;
+    }
 
-success:
+    md_trajectory_i* traj = (md_trajectory_i*)md_alloc(alloc, sizeof(md_trajectory_i));
+    memset(traj, 0, sizeof(md_trajectory_i));
+
     LoadedTrajectory* inst = alloc_loaded_trajectory((uint64_t)traj);
-    inst->extension = ext;
     inst->mol = mol;
+    inst->api = api;
     inst->traj = internal_traj;
     inst->cache = {0};
     inst->recenter_target = {0};
     inst->alloc = alloc;
     
-    md_frame_cache_init(&inst->cache, &inst->traj, alloc, md_trajectory_num_frames(&internal_traj));
+    md_frame_cache_init(&inst->cache, inst->traj, alloc, md_trajectory_num_frames(inst->traj));
     md_bitfield_init(&inst->recenter_target, alloc);
 
     // We only overload load frame and decode frame data to apply PBC upon loading data
@@ -386,7 +275,7 @@ success:
     traj->fetch_frame_data = fetch_frame_data;
     traj->decode_frame_data = decode_frame_data;
     
-    return true;
+    return traj;
 }
 
 bool close(md_trajectory_i* traj) {

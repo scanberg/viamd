@@ -378,12 +378,10 @@ struct ApplicationData {
 
     // --- MOLD DATA ---
     struct {
-        md_allocator_i*     mol_alloc = NULL;
-
-        md_gl_shaders_t     gl_shaders = {};
-        md_gl_molecule_t    gl_mol = {};
-        md_molecule_t       mol = {};
-        md_trajectory_i     traj = {};
+        md_gl_shaders_t         gl_shaders = {};
+        md_gl_molecule_t        gl_mol = {};
+        md_molecule_t           mol = {};
+        md_trajectory_i*        traj = 0;
 
         struct {
             md_script_ir_t    ir = {};
@@ -1135,7 +1133,7 @@ int main(int, char**) {
         ImPlot::ShowDemoWindow();
 #endif
 
-        const int64_t num_frames = md_trajectory_num_frames(&traj);
+        const int64_t num_frames = md_trajectory_num_frames(traj);
         const int64_t last_frame = MAX(0, num_frames - 1);
         const double max_frame = (double)MAX(0, last_frame);
 
@@ -1297,7 +1295,7 @@ int main(int, char**) {
             time_stopped = false;
 
             PUSH_CPU_SECTION("Interpolate Position")
-            if (md_trajectory_num_frames(&traj)) {
+            if (traj) {
                 interpolate_atomic_properties(&data);
 
                 if (data.animation.apply_pbc) {
@@ -1423,7 +1421,7 @@ int main(int, char**) {
                 } else if (data.mold.script.ir_is_valid && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
                     data.mold.script.evaluate_full = false;
                     data.tasks.evaluate_full = task_system::pool_enqueue("Eval Full", [data = &data]() {
-                        md_script_eval_compute(&data->mold.script.full_eval, &data->mold.script.ir, &data->mold.mol, &data->mold.traj, NULL);
+                        md_script_eval_compute(&data->mold.script.full_eval, &data->mold.script.ir, &data->mold.mol, data->mold.traj, NULL);
                         md_semaphore_release(&data->mold.script.ir_semaphore);
                     });
                 }
@@ -1435,14 +1433,14 @@ int main(int, char**) {
                 } else if (data.mold.script.ir_is_valid && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
                     data.mold.script.evaluate_filt = false;
                     data.tasks.evaluate_filt = task_system::pool_enqueue("Eval Filt", [data = &data]() {
-                        int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
-                        int32_t beg_frame = CLAMP((int64_t)data->timeline.filter.beg_frame, 0, num_frames-1);
-                        int32_t end_frame = CLAMP((int64_t)data->timeline.filter.end_frame, 0, num_frames);
+                        int64_t num_frames = md_trajectory_num_frames(data->mold.traj);
+                        int64_t beg_frame = CLAMP((int64_t)data->timeline.filter.beg_frame, 0, num_frames-1);
+                        int64_t end_frame = CLAMP((int64_t)data->timeline.filter.end_frame + 1, 0, num_frames);
                         end_frame = MAX(beg_frame + 1, end_frame);
                         md_bitfield_clear(&data->mold.script.frame_mask);
                         md_bitfield_set_range(&data->mold.script.frame_mask, beg_frame, end_frame);
 
-                        md_script_eval_compute(&data->mold.script.filt_eval, &data->mold.script.ir, &data->mold.mol, &data->mold.traj, &data->mold.script.frame_mask);
+                        md_script_eval_compute(&data->mold.script.filt_eval, &data->mold.script.ir, &data->mold.mol, data->mold.traj, &data->mold.script.frame_mask);
                         md_semaphore_release(&data->mold.script.ir_semaphore);
                     });
                 }
@@ -1655,6 +1653,8 @@ static void init_display_properties(DisplayProperty** prop_items, md_script_prop
 
 static void update_display_properties(ApplicationData* data) {
     ASSERT(data);
+    const int32_t num_frames = (int32_t)md_trajectory_num_frames(data->mold.traj);
+
     DisplayProperty* disp_props = data->display_properties;
     for (int64_t i = 0; i < md_array_size(disp_props); ++i) {
         if (disp_props[i].full_prop_fingerprint != disp_props[i].full_prop->data.fingerprint) {
@@ -1675,8 +1675,13 @@ static void update_display_properties(ApplicationData* data) {
                 // We copy the full range here since we want the histograms to align on the x-axis
                 // This also implys that we have a dependency to the full property, since we can only now the full range of values when full_prop has been completely evaluated.
                 hist.value_range = disp_props[i].full_hist.value_range;
-                int offset = (int)data->timeline.filter.beg_frame * p->data.dim[0];
-                int length = ((int)data->timeline.filter.end_frame - (int)data->timeline.filter.beg_frame) * p->data.dim[0];
+                int beg_frame = CLAMP((int)data->timeline.filter.beg_frame, 0, num_frames-1);
+                int end_frame = CLAMP((int)data->timeline.filter.end_frame+1, 0, num_frames);
+                end_frame = MAX(beg_frame + 1, end_frame);
+
+                int offset = beg_frame * p->data.dim[0];
+                int length = (end_frame - beg_frame) * p->data.dim[0];
+                ASSERT(offset + length <= p->data.num_values);
                 compute_histogram(hist.bin, ARRAY_SIZE(hist.bin), hist.value_range.beg, hist.value_range.end, p->data.values + offset, length);
             }
         }
@@ -1688,9 +1693,9 @@ static void interpolate_atomic_properties(ApplicationData* data) {
     const auto& mol = data->mold.mol;
     const auto& traj = data->mold.traj;
 
-    if (!mol.atom.count || !md_trajectory_num_frames(&traj)) return;
+    if (!mol.atom.count || !md_trajectory_num_frames(traj)) return;
 
-    const int64_t last_frame = MAX(0LL, md_trajectory_num_frames(&traj) - 1);
+    const int64_t last_frame = MAX(0LL, md_trajectory_num_frames(traj) - 1);
     // This is not actually time, but the fractional frame representation
     const double time = CLAMP(data->animation.frame, 0.0, double(last_frame));
 
@@ -1738,7 +1743,7 @@ static void interpolate_atomic_properties(ApplicationData* data) {
         case InterpolationMode::Nearest:
         {
             md_trajectory_frame_header_t header = {0};
-            md_trajectory_load_frame(&data->mold.traj, nearest_frame, &header, mol.atom.x, mol.atom.y, mol.atom.z);
+            md_trajectory_load_frame(data->mold.traj, nearest_frame, &header, mol.atom.x, mol.atom.y, mol.atom.z);
             memcpy(&box, header.box, sizeof(box));
             break;
         }
@@ -1746,8 +1751,8 @@ static void interpolate_atomic_properties(ApplicationData* data) {
         {
             md_trajectory_frame_header_t header[2] = {0};
 
-            md_trajectory_load_frame(&data->mold.traj, frames[1], &header[0], x[0], y[0], z[0]);
-            md_trajectory_load_frame(&data->mold.traj, frames[2], &header[1], x[1], y[1], z[1]);
+            md_trajectory_load_frame(data->mold.traj, frames[1], &header[0], x[0], y[0], z[0]);
+            md_trajectory_load_frame(data->mold.traj, frames[2], &header[1], x[1], y[1], z[1]);
 
             memcpy(&boxes[0], header[0].box, sizeof(boxes[0]));
             memcpy(&boxes[1], header[1].box, sizeof(boxes[1]));
@@ -1786,10 +1791,10 @@ static void interpolate_atomic_properties(ApplicationData* data) {
         {
             md_trajectory_frame_header_t header[4] = {0};
 
-            md_trajectory_load_frame(&data->mold.traj, frames[0], &header[0], x[0], y[0], z[0]);
-            md_trajectory_load_frame(&data->mold.traj, frames[1], &header[1], x[1], y[1], z[1]);
-            md_trajectory_load_frame(&data->mold.traj, frames[2], &header[2], x[2], y[2], z[2]);
-            md_trajectory_load_frame(&data->mold.traj, frames[3], &header[3], x[3], y[3], z[3]);
+            md_trajectory_load_frame(data->mold.traj, frames[0], &header[0], x[0], y[0], z[0]);
+            md_trajectory_load_frame(data->mold.traj, frames[1], &header[1], x[1], y[1], z[1]);
+            md_trajectory_load_frame(data->mold.traj, frames[2], &header[2], x[2], y[2], z[2]);
+            md_trajectory_load_frame(data->mold.traj, frames[3], &header[3], x[3], y[3], z[3]);
 
             memcpy(&boxes[0], header[0].box, sizeof(boxes[0]));
             memcpy(&boxes[1], header[1].box, sizeof(boxes[1]));
@@ -2559,7 +2564,7 @@ void apply_atom_elem_mappings(ApplicationData* data) {
             .complete_bond_range = mol.residue.complete_covalent_bond_range,
         }
     };
-    mol.covalent_bond.bond = md_util_extract_covalent_bonds(&args, data->mold.mol_alloc);
+    mol.covalent_bond.bond = md_util_extract_covalent_bonds(&args, persistent_allocator);
     mol.covalent_bond.count = md_array_size(mol.covalent_bond.bond);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
@@ -2574,7 +2579,7 @@ void draw_context_popup(ApplicationData* data) {
 
     const bool shift_down = ImGui::GetIO().KeyShift;
     const int64_t sss_count = single_selection_sequence_count(&data->selection.single_selection_sequence);
-    const int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
+    const int64_t num_frames = md_trajectory_num_frames(data->mold.traj);
     const int64_t num_atoms_selected = md_bitfield_popcount(&data->selection.current_selection_mask);
     
     if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) && data->ctx.input.mouse.clicked[1] && !shift_down && !ImGui::GetIO().WantTextInput) {
@@ -2802,8 +2807,8 @@ void draw_context_popup(ApplicationData* data) {
                     data->mold.dirty_buffers |= MolBit_DirtyFlags;
 
                     if (apply) {
-                        load::traj::set_recenter_target(&data->mold.traj, &mask);
-                        load::traj::clear_cache(&data->mold.traj);
+                        load::traj::set_recenter_target(data->mold.traj, &mask);
+                        load::traj::clear_cache(data->mold.traj);
                         launch_prefetch_job(data);
                         interpolate_atomic_properties(data);
                         data->mold.dirty_buffers |= MolBit_DirtyPosition;
@@ -2960,7 +2965,7 @@ static void draw_selection_query_window(ApplicationData* data) {
 
 static void draw_animation_control_window(ApplicationData* data) {
     ASSERT(data);
-    int num_frames = (int)md_trajectory_num_frames(&data->mold.traj);
+    int num_frames = (int)md_trajectory_num_frames(data->mold.traj);
     if (num_frames == 0) return;
 
     ASSERT(data->timeline.x_values);
@@ -3257,7 +3262,7 @@ static void draw_molecule_dynamic_info_window(ApplicationData* data) {
     ImGui::Begin("##molecule_dynamic_info", NULL, window_flags);
     {
         const auto& mol = data->mold.mol;
-        const auto& traj = data->mold.traj;
+        const auto traj = data->mold.traj;
 
         if (mol.atom.count) {
             ImGui::Text("MOL");
@@ -3267,12 +3272,12 @@ static void draw_molecule_dynamic_info_window(ApplicationData* data) {
             ImGui::Text("# residues: %lli", mol.residue.count);
             ImGui::Text("# chains: %lli", mol.chain.count);
         }
-        if (md_trajectory_num_frames(&traj)) {
+        if (md_trajectory_num_frames(traj)) {
             ImGui::NewLine();
             ImGui::Text("TRAJ");
             const auto file = extract_file(data->files.trajectory);
             ImGui::Text("\"%.*s\"", (int32_t)file.len, file.ptr);
-            ImGui::Text("# frames: %lli", md_trajectory_num_frames(&traj));
+            ImGui::Text("# frames: %lli", md_trajectory_num_frames(traj));
         }
         const int64_t selection_count = md_bitfield_popcount(&data->selection.current_selection_mask);
         const int64_t highlight_count = md_bitfield_popcount(&data->selection.current_highlight_mask);
@@ -3309,7 +3314,13 @@ static void draw_async_task_window(ApplicationData* data) {
         for (uint32_t i = 0; i < MIN((uint32_t)md_array_size(tasks), 8); i++) {
             const auto id = tasks[i];
             const char* label = task_system::task_label(id);
-            const float fract = task_system::task_fraction_complete(id);
+            float fract = task_system::task_fraction_complete(id);
+
+            if (id == data->tasks.evaluate_filt) {
+                fract = md_script_eval_completed_fraction(&data->mold.script.filt_eval);
+            } else if (id == data->tasks.evaluate_full) {
+                fract = md_script_eval_completed_fraction(&data->mold.script.full_eval);
+            }
 
             if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
 
@@ -4061,7 +4072,7 @@ static void draw_shape_space_window(ApplicationData* data) {
 
     if (data->shape_space.evaluate) {
         data->shape_space.input_valid = false;
-        const int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
+        const int64_t num_frames = md_trajectory_num_frames(data->mold.traj);
         if (num_frames > 0) {
             if (task_system::task_is_running(data->tasks.shape_space_evaluate)) {
                 task_system::task_interrupt_and_wait_for(data->tasks.shape_space_evaluate);
@@ -4090,7 +4101,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                             const vec2_t p[3] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 0.86602540378f}};
 
                             for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
-                                md_trajectory_load_frame(&data->mold.traj, frame_idx, NULL, x, y, z);
+                                md_trajectory_load_frame(data->mold.traj, frame_idx, NULL, x, y, z);
                                 vec3_t* xyz = 0;
                                 for (int64_t i = 0; i < data->shape_space.result.num_bitfields; ++i) {
                                     md_array_ensure(xyz, md_bitfield_popcount(&data->shape_space.result.bitfields[i]), default_allocator);
@@ -4834,7 +4845,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                     .token = prop->vis_token,
                     .ir = &data->mold.script.ir,
                     .mol = &data->mold.mol,
-                    .traj = &data->mold.traj,
+                    .traj = data->mold.traj,
                     .alloc = frame_allocator,
                     .flags = MD_SCRIPT_VISUALIZE_SDF
                 };
@@ -5057,8 +5068,8 @@ static void draw_dataset_window(ApplicationData* data) {
         if (traj_file.len) {
             ImGui::Separator();
             ImGui::Text("Trajectory data: %.*s", (int)traj_file.len, traj_file.ptr);
-            ImGui::Text("Num frames:    %9lli", md_trajectory_num_frames(&data->mold.traj));
-            ImGui::Text("Num atoms:     %9lli", md_trajectory_num_atoms(&data->mold.traj));
+            ImGui::Text("Num frames:    %9lli", md_trajectory_num_frames(data->mold.traj));
+            ImGui::Text("Num atoms:     %9lli", md_trajectory_num_atoms(data->mold.traj));
         }
 
         int64_t num_mappings = md_array_size(data->dataset.atom_element_remappings);
@@ -5186,7 +5197,7 @@ static void draw_script_editor_window(ApplicationData* data) {
                 .token = (const md_script_vis_token_t*)hovered_marker->payload,
                 .ir = &data->mold.script.ir,
                 .mol = &data->mold.mol,
-                .traj = &data->mold.traj,
+                .traj = data->mold.traj,
                 .alloc = frame_allocator,
             });
 
@@ -5318,13 +5329,13 @@ static bool export_cube(const ApplicationData& data, const md_script_property_t*
     mol.atom.y = coords + stride * 1;
     mol.atom.z = coords + stride * 2;
 
-    md_trajectory_load_frame(&data.mold.traj, 0, NULL, mol.atom.x, mol.atom.y, mol.atom.z);
+    md_trajectory_load_frame(data.mold.traj, 0, NULL, mol.atom.x, mol.atom.y, mol.atom.z);
 
     md_script_visualization_args_t args = {
         .token = prop->vis_token,
         .ir = &data.mold.script.ir,
         .mol = &data.mold.mol,
-        .traj = &data.mold.traj,
+        .traj = data.mold.traj,
         .alloc = frame_allocator,
         .flags = MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_SDF,
     };
@@ -5552,7 +5563,7 @@ static void draw_property_export_window(ApplicationData* data) {
                         }
                     }
 
-                    int num_rows = (type == Distribution) ? num_bins : md_trajectory_num_frames(&data->mold.traj);
+                    int num_rows = (type == Distribution) ? num_bins : md_trajectory_num_frames(data->mold.traj);
 
                     switch (format) {
                     case 0:
@@ -5809,8 +5820,8 @@ static void free_trajectory_data(ApplicationData* data) {
     ASSERT(data);
     interrupt_async_tasks(data);
 
-    if (md_trajectory_num_frames(&data->mold.traj)) {
-        load::traj::close(&data->mold.traj);
+    if (md_trajectory_num_frames(data->mold.traj)) {
+        load::traj::close(data->mold.traj);
     }
     memset(data->simulation_box.box.elem, 0, sizeof(mat3_t));
     md_array_shrink(data->timeline.x_values,  0);
@@ -5825,7 +5836,7 @@ static void free_trajectory_data(ApplicationData* data) {
 
 
 static void init_trajectory_data(ApplicationData* data) {
-    int64_t num_frames = md_trajectory_num_frames(&data->mold.traj);
+    int64_t num_frames = md_trajectory_num_frames(data->mold.traj);
     if (num_frames > 0) {
         int64_t min_frame = 0;
         int64_t max_frame = num_frames - 1;
@@ -5834,12 +5845,12 @@ static void init_trajectory_data(ApplicationData* data) {
         md_trajectory_frame_header_t header;
 
         {
-            md_trajectory_load_frame(&data->mold.traj, min_frame, &header, 0, 0, 0);
+            md_trajectory_load_frame(data->mold.traj, min_frame, &header, 0, 0, 0);
             min_time = header.timestamp;
         }
 
         {
-            md_trajectory_load_frame(&data->mold.traj, max_frame, &header, 0, 0, 0);
+            md_trajectory_load_frame(data->mold.traj, max_frame, &header, 0, 0, 0);
             max_time = header.timestamp;
         }
 
@@ -5860,7 +5871,7 @@ static void init_trajectory_data(ApplicationData* data) {
         data->animation.frame = CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
         int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, max_frame);
 
-        md_trajectory_load_frame(&data->mold.traj, frame_idx, &header, data->mold.mol.atom.x, data->mold.mol.atom.y, data->mold.mol.atom.z);
+        md_trajectory_load_frame(data->mold.traj, frame_idx, &header, data->mold.mol.atom.x, data->mold.mol.atom.y, data->mold.mol.atom.z);
         memcpy(&data->simulation_box.box, header.box, sizeof(header.box));
         data->mold.dirty_buffers |= MolBit_DirtyPosition;
 
@@ -5895,7 +5906,7 @@ static void init_trajectory_data(ApplicationData* data) {
                 float* z = coords + stride * 2;
 
                 for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
-                    md_trajectory_load_frame(&data->mold.traj, frame_idx, NULL, x, y, z);
+                    md_trajectory_load_frame(data->mold.traj, frame_idx, NULL, x, y, z);
 
                     md_util_backbone_angle_args_t bb_args = {
                         .atom = {
@@ -5949,7 +5960,8 @@ static bool load_trajectory_data(ApplicationData* data, str_t filename) {
     data->files.trajectory = "";
     data->animation.frame = 0;
 
-    if (load::traj::open_file(&data->mold.traj, filename, &data->mold.mol, persistent_allocator)) {
+    data->mold.traj = load::traj::open_file(filename, &data->mold.mol, persistent_allocator);
+    if (data->mold.traj) {
         data->files.trajectory = filename;
         init_trajectory_data(data);
         return true;
@@ -5964,9 +5976,11 @@ static void free_molecule_data(ApplicationData* data) {
     interrupt_async_tasks(data);
 
     if (data->mold.mol.atom.count) {
+        md_molecule_api* api = load::mol::get_api(data->files.molecule);
+        if (api) {
+            api->free(&data->mold.mol, persistent_allocator);
+        }
         data->files.molecule = "";
-        load::mol::free(&data->mold.mol);
-        data->mold.mol_alloc = NULL;
     }
     free_trajectory_data(data);
 
@@ -5978,7 +5992,6 @@ static void free_molecule_data(ApplicationData* data) {
 
 static void init_molecule_data(ApplicationData* data) {
     if (data->mold.mol.atom.count) {
-        data->mold.mol_alloc = load::mol::get_internal_allocator(&data->mold.mol);
         const auto& mol = data->mold.mol;
         data->picking.idx = INVALID_PICKING_IDX;
         data->selection.hovered = -1;
@@ -6021,14 +6034,14 @@ static void init_molecule_data(ApplicationData* data) {
 }
 
 static void launch_prefetch_job(ApplicationData* data) {
-    uint32_t num_frames = (uint32_t)md_trajectory_num_frames(&data->mold.traj);
+    uint32_t num_frames = (uint32_t)md_trajectory_num_frames(data->mold.traj);
     if (!num_frames) return;
 
     task_system::task_interrupt_and_wait_for(data->tasks.prefetch_frames);
     data->tasks.prefetch_frames = task_system::pool_enqueue("Prefetch Frames", num_frames, [data](uint32_t range_beg, uint32_t range_end) {
         for (uint32_t i = range_beg; i < range_end; ++i) {
             md_trajectory_frame_header_t header;
-            md_trajectory_load_frame(&data->mold.traj, i, &header, 0, 0, 0);
+            md_trajectory_load_frame(data->mold.traj, i, &header, 0, 0, 0);
             data->timeline.x_values[i] = header.timestamp;
         }
     });
@@ -6162,12 +6175,15 @@ static bool load_dataset_from_file(ApplicationData* data, str_t filename) {
     filename = md_os_path_make_canonical(filename, frame_allocator);
 
     if (filename.len) {
-        if (load::mol::is_extension_supported(filename)) {
-            if (compare_str(data->files.molecule, filename)) {
-                // Same as loaded file
-                return true;
-            }
+        if (compare_str(data->files.molecule, filename)) {
+            // File already loaded
+            return true;
+        }
 
+        md_molecule_api*    mol_api = load::mol::get_api(filename);
+        md_trajectory_api* traj_api = load::traj::get_api(filename);
+
+        if (mol_api) {
             interrupt_async_tasks(data);
             free_molecule_data(data);
             free_trajectory_data(data);
@@ -6175,20 +6191,23 @@ static bool load_dataset_from_file(ApplicationData* data, str_t filename) {
             data->files.trajectory = "";
 
             md_printf(MD_LOG_TYPE_INFO, "Attempting to load molecular data from file '%.*s'", filename.len, filename.ptr);
-            if (!load::mol::load_file(&data->mold.mol, filename, persistent_allocator)) {
+            if (!mol_api->init_from_file(&data->mold.mol, filename, persistent_allocator)) {
                 md_print(MD_LOG_TYPE_ERROR, "Failed to load molecular data");
                 data->files.molecule = "";
                 return false;
             }
+
             init_molecule_data(data);
 
             // @NOTE: Some files contain both atomic coordinates and trajectory
-            if (load::traj::is_extension_supported(filename)) {
+            if (traj_api) {
                 md_print(MD_LOG_TYPE_INFO, "File also contains trajectory, attempting to load trajectory");
-                load_trajectory_data(data, filename);
+            } else {
+                return true;
             }
-            return true;
-        } else if (load::traj::is_extension_supported(filename)) {
+        }
+
+        if (traj_api) {
             if (!data->mold.mol.atom.count) {
                 md_print(MD_LOG_TYPE_ERROR, "Before loading a trajectory, molecular data needs to be present");
                 return false;
@@ -6204,6 +6223,7 @@ static bool load_dataset_from_file(ApplicationData* data, str_t filename) {
             md_print(MD_LOG_TYPE_ERROR, "File extension not supported");
         }
     }
+
     return false;
 }
 

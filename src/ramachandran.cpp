@@ -238,6 +238,13 @@ static inline double lerp_sample(const double map[180][180], double x, double y)
     return lerp (dy[0], dy[1], t_y);
 }
 
+static inline double linear_sample_map(const double map[180][180], double x, double y) {
+    double cx = x * 180;
+    double cy = y * 180;
+    return lerp_sample(map, cx, cy);
+}
+
+/*
 static inline double gauss_sample(const double map[180][180], int x, int y) {
     double d = 0.0;
     const double w[] = {70 / 256.0, 56 / 256.0, 28 / 256.0, 8 / 256.0, 1 / 256.0};
@@ -288,12 +295,8 @@ static inline double gauss_sample_map(const double map[180][180], double x, doub
     double y1 = lerp(gauss_sample(map, ix + 0, iy + 1), gauss_sample(map, ix + 1, iy + 1), tx);
     return lerp(y0, y1, ty);
 }
+*/
 
-static inline double linear_sample_map(const double map[180][180], double x, double y) {
-    double cx = x * 180;
-    double cy = y * 180;
-    return lerp_sample(map, cx, cy);
-}
 
 void initialize() {
     if (!map::program) {
