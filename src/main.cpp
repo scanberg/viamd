@@ -3827,10 +3827,13 @@ static void draw_distribution_window(ApplicationData* data) {
             md_script_property_t& full_prop = *prop.full_prop;
             md_script_property_t& filt_prop = *prop.filt_prop;
 
-            float min_x = full_prop.data.min_range[0];
-            float max_x = full_prop.data.max_range[0];
-            float max_y = full_prop.data.max_value;
-            max_x = MAX(max_x, min_x + FLT_EPSILON);
+            double min_x = full_prop.data.min_range[0];
+            double max_x = full_prop.data.max_range[0];
+
+            // We need to avoid the axis collapsing, otherwise Implot will get stuck in an infinite loop
+            if (min_x == max_x) {
+                max_x = min_x + 0.001;
+            }
 
             const float* full_src = 0;
             const float* filt_src = 0;
@@ -3850,10 +3853,11 @@ static void draw_distribution_window(ApplicationData* data) {
             downsample_histogram(bins, num_bins, full_src, num_values_src);
             downsample_histogram(filtered_bins, num_bins, filt_src, num_values_src);
 
-            max_y = 0;
+            double max_y = 0;
             for (int64_t j = 0; j < num_bins; ++j) {
                 max_y = MAX(max_y, bins[j]);
             }
+            max_y = MAX(max_y, 0.001);
             
             ImGui::PushID(i);
             const double bar_width = (max_x - min_x) / (num_bins-1);
