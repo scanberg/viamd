@@ -253,6 +253,12 @@ md_trajectory_i* open_file(str_t filename, const md_molecule_t* mol, md_allocato
     if (!internal_traj) {
         return NULL;
     }
+    
+    if (md_trajectory_num_atoms(internal_traj) != mol->atom.count) {
+        md_printf(MD_LOG_TYPE_ERROR, "Trajectory is not compatible with the loaded molecule.");
+        api->destroy(internal_traj);
+        return NULL;
+    }
 
     md_trajectory_i* traj = (md_trajectory_i*)md_alloc(alloc, sizeof(md_trajectory_i));
     memset(traj, 0, sizeof(md_trajectory_i));

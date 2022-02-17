@@ -2219,12 +2219,13 @@ static void draw_main_menu(ApplicationData* data) {
             if (ImGui::MenuItem("Load Data", "CTRL+L")) {
                 auto res = application::file_dialog(application::FileDialogFlags_Open, {}, make_cstr("pdb,gro,xtc"));
                 if (res.result == application::FileDialogResult::Ok) {
-                    load_dataset_from_file(data, str_from_cstr(res.path));
-                    if (!data->representations.buffer) {
-                        create_representation(data); // Create default representation
+                    if (load_dataset_from_file(data, str_from_cstr(res.path))) {
+                        if (!data->representations.buffer) {
+                            create_representation(data); // Create default representation
+                        }
+                        data->animation = {};
+                        reset_view(data, true);
                     }
-                    data->animation = {};
-                    reset_view(data, true);
                 }
             }
             if (ImGui::MenuItem("Open Workspace", "CTRL+O")) {
@@ -5831,6 +5832,9 @@ static void update_md_buffers(ApplicationData* data) {
 static void interrupt_async_tasks(ApplicationData* data) {
     task_system::pool_interrupt_running_tasks();
 
+    md_script_eval_interrupt(&data->mold.script.full_eval);
+    md_script_eval_interrupt(&data->mold.script.filt_eval);
+
     task_system::task_wait_for(data->tasks.backbone_computations);
     task_system::task_wait_for(data->tasks.evaluate_full);
     task_system::task_wait_for(data->tasks.evaluate_filt);
@@ -5979,15 +5983,13 @@ static void init_trajectory_data(ApplicationData* data) {
 }
 
 static bool load_trajectory_data(ApplicationData* data, str_t filename) {
-    interrupt_async_tasks(data);
-    free_trajectory_data(data);
-    data->files.trajectory = "";
-    data->animation.frame = 0;
-
-    data->mold.traj = load::traj::open_file(filename, &data->mold.mol, persistent_allocator);
-    if (data->mold.traj) {
+    md_trajectory_i* traj = load::traj::open_file(filename, &data->mold.mol, persistent_allocator);
+    if (traj) {
+        free_trajectory_data(data);
+        data->mold.traj = traj;
         data->files.trajectory = filename;
         init_trajectory_data(data);
+        data->animation.frame = 0;
         return true;
     }
 
