@@ -387,6 +387,7 @@ struct ApplicationData {
             md_script_ir_t    ir = {};
             md_script_eval_t  full_eval = {};
             md_script_eval_t  filt_eval = {};
+            md_script_visualization_t vis = {};
 
             // Semaphore to control access to IR
             md_semaphore_t ir_semaphore = {};
@@ -1533,6 +1534,7 @@ int main(int, char**) {
 
         clear_gbuffer(&data.gbuffer);
         fill_gbuffer(&data);
+        immediate::render();
 
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
         if (data.visuals.cone_traced_ao.enabled) {
@@ -5031,7 +5033,7 @@ static void draw_density_volume_window(ApplicationData* data) {
             immediate::draw_box_wireframe(min_box, max_box, box_color);
             immediate::draw_box_wireframe(data->density_volume.clip_volume.min, data->density_volume.clip_volume.max, clip_color);
 
-            immediate::flush();
+            immediate::render();
         }
 
         if (prop) {
@@ -5216,10 +5218,10 @@ static void draw_script_editor_window(ApplicationData* data) {
 
         editor.Render("TextEditor");
 
-        const TextEditor::Marker* hovered_marker = editor.GetHoveredMarker();
+        data->mold.script.vis = {0};
+        const TextEditor::Marker* hovered_marker = data->script.editor.GetHoveredMarker();
         if (hovered_marker) {
-            md_script_visualization_t vis = {0};
-            md_script_visualization_init(&vis, {
+            md_script_visualization_init(&data->mold.script.vis, {
                 .token = (const md_script_vis_token_t*)hovered_marker->payload,
                 .ir = &data->mold.script.ir,
                 .mol = &data->mold.mol,
@@ -5227,41 +5229,11 @@ static void draw_script_editor_window(ApplicationData* data) {
                 .alloc = frame_allocator,
             });
 
-            immediate::set_model_view_matrix(data->view.param.matrix.current.view);
-            immediate::set_proj_matrix(data->view.param.matrix.current.proj_jittered);
-
-            const vec3_t* vertices = (const vec3_t*)vis.vertex.pos;
-            glDisable(GL_CULL_FACE);
-
-            for (int64_t i = 0; i < vis.point.count; ++i) {
-                ASSERT(vis.point.idx);
-                uint16_t idx = vis.point.idx[i];
-                immediate::draw_point(vertices[idx]);
-            }
-
-            for (int64_t i = 0; i < vis.line.count; ++i) {
-                ASSERT(vis.line.idx);
-                uint16_t idx[2] = { vis.line.idx[i * 2 + 0], vis.line.idx[i * 2 + 1] };
-                immediate::draw_line(vertices[idx[0]], vertices[idx[1]], immediate::COLOR_CYAN);
-            }
-
-            for (int64_t i = 0; i < vis.triangle.count; ++i) {
-                ASSERT(vis.triangle.idx);
-                uint16_t idx[3] = { vis.triangle.idx[i * 3 + 0], vis.triangle.idx[i * 3 + 1], vis.triangle.idx[i * 3 + 2] };
-                immediate::draw_triangle(vertices[idx[0]], vertices[idx[1]], vertices[idx[2]], 0x3300FFFF);
-            }
-
-            immediate::flush();
-
-            glEnable(GL_CULL_FACE);
-
-            if (!md_bitfield_empty(vis.atom_mask)) {
-                md_bitfield_copy(&data->selection.current_highlight_mask, vis.atom_mask);
+            if (!md_bitfield_empty(data->mold.script.vis.atom_mask)) {
+                md_bitfield_copy(&data->selection.current_highlight_mask, data->mold.script.vis.atom_mask);
                 data->mold.dirty_buffers |= MolBit_DirtyFlags;
             }
-            md_script_visualization_free(&vis);
         }
-
     }
     ImGui::End();
 }
@@ -7356,22 +7328,18 @@ static void fill_gbuffer(ApplicationData* data) {
 
     PUSH_GPU_SECTION("G-Buffer fill")
 
-    // SIMULATION BOX
+    // Immediate mode graphics
+
     if (data->simulation_box.enabled && data->simulation_box.box != mat3_t{0}) {
         PUSH_GPU_SECTION("Draw Simulation Box")
-
-        immediate::set_model_view_matrix(data->view.param.matrix.current.view);
-        immediate::set_proj_matrix(data->view.param.matrix.current.proj_jittered);
-
         const mat3_t box = data->simulation_box.box;
         const vec3_t min_box = box * vec3_t{0, 0, 0};
         const vec3_t max_box = box * vec3_t{1, 1, 1};
 
-        // Simulation box
+        immediate::set_model_view_matrix(data->view.param.matrix.current.view);
+        immediate::set_proj_matrix(data->view.param.matrix.current.proj_jittered);
         immediate::draw_box_wireframe(min_box, max_box, convert_color(data->simulation_box.color));
-
-        immediate::flush();
-
+        immediate::render();
         POP_GPU_SECTION()
     }
 
@@ -7425,6 +7393,7 @@ static void fill_gbuffer(ApplicationData* data) {
     glColorMask(0, 0, 0, 0);
 
     glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);  // Post_Tonemap buffer
+
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_EQUAL);
 
@@ -7481,15 +7450,44 @@ static void fill_gbuffer(ApplicationData* data) {
     }
 
     glDisable(GL_STENCIL_TEST);
-    glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
-    glDepthMask(1);
+    glDepthMask(0);
+    POP_GPU_SECTION()
+
+    PUSH_GPU_SECTION("Draw Visualization Geometry")
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+
+    immediate::set_model_view_matrix(data->view.param.matrix.current.view);
+    immediate::set_proj_matrix(data->view.param.matrix.current.proj);
+
+    const md_script_visualization_t& vis = data->mold.script.vis;
+    const vec3_t* vertices = (const vec3_t*)vis.vertex.pos;
+
+    for (int64_t i = 0; i < vis.point.count; ++i) {
+        ASSERT(vis.point.idx);
+        uint16_t idx = vis.point.idx[i];
+        immediate::draw_point(vertices[idx]);
+    }
+
+    for (int64_t i = 0; i < vis.line.count; ++i) {
+        ASSERT(vis.line.idx);
+        uint16_t idx[2] = { vis.line.idx[i * 2 + 0], vis.line.idx[i * 2 + 1] };
+        immediate::draw_line(vertices[idx[0]], vertices[idx[1]], immediate::COLOR_CYAN);
+    }
+
+    for (int64_t i = 0; i < vis.triangle.count; ++i) {
+        ASSERT(vis.triangle.idx);
+        uint16_t idx[3] = { vis.triangle.idx[i * 3 + 0], vis.triangle.idx[i * 3 + 1], vis.triangle.idx[i * 3 + 2] };
+        immediate::draw_triangle(vertices[idx[0]], vertices[idx[1]], vertices[idx[2]], 0x3300FFFF);
+    }
+    immediate::render();
+
+    glEnable(GL_CULL_FACE);
+    glEnable(GL_DEPTH_TEST);
     POP_GPU_SECTION()
 
     POP_GPU_SECTION()  // G-buffer
-
-    glDisable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
 }
 
 static void handle_picking(ApplicationData* data) {

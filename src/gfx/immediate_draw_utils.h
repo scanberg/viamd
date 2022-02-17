@@ -10,8 +10,7 @@ void shutdown();
 void set_model_view_matrix(mat4_t model_view_mat);
 void set_proj_matrix(mat4_t proj_mat);
 
-// Flushes the queried objects by drawing them.
-void flush();
+void render();
 
 constexpr uint32_t COLOR_WHITE = 0xffffffff;
 constexpr uint32_t COLOR_BLACK = 0xff000000;

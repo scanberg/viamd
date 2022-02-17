@@ -16,7 +16,7 @@ struct Vertex {
     uint32_t color = DEFAULT_COLOR;
 };
 
-using Index = uint16_t;
+using Index = uint32_t;
 
 struct DrawCommand {
     uint32_t offset = 0;
@@ -215,7 +215,7 @@ void set_proj_matrix(mat4_t proj_matrix) {
     md_array_push(matrix_stack, proj_matrix, default_allocator);
 }
 
-void flush() {
+void render() {
     glBindVertexArray(vao);
 
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
