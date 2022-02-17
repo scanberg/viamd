@@ -1559,7 +1559,6 @@ int main(int, char**) {
 
         apply_postprocessing(data);
 
-
         PUSH_GPU_SECTION("Imgui render")
         application::render_imgui(&data.ctx);
         POP_GPU_SECTION()
@@ -6017,41 +6016,10 @@ static void free_molecule_data(ApplicationData* data) {
 
 static void init_molecule_data(ApplicationData* data) {
     if (data->mold.mol.atom.count) {
-        const auto& mol = data->mold.mol;
         data->picking.idx = INVALID_PICKING_IDX;
         data->selection.hovered = -1;
         data->selection.right_clicked = -1;
-
-        md_gl_molecule_desc_t desc = {
-            .atom = {
-                .count = (uint32_t)mol.atom.count,
-                .pos = {
-                    .x = mol.atom.x,
-                    .y = mol.atom.y,
-                    .z = mol.atom.z,
-                },
-                .radius = mol.atom.radius
-            },
-            .covalent_bond = {
-                .count = (uint32_t)mol.covalent_bond.count,
-                .atom_bond = mol.covalent_bond.bond
-            },
-            .residue = {
-                .count = (uint32_t)mol.residue.count,
-                .atom_range = mol.residue.atom_range,
-            },
-            .backbone = {
-                .count = (uint32_t)mol.backbone.count,
-                .atoms = mol.backbone.atoms,
-                .secondary_structure = mol.backbone.secondary_structure
-            },
-            .chain = {
-                .count = (uint32_t)mol.chain.count,
-                .backbone_range = mol.chain.backbone_range
-            }
-        };
-        md_gl_molecule_init(&data->mold.gl_mol, &desc);
-
+        md_gl_molecule_init(&data->mold.gl_mol, &data->mold.mol);
         init_all_representations(data);
         update_all_representations(data);
         data->mold.script.compile_ir = true;
