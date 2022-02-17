@@ -84,7 +84,8 @@ void color_atoms_cpk(uint32_t* colors, int64_t count, const md_molecule_t& mol) 
 void color_atoms_residue_id(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
     set_colors(colors, count, 0xFFFFFFFFU);
     for (int64_t i = 0; i < mol.residue.count; i++) {
-        const uint32_t color = convert_color(color_from_hash(crc32(mol.residue.name[i], strlen(mol.residue.name[i]))));
+        str_t str = mol.residue.name[i];
+        const uint32_t color = convert_color(color_from_hash(crc32(str.ptr, str.len)));
         set_colors(colors + mol.residue.atom_range[i].beg, mol.residue.atom_range[i].end - mol.residue.atom_range[i].beg, color);
     }
 }
@@ -98,7 +99,8 @@ void color_atoms_residue_index(uint32_t* colors, int64_t count, const md_molecul
 void color_atoms_chain_id(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
     set_colors(colors, count, 0xFFFFFFFFU);
     for (int64_t i = 0; i < mol.chain.count; i++) {
-        const uint32_t color = convert_color(color_from_hash(crc32(mol.chain.id[i], strlen(mol.chain.id[i]))));
+        str_t str = mol.chain.id[i];
+        const uint32_t color = convert_color(color_from_hash(crc32(str.ptr, str.len)));
         set_colors(colors + mol.chain.atom_range[i].beg, mol.chain.atom_range[i].end - mol.chain.atom_range[i].beg, color);
     }
 }

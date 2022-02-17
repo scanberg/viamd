@@ -2032,7 +2032,8 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
         if (!smooth_transition) data->view.camera.position = pos;
         data->view.animation.target_position = pos;
         data->view.camera.focus_distance = vec3_length(pos - cen);
-        data->view.camera.orientation = (quat_from_mat4(look_at(data->view.animation.target_position, cen, {0, 1, 0})));
+        data->view.camera.orientation = quat_from_mat4(look_at(data->view.animation.target_position, cen, {0, 1, 0}));
+        //data->view.animation.target_orientation = quat_from_mat4(look_at(data->view.animation.target_position, cen, { 0, 1, 0 }));
     }
 
     data->view.camera.near_plane = 1.f;
@@ -2480,7 +2481,7 @@ ImGui::EndGroup();
             }
             ImGui::EndMenu();
         }
-        if (ImGui::BeginMenu("Configure")) {
+        if (ImGui::BeginMenu("Settings")) {
             ImGuiIO& io = ImGui::GetIO();
             ImFont* font_current = ImGui::GetFont();
             if (ImGui::BeginCombo("Font", font_current->GetDebugName()))
@@ -2499,7 +2500,7 @@ ImGui::EndGroup();
         {
             // Fps counter
             const double ms = compute_avg_ms(data->ctx.timing.delta_s);
-            char fps_buf[32] = {0};
+            char fps_buf[32];
             snprintf(fps_buf, ARRAY_SIZE(fps_buf), "%.2f ms (%.1f fps)", ms, 1000.f / ms);
             const float w = ImGui::CalcTextSize(fps_buf).x;
             ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - w);
@@ -2540,7 +2541,7 @@ void apply_atom_elem_mappings(ApplicationData* data) {
         float radius = md_util_element_vdw_radius(elem);
 
         for (int64_t i = 0; i < data->mold.mol.atom.count; ++i) {
-            if (compare_str_cstr(lbl, data->mold.mol.atom.name[i])) {
+            if (compare_str(lbl, data->mold.mol.atom.name[i])) {
                 data->mold.mol.atom.element[i] = elem;
                 data->mold.mol.atom.radius[i] = radius;
                 data->mold.dirty_buffers |= MolBit_DirtyRadius;
@@ -2635,12 +2636,14 @@ void draw_context_popup(ApplicationData* data) {
                             ImGui::CloseCurrentPopup();
                         }
 
-                        const char* resname = data->mold.mol.residue.name[res_idx];
-                        snprintf(buf, sizeof(buf), "%s = distance(%i, %i) in resname(\"%s\");", ident, idx[0]+1, idx[1]+1, resname);
-                        if (ImGui::MenuItem(buf)) {
-                            data->script.editor.AppendText("\n");
-                            data->script.editor.AppendText(buf);
-                            ImGui::CloseCurrentPopup();
+                        str_t resname = data->mold.mol.residue.name[res_idx];
+                        if (resname) {
+                            snprintf(buf, sizeof(buf), "%s = distance(%i, %i) in resname(\"%s\");", ident, idx[0] + 1, idx[1] + 1, resname.ptr);
+                            if (ImGui::MenuItem(buf)) {
+                                data->script.editor.AppendText("\n");
+                                data->script.editor.AppendText(buf);
+                                ImGui::CloseCurrentPopup();
+                            }
                         }
                     }
                 }
@@ -2677,12 +2680,14 @@ void draw_context_popup(ApplicationData* data) {
                             ImGui::CloseCurrentPopup();
                         }
 
-                        const char* resname = data->mold.mol.residue.name[res_idx];
-                        snprintf(buf, sizeof(buf), "%s = angle(%i, %i, %i) in resname(\"%s\");", ident, idx[0]+1, idx[1]+1, idx[2]+1, resname);
-                        if (ImGui::MenuItem(buf)) {
-                            data->script.editor.AppendText("\n");
-                            data->script.editor.AppendText(buf);
-                            ImGui::CloseCurrentPopup();
+                        str_t resname = data->mold.mol.residue.name[res_idx];
+                        if (resname) {
+                            snprintf(buf, sizeof(buf), "%s = angle(%i, %i, %i) in resname(\"%.*s\");", ident, idx[0]+1, idx[1]+1, idx[2]+1, (int)resname.len, resname.ptr);
+                            if (ImGui::MenuItem(buf)) {
+                                data->script.editor.AppendText("\n");
+                                data->script.editor.AppendText(buf);
+                                ImGui::CloseCurrentPopup();
+                            }
                         }
                     }
                 }
@@ -2721,12 +2726,14 @@ void draw_context_popup(ApplicationData* data) {
                             ImGui::CloseCurrentPopup();
                         }
 
-                        const char* resname = data->mold.mol.residue.name[res_idx];
-                        snprintf(buf, sizeof(buf), "%s = dihedral(%i, %i, %i, %i) in resname(\"%s\");", ident, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, resname);
-                        if (ImGui::MenuItem(buf)) {
-                            data->script.editor.AppendText("\n");
-                            data->script.editor.AppendText(buf);
-                            ImGui::CloseCurrentPopup();
+                        str_t resname = data->mold.mol.residue.name[res_idx];
+                        if (resname) {
+                            snprintf(buf, sizeof(buf), "%s = dihedral(%i, %i, %i, %i) in resname(\"%.*s\");", ident, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, (int)resname.len, resname.ptr);
+                            if (ImGui::MenuItem(buf)) {
+                                data->script.editor.AppendText("\n");
+                                data->script.editor.AppendText(buf);
+                                ImGui::CloseCurrentPopup();
+                            }
                         }
                     }
                 }
@@ -2737,11 +2744,11 @@ void draw_context_popup(ApplicationData* data) {
             int idx = data->selection.right_clicked;
             if (0 <= idx && idx < data->mold.mol.atom.count) {
                 char label[64] = "";
-                snprintf(label, sizeof(label), "Remap Element for '%s'", data->mold.mol.atom.name[idx]);
+                str_t atom_name = data->mold.mol.atom.name[idx];
+                snprintf(label, sizeof(label), "Remap Element for '%.*s'", (int)atom_name.len, atom_name.ptr);
                 if (ImGui::BeginMenu(label)) {
                     static char input_buf[32] = "";
                     md_element_t elem = data->mold.mol.atom.element[idx];
-                    str_t lbl = {data->mold.mol.atom.name[idx], (int64_t)strlen(data->mold.mol.atom.name[idx])};
                     str_t name = md_util_element_name(elem);
                     str_t sym  = md_util_element_symbol(elem);
 
@@ -2757,7 +2764,7 @@ void draw_context_popup(ApplicationData* data) {
                     ImGui::Text("New Element: %.*s (%.*s)", (int)new_name.len, new_name.ptr, (int)new_sym.len, new_sym.ptr);
                     if (!is_valid) ImGui::PushDisabled();
                     if (ImGui::Button("Apply") && is_valid) {
-                        add_atom_elem_mapping(data, lbl, new_elem);
+                        add_atom_elem_mapping(data, atom_name, new_elem);
                         apply_atom_elem_mappings(data);
                         ImGui::CloseCurrentPopup();
                     }
@@ -3180,16 +3187,16 @@ static void draw_atom_info_window(const ApplicationData& data, int atom_idx) {
     if (atom_idx < 0 || atom_idx >= mol.atom.count) return;
 
     int res_idx = mol.atom.residue_idx[atom_idx];
-    const char* res_name = mol.residue.name[res_idx];
+    str_t res_name = mol.residue.name[res_idx];
     const int res_id = mol.residue.id[res_idx];
     int local_idx = atom_idx - mol.residue.atom_range[res_idx].beg;
     const vec3_t pos = { mol.atom.x[atom_idx], mol.atom.y[atom_idx], mol.atom.z[atom_idx] };
-    const char* label = mol.atom.name[atom_idx];
+    str_t label = mol.atom.name[atom_idx];
     str_t elem = md_util_element_name(mol.atom.element[atom_idx]);
     str_t symbol = md_util_element_symbol(mol.atom.element[atom_idx]);
 
     int chain_idx = -1;
-    const char* chain_id = "\0";
+    str_t chain_id = {0};
     if (mol.atom.chain_idx) {
         chain_idx = mol.atom.chain_idx[atom_idx];
         if (chain_idx != -1 && mol.chain.count > 0) {
@@ -3205,10 +3212,10 @@ static void draw_atom_info_window(const ApplicationData& data, int atom_idx) {
 
     char buff[256];
     int len = 0;
-    len += snprintf(buff, ARRAY_SIZE(buff) - 1, "atom[%i][%i]: %s %.*s %.*s (%.2f, %.2f, %.2f)\n", atom_idx, local_idx, label, (int)elem.len, elem.ptr, (int)symbol.len, symbol.ptr, pos.x, pos.y, pos.z);
-    len += snprintf(buff + len, ARRAY_SIZE(buff) - 1 - len, "res[%i]: %s %i\n", res_idx, res_name, res_id);
+    len += snprintf(buff, ARRAY_SIZE(buff) - 1, "atom[%i][%i]: %.*s %.*s %.*s (%.2f, %.2f, %.2f)\n", atom_idx, local_idx, (int)label.len, label.ptr, (int)elem.len, elem.ptr, (int)symbol.len, symbol.ptr, pos.x, pos.y, pos.z);
+    len += snprintf(buff + len, ARRAY_SIZE(buff) - 1 - len, "res[%i]: %.*s %i\n", res_idx, (int)res_name.len, res_name.ptr, res_id);
     if (chain_idx) {
-        len += snprintf(buff + len, ARRAY_SIZE(buff) - 1 - len, "chain[%i]: %s\n", chain_idx, chain_id);
+        len += snprintf(buff + len, ARRAY_SIZE(buff) - 1 - len, "chain[%i]: %.*s\n", chain_idx, (int)chain_id.len, chain_id.ptr);
     }
 
     /*
@@ -5853,7 +5860,6 @@ static void free_trajectory_data(ApplicationData* data) {
     md_array_shrink(data->shape_space.coords, 0);
 }
 
-
 static void init_trajectory_data(ApplicationData* data) {
     int64_t num_frames = md_trajectory_num_frames(data->mold.traj);
     if (num_frames > 0) {
@@ -7278,6 +7284,7 @@ static void handle_camera_interaction(ApplicationData* data) {
 
         if (camera_controller_trackball(&data->view.camera.position, &data->view.camera.orientation, &data->view.camera.focus_distance, input, data->view.trackball_param)) {
             data->view.animation.target_position = data->view.camera.position;
+            data->view.animation.target_orientation = data->view.camera.orientation;
         }
 
         if (ImGui::GetIO().MouseDoubleClicked[0]) {
@@ -7285,6 +7292,8 @@ static void handle_camera_interaction(ApplicationData* data) {
                 const vec3_t forward = data->view.camera.orientation * vec3_t{0, 0, 1};
                 const float dist = data->view.camera.focus_distance;
                 data->view.animation.target_position = data->picking.world_coord + forward * dist;
+            } else {
+                reset_view(data, true, true);
             }
         }
 
@@ -7301,7 +7310,7 @@ static void handle_camera_animation(ApplicationData* data) {
         data->view.camera.position = data->view.camera.position + vel * dt;
     }
     {
-        //data->view.camera.orientation = math::slerp(data->view.camera.orientation, data->view.animation.target_orientation, 0.99f);
+        //data->view.camera.orientation = quat_slerp(data->view.camera.orientation, data->view.animation.target_orientation, 0.99f);
     }
     {
         // #focus-depth
@@ -7494,7 +7503,7 @@ static void fill_gbuffer(ApplicationData* data) {
 
     glDisable(GL_STENCIL_TEST);
     if (!atom_selection_empty) {
-        PUSH_GPU_SECTION("DESATURATE")
+        PUSH_GPU_SECTION("Desaturate")
         const float saturation = data->selection.color.selection_saturation;
         glDrawBuffer(GL_COLOR_ATTACHMENT_COLOR);
         postprocessing::scale_hsv(data->gbuffer.deferred.color, vec3_t{1, saturation, 1});
