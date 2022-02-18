@@ -137,26 +137,27 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, int64
     bool result = true;
     bool in_cache = md_frame_cache_find_or_reserve(&loaded_traj->cache, idx, &frame_data, &lock);
     if (!in_cache) {
+        md_allocator_i* alloc = default_allocator;
         const int64_t frame_data_size = md_trajectory_fetch_frame_data(loaded_traj->traj, idx, 0);
-        void* frame_data_ptr = md_alloc(default_temp_allocator, frame_data_size);
+        void* frame_data_ptr = md_alloc(alloc, frame_data_size);
         md_trajectory_fetch_frame_data(loaded_traj->traj, idx, frame_data_ptr);
-
         result = md_trajectory_decode_frame_data(loaded_traj->traj, frame_data_ptr, frame_data_size, &frame_data->header, frame_data->x, frame_data->y, frame_data->z);
 
-        bool have_box = (frame_data->header.box[0][0] + frame_data->header.box[1][1] + frame_data->header.box[2][2]) > 0;
-
         if (result) {
+            bool have_box = (frame_data->header.box[0][0] + frame_data->header.box[1][1] + frame_data->header.box[2][2]) > 0;
+
             // If we have a recenter target, then compute and apply that transformation
             if (!md_bitfield_empty(&loaded_traj->recenter_target)) {
                 int64_t count = md_bitfield_popcount(&loaded_traj->recenter_target);
                 if (count > 0) {
                     // Allocate data for substructure
                     int64_t stride = ROUND_UP(count, md_simd_widthf);
-                    float* mem = (float*)md_alloc(default_temp_allocator, stride * 4 * sizeof(float));
-                    float* tmp_x = mem + 0 * stride;
-                    float* tmp_y = mem + 1 * stride;
-                    float* tmp_z = mem + 2 * stride;
-                    float* tmp_w = mem + 3 * stride;
+                    const int64_t mem_size = stride * 4 * sizeof(float);
+                    void* mem_ptr = md_alloc(alloc, mem_size);
+                    float* tmp_x = (float*)mem_ptr + 0 * stride;
+                    float* tmp_y = (float*)mem_ptr + 1 * stride;
+                    float* tmp_z = (float*)mem_ptr + 2 * stride;
+                    float* tmp_w = (float*)mem_ptr + 3 * stride;
 
                     // Extract fields for substructure
                     int64_t dst_idx = 0;
@@ -191,6 +192,8 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, int64
                         frame_data->y[i] += trans.y;
                         frame_data->z[i] += trans.z;
                     }
+
+                    md_free(alloc, mem_ptr, mem_size);
                 }
             }
 
@@ -217,6 +220,8 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, int64
                 md_util_apply_pbc(frame_data->x, frame_data->y, frame_data->z, mol.atom.count, args);
             }
         }
+
+        md_free(alloc, frame_data_ptr, frame_data_size);
     }
 
     if (result) {

@@ -134,7 +134,9 @@ bool initialize(Context* ctx, int64_t width, int64_t height, const char* title) 
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;  // Enable Keyboard Controls
     // io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+#if !MD_PLATFORM_LINUX
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;  // Enable Docking
+#endif
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;  // Enable Multi-Viewport / Platform Windows
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoTaskBarIcons;
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoMerge;
@@ -144,39 +146,29 @@ bool initialize(Context* ctx, int64_t width, int64_t height, const char* title) 
 
     // default range is 0x0020 - 0x00FF.
     // Added some greek letters
-    /*
-    {
-        static const ImWchar ranges[] = {0x0020, 0x00FF, 0x03C6, 0x03C8, 0};
-        ImFontConfig config;
-        config.OversampleV = 1;
-        config.OversampleH = 1;
-        config.RasterizerMultiply = 0.9f;
-        config.PixelSnapH = true;
-        ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)DroidSans_compressed_data, DroidSans_compressed_size, 16.f, &config, ranges);
-    }
-    */
     const ImWchar ranges_characters[] = {0x0020, 0x00FF, 0x03C6, 0x03C8, 0};
     const ImWchar ranges_icons[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
-    const float scaling_factors[] = {1.0, 1.5};
-    const char* font_names[] = {"Default Size Droid Sans", "Large Size Droid Sans"};
+    const float font_size[] = {16, 20, 24, 30};
+    const char* font_names[] = {"Droid Sans (16 px)", "Droid Sans (20 px)", "Droid Sans (24 px)", "Droid Sans (30 px)"};
 
-    for (int i = 0; i < ARRAY_SIZE(scaling_factors); ++i) {
+    for (int i = 0; i < ARRAY_SIZE(font_size); ++i) {
         ImFontConfig config;
         snprintf(config.Name, sizeof(config.Name), "%s", font_names[i]);
-        config.OversampleV = 1;
+        config.OversampleV = 2;
         config.OversampleH = 3;
         config.PixelSnapH = true;
 
-        const float scl = scaling_factors[i];
+        const float size = font_size[i];
 
         // CHARACTERS
         config.RasterizerMultiply = 1.f;
-        ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)droid_sans_mono_compressed_data, droid_sans_mono_compressed_size, 16 * scl, &config, ranges_characters);
+        ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)droid_sans_mono_compressed_data, droid_sans_mono_compressed_size, size, &config, ranges_characters);
 
         // ICONS
+        const float scl = 0.875f;   // We scale this a bit to better fit within buttons and such.
         config.RasterizerMultiply = 0.9f;
         config.MergeMode = true;
-        ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)fa_solid_compressed_data, fa_solid_compressed_size, 14 * scl, &config, ranges_icons);
+        ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)fa_solid_compressed_data, fa_solid_compressed_size, size * scl, &config, ranges_icons);
     }
 
     io.Fonts->Build();
