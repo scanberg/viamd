@@ -48,11 +48,11 @@ struct UniformData {
 };
 
 void initialize() {
-    GLuint v_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/volume/raycaster.vert", GL_VERTEX_SHADER);
-    GLuint f_shader_dvr_only = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/volume/raycaster.frag", GL_FRAGMENT_SHADER, "#define INCLUDE_DVR");
-    GLuint f_shader_iso_only = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/volume/raycaster.frag", GL_FRAGMENT_SHADER, "#define INCLUDE_ISO");
+    GLuint v_shader = gl::compile_shader_from_file(MAKE_STR(VIAMD_SHADER_DIR "/volume/raycaster.vert"), GL_VERTEX_SHADER);
+    GLuint f_shader_dvr_only = gl::compile_shader_from_file(MAKE_STR(VIAMD_SHADER_DIR "/volume/raycaster.frag"), GL_FRAGMENT_SHADER, MAKE_STR("#define INCLUDE_DVR"));
+    GLuint f_shader_iso_only = gl::compile_shader_from_file(MAKE_STR(VIAMD_SHADER_DIR "/volume/raycaster.frag"), GL_FRAGMENT_SHADER, MAKE_STR("#define INCLUDE_ISO"));
     GLuint f_shader_dvr_and_iso =
-        gl::compile_shader_from_file(VIAMD_SHADER_DIR "/volume/raycaster.frag", GL_FRAGMENT_SHADER, "#define INCLUDE_DVR\n#define INCLUDE_ISO");
+        gl::compile_shader_from_file(MAKE_STR(VIAMD_SHADER_DIR "/volume/raycaster.frag"), GL_FRAGMENT_SHADER, MAKE_STR("#define INCLUDE_DVR\n#define INCLUDE_ISO"));
     defer {
         glDeleteShader(v_shader);
         glDeleteShader(f_shader_dvr_only);

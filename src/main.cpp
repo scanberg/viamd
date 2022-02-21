@@ -140,7 +140,7 @@ constexpr Key::Key_t KEY_SKIP_TO_NEXT_FRAME = Key::KEY_RIGHT;
 constexpr Key::Key_t KEY_TOGGLE_SCREENSHOT_MODE = Key::KEY_F10;
 constexpr Key::Key_t KEY_SHOW_DEBUG_WINDOW = Key::KEY_F11;
 
-constexpr str_t FILE_EXTENSION = make_cstr("via"); 
+constexpr str_t FILE_EXTENSION = MAKE_STR("via"); 
 constexpr uint32_t INVALID_PICKING_IDX = ~0U;
 
 constexpr uint32_t TEXT_BG_ERROR_COLOR = 0xAA222299;
@@ -935,7 +935,7 @@ static void create_screenshot(ApplicationData* data);
 
 // Representations
 static Representation* create_representation(ApplicationData* data, RepresentationType type = RepresentationType::SpaceFill,
-                                             ColorMapping color_mapping = ColorMapping::Cpk, str_t filter = make_cstr("all"));
+                                             ColorMapping color_mapping = ColorMapping::Cpk, str_t filter = MAKE_STR("all"));
 static Representation* clone_representation(ApplicationData* data, const Representation& rep);
 static void remove_representation(ApplicationData* data, int idx);
 static void update_representation(ApplicationData* data, Representation* rep);
@@ -1010,9 +1010,9 @@ static void modify_selection(ApplicationData* data, md_range_t range, SelectionO
 
 // Global data for application
 static md_allocator_i* frame_allocator = 0;
-#if MD_DEBUG
+#if DEBUG
 static md_allocator_i* persistent_allocator = md_tracking_allocator_create(default_allocator);
-#elif MD_RELEASE
+#elif RELEASE
 static md_allocator_i* persistent_allocator = default_allocator;
 #else
     
@@ -1098,8 +1098,8 @@ int main(int, char**) {
     data.script.editor.SetLanguageDefinition(TextEditor::LanguageDefinition::VIAMD());
     data.script.editor.SetPalette(TextEditor::GetDarkPalette());
 
-    load_dataset_from_file(&data, make_cstr(VIAMD_DATASET_DIR "/1ALA-500.pdb"));
-    create_representation(&data, RepresentationType::SpaceFill, ColorMapping::Cpk, make_cstr("all"));
+    load_dataset_from_file(&data, MAKE_STR(VIAMD_DATASET_DIR "/1ALA-500.pdb"));
+    create_representation(&data, RepresentationType::SpaceFill, ColorMapping::Cpk, MAKE_STR("all"));
     data.script.editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(1,2,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);");
 
     reset_view(&data, true);
@@ -1362,7 +1362,7 @@ int main(int, char**) {
                     TextEditor& editor = data.script.editor;
 
                     std::string src = editor.GetText();
-                    str_t src_str = {.ptr = src.data(), .len = (int64_t)src.length()};
+                    str_t src_str {src.data(), (int64_t)src.length()};
 
                     editor.ClearMarkers();
                     editor.ClearErrorMarkers();
@@ -2219,7 +2219,7 @@ static void draw_main_menu(ApplicationData* data) {
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("Load Data", "CTRL+L")) {
-                auto res = application::file_dialog(application::FileDialogFlags_Open, {}, make_cstr("pdb,gro,xtc"));
+                auto res = application::file_dialog(application::FileDialogFlags_Open, {}, MAKE_STR("pdb,gro,xtc"));
                 if (res.result == application::FileDialogResult::Ok) {
                     if (load_dataset_from_file(data, str_from_cstr(res.path))) {
                         if (!data->representations.buffer) {
@@ -3198,7 +3198,7 @@ static void draw_atom_info_window(const ApplicationData& data, int atom_idx) {
     str_t symbol = md_util_element_symbol(mol.atom.element[atom_idx]);
 
     int chain_idx = -1;
-    str_t chain_id = {0};
+    str_t chain_id = {};
     if (mol.atom.chain_idx) {
         chain_idx = mol.atom.chain_idx[atom_idx];
         if (chain_idx != -1 && mol.chain.count > 0) {
@@ -4668,7 +4668,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                 ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
                 ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.0f, 1.0f));
                 if (ImGui::ImageButton((void*)(intptr_t)data->density_volume.dvr.tf.id, button_size)) {
-                    auto res = application::file_dialog(application::FileDialogFlags_Open, {}, make_cstr("png,jpg"));
+                    auto res = application::file_dialog(application::FileDialogFlags_Open, {}, MAKE_STR("png,jpg"));
                     if (res.result == application::FileDialogResult::Ok) {
                         data->density_volume.dvr.tf.path = res.path;
                         data->density_volume.dvr.tf.dirty = true;
@@ -5138,7 +5138,7 @@ static void draw_script_editor_window(ApplicationData* data) {
         {
             if (ImGui::BeginMenu("File")) {
                 if (ImGui::MenuItem("Load")) {
-                    application::FileDialogResult file_result = application::file_dialog(application::FileDialogFlags_Open, {}, make_cstr("txt"));
+                    application::FileDialogResult file_result = application::file_dialog(application::FileDialogFlags_Open, {}, MAKE_STR("txt"));
                     if (file_result.result == application::FileDialogResult::Ok) {
                         str_t txt = load_textfile({file_result.path, file_result.path_len}, default_allocator);
                         defer { free_str(txt, default_allocator); };
@@ -5148,7 +5148,7 @@ static void draw_script_editor_window(ApplicationData* data) {
                 }
                 if (ImGui::MenuItem("Save")) {
                     auto textToSave = editor.GetText();
-                    application::FileDialogResult file_result = application::file_dialog(application::FileDialogFlags_Open, {}, make_cstr("txt"));
+                    application::FileDialogResult file_result = application::file_dialog(application::FileDialogFlags_Open, {}, MAKE_STR("txt"));
                     if (file_result.result == application::FileDialogResult::Ok) {
                         StrBuf<1024> path = str_t{file_result.path, file_result.path_len};
                         if (str_empty(extract_ext(path))) {
@@ -5424,12 +5424,12 @@ static void draw_property_export_window(ApplicationData* data) {
     };
 
     ExportFormat table_formats[] {
-        {make_cstr("XVG"), make_cstr("xvg")},
-        {make_cstr("CSV"), make_cstr("csv")}
+        {MAKE_STR("XVG"), MAKE_STR("xvg")},
+        {MAKE_STR("CSV"), MAKE_STR("csv")}
     };
 
     ExportFormat volume_formats[] {
-        {make_cstr("Gaussian Cube"), make_cstr("cube")},
+        {MAKE_STR("Gaussian Cube"), MAKE_STR("cube")},
     };
 
     if (ImGui::Begin("Property Export", &data->show_property_export_window)) {
@@ -6213,17 +6213,17 @@ static RepresentationType get_rep_type(str_t str) {
 static str_t get_rep_type_name(RepresentationType type) {
     switch (type) {
         case RepresentationType::SpaceFill:
-            return make_cstr("SPACE_FILL");
+            return MAKE_STR("SPACE_FILL");
         case RepresentationType::Licorice:
-            return make_cstr("LICORICE");
+            return MAKE_STR("LICORICE");
         /*case RepresentationType::BallAndStick:
             return make_cstr("BALL_AND_STICK");*/
         case RepresentationType::Ribbons:
-            return make_cstr("RIBBONS");
+            return MAKE_STR("RIBBONS");
         case RepresentationType::Cartoon:
-            return make_cstr("CARTOON");
+            return MAKE_STR("CARTOON");
         default:
-            return make_cstr("UNKNOWN");
+            return MAKE_STR("UNKNOWN");
     }
 }
 
@@ -6249,27 +6249,27 @@ static ColorMapping get_color_mapping(str_t str) {
 static str_t get_color_mapping_name(ColorMapping mapping) {
     switch (mapping) {
         case ColorMapping::Uniform:
-            return make_cstr("UNIFORM");
+            return MAKE_STR("UNIFORM");
         case ColorMapping::Cpk:
-            return make_cstr("CPK");
+            return MAKE_STR("CPK");
         case ColorMapping::ResId:
-            return make_cstr("RES_ID");
+            return MAKE_STR("RES_ID");
         case ColorMapping::ResIndex:
-            return make_cstr("RES_INDEX");
+            return MAKE_STR("RES_INDEX");
         case ColorMapping::ChainId:
-            return make_cstr("CHAIN_ID");
+            return MAKE_STR("CHAIN_ID");
         case ColorMapping::ChainIndex:
-            return make_cstr("CHAIN_INDEX");
+            return MAKE_STR("CHAIN_INDEX");
         case ColorMapping::SecondaryStructure:
-            return make_cstr("SECONDARY_STRUCTURE");
+            return MAKE_STR("SECONDARY_STRUCTURE");
         default:
-            return make_cstr("UNDEFINED");
+            return MAKE_STR("UNDEFINED");
     }
 }
 
 static vec4_t parse_vec4(str_t txt, vec4_t default_val = {1,1,1,1}) {
     vec4_t res = default_val;
-    str_t tok = {0};
+    str_t tok = {};
     int i = 0;
     while (extract_next_token(&tok, &txt, ',') && i < 4) {
         res.elem[i] = parse_float(tok);
@@ -6477,7 +6477,7 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
         {
             // Script starts with """
             // and ends with """
-            str_t token = make_cstr("\"\"\"");
+            str_t token = MAKE_STR("\"\"\"");
             if (compare_str_n(arg, token, token.len)) {
                 // Roll back buf to arg + 3
                 const char* beg = arg.ptr + token.len;
@@ -6506,7 +6506,7 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
         {
             // Bitfield starts with ###
             // and ends with ###
-            str_t token = make_cstr("###");
+            str_t token = MAKE_STR("###");
             if (compare_str_n(arg, token, token.len)) {
                 // Roll back buf to arg + 3
                 const char* beg = arg.ptr + token.len;
@@ -6559,7 +6559,7 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     data->animation = {};
     reset_view(data, false, true);
 
-    str_t group = {0};
+    str_t group = {};
     str_t c_txt = txt;
     str_t line = {};
 
@@ -6802,12 +6802,12 @@ void create_screenshot(ApplicationData* data) {
         }
     }
 
-    application::FileDialogResult file_res = application::file_dialog(application::FileDialogFlags_Save, {}, make_cstr("jpg;png;bmp"));
+    application::FileDialogResult file_res = application::file_dialog(application::FileDialogFlags_Save, {}, MAKE_STR("jpg;png;bmp"));
     if (file_res.result == application::FileDialogResult::Ok) {
         str_t ext = extract_ext({file_res.path, file_res.path_len});
         if (ext.ptr == NULL) {
             snprintf(file_res.path + file_res.path_len, ARRAY_SIZE(file_res.path) - file_res.path_len, ".jpg");
-            ext = make_cstr("jpg");
+            ext = MAKE_STR("jpg");
         }
         if (compare_str_cstr_ignore_case(ext, "jpg")) {
             const int quality = 95;

@@ -18,7 +18,7 @@ namespace cone_trace {
 static GLuint vao = 0;
 static GLuint vbo = 0;
 
-static const char* v_shader_fs_quad_src = R"(
+static str_t v_shader_fs_quad_src = MAKE_STR(R"(
 #version 150 core
 
 out vec2 uv;
@@ -31,7 +31,7 @@ void main() {
 		0, 1.0);
 	uv = gl_Position.xy * 0.5 + 0.5;
 }
-)";
+)");
 
 namespace voxelize {
 static struct {
@@ -46,7 +46,7 @@ static struct {
     } uniform_location;
 } gl;
 
-static const char* v_shader_src = R"(
+static str_t v_shader_src = MAKE_STR(R"(
 #version 430 core
 
 uniform ivec3_t u_volume_dim;
@@ -85,35 +85,22 @@ void main() {
         }
     }
 }
-)";
+)");
 
 static void initialize(int version_major, int version_minor) {
     if (!gl.program) {
         if (version_major >= 4 && version_minor >= 3) {
-            constexpr int BUFFER_SIZE = 1024;
-            char buffer[BUFFER_SIZE];
-
-            GLuint v_shader = glCreateShader(GL_VERTEX_SHADER);
-            glShaderSource(v_shader, 1, &v_shader_src, 0);
-
-            glCompileShader(v_shader);
-            if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
-                md_printf(MD_LOG_TYPE_ERROR, "Compiling sphere binning vertex shader:\n%s\n", buffer);
+            GLuint v_shader = gl::compile_shader_from_source(v_shader_src, GL_VERTEX_SHADER);
+            defer { glDeleteShader(v_shader); };
+            if (v_shader) {
+                gl.program = glCreateProgram();
+                if (gl::attach_link_detach(gl.program, &v_shader, 1)) {
+                    gl.uniform_location.volume_dim = glGetUniformLocation(gl.program, "u_volume_dim");
+                    gl.uniform_location.volume_min = glGetUniformLocation(gl.program, "u_volume_min");
+                    gl.uniform_location.voxel_ext = glGetUniformLocation(gl.program, "u_voxel_ext");
+                    gl.uniform_location.tex_volume = glGetUniformLocation(gl.program, "u_tex_volume");
+                }
             }
-
-            gl.program = glCreateProgram();
-            glAttachShader(gl.program, v_shader);
-            glLinkProgram(gl.program);
-            if (gl::get_program_link_error(buffer, BUFFER_SIZE, gl.program)) {
-                md_printf(MD_LOG_TYPE_ERROR, "Linking sphere binning program:\n%s\n", buffer);
-            }
-            glDetachShader(gl.program, v_shader);
-            glDeleteShader(v_shader);
-
-            gl.uniform_location.volume_dim = glGetUniformLocation(gl.program, "u_volume_dim");
-            gl.uniform_location.volume_min = glGetUniformLocation(gl.program, "u_volume_min");
-            gl.uniform_location.voxel_ext = glGetUniformLocation(gl.program, "u_voxel_ext");
-            gl.uniform_location.tex_volume = glGetUniformLocation(gl.program, "u_tex_volume");
         } else {
             md_print(MD_LOG_TYPE_INFO, "Sphere binning shader requires OpenGL 4.3");
         }
@@ -165,7 +152,7 @@ static struct {
 // Modified version of
 // https://github.com/Cigg/Voxel-Cone-Tracing
 
-static const char* f_shader_src = R"(
+static str_t f_shader_src = MAKE_STR(R"(
 #version 330 core
 
 in vec2 uv;
@@ -382,58 +369,38 @@ void main() {
 
     frag_color = vec4_t(shade(albedo, alpha, f0, smoothness, P, V, N), 1);
 }
-)";
+)");
 
 static void initialize() {
-    constexpr int BUFFER_SIZE = 1024;
-    char buffer[BUFFER_SIZE];
-
-    GLuint v_shader = glCreateShader(GL_VERTEX_SHADER);
-    GLuint f_shader = glCreateShader(GL_FRAGMENT_SHADER);
-
-    glShaderSource(v_shader, 1, &v_shader_fs_quad_src, 0);
-    glShaderSource(f_shader, 1, &f_shader_src, 0);
-
-    glCompileShader(v_shader);
-    if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, v_shader)) {
-        md_printf(MD_LOG_TYPE_ERROR,"Compiling cone_tracing vertex shader:\n%s\n", buffer);
+    GLuint v_shader = gl::compile_shader_from_source(v_shader_fs_quad_src, GL_VERTEX_SHADER);
+    GLuint f_shader = gl::compile_shader_from_source(f_shader_src, GL_FRAGMENT_SHADER);
+    defer{
+        glDeleteShader(v_shader);
+        glDeleteShader(f_shader);
+    };
+    
+    if (v_shader && f_shader) {
+        const GLuint shaders[] = {v_shader, f_shader};
+        gl.program = glCreateProgram();
+        if (gl::attach_link_detach(gl.program, shaders, 2)) {
+            gl.uniform_location.depth_tex = glGetUniformLocation(gl.program, "u_depth_texture");
+            gl.uniform_location.normal_tex = glGetUniformLocation(gl.program, "u_normal_texture");
+            gl.uniform_location.color_alpha_tex = glGetUniformLocation(gl.program, "u_color_alpha_texture");
+            gl.uniform_location.f0_smoothness_tex = glGetUniformLocation(gl.program, "u_f0_smoothness_texture");
+            gl.uniform_location.voxel_tex = glGetUniformLocation(gl.program, "u_voxel_texture");
+            gl.uniform_location.voxel_grid_min = glGetUniformLocation(gl.program, "u_voxel_grid_world_min");
+            gl.uniform_location.voxel_grid_size = glGetUniformLocation(gl.program, "u_voxel_grid_world_size");
+            gl.uniform_location.voxel_dimensions = glGetUniformLocation(gl.program, "u_voxel_dimensions");
+            gl.uniform_location.voxel_extent = glGetUniformLocation(gl.program, "u_voxel_extent");
+            gl.uniform_location.indirect_diffuse_scale = glGetUniformLocation(gl.program, "u_indirect_diffuse_scale");
+            gl.uniform_location.indirect_specular_scale = glGetUniformLocation(gl.program, "u_indirect_specular_scale");
+            gl.uniform_location.ambient_occlusion_scale = glGetUniformLocation(gl.program, "u_ambient_occlusion_scale");
+            gl.uniform_location.cone_angle = glGetUniformLocation(gl.program, "u_cone_angle");
+            gl.uniform_location.inv_view_mat = glGetUniformLocation(gl.program, "u_inv_view_mat");
+            gl.uniform_location.inv_view_proj_mat = glGetUniformLocation(gl.program, "u_inv_view_proj_mat");
+            gl.uniform_location.world_space_camera = glGetUniformLocation(gl.program, "u_world_space_camera");
+        }
     }
-
-    glCompileShader(f_shader);
-    if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, f_shader)) {
-        md_printf(MD_LOG_TYPE_ERROR,"Compiling cone_tracing fragment shader:\n%s\n", buffer);
-    }
-
-    gl.program = glCreateProgram();
-    glAttachShader(gl.program, v_shader);
-    glAttachShader(gl.program, f_shader);
-    glLinkProgram(gl.program);
-    if (gl::get_program_link_error(buffer, BUFFER_SIZE, gl.program)) {
-        md_printf(MD_LOG_TYPE_ERROR,"Linking cone_tracing program:\n%s\n", buffer);
-    }
-
-    glDetachShader(gl.program, v_shader);
-    glDetachShader(gl.program, f_shader);
-
-    glDeleteShader(v_shader);
-    glDeleteShader(f_shader);
-
-    gl.uniform_location.depth_tex = glGetUniformLocation(gl.program, "u_depth_texture");
-    gl.uniform_location.normal_tex = glGetUniformLocation(gl.program, "u_normal_texture");
-    gl.uniform_location.color_alpha_tex = glGetUniformLocation(gl.program, "u_color_alpha_texture");
-    gl.uniform_location.f0_smoothness_tex = glGetUniformLocation(gl.program, "u_f0_smoothness_texture");
-    gl.uniform_location.voxel_tex = glGetUniformLocation(gl.program, "u_voxel_texture");
-    gl.uniform_location.voxel_grid_min = glGetUniformLocation(gl.program, "u_voxel_grid_world_min");
-    gl.uniform_location.voxel_grid_size = glGetUniformLocation(gl.program, "u_voxel_grid_world_size");
-    gl.uniform_location.voxel_dimensions = glGetUniformLocation(gl.program, "u_voxel_dimensions");
-    gl.uniform_location.voxel_extent = glGetUniformLocation(gl.program, "u_voxel_extent");
-    gl.uniform_location.indirect_diffuse_scale = glGetUniformLocation(gl.program, "u_indirect_diffuse_scale");
-    gl.uniform_location.indirect_specular_scale = glGetUniformLocation(gl.program, "u_indirect_specular_scale");
-    gl.uniform_location.ambient_occlusion_scale = glGetUniformLocation(gl.program, "u_ambient_occlusion_scale");
-    gl.uniform_location.cone_angle = glGetUniformLocation(gl.program, "u_cone_angle");
-    gl.uniform_location.inv_view_mat = glGetUniformLocation(gl.program, "u_inv_view_mat");
-    gl.uniform_location.inv_view_proj_mat = glGetUniformLocation(gl.program, "u_inv_view_proj_mat");
-    gl.uniform_location.world_space_camera = glGetUniformLocation(gl.program, "u_world_space_camera");
 }
 
 static void shutdown() {
@@ -453,7 +420,11 @@ void initialize() {
         program = glCreateProgram();
     }
     GLuint v_shader = gl::compile_shader_from_source(v_shader_fs_quad_src, GL_VERTEX_SHADER);
-    GLuint f_shader = gl::compile_shader_from_file(VIAMD_SHADER_DIR "/cone_tracing/directional_occlusion.frag", GL_FRAGMENT_SHADER);
+    GLuint f_shader = gl::compile_shader_from_file(MAKE_STR(VIAMD_SHADER_DIR"/cone_tracing/directional_occlusion.frag"), GL_FRAGMENT_SHADER);
+    defer {
+        glDeleteShader(v_shader);
+        glDeleteShader(f_shader);
+    };
 
     const GLuint shaders[] = {v_shader, f_shader};
     gl::attach_link_detach(program, shaders, ARRAY_SIZE(shaders));

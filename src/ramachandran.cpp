@@ -62,7 +62,7 @@ namespace blur {
     static GLint uniform_loc_step = -1;
 }
 
-constexpr const char* v_fs_quad_src = R"(
+constexpr str_t v_fs_quad_src = MAKE_STR(R"(
 #version 150 core
 
 void main() {
@@ -72,9 +72,9 @@ void main() {
 		(float((idx>>1U)&1U)) * 4.0 - 1.0,
 		0, 1.0);
 }
-)";
+)");
 
-constexpr const char* f_shader_box_blur_src = R"(
+constexpr str_t f_shader_box_blur_src = MAKE_STR(R"(
 #version 330 core
 
 layout(location = 0) out vec4 out_frag;
@@ -96,9 +96,9 @@ void main() {
 
     out_frag /= float(KERNEL_RAD * 2);
 }
-)";
+)");
 
-constexpr const char* f_shader_map_src = R"(
+constexpr str_t f_shader_map_src = MAKE_STR(R"(
 #version 330 core
 
 layout(location = 0) out vec4 out_frag0;
@@ -138,9 +138,9 @@ void main() {
     out_frag2 = map_density(d.z, 2U);
     out_frag3 = map_density(d.w, 3U);
 }
-)";
+)");
 
-constexpr const char* f_shader_iso_src = R"(
+constexpr str_t f_shader_iso_src = MAKE_STR(R"(
 #version 330 core
 
 layout(location = 0) out vec4 out_frag0;
@@ -202,7 +202,7 @@ void main() {
     out_frag2 = map_density(d.z, 2U);
     out_frag3 = map_density(d.w, 3U);
 }
-)";
+)");
 
 double b3(double t) {
     double at = fabs(t);
@@ -662,62 +662,6 @@ task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angl
 
     return id;
 }
-
-static int compare_float(const void* a, const void* b) {
-    float va = *(const float*)a;
-    float vb = *(const float*)b;
-
-    if (va < vb) return -1;
-    if (va > vb) return  1;
-    return 0;
-}
-
-/*
-bool rama_rep_compute_density_levels(float* out_levels[4], const rama_rep_t* rep, const float* percentiles, int64_t num_percentiles) {
-    ASSERT(out_levels);
-    ASSERT(rep);
-    ASSERT(percentiles);
-
-    const int64_t N = density_tex_dim * density_tex_dim;
-    const int64_t mem_size = N * 8 * sizeof(float);
-    float* density_map = (float*)md_alloc(default_allocator, mem_size);
-    defer { md_free(default_allocator, density_map, mem_size); };
-
-    float* channel[4] = {
-        density_map + N * 4,
-        density_map + N * 5,
-        density_map + N * 6,
-        density_map + N * 7,
-    };
-
-    glBindTexture(GL_TEXTURE_2D, rep->den_tex);
-    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, density_map);
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    for (int64_t i = 0; i < N; ++i) {
-        channel[0][i] = density_map[4 * i + 0];
-        channel[1][i] = density_map[4 * i + 1];
-        channel[2][i] = density_map[4 * i + 2];
-        channel[3][i] = density_map[4 * i + 3];
-    }
-
-    qsort(channel[0], N, sizeof(float), compare_float);
-    qsort(channel[1], N, sizeof(float), compare_float);
-    qsort(channel[2], N, sizeof(float), compare_float);
-    qsort(channel[3], N, sizeof(float), compare_float);
-
-    for (int64_t i = 0; i < num_percentiles; ++i) {
-        int64_t idx0 = CLAMP((int64_t)(percentiles[i] * N) + 0, 0, N - 1);
-        int64_t idx1 = CLAMP((int64_t)(percentiles[i] * N) + 1, 0, N - 1);
-        out_levels[0][i] = lerp(channel[0][idx0], channel[0][idx1], 0.5);
-        out_levels[1][i] = lerp(channel[1][idx0], channel[1][idx1], 0.5);
-        out_levels[2][i] = lerp(channel[2][idx0], channel[2][idx1], 0.5);
-        out_levels[3][i] = lerp(channel[3][idx0], channel[3][idx1], 0.5);
-    }
-
-    return true;
-}
-*/
 
 void rama_rep_render_map(rama_rep_t* rep, const float viewport[4], const rama_colormap_t colormap[4], uint32_t display_res) {
     (void)display_res;

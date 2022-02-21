@@ -2,6 +2,7 @@
 #include <core/md_str.h>
 #include <core/md_log.h>
 #include <core/md_allocator.h>
+#include <core/md_string_builder.h>
 
 #include <string.h>
 
@@ -31,81 +32,117 @@ bool gl::get_program_link_error(char* buffer, int max_length, GLuint program) {
     }
 }
 
-GLuint gl::compile_shader_from_source(const char* shader_src, GLenum type, const char* defines) {
+bool build_shader_src(md_string_builder_t* builder, str_t src, str_t base_include_dir) {
+    str_t line;
+    while (extract_line(&line, &src)) {
+        if (compare_str_cstr_n(line, "#include ", 9)) {
+            str_t file = trim_whitespace(substr(line, 9));
+            if (!file || !(file.len > 2) || file[0] != '"' || file[file.len-1] != '"') {
+                md_printf(MD_LOG_TYPE_ERROR, "Failed to parse include file");
+                return false;
+            }
+            file = substr(file, 1, file.len - 2);
+            str_t path = alloc_printf(default_temp_allocator, "%.*s%.*s", (int)base_include_dir.len, base_include_dir.ptr, (int)file.len, file.ptr);
+
+            str_t inc_src = load_textfile(path, default_temp_allocator);
+            if (inc_src) {
+                build_shader_src(builder, inc_src, extract_path_without_file(path));
+            } else {
+                md_printf(MD_LOG_TYPE_ERROR, "Failed to open include file '%.*s'", (int)path.len, path.ptr);
+                return false;
+            }
+        } else {
+            md_string_builder_append_str(builder, line);
+        }
+    }
+
+    return true;
+}
+
+GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str_t base_include_dir) {
     ASSERT(type == GL_VERTEX_SHADER || type == GL_GEOMETRY_SHADER || type == GL_FRAGMENT_SHADER || type == GL_COMPUTE_SHADER ||
            type == GL_TESS_CONTROL_SHADER || type == GL_TESS_EVALUATION_SHADER);
-    constexpr int buffer_size = 1024;
-    char buffer[buffer_size];
 
     GLuint shader = glCreateShader(type);
+    md_string_builder_t builder = {0};
+    md_string_builder_init(&builder, default_temp_allocator);
+    
     if (defines) {
-        str_t src = {shader_src, (int64_t)strlen(shader_src)};
         str_t version_str = {};
-        if (compare_str_cstr_n(src, "#version", 8)) {
+        if (compare_str_cstr_n(src, "#version ", 9)) {
             if (!extract_line(&version_str, &src)) {
                 md_print(MD_LOG_TYPE_ERROR, "Failed to extract version string!");
                 return 0;
             }
-            // We need a zero terminated cstr of version str.
-            version_str = copy_str(version_str, default_temp_allocator);
-            const char* sources[5] = {version_str.ptr, "\n", defines, "\n", src.ptr};
-            glShaderSource(shader, 5, sources, 0);
-            free_str(version_str, default_temp_allocator);
-
+            md_string_builder_append_str(&builder, version_str);
+            md_string_builder_append_str(&builder, defines);
+            md_string_builder_append_str(&builder, MAKE_STR("\n"));
         }
         else {
-            const char* sources[3] = {defines, "\n", src.ptr};
-            glShaderSource(shader, 3, sources, 0);
+            md_string_builder_append_str(&builder, defines);
+            md_string_builder_append_str(&builder, MAKE_STR("\n"));
         }
-    } else {
-        glShaderSource(shader, 1, &shader_src, 0);
     }
 
+    build_shader_src(&builder, src, base_include_dir);
+
+    str_t final_src = md_string_builder_to_string(&builder);
+    glShaderSource(shader, 1, &final_src.ptr, 0);
+    md_string_builder_free(&builder);
+
     glCompileShader(shader);
-    if (gl::get_shader_compile_error(buffer, buffer_size, shader)) {
-        md_printf(MD_LOG_TYPE_ERROR, "Compiling shader from source: \n%s\n", buffer);
+
+    char buffer[1024];
+    if (gl::get_shader_compile_error(buffer, sizeof(buffer), shader)) {
+        md_printf(MD_LOG_TYPE_ERROR, "%s\n", buffer);
         return 0;
     }
 
     return shader;
 }
 
-GLuint gl::compile_shader_from_file(const char* filename, GLenum type, const char* defines) {
-    ASSERT(type == GL_VERTEX_SHADER || type == GL_GEOMETRY_SHADER || type == GL_FRAGMENT_SHADER || type == GL_COMPUTE_SHADER || type == GL_TESS_CONTROL_SHADER || type == GL_TESS_EVALUATION_SHADER);
-    constexpr int buffer_size = 1024;
-    char buffer[buffer_size];
+GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) {
+    ASSERT(type == GL_VERTEX_SHADER || type == GL_GEOMETRY_SHADER || type == GL_FRAGMENT_SHADER || type == GL_COMPUTE_SHADER ||
+        type == GL_TESS_CONTROL_SHADER || type == GL_TESS_EVALUATION_SHADER);
 
-    str_t file = {filename, (int64_t)strlen(filename)};
-    str_t src = load_textfile(file, default_temp_allocator);
-    //defer { FREE(shader_src.cstr()); };
-
-    if (!src.ptr) {
-        md_printf(MD_LOG_TYPE_ERROR, "Could not load shader from file %.*s\n", (int)file.len, file.ptr);
+    str_t src = load_textfile(filename, default_temp_allocator);
+    if (!src) {
+        md_printf(MD_LOG_TYPE_ERROR, "Failed to open source file for shader '%.*s'", (int)src.len, src.ptr);
         return 0;
     }
 
     GLuint shader = glCreateShader(type);
+    md_string_builder_t builder = { 0 };
+    md_string_builder_init(&builder, default_temp_allocator);
+
     if (defines) {
         str_t version_str = {};
-        if (compare_str_cstr_n(src, "#version", 8)) {
+        if (compare_str_cstr_n(src, "#version ", 9)) {
             if (!extract_line(&version_str, &src)) {
                 md_print(MD_LOG_TYPE_ERROR, "Failed to extract version string!");
                 return 0;
             }
+            md_string_builder_append_str(&builder, version_str);
+            md_string_builder_append_str(&builder, defines);
+            md_string_builder_append_str(&builder, MAKE_STR("\n"));
         }
-        // We need a zero terminated cstr of version str.
-        version_str = copy_str(version_str, default_temp_allocator);
-        const char* sources[5] = {version_str.ptr, "\n", defines, "\n", src.ptr};
-        glShaderSource(shader, 5, sources, 0);
-
-        free_str(version_str, default_temp_allocator);
-    } else {
-        glShaderSource(shader, 1, &src.ptr, 0);
+        else {
+            md_string_builder_append_str(&builder, defines);
+            md_string_builder_append_str(&builder, MAKE_STR("\n"));
+        }
     }
 
+    build_shader_src(&builder, src, extract_path_without_file(filename));
+
+    str_t final_src = md_string_builder_to_string(&builder);
+    glShaderSource(shader, 1, &final_src.ptr, 0);
+    md_string_builder_free(&builder);
+
     glCompileShader(shader);
-    if (gl::get_shader_compile_error(buffer, buffer_size, shader)) {
-        md_printf(MD_LOG_TYPE_ERROR, "Compiling shader (%.*s):\n%s\n", (int)file.len, file.ptr, buffer);
+
+    char buffer[1024];
+    if (gl::get_shader_compile_error(buffer, sizeof(buffer), shader)) {
+        md_printf(MD_LOG_TYPE_ERROR, "%s\n", buffer);
         return 0;
     }
 

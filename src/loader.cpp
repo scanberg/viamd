@@ -233,7 +233,7 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, int64
     }
 
     if (lock) {
-        md_frame_cache_release_frame_lock(lock);
+        md_frame_cache_frame_lock_release(lock);
     }
 
     return result;
