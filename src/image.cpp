@@ -31,8 +31,7 @@ bool init_image(image_t* img, int32_t width, int32_t height, md_allocator_i* all
     ASSERT(height > 0);
 
     if (img->data) {
-        md_print(MD_LOG_TYPE_DEBUG, "POSSIBLY LEAKING MEMORY HERE");
-        ASSERT(false);
+        md_print(MD_LOG_TYPE_DEBUG, "Image struct is not empty, possibly leaking memory here");
     }
 
     uint32_t* data = (uint32_t*)md_alloc(alloc, width * height * sizeof(uint32_t));

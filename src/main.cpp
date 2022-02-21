@@ -4336,7 +4336,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
                     double min_d2 = DBL_MAX;
                     int64_t mouse_hover_idx = -1;
 
-                    if (show_curr) {
+                    if (show_curr && mol.backbone.angle) {
                         const uint32_t* indices = data->ramachandran.rama_type_indices[plot_idx];
 
                         double min_x = MIN(selection_rect.X.Min, selection_rect.X.Max);
@@ -5460,7 +5460,11 @@ static void draw_property_export_window(ApplicationData* data) {
                 for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
                     const DisplayProperty& dp = data->display_properties[i];
                     if (dp.full_prop->type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
-                        ColData prop_data = {dp.lbl.cstr(), dp.full_prop->data.values, (int)dp.full_prop->data.num_values, dp.full_prop->data.dim[0]};
+                        str_t lbl = dp.lbl;
+                        if (dp.full_prop->data.dim[0] > 1) {
+                            lbl = alloc_printf(frame_allocator, "%.*s[%d:%d]", (int)lbl.len, lbl.ptr, 1, dp.full_prop->data.dim[0]);
+                        }
+                        ColData prop_data = {lbl.ptr, dp.full_prop->data.values, (int)dp.full_prop->data.num_values, dp.full_prop->data.dim[0]};
                         md_array_push(col_data, prop_data, frame_allocator);
                     }
                 }
@@ -6777,7 +6781,7 @@ static void save_workspace(ApplicationData* data, str_t filename) {
 
 void create_screenshot(ApplicationData* data) {
     ASSERT(data);
-    image_t img;
+    image_t img = {0};
     init_image(&img, data->gbuffer.width, data->gbuffer.height, frame_allocator);
     defer { free_image(&img, frame_allocator); };
 
