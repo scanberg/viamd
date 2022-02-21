@@ -68,8 +68,7 @@ bool read_image(image_t* img, const char* filename, md_allocator_i* alloc) {
     ASSERT(img);
 
     if (img->data) {
-        md_print(MD_LOG_TYPE_DEBUG, "POSSIBLY LEAKING MEMORY HERE");
-        ASSERT(false);
+        md_print(MD_LOG_TYPE_DEBUG, "Image struct is not empty, possibly leaking memory here");
     }
 
     int x, y, channels;
