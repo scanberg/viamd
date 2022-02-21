@@ -134,10 +134,10 @@ bool initialize(Context* ctx, int64_t width, int64_t height, const char* title) 
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;  // Enable Keyboard Controls
     // io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
-#if !MD_PLATFORM_LINUX
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;  // Enable Docking
-#endif
+#if !MD_PLATFORM_LINUX
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;  // Enable Multi-Viewport / Platform Windows
+#endif
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoTaskBarIcons;
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoMerge;
     io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;
