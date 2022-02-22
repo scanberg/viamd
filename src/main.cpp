@@ -89,12 +89,7 @@
     if (glPopDebugGroup) glPopDebugGroup(); \
 }
 
-#if MD_PLATFORM_OSX
-const Key::Key_t KEY_CONSOLE = Key::KEY_WORLD_1;
-#else  // WIN32 and Linux
-// @TODO: Make sure this is currect for Linux?
-const Key::Key_t KEY_CONSOLE = Key::KEY_GRAVE_ACCENT;
-#endif
+
 
 constexpr const char* shader_output_snippet = R"(
 layout(location = 0) out vec4 out_color;
@@ -134,11 +129,18 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
 }
 )";
 
-constexpr Key::Key_t KEY_PLAY_PAUSE = Key::KEY_SPACE;
-constexpr Key::Key_t KEY_SKIP_TO_PREV_FRAME = Key::KEY_LEFT;
-constexpr Key::Key_t KEY_SKIP_TO_NEXT_FRAME = Key::KEY_RIGHT;
-constexpr Key::Key_t KEY_TOGGLE_SCREENSHOT_MODE = Key::KEY_F10;
-constexpr Key::Key_t KEY_SHOW_DEBUG_WINDOW = Key::KEY_F11;
+constexpr const char* shader_output_snippet_lean_and_mean = R"(
+void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint atom_index) {
+}
+)";
+
+constexpr ImGuiKey KEY_CONSOLE = ImGuiKey_GraveAccent;
+constexpr ImGuiKey KEY_PLAY_PAUSE = ImGuiKey_Space;
+constexpr ImGuiKey KEY_SKIP_TO_PREV_FRAME = ImGuiKey_LeftArrow;
+constexpr ImGuiKey KEY_SKIP_TO_NEXT_FRAME = ImGuiKey_RightArrow;
+constexpr ImGuiKey KEY_RECOMPILE_SHADERS = ImGuiKey_F5;
+constexpr ImGuiKey KEY_TOGGLE_SCREENSHOT_MODE = ImGuiKey_F10;
+constexpr ImGuiKey KEY_SHOW_DEBUG_WINDOW = ImGuiKey_F11;
 
 constexpr str_t FILE_EXTENSION = MAKE_STR("via"); 
 constexpr uint32_t INVALID_PICKING_IDX = ~0U;
@@ -262,7 +264,7 @@ struct Representation {
 
     RepresentationType type = RepresentationType::SpaceFill;
     ColorMapping color_mapping = ColorMapping::Cpk;
-    md_exp_bitfield_t atom_mask{};
+    md_bitfield_t atom_mask{};
     md_gl_representation_t md_rep{};
 
     bool enabled = true;
@@ -302,7 +304,7 @@ struct Representation {
 
 struct Selection {
     StrBuf<64> name = "sel";
-    md_exp_bitfield_t atom_mask{};
+    md_bitfield_t atom_mask{};
 };
 
 // This is viamd's representation of a property
@@ -379,6 +381,7 @@ struct ApplicationData {
     // --- MOLD DATA ---
     struct {
         md_gl_shaders_t         gl_shaders = {};
+        md_gl_shaders_t         gl_shaders_lean_and_mean = {};
         md_gl_molecule_t        gl_mol = {};
         md_molecule_t           mol = {};
         md_trajectory_i*        traj = 0;
@@ -392,7 +395,7 @@ struct ApplicationData {
             // Semaphore to control access to IR
             md_semaphore_t ir_semaphore = {};
 
-            md_exp_bitfield_t frame_mask = {};
+            md_bitfield_t frame_mask = {};
 
             bool ir_is_valid = false;
             bool compile_ir = false;
@@ -425,8 +428,8 @@ struct ApplicationData {
         int32_t right_clicked = -1;
         SingleSelectionSequence single_selection_sequence;
 
-        md_exp_bitfield_t current_selection_mask{};
-        md_exp_bitfield_t current_highlight_mask{};
+        md_bitfield_t current_selection_mask{};
+        md_bitfield_t current_highlight_mask{};
         Selection* stored_selections = NULL;
 
         struct {
@@ -450,14 +453,14 @@ struct ApplicationData {
         struct {
             char buf[256] = "";
             char err_buf[256] = "";
-            md_exp_bitfield_t mask = {0};
+            md_bitfield_t mask = {0};
             bool query_ok = false;
             bool query_invalid = true;
             bool show_window = false;
         } query;
 
         struct {
-            md_exp_bitfield_t mask = {0};
+            md_bitfield_t mask = {0};
             SelectionGrowth mode = SelectionGrowth::CovalentBond;
             float extent = 0;
             bool mask_invalid = true;
@@ -550,8 +553,6 @@ struct ApplicationData {
             vec3_t max = {1, 1, 1};
         } clip_volume;
 
-        // mat4 model_to_world_matrix{};
-        // mat4 world_to_model_matrix{};
         vec3_t voxel_spacing{1.0f};
         float resolution_scale = 2.0f;
 
@@ -568,7 +569,6 @@ struct ApplicationData {
         mat4_t model_mat = {0};
 
         Camera camera = {};
-
     } density_volume;
 
     // --- VISUALS ---
@@ -699,7 +699,7 @@ struct ApplicationData {
     // --- REPRESENTATIONS ---
     struct {
         Representation* buffer = 0;
-        md_exp_bitfield_t atom_visibility_mask = {0};
+        md_bitfield_t atom_visibility_mask = {0};
         bool atom_visibility_mask_dirty = false;
         bool show_window = false;
     } representations;
@@ -947,13 +947,13 @@ static void clear_representations(ApplicationData* data);
 static void recompute_atom_visibility_mask(ApplicationData* data);
 
 // Selections
-static Selection* create_selection(ApplicationData* data, str_t name, md_exp_bitfield_t* bf);
+static Selection* create_selection(ApplicationData* data, str_t name, md_bitfield_t* bf);
 static Selection* clone_selection(ApplicationData* data, const Selection& sel);
 static void remove_selection(ApplicationData* data, int idx);
 
-static bool filter_expression(ApplicationData* data, str_t expr, md_exp_bitfield_t* mask, bool* is_dynamic, char* error_str, int64_t error_cap);
+static bool filter_expression(ApplicationData* data, str_t expr, md_bitfield_t* mask, bool* is_dynamic, char* error_str, int64_t error_cap);
 
-static void modify_field(md_exp_bitfield_t* bf, const md_exp_bitfield_t* mask, SelectionOperator op) {
+static void modify_field(md_bitfield_t* bf, const md_bitfield_t* mask, SelectionOperator op) {
     switch(op) {
     case SelectionOperator::Or:
         md_bitfield_or_inplace(bf, mask);
@@ -972,7 +972,7 @@ static void modify_field(md_exp_bitfield_t* bf, const md_exp_bitfield_t* mask, S
     }
 }
 
-static void modify_field(md_exp_bitfield_t* bf, md_range_t range, SelectionOperator op) {
+static void modify_field(md_bitfield_t* bf, md_range_t range, SelectionOperator op) {
     switch(op) {
     case SelectionOperator::Or:
         md_bitfield_set_range(bf, range.beg, range.end);
@@ -996,7 +996,7 @@ static void modify_field(md_exp_bitfield_t* bf, md_range_t range, SelectionOpera
     }
 }
 
-static void modify_selection(ApplicationData* data, md_exp_bitfield_t* atom_mask, SelectionOperator op = SelectionOperator::Set) {
+static void modify_selection(ApplicationData* data, md_bitfield_t* atom_mask, SelectionOperator op = SelectionOperator::Set) {
     ASSERT(data);
     modify_field(&data->selection.current_selection_mask, atom_mask, op);
     data->mold.dirty_buffers |= MolBit_DirtyFlags;
@@ -1092,6 +1092,7 @@ int main(int, char**) {
 
     md_gl_initialize();
     md_gl_shaders_init(&data.mold.gl_shaders, shader_output_snippet);
+    md_gl_shaders_init(&data.mold.gl_shaders_lean_and_mean, shader_output_snippet_lean_and_mean);
 
     ImGui::init_theme();
 
@@ -1168,7 +1169,7 @@ int main(int, char**) {
         draw_molecule_dynamic_info_window(&data);
 
         // #input
-        if (data.ctx.input.key.hit[KEY_CONSOLE]) {
+        if (ImGui::IsKeyPressed(KEY_CONSOLE)) {
             if (data.console.Visible()) {
                 data.console.Hide();
             } else if (!ImGui::GetIO().WantTextInput) {
@@ -1176,12 +1177,12 @@ int main(int, char**) {
             }
         }
 
-        if (data.ctx.input.key.hit[KEY_SHOW_DEBUG_WINDOW]) {
+        if (ImGui::IsKeyPressed(KEY_SHOW_DEBUG_WINDOW)) {
             data.show_debug_window = true;
         }
 
         if (!ImGui::GetIO().WantCaptureKeyboard) {
-            if (data.ctx.input.key.hit[KEY_TOGGLE_SCREENSHOT_MODE]) {
+            if (ImGui::IsKeyPressed(KEY_TOGGLE_SCREENSHOT_MODE)) {
                 static bool screenshot_mode = false;
                 screenshot_mode = !screenshot_mode;
 
@@ -1195,7 +1196,7 @@ int main(int, char**) {
                 }
             }
 
-            if (data.ctx.input.key.hit[Key::KEY_F5]) {
+            if (ImGui::IsKeyPressed(KEY_RECOMPILE_SHADERS)) {
                 md_print(MD_LOG_TYPE_INFO, "Recompiling shaders and re-initializing volume");
                 postprocessing::initialize(data.gbuffer.width, data.gbuffer.height);
                 ramachandran::initialize();
@@ -1207,7 +1208,7 @@ int main(int, char**) {
                 md_gl_shaders_init(&data.mold.gl_shaders, shader_output_snippet);
             }
 
-            if (data.ctx.input.key.hit[KEY_PLAY_PAUSE]) {
+            if (ImGui::IsKeyPressed(KEY_PLAY_PAUSE)) {
                 if (data.animation.mode == PlaybackMode::Stopped) {
                     if (data.animation.frame == max_frame && data.animation.fps > 0) {
                         data.animation.frame = 0;
@@ -1230,9 +1231,9 @@ int main(int, char**) {
                 data.mold.dirty_buffers |= MolBit_DirtyPosition;   // Update previous position to not get motion trail when paused
             }
 
-            if (data.ctx.input.key.hit[KEY_SKIP_TO_PREV_FRAME] || data.ctx.input.key.hit[KEY_SKIP_TO_NEXT_FRAME]) {
-                double step = data.ctx.input.key.down[Key::KEY_LEFT_CONTROL] ? 10.0 : 1.0;
-                if (data.ctx.input.key.hit[KEY_SKIP_TO_PREV_FRAME]) step = -step;
+            if (ImGui::IsKeyPressed(KEY_SKIP_TO_PREV_FRAME) || ImGui::IsKeyPressed(KEY_SKIP_TO_NEXT_FRAME)) {
+                double step = ImGui::IsKeyDown(ImGuiKey_ModCtrl) ? 10.0 : 1.0;
+                if (ImGui::IsKeyPressed(KEY_SKIP_TO_PREV_FRAME)) step = -step;
                 data.animation.frame = CLAMP(data.animation.frame + step, 0.0, max_frame);
             }
         }
@@ -2104,8 +2105,8 @@ static void compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, con
     }
 }
 
-static void grow_mask_by_covalent_bond(md_exp_bitfield_t* mask, md_bond_t* bonds, int64_t num_bonds, int64_t extent) {
-    md_exp_bitfield_t prev_mask;
+static void grow_mask_by_covalent_bond(md_bitfield_t* mask, md_bond_t* bonds, int64_t num_bonds, int64_t extent) {
+    md_bitfield_t prev_mask;
     md_bitfield_init(&prev_mask, frame_allocator);
     defer { md_bitfield_free(&prev_mask); };
 
@@ -2123,7 +2124,7 @@ static void grow_mask_by_covalent_bond(md_exp_bitfield_t* mask, md_bond_t* bonds
     }
 }
 
-static void grow_mask_by_radial_extent(md_exp_bitfield_t* dst_mask, const md_exp_bitfield_t* src_mask, const float* x, const float* y, const float* z, int64_t count, float ext) {
+static void grow_mask_by_radial_extent(md_bitfield_t* dst_mask, const md_bitfield_t* src_mask, const float* x, const float* y, const float* z, int64_t count, float ext) {
     if (ext > 0.0f) {
         const float cell_ext = CLAMP(ext / 3.0f, 3.0f, 12.0f);
         md_spatial_hash_args_t args = {
@@ -2150,7 +2151,7 @@ static void grow_mask_by_radial_extent(md_exp_bitfield_t* dst_mask, const md_exp
             vec3_t pos = {x[i], y[i], z[i]};
             float  rad = ext;
             md_spatial_hash_query(&ctx, pos, rad, [](uint32_t idx, vec3_t, void* user_data) -> bool {
-                md_exp_bitfield_t* mask = (md_exp_bitfield_t*)user_data;
+                md_bitfield_t* mask = (md_bitfield_t*)user_data;
                 md_bitfield_set_bit(mask, (int64_t)idx);
                 return true;
             }, dst_mask);
@@ -2160,7 +2161,7 @@ static void grow_mask_by_radial_extent(md_exp_bitfield_t* dst_mask, const md_exp
     }
 }
 
-static void expand_mask(md_exp_bitfield_t* mask, const md_range_t ranges[], int64_t num_ranges) {
+static void expand_mask(md_bitfield_t* mask, const md_range_t ranges[], int64_t num_ranges) {
     for (int64_t i = 0; i < num_ranges; i++) {
         if (md_bitfield_popcount_range( mask, ranges[i].beg, ranges[i].end) != 0) {
             md_bitfield_set_range(mask, ranges[i].beg, ranges[i].end);
@@ -2168,7 +2169,7 @@ static void expand_mask(md_exp_bitfield_t* mask, const md_range_t ranges[], int6
     }
 }
 
-static bool filter_expression(ApplicationData* data, str_t expr, md_exp_bitfield_t* mask, bool* is_dynamic = NULL, char* error_str = NULL, int64_t error_cap = 0) {
+static bool filter_expression(ApplicationData* data, str_t expr, md_bitfield_t* mask, bool* is_dynamic = NULL, char* error_str = NULL, int64_t error_cap = 0) {
     if (data->mold.mol.atom.count == 0) return false;    
     
     md_filter_result_t res = {0};
@@ -2779,7 +2780,7 @@ void draw_context_popup(ApplicationData* data) {
             if (ImGui::BeginMenu("Recenter Trajectory...")) {
                 const int idx = data->selection.right_clicked;
 
-                md_exp_bitfield_t mask = {0};
+                md_bitfield_t mask = {0};
                 md_bitfield_init(&mask, frame_allocator);
                 bool apply = false;
 
@@ -3034,7 +3035,7 @@ static void draw_representations_window(ApplicationData* data) {
         bool update_visual_rep = false;
         bool update_color = false;
         auto& rep = data->representations.buffer[i];
-        const float item_width = CLAMP(ImGui::GetWindowContentRegionWidth() - 90.f, 100.f, 300.f);
+        const float item_width = CLAMP(ImGui::GetContentRegionAvail().x - 90.f, 100.f, 300.f);
         StrBuf<128> name;
         snprintf(name.cstr(), name.capacity(), "%s###ID", rep.name.cstr());
 
@@ -3334,7 +3335,7 @@ static void draw_async_task_window(ApplicationData* data) {
             if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
 
             snprintf(buf, 32, "%.1f%%", fract * 100.f);
-            ImGui::ProgressBar(fract, ImVec2(ImGui::GetWindowContentRegionWidth() * PROGRESSBAR_WIDTH_FRACT, 0), buf);
+            ImGui::ProgressBar(fract, ImVec2(ImGui::GetContentRegionAvail().x * PROGRESSBAR_WIDTH_FRACT, 0), buf);
             ImGui::SameLine();
             ImGui::Text("%s", label);
             ImGui::SameLine();
@@ -3945,7 +3946,7 @@ static void draw_shape_space_window(ApplicationData* data) {
             ImGui::EndMenuBar();
         }
 
-        const float item_width = MAX(ImGui::GetWindowContentRegionWidth(), 150.f);
+        const float item_width = MAX(ImGui::GetContentRegionAvail().x, 150.f);
         ImGui::PushItemWidth(item_width);
         data->shape_space.evaluate |= ImGui::InputQuery("##input", data->shape_space.input.beg(), data->shape_space.input.capacity(), data->shape_space.input_valid);
         ImGui::PopItemWidth();
@@ -4237,8 +4238,8 @@ static void draw_ramachandran_window(ApplicationData* data) {
         }
 
         const auto& mol = data->mold.mol;
-        md_exp_bitfield_t* selection_mask = &data->selection.current_selection_mask;
-        md_exp_bitfield_t* highlight_mask = &data->selection.current_highlight_mask;
+        md_bitfield_t* selection_mask = &data->selection.current_selection_mask;
+        md_bitfield_t* highlight_mask = &data->selection.current_highlight_mask;
 
         const int plot_offset = MAX(0, layout_mode - 1);
         const int plot_cols = (layout_mode == 0) ? 2 : 1;
@@ -4769,24 +4770,31 @@ static void draw_density_volume_window(ApplicationData* data) {
             update_representations = true;
         }
 
+        /*
         // Canvas
         // Using InvisibleButton() as a convenience 1) it will advance the layout cursor and 2) allows us to use IsItemHovered()/IsItemActive()
         ImVec2 canvas_p0 = ImGui::GetCursorScreenPos();      // ImDrawList API uses screen coordinates!
-        ImVec2 canvas_sz = ImGui::GetContentRegionAvail();   // Resize canvas to what's available
-        if (canvas_sz.x < 50.0f) canvas_sz.x = 50.0f;
-        if (canvas_sz.y < 50.0f) canvas_sz.y = 50.0f;
         ImVec2 canvas_p1 = ImVec2(canvas_p0.x + canvas_sz.x, canvas_p0.y + canvas_sz.y);
-        
-        // Draw border and background color
-        ImGuiIO& io = ImGui::GetIO();
-        ImDrawList* draw_list = ImGui::GetWindowDrawList();
-        draw_list->AddImage((ImTextureID)(uint64_t)data->density_volume.fbo.deferred.post_tonemap, canvas_p0, canvas_p1, {0,1}, {1,0});
-        draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(50, 50, 50, 255));
+        */
+        ImVec2 canvas_sz = ImGui::GetContentRegionAvail();   // Resize canvas to what's available
+        canvas_sz.x = MAX(canvas_sz.x, 50.0f);
+        canvas_sz.y = MAX(canvas_sz.y, 50.0f);
 
         // This will catch our interactions
         ImGui::InvisibleButton("canvas", canvas_sz, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
-        const bool is_hovered = ImGui::IsItemHovered(); // Hovered
-        const bool is_active = ImGui::IsItemActive();   // Held
+
+        // Draw border and background color
+        ImGuiIO& io = ImGui::GetIO();
+
+        ImVec2 canvas_p0 = ImGui::GetItemRectMin();
+        ImVec2 canvas_p1 = ImGui::GetItemRectMax();
+
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        draw_list->AddImage((ImTextureID)(uint64_t)data->density_volume.fbo.deferred.post_tonemap, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
+        draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(50, 50, 50, 255));
+
+        const bool is_hovered = ImGui::IsItemHovered();
+        const bool is_active = ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left);
         const ImVec2 origin(canvas_p0.x, canvas_p0.y);  // Lock scrolled origin
         const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
 
@@ -4812,14 +4820,17 @@ static void draw_density_volume_window(ApplicationData* data) {
             .min_distance = 1.0,
             .max_distance = 1000.0,
         };
-        vec2_t delta = {data->ctx.input.mouse.win_delta.x, data->ctx.input.mouse.win_delta.y};
+
+        vec2_t delta = { io.MouseDelta.x, io.MouseDelta.y };
         vec2_t curr = {mouse_pos_in_canvas.x, mouse_pos_in_canvas.y};
         vec2_t prev = curr - delta;
+        float  wheel_delta = io.MouseWheel;
+
         TrackballControllerInput input = {
-            .rotate_button = is_active && data->ctx.input.mouse.down[0],
-            .pan_button = is_active && data->ctx.input.mouse.down[1],
-            .dolly_button = is_active && data->ctx.input.mouse.down[2],
-            .dolly_delta = is_hovered ? data->ctx.input.mouse.scroll_delta : 0.0f,
+            .rotate_button = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Left),
+            .pan_button    = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Right),
+            .dolly_button  = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Middle),
+            .dolly_delta   = is_hovered ? wheel_delta : 0.0f,
             .mouse_coord_prev = prev,
             .mouse_coord_curr = curr,
             .screen_size = {canvas_sz.x, canvas_sz.y},
@@ -4880,7 +4891,7 @@ static void draw_density_volume_window(ApplicationData* data) {
 
                 if (data->density_volume.gl_reps) {
                     // Only free those required
-                    for (int64_t i = num_reps; i < md_array_size(data->density_volume.gl_reps); ++i) {
+                    for (int64_t i = 0; i < md_array_size(data->density_volume.gl_reps); ++i) {
                         md_gl_representation_free(&data->density_volume.gl_reps[i]);
                     }
                 }
@@ -4921,20 +4932,19 @@ static void draw_density_volume_window(ApplicationData* data) {
         if (prop && data->density_volume.show_reference_structures && num_reps > 0) {
             num_reps = data->density_volume.show_reference_ensemble ? num_reps : 1;
 
-            const md_gl_representation_t** reps = (const md_gl_representation_t**)md_alloc(frame_allocator, num_reps * sizeof(void*));
-            const float** mats = (const float**)md_alloc(frame_allocator, num_reps * sizeof(void*));
-
+            md_gl_draw_op_t* draw_ops = 0;
             for (int64_t i = 0; i < num_reps; ++i) {
-                reps[i] = &data->density_volume.gl_reps[i];
-                mats[i] = &data->density_volume.rep_model_mats[i].elem[0][0];
+                md_gl_draw_op_t op = {};
+                op.rep = &data->density_volume.gl_reps[i];
+                op.model_matrix = &data->density_volume.rep_model_mats[i].elem[0][0];
+                md_array_push(draw_ops, op, frame_allocator);
             }
 
             md_gl_draw_args_t draw_args = {
                 .shaders = &data->mold.gl_shaders,
-                .representation = {
-                    .count = (uint32_t)num_reps,
-                    .data = reps,
-                    .model_matrix = mats,
+                .draw_operations = {
+                    .count = (uint32_t)md_array_size(draw_ops),
+                    .ops = draw_ops
                 },
                 .view_transform = {
                     .view_matrix = &view_mat.elem[0][0],
@@ -5355,7 +5365,7 @@ static bool export_cube(const ApplicationData& data, const md_script_property_t*
 
             // transformation matrix from world to volume
             const mat4_t M = vis.sdf.matrices[0];
-            const md_exp_bitfield_t* bf = &vis.sdf.structures[0];
+            const md_bitfield_t* bf = &vis.sdf.structures[0];
             const int num_atoms = (int)md_bitfield_popcount(bf);
             const int vol_dim[3] = {prop->data.dim[0], prop->data.dim[1], prop->data.dim[2]};
             const double extent = vis.sdf.extent * angstrom_to_bohr;
@@ -6520,7 +6530,7 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
                 if (end) {
                     void* base64_data = md_alloc(frame_allocator, md_base64_decode_size_in_bytes(end-beg));
                     int64_t base64_size = md_base64_decode(base64_data, beg, end-beg);
-                    md_exp_bitfield_t* bf = (md_exp_bitfield_t*)(ptr + target->struct_byte_offset);
+                    md_bitfield_t* bf = (md_bitfield_t*)(ptr + target->struct_byte_offset);
                     if (!base64_size || !md_bitfield_deserialize(bf, base64_data, base64_size)) {
                         md_print(MD_LOG_TYPE_ERROR, "Failed to deserialize bitfield");
                         md_bitfield_clear(bf);
@@ -6709,7 +6719,7 @@ static void write_entry(FILE* file, SerializationObject target, const void* ptr,
     }
     case SerializationType_Bitfield:
     {
-        const md_exp_bitfield_t* bf = (const md_exp_bitfield_t*)((const char*)ptr + target.struct_byte_offset);
+        const md_bitfield_t* bf = (const md_bitfield_t*)((const char*)ptr + target.struct_byte_offset);
         void* serialized_data = md_alloc(frame_allocator, md_bitfield_serialize_size_in_bytes(bf));
         int64_t serialized_size = md_bitfield_serialize(serialized_data, bf);
         if (serialized_size) {
@@ -6940,7 +6950,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
                             int i1 = CLAMP((int)data->animation.frame + 1, 0, rep->prop->data.num_values / dim - 1);
                             float frame_fract = fractf((float)data->animation.frame);
 
-                            md_exp_bitfield_t mask = {0};
+                            md_bitfield_t mask = {0};
                             md_bitfield_init(&mask, frame_allocator);
                             for (int i = 0; i < dim; ++i) {
                                 md_bitfield_and(&mask, &rep->atom_mask, &vis.structures.atom_masks[i]);
@@ -7023,7 +7033,7 @@ static void clear_representations(ApplicationData* data) {
 }
 
 // #selection
-static Selection* create_selection(ApplicationData* data, str_t name, md_exp_bitfield_t* atom_mask) {
+static Selection* create_selection(ApplicationData* data, str_t name, md_bitfield_t* atom_mask) {
     ASSERT(data);
     Selection sel;
     sel.name = name;
@@ -7067,10 +7077,10 @@ static bool handle_selection(ApplicationData* data) {
     static bool region_select = false;
     static application::Coordinate x0;
     const application::Coordinate x1 = data->ctx.input.mouse.win_coord;
-    const bool shift_down = ImGui::GetIO().KeyShift;
-    const bool mouse_down = data->ctx.input.mouse.down[0] || data->ctx.input.mouse.down[1];
+    const bool shift_down = ImGui::IsKeyDown(ImGuiKey_ModShift);
+    const bool mouse_down = ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsMouseDown(ImGuiMouseButton_Right);
 
-    md_exp_bitfield_t mask;
+    md_bitfield_t mask;
     md_bitfield_init(&mask, frame_allocator);
     defer { md_bitfield_free(&mask); };
 
@@ -7116,7 +7126,7 @@ static bool handle_selection(ApplicationData* data) {
         if (region_select) {
             const vec2_t res = {(float)data->ctx.window.width, (float)data->ctx.window.height};
             const mat4_t mvp = data->view.param.matrix.current.view_proj;
-            const md_exp_bitfield_t* vis_mask = &data->representations.atom_visibility_mask;
+            const md_bitfield_t* vis_mask = &data->representations.atom_visibility_mask;
 
             int64_t beg_bit = vis_mask->beg_bit;
             int64_t end_bit = vis_mask->end_bit;
@@ -7148,8 +7158,8 @@ static bool handle_selection(ApplicationData* data) {
                     ASSERT(false);
             }
 
-            md_exp_bitfield_t* dst_mask = mouse_down ? &data->selection.current_highlight_mask : &data->selection.current_selection_mask;
-            md_exp_bitfield_t* src_mask = &data->selection.current_selection_mask;
+            md_bitfield_t* dst_mask = mouse_down ? &data->selection.current_highlight_mask : &data->selection.current_selection_mask;
+            md_bitfield_t* src_mask = &data->selection.current_selection_mask;
 
             if (region_mode == RegionMode::Append) {
                 if (dst_mask == src_mask) {
@@ -7579,21 +7589,20 @@ static void apply_postprocessing(const ApplicationData& data) {
 
 static void draw_representations(ApplicationData* data) {
     ASSERT(data);
-    const md_gl_representation_t* rep_data[32] = { 0 };
-    uint32_t rep_count = 0;
-    for (int64_t i = 0; i < md_array_size(data->representations.buffer); i++) {
-        const auto& rep = data->representations.buffer[i];
-        if (rep.enabled) {
-            rep_data[rep_count++] = &rep.md_rep;
+
+    md_gl_draw_op_t* draw_ops = 0;
+    for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
+        if (data->representations.buffer[i].enabled) {
+            md_gl_draw_op_t op = { op.rep = &data->representations.buffer[i].md_rep, 0 };
+            md_array_push(draw_ops, op, frame_allocator);
         }
-        if (rep_count == ARRAY_SIZE(rep_data)) break;
     }
 
     md_gl_draw_args_t args = {
         .shaders = &data->mold.gl_shaders,
-        .representation = {
-            .count = rep_count,
-            .data = rep_data,
+        .draw_operations = {
+            .count = (uint32_t)md_array_size(draw_ops),
+            .ops = draw_ops,
         },
         .view_transform = {
             .view_matrix = &data->view.param.matrix.current.view.elem[0][0],
@@ -7608,21 +7617,19 @@ static void draw_representations(ApplicationData* data) {
 }
 
 static void draw_representations_lean_and_mean(ApplicationData* data, uint32_t mask) {
-    const md_gl_representation_t* rep_data[32] = { 0 };
-    uint32_t rep_count = 0;
-    for (int64_t i = 0; i < md_array_size(data->representations.buffer); i++) {
-        const auto& rep = data->representations.buffer[i];
-        if (rep.enabled) {
-            rep_data[rep_count++] = &data->representations.buffer[i].md_rep;
+    md_gl_draw_op_t* draw_ops = 0;
+    for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
+        if (data->representations.buffer[i].enabled) {
+            md_gl_draw_op_t op = { op.rep = &data->representations.buffer[i].md_rep, 0 };
+            md_array_push(draw_ops, op, frame_allocator);
         }
-        if (rep_count == ARRAY_SIZE(rep_data)) break;
     }
 
     md_gl_draw_args_t args = {
-        .shaders = &data->mold.gl_shaders,
-        .representation = {
-            .count = rep_count,
-            .data = rep_data,
+        .shaders = &data->mold.gl_shaders_lean_and_mean,
+        .draw_operations = {
+            .count = (uint32_t)md_array_size(draw_ops),
+            .ops = draw_ops,
         },
         .view_transform = {
             .view_matrix = &data->view.param.matrix.current.view.elem[0][0],

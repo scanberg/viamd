@@ -29,7 +29,7 @@ struct LoadedTrajectory {
     md_trajectory_i* traj;
     md_frame_cache_t cache;
     md_allocator_i* alloc;
-    md_exp_bitfield_t recenter_target;
+    md_bitfield_t recenter_target;
 };
 
 static LoadedMolecule loaded_molecules[8] = {};
@@ -303,7 +303,7 @@ bool close(md_trajectory_i* traj) {
     return false;
 }
 
-bool set_recenter_target(md_trajectory_i* traj, const md_exp_bitfield_t* atom_mask) {
+bool set_recenter_target(md_trajectory_i* traj, const md_bitfield_t* atom_mask) {
     ASSERT(traj);
 
     LoadedTrajectory* loaded_traj = find_loaded_trajectory((uint64_t)traj);

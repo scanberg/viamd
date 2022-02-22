@@ -177,7 +177,7 @@ constexpr inline uint32_t convert_color(vec4_t color) {
     return out;
 }
 
-void color_atoms_uniform(uint32_t* colors, int64_t count, vec4_t uniform_color, const md_exp_bitfield_t* mask = NULL);
+void color_atoms_uniform(uint32_t* colors, int64_t count, vec4_t uniform_color, const md_bitfield_t* mask = NULL);
 void color_atoms_cpk(uint32_t* colors, int64_t count, const md_molecule_t& mol);
 void color_atoms_residue_id(uint32_t* colors, int64_t count, const md_molecule_t& mol);
 void color_atoms_residue_index(uint32_t* colors, int64_t count, const md_molecule_t& mol);
@@ -187,8 +187,8 @@ void color_atoms_secondary_structure(uint32_t* colors, int64_t count, const md_m
 
 void color_atoms_backbone_angles(uint32_t* colors, int64_t count, const md_molecule_t& mol, const image_t& ramachandran_color_map);
 
-void filter_colors(uint32_t* colors, int64_t num_colors, const md_exp_bitfield_t* mask);
-void desaturate_colors(uint32_t* colors, const md_exp_bitfield_t* mask, float scale);
+void filter_colors(uint32_t* colors, int64_t num_colors, const md_bitfield_t* mask);
+void desaturate_colors(uint32_t* colors, const md_bitfield_t* mask, float scale);
 
 vec3_t magma_color_scale(float t);
 vec3_t inferno_color_scale(float t);

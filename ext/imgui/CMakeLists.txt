@@ -19,7 +19,7 @@ target_include_directories(imgui
 		${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-target_compile_features(imgui PRIVATE cxx_std_11)
+target_compile_features(imgui PRIVATE cxx_std_17)
 target_link_libraries(imgui PRIVATE ${VIAMD_STDLIBS})
 
 if (MSVC)

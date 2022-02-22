@@ -21,9 +21,12 @@ project(viamd)
 option(VIAMD_USE_RELATIVE_PATHS ON)
 option(VIAMD_PROFILE_COMPILE_TIMES OFF)
 
+set(VIAMD_COMPILER_WARNING_FLAGS "")
+
 if (MSVC)
     message(STATUS "MSVC configuration was used")
-    add_compile_options(/MT /W4 /wd4201 /wd4324 /wd26451 /MP /GR- /fp:fast /arch:AVX)
+    set(VIAMD_COMPILER_WARNING_FLAGS /W4 /wd4201 /wd4324 /wd26451)
+    add_compile_options(/MT /MP /GR- /fp:fast /arch:AVX)
 
 	if (VIAMD_PROFILE_COMPILE_TIMES)	
         add_compile_options(/d2cgsummary)
@@ -34,7 +37,8 @@ if (MSVC)
     add_compile_options_config(DEBUG /MTd /ZI)
 else()
 	message(STATUS "non MSVC configuration was used")
-    add_compile_options(-Wall -Wextra -Wno-unused-function -Wno-unused-parameter -Wno-missing-braces -Wno-missing-field-initializers -march=native)
+    set(VIAMD_COMPILER_WARNING_FLAGS -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -Wno-missing-braces -Wno-missing-field-initializers)
+    add_compile_options(-march=native)
 	if (VIAMD_PROFILE_COMPILE_TIMES)
 		add_compile_options(-ftime-trace)
 	endif()
@@ -126,6 +130,8 @@ target_compile_definitions(viamd PRIVATE
 	VIAMD_SHADER_DIR=\"${RESOURCE_DIR}shaders\"
 	VIAMD_IMAGE_DIR=\"${RESOURCE_DIR}images\"
 	VIAMD_SCREENSHOT_DIR=\"${RESOURCE_DIR}screenshots\")
+
+target_compile_options(viamd PRIVATE ${VIAMD_COMPILER_WARNING_FLAGS})
 
 if (APPLE)
 target_compile_features(viamd PRIVATE cxx_std_17)

@@ -61,7 +61,7 @@ static inline void set_colors(uint32_t* colors, int64_t count, uint32_t color) {
     }
 }
 
-void color_atoms_uniform(uint32_t* colors, int64_t count, vec4_t color, const md_exp_bitfield_t* mask) {
+void color_atoms_uniform(uint32_t* colors, int64_t count, vec4_t color, const md_bitfield_t* mask) {
     if (mask) {
         const uint32_t u32_color = convert_color(color);
         int64_t beg_bit = mask->beg_bit;
@@ -172,7 +172,7 @@ void color_atoms_backbone_angles(uint32_t* colors, int64_t count, const md_molec
     */
 }
 
-void filter_colors(uint32_t* colors, int64_t num_colors, const md_exp_bitfield_t* mask) {
+void filter_colors(uint32_t* colors, int64_t num_colors, const md_bitfield_t* mask) {
     int64_t beg_bit = mask->beg_bit;
     int64_t end_bit = mask->end_bit;
 
@@ -188,7 +188,7 @@ void filter_colors(uint32_t* colors, int64_t num_colors, const md_exp_bitfield_t
     }
 }
 
-void desaturate_colors(uint32_t* colors, const md_exp_bitfield_t* mask, float scale) {
+void desaturate_colors(uint32_t* colors, const md_bitfield_t* mask, float scale) {
     int64_t beg_bit = mask->beg_bit;
     int64_t end_bit = mask->end_bit;
     while ((beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) != 0) {
