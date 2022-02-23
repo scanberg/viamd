@@ -124,7 +124,7 @@ int64_t fetch_frame_data(struct md_trajectory_o*, int64_t idx, void* data_ptr) {
     return sizeof(int64_t);
 }
 
-bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, int64_t data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[maybe_unused]] int64_t data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
     LoadedTrajectory* loaded_traj = (LoadedTrajectory*)inst;
     ASSERT(loaded_traj);
     ASSERT(data_size == sizeof(int64_t));

@@ -562,7 +562,8 @@ struct ApplicationData {
         bool show_bounding_box = true;
         bool show_reference_structures = true;
         bool show_reference_ensemble = false;
-        bool show_target_atoms = false;
+        bool show_density_volume = false;
+        //bool show_target_atoms = false;
 
         md_gl_representation_t* gl_reps = 0;
         mat4_t* rep_model_mats = 0;
@@ -871,6 +872,9 @@ static void launch_prefetch_job(ApplicationData* data);
 static void init_display_properties(DisplayProperty** prop_items, md_script_property_t* full_props, md_script_property_t* filt_props, int64_t num_props);
 static void update_display_properties(ApplicationData* data);
 
+static void update_density_volume(ApplicationData* data);
+static void clear_density_volume(ApplicationData* data);
+
 static void interpolate_atomic_properties(ApplicationData* data);
 static void update_view_param(ApplicationData* data);
 static void reset_view(ApplicationData* data, bool move_camera = false, bool smooth_transition = false);
@@ -1143,9 +1147,9 @@ int main(int, char**) {
 
         // GUI
         if (data.representations.show_window) draw_representations_window(&data);
+        if (data.density_volume.show_window) draw_density_volume_window(&data);
         if (data.timeline.show_window) draw_timeline_window(&data);
         if (data.distributions.show_window) draw_distribution_window(&data);
-        if (data.density_volume.show_window) draw_density_volume_window(&data);
         if (data.ramachandran.show_window) draw_ramachandran_window(&data);
         if (data.shape_space.show_window) draw_shape_space_window(&data);
         if (data.script.show_editor) draw_script_editor_window(&data);
@@ -1688,6 +1692,149 @@ static void update_display_properties(ApplicationData* data) {
             }
         }
     }
+}
+
+static void update_density_volume(ApplicationData* data) {
+    if (data->density_volume.dvr.tf.dirty) {
+        image_t img = { 0 };
+        if (read_image(&img, data->density_volume.dvr.tf.path.cstr(), frame_allocator)) {
+            gl::init_texture_2D(&data->density_volume.dvr.tf.id, img.width, img.height, GL_RGBA8);
+            gl::set_texture_2D_data(data->density_volume.dvr.tf.id, img.data, GL_RGBA8);
+            data->density_volume.dvr.tf.dirty = false;
+        }
+    }
+
+    int64_t selected_property = -1;
+    for (int64_t i = 0; i < md_array_size(data->display_properties); ++i) {
+        if (data->display_properties[i].current_display_mask & DisplayProperty::ShowIn_Volume) {
+            selected_property = i;
+            break;
+        }
+    }
+
+    bool update_volume = false;
+    bool update_representations = false;
+    md_script_property_t* prop = 0;
+    uint64_t data_fingerprint = 0;
+
+    static int64_t s_selected_property = 0;
+    if (s_selected_property != selected_property) {
+        s_selected_property = selected_property;
+        update_volume = true;
+        update_representations = true;
+    }
+
+    if (selected_property != -1) {
+        if (data->timeline.filter.enabled) {
+            prop = data->display_properties[selected_property].filt_prop;
+            data_fingerprint = data->display_properties[selected_property].filt_prop->data.fingerprint;
+        }
+        else {
+            prop = data->display_properties[selected_property].full_prop;
+            data_fingerprint = data->display_properties[selected_property].full_prop->data.fingerprint;
+        }
+    }
+    data->density_volume.show_density_volume = selected_property != -1;
+
+    static uint64_t s_script_fingerprint = 0;
+    if (s_script_fingerprint != data->mold.script.ir.fingerprint) {
+        s_script_fingerprint = data->mold.script.ir.fingerprint;
+        update_volume = true;
+        update_representations = true;
+    }
+
+    static uint64_t s_data_fingerprint = 0;
+    if (s_data_fingerprint != data_fingerprint) {
+        s_data_fingerprint = data_fingerprint;
+        update_volume = true;
+    }
+
+    static double s_frame = 0;
+    if (s_frame != data->animation.frame) {
+        s_frame = data->animation.frame;
+        update_representations = true;
+    }
+
+    if (update_representations) {
+        if (prop) {
+            int64_t num_reps = 0;
+            bool result = false;
+            md_script_visualization_t vis = {};
+
+            if (data->mold.script.ir_is_valid) {
+                md_semaphore_aquire(&data->mold.script.ir_semaphore);
+                md_script_visualization_args_t args = {
+                    .token = prop->vis_token,
+                    .ir = &data->mold.script.ir,
+                    .mol = &data->mold.mol,
+                    .traj = data->mold.traj,
+                    .alloc = frame_allocator,
+                    .flags = MD_SCRIPT_VISUALIZE_SDF
+                };
+                result = md_script_visualization_init(&vis, args);
+                md_semaphore_release(&data->mold.script.ir_semaphore);
+            }
+
+            if (result) {
+                if (vis.sdf.extent) {
+                    const float s = vis.sdf.extent;
+                    vec3_t min_aabb = { -s, -s, -s };
+                    vec3_t max_aabb = { s, s, s };
+                    data->density_volume.model_mat = volume::compute_model_to_world_matrix(min_aabb, max_aabb);
+                }
+                num_reps = vis.sdf.count;
+            }
+
+            const int64_t old_size = md_array_size(data->density_volume.gl_reps);
+            if (data->density_volume.gl_reps) {
+                // Only free superflous entries
+                for (int64_t i = num_reps; i < old_size; ++i) {
+                    md_gl_representation_free(&data->density_volume.gl_reps[i]);
+                }
+            }
+            md_array_resize(data->density_volume.gl_reps, num_reps, persistent_allocator);
+            md_array_resize(data->density_volume.rep_model_mats, num_reps, persistent_allocator);
+
+            for (int64_t i = old_size; i < num_reps; ++i) {
+                // Only init new entries
+                md_gl_representation_init(&data->density_volume.gl_reps[i], &data->mold.gl_mol);
+            }
+
+            const int64_t num_colors = data->mold.mol.atom.count;
+            uint32_t* colors = (uint32_t*)md_alloc(frame_allocator, sizeof(uint32_t) * num_colors);
+            for (int64_t i = 0; i < num_reps; ++i) {
+                color_atoms_cpk(colors, num_colors, data->mold.mol);
+                filter_colors(colors, num_colors, &vis.sdf.structures[i]);
+                md_gl_representation_set_color(&data->density_volume.gl_reps[i], 0, num_colors, colors, 0);
+                md_gl_representation_set_type_and_args(&data->density_volume.gl_reps[i], MD_GL_REP_SPACE_FILL, {
+                    .space_fill = {
+                        .radius_scale = 1.0f,
+                    }
+                    });
+                data->density_volume.rep_model_mats[i] = vis.sdf.matrices[i];
+            }
+        }
+    }
+
+    if (update_volume) {
+        //data->density_volume.model_mat = volume::compute_model_to_world_matrix({ 0,0,0 }, { 1,1,1 });
+        if (prop) {
+            if (!data->density_volume.volume_texture.id) {
+                gl::init_texture_3D(&data->density_volume.volume_texture.id, prop->data.dim[0], prop->data.dim[1], prop->data.dim[2], GL_R32F);
+                data->density_volume.volume_texture.dim_x = prop->data.dim[0];
+                data->density_volume.volume_texture.dim_y = prop->data.dim[1];
+                data->density_volume.volume_texture.dim_z = prop->data.dim[2];
+                data->density_volume.volume_texture.max_value = prop->data.max_value;
+            }
+            gl::set_texture_3D_data(data->density_volume.volume_texture.id, prop->data.values, GL_R32F);
+        }
+    }
+}
+
+static void clear_density_volume(ApplicationData* data) {
+    md_array_shrink(data->density_volume.gl_reps, 0);
+    md_array_shrink(data->density_volume.rep_model_mats, 0);
+    data->density_volume.model_mat = {0};
 }
 
 static void interpolate_atomic_properties(ApplicationData* data) {
@@ -3351,9 +3498,9 @@ static void draw_async_task_window(ApplicationData* data) {
 
 
 bool draw_property_menu_widgets(DisplayProperty* props, int64_t num_props, uint32_t prop_mask, bool multi_selection = true) {
-    bool changed = false;
     int64_t num_candidates = 0;
-    int64_t selected_index = -1;
+    int64_t cur_selected_index = -1;
+    int64_t new_selected_index = -1;
 
     for (int64_t i = 0; i < num_props; ++i) {
         DisplayProperty& prop = props[i];
@@ -3361,26 +3508,29 @@ bool draw_property_menu_widgets(DisplayProperty* props, int64_t num_props, uint3
             num_candidates += 1;
             ImPlot::ItemIcon(prop.col); ImGui::SameLine();
             if (ImGui::Selectable(prop.lbl.cstr(), prop.current_display_mask & prop_mask, 0, ImVec2(50,0))) {
-                prop.current_display_mask ^= prop_mask;     // Toggle
-                changed = true;
-                if (prop.current_display_mask & prop_mask) {
-                    selected_index = i;
-                }
+                prop.current_display_mask ^= prop_mask;     // Toggle bit
+                new_selected_index = i;
+                cur_selected_index = i;
+            }
+            if (cur_selected_index == -1 && prop.current_display_mask & prop_mask) {
+                cur_selected_index = i;
             }
         }
     }
 
-    if (selected_index != -1 && !multi_selection) {
+    // Clear all other properties if we don't have multiple selection
+    if (cur_selected_index != -1 && !multi_selection) {
         for (int64_t i = 0; i < num_props; ++i) {
-            if (i == selected_index) continue;
-            props[i].current_display_mask &= ~prop_mask;    // Clear
+            if (i == cur_selected_index) continue;
+            props[i].current_display_mask &= ~prop_mask;    // Clear bit
         }
     }
     
     if (num_candidates == 0) {
         ImGui::Text("No properties to show.");
     }
-    return changed;
+
+    return new_selected_index != -1;
     /*
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
     ASSERT(draw_list);
@@ -4650,7 +4800,6 @@ static void draw_density_volume_window(ApplicationData* data) {
     ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Density Volume", &data->density_volume.show_window, ImGuiWindowFlags_MenuBar)) {
         const ImVec2 button_size = {160, 20};
-        bool property_selection_changed = false;
 
         if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
             data->animation.mode = data->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
@@ -4659,7 +4808,7 @@ static void draw_density_volume_window(ApplicationData* data) {
         if (ImGui::BeginMenuBar())
         {
             if (ImGui::BeginMenu("Property")) {
-                property_selection_changed = draw_property_menu_widgets(data->display_properties, md_array_size(data->display_properties), DisplayProperty::ShowIn_Volume, false);
+                draw_property_menu_widgets(data->display_properties, md_array_size(data->display_properties), DisplayProperty::ShowIn_Volume, false);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("DVR")) {
@@ -4731,44 +4880,9 @@ static void draw_density_volume_window(ApplicationData* data) {
             ImGui::EndMenuBar();
         }
 
-        if (data->density_volume.dvr.tf.dirty) {
-            image_t img = {0};
-            if (read_image(&img, data->density_volume.dvr.tf.path.cstr(), frame_allocator)) {
-                gl::init_texture_2D(&data->density_volume.dvr.tf.id, img.width, img.height, GL_RGBA8);
-                gl::set_texture_2D_data(data->density_volume.dvr.tf.id, img.data, GL_RGBA8);
-                data->density_volume.dvr.tf.dirty = false;
-            }
-        }
 
-        bool update_volume = property_selection_changed;
-        bool update_representations = property_selection_changed;
-        md_script_property_t* prop = 0;
-        uint64_t fingerprint = 0;
 
-        for (int64_t i = 0; i < md_array_size(data->display_properties); ++i) {
-            if (data->display_properties[i].current_display_mask & DisplayProperty::ShowIn_Volume) {
-                if (data->timeline.filter.enabled) {
-                    prop = data->display_properties[i].filt_prop;
-                    fingerprint = data->display_properties[i].filt_prop->data.fingerprint;
-                } else {
-                    prop = data->display_properties[i].full_prop;
-                    fingerprint = data->display_properties[i].full_prop->data.fingerprint;
-                }
-            }
-        }
-
-        static uint64_t s_fingerprint = 0;
-        if (s_fingerprint != fingerprint) {
-            s_fingerprint = fingerprint;
-            update_volume = true;
-            update_representations = true;
-        }
-
-        static double s_frame = 0;
-        if (s_frame != data->animation.frame) {
-            s_frame = data->animation.frame;
-            update_representations = true;
-        }
+        update_density_volume(data);
 
         /*
         // Canvas
@@ -4850,71 +4964,6 @@ static void draw_density_volume_window(ApplicationData* data) {
         glEnable(GL_DEPTH_TEST);
         glDepthMask(GL_TRUE);
 
-        if (update_volume) {
-            data->density_volume.model_mat = volume::compute_model_to_world_matrix({0,0,0}, {1,1,1});
-            if (prop) {
-                if (!data->density_volume.volume_texture.id) {
-                    gl::init_texture_3D(&data->density_volume.volume_texture.id, prop->data.dim[0], prop->data.dim[1], prop->data.dim[2], GL_R32F);
-                    data->density_volume.volume_texture.dim_x = prop->data.dim[0];
-                    data->density_volume.volume_texture.dim_y = prop->data.dim[1];
-                    data->density_volume.volume_texture.dim_z = prop->data.dim[2];
-                    data->density_volume.volume_texture.max_value = prop->data.max_value;
-                }
-                gl::set_texture_3D_data(data->density_volume.volume_texture.id, prop->data.values, GL_R32F);
-            }
-        }
-
-        if (update_representations) {
-            if (prop) {
-                int64_t num_reps = 0;
-
-                md_semaphore_aquire(&data->mold.script.ir_semaphore);
-                md_script_visualization_t vis = {};
-                md_script_visualization_args_t args = {
-                    .token = prop->vis_token,
-                    .ir = &data->mold.script.ir,
-                    .mol = &data->mold.mol,
-                    .traj = data->mold.traj,
-                    .alloc = frame_allocator,
-                    .flags = MD_SCRIPT_VISUALIZE_SDF
-                };
-                if (md_script_visualization_init(&vis, args)) {
-                    if (vis.sdf.extent) {
-                        const float s = vis.sdf.extent;
-                        vec3_t min_aabb = {-s, -s, -s};
-                        vec3_t max_aabb = {s, s, s};
-                        data->density_volume.model_mat = volume::compute_model_to_world_matrix(min_aabb, max_aabb);
-                    }
-                    num_reps = vis.sdf.count;
-                }
-                md_semaphore_release(&data->mold.script.ir_semaphore);
-
-                if (data->density_volume.gl_reps) {
-                    // Only free those required
-                    for (int64_t i = 0; i < md_array_size(data->density_volume.gl_reps); ++i) {
-                        md_gl_representation_free(&data->density_volume.gl_reps[i]);
-                    }
-                }
-                md_array_resize(data->density_volume.gl_reps, num_reps, persistent_allocator);
-                md_array_resize(data->density_volume.rep_model_mats, num_reps, persistent_allocator);
-
-                const int64_t num_colors = data->mold.mol.atom.count;
-                uint32_t* colors = (uint32_t*)md_alloc(frame_allocator, sizeof(uint32_t) * num_colors);
-                for (int64_t i = 0; i < num_reps; ++i) {
-                    color_atoms_cpk(colors, num_colors, data->mold.mol);
-                    filter_colors(colors, num_colors, &vis.sdf.structures[i]);
-                    md_gl_representation_init(&data->density_volume.gl_reps[i], &data->mold.gl_mol);
-                    md_gl_representation_set_color(&data->density_volume.gl_reps[i], 0, num_colors, colors, 0);
-                    md_gl_representation_set_type_and_args(&data->density_volume.gl_reps[i], MD_GL_REP_SPACE_FILL, {
-                        .space_fill = {
-                            .radius_scale = 1.0f
-                        }
-                    });
-                    data->density_volume.rep_model_mats[i] = vis.sdf.matrices[i];
-                }
-            }
-        }
-
         const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
             GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_POST_TONEMAP };
 
@@ -4929,7 +4978,7 @@ static void draw_density_volume_window(ApplicationData* data) {
         glViewport(0, 0, gbuf.width, gbuf.height);
 
         int64_t num_reps = md_array_size(data->density_volume.gl_reps);
-        if (prop && data->density_volume.show_reference_structures && num_reps > 0) {
+        if (data->density_volume.show_reference_structures && num_reps > 0) {
             num_reps = data->density_volume.show_reference_ensemble ? num_reps : 1;
 
             md_gl_draw_op_t* draw_ops = 0;
@@ -5032,56 +5081,60 @@ static void draw_density_volume_window(ApplicationData* data) {
         glDepthMask(GL_TRUE);
 
         if (data->density_volume.show_bounding_box) {
-            const vec3_t min_box = {0,0,0};
-            const vec3_t max_box = {1,1,1};
+            if (data->density_volume.model_mat != mat4_t{0}) {
+                const vec3_t min_box = {0,0,0};
+                const vec3_t max_box = {1,1,1};
 
-            immediate::set_model_view_matrix(mat4_mul(view_mat, data->density_volume.model_mat));
-            immediate::set_proj_matrix(proj_mat);
+                immediate::set_model_view_matrix(mat4_mul(view_mat, data->density_volume.model_mat));
+                immediate::set_proj_matrix(proj_mat);
 
-            uint32_t box_color = convert_color(data->density_volume.bounding_box_color);
-            uint32_t clip_color = convert_color(data->density_volume.clip_volume_color);
-            immediate::draw_box_wireframe(min_box, max_box, box_color);
-            immediate::draw_box_wireframe(data->density_volume.clip_volume.min, data->density_volume.clip_volume.max, clip_color);
+                uint32_t box_color = convert_color(data->density_volume.bounding_box_color);
+                uint32_t clip_color = convert_color(data->density_volume.clip_volume_color);
+                immediate::draw_box_wireframe(min_box, max_box, box_color);
+                immediate::draw_box_wireframe(data->density_volume.clip_volume.min, data->density_volume.clip_volume.max, clip_color);
 
-            immediate::render();
+                immediate::render();
+            }
         }
 
-        if (prop) {
-            volume::RenderDesc vol_desc = {
-                .render_target = {
-                    .texture = gbuf.deferred.post_tonemap,
-                    .width   = gbuf.width,
-                    .height  = gbuf.height,
-                },
-                .texture = {
-                    .volume = data->density_volume.volume_texture.id,
-                    .transfer_function = data->density_volume.dvr.tf.id,
-                    .depth = gbuf.deferred.depth,
-                },
-                .matrix = {
-                    .model = data->density_volume.model_mat,
-                    .view = view_mat,
-                    .proj = proj_mat
-                },
-                .clip_volume = {
-                    .min = data->density_volume.clip_volume.min,
-                    .max = data->density_volume.clip_volume.max
-                },
-                .bounding_box = {
-                    .color = data->density_volume.bounding_box_color,
-                    .enabled = data->density_volume.show_bounding_box,
-                },
-                .global_scaling = {
-                    .density = data->density_volume.dvr.density_scale,
-                    .alpha = data->density_volume.dvr.tf.alpha_scale
-                },
-                .isosurface = data->density_volume.iso.isosurfaces,
-                .isosurface_enabled = data->density_volume.iso.enabled,
-                .direct_volume_rendering_enabled = data->density_volume.dvr.enabled,
+        if (data->density_volume.show_density_volume) {
+            if (data->density_volume.model_mat != mat4_t{ 0 }) {
+                volume::RenderDesc vol_desc = {
+                    .render_target = {
+                        .texture = gbuf.deferred.post_tonemap,
+                        .width   = gbuf.width,
+                        .height  = gbuf.height,
+                    },
+                    .texture = {
+                        .volume = data->density_volume.volume_texture.id,
+                        .transfer_function = data->density_volume.dvr.tf.id,
+                        .depth = gbuf.deferred.depth,
+                    },
+                    .matrix = {
+                        .model = data->density_volume.model_mat,
+                        .view = view_mat,
+                        .proj = proj_mat
+                    },
+                    .clip_volume = {
+                        .min = data->density_volume.clip_volume.min,
+                        .max = data->density_volume.clip_volume.max
+                    },
+                    .bounding_box = {
+                        .color = data->density_volume.bounding_box_color,
+                        .enabled = data->density_volume.show_bounding_box,
+                    },
+                    .global_scaling = {
+                        .density = data->density_volume.dvr.density_scale,
+                        .alpha = data->density_volume.dvr.tf.alpha_scale
+                    },
+                    .isosurface = data->density_volume.iso.isosurfaces,
+                    .isosurface_enabled = data->density_volume.iso.enabled,
+                    .direct_volume_rendering_enabled = data->density_volume.dvr.enabled,
 
-                .voxel_spacing = data->density_volume.voxel_spacing
-            };
-            volume::render_volume(vol_desc);
+                    .voxel_spacing = data->density_volume.voxel_spacing
+                };
+                volume::render_volume(vol_desc);
+            }
         }
 
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
@@ -5324,7 +5377,7 @@ static bool export_csv(const float* column_data[], const char* column_labels[], 
     return true;
 }
 
-static bool export_cube(const ApplicationData& data, const md_script_property_t* prop, str_t filename) {
+static bool export_cube(ApplicationData& data, const md_script_property_t* prop, str_t filename) {
     // @NOTE: First we need to extract some meta data for the cube format, we need the atom indices/bits for any SDF
     // And the origin + extent of the volume in spatial coordinates (Ångström)
 
@@ -5336,20 +5389,28 @@ static bool export_cube(const ApplicationData& data, const md_script_property_t*
     mol.atom.x = coords + stride * 0;
     mol.atom.y = coords + stride * 1;
     mol.atom.z = coords + stride * 2;
+    
+    if (!md_trajectory_load_frame(data.mold.traj, 0, NULL, mol.atom.x, mol.atom.y, mol.atom.z)) {
+        return false;
+    }
 
-    md_trajectory_load_frame(data.mold.traj, 0, NULL, mol.atom.x, mol.atom.y, mol.atom.z);
+    bool result = false;
+    md_script_visualization_t vis = { 0 };
+    if (data.mold.script.ir_is_valid) {
+        md_semaphore_aquire(&data.mold.script.ir_semaphore);
+        md_script_visualization_args_t args = {
+            .token = prop->vis_token,
+            .ir = &data.mold.script.ir,
+            .mol = &data.mold.mol,
+            .traj = data.mold.traj,
+            .alloc = frame_allocator,
+            .flags = MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_SDF,
+        };
+        result = md_script_visualization_init(&vis, args);
+        md_semaphore_release(&data.mold.script.ir_semaphore);
+    }
 
-    md_script_visualization_args_t args = {
-        .token = prop->vis_token,
-        .ir = &data.mold.script.ir,
-        .mol = &data.mold.mol,
-        .traj = data.mold.traj,
-        .alloc = frame_allocator,
-        .flags = MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_SDF,
-    };
-    md_script_visualization_t vis = {0};
-    if (md_script_visualization_init(&vis, args)) {
-
+    if (result == true) {
         md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
         if (!file) {
             md_printf(MD_LOG_TYPE_ERROR, "Failed to open file '%.*s' in order to write to it.", (int)filename.len, filename.ptr);
@@ -6000,6 +6061,7 @@ static void free_molecule_data(ApplicationData* data) {
     md_bitfield_clear(&data->selection.current_highlight_mask);
     md_script_ir_free(&data->mold.script.ir);
     md_script_eval_free(&data->mold.script.full_eval);
+    clear_density_volume(data);
 }
 
 static void init_molecule_data(ApplicationData* data) {
@@ -6935,16 +6997,22 @@ static void update_representation(ApplicationData* data, Representation* rep) {
                 const float* values = rep->prop->data.values;
                 if (rep->prop->data.aggregate) {
                     const int dim = rep->prop->data.dim[0];
-                    md_script_visualization_args_t args = {
-                        .token = rep->prop->vis_token,
-                        .ir = &data->mold.script.ir,
-                        .mol = &data->mold.mol,
-                        .traj = NULL,
-                        .alloc = frame_allocator,
-                        .flags = MD_SCRIPT_VISUALIZE_ATOMS
-                    };
                     md_script_visualization_t vis = {0};
-                    if (md_script_visualization_init(&vis, args)) {
+                    bool result = false;
+                    if (data->mold.script.ir_is_valid) {
+                        md_semaphore_aquire(&data->mold.script.ir_semaphore);
+                        md_script_visualization_args_t args = {
+                            .token = rep->prop->vis_token,
+                            .ir = &data->mold.script.ir,
+                            .mol = &data->mold.mol,
+                            .traj = NULL,
+                            .alloc = frame_allocator,
+                            .flags = MD_SCRIPT_VISUALIZE_ATOMS
+                        };
+                        result = md_script_visualization_init(&vis, args);
+                        md_semaphore_release(&data->mold.script.ir_semaphore);
+                    }
+                    if (result) {
                         if (dim == (int)md_array_size(vis.structures.atom_masks)) {
                             int i0 = CLAMP((int)data->animation.frame + 0, 0, rep->prop->data.num_values / dim - 1);
                             int i1 = CLAMP((int)data->animation.frame + 1, 0, rep->prop->data.num_values / dim - 1);
