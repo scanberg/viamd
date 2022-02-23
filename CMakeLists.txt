@@ -20,6 +20,7 @@ project(viamd)
 
 option(VIAMD_USE_RELATIVE_PATHS ON)
 option(VIAMD_PROFILE_COMPILE_TIMES OFF)
+option(VIAMD_USE_ADDRESS_SANITIZER OFF)
 
 set(VIAMD_COMPILER_WARNING_FLAGS "")
 
@@ -27,6 +28,10 @@ if (MSVC)
     message(STATUS "MSVC configuration was used")
     set(VIAMD_COMPILER_WARNING_FLAGS /W4 /wd4201 /wd4324 /wd26451)
     add_compile_options(/MT /MP /GR- /fp:fast /arch:AVX)
+    
+    if (VIAMD_USE_ADDRESS_SANITIZER)
+        add_compile_options(/fsanitize=address)
+    endif()
 
 	if (VIAMD_PROFILE_COMPILE_TIMES)	
         add_compile_options(/d2cgsummary)
