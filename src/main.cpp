@@ -5284,17 +5284,20 @@ static void draw_script_editor_window(ApplicationData* data) {
         data->mold.script.vis = {0};
         const TextEditor::Marker* hovered_marker = data->script.editor.GetHoveredMarker();
         if (hovered_marker) {
-            md_script_visualization_init(&data->mold.script.vis, {
-                .token = (const md_script_vis_token_t*)hovered_marker->payload,
-                .ir = &data->mold.script.ir,
-                .mol = &data->mold.mol,
-                .traj = data->mold.traj,
-                .alloc = frame_allocator,
-            });
-
-            if (!md_bitfield_empty(data->mold.script.vis.atom_mask)) {
-                md_bitfield_copy(&data->selection.current_highlight_mask, data->mold.script.vis.atom_mask);
-                data->mold.dirty_buffers |= MolBit_DirtyFlags;
+            if (data->mold.script.ir_is_valid) {
+                md_semaphore_aquire(&data->mold.script.ir_semaphore);
+                md_script_visualization_init(&data->mold.script.vis, {
+                    .token = (const md_script_vis_token_t*)hovered_marker->payload,
+                    .ir = &data->mold.script.ir,
+                    .mol = &data->mold.mol,
+                    .traj = data->mold.traj,
+                    .alloc = frame_allocator,
+                });
+                md_semaphore_release(&data->mold.script.ir_semaphore);
+                if (!md_bitfield_empty(data->mold.script.vis.atom_mask)) {
+                    md_bitfield_copy(&data->selection.current_highlight_mask, data->mold.script.vis.atom_mask);
+                    data->mold.dirty_buffers |= MolBit_DirtyFlags;
+                }
             }
         }
     }
