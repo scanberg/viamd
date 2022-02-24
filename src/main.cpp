@@ -5421,30 +5421,34 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
         }
 
         // Two comment lines
-        md_file_printf(file, "EXPORTED DENSITY VOLUME FROM VIAMD, UNITS IN BOHR\n");
+        md_file_printf(file, "EXPORTED DENSITY VOLUME FROM VIAMD, UNITS IN ANGSTROM\n");
         md_file_printf(file, "OUTER LOOP: X, MIDDLE LOOP: Y, INNER LOOP: Z\n");
 
         if (vis.sdf.count > 0) {
             const float angstrom_to_bohr = (float)(1.0 / 0.529177210903);
 
             // transformation matrix from world to volume
-            const mat4_t M = vis.sdf.matrices[0];
+            mat4_t M = vis.sdf.matrices[0];
             const md_bitfield_t* bf = &vis.sdf.structures[0];
             const int num_atoms = (int)md_bitfield_popcount(bf);
             const int vol_dim[3] = {prop->data.dim[0], prop->data.dim[1], prop->data.dim[2]};
-            const double extent = vis.sdf.extent * angstrom_to_bohr;
+            const double extent = vis.sdf.extent * 2.0 * angstrom_to_bohr;
             const double voxel_ext[3] = {
-                (double)extent / (double)prop->data.dim[0],
-                (double)extent / (double)prop->data.dim[1],
-                (double)extent / (double)prop->data.dim[2],
+                (double)extent / (double)vol_dim[0],
+                (double)extent / (double)vol_dim[1],
+                (double)extent / (double)vol_dim[2],
             };
 
             const double half_ext = extent * 0.5;
+            const int num_orbitals = 1;
 
-            md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", num_atoms, -half_ext, -half_ext, -half_ext);
+            md_file_printf(file, "%5i %12.6f %12.6f %12.6f %5i\n", -num_atoms, -half_ext, -half_ext, -half_ext, num_orbitals);
             md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol_dim[0], voxel_ext[0], 0, 0);
             md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol_dim[1], 0, voxel_ext[1], 0);
             md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol_dim[2], 0, 0, voxel_ext[2]);
+
+            const float scl = angstrom_to_bohr;
+            M = mat4_mul(mat4_scale(scl, scl, scl), M);
 
             int64_t beg_bit = bf->beg_bit;
             int64_t end_bit = bf->end_bit;
@@ -5456,7 +5460,7 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
                 md_file_printf(file, "%5i %12.6f %12.6f %12.6f %12.6f\n", elem, (float)elem, coord.x, coord.y, coord.z);
             }
 
-            //md_file_printf(file, "%5i %5i\n", 1, 1);
+            md_file_printf(file, "%5i %5i\n", 1, 1);
 
             // Write density data
             int count = 0;
@@ -5626,7 +5630,7 @@ static void draw_property_export_window(ApplicationData* data) {
                                     if (col_data[idx].dim == 1) {
                                         md_array_push(column_labels, col_data[idx].label, frame_allocator);
                                     } else {
-                                        str_t lbl = alloc_printf(frame_allocator, "%s[%i]", col_data[idx].label, j);
+                                        str_t lbl = alloc_printf(frame_allocator, "%s[%i]", col_data[idx].label, j + 1);
                                         md_array_push(column_labels, lbl.ptr, frame_allocator);
                                     }
                                 }
