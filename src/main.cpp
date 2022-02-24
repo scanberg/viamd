@@ -5440,9 +5440,8 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
             };
 
             const double half_ext = extent * 0.5;
-            const int num_orbitals = 1;
 
-            md_file_printf(file, "%5i %12.6f %12.6f %12.6f %5i\n", -num_atoms, -half_ext, -half_ext, -half_ext, num_orbitals);
+            md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", -num_atoms, -half_ext, -half_ext, -half_ext);
             md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol_dim[0], voxel_ext[0], 0, 0);
             md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol_dim[1], 0, voxel_ext[1], 0);
             md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol_dim[2], 0, 0, voxel_ext[2]);
