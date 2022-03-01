@@ -803,7 +803,7 @@ void shutdown() {
 }  // namespace blit
 
 namespace velocity {
-#define VEL_TILE_SIZE 10
+#define VEL_TILE_SIZE 8
 
 struct {
     GLuint program = 0;
