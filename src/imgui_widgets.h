@@ -7,7 +7,7 @@ IMGUI_API bool RangeSliderFloat(const char* label, float* v1, float* v2, float v
 // custom ImGui procedures
 bool DeleteButton(const char* label, const ImVec2& size = ImVec2(0, 0));
 void CreateDockspace();
-void BeginCanvas(const char* id);
+void BeginCanvas(const char* id, bool allow_inputs = false);
 void EndCanvas();
 
 inline bool InputQuery(const char* label, char* buf, size_t buf_size, bool is_valid, const char* err_text = 0, ImGuiInputTextFlags flags = 0) {
