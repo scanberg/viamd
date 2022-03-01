@@ -29,7 +29,7 @@ Visual Interactive Analysis of Molecular Dynamics
 - pkgconf
 
 Example for Ubuntu:
-#### sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libgtk-3-dev pkgconf
+```sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libgtk-3-dev pkgconf```
 
 ### Step 2: Configure using CMAKE
 
