@@ -826,11 +826,24 @@ static void single_selection_sequence_clear(SingleSelectionSequence* seq) {
     }
 }
 
-static void single_selection_sequence_push_back(SingleSelectionSequence* seq, int32_t idx) {
+static void single_selection_sequence_push_idx(SingleSelectionSequence* seq, int32_t idx) {
     ASSERT(seq);
     for (int64_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
         if (seq->idx[i] == -1) {
             seq->idx[i] = idx;
+            break;
+        }
+    }
+}
+
+static void single_selection_sequence_pop_idx(SingleSelectionSequence* seq, int32_t idx) {
+    ASSERT(seq);
+    for (int64_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
+        if (seq->idx[i] == idx) {
+            for (int64_t j = i; j < ARRAY_SIZE(seq->idx) - 1; ++j) {
+                seq->idx[j] = seq->idx[j+1];
+            }
+            seq->idx[ARRAY_SIZE(seq->idx)-1] = -1;
             break;
         }
     }
@@ -7233,10 +7246,13 @@ static bool selection_surface(ApplicationData* data, bool pressed) {
                 if (data->picking.idx != INVALID_PICKING_IDX) {
                     if (mode == RegionMode::Append) {
                         md_bitfield_set_bit(&data->selection.current_selection_mask, data->picking.idx);
+                        single_selection_sequence_push_idx(&data->selection.single_selection_sequence, data->picking.idx);
                     } else if (mode == RegionMode::Remove) {
                         md_bitfield_clear_bit(&data->selection.current_selection_mask, data->picking.idx);
+                        single_selection_sequence_pop_idx(&data->selection.single_selection_sequence, data->picking.idx);
                     }
                 } else {
+                    single_selection_sequence_clear(&data->selection.single_selection_sequence);
                     md_bitfield_clear(&data->selection.current_selection_mask);
                 }
             }
