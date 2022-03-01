@@ -61,37 +61,6 @@ static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum s
     }
 }
 
-static void mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
-    if (action == GLFW_PRESS) {
-        data.internal_ctx.input.mouse.down[button] = true;
-        data.internal_ctx.input.mouse.hit[button] = true;
-    } else if (action == GLFW_RELEASE) {
-        data.internal_ctx.input.mouse.down[button] = false;
-        data.internal_ctx.input.mouse.release[button] = true;
-    }
-
-    ImGui_ImplGlfw_MouseButtonCallback(window, button, action, mods);
-}
-
-static void mouse_scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
-    data.internal_ctx.input.mouse.scroll_delta = (float)yoffset;
-    ImGui_ImplGlfw_ScrollCallback(window, xoffset, yoffset);
-}
-
-static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
-    if (action == GLFW_PRESS) {
-        data.internal_ctx.input.key.down[key] = true;
-        data.internal_ctx.input.key.hit[key] = true;
-    }
-    if (action == GLFW_RELEASE) {
-        data.internal_ctx.input.key.down[key] = false;
-    }
-
-    ImGui_ImplGlfw_KeyCallback(window, key, scancode, action, mods);
-}
-
-static void char_callback(GLFWwindow* window, unsigned int c) { ImGui_ImplGlfw_CharCallback(window, c); }
-
 bool initialize(Context* ctx, int64_t width, int64_t height, const char* title) {
     if (!glfwInit()) {
         // TODO Throw critical error
@@ -187,23 +156,10 @@ bool initialize(Context* ctx, int64_t width, int64_t height, const char* title) 
     data.internal_ctx.framebuffer.width = w;
     data.internal_ctx.framebuffer.height = h;
 
-    double x, y;
-    glfwGetCursorPos(window, &x, &y);
-    Coordinate win_coord = {(float)x, (float)y};
-    data.internal_ctx.input.mouse.win_coord = win_coord;
-
-    const float half_res_x = width * 0.5f;
-    const float half_res_y = height * 0.5f;
-    Coordinate ndc_coord = {(win_coord.x - half_res_x) / half_res_x, ((height - win_coord.y) - half_res_y) / half_res_y};
-    data.internal_ctx.input.mouse.ndc_delta = ndc_coord - data.internal_ctx.input.mouse.ndc_coord;
-    data.internal_ctx.input.mouse.ndc_coord = ndc_coord;
-
-    data.internal_ctx.input.mouse.moving = false;
-
-    glfwSetMouseButtonCallback(window, mouse_button_callback);
-    glfwSetScrollCallback(window, mouse_scroll_callback);
-    glfwSetKeyCallback(window, key_callback);
-    glfwSetCharCallback(window, char_callback);
+    glfwSetMouseButtonCallback(window, ImGui_ImplGlfw_MouseButtonCallback);
+    glfwSetScrollCallback(window, ImGui_ImplGlfw_ScrollCallback);
+    glfwSetKeyCallback(window, ImGui_ImplGlfw_KeyCallback);
+    glfwSetCharCallback(window, ImGui_ImplGlfw_CharCallback);
 
     memcpy(ctx, &data.internal_ctx, sizeof(Context));
 
@@ -224,13 +180,6 @@ void shutdown(Context* ctx) {
 }
 
 void update(Context* ctx) {
-    // Reset hit states
-    memset(data.internal_ctx.input.key.hit, 0, MAX_KEYS);
-    memset(data.internal_ctx.input.key.release, 0, MAX_KEYS);
-    memset(data.internal_ctx.input.mouse.hit, 0, MAX_MOUSE_BUTTONS);
-    memset(data.internal_ctx.input.mouse.release, 0, MAX_MOUSE_BUTTONS);
-    data.internal_ctx.input.mouse.scroll_delta = 0;
-
     glfwPollEvents();
 
     ImGui_ImplOpenGL3_NewFrame();
@@ -257,43 +206,6 @@ void update(Context* ctx) {
     }
 
     data.internal_ctx.window.should_close = (bool)glfwWindowShouldClose((GLFWwindow*)data.internal_ctx.window.ptr);
-
-    double x, y;
-    glfwGetCursorPos((GLFWwindow*)data.internal_ctx.window.ptr, &x, &y);
-    Coordinate win_coord{(float)x, (float)y};
-
-    // If user has modified value, set the mouse pointer to that value
-    if (ctx->input.mouse.win_coord != data.internal_ctx.input.mouse.win_coord) {
-        win_coord = ctx->input.mouse.win_coord;
-    }
-
-    data.internal_ctx.input.mouse.win_delta = win_coord - data.internal_ctx.input.mouse.win_coord;
-    data.internal_ctx.input.mouse.win_coord = win_coord;
-
-    constexpr Coordinate zero_coord{0, 0};
-    data.internal_ctx.input.mouse.moving = data.internal_ctx.input.mouse.win_delta != zero_coord;
-
-    const float half_res_x = w * 0.5f;
-    const float half_res_y = h * 0.5f;
-    data.internal_ctx.input.mouse.ndc_coord = {(win_coord.x - half_res_x) / half_res_x, ((h - win_coord.y) - half_res_y) / half_res_y};
-
-    // Any mouse key hit
-    bool any_mouse_key_hit = false;
-    for (int i = 0; i < MAX_MOUSE_BUTTONS; i++) {
-        if (data.internal_ctx.input.mouse.hit[i]) {
-            any_mouse_key_hit = true;
-            break;
-        }
-    }
-
-    static Coordinate mouse_click_coord = win_coord;
-    if (any_mouse_key_hit) {
-        mouse_click_coord = win_coord;
-    }
-
-    for (int i = 0; i < MAX_MOUSE_BUTTONS; i++) {
-        data.internal_ctx.input.mouse.clicked[i] = (mouse_click_coord == win_coord) && data.internal_ctx.input.mouse.release[i];
-    }
 
     double t = glfwGetTime();
     data.internal_ctx.timing.delta_s = (t - data.internal_ctx.timing.total_s);

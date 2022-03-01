@@ -2752,12 +2752,15 @@ void draw_context_popup(ApplicationData* data) {
 
     if (!data->mold.mol.atom.count) return;
 
-    const bool shift_down = ImGui::GetIO().KeyShift;
     const int64_t sss_count = single_selection_sequence_count(&data->selection.single_selection_sequence);
     const int64_t num_frames = md_trajectory_num_frames(data->mold.traj);
     const int64_t num_atoms_selected = md_bitfield_popcount(&data->selection.current_selection_mask);
     
-    if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) && data->ctx.input.mouse.clicked[1] && !shift_down && !ImGui::GetIO().WantTextInput) {
+    if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) &&
+        !ImGui::GetIO().WantTextInput &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
+        !data->selection.selecting)
+    {
         ImGui::OpenPopup("AtomContextPopup");
     }
 
@@ -3405,11 +3408,8 @@ static void draw_atom_info_window(const ApplicationData& data, int atom_idx) {
     }
     */
 
-    float x = data.ctx.input.mouse.win_coord.x;
-    float y = data.ctx.input.mouse.win_coord.y;
-
-    ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(x + 10.f, y + 18.f) + viewport->Pos);
+    const ImVec2 offset = { 10.f, 18.f };
+    ImGui::SetNextWindowPos(ImGui::GetMousePos() + offset);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
     ImGui::Begin("##Atom Info", 0,
                  ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDocking);
@@ -5452,7 +5452,7 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
         }
 
         // Two comment lines
-        md_file_printf(file, "EXPORTED DENSITY VOLUME FROM VIAMD, UNITS IN ANGSTROM\n");
+        md_file_printf(file, "EXPORTED DENSITY VOLUME FROM VIAMD, UNITS IN BOHR\n");
         md_file_printf(file, "OUTER LOOP: X, MIDDLE LOOP: Y, INNER LOOP: Z\n");
 
         if (vis.sdf.count > 0) {
@@ -7284,15 +7284,19 @@ static void handle_camera_interaction(ApplicationData* data) {
 
     if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
         if (!data->selection.selecting) {
-            const vec2_t mouse_delta = {data->ctx.input.mouse.win_delta.x, data->ctx.input.mouse.win_delta.y};
+            const ImVec2 delta = ImGui::GetIO().MouseDelta;
+            const ImVec2 coord = ImGui::GetMousePos() - ImGui::GetCurrentWindow()->Pos;
+            const vec2_t mouse_delta = {delta.x, delta.y};
+            const vec2_t mouse_coord = {coord.x, coord.y};
+            const float  scroll_delta = ImGui::GetIO().MouseWheel;
             TrackballControllerInput input;
-            input.rotate_button = data->ctx.input.mouse.down[0];
-            input.pan_button = data->ctx.input.mouse.down[1];
-            input.dolly_button = data->ctx.input.mouse.down[2];
-            input.mouse_coord_curr = {data->ctx.input.mouse.win_coord.x, data->ctx.input.mouse.win_coord.y};
-            input.mouse_coord_prev = input.mouse_coord_curr - mouse_delta;
+            input.rotate_button = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+            input.pan_button = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+            input.dolly_button = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
+            input.mouse_coord_curr = mouse_coord;
+            input.mouse_coord_prev = mouse_coord - mouse_delta;
             input.screen_size = {(float)data->ctx.window.width, (float)data->ctx.window.height};
-            input.dolly_delta = data->ctx.input.mouse.scroll_delta;
+            input.dolly_delta = scroll_delta;
             input.fov_y = data->view.camera.fov_y;
 
             if (camera_controller_trackball(&data->view.camera.position, &data->view.camera.orientation, &data->view.camera.focus_distance, input, data->view.trackball_param)) {
@@ -7553,7 +7557,7 @@ static void fill_gbuffer(ApplicationData* data) {
     for (int64_t i = 0; i < vis.triangle.count; ++i) {
         ASSERT(vis.triangle.idx);
         uint16_t idx[3] = { vis.triangle.idx[i * 3 + 0], vis.triangle.idx[i * 3 + 1], vis.triangle.idx[i * 3 + 2] };
-        immediate::draw_triangle(vertices[idx[0]], vertices[idx[1]], vertices[idx[2]], 0x3300FFFF);
+        immediate::draw_triangle(vertices[idx[0]], vertices[idx[1]], vertices[idx[2]], immediate::COLOR_CYAN);
     }
     immediate::render();
 
@@ -7566,7 +7570,8 @@ static void fill_gbuffer(ApplicationData* data) {
 
 static void handle_picking(ApplicationData* data) {
     PUSH_CPU_SECTION("PICKING") {
-        vec2_t coord = {data->ctx.input.mouse.win_coord.x, (float)data->gbuffer.height - data->ctx.input.mouse.win_coord.y};
+        vec2_t mouse_pos = vec_cast(ImGui::GetMousePos() - ImGui::GetMainViewport()->Pos);
+        vec2_t coord = {mouse_pos.x, (float)data->gbuffer.height - mouse_pos.y};
         if (coord.x < 0.f || coord.x >= (float)data->gbuffer.width || coord.y < 0.f || coord.y >= (float)data->gbuffer.height) {
             data->picking.idx = INVALID_PICKING_IDX;
             data->picking.depth = 1.f;
@@ -7602,7 +7607,7 @@ static void handle_picking(ApplicationData* data) {
         if (data->picking.idx != INVALID_PICKING_IDX) {
             data->selection.hovered = data->picking.idx;
         }
-        if (data->ctx.input.mouse.clicked[1]) {
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             data->selection.right_clicked = data->selection.hovered;
         }
     }
