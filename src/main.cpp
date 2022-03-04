@@ -61,13 +61,13 @@
 
 #include <stdio.h>
 
+/*
 #ifndef PI
 #define PI 3.141592653589793
 #endif
+*/
 
-#ifndef TWO_PI
-#define TWO_PI 2.0 * PI
-#endif
+static constexpr float TWO_PI = 2.0 * 3.141592653589793;
 
 #define PICKING_JITTER_HACK 0
 #define SHOW_IMGUI_DEMO_WINDOW 0
@@ -246,8 +246,6 @@ struct GBuffer {
     int height = 0;
 };
 
-
-
 struct Representation {
     struct PropertyColorMapping {
         StrBuf<32> ident = ""; // property identifier
@@ -299,7 +297,7 @@ struct Representation {
     // Property color mapping
     PropertyColorMapping prop_mapping[8] = {};
 
-    md_script_property_t* prop = NULL;
+    const md_script_property_t* prop = NULL;
 };
 
 struct Selection {
@@ -328,8 +326,8 @@ struct DisplayProperty {
     StrBuf<32> lbl = "";
     uint32_t col = 0xFFFFFFFFU;
 
-    md_script_property_t* full_prop = NULL;
-    md_script_property_t* filt_prop = NULL;
+    const md_script_property_t* full_prop = NULL;
+    const md_script_property_t* filt_prop = NULL;
 
     uint64_t full_prop_fingerprint = 0;
     uint64_t filt_prop_fingerprint = 0;
@@ -387,9 +385,9 @@ struct ApplicationData {
         md_trajectory_i*        traj = 0;
 
         struct {
-            md_script_ir_t    ir = {};
-            md_script_eval_t  full_eval = {};
-            md_script_eval_t  filt_eval = {};
+            md_script_ir_t*   ir = 0;
+            md_script_eval_t* full_eval = {};
+            md_script_eval_t* filt_eval = {};
             md_script_visualization_t vis = {};
 
             // Semaphore to control access to IR
@@ -397,7 +395,6 @@ struct ApplicationData {
 
             md_bitfield_t frame_mask = {};
 
-            bool ir_is_valid = false;
             bool compile_ir = false;
             bool eval_init = false;
             bool evaluate_full = false;
@@ -882,7 +879,7 @@ static int64_t single_selection_sequence_count(const SingleSelectionSequence* se
 
 static void launch_prefetch_job(ApplicationData* data);
 
-static void init_display_properties(DisplayProperty** prop_items, md_script_property_t* full_props, md_script_property_t* filt_props, int64_t num_props);
+static void init_display_properties(DisplayProperty** prop_items, const md_script_property_t* full_props, const md_script_property_t* filt_props, int64_t num_props);
 static void update_display_properties(ApplicationData* data);
 
 static void update_density_volume(ApplicationData* data);
@@ -1287,7 +1284,7 @@ int main(int, char**) {
             const double half_window_ext = data.timeline.filter.temporal_window.extent_in_frames * 0.5;
             data.timeline.filter.beg_frame = CLAMP(data.animation.frame - half_window_ext, 0.0, max_frame);
             data.timeline.filter.end_frame = CLAMP(data.animation.frame + half_window_ext, 0.0, max_frame);
-            if (data.mold.script.ir_is_valid && (data.timeline.filter.beg_frame != pre_beg || data.timeline.filter.end_frame != pre_end)) {
+            if (data.mold.script.ir && (data.timeline.filter.beg_frame != pre_beg || data.timeline.filter.end_frame != pre_end)) {
                 data.mold.script.evaluate_filt = true;
             }
         }
@@ -1360,8 +1357,8 @@ int main(int, char**) {
             if (data.mold.script.time_since_last_change > COMPILATION_TIME_DELAY_IN_SECONDS) {
                 // We cannot recompile while it is evaluating.
                 // Need to interrupt and wait for tasks to finish.
-                md_script_eval_interrupt(&data.mold.script.full_eval);
-                md_script_eval_interrupt(&data.mold.script.filt_eval);
+                if (data.mold.script.full_eval) md_script_eval_interrupt(data.mold.script.full_eval);
+                if (data.mold.script.filt_eval) md_script_eval_interrupt(data.mold.script.filt_eval);
 
                 // Try aquire all semaphores
                 if (md_semaphore_try_aquire_n(&data.mold.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT)) {
@@ -1377,17 +1374,20 @@ int main(int, char**) {
                     editor.ClearMarkers();
                     editor.ClearErrorMarkers();
 
-                    data.mold.script.ir_is_valid = md_script_ir_compile(&data.mold.script.ir, src_str, &data.mold.mol, persistent_allocator, NULL);
+                    if (data.mold.script.ir) {
+                        md_script_ir_free(data.mold.script.ir);
+                    }
+                    data.mold.script.ir = md_script_ir_create(src_str, &data.mold.mol, persistent_allocator, NULL);
 
-                    if (data.mold.script.ir_is_valid) {
+                    if (md_script_ir_valid(data.mold.script.ir)) {
                         data.mold.script.eval_init = true;
                         data.mold.script.evaluate_full = true;
                         data.mold.script.evaluate_filt = true;
                     } else {
                         TextEditor::ErrorMarkers markers;
-                        const int64_t num_errors = data.mold.script.ir.num_errors;
+                        const int64_t num_errors = md_script_ir_num_errors(data.mold.script.ir);
                         if (num_errors) {
-                            const md_script_error_t* errors = data.mold.script.ir.errors;
+                            const md_script_error_t* errors = md_script_ir_errors(data.mold.script.ir);
                             for (int64_t i = 0; i < num_errors; ++i) {
                                 std::string err_str(errors[i].error.ptr, errors[i].error.len);
                                 std::pair<int, std::string> pair = {errors[i].line, err_str};
@@ -1397,8 +1397,10 @@ int main(int, char**) {
                         editor.SetErrorMarkers(markers);
                     }
 
-                    for (int64_t i = 0; i < data.mold.script.ir.num_tokens; ++i) {
-                        const md_script_token_t& tok = data.mold.script.ir.tokens[i];
+                    const int64_t num_tokens = md_script_ir_num_tokens(data.mold.script.ir);
+                    const md_script_token_t* tokens = md_script_ir_tokens(data.mold.script.ir);
+                    for (int64_t i = 0; i < num_tokens; ++i) {
+                        const md_script_token_t& tok = tokens[i];
                         TextEditor::Marker marker = {0};
                         marker.begCol = tok.col_beg;
                         marker.endCol = tok.col_end;
@@ -1419,20 +1421,29 @@ int main(int, char**) {
         if (num_frames > 0) {
             if (data.mold.script.eval_init) {
                 data.mold.script.eval_init = false;
-                md_script_eval_init(&data.mold.script.full_eval, num_frames, &data.mold.script.ir, persistent_allocator);
-                md_script_eval_init(&data.mold.script.filt_eval, num_frames, &data.mold.script.ir, persistent_allocator);
-                const int64_t num_props = data.mold.script.full_eval.num_properties;
-                ASSERT(data.mold.script.filt_eval.num_properties == num_props);
-                init_display_properties(&data.display_properties, data.mold.script.full_eval.properties, data.mold.script.filt_eval.properties, num_props);
+
+                if (data.mold.script.full_eval) {
+                    md_script_eval_free(data.mold.script.full_eval);
+                }
+                data.mold.script.full_eval = md_script_eval_create(num_frames, data.mold.script.ir, persistent_allocator);
+
+                if (data.mold.script.filt_eval) {
+                    md_script_eval_free(data.mold.script.filt_eval);
+                }
+                data.mold.script.filt_eval = md_script_eval_create(num_frames, data.mold.script.ir, persistent_allocator);
+
+                const int64_t num_props = md_script_eval_num_properties(data.mold.script.full_eval);
+                ASSERT(md_script_eval_num_properties(data.mold.script.filt_eval) == num_props);
+                init_display_properties(&data.display_properties, md_script_eval_properties(data.mold.script.full_eval), md_script_eval_properties(data.mold.script.filt_eval), num_props);
             }
 
             if (data.mold.script.evaluate_full) {
                 if (task_system::task_is_running(data.tasks.evaluate_full)) {
-                    md_script_eval_interrupt(&data.mold.script.full_eval);
-                } else if (data.mold.script.ir_is_valid && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
+                    md_script_eval_interrupt(data.mold.script.full_eval);
+                } else if (data.mold.script.full_eval && md_script_ir_valid(data.mold.script.ir) && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
                     data.mold.script.evaluate_full = false;
                     data.tasks.evaluate_full = task_system::pool_enqueue("Eval Full", [data = &data]() {
-                        md_script_eval_compute(&data->mold.script.full_eval, &data->mold.script.ir, &data->mold.mol, data->mold.traj, NULL);
+                        md_script_eval_compute(data->mold.script.full_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, NULL);
                         md_semaphore_release(&data->mold.script.ir_semaphore);
                     });
                 }
@@ -1440,8 +1451,8 @@ int main(int, char**) {
 
             if (data.timeline.filter.enabled && data.mold.script.evaluate_filt) {
                 if (task_system::task_is_running(data.tasks.evaluate_filt)) {
-                    md_script_eval_interrupt(&data.mold.script.filt_eval);
-                } else if (data.mold.script.ir_is_valid && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
+                    md_script_eval_interrupt(data.mold.script.filt_eval);
+                } else if (data.mold.script.filt_eval && md_script_ir_valid(data.mold.script.ir) && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
                     data.mold.script.evaluate_filt = false;
                     data.tasks.evaluate_filt = task_system::pool_enqueue("Eval Filt", [data = &data]() {
                         int64_t num_frames = md_trajectory_num_frames(data->mold.traj);
@@ -1451,7 +1462,7 @@ int main(int, char**) {
                         md_bitfield_clear(&data->mold.script.frame_mask);
                         md_bitfield_set_range(&data->mold.script.frame_mask, beg_frame, end_frame);
 
-                        md_script_eval_compute(&data->mold.script.filt_eval, &data->mold.script.ir, &data->mold.mol, data->mold.traj, &data->mold.script.frame_mask);
+                        md_script_eval_compute(data->mold.script.filt_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, &data->mold.script.frame_mask);
                         md_semaphore_release(&data->mold.script.ir_semaphore);
                     });
                 }
@@ -1606,7 +1617,7 @@ int main(int, char**) {
     return 0;
 }
 
-static void init_display_properties(DisplayProperty** prop_items, md_script_property_t* full_props, md_script_property_t* filt_props, int64_t num_props) {
+static void init_display_properties(DisplayProperty** prop_items, const md_script_property_t* full_props, const md_script_property_t* filt_props, int64_t num_props) {
     ASSERT(prop_items);
     if (num_props > 0) {
         ASSERT(full_props);
@@ -1618,18 +1629,18 @@ static void init_display_properties(DisplayProperty** prop_items, md_script_prop
 
     for (int64_t i = 0; i < num_props; ++i) {
         uint32_t possible_display_mask = 0;
-        switch (full_props[i].type) {
-        case MD_SCRIPT_PROPERTY_TYPE_TEMPORAL:
+        uint32_t flags = full_props[i].flags;
+
+        if (flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
             possible_display_mask = DisplayProperty::ShowIn_Timeline | DisplayProperty::ShowIn_Distribution;
-            break;
-        case MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION:
+        }
+        else if (flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
             possible_display_mask = DisplayProperty::ShowIn_Distribution;
-            break;
-        case MD_SCRIPT_PROPERTY_TYPE_VOLUME:
+        }
+        else if (flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
             possible_display_mask = DisplayProperty::ShowIn_Volume;
-            break;
-        case MD_SCRIPT_PROPERTY_TYPE_INVALID:
-        default:
+        }
+        else {            
             ASSERT(false);
         }
 
@@ -1643,7 +1654,7 @@ static void init_display_properties(DisplayProperty** prop_items, md_script_prop
         item.full_prop_fingerprint = 0;
         item.filt_prop_fingerprint = 0;
         item.possible_display_mask = possible_display_mask;
-        item.current_display_mask = possible_display_mask;
+        item.current_display_mask  = possible_display_mask;
 
         for (int64_t j = 0; j < md_array_size(old_items); ++j) {
             if (compare_str(item.lbl, old_items[j].lbl)) {
@@ -1671,7 +1682,7 @@ static void update_display_properties(ApplicationData* data) {
         if (disp_props[i].full_prop_fingerprint != disp_props[i].full_prop->data.fingerprint) {
             disp_props[i].full_prop_fingerprint = disp_props[i].full_prop->data.fingerprint;
             const md_script_property_t* p = disp_props[i].full_prop;
-            if (p->type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
+            if (p->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                 DisplayProperty::Histogram& hist = disp_props[i].full_hist;
                 hist.value_range = {p->data.min_range[0], p->data.max_range[0]};
                 compute_histogram(hist.bin, ARRAY_SIZE(hist.bin), hist.value_range.beg, hist.value_range.end, p->data.values, p->data.num_values);
@@ -1681,7 +1692,7 @@ static void update_display_properties(ApplicationData* data) {
         if (disp_props[i].filt_prop_fingerprint != disp_props[i].filt_prop->data.fingerprint) {
             disp_props[i].filt_prop_fingerprint = disp_props[i].filt_prop->data.fingerprint;
             const md_script_property_t* p = disp_props[i].full_prop;
-            if (p->type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
+            if (p->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                 DisplayProperty::Histogram& hist = disp_props[i].filt_hist;
                 // We copy the full range here since we want the histograms to align on the x-axis
                 // This also implys that we have a dependency to the full property, since we can only now the full range of values when full_prop has been completely evaluated.
@@ -1719,7 +1730,7 @@ static void update_density_volume(ApplicationData* data) {
 
     bool update_volume = false;
     bool update_representations = false;
-    md_script_property_t* prop = 0;
+    const md_script_property_t* prop = 0;
     uint64_t data_fingerprint = 0;
 
     static int64_t s_selected_property = 0;
@@ -1741,9 +1752,9 @@ static void update_density_volume(ApplicationData* data) {
     }
     data->density_volume.show_density_volume = selected_property != -1;
 
-    static uint64_t s_script_fingerprint = 0;
-    if (s_script_fingerprint != data->mold.script.ir.fingerprint) {
-        s_script_fingerprint = data->mold.script.ir.fingerprint;
+    static uintptr_t s_script_fingerprint = 0;
+    if (s_script_fingerprint != (uintptr_t)data->mold.script.ir) {
+        s_script_fingerprint = (uintptr_t)data->mold.script.ir;
         update_volume = true;
         update_representations = true;
     }
@@ -1766,11 +1777,11 @@ static void update_density_volume(ApplicationData* data) {
             bool result = false;
             md_script_visualization_t vis = {};
 
-            if (data->mold.script.ir_is_valid) {
+            if (md_script_ir_valid(data->mold.script.ir)) {
                 md_semaphore_aquire(&data->mold.script.ir_semaphore);
                 md_script_visualization_args_t args = {
                     .token = prop->vis_token,
-                    .ir = &data->mold.script.ir,
+                    .ir = data->mold.script.ir,
                     .mol = &data->mold.mol,
                     .traj = data->mold.traj,
                     .alloc = frame_allocator,
@@ -2321,7 +2332,7 @@ static void expand_mask(md_bitfield_t* mask, const md_range_t ranges[], int64_t 
     }
 }
 
-static void grow_mask_by_current_selection_level(md_bitfield_t* mask, const ApplicationData& data) {
+static void grow_mask_by_current_selection_granularity(md_bitfield_t* mask, const ApplicationData& data) {
     ASSERT(mask);
     switch(data.selection.granularity) {
     case SelectionLevel::Atom:
@@ -2344,7 +2355,7 @@ static bool filter_expression(ApplicationData* data, str_t expr, md_bitfield_t* 
     bool success = false;
 
     md_semaphore_aquire(&data->mold.script.ir_semaphore);
-    if (md_filter_evaluate(&res, expr, &data->mold.mol, &data->mold.script.ir, frame_allocator)) {
+    if (md_filter_evaluate(&res, expr, &data->mold.mol, data->mold.script.ir, frame_allocator)) {
         if (is_dynamic) {
             *is_dynamic = res.is_dynamic;
         }
@@ -3257,10 +3268,10 @@ static void draw_representations_window(ApplicationData* data) {
                 */
 
                 static int prop_idx = 0;
-                md_script_property_t* props[32] = {0};
+                const md_script_property_t* props[32] = {0};
                 int num_props = 0;
                 for (int64_t j = 0; j < md_array_size(data->display_properties); ++j) {
-                    if (data->display_properties[j].full_prop->type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
+                    if (data->display_properties[j].full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                         props[num_props++] = data->display_properties[j].full_prop;
                     }
                 }
@@ -3503,9 +3514,9 @@ static void draw_async_task_window(ApplicationData* data) {
             float fract = task_system::task_fraction_complete(id);
 
             if (id == data->tasks.evaluate_filt) {
-                fract = md_script_eval_completed_fraction(&data->mold.script.filt_eval);
+                fract = md_script_eval_completed_fraction(data->mold.script.filt_eval);
             } else if (id == data->tasks.evaluate_full) {
-                fract = md_script_eval_completed_fraction(&data->mold.script.full_eval);
+                fract = md_script_eval_completed_fraction(data->mold.script.full_eval);
             }
 
             if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
@@ -4013,11 +4024,11 @@ static void draw_distribution_window(ApplicationData* data) {
             DisplayProperty& prop = data->display_properties[i];
             if ((prop.current_display_mask & DisplayProperty::ShowIn_Distribution) == 0) continue;
 
-            md_script_property_t& full_prop = *prop.full_prop;
-            md_script_property_t& filt_prop = *prop.filt_prop;
+            const md_script_property_t* full_prop = prop.full_prop;
+            const md_script_property_t* filt_prop = prop.filt_prop;
 
-            double min_x = full_prop.data.min_range[0];
-            double max_x = full_prop.data.max_range[0];
+            double min_x = full_prop->data.min_range[0];
+            double max_x = full_prop->data.max_range[0];
 
             // We need to avoid the axis collapsing, otherwise Implot will get stuck in an infinite loop
             if (min_x == max_x) {
@@ -4028,11 +4039,11 @@ static void draw_distribution_window(ApplicationData* data) {
             const float* filt_src = 0;
             int num_values_src = 0;
 
-            if (full_prop.type == MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION) {
-                full_src = full_prop.data.values;
-                filt_src = filt_prop.data.values;
-                num_values_src = full_prop.data.num_values;
-            } else if (full_prop.type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
+            if (full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
+                full_src = full_prop->data.values;
+                filt_src = filt_prop->data.values;
+                num_values_src = full_prop->data.num_values;
+            } else if (full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                 full_src = prop.full_hist.bin;
                 filt_src = prop.filt_hist.bin;
                 num_values_src = ARRAY_SIZE(prop.full_hist.bin);
@@ -4117,8 +4128,8 @@ static void draw_shape_space_window(ApplicationData* data) {
     if (ImGui::Begin("Shape Space", &data->shape_space.show_window, ImGuiWindowFlags_MenuBar)) {
         if (ImGui::BeginMenuBar()) {
             if (ImGui::BeginMenu("Settings")) {
-                const float marker_min_size =  0.01f;
-                const float marker_max_size = 10.0f;
+                static constexpr float marker_min_size = 0.01f;
+                static constexpr float marker_max_size = 10.0f;
                 ImGui::SliderFloat("Marker Size", &data->shape_space.marker_size, marker_min_size, marker_max_size);
                 ImGui::EndMenu();
             }
@@ -4276,12 +4287,12 @@ static void draw_shape_space_window(ApplicationData* data) {
                 md_array_shrink(data->shape_space.weights, 0);
 
                 md_filter_free(&data->shape_space.result, default_allocator);
-                if (md_filter_evaluate(&data->shape_space.result, data->shape_space.input, &data->mold.mol, &data->mold.script.ir, default_allocator)) {
+                if (md_filter_evaluate(&data->shape_space.result, data->shape_space.input, &data->mold.mol, data->mold.script.ir, default_allocator)) {
                     data->shape_space.input_valid = true;
                     data->shape_space.num_structures = (int32_t)data->shape_space.result.num_bitfields;
                     if (data->shape_space.num_structures > 0) {
                         data->shape_space.num_frames = (int32_t)num_frames;
-                        md_array_resize(data->shape_space.coords, num_frames * data->shape_space.num_structures, persistent_allocator);
+                        md_array_resize(data->shape_space.coords,  num_frames * data->shape_space.num_structures, persistent_allocator);
                         md_array_resize(data->shape_space.weights, num_frames * data->shape_space.num_structures, persistent_allocator);
 
                         data->tasks.shape_space_evaluate = task_system::pool_enqueue("Eval Shape Space", (uint32_t)num_frames, [data](uint32_t range_beg, uint32_t range_end) {
@@ -4556,10 +4567,19 @@ static void draw_ramachandran_window(ApplicationData* data) {
                             }
                         }
 
+                        if (is_selecting[plot_idx]) {
+                            grow_mask_by_current_selection_granularity(highlight_mask, *data);
+                            data->mold.dirty_buffers |= MolBit_DirtyFlags;
+                        }
+
                         if (mouse_hover_idx != -1) {
-                            md_residue_idx_t res_idx = mol.backbone.residue_idx[mouse_hover_idx];
-                            if (res_idx < mol.residue.count) {
-                                modify_field(highlight_mask, mol.residue.atom_range[res_idx], SelectionOperator::Or);
+                            if (mouse_hover_idx < mol.backbone.count) {
+                                md_residue_idx_t res_idx = mol.backbone.residue_idx[mouse_hover_idx];
+                                if (res_idx < mol.residue.count) {
+                                    modify_field(highlight_mask, mol.residue.atom_range[res_idx], SelectionOperator::Or);
+                                    grow_mask_by_current_selection_granularity(highlight_mask, *data);
+                                    data->mold.dirty_buffers |= MolBit_DirtyFlags;
+                                }
                             }
                         }
 
@@ -5315,11 +5335,11 @@ static void draw_script_editor_window(ApplicationData* data) {
         data->mold.script.vis = {0};
         const TextEditor::Marker* hovered_marker = data->script.editor.GetHoveredMarker();
         if (hovered_marker) {
-            if (data->mold.script.ir_is_valid) {
+            if (md_script_ir_valid(data->mold.script.ir)) {
                 md_semaphore_aquire(&data->mold.script.ir_semaphore);
                 md_script_visualization_init(&data->mold.script.vis, {
                     .token = (const md_script_vis_token_t*)hovered_marker->payload,
-                    .ir = &data->mold.script.ir,
+                    .ir = data->mold.script.ir,
                     .mol = &data->mold.mol,
                     .traj = data->mold.traj,
                     .alloc = frame_allocator,
@@ -5430,11 +5450,11 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
 
     bool result = false;
     md_script_visualization_t vis = { 0 };
-    if (data.mold.script.ir_is_valid) {
+    if (md_script_ir_valid(data.mold.script.ir)) {
         md_semaphore_aquire(&data.mold.script.ir_semaphore);
         md_script_visualization_args_t args = {
             .token = prop->vis_token,
-            .ir = &data.mold.script.ir,
+            .ir = data.mold.script.ir,
             .mol = &data.mold.mol,
             .traj = data.mold.traj,
             .alloc = frame_allocator,
@@ -5567,7 +5587,7 @@ static void draw_property_export_window(ApplicationData* data) {
                 md_array_push(col_data, time_data, frame_allocator);
                 for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
                     const DisplayProperty& dp = data->display_properties[i];
-                    if (dp.full_prop->type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
+                    if (dp.full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                         str_t lbl = dp.lbl;
                         if (dp.full_prop->data.dim[0] > 1) {
                             lbl = alloc_printf(frame_allocator, "%.*s[%d:%d]", (int)lbl.len, lbl.ptr, 1, dp.full_prop->data.dim[0]);
@@ -5579,7 +5599,7 @@ static void draw_property_export_window(ApplicationData* data) {
             } else if (type == Distribution) {
                 for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
                     const DisplayProperty& dp = data->display_properties[i];
-                    if (dp.full_prop->type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
+                    if (dp.full_prop->flags == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                         ColData prop_data = {dp.lbl.cstr(), dp.full_hist.bin, ARRAY_SIZE(dp.full_hist.bin), 1};
                         md_array_push(col_data, prop_data, frame_allocator);
                         if (data->timeline.filter.enabled) {
@@ -5587,7 +5607,7 @@ static void draw_property_export_window(ApplicationData* data) {
                             ColData filt_data = {lbl.ptr, dp.filt_hist.bin, ARRAY_SIZE(dp.filt_hist.bin), 1};
                             md_array_push(col_data, filt_data, frame_allocator);
                         }
-                    } else if (dp.full_prop->type == MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION) {
+                    } else if (dp.full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
                         ColData prop_data = {dp.lbl.cstr(), dp.full_prop->data.values, (int)dp.full_prop->data.num_values, dp.full_prop->data.dim[0]};
                         md_array_push(col_data, prop_data, frame_allocator);
                         if (data->timeline.filter.enabled) {
@@ -5695,7 +5715,7 @@ static void draw_property_export_window(ApplicationData* data) {
             const DisplayProperty** props = 0;
 
             for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
-                if (data->display_properties[i].full_prop->type == MD_SCRIPT_PROPERTY_TYPE_VOLUME) {
+                if (data->display_properties[i].full_prop->flags == MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
                     md_array_push(props, &data->display_properties[i], frame_allocator);
                 }
             }
@@ -5916,8 +5936,8 @@ static void update_md_buffers(ApplicationData* data) {
 static void interrupt_async_tasks(ApplicationData* data) {
     task_system::pool_interrupt_running_tasks();
 
-    md_script_eval_interrupt(&data->mold.script.full_eval);
-    md_script_eval_interrupt(&data->mold.script.filt_eval);
+    if (data->mold.script.full_eval) md_script_eval_interrupt(data->mold.script.full_eval);
+    if (data->mold.script.filt_eval) md_script_eval_interrupt(data->mold.script.filt_eval);
 
     task_system::task_wait_for(data->tasks.backbone_computations);
     task_system::task_wait_for(data->tasks.evaluate_full);
@@ -6096,8 +6116,9 @@ static void free_molecule_data(ApplicationData* data) {
 
     md_bitfield_clear(&data->selection.current_selection_mask);
     md_bitfield_clear(&data->selection.current_highlight_mask);
-    md_script_ir_free(&data->mold.script.ir);
-    md_script_eval_free(&data->mold.script.full_eval);
+    if (data->mold.script.ir) md_script_ir_free(data->mold.script.ir);
+    if (data->mold.script.full_eval) md_script_eval_free(data->mold.script.full_eval);
+    if (data->mold.script.filt_eval) md_script_eval_free(data->mold.script.filt_eval);
     clear_density_volume(data);
 }
 
@@ -6918,7 +6939,7 @@ void create_screenshot(ApplicationData* data) {
     application::FileDialogResult file_res = application::file_dialog(application::FileDialogFlags_Save, {}, MAKE_STR("jpg;png;bmp"));
     if (file_res.result == application::FileDialogResult::Ok) {
         str_t ext = extract_ext({file_res.path, file_res.path_len});
-        if (ext.ptr == NULL) {
+        if (str_empty(ext)) {
             snprintf(file_res.path + file_res.path_len, ARRAY_SIZE(file_res.path) - file_res.path_len, ".jpg");
             ext = MAKE_STR("jpg");
         }
@@ -7036,11 +7057,11 @@ static void update_representation(ApplicationData* data, Representation* rep) {
                     const int dim = rep->prop->data.dim[0];
                     md_script_visualization_t vis = {0};
                     bool result = false;
-                    if (data->mold.script.ir_is_valid) {
+                    if (md_script_ir_valid(data->mold.script.ir)) {
                         md_semaphore_aquire(&data->mold.script.ir_semaphore);
                         md_script_visualization_args_t args = {
                             .token = rep->prop->vis_token,
-                            .ir = &data->mold.script.ir,
+                            .ir = data->mold.script.ir,
                             .mol = &data->mold.mol,
                             .traj = NULL,
                             .alloc = frame_allocator,
@@ -7171,10 +7192,14 @@ static void remove_selection(ApplicationData* data, int idx) {
     md_array_pop(data->selection.stored_selections);
 }
 
-static bool selection_surface(ApplicationData* data, bool pressed) {
+// #camera-control
+static void handle_camera_interaction(ApplicationData* data) {
     ASSERT(data);
 
     enum class RegionMode { Append, Remove };
+
+    ImGui::BeginCanvas("Main interarction window", true);
+    bool pressed = ImGui::InvisibleButton("canvas", ImGui::GetContentRegionAvail(), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
 
     if (pressed || ImGui::IsItemActive()) {
         if (ImGui::IsKeyPressed(ImGuiKey_ModShift, false)) {
@@ -7182,14 +7207,11 @@ static bool selection_surface(ApplicationData* data, bool pressed) {
         }
 
         if (ImGui::IsKeyDown(ImGuiKey_ModShift)) {
-            md_bitfield_clear(&data->selection.current_highlight_mask);
-            data->mold.dirty_buffers |= MolBit_DirtyFlags;
-            data->selection.selecting = true;
-
             RegionMode mode = RegionMode::Append;
             if (ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
                 mode = RegionMode::Append;
-            } else if (ImGui::IsMouseDown(ImGuiMouseButton_Right) || ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+            }
+            else if (ImGui::IsMouseDown(ImGuiMouseButton_Right) || ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
                 mode = RegionMode::Remove;
             }
 
@@ -7204,13 +7226,17 @@ static bool selection_surface(ApplicationData* data, bool pressed) {
             dl->AddRectFilled(pos, pos + ext, fill_col);
             dl->AddRect(pos, pos + ext, line_col);
 
-            const ImVec2 min_p = ImMin(pos, pos+ext) - window->Pos;
-            const ImVec2 max_p = ImMax(pos, pos+ext) - window->Pos;
+            const ImVec2 min_p = ImMin(pos, pos + ext) - window->Pos;
+            const ImVec2 max_p = ImMax(pos, pos + ext) - window->Pos;
 
-            md_bitfield_t mask = {0};
+            md_bitfield_t mask = { 0 };
             md_bitfield_init(&mask, frame_allocator);
 
             if (min_p != max_p) {
+                md_bitfield_clear(&data->selection.current_highlight_mask);
+                data->mold.dirty_buffers |= MolBit_DirtyFlags;
+                data->selection.selecting = true;
+
                 const vec2_t res = { (float)data->ctx.window.width, (float)data->ctx.window.height };
                 const mat4_t mvp = data->view.param.matrix.current.view_proj;
                 const md_bitfield_t* vis_mask = &data->representations.atom_visibility_mask;
@@ -7231,7 +7257,7 @@ static bool selection_surface(ApplicationData* data, bool pressed) {
                         md_bitfield_set_bit(&mask, i);
                     }
                 }
-                grow_mask_by_current_selection_level(&mask, *data);
+                grow_mask_by_current_selection_granularity(&mask, *data);
 
                 if (mode == RegionMode::Append) {
                     md_bitfield_or(&data->selection.current_highlight_mask, &data->selection.current_selection_mask, &mask);
@@ -7242,45 +7268,43 @@ static bool selection_surface(ApplicationData* data, bool pressed) {
                 if (pressed) {
                     md_bitfield_copy(&data->selection.current_selection_mask, &data->selection.current_highlight_mask);
                 }
-            } else if (pressed) {
+            }
+            else if (pressed) {
                 if (data->picking.idx != INVALID_PICKING_IDX) {
                     if (mode == RegionMode::Append) {
-                        md_bitfield_set_bit(&data->selection.current_selection_mask, data->picking.idx);
                         single_selection_sequence_push_idx(&data->selection.single_selection_sequence, data->picking.idx);
-                    } else if (mode == RegionMode::Remove) {
-                        md_bitfield_clear_bit(&data->selection.current_selection_mask, data->picking.idx);
-                        single_selection_sequence_pop_idx(&data->selection.single_selection_sequence, data->picking.idx);
+                        md_bitfield_set_bit(&mask, data->picking.idx);
+                        grow_mask_by_current_selection_granularity(&mask, *data);
+                        md_bitfield_or_inplace(&data->selection.current_selection_mask, &mask);
                     }
-                } else {
+                    else if (mode == RegionMode::Remove) {
+                        single_selection_sequence_pop_idx(&data->selection.single_selection_sequence, data->picking.idx);
+                        md_bitfield_set_bit(&mask, data->picking.idx);
+                        grow_mask_by_current_selection_granularity(&mask, *data);
+                        md_bitfield_andnot_inplace(&data->selection.current_selection_mask, &mask);
+                    }
+                }
+                else {
                     single_selection_sequence_clear(&data->selection.single_selection_sequence);
                     md_bitfield_clear(&data->selection.current_selection_mask);
+                    md_bitfield_clear(&data->selection.current_highlight_mask);
                 }
             }
 
             data->mold.dirty_buffers |= MolBit_DirtyFlags;
         }
-    } else if (ImGui::IsItemHovered()) {
+    }
+    else if (ImGui::IsItemHovered()) {
         if (data->picking.idx != INVALID_PICKING_IDX) {
             ASSERT(data->picking.idx <= data->mold.mol.atom.count);
             md_bitfield_clear(&data->selection.current_highlight_mask);
             md_bitfield_set_bit(&data->selection.current_highlight_mask, data->picking.idx);
-            grow_mask_by_current_selection_level(&data->selection.current_highlight_mask, *data);
+            grow_mask_by_current_selection_granularity(&data->selection.current_highlight_mask, *data);
             data->mold.dirty_buffers |= MolBit_DirtyFlags;
 
             draw_atom_info_window(*data, data->picking.idx);
         }
     }
-
-    return pressed;
-}
-
-// #camera-control
-static void handle_camera_interaction(ApplicationData* data) {
-    ASSERT(data);
-    ImGui::BeginCanvas("Main interarction window", true);
-
-    bool pressed = ImGui::InvisibleButton("canvas", ImGui::GetContentRegionAvail(), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
-    selection_surface(data, pressed);
 
     if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
         if (!data->selection.selecting) {
