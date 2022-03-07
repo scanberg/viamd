@@ -61,13 +61,6 @@
 
 #include <stdio.h>
 
-/*
-#ifndef PI
-#define PI 3.141592653589793
-#endif
-*/
-
-static constexpr float TWO_PI = 2.0 * 3.141592653589793;
 
 #define PICKING_JITTER_HACK 0
 #define SHOW_IMGUI_DEMO_WINDOW 0
@@ -89,7 +82,7 @@ static constexpr float TWO_PI = 2.0 * 3.141592653589793;
     if (glPopDebugGroup) glPopDebugGroup(); \
 }
 
-
+constexpr float TWO_PI = 2.0 * 3.141592653589793;
 
 constexpr const char* shader_output_snippet = R"(
 layout(location = 0) out vec4 out_color;
@@ -254,7 +247,7 @@ struct Representation {
         float range_max = 0;
     };
 
-    StrBuf<32> name = "rep";
+    StrBuf<32>  name = "rep";
     StrBuf<256> filt = "all";
     StrBuf<256> filt_error = "";
     //StrBuf<256> prop = "";
@@ -378,11 +371,11 @@ struct ApplicationData {
 
     // --- MOLD DATA ---
     struct {
-        md_gl_shaders_t         gl_shaders = {};
-        md_gl_shaders_t         gl_shaders_lean_and_mean = {};
-        md_gl_molecule_t        gl_mol = {};
-        md_molecule_t           mol = {};
-        md_trajectory_i*        traj = 0;
+        md_gl_shaders_t     gl_shaders = {};
+        md_gl_shaders_t     gl_shaders_lean_and_mean = {};
+        md_gl_molecule_t    gl_mol = {};
+        md_molecule_t       mol = {};
+        md_trajectory_i*    traj = 0;
 
         struct {
             md_script_ir_t*   ir = 0;
@@ -671,8 +664,8 @@ struct ApplicationData {
             vec4_t base_color       = {0.9f, 0.9f, 0.9f, 0.9f};
             vec4_t selection_color  = {0.5f, 0.5f, 0.8f, 0.9f};
             vec4_t highlight_color  = {0.8f, 0.8f, 0.5f, 0.9f};
-            float base_radius = 4.5f;
-            float selected_radius = 6.5f;
+            float base_radius       = 4.5f;
+            float selected_radius   = 6.5f;
         } style;
 
     } ramachandran;
