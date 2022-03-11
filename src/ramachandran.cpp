@@ -526,8 +526,9 @@ bool rama_init(rama_data_t* data) {
 
     double ref_sum[4] = {0};
 
-    for (int y = 0; y < 180; ++y) {
-        for (int x = 0; x < 180; ++x) {
+    const uint32_t dim = 180;
+    for (uint32_t y = 0; y < dim; ++y) {
+        for (uint32_t x = 0; x < dim; ++x) {
             ref_sum[0] += (*densities[0])[y][x];
             ref_sum[1] += (*densities[1])[y][x];
             ref_sum[2] += (*densities[2])[y][x];
@@ -537,11 +538,11 @@ bool rama_init(rama_data_t* data) {
 
     double density_sum[4] = {0};
 
-    for (int y = 0; y < density_tex_dim; ++y) {
+    for (uint32_t y = 0; y < density_tex_dim; ++y) {
         double v = (y / (double)(density_tex_dim - 1));
-        for (int x = 0; x < density_tex_dim; ++x) {
+        for (uint32_t x = 0; x < density_tex_dim; ++x) {
             double u = (x / (double)(density_tex_dim - 1));
-            int idx = 4 * (y * density_tex_dim + x);
+            uint32_t idx = 4 * (y * density_tex_dim + x);
             density_map[idx + 0] = (float)ramachandran::linear_sample_map(*densities[0], u, v);
             density_map[idx + 1] = (float)ramachandran::linear_sample_map(*densities[1], u, v);
             density_map[idx + 2] = (float)ramachandran::linear_sample_map(*densities[2], u, v);

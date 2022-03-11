@@ -284,17 +284,32 @@ void render_volume(const RenderDesc& desc) {
 
     glUseProgram(program);
 
-    vec4_t colors[IsoSurfaces::MaxCount];
-    for (int64_t i = 0; i < (int64_t)ARRAY_SIZE(colors); ++i) {
-        colors[i] = convert_color(desc.isosurface.colors[i]);
+    int    iso_count = CLAMP(desc.iso_surface.count, 0, 8);
+    float  iso_values[8];
+    vec4_t iso_colors[8];
+
+    memcpy(iso_values, desc.iso_surface.values, iso_count * sizeof(float));
+    memcpy(iso_colors, desc.iso_surface.colors, iso_count * sizeof(vec4_t));
+
+    for (int i = 0; i < iso_count - 1; ++i) {
+        for (int j = i + 1; j < iso_count; ++j) {
+            if (iso_values[j] < iso_values[i]) {
+                float  val_tmp = iso_values[i];
+                vec4_t col_tmp = iso_colors[i];
+                iso_values[i] = iso_values[j];
+                iso_colors[i] = iso_colors[j];
+                iso_values[j] = val_tmp;
+                iso_colors[j] = col_tmp;
+            }
+        }
     }
 
     glUniform1i(uniform_loc_tex_depth, 0);
     glUniform1i(uniform_loc_tex_volume, 1);
     glUniform1i(uniform_loc_tex_tf, 2);
-    glUniform1fv(uniform_loc_iso_values, IsoSurfaces::MaxCount, desc.isosurface.values);
-    glUniform4fv(uniform_loc_iso_colors, IsoSurfaces::MaxCount, &colors[0].x);
-    glUniform1i(uniform_loc_iso_count, desc.isosurface.count);
+    glUniform1fv(uniform_loc_iso_values, iso_count, (const float*)iso_values);
+    glUniform4fv(uniform_loc_iso_colors, iso_count, (const float*)iso_colors);
+    glUniform1i(uniform_loc_iso_count, iso_count);
     glUniformBlockBinding(program, uniform_block_index, 0);
 
     glBindVertexArray(gl.vao);

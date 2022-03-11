@@ -37,35 +37,34 @@ constexpr inline vec3_t hcl_to_rgb(vec3_t HCL) {
     constexpr float HCLgamma = 3;
     constexpr float HCLy0 = 100;
     constexpr float HCLmaxL = 0.530454533953517f;  // == exp(HCLgamma / HCLy0) - 0.5
-    constexpr float PI = 3.1415926535f;
 
     vec3_t RGB = vec3_t{};
     if (HCL.z != 0) {
         float H = HCL.x;
         float C = HCL.y;
         float L = HCL.z * HCLmaxL;
-        float Q = expf((1 - C / (2 * L)) * (HCLgamma / HCLy0));
-        float U = (2 * L - C) / (2 * Q - 1);
+        float Q = expf((1.f - C / (2.f * L)) * (HCLgamma / HCLy0));
+        float U = (2.f * L - C) / (2.f * Q - 1.f);
         float V = C / Q;
-        float T = tanf((H + MIN(fractf(2 * H) / 4.f, fractf(-2 * H) / 8.f)) * PI * 2);
-        H *= 6;
-        if (H <= 1) {
-            RGB.x = 1;
-            RGB.y = T / (1 + T);
-        } else if (H <= 2) {
-            RGB.x = (1 + T) / T;
-            RGB.y = 1;
-        } else if (H <= 3) {
-            RGB.y = 1;
-            RGB.z = 1 + T;
-        } else if (H <= 4) {
-            RGB.y = 1 / (1 + T);
-            RGB.z = 1;
-        } else if (H <= 5) {
-            RGB.x = -1 / T;
-            RGB.z = 1;
+        float T = tanf((H + MIN(fractf(2.f * H) / 4.f, fractf(-2.f * H) / 8.f)) * PI * 2.f);
+        H *= 6.f;
+        if (H <= 1.f) {
+            RGB.x = 1.f;
+            RGB.y = T / (1.f + T);
+        } else if (H <= 2.f) {
+            RGB.x = (1.f + T) / T;
+            RGB.y = 1.f;
+        } else if (H <= 3.f) {
+            RGB.y = 1.f;
+            RGB.z = 1.f + T;
+        } else if (H <= 4.f) {
+            RGB.y = 1.f / (1.f + T);
+            RGB.z = 1.f;
+        } else if (H <= 5.f) {
+            RGB.x = -1.f / T;
+            RGB.z = 1.f;
         } else {
-            RGB.x = 1;
+            RGB.x = 1.f;
             RGB.z = -T;
         }
         RGB = RGB * V + U;
@@ -74,8 +73,8 @@ constexpr inline vec3_t hcl_to_rgb(vec3_t HCL) {
 }
 
 inline vec3_t rgb_to_hcl(vec3_t rgb) {
-    constexpr float HCLgamma = 3;
-    constexpr float HCLy0 = 100;
+    constexpr float HCLgamma = 3.f;
+    constexpr float HCLy0 = 100.f;
     constexpr float HCLmaxL = 0.530454533953517f;  // == exp(HCLgamma / HCLy0) - 0.5
 
     vec3_t HCL;
@@ -91,22 +90,22 @@ inline vec3_t rgb_to_hcl(vec3_t rgb) {
     Q = expf(Q);
     HCL.x = fractf(H / 2.f - MIN(fractf(H), fractf(-H)) / 6.f);
     HCL.y *= Q;
-    HCL.z = lerp(-U, V, Q) / (HCLmaxL * 2);
+    HCL.z = lerp(-U, V, Q) / (HCLmaxL * 2.f);
     return HCL;
 }
 
 // clang-format off
 inline vec3_t rgb_to_XYZ(vec3_t rgb) {
-    constexpr mat3_t RGB_2_XYZ = {0.4124564, 0.3575761, 0.1804375,
-        0.2126729, 0.7151522, 0.0721750,
-        0.0193339, 0.1191920, 0.9503041};
+    constexpr mat3_t RGB_2_XYZ = {0.4124564f, 0.3575761f, 0.1804375f,
+        0.2126729f, 0.7151522f, 0.0721750f,
+        0.0193339f, 0.1191920f, 0.9503041f};
     return RGB_2_XYZ * rgb;
 }
 
 inline vec3_t XYZ_to_rgb(vec3_t XYZ) {
-    constexpr mat3_t XYZ_2_RGB = { 3.2404542, -1.5371385, -0.4985314,
-        -0.9692660,  1.8760108,  0.0415560,
-        0.0556434, -0.2040259,  1.0572252};
+    constexpr mat3_t XYZ_2_RGB = { 3.2404542f, -1.5371385f, -0.4985314f,
+        -0.9692660f,  1.8760108f,  0.0415560f,
+        0.0556434f, -0.2040259f,  1.0572252f};
     return XYZ_2_RGB * XYZ;
 }
 // clang-format on
@@ -152,12 +151,12 @@ inline vec3_t Lab_to_rgb(vec3_t Lab) { return XYZ_to_rgb(Lab_to_XYZ(Lab)); }
 inline vec3_t hcl_to_rgb(float h, float c, float l) { return hcl_to_rgb({h, c, l}); }
 inline vec3_t rgb_to_hcl(float r, float g, float b) { return rgb_to_hcl({r, g, b}); }
 
-enum class ColorMapping { Uniform, Cpk, ResId, ResIndex, ChainId, ChainIndex, SecondaryStructure, Property };
+enum class ColorMapping { Uniform, Cpk, AtomIndex, ResId, ResIndex, ChainId, ChainIndex, SecondaryStructure, Property };
 
-inline vec4_t color_from_hash(uint32_t hash) {
+inline vec4_t color_from_hash(uint32_t hash, uint32_t num_bins = 0) {
     constexpr float chroma = 0.8f;
     constexpr float luminance = 1.0f;
-    constexpr uint32_t mod = 21;
+    const uint32_t mod = num_bins == 0 ? 0xFFFFFFFFU : num_bins;
     const float hue = (hash % mod) / (float)mod;
     const vec3_t rgb = hcl_to_rgb({hue, chroma, luminance});
 
@@ -179,6 +178,7 @@ constexpr inline uint32_t convert_color(vec4_t color) {
 
 void color_atoms_uniform(uint32_t* colors, int64_t count, vec4_t uniform_color, const md_bitfield_t* mask = NULL);
 void color_atoms_cpk(uint32_t* colors, int64_t count, const md_molecule_t& mol);
+void color_atoms_idx(uint32_t* colors, int64_t count, const md_molecule_t& mol);
 void color_atoms_residue_id(uint32_t* colors, int64_t count, const md_molecule_t& mol);
 void color_atoms_residue_index(uint32_t* colors, int64_t count, const md_molecule_t& mol);
 void color_atoms_chain_id(uint32_t* colors, int64_t count, const md_molecule_t& mol);

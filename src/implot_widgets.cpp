@@ -101,7 +101,7 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
         if (!ImHasFlag(flags, ImPlotDragRangeFlags_NoLabel)) {
             char min_buff[32];
             char max_buff[32];
-            char buff[64];
+            char buff[128];
             float x  = IM_ROUND(PlotToPixels((*x_range_max + *x_range_min) * 0.5, 0).x);
             LabelAxisValue(gp.CurrentPlot->XAxis(0), *x_range_min, min_buff, sizeof(min_buff));
             LabelAxisValue(gp.CurrentPlot->XAxis(0), *x_range_max, max_buff, sizeof(max_buff));

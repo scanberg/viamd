@@ -3,7 +3,6 @@
 #include <core/md_vec_math.h>
 #include <core/md_str.h>
 
-#include <isosurface.h>
 #include <gfx/gl.h>
 
 namespace volume {
@@ -67,7 +66,12 @@ struct RenderDesc {
         float alpha = 1.0f;
     } global_scaling;
 
-    IsoSurfaces isosurface = {};
+    struct {
+        int count;
+        const float* values;
+        const vec4_t* colors;
+    } iso_surface;
+    
     bool isosurface_enabled = false;
     bool direct_volume_rendering_enabled = true;
 

@@ -1,11 +1,7 @@
 #include <core/md_compiler.h>
 
 #if MD_COMPILER_MSVC
-
-#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
-#endif
-
 #pragma warning( disable : 26812 4244 )
 #endif
 
@@ -52,9 +48,7 @@
 #include "imgui_widgets.h"
 #include "implot_widgets.h"
 #include "application/application.h"
-#include "console.h"
 #include "color_utils.h"
-#include "isosurface.h"
 #include "task_system.h"
 #include "loader.h"
 #include "ramachandran.h"
@@ -67,6 +61,12 @@
 #define EXPERIMENTAL_CONE_TRACED_AO 0
 #define COMPILATION_TIME_DELAY_IN_SECONDS 1.0
 #define IR_SEMAPHORE_MAX_COUNT 3
+
+#define GL_COLOR_ATTACHMENT_COLOR        GL_COLOR_ATTACHMENT0
+#define GL_COLOR_ATTACHMENT_NORMAL       GL_COLOR_ATTACHMENT1
+#define GL_COLOR_ATTACHMENT_VELOCITY     GL_COLOR_ATTACHMENT2
+#define GL_COLOR_ATTACHMENT_PICKING      GL_COLOR_ATTACHMENT3
+#define GL_COLOR_ATTACHMENT_POST_TONEMAP GL_COLOR_ATTACHMENT4
 
 // For cpu profiling
 #define PUSH_CPU_SECTION(lbl) {};
@@ -81,8 +81,6 @@
 {                                           \
     if (glPopDebugGroup) glPopDebugGroup(); \
 }
-
-constexpr float TWO_PI = 2.0 * 3.141592653589793;
 
 constexpr const char* shader_output_snippet = R"(
 layout(location = 0) out vec4 out_color;
@@ -157,18 +155,6 @@ static inline bool operator != (const ImVec2& lhs, const ImVec2& rhs) { return !
 static inline bool operator == (const ImVec4& lhs, const ImVec4& rhs) { return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z && lhs.w == rhs.w; }
 static inline bool operator != (const ImVec4& lhs, const ImVec4& rhs) { return !(lhs == rhs); }
 
-static inline float rad_to_deg(float x) {
-    return x * 180.0f / 3.1415926535f;
-}
-
-static inline float deg_to_rad(float x) {
-    return x * 3.1415926535f / 180.0f;
-}
-
-static inline uint64_t generate_fingerprint() {
-    return md_os_time_current();
-}
-
 enum class PlaybackMode { Stopped, Playing };
 enum class InterpolationMode { Nearest, Linear, Cubic };
 enum class SelectionLevel { Atom, Residue, Chain };
@@ -177,12 +163,6 @@ enum class SelectionGrowth { CovalentBond, Radial };
 enum class RepresentationType { SpaceFill, Licorice, Ribbons, Cartoon };
 enum class TrackingMode { Absolute, Relative };
 enum class CameraMode { Perspective, Orthographic };
-
-#define GL_COLOR_ATTACHMENT_COLOR        GL_COLOR_ATTACHMENT0
-#define GL_COLOR_ATTACHMENT_NORMAL       GL_COLOR_ATTACHMENT1
-#define GL_COLOR_ATTACHMENT_VELOCITY     GL_COLOR_ATTACHMENT2
-#define GL_COLOR_ATTACHMENT_PICKING      GL_COLOR_ATTACHMENT3
-#define GL_COLOR_ATTACHMENT_POST_TONEMAP GL_COLOR_ATTACHMENT4
 
 enum AtomBit_ {
     AtomBit_Highlighted = 0x1,
@@ -524,7 +504,10 @@ struct ApplicationData {
 
         struct {
             bool enabled = false;
-            IsoSurfaces isosurfaces;
+            float values[8];
+            vec4_t colors[8];
+            int count = 0;
+            //IsoSurfaces isosurfaces;
         } iso;
 
         struct {
@@ -618,18 +601,6 @@ struct ApplicationData {
         } spline;
     } visuals;
 
-    /*
-    struct {
-        bool enabled = false;
-        bool dirty = true;
-        bool overlay = false;
-        vec4_t color = vec4_t(1, 0, 1, 1);
-        float distance_cutoff = HYDROGEN_BOND_DISTANCE_CUTOFF_DEFAULT;  // In Ångström
-        float angle_cutoff = HYDROGEN_BOND_ANGLE_CUTOFF_DEFAULT;        // In Degrees
-        DynamicArray<HydrogenBond> bonds{};
-    } hydrogen_bonds;
-    */
-
     struct {
         bool enabled = false;
         vec4_t color = {0, 0, 0, 0.5f};
@@ -695,9 +666,6 @@ struct ApplicationData {
         bool show_window = false;
     } representations;
 
-    // --- CONSOLE ---
-    Console console{};
-
     struct {
         TextEditor editor{};
         bool show_editor = true;
@@ -736,6 +704,10 @@ struct ApplicationData {
 
 //static void postprocess_frame(md_frame_data_t* frame, void* user_data);
 
+static inline uint64_t generate_fingerprint() {
+    return (uint64_t)md_os_time_current();
+}
+
 static void compute_histogram(float* bins, int num_bins, float min_bin_val, float max_bin_val, const float* values, int num_values) {
     memset(bins, 0, sizeof(float) * num_bins);
 
@@ -754,7 +726,6 @@ static void downsample_histogram(float* dst_bins, int num_dst_bins, const float*
 
     memset(dst_bins, 0, sizeof(float) * num_dst_bins);
     const int factor = MAX(1, num_src_bins / num_dst_bins);
-    //const float scl = 1.0f / factor;
     for (int j = 0; j < num_src_bins; ++j) {
         dst_bins[j / factor] += src_bins[j];
     }
@@ -1046,29 +1017,6 @@ int main(int, char**) {
 
     md_semaphore_init(&data.mold.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT);
 
-    md_logger_i logger = {
-        .inst = (md_logger_o*)&data.console,
-        .log = [](struct md_logger_o* inst, md_log_type_t log_type, const char* msg) {
-            const char* modifier = "";
-            switch (log_type) {
-            case MD_LOG_TYPE_DEBUG:
-                modifier = "[debug] ";
-                break;
-            case MD_LOG_TYPE_INFO:
-                modifier = "[info] ";
-                break;
-            case MD_LOG_TYPE_ERROR:
-                modifier = "[error] ";
-                break;
-            default:
-                break;
-            }
-            ((Console*)inst)->AddLog("%s%s", modifier, msg);
-        }
-    };
-
-      md_add_logger(&logger);
-
     // Init platform
     md_print(MD_LOG_TYPE_INFO, "Initializing GL...");
     if (!application::initialize(&data.ctx, 1920, 1080, "VIAMD")) {
@@ -1138,14 +1086,9 @@ int main(int, char**) {
         // This needs to happen first (in imgui events) to enable docking of imgui windows
         ImGui::CreateDockspace();
 
-#if SHOW_IMGUI_DEMO_WINDOW
-        ImGui::ShowDemoWindow();
-        ImPlot::ShowDemoWindow();
-#endif
-
-        const int64_t num_frames = md_trajectory_num_frames(traj);
+        const int64_t num_frames = md_trajectory_num_frames(data.mold.traj);
         const int64_t last_frame = MAX(0, num_frames - 1);
-        const double max_frame = (double)MAX(0, last_frame);
+        const double   max_frame = (double)last_frame;
 
         md_bitfield_clear(&data.selection.current_highlight_mask);
 
@@ -1163,28 +1106,23 @@ int main(int, char**) {
         if (data.show_property_export_window) draw_property_export_window(&data);
         if (data.show_debug_window) draw_debug_window(&data);
 
+        data.selection.selecting = false;
 
-        data.console.Draw("VIAMD", data.ctx.window.width, data.ctx.window.height, (float)data.ctx.timing.delta_s);
+        handle_camera_interaction(&data);
+        handle_camera_animation(&data);
+
         draw_main_menu(&data);
         draw_context_popup(&data);
         draw_async_task_window(&data);
         draw_animation_control_window(&data);
         draw_molecule_dynamic_info_window(&data);
 
-        // #input
-        if (ImGui::IsKeyPressed(KEY_CONSOLE)) {
-            if (data.console.Visible()) {
-                data.console.Hide();
-            } else if (!ImGui::GetIO().WantTextInput) {
-                data.console.Show();
-            }
-        }
-
-        if (ImGui::IsKeyPressed(KEY_SHOW_DEBUG_WINDOW)) {
-            data.show_debug_window = true;
-        }
-
+        // Capture non-window specific keyboard events
         if (!ImGui::GetIO().WantCaptureKeyboard) {
+            if (ImGui::IsKeyPressed(KEY_SHOW_DEBUG_WINDOW)) {
+                data.show_debug_window = true;
+            }
+
             if (ImGui::IsKeyPressed(KEY_TOGGLE_SCREENSHOT_MODE)) {
                 static bool screenshot_mode = false;
                 screenshot_mode = !screenshot_mode;
@@ -1245,11 +1183,6 @@ int main(int, char**) {
             recompute_atom_visibility_mask(&data);
             data.representations.atom_visibility_mask_dirty = false;
         }
-
-        data.selection.selecting = false;
-
-        handle_camera_interaction(&data);
-        handle_camera_animation(&data);
 
         if (data.animation.mode == PlaybackMode::Playing) {
             data.animation.frame += data.ctx.timing.delta_s * data.animation.fps;
@@ -1468,7 +1401,7 @@ int main(int, char**) {
         if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.dirty) {
             data.hydrogen_bonds.bonds = hydrogen_bond::compute_bonds(
                 {mol.hydrogen_bond.donor.data, mol.hydrogen_bond.donor.count}, {mol.hydrogen_bond.acceptor.data, mol.hydrogen_bond.acceptor.count},
-                mol.atom.position, data.hydrogen_bonds.distance_cutoff, deg_to_rad(data.hydrogen_bonds.angle_cutoff));
+                mol.atom.position, data.hydrogen_bonds.distance_cutoff, DEG_TO_RAD(data.hydrogen_bonds.angle_cutoff));
             data.hydrogen_bonds.dirty = false;
         }
         POP_CPU_SECTION()
@@ -2468,9 +2401,9 @@ static void draw_main_menu(ApplicationData* data) {
             {
                 ImGui::Combo("Mode", (int*)(&data->view.mode), "Perspective\0Orthographic\0");
                 if (data->view.mode == CameraMode::Perspective) {
-                    float fov = rad_to_deg(data->view.camera.fov_y);
+                    float fov = RAD_TO_DEG(data->view.camera.fov_y);
                     if (ImGui::SliderFloat("field of view", &fov, 12.5f, 80.0f)) {
-                        data->view.camera.fov_y = deg_to_rad(fov);
+                        data->view.camera.fov_y = DEG_TO_RAD(fov);
                     }
                 }
             }
@@ -2763,6 +2696,7 @@ void draw_context_popup(ApplicationData* data) {
     if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) &&
         !ImGui::GetIO().WantTextInput &&
         ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
+        !ImGui::IsKeyDown(ImGuiKey_ModShift) &&
         !data->selection.selecting)
     {
         ImGui::OpenPopup("AtomContextPopup");
@@ -3245,7 +3179,7 @@ static void draw_representations_window(ApplicationData* data) {
                 update_visual_rep = true;
             }
             if (ImGui::Combo("color", (int*)(&rep.color_mapping),
-                             "Uniform Color\0CPK\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0Property\0")) {
+                             "Uniform Color\0CPK\0Atom Idx\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0Property\0")) {
                 update_color = true;
             }
             if (rep.color_mapping == ColorMapping::Property) {
@@ -3407,7 +3341,7 @@ static void draw_atom_info_window(const ApplicationData& data, int atom_idx) {
     /*
     // @TODO: REIMPLEMENT THIS
     if (res_idx < mol.backbone.segment.angleangles.size() && res_idx < mol.backbone.segments.size() && valid_backbone_atoms(mol.backbone.segments[res_idx])) {
-        const auto angles = rad_to_deg((vec2)mol.backbone.angles[res_idx]);
+        const auto angles = RAD_TO_DEG((vec2)mol.backbone.angles[res_idx]);
         len += snprintf(buff + len, 256 - len, u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0\n", angles.x, angles.y);
     }
     */
@@ -4539,7 +4473,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
 
                             if (mol.backbone.angle[idx].phi == 0 && mol.backbone.angle[idx].psi == 0) continue;
 
-                            ImPlotPoint coord = ImPlotPoint(rad_to_deg(mol.backbone.angle[idx].phi), rad_to_deg(mol.backbone.angle[idx].psi));
+                            ImPlotPoint coord = ImPlotPoint(RAD_TO_DEG(mol.backbone.angle[idx].phi), RAD_TO_DEG(mol.backbone.angle[idx].psi));
                             coord.x = deperiodize(coord.x, ref_x, 360.0);
                             coord.y = deperiodize(coord.y, ref_y, 360.0);
                             
@@ -4607,8 +4541,8 @@ static void draw_ramachandran_window(ApplicationData* data) {
                                 return { INFINITY, INFINITY }; // Hide by INF!
                             }
 
-                            float x = deperiodizef(rad_to_deg(data->coords[idx].x), data->view_center.x, 360.0f);
-                            float y = deperiodizef(rad_to_deg(data->coords[idx].y), data->view_center.y, 360.0f);
+                            float x = deperiodizef(RAD_TO_DEG(data->coords[idx].x), data->view_center.x, 360.0f);
+                            float y = deperiodizef(RAD_TO_DEG(data->coords[idx].y), data->view_center.y, 360.0f);
                             return { x, y };
                         };
 
@@ -4876,26 +4810,25 @@ static void draw_density_volume_window(ApplicationData* data) {
 
             if (ImGui::BeginMenu("ISO")) {
                 ImGui::Checkbox("Enabled", &data->density_volume.iso.enabled);
-                for (int i = 0; i < data->density_volume.iso.isosurfaces.count; ++i) {
+                for (int i = 0; i < data->density_volume.iso.count; ++i) {
                     ImGui::PushID(i);
-                    ImGui::SliderFloat("##Isovalue", &data->density_volume.iso.isosurfaces.values[i], 0.0f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                    ImGui::SliderFloat("##Isovalue", &data->density_volume.iso.values[i], 0.0f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic);
                     if (ImGui::IsItemDeactivatedAfterEdit()) {
-                        sort(data->density_volume.iso.isosurfaces);
+                        // @TODO(Robin): Sort?
                     }
                     ImGui::SameLine();
-                    vec4_t col = convert_color(data->density_volume.iso.isosurfaces.colors[i]);
-                    if (ImGui::ColorEdit4Minimal("##Color", col.elem)) {
-                        data->density_volume.iso.isosurfaces.colors[i] = convert_color(col);
-                    }
+                    ImGui::ColorEdit4Minimal("##Color", data->density_volume.iso.colors[i].elem);
                     ImGui::PopID();
                 }
-                if ((data->density_volume.iso.isosurfaces.count < data->density_volume.iso.isosurfaces.MaxCount) &&
+                if ((data->density_volume.iso.count < ARRAY_SIZE(data->density_volume.iso.values)) &&
                     ImGui::Button("Add", button_size)) {
-                    insert(data->density_volume.iso.isosurfaces, 0.1f, ImColor(0.2f, 0.1f, 0.9f, 1.0f));
-                    sort(data->density_volume.iso.isosurfaces);
+                    int idx = data->density_volume.iso.count++;
+                    data->density_volume.iso.values[idx] = 0.1f;
+                    data->density_volume.iso.colors[idx] = { 0.2f, 0.1f, 0.9f, 1.0f };
+                    // @TODO(Robin): Sort?
                 }
                 if (ImGui::Button("Clear", button_size)) {
-                    clear(data->density_volume.iso.isosurfaces);
+                    data->density_volume.iso.count = 0;
                 }
                 ImGui::EndMenu();
             }
@@ -5157,11 +5090,11 @@ static void draw_density_volume_window(ApplicationData* data) {
                     .matrix = {
                         .model = data->density_volume.model_mat,
                         .view = view_mat,
-                        .proj = proj_mat
+                        .proj = proj_mat,
                     },
                     .clip_volume = {
                         .min = data->density_volume.clip_volume.min,
-                        .max = data->density_volume.clip_volume.max
+                        .max = data->density_volume.clip_volume.max,
                     },
                     .bounding_box = {
                         .color = data->density_volume.bounding_box_color,
@@ -5169,9 +5102,13 @@ static void draw_density_volume_window(ApplicationData* data) {
                     },
                     .global_scaling = {
                         .density = data->density_volume.dvr.density_scale,
-                        .alpha = data->density_volume.dvr.tf.alpha_scale
+                        .alpha = data->density_volume.dvr.tf.alpha_scale,
                     },
-                    .isosurface = data->density_volume.iso.isosurfaces,
+                    .iso_surface = {
+                        .count = data->density_volume.iso.count,
+                        .values = data->density_volume.iso.values,
+                        .colors = data->density_volume.iso.colors,
+                    },
                     .isosurface_enabled = data->density_volume.iso.enabled,
                     .direct_volume_rendering_enabled = data->density_volume.dvr.enabled,
 
@@ -7025,6 +6962,9 @@ static void update_representation(ApplicationData* data, Representation* rep) {
         case ColorMapping::Cpk:
             color_atoms_cpk(colors, mol.atom.count, mol);
             break;
+        case ColorMapping::AtomIndex:
+            color_atoms_idx(colors, mol.atom.count, mol);
+            break;
         case ColorMapping::ResId:
             color_atoms_residue_id(colors, mol.atom.count, mol);
             break;
@@ -7300,7 +7240,7 @@ static void handle_camera_interaction(ApplicationData* data) {
     }
 
     if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
-        if (!data->selection.selecting) {
+        if (!ImGui::IsKeyDown(ImGuiKey_ModShift) && !data->selection.selecting) {
             const ImVec2 delta = ImGui::GetIO().MouseDelta;
             const ImVec2 coord = ImGui::GetMousePos() - ImGui::GetCurrentWindow()->Pos;
             const vec2_t mouse_delta = {delta.x, delta.y};
