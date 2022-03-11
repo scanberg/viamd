@@ -359,8 +359,8 @@ struct ApplicationData {
 
         struct {
             md_script_ir_t*   ir = 0;
-            md_script_eval_t* full_eval = {};
-            md_script_eval_t* filt_eval = {};
+            md_script_eval_t* full_eval = 0;
+            md_script_eval_t* filt_eval = 0;
             md_script_visualization_t vis = {};
 
             // Semaphore to control access to IR
@@ -852,12 +852,9 @@ static void clear_density_volume(ApplicationData* data);
 static void interpolate_atomic_properties(ApplicationData* data);
 static void update_view_param(ApplicationData* data);
 static void reset_view(ApplicationData* data, bool move_camera = false, bool smooth_transition = false);
-static float compute_avg_ms(float dt);
+static double compute_avg_ms(double dt);
 
 static void compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, int64_t count);
-
-
-static bool selection_surface(ApplicationData* data, bool pressed);
 
 static void handle_camera_interaction(ApplicationData* data);
 static void handle_camera_animation(ApplicationData* data);
@@ -6046,9 +6043,18 @@ static void free_molecule_data(ApplicationData* data) {
 
     md_bitfield_clear(&data->selection.current_selection_mask);
     md_bitfield_clear(&data->selection.current_highlight_mask);
-    if (data->mold.script.ir) md_script_ir_free(data->mold.script.ir);
-    if (data->mold.script.full_eval) md_script_eval_free(data->mold.script.full_eval);
-    if (data->mold.script.filt_eval) md_script_eval_free(data->mold.script.filt_eval);
+    if (data->mold.script.ir) {
+        md_script_ir_free(data->mold.script.ir);
+        data->mold.script.ir = 0;
+    }
+    if (data->mold.script.full_eval) {
+        md_script_eval_free(data->mold.script.full_eval);
+        data->mold.script.full_eval = 0;
+    }
+    if (data->mold.script.filt_eval) {
+        md_script_eval_free(data->mold.script.filt_eval);
+        data->mold.script.filt_eval = 0;
+    }
     clear_density_volume(data);
 }
 
