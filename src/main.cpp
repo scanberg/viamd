@@ -1108,11 +1108,11 @@ int main(int, char**) {
         handle_camera_interaction(&data);
         handle_camera_animation(&data);
 
-        draw_main_menu(&data);
         draw_context_popup(&data);
         draw_async_task_window(&data);
         draw_animation_control_window(&data);
         draw_molecule_dynamic_info_window(&data);
+        draw_main_menu(&data);
 
         // Capture non-window specific keyboard events
         if (!ImGui::GetIO().WantCaptureKeyboard) {
@@ -2689,15 +2689,6 @@ void draw_context_popup(ApplicationData* data) {
     const int64_t sss_count = single_selection_sequence_count(&data->selection.single_selection_sequence);
     const int64_t num_frames = md_trajectory_num_frames(data->mold.traj);
     const int64_t num_atoms_selected = md_bitfield_popcount(&data->selection.current_selection_mask);
-    
-    if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) &&
-        !ImGui::GetIO().WantTextInput &&
-        ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
-        !ImGui::IsKeyDown(ImGuiKey_ModShift) &&
-        !data->selection.selecting)
-    {
-        ImGui::OpenPopup("AtomContextPopup");
-    }
 
 #if 0
     // FOR DEBUGGING
@@ -7245,6 +7236,7 @@ static void handle_camera_interaction(ApplicationData* data) {
         }
     }
 
+    bool open_atom_context = false;
     if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
         if (!ImGui::IsKeyDown(ImGuiKey_ModShift) && !data->selection.selecting) {
             const ImVec2 delta = ImGui::GetIO().MouseDelta;
@@ -7278,10 +7270,21 @@ static void handle_camera_interaction(ApplicationData* data) {
             }
 
             data->visuals.dof.focus_depth.target = data->view.camera.focus_distance;
+
+            
+            if (ImGui::GetMouseDragDelta(ImGuiMouseButton_Right) == ImVec2(0,0) &&
+                ImGui::IsMouseReleased(ImGuiMouseButton_Right))
+            {
+                open_atom_context = true;
+            }
         }
     }
 
     ImGui::EndCanvas();
+
+    if (open_atom_context) {
+        ImGui::OpenPopup("AtomContextPopup");
+    }
 }
 
 static void handle_camera_animation(ApplicationData* data) {
