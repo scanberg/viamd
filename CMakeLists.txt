@@ -38,16 +38,18 @@ option(ENKITS_INSTALL OFF)
 
 set(VIAMD_COMPILER_WARNING_FLAGS "")
 
-if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   set(VIAMD_COMPILER_WARNING_FLAGS -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -Wno-missing-braces -Wno-missing-field-initializers)
   add_compile_options(-march=native)
   if (VIAMD_PROFILE_COMPILE_TIMES)
 	add_compile_options(-ftime-trace)
   endif()
-  if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC") # clang-cl
+  if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC") # clang-cl
     message(STATUS "VIAMD: MSVC-Clang configuration was used")
-  elseif (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU") # clang native
+    elseif (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU") # clang native
     message(STATUS "VIAMD: Clang configuration was used")
+    endif()
   endif()
 elseif (CMAKE_CXX_COMPILER_ID MATCHES "GNU") # GCC
     message(STATUS "VIAMD: GCC configuration was used")
