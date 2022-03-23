@@ -3717,32 +3717,34 @@ bool DragLineX(int n_id, double* value, const ImVec4& col, float thickness, ImPl
     float x  = IM_ROUND(PlotToPixels(*value,0,IMPLOT_AUTO,IMPLOT_AUTO).x);
     const ImGuiID id = ImGui::GetCurrentWindow()->GetID(n_id);
     ImRect rect(x-grab_half_size,yt,x+grab_half_size,yb);
-    bool hovered = false, held = false;
+    bool hovered = false, held = false, dragging = false;
 
-    if (input)
-        ImGui::ButtonBehavior(rect,id,&hovered,&held);
+    if (ImGui::ItemAdd(rect, id)) {
+        if (input) {
+            ImGui::ButtonBehavior(rect,id,&hovered,&held);
+        }
 
-    if ((hovered || held) && show_curs)
-        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        if ((hovered || held) && show_curs)
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
 
-    float len = gp.Style.MajorTickLen.x;
-    ImVec4 color = IsColorAuto(col) ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : col;
-    ImU32 col32 = ImGui::ColorConvertFloat4ToU32(color);
+        float len = gp.Style.MajorTickLen.x;
+        ImVec4 color = IsColorAuto(col) ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : col;
+        ImU32 col32 = ImGui::ColorConvertFloat4ToU32(color);
 
-    bool dragging = false;
-    if (held && ImGui::IsMouseDragging(0)) {
-        *value = ImPlot::GetPlotMousePos(IMPLOT_AUTO,IMPLOT_AUTO).x;
-        dragging = true;
+        if (held && ImGui::IsMouseDragging(0)) {
+            *value = ImPlot::GetPlotMousePos(IMPLOT_AUTO,IMPLOT_AUTO).x;
+            dragging = true;
+        }
+
+        PushPlotClipRect();
+        ImDrawList& DrawList = *GetPlotDrawList();
+        if (dragging && no_delay)
+            x  = IM_ROUND(PlotToPixels(*value,0,IMPLOT_AUTO,IMPLOT_AUTO).x);
+        DrawList.AddLine(ImVec2(x,yt), ImVec2(x,yb),     col32,   thickness);
+        DrawList.AddLine(ImVec2(x,yt), ImVec2(x,yt+len), col32, 3*thickness);
+        DrawList.AddLine(ImVec2(x,yb), ImVec2(x,yb-len), col32, 3*thickness);
+        PopPlotClipRect();
     }
-
-    PushPlotClipRect();
-    ImDrawList& DrawList = *GetPlotDrawList();
-    if (dragging && no_delay)
-        x  = IM_ROUND(PlotToPixels(*value,0,IMPLOT_AUTO,IMPLOT_AUTO).x);
-    DrawList.AddLine(ImVec2(x,yt), ImVec2(x,yb),     col32,   thickness);
-    DrawList.AddLine(ImVec2(x,yt), ImVec2(x,yt+len), col32, 3*thickness);
-    DrawList.AddLine(ImVec2(x,yb), ImVec2(x,yb-len), col32, 3*thickness);
-    PopPlotClipRect();
 
     ImGui::PopID();
     return dragging;

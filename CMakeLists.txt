@@ -1,4 +1,3 @@
-
 cmake_minimum_required(VERSION 3.10)
 
 # add_compile_options_config(<CONFIG> <option> ...)
@@ -8,19 +7,34 @@ function(add_compile_options_config CONFIG)
     endforeach()
 endfunction()
 
-set(OSX_BUNDLE "")
-if (APPLE)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.9")
-    if (VIAMD_CREATE_MACOSX_BUNDLE)
-        set(OSX_BUNDLE "MACOSX_BUNDLE")
-    endif()
-endif()
-
 project(viamd)
 
-option(VIAMD_USE_RELATIVE_PATHS ON)
-option(VIAMD_PROFILE_COMPILE_TIMES OFF)
-option(VIAMD_USE_ADDRESS_SANITIZER OFF)
+set_property(GLOBAL PROPERTY USE_FOLDERS OFF)
+
+# GLOBAL OPTIONS
+option(BUILD_SHARED_LIBS OFF)
+option(USE_MSVC_RUNTIME_LIBRARY_DLL OFF)
+
+# VIAMD OPTIONS
+option(VIAMD_USE_RELATIVE_PATHS "Use relative paths for resources" ON)
+option(VIAMD_PROFILE_COMPILE_TIMES "Profile compile times (MSVC / Clang)" OFF)
+option(VIAMD_USE_ADDRESS_SANITIZER "Use Address sanitizer" OFF)
+option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
+option(VIAMD_USE_RELATIVE_PATHS "Use relative paths for resource directories" OFF)
+option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ON)
+
+# GLFW OPTIONS
+option(GLFW_BUILD_EXAMPLES OFF)
+option(GLFW_BUILD_TESTS OFF)
+option(GLFW_BUILD_DOCS OFF)
+option(GLFW_INSTALL OFF)
+option(GLFW_VULKAN_STATIC OFF)
+
+# ENKI OPTIONS
+option(ENKITS_BUILD_C_INTERFACE OFF)
+option(ENKITS_BUILD_EXAMPLES OFF)
+option(ENKITS_BUILD_SHARED OFF)
+option(ENKITS_INSTALL OFF)
 
 set(VIAMD_COMPILER_WARNING_FLAGS "")
 
@@ -37,6 +51,8 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   endif()
 elseif (CMAKE_CXX_COMPILER_ID MATCHES "GNU") # GCC
     message(STATUS "VIAMD: GCC configuration was used")
+    set(VIAMD_COMPILER_WARNING_FLAGS -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -Wno-missing-braces -Wno-missing-field-initializers)
+    add_compile_options(-march=native)
 elseif ((CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")) # msvc
     message(STATUS "VIAMD: MSVC configuration was used")
     set(VIAMD_COMPILER_WARNING_FLAGS /W4 /wd4201 /wd4324 /wd26451)
@@ -55,29 +71,13 @@ elseif ((CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")) # msvc
     add_compile_options_config(DEBUG /MTd /ZI)
 endif()
 
-set_property(GLOBAL PROPERTY USE_FOLDERS OFF)
-
-# GLOBAL OPTIONS
-option(BUILD_SHARED_LIBS OFF)
-option(USE_MSVC_RUNTIME_LIBRARY_DLL OFF)
-
-# VIAMD OPTIONS
-option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
-option(VIAMD_USE_RELATIVE_PATHS "Use relative paths for resource directories" OFF)
-option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ON)
-
-# GLFW OPTIONS
-option(GLFW_BUILD_EXAMPLES OFF)
-option(GLFW_BUILD_TESTS OFF)
-option(GLFW_BUILD_DOCS OFF)
-option(GLFW_INSTALL OFF)
-option(GLFW_VULKAN_STATIC OFF)
-
-# ENKI OPTIONS
-option(ENKITS_BUILD_C_INTERFACE OFF)
-option(ENKITS_BUILD_EXAMPLES OFF)
-option(ENKITS_BUILD_SHARED OFF)
-option(ENKITS_INSTALL OFF)
+set(OSX_BUNDLE "")
+if (APPLE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.9")
+    if (VIAMD_CREATE_MACOSX_BUNDLE)
+        set(OSX_BUNDLE "MACOSX_BUNDLE")
+    endif()
+endif()
 
 if (VIAMD_LINK_STDLIB_STATIC)
     set(VIAMD_STDLIBS "")

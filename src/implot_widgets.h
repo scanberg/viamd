@@ -6,9 +6,8 @@ typedef int ImPlotDragRangeFlags;          // -> enum ImPlotBin_
 
                                 // Options for plots (see BeginPlot).
 enum ImPlotDragRangeFlags_ {
-    ImPlotDragRangeFlags_None = 0,          // default
-    ImPlotDragRangeFlags_Periodic = 1 << 0, // the range is periodic and should wrap around the min and max values.
-    ImPlotDragRangeFlags_NoLabel  = 1 << 1, // do not display any label
+    ImPlotDragRangeFlags_None     = 0,  // default
+    ImPlotDragRangeFlags_NoLabel  = 16,  // do not display any label
 };
 
 struct ImPlotDragRangeStyle {

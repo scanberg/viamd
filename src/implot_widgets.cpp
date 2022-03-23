@@ -21,13 +21,16 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
 
     //double* x_range[2] = {x_range_max, x_range_min};
     if ((gp.CurrentPlot->PlotRect.Min.x - grab_size / 2) < x_min && x_min < (gp.CurrentPlot->PlotRect.Max.x + grab_size / 2))  {
-        if (DragLineX(ImGui::GetID("min"), x_range_min, style.line_col, style.line_thickness)) dragging = 1;
+        if (DragLineX(ImGui::GetID("min"), x_range_min, style.line_col, style.line_thickness, flags)) dragging = 1;
         *x_range_min = ImClamp(*x_range_min, min_value, max_value);
-
+        active  |= ImGui::IsItemActive();
+        hovered |= ImGui::IsItemHovered();
     }
     if ((gp.CurrentPlot->PlotRect.Min.x - grab_size / 2) < x_max && x_max < (gp.CurrentPlot->PlotRect.Max.x + grab_size / 2))  {
-        if (DragLineX(ImGui::GetID("max"), x_range_max, style.line_col, style.line_thickness)) dragging = 2;
+        if (DragLineX(ImGui::GetID("max"), x_range_max, style.line_col, style.line_thickness, flags)) dragging = 2;
         *x_range_max = ImClamp(*x_range_max, min_value, max_value);
+        active  |= ImGui::IsItemActive();
+        hovered |= ImGui::IsItemHovered();
     }
 
     //float len = gp.Style.MajorTickLen.x;

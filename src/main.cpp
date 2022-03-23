@@ -24,6 +24,7 @@
 #include <core/md_os.h>
 #include <core/md_spatial_hash.h>
 #include <core/md_base64.h>
+#include <core/md_unit.h>
 
 #include <imgui.h>
 #define IMGUI_DEFINE_MATH_OPERATORS
@@ -296,8 +297,29 @@ struct DisplayProperty {
         Range value_range = {};
     };
 
-    StrBuf<32> lbl = "";
+    struct EvaluationTarget {
+        char label[64] = "";
+        vec4_t color = {1,1,1,1};
+        Range frame_filter = {};
+    };
+
+    struct Version {
+        char label[64] = "";
+        vec4_t color = {1,1,1,1};
+        Histogram histogram;
+        uint64_t prop_fingerprint = 0;
+        Range frame_filter = {};
+        const float values = 0;
+        const md_script_property_t* prop = NULL;
+    };
+
+    StrBuf<32> lbl = {};
     uint32_t col = 0xFFFFFFFFU;
+
+    const float* values = 0;
+    md_unit_t unit = {};
+
+    StrBuf<32> unit_str = {};
 
     const md_script_property_t* full_prop = NULL;
     const md_script_property_t* filt_prop = NULL;
@@ -375,6 +397,8 @@ struct ApplicationData {
             double time_since_last_change = 0.0;
         } script;
         uint32_t dirty_buffers = {0};
+
+        md_unit_base_t unit_base = {};
     } mold;
 
     DisplayProperty* display_properties = 0;
@@ -726,8 +750,9 @@ static void downsample_histogram(float* dst_bins, int num_dst_bins, const float*
 
     memset(dst_bins, 0, sizeof(float) * num_dst_bins);
     const int factor = MAX(1, num_src_bins / num_dst_bins);
+    const float scl = 1.0f / (float)factor;
     for (int j = 0; j < num_src_bins; ++j) {
-        dst_bins[j / factor] += src_bins[j];
+        dst_bins[j / factor] += src_bins[j] * scl;
     }
 }
 
@@ -1076,6 +1101,8 @@ int main(int, char**) {
     bool time_changed = true;
     bool time_stopped = true;
 
+    //bool demo_window = true;
+
     // Main loop
     while (!data.ctx.window.should_close) {
         application::update(&data.ctx);
@@ -1104,6 +1131,8 @@ int main(int, char**) {
         if (data.show_debug_window) draw_debug_window(&data);
 
         data.selection.selecting = false;
+
+        //if (demo_window) ImGui::ShowDemoWindow(&demo_window);
 
         handle_camera_interaction(&data);
         handle_camera_animation(&data);
@@ -1572,12 +1601,15 @@ static void init_display_properties(DisplayProperty** prop_items, const md_scrip
         item.col = PROPERTY_COLORS[i % ARRAY_SIZE(PROPERTY_COLORS)];
         item.frame_filter = {0, 0};
         item.value_filter = {full_props[i].data.min_range[0], full_props[i].data.max_range[0]};
+        item.unit = full_props[i].data.unit;
         item.full_prop = &full_props[i];
         item.filt_prop = &filt_props[i];
         item.full_prop_fingerprint = 0;
         item.filt_prop_fingerprint = 0;
         item.possible_display_mask = possible_display_mask;
         item.current_display_mask  = possible_display_mask;
+
+        unit_print(item.unit_str.buf, sizeof(item.unit_str.buf), item.unit);
 
         for (int64_t j = 0; j < md_array_size(old_items); ++j) {
             if (compare_str(item.lbl, old_items[j].lbl)) {
@@ -1608,7 +1640,10 @@ static void update_display_properties(ApplicationData* data) {
             if (p->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                 DisplayProperty::Histogram& hist = disp_props[i].full_hist;
                 hist.value_range = {p->data.min_range[0], p->data.max_range[0]};
-                compute_histogram(hist.bin, ARRAY_SIZE(hist.bin), hist.value_range.beg, hist.value_range.end, p->data.values, p->data.num_values);
+                const int num_frames = md_script_eval_num_frames_completed(data->mold.script.full_eval);
+                const int num_values = p->data.dim[0] * num_frames;
+
+                compute_histogram(hist.bin, ARRAY_SIZE(hist.bin), hist.value_range.beg, hist.value_range.end, p->data.values, num_values);
             }
         }
 
@@ -2590,10 +2625,11 @@ ImGui::EndGroup();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Settings")) {
-            ImGuiIO& io = ImGui::GetIO();
+            // Font
             ImFont* font_current = ImGui::GetFont();
             if (ImGui::BeginCombo("Font", font_current->GetDebugName()))
             {
+                ImGuiIO& io = ImGui::GetIO();
                 for (int n = 0; n < io.Fonts->Fonts.Size; n++) {
                     ImFont* font = io.Fonts->Fonts[n];
                     ImGui::PushID((void*)font);
@@ -2603,6 +2639,47 @@ ImGui::EndGroup();
                 }
                 ImGui::EndCombo();
             }
+
+
+            ImGui::Text("Units");
+            char buf[64];
+
+            unit_print_long(buf, sizeof(buf), {.base = { .length = data->mold.unit_base.length }, .dim = { .length = 1 }});
+            if (ImGui::BeginCombo("length", buf)) {
+                for (uint32_t i = 0; i < UNIT_LENGTH_COUNT; ++i) {
+                    unit_print_long(buf, sizeof(buf), {.base = { .length = i }, .dim = { .length = 1 }});
+                    ImGui::PushID((int)i);
+                    if (ImGui::Selectable(buf, i == data->mold.unit_base.length))
+                        data->mold.unit_base.length = i;
+                    ImGui::PopID();
+                }
+                ImGui::EndCombo();
+            }
+
+            unit_print_long(buf, sizeof(buf), {.base = { .time = data->mold.unit_base.time }, .dim = {.time = 1 }});
+            if (ImGui::BeginCombo("time", buf)) {
+                for (uint32_t i = 0; i < UNIT_TIME_COUNT; ++i) {
+                    unit_print_long(buf, sizeof(buf), {.base = { .time = i }, .dim = {.time = 1}});
+                    ImGui::PushID((int)i);
+                    if (ImGui::Selectable(buf, i == data->mold.unit_base.time))
+                        data->mold.unit_base.time = i;
+                    ImGui::PopID();
+                }
+                ImGui::EndCombo();
+            }
+
+            unit_print_long(buf, sizeof(buf), {.base = { .angle = data->mold.unit_base.angle }, .dim = {.angle = 1 }});
+            if (ImGui::BeginCombo("angle", buf)) {
+                for (uint32_t i = 0; i < UNIT_ANGLE_COUNT; ++i) {
+                    unit_print_long(buf, sizeof(buf), {.base = { .angle = i }, .dim = {.angle = 1 }});
+                    ImGui::PushID((int)i);
+                    if (ImGui::Selectable(buf, i == data->mold.unit_base.angle))
+                        data->mold.unit_base.angle = i;
+                    ImGui::PopID();
+                }
+                ImGui::EndCombo();
+            }
+
             ImGui::EndMenu();
         }
         {
@@ -3429,9 +3506,17 @@ static void draw_async_task_window(ApplicationData* data) {
             float fract = task_system::task_fraction_complete(id);
 
             if (id == data->tasks.evaluate_filt) {
-                fract = md_script_eval_completed_fraction(data->mold.script.filt_eval);
+                uint32_t completed = md_script_eval_num_frames_completed(data->mold.script.filt_eval);
+                uint32_t total     = md_script_eval_num_frames_total(data->mold.script.filt_eval);
+                if (total > 0) {
+                    fract = (float)completed / (float)total;
+                }
             } else if (id == data->tasks.evaluate_full) {
-                fract = md_script_eval_completed_fraction(data->mold.script.full_eval);
+                uint32_t completed = md_script_eval_num_frames_completed(data->mold.script.full_eval);
+                uint32_t total     = md_script_eval_num_frames_total(data->mold.script.full_eval);
+                if (total > 0) {
+                    fract = (float)completed / (float)total;
+                }
             }
 
             if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
@@ -3558,10 +3643,13 @@ struct TimelineArgs {
         int count;
         const float* x;
         const float* y;
-        const float* y_variance;
+        const float* y_var;
+        const float* y_min;
+        const float* y_max;
 
         float min_y;
         float max_y;
+        str_t unit;
     } values;
 
     struct {
@@ -3606,6 +3694,7 @@ bool draw_property_timeline(const ApplicationData& data, const TimelineArgs& arg
         ImPlot::SetupFinish();
 
         bool active = ImGui::IsItemActive();
+        bool print_timeline_tooltip = false;
 
         if (args.value_filter.enabled) {
             float* y_vals = (float*)md_alloc(frame_allocator, args.values.count * sizeof(float));
@@ -3633,23 +3722,41 @@ bool draw_property_timeline(const ApplicationData& data, const TimelineArgs& arg
         if (args.values.count > 0) {
             ASSERT(args.values.x);
             ASSERT(args.values.y);
-            if (args.values.y_variance) {
-                char lbl[32] = "";
+            if (args.values.y_var) {
+                ASSERT(args.values.y_min);
+                ASSERT(args.values.y_max);
 
+                char lbl[32] = "";
                 snprintf(lbl, sizeof(lbl), "%s (mean)", args.lbl);
                 ImPlot::PlotLine(lbl, args.values.x, args.values.y, args.values.count);
 
-                ImPlot::SetNextFillStyle(line_col, 0.2f);
-                snprintf(lbl, sizeof(lbl), "%s (variance)", args.lbl);
+                ImPlot::SetNextFillStyle(line_col, 0.4f);
+                snprintf(lbl, sizeof(lbl), "%s (var)", args.lbl);
                 ImPlot::PlotShadedG(lbl,
                     [](void* payload, int idx) -> ImPlotPoint {
                         TimelineArgs* args = (TimelineArgs*)payload;
-                        return ImPlotPoint(args->values.x[idx], args->values.y[idx] - args->values.y_variance[idx]);
+                        return ImPlotPoint(args->values.x[idx], args->values.y[idx] - args->values.y_var[idx]);
                     },
                     (void*)&args,
                     [](void* payload, int idx) -> ImPlotPoint {
                         TimelineArgs* args = (TimelineArgs*)payload;
-                        return ImPlotPoint(args->values.x[idx], args->values.y[idx] + args->values.y_variance[idx]);
+                        return ImPlotPoint(args->values.x[idx], args->values.y[idx] + args->values.y_var[idx]);
+                    },
+                    (void*)&args,
+                    args.values.count
+                );
+
+                ImPlot::SetNextFillStyle(line_col, 0.2f);
+                snprintf(lbl, sizeof(lbl), "%s (min,max)", args.lbl);
+                ImPlot::PlotShadedG(lbl,
+                    [](void* payload, int idx) -> ImPlotPoint {
+                        TimelineArgs* args = (TimelineArgs*)payload;
+                        return ImPlotPoint(args->values.x[idx], args->values.y_min[idx]);
+                    },
+                    (void*)&args,
+                        [](void* payload, int idx) -> ImPlotPoint {
+                        TimelineArgs* args = (TimelineArgs*)payload;
+                        return ImPlotPoint(args->values.x[idx], args->values.y_max[idx]);
                     },
                     (void*)&args,
                     args.values.count
@@ -3666,8 +3773,8 @@ bool draw_property_timeline(const ApplicationData& data, const TimelineArgs& arg
         else if (*args.input.is_selecting) {
             *args.filter.end = MAX(ImPlot::GetPlotMousePos().x, *args.filter.beg);
         }
-        else if (active && ImPlot::IsPlotHovered()) {
-            if (ImGui::IsMouseDown(0)) {           
+        else if (ImPlot::IsPlotHovered()) {
+            if (active && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {           
                 if (ImGui::GetIO().KeyMods == ImGuiKeyModFlags_Shift) {
                     if (args.filter.show && args.filter.enabled) {
                         *args.input.is_selecting = true;
@@ -3676,40 +3783,57 @@ bool draw_property_timeline(const ApplicationData& data, const TimelineArgs& arg
                 } else {
                     *args.input.is_dragging = true;
                 }
-            } else {
-                ImPlotPoint plot_pos = ImPlot::GetPlotMousePos();
-                ImVec2 screen_pos = ImPlot::PlotToPixels(plot_pos);
-                ImVec2 p0 = {screen_pos.x, ImPlot::GetPlotPos().y};
-                ImVec2 p1 = {screen_pos.x, ImPlot::GetPlotPos().y + ImPlot::GetPlotSize().y};
-                ImPlot::PushPlotClipRect();
-                ImPlot::GetPlotDrawList()->AddLine(p0, p1, IM_COL32(255, 255, 255, 60));
-                ImPlot::PopPlotClipRect();
-
-                char buf[128] = "";
-                int len = 0;
-
-                double time = plot_pos.x;
-                int32_t frame_idx = CLAMP((int)(time_to_frame(time, data) + 0.5), 0, md_array_size(data.timeline.x_values)-1);
-                len += snprintf(buf + len, sizeof(buf) - len, "frame: %i, time: %.2f", frame_idx, time);
-
-                if (0 <= frame_idx && frame_idx < args.values.count) {
-                    if (args.values.y) {
-                        len += snprintf(buf + len, sizeof(buf) - len, ", value: %.2f", args.values.y[frame_idx]);
-                    }
-                    if (args.values.y_variance) {
-                        len += snprintf(buf + len, sizeof(buf) - len, ", variance: %.2f", args.values.y_variance[frame_idx]);
-                    }
-                }
-                ImGui::SetTooltip("%.*s", len, buf);
             }
         }
 
+        if (ImPlot::IsPlotHovered()) {
+            print_timeline_tooltip = true;
+        }
+        
         if (ImPlot::DragLineX(0, args.time, ImVec4(1,1,0,1))) {
             *args.time = CLAMP(*args.time, args.filter.min, args.filter.max);
         }
         if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Current Time: %f", *args.time);
+            print_timeline_tooltip = true;
         }
+
+        if (print_timeline_tooltip) {
+            ImPlotPoint plot_pos = ImPlot::GetPlotMousePos();
+            ImVec2 screen_pos = ImPlot::PlotToPixels(plot_pos);
+            ImVec2 p0 = {screen_pos.x, ImPlot::GetPlotPos().y};
+            ImVec2 p1 = {screen_pos.x, ImPlot::GetPlotPos().y + ImPlot::GetPlotSize().y};
+            ImPlot::PushPlotClipRect();
+            ImPlot::GetPlotDrawList()->AddLine(p0, p1, IM_COL32(255, 255, 255, 120));
+            ImPlot::PopPlotClipRect();
+
+            char buf[128] = "";
+            int len = 0;
+
+            double time = plot_pos.x;
+            int32_t frame_idx = CLAMP((int)(time_to_frame(time, data) + 0.5), 0, md_array_size(data.timeline.x_values)-1);
+            len += snprintf(buf + len, sizeof(buf) - len, "time: %.2f", time);
+
+            if (0 <= frame_idx && frame_idx < args.values.count) {
+                const char* value_lbl = args.values.y_var ? "mean" : "value";
+                if (args.values.y) {
+                    len += snprintf(buf + len, sizeof(buf) - len, ", %s: %.2f", value_lbl, args.values.y[frame_idx]);
+                }
+                if (args.values.y_var) {
+                    ASSERT(args.values.y_min);
+                    ASSERT(args.values.y_max);
+                    len += snprintf(buf + len, sizeof(buf) - len, ", var: %.2f, min: %.2f, max: %.2f",
+                        args.values.y_var[frame_idx],
+                        args.values.y_min[frame_idx],
+                        args.values.y_max[frame_idx]);
+                }
+
+                if (!str_empty(args.values.unit)) {
+                    len += snprintf(buf + len, sizeof(buf) - len, " (%.*s)", (int)args.values.unit.len, args.values.unit.ptr);
+                }
+            }
+            ImGui::SetTooltip("%.*s", len, buf);
+        }
+
         ImPlot::EndPlot();
     }
 
@@ -3749,7 +3873,6 @@ static void draw_timeline_window(ApplicationData* data) {
                         const double extent_min = 1.0;
                         const double extent_max = num_x_values / 2.0;
                         ImGui::SliderScalar("Extent", ImGuiDataType_Double, &data->timeline.filter.temporal_window.extent_in_frames, &extent_min, &extent_max, "%.1f");
-                        //ImGui::Slider("Extent", &data->timeline.filter.temporal_window.extent_in_frames, 1, num_x_values / 2);
                     }
                 }
                 ImGui::EndMenu();
@@ -3803,7 +3926,9 @@ static void draw_timeline_window(ApplicationData* data) {
                     .count = 0,
                     .x = NULL,
                     .y = NULL,
-                    .y_variance = NULL,
+                    .y_var = NULL,
+                    .y_min = NULL,
+                    .y_max = NULL,
                 },
                 .view_range = {
                     &view_beg,
@@ -3833,12 +3958,17 @@ static void draw_timeline_window(ApplicationData* data) {
                 ASSERT(prop.filt_prop);
 
                 const float* y_values = NULL;
-                const float* y_variance = NULL;
+                const float* y_var = NULL;
+                const float* y_min = NULL;
+                const float* y_max = NULL;
+
                 int num_y_values = 0;
                     
                 if (prop.full_prop->data.aggregate) {
-                    y_values = prop.full_prop->data.aggregate->mean;
-                    y_variance = prop.full_prop->data.aggregate->variance;
+                    y_values = prop.full_prop->data.aggregate->population_mean;
+                    y_var = prop.full_prop->data.aggregate->population_var;
+                    y_min = prop.full_prop->data.aggregate->population_min;
+                    y_max = prop.full_prop->data.aggregate->population_max;
                     num_y_values = prop.full_prop->data.aggregate->num_values;
                 } else {
                     y_values = prop.full_prop->data.values;
@@ -3854,14 +3984,17 @@ static void draw_timeline_window(ApplicationData* data) {
                     .count = num_y_values,
                     .x = x_values,
                     .y = y_values,
-                    .y_variance = y_variance,
+                    .y_var = y_var,
+                    .y_min = y_min,
+                    .y_max = y_max,
                     .min_y = prop.full_prop->data.min_value,
-                    .max_y = prop.full_prop->data.max_value
+                    .max_y = prop.full_prop->data.max_value,
+                    .unit = prop.unit_str,
                 };
                 args.value_filter = {
                     .enabled = data->distributions.filter.enabled,
                     .min = prop.value_filter.beg,
-                    .max = prop.value_filter.end
+                    .max = prop.value_filter.end,
                 };
                 draw_property_timeline(*data, args);
                 ImGui::PopID();
@@ -3893,8 +4026,12 @@ static void draw_distribution_window(ApplicationData* data) {
     ImGui::SetNextWindowSize(ImVec2(200, 300), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Distributions", &data->distributions.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
         const int MIN_NUM_BINS = 8;
-        const int MAX_NUM_BINS = 256;
+        const int MAX_NUM_BINS = 1024;
         static int num_bins = 64;
+
+        static constexpr int MIN_PLOT_HEIGHT = 10;
+        static constexpr int MAX_PLOT_HEIGHT = 1000;
+        static int plot_height = 150;
 
         if (ImGui::BeginMenuBar())
         {
@@ -3914,6 +4051,11 @@ static void draw_distribution_window(ApplicationData* data) {
 
             if (ImGui::BeginMenu("Filter")) {
                 ImGui::Checkbox("Enabled", &data->distributions.filter.enabled);
+                ImGui::EndMenu();
+            }
+
+            if (ImGui::BeginMenu("Settings")) {
+                ImGui::SliderInt("Plot Height", &plot_height, MIN_PLOT_HEIGHT, MAX_PLOT_HEIGHT);
                 ImGui::EndMenu();
             }
 
@@ -3979,7 +4121,15 @@ static void draw_distribution_window(ApplicationData* data) {
             const double bar_off = min_x;
             const double bar_scl = (max_x - min_x) / (num_bins-1);
 
-            if (ImPlot::BeginPlot(prop.lbl.cstr(), ImVec2(-1,150), flags)) {
+            char label[128];
+            int len = snprintf(label, sizeof(label), "%s ", prop.lbl.cstr());
+            if (!unit_empty(prop.unit)) {
+                char unit_buf[64];
+                int unit_len = unit_print_long(unit_buf, sizeof(unit_buf), prop.unit);
+                snprintf(label + len, MAX(0, (int)sizeof(label) - len), "(%*s)", unit_len, unit_buf);
+            }
+
+            if (ImPlot::BeginPlot(label, ImVec2(-1,plot_height), flags)) {
                 ImPlot::SetupAxesLimits(min_x, max_x, 0, max_y * 1.1, ImGuiCond_Always);
                 ImPlot::SetupAxes(0, 0, axis_flags_x, axis_flags_y);
                 ImPlot::SetupFinish();
@@ -5154,6 +5304,10 @@ static void draw_debug_window(ApplicationData* data) {
         if (md_semaphore_query_count(&data->mold.script.ir_semaphore, &sema_count)) {
             ImGui::Text("Script IR semaphore count: %i", sema_count);
         }
+
+        ImGuiID active = ImGui::GetActiveID();
+        ImGuiID hover  = ImGui::GetHoveredID();
+        ImGui::Text("Active ID: %u, Hover ID: %u", active, hover);
     }
     ImGui::End();
 }
@@ -5251,7 +5405,7 @@ static void draw_script_editor_window(ApplicationData* data) {
         editor.Render("TextEditor");
 
         data->mold.script.vis = {0};
-        const TextEditor::Marker* hovered_marker = data->script.editor.GetHoveredMarker();
+        const TextEditor::Marker* hovered_marker = editor.GetHoveredMarker();
         if (hovered_marker) {
             if (md_script_ir_valid(data->mold.script.ir)) {
                 md_semaphore_aquire(&data->mold.script.ir_semaphore);

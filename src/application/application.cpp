@@ -26,7 +26,8 @@
 // Compressed fonts
 //#include "cousine_font.inl"
 //#include "droid_sans.inl"
-#include "droid_sans_mono.inl"
+//#include "droid_sans_mono.inl"
+#include "dejavu_sans_mono.inl"
 #include "fa_solid.inl"
 
 #include <implot.h>
@@ -105,20 +106,20 @@ bool initialize(Context* ctx, int64_t width, int64_t height, const char* title) 
     // io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;  // Enable Docking
 #if !MD_PLATFORM_LINUX
-    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;  // Enable Multi-Viewport / Platform Windows
+    //io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;  // Enable Multi-Viewport / Platform Windows
 #endif
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoTaskBarIcons;
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoMerge;
-    io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;
+    //io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;
     // io.ConfigDockingWithShift = true;
     io.ConfigWindowsMoveFromTitleBarOnly = true;
 
     // default range is 0x0020 - 0x00FF.
     // Added some greek letters
-    const ImWchar ranges_characters[] = {0x0020, 0x00FF, 0x03C6, 0x03C8, 0};
+    const ImWchar ranges_characters[] = {0x0020, 0x00FF, 0x03C6, 0x03C8, 0x2074, 0x207b, 0};
     const ImWchar ranges_icons[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
-    const float font_size[] = {16, 20, 24, 30};
-    const char* font_names[] = {"Droid Sans (16 px)", "Droid Sans (20 px)", "Droid Sans (24 px)", "Droid Sans (30 px)"};
+    const float font_size[] = {18, 20, 24, 30};
+    const char* font_names[] = {"DejaVu Sans Mono (18 px)", "DejaVu Sans Mono (20 px)", "DejaVu Sans Mono (24 px)", "DejaVu Sans Mono (30 px)"};
 
     for (int i = 0; i < ARRAY_SIZE(font_size); ++i) {
         ImFontConfig config;
@@ -131,7 +132,7 @@ bool initialize(Context* ctx, int64_t width, int64_t height, const char* title) 
 
         // CHARACTERS
         config.RasterizerMultiply = 1.f;
-        ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)droid_sans_mono_compressed_data, droid_sans_mono_compressed_size, size, &config, ranges_characters);
+        ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)dejavu_sans_mono_compressed_data, dejavu_sans_mono_compressed_size, size, &config, ranges_characters);
 
         // ICONS
         const float scl = 0.875f;   // We scale this a bit to better fit within buttons and such.
