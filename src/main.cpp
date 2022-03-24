@@ -241,6 +241,7 @@ struct Representation {
 
     bool enabled = true;
     bool show_in_selection = true;
+    bool filt_is_dirty = true;
     bool filt_is_valid = false;
     bool filt_is_dynamic = false;
     bool dynamic_evaluation = false;
@@ -3225,8 +3226,7 @@ static void draw_representations_window(ApplicationData* data) {
     ImGui::Spacing();
     ImGui::Separator();
     for (int i = 0; i < (int)md_array_size(data->representations.buffer); i++) {
-        bool update_visual_rep = false;
-        bool update_color = false;
+        bool update_rep = false;
         auto& rep = data->representations.buffer[i];
         const float item_width = CLAMP(ImGui::GetContentRegionAvail().x - 90.f, 100.f, 300.f);
         StrBuf<128> name;
@@ -3250,13 +3250,16 @@ static void draw_representations_window(ApplicationData* data) {
 
             ImGui::PushItemWidth(item_width);
             ImGui::InputText("name", rep.name.cstr(), rep.name.capacity());
-            update_color |= ImGui::InputQuery("filter", rep.filt.beg(), rep.filt.capacity(), rep.filt_is_valid, rep.filt_error.cstr());
+            if (ImGui::InputQuery("filter", rep.filt.beg(), rep.filt.capacity(), rep.filt_is_valid, rep.filt_error.cstr())) {
+                rep.filt_is_dirty = true;
+                update_rep = true;
+            }
             if (ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0Cartoon\0")) {
-                update_visual_rep = true;
+                update_rep = true;
             }
             if (ImGui::Combo("color", (int*)(&rep.color_mapping),
                              "Uniform Color\0CPK\0Atom Idx\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0Property\0")) {
-                update_color = true;
+                update_rep = true;
             }
             if (rep.color_mapping == ColorMapping::Property) {
                 /*
@@ -3288,7 +3291,7 @@ static void draw_representations_window(ApplicationData* data) {
                                 prop_idx = j;
                                 rep.map_beg = props[j]->data.min_value;
                                 rep.map_end = props[j]->data.max_value;
-                                update_color = true;
+                                update_rep = true;
                             }
                         }
                         ImGui::EndCombo();
@@ -3314,25 +3317,23 @@ static void draw_representations_window(ApplicationData* data) {
                 ImGui::Checkbox("auto-update", &rep.dynamic_evaluation);
                 if (!rep.dynamic_evaluation) {
                     ImGui::SameLine();
-                    if (ImGui::Button("update")) update_color = true;
+                    if (ImGui::Button("update")) update_rep = true;
                 }
             } else {
                 rep.dynamic_evaluation = false;
             }
             ImGui::PopItemWidth();
             if (rep.color_mapping == ColorMapping::Uniform) {
-                if (ImGui::ColorEdit4("color", (float*)&rep.uniform_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
-                    update_color = true;
-                }
+                update_rep |= ImGui::ColorEdit4("color", (float*)&rep.uniform_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
             }
             ImGui::PushItemWidth(item_width);
             if (rep.type == RepresentationType::SpaceFill || rep.type == RepresentationType::Licorice) {
-                if (ImGui::SliderFloat("radii scale", &rep.radius, 0.1f, 2.f)) update_visual_rep = true;
+                update_rep |= ImGui::SliderFloat("radii scale", &rep.radius, 0.1f, 2.f);
             }
             if (rep.type == RepresentationType::Ribbons) {
-                if (ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f)) update_visual_rep = true;
-                if (ImGui::SliderFloat("spline width", &rep.width, 0.1f, 2.f)) update_visual_rep = true;
-                if (ImGui::SliderFloat("spline thickness", &rep.thickness, 0.1f, 2.f)) update_visual_rep = true;
+                update_rep |= ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f);
+                update_rep |= ImGui::SliderFloat("spline width", &rep.width, 0.1f, 2.f);
+                update_rep |= ImGui::SliderFloat("spline thickness", &rep.thickness, 0.1f, 2.f);
             }
             ImGui::PopItemWidth();
             ImGui::Spacing();
@@ -3340,35 +3341,8 @@ static void draw_representations_window(ApplicationData* data) {
         }
 
         ImGui::PopID();
-        if (update_visual_rep) {
-            md_gl_representation_type_t type = MD_GL_REP_DEFAULT;
-            md_gl_representation_args_t args = {};
-            switch(rep.type) {
-            case RepresentationType::SpaceFill:
-                type = MD_GL_REP_SPACE_FILL;
-                args.space_fill.radius_scale = rep.radius;
-                break;
-            case RepresentationType::Licorice:
-                type = MD_GL_REP_LICORICE;
-                args.licorice.radius = rep.radius * 0.5f;
-                break;
-            case RepresentationType::Ribbons:
-                type = MD_GL_REP_RIBBONS;
-                args.ribbons.width_scale = rep.width;
-                args.ribbons.thickness_scale = rep.thickness;
-                break;
-            case RepresentationType::Cartoon:
-                type = MD_GL_REP_CARTOON;
-                args.cartoon.width_scale = rep.width;
-                args.cartoon.thickness_scale = rep.thickness;
-                break;
-            default: break;
-            }
 
-            md_gl_representation_set_type_and_args(&rep.md_rep, type, args);
-        }
-
-        if (update_color) {
+        if (update_rep) {
             update_representation(data, &rep);
         }
     }
@@ -6093,13 +6067,6 @@ static void init_trajectory_data(ApplicationData* data) {
 
         md_trajectory_load_frame(data->mold.traj, frame_idx, &header, data->mold.mol.atom.x, data->mold.mol.atom.y, data->mold.mol.atom.z);
         memcpy(&data->simulation_box.box, header.box, sizeof(header.box));
-        data->mold.dirty_buffers |= MolBit_DirtyPosition;
-
-        update_md_buffers(data);
-        md_gl_molecule_zero_velocity(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
-
-        // Prefetch frames
-        launch_prefetch_job(data);
 
         if (data->mold.mol.backbone.count > 0) {
             data->trajectory_data.secondary_structure.stride = data->mold.mol.backbone.count;
@@ -6169,8 +6136,16 @@ static void init_trajectory_data(ApplicationData* data) {
             task_system::main_enqueue("Update Trajectory Data", [data]() {
                 data->trajectory_data.backbone_angles.fingerprint = generate_fingerprint();
                 data->trajectory_data.secondary_structure.fingerprint = generate_fingerprint();
+                interpolate_atomic_properties(data);
             }, data->tasks.backbone_computations);
         }
+
+        data->mold.dirty_buffers |= MolBit_DirtyPosition;
+        update_md_buffers(data);
+        md_gl_molecule_zero_velocity(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
+
+                                                          // Prefetch frames
+        launch_prefetch_job(data);
     }
 }
 
@@ -7204,7 +7179,10 @@ static void update_representation(ApplicationData* data, Representation* rep) {
             break;
     }
 
-    rep->filt_is_valid = filter_expression(data, rep->filt, &rep->atom_mask, &rep->filt_is_dynamic, rep->filt_error.beg(), rep->filt_error.capacity());
+    if (rep->filt_is_dirty) {
+        rep->filt_is_valid = filter_expression(data, rep->filt, &rep->atom_mask, &rep->filt_is_dynamic, rep->filt_error.beg(), rep->filt_error.capacity());
+        rep->filt_is_dirty = false;
+    }
 
     if (rep->filt_is_valid) {
         filter_colors(colors, mol.atom.count, &rep->atom_mask);
@@ -7242,6 +7220,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
 static void init_representation(ApplicationData* data, Representation* rep) {
     md_gl_representation_init(&rep->md_rep, &data->mold.gl_mol);
     md_bitfield_init(&rep->atom_mask, persistent_allocator);
+    rep->filt_is_dirty = true;
 }
 
 static void init_all_representations(ApplicationData* data) {
