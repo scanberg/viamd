@@ -297,20 +297,21 @@ struct DisplayProperty {
         Range value_range = {};
     };
 
+    struct EvaluationResult {
+        str_t prop_identifier = {};
+        uint64_t prop_fingerprint = 0;
+        const float* val    = 0;
+        const float* mean   = 0;
+        const float* min    = 0;
+        const float* max    = 0;
+        Histogram histogram;
+    };
+
     struct EvaluationTarget {
         char label[64] = "";
         vec4_t color = {1,1,1,1};
         Range frame_filter = {};
-    };
-
-    struct Version {
-        char label[64] = "";
-        vec4_t color = {1,1,1,1};
-        Histogram histogram;
-        uint64_t prop_fingerprint = 0;
-        Range frame_filter = {};
-        const float values = 0;
-        const md_script_property_t* prop = NULL;
+        EvaluationResult* results = {0};
     };
 
     StrBuf<32> lbl = {};
@@ -1640,9 +1641,8 @@ static void update_display_properties(ApplicationData* data) {
             if (p->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                 DisplayProperty::Histogram& hist = disp_props[i].full_hist;
                 hist.value_range = {p->data.min_range[0], p->data.max_range[0]};
-                const int num_frames = md_script_eval_num_frames_completed(data->mold.script.full_eval);
-                const int num_values = p->data.dim[0] * num_frames;
-
+                const int num_completed = md_script_eval_num_frames_completed(data->mold.script.full_eval);
+                const int num_values = p->data.dim[0] * num_completed;
                 compute_histogram(hist.bin, ARRAY_SIZE(hist.bin), hist.value_range.beg, hist.value_range.end, p->data.values, num_values);
             }
         }
@@ -2640,7 +2640,7 @@ ImGui::EndGroup();
                 ImGui::EndCombo();
             }
 
-
+            /*
             ImGui::Text("Units");
             char buf[64];
 
@@ -2679,6 +2679,7 @@ ImGui::EndGroup();
                 }
                 ImGui::EndCombo();
             }
+            */
 
             ImGui::EndMenu();
         }
@@ -3166,10 +3167,20 @@ static void draw_animation_control_window(ApplicationData* data) {
     if (ImGui::Begin("Animation")) {
         ImGui::Text("Num Frames: %i", num_frames);
 
+        md_unit_t time_unit = md_trajectory_time_unit(data->mold.traj);
         double t   = frame_to_time(data->animation.frame, *data);
         double min = data->timeline.x_values[0];
         double max = data->timeline.x_values[num_frames - 1];
-        if (ImGui::SliderScalar("Time", ImGuiDataType_Double, &t, &min, &max, "%.2f")) {
+        char time_label[32];
+        if (unit_empty(time_unit)) {
+            snprintf(time_label, sizeof(time_label), "Time");
+        } else {
+            char unit_buf[32];
+            unit_print(unit_buf, sizeof(unit_buf), time_unit);
+            snprintf(time_label, sizeof(time_label), "Time (%s)", unit_buf);
+        }
+                
+        if (ImGui::SliderScalar(time_label, ImGuiDataType_Double, &t, &min, &max, "%.2f")) {
             data->animation.frame = time_to_frame(t, *data);
         }
         ImGui::SliderFloat("Speed", &data->animation.fps, -200.0f, 200.f, "%.2f", ImGuiSliderFlags_Logarithmic);
@@ -3811,24 +3822,31 @@ bool draw_property_timeline(const ApplicationData& data, const TimelineArgs& arg
 
             double time = plot_pos.x;
             int32_t frame_idx = CLAMP((int)(time_to_frame(time, data) + 0.5), 0, md_array_size(data.timeline.x_values)-1);
-            len += snprintf(buf + len, sizeof(buf) - len, "time: %.2f", time);
+            len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), "time: %.2f", time);
+
+            md_unit_t time_unit = md_trajectory_time_unit(data.mold.traj);
+            if (!unit_empty(time_unit)) {
+                char unit_buf[32];
+                unit_print(unit_buf, sizeof(unit_buf), time_unit);
+                len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), " (%s)", unit_buf);
+            }
 
             if (0 <= frame_idx && frame_idx < args.values.count) {
                 const char* value_lbl = args.values.y_var ? "mean" : "value";
                 if (args.values.y) {
-                    len += snprintf(buf + len, sizeof(buf) - len, ", %s: %.2f", value_lbl, args.values.y[frame_idx]);
+                    len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), ", %s: %.2f", value_lbl, args.values.y[frame_idx]);
                 }
                 if (args.values.y_var) {
                     ASSERT(args.values.y_min);
                     ASSERT(args.values.y_max);
-                    len += snprintf(buf + len, sizeof(buf) - len, ", var: %.2f, min: %.2f, max: %.2f",
+                    len += snprintf(buf + len, MAX(0, sizeof(buf) - len), ", var: %.2f, min: %.2f, max: %.2f",
                         args.values.y_var[frame_idx],
                         args.values.y_min[frame_idx],
                         args.values.y_max[frame_idx]);
                 }
 
                 if (!str_empty(args.values.unit)) {
-                    len += snprintf(buf + len, sizeof(buf) - len, " (%.*s)", (int)args.values.unit.len, args.values.unit.ptr);
+                    len += snprintf(buf + len, MAX(0, sizeof(buf) - len), " (%.*s)", (int)args.values.unit.len, args.values.unit.ptr);
                 }
             }
             ImGui::SetTooltip("%.*s", len, buf);
@@ -4992,8 +5010,6 @@ static void draw_density_volume_window(ApplicationData* data) {
 
             ImGui::EndMenuBar();
         }
-
-
 
         update_density_volume(data);
 
