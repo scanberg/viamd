@@ -1235,8 +1235,8 @@ int main(int, char**) {
             const double pre_beg = data.timeline.filter.beg_frame;
             const double pre_end = data.timeline.filter.end_frame;
             const double half_window_ext = data.timeline.filter.temporal_window.extent_in_frames * 0.5;
-            data.timeline.filter.beg_frame = CLAMP(data.animation.frame - half_window_ext, 0.0, max_frame);
-            data.timeline.filter.end_frame = CLAMP(data.animation.frame + half_window_ext, 0.0, max_frame);
+            data.timeline.filter.beg_frame = CLAMP(round(data.animation.frame - half_window_ext), 0.0, max_frame);
+            data.timeline.filter.end_frame = CLAMP(round(data.animation.frame + half_window_ext), 0.0, max_frame);
             if (data.mold.script.ir && (data.timeline.filter.beg_frame != pre_beg || data.timeline.filter.end_frame != pre_end)) {
                 data.mold.script.evaluate_filt = true;
             }
@@ -3890,7 +3890,7 @@ static void draw_timeline_window(ApplicationData* data) {
                     if (data->timeline.filter.temporal_window.enabled) {
                         const double extent_min = 1.0;
                         const double extent_max = num_x_values / 2.0;
-                        ImGui::SliderScalar("Extent", ImGuiDataType_Double, &data->timeline.filter.temporal_window.extent_in_frames, &extent_min, &extent_max, "%.1f");
+                        ImGui::SliderScalar("Extent (frames)", ImGuiDataType_Double, &data->timeline.filter.temporal_window.extent_in_frames, &extent_min, &extent_max, "%1.0f");
                     }
                 }
                 ImGui::EndMenu();
