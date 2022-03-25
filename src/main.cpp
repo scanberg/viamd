@@ -562,7 +562,19 @@ struct ApplicationData {
         bool show_reference_structures = true;
         bool show_reference_ensemble = false;
         bool show_density_volume = false;
-        //bool show_target_atoms = false;
+
+        bool dirty_rep = false;
+        bool dirty_vol = false;
+
+        struct {
+            RepresentationType type;
+            ColorMapping colormap;
+            float radius;
+            float tension;
+            float width;
+            float thickness;
+            vec4_t color;
+        } rep;
 
         md_gl_representation_t* gl_reps = 0;
         mat4_t* rep_model_mats = 0;
@@ -1687,16 +1699,14 @@ static void update_density_volume(ApplicationData* data) {
         }
     }
 
-    bool update_volume = false;
-    bool update_representations = false;
     const md_script_property_t* prop = 0;
     uint64_t data_fingerprint = 0;
 
     static int64_t s_selected_property = 0;
     if (s_selected_property != selected_property) {
         s_selected_property = selected_property;
-        update_volume = true;
-        update_representations = true;
+        data->density_volume.dirty_vol = true;
+        data->density_volume.dirty_rep = true;
     }
 
     if (selected_property != -1) {
@@ -1714,24 +1724,25 @@ static void update_density_volume(ApplicationData* data) {
     static uintptr_t s_script_fingerprint = 0;
     if (s_script_fingerprint != (uintptr_t)data->mold.script.ir) {
         s_script_fingerprint = (uintptr_t)data->mold.script.ir;
-        update_volume = true;
-        update_representations = true;
+        data->density_volume.dirty_vol = true;
+        data->density_volume.dirty_rep = true;
     }
 
     static uint64_t s_data_fingerprint = 0;
     if (s_data_fingerprint != data_fingerprint) {
         s_data_fingerprint = data_fingerprint;
-        update_volume = true;
+        data->density_volume.dirty_vol = true;
     }
 
     static double s_frame = 0;
     if (s_frame != data->animation.frame) {
         s_frame = data->animation.frame;
-        update_representations = true;
+        data->density_volume.dirty_rep = true;
     }
 
-    if (update_representations) {
+    if (data->density_volume.dirty_rep) {
         if (prop) {
+            data->density_volume.dirty_rep = false;
             int64_t num_reps = 0;
             bool result = false;
             md_script_visualization_t vis = {};
@@ -1775,15 +1786,27 @@ static void update_density_volume(ApplicationData* data) {
                 md_gl_representation_init(&data->density_volume.gl_reps[i], &data->mold.gl_mol);
             }
 
+            auto& rep = data->density_volume.rep;
             const int64_t num_colors = data->mold.mol.atom.count;
             uint32_t* colors = (uint32_t*)md_alloc(frame_allocator, sizeof(uint32_t) * num_colors);
+            color_atoms_cpk(colors, num_colors, data->mold.mol);
             for (int64_t i = 0; i < num_reps; ++i) {
-                color_atoms_cpk(colors, num_colors, data->mold.mol);
                 filter_colors(colors, num_colors, &vis.sdf.structures[i]);
                 md_gl_representation_set_color(&data->density_volume.gl_reps[i], 0, num_colors, colors, 0);
                 md_gl_representation_set_type_and_args(&data->density_volume.gl_reps[i], MD_GL_REP_SPACE_FILL, {
                     .space_fill = {
-                        .radius_scale = 1.0f,
+                        .radius_scale = rep.radius,
+                    },
+                    .licorice = {
+                        .radius = rep.radius,
+                    },
+                    .ribbons = {
+                        .width_scale = rep.width,
+                        .thickness_scale = rep.thickness,
+                    },
+                    .cartoon = {
+                        .width_scale = rep.width,
+                        .thickness_scale = rep.thickness,
                     }
                     });
                 data->density_volume.rep_model_mats[i] = vis.sdf.matrices[i];
@@ -1791,9 +1814,10 @@ static void update_density_volume(ApplicationData* data) {
         }
     }
 
-    if (update_volume) {
+    if (data->density_volume.dirty_vol) {
         //data->density_volume.model_mat = volume::compute_model_to_world_matrix({ 0,0,0 }, { 1,1,1 });
         if (prop) {
+            data->density_volume.dirty_vol = false;
             if (!data->density_volume.volume_texture.id) {
                 gl::init_texture_3D(&data->density_volume.volume_texture.id, prop->data.dim[0], prop->data.dim[1], prop->data.dim[2], GL_R32F);
                 data->density_volume.volume_texture.dim_x = prop->data.dim[0];
@@ -3324,11 +3348,11 @@ static void draw_representations_window(ApplicationData* data) {
             }
             ImGui::PopItemWidth();
             if (rep.color_mapping == ColorMapping::Uniform) {
-                update_rep |= ImGui::ColorEdit4("color", (float*)&rep.uniform_color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+                update_rep |= ImGui::ColorEdit4("color", (float*)&rep.uniform_color, ImGuiColorEditFlags_NoInputs);
             }
             ImGui::PushItemWidth(item_width);
             if (rep.type == RepresentationType::SpaceFill || rep.type == RepresentationType::Licorice) {
-                update_rep |= ImGui::SliderFloat("radii scale", &rep.radius, 0.1f, 2.f);
+                update_rep |= ImGui::SliderFloat("scale", &rep.radius, 0.1f, 2.f);
             }
             if (rep.type == RepresentationType::Ribbons) {
                 update_rep |= ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f);
@@ -4911,8 +4935,7 @@ static void draw_density_volume_window(ApplicationData* data) {
             data->animation.mode = data->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
         }
 
-        if (ImGui::BeginMenuBar())
-        {
+        if (ImGui::BeginMenuBar()) {
             if (ImGui::BeginMenu("Property")) {
                 draw_property_menu_widgets(data->display_properties, md_array_size(data->display_properties), DisplayProperty::ShowIn_Volume, false);
                 ImGui::EndMenu();
@@ -4977,7 +5000,26 @@ static void draw_density_volume_window(ApplicationData* data) {
                 }
                 ImGui::Checkbox("Reference Structure", &data->density_volume.show_reference_structures);
                 if (data->density_volume.show_reference_structures) {
+                    auto& rep = data->density_volume.rep;
                     ImGui::Checkbox("Show Superimposed Structures", &data->density_volume.show_reference_ensemble);
+                    if (ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0Cartoon\0")) {
+                        data->density_volume.dirty_rep = true;
+                    }
+                    if (ImGui::Combo("color", (int*)(&rep.colormap), "Uniform Color\0CPK\0Atom Idx\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0")) {
+                        data->density_volume.dirty_rep = true;
+                    }
+                    if (rep.color_mapping == ColorMapping::Uniform) {
+                        data->density_volume.dirty_rep |= ImGui::ColorEdit4("color", (float*)&rep.uniform_color, ImGuiColorEditFlags_NoInputs);
+                    }
+                    ImGui::PushItemWidth(item_width);
+                    if (rep.type == RepresentationType::SpaceFill || rep.type == RepresentationType::Licorice) {
+                        data->density_volume.dirty_rep |= ImGui::SliderFloat("scale", &rep.radius, 0.1f, 2.f);
+                    }
+                    if (rep.type == RepresentationType::Ribbons) {
+                        data->density_volume.dirty_rep |= ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f);
+                        data->density_volume.dirty_rep |= ImGui::SliderFloat("spline width", &rep.width, 0.1f, 2.f);
+                        data->density_volume.dirty_rep |= ImGui::SliderFloat("spline thickness", &rep.thickness, 0.1f, 2.f);
+                    }
                 }
                 ImGui::EndMenu();
             }
