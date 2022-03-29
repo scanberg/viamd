@@ -567,13 +567,13 @@ struct ApplicationData {
         bool dirty_vol = false;
 
         struct {
-            RepresentationType type;
-            ColorMapping colormap;
-            float radius;
-            float tension;
-            float width;
-            float thickness;
-            vec4_t color;
+            RepresentationType type = RepresentationType::SpaceFill;
+            ColorMapping colormap = ColorMapping::Cpk;
+            float radius = 1.0f;
+            float tension = 0.5f;
+            float width = 1.0f;
+            float thickness = 1.0f;
+            vec4_t color = {1,1,1,1};
         } rep;
 
         md_gl_representation_t* gl_reps = 0;
@@ -1786,29 +1786,70 @@ static void update_density_volume(ApplicationData* data) {
                 md_gl_representation_init(&data->density_volume.gl_reps[i], &data->mold.gl_mol);
             }
 
+            const auto& mol = data->mold.mol;
             auto& rep = data->density_volume.rep;
             const int64_t num_colors = data->mold.mol.atom.count;
             uint32_t* colors = (uint32_t*)md_alloc(frame_allocator, sizeof(uint32_t) * num_colors);
-            color_atoms_cpk(colors, num_colors, data->mold.mol);
+            md_gl_representation_type_t rep_type = MD_GL_REP_SPACE_FILL;
+            md_gl_representation_args_t rep_args = {};
+
+            switch (rep.colormap) {
+            case ColorMapping::Uniform:
+                color_atoms_uniform(colors, mol.atom.count, rep.color);
+                break;
+            case ColorMapping::Cpk:
+                color_atoms_cpk(colors, mol.atom.count, mol);
+                break;
+            case ColorMapping::AtomIndex:
+                color_atoms_idx(colors, mol.atom.count, mol);
+                break;
+            case ColorMapping::ResId:
+                color_atoms_residue_id(colors, mol.atom.count, mol);
+                break;
+            case ColorMapping::ResIndex:
+                color_atoms_residue_index(colors, mol.atom.count, mol);
+                break;
+            case ColorMapping::ChainId:
+                color_atoms_chain_id(colors, mol.atom.count, mol);
+                break;
+            case ColorMapping::ChainIndex:
+                color_atoms_chain_index(colors, mol.atom.count, mol);
+                break;
+            case ColorMapping::SecondaryStructure:
+                color_atoms_secondary_structure(colors, mol.atom.count, mol);
+                break;
+            default:
+                ASSERT(false);
+                break;
+            }
+
+            switch (rep.type) {
+            case RepresentationType::SpaceFill:
+                rep_type = MD_GL_REP_SPACE_FILL;
+                rep_args.space_fill.radius_scale = rep.radius;
+                break;
+            case RepresentationType::Licorice:
+                rep_type = MD_GL_REP_LICORICE;
+                rep_args.licorice.radius = rep.radius * 0.5f;
+                break;
+            case RepresentationType::Ribbons:
+                rep_type = MD_GL_REP_RIBBONS;
+                rep_args.ribbons.width_scale = rep.width;
+                rep_args.ribbons.thickness_scale = rep.thickness;
+                break;
+            case RepresentationType::Cartoon:
+                rep_type = MD_GL_REP_CARTOON;
+                rep_args.cartoon.width_scale = rep.width;
+                rep_args.cartoon.thickness_scale = rep.thickness;
+                break;
+            default:
+                ASSERT(false);
+            }
+
             for (int64_t i = 0; i < num_reps; ++i) {
                 filter_colors(colors, num_colors, &vis.sdf.structures[i]);
                 md_gl_representation_set_color(&data->density_volume.gl_reps[i], 0, num_colors, colors, 0);
-                md_gl_representation_set_type_and_args(&data->density_volume.gl_reps[i], MD_GL_REP_SPACE_FILL, {
-                    .space_fill = {
-                        .radius_scale = rep.radius,
-                    },
-                    .licorice = {
-                        .radius = rep.radius,
-                    },
-                    .ribbons = {
-                        .width_scale = rep.width,
-                        .thickness_scale = rep.thickness,
-                    },
-                    .cartoon = {
-                        .width_scale = rep.width,
-                        .thickness_scale = rep.thickness,
-                    }
-                    });
+                md_gl_representation_set_type_and_args(&data->density_volume.gl_reps[i], rep_type, rep_args);
                 data->density_volume.rep_model_mats[i] = vis.sdf.matrices[i];
             }
         }
@@ -5008,10 +5049,9 @@ static void draw_density_volume_window(ApplicationData* data) {
                     if (ImGui::Combo("color", (int*)(&rep.colormap), "Uniform Color\0CPK\0Atom Idx\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0")) {
                         data->density_volume.dirty_rep = true;
                     }
-                    if (rep.color_mapping == ColorMapping::Uniform) {
-                        data->density_volume.dirty_rep |= ImGui::ColorEdit4("color", (float*)&rep.uniform_color, ImGuiColorEditFlags_NoInputs);
+                    if (rep.colormap == ColorMapping::Uniform) {
+                        data->density_volume.dirty_rep |= ImGui::ColorEdit4("color", rep.color.elem, ImGuiColorEditFlags_NoInputs);
                     }
-                    ImGui::PushItemWidth(item_width);
                     if (rep.type == RepresentationType::SpaceFill || rep.type == RepresentationType::Licorice) {
                         data->density_volume.dirty_rep |= ImGui::SliderFloat("scale", &rep.radius, 0.1f, 2.f);
                     }

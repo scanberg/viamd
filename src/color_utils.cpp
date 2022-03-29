@@ -187,8 +187,8 @@ void filter_colors(uint32_t* colors, int64_t num_colors, const md_bitfield_t* ma
         colors[i] &= 0x00FFFFFFU;
     }
     for (int64_t i = beg_bit; i < end_bit; ++i) {
-        const uint32_t m = md_bitfield_test_bit(mask, i) ? 0xFFFFFFFFU : 0x00FFFFFFU;
-        colors[i] &= m;
+        const uint32_t m = md_bitfield_test_bit(mask, i) ? 0xFF000000U : 0x00000000U;
+        colors[i] = m | (colors[i] & 0x00FFFFFFU);
     }
     for (int64_t i = end_bit; i < num_colors; ++i) {
         colors[i] &= 0x00FFFFFFU;
