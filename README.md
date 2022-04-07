@@ -15,7 +15,7 @@ Visual Interactive Analysis of Molecular Dynamics
 
 (Make sure the fetch the submodules as well)
 
-```git clone --recurse-submodules git://github.com/scanberg/viamd.git```
+```git clone --recurse-submodules git@github.com:scanberg/viamd.git```
 
 ### (Step 1.5: Install dependencies of external libs:) (Only for linux users)
 #### glfw
