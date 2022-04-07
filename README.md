@@ -46,10 +46,20 @@ New version comming soon. The aim is to provide this for Windows x64 and Linux x
 
 https://github.com/ocornut/imgui
 
+https://github.com/BalazsJako/ImGuiColorTextEdit
+
+https://github.com/epezent/implot
+
 https://github.com/glfw/glfw
 
 https://github.com/skaslev/gl3w
 
-https://github.com/epezent/implot
+https://github.com/dougbinks/enkiTS
 
-https://github.com/BalazsJako/ImGuiColorTextEdit
+https://github.com/max0x7ba/atomic_queue
+
+https://github.com/mlabbe/nativefiledialog
+
+https://github.com/nothings/stb
+
+
