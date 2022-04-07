@@ -705,11 +705,6 @@ struct ApplicationData {
     } representations;
 
     struct {
-        TextEditor editor{};
-        bool show_editor = true;
-    } script;
-
-    struct {
         bool show_window = false;
         AtomElementMapping* atom_element_remappings = 0;
     } dataset;
@@ -736,6 +731,7 @@ struct ApplicationData {
         } backbone_angles;
     } trajectory_data;
 
+    bool show_script_window = true;
     bool show_debug_window = false;
     bool show_property_export_window = false;
 };
@@ -1025,6 +1021,7 @@ static void modify_selection(ApplicationData* data, md_range_t range, SelectionO
 
 // Global data for application
 static md_allocator_i* frame_allocator = 0;
+static TextEditor editor {};
 #if DEBUG
 static md_allocator_i* persistent_allocator = md_tracking_allocator_create(default_allocator);
 #elif RELEASE
@@ -1088,12 +1085,12 @@ int main(int, char**) {
 
     ImGui::init_theme();
 
-    data.script.editor.SetLanguageDefinition(TextEditor::LanguageDefinition::VIAMD());
-    data.script.editor.SetPalette(TextEditor::GetDarkPalette());
+    editor.SetLanguageDefinition(TextEditor::LanguageDefinition::VIAMD());
+    editor.SetPalette(TextEditor::GetDarkPalette());
 
     load_dataset_from_file(&data, MAKE_STR(VIAMD_DATASET_DIR "/1ALA-500.pdb"));
     create_representation(&data, RepresentationType::SpaceFill, ColorMapping::Cpk, MAKE_STR("all"));
-    data.script.editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(1,2,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);");
+    editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(1,2,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);");
 
     reset_view(&data, true);
     recompute_atom_visibility_mask(&data);    
@@ -1137,7 +1134,7 @@ int main(int, char**) {
         if (data.distributions.show_window) draw_distribution_window(&data);
         if (data.ramachandran.show_window) draw_ramachandran_window(&data);
         if (data.shape_space.show_window) draw_shape_space_window(&data);
-        if (data.script.show_editor) draw_script_editor_window(&data);
+        if (data.show_script_window) draw_script_editor_window(&data);
         if (data.dataset.show_window) draw_dataset_window(&data);
         if (data.selection.query.show_window) draw_selection_query_window(&data);
         if (data.selection.grow.show_window) draw_selection_grow_window(&data);
@@ -1332,8 +1329,6 @@ int main(int, char**) {
                     data.mold.script.compile_ir = false;
                     data.mold.script.time_since_last_change = 0;
 
-                    TextEditor& editor = data.script.editor;
-
                     std::string src = editor.GetText();
                     str_t src_str {src.data(), (int64_t)src.length()};
 
@@ -1345,8 +1340,8 @@ int main(int, char**) {
                     }
                     data.mold.script.ir = md_script_ir_create(src_str, &data.mold.mol, persistent_allocator, NULL);
 
+                    data.mold.script.eval_init = true;
                     if (md_script_ir_valid(data.mold.script.ir)) {
-                        data.mold.script.eval_init = true;
                         data.mold.script.evaluate_full = true;
                         data.mold.script.evaluate_filt = true;
                     } else {
@@ -1856,7 +1851,6 @@ static void update_density_volume(ApplicationData* data) {
     }
 
     if (data->density_volume.dirty_vol) {
-        //data->density_volume.model_mat = volume::compute_model_to_world_matrix({ 0,0,0 }, { 1,1,1 });
         if (prop) {
             data->density_volume.dirty_vol = false;
             if (!data->density_volume.volume_texture.id) {
@@ -2598,6 +2592,7 @@ ImGui::EndGroup();
         }
         if (ImGui::BeginMenu("Windows")) {
             ImGui::Checkbox("Representations", &data->representations.show_window);
+            ImGui::Checkbox("Script", &data->show_script_window);
             ImGui::Checkbox("Timelines", &data->timeline.show_window);
             ImGui::Checkbox("Distributions", &data->distributions.show_window);
             ImGui::Checkbox("Density Volumes", &data->density_volume.show_window);
@@ -2858,8 +2853,8 @@ void draw_context_popup(ApplicationData* data) {
 
                     snprintf(buf, sizeof(buf), "%s = distance(%i, %i);", ident, idx[0]+1, idx[1]+1);
                     if (ImGui::MenuItem(buf)) {
-                        data->script.editor.AppendText("\n");
-                        data->script.editor.AppendText(buf);
+                        editor.AppendText("\n");
+                        editor.AppendText(buf);
                         ImGui::CloseCurrentPopup();
                     }
 
@@ -2870,16 +2865,16 @@ void draw_context_popup(ApplicationData* data) {
 
                         snprintf(buf, sizeof(buf), "%s = distance(%i, %i) in residue(%i);", ident, idx[0]+1, idx[1]+1, res_idx+1);
                         if (ImGui::MenuItem(buf)) {
-                            data->script.editor.AppendText("\n");
-                            data->script.editor.AppendText(buf);
+                            editor.AppendText("\n");
+                            editor.AppendText(buf);
                             ImGui::CloseCurrentPopup();
                         }
 
                         int32_t resid = data->mold.mol.residue.id[idx[0]];
                         snprintf(buf, sizeof(buf), "%s = distance(%i, %i) in resid(%i);", ident, idx[0]+1, idx[1]+1, resid);
                         if (ImGui::MenuItem(buf)) {
-                            data->script.editor.AppendText("\n");
-                            data->script.editor.AppendText(buf);
+                            editor.AppendText("\n");
+                            editor.AppendText(buf);
                             ImGui::CloseCurrentPopup();
                         }
 
@@ -2887,8 +2882,8 @@ void draw_context_popup(ApplicationData* data) {
                         if (resname) {
                             snprintf(buf, sizeof(buf), "%s = distance(%i, %i) in resname(\"%s\");", ident, idx[0] + 1, idx[1] + 1, resname.ptr);
                             if (ImGui::MenuItem(buf)) {
-                                data->script.editor.AppendText("\n");
-                                data->script.editor.AppendText(buf);
+                                editor.AppendText("\n");
+                                editor.AppendText(buf);
                                 ImGui::CloseCurrentPopup();
                             }
                         }
@@ -2899,8 +2894,8 @@ void draw_context_popup(ApplicationData* data) {
 
                     snprintf(buf, sizeof(buf), "%s = angle(%i, %i, %i);", ident, idx[0]+1, idx[1]+1, idx[2]+1);
                     if (ImGui::MenuItem(buf)) {
-                        data->script.editor.AppendText("\n");
-                        data->script.editor.AppendText(buf);
+                        editor.AppendText("\n");
+                        editor.AppendText(buf);
                         ImGui::CloseCurrentPopup();
                     }
 
@@ -2914,16 +2909,16 @@ void draw_context_popup(ApplicationData* data) {
 
                         snprintf(buf, sizeof(buf), "%s = angle(%i, %i, %i) in residue(%i);", ident, idx[0]+1, idx[1]+1, idx[2]+1, res_idx+1);
                         if (ImGui::MenuItem(buf)) {
-                            data->script.editor.AppendText("\n");
-                            data->script.editor.AppendText(buf);
+                            editor.AppendText("\n");
+                            editor.AppendText(buf);
                             ImGui::CloseCurrentPopup();
                         }
 
                         int32_t resid = data->mold.mol.residue.id[idx[0]];
                         snprintf(buf, sizeof(buf), "%s = angle(%i, %i, %i) in resid(%i);", ident, idx[0]+1, idx[1]+1, idx[2]+1, resid);
                         if (ImGui::MenuItem(buf)) {
-                            data->script.editor.AppendText("\n");
-                            data->script.editor.AppendText(buf);
+                            editor.AppendText("\n");
+                            editor.AppendText(buf);
                             ImGui::CloseCurrentPopup();
                         }
 
@@ -2931,8 +2926,8 @@ void draw_context_popup(ApplicationData* data) {
                         if (resname) {
                             snprintf(buf, sizeof(buf), "%s = angle(%i, %i, %i) in resname(\"%.*s\");", ident, idx[0]+1, idx[1]+1, idx[2]+1, (int)resname.len, resname.ptr);
                             if (ImGui::MenuItem(buf)) {
-                                data->script.editor.AppendText("\n");
-                                data->script.editor.AppendText(buf);
+                                editor.AppendText("\n");
+                                editor.AppendText(buf);
                                 ImGui::CloseCurrentPopup();
                             }
                         }
@@ -2943,8 +2938,8 @@ void draw_context_popup(ApplicationData* data) {
 
                     snprintf(buf, sizeof(buf), "%s = dihedral(%i, %i, %i, %i);", ident, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1);
                     if (ImGui::MenuItem(buf)) {
-                        data->script.editor.AppendText("\n");
-                        data->script.editor.AppendText(buf);
+                        editor.AppendText("\n");
+                        editor.AppendText(buf);
                         ImGui::CloseCurrentPopup();
                     }
 
@@ -2960,16 +2955,16 @@ void draw_context_popup(ApplicationData* data) {
 
                         snprintf(buf, sizeof(buf), "%s = dihedral(%i, %i, %i, %i) in residue(%i);", ident, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, res_idx+1);
                         if (ImGui::MenuItem(buf)) {
-                            data->script.editor.AppendText("\n");
-                            data->script.editor.AppendText(buf);
+                            editor.AppendText("\n");
+                            editor.AppendText(buf);
                             ImGui::CloseCurrentPopup();
                         }
 
                         int32_t resid = data->mold.mol.residue.id[idx[0]];
                         snprintf(buf, sizeof(buf), "%s = dihedral(%i, %i, %i, %i) in resid(%i);", ident, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, resid);
                         if (ImGui::MenuItem(buf)) {
-                            data->script.editor.AppendText("\n");
-                            data->script.editor.AppendText(buf);
+                            editor.AppendText("\n");
+                            editor.AppendText(buf);
                             ImGui::CloseCurrentPopup();
                         }
 
@@ -2977,8 +2972,8 @@ void draw_context_popup(ApplicationData* data) {
                         if (resname) {
                             snprintf(buf, sizeof(buf), "%s = dihedral(%i, %i, %i, %i) in resname(\"%.*s\");", ident, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, (int)resname.len, resname.ptr);
                             if (ImGui::MenuItem(buf)) {
-                                data->script.editor.AppendText("\n");
-                                data->script.editor.AppendText(buf);
+                                editor.AppendText("\n");
+                                editor.AppendText(buf);
                                 ImGui::CloseCurrentPopup();
                             }
                         }
@@ -5388,9 +5383,7 @@ static void draw_debug_window(ApplicationData* data) {
 static void draw_script_editor_window(ApplicationData* data) {
     ASSERT(data);
 
-    TextEditor& editor = data->script.editor;
-
-    if (ImGui::Begin("Script Editor", &data->script.show_editor, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_MenuBar)) {
+    if (ImGui::Begin("Script Editor", &data->show_script_window, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_MenuBar)) {
         ImGui::SetWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
         if (ImGui::BeginMenuBar())
         {
@@ -6774,8 +6767,7 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
                 const char* end = str_find_str(*buf, token).ptr;
                 if (end) {
                     std::string str(beg, end - beg);
-                    ApplicationData* data = (ApplicationData*)ptr;
-                    data->script.editor.SetText(str);
+                    editor.SetText(str);
                     // Set buf pointer to after token
                     const char* pos = end + token.len;
                     buf->len = buf->end() - pos;
@@ -6842,7 +6834,7 @@ static void load_workspace(ApplicationData* data, str_t filename) {
 
     // Reset and clear things
     clear_representations(data);
-    data->script.editor.SetText("");
+    editor.SetText("");
 
     data->animation = {};
     reset_view(data, false, true);
@@ -6986,8 +6978,7 @@ static void write_entry(FILE* file, SerializationObject target, const void* ptr,
     }
     case SerializationType_Script:
     {
-        ApplicationData* data = (ApplicationData*)ptr;
-        std::string str = data->script.editor.GetText();
+        std::string str = editor.GetText();
         fprintf(file, "\"\"\"%s\"\"\"\n", str.c_str());
         break;
     }
