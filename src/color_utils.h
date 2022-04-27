@@ -1,19 +1,10 @@
 #pragma once
 
-//#include <core/types.h>
-//#include <core/array_types.h>
-//#include <core/bitfield.h>
-//#include <core/math_utils.h>
-
-//#include <md_molecule.h>
-
 #include <core/md_vec_math.h>
 #include <core/md_bitfield.h>
 #include <md_molecule.h>
 
 #include <math.h>
-
-#include "image.h"
 
 // http://lolengine.net/blog/2013/07/27/rgb-to-hsv-in-glsl
 
@@ -184,8 +175,6 @@ void color_atoms_residue_index(uint32_t* colors, int64_t count, const md_molecul
 void color_atoms_chain_id(uint32_t* colors, int64_t count, const md_molecule_t& mol);
 void color_atoms_chain_index(uint32_t* colors, int64_t count, const md_molecule_t& mol);
 void color_atoms_secondary_structure(uint32_t* colors, int64_t count, const md_molecule_t& mol);
-
-void color_atoms_backbone_angles(uint32_t* colors, int64_t count, const md_molecule_t& mol, const image_t& ramachandran_color_map);
 
 void filter_colors(uint32_t* colors, int64_t num_colors, const md_bitfield_t* mask);
 void desaturate_colors(uint32_t* colors, const md_bitfield_t* mask, float scale);

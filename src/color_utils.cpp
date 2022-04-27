@@ -81,7 +81,7 @@ void color_atoms_cpk(uint32_t* colors, int64_t count, const md_molecule_t& mol) 
     }
 }
 
-void color_atoms_idx(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
+void color_atoms_idx(uint32_t* colors, int64_t count, const md_molecule_t&) {
     for (int i = 0; i < (int)count; ++i) {
         colors[i] = convert_color(color_from_hash(crc32((char*)&i, sizeof(i))));
     }
@@ -137,46 +137,6 @@ void color_atoms_secondary_structure(uint32_t* colors, int64_t count, const md_m
             set_colors(colors + mol.residue.atom_range[res_idx].beg, mol.residue.atom_range[res_idx].end - mol.residue.atom_range[res_idx].beg, convert_color(color));
         }
     }
-}
-
-inline uint32_t lerp_pixel(const image_t& color_map, vec2_t coords) {
-    const int x0 = CLAMP((int32_t)(coords.x * color_map.width),  0, color_map.width - 1);
-    const int y0 = CLAMP((int32_t)(coords.y * color_map.height), 0, color_map.height - 1);
-    const int x1 = MIN(x0 + 1, color_map.width - 1);
-    const int y1 = MIN(y0 + 1, color_map.height - 1);
-    const vec2_t t = vec2_fract(coords);
-    const vec4_t cx0 = vec4_lerp(convert_color(color_map.data[y0 * color_map.width + x0]),
-                               convert_color(color_map.data[y0 * color_map.width + x1]), t.x);
-    const vec4_t cx1 = vec4_lerp(convert_color(color_map.data[y1 * color_map.width + x0]),
-                               convert_color(color_map.data[y1 * color_map.width + x1]), t.x);
-    return convert_color(vec4_lerp(cx0, cx1, t.y));
-}
-
-void color_atoms_backbone_angles(uint32_t* colors, int64_t count, const md_molecule_t& mol, const image_t& color_map) {
-    set_colors(colors, count, 0xFFFFFFFFU);
-
-    if (color_map.width == 0 || color_map.height == 0) return;
-    const float one_over_two_pi = 1.f / (2.f * 3.1415926535f);
-
-    for (int64_t i = 0; i < mol.backbone.count; ++i) {
-        const vec2_t angle = { mol.backbone.angle[i].phi, mol.backbone.angle[i].psi };
-        const vec2_t coord = vec2_t{0, 1} + vec2_t{1, -1} * (angle * one_over_two_pi + 0.5f);
-        const uint32_t color = lerp_pixel(color_map, coord);
-        const md_residue_idx_t res_idx = mol.backbone.residue_idx[i];
-        set_colors(colors + mol.residue.atom_range[res_idx].beg, mol.residue.atom_range[res_idx].end - mol.residue.atom_range[res_idx].beg, color);
-    }
-
-    /*
-    // Do first and last segment explicitly since it lacks adjacent [prev/next] amino acid to properly compute phi and psi.
-    {
-        const uint32_t color = dst_atom_colors[mol.residue.atom_range[seq.beg + 1].beg];
-        memset_array(dst_atom_colors, color, mol.residue.atom_range[seq.beg]);
-    }
-    {
-        const uint32_t color = dst_atom_colors[mol.residue.atom_range[seq.end - 2].beg];  // copy color from previous residue
-        memset_array(dst_atom_colors, color, mol.residue.atom_range[seq.end - 1]);
-    }
-    */
 }
 
 void filter_colors(uint32_t* colors, int64_t num_colors, const md_bitfield_t* mask) {

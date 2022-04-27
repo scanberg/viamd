@@ -3288,7 +3288,7 @@ const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::VIAMD()
 	if (!inited)
 	{
 		static const char* const keywords[] = {
-			"and", "or", "not", "in"
+			"and", "or", "not", "in", "out"
 		};
 		for (auto& k : keywords)
 			langDef.mKeywords.insert(k);

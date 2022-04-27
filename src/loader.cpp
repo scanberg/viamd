@@ -145,6 +145,10 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
 
         if (result) {
             bool have_box = (frame_data->header.box[0][0] + frame_data->header.box[1][1] + frame_data->header.box[2][2]) > 0;
+            vec3_t box_ext = {0,0,0};
+            if (have_box) {
+                box_ext = {frame_data->header.box[0][0], frame_data->header.box[1][1], frame_data->header.box[2][2]};
+            }
 
             // If we have a recenter target, then compute and apply that transformation
             if (!md_bitfield_empty(&loaded_traj->recenter_target)) {
@@ -174,19 +178,15 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
 
                     // Compute deperiodized com for substructure
                     vec3_t com;
-                    if (have_box)
-                        com = md_util_compute_periodic_com(tmp_x, tmp_y, tmp_z, tmp_w, count, frame_data->header.box);
+                    if (have_box) {
+                        com = md_util_compute_com_periodic(tmp_x, tmp_y, tmp_z, tmp_w, count, box_ext);
+                    }
                     else {
                         com = md_util_compute_com(tmp_x, tmp_y, tmp_z, tmp_w, count);
                     }
 
-                    vec3_t ext = {0,0,0};
-                    if (have_box) {
-                        ext = {frame_data->header.box[0][0], frame_data->header.box[1][1], frame_data->header.box[2][2]};
-                    }
-
                     // Translate all
-                    vec3_t trans = ext * 0.5f - com;
+                    vec3_t trans = box_ext * 0.5f - com;
                     for (int64_t i = 0; i < frame_data->header.num_atoms; ++i) {
                         frame_data->x[i] += trans.x;
                         frame_data->y[i] += trans.y;
@@ -199,25 +199,11 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
 
             // Deperiodize
             if (have_box) {
-                const md_molecule_t& mol = *loaded_traj->mol;
-                md_util_apply_pbc_args_t args = {
-                    .atom = {
-                        .count = mol.atom.count,
-                        .x = frame_data->x,
-                        .y = frame_data->y,
-                        .z = frame_data->z,
-                    },
-                    .residue = {
-                            .count = mol.residue.count,
-                            .atom_range = mol.residue.atom_range,
-                    },
-                    .chain = {
-                            .count = mol.chain.count,
-                            .residue_range = mol.chain.residue_range,
-                    }
-                };
-                memcpy(args.pbc.box, frame_data->header.box, sizeof(args.pbc.box));
-                md_util_apply_pbc(frame_data->x, frame_data->y, frame_data->z, mol.atom.count, args);
+                md_molecule_t mol = *loaded_traj->mol;
+                mol.atom.x = frame_data->x;
+                mol.atom.y = frame_data->y;
+                mol.atom.z = frame_data->z;
+                md_util_apply_pbc(&mol, box_ext);
             }
         }
 

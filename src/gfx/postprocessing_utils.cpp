@@ -389,13 +389,10 @@ void initialize_rnd_tex(GLuint rnd_tex) {
     constexpr int buffer_size = AO_RANDOM_TEX_SIZE * AO_RANDOM_TEX_SIZE;
     signed short buffer[buffer_size * 4];
 
-    vec2_t rnd_vals[buffer_size];
-    generate_halton_sequence(rnd_vals, buffer_size, 2, 3);
-
     for (int i = 0; i < buffer_size; i++) {
 #define SCALE ((1 << 15))
-        float rand1 = rnd_vals[i].x;
-        float rand2 = rnd_vals[i].y;
+        float rand1 = halton(i + 1, 2);
+        float rand2 = halton(i + 1, 3);
         float angle = 2.f * 3.1415926535f * rand1;
 
         buffer[i * 4 + 0] = (signed short)(SCALE * cosf(angle));

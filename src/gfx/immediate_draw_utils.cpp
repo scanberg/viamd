@@ -67,7 +67,7 @@ out vec4 color;
 
 void main() {
 	gl_Position = u_mvp_matrix * vec4(in_position, 1);
-    gl_PointSize = max(u_point_size, 400.f / gl_Position.w);
+    gl_PointSize = max(u_point_size, 200.f / gl_Position.w);
 	normal = u_normal_matrix * in_normal;
 	uv = in_uv * u_uv_scale;
 	color = in_color;
@@ -231,7 +231,7 @@ void render() {
     glUseProgram(program);
     glLineWidth(1.f);
 
-    glUniform1f(uniform_loc_point_size, 4.f);
+    glUniform1f(uniform_loc_point_size, 1.f);
 
     int current_view_matrix_idx = -999;
     int current_proj_matrix_idx = -999;

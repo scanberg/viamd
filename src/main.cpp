@@ -53,6 +53,7 @@
 #include "task_system.h"
 #include "loader.h"
 #include "ramachandran.h"
+#include "image.h"
 
 #include <stdio.h>
 
@@ -552,7 +553,7 @@ struct ApplicationData {
             vec3_t max = {1, 1, 1};
         } clip_volume;
 
-        vec3_t voxel_spacing{1.0f};
+        vec3_t voxel_spacing = {1.0f, 1.0f, 1.0f};
         float resolution_scale = 2.0f;
 
         vec4_t clip_volume_color = {1,0,0,1};
@@ -730,6 +731,12 @@ struct ApplicationData {
             uint64_t fingerprint = 0;
         } backbone_angles;
     } trajectory_data;
+
+    struct {
+        vec4_t point_color      = {1,1,1,1};
+        vec4_t line_color       = {0,1,1,1};
+        vec4_t triangle_color   = {1,1,0,0.7};
+    } script;
 
     bool show_script_window = true;
     bool show_debug_window = false;
@@ -1061,7 +1068,10 @@ int main(int, char**) {
     md_print(MD_LOG_TYPE_INFO, "Creating framebuffer...");
     init_gbuffer(&data.gbuffer, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
 
-    generate_halton_sequence(data.view.jitter.sequence, ARRAY_SIZE(data.view.jitter.sequence), 2, 3);
+    for (int i = 0; i < ARRAY_SIZE(data.view.jitter.sequence); ++i) {
+        data.view.jitter.sequence[i].x = halton(i + 1, 2);
+        data.view.jitter.sequence[i].y = halton(i + 1, 3);
+    }
 
     // Init subsystems
     md_print(MD_LOG_TYPE_INFO, "Initializing immediate draw...");
@@ -1270,24 +1280,7 @@ int main(int, char**) {
                 interpolate_atomic_properties(&data);
 
                 if (data.animation.apply_pbc) {
-                    md_util_apply_pbc_args_t args = {
-                        .atom = {
-                            .count = mol.atom.count,
-                            .x = mol.atom.x,
-                            .y = mol.atom.y,
-                            .z = mol.atom.z,
-                        },
-                        .residue = {
-                            .count = mol.residue.count,
-                            .atom_range = mol.residue.atom_range,
-                        },
-                        .chain = {
-                            .count = mol.chain.count,
-                            .residue_range = mol.chain.residue_range,
-                        },
-                    };
-                    memcpy(args.pbc.box, &data.simulation_box.box, sizeof(args.pbc.box));
-                    md_util_apply_pbc(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, args);
+                    md_util_apply_pbc(&mol, data.simulation_box.box * vec3_t {1,1,1});
                 }
 
 #if EXPERIMENTAL_CONE_TRACED_AO
@@ -1762,6 +1755,7 @@ static void update_density_volume(ApplicationData* data) {
                     vec3_t min_aabb = { -s, -s, -s };
                     vec3_t max_aabb = { s, s, s };
                     data->density_volume.model_mat = volume::compute_model_to_world_matrix(min_aabb, max_aabb);
+                    data->density_volume.voxel_spacing = vec3_t{2*s / prop->data.dim[0], 2*s / prop->data.dim[1], 2*s / prop->data.dim[2]};
                 }
                 num_reps = vis.sdf.count;
             }
@@ -2359,7 +2353,7 @@ static void grow_mask_by_current_selection_granularity(md_bitfield_t* mask, cons
         expand_mask(mask, data.mold.mol.residue.atom_range, data.mold.mol.residue.count);
         break;
     case SelectionLevel::Chain:
-        expand_mask(mask, data.mold.mol.chain.atom_range, data.mold.mol.residue.count);
+        expand_mask(mask, data.mold.mol.chain.atom_range, data.mold.mol.chain.count);
         break;
     default:
         ASSERT(false);
@@ -2796,24 +2790,7 @@ void apply_atom_elem_mappings(ApplicationData* data) {
         }
     }
 
-    auto& mol = data->mold.mol;
-    md_util_covalent_bond_args_t args = {
-        .atom = {
-            .count = mol.atom.count,
-            .x = mol.atom.x,
-            .y = mol.atom.y,
-            .z = mol.atom.z,
-            .element = mol.atom.element,
-        },
-        .residue = {
-            .count = mol.residue.count,
-            .atom_range = mol.residue.atom_range,
-            .internal_bond_range = mol.residue.internal_covalent_bond_range,
-            .complete_bond_range = mol.residue.complete_covalent_bond_range,
-        }
-    };
-    mol.covalent_bond.bond = md_util_extract_covalent_bonds(&args, persistent_allocator);
-    mol.covalent_bond.count = md_array_size(mol.covalent_bond.bond);
+    md_util_extract_covalent_bonds(&data->mold.mol, persistent_allocator);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
     update_all_representations(data);
@@ -2997,7 +2974,7 @@ void draw_context_popup(ApplicationData* data) {
                     ImGui::Text("Current Element: %.*s (%.*s)", (int)name.len, name.ptr, (int)sym.len, sym.ptr);
 
                     str_t elem_str = {input_buf, (int64_t)strnlen(input_buf, sizeof(input_buf))};
-                    md_element_t new_elem = md_util_lookup_element(elem_str);
+                    md_element_t new_elem = md_util_element_lookup(elem_str);
                     const bool is_valid = new_elem != 0;
 
                     ImGui::InputQuery("##Symbol", input_buf, sizeof(input_buf), is_valid, "Cannot recognize Element symbol");
@@ -3377,7 +3354,10 @@ static void draw_representations_window(ApplicationData* data) {
                 ImGui::Checkbox("auto-update", &rep.dynamic_evaluation);
                 if (!rep.dynamic_evaluation) {
                     ImGui::SameLine();
-                    if (ImGui::Button("update")) update_rep = true;
+                    if (ImGui::Button("update")) {
+                        rep.filt_is_dirty = true;
+                        update_rep = true;
+                    }
                 }
             } else {
                 rep.dynamic_evaluation = false;
@@ -3424,6 +3404,7 @@ static void draw_atom_info_window(const ApplicationData& data, int atom_idx) {
     str_t label = mol.atom.name[atom_idx];
     str_t elem = md_util_element_name(mol.atom.element[atom_idx]);
     str_t symbol = md_util_element_symbol(mol.atom.element[atom_idx]);
+    int valence = mol.atom.valence[atom_idx];
 
     int chain_idx = -1;
     str_t chain_id = {};
@@ -3440,12 +3421,13 @@ static void draw_atom_info_window(const ApplicationData& data, int atom_idx) {
     atom_idx += 1;
     local_idx += 1;
 
-    char buff[256];
+    char buf[256];
     int len = 0;
-    len += snprintf(buff, ARRAY_SIZE(buff) - 1, "atom[%i][%i]: %.*s %.*s %.*s (%.2f, %.2f, %.2f)\n", atom_idx, local_idx, (int)label.len, label.ptr, (int)elem.len, elem.ptr, (int)symbol.len, symbol.ptr, pos.x, pos.y, pos.z);
-    len += snprintf(buff + len, ARRAY_SIZE(buff) - 1 - len, "res[%i]: %.*s %i\n", res_idx, (int)res_name.len, res_name.ptr, res_id);
+    len += snprintf(buf, sizeof(buf), "atom[%i][%i]: %.*s %.*s %.*s (%.2f, %.2f, %.2f)\n", atom_idx, local_idx, (int)label.len, label.ptr, (int)elem.len, elem.ptr, (int)symbol.len, symbol.ptr, pos.x, pos.y, pos.z);
+    len += snprintf(buf + len, sizeof(buf) - len, "covalent-valence: %i\n", valence);
+    len += snprintf(buf + len, sizeof(buf) - len, "res[%i]: %.*s %i\n", res_idx, (int)res_name.len, res_name.ptr, res_id);
     if (chain_idx) {
-        len += snprintf(buff + len, ARRAY_SIZE(buff) - 1 - len, "chain[%i]: %.*s\n", chain_idx, (int)chain_id.len, chain_id.ptr);
+        len += snprintf(buf + len, sizeof(buf) - len, "chain[%i]: %.*s\n", chain_idx, (int)chain_id.len, chain_id.ptr);
     }
 
     /*
@@ -3461,7 +3443,7 @@ static void draw_atom_info_window(const ApplicationData& data, int atom_idx) {
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
     ImGui::Begin("##Atom Info", 0,
                  ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDocking);
-    ImGui::Text("%s", buff);
+    ImGui::Text("%s", buf);
     ImGui::End();
     ImGui::PopStyleColor();
 
@@ -5458,6 +5440,13 @@ static void draw_script_editor_window(ApplicationData* data) {
             if (ImGui::MenuItem("Export")) {
                 data->show_property_export_window = true;
             }
+            if (ImGui::BeginMenu("Settings")) {
+                ImGui::ColorPicker4("Point Color",      data->script.point_color.elem);
+                ImGui::ColorPicker4("Line Color",       data->script.line_color.elem);
+                ImGui::ColorPicker4("Triangle Color",   data->script.triangle_color.elem);
+
+                ImGui::EndMenu();
+            }
 
             ImGui::EndMenuBar();
         }
@@ -5736,7 +5725,7 @@ static void draw_property_export_window(ApplicationData* data) {
             } else if (type == Distribution) {
                 for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
                     const DisplayProperty& dp = data->display_properties[i];
-                    if (dp.full_prop->flags == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
+                    if (dp.full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                         ColData prop_data = {dp.lbl.cstr(), dp.full_hist.bin, ARRAY_SIZE(dp.full_hist.bin), 1};
                         md_array_push(col_data, prop_data, frame_allocator);
                         if (data->timeline.filter.enabled) {
@@ -5852,7 +5841,7 @@ static void draw_property_export_window(ApplicationData* data) {
             const DisplayProperty** props = 0;
 
             for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
-                if (data->display_properties[i].full_prop->flags == MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
+                if (data->display_properties[i].full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
                     md_array_push(props, &data->display_properties[i], frame_allocator);
                 }
             }
@@ -6158,53 +6147,22 @@ static void init_trajectory_data(ApplicationData* data) {
             task_system::task_interrupt_and_wait_for(data->tasks.backbone_computations);
 
             data->tasks.backbone_computations = task_system::pool_enqueue("Backbone Operations", (uint32_t)num_frames, [data](uint32_t range_beg, uint32_t range_end) {
-                const auto& mol = data->mold.mol;
+                // Create copy here of molecule since we use the full structure as input
+                md_molecule_t mol = data->mold.mol;
+
                 const int64_t stride = ROUND_UP(mol.atom.count, md_simd_widthf);
                 const int64_t bytes = stride * sizeof(float) * 3;
-                float* coords = (float*)md_alloc(persistent_allocator, bytes);
-                defer { md_free(persistent_allocator, coords, bytes); };
-                float* x = coords + stride * 0;
-                float* y = coords + stride * 1;
-                float* z = coords + stride * 2;
+                float* coords = (float*)md_alloc(default_allocator, bytes);
+                defer { md_free(default_allocator, coords, bytes); };
+                // Overwrite the coordinate section, since we will load trajectory frame data into these
+                mol.atom.x = coords + stride * 0;
+                mol.atom.y = coords + stride * 1;
+                mol.atom.z = coords + stride * 2;
 
                 for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
-                    md_trajectory_load_frame(data->mold.traj, frame_idx, NULL, x, y, z);
-
-                    md_util_backbone_angle_args_t bb_args = {
-                        .atom = {
-                            .count = mol.atom.count,
-                            .x = x,
-                            .y = y,
-                            .z = z,
-                        },
-                        .backbone = {
-                            .count = mol.backbone.count,
-                            .atoms = mol.backbone.atoms,
-                        },
-                        .chain = {
-                            .count = mol.chain.count,
-                            .backbone_range = mol.chain.backbone_range,
-                        }
-                    };
-                    md_util_backbone_angles_compute(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &bb_args);
-
-                    md_util_secondary_structure_args_t ss_args = {
-                        .atom = {
-                            .count = data->mold.mol.atom.count,
-                            .x = x,
-                            .y = y,
-                            .z = z,
-                        },
-                        .backbone = {
-                            .count = mol.backbone.count,
-                            .atoms = mol.backbone.atoms,
-                        },
-                        .chain = {
-                            .count = data->mold.mol.chain.count,
-                            .backbone_range = data->mold.mol.chain.backbone_range,
-                        }
-                    };
-                    md_util_backbone_secondary_structure_compute(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &ss_args);
+                    md_trajectory_load_frame(data->mold.traj, frame_idx, NULL, mol.atom.x, mol.atom.y, mol.atom.z);
+                    md_util_backbone_angles_compute(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &mol);
+                    md_util_backbone_secondary_structure_compute(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &mol);
                 }
             });
 
@@ -7252,6 +7210,10 @@ static void update_representation(ApplicationData* data, Representation* rep) {
             break;
     }
 
+    if (rep->dynamic_evaluation) {
+        rep->filt_is_dirty = true;
+    }
+
     if (rep->filt_is_dirty) {
         rep->filt_is_valid = filter_expression(data, rep->filt, &rep->atom_mask, &rep->filt_is_dynamic, rep->filt_error.beg(), rep->filt_error.capacity());
         rep->filt_is_dirty = false;
@@ -7730,22 +7692,26 @@ static void fill_gbuffer(ApplicationData* data) {
     const md_script_visualization_t& vis = data->mold.script.vis;
     const vec3_t* vertices = (const vec3_t*)vis.vertex.pos;
 
-    for (int64_t i = 0; i < vis.point.count; ++i) {
-        ASSERT(vis.point.idx);
-        uint16_t idx = vis.point.idx[i];
-        immediate::draw_point(vertices[idx]);
+    const uint32_t point_color      = convert_color(data->script.point_color);
+    const uint32_t line_color       = convert_color(data->script.line_color);
+    const uint32_t triangle_color   = convert_color(data->script.triangle_color);
+
+    for (int64_t i = 0; i < vis.triangle.count; ++i) {
+        ASSERT(vis.triangle.idx);
+        uint16_t idx[3] = { vis.triangle.idx[i * 3 + 0], vis.triangle.idx[i * 3 + 1], vis.triangle.idx[i * 3 + 2] };
+        immediate::draw_triangle(vertices[idx[0]], vertices[idx[1]], vertices[idx[2]], triangle_color);
     }
 
     for (int64_t i = 0; i < vis.line.count; ++i) {
         ASSERT(vis.line.idx);
         uint16_t idx[2] = { vis.line.idx[i * 2 + 0], vis.line.idx[i * 2 + 1] };
-        immediate::draw_line(vertices[idx[0]], vertices[idx[1]], immediate::COLOR_CYAN);
+        immediate::draw_line(vertices[idx[0]], vertices[idx[1]], line_color);
     }
 
-    for (int64_t i = 0; i < vis.triangle.count; ++i) {
-        ASSERT(vis.triangle.idx);
-        uint16_t idx[3] = { vis.triangle.idx[i * 3 + 0], vis.triangle.idx[i * 3 + 1], vis.triangle.idx[i * 3 + 2] };
-        immediate::draw_triangle(vertices[idx[0]], vertices[idx[1]], vertices[idx[2]], immediate::COLOR_CYAN);
+    for (int64_t i = 0; i < vis.point.count; ++i) {
+        ASSERT(vis.point.idx);
+        uint16_t idx = vis.point.idx[i];
+        immediate::draw_point(vertices[idx], point_color);
     }
     immediate::render();
 
