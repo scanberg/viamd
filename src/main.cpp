@@ -1122,7 +1122,7 @@ int main(int, char**) {
     bool time_changed = true;
     bool time_stopped = true;
 
-    //bool demo_window = true;
+    bool demo_window = true;
 
     // Main loop
     while (!data.ctx.window.should_close) {
@@ -1153,7 +1153,7 @@ int main(int, char**) {
 
         data.selection.selecting = false;
 
-        //if (demo_window) ImGui::ShowDemoWindow(&demo_window);
+        if (demo_window) ImGui::ShowDemoWindow(&demo_window);
 
         handle_camera_interaction(&data);
         handle_camera_animation(&data);
@@ -4454,9 +4454,9 @@ static void draw_ramachandran_window(ApplicationData* data) {
             Colormap,
         };
 
-        constexpr const char* plot_labels[4] = {"General", "Glycine", "Proline", "Pre-Proline"};
-        constexpr const char* headers[3] = { "Reference", "Full Trajectory", "Filtered Trajectory" };
-        constexpr const char* option_label[3] = { "IsoLevels", "IsoLines", "Colormap" };
+        constexpr const char* plot_labels[4] = {"##General", "##Glycine", "##Proline", "##Pre-Proline"};
+        constexpr const char* layer_labels[3] = { "Reference", "Full Trajectory", "Filtered Trajectory" };
+        constexpr const char* option_labels[3] = { "IsoLevels", "IsoLines", "Colormap" };
 
         constexpr const float min_ext = -180.0f;
         constexpr const float max_ext = 180.0f;
@@ -4481,6 +4481,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
         static vec4_t isoline_colors[3]   = { {1,1,1,1}, {1,1,1,1}, {1,1,1,1} };
 
         static int layout_mode = 0;
+        static bool show_layer[4] = {true, true, true, true};
 
         static ImPlotRect viewrect = ImPlotRect(min_ext, max_ext, min_ext, max_ext);
         if (viewrect.Size().x < 1) {
@@ -4491,28 +4492,35 @@ static void draw_ramachandran_window(ApplicationData* data) {
         }
 
         if (ImGui::BeginMenuBar()) {
-            if (ImGui::BeginMenu("Display")) {
-                ImGui::Text("Current");
-                ImGui::SliderFloat("##Size", &data->ramachandran.style.base_radius, 1.0f, 10.0f);
-                ImGui::SameLine();
-                ImGui::ColorEdit4Minimal("##Color", data->ramachandran.style.base_color.elem);
+            if (ImGui::BeginMenu("Layers")) {
+
                 ImGui::Separator();
                 ImGui::Text("Layers");
                 for (int i = 0; i < 3; ++i) {
-                    ImGui::PushID(i);
-                    if (ImGui::BeginCombo(headers[i], option_label[display_mode[i]])) {
-                        if (ImGui::Selectable(option_label[IsoLevels], display_mode[i] == IsoLevels)) display_mode[i] = IsoLevels;
-                        if (ImGui::Selectable(option_label[IsoLines],  display_mode[i] == IsoLines))  display_mode[i] = IsoLines;
-                        if (ImGui::Selectable(option_label[Colormap],  display_mode[i] == Colormap))  display_mode[i] = Colormap;
-                        ImGui::EndCombo();
+                    ImGui::Checkbox(layer_labels[i], &show_layer[i]);
+                    if (show_layer[i]) {
+                        ImGui::PushID(i);
+                        if (ImGui::BeginCombo(layer_labels[i], option_labels[display_mode[i]])) {
+                            if (ImGui::Selectable(option_labels[IsoLevels], display_mode[i] == IsoLevels)) display_mode[i] = IsoLevels;
+                            if (ImGui::Selectable(option_labels[IsoLines],  display_mode[i] == IsoLines))  display_mode[i] = IsoLines;
+                            if (ImGui::Selectable(option_labels[Colormap],  display_mode[i] == Colormap))  display_mode[i] = Colormap;
+                            ImGui::EndCombo();
+                        }
+                        if (display_mode[i] == Colormap) {
+                            ImPlot::ColorMapSelection("Color Map", &colormap[i]);
+                        } else if (display_mode[i] == IsoLines) {
+                            ImGui::ColorEdit4Minimal("Line Color", isoline_colors[i].elem);
+                        }
+                        ImGui::PopID();
                     }
-                    if (display_mode[i] == Colormap) {
-                        ImPlot::ColorMapSelection("##Colormap", &colormap[i]);
-                    } else if (display_mode[i] == IsoLines) {
-                        ImGui::ColorEdit4Minimal("##IsoLineColor", isoline_colors[i].elem);
-                    }
-                    ImGui::PopID();
+                    ImGui::Separator();
                 }
+                ImGui::Checkbox("Current", &show_layer[3]);
+                if (show_layer[3]) {
+                    ImGui::SliderFloat("Point Size", &data->ramachandran.style.base_radius, 1.0f, 10.0f);
+                    ImGui::ColorEdit4Minimal("Point Color", data->ramachandran.style.base_color.elem);
+                }
+                ImGui::Separator();
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("View")) {
@@ -4569,17 +4577,21 @@ static void draw_ramachandran_window(ApplicationData* data) {
                     ImPlot::PopStyleColor(2);
                     ImPlot::PopStyleVar();
 
-                    ImPlot::PlotDummy("Reference");
-                    ImPlot::PlotDummy("Full");
-                    ImPlot::PlotDummy("Filtered");
-                    ImPlot::PlotDummy("Current");
+                    //ImPlot::PlotDummy("Reference");
+                    //ImPlot::PlotDummy("Full");
+                    //ImPlot::PlotDummy("Filtered");
+                    //ImPlot::PlotDummy("Current");
 
-                    ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(3)->Color = 0xFFFFFFFF;
+                    //ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(3)->Color = 0xFFFFFFFF;
 
-                    bool show_ref  = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(0)->Show;
-                    bool show_full = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(1)->Show;
-                    bool show_filt = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(2)->Show;
-                    bool show_curr = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(3)->Show;
+                    //bool show_ref  = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(0)->Show;
+                    //bool show_full = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(1)->Show;
+                    //bool show_filt = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(2)->Show;
+                    //bool show_curr = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(3)->Show;
+                    const bool show_ref  = show_layer[0];
+                    const bool show_full = show_layer[1];
+                    const bool show_filt = show_layer[2];
+                    const bool show_curr = show_layer[3];
 
                     ImVec2 plot_min = ImPlot::PlotToPixels(viewrect.Min());
                     ImVec2 plot_max = ImPlot::PlotToPixels(viewrect.Max());
@@ -4722,7 +4734,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
                         ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1));
                         if (md_array_size(indices) > 0) {
                             UserData user_data = { (const vec2_t*)(mol.backbone.angle), indices, view_mid };
-                            ImPlot::PlotScatterG("Current", index_getter, &user_data, (int)md_array_size(indices));
+                            ImPlot::PlotScatterG("##Current", index_getter, &user_data, (int)md_array_size(indices));
                         }
 
                         if (md_array_size(selection_indices) > 0) {
@@ -5396,6 +5408,9 @@ static void draw_script_editor_window(ApplicationData* data) {
                         }
                     }
                 }
+                if (ImGui::MenuItem("Export")) {
+                    data->show_property_export_window = true;
+                }
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Edit")) {
@@ -5427,23 +5442,17 @@ static void draw_script_editor_window(ApplicationData* data) {
 
                 ImGui::EndMenu();
             }
-
-            if (ImGui::BeginMenu("View")) {
+            if (ImGui::BeginMenu("Settings")) {
                 if (ImGui::MenuItem("Dark palette"))
                     editor.SetPalette(TextEditor::GetDarkPalette());
                 if (ImGui::MenuItem("Light palette"))
                     editor.SetPalette(TextEditor::GetLightPalette());
                 if (ImGui::MenuItem("Retro blue palette"))
                     editor.SetPalette(TextEditor::GetRetroBluePalette());
-                ImGui::EndMenu();
-            }
-            if (ImGui::MenuItem("Export")) {
-                data->show_property_export_window = true;
-            }
-            if (ImGui::BeginMenu("Settings")) {
-                ImGui::ColorPicker4("Point Color",      data->script.point_color.elem);
-                ImGui::ColorPicker4("Line Color",       data->script.line_color.elem);
-                ImGui::ColorPicker4("Triangle Color",   data->script.triangle_color.elem);
+                ImGui::Separator();
+                ImGui::ColorEdit4("Point Color",      data->script.point_color.elem);
+                ImGui::ColorEdit4("Line Color",       data->script.line_color.elem);
+                ImGui::ColorEdit4("Triangle Color",   data->script.triangle_color.elem);
 
                 ImGui::EndMenu();
             }
