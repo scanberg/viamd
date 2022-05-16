@@ -15,7 +15,7 @@ Visual Interactive Analysis of Molecular Dynamics
 
 (Make sure the fetch the submodules as well)
 
-```git clone --recurse-submodules git@github.com:scanberg/viamd.git```
+```git clone --recurse-submodules https://github.com/scanberg/viamd.git```
 
 ### (Step 1.5: Install dependencies of external libs:) (Only for linux users)
 #### glfw
@@ -36,8 +36,13 @@ Example for Ubuntu:
 https://cmake.org/
 
 ### Step 3: Build!
+mkdir build
+cd build/
+cmake ../
+make
 
 ### Step 4: Run
+./viamd 
 
 ## Binaries
 New version comming soon. The aim is to provide this for Windows x64 and Linux x64 (Tested on Ubuntu).
