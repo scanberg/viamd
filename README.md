@@ -36,13 +36,13 @@ Example for Ubuntu:
 https://cmake.org/
 
 ### Step 3: Build!
-mkdir build
-cd build/
-cmake ../
-make
+- mkdir build
+- cd build/
+- cmake ../
+- make
 
 ### Step 4: Run
-./viamd 
+- ./viamd 
 
 ## Binaries
 New version comming soon. The aim is to provide this for Windows x64 and Linux x64 (Tested on Ubuntu).
