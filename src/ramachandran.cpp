@@ -5,6 +5,11 @@
 #include "ramachandran/density_pro.inl"
 #include "ramachandran/density_pre.inl"
 
+#include "ramachandran/angles_gen.inl"
+#include "ramachandran/angles_gly.inl"
+#include "ramachandran/angles_pro.inl"
+#include "ramachandran/angles_pre.inl"
+
 #include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_log.h>
@@ -218,29 +223,25 @@ double bspline(double p0, double p1, double p2, double p3, double s) {
 }
 
 static inline double sample_map(const double map[180][180], int x, int y) {
-    x += ((int)(x < 0) - (int)(x > 179)) * 180;
-    y += ((int)(y < 0) - (int)(y > 179)) * 180;
     return map[x][y];
 }
 
 static inline double lerp_sample(const double map[180][180], double x, double y) {
-    int i_x[2] = { (int)x, (int)x + 1};
-    int i_y[2] = { (int)y, (int)y + 1};
+    const int i_x[2] = { ((int)x % 180), ((int)x + 1) % 180};
+    const int i_y[2] = { (int)y % 180, ((int)y + 1) % 180};
 
-    double t_x = x - (int)x;
-    double t_y = y - (int)y;
+    const double t_x = x - (int)x;
+    const double t_y = y - (int)y;
 
-    double dy[2] = {
+    return lerp(
         lerp(sample_map(map, i_x[0], i_y[0]), sample_map(map, i_x[1], i_y[0]), t_x),
-        lerp(sample_map(map, i_x[0], i_y[1]), sample_map(map, i_x[1], i_y[1]), t_x)
-    };
-
-    return lerp (dy[0], dy[1], t_y);
+        lerp(sample_map(map, i_x[0], i_y[1]), sample_map(map, i_x[1], i_y[1]), t_x),
+        t_y);
 }
 
 static inline double linear_sample_map(const double map[180][180], double x, double y) {
-    double cx = x * 180;
-    double cy = y * 180;
+    double cx = x * 179;
+    double cy = y * 179;
     return lerp_sample(map, cx, cy);
 }
 
@@ -387,6 +388,103 @@ void shutdown() {
 
 }  // namespace ramachandran
 
+static inline void blur_rows_acc(vec4_t* out, const vec4_t* in, int dim, int kernel_width) {
+    const int mod = dim - 1;
+    const float scl = 1.0 / (2 * kernel_width + 1);
+
+    for (int row = 0; row < dim; ++row) {
+        const vec4_t* src_row = in + dim * row;
+        vec4_t* dst_row = out + dim * row;
+
+        vec4_t acc = vec4_zero();
+        for (int x = -(kernel_width+1); x < kernel_width; ++x) {
+            acc = acc + src_row[x & mod];
+        }
+
+        int x = 0;
+        for (; x < kernel_width + 1; ++x) {
+            acc = vec4_max(vec4_zero(), acc - src_row[(x -(kernel_width+1)) & mod] + src_row[x + kernel_width]);
+            dst_row[x] = acc * scl;
+        }
+
+        for (; x < dim - kernel_width; ++x) {
+            acc = vec4_max(vec4_zero(), acc - src_row[x -(kernel_width+1)] + src_row[x + kernel_width]);
+            dst_row[x] = acc * scl;
+        }
+
+        for (; x < dim; ++x) {
+            acc = vec4_max(vec4_zero(), acc - src_row[x -(kernel_width+1)] + src_row[(x + kernel_width) & mod]);
+            dst_row[x] = acc * scl;
+        }
+    }
+}
+
+static inline void transpose(vec4_t* out, const vec4_t* in, int dim) {
+    for (int x = 0; x < dim; ++x) {
+        for (int y = 0; y < dim; ++y) {
+            out[y * dim + x] = in[x * dim + y];
+        }
+    }
+}
+
+static void boxes_for_gauss(int* box_w, int n, float sigma) {  // Number of boxes, standard deviation
+    ASSERT(box_w);
+    float wIdeal = sqrtf((12 * sigma * sigma / n) + 1);  // Ideal averaging filter width
+    int wl = (int)wIdeal;
+    if (wl % 2 == 0) wl--;
+    int wu = wl + 2;
+
+    float mIdeal = (12 * sigma * sigma - n * wl * wl - 4 * n * wl - 3 * n) / (-4 * wl - 4);
+    int m = (int)(mIdeal + 0.5f);
+
+    for (int i = 0; i < n; i++) box_w[i] = (i < m ? wl : wu);
+}
+
+static void blur_density_box(vec4_t* data, int dim, int num_passes) {
+    ASSERT(dim > 0 && (dim & (dim - 1)) == 0); // Ensure dimension is power of two
+
+    const md_allocator_i* alloc = default_allocator;    // Thread safe allocator (And also, temp allocator may not accomodate such large allocation!)
+    vec4_t* tmp_data = (vec4_t*)md_alloc(alloc, dim * dim * sizeof(vec4_t));
+    defer { md_free(alloc, tmp_data, dim * dim * sizeof(vec4_t)); };
+
+    const int kernel_width = 4;
+
+    for (int rep = 0; rep < num_passes; ++rep) {
+        blur_rows_acc(tmp_data, data, dim, kernel_width);
+        blur_rows_acc(data, tmp_data, dim, kernel_width);
+    }
+    transpose(tmp_data, data, dim);
+
+    for (int rep = 0; rep < num_passes; ++rep) {
+        blur_rows_acc(data, tmp_data, dim, kernel_width);
+        blur_rows_acc(tmp_data, data, dim, kernel_width);
+    }
+    transpose(data, tmp_data, dim);
+}
+
+static void blur_density_gaussian(vec4_t* data, int dim, float sigma) {
+    ASSERT(dim > 0 && (dim & (dim - 1)) == 0); // Ensure dimension is power of two
+
+    const md_allocator_i* alloc = default_allocator;    // Thread safe allocator (And also, temp allocator may not accomodate such large allocation!)
+    vec4_t* tmp_data = (vec4_t*)md_alloc(alloc, dim * dim * sizeof(vec4_t));
+    defer { md_free(alloc, tmp_data, dim * dim * sizeof(vec4_t)); };
+
+    int box_w[4];
+    boxes_for_gauss(box_w, 4, sigma);
+
+    blur_rows_acc(tmp_data, data, dim, box_w[0]);
+    blur_rows_acc(data, tmp_data, dim, box_w[1]);
+    blur_rows_acc(tmp_data, data, dim, box_w[2]);
+    blur_rows_acc(data, tmp_data, dim, box_w[3]);
+    transpose(tmp_data, data, dim);
+
+    blur_rows_acc(data, tmp_data, dim, box_w[0]);
+    blur_rows_acc(tmp_data, data, dim, box_w[1]);
+    blur_rows_acc(data, tmp_data, dim, box_w[2]);
+    blur_rows_acc(tmp_data, data, dim, box_w[3]);
+    transpose(data, tmp_data, dim);
+}
+
 static void blur_density(uint32_t density_tex, uint32_t num_passes) {
     // Backup GL state
     GLint last_viewport[4];
@@ -519,6 +617,7 @@ bool rama_init(rama_data_t* data) {
 
     const int64_t mem_size = sizeof(float) * density_tex_dim * density_tex_dim * 4;
     float* density_map = (float*)md_alloc(default_allocator, mem_size);
+    memset(density_map, 0, mem_size);
     defer { md_free(default_allocator, density_map, mem_size); };
 
     // Create reference densities since these never change
@@ -537,6 +636,48 @@ bool rama_init(rama_data_t* data) {
     }
 
     double density_sum[4] = {0};
+
+    /*
+    const float angle_to_coord_scale = 1.0 / 360.0;
+    const float angle_to_coord_offset = 0.5f;
+
+    for (uint32_t i = 0; i < ARRAY_SIZE(ref_rama_gen); ++i) {
+        float u = ref_rama_gen[i][1] * angle_to_coord_scale + angle_to_coord_offset;
+        float v = ref_rama_gen[i][0] * angle_to_coord_scale + angle_to_coord_offset;
+        uint32_t x = (uint32_t)(u * density_tex_dim) & (density_tex_dim - 1);
+        uint32_t y = (uint32_t)(v * density_tex_dim) & (density_tex_dim - 1);
+        density_map[4 * (y * density_tex_dim + x) + 0] += 1.0f;
+    }
+
+    for (uint32_t i = 0; i < ARRAY_SIZE(ref_rama_gly); ++i) {
+        float u = ref_rama_gly[i][1] * angle_to_coord_scale + angle_to_coord_offset;
+        float v = ref_rama_gly[i][0] * angle_to_coord_scale + angle_to_coord_offset;
+        uint32_t x = (uint32_t)(u * density_tex_dim) & (density_tex_dim - 1);
+        uint32_t y = (uint32_t)(v * density_tex_dim) & (density_tex_dim - 1);
+        density_map[4 * (y * density_tex_dim + x) + 1] += 1.0f;
+    }
+
+    for (uint32_t i = 0; i < ARRAY_SIZE(ref_rama_pro); ++i) {
+        float u = ref_rama_pro[i][1] * angle_to_coord_scale + angle_to_coord_offset;
+        float v = ref_rama_pro[i][0] * angle_to_coord_scale + angle_to_coord_offset;
+        uint32_t x = (uint32_t)(u * density_tex_dim) & (density_tex_dim - 1);
+        uint32_t y = (uint32_t)(v * density_tex_dim) & (density_tex_dim - 1);
+        density_map[4 * (y * density_tex_dim + x) + 2] += 1.0f;
+    }
+
+    for (uint32_t i = 0; i < ARRAY_SIZE(ref_rama_pre); ++i) {
+        float u = ref_rama_pre[i][1] * angle_to_coord_scale + angle_to_coord_offset;
+        float v = ref_rama_pre[i][0] * angle_to_coord_scale + angle_to_coord_offset;
+        uint32_t x = (uint32_t)(u * density_tex_dim) & (density_tex_dim - 1);
+        uint32_t y = (uint32_t)(v * density_tex_dim) & (density_tex_dim - 1);
+        density_map[4 * (y * density_tex_dim + x) + 3] += 1.0f;
+    }
+    */
+
+    density_sum[0] = ARRAY_SIZE(ref_rama_gen);
+    density_sum[1] = ARRAY_SIZE(ref_rama_gly);
+    density_sum[2] = ARRAY_SIZE(ref_rama_pro);
+    density_sum[3] = ARRAY_SIZE(ref_rama_pre);
 
     for (uint32_t y = 0; y < density_tex_dim; ++y) {
         double v = (y / (double)(density_tex_dim - 1));
@@ -560,11 +701,11 @@ bool rama_init(rama_data_t* data) {
     data->ref.den_sum[2] = (float)density_sum[2];
     data->ref.den_sum[3] = (float)density_sum[3];
 
+    blur_density_box((vec4_t*)density_map, density_tex_dim, 1);
+
     glBindTexture(GL_TEXTURE_2D, data->ref.den_tex);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, density_tex_dim, density_tex_dim, GL_RGBA, GL_FLOAT, density_map);
     glBindTexture(GL_TEXTURE_2D, 0);
-
-    blur_density(data->ref.den_tex, 2);
 
     return true;
 }
@@ -577,9 +718,10 @@ struct UserData {
     uint32_t frame_beg;
     uint32_t frame_end;
     uint32_t frame_stride;
+    float sigma;
 };
 
-task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angles_t* angles, const uint32_t* rama_type_indices[4], uint32_t frame_beg, uint32_t frame_end, uint32_t frame_stride) {
+task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angles_t* angles, const uint32_t* rama_type_indices[4], uint32_t frame_beg, uint32_t frame_end, uint32_t frame_stride, float sigma) {
 
     const int64_t tex_size = sizeof(float) * density_tex_dim * density_tex_dim * 4;
     float* density_tex = (float*)md_alloc(default_allocator, tex_size);
@@ -592,17 +734,22 @@ task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angl
         .frame_beg = frame_beg,
         .frame_end = frame_end,
         .frame_stride = frame_stride,
+        .sigma = sigma,
     };
 
     memcpy(user_data.type_indices, rama_type_indices, 4 * sizeof(uint32_t*));
 
     task_system::ID id = task_system::pool_enqueue("Compute rama density", [data = user_data]() {
-        const float scl = 1.0 / (2.0 * 3.14159265357989);
+        const float angle_to_coord_scale = 1.0 / (2.0 * 3.14159265357989);
+        const float angle_to_coord_offset = 0.5f;
 
         const uint32_t frame_beg = data.frame_beg;
         const uint32_t frame_end = data.frame_end;
         const uint32_t frame_stride = data.frame_stride;
+        const uint32_t frame_count = frame_end - frame_beg;
         const md_backbone_angles_t* angles = data.angles;
+
+        double sum[4] = {0,0,0,0};
 
         for (uint32_t f = frame_beg; f < frame_end; ++f) {
             for (uint32_t c = 0; c < 4; ++c) {
@@ -612,53 +759,34 @@ task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angl
                     for (uint32_t i = 0; i < num_indices; ++i) {
                         uint32_t idx = f * frame_stride + indices[i];
                         if ((angles[idx].phi == 0 && angles[idx].psi == 0)) continue;
-                        float u = angles[idx].phi * scl + 0.5f;
-                        float v = angles[idx].psi * scl + 0.5f;
+                        float u = angles[idx].phi * angle_to_coord_scale + angle_to_coord_offset;
+                        float v = angles[idx].psi * angle_to_coord_scale + angle_to_coord_offset;
                         uint32_t x = (uint32_t)(u * density_tex_dim) & (density_tex_dim - 1);
                         uint32_t y = (uint32_t)(v * density_tex_dim) & (density_tex_dim - 1);
                         data.density_tex[4 * (y * density_tex_dim + x) + c] += 1.0f;
+                        sum[c] += 1.0;
                     }
                 }
             }
         }
+
+        //blur_density_cpu((vec4_t*)data.density_tex, density_tex_dim, 8);
+        blur_density_gaussian((vec4_t*)data.density_tex, density_tex_dim, data.sigma);
+
+        data.rep->den_sum[0] = sum[0];
+        data.rep->den_sum[1] = sum[1];
+        data.rep->den_sum[2] = sum[2];
+        data.rep->den_sum[3] = sum[3];
     });
 
     task_system::main_enqueue("Update rama texture", [data = user_data]() {
+       
         glBindTexture(GL_TEXTURE_2D, data.rep->den_tex);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, density_tex_dim, density_tex_dim, GL_RGBA, GL_FLOAT, data.density_tex);
         glBindTexture(GL_TEXTURE_2D, 0);
-
-        // GPU Blur
-        blur_density(data.rep->den_tex, 8);
-
-        // Download to compute density sum ._. not ideal...
-        glBindTexture(GL_TEXTURE_2D, data.rep->den_tex);
-        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, data.density_tex);
-        glBindTexture(GL_TEXTURE_2D, 0);
-
-        // Accumulate as double
-        double density_sum[4] = { 0 };
-        float  density_max[4] = { 0 };
-
-        for (uint32_t i = 0; i < density_tex_dim * density_tex_dim; ++i) {
-            density_sum[0] += data.density_tex[i * 4 + 0];
-            density_sum[1] += data.density_tex[i * 4 + 1];
-            density_sum[2] += data.density_tex[i * 4 + 2];
-            density_sum[3] += data.density_tex[i * 4 + 3];
-
-            density_max[0] = MAX(density_max[0], data.density_tex[i * 4 + 0]);
-            density_max[1] = MAX(density_max[1], data.density_tex[i * 4 + 1]);
-            density_max[2] = MAX(density_max[2], data.density_tex[i * 4 + 2]);
-            density_max[3] = MAX(density_max[3], data.density_tex[i * 4 + 3]);
-        }
-
-        // Store as float
-        data.rep->den_sum[0] = (float)density_sum[0];
-        data.rep->den_sum[1] = (float)density_sum[1];
-        data.rep->den_sum[2] = (float)density_sum[2];
-        data.rep->den_sum[3] = (float)density_sum[3];
-
+        
         md_free(default_allocator, data.density_tex, sizeof(float) * density_tex_dim * density_tex_dim * 4);
+
     }, id);
 
     return id;

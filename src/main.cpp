@@ -678,6 +678,7 @@ struct ApplicationData {
             float selected_radius   = 6.5f;
         } style;
 
+        float blur_sigma = 5.0f;
     } ramachandran;
 
     struct {
@@ -944,6 +945,8 @@ static void update_md_buffers(ApplicationData* data);
 static void init_molecule_data(ApplicationData* data);
 static void init_trajectory_data(ApplicationData* data);
 
+static void interrupt_async_tasks(ApplicationData* data);
+
 static bool load_dataset_from_file(ApplicationData* data, str_t file);
 
 static void load_workspace(ApplicationData* data, str_t file);
@@ -1122,7 +1125,7 @@ int main(int, char**) {
     bool time_changed = true;
     bool time_stopped = true;
 
-    bool demo_window = true;
+    bool demo_window = false;
 
     // Main loop
     while (!data.ctx.window.should_close) {
@@ -1479,7 +1482,7 @@ int main(int, char**) {
                 const uint32_t frame_end = (uint32_t)num_frames;
                 const uint32_t frame_stride = (uint32_t)data.trajectory_data.backbone_angles.stride;
 
-                data.tasks.ramachandran_compute_full_density = rama_rep_compute_density(&data.ramachandran.data.full, data.trajectory_data.backbone_angles.data, indices, frame_beg, frame_end, frame_stride);
+                data.tasks.ramachandran_compute_full_density = rama_rep_compute_density(&data.ramachandran.data.full, data.trajectory_data.backbone_angles.data, indices, frame_beg, frame_end, frame_stride, data.ramachandran.blur_sigma);
             } else {
                 task_system::task_interrupt(data.tasks.ramachandran_compute_full_density);
             }
@@ -1548,6 +1551,8 @@ int main(int, char**) {
         // Reset frame allocator
         md_stack_allocator_reset(&stack_alloc);
     }
+
+    interrupt_async_tasks(&data);
 
     // shutdown subsystems
     md_print(MD_LOG_TYPE_INFO, "Shutting down immediate draw...");
@@ -4074,15 +4079,6 @@ static void draw_distribution_window(ApplicationData* data) {
                 ImGui::EndMenu();
             }
 
-            if (ImGui::BeginMenu("Bins")) {
-                if (ImGui::SliderInt("##bins", &num_bins, MIN_NUM_BINS, MAX_NUM_BINS, "%d", ImGuiSliderFlags_Logarithmic)) {
-                    const int up   = next_power_of_two32(num_bins);
-                    const int down = up / 2;
-                    num_bins = abs(num_bins - down) < abs(num_bins - up) ? down : up;
-                }
-                ImGui::EndMenu();
-            }
-
             if (ImGui::BeginMenu("Filter")) {
                 ImGui::Checkbox("Enabled", &data->distributions.filter.enabled);
                 ImGui::EndMenu();
@@ -4090,6 +4086,11 @@ static void draw_distribution_window(ApplicationData* data) {
 
             if (ImGui::BeginMenu("Settings")) {
                 ImGui::SliderInt("Plot Height", &plot_height, MIN_PLOT_HEIGHT, MAX_PLOT_HEIGHT);
+                if (ImGui::SliderInt("Histogram Bins", &num_bins, MIN_NUM_BINS, MAX_NUM_BINS, "%d", ImGuiSliderFlags_Logarithmic)) {
+                    const int up   = next_power_of_two32(num_bins);
+                    const int down = up / 2;
+                    num_bins = abs(num_bins - down) < abs(num_bins - up) ? down : up;
+                }
                 ImGui::EndMenu();
             }
 
@@ -4261,12 +4262,23 @@ static void draw_shape_space_window(ApplicationData* data) {
             ImPlot::SetupAxes(0, 0, axis_flags, axis_flags);
             ImPlot::SetupFinish();
 
-            ImVec2 p0 = ImPlot::PlotToPixels(ImPlotPoint(0.0f, 0.0f));
-            ImVec2 p1 = ImPlot::PlotToPixels(ImPlotPoint(1.0f, 0.0f));
-            ImVec2 p2 = ImPlot::PlotToPixels(ImPlotPoint(0.5f, 0.86602540378f));
+            const ImVec2 p0 = ImPlot::PlotToPixels(ImPlotPoint(0.0f, 0.0f));
+            const ImVec2 p1 = ImPlot::PlotToPixels(ImPlotPoint(1.0f, 0.0f));
+            const ImVec2 p2 = ImPlot::PlotToPixels(ImPlotPoint(0.5f, 0.86602540378f));
+            const ImVec2 lin[2] = {
+                ImPlot::PlotToPixels(p0 + ImVec2(-0.2, -0.1)),
+                ImPlot::PlotToPixels(p0 + ImVec2(-0.1, +0.1)),
+            };
+            const ImVec2 pla = ImPlot::PlotToPixels(p1 + ImVec2(+0.1, +0.1));
+            const ImVec2 iso = ImPlot::PlotToPixels(p2 + ImVec2(+0.0, +0.1));
+            const float iso_rad = ImPlot::PlotToPixels(ImVec2(0.05, 0.05)).x;
+
             ImPlot::PushPlotClipRect();
             ImPlot::GetPlotDrawList()->AddTriangleFilled(p0, p1, p2, IM_COL32(255,255,255,20));
             ImPlot::GetPlotDrawList()->AddTriangle(p0, p1, p2, IM_COL32(255,255,255,50));
+            ImPlot::GetPlotDrawList()->AddLine(lin[0], lin[1], IM_COL32(160, 160, 160, 100));
+            ImPlot::GetPlotDrawList()->AddCircleFilled(iso, iso_rad, IM_COL32(160, 160, 160, 100));
+            ImPlot::GetPlotDrawList()->AddCircle(iso, iso_rad, IM_COL32(120, 120, 120, 100));
             ImPlot::PopPlotClipRect();
 
             ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_Square);
@@ -4521,6 +4533,10 @@ static void draw_ramachandran_window(ApplicationData* data) {
                     ImGui::ColorEdit4Minimal("Point Color", data->ramachandran.style.base_color.elem);
                 }
                 ImGui::Separator();
+                if (ImGui::SliderFloat("Density Blur Sigma", &data->ramachandran.blur_sigma, 0.1f, 10.0f)) {
+                    data->ramachandran.full_fingerprint = 0;
+                    data->ramachandran.filt_fingerprint = 0;
+                }
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("View")) {
@@ -4820,8 +4836,8 @@ static void draw_ramachandran_window(ApplicationData* data) {
         const float* filt_sum = data->ramachandran.data.filt.den_sum;
 
         const float ref_iso_values[4][3] = {
-            {0, 0.0005, 0.02},
-            {0, 0.0020, 0.02},
+            {0, 0.0005, 0.02},  // 99.95%, 98% for General
+            {0, 0.0020, 0.02},  // 99.80%, 98% for Others
             {0, 0.0020, 0.02},
             {0, 0.0020, 0.02},
         };

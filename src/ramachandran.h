@@ -41,7 +41,7 @@ struct rama_isomap_t {
 bool rama_init(rama_data_t* data);
 bool rama_free(rama_data_t* data);
 
-task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angles_t* angles, const uint32_t* rama_type_indices[4], uint32_t frame_beg, uint32_t frame_end, uint32_t frame_stride);
+task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angles_t* angles, const uint32_t* rama_type_indices[4], uint32_t frame_beg, uint32_t frame_end, uint32_t frame_stride, float sigma = 5.0f);
 
 // Computes the iso levels given a set of percentiles, e.g. (0.85) will compute which (density) value best corresponds to that
 //bool rama_rep_compute_density_levels(float* out_levels[4], const rama_rep_t* rep, const float* percentiles, int64_t num_percentiles);
