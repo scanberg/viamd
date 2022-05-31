@@ -419,10 +419,26 @@ static inline void blur_rows_acc(vec4_t* out, const vec4_t* in, int dim, int ker
     }
 }
 
-static inline void transpose(vec4_t* out, const vec4_t* in, int dim) {
-    for (int x = 0; x < dim; ++x) {
-        for (int y = 0; y < dim; ++y) {
-            out[y * dim + x] = in[x * dim + y];
+static inline void transpose(vec4_t* dst, const vec4_t* src, int n) {
+#if 0
+    // Naïve version
+    for (int x = 0; x < n; ++x) {
+        for (int y = 0; y < n; ++y) {
+            dst[y * n + x] = src[x * n + y];
+        }
+    }
+#endif
+    // Block transpose
+    const int block = 8;
+    ASSERT(n % block == 0);
+
+    for (int i = 0; i < n; i += block) {
+        for (int j = 0; j < n; j += block) {
+            for (int k = i; k < i + block; ++k) {
+                for (int l = j; l < j + block; ++l) {
+                    dst[k + l*n] = src[l + k*n];
+                }
+            }
         }
     }
 }
@@ -469,19 +485,17 @@ static void blur_density_gaussian(vec4_t* data, int dim, float sigma) {
     vec4_t* tmp_data = (vec4_t*)md_alloc(alloc, dim * dim * sizeof(vec4_t));
     defer { md_free(alloc, tmp_data, dim * dim * sizeof(vec4_t)); };
 
-    int box_w[4];
-    boxes_for_gauss(box_w, 4, sigma);
+    int box_w[3];
+    boxes_for_gauss(box_w, 3, sigma);
 
     blur_rows_acc(tmp_data, data, dim, box_w[0]);
     blur_rows_acc(data, tmp_data, dim, box_w[1]);
     blur_rows_acc(tmp_data, data, dim, box_w[2]);
-    blur_rows_acc(data, tmp_data, dim, box_w[3]);
-    transpose(tmp_data, data, dim);
+    transpose(data, tmp_data, dim);
 
-    blur_rows_acc(data, tmp_data, dim, box_w[0]);
-    blur_rows_acc(tmp_data, data, dim, box_w[1]);
-    blur_rows_acc(data, tmp_data, dim, box_w[2]);
-    blur_rows_acc(tmp_data, data, dim, box_w[3]);
+    blur_rows_acc(tmp_data, data, dim, box_w[0]);
+    blur_rows_acc(data, tmp_data, dim, box_w[1]);
+    blur_rows_acc(tmp_data, data, dim, box_w[2]);
     transpose(data, tmp_data, dim);
 }
 
