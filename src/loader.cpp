@@ -8,6 +8,7 @@
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_xtc.h>
+#include <md_xyz.h>
 #include <md_trajectory.h>
 #include <md_frame_cache.h>
 #include <md_util.h>
@@ -98,6 +99,10 @@ md_molecule_api* get_api(str_t filename) {
     str_t ext = extract_ext(filename);
     if (compare_str_cstr(ext, "pdb")) return md_pdb_molecule_api();
     if (compare_str_cstr(ext, "gro")) return md_gro_molecule_api();
+    if (compare_str_cstr(ext, "xyz")) return md_xyz_molecule_api();
+    if (compare_str_cstr(ext, "xmol")) return md_xyz_molecule_api();
+    if (compare_str_cstr(ext, "arc")) return md_xyz_molecule_api();
+
     return NULL;
 }
 
@@ -109,6 +114,10 @@ md_trajectory_api* get_api(str_t filename) {
     str_t ext = extract_ext(filename);
     if (compare_str_cstr(ext, "pdb")) return md_pdb_trajectory_api();
     if (compare_str_cstr(ext, "xtc")) return md_xtc_trajectory_api();
+    if (compare_str_cstr(ext, "xyz")) return md_xyz_trajectory_api();
+    if (compare_str_cstr(ext, "xmol")) return md_xyz_trajectory_api();
+    if (compare_str_cstr(ext, "arc")) return md_xyz_trajectory_api();
+
     return NULL;
 }
 

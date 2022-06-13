@@ -1449,64 +1449,66 @@ int main(int, char**) {
         update_display_properties(&data);
         update_view_param(&data);
 
-        if (data.ramachandran.backbone_fingerprint != data.trajectory_data.backbone_angles.fingerprint) {
-            data.ramachandran.backbone_fingerprint = data.trajectory_data.backbone_angles.fingerprint;
+        if (data.mold.mol.backbone.count > 0) {
+            if (data.ramachandran.backbone_fingerprint != data.trajectory_data.backbone_angles.fingerprint) {
+                data.ramachandran.backbone_fingerprint = data.trajectory_data.backbone_angles.fingerprint;
 
-            md_array_shrink(data.ramachandran.rama_type_indices[0], 0);
-            md_array_shrink(data.ramachandran.rama_type_indices[1], 0);
-            md_array_shrink(data.ramachandran.rama_type_indices[2], 0);
-            md_array_shrink(data.ramachandran.rama_type_indices[3], 0);
+                md_array_shrink(data.ramachandran.rama_type_indices[0], 0);
+                md_array_shrink(data.ramachandran.rama_type_indices[1], 0);
+                md_array_shrink(data.ramachandran.rama_type_indices[2], 0);
+                md_array_shrink(data.ramachandran.rama_type_indices[3], 0);
 
-            for (uint32_t i = 0; i < (uint32_t)md_array_size(data.mold.mol.backbone.ramachandran_type); ++i) {
-                switch (data.mold.mol.backbone.ramachandran_type[i]) {
-                case MD_RAMACHANDRAN_TYPE_GENERAL: md_array_push(data.ramachandran.rama_type_indices[0], i, persistent_allocator); break;
-                case MD_RAMACHANDRAN_TYPE_GLYCINE: md_array_push(data.ramachandran.rama_type_indices[1], i, persistent_allocator); break;
-                case MD_RAMACHANDRAN_TYPE_PROLINE: md_array_push(data.ramachandran.rama_type_indices[2], i, persistent_allocator); break;
-                case MD_RAMACHANDRAN_TYPE_PREPROL: md_array_push(data.ramachandran.rama_type_indices[3], i, persistent_allocator); break;
-                default: break;
+                for (uint32_t i = 0; i < (uint32_t)md_array_size(data.mold.mol.backbone.ramachandran_type); ++i) {
+                    switch (data.mold.mol.backbone.ramachandran_type[i]) {
+                    case MD_RAMACHANDRAN_TYPE_GENERAL: md_array_push(data.ramachandran.rama_type_indices[0], i, persistent_allocator); break;
+                    case MD_RAMACHANDRAN_TYPE_GLYCINE: md_array_push(data.ramachandran.rama_type_indices[1], i, persistent_allocator); break;
+                    case MD_RAMACHANDRAN_TYPE_PROLINE: md_array_push(data.ramachandran.rama_type_indices[2], i, persistent_allocator); break;
+                    case MD_RAMACHANDRAN_TYPE_PREPROL: md_array_push(data.ramachandran.rama_type_indices[3], i, persistent_allocator); break;
+                    default: break;
+                    }
                 }
             }
-        }
 
-        if (data.ramachandran.full_fingerprint != data.trajectory_data.backbone_angles.fingerprint) {
-            if (!task_system::task_is_running(data.tasks.ramachandran_compute_full_density)) {
-                data.ramachandran.full_fingerprint = data.trajectory_data.backbone_angles.fingerprint;
-                const uint32_t* indices[4] = {
-                    data.ramachandran.rama_type_indices[0],
-                    data.ramachandran.rama_type_indices[1],
-                    data.ramachandran.rama_type_indices[2],
-                    data.ramachandran.rama_type_indices[3],
-                };
+            if (data.ramachandran.full_fingerprint != data.trajectory_data.backbone_angles.fingerprint) {
+                if (!task_system::task_is_running(data.tasks.ramachandran_compute_full_density)) {
+                    data.ramachandran.full_fingerprint = data.trajectory_data.backbone_angles.fingerprint;
+                    const uint32_t* indices[4] = {
+                        data.ramachandran.rama_type_indices[0],
+                        data.ramachandran.rama_type_indices[1],
+                        data.ramachandran.rama_type_indices[2],
+                        data.ramachandran.rama_type_indices[3],
+                    };
 
-                const uint32_t frame_beg = 0;
-                const uint32_t frame_end = (uint32_t)num_frames;
-                const uint32_t frame_stride = (uint32_t)data.trajectory_data.backbone_angles.stride;
+                    const uint32_t frame_beg = 0;
+                    const uint32_t frame_end = (uint32_t)num_frames;
+                    const uint32_t frame_stride = (uint32_t)data.trajectory_data.backbone_angles.stride;
 
-                data.tasks.ramachandran_compute_full_density = rama_rep_compute_density(&data.ramachandran.data.full, data.trajectory_data.backbone_angles.data, indices, frame_beg, frame_end, frame_stride, data.ramachandran.blur_sigma);
-            } else {
-                task_system::task_interrupt(data.tasks.ramachandran_compute_full_density);
+                    data.tasks.ramachandran_compute_full_density = rama_rep_compute_density(&data.ramachandran.data.full, data.trajectory_data.backbone_angles.data, indices, frame_beg, frame_end, frame_stride, data.ramachandran.blur_sigma);
+                } else {
+                    task_system::task_interrupt(data.tasks.ramachandran_compute_full_density);
+                }
             }
-        }
 
-        if (data.ramachandran.filt_fingerprint != data.timeline.filter.fingerprint) {
-            if (!task_system::task_is_running(data.tasks.ramachandran_compute_filt_density)) {
-                data.ramachandran.filt_fingerprint = data.timeline.filter.fingerprint;
+            if (data.ramachandran.filt_fingerprint != data.timeline.filter.fingerprint) {
+                if (!task_system::task_is_running(data.tasks.ramachandran_compute_filt_density)) {
+                    data.ramachandran.filt_fingerprint = data.timeline.filter.fingerprint;
 
-                const uint32_t* indices[4] = {
-                    data.ramachandran.rama_type_indices[0],
-                    data.ramachandran.rama_type_indices[1],
-                    data.ramachandran.rama_type_indices[2],
-                    data.ramachandran.rama_type_indices[3],
-                };
+                    const uint32_t* indices[4] = {
+                        data.ramachandran.rama_type_indices[0],
+                        data.ramachandran.rama_type_indices[1],
+                        data.ramachandran.rama_type_indices[2],
+                        data.ramachandran.rama_type_indices[3],
+                    };
 
-                const uint32_t frame_beg = (uint32_t)data.timeline.filter.beg_frame;
-                const uint32_t frame_end = (uint32_t)data.timeline.filter.end_frame;
-                const uint32_t frame_stride = (uint32_t)data.trajectory_data.backbone_angles.stride;
+                    const uint32_t frame_beg = (uint32_t)data.timeline.filter.beg_frame;
+                    const uint32_t frame_end = (uint32_t)data.timeline.filter.end_frame;
+                    const uint32_t frame_stride = (uint32_t)data.trajectory_data.backbone_angles.stride;
 
-                data.tasks.ramachandran_compute_filt_density = rama_rep_compute_density(&data.ramachandran.data.filt, data.trajectory_data.backbone_angles.data, indices, frame_beg, frame_end, frame_stride);
-            }
-            else {
-                task_system::task_interrupt(data.tasks.ramachandran_compute_filt_density);
+                    data.tasks.ramachandran_compute_filt_density = rama_rep_compute_density(&data.ramachandran.data.filt, data.trajectory_data.backbone_angles.data, indices, frame_beg, frame_end, frame_stride);
+                }
+                else {
+                    task_system::task_interrupt(data.tasks.ramachandran_compute_filt_density);
+                }
             }
         }
 
@@ -2416,7 +2418,7 @@ static void draw_main_menu(ApplicationData* data) {
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("Load Data", "CTRL+L")) {
-                auto res = application::file_dialog(application::FileDialogFlags_Open, {}, MAKE_STR("pdb,gro,xtc"));
+                auto res = application::file_dialog(application::FileDialogFlags_Open, {}, MAKE_STR("pdb,gro,xtc,xyz,xmol,arc"));
                 if (res.result == application::FileDialogResult::Ok) {
                     if (load_dataset_from_file(data, str_from_cstr(res.path))) {
                         if (!data->representations.buffer) {
@@ -3401,19 +3403,26 @@ static void draw_atom_info_window(const ApplicationData& data, int atom_idx) {
     // @TODO: Assert things and make this failproof
     if (atom_idx < 0 || atom_idx >= mol.atom.count) return;
 
-    int res_idx = mol.atom.residue_idx[atom_idx];
-    str_t res_name = mol.residue.name[res_idx];
-    const int res_id = mol.residue.id[res_idx];
-    int local_idx = atom_idx - mol.residue.atom_range[res_idx].beg;
+    int local_idx = atom_idx;
     const vec3_t pos = { mol.atom.x[atom_idx], mol.atom.y[atom_idx], mol.atom.z[atom_idx] };
     str_t label = mol.atom.name[atom_idx];
     str_t elem = md_util_element_name(mol.atom.element[atom_idx]);
     str_t symbol = md_util_element_symbol(mol.atom.element[atom_idx]);
     int valence = mol.atom.valence[atom_idx];
 
+    int res_idx = -1;
+    str_t res_name = {};
+    int res_id = 0;
+    if (mol.residue.count > 0 && mol.atom.residue_idx) {
+        res_idx = mol.atom.residue_idx[atom_idx];
+        res_name = mol.residue.name[res_idx];
+        res_id = mol.residue.id[res_idx];
+        local_idx = atom_idx - mol.residue.atom_range[res_idx].beg;
+    }
+
     int chain_idx = -1;
     str_t chain_id = {};
-    if (mol.atom.chain_idx) {
+    if (mol.chain.count > 0 && mol.atom.chain_idx) {
         chain_idx = mol.atom.chain_idx[atom_idx];
         if (chain_idx != -1 && mol.chain.count > 0) {
             chain_id = mol.chain.id[chain_idx];
@@ -3430,7 +3439,9 @@ static void draw_atom_info_window(const ApplicationData& data, int atom_idx) {
     int len = 0;
     len += snprintf(buf, sizeof(buf), "atom[%i][%i]: %.*s %.*s %.*s (%.2f, %.2f, %.2f)\n", atom_idx, local_idx, (int)label.len, label.ptr, (int)elem.len, elem.ptr, (int)symbol.len, symbol.ptr, pos.x, pos.y, pos.z);
     len += snprintf(buf + len, sizeof(buf) - len, "covalent-valence: %i\n", valence);
-    len += snprintf(buf + len, sizeof(buf) - len, "res[%i]: %.*s %i\n", res_idx, (int)res_name.len, res_name.ptr, res_id);
+    if (res_idx) {
+        len += snprintf(buf + len, sizeof(buf) - len, "res[%i]: %.*s %i\n", res_idx, (int)res_name.len, res_name.ptr, res_id);
+    }
     if (chain_idx) {
         len += snprintf(buf + len, sizeof(buf) - len, "chain[%i]: %.*s\n", chain_idx, (int)chain_id.len, chain_id.ptr);
     }
@@ -6535,7 +6546,7 @@ static vec4_t parse_vec4(str_t txt, vec4_t default_val = {1,1,1,1}) {
     vec4_t res = default_val;
     str_t tok = {};
     int i = 0;
-    while (extract_next_token(&tok, &txt, ',') && i < 4) {
+    while (extract_next_token_delim(&tok, &txt, ',') && i < 4) {
         res.elem[i] = parse_float(tok);
         ++i;
     }
