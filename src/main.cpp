@@ -3012,14 +3012,16 @@ void draw_context_popup(ApplicationData* data) {
                     md_bitfield_set_bit(&mask, idx);
                 }
 
-                apply |= ImGui::MenuItem("on Residue");
-                if (ImGui::IsItemHovered()) {
-                    const auto res_idx = data->mold.mol.atom.residue_idx[idx];
-                    const auto range = data->mold.mol.residue.atom_range[res_idx];
-                    md_bitfield_set_range(&mask, range.beg, range.end);
+                if (data->mold.mol.residue.count > 0 && data->mold.mol.atom.residue_idx && data->mold.mol.atom.residue_idx[idx] != -1) {
+                    apply |= ImGui::MenuItem("on Residue");
+                    if (ImGui::IsItemHovered()) {
+                        const auto res_idx = data->mold.mol.atom.residue_idx[idx];
+                        const auto range = data->mold.mol.residue.atom_range[res_idx];
+                        md_bitfield_set_range(&mask, range.beg, range.end);
+                    }
                 }
 
-                if (data->mold.mol.atom.chain_idx && data->mold.mol.atom.chain_idx[idx] != -1) {
+                if (data->mold.mol.chain.count > 0 && data->mold.mol.atom.chain_idx && data->mold.mol.atom.chain_idx[idx] != -1) {
                     apply |= ImGui::MenuItem("on Chain");
                     if (ImGui::IsItemHovered()) {
                         const auto chain_idx = data->mold.mol.atom.chain_idx[idx];
