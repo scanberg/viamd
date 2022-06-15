@@ -1342,9 +1342,11 @@ int main(int, char**) {
                         md_array_push(idents, ident, default_temp_allocator);
                     }
 
-                    md_script_ir_clear(data.mold.script.ir);
-                    md_script_ir_add_bitfield_identifiers(data.mold.script.ir, idents, md_array_size(idents));
-                    md_script_ir_compile_source(data.mold.script.ir, src_str, &data.mold.mol, NULL);
+                    md_script_ir_t* selection_ir = md_script_ir_create(default_temp_allocator);
+                    defer { md_script_ir_free(selection_ir); };
+                    md_script_ir_add_bitfield_identifiers(selection_ir, idents, md_array_size(idents));
+
+                    md_script_ir_compile_source(data.mold.script.ir, src_str, &data.mold.mol, selection_ir);
 
                     data.mold.script.eval_init = true;
                     if (md_script_ir_valid(data.mold.script.ir)) {
@@ -6277,13 +6279,21 @@ static void launch_prefetch_job(ApplicationData* data) {
     if (!num_frames) return;
 
     task_system::task_interrupt_and_wait_for(data->tasks.prefetch_frames);
-    data->tasks.prefetch_frames = task_system::pool_enqueue("Prefetch Frames", num_frames, [data](uint32_t range_beg, uint32_t range_end) {
+    data->tasks.prefetch_frames = task_system::pool_enqueue("Prefetch Frames", num_frames, [data](uint32_t range_beg, uint32_t range_end)
+    {
         for (uint32_t i = range_beg; i < range_end; ++i) {
             md_trajectory_frame_header_t header;
             md_trajectory_load_frame(data->mold.traj, i, &header, 0, 0, 0);
             data->timeline.x_values[i] = header.timestamp;
         }
     });
+
+    auto prefetch_complete = task_system::main_enqueue("Prefetch Complete", [data]()
+    {
+        interpolate_atomic_properties(data);
+        update_md_buffers(data);
+        md_gl_molecule_zero_velocity(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
+    }, data->tasks.prefetch_frames);
 
 #if 0
 #define NUM_SLOTS 64
