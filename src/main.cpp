@@ -1122,6 +1122,8 @@ int main(int, char**) {
     auto& mol = data.mold.mol;
     auto& traj = data.mold.traj;
 
+    data.mold.script.ir = md_script_ir_create(persistent_allocator);
+
     bool time_changed = true;
     bool time_stopped = true;
 
@@ -1331,10 +1333,18 @@ int main(int, char**) {
                     editor.ClearMarkers();
                     editor.ClearErrorMarkers();
 
-                    if (data.mold.script.ir) {
-                        md_script_ir_free(data.mold.script.ir);
+                    md_script_bitfield_identifier_t* idents = 0;
+                    for (int64_t i = 0; i < md_array_size(data.selection.stored_selections); ++i) {
+                        md_script_bitfield_identifier_t ident = {
+                            .identifier_name = data.selection.stored_selections[i].name,
+                            .bitfield = &data.selection.stored_selections[i].atom_mask,
+                        };
+                        md_array_push(idents, ident, default_temp_allocator);
                     }
-                    data.mold.script.ir = md_script_ir_create(src_str, &data.mold.mol, persistent_allocator, NULL);
+
+                    md_script_ir_clear(data.mold.script.ir);
+                    md_script_ir_add_bitfield_identifiers(data.mold.script.ir, idents, md_array_size(idents));
+                    md_script_ir_compile_source(data.mold.script.ir, src_str, &data.mold.mol, NULL);
 
                     data.mold.script.eval_init = true;
                     if (md_script_ir_valid(data.mold.script.ir)) {
@@ -2395,21 +2405,6 @@ static bool filter_expression(ApplicationData* data, str_t expr, md_bitfield_t* 
     return success;
 }
 
-static bool valid_identifier(str_t str) {
-    if (!str.ptr) return false;
-    if (!str.len) return false;
-
-    const char* beg = str.ptr;
-    const char* end = str.ptr + str.len;
-
-    if (!is_alpha(*beg) && *beg != '_') return false;
-    for (const char* c = beg + 1; c < end; ++c) {
-        if (!is_alpha(*c) && (*c != '_') && !is_digit(*c)) return false;
-    }
-
-    return true;
-}
-
 // ### DRAW WINDOWS ###
 static void draw_main_menu(ApplicationData* data) {
     ASSERT(data);
@@ -2630,7 +2625,7 @@ ImGui::EndGroup();
                 ImGui::Text("Stored Selections");
                 for (int i = 0; i < (int)md_array_size(data->selection.stored_selections); i++) {
                     auto& sel = data->selection.stored_selections[i];
-                    bool is_valid = valid_identifier(sel.name);
+                    bool is_valid = md_script_valid_identifier_name(sel.name);
                     char err_buf[64] = "";
                     if (!is_valid) {
                         snprintf(err_buf, sizeof(err_buf), "'%s' is not a valid identifier.", sel.name.cstr());
@@ -2660,6 +2655,7 @@ ImGui::EndGroup();
                     if (ImGui::Button("Store")) {
                         ImGui::SetTooltip("Store the active selection into the stored selection");
                         md_bitfield_copy(&sel.atom_mask, &data->selection.current_selection_mask);
+                        data->mold.script.compile_ir = true;
                         update_all_representations(data);
                     }
                     ImGui::SameLine();
@@ -6251,8 +6247,7 @@ static void free_molecule_data(ApplicationData* data) {
     md_bitfield_clear(&data->selection.current_selection_mask);
     md_bitfield_clear(&data->selection.current_highlight_mask);
     if (data->mold.script.ir) {
-        md_script_ir_free(data->mold.script.ir);
-        data->mold.script.ir = 0;
+        md_script_ir_clear(data->mold.script.ir);
     }
     if (data->mold.script.full_eval) {
         md_script_eval_free(data->mold.script.full_eval);
