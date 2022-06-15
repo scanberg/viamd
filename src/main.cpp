@@ -2437,7 +2437,7 @@ static void draw_main_menu(ApplicationData* data) {
                     auto res = application::file_dialog(application::FileDialogFlags_Save, {}, FILE_EXTENSION);
                     if (res.result == application::FileDialogResult::Ok) {
                         str_t ext = extract_ext(str_from_cstr(res.path));
-                        if (!ext.len) {
+                        if (str_empty(ext)) {
                             snprintf(res.path + res.path_len, ARRAY_SIZE(res.path) - res.path_len, ".%.*s", (uint32_t)FILE_EXTENSION.len, FILE_EXTENSION.ptr);
                         }
                         save_workspace(data, str_from_cstr(res.path));
@@ -2450,8 +2450,8 @@ static void draw_main_menu(ApplicationData* data) {
                 auto res = application::file_dialog(application::FileDialogFlags_Save, {}, FILE_EXTENSION);
                 if (res.result == application::FileDialogResult::Ok) {
                     str_t ext = extract_ext(str_from_cstr(res.path));
-                    if (!ext.len) {
-                        snprintf(res.path + res.path_len, (size_t)(ARRAY_SIZE(res.path) - res.path_len), "%.*s", (uint32_t)FILE_EXTENSION.len, FILE_EXTENSION.ptr);
+                    if (str_empty(ext)) {
+                        snprintf(res.path + res.path_len, (size_t)(ARRAY_SIZE(res.path) - res.path_len), ".%.*s", (uint32_t)FILE_EXTENSION.len, FILE_EXTENSION.ptr);
                     }
                     save_workspace(data, str_from_cstr(res.path));
                 }
