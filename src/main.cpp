@@ -1913,129 +1913,58 @@ static void interpolate_atomic_properties(ApplicationData* data) {
     void* mem = md_alloc(frame_allocator, bytes);
     defer { md_free(frame_allocator, mem, bytes); };
 
-    float* x[4] = {
-        (float*)mem + stride * 0,
-        (float*)mem + stride * 1,
-        (float*)mem + stride * 2,
-        (float*)mem + stride * 3,
+    md_vec3_soa_t src[4] = {
+        {(float*)mem + stride * 0, (float*)mem + stride *  1, (float*)mem + stride *  2},
+        {(float*)mem + stride * 3, (float*)mem + stride *  4, (float*)mem + stride *  5},
+        {(float*)mem + stride * 6, (float*)mem + stride *  7, (float*)mem + stride *  8},
+        {(float*)mem + stride * 9, (float*)mem + stride * 10, (float*)mem + stride * 11},
     };
-    float* y[4] = {
-        (float*)mem + stride * 4,
-        (float*)mem + stride * 5,
-        (float*)mem + stride * 6,
-        (float*)mem + stride * 7,
+
+    md_vec3_soa_t dst = {
+        data->mold.mol.atom.x, data->mold.mol.atom.y, data->mold.mol.atom.z,
     };
-    float* z[4] = {
-        (float*)mem + stride * 8,
-        (float*)mem + stride * 9,
-        (float*)mem + stride * 10,
-        (float*)mem + stride * 11,
-    };
+
+    const vec3_t ones = {1,1,1};
 
     const InterpolationMode mode = (frames[1] != frames[2]) ? data->animation.interpolation : InterpolationMode::Nearest;
-
-    mat3_t box = {};
     switch (mode) {
         case InterpolationMode::Nearest:
         {
             md_trajectory_frame_header_t header = {0};
             md_trajectory_load_frame(data->mold.traj, nearest_frame, &header, mol.atom.x, mol.atom.y, mol.atom.z);
-            memcpy(&box, header.box, sizeof(box));
+            memcpy(&data->simulation_box.box, header.box, sizeof(mat3_t));
             break;
         }
         case InterpolationMode::Linear:
         {
             md_trajectory_frame_header_t header[2] = {0};
-
-            md_trajectory_load_frame(data->mold.traj, frames[1], &header[0], x[0], y[0], z[0]);
-            md_trajectory_load_frame(data->mold.traj, frames[2], &header[1], x[1], y[1], z[1]);
+            md_trajectory_load_frame(data->mold.traj, frames[1], &header[0], src[0].x, src[0].y, src[0].z);
+            md_trajectory_load_frame(data->mold.traj, frames[2], &header[1], src[1].x, src[1].y, src[1].z);
 
             memcpy(&boxes[0], header[0].box, sizeof(boxes[0]));
             memcpy(&boxes[1], header[1].box, sizeof(boxes[1]));
+            data->simulation_box.box = lerp(boxes[0], boxes[1], t);
+            const vec3_t pbc_ext = data->simulation_box.box * ones;
 
-            box = lerp(boxes[0], boxes[1], t);
-
-            md_util_linear_interpolation_args_t args = {
-                .coord = {
-                    .count = mol.atom.count,
-                    .dst = {
-                    .x = mol.atom.x,
-                    .y = mol.atom.y,
-                    .z = mol.atom.z,
-                },
-                .src = {
-                    {
-                        .x = x[0],
-                        .y = y[0],
-                        .z = z[0],
-                    },
-                    {
-                        .x = x[1],
-                        .y = y[1],
-                        .z = z[1],
-                    }
-                },
-                },
-                .pbc = {0}, // memcpy this afterwards
-                .t = t
-            };
-            memcpy(args.pbc.box, &box, sizeof(args.pbc.box));
-            md_util_linear_interpolation(args);
+            md_util_linear_interpolation(dst, src, mol.atom.count, pbc_ext, t);
         }
             break;
         case InterpolationMode::Cubic:
         {
             md_trajectory_frame_header_t header[4] = {0};
-
-            md_trajectory_load_frame(data->mold.traj, frames[0], &header[0], x[0], y[0], z[0]);
-            md_trajectory_load_frame(data->mold.traj, frames[1], &header[1], x[1], y[1], z[1]);
-            md_trajectory_load_frame(data->mold.traj, frames[2], &header[2], x[2], y[2], z[2]);
-            md_trajectory_load_frame(data->mold.traj, frames[3], &header[3], x[3], y[3], z[3]);
+            md_trajectory_load_frame(data->mold.traj, frames[0], &header[0], src[0].x, src[0].y, src[0].z);
+            md_trajectory_load_frame(data->mold.traj, frames[1], &header[1], src[1].x, src[1].y, src[1].z);
+            md_trajectory_load_frame(data->mold.traj, frames[2], &header[2], src[2].x, src[2].y, src[2].z);
+            md_trajectory_load_frame(data->mold.traj, frames[3], &header[3], src[3].x, src[3].y, src[3].z);
 
             memcpy(&boxes[0], header[0].box, sizeof(boxes[0]));
             memcpy(&boxes[1], header[1].box, sizeof(boxes[1]));
             memcpy(&boxes[2], header[2].box, sizeof(boxes[2]));
             memcpy(&boxes[3], header[3].box, sizeof(boxes[3]));
+            data->simulation_box.box = cubic_spline(boxes[0], boxes[1], boxes[2], boxes[3], t, 1.0f);
+            const vec3_t pbc_ext = data->simulation_box.box * ones;
 
-            box = cubic_spline(boxes[0], boxes[1], boxes[2], boxes[3], t);
-
-            md_util_cubic_interpolation_args_t args = {
-                .coord = {
-                    .count = mol.atom.count,
-                    .dst = {
-                    .x = mol.atom.x,
-                    .y = mol.atom.y,
-                    .z = mol.atom.z,
-                },
-                .src = {
-                    {
-                        .x = x[0],
-                        .y = y[0],
-                        .z = z[0],
-                    },
-                    {
-                        .x = x[1],
-                        .y = y[1],
-                        .z = z[1],
-                    },
-                    {
-                        .x = x[2],
-                        .y = y[2],
-                        .z = z[2],
-                    },
-                    {
-                        .x = x[3],
-                        .y = y[3],
-                        .z = z[3],
-                    },
-                },
-                },
-                .pbc = {0}, // memcpy this afterwards
-                .t = t,
-                .tension = 0.5f,
-            };
-            memcpy(args.pbc.box, &box, sizeof(args.pbc.box));
-            md_util_cubic_interpolation(args);
+            md_util_cubic_interpolation(dst, src, mol.atom.count, pbc_ext, t, 1.0f);
         }
             break;
         default:
