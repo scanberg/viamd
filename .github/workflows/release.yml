@@ -1,0 +1,32 @@
+name: Build and Release
+on: [push]
+  #push:
+  #  tags:
+  #    - 'v*.*.*'
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: checkout
+        uses: actions/checkout@v2
+        run: |
+          git submodule update --init --recursive
+      - name: cmake
+        run: |
+          cmake -DBUILD_SHARED_LIBS=OFF -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF -DBUILD_STATIC_LIBS=ON . 
+      - name: build
+        run: |
+          cmake --build . --config MinSizeRel -- /nologo /verbosity:minimal /maxcpucount:4
+      - name: archive
+        uses: thedoctor0/zip-release@main
+        with:
+          type: 'zip'
+          filename: 'viamd.zip'
+          path: MinSizeRel
+      - name: release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            viamd.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
