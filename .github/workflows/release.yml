@@ -21,12 +21,12 @@ jobs:
         uses: thedoctor0/zip-release@main
         with:
           type: 'zip'
-          filename: 'viamd.zip'
-          path: MinSizeRel
+          filename: 'viamd_win.zip'
+          path: 'MinSizeRel/.'
       - name: release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            viamd.zip
+            viamd_win.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
