@@ -1,8 +1,8 @@
 name: Build and Release
 on: [push]
-  #push:
-  #  tags:
-  #    - 'v*.*.*'
+  push:
+    tags:
+      - 'v*.*.*'
 jobs:
   build:
     runs-on: windows-2022
