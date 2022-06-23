@@ -45,7 +45,7 @@ https://cmake.org/
 - ./viamd 
 
 ## Binaries
-New version comming soon. The aim is to provide this for Windows x64 and Linux x64 (Tested on Ubuntu).
+https://github.com/scanberg/viamd/releases/
 
 ## Acknowledgements
 
