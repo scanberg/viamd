@@ -421,7 +421,7 @@ static inline void blur_rows_acc(vec4_t* out, const vec4_t* in, int dim, int ker
 
 static inline void transpose(vec4_t* dst, const vec4_t* src, int n) {
 #if 0
-    // Naïve version
+    // Naï¿½ve version
     for (int x = 0; x < n; ++x) {
         for (int y = 0; y < n; ++y) {
             dst[y * n + x] = src[x * n + y];
@@ -760,7 +760,6 @@ task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angl
         const uint32_t frame_beg = data.frame_beg;
         const uint32_t frame_end = data.frame_end;
         const uint32_t frame_stride = data.frame_stride;
-        const uint32_t frame_count = frame_end - frame_beg;
         const md_backbone_angles_t* angles = data.angles;
 
         double sum[4] = {0,0,0,0};

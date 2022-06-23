@@ -127,7 +127,7 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
 }
 )";
 
-constexpr ImGuiKey KEY_CONSOLE = ImGuiKey_GraveAccent;
+//constexpr ImGuiKey KEY_CONSOLE = ImGuiKey_GraveAccent;
 constexpr ImGuiKey KEY_PLAY_PAUSE = ImGuiKey_Space;
 constexpr ImGuiKey KEY_SKIP_TO_PREV_FRAME = ImGuiKey_LeftArrow;
 constexpr ImGuiKey KEY_SKIP_TO_NEXT_FRAME = ImGuiKey_RightArrow;
@@ -138,7 +138,7 @@ constexpr ImGuiKey KEY_SHOW_DEBUG_WINDOW = ImGuiKey_F11;
 constexpr str_t FILE_EXTENSION = MAKE_STR("via"); 
 constexpr uint32_t INVALID_PICKING_IDX = ~0U;
 
-constexpr uint32_t TEXT_BG_ERROR_COLOR = 0xAA222299;
+//constexpr uint32_t TEXT_BG_ERROR_COLOR = 0xAA222299;
 constexpr uint32_t PROPERTY_COLORS[] = {4293119554, 4290017311, 4287291314, 4281114675, 4288256763, 4280031971, 4285513725, 4278222847, 4292260554, 4288298346, 4288282623, 4280834481};
 
 inline const ImVec4& vec_cast(const vec4_t& v) { return *(const ImVec4*)(&v); }
@@ -4209,7 +4209,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                 ImPlot::PlotToPixels(p0 + ImVec2(-0.2, -0.1)),
                 ImPlot::PlotToPixels(p0 + ImVec2(-0.1, +0.1)),
             };
-            const ImVec2 pla = ImPlot::PlotToPixels(p1 + ImVec2(+0.1, +0.1));
+            //const ImVec2 pla = ImPlot::PlotToPixels(p1 + ImVec2(+0.1, +0.1));
             const ImVec2 iso = ImPlot::PlotToPixels(p2 + ImVec2(+0.0, +0.1));
             const float iso_rad = ImPlot::PlotToPixels(ImVec2(0.05, 0.05)).x;
 
@@ -6217,7 +6217,7 @@ static void launch_prefetch_job(ApplicationData* data) {
         }
     });
 
-    auto prefetch_complete = task_system::main_enqueue("Prefetch Complete", [data]()
+    task_system::main_enqueue("Prefetch Complete", [data]()
     {
         interpolate_atomic_properties(data);
         update_md_buffers(data);
