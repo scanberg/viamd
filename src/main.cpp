@@ -7381,13 +7381,11 @@ static void handle_camera_interaction(ApplicationData* data) {
         }
     }
     else if (ImGui::IsItemHovered()) {
-        if (data->picking.idx != INVALID_PICKING_IDX) {
-            ASSERT(data->picking.idx <= data->mold.mol.atom.count);
+        if (data->picking.idx != INVALID_PICKING_IDX && data->picking.idx <= data->mold.mol.atom.count) {
             md_bitfield_clear(&data->selection.current_highlight_mask);
             md_bitfield_set_bit(&data->selection.current_highlight_mask, data->picking.idx);
             grow_mask_by_current_selection_granularity(&data->selection.current_highlight_mask, *data);
             data->mold.dirty_buffers |= MolBit_DirtyFlags;
-
             draw_atom_info_window(*data, data->picking.idx);
         }
     }
