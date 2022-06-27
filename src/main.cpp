@@ -316,13 +316,15 @@ struct DisplayProperty {
         EvaluationResult* results = {0};
     };
 
-    StrBuf<32> lbl = {};
+    //StrBuf<32> lbl = {};
+    char label[32] = "";
     uint32_t col = 0xFFFFFFFFU;
 
     const float* values = 0;
     md_unit_t unit = {};
 
-    StrBuf<32> unit_str = {};
+    //StrBuf<32> unit_str = {};
+    char unit_str[32] = "";
 
     const md_script_property_t* full_prop = NULL;
     const md_script_property_t* filt_prop = NULL;
@@ -531,8 +533,8 @@ struct ApplicationData {
 
         struct {
             bool enabled = false;
-            float values[8];
-            vec4_t colors[8];
+            float values[8] = {};
+            vec4_t colors[8] = {};
             int count = 0;
             //IsoSurfaces isosurfaces;
         } iso;
@@ -1618,7 +1620,7 @@ static void init_display_properties(DisplayProperty** prop_items, const md_scrip
         }
 
         DisplayProperty item;
-        item.lbl = full_props[i].ident;
+        strncpy(item.label, full_props[i].ident.ptr, MIN(sizeof(item.label), (size_t)full_props[i].ident.len));
         item.col = PROPERTY_COLORS[i % ARRAY_SIZE(PROPERTY_COLORS)];
         item.frame_filter = {0, 0};
         item.value_filter = {full_props[i].data.min_range[0], full_props[i].data.max_range[0]};
@@ -1630,10 +1632,10 @@ static void init_display_properties(DisplayProperty** prop_items, const md_scrip
         item.possible_display_mask = possible_display_mask;
         item.current_display_mask  = possible_display_mask;
 
-        unit_print(item.unit_str.buf, sizeof(item.unit_str.buf), item.unit);
+        unit_print(item.unit_str, sizeof(item.unit_str), item.unit);
 
         for (int64_t j = 0; j < md_array_size(old_items); ++j) {
-            if (compare_str(item.lbl, old_items[j].lbl)) {
+            if (strcmp(item.label, old_items[j].label) == 0) {
                 // Copy relevant parameters from existing item which we want to be persistent
                 item.frame_filter = old_items[j].frame_filter;
                 item.value_filter = old_items[j].value_filter;
@@ -2111,7 +2113,7 @@ static void update_view_param(ApplicationData* data) {
 
     if (data->visuals.temporal_reprojection.enabled && data->visuals.temporal_reprojection.jitter) {
         static uint32_t i = 0;
-        i = (++i) % ARRAY_SIZE(data->view.jitter.sequence);
+        i = (i+1) % ARRAY_SIZE(data->view.jitter.sequence);
         param.jitter.next    = data->view.jitter.sequence[(i + 1) % ARRAY_SIZE(data->view.jitter.sequence)] - 0.5f;
         param.jitter.current = data->view.jitter.sequence[i] - 0.5f;
         if (data->view.mode == CameraMode::Perspective) {
@@ -2599,7 +2601,7 @@ ImGui::EndGroup();
 
                 if (ImGui::Button("Create New")) {
                     char name_buf[64];
-                    snprintf(name_buf, sizeof(name_buf), "sel%lli", md_array_size(data->selection.stored_selections) + 1);
+                    snprintf(name_buf, sizeof(name_buf), "sel%i", (int)md_array_size(data->selection.stored_selections) + 1);
                     create_selection(data, str_from_cstr(name_buf), &data->selection.current_selection_mask);
                 }
 
@@ -3145,7 +3147,7 @@ static void draw_animation_control_window(ApplicationData* data) {
         double t   = frame_to_time(data->animation.frame, *data);
         double min = data->timeline.x_values[0];
         double max = data->timeline.x_values[num_frames - 1];
-        char time_label[32];
+        char time_label[64];
         if (unit_empty(time_unit)) {
             snprintf(time_label, sizeof(time_label), "Time");
         } else {
@@ -3429,24 +3431,24 @@ static void draw_molecule_dynamic_info_window(ApplicationData* data) {
             ImGui::Text("MOL");
             const auto file = extract_file(data->files.molecule);
             if (file.len) ImGui::Text("\"%.*s\"", (int32_t)file.len, file.ptr);
-            ImGui::Text("# atoms: %lli", mol.atom.count);
-            ImGui::Text("# residues: %lli", mol.residue.count);
-            ImGui::Text("# chains: %lli", mol.chain.count);
+            ImGui::Text("# atoms: %i", (int)mol.atom.count);
+            ImGui::Text("# residues: %i", (int)mol.residue.count);
+            ImGui::Text("# chains: %i", (int)mol.chain.count);
         }
         if (md_trajectory_num_frames(traj)) {
             ImGui::NewLine();
             ImGui::Text("TRAJ");
             const auto file = extract_file(data->files.trajectory);
-            ImGui::Text("\"%.*s\"", (int32_t)file.len, file.ptr);
-            ImGui::Text("# frames: %lli", md_trajectory_num_frames(traj));
+            ImGui::Text("\"%.*s\"", (int)file.len, file.ptr);
+            ImGui::Text("# frames: %i", (int)md_trajectory_num_frames(traj));
         }
         const int64_t selection_count = md_bitfield_popcount(&data->selection.current_selection_mask);
         const int64_t highlight_count = md_bitfield_popcount(&data->selection.current_highlight_mask);
         if (selection_count || highlight_count) {
             ImGui::NewLine();
             ImGui::Text("SELECTION");
-            ImGui::Text("# atoms selected: %lli", selection_count);
-            ImGui::Text("# atoms highlighted: %lli", highlight_count);
+            ImGui::Text("# atoms selected: %i", (int)selection_count);
+            ImGui::Text("# atoms highlighted: %i", (int)highlight_count);
         }
     }
     ImGui::End();
@@ -3519,7 +3521,7 @@ bool draw_property_menu_widgets(DisplayProperty* props, int64_t num_props, uint3
         if (prop.possible_display_mask & prop_mask) {
             num_candidates += 1;
             ImPlot::ItemIcon(prop.col); ImGui::SameLine();
-            if (ImGui::Selectable(prop.lbl.cstr(), prop.current_display_mask & prop_mask, 0, ImVec2(50,0))) {
+            if (ImGui::Selectable(prop.label, prop.current_display_mask & prop_mask, 0, ImVec2(50,0))) {
                 prop.current_display_mask ^= prop_mask;     // Toggle bit
                 new_selected_index = i;
                 cur_selected_index = i;
@@ -3800,14 +3802,14 @@ bool draw_property_timeline(const ApplicationData& data, const TimelineArgs& arg
                 if (args.values.y_var) {
                     ASSERT(args.values.y_min);
                     ASSERT(args.values.y_max);
-                    len += snprintf(buf + len, MAX(0, sizeof(buf) - len), ", var: %.2f, min: %.2f, max: %.2f",
+                    len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), ", var: %.2f, min: %.2f, max: %.2f",
                         args.values.y_var[frame_idx],
                         args.values.y_min[frame_idx],
                         args.values.y_max[frame_idx]);
                 }
 
                 if (!str_empty(args.values.unit)) {
-                    len += snprintf(buf + len, MAX(0, sizeof(buf) - len), " (%.*s)", (int)args.values.unit.len, args.values.unit.ptr);
+                    len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), " (%.*s)", (int)args.values.unit.len, args.values.unit.ptr);
                 }
             }
             ImGui::SetTooltip("%.*s", len, buf);
@@ -3957,7 +3959,7 @@ static void draw_timeline_window(ApplicationData* data) {
                 ASSERT(num_y_values == num_x_values);
 
                 ImGui::PushID(i);
-                args.lbl = prop.lbl.cstr();
+                args.lbl = prop.label;
                 args.col = prop.col;
                 args.values = {
                     .count = num_y_values,
@@ -3968,7 +3970,7 @@ static void draw_timeline_window(ApplicationData* data) {
                     .y_max = y_max,
                     .min_y = prop.full_prop->data.min_value,
                     .max_y = prop.full_prop->data.max_value,
-                    .unit = prop.unit_str,
+                    .unit = {prop.unit_str, (int64_t)strnlen(prop.unit_str, sizeof(prop.unit_str))},
                 };
                 args.value_filter = {
                     .enabled = data->distributions.filter.enabled,
@@ -4097,7 +4099,7 @@ static void draw_distribution_window(ApplicationData* data) {
             const double bar_scl = (max_x - min_x) / (num_bins-1);
 
             char label[128];
-            int len = snprintf(label, sizeof(label), "%s ", prop.lbl.cstr());
+            int len = snprintf(label, sizeof(label), "%s ", prop.label);
             if (!unit_empty(prop.unit)) {
                 char unit_buf[64];
                 int unit_len = unit_print_long(unit_buf, sizeof(unit_buf), prop.unit);
@@ -5287,16 +5289,16 @@ static void draw_dataset_window(ApplicationData* data) {
     if (ImGui::Begin("Dataset", &data->dataset.show_window)) {
         str_t mol_file = data->files.molecule;
         ImGui::Text("Molecular data: %.*s", (int)mol_file.len, mol_file.ptr);
-        ImGui::Text("Num atoms:    %9lli", data->mold.mol.atom.count);
-        ImGui::Text("Num residues: %9lli", data->mold.mol.residue.count);
-        ImGui::Text("Num chains:   %9lli", data->mold.mol.chain.count);
+        ImGui::Text("Num atoms:    %9i", (int)data->mold.mol.atom.count);
+        ImGui::Text("Num residues: %9i", (int)data->mold.mol.residue.count);
+        ImGui::Text("Num chains:   %9i", (int)data->mold.mol.chain.count);
 
         str_t traj_file = data->files.trajectory;
         if (traj_file.len) {
             ImGui::Separator();
             ImGui::Text("Trajectory data: %.*s", (int)traj_file.len, traj_file.ptr);
-            ImGui::Text("Num frames:    %9lli", md_trajectory_num_frames(data->mold.traj));
-            ImGui::Text("Num atoms:     %9lli", md_trajectory_num_atoms(data->mold.traj));
+            ImGui::Text("Num frames:    %9i", (int)md_trajectory_num_frames(data->mold.traj));
+            ImGui::Text("Num atoms:     %9i", (int)md_trajectory_num_atoms(data->mold.traj));
         }
 
         int64_t num_mappings = md_array_size(data->dataset.atom_element_remappings);
@@ -5679,7 +5681,7 @@ static void draw_property_export_window(ApplicationData* data) {
                 for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
                     const DisplayProperty& dp = data->display_properties[i];
                     if (dp.full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
-                        str_t lbl = dp.lbl;
+                        str_t lbl = {dp.label, (int64_t)strnlen(dp.label, sizeof(dp.label))};
                         if (dp.full_prop->data.dim[0] > 1) {
                             lbl = alloc_printf(frame_allocator, "%.*s[%d:%d]", (int)lbl.len, lbl.ptr, 1, dp.full_prop->data.dim[0]);
                         }
@@ -5691,18 +5693,18 @@ static void draw_property_export_window(ApplicationData* data) {
                 for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
                     const DisplayProperty& dp = data->display_properties[i];
                     if (dp.full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
-                        ColData prop_data = {dp.lbl.cstr(), dp.full_hist.bin, ARRAY_SIZE(dp.full_hist.bin), 1};
+                        ColData prop_data = {dp.label, dp.full_hist.bin, ARRAY_SIZE(dp.full_hist.bin), 1};
                         md_array_push(col_data, prop_data, frame_allocator);
                         if (data->timeline.filter.enabled) {
-                            str_t lbl = alloc_printf(frame_allocator, "%.*s(filt)", (int)dp.lbl.length(), dp.lbl.cstr());
+                            str_t lbl = alloc_printf(frame_allocator, "%s(filt)", dp.label);
                             ColData filt_data = {lbl.ptr, dp.filt_hist.bin, ARRAY_SIZE(dp.filt_hist.bin), 1};
                             md_array_push(col_data, filt_data, frame_allocator);
                         }
                     } else if (dp.full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
-                        ColData prop_data = {dp.lbl.cstr(), dp.full_prop->data.values, (int)dp.full_prop->data.num_values, dp.full_prop->data.dim[0]};
+                        ColData prop_data = {dp.label, dp.full_prop->data.values, (int)dp.full_prop->data.num_values, dp.full_prop->data.dim[0]};
                         md_array_push(col_data, prop_data, frame_allocator);
                         if (data->timeline.filter.enabled) {
-                            str_t lbl = alloc_printf(frame_allocator, "%.*s(filt)", (int)dp.lbl.length(), dp.lbl.cstr());
+                            str_t lbl = alloc_printf(frame_allocator, "%s(filt)", dp.label);
                             ColData filt_data = {lbl.ptr, dp.filt_prop->data.values, (int)dp.filt_prop->data.num_values, dp.filt_prop->data.dim[0]};
                             md_array_push(col_data, filt_data, frame_allocator);
                         }
@@ -5814,9 +5816,9 @@ static void draw_property_export_window(ApplicationData* data) {
             const int num_props = (int)md_array_size(props);
             if (num_props > 0) {
                 prop_idx = CLAMP(prop_idx, 0, num_props);
-                if (ImGui::BeginCombo("Source", props[prop_idx]->lbl.cstr())) {
+                if (ImGui::BeginCombo("Source", props[prop_idx]->label)) {
                     for (int i = 0; i < num_props; ++i) {
-                        if (ImGui::Selectable(props[i]->lbl.cstr(), prop_idx == i)) {
+                        if (ImGui::Selectable(props[i]->label, prop_idx == i)) {
                             prop_idx = i;
                         }
                     }
@@ -7782,7 +7784,10 @@ static void draw_representations(ApplicationData* data) {
     md_gl_draw_op_t* draw_ops = 0;
     for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
         if (data->representations.buffer[i].enabled) {
-            md_gl_draw_op_t op = { op.rep = &data->representations.buffer[i].md_rep, 0 };
+            md_gl_draw_op_t op = {
+                &data->representations.buffer[i].md_rep,
+                NULL,
+            };
             md_array_push(draw_ops, op, frame_allocator);
         }
     }
@@ -7809,7 +7814,10 @@ static void draw_representations_lean_and_mean(ApplicationData* data, uint32_t m
     md_gl_draw_op_t* draw_ops = 0;
     for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
         if (data->representations.buffer[i].enabled) {
-            md_gl_draw_op_t op = { op.rep = &data->representations.buffer[i].md_rep, 0 };
+            md_gl_draw_op_t op = { 
+                &data->representations.buffer[i].md_rep,
+                NULL,
+            };
             md_array_push(draw_ops, op, frame_allocator);
         }
     }
