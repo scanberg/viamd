@@ -649,7 +649,7 @@ struct ApplicationData {
             bool enabled = true;
             postprocessing::Tonemapping tonemapper = postprocessing::Tonemapping_Filmic;
             float exposure = 1.f;
-            float gamma = 2.2;
+            float gamma = 2.2f;
         } tonemapping;
 
         struct {
@@ -754,7 +754,7 @@ struct ApplicationData {
     struct {
         vec4_t point_color      = {1,1,1,1};
         vec4_t line_color       = {0,1,1,1};
-        vec4_t triangle_color   = {1,1,0,0.7};
+        vec4_t triangle_color   = {1,1,0,0.7f};
     } script;
 
     bool show_script_window = true;
@@ -2028,12 +2028,12 @@ static void interpolate_atomic_properties(ApplicationData* data) {
                 float phi[2] = {src_angles[1][i].phi, src_angles[2][i].phi};
                 float psi[2] = {src_angles[1][i].psi, src_angles[2][i].psi};
 
-                phi[1] = deperiodizef(phi[1], phi[0], TWO_PI);
-                psi[1] = deperiodizef(psi[1], psi[0], TWO_PI);
+                phi[1] = deperiodizef(phi[1], phi[0], (float)TWO_PI);
+                psi[1] = deperiodizef(psi[1], psi[0], (float)TWO_PI);
 
                 float final_phi = lerp(phi[0], phi[1], t);
                 float final_psi = lerp(psi[0], psi[1], t);
-                mol.backbone.angle[i] = {deperiodizef(final_phi, 0, TWO_PI), deperiodizef(final_psi, 0, TWO_PI)};
+                mol.backbone.angle[i] = {deperiodizef(final_phi, 0, (float)TWO_PI), deperiodizef(final_psi, 0, (float)TWO_PI)};
             }
             break;
         }
@@ -2042,17 +2042,17 @@ static void interpolate_atomic_properties(ApplicationData* data) {
                 float phi[4] = {src_angles[0][i].phi, src_angles[1][i].phi, src_angles[2][i].phi, src_angles[3][i].phi};
                 float psi[4] = {src_angles[0][i].psi, src_angles[1][i].psi, src_angles[2][i].psi, src_angles[3][i].psi};
 
-                phi[0] = deperiodizef(phi[0], phi[1], TWO_PI);
-                phi[2] = deperiodizef(phi[2], phi[1], TWO_PI);
-                phi[3] = deperiodizef(phi[3], phi[2], TWO_PI);
+                phi[0] = deperiodizef(phi[0], phi[1], (float)TWO_PI);
+                phi[2] = deperiodizef(phi[2], phi[1], (float)TWO_PI);
+                phi[3] = deperiodizef(phi[3], phi[2], (float)TWO_PI);
 
-                psi[0] = deperiodizef(psi[0], psi[1], TWO_PI);
-                psi[2] = deperiodizef(psi[2], psi[1], TWO_PI);
-                psi[3] = deperiodizef(psi[3], psi[2], TWO_PI);
+                psi[0] = deperiodizef(psi[0], psi[1], (float)TWO_PI);
+                psi[2] = deperiodizef(psi[2], psi[1], (float)TWO_PI);
+                psi[3] = deperiodizef(psi[3], psi[2], (float)TWO_PI);
 
                 float final_phi = cubic_spline(phi[0], phi[1], phi[2], phi[3], t);
                 float final_psi = cubic_spline(psi[0], psi[1], psi[2], psi[3], t);
-                mol.backbone.angle[i] = {deperiodizef(final_phi, 0, TWO_PI), deperiodizef(final_psi, 0, TWO_PI)};
+                mol.backbone.angle[i] = {deperiodizef(final_phi, 0, (float)TWO_PI), deperiodizef(final_psi, 0, (float)TWO_PI)};
             }
             break;
         }
@@ -4355,8 +4355,8 @@ static void draw_shape_space_window(ApplicationData* data) {
         ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_AntiAliased | ImPlotFlags_NoMenus;
         ImPlotAxisFlags axis_flags = ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks;
 
-        const float x_reset[2] = {-0.025, 1.025};
-        const float y_reset[2] = {-0.025, 0.891};
+        const float x_reset[2] = {-0.025f, 1.025f};
+        const float y_reset[2] = {-0.025f, 0.891f};
 
         if (ImPlot::BeginPlot("##Shape Space Plot", ImVec2(-1,-1), flags)) {
             ImPlot::SetupAxesLimits(x_reset[0], x_reset[1], y_reset[0], y_reset[1], ImGuiCond_Once);
@@ -4367,12 +4367,12 @@ static void draw_shape_space_window(ApplicationData* data) {
             const ImVec2 p1 = ImPlot::PlotToPixels(ImPlotPoint(1.0f, 0.0f));
             const ImVec2 p2 = ImPlot::PlotToPixels(ImPlotPoint(0.5f, 0.86602540378f));
             const ImVec2 lin[2] = {
-                ImPlot::PlotToPixels(p0 + ImVec2(-0.2, -0.1)),
-                ImPlot::PlotToPixels(p0 + ImVec2(-0.1, +0.1)),
+                ImPlot::PlotToPixels(p0 + ImVec2(-0.2f, -0.1f)),
+                ImPlot::PlotToPixels(p0 + ImVec2(-0.1f, +0.1f)),
             };
             //const ImVec2 pla = ImPlot::PlotToPixels(p1 + ImVec2(+0.1, +0.1));
-            const ImVec2 iso = ImPlot::PlotToPixels(p2 + ImVec2(+0.0, +0.1));
-            const float iso_rad = ImPlot::PlotToPixels(ImVec2(0.05, 0.05)).x;
+            const ImVec2 iso = ImPlot::PlotToPixels(p2 + ImVec2(+0.0f, +0.1f));
+            const float iso_rad = ImPlot::PlotToPixels(ImVec2(0.05f, 0.05f)).x;
 
             ImPlot::PushPlotClipRect();
             ImPlot::GetPlotDrawList()->AddTriangleFilled(p0, p1, p2, IM_COL32(255,255,255,20));
@@ -4937,10 +4937,10 @@ static void draw_ramachandran_window(ApplicationData* data) {
         const float* filt_sum = data->ramachandran.data.filt.den_sum;
 
         const float ref_iso_values[4][3] = {
-            {0, 0.0005, 0.02},  // 99.95%, 98% for General
-            {0, 0.0020, 0.02},  // 99.80%, 98% for Others
-            {0, 0.0020, 0.02},
-            {0, 0.0020, 0.02},
+            {0, 0.0005f, 0.02f},  // 99.95%, 98% for General
+            {0, 0.0020f, 0.02f},  // 99.80%, 98% for Others
+            {0, 0.0020f, 0.02f},
+            {0, 0.0020f, 0.02f},
         };
 
         const uint32_t ref_iso_level_colors[4][3] = {
@@ -7811,15 +7811,15 @@ static void fill_gbuffer(ApplicationData* data) {
 
     if (!atom_selection_empty) {
         glStencilFunc(GL_EQUAL, 2, 2);
-        postprocessing::blit_color({0, 0, 1, 0.25});
+        postprocessing::blit_color({0, 0, 1, 0.25f});
 
         glStencilFunc(GL_EQUAL, 2, 3);
-        postprocessing::blit_color({0, 0, 0.25, 0.4});
+        postprocessing::blit_color({0, 0, 0.25f, 0.4f});
     }
 
     if (!atom_highlight_empty) {
         glStencilFunc(GL_EQUAL, 4, 4);
-        postprocessing::blit_color({1, 1, 0, 0.25});
+        postprocessing::blit_color({1, 1, 0, 0.25f});
     }
 
     glDisable(GL_STENCIL_TEST);
