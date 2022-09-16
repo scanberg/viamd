@@ -36,7 +36,7 @@ if (MD_LINK_STDLIB_STATIC)
     set(glfw_LIBRARIES ${VIAMD_STDLIBS})
 endif()
 
-add_subdirectory(ext/mold)
+add_subdirectory(ext/mdlib)
 add_subdirectory(ext/glfw)
 add_subdirectory(ext/imgui)
 add_subdirectory(ext/nativefiledialog)
