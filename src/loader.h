@@ -10,6 +10,9 @@ struct md_trajectory_api;
 struct md_bitfield_t;
 
 namespace load {
+    uint32_t     get_supported_extension_count();
+    const str_t* get_supported_extensions();
+
 namespace mol {
     md_molecule_api* get_api(str_t filename);
 }

@@ -142,7 +142,7 @@ inline vec3_t Lab_to_rgb(vec3_t Lab) { return XYZ_to_rgb(Lab_to_XYZ(Lab)); }
 inline vec3_t hcl_to_rgb(float h, float c, float l) { return hcl_to_rgb({h, c, l}); }
 inline vec3_t rgb_to_hcl(float r, float g, float b) { return rgb_to_hcl({r, g, b}); }
 
-enum class ColorMapping { Uniform, Cpk, AtomIndex, ResId, ResIndex, ChainId, ChainIndex, SecondaryStructure, Property };
+enum class ColorMapping { Uniform, Cpk, AtomLabel, AtomIndex, ResId, ResIndex, ChainId, ChainIndex, SecondaryStructure, Property };
 
 inline vec4_t color_from_hash(uint32_t hash, uint32_t num_bins = 0) {
     constexpr float chroma = 0.8f;
@@ -169,6 +169,7 @@ constexpr inline uint32_t convert_color(vec4_t color) {
 
 void color_atoms_uniform(uint32_t* colors, int64_t count, vec4_t uniform_color, const md_bitfield_t* mask = NULL);
 void color_atoms_cpk(uint32_t* colors, int64_t count, const md_molecule_t& mol);
+void color_atoms_label(uint32_t* colors, int64_t count, const md_molecule_t& mol);
 void color_atoms_idx(uint32_t* colors, int64_t count, const md_molecule_t& mol);
 void color_atoms_residue_id(uint32_t* colors, int64_t count, const md_molecule_t& mol);
 void color_atoms_residue_index(uint32_t* colors, int64_t count, const md_molecule_t& mol);

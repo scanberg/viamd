@@ -135,7 +135,7 @@ bool initialize(Context* ctx, int64_t width, int64_t height, const char* title) 
         ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)dejavu_sans_mono_compressed_data, dejavu_sans_mono_compressed_size, size, &config, ranges_characters);
 
         // ICONS
-        const float scl = 0.875f;   // We scale this a bit to better fit within buttons and such.
+        const float scl = 0.75f; // 0.875f;   // We scale this a bit to better fit within buttons and such.
         config.RasterizerMultiply = 0.9f;
         config.MergeMode = true;
         ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)fa_solid_compressed_data, fa_solid_compressed_size, size * scl, &config, ranges_icons);
@@ -234,42 +234,29 @@ void render_imgui(Context* ctx) {
 
 void swap_buffers(Context* ctx) { glfwSwapBuffers((GLFWwindow*)ctx->window.ptr); }
 
-FileDialogResult file_dialog(FileDialogFlags flags, str_t path, str_t filter) {
-    ASSERT(path.len >= 0);
-    ASSERT(filter.len >= 0);
-
-    // Create zero terminated strings
-    path = copy_str(path, default_temp_allocator);
-    filter = copy_str(filter, default_temp_allocator);
-
+bool file_dialog(char* str_buf, int64_t str_cap, FileDialogFlags flags, const char* filter) {    
     nfdchar_t* out_path = NULL;
+    defer { if (out_path) free(out_path); };
+
     nfdresult_t result = NFD_ERROR;
 
-    if (flags & FileDialogFlags_Open) {
-        result = NFD_OpenDialog(filter.ptr, path.ptr, &out_path);
-    } else if (flags & FileDialogFlags_Save) {
-        result = NFD_SaveDialog(filter.ptr, path.ptr, &out_path);
+    const char* default_path = 0;
+
+    if (flags & FileDialog_Open) {
+        result = NFD_OpenDialog(filter, default_path, &out_path);
+    } else if (flags & FileDialog_Save) {
+        result = NFD_SaveDialog(filter, default_path, &out_path);
     }
-
-    free_str(path, default_temp_allocator);
-    free_str(filter, default_temp_allocator);
-
-    FileDialogResult res = {};
 
     if (result == NFD_OKAY) {
-        strncpy(res.path, out_path, ARRAY_SIZE(res.path)-1);
-        res.path_len = strnlen(res.path, ARRAY_SIZE(res.path));
-        convert_backslashes(res.path, ARRAY_SIZE(res.path));
-        goto done;
-    } else if (result == NFD_CANCEL) {
-        res.result = FileDialogResult::Cancel;
-        goto done;
+        strncpy(str_buf, out_path, str_cap);
+        convert_backslashes(str_buf, str_cap);
+        return true;
+    } else if (result == NFD_ERROR) {
+        md_printf(MD_LOG_TYPE_ERROR, "%s\n", NFD_GetError());
     }
-    md_printf(MD_LOG_TYPE_ERROR, "%s\n", NFD_GetError());
-
-done:
-    if (out_path) free(out_path);
-    return res;
+    /* fallthrough for NFD_CANCEL */
+    return false;
 }
 
 }  // namespace application

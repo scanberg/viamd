@@ -77,7 +77,13 @@ void color_atoms_uniform(uint32_t* colors, int64_t count, vec4_t color, const md
 
 void color_atoms_cpk(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
     for (int64_t i = 0; i < count; i++) {
-        colors[i] = md_util_element_cpk_color(mol.atom.element[i]);
+        colors[i] = mol.atom.element ? md_util_element_cpk_color(mol.atom.element[i]) : 0xFFFFFFFFU;
+    }
+}
+
+void color_atoms_label(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
+    for (int64_t i = 0; i < count; ++i) {
+        colors[i] = convert_color(color_from_hash(crc32(mol.atom.name[i].buf, mol.atom.name[i].len)));
     }
 }
 

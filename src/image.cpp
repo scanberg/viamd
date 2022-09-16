@@ -64,21 +64,24 @@ void free_image(image_t* img, md_allocator_i* alloc) {
     img->data = nullptr;
 }
 
-bool read_image(image_t* img, const char* filename, md_allocator_i* alloc) {
+bool read_image(image_t* img, str_t filename, md_allocator_i* alloc) {
     ASSERT(img);
 
     if (img->data) {
         md_print(MD_LOG_TYPE_DEBUG, "Image struct is not empty, possibly leaking memory here");
     }
 
+    // Ensure zero terminated cstr
+    filename = str_copy(filename, default_temp_allocator);
+
     int x, y, channels;
-    uint8_t* tmp_data = stbi_load(filename, &x, &y, &channels, 4);
+    uint8_t* tmp_data = stbi_load(filename.ptr, &x, &y, &channels, 4);
     if (!tmp_data) return false;
 
     void *img_data = md_alloc(alloc, x * y * 4);
     memcpy(img_data, tmp_data, x * y * 4);
 
-    img->width = x;
+    img->width  = x;
     img->height = y;
     img->data = (uint32_t*)img_data;
 
@@ -91,15 +94,15 @@ static void write_func(void* context, void* data, int size) {
     fwrite(data, 1, size, file);
 }
 
-static FILE* open_file(const char* filename) {
-    FILE* file = fopen(filename, "wb");
+static inline FILE* open_file(str_t filename) {
+    FILE* file = (FILE*)md_file_open(filename, MD_FILE_WRITE | MD_FILE_BINARY);
     if (!file) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to open file");
     }
     return file;
 }
 
-bool write_image_jpg(const image_t img, const char* filename, int quality) {
+bool write_image_jpg(const image_t img, str_t filename, int quality) {
     FILE* file = open_file(filename);
     bool result = false;
     if (file) {
@@ -109,7 +112,7 @@ bool write_image_jpg(const image_t img, const char* filename, int quality) {
     return result;
 }
 
-bool write_image_png(const image_t img, const char* filename) {
+bool write_image_png(const image_t img, str_t filename) {
     FILE* file = open_file(filename);
     bool result = false;
     if (file) {
@@ -119,7 +122,7 @@ bool write_image_png(const image_t img, const char* filename) {
     return result;
 }
 
-bool write_image_bmp(const image_t img, const char* filename) {
+bool write_image_bmp(const image_t img, str_t filename) {
     FILE* file = open_file(filename);
     bool result = false;
     if (file) {

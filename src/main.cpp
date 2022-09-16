@@ -7,6 +7,7 @@
 
 #include <md_util.h>
 #include <md_gl.h>
+#include <md_gfx.h>
 #include <md_filter.h>
 #include <md_script.h>
 #include <md_molecule.h>
@@ -135,7 +136,7 @@ constexpr ImGuiKey KEY_RECOMPILE_SHADERS = ImGuiKey_F5;
 constexpr ImGuiKey KEY_TOGGLE_SCREENSHOT_MODE = ImGuiKey_F10;
 constexpr ImGuiKey KEY_SHOW_DEBUG_WINDOW = ImGuiKey_F11;
 
-constexpr str_t FILE_EXTENSION = MAKE_STR("via"); 
+constexpr const char* FILE_EXTENSION = "via"; 
 constexpr uint32_t INVALID_PICKING_IDX = ~0U;
 
 //constexpr uint32_t TEXT_BG_ERROR_COLOR = 0xAA222299;
@@ -223,15 +224,15 @@ struct GBuffer {
 
 struct Representation {
     struct PropertyColorMapping {
-        StrBuf<32> ident = ""; // property identifier
+        char ident[32] = ""; // property identifier
         ImPlotColormap colormap = 0;
         float range_min = 0;
         float range_max = 0;
     };
 
-    StrBuf<32>  name = "rep";
-    StrBuf<256> filt = "all";
-    StrBuf<256> filt_error = "";
+    char name[32] = "rep";
+    char filt[256] = "all";
+    char filt_error[256] = "";
     //StrBuf<256> prop = "";
     //StrBuf<256> prop_error = "";
 
@@ -241,7 +242,6 @@ struct Representation {
     md_gl_representation_t md_rep{};
 
     bool enabled = true;
-    bool show_in_selection = true;
     bool filt_is_dirty = true;
     bool filt_is_valid = false;
     bool filt_is_dynamic = false;
@@ -316,14 +316,12 @@ struct DisplayProperty {
         EvaluationResult* results = {0};
     };
 
-    //StrBuf<32> lbl = {};
     char label[32] = "";
     uint32_t col = 0xFFFFFFFFU;
 
     const float* values = 0;
     md_unit_t unit = {};
 
-    //StrBuf<32> unit_str = {};
     char unit_str[32] = "";
 
     const md_script_property_t* full_prop = NULL;
@@ -347,9 +345,21 @@ struct AtomElementMapping {
     md_element_t elem = 0;
 };
 
+struct LoadDatasetWindowState {
+    char path_buf[2048] = "";
+    bool path_is_valid = false;
+    int  loader_idx = -1;
+    bool load_topology = false;
+    bool load_trajectory = false;
+    bool coarse_grained = false;
+    bool show_window = false;
+};
+
 struct ApplicationData {
     // --- APPLICATION ---
     application::Context ctx {};
+
+    LoadDatasetWindowState load_dataset;
 
     // --- FILES ---
     // for keeping track of open files
@@ -357,6 +367,8 @@ struct ApplicationData {
         StrBuf<1024> molecule{};
         StrBuf<1024> trajectory{};
         StrBuf<1024> workspace{};
+
+        bool coarse_grained = false;
     } files;
 
     // --- CAMERA ---
@@ -372,12 +384,19 @@ struct ApplicationData {
 
         struct {
             vec3_t target_position{};
-            quat_t target_orientation{};
+            quat_t target_orientation = {};
+            float  target_distance = 0;
         } animation;
     } view;
 
+    struct {
+        bool  hide_gui = true;
+        str_t path_to_file = {};
+    } screenshot;
+
     // --- MOLD DATA ---
     struct {
+        md_allocator_i*     mol_alloc = 0;
         md_gl_shaders_t     gl_shaders = {};
         md_gl_shaders_t     gl_shaders_lean_and_mean = {};
         md_gl_molecule_t    gl_mol = {};
@@ -610,10 +629,7 @@ struct ApplicationData {
 
         struct {
             bool enabled = false;
-            struct {
-                float target = 5.0f;
-                float current = 5.0f;
-            } focus_depth;
+            float focus_depth = 10.0f;
             float focus_scale = 10.0f;
         } dof;
 
@@ -897,7 +913,6 @@ static void clear_density_volume(ApplicationData* data);
 static void interpolate_atomic_properties(ApplicationData* data);
 static void update_view_param(ApplicationData* data);
 static void reset_view(ApplicationData* data, bool move_camera = false, bool smooth_transition = false);
-static double compute_avg_ms(double dt);
 
 static void compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, int64_t count);
 
@@ -918,6 +933,7 @@ static void init_occupancy_volume(ApplicationData* data);
 static void draw_representations(ApplicationData* data);
 static void draw_representations_lean_and_mean(ApplicationData* data, uint32_t mask = 0xFFFFFFFFU);
 
+static void draw_load_dataset_window(ApplicationData* data);
 static void draw_main_menu(ApplicationData* data);
 static void draw_context_popup(ApplicationData* data);
 static void draw_selection_query_window(ApplicationData* data);
@@ -937,6 +953,7 @@ static void draw_dataset_window(ApplicationData* data);
 static void draw_debug_window(ApplicationData* data);
 static void draw_property_export_window(ApplicationData* data);
 
+
 static void clear_gbuffer(GBuffer* gbuf);
 static void init_gbuffer(GBuffer* gbuf, int width, int height);
 static void destroy_gbuffer(GBuffer* gbuf);
@@ -949,7 +966,7 @@ static void init_trajectory_data(ApplicationData* data);
 
 static void interrupt_async_tasks(ApplicationData* data);
 
-static bool load_dataset_from_file(ApplicationData* data, str_t file);
+static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md_molecule_api* mol_api = NULL, md_trajectory_api* traj_api = NULL, bool coarse_grained = false);
 
 static void load_workspace(ApplicationData* data, str_t file);
 static void save_workspace(ApplicationData* data, str_t file);
@@ -1033,7 +1050,7 @@ static void modify_selection(ApplicationData* data, md_range_t range, SelectionO
 
 // Global data for application
 static md_allocator_i* frame_allocator = 0;
-static TextEditor editor {};
+static TextEditor editor {};    // We do not want this within the application data since it messes up the layout and therefore the usage of offset_of
 #if DEBUG
 static md_allocator_i* persistent_allocator = md_tracking_allocator_create(default_allocator);
 #elif RELEASE
@@ -1051,6 +1068,8 @@ int main(int, char**) {
     frame_allocator = &stack_interface;
 
     ApplicationData data;
+
+    data.mold.mol_alloc = md_arena_allocator_create(persistent_allocator, MEGABYTES(1));
 
     md_bitfield_init(&data.selection.current_selection_mask, persistent_allocator);
     md_bitfield_init(&data.selection.current_highlight_mask, persistent_allocator);
@@ -1093,6 +1112,8 @@ int main(int, char**) {
 #endif
     md_print(MD_LOG_TYPE_INFO, "Initializing task system...");
     task_system::initialize();
+
+    md_gfx_initialize(data.gbuffer.width, data.gbuffer.height, 0);
 
     md_gl_initialize();
     md_gl_shaders_init(&data.mold.gl_shaders, shader_output_snippet);
@@ -1145,6 +1166,7 @@ int main(int, char**) {
         md_bitfield_clear(&data.selection.current_highlight_mask);
 
         // GUI
+        if (data.load_dataset.show_window) draw_load_dataset_window(&data);
         if (data.representations.show_window) draw_representations_window(&data);
         if (data.density_volume.show_window) draw_density_volume_window(&data);
         if (data.timeline.show_window) draw_timeline_window(&data);
@@ -1528,6 +1550,7 @@ int main(int, char**) {
 
         clear_gbuffer(&data.gbuffer);
         fill_gbuffer(&data);
+        handle_picking(&data);
         immediate::render();
 
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
@@ -1544,8 +1567,6 @@ int main(int, char**) {
         }
 #endif
 
-        handle_picking(&data);
-
         // Activate backbuffer
         glDisable(GL_DEPTH_TEST);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
@@ -1555,9 +1576,21 @@ int main(int, char**) {
 
         apply_postprocessing(data);
 
+        // Render Screenshot of backbuffer without GUI here
+        if (data.screenshot.hide_gui && !str_empty(data.screenshot.path_to_file)) {
+            create_screenshot(&data);
+            data.screenshot.path_to_file = {};
+        }
+
         PUSH_GPU_SECTION("Imgui render")
         application::render_imgui(&data.ctx);
         POP_GPU_SECTION()
+
+        // Render Screenshot of backbuffer with GUI here
+        if (!data.screenshot.hide_gui && !str_empty(data.screenshot.path_to_file)) {
+            create_screenshot(&data);
+            data.screenshot.path_to_file = {};
+        }
 
         // Swap buffers
         application::swap_buffers(&data.ctx);
@@ -1693,7 +1726,7 @@ static void update_display_properties(ApplicationData* data) {
 static void update_density_volume(ApplicationData* data) {
     if (data->density_volume.dvr.tf.dirty) {
         image_t img = { 0 };
-        if (read_image(&img, data->density_volume.dvr.tf.path.cstr(), frame_allocator)) {
+        if (read_image(&img, data->density_volume.dvr.tf.path, frame_allocator)) {
             gl::init_texture_2D(&data->density_volume.dvr.tf.id, img.width, img.height, GL_RGBA8);
             gl::set_texture_2D_data(data->density_volume.dvr.tf.id, img.data, GL_RGBA8);
             data->density_volume.dvr.tf.dirty = false;
@@ -1809,6 +1842,9 @@ static void update_density_volume(ApplicationData* data) {
                 break;
             case ColorMapping::Cpk:
                 color_atoms_cpk(colors, mol.atom.count, mol);
+                break;
+            case ColorMapping::AtomLabel:
+                color_atoms_label(colors, mol.atom.count, mol);
                 break;
             case ColorMapping::AtomIndex:
                 color_atoms_idx(colors, mol.atom.count, mol);
@@ -2073,23 +2109,6 @@ static void interpolate_atomic_properties(ApplicationData* data) {
 }
 
 // #misc
-static double compute_avg_ms(double dt) {
-    constexpr double interval = 0.5f;
-    static double avg = 0.f;
-    static int num_frames = 0;
-    static double t = 0;
-    t += dt;
-    num_frames++;
-
-    if (t > interval) {
-        avg = t / num_frames * 1000.0;
-        t = 0;
-        num_frames = 0;
-    }
-
-    return avg;
-}
-
 static void update_view_param(ApplicationData* data) {
     ViewParam& param = data->view.param;
     param.matrix.previous = param.matrix.current;
@@ -2150,17 +2169,30 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
     const auto& mol = data->mold.mol;
 
     vec3_t aabb_min, aabb_max;
-    compute_aabb(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count);
+    if (data->simulation_box.box != mat3_t{0}) {
+        aabb_min = {0,0,0};
+        aabb_max = data->simulation_box.box * vec3_t{1,1,1};
+    } else {
+        compute_aabb(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count);
+    }
+
     const vec3_t ext = aabb_max - aabb_min;
     const vec3_t cen = (aabb_min + aabb_max) * 0.5f;
-    const vec3_t pos = cen + ext * 3.f;
+    const vec3_t pos = cen + ext * 5.f;
 
     if (move_camera) {
-        if (!smooth_transition) data->view.camera.position = pos;
+        const quat_t ori = quat_from_mat4(look_at(pos, cen, {0, 1, 0}));
+        const float dist = vec3_length(pos - cen);
+
         data->view.animation.target_position = pos;
-        data->view.camera.focus_distance = vec3_length(pos - cen);
-        data->view.camera.orientation = quat_from_mat4(look_at(data->view.animation.target_position, cen, {0, 1, 0}));
-        //data->view.animation.target_orientation = quat_from_mat4(look_at(data->view.animation.target_position, cen, { 0, 1, 0 }));
+        data->view.animation.target_orientation = ori;
+        data->view.animation.target_distance = dist;
+
+        if (!smooth_transition) {
+            data->view.camera.position = pos;
+            data->view.camera.orientation = ori;
+            data->view.camera.focus_distance = dist;
+        }
     }
 
     data->view.camera.near_plane = 1.f;
@@ -2342,49 +2374,40 @@ static bool filter_expression(ApplicationData* data, str_t expr, md_bitfield_t* 
 static void draw_main_menu(ApplicationData* data) {
     ASSERT(data);
     bool new_clicked = false;
+    char path_buf[4096] = "";
 
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("Load Data", "CTRL+L")) {
-                auto res = application::file_dialog(application::FileDialogFlags_Open, {}, MAKE_STR("pdb,gro,xtc,xyz,xmol,arc"));
-                if (res.result == application::FileDialogResult::Ok) {
-                    if (load_dataset_from_file(data, str_from_cstr(res.path))) {
-                        if (!data->representations.buffer) {
-                            create_representation(data); // Create default representation
-                        }
-                        data->animation = {};
-                        reset_view(data, true);
-                    }
-                }
+                data->load_dataset.show_window = true;
             }
             if (ImGui::MenuItem("Open Workspace", "CTRL+O")) {
-                auto res = application::file_dialog(application::FileDialogFlags_Open, {}, FILE_EXTENSION);
-                if (res.result == application::FileDialogResult::Ok) {
-                    load_workspace(data, str_from_cstr(res.path));
+                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialog_Open, FILE_EXTENSION)) {
+                    load_workspace(data, str_from_cstr(path_buf));
                 }
             }
             if (ImGui::MenuItem("Save Workspace", "CTRL+S")) {
                 if (!data->files.workspace) {
-                    auto res = application::file_dialog(application::FileDialogFlags_Save, {}, FILE_EXTENSION);
-                    if (res.result == application::FileDialogResult::Ok) {
-                        str_t ext = extract_ext(str_from_cstr(res.path));
+                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialog_Save, FILE_EXTENSION)) {
+                        int path_len = (int)strnlen(path_buf, sizeof(path_buf));
+                        str_t ext = extract_ext({path_buf, path_len});
                         if (str_empty(ext)) {
-                            snprintf(res.path + res.path_len, ARRAY_SIZE(res.path) - res.path_len, ".%.*s", (uint32_t)FILE_EXTENSION.len, FILE_EXTENSION.ptr);
+                            path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".%s", FILE_EXTENSION);
                         }
-                        save_workspace(data, str_from_cstr(res.path));
+                        save_workspace(data, {path_buf, path_len});
                     }
                 } else {
                     save_workspace(data, data->files.workspace);
                 }
             }
             if (ImGui::MenuItem("Save As")) {
-                auto res = application::file_dialog(application::FileDialogFlags_Save, {}, FILE_EXTENSION);
-                if (res.result == application::FileDialogResult::Ok) {
-                    str_t ext = extract_ext(str_from_cstr(res.path));
+                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialog_Save, FILE_EXTENSION)) {
+                    int path_len = (int)strnlen(path_buf, sizeof(path_buf));
+                    str_t ext = extract_ext({path_buf, path_len});
                     if (str_empty(ext)) {
-                        snprintf(res.path + res.path_len, (size_t)(ARRAY_SIZE(res.path) - res.path_len), ".%.*s", (uint32_t)FILE_EXTENSION.len, FILE_EXTENSION.ptr);
+                        path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".%s", FILE_EXTENSION);
                     }
-                    save_workspace(data, str_from_cstr(res.path));
+                    save_workspace(data, {path_buf, path_len});
                 }
             }
             ImGui::Separator();
@@ -2565,7 +2588,7 @@ ImGui::EndGroup();
                     }
 
                     for (int j = 0; j < i; ++j) {
-                        if (compare_str(sel.name, data->selection.stored_selections[j].name)) {
+                        if (str_equal(sel.name, data->selection.stored_selections[j].name)) {
                             is_valid = false;
                             snprintf(err_buf, sizeof(err_buf), "identifier '%s' is already taken.", sel.name.cstr());
                             break;
@@ -2610,8 +2633,22 @@ ImGui::EndGroup();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Screenshot")) {
+            //ImGui::Checkbox("Hide GUI", &data->screenshot.hide_gui);
             if (ImGui::MenuItem("Take Screenshot")) {
-                create_screenshot(data);
+                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialog_Save, "jpg;png;bmp")) {
+                    int path_len = (int)strnlen(path_buf, sizeof(path_buf));
+                    str_t ext = extract_ext({path_buf, path_len});
+                    if (str_empty(ext)) {
+                        path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".jpg");
+                        ext = MAKE_STR("jpg");
+                    }
+                    if (str_equal_cstr_ignore_case(ext, "jpg") || str_equal_cstr_ignore_case(ext, "png") || str_equal_cstr_ignore_case(ext, "bmp")) {
+                        data->screenshot.path_to_file = str_copy({path_buf, path_len}, frame_allocator);
+                    }
+                    else {
+                        md_print(MD_LOG_TYPE_ERROR, "Supplied image extension is not supported");
+                    }
+                }
             }
             ImGui::EndMenu();
         }
@@ -2676,9 +2713,22 @@ ImGui::EndGroup();
         }
         {
             // Fps counter
-            const double ms = compute_avg_ms(data->ctx.timing.delta_s);
-            char fps_buf[32];
-            snprintf(fps_buf, ARRAY_SIZE(fps_buf), "%.2f ms (%.1f fps)", ms, 1000.f / ms);
+            static int num_frames = 0;
+            static double acc_ms  = 0;
+            static double avg_ms  = 0;
+
+            double ms = (data->ctx.timing.delta_s * 1000);
+            acc_ms += ms;
+            num_frames += 1;
+
+            if (acc_ms > 500) {
+                avg_ms = acc_ms / num_frames;
+                acc_ms = 0;
+                num_frames = 0;
+            }
+
+            char fps_buf[64];
+            snprintf(fps_buf, ARRAY_SIZE(fps_buf), "%.2f ms (%.1f fps)", avg_ms, 1000.f / avg_ms);
             const float w = ImGui::CalcTextSize(fps_buf).x;
             ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - w);
             ImGui::Text("%s", fps_buf);
@@ -2689,6 +2739,86 @@ ImGui::EndGroup();
     if (new_clicked) ImGui::OpenPopup("Warning New");
 }
 
+
+
+void draw_load_dataset_window(ApplicationData* data) {
+    LoadDatasetWindowState& state = data->load_dataset;
+    
+    ImGui::SetNextWindowSize(ImVec2(300, 200), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Load Dataset", &state.show_window)) {
+        bool path_changed = false;
+        bool path_invalid = !state.path_is_valid && state.path_buf[0] != '\0';
+        const str_t* loader_ext = load::get_supported_extensions();
+        const int loader_ext_count = (int)load::get_supported_extension_count();
+
+        if (path_invalid) ImGui::PushInvalid();
+        if (ImGui::InputText("##path", state.path_buf, sizeof(state.path_buf))) {
+            path_changed = true;
+        }
+        if (path_invalid) ImGui::PopInvalid();
+
+        ImGui::SameLine();
+        if (ImGui::Button("Browse")) {
+            if (application::file_dialog(state.path_buf, sizeof(state.path_buf), application::FileDialog_Open)) {
+                path_changed = true;
+            }
+        }
+
+        str_t path = str_from_cstr(state.path_buf);
+        if (path_changed) {
+            state.path_is_valid = md_os_path_exists(path) && !md_os_path_is_directory(path);
+            str_t ext = extract_ext(path);
+
+            // Try to assign loader_idx from extension
+            state.loader_idx = 0;
+            for (int i = 1; i < loader_ext_count; ++i) {
+                if (str_equal_ignore_case(ext, loader_ext[i])) {
+                    state.loader_idx = i;
+                    break;
+                }
+            }
+        }
+
+        if (ImGui::BeginCombo("Loader", state.loader_idx > -1 ? loader_ext[state.loader_idx].ptr : "")) {
+            for (int i = 0; i < loader_ext_count; ++i) {
+                if (ImGui::Selectable(loader_ext[i].ptr, state.loader_idx == i)) {
+                    state.loader_idx = i;
+                }
+            }
+            ImGui::EndCombo();
+        }
+
+        ImGui::Checkbox("Coarse Grained", &state.coarse_grained);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Enable if the dataset is coarse grained");
+        }
+
+        bool load_enabled = (state.path_is_valid && state.loader_idx > -1);
+        if (!load_enabled) ImGui::PushDisabled();
+        if (ImGui::Button("Load")) {
+            // A bit cheeky, write a temp string with .[extension] to query for loaders
+            char buf[32];
+            int len = snprintf(buf, sizeof(buf), ".%s", loader_ext[state.loader_idx].ptr);
+            str_t ext = {buf, len};
+            if (load_dataset_from_file(data, path, load::mol::get_api(ext), load::traj::get_api(ext), state.coarse_grained)) {
+                if (!data->representations.buffer) {
+                    create_representation(data); // Create default representation
+                }
+                data->animation = {};
+                reset_view(data, true, true);
+            }
+            state.show_window = false;
+        }
+        if (!load_enabled) ImGui::PopDisabled();
+
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            state.show_window = false;
+        }
+    }
+    ImGui::End();
+}
+
 void clear_atom_elem_mappings(ApplicationData* data) {
     md_array_shrink(data->dataset.atom_element_remappings, 0);
 }
@@ -2697,7 +2827,7 @@ AtomElementMapping* add_atom_elem_mapping(ApplicationData* data, str_t lbl, md_e
     // Check if we already have a mapping for the label -> overwrite
     int64_t i = 0;
     for (; i < md_array_size(data->dataset.atom_element_remappings); ++i) {
-        if (compare_str(lbl, data->dataset.atom_element_remappings[i].lbl)) break;
+        if (str_equal(lbl, data->dataset.atom_element_remappings[i].lbl)) break;
     }
     if (i == md_array_size(data->dataset.atom_element_remappings)) {
         AtomElementMapping mapping = {
@@ -2718,7 +2848,7 @@ void apply_atom_elem_mappings(ApplicationData* data) {
         float radius = md_util_element_vdw_radius(elem);
 
         for (int64_t i = 0; i < data->mold.mol.atom.count; ++i) {
-            if (compare_str(lbl, data->mold.mol.atom.name[i])) {
+            if (str_equal(lbl, data->mold.mol.atom.name[i])) {
                 data->mold.mol.atom.element[i] = elem;
                 data->mold.mol.atom.radius[i] = radius;
                 data->mold.dirty_buffers |= MolBit_DirtyRadius;
@@ -3204,28 +3334,53 @@ static void draw_representations_window(ApplicationData* data) {
         bool update_rep = false;
         auto& rep = data->representations.buffer[i];
         const float item_width = CLAMP(ImGui::GetContentRegionAvail().x - 90.f, 100.f, 300.f);
-        StrBuf<128> name;
-        snprintf(name.cstr(), name.capacity(), "%s###ID", rep.name.cstr());
+        char label[128];
+        snprintf(label, sizeof(label), "%s###ID", rep.name);
 
         ImGui::PushID(i);
-        if (ImGui::CollapsingHeader(name.cstr())) {
-            if (ImGui::Checkbox("enabled", &rep.enabled)) {
-                data->representations.atom_visibility_mask_dirty = true;
-            }
-            ImGui::SameLine();
-            ImGui::Checkbox("show in sel.", &rep.show_in_selection);
-            ImGui::SameLine();
-            if (ImGui::DeleteButton("remove")) {
-                remove_representation(data, i);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("clone")) {
-                clone_representation(data, rep);
-            }
+        
+        const float pad = 3.0f;
+        const float size = ImGui::GetFontSize() + pad * 2;
+        const float spacing = 2.f;
+        const float total_button_size = (size + 1) * 3;
 
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, pad));
+        bool draw_content = ImGui::TreeNodeEx("##label", ImGuiTreeNodeFlags_FramePadding);
+        ImGui::PopStyleVar();
+
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - total_button_size);
+        ImGui::InputText("##name", rep.name, sizeof(rep.name));
+
+        ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - total_button_size, spacing);
+        const char* eye_icon = rep.enabled ? (const char*)ICON_FA_EYE : (const char*)ICON_FA_EYE_SLASH;
+        
+        const ImVec2 btn_size = {size, size};
+        if (ImGui::Button(eye_icon, btn_size)) {
+            rep.enabled = !rep.enabled;
+            data->representations.atom_visibility_mask_dirty = true;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Show/Hide");
+        }
+        ImGui::SameLine(0, spacing);
+        if (ImGui::Button((const char*)ICON_FA_COPY, btn_size)) {
+            clone_representation(data, rep);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Duplicate");
+        }
+        ImGui::SameLine(0, spacing);
+        if (ImGui::DeleteButton((const char*)ICON_FA_XMARK, btn_size)) {
+            remove_representation(data, i);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Remove");
+        }
+
+        if (draw_content) {
             ImGui::PushItemWidth(item_width);
-            ImGui::InputText("name", rep.name.cstr(), rep.name.capacity());
-            if (ImGui::InputQuery("filter", rep.filt.beg(), rep.filt.capacity(), rep.filt_is_valid, rep.filt_error.cstr())) {
+            if (ImGui::InputQuery("filter", rep.filt, sizeof(rep.filt), rep.filt_is_valid, rep.filt_error)) {
                 rep.filt_is_dirty = true;
                 update_rep = true;
             }
@@ -3233,7 +3388,7 @@ static void draw_representations_window(ApplicationData* data) {
                 update_rep = true;
             }
             if (ImGui::Combo("color", (int*)(&rep.color_mapping),
-                             "Uniform Color\0CPK\0Atom Idx\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0Property\0")) {
+                             "Uniform Color\0CPK\0Atom Label\0Atom Idx\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0Property\0")) {
                 update_rep = true;
             }
             if (rep.color_mapping == ColorMapping::Property) {
@@ -3306,7 +3461,7 @@ static void draw_representations_window(ApplicationData* data) {
             }
             ImGui::PushItemWidth(item_width);
             if (rep.type == RepresentationType::SpaceFill || rep.type == RepresentationType::Licorice) {
-                update_rep |= ImGui::SliderFloat("scale", &rep.radius, 0.1f, 2.f);
+                update_rep |= ImGui::SliderFloat("scale", &rep.radius, 0.1f, 4.f);
             }
             if (rep.type == RepresentationType::Ribbons) {
                 update_rep |= ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f);
@@ -3316,6 +3471,8 @@ static void draw_representations_window(ApplicationData* data) {
             ImGui::PopItemWidth();
             ImGui::Spacing();
             ImGui::Separator();
+
+            ImGui::TreePop();
         }
 
         ImGui::PopID();
@@ -3336,10 +3493,10 @@ static void draw_atom_info_window(const ApplicationData& data, int atom_idx) {
 
     int local_idx = atom_idx;
     const vec3_t pos = { mol.atom.x[atom_idx], mol.atom.y[atom_idx], mol.atom.z[atom_idx] };
-    str_t label = mol.atom.name[atom_idx];
-    str_t elem = md_util_element_name(mol.atom.element[atom_idx]);
-    str_t symbol = md_util_element_symbol(mol.atom.element[atom_idx]);
-    int valence = mol.atom.valence[atom_idx];
+    str_t label = mol.atom.name ? mol.atom.name[atom_idx] : str_t{};
+    str_t elem = mol.atom.element ? md_util_element_name(mol.atom.element[atom_idx]) : str_t{};
+    str_t symbol = mol.atom.element ? md_util_element_symbol(mol.atom.element[atom_idx]) : str_t{};
+    int valence = mol.atom.valence ? mol.atom.valence[atom_idx] : 0;
 
     int res_idx = -1;
     str_t res_name = {};
@@ -3369,7 +3526,9 @@ static void draw_atom_info_window(const ApplicationData& data, int atom_idx) {
     char buf[256];
     int len = 0;
     len += snprintf(buf, sizeof(buf), "atom[%i][%i]: %.*s %.*s %.*s (%.2f, %.2f, %.2f)\n", atom_idx, local_idx, (int)label.len, label.ptr, (int)elem.len, elem.ptr, (int)symbol.len, symbol.ptr, pos.x, pos.y, pos.z);
-    len += snprintf(buf + len, sizeof(buf) - len, "covalent-valence: %i\n", valence);
+    if (mol.atom.valence) {
+        len += snprintf(buf + len, sizeof(buf) - len, "covalent-valence: %i\n", valence);
+    }
     if (res_idx) {
         len += snprintf(buf + len, sizeof(buf) - len, "res[%i]: %.*s %i\n", res_idx, (int)res_name.len, res_name.ptr, res_id);
     }
@@ -4102,12 +4261,12 @@ static void draw_distribution_window(ApplicationData* data) {
             int len = snprintf(label, sizeof(label), "%s ", prop.label);
             if (!unit_empty(prop.unit)) {
                 char unit_buf[64];
-                int unit_len = unit_print_long(unit_buf, sizeof(unit_buf), prop.unit);
+                int unit_len = unit_print(unit_buf, sizeof(unit_buf), prop.unit);
                 snprintf(label + len, MAX(0, (int)sizeof(label) - len), "(%*s)", unit_len, unit_buf);
             }
 
             if (ImPlot::BeginPlot(label, ImVec2(-1,plot_height), flags)) {
-                ImPlot::SetupAxesLimits(min_x, max_x, 0, max_y * 1.1, ImGuiCond_Always);
+                ImPlot::SetupAxesLimits(min_x, max_x, 0, max_y * 1.1, ImGuiCond_Once);
                 ImPlot::SetupAxes(0, 0, axis_flags_x, axis_flags_y);
                 ImPlot::SetupFinish();
 
@@ -4935,9 +5094,9 @@ static void draw_density_volume_window(ApplicationData* data) {
                 ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
                 ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.0f, 1.0f));
                 if (ImGui::ImageButton((void*)(intptr_t)data->density_volume.dvr.tf.id, button_size)) {
-                    auto res = application::file_dialog(application::FileDialogFlags_Open, {}, MAKE_STR("png,jpg"));
-                    if (res.result == application::FileDialogResult::Ok) {
-                        data->density_volume.dvr.tf.path = res.path;
+                    char path[4096] = "";
+                    if (application::file_dialog(path, sizeof(path), application::FileDialog_Open, "png,jpg")) {
+                        data->density_volume.dvr.tf.path = path;
                         data->density_volume.dvr.tf.dirty = true;
                     }
                 }
@@ -4993,7 +5152,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                     if (ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0Cartoon\0")) {
                         data->density_volume.dirty_rep = true;
                     }
-                    if (ImGui::Combo("color", (int*)(&rep.colormap), "Uniform Color\0CPK\0Atom Idx\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0")) {
+                    if (ImGui::Combo("color", (int*)(&rep.colormap), "Uniform Color\0CPK\0Atom Label\0Atom Idx\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0")) {
                         data->density_volume.dirty_rep = true;
                     }
                     if (rep.colormap == ColorMapping::Uniform) {
@@ -5169,7 +5328,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                 },
                 .depth_of_field = {
                             .enabled = data->visuals.dof.enabled,
-                            .focus_depth = data->visuals.dof.focus_depth.current,
+                            .focus_depth = data->visuals.dof.focus_depth,
                             .focus_scale = data->visuals.dof.focus_scale,
                 },
                 .temporal_reprojection = {
@@ -5331,7 +5490,6 @@ static void draw_debug_window(ApplicationData* data) {
     ImGui::End();
 }
 
-
 static void draw_script_editor_window(ApplicationData* data) {
     ASSERT(data);
 
@@ -5340,29 +5498,28 @@ static void draw_script_editor_window(ApplicationData* data) {
         if (ImGui::BeginMenuBar())
         {
             if (ImGui::BeginMenu("File")) {
+                char path_buf[1024] = "";
                 if (ImGui::MenuItem("Load")) {
-                    application::FileDialogResult file_result = application::file_dialog(application::FileDialogFlags_Open, {}, MAKE_STR("txt"));
-                    if (file_result.result == application::FileDialogResult::Ok) {
-                        str_t txt = load_textfile({file_result.path, file_result.path_len}, default_allocator);
-                        defer { free_str(txt, default_allocator); };
+                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialog_Open, "txt")) {
+                        str_t txt = load_textfile(str_from_cstr(path_buf), frame_allocator);
                         std::string str(txt.ptr, txt.len);
                         editor.SetText(str);
                     }
                 }
                 if (ImGui::MenuItem("Save")) {
                     auto textToSave = editor.GetText();
-                    application::FileDialogResult file_result = application::file_dialog(application::FileDialogFlags_Open, {}, MAKE_STR("txt"));
-                    if (file_result.result == application::FileDialogResult::Ok) {
-                        StrBuf<1024> path = str_t{file_result.path, file_result.path_len};
+                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialog_Save, "txt")) {
+                        int path_len = (int)strnlen(path_buf, sizeof(path_buf));
+                        str_t path = str_t{path_buf, path_len};
                         if (str_empty(extract_ext(path))) {
-                            path += ".txt";
+                            path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".txt");
                         }
                         md_file_o* file = md_file_open(path, MD_FILE_WRITE);
                         if (file) {
                             md_file_write(file, textToSave.c_str(), textToSave.length());
                             md_file_close(file);
                         } else {
-                            md_printf(MD_LOG_TYPE_ERROR, "Failed to open file '%s' for saving script", path.cstr());
+                            md_printf(MD_LOG_TYPE_ERROR, "Failed to open file '%s' for saving script", path_buf);
                         }
                     }
                 }
@@ -5640,20 +5797,21 @@ static void draw_property_export_window(ApplicationData* data) {
     };
 
     struct ExportFormat {
-        str_t label;
-        str_t extension;
+        const char* label;
+        const char* extension;
     };
 
     ExportFormat table_formats[] {
-        {MAKE_STR("XVG"), MAKE_STR("xvg")},
-        {MAKE_STR("CSV"), MAKE_STR("csv")}
+        {"XVG", "xvg"},
+        {"CSV", "csv"}
     };
 
     ExportFormat volume_formats[] {
-        {MAKE_STR("Gaussian Cube"), MAKE_STR("cube")},
+        {"Gaussian Cube", "cube"},
     };
 
     if (ImGui::Begin("Property Export", &data->show_property_export_window)) {
+        char path_buf[1024] = "";
         static ExportType type = Temporal;
         ImGui::PushItemWidth(200);
         ImGui::Combo("Data Type", (int*)(&type), "Temporal\0Distribution\0Density Volume\0");
@@ -5752,12 +5910,12 @@ static void draw_property_export_window(ApplicationData* data) {
             ImGui::Text("File format");
             ImGui::Combo("##Export Format", (int*)(&format), "XVG\0CSV\0");
             if (ImGui::Button("Export")) {
-                application::FileDialogResult file_dialog = application::file_dialog(application::FileDialogFlags_Save, {}, table_formats[format].extension);
-                if (file_dialog.result == application::FileDialogResult::Ok) {
-                    StrBuf<1024> path = str_t{file_dialog.path, file_dialog.path_len};
-                    if (str_empty(extract_ext(path))) {
-                        path += ".";
-                        path += table_formats[format].extension;
+
+                //application::FileDialogResult file_dialog = application::file_dialog(application::FileDialog_Save, {}, table_formats[format].extension);
+                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialog_Save, table_formats[format].extension)) {
+                    int path_len = (int)strnlen(path_buf, sizeof(path_buf));
+                    if (str_empty(extract_ext({path_buf, path_len}))) {
+                        path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, "%s", table_formats[format].extension);
                     }
 
                     const float** column_data = 0;
@@ -5790,10 +5948,10 @@ static void draw_property_export_window(ApplicationData* data) {
 
                     switch (format) {
                     case 0:
-                        export_xvg(column_data, column_labels, md_array_size(column_data), num_rows, path);
+                        export_xvg(column_data, column_labels, md_array_size(column_data), num_rows, {path_buf, path_len});
                         break;
                     case 1:
-                        export_csv(column_data, column_labels, md_array_size(column_data), num_rows, path);
+                        export_csv(column_data, column_labels, md_array_size(column_data), num_rows, {path_buf, path_len});
                         break;
                     default:
                         ASSERT(false);
@@ -5833,24 +5991,22 @@ static void draw_property_export_window(ApplicationData* data) {
                 }
 
                 format = CLAMP(format, 0, ARRAY_SIZE(volume_formats));
-                if (ImGui::BeginCombo("Format", volume_formats[format].label.ptr)) {
+                if (ImGui::BeginCombo("Format", volume_formats[format].label)) {
                     for (int i = 0; i < (int)ARRAY_SIZE(volume_formats); ++i) {
-                        if (ImGui::Selectable(volume_formats[i].label.ptr, format == i)) format = i;
+                        if (ImGui::Selectable(volume_formats[i].label, format == i)) format = i;
                     }
                     ImGui::EndCombo();
                 }
 
                 if (ImGui::Button("Export")) {
-                    application::FileDialogResult file_dialog = application::file_dialog(application::FileDialogFlags_Save, {}, volume_formats[format].extension);
-                    if (file_dialog.result == application::FileDialogResult::Ok) {
-                        StrBuf<1024> path = str_t{file_dialog.path, file_dialog.path_len};
-                        if (str_empty(extract_ext(path))) {
-                            path += ".";
-                            path += volume_formats[format].extension;
+                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialog_Save, volume_formats[format].extension)) {
+                        int path_len = (int)strnlen(path_buf, sizeof(path_buf));
+                        if (str_empty(extract_ext({path_buf, path_len}))) {
+                            path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, "%s", volume_formats[format].extension);
                         }
                         switch (format) {
                         case 0:
-                            export_cube(*data, temporal_filter ? props[prop_idx]->filt_prop : props[prop_idx]->filt_prop, path);
+                            export_cube(*data, temporal_filter ? props[prop_idx]->filt_prop : props[prop_idx]->filt_prop, {path_buf, path_len});
                             break;
                         case 1:
                             // @TODO: Export dat + raw
@@ -5904,14 +6060,14 @@ static void init_gbuffer(GBuffer* gbuf, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glBindTexture(GL_TEXTURE_2D, gbuf->deferred.normal);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16, width, height, 0, GL_RG, GL_UNSIGNED_SHORT, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, width, height, 0, GL_RG, GL_UNSIGNED_SHORT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glBindTexture(GL_TEXTURE_2D, gbuf->deferred.velocity);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32F, width, height, 0, GL_RG, GL_FLOAT, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, width, height, 0, GL_RG, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -6168,13 +6324,11 @@ static void free_molecule_data(ApplicationData* data) {
     ASSERT(data);
     interrupt_async_tasks(data);
 
-    if (data->mold.mol.atom.count) {
-        md_molecule_api* api = load::mol::get_api(data->files.molecule);
-        if (api) {
-            api->free(&data->mold.mol, persistent_allocator);
-        }
-        data->files.molecule = "";
-    }
+    //md_molecule_free(&data->mold.mol, persistent_allocator);
+    md_arena_allocator_reset(data->mold.mol_alloc);
+    memset(&data->mold.mol, 0, sizeof(data->mold.mol));
+
+    data->files.molecule = "";
     free_trajectory_data(data);
 
     md_bitfield_clear(&data->selection.current_selection_mask);
@@ -6349,34 +6503,37 @@ static void launch_prefetch_job(ApplicationData* data) {
 #endif
 }
 
-static bool load_dataset_from_file(ApplicationData* data, str_t filename) {
+static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md_molecule_api* mol_api, md_trajectory_api* traj_api, bool coarse_grained) {
     ASSERT(data);
 
-    filename = md_os_path_make_canonical(filename, frame_allocator);
+    path_to_file = md_os_path_make_canonical(path_to_file, frame_allocator);
 
-    if (filename.len) {
-        if (compare_str(data->files.molecule, filename)) {
+    if (path_to_file.len) {
+        if (str_equal(data->files.molecule, path_to_file)) {
             // File already loaded
             return true;
         }
 
-        md_molecule_api*    mol_api = load::mol::get_api(filename);
-        md_trajectory_api* traj_api = load::traj::get_api(filename);
+        if (!mol_api) mol_api = load::mol::get_api(path_to_file);
+        if (!traj_api) traj_api = load::traj::get_api(path_to_file);
 
         if (mol_api) {
             interrupt_async_tasks(data);
             free_molecule_data(data);
             free_trajectory_data(data);
-            data->files.molecule = filename;
+            data->files.molecule = "";
             data->files.trajectory = "";
 
-            md_printf(MD_LOG_TYPE_INFO, "Attempting to load molecular data from file '%.*s'", filename.len, filename.ptr);
-            if (!mol_api->init_from_file(&data->mold.mol, filename, persistent_allocator)) {
+            md_printf(MD_LOG_TYPE_INFO, "Attempting to load molecular data from file '%.*s'", path_to_file.len, path_to_file.ptr);
+            if (!mol_api->init_from_file(&data->mold.mol, path_to_file, data->mold.mol_alloc)) {
                 md_print(MD_LOG_TYPE_ERROR, "Failed to load molecular data");
-                data->files.molecule = "";
                 return false;
             }
 
+            data->files.molecule = path_to_file;
+            // @NOTE: If the dataset is coarse-grained, then postprocessing must be aware
+            md_util_postprocess_flags_t flags = coarse_grained ? MD_UTIL_POSTPROCESS_COARSE_GRAINED : MD_UTIL_POSTPROCESS_ALL;
+            md_util_postprocess_molecule(&data->mold.mol, data->mold.mol_alloc, flags);
             init_molecule_data(data);
 
             // @NOTE: Some files contain both atomic coordinates and trajectory
@@ -6393,12 +6550,12 @@ static bool load_dataset_from_file(ApplicationData* data, str_t filename) {
                 return false;
             }
 
-            if (compare_str(data->files.trajectory, filename)) {
+            if (str_equal(data->files.trajectory, path_to_file)) {
                 // Same as loaded file
                 return true;
             }
 
-            return load_trajectory_data(data, filename);
+            return load_trajectory_data(data, path_to_file);
         } else {
             md_print(MD_LOG_TYPE_ERROR, "File extension not supported");
         }
@@ -6409,15 +6566,15 @@ static bool load_dataset_from_file(ApplicationData* data, str_t filename) {
 
 // ### WORKSPACE ###
 static RepresentationType get_rep_type(str_t str) {
-    if (compare_str_cstr(str, "SPACE_FILL"))
+    if (str_equal_cstr(str, "SPACE_FILL"))
         return RepresentationType::SpaceFill;
-    else if (compare_str_cstr(str, "LICORICE"))
+    else if (str_equal_cstr(str, "LICORICE"))
         return RepresentationType::Licorice;
-    else if (compare_str_cstr(str, "BALL_AND_STICK"))    // Ball and stick is removed for now
+    else if (str_equal_cstr(str, "BALL_AND_STICK"))    // Ball and stick is removed for now
         return RepresentationType::SpaceFill;
-    else if (compare_str_cstr(str, "RIBBONS"))
+    else if (str_equal_cstr(str, "RIBBONS"))
         return RepresentationType::Ribbons;
-    else if (compare_str_cstr(str, "CARTOON"))
+    else if (str_equal_cstr(str, "CARTOON"))
         return RepresentationType::Cartoon;
     else
         return RepresentationType::SpaceFill;
@@ -6441,19 +6598,23 @@ static str_t get_rep_type_name(RepresentationType type) {
 }
 
 static ColorMapping get_color_mapping(str_t str) {
-    if (compare_str_cstr(str, "UNIFORM"))
+    if (str_equal_cstr(str, "UNIFORM"))
         return ColorMapping::Uniform;
-    else if (compare_str_cstr(str, "CPK"))
+    else if (str_equal_cstr(str, "CPK"))
         return ColorMapping::Cpk;
-    else if (compare_str_cstr(str, "RES_ID"))
+    else if (str_equal_cstr(str, "ATOM_LABEL"))
+        return ColorMapping::AtomLabel;
+    else if (str_equal_cstr(str, "ATOM_INDEX"))
+        return ColorMapping::AtomIndex;
+    else if (str_equal_cstr(str, "RES_ID"))
         return ColorMapping::ResId;
-    else if (compare_str_cstr(str, "RES_INDEX"))
+    else if (str_equal_cstr(str, "RES_INDEX"))
         return ColorMapping::ResIndex;
-    else if (compare_str_cstr(str, "CHAIN_ID"))
+    else if (str_equal_cstr(str, "CHAIN_ID"))
         return ColorMapping::ChainId;
-    else if (compare_str_cstr(str, "CHAIN_INDEX"))
+    else if (str_equal_cstr(str, "CHAIN_INDEX"))
         return ColorMapping::ChainIndex;
-    else if (compare_str_cstr(str, "SECONDARY_STRUCTURE"))
+    else if (str_equal_cstr(str, "SECONDARY_STRUCTURE"))
         return ColorMapping::SecondaryStructure;
     else
         return ColorMapping::Cpk;
@@ -6465,6 +6626,10 @@ static str_t get_color_mapping_name(ColorMapping mapping) {
             return MAKE_STR("UNIFORM");
         case ColorMapping::Cpk:
             return MAKE_STR("CPK");
+        case ColorMapping::AtomLabel:
+            return MAKE_STR("ATOM_LABEL");
+        case ColorMapping::AtomIndex:
+            return MAKE_STR("ATOM_INDEX");
         case ColorMapping::ResId:
             return MAKE_STR("RES_ID");
         case ColorMapping::ResIndex:
@@ -6526,8 +6691,9 @@ struct SerializationArray {
 };
 
 SerializationObject serialization_targets[] = {
-    {"[Files]", "MoleculeFile",             SerializationType_Path,     offsetof(ApplicationData, files.molecule),    sizeof(ApplicationData::files.molecule)},
+    {"[Files]", "MoleculeFile",             SerializationType_Path,     offsetof(ApplicationData, files.molecule),     sizeof(ApplicationData::files.molecule)},
     {"[Files]", "TrajectoryFile",           SerializationType_Path,     offsetof(ApplicationData, files.trajectory),   sizeof(ApplicationData::files.trajectory)},
+    {"[Files]", "CoarseGrained",            SerializationType_Bool,     offsetof(ApplicationData, files.coarse_grained)},
     
     {"[Animation]", "Frame",                SerializationType_Double,   offsetof(ApplicationData, animation.frame)},
     {"[Animation]", "Fps",                  SerializationType_Float,    offsetof(ApplicationData, animation.fps)},
@@ -6585,13 +6751,13 @@ SerializationArray serialization_array_groups[] = {
     {"[Selection]",             offsetof(ApplicationData, selection.stored_selections),     sizeof(Selection),          serialize_create_selection},
 };
 
-#define COMPARE(str, ref) (compare_str_cstr_n(str, ref"", sizeof(ref) - 1))
-#define EXTRACT(str, ref) (compare_str_cstr_n(str, ref"", sizeof(ref) - 1) && (line = trim_whitespace(substr(line, sizeof(ref) - 1))).len > 0)
+#define COMPARE(str, ref) (str_equal_cstr_n(str, ref"", sizeof(ref) - 1))
+#define EXTRACT(str, ref) (str_equal_cstr_n(str, ref"", sizeof(ref) - 1) && (line = str_trim_whitespace(substr(line, sizeof(ref) - 1))).len > 0)
 #define EXTRACT_PARAM_LINE(line, txt) (c_txt.len && c_txt[0] != '[' && (extract_line(&line, &c_txt)))
 
 static const SerializationObject* find_serialization_target(str_t group, str_t label) {
     for (int64_t i = 0; i < (int64_t)ARRAY_SIZE(serialization_targets); ++i) {
-        if (compare_str_cstr(group, serialization_targets[i].group) && compare_str_cstr(label, serialization_targets[i].label)) {
+        if (str_equal_cstr(group, serialization_targets[i].group) && str_equal_cstr(label, serialization_targets[i].label)) {
             return &serialization_targets[i];
         }
     }
@@ -6600,7 +6766,7 @@ static const SerializationObject* find_serialization_target(str_t group, str_t l
 
 static const SerializationArray* find_serialization_array_group(str_t group) {
     for (int64_t i = 0; i < ARRAY_SIZE(serialization_array_groups); ++i) {
-        if (compare_str_cstr(group, serialization_array_groups[i].group)) {
+        if (str_equal_cstr(group, serialization_array_groups[i].group)) {
             return &serialization_array_groups[i];
         }
     }
@@ -6610,7 +6776,7 @@ static const SerializationArray* find_serialization_array_group(str_t group) {
 static void deserialize_object(const SerializationObject* target, char* ptr, str_t* buf, str_t filename) {
     str_t line;
     if (extract_line(&line, buf)) {
-        str_t arg = trim_whitespace(line);
+        str_t arg = str_trim_whitespace(line);
 
         switch (target->type) {
         case SerializationType_Bool:
@@ -6691,7 +6857,7 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
             // Script starts with """
             // and ends with """
             str_t token = MAKE_STR("\"\"\"");
-            if (compare_str_n(arg, token, token.len)) {
+            if (str_equal_n(arg, token, token.len)) {
                 // Roll back buf to arg + 3
                 const char* beg = arg.ptr + token.len;
                 buf->len = buf->end() - beg;
@@ -6719,7 +6885,7 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
             // Bitfield starts with ###
             // and ends with ###
             str_t token = MAKE_STR("###");
-            if (compare_str_n(arg, token, token.len)) {
+            if (str_equal_n(arg, token, token.len)) {
                 // Roll back buf to arg + 3
                 const char* beg = arg.ptr + token.len;
                 buf->len = buf->end() - beg;
@@ -6757,7 +6923,7 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
 
 static void load_workspace(ApplicationData* data, str_t filename) {
     str_t txt = load_textfile(filename, frame_allocator);
-    defer { free_str(txt, frame_allocator); };
+    defer { str_free(txt, frame_allocator); };
 
     if (!txt.len) {
         md_printf(MD_LOG_TYPE_ERROR, "Could not open workspace file: '%.*s", (int)filename.len, filename.ptr);
@@ -6775,14 +6941,15 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     str_t c_txt = txt;
     str_t line = {};
 
-    str_t cur_molecule_file = copy_str(data->files.molecule, frame_allocator);
-    str_t cur_trajectory_file = copy_str(data->files.trajectory, frame_allocator);
+    str_t cur_molecule_file = str_copy(data->files.molecule, frame_allocator);
+    str_t cur_trajectory_file = str_copy(data->files.trajectory, frame_allocator);
+    bool  cur_coarse_grained = data->files.coarse_grained;
 
     const SerializationArray* arr_group = NULL;
     void* ptr = 0;
 
     while (extract_line(&line, &c_txt)) {
-        line = trim_whitespace(line);
+        line = str_trim_whitespace(line);
         if (line[0] == '[') {
             group = line;
             arr_group = find_serialization_array_group(group);
@@ -6794,7 +6961,7 @@ static void load_workspace(ApplicationData* data, str_t filename) {
         } else {
             int64_t loc = find_char(line, '=');
             if (loc != -1) {
-                str_t label = trim_whitespace(substr(line, 0, loc));
+                str_t label = str_trim_whitespace(substr(line, 0, loc));
                 const SerializationObject* target = find_serialization_target(group, label);
                 if (target) {
                     // Move read pointer back 'loc+1' => after '='.
@@ -6811,21 +6978,26 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     data->view.animation.target_position = data->view.camera.position;
     data->files.workspace = filename;
 
-    str_t new_molecule_file = copy_str(data->files.molecule, frame_allocator);
-    str_t new_trajectory_file = copy_str(data->files.trajectory, frame_allocator);
+    str_t new_molecule_file   = str_copy(data->files.molecule, frame_allocator);
+    str_t new_trajectory_file = str_copy(data->files.trajectory, frame_allocator);
+    bool  new_coarse_grained  = data->files.coarse_grained;
 
     // When we de-serialize we overwrite the two following paths, even though they are not loaded.
     // So we copy them back to their original values.
     data->files.molecule = cur_molecule_file;
     data->files.trajectory = cur_trajectory_file;
+    data->files.coarse_grained = cur_coarse_grained;
 
-    if (new_molecule_file.len && load_dataset_from_file(data, new_molecule_file)) {
+    md_molecule_api* mol_api = load::mol::get_api(new_molecule_file);
+    md_trajectory_api* traj_api = load::traj::get_api(new_trajectory_file);
+
+    if (new_molecule_file.len && load_dataset_from_file(data, new_molecule_file, mol_api, traj_api, new_coarse_grained)) {
         init_all_representations(data);
         update_all_representations(data);
     }
 
     if (new_trajectory_file.len) {
-        load_dataset_from_file(data, new_trajectory_file);
+        load_dataset_from_file(data, new_trajectory_file, mol_api, traj_api);
     }
 
     apply_atom_elem_mappings(data);
@@ -6988,6 +7160,7 @@ static void save_workspace(ApplicationData* data, str_t filename) {
 
 void create_screenshot(ApplicationData* data) {
     ASSERT(data);
+    // @NOTE(Robin): Package this as a main(render thread) task to ensure that it is done when it has been 
     image_t img = {0};
     init_image(&img, data->gbuffer.width, data->gbuffer.height, frame_allocator);
     defer { free_image(&img, frame_allocator); };
@@ -7013,33 +7186,28 @@ void create_screenshot(ApplicationData* data) {
         }
     }
 
-    application::FileDialogResult file_res = application::file_dialog(application::FileDialogFlags_Save, {}, MAKE_STR("jpg;png;bmp"));
-    if (file_res.result == application::FileDialogResult::Ok) {
-        str_t ext = extract_ext({file_res.path, file_res.path_len});
-        if (str_empty(ext)) {
-            snprintf(file_res.path + file_res.path_len, ARRAY_SIZE(file_res.path) - file_res.path_len, ".jpg");
-            ext = MAKE_STR("jpg");
-        }
-        if (compare_str_cstr_ignore_case(ext, "jpg")) {
-            const int quality = 95;
-            write_image_jpg(img, file_res.path, quality);
-        } else if (compare_str_cstr_ignore_case(ext, "png")) {
-            write_image_png(img, file_res.path);
-        } else if (compare_str_cstr_ignore_case(ext, "bmp")) {
-            write_image_bmp(img, file_res.path);
-        } else {
-            md_print(MD_LOG_TYPE_ERROR, "Supplied image format is not supported");
-        }
+    str_t ext = extract_ext(data->screenshot.path_to_file);
+    if (str_equal_cstr_ignore_case(ext, "jpg")) {
+        const int quality = 95;
+        write_image_jpg(img, data->screenshot.path_to_file, quality);
+    } else if (str_equal_cstr_ignore_case(ext, "png")) {
+        write_image_png(img, data->screenshot.path_to_file);
+    } else if (str_equal_cstr_ignore_case(ext, "bmp")) {
+        write_image_bmp(img, data->screenshot.path_to_file);
+    } else {
+        md_printf(MD_LOG_TYPE_ERROR, "Could not match extension when saving screenshot");
     }
 }
 
 // #representation
 static Representation* create_representation(ApplicationData* data, RepresentationType type, ColorMapping color_mapping, str_t filter) {
     ASSERT(data);
-    Representation rep;
+    Representation rep = {};
     rep.type = type;
     rep.color_mapping = color_mapping;
-    rep.filt = filter;   
+    if (!str_empty(filter)) {
+        strncpy(rep.filt, filter.ptr, MIN(filter.len, sizeof(rep.filt)));
+    }
     init_representation(data, &rep);
     update_representation(data, &rep);
     return md_array_push(data->representations.buffer, rep, persistent_allocator);
@@ -7109,6 +7277,9 @@ static void update_representation(ApplicationData* data, Representation* rep) {
         case ColorMapping::Cpk:
             color_atoms_cpk(colors, mol.atom.count, mol);
             break;
+        case ColorMapping::AtomLabel:
+            color_atoms_label(colors, mol.atom.count, mol);
+            break;
         case ColorMapping::AtomIndex:
             color_atoms_idx(colors, mol.atom.count, mol);
             break;
@@ -7131,7 +7302,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
             // @TODO: Map colors accordingly
             //color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
             if (rep->prop) {
-                color_atoms_uniform(colors, mol.atom.count, {1,1,1,1});
+                memset(colors, 0xFFFFFFFF, bytes);
                 const float* values = rep->prop->data.values;
                 if (rep->prop->data.aggregate) {
                     const int dim = rep->prop->data.dim[0];
@@ -7189,7 +7360,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
     }
 
     if (rep->filt_is_dirty) {
-        rep->filt_is_valid = filter_expression(data, rep->filt, &rep->atom_mask, &rep->filt_is_dynamic, rep->filt_error.beg(), rep->filt_error.capacity());
+        rep->filt_is_valid = filter_expression(data, str_from_cstr(rep->filt), &rep->atom_mask, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
         rep->filt_is_dirty = false;
     }
 
@@ -7400,10 +7571,11 @@ static void handle_camera_interaction(ApplicationData* data) {
             const vec2_t mouse_delta = {delta.x, delta.y};
             const vec2_t mouse_coord = {coord.x, coord.y};
             const float  scroll_delta = ImGui::GetIO().MouseWheel;
+
             TrackballControllerInput input;
             input.rotate_button = ImGui::IsMouseDown(ImGuiMouseButton_Left);
-            input.pan_button = ImGui::IsMouseDown(ImGuiMouseButton_Right);
-            input.dolly_button = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
+            input.pan_button    = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+            input.dolly_button  = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
             input.mouse_coord_curr = mouse_coord;
             input.mouse_coord_prev = mouse_coord - mouse_delta;
             input.screen_size = {(float)data->ctx.window.width, (float)data->ctx.window.height};
@@ -7413,6 +7585,7 @@ static void handle_camera_interaction(ApplicationData* data) {
             if (camera_controller_trackball(&data->view.camera.position, &data->view.camera.orientation, &data->view.camera.focus_distance, input, data->view.trackball_param)) {
                 data->view.animation.target_position = data->view.camera.position;
                 data->view.animation.target_orientation = data->view.camera.orientation;
+                data->view.animation.target_distance = data->view.camera.focus_distance;
             }
 
             if (ImGui::GetIO().MouseDoubleClicked[0]) {
@@ -7425,8 +7598,7 @@ static void handle_camera_interaction(ApplicationData* data) {
                 }
             }
 
-            data->visuals.dof.focus_depth.target = data->view.camera.focus_distance;
-
+            data->visuals.dof.focus_depth = data->view.camera.focus_distance;
             
             if (ImGui::GetMouseDragDelta(ImGuiMouseButton_Right) == ImVec2(0,0) &&
                 ImGui::IsMouseReleased(ImGuiMouseButton_Right))
@@ -7444,29 +7616,39 @@ static void handle_camera_interaction(ApplicationData* data) {
 }
 
 static void handle_camera_animation(ApplicationData* data) {
-    const float dt = (float)MIN(data->ctx.timing.delta_s, 0.033);
-    {
-        // #camera-translation
-        constexpr float speed = 10.0f;
-        const vec3_t vel = (data->view.animation.target_position - data->view.camera.position) * speed;
-        data->view.camera.position = data->view.camera.position + vel * dt;
-    }
-    {
-        //data->view.camera.orientation = quat_slerp(data->view.camera.orientation, data->view.animation.target_orientation, 0.99f);
-    }
-    {
-        // #focus-depth
-        constexpr float speed = 10.0f;
-        const float vel = (data->visuals.dof.focus_depth.target - data->visuals.dof.focus_depth.current) * speed;
-        data->visuals.dof.focus_depth.current += vel * dt;
-    }
+    // We use an exponential interpolation of the deltas with a common factor
+    const float interpolation_factor = 0.05f;
+
+    vec3_t& current_pos = data->view.camera.position;
+    vec3_t& target_pos  = data->view.animation.target_position;
+
+    quat_t& current_ori = data->view.camera.orientation;
+    quat_t& target_ori  = data->view.animation.target_orientation;
+
+    float&  current_dist = data->view.camera.focus_distance;
+    float&  target_dist  = data->view.animation.target_distance;
+
+    // We want to interpolate along an arc which is formed by maintaining a distance to the look_at position and smoothly interpolating the orientation,
+    // This means that 
+    // We linearly interpolate a look_at position which is implicitly defined by position, orientation and distance
+
+    const vec3_t current_look_at = current_pos - current_ori * vec3_t{0, 0, current_dist};
+    const vec3_t target_look_at  = target_pos  -  target_ori * vec3_t{0, 0,  target_dist};
+
+    const vec3_t look_at = lerp(current_look_at, target_look_at, interpolation_factor);
+    current_dist = lerp(current_dist, target_dist, interpolation_factor);
+
+    current_ori = quat_slerp(current_ori, target_ori, interpolation_factor);
+    current_pos = look_at + current_ori * vec3_t{0, 0, current_dist};
+        
+    data->visuals.dof.focus_depth = current_dist;
 #if 0
-        ImGui::Begin("Camera Debug Info");
-        ImGui::Text("lin vel [%.2f %.2f %.2f]", vel.x, vel.y, vel.z);
-        ImGui::Text("lin cur [%.2f %.2f %.2f]", data->view.camera.position.x, data->view.camera.position.y, data->view.camera.position.z);
-        ImGui::Text("lin tar [%.2f %.2f %.2f]", data->view.animation.target_position.x, data->view.animation.target_position.y, data->view.animation.target_position.z);
-        ImGui::Text("ang cur [%.2f %.2f %.2f %.2f]", data->view.camera.orientation.x, data->view.camera.orientation.y, data->view.camera.orientation.z, data->view.camera.orientation.w);
-        ImGui::End();
+    ImGui::Begin("Camera Debug Info");
+    ImGui::Text("lin vel [%.2f %.2f %.2f]", vel.x, vel.y, vel.z);
+    ImGui::Text("lin cur [%.2f %.2f %.2f]", data->view.camera.position.x, data->view.camera.position.y, data->view.camera.position.z);
+    ImGui::Text("lin tar [%.2f %.2f %.2f]", data->view.animation.target_position.x, data->view.animation.target_position.y, data->view.animation.target_position.z);
+    ImGui::Text("ang cur [%.2f %.2f %.2f %.2f]", data->view.camera.orientation.x, data->view.camera.orientation.y, data->view.camera.orientation.z, data->view.camera.orientation.w);
+    ImGui::End();
 #endif
 }
 
@@ -7722,8 +7904,6 @@ static void handle_picking(ApplicationData* data) {
                 data->picking.world_coord = mat4_unproject({coord.x, coord.y, data->picking.depth}, data->view.param.matrix.inverse.view_proj_jittered, viewport);
             }
 #else
-            //coord -= data->view.param.jitter.current * 2.0f;
-            //coord += 0.5f;
             data->picking = read_picking_data(&data->gbuffer, (int)coord.x, (int)coord.y);
             const vec4_t viewport = {0, 0, (float)data->gbuffer.width, (float)data->gbuffer.height};
             data->picking.world_coord = mat4_unproject({coord.x, coord.y, data->picking.depth}, data->view.param.matrix.inverse.view_proj_jittered, viewport);
@@ -7756,7 +7936,7 @@ static void apply_postprocessing(const ApplicationData& data) {
     desc.tonemapping.gamma = data.visuals.tonemapping.gamma;
 
     desc.depth_of_field.enabled = data.visuals.dof.enabled;
-    desc.depth_of_field.focus_depth = data.visuals.dof.focus_depth.current;
+    desc.depth_of_field.focus_depth = data.visuals.dof.focus_depth;
     desc.depth_of_field.focus_scale = data.visuals.dof.focus_scale;
 
     constexpr float MOTION_BLUR_REFERENCE_DT = 1.0f / 60.0f;

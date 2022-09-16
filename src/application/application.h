@@ -4,7 +4,7 @@
 #include <core/md_str.h>
 #include <core/md_vec_math.h>
 
-#include "IconsFontAwesome5.h"
+#include "IconsFontAwesome6.h"
 
 namespace application {
 
@@ -52,18 +52,18 @@ void swap_buffers(Context* ctx);
 typedef uint32_t FileDialogFlags;
 
 enum FileDialogFlags_ {
-    FileDialogFlags_Open = 0x1,
-    FileDialogFlags_Save = 0x2,
-    FileDialogFlags_Directory = 0x4
+    FileDialog_Open = 0x1,
+    FileDialog_Save = 0x2,
+    FileDialog_Dir  = 0x4
 };
 
-struct FileDialogResult {
-    enum Result { Ok, Cancel };
-    Result result;
-    int64_t path_len;
-    char path[512];
-};
 
-FileDialogResult file_dialog(FileDialogFlags flags, str_t default_path = {}, str_t filter = {});
+// Opens a file system file dialogue which prompts the user to either open or save files/directories.
+// returns true if successful and false if it fails or is canceled by the user.
+// path_buf is a pointer to a string buffer which the null-terminated path is written to
+// path_cap is the capacity of the string buffer
+// flags represents the type of dialogue to be opened, e.g. FileDialog_Save to save a file, FileDialog_Open | FileDialog_Dir to open a directory.
+// filter is a null-terminated string containing comma separated extensions to be applied as a filter for the files: e.g. "jpg,png,bmp" to limit the scope of files to files with endings .jpg, .png or .bmp
+bool file_dialog(char* path_buf, int64_t path_cap, FileDialogFlags flags, const char* filter = 0);
 
 }  // namespace application
