@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-INCLUDE(ext/mold/cmake/common.cmake)
+INCLUDE(ext/mdlib/cmake/common.cmake)
 
 project(viamd)
 
