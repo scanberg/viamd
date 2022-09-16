@@ -66,14 +66,14 @@ source_group("gfx" FILES ${GFX_FILES})
 add_executable(viamd ${OSX_BUNDLE} ${SRC_FILES} ${APP_FILES} ${GFX_FILES})
 
 
-set(VIAMD_RESOURCE_DST_DIR "${CMAKE_BINARY_DIR}")
+set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
 if (CMAKE_C_COMPILER_ID STREQUAL "MSVC")
-    set(VIAMD_RESOURCE_DST_DIR "${CMAKE_BINARY_DIR}/$<CONFIG>")
+    set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>")
 endif()
 
-create_copy_resource_dir_target(viamd_copy_shaders  "${CMAKE_CURRENT_SOURCE_DIR}/shaders"  "${VIAMD_RESOURCE_DST_DIR}/shaders")
-create_copy_resource_dir_target(viamd_copy_images   "${CMAKE_CURRENT_SOURCE_DIR}/images"   "${VIAMD_RESOURCE_DST_DIR}/images")
-create_copy_resource_dir_target(viamd_copy_datasets "${CMAKE_CURRENT_SOURCE_DIR}/datasets" "${VIAMD_RESOURCE_DST_DIR}/datasets")
+create_copy_resource_dir_target(viamd_copy_shaders  "${CMAKE_CURRENT_SOURCE_DIR}/shaders"  "${VIAMD_BIN_DIR}/shaders")
+create_copy_resource_dir_target(viamd_copy_images   "${CMAKE_CURRENT_SOURCE_DIR}/images"   "${VIAMD_BIN_DIR}/images")
+create_copy_resource_dir_target(viamd_copy_datasets "${CMAKE_CURRENT_SOURCE_DIR}/datasets" "${VIAMD_BIN_DIR}/datasets")
 
 add_dependencies(viamd viamd_copy_shaders viamd_copy_images viamd_copy_datasets)
 
@@ -100,6 +100,9 @@ target_include_directories(viamd
         ${CMAKE_CURRENT_SOURCE_DIR}/ext/gl3w
         ${CMAKE_CURRENT_SOURCE_DIR}/ext/enkiTS/src
 )
+
+set_target_properties(viamd PROPERTIES
+    VS_DEBUGGER_WORKING_DIRECTORY "${VIAMD_BIN_DIR}")
 
 target_link_libraries(viamd
     gl3w

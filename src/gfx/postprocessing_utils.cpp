@@ -27,12 +27,6 @@
 
 #include "postprocessing_utils.h"
 
-//#include <core/types.h>
-//#include <core/common.h>
-//#include <core/log.h>
-//#include <core/math_utils.h>
-//#include <core/string_utils.h>
-
 #include <core/md_str.h>
 #include <core/md_log.h>
 #include <gfx/gl_utils.h>
