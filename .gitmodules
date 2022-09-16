@@ -3,7 +3,7 @@
 	url = https://github.com/glfw/glfw
 [submodule "ext/imgui"]
 	path = ext/imgui
-	url = https://github.com/ocornut/imgui.git
+	url = https://github.com/ocornut/imgui
 [submodule "ext/gl3w"]
 	path = ext/gl3w
 	url = https://github.com/skaslev/gl3w
