@@ -2739,13 +2739,15 @@ ImGui::EndGroup();
     if (new_clicked) ImGui::OpenPopup("Warning New");
 }
 
-
-
 void draw_load_dataset_window(ApplicationData* data) {
     LoadDatasetWindowState& state = data->load_dataset;
     
     ImGui::SetNextWindowSize(ImVec2(300, 200), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Load Dataset", &state.show_window)) {
+    if (state.show_window) {
+        ImGui::OpenPopup("Load Dataset");
+    }
+
+    if (ImGui::BeginPopupModal("Load Dataset", &state.show_window)) {
         bool path_changed = false;
         bool path_invalid = !state.path_is_valid && state.path_buf[0] != '\0';
         const str_t* loader_ext = load::get_supported_extensions();
@@ -2815,8 +2817,8 @@ void draw_load_dataset_window(ApplicationData* data) {
         if (ImGui::Button("Cancel")) {
             state.show_window = false;
         }
+        ImGui::EndPopup();
     }
-    ImGui::End();
 }
 
 void clear_atom_elem_mappings(ApplicationData* data) {
@@ -3270,6 +3272,7 @@ static void draw_animation_control_window(ApplicationData* data) {
     ASSERT(data->timeline.x_values);
     ASSERT(md_array_size(data->timeline.x_values) == num_frames);
 
+    ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Animation")) {
         ImGui::Text("Num Frames: %i", num_frames);
 
@@ -3320,6 +3323,8 @@ static void draw_animation_control_window(ApplicationData* data) {
 }
 
 static void draw_representations_window(ApplicationData* data) {
+
+    ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
     ImGui::Begin("Representations", &data->representations.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
     if (ImGui::Button("create new")) {
         create_representation(data);
@@ -4326,6 +4331,8 @@ static void draw_distribution_window(ApplicationData* data) {
 }
 
 static void draw_shape_space_window(ApplicationData* data) {
+
+    ImGui::SetNextWindowSize({300,350}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Shape Space", &data->shape_space.show_window, ImGuiWindowFlags_MenuBar)) {
         if (ImGui::BeginMenuBar()) {
             if (ImGui::BeginMenu("Settings")) {
@@ -4560,6 +4567,8 @@ static void draw_shape_space_window(ApplicationData* data) {
 }
 
 static void draw_ramachandran_window(ApplicationData* data) {
+
+    ImGui::SetNextWindowSize({300,350}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Ramachandran", &data->ramachandran.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_MenuBar)) {
         enum RamachandranDisplayMode {
             IsoLevels,
@@ -5493,6 +5502,7 @@ static void draw_debug_window(ApplicationData* data) {
 static void draw_script_editor_window(ApplicationData* data) {
     ASSERT(data);
 
+    ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Script Editor", &data->show_script_window, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_MenuBar)) {
         ImGui::SetWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
         if (ImGui::BeginMenuBar())
@@ -6060,7 +6070,7 @@ static void init_gbuffer(GBuffer* gbuf, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glBindTexture(GL_TEXTURE_2D, gbuf->deferred.normal);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, width, height, 0, GL_RG, GL_UNSIGNED_SHORT, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, width, height, 0, GL_RG, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);

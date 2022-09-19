@@ -981,26 +981,28 @@ void TextEditor::Render()
 				}
 			}
 
-			auto markerIt = mMarkers.find(lineNo + 1);
-			if (markerIt != mMarkers.end()) {
-				// We need to find the deepest marker with text and only render that text
-				int depth = -1;
-				for (const auto& marker : markerIt->second) {
-					auto begCoord = Coordinates(lineNo, marker.begCol);
-					auto endCoord = Coordinates(lineNo, marker.endCol);
-					auto beg = ImVec2(lineStartScreenPos.x + mTextStart + 2.0f * scrollX + TextDistanceToLineStart(begCoord), lineStartScreenPos.y);
-					auto end = ImVec2(lineStartScreenPos.x + mTextStart + 2.0f * scrollX + TextDistanceToLineStart(endCoord), lineStartScreenPos.y + mCharAdvance.y);
+			if (ImGui::IsWindowFocused()) {
+				auto markerIt = mMarkers.find(lineNo + 1);
+				if (markerIt != mMarkers.end()) {
+					// We need to find the deepest marker with text and only render that text
+					int depth = -1;
+					for (const auto& marker : markerIt->second) {
+						auto begCoord = Coordinates(lineNo, marker.begCol);
+						auto endCoord = Coordinates(lineNo, marker.endCol);
+						auto beg = ImVec2(lineStartScreenPos.x + mTextStart + 2.0f * scrollX + TextDistanceToLineStart(begCoord), lineStartScreenPos.y);
+						auto end = ImVec2(lineStartScreenPos.x + mTextStart + 2.0f * scrollX + TextDistanceToLineStart(endCoord), lineStartScreenPos.y + mCharAdvance.y);
 
-					if (!marker.onlyShowBgOnMouseOver) {
-						drawList->AddRectFilled(beg, end, ImColor(marker.bgColor));
-					}
+						if (!marker.onlyShowBgOnMouseOver) {
+							drawList->AddRectFilled(beg, end, ImColor(marker.bgColor));
+						}
 
-					if (ImGui::IsMouseHoveringRect(beg, end)) {
-						if (marker.depth > depth) {
-							depth = marker.depth;
-							mHoveredMarker = &marker;
-							hoverBeg = beg;
-							hoverEnd = end;
+						if (ImGui::IsMouseHoveringRect(beg, end)) {
+							if (marker.depth > depth) {
+								depth = marker.depth;
+								mHoveredMarker = &marker;
+								hoverBeg = beg;
+								hoverEnd = end;
+							}
 						}
 					}
 				}
