@@ -2120,8 +2120,10 @@ static void update_view_param(ApplicationData* data) {
     param.resolution = {(float)data->gbuffer.width, (float)data->gbuffer.height};
 
     param.matrix.current.view = camera_world_to_view_matrix(data->view.camera);
+    param.matrix.inverse.view = camera_view_to_world_matrix(data->view.camera);
+
     if (data->view.mode == CameraMode::Perspective) {
-        param.matrix.current.proj = camera_perspective_projection_matrix(data->view.camera, data->gbuffer.width, data->gbuffer.height);
+        param.matrix.current.proj = camera_perspective_projection_matrix(data->view.camera, (float)data->gbuffer.width / (float)data->gbuffer.height);
     } else {
         const float aspect_ratio = (float)data->gbuffer.width / (float)data->gbuffer.height;
         const float h = data->view.camera.focus_distance * tanf(data->view.camera.fov_y * 0.5f);
@@ -2136,27 +2138,26 @@ static void update_view_param(ApplicationData* data) {
         param.jitter.next    = data->view.jitter.sequence[(i + 1) % ARRAY_SIZE(data->view.jitter.sequence)] - 0.5f;
         param.jitter.current = data->view.jitter.sequence[i] - 0.5f;
         if (data->view.mode == CameraMode::Perspective) {
-            param.matrix.current.proj_jittered = camera_perspective_projection_matrix(data->view.camera, data->gbuffer.width, data->gbuffer.height,
-                param.jitter.current.x, param.jitter.current.y);
+            const vec2_t j = param.jitter.current;
+            const int w = data->gbuffer.width;
+            const int h = data->gbuffer.height;
+            param.matrix.current.proj_jittered = camera_perspective_projection_matrix(data->view.camera, w, h, j.x, j.y);
+            param.matrix.inverse.proj_jittered = camera_inverse_perspective_projection_matrix(data->view.camera, w, h, j.x, j.y);
         } else {
             const float aspect_ratio = (float)data->gbuffer.width / (float)data->gbuffer.height;
             const float h = data->view.camera.focus_distance * tanf(data->view.camera.fov_y * 0.5f);
             const float w = aspect_ratio * h;
-            const float scale_x = w / data->gbuffer.width * 2.0f;
-            const float scale_y = h / data->gbuffer.height * 2.0f;
-            const float j_x = param.jitter.current.x * scale_x;
-            const float j_y = param.jitter.current.y * scale_y;
-            param.matrix.current.proj_jittered = param.matrix.current.proj =
-                camera_orthographic_projection_matrix(-w + j_x, w + j_x, -h + j_y, h + j_y, data->view.camera.near_plane, data->view.camera.far_plane);
+            const vec2_t scl = {w / data->gbuffer.width * 2.0f, h / data->gbuffer.height * 2.0f};
+            const vec2_t j = param.jitter.current * scl;
+            param.matrix.current.proj_jittered = camera_orthographic_projection_matrix(-w + j.x, w + j.x, -h + j.y, h + j.y, data->view.camera.near_plane, data->view.camera.far_plane);
+            param.matrix.inverse.proj_jittered = camera_inverse_orthographic_projection_matrix(-w + j.x, w + j.x, -h + j.y, h + j.y, data->view.camera.near_plane, data->view.camera.far_plane);
         }
     }
 
+    // @TODO Remove these, these are superflous
     param.matrix.current.view_proj = param.matrix.current.proj * param.matrix.current.view;
     param.matrix.current.view_proj_jittered = param.matrix.current.proj_jittered * param.matrix.current.view;
 
-    param.matrix.inverse.view = mat4_inverse(param.matrix.current.view);
-    param.matrix.inverse.proj = mat4_inverse(param.matrix.current.proj);
-    param.matrix.inverse.proj_jittered = mat4_inverse(param.matrix.current.proj_jittered);
     param.matrix.inverse.view_proj = mat4_inverse(param.matrix.current.view_proj);
     param.matrix.inverse.view_proj_jittered = mat4_inverse(param.matrix.current.view_proj_jittered);
 
@@ -5255,7 +5256,8 @@ static void draw_density_volume_window(ApplicationData* data) {
         }
 
         mat4_t view_mat = camera_world_to_view_matrix(data->density_volume.camera);
-        mat4_t proj_mat = camera_perspective_projection_matrix(data->density_volume.camera, (int)canvas_sz.x, (int)canvas_sz.y);
+        mat4_t proj_mat = camera_perspective_projection_matrix(data->density_volume.camera, (float)canvas_sz.x / (float)canvas_sz.y);
+        mat4_t inv_proj_mat = camera_inverse_perspective_projection_matrix(data->density_volume.camera, (float)canvas_sz.x / (float)canvas_sz.y);
 
         clear_gbuffer(&gbuf);
 
@@ -5356,19 +5358,16 @@ static void draw_density_volume_window(ApplicationData* data) {
                     .current = {
                     .view = view_mat,
                     .proj = proj_mat,
-                    .proj_jittered = proj_mat,
                     .view_proj = mat4_mul(proj_mat, view_mat),
-                    .view_proj_jittered = mat4_mul(proj_mat, view_mat),
                     .norm = view_mat,
                 },
                 .inverse = {
-                        .proj = mat4_inverse(proj_mat),
-                        .proj_jittered = mat4_inverse(proj_mat),
+                    .proj = inv_proj_mat,
                 }
                 },
-                    .clip_planes = {
-                        .near = data->density_volume.camera.near_plane,
-                        .far = data->density_volume.camera.far_plane,
+                .clip_planes = {
+                    .near = data->density_volume.camera.near_plane,
+                    .far = data->density_volume.camera.far_plane,
                 },
                 .fov_y = data->density_volume.camera.fov_y,
                 .resolution = {canvas_sz.x, canvas_sz.y}
