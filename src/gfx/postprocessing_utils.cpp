@@ -1396,7 +1396,9 @@ void apply_inverse_aa_tonemapping(GLuint color_tex) {
 }
 
 void blit_static_velocity(GLuint depth_tex, const ViewParam& view_param) {
-    mat4_t curr_clip_to_prev_clip_mat = view_param.matrix.previous.view_proj_jittered * view_param.matrix.inverse.view_proj_jittered;
+
+    //mat4_t curr_clip_to_prev_clip_mat = view_param.matrix.previous.view_proj_jittered * view_param.matrix.inverse.view_proj_jittered;
+    mat4_t curr_clip_to_prev_clip_mat = view_param.matrix.previous.proj_jittered * view_param.matrix.previous.view * view_param.matrix.inverse.view * view_param.matrix.inverse.proj;
 
 	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, depth_tex);

@@ -240,6 +240,7 @@ struct Representation {
     ColorMapping color_mapping = ColorMapping::Cpk;
     md_bitfield_t atom_mask{};
     md_gl_representation_t md_rep{};
+    md_gfx_handle_t gfx_rep = {};
 
     bool enabled = true;
     bool filt_is_dirty = true;
@@ -400,6 +401,7 @@ struct ApplicationData {
         md_gl_shaders_t     gl_shaders = {};
         md_gl_shaders_t     gl_shaders_lean_and_mean = {};
         md_gl_molecule_t    gl_mol = {};
+        md_gfx_handle_t     gfx_structure = {};
         md_molecule_t       mol = {};
         md_trajectory_i*    traj = 0;
 
@@ -1051,6 +1053,7 @@ static void modify_selection(ApplicationData* data, md_range_t range, SelectionO
 // Global data for application
 static md_allocator_i* frame_allocator = 0;
 static TextEditor editor {};    // We do not want this within the application data since it messes up the layout and therefore the usage of offset_of
+static bool use_gfx = false;
 #if DEBUG
 static md_allocator_i* persistent_allocator = md_tracking_allocator_create(default_allocator);
 #elif RELEASE
@@ -1118,6 +1121,8 @@ int main(int, char**) {
     md_gl_initialize();
     md_gl_shaders_init(&data.mold.gl_shaders, shader_output_snippet);
     md_gl_shaders_init(&data.mold.gl_shaders_lean_and_mean, shader_output_snippet_lean_and_mean);
+
+    md_gfx_initialize(data.gbuffer.width, data.gbuffer.height, 0);
 
     ImGui::init_theme();
 
@@ -1195,6 +1200,10 @@ int main(int, char**) {
 
         // Capture non-window specific keyboard events
         if (!ImGui::GetIO().WantCaptureKeyboard) {
+            if (ImGui::IsKeyPressed(ImGuiKey_F1)) {
+                use_gfx = !use_gfx;
+            }
+
             if (ImGui::IsKeyPressed(KEY_SHOW_DEBUG_WINDOW)) {
                 data.show_debug_window = true;
             }
@@ -2124,11 +2133,15 @@ static void update_view_param(ApplicationData* data) {
 
     if (data->view.mode == CameraMode::Perspective) {
         param.matrix.current.proj = camera_perspective_projection_matrix(data->view.camera, (float)data->gbuffer.width / (float)data->gbuffer.height);
+        param.matrix.inverse.proj = camera_inverse_perspective_projection_matrix(data->view.camera, (float)data->gbuffer.width / (float)data->gbuffer.height);
     } else {
         const float aspect_ratio = (float)data->gbuffer.width / (float)data->gbuffer.height;
         const float h = data->view.camera.focus_distance * tanf(data->view.camera.fov_y * 0.5f);
         const float w = aspect_ratio * h;
-        param.matrix.current.proj = camera_orthographic_projection_matrix(-w, w, -h, h, data->view.camera.near_plane, data->view.camera.far_plane);
+        const float n = data->view.camera.near_plane;
+        const float f = data->view.camera.far_plane;
+        param.matrix.current.proj = camera_orthographic_projection_matrix(-w, w, -h, h, n, f);
+        param.matrix.inverse.proj = camera_inverse_orthographic_projection_matrix(-w, w, -h, h, n, f);
     }
     param.matrix.current.proj_jittered = param.matrix.current.proj;
 
@@ -2155,11 +2168,13 @@ static void update_view_param(ApplicationData* data) {
     }
 
     // @TODO Remove these, these are superflous
+    /*
     param.matrix.current.view_proj = param.matrix.current.proj * param.matrix.current.view;
     param.matrix.current.view_proj_jittered = param.matrix.current.proj_jittered * param.matrix.current.view;
 
     param.matrix.inverse.view_proj = mat4_inverse(param.matrix.current.view_proj);
     param.matrix.inverse.view_proj_jittered = mat4_inverse(param.matrix.current.view_proj_jittered);
+    */
 
     param.matrix.current.norm = mat4_transpose(param.matrix.inverse.view);
 }
@@ -5358,7 +5373,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                     .current = {
                     .view = view_mat,
                     .proj = proj_mat,
-                    .view_proj = mat4_mul(proj_mat, view_mat),
+                    //.view_proj = mat4_mul(proj_mat, view_mat),
                     .norm = view_mat,
                 },
                 .inverse = {
@@ -6159,10 +6174,14 @@ static void update_md_buffers(ApplicationData* data) {
         const vec3_t pbc_ext = data->simulation_box.box * vec3_t{1,1,1};
         md_gl_molecule_set_atom_position(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
         md_gl_molecule_compute_velocity(&data->mold.gl_mol, pbc_ext.elem);
+
+        md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyRadius) {
         md_gl_molecule_set_atom_radius(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.radius, 0);
+
+        md_gfx_structure_set_atom_radius(data->mold.gfx_structure, 0, (uint32_t)mol.atom.count, mol.atom.radius, 0);
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyFlags) {
@@ -6337,6 +6356,8 @@ static void free_molecule_data(ApplicationData* data) {
     md_arena_allocator_reset(data->mold.mol_alloc);
     memset(&data->mold.mol, 0, sizeof(data->mold.mol));
 
+    md_gl_molecule_free(&data->mold.gl_mol);
+
     data->files.molecule = "";
     free_trajectory_data(data);
 
@@ -6362,6 +6383,16 @@ static void init_molecule_data(ApplicationData* data) {
         data->selection.hovered = -1;
         data->selection.right_clicked = -1;
         md_gl_molecule_init(&data->mold.gl_mol, &data->mold.mol);
+
+        const md_molecule_t& mol = data->mold.mol;
+        
+        data->mold.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent_bond.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
+        md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
+        md_gfx_structure_set_atom_radius(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.radius, 0);
+        md_gfx_structure_set_group_ranges(data->mold.gfx_structure, 0, mol.residue.count, (md_gfx_range_t*)mol.residue.atom_range, 0);
+        md_gfx_structure_set_instance_group_ranges(data->mold.gfx_structure, 0, mol.instance.count, (md_gfx_range_t*)mol.instance.residue_range, 0);
+        md_gfx_structure_set_instance_transforms(data->mold.gfx_structure, 0, mol.instance.count, mol.instance.transform, 0);
+
         init_all_representations(data);
         update_all_representations(data);
         data->mold.script.compile_ir = true;
@@ -7403,10 +7434,17 @@ static void update_representation(ApplicationData* data, Representation* rep) {
 
         md_gl_representation_set_type_and_args(&rep->md_rep, type, args);
         md_gl_representation_set_color(&rep->md_rep, 0, (uint32_t)mol.atom.count, colors, 0);
+
+        md_gfx_rep_attr_t attributes = {};
+        attributes.spacefill.radius_scale = 1.0f;
+        md_gfx_rep_set_type_and_attr(rep->gfx_rep, MD_GFX_REP_TYPE_SPACEFILL, &attributes);
+        md_gfx_rep_set_color(rep->gfx_rep, 0, (uint32_t)mol.atom.count, (md_gfx_color_t*)colors, 0);
     }
 }
 
 static void init_representation(ApplicationData* data, Representation* rep) {
+    rep->gfx_rep = md_gfx_rep_create(data->mold.mol.atom.count);
+
     md_gl_representation_init(&rep->md_rep, &data->mold.gl_mol);
     md_bitfield_init(&rep->atom_mask, persistent_allocator);
     rep->filt_is_dirty = true;
@@ -7506,7 +7544,7 @@ static void handle_camera_interaction(ApplicationData* data) {
                 data->selection.selecting = true;
 
                 const vec2_t res = { (float)data->ctx.window.width, (float)data->ctx.window.height };
-                const mat4_t mvp = data->view.param.matrix.current.view_proj;
+                const mat4_t mvp = data->view.param.matrix.current.proj * data->view.param.matrix.current.view;
                 const md_bitfield_t* vis_mask = &data->representations.atom_visibility_mask;
 
                 int64_t beg_bit = vis_mask->beg_bit;
@@ -7915,7 +7953,8 @@ static void handle_picking(ApplicationData* data) {
 #else
             data->picking = read_picking_data(&data->gbuffer, (int)coord.x, (int)coord.y);
             const vec4_t viewport = {0, 0, (float)data->gbuffer.width, (float)data->gbuffer.height};
-            data->picking.world_coord = mat4_unproject({coord.x, coord.y, data->picking.depth}, data->view.param.matrix.inverse.view_proj_jittered, viewport);
+            const mat4_t inv_VP = data->view.param.matrix.inverse.proj_jittered * data->view.param.matrix.inverse.view;
+            data->picking.world_coord = mat4_unproject({coord.x, coord.y, data->picking.depth}, inv_VP, viewport);
 #endif
         }
         data->selection.hovered = -1;
@@ -7970,33 +8009,48 @@ static void apply_postprocessing(const ApplicationData& data) {
 static void draw_representations(ApplicationData* data) {
     ASSERT(data);
 
-    md_gl_draw_op_t* draw_ops = 0;
-    for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
-        if (data->representations.buffer[i].enabled) {
-            md_gl_draw_op_t op = {
-                &data->representations.buffer[i].md_rep,
-                NULL,
-            };
-            md_array_push(draw_ops, op, frame_allocator);
+    if (use_gfx) {
+        md_gfx_draw_op_t* draw_ops = 0;
+        for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
+            if (data->representations.buffer[i].enabled) {
+                md_gfx_draw_op_t op;
+                op.structure = data->mold.gfx_structure;
+                op.representation = data->representations.buffer[i].gfx_rep;
+                op.model_mat = NULL;
+                md_array_push(draw_ops, op, frame_allocator);
+            }
         }
-    }
 
-    md_gl_draw_args_t args = {
-        .shaders = &data->mold.gl_shaders,
-        .draw_operations = {
-            .count = (uint32_t)md_array_size(draw_ops),
-            .ops = draw_ops,
+        md_gfx_draw((uint32_t)md_array_size(draw_ops), draw_ops, &data->view.param.matrix.current.proj, &data->view.param.matrix.current.view, &data->view.param.matrix.inverse.proj, &data->view.param.matrix.inverse.view);
+    } else {
+        md_gl_draw_op_t* draw_ops = 0;
+        for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
+            if (data->representations.buffer[i].enabled) {
+                md_gl_draw_op_t op = {
+                    &data->representations.buffer[i].md_rep,
+                    NULL,
+                };
+                md_array_push(draw_ops, op, frame_allocator);
+            }
+        }
+
+        md_gl_draw_args_t args = {
+            .shaders = &data->mold.gl_shaders,
+            .draw_operations = {
+                .count = (uint32_t)md_array_size(draw_ops),
+                .ops = draw_ops,
         },
         .view_transform = {
-            .view_matrix = &data->view.param.matrix.current.view.elem[0][0],
-            .projection_matrix = &data->view.param.matrix.current.proj_jittered.elem[0][0],
-            // These two are for temporal anti-aliasing reprojection (optional)
-            .prev_view_matrix = &data->view.param.matrix.previous.view.elem[0][0],
-            .prev_projection_matrix = &data->view.param.matrix.previous.proj_jittered.elem[0][0],
+                .view_matrix = &data->view.param.matrix.current.view.elem[0][0],
+                .projection_matrix = &data->view.param.matrix.current.proj_jittered.elem[0][0],
+                // These two are for temporal anti-aliasing reprojection (optional)
+                .prev_view_matrix = &data->view.param.matrix.previous.view.elem[0][0],
+                .prev_projection_matrix = &data->view.param.matrix.previous.proj_jittered.elem[0][0],
         },
-    };
+        };
 
-    md_gl_draw(&args);
+        md_gl_draw(&args);
+    }
 }
 
 static void draw_representations_lean_and_mean(ApplicationData* data, uint32_t mask) {
