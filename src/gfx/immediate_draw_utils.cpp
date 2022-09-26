@@ -7,6 +7,8 @@
 #include <core/md_allocator.h>
 #include <core/md_log.h>
 
+#include <stddef.h>
+
 namespace immediate {
 
 struct Vertex {

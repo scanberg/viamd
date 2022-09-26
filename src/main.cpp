@@ -58,7 +58,7 @@
 
 #include <stdio.h>
 
-
+#define EXPERIMENTAL_GFX_API 0
 #define PICKING_JITTER_HACK 0
 #define SHOW_IMGUI_DEMO_WINDOW 0
 #define EXPERIMENTAL_CONE_TRACED_AO 0
@@ -240,7 +240,9 @@ struct Representation {
     ColorMapping color_mapping = ColorMapping::Cpk;
     md_bitfield_t atom_mask{};
     md_gl_representation_t md_rep{};
+#if EXPERIMENTAL_GFX_API
     md_gfx_handle_t gfx_rep = {};
+#endif
 
     bool enabled = true;
     bool filt_is_dirty = true;
@@ -401,7 +403,9 @@ struct ApplicationData {
         md_gl_shaders_t     gl_shaders = {};
         md_gl_shaders_t     gl_shaders_lean_and_mean = {};
         md_gl_molecule_t    gl_mol = {};
+#if EXPERIMENTAL_GFX_API
         md_gfx_handle_t     gfx_structure = {};
+#endif
         md_molecule_t       mol = {};
         md_trajectory_i*    traj = 0;
 
@@ -1116,13 +1120,14 @@ int main(int, char**) {
     md_print(MD_LOG_TYPE_INFO, "Initializing task system...");
     task_system::initialize();
 
-    md_gfx_initialize(data.gbuffer.width, data.gbuffer.height, 0);
 
     md_gl_initialize();
     md_gl_shaders_init(&data.mold.gl_shaders, shader_output_snippet);
     md_gl_shaders_init(&data.mold.gl_shaders_lean_and_mean, shader_output_snippet_lean_and_mean);
 
+#if EXPERIMENTAL_GFX_API
     md_gfx_initialize(data.gbuffer.width, data.gbuffer.height, 0);
+#endif
 
     ImGui::init_theme();
 
@@ -1200,9 +1205,11 @@ int main(int, char**) {
 
         // Capture non-window specific keyboard events
         if (!ImGui::GetIO().WantCaptureKeyboard) {
+#if EXPERIMENTAL_GFX_API
             if (ImGui::IsKeyPressed(ImGuiKey_F1)) {
                 use_gfx = !use_gfx;
             }
+#endif
 
             if (ImGui::IsKeyPressed(KEY_SHOW_DEBUG_WINDOW)) {
                 data.show_debug_window = true;
@@ -2788,7 +2795,7 @@ void draw_load_dataset_window(ApplicationData* data) {
             str_t ext = extract_ext(path);
 
             // Try to assign loader_idx from extension
-            state.loader_idx = 0;
+            state.loader_idx = -1;
             for (int i = 1; i < loader_ext_count; ++i) {
                 if (str_equal_ignore_case(ext, loader_ext[i])) {
                     state.loader_idx = i;
@@ -6174,14 +6181,16 @@ static void update_md_buffers(ApplicationData* data) {
         const vec3_t pbc_ext = data->simulation_box.box * vec3_t{1,1,1};
         md_gl_molecule_set_atom_position(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
         md_gl_molecule_compute_velocity(&data->mold.gl_mol, pbc_ext.elem);
-
+#if EXPERIMENTAL_GFX_API
         md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
+#endif
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyRadius) {
         md_gl_molecule_set_atom_radius(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.radius, 0);
-
+#if EXPERIMENTAL_GFX_API
         md_gfx_structure_set_atom_radius(data->mold.gfx_structure, 0, (uint32_t)mol.atom.count, mol.atom.radius, 0);
+#endif
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyFlags) {
@@ -6385,14 +6394,14 @@ static void init_molecule_data(ApplicationData* data) {
         md_gl_molecule_init(&data->mold.gl_mol, &data->mold.mol);
 
         const md_molecule_t& mol = data->mold.mol;
-        
+#if EXPERIMENTAL_GFX_API
         data->mold.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent_bond.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
         md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
         md_gfx_structure_set_atom_radius(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.radius, 0);
         md_gfx_structure_set_group_ranges(data->mold.gfx_structure, 0, mol.residue.count, (md_gfx_range_t*)mol.residue.atom_range, 0);
         md_gfx_structure_set_instance_group_ranges(data->mold.gfx_structure, 0, mol.instance.count, (md_gfx_range_t*)mol.instance.residue_range, 0);
         md_gfx_structure_set_instance_transforms(data->mold.gfx_structure, 0, mol.instance.count, mol.instance.transform, 0);
-
+#endif
         init_all_representations(data);
         update_all_representations(data);
         data->mold.script.compile_ir = true;
@@ -7435,16 +7444,19 @@ static void update_representation(ApplicationData* data, Representation* rep) {
         md_gl_representation_set_type_and_args(&rep->md_rep, type, args);
         md_gl_representation_set_color(&rep->md_rep, 0, (uint32_t)mol.atom.count, colors, 0);
 
+#if EXPERIMENTAL_GFX_API
         md_gfx_rep_attr_t attributes = {};
         attributes.spacefill.radius_scale = 1.0f;
         md_gfx_rep_set_type_and_attr(rep->gfx_rep, MD_GFX_REP_TYPE_SPACEFILL, &attributes);
         md_gfx_rep_set_color(rep->gfx_rep, 0, (uint32_t)mol.atom.count, (md_gfx_color_t*)colors, 0);
+#endif
     }
 }
 
 static void init_representation(ApplicationData* data, Representation* rep) {
+#if EXPERIMENTAL_GFX_API
     rep->gfx_rep = md_gfx_rep_create(data->mold.mol.atom.count);
-
+#endif
     md_gl_representation_init(&rep->md_rep, &data->mold.gl_mol);
     md_bitfield_init(&rep->atom_mask, persistent_allocator);
     rep->filt_is_dirty = true;
@@ -7953,7 +7965,7 @@ static void handle_picking(ApplicationData* data) {
 #else
             data->picking = read_picking_data(&data->gbuffer, (int)coord.x, (int)coord.y);
             const vec4_t viewport = {0, 0, (float)data->gbuffer.width, (float)data->gbuffer.height};
-            const mat4_t inv_VP = data->view.param.matrix.inverse.proj_jittered * data->view.param.matrix.inverse.view;
+            const mat4_t inv_VP = data->view.param.matrix.inverse.view * data->view.param.matrix.inverse.proj_jittered;
             data->picking.world_coord = mat4_unproject({coord.x, coord.y, data->picking.depth}, inv_VP, viewport);
 #endif
         }
@@ -8009,6 +8021,7 @@ static void apply_postprocessing(const ApplicationData& data) {
 static void draw_representations(ApplicationData* data) {
     ASSERT(data);
 
+#if EXPERIMENTAL_GFX_API
     if (use_gfx) {
         md_gfx_draw_op_t* draw_ops = 0;
         for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
@@ -8023,6 +8036,7 @@ static void draw_representations(ApplicationData* data) {
 
         md_gfx_draw((uint32_t)md_array_size(draw_ops), draw_ops, &data->view.param.matrix.current.proj, &data->view.param.matrix.current.view, &data->view.param.matrix.inverse.proj, &data->view.param.matrix.inverse.view);
     } else {
+#endif
         md_gl_draw_op_t* draw_ops = 0;
         for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
             if (data->representations.buffer[i].enabled) {
@@ -8050,7 +8064,9 @@ static void draw_representations(ApplicationData* data) {
         };
 
         md_gl_draw(&args);
+#if EXPERIMENTAL_GFX_API
     }
+#endif
 }
 
 static void draw_representations_lean_and_mean(ApplicationData* data, uint32_t mask) {

@@ -65,7 +65,7 @@ static vec4_t projection_extents(const Camera& camera, int width, int height, fl
 
 mat4_t camera_view_to_world_matrix(const Camera& camera) {
     mat4_t M = mat4_from_quat(camera.orientation);
-    M.col[3] = vec4_from_vec3(camera.orientation * camera.position, 1);
+    M.col[3] = vec4_from_vec3(camera.position, 1);
     return M;
 }
 

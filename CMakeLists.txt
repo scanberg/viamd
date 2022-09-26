@@ -41,7 +41,6 @@ add_subdirectory(ext/glfw)
 add_subdirectory(ext/imgui)
 add_subdirectory(ext/nativefiledialog)
 add_subdirectory(ext/stb)
-add_subdirectory(ext/gl3w)
 add_subdirectory(ext/enkiTS)
 add_subdirectory(ext/ImGuiColorTextEdit)
 add_subdirectory(ext/implot)
@@ -105,7 +104,6 @@ set_target_properties(viamd PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${VIAMD_BIN_DIR}")
 
 target_link_libraries(viamd
-    gl3w
     glfw
     imgui
     nativefiledialog
