@@ -160,12 +160,10 @@ mat4_t look_at(vec3_t look_from, vec3_t look_at, vec3_t look_up) {
     const vec3_t s = vec3_normalize(vec3_cross(f, look_up));
     const vec3_t u = vec3_cross(s, f);
 	const mat4_t M = {
-        .col = {
-            {s.x, u.x, -f.x, 0.0f},
-            {s.y, u.y, -f.y, 0.0f},
-            {s.z, u.z, -f.z, 0.0f},
-            {-vec3_dot(s, look_from), -vec3_dot(u, look_from), vec3_dot(f, look_from), 1.0f}
-        }
+            s.x, u.x, -f.x, 0.0f,
+            s.y, u.y, -f.y, 0.0f,
+            s.z, u.z, -f.z, 0.0f,
+            -vec3_dot(s, look_from), -vec3_dot(u, look_from), vec3_dot(f, look_from), 1.0f,
     };
     return M;
 }

@@ -167,26 +167,22 @@ mat4_t compute_model_to_world_matrix(vec3_t min_world_aabb, vec3_t max_world_aab
     vec3_t ext = max_world_aabb - min_world_aabb;
     vec3_t off = min_world_aabb;
     return {
-        .col = {
-            {ext.x, 0, 0, 0},
-            {0, ext.y, 0, 0},
-            {0, 0, ext.z, 0},
-            {off.x, off.y, off.z, 1},
-        }
-    };
+            ext.x, 0, 0, 0,
+            0, ext.y, 0, 0,
+            0, 0, ext.z, 0,
+            off.x, off.y, off.z, 1,
+        };
 }
 
 mat4_t compute_world_to_model_matrix(vec3_t min_world_aabb, vec3_t max_world_aabb) {
     vec3_t ext = max_world_aabb - min_world_aabb;
     vec3_t off = min_world_aabb;
     return {
-        .col = {
-            {1.0f / ext.x, 0, 0, 0},
-            {0, 1.0f / ext.y, 0, 0},
-            {0, 0, 1.0f / ext.z, 0},
-            {-off.x, -off.y, -off.z, 1},
-        }
-    };
+            1.0f / ext.x, 0, 0, 0,
+            0, 1.0f / ext.y, 0, 0,
+            0, 0, 1.0f / ext.z, 0,
+            -off.x, -off.y, -off.z, 1,
+        };
 }
 
 mat4_t compute_model_to_texture_matrix(int dim_x, int dim_y, int dim_z) {
