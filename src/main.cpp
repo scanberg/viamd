@@ -7008,7 +7008,7 @@ static void load_workspace(ApplicationData* data, str_t filename) {
                 ptr = data;
             }
         } else {
-            int64_t loc = find_char(line, '=');
+            int64_t loc = str_find_char(line, '=');
             if (loc != -1) {
                 str_t label = str_trim_whitespace(substr(line, 0, loc));
                 const SerializationObject* target = find_serialization_target(group, label);
