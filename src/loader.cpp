@@ -181,7 +181,7 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
                 int64_t count = md_bitfield_popcount(&loaded_traj->recenter_target);
                 if (count > 0) {
                     // Allocate data for substructure
-                    int64_t stride = ROUND_UP(count, md_simd_widthf);
+                    int64_t stride = ALIGN_TO(count, md_simd_widthf);
                     const int64_t mem_size = stride * 4 * sizeof(float);
                     void* mem_ptr = md_alloc(alloc, mem_size);
                     float* tmp_x = (float*)mem_ptr + 0 * stride;

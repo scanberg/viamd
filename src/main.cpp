@@ -1962,7 +1962,7 @@ static void interpolate_atomic_properties(ApplicationData* data) {
 
     mat3_t boxes[4] = {};
 
-    int64_t stride = ROUND_UP(mol.atom.count, md_simd_widthf);    // The interploation uses SIMD vectorization without bounds, so we make sure there is no overlap between the data segments
+    int64_t stride = ALIGN_TO(mol.atom.count, md_simd_widthf);    // The interploation uses SIMD vectorization without bounds, so we make sure there is no overlap between the data segments
     int64_t bytes = stride * sizeof(float) * 3 * 4;
     void* mem = md_alloc(frame_allocator, bytes);
     defer { md_free(frame_allocator, mem, bytes); };
@@ -4538,7 +4538,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                         md_array_resize(data->shape_space.weights, num_frames * data->shape_space.num_structures, persistent_allocator);
 
                         data->tasks.shape_space_evaluate = task_system::pool_enqueue("Eval Shape Space", (uint32_t)num_frames, [data](uint32_t range_beg, uint32_t range_end) {
-                            int64_t stride = ROUND_UP(data->mold.mol.atom.count, md_simd_widthf);
+                            int64_t stride = ALIGN_TO(data->mold.mol.atom.count, md_simd_widthf);
                             float* coords = (float*)md_alloc(default_allocator, stride * 3 * sizeof(float));
                             float* x = coords + stride * 0;
                             float* y = coords + stride * 1;
@@ -5719,7 +5719,7 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
     // Copy mol and replace with initial coords
     md_molecule_t mol = data.mold.mol;
 
-    int64_t stride = ROUND_UP(data.mold.mol.atom.count, md_simd_widthf);
+    int64_t stride = ALIGN_TO(data.mold.mol.atom.count, md_simd_widthf);
     float* coords = (float*)md_alloc(frame_allocator, stride * sizeof(float) * 3);
     mol.atom.x = coords + stride * 0;
     mol.atom.y = coords + stride * 1;
@@ -6310,7 +6310,7 @@ static void init_trajectory_data(ApplicationData* data) {
                 // Create copy here of molecule since we use the full structure as input
                 md_molecule_t mol = data->mold.mol;
 
-                const int64_t stride = ROUND_UP(mol.atom.count, md_simd_widthf);
+                const int64_t stride = ALIGN_TO(mol.atom.count, md_simd_widthf);
                 const int64_t bytes = stride * sizeof(float) * 3;
                 float* coords = (float*)md_alloc(default_allocator, bytes);
                 defer { md_free(default_allocator, coords, bytes); };
@@ -7911,19 +7911,19 @@ static void fill_gbuffer(ApplicationData* data) {
 
     for (int64_t i = 0; i < vis.triangle.count; ++i) {
         ASSERT(vis.triangle.idx);
-        uint16_t idx[3] = { vis.triangle.idx[i * 3 + 0], vis.triangle.idx[i * 3 + 1], vis.triangle.idx[i * 3 + 2] };
+        uint32_t idx[3] = { vis.triangle.idx[i * 3 + 0], vis.triangle.idx[i * 3 + 1], vis.triangle.idx[i * 3 + 2] };
         immediate::draw_triangle(vertices[idx[0]], vertices[idx[1]], vertices[idx[2]], triangle_color);
     }
 
     for (int64_t i = 0; i < vis.line.count; ++i) {
         ASSERT(vis.line.idx);
-        uint16_t idx[2] = { vis.line.idx[i * 2 + 0], vis.line.idx[i * 2 + 1] };
+        uint32_t idx[2] = { vis.line.idx[i * 2 + 0], vis.line.idx[i * 2 + 1] };
         immediate::draw_line(vertices[idx[0]], vertices[idx[1]], line_color);
     }
 
     for (int64_t i = 0; i < vis.point.count; ++i) {
         ASSERT(vis.point.idx);
-        uint16_t idx = vis.point.idx[i];
+        uint32_t idx = vis.point.idx[i];
         immediate::draw_point(vertices[idx], point_color);
     }
     immediate::render();
