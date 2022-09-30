@@ -5859,8 +5859,8 @@ static void draw_property_export_window(ApplicationData* data) {
             struct ColData {
                 const char* label;
                 const float* values;
-                int num_values;
-                int dim;
+                uint64_t num_values;
+                uint64_t dim;
             };
 
             ColData* col_data = 0;
