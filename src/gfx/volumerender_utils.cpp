@@ -71,15 +71,15 @@ void initialize() {
 
     {
         const GLuint shaders[] = {v_shader, f_shader_dvr_only};
-        gl::attach_link_detach(gl.program.dvr_only, shaders, ARRAY_SIZE(shaders));
+        gl::attach_link_detach(gl.program.dvr_only, shaders, (int)ARRAY_SIZE(shaders));
     }
     {
         const GLuint shaders[] = {v_shader, f_shader_iso_only};
-        gl::attach_link_detach(gl.program.iso_only, shaders, ARRAY_SIZE(shaders));
+        gl::attach_link_detach(gl.program.iso_only, shaders, (int)ARRAY_SIZE(shaders));
     }
     {
         const GLuint shaders[] = {v_shader, f_shader_dvr_and_iso};
-        gl::attach_link_detach(gl.program.dvr_and_iso, shaders, ARRAY_SIZE(shaders));
+        gl::attach_link_detach(gl.program.dvr_and_iso, shaders, (int)ARRAY_SIZE(shaders));
     }
 
     if (!gl.vbo) {

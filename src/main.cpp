@@ -849,14 +849,14 @@ static double time_to_frame(double time, const ApplicationData& data) {
 
 static void single_selection_sequence_clear(SingleSelectionSequence* seq) {
     ASSERT(seq);
-    for (int64_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
+    for (size_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
         seq->idx[i] = -1;
     }
 }
 
 static void single_selection_sequence_push_idx(SingleSelectionSequence* seq, int32_t idx) {
     ASSERT(seq);
-    for (int64_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
+    for (size_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
         if (seq->idx[i] == -1) {
             seq->idx[i] = idx;
             break;
@@ -866,9 +866,9 @@ static void single_selection_sequence_push_idx(SingleSelectionSequence* seq, int
 
 static void single_selection_sequence_pop_idx(SingleSelectionSequence* seq, int32_t idx) {
     ASSERT(seq);
-    for (int64_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
+    for (size_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
         if (seq->idx[i] == idx) {
-            for (int64_t j = i; j < ARRAY_SIZE(seq->idx) - 1; ++j) {
+            for (size_t j = i; j < ARRAY_SIZE(seq->idx) - 1; ++j) {
                 seq->idx[j] = seq->idx[j+1];
             }
             seq->idx[ARRAY_SIZE(seq->idx)-1] = -1;
@@ -879,7 +879,7 @@ static void single_selection_sequence_pop_idx(SingleSelectionSequence* seq, int3
 
 static void single_selection_sequence_pop_back(SingleSelectionSequence* seq) {
     ASSERT(seq);
-    int64_t i = 0;
+    size_t i = 0;
     for (; i < ARRAY_SIZE(seq->idx); ++i) {
         if (seq->idx[i] == -1) break;
     }
@@ -890,7 +890,7 @@ static void single_selection_sequence_pop_back(SingleSelectionSequence* seq) {
 
 static int32_t single_selection_sequence_last(const SingleSelectionSequence* seq) {
     ASSERT(seq);
-    int64_t i = 0;
+    size_t i = 0;
     for (; i < ARRAY_SIZE(seq->idx); ++i) {
         if (seq->idx[i] == -1) break;
     }
@@ -902,7 +902,7 @@ static int32_t single_selection_sequence_last(const SingleSelectionSequence* seq
 
 static int64_t single_selection_sequence_count(const SingleSelectionSequence* seq) {
     int64_t i = 0;
-    for (; i < ARRAY_SIZE(seq->idx); ++i) {
+    for (; i < (int64_t)ARRAY_SIZE(seq->idx); ++i) {
         if (seq->idx[i] == -1) break;
     }
     return i;
@@ -1714,7 +1714,7 @@ static void update_display_properties(ApplicationData* data) {
                 hist.value_range = {p->data.min_range[0], p->data.max_range[0]};
                 const int num_completed = md_script_eval_num_frames_completed(data->mold.script.full_eval);
                 const int num_values = p->data.dim[0] * num_completed;
-                compute_histogram(hist.bin, ARRAY_SIZE(hist.bin), hist.value_range.beg, hist.value_range.end, p->data.values, num_values);
+                compute_histogram(hist.bin, (int)ARRAY_SIZE(hist.bin), hist.value_range.beg, hist.value_range.end, p->data.values, num_values);
             }
         }
 
@@ -1733,7 +1733,7 @@ static void update_display_properties(ApplicationData* data) {
                 int offset = beg_frame * p->data.dim[0];
                 int length = (end_frame - beg_frame) * p->data.dim[0];
                 ASSERT(offset + length <= p->data.num_values);
-                compute_histogram(hist.bin, ARRAY_SIZE(hist.bin), hist.value_range.beg, hist.value_range.end, p->data.values + offset, length);
+                compute_histogram(hist.bin, (int)ARRAY_SIZE(hist.bin), hist.value_range.beg, hist.value_range.end, p->data.values + offset, length);
             }
         }
     }
@@ -4267,7 +4267,7 @@ static void draw_distribution_window(ApplicationData* data) {
             } else if (full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                 full_src = prop.full_hist.bin;
                 filt_src = prop.filt_hist.bin;
-                num_values_src = ARRAY_SIZE(prop.full_hist.bin);
+                num_values_src = (int)ARRAY_SIZE(prop.full_hist.bin);
             }
 
             // Downsample bins
@@ -5300,7 +5300,7 @@ static void draw_density_volume_window(ApplicationData* data) {
         glDepthFunc(GL_LESS);
 
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.deferred.fbo);
-        glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
+        glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
         glViewport(0, 0, gbuf.width, gbuf.height);
 
         int64_t num_reps = md_array_size(data->density_volume.gl_reps);
@@ -5859,8 +5859,8 @@ static void draw_property_export_window(ApplicationData* data) {
             struct ColData {
                 const char* label;
                 const float* values;
-                uint64_t num_values;
-                uint64_t dim;
+                int32_t num_values;
+                int32_t dim;
             };
 
             ColData* col_data = 0;
@@ -5882,11 +5882,11 @@ static void draw_property_export_window(ApplicationData* data) {
                 for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
                     const DisplayProperty& dp = data->display_properties[i];
                     if (dp.full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
-                        ColData prop_data = {dp.label, dp.full_hist.bin, ARRAY_SIZE(dp.full_hist.bin), 1};
+                        ColData prop_data = {dp.label, dp.full_hist.bin, (int)ARRAY_SIZE(dp.full_hist.bin), 1};
                         md_array_push(col_data, prop_data, frame_allocator);
                         if (data->timeline.filter.enabled) {
                             str_t lbl = alloc_printf(frame_allocator, "%s(filt)", dp.label);
-                            ColData filt_data = {lbl.ptr, dp.filt_hist.bin, ARRAY_SIZE(dp.filt_hist.bin), 1};
+                            ColData filt_data = {lbl.ptr, dp.filt_hist.bin, (int)ARRAY_SIZE(dp.filt_hist.bin), 1};
                             md_array_push(col_data, filt_data, frame_allocator);
                         }
                     } else if (dp.full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
@@ -5902,7 +5902,7 @@ static void draw_property_export_window(ApplicationData* data) {
             }
 
             ImGui::Text("Column Layout");
-            ImGui::SliderInt("Num Columns", &num_columns, 1, ARRAY_SIZE(col_options));
+            ImGui::SliderInt("Num Columns", &num_columns, 1, (int)ARRAY_SIZE(col_options));
 
             int num_col_data = (int)md_array_size(col_data);
             if (ImGui::BeginTable("Columns", num_columns, ImGuiTableFlags_Borders)) {
@@ -6021,7 +6021,7 @@ static void draw_property_export_window(ApplicationData* data) {
                     temporal_filter = false;
                 }
 
-                format = CLAMP(format, 0, ARRAY_SIZE(volume_formats));
+                format = CLAMP(format, 0, (int)ARRAY_SIZE(volume_formats));
                 if (ImGui::BeginCombo("Format", volume_formats[format].label)) {
                     for (int i = 0; i < (int)ARRAY_SIZE(volume_formats); ++i) {
                         if (ImGui::Selectable(volume_formats[i].label, format == i)) format = i;
@@ -6153,7 +6153,7 @@ static void init_gbuffer(GBuffer* gbuf, int width, int height) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_PICKING, GL_TEXTURE_2D, gbuf->deferred.picking, 0);
     }
     ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
-    glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
+    glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
     glClearColor(0, 0, 0, 0);
     glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
 
@@ -6805,7 +6805,7 @@ SerializationArray serialization_array_groups[] = {
 #define EXTRACT_PARAM_LINE(line, txt) (c_txt.len && c_txt[0] != '[' && (extract_line(&line, &c_txt)))
 
 static const SerializationObject* find_serialization_target(str_t group, str_t label) {
-    for (int64_t i = 0; i < (int64_t)ARRAY_SIZE(serialization_targets); ++i) {
+    for (size_t i = 0; i < ARRAY_SIZE(serialization_targets); ++i) {
         if (str_equal_cstr(group, serialization_targets[i].group) && str_equal_cstr(label, serialization_targets[i].label)) {
             return &serialization_targets[i];
         }
@@ -6814,7 +6814,7 @@ static const SerializationObject* find_serialization_target(str_t group, str_t l
 }
 
 static const SerializationArray* find_serialization_array_group(str_t group) {
-    for (int64_t i = 0; i < ARRAY_SIZE(serialization_array_groups); ++i) {
+    for (size_t i = 0; i < ARRAY_SIZE(serialization_array_groups); ++i) {
         if (str_equal_cstr(group, serialization_array_groups[i].group)) {
             return &serialization_array_groups[i];
         }
@@ -7739,7 +7739,7 @@ static void clear_gbuffer(GBuffer* gbuffer) {
     // Setup gbuffer and clear textures
     PUSH_GPU_SECTION("Clear G-buffer") {
         // Clear color+alpha, normal, velocity, emissive, post_tonemap and depth
-        glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
+        glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
         glClearColor(0, 0, 0, 0);
         glClearDepthf(1.f);
         glStencilMask(0xFF);
@@ -7765,7 +7765,7 @@ static void fill_gbuffer(ApplicationData* data) {
 
     // Enable all draw buffers
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data->gbuffer.deferred.fbo);
-    glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
+    glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
 
     PUSH_GPU_SECTION("G-Buffer fill")
 
@@ -7822,7 +7822,7 @@ static void fill_gbuffer(ApplicationData* data) {
 
     // DRAW REPRESENTATIONS
     PUSH_GPU_SECTION("Representation")
-    glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
+    glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
     draw_representations(data);
     POP_GPU_SECTION()
 

@@ -427,7 +427,7 @@ void initialize() {
     };
 
     const GLuint shaders[] = {v_shader, f_shader};
-    gl::attach_link_detach(program, shaders, ARRAY_SIZE(shaders));
+    gl::attach_link_detach(program, shaders, (int)ARRAY_SIZE(shaders));
 }
 
 void shutdown() {

@@ -310,7 +310,7 @@ void initialize() {
 
         map::program = glCreateProgram();
         const GLuint shaders[] = {v_shader, f_shader};
-        gl::attach_link_detach(map::program, shaders, ARRAY_SIZE(shaders));
+        gl::attach_link_detach(map::program, shaders, (int)ARRAY_SIZE(shaders));
 
         map::uniform_loc_tex_den    = glGetUniformLocation(map::program, "u_tex_den");
         map::uniform_loc_viewport   = glGetUniformLocation(map::program, "u_viewport");
@@ -331,7 +331,7 @@ void initialize() {
 
         iso::program = glCreateProgram();
         const GLuint shaders[] = {v_shader, f_shader};
-        gl::attach_link_detach(iso::program, shaders, ARRAY_SIZE(shaders));
+        gl::attach_link_detach(iso::program, shaders, (int)ARRAY_SIZE(shaders));
 
         iso::uniform_loc_tex_den    = glGetUniformLocation(iso::program, "u_tex_den");
         iso::uniform_loc_viewport   = glGetUniformLocation(iso::program, "u_viewport");
@@ -354,7 +354,7 @@ void initialize() {
 
         blur::program = glCreateProgram();
         const GLuint shaders[] = {v_shader, f_shader};
-        gl::attach_link_detach(blur::program, shaders, ARRAY_SIZE(shaders));
+        gl::attach_link_detach(blur::program, shaders, (int)ARRAY_SIZE(shaders));
 
         blur::uniform_loc_tex         = glGetUniformLocation(blur::program, "u_tex");
         blur::uniform_loc_inv_res     = glGetUniformLocation(blur::program, "u_inv_res");
@@ -390,7 +390,7 @@ void shutdown() {
 
 static inline void blur_rows_acc(vec4_t* out, const vec4_t* in, int dim, int kernel_width) {
     const int mod = dim - 1;
-    const float scl = 1.0 / (2 * kernel_width + 1);
+    const float scl = 1.0f / (2 * kernel_width + 1);
 
     for (int row = 0; row < dim; ++row) {
         const vec4_t* src_row = in + dim * row;
@@ -688,10 +688,10 @@ bool rama_init(rama_data_t* data) {
     }
     */
 
-    density_sum[0] = ARRAY_SIZE(ref_rama_gen);
-    density_sum[1] = ARRAY_SIZE(ref_rama_gly);
-    density_sum[2] = ARRAY_SIZE(ref_rama_pro);
-    density_sum[3] = ARRAY_SIZE(ref_rama_pre);
+    density_sum[0] = (double)ARRAY_SIZE(ref_rama_gen);
+    density_sum[1] = (double)ARRAY_SIZE(ref_rama_gly);
+    density_sum[2] = (double)ARRAY_SIZE(ref_rama_pro);
+    density_sum[3] = (double)ARRAY_SIZE(ref_rama_pre);
 
     for (uint32_t y = 0; y < density_tex_dim; ++y) {
         double v = (y / (double)(density_tex_dim - 1));
@@ -754,7 +754,7 @@ task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angl
     memcpy(user_data.type_indices, rama_type_indices, 4 * sizeof(uint32_t*));
 
     task_system::ID id = task_system::pool_enqueue("Compute rama density", [data = user_data]() {
-        const float angle_to_coord_scale = 1.0 / (2.0 * 3.14159265357989);
+        const float angle_to_coord_scale = 1.0f / (2.0f * PI);
         const float angle_to_coord_offset = 0.5f;
 
         const uint32_t frame_beg = data.frame_beg;
@@ -786,10 +786,10 @@ task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angl
         //blur_density_cpu((vec4_t*)data.density_tex, density_tex_dim, 8);
         blur_density_gaussian((vec4_t*)data.density_tex, density_tex_dim, data.sigma);
 
-        data.rep->den_sum[0] = sum[0];
-        data.rep->den_sum[1] = sum[1];
-        data.rep->den_sum[2] = sum[2];
-        data.rep->den_sum[3] = sum[3];
+        data.rep->den_sum[0] = (float)sum[0];
+        data.rep->den_sum[1] = (float)sum[1];
+        data.rep->den_sum[2] = (float)sum[2];
+        data.rep->den_sum[3] = (float)sum[3];
     });
 
     task_system::main_enqueue("Update rama texture", [data = user_data]() {
@@ -817,7 +817,7 @@ void rama_rep_render_map(rama_rep_t* rep, const float viewport[4], const rama_co
     const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3 };
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ramachandran::fbo);
-    glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
+    glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
 
     glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, rep->map_tex[0], 0);
     glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, rep->map_tex[1], 0);
@@ -847,10 +847,10 @@ void rama_rep_render_map(rama_rep_t* rep, const float viewport[4], const rama_co
     glUniform1i(ramachandran::map::uniform_loc_tex_den, 0);
     glUniform2f(ramachandran::map::uniform_loc_inv_res, 1.0f / tex_dim, 1.0f / tex_dim);
     glUniform4fv(ramachandran::map::uniform_loc_viewport, 1, vp.elem);
-    glUniform4fv(ramachandran::map::uniform_loc_map_colors, ARRAY_SIZE(colors), colors[0].elem);
-    glUniform1uiv(ramachandran::map::uniform_loc_map_offset, ARRAY_SIZE(offset), offset);
-    glUniform1uiv(ramachandran::map::uniform_loc_map_length, ARRAY_SIZE(length), length);
-    glUniform2fv(ramachandran::map::uniform_loc_map_range, ARRAY_SIZE(range), range[0].elem);
+    glUniform4fv(ramachandran::map::uniform_loc_map_colors,  (int)ARRAY_SIZE(colors), colors[0].elem);
+    glUniform1uiv(ramachandran::map::uniform_loc_map_offset, (int)ARRAY_SIZE(offset), offset);
+    glUniform1uiv(ramachandran::map::uniform_loc_map_length, (int)ARRAY_SIZE(length), length);
+    glUniform2fv(ramachandran::map::uniform_loc_map_range,   (int)ARRAY_SIZE(range), range[0].elem);
 
     glBindVertexArray(ramachandran::vao);
 
@@ -871,7 +871,7 @@ void rama_rep_render_iso(rama_rep_t* rep, const float viewport[4], const rama_is
     const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3 };
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ramachandran::fbo);
-    glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
+    glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
 
     glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, rep->iso_tex[0], 0);
     glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, rep->iso_tex[1], 0);
@@ -919,11 +919,11 @@ void rama_rep_render_iso(rama_rep_t* rep, const float viewport[4], const rama_is
     glUniform4fv(ramachandran::iso::uniform_loc_viewport, 1, viewport);
     glUniform2f (ramachandran::iso::uniform_loc_inv_res, 1.0f / tex_dim, 1.0f / tex_dim);
     glUniform4fv(ramachandran::iso::uniform_loc_viewport, 1, vp.elem);
-    glUniform1fv(ramachandran::iso::uniform_loc_iso_values, ARRAY_SIZE(values), values);
-    glUniform4fv(ramachandran::iso::uniform_loc_iso_level_colors, ARRAY_SIZE(level_colors), level_colors[0].elem);
-    glUniform4fv(ramachandran::iso::uniform_loc_iso_contour_colors, ARRAY_SIZE(contour_colors), contour_colors[0].elem);
-    glUniform1uiv(ramachandran::iso::uniform_loc_iso_offset, ARRAY_SIZE(offset), offset);
-    glUniform1uiv(ramachandran::iso::uniform_loc_iso_length, ARRAY_SIZE(length), length);
+    glUniform1fv(ramachandran::iso::uniform_loc_iso_values, (int)ARRAY_SIZE(values), values);
+    glUniform4fv(ramachandran::iso::uniform_loc_iso_level_colors, (int)ARRAY_SIZE(level_colors), level_colors[0].elem);
+    glUniform4fv(ramachandran::iso::uniform_loc_iso_contour_colors, (int)ARRAY_SIZE(contour_colors), contour_colors[0].elem);
+    glUniform1uiv(ramachandran::iso::uniform_loc_iso_offset, (int)ARRAY_SIZE(offset), offset);
+    glUniform1uiv(ramachandran::iso::uniform_loc_iso_length, (int)ARRAY_SIZE(length), length);
     glUniform1f(ramachandran::iso::uniform_loc_iso_contour_line_scale, contour_line_scale);
 
     glActiveTexture(GL_TEXTURE0);
