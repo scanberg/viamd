@@ -1564,9 +1564,9 @@ int main(int, char**) {
             }
         }
 
+        handle_picking(&data);
         clear_gbuffer(&data.gbuffer);
         fill_gbuffer(&data);
-        handle_picking(&data);
         immediate::render();
 
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
