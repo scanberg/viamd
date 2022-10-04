@@ -211,10 +211,10 @@ struct GBuffer {
     } deferred;
 
     struct {
-        // @NOTE: Two of each for ping-pong read / write (hopefully non blocking reads)
-        // This means that we read with one frames latency
-        GLuint color[2] = {0, 0};
-        GLuint depth[2] = {0, 0};
+        // @NOTE: Many of each, we submit the read and use it several frames later
+        // This means that we read with N-1 frames latency
+        GLuint color[2] = {};
+        GLuint depth[2] = {};
         uint32_t frame = 0;
     } pbo_picking;
 
@@ -1196,6 +1196,7 @@ int main(int, char**) {
 
         handle_camera_interaction(&data);
         handle_camera_animation(&data);
+        update_view_param(&data);
 
         draw_context_popup(&data);
         draw_async_task_window(&data);
@@ -1499,7 +1500,6 @@ int main(int, char**) {
 
         update_md_buffers(&data);
         update_display_properties(&data);
-        update_view_param(&data);
 
         if (data.mold.mol.backbone.count > 0) {
             if (data.ramachandran.backbone_fingerprint != data.trajectory_data.backbone_angles.fingerprint) {
@@ -2174,15 +2174,6 @@ static void update_view_param(ApplicationData* data) {
         }
     }
 
-    // @TODO Remove these, these are superflous
-    /*
-    param.matrix.current.view_proj = param.matrix.current.proj * param.matrix.current.view;
-    param.matrix.current.view_proj_jittered = param.matrix.current.proj_jittered * param.matrix.current.view;
-
-    param.matrix.inverse.view_proj = mat4_inverse(param.matrix.current.view_proj);
-    param.matrix.inverse.view_proj_jittered = mat4_inverse(param.matrix.current.view_proj_jittered);
-    */
-
     param.matrix.current.norm = mat4_transpose(param.matrix.inverse.view);
 }
 
@@ -2225,33 +2216,42 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
 
 // #picking
 static PickingData read_picking_data(GBuffer* gbuf, int32_t x, int32_t y) {
-    ASSERT(gbuf);
-    uint32_t frame = gbuf->pbo_picking.frame++;
-    uint32_t curr = (frame + 0) % 2;
-    uint32_t prev = (frame + 1) % 2;
-
     PickingData data{};
+#if EXPERIMENTAL_GFX_API
+    if (use_gfx) {
+        data.idx = md_gfx_get_picking_idx();
+        data.depth = md_gfx_get_picking_depth();
+        md_gfx_query_picking((uint32_t)x, (uint32_t)y);
+    }
+    else {
+#endif
+    ASSERT(gbuf);
+    uint32_t N = (uint32_t)ARRAY_SIZE(gbuf->pbo_picking.color);
+    uint32_t frame = gbuf->pbo_picking.frame++;
+    uint32_t queue = (frame) % N;
+    uint32_t read  = (frame + N-1) % N;
+
 
     PUSH_GPU_SECTION("READ PICKING DATA")
     glBindFramebuffer(GL_READ_FRAMEBUFFER, gbuf->deferred.fbo);
     glReadBuffer(GL_COLOR_ATTACHMENT_PICKING);
 
     // Queue async reads from current frame to pixel pack buffer
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.color[curr]);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.color[queue]);
     glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, 0);
 
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.depth[curr]);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.depth[queue]);
     glReadPixels(x, y, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, 0);
 
     // Read values from previous frames pixel pack buffer
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.color[prev]);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.color[read]);
     const GLubyte* color = (const GLubyte*)glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
     if (color) {
         data.idx = color[0] + (color[1] << 8) + (color[2] << 16) + (color[3] << 24);
         glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
     }
 
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.depth[prev]);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.depth[read]);
     const GLfloat* depth = (const GLfloat*)glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
     if (depth) {
         data.depth = depth[0];
@@ -2261,7 +2261,9 @@ static PickingData read_picking_data(GBuffer* gbuf, int32_t x, int32_t y) {
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     POP_GPU_SECTION()
-
+#if EXPERIMENTAL_GFX_API
+    }
+#endif
     return data;
 }
 
@@ -2796,7 +2798,7 @@ void draw_load_dataset_window(ApplicationData* data) {
 
             // Try to assign loader_idx from extension
             state.loader_idx = -1;
-            for (int i = 1; i < loader_ext_count; ++i) {
+            for (int i = 0; i < loader_ext_count; ++i) {
                 if (str_equal_ignore_case(ext, loader_ext[i])) {
                     state.loader_idx = i;
                     break;
@@ -6073,8 +6075,8 @@ static void init_gbuffer(GBuffer* gbuf, int width, int height) {
     if (!gbuf->deferred.velocity) glGenTextures(1, &gbuf->deferred.velocity);
     if (!gbuf->deferred.post_tonemap) glGenTextures(1, &gbuf->deferred.post_tonemap);
     if (!gbuf->deferred.picking) glGenTextures(1, &gbuf->deferred.picking);
-    if (!gbuf->pbo_picking.color[0]) glGenBuffers(2, gbuf->pbo_picking.color);
-    if (!gbuf->pbo_picking.depth[0]) glGenBuffers(2, gbuf->pbo_picking.depth);
+    if (!gbuf->pbo_picking.color[0]) glGenBuffers((int)ARRAY_SIZE(gbuf->pbo_picking.color), gbuf->pbo_picking.color);
+    if (!gbuf->pbo_picking.depth[0]) glGenBuffers((int)ARRAY_SIZE(gbuf->pbo_picking.depth), gbuf->pbo_picking.depth);
 
     glBindTexture(GL_TEXTURE_2D, gbuf->deferred.depth);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
@@ -6118,21 +6120,17 @@ static void init_gbuffer(GBuffer* gbuf, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.color[0]);
-    glBufferData(GL_PIXEL_PACK_BUFFER, 4, NULL, GL_DYNAMIC_READ);
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    for (uint32_t i = 0; i < ARRAY_SIZE(gbuf->pbo_picking.color); ++i) {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.color[i]);
+        glBufferData(GL_PIXEL_PACK_BUFFER, 4, NULL, GL_DYNAMIC_READ);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    }
 
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.color[1]);
-    glBufferData(GL_PIXEL_PACK_BUFFER, 4, NULL, GL_DYNAMIC_READ);
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.depth[0]);
-    glBufferData(GL_PIXEL_PACK_BUFFER, 4, NULL, GL_DYNAMIC_READ);
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.depth[1]);
-    glBufferData(GL_PIXEL_PACK_BUFFER, 4, NULL, GL_DYNAMIC_READ);
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    for (uint32_t i = 0; i < ARRAY_SIZE(gbuf->pbo_picking.depth); ++i) {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.depth[i]);
+        glBufferData(GL_PIXEL_PACK_BUFFER, 4, NULL, GL_DYNAMIC_READ);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    }
 
     glBindTexture(GL_TEXTURE_2D, 0);
 
@@ -7641,16 +7639,20 @@ static void handle_camera_interaction(ApplicationData* data) {
             input.dolly_delta = scroll_delta;
             input.fov_y = data->view.camera.fov_y;
 
-            if (camera_controller_trackball(&data->view.camera.position, &data->view.camera.orientation, &data->view.camera.focus_distance, input, data->view.trackball_param)) {
-                data->view.animation.target_position = data->view.camera.position;
-                data->view.animation.target_orientation = data->view.camera.orientation;
-                data->view.animation.target_distance = data->view.camera.focus_distance;
+            vec3_t pos = data->view.animation.target_position;
+            quat_t ori = data->view.animation.target_orientation;
+            float dist = data->view.animation.target_distance;
+            if (camera_controller_trackball(&pos, &ori, &dist, input, data->view.trackball_param, 0)) {
+                // We could make the camera interaction more snappy, by directly modifying camera[pos, ori, dist] here
+                // But for now its decent. I like smooth transitions rather than discontinous jumps
             }
+            data->view.animation.target_position = pos;
+            data->view.animation.target_orientation = ori;
+            data->view.animation.target_distance = dist;
 
             if (ImGui::GetIO().MouseDoubleClicked[0]) {
                 if (data->picking.depth < 1.0f) {
                     const vec3_t forward = data->view.camera.orientation * vec3_t{0, 0, 1};
-                    const float dist = data->view.camera.focus_distance;
                     data->view.animation.target_position = data->picking.world_coord + forward * dist;
                 } else {
                     reset_view(data, true, true);
@@ -7676,7 +7678,10 @@ static void handle_camera_interaction(ApplicationData* data) {
 
 static void handle_camera_animation(ApplicationData* data) {
     // We use an exponential interpolation of the deltas with a common factor
-    const float interpolation_factor = 0.05f;
+    const float TARGET_DT = 1.0f / 100.0f;
+    const float TARGET_FACTOR = 0.1f;
+    const float dt = CLAMP(data->ctx.timing.delta_s, 1.0f / 1000.f, 1.0f / 20.f);
+    const float interpolation_factor = TARGET_FACTOR * (dt / TARGET_DT);
 
     vec3_t& current_pos = data->view.camera.position;
     vec3_t& target_pos  = data->view.animation.target_position;
@@ -7703,10 +7708,10 @@ static void handle_camera_animation(ApplicationData* data) {
     data->visuals.dof.focus_depth = current_dist;
 #if 0
     ImGui::Begin("Camera Debug Info");
-    ImGui::Text("lin vel [%.2f %.2f %.2f]", vel.x, vel.y, vel.z);
-    ImGui::Text("lin cur [%.2f %.2f %.2f]", data->view.camera.position.x, data->view.camera.position.y, data->view.camera.position.z);
-    ImGui::Text("lin tar [%.2f %.2f %.2f]", data->view.animation.target_position.x, data->view.animation.target_position.y, data->view.animation.target_position.z);
-    ImGui::Text("ang cur [%.2f %.2f %.2f %.2f]", data->view.camera.orientation.x, data->view.camera.orientation.y, data->view.camera.orientation.z, data->view.camera.orientation.w);
+    ImGui::Text("pos cur [%.2f %.2f %.2f]", current_pos.x, current_pos.y, current_pos.z);
+    ImGui::Text("pos tar [%.2f %.2f %.2f]", target_pos.x, target_pos.y, target_pos.z);
+    ImGui::Text("dis cur [%.3f]", current_dist);
+    ImGui::Text("dis tar [%.3f]", target_dist);
     ImGui::End();
 #endif
 }
