@@ -211,7 +211,7 @@ struct GBuffer {
     } deferred;
 
     struct {
-        // @NOTE: Many of each, we submit the read and use it several frames later
+        // @NOTE: Many of each, we submit the read and use it some frame(s) later
         // This means that we read with N-1 frames latency
         GLuint color[2] = {};
         GLuint depth[2] = {};
@@ -233,8 +233,6 @@ struct Representation {
     char name[32] = "rep";
     char filt[256] = "all";
     char filt_error[256] = "";
-    //StrBuf<256> prop = "";
-    //StrBuf<256> prop_error = "";
 
     RepresentationType type = RepresentationType::SpaceFill;
     ColorMapping color_mapping = ColorMapping::Cpk;
@@ -408,6 +406,9 @@ struct ApplicationData {
 #endif
         md_molecule_t       mol = {};
         md_trajectory_i*    traj = 0;
+
+        vec3_t              mol_aabb_min;
+        vec3_t              mol_aabb_max;
 
         struct {
             md_script_ir_t*   ir = 0;
@@ -736,13 +737,6 @@ struct ApplicationData {
     } dataset;
 
     struct {
-        /*
-        struct {
-            // Data is packed, no need for stride
-            int64_t count = 0;
-            float* data = NULL;
-        } timestamp;
-        */
         struct {
             int64_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
             int64_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
@@ -806,10 +800,10 @@ static double frame_to_time(double frame, const ApplicationData& data) {
     return lerp(data.timeline.x_values[f0], data.timeline.x_values[f1], fract(frame));
 }
 
+// Try to map time t back into frame
 static double time_to_frame(double time, const ApplicationData& data) {
     int64_t num_frames = md_array_size(data.timeline.x_values);
     ASSERT(num_frames);
-    // Try to map time t back into frame
 
     double beg = data.timeline.x_values[0];
     double end = data.timeline.x_values[num_frames - 1];
@@ -1067,7 +1061,7 @@ static md_allocator_i* persistent_allocator = default_allocator;
 #endif
 
 int main(int, char**) {
-    const int64_t stack_size = MEGABYTES(128);
+    const int64_t stack_size = MEGABYTES(256);
     void* stack_mem = md_alloc(default_allocator, stack_size);
     md_stack_allocator_t stack_alloc {};
     md_stack_allocator_init(&stack_alloc, stack_mem, stack_size);
@@ -1139,7 +1133,7 @@ int main(int, char**) {
     editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(1,2,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);");
 
     reset_view(&data, true);
-    recompute_atom_visibility_mask(&data);    
+    recompute_atom_visibility_mask(&data);
     interpolate_atomic_properties(&data);
 
     rama_init(&data.ramachandran.data);
@@ -2025,6 +2019,8 @@ static void interpolate_atomic_properties(ApplicationData* data) {
             ASSERT(false);
     }
 
+    md_util_compute_aabb(&data->mold.mol_aabb_min, &data->mold.mol_aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
+
     if (mol.backbone.angle) {
         const md_backbone_angles_t* src_angles[4] = {
             data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frames[0],
@@ -2209,9 +2205,9 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
         }
     }
 
-    data->view.camera.near_plane = 1.f;
-    data->view.camera.far_plane = vec3_length(ext) * 50.f;
-    data->view.trackball_param.max_distance = vec3_length(ext) * 20.0f;
+    data->view.camera.near_plane = 1.0f;
+    data->view.camera.far_plane = 10000.0f;
+    data->view.trackball_param.max_distance = vec3_length(ext) * 10.0f;
 }
 
 // #picking
@@ -5382,7 +5378,6 @@ static void draw_density_volume_window(ApplicationData* data) {
                     .current = {
                     .view = view_mat,
                     .proj = proj_mat,
-                    //.view_proj = mat4_mul(proj_mat, view_mat),
                     .norm = view_mat,
                 },
                 .inverse = {
@@ -6181,6 +6176,7 @@ static void update_md_buffers(ApplicationData* data) {
         md_gl_molecule_compute_velocity(&data->mold.gl_mol, pbc_ext.elem);
 #if EXPERIMENTAL_GFX_API
         md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
+        md_gfx_structure_set_aabb(data->mold.gfx_structure, &data->mold.mol_aabb_min, &data->mold.mol_aabb_max);
 #endif
     }
 
@@ -6194,7 +6190,7 @@ static void update_md_buffers(ApplicationData* data) {
     if (data->mold.dirty_buffers & MolBit_DirtyFlags) {
         if (data->mold.mol.atom.flags) {
             for (int64_t i = 0; i < mol.atom.count; i++) {
-                uint8_t flags = 0;
+                md_flags_t flags = 0;
                 flags |= md_bitfield_test_bit(&data->selection.current_highlight_mask, i)     ? AtomBit_Highlighted : 0;
                 flags |= md_bitfield_test_bit(&data->selection.current_selection_mask, i)     ? AtomBit_Selected : 0;
                 flags |= md_bitfield_test_bit(&data->representations.atom_visibility_mask, i) ? AtomBit_Visible : 0;
@@ -6386,19 +6382,26 @@ static void free_molecule_data(ApplicationData* data) {
 
 static void init_molecule_data(ApplicationData* data) {
     if (data->mold.mol.atom.count) {
+        const md_molecule_t& mol = data->mold.mol;
+        vec3_t& aabb_min = data->mold.mol_aabb_min;
+        vec3_t& aabb_max = data->mold.mol_aabb_max;
+        md_util_compute_aabb(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
+
         data->picking.idx = INVALID_PICKING_IDX;
         data->selection.hovered = -1;
         data->selection.right_clicked = -1;
+
         md_gl_molecule_init(&data->mold.gl_mol, &data->mold.mol);
 
-        const md_molecule_t& mol = data->mold.mol;
 #if EXPERIMENTAL_GFX_API
         data->mold.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent_bond.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
         md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
         md_gfx_structure_set_atom_radius(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.radius, 0);
-        md_gfx_structure_set_group_ranges(data->mold.gfx_structure, 0, mol.residue.count, (md_gfx_range_t*)mol.residue.atom_range, 0);
-        md_gfx_structure_set_instance_group_ranges(data->mold.gfx_structure, 0, mol.instance.count, (md_gfx_range_t*)mol.instance.residue_range, 0);
-        md_gfx_structure_set_instance_transforms(data->mold.gfx_structure, 0, mol.instance.count, mol.instance.transform, 0);
+        md_gfx_structure_set_aabb(data->mold.gfx_structure, &data->mold.mol_aabb_min, &data->mold.mol_aabb_max);
+        if (mol.instance.count > 0) {
+            md_gfx_structure_set_instance_atom_ranges(data->mold.gfx_structure, 0, mol.instance.count, (md_gfx_range_t*)mol.instance.atom_range, 0);
+            md_gfx_structure_set_instance_transforms(data->mold.gfx_structure, 0, mol.instance.count, mol.instance.transform, 0);
+        }
 #endif
         init_all_representations(data);
         update_all_representations(data);
@@ -7695,23 +7698,26 @@ static void handle_camera_animation(ApplicationData* data) {
     // We want to interpolate along an arc which is formed by maintaining a distance to the look_at position and smoothly interpolating the orientation,
     // This means that 
     // We linearly interpolate a look_at position which is implicitly defined by position, orientation and distance
+    // There is some precision errors creeping into the posision because we transform back and forth to look at using the orientation
+
+    current_dist = lerp(current_dist, target_dist, interpolation_factor);
 
     const vec3_t current_look_at = current_pos - current_ori * vec3_t{0, 0, current_dist};
     const vec3_t target_look_at  = target_pos  -  target_ori * vec3_t{0, 0,  target_dist};
-
     const vec3_t look_at = lerp(current_look_at, target_look_at, interpolation_factor);
-    current_dist = lerp(current_dist, target_dist, interpolation_factor);
 
-    current_ori = quat_slerp(current_ori, target_ori, interpolation_factor);
+    current_ori = quat_normalize(quat_slerp(current_ori, target_ori, interpolation_factor));
     current_pos = look_at + current_ori * vec3_t{0, 0, current_dist};
         
     data->visuals.dof.focus_depth = current_dist;
 #if 0
     ImGui::Begin("Camera Debug Info");
-    ImGui::Text("pos cur [%.2f %.2f %.2f]", current_pos.x, current_pos.y, current_pos.z);
-    ImGui::Text("pos tar [%.2f %.2f %.2f]", target_pos.x, target_pos.y, target_pos.z);
-    ImGui::Text("dis cur [%.3f]", current_dist);
-    ImGui::Text("dis tar [%.3f]", target_dist);
+    ImGui::Text("pos cur [%.4f %.4f %.4f]", current_pos.x, current_pos.y, current_pos.z);
+    ImGui::Text("pos tar [%.4f %.4f %.4f]", target_pos.x, target_pos.y, target_pos.z);
+    ImGui::Text("ori cur [%.4f %.4f %.4f %.4f]", current_ori.x, current_ori.y, current_ori.z, target_ori.w);
+    ImGui::Text("ori tar [%.4f %.4f %.4f %.4f]", target_ori.x, target_ori.y, target_ori.z, target_ori.w);
+    ImGui::Text("dis cur [%.4f]", current_dist);
+    ImGui::Text("dis tar [%.4f]", target_dist);
     ImGui::End();
 #endif
 }
@@ -7814,6 +7820,7 @@ static void fill_gbuffer(ApplicationData* data) {
     POP_GPU_SECTION()
 #endif
 
+if (!use_gfx) {
     // DRAW VELOCITY OF STATIC OBJECTS
     PUSH_GPU_SECTION("Blit Static Velocity")
     glDrawBuffer(GL_COLOR_ATTACHMENT_VELOCITY);
@@ -7821,7 +7828,7 @@ static void fill_gbuffer(ApplicationData* data) {
     postprocessing::blit_static_velocity(data->gbuffer.deferred.depth, data->view.param);
     glDepthMask(1);
     POP_GPU_SECTION()
-
+}
     glDepthMask(1);
     glColorMask(1, 1, 1, 1);
 
@@ -7831,6 +7838,9 @@ static void fill_gbuffer(ApplicationData* data) {
     draw_representations(data);
     POP_GPU_SECTION()
 
+    glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);  // Post_Tonemap buffer
+
+if (!use_gfx) {
     PUSH_GPU_SECTION("Selection")
     const bool atom_selection_empty = md_bitfield_popcount(&data->selection.current_selection_mask) == 0;
     const bool atom_highlight_empty = md_bitfield_popcount(&data->selection.current_highlight_mask) == 0;
@@ -7838,7 +7848,6 @@ static void fill_gbuffer(ApplicationData* data) {
     glDepthMask(0);
     glColorMask(0, 0, 0, 0);
 
-    glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);  // Post_Tonemap buffer
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_EQUAL);
@@ -7899,6 +7908,7 @@ static void fill_gbuffer(ApplicationData* data) {
     glDepthFunc(GL_LESS);
     glDepthMask(0);
     POP_GPU_SECTION()
+}
 
     PUSH_GPU_SECTION("Draw Visualization Geometry")
     glDisable(GL_DEPTH_TEST);
@@ -8028,6 +8038,24 @@ static void draw_representations(ApplicationData* data) {
 
 #if EXPERIMENTAL_GFX_API
     if (use_gfx) {
+        const uint32_t instance_count = 10000;
+        static mat4_t* transforms = 0;
+
+        if (transforms == 0) {
+            auto rnd = []() -> float {
+                return (float)rand() / RAND_MAX;
+            };
+            for (uint32_t i = 0; i < instance_count; ++i) {
+                vec3_t axis = {rnd(), rnd(), rnd()};
+                quat_t ori = quat_angle_axis(rnd() * TWO_PI, vec3_normalize(axis));
+                mat4_t R = mat4_from_quat(ori);
+                mat4_t T = mat4_translate(rnd() * 4000, rnd() * 4000, rnd() * 4000);
+                mat4_t M = T * R;
+                md_range_t range = {0, (int32_t)data->mold.mol.atom.count};
+                md_array_push(transforms, M, persistent_allocator);
+            }
+        }
+
         md_gfx_draw_op_t* draw_ops = 0;
         for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
             if (data->representations.buffer[i].enabled) {
@@ -8036,6 +8064,15 @@ static void draw_representations(ApplicationData* data) {
                 op.representation = data->representations.buffer[i].gfx_rep;
                 op.model_mat = NULL;
                 md_array_push(draw_ops, op, frame_allocator);
+                
+                for (uint32_t j = 0; j < instance_count; ++j) {
+                    md_gfx_draw_op_t op;
+                    op.structure = data->mold.gfx_structure;
+                    op.representation = data->representations.buffer[i].gfx_rep;
+                    op.model_mat = &transforms[j];
+                    md_array_push(draw_ops, op, frame_allocator);
+                }
+                
             }
         }
 
