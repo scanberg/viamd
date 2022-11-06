@@ -58,7 +58,7 @@
 
 #include <stdio.h>
 
-#define EXPERIMENTAL_GFX_API 0
+#define EXPERIMENTAL_GFX_API 1
 #define PICKING_JITTER_HACK 0
 #define SHOW_IMGUI_DEMO_WINDOW 0
 #define EXPERIMENTAL_CONE_TRACED_AO 0
@@ -1120,7 +1120,7 @@ int main(int, char**) {
     md_gl_shaders_init(&data.mold.gl_shaders_lean_and_mean, shader_output_snippet_lean_and_mean);
 
 #if EXPERIMENTAL_GFX_API
-    md_gfx_initialize(data.gbuffer.width, data.gbuffer.height, 0);
+    md_gfx_initialize(MD_SHADER_DIR, data.gbuffer.width, data.gbuffer.height, 0);
 #endif
 
     ImGui::init_theme();
@@ -1128,7 +1128,10 @@ int main(int, char**) {
     editor.SetLanguageDefinition(TextEditor::LanguageDefinition::VIAMD());
     editor.SetPalette(TextEditor::GetDarkPalette());
 
-    load_dataset_from_file(&data, MAKE_STR(VIAMD_DATASET_DIR "/1ALA-500.pdb"));
+    //load_dataset_from_file(&data, MAKE_STR(VIAMD_DATASET_DIR "/1ALA-500.pdb"));
+    //load_dataset_from_file(&data, MAKE_STR("D:/data/1a64.gro"));
+    load_dataset_from_file(&data, MAKE_STR("D:/data/md/amyloid-PFT/centered.gro"));
+    load_dataset_from_file(&data, MAKE_STR("D:/data/md/amyloid-PFT/centered.xtc"));
     create_representation(&data, RepresentationType::SpaceFill, ColorMapping::Cpk, MAKE_STR("all"));
     editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(1,2,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);");
 
@@ -2019,7 +2022,7 @@ static void interpolate_atomic_properties(ApplicationData* data) {
             ASSERT(false);
     }
 
-    md_util_compute_aabb(&data->mold.mol_aabb_min, &data->mold.mol_aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
+    md_util_compute_aabb_xyzr(&data->mold.mol_aabb_min, &data->mold.mol_aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
 
     if (mol.backbone.angle) {
         const md_backbone_angles_t* src_angles[4] = {
@@ -2205,8 +2208,8 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
         }
     }
 
-    data->view.camera.near_plane = 1.0f;
-    data->view.camera.far_plane = 10000.0f;
+    data->view.camera.near_plane = 10.0f;
+    data->view.camera.far_plane = 100000.0f;
     data->view.trackball_param.max_distance = vec3_length(ext) * 10.0f;
 }
 
@@ -4548,7 +4551,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                                 md_trajectory_load_frame(data->mold.traj, frame_idx, NULL, x, y, z);
                                 vec3_t* xyz = 0;
                                 for (int64_t i = 0; i < data->shape_space.result.num_bitfields; ++i) {
-                                    md_array_ensure(xyz, md_bitfield_popcount(&data->shape_space.result.bitfields[i]), default_allocator);
+                                    md_array_ensure(xyz, (int64_t)md_bitfield_popcount(&data->shape_space.result.bitfields[i]), default_allocator);
                                     int64_t beg_bit = data->shape_space.result.bitfields[i].beg_bit;
                                     int64_t end_bit = data->shape_space.result.bitfields[i].end_bit;
                                     int64_t count = 0;
@@ -6175,15 +6178,14 @@ static void update_md_buffers(ApplicationData* data) {
         md_gl_molecule_set_atom_position(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
         md_gl_molecule_compute_velocity(&data->mold.gl_mol, pbc_ext.elem);
 #if EXPERIMENTAL_GFX_API
-        md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
-        md_gfx_structure_set_aabb(data->mold.gfx_structure, &data->mold.mol_aabb_min, &data->mold.mol_aabb_max);
+        md_gfx_structure_set_atom_position_soa(data->mold.gfx_structure, mol.atom.x, mol.atom.y, mol.atom.z, (uint32_t)mol.atom.count);
 #endif
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyRadius) {
         md_gl_molecule_set_atom_radius(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.radius, 0);
 #if EXPERIMENTAL_GFX_API
-        md_gfx_structure_set_atom_radius(data->mold.gfx_structure, 0, (uint32_t)mol.atom.count, mol.atom.radius, 0);
+        md_gfx_structure_set_atom_radius(data->mold.gfx_structure, mol.atom.radius, (uint32_t)mol.atom.count, 0);
 #endif
     }
 
@@ -6385,7 +6387,7 @@ static void init_molecule_data(ApplicationData* data) {
         const md_molecule_t& mol = data->mold.mol;
         vec3_t& aabb_min = data->mold.mol_aabb_min;
         vec3_t& aabb_max = data->mold.mol_aabb_max;
-        md_util_compute_aabb(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
+        md_util_compute_aabb_xyzr(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
 
         data->picking.idx = INVALID_PICKING_IDX;
         data->selection.hovered = -1;
@@ -6394,13 +6396,12 @@ static void init_molecule_data(ApplicationData* data) {
         md_gl_molecule_init(&data->mold.gl_mol, &data->mold.mol);
 
 #if EXPERIMENTAL_GFX_API
-        data->mold.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent_bond.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
-        md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
-        md_gfx_structure_set_atom_radius(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.radius, 0);
-        md_gfx_structure_set_aabb(data->mold.gfx_structure, &data->mold.mol_aabb_min, &data->mold.mol_aabb_max);
+        data->mold.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent_bond.count, mol.backbone.count, mol.backbone.range_count, mol.instance.count);
+        md_gfx_structure_set_atom_position_soa(data->mold.gfx_structure, mol.atom.x, mol.atom.y, mol.atom.z, (uint32_t)mol.atom.count);
+        md_gfx_structure_set_atom_radius(data->mold.gfx_structure, mol.atom.radius, (uint32_t)mol.atom.count, 0);
         if (mol.instance.count > 0) {
-            md_gfx_structure_set_instance_atom_ranges(data->mold.gfx_structure, 0, mol.instance.count, (md_gfx_range_t*)mol.instance.atom_range, 0);
-            md_gfx_structure_set_instance_transforms(data->mold.gfx_structure, 0, mol.instance.count, mol.instance.transform, 0);
+            md_gfx_structure_set_instance_atom_ranges(data->mold.gfx_structure, (md_gfx_range_t*)mol.instance.atom_range, mol.instance.count, 0);
+            md_gfx_structure_set_instance_transforms(data->mold.gfx_structure, mol.instance.transform, mol.instance.count, 0);
         }
 #endif
         init_all_representations(data);
@@ -7448,8 +7449,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
 #if EXPERIMENTAL_GFX_API
         md_gfx_rep_attr_t attributes = {};
         attributes.spacefill.radius_scale = 1.0f;
-        md_gfx_rep_set_type_and_attr(rep->gfx_rep, MD_GFX_REP_TYPE_SPACEFILL, &attributes);
-        md_gfx_rep_set_color(rep->gfx_rep, 0, (uint32_t)mol.atom.count, (md_gfx_color_t*)colors, 0);
+        md_gfx_rep_set_data(rep->gfx_rep, MD_GFX_REP_TYPE_SPACEFILL, attributes, (md_gfx_color_t*)colors, (uint32_t)mol.atom.count, 0);
 #endif
     }
 }
@@ -7631,6 +7631,16 @@ static void handle_camera_interaction(ApplicationData* data) {
             const vec2_t mouse_delta = {delta.x, delta.y};
             const vec2_t mouse_coord = {coord.x, coord.y};
             const float  scroll_delta = ImGui::GetIO().MouseWheel;
+
+            if (!ImGui::GetIO().WantCaptureKeyboard) {
+                vec3_t t = {
+                    (float)(ImGui::IsKeyDown(ImGuiKey_D) - ImGui::IsKeyDown(ImGuiKey_A)),
+                    0, 
+                    (float)(ImGui::IsKeyDown(ImGuiKey_S) - ImGui::IsKeyDown(ImGuiKey_W))
+                };
+
+                data->view.animation.target_position += data->view.camera.orientation * t * 50.0f;
+            }
 
             TrackballControllerInput input;
             input.rotate_button = ImGui::IsMouseDown(ImGuiMouseButton_Left);
@@ -8049,7 +8059,8 @@ static void draw_representations(ApplicationData* data) {
                 vec3_t axis = {rnd(), rnd(), rnd()};
                 quat_t ori = quat_angle_axis(rnd() * TWO_PI, vec3_normalize(axis));
                 mat4_t R = mat4_from_quat(ori);
-                mat4_t T = mat4_translate(rnd() * 4000, rnd() * 4000, rnd() * 4000);
+                float ext = sqrtf(5000 * instance_count);
+                mat4_t T = mat4_translate(rnd() * ext, rnd() * ext, rnd() * ext);
                 mat4_t M = T * R;
                 md_range_t range = {0, (int32_t)data->mold.mol.atom.count};
                 md_array_push(transforms, M, persistent_allocator);
