@@ -3359,7 +3359,7 @@ static void draw_representations_window(ApplicationData* data) {
     for (int i = 0; i < (int)md_array_size(data->representations.buffer); i++) {
         bool update_rep = false;
         auto& rep = data->representations.buffer[i];
-        const float item_width = CLAMP(ImGui::GetContentRegionAvail().x - 90.f, 100.f, 300.f);
+        const float item_width = MAX(ImGui::GetContentRegionAvail().x - 90.f, 100.f);
         char label[128];
         snprintf(label, sizeof(label), "%s###ID", rep.name);
 
