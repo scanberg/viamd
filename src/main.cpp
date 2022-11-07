@@ -6396,9 +6396,10 @@ static void init_molecule_data(ApplicationData* data) {
         md_gl_molecule_init(&data->mold.gl_mol, &data->mold.mol);
 
 #if EXPERIMENTAL_GFX_API
-        data->mold.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent_bond.count, mol.backbone.count, mol.backbone.range_count, mol.instance.count);
+        data->mold.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent_bond.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
         md_gfx_structure_set_atom_position_soa(data->mold.gfx_structure, mol.atom.x, mol.atom.y, mol.atom.z, (uint32_t)mol.atom.count);
         md_gfx_structure_set_atom_radius(data->mold.gfx_structure, mol.atom.radius, (uint32_t)mol.atom.count, 0);
+        md_gfx_structure_set_group_atom_ranges(data->mold.gfx_structure, (md_gfx_range_t*)mol.residue.atom_range, mol.residue.count, 0);
         if (mol.instance.count > 0) {
             md_gfx_structure_set_instance_atom_ranges(data->mold.gfx_structure, (md_gfx_range_t*)mol.instance.atom_range, mol.instance.count, 0);
             md_gfx_structure_set_instance_transforms(data->mold.gfx_structure, mol.instance.transform, mol.instance.count, 0);
