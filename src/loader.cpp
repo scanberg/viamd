@@ -31,6 +31,7 @@ struct LoadedTrajectory {
     md_frame_cache_t cache;
     md_allocator_i* alloc;
     md_bitfield_t recenter_target;
+    bool deperiodize;
 };
 
 static LoadedMolecule loaded_molecules[8] = {};
@@ -224,7 +225,7 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
             }
 
             // Deperiodize
-            if (have_box) {
+            if (loaded_traj->deperiodize && have_box) {
                 md_molecule_t mol = *loaded_traj->mol;
                 mol.atom.x = frame_data->x;
                 mol.atom.y = frame_data->y;
@@ -256,7 +257,7 @@ bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_h
     return decode_frame_data(inst, frame_data, sizeof(int64_t), header, x, y, z);
 }
 
-md_trajectory_i* open_file(str_t filename, const md_molecule_t* mol, md_allocator_i* alloc) {
+md_trajectory_i* open_file(str_t filename, const md_molecule_t* mol, md_allocator_i* alloc, bool deperiodize_on_load) {
     ASSERT(mol);
     ASSERT(alloc);
 
@@ -287,6 +288,7 @@ md_trajectory_i* open_file(str_t filename, const md_molecule_t* mol, md_allocato
     inst->cache = {0};
     inst->recenter_target = {0};
     inst->alloc = alloc;
+    inst->deperiodize = deperiodize_on_load;
     
     md_frame_cache_init(&inst->cache, inst->traj, alloc, md_trajectory_num_frames(inst->traj));
     md_bitfield_init(&inst->recenter_target, alloc);

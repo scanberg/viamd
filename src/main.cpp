@@ -353,6 +353,7 @@ struct LoadDatasetWindowState {
     bool load_topology = false;
     bool load_trajectory = false;
     bool coarse_grained = false;
+    bool deperiodize_on_load = false;
     bool show_window = false;
 };
 
@@ -370,6 +371,7 @@ struct ApplicationData {
         StrBuf<1024> workspace{};
 
         bool coarse_grained = false;
+        bool deperiodize    = false;
     } files;
 
     // --- CAMERA ---
@@ -966,7 +968,7 @@ static void init_trajectory_data(ApplicationData* data);
 
 static void interrupt_async_tasks(ApplicationData* data);
 
-static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md_molecule_api* mol_api = NULL, md_trajectory_api* traj_api = NULL, bool coarse_grained = false);
+static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md_molecule_api* mol_api = NULL, md_trajectory_api* traj_api = NULL, bool coarse_grained = false, bool deperiodize_on_load = false);
 
 static void load_workspace(ApplicationData* data, str_t file);
 static void save_workspace(ApplicationData* data, str_t file);
@@ -2811,10 +2813,21 @@ void draw_load_dataset_window(ApplicationData* data) {
             ImGui::EndCombo();
         }
 
+        bool show_cg = !path_invalid && load::mol::get_api(path);
+        if (!show_cg) ImGui::PushDisabled();
         ImGui::Checkbox("Coarse Grained", &state.coarse_grained);
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Enable if the dataset is coarse grained");
         }
+        if (!show_cg) ImGui::PopDisabled();
+
+        bool show_dp = !path_invalid && load::traj::get_api(path);
+        if (!show_dp) ImGui::PushDisabled();
+        ImGui::Checkbox("Deperiodize on Load", &state.deperiodize_on_load);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Enable if the loaded frames should be deperiodized");
+        }
+        if (!show_dp) ImGui::PopDisabled();
 
         bool load_enabled = (state.path_is_valid && state.loader_idx > -1);
         if (!load_enabled) ImGui::PushDisabled();
@@ -6336,8 +6349,8 @@ static void init_trajectory_data(ApplicationData* data) {
     }
 }
 
-static bool load_trajectory_data(ApplicationData* data, str_t filename) {
-    md_trajectory_i* traj = load::traj::open_file(filename, &data->mold.mol, persistent_allocator);
+static bool load_trajectory_data(ApplicationData* data, str_t filename, bool deperiodize_on_load) {
+    md_trajectory_i* traj = load::traj::open_file(filename, &data->mold.mol, persistent_allocator, deperiodize_on_load);
     if (traj) {
         free_trajectory_data(data);
         data->mold.traj = traj;
@@ -6553,7 +6566,7 @@ static void launch_prefetch_job(ApplicationData* data) {
 #endif
 }
 
-static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md_molecule_api* mol_api, md_trajectory_api* traj_api, bool coarse_grained) {
+static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md_molecule_api* mol_api, md_trajectory_api* traj_api, bool coarse_grained, bool deperiodize_on_load) {
     ASSERT(data);
 
     path_to_file = md_os_path_make_canonical(path_to_file, frame_allocator);
@@ -6605,7 +6618,7 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
                 return true;
             }
 
-            return load_trajectory_data(data, path_to_file);
+            return load_trajectory_data(data, path_to_file, deperiodize_on_load);
         } else {
             md_print(MD_LOG_TYPE_ERROR, "File extension not supported");
         }
@@ -6994,6 +7007,7 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     str_t cur_molecule_file = str_copy(data->files.molecule, frame_allocator);
     str_t cur_trajectory_file = str_copy(data->files.trajectory, frame_allocator);
     bool  cur_coarse_grained = data->files.coarse_grained;
+    bool  cur_deperiodize = data->files.deperiodize;
 
     const SerializationArray* arr_group = NULL;
     void* ptr = 0;
@@ -7031,17 +7045,19 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     str_t new_molecule_file   = str_copy(data->files.molecule, frame_allocator);
     str_t new_trajectory_file = str_copy(data->files.trajectory, frame_allocator);
     bool  new_coarse_grained  = data->files.coarse_grained;
+    bool  new_deperiodize     = data->files.deperiodize;
 
     // When we de-serialize we overwrite the two following paths, even though they are not loaded.
     // So we copy them back to their original values.
     data->files.molecule = cur_molecule_file;
     data->files.trajectory = cur_trajectory_file;
     data->files.coarse_grained = cur_coarse_grained;
+    data->files.deperiodize = cur_deperiodize;
 
     md_molecule_api* mol_api = load::mol::get_api(new_molecule_file);
     md_trajectory_api* traj_api = load::traj::get_api(new_trajectory_file);
 
-    if (new_molecule_file.len && load_dataset_from_file(data, new_molecule_file, mol_api, traj_api, new_coarse_grained)) {
+    if (new_molecule_file.len && load_dataset_from_file(data, new_molecule_file, mol_api, traj_api, new_coarse_grained, new_deperiodize)) {
         init_all_representations(data);
         update_all_representations(data);
     }
