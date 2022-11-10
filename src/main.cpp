@@ -2021,7 +2021,7 @@ static void interpolate_atomic_properties(ApplicationData* data) {
             ASSERT(false);
     }
 
-    md_util_compute_aabb(&data->mold.mol_aabb_min, &data->mold.mol_aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
+    md_util_compute_aabb_xyzr(&data->mold.mol_aabb_min, &data->mold.mol_aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
 
     if (mol.backbone.angle) {
         const md_backbone_angles_t* src_angles[4] = {
@@ -6398,7 +6398,7 @@ static void init_molecule_data(ApplicationData* data) {
         const md_molecule_t& mol = data->mold.mol;
         vec3_t& aabb_min = data->mold.mol_aabb_min;
         vec3_t& aabb_max = data->mold.mol_aabb_max;
-        md_util_compute_aabb(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
+        md_util_compute_aabb_xyzr(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
 
         data->picking.idx = INVALID_PICKING_IDX;
         data->selection.hovered = -1;
