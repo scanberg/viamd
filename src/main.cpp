@@ -353,7 +353,7 @@ struct LoadDatasetWindowState {
     bool load_topology = false;
     bool load_trajectory = false;
     bool coarse_grained = false;
-    bool deperiodize_on_load = false;
+    bool deperiodize_on_load = true;
     bool show_window = false;
 };
 
@@ -968,7 +968,7 @@ static void init_trajectory_data(ApplicationData* data);
 
 static void interrupt_async_tasks(ApplicationData* data);
 
-static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md_molecule_api* mol_api = NULL, md_trajectory_api* traj_api = NULL, bool coarse_grained = false, bool deperiodize_on_load = false);
+static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md_molecule_api* mol_api = NULL, md_trajectory_api* traj_api = NULL, bool coarse_grained = false, bool deperiodize_on_load = true);
 
 static void load_workspace(ApplicationData* data, str_t file);
 static void save_workspace(ApplicationData* data, str_t file);
@@ -1825,6 +1825,9 @@ static void update_density_volume(ApplicationData* data) {
                 }
                 num_reps = vis.sdf.count;
             }
+
+            // We need to limit this for performance reasons
+            num_reps = MIN(num_reps, 100);
 
             const int64_t old_size = md_array_size(data->density_volume.gl_reps);
             if (data->density_volume.gl_reps) {
@@ -2813,21 +2816,21 @@ void draw_load_dataset_window(ApplicationData* data) {
             ImGui::EndCombo();
         }
 
-        bool show_cg = !path_invalid && load::mol::get_api(path);
-        if (!show_cg) ImGui::PushDisabled();
-        ImGui::Checkbox("Coarse Grained", &state.coarse_grained);
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Enable if the dataset is coarse grained");
+        bool show_cg = state.path_is_valid && load::mol::get_api(path);
+        if (show_cg) {
+            ImGui::Checkbox("Coarse Grained", &state.coarse_grained);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Enable if the dataset is coarse grained");
+            }
         }
-        if (!show_cg) ImGui::PopDisabled();
 
-        bool show_dp = !path_invalid && load::traj::get_api(path);
-        if (!show_dp) ImGui::PushDisabled();
-        ImGui::Checkbox("Deperiodize on Load", &state.deperiodize_on_load);
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Enable if the loaded frames should be deperiodized");
+        bool show_dp = state.path_is_valid && load::traj::get_api(path);
+        if (show_dp) {
+            ImGui::Checkbox("Deperiodize on Load", &state.deperiodize_on_load);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Enable if the loaded frames should be deperiodized");
+            }
         }
-        if (!show_dp) ImGui::PopDisabled();
 
         bool load_enabled = (state.path_is_valid && state.loader_idx > -1);
         if (!load_enabled) ImGui::PushDisabled();
@@ -2836,13 +2839,14 @@ void draw_load_dataset_window(ApplicationData* data) {
             char buf[32];
             int len = snprintf(buf, sizeof(buf), ".%s", loader_ext[state.loader_idx].ptr);
             str_t ext = {buf, len};
-            if (load_dataset_from_file(data, path, load::mol::get_api(ext), load::traj::get_api(ext), state.coarse_grained)) {
+            if (load_dataset_from_file(data, path, load::mol::get_api(ext), load::traj::get_api(ext), show_cg && state.coarse_grained, show_dp && state.deperiodize_on_load)) {
                 if (!data->representations.buffer) {
                     create_representation(data); // Create default representation
                 }
                 data->animation = {};
                 reset_view(data, true, true);
             }
+            state = {};
             state.show_window = false;
         }
         if (!load_enabled) ImGui::PopDisabled();
