@@ -2846,7 +2846,7 @@ void draw_load_dataset_window(ApplicationData* data) {
                 data->animation = {};
                 reset_view(data, true, true);
             }
-            state = {};
+            state = LoadDatasetWindowState();
             state.show_window = false;
         }
         if (!load_enabled) ImGui::PopDisabled();
