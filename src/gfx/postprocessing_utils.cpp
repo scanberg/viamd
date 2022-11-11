@@ -571,6 +571,15 @@ static struct {
 } filmic;
 
 static struct {
+    GLuint program = 0;
+    struct {
+        GLint texture = -1;
+        GLint exposure = -1;
+        GLint gamma = -1;
+    } uniform_loc;
+} aces;
+
+static struct {
     GLuint program_forward = 0;
     GLuint program_inverse = 0;
     struct {
@@ -599,6 +608,13 @@ void initialize() {
         filmic.uniform_loc.gamma = glGetUniformLocation(filmic.program, "u_gamma");
     }
     {
+        // ACES
+        aces.program = setup_program_from_file(MAKE_STR("ACES"), MAKE_STR(VIAMD_SHADER_DIR "/tonemap/aces.frag"));
+        aces.uniform_loc.texture = glGetUniformLocation(filmic.program, "u_texture");
+        aces.uniform_loc.exposure = glGetUniformLocation(filmic.program, "u_exposure");
+        aces.uniform_loc.gamma = glGetUniformLocation(filmic.program, "u_gamma");
+    }
+    {
         // Fast Reversible (For AA) (Credits to Brian Karis: http://graphicrants.blogspot.com/2013/12/tone-mapping.html)
         fast_reversible.program_forward = setup_program_from_file(MAKE_STR("Fast Reversible"), MAKE_STR(VIAMD_SHADER_DIR "/tonemap/fast_reversible.frag"), MAKE_STR("#define USE_INVERSE 0"));
         fast_reversible.program_inverse = setup_program_from_file(MAKE_STR("Fast Reversible"), MAKE_STR(VIAMD_SHADER_DIR "/tonemap/fast_reversible.frag"), MAKE_STR("#define USE_INVERSE 1"));
@@ -610,6 +626,7 @@ void shutdown() {
     if (passthrough.program) glDeleteProgram(passthrough.program);
     if (exposure_gamma.program) glDeleteProgram(exposure_gamma.program);
     if (filmic.program) glDeleteProgram(filmic.program);
+    if (aces.program) glDeleteProgram(aces.program);
     if (fast_reversible.program_forward) glDeleteProgram(fast_reversible.program_forward);
     if (fast_reversible.program_inverse) glDeleteProgram(fast_reversible.program_inverse);
 }
@@ -1351,6 +1368,12 @@ void apply_tonemapping(GLuint color_tex, Tonemapping tonemapping, float exposure
             glUniform1i(tonemapping::filmic.uniform_loc.texture, 0);
             glUniform1f(tonemapping::filmic.uniform_loc.exposure, exposure);
             glUniform1f(tonemapping::filmic.uniform_loc.gamma, gamma);
+            break;
+        case Tonemapping_ACES:
+            glUseProgram(tonemapping::aces.program);
+            glUniform1i(tonemapping::aces.uniform_loc.texture, 0);
+            glUniform1f(tonemapping::aces.uniform_loc.exposure, exposure);
+            glUniform1f(tonemapping::aces.uniform_loc.gamma, gamma);
             break;
         case Tonemapping_Passthrough:
         default:
