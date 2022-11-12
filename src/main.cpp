@@ -7438,7 +7438,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
         filter_colors(colors, mol.atom.count, &rep->atom_mask);
         data->representations.atom_visibility_mask_dirty = true;
 
-        md_gl_representation_type_t type = MD_GL_REP_DEFAULT;
+        md_gl_representation_type_t type = MD_GL_REP_SPACE_FILL;
         md_gl_representation_args_t args = {};
         switch(rep->type) {
         case RepresentationType::SpaceFill:
