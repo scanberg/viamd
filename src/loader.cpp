@@ -206,10 +206,13 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
                     // Compute deperiodized com for substructure
                     vec3_t com;
                     if (have_box) {
-                        com = md_util_compute_com_periodic(tmp_x, tmp_y, tmp_z, tmp_w, count, box_ext);
+                        com = md_util_compute_com_periodic_soa(tmp_x, tmp_y, tmp_z, tmp_w, count, box_ext);
+                        com.x = deperiodizef(com.x, box_ext.x * 0.5f, box_ext.x);
+                        com.y = deperiodizef(com.y, box_ext.y * 0.5f, box_ext.y);
+                        com.z = deperiodizef(com.z, box_ext.z * 0.5f, box_ext.z);
                     }
                     else {
-                        com = md_util_compute_com(tmp_x, tmp_y, tmp_z, tmp_w, count);
+                        com = md_util_compute_com_soa(tmp_x, tmp_y, tmp_z, tmp_w, count);
                     }
 
                     // Translate all

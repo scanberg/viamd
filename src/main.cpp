@@ -552,10 +552,9 @@ struct ApplicationData {
             float density_scale = 1.f;
             struct {
                 GLuint id = 0;
-                bool dirty = true;
-                int width = 0;
                 float alpha_scale = 1.f;
-                StrBuf<512> path = VIAMD_IMAGE_DIR "/tf/tf.png";
+                ImPlotColormap colormap = ImPlotColormap_Plasma; // Corresponds to Plasma colormap
+                bool dirty = true;
             } tf;
         } dvr;
 
@@ -1737,12 +1736,21 @@ static void update_display_properties(ApplicationData* data) {
 
 static void update_density_volume(ApplicationData* data) {
     if (data->density_volume.dvr.tf.dirty) {
-        image_t img = { 0 };
-        if (read_image(&img, data->density_volume.dvr.tf.path, frame_allocator)) {
-            gl::init_texture_2D(&data->density_volume.dvr.tf.id, img.width, img.height, GL_RGBA8);
-            gl::set_texture_2D_data(data->density_volume.dvr.tf.id, img.data, GL_RGBA8);
-            data->density_volume.dvr.tf.dirty = false;
+        data->density_volume.dvr.tf.dirty = false;
+
+        uint32_t pixel_data[128];
+
+        for (int i = 0; i < ARRAY_SIZE(pixel_data); ++i) {
+            float t = (float)i / (float)(ARRAY_SIZE(pixel_data) - 1);
+            ImVec4 col = ImPlot::SampleColormap(t, data->density_volume.dvr.tf.colormap);
+
+            // This is a small alpha ramp in the start of the TF to avoid rendering low density values.
+            col.w = MIN(160 * t*t, 0.341176);
+            pixel_data[i] = ImGui::ColorConvertFloat4ToU32(col);
         }
+
+        gl::init_texture_1D(&data->density_volume.dvr.tf.id, (int)ARRAY_SIZE(pixel_data), GL_RGBA8);
+        gl::set_texture_1D_data(data->density_volume.dvr.tf.id, pixel_data, GL_RGBA8);
     }
 
     int64_t selected_property = -1;
@@ -4565,7 +4573,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                                 md_trajectory_load_frame(data->mold.traj, frame_idx, NULL, x, y, z);
                                 vec3_t* xyz = 0;
                                 for (int64_t i = 0; i < data->shape_space.result.num_bitfields; ++i) {
-                                    md_array_ensure(xyz, md_bitfield_popcount(&data->shape_space.result.bitfields[i]), default_allocator);
+                                    md_array_ensure(xyz, (int64_t)md_bitfield_popcount(&data->shape_space.result.bitfields[i]), default_allocator);
                                     int64_t beg_bit = data->shape_space.result.bitfields[i].beg_bit;
                                     int64_t end_bit = data->shape_space.result.bitfields[i].end_bit;
                                     int64_t count = 0;
@@ -5123,7 +5131,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
 static void draw_density_volume_window(ApplicationData* data) {
     ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Density Volume", &data->density_volume.show_window, ImGuiWindowFlags_MenuBar)) {
-        const ImVec2 button_size = {160, 20};
+        const ImVec2 button_size = {160, 0};
 
         if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
             data->animation.mode = data->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
@@ -5136,19 +5144,20 @@ static void draw_density_volume_window(ApplicationData* data) {
             }
             if (ImGui::BeginMenu("DVR")) {
                 ImGui::Checkbox("Enabled", &data->density_volume.dvr.enabled);
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-                ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 1.0f));
-                ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
-                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.0f, 1.0f));
-                if (ImGui::ImageButton((void*)(intptr_t)data->density_volume.dvr.tf.id, button_size)) {
-                    char path[4096] = "";
-                    if (application::file_dialog(path, sizeof(path), application::FileDialog_Open, "png,jpg")) {
-                        data->density_volume.dvr.tf.path = path;
-                        data->density_volume.dvr.tf.dirty = true;
-                    }
+
+                if (ImPlot::ColormapButton(ImPlot::GetColormapName(data->density_volume.dvr.tf.colormap), button_size, data->density_volume.dvr.tf.colormap)) {
+                    ImGui::OpenPopup("Colormap Selector");
                 }
-                ImGui::PopStyleVar(2);
-                ImGui::PopStyleColor(2);
+
+                if (ImGui::BeginPopup("Colormap Selector")) {
+                    for (int map = 4; map < ImPlot::GetColormapCount(); ++map) {
+                        if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), button_size, map)) {
+                            data->density_volume.dvr.tf.colormap = map;
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                    ImGui::EndPopup();
+                }
 
                 ImGui::SliderFloat("Density Scaling", &data->density_volume.dvr.density_scale, 0.001f, 10000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
                 ImGui::SliderFloat("Alpha Scaling", &data->density_volume.dvr.tf.alpha_scale, 0.001f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic);
@@ -6909,7 +6918,7 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
         }
         case SerializationType_Path:
         {
-            StrBuf<512> path = extract_path_without_file(filename);
+            StrBuf<1024> path = extract_path_without_file(filename);
             path += arg;
             str_t can_path = md_os_path_make_canonical(path, frame_allocator);
             if (can_path.ptr && can_path.len > 0) {
