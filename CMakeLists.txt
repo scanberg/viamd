@@ -71,10 +71,9 @@ if (CMAKE_C_COMPILER_ID STREQUAL "MSVC")
 endif()
 
 create_copy_resource_dir_target(viamd_copy_shaders  "${CMAKE_CURRENT_SOURCE_DIR}/shaders"  "${VIAMD_BIN_DIR}/shaders")
-create_copy_resource_dir_target(viamd_copy_images   "${CMAKE_CURRENT_SOURCE_DIR}/images"   "${VIAMD_BIN_DIR}/images")
 create_copy_resource_dir_target(viamd_copy_datasets "${CMAKE_CURRENT_SOURCE_DIR}/datasets" "${VIAMD_BIN_DIR}/datasets")
 
-add_dependencies(viamd viamd_copy_shaders viamd_copy_images viamd_copy_datasets)
+add_dependencies(viamd viamd_copy_shaders viamd_copy_datasets)
 
 target_compile_definitions(viamd PRIVATE
 	VIAMD_DATASET_DIR=\"datasets\"
