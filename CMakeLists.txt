@@ -78,7 +78,6 @@ add_dependencies(viamd viamd_copy_shaders viamd_copy_datasets)
 target_compile_definitions(viamd PRIVATE
 	VIAMD_DATASET_DIR=\"datasets\"
 	VIAMD_SHADER_DIR=\"shaders\"
-	VIAMD_IMAGE_DIR=\"images\"
 	VIAMD_SCREENSHOT_DIR=\"screenshots\")
 
 # We just hijack the warning and compile flags from mdlib
