@@ -9,21 +9,16 @@
 #include <core/md_log.h>
 #include <core/md_file.h>
 
-#define STBI_MALLOC(sz)                     md_alloc(default_temp_allocator, sz)
-#define STBI_REALLOC_SIZED(p,oldsz,newsz)   md_realloc(default_temp_allocator, p, oldsz, newsz)
-#define STBI_FREE(p)                        {}
-
-#define STBIW_MALLOC(sz)                     md_alloc(default_temp_allocator, sz)
-#define STBIW_REALLOC_SIZED(p,oldsz,newsz)   md_realloc(default_temp_allocator, p, oldsz, newsz)
-#define STBIW_FREE(p)                        {}
-
-#include <stb_image.h>
-#include <stb_image_write.h>
-
 #include <string.h>
 #include <math.h>
 
 #include "color_utils.h"
+
+#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+
+#include <stb_image.h>
+#include <stb_image_write.h>
 
 bool init_image(image_t* img, int32_t width, int32_t height, md_allocator_i* alloc) {
     ASSERT(img);

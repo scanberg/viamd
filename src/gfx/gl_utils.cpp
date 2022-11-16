@@ -198,31 +198,55 @@ bool gl::attach_link_detach_with_transform_feedback(GLuint program, const GLuint
     return result;
 }
 
-bool gl::init_texture_2D(GLuint* texture, int width, int height, GLenum format) {
+bool gl::init_texture_1D(GLuint* texture, int width, GLenum format) {
     ASSERT(texture);    
 
     if (glIsTexture(*texture)) {
         int x, y;
         GLenum fmt;
-        glBindTexture(GL_TEXTURE_2D, *texture);
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH,  &x);
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &y);
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&fmt);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        if (width == x && width == y && format == fmt)
+        glGetTextureLevelParameteriv(*texture, 0, GL_TEXTURE_WIDTH, &x);
+        glGetTextureLevelParameteriv(*texture, 0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&fmt);
+        glBindTexture(GL_TEXTURE_1D, 0);
+        if (width == x && format == fmt)
             return true;
         else
             glDeleteTextures(1, texture);
     }
 
     glGenTextures(1, texture);
-    glBindTexture(GL_TEXTURE_2D, *texture);
-    glTexStorage2D(GL_TEXTURE_2D, 1, format, width, height);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    glCreateTextures(GL_TEXTURE_1D, 1, texture);
+    glTextureStorage1D(*texture, 1, format, width);
+    glTextureParameteri(*texture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTextureParameteri(*texture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTextureParameteri(*texture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(*texture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    return true;
+}
+
+bool gl::init_texture_2D(GLuint* texture, int width, int height, GLenum format) {
+    ASSERT(texture);    
+
+    if (glIsTexture(*texture)) {
+        int x, y;
+        GLenum fmt;
+
+        glGetTextureLevelParameteriv(*texture, 0, GL_TEXTURE_WIDTH,  &x);
+        glGetTextureLevelParameteriv(*texture, 0, GL_TEXTURE_HEIGHT, &y);
+        glGetTextureLevelParameteriv(*texture, 0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&fmt);
+
+        if (width == x && height == y && format == fmt)
+            return true;
+        else
+            glDeleteTextures(1, texture);
+    }
+
+    glCreateTextures(GL_TEXTURE_2D, 1, texture);
+    glTextureStorage2D(*texture, 1, format, width, height);
+    glTextureParameteri(*texture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTextureParameteri(*texture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTextureParameteri(*texture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(*texture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     return true;
 }
@@ -234,28 +258,25 @@ bool gl::init_texture_3D(GLuint* texture, int width, int height, int depth, GLen
     if (glIsTexture(*texture)) {
         int x, y, z;
         GLenum fmt;
-        glBindTexture(GL_TEXTURE_3D, *texture);
-        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH,  &x);
-        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &y);
-        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH,  &z);
-        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&fmt);
-        glBindTexture(GL_TEXTURE_3D, 0);
-        if (width == x && width == y && width == z && format == fmt)
+        
+        glGetTextureLevelParameteriv(*texture, 0, GL_TEXTURE_WIDTH,  &x);
+        glGetTextureLevelParameteriv(*texture, 0, GL_TEXTURE_HEIGHT, &y);
+        glGetTextureLevelParameteriv(*texture, 0, GL_TEXTURE_DEPTH,  &z);
+        glGetTextureLevelParameteriv(*texture, 0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&fmt);
+        
+        if (width == x && height == y && depth == z && format == fmt)
             return true;
         else
             glDeleteTextures(1, texture);
     }
 
-    glGenTextures(1, texture);
-    glBindTexture(GL_TEXTURE_3D, *texture);
-    glTexStorage3D(GL_TEXTURE_3D, 1, format, width, height, depth);
-    // glTexImage3D(GL_TEXTURE_3D, 0, GL_R8, dim.x, dim.y, dim.z, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_3D, 0);
+    glCreateTextures(GL_TEXTURE_3D, 1, texture);
+    glTextureStorage3D(*texture, 1, format, width, height, depth);
+    glTextureParameteri(*texture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTextureParameteri(*texture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTextureParameteri(*texture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(*texture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(*texture, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
 
     return true;
 }
@@ -267,26 +288,56 @@ bool gl::free_texture(GLuint* texture) {
     return true;
 }
 
+static inline void get_pixel_channel_type(GLenum& channel, GLenum& type, GLenum format) {
+    switch (format) {
+    case GL_RGBA8:
+        channel = GL_RGBA;
+        type = GL_UNSIGNED_BYTE;
+        break;
+    case GL_RGBA32F:
+        channel = GL_RGBA;
+        type = GL_FLOAT;
+        break;
+    case GL_R32F:
+        channel = GL_RED;
+        type = GL_FLOAT;
+        break;
+    default:
+        channel = 0;
+        type = 0;
+    }
+}
+
+bool gl::set_texture_1D_data(GLuint texture, const void* data, GLenum format) {
+    if (!glIsTexture(texture)) return false;
+
+    GLenum pixel_channel = 0;
+    GLenum pixel_type = 0;
+
+    get_pixel_channel_type(pixel_channel, pixel_type, format);
+    if (pixel_channel == 0 || pixel_type == 0) return false;
+
+    int w;
+    glGetTextureLevelParameteriv(texture, 0, GL_TEXTURE_WIDTH, &w);
+    glTextureSubImage1D(texture, 0, 0, w, pixel_channel, pixel_type, data);
+    
+    return true;
+}
+
 bool gl::set_texture_2D_data(GLuint texture, const void* data, GLenum format) {
     if (!glIsTexture(texture)) return false;
 
     GLenum pixel_channel = 0;
     GLenum pixel_type = 0;
 
-    if (format == GL_RGBA8) {
-        pixel_channel = GL_RGBA;
-        pixel_type = GL_UNSIGNED_BYTE;
-    }
-
+    get_pixel_channel_type(pixel_channel, pixel_type, format);
     if (pixel_channel == 0 || pixel_type == 0) return false;
 
-    glBindTexture(GL_TEXTURE_2D, texture);
     int w, h;
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
+    glGetTextureLevelParameteriv(texture, 0, GL_TEXTURE_WIDTH, &w);
+    glGetTextureLevelParameteriv(texture, 0, GL_TEXTURE_HEIGHT, &h);
 
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, pixel_channel, pixel_type, data);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    glTextureSubImage2D(texture, 0, 0, 0, w, h, pixel_channel, pixel_type, data);
 
     return true;
 }
@@ -297,21 +348,15 @@ bool gl::set_texture_3D_data(GLuint texture, const void* data, GLenum format) {
     GLenum pixel_channel = 0;
     GLenum pixel_type = 0;
 
-    if (format == GL_R32F) {
-        pixel_channel = GL_RED;
-        pixel_type = GL_FLOAT;
-    }
-
+    get_pixel_channel_type(pixel_channel, pixel_type, format);
     if (pixel_channel == 0 || pixel_type == 0) return false;
 
-    glBindTexture(GL_TEXTURE_3D, texture);
     int w, h, d;
-    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH, &w);
-    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &h);
-    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH, &d);
+    glGetTextureLevelParameteriv(texture, 0, GL_TEXTURE_WIDTH, &w);
+    glGetTextureLevelParameteriv(texture, 0, GL_TEXTURE_HEIGHT, &h);
+    glGetTextureLevelParameteriv(texture, 0, GL_TEXTURE_DEPTH, &d);
 
-    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, w, h, d, pixel_channel, pixel_type, data);
-    glBindTexture(GL_TEXTURE_3D, 0);
+    glTextureSubImage3D(texture, 0, 0, 0, 0, w, h, d, pixel_channel, pixel_type, data);
 
     return true;
 }

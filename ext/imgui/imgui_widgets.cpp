@@ -8400,3 +8400,9 @@ void ImGui::TabItemLabelAndCloseButton(ImDrawList* draw_list, const ImRect& bb, 
 
 
 #endif // #ifndef IMGUI_DISABLE
+
+// Explicit instantiation for things we use outside, in case they don't get instantiated and used, they are never part of the exported symbols
+// Which cause problems for linkers (GCC 11) in release mode
+template float ImGui::RoundScalarWithFormatT<float, float>(const char* format, ImGuiDataType data_type, float v);
+template float ImGui::ScaleRatioFromValueT<float, float, float>(ImGuiDataType data_type, float t, float v_min, float v_max, bool is_logarithmic, float logarithmic_zero_epsilon, float zero_deadzone_halfsize);
+template float ImGui::ScaleValueFromRatioT<float, float, float>(ImGuiDataType data_type, float t, float v_min, float v_max, bool is_logarithmic, float logarithmic_zero_epsilon, float zero_deadzone_halfsize);

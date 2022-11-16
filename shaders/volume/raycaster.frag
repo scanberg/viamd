@@ -39,7 +39,7 @@ uniform IsovalueParameters u_iso;
 
 uniform sampler2D u_tex_depth;
 uniform sampler3D u_tex_volume;
-uniform sampler2D u_tex_tf;
+uniform sampler1D u_tex_tf;
 
 in  vec3 model_pos;
 in  vec3 model_eye;
@@ -57,7 +57,7 @@ float getVoxel(in vec3 samplePos) {
 }
 
 vec4 classify(in float density) {
-    vec4 c = texture(u_tex_tf, vec2(density, 0.5));
+    vec4 c = texture(u_tex_tf, density);
     c.a = clamp(c.a * u_alpha_scale, 0.0, 1.0);
     return c;
 }

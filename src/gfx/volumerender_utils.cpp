@@ -263,7 +263,7 @@ void render_volume(const RenderDesc& desc) {
     glBindTexture(GL_TEXTURE_3D, desc.texture.volume);
 
     glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, desc.texture.transfer_function);
+    glBindTexture(GL_TEXTURE_1D, desc.texture.transfer_function);
 
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, gl.ubo);
 

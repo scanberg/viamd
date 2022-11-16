@@ -571,6 +571,15 @@ static struct {
 } filmic;
 
 static struct {
+    GLuint program = 0;
+    struct {
+        GLint texture = -1;
+        GLint exposure = -1;
+        GLint gamma = -1;
+    } uniform_loc;
+} aces;
+
+static struct {
     GLuint program_forward = 0;
     GLuint program_inverse = 0;
     struct {
@@ -599,6 +608,13 @@ void initialize() {
         filmic.uniform_loc.gamma = glGetUniformLocation(filmic.program, "u_gamma");
     }
     {
+        // ACES
+        aces.program = setup_program_from_file(MAKE_STR("ACES"), MAKE_STR(VIAMD_SHADER_DIR "/tonemap/aces.frag"));
+        aces.uniform_loc.texture = glGetUniformLocation(filmic.program, "u_texture");
+        aces.uniform_loc.exposure = glGetUniformLocation(filmic.program, "u_exposure");
+        aces.uniform_loc.gamma = glGetUniformLocation(filmic.program, "u_gamma");
+    }
+    {
         // Fast Reversible (For AA) (Credits to Brian Karis: http://graphicrants.blogspot.com/2013/12/tone-mapping.html)
         fast_reversible.program_forward = setup_program_from_file(MAKE_STR("Fast Reversible"), MAKE_STR(VIAMD_SHADER_DIR "/tonemap/fast_reversible.frag"), MAKE_STR("#define USE_INVERSE 0"));
         fast_reversible.program_inverse = setup_program_from_file(MAKE_STR("Fast Reversible"), MAKE_STR(VIAMD_SHADER_DIR "/tonemap/fast_reversible.frag"), MAKE_STR("#define USE_INVERSE 1"));
@@ -610,6 +626,7 @@ void shutdown() {
     if (passthrough.program) glDeleteProgram(passthrough.program);
     if (exposure_gamma.program) glDeleteProgram(exposure_gamma.program);
     if (filmic.program) glDeleteProgram(filmic.program);
+    if (aces.program) glDeleteProgram(aces.program);
     if (fast_reversible.program_forward) glDeleteProgram(fast_reversible.program_forward);
     if (fast_reversible.program_inverse) glDeleteProgram(fast_reversible.program_inverse);
 }
@@ -1138,16 +1155,17 @@ void apply_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj_m
 
     const vec2_t inv_res = vec2_t{1.f / gl.tex_width, 1.f / gl.tex_height};
 
+    int w = gl.tex_width;
+    int h = gl.tex_height;
+
     glBindVertexArray(gl.vao);
 
-    ssao::setup_ubo_hbao_data(gl.ssao.ubo_hbao_data, width, height, proj_matrix, intensity, radius, bias, time);
+    ssao::setup_ubo_hbao_data(gl.ssao.ubo_hbao_data, w, h, proj_matrix, intensity, radius, bias, time);
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.ssao.hbao.fbo);
-    glViewport(0, 0, gl.tex_width, gl.tex_height);
+    glViewport(0, 0, w, h);
     glClearColor(1,1,1,1);
     glClear(GL_COLOR_BUFFER_BIT);
-
-    glViewport(0, 0, width, height);
 
     // RENDER HBAO
     GLuint program = ortho ? gl.ssao.hbao.program_ortho : gl.ssao.hbao.program_persp;
@@ -1168,8 +1186,7 @@ void apply_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj_m
     glUniform1i(glGetUniformLocation(program, "u_tex_normal"), 1);
     glUniform1i(glGetUniformLocation(program, "u_tex_random"), 2);
 
-    glUniform2f(glGetUniformLocation(program, "u_tc_scl"), (float)width/(float)gl.tex_width, (float)height/(float)gl.tex_height);
-    //glUniform2f(glGetUniformLocation(program, "u_tc_scl"), (float)gl.tex_width/(float)width, (float)gl.tex_height/(float)height);
+    //glUniform2f(glGetUniformLocation(program, "u_tc_scl"), (float)width/(float)gl.tex_width, (float)height/(float)gl.tex_height);
 
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
@@ -1182,16 +1199,14 @@ void apply_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj_m
     glUniform1f(glGetUniformLocation(gl.ssao.blur.program, "u_sharpness"), sharpness);
     glUniform2f(glGetUniformLocation(gl.ssao.blur.program, "u_inv_res_dir"), inv_res.x, 0);
 
-    glUniform2f(glGetUniformLocation(gl.ssao.blur.program, "u_tc_scl"), (float)width/(float)gl.tex_width, (float)height/(float)gl.tex_height);
-
-    //glUniform2f(glGetUniformLocation(gl.ssao.blur.program, "u_tc_scl"), (float)gl.tex_width/(float)width, (float)gl.tex_height/(float)height);
+    //glUniform2f(glGetUniformLocation(gl.ssao.blur.program, "u_tc_scl"), (float)width/(float)gl.tex_width, (float)height/(float)gl.tex_height);
 
     glActiveTexture(GL_TEXTURE1);
 
     // BLUR FIRST
     PUSH_GPU_SECTION("BLUR 1st")
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.ssao.blur.fbo);
-    glViewport(0, 0, width, height);
+    glViewport(0, 0, w, h);
     glClearColor(0,0,0,0);
     glClear(GL_COLOR_BUFFER_BIT);
     glBindTexture(GL_TEXTURE_2D, gl.ssao.hbao.texture);
@@ -1351,6 +1366,12 @@ void apply_tonemapping(GLuint color_tex, Tonemapping tonemapping, float exposure
             glUniform1i(tonemapping::filmic.uniform_loc.texture, 0);
             glUniform1f(tonemapping::filmic.uniform_loc.exposure, exposure);
             glUniform1f(tonemapping::filmic.uniform_loc.gamma, gamma);
+            break;
+        case Tonemapping_ACES:
+            glUseProgram(tonemapping::aces.program);
+            glUniform1i(tonemapping::aces.uniform_loc.texture, 0);
+            glUniform1f(tonemapping::aces.uniform_loc.exposure, exposure);
+            glUniform1f(tonemapping::aces.uniform_loc.gamma, gamma);
             break;
         case Tonemapping_Passthrough:
         default:

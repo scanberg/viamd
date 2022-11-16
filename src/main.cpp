@@ -167,6 +167,19 @@ enum class RepresentationType { SpaceFill, Licorice, Ribbons, Cartoon };
 enum class TrackingMode { Absolute, Relative };
 enum class CameraMode { Perspective, Orthographic };
 
+enum class ColorMapping {
+    Uniform,
+    Cpk,
+    AtomLabel,
+    AtomIndex,
+    ResId,
+    ResIndex,
+    ChainId,
+    ChainIndex,
+    SecondaryStructure,
+    Property
+};
+
 enum AtomBit_ {
     AtomBit_Highlighted = 0x1,
     AtomBit_Selected    = 0x2,
@@ -353,6 +366,7 @@ struct LoadDatasetWindowState {
     bool load_topology = false;
     bool load_trajectory = false;
     bool coarse_grained = false;
+    bool deperiodize_on_load = true;
     bool show_window = false;
 };
 
@@ -370,6 +384,7 @@ struct ApplicationData {
         StrBuf<1024> workspace{};
 
         bool coarse_grained = false;
+        bool deperiodize    = false;
     } files;
 
     // --- CAMERA ---
@@ -550,10 +565,9 @@ struct ApplicationData {
             float density_scale = 1.f;
             struct {
                 GLuint id = 0;
-                bool dirty = true;
-                int width = 0;
                 float alpha_scale = 1.f;
-                StrBuf<512> path = VIAMD_IMAGE_DIR "/tf/tf.png";
+                ImPlotColormap colormap = ImPlotColormap_Plasma; // Corresponds to Plasma colormap
+                bool dirty = true;
             } tf;
         } dvr;
 
@@ -966,7 +980,7 @@ static void init_trajectory_data(ApplicationData* data);
 
 static void interrupt_async_tasks(ApplicationData* data);
 
-static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md_molecule_api* mol_api = NULL, md_trajectory_api* traj_api = NULL, bool coarse_grained = false);
+static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md_molecule_api* mol_api = NULL, md_trajectory_api* traj_api = NULL, bool coarse_grained = false, bool deperiodize_on_load = true);
 
 static void load_workspace(ApplicationData* data, str_t file);
 static void save_workspace(ApplicationData* data, str_t file);
@@ -1738,12 +1752,21 @@ static void update_display_properties(ApplicationData* data) {
 
 static void update_density_volume(ApplicationData* data) {
     if (data->density_volume.dvr.tf.dirty) {
-        image_t img = { 0 };
-        if (read_image(&img, data->density_volume.dvr.tf.path, frame_allocator)) {
-            gl::init_texture_2D(&data->density_volume.dvr.tf.id, img.width, img.height, GL_RGBA8);
-            gl::set_texture_2D_data(data->density_volume.dvr.tf.id, img.data, GL_RGBA8);
-            data->density_volume.dvr.tf.dirty = false;
+        data->density_volume.dvr.tf.dirty = false;
+
+        uint32_t pixel_data[128];
+
+        for (int i = 0; i < ARRAY_SIZE(pixel_data); ++i) {
+            float t = (float)i / (float)(ARRAY_SIZE(pixel_data) - 1);
+            ImVec4 col = ImPlot::SampleColormap(t, data->density_volume.dvr.tf.colormap);
+
+            // This is a small alpha ramp in the start of the TF to avoid rendering low density values.
+            col.w = MIN(160 * t*t, 0.341176);
+            pixel_data[i] = ImGui::ColorConvertFloat4ToU32(col);
         }
+
+        gl::init_texture_1D(&data->density_volume.dvr.tf.id, (int)ARRAY_SIZE(pixel_data), GL_RGBA8);
+        gl::set_texture_1D_data(data->density_volume.dvr.tf.id, pixel_data, GL_RGBA8);
     }
 
     int64_t selected_property = -1;
@@ -1826,6 +1849,9 @@ static void update_density_volume(ApplicationData* data) {
                 }
                 num_reps = vis.sdf.count;
             }
+
+            // We need to limit this for performance reasons
+            num_reps = MIN(num_reps, 100);
 
             const int64_t old_size = md_array_size(data->density_volume.gl_reps);
             if (data->density_volume.gl_reps) {
@@ -2814,9 +2840,20 @@ void draw_load_dataset_window(ApplicationData* data) {
             ImGui::EndCombo();
         }
 
-        ImGui::Checkbox("Coarse Grained", &state.coarse_grained);
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Enable if the dataset is coarse grained");
+        bool show_cg = state.path_is_valid && load::mol::get_api(path);
+        if (show_cg) {
+            ImGui::Checkbox("Coarse Grained", &state.coarse_grained);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Enable if the dataset is coarse grained");
+            }
+        }
+
+        bool show_dp = state.path_is_valid && load::traj::get_api(path);
+        if (show_dp) {
+            ImGui::Checkbox("Deperiodize on Load", &state.deperiodize_on_load);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Enable if the loaded frames should be deperiodized");
+            }
         }
 
         bool load_enabled = (state.path_is_valid && state.loader_idx > -1);
@@ -2826,13 +2863,14 @@ void draw_load_dataset_window(ApplicationData* data) {
             char buf[32];
             int len = snprintf(buf, sizeof(buf), ".%s", loader_ext[state.loader_idx].ptr);
             str_t ext = {buf, len};
-            if (load_dataset_from_file(data, path, load::mol::get_api(ext), load::traj::get_api(ext), state.coarse_grained)) {
+            if (load_dataset_from_file(data, path, load::mol::get_api(ext), load::traj::get_api(ext), show_cg && state.coarse_grained, show_dp && state.deperiodize_on_load)) {
                 if (!data->representations.buffer) {
                     create_representation(data); // Create default representation
                 }
                 data->animation = {};
                 reset_view(data, true, true);
             }
+            state = LoadDatasetWindowState();
             state.show_window = false;
         }
         if (!load_enabled) ImGui::PopDisabled();
@@ -3298,6 +3336,9 @@ static void draw_animation_control_window(ApplicationData* data) {
 
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Animation")) {
+        const float item_width = MAX(ImGui::GetContentRegionAvail().x - 80.f, 100.f);
+        ImGui::PushItemWidth(item_width);
+
         ImGui::Text("Num Frames: %i", num_frames);
 
         md_unit_t time_unit = md_trajectory_time_unit(data->mold.traj);
@@ -3342,6 +3383,7 @@ static void draw_animation_control_window(ApplicationData* data) {
             data->animation.mode = PlaybackMode::Stopped;
             data->animation.frame = 0.0;
         }
+        ImGui::PopItemWidth();
     }
     ImGui::End();
 }
@@ -5109,7 +5151,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
 static void draw_density_volume_window(ApplicationData* data) {
     ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Density Volume", &data->density_volume.show_window, ImGuiWindowFlags_MenuBar)) {
-        const ImVec2 button_size = {160, 20};
+        const ImVec2 button_size = {160, 0};
 
         if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
             data->animation.mode = data->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
@@ -5122,19 +5164,20 @@ static void draw_density_volume_window(ApplicationData* data) {
             }
             if (ImGui::BeginMenu("DVR")) {
                 ImGui::Checkbox("Enabled", &data->density_volume.dvr.enabled);
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-                ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 1.0f));
-                ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
-                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.0f, 1.0f));
-                if (ImGui::ImageButton((void*)(intptr_t)data->density_volume.dvr.tf.id, button_size)) {
-                    char path[4096] = "";
-                    if (application::file_dialog(path, sizeof(path), application::FileDialog_Open, "png,jpg")) {
-                        data->density_volume.dvr.tf.path = path;
-                        data->density_volume.dvr.tf.dirty = true;
-                    }
+
+                if (ImPlot::ColormapButton(ImPlot::GetColormapName(data->density_volume.dvr.tf.colormap), button_size, data->density_volume.dvr.tf.colormap)) {
+                    ImGui::OpenPopup("Colormap Selector");
                 }
-                ImGui::PopStyleVar(2);
-                ImGui::PopStyleColor(2);
+
+                if (ImGui::BeginPopup("Colormap Selector")) {
+                    for (int map = 4; map < ImPlot::GetColormapCount(); ++map) {
+                        if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), button_size, map)) {
+                            data->density_volume.dvr.tf.colormap = map;
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                    ImGui::EndPopup();
+                }
 
                 ImGui::SliderFloat("Density Scaling", &data->density_volume.dvr.density_scale, 0.001f, 10000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
                 ImGui::SliderFloat("Alpha Scaling", &data->density_volume.dvr.tf.alpha_scale, 0.001f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic);
@@ -6338,8 +6381,8 @@ static void init_trajectory_data(ApplicationData* data) {
     }
 }
 
-static bool load_trajectory_data(ApplicationData* data, str_t filename) {
-    md_trajectory_i* traj = load::traj::open_file(filename, &data->mold.mol, persistent_allocator);
+static bool load_trajectory_data(ApplicationData* data, str_t filename, bool deperiodize_on_load) {
+    md_trajectory_i* traj = load::traj::open_file(filename, &data->mold.mol, persistent_allocator, deperiodize_on_load);
     if (traj) {
         free_trajectory_data(data);
         data->mold.traj = traj;
@@ -6555,7 +6598,7 @@ static void launch_prefetch_job(ApplicationData* data) {
 #endif
 }
 
-static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md_molecule_api* mol_api, md_trajectory_api* traj_api, bool coarse_grained) {
+static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md_molecule_api* mol_api, md_trajectory_api* traj_api, bool coarse_grained, bool deperiodize_on_load) {
     ASSERT(data);
 
     path_to_file = md_os_path_make_canonical(path_to_file, frame_allocator);
@@ -6607,7 +6650,7 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
                 return true;
             }
 
-            return load_trajectory_data(data, path_to_file);
+            return load_trajectory_data(data, path_to_file, deperiodize_on_load);
         } else {
             md_print(MD_LOG_TYPE_ERROR, "File extension not supported");
         }
@@ -6894,7 +6937,7 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
         }
         case SerializationType_Path:
         {
-            StrBuf<512> path = extract_path_without_file(filename);
+            StrBuf<1024> path = extract_path_without_file(filename);
             path += arg;
             str_t can_path = md_os_path_make_canonical(path, frame_allocator);
             if (can_path.ptr && can_path.len > 0) {
@@ -6996,6 +7039,7 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     str_t cur_molecule_file = str_copy(data->files.molecule, frame_allocator);
     str_t cur_trajectory_file = str_copy(data->files.trajectory, frame_allocator);
     bool  cur_coarse_grained = data->files.coarse_grained;
+    bool  cur_deperiodize = data->files.deperiodize;
 
     const SerializationArray* arr_group = NULL;
     void* ptr = 0;
@@ -7033,17 +7077,19 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     str_t new_molecule_file   = str_copy(data->files.molecule, frame_allocator);
     str_t new_trajectory_file = str_copy(data->files.trajectory, frame_allocator);
     bool  new_coarse_grained  = data->files.coarse_grained;
+    bool  new_deperiodize     = data->files.deperiodize;
 
     // When we de-serialize we overwrite the two following paths, even though they are not loaded.
     // So we copy them back to their original values.
     data->files.molecule = cur_molecule_file;
     data->files.trajectory = cur_trajectory_file;
     data->files.coarse_grained = cur_coarse_grained;
+    data->files.deperiodize = cur_deperiodize;
 
     md_molecule_api* mol_api = load::mol::get_api(new_molecule_file);
     md_trajectory_api* traj_api = load::traj::get_api(new_trajectory_file);
 
-    if (new_molecule_file.len && load_dataset_from_file(data, new_molecule_file, mol_api, traj_api, new_coarse_grained)) {
+    if (new_molecule_file.len && load_dataset_from_file(data, new_molecule_file, mol_api, traj_api, new_coarse_grained, new_deperiodize)) {
         init_all_representations(data);
         update_all_representations(data);
     }
@@ -7420,7 +7466,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
         filter_colors(colors, mol.atom.count, &rep->atom_mask);
         data->representations.atom_visibility_mask_dirty = true;
 
-        md_gl_representation_type_t type = MD_GL_REP_DEFAULT;
+        md_gl_representation_type_t type = MD_GL_REP_SPACE_FILL;
         md_gl_representation_args_t args = {};
         switch(rep->type) {
         case RepresentationType::SpaceFill:

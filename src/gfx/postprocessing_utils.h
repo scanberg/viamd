@@ -11,7 +11,12 @@ void initialize(int width, int height);
 void shutdown();
 
 typedef int Tonemapping;
-enum Tonemapping_ { Tonemapping_Passthrough, Tonemapping_ExposureGamma, Tonemapping_Filmic };
+enum Tonemapping_ {
+    Tonemapping_Passthrough,
+    Tonemapping_ExposureGamma,
+    Tonemapping_Filmic,
+    Tonemapping_ACES,
+};
 
 struct Descriptor {
     struct {
