@@ -6,6 +6,8 @@ project(viamd)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS OFF)
 
+find_package(OpenGL REQUIRED)
+
 # GLOBAL OPTIONS
 option(BUILD_SHARED_LIBS OFF)
 option(USE_MSVC_RUNTIME_LIBRARY_DLL OFF)

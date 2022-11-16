@@ -33,12 +33,14 @@ if(UNIX AND NOT APPLE)
             ${SRC}
             ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_zenity.c)
     endif()
+    set(OPT "-w")
 elseif(APPLE)
     find_library(APPKIT_LIBRARY AppKit)
     set(SRC
         ${SRC}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_cocoa.m)
     set(LIB ${APPKIT_LIBRARY})
+    set(OPT "-w")
 else() #windows
     set(SRC
         ${SRC}
