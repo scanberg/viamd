@@ -5,10 +5,12 @@
 #include "ramachandran/density_pro.inl"
 #include "ramachandran/density_pre.inl"
 
+#if 0
 #include "ramachandran/angles_gen.inl"
 #include "ramachandran/angles_gly.inl"
 #include "ramachandran/angles_pro.inl"
 #include "ramachandran/angles_pre.inl"
+#endif
 
 #include <core/md_common.h>
 #include <core/md_allocator.h>
@@ -420,14 +422,6 @@ static inline void blur_rows_acc(vec4_t* out, const vec4_t* in, int dim, int ker
 }
 
 static inline void transpose(vec4_t* dst, const vec4_t* src, int n) {
-#if 0
-    // Na�ve version
-    for (int x = 0; x < n; ++x) {
-        for (int y = 0; y < n; ++y) {
-            dst[y * n + x] = src[x * n + y];
-        }
-    }
-#endif
     // Block transpose
     const int block = 8;
     ASSERT(n % block == 0);
@@ -686,12 +680,12 @@ bool rama_init(rama_data_t* data) {
         uint32_t y = (uint32_t)(v * density_tex_dim) & (density_tex_dim - 1);
         density_map[4 * (y * density_tex_dim + x) + 3] += 1.0f;
     }
-    */
 
     density_sum[0] = (double)ARRAY_SIZE(ref_rama_gen);
     density_sum[1] = (double)ARRAY_SIZE(ref_rama_gly);
     density_sum[2] = (double)ARRAY_SIZE(ref_rama_pro);
     density_sum[3] = (double)ARRAY_SIZE(ref_rama_pre);
+    */
 
     for (uint32_t y = 0; y < density_tex_dim; ++y) {
         double v = (y / (double)(density_tex_dim - 1));
@@ -783,7 +777,6 @@ task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angl
             }
         }
 
-        //blur_density_cpu((vec4_t*)data.density_tex, density_tex_dim, 8);
         blur_density_gaussian((vec4_t*)data.density_tex, density_tex_dim, data.sigma);
 
         data.rep->den_sum[0] = (float)sum[0];

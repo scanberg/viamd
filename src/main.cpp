@@ -3333,6 +3333,9 @@ static void draw_animation_control_window(ApplicationData* data) {
 
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Animation")) {
+        const float item_width = MAX(ImGui::GetContentRegionAvail().x - 80.f, 100.f);
+        ImGui::PushItemWidth(item_width);
+
         ImGui::Text("Num Frames: %i", num_frames);
 
         md_unit_t time_unit = md_trajectory_time_unit(data->mold.traj);
@@ -3377,6 +3380,7 @@ static void draw_animation_control_window(ApplicationData* data) {
             data->animation.mode = PlaybackMode::Stopped;
             data->animation.frame = 0.0;
         }
+        ImGui::PopItemWidth();
     }
     ImGui::End();
 }
