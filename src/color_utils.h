@@ -37,7 +37,7 @@ constexpr inline vec3_t hcl_to_rgb(vec3_t HCL) {
         float Q = expf((1.f - C / (2.f * L)) * (HCLgamma / HCLy0));
         float U = (2.f * L - C) / (2.f * Q - 1.f);
         float V = C / Q;
-        float T = tanf((H + MIN(fractf(2.f * H) / 4.f, fractf(-2.f * H) / 8.f)) * PI * 2.f);
+        float T = tanf((H + MIN(fractf(2.f * H) / 4.f, fractf(-2.f * H) / 8.f)) * (float)PI * 2.f);
         H *= 6.f;
         if (H <= 1.f) {
             RGB.x = 1.f;
@@ -101,7 +101,7 @@ inline vec3_t XYZ_to_rgb(vec3_t XYZ) {
 }
 // clang-format on
 
-inline vec3_t XYZ_to_Lab(vec3_t XYZ) {
+constexpr inline vec3_t XYZ_to_Lab(vec3_t XYZ) {
     const auto f = [](float t) {
         const float d = 6.f / 29.f;
         return t > d * d * d ? powf(t, 1.0f / 3.0f) : (t / (3.f * d * d) + 4.f / 29.f);
@@ -120,7 +120,7 @@ inline vec3_t XYZ_to_Lab(vec3_t XYZ) {
     return {L, a, b};
 }
 
-inline vec3_t Lab_to_XYZ(vec3_t Lab) {
+constexpr inline vec3_t Lab_to_XYZ(vec3_t Lab) {
     const auto f = [](float t) {
         const float d = 6.f / 29.f;
         return t > d ? t * t * t : 3.0f * d * d * (t - 4.f / 29.f);
@@ -142,7 +142,6 @@ inline vec3_t Lab_to_rgb(vec3_t Lab) { return XYZ_to_rgb(Lab_to_XYZ(Lab)); }
 inline vec3_t hcl_to_rgb(float h, float c, float l) { return hcl_to_rgb({h, c, l}); }
 inline vec3_t rgb_to_hcl(float r, float g, float b) { return rgb_to_hcl({r, g, b}); }
 
-enum class ColorMapping { Uniform, Cpk, AtomLabel, AtomIndex, ResId, ResIndex, ChainId, ChainIndex, SecondaryStructure, Property };
 
 inline vec4_t color_from_hash(uint32_t hash, uint32_t num_bins = 0) {
     constexpr float chroma = 0.8f;
@@ -179,13 +178,3 @@ void color_atoms_secondary_structure(uint32_t* colors, int64_t count, const md_m
 
 void filter_colors(uint32_t* colors, int64_t num_colors, const md_bitfield_t* mask);
 void desaturate_colors(uint32_t* colors, const md_bitfield_t* mask, float scale);
-
-vec3_t magma_color_scale(float t);
-vec3_t inferno_color_scale(float t);
-vec3_t plasma_color_scale(float t);
-vec3_t viridis_color_scale(float t);
-
-vec3_t orange_color_scale(float t);
-vec3_t green_color_scale(float t);
-
-vec4_t qualitative_color_scale(int idx);

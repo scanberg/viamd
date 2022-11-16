@@ -167,6 +167,19 @@ enum class RepresentationType { SpaceFill, Licorice, Ribbons, Cartoon };
 enum class TrackingMode { Absolute, Relative };
 enum class CameraMode { Perspective, Orthographic };
 
+enum class ColorMapping {
+    Uniform,
+    Cpk,
+    AtomLabel,
+    AtomIndex,
+    ResId,
+    ResIndex,
+    ChainId,
+    ChainIndex,
+    SecondaryStructure,
+    Property
+};
+
 enum AtomBit_ {
     AtomBit_Highlighted = 0x1,
     AtomBit_Selected    = 0x2,
