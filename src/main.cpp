@@ -7494,16 +7494,14 @@ static void update_representation(ApplicationData* data, Representation* rep) {
         md_gl_representation_set_color(&rep->md_rep, 0, (uint32_t)mol.atom.count, colors, 0);
 
 #if EXPERIMENTAL_GFX_API
-        md_gfx_rep_attr_t attributes = {};
-        attributes.spacefill.radius_scale = 1.0f;
-        md_gfx_rep_set_data(rep->gfx_rep, MD_GFX_REP_TYPE_SPACEFILL, attributes, (md_gfx_color_t*)colors, (uint32_t)mol.atom.count, 0);
+        md_gfx_rep_set_color_data(rep->gfx_rep, (md_gfx_color_t*)colors, (uint32_t)mol.atom.count, 0);
 #endif
     }
 }
 
 static void init_representation(ApplicationData* data, Representation* rep) {
 #if EXPERIMENTAL_GFX_API
-    rep->gfx_rep = md_gfx_rep_create(data->mold.mol.atom.count);
+    rep->gfx_rep = md_gfx_rep_create(data->mold.gfx_structure);
 #endif
     md_gl_representation_init(&rep->md_rep, &data->mold.gl_mol);
     md_bitfield_init(&rep->atom_mask, persistent_allocator);
@@ -8097,11 +8095,11 @@ static void draw_representations(ApplicationData* data) {
     if (use_gfx) {
         const uint32_t instance_count = 10000;
         static mat4_t* transforms = 0;
+        auto rnd = []() -> float {
+            return (float)rand() / RAND_MAX;
+        };
 
         if (transforms == 0) {
-            auto rnd = []() -> float {
-                return (float)rand() / RAND_MAX;
-            };
             for (uint32_t i = 0; i < instance_count; ++i) {
                 vec3_t axis = {rnd(), rnd(), rnd()};
                 quat_t ori = quat_angle_axis(rnd() * TWO_PI, vec3_normalize(axis));
@@ -8114,27 +8112,17 @@ static void draw_representations(ApplicationData* data) {
             }
         }
 
-        md_gfx_draw_op_t* draw_ops = 0;
-        for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
-            if (data->representations.buffer[i].enabled) {
-                md_gfx_draw_op_t op;
-                op.structure = data->mold.gfx_structure;
-                op.representation = data->representations.buffer[i].gfx_rep;
-                op.model_mat = NULL;
-                md_array_push(draw_ops, op, frame_allocator);
-                
-                for (uint32_t j = 0; j < instance_count; ++j) {
-                    md_gfx_draw_op_t op;
-                    op.structure = data->mold.gfx_structure;
-                    op.representation = data->representations.buffer[i].gfx_rep;
-                    op.model_mat = &transforms[j];
-                    md_array_push(draw_ops, op, frame_allocator);
+        if (md_gfx_draw_cmd_begin(&data->view.param.matrix.current.proj, &data->view.param.matrix.current.view, &data->view.param.matrix.inverse.proj, &data->view.param.matrix.inverse.view, 0)) {
+            for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
+                if (data->representations.buffer[i].enabled) {
+                    md_gfx_draw_cmd_submit_spacefill(data->representations.buffer[i].gfx_rep, 1.0f, NULL, 0);
+                    for (uint32_t j = 0; j < instance_count; ++j) {
+                        md_gfx_draw_cmd_submit_spacefill(data->representations.buffer[i].gfx_rep, 1.0f, &transforms[j], 0);
+                    }
                 }
-                
             }
+            md_gfx_draw_cmd_end();
         }
-
-        md_gfx_draw((uint32_t)md_array_size(draw_ops), draw_ops, &data->view.param.matrix.current.proj, &data->view.param.matrix.current.view, &data->view.param.matrix.inverse.proj, &data->view.param.matrix.inverse.view);
     } else {
 #endif
         md_gl_draw_op_t* draw_ops = 0;
