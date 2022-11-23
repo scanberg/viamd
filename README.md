@@ -1,4 +1,4 @@
-# viamd
+# VIAMD
 Visual Interactive Analysis of Molecular Dynamics
 
 <img src="https://github.com/scanberg/viamd/wiki/img/viamd_environment.png" alt="viamd" width="500"/>
