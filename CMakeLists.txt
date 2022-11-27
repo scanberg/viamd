@@ -6,16 +6,10 @@ project(viamd)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS OFF)
 
-find_package(OpenGL REQUIRED)
 
 # GLOBAL OPTIONS
 option(BUILD_SHARED_LIBS OFF)
 option(USE_MSVC_RUNTIME_LIBRARY_DLL OFF)
-
-# VIAMD OPTIONS
-option(VIAMD_USE_ADDRESS_SANITIZER "Use Address sanitizer" OFF)
-option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
-option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ON)
 
 # GLFW OPTIONS
 option(GLFW_BUILD_EXAMPLES OFF)
@@ -30,13 +24,7 @@ option(ENKITS_BUILD_EXAMPLES OFF)
 option(ENKITS_BUILD_SHARED OFF)
 option(ENKITS_INSTALL OFF)
 
-set(VIAMD_STDLIBS)
-if (MD_LINK_STDLIB_STATIC)
-    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-        set(VIAMD_STDLIBS "-static-libgcc -static-libstdc++")
-    endif()
-    set(glfw_LIBRARIES ${VIAMD_STDLIBS})
-endif()
+find_package(OpenGL REQUIRED)
 
 add_subdirectory(ext/mdlib)
 add_subdirectory(ext/glfw)
@@ -47,6 +35,25 @@ add_subdirectory(ext/enkiTS)
 add_subdirectory(ext/ImGuiColorTextEdit)
 add_subdirectory(ext/implot)
 add_subdirectory(ext/atomic_queue)
+add_subdirectory(ext/imgui_notify)
+
+# VIAMD OPTIONS
+option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
+option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ${MD_LINK_STDLIB_STATIC})
+
+# Copy many of the fields from mdlib
+set(VIAMD_DEFINES ${MD_DEFS})
+set(VIAMD_STDLIBS)
+set(VIAMD_FLAGS ${MD_FLAGS})
+set(VIAMD_FLAGS_DEB ${MD_FLAGS} "/INCREMENTAL")
+set(VIAMD_FLAGS_REL ${MD_FLAGS})
+
+if (MD_LINK_STDLIB_STATIC)
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        set(VIAMD_STDLIBS "-static-libgcc -static-libstdc++")
+    endif()
+    set(glfw_LIBRARIES ${VIAMD_STDLIBS})
+endif()
 
 set(OSX_BUNDLE "")
 if (APPLE)
@@ -56,6 +63,9 @@ if (APPLE)
     endif()
 endif()
 
+if (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
+    set(VIAMD_FLAGS ${VIAMD_FLAGS} "-fms-extensions") #Silence pesky warnings of anonymous structs in vector types
+endif()
 
 file(GLOB APP_FILES src/application/*)
 file(GLOB SRC_FILES src/*)
@@ -65,7 +75,6 @@ source_group("app" FILES ${APP_FILES})
 source_group("gfx" FILES ${GFX_FILES})
 
 add_executable(viamd ${OSX_BUNDLE} ${SRC_FILES} ${APP_FILES} ${GFX_FILES})
-
 
 set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
 if (CMAKE_C_COMPILER_ID STREQUAL "MSVC")
@@ -83,15 +92,11 @@ target_compile_definitions(viamd PRIVATE
 	VIAMD_SCREENSHOT_DIR=\"screenshots\")
 
 # We just hijack the warning and compile flags from mdlib
-target_compile_options(viamd PRIVATE ${MD_WARNING_FLAGS} ${MD_COMMON_COMPILE_FLAGS})
-add_compile_options_config(DEBUG ${MD_DEBUG_COMPILE_FLAGS})
-add_compile_options_config(RELEASE ${MD_RELEASE_COMPILE_FLAGS})
+target_compile_options(viamd PRIVATE ${VIAMD_FLAGS})
+add_compile_options_config(DEBUG ${VIAMD_FLAGS_DEB})
+add_compile_options_config(RELEASE ${VIAMD_FLAGS_REL})
 
-if (APPLE)
-target_compile_features(viamd PRIVATE cxx_std_17)
-else()
 target_compile_features(viamd PRIVATE cxx_std_20)
-endif()
 
 target_include_directories(viamd
     PRIVATE
@@ -113,5 +118,6 @@ target_link_libraries(viamd
     ImGuiColorTextEdit
     implot
     atomic_queue
+    imgui_notify
     ${VIAMD_STDLIBS}
 )

@@ -24,9 +24,6 @@
 #include "imgui_impl_opengl3.h"
 
 // Compressed fonts
-//#include "cousine_font.inl"
-//#include "droid_sans.inl"
-//#include "droid_sans_mono.inl"
 #include "dejavu_sans_mono.inl"
 #include "fa_solid.inl"
 
