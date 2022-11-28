@@ -88,7 +88,7 @@ public:
 
 	NOTIFY_INLINE auto set_content(const char* format, ...) -> void { NOTIFY_FORMAT(this->set_content, format); }
 
-	NOTIFY_INLINE auto set_type(const ImGuiToastType& type) -> void { IM_ASSERT(type < ImGuiToastType_COUNT); this->type = type; };
+	NOTIFY_INLINE auto set_type(const ImGuiToastType& t) -> void { IM_ASSERT(t < ImGuiToastType_COUNT); this->type = t; };
 
 public:
 	// Getters

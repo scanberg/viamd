@@ -7,6 +7,8 @@
 #include <core/md_log.h>
 #include <core/md_common.h>
 #include <core/md_allocator.h>
+#include <core/md_platform.h>
+#include <core/md_str.h>
 
 #include "gfx/gl.h"
 #include <GLFW/glfw3.h>
@@ -26,11 +28,13 @@
 // Compressed fonts
 #include "dejavu_sans_mono.inl"
 #include "fa_solid.inl"
+#include "IconsFontAwesome6.h"
 
 #include <implot.h>
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 namespace application {
 
@@ -59,30 +63,41 @@ static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum s
     }
 }
 
-bool initialize(Context* ctx, int64_t width, int64_t height, const char* title) {
+bool initialize(Context* ctx, int width, int height, const char* title) {
     if (!glfwInit()) {
         // TODO Throw critical error
-        error_callback(1, "Error while initializing glfw.");
+        md_print(MD_LOG_TYPE_ERROR, "Error while initializing glfw.");
         return false;
     }
     glfwSetErrorCallback(error_callback);
 
+    if (width == 0 && height == 0) {
+        int count;
+        GLFWmonitor** monitors = glfwGetMonitors(&count);
+        if (count > 0) {
+            int pos_x, pos_y, dim_x, dim_y;
+            glfwGetMonitorWorkarea(monitors[0], &pos_x, &pos_y, &dim_x, &dim_y);
+            width  = (int)(dim_x * 0.9);
+            height = (int)(dim_y * 0.9);
+        }
+    }
+
 #if MD_PLATFORM_OSX
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
     GLFWwindow* window = glfwCreateWindow((int)width, (int)height, title, NULL, NULL);
     if (!window) {
-        error_callback(2, "Could not create glfw window.");
+        md_print(MD_LOG_TYPE_ERROR, "Could not create glfw window.");
         return false;
     }
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
     if (gl3wInit() != GL3W_OK) {
-        error_callback(3, "Could not load gl functions.");
+        md_print(MD_LOG_TYPE_ERROR, "Could not load gl functions.");
         return false;
     }
 
@@ -107,7 +122,7 @@ bool initialize(Context* ctx, int64_t width, int64_t height, const char* title) 
 #endif
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoTaskBarIcons;
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoMerge;
-    //io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;
+    // io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;
     // io.ConfigDockingWithShift = true;
     io.ConfigWindowsMoveFromTitleBarOnly = true;
 
@@ -231,7 +246,7 @@ void render_imgui(Context* ctx) {
 
 void swap_buffers(Context* ctx) { glfwSwapBuffers((GLFWwindow*)ctx->window.ptr); }
 
-bool file_dialog(char* str_buf, int64_t str_cap, FileDialogFlags flags, const char* filter) {    
+bool file_dialog(char* str_buf, int str_cap, FileDialogFlags flags, const char* filter) {    
     nfdchar_t* out_path = NULL;
     defer { if (out_path) free(out_path); };
 

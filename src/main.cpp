@@ -40,12 +40,13 @@
 #include "random_util.h"
 #include "imgui_widgets.h"
 #include "implot_widgets.h"
-#include "application/application.h"
-#include "color_utils.h"
 #include "task_system.h"
+#include "color_utils.h"
 #include "loader.h"
 #include "ramachandran.h"
 #include "image.h"
+#include "application/application.h"
+#include "application/IconsFontAwesome6.h"
 
 #include <imgui.h>
 #define IMGUI_DEFINE_MATH_OPERATORS
@@ -1089,6 +1090,7 @@ int main(int, char**) {
     md_logger_i notification_logger = {
         NULL,
         [](struct md_logger_o* inst, enum md_log_type_t log_type, const char* msg) {
+            (void)inst;
             ImGuiToastType toast_type = ImGuiToastType_None;
             switch (log_type) {
             case MD_LOG_TYPE_INFO:
@@ -1125,7 +1127,7 @@ int main(int, char**) {
 
     // Init platform
     LDEBUG("Initializing GL...");
-    if (!application::initialize(&data.ctx, 1920, 1080, "VIAMD")) {
+    if (!application::initialize(&data.ctx, 0, 0, "VIAMD")) {
         LERROR("Could not initialize platform layer... terminating\n");
         return -1;
     }
@@ -1655,19 +1657,19 @@ int main(int, char**) {
     interrupt_async_tasks(&data);
 
     // shutdown subsystems
-    LINFO("Shutting down immediate draw...");
+    LDEBUG("Shutting down immediate draw...");
     immediate::shutdown();
-    LINFO("Shutting down ramachandran...");
+    LDEBUG("Shutting down ramachandran...");
     ramachandran::shutdown();
-    LINFO("Shutting down post processing...");
+    LDEBUG("Shutting down post processing...");
     postprocessing::shutdown();
-    LINFO("Shutting down volume...");
+    LDEBUG("Shutting down volume...");
     volume::shutdown();
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
     LINFO("Shutting down cone tracing...");
     cone_trace::shutdown();
 #endif
-    LINFO("Shutting down task system...");
+    LDEBUG("Shutting down task system...");
     task_system::shutdown();
 
     destroy_gbuffer(&data.gbuffer);

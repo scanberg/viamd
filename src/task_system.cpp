@@ -25,11 +25,11 @@ constexpr uint32_t MAX_TASKS = 256;
 constexpr uint32_t LABEL_SIZE = 64;
 
 static inline ID generate_id(uint32_t slot_idx) {
-    return (md_os_time_current() << 8) | (slot_idx & 255);
+    return (md_os_time_current() << 8) | (slot_idx & (MAX_TASKS - 1));
 }
 
 static inline uint32_t get_slot_idx(ID id) {
-    return (uint32_t)(id & 255);
+    return (uint32_t)(id & (MAX_TASKS - 1));
 }
 
 namespace main {
@@ -236,28 +236,24 @@ ID pool_enqueue(const char* label, uint32_t range_size, execute_range_fn range_f
 bool task_is_running(ID id) {
     uint32_t slot_idx = get_slot_idx(id);
     PoolTask* task = &pool::task_data[slot_idx];
-
     return task->m_id == id ? task->Running() : false;
 }
 
 const char* task_label(ID id) {
     uint32_t slot_idx = get_slot_idx(id);
     PoolTask* task = &pool::task_data[slot_idx];
-
     return task->m_id == id ? task->m_label : "";
 }
 
 float task_fraction_complete(ID id) {
     uint32_t slot_idx = get_slot_idx(id);
     PoolTask* task = &pool::task_data[slot_idx];
-
     return task->m_id == id ? (float)task->m_set_completed / (float)task->m_SetSize : 0.f;
 }
 
 void task_wait_for(ID id) {
     uint32_t slot_idx = get_slot_idx(id);
     PoolTask* task = &pool::task_data[slot_idx];
-
     if (task->m_id == id && task->Running()) {
         ts.WaitforTask(task);
     }
@@ -266,7 +262,6 @@ void task_wait_for(ID id) {
 void task_interrupt(ID id) {
     uint32_t slot_idx = get_slot_idx(id);
     PoolTask* task = &pool::task_data[slot_idx];
-
     if (task->m_id == id) {
         task->m_interrupt = true;
     }
@@ -275,7 +270,6 @@ void task_interrupt(ID id) {
 void task_interrupt_and_wait_for(ID id) {
     uint32_t slot_idx = get_slot_idx(id);
     PoolTask* task = &pool::task_data[slot_idx];
-
     if (task->m_id == id && task->Running()) {
         task->m_interrupt = true;
         ts.WaitforTask(task);
