@@ -133,7 +133,7 @@ bool initialize(Context* ctx, int width, int height, const char* title) {
     const float font_size[] = {18, 20, 24, 30};
     const char* font_names[] = {"DejaVu Sans Mono (18 px)", "DejaVu Sans Mono (20 px)", "DejaVu Sans Mono (24 px)", "DejaVu Sans Mono (30 px)"};
 
-    for (int i = 0; i < ARRAY_SIZE(font_size); ++i) {
+    for (size_t i = 0; i < ARRAY_SIZE(font_size); ++i) {
         ImFontConfig config;
         snprintf(config.Name, sizeof(config.Name), "%s", font_names[i]);
         config.OversampleV = 2;

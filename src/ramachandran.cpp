@@ -453,7 +453,7 @@ static void boxes_for_gauss(int* box_w, int n, float sigma) {  // Number of boxe
 static void blur_density_box(vec4_t* data, int dim, int num_passes) {
     ASSERT(dim > 0 && (dim & (dim - 1)) == 0); // Ensure dimension is power of two
 
-    const md_allocator_i* alloc = default_allocator;    // Thread safe allocator (And also, temp allocator may not accomodate such large allocation!)
+    const md_allocator_i* alloc = default_temp_allocator;    // Thread safe allocator!
     vec4_t* tmp_data = (vec4_t*)md_alloc(alloc, dim * dim * sizeof(vec4_t));
     defer { md_free(alloc, tmp_data, dim * dim * sizeof(vec4_t)); };
 
@@ -475,7 +475,7 @@ static void blur_density_box(vec4_t* data, int dim, int num_passes) {
 static void blur_density_gaussian(vec4_t* data, int dim, float sigma) {
     ASSERT(dim > 0 && (dim & (dim - 1)) == 0); // Ensure dimension is power of two
 
-    const md_allocator_i* alloc = default_allocator;    // Thread safe allocator (And also, temp allocator may not accomodate such large allocation!)
+    const md_allocator_i* alloc = default_temp_allocator;    // Thread safe allocator!
     vec4_t* tmp_data = (vec4_t*)md_alloc(alloc, dim * dim * sizeof(vec4_t));
     defer { md_free(alloc, tmp_data, dim * dim * sizeof(vec4_t)); };
 
