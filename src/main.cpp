@@ -5591,7 +5591,7 @@ static void draw_script_editor_window(ApplicationData* data) {
                         int path_len = (int)strnlen(path_buf, sizeof(path_buf));
                         str_t path = str_t{path_buf, path_len};
                         if (str_empty(extract_ext(path))) {
-                            path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".txt");
+                            path.len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".txt");
                         }
                         md_file_o* file = md_file_open(path, MD_FILE_WRITE);
                         if (file) {
