@@ -801,6 +801,32 @@ static void compute_histogram(float* bins, int num_bins, float min_bin_val, floa
     }
 }
 
+static void compute_histogram_masked(float* bins, int num_bins, float min_bin_val, float max_bin_val, const float* values, int dim, const md_bitfield_t* mask) {
+    ASSERT(bins);
+    ASSERT(values);
+    ASSERT(mask);
+    ASSERT(dim > 0);
+    memset(bins, 0, sizeof(float) * num_bins);
+
+    const int num_values = md_bitfield_popcount(mask);
+    if (num_values == 0) return;
+
+    const float bin_range = max_bin_val - min_bin_val;
+    const float inv_range = 1.0f / bin_range;
+    const float scl = 1.0f / num_values;
+
+    uint64_t beg_bit = mask->beg_bit;
+    uint64_t end_bit = mask->end_bit;
+
+    // We evaluate each frame, one at a time
+    while ((beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) != 0) {
+        uint64_t i = dim * (beg_bit - 1);
+        if (values[i] < min_bin_val || max_bin_val < values[i]) continue;
+        int idx = CLAMP((int)(((values[i] - min_bin_val) * inv_range) * num_bins), 0, num_bins - 1);
+        bins[idx] += scl;
+    }
+}
+
 static void downsample_histogram(float* dst_bins, int num_dst_bins, const float* src_bins, int num_src_bins) {
     ASSERT(num_dst_bins <= num_src_bins);
 
@@ -1489,10 +1515,16 @@ int main(int, char**) {
                     md_script_eval_interrupt(data.mold.script.full_eval);
                 } else if (data.mold.script.full_eval && md_script_ir_valid(data.mold.script.ir) && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
                     data.mold.script.evaluate_full = false;
-                    data.tasks.evaluate_full = task_system::pool_enqueue("Eval Full", [data = &data]() {
-                        md_script_eval_compute(data->mold.script.full_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, NULL);
-                        md_semaphore_release(&data->mold.script.ir_semaphore);
+                    md_script_eval_clear(data.mold.script.full_eval);
+                    data.tasks.evaluate_full = task_system::pool_enqueue("Eval Full", (uint32_t)num_frames, [data = &data](uint32_t frame_beg, uint32_t frame_end) {
+                        md_bitfield_t frame_mask = {0};
+                        md_bitfield_init(&frame_mask, default_temp_allocator);
+                        md_bitfield_set_range(&frame_mask, frame_beg, frame_end);
+                        md_script_eval_frames(data->mold.script.full_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, &frame_mask);
                     });
+                    task_system::pool_enqueue("##Release Semaphore", [data = &data]() {
+                        md_semaphore_release(&data->mold.script.ir_semaphore);
+                    }, data.tasks.evaluate_full);
                 }
             }
 
@@ -1509,7 +1541,9 @@ int main(int, char**) {
                         md_bitfield_clear(&data->mold.script.frame_mask);
                         md_bitfield_set_range(&data->mold.script.frame_mask, beg_frame, end_frame);
 
-                        md_script_eval_compute(data->mold.script.filt_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, &data->mold.script.frame_mask);
+                        md_script_eval_clear(data->mold.script.filt_eval);
+                        md_script_eval_frames(data->mold.script.filt_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, &data->mold.script.frame_mask);
+
                         md_semaphore_release(&data->mold.script.ir_semaphore);
                     });
                 }
@@ -1739,7 +1773,7 @@ static void init_display_properties(DisplayProperty** prop_items, const md_scrip
 
 static void update_display_properties(ApplicationData* data) {
     ASSERT(data);
-    const int32_t num_frames = (int32_t)md_trajectory_num_frames(data->mold.traj);
+//    const int32_t num_frames = (int32_t)md_trajectory_num_frames(data->mold.traj);
 
     DisplayProperty* disp_props = data->display_properties;
     for (int64_t i = 0; i < md_array_size(disp_props); ++i) {
@@ -1749,9 +1783,10 @@ static void update_display_properties(ApplicationData* data) {
             if (p->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                 DisplayProperty::Histogram& hist = disp_props[i].full_hist;
                 hist.value_range = {p->data.min_range[0], p->data.max_range[0]};
-                const int num_completed = md_script_eval_num_frames_completed(data->mold.script.full_eval);
-                const int num_values = p->data.dim[0] * num_completed;
-                compute_histogram(hist.bin, (int)ARRAY_SIZE(hist.bin), hist.value_range.beg, hist.value_range.end, p->data.values, num_values);
+                const md_bitfield_t* completed_frames = md_script_eval_completed_frames(data->mold.script.full_eval);
+                //const int num_completed = md_bitfield_popcount(completed_frames);
+                //const int num_values = p->data.dim[0] * num_completed;
+                compute_histogram_masked(hist.bin, (int)ARRAY_SIZE(hist.bin), hist.value_range.beg, hist.value_range.end, p->data.values, p->data.dim[0], completed_frames);
             }
         }
 
@@ -1763,14 +1798,16 @@ static void update_display_properties(ApplicationData* data) {
                 // We copy the full range here since we want the histograms to align on the x-axis
                 // This also implys that we have a dependency to the full property, since we can only now the full range of values when full_prop has been completely evaluated.
                 hist.value_range = disp_props[i].full_hist.value_range;
-                int beg_frame = CLAMP((int)data->timeline.filter.beg_frame, 0, num_frames-1);
-                int end_frame = CLAMP((int)data->timeline.filter.end_frame+1, 0, num_frames);
-                end_frame = MAX(beg_frame + 1, end_frame);
+                //int beg_frame = CLAMP((int)data->timeline.filter.beg_frame, 0, num_frames-1);
+                //int end_frame = CLAMP((int)data->timeline.filter.end_frame+1, 0, num_frames);
+                //end_frame = MAX(beg_frame + 1, end_frame);
 
-                int offset = beg_frame * p->data.dim[0];
-                int length = (end_frame - beg_frame) * p->data.dim[0];
-                ASSERT(offset + length <= p->data.num_values);
-                compute_histogram(hist.bin, (int)ARRAY_SIZE(hist.bin), hist.value_range.beg, hist.value_range.end, p->data.values + offset, length);
+                //int offset = beg_frame * p->data.dim[0];
+                //int length = (end_frame - beg_frame) * p->data.dim[0];
+                //ASSERT(offset + length <= p->data.num_values);
+                const md_bitfield_t* completed_frames = md_script_eval_completed_frames(data->mold.script.filt_eval);
+
+                compute_histogram_masked(hist.bin, (int)ARRAY_SIZE(hist.bin), hist.value_range.beg, hist.value_range.end, p->data.values, p->data.dim[0], completed_frames);
             }
         }
     }
@@ -3674,19 +3711,21 @@ static void draw_async_task_window(ApplicationData* data) {
             const char* label = task_system::task_label(id);
             float fract = task_system::task_fraction_complete(id);
 
+            /*
             if (id == data->tasks.evaluate_filt) {
                 uint32_t completed = md_script_eval_num_frames_completed(data->mold.script.filt_eval);
                 uint32_t total     = md_script_eval_num_frames_total(data->mold.script.filt_eval);
                 if (total > 0) {
                     fract = (float)completed / (float)total;
                 }
-            } else if (id == data->tasks.evaluate_full) {
+            }else if (id == data->tasks.evaluate_full) {
                 uint32_t completed = md_script_eval_num_frames_completed(data->mold.script.full_eval);
                 uint32_t total     = md_script_eval_num_frames_total(data->mold.script.full_eval);
                 if (total > 0) {
                     fract = (float)completed / (float)total;
                 }
             }
+            */
 
             if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
 

@@ -2,7 +2,7 @@
 #include <core/md_str.h>
 #include <core/md_log.h>
 #include <core/md_allocator.h>
-#include <core/md_string_builder.h>
+#include <core/md_str_builder.h>
 
 #include <string.h>
 
@@ -32,7 +32,7 @@ bool gl::get_program_link_error(char* buffer, int max_length, GLuint program) {
     }
 }
 
-bool build_shader_src(md_string_builder_t* builder, str_t src, str_t base_include_dir) {
+bool build_shader_src(md_str_builder_t* builder, str_t src, str_t base_include_dir) {
     str_t line;
     while (extract_line(&line, &src)) {
         if (str_equal_cstr_n(line, "#include ", 9)) {
@@ -52,7 +52,7 @@ bool build_shader_src(md_string_builder_t* builder, str_t src, str_t base_includ
                 return false;
             }
         } else {
-            md_string_builder_append_str(builder, line);
+            md_str_builder_append_str(builder, line);
         }
     }
 
@@ -64,8 +64,8 @@ GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str
            type == GL_TESS_CONTROL_SHADER || type == GL_TESS_EVALUATION_SHADER);
 
     GLuint shader = glCreateShader(type);
-    md_string_builder_t builder = {0};
-    md_string_builder_init(&builder, default_temp_allocator);
+    md_str_builder_t builder = {0};
+    md_str_builder_init(&builder, default_temp_allocator);
     
     if (defines) {
         str_t version_str = {};
@@ -74,21 +74,21 @@ GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str
                 md_print(MD_LOG_TYPE_ERROR, "Failed to extract version string!");
                 return 0;
             }
-            md_string_builder_append_str(&builder, version_str);
-            md_string_builder_append_str(&builder, defines);
-            md_string_builder_append_str(&builder, MAKE_STR("\n"));
+            md_str_builder_append_str(&builder, version_str);
+            md_str_builder_append_str(&builder, defines);
+            md_str_builder_append_str(&builder, MAKE_STR("\n"));
         }
         else {
-            md_string_builder_append_str(&builder, defines);
-            md_string_builder_append_str(&builder, MAKE_STR("\n"));
+            md_str_builder_append_str(&builder, defines);
+            md_str_builder_append_str(&builder, MAKE_STR("\n"));
         }
     }
 
     build_shader_src(&builder, src, base_include_dir);
 
-    str_t final_src = md_string_builder_to_string(&builder);
+    str_t final_src = md_str_builder_to_str(&builder);
     glShaderSource(shader, 1, &final_src.ptr, 0);
-    md_string_builder_free(&builder);
+    md_str_builder_free(&builder);
 
     glCompileShader(shader);
 
@@ -112,8 +112,8 @@ GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) 
     }
 
     GLuint shader = glCreateShader(type);
-    md_string_builder_t builder = { 0 };
-    md_string_builder_init(&builder, default_temp_allocator);
+    md_str_builder_t builder = { 0 };
+    md_str_builder_init(&builder, default_temp_allocator);
 
     if (defines) {
         str_t version_str = {};
@@ -122,21 +122,21 @@ GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) 
                 md_print(MD_LOG_TYPE_ERROR, "Failed to extract version string!");
                 return 0;
             }
-            md_string_builder_append_str(&builder, version_str);
-            md_string_builder_append_str(&builder, defines);
-            md_string_builder_append_str(&builder, MAKE_STR("\n"));
+            md_str_builder_append_str(&builder, version_str);
+            md_str_builder_append_str(&builder, defines);
+            md_str_builder_append_str(&builder, MAKE_STR("\n"));
         }
         else {
-            md_string_builder_append_str(&builder, defines);
-            md_string_builder_append_str(&builder, MAKE_STR("\n"));
+            md_str_builder_append_str(&builder, defines);
+            md_str_builder_append_str(&builder, MAKE_STR("\n"));
         }
     }
 
     build_shader_src(&builder, src, extract_path_without_file(filename));
 
-    str_t final_src = md_string_builder_to_string(&builder);
+    str_t final_src = md_str_builder_to_str(&builder);
     glShaderSource(shader, 1, &final_src.ptr, 0);
-    md_string_builder_free(&builder);
+    md_str_builder_free(&builder);
 
     glCompileShader(shader);
 
@@ -202,7 +202,7 @@ bool gl::init_texture_1D(GLuint* texture, int width, GLenum format) {
     ASSERT(texture);    
 
     if (glIsTexture(*texture)) {
-        int x, y;
+        int x;
         GLenum fmt;
         glGetTextureLevelParameteriv(*texture, 0, GL_TEXTURE_WIDTH, &x);
         glGetTextureLevelParameteriv(*texture, 0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&fmt);

@@ -3,6 +3,7 @@
 
 // Original source code found in the link above under MIT license.
 // This particular version has been stripped of the fonts, since viamd use the same ones to avoid bloating the font atlas.
+// chrono has also been added as a dependency in order to work around the original get_tick function which was win32 specific.
 
 #ifndef IMGUI_NOTIFY
 #define IMGUI_NOTIFY
@@ -10,9 +11,6 @@
 #pragma once
 #include <vector>
 #include <chrono>
-//#include <string>
-//#include "font_awesome_5.h"
-//#include "fa_solid_900.h"
 
 #define NOTIFY_MAX_MSG_LENGTH			4096		// Max message content length
 #define NOTIFY_PADDING_X				20.f		// Bottom-left X padding
@@ -342,24 +340,6 @@ namespace ImGui
 			End();
 		}
 	}
-
-	/// <summary>
-	/// Adds font-awesome font, must be called ONCE on initialization
-	/// <param name="FontDataOwnedByAtlas">Fonts are loaded from read-only memory, should be set to false!</param>
-	/// </summary>
-#if 0
-	NOTIFY_INLINE void MergeIconsWithLatestFont(float font_size, bool FontDataOwnedByAtlas = false)
-	{
-		static const ImWchar icons_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
-
-		ImFontConfig icons_config;
-		icons_config.MergeMode = true;
-		icons_config.PixelSnapH = true;
-		icons_config.FontDataOwnedByAtlas = FontDataOwnedByAtlas;
-
-		GetIO().Fonts->AddFontFromMemoryTTF((void*)fa_solid_900, sizeof(fa_solid_900), font_size, &icons_config, icons_ranges);
-	}
-#endif
 }
 
 #endif
