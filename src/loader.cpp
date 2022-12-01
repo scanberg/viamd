@@ -5,6 +5,7 @@
 #include <core/md_log.h>
 #include <core/md_simd.h>
 #include <core/md_bitfield.h>
+#include <core/md_os.h>
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_xtc.h>
@@ -293,7 +294,14 @@ md_trajectory_i* open_file(str_t filename, const md_molecule_t* mol, md_allocato
     inst->alloc = alloc;
     inst->deperiodize = deperiodize_on_load;
     
-    md_frame_cache_init(&inst->cache, inst->traj, alloc, md_trajectory_num_frames(inst->traj));
+    // For now we use a fixed target of 4GB and see how many frames we can fit into that
+    // @TODO: Make this a user defined variable
+
+    const uint64_t frame_cache_bytes = MIN(md_os_physical_ram_in_bytes() / 2, GIGABYTES(4));
+    const uint64_t max_frame_size = (uint64_t)md_trajectory_max_frame_data_size(inst->traj);
+    const uint64_t num_cached_frames = frame_cache_bytes / max_frame_size;
+
+    md_frame_cache_init(&inst->cache, inst->traj, alloc, num_cached_frames);
     md_bitfield_init(&inst->recenter_target, alloc);
 
     // We only overload load frame and decode frame data to apply PBC upon loading data
