@@ -11,7 +11,7 @@ typedef uint64_t ID;
 constexpr ID INVALID_ID = 0;
 
 using execute_fn = std::function<void()>;
-using execute_range_fn = std::function<void(uint32_t, uint32_t)>;
+using execute_range_fn = std::function<void(uint32_t range_beg, uint32_t range_end)>;
 
 void initialize();
 void shutdown();
