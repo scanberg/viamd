@@ -70,18 +70,20 @@ endif()
 file(GLOB APP_FILES src/application/*)
 file(GLOB SRC_FILES src/*)
 file(GLOB GFX_FILES src/gfx/*)
+file(GLOB_RECURSE SHADER_FILES src/shaders/*)
 
 source_group("app" FILES ${APP_FILES})
 source_group("gfx" FILES ${GFX_FILES})
+source_group("shaders" FILES ${SHADER_FILES})
 
-add_executable(viamd ${OSX_BUNDLE} ${SRC_FILES} ${APP_FILES} ${GFX_FILES})
+add_executable(viamd ${OSX_BUNDLE} ${SRC_FILES} ${APP_FILES} ${GFX_FILES} ${SHADER_FILES})
 
 set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
 if (CMAKE_C_COMPILER_ID STREQUAL "MSVC")
     set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>")
 endif()
 
-create_copy_resource_dir_target(viamd_copy_shaders  "${CMAKE_CURRENT_SOURCE_DIR}/shaders"  "${VIAMD_BIN_DIR}/shaders")
+create_copy_resource_dir_target(viamd_copy_shaders  "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders"  "${VIAMD_BIN_DIR}/shaders")
 create_copy_resource_dir_target(viamd_copy_datasets "${CMAKE_CURRENT_SOURCE_DIR}/datasets" "${VIAMD_BIN_DIR}/datasets")
 
 add_dependencies(viamd viamd_copy_shaders viamd_copy_datasets)

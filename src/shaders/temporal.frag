@@ -6,6 +6,9 @@
 // This is ported straight from the implementation given by playdeadgames (MIT License)
 // https://github.com/playdeadgames/temporal/blob/master/Assets/Shaders/TemporalReprojection.shader
 
+#ifndef USE_TONEMAP
+#define USE_TONEMAP 0
+#endif
 
 #ifndef UNJITTER_COLORSAMPLES
 #define UNJITTER_COLORSAMPLES 1
@@ -123,6 +126,27 @@ vec4 PDsrand4( vec2 n ) {
 	return PDnrand4( n ) * 2.0 - 1.0;
 }
 
+float rcp(float value) {
+    return 1. / value;
+}
+
+// Tonemapper from http://gpuopen.com/optimized-reversible-tonemapper-for-resolve/
+float getMaximumElement(in vec3 value) {
+    return max(max(value.x, value.y), value.z);
+}
+
+vec4 map(in vec4 color) {
+    return vec4(color.rgb * rcp(getMaximumElement(color.rgb) + 1.), color.a);
+}
+
+vec4 map(in vec4 color, in float weight) {
+    return vec4(color.rgb * rcp(weight * getMaximumElement(color.rgb) + 1.), color.a);
+}
+
+vec4 unmap(in vec4 color) {
+    return vec4(color.rgb * rcp(1. - getMaximumElement(color.rgb)), color.a);
+}
+
 float depth_sample_linear(vec2 uv) {
 	return texture(u_tex_linear_depth, uv).x;
 }
@@ -166,21 +190,25 @@ vec3 find_closest_fragment_3x3(vec2 uv)
 
 vec4 sample_color(sampler2D tex, vec2 uv)
 {
-#if USE_YCOCG
 	vec4 c = texture(tex, uv);
-	return vec4(rgb_to_ycocg(c.rgb), c.a);
-#else
-	return texture(tex, uv);
+#if USE_TONEMAP
+	c = map(c);
 #endif
-}
-
-vec4 resolve_color(vec4 c)
-{
 #if USE_YCOCG
-	return vec4(ycocg_to_rgb(c.rgb).rgb, c.a);
+	return vec4(rgb_to_ycocg(c.rgb), c.a);
 #else
 	return c;
 #endif
+}
+
+vec4 resolve_color(vec4 c) {
+#if USE_YCOCG
+	c = vec4(ycocg_to_rgb(c.rgb).rgb, c.a);
+#endif
+#if USE_TONEMAP
+	c = unmap(c);
+#endif
+	return c;
 }
 
 vec4 clip_aabb(vec3 aabb_min, vec3 aabb_max, vec4 p, vec4 q)
