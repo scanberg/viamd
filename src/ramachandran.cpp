@@ -493,7 +493,7 @@ static void blur_density_gaussian(vec4_t* data, int dim, float sigma) {
     transpose(data, tmp_data, dim);
 }
 
-static void blur_density(uint32_t density_tex, uint32_t num_passes) {
+static void blur_density_gpu(uint32_t density_tex, uint32_t num_passes) {
     // Backup GL state
     GLint last_viewport[4];
     glGetIntegerv(GL_VIEWPORT, last_viewport);

@@ -16,7 +16,7 @@
 #include <core/md_sync.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_stack_allocator.h>
+#include <core/md_linear_allocator.h>
 #include <core/md_tracking_allocator.h>
 #include <core/md_log.h>
 #include <core/md_simd.h>
@@ -61,7 +61,6 @@
 
 #define EXPERIMENTAL_GFX_API 0
 #define PICKING_JITTER_HACK 0
-#define SHOW_IMGUI_DEMO_WINDOW 0
 #define EXPERIMENTAL_CONE_TRACED_AO 0
 #define COMPILATION_TIME_DELAY_IN_SECONDS 1.0
 #define IR_SEMAPHORE_MAX_COUNT 3
@@ -439,8 +438,6 @@ struct ApplicationData {
 
             // Semaphore to control access to IR
             md_semaphore_t ir_semaphore = {};
-
-            md_bitfield_t frame_mask = {};
 
             bool compile_ir = false;
             bool eval_init = false;
@@ -1106,12 +1103,12 @@ static md_allocator_i* persistent_allocator = default_allocator;
 #endif
 
 int main(int, char**) {
-    const int64_t stack_size = MEGABYTES(256);
-    void* stack_mem = md_alloc(default_allocator, stack_size);
-    md_stack_allocator_t stack_alloc {};
-    md_stack_allocator_init(&stack_alloc, stack_mem, stack_size);
-    md_allocator_i stack_interface = md_stack_allocator_create_interface(&stack_alloc);
-    frame_allocator = &stack_interface;
+    const int64_t linear_size = MEGABYTES(256);
+    void* linear_mem = md_alloc(default_allocator, linear_size);
+    md_linear_allocator_t linear_alloc {};
+    md_linear_allocator_init(&linear_alloc, linear_mem, linear_size);
+    md_allocator_i linear_interface = md_linear_allocator_create_interface(&linear_alloc);
+    frame_allocator = &linear_interface;
 
     md_logger_i notification_logger = {
         NULL,
@@ -1147,7 +1144,6 @@ int main(int, char**) {
     md_bitfield_init(&data.selection.grow.mask, persistent_allocator);
 
     md_bitfield_init(&data.representations.atom_visibility_mask, persistent_allocator);
-    md_bitfield_init(&data.mold.script.frame_mask, persistent_allocator);
 
     md_semaphore_init(&data.mold.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT);
 
@@ -1255,7 +1251,7 @@ int main(int, char**) {
 
         data.selection.selecting = false;
 
-        if (demo_window) ImGui::ShowDemoWindow(&demo_window);
+        //if (demo_window) ImGui::ShowDemoWindow(&demo_window);
 
         handle_camera_interaction(&data);
         handle_camera_animation(&data);
@@ -1443,10 +1439,10 @@ int main(int, char**) {
                             .identifier_name = data.selection.stored_selections[i].name,
                             .bitfield = &data.selection.stored_selections[i].atom_mask,
                         };
-                        md_array_push(idents, ident, default_temp_allocator);
+                        md_array_push(idents, ident, frame_allocator);
                     }
 
-                    md_script_ir_t* selection_ir = md_script_ir_create(default_temp_allocator);
+                    md_script_ir_t* selection_ir = md_script_ir_create(frame_allocator);
                     defer { md_script_ir_free(selection_ir); };
                     md_script_ir_add_bitfield_identifiers(selection_ir, idents, md_array_size(idents));
 
@@ -1517,12 +1513,9 @@ int main(int, char**) {
                     data.mold.script.evaluate_full = false;
                     md_script_eval_clear(data.mold.script.full_eval);
                     data.tasks.evaluate_full = task_system::pool_enqueue("Eval Full", (uint32_t)num_frames, [data = &data](uint32_t frame_beg, uint32_t frame_end) {
-                        md_bitfield_t frame_mask = {0};
-                        md_bitfield_init(&frame_mask, default_temp_allocator);
-                        md_bitfield_set_range(&frame_mask, frame_beg, frame_end);
-                        md_script_eval_frames(data->mold.script.full_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, &frame_mask);
+                        md_script_eval_frame_range(data->mold.script.full_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, frame_beg, frame_end);
                     });
-                    task_system::pool_enqueue("##Release Semaphore", [data = &data]() {
+                    task_system::pool_enqueue("##Release IR Semaphore", [data = &data]() {
                         md_semaphore_release(&data->mold.script.ir_semaphore);
                     }, data.tasks.evaluate_full);
                 }
@@ -1532,20 +1525,17 @@ int main(int, char**) {
                 if (task_system::task_is_running(data.tasks.evaluate_filt)) {
                     md_script_eval_interrupt(data.mold.script.filt_eval);
                 } else if (data.mold.script.filt_eval && md_script_ir_valid(data.mold.script.ir) && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
+                    uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(data.mold.traj);
+                    uint32_t beg_frame = CLAMP((uint32_t)data.timeline.filter.beg_frame, 0, traj_frames-1);
+                    uint32_t end_frame = CLAMP((uint32_t)data.timeline.filter.end_frame + 1, beg_frame + 1, traj_frames);
                     data.mold.script.evaluate_filt = false;
-                    data.tasks.evaluate_filt = task_system::pool_enqueue("Eval Filt", [data = &data]() {
-                        int64_t num_frames = md_trajectory_num_frames(data->mold.traj);
-                        int64_t beg_frame = CLAMP((int64_t)data->timeline.filter.beg_frame, 0, num_frames-1);
-                        int64_t end_frame = CLAMP((int64_t)data->timeline.filter.end_frame + 1, 0, num_frames);
-                        end_frame = MAX(beg_frame + 1, end_frame);
-                        md_bitfield_clear(&data->mold.script.frame_mask);
-                        md_bitfield_set_range(&data->mold.script.frame_mask, beg_frame, end_frame);
-
-                        md_script_eval_clear(data->mold.script.filt_eval);
-                        md_script_eval_frames(data->mold.script.filt_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, &data->mold.script.frame_mask);
-
-                        md_semaphore_release(&data->mold.script.ir_semaphore);
+                    md_script_eval_clear(data.mold.script.filt_eval);
+                    data.tasks.evaluate_filt = task_system::pool_enqueue("Eval Filt", MAX(0, end_frame - beg_frame), [data = &data, frame_offset = beg_frame](uint32_t beg, uint32_t end) {
+                        md_script_eval_frame_range(data->mold.script.filt_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, frame_offset + beg, frame_offset + end);
                     });
+                    task_system::pool_enqueue("##Release IR Semaphore", [data = &data]() {
+                        md_semaphore_release(&data->mold.script.ir_semaphore);
+                    }, data.tasks.evaluate_filt);
                 }
             }
         }
@@ -1685,7 +1675,7 @@ int main(int, char**) {
         task_system::execute_tasks();
 
         // Reset frame allocator
-        md_stack_allocator_reset(&stack_alloc);
+        md_linear_allocator_reset(&linear_alloc);
     }
 
     interrupt_async_tasks(&data);
@@ -5559,6 +5549,16 @@ static void draw_debug_window(ApplicationData* data) {
         int32_t sema_count = 0;
         if (md_semaphore_query_count(&data->mold.script.ir_semaphore, &sema_count)) {
             ImGui::Text("Script IR semaphore count: %i", sema_count);
+        }
+
+        
+        task_system::ID* tasks = task_system::pool_running_tasks(default_allocator);
+        int64_t num_tasks = md_array_size(tasks);
+        if (num_tasks > 0) {
+            ImGui::Text("Running Pool Tasks:");
+            for (int64_t i = 0; i < md_array_size(tasks); ++i) {
+                ImGui::Text("[%i]: %s", (int)i, task_system::task_label(tasks[i]));
+            }
         }
 
         ImGuiID active = ImGui::GetActiveID();
