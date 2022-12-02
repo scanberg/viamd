@@ -960,7 +960,7 @@ void initialize() {
         vec3 cr = texelFetch(u_tex, ivec2(gl_FragCoord.xy) + ivec2( 1, 0), 0).rgb;
         vec3 cb = texelFetch(u_tex, ivec2(gl_FragCoord.xy) + ivec2( 0,-1), 0).rgb;
 
-        const float weight[2] = float[2](1.4, -0.1);
+        const float weight[2] = float[2](1.2, -0.05);
         out_frag = vec4(vec3(weight[0] * cc + weight[1] * (cl + ct + cr + cb)), 1.0);
     })");
     program = setup_program_from_source(MAKE_STR("sharpen"), f_shader_src_sharpen);
