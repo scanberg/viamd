@@ -1,15 +1,20 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.15)
 
 INCLUDE(ext/mdlib/cmake/common.cmake)
 
-project(viamd)
+project(viamd VERSION 0.1.5 LANGUAGES CXX)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS OFF)
-
 
 # GLOBAL OPTIONS
 option(BUILD_SHARED_LIBS OFF)
 option(USE_MSVC_RUNTIME_LIBRARY_DLL OFF)
+
+if (USE_MSVC_RUNTIME_LIBRARY_DLL)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreaded$<$<CONFIG:Debug>:Debug>DLL)
+else()
+    set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreaded$<$<CONFIG:Debug>:Debug>)
+endif()
 
 # GLFW OPTIONS
 option(GLFW_BUILD_EXAMPLES OFF)
@@ -45,8 +50,8 @@ option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ${MD_LINK_STDLI
 set(VIAMD_DEFINES ${MD_DEFS})
 set(VIAMD_STDLIBS)
 set(VIAMD_FLAGS ${MD_FLAGS})
-set(VIAMD_FLAGS_DEB ${MD_FLAGS} "/INCREMENTAL")
-set(VIAMD_FLAGS_REL ${MD_FLAGS})
+set(VIAMD_FLAGS_DEB ${MD_FLAGS_DEB} "/INCREMENTAL")
+set(VIAMD_FLAGS_REL ${MD_FLAGS_REL})
 
 if (MD_LINK_STDLIB_STATIC)
     if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
@@ -78,6 +83,13 @@ source_group("shaders" FILES ${SHADER_FILES})
 
 add_executable(viamd ${OSX_BUNDLE} ${SRC_FILES} ${APP_FILES} ${GFX_FILES} ${SHADER_FILES})
 
+# Default to linking statically
+if (VIAMD_LINK_STDLIB_STATIC)
+    set_property(TARGET viamd PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+else()
+    set_property(TARGET viamd PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+endif()
+
 set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
 if (CMAKE_C_COMPILER_ID STREQUAL "MSVC")
     set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>")
@@ -94,9 +106,7 @@ target_compile_definitions(viamd PRIVATE
 	VIAMD_SCREENSHOT_DIR=\"screenshots\")
 
 # We just hijack the warning and compile flags from mdlib
-target_compile_options(viamd PRIVATE ${VIAMD_FLAGS})
-add_compile_options_config(DEBUG ${VIAMD_FLAGS_DEB})
-add_compile_options_config(RELEASE ${VIAMD_FLAGS_REL})
+target_compile_options(viamd PRIVATE ${VIAMD_FLAGS} $<$<CONFIG:Debug>:${VIAMD_FLAGS_DEB}> $<$<CONFIG:Release>:${VIAMD_FLAGS_REL}>)
 
 target_compile_features(viamd PRIVATE cxx_std_20)
 
