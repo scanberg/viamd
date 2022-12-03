@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.15)
 
-INCLUDE(ext/mdlib/cmake/common.cmake)
-
 project(viamd VERSION 0.1.5 LANGUAGES CXX)
+
+INCLUDE(ext/mdlib/cmake/common.cmake)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS OFF)
 
@@ -91,7 +91,7 @@ else()
 endif()
 
 set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
-if (CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>")
 endif()
 
