@@ -4,8 +4,7 @@
 
 namespace ImGui {
 
-extern template IMGUI_API float RoundScalarWithFormatT<float, float>(const char* format, ImGuiDataType data_type, float v);
-
+extern template IMGUI_API float RoundScalarWithFormatT<float>(const char* format, ImGuiDataType data_type, float v);
 extern template IMGUI_API float ScaleRatioFromValueT<float, float, float>(ImGuiDataType data_type, float t, float v_min, float v_max, bool is_logarithmic, float logarithmic_zero_epsilon, float zero_deadzone_halfsize);
 extern template IMGUI_API float ScaleValueFromRatioT<float, float, float>(ImGuiDataType data_type, float t, float v_min, float v_max, bool is_logarithmic, float logarithmic_zero_epsilon, float zero_deadzone_halfsize);
 
@@ -62,7 +61,7 @@ bool RangeSliderBehavior(const ImRect& frame_bb, const char* str_id, float* v1, 
             const float mouse_abs_pos = is_horizontal ? g.IO.MousePos.x : g.IO.MousePos.y;
             float mouse_t = (slider_usable_sz > 0.0f) ? ImClamp((mouse_abs_pos - slider_usable_pos_min) / slider_usable_sz, 0.0f, 1.0f) : 0.0f;
             float new_value = ScaleValueFromRatioT<float, float, float>(ImGuiDataType_Float, mouse_t, v_min, v_max, is_logarithmic, 0.0f, 0.0f);
-            *values[i] = RoundScalarWithFormatT<float, float>(format, ImGuiDataType_Float, new_value);
+            *values[i] = RoundScalarWithFormatT<float>(format, ImGuiDataType_Float, new_value);
             changed = true;
         }
 
@@ -121,7 +120,7 @@ bool RangeSliderBehavior(const ImRect& frame_bb, const char* str_id, float* v1, 
 
         for (int i = 0; i < 2; ++i) {
             float new_value = ScaleValueFromRatioT<float, float, float>(ImGuiDataType_Float, t[i], v_min, v_max, is_logarithmic, 0.0f, 0.0f);
-            *values[i] = RoundScalarWithFormatT<float, float>(format, ImGuiDataType_Float, new_value);
+            *values[i] = RoundScalarWithFormatT<float>(format, ImGuiDataType_Float, new_value);
         }
         
         changed = true;
@@ -252,12 +251,12 @@ void BeginCanvas(const char* id, bool allow_inputs) {
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->Pos);
     ImGui::SetNextWindowSize(viewport->Size);
-    ImGui::SetNextWindowViewport(viewport->ID);
     ImGui::SetNextWindowBgAlpha(0.0f);
+    ImGui::SetNextWindowViewport(viewport->ID);
 
-    ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
+    ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoTitleBar |
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoNavInputs;
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoNavInputs | ImGuiWindowFlags_NoDocking;
 
     if (!allow_inputs) {
         window_flags |= ImGuiWindowFlags_NoInputs;

@@ -243,6 +243,8 @@ public:
 	Coordinates GetCursorPosition() const { return GetActualCursorCoordinates(); }
 	void SetCursorPosition(const Coordinates& aPosition);
 
+	Coordinates GetCharacterCoordinates(int aLinearIndex) const;
+
 	Coordinates GetMouseCoordinates() const { return mState.mMouseCursorPosition; }
 
 	inline void SetHandleMouseInputs    (bool aValue){ mHandleMouseInputs    = aValue;}

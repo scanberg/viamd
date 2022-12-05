@@ -19,18 +19,20 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
     bool active = false;
     bool hovered = false;
 
+    ImGui::PushID(id);
+
     //double* x_range[2] = {x_range_max, x_range_min};
     if ((gp.CurrentPlot->PlotRect.Min.x - grab_size / 2) < x_min && x_min < (gp.CurrentPlot->PlotRect.Max.x + grab_size / 2))  {
-        if (DragLineX(ImGui::GetID("min"), x_range_min, style.line_col, style.line_thickness, flags)) dragging = 1;
+        if (DragLineX(1, x_range_min, style.line_col, style.line_thickness, flags)) dragging = 1;
         *x_range_min = ImClamp(*x_range_min, min_value, max_value);
-        active  |= ImGui::IsItemActive();
-        hovered |= ImGui::IsItemHovered();
+        active  |= ImGui::GetActiveID()  == 1;
+        hovered |= ImGui::GetHoveredID() == 1;
     }
     if ((gp.CurrentPlot->PlotRect.Min.x - grab_size / 2) < x_max && x_max < (gp.CurrentPlot->PlotRect.Max.x + grab_size / 2))  {
-        if (DragLineX(ImGui::GetID("max"), x_range_max, style.line_col, style.line_thickness, flags)) dragging = 2;
+        if (DragLineX(2, x_range_max, style.line_col, style.line_thickness, flags)) dragging = 2;
         *x_range_max = ImClamp(*x_range_max, min_value, max_value);
-        active  |= ImGui::IsItemActive();
-        hovered |= ImGui::IsItemHovered();
+        active  |= ImGui::GetActiveID()  == 2;
+        hovered |= ImGui::GetHoveredID() == 2;
     }
 
     //float len = gp.Style.MajorTickLen.x;
@@ -56,8 +58,10 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
                 const float btn_width = ImMax(x_max - x_min, 1.0f);
                 ImGui::InvisibleButton(id, ImVec2(btn_width, drag_bar_height));
                 ImGui::GetCurrentWindow()->DC.CursorPos = old_cursor_pos;
+
                 hovered |= ImGui::IsItemHovered();
-                active |= ImGui::IsItemActive();
+                active  |= ImGui::IsItemActive();
+
                 if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0)) {
                     const float delta = ImGui::GetIO().MouseDelta.x;
                     double x_min_temp = PlotToPixels(*x_range_min, 0).x;
@@ -93,7 +97,7 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
     bar_color.w *= ImGui::GetStyle().Alpha;
 
     ImDrawList& DrawList = *GetPlotDrawList();
-    PushPlotClipRect();
+    PushPlotClipRect(0.0f);
     DrawList.AddRectFilled(ImVec2(x_min+1, yt), ImVec2(x_max-1, yb), ImGui::ColorConvertFloat4ToU32(range_color));
     DrawList.AddRectFilled(ImVec2(x_min+1, yb), ImVec2(x_max-1, yb-drag_bar_height), ImGui::ColorConvertFloat4ToU32(bar_color));
     PopPlotClipRect();
@@ -114,6 +118,8 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
             gp.Annotations.Append(ImVec2(x,yb),ImVec2(0,0),col32,CalcTextColor(color),true,"%s = %s", id, buff);
         }
     }
+
+    ImGui::PopID();
 
     return dragging;
 }

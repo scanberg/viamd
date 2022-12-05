@@ -19,7 +19,7 @@ ImPlot is an immediate mode, GPU accelerated plotting library for [Dear ImGui](h
     - line plots
     - shaded plots
     - scatter plots
-    - vertical/horizontal bars graphs
+    - vertical/horizontal/stacked bars graphs
     - vertical/horizontal error bars
     - stem plots
     - stair plots
@@ -33,7 +33,7 @@ ImPlot is an immediate mode, GPU accelerated plotting library for [Dear ImGui](h
 - subplots
 - time formatted x-axes (US formatted or ISO 8601)
 - reversible and lockable axes
-- up to three independent y-axes
+- multiple x-axes and y-axes
 - controls for zooming, panning, box selection, and auto-fitting data
 - controls for creating persistent query ranges (see demo)
 - several plot styling options: 10 marker types, adjustable marker sizes, line weights, outline colors, fill colors, etc.
@@ -43,7 +43,7 @@ ImPlot is an immediate mode, GPU accelerated plotting library for [Dear ImGui](h
 - default styling based on current ImGui theme, or completely custom plot styles
 - customizable data getters and data striding (just like ImGui:PlotLine)
 - accepts data as float, double, and 8, 16, 32, and 64-bit signed/unsigned integral types
-- and more! (see Announcements [2020](https://github.com/epezent/implot/issues/48)/[2021](https://github.com/epezent/implot/issues/168))
+- and more! (see Announcements [2022](https://github.com/epezent/implot/discussions/370)/[2021](https://github.com/epezent/implot/issues/168)/[2020](https://github.com/epezent/implot/issues/48))
 
 ## Usage
 
@@ -71,7 +71,7 @@ Of course, there's much more you can do with ImPlot...
 
 ## Demos
 
-A comprehensive example of ImPlot's features can be found in `implot_demo.h`. Add this file to your sources and call `ImPlot::ShowDemoWindow()` somewhere in your update loop. You are encouraged to use this file as a reference when needing to implement various plot types. The demo is always updated to show new plot types and features as they are added, so check back with each release!
+A comprehensive example of ImPlot's features can be found in `implot_demo.cpp`. Add this file to your sources and call `ImPlot::ShowDemoWindow()` somewhere in your update loop. You are encouraged to use this file as a reference when needing to implement various plot types. The demo is always updated to show new plot types and features as they are added, so check back with each release!
 
 An online version of the demo is hosted [here](https://traineq.org/implot_demo/src/implot_demo.html). You can view the plots and the source code that generated them. Note that this demo may not always be up to date and is not as performant as a desktop implementation, but it should give you a general taste of what's possible with ImPlot. Special thanks to [pthom](https://github.com/pthom) for creating and hosting this!
 
@@ -93,7 +93,19 @@ ImGui::DestroyContext();
 
 You should be good to go!
 
-If you want to test ImPlot quickly, consider trying [mahi-gui](https://github.com/mahilab/mahi-gui), which bundles ImGui, ImPlot, and several other packages for you.
+## Installing ImPlot using vcpkg
+
+You can download and install ImPlot using the [vcpkg](https://github.com/Microsoft/vcpkg) dependency manager:
+
+```bash
+git clone https://github.com/Microsoft/vcpkg.git
+cd vcpkg
+./bootstrap-vcpkg.sh
+./vcpkg integrate install
+./vcpkg install implot
+```
+
+The ImPlot port in vcpkg is kept up to date by Microsoft team members and community contributors. If the version is out of date, please [create an issue or pull request](https://github.com/Microsoft/vcpkg) on the vcpkg repository.
 
 ## Extremely Important Note
 
@@ -110,20 +122,20 @@ A: ImGui is an incredibly powerful tool for rapid prototyping and development, b
 
 **Q: Is ImPlot the right plotting library for me?**
 
-A: If you're looking to generate publication quality plots and/or export plots to a file, ImPlot is NOT the library for you. ImPlot is geared toward plotting application data at realtime speeds. ImPlot does its best to create pretty plots (indeed, there are quite a few styling options available), but it will always favor function over form.
+A: If you're looking to generate publication quality plots and/or export plots to a file, ImPlot is NOT the library for you! ImPlot is geared toward plotting application data at realtime speeds with high levels of interactivity. ImPlot does its best to create pretty plots (indeed, there are quite a few styling options available), but it will always favor function over form.
 
 **Q: Where is the documentation?**
 
-A: The API is thoroughly commented in `implot.h`, and the demo in `implot_demo.cpp` should be more than enough to get you started.
+A: The API is thoroughly commented in `implot.h`, and the demo in `implot_demo.cpp` should be more than enough to get you started. Also take a look at the [implot_demos](https://github.com/epezent/implot_demos) repository.
 
 **Q: Is ImPlot suitable for plotting large datasets?**
 
-A: Yes, within reason. You can plot tens to hundreds of thousands of points without issue, but don't expect millions to be a buttery smooth experience. That said, you can always downsample extremely large datasets by telling ImPlot to stride your data at larger intervals if needed.
+A: Yes, within reason. You can plot tens to hundreds of thousands of points without issue, but don't expect millions to be a buttery smooth experience. That said, you can always downsample extremely large datasets by telling ImPlot to stride your data at larger intervals if needed. Also try the experimental `backends` branch which aims to provide GPU acceleration support.
 
 **Q: What data types can I plot?**
 
 A: ImPlot plotting functions accept most scalar types:
-`float`, `double`, `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`. Arrays of custom structs or classes (e.g. `Vector2f` or similar) are easily passed to ImPlot functions using the built in striding features (see `implot.h` for documentation).
+`float`, `double`, `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`. Arrays of custom structs or classes (e.g. `Vector2f` or similar) are easily passed to ImPlot functions using the built-in striding features (see `implot.h` for documentation), and many plotters provide a "getter" overload which accepts data generating callbacks. You can fully customize the list of accepted types by defining `IMPLOT_CUSTOM_NUMERIC_TYPES` at compile time: see doc in `implot_items.cpp`.
 
 **Q: Can plot styles be modified?**
 
@@ -135,7 +147,7 @@ A: Yep! Both logscale and timescale are supported.
 
 **Q: Does ImPlot support multiple y-axes? x-axes?**
 
-A: Yes. Up to three y-axes can be enabled. Multiple x-axes are not supported.
+A: Yes. Up to three x-axes and three y-axes can be enabled.
 
 **Q: Does ImPlot support [insert plot type]?**
 
@@ -157,9 +169,9 @@ A: Not exactly, but it does give you the ability to query plot sub-ranges, with 
 
 A: Not currently. Use your OS's screen capturing mechanisms if you need to capture a plot. ImPlot is not suitable for rendering publication quality plots; it is only intended to be used as a visualization tool. Post-process your data with MATLAB or matplotlib for these purposes.
 
-**Q: Can a compile ImPlot as a dynamic library?**
+**Q: Can I compile ImPlot as a dynamic library?**
 
-A: Like ImGui, it is recommended that you compile and link ImPlot as a *static* library or directly as a part of your sources. However, if you are compiling ImPlot and ImGui as separate DLLs, make sure you set the current *ImGui* context with `ImPlot::SetImGuiContext(ImGuiContext* ctx)`. This ensures that global ImGui variables are correctly shared across the DLL boundary.
+A: Like ImGui, it is recommended that you compile and link ImPlot as a *static* library or directly as a part of your sources. However, if you must and are compiling ImPlot and ImGui as separate DLLs, make sure you set the current *ImGui* context with `ImPlot::SetImGuiContext(ImGuiContext* ctx)`. This ensures that global ImGui variables are correctly shared across the DLL boundary.
 
 **Q: Can ImPlot be used with other languages/bindings?**
 

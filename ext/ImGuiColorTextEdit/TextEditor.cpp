@@ -499,6 +499,20 @@ TextEditor::Coordinates TextEditor::FindNextWord(const Coordinates & aFrom) cons
 	return at;
 }
 
+TextEditor::Coordinates TextEditor::GetCharacterCoordinates(int aIndex) const
+{
+	int line_beg = 0;
+	for (int line = 0; line < (int)mLines.size(); ++line) {
+		int line_end = line_beg + (int)mLines[line].size();
+		//if (!mLines[line].empty()) {
+			if (line_beg <= aIndex && aIndex <= line_end)
+				return Coordinates(line, GetCharacterColumn(line, aIndex - line_beg));
+		//}
+		line_beg = line_end + 1;
+	}
+	return {};
+}
+
 int TextEditor::GetCharacterIndex(const Coordinates& aCoordinates) const
 {
 	if (aCoordinates.mLine >= (int)mLines.size())
@@ -714,10 +728,10 @@ void TextEditor::HandleKeyboardInputs()
 
 		ImGuiIO& io = ImGui::GetIO();
 		auto isOSX = io.ConfigMacOSXBehaviors;
-		auto alt = ImGui::IsKeyDown(ImGuiKey_ModAlt);
-		auto ctrl = ImGui::IsKeyDown(ImGuiKey_ModCtrl) && !alt;	// @NOTE(Robin): There seems to be some wierd behaviour in recent imgui versions where the Right alt key (AltGr) is mapped to Ctrl && Alt
-		auto shift = ImGui::IsKeyDown(ImGuiKey_ModShift);
-		auto super = ImGui::IsKeyDown(ImGuiKey_ModSuper);
+		auto alt = ImGui::IsKeyDown(ImGuiMod_Alt);
+		auto ctrl = ImGui::IsKeyDown(ImGuiMod_Ctrl) && !alt;	// @NOTE(Robin): There seems to be some wierd behaviour in recent imgui versions where the Right alt key (AltGr) is mapped to Ctrl && Alt
+		auto shift = ImGui::IsKeyDown(ImGuiMod_Shift);
+		auto super = ImGui::IsKeyDown(ImGuiMod_Super);
 
 		auto isShortcut = (isOSX ? (super && !ctrl) : (ctrl && !super)) && !alt && !shift;
 		auto isShiftShortcut = (isOSX ? (super && !ctrl) : (ctrl && !super)) && shift && !alt;
@@ -967,7 +981,7 @@ void TextEditor::Render()
 				auto end = ImVec2(lineStartScreenPos.x + contentSize.x + 2.0f * scrollX, lineStartScreenPos.y + mCharAdvance.y);
 				drawList->AddRectFilled(start, end, mPalette[(int)PaletteIndex::ErrorMarker]);
 
-				if (ImGui::IsMouseHoveringRect(lineStartScreenPos, end))
+				if (!ImGui::IsAnyItemActive() && ImGui::IsMouseHoveringRect(lineStartScreenPos, end))
 				{
 					ImGui::BeginTooltip();
 					ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.2f, 0.2f, 1.0f));
@@ -981,7 +995,7 @@ void TextEditor::Render()
 				}
 			}
 
-			if (ImGui::IsWindowFocused()) {
+			if (!ImGui::IsAnyItemActive()) {
 				auto markerIt = mMarkers.find(lineNo + 1);
 				if (markerIt != mMarkers.end()) {
 					// We need to find the deepest marker with text and only render that text
@@ -989,8 +1003,8 @@ void TextEditor::Render()
 					for (const auto& marker : markerIt->second) {
 						auto begCoord = Coordinates(lineNo, marker.begCol);
 						auto endCoord = Coordinates(lineNo, marker.endCol);
-						auto beg = ImVec2(lineStartScreenPos.x + mTextStart + 2.0f * scrollX + TextDistanceToLineStart(begCoord), lineStartScreenPos.y);
-						auto end = ImVec2(lineStartScreenPos.x + mTextStart + 2.0f * scrollX + TextDistanceToLineStart(endCoord), lineStartScreenPos.y + mCharAdvance.y);
+						auto beg = ImVec2(lineStartScreenPos.x + mTextStart + TextDistanceToLineStart(begCoord), lineStartScreenPos.y);
+						auto end = ImVec2(lineStartScreenPos.x + mTextStart + TextDistanceToLineStart(endCoord), lineStartScreenPos.y + mCharAdvance.y);
 
 						if (!marker.onlyShowBgOnMouseOver) {
 							drawList->AddRectFilled(beg, end, ImColor(marker.bgColor));

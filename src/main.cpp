@@ -444,6 +444,7 @@ struct ApplicationData {
             bool evaluate_full = false;
             bool evaluate_filt = false;
             double time_since_last_change = 0.0;
+            uint64_t ir_fingerprint = 0;
         } script;
         uint32_t dirty_buffers = {0};
 
@@ -1219,14 +1220,16 @@ int main(int, char**) {
     bool time_changed = true;
     bool time_stopped = true;
 
-    bool demo_window = false;
+    //bool demo_window = false;
 
     // Main loop
     while (!data.ctx.window.should_close) {
         application::update(&data.ctx);
         
         // This needs to happen first (in imgui events) to enable docking of imgui windows
+#ifdef IMGUI_DOCKING
         ImGui::CreateDockspace();
+#endif
 
         const int64_t num_frames = md_trajectory_num_frames(data.mold.traj);
         const int64_t last_frame = MAX(0, num_frames - 1);
@@ -1325,7 +1328,7 @@ int main(int, char**) {
             }
 
             if (ImGui::IsKeyPressed(KEY_SKIP_TO_PREV_FRAME) || ImGui::IsKeyPressed(KEY_SKIP_TO_NEXT_FRAME)) {
-                double step = ImGui::IsKeyDown(ImGuiKey_ModCtrl) ? 10.0 : 1.0;
+                double step = ImGui::IsKeyDown(ImGuiMod_Ctrl) ? 10.0 : 1.0;
                 if (ImGui::IsKeyPressed(KEY_SKIP_TO_PREV_FRAME)) step = -step;
                 data.animation.frame = CLAMP(data.animation.frame + step, 0.0, max_frame);
             }
@@ -1448,37 +1451,48 @@ int main(int, char**) {
 
                     md_script_ir_compile_source(data.mold.script.ir, src_str, &data.mold.mol, selection_ir);
 
-                    data.mold.script.eval_init = true;
                     if (md_script_ir_valid(data.mold.script.ir)) {
-                        data.mold.script.evaluate_full = true;
-                        data.mold.script.evaluate_filt = true;
-                    } else {
-                        TextEditor::ErrorMarkers markers;
-                        const int64_t num_errors = md_script_ir_num_errors(data.mold.script.ir);
-                        if (num_errors) {
-                            const md_script_error_t* errors = md_script_ir_errors(data.mold.script.ir);
-                            for (int64_t i = 0; i < num_errors; ++i) {
-                                std::string err_str(errors[i].error.ptr, errors[i].error.len);
-                                std::pair<int, std::string> pair = {errors[i].line, err_str};
+                        uint64_t ir_figerprint = md_script_ir_fingerprint(data.mold.script.ir);
+                        if (data.mold.script.ir_fingerprint != ir_figerprint) {
+                            data.mold.script.ir_fingerprint = ir_figerprint;
+
+                            data.mold.script.eval_init = true;
+                            data.mold.script.evaluate_full = true;
+                            data.mold.script.evaluate_filt = true;
+                        }
+                    }
+
+                    TextEditor::ErrorMarkers markers{};
+                    const int64_t num_errors = md_script_ir_num_errors(data.mold.script.ir);
+                    if (num_errors) {
+                        const md_script_error_t* errors = md_script_ir_errors(data.mold.script.ir);
+                        for (int64_t i = 0; i < num_errors; ++i) {
+                            std::string err_str(errors[i].text.ptr, errors[i].text.len);
+                            auto first = editor.GetCharacterCoordinates(errors[i].range.beg);
+                            auto last  = editor.GetCharacterCoordinates(errors[i].range.end-1);
+                            for (int j = first.mLine; j <= last.mLine; ++j) {
+                                std::pair<int, std::string> pair = {j + 1, err_str};
                                 markers.insert(pair);
                             }
                         }
-                        editor.SetErrorMarkers(markers);
                     }
+                    editor.SetErrorMarkers(markers);
 
-                    const int64_t num_tokens = md_script_ir_num_tokens(data.mold.script.ir);
-                    const md_script_token_t* tokens = md_script_ir_tokens(data.mold.script.ir);
+                    const int64_t num_tokens = md_script_ir_num_vis_tokens(data.mold.script.ir);
+                    const md_script_vis_token_t* vis_tokens = md_script_ir_vis_tokens(data.mold.script.ir);
                     for (int64_t i = 0; i < num_tokens; ++i) {
-                        const md_script_token_t& tok = tokens[i];
+                        const md_script_vis_token_t& vis_tok = vis_tokens[i];
                         TextEditor::Marker marker = {0};
-                        marker.begCol = tok.col_beg;
-                        marker.endCol = tok.col_end;
+                        auto first = editor.GetCharacterCoordinates(vis_tok.range.beg);
+                        auto last  = editor.GetCharacterCoordinates(vis_tok.range.end);
+                        marker.begCol = first.mColumn;
+                        marker.endCol = last.mColumn;
                         marker.bgColor = ImVec4(1,1,1,0.5);
-                        marker.depth = tok.depth;
-                        marker.line = tok.line;
+                        marker.depth = vis_tok.depth;
                         marker.onlyShowBgOnMouseOver = true;
-                        marker.text = std::string(tok.text.ptr, tok.text.len);
-                        marker.payload = (void*)tok.vis_token;
+                        marker.text = std::string(vis_tok.text.ptr, vis_tok.text.len);
+                        marker.payload = (void*)vis_tok.payload;
+                        marker.line = first.mLine + 1;
                         editor.AddMarker(marker);
                     }
 
@@ -1881,7 +1895,7 @@ static void update_density_volume(ApplicationData* data) {
             if (md_script_ir_valid(data->mold.script.ir)) {
                 md_semaphore_aquire(&data->mold.script.ir_semaphore);
                 md_script_visualization_args_t args = {
-                    .token = prop->vis_token,
+                    .payload = prop->vis_payload,
                     .ir = data->mold.script.ir,
                     .mol = &data->mold.mol,
                     .traj = data->mold.traj,
@@ -2660,7 +2674,7 @@ ImGui::EndGroup();
                 ImGui::Text("Stored Selections");
                 for (int i = 0; i < (int)md_array_size(data->selection.stored_selections); i++) {
                     auto& sel = data->selection.stored_selections[i];
-                    bool is_valid = md_script_valid_identifier_name(sel.name);
+                    bool is_valid = md_script_identifier_name_valid(sel.name);
                     char err_buf[64] = "";
                     if (!is_valid) {
                         snprintf(err_buf, sizeof(err_buf), "'%s' is not a valid identifier.", sel.name.cstr());
@@ -3851,8 +3865,10 @@ struct TimelineArgs {
     } values;
 
     struct {
-        double* min;
-        double* max;
+        double* beg;
+        double* end;
+        double  min;
+        double  max;
     } view_range;
 
     struct {
@@ -3884,10 +3900,13 @@ bool draw_property_timeline(const ApplicationData& data, const TimelineArgs& arg
     const ImPlotAxisFlags axis_flags = 0;
     const ImPlotAxisFlags axis_flags_x = axis_flags;
     const ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit | ImPlotAxisFlags_NoLabel |ImPlotAxisFlags_NoTickLabels;
-    const ImPlotFlags flags = ImPlotFlags_AntiAliased;
+    
+    //const ImPlotFlags flags = ImPlotFlags_AntiAliased;
+    ImPlotFlags flags = 0;
 
     if (ImPlot::BeginPlot("##Timeline", ImVec2(-1,args.plot_height), flags)) {
-        ImPlot::SetupAxisLinks(ImAxis_X1, args.view_range.min, args.view_range.max);
+        ImPlot::SetupAxisLinks(ImAxis_X1, args.view_range.beg, args.view_range.end);
+        ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, args.view_range.min, args.view_range.max);
         ImPlot::SetupAxes(0, 0, axis_flags_x, axis_flags_y);
         ImPlot::SetupFinish();
 
@@ -3931,12 +3950,12 @@ bool draw_property_timeline(const ApplicationData& data, const TimelineArgs& arg
                 ImPlot::SetNextFillStyle(line_col, 0.4f);
                 snprintf(lbl, sizeof(lbl), "%s (var)", args.lbl);
                 ImPlot::PlotShadedG(lbl,
-                    [](void* payload, int idx) -> ImPlotPoint {
+                    [](int idx, void* payload) -> ImPlotPoint {
                         TimelineArgs* args = (TimelineArgs*)payload;
                         return ImPlotPoint(args->values.x[idx], args->values.y[idx] - args->values.y_var[idx]);
                     },
                     (void*)&args,
-                    [](void* payload, int idx) -> ImPlotPoint {
+                    [](int idx, void* payload) -> ImPlotPoint {
                         TimelineArgs* args = (TimelineArgs*)payload;
                         return ImPlotPoint(args->values.x[idx], args->values.y[idx] + args->values.y_var[idx]);
                     },
@@ -3947,12 +3966,12 @@ bool draw_property_timeline(const ApplicationData& data, const TimelineArgs& arg
                 ImPlot::SetNextFillStyle(line_col, 0.2f);
                 snprintf(lbl, sizeof(lbl), "%s (min,max)", args.lbl);
                 ImPlot::PlotShadedG(lbl,
-                    [](void* payload, int idx) -> ImPlotPoint {
+                    [](int idx, void* payload) -> ImPlotPoint {
                         TimelineArgs* args = (TimelineArgs*)payload;
                         return ImPlotPoint(args->values.x[idx], args->values.y_min[idx]);
                     },
                     (void*)&args,
-                        [](void* payload, int idx) -> ImPlotPoint {
+                        [](int idx, void* payload) -> ImPlotPoint {
                         TimelineArgs* args = (TimelineArgs*)payload;
                         return ImPlotPoint(args->values.x[idx], args->values.y_max[idx]);
                     },
@@ -3973,7 +3992,7 @@ bool draw_property_timeline(const ApplicationData& data, const TimelineArgs& arg
         }
         else if (ImPlot::IsPlotHovered()) {
             if (active && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {           
-                if (ImGui::GetIO().KeyMods == ImGuiKeyModFlags_Shift) {
+                if (ImGui::GetIO().KeyMods == ImGuiMod_Shift) {
                     if (args.filter.show && args.filter.enabled) {
                         *args.input.is_selecting = true;
                         *args.filter.beg = ImPlot::GetPlotMousePos().x;
@@ -4101,7 +4120,7 @@ static void draw_timeline_window(ApplicationData* data) {
             map.Pan = ImGuiMouseButton_Right;
             map.Select = ImGuiMouseButton_Right;
             map.SelectCancel = ImGuiMouseButton_Left;
-            map.SelectMod = ImGuiKeyModFlags_Shift;
+            map.SelectMod = ImGuiMod_Shift;
             map.Menu = -1;
             map.Fit = ImGuiMouseButton_Right;
 
@@ -4136,8 +4155,10 @@ static void draw_timeline_window(ApplicationData* data) {
                     .y_max = NULL,
                 },
                 .view_range = {
-                    &view_beg,
-                    &view_end,
+                    .beg = &view_beg,
+                    .end = &view_end,
+                    .min = min_x_value,
+                    .max = max_x_value,
                 },
                 .input = {
                     .is_dragging = &is_dragging,
@@ -4232,11 +4253,11 @@ static void draw_distribution_window(ApplicationData* data) {
     if (ImGui::Begin("Distributions", &data->distributions.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
         const int MIN_NUM_BINS = 8;
         const int MAX_NUM_BINS = 1024;
-        static int num_bins = 64;
+        static int num_bins = 128;
 
         static constexpr int MIN_PLOT_HEIGHT = 10;
         static constexpr int MAX_PLOT_HEIGHT = 1000;
-        static int plot_height = 150;
+        static int plot_height = 180;
 
         if (ImGui::BeginMenuBar())
         {
@@ -4270,7 +4291,8 @@ static void draw_distribution_window(ApplicationData* data) {
         ImPlotAxisFlags axis_flags = 0;
         ImPlotAxisFlags axis_flags_x = axis_flags | 0;
         ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_NoTickLabels;
-        ImPlotFlags flags = ImPlotFlags_AntiAliased;
+        //ImPlotFlags flags = ImPlotFlags_AntiAliased;
+        ImPlotFlags flags = 0;
 
         // The distribution properties are always computed as histograms with a resolution of 1024
         // If we have a different number of bins for our visualization, we need to recompute the bins
@@ -4331,7 +4353,9 @@ static void draw_distribution_window(ApplicationData* data) {
             }
 
             if (ImPlot::BeginPlot(label, ImVec2(-1,plot_height), flags)) {
-                ImPlot::SetupAxesLimits(min_x, max_x, 0, max_y * 1.1, ImGuiCond_Once);
+                ImPlot::SetupAxisLimits(ImAxis_Y1, 0, max_y * 1.1, ImGuiCond_Always);
+                ImPlot::SetupAxisLimits(ImAxis_X1, min_x, max_x, ImGuiCond_Once);
+                ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, min_x, max_x);
                 ImPlot::SetupAxes(0, 0, axis_flags_x, axis_flags_y);
                 ImPlot::SetupFinish();
 
@@ -4350,7 +4374,7 @@ static void draw_distribution_window(ApplicationData* data) {
                     .num_bars = num_bins
                 };
 
-                auto getter = [](void* data, int idx) -> ImPlotPoint {
+                auto getter = [](int idx, void* data) -> ImPlotPoint {
                     PlotData* pd = (PlotData*)data;
                     return ImPlotPoint(idx * pd->scale + pd->offset, (double)pd->bars[idx]);
                 };
@@ -4368,11 +4392,15 @@ static void draw_distribution_window(ApplicationData* data) {
                 }
 
                 if (data->distributions.filter.enabled) {
-                    if ((is_active || is_hovered) && ImGui::IsMouseClicked(0)) {
-                        if (ImGui::GetIO().KeyMods == ImGuiKeyModFlags_Shift) {
+                    if ((is_active || is_hovered) && ImGui::GetIO().KeyMods == ImGuiMod_Shift) {
+                        if (ImGui::IsMouseClicked(0)) {
                             prop.value_filter.beg = ImPlot::GetPlotMousePos().x;
                             prop.value_filter.end = ImPlot::GetPlotMousePos().x;
-                        };
+                        } else if (ImGui::IsMouseDragging(0)) {
+                            prop.value_filter.end = ImPlot::GetPlotMousePos().x;
+                            prop.value_filter.beg = MIN(prop.value_filter.beg, prop.value_filter.end);
+                            prop.value_filter.end = MAX(prop.value_filter.beg, prop.value_filter.end);
+                        }
                     }
 
                     double beg = prop.value_filter.beg;
@@ -4419,7 +4447,7 @@ static void draw_shape_space_window(ApplicationData* data) {
             }
         }
 
-        ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_AntiAliased | ImPlotFlags_NoMenus;
+        ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_NoMenus; // ImPlotFlags_AntiAliased;
         ImPlotAxisFlags axis_flags = ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks;
 
         const float x_reset[2] = {-0.025f, 1.025f};
@@ -4456,7 +4484,7 @@ static void draw_shape_space_window(ApplicationData* data) {
             ImPlot::PopStyleColor(2);
             ImPlot::PopStyleVar();
 
-            auto getter = [](void* user_data, int idx) -> ImPlotPoint {
+            auto getter = [](int idx, void* user_data) -> ImPlotPoint {
                 const vec2_t* coords = (vec2_t*)user_data;
                 return {coords[idx].x, coords[idx].y};
             };
@@ -4646,7 +4674,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
         constexpr const char* x_lbl = "\xc2\xb0\xcf\x86";   // utf8 Degree Phi
         constexpr const char* y_lbl = "\xc2\xb0\xcf\x88";   // utf8 Degree Psi
 
-        constexpr const ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_AntiAliased | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect;
+        constexpr const ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect; // | ImPlotFlags_AntiAliased;
         constexpr const ImPlotFlags subplotflags = ImPlotSubplotFlags_NoResize | ImPlotSubplotFlags_NoMenus;
         constexpr const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_Foreground | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels;
 
@@ -4730,12 +4758,12 @@ static void draw_ramachandran_window(ApplicationData* data) {
         const int num_plots = plot_cols * plot_rows;
 
         ImPlotInputMap& map = ImPlot::GetInputMap();
-        map.OverrideMod = ImGuiKeyModFlags_Shift;
+        map.OverrideMod = ImGuiMod_Shift;
 
-        auto formatter = [](double value, char* buff, int size, void* user_data) {
+        auto formatter = [](double value, char* buff, int size, void* user_data) -> int {
             const char* suffix = (const char*)user_data;
             value = deperiodize(value, 0, 360.0);
-            snprintf(buff, size, "%g%s", value, suffix);
+            return snprintf(buff, size, "%g%s", value, suffix);
         };
 
         ImVec2 plot_size = {0,0};
@@ -4749,6 +4777,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
                     ImPlot::SetupAxisLinks(ImAxis_X1, &viewrect.X.Min, &viewrect.X.Max);
                     ImPlot::SetupAxisLinks(ImAxis_Y1, &viewrect.Y.Min, &viewrect.Y.Max);
                     ImPlot::SetupAxes(x_lbl, y_lbl, axis_flags, axis_flags);
+                    
                     ImPlot::SetupAxisFormat(ImAxis_X1, formatter, (void*)x_lbl);
                     ImPlot::SetupAxisFormat(ImAxis_Y1, formatter, (void*)y_lbl);
 
@@ -4903,7 +4932,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
                             ImPlotPoint     view_center; // We use this to deperiodize the coordinates
                         };
 
-                        auto index_getter = [](void* user_data, int i) -> ImPlotPoint {
+                        auto index_getter = [](int i, void* user_data) -> ImPlotPoint {
                             const UserData* data = (UserData*)user_data;
                             uint32_t idx = data->indices[i];
 
@@ -5667,7 +5696,7 @@ static void draw_script_editor_window(ApplicationData* data) {
             if (md_script_ir_valid(data->mold.script.ir)) {
                 md_semaphore_aquire(&data->mold.script.ir_semaphore);
                 md_script_visualization_init(&data->mold.script.vis, {
-                    .token = (const md_script_vis_token_t*)hovered_marker->payload,
+                    .payload = (const md_script_vis_payload_t*)hovered_marker->payload,
                     .ir = data->mold.script.ir,
                     .mol = &data->mold.mol,
                     .traj = data->mold.traj,
@@ -5783,7 +5812,7 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
     if (md_script_ir_valid(data.mold.script.ir)) {
         md_semaphore_aquire(&data.mold.script.ir_semaphore);
         md_script_visualization_args_t args = {
-            .token = prop->vis_token,
+            .payload = prop->vis_payload,
             .ir = data.mold.script.ir,
             .mol = &data.mold.mol,
             .traj = data.mold.traj,
@@ -6974,7 +7003,7 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
                 if (end) {
                     std::string str(beg, end - beg);
                     editor.SetText(str);
-                    // Set buf pointer to after token
+                    // Set buf pointer to after marker
                     const char* pos = end + token.len;
                     buf->len = buf->end() - pos;
                     buf->ptr = pos;
@@ -7008,7 +7037,7 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
                         md_bitfield_clear(bf);
                         return;
                     }
-                    // Set buf pointer to after token
+                    // Set buf pointer to after marker
                     const char* pos = end + token.len;
                     buf->len = buf->end() - pos;
                     buf->ptr = pos;
@@ -7422,7 +7451,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
                     if (md_script_ir_valid(data->mold.script.ir)) {
                         md_semaphore_aquire(&data->mold.script.ir_semaphore);
                         md_script_visualization_args_t args = {
-                            .token = rep->prop->vis_token,
+                            .payload = rep->prop->vis_payload,
                             .ir = data->mold.script.ir,
                             .mol = &data->mold.mol,
                             .traj = NULL,
@@ -7582,11 +7611,11 @@ static void handle_camera_interaction(ApplicationData* data) {
     bool pressed = ImGui::InvisibleButton("canvas", ImGui::GetContentRegionAvail(), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
 
     if (pressed || ImGui::IsItemActive()) {
-        if (ImGui::IsKeyPressed(ImGuiKey_ModShift, false)) {
+        if (ImGui::IsKeyPressed(ImGuiMod_Shift, false)) {
             ImGui::ResetMouseDragDelta();
         }
 
-        if (ImGui::IsKeyDown(ImGuiKey_ModShift)) {
+        if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
             RegionMode mode = RegionMode::Append;
             if (ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
                 mode = RegionMode::Append;
@@ -7686,7 +7715,7 @@ static void handle_camera_interaction(ApplicationData* data) {
 
     bool open_atom_context = false;
     if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
-        if (!ImGui::IsKeyDown(ImGuiKey_ModShift) && !data->selection.selecting) {
+        if (!ImGui::IsKeyDown(ImGuiMod_Shift) && !data->selection.selecting) {
             const ImVec2 delta = ImGui::GetIO().MouseDelta;
             const ImVec2 coord = ImGui::GetMousePos() - ImGui::GetCurrentWindow()->Pos;
             const vec2_t mouse_delta = {delta.x, delta.y};
