@@ -9,6 +9,7 @@
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_xtc.h>
+#include <md_trr.h>
 #include <md_xyz.h>
 #include <md_trajectory.h>
 #include <md_frame_cache.h>
@@ -99,6 +100,7 @@ static const str_t extensions[] = {
     MAKE_STR("pdb"),
     MAKE_STR("gro"),
     MAKE_STR("xtc"),
+    MAKE_STR("trr"),
     MAKE_STR("xyz"),
     MAKE_STR("xmol"),
     MAKE_STR("arc"),
@@ -133,6 +135,7 @@ md_trajectory_api* get_api(str_t filename) {
     str_t ext = extract_ext(filename);
     if (str_equal_cstr(ext, "pdb"))  return md_pdb_trajectory_api();
     if (str_equal_cstr(ext, "xtc"))  return md_xtc_trajectory_api();
+    if (str_equal_cstr(ext, "trr"))  return md_trr_trajectory_api();
     if (str_equal_cstr(ext, "xyz"))  return md_xyz_trajectory_api();
     if (str_equal_cstr(ext, "xmol")) return md_xyz_trajectory_api();
     if (str_equal_cstr(ext, "arc"))  return md_xyz_trajectory_api();
