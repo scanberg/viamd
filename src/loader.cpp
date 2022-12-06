@@ -297,11 +297,15 @@ md_trajectory_i* open_file(str_t filename, const md_molecule_t* mol, md_allocato
     // For now we use a fixed target of 4GB and see how many frames we can fit into that
     // @TODO: Make this a user defined variable
 
-    const uint64_t frame_cache_bytes = MIN(md_os_physical_ram_in_bytes() / 2, GIGABYTES(4));
-    const uint64_t max_frame_size = (uint64_t)md_trajectory_max_frame_data_size(inst->traj);
-    const uint64_t num_cached_frames = frame_cache_bytes / max_frame_size;
+    const uint64_t num_traj_frames      = md_trajectory_num_frames(internal_traj);
+    const uint64_t frame_cache_size     = MIN(md_physical_ram() / 2, GIGABYTES(2));
+    const uint64_t max_frame_size       = (uint64_t)md_trajectory_max_frame_data_size(inst->traj);
+    const uint64_t max_num_cache_frames = frame_cache_size / max_frame_size;
 
-    md_frame_cache_init(&inst->cache, inst->traj, alloc, num_cached_frames);
+    const int64_t num_frames_in_cache   = MIN(num_traj_frames, max_num_cache_frames);
+
+    md_printf(MD_LOG_TYPE_DEBUG, "Initializing frame cache with %i frames.", (int)num_frames_in_cache);
+    md_frame_cache_init(&inst->cache, inst->traj, alloc, num_frames_in_cache);
     md_bitfield_init(&inst->recenter_target, alloc);
 
     // We only overload load frame and decode frame data to apply PBC upon loading data

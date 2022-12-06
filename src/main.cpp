@@ -2871,7 +2871,7 @@ void draw_load_dataset_window(ApplicationData* data) {
 
         str_t path = str_from_cstr(state.path_buf);
         if (path_changed) {
-            state.path_is_valid = md_os_path_exists(path) && !md_os_path_is_directory(path);
+            state.path_is_valid = md_os_path_is_valid(path) && !md_os_path_is_directory(path);
             str_t ext = extract_ext(path);
 
             // Try to assign loader_idx from extension
@@ -6520,7 +6520,7 @@ static void launch_prefetch_job(ApplicationData* data) {
     // We pre-allocate the number of slots * max frame data size, so don't go bananas here if you want to save some on memory.
     task_system::pool_enqueue("Preloading frames", 1, [data, num_frames](task_system::TaskSetRange)
         {
-            timestamp_t t0 = md_os_time_current();
+            md_timestamp_t t0 = md_os_time_current();
             const int64_t slot_size = md_trajectory_max_frame_data_size(&data->mold.traj);
             void* slot_mem = md_alloc(default_allocator, slot_size * NUM_SLOTS);
 
@@ -6628,7 +6628,7 @@ static void launch_prefetch_job(ApplicationData* data) {
 
             md_free(default_allocator, slot_mem, slot_size * NUM_SLOTS);
 
-            timestamp_t t1 = md_os_time_current();
+            md_timestamp_t t1 = md_os_time_current();
             LINFO("Frame preload took %.2f seconds", md_os_time_delta_in_s(t0, t1));
         });
 #undef NUM_SLOTS
