@@ -1,7 +1,7 @@
 #include <algorithm>
 #include <chrono>
 #include <string>
-#include <regex>
+//#include <regex>
 #include <cmath>
 #include <climits>
 
@@ -56,7 +56,7 @@ TextEditor::TextEditor()
 	, mLastClick(-1.0f)
 {
 	SetPalette(GetDarkPalette());
-	SetLanguageDefinition(LanguageDefinition::HLSL());
+	SetLanguageDefinition(LanguageDefinition::VIAMD());
 	mLines.push_back(Line());
 }
 
@@ -67,10 +67,12 @@ TextEditor::~TextEditor()
 void TextEditor::SetLanguageDefinition(const LanguageDefinition & aLanguageDef)
 {
 	mLanguageDefinition = aLanguageDef;
+	/*
 	mRegexList.clear();
 
 	for (auto& r : mLanguageDefinition.mTokenRegexStrings)
 		mRegexList.push_back(std::make_pair(std::regex(r.first, std::regex_constants::optimize), r.second));
+	*/
 
 	Colorize();
 }
@@ -2282,7 +2284,7 @@ void TextEditor::ColorizeRange(int aFromLine, int aToLine)
 		return;
 
 	std::string buffer;
-	std::cmatch results;
+	//std::cmatch results;
 	std::string id;
 
 	int endLine = std::max(0, std::min((int)mLines.size(), aToLine));
@@ -2324,7 +2326,7 @@ void TextEditor::ColorizeRange(int aFromLine, int aToLine)
 			{
 				// todo : remove
 				//printf("using regex for %.*s\n", first + 10 < last ? 10 : int(last - first), first);
-
+				/*
 				for (auto& p : mRegexList)
 				{
 					if (std::regex_search(first, last, results, p.first, std::regex_constants::match_continuous))
@@ -2338,6 +2340,7 @@ void TextEditor::ColorizeRange(int aFromLine, int aToLine)
 						break;
 					}
 				}
+				*/
 			}
 
 			if (hasTokenizeResult == false)
@@ -3110,6 +3113,7 @@ const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::CPlusPlus(
 	return langDef;
 }
 
+#if 0
 const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::HLSL()
 {
 	static bool inited = false;
@@ -3230,6 +3234,7 @@ const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::GLSL()
 	}
 	return langDef;
 }
+#endif
 
 const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::C()
 {
@@ -3372,6 +3377,8 @@ const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::VIAMD()
 	return langDef;
 }
 
+#if 0
+
 const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::SQL()
 {
 	static bool inited = false;
@@ -3485,6 +3492,7 @@ const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::AngelScrip
 	}
 	return langDef;
 }
+#endif
 
 const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::Lua()
 {

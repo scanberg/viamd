@@ -7,7 +7,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <map>
-#include <regex>
+//#include <regex>
 #include "imgui.h"
 
 class TextEditor
@@ -186,12 +186,12 @@ public:
 		}
 
 		static const LanguageDefinition& CPlusPlus();
-		static const LanguageDefinition& HLSL();
-		static const LanguageDefinition& GLSL();
+		//static const LanguageDefinition& HLSL();
+		//static const LanguageDefinition& GLSL();
 		static const LanguageDefinition& C();
 		static const LanguageDefinition& VIAMD();
-		static const LanguageDefinition& SQL();
-		static const LanguageDefinition& AngelScript();
+		//static const LanguageDefinition& SQL();
+		//static const LanguageDefinition& AngelScript();
 		static const LanguageDefinition& Lua();
 	};
 
@@ -302,7 +302,7 @@ public:
 	static const Palette& GetRetroBluePalette();
 
 private:
-	typedef std::vector<std::pair<std::regex, PaletteIndex>> RegexList;
+	//typedef std::vector<std::pair<std::regex, PaletteIndex>> RegexList;
 
 	struct EditorState
 	{
@@ -412,7 +412,7 @@ private:
 	Palette mPaletteBase;
 	Palette mPalette;
 	LanguageDefinition mLanguageDefinition;
-	RegexList mRegexList;
+	//RegexList mRegexList;
 
 	bool mCheckComments;
 	Breakpoints mBreakpoints;
