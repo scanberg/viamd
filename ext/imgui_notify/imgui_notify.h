@@ -10,7 +10,8 @@
 
 #pragma once
 #include <vector>
-#include <chrono>
+//#include <chrono>
+#include <time.h>
 
 #define NOTIFY_MAX_MSG_LENGTH			4096		// Max message content length
 #define NOTIFY_PADDING_X				20.f		// Bottom-left X padding
@@ -78,7 +79,10 @@ private:
 
 	NOTIFY_INLINE auto set_content(const char* format, va_list args) { vsnprintf(this->content, sizeof(this->content), format, args); }
 
-	NOTIFY_INLINE uint64_t get_tick() { return std::chrono::duration_cast<std::chrono::duration<uint64_t, std::milli>>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+	NOTIFY_INLINE uint64_t get_tick() {
+		//return std::chrono::duration_cast<std::chrono::duration<uint64_t, std::milli>>(std::chrono::steady_clock::now().time_since_epoch()).count();
+		return clock() * 1000 / CLOCKS_PER_SEC;
+	}
 
 public:
 
