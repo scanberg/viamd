@@ -13,7 +13,6 @@
 #include <md_molecule.h>
 #include <md_trajectory.h>
 
-#include <core/md_sync.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_linear_allocator.h>
@@ -21,7 +20,7 @@
 #include <core/md_log.h>
 #include <core/md_simd.h>
 #include <core/md_file.h>
-#include <core/md_array.inl>
+#include <core/md_array.h>
 #include <core/md_os.h>
 #include <core/md_spatial_hash.h>
 #include <core/md_base64.h>
@@ -1544,7 +1543,7 @@ int main(int, char**) {
                     uint32_t end_frame = CLAMP((uint32_t)data.timeline.filter.end_frame + 1, beg_frame + 1, traj_frames);
                     data.mold.script.evaluate_filt = false;
                     md_script_eval_clear(data.mold.script.filt_eval);
-                    data.tasks.evaluate_filt = task_system::pool_enqueue("Eval Filt", MAX(0, end_frame - beg_frame), [data = &data, frame_offset = beg_frame](uint32_t beg, uint32_t end) {
+                    data.tasks.evaluate_filt = task_system::pool_enqueue("Eval Filt", end_frame - beg_frame, [data = &data, frame_offset = beg_frame](uint32_t beg, uint32_t end) {
                         md_script_eval_frame_range(data->mold.script.filt_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, frame_offset + beg, frame_offset + end);
                     });
                     task_system::pool_enqueue("##Release IR Semaphore", [data = &data]() {

@@ -16,7 +16,7 @@
 #include <core/md_allocator.h>
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
-#include <core/md_array.inl>
+#include <core/md_array.h>
 #include <md_molecule.h>
 
 #include "gfx/gl.h"

@@ -3,7 +3,7 @@
 #include "immediate_draw_utils.h"
 
 #include <core/md_common.h>
-#include <core/md_array.inl>
+#include <core/md_array.h>
 #include <core/md_allocator.h>
 #include <core/md_log.h>
 

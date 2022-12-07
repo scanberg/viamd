@@ -1,7 +1,7 @@
 #include "loader.h"
 
 #include <core/md_allocator.h>
-#include <core/md_array.inl>
+#include <core/md_array.h>
 #include <core/md_log.h>
 #include <core/md_simd.h>
 #include <core/md_bitfield.h>
@@ -301,9 +301,9 @@ md_trajectory_i* open_file(str_t filename, const md_molecule_t* mol, md_allocato
     // @TODO: Make this a user defined variable
 
     const uint64_t num_traj_frames      = md_trajectory_num_frames(internal_traj);
-    const uint64_t frame_cache_size     = MIN(md_physical_ram() / 2, GIGABYTES(2));
-    const uint64_t max_frame_size       = (uint64_t)md_trajectory_max_frame_data_size(inst->traj);
-    const uint64_t max_num_cache_frames = frame_cache_size / max_frame_size;
+    const uint64_t frame_cache_size     = MIN(md_physical_ram() / 2, GIGABYTES(1));
+    const uint64_t approx_frame_size    = (uint64_t)mol->atom.count * 3 * sizeof(float);
+    const uint64_t max_num_cache_frames = frame_cache_size / approx_frame_size;
 
     const int64_t num_frames_in_cache   = MIN(num_traj_frames, max_num_cache_frames);
 

@@ -3,7 +3,7 @@
 #include <core/md_allocator.h>
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
-#include <core/md_sync.h>
+#include <core/md_os.h>
 
 #include "gfx/gl_utils.h"
 #include "gfx/immediate_draw_utils.h"

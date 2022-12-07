@@ -13,15 +13,9 @@
 #include "gfx/gl.h"
 #include <GLFW/glfw3.h>
 #include <nfd.h>
-#if MD_PLATFORM_WINDOWS
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN 1
-#endif
-#define GLFW_EXPOSE_NATIVE_WIN32
-#define GLFW_EXPOSE_NATIVE_WGL
-#include <GLFW/glfw3native.h>
-#endif
+
 #include <imgui.h>
+#include <implot.h>
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 
@@ -29,8 +23,6 @@
 #include "dejavu_sans_mono.inl"
 #include "fa_solid.inl"
 #include "IconsFontAwesome6.h"
-
-#include <implot.h>
 
 #include <stdio.h>
 #include <stdlib.h>

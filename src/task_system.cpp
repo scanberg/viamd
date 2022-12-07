@@ -7,7 +7,7 @@
 #include <core/md_common.h>
 #include <core/md_log.h>
 #include <core/md_allocator.h>
-#include <core/md_array.inl>
+#include <core/md_array.h>
 #include <core/md_os.h>
 
 #include <string.h>
@@ -75,11 +75,10 @@ public:
         uint32_t range_ext = (range.end - range.start);
 
         // This should be protected with a mutex or something to ensure that only a single thread does this
-        if (m_set_completed + range_ext == m_SetSize) {
+        uint32_t set_size = m_set_completed += range_ext;
+        if (set_size == m_SetSize) {
             pool::free_slots.push(get_slot_idx(m_id));
         }
-
-        m_set_completed += range_ext;
     }
 
     bool Running() {

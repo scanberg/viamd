@@ -176,13 +176,6 @@ static struct {
             } uniform_loc;
         } no_motion_blur;
     } temporal;
-
-    struct {
-        GLuint program_edge_detection;
-        GLuint program_blending_weight_calculation;
-        GLuint program_neighborhood_blending;
-    } smaa;
-
 } gl;
 
 static constexpr str_t v_shader_src_fs_quad = MAKE_STR(
@@ -1149,9 +1142,6 @@ void apply_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj_m
     GLint last_viewport[4];
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fbo);
     glGetIntegerv(GL_VIEWPORT, last_viewport);
-
-    int width = last_viewport[2];
-    int height = last_viewport[3];
 
     const vec2_t inv_res = vec2_t{1.f / gl.tex_width, 1.f / gl.tex_height};
 
