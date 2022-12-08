@@ -57,6 +57,7 @@
 #include <imgui_notify.h>
 
 #include <stdio.h>
+#include <thread>
 
 #define EXPERIMENTAL_GFX_API 0
 #define PICKING_JITTER_HACK 0
@@ -1017,7 +1018,7 @@ static void create_screenshot(ApplicationData* data);
 
 // Representations
 static Representation* create_representation(ApplicationData* data, RepresentationType type = RepresentationType::SpaceFill,
-                                             ColorMapping color_mapping = ColorMapping::Cpk, str_t filter = MAKE_STR("all"));
+                                             ColorMapping color_mapping = ColorMapping::Cpk, str_t filter = STR("all"));
 static Representation* clone_representation(ApplicationData* data, const Representation& rep);
 static void remove_representation(ApplicationData* data, int idx);
 static void update_representation(ApplicationData* data, Representation* rep);
@@ -1177,8 +1178,7 @@ int main(int, char**) {
     cone_trace::initialize();
 #endif
     LDEBUG("Initializing task system...");
-    task_system::initialize();
-
+    task_system::initialize(MIN(VIAMD_NUM_WORKER_THREADS, std::thread::hardware_concurrency()));
 
     md_gl_initialize();
     md_gl_shaders_init(&data.mold.gl_shaders, shader_output_snippet);
@@ -1193,8 +1193,8 @@ int main(int, char**) {
     editor.SetLanguageDefinition(TextEditor::LanguageDefinition::VIAMD());
     editor.SetPalette(TextEditor::GetDarkPalette());
 
-    load_dataset_from_file(&data, MAKE_STR(VIAMD_DATASET_DIR "/1ALA-500.pdb"));
-    create_representation(&data, RepresentationType::SpaceFill, ColorMapping::Cpk, MAKE_STR("all"));
+    load_dataset_from_file(&data, STR(VIAMD_DATASET_DIR "/1ALA-500.pdb"));
+    create_representation(&data, RepresentationType::SpaceFill, ColorMapping::Cpk, STR("all"));
     editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(1,2,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);");
 
     reset_view(&data, true);
@@ -2732,7 +2732,7 @@ ImGui::EndGroup();
                     str_t ext = extract_ext({path_buf, path_len});
                     if (str_empty(ext)) {
                         path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".jpg");
-                        ext = MAKE_STR("jpg");
+                        ext = STR("jpg");
                     }
                     if (str_equal_cstr_ignore_case(ext, "jpg") || str_equal_cstr_ignore_case(ext, "png") || str_equal_cstr_ignore_case(ext, "bmp")) {
                         data->screenshot.path_to_file = str_copy({path_buf, path_len}, frame_allocator);
@@ -6719,17 +6719,17 @@ static RepresentationType get_rep_type(str_t str) {
 static str_t get_rep_type_name(RepresentationType type) {
     switch (type) {
         case RepresentationType::SpaceFill:
-            return MAKE_STR("SPACE_FILL");
+            return STR("SPACE_FILL");
         case RepresentationType::Licorice:
-            return MAKE_STR("LICORICE");
+            return STR("LICORICE");
         /*case RepresentationType::BallAndStick:
             return make_cstr("BALL_AND_STICK");*/
         case RepresentationType::Ribbons:
-            return MAKE_STR("RIBBONS");
+            return STR("RIBBONS");
         case RepresentationType::Cartoon:
-            return MAKE_STR("CARTOON");
+            return STR("CARTOON");
         default:
-            return MAKE_STR("UNKNOWN");
+            return STR("UNKNOWN");
     }
 }
 
@@ -6759,25 +6759,25 @@ static ColorMapping get_color_mapping(str_t str) {
 static str_t get_color_mapping_name(ColorMapping mapping) {
     switch (mapping) {
         case ColorMapping::Uniform:
-            return MAKE_STR("UNIFORM");
+            return STR("UNIFORM");
         case ColorMapping::Cpk:
-            return MAKE_STR("CPK");
+            return STR("CPK");
         case ColorMapping::AtomLabel:
-            return MAKE_STR("ATOM_LABEL");
+            return STR("ATOM_LABEL");
         case ColorMapping::AtomIndex:
-            return MAKE_STR("ATOM_INDEX");
+            return STR("ATOM_INDEX");
         case ColorMapping::ResId:
-            return MAKE_STR("RES_ID");
+            return STR("RES_ID");
         case ColorMapping::ResIndex:
-            return MAKE_STR("RES_INDEX");
+            return STR("RES_INDEX");
         case ColorMapping::ChainId:
-            return MAKE_STR("CHAIN_ID");
+            return STR("CHAIN_ID");
         case ColorMapping::ChainIndex:
-            return MAKE_STR("CHAIN_INDEX");
+            return STR("CHAIN_INDEX");
         case ColorMapping::SecondaryStructure:
-            return MAKE_STR("SECONDARY_STRUCTURE");
+            return STR("SECONDARY_STRUCTURE");
         default:
-            return MAKE_STR("UNDEFINED");
+            return STR("UNDEFINED");
     }
 }
 
@@ -6992,7 +6992,7 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
         {
             // Script starts with """
             // and ends with """
-            str_t token = MAKE_STR("\"\"\"");
+            str_t token = STR("\"\"\"");
             if (str_equal_n(arg, token, token.len)) {
                 // Roll back buf to arg + 3
                 const char* beg = arg.ptr + token.len;
@@ -7020,7 +7020,7 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
         {
             // Bitfield starts with ###
             // and ends with ###
-            str_t token = MAKE_STR("###");
+            str_t token = STR("###");
             if (str_equal_n(arg, token, token.len)) {
                 // Roll back buf to arg + 3
                 const char* beg = arg.ptr + token.len;

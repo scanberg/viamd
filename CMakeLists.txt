@@ -45,6 +45,8 @@ add_subdirectory(ext/imgui_notify)
 # VIAMD OPTIONS
 option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
 option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ${MD_LINK_STDLIB_STATIC})
+set(VIAMD_FRAME_CACHE_SIZE "2048" CACHE STRING "Reserved frame cache size in Megabytes")
+set(VIAMD_NUM_WORKER_THREADS "8" CACHE STRING "Number of worker threads (Decrease if you run out of memory during evaluation)")
 
 # Copy many of the fields from mdlib
 set(VIAMD_DEFINES ${MD_DEFS})
@@ -103,7 +105,10 @@ add_dependencies(viamd viamd_copy_shaders viamd_copy_datasets)
 target_compile_definitions(viamd PRIVATE
 	VIAMD_DATASET_DIR=\"datasets\"
 	VIAMD_SHADER_DIR=\"shaders\"
-	VIAMD_SCREENSHOT_DIR=\"screenshots\")
+	VIAMD_SCREENSHOT_DIR=\"screenshots\"
+    VIAMD_NUM_WORKER_THREADS=${VIAMD_NUM_WORKER_THREADS}
+    VIAMD_FRAME_CACHE_SIZE=${VIAMD_FRAME_CACHE_SIZE}
+)
 
 # We just hijack the warning and compile flags from mdlib
 target_compile_options(viamd PRIVATE ${VIAMD_FLAGS} $<$<CONFIG:Debug>:${VIAMD_FLAGS_DEB}> $<$<CONFIG:Release>:${VIAMD_FLAGS_REL}>)

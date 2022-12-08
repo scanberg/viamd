@@ -178,7 +178,7 @@ static struct {
     } temporal;
 } gl;
 
-static constexpr str_t v_shader_src_fs_quad = MAKE_STR(
+static constexpr str_t v_shader_src_fs_quad = STR(
 R"(
 #version 150 core
 
@@ -196,7 +196,7 @@ void main() {
 }
 )");
 
-static constexpr str_t f_shader_src_linearize_depth = MAKE_STR(
+static constexpr str_t f_shader_src_linearize_depth = STR(
 R"(
 #ifndef PERSPECTIVE
 #define PERSPECTIVE 1
@@ -399,9 +399,9 @@ void initialize_rnd_tex(GLuint rnd_tex) {
 float compute_sharpness(float radius) { return 30.f / sqrtf(radius); }
 
 void initialize(int width, int height) {
-    gl.ssao.hbao.program_persp = setup_program_from_file(MAKE_STR("ssao persp"), MAKE_STR(VIAMD_SHADER_DIR "/ssao/ssao.frag"), MAKE_STR("#define AO_PERSPECTIVE 1"));
-    gl.ssao.hbao.program_ortho = setup_program_from_file(MAKE_STR("ssao ortho"), MAKE_STR(VIAMD_SHADER_DIR "/ssao/ssao.frag"), MAKE_STR("#define AO_PERSPECTIVE 0"));
-    gl.ssao.blur.program       = setup_program_from_file(MAKE_STR("ssao blur"),  MAKE_STR(VIAMD_SHADER_DIR "/ssao/blur.frag"));
+    gl.ssao.hbao.program_persp = setup_program_from_file(STR("ssao persp"), STR(VIAMD_SHADER_DIR "/ssao/ssao.frag"), STR("#define AO_PERSPECTIVE 1"));
+    gl.ssao.hbao.program_ortho = setup_program_from_file(STR("ssao ortho"), STR(VIAMD_SHADER_DIR "/ssao/ssao.frag"), STR("#define AO_PERSPECTIVE 0"));
+    gl.ssao.blur.program       = setup_program_from_file(STR("ssao blur"),  STR(VIAMD_SHADER_DIR "/ssao/blur.frag"));
     
     if (!gl.ssao.hbao.fbo) glGenFramebuffers(1, &gl.ssao.hbao.fbo);
     if (!gl.ssao.blur.fbo) glGenFramebuffers(1, &gl.ssao.blur.fbo);
@@ -474,7 +474,7 @@ static struct {
 } highlight;
 
 void initialize() {
-    highlight.program = setup_program_from_file(MAKE_STR("highlight"), MAKE_STR(VIAMD_SHADER_DIR "/highlight.frag"));
+    highlight.program = setup_program_from_file(STR("highlight"), STR(VIAMD_SHADER_DIR "/highlight.frag"));
     if (!highlight.selection_texture) glGenTextures(1, &highlight.selection_texture);
     highlight.uniform_loc.texture_atom_idx = glGetUniformLocation(highlight.program, "u_texture_atom_idx");
     highlight.uniform_loc.buffer_selection = glGetUniformLocation(highlight.program, "u_buffer_selection");
@@ -499,7 +499,7 @@ static struct {
 } gl;
 
 void initialize() {
-    gl.program = setup_program_from_file(MAKE_STR("scale hsv"), MAKE_STR(VIAMD_SHADER_DIR "/scale_hsv.frag"));
+    gl.program = setup_program_from_file(STR("scale hsv"), STR(VIAMD_SHADER_DIR "/scale_hsv.frag"));
     gl.uniform_loc.texture_color = glGetUniformLocation(gl.program, "u_texture_atom_color");
     gl.uniform_loc.hsv_scale = glGetUniformLocation(gl.program, "u_hsv_scale");
 }
@@ -523,7 +523,7 @@ static struct {
 } deferred;
 
 void initialize() {
-    deferred.program = setup_program_from_file(MAKE_STR("deferred shading"), MAKE_STR(VIAMD_SHADER_DIR "/deferred_shading.frag"));
+    deferred.program = setup_program_from_file(STR("deferred shading"), STR(VIAMD_SHADER_DIR "/deferred_shading.frag"));
     deferred.uniform_loc.texture_depth = glGetUniformLocation(deferred.program, "u_texture_depth");
     deferred.uniform_loc.texture_color = glGetUniformLocation(deferred.program, "u_texture_color");
     deferred.uniform_loc.texture_normal = glGetUniformLocation(deferred.program, "u_texture_normal");
@@ -583,34 +583,34 @@ static struct {
 void initialize() {
     {
         // PASSTHROUGH
-        passthrough.program = setup_program_from_file(MAKE_STR("Passthrough"), MAKE_STR(VIAMD_SHADER_DIR "/tonemap/passthrough.frag"));
+        passthrough.program = setup_program_from_file(STR("Passthrough"), STR(VIAMD_SHADER_DIR "/tonemap/passthrough.frag"));
         passthrough.uniform_loc.texture = glGetUniformLocation(passthrough.program, "u_texture");
     }
     {
         // EXPOSURE GAMMA
-        exposure_gamma.program = setup_program_from_file(MAKE_STR("Exposure Gamma"), MAKE_STR(VIAMD_SHADER_DIR "/tonemap/exposure_gamma.frag"));
+        exposure_gamma.program = setup_program_from_file(STR("Exposure Gamma"), STR(VIAMD_SHADER_DIR "/tonemap/exposure_gamma.frag"));
         exposure_gamma.uniform_loc.texture = glGetUniformLocation(exposure_gamma.program, "u_texture");
         exposure_gamma.uniform_loc.exposure = glGetUniformLocation(exposure_gamma.program, "u_exposure");
         exposure_gamma.uniform_loc.gamma = glGetUniformLocation(exposure_gamma.program, "u_gamma");
     }
     {
         // UNCHARTED
-        filmic.program = setup_program_from_file(MAKE_STR("Filmic"), MAKE_STR(VIAMD_SHADER_DIR "/tonemap/uncharted.frag"));
+        filmic.program = setup_program_from_file(STR("Filmic"), STR(VIAMD_SHADER_DIR "/tonemap/uncharted.frag"));
         filmic.uniform_loc.texture = glGetUniformLocation(filmic.program, "u_texture");
         filmic.uniform_loc.exposure = glGetUniformLocation(filmic.program, "u_exposure");
         filmic.uniform_loc.gamma = glGetUniformLocation(filmic.program, "u_gamma");
     }
     {
         // ACES
-        aces.program = setup_program_from_file(MAKE_STR("ACES"), MAKE_STR(VIAMD_SHADER_DIR "/tonemap/aces.frag"));
+        aces.program = setup_program_from_file(STR("ACES"), STR(VIAMD_SHADER_DIR "/tonemap/aces.frag"));
         aces.uniform_loc.texture = glGetUniformLocation(filmic.program, "u_texture");
         aces.uniform_loc.exposure = glGetUniformLocation(filmic.program, "u_exposure");
         aces.uniform_loc.gamma = glGetUniformLocation(filmic.program, "u_gamma");
     }
     {
         // Fast Reversible (For AA) (Credits to Brian Karis: http://graphicrants.blogspot.com/2013/12/tone-mapping.html)
-        fast_reversible.program_forward = setup_program_from_file(MAKE_STR("Fast Reversible"), MAKE_STR(VIAMD_SHADER_DIR "/tonemap/fast_reversible.frag"), MAKE_STR("#define USE_INVERSE 0"));
-        fast_reversible.program_inverse = setup_program_from_file(MAKE_STR("Fast Reversible"), MAKE_STR(VIAMD_SHADER_DIR "/tonemap/fast_reversible.frag"), MAKE_STR("#define USE_INVERSE 1"));
+        fast_reversible.program_forward = setup_program_from_file(STR("Fast Reversible"), STR(VIAMD_SHADER_DIR "/tonemap/fast_reversible.frag"), STR("#define USE_INVERSE 0"));
+        fast_reversible.program_inverse = setup_program_from_file(STR("Fast Reversible"), STR(VIAMD_SHADER_DIR "/tonemap/fast_reversible.frag"), STR("#define USE_INVERSE 1"));
         fast_reversible.uniform_loc.texture = glGetUniformLocation(fast_reversible.program_forward, "u_texture");
     }
 }
@@ -629,7 +629,7 @@ void shutdown() {
 namespace dof {
 void initialize(int32_t width, int32_t height) {
     {
-        gl.bokeh_dof.half_res.program = setup_program_from_file(MAKE_STR("DOF prepass"), MAKE_STR(VIAMD_SHADER_DIR "/dof/dof_half_res_prepass.frag"));
+        gl.bokeh_dof.half_res.program = setup_program_from_file(STR("DOF prepass"), STR(VIAMD_SHADER_DIR "/dof/dof_half_res_prepass.frag"));
         if (gl.bokeh_dof.half_res.program) {
             gl.bokeh_dof.half_res.uniform_loc.tex_depth = glGetUniformLocation(gl.bokeh_dof.half_res.program, "u_tex_depth");
             gl.bokeh_dof.half_res.uniform_loc.tex_color = glGetUniformLocation(gl.bokeh_dof.half_res.program, "u_tex_color");
@@ -662,7 +662,7 @@ void initialize(int32_t width, int32_t height) {
 
     // DOF
     {
-        gl.bokeh_dof.program = setup_program_from_file(MAKE_STR("Bokeh DOF"), MAKE_STR(VIAMD_SHADER_DIR "/dof/dof.frag"));
+        gl.bokeh_dof.program = setup_program_from_file(STR("Bokeh DOF"), STR(VIAMD_SHADER_DIR "/dof/dof.frag"));
         if (gl.bokeh_dof.program) {
             gl.bokeh_dof.uniform_loc.tex_color = glGetUniformLocation(gl.bokeh_dof.program, "u_half_res");
             gl.bokeh_dof.uniform_loc.tex_color = glGetUniformLocation(gl.bokeh_dof.program, "u_tex_color");
@@ -684,7 +684,7 @@ static GLuint program_col = 0;
 static GLint uniform_loc_texture = -1;
 static GLint uniform_loc_color = -1;
 
-constexpr str_t f_shader_src_tex = MAKE_STR(R"(
+constexpr str_t f_shader_src_tex = STR(R"(
 #version 150 core
 
 uniform sampler2D u_texture;
@@ -696,7 +696,7 @@ void main() {
 }
 )");
 
-constexpr str_t f_shader_src_col = MAKE_STR(R"(
+constexpr str_t f_shader_src_col = STR(R"(
 #version 150 core
 
 uniform vec4 u_color;
@@ -708,10 +708,10 @@ void main() {
 )");
 
 void initialize() {
-    program_tex = setup_program_from_source(MAKE_STR("blit texture"), f_shader_src_tex);
+    program_tex = setup_program_from_source(STR("blit texture"), f_shader_src_tex);
     uniform_loc_texture = glGetUniformLocation(program_tex, "u_texture");
 
-    program_col = setup_program_from_source(MAKE_STR("blit color"), f_shader_src_col);
+    program_col = setup_program_from_source(STR("blit color"), f_shader_src_col);
     uniform_loc_color = glGetUniformLocation(program_col, "u_color");
 }
 
@@ -727,7 +727,7 @@ static GLuint program_box = 0;
 static GLint uniform_loc_texture = -1;
 static GLint uniform_loc_inv_res_dir = -1;
 
-constexpr str_t f_shader_src_gaussian = MAKE_STR(R"(
+constexpr str_t f_shader_src_gaussian = STR(R"(
 #version 150 core
 
 #define KERNEL_RADIUS 5
@@ -767,7 +767,7 @@ void main() {
 }
 )");
 
-constexpr str_t f_shader_src_box = MAKE_STR(R"(
+constexpr str_t f_shader_src_box = STR(R"(
 #version 150 core
 
 uniform sampler2D u_texture;
@@ -790,11 +790,11 @@ void main() {
 )");
 
 void initialize() {
-    program_gaussian = setup_program_from_source(MAKE_STR("gaussian blur"), f_shader_src_gaussian);
+    program_gaussian = setup_program_from_source(STR("gaussian blur"), f_shader_src_gaussian);
     uniform_loc_texture = glGetUniformLocation(program_gaussian, "u_texture");
     uniform_loc_inv_res_dir = glGetUniformLocation(program_gaussian, "u_inv_res_dir");
 
-    program_box = setup_program_from_source(MAKE_STR("box blur"), f_shader_src_box);
+    program_box = setup_program_from_source(STR("box blur"), f_shader_src_box);
 }
 
 void shutdown() {
@@ -833,7 +833,7 @@ struct {
 
 void initialize(int32_t width, int32_t height) {
     {
-        blit_velocity.program = setup_program_from_file(MAKE_STR("screen-space velocity"), MAKE_STR(VIAMD_SHADER_DIR "/velocity/blit_velocity.frag"));
+        blit_velocity.program = setup_program_from_file(STR("screen-space velocity"), STR(VIAMD_SHADER_DIR "/velocity/blit_velocity.frag"));
 		blit_velocity.uniform_loc.tex_depth = glGetUniformLocation(blit_velocity.program, "u_tex_depth");
         blit_velocity.uniform_loc.curr_clip_to_prev_clip_mat = glGetUniformLocation(blit_velocity.program, "u_curr_clip_to_prev_clip_mat");
         blit_velocity.uniform_loc.jitter_uv = glGetUniformLocation(blit_velocity.program, "u_jitter_uv");
@@ -842,15 +842,15 @@ void initialize(int32_t width, int32_t height) {
     {
 #define STRINGIFY(x) #x
 #define TOSTRING(x) STRINGIFY(x)
-        str_t defines = MAKE_STR("#define TILE_SIZE " TOSTRING(VEL_TILE_SIZE));
-        blit_tilemax.program = setup_program_from_file(MAKE_STR("tilemax"), MAKE_STR(VIAMD_SHADER_DIR "/velocity/blit_tilemax.frag"), defines);
+        str_t defines = STR("#define TILE_SIZE " TOSTRING(VEL_TILE_SIZE));
+        blit_tilemax.program = setup_program_from_file(STR("tilemax"), STR(VIAMD_SHADER_DIR "/velocity/blit_tilemax.frag"), defines);
         blit_tilemax.uniform_loc.tex_vel = glGetUniformLocation(blit_tilemax.program, "u_tex_vel");
         blit_tilemax.uniform_loc.tex_vel_texel_size = glGetUniformLocation(blit_tilemax.program, "u_tex_vel_texel_size");
 #undef STRINGIFY
 #undef TOSTRING
     }
     {
-        blit_neighbormax.program = setup_program_from_file(MAKE_STR("neighbormax"), MAKE_STR(VIAMD_SHADER_DIR "/velocity/blit_neighbormax.frag"));
+        blit_neighbormax.program = setup_program_from_file(STR("neighbormax"), STR(VIAMD_SHADER_DIR "/velocity/blit_neighbormax.frag"));
         blit_neighbormax.uniform_loc.tex_vel = glGetUniformLocation(blit_neighbormax.program, "u_tex_vel");
         blit_neighbormax.uniform_loc.tex_vel_texel_size = glGetUniformLocation(blit_neighbormax.program, "u_tex_vel_texel_size");
     }
@@ -906,8 +906,8 @@ void shutdown() {
 namespace temporal {
 void initialize() {
     {
-        gl.temporal.with_motion_blur.program = setup_program_from_file(MAKE_STR("temporal aa + motion-blur"), MAKE_STR(VIAMD_SHADER_DIR "/temporal.frag"));
-        gl.temporal.no_motion_blur.program   = setup_program_from_file(MAKE_STR("temporal aa"), MAKE_STR(VIAMD_SHADER_DIR "/temporal.frag"), MAKE_STR("#define USE_MOTION_BLUR 0\n"));
+        gl.temporal.with_motion_blur.program = setup_program_from_file(STR("temporal aa + motion-blur"), STR(VIAMD_SHADER_DIR "/temporal.frag"));
+        gl.temporal.no_motion_blur.program   = setup_program_from_file(STR("temporal aa"), STR(VIAMD_SHADER_DIR "/temporal.frag"), STR("#define USE_MOTION_BLUR 0\n"));
 
         gl.temporal.with_motion_blur.uniform_loc.tex_linear_depth = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_tex_linear_depth");
         gl.temporal.with_motion_blur.uniform_loc.tex_main = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_tex_main");
@@ -940,7 +940,7 @@ void shutdown() {}
 namespace sharpen {
 static GLuint program = 0;
 void initialize() {
-    constexpr str_t f_shader_src_sharpen = MAKE_STR(
+    constexpr str_t f_shader_src_sharpen = STR(
  R"(#version 150 core
 
     uniform sampler2D u_tex;
@@ -956,7 +956,7 @@ void initialize() {
         const float weight[2] = float[2](1.2, -0.05);
         out_frag = vec4(vec3(weight[0] * cc + weight[1] * (cl + ct + cr + cb)), 1.0);
     })");
-    program = setup_program_from_source(MAKE_STR("sharpen"), f_shader_src_sharpen);
+    program = setup_program_from_source(STR("sharpen"), f_shader_src_sharpen);
 }
 
 void sharpen(GLuint in_texture) {
@@ -985,8 +985,8 @@ void initialize(int width, int height) {
 
     // LINEARIZE DEPTH
 
-    gl.linear_depth.program_persp = setup_program_from_source(MAKE_STR("linearize depth persp"), f_shader_src_linearize_depth, MAKE_STR("#version 150 core\n#define PERSPECTIVE 1"));
-    gl.linear_depth.program_ortho = setup_program_from_source(MAKE_STR("linearize depth ortho"), f_shader_src_linearize_depth, MAKE_STR("#version 150 core\n#define PERSPECTIVE 0"));
+    gl.linear_depth.program_persp = setup_program_from_source(STR("linearize depth persp"), f_shader_src_linearize_depth, STR("#version 150 core\n#define PERSPECTIVE 1"));
+    gl.linear_depth.program_ortho = setup_program_from_source(STR("linearize depth ortho"), f_shader_src_linearize_depth, STR("#version 150 core\n#define PERSPECTIVE 0"));
 
     if (!gl.linear_depth.texture) glGenTextures(1, &gl.linear_depth.texture);
     glBindTexture(GL_TEXTURE_2D, gl.linear_depth.texture);

@@ -76,11 +76,11 @@ GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str
             }
             md_str_builder_append_str(&builder, version_str);
             md_str_builder_append_str(&builder, defines);
-            md_str_builder_append_str(&builder, MAKE_STR("\n"));
+            md_str_builder_append_str(&builder, STR("\n"));
         }
         else {
             md_str_builder_append_str(&builder, defines);
-            md_str_builder_append_str(&builder, MAKE_STR("\n"));
+            md_str_builder_append_str(&builder, STR("\n"));
         }
     }
 
@@ -124,11 +124,11 @@ GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) 
             }
             md_str_builder_append_str(&builder, version_str);
             md_str_builder_append_str(&builder, defines);
-            md_str_builder_append_str(&builder, MAKE_STR("\n"));
+            md_str_builder_append_str(&builder, STR("\n"));
         }
         else {
             md_str_builder_append_str(&builder, defines);
-            md_str_builder_append_str(&builder, MAKE_STR("\n"));
+            md_str_builder_append_str(&builder, STR("\n"));
         }
     }
 

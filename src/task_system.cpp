@@ -136,13 +136,10 @@ static inline enki::ICompletable* get_task(ID id) {
 
 static enki::TaskScheduler ts{};
 
-void initialize() {
-    ts.Initialize();
+void initialize(uint32_t num_threads = 0) {
+    ts.Initialize(num_threads);
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
         pool::free_slots.push(i);
-    }
-
-    for (uint32_t i = 0; i < MAX_TASKS; i++) {
         main::free_slots.push(i);
     }
 }

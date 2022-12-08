@@ -13,7 +13,7 @@ constexpr ID INVALID_ID = 0;
 using execute_fn = std::function<void()>;
 using execute_range_fn = std::function<void(uint32_t range_beg, uint32_t range_end)>;
 
-void initialize();
+void initialize(uint32_t num_threads);
 void shutdown();
 
 // Call once per frame at some approriate time, if there are items in the main queue, the main thread will be stalled.

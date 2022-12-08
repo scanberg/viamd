@@ -69,7 +69,7 @@ namespace blur {
     static GLint uniform_loc_step = -1;
 }
 
-constexpr str_t v_fs_quad_src = MAKE_STR(R"(
+constexpr str_t v_fs_quad_src = STR(R"(
 #version 150 core
 
 void main() {
@@ -81,7 +81,7 @@ void main() {
 }
 )");
 
-constexpr str_t f_shader_box_blur_src = MAKE_STR(R"(
+constexpr str_t f_shader_box_blur_src = STR(R"(
 #version 330 core
 
 layout(location = 0) out vec4 out_frag;
@@ -105,7 +105,7 @@ void main() {
 }
 )");
 
-constexpr str_t f_shader_map_src = MAKE_STR(R"(
+constexpr str_t f_shader_map_src = STR(R"(
 #version 330 core
 
 layout(location = 0) out vec4 out_frag0;
@@ -147,7 +147,7 @@ void main() {
 }
 )");
 
-constexpr str_t f_shader_iso_src = MAKE_STR(R"(
+constexpr str_t f_shader_iso_src = STR(R"(
 #version 330 core
 
 layout(location = 0) out vec4 out_frag0;

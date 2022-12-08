@@ -97,13 +97,13 @@ static inline void remove_loaded_trajectory(uint64_t key) {
 namespace load {
 
 static const str_t extensions[] = {
-    MAKE_STR("pdb"),
-    MAKE_STR("gro"),
-    MAKE_STR("xtc"),
-    MAKE_STR("trr"),
-    MAKE_STR("xyz"),
-    MAKE_STR("xmol"),
-    MAKE_STR("arc"),
+    STR("pdb"),
+    STR("gro"),
+    STR("xtc"),
+    STR("trr"),
+    STR("xyz"),
+    STR("xmol"),
+    STR("arc"),
 };
 
 uint32_t get_supported_extension_count() {
@@ -301,14 +301,14 @@ md_trajectory_i* open_file(str_t filename, const md_molecule_t* mol, md_allocato
     // @TODO: Make this a user defined variable
 
     const uint64_t num_traj_frames      = md_trajectory_num_frames(internal_traj);
-    const uint64_t frame_cache_size     = MIN(md_physical_ram() / 2, GIGABYTES(1));
+    const uint64_t frame_cache_size     = CLAMP(MEGABYTES(VIAMD_FRAME_CACHE_SIZE), MEGABYTES(4), md_physical_ram() / 4);
     const uint64_t approx_frame_size    = (uint64_t)mol->atom.count * 3 * sizeof(float);
     const uint64_t max_num_cache_frames = frame_cache_size / approx_frame_size;
 
-    const int64_t num_frames_in_cache   = MIN(num_traj_frames, max_num_cache_frames);
+    const int64_t num_cache_frames   = MIN(num_traj_frames, max_num_cache_frames);
 
-    md_printf(MD_LOG_TYPE_DEBUG, "Initializing frame cache with %i frames.", (int)num_frames_in_cache);
-    md_frame_cache_init(&inst->cache, inst->traj, alloc, num_frames_in_cache);
+    md_printf(MD_LOG_TYPE_DEBUG, "Initializing frame cache with %i frames.", (int)num_cache_frames);
+    md_frame_cache_init(&inst->cache, inst->traj, alloc, num_cache_frames);
     md_bitfield_init(&inst->recenter_target, alloc);
 
     // We only overload load frame and decode frame data to apply PBC upon loading data
