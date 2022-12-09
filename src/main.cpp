@@ -5792,6 +5792,11 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
     // @NOTE: First we need to extract some meta data for the cube format, we need the atom indices/bits for any SDF
     // And the origin + extent of the volume in spatial coordinates (Ångström)
 
+    if (!prop) {
+        LERROR("Export Cube: The property to be exported did not exist");
+        return false;
+    }
+
     // Copy mol and replace with initial coords
     md_molecule_t mol = data.mold.mol;
 
@@ -6024,7 +6029,7 @@ static void draw_property_export_window(ApplicationData* data) {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialog_Save, table_formats[format].extension)) {
                     int path_len = (int)strnlen(path_buf, sizeof(path_buf));
                     if (str_empty(extract_ext({path_buf, path_len}))) {
-                        path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, "%s", table_formats[format].extension);
+                        path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".%s", table_formats[format].extension);
                     }
 
                     const float** column_data = 0;
@@ -6111,11 +6116,11 @@ static void draw_property_export_window(ApplicationData* data) {
                     if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialog_Save, volume_formats[format].extension)) {
                         int path_len = (int)strnlen(path_buf, sizeof(path_buf));
                         if (str_empty(extract_ext({path_buf, path_len}))) {
-                            path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, "%s", volume_formats[format].extension);
+                            path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".%s", volume_formats[format].extension);
                         }
                         switch (format) {
                         case 0:
-                            export_cube(*data, temporal_filter ? props[prop_idx]->filt_prop : props[prop_idx]->filt_prop, {path_buf, path_len});
+                            export_cube(*data, temporal_filter ? props[prop_idx]->filt_prop : props[prop_idx]->full_prop, {path_buf, path_len});
                             break;
                         case 1:
                             // @TODO: Export dat + raw
@@ -6491,7 +6496,7 @@ static void init_molecule_data(ApplicationData* data) {
 }
 
 static void launch_prefetch_job(ApplicationData* data) {
-    uint32_t num_frames = (uint32_t)md_trajectory_num_frames(data->mold.traj);
+    uint32_t num_frames = (uint32_t)load::traj::num_cache_frames(data->mold.traj);
     if (!num_frames) return;
 
     task_system::task_interrupt_and_wait_for(data->tasks.prefetch_frames);

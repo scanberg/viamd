@@ -25,6 +25,7 @@ namespace traj {
 
     bool set_recenter_target(md_trajectory_i* traj, const md_bitfield_t* atom_mask);
     bool clear_cache(md_trajectory_i* traj);
+    int64_t num_cache_frames(md_trajectory_i* traj);
 }
 
 }  // namespace load

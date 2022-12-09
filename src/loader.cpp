@@ -297,9 +297,6 @@ md_trajectory_i* open_file(str_t filename, const md_molecule_t* mol, md_allocato
     inst->alloc = alloc;
     inst->deperiodize = deperiodize_on_load;
     
-    // For now we use a fixed target of 4GB and see how many frames we can fit into that
-    // @TODO: Make this a user defined variable
-
     const uint64_t num_traj_frames      = md_trajectory_num_frames(internal_traj);
     const uint64_t frame_cache_size     = CLAMP(MEGABYTES(VIAMD_FRAME_CACHE_SIZE), MEGABYTES(4), md_physical_ram() / 4);
     const uint64_t approx_frame_size    = (uint64_t)mol->atom.count * 3 * sizeof(float);
@@ -362,6 +359,17 @@ bool clear_cache(md_trajectory_i* traj) {
     }
     md_print(MD_LOG_TYPE_ERROR, "Supplied trajectory was not loaded with loader");
     return false;
+}
+
+int64_t num_cache_frames(md_trajectory_i* traj) {
+    ASSERT(traj);
+
+    LoadedTrajectory* loaded_traj = find_loaded_trajectory((uint64_t)traj);
+    if (loaded_traj) {
+        return md_frame_cache_num_frames(&loaded_traj->cache);
+    }
+    md_print(MD_LOG_TYPE_ERROR, "Supplied trajectory was not loaded with loader");
+    return 0;
 }
 
 }  // namespace traj
