@@ -303,18 +303,18 @@ struct HBAOData {
     float radius_to_screen;
     float neg_inv_r2;
     float n_dot_v_bias;
-    float time;
+    unsigned frame;
 
+    vec2_t inv_full_res;
     float ao_multiplier;
     float pow_exponent;
-    vec2_t inv_full_res;
 
     vec4_t proj_info;
 
     vec4_t sample_pattern[32];
 };
 
-void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4_t& proj_mat, float intensity, float radius, float bias, float time) {
+void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4_t& proj_mat, float intensity, float radius, float bias, unsigned frame) {
     ASSERT(ubo);
 
     // From intel ASSAO
@@ -360,10 +360,10 @@ void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4_t& proj_m
     data.radius_to_screen = r * 0.5f * proj_scl;
     data.neg_inv_r2 = -1.f / (r * r);
     data.n_dot_v_bias = CLAMP(bias, 0.f, 1.f - FLT_EPSILON);
-    data.time = time;
+    data.frame = frame;
+    data.inv_full_res = {1.f / float(width), 1.f / float(height)};
     data.ao_multiplier = 1.f / (1.f - data.n_dot_v_bias);
     data.pow_exponent = MAX(intensity, 0.f);
-    data.inv_full_res = {1.f / float(width), 1.f / float(height)};
     data.proj_info = proj_info;
     memcpy(&data.sample_pattern, SAMPLE_PATTERN, sizeof(SAMPLE_PATTERN));
 
@@ -396,7 +396,7 @@ void initialize_rnd_tex(GLuint rnd_tex) {
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-float compute_sharpness(float radius) { return 30.f / sqrtf(radius); }
+float compute_sharpness(float radius) { return 20.f / sqrtf(radius); }
 
 void initialize(int width, int height) {
     gl.ssao.hbao.program_persp = setup_program_from_file(STR("ssao persp"), STR(VIAMD_SHADER_DIR "/ssao/ssao.frag"), STR("#define AO_PERSPECTIVE 1"));
@@ -1131,7 +1131,7 @@ void compute_linear_depth(GLuint depth_tex, float near_plane, float far_plane, b
     glBindVertexArray(0);
 }
 
-void apply_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj_matrix, float intensity, float radius, float bias, float time) {
+void apply_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj_matrix, float intensity, float radius, float bias, unsigned int frame) {
     ASSERT(glIsTexture(linear_depth_tex));
     ASSERT(glIsTexture(normal_tex));
 
@@ -1150,7 +1150,7 @@ void apply_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj_m
 
     glBindVertexArray(gl.vao);
 
-    ssao::setup_ubo_hbao_data(gl.ssao.ubo_hbao_data, w, h, proj_matrix, intensity, radius, bias, time);
+    ssao::setup_ubo_hbao_data(gl.ssao.ubo_hbao_data, w, h, proj_matrix, intensity, radius, bias, frame);
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.ssao.hbao.fbo);
     glViewport(0, 0, w, h);
@@ -1701,6 +1701,8 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     static float time = 0.f;
     time = time + 0.016f;
     if (time > 100.f) time -= 100.f;
+    static unsigned int frame = 0;
+    frame = frame + 1;
 
     const auto near_dist = view_param.clip_planes.near;
     const auto far_dist = view_param.clip_planes.far;
@@ -1781,7 +1783,7 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
 
     if (desc.ambient_occlusion.enabled) {
         PUSH_GPU_SECTION("SSAO")
-            apply_ssao(gl.linear_depth.texture, desc.input_textures.normal, view_param.matrix.current.proj_jittered, desc.ambient_occlusion.intensity, desc.ambient_occlusion.radius, desc.ambient_occlusion.bias, time);
+            apply_ssao(gl.linear_depth.texture, desc.input_textures.normal, view_param.matrix.current.proj_jittered, desc.ambient_occlusion.intensity, desc.ambient_occlusion.radius, desc.ambient_occlusion.bias, frame);
         POP_GPU_SECTION()
     }
 

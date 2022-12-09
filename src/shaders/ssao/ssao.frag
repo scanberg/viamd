@@ -1,4 +1,4 @@
-#version 150 core
+#version 330 core
 
 #pragma optionNV(unroll all)
 
@@ -11,18 +11,18 @@
 #endif
 
 #ifndef AO_NUM_SAMPLES
-#define AO_NUM_SAMPLES 32
+#define AO_NUM_SAMPLES 16
 #endif
 
 struct HBAOData {
     float   radius_to_screen;
     float   neg_inv_r2;
     float   n_dot_v_bias;
-    float   time;
+    uint    frame;
 
+    vec2    inv_full_res;
     float   ao_multiplier;
     float   pow_exponent;
-    vec2    inv_full_res;
 
     vec4    proj_info;
 
@@ -142,17 +142,25 @@ float compute_ao(vec2 full_res_uv, float radius_pixels, vec4 jitter, vec3 view_p
 
     //vec2 noise = srand2(full_res_uv + vec2(control.time) + 0.2765672);
     //vec2 cos_sin = vec2(cos(noise.x * 3.1415926535), sin(noise.x * 3.1415026535));
+    //jitter.xy = cos_sin;
+    int offset = int(control.frame & 4U) * 8;
 
     for (int i = 0; i < AO_NUM_SAMPLES; i++) {
-        vec4 sample = control.sample_pattern[i];
+        vec4 sample = control.sample_pattern[(offset + i) & 31];
         vec2 uv = rotate_sample(sample.xy, jitter.xy) * jitter.z;
         float weight_scale = sample.z;
         float mip_level = mip_offset + sample.w;
+        // Experimental term to mix the correct view_normal with a flat one directly facing the viewer
+        // It is blended with respect to distance from the sample center
+        // This is to reduce the emphasis of the sample normal when sampling further away, 
+        // which yields more plausible ambient occlusion to 'larger' cavities.
+
+        //vec3 normal = mix(view_normal, vec3(0,0,-1), dot(sample.xy, sample.xy));
         
         vec2 snapped_uv = round(radius_pixels * uv) * control.inv_full_res + full_res_uv;
         vec3 view_sample = fetch_view_pos(snapped_uv, mip_level);
         ao += compute_pixel_obscurance(view_position, view_normal, view_sample) * weight_scale;
-        weight_sum += 1.0;
+        weight_sum += weight_scale;
     }
     ao *= control.ao_multiplier / weight_sum;
 
