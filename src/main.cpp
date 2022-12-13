@@ -24,6 +24,7 @@
 #include <core/md_spatial_hash.h>
 #include <core/md_base64.h>
 #include <core/md_unit.h>
+#include <core/md_str_builder.h>
 
 #include "gfx/gl.h"
 #include "gfx/gl_utils.h"
@@ -1446,7 +1447,7 @@ int main(int, char**) {
                     defer { md_script_ir_free(selection_ir); };
                     md_script_ir_add_bitfield_identifiers(selection_ir, idents, md_array_size(idents));
 
-                    md_script_ir_compile_source(data.mold.script.ir, src_str, &data.mold.mol, selection_ir);
+                    md_script_ir_compile_from_source(data.mold.script.ir, src_str, &data.mold.mol, selection_ir);
 
                     if (md_script_ir_valid(data.mold.script.ir)) {
                         uint64_t ir_figerprint = md_script_ir_fingerprint(data.mold.script.ir);
@@ -2980,6 +2981,62 @@ void apply_atom_elem_mappings(ApplicationData* data) {
     update_all_representations(data);
 }
 
+// Create a textual script describing a selection from a bitfield with respect to some reference index
+static void create_script_ranges(md_str_builder_t* sb, const md_bitfield_t* bf, int ref_idx = 0) {
+    ASSERT(sb);
+    ASSERT(bf);
+
+    md_str_builder_printf(sb, "atom({");
+
+    int range_beg = -1;
+    int prev_idx  = -1;
+
+    uint64_t beg_idx = bf->beg_bit;
+    uint64_t end_idx = bf->end_bit;
+    while ((beg_idx = md_bitfield_scan(bf, beg_idx, end_idx)) != 0) {
+        int idx = (int)beg_idx - 1;
+        if (range_beg == -1) range_beg = idx;
+
+        if (idx - prev_idx > 1) {
+            if (prev_idx > range_beg) {
+                md_str_builder_printf(sb, "%i:%i,", range_beg - ref_idx + 1, prev_idx - ref_idx + 1);
+            } else if (prev_idx != -1) {
+                md_str_builder_printf(sb, "%i,", prev_idx - ref_idx + 1);
+            }
+            range_beg = idx;
+        }
+
+        prev_idx = idx;
+    }
+
+    md_str_builder_pop(sb, 1);
+    if (prev_idx - range_beg > 0) {
+        md_str_builder_printf(sb, "%i:%i})", range_beg - ref_idx + 1, prev_idx - ref_idx + 1);
+    } else {
+        md_str_builder_printf(sb, "})");
+    }
+}
+
+static int64_t find_identifier(const md_script_ir_t* ir, str_t ident) {
+    const int64_t num_ident = md_script_ir_num_identifiers(ir);
+    const str_t* idents = md_script_ir_identifiers(ir);
+    for (int64_t i = 0; i < num_ident; ++i) {
+        if (str_equal(ident, idents[i])) return i;
+    }
+    return -1;
+}
+
+static str_t create_unique_identifier(const md_script_ir_t* ir, str_t base, md_allocator_i* alloc) {
+    char buf[128];
+    for (int64_t i = 1; i < 10; ++i) {
+        str_t ident = {buf, snprintf(buf, sizeof(buf), "%.*s%i", (int)base.len, base.ptr, (int)i)};
+        if (find_identifier(ir, ident) == -1) {
+            return str_copy(ident, alloc);
+        }
+    }
+    return str_t();
+}
+
 // # context_menu
 void draw_context_popup(ApplicationData* data) {
     ASSERT(data);
@@ -3003,16 +3060,15 @@ void draw_context_popup(ApplicationData* data) {
 #endif
 
     if (ImGui::BeginPopup("AtomContextPopup")) {
-        if (sss_count > 1) {
-            if (ImGui::BeginMenu("Create Property")) {
-                char ident[32] = "prop";
+        if (ImGui::BeginMenu("Script")) {
+            if (num_atoms_selected <= 4 && sss_count > 1) {
                 char buf[256] = "";
-                ImGui::InputText("##identifier", ident, sizeof(ident));
 
                 if (sss_count == 2) {
                     int32_t idx[2] = {data->selection.single_selection_sequence.idx[0], data->selection.single_selection_sequence.idx[1]};
+                    str_t ident = create_unique_identifier(data->mold.script.ir, STR("dist"), frame_allocator);
 
-                    snprintf(buf, sizeof(buf), "%s = distance(%i, %i);", ident, idx[0]+1, idx[1]+1);
+                    snprintf(buf, sizeof(buf), "%.*s = distance(%i, %i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1);
                     if (ImGui::MenuItem(buf)) {
                         editor.AppendText("\n");
                         editor.AppendText(buf);
@@ -3024,7 +3080,7 @@ void draw_context_popup(ApplicationData* data) {
                         idx[0] -= data->mold.mol.residue.atom_range[res_idx].beg;
                         idx[1] -= data->mold.mol.residue.atom_range[res_idx].beg;
 
-                        snprintf(buf, sizeof(buf), "%s = distance(%i, %i) in residue(%i);", ident, idx[0]+1, idx[1]+1, res_idx+1);
+                        snprintf(buf, sizeof(buf), "%.*s = distance(%i, %i) in residue(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, res_idx+1);
                         if (ImGui::MenuItem(buf)) {
                             editor.AppendText("\n");
                             editor.AppendText(buf);
@@ -3032,7 +3088,7 @@ void draw_context_popup(ApplicationData* data) {
                         }
 
                         int32_t resid = data->mold.mol.residue.id[idx[0]];
-                        snprintf(buf, sizeof(buf), "%s = distance(%i, %i) in resid(%i);", ident, idx[0]+1, idx[1]+1, resid);
+                        snprintf(buf, sizeof(buf), "%.*s = distance(%i, %i) in resid(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, resid);
                         if (ImGui::MenuItem(buf)) {
                             editor.AppendText("\n");
                             editor.AppendText(buf);
@@ -3041,7 +3097,7 @@ void draw_context_popup(ApplicationData* data) {
 
                         str_t resname = data->mold.mol.residue.name[res_idx];
                         if (resname) {
-                            snprintf(buf, sizeof(buf), "%s = distance(%i, %i) in resname(\"%s\");", ident, idx[0] + 1, idx[1] + 1, resname.ptr);
+                            snprintf(buf, sizeof(buf), "%.*s = distance(%i, %i) in resname(\"%s\");", (int)ident.len, ident.ptr, idx[0] + 1, idx[1] + 1, resname.ptr);
                             if (ImGui::MenuItem(buf)) {
                                 editor.AppendText("\n");
                                 editor.AppendText(buf);
@@ -3052,8 +3108,9 @@ void draw_context_popup(ApplicationData* data) {
                 }
                 else if(sss_count == 3) {
                     int32_t idx[3] = {data->selection.single_selection_sequence.idx[0], data->selection.single_selection_sequence.idx[1], data->selection.single_selection_sequence.idx[2]};
+                    str_t ident = create_unique_identifier(data->mold.script.ir, STR("ang"), frame_allocator);
 
-                    snprintf(buf, sizeof(buf), "%s = angle(%i, %i, %i);", ident, idx[0]+1, idx[1]+1, idx[2]+1);
+                    snprintf(buf, sizeof(buf), "%.*s = angle(%i, %i, %i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1);
                     if (ImGui::MenuItem(buf)) {
                         editor.AppendText("\n");
                         editor.AppendText(buf);
@@ -3068,7 +3125,7 @@ void draw_context_popup(ApplicationData* data) {
                         idx[1] -= data->mold.mol.residue.atom_range[res_idx].beg;
                         idx[2] -= data->mold.mol.residue.atom_range[res_idx].beg;
 
-                        snprintf(buf, sizeof(buf), "%s = angle(%i, %i, %i) in residue(%i);", ident, idx[0]+1, idx[1]+1, idx[2]+1, res_idx+1);
+                        snprintf(buf, sizeof(buf), "%.*s = angle(%i, %i, %i) in residue(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, res_idx+1);
                         if (ImGui::MenuItem(buf)) {
                             editor.AppendText("\n");
                             editor.AppendText(buf);
@@ -3076,7 +3133,7 @@ void draw_context_popup(ApplicationData* data) {
                         }
 
                         int32_t resid = data->mold.mol.residue.id[idx[0]];
-                        snprintf(buf, sizeof(buf), "%s = angle(%i, %i, %i) in resid(%i);", ident, idx[0]+1, idx[1]+1, idx[2]+1, resid);
+                        snprintf(buf, sizeof(buf), "%.*s = angle(%i, %i, %i) in resid(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, resid);
                         if (ImGui::MenuItem(buf)) {
                             editor.AppendText("\n");
                             editor.AppendText(buf);
@@ -3085,7 +3142,7 @@ void draw_context_popup(ApplicationData* data) {
 
                         str_t resname = data->mold.mol.residue.name[res_idx];
                         if (resname) {
-                            snprintf(buf, sizeof(buf), "%s = angle(%i, %i, %i) in resname(\"%.*s\");", ident, idx[0]+1, idx[1]+1, idx[2]+1, (int)resname.len, resname.ptr);
+                            snprintf(buf, sizeof(buf), "%.*s = angle(%i, %i, %i) in resname(\"%.*s\");", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, (int)resname.len, resname.ptr);
                             if (ImGui::MenuItem(buf)) {
                                 editor.AppendText("\n");
                                 editor.AppendText(buf);
@@ -3096,8 +3153,9 @@ void draw_context_popup(ApplicationData* data) {
                 }
                 else if(sss_count == 4) {
                     int32_t idx[4] = {data->selection.single_selection_sequence.idx[0], data->selection.single_selection_sequence.idx[1], data->selection.single_selection_sequence.idx[2], data->selection.single_selection_sequence.idx[3]};
+                    str_t ident = create_unique_identifier(data->mold.script.ir, STR("dih"), frame_allocator);
 
-                    snprintf(buf, sizeof(buf), "%s = dihedral(%i, %i, %i, %i);", ident, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1);
+                    snprintf(buf, sizeof(buf), "%.*s = dihedral(%i, %i, %i, %i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1);
                     if (ImGui::MenuItem(buf)) {
                         editor.AppendText("\n");
                         editor.AppendText(buf);
@@ -3114,7 +3172,7 @@ void draw_context_popup(ApplicationData* data) {
                         idx[2] -= data->mold.mol.residue.atom_range[res_idx].beg;
                         idx[3] -= data->mold.mol.residue.atom_range[res_idx].beg;
 
-                        snprintf(buf, sizeof(buf), "%s = dihedral(%i, %i, %i, %i) in residue(%i);", ident, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, res_idx+1);
+                        snprintf(buf, sizeof(buf), "%.*s = dihedral(%i, %i, %i, %i) in residue(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, res_idx+1);
                         if (ImGui::MenuItem(buf)) {
                             editor.AppendText("\n");
                             editor.AppendText(buf);
@@ -3122,7 +3180,7 @@ void draw_context_popup(ApplicationData* data) {
                         }
 
                         int32_t resid = data->mold.mol.residue.id[idx[0]];
-                        snprintf(buf, sizeof(buf), "%s = dihedral(%i, %i, %i, %i) in resid(%i);", ident, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, resid);
+                        snprintf(buf, sizeof(buf), "%.*s = dihedral(%i, %i, %i, %i) in resid(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, resid);
                         if (ImGui::MenuItem(buf)) {
                             editor.AppendText("\n");
                             editor.AppendText(buf);
@@ -3131,7 +3189,7 @@ void draw_context_popup(ApplicationData* data) {
 
                         str_t resname = data->mold.mol.residue.name[res_idx];
                         if (resname) {
-                            snprintf(buf, sizeof(buf), "%s = dihedral(%i, %i, %i, %i) in resname(\"%.*s\");", ident, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, (int)resname.len, resname.ptr);
+                            snprintf(buf, sizeof(buf), "%.*s = dihedral(%i, %i, %i, %i) in resname(\"%.*s\");", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, (int)resname.len, resname.ptr);
                             if (ImGui::MenuItem(buf)) {
                                 editor.AppendText("\n");
                                 editor.AppendText(buf);
@@ -3140,9 +3198,94 @@ void draw_context_popup(ApplicationData* data) {
                         }
                     }
                 }
-                ImGui::EndMenu();
             }
+            if (num_atoms_selected >= 3) {
+                const md_bitfield_t* bf = &data->selection.current_selection_mask;
+                str_t ident = create_unique_identifier(data->mold.script.ir, STR("sel"), frame_allocator);
+                bool same_residue = true;
+                bool same_chain   = true;
+
+                md_chain_idx_t chain_idx = -1;
+                md_residue_idx_t res_idx = -1;
+
+                uint64_t beg_idx = md_bitfield_beg_bit(bf);
+                uint64_t end_idx = md_bitfield_end_bit(bf);
+
+                while ((beg_idx = md_bitfield_scan(bf, beg_idx, end_idx)) != 0) {
+                    uint64_t i = beg_idx - 1;
+                    if (data->mold.mol.atom.chain_idx) {
+                        if (chain_idx == -1) {
+                            chain_idx = data->mold.mol.atom.chain_idx[i];
+                        } else if (data->mold.mol.atom.chain_idx[i] != chain_idx) {
+                            same_chain = false;
+                        }
+                    }
+
+                    if (data->mold.mol.atom.residue_idx) {
+                        if (res_idx == -1) {
+                            res_idx = data->mold.mol.atom.residue_idx[i];
+                        } else if (data->mold.mol.atom.residue_idx[i] != res_idx) {
+                            same_residue = false;                            
+                        }
+                    } 
+
+                    if (!same_residue && !same_chain) {
+                        break;
+                    }
+                }
+                md_str_builder_t sb = {0};
+                md_str_builder_init(&sb, frame_allocator);
+                defer { md_str_builder_free(&sb); };
+
+                if (res_idx != -1 && same_residue) {
+                    md_str_builder_reset(&sb);
+                    md_str_builder_append_str(&sb, ident);
+                    md_str_builder_append_str(&sb, STR(" = "));
+                    create_script_ranges(&sb, bf, data->mold.mol.residue.atom_range[res_idx].beg);
+                    if (md_str_builder_len(&sb) < 512) {
+                        str_t resname = LBL_TO_STR(data->mold.mol.residue.name[res_idx]);
+                        md_str_builder_printf(&sb, " in resname(\"%.*s\");", (int)resname.len, resname.ptr);
+                        if (ImGui::MenuItem(sb.buf)) {
+                            editor.AppendText("\n");
+                            editor.AppendText(sb.buf);
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                }
+
+                if (chain_idx != -1 && same_chain) {
+                    md_str_builder_reset(&sb);
+                    md_str_builder_append_str(&sb, ident);
+                    md_str_builder_append_str(&sb, STR(" = "));
+                    create_script_ranges(&sb, bf, data->mold.mol.chain.atom_range[chain_idx].beg);
+                    if (md_str_builder_len(&sb) < 512) {
+                        str_t chain_id = LBL_TO_STR(data->mold.mol.chain.id[chain_idx]);
+                        md_str_builder_printf(&sb, " in chain(\"%.*s\");", (int)chain_id.len, chain_id.ptr);
+                        if (ImGui::MenuItem(sb.buf)) {
+                            editor.AppendText("\n");
+                            editor.AppendText(sb.buf);
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                }
+
+                md_str_builder_reset(&sb);
+                md_str_builder_append_str(&sb, ident);
+                md_str_builder_append_str(&sb, STR(" = "));
+                create_script_ranges(&sb, bf);
+                if (md_str_builder_len(&sb) < 512) {
+                    md_str_builder_append_char(&sb, ';');
+                    if (ImGui::MenuItem(sb.buf)) {
+                        editor.AppendText("\n");
+                        editor.AppendText(sb.buf);
+                        ImGui::CloseCurrentPopup();
+                    }
+                }
+                md_str_builder_free(&sb);
+            }
+            ImGui::EndMenu();
         }
+
         if (data->selection.right_clicked != -1 && num_atoms_selected == 0 && data->mold.mol.atom.element) {
             int idx = data->selection.right_clicked;
             if (0 <= idx && idx < data->mold.mol.atom.count) {
