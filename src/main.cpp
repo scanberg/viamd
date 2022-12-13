@@ -19,7 +19,6 @@
 #include <core/md_tracking_allocator.h>
 #include <core/md_log.h>
 #include <core/md_simd.h>
-#include <core/md_file.h>
 #include <core/md_array.h>
 #include <core/md_os.h>
 #include <core/md_spatial_hash.h>
@@ -33,7 +32,6 @@
 #include "gfx/immediate_draw_utils.h"
 #include "gfx/postprocessing_utils.h"
 #include "gfx/volumerender_utils.h"
-#include "gfx/conetracing_utils.h"
 
 #include "string_util.h"
 #include "random_util.h"
@@ -88,7 +86,7 @@
 #define LINFO(...) md_printf(MD_LOG_TYPE_INFO, __VA_ARGS__)
 #define LDEBUG(...) md_printf(MD_LOG_TYPE_DEBUG, __VA_ARGS__)
 #define LERROR(...) md_printf(MD_LOG_TYPE_ERROR, __VA_ARGS__)
-#define LSUCCESS(...) ImGui::InsertNotification(ImGuiToast(ImGuiToastType_Success, 6000, __VA_ARGS__)
+#define LSUCCESS(...) ImGui::InsertNotification(ImGuiToast(ImGuiToastType_Success, 6000, __VA_ARGS__))
 
 constexpr const char* shader_output_snippet = R"(
 layout(location = 0) out vec4 out_color;
@@ -783,7 +781,7 @@ struct ApplicationData {
 //static void postprocess_frame(md_frame_data_t* frame, void* user_data);
 
 static inline uint64_t generate_fingerprint() {
-    return (uint64_t)md_os_time_current();
+    return (uint64_t)md_time_current();
 }
 
 static void compute_histogram(float* bins, int num_bins, float min_bin_val, float max_bin_val, const float* values, int num_values) {
@@ -2870,7 +2868,7 @@ void draw_load_dataset_window(ApplicationData* data) {
 
         str_t path = str_from_cstr(state.path_buf);
         if (path_changed) {
-            state.path_is_valid = md_os_path_is_valid(path) && !md_os_path_is_directory(path);
+            state.path_is_valid = md_path_is_valid(path) && !md_path_is_directory(path);
             str_t ext = extract_ext(path);
 
             // Try to assign loader_idx from extension
@@ -5874,6 +5872,7 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
                 md_file_printf(file, "%5i %12.6f %12.6f %12.6f %12.6f\n", elem, (float)elem, coord.x, coord.y, coord.z);
             }
 
+            // This entry somehow relates to the number of densities
             md_file_printf(file, "%5i %5i\n", 1, 1);
 
             // Write density data
@@ -6496,7 +6495,7 @@ static void init_molecule_data(ApplicationData* data) {
 }
 
 static void launch_prefetch_job(ApplicationData* data) {
-    uint32_t num_frames = (uint32_t)load::traj::num_cache_frames(data->mold.traj);
+    uint32_t num_frames = MIN((uint32_t)md_trajectory_num_frames(data->mold.traj), (uint32_t)load::traj::num_cache_frames(data->mold.traj));
     if (!num_frames) return;
 
     task_system::task_interrupt_and_wait_for(data->tasks.prefetch_frames);
@@ -6524,7 +6523,7 @@ static void launch_prefetch_job(ApplicationData* data) {
     // We pre-allocate the number of slots * max frame data size, so don't go bananas here if you want to save some on memory.
     task_system::pool_enqueue("Preloading frames", 1, [data, num_frames](task_system::TaskSetRange)
         {
-            md_timestamp_t t0 = md_os_time_current();
+            md_timestamp_t t0 = md_time_current();
             const int64_t slot_size = md_trajectory_max_frame_data_size(&data->mold.traj);
             void* slot_mem = md_alloc(default_allocator, slot_size * NUM_SLOTS);
 
@@ -6632,7 +6631,7 @@ static void launch_prefetch_job(ApplicationData* data) {
 
             md_free(default_allocator, slot_mem, slot_size * NUM_SLOTS);
 
-            md_timestamp_t t1 = md_os_time_current();
+            md_timestamp_t t1 = md_time_current();
             LINFO("Frame preload took %.2f seconds", md_os_time_delta_in_s(t0, t1));
         });
 #undef NUM_SLOTS
@@ -6642,7 +6641,7 @@ static void launch_prefetch_job(ApplicationData* data) {
 static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md_molecule_api* mol_api, md_trajectory_api* traj_api, bool coarse_grained, bool deperiodize_on_load) {
     ASSERT(data);
 
-    path_to_file = md_os_path_make_canonical(path_to_file, frame_allocator);
+    path_to_file = md_path_make_canonical(path_to_file, frame_allocator);
 
     if (path_to_file.len) {
         if (str_equal(data->files.molecule, path_to_file)) {
@@ -6664,7 +6663,7 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
                 LERROR("Failed to load molecular data from file '%.*s'", path_to_file.len, path_to_file.ptr);
                 return false;
             }
-            LSUCCESS("Successfully loaded molecular data from file '%.*s'", path_to_file.len, path_to_file.ptr));
+            LSUCCESS("Successfully loaded molecular data from file '%.*s'", path_to_file.len, path_to_file.ptr);
 
             data->files.molecule = path_to_file;
             // @NOTE: If the dataset is coarse-grained, then postprocessing must be aware
@@ -6693,12 +6692,10 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
 
             bool success = load_trajectory_data(data, path_to_file, deperiodize_on_load);
             if (success) {
-                ImGui::InsertNotification(ImGuiToast(ImGuiToastType_Success, 6000, "Successfully opened trajectory from file '%.*s'", path_to_file.len, path_to_file.ptr));
+                LSUCCESS("Successfully opened trajectory from file '%.*s'", path_to_file.len, path_to_file.ptr);
             } else {
                 LERROR("Failed to opened trajectory from file '%.*s'", path_to_file.len, path_to_file.ptr);
             }
-        } else {
-            LERROR("File extension not supported");
         }
     }
 
@@ -6985,7 +6982,7 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
         {
             StrBuf<1024> path = extract_path_without_file(filename);
             path += arg;
-            str_t can_path = md_os_path_make_canonical(path, frame_allocator);
+            str_t can_path = md_path_make_canonical(path, frame_allocator);
             if (can_path.ptr && can_path.len > 0) {
                 size_t copy_len = MIN(target->capacity - 1, (size_t)can_path.len);
                 memcpy(ptr + target->struct_byte_offset, can_path.ptr, copy_len);
@@ -7218,7 +7215,7 @@ static void write_entry(FILE* file, SerializationObject target, const void* ptr,
         int len = (int)strnlen(str, target.capacity);
 
         // Make this sucker relative
-        str_t rel_path = md_os_path_make_relative(filename, {str, len}, frame_allocator);
+        str_t rel_path = md_path_make_relative(filename, {str, len}, frame_allocator);
         if (rel_path.ptr && rel_path.len) {
             fprintf(file, "%.*s\n", (int)rel_path.len, rel_path.ptr);
         }     
