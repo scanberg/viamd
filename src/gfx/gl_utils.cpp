@@ -32,16 +32,16 @@ bool gl::get_program_link_error(char* buffer, int max_length, GLuint program) {
     }
 }
 
-bool build_shader_src(md_str_builder_t* builder, str_t src, str_t base_include_dir) {
+bool build_shader_src(md_strb_t* builder, str_t src, str_t base_include_dir) {
     str_t line;
-    while (extract_line(&line, &src)) {
+    while (str_extract_line(&line, &src)) {
         if (str_equal_cstr_n(line, "#include ", 9)) {
-            str_t file = str_trim_whitespace(substr(line, 9));
+            str_t file = str_trim(str_substr(line, 9));
             if (!file || !(file.len > 2) || file[0] != '"' || file[file.len-1] != '"') {
                 md_printf(MD_LOG_TYPE_ERROR, "Failed to parse include file");
                 return false;
             }
-            file = substr(file, 1, file.len - 2);
+            file = str_substr(file, 1, file.len - 2);
             str_t path = alloc_printf(default_temp_allocator, "%.*s%.*s", (int)base_include_dir.len, base_include_dir.ptr, (int)file.len, file.ptr);
 
             str_t inc_src = load_textfile(path, default_temp_allocator);
@@ -52,7 +52,8 @@ bool build_shader_src(md_str_builder_t* builder, str_t src, str_t base_include_d
                 return false;
             }
         } else {
-            md_str_builder_append_str(builder, line);
+            md_strb_str(builder, line);
+            md_strb_char(builder, '\n');
         }
     }
 
@@ -64,39 +65,41 @@ GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str
            type == GL_TESS_CONTROL_SHADER || type == GL_TESS_EVALUATION_SHADER);
 
     GLuint shader = glCreateShader(type);
-    md_str_builder_t builder = {0};
-    md_str_builder_init(&builder, default_temp_allocator);
+    md_strb_t builder = {0};
+    md_strb_init(&builder, default_temp_allocator);
     
     if (defines) {
         str_t version_str = {};
         if (str_equal_cstr_n(src, "#version ", 9)) {
-            if (!extract_line(&version_str, &src)) {
+            if (!str_extract_line(&version_str, &src)) {
                 md_print(MD_LOG_TYPE_ERROR, "Failed to extract version string!");
                 return 0;
             }
-            md_str_builder_append_str(&builder, version_str);
-            md_str_builder_append_str(&builder, defines);
-            md_str_builder_append_str(&builder, STR("\n"));
+            md_strb_str(&builder, version_str);
+            md_strb_str(&builder, defines);
+            md_strb_str(&builder, STR("\n"));
         }
         else {
-            md_str_builder_append_str(&builder, defines);
-            md_str_builder_append_str(&builder, STR("\n"));
+            md_strb_str(&builder, defines);
+            md_strb_str(&builder, STR("\n"));
         }
     }
 
     build_shader_src(&builder, src, base_include_dir);
 
-    str_t final_src = md_str_builder_to_str(&builder);
+    str_t final_src = md_strb_to_str(&builder);
     glShaderSource(shader, 1, &final_src.ptr, 0);
-    md_str_builder_free(&builder);
 
     glCompileShader(shader);
 
     char buffer[1024];
     if (gl::get_shader_compile_error(buffer, sizeof(buffer), shader)) {
         md_printf(MD_LOG_TYPE_ERROR, "%s\n", buffer);
-        return 0;
+        glDeleteShader(shader);
+        shader = 0;
     }
+
+    md_strb_free(&builder);
 
     return shader;
 }
@@ -112,31 +115,32 @@ GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) 
     }
 
     GLuint shader = glCreateShader(type);
-    md_str_builder_t builder = { 0 };
-    md_str_builder_init(&builder, default_temp_allocator);
+    md_strb_t builder = { 0 };
+    md_strb_init(&builder, default_temp_allocator);
 
     if (defines) {
         str_t version_str = {};
         if (str_equal_cstr_n(src, "#version ", 9)) {
-            if (!extract_line(&version_str, &src)) {
+            if (!str_extract_line(&version_str, &src)) {
                 md_print(MD_LOG_TYPE_ERROR, "Failed to extract version string!");
                 return 0;
             }
-            md_str_builder_append_str(&builder, version_str);
-            md_str_builder_append_str(&builder, defines);
-            md_str_builder_append_str(&builder, STR("\n"));
+            md_strb_str(&builder, version_str);
+            md_strb_char(&builder, '\n');
+            md_strb_str(&builder, defines);
+            md_strb_char(&builder, '\n');
         }
         else {
-            md_str_builder_append_str(&builder, defines);
-            md_str_builder_append_str(&builder, STR("\n"));
+            md_strb_str(&builder, defines);
+            md_strb_char(&builder, '\n');
         }
     }
 
     build_shader_src(&builder, src, extract_path_without_file(filename));
 
-    str_t final_src = md_str_builder_to_str(&builder);
+    str_t final_src = md_strb_to_str(&builder);
     glShaderSource(shader, 1, &final_src.ptr, 0);
-    md_str_builder_free(&builder);
+    md_strb_free(&builder);
 
     glCompileShader(shader);
 

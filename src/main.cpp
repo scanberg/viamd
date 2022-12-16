@@ -2982,11 +2982,11 @@ void apply_atom_elem_mappings(ApplicationData* data) {
 }
 
 // Create a textual script describing a selection from a bitfield with respect to some reference index
-static void create_script_ranges(md_str_builder_t* sb, const md_bitfield_t* bf, int ref_idx = 0) {
+static void create_script_ranges(md_strb_t* sb, const md_bitfield_t* bf, int ref_idx = 0) {
     ASSERT(sb);
     ASSERT(bf);
 
-    md_str_builder_printf(sb, "atom({");
+    md_strb_fmt(sb, "atom({");
 
     int range_beg = -1;
     int prev_idx  = -1;
@@ -2999,9 +2999,9 @@ static void create_script_ranges(md_str_builder_t* sb, const md_bitfield_t* bf, 
 
         if (idx - prev_idx > 1) {
             if (prev_idx > range_beg) {
-                md_str_builder_printf(sb, "%i:%i,", range_beg - ref_idx + 1, prev_idx - ref_idx + 1);
+                md_strb_fmt(sb, "%i:%i,", range_beg - ref_idx + 1, prev_idx - ref_idx + 1);
             } else if (prev_idx != -1) {
-                md_str_builder_printf(sb, "%i,", prev_idx - ref_idx + 1);
+                md_strb_fmt(sb, "%i,", prev_idx - ref_idx + 1);
             }
             range_beg = idx;
         }
@@ -3009,11 +3009,11 @@ static void create_script_ranges(md_str_builder_t* sb, const md_bitfield_t* bf, 
         prev_idx = idx;
     }
 
-    md_str_builder_pop(sb, 1);
+    md_strb_pop(sb, 1);
     if (prev_idx - range_beg > 0) {
-        md_str_builder_printf(sb, "%i:%i})", range_beg - ref_idx + 1, prev_idx - ref_idx + 1);
-    } else {
-        md_str_builder_printf(sb, "})");
+        md_strb_fmt(sb, "%i:%i})", range_beg - ref_idx + 1, prev_idx - ref_idx + 1);
+    } else if (prev_idx != -1) {
+        md_strb_fmt(sb, "%i})", prev_idx - ref_idx + 1);
     }
 }
 
@@ -3233,18 +3233,18 @@ void draw_context_popup(ApplicationData* data) {
                         break;
                     }
                 }
-                md_str_builder_t sb = {0};
-                md_str_builder_init(&sb, frame_allocator);
-                defer { md_str_builder_free(&sb); };
+                md_strb_t sb = {0};
+                md_strb_init(&sb, frame_allocator);
+                defer { md_strb_free(&sb); };
 
                 if (res_idx != -1 && same_residue) {
-                    md_str_builder_reset(&sb);
-                    md_str_builder_append_str(&sb, ident);
-                    md_str_builder_append_str(&sb, STR(" = "));
+                    md_strb_reset(&sb);
+                    md_strb_str(&sb, ident);
+                    md_strb_str(&sb, STR(" = "));
                     create_script_ranges(&sb, bf, data->mold.mol.residue.atom_range[res_idx].beg);
-                    if (md_str_builder_len(&sb) < 512) {
+                    if (md_strb_len(&sb) < 512) {
                         str_t resname = LBL_TO_STR(data->mold.mol.residue.name[res_idx]);
-                        md_str_builder_printf(&sb, " in resname(\"%.*s\");", (int)resname.len, resname.ptr);
+                        md_strb_fmt(&sb, " in resname(\"%.*s\");", (int)resname.len, resname.ptr);
                         if (ImGui::MenuItem(sb.buf)) {
                             editor.AppendText("\n");
                             editor.AppendText(sb.buf);
@@ -3254,13 +3254,13 @@ void draw_context_popup(ApplicationData* data) {
                 }
 
                 if (chain_idx != -1 && same_chain) {
-                    md_str_builder_reset(&sb);
-                    md_str_builder_append_str(&sb, ident);
-                    md_str_builder_append_str(&sb, STR(" = "));
+                    md_strb_reset(&sb);
+                    md_strb_str(&sb, ident);
+                    md_strb_str(&sb, STR(" = "));
                     create_script_ranges(&sb, bf, data->mold.mol.chain.atom_range[chain_idx].beg);
-                    if (md_str_builder_len(&sb) < 512) {
+                    if (md_strb_len(&sb) < 512) {
                         str_t chain_id = LBL_TO_STR(data->mold.mol.chain.id[chain_idx]);
-                        md_str_builder_printf(&sb, " in chain(\"%.*s\");", (int)chain_id.len, chain_id.ptr);
+                        md_strb_fmt(&sb, " in chain(\"%.*s\");", (int)chain_id.len, chain_id.ptr);
                         if (ImGui::MenuItem(sb.buf)) {
                             editor.AppendText("\n");
                             editor.AppendText(sb.buf);
@@ -3269,19 +3269,19 @@ void draw_context_popup(ApplicationData* data) {
                     }
                 }
 
-                md_str_builder_reset(&sb);
-                md_str_builder_append_str(&sb, ident);
-                md_str_builder_append_str(&sb, STR(" = "));
+                md_strb_reset(&sb);
+                md_strb_str(&sb, ident);
+                md_strb_str(&sb, STR(" = "));
                 create_script_ranges(&sb, bf);
-                if (md_str_builder_len(&sb) < 512) {
-                    md_str_builder_append_char(&sb, ';');
+                if (md_strb_len(&sb) < 512) {
+                    md_strb_char(&sb, ';');
                     if (ImGui::MenuItem(sb.buf)) {
                         editor.AppendText("\n");
                         editor.AppendText(sb.buf);
                         ImGui::CloseCurrentPopup();
                     }
                 }
-                md_str_builder_free(&sb);
+                md_strb_free(&sb);
             }
             ImGui::EndMenu();
         }
@@ -7033,8 +7033,8 @@ SerializationArray serialization_array_groups[] = {
 };
 
 #define COMPARE(str, ref) (str_equal_cstr_n(str, ref"", sizeof(ref) - 1))
-#define EXTRACT(str, ref) (str_equal_cstr_n(str, ref"", sizeof(ref) - 1) && (line = str_trim_whitespace(substr(line, sizeof(ref) - 1))).len > 0)
-#define EXTRACT_PARAM_LINE(line, txt) (c_txt.len && c_txt[0] != '[' && (extract_line(&line, &c_txt)))
+#define EXTRACT(str, ref) (str_equal_cstr_n(str, ref"", sizeof(ref) - 1) && (line = str_trim(str_substr(line, sizeof(ref) - 1))).len > 0)
+#define EXTRACT_PARAM_LINE(line, txt) (c_txt.len && c_txt[0] != '[' && (str_extract_line(&line, &c_txt)))
 
 static const SerializationObject* find_serialization_target(str_t group, str_t label) {
     for (size_t i = 0; i < ARRAY_SIZE(serialization_targets); ++i) {
@@ -7056,8 +7056,8 @@ static const SerializationArray* find_serialization_array_group(str_t group) {
 
 static void deserialize_object(const SerializationObject* target, char* ptr, str_t* buf, str_t filename) {
     str_t line;
-    if (extract_line(&line, buf)) {
-        str_t arg = str_trim_whitespace(line);
+    if (str_extract_line(&line, buf)) {
+        str_t arg = str_trim(line);
 
         switch (target->type) {
         case SerializationType_Bool:
@@ -7230,8 +7230,8 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     const SerializationArray* arr_group = NULL;
     void* ptr = 0;
 
-    while (extract_line(&line, &c_txt)) {
-        line = str_trim_whitespace(line);
+    while (str_extract_line(&line, &c_txt)) {
+        line = str_trim(line);
         if (line[0] == '[') {
             group = line;
             arr_group = find_serialization_array_group(group);
@@ -7243,7 +7243,7 @@ static void load_workspace(ApplicationData* data, str_t filename) {
         } else {
             int64_t loc = str_find_char(line, '=');
             if (loc != -1) {
-                str_t label = str_trim_whitespace(substr(line, 0, loc));
+                str_t label = str_trim(str_substr(line, 0, loc));
                 const SerializationObject* target = find_serialization_target(group, label);
                 if (target) {
                     // Move read pointer back 'loc+1' => after '='.
