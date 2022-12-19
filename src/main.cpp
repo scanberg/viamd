@@ -1344,6 +1344,33 @@ int main(int, char**) {
                 data.animation.mode = PlaybackMode::Stopped;
                 data.animation.frame = max_frame;
             }
+
+            if (!task_system::task_is_running(data.tasks.prefetch_frames)) {
+                uint32_t traj_frames = md_trajectory_num_frames(data.mold.traj);
+                if (traj_frames > 0 && load::traj::num_cache_frames(data.mold.traj) < traj_frames) {
+                    uint32_t frame_beg = 0;
+                    uint32_t frame_end = 0;
+                    // @NOTE: This is certainly something which can be improved upon.
+                    // It prefetches frames in the direction of the animation.
+                    // In a more optimal case, it should never yield until it catches up with the number of frames it expects to have as a buffer.
+                    
+                    if (data.animation.fps > 0) {
+                        frame_beg = CLAMP((uint32_t)data.animation.frame, 0, traj_frames - 1);
+                        frame_end = CLAMP((uint32_t)data.animation.frame + 20, 0, traj_frames);
+                    } else {
+                        frame_beg = CLAMP((uint32_t)data.animation.frame - 20, 0, traj_frames - 1);
+                        frame_end = CLAMP((uint32_t)data.animation.frame, 0, traj_frames);
+                    }
+                    if (frame_beg != frame_end) {
+                        data.tasks.prefetch_frames = task_system::pool_enqueue(STR("##Prefetch Frames"), frame_beg, frame_end, [](uint32_t frame_beg, uint32_t frame_end, void* user_data) {
+                            ApplicationData* data = (ApplicationData*)user_data;
+                            for (uint32_t i = frame_beg; i < frame_end; ++i) {
+                                md_trajectory_load_frame(data->mold.traj, i, 0, 0, 0, 0);
+                            }
+                        }, &data);
+                    }
+                }
+            }
         }
 
         {
@@ -1433,65 +1460,67 @@ int main(int, char**) {
 
                     editor.ClearMarkers();
                     editor.ClearErrorMarkers();
-
-                    md_script_bitfield_identifier_t* idents = 0;
-                    for (int64_t i = 0; i < md_array_size(data.selection.stored_selections); ++i) {
-                        md_script_bitfield_identifier_t ident = {
-                            .identifier_name = data.selection.stored_selections[i].name,
-                            .bitfield = &data.selection.stored_selections[i].atom_mask,
-                        };
-                        md_array_push(idents, ident, frame_allocator);
-                    }
-
-                    md_script_ir_t* selection_ir = md_script_ir_create(frame_allocator);
-                    defer { md_script_ir_free(selection_ir); };
-                    md_script_ir_add_bitfield_identifiers(selection_ir, idents, md_array_size(idents));
-
-                    md_script_ir_compile_from_source(data.mold.script.ir, src_str, &data.mold.mol, selection_ir);
-
-                    if (md_script_ir_valid(data.mold.script.ir)) {
-                        uint64_t ir_figerprint = md_script_ir_fingerprint(data.mold.script.ir);
-                        if (data.mold.script.ir_fingerprint != ir_figerprint) {
-                            data.mold.script.ir_fingerprint = ir_figerprint;
-
-                            data.mold.script.eval_init = true;
-                            data.mold.script.evaluate_full = true;
-                            data.mold.script.evaluate_filt = true;
+                    
+                    if (src_str) {
+                        md_script_bitfield_identifier_t* idents = 0;
+                        for (int64_t i = 0; i < md_array_size(data.selection.stored_selections); ++i) {
+                            md_script_bitfield_identifier_t ident = {
+                                .identifier_name = data.selection.stored_selections[i].name,
+                                .bitfield = &data.selection.stored_selections[i].atom_mask,
+                            };
+                            md_array_push(idents, ident, frame_allocator);
                         }
-                    }
 
-                    TextEditor::ErrorMarkers markers{};
-                    const int64_t num_errors = md_script_ir_num_errors(data.mold.script.ir);
-                    if (num_errors) {
-                        const md_script_error_t* errors = md_script_ir_errors(data.mold.script.ir);
-                        for (int64_t i = 0; i < num_errors; ++i) {
-                            std::string err_str(errors[i].text.ptr, errors[i].text.len);
-                            auto first = editor.GetCharacterCoordinates(errors[i].range.beg);
-                            auto last  = editor.GetCharacterCoordinates(errors[i].range.end-1);
-                            for (int j = first.mLine; j <= last.mLine; ++j) {
-                                std::pair<int, std::string> pair = {j + 1, err_str};
-                                markers.insert(pair);
+                        md_script_ir_t* selection_ir = md_script_ir_create(frame_allocator);
+                        defer { md_script_ir_free(selection_ir); };
+                        md_script_ir_add_bitfield_identifiers(selection_ir, idents, md_array_size(idents));
+
+                        md_script_ir_compile_from_source(data.mold.script.ir, src_str, &data.mold.mol, selection_ir);
+
+                        if (md_script_ir_valid(data.mold.script.ir)) {
+                            uint64_t ir_figerprint = md_script_ir_fingerprint(data.mold.script.ir);
+                            if (data.mold.script.ir_fingerprint != ir_figerprint) {
+                                data.mold.script.ir_fingerprint = ir_figerprint;
+
+                                data.mold.script.eval_init = true;
+                                data.mold.script.evaluate_full = true;
+                                data.mold.script.evaluate_filt = true;
                             }
                         }
-                    }
-                    editor.SetErrorMarkers(markers);
 
-                    const int64_t num_tokens = md_script_ir_num_vis_tokens(data.mold.script.ir);
-                    const md_script_vis_token_t* vis_tokens = md_script_ir_vis_tokens(data.mold.script.ir);
-                    for (int64_t i = 0; i < num_tokens; ++i) {
-                        const md_script_vis_token_t& vis_tok = vis_tokens[i];
-                        TextEditor::Marker marker = {0};
-                        auto first = editor.GetCharacterCoordinates(vis_tok.range.beg);
-                        auto last  = editor.GetCharacterCoordinates(vis_tok.range.end);
-                        marker.begCol = first.mColumn;
-                        marker.endCol = last.mColumn;
-                        marker.bgColor = ImVec4(1,1,1,0.5);
-                        marker.depth = vis_tok.depth;
-                        marker.onlyShowBgOnMouseOver = true;
-                        marker.text = std::string(vis_tok.text.ptr, vis_tok.text.len);
-                        marker.payload = (void*)vis_tok.payload;
-                        marker.line = first.mLine + 1;
-                        editor.AddMarker(marker);
+                        TextEditor::ErrorMarkers markers{};
+                        const int64_t num_errors = md_script_ir_num_errors(data.mold.script.ir);
+                        if (num_errors) {
+                            const md_script_error_t* errors = md_script_ir_errors(data.mold.script.ir);
+                            for (int64_t i = 0; i < num_errors; ++i) {
+                                std::string err_str(errors[i].text.ptr, errors[i].text.len);
+                                auto first = editor.GetCharacterCoordinates(errors[i].range.beg);
+                                auto last  = editor.GetCharacterCoordinates(errors[i].range.end-1);
+                                for (int j = first.mLine; j <= last.mLine; ++j) {
+                                    std::pair<int, std::string> pair = {j + 1, err_str};
+                                    markers.insert(pair);
+                                }
+                            }
+                        }
+                        editor.SetErrorMarkers(markers);
+
+                        const int64_t num_tokens = md_script_ir_num_vis_tokens(data.mold.script.ir);
+                        const md_script_vis_token_t* vis_tokens = md_script_ir_vis_tokens(data.mold.script.ir);
+                        for (int64_t i = 0; i < num_tokens; ++i) {
+                            const md_script_vis_token_t& vis_tok = vis_tokens[i];
+                            TextEditor::Marker marker = {0};
+                            auto first = editor.GetCharacterCoordinates(vis_tok.range.beg);
+                            auto last  = editor.GetCharacterCoordinates(vis_tok.range.end);
+                            marker.begCol = first.mColumn;
+                            marker.endCol = last.mColumn;
+                            marker.bgColor = ImVec4(1,1,1,0.5);
+                            marker.depth = vis_tok.depth;
+                            marker.onlyShowBgOnMouseOver = true;
+                            marker.text = std::string(vis_tok.text.ptr, vis_tok.text.len);
+                            marker.payload = (void*)vis_tok.payload;
+                            marker.line = first.mLine + 1;
+                            editor.AddMarker(marker);
+                        }
                     }
 
                     md_semaphore_release_n(&data.mold.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT);
@@ -1524,12 +1553,14 @@ int main(int, char**) {
                 } else if (data.mold.script.full_eval && md_script_ir_valid(data.mold.script.ir) && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
                     data.mold.script.evaluate_full = false;
                     md_script_eval_clear(data.mold.script.full_eval);
-                    data.tasks.evaluate_full = task_system::pool_enqueue("Eval Full", (uint32_t)num_frames, [data = &data](uint32_t frame_beg, uint32_t frame_end) {
+                    data.tasks.evaluate_full = task_system::pool_enqueue(STR("Eval Full"), 0, (uint32_t)num_frames, [](uint32_t frame_beg, uint32_t frame_end, void* user_data) {
+                        ApplicationData* data = (ApplicationData*)user_data;
                         md_script_eval_frame_range(data->mold.script.full_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, frame_beg, frame_end);
-                    });
-                    task_system::pool_enqueue("##Release IR Semaphore", [data = &data]() {
+                    }, &data);
+                    task_system::pool_enqueue(STR("##Release IR Semaphore"), [](void* user_data) {
+                        ApplicationData* data = (ApplicationData*)user_data;
                         md_semaphore_release(&data->mold.script.ir_semaphore);
-                    }, data.tasks.evaluate_full);
+                    }, &data, data.tasks.evaluate_full);
                 }
             }
 
@@ -1542,12 +1573,14 @@ int main(int, char**) {
                     uint32_t end_frame = CLAMP((uint32_t)data.timeline.filter.end_frame + 1, beg_frame + 1, traj_frames);
                     data.mold.script.evaluate_filt = false;
                     md_script_eval_clear(data.mold.script.filt_eval);
-                    data.tasks.evaluate_filt = task_system::pool_enqueue("Eval Filt", end_frame - beg_frame, [data = &data, frame_offset = beg_frame](uint32_t beg, uint32_t end) {
-                        md_script_eval_frame_range(data->mold.script.filt_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, frame_offset + beg, frame_offset + end);
-                    });
-                    task_system::pool_enqueue("##Release IR Semaphore", [data = &data]() {
+                    data.tasks.evaluate_filt = task_system::pool_enqueue(STR("Eval Filt"), beg_frame, end_frame, [](uint32_t beg, uint32_t end, void* user_data) {
+                        ApplicationData* data = (ApplicationData*)user_data;
+                        md_script_eval_frame_range(data->mold.script.filt_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, beg, end);
+                    }, &data);
+                    task_system::pool_enqueue(STR("##Release IR Semaphore"), [](void* user_data) {
+                        ApplicationData* data = (ApplicationData*)user_data;
                         md_semaphore_release(&data->mold.script.ir_semaphore);
-                    }, data.tasks.evaluate_filt);
+                    }, &data, data.tasks.evaluate_filt);
                 }
             }
         }
@@ -1684,7 +1717,7 @@ int main(int, char**) {
         // Swap buffers
         application::swap_buffers(&data.ctx);
 
-        task_system::execute_tasks();
+        task_system::execute_queued_tasks();
 
         // Reset frame allocator
         md_linear_allocator_reset(&linear_alloc);
@@ -2975,7 +3008,7 @@ void apply_atom_elem_mappings(ApplicationData* data) {
         }
     }
 
-    md_util_extract_covalent_bonds(&data->mold.mol, persistent_allocator);
+    md_util_extract_covalent_bonds(&data->mold.mol, data->mold.mol_alloc);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
     update_all_representations(data);
@@ -3836,10 +3869,16 @@ static void draw_async_task_window(ApplicationData* data) {
     constexpr float MARGIN = 10.f;
     constexpr float PROGRESSBAR_WIDTH_FRACT = 0.3f;
 
-    //const float stats_fract = stats::fraction_done();
-
     task_system::ID* tasks = task_system::pool_running_tasks(frame_allocator);
-    if (tasks) {
+    uint32_t num_tasks = (uint32_t)md_array_size(tasks);
+    bool any_task_label_visible = false;
+    for (uint32_t i = 0; i < num_tasks; i++) {
+        str_t label = task_system::task_label(tasks[i]);
+        if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
+        any_task_label_visible = true;
+    }
+    
+    if (any_task_label_visible) {
         ImGuiViewport* viewport = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(viewport->Pos + ImVec2(data->ctx.window.width - WIDTH - MARGIN,
                                                        ImGui::GetCurrentContext()->FontBaseSize + ImGui::GetStyle().FramePadding.y * 2.f + MARGIN));
@@ -3847,12 +3886,16 @@ static void draw_async_task_window(ApplicationData* data) {
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
         ImGui::Begin("##Async Info", 0,
                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing);
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
+
+        const float pad = 3.0f;
+        const float size = ImGui::GetFontSize() + pad * 2;
+        const float spacing = 2.f;
 
         char buf[32];
-        for (uint32_t i = 0; i < MIN((uint32_t)md_array_size(tasks), 8); i++) {
+        for (uint32_t i = 0; i < MIN(num_tasks, 8); i++) {
             const auto id = tasks[i];
-            const char* label = task_system::task_label(id);
+            str_t label = task_system::task_label(id);
             float fract = task_system::task_fraction_complete(id);
 
             /*
@@ -3873,13 +3916,17 @@ static void draw_async_task_window(ApplicationData* data) {
 
             if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
 
-            snprintf(buf, 32, "%.1f%%", fract * 100.f);
-            ImGui::ProgressBar(fract, ImVec2(ImGui::GetContentRegionAvail().x * PROGRESSBAR_WIDTH_FRACT, 0), buf);
+            snprintf(buf, sizeof(buf), "%.*s %.1f%%", (int)label.len, label.ptr, fract * 100.f);
+            ImGui::ProgressBar(fract, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad),0), buf);
             ImGui::SameLine();
-            ImGui::Text("%s", label);
-            ImGui::SameLine();
-            if (ImGui::Button("X", ImVec2(20,20))) {
+            if (ImGui::DeleteButton((const char*)ICON_FA_XMARK, ImVec2(size, size))) {
                 task_system::task_interrupt(id);
+                if (id == data->tasks.evaluate_full) {
+                    md_script_eval_interrupt(data->mold.script.full_eval);
+                }
+                else if(id == data->tasks.evaluate_filt) {
+                    md_script_eval_interrupt(data->mold.script.filt_eval);
+                }
             }
         }
 
@@ -4742,7 +4789,8 @@ static void draw_shape_space_window(ApplicationData* data) {
                         md_array_resize(data->shape_space.coords,  num_frames * data->shape_space.num_structures, persistent_allocator);
                         md_array_resize(data->shape_space.weights, num_frames * data->shape_space.num_structures, persistent_allocator);
 
-                        data->tasks.shape_space_evaluate = task_system::pool_enqueue("Eval Shape Space", (uint32_t)num_frames, [data](uint32_t range_beg, uint32_t range_end) {
+                        data->tasks.shape_space_evaluate = task_system::pool_enqueue(STR("Eval Shape Space"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+                            ApplicationData* data = (ApplicationData*)user_data;
                             int64_t stride = ALIGN_TO(data->mold.mol.atom.count, md_simd_widthf);
                             float* coords = (float*)md_alloc(default_allocator, stride * 3 * sizeof(float));
                             float* x = coords + stride * 0;
@@ -4778,7 +4826,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                                 }
                                 md_array_free(xyz, default_allocator);
                             }
-                        });
+                        }, data);
                     } else {
                         snprintf(data->shape_space.err_text.beg(), data->shape_space.err_text.capacity(), "Expression did not evaluate into any bitfields");
                     }
@@ -6528,7 +6576,9 @@ static void init_trajectory_data(ApplicationData* data) {
             // Launch work to compute the values
             task_system::task_interrupt_and_wait_for(data->tasks.backbone_computations);
 
-            data->tasks.backbone_computations = task_system::pool_enqueue("Backbone Operations", (uint32_t)num_frames, [data](uint32_t range_beg, uint32_t range_end) {
+            data->tasks.backbone_computations = task_system::pool_enqueue(STR("Backbone Operations"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+                ApplicationData* data = (ApplicationData*)user_data;
+                
                 // Create copy here of molecule since we use the full structure as input
                 md_molecule_t mol = data->mold.mol;
 
@@ -6546,13 +6596,14 @@ static void init_trajectory_data(ApplicationData* data) {
                     md_util_backbone_angles_compute(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &mol);
                     md_util_backbone_secondary_structure_compute(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &mol);
                 }
-            });
+            }, data);
 
-            task_system::main_enqueue("Update Trajectory Data", [data]() {
+            task_system::main_enqueue(STR("Update Trajectory Data"), [](void* user_data) {
+                ApplicationData* data = (ApplicationData*)user_data;
                 data->trajectory_data.backbone_angles.fingerprint = generate_fingerprint();
                 data->trajectory_data.secondary_structure.fingerprint = generate_fingerprint();
                 interpolate_atomic_properties(data);
-            }, data->tasks.backbone_computations);
+            }, data, data->tasks.backbone_computations);
         }
 
         data->mold.dirty_buffers |= MolBit_DirtyPosition;
@@ -6570,6 +6621,7 @@ static bool load_trajectory_data(ApplicationData* data, str_t filename, bool dep
         free_trajectory_data(data);
         data->mold.traj = traj;
         data->files.trajectory = filename;
+        data->files.deperiodize = deperiodize_on_load;
         init_trajectory_data(data);
         data->animation.frame = 0;
         return true;
@@ -6642,143 +6694,21 @@ static void launch_prefetch_job(ApplicationData* data) {
     if (!num_frames) return;
 
     task_system::task_interrupt_and_wait_for(data->tasks.prefetch_frames);
-    data->tasks.prefetch_frames = task_system::pool_enqueue("Prefetch Frames", num_frames, [data](uint32_t range_beg, uint32_t range_end)
-    {
+    data->tasks.prefetch_frames = task_system::pool_enqueue(STR("Prefetch Frames"), 0, num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+        ApplicationData* data = (ApplicationData*)user_data;
         for (uint32_t i = range_beg; i < range_end; ++i) {
             md_trajectory_frame_header_t header;
             md_trajectory_load_frame(data->mold.traj, i, &header, 0, 0, 0);
             data->timeline.x_values[i] = header.timestamp;
         }
-    });
+    }, data);
 
-    task_system::main_enqueue("Prefetch Complete", [data]()
-    {
+    task_system::main_enqueue(STR("Prefetch Complete"), [](void* user_data) {
+        ApplicationData* data = (ApplicationData*)user_data;
         interpolate_atomic_properties(data);
         update_md_buffers(data);
         md_gl_molecule_zero_velocity(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
-    }, data->tasks.prefetch_frames);
-
-#if 0
-#define NUM_SLOTS 64
-
-    // This is the number of slots we have to work with in parallel.
-    // This number should ideally be more than the number of cores available.
-    // We pre-allocate the number of slots * max frame data size, so don't go bananas here if you want to save some on memory.
-    task_system::pool_enqueue("Preloading frames", 1, [data, num_frames](task_system::TaskSetRange)
-        {
-            md_timestamp_t t0 = md_time_current();
-            const int64_t slot_size = md_trajectory_max_frame_data_size(&data->mold.traj);
-            void* slot_mem = md_alloc(default_allocator, slot_size * NUM_SLOTS);
-
-            void* slots[NUM_SLOTS];
-            atomic_queue::AtomicQueue<uint32_t, NUM_SLOTS, 0xFFFFFFFF> slot_queue;
-
-            for (uint32_t i = 0; i < NUM_SLOTS; ++i) {
-                slots[i] = (char*)slot_mem + i * slot_size;
-                slot_queue.push(i);
-            }
-
-            // Iterate over all frames and load the raw data, then spawn a task for each frame
-            for (uint32_t i = 0; i < num_frames; ++i) {
-                uint32_t slot_idx = slot_queue.pop();
-                ASSERT(slot_idx < NUM_SLOTS);
-
-                void* frame_mem = slots[slot_idx];
-                const int64_t frame_size = data->mold.traj.fetch_frame_data(data->mold.traj.inst, i, NULL);
-                data->mold.traj.fetch_frame_data(data->mold.traj.inst, i, frame_mem);
-
-                // Spawn task: Load, Decode and postprocess
-                //printf("Spawning task to decode frame %i\n", i);
-                auto id = task_system::pool_enqueue("##Decode frame", 1, [slot_idx, frame_mem, frame_size, frame_idx = i, &slot_queue, data](task_system::TaskSetRange)
-                    {
-                        md_frame_data_t* frame_data;
-                        md_frame_cache_lock_t* lock;
-                        if (md_frame_cache_reserve_frame(&data->mold.frame_cache, frame_idx, &frame_data, &lock)) {
-                            data->mold.traj.decode_frame_data(data->mold.traj.inst, frame_mem, frame_size, &frame_data->header, frame_data->x, frame_data->y, frame_data->z);
-
-                            // Free the data slot directly here
-                            slot_queue.push(slot_idx);
-
-                            // deperiodize
-                            const md_molecule_t& mol = data->mold.mol;
-                            md_util_apply_pbc_args_t args = {
-                                .atom = {
-                                    .count = mol.atom.count,
-                                    .x = frame_data->x,
-                                    .y = frame_data->y,
-                                    .z = frame_data->z,
-                            },
-                            .residue = {
-                                    .count = mol.residue.count,
-                                    .atom_range = mol.residue.atom_range,
-                            },
-                            .chain = {
-                                    .count = mol.chain.count,
-                                    .residue_range = mol.chain.residue_range,
-                            }
-                            };
-                            memcpy(args.pbc.box, frame_data->header.box, sizeof(args.pbc.box));
-                            md_util_apply_pbc(frame_data->x, frame_data->y, frame_data->z, mol.atom.count, args);
-
-                            if (mol.backbone.count > 0) {
-                                md_util_backbone_angle_args_t bb_args = {
-                                    .atom = {
-                                        .count = mol.atom.count,
-                                        .x = frame_data->x,
-                                        .y = frame_data->y,
-                                        .z = frame_data->z,
-                                },
-                                .backbone = {
-                                        .count = mol.backbone.count,
-                                        .atoms = mol.backbone.atoms,
-                                },
-                                .chain = {
-                                        .count = mol.chain.count,
-                                        .backbone_range = mol.chain.backbone_range,
-                                }
-                                };
-                                md_util_compute_backbone_angles(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &bb_args);
-
-                                md_util_secondary_structure_args_t ss_args = {
-                                    .atom = {
-                                        .count = data->mold.mol.atom.count,
-                                        .x = frame_data->x,
-                                        .y = frame_data->y,
-                                        .z = frame_data->z,
-                                },
-                                .backbone = {
-                                        .count = mol.backbone.count,
-                                        .atoms = mol.backbone.atoms,
-                                },
-                                .chain = {
-                                        .count = data->mold.mol.chain.count,
-                                        .backbone_range = data->mold.mol.chain.backbone_range,
-                                }
-                                };
-                                md_util_compute_secondary_structure(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &ss_args);
-                            }
-
-                            md_frame_cache_release_frame_lock(lock);
-                        } else {
-                            slot_queue.push(slot_idx);
-                        }
-                        //printf("Finished decoding frame %i\n", frame_idx);
-                    }
-                );
-            }
-
-            //printf("Sitting back waiting for tasks to complete...\n");
-            while (!slot_queue.was_full()) {
-                _mm_pause(); // Back off for a bit
-            }
-
-            md_free(default_allocator, slot_mem, slot_size * NUM_SLOTS);
-
-            md_timestamp_t t1 = md_time_current();
-            LINFO("Frame preload took %.2f seconds", md_os_time_delta_in_s(t0, t1));
-        });
-#undef NUM_SLOTS
-#endif
+    }, data, data->tasks.prefetch_frames);
 }
 
 static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md_molecule_api* mol_api, md_trajectory_api* traj_api, bool coarse_grained, bool deperiodize_on_load) {
@@ -6786,14 +6716,16 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
 
     path_to_file = md_path_make_canonical(path_to_file, frame_allocator);
 
-    if (path_to_file.len) {
-        if (str_equal(data->files.molecule, path_to_file)) {
+    if (path_to_file) {
+        if (str_equal(data->files.molecule, path_to_file) && data->files.coarse_grained == coarse_grained) {
             // File already loaded
             return true;
         }
 
-        if (!mol_api) mol_api = load::mol::get_api(path_to_file);
-        if (!traj_api) traj_api = load::traj::get_api(path_to_file);
+        if (!mol_api && !traj_api) {
+            mol_api = load::mol::get_api(path_to_file);
+            traj_api = load::traj::get_api(path_to_file);
+        }
 
         if (mol_api) {
             interrupt_async_tasks(data);
@@ -6809,6 +6741,7 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
             LSUCCESS("Successfully loaded molecular data from file '%.*s'", path_to_file.len, path_to_file.ptr);
 
             data->files.molecule = path_to_file;
+            data->files.coarse_grained = coarse_grained;
             // @NOTE: If the dataset is coarse-grained, then postprocessing must be aware
             md_util_postprocess_flags_t flags = coarse_grained ? MD_UTIL_POSTPROCESS_COARSE_GRAINED : MD_UTIL_POSTPROCESS_ALL;
             md_util_postprocess_molecule(&data->mold.mol, data->mold.mol_alloc, flags);
@@ -6828,7 +6761,7 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
                 return false;
             }
 
-            if (str_equal(data->files.trajectory, path_to_file)) {
+            if (str_equal(data->files.trajectory, path_to_file) && data->files.deperiodize == deperiodize_on_load) {
                 // Same as loaded file
                 return true;
             }
@@ -6975,6 +6908,7 @@ SerializationObject serialization_targets[] = {
     {"[Files]", "MoleculeFile",             SerializationType_Path,     offsetof(ApplicationData, files.molecule),     sizeof(ApplicationData::files.molecule)},
     {"[Files]", "TrajectoryFile",           SerializationType_Path,     offsetof(ApplicationData, files.trajectory),   sizeof(ApplicationData::files.trajectory)},
     {"[Files]", "CoarseGrained",            SerializationType_Bool,     offsetof(ApplicationData, files.coarse_grained)},
+    {"[Files]", "Deperiodize",              SerializationType_Bool,     offsetof(ApplicationData, files.deperiodize)},
     
     {"[Animation]", "Frame",                SerializationType_Double,   offsetof(ApplicationData, animation.frame)},
     {"[Animation]", "Fps",                  SerializationType_Float,    offsetof(ApplicationData, animation.fps)},
@@ -7257,7 +7191,10 @@ static void load_workspace(ApplicationData* data, str_t filename) {
             }
         }
     }
-    data->view.animation.target_position = data->view.camera.position;
+    data->view.animation.target_position    = data->view.camera.position;
+    data->view.animation.target_orientation = data->view.camera.orientation;
+    data->view.animation.target_distance    = data->view.camera.focus_distance;
+    
     data->files.workspace = filename;
 
     str_t new_molecule_file   = str_copy(data->files.molecule, frame_allocator);
@@ -7275,13 +7212,13 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     md_molecule_api* mol_api = load::mol::get_api(new_molecule_file);
     md_trajectory_api* traj_api = load::traj::get_api(new_trajectory_file);
 
-    if (new_molecule_file.len && load_dataset_from_file(data, new_molecule_file, mol_api, traj_api, new_coarse_grained, new_deperiodize)) {
+    if (new_molecule_file && load_dataset_from_file(data, new_molecule_file, mol_api, nullptr, new_coarse_grained, new_deperiodize)) {
         init_all_representations(data);
         update_all_representations(data);
     }
 
-    if (new_trajectory_file.len) {
-        load_dataset_from_file(data, new_trajectory_file, mol_api, traj_api);
+    if (new_trajectory_file) {
+        load_dataset_from_file(data, new_trajectory_file, nullptr, traj_api);
     }
 
     apply_atom_elem_mappings(data);

@@ -719,7 +719,8 @@ bool rama_init(rama_data_t* data) {
 }
 
 struct UserData {
-    float* density_tex;
+    uint64_t alloc_size;
+    vec4_t* density_tex;
     rama_rep_t* rep;
     const md_backbone_angles_t* angles;
     const uint32_t* type_indices[4];
@@ -731,37 +732,41 @@ struct UserData {
 
 task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angles_t* angles, const uint32_t* rama_type_indices[4], uint32_t frame_beg, uint32_t frame_end, uint32_t frame_stride, float sigma) {
 
-    const int64_t tex_size = sizeof(float) * density_tex_dim * density_tex_dim * 4;
-    float* density_tex = (float*)md_alloc(default_allocator, tex_size);
+    uint64_t tex_size = sizeof(vec4_t) * density_tex_dim * density_tex_dim;
+    uint64_t alloc_size = sizeof(UserData) + tex_size + alignof(vec4_t);
+    UserData* user_data = (UserData*)md_alloc(default_allocator, sizeof(UserData) + tex_size);
+    vec4_t* density_tex = (vec4_t*)NEXT_ALIGNED_ADDRESS(user_data + 1, alignof(vec4_t));
     memset(density_tex, 0, tex_size);
 
-    UserData user_data = {
-        .density_tex = density_tex,
-        .rep = rep,
-        .angles = angles,
-        .frame_beg = frame_beg,
-        .frame_end = frame_end,
-        .frame_stride = frame_stride,
-        .sigma = sigma,
-    };
+    user_data->alloc_size = alloc_size;
+    user_data->density_tex = density_tex;
+    user_data->rep = rep;
+    user_data->angles = angles;
+    user_data->frame_beg = frame_beg;
+    user_data->frame_end = frame_end;
+    user_data->frame_stride = frame_stride;
+    user_data->sigma = sigma;
 
-    memcpy(user_data.type_indices, rama_type_indices, 4 * sizeof(uint32_t*));
+    MEMCPY(user_data->type_indices, rama_type_indices, 4 * sizeof(uint32_t*));
 
-    task_system::ID id = task_system::pool_enqueue("Compute rama density", [data = user_data]() {
+    task_system::ID id = task_system::pool_enqueue(STR("Compute rama density"), [](void* user_data) {
+        UserData* data = (UserData*)user_data;
         const float angle_to_coord_scale = 1.0f / (2.0f * PI);
         const float angle_to_coord_offset = 0.5f;
 
-        const uint32_t frame_beg = data.frame_beg;
-        const uint32_t frame_end = data.frame_end;
-        const uint32_t frame_stride = data.frame_stride;
-        const md_backbone_angles_t* angles = data.angles;
+        const uint32_t frame_beg = data->frame_beg;
+        const uint32_t frame_end = data->frame_end;
+        const uint32_t frame_stride = data->frame_stride;
+        const md_backbone_angles_t* angles = data->angles;
 
         double sum[4] = {0,0,0,0};
 
         for (uint32_t f = frame_beg; f < frame_end; ++f) {
             for (uint32_t c = 0; c < 4; ++c) {
-                const uint32_t* indices = data.type_indices[c];
-                const uint32_t num_indices = (uint32_t)md_array_size(data.type_indices[c]);
+                const uint32_t* indices = data->type_indices[c];
+                const uint32_t num_indices = (uint32_t)md_array_size(data->type_indices[c]);
+                vec4_t val = {0, 0, 0, 0};
+                val.elem[c] = 1.0f;
                 if (num_indices) {
                     for (uint32_t i = 0; i < num_indices; ++i) {
                         uint32_t idx = f * frame_stride + indices[i];
@@ -770,30 +775,31 @@ task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angl
                         float v = angles[idx].psi * angle_to_coord_scale + angle_to_coord_offset;
                         uint32_t x = (uint32_t)(u * density_tex_dim) & (density_tex_dim - 1);
                         uint32_t y = (uint32_t)(v * density_tex_dim) & (density_tex_dim - 1);
-                        data.density_tex[4 * (y * density_tex_dim + x) + c] += 1.0f;
+                        ASSERT(0 <= x && x < density_tex_dim);
+                        ASSERT(0 <= y && y < density_tex_dim);
+                        data->density_tex[y * density_tex_dim + x] += val;
                         sum[c] += 1.0;
                     }
                 }
             }
         }
 
-        blur_density_gaussian((vec4_t*)data.density_tex, density_tex_dim, data.sigma);
+        blur_density_gaussian(data->density_tex, density_tex_dim, data->sigma);
 
-        data.rep->den_sum[0] = (float)sum[0];
-        data.rep->den_sum[1] = (float)sum[1];
-        data.rep->den_sum[2] = (float)sum[2];
-        data.rep->den_sum[3] = (float)sum[3];
-    });
+        data->rep->den_sum[0] = (float)sum[0];
+        data->rep->den_sum[1] = (float)sum[1];
+        data->rep->den_sum[2] = (float)sum[2];
+        data->rep->den_sum[3] = (float)sum[3];
+    }, user_data);
 
-    task_system::main_enqueue("Update rama texture", [data = user_data]() {
-       
-        glBindTexture(GL_TEXTURE_2D, data.rep->den_tex);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, density_tex_dim, density_tex_dim, GL_RGBA, GL_FLOAT, data.density_tex);
+    task_system::main_enqueue(STR("Update rama texture"), [](void* user_data) {
+        UserData* data = (UserData*)user_data;
+        glBindTexture(GL_TEXTURE_2D, data->rep->den_tex);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, density_tex_dim, density_tex_dim, GL_RGBA, GL_FLOAT, data->density_tex);
         glBindTexture(GL_TEXTURE_2D, 0);
         
-        md_free(default_allocator, data.density_tex, sizeof(float) * density_tex_dim * density_tex_dim * 4);
-
-    }, id);
+        md_free(default_allocator, data, data->alloc_size);
+    }, user_data, id);
 
     return id;
 }
