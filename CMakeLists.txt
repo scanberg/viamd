@@ -64,7 +64,6 @@ endif()
 
 set(OSX_BUNDLE "")
 if (APPLE)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.9")
     if (VIAMD_CREATE_MACOSX_BUNDLE)
         set(OSX_BUNDLE "MACOSX_BUNDLE")
     endif()
