@@ -3867,7 +3867,6 @@ ImGui::PopStyleColor();
 static void draw_async_task_window(ApplicationData* data) {
     constexpr float WIDTH = 300.f;
     constexpr float MARGIN = 10.f;
-    constexpr float PROGRESSBAR_WIDTH_FRACT = 0.3f;
 
     task_system::ID* tasks = task_system::pool_running_tasks(frame_allocator);
     uint32_t num_tasks = (uint32_t)md_array_size(tasks);
@@ -5774,7 +5773,8 @@ static void draw_debug_window(ApplicationData* data) {
         if (num_tasks > 0) {
             ImGui::Text("Running Pool Tasks:");
             for (int64_t i = 0; i < md_array_size(tasks); ++i) {
-                ImGui::Text("[%i]: %s", (int)i, task_system::task_label(tasks[i]));
+                str_t lbl = task_system::task_label(tasks[i]);
+                ImGui::Text("[%i]: %.*s", (int)i, (int)lbl.len, lbl.ptr);
             }
         }
 

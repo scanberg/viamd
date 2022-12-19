@@ -742,14 +742,16 @@ task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angl
     user_data->density_tex = density_tex;
     user_data->rep = rep;
     user_data->angles = angles;
+    user_data->type_indices[0] = rama_type_indices[0];
+    user_data->type_indices[1] = rama_type_indices[1];
+    user_data->type_indices[2] = rama_type_indices[2];
+    user_data->type_indices[3] = rama_type_indices[3];
     user_data->frame_beg = frame_beg;
     user_data->frame_end = frame_end;
     user_data->frame_stride = frame_stride;
     user_data->sigma = sigma;
 
-    MEMCPY(user_data->type_indices, rama_type_indices, 4 * sizeof(uint32_t*));
-
-    task_system::ID id = task_system::pool_enqueue(STR("Compute rama density"), [](void* user_data) {
+    task_system::ID id = task_system::pool_enqueue(STR("Rama density"), [](void* user_data) {
         UserData* data = (UserData*)user_data;
         const float angle_to_coord_scale = 1.0f / (2.0f * PI);
         const float angle_to_coord_offset = 0.5f;
