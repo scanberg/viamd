@@ -794,7 +794,7 @@ task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angl
         data->rep->den_sum[3] = (float)sum[3];
     }, user_data);
 
-    task_system::main_enqueue(STR("Update rama texture"), [](void* user_data) {
+    task_system::main_enqueue(STR("##Update rama texture"), [](void* user_data) {
         UserData* data = (UserData*)user_data;
         glBindTexture(GL_TEXTURE_2D, data->rep->den_tex);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, density_tex_dim, density_tex_dim, GL_RGBA, GL_FLOAT, data->density_tex);
