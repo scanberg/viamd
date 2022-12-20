@@ -1213,8 +1213,6 @@ int main(int, char**) {
     auto& mol = data.mold.mol;
     auto& traj = data.mold.traj;
 
-    data.mold.script.ir = md_script_ir_create(persistent_allocator);
-
     bool time_changed = true;
     bool time_stopped = true;
 
@@ -1458,6 +1456,11 @@ int main(int, char**) {
                     std::string src = editor.GetText();
                     str_t src_str {src.data(), (int64_t)src.length()};
 
+                    if (data.mold.script.ir) {
+                        md_script_ir_free(data.mold.script.ir);
+                        data.mold.script.ir = nullptr;
+                    }
+
                     editor.ClearMarkers();
                     editor.ClearErrorMarkers();
                     
@@ -1475,16 +1478,15 @@ int main(int, char**) {
                         defer { md_script_ir_free(selection_ir); };
                         md_script_ir_add_bitfield_identifiers(selection_ir, idents, md_array_size(idents));
 
+                        if (!data.mold.script.ir) {
+                            data.mold.script.ir = md_script_ir_create(persistent_allocator);
+                        }
                         md_script_ir_compile_from_source(data.mold.script.ir, src_str, &data.mold.mol, selection_ir);
 
                         if (md_script_ir_valid(data.mold.script.ir)) {
                             uint64_t ir_figerprint = md_script_ir_fingerprint(data.mold.script.ir);
                             if (data.mold.script.ir_fingerprint != ir_figerprint) {
                                 data.mold.script.ir_fingerprint = ir_figerprint;
-
-                                data.mold.script.eval_init = true;
-                                data.mold.script.evaluate_full = true;
-                                data.mold.script.evaluate_filt = true;
                             }
                         }
 
@@ -1535,39 +1537,53 @@ int main(int, char**) {
                 if (data.mold.script.full_eval) {
                     md_script_eval_free(data.mold.script.full_eval);
                 }
-                data.mold.script.full_eval = md_script_eval_create(num_frames, data.mold.script.ir, persistent_allocator);
-
                 if (data.mold.script.filt_eval) {
                     md_script_eval_free(data.mold.script.filt_eval);
                 }
-                data.mold.script.filt_eval = md_script_eval_create(num_frames, data.mold.script.ir, persistent_allocator);
+                
+                if (md_script_ir_valid(data.mold.script.ir)) {
+                    data.mold.script.full_eval = md_script_eval_create(num_frames, data.mold.script.ir, persistent_allocator);
+                    data.mold.script.filt_eval = md_script_eval_create(num_frames, data.mold.script.ir, persistent_allocator);
+                }
 
                 const int64_t num_props = md_script_eval_num_properties(data.mold.script.full_eval);
                 ASSERT(md_script_eval_num_properties(data.mold.script.filt_eval) == num_props);
                 init_display_properties(&data.display_properties, md_script_eval_properties(data.mold.script.full_eval), md_script_eval_properties(data.mold.script.filt_eval), num_props);
+
+                data.mold.script.evaluate_filt = true;
+                data.mold.script.evaluate_full = true;
             }
 
             if (data.mold.script.evaluate_full) {
                 if (task_system::task_is_running(data.tasks.evaluate_full)) {
                     md_script_eval_interrupt(data.mold.script.full_eval);
-                } else if (data.mold.script.full_eval && md_script_ir_valid(data.mold.script.ir) && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
+                } else if (data.mold.script.full_eval &&
+                           md_script_ir_valid(data.mold.script.ir) &&
+                           md_script_eval_ir_fingerprint(data.mold.script.full_eval) == md_script_ir_fingerprint(data.mold.script.ir) &&
+                           md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
                     data.mold.script.evaluate_full = false;
                     md_script_eval_clear(data.mold.script.full_eval);
-                    data.tasks.evaluate_full = task_system::pool_enqueue(STR("Eval Full"), 0, (uint32_t)num_frames, [](uint32_t frame_beg, uint32_t frame_end, void* user_data) {
-                        ApplicationData* data = (ApplicationData*)user_data;
-                        md_script_eval_frame_range(data->mold.script.full_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, frame_beg, frame_end);
-                    }, &data);
-                    task_system::pool_enqueue(STR("##Release IR Semaphore"), [](void* user_data) {
-                        ApplicationData* data = (ApplicationData*)user_data;
-                        md_semaphore_release(&data->mold.script.ir_semaphore);
-                    }, &data, data.tasks.evaluate_full);
+
+                    if (md_script_eval_num_properties(data.mold.script.full_eval) > 0) {
+                        data.tasks.evaluate_full = task_system::pool_enqueue(STR("Eval Full"), 0, (uint32_t)num_frames, [](uint32_t frame_beg, uint32_t frame_end, void* user_data) {
+                            ApplicationData* data = (ApplicationData*)user_data;
+                            md_script_eval_frame_range(data->mold.script.full_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, frame_beg, frame_end);
+                        }, &data);
+                        task_system::pool_enqueue(STR("##Release IR Semaphore"), [](void* user_data) {
+                            ApplicationData* data = (ApplicationData*)user_data;
+                            md_semaphore_release(&data->mold.script.ir_semaphore);
+                        }, &data, data.tasks.evaluate_full);
+                    }
                 }
             }
 
             if (data.timeline.filter.enabled && data.mold.script.evaluate_filt) {
                 if (task_system::task_is_running(data.tasks.evaluate_filt)) {
                     md_script_eval_interrupt(data.mold.script.filt_eval);
-                } else if (data.mold.script.filt_eval && md_script_ir_valid(data.mold.script.ir) && md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
+                } else if (data.mold.script.filt_eval &&
+                           md_script_ir_valid(data.mold.script.ir) &&
+                           md_script_eval_ir_fingerprint(data.mold.script.filt_eval) == md_script_ir_fingerprint(data.mold.script.ir) &&
+                           md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
                     uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(data.mold.traj);
                     uint32_t beg_frame = CLAMP((uint32_t)data.timeline.filter.beg_frame, 0, traj_frames-1);
                     uint32_t end_frame = CLAMP((uint32_t)data.timeline.filter.end_frame + 1, beg_frame + 1, traj_frames);
@@ -3889,9 +3905,8 @@ static void draw_async_task_window(ApplicationData* data) {
 
         const float pad = 3.0f;
         const float size = ImGui::GetFontSize() + pad * 2;
-        const float spacing = 2.f;
 
-        char buf[32];
+        char buf[64];
         for (uint32_t i = 0; i < MIN(num_tasks, 8); i++) {
             const auto id = tasks[i];
             str_t label = task_system::task_label(id);
@@ -5876,7 +5891,25 @@ static void draw_script_editor_window(ApplicationData* data) {
             data->mold.script.time_since_last_change = 0;
         }
 
-        editor.Render("TextEditor");
+        const ImVec2 content_size = ImGui::GetContentRegionAvail();
+        const char* btn_text = "Evaluate";
+        const ImVec2 label_size = ImGui::CalcTextSize(btn_text, NULL, true) * ImVec2(1.4, 1.0);
+        const ImVec2 btn_size = ImGui::CalcItemSize(ImVec2(0,0), label_size.x + ImGui::GetStyle().FramePadding.x * 2.0f, label_size.y + ImGui::GetStyle().FramePadding.y * 2.0f);
+        const ImVec2 text_size(content_size - ImVec2(0, btn_size.y + ImGui::GetStyle().ItemSpacing.y));
+
+        editor.Render("TextEditor", text_size);
+
+        const float widthNeeded = btn_size.x + ImGui::GetStyle().ItemSpacing.x;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + content_size.x - btn_size.x);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetStyle().ItemSpacing.y);
+
+        const bool valid = md_script_ir_valid(data->mold.script.ir);
+        
+        if (!valid) ImGui::PushDisabled();
+        if (ImGui::Button("Evaluate", btn_size)) {
+            data->mold.script.eval_init = true;
+        }
+        if (!valid) ImGui::PopDisabled();
 
         data->mold.script.vis = {0};
         const TextEditor::Marker* hovered_marker = editor.GetHoveredMarker();
