@@ -730,8 +730,10 @@ void TextEditor::HandleKeyboardInputs()
 
 		ImGuiIO& io = ImGui::GetIO();
 		auto isOSX = io.ConfigMacOSXBehaviors;
-		auto alt = ImGui::IsKeyDown(ImGuiMod_Alt);
-		auto ctrl = ImGui::IsKeyDown(ImGuiMod_Ctrl) && !alt;	// @NOTE(Robin): There seems to be some wierd behaviour in recent imgui versions where the Right alt key (AltGr) is mapped to Ctrl && Alt
+		//auto alt = ImGui::IsKeyDown(ImGuiMod_Alt);
+		//auto ctrl = ImGui::IsKeyDown(ImGuiMod_Ctrl);// && !alt;	// @NOTE(Robin): There seems to be some wierd behaviour in recent imgui versions where the Right alt key (AltGr) is mapped to Ctrl && Alt
+		auto alt = ImGui::IsKeyDown(ImGuiKey_LeftAlt) || ImGui::IsKeyDown(ImGuiKey_RightAlt);
+		auto ctrl = ImGui::IsKeyDown(ImGuiKey_LeftCtrl) || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
 		auto shift = ImGui::IsKeyDown(ImGuiMod_Shift);
 		auto super = ImGui::IsKeyDown(ImGuiMod_Super);
 
@@ -796,7 +798,7 @@ void TextEditor::HandleKeyboardInputs()
 		else if (!IsReadOnly() && !alt && !ctrl && !shift && !super && ImGui::IsKeyPressed(ImGuiKey_Enter))
 			EnterCharacter('\n', false);
 		else if (!IsReadOnly() && !alt && !ctrl && !super && ImGui::IsKeyPressed(ImGuiKey_Tab))
-			EnterCharacter('\t', shift);
+			InsertText("    ");
 
 		if (!IsReadOnly() && !io.InputQueueCharacters.empty() && !ctrl && !super)
 		{
