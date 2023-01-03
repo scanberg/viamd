@@ -61,14 +61,6 @@ namespace iso {
     static GLint uniform_loc_iso_contour_line_scale = -1;
 }
 
-namespace blur {
-    static GLuint program = 0;
-    static GLuint tex = 0;
-    static GLint uniform_loc_tex = -1;
-    static GLint uniform_loc_inv_res = -1;
-    static GLint uniform_loc_step = -1;
-}
-
 constexpr str_t v_fs_quad_src = STR(R"(
 #version 150 core
 
@@ -346,34 +338,6 @@ void initialize() {
         iso::uniform_loc_iso_contour_line_scale = glGetUniformLocation(iso::program, "u_iso_contour_line_scale");
     }
 
-    if (!blur::program) {
-        GLuint v_shader = gl::compile_shader_from_source(v_fs_quad_src, GL_VERTEX_SHADER);
-        GLuint f_shader = gl::compile_shader_from_source(f_shader_box_blur_src, GL_FRAGMENT_SHADER);
-        defer {
-            glDeleteShader(v_shader);
-            glDeleteShader(f_shader);
-        };
-
-        blur::program = glCreateProgram();
-        const GLuint shaders[] = {v_shader, f_shader};
-        gl::attach_link_detach(blur::program, shaders, (int)ARRAY_SIZE(shaders));
-
-        blur::uniform_loc_tex         = glGetUniformLocation(blur::program, "u_tex");
-        blur::uniform_loc_inv_res     = glGetUniformLocation(blur::program, "u_inv_res");
-        blur::uniform_loc_step        = glGetUniformLocation(blur::program, "u_step");
-    }
-
-    if (!blur::tex) {
-        glGenTextures(1, &blur::tex);
-        glBindTexture(GL_TEXTURE_2D, blur::tex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, density_tex_dim, density_tex_dim);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }
-
     if (!fbo) {
         glGenFramebuffers(1, &fbo);
     }
@@ -491,69 +455,6 @@ static void blur_density_gaussian(vec4_t* data, int dim, float sigma) {
     blur_rows_acc(data, tmp_data, dim, box_w[1]);
     blur_rows_acc(tmp_data, data, dim, box_w[2]);
     transpose(data, tmp_data, dim);
-}
-
-static void blur_density_gpu(uint32_t density_tex, uint32_t num_passes) {
-    // Backup GL state
-    GLint last_viewport[4];
-    glGetIntegerv(GL_VIEWPORT, last_viewport);
-    GLboolean last_enable_blend = glIsEnabled(GL_BLEND);
-    GLboolean last_enable_cull_face = glIsEnabled(GL_CULL_FACE);
-    GLboolean last_enable_depth_test = glIsEnabled(GL_DEPTH_TEST);
-    GLboolean last_enable_scissor_test = glIsEnabled(GL_SCISSOR_TEST);
-
-    glDisable(GL_BLEND);
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_DEPTH_TEST);
-
-    glViewport(0, 0, density_tex_dim, density_tex_dim);
-
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ramachandran::fbo);
-    glDrawBuffer(GL_COLOR_ATTACHMENT0);
-
-    glBindVertexArray(ramachandran::vao);
-
-    glUseProgram(ramachandran::blur::program);
-
-    const float one_over_dim = 1.0f / density_tex_dim;
-
-    glUniform1i(ramachandran::blur::uniform_loc_tex, 0);
-    glUniform2f(ramachandran::blur::uniform_loc_inv_res, one_over_dim, one_over_dim);
-
-    glActiveTexture(GL_TEXTURE0);
-    for (uint32_t i = 0; i < num_passes; ++i) {
-        glUniform2f(ramachandran::blur::uniform_loc_step, one_over_dim, 0);
-        glBindTexture(GL_TEXTURE_2D, density_tex);
-        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, ramachandran::blur::tex, 0);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-
-        glUniform2f(ramachandran::blur::uniform_loc_step, 0, one_over_dim);
-        glBindTexture(GL_TEXTURE_2D, ramachandran::blur::tex);
-        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, density_tex, 0);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-    }
-
-    glBindVertexArray(0);
-    glUseProgram(0);
-
-    // Restore modified GL state
-    if (last_enable_blend)
-        glEnable(GL_BLEND);
-    else
-        glDisable(GL_BLEND);
-    if (last_enable_cull_face)
-        glEnable(GL_CULL_FACE);
-    else
-        glDisable(GL_CULL_FACE);
-    if (last_enable_depth_test)
-        glEnable(GL_DEPTH_TEST);
-    else
-        glDisable(GL_DEPTH_TEST);
-    if (last_enable_scissor_test)
-        glEnable(GL_SCISSOR_TEST);
-    else
-        glDisable(GL_SCISSOR_TEST);
-    glViewport(last_viewport[0], last_viewport[1], (GLsizei)last_viewport[2], (GLsizei)last_viewport[3]);
 }
 
 static void init_rama_rep(rama_rep_t* rep) {
