@@ -2097,7 +2097,7 @@ static void interpolate_atomic_properties(ApplicationData* data) {
         MIN(frame + 2, last_frame)
     };
 
-    int64_t stride = ALIGN_TO(mol.atom.count, md_simd_widthf);    // The interploation uses SIMD vectorization without bounds, so we make sure there is no overlap between the data segments
+    int64_t stride = ALIGN_TO(mol.atom.count, md_simd_f32_width);    // The interploation uses SIMD vectorization without bounds, so we make sure there is no overlap between the data segments
     int64_t bytes = stride * sizeof(float) * 3 * 4;
     void* mem = md_alloc(frame_allocator, bytes);
     defer { md_free(frame_allocator, mem, bytes); };
@@ -4805,7 +4805,7 @@ static void draw_shape_space_window(ApplicationData* data) {
 
                         data->tasks.shape_space_evaluate = task_system::pool_enqueue(STR("Eval Shape Space"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
                             ApplicationData* data = (ApplicationData*)user_data;
-                            int64_t stride = ALIGN_TO(data->mold.mol.atom.count, md_simd_widthf);
+                            int64_t stride = ALIGN_TO(data->mold.mol.atom.count, md_simd_f32_width);
                             float* coords = (float*)md_alloc(default_allocator, stride * 3 * sizeof(float));
                             float* x = coords + stride * 0;
                             float* y = coords + stride * 1;
@@ -6022,7 +6022,7 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
     // Copy mol and replace with initial coords
     md_molecule_t mol = data.mold.mol;
 
-    int64_t stride = ALIGN_TO(data.mold.mol.atom.count, md_simd_widthf);
+    int64_t stride = ALIGN_TO(data.mold.mol.atom.count, md_simd_f32_width);
     float* coords = (float*)md_alloc(frame_allocator, stride * sizeof(float) * 3);
     mol.atom.x = coords + stride * 0;
     mol.atom.y = coords + stride * 1;
@@ -6615,7 +6615,7 @@ static void init_trajectory_data(ApplicationData* data) {
                 // Create copy here of molecule since we use the full structure as input
                 md_molecule_t mol = data->mold.mol;
 
-                const int64_t stride = ALIGN_TO(mol.atom.count, md_simd_widthf);
+                const int64_t stride = ALIGN_TO(mol.atom.count, md_simd_f32_width);
                 const int64_t bytes = stride * sizeof(float) * 3;
                 float* coords = (float*)md_alloc(default_allocator, bytes);
                 defer { md_free(default_allocator, coords, bytes); };
