@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(viamd VERSION 0.1.5 LANGUAGES CXX)
+project(viamd VERSION 0.1.11 LANGUAGES CXX)
 
 INCLUDE(ext/mdlib/cmake/common.cmake)
 

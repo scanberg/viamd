@@ -5899,7 +5899,6 @@ static void draw_script_editor_window(ApplicationData* data) {
 
         editor.Render("TextEditor", text_size);
 
-        const float widthNeeded = btn_size.x + ImGui::GetStyle().ItemSpacing.x;
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + content_size.x - btn_size.x);
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetStyle().ItemSpacing.y);
 
