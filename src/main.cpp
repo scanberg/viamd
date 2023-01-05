@@ -779,8 +779,6 @@ struct ApplicationData {
     bool show_property_export_window = false;
 };
 
-//static void postprocess_frame(md_frame_data_t* frame, void* user_data);
-
 static inline uint64_t generate_fingerprint() {
     return (uint64_t)md_time_current();
 }
