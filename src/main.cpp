@@ -163,7 +163,7 @@ static inline bool operator == (const ImVec4& lhs, const ImVec4& rhs) { return l
 static inline bool operator != (const ImVec4& lhs, const ImVec4& rhs) { return !(lhs == rhs); }
 
 enum class PlaybackMode { Stopped, Playing };
-enum class InterpolationMode { Nearest, Linear, Cubic };
+enum class InterpolationMode { Nearest, Linear, CubicSpline };
 enum class SelectionLevel { Atom, Residue, Chain };
 enum class SelectionOperator { Or, And, AndNot, Set, Clear };
 enum class SelectionGrowth { CovalentBond, Radial };
@@ -520,7 +520,8 @@ struct ApplicationData {
     struct {
         double frame = 0.f;  // double precision for long trajectories
         float fps = 10.f;
-        InterpolationMode interpolation = InterpolationMode::Cubic;
+        float tension = 0.0f;
+        InterpolationMode interpolation = InterpolationMode::CubicSpline;
         PlaybackMode mode = PlaybackMode::Stopped;
         bool apply_pbc = false;
     } animation;
@@ -979,7 +980,7 @@ static void draw_main_menu(ApplicationData* data);
 static void draw_context_popup(ApplicationData* data);
 static void draw_selection_query_window(ApplicationData* data);
 static void draw_selection_grow_window(ApplicationData* data);
-static void draw_animation_control_window(ApplicationData* data);
+static void draw_animation_window(ApplicationData* data);
 static void draw_representations_window(ApplicationData* data);
 static void draw_timeline_window(ApplicationData* data);
 static void draw_distribution_window(ApplicationData* data);
@@ -1256,7 +1257,7 @@ int main(int, char**) {
 
         draw_context_popup(&data);
         draw_async_task_window(&data);
-        draw_animation_control_window(&data);
+        draw_animation_window(&data);
         draw_main_menu(&data);
         draw_notifications_window();
 
@@ -2084,6 +2085,8 @@ static void interpolate_atomic_properties(ApplicationData* data) {
     // This is not actually time, but the fractional frame representation
     const double time = CLAMP(data->animation.frame, 0.0, double(last_frame));
 
+    // Scaling factor for cubic spline
+    const float s = 1.0f - CLAMP(data->animation.tension, 0.0f, 1.0f);
     const float t = (float)fractf(time);
     const int64_t frame = (int64_t)time;
     const int64_t nearest_frame = CLAMP((int64_t)(time + 0.5), 0LL, last_frame);
@@ -2131,17 +2134,17 @@ static void interpolate_atomic_properties(ApplicationData* data) {
             md_util_linear_interpolation(dst, src, mol.atom.count, pbc_ext, t);
         }
             break;
-        case InterpolationMode::Cubic:
+        case InterpolationMode::CubicSpline:
         {
             md_trajectory_frame_header_t header[4] = {0};
             md_trajectory_load_frame(data->mold.traj, frames[0], &header[0], src[0].x, src[0].y, src[0].z);
             md_trajectory_load_frame(data->mold.traj, frames[1], &header[1], src[1].x, src[1].y, src[1].z);
             md_trajectory_load_frame(data->mold.traj, frames[2], &header[2], src[2].x, src[2].y, src[2].z);
             md_trajectory_load_frame(data->mold.traj, frames[3], &header[3], src[3].x, src[3].y, src[3].z);
-            data->simulation_box.box = cubic_spline(header[0].box, header[1].box, header[2].box, header[3].box, t, 1.0f);
+            data->simulation_box.box = cubic_spline(header[0].box, header[1].box, header[2].box, header[3].box, t, s);
             const vec3_t pbc_ext = data->simulation_box.box * vec3_set1(1);
 
-            md_util_cubic_interpolation(dst, src, mol.atom.count, pbc_ext, t, 1.0f);
+            md_util_cubic_spline_interpolation(dst, src, mol.atom.count, pbc_ext, t, s);
         }
             break;
         default:
@@ -2178,7 +2181,7 @@ static void interpolate_atomic_properties(ApplicationData* data) {
             }
             break;
         }
-        case InterpolationMode::Cubic: {
+        case InterpolationMode::CubicSpline: {
             for (int64_t i = 0; i < mol.backbone.count; ++i) {
                 float phi[4] = {src_angles[0][i].phi, src_angles[1][i].phi, src_angles[2][i].phi, src_angles[3][i].phi};
                 float psi[4] = {src_angles[0][i].psi, src_angles[1][i].psi, src_angles[2][i].psi, src_angles[3][i].psi};
@@ -2191,8 +2194,8 @@ static void interpolate_atomic_properties(ApplicationData* data) {
                 psi[2] = deperiodizef(psi[2], psi[1], (float)TWO_PI);
                 psi[3] = deperiodizef(psi[3], psi[2], (float)TWO_PI);
 
-                float final_phi = cubic_spline(phi[0], phi[1], phi[2], phi[3], t);
-                float final_psi = cubic_spline(psi[0], psi[1], psi[2], psi[3], t);
+                float final_phi = cubic_spline(phi[0], phi[1], phi[2], phi[3], t, s);
+                float final_psi = cubic_spline(psi[0], psi[1], psi[2], psi[3], t, s);
                 mol.backbone.angle[i] = {deperiodizef(final_phi, 0, (float)TWO_PI), deperiodizef(final_psi, 0, (float)TWO_PI)};
             }
             break;
@@ -2227,7 +2230,7 @@ static void interpolate_atomic_properties(ApplicationData* data) {
             }
             break;
         }
-        case InterpolationMode::Cubic: {
+        case InterpolationMode::CubicSpline: {
             for (int64_t i = 0; i < mol.backbone.count; ++i) {
                 const vec4_t ss_f[4] = {
                     convert_color((uint32_t)src_ss[0][i]),
@@ -2235,7 +2238,7 @@ static void interpolate_atomic_properties(ApplicationData* data) {
                     convert_color((uint32_t)src_ss[2][i]),
                     convert_color((uint32_t)src_ss[3][i]),
                 };
-                const vec4_t ss_res = cubic_spline(ss_f[0], ss_f[1], ss_f[2], ss_f[3], t);
+                const vec4_t ss_res = cubic_spline(ss_f[0], ss_f[1], ss_f[2], ss_f[3], t, s);
                 mol.backbone.secondary_structure[i] = (md_secondary_structure_t)convert_color(ss_res);
             }
             break;
@@ -3571,7 +3574,7 @@ static void draw_selection_query_window(ApplicationData* data) {
     ImGui::End();
 }
 
-static void draw_animation_control_window(ApplicationData* data) {
+static void draw_animation_window(ApplicationData* data) {
     ASSERT(data);
     int num_frames = (int)md_trajectory_num_frames(data->mold.traj);
     if (num_frames == 0) return;
@@ -3598,7 +3601,12 @@ static void draw_animation_control_window(ApplicationData* data) {
             unit_print(unit_buf, sizeof(unit_buf), time_unit);
             snprintf(time_label, sizeof(time_label), "Time (%s)", unit_buf);
         }
-                
+        if (ImGui::Combo("Interp.", (int*)(&data->animation.interpolation), "Nearest\0Linear\0Cubic Spline\0\0")) {
+            interpolate_atomic_properties(data);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Interpolation Method for Atom Positions");
+        }
         if (ImGui::SliderScalar(time_label, ImGuiDataType_Double, &t, &min, &max, "%.2f")) {
             data->animation.frame = time_to_frame(t, *data);
         }
@@ -3606,11 +3614,11 @@ static void draw_animation_control_window(ApplicationData* data) {
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Animation Speed in Frames Per Second");
         }
-        if (ImGui::Combo("Interp.", (int*)(&data->animation.interpolation), "Nearest\0Linear\0Cubic\0\0")) {
-            interpolate_atomic_properties(data);
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Interpolation Method for Atom Positions");
+        if (data->animation.interpolation == InterpolationMode::CubicSpline) {
+            ImGui::SliderFloat("Tension", &data->animation.tension, 0.0f, 1.0f, "%.2f");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Tension of the Cubic Spline");
+            }
         }
         ImGui::Checkbox("Apply PBC", &data->animation.apply_pbc);
         switch (data->animation.mode) {
