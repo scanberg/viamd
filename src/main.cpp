@@ -1146,6 +1146,8 @@ int main(int, char**) {
 
     md_semaphore_init(&data.mold.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT);
 
+    data.mold.script.ir = md_script_ir_create(persistent_allocator);
+
     // Init platform
     LDEBUG("Initializing GL...");
     if (!application::initialize(&data.ctx, 0, 0, "VIAMD")) {
@@ -1448,39 +1450,34 @@ int main(int, char**) {
 
                 // Try aquire all semaphores
                 if (md_semaphore_try_aquire_n(&data.mold.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT)) {
+                    defer { md_semaphore_release_n(&data.mold.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT); };
+
                     // Now we hold all semaphores for the script
                     data.mold.script.compile_ir = false;
                     data.mold.script.time_since_last_change = 0;
+                    
+                    md_script_ir_clear(data.mold.script.ir);
 
                     std::string src = editor.GetText();
                     str_t src_str {src.data(), (int64_t)src.length()};
-
-                    if (data.mold.script.ir) {
-                        md_script_ir_free(data.mold.script.ir);
-                        data.mold.script.ir = nullptr;
-                    }
 
                     editor.ClearMarkers();
                     editor.ClearErrorMarkers();
                     
                     if (src_str) {
-                        md_script_bitfield_identifier_t* idents = 0;
-                        for (int64_t i = 0; i < md_array_size(data.selection.stored_selections); ++i) {
-                            md_script_bitfield_identifier_t ident = {
-                                .identifier_name = data.selection.stored_selections[i].name,
-                                .bitfield = &data.selection.stored_selections[i].atom_mask,
-                            };
-                            md_array_push(idents, ident, frame_allocator);
+                        const int64_t num_stored_selections = md_array_size(data.selection.stored_selections);                       
+                        if (num_stored_selections > 0) {
+                            md_script_bitfield_identifier_t* idents = 0;
+                            for (int64_t i = 0; i < num_stored_selections; ++i) {
+                                md_script_bitfield_identifier_t ident = {
+                                    .identifier_name = data.selection.stored_selections[i].name,
+                                    .bitfield = &data.selection.stored_selections[i].atom_mask,
+                                };
+                                md_array_push(idents, ident, frame_allocator);
+                            }
+                            md_script_ir_add_bitfield_identifiers(data.mold.script.ir, idents, md_array_size(idents));
                         }
-
-                        md_script_ir_t* selection_ir = md_script_ir_create(frame_allocator);
-                        defer { md_script_ir_free(selection_ir); };
-                        md_script_ir_add_bitfield_identifiers(selection_ir, idents, md_array_size(idents));
-
-                        if (!data.mold.script.ir) {
-                            data.mold.script.ir = md_script_ir_create(persistent_allocator);
-                        }
-                        md_script_ir_compile_from_source(data.mold.script.ir, src_str, &data.mold.mol, selection_ir);
+                        md_script_ir_compile_from_source(data.mold.script.ir, src_str, &data.mold.mol, NULL);
 
                         if (md_script_ir_valid(data.mold.script.ir)) {
                             uint64_t ir_figerprint = md_script_ir_fingerprint(data.mold.script.ir);
@@ -1523,8 +1520,6 @@ int main(int, char**) {
                             editor.AddMarker(marker);
                         }
                     }
-
-                    md_semaphore_release_n(&data.mold.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT);
                 }
             }
         }
@@ -1553,49 +1548,63 @@ int main(int, char**) {
                 data.mold.script.evaluate_full = true;
             }
 
-            if (data.mold.script.evaluate_full) {
+            if (data.mold.script.full_eval && data.mold.script.evaluate_full) {
                 if (task_system::task_is_running(data.tasks.evaluate_full)) {
                     md_script_eval_interrupt(data.mold.script.full_eval);
-                } else if (data.mold.script.full_eval &&
-                           md_script_ir_valid(data.mold.script.ir) &&
-                           md_script_eval_ir_fingerprint(data.mold.script.full_eval) == md_script_ir_fingerprint(data.mold.script.ir) &&
-                           md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
-                    data.mold.script.evaluate_full = false;
-                    md_script_eval_clear(data.mold.script.full_eval);
+                } else {
+                    if (md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
+                        if (md_script_ir_valid(data.mold.script.ir) &&
+                            md_script_eval_ir_fingerprint(data.mold.script.full_eval) == md_script_ir_fingerprint(data.mold.script.ir))
+                        {
+                            data.mold.script.evaluate_full = false;
+                            md_script_eval_clear(data.mold.script.full_eval);
 
-                    if (md_script_eval_num_properties(data.mold.script.full_eval) > 0) {
-                        data.tasks.evaluate_full = task_system::pool_enqueue(STR("Eval Full"), 0, (uint32_t)num_frames, [](uint32_t frame_beg, uint32_t frame_end, void* user_data) {
-                            ApplicationData* data = (ApplicationData*)user_data;
-                            md_script_eval_frame_range(data->mold.script.full_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, frame_beg, frame_end);
-                        }, &data);
-                        task_system::pool_enqueue(STR("##Release IR Semaphore"), [](void* user_data) {
-                            ApplicationData* data = (ApplicationData*)user_data;
-                            md_semaphore_release(&data->mold.script.ir_semaphore);
-                        }, &data, data.tasks.evaluate_full);
+                            data.tasks.evaluate_full = task_system::pool_enqueue(STR("Eval Full"), 0, (uint32_t)num_frames, [](uint32_t frame_beg, uint32_t frame_end, void* user_data) {
+                                ApplicationData* data = (ApplicationData*)user_data;
+                                md_script_eval_frame_range(data->mold.script.full_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, frame_beg, frame_end);
+                            }, &data);
+                            
+                            task_system::pool_enqueue(STR("##Release IR Semaphore"), [](void* user_data) {
+                                ApplicationData* data = (ApplicationData*)user_data;
+                                md_semaphore_release(&data->mold.script.ir_semaphore);
+                            }, &data, data.tasks.evaluate_full);
+                        }
+                        else {
+                            md_semaphore_release(&data.mold.script.ir_semaphore);
+                        }
                     }
                 }
             }
 
-            if (data.timeline.filter.enabled && data.mold.script.evaluate_filt) {
+            if (data.mold.script.filt_eval && data.mold.script.evaluate_filt && data.timeline.filter.enabled) {
                 if (task_system::task_is_running(data.tasks.evaluate_filt)) {
                     md_script_eval_interrupt(data.mold.script.filt_eval);
-                } else if (data.mold.script.filt_eval &&
-                           md_script_ir_valid(data.mold.script.ir) &&
-                           md_script_eval_ir_fingerprint(data.mold.script.filt_eval) == md_script_ir_fingerprint(data.mold.script.ir) &&
-                           md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
-                    uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(data.mold.traj);
-                    uint32_t beg_frame = CLAMP((uint32_t)data.timeline.filter.beg_frame, 0, traj_frames-1);
-                    uint32_t end_frame = CLAMP((uint32_t)data.timeline.filter.end_frame + 1, beg_frame + 1, traj_frames);
-                    data.mold.script.evaluate_filt = false;
-                    md_script_eval_clear(data.mold.script.filt_eval);
-                    data.tasks.evaluate_filt = task_system::pool_enqueue(STR("Eval Filt"), beg_frame, end_frame, [](uint32_t beg, uint32_t end, void* user_data) {
-                        ApplicationData* data = (ApplicationData*)user_data;
-                        md_script_eval_frame_range(data->mold.script.filt_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, beg, end);
-                    }, &data);
-                    task_system::pool_enqueue(STR("##Release IR Semaphore"), [](void* user_data) {
-                        ApplicationData* data = (ApplicationData*)user_data;
-                        md_semaphore_release(&data->mold.script.ir_semaphore);
-                    }, &data, data.tasks.evaluate_filt);
+                } else {
+                    if (md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
+                        if (md_script_ir_valid(data.mold.script.ir) &&
+                            md_script_eval_ir_fingerprint(data.mold.script.filt_eval) == md_script_ir_fingerprint(data.mold.script.ir))
+                        {
+                            data.mold.script.evaluate_filt = false;
+                            md_script_eval_clear(data.mold.script.filt_eval);
+                            
+                            const uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(data.mold.traj);
+                            const uint32_t beg_frame = CLAMP((uint32_t)data.timeline.filter.beg_frame, 0, traj_frames-1);
+                            const uint32_t end_frame = CLAMP((uint32_t)data.timeline.filter.end_frame + 1, beg_frame + 1, traj_frames);
+                            data.tasks.evaluate_filt = task_system::pool_enqueue(STR("Eval Filt"), beg_frame, end_frame, [](uint32_t beg, uint32_t end, void* user_data)
+                                {
+                                    ApplicationData* data = (ApplicationData*)user_data;
+                                    md_script_eval_frame_range(data->mold.script.filt_eval, data->mold.script.ir, &data->mold.mol, data->mold.traj, beg, end);
+                                }, &data);
+                            
+                            task_system::pool_enqueue(STR("##Release IR Semaphore"), [](void* user_data)
+                                {
+                                    ApplicationData* data = (ApplicationData*)user_data;
+                                    md_semaphore_release(&data->mold.script.ir_semaphore);
+                                }, &data, data.tasks.evaluate_filt);
+                        } else {
+                            md_semaphore_release(&data.mold.script.ir_semaphore);
+                        }
+                    }
                 }
             }
         }
@@ -1938,18 +1947,19 @@ static void update_density_volume(ApplicationData* data) {
             bool result = false;
             md_script_visualization_t vis = {};
 
-            if (md_script_ir_valid(data->mold.script.ir)) {
-                md_semaphore_aquire(&data->mold.script.ir_semaphore);
-                md_script_visualization_args_t args = {
-                    .payload = prop->vis_payload,
-                    .ir = data->mold.script.ir,
-                    .mol = &data->mold.mol,
-                    .traj = data->mold.traj,
-                    .alloc = frame_allocator,
-                    .flags = MD_SCRIPT_VISUALIZE_SDF
-                };
-                result = md_script_visualization_init(&vis, args);
-                md_semaphore_release(&data->mold.script.ir_semaphore);
+            if (md_semaphore_aquire(&data->mold.script.ir_semaphore)) {
+                defer { md_semaphore_release(&data->mold.script.ir_semaphore); };
+                if (md_script_ir_valid(data->mold.script.ir)) {
+                    md_script_visualization_args_t args = {
+                        .payload = prop->vis_payload,
+                        .ir = data->mold.script.ir,
+                        .mol = &data->mold.mol,
+                        .traj = data->mold.traj,
+                        .alloc = frame_allocator,
+                        .flags = MD_SCRIPT_VISUALIZE_SDF
+                    };
+                    result = md_script_visualization_init(&vis, args);
+                }
             }
 
             if (result) {
@@ -2489,24 +2499,26 @@ static bool filter_expression(ApplicationData* data, str_t expr, md_bitfield_t* 
     md_filter_result_t res = {0};
     bool success = false;
 
-    md_semaphore_aquire(&data->mold.script.ir_semaphore);
-    if (md_filter_evaluate(&res, expr, &data->mold.mol, data->mold.script.ir, frame_allocator)) {
-        if (is_dynamic) {
-            *is_dynamic = res.is_dynamic;
-        }
-        if (mask) {
-            md_bitfield_clear(mask);
-            for (int64_t i = 0; i < res.num_bitfields; ++i) {
-                md_bitfield_or_inplace(mask, &res.bitfields[i]);
+    if (md_semaphore_aquire(&data->mold.script.ir_semaphore)) {
+        defer { md_semaphore_release(&data->mold.script.ir_semaphore); };
+        
+        if (md_filter_evaluate(&res, expr, &data->mold.mol, data->mold.script.ir, frame_allocator)) {
+            if (is_dynamic) {
+                *is_dynamic = res.is_dynamic;
+            }
+            if (mask) {
+                md_bitfield_clear(mask);
+                for (int64_t i = 0; i < res.num_bitfields; ++i) {
+                    md_bitfield_or_inplace(mask, &res.bitfields[i]);
+                }
+            }
+            success = true;
+        } else {
+            if (error_str) {
+                snprintf(error_str, error_cap, "%s", res.error_buf);
             }
         }
-        success = true;
-    } else {
-        if (error_str) {
-            snprintf(error_str, error_cap, "%s", res.error_buf);
-        }
     }
-    md_semaphore_release(&data->mold.script.ir_semaphore);
 
     return success;
 }
@@ -4796,6 +4808,8 @@ static void draw_shape_space_window(ApplicationData* data) {
                 task_system::task_interrupt_and_wait_for(data->tasks.shape_space_evaluate);
             }
             if (md_semaphore_try_aquire(&data->mold.script.ir_semaphore)) {
+                defer { md_semaphore_release(&data->mold.script.ir_semaphore); };
+                
                 data->shape_space.evaluate = false;
                 md_array_shrink(data->shape_space.coords, 0);
                 md_array_shrink(data->shape_space.weights, 0);
@@ -4853,7 +4867,6 @@ static void draw_shape_space_window(ApplicationData* data) {
                 } else {
                     snprintf(data->shape_space.err_text.beg(), data->shape_space.err_text.capacity(), "%s", data->shape_space.result.error_buf);
                 }
-                md_semaphore_release(&data->mold.script.ir_semaphore);
             }
         } else {
             data->shape_space.evaluate = false;
@@ -5919,19 +5932,21 @@ static void draw_script_editor_window(ApplicationData* data) {
         data->mold.script.vis = {0};
         const TextEditor::Marker* hovered_marker = editor.GetHoveredMarker();
         if (hovered_marker) {
-            if (md_script_ir_valid(data->mold.script.ir)) {
-                md_semaphore_aquire(&data->mold.script.ir_semaphore);
-                md_script_visualization_init(&data->mold.script.vis, {
-                    .payload = (const md_script_vis_payload_t*)hovered_marker->payload,
-                    .ir = data->mold.script.ir,
-                    .mol = &data->mold.mol,
-                    .traj = data->mold.traj,
-                    .alloc = frame_allocator,
-                });
-                md_semaphore_release(&data->mold.script.ir_semaphore);
-                if (!md_bitfield_empty(data->mold.script.vis.atom_mask)) {
-                    md_bitfield_copy(&data->selection.current_highlight_mask, data->mold.script.vis.atom_mask);
-                    data->mold.dirty_buffers |= MolBit_DirtyFlags;
+            if (md_semaphore_try_aquire(&data->mold.script.ir_semaphore)) {
+                defer { md_semaphore_release(&data->mold.script.ir_semaphore); };
+                
+                if (md_script_ir_valid(data->mold.script.ir)) {
+                    md_script_visualization_init(&data->mold.script.vis, {
+                        .payload = (const md_script_vis_payload_t*)hovered_marker->payload,
+                        .ir = data->mold.script.ir,
+                        .mol = &data->mold.mol,
+                        .traj = data->mold.traj,
+                        .alloc = frame_allocator,
+                    });
+                    if (!md_bitfield_empty(data->mold.script.vis.atom_mask)) {
+                        md_bitfield_copy(&data->selection.current_highlight_mask, data->mold.script.vis.atom_mask);
+                        data->mold.dirty_buffers |= MolBit_DirtyFlags;
+                    }
                 }
             }
         }
@@ -6040,18 +6055,21 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
     bool result = false;
     md_script_visualization_t vis = { 0 };
     defer { md_script_visualization_free(&vis); };
-    if (md_script_ir_valid(data.mold.script.ir)) {
-        md_semaphore_aquire(&data.mold.script.ir_semaphore);
-        md_script_visualization_args_t args = {
-            .payload = prop->vis_payload,
-            .ir = data.mold.script.ir,
-            .mol = &data.mold.mol,
-            .traj = data.mold.traj,
-            .alloc = frame_allocator,
-            .flags = MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_SDF,
-        };
-        result = md_script_visualization_init(&vis, args);
-        md_semaphore_release(&data.mold.script.ir_semaphore);
+    
+    if (md_semaphore_aquire(&data.mold.script.ir_semaphore)) {
+        defer { md_semaphore_release(&data.mold.script.ir_semaphore); };
+        
+        if (md_script_ir_valid(data.mold.script.ir)) {
+            md_script_visualization_args_t args = {
+                .payload = prop->vis_payload,
+                .ir = data.mold.script.ir,
+                .mol = &data.mold.mol,
+                .traj = data.mold.traj,
+                .alloc = frame_allocator,
+                .flags = MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_SDF,
+            };
+            result = md_script_visualization_init(&vis, args);
+        }
     }
 
     if (result == true) {
@@ -7567,18 +7585,21 @@ static void update_representation(ApplicationData* data, Representation* rep) {
                     const int dim = rep->prop->data.dim[0];
                     md_script_visualization_t vis = {0};
                     bool result = false;
-                    if (md_script_ir_valid(data->mold.script.ir)) {
-                        md_semaphore_aquire(&data->mold.script.ir_semaphore);
-                        md_script_visualization_args_t args = {
-                            .payload = rep->prop->vis_payload,
-                            .ir = data->mold.script.ir,
-                            .mol = &data->mold.mol,
-                            .traj = NULL,
-                            .alloc = frame_allocator,
-                            .flags = MD_SCRIPT_VISUALIZE_ATOMS
-                        };
-                        result = md_script_visualization_init(&vis, args);
-                        md_semaphore_release(&data->mold.script.ir_semaphore);
+                    
+                    if (md_semaphore_aquire(&data->mold.script.ir_semaphore)) {
+                        defer { md_semaphore_release(&data->mold.script.ir_semaphore); };
+                        
+                        if (md_script_ir_valid(data->mold.script.ir)) {
+                            md_script_visualization_args_t args = {
+                                .payload = rep->prop->vis_payload,
+                                .ir = data->mold.script.ir,
+                                .mol = &data->mold.mol,
+                                .traj = NULL,
+                                .alloc = frame_allocator,
+                                .flags = MD_SCRIPT_VISUALIZE_ATOMS
+                            };
+                            result = md_script_visualization_init(&vis, args);
+                        }
                     }
                     if (result) {
                         if (dim == (int)md_array_size(vis.structures.atom_masks)) {
