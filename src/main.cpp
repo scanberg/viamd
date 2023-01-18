@@ -3137,33 +3137,35 @@ void draw_context_popup(ApplicationData* data) {
                         ImGui::CloseCurrentPopup();
                     }
 
-                    if (data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[1]]) {
-                        int32_t res_idx = data->mold.mol.atom.residue_idx[idx[0]];
-                        idx[0] -= data->mold.mol.residue.atom_range[res_idx].beg;
-                        idx[1] -= data->mold.mol.residue.atom_range[res_idx].beg;
+                    if (data->mold.mol.residue.count) {
+                        if (data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[1]]) {
+                            int32_t res_idx = data->mold.mol.atom.residue_idx[idx[0]];
+                            idx[0] -= data->mold.mol.residue.atom_range[res_idx].beg;
+                            idx[1] -= data->mold.mol.residue.atom_range[res_idx].beg;
 
-                        snprintf(buf, sizeof(buf), "%.*s = distance(%i, %i) in residue(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, res_idx+1);
-                        if (ImGui::MenuItem(buf)) {
-                            editor.AppendText("\n");
-                            editor.AppendText(buf);
-                            ImGui::CloseCurrentPopup();
-                        }
-
-                        int32_t resid = data->mold.mol.residue.id[idx[0]];
-                        snprintf(buf, sizeof(buf), "%.*s = distance(%i, %i) in resid(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, resid);
-                        if (ImGui::MenuItem(buf)) {
-                            editor.AppendText("\n");
-                            editor.AppendText(buf);
-                            ImGui::CloseCurrentPopup();
-                        }
-
-                        str_t resname = data->mold.mol.residue.name[res_idx];
-                        if (resname) {
-                            snprintf(buf, sizeof(buf), "%.*s = distance(%i, %i) in resname(\"%s\");", (int)ident.len, ident.ptr, idx[0] + 1, idx[1] + 1, resname.ptr);
+                            snprintf(buf, sizeof(buf), "%.*s = distance(%i, %i) in residue(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, res_idx+1);
                             if (ImGui::MenuItem(buf)) {
                                 editor.AppendText("\n");
                                 editor.AppendText(buf);
                                 ImGui::CloseCurrentPopup();
+                            }
+
+                            int32_t resid = data->mold.mol.residue.id[idx[0]];
+                            snprintf(buf, sizeof(buf), "%.*s = distance(%i, %i) in resid(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, resid);
+                            if (ImGui::MenuItem(buf)) {
+                                editor.AppendText("\n");
+                                editor.AppendText(buf);
+                                ImGui::CloseCurrentPopup();
+                            }
+
+                            str_t resname = data->mold.mol.residue.name[res_idx];
+                            if (resname) {
+                                snprintf(buf, sizeof(buf), "%.*s = distance(%i, %i) in resname(\"%s\");", (int)ident.len, ident.ptr, idx[0] + 1, idx[1] + 1, resname.ptr);
+                                if (ImGui::MenuItem(buf)) {
+                                    editor.AppendText("\n");
+                                    editor.AppendText(buf);
+                                    ImGui::CloseCurrentPopup();
+                                }
                             }
                         }
                     }
@@ -3179,36 +3181,38 @@ void draw_context_popup(ApplicationData* data) {
                         ImGui::CloseCurrentPopup();
                     }
 
-                    if (data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[1]] &&
-                        data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[2]]) {
+                    if (data->mold.mol.residue.count) {
+                        if (data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[1]] &&
+                            data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[2]]) {
 
-                        int32_t res_idx = data->mold.mol.atom.residue_idx[idx[0]];
-                        idx[0] -= data->mold.mol.residue.atom_range[res_idx].beg;
-                        idx[1] -= data->mold.mol.residue.atom_range[res_idx].beg;
-                        idx[2] -= data->mold.mol.residue.atom_range[res_idx].beg;
+                            int32_t res_idx = data->mold.mol.atom.residue_idx[idx[0]];
+                            idx[0] -= data->mold.mol.residue.atom_range[res_idx].beg;
+                            idx[1] -= data->mold.mol.residue.atom_range[res_idx].beg;
+                            idx[2] -= data->mold.mol.residue.atom_range[res_idx].beg;
 
-                        snprintf(buf, sizeof(buf), "%.*s = angle(%i, %i, %i) in residue(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, res_idx+1);
-                        if (ImGui::MenuItem(buf)) {
-                            editor.AppendText("\n");
-                            editor.AppendText(buf);
-                            ImGui::CloseCurrentPopup();
-                        }
-
-                        int32_t resid = data->mold.mol.residue.id[idx[0]];
-                        snprintf(buf, sizeof(buf), "%.*s = angle(%i, %i, %i) in resid(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, resid);
-                        if (ImGui::MenuItem(buf)) {
-                            editor.AppendText("\n");
-                            editor.AppendText(buf);
-                            ImGui::CloseCurrentPopup();
-                        }
-
-                        str_t resname = data->mold.mol.residue.name[res_idx];
-                        if (resname) {
-                            snprintf(buf, sizeof(buf), "%.*s = angle(%i, %i, %i) in resname(\"%.*s\");", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, (int)resname.len, resname.ptr);
+                            snprintf(buf, sizeof(buf), "%.*s = angle(%i, %i, %i) in residue(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, res_idx+1);
                             if (ImGui::MenuItem(buf)) {
                                 editor.AppendText("\n");
                                 editor.AppendText(buf);
                                 ImGui::CloseCurrentPopup();
+                            }
+
+                            int32_t resid = data->mold.mol.residue.id[idx[0]];
+                            snprintf(buf, sizeof(buf), "%.*s = angle(%i, %i, %i) in resid(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, resid);
+                            if (ImGui::MenuItem(buf)) {
+                                editor.AppendText("\n");
+                                editor.AppendText(buf);
+                                ImGui::CloseCurrentPopup();
+                            }
+
+                            str_t resname = data->mold.mol.residue.name[res_idx];
+                            if (resname) {
+                                snprintf(buf, sizeof(buf), "%.*s = angle(%i, %i, %i) in resname(\"%.*s\");", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, (int)resname.len, resname.ptr);
+                                if (ImGui::MenuItem(buf)) {
+                                    editor.AppendText("\n");
+                                    editor.AppendText(buf);
+                                    ImGui::CloseCurrentPopup();
+                                }
                             }
                         }
                     }
@@ -3224,38 +3228,40 @@ void draw_context_popup(ApplicationData* data) {
                         ImGui::CloseCurrentPopup();
                     }
 
-                    if (data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[1]] &&
-                        data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[2]] &&
-                        data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[3]]) {
+                    if (data->mold.mol.residue.count) {
+                        if (data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[1]] &&
+                            data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[2]] &&
+                            data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[3]]) {
 
-                        int32_t res_idx = data->mold.mol.atom.residue_idx[idx[0]];
-                        idx[0] -= data->mold.mol.residue.atom_range[res_idx].beg;
-                        idx[1] -= data->mold.mol.residue.atom_range[res_idx].beg;
-                        idx[2] -= data->mold.mol.residue.atom_range[res_idx].beg;
-                        idx[3] -= data->mold.mol.residue.atom_range[res_idx].beg;
+                            int32_t res_idx = data->mold.mol.atom.residue_idx[idx[0]];
+                            idx[0] -= data->mold.mol.residue.atom_range[res_idx].beg;
+                            idx[1] -= data->mold.mol.residue.atom_range[res_idx].beg;
+                            idx[2] -= data->mold.mol.residue.atom_range[res_idx].beg;
+                            idx[3] -= data->mold.mol.residue.atom_range[res_idx].beg;
 
-                        snprintf(buf, sizeof(buf), "%.*s = dihedral(%i, %i, %i, %i) in residue(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, res_idx+1);
-                        if (ImGui::MenuItem(buf)) {
-                            editor.AppendText("\n");
-                            editor.AppendText(buf);
-                            ImGui::CloseCurrentPopup();
-                        }
-
-                        int32_t resid = data->mold.mol.residue.id[idx[0]];
-                        snprintf(buf, sizeof(buf), "%.*s = dihedral(%i, %i, %i, %i) in resid(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, resid);
-                        if (ImGui::MenuItem(buf)) {
-                            editor.AppendText("\n");
-                            editor.AppendText(buf);
-                            ImGui::CloseCurrentPopup();
-                        }
-
-                        str_t resname = data->mold.mol.residue.name[res_idx];
-                        if (resname) {
-                            snprintf(buf, sizeof(buf), "%.*s = dihedral(%i, %i, %i, %i) in resname(\"%.*s\");", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, (int)resname.len, resname.ptr);
+                            snprintf(buf, sizeof(buf), "%.*s = dihedral(%i, %i, %i, %i) in residue(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, res_idx+1);
                             if (ImGui::MenuItem(buf)) {
                                 editor.AppendText("\n");
                                 editor.AppendText(buf);
                                 ImGui::CloseCurrentPopup();
+                            }
+
+                            int32_t resid = data->mold.mol.residue.id[idx[0]];
+                            snprintf(buf, sizeof(buf), "%.*s = dihedral(%i, %i, %i, %i) in resid(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, resid);
+                            if (ImGui::MenuItem(buf)) {
+                                editor.AppendText("\n");
+                                editor.AppendText(buf);
+                                ImGui::CloseCurrentPopup();
+                            }
+
+                            str_t resname = data->mold.mol.residue.name[res_idx];
+                            if (resname) {
+                                snprintf(buf, sizeof(buf), "%.*s = dihedral(%i, %i, %i, %i) in resname(\"%.*s\");", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, (int)resname.len, resname.ptr);
+                                if (ImGui::MenuItem(buf)) {
+                                    editor.AppendText("\n");
+                                    editor.AppendText(buf);
+                                    ImGui::CloseCurrentPopup();
+                                }
                             }
                         }
                     }
