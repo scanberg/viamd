@@ -46,11 +46,11 @@ static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum s
     (void)length;
     (void)userParam;
 
-    if (severity < GL_DEBUG_SEVERITY_HIGH) {
-        MD_LOG_INFO("%s", message);
-    } else {
+    if (severity == GL_DEBUG_SEVERITY_HIGH) {
         MD_LOG_ERROR("A SEVERE GL ERROR HAS OCCURED: %s", message);
         abort();
+    } else {
+        //MD_LOG_INFO("%s", message);
     }
 }
 
