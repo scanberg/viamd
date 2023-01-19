@@ -84,10 +84,10 @@
     if (glPopDebugGroup) glPopDebugGroup(); \
 }
 
-#define LINFO(...) md_printf(MD_LOG_TYPE_INFO, __VA_ARGS__)
-#define LDEBUG(...) md_printf(MD_LOG_TYPE_DEBUG, __VA_ARGS__)
-#define LERROR(...) md_printf(MD_LOG_TYPE_ERROR, __VA_ARGS__)
-#define LSUCCESS(...) ImGui::InsertNotification(ImGuiToast(ImGuiToastType_Success, 6000, __VA_ARGS__))
+#define LOG_INFO  MD_LOG_INFO
+#define LOG_DEBUG MD_LOG_DEBUG
+#define LOG_ERROR MD_LOG_ERROR
+#define LOG_SUCCESS(...) ImGui::InsertNotification(ImGuiToast(ImGuiToastType_Success, 6000, __VA_ARGS__))
 
 constexpr const char* shader_output_snippet = R"(
 layout(location = 0) out vec4 out_color;
@@ -1149,14 +1149,14 @@ int main(int, char**) {
     data.mold.script.ir = md_script_ir_create(persistent_allocator);
 
     // Init platform
-    LDEBUG("Initializing GL...");
+    LOG_DEBUG("Initializing GL...");
     if (!application::initialize(&data.ctx, 0, 0, "VIAMD")) {
-        LERROR("Could not initialize platform layer... terminating\n");
+        LOG_ERROR("Could not initialize platform layer... terminating\n");
         return -1;
     }
     data.ctx.window.vsync = true;
 
-    LDEBUG("Creating framebuffer...");
+    LOG_DEBUG("Creating framebuffer...");
     init_gbuffer(&data.gbuffer, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
 
     for (int i = 0; i < (int)ARRAY_SIZE(data.view.jitter.sequence); ++i) {
@@ -1165,19 +1165,19 @@ int main(int, char**) {
     }
 
     // Init subsystems
-    LDEBUG("Initializing immediate draw...");
+    LOG_DEBUG("Initializing immediate draw...");
     immediate::initialize();
-    LDEBUG("Initializing ramachandran...");
+    LOG_DEBUG("Initializing ramachandran...");
     ramachandran::initialize();
-    LDEBUG("Initializing post processing...");
+    LOG_DEBUG("Initializing post processing...");
     postprocessing::initialize(data.gbuffer.width, data.gbuffer.height);
-    LDEBUG("Initializing volume...");
+    LOG_DEBUG("Initializing volume...");
     volume::initialize();
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
-    LDEBUG("Initializing cone tracing...");
+    LOG_DEBUG("Initializing cone tracing...");
     cone_trace::initialize();
 #endif
-    LDEBUG("Initializing task system...");
+    LOG_DEBUG("Initializing task system...");
     task_system::initialize(MIN(VIAMD_NUM_WORKER_THREADS, std::thread::hardware_concurrency()));
 
     md_gl_initialize();
@@ -1290,7 +1290,7 @@ int main(int, char**) {
             }
 
             if (ImGui::IsKeyPressed(KEY_RECOMPILE_SHADERS)) {
-                LINFO("Recompiling shaders and re-initializing volume");
+                LOG_INFO("Recompiling shaders and re-initializing volume");
                 postprocessing::initialize(data.gbuffer.width, data.gbuffer.height);
                 ramachandran::initialize();
                 volume::initialize();
@@ -1750,19 +1750,19 @@ int main(int, char**) {
     interrupt_async_tasks(&data);
 
     // shutdown subsystems
-    LDEBUG("Shutting down immediate draw...");
+    LOG_DEBUG("Shutting down immediate draw...");
     immediate::shutdown();
-    LDEBUG("Shutting down ramachandran...");
+    LOG_DEBUG("Shutting down ramachandran...");
     ramachandran::shutdown();
-    LDEBUG("Shutting down post processing...");
+    LOG_DEBUG("Shutting down post processing...");
     postprocessing::shutdown();
-    LDEBUG("Shutting down volume...");
+    LOG_DEBUG("Shutting down volume...");
     volume::shutdown();
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
-    LINFO("Shutting down cone tracing...");
+    LOG_INFO("Shutting down cone tracing...");
     cone_trace::shutdown();
 #endif
-    LDEBUG("Shutting down task system...");
+    LOG_DEBUG("Shutting down task system...");
     task_system::shutdown();
 
     destroy_gbuffer(&data.gbuffer);
@@ -2799,7 +2799,7 @@ ImGui::EndGroup();
                         data->screenshot.path_to_file = str_copy({path_buf, path_len}, frame_allocator);
                     }
                     else {
-                        LERROR("Supplied image extension is not supported");
+                        LOG_ERROR("Supplied image extension is not supported");
                     }
                 }
             }
@@ -3036,8 +3036,10 @@ void apply_atom_elem_mappings(ApplicationData* data) {
             }
         }
     }
-
-    md_util_extract_covalent_bonds(&data->mold.mol, data->mold.mol_alloc);
+    md_molecule_t* mol = &data->mold.mol;
+    
+    const vec3_t pbc_ext = md_util_compute_unit_cell_extent(mol->coord_frame);
+    md_util_compute_covalent_bonds(&mol->covalent_bond, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.element, mol->atom.residue_idx, mol->atom.count, pbc_ext, data->mold.mol_alloc);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
     update_all_representations(data);
@@ -5855,7 +5857,7 @@ static void draw_script_editor_window(ApplicationData* data) {
                             md_file_write(file, textToSave.c_str(), textToSave.length());
                             md_file_close(file);
                         } else {
-                            LERROR("Failed to open file '%s' for saving script", path_buf);
+                            LOG_ERROR("Failed to open file '%s' for saving script", path_buf);
                         }
                     }
                 }
@@ -5927,10 +5929,10 @@ static void draw_script_editor_window(ApplicationData* data) {
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + content_size.x - btn_size.x);
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetStyle().ItemSpacing.y);
 
-        const bool valid = md_script_ir_valid(data->mold.script.ir);
+        const bool valid = md_script_ir_valid(data->mold.script.ir) && !task_system::task_is_running(data->tasks.evaluate_full);
         
         if (!valid) ImGui::PushDisabled();
-        if (ImGui::Button("Evaluate", btn_size)) {
+        if (ImGui::Button(btn_text, btn_size)) {
             data->mold.script.eval_init = true;
         }
         if (!valid) ImGui::PopDisabled();
@@ -5968,7 +5970,7 @@ static bool export_xvg(const float* column_data[], const char* column_labels[], 
 
     md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
     if (!file) {
-        LERROR("Failed to open file '%.*s' to write data.", (int)filename.len, filename.ptr);
+        LOG_ERROR("Failed to open file '%.*s' to write data.", (int)filename.len, filename.ptr);
         return false;
     }    
 
@@ -6016,7 +6018,7 @@ static bool export_csv(const float* column_data[], const char* column_labels[], 
 
     md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
     if (!file) {
-        LERROR("Failed to open file '%.*s' to write data.", (int)filename.len, filename.ptr);
+        LOG_ERROR("Failed to open file '%.*s' to write data.", (int)filename.len, filename.ptr);
         return false;
     }
     
@@ -6041,7 +6043,7 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
     // And the origin + extent of the volume in spatial coordinates (Ångström)
 
     if (!prop) {
-        LERROR("Export Cube: The property to be exported did not exist");
+        LOG_ERROR("Export Cube: The property to be exported did not exist");
         return false;
     }
 
@@ -6081,7 +6083,7 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
     if (result == true) {
         md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
         if (!file) {
-            LERROR("Failed to open file '%.*s' in order to write to it.", (int)filename.len, filename.ptr);
+            LOG_ERROR("Failed to open file '%.*s' in order to write to it.", (int)filename.len, filename.ptr);
             return false;
         }
 
@@ -6144,7 +6146,7 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
 
         md_file_close(file);
     } else {
-        LERROR("Failed to visualize volume for export.");
+        LOG_ERROR("Failed to visualize volume for export.");
         return false;
     }
 
@@ -6797,10 +6799,10 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
             data->files.trajectory = "";
 
             if (!mol_api->init_from_file(&data->mold.mol, path_to_file, data->mold.mol_alloc)) {
-                LERROR("Failed to load molecular data from file '%.*s'", path_to_file.len, path_to_file.ptr);
+                LOG_ERROR("Failed to load molecular data from file '%.*s'", path_to_file.len, path_to_file.ptr);
                 return false;
             }
-            LSUCCESS("Successfully loaded molecular data from file '%.*s'", path_to_file.len, path_to_file.ptr);
+            LOG_SUCCESS("Successfully loaded molecular data from file '%.*s'", path_to_file.len, path_to_file.ptr);
 
             data->files.molecule = path_to_file;
             data->files.coarse_grained = coarse_grained;
@@ -6811,7 +6813,7 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
 
             // @NOTE: Some files contain both atomic coordinates and trajectory
             if (traj_api) {
-                LINFO("File also contains trajectory, attempting to load trajectory");
+                LOG_INFO("File also contains trajectory, attempting to load trajectory");
             } else {
                 return true;
             }
@@ -6819,7 +6821,7 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
 
         if (traj_api) {
             if (!data->mold.mol.atom.count) {
-                LERROR("Before loading a trajectory, molecular data needs to be present");
+                LOG_ERROR("Before loading a trajectory, molecular data needs to be present");
                 return false;
             }
 
@@ -6830,9 +6832,9 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
 
             bool success = load_trajectory_data(data, path_to_file, deperiodize_on_load);
             if (success) {
-                LSUCCESS("Successfully opened trajectory from file '%.*s'", path_to_file.len, path_to_file.ptr);
+                LOG_SUCCESS("Successfully opened trajectory from file '%.*s'", path_to_file.len, path_to_file.ptr);
             } else {
-                LERROR("Failed to opened trajectory from file '%.*s'", path_to_file.len, path_to_file.ptr);
+                LOG_ERROR("Failed to opened trajectory from file '%.*s'", path_to_file.len, path_to_file.ptr);
             }
         }
     }
@@ -7149,11 +7151,11 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
                     buf->ptr = pos;
                     break;
                 } else {
-                    LERROR("Malformed end token for script");
+                    LOG_ERROR("Malformed end token for script");
                     return;
                 }
             } else {
-                LERROR("Malformed start token for script");
+                LOG_ERROR("Malformed start token for script");
                 return;
             }
         }
@@ -7173,7 +7175,7 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
                     int64_t base64_size = md_base64_decode(base64_data, beg, end-beg);
                     md_bitfield_t* bf = (md_bitfield_t*)(ptr + target->struct_byte_offset);
                     if (!base64_size || !md_bitfield_deserialize(bf, base64_data, base64_size)) {
-                        LERROR("Failed to deserialize bitfield");
+                        LOG_ERROR("Failed to deserialize bitfield");
                         md_bitfield_clear(bf);
                         return;
                     }
@@ -7183,11 +7185,11 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
                     buf->ptr = pos;
                     break;
                 } else {
-                    LERROR("Malformed end token for bitfield");
+                    LOG_ERROR("Malformed end token for bitfield");
                     return;
                 }
             } else {
-                LERROR("Malformed start token for bitfield");
+                LOG_ERROR("Malformed start token for bitfield");
                 return;
             }
         }
@@ -7203,7 +7205,7 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     defer { str_free(txt, frame_allocator); };
 
     if (!txt.len) {
-        LERROR("Could not open workspace file: '%.*s", (int)filename.len, filename.ptr);
+        LOG_ERROR("Could not open workspace file: '%.*s", (int)filename.len, filename.ptr);
         return;
     }
 
@@ -7248,7 +7250,7 @@ static void load_workspace(ApplicationData* data, str_t filename) {
                     c_txt.ptr = pos;
                     deserialize_object(target, (char*)ptr, &c_txt, filename);
                 } else {
-                    LERROR("Could not recognize serialization target '%.*s' in group '%.*s,", (int)label.len, label.ptr, (int)group.len, group.ptr);
+                    LOG_ERROR("Could not recognize serialization target '%.*s' in group '%.*s,", (int)label.len, label.ptr, (int)group.len, group.ptr);
                 }
             }
         }
@@ -7393,7 +7395,7 @@ static void save_workspace(ApplicationData* data, str_t filename) {
     md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
 
     if (!file) {
-        LERROR("Could not open workspace file: '%.*s", (int)filename.len, filename.ptr);
+        LOG_ERROR("Could not open workspace file: '%.*s", (int)filename.len, filename.ptr);
         return;
     }
     defer { md_file_close(file); };
@@ -7478,7 +7480,7 @@ void create_screenshot(ApplicationData* data) {
     } else if (str_equal_cstr_ignore_case(ext, "bmp")) {
         write_image_bmp(img, data->screenshot.path_to_file);
     } else {
-        LERROR("Could not match extension when saving screenshot");
+        LOG_ERROR("Could not match extension when saving screenshot");
     }
 }
 
@@ -7738,7 +7740,7 @@ static Selection* create_selection(ApplicationData* data, str_t name, md_bitfiel
 static void remove_selection(ApplicationData* data, int idx) {
     ASSERT(data);
     if (idx < 0 || (int)md_array_size(data->selection.stored_selections) <= idx) {
-        LERROR("Index [%i] out of range when trying to remove selection", idx);
+        LOG_ERROR("Index [%i] out of range when trying to remove selection", idx);
     }
     auto item = &data->selection.stored_selections[idx];
     md_bitfield_free(&item->atom_mask);

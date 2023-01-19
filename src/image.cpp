@@ -26,7 +26,7 @@ bool init_image(image_t* img, int32_t width, int32_t height, md_allocator_i* all
     ASSERT(height > 0);
 
     if (img->data) {
-        md_print(MD_LOG_TYPE_DEBUG, "Image struct is not empty, possibly leaking memory here");
+        MD_LOG_DEBUG("Image struct is not empty, possibly leaking memory here");
     }
 
     uint32_t* data = (uint32_t*)md_alloc(alloc, width * height * sizeof(uint32_t));
@@ -63,7 +63,7 @@ bool read_image(image_t* img, str_t filename, md_allocator_i* alloc) {
     ASSERT(img);
 
     if (img->data) {
-        md_print(MD_LOG_TYPE_DEBUG, "Image struct is not empty, possibly leaking memory here");
+        MD_LOG_DEBUG("Image struct is not empty, possibly leaking memory here");
     }
 
     // Ensure zero terminated cstr
@@ -92,7 +92,7 @@ static void write_func(void* context, void* data, int size) {
 static inline FILE* open_file(str_t filename) {
     FILE* file = (FILE*)md_file_open(filename, MD_FILE_WRITE | MD_FILE_BINARY);
     if (!file) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to open file");
+        MD_LOG_ERROR("Failed to open file");
     }
     return file;
 }

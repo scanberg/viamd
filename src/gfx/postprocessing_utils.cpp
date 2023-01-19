@@ -254,7 +254,7 @@ static GLuint setup_program_from_source(str_t name, str_t f_shader_src, str_t de
         glAttachShader(program, f_shader);
         glLinkProgram(program);
         if (gl::get_program_link_error(buffer, sizeof(buffer), program)) {
-            md_printf(MD_LOG_TYPE_ERROR, "Error while linking %.*s program:\n%s", (int)name.len, name.ptr, buffer);
+            MD_LOG_ERROR("Error while linking %.*s program:\n%s", (int)name.len, name.ptr, buffer);
             glDeleteProgram(program);
             return 0;
         }
@@ -279,7 +279,7 @@ static GLuint setup_program_from_file(str_t name, str_t filename, str_t defines 
         glAttachShader(program, f_shader);
         glLinkProgram(program);
         if (gl::get_program_link_error(buffer, sizeof(buffer), program)) {
-            md_printf(MD_LOG_TYPE_ERROR, "Error while linking %s program:\n%s", name, buffer);
+            MD_LOG_ERROR("Error while linking %s program:\n%s", name, buffer);
             glDeleteProgram(program);
             return 0;
         }
@@ -655,7 +655,7 @@ void initialize(int32_t width, int32_t height) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.bokeh_dof.half_res.tex.color_coc, 0);
         GLenum status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
         if (status != GL_FRAMEBUFFER_COMPLETE) {
-            md_print(MD_LOG_TYPE_ERROR, "Something went wrong when generating framebuffer for DOF");
+            MD_LOG_ERROR("Something went wrong when generating framebuffer for DOF");
         }
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     }
@@ -840,14 +840,10 @@ void initialize(int32_t width, int32_t height) {
 
     }
     {
-#define STRINGIFY(x) #x
-#define TOSTRING(x) STRINGIFY(x)
-        str_t defines = STR("#define TILE_SIZE " TOSTRING(VEL_TILE_SIZE));
+        str_t defines = STR("#define TILE_SIZE " STRINGIFY_VAL(VEL_TILE_SIZE));
         blit_tilemax.program = setup_program_from_file(STR("tilemax"), STR(VIAMD_SHADER_DIR "/velocity/blit_tilemax.frag"), defines);
         blit_tilemax.uniform_loc.tex_vel = glGetUniformLocation(blit_tilemax.program, "u_tex_vel");
         blit_tilemax.uniform_loc.tex_vel_texel_size = glGetUniformLocation(blit_tilemax.program, "u_tex_vel_texel_size");
-#undef STRINGIFY
-#undef TOSTRING
     }
     {
         blit_neighbormax.program = setup_program_from_file(STR("neighbormax"), STR(VIAMD_SHADER_DIR "/velocity/blit_neighbormax.frag"));
@@ -889,7 +885,7 @@ void initialize(int32_t width, int32_t height) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.velocity.tex_neighbormax, 0);
         GLenum status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
         if (status != GL_FRAMEBUFFER_COMPLETE) {
-            md_print(MD_LOG_TYPE_ERROR, "Something went wrong in creating framebuffer for velocity");
+            MD_LOG_ERROR("Something went wrong in creating framebuffer for velocity");
         }
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     }
@@ -1003,7 +999,7 @@ void initialize(int width, int height) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.linear_depth.texture, 0);
         GLenum status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
         if (status != GL_FRAMEBUFFER_COMPLETE) {
-            md_print(MD_LOG_TYPE_ERROR, "Something went wrong in creating framebuffer for depth linearization");
+            MD_LOG_ERROR("Something went wrong in creating framebuffer for depth linearization");
         }
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     }
@@ -1052,7 +1048,7 @@ void initialize(int width, int height) {
 
         GLenum status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
         if (status != GL_FRAMEBUFFER_COMPLETE) {
-            md_print(MD_LOG_TYPE_ERROR, "Something went wrong in creating framebuffer for targets");
+            MD_LOG_ERROR("Something went wrong in creating framebuffer for targets");
         }
 
         GLenum buffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3};

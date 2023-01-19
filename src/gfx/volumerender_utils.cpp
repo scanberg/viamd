@@ -61,7 +61,7 @@ void initialize() {
     };
 
     if (v_shader == 0u || f_shader_dvr_only == 0u || f_shader_iso_only == 0u || f_shader_dvr_and_iso == 0u) {
-        md_print(MD_LOG_TYPE_ERROR, "shader compilation failed, shader program for raycasting will not be updated");
+        MD_LOG_ERROR("shader compilation failed, shader program for raycasting will not be updated");
         return;
     }
 
@@ -137,7 +137,7 @@ void create_tf_texture(GLuint* texture, int* width, CStringView path) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glBindTexture(GL_TEXTURE_2D, 0);
     } else {
-        md_printf(MD_LOG_TYPE_ERROR, "could not read TF ('%.s')", path.length(), path.cstr());
+        MD_LOG_ERROR("could not read TF ('%.s')", path.length(), path.cstr());
     }
 }
 */

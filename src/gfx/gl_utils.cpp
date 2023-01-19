@@ -38,7 +38,7 @@ bool build_shader_src(md_strb_t* builder, str_t src, str_t base_include_dir) {
         if (str_equal_cstr_n(line, "#include ", 9)) {
             str_t file = str_trim(str_substr(line, 9));
             if (!file || !(file.len > 2) || file[0] != '"' || file[file.len-1] != '"') {
-                md_printf(MD_LOG_TYPE_ERROR, "Failed to parse include file");
+                MD_LOG_ERROR("Failed to parse include file");
                 return false;
             }
             file = str_substr(file, 1, file.len - 2);
@@ -48,7 +48,7 @@ bool build_shader_src(md_strb_t* builder, str_t src, str_t base_include_dir) {
             if (inc_src) {
                 build_shader_src(builder, inc_src, extract_path_without_file(path));
             } else {
-                md_printf(MD_LOG_TYPE_ERROR, "Failed to open include file '%.*s'", (int)path.len, path.ptr);
+                MD_LOG_ERROR("Failed to open include file '%.*s'", (int)path.len, path.ptr);
                 return false;
             }
         } else {
@@ -72,7 +72,7 @@ GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str
         str_t version_str = {};
         if (str_equal_cstr_n(src, "#version ", 9)) {
             if (!str_extract_line(&version_str, &src)) {
-                md_print(MD_LOG_TYPE_ERROR, "Failed to extract version string!");
+                MD_LOG_ERROR("Failed to extract version string!");
                 return 0;
             }
             md_strb_str(&builder, version_str);
@@ -94,7 +94,7 @@ GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str
 
     char buffer[1024];
     if (gl::get_shader_compile_error(buffer, sizeof(buffer), shader)) {
-        md_printf(MD_LOG_TYPE_ERROR, "%s\n", buffer);
+        MD_LOG_ERROR("%s\n", buffer);
         glDeleteShader(shader);
         shader = 0;
     }
@@ -110,7 +110,7 @@ GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) 
 
     str_t src = load_textfile(filename, default_temp_allocator);
     if (!src) {
-        md_printf(MD_LOG_TYPE_ERROR, "Failed to open source file for shader '%.*s'", (int)src.len, src.ptr);
+        MD_LOG_ERROR("Failed to open source file for shader '%.*s'", (int)src.len, src.ptr);
         return 0;
     }
 
@@ -122,7 +122,7 @@ GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) 
         str_t version_str = {};
         if (str_equal_cstr_n(src, "#version ", 9)) {
             if (!str_extract_line(&version_str, &src)) {
-                md_print(MD_LOG_TYPE_ERROR, "Failed to extract version string!");
+                MD_LOG_ERROR("Failed to extract version string!");
                 return 0;
             }
             md_strb_str(&builder, version_str);
@@ -146,7 +146,7 @@ GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) 
 
     char buffer[1024];
     if (gl::get_shader_compile_error(buffer, sizeof(buffer), shader)) {
-        md_printf(MD_LOG_TYPE_ERROR, "%s\n", buffer);
+        MD_LOG_ERROR("%s\n", buffer);
         return 0;
     }
 
@@ -165,7 +165,7 @@ bool gl::attach_link_detach(GLuint program, const GLuint shaders[], int num_shad
 
     glLinkProgram(program);
     if (gl::get_program_link_error(buffer, buffer_size, program)) {
-        md_printf(MD_LOG_TYPE_ERROR, "Linking program:\n%s\n", buffer);
+        MD_LOG_ERROR("Linking program:\n%s\n", buffer);
         result = false;
     }
 
@@ -192,7 +192,7 @@ bool gl::attach_link_detach_with_transform_feedback(GLuint program, const GLuint
 
     glLinkProgram(program);
     if (gl::get_program_link_error(buffer, buffer_size, program)) {
-        md_printf(MD_LOG_TYPE_ERROR, "Linking program:\n%s\n", buffer);
+        MD_LOG_ERROR("Linking program:\n%s\n", buffer);
         result = false;
     }
 

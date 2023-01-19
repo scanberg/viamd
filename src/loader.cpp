@@ -270,7 +270,7 @@ md_trajectory_i* open_file(str_t filename, const md_molecule_t* mol, md_allocato
 
     md_trajectory_api* api = get_api(filename);
     if (!api) {
-        md_printf(MD_LOG_TYPE_ERROR, "Unsupported file extension: '%.*s'", filename.len, filename.ptr);
+        MD_LOG_ERROR("Unsupported file extension: '%.*s'", filename.len, filename.ptr);
         return NULL;
     }
 
@@ -280,7 +280,7 @@ md_trajectory_i* open_file(str_t filename, const md_molecule_t* mol, md_allocato
     }
     
     if (md_trajectory_num_atoms(internal_traj) != mol->atom.count) {
-        md_printf(MD_LOG_TYPE_ERROR, "Trajectory is not compatible with the loaded molecule.");
+        MD_LOG_ERROR("Trajectory is not compatible with the loaded molecule.");
         api->destroy(internal_traj);
         return NULL;
     }
@@ -303,8 +303,8 @@ md_trajectory_i* open_file(str_t filename, const md_molecule_t* mol, md_allocato
     const uint64_t max_num_cache_frames = frame_cache_size / approx_frame_size;
 
     const int64_t num_cache_frames   = MIN(num_traj_frames, max_num_cache_frames);
-
-    md_printf(MD_LOG_TYPE_DEBUG, "Initializing frame cache with %i frames.", (int)num_cache_frames);
+    
+    MD_LOG_DEBUG("Initializing frame cache with %i frames.", (int)num_cache_frames);
     md_frame_cache_init(&inst->cache, inst->traj, alloc, num_cache_frames);
     md_bitfield_init(&inst->recenter_target, alloc);
 
@@ -327,7 +327,7 @@ bool close(md_trajectory_i* traj) {
         memset(traj, 0, sizeof(md_trajectory_i));
         return true;
     }
-    md_print(MD_LOG_TYPE_ERROR, "Attempting to free trajectory which was not loaded with loader");
+    MD_LOG_ERROR("Attempting to free trajectory which was not loaded with loader");
     ASSERT(false);
     return false;
 }
@@ -345,7 +345,7 @@ bool set_recenter_target(md_trajectory_i* traj, const md_bitfield_t* atom_mask) 
         }
         return true;
     }
-    md_print(MD_LOG_TYPE_ERROR, "Supplied trajectory was not loaded with loader");
+    MD_LOG_ERROR("Supplied trajectory was not loaded with loader");
     return false;
 }
 
@@ -357,7 +357,7 @@ bool clear_cache(md_trajectory_i* traj) {
         md_frame_cache_clear(&loaded_traj->cache);
         return true;
     }
-    md_print(MD_LOG_TYPE_ERROR, "Supplied trajectory was not loaded with loader");
+    MD_LOG_ERROR("Supplied trajectory was not loaded with loader");
     return false;
 }
 
@@ -368,7 +368,7 @@ int64_t num_cache_frames(md_trajectory_i* traj) {
     if (loaded_traj) {
         return md_frame_cache_num_frames(&loaded_traj->cache);
     }
-    md_print(MD_LOG_TYPE_ERROR, "Supplied trajectory was not loaded with loader");
+    MD_LOG_ERROR("Supplied trajectory was not loaded with loader");
     return 0;
 }
 

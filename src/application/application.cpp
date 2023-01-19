@@ -35,7 +35,7 @@ static struct {
     Context internal_ctx{};
 } data;
 
-static void error_callback(int error, const char* description) { md_printf(MD_LOG_TYPE_ERROR, "%d: %s\n", error, description); }
+static void error_callback(int error, const char* description) { MD_LOG_ERROR("%d: %s\n", error, description); }
 
 static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message,
                                  const void* userParam) {
@@ -46,11 +46,10 @@ static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum s
     (void)length;
     (void)userParam;
 
-    if (severity > GL_DEBUG_SEVERITY_LOW) {
-        md_print(MD_LOG_TYPE_INFO, message);
-    }
-    if (severity == GL_DEBUG_SEVERITY_HIGH) {
-        md_printf(MD_LOG_TYPE_ERROR, "A SEVERE GL ERROR HAS OCCURED: %s", message);
+    if (severity < GL_DEBUG_SEVERITY_HIGH) {
+        MD_LOG_INFO("%s", message);
+    } else {
+        MD_LOG_ERROR("A SEVERE GL ERROR HAS OCCURED: %s", message);
         abort();
     }
 }
@@ -58,7 +57,7 @@ static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum s
 bool initialize(Context* ctx, int width, int height, const char* title) {
     if (!glfwInit()) {
         // TODO Throw critical error
-        md_print(MD_LOG_TYPE_ERROR, "Error while initializing glfw.");
+        MD_LOG_ERROR("Error while initializing glfw.");
         return false;
     }
     glfwSetErrorCallback(error_callback);
@@ -82,14 +81,14 @@ bool initialize(Context* ctx, int width, int height, const char* title) {
 #endif
     GLFWwindow* window = glfwCreateWindow((int)width, (int)height, title, NULL, NULL);
     if (!window) {
-        md_print(MD_LOG_TYPE_ERROR, "Could not create glfw window.");
+        MD_LOG_ERROR("Could not create glfw window.");
         return false;
     }
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
     if (gl3wInit() != GL3W_OK) {
-        md_print(MD_LOG_TYPE_ERROR, "Could not load gl functions.");
+        MD_LOG_ERROR("Could not load gl functions.");
         return false;
     }
 
@@ -257,7 +256,7 @@ bool file_dialog(char* str_buf, int str_cap, FileDialogFlags flags, const char* 
         convert_backslashes(str_buf, str_cap);
         return true;
     } else if (result == NFD_ERROR) {
-        md_printf(MD_LOG_TYPE_ERROR, "%s\n", NFD_GetError());
+        MD_LOG_ERROR("%s\n", NFD_GetError());
     }
     /* fallthrough for NFD_CANCEL */
     return false;
