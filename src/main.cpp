@@ -1193,7 +1193,9 @@ int main(int, char**) {
     editor.SetLanguageDefinition(TextEditor::LanguageDefinition::VIAMD());
     editor.SetPalette(TextEditor::GetDarkPalette());
 
-    load_dataset_from_file(&data, STR(VIAMD_DATASET_DIR "/1ALA-500.pdb"));
+    str_t path = STR(VIAMD_DATASET_DIR "/1ALA-500.pdb");
+
+    load_dataset_from_file(&data, path, load::mol::get_api(path), load::traj::get_api(path), false, true);
     create_representation(&data, RepresentationType::SpaceFill, ColorMapping::Cpk, STR("all"));
     editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(1,2,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);");
 
@@ -6779,19 +6781,13 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
     ASSERT(data);
 
     path_to_file = md_path_make_canonical(path_to_file, frame_allocator);
-
     if (path_to_file) {
-        if (str_equal(data->files.molecule, path_to_file) && data->files.coarse_grained == coarse_grained) {
-            // File already loaded
-            return true;
-        }
-
-        if (!mol_api && !traj_api) {
-            mol_api = load::mol::get_api(path_to_file);
-            traj_api = load::traj::get_api(path_to_file);
-        }
-
         if (mol_api) {
+            if (str_equal(data->files.molecule, path_to_file) && data->files.coarse_grained == coarse_grained) {
+                // File already loaded as molecular data
+                return true;
+            }
+
             interrupt_async_tasks(data);
             free_molecule_data(data);
             free_trajectory_data(data);
@@ -6833,6 +6829,7 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
             bool success = load_trajectory_data(data, path_to_file, deperiodize_on_load);
             if (success) {
                 LOG_SUCCESS("Successfully opened trajectory from file '%.*s'", path_to_file.len, path_to_file.ptr);
+                return true;
             } else {
                 LOG_ERROR("Failed to opened trajectory from file '%.*s'", path_to_file.len, path_to_file.ptr);
             }
