@@ -15,7 +15,7 @@
 
 // CHANGELOG
 // (minor and older changes stripped away, please see git history for details)
-//  2022-XX-XX: Platform: Added support for multiple windows via the ImGuiPlatformIO interface.
+//  2023-XX-XX: Platform: Added support for multiple windows via the ImGuiPlatformIO interface.
 //  2022-11-09: OpenGL: Reverted use of glBufferSubData(), too many corruptions issues + old issues seemingly can't be reproed with Intel drivers nowadays (revert 2021-12-15 and 2022-05-23 changes).
 //  2022-10-11: Using 'nullptr' instead of 'NULL' as per our switch to C++11.
 //  2022-09-27: OpenGL: Added ability to '#define IMGUI_IMPL_OPENGL_DEBUG'.
@@ -111,6 +111,10 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wold-style-cast"     // warning: use of old-style cast
 #pragma clang diagnostic ignored "-Wsign-conversion"    // warning: implicit conversion changes signedness
+#endif
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-function-type"   // warning: cast between incompatible function types
 #endif
 
 // GL includes
@@ -924,6 +928,9 @@ static void ImGui_ImplOpenGL3_ShutdownPlatformInterface()
     ImGui::DestroyPlatformWindows();
 }
 
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 #if defined(__clang__)
 #pragma clang diagnostic pop
 #endif
