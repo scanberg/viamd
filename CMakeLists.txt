@@ -48,7 +48,6 @@ set(VIAMD_FRAME_CACHE_SIZE "2048" CACHE STRING "Reserved frame cache size in Meg
 set(VIAMD_NUM_WORKER_THREADS "8" CACHE STRING "Number of worker threads (Decrease if you run out of memory during evaluation)")
 
 # Copy many of the fields from mdlib
-set(VIAMD_DEFINES ${MD_DEFS})
 set(VIAMD_STDLIBS)
 set(VIAMD_FLAGS ${MD_FLAGS})
 set(VIAMD_FLAGS_DEB ${MD_FLAGS_DEB})
@@ -95,8 +94,8 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>")
 endif()
 
-create_copy_resource_dir_target(viamd_copy_shaders  "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders"  "${VIAMD_BIN_DIR}/shaders")
-create_copy_resource_dir_target(viamd_copy_datasets "${CMAKE_CURRENT_SOURCE_DIR}/datasets" "${VIAMD_BIN_DIR}/datasets")
+create_copy_resource_dir_target(viamd_copy_shaders  "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders"   "${VIAMD_BIN_DIR}/shaders")
+create_copy_resource_dir_target(viamd_copy_datasets "${CMAKE_CURRENT_SOURCE_DIR}/datasets"      "${VIAMD_BIN_DIR}/datasets")
 
 add_dependencies(viamd viamd_copy_shaders viamd_copy_datasets)
 
@@ -106,6 +105,7 @@ target_compile_definitions(viamd PRIVATE
 	VIAMD_SCREENSHOT_DIR=\"screenshots\"
     VIAMD_NUM_WORKER_THREADS=${VIAMD_NUM_WORKER_THREADS}
     VIAMD_FRAME_CACHE_SIZE=${VIAMD_FRAME_CACHE_SIZE}
+    ${MD_DEFINES}
 )
 
 # We just hijack the warning and compile flags from mdlib
