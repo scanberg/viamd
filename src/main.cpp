@@ -1,8 +1,10 @@
 #include <core/md_compiler.h>
 
 #if MD_COMPILER_MSVC
-#define _CRT_SECURE_NO_WARNINGS
-#pragma warning( disable : 26812 4244 )
+#   ifndef _CRT_SECURE_NO_WARNINGS
+#       define _CRT_SECURE_NO_WARNINGS
+#   endif
+#   pragma warning( disable : 26812 4244 )
 #endif
 
 #include <md_util.h>
@@ -260,6 +262,7 @@ struct Representation {
 #endif
 
     bool enabled = true;
+    bool type_is_valid = false;
     bool filt_is_dirty = true;
     bool filt_is_valid = false;
     bool filt_is_dynamic = false;
@@ -743,11 +746,11 @@ struct ApplicationData {
 
     // --- REPRESENTATIONS ---
     struct {
-        Representation* buffer = 0;
+        md_array(Representation) reps = 0;
         md_bitfield_t atom_visibility_mask = {0};
         bool atom_visibility_mask_dirty = false;
         bool show_window = false;
-    } representations;
+    } representation;
 
     struct {
         bool show_window = false;
@@ -1113,6 +1116,13 @@ int main(int, char**) {
         NULL,
         [](struct md_logger_o* inst, enum md_log_type_t log_type, const char* msg) {
             (void)inst;
+    
+            static char prev_msg[1024];
+            if (strncmp(prev_msg, msg, sizeof(prev_msg)) == 0) {
+                return;
+            }
+            strncpy(prev_msg, msg, sizeof(prev_msg));
+            
             ImGuiToastType toast_type = ImGuiToastType_None;
             switch (log_type) {
             case MD_LOG_TYPE_INFO:
@@ -1142,7 +1152,7 @@ int main(int, char**) {
     md_bitfield_init(&data.selection.query.mask, persistent_allocator);
     md_bitfield_init(&data.selection.grow.mask, persistent_allocator);
 
-    md_bitfield_init(&data.representations.atom_visibility_mask, persistent_allocator);
+    md_bitfield_init(&data.representation.atom_visibility_mask, persistent_allocator);
 
     md_semaphore_init(&data.mold.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT);
 
@@ -1238,7 +1248,7 @@ int main(int, char**) {
 
         // GUI
         if (data.load_dataset.show_window) draw_load_dataset_window(&data);
-        if (data.representations.show_window) draw_representations_window(&data);
+        if (data.representation.show_window) draw_representations_window(&data);
         if (data.density_volume.show_window) draw_density_volume_window(&data);
         if (data.timeline.show_window) draw_timeline_window(&data);
         if (data.distributions.show_window) draw_distribution_window(&data);
@@ -1333,9 +1343,9 @@ int main(int, char**) {
             }
         }
 
-        if (data.representations.atom_visibility_mask_dirty) {
+        if (data.representation.atom_visibility_mask_dirty) {
             recompute_atom_visibility_mask(&data);
-            data.representations.atom_visibility_mask_dirty = false;
+            data.representation.atom_visibility_mask_dirty = false;
         }
 
         if (data.animation.mode == PlaybackMode::Playing) {
@@ -1426,8 +1436,8 @@ int main(int, char**) {
             POP_CPU_SECTION()
 
             PUSH_CPU_SECTION("Update dynamic representations")
-            for (int64_t i = 0; i < md_array_size(data.representations.buffer); ++i) {
-                auto& rep = data.representations.buffer[i];
+            for (int64_t i = 0; i < md_array_size(data.representation.reps); ++i) {
+                auto& rep = data.representation.reps[i];
                 if (!rep.enabled) continue;
                 if (rep.dynamic_evaluation || rep.color_mapping == ColorMapping::SecondaryStructure) {
                     update_representation(&data, &rep);
@@ -2698,7 +2708,7 @@ ImGui::EndGroup();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Windows")) {
-            ImGui::Checkbox("Representations", &data->representations.show_window);
+            ImGui::Checkbox("Representations", &data->representation.show_window);
             ImGui::Checkbox("Script", &data->show_script_window);
             ImGui::Checkbox("Timelines", &data->timeline.show_window);
             ImGui::Checkbox("Distributions", &data->distributions.show_window);
@@ -2979,7 +2989,7 @@ void draw_load_dataset_window(ApplicationData* data) {
             int len = snprintf(buf, sizeof(buf), ".%s", loader_ext[state.loader_idx].ptr);
             str_t ext = {buf, len};
             if (load_dataset_from_file(data, path, load::mol::get_api(ext), load::traj::get_api(ext), show_cg && state.coarse_grained, show_dp && state.deperiodize_on_load)) {
-                if (!data->representations.buffer) {
+                if (md_array_size(data->representation.reps) == 0) {
                     create_representation(data); // Create default representation
                 }
                 data->animation = {};
@@ -3666,7 +3676,7 @@ static void draw_animation_window(ApplicationData* data) {
 static void draw_representations_window(ApplicationData* data) {
 
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
-    ImGui::Begin("Representations", &data->representations.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::Begin("Representations", &data->representation.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
     if (ImGui::Button("create new")) {
         create_representation(data);
     }
@@ -3676,9 +3686,9 @@ static void draw_representations_window(ApplicationData* data) {
     }
     ImGui::Spacing();
     ImGui::Separator();
-    for (int i = 0; i < (int)md_array_size(data->representations.buffer); i++) {
+    for (int i = 0; i < (int)md_array_size(data->representation.reps); i++) {
         bool update_rep = false;
-        auto& rep = data->representations.buffer[i];
+        auto& rep = data->representation.reps[i];
         const float item_width = MAX(ImGui::GetContentRegionAvail().x - 90.f, 100.f);
         char label[128];
         snprintf(label, sizeof(label), "%s###ID", rep.name);
@@ -3704,7 +3714,7 @@ static void draw_representations_window(ApplicationData* data) {
         const ImVec2 btn_size = {size, size};
         if (ImGui::Button(eye_icon, btn_size)) {
             rep.enabled = !rep.enabled;
-            data->representations.atom_visibility_mask_dirty = true;
+            data->representation.atom_visibility_mask_dirty = true;
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Show/Hide");
@@ -3730,9 +3740,12 @@ static void draw_representations_window(ApplicationData* data) {
                 rep.filt_is_dirty = true;
                 update_rep = true;
             }
+            if (!rep.type_is_valid) ImGui::PushInvalid();
             if (ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0Cartoon\0")) {
                 update_rep = true;
             }
+            if (!rep.type_is_valid) ImGui::PopInvalid();
+
             if (ImGui::Combo("color", (int*)(&rep.color_mapping),
                              "Uniform Color\0CPK\0Atom Label\0Atom Idx\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0Property\0")) {
                 update_rep = true;
@@ -6535,7 +6548,7 @@ static void update_md_buffers(ApplicationData* data) {
                 md_flags_t flags = 0;
                 flags |= md_bitfield_test_bit(&data->selection.current_highlight_mask, i)     ? AtomBit_Highlighted : 0;
                 flags |= md_bitfield_test_bit(&data->selection.current_selection_mask, i)     ? AtomBit_Selected : 0;
-                flags |= md_bitfield_test_bit(&data->representations.atom_visibility_mask, i) ? AtomBit_Visible : 0;
+                flags |= md_bitfield_test_bit(&data->representation.atom_visibility_mask, i) ? AtomBit_Visible : 0;
                 data->mold.mol.atom.flags[i] = flags;
             }
             md_gl_molecule_set_atom_flags(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.flags, 0);
@@ -7022,7 +7035,7 @@ void* serialize_create_selection(ApplicationData* data) {
 }
 
 SerializationArray serialization_array_groups[] = {
-    {"[Representation]",        offsetof(ApplicationData, representations.buffer),          sizeof(Representation),     serialize_create_rep},
+    {"[Representation]",        offsetof(ApplicationData, representation.reps),             sizeof(Representation),     serialize_create_rep},
     {"[AtomElementMapping]",    offsetof(ApplicationData, dataset.atom_element_remappings), sizeof(AtomElementMapping), serialize_create_atom_elem_mapping},
     {"[Selection]",             offsetof(ApplicationData, selection.stored_selections),     sizeof(Selection),          serialize_create_selection},
 };
@@ -7492,12 +7505,12 @@ static Representation* create_representation(ApplicationData* data, Representati
     }
     init_representation(data, &rep);
     update_representation(data, &rep);
-    return md_array_push(data->representations.buffer, rep, persistent_allocator);
+    return md_array_push(data->representation.reps, rep, persistent_allocator);
 }
 
 static Representation* clone_representation(ApplicationData* data, const Representation& rep) {
     ASSERT(data);
-    Representation* clone = md_array_push(data->representations.buffer, rep, persistent_allocator);
+    Representation* clone = md_array_push(data->representation.reps, rep, persistent_allocator);
     clone->md_rep = {0};
     clone->atom_mask = {0};
     init_representation(data, clone);
@@ -7507,22 +7520,22 @@ static Representation* clone_representation(ApplicationData* data, const Represe
 
 static void remove_representation(ApplicationData* data, int idx) {
     ASSERT(data);
-    ASSERT(idx < md_array_size(data->representations.buffer));
-    auto& rep = data->representations.buffer[idx];
+    ASSERT(idx < md_array_size(data->representation.reps));
+    auto& rep = data->representation.reps[idx];
     md_bitfield_free(&rep.atom_mask);
     md_gl_representation_free(&rep.md_rep);
-    data->representations.buffer[idx] = *md_array_last(data->representations.buffer);
-    md_array_pop(data->representations.buffer);
+    data->representation.reps[idx] = *md_array_last(data->representation.reps);
+    md_array_pop(data->representation.reps);
 }
 
 static void recompute_atom_visibility_mask(ApplicationData* data) {
     ASSERT(data);
 
-    auto& mask = data->representations.atom_visibility_mask;
+    auto& mask = data->representation.atom_visibility_mask;
 
     md_bitfield_clear(&mask);
-    for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
-        auto& rep = data->representations.buffer[i];
+    for (int64_t i = 0; i < md_array_size(data->representation.reps); ++i) {
+        auto& rep = data->representation.reps[i];
         if (!rep.enabled) continue;
         md_bitfield_or_inplace(&mask, &rep.atom_mask);
     }
@@ -7531,8 +7544,8 @@ static void recompute_atom_visibility_mask(ApplicationData* data) {
 }
 
 static void update_all_representations(ApplicationData* data) {
-    for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
-        auto& rep = data->representations.buffer[i];
+    for (int64_t i = 0; i < md_array_size(data->representation.reps); ++i) {
+        auto& rep = data->representation.reps[i];
         update_representation(data, &rep);
     }
 }
@@ -7640,6 +7653,19 @@ static void update_representation(ApplicationData* data, Representation* rep) {
             break;
     }
 
+    switch (rep->type) {
+    case RepresentationType::SpaceFill:
+    case RepresentationType::Licorice:
+        rep->type_is_valid = true;
+        break;
+    case RepresentationType::Ribbons:
+    case RepresentationType::Cartoon:
+        rep->type_is_valid = mol.backbone.range_count > 0;
+        break;
+    default:
+        ASSERT(false);
+    }
+
     if (rep->dynamic_evaluation) {
         rep->filt_is_dirty = true;
     }
@@ -7651,11 +7677,11 @@ static void update_representation(ApplicationData* data, Representation* rep) {
 
     if (rep->filt_is_valid) {
         filter_colors(colors, mol.atom.count, &rep->atom_mask);
-        data->representations.atom_visibility_mask_dirty = true;
+        data->representation.atom_visibility_mask_dirty = true;
 
         md_gl_representation_type_t type = MD_GL_REP_SPACE_FILL;
         md_gl_representation_args_t args = {};
-        switch(rep->type) {
+        switch (rep->type) {
         case RepresentationType::SpaceFill:
             type = MD_GL_REP_SPACE_FILL;
             args.space_fill.radius_scale = rep->radius;
@@ -7699,16 +7725,16 @@ static void init_representation(ApplicationData* data, Representation* rep) {
 }
 
 static void init_all_representations(ApplicationData* data) {
-    for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
-        auto& rep = data->representations.buffer[i];
+    for (int64_t i = 0; i < md_array_size(data->representation.reps); ++i) {
+        auto& rep = data->representation.reps[i];
         init_representation(data, &rep);
     }
 }
 
 static void clear_representations(ApplicationData* data) {
     ASSERT(data);
-    while (md_array_size(data->representations.buffer) > 0) {
-        remove_representation(data, (int32_t)md_array_size(data->representations.buffer) - 1);
+    while (md_array_size(data->representation.reps) > 0) {
+        remove_representation(data, (int32_t)md_array_size(data->representation.reps) - 1);
     }
 }
 
@@ -7793,7 +7819,7 @@ static void handle_camera_interaction(ApplicationData* data) {
 
                 const vec2_t res = { (float)data->ctx.window.width, (float)data->ctx.window.height };
                 const mat4_t mvp = data->view.param.matrix.current.proj * data->view.param.matrix.current.view;
-                const md_bitfield_t* vis_mask = &data->representations.atom_visibility_mask;
+                const md_bitfield_t* vis_mask = &data->representation.atom_visibility_mask;
 
                 int64_t beg_bit = vis_mask->beg_bit;
                 int64_t end_bit = vis_mask->end_bit;
@@ -7965,7 +7991,7 @@ static void init_occupancy_volume(ApplicationData* data) {
     //data->occupancy_volume.vol_mutex.lock();
     if (data->occupancy_volume.vol.texture_id) {
         cone_trace::compute_occupancy_volume(data->occupancy_volume.vol, data->mold.mol.atom.position,
-                                             data->mold.mol.atom.radius, data->representations.atom_visibility_mask);
+                                             data->mold.mol.atom.radius, data->representation.atom_visibility_mask);
     }
     //data->occupancy_volume.vol_mutex.unlock();
 }
@@ -8292,18 +8318,18 @@ static void draw_representations(ApplicationData* data) {
         }
 
         md_gfx_draw_op_t* draw_ops = 0;
-        for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
-            if (data->representations.buffer[i].enabled) {
+        for (int64_t i = 0; i < md_array_size(data->representation.reps); ++i) {
+            if (data->representation.reps[i].enabled) {
                 md_gfx_draw_op_t op;
                 op.structure = data->mold.gfx_structure;
-                op.representation = data->representations.buffer[i].gfx_rep;
+                op.representation = data->representation.reps[i].gfx_rep;
                 op.model_mat = NULL;
                 md_array_push(draw_ops, op, frame_allocator);
                 
                 for (uint32_t j = 0; j < instance_count; ++j) {
                     md_gfx_draw_op_t op;
                     op.structure = data->mold.gfx_structure;
-                    op.representation = data->representations.buffer[i].gfx_rep;
+                    op.representation = data->representation.reps[i].gfx_rep;
                     op.model_mat = &transforms[j];
                     md_array_push(draw_ops, op, frame_allocator);
                 }
@@ -8315,10 +8341,10 @@ static void draw_representations(ApplicationData* data) {
     } else {
 #endif
         md_gl_draw_op_t* draw_ops = 0;
-        for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
-            if (data->representations.buffer[i].enabled) {
+        for (int64_t i = 0; i < md_array_size(data->representation.reps); ++i) {
+            if (data->representation.reps[i].enabled && data->representation.reps[i].type_is_valid) {
                 md_gl_draw_op_t op = {
-                    &data->representations.buffer[i].md_rep,
+                    &data->representation.reps[i].md_rep,
                     NULL,
                 };
                 md_array_push(draw_ops, op, frame_allocator);
@@ -8348,10 +8374,10 @@ static void draw_representations(ApplicationData* data) {
 
 static void draw_representations_lean_and_mean(ApplicationData* data, uint32_t mask) {
     md_gl_draw_op_t* draw_ops = 0;
-    for (int64_t i = 0; i < md_array_size(data->representations.buffer); ++i) {
-        if (data->representations.buffer[i].enabled) {
+    for (int64_t i = 0; i < md_array_size(data->representation.reps); ++i) {
+        if (data->representation.reps[i].enabled && data->representation.reps[i].type_is_valid) {
             md_gl_draw_op_t op = { 
-                &data->representations.buffer[i].md_rep,
+                &data->representation.reps[i].md_rep,
                 NULL,
             };
             md_array_push(draw_ops, op, frame_allocator);
