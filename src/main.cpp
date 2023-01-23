@@ -4872,12 +4872,11 @@ static void draw_shape_space_window(ApplicationData* data) {
                                         xyz[count++] = pos;
                                     }
                                     com = com / (float)count;
-                                    vec3_t eigen_vals;
-                                    mat3_t eigen_vecs;
-                                    mat3_eigen(mat3_covariance_matrix_vec3(xyz, com, count), eigen_vecs.col, eigen_vals.elem);
-                                    float scl = 1.0f / (eigen_vals.x + eigen_vals.y + eigen_vals.z);
-                                    int64_t dst_idx = data->shape_space.num_frames * i + frame_idx;
-                                    vec3_t w = { (eigen_vals[0] - eigen_vals[1]) * scl, 2.0f * (eigen_vals[1] - eigen_vals[2]) * scl, 3.0f * eigen_vals[2] * scl };
+                                    const mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix_vec3(xyz, com, count));
+                                    const float scl = 1.0f / (eigen.values[0] + eigen.values[1] + eigen.values[2]);
+                                    const int64_t dst_idx = data->shape_space.num_frames * i + frame_idx;
+                                    vec3_t w = {(eigen.values[0] - eigen.values[1]) * scl, 2.0f * (eigen.values[1] - eigen.values[2]) * scl,
+                                                3.0f * eigen.values[2] * scl};
                                     data->shape_space.weights[dst_idx] = w;
                                     data->shape_space.coords[dst_idx] = p[0] * w[0] + p[1] * w[1] + p[2] * w[2];
                                 }
