@@ -59,6 +59,7 @@
 
 #include <stdio.h>
 #include <thread>
+#include <functional>
 
 #define EXPERIMENTAL_GFX_API 0
 #define PICKING_JITTER_HACK 0
@@ -311,8 +312,8 @@ struct DisplayProperty {
     };
 
     struct Range {
-        float beg = 0;
-        float end = 0;
+        double beg = 0;
+        double end = 0;
     };
 
     struct Histogram {
@@ -338,7 +339,7 @@ struct DisplayProperty {
     };
 
     char label[32] = "";
-    uint32_t col = 0xFFFFFFFFU;
+    uint32_t col = 0xFFFFFFFFul;
 
     const float* values = 0;
     md_unit_t unit = {};
@@ -356,6 +357,7 @@ struct DisplayProperty {
 
     Range value_filter = {};
     Range frame_filter = {};
+    Range view_range   = {};
 
     Histogram full_hist = {};
     Histogram filt_hist = {};
@@ -1815,6 +1817,7 @@ static void init_display_properties(DisplayProperty** prop_items, const md_scrip
         item.col = PROPERTY_COLORS[i % ARRAY_SIZE(PROPERTY_COLORS)];
         item.frame_filter = {0, 0};
         item.value_filter = {full_props[i].data.min_range[0], full_props[i].data.max_range[0]};
+        item.view_range   = {full_props[i].data.min_range[0], full_props[i].data.max_range[0]};
         item.unit = full_props[i].data.unit;
         item.full_prop = &full_props[i];
         item.filt_prop = &filt_props[i];
@@ -1830,6 +1833,7 @@ static void init_display_properties(DisplayProperty** prop_items, const md_scrip
                 // Copy relevant parameters from existing item which we want to be persistent
                 item.frame_filter = old_items[j].frame_filter;
                 item.value_filter = old_items[j].value_filter;
+                item.view_range   = old_items[j].view_range;
                 item.current_display_mask = old_items[j].current_display_mask & possible_display_mask;
                 item.full_prop_fingerprint = old_items[j].full_prop_fingerprint;
                 item.filt_prop_fingerprint = old_items[j].filt_prop_fingerprint;
@@ -4501,6 +4505,8 @@ static void draw_distribution_window(ApplicationData* data) {
         static constexpr int MAX_PLOT_HEIGHT = 1000;
         static int plot_height = 180;
 
+        static bool sync_axis = true;
+
         if (ImGui::BeginMenuBar())
         {
             if (ImGui::BeginMenu("Properties")) {
@@ -4520,6 +4526,7 @@ static void draw_distribution_window(ApplicationData* data) {
                     const int down = up / 2;
                     num_bins = abs(num_bins - down) < abs(num_bins - up) ? down : up;
                 }
+                ImGui::Checkbox("Sync X-Axis per type", &sync_axis);
                 ImGui::EndMenu();
             }
 
@@ -4538,10 +4545,37 @@ static void draw_distribution_window(ApplicationData* data) {
 
         // The distribution properties are always computed as histograms with a resolution of 1024
         // If we have a different number of bins for our visualization, we need to recompute the bins
-        float* bins = (float*)md_alloc(frame_allocator, num_bins * sizeof(float));
-        float* filtered_bins = (float*)md_alloc(frame_allocator, num_bins * sizeof(float));
+        float* full_bins = (float*)md_alloc(frame_allocator, num_bins * sizeof(float));
+        float* filt_bins = (float*)md_alloc(frame_allocator, num_bins * sizeof(float));
 
-        int num_props = (int)md_array_size(data->display_properties);
+        const int num_props = (int)md_array_size(data->display_properties);
+        
+        md_array(uint64_t) prop_hash = 0;
+        md_array(int)      prop_remap = 0;
+        
+        if (sync_axis) {
+            md_array_resize(prop_hash,  num_props, frame_allocator);
+            md_array_resize(prop_remap, num_props, frame_allocator);
+            
+            for (int i = 0; i < num_props; ++i) {
+                DisplayProperty& prop = data->display_properties[i];
+                if ((prop.current_display_mask & DisplayProperty::ShowIn_Distribution) == 0) continue;
+                const uint64_t min_hash  = std::hash<double>()(prop.full_prop->data.min_range[0]);
+                const uint64_t max_hash  = std::hash<double>()(prop.full_prop->data.max_range[0]);
+                const uint64_t unit_hash = std::hash<std::string_view>()(prop.unit_str);
+                const uint64_t hash = min_hash ^ (max_hash << 1) ^ (unit_hash << 2);
+                prop_hash[i] = hash;
+                prop_remap[i] = i;
+                
+                for (int j = 0; j < i; ++j) {
+                    if (prop_hash[j] == hash) {
+                        prop_remap[i] = j;
+                        break;
+                    }
+                }
+            }
+        }
+
         for (int i = 0; i < num_props; ++i) {
             DisplayProperty& prop = data->display_properties[i];
             if ((prop.current_display_mask & DisplayProperty::ShowIn_Distribution) == 0) continue;
@@ -4551,6 +4585,9 @@ static void draw_distribution_window(ApplicationData* data) {
 
             double min_x = full_prop->data.min_range[0];
             double max_x = full_prop->data.max_range[0];
+            
+            double* view_beg = sync_axis ? &data->display_properties[prop_remap[i]].view_range.beg : &prop.view_range.beg;
+            double* view_end = sync_axis ? &data->display_properties[prop_remap[i]].view_range.end : &prop.view_range.end;
 
             // We need to avoid the axis collapsing, otherwise Implot will get stuck in an infinite loop
             if (min_x == max_x) {
@@ -4572,12 +4609,12 @@ static void draw_distribution_window(ApplicationData* data) {
             }
 
             // Downsample bins
-            downsample_histogram(bins, num_bins, full_src, num_values_src);
-            downsample_histogram(filtered_bins, num_bins, filt_src, num_values_src);
+            downsample_histogram(full_bins, num_bins, full_src, num_values_src);
+            downsample_histogram(filt_bins, num_bins, filt_src, num_values_src);
 
             double max_y = 0;
             for (int64_t j = 0; j < num_bins; ++j) {
-                max_y = MAX(max_y, bins[j]);
+                max_y = MAX(max_y, full_bins[j]);
             }
             max_y = MAX(max_y, 0.001);
             
@@ -4598,6 +4635,7 @@ static void draw_distribution_window(ApplicationData* data) {
                 ImPlot::SetupAxisLimits(ImAxis_Y1, 0, max_y * 1.1, ImGuiCond_Always);
                 ImPlot::SetupAxisLimits(ImAxis_X1, min_x, max_x, ImGuiCond_Once);
                 ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, min_x, max_x);
+                ImPlot::SetupAxisLinks(ImAxis_X1, view_beg, view_end);
                 ImPlot::SetupAxes(0, 0, axis_flags_x, axis_flags_y);
                 ImPlot::SetupFinish();
 
@@ -4621,13 +4659,13 @@ static void draw_distribution_window(ApplicationData* data) {
                     return ImPlotPoint(idx * pd->scale + pd->offset, (double)pd->bars[idx]);
                 };
 
-                plot_data.bars = bins;
+                plot_data.bars = full_bins;
                 ImPlot::SetNextFillStyle(ImVec4(0,0,0,-1), 1.0f);
                 ImPlot::SetNextLineStyle(ImVec4(0,0,0,0), 0);
                 ImPlot::PlotBarsG("full", getter, &plot_data, num_bins, bar_width);
 
                 if (data->timeline.filter.enabled) {
-                    plot_data.bars = filtered_bins;
+                    plot_data.bars = filt_bins;
                     ImPlot::SetNextFillStyle(ImVec4(1,1,0,1), 0.3f);
                     ImPlot::SetNextLineStyle(ImVec4(0,0,0,0), 0);
                     ImPlot::PlotBarsG("filt", getter, &plot_data, num_bins, bar_width);
@@ -4872,12 +4910,10 @@ static void draw_shape_space_window(ApplicationData* data) {
                                         xyz[count++] = pos;
                                     }
                                     com = com / (float)count;
-                                    vec3_t eigen_vals;
-                                    mat3_t eigen_vecs;
-                                    mat3_eigen(mat3_covariance_matrix_vec3(xyz, com, count), eigen_vecs.col, eigen_vals.elem);
-                                    float scl = 1.0f / (eigen_vals.x + eigen_vals.y + eigen_vals.z);
+                                    mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix_vec3(xyz, com, count));
+                                    float scl = 1.0f / (eigen.values.x + eigen.values.y + eigen.values.z);
                                     int64_t dst_idx = data->shape_space.num_frames * i + frame_idx;
-                                    vec3_t w = { (eigen_vals[0] - eigen_vals[1]) * scl, 2.0f * (eigen_vals[1] - eigen_vals[2]) * scl, 3.0f * eigen_vals[2] * scl };
+                                    vec3_t w = { (eigen.values[0] - eigen.values[1]) * scl, 2.0f * (eigen.values[1] - eigen.values[2]) * scl, 3.0f * eigen.values[2] * scl };
                                     data->shape_space.weights[dst_idx] = w;
                                     data->shape_space.coords[dst_idx] = p[0] * w[0] + p[1] * w[1] + p[2] * w[2];
                                 }
@@ -7131,7 +7167,8 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
         }
         case SerializationType_Path:
         {
-            StrBuf<1024> path = extract_path_without_file(filename);
+            md_strb_t path = md_strb_create(frame_allocator);
+            path += extract_path_without_file(filename);
             path += arg;
             str_t can_path = md_path_make_canonical(path, frame_allocator);
             if (can_path.ptr && can_path.len > 0) {
