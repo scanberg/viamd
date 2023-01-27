@@ -155,7 +155,7 @@ int64_t fetch_frame_data(struct md_trajectory_o*, int64_t idx, void* data_ptr) {
     return sizeof(int64_t);
 }
 
-bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[maybe_unused]] int64_t data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[maybe_unused]] int64_t data_size, md_trajectory_frame_header_t* header, float* out_x, float* out_y, float* out_z) {
     LoadedTrajectory* loaded_traj = (LoadedTrajectory*)inst;
     ASSERT(loaded_traj);
     ASSERT(data_size == sizeof(int64_t));
@@ -181,63 +181,46 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
                 box_ext = {frame_data->header.box[0][0], frame_data->header.box[1][1], frame_data->header.box[2][2]};
             }
 
-            // If we have a recenter target, then compute and apply that transformation
+            const md_molecule_t* mol = loaded_traj->mol;
+            float* x = frame_data->x;
+            float* y = frame_data->y;
+            float* z = frame_data->z;
+            const int64_t num_atoms = frame_data->header.num_atoms;
+
+            // If we have a recenter target, then compute the com and apply that transformation
             if (!md_bitfield_empty(&loaded_traj->recenter_target)) {
-                int64_t count = md_bitfield_popcount(&loaded_traj->recenter_target);
+                const md_bitfield_t* bf = &loaded_traj->recenter_target;
+                const int64_t count = md_bitfield_popcount(bf);
+                
                 if (count > 0) {
-                    // Allocate data for substructure
-                    int64_t stride = ALIGN_TO(count, md_simd_f32_width);
-                    const int64_t mem_size = stride * 4 * sizeof(float);
-                    void* mem_ptr = md_alloc(alloc, mem_size);
-                    float* tmp_x = (float*)mem_ptr + 0 * stride;
-                    float* tmp_y = (float*)mem_ptr + 1 * stride;
-                    float* tmp_z = (float*)mem_ptr + 2 * stride;
-                    float* tmp_w = (float*)mem_ptr + 3 * stride;
+                    int32_t* indices = (int32_t*)md_alloc(alloc, sizeof(int32_t) * count);
+                    defer { md_free(alloc, indices, sizeof(int32_t) * count); };
+                        
+                    md_bitfield_extract_indices(indices, bf);                
 
-                    // Extract fields for substructure
-                    int64_t dst_idx = 0;
-                    int64_t beg_bit = loaded_traj->recenter_target.beg_bit;
-                    int64_t end_bit = loaded_traj->recenter_target.end_bit;
-                    while ((beg_bit = md_bitfield_scan(&loaded_traj->recenter_target, beg_bit, end_bit)) != 0) {
-                        int64_t src_idx = beg_bit - 1;
-                        tmp_x[dst_idx] = frame_data->x[src_idx];
-                        tmp_y[dst_idx] = frame_data->y[src_idx];
-                        tmp_z[dst_idx] = frame_data->z[src_idx];
-                        tmp_w[dst_idx] = loaded_traj->mol->atom.mass[src_idx];
-                        dst_idx += 1;
+                    // This seems a bit excessive, but we need to unwrap the coordinates
+                    // In order to properly resolve the com of structures
+                    if (loaded_traj->deperiodize && have_box) {
+                        md_util_pbc_ortho(x, y, z, num_atoms, box_ext);
+                        md_util_unwrap_ortho(x, y, z, &mol->covalent.structures, box_ext);
                     }
-
-                    // Compute deperiodized com for substructure
-                    vec3_t com;
+                    vec3_t com = md_util_compute_com_indexed_soa(x, y, z, mol->atom.mass, indices, count);
                     if (have_box) {
-                        com = md_util_compute_com_periodic_soa(tmp_x, tmp_y, tmp_z, tmp_w, count, box_ext);
-                        com.x = deperiodizef(com.x, box_ext.x * 0.5f, box_ext.x);
-                        com.y = deperiodizef(com.y, box_ext.y * 0.5f, box_ext.y);
-                        com.z = deperiodizef(com.z, box_ext.z * 0.5f, box_ext.z);
-                    }
-                    else {
-                        com = md_util_compute_com_soa(tmp_x, tmp_y, tmp_z, tmp_w, count);
+                        com = vec3_deperiodize(com, box_ext * 0.5f, box_ext);
                     }
 
                     // Translate all
-                    vec3_t trans = box_ext * 0.5f - com;
-                    for (int64_t i = 0; i < frame_data->header.num_atoms; ++i) {
-                        frame_data->x[i] += trans.x;
-                        frame_data->y[i] += trans.y;
-                        frame_data->z[i] += trans.z;
+                    const vec3_t trans = have_box ? box_ext * 0.5f - com : -com;
+                    for (int64_t i = 0; i < num_atoms; ++i) {
+                        x[i] += trans.x;
+                        y[i] += trans.y;
+                        z[i] += trans.z;
                     }
-
-                    md_free(alloc, mem_ptr, mem_size);
                 }
             }
 
-            // Deperiodize
             if (loaded_traj->deperiodize && have_box) {
-                md_molecule_t mol = *loaded_traj->mol;
-                mol.atom.x = frame_data->x;
-                mol.atom.y = frame_data->y;
-                mol.atom.z = frame_data->z;
-                md_util_apply_pbc(&mol, box_ext);
+                md_util_deperiodize_system_ortho(x, y, z, mol->atom.mass, num_atoms, &mol->covalent.structures, box_ext);
             }
         }
 
@@ -247,9 +230,9 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
     if (result) {
         const int64_t num_atoms = frame_data->header.num_atoms;
         if (header) *header = frame_data->header;
-        if (x) memcpy(x, frame_data->x, sizeof(float) * num_atoms);
-        if (y) memcpy(y, frame_data->y, sizeof(float) * num_atoms);
-        if (z) memcpy(z, frame_data->z, sizeof(float) * num_atoms);
+        if (out_x) MEMCPY(out_x, frame_data->x, sizeof(float) * num_atoms);
+        if (out_y) MEMCPY(out_y, frame_data->y, sizeof(float) * num_atoms);
+        if (out_z) MEMCPY(out_z, frame_data->z, sizeof(float) * num_atoms);
     }
 
     if (lock) {

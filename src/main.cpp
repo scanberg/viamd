@@ -1426,7 +1426,13 @@ int main(int, char**) {
                 interpolate_atomic_properties(&data);
 
                 if (data.animation.apply_pbc) {
-                    md_util_apply_pbc(&mol, data.simulation_box.box * vec3_t {1,1,1});
+                    const vec3_t pbc_ext = data.simulation_box.box * (vec3_t {1,1,1});
+                    if (mol.covalent.count > 0) {
+                        //md_util_apply_pbc_preserve_covalent(mol.atom.x, mol.atom.y, mol.atom.z, &mol.covalent, pbc_ext);
+                        ASSERT(false);
+                    } else {
+                        md_util_pbc_ortho(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, pbc_ext);
+                    }
                 }
 
 #if EXPERIMENTAL_CONE_TRACED_AO
@@ -1627,8 +1633,8 @@ int main(int, char**) {
 #if 0
         PUSH_CPU_SECTION("Hydrogen bonds")
         if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.dirty) {
-            data.hydrogen_bonds.bonds = hydrogen_bond::compute_bonds(
-                {mol.hydrogen_bond.donor.data, mol.hydrogen_bond.donor.count}, {mol.hydrogen_bond.acceptor.data, mol.hydrogen_bond.acceptor.count},
+            data.hydrogen_bonds.bonds = hydrogen::compute_bonds(
+                {mol.hydrogen.donor.data, mol.hydrogen.donor.count}, {mol.hydrogen.acceptor.data, mol.hydrogen.acceptor.count},
                 mol.atom.position, data.hydrogen_bonds.distance_cutoff, DEG_TO_RAD(data.hydrogen_bonds.angle_cutoff));
             data.hydrogen_bonds.dirty = false;
         }
@@ -3055,7 +3061,8 @@ void apply_atom_elem_mappings(ApplicationData* data) {
     md_molecule_t* mol = &data->mold.mol;
     
     const vec3_t pbc_ext = md_util_compute_unit_cell_extent(mol->coord_frame);
-    md_util_compute_covalent_bonds(&mol->covalent_bond, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.element, mol->atom.residue_idx, mol->atom.count, pbc_ext, data->mold.mol_alloc);
+    md_bond_data_clear(&mol->covalent);
+    md_util_compute_covalent_bonds_and_connectivity(&mol->covalent, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.element, mol->atom.residue_idx, mol->atom.count, pbc_ext, data->mold.mol_alloc);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
     update_all_representations(data);
@@ -3504,7 +3511,7 @@ static void draw_selection_grow_window(ApplicationData* data) {
             switch (data->selection.grow.mode) {
             case SelectionGrowth::CovalentBond:
                 md_bitfield_copy(&data->selection.grow.mask, &data->selection.current_selection_mask);
-                grow_mask_by_covalent_bond(&data->selection.grow.mask, data->mold.mol.covalent_bond.bond, data->mold.mol.covalent_bond.count, (int64_t)data->selection.grow.extent);
+                grow_mask_by_covalent_bond(&data->selection.grow.mask, data->mold.mol.covalent.bond, data->mold.mol.covalent.count, (int64_t)data->selection.grow.extent);
                 break;
             case SelectionGrowth::Radial: {
                 const auto& mol = data->mold.mol;
@@ -6595,7 +6602,7 @@ static void update_md_buffers(ApplicationData* data) {
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyBonds) {
-        md_gl_molecule_set_covalent_bonds(&data->mold.gl_mol, 0, (uint32_t)mol.covalent_bond.count, mol.covalent_bond.bond, 0);
+        md_gl_molecule_set_covalent_bonds(&data->mold.gl_mol, 0, (uint32_t)mol.covalent.count, mol.covalent.bond, 0);
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtySecondaryStructure) {
@@ -6792,7 +6799,7 @@ static void init_molecule_data(ApplicationData* data) {
         md_gl_molecule_init(&data->mold.gl_mol, &data->mold.mol);
 
 #if EXPERIMENTAL_GFX_API
-        data->mold.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent_bond.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
+        data->mold.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
         md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
         md_gfx_structure_set_atom_radius(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.radius, 0);
         md_gfx_structure_set_aabb(data->mold.gfx_structure, &data->mold.mol_aabb_min, &data->mold.mol_aabb_max);
