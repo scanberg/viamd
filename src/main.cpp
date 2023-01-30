@@ -730,9 +730,9 @@ struct ApplicationData {
     } ramachandran;
 
     struct {
-        StrBuf<256> input = "all";
-        StrBuf<256> err_text = "";
-        md_filter_result_t result = {0};
+        char input[256] = "all";
+        char error[256] = "";
+        
         bool evaluate    = true;
         bool input_valid = false;
         bool show_window = false;
@@ -740,8 +740,11 @@ struct ApplicationData {
         // coords and weights should be of size num_frames * num_structures
         int32_t num_frames;
         int32_t num_structures;
+
         vec3_t* weights = 0;
         vec2_t* coords = 0;
+
+        md_array(md_bitfield_t) bitfields = 0;
 
         float marker_size = 1.4f;
     } shape_space;
@@ -1037,7 +1040,7 @@ static Selection* create_selection(ApplicationData* data, str_t name, md_bitfiel
 static Selection* clone_selection(ApplicationData* data, const Selection& sel);
 static void remove_selection(ApplicationData* data, int idx);
 
-static bool filter_expression(ApplicationData* data, str_t expr, md_bitfield_t* mask, bool* is_dynamic, char* error_str, int64_t error_cap);
+static bool filter_expression(ApplicationData* data, str_t expr, md_bitfield_t* mask, bool* is_dynamic, char* error_str, int error_cap);
 
 static void modify_field(md_bitfield_t* bf, const md_bitfield_t* mask, SelectionOperator op) {
     switch(op) {
@@ -2515,31 +2518,14 @@ static void grow_mask_by_current_selection_granularity(md_bitfield_t* mask, cons
     }
 }
 
-static bool filter_expression(ApplicationData* data, str_t expr, md_bitfield_t* mask, bool* is_dynamic = NULL, char* error_str = NULL, int64_t error_cap = 0) {
+static bool filter_expression(ApplicationData* data, str_t expr, md_bitfield_t* mask, bool* is_dynamic = NULL, char* error_buf = NULL, int error_cap = 0) {
     if (data->mold.mol.atom.count == 0) return false;    
     
-    md_filter_result_t res = {0};
     bool success = false;
 
     if (md_semaphore_aquire(&data->mold.script.ir_semaphore)) {
         defer { md_semaphore_release(&data->mold.script.ir_semaphore); };
-        
-        if (md_filter_evaluate(&res, expr, &data->mold.mol, data->mold.script.ir, frame_allocator)) {
-            if (is_dynamic) {
-                *is_dynamic = res.is_dynamic;
-            }
-            if (mask) {
-                md_bitfield_clear(mask);
-                for (int64_t i = 0; i < res.num_bitfields; ++i) {
-                    md_bitfield_or_inplace(mask, &res.bitfields[i]);
-                }
-            }
-            success = true;
-        } else {
-            if (error_str) {
-                snprintf(error_str, error_cap, "%s", res.error_buf);
-            }
-        }
+        return md_filter(mask, expr, &data->mold.mol, data->mold.script.ir, is_dynamic, error_buf, error_cap);
     }
 
     return success;
@@ -4721,16 +4707,16 @@ static void draw_shape_space_window(ApplicationData* data) {
 
         const float item_width = MAX(ImGui::GetContentRegionAvail().x, 150.f);
         ImGui::PushItemWidth(item_width);
-        data->shape_space.evaluate |= ImGui::InputQuery("##input", data->shape_space.input.beg(), data->shape_space.input.capacity(), data->shape_space.input_valid);
+        data->shape_space.evaluate |= ImGui::InputQuery("##input", data->shape_space.input, sizeof(data->shape_space.input), data->shape_space.input_valid);
         ImGui::PopItemWidth();
         if (ImGui::IsItemHovered()) {
             if (data->shape_space.input_valid) {
                 md_bitfield_clear(&data->selection.current_highlight_mask);
-                for (int64_t i = 0; i < data->shape_space.result.num_bitfields; ++i) {
-                    md_bitfield_or_inplace(&data->selection.current_highlight_mask, &data->shape_space.result.bitfields[i]);
+                for (int64_t i = 0; i < md_array_size(data->shape_space.bitfields); ++i) {
+                    md_bitfield_or_inplace(&data->selection.current_highlight_mask, &data->shape_space.bitfields[i]);
                 }
-            } else if (data->shape_space.err_text[0] != '\0') {
-                ImGui::SetTooltip("%s", data->shape_space.err_text.cstr());
+            } else if (data->shape_space.error[0] != '\0') {
+                ImGui::SetTooltip("%s", data->shape_space.error);
             }
         }
 
@@ -4745,23 +4731,22 @@ static void draw_shape_space_window(ApplicationData* data) {
             ImPlot::SetupAxes(0, 0, axis_flags, axis_flags);
             ImPlot::SetupFinish();
 
-            const ImVec2 p0 = ImPlot::PlotToPixels(ImPlotPoint(0.0f, 0.0f));
-            const ImVec2 p1 = ImPlot::PlotToPixels(ImPlotPoint(1.0f, 0.0f));
-            const ImVec2 p2 = ImPlot::PlotToPixels(ImPlotPoint(0.5f, 0.86602540378f));
-            const ImVec2 lin[2] = {
-                ImPlot::PlotToPixels(p0 + ImVec2(-0.2f, -0.1f)),
-                ImPlot::PlotToPixels(p0 + ImVec2(-0.1f, +0.1f)),
-            };
-            //const ImVec2 pla = ImPlot::PlotToPixels(p1 + ImVec2(+0.1, +0.1));
-            const ImVec2 iso = ImPlot::PlotToPixels(p2 + ImVec2(+0.0f, +0.1f));
-            const float iso_rad = ImPlot::PlotToPixels(ImVec2(0.05f, 0.05f)).x;
+            const ImVec2 p0 = ImPlot::PlotToPixels(ImPlotPoint(0.0, 0.0));
+            const ImVec2 p1 = ImPlot::PlotToPixels(ImPlotPoint(1.0, 0.0));
+            const ImVec2 p2 = ImPlot::PlotToPixels(ImPlotPoint(0.5, 0.86602540378));
+            
+            
+            const ImVec2 iso = ImPlot::PlotToPixels(ImPlotPoint(0.5, 0.86602540378 + 0.1));
+            const float iso_rad = ImPlot::PlotToPixels(ImPlotPoint(0.05, 0.05)).x;
+            
+            const ImVec2 text_iso_offset = iso - ImGui::CalcTextSize("Iso") * 0.5f;
 
             ImPlot::PushPlotClipRect();
             ImPlot::GetPlotDrawList()->AddTriangleFilled(p0, p1, p2, IM_COL32(255,255,255,20));
             ImPlot::GetPlotDrawList()->AddTriangle(p0, p1, p2, IM_COL32(255,255,255,50));
-            ImPlot::GetPlotDrawList()->AddLine(lin[0], lin[1], IM_COL32(160, 160, 160, 100));
-            ImPlot::GetPlotDrawList()->AddCircleFilled(iso, iso_rad, IM_COL32(160, 160, 160, 100));
-            ImPlot::GetPlotDrawList()->AddCircle(iso, iso_rad, IM_COL32(120, 120, 120, 100));
+            //ImPlot::GetPlotDrawList()->AddCircleFilled(iso, iso_rad, IM_COL32(160, 160, 160, 100));
+            //ImPlot::GetPlotDrawList()->AddCircle(iso, iso_rad, IM_COL32(120, 120, 120, 100));
+            ImPlot::GetPlotDrawList()->AddText(text_iso_offset, IM_COL32(255, 255, 255, 255), "Iso");
             ImPlot::PopPlotClipRect();
 
             ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_Square);
@@ -4837,7 +4822,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                 }
                 vec2_t* coordinates = data->shape_space.coords + offset;
                 ImPlot::PlotScatterG("##hovered structure", getter, coordinates, count);
-                md_bitfield_copy(&data->selection.current_highlight_mask, &data->shape_space.result.bitfields[hovered_structure_idx]);
+                md_bitfield_copy(&data->selection.current_highlight_mask, &data->shape_space.bitfields[hovered_structure_idx]);
                 data->mold.dirty_buffers |= MolBit_DirtyFlags;
             }
             if (hovered_point_idx != -1) {
@@ -4850,7 +4835,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                 vec3_t w = data->shape_space.weights[hovered_point_idx];
                 if (data->shape_space.num_structures > 1) {
                     len += snprintf(buf, sizeof(buf), "Structure: %i, ", structure_idx + 1);
-                    md_bitfield_copy(&data->selection.current_highlight_mask, &data->shape_space.result.bitfields[structure_idx]);
+                    md_bitfield_copy(&data->selection.current_highlight_mask, &data->shape_space.bitfields[structure_idx]);
                     data->mold.dirty_buffers |= MolBit_DirtyFlags;
                 }
                 len += snprintf(buf + len, sizeof(buf) - len, "Frame: %i, Weight(l,p,s): (%.2f, %.2f, %.2f)", frame_idx, w.x, w.y, w.z);
@@ -4873,23 +4858,30 @@ static void draw_shape_space_window(ApplicationData* data) {
         const int64_t num_frames = md_trajectory_num_frames(data->mold.traj);
         if (num_frames > 0) {
             if (task_system::task_is_running(data->tasks.shape_space_evaluate)) {
-                task_system::task_interrupt_and_wait_for(data->tasks.shape_space_evaluate);
+                task_system::task_interrupt(data->tasks.shape_space_evaluate);
             }
-            if (md_semaphore_try_aquire(&data->mold.script.ir_semaphore)) {
+            else if (md_semaphore_try_aquire(&data->mold.script.ir_semaphore)) {
                 defer { md_semaphore_release(&data->mold.script.ir_semaphore); };
                 
                 data->shape_space.evaluate = false;
                 md_array_shrink(data->shape_space.coords, 0);
                 md_array_shrink(data->shape_space.weights, 0);
-
-                md_filter_free(&data->shape_space.result, default_allocator);
-                if (md_filter_evaluate(&data->shape_space.result, data->shape_space.input, &data->mold.mol, data->mold.script.ir, default_allocator)) {
+                
+                for (int64_t i = 0; i < md_array_size(data->shape_space.bitfields); ++i) {
+                    md_bitfield_free(&data->shape_space.bitfields[i]);
+                }
+                md_array_shrink(data->shape_space.bitfields, 0);
+                
+                if (md_filter_evaluate(&data->shape_space.bitfields, str_from_cstr(data->shape_space.input), &data->mold.mol, data->mold.script.ir, NULL, data->shape_space.error, sizeof(data->shape_space.error), persistent_allocator)) {
                     data->shape_space.input_valid = true;
-                    data->shape_space.num_structures = (int32_t)data->shape_space.result.num_bitfields;
+                    data->shape_space.num_structures = (int32_t)md_array_size(data->shape_space.bitfields);
+                    
                     if (data->shape_space.num_structures > 0) {
                         data->shape_space.num_frames = (int32_t)num_frames;
                         md_array_resize(data->shape_space.coords,  num_frames * data->shape_space.num_structures, persistent_allocator);
+                        MEMSET(data->shape_space.coords, 0, md_array_bytes(data->shape_space.coords));
                         md_array_resize(data->shape_space.weights, num_frames * data->shape_space.num_structures, persistent_allocator);
+                        MEMSET(data->shape_space.weights, 0, md_array_bytes(data->shape_space.weights));
 
                         data->tasks.shape_space_evaluate = task_system::pool_enqueue(STR("Eval Shape Space"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
                             ApplicationData* data = (ApplicationData*)user_data;
@@ -4901,16 +4893,16 @@ static void draw_shape_space_window(ApplicationData* data) {
 
                             const vec2_t p[3] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 0.86602540378f}};
 
+                            vec3_t* xyz = 0;
                             for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
                                 md_trajectory_load_frame(data->mold.traj, frame_idx, NULL, x, y, z);
-                                vec3_t* xyz = 0;
-                                for (int64_t i = 0; i < data->shape_space.result.num_bitfields; ++i) {
-                                    md_array_ensure(xyz, (int64_t)md_bitfield_popcount(&data->shape_space.result.bitfields[i]), default_allocator);
-                                    int64_t beg_bit = data->shape_space.result.bitfields[i].beg_bit;
-                                    int64_t end_bit = data->shape_space.result.bitfields[i].end_bit;
+                                for (int64_t i = 0; i < md_array_size(data->shape_space.bitfields); ++i) {
+                                    md_array_ensure(xyz, (int64_t)md_bitfield_popcount(&data->shape_space.bitfields[i]), default_allocator);
+                                    int64_t beg_bit = data->shape_space.bitfields[i].beg_bit;
+                                    int64_t end_bit = data->shape_space.bitfields[i].end_bit;
                                     int64_t count = 0;
                                     vec3_t com = {0,0,0};
-                                    while ((beg_bit = md_bitfield_scan(&data->shape_space.result.bitfields[i], beg_bit, end_bit)) != 0) {
+                                    while ((beg_bit = md_bitfield_scan(&data->shape_space.bitfields[i], beg_bit, end_bit)) != 0) {
                                         int64_t src_idx = beg_bit - 1;
                                         vec3_t pos = {x[src_idx], y[src_idx], z[src_idx]};
                                         com = com + pos;
@@ -4921,25 +4913,22 @@ static void draw_shape_space_window(ApplicationData* data) {
                                     const mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix_vec3(xyz, com, count));
                                     const float scl = 1.0f / (eigen.values[0] + eigen.values[1] + eigen.values[2]);
                                     const int64_t dst_idx = data->shape_space.num_frames * i + frame_idx;
-                                    const vec3_t w = {(eigen.values[0] - eigen.values[1]) * scl, 2.0f * (eigen.values[1] - eigen.values[2]) * scl,
-                                                3.0f * eigen.values[2] * scl};
+                                    const vec3_t w = {(eigen.values[0] - eigen.values[1]) * scl, 2.0f * (eigen.values[1] - eigen.values[2]) * scl, 3.0f * eigen.values[2] * scl};
 
                                     data->shape_space.weights[dst_idx] = w;
                                     data->shape_space.coords[dst_idx] = p[0] * w[0] + p[1] * w[1] + p[2] * w[2];
                                 }
-                                md_array_free(xyz, default_allocator);
                             }
+                            md_array_free(xyz, default_allocator);
                         }, data);
                     } else {
-                        snprintf(data->shape_space.err_text.beg(), data->shape_space.err_text.capacity(), "Expression did not evaluate into any bitfields");
+                        snprintf(data->shape_space.error, sizeof(data->shape_space.error), "Expression did not evaluate into any bitfields");
                     }
-                } else {
-                    snprintf(data->shape_space.err_text.beg(), data->shape_space.err_text.capacity(), "%s", data->shape_space.result.error_buf);
                 }
             }
         } else {
             data->shape_space.evaluate = false;
-            snprintf(data->shape_space.err_text.beg(), data->shape_space.err_text.capacity(), "Missing trajectory for evaluating expression");
+            snprintf(data->shape_space.error, sizeof(data->shape_space.error), "Missing trajectory for evaluating expression");
         }
     }
 }
