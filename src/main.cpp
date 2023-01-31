@@ -500,7 +500,7 @@ struct ApplicationData {
 
         struct {
             char buf[256] = "";
-            char err_buf[256] = "";
+            char error[256] = "";
             md_bitfield_t mask = {0};
             bool query_ok = false;
             bool query_invalid = true;
@@ -704,7 +704,7 @@ struct ApplicationData {
     // --- RAMACHANDRAN ---
     struct {
         StrBuf<256> input = "all";
-        StrBuf<256> err_buf = "";
+        StrBuf<256> error = "";
 
         bool evaluate = true;
         bool input_valid = false;
@@ -2743,21 +2743,21 @@ ImGui::EndGroup();
                 for (int i = 0; i < (int)md_array_size(data->selection.stored_selections); i++) {
                     auto& sel = data->selection.stored_selections[i];
                     bool is_valid = md_script_identifier_name_valid(sel.name);
-                    char err_buf[64] = "";
+                    char error[64] = "";
                     if (!is_valid) {
-                        snprintf(err_buf, sizeof(err_buf), "'%s' is not a valid identifier.", sel.name.cstr());
+                        snprintf(error, sizeof(error), "'%s' is not a valid identifier.", sel.name.cstr());
                     }
 
                     for (int j = 0; j < i; ++j) {
                         if (str_equal(sel.name, data->selection.stored_selections[j].name)) {
                             is_valid = false;
-                            snprintf(err_buf, sizeof(err_buf), "identifier '%s' is already taken.", sel.name.cstr());
+                            snprintf(error, sizeof(error), "identifier '%s' is already taken.", sel.name.cstr());
                             break;
                         }
                     }
 
                     ImGui::PushID(i);
-                    ImGui::InputQuery("##label", sel.name.beg(), sel.name.capacity(), is_valid, err_buf);
+                    ImGui::InputQuery("##label", sel.name.beg(), sel.name.capacity(), is_valid, error);
                     ImGui::SameLine();
                     if (ImGui::Button("Load")) {
                         md_bitfield_copy(&data->selection.current_selection_mask, &sel.atom_mask);
@@ -3550,7 +3550,7 @@ static void draw_selection_query_window(ApplicationData* data) {
         }
 
         ImGui::PushItemWidth(-1);
-        bool apply = ImGui::InputQuery("##query", data->selection.query.buf, sizeof(data->selection.query.buf), data->selection.query.query_ok, data->selection.query.err_buf, ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue);
+        bool apply = ImGui::InputQuery("##query", data->selection.query.buf, sizeof(data->selection.query.buf), data->selection.query.query_ok, data->selection.query.error, ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue);
         ImGui::PopItemWidth();
 
         data->selection.query.query_invalid |= ImGui::IsItemEdited();
@@ -3568,7 +3568,7 @@ static void draw_selection_query_window(ApplicationData* data) {
 
         if (data->selection.query.query_invalid) {
             data->selection.query.query_invalid = false;
-            data->selection.query.query_ok = filter_expression(data, str_from_cstr(data->selection.query.buf), &data->selection.query.mask, NULL, data->selection.query.err_buf, sizeof(data->selection.query.err_buf));
+            data->selection.query.query_ok = filter_expression(data, str_from_cstr(data->selection.query.buf), &data->selection.query.mask, NULL, data->selection.query.error, sizeof(data->selection.query.error));
 
             if (data->selection.query.query_ok) {
                 switch (data->selection.granularity) {
