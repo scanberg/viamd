@@ -4723,30 +4723,43 @@ static void draw_shape_space_window(ApplicationData* data) {
         ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_NoMenus; // ImPlotFlags_AntiAliased;
         ImPlotAxisFlags axis_flags = ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks;
 
-        const float x_reset[2] = {-0.025f, 1.025f};
-        const float y_reset[2] = {-0.025f, 0.891f};
+        const float x_reset[2] = {-0.10f, 1.10f};
+        const float y_reset[2] = {-0.10f, 0.98f};
 
         if (ImPlot::BeginPlot("##Shape Space Plot", ImVec2(-1,-1), flags)) {
-            ImPlot::SetupAxesLimits(x_reset[0], x_reset[1], y_reset[0], y_reset[1], ImGuiCond_Once);
+            ImPlot::SetupAxesLimits(x_reset[0], x_reset[1], y_reset[0], y_reset[1], ImGuiCond_Appearing);
+            ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_reset[0], x_reset[1]);
+            ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_reset[0], y_reset[1]);
             ImPlot::SetupAxes(0, 0, axis_flags, axis_flags);
             ImPlot::SetupFinish();
 
-            const ImVec2 p0 = ImPlot::PlotToPixels(ImPlotPoint(0.0, 0.0));
-            const ImVec2 p1 = ImPlot::PlotToPixels(ImPlotPoint(1.0, 0.0));
-            const ImVec2 p2 = ImPlot::PlotToPixels(ImPlotPoint(0.5, 0.86602540378));
+			const ImPlotPoint lin(0.0, 0.0);
+			const ImPlotPoint pla(1.0, 0.0);
+			const ImPlotPoint iso(0.5, 0.86602540378);
+
+            const ImVec2 p0 = ImPlot::PlotToPixels(lin);
+            const ImVec2 p1 = ImPlot::PlotToPixels(pla);
+            const ImVec2 p2 = ImPlot::PlotToPixels(iso);
             
+            const ImVec2 pos_iso = ImPlot::PlotToPixels(iso);
+            const ImVec2 pos_pla = ImPlot::PlotToPixels(pla);
+			const ImVec2 pos_lin = ImPlot::PlotToPixels(lin);
+
+            static const char* text_iso = "Isotropic";
+            static const char* text_pla = "Planar";
+            static const char* text_lin = "Linear";
             
-            const ImVec2 iso = ImPlot::PlotToPixels(ImPlotPoint(0.5, 0.86602540378 + 0.1));
-            const float iso_rad = ImPlot::PlotToPixels(ImPlotPoint(0.05, 0.05)).x;
-            
-            const ImVec2 text_iso_offset = iso - ImGui::CalcTextSize("Iso") * 0.5f;
+            const ImVec2 text_iso_offset = pos_iso + ImGui::CalcTextSize(text_iso) * ImVec2(-0.5f, -1.0f);
+            const ImVec2 text_pla_offset = pos_pla + ImGui::CalcTextSize(text_pla) * ImVec2(-0.5f,  0.0f);
+            const ImVec2 text_lin_offset = pos_lin + ImGui::CalcTextSize(text_lin) * ImVec2(-0.5f,  0.0f);
 
             ImPlot::PushPlotClipRect();
             ImPlot::GetPlotDrawList()->AddTriangleFilled(p0, p1, p2, IM_COL32(255,255,255,20));
             ImPlot::GetPlotDrawList()->AddTriangle(p0, p1, p2, IM_COL32(255,255,255,50));
-            //ImPlot::GetPlotDrawList()->AddCircleFilled(iso, iso_rad, IM_COL32(160, 160, 160, 100));
-            //ImPlot::GetPlotDrawList()->AddCircle(iso, iso_rad, IM_COL32(120, 120, 120, 100));
-            ImPlot::GetPlotDrawList()->AddText(text_iso_offset, IM_COL32(255, 255, 255, 255), "Iso");
+            
+            ImPlot::GetPlotDrawList()->AddText(text_iso_offset, IM_COL32(255, 255, 255, 255), text_iso);
+			ImPlot::GetPlotDrawList()->AddText(text_pla_offset, IM_COL32(255, 255, 255, 255), text_pla);
+			ImPlot::GetPlotDrawList()->AddText(text_lin_offset, IM_COL32(255, 255, 255, 255), text_lin);
             ImPlot::PopPlotClipRect();
 
             ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_Square);
@@ -4973,6 +4986,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
         static bool show_layer[4] = {true, true, true, true};
 
         static ImPlotRect viewrect = ImPlotRect(min_ext, max_ext, min_ext, max_ext);
+        
         if (viewrect.Size().x < 1) {
             viewrect.X.Max = viewrect.X.Min + 1;
         }
@@ -5052,9 +5066,12 @@ static void draw_ramachandran_window(ApplicationData* data) {
                 if (ImPlot::BeginPlot(plot_labels[plot_idx], ImVec2(), flags)) {
                     ImPlotPoint view_mid = { (viewrect.X.Min + viewrect.X.Max) * 0.5, (viewrect.Y.Min + viewrect.Y.Max) * 0.5 };
 
-                    ImPlot::SetupAxesLimits(min_ext, max_ext, min_ext, max_ext, ImPlotCond_Once);
+					ImPlot::SetupAxesLimits(min_ext, max_ext, min_ext, max_ext, ImPlotCond_Once);
                     ImPlot::SetupAxisLinks(ImAxis_X1, &viewrect.X.Min, &viewrect.X.Max);
                     ImPlot::SetupAxisLinks(ImAxis_Y1, &viewrect.Y.Min, &viewrect.Y.Max);
+                    // @NOTE(Robin): This wont work out of the box due to the periodic domain.
+                    //ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, -720, +720);
+                    //ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, -720, +720);
                     ImPlot::SetupAxes(x_lbl, y_lbl, axis_flags, axis_flags);
                     
                     ImPlot::SetupAxisFormat(ImAxis_X1, formatter, (void*)x_lbl);
@@ -5275,9 +5292,9 @@ static void draw_ramachandran_window(ApplicationData* data) {
                 ImSwap(viewrect.Y.Min, viewrect.Y.Max);
             }
 
-            double ratio = viewrect.Size().x / viewrect.Size().y;
-            double mid_x = (viewrect.X.Min + viewrect.X.Max) * 0.5;
-            double mid_y = (viewrect.Y.Min + viewrect.Y.Max) * 0.5;
+            const double ratio = viewrect.Size().x / viewrect.Size().y;
+            const double mid_x = (viewrect.X.Min + viewrect.X.Max) * 0.5;
+            const double mid_y = (viewrect.Y.Min + viewrect.Y.Max) * 0.5;
 
             if (viewrect.Size().x > 360) {
                 viewrect.X.Min = mid_x - 180;
