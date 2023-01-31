@@ -198,16 +198,9 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
                         
                     md_bitfield_extract_indices(indices, bf);                
 
-                    // This seems a bit excessive, but we need to unwrap the coordinates
-                    // In order to properly resolve the com of structures
-                    if (loaded_traj->deperiodize && have_box) {
-                        md_util_pbc_ortho(x, y, z, num_atoms, box_ext);
-                        md_util_unwrap_ortho(x, y, z, &mol->covalent.structures, box_ext);
-                    }
-                    vec3_t com = md_util_compute_com_indexed_soa(x, y, z, mol->atom.mass, indices, count);
-                    if (have_box) {
-                        com = vec3_deperiodize(com, box_ext * 0.5f, box_ext);
-                    }
+                    const vec3_t com = have_box ?
+                        vec3_deperiodize(md_util_compute_com_indexed_soa_ortho(x, y, z, mol->atom.mass, indices, count, box_ext), box_ext * 0.5f, box_ext) :
+                                         md_util_compute_com_indexed_soa(x, y, z, mol->atom.mass, indices, count);
 
                     // Translate all
                     const vec3_t trans = have_box ? box_ext * 0.5f - com : -com;
