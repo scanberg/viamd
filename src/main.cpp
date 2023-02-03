@@ -6989,7 +6989,7 @@ static vec4_t parse_vec4(str_t txt, vec4_t default_val = {1,1,1,1}) {
     vec4_t res = default_val;
     str_t tok = {};
     int i = 0;
-    while (extract_next_token_delim(&tok, &txt, ',') && i < 4) {
+    while (extract_token_delim(&tok, &txt, ',') && i < 4) {
         res.elem[i] = parse_float(tok);
         ++i;
     }
