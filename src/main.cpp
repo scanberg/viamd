@@ -1431,8 +1431,7 @@ int main(int, char**) {
                 if (data.animation.apply_pbc) {
                     const vec3_t pbc_ext = data.simulation_box.box * (vec3_t {1,1,1});
                     if (mol.covalent.count > 0) {
-                        //md_util_apply_pbc_preserve_covalent(mol.atom.x, mol.atom.y, mol.atom.z, &mol.covalent, pbc_ext);
-                        ASSERT(false);
+						md_util_deperiodize_system_ortho(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.mass, mol.atom.count, &mol.covalent.structures, pbc_ext);
                     } else {
                         md_util_pbc_ortho(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, pbc_ext);
                     }
