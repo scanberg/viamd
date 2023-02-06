@@ -845,9 +845,12 @@ static void downsample_histogram(float* dst_bins, int num_dst_bins, const float*
 static double frame_to_time(double frame, const ApplicationData& data) {
     int64_t num_frames = md_array_size(data.timeline.x_values);
     ASSERT(num_frames);
-    int64_t f0 = CLAMP((int64_t)frame, 0, num_frames - 1);
-    int64_t f1 = CLAMP((int64_t)frame + 1, 0, num_frames - 1);
-    return lerp(data.timeline.x_values[f0], data.timeline.x_values[f1], fract(frame));
+    const int64_t f0 = CLAMP((int64_t)frame, 0, num_frames - 1);
+    const int64_t f1 = CLAMP((int64_t)frame + 1, 0, num_frames - 1);
+    const double t0 = data.timeline.x_values[f0];
+    const double t1 = data.timeline.x_values[f1];
+    const double t = fract(frame);
+    return lerp(t0, t1, t);
 }
 
 // Try to map time t back into frame
