@@ -377,6 +377,7 @@ struct LoadDatasetWindowState {
     bool coarse_grained = false;
     bool deperiodize_on_load = true;
     bool show_window = false;
+    bool show_file_dialog = false;
 };
 
 struct ApplicationData {
@@ -691,7 +692,6 @@ struct ApplicationData {
     struct {
         bool enabled = false;
         vec4_t color = {0, 0, 0, 0.5f};
-        mat3_t box = {0};
     } simulation_box;
 
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
@@ -1429,13 +1429,7 @@ int main(int, char**) {
                 interpolate_atomic_properties(&data);
 
                 if (data.animation.apply_pbc) {
-                    const vec3_t pbc_ext = data.simulation_box.box * (vec3_t {1,1,1});
-                    if (mol.covalent.count > 0) {
-                        //md_util_apply_pbc_preserve_covalent(mol.atom.x, mol.atom.y, mol.atom.z, &mol.covalent, pbc_ext);
-                        ASSERT(false);
-                    } else {
-                        md_util_pbc_ortho(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, pbc_ext);
-                    }
+                    md_util_deperiodize_system(mol.atom.x, mol.atom.y, mol.atom.z, &mol.cell, &mol);
                 }
 
 #if EXPERIMENTAL_CONE_TRACED_AO
@@ -2155,7 +2149,7 @@ static void interpolate_atomic_properties(ApplicationData* data) {
         {
             md_trajectory_frame_header_t header = {0};
             md_trajectory_load_frame(data->mold.traj, nearest_frame, &header, mol.atom.x, mol.atom.y, mol.atom.z);
-            data->simulation_box.box = header.box;
+            data->mold.mol.cell = header.cell;
             break;
         }
         case InterpolationMode::Linear:
@@ -2163,8 +2157,8 @@ static void interpolate_atomic_properties(ApplicationData* data) {
             md_trajectory_frame_header_t header[2] = {0};
             md_trajectory_load_frame(data->mold.traj, frames[1], &header[0], src[0].x, src[0].y, src[0].z);
             md_trajectory_load_frame(data->mold.traj, frames[2], &header[1], src[1].x, src[1].y, src[1].z);
-            data->simulation_box.box = lerp(header[0].box, header[1].box, t);
-            const vec3_t pbc_ext = data->simulation_box.box * vec3_set1(1);
+            data->mold.mol.cell.basis = lerp(header[0].cell.basis, header[1].cell.basis, t);
+            const vec3_t pbc_ext = data->mold.mol.cell.basis * vec3_set1(1);
 
             md_util_linear_interpolation(dst, src, mol.atom.count, pbc_ext, t);
         }
@@ -2176,8 +2170,8 @@ static void interpolate_atomic_properties(ApplicationData* data) {
             md_trajectory_load_frame(data->mold.traj, frames[1], &header[1], src[1].x, src[1].y, src[1].z);
             md_trajectory_load_frame(data->mold.traj, frames[2], &header[2], src[2].x, src[2].y, src[2].z);
             md_trajectory_load_frame(data->mold.traj, frames[3], &header[3], src[3].x, src[3].y, src[3].z);
-            data->simulation_box.box = cubic_spline(header[0].box, header[1].box, header[2].box, header[3].box, t, s);
-            const vec3_t pbc_ext = data->simulation_box.box * vec3_set1(1);
+            data->mold.mol.cell.basis = cubic_spline(header[0].cell.basis, header[1].cell.basis, header[2].cell.basis, header[3].cell.basis, t, s);
+            const vec3_t pbc_ext = data->mold.mol.cell.basis * vec3_set1(1);
 
             md_util_cubic_spline_interpolation(dst, src, mol.atom.count, pbc_ext, t, s);
         }
@@ -2346,9 +2340,9 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
     const auto& mol = data->mold.mol;
 
     vec3_t aabb_min, aabb_max;
-    if (data->simulation_box.box != mat3_t{0}) {
+    if (data->mold.mol.cell.basis != mat3_t{0}) {
         aabb_min = {0,0,0};
-        aabb_max = data->simulation_box.box * vec3_t{1,1,1};
+        aabb_max = data->mold.mol.cell.basis * vec3_t{1,1,1};
     } else {
         compute_aabb(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count);
     }
@@ -2930,8 +2924,16 @@ void draw_load_dataset_window(ApplicationData* data) {
         }
         if (path_invalid) ImGui::PopInvalid();
 
+
+        // @WORKAROUND(Robin): This show_file_dialog is only here to circumvent the issue that if you open a file dialog
+        // Within the same frame as the button is clicked, the dialogue will open again after the closing the dialog.
         ImGui::SameLine();
-        if (ImGui::Button("Browse")) {
+        if (ImGui::Button("Browse") && !state.show_file_dialog) {
+            state.show_file_dialog = true;
+        }
+
+        if (state.show_file_dialog) {
+            state.show_file_dialog = false;
             if (application::file_dialog(state.path_buf, sizeof(state.path_buf), application::FileDialog_Open)) {
                 path_changed = true;
             }
@@ -3046,9 +3048,12 @@ void apply_atom_elem_mappings(ApplicationData* data) {
     }
     md_molecule_t* mol = &data->mold.mol;
     
-    const vec3_t pbc_ext = md_util_compute_unit_cell_extent(mol->coord_frame);
-    md_bond_data_clear(&mol->covalent);
-    md_util_compute_covalent_bonds_and_connectivity(&mol->covalent, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.element, mol->atom.residue_idx, mol->atom.count, pbc_ext, data->mold.mol_alloc);
+    md_array_free(mol->covalent_bonds, data->mold.mol_alloc);
+    md_index_data_free(&mol->connectivity, data->mold.mol_alloc);
+    md_index_data_free(&mol->structures, data->mold.mol_alloc);
+    md_index_data_free(&mol->rings, data->mold.mol_alloc);
+    
+    md_util_postprocess_molecule(mol, data->mold.mol_alloc, MD_UTIL_POSTPROCESS_COVALENT_BIT);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
     update_all_representations(data);
@@ -3497,11 +3502,11 @@ static void draw_selection_grow_window(ApplicationData* data) {
             switch (data->selection.grow.mode) {
             case SelectionGrowth::CovalentBond:
                 md_bitfield_copy(&data->selection.grow.mask, &data->selection.current_selection_mask);
-                grow_mask_by_covalent_bond(&data->selection.grow.mask, data->mold.mol.covalent.bond, data->mold.mol.covalent.count, (int64_t)data->selection.grow.extent);
+                grow_mask_by_covalent_bond(&data->selection.grow.mask, data->mold.mol.covalent_bonds, md_array_size(data->mold.mol.covalent_bonds), (int64_t)data->selection.grow.extent);
                 break;
             case SelectionGrowth::Radial: {
                 const auto& mol = data->mold.mol;
-                vec3_t pbc_ext = mat3_mul_vec3(data->simulation_box.box, vec3_set1(1));
+                vec3_t pbc_ext = mat3_mul_vec3(data->mold.mol.cell.basis, vec3_set1(1));
                 grow_mask_by_radial_extent(&data->selection.grow.mask, &data->selection.current_selection_mask, mol, pbc_ext, data->selection.grow.extent);
                 break;
             }
@@ -6578,7 +6583,7 @@ static void update_md_buffers(ApplicationData* data) {
     const auto& mol = data->mold.mol;
 
     if (data->mold.dirty_buffers & MolBit_DirtyPosition) {
-        const vec3_t pbc_ext = data->simulation_box.box * vec3_t{1,1,1};
+        const vec3_t pbc_ext = data->mold.mol.cell.basis * vec3_t{1,1,1};
         md_gl_molecule_set_atom_position(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
         md_gl_molecule_compute_velocity(&data->mold.gl_mol, pbc_ext.elem);
 #if EXPERIMENTAL_GFX_API
@@ -6608,7 +6613,7 @@ static void update_md_buffers(ApplicationData* data) {
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyBonds) {
-        md_gl_molecule_set_covalent_bonds(&data->mold.gl_mol, 0, (uint32_t)mol.covalent.count, mol.covalent.bond, 0);
+        md_gl_molecule_set_covalent_bonds(&data->mold.gl_mol, 0, (uint32_t)md_array_size(mol.covalent_bonds), mol.covalent_bonds, sizeof(md_bond_t));
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtySecondaryStructure) {
@@ -6643,7 +6648,7 @@ static void free_trajectory_data(ApplicationData* data) {
     if (md_trajectory_num_frames(data->mold.traj)) {
         load::traj::close(data->mold.traj);
     }
-    memset(data->simulation_box.box.elem, 0, sizeof(mat3_t));
+    data->mold.mol.cell = {};
     md_array_shrink(data->timeline.x_values,  0);
     md_array_shrink(data->display_properties, 0);
 
@@ -6691,7 +6696,7 @@ static void init_trajectory_data(ApplicationData* data) {
         int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, max_frame);
 
         md_trajectory_load_frame(data->mold.traj, frame_idx, &header, data->mold.mol.atom.x, data->mold.mol.atom.y, data->mold.mol.atom.z);
-        data->simulation_box.box = header.box;
+        data->mold.mol.cell = header.cell;
 
         if (data->mold.mol.backbone.count > 0) {
             data->trajectory_data.secondary_structure.stride = data->mold.mol.backbone.count;
@@ -8038,8 +8043,8 @@ static void handle_camera_animation(ApplicationData* data) {
 
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
 static void init_occupancy_volume(ApplicationData* data) {
-    const AABB box = compute_aabb(data->mold.mol.atom.position, data->mold.mol.atom.radius, data->mold.mol.atom.count);
-    cone_trace::init_occlusion_volume(&data->occupancy_volume.vol, box.min, box.max, 8.0f);
+    const AABB cell = compute_aabb(data->mold.mol.atom.position, data->mold.mol.atom.radius, data->mold.mol.atom.count);
+    cone_trace::init_occlusion_volume(&data->occupancy_volume.vol, cell.min, cell.max, 8.0f);
 
     //data->occupancy_volume.vol_mutex.lock();
     if (data->occupancy_volume.vol.texture_id) {
@@ -8096,9 +8101,9 @@ static void fill_gbuffer(ApplicationData* data) {
 
     // Immediate mode graphics
 
-    if (data->simulation_box.enabled && data->simulation_box.box != mat3_t{0}) {
+    if (data->simulation_box.enabled && data->mold.mol.cell.basis != mat3_t{0}) {
         PUSH_GPU_SECTION("Draw Simulation Box")
-        const mat3_t box = data->simulation_box.box;
+        const mat3_t box = data->mold.mol.cell.basis;
         const vec3_t min_box = box * vec3_t{0, 0, 0};
         const vec3_t max_box = box * vec3_t{1, 1, 1};
 

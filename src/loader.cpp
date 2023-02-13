@@ -175,11 +175,8 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
         result = md_trajectory_decode_frame_data(loaded_traj->traj, frame_data_ptr, frame_data_size, &frame_data->header, frame_data->x, frame_data->y, frame_data->z);
 
         if (result) {
-            bool have_box = (frame_data->header.box[0][0] + frame_data->header.box[1][1] + frame_data->header.box[2][2]) > 0;
-            vec3_t box_ext = {0,0,0};
-            if (have_box) {
-                box_ext = {frame_data->header.box[0][0], frame_data->header.box[1][1], frame_data->header.box[2][2]};
-            }
+            const md_unit_cell_t* cell = &frame_data->header.cell;
+            const bool have_cell = cell->flags != 0;
 
             const md_molecule_t* mol = loaded_traj->mol;
             float* x = frame_data->x;
@@ -196,14 +193,16 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
                     int32_t* indices = (int32_t*)md_alloc(alloc, sizeof(int32_t) * count);
                     defer { md_free(alloc, indices, sizeof(int32_t) * count); };
                         
-                    md_bitfield_extract_indices(indices, bf);                
+                    md_bitfield_extract_indices(indices, bf);
 
-                    const vec3_t com = have_box ?
+                    const vec3_t box_ext = mat3_mul_vec3(header->cell.basis, vec3_set1(1.0f));
+
+                    const vec3_t com = have_cell ?
                         vec3_deperiodize(md_util_compute_com_indexed_soa_ortho(x, y, z, mol->atom.mass, indices, count, box_ext), box_ext * 0.5f, box_ext) :
-                                         md_util_compute_com_indexed_soa(x, y, z, mol->atom.mass, indices, count);
+                        md_util_compute_com_indexed_soa(x, y, z, mol->atom.mass, indices, count);
 
                     // Translate all
-                    const vec3_t trans = have_box ? box_ext * 0.5f - com : -com;
+                    const vec3_t trans = have_cell ? box_ext * 0.5f - com : -com;
                     for (int64_t i = 0; i < num_atoms; ++i) {
                         x[i] += trans.x;
                         y[i] += trans.y;
@@ -212,8 +211,8 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
                 }
             }
 
-            if (loaded_traj->deperiodize && have_box) {
-                md_util_deperiodize_system_ortho(x, y, z, mol->atom.mass, num_atoms, &mol->covalent.structures, box_ext);
+            if (loaded_traj->deperiodize && have_cell) {
+                md_util_deperiodize_system(x, y, z, cell, mol);
             }
         }
 
