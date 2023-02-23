@@ -15,18 +15,20 @@
 #include <md_molecule.h>
 #include <md_trajectory.h>
 
+#include <core/md_log.h>
+#include <core/md_str.h>
+#include <core/md_array.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_linear_allocator.h>
 #include <core/md_tracking_allocator.h>
-#include <core/md_log.h>
 #include <core/md_simd.h>
-#include <core/md_array.h>
 #include <core/md_os.h>
 #include <core/md_spatial_hash.h>
 #include <core/md_base64.h>
 #include <core/md_unit.h>
 #include <core/md_str_builder.h>
+#include <core/md_parse.h>
 
 #include "gfx/gl.h"
 #include "gfx/gl_utils.h"
@@ -1019,6 +1021,9 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
 
 static void load_workspace(ApplicationData* data, str_t file);
 static void save_workspace(ApplicationData* data, str_t file);
+
+static bool export_xvg(const float* column_data[], const char* column_labels[], int num_columns, int num_rows, str_t filename);
+static bool export_csv(const float* column_data[], const char* column_labels[], int num_columns, int num_rows, str_t filename);
 
 static void create_screenshot(ApplicationData* data);
 
@@ -3048,8 +3053,7 @@ void apply_atom_elem_mappings(ApplicationData* data) {
     }
     md_molecule_t* mol = &data->mold.mol;
     
-    md_array_free(mol->covalent_bonds, data->mold.mol_alloc);
-    md_index_data_free(&mol->connectivity, data->mold.mol_alloc);
+    md_array_free(mol->bonds, data->mold.mol_alloc);
     md_index_data_free(&mol->structures, data->mold.mol_alloc);
     md_index_data_free(&mol->rings, data->mold.mol_alloc);
     
@@ -3323,8 +3327,8 @@ void draw_context_popup(ApplicationData* data) {
 
                 if (res_idx != -1 && same_residue) {
                     md_strb_reset(&sb);
-                    md_strb_str(&sb, ident);
-                    md_strb_str(&sb, STR(" = "));
+                    md_strb_push_str(&sb, ident);
+                    md_strb_push_str(&sb, STR(" = "));
                     create_script_ranges(&sb, bf, data->mold.mol.residue.atom_range[res_idx].beg);
                     if (md_strb_len(&sb) < 512) {
                         str_t resname = LBL_TO_STR(data->mold.mol.residue.name[res_idx]);
@@ -3339,8 +3343,8 @@ void draw_context_popup(ApplicationData* data) {
 
                 if (chain_idx != -1 && same_chain) {
                     md_strb_reset(&sb);
-                    md_strb_str(&sb, ident);
-                    md_strb_str(&sb, STR(" = "));
+                    md_strb_push_str(&sb, ident);
+                    md_strb_push_str(&sb, STR(" = "));
                     create_script_ranges(&sb, bf, data->mold.mol.chain.atom_range[chain_idx].beg);
                     if (md_strb_len(&sb) < 512) {
                         str_t chain_id = LBL_TO_STR(data->mold.mol.chain.id[chain_idx]);
@@ -3354,11 +3358,11 @@ void draw_context_popup(ApplicationData* data) {
                 }
 
                 md_strb_reset(&sb);
-                md_strb_str(&sb, ident);
-                md_strb_str(&sb, STR(" = "));
+                md_strb_push_str(&sb, ident);
+                md_strb_push_str(&sb, STR(" = "));
                 create_script_ranges(&sb, bf);
                 if (md_strb_len(&sb) < 512) {
-                    md_strb_char(&sb, ';');
+                    md_strb_push_char(&sb, ';');
                     if (ImGui::MenuItem(sb.buf)) {
                         editor.AppendText("\n");
                         editor.AppendText(sb.buf);
@@ -3502,7 +3506,7 @@ static void draw_selection_grow_window(ApplicationData* data) {
             switch (data->selection.grow.mode) {
             case SelectionGrowth::CovalentBond:
                 md_bitfield_copy(&data->selection.grow.mask, &data->selection.current_selection_mask);
-                grow_mask_by_covalent_bond(&data->selection.grow.mask, data->mold.mol.covalent_bonds, md_array_size(data->mold.mol.covalent_bonds), (int64_t)data->selection.grow.extent);
+                grow_mask_by_covalent_bond(&data->selection.grow.mask, data->mold.mol.bonds, md_array_size(data->mold.mol.bonds), (int64_t)data->selection.grow.extent);
                 break;
             case SelectionGrowth::Radial: {
                 const auto& mol = data->mold.mol;
@@ -4696,11 +4700,84 @@ static void draw_distribution_window(ApplicationData* data) {
     ImGui::End();
 }
 
-static void draw_shape_space_window(ApplicationData* data) {
+static void export_shape_space(ApplicationData* data, const char* ext) {
+    char path[2048];
+    if (application::file_dialog(path, sizeof(path), application::FileDialog_Save, ext)) {
+        md_array(const char*) column_labels = 0;
+        md_array(float*) column_data = 0;
 
+        md_allocator_i* alloc = md_arena_allocator_create(default_allocator, MEGABYTES(4));
+        
+        // @TODO: add unit to time (if available)
+
+        md_unit_t time_unit = md_trajectory_time_unit(data->mold.traj);
+        char time_buf[64];
+        if (unit_empty(time_unit)) {
+            snprintf(time_buf, sizeof(time_buf), "Time");
+        } else {
+            char unit_buf[64];
+            unit_print(unit_buf, sizeof(unit_buf), time_unit);
+            snprintf(time_buf, sizeof(time_buf), "Time (%s)", unit_buf);
+        }
+        md_array_push(column_labels, time_buf, alloc);
+        md_array_push(column_data, NULL, alloc);
+
+        int num_struct = (int)data->shape_space.num_structures;
+        int num_rows = data->shape_space.num_frames;
+
+        for (int i = 0; i < num_struct; ++i) {
+            md_array_push(column_labels, alloc_printf(alloc, "%i (lin)",  i + 1).ptr, alloc);
+            md_array_push(column_data, NULL, alloc);
+            md_array_push(column_labels, alloc_printf(alloc, "%i (plan)", i + 1).ptr, alloc);
+            md_array_push(column_data, NULL, alloc);
+            md_array_push(column_labels, alloc_printf(alloc, "%i (iso)",  i + 1).ptr, alloc);
+            md_array_push(column_data, NULL, alloc);
+        }
+
+        const float* time = data->timeline.x_values;
+        
+        for (int i = 0; i < num_rows; ++i) {
+            float t = time ? time[i] : (float)i;
+            md_array_push(column_data[0], t, alloc);
+            
+            for (int j = 0; j < num_struct; ++j) {
+                int idx = num_rows * j + i;
+                vec3_t w = data->shape_space.weights[idx];
+                md_array_push(column_data[1 + j * 3 + 0], w.x, alloc);
+                md_array_push(column_data[1 + j * 3 + 1], w.y, alloc);
+                md_array_push(column_data[1 + j * 3 + 2], w.z, alloc);
+            }
+        }
+        
+        int num_cols = num_struct * 3 + 1;
+        ASSERT(num_cols == md_array_size(column_data));
+        ASSERT(num_cols == md_array_size(column_labels));
+        if (str_equal_cstr(STR("csv"), ext)) {
+            export_csv((const float**)column_data, column_labels, num_cols, num_rows, str_from_cstr(path));
+        } else if (str_equal_cstr(STR("xvg"), ext)) {
+            export_xvg((const float**)column_data, column_labels, num_cols, num_rows, str_from_cstr(path));
+        } else {
+            MD_LOG_DEBUG("Unrecognized export format");
+            ASSERT(false);
+        }
+
+        md_arena_allocator_destroy(alloc);
+    }
+}
+
+static void draw_shape_space_window(ApplicationData* data) {
     ImGui::SetNextWindowSize({300,350}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Shape Space", &data->shape_space.show_window, ImGuiWindowFlags_MenuBar)) {
         if (ImGui::BeginMenuBar()) {
+            if (ImGui::BeginMenu("Export")) {
+                if (ImGui::MenuItem("XVG")) {
+                    export_shape_space(data, "xvg");
+                }
+                if (ImGui::MenuItem("CSV")) {
+                    export_shape_space(data, "csv");
+                }
+                ImGui::EndMenu();
+            }
             if (ImGui::BeginMenu("Settings")) {
                 static constexpr float marker_min_size = 0.01f;
                 static constexpr float marker_max_size = 10.0f;
@@ -6059,13 +6136,13 @@ static bool export_xvg(const float* column_data[], const char* column_labels[], 
     // Print Legend Meta
     md_file_printf(file, "@    title \"VIAMD Properties\"\n");
     md_file_printf(file, "@    xaxis  label \"Time\"\n");
-    md_file_printf(file, "@TYPE xy\n");
+    md_file_printf(file, "@ TYPE xy\n");
     md_file_printf(file, "@ view 0.15, 0.15, 0.75, 0.85\n");
     md_file_printf(file, "@ legend on\n");
     md_file_printf(file, "@ legend box on\n");
     md_file_printf(file, "@ legend loctype view\n");
     md_file_printf(file, "@ legend 0.78, 0.8\n");
-    md_file_printf(file, "@ legend length 2\n");
+    md_file_printf(file, "@ legend length %i\n", num_columns);
 
     for (int j = 0; j < num_columns; ++j) {
         md_file_printf(file, "@ s%i legend \"%s\"\n", j, column_labels[j]);
@@ -6079,6 +6156,7 @@ static bool export_xvg(const float* column_data[], const char* column_labels[], 
     }
 
     md_file_close(file);
+    LOG_SUCCESS("Successfully exported XVG file to '%.*s'", (int)filename.len, filename.ptr);
     return true;
 }
 
@@ -6107,6 +6185,7 @@ static bool export_csv(const float* column_data[], const char* column_labels[], 
     }
 
     md_file_close(file);
+    LOG_SUCCESS("Successfully exported CSV file to '%.*s'", (int)filename.len, filename.ptr);
     return true;
 }
 
@@ -6222,6 +6301,7 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
         return false;
     }
 
+    LOG_SUCCESS("Successfully exported cube file to '%.*s'", (int)filename.len, filename.ptr);
     return true;
 }
 
@@ -6613,7 +6693,7 @@ static void update_md_buffers(ApplicationData* data) {
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyBonds) {
-        md_gl_molecule_set_covalent_bonds(&data->mold.gl_mol, 0, (uint32_t)md_array_size(mol.covalent_bonds), mol.covalent_bonds, sizeof(md_bond_t));
+        md_gl_molecule_set_bonds(&data->mold.gl_mol, 0, (uint32_t)md_array_size(mol.bonds), mol.bonds, sizeof(md_bond_t));
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtySecondaryStructure) {

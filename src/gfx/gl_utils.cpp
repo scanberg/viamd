@@ -52,8 +52,8 @@ bool build_shader_src(md_strb_t* builder, str_t src, str_t base_include_dir) {
                 return false;
             }
         } else {
-            md_strb_str(builder, line);
-            md_strb_char(builder, '\n');
+            md_strb_push_str(builder, line);
+            md_strb_push_char(builder, '\n');
         }
     }
 
@@ -75,13 +75,13 @@ GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str
                 MD_LOG_ERROR("Failed to extract version string!");
                 return 0;
             }
-            md_strb_str(&builder, version_str);
-            md_strb_str(&builder, defines);
-            md_strb_str(&builder, STR("\n"));
+            md_strb_push_str(&builder, version_str);
+            md_strb_push_str(&builder, defines);
+            md_strb_push_str(&builder, STR("\n"));
         }
         else {
-            md_strb_str(&builder, defines);
-            md_strb_str(&builder, STR("\n"));
+            md_strb_push_str(&builder, defines);
+            md_strb_push_str(&builder, STR("\n"));
         }
     }
 
@@ -125,14 +125,14 @@ GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) 
                 MD_LOG_ERROR("Failed to extract version string!");
                 return 0;
             }
-            md_strb_str(&builder, version_str);
-            md_strb_char(&builder, '\n');
-            md_strb_str(&builder, defines);
-            md_strb_char(&builder, '\n');
+            builder += version_str;
+            builder += '\n';
+            builder += defines;
+            builder += '\n';
         }
         else {
-            md_strb_str(&builder, defines);
-            md_strb_char(&builder, '\n');
+            builder += defines;
+            builder += '\n';
         }
     }
 
