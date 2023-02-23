@@ -252,7 +252,23 @@ bool file_dialog(char* str_buf, int str_cap, FileDialogFlags flags, const char* 
     }
 
     if (result == NFD_OKAY) {
-        strncpy(str_buf, out_path, str_cap);
+        char ext[16] = {0};
+        if (flags & FileDialog_Save) {
+            str_t path = str_from_cstr(out_path);
+            str_t pext  = extract_ext(path);
+            if (str_empty(pext) && filter) {
+                // get ext from supplied filter (first match)
+                pext.ptr = filter;
+                const char* delim = strchr(filter, ',');
+                if (delim) {
+                    pext.len = delim - filter;
+                } else {
+                    pext.len = strlen(filter);
+                }
+                snprintf(ext, sizeof(ext), ".%.*s", (int)pext.len, pext.ptr);
+            }
+        }
+        snprintf(str_buf, str_cap, "%s%s", out_path, ext);
         convert_backslashes(str_buf, str_cap);
         return true;
     } else if (result == NFD_ERROR) {
