@@ -39,4 +39,6 @@ void PopDisabled();
 bool ColorEdit3Minimal(const char* label, float color[3]);
 bool ColorEdit4Minimal(const char* label, float color[4]);
 
+void DrawCheckerboard(ImDrawList* draw_list, ImVec2 p_min, ImVec2 p_max, ImU32 col1, ImU32 col2, float grid_step, ImVec2 grid_off);
+
 }  // namespace ImGui

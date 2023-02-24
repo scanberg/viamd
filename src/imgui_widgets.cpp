@@ -93,6 +93,28 @@ bool RangeSliderBehavior(const ImRect& frame_bb, const char* str_id, float* v1, 
     ImGui::PushID(-1);
     ImGui::InvisibleButton(str_id, grab_bb.GetSize());
     bool active = IsItemActive();
+    bool hovered = IsItemHovered();
+
+    if (hovered) {
+        const float wheel_delta = GetIO().MouseWheel;
+        if (wheel_delta) {
+            float t[2] = {
+                ScaleValueFromRatioT<float, float, float>(ImGuiDataType_Float, *values[0], v_min, v_max, is_logarithmic, 0.0f, 0.0f),
+                ScaleValueFromRatioT<float, float, float>(ImGuiDataType_Float, *values[1], v_min, v_max, is_logarithmic, 0.0f, 0.0f),
+            };
+
+            const float delta = wheel_delta * (v_max - v_min) * 0.025;
+
+            t[0] -= delta;
+            t[1] += delta;
+
+            for (int i = 0; i < 2; ++i) {
+                float new_value = ScaleValueFromRatioT<float, float, float>(ImGuiDataType_Float, t[i], v_min, v_max, is_logarithmic, 0.0f, 0.0f);
+                *values[i] = RoundScalarWithFormatT<float>(format, ImGuiDataType_Float, new_value);
+            }
+            changed = true;
+        }
+    }
 
     if (active && IsMouseDragging(0))
     {
@@ -305,6 +327,25 @@ bool ColorEdit4Minimal(const char* label, float color[4]) {
     bool result = ImGui::ColorEdit4(label, color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_Float);
     ImGui::PopStyleVar();
     return result;
+}
+
+void DrawCheckerboard(ImDrawList* draw_list, ImVec2 p_min, ImVec2 p_max, ImU32 col1, ImU32 col2, float grid_step, ImVec2 grid_off) {
+    draw_list->AddRectFilled(p_min, p_max, col1);
+
+    int yi = 0;
+    for (float y = p_min.y + grid_off.y; y < p_max.y; y += grid_step, yi++)
+    {
+        float y1 = ImClamp(y, p_min.y, p_max.y), y2 = ImMin(y + grid_step, p_max.y);
+        if (y2 <= y1)
+            continue;
+        for (float x = p_min.x + grid_off.x + (yi & 1) * grid_step; x < p_max.x; x += grid_step * 2.0f)
+        {
+            float x1 = ImClamp(x, p_min.x, p_max.x), x2 = ImMin(x + grid_step, p_max.x);
+            if (x2 <= x1)
+                continue;
+            draw_list->AddRectFilled(ImVec2(x1, y1), ImVec2(x2, y2), col2);
+        }
+    }
 }
 
 }  // namespace ImGui
