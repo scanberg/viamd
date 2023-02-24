@@ -10,7 +10,6 @@ layout (std140) uniform UniformData
 
     vec2  u_inv_res;
     float u_density_scale;
-    float u_alpha_scale;
 
     vec3  u_clip_plane_min;
     vec3  u_clip_plane_max;

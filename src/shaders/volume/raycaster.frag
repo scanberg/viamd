@@ -25,7 +25,6 @@ layout (std140) uniform UniformData
 
     vec2  u_inv_res;
     float u_density_scale;
-    float u_alpha_scale;
 
     vec3  u_clip_plane_min;
     vec3  u_clip_plane_max;
@@ -39,7 +38,7 @@ uniform IsovalueParameters u_iso;
 
 uniform sampler2D u_tex_depth;
 uniform sampler3D u_tex_volume;
-uniform sampler1D u_tex_tf;
+uniform sampler2D u_tex_tf;
 
 in  vec3 model_pos;
 in  vec3 model_eye;
@@ -57,9 +56,7 @@ float getVoxel(in vec3 samplePos) {
 }
 
 vec4 classify(in float density) {
-    vec4 c = texture(u_tex_tf, density);
-    c.a = clamp(c.a * u_alpha_scale, 0.0, 1.0);
-    return c;
+    return texture(u_tex_tf, vec2(density, 0.5));
 }
 
 vec4 compositing(in vec4 dstColor, in vec4 srcColor, in float tIncr) {
@@ -351,5 +348,6 @@ void main() {
         }
     }
 
+    //result.a = 1.0;
     out_frag = result;
 }

@@ -48,7 +48,7 @@ static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum s
 
     if (severity == GL_DEBUG_SEVERITY_HIGH) {
         MD_LOG_ERROR("A SEVERE GL ERROR HAS OCCURED: %s", message);
-        abort();
+        ASSERT(false);
     } else {
         //MD_LOG_INFO("%s", message);
     }

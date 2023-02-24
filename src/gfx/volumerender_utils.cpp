@@ -35,15 +35,15 @@ struct UniformData {
 
     vec2_t inv_res;
     float density_scale;
-    float alpha_scale;
+    float _pad0;
 
     vec3_t clip_volume_min;
-    float _pad0;
+    float _pad1;
     vec3_t clip_volume_max;
     float time;
 
     vec3_t gradient_spacing_world_space;
-    float _pad1;
+    float _pad2;
     mat4_t gradient_spacing_tex_space;
 };
 
@@ -239,7 +239,6 @@ void render_volume(const RenderDesc& desc) {
     data.model_view_proj_mat = desc.matrix.proj * model_to_view_matrix;
     data.inv_res = {1.f / (float)(desc.render_target.width), 1.f / (float)(desc.render_target.height)};
     data.density_scale = desc.global_scaling.density;
-    data.alpha_scale = desc.global_scaling.alpha;
     data.clip_volume_min = desc.clip_volume.min;
     data.clip_volume_max = desc.clip_volume.max;
     data.time = time;
@@ -263,7 +262,7 @@ void render_volume(const RenderDesc& desc) {
     glBindTexture(GL_TEXTURE_3D, desc.texture.volume);
 
     glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_1D, desc.texture.transfer_function);
+    glBindTexture(GL_TEXTURE_2D, desc.texture.transfer_function);
 
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, gl.ubo);
 

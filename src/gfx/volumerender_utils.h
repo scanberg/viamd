@@ -63,7 +63,6 @@ struct RenderDesc {
 
     struct {
         float density = 1.0f;
-        float alpha = 1.0f;
     } global_scaling;
 
     struct {

@@ -574,11 +574,10 @@ struct ApplicationData {
 
         struct {
             bool enabled = true;
-            float density_scale = 1.f;
             struct {
                 GLuint id = 0;
                 float alpha_scale = 1.f;
-                ImPlotColormap colormap = ImPlotColormap_Plasma; // Corresponds to Plasma colormap
+                ImPlotColormap colormap = ImPlotColormap_Plasma;
                 bool dirty = true;
             } tf;
         } dvr;
@@ -607,6 +606,13 @@ struct ApplicationData {
             vec3_t max = {1, 1, 1};
         } clip_volume;
 
+        struct {
+            bool enabled = true;
+            bool checkerboard = true;
+            int  colormap_mode = 3;
+        } legend;
+
+        float density_scale = 1.f;
         vec3_t voxel_spacing = {1.0f, 1.0f, 1.0f};
         float resolution_scale = 2.0f;
 
@@ -1907,12 +1913,13 @@ static void update_density_volume(ApplicationData* data) {
             ImVec4 col = ImPlot::SampleColormap(t, data->density_volume.dvr.tf.colormap);
 
             // This is a small alpha ramp in the start of the TF to avoid rendering low density values.
-            col.w = MIN(160 * t*t, 0.341176);
+            col.w = ImMin(160 * t*t, 0.341176f);
+            col.w = ImClamp(col.w * data->density_volume.dvr.tf.alpha_scale, 0.0f, 1.0f);
             pixel_data[i] = ImGui::ColorConvertFloat4ToU32(col);
         }
 
-        gl::init_texture_1D(&data->density_volume.dvr.tf.id, (int)ARRAY_SIZE(pixel_data), GL_RGBA8);
-        gl::set_texture_1D_data(data->density_volume.dvr.tf.id, pixel_data, GL_RGBA8);
+        gl::init_texture_2D(&data->density_volume.dvr.tf.id, (int)ARRAY_SIZE(pixel_data), 1, GL_RGBA8);
+        gl::set_texture_2D_data(data->density_volume.dvr.tf.id, pixel_data, GL_RGBA8);
     }
 
     int64_t selected_property = -1;
@@ -5563,50 +5570,61 @@ static void draw_density_volume_window(ApplicationData* data) {
                 draw_property_menu_widgets(data->display_properties, md_array_size(data->display_properties), DisplayProperty::ShowIn_Volume, false);
                 ImGui::EndMenu();
             }
-            if (ImGui::BeginMenu("DVR")) {
-                ImGui::Checkbox("Enabled", &data->density_volume.dvr.enabled);
-
-                if (ImPlot::ColormapButton(ImPlot::GetColormapName(data->density_volume.dvr.tf.colormap), button_size, data->density_volume.dvr.tf.colormap)) {
-                    ImGui::OpenPopup("Colormap Selector");
-                }
-
-                if (ImGui::BeginPopup("Colormap Selector")) {
-                    for (int map = 4; map < ImPlot::GetColormapCount(); ++map) {
-                        if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), button_size, map)) {
-                            data->density_volume.dvr.tf.colormap = map;
-                            data->density_volume.dvr.tf.dirty = true;
-                            ImGui::CloseCurrentPopup();
-                        }
+            if (ImGui::BeginMenu("Render")) {
+                ImGui::SliderFloat("Density Scaling", &data->density_volume.density_scale, 0.001f, 10000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                ImGui::Checkbox("Direct Volume Rendering", &data->density_volume.dvr.enabled);
+                if (data->density_volume.dvr.enabled) {
+                    ImGui::Indent();
+                    if (ImPlot::ColormapButton(ImPlot::GetColormapName(data->density_volume.dvr.tf.colormap), button_size, data->density_volume.dvr.tf.colormap)) {
+                        ImGui::OpenPopup("Colormap Selector");
                     }
-                    ImGui::EndPopup();
+                    if (ImGui::BeginPopup("Colormap Selector")) {
+                        for (int map = 4; map < ImPlot::GetColormapCount(); ++map) {
+                            if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), button_size, map)) {
+                                data->density_volume.dvr.tf.colormap = map;
+                                data->density_volume.dvr.tf.dirty = true;
+                                ImGui::CloseCurrentPopup();
+                            }
+                        }
+                        ImGui::EndPopup();
+                    }
+                    if (ImGui::SliderFloat("Alpha Scaling", &data->density_volume.dvr.tf.alpha_scale, 0.001f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic)) {
+                        data->density_volume.dvr.tf.dirty = true;
+                    }
+                    ImGui::Unindent();
                 }
-
-                ImGui::SliderFloat("Density Scaling", &data->density_volume.dvr.density_scale, 0.001f, 10000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
-                ImGui::SliderFloat("Alpha Scaling", &data->density_volume.dvr.tf.alpha_scale, 0.001f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic);
-                ImGui::EndMenu();
-            }
-
-            if (ImGui::BeginMenu("ISO")) {
-                ImGui::Checkbox("Enabled", &data->density_volume.iso.enabled);
-                for (int i = 0; i < data->density_volume.iso.count; ++i) {
-                    ImGui::PushID(i);
-                    ImGui::SliderFloat("##Isovalue", &data->density_volume.iso.values[i], 0.0f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic);
-                    if (ImGui::IsItemDeactivatedAfterEdit()) {
+                ImGui::Checkbox("Iso Surfaces", &data->density_volume.iso.enabled);
+                if (data->density_volume.iso.enabled) {
+                    ImGui::Indent();
+                    for (int i = 0; i < data->density_volume.iso.count; ++i) {
+                        ImGui::PushID(i);
+                        ImGui::SliderFloat("##Isovalue", &data->density_volume.iso.values[i], 0.0f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                        if (ImGui::IsItemDeactivatedAfterEdit()) {
+                            // @TODO(Robin): Sort?
+                        }
+                        ImGui::SameLine();
+                        ImGui::ColorEdit4Minimal("##Color", data->density_volume.iso.colors[i].elem);
+                        ImGui::SameLine();
+                        if (ImGui::DeleteButton(ICON_FA_XMARK)) {
+                            for (int j = i; j < data->density_volume.iso.count - 1; ++j) {
+                                data->density_volume.iso.colors[j] = data->density_volume.iso.colors[j+1];
+                                data->density_volume.iso.values[j] = data->density_volume.iso.values[j+1];
+                            }
+                            data->density_volume.iso.count -= 1;
+                        }
+                        ImGui::PopID();
+                    }
+                    if ((data->density_volume.iso.count < (int)ARRAY_SIZE(data->density_volume.iso.values)) && ImGui::Button("Add", button_size)) {
+                        int idx = data->density_volume.iso.count++;
+                        data->density_volume.iso.values[idx] = 0.1f;
+                        data->density_volume.iso.colors[idx] = { 0.2f, 0.1f, 0.9f, 1.0f };
                         // @TODO(Robin): Sort?
                     }
-                    ImGui::SameLine();
-                    ImGui::ColorEdit4Minimal("##Color", data->density_volume.iso.colors[i].elem);
-                    ImGui::PopID();
-                }
-                if ((data->density_volume.iso.count < (int)ARRAY_SIZE(data->density_volume.iso.values)) &&
-                    ImGui::Button("Add", button_size)) {
-                    int idx = data->density_volume.iso.count++;
-                    data->density_volume.iso.values[idx] = 0.1f;
-                    data->density_volume.iso.colors[idx] = { 0.2f, 0.1f, 0.9f, 1.0f };
-                    // @TODO(Robin): Sort?
-                }
-                if (ImGui::Button("Clear", button_size)) {
-                    data->density_volume.iso.count = 0;
+                        ImGui::SameLine();
+                    if (ImGui::Button("Clear", button_size)) {
+                        data->density_volume.iso.count = 0;
+                    }
+                    ImGui::Unindent();
                 }
                 ImGui::EndMenu();
             }
@@ -5617,14 +5635,16 @@ static void draw_density_volume_window(ApplicationData* data) {
                 ImGui::RangeSliderFloat("z", &data->density_volume.clip_volume.min.z, &data->density_volume.clip_volume.max.z, 0.0f, 1.0f);
                 ImGui::EndMenu();
             }
-            if (ImGui::BeginMenu("Visualize")) {
+            if (ImGui::BeginMenu("Show")) {
                 ImGui::Checkbox("Bounding Box", &data->density_volume.show_bounding_box);
                 if (data->density_volume.show_bounding_box) {
-                    ImGui::SameLine();
-                    ImGui::ColorEdit4Minimal("Color", data->density_volume.bounding_box_color.elem);
+                    ImGui::Indent();
+                    ImGui::ColorEdit4("Color", data->density_volume.bounding_box_color.elem);
+                    ImGui::Unindent();
                 }
                 ImGui::Checkbox("Reference Structure", &data->density_volume.show_reference_structures);
                 if (data->density_volume.show_reference_structures) {
+                    ImGui::Indent();
                     auto& rep = data->density_volume.rep;
                     ImGui::Checkbox("Show Superimposed Structures", &data->density_volume.show_reference_ensemble);
                     if (ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0Cartoon\0")) {
@@ -5641,9 +5661,28 @@ static void draw_density_volume_window(ApplicationData* data) {
                     }
                     if (rep.type == RepresentationType::Ribbons) {
                         data->density_volume.dirty_rep |= ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f);
-                        data->density_volume.dirty_rep |= ImGui::SliderFloat("spline width", &rep.width, 0.1f, 2.f);
-                        data->density_volume.dirty_rep |= ImGui::SliderFloat("spline thickness", &rep.thickness, 0.1f, 2.f);
+                        data->density_volume.dirty_rep |= ImGui::SliderFloat("width", &rep.width, 0.1f, 2.f);
+                        data->density_volume.dirty_rep |= ImGui::SliderFloat("thickness", &rep.thickness, 0.1f, 2.f);
                     }
+                    ImGui::Unindent();
+                }
+                ImGui::Checkbox("Legend", &data->density_volume.legend.enabled);
+                if (data->density_volume.legend.enabled) {
+                    ImGui::Indent();
+                    const char* colormap_modes[] = {"Disabled", "Opaque", "Transparent", "Split"};
+                    if (ImGui::BeginCombo("Colormap", colormap_modes[data->density_volume.legend.colormap_mode])) {
+                        for (int i = 0; i < IM_ARRAYSIZE(colormap_modes); ++i) {
+                            if (ImGui::Selectable(colormap_modes[i])) {
+                                data->density_volume.legend.colormap_mode = i;
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::Checkbox("Use Checkerboard", &data->density_volume.legend.checkerboard);
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Use a checkerboard background for transparent parts in the legend.");
+                    }
+                    ImGui::Unindent();
                 }
                 ImGui::EndMenu();
             }
@@ -5673,8 +5712,51 @@ static void draw_density_volume_window(ApplicationData* data) {
         ImVec2 canvas_p1 = ImGui::GetItemRectMax();
 
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
-        draw_list->AddImage((ImTextureID)(uint64_t)data->density_volume.fbo.deferred.post_tonemap, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
+        draw_list->AddImage((ImTextureID)(intptr_t)data->density_volume.fbo.deferred.post_tonemap, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
         draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(50, 50, 50, 255));
+
+        if (data->density_volume.dvr.enabled && data->density_volume.legend.colormap_mode) {
+            ImVec2 canvas_ext = canvas_p1 - canvas_p0;
+            ImVec2 cmap_ext = {MIN(canvas_ext.x * 0.5f, 250.0f), MIN(canvas_ext.y * 0.25f, 30.0f)};
+            ImVec2 cmap_pad = {10, 10};
+            ImVec2 cmap_pos = canvas_p1 - ImVec2(cmap_ext.x, cmap_ext.y) - cmap_pad;
+            ImPlotColormap cmap = data->density_volume.dvr.tf.colormap;
+            ImPlotContext& gp = *ImPlot::GetCurrentContext();
+            ImU32 checker_bg = IM_COL32(255, 255, 255, 255);
+            ImU32 checker_fg = IM_COL32(128, 128, 128, 255);
+            float checker_size = 8.0f;
+            ImVec2 checker_offset = ImVec2(0,0);
+
+            int mode = data->density_volume.legend.colormap_mode;
+
+            ImVec2 opaque_scl = ImVec2(1,1);
+            ImVec2 transp_scl = ImVec2(0,0);
+
+            if (mode == 3) {
+                opaque_scl = ImVec2(1.0f, 0.5f);
+                transp_scl = ImVec2(0.0f, 0.5f);
+            }
+
+            ImRect opaque_rect = ImRect(cmap_pos, cmap_pos + cmap_ext * opaque_scl);
+            ImRect transp_rect = ImRect(cmap_pos + cmap_ext * transp_scl, cmap_pos + cmap_ext);
+            
+            // Opaque
+            if (mode == 1 || mode == 3) {
+                ImPlot::RenderColorBar(gp.ColormapData.GetKeys(cmap),gp.ColormapData.GetKeyCount(cmap),*draw_list,opaque_rect,false,false,!gp.ColormapData.IsQual(cmap));
+            }
+            
+            if (mode == 2 || mode == 3) {
+                if (data->density_volume.legend.checkerboard) {
+                    // Checkerboard
+                    ImGui::DrawCheckerboard(draw_list, transp_rect.Min, transp_rect.Max, checker_bg, checker_fg, checker_size, checker_offset);
+                }
+                // Transparent
+                draw_list->AddImage((ImTextureID)(intptr_t)data->density_volume.dvr.tf.id, transp_rect.Min, transp_rect.Max);
+            }
+            
+            // Boarder
+            draw_list->AddRect(cmap_pos, cmap_pos + cmap_ext, IM_COL32(0, 0, 0, 255));
+        }
 
         const bool is_hovered = ImGui::IsItemHovered();
         const bool is_active = ImGui::IsItemActive();
@@ -5892,8 +5974,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                         .enabled = data->density_volume.show_bounding_box,
                     },
                     .global_scaling = {
-                        .density = data->density_volume.dvr.density_scale,
-                        .alpha = data->density_volume.dvr.tf.alpha_scale,
+                        .density = data->density_volume.density_scale,
                     },
                     .iso_surface = {
                         .count = data->density_volume.iso.count,
