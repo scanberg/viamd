@@ -3075,7 +3075,13 @@ static void create_script_ranges(md_strb_t* sb, const md_bitfield_t* bf, int ref
     ASSERT(sb);
     ASSERT(bf);
 
-    md_strb_fmt(sb, "atom({");
+    const int64_t popcount = md_bitfield_popcount(bf);
+
+    md_strb_fmt(sb, "atom(");
+
+    if (popcount > 1) {
+        md_strb_push_char(sb, '{');
+    }
 
     int range_beg = -1;
     int prev_idx  = -1;
@@ -3100,10 +3106,15 @@ static void create_script_ranges(md_strb_t* sb, const md_bitfield_t* bf, int ref
 
     md_strb_pop(sb, 1);
     if (prev_idx - range_beg > 0) {
-        md_strb_fmt(sb, "%i:%i})", range_beg - ref_idx + 1, prev_idx - ref_idx + 1);
+        md_strb_fmt(sb, "%i:%i", range_beg - ref_idx + 1, prev_idx - ref_idx + 1);
     } else if (prev_idx != -1) {
-        md_strb_fmt(sb, "%i})", prev_idx - ref_idx + 1);
+        md_strb_fmt(sb, "%i", prev_idx - ref_idx + 1);
     }
+
+    if (popcount > 1) {
+        md_strb_push_char(sb, '}');
+    }
+    md_strb_push_char(sb, ')');
 }
 
 static int64_t find_identifier(const md_script_ir_t* ir, str_t ident) {
@@ -3294,7 +3305,7 @@ void draw_context_popup(ApplicationData* data) {
                     }
                 }
             }
-            if (num_atoms_selected >= 3) {
+            if (num_atoms_selected >= 1) {
                 const md_bitfield_t* bf = &data->selection.current_selection_mask;
                 str_t ident = create_unique_identifier(data->mold.script.ir, STR("sel"), frame_allocator);
                 bool same_residue = true;
