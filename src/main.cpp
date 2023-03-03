@@ -832,10 +832,13 @@ static void compute_histogram_masked(float* bins, int num_bins, float min_bin_va
 
     // We evaluate each frame, one at a time
     while ((beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) != 0) {
-        uint64_t i = dim * (beg_bit - 1);
-        if (values[i] < min_bin_val || max_bin_val < values[i]) continue;
-        int idx = CLAMP((int)(((values[i] - min_bin_val) * inv_range) * num_bins), 0, num_bins - 1);
-        bins[idx] += scl;
+        int val_idx = dim * ((int)beg_bit - 1);
+        for (int i = 0; i < dim; ++i) {
+            float val = values[val_idx + i];
+            if (val < min_bin_val || max_bin_val < val) continue;
+            int bin_idx = CLAMP((int)(((val - min_bin_val) * inv_range) * num_bins), 0, num_bins - 1);
+            bins[bin_idx] += scl;
+        }
     }
 }
 
@@ -1831,7 +1834,7 @@ static void init_display_properties(DisplayProperty** prop_items, const md_scrip
         item.col = PROPERTY_COLORS[i % ARRAY_SIZE(PROPERTY_COLORS)];
         item.frame_filter = {0, 0};
         item.value_filter = {full_props[i].data.min_range[0], full_props[i].data.max_range[0]};
-        item.view_range   = {full_props[i].data.min_range[0], full_props[i].data.max_range[0]};
+        item.view_range   = {-DBL_MAX, DBL_MAX};
         item.unit = full_props[i].data.unit;
         item.full_prop = &full_props[i];
         item.filt_prop = &filt_props[i];
@@ -1847,7 +1850,7 @@ static void init_display_properties(DisplayProperty** prop_items, const md_scrip
                 // Copy relevant parameters from existing item which we want to be persistent
                 item.frame_filter = old_items[j].frame_filter;
                 item.value_filter = old_items[j].value_filter;
-                item.view_range   = old_items[j].view_range;
+                //item.view_range   = old_items[j].view_range;
                 item.current_display_mask = old_items[j].current_display_mask & possible_display_mask;
                 item.full_prop_fingerprint = old_items[j].full_prop_fingerprint;
                 item.filt_prop_fingerprint = old_items[j].filt_prop_fingerprint;
@@ -1862,40 +1865,33 @@ static void init_display_properties(DisplayProperty** prop_items, const md_scrip
 
 static void update_display_properties(ApplicationData* data) {
     ASSERT(data);
-//    const int32_t num_frames = (int32_t)md_trajectory_num_frames(data->mold.traj);
 
-    DisplayProperty* disp_props = data->display_properties;
-    for (int64_t i = 0; i < md_array_size(disp_props); ++i) {
-        if (disp_props[i].full_prop_fingerprint != disp_props[i].full_prop->data.fingerprint) {
-            disp_props[i].full_prop_fingerprint = disp_props[i].full_prop->data.fingerprint;
-            const md_script_property_t* p = disp_props[i].full_prop;
+    for (int64_t i = 0; i < md_array_size(data->display_properties); ++i) {
+        DisplayProperty& dp = data->display_properties[i];
+        const md_script_property_t* p = dp.full_prop;
+        
+        if (dp.full_prop_fingerprint != dp.full_prop->data.fingerprint) {
+            dp.full_prop_fingerprint = dp.full_prop->data.fingerprint;
+            
             if (p->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
-                DisplayProperty::Histogram& hist = disp_props[i].full_hist;
+                DisplayProperty::Histogram& hist = dp.full_hist;
                 hist.value_range = {p->data.min_range[0], p->data.max_range[0]};
+
                 const md_bitfield_t* completed_frames = md_script_eval_completed_frames(data->mold.script.full_eval);
-                //const int num_completed = md_bitfield_popcount(completed_frames);
-                //const int num_values = p->data.dim[0] * num_completed;
                 compute_histogram_masked(hist.bin, (int)ARRAY_SIZE(hist.bin), hist.value_range.beg, hist.value_range.end, p->data.values, p->data.dim[0], completed_frames);
             }
         }
 
-        if (disp_props[i].filt_prop_fingerprint != disp_props[i].filt_prop->data.fingerprint) {
-            disp_props[i].filt_prop_fingerprint = disp_props[i].filt_prop->data.fingerprint;
-            const md_script_property_t* p = disp_props[i].full_prop;
+        if (dp.filt_prop_fingerprint != dp.filt_prop->data.fingerprint) {
+            dp.filt_prop_fingerprint = dp.filt_prop->data.fingerprint;
+            
             if (p->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
-                DisplayProperty::Histogram& hist = disp_props[i].filt_hist;
+                DisplayProperty::Histogram& hist = dp.filt_hist;
                 // We copy the full range here since we want the histograms to align on the x-axis
                 // This also implys that we have a dependency to the full property, since we can only now the full range of values when full_prop has been completely evaluated.
-                hist.value_range = disp_props[i].full_hist.value_range;
-                //int beg_frame = CLAMP((int)data->timeline.filter.beg_frame, 0, num_frames-1);
-                //int end_frame = CLAMP((int)data->timeline.filter.end_frame+1, 0, num_frames);
-                //end_frame = MAX(beg_frame + 1, end_frame);
+                hist.value_range = dp.full_hist.value_range;
 
-                //int offset = beg_frame * p->data.dim[0];
-                //int length = (end_frame - beg_frame) * p->data.dim[0];
-                //ASSERT(offset + length <= p->data.num_values);
                 const md_bitfield_t* completed_frames = md_script_eval_completed_frames(data->mold.script.filt_eval);
-
                 compute_histogram_masked(hist.bin, (int)ARRAY_SIZE(hist.bin), hist.value_range.beg, hist.value_range.end, p->data.values, p->data.dim[0], completed_frames);
             }
         }
@@ -4553,14 +4549,10 @@ static void draw_distribution_window(ApplicationData* data) {
             ImGui::EndMenuBar();
         }
 
-        if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
-            data->animation.mode = data->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
-        }
-
         ImPlotAxisFlags axis_flags = 0;
         ImPlotAxisFlags axis_flags_x = axis_flags | 0;
         ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_NoTickLabels;
-        //ImPlotFlags flags = ImPlotFlags_AntiAliased;
+
         ImPlotFlags flags = 0;
 
         // The distribution properties are always computed as histograms with a resolution of 1024
@@ -4570,7 +4562,7 @@ static void draw_distribution_window(ApplicationData* data) {
 
         const int num_props = (int)md_array_size(data->display_properties);
         
-        md_array(uint64_t) prop_hash = 0;
+        md_array(uint64_t) prop_hash  = 0;
         md_array(int)      prop_remap = 0;
         
         if (sync_axis) {
@@ -4605,9 +4597,11 @@ static void draw_distribution_window(ApplicationData* data) {
 
             double min_x = full_prop->data.min_range[0];
             double max_x = full_prop->data.max_range[0];
+
+            int view_idx = prop_remap[i];
             
-            double* view_beg = sync_axis ? &data->display_properties[prop_remap[i]].view_range.beg : &prop.view_range.beg;
-            double* view_end = sync_axis ? &data->display_properties[prop_remap[i]].view_range.end : &prop.view_range.end;
+            double* view_beg = sync_axis ? &data->display_properties[view_idx].view_range.beg : &prop.view_range.beg;
+            double* view_end = sync_axis ? &data->display_properties[view_idx].view_range.end : &prop.view_range.end;
 
             // We need to avoid the axis collapsing, otherwise Implot will get stuck in an infinite loop
             if (min_x == max_x) {
@@ -4713,6 +4707,17 @@ static void draw_distribution_window(ApplicationData* data) {
                 ImPlot::EndPlot();
             }
             ImGui::PopID();
+
+            // @NOTE(Robin): Implot will clip the view range of the distribution.
+            // But if the distribution is being computed in another thread, its range may change.
+            // Therefore we want to ensure that we reset the range to its potential maximum if we were clipped.
+            
+            if (*view_beg == min_x) {
+                *view_beg = -DBL_MAX;
+            }
+            if (*view_end == max_x) {
+                *view_end = DBL_MAX;
+            }
         }
     }
     ImGui::End();
