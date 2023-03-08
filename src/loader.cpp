@@ -195,7 +195,7 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
                         
                     md_bitfield_extract_indices(indices, bf);
 
-                    const vec3_t box_ext = mat3_mul_vec3(header->cell.basis, vec3_set1(1.0f));
+                    const vec3_t box_ext = mat3_mul_vec3(cell->basis, vec3_set1(1.0f));
 
                     const vec3_t com = have_cell ?
                         vec3_deperiodize(md_util_compute_com_indexed_soa_ortho(x, y, z, mol->atom.mass, indices, count, box_ext), box_ext * 0.5f, box_ext) :
