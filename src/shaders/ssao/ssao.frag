@@ -11,7 +11,7 @@
 #endif
 
 #ifndef AO_NUM_SAMPLES
-#define AO_NUM_SAMPLES 16
+#define AO_NUM_SAMPLES 32
 #endif
 
 struct HBAOData {
@@ -140,10 +140,11 @@ float compute_ao(vec2 full_res_uv, float radius_pixels, vec4 jitter, vec3 view_p
     float weight_sum = 0.0;
     float ao = 0.0;
 
-    //vec2 noise = srand2(full_res_uv + vec2(control.time) + 0.2765672);
+    //vec2 noise = srand2(full_res_uv + float(control.frame) + 0.2765672);
     //vec2 cos_sin = vec2(cos(noise.x * 3.1415926535), sin(noise.x * 3.1415026535));
-    //jitter.xy = cos_sin;
-    int offset = int(control.frame & 4U) * 8;
+    //jitter.xy *= cos_sin;
+    //int offset = int(control.frame & 4U) * 8;
+    int offset = 0;
 
     for (int i = 0; i < AO_NUM_SAMPLES; i++) {
         vec4 sample = control.sample_pattern[(offset + i) & 31];
