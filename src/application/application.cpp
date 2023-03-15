@@ -165,6 +165,22 @@ bool initialize(Context* ctx, int width, int height, const char* title) {
     glfwSetKeyCallback(window, ImGui_ImplGlfw_KeyCallback);
     glfwSetCharCallback(window, ImGui_ImplGlfw_CharCallback);
 
+    glfwSetWindowUserPointer(window, &data.internal_ctx);
+
+    GLFWdropfun drop_cb = [](GLFWwindow* window, int num_files, const char** paths) {
+        Context* ctx = (Context*)glfwGetWindowUserPointer(window);
+        ASSERT(ctx);
+        
+        for (int i = 0; i < num_files; ++i) {
+            MD_LOG_DEBUG("User dropped file: '%s'", paths[i]);
+        }
+        
+        if (ctx->file_drop.callback) {
+            ctx->file_drop.callback(num_files, paths, ctx->file_drop.user_data);
+        }
+    };
+    glfwSetDropCallback(window, drop_cb);
+
     memcpy(ctx, &data.internal_ctx, sizeof(Context));
 
     return true;
@@ -207,6 +223,14 @@ void update(Context* ctx) {
     if (ctx->window.vsync != data.internal_ctx.window.vsync) {
         data.internal_ctx.window.vsync = ctx->window.vsync;
         glfwSwapInterval((int)ctx->window.vsync);
+    }
+
+    if (ctx->file_drop.callback != data.internal_ctx.file_drop.callback) {
+        data.internal_ctx.file_drop.callback = ctx->file_drop.callback;
+    }
+
+    if (ctx->file_drop.user_data != data.internal_ctx.file_drop.user_data) {
+        data.internal_ctx.file_drop.user_data = ctx->file_drop.user_data;
     }
 
     data.internal_ctx.window.should_close = (bool)glfwWindowShouldClose((GLFWwindow*)data.internal_ctx.window.ptr);

@@ -373,13 +373,14 @@ struct AtomElementMapping {
 struct LoadDatasetWindowState {
     char path_buf[2048] = "";
     bool path_is_valid = false;
-    int  loader_idx = -1;
+    bool path_changed = false;
     bool load_topology = false;
     bool load_trajectory = false;
     bool coarse_grained = false;
     bool deperiodize_on_load = true;
     bool show_window = false;
     bool show_file_dialog = false;
+    int  loader_idx = -1;
 };
 
 struct ApplicationData {
@@ -1187,6 +1188,32 @@ int main(int, char**) {
         return -1;
     }
     data.ctx.window.vsync = true;
+
+    data.ctx.file_drop.user_data = &data;
+    data.ctx.file_drop.callback = [](int num_files, const char** paths, void* user_data) {
+        ApplicationData* data = (ApplicationData*)user_data;
+        ASSERT(data);
+
+        if (num_files > 1) {
+            LOG_INFO("Only loading first file in drop event!");
+            num_files = 1;
+        }
+
+        for (int i = 0; i < num_files; ++i) {
+            str_t path = str_from_cstr(paths[i]);
+            str_t ext  = extract_ext(path);
+
+            if (str_equal_cstr_ignore_case(ext, "via")) {
+                load_workspace(data, path);
+            }
+            else {
+                LoadDatasetWindowState& state = data->load_dataset;
+                state.show_window = true;
+                state.path_changed = true;
+                str_copy_to_char_buf(state.path_buf, sizeof(state.path_buf), path);
+            }
+        }
+    };
 
     LOG_DEBUG("Creating framebuffer...");
     init_gbuffer(&data.gbuffer, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
@@ -2937,14 +2964,13 @@ void draw_load_dataset_window(ApplicationData* data) {
     }
 
     if (ImGui::BeginPopupModal("Load Dataset", &state.show_window)) {
-        bool path_changed = false;
         bool path_invalid = !state.path_is_valid && state.path_buf[0] != '\0';
         const str_t* loader_ext = load::get_supported_extensions();
         const int loader_ext_count = (int)load::get_supported_extension_count();
 
         if (path_invalid) ImGui::PushInvalid();
         if (ImGui::InputText("##path", state.path_buf, sizeof(state.path_buf))) {
-            path_changed = true;
+            state.path_changed = true;
         }
         if (path_invalid) ImGui::PopInvalid();
 
@@ -2959,12 +2985,13 @@ void draw_load_dataset_window(ApplicationData* data) {
         if (state.show_file_dialog) {
             state.show_file_dialog = false;
             if (application::file_dialog(state.path_buf, sizeof(state.path_buf), application::FileDialog_Open)) {
-                path_changed = true;
+                state.path_changed = true;
             }
         }
 
         str_t path = str_from_cstr(state.path_buf);
-        if (path_changed) {
+        if (state.path_changed) {
+            state.path_changed = false;
             state.path_is_valid = md_path_is_valid(path) && !md_path_is_directory(path);
             str_t ext = extract_ext(path);
 

@@ -2,6 +2,8 @@
 
 namespace application {
 
+typedef void (*FileDropCallback)(int file_count, const char** paths, void* user_data);
+
 struct Context {
     struct {
         const char* title;
@@ -28,6 +30,11 @@ struct Context {
         double delta_s;
         double total_s;
     } timing;
+
+    struct {
+        FileDropCallback callback;
+        void* user_data;
+    } file_drop;
 };
 
 // Context
