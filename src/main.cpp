@@ -1511,7 +1511,10 @@ int main(int, char**) {
 
                 // Try aquire all semaphores
                 if (md_semaphore_try_aquire_n(&data.mold.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT)) {
-                    defer { md_semaphore_release_n(&data.mold.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT); };
+                    defer {
+                        md_semaphore_release_n(&data.mold.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT);
+                        update_all_representations(&data);
+                    };
 
                     // Now we hold all semaphores for the script
                     data.mold.script.compile_ir = false;
@@ -7835,6 +7838,7 @@ static void recompute_atom_visibility_mask(ApplicationData* data) {
 static void update_all_representations(ApplicationData* data) {
     for (int64_t i = 0; i < md_array_size(data->representation.reps); ++i) {
         auto& rep = data->representation.reps[i];
+        rep.filt_is_dirty = true;
         update_representation(data, &rep);
     }
 }
