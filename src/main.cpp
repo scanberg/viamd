@@ -1591,30 +1591,36 @@ int main(int, char**) {
 
         if (num_frames > 0) {
             if (data.mold.script.eval_init) {
-                data.mold.script.eval_init = false;
+                if (task_system::task_is_running(data.tasks.evaluate_full)) md_script_eval_interrupt(data.mold.script.full_eval);
+                if (task_system::task_is_running(data.tasks.evaluate_filt)) md_script_eval_interrupt(data.mold.script.filt_eval);
+                    
+                if (task_system::task_is_running(data.tasks.evaluate_full) == false &&
+                    task_system::task_is_running(data.tasks.evaluate_filt) == false) {
+                    data.mold.script.eval_init = false;
 
-                if (data.mold.script.full_eval) {
-                    md_script_eval_free(data.mold.script.full_eval);
-                }
-                if (data.mold.script.filt_eval) {
-                    md_script_eval_free(data.mold.script.filt_eval);
-                }
-                
-                if (md_script_ir_valid(data.mold.script.ir)) {
-                    if (data.mold.script.ir != data.mold.script.eval_ir) {
-                        md_script_ir_free(data.mold.script.eval_ir);
-                        data.mold.script.eval_ir = data.mold.script.ir;
+                    if (data.mold.script.full_eval) {
+                        md_script_eval_free(data.mold.script.full_eval);
                     }
-                    data.mold.script.full_eval = md_script_eval_create(num_frames, data.mold.script.ir, persistent_allocator);
-                    data.mold.script.filt_eval = md_script_eval_create(num_frames, data.mold.script.ir, persistent_allocator);
+                    if (data.mold.script.filt_eval) {
+                        md_script_eval_free(data.mold.script.filt_eval);
+                    }
+                
+                    if (md_script_ir_valid(data.mold.script.ir)) {
+                        if (data.mold.script.ir != data.mold.script.eval_ir) {
+                            md_script_ir_free(data.mold.script.eval_ir);
+                            data.mold.script.eval_ir = data.mold.script.ir;
+                        }
+                        data.mold.script.full_eval = md_script_eval_create(num_frames, data.mold.script.ir, persistent_allocator);
+                        data.mold.script.filt_eval = md_script_eval_create(num_frames, data.mold.script.ir, persistent_allocator);
+                    }
+
+                    const int64_t num_props = md_script_eval_num_properties(data.mold.script.full_eval);
+                    ASSERT(md_script_eval_num_properties(data.mold.script.filt_eval) == num_props);
+                    init_display_properties(&data.display_properties, md_script_eval_properties(data.mold.script.full_eval), md_script_eval_properties(data.mold.script.filt_eval), num_props);
+
+                    data.mold.script.evaluate_filt = true;
+                    data.mold.script.evaluate_full = true;
                 }
-
-                const int64_t num_props = md_script_eval_num_properties(data.mold.script.full_eval);
-                ASSERT(md_script_eval_num_properties(data.mold.script.filt_eval) == num_props);
-                init_display_properties(&data.display_properties, md_script_eval_properties(data.mold.script.full_eval), md_script_eval_properties(data.mold.script.filt_eval), num_props);
-
-                data.mold.script.evaluate_filt = true;
-                data.mold.script.evaluate_full = true;
             }
 
             if (data.mold.script.full_eval && data.mold.script.evaluate_full) {
@@ -6218,7 +6224,7 @@ static void draw_script_editor_window(ApplicationData* data) {
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + content_size.x - btn_size.x);
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetStyle().ItemSpacing.y);
 
-        const bool valid = md_script_ir_valid(data->mold.script.ir) && !task_system::task_is_running(data->tasks.evaluate_full);
+        const bool valid = md_script_ir_valid(data->mold.script.ir);
         
         if (!valid) ImGui::PushDisabled();
         if (ImGui::Button(btn_text, btn_size)) {
