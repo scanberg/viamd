@@ -1,6 +1,5 @@
 #include "volumerender_utils.h"
 
-#include "image.h"
 #include "gfx/gl_utils.h"
 #include "gfx/immediate_draw_utils.h"
 #include "color_utils.h"
@@ -113,54 +112,6 @@ void initialize() {
 }
 
 void shutdown() {}
-
-/*
-void create_tf_texture(GLuint* texture, int* width, CStringView path) {
-    ASSERT(texture);
-    // load transfer function
-    if (*texture == 0 || !glIsTexture(*texture)) {
-        glGenTextures(1, texture);
-    }
-
-    Image img;
-    defer { free_image(&img); };
-    if (read_image(&img, path)) {
-        if (width) {
-            *width = img.width;
-        }
-        glBindTexture(GL_TEXTURE_2D, *texture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, img.width, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, img.data);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    } else {
-        MD_LOG_ERROR("could not read TF ('%.s')", path.length(), path.cstr());
-    }
-}
-*/
-
-
-
-/*
-void set_volume_texture_data(GLuint texture, ivec3 dim, const float* data, float max_value) {
-    if (glIsTexture(texture)) {
-        uint8_t* rescaled_data = (uint8_t*)TMP_MALLOC(dim.x * dim.y * dim.z);
-        defer { TMP_FREE(rescaled_data); };
-
-        if (max_value > 0) {
-            const int size = dim.x * dim.y * dim.z;
-            for (int i = 0; i < size; ++i) {
-                rescaled_data[i] = (uint8_t)((double)data[i] / (double)max_value * 255);
-            }
-        }
-        glBindTexture(GL_TEXTURE_3D, texture);
-        glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, dim.x, dim.y, dim.z, GL_RED, GL_UNSIGNED_BYTE, rescaled_data);
-        glBindTexture(GL_TEXTURE_3D, 0);
-    }
-}
-*/
 
 mat4_t compute_model_to_world_matrix(vec3_t min_world_aabb, vec3_t max_world_aabb) {
     vec3_t ext = max_world_aabb - min_world_aabb;
@@ -282,8 +233,8 @@ void render_volume(const RenderDesc& desc) {
     float  iso_values[8];
     vec4_t iso_colors[8];
 
-    memcpy(iso_values, desc.iso_surface.values, iso_count * sizeof(float));
-    memcpy(iso_colors, desc.iso_surface.colors, iso_count * sizeof(vec4_t));
+    MEMCPY(iso_values, desc.iso_surface.values, iso_count * sizeof(float));
+    MEMCPY(iso_colors, desc.iso_surface.colors, iso_count * sizeof(vec4_t));
 
     for (int i = 0; i < iso_count - 1; ++i) {
         for (int j = i + 1; j < iso_count; ++j) {
