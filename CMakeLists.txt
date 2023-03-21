@@ -74,7 +74,29 @@ endif()
 file(GLOB APP_FILES src/application/*)
 file(GLOB SRC_FILES src/*)
 file(GLOB GFX_FILES src/gfx/*)
-file(GLOB_RECURSE SHADER_FILES src/shaders/*)
+
+set(SHADER_FILES 
+    src/shaders/highlight.frag
+    src/shaders/scale_hsv.frag
+    src/shaders/deferred_shading.frag
+    src/shaders/temporal.frag
+    src/shaders/tonemap/passthrough.frag
+    src/shaders/tonemap/exposure_gamma.frag
+    src/shaders/tonemap/uncharted.frag
+    src/shaders/tonemap/aces.frag
+    src/shaders/tonemap/fast_reversible.frag
+    src/shaders/dof/dof_half_res_prepass.frag
+    src/shaders/dof/dof.frag
+    src/shaders/velocity/blit_velocity.frag
+    src/shaders/velocity/blit_tilemax.frag
+    src/shaders/velocity/blit_neighbormax.frag
+    src/shaders/volume/raycaster.vert
+    src/shaders/volume/raycaster.frag
+    src/shaders/ssao/ssao.frag
+    src/shaders/ssao/blur.frag
+)
+
+create_resources("${SHADER_FILES}" "gen/shaders.inl")
 
 source_group("app" FILES ${APP_FILES})
 source_group("gfx" FILES ${GFX_FILES})
@@ -94,14 +116,12 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>")
 endif()
 
-create_copy_resource_dir_target(viamd_copy_shaders  "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders"   "${VIAMD_BIN_DIR}/shaders")
 create_copy_resource_dir_target(viamd_copy_datasets "${CMAKE_CURRENT_SOURCE_DIR}/datasets"      "${VIAMD_BIN_DIR}/datasets")
 
-add_dependencies(viamd viamd_copy_shaders viamd_copy_datasets)
+add_dependencies(viamd viamd_copy_datasets)
 
 target_compile_definitions(viamd PRIVATE
 	VIAMD_DATASET_DIR=\"datasets\"
-	VIAMD_SHADER_DIR=\"shaders\"
 	VIAMD_SCREENSHOT_DIR=\"screenshots\"
     VIAMD_NUM_WORKER_THREADS=${VIAMD_NUM_WORKER_THREADS}
     VIAMD_FRAME_CACHE_SIZE=${VIAMD_FRAME_CACHE_SIZE}
@@ -115,9 +135,10 @@ target_compile_features(viamd PRIVATE cxx_std_20)
 
 target_include_directories(viamd
     PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${CMAKE_CURRENT_SOURCE_DIR}/ext/gl3w
-        ${CMAKE_CURRENT_SOURCE_DIR}/ext/enkiTS/src
+        src
+        gen
+        ext/gl3w
+        ext/enkiTS/src
 )
 
 set_target_properties(viamd PROPERTIES

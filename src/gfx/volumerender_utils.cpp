@@ -10,7 +10,7 @@
 #include <core/md_os.h>
 #include <core/md_vec_math.h>
 
-#include <imgui.h>
+#include <shaders.inl>
 
 namespace volume {
 
@@ -48,11 +48,10 @@ struct UniformData {
 };
 
 void initialize() {
-    GLuint v_shader = gl::compile_shader_from_file(STR(VIAMD_SHADER_DIR "/volume/raycaster.vert"), GL_VERTEX_SHADER);
-    GLuint f_shader_dvr_only = gl::compile_shader_from_file(STR(VIAMD_SHADER_DIR "/volume/raycaster.frag"), GL_FRAGMENT_SHADER, STR("#define INCLUDE_DVR"));
-    GLuint f_shader_iso_only = gl::compile_shader_from_file(STR(VIAMD_SHADER_DIR "/volume/raycaster.frag"), GL_FRAGMENT_SHADER, STR("#define INCLUDE_ISO"));
-    GLuint f_shader_dvr_and_iso =
-        gl::compile_shader_from_file(STR(VIAMD_SHADER_DIR "/volume/raycaster.frag"), GL_FRAGMENT_SHADER, STR("#define INCLUDE_DVR\n#define INCLUDE_ISO"));
+    GLuint v_shader             = gl::compile_shader_from_source({(const char*)raycaster_vert, raycaster_vert_size}, GL_VERTEX_SHADER);
+    GLuint f_shader_dvr_only    = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR("#define INCLUDE_DVR"));
+    GLuint f_shader_iso_only    = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR("#define INCLUDE_ISO"));
+    GLuint f_shader_dvr_and_iso = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR("#define INCLUDE_DVR\n#define INCLUDE_ISO"));
     defer {
         glDeleteShader(v_shader);
         glDeleteShader(f_shader_dvr_only);

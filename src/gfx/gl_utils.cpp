@@ -76,12 +76,13 @@ GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str
                 return 0;
             }
             md_strb_push_str(&builder, version_str);
+            md_strb_push_char(&builder, '\n');
             md_strb_push_str(&builder, defines);
-            md_strb_push_str(&builder, STR("\n"));
+            md_strb_push_char(&builder, '\n');
         }
         else {
             md_strb_push_str(&builder, defines);
-            md_strb_push_str(&builder, STR("\n"));
+            md_strb_push_char(&builder, '\n');
         }
     }
 

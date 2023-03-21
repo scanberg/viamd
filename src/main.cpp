@@ -94,7 +94,7 @@
 #define LOG_ERROR MD_LOG_ERROR
 #define LOG_SUCCESS(...) ImGui::InsertNotification(ImGuiToast(ImGuiToastType_Success, 6000, __VA_ARGS__))
 
-constexpr const char* shader_output_snippet = R"(
+constexpr str_t shader_output_snippet = STR(R"(
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec4 out_normal;
 layout(location = 2) out vec4 out_velocity;
@@ -130,12 +130,12 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
    out_velocity = vec4(compute_ss_vel(view_coord, view_vel), 0, 0);
    out_atom_index = encode_index(atom_index);
 }
-)";
+)");
 
-constexpr const char* shader_output_snippet_lean_and_mean = R"(
+constexpr str_t shader_output_snippet_lean_and_mean = STR(R"(
 void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint atom_index) {
 }
-)";
+)");
 
 //constexpr ImGuiKey KEY_CONSOLE = ImGuiKey_GraveAccent;
 constexpr ImGuiKey KEY_PLAY_PAUSE = ImGuiKey_Space;
@@ -7443,8 +7443,9 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
                 const char* beg = arg.ptr + token.len;
                 buf->len = buf->end() - beg;
                 buf->ptr = beg;
-                const char* end = str_find_str(*buf, token).ptr;
-                if (end) {
+                const int64_t loc = str_find_str(*buf, token);
+                if (loc != -1) {
+                    const char* end = beg + loc;
                     std::string str(beg, end - beg);
                     editor.SetText(str);
                     // Set buf pointer to after marker
@@ -7471,10 +7472,12 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
                 const char* beg = arg.ptr + token.len;
                 buf->len = buf->end() - beg;
                 buf->ptr = beg;
-                const char* end = str_find_str(*buf, token).ptr;
-                if (end) {
-                    void* base64_data = md_alloc(frame_allocator, md_base64_decode_size_in_bytes(end-beg));
-                    int64_t base64_size = md_base64_decode(base64_data, beg, end-beg);
+                int64_t loc = str_find_str(*buf, token);
+                if (loc != -1) {
+                    const char* end = beg + loc;
+                    int len = (int)(end - beg);
+                    void* base64_data = md_alloc(frame_allocator, md_base64_decode_size_in_bytes(len));
+                    int64_t base64_size = md_base64_decode(base64_data, beg, len);
                     md_bitfield_t* bf = (md_bitfield_t*)(ptr + target->struct_byte_offset);
                     if (!base64_size || !md_bitfield_deserialize(bf, base64_data, base64_size)) {
                         LOG_ERROR("Failed to deserialize bitfield");
