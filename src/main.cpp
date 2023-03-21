@@ -792,9 +792,9 @@ struct ApplicationData {
     } trajectory_data;
 
     struct {
-        vec4_t point_color      = {1,1,1,1};
-        vec4_t line_color       = {0,1,1,1};
-        vec4_t triangle_color   = {1,1,0,0.7f};
+        vec4_t point_color      = {1,1,1,0.7f};
+        vec4_t line_color       = {1,1,0,0.7f};
+        vec4_t triangle_color   = {1,1,0,0.5f};
     } script;
 
     bool show_script_window = true;
@@ -7474,18 +7474,21 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
                 buf->ptr = beg;
                 int64_t loc = str_find_str(*buf, token);
                 if (loc != -1) {
-                    const char* end = beg + loc;
-                    int len = (int)(end - beg);
-                    void* base64_data = md_alloc(frame_allocator, md_base64_decode_size_in_bytes(len));
-                    int64_t base64_size = md_base64_decode(base64_data, beg, len);
+                    int len = (int)loc;
+                    const int raw_cap = md_base64_decode_size_in_bytes(len);
+                    void* raw_ptr = md_alloc(frame_allocator, raw_cap);
+                    defer { md_free(frame_allocator, raw_ptr, raw_cap); };
+                    
+                    const int64_t raw_len = md_base64_decode(raw_ptr, beg, len);
                     md_bitfield_t* bf = (md_bitfield_t*)(ptr + target->struct_byte_offset);
-                    if (!base64_size || !md_bitfield_deserialize(bf, base64_data, base64_size)) {
+                    if (!raw_len || !md_bitfield_deserialize(bf, raw_ptr, raw_len)) {
                         LOG_ERROR("Failed to deserialize bitfield");
                         md_bitfield_clear(bf);
                         return;
                     }
+                    
                     // Set buf pointer to after marker
-                    const char* pos = end + token.len;
+                    const char* pos = beg + loc + token.len;
                     buf->len = buf->end() - pos;
                     buf->ptr = pos;
                     break;
@@ -8481,6 +8484,14 @@ if (!use_gfx) {
     const uint32_t line_color       = convert_color(data->script.line_color);
     const uint32_t triangle_color   = convert_color(data->script.triangle_color);
 
+    md_array(mat4_t) model_matrices = 0;
+    if (vis.sdf.count) {
+        model_matrices = md_array_create(mat4_t, vis.sdf.count, frame_allocator);
+        for (int64_t i = 0; i < vis.sdf.count; ++i) {
+            model_matrices[i] = mat4_inverse(vis.sdf.matrices[i]);
+        }
+    }
+
     for (int64_t i = 0; i < vis.triangle.count; ++i) {
         ASSERT(vis.triangle.idx);
         uint32_t idx[3] = { vis.triangle.idx[i * 3 + 0], vis.triangle.idx[i * 3 + 1], vis.triangle.idx[i * 3 + 2] };
@@ -8498,10 +8509,36 @@ if (!use_gfx) {
         uint32_t idx = vis.point.idx[i];
         immediate::draw_point(vertices[idx], point_color);
     }
+
+    const uint32_t col_x = convert_color(vec4_set(1, 0, 0, 0.7f));
+    const uint32_t col_y = convert_color(vec4_set(0, 1, 0, 0.7f));
+    const uint32_t col_z = convert_color(vec4_set(0, 0, 1, 0.7f));
+    const float ext = vis.sdf.extent * 0.25f;
+    for (int64_t i = 0; i < vis.sdf.count; ++i) {
+        immediate::draw_basis(model_matrices[i], ext, col_x, col_y, col_z);
+    }
+    
     immediate::render();
 
-    glEnable(GL_CULL_FACE);
+    immediate::set_model_view_matrix(data->view.param.matrix.current.view);
+    immediate::set_proj_matrix(data->view.param.matrix.current.proj);
+    
     glEnable(GL_DEPTH_TEST);
+    
+    const vec3_t box_ext = vec3_set1(vis.sdf.extent);
+    const uint32_t box_color = convert_color(data->density_volume.bounding_box_color * vec4_set(1.f, 1.f, 1.f, 0.25f));
+    
+    for (int64_t i = 0; i < vis.sdf.count; ++i) {
+        ASSERT(vis.sdf.matrices);
+        const mat4_t M = mat4_inverse(vis.sdf.matrices[i]);
+        immediate::draw_box_wireframe(-box_ext, box_ext, M, box_color);
+    }
+
+    immediate::render();
+
+    md_array_free(model_matrices, frame_allocator);
+
+    glEnable(GL_CULL_FACE);
     POP_GPU_SECTION()
 
     POP_GPU_SECTION()  // G-buffer
