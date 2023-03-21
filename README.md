@@ -1,6 +1,10 @@
 # VIAMD
 Visual Interactive Analysis of Molecular Dynamics
 
+VIAMD is an interactive analysis tool for molecular dynamics (MD) written in C/C++.
+It exposes a rudementary script language that is used to declare operations which are performed over the frames of the trajectory.
+The results can then be viewed in the different windows exposed in the application.
+
 <img src="https://github.com/scanberg/viamd/wiki/img/viamd_environment.png" alt="viamd" width="500"/>
 
 ## Status
@@ -34,32 +38,39 @@ Example for Ubuntu:
 ### Step 2: Configure using CMAKE
 
 https://cmake.org/
+(Example using terminal and default build configuration for system)
+```
+cd viamd
+mkdir build
+cd build
+cmake ..
+```
 
 ### Step 3: Build!
-- mkdir build
-- cd build/
-- cmake ../
-- make
+```cmake --build .```
 
 ### Step 4: Run
-- ./viamd 
+```
+cd bin
+./viamd
+```
 
 ## Binaries
 https://github.com/scanberg/viamd/releases/
 
 ## Acknowledgements
 
-https://github.com/ocornut/imgui
+https://github.com/glfw/glfw
 
-https://github.com/BalazsJako/ImGuiColorTextEdit
+https://github.com/dougbinks/enkiTS
+
+https://github.com/ocornut/imgui
 
 https://github.com/epezent/implot
 
-https://github.com/glfw/glfw
+https://github.com/BalazsJako/ImGuiColorTextEdit
 
 https://github.com/skaslev/gl3w
-
-https://github.com/dougbinks/enkiTS
 
 https://github.com/max0x7ba/atomic_queue
 
