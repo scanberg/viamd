@@ -538,6 +538,8 @@ struct ApplicationData {
         InterpolationMode interpolation = InterpolationMode::CubicSpline;
         PlaybackMode mode = PlaybackMode::Stopped;
         bool apply_pbc = false;
+
+        bool show_window = true;
     } animation;
 
     // --- TIMELINE---
@@ -807,7 +809,7 @@ static inline uint64_t generate_fingerprint() {
 }
 
 static void compute_histogram(float* bins, int num_bins, float min_bin_val, float max_bin_val, const float* values, int num_values) {
-    memset(bins, 0, sizeof(float) * num_bins);
+    MEMSET(bins, 0, sizeof(float) * num_bins);
 
     const float bin_range = max_bin_val - min_bin_val;
     const float inv_range = 1.0f / bin_range;
@@ -1320,7 +1322,7 @@ int main(int, char**) {
 
         draw_context_popup(&data);
         draw_async_task_window(&data);
-        draw_animation_window(&data);
+        if (data.animation.show_window) draw_animation_window(&data);
         draw_main_menu(&data);
         draw_notifications_window();
 
@@ -2758,8 +2760,9 @@ ImGui::EndGroup();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Windows")) {
+            ImGui::Checkbox("Animation", &data->animation.show_window);
             ImGui::Checkbox("Representations", &data->representation.show_window);
-            ImGui::Checkbox("Script", &data->show_script_window);
+            ImGui::Checkbox("Script Editor", &data->show_script_window);
             ImGui::Checkbox("Timelines", &data->timeline.show_window);
             ImGui::Checkbox("Distributions", &data->distributions.show_window);
             ImGui::Checkbox("Density Volumes", &data->density_volume.show_window);
@@ -3687,7 +3690,7 @@ static void draw_animation_window(ApplicationData* data) {
     ASSERT(md_array_size(data->timeline.x_values) == num_frames);
 
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Animation")) {
+    if (ImGui::Begin("Animation", &data->animation.show_window)) {
         const float item_width = MAX(ImGui::GetContentRegionAvail().x - 80.f, 100.f);
         ImGui::PushItemWidth(item_width);
 
@@ -4383,7 +4386,7 @@ static void draw_timeline_window(ApplicationData* data) {
     ASSERT(data);
     ImGui::SetNextWindowSize(ImVec2(600, 300), ImGuiCond_FirstUseEver);
 
-    if (ImGui::Begin("Temporal", &data->timeline.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
+    if (ImGui::Begin("Timelines", &data->timeline.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
 
         constexpr int MIN_PLOT_HEIGHT = 10;
         constexpr int MAX_PLOT_HEIGHT = 1000;
@@ -4601,11 +4604,11 @@ static void draw_distribution_window(ApplicationData* data) {
             ImGui::EndMenuBar();
         }
 
-        ImPlotAxisFlags axis_flags = 0;
+        ImPlotAxisFlags axis_flags   = ImPlotAxisFlags_NoSideSwitch | ImPlotAxisFlags_NoHighlight;
         ImPlotAxisFlags axis_flags_x = axis_flags | 0;
         ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_NoTickLabels;
 
-        ImPlotFlags flags = 0;
+        ImPlotFlags flags = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame;
 
         // The distribution properties are always computed as histograms with a resolution of 1024
         // If we have a different number of bins for our visualization, we need to recompute the bins
@@ -4697,6 +4700,7 @@ static void draw_distribution_window(ApplicationData* data) {
                 snprintf(label + len, MAX(0, (int)sizeof(label) - len), "(%*s)", unit_len, unit_buf);
             }
 
+            ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(10, 0));
             if (ImPlot::BeginPlot(label, ImVec2(-1,plot_height), flags)) {
                 ImPlot::SetupAxisLimits(ImAxis_Y1, 0, max_y * 1.1, ImGuiCond_Always);
                 ImPlot::SetupAxisLimits(ImAxis_X1, min_x, max_x, ImGuiCond_Once);
@@ -4758,6 +4762,7 @@ static void draw_distribution_window(ApplicationData* data) {
 
                 ImPlot::EndPlot();
             }
+            ImPlot::PopStyleVar();
             ImGui::PopID();
 
             // @NOTE(Robin): Implot will clip the view range of the distribution.
@@ -4771,6 +4776,7 @@ static void draw_distribution_window(ApplicationData* data) {
                 *view_end = DBL_MAX;
             }
         }
+        
     }
     ImGui::End();
 }

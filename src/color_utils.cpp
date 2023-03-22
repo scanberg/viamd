@@ -1,12 +1,7 @@
 #include "color_utils.h"
 
-//#include <core/array_types.h>
-//#include <core/hash.h>
-#include <core/md_bitop.h>
 #include <md_molecule.h>
 #include <md_util.h>
-
-#include <string.h>
 
 /*
 https://github.com/LordJZ/consthash
