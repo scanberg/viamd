@@ -3123,7 +3123,61 @@ void apply_atom_elem_mappings(ApplicationData* data) {
 
 // Create a textual script describing a selection from a bitfield with respect to some reference index
 // @TODO(Robin): Clean this up, it is a mess. Just provide complete suggestions based on bitfield and molecule input.
-static void create_script_atom_ranges(md_strb_t* sb, const md_bitfield_t* bf, int ref_idx = 0) {
+static void write_script_range(md_strb_t& sb, const int* indices, int64_t num_indices, int ref_idx = 0) {
+    if (num_indices == 0) return;
+    if (num_indices == 1) {
+        md_strb_fmt(&sb, "%i", indices[0] - ref_idx + 1);
+        return;
+    }
+    
+    int range_beg = indices[0];
+    int prev_idx  = -1;
+
+    md_array(md_range_t) items = 0;
+    
+    for (int i = 0; i < num_indices; ++i) {
+        int idx = indices[i];
+        
+        if (idx - prev_idx > 1) {
+            if (prev_idx > range_beg) {
+                md_range_t item = {range_beg - ref_idx + 1, prev_idx - ref_idx + 1};
+                md_array_push(items, item, default_temp_allocator);
+            } else if (prev_idx != -1) {
+                md_range_t item = {prev_idx - ref_idx + 1, prev_idx - ref_idx + 1};
+                md_array_push(items, item, default_temp_allocator);
+            }
+            range_beg = idx;
+        }
+
+        prev_idx = idx;
+    }
+
+    if (prev_idx - range_beg > 0) {
+        md_range_t item = {range_beg - ref_idx + 1, prev_idx - ref_idx + 1};
+        md_array_push(items, item, default_temp_allocator);
+    } else if (prev_idx != -1) {
+        md_range_t item = {prev_idx - ref_idx + 1, prev_idx - ref_idx + 1};
+        md_array_push(items, item, default_temp_allocator);
+    }
+
+    const int64_t num_items = md_array_size(items);
+    if (num_items > 1) sb += "{";
+    for (int64_t i = 0; i < num_items; ++i) {
+        md_range_t item = items[i];
+        if (item.beg == item.end) {
+            md_strb_fmt(&sb, "%i", item.beg);
+        }
+        else {
+            md_strb_fmt(&sb, "%i:%i", item.beg, item.end);
+        }
+        if (i < num_items - 1) {
+            sb += ',';
+        }
+    }
+    if (num_items > 1) sb += "}";
+}
+
+static void write_script_atom_ranges(md_strb_t* sb, const md_bitfield_t* bf, int ref_idx = 0) {
     ASSERT(sb);
     ASSERT(bf);
 
@@ -3178,11 +3232,9 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     md_chain_idx_t chain_idx = -1;
     md_residue_idx_t res_idx = -1;
 
-    uint64_t beg_idx = md_bitfield_beg_bit(bf);
-    uint64_t end_idx = md_bitfield_end_bit(bf);
-
-    while ((beg_idx = md_bitfield_scan(bf, beg_idx, end_idx)) != 0) {
-        uint64_t i = beg_idx - 1;
+    md_bitfield_iter_t it = md_bitfield_iter(bf);
+    while (md_bitfield_iter_next(&it)) {
+        uint64_t i = md_bitfield_iter_idx(&it);
         if (mol->atom.chain_idx) {
             if (chain_idx == -1) {
                 chain_idx = mol->atom.chain_idx[i];
@@ -3209,6 +3261,20 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     md_strb_t sb = md_strb_create(frame_allocator);
     defer { md_strb_free(&sb); };
 
+    auto write_atom_remainder = [](md_strb_t& sb, const md_bitfield_t* bf, int ref_idx = 0) {
+        // Add any remainder
+        const uint64_t remainder = md_bitfield_popcount(bf);
+        if (remainder) {
+            int* indices = (int*)md_alloc(frame_allocator, remainder * sizeof(int));
+            defer { md_free(frame_allocator, indices, remainder * sizeof(int)); };
+
+            md_bitfield_extract_indices(indices, bf);
+            sb += "atom(";
+            write_script_range(sb, indices, remainder, ref_idx);
+            sb += ")";
+        }
+    };
+
     if (res_idx != -1 && within_same_residue) {
         const md_range_t range = mol->residue.atom_range[res_idx];
         if (popcount != range.end - range.beg) {
@@ -3217,12 +3283,11 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
             sb += " = ";
 
             // Subset of residue is selected
-            create_script_atom_ranges(&sb, bf, range.beg);
+            write_atom_remainder(sb, bf, range.beg);
             if (md_strb_len(&sb) < 512) {
                 str_t resname = LBL_TO_STR(mol->residue.name[res_idx]);
                 md_strb_fmt(&sb, " in resname(\"%.*s\");", (int)resname.len, resname.ptr);
                 md_array_push(suggestions, str_copy(md_strb_to_str(&sb), frame_allocator), frame_allocator);
-                return suggestions;
             }
         }
     }
@@ -3235,12 +3300,11 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
             sb += " = ";
 
             // Subset of chain is selected
-            create_script_atom_ranges(&sb, bf, mol->chain.atom_range[chain_idx].beg);
+            write_atom_remainder(sb, bf, range.beg);
             if (md_strb_len(&sb) < 512) {
                 str_t chain_id = LBL_TO_STR(mol->chain.id[chain_idx]);
                 md_strb_fmt(&sb, " in chain(\"%.*s\");", (int)chain_id.len, chain_id.ptr);
                 md_array_push(suggestions, str_copy(md_strb_to_str(&sb), frame_allocator), frame_allocator);
-                return suggestions;
             }
         }
     }
@@ -3254,7 +3318,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     if (mol->chain.count && mol->chain.atom_range) {
         for (int i = 0; i < (int)mol->chain.count; ++i) {    
             md_range_t range = mol->chain.atom_range[i];
-            if (md_bitfield_test_range(bf, range.beg, range.end)) {
+            if (md_bitfield_test_range(&tmp_bf, range.beg, range.end)) {
                 md_array_push(complete_chains, i, frame_allocator);
                 md_bitfield_clear_range(&tmp_bf, range.beg, range.end);
             }
@@ -3264,50 +3328,92 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     if (mol->residue.count && mol->residue.atom_range) {
         for (int i = 0; i < (int)mol->residue.count; ++i) {    
             md_range_t range = mol->residue.atom_range[i];
-            if (md_bitfield_test_range(bf, range.beg, range.end)) {
+            if (md_bitfield_test_range(&tmp_bf, range.beg, range.end)) {
                 md_array_push(complete_residues, i, frame_allocator);
                 md_bitfield_clear_range(&tmp_bf, range.beg, range.end);
             }
         }
     }
 
-    md_strb_reset(&sb);
-    sb += ident;
-    sb += " = ";
+    const uint64_t atom_remainder_count = md_bitfield_popcount(&tmp_bf);
     
     if (complete_chains) {
-        sb += "chain(";
+        md_strb_reset(&sb);
+        sb += ident;
+        sb += " = chain(";
+        write_script_range(sb, complete_chains, md_array_size(complete_chains));
+        sb += ")";
+
+        if (complete_residues) {
+            sb += " or residue(";
+            write_script_range(sb, complete_residues, md_array_size(complete_residues));
+            sb += ")";
+        }
+
+        if (atom_remainder_count) {
+            sb += " or ";
+            write_atom_remainder(sb, &tmp_bf);
+        }
+        
+        if (md_strb_len(&sb) < 512) {
+            md_strb_push_char(&sb, ';');
+            md_array_push(suggestions, str_copy(md_strb_to_str(&sb), frame_allocator), frame_allocator);
+        }
+        
+        md_strb_reset(&sb);
+        sb += ident;
+        sb += " = residue(";
         for (int64_t i = 0; i < md_array_size(complete_chains); ++i) {
-            if (i > 0) {
-                sb += ", ";
-            }
-            md_strb_fmt(&sb, "%i", (int)i+1);
+            md_range_t range = mol->chain.residue_range[complete_chains[i]];
+            md_strb_fmt(&sb, "%i:%i,", range.beg + 1, range.end);
+        }
+        if (complete_residues) {
+            write_script_range(sb, complete_residues, md_array_size(complete_residues));
+        } else {
+            md_strb_pop(&sb, 1);
         }
         sb += ")";
+
+        if (atom_remainder_count) {
+            sb += " or ";
+            write_atom_remainder(sb, &tmp_bf);
+        }
+        
+        if (md_strb_len(&sb) < 512) {
+            md_strb_push_char(&sb, ';');
+            md_array_push(suggestions, str_copy(md_strb_to_str(&sb), frame_allocator), frame_allocator);
+        }
     }
 
     if (complete_residues) {
-        if (complete_chains) {
-            sb += " and ";
-        }
-        sb += "residue(";
-        for (int64_t i = 0; i < md_array_size(complete_residues); ++i) {
-            if (i > 0) {
-                sb += ", ";
-            }
-            md_strb_fmt(&sb, "%i", (int)i+1);
-        }
+        md_strb_reset(&sb);
+        sb += ident;
+        sb += " = residue(";
+        write_script_range(sb, complete_residues, md_array_size(complete_residues));
         sb += ")";
+
+        if (atom_remainder_count) {
+            sb += " or ";
+            write_atom_remainder(sb, &tmp_bf);
+        }
+
+        if (md_strb_len(&sb) < 512) {
+            md_strb_push_char(&sb, ';');
+            md_array_push(suggestions, str_copy(md_strb_to_str(&sb), frame_allocator), frame_allocator);
+        }
     }
 
-    if (complete_chains || complete_residues) {
-        sb += " and ";
+    if (popcount) {
+        md_strb_reset(&sb);
+        sb += ident;
+        sb += " = ";
+        write_atom_remainder(sb, bf);
+        if (md_strb_len(&sb) < 512) {
+            md_strb_push_char(&sb, ';');
+            md_array_push(suggestions, str_copy(md_strb_to_str(&sb), frame_allocator), frame_allocator);
+        }
     }
-    create_script_atom_ranges(&sb, bf);
-    md_strb_push_char(&sb, ';');
-    if (md_strb_len(&sb) < 512) {
-        md_array_push(suggestions, str_copy(md_strb_to_str(&sb), frame_allocator), frame_allocator);
-    }
+    
     return suggestions;
 }
 
@@ -3556,7 +3662,7 @@ void draw_context_popup(ApplicationData* data) {
                     md_strb_reset(&sb);
                     md_strb_push_str(&sb, ident);
                     md_strb_push_str(&sb, STR(" = "));
-                    create_script_atom_ranges(&sb, bf, data->mold.mol.residue.atom_range[res_idx].beg);
+                    write_script_atom_ranges(&sb, bf, data->mold.mol.residue.atom_range[res_idx].beg);
                     if (md_strb_len(&sb) < 512) {
                         str_t resname = LBL_TO_STR(data->mold.mol.residue.name[res_idx]);
                         md_strb_fmt(&sb, " in resname(\"%.*s\");", (int)resname.len, resname.ptr);
@@ -3572,7 +3678,7 @@ void draw_context_popup(ApplicationData* data) {
                     md_strb_reset(&sb);
                     md_strb_push_str(&sb, ident);
                     md_strb_push_str(&sb, STR(" = "));
-                    create_script_atom_ranges(&sb, bf, data->mold.mol.chain.atom_range[chain_idx].beg);
+                    write_script_atom_ranges(&sb, bf, data->mold.mol.chain.atom_range[chain_idx].beg);
                     if (md_strb_len(&sb) < 512) {
                         str_t chain_id = LBL_TO_STR(data->mold.mol.chain.id[chain_idx]);
                         md_strb_fmt(&sb, " in chain(\"%.*s\");", (int)chain_id.len, chain_id.ptr);
@@ -3587,7 +3693,7 @@ void draw_context_popup(ApplicationData* data) {
                 md_strb_reset(&sb);
                 md_strb_push_str(&sb, ident);
                 md_strb_push_str(&sb, STR(" = "));
-                create_script_atom_ranges(&sb, bf);
+                write_script_atom_ranges(&sb, bf);
                 if (md_strb_len(&sb) < 512) {
                     md_strb_push_char(&sb, ';');
                     if (ImGui::MenuItem(sb.buf)) {
