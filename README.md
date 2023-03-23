@@ -58,6 +58,9 @@ cd bin
 ## Binaries
 https://github.com/scanberg/viamd/releases/
 
+## Documentation
+Documentation about VIAMD is available on the github [wiki](https://github.com/scanberg/viamd/wiki). The two first chapters relate to the [visual](https://github.com/scanberg/viamd/wiki/1.-Visual) and [analysis](https://github.com/scanberg/viamd/wiki/2.-Analysis) features respectively, where we highlight the interactive part of software. The third chapter focus on the VIAMD [language](https://github.com/scanberg/viamd/wiki/3.-Language) used for scripting and the fourth chapter propose a serie of [tutorial](https://github.com/scanberg/viamd/wiki/4.-Tutorials) (under construction). 
+
 ## Acknowledgements
 
 https://github.com/glfw/glfw
@@ -78,4 +81,8 @@ https://github.com/mlabbe/nativefiledialog
 
 https://github.com/nothings/stb
 
+#
+<p align="center">
+<img src="https://user-images.githubusercontent.com/38646069/227140106-1162c730-ae85-4158-81f5-a40d10099e0e.png"  width="150" alt="This is the VIAMD logo" >
+</p>
 
