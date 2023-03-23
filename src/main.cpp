@@ -4918,7 +4918,7 @@ static void draw_distribution_window(ApplicationData* data) {
             double min_x = full_prop->data.min_range[0];
             double max_x = full_prop->data.max_range[0];
 
-            int view_idx = prop_remap[i];
+            int view_idx = prop_remap ? prop_remap[i] : i;
             
             double* view_beg = sync_axis ? &data->display_properties[view_idx].view_range.beg : &prop.view_range.beg;
             double* view_end = sync_axis ? &data->display_properties[view_idx].view_range.end : &prop.view_range.end;
