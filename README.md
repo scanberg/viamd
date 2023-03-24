@@ -85,6 +85,7 @@ https://github.com/nothings/stb
 
 #
 <p align="center">
-<img src="https://user-images.githubusercontent.com/38646069/227140106-1162c730-ae85-4158-81f5-a40d10099e0e.png"  width="150" alt="This is the VIAMD logo" >
+<img src="https://user-images.githubusercontent.com/38646069/227518757-590d3bfa-ee6b-42eb-b371-25743da1b208.png"  width="150" alt="This is the VIAMD logo" >
 </p>
+
 
