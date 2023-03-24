@@ -8732,6 +8732,7 @@ if (!use_gfx) {
         const float saturation = data->selection.color.selection_saturation;
         glDrawBuffer(GL_COLOR_ATTACHMENT_COLOR);
         postprocessing::scale_hsv(data->gbuffer.deferred.color, vec3_t{1, saturation, 1});
+        glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
         POP_GPU_SECTION()
     }
 
