@@ -1523,7 +1523,6 @@ int main(int, char**) {
                     data.mold.script.time_since_last_change = 0;
                     
                     data.mold.script.ir = md_script_ir_create(persistent_allocator);
-//                    md_script_ir_clear(data.mold.script.ir);
 
                     std::string src = editor.GetText();
                     str_t src_str {src.data(), (int64_t)src.length()};
@@ -2242,7 +2241,7 @@ static void interpolate_atomic_properties(ApplicationData* data) {
             ASSERT(false);
     }
 
-    md_util_compute_aabb_xyzr(&data->mold.mol_aabb_min, &data->mold.mol_aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
+    md_util_compute_aabb_soa(&data->mold.mol_aabb_min, &data->mold.mol_aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
 
     if (mol.backbone.angle) {
         const md_backbone_angles_t* src_angles[4] = {
@@ -2503,50 +2502,6 @@ static void compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, con
         aabb_max->y = MAX(aabb_max->y, y[i]);
         aabb_min->z = MIN(aabb_min->z, z[i]);
         aabb_max->z = MAX(aabb_max->z, z[i]);
-    }
-}
-
-static void grow_mask_by_covalent_bond(md_bitfield_t* mask, md_bond_t* bonds, int64_t num_bonds, int64_t extent) {
-    md_bitfield_t prev_mask;
-    md_bitfield_init(&prev_mask, frame_allocator);
-    defer { md_bitfield_free(&prev_mask); };
-
-    for (int64_t i = 0; i < extent; i++) {
-        for (int64_t j = 0; j < num_bonds; ++j) {
-            const auto& bond = bonds[j];
-            const int64_t idx[2] = {bond.idx[0], bond.idx[1]};
-            if (md_bitfield_test_bit(&prev_mask, idx[0]) && !md_bitfield_test_bit(mask, idx[1])) {
-                md_bitfield_set_bit(mask, idx[1]);
-            } else if (md_bitfield_test_bit(&prev_mask, idx[1]) && !md_bitfield_test_bit(mask, idx[0])) {
-                md_bitfield_set_bit(mask, idx[0]);
-            }
-        }
-        md_bitfield_copy(&prev_mask, mask);
-    }
-}
-
-static void grow_mask_by_radial_extent(md_bitfield_t* dst_mask, const md_bitfield_t* src_mask, const md_molecule_t& mol, vec3_t pbc_ext, float rad_ext) {
-    if (rad_ext > 0.0f) {
-        md_spatial_hash_t ctx = {0};
-        md_spatial_hash_init_soa(&ctx, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, pbc_ext, frame_allocator);
-        defer { md_spatial_hash_free(&ctx); };
-
-        md_bitfield_clear(dst_mask);
-
-        int64_t beg_bit = src_mask->beg_bit;
-        int64_t end_bit = src_mask->end_bit;
-        while ((beg_bit = md_bitfield_scan(src_mask, beg_bit, end_bit)) != 0) {
-            int64_t i = beg_bit - 1;
-            vec3_t pos = {mol.atom.x[i], mol.atom.y[i], mol.atom.z[i]};
-            float  rad = rad_ext;
-            md_spatial_hash_query(&ctx, pos, rad, [](uint32_t idx, vec3_t, void* user_data) -> bool {
-                md_bitfield_t* mask = (md_bitfield_t*)user_data;
-                md_bitfield_set_bit(mask, (int64_t)idx);
-                return true;
-            }, dst_mask);
-        }
-    } else {
-        md_bitfield_copy(dst_mask, src_mask);
     }
 }
 
@@ -3112,10 +3067,11 @@ void apply_atom_elem_mappings(ApplicationData* data) {
     md_molecule_t* mol = &data->mold.mol;
     
     md_array_free(mol->bonds, data->mold.mol_alloc);
+    md_index_data_free(&mol->connectivity, data->mold.mol_alloc);
     md_index_data_free(&mol->structures, data->mold.mol_alloc);
     md_index_data_free(&mol->rings, data->mold.mol_alloc);
     
-    md_util_postprocess_molecule(mol, data->mold.mol_alloc, MD_UTIL_POSTPROCESS_COVALENT_BIT);
+    md_util_postprocess_molecule(mol, data->mold.mol_alloc, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
     update_all_representations(data);
@@ -3268,7 +3224,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
             int* indices = (int*)md_alloc(frame_allocator, remainder * sizeof(int));
             defer { md_free(frame_allocator, indices, remainder * sizeof(int)); };
 
-            md_bitfield_extract_indices(indices, bf);
+            md_bitfield_extract_indices(indices, remainder, bf);
             sb += "atom(";
             write_script_range(sb, indices, remainder, ref_idx);
             sb += ")";
@@ -3825,8 +3781,8 @@ void draw_context_popup(ApplicationData* data) {
 
 
 static void draw_selection_grow_window(ApplicationData* data) {
-    ImGui::SetNextWindowSize(ImVec2(300,120), ImGuiCond_Always);
-    if (ImGui::Begin("Selection Grow", &data->selection.grow.show_window, ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse)) {
+    ImGui::SetNextWindowSize(ImVec2(300,150), ImGuiCond_Always);
+    if (ImGui::Begin("Selection Grow", &data->selection.grow.show_window, ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse)) {
         ImGui::PushItemWidth(-1);
         const bool mode_changed = ImGui::Combo("##Mode", (int*)(&data->selection.grow.mode), "Covalent Bond\0Radial\0\0");
         const bool extent_changed = ImGui::SliderFloat("##Extent", &data->selection.grow.extent, 1.0f, 20.f);
@@ -3837,15 +3793,14 @@ static void draw_selection_grow_window(ApplicationData* data) {
 
         if (data->selection.grow.mask_invalid) {
             data->selection.grow.mask_invalid = false;
+            md_bitfield_copy(&data->selection.grow.mask, &data->selection.current_selection_mask);
+
             switch (data->selection.grow.mode) {
             case SelectionGrowth::CovalentBond:
-                md_bitfield_copy(&data->selection.grow.mask, &data->selection.current_selection_mask);
-                grow_mask_by_covalent_bond(&data->selection.grow.mask, data->mold.mol.bonds, md_array_size(data->mold.mol.bonds), (int64_t)data->selection.grow.extent);
+                md_util_grow_mask_by_bonds(&data->selection.grow.mask, &data->mold.mol, (int)data->selection.grow.extent, &data->representation.atom_visibility_mask);
                 break;
             case SelectionGrowth::Radial: {
-                const auto& mol = data->mold.mol;
-                vec3_t pbc_ext = mat3_mul_vec3(data->mold.mol.cell.basis, vec3_set1(1));
-                grow_mask_by_radial_extent(&data->selection.grow.mask, &data->selection.current_selection_mask, mol, pbc_ext, data->selection.grow.extent);
+                md_util_grow_mask_by_radius(&data->selection.grow.mask, &data->mold.mol, data->selection.grow.extent, &data->representation.atom_visibility_mask);
                 break;
             }
             default:
@@ -3877,7 +3832,7 @@ static void draw_selection_grow_window(ApplicationData* data) {
         }
         if (apply) {
             md_bitfield_copy(&data->selection.current_selection_mask, &data->selection.grow.mask);
-            data->selection.grow.show_window = false;
+            data->selection.grow.mask_invalid = true;
         }
     }
     ImGui::End();
@@ -7304,9 +7259,6 @@ static void free_molecule_data(ApplicationData* data) {
 static void init_molecule_data(ApplicationData* data) {
     if (data->mold.mol.atom.count) {
         const md_molecule_t& mol = data->mold.mol;
-        vec3_t& aabb_min = data->mold.mol_aabb_min;
-        vec3_t& aabb_max = data->mold.mol_aabb_max;
-        md_util_compute_aabb_xyzr(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
 
         data->picking.idx = INVALID_PICKING_IDX;
         data->selection.hovered = -1;
@@ -7315,6 +7267,10 @@ static void init_molecule_data(ApplicationData* data) {
         md_gl_molecule_init(&data->mold.gl_mol, &data->mold.mol);
 
 #if EXPERIMENTAL_GFX_API
+        vec3_t& aabb_min = data->mold.mol_aabb_min;
+        vec3_t& aabb_max = data->mold.mol_aabb_max;
+        md_util_compute_aabb_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
+
         data->mold.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
         md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
         md_gfx_structure_set_atom_radius(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.radius, 0);
@@ -8678,7 +8634,6 @@ if (!use_gfx) {
 
     glDepthMask(0);
     glColorMask(0, 0, 0, 0);
-
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_EQUAL);

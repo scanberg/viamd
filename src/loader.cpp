@@ -193,7 +193,8 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
                     int32_t* indices = (int32_t*)md_alloc(alloc, sizeof(int32_t) * count);
                     defer { md_free(alloc, indices, sizeof(int32_t) * count); };
                         
-                    md_bitfield_extract_indices(indices, bf);
+                    int64_t num_indices = md_bitfield_extract_indices(indices, count, bf);
+                    ASSERT(num_indices == count);
 
                     const vec3_t box_ext = mat3_mul_vec3(cell->basis, vec3_set1(1.0f));
 

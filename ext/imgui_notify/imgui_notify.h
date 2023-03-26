@@ -10,7 +10,6 @@
 
 #pragma once
 #include <vector>
-//#include <chrono>
 #include <time.h>
 
 #define NOTIFY_MAX_MSG_LENGTH			4096		// Max message content length
