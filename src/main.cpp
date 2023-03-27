@@ -2404,8 +2404,9 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
 
 	const int64_t popcount = md_bitfield_popcount(&data->representation.atom_visibility_mask);
     vec3_t aabb_min, aabb_max;
+    mat3_t R = mat3_ident();
     
-    if (popcount) {
+    if (0 < popcount && popcount < mol.atom.count) {
         int32_t* indices = (int32_t*)md_linear_allocator_push(linear_allocator, popcount * sizeof(int32_t));
         defer{ md_linear_allocator_pop(linear_allocator, popcount * sizeof(int32_t)); };
         
@@ -2419,25 +2420,27 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
 
     const vec3_t ext = aabb_max - aabb_min;
     const float len = vec3_length(ext * 0.5f);
-    
+
+    // We want to align the view such that we the longest axis of the aabb align with the X-axis, the mid axis with the Y-axis
+
     int l[3] = { 0, 1, 2 };
     if (ext[l[0]] < ext[l[1]]) std::swap(l[0], l[1]);
     if (ext[l[1]] < ext[l[2]]) std::swap(l[1], l[2]);
     if (ext[l[0]] < ext[l[1]]) std::swap(l[0], l[1]);
+
+    // Now the axes are sorted with respect to the length l[0] > l[1] > l[2]
+
+    const mat3_t I = mat3_ident();
+    const vec3_t right = I[l[0]];
+    const vec3_t up    = I[l[1]];
+    const vec3_t out   = I[l[2]];
     
-    vec3_t scl = { 0 };
-    scl[l[0]] = 1.0f;
-    scl[l[1]] = 2.0f;
-    scl[l[2]] = 10.0f;
-    
-    const vec3_t dir = vec3_normalize(ext * scl);
+    const vec3_t dir = vec3_normalize(right * -0.6f + up * 0.5f + out * 1.0f);
 
     const vec3_t cen = (aabb_min + aabb_max) * 0.5f;
     const vec3_t pos = cen + dir * len * 3.0f;
 
     if (move_camera) {
-        vec3_t up = { 0 };
-        up[l[2]] = 1;
         const quat_t ori = quat_from_mat4(look_at(pos, cen, up));
         const float dist = vec3_length(pos - cen);
 
@@ -5234,7 +5237,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                                     }
                                     com = com / (float)count;
 
-                                    const mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix_vec3(xyz, com, count));
+                                    const mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix_vec3(xyz, 0, com, count));
                                     const float scl = 1.0f / (eigen.values[0] + eigen.values[1] + eigen.values[2]);
                                     const int64_t dst_idx = data->shape_space.num_frames * i + frame_idx;
                                     const vec3_t w = {(eigen.values[0] - eigen.values[1]) * scl, 2.0f * (eigen.values[1] - eigen.values[2]) * scl, 3.0f * eigen.values[2] * scl};
