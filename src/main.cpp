@@ -983,8 +983,6 @@ static void interpolate_atomic_properties(ApplicationData* data);
 static void update_view_param(ApplicationData* data);
 static void reset_view(ApplicationData* data, bool move_camera = false, bool smooth_transition = false);
 
-static void compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, int64_t count);
-
 static void handle_camera_interaction(ApplicationData* data);
 static void handle_camera_animation(ApplicationData* data);
 
@@ -1120,7 +1118,9 @@ static void modify_selection(ApplicationData* data, md_range_t range, SelectionO
 }
 
 // Global data for application
+static md_linear_allocator_t* linear_allocator = 0;
 static md_allocator_i* frame_allocator = 0;
+
 static TextEditor editor {};    // We do not want this within the application data since it messes up the layout and therefore the usage of offset_of
 static bool use_gfx = false;
 #if DEBUG
@@ -1137,6 +1137,8 @@ int main(int, char**) {
     md_linear_allocator_t linear_alloc {};
     md_linear_allocator_init(&linear_alloc, linear_mem, linear_size);
     md_allocator_i linear_interface = md_linear_allocator_create_interface(&linear_alloc);
+    
+	linear_allocator = &linear_alloc;
     frame_allocator = &linear_interface;
 
     md_logger_i notification_logger = {
@@ -2400,20 +2402,43 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
     if (!data->mold.mol.atom.count) return;
     const auto& mol = data->mold.mol;
 
+	const int64_t popcount = md_bitfield_popcount(&data->representation.atom_visibility_mask);
     vec3_t aabb_min, aabb_max;
-    if (data->mold.mol.cell.basis != mat3_t{0}) {
-        aabb_min = {0,0,0};
-        aabb_max = data->mold.mol.cell.basis * vec3_t{1,1,1};
-    } else {
-        compute_aabb(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count);
+    
+    if (popcount) {
+        int32_t* indices = (int32_t*)md_linear_allocator_push(linear_allocator, popcount * sizeof(int32_t));
+        defer{ md_linear_allocator_pop(linear_allocator, popcount * sizeof(int32_t)); };
+        
+        const int64_t len = md_bitfield_extract_indices(indices, popcount, &data->representation.atom_visibility_mask);
+		md_util_compute_aabb_indexed_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, len);
+    }
+    else {
+        aabb_min = { 0,0,0 };
+        aabb_max = data->mold.mol.cell.basis * vec3_t{ 1,1,1 };
     }
 
     const vec3_t ext = aabb_max - aabb_min;
+    const float len = vec3_length(ext * 0.5f);
+    
+    int l[3] = { 0, 1, 2 };
+    if (ext[l[0]] < ext[l[1]]) std::swap(l[0], l[1]);
+    if (ext[l[1]] < ext[l[2]]) std::swap(l[1], l[2]);
+    if (ext[l[0]] < ext[l[1]]) std::swap(l[0], l[1]);
+    
+    vec3_t scl = { 0 };
+    scl[l[0]] = 1.0f;
+    scl[l[1]] = 2.0f;
+    scl[l[2]] = 10.0f;
+    
+    const vec3_t dir = vec3_normalize(ext * scl);
+
     const vec3_t cen = (aabb_min + aabb_max) * 0.5f;
-    const vec3_t pos = cen + ext * 5.f;
+    const vec3_t pos = cen + dir * len * 3.0f;
 
     if (move_camera) {
-        const quat_t ori = quat_from_mat4(look_at(pos, cen, {0, 1, 0}));
+        vec3_t up = { 0 };
+        up[l[2]] = 1;
+        const quat_t ori = quat_from_mat4(look_at(pos, cen, up));
         const float dist = vec3_length(pos - cen);
 
         data->view.animation.target_position = pos;
@@ -2483,26 +2508,6 @@ static PickingData read_picking_data(GBuffer* gbuf, int32_t x, int32_t y) {
     }
 #endif
     return data;
-}
-
-static void compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, int64_t count) {
-    ASSERT(count >= 0);
-
-    if (count < 1) {
-        *aabb_min = *aabb_max = {0,0,0};
-        return;
-    }
-
-    *aabb_min = {x[0], y[0], z[0]};
-    *aabb_max = {x[0], y[0], z[0]};
-    for (int64_t i = 1; i < count; ++i) {
-        aabb_min->x = MIN(aabb_min->x, x[i]);
-        aabb_max->x = MAX(aabb_max->x, x[i]);
-        aabb_min->y = MIN(aabb_min->y, y[i]);
-        aabb_max->y = MAX(aabb_max->y, y[i]);
-        aabb_min->z = MIN(aabb_min->z, z[i]);
-        aabb_max->z = MAX(aabb_max->z, z[i]);
-    }
 }
 
 static void expand_mask(md_bitfield_t* mask, const md_range_t ranges[], int64_t num_ranges) {
