@@ -3419,9 +3419,10 @@ void draw_context_popup(ApplicationData* data) {
 
     if (ImGui::BeginPopup("AtomContextPopup")) {
         if (ImGui::BeginMenu("Script")) {
+            bool any_suggestions = false;
             if (num_atoms_selected <= 4 && sss_count > 1) {
+                any_suggestions = true;
                 char buf[256] = "";
-
                 if (sss_count == 2) {
                     int32_t idx[2] = {data->selection.single_selection_sequence.idx[0], data->selection.single_selection_sequence.idx[1]};
                     str_t ident = create_unique_identifier(data->mold.script.ir, STR("dist"), frame_allocator);
@@ -3577,89 +3578,11 @@ void draw_context_popup(ApplicationData* data) {
                         ImGui::CloseCurrentPopup();
                     }
                 }
-                
-                /*
-                bool same_residue = true;
-                bool same_chain   = true;
 
-                md_chain_idx_t chain_idx = -1;
-                md_residue_idx_t res_idx = -1;
-
-                uint64_t beg_idx = md_bitfield_beg_bit(bf);
-                uint64_t end_idx = md_bitfield_end_bit(bf);
-
-                while ((beg_idx = md_bitfield_scan(bf, beg_idx, end_idx)) != 0) {
-                    uint64_t i = beg_idx - 1;
-                    if (data->mold.mol.atom.chain_idx) {
-                        if (chain_idx == -1) {
-                            chain_idx = data->mold.mol.atom.chain_idx[i];
-                        } else if (data->mold.mol.atom.chain_idx[i] != chain_idx) {
-                            same_chain = false;
-                        }
-                    }
-
-                    if (data->mold.mol.atom.residue_idx) {
-                        if (res_idx == -1) {
-                            res_idx = data->mold.mol.atom.residue_idx[i];
-                        } else if (data->mold.mol.atom.residue_idx[i] != res_idx) {
-                            same_residue = false;                            
-                        }
-                    } 
-
-                    if (!same_residue && !same_chain) {
-                        break;
-                    }
-                }
-                md_strb_t sb = {0};
-                md_strb_init(&sb, frame_allocator);
-                defer { md_strb_free(&sb); };
-
-                if (res_idx != -1 && same_residue) {
-                    md_strb_reset(&sb);
-                    md_strb_push_str(&sb, ident);
-                    md_strb_push_str(&sb, STR(" = "));
-                    write_script_atom_ranges(&sb, bf, data->mold.mol.residue.atom_range[res_idx].beg);
-                    if (md_strb_len(&sb) < 512) {
-                        str_t resname = LBL_TO_STR(data->mold.mol.residue.name[res_idx]);
-                        md_strb_fmt(&sb, " in resname(\"%.*s\");", (int)resname.len, resname.ptr);
-                        if (ImGui::MenuItem(sb.buf)) {
-                            editor.AppendText("\n");
-                            editor.AppendText(sb.buf);
-                            ImGui::CloseCurrentPopup();
-                        }
-                    }
-                }
-
-                if (chain_idx != -1 && same_chain) {
-                    md_strb_reset(&sb);
-                    md_strb_push_str(&sb, ident);
-                    md_strb_push_str(&sb, STR(" = "));
-                    write_script_atom_ranges(&sb, bf, data->mold.mol.chain.atom_range[chain_idx].beg);
-                    if (md_strb_len(&sb) < 512) {
-                        str_t chain_id = LBL_TO_STR(data->mold.mol.chain.id[chain_idx]);
-                        md_strb_fmt(&sb, " in chain(\"%.*s\");", (int)chain_id.len, chain_id.ptr);
-                        if (ImGui::MenuItem(sb.buf)) {
-                            editor.AppendText("\n");
-                            editor.AppendText(sb.buf);
-                            ImGui::CloseCurrentPopup();
-                        }
-                    }
-                }
-
-                md_strb_reset(&sb);
-                md_strb_push_str(&sb, ident);
-                md_strb_push_str(&sb, STR(" = "));
-                write_script_atom_ranges(&sb, bf);
-                if (md_strb_len(&sb) < 512) {
-                    md_strb_push_char(&sb, ';');
-                    if (ImGui::MenuItem(sb.buf)) {
-                        editor.AppendText("\n");
-                        editor.AppendText(sb.buf);
-                        ImGui::CloseCurrentPopup();
-                    }
-                }
-                md_strb_free(&sb);
-                */
+				any_suggestions = any_suggestions || md_array_size(suggestions) > 0;
+            }
+            if (!any_suggestions) {
+                ImGui::Text("No suggestions for current selection");
             }
             ImGui::EndMenu();
         }
