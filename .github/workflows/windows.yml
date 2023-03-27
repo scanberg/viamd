@@ -16,7 +16,3 @@ jobs:
         - name: build
           run: |
             cmake --build . --config Release -- /nologo /verbosity:minimal /maxcpucount:4
-#        - name: unittest
-#          run: |
-#            cd unittest/Release
-#            ./unittests

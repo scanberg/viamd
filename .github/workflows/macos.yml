@@ -16,7 +16,3 @@ jobs:
         - name: build
           run: |
             make -j 4
-#        - name: unittest
-#          run: |
-#            cd unittest
-#            ./unittests

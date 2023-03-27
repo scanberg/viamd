@@ -1,10 +1,10 @@
-name: Ubuntu 20.04 (GCC 9)
+name: Ubuntu 22.04 (GCC 11)
 
 on: [push]
 
 jobs:
     ci:
-        runs-on: ubuntu-20.04
+        runs-on: ubuntu-22.04
         steps:
         - uses: actions/checkout@v2
         - name: prepare
