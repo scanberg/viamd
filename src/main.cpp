@@ -1407,6 +1407,9 @@ int main(int, char**) {
             if (data.animation.frame >= max_frame) {
                 data.animation.mode = PlaybackMode::Stopped;
                 data.animation.frame = max_frame;
+            } else if (data.animation.frame <= 0) {
+                data.animation.mode = PlaybackMode::Stopped;
+                data.animation.frame = 0;
             }
 
             if (!task_system::task_is_running(data.tasks.prefetch_frames)) {
@@ -2414,8 +2417,12 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
 		md_util_compute_aabb_indexed_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, len);
     }
     else {
-        aabb_min = { 0,0,0 };
-        aabb_max = data->mold.mol.cell.basis * vec3_t{ 1,1,1 };
+        if (mat3_trace(data->mold.mol.cell.basis) > 0.0f) {
+            aabb_min = { 0,0,0 };
+            aabb_max = data->mold.mol.cell.basis * vec3_t{ 1,1,1 };
+        } else {
+            md_util_compute_aabb_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, mol.atom.count);
+        }
     }
 
     const vec3_t ext = aabb_max - aabb_min;
@@ -3017,6 +3024,7 @@ void draw_load_dataset_window(ApplicationData* data) {
                     create_representation(data); // Create default representation
                 }
                 data->animation = {};
+                recompute_atom_visibility_mask(data);
                 reset_view(data, true, true);
             }
             state = LoadDatasetWindowState();
@@ -3715,14 +3723,21 @@ static void draw_selection_grow_window(ApplicationData* data) {
     ImGui::SetNextWindowSize(ImVec2(300,150), ImGuiCond_Always);
     if (ImGui::Begin("Selection Grow", &data->selection.grow.show_window, ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse)) {
         ImGui::PushItemWidth(-1);
+        static uint64_t sel_popcount = 0;
+        const uint64_t popcount = md_bitfield_popcount(&data->selection.current_selection_mask);
         const bool mode_changed = ImGui::Combo("##Mode", (int*)(&data->selection.grow.mode), "Covalent Bond\0Radial\0\0");
         const bool extent_changed = ImGui::SliderFloat("##Extent", &data->selection.grow.extent, 1.0f, 20.f);
+        const bool appearing = ImGui::IsWindowAppearing();
+        const bool sel_changed = popcount != sel_popcount;
         ImGui::PopItemWidth();
+
         const bool apply = ImGui::Button("Apply");
 
-        data->selection.grow.mask_invalid |= (mode_changed || extent_changed);
+        // Need to invalidate when selection changes
+        data->selection.grow.mask_invalid |= (mode_changed || extent_changed || appearing || sel_changed);
 
         if (data->selection.grow.mask_invalid) {
+            sel_popcount = popcount;
             data->selection.grow.mask_invalid = false;
             md_bitfield_copy(&data->selection.grow.mask, &data->selection.current_selection_mask);
 
