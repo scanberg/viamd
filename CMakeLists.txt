@@ -128,6 +128,10 @@ target_compile_definitions(viamd PRIVATE
     ${MD_DEFINES}
 )
 
+if (WIN32)
+    target_sources(viamd PRIVATE icon.rc)
+endif()
+
 # We just hijack the warning and compile flags from mdlib
 target_compile_options(viamd PRIVATE ${VIAMD_FLAGS} $<$<CONFIG:Debug>:${VIAMD_FLAGS_DEB}> $<$<CONFIG:Release>:${VIAMD_FLAGS_REL}>)
 
