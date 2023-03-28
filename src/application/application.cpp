@@ -117,12 +117,16 @@ bool initialize(Context* ctx, int width, int height, const char* title) {
     // io.ConfigDockingWithShift = true;
     io.ConfigWindowsMoveFromTitleBarOnly = true;
 
+    float xscale, yscale;
+    glfwGetWindowContentScale(window, &xscale, &yscale);
+    const float dpi_scale = (xscale + yscale) * 0.5f;
+
     // default range is 0x0020 - 0x00FF.
     // Added some greek letters
     const ImWchar ranges_characters[] = {0x0020, 0x00FF, 0x03C6, 0x03C8, 0x2074, 0x207b, 0};
     const ImWchar ranges_icons[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
-    const float font_size[] = {14, 18, 20, 24, 30};
-    const char* font_names[] = {"DejaVu Sans Mono (14 px)", "DejaVu Sans Mono (18 px)", "DejaVu Sans Mono (20 px)", "DejaVu Sans Mono (24 px)", "DejaVu Sans Mono (30 px)"};
+    const float font_size[] = {16, 18, 20, 24, 30};
+    const char* font_names[] = {"DejaVu Sans Mono 16", "DejaVu Sans Mono 18", "DejaVu Sans Mono 20", "DejaVu Sans Mono 24", "DejaVu Sans Mono 30"};
 
     STATIC_ASSERT(ARRAY_SIZE(font_size) == ARRAY_SIZE(font_names), "font_size and font_names must have the same size");
     
