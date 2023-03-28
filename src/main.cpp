@@ -2417,16 +2417,11 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
 		md_util_compute_aabb_indexed_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, len);
     }
     else {
-        if (mat3_trace(data->mold.mol.cell.basis) > 0.0f) {
-            aabb_min = { 0,0,0 };
-            aabb_max = data->mold.mol.cell.basis * vec3_t{ 1,1,1 };
-        } else {
-            md_util_compute_aabb_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, mol.atom.count);
-        }
+        md_util_compute_aabb_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, mol.atom.count);
     }
 
     const vec3_t ext = aabb_max - aabb_min;
-    const float len = vec3_length(ext * 0.5f);
+    const float len = MAX(vec3_length(ext * 0.5f), 10.0f);
 
     // We want to align the view such that we the longest axis of the aabb align with the X-axis, the mid axis with the Y-axis
 
@@ -2464,7 +2459,7 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
 
     data->view.camera.near_plane = 1.0f;
     data->view.camera.far_plane = 10000.0f;
-    data->view.trackball_param.max_distance = vec3_length(ext) * 10.0f;
+    data->view.trackball_param.max_distance = len * 10.0f;
 }
 
 // #picking
