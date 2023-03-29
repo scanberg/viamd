@@ -7287,6 +7287,7 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
             }
         }
 
+		const bool mol_and_traj = mol_api && traj_api;
         if (traj_api) {
             if (!data->mold.mol.atom.count) {
                 LOG_ERROR("Before loading a trajectory, molecular data needs to be present");
@@ -7303,6 +7304,10 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
                 LOG_SUCCESS("Successfully opened trajectory from file '%.*s'", path_to_file.len, path_to_file.ptr);
                 return true;
             } else {
+                if (mol_and_traj) {
+					// Don't record this as an error, as the trajectory may be optional (In case of PDB for example)
+                    return true;
+                }
                 LOG_ERROR("Failed to opened trajectory from file '%.*s'", path_to_file.len, path_to_file.ptr);
             }
         }
