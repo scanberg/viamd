@@ -12,6 +12,11 @@
 
 #include "gfx/gl.h"
 #include <GLFW/glfw3.h>
+
+#if MD_PLATFORM_WINDOWS
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
 #include <nfd.h>
 
 #include <imgui.h>
@@ -187,6 +192,15 @@ bool initialize(Context* ctx, int width, int height, const char* title) {
         }
     };
     glfwSetDropCallback(window, drop_cb);
+    
+#if MD_PLATFORM_WINDOWS
+    HWND hwnd = glfwGetWin32Window(window);
+    HINSTANCE hinst = GetModuleHandle(NULL);
+
+    HICON hIcon = LoadIcon(hinst, "VIAMD_ICON");
+    SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
+    SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
+#endif
 
     memcpy(ctx, &data.internal_ctx, sizeof(Context));
 
