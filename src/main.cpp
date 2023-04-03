@@ -284,15 +284,8 @@ struct Representation {
     float map_min = 0;
     float map_max = 1;
 
-    // VDW and Ball & Stick
-    float radius = 1.f;
-
-    // Ball & Stick and Licorice, Ribbons, Cartoon
-    float thickness = 1.f;
-
-    // Ribbons, Cartoon
-    float tension = 0.5f;
-    float width = 1.f;
+    // scaling parameter (radius, width, height, etc depending on type)
+    vec4_t param = {1.0f, 1.0f, 1.0f, 1.0f};
 
     // Property color mapping
     PropertyColorMapping prop_mapping[8] = {};
@@ -638,10 +631,7 @@ struct ApplicationData {
         struct {
             RepresentationType type = RepresentationType::SpaceFill;
             ColorMapping colormap = ColorMapping::Cpk;
-            float radius = 1.0f;
-            float tension = 0.5f;
-            float width = 1.0f;
-            float thickness = 1.0f;
+            float param[4] = {1,1,1,1};
             vec4_t color = {1,1,1,1};
         } rep;
 
@@ -2119,21 +2109,22 @@ static void update_density_volume(ApplicationData* data) {
             switch (rep.type) {
             case RepresentationType::SpaceFill:
                 rep_type = MD_GL_REP_SPACE_FILL;
-                rep_args.space_fill.radius_scale = rep.radius;
+                rep_args.space_fill.radius_scale = rep.param[0];
                 break;
             case RepresentationType::Licorice:
                 rep_type = MD_GL_REP_LICORICE;
-                rep_args.licorice.radius = rep.radius * 0.5f;
+                rep_args.licorice.radius = rep.param[1] * 0.5f;
                 break;
             case RepresentationType::Ribbons:
                 rep_type = MD_GL_REP_RIBBONS;
-                rep_args.ribbons.width_scale = rep.width;
-                rep_args.ribbons.thickness_scale = rep.thickness;
+                rep_args.ribbons.width_scale = rep.param[0];
+                rep_args.ribbons.thickness_scale = rep.param[1];
                 break;
             case RepresentationType::Cartoon:
                 rep_type = MD_GL_REP_CARTOON;
-                rep_args.cartoon.width_scale = rep.width;
-                rep_args.cartoon.thickness_scale = rep.thickness;
+                rep_args.cartoon.coil_scale = rep.param[0];
+                rep_args.cartoon.helix_scale = rep.param[1];
+                rep_args.cartoon.sheet_scale = rep.param[2];
                 break;
             default:
                 ASSERT(false);
@@ -4056,12 +4047,16 @@ static void draw_representations_window(ApplicationData* data) {
             }
             ImGui::PushItemWidth(item_width);
             if (rep.type == RepresentationType::SpaceFill || rep.type == RepresentationType::Licorice) {
-                update_rep |= ImGui::SliderFloat("scale", &rep.radius, 0.1f, 4.f);
+                update_rep |= ImGui::SliderFloat("scale", &rep.param[0], 0.1f, 4.f);
             }
             if (rep.type == RepresentationType::Ribbons) {
-                update_rep |= ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f);
-                update_rep |= ImGui::SliderFloat("spline width", &rep.width, 0.1f, 2.f);
-                update_rep |= ImGui::SliderFloat("spline thickness", &rep.thickness, 0.1f, 2.f);
+                update_rep |= ImGui::SliderFloat("width",       &rep.param[0], 0.1f, 3.f);
+                update_rep |= ImGui::SliderFloat("thickness",   &rep.param[1], 0.1f, 3.f);
+            }
+            if (rep.type == RepresentationType::Cartoon) {
+                update_rep |= ImGui::SliderFloat("coil scale",  &rep.param[0], 0.1f, 3.f);
+                update_rep |= ImGui::SliderFloat("helix scale", &rep.param[1], 0.1f, 3.f);
+                update_rep |= ImGui::SliderFloat("sheet scale", &rep.param[2], 0.1f, 3.f);
             }
             ImGui::PopItemWidth();
             ImGui::Spacing();
@@ -5892,12 +5887,16 @@ static void draw_density_volume_window(ApplicationData* data) {
                         data->density_volume.dirty_rep |= ImGui::ColorEdit4("color", rep.color.elem, ImGuiColorEditFlags_NoInputs);
                     }
                     if (rep.type == RepresentationType::SpaceFill || rep.type == RepresentationType::Licorice) {
-                        data->density_volume.dirty_rep |= ImGui::SliderFloat("scale", &rep.radius, 0.1f, 2.f);
+                        data->density_volume.dirty_rep |= ImGui::SliderFloat("scale", &rep.param[0], 0.1f, 2.f);
                     }
                     if (rep.type == RepresentationType::Ribbons) {
-                        data->density_volume.dirty_rep |= ImGui::SliderFloat("spline tension", &rep.tension, 0.f, 1.f);
-                        data->density_volume.dirty_rep |= ImGui::SliderFloat("width", &rep.width, 0.1f, 2.f);
-                        data->density_volume.dirty_rep |= ImGui::SliderFloat("thickness", &rep.thickness, 0.1f, 2.f);
+                        data->density_volume.dirty_rep |= ImGui::SliderFloat("width", &rep.param[0], 0.1f, 2.f);
+                        data->density_volume.dirty_rep |= ImGui::SliderFloat("thickness", &rep.param[1], 0.1f, 2.f);
+                    }
+                    if (rep.type == RepresentationType::Cartoon) {
+                        data->density_volume.dirty_rep |= ImGui::SliderFloat("coil scale",  &rep.param[0], 0.1f, 3.f);
+                        data->density_volume.dirty_rep |= ImGui::SliderFloat("helix scale", &rep.param[1], 0.1f, 3.f);
+                        data->density_volume.dirty_rep |= ImGui::SliderFloat("sheet scale", &rep.param[2], 0.1f, 3.f);
                     }
                     ImGui::Unindent();
                 }
@@ -7469,10 +7468,7 @@ SerializationObject serialization_targets[] = {
     {"[Representation]", "Type",            SerializationType_Int32,    offsetof(Representation, type)},
     {"[Representation]", "ColorMapping",    SerializationType_Int32,    offsetof(Representation, color_mapping)},
     {"[Representation]", "StaticColor",     SerializationType_Vec4,     offsetof(Representation, uniform_color)},
-    {"[Representation]", "Radius",          SerializationType_Float,    offsetof(Representation, radius)},
-    {"[Representation]", "Tension",         SerializationType_Float,    offsetof(Representation, tension)},
-    {"[Representation]", "Width",           SerializationType_Float,    offsetof(Representation, width)},
-    {"[Representation]", "Thickness",       SerializationType_Float,    offsetof(Representation, thickness)},
+    {"[Representation]", "Param",           SerializationType_Vec4,     offsetof(Representation, param)},
 
     {"[AtomElementMapping]", "Label",       SerializationType_String,   offsetof(AtomElementMapping, lbl),  sizeof(AtomElementMapping::lbl)},
     {"[AtomElementMapping]", "Element",     SerializationType_Int8,     offsetof(AtomElementMapping, elem)},
@@ -8156,21 +8152,22 @@ static void update_representation(ApplicationData* data, Representation* rep) {
         switch (rep->type) {
         case RepresentationType::SpaceFill:
             type = MD_GL_REP_SPACE_FILL;
-            args.space_fill.radius_scale = rep->radius;
+            args.space_fill.radius_scale = rep->param[0];
             break;
         case RepresentationType::Licorice:
             type = MD_GL_REP_LICORICE;
-            args.licorice.radius = rep->radius * 0.5f;
+            args.licorice.radius        = rep->param[0] * 0.5f;
             break;
         case RepresentationType::Ribbons:
             type = MD_GL_REP_RIBBONS;
-            args.ribbons.width_scale = rep->width;
-            args.ribbons.thickness_scale = rep->thickness;
+            args.ribbons.width_scale     = rep->param[0];
+            args.ribbons.thickness_scale = rep->param[1];
             break;
         case RepresentationType::Cartoon:
             type = MD_GL_REP_CARTOON;
-            args.cartoon.width_scale = rep->width;
-            args.cartoon.thickness_scale = rep->thickness;
+            args.cartoon.coil_scale     = rep->param[0];
+            args.cartoon.helix_scale    = rep->param[1];
+            args.cartoon.sheet_scale    = rep->param[2];
             break;
         default: break;
         }
