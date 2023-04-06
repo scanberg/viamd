@@ -175,7 +175,7 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
         result = md_trajectory_decode_frame_data(loaded_traj->traj, frame_data_ptr, frame_data_size, &frame_data->header, frame_data->x, frame_data->y, frame_data->z);
 
         if (result) {
-            const md_unit_cell_t* cell = &frame_data->header.cell;
+            const md_unit_cell_t* cell = &frame_data->header.unit_cell;
             const bool have_cell = cell->flags != 0;
 
             const md_molecule_t* mol = loaded_traj->mol;

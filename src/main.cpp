@@ -1470,7 +1470,7 @@ int main(int, char**) {
                 interpolate_atomic_properties(&data);
 
                 if (data.animation.apply_pbc) {
-                    md_util_deperiodize_system(mol.atom.x, mol.atom.y, mol.atom.z, &mol.cell, &mol);
+                    md_util_deperiodize_system(mol.atom.x, mol.atom.y, mol.atom.z, &mol.unit_cell, &mol);
                 }
 
 #if EXPERIMENTAL_CONE_TRACED_AO
@@ -2206,7 +2206,7 @@ static void interpolate_atomic_properties(ApplicationData* data) {
         {
             md_trajectory_frame_header_t header = {0};
             md_trajectory_load_frame(data->mold.traj, nearest_frame, &header, mol.atom.x, mol.atom.y, mol.atom.z);
-            data->mold.mol.cell = header.cell;
+            data->mold.mol.unit_cell = header.unit_cell;
             break;
         }
         case InterpolationMode::Linear:
@@ -2214,8 +2214,8 @@ static void interpolate_atomic_properties(ApplicationData* data) {
             md_trajectory_frame_header_t header[2] = {0};
             md_trajectory_load_frame(data->mold.traj, frames[1], &header[0], src[0].x, src[0].y, src[0].z);
             md_trajectory_load_frame(data->mold.traj, frames[2], &header[1], src[1].x, src[1].y, src[1].z);
-            data->mold.mol.cell.basis = lerp(header[0].cell.basis, header[1].cell.basis, t);
-            const vec3_t pbc_ext = data->mold.mol.cell.basis * vec3_set1(1);
+            data->mold.mol.unit_cell.basis = lerp(header[0].unit_cell.basis, header[1].unit_cell.basis, t);
+            const vec3_t pbc_ext = data->mold.mol.unit_cell.basis * vec3_set1(1);
 
             md_util_linear_interpolation(dst, src, mol.atom.count, pbc_ext, t);
         }
@@ -2227,8 +2227,8 @@ static void interpolate_atomic_properties(ApplicationData* data) {
             md_trajectory_load_frame(data->mold.traj, frames[1], &header[1], src[1].x, src[1].y, src[1].z);
             md_trajectory_load_frame(data->mold.traj, frames[2], &header[2], src[2].x, src[2].y, src[2].z);
             md_trajectory_load_frame(data->mold.traj, frames[3], &header[3], src[3].x, src[3].y, src[3].z);
-            data->mold.mol.cell.basis = cubic_spline(header[0].cell.basis, header[1].cell.basis, header[2].cell.basis, header[3].cell.basis, t, s);
-            const vec3_t pbc_ext = data->mold.mol.cell.basis * vec3_set1(1);
+            data->mold.mol.unit_cell.basis = cubic_spline(header[0].unit_cell.basis, header[1].unit_cell.basis, header[2].unit_cell.basis, header[3].unit_cell.basis, t, s);
+            const vec3_t pbc_ext = data->mold.mol.unit_cell.basis * vec3_set1(1);
 
             md_util_cubic_spline_interpolation(dst, src, mol.atom.count, pbc_ext, t, s);
         }
@@ -6978,7 +6978,7 @@ static void update_md_buffers(ApplicationData* data) {
     const auto& mol = data->mold.mol;
 
     if (data->mold.dirty_buffers & MolBit_DirtyPosition) {
-        const vec3_t pbc_ext = data->mold.mol.cell.basis * vec3_t{1,1,1};
+        const vec3_t pbc_ext = data->mold.mol.unit_cell.basis * vec3_t{1,1,1};
         md_gl_molecule_set_atom_position(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
         md_gl_molecule_compute_velocity(&data->mold.gl_mol, pbc_ext.elem);
 #if EXPERIMENTAL_GFX_API
@@ -7043,7 +7043,7 @@ static void free_trajectory_data(ApplicationData* data) {
     if (md_trajectory_num_frames(data->mold.traj)) {
         load::traj::close(data->mold.traj);
     }
-    data->mold.mol.cell = {};
+    data->mold.mol.unit_cell = {};
     md_array_shrink(data->timeline.x_values,  0);
     md_array_shrink(data->display_properties, 0);
 
@@ -7091,7 +7091,7 @@ static void init_trajectory_data(ApplicationData* data) {
         int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, max_frame);
 
         md_trajectory_load_frame(data->mold.traj, frame_idx, &header, data->mold.mol.atom.x, data->mold.mol.atom.y, data->mold.mol.atom.z);
-        data->mold.mol.cell = header.cell;
+        data->mold.mol.unit_cell = header.unit_cell;
 
         if (data->mold.mol.backbone.count > 0) {
             data->trajectory_data.secondary_structure.stride = data->mold.mol.backbone.count;
@@ -8512,9 +8512,9 @@ static void fill_gbuffer(ApplicationData* data) {
 
     // Immediate mode graphics
 
-    if (data->simulation_box.enabled && data->mold.mol.cell.basis != mat3_t{0}) {
+    if (data->simulation_box.enabled && data->mold.mol.unit_cell.basis != mat3_t{0}) {
         PUSH_GPU_SECTION("Draw Simulation Box")
-        const mat3_t box = data->mold.mol.cell.basis;
+        const mat3_t box = data->mold.mol.unit_cell.basis;
         const vec3_t min_box = box * vec3_t{0, 0, 0};
         const vec3_t max_box = box * vec3_t{1, 1, 1};
 
