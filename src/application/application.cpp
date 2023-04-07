@@ -122,9 +122,9 @@ bool initialize(Context* ctx, int width, int height, const char* title) {
     // io.ConfigDockingWithShift = true;
     io.ConfigWindowsMoveFromTitleBarOnly = true;
 
-    float xscale, yscale;
-    glfwGetWindowContentScale(window, &xscale, &yscale);
-    const float dpi_scale = (xscale + yscale) * 0.5f;
+    //float xscale, yscale;
+    //glfwGetWindowContentScale(window, &xscale, &yscale);
+    //const float dpi_scale = (xscale + yscale) * 0.5f;
 
     // default range is 0x0020 - 0x00FF.
     // Added some greek letters

@@ -678,8 +678,8 @@ task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angl
                         float v = angles[idx].psi * angle_to_coord_scale + angle_to_coord_offset;
                         uint32_t x = (uint32_t)(u * density_tex_dim) & (density_tex_dim - 1);
                         uint32_t y = (uint32_t)(v * density_tex_dim) & (density_tex_dim - 1);
-                        ASSERT(0 <= x && x < density_tex_dim);
-                        ASSERT(0 <= y && y < density_tex_dim);
+                        ASSERT(x < density_tex_dim);
+                        ASSERT(y < density_tex_dim);
                         data->density_tex[y * density_tex_dim + x] += val;
                         sum[c] += 1.0;
                     }

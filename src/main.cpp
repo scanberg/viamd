@@ -2398,7 +2398,6 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
 
 	const int64_t popcount = md_bitfield_popcount(&data->representation.atom_visibility_mask);
     vec3_t aabb_min, aabb_max;
-    mat3_t R = mat3_ident();
     
     if (0 < popcount && popcount < mol.atom.count) {
         int32_t* indices = (int32_t*)md_linear_allocator_push(linear_allocator, popcount * sizeof(int32_t));
@@ -2413,15 +2412,22 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
 
     const vec3_t ext = aabb_max - aabb_min;
     const float len = MAX(vec3_length(ext * 0.5f), 10.0f);
+    
+    const float max_ext = MAX(MAX(ext.x, ext.y), ext.z);
+    const float min_ext = MIN(MIN(ext.x, ext.y), ext.z);
+    const float aniso_ext = max_ext / min_ext;
 
     // We want to align the view such that we the longest axis of the aabb align with the X-axis, the mid axis with the Y-axis
 
     int l[3] = { 0, 1, 2 };
-    if (ext[l[0]] < ext[l[1]]) std::swap(l[0], l[1]);
-    if (ext[l[1]] < ext[l[2]]) std::swap(l[1], l[2]);
-    if (ext[l[0]] < ext[l[1]]) std::swap(l[0], l[1]);
-
-    // Now the axes are sorted with respect to the length l[0] > l[1] > l[2]
+    
+    if (aniso_ext > 1.1f) {
+        // The aabb is not very uniform, so we sort the axes by length
+        if (ext[l[0]] < ext[l[1]]) std::swap(l[0], l[1]);
+        if (ext[l[1]] < ext[l[2]]) std::swap(l[1], l[2]);
+        if (ext[l[0]] < ext[l[1]]) std::swap(l[0], l[1]);
+        // Now the axes are sorted with respect to the length l[0] > l[1] > l[2]
+    }
 
     const mat3_t I = mat3_ident();
     const vec3_t right = I[l[0]];
@@ -4948,7 +4954,7 @@ static void export_shape_space(ApplicationData* data, const char* ext) {
         // @TODO: add unit to time (if available)
 
         md_unit_t time_unit = md_trajectory_time_unit(data->mold.traj);
-        char time_buf[64];
+        char time_buf[128];
         if (unit_empty(time_unit)) {
             snprintf(time_buf, sizeof(time_buf), "Time");
         } else {
@@ -7198,7 +7204,6 @@ static void free_molecule_data(ApplicationData* data) {
 
 static void init_molecule_data(ApplicationData* data) {
     if (data->mold.mol.atom.count) {
-        const md_molecule_t& mol = data->mold.mol;
 
         data->picking.idx = INVALID_PICKING_IDX;
         data->selection.hovered = -1;
@@ -7207,6 +7212,7 @@ static void init_molecule_data(ApplicationData* data) {
         md_gl_molecule_init(&data->mold.gl_mol, &data->mold.mol);
 
 #if EXPERIMENTAL_GFX_API
+        const md_molecule_t& mol = data->mold.mol;
         vec3_t& aabb_min = data->mold.mol_aabb_min;
         vec3_t& aabb_max = data->mold.mol_aabb_max;
         md_util_compute_aabb_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
