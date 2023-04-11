@@ -844,9 +844,8 @@ static void downsample_histogram(float* dst_bins, int num_dst_bins, const float*
 
     memset(dst_bins, 0, sizeof(float) * num_dst_bins);
     const int factor = MAX(1, num_src_bins / num_dst_bins);
-    const float scl = 1.0f / (float)factor;
     for (int j = 0; j < num_src_bins; ++j) {
-        dst_bins[j / factor] += src_bins[j] * scl;
+        dst_bins[j / factor] += src_bins[j];
     }
 }
 
@@ -4859,10 +4858,9 @@ static void draw_distribution_window(ApplicationData* data) {
 
             char label[128];
             int len = snprintf(label, sizeof(label), "%s ", prop.label);
+            
             if (!unit_empty(prop.unit)) {
-                char unit_buf[64];
-                int unit_len = unit_print(unit_buf, sizeof(unit_buf), prop.unit);
-                snprintf(label + len, MAX(0, (int)sizeof(label) - len), "(%*s)", unit_len, unit_buf);
+                snprintf(label + len, MAX(0, (int)sizeof(label) - len), "(%s)", prop.unit_str);
             }
 
             ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(10, 0));
@@ -4923,6 +4921,45 @@ static void draw_distribution_window(ApplicationData* data) {
                     ImPlot::DragRangeX("filter", &beg, &end, min_x, max_x);
                     prop.value_filter.beg = beg;
                     prop.value_filter.end = end;
+                }
+
+                bool print_tooltip = ImPlot::IsPlotHovered();
+
+                if (print_tooltip) {
+                    ImPlotPoint plot_pos = ImPlot::GetPlotMousePos();
+                    ImVec2 screen_pos = ImPlot::PlotToPixels(plot_pos);
+                    ImVec2 p0 = {screen_pos.x, ImPlot::GetPlotPos().y};
+                    ImVec2 p1 = {screen_pos.x, ImPlot::GetPlotPos().y + ImPlot::GetPlotSize().y};
+                    ImPlot::PushPlotClipRect();
+                    ImPlot::GetPlotDrawList()->AddLine(p0, p1, IM_COL32(255, 255, 255, 120));
+                    ImPlot::PopPlotClipRect();\
+
+                    const int32_t bin_idx = CLAMP((int)((plot_pos.x / max_x) * (num_bins-1)), 0, num_bins-1);
+                    const float full_val = full_bins[bin_idx];
+                    const float filt_val = filt_bins[bin_idx];
+
+                    const int legend_count = ImPlot::GetCurrentPlot()->Items.GetLegendCount();
+                    const bool show_full = (legend_count > 0) && ImPlot::GetCurrentPlot()->Items.GetLegendItem(0)->Show;
+                    const bool show_filt = (legend_count > 1) && ImPlot::GetCurrentPlot()->Items.GetLegendItem(1)->Show;
+
+                    md_strb_t sb = md_strb_create(frame_allocator);
+                    md_strb_fmt(&sb, "%.2f ,", plot_pos.x);
+                    
+                    if (!unit_empty(prop.unit)) {
+                        md_strb_pop(&sb, 1);
+                        sb += prop.unit_str;
+                        sb += ',';
+                    }
+
+                    if (show_full) {
+                        md_strb_fmt(&sb, " %.3f", full_val);
+                    }
+
+                    if (show_filt) {
+                        md_strb_fmt(&sb, " (full), %.3f (filt)", filt_val);   
+                    }
+
+                    ImGui::SetTooltip("%s", md_strb_to_cstr(&sb));
                 }
 
                 ImPlot::EndPlot();
@@ -8277,8 +8314,6 @@ static void handle_camera_interaction(ApplicationData* data) {
 
     ImGui::BeginCanvas("Main interarction window", true);
     bool pressed = ImGui::InvisibleButton("canvas", ImGui::GetContentRegionAvail(), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
-
-    
 
     if (pressed || ImGui::IsItemActive() || ImGui::IsItemDeactivated()) {
         if (ImGui::IsKeyPressed(ImGuiMod_Shift, false)) {
