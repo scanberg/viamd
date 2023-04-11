@@ -71,7 +71,18 @@ struct TrackballControllerState {
 };
 */
 
-enum TrackballFlags_ { TrackballFlags_RotateReturnsTrue = 0x1, TrackballFlags_PanReturnsTrue = 0x2, TrackballFlags_DollyReturnsTrue = 0x4, TrackballFlags_AnyInteractionReturnsTrue = 0xFFFFFFFF };
+enum TrackballFlags_ {
+    TrackballFlags_PanEnabled           = 0x1,
+    TrackballFlags_RotateEnabled        = 0x2,
+    TrackballFlags_DollyEnabled         = 0x4,
+    TrackballFlags_PanReturnsTrue       = 0x10,
+    TrackballFlags_RotateReturnsTrue    = 0x20,
+    TrackballFlags_DollyReturnsTrue     = 0x40,
+    
+    TrackballFlags_EnableAllInteractions     = TrackballFlags_PanEnabled | TrackballFlags_RotateEnabled | TrackballFlags_DollyEnabled,
+    TrackballFlags_AnyInteractionReturnsTrue = TrackballFlags_PanReturnsTrue | TrackballFlags_RotateReturnsTrue | TrackballFlags_DollyReturnsTrue
+};
+
 typedef uint32_t TrackballFlags;
 
 mat4_t look_at(vec3_t look_from, vec3_t look_at, vec3_t look_up = {0, 1, 0});
@@ -95,6 +106,6 @@ mat4_t camera_orthographic_projection_matrix(float left, float right, float bott
 mat4_t camera_inverse_orthographic_projection_matrix(float left, float right, float bottom, float top, float near, float far);
 
 // @TODO: Fix the name to something more descriptive. This modifies the position, orientation and distance using a trackball modality
-bool camera_controller_trackball(vec3_t* position, quat_t* orientation, float* distance, TrackballControllerInput input, TrackballControllerParam param, TrackballFlags flags = 0xFFFFFFFF);
+bool camera_controller_trackball(vec3_t* position, quat_t* orientation, float* distance, TrackballControllerInput input, TrackballControllerParam param, TrackballFlags flags = -1);
 
 //void camera_controller_fps(Camera* camera, const FpsControllerState& state);

@@ -4374,12 +4374,15 @@ struct TimelineArgs {
 };
 
 bool draw_property_timeline(const ApplicationData& data, const TimelineArgs& args) {
-    const ImPlotAxisFlags axis_flags = 0;
+    const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_NoSideSwitch | ImPlotAxisFlags_NoHighlight;
     const ImPlotAxisFlags axis_flags_x = axis_flags;
     const ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit | ImPlotAxisFlags_NoLabel |ImPlotAxisFlags_NoTickLabels;
     
-    //const ImPlotFlags flags = ImPlotFlags_AntiAliased;
-    ImPlotFlags flags = 0;
+    const ImPlotFlags flags = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame;
+    
+    const float pad_x = ImPlot::GetStyle().PlotPadding.x;
+    ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(pad_x, 0));
+    defer { ImPlot::PopStyleVar(1); };
 
     if (ImPlot::BeginPlot("##Timeline", ImVec2(-1,args.plot_height), flags)) {
         ImPlot::SetupAxisLinks(ImAxis_X1, args.view_range.beg, args.view_range.end);
@@ -4745,10 +4748,12 @@ static void draw_distribution_window(ApplicationData* data) {
                 ImGui::EndMenu();
             }
 
+            /*
             if (ImGui::BeginMenu("Filter")) {
                 ImGui::Checkbox("Enabled", &data->distributions.filter.enabled);
                 ImGui::EndMenu();
             }
+            */
 
             if (ImGui::BeginMenu("Settings")) {
                 ImGui::SliderInt("Plot Height", &plot_height, MIN_PLOT_HEIGHT, MAX_PLOT_HEIGHT);
@@ -5008,6 +5013,9 @@ static void export_shape_space(ApplicationData* data, const char* ext) {
 
 static void draw_shape_space_window(ApplicationData* data) {
     ImGui::SetNextWindowSize({300,350}, ImGuiCond_FirstUseEver);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 2));
+    defer { ImGui::PopStyleVar(1); };
+
     if (ImGui::Begin("Shape Space", &data->shape_space.show_window, ImGuiWindowFlags_MenuBar)) {
         if (ImGui::BeginMenuBar()) {
             if (ImGui::BeginMenu("Export")) {
@@ -5043,8 +5051,11 @@ static void draw_shape_space_window(ApplicationData* data) {
             }
         }
 
-        ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_NoMenus; // ImPlotFlags_AntiAliased;
-        ImPlotAxisFlags axis_flags = ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks;
+        ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2,2));
+        defer { ImPlot::PopStyleVar(1); };
+
+        const ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_NoMenus | ImPlotFlags_NoMouseText;
+        const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks;
 
         const float x_reset[2] = {-0.10f, 1.10f};
         const float y_reset[2] = {-0.10f, 0.98f};
@@ -5174,7 +5185,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                     md_bitfield_copy(&data->selection.current_highlight_mask, &data->shape_space.bitfields[structure_idx]);
                     data->mold.dirty_buffers |= MolBit_DirtyFlags;
                 }
-                len += snprintf(buf + len, sizeof(buf) - len, "Frame: %i, Weight(l,p,s): (%.2f, %.2f, %.2f)", frame_idx, w.x, w.y, w.z);
+                len += snprintf(buf + len, sizeof(buf) - len, "Frame: %i, lin: %.2f, plan: %.2f, iso: %.2f", frame_idx, w.x, w.y, w.z);
                 ImGui::SetTooltip("%s", buf);
 
                 if (ImGui::IsWindowFocused() && ImPlot::IsPlotHovered() && ImGui::GetIO().MouseReleased[0]) {
@@ -5202,11 +5213,13 @@ static void draw_shape_space_window(ApplicationData* data) {
                 data->shape_space.evaluate = false;
                 md_array_shrink(data->shape_space.coords, 0);
                 md_array_shrink(data->shape_space.weights, 0);
+
+                const int64_t num_bitfields = md_array_size(data->shape_space.bitfields);
+                md_array_shrink(data->shape_space.bitfields, 0); // Shrink only sets the size to zero, it does not free any data
                 
-                for (int64_t i = 0; i < md_array_size(data->shape_space.bitfields); ++i) {
+                for (int64_t i = 0; i < num_bitfields; ++i) {
                     md_bitfield_free(&data->shape_space.bitfields[i]);
                 }
-                md_array_shrink(data->shape_space.bitfields, 0);
                 
                 if (md_filter_evaluate(&data->shape_space.bitfields, str_from_cstr(data->shape_space.input), &data->mold.mol, data->mold.script.ir, NULL, data->shape_space.error, sizeof(data->shape_space.error), persistent_allocator)) {
                     data->shape_space.input_valid = true;
@@ -7471,6 +7484,7 @@ SerializationObject serialization_targets[] = {
     {"[Camera]", "Position",                SerializationType_Vec3,     offsetof(ApplicationData, view.camera.position)},
     {"[Camera]", "Rotation",                SerializationType_Vec4,     offsetof(ApplicationData, view.camera.orientation)},
     {"[Camera]", "Distance",                SerializationType_Float,    offsetof(ApplicationData, view.camera.focus_distance)},
+    {"[Camera]", "Mode",                    SerializationType_Int32,    offsetof(ApplicationData, view.mode)},
 
     {"[Representation]", "Name",            SerializationType_String,   offsetof(Representation, name),     sizeof(Representation::name)},
     {"[Representation]", "Filter",          SerializationType_String,   offsetof(Representation, filt),     sizeof(Representation::filt)},
@@ -7483,6 +7497,9 @@ SerializationObject serialization_targets[] = {
 
     {"[AtomElementMapping]", "Label",       SerializationType_String,   offsetof(AtomElementMapping, lbl),  sizeof(AtomElementMapping::lbl)},
     {"[AtomElementMapping]", "Element",     SerializationType_Int8,     offsetof(AtomElementMapping, elem)},
+
+    {"[ShapeSpace]", "Filter",              SerializationType_String,   offsetof(ApplicationData, shape_space.input), sizeof(ApplicationData::shape_space.input)},
+    {"[ShapeSpace]", "MarkerSize",          SerializationType_Float,    offsetof(ApplicationData, shape_space.marker_size)},
 
     {"[Script]", "Text",                    SerializationType_Script,   0},
 
@@ -8261,7 +8278,9 @@ static void handle_camera_interaction(ApplicationData* data) {
     ImGui::BeginCanvas("Main interarction window", true);
     bool pressed = ImGui::InvisibleButton("canvas", ImGui::GetContentRegionAvail(), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
 
-    if (pressed || ImGui::IsItemActive()) {
+    
+
+    if (pressed || ImGui::IsItemActive() || ImGui::IsItemDeactivated()) {
         if (ImGui::IsKeyPressed(ImGuiMod_Shift, false)) {
             ImGui::ResetMouseDragDelta();
         }
@@ -8299,16 +8318,12 @@ static void handle_camera_interaction(ApplicationData* data) {
 
                 const vec2_t res = { (float)data->ctx.window.width, (float)data->ctx.window.height };
                 const mat4_t mvp = data->view.param.matrix.current.proj * data->view.param.matrix.current.view;
-                const md_bitfield_t* vis_mask = &data->representation.atom_visibility_mask;
 
-                int64_t beg_bit = vis_mask->beg_bit;
-                int64_t end_bit = vis_mask->end_bit;
-                while ((beg_bit = md_bitfield_scan(vis_mask, beg_bit, end_bit)) != 0) {
-                    int64_t i = beg_bit - 1;
-                    vec4_t p = { data->mold.mol.atom.x[i], data->mold.mol.atom.y[i], data->mold.mol.atom.z[i], 1.0f };
-                    p = mat4_mul_vec4(mvp, p);
-
-                    vec2_t c = {
+                md_bitfield_iter_t it = md_bitfield_iter(&data->representation.atom_visibility_mask);
+                while (md_bitfield_iter_next(&it)) {
+                    const int64_t i = md_bitfield_iter_idx(&it);
+                    const vec4_t p = mat4_mul_vec4(mvp, vec4_set(data->mold.mol.atom.x[i], data->mold.mol.atom.y[i], data->mold.mol.atom.z[i], 1.0f));
+                    const vec2_t c = {
                         (p.x / p.w * 0.5f + 0.5f) * res.x,
                         (-p.y / p.w * 0.5f + 0.5f) * res.y
                     };
@@ -8325,7 +8340,7 @@ static void handle_camera_interaction(ApplicationData* data) {
                 else if (mode == RegionMode::Remove) {
                     md_bitfield_andnot(&data->selection.current_highlight_mask, &data->selection.current_selection_mask, &mask);
                 }
-                if (pressed) {
+                if (pressed || ImGui::IsMouseReleased(0)) {
                     md_bitfield_copy(&data->selection.current_selection_mask, &data->selection.current_highlight_mask);
                 }
             }
@@ -8354,7 +8369,7 @@ static void handle_camera_interaction(ApplicationData* data) {
             data->mold.dirty_buffers |= MolBit_DirtyFlags;
         }
     }
-    else if (ImGui::IsItemHovered()) {
+    else if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) {
         if (data->picking.idx != INVALID_PICKING_IDX && data->picking.idx <= data->mold.mol.atom.count) {
             md_bitfield_clear(&data->selection.current_highlight_mask);
             md_bitfield_set_bit(&data->selection.current_highlight_mask, data->picking.idx);
@@ -8386,8 +8401,16 @@ static void handle_camera_interaction(ApplicationData* data) {
             vec3_t pos = data->view.animation.target_position;
             quat_t ori = data->view.animation.target_orientation;
             float dist = data->view.animation.target_distance;
-            if (camera_controller_trackball(&pos, &ori, &dist, input, data->view.trackball_param, 0)) {
-                // We could make the camera interaction more snappy, by directly modifying camera[pos, ori, dist] here
+            
+            TrackballFlags flags = TrackballFlags_AnyInteractionReturnsTrue;
+            if (ImGui::IsItemActive()) {
+                flags |= TrackballFlags_EnableAllInteractions;
+            } else {
+                flags |= TrackballFlags_DollyEnabled;
+            }
+
+            if (camera_controller_trackball(&pos, &ori, &dist, input, data->view.trackball_param, flags)) {
+                // @NOTE(Robin): We could make the camera interaction more snappy, by directly modifying camera[pos, ori, dist] here
                 // But for now its decent. I like smooth transitions rather than discontinous jumps
             }
             data->view.animation.target_position = pos;

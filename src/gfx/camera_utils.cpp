@@ -216,20 +216,20 @@ bool camera_controller_trackball(vec3_t* position, quat_t* orientation, float* d
     const vec2_t mouse_coord_delta = input.mouse_coord_curr - input.mouse_coord_prev;
     const bool mouse_move = mouse_coord_delta != vec2_t{0, 0};
 
-    if (input.rotate_button && mouse_move) {
+    if ((flags & TrackballFlags_RotateEnabled) && input.rotate_button && mouse_move) {
         const quat_t q = trackball(ndc_prev, ndc_curr);
         const vec3_t look_at = *position - *orientation * vec3_t{0, 0, *distance};
         *orientation = quat_normalize(*orientation * q);
         *position = look_at + *orientation * vec3_t{0, 0, *distance};
         if (flags & TrackballFlags_RotateReturnsTrue) return true;
-    } else if (input.pan_button && mouse_move) {
+    } else if ((flags & TrackballFlags_PanEnabled) && input.pan_button && mouse_move) {
         const float aspect_ratio = input.screen_size.x / input.screen_size.y;
         const float scl = tanf(input.fov_y * 0.5f);
         const vec2_t delta = (ndc_curr - ndc_prev) * vec2_t{1, -1} * vec2_t{aspect_ratio * scl, scl};
         const vec3_t move = *orientation * vec3_t{-delta.x, delta.y, 0} * powf(*distance * param.pan_scale, param.pan_exponent);
         *position = *position + move;
         if (flags & TrackballFlags_PanReturnsTrue) return true;
-    } else if ((input.dolly_button && mouse_move) || input.dolly_delta != 0.f) {
+    } else if ((flags & TrackballFlags_DollyEnabled) && ((input.dolly_button && mouse_move) || input.dolly_delta != 0.f)) {
         float delta = -(input.mouse_coord_curr.y - input.mouse_coord_prev.y) * powf(*distance * param.dolly_drag_scale, param.dolly_drag_exponent);
         delta -= input.dolly_delta * powf(*distance * param.dolly_delta_scale, param.dolly_delta_exponent);
         const vec3_t look_at = *position - *orientation * vec3_t{0, 0, *distance};
