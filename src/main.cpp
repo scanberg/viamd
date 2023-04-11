@@ -68,6 +68,7 @@
 #define EXPERIMENTAL_CONE_TRACED_AO 0
 #define COMPILATION_TIME_DELAY_IN_SECONDS 1.0
 #define IR_SEMAPHORE_MAX_COUNT 3
+#define JITTER_SEQUENCE_SIZE 32
 
 #define GL_COLOR_ATTACHMENT_COLOR        GL_COLOR_ATTACHMENT0
 #define GL_COLOR_ATTACHMENT_NORMAL       GL_COLOR_ATTACHMENT1
@@ -401,7 +402,7 @@ struct ApplicationData {
         CameraMode mode = CameraMode::Perspective;
 
         struct {
-            vec2_t sequence[16] {};
+            vec2_t sequence[JITTER_SEQUENCE_SIZE] {};
         } jitter;
 
         struct {
@@ -418,7 +419,7 @@ struct ApplicationData {
 
     // --- MOLD DATA ---
     struct {
-        md_allocator_i*     mol_alloc = 0;
+        md_allocator_i*     mol_alloc = nullptr;
         md_gl_shaders_t     gl_shaders = {};
         md_gl_shaders_t     gl_shaders_lean_and_mean = {};
         md_gl_molecule_t    gl_mol = {};
@@ -426,7 +427,7 @@ struct ApplicationData {
         md_gfx_handle_t     gfx_structure = {};
 #endif
         md_molecule_t       mol = {};
-        md_trajectory_i*    traj = 0;
+        md_trajectory_i*    traj = nullptr;
 
         vec3_t              mol_aabb_min;
         vec3_t              mol_aabb_max;
@@ -435,11 +436,11 @@ struct ApplicationData {
             // A bit confusing and a bit of a hack,
             // But we want to preserve the ir while evaluating it (visualizing it etc)
             // So we only commit the 'new' ir to eval_ir upon starting evaluation
-            md_script_ir_t*   ir = 0;
-            md_script_ir_t*   eval_ir = 0;
+            md_script_ir_t*   ir = nullptr;
+            md_script_ir_t*   eval_ir = nullptr;
 
-            md_script_eval_t* full_eval = 0;
-            md_script_eval_t* filt_eval = 0;
+            md_script_eval_t* full_eval = nullptr;
+            md_script_eval_t* filt_eval = nullptr;
             md_script_visualization_t vis = {};
 
             // Semaphore to control access to IR
@@ -457,7 +458,7 @@ struct ApplicationData {
         md_unit_base_t unit_base = {};
     } mold;
 
-    DisplayProperty* display_properties = 0;
+    DisplayProperty* display_properties = nullptr;
 
     // --- ASYNC TASKS HANDLES ---
     struct {
@@ -635,8 +636,8 @@ struct ApplicationData {
             vec4_t color = {1,1,1,1};
         } rep;
 
-        md_gl_representation_t* gl_reps = 0;
-        mat4_t* rep_model_mats = 0;
+        md_gl_representation_t* gl_reps = nullptr;
+        mat4_t* rep_model_mats = nullptr;
         mat4_t model_mat = {0};
 
         Camera camera = {};
@@ -721,7 +722,7 @@ struct ApplicationData {
         uint64_t filt_fingerprint = 0;
 
         rama_data_t data = {0};
-        uint32_t* rama_type_indices[4] = {0};
+        uint32_t* rama_type_indices[4] = {};
 
         struct {
             vec4_t border_color     = {0.0f, 0.0f, 0.0f, 1.0f};
@@ -747,8 +748,8 @@ struct ApplicationData {
         int32_t num_frames;
         int32_t num_structures;
 
-        vec3_t* weights = 0;
-        vec2_t* coords = 0;
+        vec3_t* weights = nullptr;
+        vec2_t* coords  = nullptr;
 
         md_array(md_bitfield_t) bitfields = 0;
 
@@ -772,13 +773,13 @@ struct ApplicationData {
         struct {
             int64_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
             int64_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
-            md_secondary_structure_t* data = NULL;
+            md_secondary_structure_t* data = nullptr;
             uint64_t fingerprint = 0;
         } secondary_structure;
         struct {
             int64_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
             int64_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
-            md_backbone_angles_t* data = NULL;
+            md_backbone_angles_t* data = nullptr;
             uint64_t fingerprint = 0;
         } backbone_angles;
     } trajectory_data;
@@ -825,16 +826,14 @@ static void compute_histogram_masked(float* bins, int num_bins, float min_bin_va
     const float inv_range = 1.0f / bin_range;
     const float scl = 1.0f / num_values;
 
-    uint64_t beg_bit = mask->beg_bit;
-    uint64_t end_bit = mask->end_bit;
-
     // We evaluate each frame, one at a time
-    while ((beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) != 0) {
-        int val_idx = dim * ((int)beg_bit - 1);
+    md_bitfield_iter_t it = md_bitfield_iter(mask);
+    while (md_bitfield_iter_next(&it)) {
+        const int val_idx = dim * (int)md_bitfield_iter_idx(&it);
         for (int i = 0; i < dim; ++i) {
-            float val = values[val_idx + i];
+            const float val = values[val_idx + i];
             if (val < min_bin_val || max_bin_val < val) continue;
-            int bin_idx = CLAMP((int)(((val - min_bin_val) * inv_range) * num_bins), 0, num_bins - 1);
+            const int bin_idx = CLAMP((int)(((val - min_bin_val) * inv_range) * num_bins), 0, num_bins - 1);
             bins[bin_idx] += scl;
         }
     }
@@ -1246,7 +1245,7 @@ int main(int, char**) {
     editor.SetLanguageDefinition(TextEditor::LanguageDefinition::VIAMD());
     editor.SetPalette(TextEditor::GetDarkPalette());
 
-    str_t path = STR(VIAMD_DATASET_DIR "/1ALA-500.pdb");
+    const str_t path = STR(VIAMD_DATASET_DIR "/1ALA-500.pdb");
 
     load_dataset_from_file(&data, path, load::mol::get_api(path), load::traj::get_api(path), false, true);
     create_representation(&data, RepresentationType::SpaceFill, ColorMapping::Cpk, STR("all"));
@@ -2405,8 +2404,7 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
         
         const int64_t len = md_bitfield_extract_indices(indices, popcount, &data->representation.atom_visibility_mask);
 		md_util_compute_aabb_indexed_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, len);
-    }
-    else {
+    } else {
         md_util_compute_aabb_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, mol.atom.count);
     }
 
@@ -5273,6 +5271,9 @@ static void draw_shape_space_window(ApplicationData* data) {
 
 static void draw_ramachandran_window(ApplicationData* data) {
 
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 2));
+    defer { ImGui::PopStyleVar(1); };
+
     ImGui::SetNextWindowSize({300,350}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Ramachandran", &data->ramachandran.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_MenuBar)) {
         enum RamachandranDisplayMode {
@@ -5386,6 +5387,9 @@ static void draw_ramachandran_window(ApplicationData* data) {
 
         ImVec2 plot_size = {0,0};
 
+        ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2,2));
+        defer { ImPlot::PopStyleVar(); };
+
         if (ImPlot::BeginSubplots("##Ramaplots", plot_rows, plot_cols, ImVec2(-1, -1), subplotflags | ImPlotSubplotFlags_ShareItems)) {
             for (int plot_idx = plot_offset; plot_idx < plot_offset + num_plots; ++plot_idx) {
                 if (ImPlot::BeginPlot(plot_labels[plot_idx], ImVec2(), flags)) {
@@ -5458,7 +5462,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
                         selection_rect.Y.Max = mouse_coord.y;
                         if (selection_rect.Size().x != 0 && selection_rect.Size().y != 0) {
                             md_bitfield_copy(highlight_mask, selection_mask);
-                            ImPlot::DragRect(0, &selection_rect.X.Min, &selection_rect.Y.Min, &selection_rect.X.Max, &selection_rect.Y.Max, ImVec4(0,0,0,0.5f), ImPlotDragToolFlags_NoInputs);
+                            ImPlot::DragRect(0, &selection_rect.X.Min, &selection_rect.Y.Min, &selection_rect.X.Max, &selection_rect.Y.Max, ImVec4(1,1,1,0.5f), ImPlotDragToolFlags_NoInputs);
                         }
 
                         if (!shift) {
@@ -8071,7 +8075,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
             // @TODO: Map colors accordingly
             //color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
             if (rep->prop) {
-                memset(colors, 0xFFFFFFFF, bytes);
+                MEMSET(colors, 0xFFFFFFFF, bytes);
                 const float* values = rep->prop->data.values;
                 if (rep->prop->data.aggregate) {
                     const int dim = rep->prop->data.dim[0];
@@ -8422,11 +8426,11 @@ static void handle_camera_animation(ApplicationData* data) {
     const float dt = CLAMP(data->ctx.timing.delta_s, 1.0f / 1000.f, 1.0f / 20.f);
     const float interpolation_factor = TARGET_FACTOR * (dt / TARGET_DT);
 
-    vec3_t& current_pos = data->view.camera.position;
-    vec3_t& target_pos  = data->view.animation.target_position;
+    vec3_t& current_pos  = data->view.camera.position;
+    vec3_t& target_pos   = data->view.animation.target_position;
 
-    quat_t& current_ori = data->view.camera.orientation;
-    quat_t& target_ori  = data->view.animation.target_orientation;
+    quat_t& current_ori  = data->view.camera.orientation;
+    quat_t& target_ori   = data->view.animation.target_orientation;
 
     float&  current_dist = data->view.camera.focus_distance;
     float&  target_dist  = data->view.animation.target_distance;
@@ -8556,15 +8560,15 @@ static void fill_gbuffer(ApplicationData* data) {
     POP_GPU_SECTION()
 #endif
 
-if (!use_gfx) {
-    // DRAW VELOCITY OF STATIC OBJECTS
-    PUSH_GPU_SECTION("Blit Static Velocity")
-    glDrawBuffer(GL_COLOR_ATTACHMENT_VELOCITY);
-    glDepthMask(0);
-    postprocessing::blit_static_velocity(data->gbuffer.deferred.depth, data->view.param);
-    glDepthMask(1);
-    POP_GPU_SECTION()
-}
+    if (!use_gfx) {
+        // DRAW VELOCITY OF STATIC OBJECTS
+        PUSH_GPU_SECTION("Blit Static Velocity")
+        glDrawBuffer(GL_COLOR_ATTACHMENT_VELOCITY);
+        glDepthMask(0);
+        postprocessing::blit_static_velocity(data->gbuffer.deferred.depth, data->view.param);
+        glDepthMask(1);
+        POP_GPU_SECTION()
+    }
     glDepthMask(1);
     glColorMask(1, 1, 1, 1);
 
@@ -8576,75 +8580,75 @@ if (!use_gfx) {
 
     glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);  // Post_Tonemap buffer
 
-if (!use_gfx) {
-    PUSH_GPU_SECTION("Selection")
-    const bool atom_selection_empty = md_bitfield_popcount(&data->selection.current_selection_mask) == 0;
-    const bool atom_highlight_empty = md_bitfield_popcount(&data->selection.current_highlight_mask) == 0;
+    if (!use_gfx) {
+        PUSH_GPU_SECTION("Selection")
+        const bool atom_selection_empty = md_bitfield_popcount(&data->selection.current_selection_mask) == 0;
+        const bool atom_highlight_empty = md_bitfield_popcount(&data->selection.current_highlight_mask) == 0;
 
-    glDepthMask(0);
-    glColorMask(0, 0, 0, 0);
+        glDepthMask(0);
+        glColorMask(0, 0, 0, 0);
 
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_EQUAL);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_EQUAL);
 
-    glEnable(GL_STENCIL_TEST);
-    glStencilFunc(GL_ALWAYS, 0xFF, 0xFF);
+        glEnable(GL_STENCIL_TEST);
+        glStencilFunc(GL_ALWAYS, 0xFF, 0xFF);
 
-    if (!atom_selection_empty)
-    {
-        glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
-        glStencilMask(0x02);
-        draw_representations_lean_and_mean(data, AtomBit_Selected | AtomBit_Visible);
-    }
+        if (!atom_selection_empty)
+        {
+            glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
+            glStencilMask(0x02);
+            draw_representations_lean_and_mean(data, AtomBit_Selected | AtomBit_Visible);
+        }
 
-    if (!atom_highlight_empty)
-    {
-        glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
-        glStencilMask(0x4);
-        draw_representations_lean_and_mean(data, AtomBit_Highlighted | AtomBit_Visible);
-    }
+        if (!atom_highlight_empty)
+        {
+            glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
+            glStencilMask(0x4);
+            draw_representations_lean_and_mean(data, AtomBit_Highlighted | AtomBit_Visible);
+        }
         
-    if (!atom_selection_empty)
-    {
-        glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-        glStencilMask(0x1);
-        draw_representations_lean_and_mean(data, AtomBit_Selected | AtomBit_Visible);
-    }
+        if (!atom_selection_empty)
+        {
+            glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+            glStencilMask(0x1);
+            draw_representations_lean_and_mean(data, AtomBit_Selected | AtomBit_Visible);
+        }
         
-    glDisable(GL_DEPTH_TEST);
+        glDisable(GL_DEPTH_TEST);
 
-    glStencilMask(0x00);
-    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-    glColorMask(1, 1, 1, 1);
+        glStencilMask(0x00);
+        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+        glColorMask(1, 1, 1, 1);
 
-    if (!atom_selection_empty) {
-        glStencilFunc(GL_EQUAL, 2, 2);
-        postprocessing::blit_color({0, 0, 1, 0.25f});
+        if (!atom_selection_empty) {
+            glStencilFunc(GL_EQUAL, 2, 2);
+            postprocessing::blit_color({0, 0, 1, 0.25f});
 
-        glStencilFunc(GL_EQUAL, 2, 3);
-        postprocessing::blit_color({0, 0, 0.25f, 0.4f});
-    }
+            glStencilFunc(GL_EQUAL, 2, 3);
+            postprocessing::blit_color({0, 0, 0.25f, 0.4f});
+        }
 
-    if (!atom_highlight_empty) {
-        glStencilFunc(GL_EQUAL, 4, 4);
-        postprocessing::blit_color({1, 1, 0, 0.25f});
-    }
+        if (!atom_highlight_empty) {
+            glStencilFunc(GL_EQUAL, 4, 4);
+            postprocessing::blit_color({1, 1, 0, 0.25f});
+        }
 
-    glDisable(GL_STENCIL_TEST);
-    if (!atom_selection_empty) {
-        PUSH_GPU_SECTION("Desaturate")
-        const float saturation = data->selection.color.selection_saturation;
-        glDrawBuffer(GL_COLOR_ATTACHMENT_COLOR);
-        postprocessing::scale_hsv(data->gbuffer.deferred.color, vec3_t{1, saturation, 1});
-        glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
+        glDisable(GL_STENCIL_TEST);
+        if (!atom_selection_empty) {
+            PUSH_GPU_SECTION("Desaturate")
+            const float saturation = data->selection.color.selection_saturation;
+            glDrawBuffer(GL_COLOR_ATTACHMENT_COLOR);
+            postprocessing::scale_hsv(data->gbuffer.deferred.color, vec3_t{1, saturation, 1});
+            glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
+            POP_GPU_SECTION()
+        }
+
+        glDisable(GL_STENCIL_TEST);
+        glDepthFunc(GL_LESS);
+        glDepthMask(0);
         POP_GPU_SECTION()
     }
-
-    glDisable(GL_STENCIL_TEST);
-    glDepthFunc(GL_LESS);
-    glDepthMask(0);
-    POP_GPU_SECTION()
-}
 
     PUSH_GPU_SECTION("Draw Visualization Geometry")
     glDisable(GL_DEPTH_TEST);

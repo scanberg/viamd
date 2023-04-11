@@ -1,8 +1,9 @@
 #include "volumerender_utils.h"
 
-#include "gfx/gl_utils.h"
-#include "gfx/immediate_draw_utils.h"
-#include "color_utils.h"
+#include <gfx/gl.h>
+#include <gfx/gl_utils.h>
+#include <gfx/immediate_draw_utils.h>
+#include <color_utils.h>
 
 #include <core/md_common.h>
 #include <core/md_log.h>
@@ -216,16 +217,15 @@ void render_volume(const RenderDesc& desc) {
 
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, gl.ubo);
 
-    const GLuint program =
-        desc.direct_volume_rendering_enabled ? (desc.isosurface_enabled ? gl.program.dvr_and_iso : gl.program.dvr_only) : gl.program.iso_only;
+    const GLuint program = desc.direct_volume_rendering_enabled ? (desc.isosurface_enabled ? gl.program.dvr_and_iso : gl.program.dvr_only) : gl.program.iso_only;
 
-    const GLint uniform_loc_tex_depth = glGetUniformLocation(program, "u_tex_depth");
-    const GLint uniform_loc_tex_volume = glGetUniformLocation(program, "u_tex_volume");
-    const GLint uniform_loc_tex_tf = glGetUniformLocation(program, "u_tex_tf");
-    const GLint uniform_block_index = glGetUniformBlockIndex(program, "UniformData");
-    const GLint uniform_loc_iso_values = glGetUniformLocation(program, "u_iso.values");
-    const GLint uniform_loc_iso_colors = glGetUniformLocation(program, "u_iso.colors");
-    const GLint uniform_loc_iso_count = glGetUniformLocation(program, "u_iso.count");
+    const GLint uniform_block_index     = glGetUniformBlockIndex(program, "UniformData");
+    const GLint uniform_loc_tex_tf      = glGetUniformLocation(program, "u_tex_tf");
+    const GLint uniform_loc_tex_depth   = glGetUniformLocation(program, "u_tex_depth");
+    const GLint uniform_loc_tex_volume  = glGetUniformLocation(program, "u_tex_volume");
+    const GLint uniform_loc_iso_values  = glGetUniformLocation(program, "u_iso.values");
+    const GLint uniform_loc_iso_colors  = glGetUniformLocation(program, "u_iso.colors");
+    const GLint uniform_loc_iso_count   = glGetUniformLocation(program, "u_iso.count");
 
     glUseProgram(program);
 

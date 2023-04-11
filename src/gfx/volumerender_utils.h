@@ -3,8 +3,6 @@
 #include <core/md_vec_math.h>
 #include <core/md_str.h>
 
-#include <gfx/gl.h>
-
 namespace volume {
 
 void initialize();
@@ -34,15 +32,15 @@ bool write_volume_to_file(const float* data, int64_t dim_x, int64_t dim_y, int64
 
 struct RenderDesc {
     struct {
-        GLuint texture;
+        uint32_t texture;
         int width;
         int height;
     } render_target;
 
     struct {
-        GLuint volume = 0;
-        GLuint transfer_function = 0;
-        GLuint depth = 0;
+        uint32_t volume = 0;
+        uint32_t transfer_function = 0;
+        uint32_t depth = 0;
     } texture;
 
     struct {
