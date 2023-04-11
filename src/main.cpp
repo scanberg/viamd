@@ -7479,6 +7479,7 @@ SerializationObject serialization_targets[] = {
     {"[Representation]", "ColorMapping",    SerializationType_Int32,    offsetof(Representation, color_mapping)},
     {"[Representation]", "StaticColor",     SerializationType_Vec4,     offsetof(Representation, uniform_color)},
     {"[Representation]", "Param",           SerializationType_Vec4,     offsetof(Representation, param)},
+    {"[Representation]", "DynamicEval",     SerializationType_Bool,     offsetof(Representation, dynamic_evaluation)},
 
     {"[AtomElementMapping]", "Label",       SerializationType_String,   offsetof(AtomElementMapping, lbl),  sizeof(AtomElementMapping::lbl)},
     {"[AtomElementMapping]", "Element",     SerializationType_Int8,     offsetof(AtomElementMapping, elem)},
@@ -7737,7 +7738,7 @@ static void load_workspace(ApplicationData* data, str_t filename) {
                     c_txt.ptr = pos;
                     deserialize_object(target, (char*)ptr, &c_txt, filename);
                 } else {
-                    LOG_ERROR("Could not recognize serialization target '%.*s' in group '%.*s,", (int)label.len, label.ptr, (int)group.len, group.ptr);
+                    LOG_INFO("Could not recognize serialization target '%.*s' in group '%.*s,", (int)label.len, label.ptr, (int)group.len, group.ptr);
                 }
             }
         }
