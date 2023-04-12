@@ -804,11 +804,15 @@ static void compute_histogram(float* bins, int num_bins, float min_bin_val, floa
 
     const float bin_range = max_bin_val - min_bin_val;
     const float inv_range = 1.0f / bin_range;
-    const float scl = 1.0f / num_values;
     for (int i = 0; i < num_values; ++i) {
         if (values[i] < min_bin_val || max_bin_val < values[i]) continue;
         int idx = CLAMP((int)(((values[i] - min_bin_val) * inv_range) * num_bins), 0, num_bins - 1);
-        bins[idx] += scl;
+        bins[idx] += 1.0f;
+    }
+
+    const float scl = 1.0f / num_values;
+    for (int i = 0; i < num_bins; ++i) {
+        bins[i] = bins[i] * scl;
     }
 }
 
@@ -819,12 +823,11 @@ static void compute_histogram_masked(float* bins, int num_bins, float min_bin_va
     ASSERT(dim > 0);
     memset(bins, 0, sizeof(float) * num_bins);
 
-    const int num_values = md_bitfield_popcount(mask);
+    const int num_values = md_bitfield_popcount(mask) * dim;
     if (num_values == 0) return;
 
     const float bin_range = max_bin_val - min_bin_val;
     const float inv_range = 1.0f / bin_range;
-    const float scl = 1.0f / num_values;
 
     // We evaluate each frame, one at a time
     md_bitfield_iter_t it = md_bitfield_iter(mask);
@@ -834,8 +837,13 @@ static void compute_histogram_masked(float* bins, int num_bins, float min_bin_va
             const float val = values[val_idx + i];
             if (val < min_bin_val || max_bin_val < val) continue;
             const int bin_idx = CLAMP((int)(((val - min_bin_val) * inv_range) * num_bins), 0, num_bins - 1);
-            bins[bin_idx] += scl;
+            bins[bin_idx] += 1.0f;
         }
+    }
+    
+    const float scl = 1.0f / num_values;
+    for (int i = 0; i < num_bins; ++i) {
+        bins[i] = bins[i] * scl;
     }
 }
 
@@ -4841,9 +4849,19 @@ static void draw_distribution_window(ApplicationData* data) {
                 num_values_src = (int)ARRAY_SIZE(prop.full_hist.bin);
             }
 
-            // Downsample bins
+            // Downsample histograms to visual resolution
             downsample_histogram(full_bins, num_bins, full_src, num_values_src);
             downsample_histogram(filt_bins, num_bins, filt_src, num_values_src);
+
+            // In case we have a distribution which is not a probability distribution, we need to scale the bins (e.g. RDF)
+            // For now we assume that any property with FLAG_DISTRIBUTION is not a probability distribution
+            if (full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
+                const double scl = (double)num_bins / (double)num_values_src;
+                for (int64_t j = 0; j < num_bins; ++j) {
+                    full_bins[j] *= scl;
+                    filt_bins[j] *= scl;
+                }
+            }
 
             double max_y = 0;
             for (int64_t j = 0; j < num_bins; ++j) {
@@ -4852,9 +4870,9 @@ static void draw_distribution_window(ApplicationData* data) {
             max_y = MAX(max_y, 0.001);
             
             ImGui::PushID(i);
-            const double bar_width = (max_x - min_x) / (num_bins-1);
-            const double bar_off = min_x;
-            const double bar_scl = (max_x - min_x) / (num_bins-1);
+            const double bar_width = (max_x - min_x) / (num_bins);
+            const double bar_off = min_x + 0.5 * bar_width;
+            const double bar_scl = (max_x - min_x) / (num_bins);
 
             char label[128];
             int len = snprintf(label, sizeof(label), "%s ", prop.label);
@@ -4934,7 +4952,7 @@ static void draw_distribution_window(ApplicationData* data) {
                     ImPlot::GetPlotDrawList()->AddLine(p0, p1, IM_COL32(255, 255, 255, 120));
                     ImPlot::PopPlotClipRect();\
 
-                    const int32_t bin_idx = CLAMP((int)((plot_pos.x / max_x) * (num_bins-1)), 0, num_bins-1);
+                    const int32_t bin_idx = CLAMP((int)((plot_pos.x / max_x) * num_bins), 0, num_bins-1);
                     const float full_val = full_bins[bin_idx];
                     const float filt_val = filt_bins[bin_idx];
 
