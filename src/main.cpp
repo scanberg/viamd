@@ -4842,7 +4842,7 @@ static void draw_distribution_window(ApplicationData* data) {
             if (full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
                 full_src = full_prop->data.values;
                 filt_src = filt_prop->data.values;
-                num_values_src = full_prop->data.num_values;
+                num_values_src = full_prop->data.dim[0];
             } else if (full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                 full_src = prop.full_hist.bin;
                 filt_src = prop.filt_hist.bin;
