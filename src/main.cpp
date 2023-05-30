@@ -5764,7 +5764,7 @@ static void draw_ramachandran_window(ApplicationData* data) {
                 uint32_t lines[4][count] = {0};
                 float values[4][count] = {0};
 
-                memcpy(values, ref_iso_values, sizeof(ref_iso_values));
+                MEMCPY(values, ref_iso_values, sizeof(ref_iso_values));
                 for (uint32_t j = 0; j < count; ++j) {
                     values[0][j] *= MAX(scl[i][0], FLT_EPSILON);
                     values[1][j] *= MAX(scl[i][1], FLT_EPSILON);
@@ -5773,8 +5773,8 @@ static void draw_ramachandran_window(ApplicationData* data) {
                 }
 
                 if (display_mode[i] == IsoLevels) {
-                    memcpy(colors, ref_iso_level_colors, sizeof(colors));
-                    memcpy(lines,  ref_iso_level_colors, sizeof(lines));
+                    MEMCPY(colors, ref_iso_level_colors, sizeof(colors));
+                    MEMCPY(lines,  ref_iso_level_colors, sizeof(lines));
                 }
                 else {
                     uint32_t line_colors[3] = {
