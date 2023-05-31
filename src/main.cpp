@@ -4952,7 +4952,8 @@ static void draw_distribution_window(ApplicationData* data) {
                     ImPlot::GetPlotDrawList()->AddLine(p0, p1, IM_COL32(255, 255, 255, 120));
                     ImPlot::PopPlotClipRect();\
 
-                    const int32_t bin_idx = CLAMP((int)((plot_pos.x / max_x) * num_bins), 0, num_bins-1);
+                    const float size_x = max_x - min_x;
+                    const int32_t bin_idx = CLAMP((int)(((plot_pos.x - min_x) / size_x) * num_bins), 0, num_bins-1);
                     const float full_val = full_bins[bin_idx];
                     const float filt_val = filt_bins[bin_idx];
 
@@ -6700,6 +6701,15 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
 
 #define APPEND_BUF(buf, len, fmt, ...) (len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), fmt, ##__VA_ARGS__) + 1)
 
+static md_array(float) sample_range(float beg, float end, int sample_count, md_allocator_i* alloc) {
+    md_array(float) result = md_array_create(float, sample_count, alloc);
+    double step = (end - beg) / (double)(sample_count - 1);
+    for (int i = 0; i < sample_count; ++i) {
+        result[i] = (float)((double)beg + step * (double)i);
+    }
+    return result;
+}
+
 static void draw_property_export_window(ApplicationData* data) {
     ASSERT(data);
 
@@ -6764,21 +6774,45 @@ static void draw_property_export_window(ApplicationData* data) {
                 for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
                     const DisplayProperty& dp = data->display_properties[i];
                     if (dp.full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
-                        ColData prop_data = {dp.label, dp.full_hist.bin, (int)ARRAY_SIZE(dp.full_hist.bin), 1};
-                        md_array_push(col_data, prop_data, frame_allocator);
+                        {
+                            // X
+                            str_t lbl = alloc_printf(frame_allocator, "%s(x)", dp.label);
+                            md_array(float) x_data = sample_range(dp.full_hist.value_range.beg, dp.full_hist.value_range.end, (int)ARRAY_SIZE(dp.full_hist.bin), frame_allocator);
+                            ColData x_col = {lbl.ptr, x_data, (int)md_array_size(x_data), 1};
+                            md_array_push(col_data, x_col, frame_allocator);
+                        }
+                        {
+                            // Full
+                            ColData prop_data = {dp.label, dp.full_hist.bin, (int)ARRAY_SIZE(dp.full_hist.bin), 1};
+                            md_array_push(col_data, prop_data, frame_allocator);
+                        }
                         if (data->timeline.filter.enabled) {
+                            // Filtered
                             str_t lbl = alloc_printf(frame_allocator, "%s(filt)", dp.label);
                             ColData filt_data = {lbl.ptr, dp.filt_hist.bin, (int)ARRAY_SIZE(dp.filt_hist.bin), 1};
                             md_array_push(col_data, filt_data, frame_allocator);
                         }
+
                     } else if (dp.full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
-                        ColData prop_data = {dp.label, dp.full_prop->data.values, (int)dp.full_prop->data.num_values, dp.full_prop->data.dim[0]};
-                        md_array_push(col_data, prop_data, frame_allocator);
+                        {
+                            // X
+                            str_t lbl = alloc_printf(frame_allocator, "%s(x)", dp.label);
+                            md_array(float) x_data = sample_range(dp.full_prop->data.min_range[0], dp.full_prop->data.max_range[0], (int)dp.full_prop->data.dim[0], frame_allocator);
+                            ColData x_col = {lbl.ptr, x_data, (int)md_array_size(x_data), 1};
+                            md_array_push(col_data, x_col, frame_allocator);
+                        }
+                        {
+                            // Full
+                            ColData prop_data = {dp.label, dp.full_prop->data.values, (int)dp.full_prop->data.dim[0], 1};
+                            md_array_push(col_data, prop_data, frame_allocator);
+                        }
                         if (data->timeline.filter.enabled) {
+                            // Filtered
                             str_t lbl = alloc_printf(frame_allocator, "%s(filt)", dp.label);
-                            ColData filt_data = {lbl.ptr, dp.filt_prop->data.values, (int)dp.filt_prop->data.num_values, dp.filt_prop->data.dim[0]};
+                            ColData filt_data = {lbl.ptr, dp.filt_prop->data.values, (int)dp.full_prop->data.dim[0], 1};
                             md_array_push(col_data, filt_data, frame_allocator);
                         }
+
                     }
                 }
             }
@@ -6794,7 +6828,7 @@ static void draw_property_export_window(ApplicationData* data) {
                     ImGui::PushID(i);
                     const char* preview = (0 <= col_options[i] && col_options[i] < num_col_data) ? col_data[col_options[i]].label : "";
                     if (ImGui::BeginCombo("##col", preview)) {
-                        if (ImGui::Selectable("", col_options[i] == -1)) {
+                        if (ImGui::Selectable("##empty", col_options[i] == -1)) {
                             col_options[i] = -1;
                         }
                         for (int j = 0; j < num_col_data; ++j) {
