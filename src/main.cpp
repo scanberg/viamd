@@ -513,7 +513,7 @@ struct ApplicationData {
         struct {
             md_bitfield_t mask = {0};
             SelectionGrowth mode = SelectionGrowth::CovalentBond;
-            float extent = 0;
+            float extent = 1;
             bool mask_invalid = true;
             bool show_window = false;
         } grow;
@@ -3723,7 +3723,8 @@ static void draw_selection_grow_window(ApplicationData* data) {
         static uint64_t sel_popcount = 0;
         const uint64_t popcount = md_bitfield_popcount(&data->selection.current_selection_mask);
         const bool mode_changed = ImGui::Combo("##Mode", (int*)(&data->selection.grow.mode), "Covalent Bond\0Radial\0\0");
-        const bool extent_changed = ImGui::SliderFloat("##Extent", &data->selection.grow.extent, 1.0f, 20.f);
+        const char* fmt = (data->selection.grow.mode == SelectionGrowth::CovalentBond) ? "%.0f" : "%.2f";
+        const bool extent_changed = ImGui::SliderFloat("##Extent", &data->selection.grow.extent, 1.0f, 20.f, fmt);
         const bool appearing = ImGui::IsWindowAppearing();
         const bool sel_changed = popcount != sel_popcount;
         ImGui::PopItemWidth();
