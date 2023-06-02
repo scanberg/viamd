@@ -3600,7 +3600,7 @@ void draw_context_popup(ApplicationData* data) {
             ImGui::EndMenu();
         }
 
-        if (data->selection.right_clicked != -1 && num_atoms_selected == 0 && data->mold.mol.atom.element) {
+        if (data->selection.right_clicked != -1 && data->mold.mol.atom.element) {
             int idx = data->selection.right_clicked;
             if (0 <= idx && idx < data->mold.mol.atom.count) {
                 char label[64] = "";
