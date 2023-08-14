@@ -8042,8 +8042,8 @@ void create_screenshot(ApplicationData* data) {
     ASSERT(data);
     // @NOTE(Robin): Package this as a main(render thread) task to ensure that it is done when it has been 
     image_t img = {0};
-    init_image(&img, data->gbuffer.width, data->gbuffer.height, frame_allocator);
-    defer { free_image(&img, frame_allocator); };
+    image_init(&img, data->gbuffer.width, data->gbuffer.height, frame_allocator);
+    defer { image_free(&img, frame_allocator); };
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glReadBuffer(GL_BACK);
@@ -8069,11 +8069,11 @@ void create_screenshot(ApplicationData* data) {
     str_t ext = extract_ext(data->screenshot.path_to_file);
     if (str_equal_cstr_ignore_case(ext, "jpg")) {
         const int quality = 95;
-        write_image_jpg(img, data->screenshot.path_to_file, quality);
+        image_write_jpg(&img, data->screenshot.path_to_file, quality);
     } else if (str_equal_cstr_ignore_case(ext, "png")) {
-        write_image_png(img, data->screenshot.path_to_file);
+        image_write_png(&img, data->screenshot.path_to_file);
     } else if (str_equal_cstr_ignore_case(ext, "bmp")) {
-        write_image_bmp(img, data->screenshot.path_to_file);
+        image_write_bmp(&img, data->screenshot.path_to_file);
     } else {
         LOG_ERROR("Could not match extension when saving screenshot");
     }
