@@ -15,7 +15,7 @@ inline vec3_t rgb_to_hsv(vec3_t c) {
 
     const float d = q.x - MIN(q.w, q.y);
     const float e = 1.0e-10f;
-    return {ABS(q.z + (q.w - q.y) / (6.0f * d + e)), d / (q.x + e), q.x};
+    return {fabsf(q.z + (q.w - q.y) / (6.0f * d + e)), d / (q.x + e), q.x};
 }
 
 inline vec3_t hsv_to_rgb(vec3_t c) {
@@ -85,21 +85,21 @@ inline vec3_t rgb_to_hcl(vec3_t rgb) {
     return HCL;
 }
 
-// clang-format off
 inline vec3_t rgb_to_XYZ(vec3_t rgb) {
-    constexpr mat3_t RGB_2_XYZ = {0.4124564f, 0.3575761f, 0.1804375f,
+    constexpr mat3_t RGB_2_XYZ = {
+        0.4124564f, 0.3575761f, 0.1804375f,
         0.2126729f, 0.7151522f, 0.0721750f,
         0.0193339f, 0.1191920f, 0.9503041f};
     return RGB_2_XYZ * rgb;
 }
 
 inline vec3_t XYZ_to_rgb(vec3_t XYZ) {
-    constexpr mat3_t XYZ_2_RGB = { 3.2404542f, -1.5371385f, -0.4985314f,
-        -0.9692660f,  1.8760108f,  0.0415560f,
+    constexpr mat3_t XYZ_2_RGB = {
+        3.2404542f, -1.5371385f, -0.4985314f,
+       -0.9692660f,  1.8760108f,  0.0415560f,
         0.0556434f, -0.2040259f,  1.0572252f};
     return XYZ_2_RGB * XYZ;
 }
-// clang-format on
 
 constexpr inline vec3_t XYZ_to_Lab(vec3_t XYZ) {
     const auto f = [](float t) {
@@ -136,33 +136,34 @@ constexpr inline vec3_t Lab_to_XYZ(vec3_t Lab) {
     return {X, Y, Z};
 }
 
-inline vec3_t rgb_to_Lab(vec3_t rgb) { return XYZ_to_Lab(rgb_to_XYZ(rgb)); }
+constexpr inline vec3_t rgb_to_Lab(vec3_t rgb) { return XYZ_to_Lab(rgb_to_XYZ(rgb)); }
 inline vec3_t Lab_to_rgb(vec3_t Lab) { return XYZ_to_rgb(Lab_to_XYZ(Lab)); }
 
-inline vec3_t hcl_to_rgb(float h, float c, float l) { return hcl_to_rgb({h, c, l}); }
+constexpr inline vec3_t hcl_to_rgb(float h, float c, float l) { return hcl_to_rgb({h, c, l}); }
 inline vec3_t rgb_to_hcl(float r, float g, float b) { return rgb_to_hcl({r, g, b}); }
 
+constexpr float hue_from_hash(uint32_t hash) {
+    return (hash % 0xFFFFFFFFU) / (float)0xFFFFFFFFU;
+}
 
-inline vec4_t color_from_hash(uint32_t hash, uint32_t num_bins = 0) {
-    constexpr float chroma = 0.8f;
-    constexpr float luminance = 1.0f;
-    const uint32_t mod = num_bins == 0 ? 0xFFFFFFFFU : num_bins;
-    const float hue = (hash % mod) / (float)mod;
-    const vec3_t rgb = hcl_to_rgb({hue, chroma, luminance});
-
-    return vec4_from_vec3(rgb, 1);
+constexpr inline vec4_t color_from_hash(uint32_t hash, float chroma = 0.8f, float luminance = 1.0f, float alpha = 1.0f) {
+    return { hue_from_hash(hash), chroma, luminance, alpha };
 }
 
 constexpr inline vec4_t convert_color(uint32_t rgba) {
-    return { (float)((rgba >> 0) & 0xFF) / 255.f, (float)((rgba >> 8) & 0xFF) / 255.f, (float)((rgba >> 16) & 0xFF) / 255.f, (float)((rgba >> 24) & 0xFF) / 255.f };
+    const float r = (float)((rgba >>  0) & 0xFF) / 255.f;
+    const float g = (float)((rgba >>  8) & 0xFF) / 255.f;
+    const float b = (float)((rgba >> 16) & 0xFF) / 255.f;
+    const float a = (float)((rgba >> 24) & 0xFF) / 255.f;
+    return { r, g, b, a };
 }
 
-constexpr inline uint32_t convert_color(vec4_t color) {
-    uint32_t out = 0;
-    out |= ((uint32_t)(CLAMP(color.x, 0.0f, 1.0f) * 255.0f + 0.5f)) << 0;
-    out |= ((uint32_t)(CLAMP(color.y, 0.0f, 1.0f) * 255.0f + 0.5f)) << 8;
-    out |= ((uint32_t)(CLAMP(color.z, 0.0f, 1.0f) * 255.0f + 0.5f)) << 16;
-    out |= ((uint32_t)(CLAMP(color.w, 0.0f, 1.0f) * 255.0f + 0.5f)) << 24;
+constexpr inline uint32_t convert_color(vec4_t in) {
+    const uint32_t out = 
+        ((uint32_t)(CLAMP(in.x, 0.0f, 1.0f) * 255.0f + 0.5f)) << 0   |
+        ((uint32_t)(CLAMP(in.y, 0.0f, 1.0f) * 255.0f + 0.5f)) << 8   |
+        ((uint32_t)(CLAMP(in.z, 0.0f, 1.0f) * 255.0f + 0.5f)) << 16  |
+        ((uint32_t)(CLAMP(in.w, 0.0f, 1.0f) * 255.0f + 0.5f)) << 24;
     return out;
 }
 
