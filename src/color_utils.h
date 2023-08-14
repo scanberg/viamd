@@ -101,7 +101,7 @@ inline vec3_t XYZ_to_rgb(vec3_t XYZ) {
     return XYZ_2_RGB * XYZ;
 }
 
-constexpr inline vec3_t XYZ_to_Lab(vec3_t XYZ) {
+inline vec3_t XYZ_to_Lab(vec3_t XYZ) {
     const auto f = [](float t) {
         const float d = 6.f / 29.f;
         return t > d * d * d ? powf(t, 1.0f / 3.0f) : (t / (3.f * d * d) + 4.f / 29.f);
@@ -120,7 +120,7 @@ constexpr inline vec3_t XYZ_to_Lab(vec3_t XYZ) {
     return {L, a, b};
 }
 
-constexpr inline vec3_t Lab_to_XYZ(vec3_t Lab) {
+inline vec3_t Lab_to_XYZ(vec3_t Lab) {
     const auto f = [](float t) {
         const float d = 6.f / 29.f;
         return t > d ? t * t * t : 3.0f * d * d * (t - 4.f / 29.f);
@@ -136,10 +136,10 @@ constexpr inline vec3_t Lab_to_XYZ(vec3_t Lab) {
     return {X, Y, Z};
 }
 
-constexpr inline vec3_t rgb_to_Lab(vec3_t rgb) { return XYZ_to_Lab(rgb_to_XYZ(rgb)); }
+inline vec3_t rgb_to_Lab(vec3_t rgb) { return XYZ_to_Lab(rgb_to_XYZ(rgb)); }
 inline vec3_t Lab_to_rgb(vec3_t Lab) { return XYZ_to_rgb(Lab_to_XYZ(Lab)); }
 
-constexpr inline vec3_t hcl_to_rgb(float h, float c, float l) { return hcl_to_rgb({h, c, l}); }
+inline vec3_t hcl_to_rgb(float h, float c, float l) { return hcl_to_rgb({h, c, l}); }
 inline vec3_t rgb_to_hcl(float r, float g, float b) { return rgb_to_hcl({r, g, b}); }
 
 constexpr float hue_from_hash(uint32_t hash) {

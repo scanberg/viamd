@@ -30,6 +30,7 @@
 #include <application/IconsFontAwesome6.h>
 
 #include <stdio.h> // snprintf
+#include <stdlib.h> // free
 
 namespace application {
 
