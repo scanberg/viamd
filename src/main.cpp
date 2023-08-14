@@ -30,25 +30,24 @@
 #include <core/md_str_builder.h>
 #include <core/md_parse.h>
 
-#include "gfx/gl.h"
-#include "gfx/gl_utils.h"
-#include "gfx/camera.h"
-#include "gfx/camera_utils.h"
-#include "gfx/immediate_draw_utils.h"
-#include "gfx/postprocessing_utils.h"
-#include "gfx/volumerender_utils.h"
+#include <gfx/gl.h>
+#include <gfx/gl_utils.h>
+#include <gfx/camera.h>
+#include <gfx/camera_utils.h>
+#include <gfx/immediate_draw_utils.h>
+#include <gfx/postprocessing_utils.h>
+#include <gfx/volumerender_utils.h>
 
-#include "string_util.h"
-#include "random_util.h"
-#include "imgui_widgets.h"
-#include "implot_widgets.h"
-#include "task_system.h"
-#include "color_utils.h"
-#include "loader.h"
-#include "ramachandran.h"
-#include "image.h"
-#include "application/application.h"
-#include "application/IconsFontAwesome6.h"
+#include <halton.h>
+#include <imgui_widgets.h>
+#include <implot_widgets.h>
+#include <task_system.h>
+#include <color_utils.h>
+#include <loader.h>
+#include <ramachandran.h>
+#include <image.h>
+#include <application/application.h>
+#include <application/IconsFontAwesome6.h>
 
 #include <imgui.h>
 #define IMGUI_DEFINE_MATH_OPERATORS
@@ -60,8 +59,6 @@
 #include <imgui_notify.h>
 
 #include <stdio.h>
-#include <thread>
-#include <functional>
 
 #define EXPERIMENTAL_GFX_API 0
 #define PICKING_JITTER_HACK 0
@@ -295,7 +292,7 @@ struct Representation {
 };
 
 struct Selection {
-    StrBuf<64> name = "sel";
+    char name[64] = "sel";
     md_bitfield_t atom_mask{};
 };
 
@@ -360,7 +357,7 @@ struct DisplayProperty {
 };
 
 struct AtomElementMapping {
-    StrBuf<31> lbl = "";
+    char lbl[31] = "";
     md_element_t elem = 0;
 };
 
@@ -386,9 +383,9 @@ struct ApplicationData {
     // --- FILES ---
     // for keeping track of open files
     struct {
-        StrBuf<1024> molecule{};
-        StrBuf<1024> trajectory{};
-        StrBuf<1024> workspace{};
+        char molecule[2048];
+        char trajectory[2048];
+        char workspace[2048];
 
         bool coarse_grained = false;
         bool deperiodize    = false;
@@ -710,8 +707,8 @@ struct ApplicationData {
     
     // --- RAMACHANDRAN ---
     struct {
-        StrBuf<256> input = "all";
-        StrBuf<256> error = "";
+        char input[256] = "all";
+        char error[256] = "";
 
         bool evaluate = true;
         bool input_valid = false;
@@ -830,7 +827,7 @@ static void compute_histogram_masked(float* bins, int num_bins, float min_bin_va
     const float inv_range = 1.0f / bin_range;
 
     // We evaluate each frame, one at a time
-    md_bitfield_iter_t it = md_bitfield_iter(mask);
+    md_bitfield_iter_t it = md_bitfield_iter_create(mask);
     while (md_bitfield_iter_next(&it)) {
         const int val_idx = dim * (int)md_bitfield_iter_idx(&it);
         for (int i = 0; i < dim; ++i) {
@@ -847,36 +844,54 @@ static void compute_histogram_masked(float* bins, int num_bins, float min_bin_va
     }
 }
 
-static void downsample_histogram(float* dst_bins, int num_dst_bins, const float* src_bins, int num_src_bins) {
+static void downsample_histogram(float* dst_bins, float* dst_weights, int num_dst_bins, const float* src_bins, const float* src_weights, int num_src_bins) {
+    ASSERT(dst_bins);
+    ASSERT(dst_weights);
+    ASSERT(src_bins);
     ASSERT(num_dst_bins <= num_src_bins);
 
-    memset(dst_bins, 0, sizeof(float) * num_dst_bins);
+    MEMSET(dst_bins, 0, sizeof(float) * num_dst_bins);
+    MEMSET(dst_weights, 0, sizeof(float) * num_dst_bins);
+
     const int factor = MAX(1, num_src_bins / num_dst_bins);
-    for (int j = 0; j < num_src_bins; ++j) {
-        dst_bins[j / factor] += src_bins[j];
+    for (int src_idx = 0; src_idx < num_src_bins; ++src_idx) {
+        // @TODO: this could be a shift instead of div since we always deal in powers of 2
+        const int dst_idx = src_idx / factor;
+        dst_bins[dst_idx] += src_bins[src_idx];
+        dst_weights[dst_idx] += src_weights ? src_weights[src_idx] : 1.0f;
+    }
+}
+
+static void scale_histogram(float* bins, const float* weights, int num_bins) {
+    ASSERT(bins);
+    ASSERT(weights);
+
+    for (int i = 0; i < num_bins; ++i) {
+        if (weights[i]) {
+            bins[i] /= weights[i];
+        }
     }
 }
 
 static double frame_to_time(double frame, const ApplicationData& data) {
-    int64_t num_frames = md_array_size(data.timeline.x_values);
+    const int64_t num_frames = md_array_size(data.timeline.x_values);
     ASSERT(num_frames);
-    int64_t f0 = CLAMP((int64_t)frame, 0, num_frames - 1);
-    int64_t f1 = CLAMP((int64_t)frame + 1, 0, num_frames - 1);
+    const int64_t f0 = CLAMP((int64_t)frame + 0, 0, num_frames - 1);
+    const int64_t f1 = CLAMP((int64_t)frame + 1, 0, num_frames - 1);
     return lerp(data.timeline.x_values[f0], data.timeline.x_values[f1], fract(frame));
 }
 
 // Try to map time t back into frame
 static double time_to_frame(double time, const ApplicationData& data) {
-    int64_t num_frames = md_array_size(data.timeline.x_values);
+    const int64_t num_frames = md_array_size(data.timeline.x_values);
     ASSERT(num_frames);
 
-    double beg = data.timeline.x_values[0];
-    double end = data.timeline.x_values[num_frames - 1];
+    const double beg = data.timeline.x_values[0];
+    const double end = data.timeline.x_values[num_frames - 1];
     time = CLAMP(time, beg, end);
 
     // Estimate the frame
-    double frame_est = ((time - beg) / (end-beg)) * (num_frames - 1);
-    frame_est = CLAMP(frame_est, 0, num_frames - 1);
+    const double frame_est = CLAMP(((time - beg) / (end-beg)) * (num_frames - 1), 0, num_frames - 1);
 
     int64_t prev_frame_idx = CLAMP((int64_t)frame_est,     0, num_frames - 1);
     int64_t next_frame_idx = CLAMP((int64_t)frame_est + 1, 0, num_frames - 1);
@@ -1237,7 +1252,7 @@ int main(int, char**) {
     cone_trace::initialize();
 #endif
     LOG_DEBUG("Initializing task system...");
-    task_system::initialize(MIN(VIAMD_NUM_WORKER_THREADS, std::thread::hardware_concurrency()));
+    task_system::initialize(MIN(VIAMD_NUM_WORKER_THREADS, (uint32_t)md_os_num_processors()));
 
     md_gl_initialize();
     md_gl_shaders_init(&data.mold.gl_shaders, shader_output_snippet);
@@ -2558,7 +2573,7 @@ static bool filter_expression(ApplicationData* data, str_t expr, md_bitfield_t* 
 static void draw_main_menu(ApplicationData* data) {
     ASSERT(data);
     bool new_clicked = false;
-    char path_buf[4096] = "";
+    char path_buf[2048] = "";
 
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
@@ -2581,7 +2596,7 @@ static void draw_main_menu(ApplicationData* data) {
                         save_workspace(data, {path_buf, path_len});
                     }
                 } else {
-                    save_workspace(data, data->files.workspace);
+                    save_workspace(data, str_from_cstr(data->files.workspace));
                 }
             }
             if (ImGui::MenuItem("Save As")) {
@@ -2766,22 +2781,23 @@ ImGui::EndGroup();
                 ImGui::Text("Stored Selections");
                 for (int i = 0; i < (int)md_array_size(data->selection.stored_selections); i++) {
                     auto& sel = data->selection.stored_selections[i];
-                    bool is_valid = md_script_identifier_name_valid(sel.name);
+                    const str_t name_str = str_from_cstr(sel.name);
+                    bool is_valid = md_script_identifier_name_valid(name_str);
                     char error[64] = "";
                     if (!is_valid) {
-                        snprintf(error, sizeof(error), "'%s' is not a valid identifier.", sel.name.cstr());
+                        snprintf(error, sizeof(error), "'%s' is not a valid identifier.", sel.name);
                     }
 
                     for (int j = 0; j < i; ++j) {
-                        if (str_equal(sel.name, data->selection.stored_selections[j].name)) {
+                        if (str_equal_cstr(name_str, data->selection.stored_selections[j].name)) {
                             is_valid = false;
-                            snprintf(error, sizeof(error), "identifier '%s' is already taken.", sel.name.cstr());
+                            snprintf(error, sizeof(error), "identifier '%s' is already taken.", sel.name);
                             break;
                         }
                     }
 
                     ImGui::PushID(i);
-                    ImGui::InputQuery("##label", sel.name.beg(), sel.name.capacity(), is_valid, error);
+                    ImGui::InputQuery("##label", sel.name, sizeof(sel.name), is_valid, error);
                     ImGui::SameLine();
                     if (ImGui::Button("Load")) {
                         md_bitfield_copy(&data->selection.current_selection_mask, &sel.atom_mask);
@@ -3045,7 +3061,7 @@ AtomElementMapping* add_atom_elem_mapping(ApplicationData* data, str_t lbl, md_e
     // Check if we already have a mapping for the label -> overwrite
     int64_t i = 0;
     for (; i < md_array_size(data->dataset.atom_element_remappings); ++i) {
-        if (str_equal(lbl, data->dataset.atom_element_remappings[i].lbl)) break;
+        if (str_equal_cstr(lbl, data->dataset.atom_element_remappings[i].lbl)) break;
     }
     if (i == md_array_size(data->dataset.atom_element_remappings)) {
         AtomElementMapping mapping = {
@@ -3065,7 +3081,7 @@ void apply_atom_elem_mappings(ApplicationData* data) {
     }
 
     for (int64_t j = 0; j < md_array_size(data->dataset.atom_element_remappings); ++j) {
-        str_t lbl = data->dataset.atom_element_remappings[j].lbl;
+        str_t lbl = str_from_cstr(data->dataset.atom_element_remappings[j].lbl);
         md_element_t elem = data->dataset.atom_element_remappings[j].elem;
         float radius = md_util_element_vdw_radius(elem);
 
@@ -3201,7 +3217,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     md_chain_idx_t chain_idx = -1;
     md_residue_idx_t res_idx = -1;
 
-    md_bitfield_iter_t it = md_bitfield_iter(bf);
+    md_bitfield_iter_t it = md_bitfield_iter_create(bf);
     while (md_bitfield_iter_next(&it)) {
         uint64_t i = md_bitfield_iter_idx(&it);
         if (mol->atom.chain_idx) {
@@ -4114,7 +4130,7 @@ static void draw_atom_info_window(const ApplicationData& data, int atom_idx) {
     str_t chain_id = {};
     if (mol.chain.count > 0 && mol.atom.chain_idx) {
         chain_idx = mol.atom.chain_idx[atom_idx];
-        if (chain_idx != -1 && mol.chain.count > 0) {
+        if (0 <= chain_idx && chain_idx < mol.chain.count) {
             chain_id = mol.chain.id[chain_idx];
         }
     }
@@ -4783,10 +4799,12 @@ static void draw_distribution_window(ApplicationData* data) {
 
         ImPlotFlags flags = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame;
 
-        // The distribution properties are always computed as histograms with a resolution of 1024
+        // The distribution properties are always computed as histograms with a fixed high resolution
         // If we have a different number of bins for our visualization, we need to recompute the bins
-        float* full_bins = (float*)md_alloc(frame_allocator, num_bins * sizeof(float));
-        float* filt_bins = (float*)md_alloc(frame_allocator, num_bins * sizeof(float));
+        float* full_bins    = (float*)md_alloc(frame_allocator, num_bins * sizeof(float));
+        float* full_weights = (float*)md_alloc(frame_allocator, num_bins * sizeof(float));
+        float* filt_bins    = (float*)md_alloc(frame_allocator, num_bins * sizeof(float));
+        float* filt_weights = (float*)md_alloc(frame_allocator, num_bins * sizeof(float));
 
         const int num_props = (int)md_array_size(data->display_properties);
         
@@ -4837,38 +4855,34 @@ static void draw_distribution_window(ApplicationData* data) {
             }
 
             const float* full_src = 0;
+            const float* full_weights_src = 0;
             const float* filt_src = 0;
-            int num_values_src = 0;
+            const float* filt_weights_src = 0;
+            int num_bins_src = 0;
 
             if (full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
                 full_src = full_prop->data.values;
+                full_weights_src = full_prop->data.weights;
                 filt_src = filt_prop->data.values;
-                num_values_src = full_prop->data.dim[0];
+                filt_weights_src = filt_prop->data.weights;
+                num_bins_src = full_prop->data.dim[0];
             } else if (full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                 full_src = prop.full_hist.bin;
                 filt_src = prop.filt_hist.bin;
-                num_values_src = (int)ARRAY_SIZE(prop.full_hist.bin);
+                num_bins_src = (int)ARRAY_SIZE(prop.full_hist.bin);
             }
 
-            // Downsample histograms to visual resolution
-            downsample_histogram(full_bins, num_bins, full_src, num_values_src);
-            downsample_histogram(filt_bins, num_bins, filt_src, num_values_src);
+            // Downsample and scale histograms to visual resolution
+            downsample_histogram(full_bins, full_weights, num_bins, full_src, full_weights_src, num_bins_src);
+            scale_histogram(full_bins, full_weights, num_bins);
+            
+            downsample_histogram(filt_bins, filt_weights, num_bins, filt_src, filt_weights_src, num_bins_src);
+            scale_histogram(filt_bins, filt_weights, num_bins);
 
-            // In case we have a distribution which is not a probability distribution, we need to scale the bins (e.g. RDF)
-            // For now we assume that any property with FLAG_DISTRIBUTION is not a probability distribution
-            if (full_prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
-                const double scl = (double)num_bins / (double)num_values_src;
-                for (int64_t j = 0; j < num_bins; ++j) {
-                    full_bins[j] *= scl;
-                    filt_bins[j] *= scl;
-                }
-            }
-
-            double max_y = 0;
+            double max_y = 0.001;
             for (int64_t j = 0; j < num_bins; ++j) {
                 max_y = MAX(max_y, full_bins[j]);
             }
-            max_y = MAX(max_y, 0.001);
             
             ImGui::PushID(i);
             const double bar_width = (max_x - min_x) / (num_bins);
@@ -6316,16 +6330,14 @@ static void draw_dataset_window(ApplicationData* data) {
 
     ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Dataset", &data->dataset.show_window)) {
-        str_t mol_file = data->files.molecule;
-        ImGui::Text("Molecular data: %.*s", (int)mol_file.len, mol_file.ptr);
+        ImGui::Text("Molecular data: %s", data->files.molecule);
         ImGui::Text("Num atoms:    %9i", (int)data->mold.mol.atom.count);
         ImGui::Text("Num residues: %9i", (int)data->mold.mol.residue.count);
         ImGui::Text("Num chains:   %9i", (int)data->mold.mol.chain.count);
 
-        str_t traj_file = data->files.trajectory;
-        if (traj_file.len) {
+        if (data->files.trajectory[0] != '\0') {
             ImGui::Separator();
-            ImGui::Text("Trajectory data: %.*s", (int)traj_file.len, traj_file.ptr);
+            ImGui::Text("Trajectory data: %s", data->files.trajectory);
             ImGui::Text("Num frames:    %9i", (int)md_trajectory_num_frames(data->mold.traj));
             ImGui::Text("Num atoms:     %9i", (int)md_trajectory_num_atoms(data->mold.traj));
         }
@@ -6336,7 +6348,7 @@ static void draw_dataset_window(ApplicationData* data) {
             ImGui::Text("Atom element mappings, label -> element");
             for (int64_t i = 0; i < num_mappings; ++i) {
                 const auto& mapping = data->dataset.atom_element_remappings[i];
-                ImGui::Text("%s -> %s (%s)", mapping.lbl.cstr(), md_util_element_name(mapping.elem).ptr, md_util_element_symbol(mapping.elem).ptr);
+                ImGui::Text("%s -> %s (%s)", mapping.lbl, md_util_element_name(mapping.elem).ptr, md_util_element_symbol(mapping.elem).ptr);
             }
         }
     }
@@ -6884,8 +6896,12 @@ static void draw_property_export_window(ApplicationData* data) {
                                     }
                                 }
                             } else if (type == Distribution) {
-                                float* bins = (float*)md_alloc(frame_allocator, num_bins * sizeof(float));
-                                downsample_histogram(bins, num_bins, col_data[idx].values, col_data[idx].num_values);
+                                float* bins    = (float*)md_alloc(frame_allocator, num_bins * sizeof(float));
+                                float* weights = (float*)md_alloc(frame_allocator, num_bins * sizeof(float));
+
+                                downsample_histogram(bins, weights, num_bins, col_data[idx].values, NULL, col_data[idx].num_values);
+                                scale_histogram(bins, weights, num_bins);
+                                
                                 md_array_push(column_data, bins, frame_allocator);
                                 md_array_push(column_labels, col_data[idx].label, frame_allocator);
                             }
@@ -7153,9 +7169,12 @@ static void free_trajectory_data(ApplicationData* data) {
     ASSERT(data);
     interrupt_async_tasks(data);
 
-    if (md_trajectory_num_frames(data->mold.traj)) {
+    if (data->mold.traj) {
         load::traj::close(data->mold.traj);
+        data->mold.traj = nullptr;
     }
+    MEMSET(data->files.trajectory, 0, sizeof(data->files.trajectory));
+    
     data->mold.mol.unit_cell = {};
     md_array_shrink(data->timeline.x_values,  0);
     md_array_shrink(data->display_properties, 0);
@@ -7254,7 +7273,7 @@ static void init_trajectory_data(ApplicationData* data) {
         update_md_buffers(data);
         md_gl_molecule_zero_velocity(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
 
-                                                          // Prefetch frames
+        // Prefetch frames
         launch_prefetch_job(data);
     }
 }
@@ -7264,7 +7283,7 @@ static bool load_trajectory_data(ApplicationData* data, str_t filename, bool dep
     if (traj) {
         free_trajectory_data(data);
         data->mold.traj = traj;
-        data->files.trajectory = filename;
+        str_copy_to_char_buf(data->files.trajectory, sizeof(data->files.trajectory), filename);
         data->files.deperiodize = deperiodize_on_load;
         init_trajectory_data(data);
         data->animation.frame = 0;
@@ -7285,8 +7304,7 @@ static void free_molecule_data(ApplicationData* data) {
 
     md_gl_molecule_free(&data->mold.gl_mol);
 
-    data->files.molecule = "";
-    free_trajectory_data(data);
+    MEMSET(data->files.molecule, 0, sizeof(data->files.molecule));
 
     md_bitfield_clear(&data->selection.current_selection_mask);
     md_bitfield_clear(&data->selection.current_highlight_mask);
@@ -7367,7 +7385,7 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
     path_to_file = md_path_make_canonical(path_to_file, frame_allocator);
     if (path_to_file) {
         if (mol_api) {
-            if (str_equal(data->files.molecule, path_to_file) && data->files.coarse_grained == coarse_grained) {
+            if (str_equal_cstr(path_to_file, data->files.molecule) && data->files.coarse_grained == coarse_grained) {
                 // File already loaded as molecular data
                 return true;
             }
@@ -7375,8 +7393,6 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
             interrupt_async_tasks(data);
             free_molecule_data(data);
             free_trajectory_data(data);
-            data->files.molecule = "";
-            data->files.trajectory = "";
 
             if (!mol_api->init_from_file(&data->mold.mol, path_to_file, data->mold.mol_alloc)) {
                 LOG_ERROR("Failed to load molecular data from file '%.*s'", path_to_file.len, path_to_file.ptr);
@@ -7384,7 +7400,7 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
             }
             LOG_SUCCESS("Successfully loaded molecular data from file '%.*s'", path_to_file.len, path_to_file.ptr);
 
-            data->files.molecule = path_to_file;
+            str_copy_to_char_buf(data->files.molecule, sizeof(data->files.molecule), path_to_file);
             data->files.coarse_grained = coarse_grained;
             // @NOTE: If the dataset is coarse-grained, then postprocessing must be aware
             md_util_postprocess_flags_t flags = coarse_grained ? MD_UTIL_POSTPROCESS_COARSE_GRAINED : MD_UTIL_POSTPROCESS_ALL;
@@ -7406,7 +7422,7 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
                 return false;
             }
 
-            if (str_equal(data->files.trajectory, path_to_file) && data->files.deperiodize == deperiodize_on_load) {
+            if (str_equal_cstr(path_to_file, data->files.trajectory) && data->files.deperiodize == deperiodize_on_load) {
                 // Same as loaded file
                 return true;
             }
@@ -7533,8 +7549,8 @@ enum SerializationType {
     SerializationType_Int64,
     SerializationType_Vec3,
     SerializationType_Vec4,
-    SerializationType_Path,
     // Custom types
+    SerializationType_Path,
     SerializationType_Script,
     SerializationType_Bitfield,
 };
@@ -7815,10 +7831,10 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     str_t c_txt = txt;
     str_t line = {};
 
-    str_t cur_molecule_file = str_copy(data->files.molecule, frame_allocator);
-    str_t cur_trajectory_file = str_copy(data->files.trajectory, frame_allocator);
-    bool  cur_coarse_grained = data->files.coarse_grained;
-    bool  cur_deperiodize = data->files.deperiodize;
+    str_t cur_molecule_file     = str_copy_cstr(data->files.molecule, frame_allocator);
+    str_t cur_trajectory_file   = str_copy_cstr(data->files.trajectory, frame_allocator);
+    bool  cur_coarse_grained    = data->files.coarse_grained;
+    bool  cur_deperiodize       = data->files.deperiodize;
 
     const SerializationArray* arr_group = NULL;
     void* ptr = 0;
@@ -7854,19 +7870,19 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     data->view.animation.target_orientation = data->view.camera.orientation;
     data->view.animation.target_distance    = data->view.camera.focus_distance;
     
-    data->files.workspace = filename;
-
-    str_t new_molecule_file   = str_copy(data->files.molecule, frame_allocator);
-    str_t new_trajectory_file = str_copy(data->files.trajectory, frame_allocator);
+    str_t new_molecule_file   = str_copy_cstr(data->files.molecule, frame_allocator);
+    str_t new_trajectory_file = str_copy_cstr(data->files.trajectory, frame_allocator);
     bool  new_coarse_grained  = data->files.coarse_grained;
     bool  new_deperiodize     = data->files.deperiodize;
 
+    str_copy_to_char_buf(data->files.workspace, sizeof(data->files.workspace), filename);
+    
     // When we de-serialize we overwrite the two following paths, even though they are not loaded.
     // So we copy them back to their original values.
-    data->files.molecule = cur_molecule_file;
-    data->files.trajectory = cur_trajectory_file;
-    data->files.coarse_grained = cur_coarse_grained;
-    data->files.deperiodize = cur_deperiodize;
+    str_copy_to_char_buf(data->files.molecule, sizeof(data->files.molecule), cur_molecule_file);
+    str_copy_to_char_buf(data->files.trajectory, sizeof(data->files.trajectory), cur_trajectory_file);
+    data->files.coarse_grained  = cur_coarse_grained;
+    data->files.deperiodize     = cur_deperiodize;
 
     md_molecule_api* mol_api = load::mol::get_api(new_molecule_file);
     md_trajectory_api* traj_api = load::traj::get_api(new_trajectory_file);
@@ -8329,7 +8345,7 @@ static void clear_representations(ApplicationData* data) {
 static Selection* create_selection(ApplicationData* data, str_t name, md_bitfield_t* atom_mask) {
     ASSERT(data);
     Selection sel;
-    sel.name = name;
+    str_copy_to_char_buf(sel.name, sizeof(sel.name), name);
     md_bitfield_init(&sel.atom_mask, persistent_allocator);
     if (atom_mask) {
         md_bitfield_copy(&sel.atom_mask, atom_mask);
@@ -8407,7 +8423,7 @@ static void handle_camera_interaction(ApplicationData* data) {
                 const vec2_t res = { (float)data->ctx.window.width, (float)data->ctx.window.height };
                 const mat4_t mvp = data->view.param.matrix.current.proj * data->view.param.matrix.current.view;
 
-                md_bitfield_iter_t it = md_bitfield_iter(&data->representation.atom_visibility_mask);
+                md_bitfield_iter_t it = md_bitfield_iter_create(&data->representation.atom_visibility_mask);
                 while (md_bitfield_iter_next(&it)) {
                     const int64_t i = md_bitfield_iter_idx(&it);
                     const vec4_t p = mat4_mul_vec4(mvp, vec4_set(data->mold.mol.atom.x[i], data->mold.mol.atom.y[i], data->mold.mol.atom.z[i], 1.0f));

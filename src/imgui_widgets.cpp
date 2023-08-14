@@ -1,4 +1,4 @@
-#include "imgui_widgets.h"
+#include <imgui_widgets.h>
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui_internal.h>
 
@@ -103,7 +103,7 @@ bool RangeSliderBehavior(const ImRect& frame_bb, const char* str_id, float* v1, 
                 ScaleValueFromRatioT<float, float, float>(ImGuiDataType_Float, *values[1], v_min, v_max, is_logarithmic, 0.0f, 0.0f),
             };
 
-            const float delta = wheel_delta * (v_max - v_min) * 0.025;
+            const float delta = wheel_delta * (v_max - v_min) * 0.025f;
 
             t[0] -= delta;
             t[1] += delta;

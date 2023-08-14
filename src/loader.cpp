@@ -15,7 +15,6 @@
 #include <md_frame_cache.h>
 #include <md_util.h>
 
-#include <string_util.h>
 #include <string.h>
 
 #include "task_system.h"
@@ -204,11 +203,7 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
 
                     // Translate all
                     const vec3_t trans = have_cell ? box_ext * 0.5f - com : -com;
-                    for (int64_t i = 0; i < num_atoms; ++i) {
-                        x[i] += trans.x;
-                        y[i] += trans.y;
-                        z[i] += trans.z;
-                    }
+                    vec3_batch_translate_inplace(x, y, z, num_atoms, trans);
                 }
             }
 
@@ -274,7 +269,7 @@ md_trajectory_i* open_file(str_t filename, const md_molecule_t* mol, md_allocato
     inst->deperiodize = deperiodize_on_load;
     
     const uint64_t num_traj_frames      = md_trajectory_num_frames(internal_traj);
-    const uint64_t frame_cache_size     = CLAMP(MEGABYTES(VIAMD_FRAME_CACHE_SIZE), MEGABYTES(4), md_physical_ram() / 4);
+    const uint64_t frame_cache_size     = CLAMP(MEGABYTES(VIAMD_FRAME_CACHE_SIZE), MEGABYTES(4), md_os_physical_ram() / 4);
     const uint64_t approx_frame_size    = (uint64_t)mol->atom.count * 3 * sizeof(float);
     const uint64_t max_num_cache_frames = frame_cache_size / approx_frame_size;
 

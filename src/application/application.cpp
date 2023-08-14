@@ -2,15 +2,14 @@
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 
-#include "application.h"
+#include <application/application.h>
 
 #include <core/md_log.h>
 #include <core/md_common.h>
-#include <core/md_allocator.h>
 #include <core/md_platform.h>
 #include <core/md_str.h>
 
-#include "gfx/gl.h"
+#include <gfx/gl.h>
 #include <GLFW/glfw3.h>
 
 #if MD_PLATFORM_WINDOWS
@@ -21,17 +20,16 @@
 
 #include <imgui.h>
 #include <implot.h>
-#include "imgui_impl_glfw.h"
-#include "imgui_impl_opengl3.h"
+
+#include <application/imgui_impl_glfw.h>
+#include <application/imgui_impl_opengl3.h>
 
 // Compressed fonts
-#include "dejavu_sans_mono.inl"
-#include "fa_solid.inl"
-#include "IconsFontAwesome6.h"
+#include <application/dejavu_sans_mono.inl>
+#include <application/fa_solid.inl>
+#include <application/IconsFontAwesome6.h>
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdint.h>
+#include <stdio.h> // snprintf
 
 namespace application {
 
@@ -202,7 +200,7 @@ bool initialize(Context* ctx, int width, int height, const char* title) {
     SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
 #endif
 
-    memcpy(ctx, &data.internal_ctx, sizeof(Context));
+    MEMCPY(ctx, &data.internal_ctx, sizeof(Context));
 
     return true;
 }
@@ -260,7 +258,7 @@ void update(Context* ctx) {
     data.internal_ctx.timing.delta_s = (t - data.internal_ctx.timing.total_s);
     data.internal_ctx.timing.total_s = t;
 
-    memcpy(ctx, &data.internal_ctx, sizeof(Context));
+    MEMCPY(ctx, &data.internal_ctx, sizeof(Context));
 }
 
 void render_imgui(Context* ctx) {

@@ -1,4 +1,4 @@
-#include "implot_widgets.h"
+#include <implot_widgets.h>
 #include <implot_internal.h>
 
 namespace ImPlot {

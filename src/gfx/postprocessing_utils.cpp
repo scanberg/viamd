@@ -25,17 +25,19 @@
 
 // Shaders for HBAO are based on nVidias examples and are copyright protected as stated above
 
-#include "postprocessing_utils.h"
-
-#include <shaders.inl>
+#include <gfx/postprocessing_utils.h>
 
 #include <core/md_str.h>
 #include <core/md_log.h>
+
 #include <gfx/gl_utils.h>
-#include <random_util.h>
+
+#include <halton.h>
 #include <stdio.h>
 #include <string.h>
 #include <float.h>
+
+#include <shaders.inl>
 
 #define PUSH_GPU_SECTION(lbl)                                                                       \
     {                                                                                               \
