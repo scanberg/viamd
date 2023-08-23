@@ -383,9 +383,9 @@ struct ApplicationData {
     // --- FILES ---
     // for keeping track of open files
     struct {
-        char molecule[2048];
-        char trajectory[2048];
-        char workspace[2048];
+        char molecule[2048] = {0};
+        char trajectory[2048] = {0};
+        char workspace[2048] = {0};
 
         bool coarse_grained = false;
         bool deperiodize    = false;
@@ -1542,6 +1542,16 @@ int main(int, char**) {
 
                     std::string src = editor.GetText();
                     str_t src_str {src.data(), (int64_t)src.length()};
+                    
+                    str_t cwd = {};
+                    if (data.files.workspace[0] != '\0') {
+                        cwd = extract_path_without_file(str_from_cstr(data.files.workspace));
+                    } else if (data.files.trajectory[0] != '\0') {
+                        cwd = extract_path_without_file(str_from_cstr(data.files.trajectory));
+                    }
+                    if (!str_empty(cwd)) {
+                        md_path_set_cwd(cwd);
+                    }
 
                     editor.ClearMarkers();
                     editor.ClearErrorMarkers();
@@ -6536,7 +6546,7 @@ static bool export_xvg(const float* column_data[], const char* column_labels[], 
     info = localtime(&t);
 
     // Print Header
-    md_file_printf(file, "# This file was created %s\n", asctime(info));
+    md_file_printf(file, "# This file was created %s", asctime(info));
     md_file_printf(file, "# Created by:\n");
     md_file_printf(file, "# VIAMD \n");
 
@@ -7300,10 +7310,9 @@ static void free_molecule_data(ApplicationData* data) {
 
     //md_molecule_free(&data->mold.mol, persistent_allocator);
     md_arena_allocator_reset(data->mold.mol_alloc);
-    memset(&data->mold.mol, 0, sizeof(data->mold.mol));
+    MEMSET(&data->mold.mol, 0, sizeof(data->mold.mol));
 
     md_gl_molecule_free(&data->mold.gl_mol);
-
     MEMSET(data->files.molecule, 0, sizeof(data->files.molecule));
 
     md_bitfield_clear(&data->selection.current_selection_mask);
