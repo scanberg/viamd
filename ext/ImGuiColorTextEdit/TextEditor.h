@@ -129,10 +129,10 @@ public:
 		int line;
 		int begCol;
 		int endCol;
-		int depth; // We need to have a depth associated to each marker if we have several on top of each other. In such case we only want to render the deepest.
-		ImVec4 bgColor;
+		int prio; // We need to have a 'depth' associated to each marker if we have several on top of each other. In such case we only want to render the most prominent one (highest prio)
+		ImU32 bgColor;
+        ImU32 hoverBgColor;
 		std::string text;
-		bool onlyShowBgOnMouseOver = false;
 		void* payload;
 	};
 

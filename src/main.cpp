@@ -1569,26 +1569,46 @@ int main(int, char**) {
                             }
                             md_script_ir_add_bitfield_identifiers(data.mold.script.ir, idents, md_array_size(idents));
                         }
-                        md_script_ir_compile_from_source(data.mold.script.ir, src_str, &data.mold.mol, NULL);
+                        md_script_ir_compile_from_source(data.mold.script.ir, src_str, &data.mold.mol, data.mold.traj, NULL);
 
-                        TextEditor::ErrorMarkers markers{};
                         const int64_t num_errors = md_script_ir_num_errors(data.mold.script.ir);
-                        if (num_errors) {
-                            const md_script_error_t* errors = md_script_ir_errors(data.mold.script.ir);
-                            for (int64_t i = 0; i < num_errors; ++i) {
-                                std::string err_str(errors[i].text.ptr, errors[i].text.len);
-                                auto first = editor.GetCharacterCoordinates(errors[i].range.beg);
-                                auto last  = editor.GetCharacterCoordinates(errors[i].range.end-1);
-                                for (int j = first.mLine; j <= last.mLine; ++j) {
-                                    std::pair<int, std::string> pair = {j + 1, err_str};
-                                    markers.insert(pair);
-                                }
-                            }
+                        const md_log_token_t* errors = md_script_ir_errors(data.mold.script.ir);
+                        
+                        for (int64_t i = 0; i < num_errors; ++i) {
+                            TextEditor::Marker marker = {0};
+                            auto first = editor.GetCharacterCoordinates(errors[i].range.beg);
+                            auto last  = editor.GetCharacterCoordinates(errors[i].range.end);
+                            marker.begCol = first.mColumn;
+                            marker.endCol = last.mColumn;
+                            marker.prio = INT32_MAX;   // Ensures marker is rendered on top
+                            marker.bgColor = IM_COL32(255, 0, 0, 128);
+                            marker.hoverBgColor = 0;
+                            marker.text = std::string(errors[i].text.ptr, errors[i].text.len);
+                            marker.payload = NULL;
+                            marker.line = first.mLine + 1;
+                            editor.AddMarker(marker);
                         }
-                        editor.SetErrorMarkers(markers);
+
+                        const int64_t num_warnings = md_script_ir_num_warnings(data.mold.script.ir);
+                        const md_log_token_t* warnings = md_script_ir_warnings(data.mold.script.ir);
+                        for (int64_t i = 0; i < num_warnings; ++i) {
+                            TextEditor::Marker marker = {0};
+                            auto first = editor.GetCharacterCoordinates(warnings[i].range.beg);
+                            auto last  = editor.GetCharacterCoordinates(warnings[i].range.end);
+                            marker.begCol = first.mColumn;
+                            marker.endCol = last.mColumn;
+                            marker.prio = INT32_MAX - 1;   // Ensures marker is rendered on top (but bellow an error)
+                            marker.bgColor = IM_COL32(255, 255, 0, 128);
+                            marker.hoverBgColor = 0;
+                            marker.text = std::string(warnings[i].text.ptr, warnings[i].text.len);
+                            marker.payload = NULL;
+                            marker.line = first.mLine + 1;
+                            editor.AddMarker(marker);
+                        }
 
                         const int64_t num_tokens = md_script_ir_num_vis_tokens(data.mold.script.ir);
                         const md_script_vis_token_t* vis_tokens = md_script_ir_vis_tokens(data.mold.script.ir);
+
                         for (int64_t i = 0; i < num_tokens; ++i) {
                             const md_script_vis_token_t& vis_tok = vis_tokens[i];
                             TextEditor::Marker marker = {0};
@@ -1596,9 +1616,9 @@ int main(int, char**) {
                             auto last  = editor.GetCharacterCoordinates(vis_tok.range.end);
                             marker.begCol = first.mColumn;
                             marker.endCol = last.mColumn;
-                            marker.bgColor = ImVec4(1,1,1,0.5);
-                            marker.depth = vis_tok.depth;
-                            marker.onlyShowBgOnMouseOver = true;
+                            marker.prio = vis_tok.depth;
+                            marker.bgColor = 0;
+                            marker.hoverBgColor = IM_COL32(255, 255, 255, 128);
                             marker.text = std::string(vis_tok.text.ptr, vis_tok.text.len);
                             marker.payload = (void*)vis_tok.payload;
                             marker.line = first.mLine + 1;
@@ -6505,7 +6525,7 @@ static void draw_script_editor_window(ApplicationData* data) {
 
         data->mold.script.vis = {0};
         const TextEditor::Marker* hovered_marker = editor.GetHoveredMarker();
-        if (hovered_marker) {
+        if (hovered_marker && hovered_marker->payload) {
             if (md_semaphore_try_aquire(&data->mold.script.ir_semaphore)) {
                 defer { md_semaphore_release(&data->mold.script.ir_semaphore); };
                 

@@ -999,28 +999,24 @@ void TextEditor::Render()
 				}
 			}
 
-			if (!ImGui::IsAnyItemActive()) {
-				auto markerIt = mMarkers.find(lineNo + 1);
-				if (markerIt != mMarkers.end()) {
-					// We need to find the deepest marker with text and only render that text
-					int depth = -1;
-					for (const auto& marker : markerIt->second) {
-						auto begCoord = Coordinates(lineNo, marker.begCol);
-						auto endCoord = Coordinates(lineNo, marker.endCol);
-						auto beg = ImVec2(lineStartScreenPos.x + mTextStart + TextDistanceToLineStart(begCoord), lineStartScreenPos.y);
-						auto end = ImVec2(lineStartScreenPos.x + mTextStart + TextDistanceToLineStart(endCoord), lineStartScreenPos.y + mCharAdvance.y);
+			auto markerIt = mMarkers.find(lineNo + 1);
+			if (markerIt != mMarkers.end()) {
+				// Keep track of the highest prio marker which is hovered.
+				int prio = -1;
+				for (const auto& marker : markerIt->second) {
+					auto begCoord = Coordinates(lineNo, marker.begCol);
+					auto endCoord = Coordinates(lineNo, marker.endCol);
+					auto beg = ImVec2(lineStartScreenPos.x + mTextStart + TextDistanceToLineStart(begCoord), lineStartScreenPos.y);
+					auto end = ImVec2(lineStartScreenPos.x + mTextStart + TextDistanceToLineStart(endCoord), lineStartScreenPos.y + mCharAdvance.y);
 
-						if (!marker.onlyShowBgOnMouseOver) {
-							drawList->AddRectFilled(beg, end, ImColor(marker.bgColor));
-						}
+					drawList->AddRectFilled(beg, end, marker.bgColor);
 
-						if (ImGui::IsMouseHoveringRect(beg, end)) {
-							if (marker.depth > depth) {
-								depth = marker.depth;
-								mHoveredMarker = &marker;
-								hoverBeg = beg;
-								hoverEnd = end;
-							}
+					if (!ImGui::IsAnyItemActive() && ImGui::IsMouseHoveringRect(beg, end)) {
+						if (marker.prio > prio) {
+							prio = marker.prio;
+							mHoveredMarker = &marker;
+							hoverBeg = beg;
+							hoverEnd = end;
 						}
 					}
 				}
@@ -1176,9 +1172,7 @@ void TextEditor::Render()
 				ImGui::Text("%.*s", (int)mHoveredMarker->text.length(), mHoveredMarker->text.c_str());
 				ImGui::EndTooltip();
 			}
-			if (mHoveredMarker->onlyShowBgOnMouseOver) {
-				drawList->AddRectFilled(hoverBeg, hoverEnd, ImColor(mHoveredMarker->bgColor));
-			}
+			drawList->AddRectFilled(hoverBeg, hoverEnd,mHoveredMarker->hoverBgColor);
 		}
 
 		/*
