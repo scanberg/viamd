@@ -34,7 +34,7 @@ The results can then be viewed in the different windows exposed in the applicati
 - pkgconf
 
 Example for Ubuntu:
-```sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev pkgconf```
+```sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libgtk-3-dev pkgconf```
 
 ### Step 2: Configure using CMAKE
 
