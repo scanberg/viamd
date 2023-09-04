@@ -910,7 +910,7 @@ void initialize() {
 }
 
 void shutdown() {}
-};  // namespace temporal
+}  // namespace temporal
 
 namespace sharpen {
 static GLuint program = 0;

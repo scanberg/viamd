@@ -3108,9 +3108,9 @@ AtomElementMapping* add_atom_elem_mapping(ApplicationData* data, str_t lbl, md_e
     }
     if (i == md_array_size(data->dataset.atom_element_remappings)) {
         AtomElementMapping mapping = {
-            .lbl = lbl,
             .elem = elem,
         };
+        str_copy_to_char_buf(mapping.lbl, sizeof(mapping.lbl), lbl);
         return md_array_push(data->dataset.atom_element_remappings, mapping, persistent_allocator);
     } else {
         data->dataset.atom_element_remappings[i].elem = elem;
