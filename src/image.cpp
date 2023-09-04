@@ -71,7 +71,7 @@ bool image_read(image_t* img, str_t filename, md_allocator_i* alloc) {
     }
 
     // Ensure zero terminated cstr
-    filename = str_copy(filename, default_temp_allocator);
+    filename = str_copy(filename, md_temp_allocator);
 
     int x, y, channels;
     uint8_t* tmp_data = stbi_load(filename.ptr, &x, &y, &channels, 4);
@@ -231,7 +231,7 @@ void image_gaussian_blur(image_t* img, int32_t radius) {
     int box_w[3];
     boxes_for_gauss_3(box_w, 3, (float)radius);
     int64_t tmp_size = img->width * img->height * sizeof(uint32_t);
-    uint32_t* tmp_data = (uint32_t*)md_alloc(default_temp_allocator, tmp_size);
+    uint32_t* tmp_data = (uint32_t*)md_alloc(md_temp_allocator, tmp_size);
     ASSERT(tmp_data);
     memcpy(tmp_data, img->data, w * h * sizeof(uint32_t));
 
@@ -239,5 +239,5 @@ void image_gaussian_blur(image_t* img, int32_t radius) {
     box_blur(img->data, tmp_data, w, h, box_w[1] / 2);
     box_blur(tmp_data, img->data, w, h, box_w[2] / 2);
 
-    md_free(default_temp_allocator, tmp_data, tmp_size);
+    md_free(md_temp_allocator, tmp_data, tmp_size);
 }

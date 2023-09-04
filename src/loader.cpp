@@ -27,7 +27,7 @@ struct LoadedMolecule {
 struct LoadedTrajectory {
     uint64_t key;
     const md_molecule_t* mol;
-    md_trajectory_api* api;
+    md_trajectory_loader_i* loader;
     md_trajectory_i* traj;
     md_frame_cache_t cache;
     md_allocator_i* alloc;
@@ -84,7 +84,7 @@ static inline void remove_loaded_trajectory(uint64_t key) {
     for (int64_t i = 0; i < num_loaded_trajectories; ++i) {
         if (loaded_trajectories[i].key == key) {
             md_frame_cache_free(&loaded_trajectories[i].cache);
-            loaded_trajectories[i].api->destroy(loaded_trajectories[i].traj);
+            loaded_trajectories[i].loader->destroy(loaded_trajectories[i].traj);
             // Swap back and pop
             loaded_trajectories[i] = loaded_trajectories[--num_loaded_trajectories];
             return;
@@ -115,8 +115,7 @@ const str_t* get_supported_extensions() {
 
 namespace mol {
 
-md_molecule_api* get_api(str_t filename) {
-    str_t ext = extract_ext(filename);
+md_molecule_loader_i* get_loader_from_ext(str_t ext) {
     if (str_equal_cstr(ext, "pdb"))  return md_pdb_molecule_api();
     if (str_equal_cstr(ext, "gro"))  return md_gro_molecule_api();
     if (str_equal_cstr(ext, "xyz"))  return md_xyz_molecule_api();
@@ -130,14 +129,13 @@ md_molecule_api* get_api(str_t filename) {
 
 namespace traj {
 
-md_trajectory_api* get_api(str_t filename) {
-    str_t ext = extract_ext(filename);
-    if (str_equal_cstr(ext, "pdb"))  return md_pdb_trajectory_api();
-    if (str_equal_cstr(ext, "xtc"))  return md_xtc_trajectory_api();
-    if (str_equal_cstr(ext, "trr"))  return md_trr_trajectory_api();
-    if (str_equal_cstr(ext, "xyz"))  return md_xyz_trajectory_api();
-    if (str_equal_cstr(ext, "xmol")) return md_xyz_trajectory_api();
-    if (str_equal_cstr(ext, "arc"))  return md_xyz_trajectory_api();
+md_trajectory_loader_i* get_loader_from_ext(str_t ext) {
+    if (str_equal_cstr(ext, "pdb"))  return md_pdb_trajectory_loader();
+    if (str_equal_cstr(ext, "xtc"))  return md_xtc_trajectory_loader();
+    if (str_equal_cstr(ext, "trr"))  return md_trr_trajectory_loader();
+    if (str_equal_cstr(ext, "xyz"))  return md_xyz_trajectory_loader();
+    if (str_equal_cstr(ext, "xmol")) return md_xyz_trajectory_loader();
+    if (str_equal_cstr(ext, "arc"))  return md_xyz_trajectory_loader();
 
     return NULL;
 }
@@ -167,7 +165,7 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
     bool result = true;
     bool in_cache = md_frame_cache_find_or_reserve(&loaded_traj->cache, idx, &frame_data, &lock);
     if (!in_cache) {
-        md_allocator_i* alloc = default_allocator;
+        md_allocator_i* alloc = md_heap_allocator;
         const int64_t frame_data_size = md_trajectory_fetch_frame_data(loaded_traj->traj, idx, 0);
         void* frame_data_ptr = md_alloc(alloc, frame_data_size);
         md_trajectory_fetch_frame_data(loaded_traj->traj, idx, frame_data_ptr);
@@ -235,24 +233,26 @@ bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_h
     return decode_frame_data(inst, frame_data, sizeof(int64_t), header, x, y, z);
 }
 
-md_trajectory_i* open_file(str_t filename, const md_molecule_t* mol, md_allocator_i* alloc, bool deperiodize_on_load) {
+md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const md_molecule_t* mol, md_allocator_i* alloc, bool deperiodize_on_load) {
     ASSERT(mol);
     ASSERT(alloc);
 
-    md_trajectory_api* api = get_api(filename);
-    if (!api) {
+    if (!loader) {
+        loader = get_loader_from_ext(extract_ext(filename));
+    }
+    if (!loader) {
         MD_LOG_ERROR("Unsupported file extension: '%.*s'", filename.len, filename.ptr);
         return NULL;
     }
 
-    md_trajectory_i* internal_traj = api->create(filename, alloc);
+    md_trajectory_i* internal_traj = loader->create(filename, alloc);
     if (!internal_traj) {
         return NULL;
     }
     
     if (md_trajectory_num_atoms(internal_traj) != mol->atom.count) {
         MD_LOG_ERROR("Trajectory is not compatible with the loaded molecule.");
-        api->destroy(internal_traj);
+        loader->destroy(internal_traj);
         return NULL;
     }
 
@@ -261,7 +261,7 @@ md_trajectory_i* open_file(str_t filename, const md_molecule_t* mol, md_allocato
 
     LoadedTrajectory* inst = alloc_loaded_trajectory((uint64_t)traj);
     inst->mol = mol;
-    inst->api = api;
+    inst->loader = loader;
     inst->traj = internal_traj;
     inst->cache = {0};
     inst->recenter_target = {0};
