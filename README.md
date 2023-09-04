@@ -14,6 +14,12 @@ The results can then be viewed in the different windows exposed in the applicati
 [![MacOS (Clang)](https://github.com/scanberg/viamd/actions/workflows/macos.yml/badge.svg)](https://github.com/scanberg/viamd/actions/workflows/macos.yml)
 
 
+## Running VIAMD 
+### Windows
+For windows, we recommend to use the latest binary available on the ![release page](https://github.com/scanberg/viamd/releases/).
+
+### Ubuntu and MacOs
+For Linux and MacOs, we recommend you to build VIAMD on your machine following the procedure below.
 
 ## Building
 ### Step 1: Clone the repository:
@@ -30,7 +36,7 @@ The results can then be viewed in the different windows exposed in the applicati
 - libxcursor-dev
 
 #### nativefiledialog
-- libgtk-3-dev (optional, fallback is Zenity)
+- libgtk-3-dev (recommended for ubuntu,use Zenity for kubuntu)
 - pkgconf
 
 Example for Ubuntu:
