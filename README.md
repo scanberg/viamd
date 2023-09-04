@@ -36,7 +36,7 @@ For Linux and MacOs, we recommend you to build VIAMD on your machine following t
 - libxcursor-dev
 
 #### nativefiledialog
-- libgtk-3-dev (recommended for ubuntu,use Zenity for kubuntu)
+- libgtk-3-dev (recommended for ubuntu, use Zenity for kubuntu)
 - pkgconf
 
 Example for Ubuntu:
