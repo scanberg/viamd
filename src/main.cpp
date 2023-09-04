@@ -3842,19 +3842,23 @@ static void draw_selection_grow_window(ApplicationData* data) {
 }
 
 static void draw_selection_query_window(ApplicationData* data) {
-    ImGui::SetNextWindowSize(ImVec2(300,100), ImGuiCond_Always);
-    if (ImGui::Begin("Selection Query", &data->selection.query.show_window, ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse)) {
+    ImGui::SetNextWindowSize(ImVec2(300,100), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Selection Query", &data->selection.query.show_window, ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse)) {
 
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
             data->selection.query.show_window = false;
             return;
         }
 
+        static double query_frame = 0.0;
+
         ImGui::PushItemWidth(-1);
         bool apply = ImGui::InputQuery("##query", data->selection.query.buf, sizeof(data->selection.query.buf), data->selection.query.query_ok, data->selection.query.error, ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue);
         ImGui::PopItemWidth();
 
-        data->selection.query.query_invalid |= ImGui::IsItemEdited();
+        if (ImGui::IsItemEdited() || data->animation.frame != query_frame) {
+            data->selection.query.query_invalid = true;
+        }
         bool preview = ImGui::IsItemActive() || ImGui::IsItemHovered();
 
         if (ImGui::IsWindowAppearing()) {
@@ -3870,6 +3874,7 @@ static void draw_selection_query_window(ApplicationData* data) {
         if (data->selection.query.query_invalid) {
             data->selection.query.query_invalid = false;
             data->selection.query.query_ok = filter_expression(data, str_from_cstr(data->selection.query.buf), &data->selection.query.mask, NULL, data->selection.query.error, sizeof(data->selection.query.error));
+            query_frame = data->animation.frame;
 
             if (data->selection.query.query_ok) {
                 switch (data->selection.granularity) {
