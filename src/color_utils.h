@@ -143,11 +143,12 @@ inline vec3_t hcl_to_rgb(float h, float c, float l) { return hcl_to_rgb({h, c, l
 inline vec3_t rgb_to_hcl(float r, float g, float b) { return rgb_to_hcl({r, g, b}); }
 
 constexpr float hue_from_hash(uint32_t hash) {
-    return (hash % 0xFFFFFFFFU) / (float)0xFFFFFFFFU;
+    return hash / (float)0xFFFFFFFFU;
 }
 
 constexpr inline vec4_t color_from_hash(uint32_t hash, float chroma = 0.8f, float luminance = 1.0f, float alpha = 1.0f) {
-    return { hue_from_hash(hash), chroma, luminance, alpha };
+    vec3_t rgb = hcl_to_rgb({ hue_from_hash(hash), chroma, luminance});
+    return { rgb.x, rgb.y, rgb.z, alpha };
 }
 
 constexpr inline vec4_t convert_color(uint32_t rgba) {

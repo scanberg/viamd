@@ -59,11 +59,9 @@ static inline void set_colors(uint32_t* colors, int64_t count, uint32_t color) {
 void color_atoms_uniform(uint32_t* colors, int64_t count, vec4_t color, const md_bitfield_t* mask) {
     if (mask) {
         const uint32_t u32_color = convert_color(color);
-        int64_t beg_bit = mask->beg_bit;
-        int64_t end_bit = mask->end_bit;
-        while ((beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) != 0) {
-            int64_t i = beg_bit - 1;
-            colors[i] = u32_color;
+        md_bitfield_iter_t it = md_bitfield_iter_create(mask);
+        while (md_bitfield_iter_next(&it)) {
+            colors[it.idx] = u32_color;
         }
     } else {
         set_colors(colors, count, convert_color(color));
