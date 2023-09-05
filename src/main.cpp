@@ -2807,7 +2807,10 @@ ImGui::EndGroup();
             if (num_selected_atoms == 0) ImGui::PushDisabled();
             if (ImGui::MenuItem("Grow"))  data->selection.grow.show_window = true;
             if (num_selected_atoms == 0) ImGui::PopDisabled();
-
+            if (ImGui::MenuItem("Clear")) {
+                md_bitfield_clear(&data->selection.current_selection_mask);
+                data->mold.dirty_buffers |= MolBit_DirtyFlags;
+            }
             ImGui::Spacing();
             ImGui::Separator();
 
@@ -3859,7 +3862,7 @@ static void draw_selection_query_window(ApplicationData* data) {
         if (ImGui::IsItemEdited() || data->animation.frame != query_frame) {
             data->selection.query.query_invalid = true;
         }
-        bool preview = ImGui::IsItemActive() || ImGui::IsItemHovered();
+        bool preview = ImGui::IsItemFocused() || ImGui::IsItemHovered();
 
         if (ImGui::IsWindowAppearing()) {
             ImGui::SetKeyboardFocusHere(-1);
