@@ -5363,6 +5363,10 @@ static void draw_distribution_window(ApplicationData* data) {
                     for (int i = 0; i < num_props; ++i) {
                         DisplayProperty& prop = props[i];
                         if (prop.type == DisplayProperty::Type_Distribution) {
+                            // @TODO(Robin): This is a hack to hide the filter property when not enabled. This should not be hardcoded in the future...
+                            if (!data->timeline.filter.enabled && str_equal(md_script_eval_label(prop.eval), STR("filt"))) {
+                                continue;
+                            }
                             ImPlot::ItemIcon(prop.color);
                             ImGui::SameLine();
                             ImGui::Selectable(prop.label);
@@ -5737,12 +5741,6 @@ static void draw_distribution_window(ApplicationData* data) {
             }
             ImPlot::EndSubplots();
         }
-
-        /*
-        if (backup_constraint_ranges) {
-            restore_constraint_ranges = true;
-        }
-        */
 
         // Try to handle the case when the user is dragging a payload and not dropping it within a valid target zone.
         // In such case if the property had a source plot index, remove the property from that plot
@@ -6820,6 +6818,10 @@ static void draw_density_volume_window(ApplicationData* data) {
                 for (int64_t i = 0; i < md_array_size(data->display_properties); ++i) {
                     DisplayProperty& dp = data->display_properties[i];
                     if (dp.type != DisplayProperty::Type_Volume) continue;
+                    // @TODO(Robin): This is a hack to hide the filter property when not enabled. This should not be hardcoded in the future...
+                    if (!data->timeline.filter.enabled && str_equal(md_script_eval_label(dp.eval), STR("filt"))) {
+                        continue;
+                    }
                     ImPlot::ItemIcon(dp.color); ImGui::SameLine();
                     if (ImGui::Selectable(dp.label, dp.show_in_volume)) {
                         selected_index = i;
@@ -7449,7 +7451,7 @@ static void draw_script_editor_window(ApplicationData* data) {
         if (!valid) ImGui::PopDisabled();
 
         const TextEditor::Marker* hovered_marker = editor.GetHoveredMarker();
-        if (hovered_marker && hovered_marker->payload) {
+        if (ImGui::IsWindowFocused() && hovered_marker && hovered_marker->payload) {
             if (md_semaphore_try_aquire(&data->mold.script.ir_semaphore)) {
                 defer { md_semaphore_release(&data->mold.script.ir_semaphore); };
                 
