@@ -999,24 +999,27 @@ void TextEditor::Render()
 				}
 			}
 
-			auto markerIt = mMarkers.find(lineNo + 1);
-			if (markerIt != mMarkers.end()) {
-				// Keep track of the highest prio marker which is hovered.
-				int prio = -1;
-				for (const auto& marker : markerIt->second) {
-					auto begCoord = Coordinates(lineNo, marker.begCol);
-					auto endCoord = Coordinates(lineNo, marker.endCol);
-					auto beg = ImVec2(lineStartScreenPos.x + mTextStart + TextDistanceToLineStart(begCoord), lineStartScreenPos.y);
-					auto end = ImVec2(lineStartScreenPos.x + mTextStart + TextDistanceToLineStart(endCoord), lineStartScreenPos.y + mCharAdvance.y);
 
-					drawList->AddRectFilled(beg, end, marker.bgColor);
+			if (ImGui::IsWindowHovered()) {
+				auto markerIt = mMarkers.find(lineNo + 1);
+				if (markerIt != mMarkers.end()) {
+					// Keep track of the highest prio marker which is hovered.
+					int prio = -1;
+					for (const auto& marker : markerIt->second) {
+						auto begCoord = Coordinates(lineNo, marker.begCol);
+						auto endCoord = Coordinates(lineNo, marker.endCol);
+						auto beg = ImVec2(lineStartScreenPos.x + mTextStart + TextDistanceToLineStart(begCoord), lineStartScreenPos.y);
+						auto end = ImVec2(lineStartScreenPos.x + mTextStart + TextDistanceToLineStart(endCoord), lineStartScreenPos.y + mCharAdvance.y);
 
-					if (!ImGui::IsAnyItemActive() && ImGui::IsMouseHoveringRect(beg, end)) {
-						if (marker.prio > prio) {
-							prio = marker.prio;
-							mHoveredMarker = &marker;
-							hoverBeg = beg;
-							hoverEnd = end;
+						drawList->AddRectFilled(beg, end, marker.bgColor);
+
+						if (!ImGui::IsAnyItemActive() && ImGui::IsMouseHoveringRect(beg, end)) {
+							if (marker.prio > prio) {
+								prio = marker.prio;
+								mHoveredMarker = &marker;
+								hoverBeg = beg;
+								hoverEnd = end;
+							}
 						}
 					}
 				}
