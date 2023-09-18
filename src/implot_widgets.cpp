@@ -37,54 +37,57 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
 
     //float len = gp.Style.MajorTickLen.x;
     const float drag_bar_height = 15;
+    const bool bar_enabled = !(flags & ImPlotDragRangeFlags_NoBar);
 
-    if (!(ImGui::GetItemFlags() & ImGuiItemFlags_Disabled)) {
-        if (!gp.CurrentPlot->Selecting) {
-            if (dragging) {
-                if (dragging == 2) {
-                    if (*x_range_min > *x_range_max) {
-                        *x_range_min = *x_range_max;
-                    }
-                } else {
-                    if (*x_range_max < *x_range_min) {
-                        *x_range_max = *x_range_min;
+    if (bar_enabled) {
+        if (!(ImGui::GetItemFlags() & ImGuiItemFlags_Disabled)) {
+            if (!gp.CurrentPlot->Selecting) {
+                if (dragging) {
+                    if (dragging == 2) {
+                        if (*x_range_min > *x_range_max) {
+                            *x_range_min = *x_range_max;
+                        }
+                    } else {
+                        if (*x_range_max < *x_range_min) {
+                            *x_range_max = *x_range_min;
+                        }
                     }
                 }
-            }
-            else {
-                ImVec2 old_cursor_pos = ImGui::GetCursorScreenPos();
-                ImVec2 new_cursor_pos = ImVec2(x_min, yb - drag_bar_height);
-                ImGui::GetCurrentWindow()->DC.CursorPos = new_cursor_pos;
-                const float btn_width = ImMax(x_max - x_min, 1.0f);
-                ImGui::InvisibleButton(id, ImVec2(btn_width, drag_bar_height));
-                ImGui::GetCurrentWindow()->DC.CursorPos = old_cursor_pos;
+                else {
+                    ImVec2 old_cursor_pos = ImGui::GetCursorScreenPos();
+                    ImVec2 new_cursor_pos = ImVec2(x_min, yb - drag_bar_height);
+                    ImGui::GetCurrentWindow()->DC.CursorPos = new_cursor_pos;
+                    const float btn_width = ImMax(x_max - x_min, 1.0f);
+                    ImGui::InvisibleButton(id, ImVec2(btn_width, drag_bar_height));
+                    ImGui::GetCurrentWindow()->DC.CursorPos = old_cursor_pos;
 
-                hovered |= ImGui::IsItemHovered();
-                active  |= ImGui::IsItemActive();
+                    hovered |= ImGui::IsItemHovered();
+                    active  |= ImGui::IsItemActive();
 
-                if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0)) {
-                    const float delta = ImGui::GetIO().MouseDelta.x;
-                    double x_min_temp = PlotToPixels(*x_range_min, 0).x;
-                    double x_max_temp = PlotToPixels(*x_range_max, 0).x;
+                    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0)) {
+                        const float delta = ImGui::GetIO().MouseDelta.x;
+                        double x_min_temp = PlotToPixels(*x_range_min, 0).x;
+                        double x_max_temp = PlotToPixels(*x_range_max, 0).x;
 
-                    x_min_temp += delta;
-                    x_max_temp += delta;
+                        x_min_temp += delta;
+                        x_max_temp += delta;
 
-                    *x_range_min = PixelsToPlot((float)x_min_temp, 0).x;
-                    *x_range_max = PixelsToPlot((float)x_max_temp, 0).x;
+                        *x_range_min = PixelsToPlot((float)x_min_temp, 0).x;
+                        *x_range_max = PixelsToPlot((float)x_max_temp, 0).x;
 
-                    double x_diff = *x_range_max - *x_range_min;
+                        double x_diff = *x_range_max - *x_range_min;
 
-                    if (*x_range_min < min_value) {
-                        *x_range_min = min_value;
-                        *x_range_max = *x_range_min + x_diff;
+                        if (*x_range_min < min_value) {
+                            *x_range_min = min_value;
+                            *x_range_max = *x_range_min + x_diff;
+                        }
+                        if (*x_range_max > max_value) {
+                            *x_range_max = max_value;
+                            *x_range_min = *x_range_max - x_diff;
+                        }
+
+                        dragging = 3;
                     }
-                    if (*x_range_max > max_value) {
-                        *x_range_max = max_value;
-                        *x_range_min = *x_range_max - x_diff;
-                    }
-
-                    dragging = 3;
                 }
             }
         }
@@ -99,7 +102,9 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
     ImDrawList& DrawList = *GetPlotDrawList();
     PushPlotClipRect(0.0f);
     DrawList.AddRectFilled(ImVec2(x_min+1, yt), ImVec2(x_max-1, yb), ImGui::ColorConvertFloat4ToU32(range_color));
-    DrawList.AddRectFilled(ImVec2(x_min+1, yb), ImVec2(x_max-1, yb-drag_bar_height), ImGui::ColorConvertFloat4ToU32(bar_color));
+    if (bar_enabled) {
+        DrawList.AddRectFilled(ImVec2(x_min+1, yb), ImVec2(x_max-1, yb-drag_bar_height), ImGui::ColorConvertFloat4ToU32(bar_color));
+    }
     PopPlotClipRect();
 
     if (hovered || active) {

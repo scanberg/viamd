@@ -42,6 +42,7 @@ add_subdirectory(ext/atomic_queue)
 add_subdirectory(ext/imgui_notify)
 
 # VIAMD OPTIONS
+option(VIAMD_IMGUI_ENABLE_VIEWPORTS "Enable ImGui Viewports" OFF)
 option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
 option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ${MD_LINK_STDLIB_STATIC})
 set(VIAMD_FRAME_CACHE_SIZE "2048" CACHE STRING "Reserved frame cache size in Megabytes")
@@ -125,6 +126,7 @@ target_compile_definitions(viamd PRIVATE
 	VIAMD_SCREENSHOT_DIR=\"screenshots\"
     VIAMD_NUM_WORKER_THREADS=${VIAMD_NUM_WORKER_THREADS}
     VIAMD_FRAME_CACHE_SIZE=${VIAMD_FRAME_CACHE_SIZE}
+    VIAMD_IMGUI_ENABLE_VIEWPORTS=$<BOOL:${VIAMD_IMGUI_ENABLE_VIEWPORTS}>
     ${MD_DEFINES}
 )
 

@@ -112,8 +112,9 @@ bool initialize(Context* ctx, int width, int height, const char* title) {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;  // Enable Keyboard Controls
     // io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;  // Enable Docking
-#if !MD_PLATFORM_LINUX
-    //io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;  // Enable Multi-Viewport / Platform Windows
+    
+#if VIAMD_IMGUI_ENABLE_VIEWPORTS
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;  // Enable Multi-Viewport / Platform Windows
 #endif
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoTaskBarIcons;
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoMerge;
