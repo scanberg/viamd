@@ -63,6 +63,8 @@
 #define MAX_POPULATION_SIZE 64
 #define MAX_TEMPORAL_SUBPLOTS 10
 #define MAX_DISTRIBUTION_SUBPLOTS 10
+#define MAX_EVALUATIONS 10
+
 #define EXPERIMENTAL_GFX_API 0
 #define PICKING_JITTER_HACK 0
 #define EXPERIMENTAL_CONE_TRACED_AO 0
@@ -305,6 +307,23 @@ struct Selection {
     md_bitfield_t atom_mask{};
 };
 
+struct Evaluation {
+    char name[64] = "";
+
+    struct {
+        double beg = 0;
+        double end = 1;
+    } frame;
+
+    double window_extent = 10;
+    bool temporal_window = false;
+    bool enabled = false;
+
+    md_script_eval_t* eval = 0;
+    task_system::ID task_id = task_system::INVALID_ID;
+    uint64_t fingerprint = 0;
+};
+
 // This is viamd's representation of a property
 struct DisplayProperty {
     enum Type {
@@ -471,6 +490,7 @@ struct ApplicationData {
 
             md_script_eval_t* full_eval = nullptr;
             md_script_eval_t* filt_eval = nullptr;
+
             md_script_vis_t vis = {};
 
             // Semaphore to control access to IR
@@ -488,6 +508,12 @@ struct ApplicationData {
         md_unit_base_t unit_base = {};
     } mold;
 
+    struct {
+        md_array(DisplayProperty) display_properties = 0;
+        Evaluation evaluations[MAX_EVALUATIONS];
+        int num_evaluations;
+    } prop;
+
     DisplayProperty* display_properties = nullptr;
     str_t hovered_display_property_label = STR("");
     int   hovered_display_property_pop_idx = -1;
@@ -501,7 +527,7 @@ struct ApplicationData {
         task_system::ID shape_space_evaluate = task_system::INVALID_ID;
         task_system::ID ramachandran_compute_full_density = task_system::INVALID_ID;
         task_system::ID ramachandran_compute_filt_density = task_system::INVALID_ID;
-    } tasks;
+    } task;
 
     // --- ATOM SELECTION ---
     struct {
@@ -1396,7 +1422,7 @@ int main(int, char**) {
         
         // This needs to happen first (in imgui events) to enable docking of imgui windows
 //#ifdef IMGUI_DOCKING
-        ImGui::CreateDockspace();
+        //ImGui::CreateDockspace();
 //#endif
 
         const int64_t num_frames = md_trajectory_num_frames(data.mold.traj);
@@ -1526,7 +1552,7 @@ int main(int, char**) {
                 data.animation.frame = 0;
             }
 
-            if (!task_system::task_is_running(data.tasks.prefetch_frames)) {
+            if (!task_system::task_is_running(data.task.prefetch_frames)) {
                 uint32_t traj_frames = md_trajectory_num_frames(data.mold.traj);
                 if (traj_frames > 0 && load::traj::num_cache_frames(data.mold.traj) < traj_frames) {
                     uint32_t frame_beg = 0;
@@ -1543,7 +1569,7 @@ int main(int, char**) {
                         frame_end = CLAMP((uint32_t)data.animation.frame, 0, traj_frames);
                     }
                     if (frame_beg != frame_end) {
-                        data.tasks.prefetch_frames = task_system::pool_enqueue(STR("##Prefetch Frames"), frame_beg, frame_end, [](uint32_t frame_beg, uint32_t frame_end, void* user_data) {
+                        data.task.prefetch_frames = task_system::pool_enqueue(STR("##Prefetch Frames"), frame_beg, frame_end, [](uint32_t frame_beg, uint32_t frame_end, void* user_data) {
                             ApplicationData* data = (ApplicationData*)user_data;
                             for (uint32_t i = frame_beg; i < frame_end; ++i) {
                                 md_trajectory_load_frame(data->mold.traj, i, 0, 0, 0, 0);
@@ -1744,11 +1770,11 @@ int main(int, char**) {
 
         if (num_frames > 0) {
             if (data.mold.script.eval_init) {
-                if (task_system::task_is_running(data.tasks.evaluate_full)) md_script_eval_interrupt(data.mold.script.full_eval);
-                if (task_system::task_is_running(data.tasks.evaluate_filt)) md_script_eval_interrupt(data.mold.script.filt_eval);
+                if (task_system::task_is_running(data.task.evaluate_full)) md_script_eval_interrupt(data.mold.script.full_eval);
+                if (task_system::task_is_running(data.task.evaluate_filt)) md_script_eval_interrupt(data.mold.script.filt_eval);
                     
-                if (task_system::task_is_running(data.tasks.evaluate_full) == false &&
-                    task_system::task_is_running(data.tasks.evaluate_filt) == false) {
+                if (task_system::task_is_running(data.task.evaluate_full) == false &&
+                    task_system::task_is_running(data.task.evaluate_filt) == false) {
                     data.mold.script.eval_init = false;
 
                     if (data.mold.script.full_eval) {
@@ -1775,7 +1801,7 @@ int main(int, char**) {
             }
 
             if (data.mold.script.full_eval && data.mold.script.evaluate_full) {
-                if (task_system::task_is_running(data.tasks.evaluate_full)) {
+                if (task_system::task_is_running(data.task.evaluate_full)) {
                     md_script_eval_interrupt(data.mold.script.full_eval);
                 } else {
                     //if (md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
@@ -1785,7 +1811,7 @@ int main(int, char**) {
                             data.mold.script.evaluate_full = false;
                             md_script_eval_clear(data.mold.script.full_eval);
 
-                            data.tasks.evaluate_full = task_system::pool_enqueue(STR("Eval Full"), 0, (uint32_t)num_frames, [](uint32_t frame_beg, uint32_t frame_end, void* user_data) {
+                            data.task.evaluate_full = task_system::pool_enqueue(STR("Eval Full"), 0, (uint32_t)num_frames, [](uint32_t frame_beg, uint32_t frame_end, void* user_data) {
                                 ApplicationData* data = (ApplicationData*)user_data;
                                 md_script_eval_frame_range(data->mold.script.full_eval, data->mold.script.eval_ir, &data->mold.mol, data->mold.traj, frame_beg, frame_end);
                             }, &data);
@@ -1805,7 +1831,7 @@ int main(int, char**) {
             }
 
             if (data.mold.script.filt_eval && data.mold.script.evaluate_filt && data.timeline.filter.enabled) {
-                if (task_system::task_is_running(data.tasks.evaluate_filt)) {
+                if (task_system::task_is_running(data.task.evaluate_filt)) {
                     md_script_eval_interrupt(data.mold.script.filt_eval);
                 } else {
                     //if (md_semaphore_try_aquire(&data.mold.script.ir_semaphore)) {
@@ -1818,7 +1844,7 @@ int main(int, char**) {
                             const uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(data.mold.traj);
                             const uint32_t beg_frame = CLAMP((uint32_t)data.timeline.filter.beg_frame, 0, traj_frames-1);
                             const uint32_t end_frame = CLAMP((uint32_t)data.timeline.filter.end_frame + 1, beg_frame + 1, traj_frames);
-                            data.tasks.evaluate_filt = task_system::pool_enqueue(STR("Eval Filt"), beg_frame, end_frame, [](uint32_t beg, uint32_t end, void* user_data)
+                            data.task.evaluate_filt = task_system::pool_enqueue(STR("Eval Filt"), beg_frame, end_frame, [](uint32_t beg, uint32_t end, void* user_data)
                                 {
                                     ApplicationData* data = (ApplicationData*)user_data;
                                     md_script_eval_frame_range(data->mold.script.filt_eval, data->mold.script.eval_ir, &data->mold.mol, data->mold.traj, beg, end);
@@ -1883,7 +1909,7 @@ int main(int, char**) {
             }
 
             if (data.ramachandran.full_fingerprint != data.trajectory_data.backbone_angles.fingerprint) {
-                if (!task_system::task_is_running(data.tasks.ramachandran_compute_full_density)) {
+                if (!task_system::task_is_running(data.task.ramachandran_compute_full_density)) {
                     data.ramachandran.full_fingerprint = data.trajectory_data.backbone_angles.fingerprint;
                     const uint32_t* indices[4] = {
                         data.ramachandran.rama_type_indices[0],
@@ -1896,14 +1922,14 @@ int main(int, char**) {
                     const uint32_t frame_end = (uint32_t)num_frames;
                     const uint32_t frame_stride = (uint32_t)data.trajectory_data.backbone_angles.stride;
 
-                    data.tasks.ramachandran_compute_full_density = rama_rep_compute_density(&data.ramachandran.data.full, data.trajectory_data.backbone_angles.data, indices, frame_beg, frame_end, frame_stride, data.ramachandran.blur_sigma);
+                    data.task.ramachandran_compute_full_density = rama_rep_compute_density(&data.ramachandran.data.full, data.trajectory_data.backbone_angles.data, indices, frame_beg, frame_end, frame_stride, data.ramachandran.blur_sigma);
                 } else {
-                    task_system::task_interrupt(data.tasks.ramachandran_compute_full_density);
+                    task_system::task_interrupt(data.task.ramachandran_compute_full_density);
                 }
             }
 
             if (data.ramachandran.filt_fingerprint != data.timeline.filter.fingerprint) {
-                if (!task_system::task_is_running(data.tasks.ramachandran_compute_filt_density)) {
+                if (!task_system::task_is_running(data.task.ramachandran_compute_filt_density)) {
                     data.ramachandran.filt_fingerprint = data.timeline.filter.fingerprint;
 
                     const uint32_t* indices[4] = {
@@ -1917,10 +1943,10 @@ int main(int, char**) {
                     const uint32_t frame_end = (uint32_t)data.timeline.filter.end_frame;
                     const uint32_t frame_stride = (uint32_t)data.trajectory_data.backbone_angles.stride;
 
-                    data.tasks.ramachandran_compute_filt_density = rama_rep_compute_density(&data.ramachandran.data.filt, data.trajectory_data.backbone_angles.data, indices, frame_beg, frame_end, frame_stride);
+                    data.task.ramachandran_compute_filt_density = rama_rep_compute_density(&data.ramachandran.data.filt, data.trajectory_data.backbone_angles.data, indices, frame_beg, frame_end, frame_stride);
                 }
                 else {
-                    task_system::task_interrupt(data.tasks.ramachandran_compute_filt_density);
+                    task_system::task_interrupt(data.task.ramachandran_compute_filt_density);
                 }
             }
         }
@@ -4514,22 +4540,6 @@ static void draw_async_task_window(ApplicationData* data) {
             str_t label = task_system::task_label(id);
             float fract = task_system::task_fraction_complete(id);
 
-            /*
-            if (id == data->tasks.evaluate_filt) {
-                uint32_t completed = md_script_eval_num_frames_completed(data->mold.script.filt_eval);
-                uint32_t total     = md_script_eval_num_frames_total(data->mold.script.filt_eval);
-                if (total > 0) {
-                    fract = (float)completed / (float)total;
-                }
-            }else if (id == data->tasks.evaluate_full) {
-                uint32_t completed = md_script_eval_num_frames_completed(data->mold.script.full_eval);
-                uint32_t total     = md_script_eval_num_frames_total(data->mold.script.full_eval);
-                if (total > 0) {
-                    fract = (float)completed / (float)total;
-                }
-            }
-            */
-
             if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
 
             snprintf(buf, sizeof(buf), "%.*s %.1f%%", (int)label.len, label.ptr, fract * 100.f);
@@ -4537,10 +4547,10 @@ static void draw_async_task_window(ApplicationData* data) {
             ImGui::SameLine();
             if (ImGui::DeleteButton((const char*)ICON_FA_XMARK, ImVec2(size, size))) {
                 task_system::task_interrupt(id);
-                if (id == data->tasks.evaluate_full) {
+                if (id == data->task.evaluate_full) {
                     md_script_eval_interrupt(data->mold.script.full_eval);
                 }
-                else if(id == data->tasks.evaluate_filt) {
+                else if(id == data->task.evaluate_filt) {
                     md_script_eval_interrupt(data->mold.script.filt_eval);
                 }
             }
@@ -6195,8 +6205,8 @@ static void draw_shape_space_window(ApplicationData* data) {
         data->shape_space.input_valid = false;
         const int64_t num_frames = md_trajectory_num_frames(data->mold.traj);
         if (num_frames > 0) {
-            if (task_system::task_is_running(data->tasks.shape_space_evaluate)) {
-                task_system::task_interrupt(data->tasks.shape_space_evaluate);
+            if (task_system::task_is_running(data->task.shape_space_evaluate)) {
+                task_system::task_interrupt(data->task.shape_space_evaluate);
             }
             else if (md_semaphore_try_aquire(&data->mold.script.ir_semaphore)) {
                 defer { md_semaphore_release(&data->mold.script.ir_semaphore); };
@@ -6223,7 +6233,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                         md_array_resize(data->shape_space.weights, num_frames * data->shape_space.num_structures, persistent_allocator);
                         MEMSET(data->shape_space.weights, 0, md_array_bytes(data->shape_space.weights));
 
-                        data->tasks.shape_space_evaluate = task_system::pool_enqueue(STR("Eval Shape Space"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+                        data->task.shape_space_evaluate = task_system::pool_enqueue(STR("Eval Shape Space"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
                             ApplicationData* data = (ApplicationData*)user_data;
                             int64_t stride = ALIGN_TO(data->mold.mol.atom.count, md_simd_f32_width);
                             float* coords = (float*)md_alloc(md_heap_allocator, stride * 3 * sizeof(float));
@@ -8083,13 +8093,13 @@ static void interrupt_async_tasks(ApplicationData* data) {
     if (data->mold.script.full_eval) md_script_eval_interrupt(data->mold.script.full_eval);
     if (data->mold.script.filt_eval) md_script_eval_interrupt(data->mold.script.filt_eval);
 
-    task_system::task_wait_for(data->tasks.backbone_computations);
-    task_system::task_wait_for(data->tasks.evaluate_full);
-    task_system::task_wait_for(data->tasks.evaluate_filt);
-    task_system::task_wait_for(data->tasks.prefetch_frames);
-    task_system::task_wait_for(data->tasks.ramachandran_compute_full_density);
-    task_system::task_wait_for(data->tasks.ramachandran_compute_filt_density);
-    task_system::task_wait_for(data->tasks.shape_space_evaluate);
+    task_system::task_wait_for(data->task.backbone_computations);
+    task_system::task_wait_for(data->task.evaluate_full);
+    task_system::task_wait_for(data->task.evaluate_filt);
+    task_system::task_wait_for(data->task.prefetch_frames);
+    task_system::task_wait_for(data->task.ramachandran_compute_full_density);
+    task_system::task_wait_for(data->task.ramachandran_compute_filt_density);
+    task_system::task_wait_for(data->task.shape_space_evaluate);
 }
 
 // #trajectorydata
@@ -8155,9 +8165,9 @@ static void init_trajectory_data(ApplicationData* data) {
             memset(data->trajectory_data.backbone_angles.data, 0, md_array_size(data->trajectory_data.backbone_angles.data) * sizeof (md_backbone_angles_t));
 
             // Launch work to compute the values
-            task_system::task_interrupt_and_wait_for(data->tasks.backbone_computations);
+            task_system::task_interrupt_and_wait_for(data->task.backbone_computations);
 
-            data->tasks.backbone_computations = task_system::pool_enqueue(STR("Backbone Operations"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+            data->task.backbone_computations = task_system::pool_enqueue(STR("Backbone Operations"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
                 ApplicationData* data = (ApplicationData*)user_data;
                 
                 // Create copy here of molecule since we use the full structure as input
@@ -8188,7 +8198,7 @@ static void init_trajectory_data(ApplicationData* data) {
                 update_md_buffers(data);
                 md_gl_molecule_zero_velocity(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
 
-            }, data, data->tasks.backbone_computations);
+            }, data, data->task.backbone_computations);
         }
 
         data->mold.dirty_buffers |= MolBit_DirtyPosition;
@@ -8282,8 +8292,8 @@ static void launch_prefetch_job(ApplicationData* data) {
     const uint32_t num_frames = MIN((uint32_t)md_trajectory_num_frames(data->mold.traj), (uint32_t)load::traj::num_cache_frames(data->mold.traj));
     if (!num_frames) return;
 
-    task_system::task_interrupt_and_wait_for(data->tasks.prefetch_frames);
-    data->tasks.prefetch_frames = task_system::pool_enqueue(STR("Prefetch Frames"), 0, num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+    task_system::task_interrupt_and_wait_for(data->task.prefetch_frames);
+    data->task.prefetch_frames = task_system::pool_enqueue(STR("Prefetch Frames"), 0, num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
         ApplicationData* data = (ApplicationData*)user_data;
         for (uint32_t i = range_beg; i < range_end; ++i) {
             md_trajectory_frame_header_t header;
@@ -8296,7 +8306,7 @@ static void launch_prefetch_job(ApplicationData* data) {
         interpolate_atomic_properties(data);
         update_md_buffers(data);
         md_gl_molecule_zero_velocity(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
-    }, data, data->tasks.prefetch_frames);
+    }, data, data->task.prefetch_frames);
 }
 
 static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md_molecule_loader_i* mol_loader, md_trajectory_loader_i* traj_loader, bool coarse_grained, bool deperiodize_on_load) {
