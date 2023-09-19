@@ -7451,7 +7451,7 @@ static void draw_script_editor_window(ApplicationData* data) {
         if (!valid) ImGui::PopDisabled();
 
         const TextEditor::Marker* hovered_marker = editor.GetHoveredMarker();
-        if (ImGui::IsWindowFocused() && hovered_marker && hovered_marker->payload) {
+        if (hovered_marker && hovered_marker->payload) {
             if (md_semaphore_try_aquire(&data->mold.script.ir_semaphore)) {
                 defer { md_semaphore_release(&data->mold.script.ir_semaphore); };
                 
