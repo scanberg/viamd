@@ -510,8 +510,8 @@ struct ApplicationData {
 
     struct {
         md_array(DisplayProperty) display_properties = 0;
-        Evaluation evaluations[MAX_EVALUATIONS];
-        int num_evaluations;
+        Evaluation evaluations[MAX_EVALUATIONS] = {};
+        int num_evaluations = 0;
     } prop;
 
     DisplayProperty* display_properties = nullptr;
@@ -4891,11 +4891,11 @@ static void draw_timeline_window(ApplicationData* data) {
     if (ImGui::Begin("Timelines", &data->timeline.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
         static int num_subplots = 1;
 
-        double pre_filter_min = data->timeline.filter.beg_frame;
-        double pre_filter_max = data->timeline.filter.end_frame;
+        double pre_filter_min   = data->timeline.filter.beg_frame;
+        double pre_filter_max   = data->timeline.filter.end_frame;
 
-        const float* x_values = data->timeline.x_values;
-        const int num_x_values = md_array_size(data->timeline.x_values);
+        const float* x_values   = data->timeline.x_values;
+        const int num_x_values  = md_array_size(data->timeline.x_values);
         const float min_x_value = num_x_values > 0 ? x_values[0] : 0.0f;
         const float max_x_value = num_x_values > 0 ? x_values[num_x_values - 1] : 1.0f;
 
