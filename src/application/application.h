@@ -45,14 +45,13 @@ void render_imgui(Context* ctx);
 void swap_buffers(Context* ctx);
 
 // File Dialog
-typedef unsigned FileDialogFlags;
+typedef unsigned int FileDialogFlag;
 
-enum FileDialogFlags_ {
-    FileDialog_Open = 0x1,
-    FileDialog_Save = 0x2,
-    FileDialog_Dir  = 0x4
+enum {
+    FileDialogFlag_Open = 0x1,
+    FileDialogFlag_Save = 0x2,
+    FileDialogFlag_Dir  = 0x4
 };
-
 
 // Opens a file system file dialogue which prompts the user to either open or save files/directories.
 // returns true if successful and false if it fails or is canceled by the user.
@@ -60,6 +59,6 @@ enum FileDialogFlags_ {
 // path_cap is the capacity of the string buffer
 // flags represents the type of dialogue to be opened, e.g. FileDialog_Save to save a file, FileDialog_Open | FileDialog_Dir to open a directory.
 // filter is a null-terminated string containing comma separated extensions to be applied as a filter for the files: e.g. "jpg,png,bmp" to limit the scope of files to files with endings .jpg, .png or .bmp
-bool file_dialog(char* path_buf, int path_cap, FileDialogFlags flags, const char* filter = 0);
+bool file_dialog(char* path_buf, int path_cap, FileDialogFlag flags, const char* filter = 0);
 
 }  // namespace application

@@ -282,7 +282,7 @@ void render_imgui(Context* ctx) {
 
 void swap_buffers(Context* ctx) { glfwSwapBuffers((GLFWwindow*)ctx->window.ptr); }
 
-bool file_dialog(char* str_buf, int str_cap, FileDialogFlags flags, const char* filter) {    
+bool file_dialog(char* str_buf, int str_cap, FileDialogFlag flags, const char* filter) {    
     nfdchar_t* out_path = NULL;
     defer { if (out_path) free(out_path); };
 
@@ -290,15 +290,15 @@ bool file_dialog(char* str_buf, int str_cap, FileDialogFlags flags, const char* 
 
     const char* default_path = 0;
 
-    if (flags & FileDialog_Open) {
+    if (flags & FileDialogFlag_Open) {
         result = NFD_OpenDialog(filter, default_path, &out_path);
-    } else if (flags & FileDialog_Save) {
+    } else if (flags & FileDialogFlag_Save) {
         result = NFD_SaveDialog(filter, default_path, &out_path);
     }
 
     if (result == NFD_OKAY) {
         char ext[16] = {0};
-        if (flags & FileDialog_Save) {
+        if (flags & FileDialogFlag_Save) {
             str_t path = str_from_cstr(out_path);
             str_t pext  = extract_ext(path);
             if (str_empty(pext) && filter) {

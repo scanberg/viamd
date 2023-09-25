@@ -143,7 +143,6 @@ constexpr ImGuiKey KEY_PLAY_PAUSE = ImGuiKey_Space;
 constexpr ImGuiKey KEY_SKIP_TO_PREV_FRAME = ImGuiKey_LeftArrow;
 constexpr ImGuiKey KEY_SKIP_TO_NEXT_FRAME = ImGuiKey_RightArrow;
 constexpr ImGuiKey KEY_RECOMPILE_SHADERS = ImGuiKey_F5;
-constexpr ImGuiKey KEY_TOGGLE_SCREENSHOT_MODE = ImGuiKey_F10;
 constexpr ImGuiKey KEY_SHOW_DEBUG_WINDOW = ImGuiKey_F11;
 
 constexpr const char* FILE_EXTENSION = "via"; 
@@ -459,8 +458,8 @@ struct ApplicationData {
         md_molecule_t       mol = {};
         md_trajectory_i*    traj = nullptr;
 
-        vec3_t              mol_aabb_min;
-        vec3_t              mol_aabb_max;
+        vec3_t              mol_aabb_min = {};
+        vec3_t              mol_aabb_max = {};
 
         struct {
             // A bit confusing and a bit of a hack,
@@ -1454,20 +1453,6 @@ int main(int, char**) {
                 data.show_debug_window = true;
             }
 
-            if (ImGui::IsKeyPressed(KEY_TOGGLE_SCREENSHOT_MODE)) {
-                static bool screenshot_mode = false;
-                screenshot_mode = !screenshot_mode;
-
-                ImGuiStyle& style = ImGui::GetStyle();
-                if (screenshot_mode) {
-                    ImGui::StyleColorsClassic(&style);
-                } else {
-                    ImGui::StyleColorsLight(&style);
-                    // style.Colors[ImGuiCol_WindowBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
-                    // style.Colors[ImGuiCol_ChildWindowBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
-                }
-            }
-
             if (ImGui::IsKeyPressed(KEY_RECOMPILE_SHADERS)) {
                 LOG_INFO("Recompiling shaders and re-initializing volume");
                 postprocessing::initialize(data.gbuffer.width, data.gbuffer.height);
@@ -1956,6 +1941,7 @@ int main(int, char**) {
         // Render Screenshot of backbuffer without GUI here
         if (data.screenshot.hide_gui && !str_empty(data.screenshot.path_to_file)) {
             create_screenshot(&data);
+            str_free(data.screenshot.path_to_file, persistent_allocator);
             data.screenshot.path_to_file = {};
         }
 
@@ -1963,10 +1949,10 @@ int main(int, char**) {
         application::render_imgui(&data.ctx);
         POP_GPU_SECTION()
 
-        // Render Screenshot of backbuffer with GUI here
         if (!data.screenshot.hide_gui && !str_empty(data.screenshot.path_to_file)) {
             create_screenshot(&data);
             data.screenshot.path_to_file = {};
+            str_free(data.screenshot.path_to_file, persistent_allocator);
         }
 
         // Swap buffers
@@ -2870,13 +2856,13 @@ static void draw_main_menu(ApplicationData* data) {
                 data->load_dataset.show_window = true;
             }
             if (ImGui::MenuItem("Open Workspace", "CTRL+O")) {
-                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialog_Open, FILE_EXTENSION)) {
+                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Open, FILE_EXTENSION)) {
                     load_workspace(data, str_from_cstr(path_buf));
                 }
             }
             if (ImGui::MenuItem("Save Workspace", "CTRL+S")) {
                 if (!data->files.workspace) {
-                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialog_Save, FILE_EXTENSION)) {
+                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, FILE_EXTENSION)) {
                         int path_len = (int)strnlen(path_buf, sizeof(path_buf));
                         str_t ext = extract_ext({path_buf, path_len});
                         if (str_empty(ext)) {
@@ -2889,7 +2875,7 @@ static void draw_main_menu(ApplicationData* data) {
                 }
             }
             if (ImGui::MenuItem("Save As")) {
-                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialog_Save, FILE_EXTENSION)) {
+                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, FILE_EXTENSION)) {
                     int path_len = (int)strnlen(path_buf, sizeof(path_buf));
                     str_t ext = extract_ext({path_buf, path_len});
                     if (str_empty(ext)) {
@@ -3126,9 +3112,9 @@ ImGui::EndGroup();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Screenshot")) {
-            //ImGui::Checkbox("Hide GUI", &data->screenshot.hide_gui);
+            ImGui::Checkbox("Hide GUI", &data->screenshot.hide_gui);
             if (ImGui::MenuItem("Take Screenshot")) {
-                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialog_Save, "jpg;png;bmp")) {
+                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, "jpg,png,bmp")) {
                     int path_len = (int)strnlen(path_buf, sizeof(path_buf));
                     str_t ext = extract_ext({path_buf, path_len});
                     if (str_empty(ext)) {
@@ -3136,12 +3122,13 @@ ImGui::EndGroup();
                         ext = STR("jpg");
                     }
                     if (str_equal_cstr_ignore_case(ext, "jpg") || str_equal_cstr_ignore_case(ext, "png") || str_equal_cstr_ignore_case(ext, "bmp")) {
-                        data->screenshot.path_to_file = str_copy({path_buf, path_len}, frame_allocator);
+                        data->screenshot.path_to_file = str_copy({path_buf, path_len}, persistent_allocator);
                     }
                     else {
                         LOG_ERROR("Supplied image extension is not supported");
                     }
                 }
+                ImGui::GetCurrentWindow()->Hidden = true;
             }
             ImGui::EndMenu();
         }
@@ -3271,7 +3258,7 @@ void draw_load_dataset_window(ApplicationData* data) {
 
         if (state.show_file_dialog) {
             state.show_file_dialog = false;
-            if (application::file_dialog(state.path_buf, sizeof(state.path_buf), application::FileDialog_Open)) {
+            if (application::file_dialog(state.path_buf, sizeof(state.path_buf), application::FileDialogFlag_Open)) {
                 state.path_changed = true;
             }
         }
@@ -5274,7 +5261,7 @@ static void draw_timeline_window(ApplicationData* data) {
                         time = CLAMP(time, min_x_value, max_x_value);
                     }
 
-                    if (ImPlot::IsPlotHovered) {
+                    if (ImPlot::IsPlotHovered()) {
                         if (hovered_prop_idx != -1) {
                             visualize_payload(data, data->display_properties[hovered_prop_idx].prop->vis_payload, hovered_pop_idx + 1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                             set_hovered_property(data, str_from_cstr(data->display_properties[hovered_prop_idx].label), hovered_pop_idx);
@@ -5939,7 +5926,7 @@ static void draw_distribution_window(ApplicationData* data) {
 
 static void export_shape_space(ApplicationData* data, const char* ext) {
     char path[2048];
-    if (application::file_dialog(path, sizeof(path), application::FileDialog_Save, ext)) {
+    if (application::file_dialog(path, sizeof(path), application::FileDialogFlag_Save, ext)) {
         md_array(const char*) column_labels = 0;
         md_array(float*) column_data = 0;
 
@@ -7351,7 +7338,7 @@ static void draw_script_editor_window(ApplicationData* data) {
             if (ImGui::BeginMenu("File")) {
                 char path_buf[1024] = "";
                 if (ImGui::MenuItem("Load")) {
-                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialog_Open, "txt")) {
+                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Open, "txt")) {
                         str_t txt = load_textfile(str_from_cstr(path_buf), frame_allocator);
                         std::string str(txt.ptr, txt.len);
                         editor.SetText(str);
@@ -7359,7 +7346,7 @@ static void draw_script_editor_window(ApplicationData* data) {
                 }
                 if (ImGui::MenuItem("Save")) {
                     auto textToSave = editor.GetText();
-                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialog_Save, "txt")) {
+                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, "txt")) {
                         int path_len = (int)strnlen(path_buf, sizeof(path_buf));
                         str_t path = str_t{path_buf, path_len};
                         if (str_empty(extract_ext(path))) {
@@ -7803,7 +7790,7 @@ static void draw_property_export_window(ApplicationData* data) {
             if (ImGui::Button("Export")) {
 
                 //application::FileDialogResult file_dialog = application::file_dialog(application::FileDialog_Save, {}, table_formats[format].extension);
-                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialog_Save, table_formats[format].extension)) {
+                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, table_formats[format].extension)) {
                     int path_len = (int)strnlen(path_buf, sizeof(path_buf));
                     if (str_empty(extract_ext({path_buf, path_len}))) {
                         path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".%s", table_formats[format].extension);
@@ -7891,7 +7878,7 @@ static void draw_property_export_window(ApplicationData* data) {
                 }
 
                 if (ImGui::Button("Export")) {
-                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialog_Save, volume_formats[format].extension)) {
+                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, volume_formats[format].extension)) {
                         int path_len = (int)strnlen(path_buf, sizeof(path_buf));
                         if (str_empty(extract_ext({path_buf, path_len}))) {
                             path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".%s", volume_formats[format].extension);
@@ -8057,7 +8044,7 @@ static void update_md_buffers(ApplicationData* data) {
                 md_flags_t flags = 0;
                 flags |= md_bitfield_test_bit(&data->selection.current_highlight_mask, i)     ? AtomBit_Highlighted : 0;
                 flags |= md_bitfield_test_bit(&data->selection.current_selection_mask, i)     ? AtomBit_Selected : 0;
-                flags |= md_bitfield_test_bit(&data->representation.atom_visibility_mask, i) ? AtomBit_Visible : 0;
+                flags |= md_bitfield_test_bit(&data->representation.atom_visibility_mask, i)  ? AtomBit_Visible : 0;
                 data->mold.mol.atom.flags[i] = flags;
             }
             md_gl_molecule_set_atom_flags(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.flags, 0);
@@ -8147,12 +8134,12 @@ static void init_trajectory_data(ApplicationData* data) {
             data->trajectory_data.secondary_structure.stride = data->mold.mol.backbone.count;
             data->trajectory_data.secondary_structure.count = data->mold.mol.backbone.count * num_frames;
             md_array_resize(data->trajectory_data.secondary_structure.data, data->mold.mol.backbone.count * num_frames, persistent_allocator);
-            memset(data->trajectory_data.secondary_structure.data, 0, md_array_size(data->trajectory_data.secondary_structure.data) * sizeof (md_secondary_structure_t));
+            MEMSET(data->trajectory_data.secondary_structure.data, 0, md_array_size(data->trajectory_data.secondary_structure.data) * sizeof (md_secondary_structure_t));
 
             data->trajectory_data.backbone_angles.stride = data->mold.mol.backbone.count;
             data->trajectory_data.backbone_angles.count = data->mold.mol.backbone.count * num_frames;
             md_array_resize(data->trajectory_data.backbone_angles.data, data->mold.mol.backbone.count * num_frames, persistent_allocator);
-            memset(data->trajectory_data.backbone_angles.data, 0, md_array_size(data->trajectory_data.backbone_angles.data) * sizeof (md_backbone_angles_t));
+            MEMSET(data->trajectory_data.backbone_angles.data, 0, md_array_size(data->trajectory_data.backbone_angles.data) * sizeof (md_backbone_angles_t));
 
             // Launch work to compute the values
             task_system::task_interrupt_and_wait_for(data->tasks.backbone_computations);
@@ -8979,7 +8966,8 @@ static void save_workspace(ApplicationData* data, str_t filename) {
 
 void create_screenshot(ApplicationData* data) {
     ASSERT(data);
-    // @NOTE(Robin): Package this as a main(render thread) task to ensure that it is done when it has been 
+    str_t path = data->screenshot.path_to_file;
+
     image_t img = {0};
     image_init(&img, data->gbuffer.width, data->gbuffer.height, frame_allocator);
     defer { image_free(&img, frame_allocator); };
@@ -8998,24 +8986,27 @@ void create_screenshot(ApplicationData* data) {
             uint32_t* row_a = img.data + i * img.width;
             uint32_t* row_b = img.data + (img.height - 1 - i) * img.width;
             if (row_a != row_b) {
-                memcpy(row_t, row_a, row_byte_size);  // tmp = a;
-                memcpy(row_a, row_b, row_byte_size);  // a = b;
-                memcpy(row_b, row_t, row_byte_size);  // b = tmp;
+                MEMCPY(row_t, row_a, row_byte_size);  // tmp = a;
+                MEMCPY(row_a, row_b, row_byte_size);  // a = b;
+                MEMCPY(row_b, row_t, row_byte_size);  // b = tmp;
             }
         }
     }
 
-    str_t ext = extract_ext(data->screenshot.path_to_file);
+    str_t ext = extract_ext(path);
     if (str_equal_cstr_ignore_case(ext, "jpg")) {
         const int quality = 95;
-        image_write_jpg(&img, data->screenshot.path_to_file, quality);
+        image_write_jpg(&img, path, quality);
     } else if (str_equal_cstr_ignore_case(ext, "png")) {
-        image_write_png(&img, data->screenshot.path_to_file);
+        image_write_png(&img, path);
     } else if (str_equal_cstr_ignore_case(ext, "bmp")) {
-        image_write_bmp(&img, data->screenshot.path_to_file);
+        image_write_bmp(&img, path);
     } else {
-        LOG_ERROR("Could not match extension when saving screenshot");
+        LOG_ERROR("Non supported file-extension '%.*s' when saving screenshot", (int)ext.len, ext.ptr);
+        return;
     }
+
+    LOG_SUCCESS("Screenshot saved to: '%.*s'", (int)path.len, path.ptr);
 }
 
 // #representation
