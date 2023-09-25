@@ -45,8 +45,8 @@ namespace pool {
 class PoolTask : public enki::ITaskSet {
 public:
     PoolTask() = default;
-    PoolTask(uint32_t set_beg_, uint32_t set_end_, RangeTask set_func_, void* user_data_, str_t lbl_ = {}, ID id = INVALID_ID, enki::ICompletable* dependency = 0)
-        : ITaskSet(set_end_-set_beg_), m_set_func(set_func_), m_user_data(user_data_), m_range_offset(set_beg_), m_set_completed(0), m_interrupt(false), m_id(id) {
+    PoolTask(uint32_t set_beg_, uint32_t set_end_, RangeTask set_func_, str_t lbl_ = {}, ID id = INVALID_ID, enki::ICompletable* dependency = 0)
+        : ITaskSet(set_end_-set_beg_), m_set_func(set_func_), m_range_offset(set_beg_), m_set_completed(0), m_interrupt(false), m_id(id) {
         int64_t len = MIN(lbl_.len, LABEL_SIZE-1);
         m_label = {strncpy(m_buf, lbl_.ptr, len), len};
         if (dependency) {
@@ -54,8 +54,8 @@ public:
         }
     }
 
-    PoolTask(Task func_, void* user_data_, str_t lbl_ = {}, ID id = INVALID_ID, enki::ICompletable* dependency = 0)
-        : ITaskSet(1), m_func(func_), m_user_data(user_data_), m_set_completed(0), m_interrupt(false), m_id(id) {
+    PoolTask(Task func_, str_t lbl_ = {}, ID id = INVALID_ID, enki::ICompletable* dependency = 0)
+        : ITaskSet(1), m_func(func_), m_set_completed(0), m_interrupt(false), m_id(id) {
         int64_t len = MIN(lbl_.len, LABEL_SIZE-1);
         m_label = {strncpy(m_buf, lbl_.ptr, len), len};
         if (dependency) {
@@ -69,9 +69,9 @@ public:
         (void)threadnum;
         if (!m_interrupt) {
             if (m_set_func)
-                m_set_func(m_range_offset + range.start, m_range_offset + range.end, m_user_data);
+                m_set_func(m_range_offset + range.start, m_range_offset + range.end);
             else if (m_func)
-                m_func(m_user_data);
+                m_func();
         }
        
         uint32_t range_ext = (range.end - range.start);
@@ -89,7 +89,6 @@ public:
 
     RangeTask  m_set_func = nullptr;  // either of these two are executed
     Task       m_func     = nullptr;
-    void*      m_user_data = nullptr;
     uint32_t   m_range_offset = 0;
     std::atomic_uint32_t m_set_completed = 0;
     std::atomic_bool m_interrupt = false;
@@ -102,8 +101,8 @@ public:
 class MainTask : public enki::IPinnedTask {
 public:
     MainTask() = default;
-    MainTask(Task func, void* user_data, str_t lbl = {}, ID id = INVALID_ID, enki::ICompletable* dependency = 0) :
-        IPinnedTask(0), m_function(func), m_user_data(user_data), m_id(id) {
+    MainTask(Task func, str_t lbl = {}, ID id = INVALID_ID, enki::ICompletable* dependency = 0) :
+        IPinnedTask(0), m_function(func), m_id(id) {
         int64_t len = MIN(lbl.len, LABEL_SIZE-1);
         m_label = {strncpy(m_buf, lbl.ptr, len), len};
         if (dependency) {
@@ -111,12 +110,11 @@ public:
         }
     }
     virtual void Execute() final {
-        m_function(m_user_data);
+        m_function();
         main::free_slots.push(get_slot_idx(m_id));
     }
 
     Task m_function = nullptr;
-    void* m_user_data = nullptr;
     enki::Dependency m_dependency;
     char m_buf[LABEL_SIZE];
     str_t m_label = {};
@@ -166,14 +164,14 @@ void execute_queued_tasks() {
     ts.RunPinnedTasks();
 }
 
-ID main_enqueue(str_t label, Task func, void* user_data, ID dependency) {
+ID main_enqueue(str_t label, Task func, ID dependency) {
     using namespace main;
     uint32_t idx = free_slots.pop();
 
     ID id = generate_id(idx);
     MainTask* Task = &task_data[idx];
     enki::ICompletable* dep_task = get_task(dependency);
-    PLACEMENT_NEW(Task) MainTask(func, user_data, label, id, dep_task);
+    PLACEMENT_NEW(Task) MainTask(func, label, id, dep_task);
 
     if (!dep_task) {
         queued_slots.push(idx);
@@ -203,7 +201,7 @@ void pool_interrupt_running_tasks() {
     }
 }
 
-ID pool_enqueue(str_t label, Task func, void* user_data, ID dependency) {
+ID pool_enqueue(str_t label, Task func, ID dependency) {
     using namespace pool;
 
     uint32_t slot_idx = free_slots.pop();
@@ -211,7 +209,7 @@ ID pool_enqueue(str_t label, Task func, void* user_data, ID dependency) {
     ID id = generate_id(slot_idx);
     PoolTask* Task = &pool::task_data[slot_idx];
     enki::ICompletable* dep_task = get_task(dependency);
-    PLACEMENT_NEW(Task) PoolTask(func, user_data, label, id, dep_task);
+    PLACEMENT_NEW(Task) PoolTask(func, label, id, dep_task);
 
     if (!dep_task) {
         queued_slots.push(slot_idx);
@@ -220,7 +218,7 @@ ID pool_enqueue(str_t label, Task func, void* user_data, ID dependency) {
     return id;
 }
 
-ID pool_enqueue(str_t label, uint32_t range_beg, uint32_t range_end, RangeTask range_func, void* user_data, ID dependency) {
+ID pool_enqueue(str_t label, uint32_t range_beg, uint32_t range_end, RangeTask range_func, ID dependency) {
     using namespace pool;
 
     uint32_t slot_idx = free_slots.pop();
@@ -228,7 +226,7 @@ ID pool_enqueue(str_t label, uint32_t range_beg, uint32_t range_end, RangeTask r
     ID id = generate_id(slot_idx);
     PoolTask* Task = &pool::task_data[slot_idx];
     enki::ICompletable* dep_task = get_task(dependency);
-    PLACEMENT_NEW(Task) PoolTask(range_beg, range_end, range_func, user_data, label, id, dep_task);
+    PLACEMENT_NEW(Task) PoolTask(range_beg, range_end, range_func, label, id, dep_task);
 
     if (!dep_task) {
         queued_slots.push(slot_idx);

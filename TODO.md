@@ -10,10 +10,11 @@ VIAMD
 
     [ ] Support batched visualization evaluation in script (MDLIB | Enhancement)
     [ ] Implement util function to find identical structures based on input structure (MDLIB | Feature)
-        [ ] Implement util function to compare if two structures are equivalent (MDLIB | Feature)
+        [ ] Implement util function to compare if two structures are topologically equivalent (MDLIB | Feature)
     [ ] Implement util function to find maximum common supgraph of two input graphs (MDLIB | Feature)
     [ ] Revise script interface (MDLIB | Cleanup)
         [ ] Property 
+    [ ] Implement SMAA in conjunction with TAA (temporal is not great)
 
 
 ### Old design specification ###

@@ -2,6 +2,7 @@
 project(imgui LANGUAGES CXX)
 
 set(SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/imgui.h
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui_widgets.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui_draw.cpp

@@ -19,6 +19,9 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
     bool active = false;
     bool hovered = false;
 
+	double pre_min = *x_range_min;
+	double pre_max = *x_range_max;
+
     ImGui::PushID(id);
 
     //double* x_range[2] = {x_range_max, x_range_min};
@@ -120,13 +123,20 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
             snprintf(buff, sizeof(buff), "[%s, %s]", min_buff, max_buff);
             ImVec4 color = IsColorAuto(style.line_col) ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : style.line_col;
             ImU32  col32 = ImGui::ColorConvertFloat4ToU32(color);
-            gp.Annotations.Append(ImVec2(x,yb),ImVec2(0,0),col32,CalcTextColor(color),true,"%s = %s", id, buff);
+            if (id) {
+                gp.Annotations.Append(ImVec2(x,yb),ImVec2(0,0),col32,CalcTextColor(color),true,"%s %s", id, buff);
+            }
+            else {
+                gp.Annotations.Append(ImVec2(x, yb), ImVec2(0, 0), col32, CalcTextColor(color), true, "%s", buff);
+            }
+
         }
     }
 
     ImGui::PopID();
 
-    return dragging;
+	bool value_changed = (*x_range_min != pre_min) || (*x_range_max != pre_max);
+    return value_changed;
 }
 
 IMPLOT_API bool ColorMapSelection(const char* id, ImPlotColormap* idx, ImVec2 size) {

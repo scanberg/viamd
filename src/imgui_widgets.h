@@ -41,4 +41,8 @@ bool ColorEdit4Minimal(const char* label, float color[4]);
 
 void DrawCheckerboard(ImDrawList* draw_list, ImVec2 p_min, ImVec2 p_max, ImU32 col1, ImU32 col2, float grid_step, ImVec2 grid_off);
 
+bool SliderDouble(const char* label, double* v, double v_min, double v_max, const char* format = "%.3f", ImGuiSliderFlags flags = 0);
+
+bool DragDoubleRange2(const char* label, double* v_current_min, double* v_current_max, double v_speed = 1.0, double v_min = 0.0f, double v_max = 0.0f, const char* format = "%.3f", const char* format_max = NULL, ImGuiSliderFlags flags = 0);
+
 }  // namespace ImGui

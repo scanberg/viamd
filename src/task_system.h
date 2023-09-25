@@ -3,7 +3,7 @@
 #include <core/md_str.h>
 
 #include <stdint.h>
-//#include <functional>
+#include <functional>
 
 struct md_allocator_i;
 
@@ -12,11 +12,11 @@ namespace task_system {
 typedef uint64_t ID;
 constexpr ID INVALID_ID = 0;
 
-//using Task = std::function<void()>;
-//using RangeTask = std::function<void(uint32_t range_beg, uint32_t range_end)>;
+using Task = std::function<void()>;
+using RangeTask = std::function<void(uint32_t range_beg, uint32_t range_end)>;
 
-using Task = void (*)(void* user_data);
-using RangeTask = void (*)(uint32_t range_beg, uint32_t range_end, void* user_data);
+//using Task = void (*)(void* user_data);
+//using RangeTask = void (*)(uint32_t range_beg, uint32_t range_end, void* user_data);
 
 /*
 typedef void (*Task) (void* user_data);
@@ -36,11 +36,11 @@ void execute_queued_tasks();
 void execute_task(ID);
 
 // This is to generate tasks for the main thread ("render" thread)
-ID main_enqueue(str_t label, Task task, void* user_data = 0, ID dependency = 0);
+ID main_enqueue(str_t label, Task task, ID dependency = 0);
 
 // This is to generate tasks for the thread-pool (async operations)
-ID pool_enqueue(str_t label, Task task, void* user_data = 0, ID dependency = 0);
-ID pool_enqueue(str_t label, uint32_t range_beg, uint32_t range_end, RangeTask task, void* user_data = 0, ID dependency = 0);
+ID pool_enqueue(str_t label, Task task, ID dependency = 0);
+ID pool_enqueue(str_t label, uint32_t range_beg, uint32_t range_end, RangeTask task, ID dependency = 0);
 
 uint32_t pool_num_threads();
 

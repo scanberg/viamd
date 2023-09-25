@@ -1,7 +1,3 @@
-#ifndef  _CRT_SECURE_NO_WARNINGS
-#define  _CRT_SECURE_NO_WARNINGS
-#endif // ! _CRT_SECURE_NO_WARNINGS
-
 #include <image.h>
 
 #include <core/md_common.h>

@@ -619,7 +619,7 @@ bool rama_init(rama_data_t* data) {
     return true;
 }
 
-struct UserData {
+struct RamaData {
     uint64_t alloc_size;
     vec4_t* density_tex;
     rama_rep_t* rep;
@@ -634,26 +634,25 @@ struct UserData {
 task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angles_t* angles, const uint32_t* rama_type_indices[4], uint32_t frame_beg, uint32_t frame_end, uint32_t frame_stride, float sigma) {
 
     uint64_t tex_size = sizeof(vec4_t) * density_tex_dim * density_tex_dim;
-    uint64_t alloc_size = sizeof(UserData) + tex_size + alignof(vec4_t);
-    UserData* user_data = (UserData*)md_alloc(md_heap_allocator, sizeof(UserData) + tex_size);
-    vec4_t* density_tex = (vec4_t*)NEXT_ALIGNED_ADDRESS(user_data + 1, alignof(vec4_t));
+    uint64_t alloc_size = sizeof(RamaData) + tex_size + alignof(vec4_t);
+    RamaData* rama_data = (RamaData*)md_alloc(md_heap_allocator, sizeof(RamaData) + tex_size);
+    vec4_t* density_tex = (vec4_t*)NEXT_ALIGNED_ADDRESS(rama_data + 1, alignof(vec4_t));
     memset(density_tex, 0, tex_size);
 
-    user_data->alloc_size = alloc_size;
-    user_data->density_tex = density_tex;
-    user_data->rep = rep;
-    user_data->angles = angles;
-    user_data->type_indices[0] = rama_type_indices[0];
-    user_data->type_indices[1] = rama_type_indices[1];
-    user_data->type_indices[2] = rama_type_indices[2];
-    user_data->type_indices[3] = rama_type_indices[3];
-    user_data->frame_beg = frame_beg;
-    user_data->frame_end = frame_end;
-    user_data->frame_stride = frame_stride;
-    user_data->sigma = sigma;
+    rama_data->alloc_size = alloc_size;
+    rama_data->density_tex = density_tex;
+    rama_data->rep = rep;
+    rama_data->angles = angles;
+    rama_data->type_indices[0] = rama_type_indices[0];
+    rama_data->type_indices[1] = rama_type_indices[1];
+    rama_data->type_indices[2] = rama_type_indices[2];
+    rama_data->type_indices[3] = rama_type_indices[3];
+    rama_data->frame_beg = frame_beg;
+    rama_data->frame_end = frame_end;
+    rama_data->frame_stride = frame_stride;
+    rama_data->sigma = sigma;
 
-    task_system::ID id = task_system::pool_enqueue(STR("Rama density"), [](void* user_data) {
-        UserData* data = (UserData*)user_data;
+    task_system::ID id = task_system::pool_enqueue(STR("Rama density"), [data = rama_data]() {
         const float angle_to_coord_scale = 1.0f / (2.0f * PI);
         const float angle_to_coord_offset = 0.5f;
 
@@ -693,16 +692,15 @@ task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angl
         data->rep->den_sum[1] = (float)sum[1];
         data->rep->den_sum[2] = (float)sum[2];
         data->rep->den_sum[3] = (float)sum[3];
-    }, user_data);
+    });
 
-    task_system::main_enqueue(STR("##Update rama texture"), [](void* user_data) {
-        UserData* data = (UserData*)user_data;
-        glBindTexture(GL_TEXTURE_2D, data->rep->den_tex);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, density_tex_dim, density_tex_dim, GL_RGBA, GL_FLOAT, data->density_tex);
+    task_system::main_enqueue(STR("##Update rama texture"), [rama_data]() {
+        glBindTexture(GL_TEXTURE_2D, rama_data->rep->den_tex);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, density_tex_dim, density_tex_dim, GL_RGBA, GL_FLOAT, rama_data->density_tex);
         glBindTexture(GL_TEXTURE_2D, 0);
         
-        md_free(md_heap_allocator, data, data->alloc_size);
-    }, user_data, id);
+        md_free(md_heap_allocator, rama_data, rama_data->alloc_size);
+    }, id);
 
     return id;
 }

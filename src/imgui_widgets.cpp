@@ -348,4 +348,41 @@ void DrawCheckerboard(ImDrawList* draw_list, ImVec2 p_min, ImVec2 p_max, ImU32 c
     }
 }
 
+bool SliderDouble(const char* label, double* v, double v_min, double v_max, const char* format, ImGuiSliderFlags flags) {
+    return SliderScalar(label, ImGuiDataType_Double, v, &v_min, &v_max, format, flags);
+}
+
+// NB: You likely want to specify the ImGuiSliderFlags_AlwaysClamp when using this.
+bool ImGui::DragDoubleRange2(const char* label, double* v_current_min, double* v_current_max, double v_speed, double v_min, double v_max, const char* format, const char* format_max, ImGuiSliderFlags flags)
+{
+    ImGuiWindow* window = GetCurrentWindow();
+    if (window->SkipItems)
+        return false;
+
+    ImGuiContext& g = *GImGui;
+    PushID(label);
+    BeginGroup();
+    PushMultiItemsWidths(2, CalcItemWidth());
+
+    double min_min = (v_min >= v_max) ? -DBL_MAX : v_min;
+    double min_max = (v_min >= v_max) ? *v_current_max : ImMin(v_max, *v_current_max);
+    ImGuiSliderFlags min_flags = flags | ((min_min == min_max) ? ImGuiSliderFlags_ReadOnly : 0);
+    bool value_changed = DragScalar("##min", ImGuiDataType_Double, v_current_min, (float)v_speed, &min_min, &min_max, format, min_flags);
+    PopItemWidth();
+    SameLine(0, g.Style.ItemInnerSpacing.x);
+
+    double max_min = (v_min >= v_max) ? *v_current_min : ImMax(v_min, *v_current_min);
+    double max_max = (v_min >= v_max) ? DBL_MAX : v_max;
+    ImGuiSliderFlags max_flags = flags | ((max_min == max_max) ? ImGuiSliderFlags_ReadOnly : 0);
+    value_changed |= DragScalar("##max", ImGuiDataType_Double, v_current_max, (float)v_speed, &max_min, &max_max, format_max ? format_max : format, max_flags);
+    PopItemWidth();
+    SameLine(0, g.Style.ItemInnerSpacing.x);
+
+    TextEx(label, FindRenderedTextEnd(label));
+    EndGroup();
+    PopID();
+
+    return value_changed;
+}
+
 }  // namespace ImGui
