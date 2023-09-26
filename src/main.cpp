@@ -14,6 +14,9 @@
 #include <md_script.h>
 #include <md_molecule.h>
 #include <md_trajectory.h>
+#include <md_xvg.h>
+#include <md_csv.h>
+#include <md_cube.h>
 
 #include <core/md_log.h>
 #include <core/md_str.h>
@@ -1292,11 +1295,11 @@ int main(int, char**) {
     // Init platform
     LOG_DEBUG("Initializing GL...");
     if (!application::initialize(&data.ctx, 0, 0, "VIAMD")) {
-        LOG_ERROR("Could not initialize platform layer... terminating\n");
+        LOG_ERROR("Could not initialize application...\n");
         return -1;
     }
-    data.ctx.window.vsync = true;
 
+    data.ctx.window.vsync = true;
     data.ctx.file_drop.user_data = &data;
     data.ctx.file_drop.callback = [](int num_files, const char** paths, void* user_data) {
         ApplicationData* data = (ApplicationData*)user_data;
@@ -1323,7 +1326,7 @@ int main(int, char**) {
         }
     };
 
-    LOG_DEBUG("Creating framebuffer...");
+    LOG_DEBUG("Initializing framebuffer...");
     init_gbuffer(&data.gbuffer, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
 
     for (int i = 0; i < (int)ARRAY_SIZE(data.view.jitter.sequence); ++i) {
@@ -1394,9 +1397,9 @@ int main(int, char**) {
         application::update(&data.ctx);
         
         // This needs to happen first (in imgui events) to enable docking of imgui windows
-//#ifdef IMGUI_DOCKING
+#if VIAMD_IMGUI_ENABLE_DOCKSPACE
         ImGui::CreateDockspace();
-//#endif
+#endif
 
         const int64_t num_frames = md_trajectory_num_frames(data.mold.traj);
         const int64_t last_frame = MAX(0, num_frames - 1);
@@ -1633,6 +1636,13 @@ int main(int, char**) {
 
                     std::string src = editor.GetText();
                     str_t src_str {src.data(), (int64_t)src.length()};
+
+                    char buf[1024];
+                    int64_t len = md_path_write_cwd(buf, sizeof(buf));
+                    str_t old_cwd = {buf, len};
+                    defer {
+                        md_path_set_cwd(old_cwd);
+                    };
                     
                     str_t cwd = {};
                     if (data.files.workspace[0] != '\0') {
@@ -7653,7 +7663,6 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
         return false;
     }
 
-    LOG_SUCCESS("Successfully exported cube file to '%.*s'", (int)filename.len, filename.ptr);
     return true;
 }
 
@@ -7671,12 +7680,6 @@ static md_array(float) sample_range(float beg, float end, int sample_count, md_a
 static void draw_property_export_window(ApplicationData* data) {
     ASSERT(data);
 
-    enum ExportType {
-        Temporal = 0,
-        Distribution,
-        DensityVolume
-    };
-
     struct ExportFormat {
         const char* label;
         const char* extension;
@@ -7692,213 +7695,191 @@ static void draw_property_export_window(ApplicationData* data) {
     };
 
     if (ImGui::Begin("Property Export", &data->show_property_export_window)) {
-        char path_buf[1024] = "";
-        static ExportType type = Temporal;
+        static int type = DisplayProperty::Type_Temporal;
+        static int property_idx  = 0;
+        static int table_format  = 0;
+        static int volume_format = 0;
+
+        int num_properties = (int)md_array_size(data->display_properties);
+        if (num_properties == 0) {
+            ImGui::Text("No properties available for export, try evaluating the script.");
+			ImGui::End();
+            property_idx = 0;
+			return;
+        }
+
+        if (task_system::task_is_running(data->tasks.evaluate_full)) {
+            ImGui::Text("The properties is currently being evaluated, please wait...");
+            ImGui::End();
+            property_idx = 0;
+            return;
+        }
+
         ImGui::PushItemWidth(200);
-        ImGui::Combo("Data Type", (int*)(&type), "Temporal\0Distribution\0Density Volume\0");
+        if (ImGui::Combo("Data Type", (int*)(&type), "Temporal\0Distribution\0Density Volume\0")) {
+            if (property_idx != -1) {
+                const char* cur_lbl = data->display_properties[property_idx].label;
+                for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
+                    const DisplayProperty& dp = data->display_properties[i];
+                    if (type == dp.type && strcmp(cur_lbl, dp.label) == 0) {
+                        property_idx = i;
+                        break;
+                    }
+                }
+            }
+        }
         ImGui::Separator();
-        if (type == Temporal || type == Distribution) {
-            static int format = 0;
-            static int col_options[16] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
-            static int num_columns = 4;
-            static int num_bins = 64;
-
-            const int MIN_NUM_BINS = 8;
-            const int MAX_NUM_BINS = 1024;
-
-            struct ColData {
-                const char* label;
-                const float* values;
-                const float* weights;
-                int32_t num_values;
-                int32_t dim;
-            };
-
-            ColData* col_data = 0;
-            if (type == Temporal) {
-                ColData time_data = {"Time", data->timeline.x_values, NULL, (int)md_array_size(data->timeline.x_values), 1};
-                md_array_push(col_data, time_data, frame_allocator);
-                for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
-                    const DisplayProperty& dp = data->display_properties[i];
-                    if (dp.type == DisplayProperty::Type_Temporal) {
-                        str_t lbl = {dp.label, (int64_t)strnlen(dp.label, sizeof(dp.label))};
-                        if (dp.prop->data.dim[0] > 1) {
-                            lbl = alloc_printf(frame_allocator, "%.*s[%d:%d]", (int)lbl.len, lbl.ptr, 1, dp.prop->data.dim[0]);
-                        }
-                        ColData prop_data = {lbl.ptr, dp.prop->data.values, NULL, (int)dp.prop->data.num_values, dp.prop->data.dim[0]};
-                        md_array_push(col_data, prop_data, frame_allocator);
-                    }
-                }
-            } else if (type == Distribution) {
-                for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
-                    const DisplayProperty& dp = data->display_properties[i];
-                    if (dp.type == DisplayProperty::Type_Distribution) {
-                        {
-                            // X
-                            str_t lbl = alloc_printf(frame_allocator, "%s(x)", dp.label);
-                            md_array(float) x_data = sample_range(dp.prop->data.min_range[0], dp.prop->data.max_range[0], (int)dp.prop->data.dim[0], frame_allocator);
-                            ColData x_col = {lbl.ptr, x_data, NULL, (int)md_array_size(x_data), 1};
-                            md_array_push(col_data, x_col, frame_allocator);
-                        }
-                        {
-                            ColData prop_data = {dp.label, dp.prop->data.values, dp.prop->data.weights, (int)dp.prop->data.dim[0], 1};
-                            md_array_push(col_data, prop_data, frame_allocator);
-                        }
-                    }
-                }
-            }
-
-            ImGui::Text("Column Layout");
-            ImGui::SliderInt("Num Columns", &num_columns, 1, (int)ARRAY_SIZE(col_options));
-
-            int num_col_data = (int)md_array_size(col_data);
-            if (ImGui::BeginTable("Columns", num_columns, ImGuiTableFlags_Borders)) {
-                for (int i = 0; i < num_columns; ++i) {
-                    ImGui::TableNextColumn();
-                    ImGui::PushItemWidth(-1);
-                    ImGui::PushID(i);
-                    const char* preview = (0 <= col_options[i] && col_options[i] < num_col_data) ? col_data[col_options[i]].label : "";
-                    if (ImGui::BeginCombo("##col", preview)) {
-                        if (ImGui::Selectable("##empty", col_options[i] == -1)) {
-                            col_options[i] = -1;
-                        }
-                        for (int j = 0; j < num_col_data; ++j) {
-                            ImGui::PushID(j);
-                            if (ImGui::Selectable(col_data[j].label, col_options[i] == j)) {
-                                col_options[i] = j;
-                            }
-                            ImGui::PopID();
-                        }
-                        ImGui::EndCombo();
-                    }
-                    ImGui::PopID();
-                }
-                ImGui::EndTable();
-            }
-
-            if (type == Distribution) {
-                if (ImGui::SliderInt("Num Bins", &num_bins, MIN_NUM_BINS, MAX_NUM_BINS, "%d", ImGuiSliderFlags_Logarithmic)) {
-                    const int up   = next_power_of_two32(num_bins);
-                    const int down = up >> 1;
-                    num_bins = abs(num_bins - down) < abs(num_bins - up) ? down : up;
-                }
-            }
-
-            ImGui::Separator();
-            ImGui::Text("File format");
-            ImGui::Combo("##Export Format", (int*)(&format), "XVG\0CSV\0");
-            if (ImGui::Button("Export")) {
-
-                //application::FileDialogResult file_dialog = application::file_dialog(application::FileDialog_Save, {}, table_formats[format].extension);
-                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, table_formats[format].extension)) {
-                    int path_len = (int)strnlen(path_buf, sizeof(path_buf));
-                    if (str_empty(extract_ext({path_buf, path_len}))) {
-                        path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".%s", table_formats[format].extension);
-                    }
-
-                    const float** column_data = 0;
-                    const char** column_labels = 0;
-                    for (int i = 0; i < num_columns; ++i) {
-                        int idx = col_options[i];
-                        if (0 <= idx && idx < num_col_data) {
-                            ASSERT(col_data[idx].dim >= 1);
-                            if (type == Temporal) {
-                                for (int j = 0; j < col_data[idx].dim; ++j) {
-                                    int stride = col_data[idx].num_values / col_data[idx].dim;
-                                    md_array_push(column_data, col_data[idx].values + stride * j, frame_allocator);
-                                    if (col_data[idx].dim == 1) {
-                                        md_array_push(column_labels, col_data[idx].label, frame_allocator);
-                                    } else {
-                                        str_t lbl = alloc_printf(frame_allocator, "%s[%i]", col_data[idx].label, j + 1);
-                                        md_array_push(column_labels, lbl.ptr, frame_allocator);
-                                    }
-                                }
-                            } else if (type == Distribution) {
-                                float* bins    = (float*)md_alloc(frame_allocator, num_bins * sizeof(float));
-                                downsample_histogram(bins, num_bins, col_data[idx].values, col_data[idx].weights, col_data[idx].num_values);
-                                
-                                md_array_push(column_data, bins, frame_allocator);
-                                md_array_push(column_labels, col_data[idx].label, frame_allocator);
-                            }
-                        }
-                    }
-
-                    int num_rows = (type == Distribution) ? num_bins : md_trajectory_num_frames(data->mold.traj);
-
-                    switch (format) {
-                    case 0:
-                        export_xvg(column_data, column_labels, md_array_size(column_data), num_rows, {path_buf, path_len});
-                        break;
-                    case 1:
-                        export_csv(column_data, column_labels, md_array_size(column_data), num_rows, {path_buf, path_len});
-                        break;
-                    default:
-                        ASSERT(false);
-                    }
-                }
-            }
-        }
-        else if (type == DensityVolume) {
-            static int format = 0;
-            static int prop_idx = 0;
-            static bool temporal_filter = false;
-            const DisplayProperty** props = 0;
-
+        
+        if (ImGui::BeginCombo("Property", property_idx != -1 ? data->display_properties[property_idx].label : "")) {
             for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
-                if (data->display_properties[i].prop->flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
-                    md_array_push(props, &data->display_properties[i], frame_allocator);
-                }
-            }
-
-            const int num_props = (int)md_array_size(props);
-            if (num_props > 0) {
-                prop_idx = CLAMP(prop_idx, 0, num_props);
-                if (ImGui::BeginCombo("Source", props[prop_idx]->label)) {
-                    for (int i = 0; i < num_props; ++i) {
-                        if (ImGui::Selectable(props[i]->label, prop_idx == i)) {
-                            prop_idx = i;
-                        }
-                    }
-                    ImGui::EndCombo();
-                }
-
-                if (data->timeline.filter.enabled) {
-                    ImGui::SameLine();
-                    ImGui::Checkbox("Use Temporal Filter", &temporal_filter);
-                } else {
-                    temporal_filter = false;
-                }
-
-                format = CLAMP(format, 0, (int)ARRAY_SIZE(volume_formats));
-                if (ImGui::BeginCombo("Format", volume_formats[format].label)) {
-                    for (int i = 0; i < (int)ARRAY_SIZE(volume_formats); ++i) {
-                        if (ImGui::Selectable(volume_formats[i].label, format == i)) format = i;
-                    }
-                    ImGui::EndCombo();
-                }
-
-                if (ImGui::Button("Export")) {
-                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, volume_formats[format].extension)) {
-                        int path_len = (int)strnlen(path_buf, sizeof(path_buf));
-                        if (str_empty(extract_ext({path_buf, path_len}))) {
-                            path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".%s", volume_formats[format].extension);
-                        }
-                        switch (format) {
-                        case 0:
-                            export_cube(*data, props[prop_idx]->prop, {path_buf, path_len});
-                            break;
-                        case 1:
-                            // @TODO: Export dat + raw
-                            break;
-                        default:
-                            ASSERT(false);
-                        }
+                const DisplayProperty& dp = data->display_properties[i];
+                if (type == dp.type) {
+                    if (ImGui::Selectable(dp.label, property_idx == i)) {
+                        property_idx = i;
                     }
                 }
             }
+            ImGui::EndCombo();
         }
-        else {
-            ASSERT(false);
+        
+        const char* file_extension = "";
+        if (type == DisplayProperty::Type_Distribution || type == DisplayProperty::Type_Temporal) {
+            if (ImGui::BeginCombo("File Format", table_formats[table_format].label)) {
+                for (int i = 0; i < ARRAY_SIZE(table_formats); ++i) {
+                    if (ImGui::Selectable(table_formats[i].label, table_format == i)) {
+                        table_format = i;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            file_extension = table_formats[table_format].extension;
+        } else if (type == DisplayProperty::Type_Volume) {
+            if (ImGui::BeginCombo("File Format", volume_formats[volume_format].label)) {
+                for (int i = 0; i < ARRAY_SIZE(volume_formats); ++i) {
+                    if (ImGui::Selectable(volume_formats[i].label, volume_format == i)) {
+                        volume_format = i;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            file_extension = volume_formats[volume_format].extension;
+		}
+
+        if (property_idx != -1) {
+            if (type != data->display_properties[property_idx].type) {
+				property_idx = -1;
+			}
+        }
+
+        if (property_idx == -1) ImGui::PushDisabled();
+        bool export_clicked = ImGui::Button("Export");
+        if (property_idx == -1) ImGui::PopDisabled();
+
+        if (export_clicked) {
+            ASSERT(property_idx != -1);
+            char path_buf[1024];
+            DisplayProperty& dp = data->display_properties[property_idx];
+            md_array(const float*)  column_data = 0;
+            md_array(str_t)         column_labels = 0;
+            md_array(str_t)         legends = 0;
+
+            if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, file_extension)) {
+                int path_len = (int)strnlen(path_buf, sizeof(path_buf));
+                if (str_empty(extract_ext({path_buf, path_len}))) {
+                    path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".%s", file_extension);
+                }
+                str_t path = {path_buf, path_len};
+                if (dp.type == DisplayProperty::Type_Volume) {
+                    if (strcmp(file_extension, "cube") == 0) {
+                        if (export_cube(*data, dp.prop, path)) {
+                            LOG_SUCCESS("Successfully exported property '%s' to '%.*s'", dp.label, (int)path.len, path.ptr);
+                        }
+                    }
+                } else {
+                    md_file_o* file = md_file_open(path, MD_FILE_WRITE | MD_FILE_BINARY);
+                    if (file) {
+                        str_t out_str = {};
+                        if (dp.type == DisplayProperty::Type_Temporal) {
+                            const double* traj_times = md_trajectory_frame_times(data->mold.traj);
+                            const int64_t num_frames = md_trajectory_num_frames(data->mold.traj);
+                            md_array(float) time = md_array_create(float, num_frames, frame_allocator);
+                            for (int64_t i = 0; i < num_frames; ++i) {
+                                time[i] = (float)traj_times[i];
+                            }
+
+                            str_t x_label = STR("Frame");
+                            str_t y_label = str_from_cstr(dp.label);
+
+                            if (!md_unit_empty(dp.unit)) {
+                                y_label = alloc_printf(frame_allocator, "%s (%s)", dp.label, dp.unit_str);
+                            }
+
+                            md_unit_t time_unit = md_trajectory_time_unit(data->mold.traj);
+                            if (!md_unit_empty(time_unit)) {
+                                char time_buf[64];
+                                int len = md_unit_print(time_buf, sizeof(time_buf), time_unit);
+                                x_label = alloc_printf(frame_allocator, "Time (%.*s)", len, time_buf);
+                            }
+
+                            md_array_push(column_data, time, frame_allocator);
+                            md_array_push(column_labels, x_label, frame_allocator);
+
+                            if (dp.dim > 1) {
+                                for (int i = 0; i < dp.dim; ++i) {
+                                    str_t legend = alloc_printf(frame_allocator, "%s[%i]", dp.label, i + 1);
+                                    md_array_push(column_data, dp.prop->data.values + i * num_frames, frame_allocator);
+                                    md_array_push(legends, legend, frame_allocator);
+                                    md_array_push(column_labels, legend, frame_allocator);
+                                }
+                            } else {
+                                md_array_push(column_data, dp.prop->data.values, frame_allocator);
+                                md_array_push(column_labels, y_label, frame_allocator);
+                            }
+
+                            if (strcmp(file_extension, "xvg") == 0) {
+                                str_t header = md_xvg_format_header(str_from_cstr(dp.label), x_label, y_label, md_array_size(legends), legends, frame_allocator);
+                                out_str = md_xvg_format(header, md_array_size(column_data), num_frames, column_data, frame_allocator);
+                            } else if (strcmp(file_extension, "csv") == 0) {
+                                out_str = md_csv_write_to_str(column_data, column_labels, md_array_size(column_data), num_frames, frame_allocator);
+                            }
+
+
+                        } else if (dp.type == DisplayProperty::Type_Distribution) {
+                            md_array(float) x_values = sample_range(dp.hist.x_min, dp.hist.x_max, dp.hist.num_bins, frame_allocator);
+
+                            str_t x_label = str_from_cstr(dp.unit_str);
+                            str_t y_label = str_from_cstr(dp.label);
+
+                            md_array_push(column_data, x_values, frame_allocator);
+                            md_array_push(column_labels, x_label, frame_allocator);
+
+                            if (dp.hist.dim > 1) {
+                                for (int i = 0; i < dp.hist.dim; ++i) {
+                                    md_array_push(column_data, dp.hist.bins + i * dp.hist.num_bins, frame_allocator);
+                                    str_t legend = alloc_printf(frame_allocator, "%s[%i]", dp.label, i + 1);
+                                    md_array_push(legends, legend, frame_allocator);
+                                    md_array_push(column_labels, legend, frame_allocator);
+                                }
+                            } else {
+                                md_array_push(column_data, dp.hist.bins, frame_allocator);
+                                md_array_push(column_labels, y_label, frame_allocator);
+                            }
+
+                            if (strcmp(file_extension, "xvg") == 0) {
+                                str_t header = md_xvg_format_header(str_from_cstr(dp.label), x_label, y_label, md_array_size(legends), legends, frame_allocator);
+                                out_str = md_xvg_format(header, md_array_size(column_data), dp.hist.num_bins, column_data, frame_allocator);
+                            } else if (strcmp(file_extension, "csv") == 0) {
+                                out_str = md_csv_write_to_str(column_data, column_labels, md_array_size(column_data), dp.hist.num_bins, frame_allocator);
+                            }
+                        }
+                        if (!str_empty(out_str)) {
+                            md_file_write(file, out_str.ptr, out_str.len);
+                            LOG_SUCCESS("Successfully exported property '%s' to '%.*s'", dp.label, (int)path.len, path.ptr);
+                        }
+                        md_file_close(file);
+                    }
+                }
+            }
         }
         ImGui::PopItemWidth();
     }
