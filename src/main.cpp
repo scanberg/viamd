@@ -62,8 +62,9 @@
 #include <imgui_notify.h>
 
 #include <stdio.h>
+#include <bitset>
 
-#define MAX_POPULATION_SIZE 64
+#define MAX_POPULATION_SIZE 256
 #define MAX_TEMPORAL_SUBPLOTS 10
 #define MAX_DISTRIBUTION_SUBPLOTS 10
 #define EXPERIMENTAL_GFX_API 0
@@ -382,7 +383,7 @@ struct DisplayProperty {
     bool show_in_volume = false;
 
     // Encodes which indices of the population to show (if applicable, i.e. dim > 1)
-    uint64_t population_mask = UINT64_MAX;
+    std::bitset<MAX_POPULATION_SIZE> population_mask = {};
 
     STATIC_ASSERT(MAX_TEMPORAL_SUBPLOTS     <= sizeof(temporal_subplot_mask) * 8,     "Cannot fit temporal subplot mask");
     STATIC_ASSERT(MAX_DISTRIBUTION_SUBPLOTS <= sizeof(distribution_subplot_mask) * 8, "Cannot fit distribution subplot mask");
@@ -2045,6 +2046,7 @@ static void init_display_properties(ApplicationData* data) {
             item.prop = &props[i];
             item.eval = eval;
             item.prop_fingerprint = 0;
+            item.population_mask.set();
             item.temporal_subplot_mask = 0;
             item.distribution_subplot_mask = 0;
             item.hist = {};
@@ -2871,7 +2873,7 @@ static void draw_main_menu(ApplicationData* data) {
                 }
             }
             if (ImGui::MenuItem("Save Workspace", "CTRL+S")) {
-                if (!data->files.workspace) {
+                if (strnlen(data->files.workspace, sizeof(data->files.workspace)) == 0) {
                     if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, FILE_EXTENSION)) {
                         int path_len = (int)strnlen(path_buf, sizeof(path_buf));
                         str_t ext = extract_ext({path_buf, path_len});
@@ -5069,9 +5071,9 @@ static void draw_timeline_window(ApplicationData* data) {
                             };
                             
                             if (prop.temporal_subplot_mask & (1 << i)) {
-                                int dim = CLAMP(1, prop.dim, MAX_POPULATION_SIZE);
-                                for (int k = 0; k < MIN(prop.dim, MAX_POPULATION_SIZE); ++k) {
-                                    if (prop.dim > 1 && !(prop.population_mask & (1ULL << k))) {
+                                const int dim = CLAMP(1, prop.dim, MAX_POPULATION_SIZE);
+                                for (int k = 0; k < dim; ++k) {
+                                    if (dim > 1 && !(prop.population_mask.test(k))) {
                                         continue;
                                     }
                                     payload.dim_idx = k;
@@ -5109,6 +5111,7 @@ static void draw_timeline_window(ApplicationData* data) {
                                     }
                                     default:
                                         // Should not end up here
+                                        ASSERT(false);
                                         break;
                                     }
 
@@ -5123,8 +5126,8 @@ static void draw_timeline_window(ApplicationData* data) {
                                         }
 
                                         hovered_prop_idx = j;
+                                        hovered_pop_idx = k;
                                         if (prop.dim > 1) {
-                                            hovered_pop_idx = k;
                                             snprintf(hovered_label, sizeof(hovered_label), "%s[%i]: %s", prop.label, k + 1, value_buf);
                                         } else {
                                             snprintf(hovered_label, sizeof(hovered_label), "%s: %s", prop.label, value_buf);
@@ -5178,6 +5181,8 @@ static void draw_timeline_window(ApplicationData* data) {
                         if (ImPlot::IsLegendEntryHovered(prop.label)) {
                             visualize_payload(data, prop.prop->vis_payload, 0, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                             set_hovered_property(data, str_from_cstr(prop.label));
+                            hovered_prop_idx = j;
+                            hovered_pop_idx = -1;
                         }
 
                         // legend context menu
@@ -5190,11 +5195,11 @@ static void draw_timeline_window(ApplicationData* data) {
                             if (prop.dim > 1) {
                                 ImGui::Separator();
                                 if (ImGui::Button("Set All")) {
-                                    prop.population_mask = UINT64_MAX;
+                                    prop.population_mask.set();
                                 }
                                 ImGui::SameLine();
                                 if (ImGui::Button("Clear All")) {
-                                    prop.population_mask = 0;
+                                    prop.population_mask.reset();
                                 }
 
                                 const float sz = ImGui::GetFontSize() * 1.5f;
@@ -5202,9 +5207,9 @@ static void draw_timeline_window(ApplicationData* data) {
                                 for (int k = 0; k < MIN(prop.dim, MAX_POPULATION_SIZE); ++k) {
                                     char lbl[32];
                                     snprintf(lbl, sizeof(lbl), "%d", k+1);
-                                    if (ImGui::Selectable(lbl, (prop.population_mask & (1ULL << k)), ImGuiSelectableFlags_DontClosePopups, ImVec2(sz, sz))) {
+                                    if (ImGui::Selectable(lbl, prop.population_mask.test(k), ImGuiSelectableFlags_DontClosePopups, ImVec2(sz, sz))) {
                                         // Toggle bit for this population index
-                                        prop.population_mask ^= (1ULL << k);
+                                        prop.population_mask.flip(k);
                                     }
                                     if (ImGui::IsItemHovered()) {
                                         visualize_payload(data, prop.prop->vis_payload, k + 1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
@@ -5224,39 +5229,66 @@ static void draw_timeline_window(ApplicationData* data) {
                         DisplayProperty::Payload payload {
                             .display_prop = &prop,
                         };
-                        ImPlot::PushStyleColor(ImPlotCol_Line, prop.color);
-                        ImPlot::PushStyleColor(ImPlotCol_Fill, prop.color);
 
+                        const float  hov_fill_alpha  = 1.25f;
+                        const float  hov_line_weight = 2.0f;
+                        const float  hov_col_scl = 1.5f;
+
+                        const ImVec4 hov_col = ImVec4(ImSaturate(prop.color.x * hov_col_scl), ImSaturate(prop.color.y * hov_col_scl), ImSaturate(prop.color.z * hov_col_scl), prop.color.w);
+                        // @NOTE(Robin): The regular color used for lines and shaded areas, if the population_idx is -1 it means we are not hovering a specific index within the population
+                        // This occurs for example when we hover the legend entry for the property. And in such case, ImPlot automatically sets the line weight for all population indices, but we need 
+                        // to set the color manually.
+                        ImVec4 reg_col = prop.color;
+                        float  reg_fill_alpha = 1.0f;
+                        if (hovered_prop_idx == j && hovered_pop_idx == -1) {
+                            reg_col = hov_col;
+                            reg_fill_alpha = hov_fill_alpha;
+                        }
+
+                        // Draw regular lines
                         const int population_size = CLAMP(prop.dim, 1, MAX_POPULATION_SIZE);
                         for (int k = 0; k < population_size; ++k) {
-                            if (population_size > 1 && !(prop.population_mask & (1ULL << k))) {
+                            if (population_size > 1 && !prop.population_mask.test(k)) {
                                 continue;
                             }
+                            if (hovered_prop_idx == j && hovered_pop_idx == k) {
+								continue;
+							}
                             payload.dim_idx = k;
-
-                            if (hovered_prop_idx == j) {
-                                if (hovered_pop_idx == -1 || hovered_pop_idx == k) {
-                                    const float scl = 1.5f;
-                                    ImVec4 col = ImVec4(ImSaturate(prop.color.x * scl), ImSaturate(prop.color.y * scl), ImSaturate(prop.color.z * scl), prop.color.w);
-                                    ImPlot::SetNextLineStyle(col, 2.0f);
-                                    ImPlot::SetNextFillStyle(col, scl);
-                                }
-                            }
-
                             switch (prop.plot_type) {
                             case DisplayProperty::PlotType_Line:
+                                ImPlot::SetNextLineStyle(reg_col);
                                 ImPlot::PlotLineG(prop.label, prop.getter[0], &payload, prop.num_samples);
                                 break;
                             case DisplayProperty::PlotType_Area:
+                                ImPlot::SetNextFillStyle(reg_col, reg_fill_alpha);
                                 ImPlot::PlotShadedG(prop.label, prop.getter[0], &payload, prop.getter[1], &payload, prop.num_samples);
                                 break;
                             default:
                                 // Should not end up here
+                                ASSERT(false);
                                 break;
                             }
                         }
 
-                        ImPlot::PopStyleColor(2);
+                        // Draw hovered line
+                        if (hovered_prop_idx == j && hovered_pop_idx != -1) {
+                            payload.dim_idx = hovered_pop_idx;
+                            switch (prop.plot_type) {
+                            case DisplayProperty::PlotType_Line:
+                                ImPlot::SetNextLineStyle(hov_col, hov_line_weight);
+                                ImPlot::PlotLineG(prop.label, prop.getter[0], &payload, prop.num_samples);
+                                break;
+                            case DisplayProperty::PlotType_Area:
+                                ImPlot::SetNextFillStyle(hov_col, hov_fill_alpha);
+                                ImPlot::PlotShadedG(prop.label, prop.getter[0], &payload, prop.getter[1], &payload, prop.num_samples);
+                                break;
+                            default:
+                                // Should not end up here
+                                ASSERT(false);
+                                break;
+                            }
+                        }
 
                         if (ImPlot::BeginDragDropSourceItem(prop.label)) {
                             DisplayPropertyDragDropPayload dnd_payload = {j, i};
@@ -5273,7 +5305,8 @@ static void draw_timeline_window(ApplicationData* data) {
 
                     if (ImPlot::IsPlotHovered()) {
                         if (hovered_prop_idx != -1) {
-                            visualize_payload(data, data->display_properties[hovered_prop_idx].prop->vis_payload, hovered_pop_idx + 1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                            const int pop_idx = data->display_properties[hovered_prop_idx].dim > 1 ? hovered_pop_idx + 1 : 0;
+                            visualize_payload(data, data->display_properties[hovered_prop_idx].prop->vis_payload, pop_idx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                             set_hovered_property(data, str_from_cstr(data->display_properties[hovered_prop_idx].label), hovered_pop_idx);
                         }
                     }
@@ -5468,7 +5501,7 @@ static void draw_distribution_window(ApplicationData* data) {
 
                             if (prop.distribution_subplot_mask & (1 << i)) {
                                 for (int k = 0; k < MIN(prop.hist.dim, MAX_POPULATION_SIZE); ++k) {
-                                    if (prop.hist.dim > 1 && !(prop.population_mask & (1ULL << k))) {
+                                    if (prop.hist.dim > 1 && !prop.population_mask.test(k)) {
                                         continue;
                                     }
                                     payload.dim_idx = k;
@@ -5540,6 +5573,7 @@ static void draw_distribution_window(ApplicationData* data) {
                                             hovered_pop_idx = k;
                                             snprintf(hovered_label, sizeof(hovered_label), "%s[%i]: %s", prop.label, k + 1, value_buf);
                                         } else {
+                                            hovered_pop_idx = -1;
                                             snprintf(hovered_label, sizeof(hovered_label), "%s: %s", prop.label, value_buf);
                                         }
                                     }
@@ -5574,9 +5608,14 @@ static void draw_distribution_window(ApplicationData* data) {
                         if (prop.type != DisplayProperty::Type_Distribution) continue;
                         if (!(prop.distribution_subplot_mask & (1 << i))) continue;
 
+                        bool legend_entry_hovered = false;
+
                         if (ImPlot::IsLegendEntryHovered(prop.label)) {
                             visualize_payload(data, prop.prop->vis_payload, 0, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                             set_hovered_property(data, str_from_cstr(prop.label));
+                            hovered_prop_idx = j;
+                            hovered_pop_idx = -1;
+                            legend_entry_hovered = true;
                         }
                         
                         // legend context menu
@@ -5636,9 +5675,9 @@ static void draw_distribution_window(ApplicationData* data) {
                                 for (int k = 0; k < MIN(prop.hist.dim, MAX_POPULATION_SIZE); ++k) {
                                     char lbl[32];
                                     snprintf(lbl, sizeof(lbl), "%d", k+1);
-                                    if (ImGui::Selectable(lbl, (prop.population_mask & (1ULL << k)), ImGuiSelectableFlags_DontClosePopups, ImVec2(sz, sz))) {
+                                    if (ImGui::Selectable(lbl, prop.population_mask.test(k), ImGuiSelectableFlags_DontClosePopups, ImVec2(sz, sz))) {
                                         // Toggle bit for this population index
-                                        prop.population_mask ^= (1ULL << k);
+                                        prop.population_mask.flip(k);
                                     }
                                     if (ImGui::IsItemHovered()) {
                                         visualize_payload(data, prop.prop->vis_payload, k + 1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
@@ -5659,48 +5698,78 @@ static void draw_distribution_window(ApplicationData* data) {
                         DisplayProperty::Payload payload = {
                             .display_prop = &prop,
                         };
-                        
-                        ImPlot::PushStyleColor(ImPlotCol_Line, prop.color);
-                        ImPlot::PushStyleColor(ImPlotCol_Fill, prop.color);
+
+                        const double bar_width = (prop.hist.x_max - prop.hist.x_min) / (prop.hist.num_bins);
+
+                        const float  hov_fill_alpha  = 1.25f;
+                        const float  hov_line_weight = 2.0f;
+                        const float  hov_col_scl = 1.5f;
+
+                        const ImVec4 hov_col = ImVec4(ImSaturate(prop.color.x * hov_col_scl), ImSaturate(prop.color.y * hov_col_scl), ImSaturate(prop.color.z * hov_col_scl), prop.color.w);
+                        // @NOTE(Robin): The regular color used for lines and shaded areas, if the population_idx is -1 it means we are not hovering a specific index within the population
+                        // This occurs the user hovers the legend entry for the property. And in such case, ImPlot automatically sets the line weight for all population indices, but we need 
+                        // to set the color manually.
+                        ImVec4 reg_col = prop.color;
+                        float  reg_fill_alpha = 1.0f;
+                        float  reg_line_weight = 1.0f;
+                        if (hovered_prop_idx == j && hovered_pop_idx == -1) {
+                            reg_col = hov_col;
+                            reg_fill_alpha = hov_fill_alpha;
+                            if (!legend_entry_hovered) {
+                                reg_line_weight = hov_line_weight;
+                            }
+                        }
                         
                         if (prop.hist.num_bins > 0) {
-                            for (int k = 0; k < prop.hist.dim; ++k) {
+                            const int dim = CLAMP(prop.hist.dim, 1, MAX_POPULATION_SIZE);
+                            for (int k = 0; k < dim; ++k) {
                                 payload.dim_idx = k;
-                                if (prop.hist.dim > 1 && !(prop.population_mask & (1ULL << k))) continue;
-
-                                if (hovered_prop_idx == j) {
-                                    if (hovered_pop_idx == -1 || hovered_pop_idx == k) {
-                                        const float scl = 1.5f;
-                                        ImVec4 col = ImVec4(ImSaturate(prop.color.x * scl), ImSaturate(prop.color.y * scl), ImSaturate(prop.color.z * scl), prop.color.w);
-                                        ImPlot::SetNextLineStyle(col, 2.0f);
-                                        ImPlot::SetNextFillStyle(col, scl);
-                                    }
+                                if (prop.hist.dim > 1 && !prop.population_mask.test(k)) {
+                                    continue;
                                 }
+                                // Render this last, to make sure it is on top of the others
+                                if (hovered_prop_idx == j && hovered_pop_idx == k) {
+									continue;
+								}
                                 
                                 switch (prop.plot_type) {
                                 case DisplayProperty::PlotType_Line:
-                                    // @NOTE(Robin): num_bins + 1 is wonky and a bit of a hack.
-                                    // But in order to render the histogram using lines instead of discrete bars
+                                    ImPlot::SetNextLineStyle(reg_col, reg_line_weight);
                                     ImPlot::PlotLineG(prop.label, prop.getter[1], &payload, prop.hist.num_bins);
                                     break;
                                 case DisplayProperty::PlotType_Area:
+                                    ImPlot::SetNextFillStyle(reg_col, reg_fill_alpha);
                                     ImPlot::PlotShadedG(prop.label, prop.getter[0], &payload, prop.getter[1], &payload, prop.hist.num_bins);
                                     break;
                                 case DisplayProperty::PlotType_Bars:
-                                {
-                                    const double bar_width = (prop.hist.x_max - prop.hist.x_min) / (prop.hist.num_bins);
+                                    ImPlot::SetNextFillStyle(reg_col, reg_fill_alpha);
                                     ImPlot::PlotBarsG(prop.label, prop.getter[1], &payload, prop.hist.num_bins, bar_width * prop.bar_width_scale);
-                                
-                                    //ImPlot::PlotHistogram(prop.label, prop.prop->data.values, prop.prop->data.num_values, num_bins, prop.bar_width_scale, ImPlotRange(prop.hist.x_min, prop.hist.x_max), ImPlotHistogramFlags_Density);
+                                    break;
+                                default:
                                     break;
                                 }
+                            }
+
+                            if (hovered_prop_idx == j && hovered_pop_idx != -1) {
+                                payload.dim_idx = hovered_pop_idx;
+                                switch (prop.plot_type) {
+                                case DisplayProperty::PlotType_Line:
+                                    ImPlot::SetNextLineStyle(hov_col, hov_line_weight);
+                                    ImPlot::PlotLineG(prop.label, prop.getter[1], &payload, prop.hist.num_bins);
+                                    break;
+                                case DisplayProperty::PlotType_Area:
+                                    ImPlot::SetNextFillStyle(hov_col, hov_fill_alpha);
+                                    ImPlot::PlotShadedG(prop.label, prop.getter[0], &payload, prop.getter[1], &payload, prop.hist.num_bins);
+                                    break;
+                                case DisplayProperty::PlotType_Bars:
+                                    ImPlot::SetNextFillStyle(hov_col, hov_fill_alpha);
+                                    ImPlot::PlotBarsG(prop.label, prop.getter[1], &payload, prop.hist.num_bins, bar_width * prop.bar_width_scale);
+                                    break;
                                 default:
                                     break;
                                 }
                             }
                         }
-
-                        ImPlot::PopStyleColor(2);
 
                         if (ImPlot::BeginDragDropSourceItem(prop.label)) {
                             DisplayPropertyDragDropPayload dnd_payload = {j, i};
@@ -5724,6 +5793,11 @@ static void draw_distribution_window(ApplicationData* data) {
                     }
 
                     if (ImPlot::IsPlotHovered()) {
+                        if (hovered_prop_idx != -1) {
+                            visualize_payload(data, data->display_properties[hovered_prop_idx].prop->vis_payload, hovered_pop_idx + 1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                            set_hovered_property(data, str_from_cstr(data->display_properties[hovered_prop_idx].label), hovered_pop_idx);
+                        }
+
                         ImPlotPoint plot_pos = ImPlot::GetPlotMousePos();
                         ImVec2 screen_pos = ImPlot::PlotToPixels(plot_pos);
                         ImVec2 p0 = {screen_pos.x, ImPlot::GetPlotPos().y};
@@ -5750,186 +5824,6 @@ static void draw_distribution_window(ApplicationData* data) {
                 }
             }
         }
-
-#if 0
-        for (int i = 0; i < num_props; ++i) {
-            DisplayProperty& prop = data->display_properties[i];
-            if ((prop.current_display_mask & DisplayProperty::ShowIn_Distribution) == 0) continue;
-
-            const md_script_property_t* prop = prop.prop;
-            const md_script_property_t* filt_prop = prop.filt_prop;
-
-            double min_x = prop->data.min_range[0];
-            double max_x = prop->data.max_range[0];
-
-            // We need to avoid the axis collapsing, otherwise Implot will get stuck in an infinite loop
-            if (min_x == max_x) {
-                max_x = min_x + 0.001;
-            }
-
-            const float* full_src = 0;
-            const float* full_weights_src = 0;
-            const float* filt_src = 0;
-            const float* filt_weights_src = 0;
-            int num_bins_src = 0;
-
-            if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
-                full_src = prop->data.values;
-                full_weights_src = prop->data.weights;
-                filt_src = filt_prop->data.values;
-                filt_weights_src = filt_prop->data.weights;
-                num_bins_src = prop->data.dim[0];
-            } else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
-                full_src = prop.full_hist.bin;
-                filt_src = prop.filt_hist.bin;
-                num_bins_src = (int)ARRAY_SIZE(prop.full_hist.bin);
-            }
-
-            // Downsample and scale histograms to visual resolution
-            downsample_histogram(full_bins, full_weights, num_bins, full_src, full_weights_src, num_bins_src);
-            scale_histogram(full_bins, full_weights, num_bins);
-            
-            downsample_histogram(filt_bins, filt_weights, num_bins, filt_src, filt_weights_src, num_bins_src);
-            scale_histogram(filt_bins, filt_weights, num_bins);
-
-            double max_y = 0.001;
-            for (int64_t j = 0; j < num_bins; ++j) {
-                max_y = MAX(max_y, full_bins[j]);
-            }
-            
-            ImGui::PushID(i);
-            const double bar_width = (max_x - min_x) / (num_bins);
-            const double bar_off = min_x + 0.5 * bar_width;
-            const double bar_scl = (max_x - min_x) / (num_bins);
-
-            char label[128];
-            int len = snprintf(label, sizeof(label), "%s ", prop.label);
-            
-            if (!md_unit_empty(prop.unit)) {
-                snprintf(label + len, MAX(0, (int)sizeof(label) - len), "(%s)", prop.unit_str);
-            }
-
-            /*
-            ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(10, 0));
-            if (ImPlot::BeginPlot(label, ImVec2(-1,plot_height), flags)) {
-                ImPlot::SetupAxisLimits(ImAxis_Y1, 0, max_y * 1.1, ImGuiCond_Always);
-                ImPlot::SetupAxisLimits(ImAxis_X1, min_x, max_x, ImGuiCond_Once);
-                ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, min_x, max_x);
-                ImPlot::SetupAxisLinks(ImAxis_X1, view_beg, view_end);
-                ImPlot::SetupAxes(0, 0, axis_flags_x, axis_flags_y);
-                ImPlot::SetupFinish();
-
-                bool is_active = ImGui::IsItemActive();
-                bool is_hovered = ImGui::IsItemHovered();
-
-                struct PlotData {
-                    double offset;
-                    double scale;
-                    const float* bars;
-                    int num_bars;
-                } plot_data = {
-                    .offset = bar_off,
-                    .scale = bar_scl,
-                    .bars = 0,
-                    .num_bars = num_bins
-                };
-
-                auto getter = [](int idx, void* data) -> ImPlotPoint {
-                    PlotData* pd = (PlotData*)data;
-                    return ImPlotPoint(idx * pd->scale + pd->offset, (double)pd->bars[idx]);
-                };
-
-                plot_data.bars = full_bins;
-                ImPlot::SetNextFillStyle(ImVec4(0,0,0,-1), 1.0f);
-                ImPlot::SetNextLineStyle(ImVec4(0,0,0,0), 0);
-                ImPlot::PlotBarsG("full", getter, &plot_data, num_bins, bar_width);
-
-                if (data->timeline.filter.enabled) {
-                    plot_data.bars = filt_bins;
-                    ImPlot::SetNextFillStyle(ImVec4(1,1,0,1), 0.3f);
-                    ImPlot::SetNextLineStyle(ImVec4(0,0,0,0), 0);
-                    ImPlot::PlotBarsG("filt", getter, &plot_data, num_bins, bar_width);
-                }
-
-                if (data->distributions.filter.enabled) {
-                    if ((is_active || is_hovered) && ImGui::GetIO().KeyMods == ImGuiMod_Shift) {
-                        if (ImGui::IsMouseClicked(0)) {
-                            prop.value_filter.beg = ImPlot::GetPlotMousePos().x;
-                            prop.value_filter.end = ImPlot::GetPlotMousePos().x;
-                        } else if (ImGui::IsMouseDragging(0)) {
-                            prop.value_filter.end = ImPlot::GetPlotMousePos().x;
-                            prop.value_filter.beg = MIN(prop.value_filter.beg, prop.value_filter.end);
-                            prop.value_filter.end = MAX(prop.value_filter.beg, prop.value_filter.end);
-                        }
-                    }
-
-                    double beg = prop.value_filter.beg;
-                    double end = prop.value_filter.end;
-                    ImPlot::DragRangeX("filter", &beg, &end, min_x, max_x);
-                    prop.value_filter.beg = beg;
-                    prop.value_filter.end = end;
-                }
-
-                bool print_tooltip = ImPlot::IsPlotHovered();
-
-                if (print_tooltip) {
-                    ImPlotPoint plot_pos = ImPlot::GetPlotMousePos();
-                    ImVec2 screen_pos = ImPlot::PlotToPixels(plot_pos);
-                    ImVec2 p0 = {screen_pos.x, ImPlot::GetPlotPos().y};
-                    ImVec2 p1 = {screen_pos.x, ImPlot::GetPlotPos().y + ImPlot::GetPlotSize().y};
-                    ImPlot::PushPlotClipRect();
-                    ImPlot::GetPlotDrawList()->AddLine(p0, p1, IM_COL32(255, 255, 255, 120));
-                    ImPlot::PopPlotClipRect();\
-
-                    const float size_x = max_x - min_x;
-                    const int32_t bin_idx = CLAMP((int)(((plot_pos.x - min_x) / size_x) * num_bins), 0, num_bins-1);
-                    const float full_val = full_bins[bin_idx];
-                    const float filt_val = filt_bins[bin_idx];
-
-                    const int legend_count = ImPlot::GetCurrentPlot()->Items.GetLegendCount();
-                    const bool show_full = (legend_count > 0) && ImPlot::GetCurrentPlot()->Items.GetLegendItem(0)->Show;
-                    const bool show_filt = (legend_count > 1) && ImPlot::GetCurrentPlot()->Items.GetLegendItem(1)->Show;
-
-                    md_strb_t sb = md_strb_create(frame_allocator);
-                    md_strb_fmt(&sb, "%.2f ,", plot_pos.x);
-                    
-                    if (!md_unit_empty(prop.unit)) {
-                        md_strb_pop(&sb, 1);
-                        sb += prop.unit_str;
-                        sb += ',';
-                    }
-
-                    if (show_full) {
-                        md_strb_fmt(&sb, " %.3f", full_val);
-                    }
-
-                    if (show_filt) {
-                        md_strb_fmt(&sb, " (full), %.3f (filt)", filt_val);   
-                    }
-
-                    ImGui::SetTooltip("%s", md_strb_to_cstr(&sb));
-                }
-
-                ImPlot::EndPlot();
-            }
-            ImPlot::PopStyleVar();
-            ImGui::PopID();
-            */
-
-            // @NOTE(Robin): Implot will clip the view range of the distribution.
-            // But if the distribution is being computed in another thread, its range may change.
-            // Therefore we want to ensure that we reset the range to its potential maximum if we were clipped.
-            
-/*
-            if (*view_beg == min_x) {
-                *view_beg = -DBL_MAX;
-            }
-            if (*view_end == max_x) {
-                *view_end = DBL_MAX;
-            }
-            */
-        }
-#endif
     }
     ImGui::End();
 }
