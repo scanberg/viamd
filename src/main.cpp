@@ -2353,7 +2353,7 @@ static void update_density_volume(ApplicationData* data) {
                     data->density_volume.model_mat = volume::compute_model_to_world_matrix(min_aabb, max_aabb);
                     data->density_volume.voxel_spacing = vec3_t{2*s / prop->data.dim[0], 2*s / prop->data.dim[1], 2*s / prop->data.dim[2]};
                 }
-                num_reps = vis.sdf.count;
+                num_reps = md_array_size(vis.sdf.structures);
             }
 
             // We need to limit this for performance reasons
@@ -7498,7 +7498,7 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
         md_file_printf(file, "EXPORTED DENSITY VOLUME FROM VIAMD, UNITS IN BOHR\n");
         md_file_printf(file, "OUTER LOOP: X, MIDDLE LOOP: Y, INNER LOOP: Z\n");
 
-        if (vis.sdf.count > 0) {
+        if (md_array_size(vis.sdf.structures) > 0) {
             const float angstrom_to_bohr = (float)(1.0 / 0.529177210903);
 
             // transformation matrix from world to volume
@@ -9009,7 +9009,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
                         }
                     //}
                     if (result) {
-                        if (dim == (int)md_array_size(vis.structures.atom_masks)) {
+                        if (dim == (int)md_array_size(vis.structures)) {
                             int i0 = CLAMP((int)data->animation.frame + 0, 0, rep->prop->data.num_values / dim - 1);
                             int i1 = CLAMP((int)data->animation.frame + 1, 0, rep->prop->data.num_values / dim - 1);
                             float frame_fract = fractf((float)data->animation.frame);
@@ -9017,7 +9017,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
                             md_bitfield_t mask = {0};
                             md_bitfield_init(&mask, frame_allocator);
                             for (int i = 0; i < dim; ++i) {
-                                md_bitfield_and(&mask, &rep->atom_mask, &vis.structures.atom_masks[i]);
+                                md_bitfield_and(&mask, &rep->atom_mask, &vis.structures[i]);
                                 float value = lerpf(values[i0 * dim + i], values[i1 * dim + i], frame_fract);
                                 float t = CLAMP((value - rep->map_beg) / (rep->map_end - rep->map_beg), 0, 1);
                                 ImVec4 color = ImPlot::SampleColormap(t, rep->color_map);
@@ -9577,43 +9577,36 @@ static void fill_gbuffer(ApplicationData* data) {
     immediate::set_proj_matrix(data->view.param.matrix.current.proj);
 
     const md_script_vis_t& vis = data->mold.script.vis;
-    const vec3_t* vertices = (const vec3_t*)vis.vertex.pos;
 
     const uint32_t point_color      = convert_color(data->script.point_color);
     const uint32_t line_color       = convert_color(data->script.line_color);
     const uint32_t triangle_color   = convert_color(data->script.triangle_color);
 
     md_array(mat4_t) model_matrices = 0;
-    if (vis.sdf.count) {
-        model_matrices = md_array_create(mat4_t, vis.sdf.count, frame_allocator);
-        for (int64_t i = 0; i < vis.sdf.count; ++i) {
+    if (md_array_size(vis.sdf.matrices) > 0) {
+        model_matrices = md_array_create(mat4_t, md_array_size(vis.sdf.matrices), frame_allocator);
+        for (int64_t i = 0; i < md_array_size(vis.sdf.matrices); ++i) {
             model_matrices[i] = mat4_inverse(vis.sdf.matrices[i]);
         }
     }
 
-    for (int64_t i = 0; i < vis.triangle.count; ++i) {
-        ASSERT(vis.triangle.idx);
-        uint32_t idx[3] = { vis.triangle.idx[i * 3 + 0], vis.triangle.idx[i * 3 + 1], vis.triangle.idx[i * 3 + 2] };
-        immediate::draw_triangle(vertices[idx[0]], vertices[idx[1]], vertices[idx[2]], triangle_color);
+    for (int64_t i = 0; i < md_array_size(vis.triangles); i += 3) {
+        immediate::draw_triangle(vis.triangles[i+0].pos, vis.triangles[i+1].pos, vis.triangles[i+2].pos, triangle_color);
     }
 
-    for (int64_t i = 0; i < vis.line.count; ++i) {
-        ASSERT(vis.line.idx);
-        uint32_t idx[2] = { vis.line.idx[i * 2 + 0], vis.line.idx[i * 2 + 1] };
-        immediate::draw_line(vertices[idx[0]], vertices[idx[1]], line_color);
+    for (int64_t i = 0; i < md_array_size(vis.lines); i += 2) {
+        immediate::draw_line(vis.lines[i+0].pos, vis.lines[i+1].pos, line_color);
     }
 
-    for (int64_t i = 0; i < vis.point.count; ++i) {
-        ASSERT(vis.point.idx);
-        uint32_t idx = vis.point.idx[i];
-        immediate::draw_point(vertices[idx], point_color);
+    for (int64_t i = 0; i < md_array_size(vis.points); ++i) {
+        immediate::draw_point(vis.points[i].pos, point_color);
     }
 
     const uint32_t col_x = convert_color(vec4_set(1, 0, 0, 0.7f));
     const uint32_t col_y = convert_color(vec4_set(0, 1, 0, 0.7f));
     const uint32_t col_z = convert_color(vec4_set(0, 0, 1, 0.7f));
     const float ext = vis.sdf.extent * 0.25f;
-    for (int64_t i = 0; i < vis.sdf.count; ++i) {
+    for (int64_t i = 0; i < md_array_size(model_matrices); ++i) {
         immediate::draw_basis(model_matrices[i], ext, col_x, col_y, col_z);
     }
     
@@ -9627,10 +9620,8 @@ static void fill_gbuffer(ApplicationData* data) {
     const vec3_t box_ext = vec3_set1(vis.sdf.extent);
     const uint32_t box_color = convert_color(data->density_volume.bounding_box_color * vec4_set(1.f, 1.f, 1.f, 0.25f));
     
-    for (int64_t i = 0; i < vis.sdf.count; ++i) {
-        ASSERT(vis.sdf.matrices);
-        const mat4_t M = mat4_inverse(vis.sdf.matrices[i]);
-        immediate::draw_box_wireframe(-box_ext, box_ext, M, box_color);
+    for (int64_t i = 0; i < md_array_size(model_matrices); ++i) {
+        immediate::draw_box_wireframe(-box_ext, box_ext, model_matrices[i], box_color);
     }
 
     immediate::render();
