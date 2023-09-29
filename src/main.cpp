@@ -520,18 +520,16 @@ struct ApplicationData {
 
         struct {
             struct {
-                vec4_t fill_color = {1.0f, 1.0f, 1.0f, 0.5f};
-                vec4_t outline_color = {1.0f, 0.5f, 0.0f, 0.5f};
-                float outline_scale = 1.1f;
-            } highlight;
-
-            struct {
-                vec4_t fill_color = {1.0f, 1.0f, 1.0f, 0.5f};
-                vec4_t outline_color = {0.0f, 0.5f, 1.0f, 0.5f};
-                float outline_scale = 1.2f;
+                vec4_t visible = {0.0f, 0.0f, 1.0f, 0.25f};
+                vec4_t hidden  = {0.0f, 0.0f, 0.25f, 0.4f};
             } selection;
 
-            float selection_saturation = 0.3f;
+            struct {
+                vec4_t visible = {1.0f, 1.0f, 0.0f, 0.25f};
+                vec4_t hidden  = {0.5f, 0.5f, 0.0f, 0.40f};
+            } highlight;
+
+            float saturation = 0.5f;
         } color;
 
         bool selecting = false;
@@ -1858,7 +1856,7 @@ int main(int, char**) {
         update_md_buffers(&data);
         update_display_properties(&data);
 
-        if (data.mold.mol.backbone.count > 0) {
+        if (data.mold.mol.backbone.count > 0 && data.ramachandran.show_window) {
             if (data.ramachandran.backbone_fingerprint != data.trajectory_data.backbone_angles.fingerprint) {
                 data.ramachandran.backbone_fingerprint = data.trajectory_data.backbone_angles.fingerprint;
 
@@ -2010,6 +2008,7 @@ static void display_property_copy_param_from_old(DisplayProperty& item, const Di
             item.temporal_subplot_mask      = old_items[i].temporal_subplot_mask;
             item.distribution_subplot_mask  = old_items[i].distribution_subplot_mask;
             item.show_in_volume             = old_items[i].show_in_volume;
+            item.plot_type                  = old_items[i].plot_type;
             break;
         }
     }
@@ -5789,6 +5788,24 @@ static void draw_distribution_window(ApplicationData* data) {
                                 // Clear bit from mask representing src plot index (only if it originated from another plot)
                                 data->display_properties[dnd->prop_idx].distribution_subplot_mask &= ~(1 << dnd->src_plot_idx);
                             }
+
+                            for (int j = 0; j < num_props; ++j) {
+                                DisplayProperty& dp = data->display_properties[j];
+                                if (dp.distribution_subplot_mask & (1 << i)) {
+                                    ImPlotItem* item = ImPlot::GetItem(dp.label);
+                                    bool just_dropped = dnd->prop_idx == j;
+                                    bool previously_visible = item && item->Show;
+                                    if (just_dropped || previously_visible) {
+                                        ImPlot::GetCurrentPlot()->Axes[ImAxis_X1].ExtendFit(dp.hist.x_min);
+                                        ImPlot::GetCurrentPlot()->Axes[ImAxis_X1].ExtendFit(dp.hist.x_max);
+                                        ImPlot::GetCurrentPlot()->Axes[ImAxis_Y1].ExtendFit(dp.hist.y_min);
+                                        ImPlot::GetCurrentPlot()->Axes[ImAxis_Y1].ExtendFit(dp.hist.y_max);
+                                    }
+                                }
+                            }
+                            
+                            ImPlot::GetCurrentPlot()->Axes[ImAxis_X1].ApplyFit(ImPlot::GetStyle().FitPadding.x);
+                            ImPlot::GetCurrentPlot()->Axes[ImAxis_Y1].ApplyFit(ImPlot::GetStyle().FitPadding.y);
                         }
                     }
 
@@ -8352,11 +8369,20 @@ struct SerializationArray {
     void* (*create_item_func)(ApplicationData* data);
 };
 
-SerializationObject serialization_targets[] = {
+// Contains a list of deprecated serialization targets, which are used when reading, but not when writing
+// Used to maintain some type of backwards compatability when reading old workspace files
+SerializationObject deprecated_serialization_targets[] = {
     {"[Files]", "MoleculeFile",             SerializationType_Path,     offsetof(ApplicationData, files.molecule),     sizeof(ApplicationData::files.molecule)},
     {"[Files]", "TrajectoryFile",           SerializationType_Path,     offsetof(ApplicationData, files.trajectory),   sizeof(ApplicationData::files.trajectory)},
     {"[Files]", "CoarseGrained",            SerializationType_Bool,     offsetof(ApplicationData, files.coarse_grained)},
     {"[Files]", "Deperiodize",              SerializationType_Bool,     offsetof(ApplicationData, files.deperiodize)},
+};
+
+SerializationObject serialization_targets[] = {
+    {"[File]", "MoleculeFile",             SerializationType_Path,     offsetof(ApplicationData, files.molecule),     sizeof(ApplicationData::files.molecule)},
+    {"[File]", "TrajectoryFile",           SerializationType_Path,     offsetof(ApplicationData, files.trajectory),   sizeof(ApplicationData::files.trajectory)},
+    {"[File]", "CoarseGrained",            SerializationType_Bool,     offsetof(ApplicationData, files.coarse_grained)},
+    {"[File]", "Deperiodize",              SerializationType_Bool,     offsetof(ApplicationData, files.deperiodize)},
     
     {"[Animation]", "Frame",                SerializationType_Double,   offsetof(ApplicationData, animation.frame)},
     {"[Animation]", "Fps",                  SerializationType_Float,    offsetof(ApplicationData, animation.fps)},
@@ -8368,6 +8394,12 @@ SerializationObject serialization_targets[] = {
     {"[RenderSettings]", "SsaoBias",        SerializationType_Float,    offsetof(ApplicationData, visuals.ssao.bias)},
     {"[RenderSettings]", "DofEnabled",      SerializationType_Bool,     offsetof(ApplicationData, visuals.dof.enabled)},
     {"[RenderSettings]", "DofFocusScale",   SerializationType_Bool,     offsetof(ApplicationData, visuals.dof.focus_scale)},
+
+    {"[VisualStyle]", "SelectionVisible",   SerializationType_Vec4,     offsetof(ApplicationData, selection.color.selection.visible)},
+    {"[VisualStyle]", "SelectionHidden",    SerializationType_Vec4,     offsetof(ApplicationData, selection.color.selection.hidden)},
+    {"[VisualStyle]", "SelectionSaturation",SerializationType_Float,    offsetof(ApplicationData, selection.color.saturation)},
+    {"[VisualStyle]", "HighlightVisible",   SerializationType_Vec4,     offsetof(ApplicationData, selection.color.highlight.visible)},
+    {"[VisualStyle]", "HighlightHidden",    SerializationType_Vec4,     offsetof(ApplicationData, selection.color.highlight.hidden)},
 
     {"[Camera]", "Position",                SerializationType_Vec3,     offsetof(ApplicationData, view.camera.position)},
     {"[Camera]", "Rotation",                SerializationType_Vec4,     offsetof(ApplicationData, view.camera.orientation)},
@@ -8421,9 +8453,14 @@ SerializationArray serialization_array_groups[] = {
 #define EXTRACT_PARAM_LINE(line, txt) (c_txt.len && c_txt[0] != '[' && (str_extract_line(&line, &c_txt)))
 
 static const SerializationObject* find_serialization_target(str_t group, str_t label) {
-    for (size_t i = 0; i < ARRAY_SIZE(serialization_targets); ++i) {
-        if (str_equal_cstr(group, serialization_targets[i].group) && str_equal_cstr(label, serialization_targets[i].label)) {
-            return &serialization_targets[i];
+    for (const SerializationObject& target : serialization_targets) {
+        if (str_equal_cstr(group, target.group) && str_equal_cstr(label, target.label)) {
+            return &target;
+        }
+    }
+    for (const SerializationObject& target : deprecated_serialization_targets) {
+        if (str_equal_cstr(group, target.group) && str_equal_cstr(label, target.label)) {
+            return &target;
         }
     }
     return NULL;
@@ -9405,6 +9442,7 @@ static void clear_gbuffer(GBuffer* gbuffer) {
 
     glDepthMask(1);
     glColorMask(1, 1, 1, 1);
+    glStencilMask(0xFF);
 
     // Setup gbuffer and clear textures
     PUSH_GPU_SECTION("Clear G-buffer") {
@@ -9412,7 +9450,7 @@ static void clear_gbuffer(GBuffer* gbuffer) {
         glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
         glClearColor(0, 0, 0, 0);
         glClearDepthf(1.f);
-        glStencilMask(0xFF);
+        glClearStencil(0x01);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
         // Clear picking buffer
@@ -9505,67 +9543,84 @@ static void fill_gbuffer(ApplicationData* data) {
         const bool atom_highlight_empty = md_bitfield_popcount(&data->selection.current_highlight_mask) == 0;
 
         glDepthMask(0);
-        glColorMask(0, 0, 0, 0);
 
-        glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_EQUAL);
-
-        glEnable(GL_STENCIL_TEST);
-        glStencilFunc(GL_ALWAYS, 0xFF, 0xFF);
-
-        if (!atom_selection_empty)
-        {
-            glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
-            glStencilMask(0x02);
-            draw_representations_lean_and_mean(data, AtomBit_Selected | AtomBit_Visible);
-        }
-
-        if (!atom_highlight_empty)
-        {
-            glStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
-            glStencilMask(0x4);
-            draw_representations_lean_and_mean(data, AtomBit_Highlighted | AtomBit_Visible);
-        }
-        
-        if (!atom_selection_empty)
-        {
-            glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-            glStencilMask(0x1);
-            draw_representations_lean_and_mean(data, AtomBit_Selected | AtomBit_Visible);
-        }
-        
-        glDisable(GL_DEPTH_TEST);
-
-        glStencilMask(0x00);
-        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-        glColorMask(1, 1, 1, 1);
+        // @NOTE(Robin): This is a b*tch to get right, What we want is to separate in a single pass, the visible selected from the
+        // non visible selected. In order to achieve this, we start with a cleared stencil of value 1 then either set it to zero selected and not visible
+        // and to two if it is selected and visible. But the visible atoms should always be able to write over a non visible 0, but not the other way around.
+        // Hence the GL_GREATER stencil test against the reference value of 2.
 
         if (!atom_selection_empty) {
-            glStencilFunc(GL_EQUAL, 2, 2);
-            postprocessing::blit_color({0, 0, 1, 0.25f});
+            glColorMask(0, 0, 0, 0);
 
-            glStencilFunc(GL_EQUAL, 2, 3);
-            postprocessing::blit_color({0, 0, 0.25f, 0.4f});
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_EQUAL);
+
+            glEnable(GL_STENCIL_TEST);
+            glStencilMask(0xFF);
+
+            glClearStencil(1);
+            glClear(GL_STENCIL_BUFFER_BIT);
+
+            glStencilFunc(GL_GREATER, 0x02, 0xFF);
+            glStencilOp(GL_KEEP, GL_ZERO, GL_REPLACE);
+            draw_representations_lean_and_mean(data, AtomBit_Selected | AtomBit_Visible);
+
+            glDisable(GL_DEPTH_TEST);
+
+            glStencilMask(0x0);
+            glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+            glColorMask(1, 1, 1, 1);
+
+            glStencilFunc(GL_EQUAL, 2, 0xFF);
+            postprocessing::blit_color(data->selection.color.selection.visible);
+
+            glStencilFunc(GL_EQUAL, 0, 0xFF);
+            postprocessing::blit_color(data->selection.color.selection.hidden);
         }
 
         if (!atom_highlight_empty) {
-            glStencilFunc(GL_EQUAL, 4, 4);
-            postprocessing::blit_color({1, 1, 0, 0.25f});
+            glColorMask(0, 0, 0, 0);
+
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_EQUAL);
+
+            glEnable(GL_STENCIL_TEST);
+            glStencilMask(0xFF);
+
+            glClearStencil(1);
+            glClear(GL_STENCIL_BUFFER_BIT);
+
+            glStencilFunc(GL_GREATER, 0x02, 0xFF);
+            glStencilOp(GL_KEEP, GL_ZERO, GL_REPLACE);
+            draw_representations_lean_and_mean(data, AtomBit_Highlighted | AtomBit_Visible);
+
+            glDisable(GL_DEPTH_TEST);
+
+            glStencilMask(0x0);
+            glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+            glColorMask(1, 1, 1, 1);
+
+            glStencilFunc(GL_EQUAL, 2, 0xFF);
+            postprocessing::blit_color(data->selection.color.highlight.visible);
+
+            glStencilFunc(GL_EQUAL, 0, 0xFF);
+            postprocessing::blit_color(data->selection.color.highlight.hidden);
         }
 
         glDisable(GL_STENCIL_TEST);
+
         if (!atom_selection_empty) {
-            PUSH_GPU_SECTION("Desaturate")
-            const float saturation = data->selection.color.selection_saturation;
-            glDrawBuffer(GL_COLOR_ATTACHMENT_COLOR);
-            postprocessing::scale_hsv(data->gbuffer.deferred.color, vec3_t{1, saturation, 1});
-            glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
-            POP_GPU_SECTION()
+            PUSH_GPU_SECTION("Desaturate") {
+                const float saturation = data->selection.color.saturation;
+                glDrawBuffer(GL_COLOR_ATTACHMENT_COLOR);
+                postprocessing::scale_hsv(data->gbuffer.deferred.color, vec3_t{1, saturation, 1});
+                glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
+            } POP_GPU_SECTION()
         }
 
-        glDisable(GL_STENCIL_TEST);
         glDepthFunc(GL_LESS);
         glDepthMask(0);
+        glColorMask(1,1,1,1);
         POP_GPU_SECTION()
     }
 
