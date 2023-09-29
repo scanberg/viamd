@@ -8376,13 +8376,17 @@ SerializationObject deprecated_serialization_targets[] = {
     {"[Files]", "TrajectoryFile",           SerializationType_Path,     offsetof(ApplicationData, files.trajectory),   sizeof(ApplicationData::files.trajectory)},
     {"[Files]", "CoarseGrained",            SerializationType_Bool,     offsetof(ApplicationData, files.coarse_grained)},
     {"[Files]", "Deperiodize",              SerializationType_Bool,     offsetof(ApplicationData, files.deperiodize)},
+
+    {"[Representation]", "Radius",          SerializationType_Float,    offsetof(Representation,  param.x)},
+    {"[Representation]", "Width",           SerializationType_Float,    offsetof(Representation,  param.x)},
+    {"[Representation]", "Thickness",       SerializationType_Float,    offsetof(Representation,  param.y)},
 };
 
 SerializationObject serialization_targets[] = {
-    {"[File]", "MoleculeFile",             SerializationType_Path,     offsetof(ApplicationData, files.molecule),     sizeof(ApplicationData::files.molecule)},
-    {"[File]", "TrajectoryFile",           SerializationType_Path,     offsetof(ApplicationData, files.trajectory),   sizeof(ApplicationData::files.trajectory)},
-    {"[File]", "CoarseGrained",            SerializationType_Bool,     offsetof(ApplicationData, files.coarse_grained)},
-    {"[File]", "Deperiodize",              SerializationType_Bool,     offsetof(ApplicationData, files.deperiodize)},
+    {"[File]", "MoleculeFile",             SerializationType_Path,      offsetof(ApplicationData, files.molecule),     sizeof(ApplicationData::files.molecule)},
+    {"[File]", "TrajectoryFile",           SerializationType_Path,      offsetof(ApplicationData, files.trajectory),   sizeof(ApplicationData::files.trajectory)},
+    {"[File]", "CoarseGrained",            SerializationType_Bool,      offsetof(ApplicationData, files.coarse_grained)},
+    {"[File]", "Deperiodize",              SerializationType_Bool,      offsetof(ApplicationData, files.deperiodize)},
     
     {"[Animation]", "Frame",                SerializationType_Double,   offsetof(ApplicationData, animation.frame)},
     {"[Animation]", "Fps",                  SerializationType_Float,    offsetof(ApplicationData, animation.fps)},
