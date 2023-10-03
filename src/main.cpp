@@ -73,6 +73,7 @@
 #define COMPILATION_TIME_DELAY_IN_SECONDS 1.0
 #define IR_SEMAPHORE_MAX_COUNT 3
 #define JITTER_SEQUENCE_SIZE 32
+#define MEASURE_EVALUATION_TIME 1
 
 #define GL_COLOR_ATTACHMENT_COLOR        GL_COLOR_ATTACHMENT0
 #define GL_COLOR_ATTACHMENT_NORMAL       GL_COLOR_ATTACHMENT1
@@ -1784,17 +1785,16 @@ int main(int, char**) {
                                 md_script_eval_frame_range(data->mold.script.full_eval, data->mold.script.eval_ir, &data->mold.mol, data->mold.traj, frame_beg, frame_end);
                             }, &data);
                             
-                            /*
-                            task_system::pool_enqueue(STR("##Release IR Semaphore"), [](void* user_data) {
-                                ApplicationData* data = (ApplicationData*)user_data;
-                                md_semaphore_release(&data->mold.script.ir_semaphore);
-                            }, &data, data.tasks.evaluate_full);
-                            */
+#if MEASURE_EVALUATION_TIME
+                            uint64_t time = (uint64_t)md_time_current();
+                            task_system::pool_enqueue(STR("##Time Eval Full"), [](void* user_data) {
+                                uint64_t t1 = md_time_current();
+                                uint64_t t0 = (uint64_t)user_data;
+                                double s = md_time_as_seconds(t1 - t0);
+                                LOG_INFO("Evaluation completed in: %.3fs", s);
+                            }, (void*)time, data.tasks.evaluate_full);
+#endif
                         }
-                        //else {
-                        //    md_semaphore_release(&data.mold.script.ir_semaphore);
-                        //}
-                    //}
                 }
             }
 
