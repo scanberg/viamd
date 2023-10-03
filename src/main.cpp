@@ -1348,7 +1348,8 @@ int main(int, char**) {
     cone_trace::initialize();
 #endif
     LOG_DEBUG("Initializing task system...");
-    task_system::initialize(MIN(VIAMD_NUM_WORKER_THREADS, (uint32_t)md_os_num_processors()));
+    const int num_threads = VIAMD_NUM_WORKER_THREADS == 0 ? md_os_num_processors() : VIAMD_NUM_WORKER_THREADS;
+    task_system::initialize(CLAMP(num_threads, 2, (uint32_t)md_os_num_processors()));
 
     md_gl_initialize();
     md_gl_shaders_init(&data.mold.gl_shaders, shader_output_snippet);
