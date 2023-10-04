@@ -1254,12 +1254,12 @@ int main(int, char**) {
         NULL,
         [](struct md_logger_o* inst, enum md_log_type_t log_type, const char* msg) {
             (void)inst;
-    
-            static char prev_msg[1024];
-            if (strncmp(prev_msg, msg, sizeof(prev_msg)) == 0) {
+            const size_t len = strlen(msg);
+            static char prev_msg[1024] = {};
+            if (strncmp(prev_msg, msg, MIN(len, sizeof(prev_msg))) == 0) {
                 return;
             }
-            strncpy(prev_msg, msg, sizeof(prev_msg));
+            strncpy(prev_msg, msg, MIN(len, sizeof(prev_msg)));
             
             ImGuiToastType toast_type = ImGuiToastType_None;
             switch (log_type) {
@@ -4977,8 +4977,6 @@ static void draw_timeline_window(ApplicationData* data) {
             double filter_beg = frame_to_time(data->timeline.filter.beg_frame, *data);
             double filter_end = frame_to_time(data->timeline.filter.end_frame, *data);
             double time = frame_to_time(data->animation.frame, *data);
-            double view_beg = data->timeline.view_range.beg_x;
-            double view_end = data->timeline.view_range.end_x;
 
             ImPlot::BeginSubplots("##Temporal", num_subplots, 1, ImVec2(-1,-1));
 
@@ -7671,7 +7669,7 @@ static void draw_property_export_window(ApplicationData* data) {
         const char* file_extension = "";
         if (type == DisplayProperty::Type_Distribution || type == DisplayProperty::Type_Temporal) {
             if (ImGui::BeginCombo("File Format", table_formats[table_format].label)) {
-                for (int i = 0; i < ARRAY_SIZE(table_formats); ++i) {
+                for (int i = 0; i < (int)ARRAY_SIZE(table_formats); ++i) {
                     if (ImGui::Selectable(table_formats[i].label, table_format == i)) {
                         table_format = i;
                     }
@@ -7681,7 +7679,7 @@ static void draw_property_export_window(ApplicationData* data) {
             file_extension = table_formats[table_format].extension;
         } else if (type == DisplayProperty::Type_Volume) {
             if (ImGui::BeginCombo("File Format", volume_formats[volume_format].label)) {
-                for (int i = 0; i < ARRAY_SIZE(volume_formats); ++i) {
+                for (int i = 0; i < (int)ARRAY_SIZE(volume_formats); ++i) {
                     if (ImGui::Selectable(volume_formats[i].label, volume_format == i)) {
                         volume_format = i;
                     }
@@ -8947,7 +8945,7 @@ static Representation* create_representation(ApplicationData* data, Representati
     rep.type = type;
     rep.color_mapping = color_mapping;
     if (!str_empty(filter)) {
-        strncpy(rep.filt, filter.ptr, MIN((size_t)filter.len, sizeof(rep.filt)));
+        str_copy_to_char_buf(rep.filt, sizeof(rep.filt), filter);
     }
     init_representation(data, &rep);
     update_representation(data, &rep);

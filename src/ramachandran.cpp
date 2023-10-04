@@ -73,30 +73,6 @@ void main() {
 }
 )");
 
-constexpr str_t f_shader_box_blur_src = STR(R"(
-#version 330 core
-
-layout(location = 0) out vec4 out_frag;
-
-uniform sampler2D u_tex;
-
-uniform vec2  u_inv_res;
-uniform vec2  u_step;
-
-#define KERNEL_RAD 8
-
-void main() {
-    vec2 coord = vec2(gl_FragCoord.xy) * u_inv_res;
-
-    out_frag = vec4(0,0,0,0);
-    for (int i = -KERNEL_RAD; i <= KERNEL_RAD; ++i) {
-        out_frag += texture(u_tex, coord + u_step * i);
-    }
-
-    out_frag /= float(KERNEL_RAD * 2);
-}
-)");
-
 constexpr str_t f_shader_map_src = STR(R"(
 #version 330 core
 
