@@ -149,6 +149,8 @@ constexpr ImGuiKey KEY_SKIP_TO_PREV_FRAME = ImGuiKey_LeftArrow;
 constexpr ImGuiKey KEY_SKIP_TO_NEXT_FRAME = ImGuiKey_RightArrow;
 constexpr ImGuiKey KEY_RECOMPILE_SHADERS = ImGuiKey_F5;
 constexpr ImGuiKey KEY_SHOW_DEBUG_WINDOW = ImGuiKey_F11;
+constexpr ImGuiKey KEY_SCRIPT_EVALUATE     = ImGuiKey_Enter;
+constexpr ImGuiKey KEY_SCRIPT_EVALUATE_MOD = ImGuiMod_Shift;
 
 constexpr const char* FILE_EXTENSION = "via"; 
 constexpr uint32_t INVALID_PICKING_IDX = ~0U;
@@ -1444,7 +1446,6 @@ int main(int, char**) {
         draw_main_menu(&data);
         draw_notifications_window();
 
-
         // Capture non-window specific keyboard events
         if (!ImGui::GetIO().WantCaptureKeyboard) {
 #if EXPERIMENTAL_GFX_API
@@ -1452,6 +1453,9 @@ int main(int, char**) {
                 use_gfx = !use_gfx;
             }
 #endif
+            if (ImGui::IsKeyDown(KEY_SCRIPT_EVALUATE_MOD) && ImGui::IsKeyPressed(KEY_SCRIPT_EVALUATE)) {
+                data.mold.script.eval_init = true;
+            }
 
             if (ImGui::IsKeyPressed(KEY_SHOW_DEBUG_WINDOW)) {
                 data.show_debug_window = true;
@@ -7348,16 +7352,26 @@ static void draw_script_editor_window(ApplicationData* data) {
 
         editor.Render("TextEditor", text_size);
 
+        
+        bool eval = false;
+        if (editor.IsFocused() && ImGui::IsKeyDown(KEY_SCRIPT_EVALUATE_MOD) && ImGui::IsKeyPressed(KEY_SCRIPT_EVALUATE)) {
+            eval = true;
+        }
+
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + content_size.x - btn_size.x);
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetStyle().ItemSpacing.y);
 
         const bool valid = md_script_ir_valid(data->mold.script.ir);
-        
+
         if (!valid) ImGui::PushDisabled();
         if (ImGui::Button(btn_text, btn_size)) {
-            data->mold.script.eval_init = true;
+            eval = true;
         }
         if (!valid) ImGui::PopDisabled();
+
+        if (eval && valid) {
+            data->mold.script.eval_init = true;
+        }
 
         const TextEditor::Marker* hovered_marker = editor.GetHoveredMarker();
         if (hovered_marker && hovered_marker->payload) {

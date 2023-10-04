@@ -32,6 +32,7 @@ TextEditor::TextEditor()
 	, mOverwrite(false)
 	, mReadOnly(false)
 	, mWithinRender(false)
+	, mFocused(false)
 	, mScrollToCursor(false)
 	, mScrollToTop(false)
 	, mTextChanged(false)
@@ -1233,11 +1234,16 @@ void TextEditor::Render(const char* aTitle, const ImVec2& aSize, bool aBorder)
 	mWithinRender = true;
 	mTextChanged = false;
 	mCursorPositionChanged = false;
+	mFocused = false;
 
 	ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(mPalette[(int)PaletteIndex::Background]));
 	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
-	if (!mIgnoreImGuiChild)
+	if (!mIgnoreImGuiChild) {
 		ImGui::BeginChild(aTitle, aSize, aBorder, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoMove);
+		if (ImGui::IsWindowFocused()) {
+			mFocused = true;
+		}
+	}
 
 	if (mHandleKeyboardInputs)
 	{

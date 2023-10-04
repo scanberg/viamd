@@ -237,6 +237,8 @@ public:
 	bool IsTextChanged() const { return mTextChanged; }
 	bool IsCursorPositionChanged() const { return mCursorPositionChanged; }
 
+	bool IsFocused() const { return mFocused; }
+
 	bool IsColorizerEnabled() const { return mColorizerEnabled; }
 	void SetColorizerEnable(bool aValue);
 
@@ -394,6 +396,7 @@ private:
 	bool mOverwrite;
 	bool mReadOnly;
 	bool mWithinRender;
+	bool mFocused;
 	bool mScrollToCursor;
 	bool mScrollToTop;
 	bool mTextChanged;
