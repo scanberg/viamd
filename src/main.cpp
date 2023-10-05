@@ -69,7 +69,6 @@
 #define MAX_DISTRIBUTION_SUBPLOTS 10
 #define EXPERIMENTAL_GFX_API 0
 #define PICKING_JITTER_HACK 0
-#define EXPERIMENTAL_CONE_TRACED_AO 0
 #define COMPILATION_TIME_DELAY_IN_SECONDS 1.0
 #define IR_SEMAPHORE_MAX_COUNT 3
 #define JITTER_SEQUENCE_SIZE 32
@@ -736,14 +735,7 @@ struct ApplicationData {
         bool enabled = false;
         vec4_t color = {0, 0, 0, 0.5f};
     } simulation_box;
-
-#if EXPERIMENTAL_CONE_TRACED_AO == 1
-    struct {
-        cone_trace::GPUVolume vol;
-        std::mutex vol_mutex{};
-    } occupancy_volume;
-#endif
-    
+   
     // --- RAMACHANDRAN ---
     struct {
         char input[256] = "all";
@@ -1097,10 +1089,6 @@ static void handle_picking(ApplicationData* data);
 static void fill_gbuffer(ApplicationData* data);
 static void apply_postprocessing(const ApplicationData& data);
 
-#if EXPERIMENTAL_CONE_TRACED_AO
-static void init_occupancy_volume(ApplicationData* data);
-#endif
-
 static void draw_representations(ApplicationData* data);
 static void draw_representations_lean_and_mean(ApplicationData* data, uint32_t mask = 0xFFFFFFFFU);
 
@@ -1240,6 +1228,15 @@ static md_allocator_i* persistent_allocator = md_heap_allocator;
     
 #endif
 
+// http://www.cse.yorku.ca/~oz/hash.html
+uint32_t djb2_hash(const char *str) {
+    uint32_t hash = 5381;
+    int c;
+    while (c = *str++)
+        hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
+    return hash;
+}
+
 int main(int, char**) {
     const int64_t linear_size = MEGABYTES(256);
     void* linear_mem = md_alloc(md_heap_allocator, linear_size);
@@ -1254,12 +1251,18 @@ int main(int, char**) {
         NULL,
         [](struct md_logger_o* inst, enum md_log_type_t log_type, const char* msg) {
             (void)inst;
-            const size_t len = strlen(msg);
-            static char prev_msg[1024] = {};
-            if (strncmp(prev_msg, msg, MIN(len, sizeof(prev_msg))) == 0) {
+            static uint32_t prev_hash = 0;
+            static md_timestamp_t prev_time = 0;
+
+            // Prevent spamming the logger with the same message by comparing its hash
+            const md_timestamp_t time = md_time_current();
+            const uint32_t hash = djb2_hash(msg);
+
+            if (md_time_as_seconds(time - prev_time) < 1.0 && hash == prev_hash) {
                 return;
             }
-            strncpy(prev_msg, msg, MIN(len, sizeof(prev_msg)));
+            prev_hash = hash;
+            prev_time = time;
             
             ImGuiToastType toast_type = ImGuiToastType_None;
             switch (log_type) {
@@ -1345,10 +1348,6 @@ int main(int, char**) {
     postprocessing::initialize(data.gbuffer.width, data.gbuffer.height);
     LOG_DEBUG("Initializing volume...");
     volume::initialize();
-#if EXPERIMENTAL_CONE_TRACED_AO == 1
-    LOG_DEBUG("Initializing cone tracing...");
-    cone_trace::initialize();
-#endif
     LOG_DEBUG("Initializing task system...");
     const int num_threads = VIAMD_NUM_WORKER_THREADS == 0 ? md_os_num_processors() : VIAMD_NUM_WORKER_THREADS;
     task_system::initialize(CLAMP(num_threads, 2, (uint32_t)md_os_num_processors()));
@@ -1378,10 +1377,6 @@ int main(int, char**) {
     interpolate_atomic_properties(&data);
 
     rama_init(&data.ramachandran.data);
-
-#if EXPERIMENTAL_CONE_TRACED_AO == 1
-    init_occupancy_volume(&data);
-#endif
 
 #if EXPERIMENTAL_SDF == 1
     draw::scan::test_scan();
@@ -1466,9 +1461,6 @@ int main(int, char**) {
                 postprocessing::initialize(data.gbuffer.width, data.gbuffer.height);
                 ramachandran::initialize();
                 volume::initialize();
-#if EXPERIMENTAL_CONE_TRACED_AO == 1
-                cone_trace::initialize();
-#endif
                 md_gl_shaders_free(&data.mold.gl_shaders);
                 md_gl_shaders_init(&data.mold.gl_shaders, shader_output_snippet);
             }
@@ -1589,12 +1581,6 @@ int main(int, char**) {
                 if (data.animation.apply_pbc) {
                     md_util_deperiodize_system(mol.atom.x, mol.atom.y, mol.atom.z, &mol.unit_cell, &mol);
                 }
-
-#if EXPERIMENTAL_CONE_TRACED_AO
-                if (data.visuals.cone_traced_ao.enabled) {
-                    init_occupancy_volume(&data);
-                }
-#endif
             }
             POP_CPU_SECTION()
 
@@ -1929,20 +1915,6 @@ int main(int, char**) {
         fill_gbuffer(&data);
         immediate::render();
 
-#if EXPERIMENTAL_CONE_TRACED_AO == 1
-        if (data.visuals.cone_traced_ao.enabled) {
-            PUSH_GPU_SECTION("Cone-Trace AO")
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.gbuffer.deferred.gbuffer);
-            glViewport(0, 0, data.gbuffer.width, data.gbuffer.height);
-            glDrawBuffer(GL_COLOR_ATTACHMENT0);  // Modify to color buffer
-            cone_trace::render_directional_occlusion(data.gbuffer.deferred.depth, data.gbuffer.deferred.normal, data.occupancy_volume.vol,
-                                                     data.view.param.matrix.current.view, data.view.param.matrix.current.proj,
-                                                     data.visuals.cone_traced_ao.intensity, data.visuals.cone_traced_ao.step_scale);
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-            POP_GPU_SECTION()
-        }
-#endif
-
         // Activate backbuffer
         glDisable(GL_DEPTH_TEST);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
@@ -1989,10 +1961,6 @@ int main(int, char**) {
     postprocessing::shutdown();
     LOG_DEBUG("Shutting down volume...");
     volume::shutdown();
-#if EXPERIMENTAL_CONE_TRACED_AO == 1
-    LOG_INFO("Shutting down cone tracing...");
-    cone_trace::shutdown();
-#endif
     LOG_DEBUG("Shutting down task system...");
     task_system::shutdown();
 
@@ -9434,20 +9402,6 @@ static void handle_camera_animation(ApplicationData* data) {
     ImGui::End();
 #endif
 }
-
-#if EXPERIMENTAL_CONE_TRACED_AO == 1
-static void init_occupancy_volume(ApplicationData* data) {
-    const AABB cell = compute_aabb(data->mold.mol.atom.position, data->mold.mol.atom.radius, data->mold.mol.atom.count);
-    cone_trace::init_occlusion_volume(&data->occupancy_volume.vol, cell.min, cell.max, 8.0f);
-
-    //data->occupancy_volume.vol_mutex.lock();
-    if (data->occupancy_volume.vol.texture_id) {
-        cone_trace::compute_occupancy_volume(data->occupancy_volume.vol, data->mold.mol.atom.position,
-                                             data->mold.mol.atom.radius, data->representation.atom_visibility_mask);
-    }
-    //data->occupancy_volume.vol_mutex.unlock();
-}
-#endif
 
 static void clear_gbuffer(GBuffer* gbuffer) {
     const vec4_t CLEAR_INDEX = vec4_t{1, 1, 1, 1};
