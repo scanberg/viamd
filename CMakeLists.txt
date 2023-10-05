@@ -54,6 +54,9 @@ set(VIAMD_STDLIBS)
 set(VIAMD_FLAGS ${MD_FLAGS})
 set(VIAMD_FLAGS_DEB ${MD_FLAGS_DEB})
 set(VIAMD_FLAGS_REL ${MD_FLAGS_REL})
+set(VIAMD_LINK_FLAGS ${MD_LINK_FLAGS})
+set(VIAMD_LINK_FLAGS_DEB ${MD_LINK_FLAGS_DEB})
+set(VIAMD_LINK_FLAGS_REL ${MD_LINK_FLAGS_REL})
 
 if (MD_LINK_STDLIB_STATIC)
     if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
@@ -152,6 +155,7 @@ target_include_directories(viamd
 set_target_properties(viamd PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${VIAMD_BIN_DIR}")
 
+target_link_options(viamd PRIVATE ${VIAMD_LINK_FLAGS} $<$<CONFIG:Debug>:${VIAMD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${VIAMD_LINK_FLAGS_REL}>)
 target_link_libraries(viamd
     glfw
     imgui
