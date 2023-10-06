@@ -398,6 +398,14 @@ struct AtomElementMapping {
     md_element_t elem = 0;
 };
 
+// We use this to represent a single entity within the loaded system, e.g. a residue type
+struct DatasetItem {
+    char label[32] = "";
+    char query[32] = "";
+    uint32_t count = 0;
+    float fraction = 0;
+};
+
 struct LoadDatasetWindowState {
     char path_buf[2048] = "";
     bool path_is_valid = false;
@@ -795,6 +803,10 @@ struct ApplicationData {
     struct {
         bool show_window = false;
         AtomElementMapping* atom_element_remappings = 0;
+
+        md_array(DatasetItem) chains = 0;
+        md_array(DatasetItem) residue_names = 0;
+        md_array(DatasetItem) atom_labels = 0;
     } dataset;
 
     struct {
@@ -1068,6 +1080,9 @@ static int64_t single_selection_sequence_count(const SingleSelectionSequence* se
 }
 
 //static void launch_prefetch_job(ApplicationData* data);
+
+static void init_dataset_items(ApplicationData* data);
+static void clear_dataset_items(ApplicationData* data);
 
 static void init_display_properties(ApplicationData* data);
 static void update_display_properties(ApplicationData* data);
@@ -1421,8 +1436,6 @@ int main(int, char**) {
         if (data.show_debug_window) draw_debug_window(&data);
 
         data.selection.selecting = false;
-
-
 
         //ImGui::ShowDemoWindow();
 
@@ -1968,6 +1981,79 @@ int main(int, char**) {
     application::shutdown(&data.ctx);
 
     return 0;
+}
+
+static void init_dataset_items(ApplicationData* data) {
+    clear_dataset_items(data);
+    if (data->mold.mol.atom.count == 0) return;
+
+    for (int64_t i = 0; i < data->mold.mol.chain.count; ++i) {
+        DatasetItem item = {};
+        str_t str = LBL_TO_STR(data->mold.mol.chain.id[i]);
+        snprintf(item.label, sizeof(item.label), "%.*s", (int)str.len, str.ptr);
+        snprintf(item.query, sizeof(item.query), "chain(%d)", (int)(i+1));
+        item.count = 1;
+        item.fraction = (data->mold.mol.chain.atom_range[i].end - data->mold.mol.chain.atom_range[i].beg) / (float)data->mold.mol.atom.count;
+        md_array_push(data->dataset.chains, item, persistent_allocator);
+    }
+
+    for (int64_t i = 0; i < data->mold.mol.residue.count; ++i) {
+        const float fraction_size = (data->mold.mol.residue.atom_range[i].end - data->mold.mol.residue.atom_range[i].beg) / (float)data->mold.mol.atom.count;
+        {
+            // Do resname
+            str_t resname = LBL_TO_STR(data->mold.mol.residue.name[i]);
+            DatasetItem* item = 0;
+			for (int64_t j = 0; j < md_array_size(data->dataset.residue_names); ++j) {
+				if (strcmp(data->dataset.residue_names[j].label, resname.ptr) == 0) {
+                    item = &data->dataset.residue_names[j];
+					break;
+				}
+			}
+            if (!item) {
+                DatasetItem it = {};
+                snprintf(it.label, sizeof(it.label), "%.*s", (int)resname.len, resname.ptr);
+                snprintf(it.query, sizeof(it.query), "resname('%.*s')", (int)resname.len, resname.ptr);
+                it.count = 0;
+                it.fraction = 0;
+                item = md_array_push(data->dataset.residue_names, it, persistent_allocator);
+            }
+			item->count += 1;
+            item->fraction += fraction_size;
+		}
+    }
+
+    for (int64_t i = 0; i < data->mold.mol.atom.count; ++i) {
+        {
+            // Do atom label
+            str_t label = LBL_TO_STR(data->mold.mol.atom.name[i]);
+            DatasetItem* item = 0;
+            for (int64_t j = 0; j < md_array_size(data->dataset.atom_labels); ++j) {
+                if (strcmp(data->dataset.atom_labels[j].label, label.ptr) == 0) {
+                    item = &data->dataset.atom_labels[j];
+                    break;
+                }
+            }
+            if (!item) {
+                DatasetItem it = {};
+                snprintf(it.label, sizeof(it.label), "%.*s", (int)label.len, label.ptr);
+                snprintf(it.query, sizeof(it.query), "type('%.*s')", (int)label.len, label.ptr);
+                it.count = 0;
+                it.fraction = 0;
+                item = md_array_push(data->dataset.atom_labels, it, persistent_allocator);
+            }
+            item->count += 1;
+        }
+    }
+
+    for (int64_t i = 0; i < md_array_size(data->dataset.atom_labels); ++i) {
+		data->dataset.atom_labels[i].fraction = data->dataset.atom_labels[i].count / (float)data->mold.mol.atom.count;
+	}
+}
+
+static void clear_dataset_items(ApplicationData* data) {
+    md_array_shrink(data->dataset.chains, 0);
+    md_array_shrink(data->dataset.residue_names, 0);
+    md_array_shrink(data->dataset.atom_labels, 0);
 }
 
 static void display_property_copy_param_from_old(DisplayProperty& item, const DisplayProperty* old_items, int64_t num_old_items) {
@@ -7178,13 +7264,47 @@ static void draw_dataset_window(ApplicationData* data) {
             ImGui::Text("Num atoms:     %9i", (int)md_trajectory_num_atoms(data->mold.traj));
         }
 
-        int64_t num_mappings = md_array_size(data->dataset.atom_element_remappings);
+        const char* lbls[] = {"Chains", "Residue Names", "Atom Labels"};
+        const md_array(DatasetItem) items[] = {data->dataset.chains, data->dataset.residue_names, data->dataset.atom_labels};
+        STATIC_ASSERT(ARRAY_SIZE(lbls) == ARRAY_SIZE(items));
+
+        const ImVec2 item_size = ImVec2(ImGui::GetFontSize() * 1.8f, ImGui::GetFontSize() * 1.1f);
+        const float window_x_max = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+        for (int i = 0; i < ARRAY_SIZE(lbls); ++i) {
+            const int64_t count = md_array_size(items[i]);
+            if (count) {
+                if (ImGui::CollapsingHeader(lbls[i])) {
+                    for (int64_t j = 0; j < count; ++j) {
+                        const DatasetItem& item = items[i][j];
+                        const float t = powf(item.fraction, 0.2f) * 0.5f;
+                        ImGui::PushStyleColor(ImGuiCol_Header, ImPlot::SampleColormap(t, ImPlotColormap_Plasma));
+                        ImGui::Selectable(item.label, true, 0, item_size);
+                        ImGui::PopStyleColor();
+
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("%s: count %d", item.label, item.count);
+                            if (filter_expression(data, str_from_cstr(item.query), &data->selection.current_highlight_mask)) {
+                                data->mold.dirty_buffers |= MolBit_DirtyFlags;
+                            }
+                        }
+
+                        float last_item_x = ImGui::GetItemRectMax().x;
+                        float next_button_x = last_item_x + item_size.x;
+                        if (j + 1 < count && next_button_x < window_x_max) {
+                            ImGui::SameLine();
+                        }
+                    }
+                }
+            }
+        }
+
+        const int64_t num_mappings = md_array_size(data->dataset.atom_element_remappings);
         if (num_mappings) {
-            ImGui::Separator();
-            ImGui::Text("Atom element mappings, label -> element");
-            for (int64_t i = 0; i < num_mappings; ++i) {
-                const auto& mapping = data->dataset.atom_element_remappings[i];
-                ImGui::Text("%s -> %s (%s)", mapping.lbl, md_util_element_name(mapping.elem).ptr, md_util_element_symbol(mapping.elem).ptr);
+            if (ImGui::CollapsingHeader("Atom Element Mappings")) {
+                for (int64_t i = 0; i < num_mappings; ++i) {
+                    const auto& mapping = data->dataset.atom_element_remappings[i];
+                    ImGui::Text("%s -> %s (%s)", mapping.lbl, md_util_element_name(mapping.elem).ptr, md_util_element_symbol(mapping.elem).ptr);
+                }
             }
         }
     }
@@ -8135,6 +8255,8 @@ static void init_molecule_data(ApplicationData* data) {
         init_all_representations(data);
         update_all_representations(data);
         data->mold.script.compile_ir = true;
+
+        init_dataset_items(data);
     }
 }
 
