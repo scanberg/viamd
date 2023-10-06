@@ -1336,6 +1336,29 @@ int main(int, char**) {
 
             if (str_equal_cstr_ignore_case(ext, "via")) {
                 load_workspace(data, path);
+            } else if (
+                str_equal_cstr_ignore_case(ext, "edr") ||
+                str_equal_cstr_ignore_case(ext, "xvg") ||
+                str_equal_cstr_ignore_case(ext, "csv"))
+            {
+                char buf[1024];
+                str_t base_path = {};
+                if (data->files.workspace[0] != '\0') {
+					base_path = str_from_cstr(data->files.workspace);
+				} else if (data->files.trajectory[0] != '\0') {
+					base_path = str_from_cstr(data->files.trajectory);
+                } else if (data->files.molecule[0] != '\0') {
+                    base_path = str_from_cstr(data->files.molecule);
+				} else {
+                    md_path_write_cwd(buf, sizeof(buf));
+                    base_path = str_from_cstr(buf);
+                }
+
+                str_t rel_path = md_path_make_relative(base_path, path, frame_allocator);
+                if (!str_empty(rel_path)) {
+                    snprintf(buf, sizeof(buf), "\ntable = import(\"%.*s\");", STR_FMT(rel_path));
+                    editor.AppendText(buf);
+                }
             }
             else {
                 LoadDatasetWindowState& state = data->load_dataset;
@@ -1653,6 +1676,8 @@ int main(int, char**) {
                         cwd = extract_path_without_file(str_from_cstr(data.files.workspace));
                     } else if (data.files.trajectory[0] != '\0') {
                         cwd = extract_path_without_file(str_from_cstr(data.files.trajectory));
+                    } else if (data.files.molecule[0] != '\0') {
+                        cwd = extract_path_without_file(str_from_cstr(data.files.molecule));
                     }
                     if (!str_empty(cwd)) {
                         md_path_set_cwd(cwd);
