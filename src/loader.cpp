@@ -196,8 +196,8 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
                     const vec3_t box_ext = mat3_mul_vec3(cell->basis, vec3_set1(1.0f));
 
                     const vec3_t com = have_cell ?
-                        vec3_deperiodize(md_util_compute_com_indexed_soa_ortho(x, y, z, mol->atom.mass, indices, count, box_ext), box_ext * 0.5f, box_ext) :
-                        md_util_compute_com_indexed_soa(x, y, z, mol->atom.mass, indices, count);
+                        vec3_deperiodize(md_util_compute_com_ortho(x, y, z, mol->atom.mass, indices, count, box_ext), box_ext * 0.5f, box_ext) :
+                        md_util_compute_com(x, y, z, mol->atom.mass, indices, count);
 
                     // Translate all
                     const vec3_t trans = have_cell ? box_ext * 0.5f - com : -com;

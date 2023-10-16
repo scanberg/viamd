@@ -129,11 +129,14 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
     return dragging;
 }
 
-IMPLOT_API bool ColorMapSelection(const char* id, ImPlotColormap* idx, ImVec2 size) {
+IMPLOT_API bool ColormapSelection(const char* id, ImPlotColormap* idx, ImVec2 size) {
     IM_ASSERT(id);
     IM_ASSERT(idx);
 
     bool value = false;
+
+    if (size.x == 0)
+        size.x = ImGui::CalcItemWidth();
 
     ImGui::PushID(ImGui::GetID(id));
     if (ImPlot::ColormapButton(ImPlot::GetColormapName(*idx), size, *idx)) {
@@ -156,35 +159,8 @@ IMPLOT_API bool ColorMapSelection(const char* id, ImPlotColormap* idx, ImVec2 si
     return value;
 }
 
-IMPLOT_API bool ColorMapSelection(const char* id, ImPlotColormap* idx, float* cur_range_min, float* cur_range_max, float min, float max, ImVec2 size) {
-    IM_ASSERT(id);
-    IM_ASSERT(idx);
-    IM_ASSERT(cur_range_min);
-    IM_ASSERT(cur_range_max);
-
-    bool value = false;
-
-    ImGui::PushID(ImGui::GetID(id));
-    if (ImPlot::ColormapButton(ImPlot::GetColormapName(*idx), size, *idx)) {
-        ImGui::OpenPopup("Color Map Selector");
-    }
-    ImGui::SameLine();
-    if (id && id[0] != '#' && id[1] != '#')
-        ImGui::Text("%s", id);
-    value |= ImGui::DragFloatRange2("Min / Max", cur_range_min, cur_range_max, 1.0f, min, max);
-    if (ImGui::BeginPopup("Color Map Selector")) {
-        for (int map = 0; map < ImPlot::GetColormapCount(); ++map) {
-            if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), size, map)) {
-                *idx = map;
-                value = true;
-                ImGui::CloseCurrentPopup();
-            }
-        }
-        ImGui::EndPopup();
-    }
-    ImGui::PopID();
-
-    return value;
+IMPLOT_API bool ColormapQualitative(ImPlotColormap idx) {
+    return ImPlot::GetCurrentContext()->ColormapData.IsQual(idx);
 }
 
 }  // namespace ImGui
