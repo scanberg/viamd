@@ -5421,6 +5421,8 @@ static void draw_timeline_window(ApplicationData* data) {
                             const int    population_size = CLAMP(prop.dim, 1, MAX_POPULATION_SIZE);
 
                             ImVec4 color = {};
+                            ImVec4 marker_line_color = {};
+                            float  marker_line_weight = 0;
                             float  fill_alpha = 1.0f;
                             float  weight = 1.0f;
 
@@ -5445,6 +5447,8 @@ static void draw_timeline_window(ApplicationData* data) {
                                 if (hovered_pop_idx == -1 || hovered_pop_idx == k) {
                                     color = ImVec4(ImSaturate(color.x * hov_col_scl), ImSaturate(color.y * hov_col_scl), ImSaturate(color.z * hov_col_scl), color.w);
                                     fill_alpha = hov_fill_alpha;
+                                    marker_line_color = {1,1,1,1};
+                                    marker_line_weight = 1.0f;
                                 }
                                 if (hovered_pop_idx == k) {
                                     weight = hov_line_weight;
@@ -5466,7 +5470,7 @@ static void draw_timeline_window(ApplicationData* data) {
                                 ImPlot::PlotShadedG(prop.label, prop.getter[0], &payload, prop.getter[1], &payload, prop.num_samples);
                                 break;
                             case DisplayProperty::PlotType_Scatter:
-                                ImPlot::SetNextMarkerStyle(prop.marker_type, prop.marker_size, color, weight);
+                                ImPlot::SetNextMarkerStyle(prop.marker_type, prop.marker_size, color, marker_line_weight, marker_line_color);
                                 ImPlot::PlotScatterG(prop.label, prop.getter[0], &payload, prop.num_samples);
                                 break;
                             default:
