@@ -2586,7 +2586,7 @@ static void interpolate_atomic_properties(ApplicationData* data) {
         MIN(frame + 2, last_frame)
     };
 
-    int64_t stride = ALIGN_TO(mol.atom.count, md_simd_width_f32);    // The interploation uses SIMD vectorization without bounds, so we make sure there is no overlap between the data segments
+    int64_t stride = ALIGN_TO(mol.atom.count, 8);    // The interploation uses SIMD vectorization without bounds, so we make sure there is no overlap between the data segments
     int64_t bytes = stride * sizeof(float) * 3 * 4;
     void* mem = md_alloc(frame_allocator, bytes);
     defer { md_free(frame_allocator, mem, bytes); };
@@ -2639,7 +2639,7 @@ static void interpolate_atomic_properties(ApplicationData* data) {
             ASSERT(false);
     }
 
-    md_util_compute_aabb_soa(&data->mold.mol_aabb_min, &data->mold.mol_aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
+    md_util_compute_aabb(&data->mold.mol_aabb_min, &data->mold.mol_aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, 0, mol.atom.count);
 
     if (mol.backbone.angle) {
         const md_backbone_angles_t* src_angles[4] = {
@@ -2803,12 +2803,11 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
     
     if (0 < popcount && popcount < mol.atom.count) {
         int32_t* indices = (int32_t*)md_linear_allocator_push(linear_allocator, popcount * sizeof(int32_t));
-        defer{ md_linear_allocator_pop(linear_allocator, popcount * sizeof(int32_t)); };
-        
         const int64_t len = md_bitfield_extract_indices(indices, popcount, &data->representation.atom_visibility_mask);
-		md_util_compute_aabb_indexed_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, len);
+		md_util_compute_aabb(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, len);
+        md_linear_allocator_pop(linear_allocator, popcount * sizeof(int32_t));
     } else {
-        md_util_compute_aabb_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, mol.atom.count);
+        md_util_compute_aabb(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, nullptr, mol.atom.count);
     }
 
     const vec3_t ext = aabb_max - aabb_min;
@@ -6410,7 +6409,7 @@ static void draw_shape_space_window(ApplicationData* data) {
 
                         data->tasks.shape_space_evaluate = task_system::pool_enqueue(STR("Eval Shape Space"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
                             ApplicationData* data = (ApplicationData*)user_data;
-                            int64_t stride = ALIGN_TO(data->mold.mol.atom.count, md_simd_width_f32);
+                            int64_t stride = ALIGN_TO(data->mold.mol.atom.count, 8);
                             const int64_t bytes = stride * 3 * sizeof(float);
                             float* coords = (float*)md_alloc(md_heap_allocator, bytes);
                             defer { md_free(md_heap_allocator, coords, bytes); };
@@ -7790,7 +7789,7 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
     // Copy mol and replace with initial coords
     md_molecule_t mol = data.mold.mol;
 
-    int64_t stride = ALIGN_TO(data.mold.mol.atom.count, md_simd_width_f32);
+    int64_t stride = ALIGN_TO(data.mold.mol.atom.count, 8);
     float* coords = (float*)md_alloc(frame_allocator, stride * sizeof(float) * 3);
     mol.atom.x = coords + stride * 0;
     mol.atom.y = coords + stride * 1;
@@ -8356,7 +8355,7 @@ static void init_trajectory_data(ApplicationData* data) {
                 // Create copy here of molecule since we use the full structure as input
                 md_molecule_t mol = data->mold.mol;
 
-                const int64_t stride = ALIGN_TO(mol.atom.count, md_simd_width_f32);
+                const int64_t stride = ALIGN_TO(mol.atom.count, 8);
                 const int64_t bytes = stride * sizeof(float) * 3;
                 float* coords = (float*)md_alloc(md_heap_allocator, bytes);
                 defer { md_free(md_heap_allocator, coords, bytes); };
