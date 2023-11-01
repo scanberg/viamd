@@ -6424,7 +6424,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                             for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
                                 md_trajectory_load_frame(data->mold.traj, frame_idx, NULL, x, y, z);
                                 for (int64_t i = 0; i < md_array_size(data->shape_space.bitfields); ++i) {
-                                    md_array_ensure(indices, (int64_t)md_bitfield_popcount(&data->shape_space.bitfields[i]), md_heap_allocator);
+                                    md_array_resize(indices, (int64_t)md_bitfield_popcount(&data->shape_space.bitfields[i]), md_heap_allocator);
                                     md_bitfield_extract_indices(indices, md_array_size(indices), &data->shape_space.bitfields[i]);
 
                                     const vec3_t com = md_util_compute_com(x, y, z, w, indices, md_array_size(indices));
@@ -6433,7 +6433,7 @@ static void draw_shape_space_window(ApplicationData* data) {
 
                                     const int64_t dst_idx = data->shape_space.num_frames * i + frame_idx;
                                     data->shape_space.weights[dst_idx] = weights;
-                                    data->shape_space.coords[dst_idx] = p[0] * w[0] + p[1] * w[1] + p[2] * w[2];
+                                    data->shape_space.coords[dst_idx] = p[0] * weights[0] + p[1] * weights[1] + p[2] * weights[2];
                                 }
                             }
                             md_array_free(indices, md_heap_allocator);
