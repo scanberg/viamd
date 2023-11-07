@@ -4113,6 +4113,10 @@ void draw_context_popup(ApplicationData* data) {
                     data->selection.grow.show_window = true;
                     ImGui::CloseCurrentPopup();
                 }
+                if (ImGui::MenuItem("Clear")) {
+                    md_bitfield_clear(&data->selection.current_selection_mask);
+                    data->mold.dirty_buffers |= MolBit_DirtyFlags;
+                }
             }
             ImGui::EndMenu();
         }
