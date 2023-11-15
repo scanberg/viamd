@@ -175,7 +175,7 @@ enum class InterpolationMode { Nearest, Linear, CubicSpline };
 enum class SelectionLevel { Atom, Residue, Chain };
 enum class SelectionOperator { Or, And, AndNot, Set, Clear };
 enum class SelectionGrowth { CovalentBond, Radial };
-enum class RepresentationType { SpaceFill, Licorice, Ribbons, Cartoon };
+enum class RepresentationType { SpaceFill = MD_GL_REP_SPACE_FILL, Licorice = MD_GL_REP_LICORICE, BallAndStick = MD_GL_REP_BALL_AND_STICK, Ribbons = MD_GL_REP_RIBBONS, Cartoon = MD_GL_REP_CARTOON };
 enum class TrackingMode { Absolute, Relative };
 enum class CameraMode { Perspective, Orthographic };
 
@@ -199,9 +199,9 @@ enum LegendColorMapMode_ {
 };
 
 enum AtomBit_ {
-    AtomBit_Highlighted = 0x1,
-    AtomBit_Selected    = 0x2,
-    AtomBit_Visible     = 0x4
+    AtomBit_Highlighted = 1,
+    AtomBit_Selected    = 2,
+    AtomBit_Visible     = 4,
 };
 
 enum MolBit_ {
@@ -281,8 +281,6 @@ struct Representation {
     bool dynamic_evaluation = false;
     //bool prop_is_valid = false;
 
-    uint32_t flags = 0;
-
     // User defined color used in uniform mode
     vec4_t uniform_color = vec4_t{1,1,1,1};
 
@@ -294,7 +292,7 @@ struct Representation {
     float map_max = 1;
 
     // scaling parameter (radius, width, height, etc depending on type)
-    vec4_t param = {1.0f, 1.0f, 1.0f, 1.0f};
+    vec4_t scale = {1.0f, 1.0f, 1.0f, 1.0f};
 
     // Property color mapping
     PropertyColorMapping prop_mapping[8] = {};
@@ -529,8 +527,16 @@ struct ApplicationData {
     struct {
         SelectionLevel granularity = SelectionLevel::Atom;
 
-        int32_t hovered = -1;
-        int32_t right_clicked = -1;
+        struct {
+            int32_t hovered;
+            int32_t right_click;
+        } atom_idx;
+
+        struct {
+            int32_t hovered;
+            int32_t right_click;
+        } bond_idx;
+
         SingleSelectionSequence single_selection_sequence;
 
         md_bitfield_t current_selection_mask{};
@@ -815,7 +821,7 @@ struct ApplicationData {
 
         md_array(DatasetItem) chains = 0;
         md_array(DatasetItem) residue_names = 0;
-        md_array(DatasetItem) atom_labels = 0;
+        md_array(DatasetItem) atom_types = 0;
     } dataset;
 
     struct {
@@ -1126,7 +1132,7 @@ static void draw_representations_window(ApplicationData* data);
 static void draw_timeline_window(ApplicationData* data);
 static void draw_distribution_window(ApplicationData* data);
 static void draw_ramachandran_window(ApplicationData* data);
-static void draw_atom_info_window(const ApplicationData& data, int atom_idx);
+static void draw_info_window(const ApplicationData& data, int picking_idx);
 static void draw_async_task_window(ApplicationData* data);
 static void draw_shape_space_window(ApplicationData* data);
 static void draw_density_volume_window(ApplicationData* data);
@@ -1402,8 +1408,8 @@ int main(int, char**) {
     rama_init(&data.ramachandran.data);
 
     md_gl_initialize();
-    md_gl_shaders_init(&data.mold.gl_shaders, shader_output_snippet);
-    md_gl_shaders_init(&data.mold.gl_shaders_lean_and_mean, shader_output_snippet_lean_and_mean);
+    md_gl_shaders_init(&data.mold.gl_shaders, shader_output_snippet.ptr, shader_output_snippet.len);
+    md_gl_shaders_init(&data.mold.gl_shaders_lean_and_mean, shader_output_snippet_lean_and_mean.ptr, shader_output_snippet_lean_and_mean.len);
 
 #if EXPERIMENTAL_GFX_API
     md_gfx_initialize(data.gbuffer.width, data.gbuffer.height, 0);
@@ -1418,7 +1424,7 @@ int main(int, char**) {
     if (md_path_is_valid(path)) {
         const str_t ext = extract_ext(path);
         if (load_dataset_from_file(&data, path, load::mol::get_loader_from_ext(ext), load::traj::get_loader_from_ext(ext), false, true)) {
-            create_representation(&data, RepresentationType::SpaceFill, ColorMapping::Cpk, STR("all"));
+            create_representation(&data, RepresentationType::BallAndStick, ColorMapping::Cpk, STR("all"));
             editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(1,2,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);");
 
             reset_view(&data, true);
@@ -1509,7 +1515,7 @@ int main(int, char**) {
                 ramachandran::initialize();
                 volume::initialize();
                 md_gl_shaders_free(&data.mold.gl_shaders);
-                md_gl_shaders_init(&data.mold.gl_shaders, shader_output_snippet);
+                md_gl_shaders_init(&data.mold.gl_shaders, shader_output_snippet.ptr, shader_output_snippet.len);
             }
 
             if (ImGui::IsKeyPressed(KEY_PLAY_PAUSE)) {
@@ -2061,11 +2067,11 @@ static void init_dataset_items(ApplicationData* data) {
     for (int64_t i = 0; i < data->mold.mol.atom.count; ++i) {
         {
             // Do atom label
-            str_t label = LBL_TO_STR(data->mold.mol.atom.name[i]);
+            str_t label = LBL_TO_STR(data->mold.mol.atom.type[i]);
             DatasetItem* item = 0;
-            for (int64_t j = 0; j < md_array_size(data->dataset.atom_labels); ++j) {
-                if (strcmp(data->dataset.atom_labels[j].label, label.ptr) == 0) {
-                    item = &data->dataset.atom_labels[j];
+            for (int64_t j = 0; j < md_array_size(data->dataset.atom_types); ++j) {
+                if (strcmp(data->dataset.atom_types[j].label, label.ptr) == 0) {
+                    item = &data->dataset.atom_types[j];
                     break;
                 }
             }
@@ -2075,21 +2081,21 @@ static void init_dataset_items(ApplicationData* data) {
                 snprintf(it.query, sizeof(it.query), "type('%.*s')", (int)label.len, label.ptr);
                 it.count = 0;
                 it.fraction = 0;
-                item = md_array_push(data->dataset.atom_labels, it, persistent_allocator);
+                item = md_array_push(data->dataset.atom_types, it, persistent_allocator);
             }
             item->count += 1;
         }
     }
 
-    for (int64_t i = 0; i < md_array_size(data->dataset.atom_labels); ++i) {
-		data->dataset.atom_labels[i].fraction = data->dataset.atom_labels[i].count / (float)data->mold.mol.atom.count;
+    for (int64_t i = 0; i < md_array_size(data->dataset.atom_types); ++i) {
+		data->dataset.atom_types[i].fraction = data->dataset.atom_types[i].count / (float)data->mold.mol.atom.count;
 	}
 }
 
 static void clear_dataset_items(ApplicationData* data) {
     md_array_shrink(data->dataset.chains, 0);
     md_array_shrink(data->dataset.residue_names, 0);
-    md_array_shrink(data->dataset.atom_labels, 0);
+    md_array_shrink(data->dataset.atom_types, 0);
 }
 
 static void display_property_copy_param_from_old(DisplayProperty& item, const DisplayProperty* old_items, int64_t num_old_items) {
@@ -2472,8 +2478,6 @@ static void update_density_volume(ApplicationData* data) {
             auto& rep = data->density_volume.rep;
             const int64_t num_colors = data->mold.mol.atom.count;
             uint32_t* colors = (uint32_t*)md_alloc(frame_allocator, sizeof(uint32_t) * num_colors);
-            md_gl_representation_type_t rep_type = MD_GL_REP_SPACE_FILL;
-            md_gl_representation_args_t rep_args = {};
 
             switch (rep.colormap) {
             case ColorMapping::Uniform:
@@ -2508,34 +2512,9 @@ static void update_density_volume(ApplicationData* data) {
                 break;
             }
 
-            switch (rep.type) {
-            case RepresentationType::SpaceFill:
-                rep_type = MD_GL_REP_SPACE_FILL;
-                rep_args.space_fill.radius_scale = rep.param[0];
-                break;
-            case RepresentationType::Licorice:
-                rep_type = MD_GL_REP_LICORICE;
-                rep_args.licorice.radius = rep.param[1] * 0.5f;
-                break;
-            case RepresentationType::Ribbons:
-                rep_type = MD_GL_REP_RIBBONS;
-                rep_args.ribbons.width_scale = rep.param[0];
-                rep_args.ribbons.thickness_scale = rep.param[1];
-                break;
-            case RepresentationType::Cartoon:
-                rep_type = MD_GL_REP_CARTOON;
-                rep_args.cartoon.coil_scale = rep.param[0];
-                rep_args.cartoon.helix_scale = rep.param[1];
-                rep_args.cartoon.sheet_scale = rep.param[2];
-                break;
-            default:
-                ASSERT(false);
-            }
-
             for (int64_t i = 0; i < num_reps; ++i) {
                 filter_colors(colors, num_colors, &vis.sdf.structures[i]);
                 md_gl_representation_set_color(&data->density_volume.gl_reps[i], 0, num_colors, colors, 0);
-                md_gl_representation_set_type_and_args(&data->density_volume.gl_reps[i], rep_type, rep_args);
                 data->density_volume.rep_model_mats[i] = vis.sdf.matrices[i];
             }
         }
@@ -3475,7 +3454,7 @@ void apply_atom_elem_mappings(ApplicationData* data) {
         float radius = md_util_element_vdw_radius(elem);
 
         for (int64_t i = 0; i < data->mold.mol.atom.count; ++i) {
-            if (str_equal(lbl, data->mold.mol.atom.name[i])) {
+            if (str_equal(lbl, data->mold.mol.atom.type[i])) {
                 data->mold.mol.atom.element[i] = elem;
                 data->mold.mol.atom.radius[i] = radius;
                 data->mold.dirty_buffers |= MolBit_DirtyRadius;
@@ -3484,8 +3463,14 @@ void apply_atom_elem_mappings(ApplicationData* data) {
     }
     md_molecule_t* mol = &data->mold.mol;
     
-    md_array_free(mol->bonds, data->mold.mol_alloc);
-    md_index_data_free(&mol->connectivity, data->mold.mol_alloc);
+    md_array_free(mol->bond.pairs, data->mold.mol_alloc);
+    md_array_free(mol->bond.order, data->mold.mol_alloc);
+    md_array_free(mol->bond.flags, data->mold.mol_alloc);
+
+    md_array_free(mol->conn.index, data->mold.mol_alloc);
+    md_array_free(mol->conn.order, data->mold.mol_alloc);
+    md_array_free(mol->conn.flags, data->mold.mol_alloc);
+
     md_index_data_free(&mol->structures, data->mold.mol_alloc);
     md_index_data_free(&mol->rings, data->mold.mol_alloc);
     
@@ -3603,25 +3588,25 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     bool within_same_residue = true;
     bool within_same_chain   = true;
 
-    md_chain_idx_t chain_idx = -1;
-    md_residue_idx_t res_idx = -1;
+    int32_t     chain_idx = -1;
+    int32_t     res_idx   = -1;
 
     md_bitfield_iter_t it = md_bitfield_iter_create(bf);
     while (md_bitfield_iter_next(&it)) {
         uint64_t i = md_bitfield_iter_idx(&it);
-        if (mol->atom.chain_idx) {
+        if (mol->atom.chainid) {
             if (chain_idx == -1) {
                 chain_idx = mol->atom.chain_idx[i];
-            } else if (mol->atom.chain_idx[i] != chain_idx) {
+            } else if (chain_idx != mol->atom.chain_idx[i]) {
                 within_same_chain = false;
             }
         }
 
-        if (mol->atom.residue_idx) {
+        if (mol->atom.res_idx) {
             if (res_idx == -1) {
-                res_idx = mol->atom.residue_idx[i];
-            } else if (mol->atom.residue_idx[i] != res_idx) {
-                within_same_residue = false;                            
+                res_idx = mol->atom.res_idx[i];
+            } else if (mol->atom.res_idx[i] != res_idx) {
+                within_same_residue = false;                        
             }
         } 
 
@@ -3692,7 +3677,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     if (mol->chain.count && mol->chain.atom_range) {
         for (int i = 0; i < (int)mol->chain.count; ++i) {    
             md_range_t range = mol->chain.atom_range[i];
-            if (md_bitfield_test_range(&tmp_bf, range.beg, range.end)) {
+            if (md_bitfield_test_all_range(&tmp_bf, range.beg, range.end)) {
                 md_array_push(complete_chains, i, frame_allocator);
                 md_bitfield_clear_range(&tmp_bf, range.beg, range.end);
             }
@@ -3702,7 +3687,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     if (mol->residue.count && mol->residue.atom_range) {
         for (int i = 0; i < (int)mol->residue.count; ++i) {    
             md_range_t range = mol->residue.atom_range[i];
-            if (md_bitfield_test_range(&tmp_bf, range.beg, range.end)) {
+            if (md_bitfield_test_all_range(&tmp_bf, range.beg, range.end)) {
                 md_array_push(complete_residues, i, frame_allocator);
                 md_bitfield_clear_range(&tmp_bf, range.beg, range.end);
             }
@@ -3853,8 +3838,8 @@ void draw_context_popup(ApplicationData* data) {
                     }
 
                     if (data->mold.mol.residue.count) {
-                        if (data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[1]]) {
-                            int32_t res_idx = data->mold.mol.atom.residue_idx[idx[0]];
+                        if (data->mold.mol.atom.res_idx[idx[0]] == data->mold.mol.atom.res_idx[idx[1]]) {
+                            int32_t res_idx = data->mold.mol.atom.res_idx[idx[0]];
                             idx[0] -= data->mold.mol.residue.atom_range[res_idx].beg;
                             idx[1] -= data->mold.mol.residue.atom_range[res_idx].beg;
 
@@ -3897,10 +3882,10 @@ void draw_context_popup(ApplicationData* data) {
                     }
 
                     if (data->mold.mol.residue.count) {
-                        if (data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[1]] &&
-                            data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[2]]) {
+                        if (data->mold.mol.atom.res_idx[idx[0]] == data->mold.mol.atom.res_idx[idx[1]] &&
+                            data->mold.mol.atom.res_idx[idx[0]] == data->mold.mol.atom.res_idx[idx[2]]) {
 
-                            int32_t res_idx = data->mold.mol.atom.residue_idx[idx[0]];
+                            int32_t res_idx = data->mold.mol.atom.res_idx[idx[0]];
                             idx[0] -= data->mold.mol.residue.atom_range[res_idx].beg;
                             idx[1] -= data->mold.mol.residue.atom_range[res_idx].beg;
                             idx[2] -= data->mold.mol.residue.atom_range[res_idx].beg;
@@ -3944,11 +3929,11 @@ void draw_context_popup(ApplicationData* data) {
                     }
 
                     if (data->mold.mol.residue.count) {
-                        if (data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[1]] &&
-                            data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[2]] &&
-                            data->mold.mol.atom.residue_idx[idx[0]] == data->mold.mol.atom.residue_idx[idx[3]]) {
+                        if (data->mold.mol.atom.res_idx[idx[0]] == data->mold.mol.atom.res_idx[idx[1]] &&
+                            data->mold.mol.atom.res_idx[idx[0]] == data->mold.mol.atom.res_idx[idx[2]] &&
+                            data->mold.mol.atom.res_idx[idx[0]] == data->mold.mol.atom.res_idx[idx[3]]) {
 
-                            int32_t res_idx = data->mold.mol.atom.residue_idx[idx[0]];
+                            int32_t res_idx = data->mold.mol.atom.res_idx[idx[0]];
                             idx[0] -= data->mold.mol.residue.atom_range[res_idx].beg;
                             idx[1] -= data->mold.mol.residue.atom_range[res_idx].beg;
                             idx[2] -= data->mold.mol.residue.atom_range[res_idx].beg;
@@ -4005,12 +3990,12 @@ void draw_context_popup(ApplicationData* data) {
             ImGui::EndMenu();
         }
 
-        if (data->selection.right_clicked != -1 && data->mold.mol.atom.element) {
-            int idx = data->selection.right_clicked;
+        if (data->selection.atom_idx.right_click != -1 && data->mold.mol.atom.element) {
+            int idx = data->selection.atom_idx.right_click;
             if (0 <= idx && idx < data->mold.mol.atom.count) {
                 char label[64] = "";
-                str_t atom_name = data->mold.mol.atom.name[idx];
-                snprintf(label, sizeof(label), "Remap Element for '%.*s'", (int)atom_name.len, atom_name.ptr);
+                str_t type = data->mold.mol.atom.type[idx];
+                snprintf(label, sizeof(label), "Remap Element for '%.*s'", (int)type.len, type.ptr);
                 if (ImGui::BeginMenu(label)) {
                     static char input_buf[32] = "";
                     md_element_t elem = data->mold.mol.atom.element[idx];
@@ -4029,7 +4014,7 @@ void draw_context_popup(ApplicationData* data) {
                     ImGui::Text("New Element: %.*s (%.*s)", (int)new_name.len, new_name.ptr, (int)new_sym.len, new_sym.ptr);
                     if (!is_valid) ImGui::PushDisabled();
                     if (ImGui::Button("Apply") && is_valid) {
-                        add_atom_elem_mapping(data, atom_name, new_elem);
+                        add_atom_elem_mapping(data, type, new_elem);
                         apply_atom_elem_mappings(data);
                         ImGui::CloseCurrentPopup();
                     }
@@ -4038,9 +4023,9 @@ void draw_context_popup(ApplicationData* data) {
                 }
             }
         }
-        if (data->selection.right_clicked != -1 && num_frames > 0) {
+        if (data->selection.atom_idx.right_click != -1 && num_frames > 0) {
             if (ImGui::BeginMenu("Recenter Trajectory...")) {
-                const int idx = data->selection.right_clicked;
+                const int idx = data->selection.atom_idx.right_click;
 
                 md_bitfield_t mask = {0};
                 md_bitfield_init(&mask, frame_allocator);
@@ -4051,10 +4036,10 @@ void draw_context_popup(ApplicationData* data) {
                     md_bitfield_set_bit(&mask, idx);
                 }
 
-                if (data->mold.mol.residue.count > 0 && data->mold.mol.atom.residue_idx && data->mold.mol.atom.residue_idx[idx] != -1) {
+                if (data->mold.mol.residue.count > 0 && data->mold.mol.atom.res_idx && data->mold.mol.atom.res_idx[idx] != -1) {
                     apply |= ImGui::MenuItem("on Residue");
                     if (ImGui::IsItemHovered()) {
-                        const auto res_idx = data->mold.mol.atom.residue_idx[idx];
+                        const auto res_idx = data->mold.mol.atom.res_idx[idx];
                         const auto range = data->mold.mol.residue.atom_range[res_idx];
                         md_bitfield_set_range(&mask, range.beg, range.end);
                     }
@@ -4394,7 +4379,7 @@ static void draw_representations_window(ApplicationData* data) {
                 update_rep = true;
             }
             if (!rep.type_is_valid) ImGui::PushInvalid();
-            if (ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0Cartoon\0")) {
+            if (ImGui::Combo("type", (int*)(&rep.type), "Space Fill\0Licorice\0Ball & Stick\0Ribbons\0Cartoon\0")) {
                 update_rep = true;
             }
             if (!rep.type_is_valid) ImGui::PopInvalid();
@@ -4472,18 +4457,30 @@ static void draw_representations_window(ApplicationData* data) {
                 update_rep |= ImGui::ColorEdit4("color", (float*)&rep.uniform_color, ImGuiColorEditFlags_NoInputs);
             }
             ImGui::PushItemWidth(item_width);
-            if (rep.type == RepresentationType::SpaceFill || rep.type == RepresentationType::Licorice) {
-                update_rep |= ImGui::SliderFloat("scale", &rep.param[0], 0.1f, 4.f);
+            switch (rep.type) {
+            case RepresentationType::SpaceFill:
+                update_rep |= ImGui::SliderFloat("scale", &rep.scale[0], 0.1f, 4.f);
+                break;
+            case RepresentationType::Licorice:
+                update_rep |= ImGui::SliderFloat("radius", &rep.scale[0], 0.1f, 4.0f);
+                break;
+            case RepresentationType::BallAndStick:
+                update_rep |= ImGui::SliderFloat("ball scale", &rep.scale[0], 0.1f, 4.f);
+                update_rep |= ImGui::SliderFloat("bond scale", &rep.scale[1], 0.1f, 4.f);
+                break;
+            case RepresentationType::Ribbons:
+                update_rep |= ImGui::SliderFloat("width",       &rep.scale[0], 0.1f, 3.f);
+                update_rep |= ImGui::SliderFloat("thickness",   &rep.scale[1], 0.1f, 3.f);
+                break;
+            case RepresentationType::Cartoon:
+                update_rep |= ImGui::SliderFloat("coil scale",  &rep.scale[0], 0.1f, 3.f);
+                update_rep |= ImGui::SliderFloat("helix scale", &rep.scale[1], 0.1f, 3.f);
+                update_rep |= ImGui::SliderFloat("sheet scale", &rep.scale[2], 0.1f, 3.f);
+                break;
+            default:
+                ASSERT(false);
             }
-            if (rep.type == RepresentationType::Ribbons) {
-                update_rep |= ImGui::SliderFloat("width",       &rep.param[0], 0.1f, 3.f);
-                update_rep |= ImGui::SliderFloat("thickness",   &rep.param[1], 0.1f, 3.f);
-            }
-            if (rep.type == RepresentationType::Cartoon) {
-                update_rep |= ImGui::SliderFloat("coil scale",  &rep.param[0], 0.1f, 3.f);
-                update_rep |= ImGui::SliderFloat("helix scale", &rep.param[1], 0.1f, 3.f);
-                update_rep |= ImGui::SliderFloat("sheet scale", &rep.param[2], 0.1f, 3.f);
-            }
+
             ImGui::PopItemWidth();
             ImGui::Spacing();
             ImGui::Separator();
@@ -4501,81 +4498,90 @@ static void draw_representations_window(ApplicationData* data) {
     ImGui::End();
 }
 
-static void draw_atom_info_window(const ApplicationData& data, int atom_idx) {
+static void draw_info_window(const ApplicationData& data, int picking_idx) {
     const auto& mol = data.mold.mol;
 
-    // @TODO: Assert things and make this failproof
-    if (atom_idx < 0 || atom_idx >= mol.atom.count) return;
+    if (picking_idx == INVALID_PICKING_IDX) return;
 
-    int local_idx = atom_idx;
-    const vec3_t pos = { mol.atom.x[atom_idx], mol.atom.y[atom_idx], mol.atom.z[atom_idx] };
-    str_t label = mol.atom.name ? mol.atom.name[atom_idx] : str_t{};
-    str_t elem = mol.atom.element ? md_util_element_name(mol.atom.element[atom_idx]) : str_t{};
-    str_t symbol = mol.atom.element ? md_util_element_symbol(mol.atom.element[atom_idx]) : str_t{};
-    int valence = mol.atom.valence ? mol.atom.valence[atom_idx] : 0;
+    md_strb_t sb = md_strb_create(frame_allocator);
+    
+    if (0 <= picking_idx && picking_idx < mol.atom.count) {
+        int atom_idx = picking_idx;
+        int local_idx = atom_idx;
+        const vec3_t pos = { mol.atom.x[atom_idx], mol.atom.y[atom_idx], mol.atom.z[atom_idx] };
+        str_t type = mol.atom.type ? mol.atom.type[atom_idx] : str_t{};
+        str_t elem = mol.atom.element ? md_util_element_name(mol.atom.element[atom_idx]) : str_t{};
+        str_t symbol = mol.atom.element ? md_util_element_symbol(mol.atom.element[atom_idx]) : str_t{};
+        int valence = mol.atom.valence ? mol.atom.valence[atom_idx] : 0;
 
-    int res_idx = -1;
-    str_t res_name = {};
-    int res_id = 0;
-    if (mol.residue.count > 0 && mol.atom.residue_idx) {
-        res_idx = mol.atom.residue_idx[atom_idx];
-        res_name = mol.residue.name[res_idx];
-        res_id = mol.residue.id[res_idx];
-        local_idx = atom_idx - mol.residue.atom_range[res_idx].beg;
+        int res_idx = -1;
+        str_t res_name = {};
+        int res_id = 0;
+        if (mol.residue.count > 0 && mol.atom.res_idx) {
+            res_idx = mol.atom.res_idx[atom_idx];
+            res_name = mol.residue.name[res_idx];
+            res_id = mol.residue.id[res_idx];
+            local_idx = atom_idx - mol.residue.atom_range[res_idx].beg;
+        }
+
+        int chain_idx = -1;
+        str_t chain_id = {};
+        if (mol.chain.count > 0 && mol.atom.chain_idx) {
+            chain_idx = mol.atom.chain_idx[atom_idx];
+            if (0 <= chain_idx && chain_idx < mol.chain.count) {
+                chain_id = mol.chain.id[chain_idx];
+            }
+        }
+
+        // External indices begin with 1 not 0
+        res_idx += 1;
+        chain_idx += 1;
+        atom_idx += 1;
+        local_idx += 1;
+
+        md_strb_fmt(&sb, "atom[%i][%i]: %.*s %.*s %.*s (%.2f, %.2f, %.2f)\n", atom_idx, local_idx, STR_FMT(type), STR_FMT(elem), STR_FMT(symbol), pos.x, pos.y, pos.z);
+        if (mol.atom.valence) {
+            md_strb_fmt(&sb, "covalent-valence: %i\n", valence);
+        }
+        if (res_idx) {
+            md_strb_fmt(&sb, "res[%i]: %.*s %i\n", res_idx, STR_FMT(res_name), res_id);
+        }
+        if (chain_idx) {
+            md_strb_fmt(&sb, "chain[%i]: %.*s\n", chain_idx, STR_FMT(chain_id));
+        }
+        /*
+        // @TODO: REIMPLEMENT THIS
+        if (res_idx < mol.backbone.segment.angleangles.size() && res_idx < mol.backbone.segments.size() && valid_backbone_atoms(mol.backbone.segments[res_idx])) {
+            const auto angles = RAD_TO_DEG((vec2)mol.backbone.angles[res_idx]);
+            len += snprintf(buff + len, 256 - len, u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0\n", angles.x, angles.y);
+        }
+        */
     }
-
-    int chain_idx = -1;
-    str_t chain_id = {};
-    if (mol.chain.count > 0 && mol.atom.chain_idx) {
-        chain_idx = mol.atom.chain_idx[atom_idx];
-        if (0 <= chain_idx && chain_idx < mol.chain.count) {
-            chain_id = mol.chain.id[chain_idx];
+    else if (picking_idx >= 0x80000000) {
+        int bond_idx = picking_idx & 0x7FFFFFFF;
+        if (0 <= bond_idx && bond_idx < mol.bond.count) {
+            md_bond_pair_t b = mol.bond.pairs[bond_idx];
+            char bond_type;
+			switch (mol.bond.order[bond_idx]) {
+			case 1: bond_type = '-'; break;
+			case 2: bond_type = '='; break;
+			case 3: bond_type = '#'; break;
+			case 4: bond_type = '$'; break;
+			default: bond_type = '?'; break;
+			}
+            md_strb_fmt(&sb, "bond: %s%c%s\n", mol.atom.type[b.idx[0]].buf, bond_type, mol.atom.type[b.idx[1]].buf);
+            md_strb_fmt(&sb, "order: %i\n", mol.bond.order[bond_idx]);
         }
     }
-
-    // External indices begin with 1 not 0
-    res_idx += 1;
-    chain_idx += 1;
-    atom_idx += 1;
-    local_idx += 1;
-
-    char buf[256];
-    int len = 0;
-    len += snprintf(buf, sizeof(buf), "atom[%i][%i]: %.*s %.*s %.*s (%.2f, %.2f, %.2f)\n", atom_idx, local_idx, (int)label.len, label.ptr, (int)elem.len, elem.ptr, (int)symbol.len, symbol.ptr, pos.x, pos.y, pos.z);
-    if (mol.atom.valence) {
-        len += snprintf(buf + len, sizeof(buf) - len, "covalent-valence: %i\n", valence);
-    }
-    if (res_idx) {
-        len += snprintf(buf + len, sizeof(buf) - len, "res[%i]: %.*s %i\n", res_idx, (int)res_name.len, res_name.ptr, res_id);
-    }
-    if (chain_idx) {
-        len += snprintf(buf + len, sizeof(buf) - len, "chain[%i]: %.*s\n", chain_idx, (int)chain_id.len, chain_id.ptr);
-    }
-
-    /*
-    // @TODO: REIMPLEMENT THIS
-    if (res_idx < mol.backbone.segment.angleangles.size() && res_idx < mol.backbone.segments.size() && valid_backbone_atoms(mol.backbone.segments[res_idx])) {
-        const auto angles = RAD_TO_DEG((vec2)mol.backbone.angles[res_idx]);
-        len += snprintf(buff + len, 256 - len, u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0\n", angles.x, angles.y);
-    }
-    */
 
     const ImVec2 offset = { 10.f, 18.f };
     ImGui::SetNextWindowPos(ImGui::GetMousePos() + offset);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
     ImGui::Begin("##Atom Info", 0,
-                 ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDocking);
-    ImGui::Text("%s", buf);
+                    ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDocking);
+    ImGui::Text("%s", md_strb_to_cstr(&sb));
     ImGui::End();
     ImGui::PopStyleColor();
-
-    /*
-ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
-ImGui::BeginTooltip();
-ImGui::Text("%s", buff);
-ImGui::EndTooltip();
-ImGui::PopStyleColor();
-    */
 }
 
 static void draw_async_task_window(ApplicationData* data) {
@@ -7109,7 +7115,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                     ImGui::Indent();
                     auto& rep = data->density_volume.rep;
                     ImGui::Checkbox("Show Superimposed Structures", &data->density_volume.show_reference_ensemble);
-                    if (ImGui::Combo("type", (int*)(&rep.type), "VDW\0Licorice\0Ribbons\0Cartoon\0")) {
+                    if (ImGui::Combo("type", (int*)(&rep.type), "Space Fill\0Licorice\0Ball & Stick\0Ribbons\0Cartoon\0")) {
                         data->density_volume.dirty_rep = true;
                     }
                     if (ImGui::Combo("color", (int*)(&rep.colormap), "Uniform Color\0CPK\0Atom Label\0Atom Idx\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0")) {
@@ -7302,8 +7308,12 @@ static void draw_density_volume_window(ApplicationData* data) {
             num_reps = data->density_volume.show_reference_ensemble ? num_reps : 1;
 
             md_gl_draw_op_t* draw_ops = 0;
+
+            md_gl_draw_op_t op = {};
+            op.type = (md_gl_representation_type_t)data->density_volume.rep.type;
+            MEMCPY(&op.args, data->density_volume.rep.param, sizeof(op.args));
+
             for (int64_t i = 0; i < num_reps; ++i) {
-                md_gl_draw_op_t op = {};
                 op.rep = &data->density_volume.gl_reps[i];
                 op.model_matrix = &data->density_volume.rep_model_mats[i].elem[0][0];
                 md_array_push(draw_ops, op, frame_allocator);
@@ -7327,7 +7337,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                 vec2_t coord = {mouse_pos_in_canvas.x, (float)gbuf.height - mouse_pos_in_canvas.y};
                 PickingData pd = read_picking_data(&gbuf, (int)coord.x, (int)coord.y);
                 if (pd.idx != INVALID_PICKING_IDX) {
-                    draw_atom_info_window(*data, pd.idx);
+                    draw_info_window(*data, pd.idx);
                 }
             }
 
@@ -7481,7 +7491,7 @@ static void draw_dataset_window(ApplicationData* data) {
         }
 
         const char* lbls[] = {"Chains", "Residue Names", "Atom Labels"};
-        const md_array(DatasetItem) items[] = {data->dataset.chains, data->dataset.residue_names, data->dataset.atom_labels};
+        const md_array(DatasetItem) items[] = {data->dataset.chains, data->dataset.residue_names, data->dataset.atom_types};
         STATIC_ASSERT(ARRAY_SIZE(lbls) == ARRAY_SIZE(items));
 
         const ImVec2 item_size = ImVec2(ImGui::GetFontSize() * 1.8f, ImGui::GetFontSize() * 1.1f);
@@ -8248,20 +8258,19 @@ static void update_md_buffers(ApplicationData* data) {
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyFlags) {
-        if (data->mold.mol.atom.flags) {
-            for (int64_t i = 0; i < mol.atom.count; i++) {
-                md_flags_t flags = 0;
-                flags |= md_bitfield_test_bit(&data->selection.current_highlight_mask, i)     ? AtomBit_Highlighted : 0;
-                flags |= md_bitfield_test_bit(&data->selection.current_selection_mask, i)     ? AtomBit_Selected : 0;
-                flags |= md_bitfield_test_bit(&data->representation.atom_visibility_mask, i)  ? AtomBit_Visible : 0;
-                data->mold.mol.atom.flags[i] = flags;
-            }
-            md_gl_molecule_set_atom_flags(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.flags, 0);
+        uint8_t* flags = (uint8_t*)md_alloc(frame_allocator, mol.atom.count);
+        for (int64_t i = 0; i < mol.atom.count; i++) {
+            uint8_t f = 0;
+            f |= md_bitfield_test_bit(&data->selection.current_highlight_mask, i)     ? AtomBit_Highlighted : 0;
+            f |= md_bitfield_test_bit(&data->selection.current_selection_mask, i)     ? AtomBit_Selected : 0;
+            f |= md_bitfield_test_bit(&data->representation.atom_visibility_mask, i)  ? AtomBit_Visible : 0;
+            flags[i] = f;
         }
+        md_gl_molecule_set_atom_flags(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, flags, 0);
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyBonds) {
-        md_gl_molecule_set_bonds(&data->mold.gl_mol, 0, (uint32_t)md_array_size(mol.bonds), mol.bonds, sizeof(md_bond_t));
+        md_gl_molecule_set_bonds(&data->mold.gl_mol, 0, (uint32_t)mol.bond.count, mol.bond.pairs, sizeof(md_bond_pair_t));
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtySecondaryStructure) {
@@ -8448,8 +8457,10 @@ static void init_molecule_data(ApplicationData* data) {
     if (data->mold.mol.atom.count) {
 
         data->picking.idx = INVALID_PICKING_IDX;
-        data->selection.hovered = -1;
-        data->selection.right_clicked = -1;
+        data->selection.atom_idx.hovered = -1;
+        data->selection.atom_idx.right_click = -1;
+        data->selection.bond_idx.hovered = -1;
+        data->selection.bond_idx.right_click = -1;
 
         md_gl_molecule_init(&data->mold.gl_mol, &data->mold.mol);
 
@@ -8568,8 +8579,8 @@ static RepresentationType get_rep_type(str_t str) {
         return RepresentationType::SpaceFill;
     else if (str_equal_cstr(str, "LICORICE"))
         return RepresentationType::Licorice;
-    else if (str_equal_cstr(str, "BALL_AND_STICK"))    // Ball and stick is removed for now
-        return RepresentationType::SpaceFill;
+    else if (str_equal_cstr(str, "BALL_AND_STICK"))
+        return RepresentationType::BallAndStick;
     else if (str_equal_cstr(str, "RIBBONS"))
         return RepresentationType::Ribbons;
     else if (str_equal_cstr(str, "CARTOON"))
@@ -8584,8 +8595,8 @@ static str_t get_rep_type_name(RepresentationType type) {
             return STR("SPACE_FILL");
         case RepresentationType::Licorice:
             return STR("LICORICE");
-        /*case RepresentationType::BallAndStick:
-            return make_cstr("BALL_AND_STICK");*/
+        case RepresentationType::BallAndStick:
+            return STR("BALL_AND_STICK");
         case RepresentationType::Ribbons:
             return STR("RIBBONS");
         case RepresentationType::Cartoon:
@@ -8696,9 +8707,11 @@ SerializationObject deprecated_serialization_targets[] = {
     {"[Files]", "CoarseGrained",            SerializationType_Bool,     offsetof(ApplicationData, files.coarse_grained)},
     {"[Files]", "Deperiodize",              SerializationType_Bool,     offsetof(ApplicationData, files.deperiodize)},
 
-    {"[Representation]", "Radius",          SerializationType_Float,    offsetof(Representation,  param.x)},
-    {"[Representation]", "Width",           SerializationType_Float,    offsetof(Representation,  param.x)},
-    {"[Representation]", "Thickness",       SerializationType_Float,    offsetof(Representation,  param.y)},
+    {"[Representation]", "Radius",          SerializationType_Float,    offsetof(Representation,  scale.x)},
+    {"[Representation]", "Width",           SerializationType_Float,    offsetof(Representation,  scale.x)},
+    {"[Representation]", "Thickness",       SerializationType_Float,    offsetof(Representation,  scale.y)},
+
+    {"[Representation]", "Param",           SerializationType_Vec4,     offsetof(Representation,  scale)},
 };
 
 SerializationObject serialization_targets[] = {
@@ -8735,7 +8748,7 @@ SerializationObject serialization_targets[] = {
     {"[Representation]", "Type",            SerializationType_Int32,    offsetof(Representation, type)},
     {"[Representation]", "ColorMapping",    SerializationType_Int32,    offsetof(Representation, color_mapping)},
     {"[Representation]", "StaticColor",     SerializationType_Vec4,     offsetof(Representation, uniform_color)},
-    {"[Representation]", "Param",           SerializationType_Vec4,     offsetof(Representation, param)},
+    {"[Representation]", "Scale",           SerializationType_Vec4,     offsetof(Representation, scale)},
     {"[Representation]", "DynamicEval",     SerializationType_Bool,     offsetof(Representation, dynamic_evaluation)},
 
     {"[AtomElementMapping]", "Label",       SerializationType_String,   offsetof(AtomElementMapping, lbl),  sizeof(AtomElementMapping::lbl)},
@@ -9404,8 +9417,11 @@ static void update_representation(ApplicationData* data, Representation* rep) {
 
     switch (rep->type) {
     case RepresentationType::SpaceFill:
+		rep->type_is_valid = true;
+		break;
     case RepresentationType::Licorice:
-        rep->type_is_valid = true;
+    case RepresentationType::BallAndStick:
+        rep->type_is_valid = mol.bond.count > 0;
         break;
     case RepresentationType::Ribbons:
     case RepresentationType::Cartoon:
@@ -9427,33 +9443,6 @@ static void update_representation(ApplicationData* data, Representation* rep) {
     if (rep->filt_is_valid) {
         filter_colors(colors, mol.atom.count, &rep->atom_mask);
         data->representation.atom_visibility_mask_dirty = true;
-
-        md_gl_representation_type_t type = MD_GL_REP_SPACE_FILL;
-        md_gl_representation_args_t args = {};
-        switch (rep->type) {
-        case RepresentationType::SpaceFill:
-            type = MD_GL_REP_SPACE_FILL;
-            args.space_fill.radius_scale = rep->param[0];
-            break;
-        case RepresentationType::Licorice:
-            type = MD_GL_REP_LICORICE;
-            args.licorice.radius        = rep->param[0] * 0.5f;
-            break;
-        case RepresentationType::Ribbons:
-            type = MD_GL_REP_RIBBONS;
-            args.ribbons.width_scale     = rep->param[0];
-            args.ribbons.thickness_scale = rep->param[1];
-            break;
-        case RepresentationType::Cartoon:
-            type = MD_GL_REP_CARTOON;
-            args.cartoon.coil_scale     = rep->param[0];
-            args.cartoon.helix_scale    = rep->param[1];
-            args.cartoon.sheet_scale    = rep->param[2];
-            break;
-        default: break;
-        }
-
-        md_gl_representation_set_type_and_args(&rep->md_rep, type, args);
         md_gl_representation_set_color(&rep->md_rep, 0, (uint32_t)mol.atom.count, colors, 0);
 
 #if EXPERIMENTAL_GFX_API
@@ -9600,16 +9589,28 @@ static void handle_camera_interaction(ApplicationData* data) {
                 }
             }
             else if (pressed) {
-                if (data->picking.idx != INVALID_PICKING_IDX) {
+                if (data->selection.atom_idx.hovered != -1 || data->selection.bond_idx.hovered != -1) {
                     if (mode == RegionMode::Append) {
-                        single_selection_sequence_push_idx(&data->selection.single_selection_sequence, data->picking.idx);
-                        md_bitfield_set_bit(&mask, data->picking.idx);
+                        if (data->selection.atom_idx.hovered != -1) {
+                            single_selection_sequence_push_idx(&data->selection.single_selection_sequence, data->selection.atom_idx.hovered);
+                            md_bitfield_set_bit(&mask, data->selection.atom_idx.hovered);
+                        } else {
+                            md_bond_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
+                            md_bitfield_set_bit(&mask, pair.idx[0]);
+                            md_bitfield_set_bit(&mask, pair.idx[1]);
+                        }
                         grow_mask_by_current_selection_granularity(&mask, *data);
                         md_bitfield_or_inplace(&data->selection.current_selection_mask, &mask);
                     }
                     else if (mode == RegionMode::Remove) {
-                        single_selection_sequence_pop_idx(&data->selection.single_selection_sequence, data->picking.idx);
-                        md_bitfield_set_bit(&mask, data->picking.idx);
+                        if (data->selection.atom_idx.hovered != -1) {
+                            single_selection_sequence_pop_idx(&data->selection.single_selection_sequence, data->selection.atom_idx.hovered);
+                            md_bitfield_set_bit(&mask, data->selection.atom_idx.hovered);
+                        } else {
+                            md_bond_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
+                            md_bitfield_set_bit(&mask, pair.idx[0]);
+                            md_bitfield_set_bit(&mask, pair.idx[1]);
+                        }
                         grow_mask_by_current_selection_granularity(&mask, *data);
                         md_bitfield_andnot_inplace(&data->selection.current_selection_mask, &mask);
                     }
@@ -9625,12 +9626,19 @@ static void handle_camera_interaction(ApplicationData* data) {
         }
     }
     else if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) {
-        if (data->picking.idx != INVALID_PICKING_IDX && data->picking.idx <= data->mold.mol.atom.count) {
+        if (data->picking.idx != INVALID_PICKING_IDX) {
             md_bitfield_clear(&data->selection.current_highlight_mask);
-            md_bitfield_set_bit(&data->selection.current_highlight_mask, data->picking.idx);
+            if (data->selection.atom_idx.hovered != -1) {
+                md_bitfield_set_bit(&data->selection.current_highlight_mask, data->picking.idx);
+            }
+            else if (data->selection.bond_idx.hovered != -1) {
+                md_bond_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
+                md_bitfield_set_bit(&data->selection.current_highlight_mask, pair.idx[0]);
+                md_bitfield_set_bit(&data->selection.current_highlight_mask, pair.idx[1]);
+            }
             grow_mask_by_current_selection_granularity(&data->selection.current_highlight_mask, *data);
             data->mold.dirty_buffers |= MolBit_DirtyFlags;
-            draw_atom_info_window(*data, data->picking.idx);
+            draw_info_window(*data, data->picking.idx);
         }
     }
 
@@ -10034,12 +10042,21 @@ static void handle_picking(ApplicationData* data) {
             data->picking.world_coord = mat4_unproject({coord.x, coord.y, data->picking.depth}, inv_VP, viewport);
 #endif
         }
-        data->selection.hovered = -1;
+        data->selection.atom_idx.hovered = -1;
+        data->selection.bond_idx.hovered = -1;
+
         if (data->picking.idx != INVALID_PICKING_IDX) {
-            data->selection.hovered = data->picking.idx;
+            // The index space is segmented into two parts, the first half is for atoms and the second half is for bonds
+            if (data->picking.idx < 0x80000000) {
+                data->selection.atom_idx.hovered = data->picking.idx;
+            } else {
+                data->selection.bond_idx.hovered = data->picking.idx & 0x7FFFFFFF;
+            }
         }
+        
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-            data->selection.right_clicked = data->selection.hovered;
+            data->selection.atom_idx.right_click = data->selection.atom_idx.hovered;
+            data->selection.bond_idx.right_click = data->selection.bond_idx.hovered;
         }
     }
     POP_CPU_SECTION()
@@ -10131,11 +10148,15 @@ static void draw_representations(ApplicationData* data) {
 #endif
         md_gl_draw_op_t* draw_ops = 0;
         for (int64_t i = 0; i < md_array_size(data->representation.reps); ++i) {
-            if (data->representation.reps[i].enabled && data->representation.reps[i].type_is_valid) {
+            const Representation& rep = data->representation.reps[i];
+            if (rep.enabled && rep.type_is_valid) {
                 md_gl_draw_op_t op = {
-                    &data->representation.reps[i].md_rep,
-                    NULL,
+                    .type = (md_gl_representation_type_t)rep.type,
+                    .args = {},
+                    .rep = &data->representation.reps[i].md_rep,
+                    .model_matrix = NULL,
                 };
+                MEMCPY(&op.args, &rep.scale, sizeof(op.args));
                 md_array_push(draw_ops, op, frame_allocator);
             }
         }
@@ -10164,11 +10185,15 @@ static void draw_representations(ApplicationData* data) {
 static void draw_representations_lean_and_mean(ApplicationData* data, uint32_t mask) {
     md_gl_draw_op_t* draw_ops = 0;
     for (int64_t i = 0; i < md_array_size(data->representation.reps); ++i) {
-        if (data->representation.reps[i].enabled && data->representation.reps[i].type_is_valid) {
-            md_gl_draw_op_t op = { 
-                &data->representation.reps[i].md_rep,
-                NULL,
+        const Representation& rep = data->representation.reps[i];
+        if (rep.enabled && rep.type_is_valid) {
+            md_gl_draw_op_t op = {
+                .type = (md_gl_representation_type_t)rep.type,
+                .args = {},
+                .rep = &data->representation.reps[i].md_rep,
+                .model_matrix = NULL,
             };
+            MEMCPY(&op.args, &rep.scale, sizeof(op.args));
             md_array_push(draw_ops, op, frame_allocator);
         }
     }

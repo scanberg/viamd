@@ -76,7 +76,7 @@ void color_atoms_cpk(uint32_t* colors, int64_t count, const md_molecule_t& mol) 
 
 void color_atoms_label(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
     for (int64_t i = 0; i < count; ++i) {
-        colors[i] = convert_color(color_from_hash(crc32(mol.atom.name[i].buf, mol.atom.name[i].len)));
+        colors[i] = convert_color(color_from_hash(crc32(mol.atom.type[i].buf, mol.atom.type[i].len)));
     }
 }
 
