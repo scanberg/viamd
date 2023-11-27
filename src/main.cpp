@@ -1132,7 +1132,7 @@ static void draw_representations_window(ApplicationData* data);
 static void draw_timeline_window(ApplicationData* data);
 static void draw_distribution_window(ApplicationData* data);
 static void draw_ramachandran_window(ApplicationData* data);
-static void draw_info_window(const ApplicationData& data, int picking_idx);
+static void draw_info_window(const ApplicationData& data, uint32_t picking_idx);
 static void draw_async_task_window(ApplicationData* data);
 static void draw_shape_space_window(ApplicationData* data);
 static void draw_density_volume_window(ApplicationData* data);
@@ -4404,9 +4404,10 @@ static void draw_representations_window(ApplicationData* data) {
                 const md_script_property_t* props[32] = {0};
                 int num_props = 0;
                 for (int64_t j = 0; j < md_array_size(data->display_properties); ++j) {
-                    if (data->display_properties[j].prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
+                    if (data->display_properties[j].type == DisplayProperty::Type_Temporal) {
                         props[num_props++] = data->display_properties[j].prop;
                     }
+                    if (num_props == ARRAY_SIZE(props)) break;
                 }
 
                 rep.prop = NULL;
@@ -4498,14 +4499,14 @@ static void draw_representations_window(ApplicationData* data) {
     ImGui::End();
 }
 
-static void draw_info_window(const ApplicationData& data, int picking_idx) {
+static void draw_info_window(const ApplicationData& data, uint32_t picking_idx) {
     const auto& mol = data.mold.mol;
 
     if (picking_idx == INVALID_PICKING_IDX) return;
 
     md_strb_t sb = md_strb_create(frame_allocator);
     
-    if (0 <= picking_idx && picking_idx < mol.atom.count) {
+    if (picking_idx < mol.atom.count) {
         int atom_idx = picking_idx;
         int local_idx = atom_idx;
         const vec3_t pos = { mol.atom.x[atom_idx], mol.atom.y[atom_idx], mol.atom.z[atom_idx] };
