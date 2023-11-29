@@ -11,6 +11,7 @@
 #include <md_xtc.h>
 #include <md_trr.h>
 #include <md_xyz.h>
+#include <md_mmcif.h>
 #include <md_trajectory.h>
 #include <md_frame_cache.h>
 #include <md_util.h>
@@ -103,6 +104,7 @@ static const str_t extensions[] = {
     STR("xyz"),
     STR("xmol"),
     STR("arc"),
+    STR("cif"),
 };
 
 uint32_t get_supported_extension_count() {
@@ -121,6 +123,7 @@ md_molecule_loader_i* get_loader_from_ext(str_t ext) {
     if (str_equal_cstr(ext, "xyz"))  return md_xyz_molecule_api();
     if (str_equal_cstr(ext, "xmol")) return md_xyz_molecule_api();
     if (str_equal_cstr(ext, "arc"))  return md_xyz_molecule_api();
+    if (str_equal_cstr(ext, "cif"))  return md_mmcif_molecule_api();
 
     return NULL;
 }
