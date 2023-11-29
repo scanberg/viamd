@@ -18,6 +18,7 @@ For windows, we recommend to use the latest binary available on the ![release pa
 
 ### Ubuntu and MacOs
 For Linux and MacOs, we recommend you to build VIAMD on your machine following the procedure below.
+MacOs is not actively tested.
 
 ## Building
 ### Step 1: Clone the repository:
