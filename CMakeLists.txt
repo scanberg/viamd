@@ -67,6 +67,8 @@ endif()
 
 set(OSX_BUNDLE "")
 if (APPLE)
+    # Remove once we have proper support for Apple Silicon?
+    SET(CMAKE_OSX_ARCHITECTURES "x86_64")
     if (VIAMD_CREATE_MACOSX_BUNDLE)
         set(OSX_BUNDLE "MACOSX_BUNDLE")
     endif()
