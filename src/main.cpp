@@ -8531,10 +8531,12 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
     path_to_file = md_path_make_canonical(path_to_file, frame_allocator);
     if (path_to_file) {
         if (mol_loader) {
+            /*
             if (str_equal_cstr(path_to_file, data->files.molecule) && data->files.coarse_grained == coarse_grained) {
                 // File already loaded as molecular data
                 return true;
             }
+            */
 
             interrupt_async_tasks(data);
             free_molecule_data(data);
@@ -8568,10 +8570,12 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
                 return false;
             }
 
+            /*
             if (str_equal_cstr(path_to_file, data->files.trajectory) && data->files.deperiodize == deperiodize_on_load) {
                 // Same as loaded file
                 return true;
             }
+            */
 
             bool success = load_trajectory_data(data, path_to_file, traj_loader, deperiodize_on_load);
             if (success) {
