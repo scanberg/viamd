@@ -3321,7 +3321,7 @@ void draw_notifications_window() {
 void draw_load_dataset_window(ApplicationData* data) {
     LoadDatasetWindowState& state = data->load_dataset;
     
-    ImGui::SetNextWindowSize(ImVec2(300, 200), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(300, 215), ImGuiCond_FirstUseEver);
     if (state.show_window) {
         ImGui::OpenPopup("Load Dataset");
     }
