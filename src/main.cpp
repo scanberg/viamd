@@ -184,8 +184,8 @@ enum class ColorMapping {
     Cpk,
     AtomLabel,
     AtomIndex,
+    ResName,
     ResId,
-    ResIndex,
     ChainId,
     ChainIndex,
     SecondaryStructure,
@@ -198,10 +198,13 @@ enum LegendColorMapMode_ {
     LegendColorMapMode_Split,
 };
 
+// These bits are a compressed form of flags which are passed onto rendering
 enum AtomBit_ {
     AtomBit_Highlighted = 1,
     AtomBit_Selected    = 2,
     AtomBit_Visible     = 4,
+    AtomBit_ChainBeg    = 8,
+    AtomBit_ChainEnd    = 16,
 };
 
 enum MolBit_ {
@@ -421,6 +424,7 @@ struct LoadDatasetWindowState {
     bool load_topology = false;
     bool load_trajectory = false;
     bool coarse_grained = false;
+    bool keep_representations = false;
     bool deperiodize_on_load = true;
     bool show_window = false;
     bool show_file_dialog = false;
@@ -840,8 +844,8 @@ struct ApplicationData {
     } trajectory_data;
 
     struct {
-        vec4_t point_color      = {1,1,1,0.7f};
-        vec4_t line_color       = {1,1,0,0.7f};
+        vec4_t point_color      = {1,0,0,0.8f};
+        vec4_t line_color       = {0,0,0,0.0f};
         vec4_t triangle_color   = {1,1,0,0.5f};
     } script;
 
@@ -1174,6 +1178,7 @@ static void update_all_representations(ApplicationData* data);
 static void init_representation(ApplicationData* data, Representation* rep);
 static void init_all_representations(ApplicationData* data);
 static void clear_representations(ApplicationData* data);
+static void create_default_representations(ApplicationData* data);
 
 static void recompute_atom_visibility_mask(ApplicationData* data);
 
@@ -1424,8 +1429,8 @@ int main(int, char**) {
     if (md_path_is_valid(path)) {
         const str_t ext = extract_ext(path);
         if (load_dataset_from_file(&data, path, load::mol::get_loader_from_ext(ext), load::traj::get_loader_from_ext(ext), false, true)) {
-            create_representation(&data, RepresentationType::BallAndStick, ColorMapping::Cpk, STR("all"));
-            editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(1,2,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);");
+            create_default_representations(&data);
+            editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(2,1,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);");
 
             reset_view(&data, true);
             recompute_atom_visibility_mask(&data);
@@ -2487,22 +2492,22 @@ static void update_density_volume(ApplicationData* data) {
                 color_atoms_cpk(colors, mol.atom.count, mol);
                 break;
             case ColorMapping::AtomLabel:
-                color_atoms_label(colors, mol.atom.count, mol);
+                color_atoms_type(colors, mol.atom.count, mol);
                 break;
             case ColorMapping::AtomIndex:
                 color_atoms_idx(colors, mol.atom.count, mol);
                 break;
-            case ColorMapping::ResId:
-                color_atoms_residue_id(colors, mol.atom.count, mol);
+            case ColorMapping::ResName:
+                color_atoms_res_name(colors, mol.atom.count, mol);
                 break;
-            case ColorMapping::ResIndex:
-                color_atoms_residue_index(colors, mol.atom.count, mol);
+            case ColorMapping::ResId:
+                color_atoms_res_id(colors, mol.atom.count, mol);
                 break;
             case ColorMapping::ChainId:
                 color_atoms_chain_id(colors, mol.atom.count, mol);
                 break;
             case ColorMapping::ChainIndex:
-                color_atoms_chain_index(colors, mol.atom.count, mol);
+                color_atoms_chain_idx(colors, mol.atom.count, mol);
                 break;
             case ColorMapping::SecondaryStructure:
                 color_atoms_secondary_structure(colors, mol.atom.count, mol);
@@ -3388,6 +3393,14 @@ void draw_load_dataset_window(ApplicationData* data) {
             }
         }
 
+        bool show_keep_rep = state.path_is_valid && mol_loader;
+        if (show_keep_rep) {
+            ImGui::Checkbox("Keep Representations", &state.keep_representations);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Keep current representations, do not create new default ones");
+            }
+        }
+
         md_trajectory_loader_i* traj_loader = load::traj::get_loader_from_ext(cur_ext);
         bool show_dp = state.path_is_valid && traj_loader;
         if (show_dp) {
@@ -3401,8 +3414,9 @@ void draw_load_dataset_window(ApplicationData* data) {
         if (!load_enabled) ImGui::PushDisabled();
         if (ImGui::Button("Load")) {
             if (load_dataset_from_file(data, path, mol_loader, traj_loader, show_cg && state.coarse_grained, show_dp && state.deperiodize_on_load)) {
-                if (md_array_size(data->representation.reps) == 0) {
-                    create_representation(data); // Create default representation
+                if (mol_loader && !state.keep_representations) {
+                    clear_representations(data);
+                    create_default_representations(data);
                 }
                 data->animation = {};
                 recompute_atom_visibility_mask(data);
@@ -8265,6 +8279,8 @@ static void update_md_buffers(ApplicationData* data) {
             f |= md_bitfield_test_bit(&data->selection.current_highlight_mask, i)     ? AtomBit_Highlighted : 0;
             f |= md_bitfield_test_bit(&data->selection.current_selection_mask, i)     ? AtomBit_Selected : 0;
             f |= md_bitfield_test_bit(&data->representation.atom_visibility_mask, i)  ? AtomBit_Visible : 0;
+            f |= (data->mold.mol.atom.flags[i] & MD_FLAG_CHAIN_BEG) ? AtomBit_ChainBeg : 0;
+            f |= (data->mold.mol.atom.flags[i] & MD_FLAG_CHAIN_END) ? AtomBit_ChainEnd : 0;
             flags[i] = f;
         }
         md_gl_molecule_set_atom_flags(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, flags, 0);
@@ -8616,10 +8632,12 @@ static ColorMapping get_color_mapping(str_t str) {
         return ColorMapping::AtomLabel;
     else if (str_equal_cstr(str, "ATOM_INDEX"))
         return ColorMapping::AtomIndex;
+    else if (str_equal_cstr(str, "RES_NAME"))
+        return ColorMapping::ResName;
     else if (str_equal_cstr(str, "RES_ID"))
         return ColorMapping::ResId;
     else if (str_equal_cstr(str, "RES_INDEX"))
-        return ColorMapping::ResIndex;
+        return ColorMapping::ResId;
     else if (str_equal_cstr(str, "CHAIN_ID"))
         return ColorMapping::ChainId;
     else if (str_equal_cstr(str, "CHAIN_INDEX"))
@@ -8640,10 +8658,10 @@ static str_t get_color_mapping_name(ColorMapping mapping) {
             return STR("ATOM_LABEL");
         case ColorMapping::AtomIndex:
             return STR("ATOM_INDEX");
+        case ColorMapping::ResName:
+            return STR("RES_NAME");
         case ColorMapping::ResId:
             return STR("RES_ID");
-        case ColorMapping::ResIndex:
-            return STR("RES_INDEX");
         case ColorMapping::ChainId:
             return STR("CHAIN_ID");
         case ColorMapping::ChainIndex:
@@ -9338,22 +9356,22 @@ static void update_representation(ApplicationData* data, Representation* rep) {
             color_atoms_cpk(colors, mol.atom.count, mol);
             break;
         case ColorMapping::AtomLabel:
-            color_atoms_label(colors, mol.atom.count, mol);
+            color_atoms_type(colors, mol.atom.count, mol);
             break;
         case ColorMapping::AtomIndex:
             color_atoms_idx(colors, mol.atom.count, mol);
             break;
-        case ColorMapping::ResId:
-            color_atoms_residue_id(colors, mol.atom.count, mol);
+        case ColorMapping::ResName:
+            color_atoms_res_name(colors, mol.atom.count, mol);
             break;
-        case ColorMapping::ResIndex:
-            color_atoms_residue_index(colors, mol.atom.count, mol);
+        case ColorMapping::ResId:
+            color_atoms_res_id(colors, mol.atom.count, mol);
             break;
         case ColorMapping::ChainId:
             color_atoms_chain_id(colors, mol.atom.count, mol);
             break;
         case ColorMapping::ChainIndex:
-            color_atoms_chain_index(colors, mol.atom.count, mol);
+            color_atoms_chain_idx(colors, mol.atom.count, mol);
             break;
         case ColorMapping::SecondaryStructure:
             color_atoms_secondary_structure(colors, mol.atom.count, mol);
@@ -9475,6 +9493,55 @@ static void clear_representations(ApplicationData* data) {
     ASSERT(data);
     while (md_array_size(data->representation.reps) > 0) {
         remove_representation(data, (int32_t)md_array_size(data->representation.reps) - 1);
+    }
+}
+
+static void create_default_representations(ApplicationData* data) {
+    bool amino_acid_present = false;
+    bool nucleic_acid_present = false;
+    bool ion_present = false;
+    bool water_present = false;
+    bool ligand_present = false;
+
+    for (int64_t i = 0; i < data->mold.mol.atom.count; ++i) {
+        uint32_t flags = data->mold.mol.atom.flags[i];
+        if (flags & MD_FLAG_AMINO_ACID) amino_acid_present = true;
+        if (flags & MD_FLAG_NUCLEIC_ACID) nucleic_acid_present = true;
+        if (flags & MD_FLAG_ION) ion_present = true;
+        if (flags & MD_FLAG_WATER) water_present = true;
+
+        if (!(flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEIC_ACID | MD_FLAG_ION | MD_FLAG_WATER))) {
+			ligand_present = true;
+		}
+    }
+
+    if (amino_acid_present) {
+        RepresentationType type = RepresentationType::Cartoon;
+        ColorMapping color = ColorMapping::SecondaryStructure;
+
+        if (data->mold.mol.chain.count > 1) {
+            color = ColorMapping::ChainId;
+        } else {
+            if (data->mold.mol.chain.residue_range->end < 20) {
+                type = RepresentationType::BallAndStick;
+                color = ColorMapping::Cpk;
+            }
+        }
+
+        Representation* prot = create_representation(data, type, color, STR("protein"));
+        snprintf(prot->name, sizeof(prot->name), "protein");
+    }
+    if (nucleic_acid_present) {
+        Representation* nucl = create_representation(data, RepresentationType::Cartoon, ColorMapping::ChainId, STR("dna"));
+        snprintf(nucl->name, sizeof(nucl->name), "nucleic");
+    }
+    if (ion_present) {
+        Representation* ion = create_representation(data, RepresentationType::SpaceFill, ColorMapping::Cpk, STR("ion"));
+        snprintf(ion->name, sizeof(ion->name), "ions");
+    }
+    if (ligand_present) {
+        Representation* ligand = create_representation(data, RepresentationType::BallAndStick, ColorMapping::Cpk, STR("not protein and not water and not ion"));
+        snprintf(ligand->name, sizeof(ligand->name), "ligand");
     }
 }
 

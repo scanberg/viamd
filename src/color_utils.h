@@ -170,12 +170,13 @@ constexpr inline uint32_t convert_color(vec4_t in) {
 
 void color_atoms_uniform(uint32_t* colors, int64_t count, vec4_t uniform_color, const md_bitfield_t* mask = NULL);
 void color_atoms_cpk(uint32_t* colors, int64_t count, const md_molecule_t& mol);
-void color_atoms_label(uint32_t* colors, int64_t count, const md_molecule_t& mol);
+void color_atoms_type(uint32_t* colors, int64_t count, const md_molecule_t& mol);
 void color_atoms_idx(uint32_t* colors, int64_t count, const md_molecule_t& mol);
-void color_atoms_residue_id(uint32_t* colors, int64_t count, const md_molecule_t& mol);
-void color_atoms_residue_index(uint32_t* colors, int64_t count, const md_molecule_t& mol);
+void color_atoms_res_name(uint32_t* colors, int64_t count, const md_molecule_t& mol);
+void color_atoms_res_id(uint32_t* colors, int64_t count, const md_molecule_t& mol);
+void color_atoms_res_idx(uint32_t* colors, int64_t count, const md_molecule_t& mol);
 void color_atoms_chain_id(uint32_t* colors, int64_t count, const md_molecule_t& mol);
-void color_atoms_chain_index(uint32_t* colors, int64_t count, const md_molecule_t& mol);
+void color_atoms_chain_idx(uint32_t* colors, int64_t count, const md_molecule_t& mol);
 void color_atoms_secondary_structure(uint32_t* colors, int64_t count, const md_molecule_t& mol);
 
 void filter_colors(uint32_t* colors, int64_t num_colors, const md_bitfield_t* mask);
