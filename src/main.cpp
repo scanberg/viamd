@@ -9498,7 +9498,7 @@ static void clear_representations(ApplicationData* data) {
 
 static void create_default_representations(ApplicationData* data) {
     bool amino_acid_present = false;
-    bool nucleic_acid_present = false;
+    bool nucleic_present = false;
     bool ion_present = false;
     bool water_present = false;
     bool ligand_present = false;
@@ -9506,11 +9506,11 @@ static void create_default_representations(ApplicationData* data) {
     for (int64_t i = 0; i < data->mold.mol.atom.count; ++i) {
         uint32_t flags = data->mold.mol.atom.flags[i];
         if (flags & MD_FLAG_AMINO_ACID) amino_acid_present = true;
-        if (flags & MD_FLAG_NUCLEIC_ACID) nucleic_acid_present = true;
+        if (flags & MD_FLAG_NUCLEOTIDE) nucleic_present = true;
         if (flags & MD_FLAG_ION) ion_present = true;
         if (flags & MD_FLAG_WATER) water_present = true;
 
-        if (!(flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEIC_ACID | MD_FLAG_ION | MD_FLAG_WATER))) {
+        if (!(flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE | MD_FLAG_ION | MD_FLAG_WATER))) {
 			ligand_present = true;
 		}
     }
@@ -9531,8 +9531,8 @@ static void create_default_representations(ApplicationData* data) {
         Representation* prot = create_representation(data, type, color, STR("protein"));
         snprintf(prot->name, sizeof(prot->name), "protein");
     }
-    if (nucleic_acid_present) {
-        Representation* nucl = create_representation(data, RepresentationType::Cartoon, ColorMapping::ChainId, STR("dna"));
+    if (nucleic_present) {
+        Representation* nucl = create_representation(data, RepresentationType::BallAndStick, ColorMapping::SecondaryStructure, STR("nucleic"));
         snprintf(nucl->name, sizeof(nucl->name), "nucleic");
     }
     if (ion_present) {
