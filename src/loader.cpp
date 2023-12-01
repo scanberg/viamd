@@ -209,7 +209,7 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
             }
 
             if (loaded_traj->deperiodize && have_cell) {
-                md_util_deperiodize_system(x, y, z, cell, mol);
+                md_util_deperiodize_system(x, y, z, mol->atom.mass, mol->atom.count, cell, &mol->structures);
             }
         }
 

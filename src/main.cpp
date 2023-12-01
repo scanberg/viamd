@@ -1637,7 +1637,7 @@ int main(int, char**) {
                 interpolate_atomic_properties(&data);
 
                 if (data.animation.apply_pbc) {
-                    md_util_deperiodize_system(mol.atom.x, mol.atom.y, mol.atom.z, &mol.unit_cell, &mol);
+                    md_util_deperiodize_system(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.mass, mol.atom.count, &mol.unit_cell, &mol.structures);
                 }
             }
             POP_CPU_SECTION()
@@ -4584,8 +4584,13 @@ static void draw_info_window(const ApplicationData& data, uint32_t picking_idx) 
 			case 4: bond_type = '$'; break;
 			default: bond_type = '?'; break;
 			}
+            const float dx = mol.atom.x[b.idx[0]] - mol.atom.x[b.idx[1]];
+            const float dy = mol.atom.y[b.idx[0]] - mol.atom.y[b.idx[1]];
+            const float dz = mol.atom.z[b.idx[0]] - mol.atom.z[b.idx[1]];
+            const float d = sqrtf(dx*dx + dy*dy + dz*dz);
             md_strb_fmt(&sb, "bond: %s%c%s\n", mol.atom.type[b.idx[0]].buf, bond_type, mol.atom.type[b.idx[1]].buf);
             md_strb_fmt(&sb, "order: %i\n", mol.bond.order[bond_idx]);
+            md_strb_fmt(&sb, "length: %.3f\n", d);
         }
     }
 
@@ -9526,7 +9531,7 @@ static void create_default_representations(ApplicationData* data) {
         if (data->mold.mol.chain.count > 1) {
             color = ColorMapping::ChainId;
         } else {
-            if (data->mold.mol.chain.residue_range->end < 20) {
+            if (data->mold.mol.chain.count == 0 || data->mold.mol.chain.residue_range && data->mold.mol.chain.residue_range[0].end < 20) {
                 type = RepresentationType::BallAndStick;
                 color = ColorMapping::Cpk;
             }
@@ -9870,13 +9875,11 @@ static void fill_gbuffer(ApplicationData* data) {
 
     if (data->simulation_box.enabled && data->mold.mol.unit_cell.basis != mat3_t{0}) {
         PUSH_GPU_SECTION("Draw Simulation Box")
-        const mat3_t box = data->mold.mol.unit_cell.basis;
-        const vec3_t min_box = box * vec3_t{0, 0, 0};
-        const vec3_t max_box = box * vec3_t{1, 1, 1};
-
-        immediate::set_model_view_matrix(data->view.param.matrix.current.view);
+        const mat4_t model_mat = mat4_from_mat3(data->mold.mol.unit_cell.basis);
+        const mat4_t model_view_mat = data->view.param.matrix.current.view * model_mat;
+        immediate::set_model_view_matrix(model_view_mat);
         immediate::set_proj_matrix(data->view.param.matrix.current.proj_jittered);
-        immediate::draw_box_wireframe(min_box, max_box, convert_color(data->simulation_box.color));
+        immediate::draw_box_wireframe({0,0,0}, {1,1,1}, convert_color(data->simulation_box.color));
         immediate::render();
         POP_GPU_SECTION()
     }
