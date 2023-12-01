@@ -9506,6 +9506,13 @@ static void clear_representations(ApplicationData* data) {
 }
 
 static void create_default_representations(ApplicationData* data) {
+    if (data->mold.mol.residue.count == 0) {
+        // No residues present
+        Representation* rep = create_representation(data, RepresentationType::BallAndStick, ColorMapping::Cpk, STR("all"));
+        snprintf(rep->name, sizeof(rep->name), "default");
+        return;
+    }
+
     bool amino_acid_present = false;
     bool nucleic_present = false;
     bool ion_present = false;
