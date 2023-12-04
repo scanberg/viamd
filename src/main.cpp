@@ -9506,18 +9506,18 @@ static void clear_representations(ApplicationData* data) {
 }
 
 static void create_default_representations(ApplicationData* data) {
+    bool amino_acid_present = false;
+    bool nucleic_present = false;
+    bool ion_present = false;
+    bool water_present = false;
+    bool ligand_present = false;
+
     if (data->mold.mol.residue.count == 0) {
         // No residues present
         Representation* rep = create_representation(data, RepresentationType::BallAndStick, ColorMapping::Cpk, STR("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
         return;
     }
-
-    bool amino_acid_present = false;
-    bool nucleic_present = false;
-    bool ion_present = false;
-    bool water_present = false;
-    bool ligand_present = false;
 
     for (int64_t i = 0; i < data->mold.mol.atom.count; ++i) {
         uint32_t flags = data->mold.mol.atom.flags[i];
@@ -9558,6 +9558,12 @@ static void create_default_representations(ApplicationData* data) {
     if (ligand_present) {
         Representation* ligand = create_representation(data, RepresentationType::BallAndStick, ColorMapping::Cpk, STR("not protein and not water and not ion"));
         snprintf(ligand->name, sizeof(ligand->name), "ligand");
+    }
+    if (water_present) {
+        if (!amino_acid_present && !nucleic_present && !ligand_present) {
+		    Representation* water = create_representation(data, RepresentationType::SpaceFill, ColorMapping::Cpk, STR("water"));
+		    snprintf(water->name, sizeof(water->name), "water");
+        }
     }
 }
 
