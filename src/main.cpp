@@ -7,6 +7,8 @@
 #   pragma warning( disable : 26812 4244 )
 #endif
 
+#define IMGUI_DEFINE_MATH_OPERATORS
+
 #include <md_util.h>
 #include <md_gl.h>
 #include <md_gfx.h>
@@ -51,7 +53,6 @@
 #include <application/IconsFontAwesome6.h>
 
 #include <imgui.h>
-#define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui_internal.h>
 
 #include <implot.h>
@@ -2787,7 +2788,11 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
     
     if (0 < popcount && popcount < mol.atom.count) {
         int32_t* indices = (int32_t*)md_linear_allocator_push(linear_allocator, popcount * sizeof(int32_t));
-        const int64_t len = md_bitfield_extract_indices(indices, popcount, &data->representation.atom_visibility_mask);
+        int64_t len = md_bitfield_extract_indices(indices, popcount, &data->representation.atom_visibility_mask);
+        if (len > popcount || len > mol.atom.count) {
+            MD_LOG_DEBUG("Error: Invalid number of indices");
+            len = MIN(popcount, mol.atom.count);
+        }
 		md_util_compute_aabb(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, len);
         md_linear_allocator_pop(linear_allocator, popcount * sizeof(int32_t));
     } else {
@@ -9538,7 +9543,7 @@ static void create_default_representations(ApplicationData* data) {
         if (data->mold.mol.chain.count > 1) {
             color = ColorMapping::ChainId;
         } else {
-            if (data->mold.mol.chain.count == 0 || data->mold.mol.chain.residue_range && data->mold.mol.chain.residue_range[0].end < 20) {
+            if (data->mold.mol.chain.count == 0 || (data->mold.mol.chain.residue_range && data->mold.mol.chain.residue_range[0].end < 20)) {
                 type = RepresentationType::BallAndStick;
                 color = ColorMapping::Cpk;
             }
@@ -9553,18 +9558,22 @@ static void create_default_representations(ApplicationData* data) {
     }
     if (ion_present) {
         Representation* ion = create_representation(data, RepresentationType::SpaceFill, ColorMapping::Cpk, STR("ion"));
-        snprintf(ion->name, sizeof(ion->name), "ions");
+        snprintf(ion->name, sizeof(ion->name), "ion");
     }
     if (ligand_present) {
-        Representation* ligand = create_representation(data, RepresentationType::BallAndStick, ColorMapping::Cpk, STR("not protein and not water and not ion"));
+        Representation* ligand = create_representation(data, RepresentationType::BallAndStick, ColorMapping::Cpk, STR("not protein and not nucleic and not water and not ion"));
         snprintf(ligand->name, sizeof(ligand->name), "ligand");
     }
     if (water_present) {
+        Representation* water = create_representation(data, RepresentationType::Licorice, ColorMapping::Cpk, STR("water"));
+        snprintf(water->name, sizeof(water->name), "water");
+        water->enabled = false;
         if (!amino_acid_present && !nucleic_present && !ligand_present) {
-		    Representation* water = create_representation(data, RepresentationType::SpaceFill, ColorMapping::Cpk, STR("water"));
-		    snprintf(water->name, sizeof(water->name), "water");
+            water->enabled = true;
         }
     }
+
+    recompute_atom_visibility_mask(data);
 }
 
 // #selection
@@ -9811,6 +9820,13 @@ static void handle_camera_animation(ApplicationData* data) {
 
     float&  current_dist = data->view.camera.focus_distance;
     float&  target_dist  = data->view.animation.target_distance;
+
+    if (vec3_distance_squared(current_pos, target_pos) > 100000.f) {
+        // We have misplaced the camera for some reason, reset it
+        current_pos = target_pos;
+        current_ori = target_ori;
+        current_dist = target_dist;
+    }
 
     // We want to interpolate along an arc which is formed by maintaining a distance to the look_at position and smoothly interpolating the orientation,
     // This means that 

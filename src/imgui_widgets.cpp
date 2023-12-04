@@ -1,5 +1,5 @@
-#include <imgui_widgets.h>
 #define IMGUI_DEFINE_MATH_OPERATORS
+#include <imgui_widgets.h>
 #include <imgui_internal.h>
 
 namespace ImGui {
