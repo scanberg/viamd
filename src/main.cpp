@@ -3492,7 +3492,7 @@ void apply_atom_elem_mappings(ApplicationData* data) {
     md_index_data_free(&mol->structures, data->mold.mol_alloc);
     md_index_data_free(&mol->rings, data->mold.mol_alloc);
     
-    md_util_postprocess_molecule(mol, data->mold.mol_alloc, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT);
+    md_util_postprocess_molecule(mol, data->mold.mol_alloc, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT | MD_UTIL_POSTPROCESS_STRUCTURE_BIT);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
     update_all_representations(data);
@@ -4086,7 +4086,6 @@ void draw_context_popup(ApplicationData* data) {
                     if (apply) {
                         load::traj::set_recenter_target(data->mold.traj, &mask);
                         load::traj::clear_cache(data->mold.traj);
-                        //launch_prefetch_job(data);
                         interpolate_atomic_properties(data);
                         data->mold.dirty_buffers |= MolBit_DirtyPosition;
                         update_md_buffers(data);
