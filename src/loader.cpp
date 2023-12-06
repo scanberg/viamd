@@ -96,35 +96,42 @@ static inline void remove_loaded_trajectory(uint64_t key) {
 
 namespace load {
 
-static const str_t extensions[] = {
-    STR("pdb"),
-    STR("gro"),
-    STR("xtc"),
-    STR("trr"),
-    STR("xyz"),
-    STR("xmol"),
-    STR("arc"),
-    STR("cif"),
+struct table_entry_t {
+    str_t ext;
+    md_molecule_loader_i*   mol_loader;
+    md_trajectory_loader_i* traj_loader;
 };
 
-uint32_t get_supported_extension_count() {
-    return (uint32_t)ARRAY_SIZE(extensions);
+static const table_entry_t table[8] = {
+    { STR("pdb"),  md_pdb_molecule_api(),   md_pdb_trajectory_loader() },
+	{ STR("gro"),  md_gro_molecule_api(),   NULL },
+	{ STR("xtc"),  NULL,                    md_xtc_trajectory_loader() },
+	{ STR("trr"),  NULL,                    md_trr_trajectory_loader() },
+	{ STR("xyz"),  md_xyz_molecule_api(),   md_xyz_trajectory_loader() },
+	{ STR("xmol"), md_xyz_molecule_api(),   md_xyz_trajectory_loader() },
+	{ STR("arc"),  md_xyz_molecule_api(),   md_xyz_trajectory_loader() },
+	{ STR("cif"),  md_mmcif_molecule_api(), NULL },
+};
+
+int64_t supported_extension_count() {
+    return ARRAY_SIZE(table);
 }
 
-const str_t* get_supported_extensions() {
-    return extensions;
+str_t supported_extension_str(int64_t idx) {
+    if (0 <= idx && idx < (int64_t)ARRAY_SIZE(table)) {
+        return table[idx].ext;
+    }
+    return {};
 }
 
 namespace mol {
 
 md_molecule_loader_i* get_loader_from_ext(str_t ext) {
-    if (str_equal_cstr(ext, "pdb"))  return md_pdb_molecule_api();
-    if (str_equal_cstr(ext, "gro"))  return md_gro_molecule_api();
-    if (str_equal_cstr(ext, "xyz"))  return md_xyz_molecule_api();
-    if (str_equal_cstr(ext, "xmol")) return md_xyz_molecule_api();
-    if (str_equal_cstr(ext, "arc"))  return md_xyz_molecule_api();
-    if (str_equal_cstr(ext, "cif"))  return md_mmcif_molecule_api();
-
+    for (size_t i = 0; i < ARRAY_SIZE(table); ++i) {
+    	if (str_equal(ext, table[i].ext)) {
+            return table[i].mol_loader;
+        }
+    }
     return NULL;
 }
 
@@ -133,13 +140,11 @@ md_molecule_loader_i* get_loader_from_ext(str_t ext) {
 namespace traj {
 
 md_trajectory_loader_i* get_loader_from_ext(str_t ext) {
-    if (str_equal_cstr(ext, "pdb"))  return md_pdb_trajectory_loader();
-    if (str_equal_cstr(ext, "xtc"))  return md_xtc_trajectory_loader();
-    if (str_equal_cstr(ext, "trr"))  return md_trr_trajectory_loader();
-    if (str_equal_cstr(ext, "xyz"))  return md_xyz_trajectory_loader();
-    if (str_equal_cstr(ext, "xmol")) return md_xyz_trajectory_loader();
-    if (str_equal_cstr(ext, "arc"))  return md_xyz_trajectory_loader();
-
+	for (size_t i = 0; i < ARRAY_SIZE(table); ++i) {
+        if (str_equal(ext, table[i].ext)) {
+            return table[i].traj_loader;
+        }
+    }
     return NULL;
 }
 
@@ -283,7 +288,7 @@ md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const
     md_bitfield_init(&inst->recenter_target, alloc);
 
     // We only overload load frame and decode frame data to apply PBC upon loading data
-    traj->inst = (struct md_trajectory_o*)inst;
+    traj->inst = (md_trajectory_o*)inst;
     traj->get_header = get_header;
     traj->load_frame = load_frame;
     traj->fetch_frame_data = fetch_frame_data;

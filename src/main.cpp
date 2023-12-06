@@ -3333,8 +3333,7 @@ void draw_load_dataset_window(ApplicationData* data) {
 
     if (ImGui::BeginPopupModal("Load Dataset", &state.show_window)) {
         bool path_invalid = !state.path_is_valid && state.path_buf[0] != '\0';
-        const str_t* loader_ext = load::get_supported_extensions();
-        const int loader_ext_count = (int)load::get_supported_extension_count();
+        const int loader_ext_count = (int)load::supported_extension_count();
 
         if (path_invalid) ImGui::PushInvalid();
         if (ImGui::InputText("##path", state.path_buf, sizeof(state.path_buf))) {
@@ -3368,16 +3367,16 @@ void draw_load_dataset_window(ApplicationData* data) {
             str_t ext = extract_ext(path);
 
             for (int i = 0; i < loader_ext_count; ++i) {
-                if (str_equal_ignore_case(ext, loader_ext[i])) {
+                if (str_equal_ignore_case(ext, load::supported_extension_str(i))) {
                     state.loader_idx = i;
                     break;
                 }
             }
         }
 
-        if (ImGui::BeginCombo("Loader", state.loader_idx > -1 ? loader_ext[state.loader_idx].ptr : "")) {
+        if (ImGui::BeginCombo("Loader", state.loader_idx > -1 ? load::supported_extension_str(state.loader_idx).ptr : "")) {
             for (int i = 0; i < loader_ext_count; ++i) {
-                if (ImGui::Selectable(loader_ext[i].ptr, state.loader_idx == i)) {
+                if (ImGui::Selectable(load::supported_extension_str(state.loader_idx).ptr, state.loader_idx == i)) {
                     state.loader_idx = i;
                 }
             }
@@ -3386,7 +3385,7 @@ void draw_load_dataset_window(ApplicationData* data) {
 
         str_t cur_ext = {};
         if (state.loader_idx > -1) {
-            cur_ext = load::get_supported_extensions()[state.loader_idx];
+            cur_ext = load::supported_extension_str(state.loader_idx);
         }
 
         md_molecule_loader_i* mol_loader = load::mol::get_loader_from_ext(cur_ext);
@@ -4331,7 +4330,6 @@ static void draw_animation_window(ApplicationData* data) {
 }
 
 static void draw_representations_window(ApplicationData* data) {
-
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
     ImGui::Begin("Representations", &data->representation.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
     if (ImGui::Button("create new")) {
@@ -4346,7 +4344,7 @@ static void draw_representations_window(ApplicationData* data) {
     for (int i = 0; i < (int)md_array_size(data->representation.reps); i++) {
         bool update_rep = false;
         auto& rep = data->representation.reps[i];
-        const float item_width = MAX(ImGui::GetContentRegionAvail().x - 90.f, 100.f);
+        const float item_width = MAX(ImGui::GetContentRegionAvail().x - 125.f, 100.f);
         char label[128];
         snprintf(label, sizeof(label), "%s###ID", rep.name);
 
@@ -9561,11 +9559,12 @@ static void create_default_representations(ApplicationData* data) {
         snprintf(ion->name, sizeof(ion->name), "ion");
     }
     if (ligand_present) {
-        Representation* ligand = create_representation(data, RepresentationType::BallAndStick, ColorMapping::Cpk, STR("not protein and not nucleic and not water and not ion"));
+        Representation* ligand = create_representation(data, RepresentationType::BallAndStick, ColorMapping::Cpk, STR("not (protein or nucleic or water or ion)"));
         snprintf(ligand->name, sizeof(ligand->name), "ligand");
     }
     if (water_present) {
-        Representation* water = create_representation(data, RepresentationType::Licorice, ColorMapping::Cpk, STR("water"));
+        Representation* water = create_representation(data, RepresentationType::SpaceFill, ColorMapping::Cpk, STR("water"));
+        water->scale.x = 0.5f;
         snprintf(water->name, sizeof(water->name), "water");
         water->enabled = false;
         if (!amino_acid_present && !nucleic_present && !ligand_present) {

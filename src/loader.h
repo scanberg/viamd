@@ -10,8 +10,8 @@ struct md_trajectory_loader_i;
 struct md_bitfield_t;
 
 namespace load {
-    uint32_t     get_supported_extension_count();
-    const str_t* get_supported_extensions();
+    int64_t supported_extension_count();
+    str_t   supported_extension_str(int64_t idx);
 
 namespace mol {
     md_molecule_loader_i* get_loader_from_ext(str_t filename);
