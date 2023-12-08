@@ -96,40 +96,60 @@ static inline void remove_loaded_trajectory(uint64_t key) {
 
 namespace load {
 
+static const int64_t NUM_ENTRIES = 8;
 struct table_entry_t {
-    str_t ext;
-    md_molecule_loader_i*   mol_loader;
-    md_trajectory_loader_i* traj_loader;
+    str_t ext[NUM_ENTRIES];
+    md_molecule_loader_i*   mol_loader[NUM_ENTRIES];
+    md_trajectory_loader_i* traj_loader[NUM_ENTRIES];
 };
 
-static const table_entry_t table[8] = {
-    { STR("pdb"),  md_pdb_molecule_api(),   md_pdb_trajectory_loader() },
-	{ STR("gro"),  md_gro_molecule_api(),   NULL },
-	{ STR("xtc"),  NULL,                    md_xtc_trajectory_loader() },
-	{ STR("trr"),  NULL,                    md_trr_trajectory_loader() },
-	{ STR("xyz"),  md_xyz_molecule_api(),   md_xyz_trajectory_loader() },
-	{ STR("xmol"), md_xyz_molecule_api(),   md_xyz_trajectory_loader() },
-	{ STR("arc"),  md_xyz_molecule_api(),   md_xyz_trajectory_loader() },
-	{ STR("cif"),  md_mmcif_molecule_api(), NULL },
+static const table_entry_t table = {
+    {
+        STR("pdb"),
+        STR("gro"),
+        STR("xtc"),
+        STR("trr"),
+        STR("xyz"),
+        STR("xmol"),
+        STR("arc"),
+        STR("cif")
+    },
+    { 
+        md_pdb_molecule_api(),
+        md_gro_molecule_api(),  
+        NULL,
+        NULL,
+        md_xyz_molecule_api(),
+        md_xyz_molecule_api(),
+        md_xyz_molecule_api(),
+        md_mmcif_molecule_api(),
+    },
+	{ 
+        md_pdb_trajectory_loader(),
+    	NULL,
+    	md_xtc_trajectory_loader(),
+    	md_trr_trajectory_loader(),
+    	md_xyz_trajectory_loader(),
+    	md_xyz_trajectory_loader(),
+    	md_xyz_trajectory_loader(),
+    	NULL,
+    },
 };
 
 int64_t supported_extension_count() {
-    return ARRAY_SIZE(table);
+    return NUM_ENTRIES;
 }
 
-str_t supported_extension_str(int64_t idx) {
-    if (0 <= idx && idx < (int64_t)ARRAY_SIZE(table)) {
-        return table[idx].ext;
-    }
-    return {};
+const str_t* supported_extensions() {
+	return table.ext;
 }
 
 namespace mol {
 
 md_molecule_loader_i* get_loader_from_ext(str_t ext) {
-    for (size_t i = 0; i < ARRAY_SIZE(table); ++i) {
-    	if (str_equal(ext, table[i].ext)) {
-            return table[i].mol_loader;
+    for (size_t i = 0; i < NUM_ENTRIES; ++i) {
+    	if (str_equal(ext, table.ext[i])) {
+            return table.mol_loader[i];
         }
     }
     return NULL;
@@ -140,9 +160,9 @@ md_molecule_loader_i* get_loader_from_ext(str_t ext) {
 namespace traj {
 
 md_trajectory_loader_i* get_loader_from_ext(str_t ext) {
-	for (size_t i = 0; i < ARRAY_SIZE(table); ++i) {
-        if (str_equal(ext, table[i].ext)) {
-            return table[i].traj_loader;
+	for (size_t i = 0; i < NUM_ENTRIES; ++i) {
+        if (str_equal(ext, table.ext[i])) {
+            return table.traj_loader[i];
         }
     }
     return NULL;
@@ -333,6 +353,18 @@ bool set_recenter_target(md_trajectory_i* traj, const md_bitfield_t* atom_mask) 
     }
     MD_LOG_ERROR("Supplied trajectory was not loaded with loader");
     return false;
+}
+
+bool set_depositize(md_trajectory_i* traj, bool deperiodize) {
+	ASSERT(traj);
+
+	LoadedTrajectory* loaded_traj = find_loaded_trajectory((uint64_t)traj);
+	if (loaded_traj) {
+    	loaded_traj->deperiodize = deperiodize;
+    	return true;
+    }
+	MD_LOG_ERROR("Supplied trajectory was not loaded with loader");
+	return false;
 }
 
 bool clear_cache(md_trajectory_i* traj) {

@@ -150,10 +150,12 @@ constexpr ImGuiKey KEY_SHOW_DEBUG_WINDOW = ImGuiKey_F11;
 constexpr ImGuiKey KEY_SCRIPT_EVALUATE     = ImGuiKey_Enter;
 constexpr ImGuiKey KEY_SCRIPT_EVALUATE_MOD = ImGuiMod_Shift;
 
-constexpr const char* WORKSPACE_FILE_EXTENSION = "via"; 
+constexpr str_t WORKSPACE_FILE_EXTENSION = STR("via"); 
 constexpr uint32_t INVALID_PICKING_IDX = ~0U;
 
 constexpr uint32_t PROPERTY_COLORS[] = {4293119554, 4290017311, 4287291314, 4281114675, 4288256763, 4280031971, 4285513725, 4278222847, 4292260554, 4288298346, 4288282623, 4280834481};
+
+constexpr str_t SCRIPT_IMPORT_FILE_EXTENSIONS[] = { STR("edr"), STR("xvg"), STR("csv") };
 
 inline const ImVec4& vec_cast(const vec4_t& v) { return *(const ImVec4*)(&v); }
 inline const vec4_t& vec_cast(const ImVec4& v) { return *(const vec4_t*)(&v); }
@@ -419,7 +421,7 @@ struct DatasetItem {
 };
 
 struct LoadDatasetWindowState {
-    char path_buf[2048] = "";
+    char path_buf[1024] = "";
     bool path_is_valid = false;
     bool path_changed = false;
     bool load_topology = false;
@@ -432,6 +434,28 @@ struct LoadDatasetWindowState {
     int  loader_idx = -1;
 };
 
+enum {
+    FileFlags_None = 0,
+    FileFlags_ShowDialogue = 1,
+    FileFlags_CoarseGrained = 2,
+    FileFlags_Deperiodize = 4,
+    FileFlags_KeepRepresentations = 8,
+};
+
+typedef uint32_t FileFlags;
+
+struct FileQueue {
+    struct Entry {
+        str_t path;
+        FileFlags flags;
+        int prio;
+    };
+    Entry arr[8] = {};
+    uint64_t head = 0;
+    uint64_t tail = 0;
+    md_allocator_i* alloc = NULL;
+};
+
 struct ApplicationData {
     // --- APPLICATION ---
     application::Context ctx {};
@@ -441,13 +465,19 @@ struct ApplicationData {
     // --- FILES ---
     // for keeping track of open files
     struct {
-        char molecule[2048]   = {0};
-        char trajectory[2048] = {0};
-        char workspace[2048]  = {0};
+        char molecule[1024]   = {0};
+        char trajectory[1024] = {0};
+        char workspace[1024]  = {0};
 
         bool coarse_grained = false;
         bool deperiodize    = false;
     } files;
+
+    // The idea for the file load queue is to fill it with files that are dropped onto the application
+    // Or passed via the commandline. The files need to be processed in a certain order (topology before trajectory)
+    // It also provides a way to chain the file load dialogue.
+    // It owns the strings and their contents and should be freed upon popping from the queue
+    FileQueue file_queue = {};
 
     // --- CAMERA ---
     struct {
@@ -461,7 +491,7 @@ struct ApplicationData {
         } jitter;
 
         struct {
-            vec3_t target_position{};
+            vec3_t target_position = {};
             quat_t target_orientation = {};
             float  target_distance = 0;
         } animation;
@@ -854,6 +884,67 @@ struct ApplicationData {
     bool show_debug_window = false;
     bool show_property_export_window = false;
 };
+
+const str_t* find_in_arr(str_t str, const str_t arr[], int64_t len) {
+	for (int64_t i = 0; i < len; ++i) {
+    	if (str_equal(arr[i], str)) {
+            return &arr[i];
+        }
+    }
+	return NULL;
+}
+
+static inline bool file_queue_empty(const FileQueue* queue) {
+    return queue->head == queue->tail;
+}
+
+static inline bool file_queue_full(const FileQueue* queue) {
+    return (queue->head + 1) % ARRAY_SIZE(queue->arr) == queue->tail;
+}
+
+static inline void file_queue_push(FileQueue* queue, str_t path, FileFlags flags = FileFlags_None) {
+    ASSERT(queue);
+    ASSERT(!file_queue_full(queue));
+    int prio = 0;
+
+    str_t ext = extract_ext(path);
+    if (str_equal(ext, WORKSPACE_FILE_EXTENSION)) {
+        prio = 1;
+    } else if (load::mol::get_loader_from_ext(ext)) {
+        prio = 2;
+	} else if (load::traj::get_loader_from_ext(ext)) {
+		prio = 3;
+    } else if (find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS))) {
+    	prio = 4;
+    } else {
+        // Unknown extension
+        prio = 5;
+        flags |= FileFlags_ShowDialogue;
+    }
+
+    uint64_t i = queue->head;
+    queue->arr[queue->head] = {str_copy(path, queue->alloc), flags, prio};
+    queue->head = (queue->head + 1) % ARRAY_SIZE(queue->arr);
+
+    // Sort queue based on prio
+     while (i != queue->tail && queue->arr[i].prio < queue->arr[(i - 1) % ARRAY_SIZE(queue->arr)].prio) {
+		FileQueue::Entry tmp = queue->arr[i];
+		queue->arr[i] = queue->arr[(i - 1) % ARRAY_SIZE(queue->arr)];
+		queue->arr[(i - 1) % ARRAY_SIZE(queue->arr)] = tmp;
+		i = (i - 1) % ARRAY_SIZE(queue->arr);
+     }
+}
+
+static inline void file_queue_pop(FileQueue* queue) {
+    ASSERT(queue);
+    ASSERT(!file_queue_empty(queue));
+    queue->tail = (queue->tail + 1) % ARRAY_SIZE(queue->arr);
+}
+
+static inline FileQueue::Entry file_queue_front(const FileQueue* queue) {
+    ASSERT(!file_queue_empty(queue));
+    return queue->arr[queue->tail];
+}
 
 static inline uint64_t generate_fingerprint() {
     return (uint64_t)md_time_current();
@@ -1273,7 +1364,7 @@ uint32_t djb2_hash(const char *str) {
     return hash;
 }
 
-int main(int, char**) {
+int main(int argc, char** argv) {
     const int64_t linear_size = MEGABYTES(256);
     void* linear_mem = md_alloc(md_heap_allocator, linear_size);
     md_linear_allocator_t linear_alloc {};
@@ -1321,6 +1412,7 @@ int main(int, char**) {
     md_logger_add(&notification_logger);
 
     ApplicationData data;
+    data.file_queue.alloc = persistent_allocator;
 
     data.mold.mol_alloc = md_arena_allocator_create(persistent_allocator, MEGABYTES(1));
 
@@ -1346,47 +1438,8 @@ int main(int, char**) {
         ApplicationData* data = (ApplicationData*)user_data;
         ASSERT(data);
 
-        if (num_files > 1) {
-            LOG_INFO("Only loading first file in drop event!");
-            num_files = 1;
-        }
-
         for (int i = 0; i < num_files; ++i) {
-            str_t path = str_from_cstr(paths[i]);
-            str_t ext  = extract_ext(path);
-
-            if (str_equal_cstr_ignore_case(ext, "via")) {
-                load_workspace(data, path);
-            } else if (
-                str_equal_cstr_ignore_case(ext, "edr") ||
-                str_equal_cstr_ignore_case(ext, "xvg") ||
-                str_equal_cstr_ignore_case(ext, "csv"))
-            {
-                char buf[1024];
-                str_t base_path = {};
-                if (data->files.workspace[0] != '\0') {
-					base_path = str_from_cstr(data->files.workspace);
-				} else if (data->files.trajectory[0] != '\0') {
-					base_path = str_from_cstr(data->files.trajectory);
-                } else if (data->files.molecule[0] != '\0') {
-                    base_path = str_from_cstr(data->files.molecule);
-				} else {
-                    md_path_write_cwd(buf, sizeof(buf));
-                    base_path = str_from_cstr(buf);
-                }
-
-                str_t rel_path = md_path_make_relative(base_path, path, frame_allocator);
-                if (!str_empty(rel_path)) {
-                    snprintf(buf, sizeof(buf), "\ntable = import(\"%.*s\");", STR_FMT(rel_path));
-                    editor.AppendText(buf);
-                }
-            }
-            else {
-                LoadDatasetWindowState& state = data->load_dataset;
-                state.show_window = true;
-                state.path_changed = true;
-                str_copy_to_char_buf(state.path_buf, sizeof(state.path_buf), path);
-            }
+            file_queue_push(&data->file_queue, str_from_cstr(paths[i]), FileFlags_None);
         }
     };
 
@@ -1426,16 +1479,26 @@ int main(int, char**) {
     editor.SetLanguageDefinition(TextEditor::LanguageDefinition::VIAMD());
     editor.SetPalette(TextEditor::GetDarkPalette());
 
-    const str_t path = STR(VIAMD_DATASET_DIR "/1ALA-500.pdb");
-    if (md_path_is_valid(path)) {
-        const str_t ext = extract_ext(path);
-        if (load_dataset_from_file(&data, path, load::mol::get_loader_from_ext(ext), load::traj::get_loader_from_ext(ext), false, true)) {
-            create_default_representations(&data);
-            editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(2,1,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);");
-
-            reset_view(&data, true);
-            recompute_atom_visibility_mask(&data);
-            interpolate_atomic_properties(&data);
+    {
+        md_strb_t sb = md_strb_create(frame_allocator);
+        if (argc == 1) {
+            sb += extract_path_without_file(str_from_cstr(argv[0]));
+            sb += VIAMD_DATASET_DIR "/1ALA-500.pdb";
+            convert_backslashes(sb.buf, md_array_size(sb.buf));
+            str_t path = md_strb_to_str(&sb);
+            if (md_path_is_valid(path)) {
+                file_queue_push(&data.file_queue, path);
+                editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(2,1,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);");
+            }
+        } else if (argc > 1) {
+            // Currently we do not support any command line flags
+            // So anything here which is a file path is assumed to be a file to load
+            for (int i = 1; i < argc; ++i) {
+                str_t path = str_from_cstr(argv[i]);
+                if (md_path_is_valid(path)) {
+					file_queue_push(&data.file_queue, path);
+				}
+            }
         }
     }
 
@@ -1443,7 +1506,7 @@ int main(int, char**) {
     draw::scan::test_scan();
 #endif
 
-    auto& mol = data.mold.mol;
+    auto& mol  = data.mold.mol;
     auto& traj = data.mold.traj;
 
     bool time_changed = true;
@@ -1465,6 +1528,54 @@ int main(int, char**) {
         const double   max_frame = (double)last_frame;
 
         md_bitfield_clear(&data.selection.current_highlight_mask);
+
+        if (!file_queue_empty(&data.file_queue) && !data.load_dataset.show_window) {
+        	FileQueue::Entry e = file_queue_front(&data.file_queue);
+            str_t ext = extract_ext(e.path);
+            const str_t* res = 0;
+
+            if (str_equal_ignore_case(ext, WORKSPACE_FILE_EXTENSION)) {
+				load_workspace(&data, e.path);
+			} else if (res = find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS))) {
+                char buf[1024];
+                str_t base_path = {};
+                if (data.files.workspace[0] != '\0') {
+                    base_path = str_from_cstr(data.files.workspace);
+                } else if (data.files.trajectory[0] != '\0') {
+                    base_path = str_from_cstr(data.files.trajectory);
+                } else if (data.files.molecule[0] != '\0') {
+                    base_path = str_from_cstr(data.files.molecule);
+                } else {
+                    md_path_write_cwd(buf, sizeof(buf));
+                    base_path = str_from_cstr(buf);
+                }
+
+                str_t rel_path = md_path_make_relative(base_path, e.path, frame_allocator);
+                if (!str_empty(rel_path)) {
+                    snprintf(buf, sizeof(buf), "table = import(\"%.*s\");\n", STR_FMT(rel_path));
+                    TextEditor::Coordinates pos = editor.GetCursorPosition();
+                    pos.mLine += 1;
+                    editor.SetCursorPosition({0,0});
+                    editor.InsertText(buf);
+                    editor.SetCursorPosition(pos);
+                }
+            } else if (res = find_in_arr(ext, load::supported_extensions(), load::supported_extension_count())) {
+                if (e.flags & FileFlags_ShowDialogue) {
+                    data.load_dataset.show_window = true;
+                } else if (load_dataset_from_file(&data, e.path, load::mol::get_loader_from_ext(ext), load::traj::get_loader_from_ext(ext), e.flags & FileFlags_CoarseGrained, e.flags & FileFlags_Deperiodize)) {
+                    data.animation = {};
+                    if (!(e.flags & FileFlags_KeepRepresentations)) {
+						clear_representations(&data);
+						create_default_representations(&data);
+					}
+					reset_view(&data, true, false);
+					recompute_atom_visibility_mask(&data);
+					interpolate_atomic_properties(&data);
+				}
+            }
+
+			file_queue_pop(&data.file_queue);
+        }
 
         // GUI
         if (data.show_script_window) draw_script_editor_window(&data);
@@ -2950,17 +3061,17 @@ static void draw_main_menu(ApplicationData* data) {
                 data->load_dataset.show_window = true;
             }
             if (ImGui::MenuItem("Open Workspace", "CTRL+O")) {
-                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Open, WORKSPACE_FILE_EXTENSION)) {
+                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Open, str_ptr(WORKSPACE_FILE_EXTENSION))) {
                     load_workspace(data, str_from_cstr(path_buf));
                 }
             }
             if (ImGui::MenuItem("Save Workspace", "CTRL+S")) {
                 if (strnlen(data->files.workspace, sizeof(data->files.workspace)) == 0) {
-                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, WORKSPACE_FILE_EXTENSION)) {
+                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, str_ptr(WORKSPACE_FILE_EXTENSION))) {
                         int path_len = (int)strnlen(path_buf, sizeof(path_buf));
                         str_t ext = extract_ext({path_buf, path_len});
                         if (str_empty(ext)) {
-                            path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".%s", WORKSPACE_FILE_EXTENSION);
+                            path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".%s", str_ptr(WORKSPACE_FILE_EXTENSION));
                         }
                         save_workspace(data, {path_buf, path_len});
                     }
@@ -2969,11 +3080,11 @@ static void draw_main_menu(ApplicationData* data) {
                 }
             }
             if (ImGui::MenuItem("Save As")) {
-                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, WORKSPACE_FILE_EXTENSION)) {
+                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, str_ptr(WORKSPACE_FILE_EXTENSION))) {
                     int path_len = (int)strnlen(path_buf, sizeof(path_buf));
                     str_t ext = extract_ext({path_buf, path_len});
                     if (str_empty(ext)) {
-                        path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".%s", WORKSPACE_FILE_EXTENSION);
+                        path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".%s", str_ptr(WORKSPACE_FILE_EXTENSION));
                     }
                     save_workspace(data, {path_buf, path_len});
                 }
@@ -3333,7 +3444,8 @@ void draw_load_dataset_window(ApplicationData* data) {
 
     if (ImGui::BeginPopupModal("Load Dataset", &state.show_window)) {
         bool path_invalid = !state.path_is_valid && state.path_buf[0] != '\0';
-        const int loader_ext_count = (int)load::supported_extension_count();
+        const int    loader_ext_count = (int)load::supported_extension_count();
+        const str_t* loader_ext_str = load::supported_extensions();
 
         if (path_invalid) ImGui::PushInvalid();
         if (ImGui::InputText("##path", state.path_buf, sizeof(state.path_buf))) {
@@ -3357,7 +3469,7 @@ void draw_load_dataset_window(ApplicationData* data) {
         }
 
         str_t path = str_from_cstr(state.path_buf);
-        
+
         if (state.path_changed) {
             state.path_changed = false;
             state.path_is_valid = md_path_is_valid(path) && !md_path_is_directory(path);
@@ -3367,16 +3479,17 @@ void draw_load_dataset_window(ApplicationData* data) {
             str_t ext = extract_ext(path);
 
             for (int i = 0; i < loader_ext_count; ++i) {
-                if (str_equal_ignore_case(ext, load::supported_extension_str(i))) {
+                if (str_equal_ignore_case(ext, loader_ext_str[i])) {
                     state.loader_idx = i;
                     break;
                 }
             }
         }
 
-        if (ImGui::BeginCombo("Loader", state.loader_idx > -1 ? load::supported_extension_str(state.loader_idx).ptr : "")) {
+
+        if (ImGui::BeginCombo("Loader", state.loader_idx > -1 ? loader_ext_str[state.loader_idx].ptr : "")) {
             for (int i = 0; i < loader_ext_count; ++i) {
-                if (ImGui::Selectable(load::supported_extension_str(i).ptr, state.loader_idx == i)) {
+                if (ImGui::Selectable(loader_ext_str[i].ptr, state.loader_idx == i)) {
                     state.loader_idx = i;
                 }
             }
@@ -3385,7 +3498,7 @@ void draw_load_dataset_window(ApplicationData* data) {
 
         str_t cur_ext = {};
         if (state.loader_idx > -1) {
-            cur_ext = load::supported_extension_str(state.loader_idx);
+            cur_ext = loader_ext_str[state.loader_idx];
         }
 
         md_molecule_loader_i* mol_loader = load::mol::get_loader_from_ext(cur_ext);
@@ -3414,9 +3527,27 @@ void draw_load_dataset_window(ApplicationData* data) {
             }
         }
 
+        enum Action {
+            Action_None,
+			Action_Cancel,
+			Action_Load,
+		};
+        Action action = Action_None;
+
         bool load_enabled = (state.path_is_valid && state.loader_idx > -1);
         if (!load_enabled) ImGui::PushDisabled();
         if (ImGui::Button("Load")) {
+            action = Action_Load;
+        }
+        if (!load_enabled) ImGui::PopDisabled();
+
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            action = Action_Cancel;
+        }
+
+        switch (action) {
+        case Action_Load:
             if (load_dataset_from_file(data, path, mol_loader, traj_loader, show_cg && state.coarse_grained, show_dp && state.deperiodize_on_load)) {
                 if (mol_loader && !state.keep_representations) {
                     clear_representations(data);
@@ -3426,15 +3557,16 @@ void draw_load_dataset_window(ApplicationData* data) {
                 recompute_atom_visibility_mask(data);
                 reset_view(data, true, true);
             }
-            state = LoadDatasetWindowState();
-            state.show_window = false;
+            [[fallthrough]];
+        case Action_Cancel:
+            // Reset state
+            state = {};
+            [[fallthrough]];
+        case Action_None:
+        default:
+            break;
         }
-        if (!load_enabled) ImGui::PopDisabled();
 
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) {
-            state.show_window = false;
-        }
         ImGui::EndPopup();
     }
 }
@@ -8540,13 +8672,6 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
     path_to_file = md_path_make_canonical(path_to_file, frame_allocator);
     if (path_to_file) {
         if (mol_loader) {
-            /*
-            if (str_equal_cstr(path_to_file, data->files.molecule) && data->files.coarse_grained == coarse_grained) {
-                // File already loaded as molecular data
-                return true;
-            }
-            */
-
             interrupt_async_tasks(data);
             free_molecule_data(data);
             free_trajectory_data(data);
@@ -8578,13 +8703,7 @@ static bool load_dataset_from_file(ApplicationData* data, str_t path_to_file, md
                 LOG_ERROR("Before loading a trajectory, molecular data needs to be present");
                 return false;
             }
-
-            /*
-            if (str_equal_cstr(path_to_file, data->files.trajectory) && data->files.deperiodize == deperiodize_on_load) {
-                // Same as loaded file
-                return true;
-            }
-            */
+            interrupt_async_tasks(data);
 
             bool success = load_trajectory_data(data, path_to_file, traj_loader, deperiodize_on_load);
             if (success) {
