@@ -3560,7 +3560,8 @@ void draw_load_dataset_window(ApplicationData* data) {
             [[fallthrough]];
         case Action_Cancel:
             // Reset state
-            state = {};
+            // @NOTE(Robin): Don't change this to {}, it won't work on GCC 9
+            state = LoadDatasetWindowState();
             [[fallthrough]];
         case Action_None:
         default:
