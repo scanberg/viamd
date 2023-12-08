@@ -3376,7 +3376,7 @@ void draw_load_dataset_window(ApplicationData* data) {
 
         if (ImGui::BeginCombo("Loader", state.loader_idx > -1 ? load::supported_extension_str(state.loader_idx).ptr : "")) {
             for (int i = 0; i < loader_ext_count; ++i) {
-                if (ImGui::Selectable(load::supported_extension_str(state.loader_idx).ptr, state.loader_idx == i)) {
+                if (ImGui::Selectable(load::supported_extension_str(i).ptr, state.loader_idx == i)) {
                     state.loader_idx = i;
                 }
             }
@@ -8261,6 +8261,8 @@ static void destroy_gbuffer(GBuffer* gbuf) {
 static void update_md_buffers(ApplicationData* data) {
     ASSERT(data);
     const auto& mol = data->mold.mol;
+
+    if (mol.atom.count == 0) return;
 
     if (data->mold.dirty_buffers & MolBit_DirtyPosition) {
         const vec3_t pbc_ext = data->mold.mol.unit_cell.basis * vec3_t{1,1,1};
