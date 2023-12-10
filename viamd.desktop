@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=viamd
+GenericName=viamd
+Comment=Visual Interactive Analysis of Molecular Dynamics
+Exec=viamd
+Icon=viamd.png
+Terminal=false
+Type=Application
+Categories=Utility;Science;
