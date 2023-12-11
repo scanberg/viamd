@@ -9941,13 +9941,6 @@ static void handle_camera_animation(ApplicationData* data) {
     float&  current_dist = data->view.camera.focus_distance;
     float&  target_dist  = data->view.animation.target_distance;
 
-    if (vec3_distance_squared(current_pos, target_pos) > 100000.f) {
-        // We have misplaced the camera for some reason, reset it
-        current_pos = target_pos;
-        current_ori = target_ori;
-        current_dist = target_dist;
-    }
-
     // We want to interpolate along an arc which is formed by maintaining a distance to the look_at position and smoothly interpolating the orientation,
     // This means that 
     // We linearly interpolate a look_at position which is implicitly defined by position, orientation and distance
