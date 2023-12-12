@@ -563,13 +563,13 @@ struct ApplicationData {
         SelectionLevel granularity = SelectionLevel::Atom;
 
         struct {
-            int32_t hovered;
-            int32_t right_click;
+            int32_t hovered = -1;
+            int32_t right_click = -1;
         } atom_idx;
 
         struct {
-            int32_t hovered;
-            int32_t right_click;
+            int32_t hovered = -1;
+            int32_t right_click = -1;
         } bond_idx;
 
         SingleSelectionSequence single_selection_sequence;
@@ -1560,17 +1560,22 @@ int main(int argc, char** argv) {
                     editor.SetCursorPosition(pos);
                 }
             } else if (res = find_in_arr(ext, load::supported_extensions(), load::supported_extension_count())) {
+                md_molecule_loader_i* mol_api = load::mol::get_loader_from_ext(ext);
+                md_trajectory_loader_i* traj_api = load::traj::get_loader_from_ext(ext);
+
                 if (e.flags & FileFlags_ShowDialogue) {
                     data.load_dataset.show_window = true;
-                } else if (load_dataset_from_file(&data, e.path, load::mol::get_loader_from_ext(ext), load::traj::get_loader_from_ext(ext), e.flags & FileFlags_CoarseGrained, e.flags & FileFlags_Deperiodize)) {
+                } else if (load_dataset_from_file(&data, e.path, mol_api, traj_api, e.flags & FileFlags_CoarseGrained, e.flags & FileFlags_Deperiodize)) {
                     data.animation = {};
-                    if (!(e.flags & FileFlags_KeepRepresentations)) {
-						clear_representations(&data);
-						create_default_representations(&data);
+                    if (mol_api) {
+                        if (!(e.flags & FileFlags_KeepRepresentations)) {
+						    clear_representations(&data);
+						    create_default_representations(&data);
+                        }
+					    recompute_atom_visibility_mask(&data);
+					    interpolate_atomic_properties(&data);
+					    reset_view(&data, true, false);
 					}
-					reset_view(&data, true, false);
-					recompute_atom_visibility_mask(&data);
-					interpolate_atomic_properties(&data);
 				}
             }
 
@@ -8511,7 +8516,10 @@ static void init_trajectory_data(ApplicationData* data) {
             data->trajectory_data.secondary_structure.stride = data->mold.mol.backbone.count;
             data->trajectory_data.secondary_structure.count = data->mold.mol.backbone.count * num_frames;
             md_array_resize(data->trajectory_data.secondary_structure.data, data->mold.mol.backbone.count * num_frames, persistent_allocator);
-            MEMSET(data->trajectory_data.secondary_structure.data, 0, md_array_size(data->trajectory_data.secondary_structure.data) * sizeof (md_secondary_structure_t));
+            for (int64_t i = 0; i < md_array_size(data->trajectory_data.secondary_structure.data); ++i) {
+                data->trajectory_data.secondary_structure.data[i] = MD_SECONDARY_STRUCTURE_COIL;
+            }
+//            MEMSET(data->trajectory_data.secondary_structure.data, 0, md_array_size(data->trajectory_data.secondary_structure.data) * sizeof (md_secondary_structure_t));
 
             data->trajectory_data.backbone_angles.stride = data->mold.mol.backbone.count;
             data->trajectory_data.backbone_angles.count = data->mold.mol.backbone.count * num_frames;
@@ -9740,6 +9748,104 @@ static void handle_camera_interaction(ApplicationData* data) {
 
     enum class RegionMode { Append, Remove };
 
+#if 0
+    // Coordinate system widget
+    static int size = 150;
+    ImGui::SetNextWindowSize(ImVec2(size, size));
+    const int flags = ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize;
+    if (ImGui::Begin("Coordinate Widget", NULL, flags)) {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 wp = ImGui::GetWindowPos();
+        const ImVec2 ws = ImGui::GetWindowSize();
+
+        const float ext = ImMin(ws.x, ws.y) * 0.5f;
+        const ImVec2 o = {wp.x + ws.x * 0.5f, wp.y + ws.y * 0.5f};
+        const float dist = 5;
+        const float fovy = data->view.camera.fov_y;
+        const float ar = 1.0f;
+        const float near = 0.1f;
+        const float far = 100.f;
+
+        mat4_t P = mat4_ident();
+        if (data->view.mode == CameraMode::Perspective) {
+            P = mat4_persp(fovy, ar, near, far);
+        } else {
+            const float h = dist * tanf(fovy * 0.5f);
+            const float w = ar * h;
+            P = mat4_ortho(-w, w, -h, h, near, far);
+        }
+        mat4_t V = data->view.param.matrix.current.view;
+        V.col[3] = vec4_set(0, 0, -dist, 1);
+
+        mat4_t M = mat4_mul(P, V);
+
+        vec4_t x = mat4_mul_vec4(M, {1, 0, 0, 1});
+        vec4_t y = mat4_mul_vec4(M, {0, 1, 0, 1});
+        vec4_t z = mat4_mul_vec4(M, {0, 0, 1, 1});
+
+        x = vec4_div_f(x, x.w);
+        y = vec4_div_f(y, y.w);
+        z = vec4_div_f(z, z.w);
+
+        // Vector
+        const ImVec2 v[3] = { ImVec2(x.x, -x.y) * ext, ImVec2(y.x, -y.y) * ext, ImVec2(z.x, -z.y) * ext };
+        // Normalized vector
+        const ImVec2 n[3] = { v[0] * ImInvLength(v[0], 0.0f), v[1] * ImInvLength(v[1], 0.0f), v[2] * ImInvLength(v[2], 0.0f) };
+        // Text
+        const char* t[3] = { "X", "Y", "Z" };
+        // Size
+        const ImVec2 s[3] = { ImGui::CalcTextSize(t[0]), ImGui::CalcTextSize(t[1]), ImGui::CalcTextSize(t[2]) };
+        // Color
+        const uint32_t c[3] = { 0xFF0000FF, 0xFF00FF00, 0xFFFF0000 };
+        // Depth
+        const float d[3] = { x.z, y.z, z.z };
+
+        // Draw order
+        int idx[3] = {0, 1, 2};
+
+        // Sort by depth
+        if (d[idx[0]] < d[idx[1]]) { ImSwap(idx[0], idx[1]); }
+        if (d[idx[1]] < d[idx[2]]) { ImSwap(idx[1], idx[2]); }
+        if (d[idx[0]] < d[idx[1]]) { ImSwap(idx[0], idx[1]); }
+
+        for (int i : idx) {
+            dl->AddLine(o, o + v[i], c[i], 3.0f);
+            dl->AddText(o + v[i] + n[i] * s[i].y * 1.1f + ImVec2(-0.5f, -0.5f) * s[i], c[i], t[i]);
+        }
+
+        // Interaction rectangles for resetting view
+        {
+            const float s_min = 0.25f;
+            const float s_max = 0.75f;
+            const ImVec2 p[][4] = {
+                {
+                    o + v[1] * s_min + v[2] * s_min,
+                    o + v[1] * s_max + v[2] * s_min,
+                    o + v[1] * s_max + v[2] * s_max,
+                    o + v[1] * s_min + v[2] * s_max,
+                },
+                {
+                    o + v[2] * s_min + v[0] * s_min,
+                    o + v[2] * s_max + v[0] * s_min,
+                    o + v[2] * s_max + v[0] * s_max,
+                    o + v[2] * s_min + v[0] * s_max,
+                },
+                {
+                    o + v[0] * s_min + v[1] * s_min,
+                    o + v[0] * s_max + v[1] * s_min,
+                    o + v[0] * s_max + v[1] * s_max,
+                    o + v[0] * s_min + v[1] * s_max,
+                },
+            };
+            for (int i = 0; i < 3; ++i) {
+                ImU32 col = (c[i] & 0x00FFFFFF) | 0x22000000;
+                dl->AddConvexPolyFilled(p[i], ARRAY_SIZE(p[i]), col);
+            }
+        }
+    }
+    ImGui::End();
+#endif
+
     ImGui::BeginCanvas("Main interaction window", true);
     bool pressed = ImGui::InvisibleButton("canvas", ImGui::GetContentRegionAvail(), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
     bool open_atom_context = false;
@@ -9748,37 +9854,6 @@ static void handle_camera_interaction(ApplicationData* data) {
     if (window) {
         ImDrawList* dl = window->DrawList;
         ASSERT(dl);
-
-        // Coordinate system widget
-#if 0
-            const ImVec2 wp = ImGui::GetWindowPos();
-            const ImVec2 ws = ImGui::GetWindowSize();
-
-            const ImVec2 s = ImVec2(100, 100);
-            const ImVec2 o = {wp.x + s.x, wp.y + ws.y - s.y};
-
-            vec4_t x = {1, 0, 0, 1};
-            vec4_t y = {0, 1, 0, 1};
-            vec4_t z = {0, 0, 1, 1};
-
-            mat4_t P = mat4_persp(PI / 4.0f, s.x / s.y, 0.1f, 100.0f);
-            mat4_t V = data->view.param.matrix.current.view;
-            V.col[3] = vec4_set(0, 0, 5, 1);
-            
-            mat4_t M = mat4_mul(P, V);
-
-            x = mat4_mul_vec4(M, x);
-            y = mat4_mul_vec4(M, y);
-            z = mat4_mul_vec4(M, z);
-
-            x = vec4_div_f(x, x.w);
-            y = vec4_div_f(y, y.w);
-            z = vec4_div_f(z, z.w);
-
-            dl->AddLine(o, o - ImVec2(x.x, -x.y) * s, 0xFF0000FF, 2.0f);
-            dl->AddLine(o, o - ImVec2(y.x, -y.y) * s, 0xFF00FF00, 2.0f);
-            dl->AddLine(o, o - ImVec2(z.x, -z.y) * s, 0xFFFF0000, 2.0f);
-#endif
 
         if (pressed || ImGui::IsItemActive() || ImGui::IsItemDeactivated()) {
             if (ImGui::IsKeyPressed(ImGuiMod_Shift, false)) {
