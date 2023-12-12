@@ -1,58 +1,13 @@
 #include "camera_utils.h"
 #include <core/md_common.h>
+#include <core/md_vec_math.h>
 
 #include <float.h>
 #include <math.h>
 
-static mat4_t frustum(float l, float r, float b, float t, float n, float f) {
-    mat4_t M{0};
-    M.elem[0][0] = (2*n) / (r-l);
-    M.elem[1][1] = (2*n) / (t-b);
-    M.elem[2][0] = (r+l) / (r-l);
-    M.elem[2][1] = (t+b) / (t-b);
-    M.elem[2][2] = -(f+n) / (f-n);
-    M.elem[2][3] = -1;
-    M.elem[3][2] = -(2*n*f) / (f-n);
-    return M;
-}
-
-static mat4_t inv_frustum(float l, float r, float b, float t, float n, float f) {
-    mat4_t M{0};
-    M.elem[0][0] = (r-l) / (2*n);
-    M.elem[1][1] = (t-b) / (2*n);
-    M.elem[2][3] = (n-f) / (2*n*f);
-    M.elem[3][0] = (l+r) / (2*n);
-    M.elem[3][1] = (b+t) / (2*n);
-    M.elem[3][2] = -1;
-    M.elem[3][3] = (n+f) / (2*n*f);
-    return M;
-}
-
-static mat4_t persp(float fovy, float aspect, float near, float far) {
-    const float tan_half_fovy = tanf(fovy * 0.5f);
-    mat4_t M{0};
-    M.elem[0][0] = 1.0f / (aspect * tan_half_fovy);
-    M.elem[1][1] = 1.0f / (tan_half_fovy);
-    M.elem[2][2] = -(far + near) / (far - near);
-    M.elem[2][3] = -1;
-    M.elem[3][2] = -(2 * far * near) / (far - near);
-    return M;
-}
-
-static mat4_t inv_persp(float fovy, float aspect, float near, float far) {
-    const float tan_half_fovy = tanf(fovy * 0.5f);
-    mat4_t M{0};
-    M.elem[0][0] = aspect * tan_half_fovy;
-    M.elem[1][1] = tan_half_fovy;
-    M.elem[2][3] = (near - far) / (2 * far * near);
-    M.elem[3][2] = -1;
-    M.elem[3][3] = (near + far) / (2 * far * near);
-    return M;
-}
-
-static vec4_t projection_extents(const Camera& camera, int width, int height, float texel_offset_x, float texel_offset_y) {
+static vec4_t projection_extents(float fov_y, int width, int height, float texel_offset_x, float texel_offset_y) {
     const float aspect_ratio = (float)width / (float)height;
-    const float half_h = tanf(camera.fov_y * 0.5f);
+    const float half_h = tanf(fov_y * 0.5f);
     const float half_w = aspect_ratio * half_h;
     const float texel_size_x = half_w / (float)(0.5f * width);
     const float texel_size_y = half_h / (float)(0.5f * height);
@@ -76,15 +31,15 @@ mat4_t camera_world_to_view_matrix(const Camera& camera) {
 }
 
 mat4_t camera_perspective_projection_matrix(const Camera& camera, float aspect_ratio) {
-    return persp(camera.fov_y, aspect_ratio, camera.near_plane, camera.far_plane);
+    return mat4_persp(camera.fov_y, aspect_ratio, camera.near_plane, camera.far_plane);
 }
 
 mat4_t camera_inverse_perspective_projection_matrix(const Camera& camera, float aspect_ratio) {
-    return inv_persp(camera.fov_y, aspect_ratio, camera.near_plane, camera.far_plane);
+    return mat4_persp_inv(camera.fov_y, aspect_ratio, camera.near_plane, camera.far_plane);
 }
 
 mat4_t camera_perspective_projection_matrix(const Camera& camera, int width, int height, float texel_offset_x, float texel_offset_y) {
-    const vec4_t ext = projection_extents(camera, width, height, texel_offset_x, texel_offset_y);
+    const vec4_t ext = projection_extents(camera.fov_y, width, height, texel_offset_x, texel_offset_y);
 
     const float cn = camera.near_plane;
     const float cf = camera.far_plane;
@@ -93,11 +48,11 @@ mat4_t camera_perspective_projection_matrix(const Camera& camera, int width, int
     const float ym = ext.w - ext.y;
     const float yp = ext.w + ext.y;
 
-    return frustum(xm * cn, xp * cn, ym * cn, yp * cn, cn, cf);
+    return mat4_frustum(xm * cn, xp * cn, ym * cn, yp * cn, cn, cf);
 }
 
 mat4_t camera_inverse_perspective_projection_matrix(const Camera& camera, int width, int height, float texel_offset_x, float texel_offset_y) {
-    const vec4_t ext = projection_extents(camera, width, height, texel_offset_x, texel_offset_y);
+    const vec4_t ext = projection_extents(camera.fov_y, width, height, texel_offset_x, texel_offset_y);
 
     const float cn = camera.near_plane;
     const float cf = camera.far_plane;
@@ -106,53 +61,23 @@ mat4_t camera_inverse_perspective_projection_matrix(const Camera& camera, int wi
     const float ym = ext.w - ext.y;
     const float yp = ext.w + ext.y;
 
-    return inv_frustum(xm * cn, xp * cn, ym * cn, yp * cn, cn, cf);
+    return mat4_frustum_inv(xm * cn, xp * cn, ym * cn, yp * cn, cn, cf);
 }
 
 mat4_t camera_orthographic_projection_matrix(float l, float r, float b, float t) {
-    mat4_t M = {0};
-    M.elem[0][0] = 2 / (r-l);
-    M.elem[1][1] = 2 / (t-b);
-    M.elem[2][2] = -1;
-    M.elem[3][0] = -(r+l) / (r-l);
-    M.elem[3][1] = -(t+b) / (t-b);
-    M.elem[3][3] = 1;
-    return M;
+    return mat4_ortho_2d(l, r, b, t);
 }
 
 mat4_t camera_inverse_orthographic_projection_matrix(float l, float r, float b, float t) {
-    mat4_t M = {0};
-    M.elem[0][0] = (r-l) / 2;
-    M.elem[1][1] = (t-b) / 2;
-    M.elem[2][2] = -1;
-    M.elem[3][0] = (l+r) / 2;
-    M.elem[3][1] = (b+t) / 2;
-    M.elem[3][3] = 1;
-    return M;
+    return mat4_ortho_2d_inv(l, r, b, t);
 }
 
 mat4_t camera_orthographic_projection_matrix(float l, float r, float b, float t, float n, float f) {
-    mat4_t M = {0};
-    M.elem[0][0] = 2 / (r-l);
-    M.elem[1][1] = 2 / (t-b);
-    M.elem[2][2] = -2 / (f-n);
-    M.elem[3][0] = -(r+l) / (r-l);
-    M.elem[3][1] = -(t+b) / (t-b);
-    M.elem[3][2] = -(f+n) / (f-n);
-    M.elem[3][3] = 1;
-    return M;
+    return mat4_ortho(l, r, b, t, n, f);
 }
 
 mat4_t camera_inverse_orthographic_projection_matrix(float l, float r, float b, float t, float n, float f) {
-    mat4_t M = {0};
-    M.elem[0][0] = (r-l) / 2;
-    M.elem[1][1] = (t-b) / 2;
-    M.elem[2][2] = (n-f) / 2;
-    M.elem[3][0] = (l+r) / 2;
-    M.elem[3][1] = (b+t) / 2;
-    M.elem[3][2] = -(n+f) / 2;
-    M.elem[3][3] = 1;
-    return M;
+    return mat4_ortho_inv(l, r, b, t, n, f);
 }
 
 mat4_t look_at(vec3_t look_from, vec3_t look_at, vec3_t look_up) {

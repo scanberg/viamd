@@ -85,8 +85,6 @@ enum TrackballFlags_ {
 
 typedef uint32_t TrackballFlags;
 
-mat4_t look_at(vec3_t look_from, vec3_t look_at, vec3_t look_up = {0, 1, 0});
-
 void camera_trackball(Camera* camera, vec2_t prev_ndc, vec2_t curr_ndc);
 void camera_move(Camera* camera, vec3_t vec);
 

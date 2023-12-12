@@ -2940,7 +2940,7 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
     const vec3_t pos = cen + dir * len * 3.0f;
 
     if (move_camera) {
-        const quat_t ori = quat_from_mat4(look_at(pos, cen, up));
+        const quat_t ori = quat_from_mat4(mat4_look_at(pos, cen, up));
         const float dist = vec3_length(pos - cen);
 
         data->view.animation.target_position = pos;
@@ -7404,7 +7404,7 @@ static void draw_density_volume_window(ApplicationData* data) {
 
             data->density_volume.camera.position = pos;
             data->density_volume.camera.focus_distance = vec3_length(pos - cen);
-            data->density_volume.camera.orientation = quat_from_mat4(look_at(data->density_volume.camera.position, cen, up));
+            data->density_volume.camera.orientation = quat_from_mat4(mat4_look_at(data->density_volume.camera.position, cen, up));
             init = false;
         }
 
@@ -9742,178 +9742,213 @@ static void handle_camera_interaction(ApplicationData* data) {
 
     ImGui::BeginCanvas("Main interaction window", true);
     bool pressed = ImGui::InvisibleButton("canvas", ImGui::GetContentRegionAvail(), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    bool open_atom_context = false;
 
-    if (pressed || ImGui::IsItemActive() || ImGui::IsItemDeactivated()) {
-        if (ImGui::IsKeyPressed(ImGuiMod_Shift, false)) {
-            ImGui::ResetMouseDragDelta();
-        }
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window) {
+        ImDrawList* dl = window->DrawList;
+        ASSERT(dl);
 
-        if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
-            RegionMode mode = RegionMode::Append;
-            if (ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-                mode = RegionMode::Append;
+        // Coordinate system widget
+#if 0
+            const ImVec2 wp = ImGui::GetWindowPos();
+            const ImVec2 ws = ImGui::GetWindowSize();
+
+            const ImVec2 s = ImVec2(100, 100);
+            const ImVec2 o = {wp.x + s.x, wp.y + ws.y - s.y};
+
+            vec4_t x = {1, 0, 0, 1};
+            vec4_t y = {0, 1, 0, 1};
+            vec4_t z = {0, 0, 1, 1};
+
+            mat4_t P = mat4_persp(PI / 4.0f, s.x / s.y, 0.1f, 100.0f);
+            mat4_t V = data->view.param.matrix.current.view;
+            V.col[3] = vec4_set(0, 0, 5, 1);
+            
+            mat4_t M = mat4_mul(P, V);
+
+            x = mat4_mul_vec4(M, x);
+            y = mat4_mul_vec4(M, y);
+            z = mat4_mul_vec4(M, z);
+
+            x = vec4_div_f(x, x.w);
+            y = vec4_div_f(y, y.w);
+            z = vec4_div_f(z, z.w);
+
+            dl->AddLine(o, o - ImVec2(x.x, -x.y) * s, 0xFF0000FF, 2.0f);
+            dl->AddLine(o, o - ImVec2(y.x, -y.y) * s, 0xFF00FF00, 2.0f);
+            dl->AddLine(o, o - ImVec2(z.x, -z.y) * s, 0xFFFF0000, 2.0f);
+#endif
+
+        if (pressed || ImGui::IsItemActive() || ImGui::IsItemDeactivated()) {
+            if (ImGui::IsKeyPressed(ImGuiMod_Shift, false)) {
+                ImGui::ResetMouseDragDelta();
             }
-            else if (ImGui::IsMouseDown(ImGuiMouseButton_Right) || ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
-                mode = RegionMode::Remove;
-            }
 
-            const ImVec2 ext = ImGui::GetMouseDragDelta(mode == RegionMode::Append ? ImGuiMouseButton_Left : ImGuiMouseButton_Right);
-            const ImVec2 pos = ImGui::GetMousePos() - ext;
-            const ImU32 fill_col = 0x22222222;
-            const ImU32 line_col = 0x88888888;
-
-            ImGuiWindow* window = ImGui::GetCurrentWindow();
-            ASSERT(window);
-            ImDrawList* dl = window->DrawList;
-            dl->AddRectFilled(pos, pos + ext, fill_col);
-            dl->AddRect(pos, pos + ext, line_col);
-
-            const ImVec2 min_p = ImMin(pos, pos + ext) - window->Pos;
-            const ImVec2 max_p = ImMax(pos, pos + ext) - window->Pos;
-
-            md_bitfield_t mask = { 0 };
-            md_bitfield_init(&mask, frame_allocator);
-
-            if (min_p != max_p) {
-                md_bitfield_clear(&data->selection.current_highlight_mask);
-                data->mold.dirty_buffers |= MolBit_DirtyFlags;
-                data->selection.selecting = true;
-
-                const vec2_t res = { (float)data->ctx.window.width, (float)data->ctx.window.height };
-                const mat4_t mvp = data->view.param.matrix.current.proj * data->view.param.matrix.current.view;
-
-                md_bitfield_iter_t it = md_bitfield_iter_create(&data->representation.atom_visibility_mask);
-                while (md_bitfield_iter_next(&it)) {
-                    const int64_t i = md_bitfield_iter_idx(&it);
-                    const vec4_t p = mat4_mul_vec4(mvp, vec4_set(data->mold.mol.atom.x[i], data->mold.mol.atom.y[i], data->mold.mol.atom.z[i], 1.0f));
-                    const vec2_t c = {
-                        (p.x / p.w * 0.5f + 0.5f) * res.x,
-                        (-p.y / p.w * 0.5f + 0.5f) * res.y
-                    };
-
-                    if (min_p.x <= c.x && c.x <= max_p.x && min_p.y <= c.y && c.y <= max_p.y) {
-                        md_bitfield_set_bit(&mask, i);
-                    }
+            if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
+                RegionMode mode = RegionMode::Append;
+                if (ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                    mode = RegionMode::Append;
                 }
-                grow_mask_by_current_selection_granularity(&mask, *data);
+                else if (ImGui::IsMouseDown(ImGuiMouseButton_Right) || ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+                    mode = RegionMode::Remove;
+                }
 
-                if (mode == RegionMode::Append) {
-                    md_bitfield_or(&data->selection.current_highlight_mask, &data->selection.current_selection_mask, &mask);
-                }
-                else if (mode == RegionMode::Remove) {
-                    md_bitfield_andnot(&data->selection.current_highlight_mask, &data->selection.current_selection_mask, &mask);
-                }
-                if (pressed || ImGui::IsMouseReleased(0)) {
-                    md_bitfield_copy(&data->selection.current_selection_mask, &data->selection.current_highlight_mask);
-                }
-            }
-            else if (pressed) {
-                if (data->selection.atom_idx.hovered != -1 || data->selection.bond_idx.hovered != -1) {
-                    if (mode == RegionMode::Append) {
-                        if (data->selection.atom_idx.hovered != -1) {
-                            single_selection_sequence_push_idx(&data->selection.single_selection_sequence, data->selection.atom_idx.hovered);
-                            md_bitfield_set_bit(&mask, data->selection.atom_idx.hovered);
-                        } else {
-                            md_bond_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
-                            md_bitfield_set_bit(&mask, pair.idx[0]);
-                            md_bitfield_set_bit(&mask, pair.idx[1]);
+                const ImVec2 ext = ImGui::GetMouseDragDelta(mode == RegionMode::Append ? ImGuiMouseButton_Left : ImGuiMouseButton_Right);
+                const ImVec2 pos = ImGui::GetMousePos() - ext;
+                const ImU32 fill_col = 0x22222222;
+                const ImU32 line_col = 0x88888888;
+
+                ASSERT(dl);
+                dl->AddRectFilled(pos, pos + ext, fill_col);
+                dl->AddRect(pos, pos + ext, line_col);
+
+                const ImVec2 min_p = ImMin(pos, pos + ext) - window->Pos;
+                const ImVec2 max_p = ImMax(pos, pos + ext) - window->Pos;
+
+                md_bitfield_t mask = { 0 };
+                md_bitfield_init(&mask, frame_allocator);
+
+                if (min_p != max_p) {
+                    md_bitfield_clear(&data->selection.current_highlight_mask);
+                    data->mold.dirty_buffers |= MolBit_DirtyFlags;
+                    data->selection.selecting = true;
+
+                    const vec2_t res = { (float)data->ctx.window.width, (float)data->ctx.window.height };
+                    const mat4_t mvp = data->view.param.matrix.current.proj * data->view.param.matrix.current.view;
+
+                    md_bitfield_iter_t it = md_bitfield_iter_create(&data->representation.atom_visibility_mask);
+                    while (md_bitfield_iter_next(&it)) {
+                        const int64_t i = md_bitfield_iter_idx(&it);
+                        const vec4_t p = mat4_mul_vec4(mvp, vec4_set(data->mold.mol.atom.x[i], data->mold.mol.atom.y[i], data->mold.mol.atom.z[i], 1.0f));
+                        const vec2_t c = {
+                            (p.x / p.w * 0.5f + 0.5f) * res.x,
+                            (-p.y / p.w * 0.5f + 0.5f) * res.y
+                        };
+
+                        if (min_p.x <= c.x && c.x <= max_p.x && min_p.y <= c.y && c.y <= max_p.y) {
+                            md_bitfield_set_bit(&mask, i);
                         }
-                        grow_mask_by_current_selection_granularity(&mask, *data);
-                        md_bitfield_or_inplace(&data->selection.current_selection_mask, &mask);
+                    }
+                    grow_mask_by_current_selection_granularity(&mask, *data);
+
+                    if (mode == RegionMode::Append) {
+                        md_bitfield_or(&data->selection.current_highlight_mask, &data->selection.current_selection_mask, &mask);
                     }
                     else if (mode == RegionMode::Remove) {
-                        if (data->selection.atom_idx.hovered != -1) {
-                            single_selection_sequence_pop_idx(&data->selection.single_selection_sequence, data->selection.atom_idx.hovered);
-                            md_bitfield_set_bit(&mask, data->selection.atom_idx.hovered);
-                        } else {
-                            md_bond_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
-                            md_bitfield_set_bit(&mask, pair.idx[0]);
-                            md_bitfield_set_bit(&mask, pair.idx[1]);
-                        }
-                        grow_mask_by_current_selection_granularity(&mask, *data);
-                        md_bitfield_andnot_inplace(&data->selection.current_selection_mask, &mask);
+                        md_bitfield_andnot(&data->selection.current_highlight_mask, &data->selection.current_selection_mask, &mask);
+                    }
+                    if (pressed || ImGui::IsMouseReleased(0)) {
+                        md_bitfield_copy(&data->selection.current_selection_mask, &data->selection.current_highlight_mask);
                     }
                 }
-                else {
-                    single_selection_sequence_clear(&data->selection.single_selection_sequence);
-                    md_bitfield_clear(&data->selection.current_selection_mask);
-                    md_bitfield_clear(&data->selection.current_highlight_mask);
+                else if (pressed) {
+                    if (data->selection.atom_idx.hovered != -1 || data->selection.bond_idx.hovered != -1) {
+                        if (mode == RegionMode::Append) {
+                            if (data->selection.atom_idx.hovered != -1) {
+                                single_selection_sequence_push_idx(&data->selection.single_selection_sequence, data->selection.atom_idx.hovered);
+                                md_bitfield_set_bit(&mask, data->selection.atom_idx.hovered);
+                            } else {
+                                md_bond_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
+                                md_bitfield_set_bit(&mask, pair.idx[0]);
+                                md_bitfield_set_bit(&mask, pair.idx[1]);
+                            }
+                            grow_mask_by_current_selection_granularity(&mask, *data);
+                            md_bitfield_or_inplace(&data->selection.current_selection_mask, &mask);
+                        }
+                        else if (mode == RegionMode::Remove) {
+                            if (data->selection.atom_idx.hovered != -1) {
+                                single_selection_sequence_pop_idx(&data->selection.single_selection_sequence, data->selection.atom_idx.hovered);
+                                md_bitfield_set_bit(&mask, data->selection.atom_idx.hovered);
+                            } else {
+                                md_bond_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
+                                md_bitfield_set_bit(&mask, pair.idx[0]);
+                                md_bitfield_set_bit(&mask, pair.idx[1]);
+                            }
+                            grow_mask_by_current_selection_granularity(&mask, *data);
+                            md_bitfield_andnot_inplace(&data->selection.current_selection_mask, &mask);
+                        }
+                    }
+                    else {
+                        single_selection_sequence_clear(&data->selection.single_selection_sequence);
+                        md_bitfield_clear(&data->selection.current_selection_mask);
+                        md_bitfield_clear(&data->selection.current_highlight_mask);
+                    }
                 }
-            }
 
-            data->mold.dirty_buffers |= MolBit_DirtyFlags;
+                data->mold.dirty_buffers |= MolBit_DirtyFlags;
+            }
         }
-    }
-    else if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) {
-        if (data->picking.idx != INVALID_PICKING_IDX) {
-            md_bitfield_clear(&data->selection.current_highlight_mask);
-            if (data->selection.atom_idx.hovered != -1) {
-                md_bitfield_set_bit(&data->selection.current_highlight_mask, data->picking.idx);
+        else if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) {
+            if (data->picking.idx != INVALID_PICKING_IDX) {
+                md_bitfield_clear(&data->selection.current_highlight_mask);
+                if (data->selection.atom_idx.hovered != -1) {
+                    md_bitfield_set_bit(&data->selection.current_highlight_mask, data->picking.idx);
+                }
+                else if (data->selection.bond_idx.hovered != -1) {
+                    md_bond_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
+                    md_bitfield_set_bit(&data->selection.current_highlight_mask, pair.idx[0]);
+                    md_bitfield_set_bit(&data->selection.current_highlight_mask, pair.idx[1]);
+                }
+                grow_mask_by_current_selection_granularity(&data->selection.current_highlight_mask, *data);
+                data->mold.dirty_buffers |= MolBit_DirtyFlags;
+                draw_info_window(*data, data->picking.idx);
             }
-            else if (data->selection.bond_idx.hovered != -1) {
-                md_bond_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
-                md_bitfield_set_bit(&data->selection.current_highlight_mask, pair.idx[0]);
-                md_bitfield_set_bit(&data->selection.current_highlight_mask, pair.idx[1]);
-            }
-            grow_mask_by_current_selection_granularity(&data->selection.current_highlight_mask, *data);
-            data->mold.dirty_buffers |= MolBit_DirtyFlags;
-            draw_info_window(*data, data->picking.idx);
         }
-    }
 
-    bool open_atom_context = false;
-    if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
-        if (!ImGui::IsKeyDown(ImGuiMod_Shift) && !data->selection.selecting) {
-            const ImVec2 delta = ImGui::GetIO().MouseDelta;
-            const ImVec2 coord = ImGui::GetMousePos() - ImGui::GetCurrentWindow()->Pos;
-            const vec2_t mouse_delta = {delta.x, delta.y};
-            const vec2_t mouse_coord = {coord.x, coord.y};
-            const float  scroll_delta = ImGui::GetIO().MouseWheel;
+        if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
+            if (!ImGui::IsKeyDown(ImGuiMod_Shift) && !data->selection.selecting) {
+                const ImVec2 delta = ImGui::GetIO().MouseDelta;
+                const ImVec2 coord = ImGui::GetMousePos() - ImGui::GetCurrentWindow()->Pos;
+                const vec2_t mouse_delta = {delta.x, delta.y};
+                const vec2_t mouse_coord = {coord.x, coord.y};
+                const float  scroll_delta = ImGui::GetIO().MouseWheel;
 
-            TrackballControllerInput input;
-            input.rotate_button = ImGui::IsMouseDown(ImGuiMouseButton_Left);
-            input.pan_button    = ImGui::IsMouseDown(ImGuiMouseButton_Right);
-            input.dolly_button  = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
-            input.mouse_coord_curr = mouse_coord;
-            input.mouse_coord_prev = mouse_coord - mouse_delta;
-            input.screen_size = {(float)data->ctx.window.width, (float)data->ctx.window.height};
-            input.dolly_delta = scroll_delta;
-            input.fov_y = data->view.camera.fov_y;
+                TrackballControllerInput input;
+                input.rotate_button = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+                input.pan_button    = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+                input.dolly_button  = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
+                input.mouse_coord_curr = mouse_coord;
+                input.mouse_coord_prev = mouse_coord - mouse_delta;
+                input.screen_size = {(float)data->ctx.window.width, (float)data->ctx.window.height};
+                input.dolly_delta = scroll_delta;
+                input.fov_y = data->view.camera.fov_y;
 
-            vec3_t pos = data->view.animation.target_position;
-            quat_t ori = data->view.animation.target_orientation;
-            float dist = data->view.animation.target_distance;
+                vec3_t pos = data->view.animation.target_position;
+                quat_t ori = data->view.animation.target_orientation;
+                float dist = data->view.animation.target_distance;
             
-            TrackballFlags flags = TrackballFlags_AnyInteractionReturnsTrue;
-            if (ImGui::IsItemActive()) {
-                flags |= TrackballFlags_EnableAllInteractions;
-            } else {
-                flags |= TrackballFlags_DollyEnabled;
-            }
-
-            if (camera_controller_trackball(&pos, &ori, &dist, input, data->view.trackball_param, flags)) {
-                // @NOTE(Robin): We could make the camera interaction more snappy, by directly modifying camera[pos, ori, dist] here
-                // But for now its decent. I like smooth transitions rather than discontinous jumps
-            }
-            data->view.animation.target_position = pos;
-            data->view.animation.target_orientation = ori;
-            data->view.animation.target_distance = dist;
-
-            if (ImGui::GetIO().MouseDoubleClicked[0]) {
-                if (data->picking.depth < 1.0f) {
-                    const vec3_t forward = data->view.camera.orientation * vec3_t{0, 0, 1};
-                    data->view.animation.target_position = data->picking.world_coord + forward * dist;
+                TrackballFlags flags = TrackballFlags_AnyInteractionReturnsTrue;
+                if (ImGui::IsItemActive()) {
+                    flags |= TrackballFlags_EnableAllInteractions;
                 } else {
-                    reset_view(data, true, true);
+                    flags |= TrackballFlags_DollyEnabled;
                 }
-            }
 
-            data->visuals.dof.focus_depth = data->view.camera.focus_distance;
+                if (camera_controller_trackball(&pos, &ori, &dist, input, data->view.trackball_param, flags)) {
+                    // @NOTE(Robin): We could make the camera interaction more snappy, by directly modifying camera[pos, ori, dist] here
+                    // But for now its decent. I like smooth transitions rather than discontinous jumps
+                }
+                data->view.animation.target_position = pos;
+                data->view.animation.target_orientation = ori;
+                data->view.animation.target_distance = dist;
+
+                if (ImGui::GetIO().MouseDoubleClicked[0]) {
+                    if (data->picking.depth < 1.0f) {
+                        const vec3_t forward = data->view.camera.orientation * vec3_t{0, 0, 1};
+                        data->view.animation.target_position = data->picking.world_coord + forward * dist;
+                    } else {
+                        reset_view(data, true, true);
+                    }
+                }
+
+                data->visuals.dof.focus_depth = data->view.camera.focus_distance;
             
-            if (ImGui::GetMouseDragDelta(ImGuiMouseButton_Right) == ImVec2(0,0) &&
-                ImGui::IsMouseReleased(ImGuiMouseButton_Right))
-            {
-                open_atom_context = true;
+                if (ImGui::GetMouseDragDelta(ImGuiMouseButton_Right) == ImVec2(0,0) &&
+                    ImGui::IsMouseReleased(ImGuiMouseButton_Right))
+                {
+                    open_atom_context = true;
+                }
             }
         }
     }
