@@ -4,6 +4,12 @@ project(viamd VERSION 0.1.15 LANGUAGES CXX)
 
 INCLUDE(ext/mdlib/cmake/common.cmake)
 
+if (NOT EXISTS ${CMAKE_BINARY_DIR}/CMakeCache.txt)
+  if (NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "" FORCE)
+  endif()
+endif()
+
 set_property(GLOBAL PROPERTY USE_FOLDERS OFF)
 
 # GLOBAL OPTIONS
