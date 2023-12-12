@@ -4629,8 +4629,8 @@ static void draw_representations_window(ApplicationData* data) {
                 break;
             case RepresentationType::Cartoon:
                 update_rep |= ImGui::SliderFloat("coil scale",  &rep.scale[0], 0.1f, 3.f);
-                update_rep |= ImGui::SliderFloat("helix scale", &rep.scale[1], 0.1f, 3.f);
-                update_rep |= ImGui::SliderFloat("sheet scale", &rep.scale[2], 0.1f, 3.f);
+                update_rep |= ImGui::SliderFloat("sheet scale", &rep.scale[1], 0.1f, 3.f);
+                update_rep |= ImGui::SliderFloat("helix scale", &rep.scale[2], 0.1f, 3.f);
                 break;
             default:
                 ASSERT(false);
@@ -7293,8 +7293,8 @@ static void draw_density_volume_window(ApplicationData* data) {
                     }
                     if (rep.type == RepresentationType::Cartoon) {
                         data->density_volume.dirty_rep |= ImGui::SliderFloat("coil scale",  &rep.param[0], 0.1f, 3.f);
-                        data->density_volume.dirty_rep |= ImGui::SliderFloat("helix scale", &rep.param[1], 0.1f, 3.f);
-                        data->density_volume.dirty_rep |= ImGui::SliderFloat("sheet scale", &rep.param[2], 0.1f, 3.f);
+                        data->density_volume.dirty_rep |= ImGui::SliderFloat("sheet scale", &rep.param[1], 0.1f, 3.f);
+                        data->density_volume.dirty_rep |= ImGui::SliderFloat("helix scale", &rep.param[2], 0.1f, 3.f);
                     }
                     ImGui::Unindent();
                 }
