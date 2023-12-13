@@ -1480,9 +1480,13 @@ int main(int argc, char** argv) {
     editor.SetPalette(TextEditor::GetDarkPalette());
 
     {
-        md_strb_t sb = md_strb_create(frame_allocator);
-        if (argc == 1) {
-            sb += extract_path_without_file(str_from_cstr(argv[0]));
+        char exe[1024];
+        size_t len = md_path_write_exe(exe, sizeof(exe));
+        if (len) {
+            md_strb_t sb = md_strb_create(frame_allocator);
+            str_t folder;
+            extract_folder_path(&folder, {exe, len});
+            sb += folder;
             sb += VIAMD_DATASET_DIR "/1ALA-500.pdb";
             convert_backslashes(sb.buf, md_array_size(sb.buf));
             str_t path = md_strb_to_str(&sb);
@@ -1490,7 +1494,9 @@ int main(int argc, char** argv) {
                 file_queue_push(&data.file_queue, path);
                 editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(2,1,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);");
             }
-        } else if (argc > 1) {
+        }
+        if (argc > 1) {
+            // Assume argv[1..] are files to load
             // Currently we do not support any command line flags
             // So anything here which is a file path is assumed to be a file to load
             for (int i = 1; i < argc; ++i) {
