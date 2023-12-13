@@ -35,7 +35,7 @@ bool gl::get_program_link_error(char* buffer, int max_length, GLuint program) {
 bool build_shader_src(md_strb_t* builder, str_t src, str_t base_include_dir) {
     str_t line;
     while (str_extract_line(&line, &src)) {
-        if (str_equal_cstr_n(line, "#include ", 9)) {
+        if (str_eq_cstr_n(line, "#include ", 9)) {
             str_t file = str_trim(str_substr(line, 9));
             if (!file || !(file.len > 2) || file[0] != '"' || file[file.len-1] != '"') {
                 MD_LOG_ERROR("Failed to parse include file");
@@ -46,7 +46,9 @@ bool build_shader_src(md_strb_t* builder, str_t src, str_t base_include_dir) {
 
             str_t inc_src = load_textfile(path, md_temp_allocator);
             if (inc_src) {
-                build_shader_src(builder, inc_src, extract_path_without_file(path));
+                str_t base = {};
+                extract_folder_path(&base, path);
+                build_shader_src(builder, inc_src, base);
             } else {
                 MD_LOG_ERROR("Failed to open include file '%.*s'", (int)path.len, path.ptr);
                 return false;
@@ -70,7 +72,7 @@ GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str
     
     if (defines) {
         str_t version_str = {};
-        if (str_equal_cstr_n(src, "#version ", 9)) {
+        if (str_eq_cstr_n(src, "#version ", 9)) {
             if (!str_extract_line(&version_str, &src)) {
                 MD_LOG_ERROR("Failed to extract version string!");
                 return 0;
@@ -121,7 +123,7 @@ GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) 
 
     if (defines) {
         str_t version_str = {};
-        if (str_equal_cstr_n(src, "#version ", 9)) {
+        if (str_eq_cstr_n(src, "#version ", 9)) {
             if (!str_extract_line(&version_str, &src)) {
                 MD_LOG_ERROR("Failed to extract version string!");
                 return 0;
@@ -137,7 +139,9 @@ GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) 
         }
     }
 
-    build_shader_src(&builder, src, extract_path_without_file(filename));
+    str_t folder_path;
+    extract_folder_path(&folder_path, filename);
+    build_shader_src(&builder, src, folder_path);
 
     str_t final_src = md_strb_to_str(&builder);
     glShaderSource(shader, 1, &final_src.ptr, 0);

@@ -3,6 +3,7 @@
 #include <core/md_str.h>
 
 #include <stdint.h>
+#include <stddef.h>
 //#include <functional>
 
 struct md_allocator_i;
@@ -23,7 +24,7 @@ typedef void (*Task) (void* user_data);
 typedef void (*RangeTask)(uint32_t range_beg, uint32_t range_end, void *user_data);
 */
 
-void initialize(uint32_t num_threads);
+void initialize(size_t num_threads);
 void shutdown();
 
 // Call once per frame at some approriate time, if there are items in the main queue, the main thread will be stalled.

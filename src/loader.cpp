@@ -148,7 +148,7 @@ namespace mol {
 
 md_molecule_loader_i* get_loader_from_ext(str_t ext) {
     for (size_t i = 0; i < NUM_ENTRIES; ++i) {
-    	if (str_equal(ext, table.ext[i])) {
+    	if (str_eq(ext, table.ext[i])) {
             return table.mol_loader[i];
         }
     }
@@ -161,7 +161,7 @@ namespace traj {
 
 md_trajectory_loader_i* get_loader_from_ext(str_t ext) {
 	for (size_t i = 0; i < NUM_ENTRIES; ++i) {
-        if (str_equal(ext, table.ext[i])) {
+        if (str_eq(ext, table.ext[i])) {
             return table.traj_loader[i];
         }
     }
@@ -173,20 +173,20 @@ bool get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header) {
     return md_trajectory_get_header(loaded_traj->traj, header);
 }
 
-int64_t fetch_frame_data(struct md_trajectory_o*, int64_t idx, void* data_ptr) {
+size_t fetch_frame_data(struct md_trajectory_o*, int64_t idx, void* data_ptr) {
     if (data_ptr) {
         *((int64_t*)data_ptr) = idx;
     }
     return sizeof(int64_t);
 }
 
-bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[maybe_unused]] int64_t data_size, md_trajectory_frame_header_t* header, float* out_x, float* out_y, float* out_z) {
+bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[maybe_unused]] size_t data_size, md_trajectory_frame_header_t* header, float* out_x, float* out_y, float* out_z) {
     LoadedTrajectory* loaded_traj = (LoadedTrajectory*)inst;
     ASSERT(loaded_traj);
     ASSERT(data_size == sizeof(int64_t));
 
     int64_t idx = *((int64_t*)data_ptr);
-    ASSERT(0 <= idx && idx < md_trajectory_num_frames(loaded_traj->traj));
+    ASSERT(0 <= idx && idx < (int64_t)md_trajectory_num_frames(loaded_traj->traj));
 
     md_frame_data_t* frame_data;
     md_frame_cache_lock_t* lock = 0;
@@ -225,8 +225,8 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
 
                     vec3_t com = {0};
                     if (count == 1) {
-                    	const int32_t idx = indices[0];
-						com = vec3_set(x[idx], y[idx], z[idx]);
+                    	const int32_t i = indices[0];
+						com = vec3_set(x[i], y[i], z[i]);
 					}
 					else {
 						com = have_cell ?
@@ -273,7 +273,10 @@ md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const
     ASSERT(alloc);
 
     if (!loader) {
-        loader = get_loader_from_ext(extract_ext(filename));
+        str_t ext;
+        if (extract_ext(&ext, filename)) {
+            loader = get_loader_from_ext(ext);
+        }
     }
     if (!loader) {
         MD_LOG_ERROR("Unsupported file extension: '%.*s'", filename.len, filename.ptr);

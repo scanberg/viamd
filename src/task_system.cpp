@@ -47,7 +47,7 @@ public:
     PoolTask() = default;
     PoolTask(uint32_t set_beg_, uint32_t set_end_, RangeTask set_func_, void* user_data_, str_t lbl_ = {}, ID id = INVALID_ID, enki::ICompletable* dependency = 0)
         : ITaskSet(set_end_-set_beg_), m_set_func(set_func_), m_user_data(user_data_), m_range_offset(set_beg_), m_set_completed(0), m_interrupt(false), m_id(id) {
-        int64_t len = MIN(lbl_.len, LABEL_SIZE-1);
+        size_t len = MIN(lbl_.len, LABEL_SIZE-1);
         m_label = {strncpy(m_buf, lbl_.ptr, len), len};
         if (dependency) {
             SetDependency(m_dependency, dependency);
@@ -56,7 +56,7 @@ public:
 
     PoolTask(Task func_, void* user_data_, str_t lbl_ = {}, ID id = INVALID_ID, enki::ICompletable* dependency = 0)
         : ITaskSet(1), m_func(func_), m_user_data(user_data_), m_set_completed(0), m_interrupt(false), m_id(id) {
-        int64_t len = MIN(lbl_.len, LABEL_SIZE-1);
+        size_t len = MIN(lbl_.len, LABEL_SIZE-1);
         m_label = {strncpy(m_buf, lbl_.ptr, len), len};
         if (dependency) {
             SetDependency(m_dependency, dependency);
@@ -104,7 +104,7 @@ public:
     MainTask() = default;
     MainTask(Task func, void* user_data, str_t lbl = {}, ID id = INVALID_ID, enki::ICompletable* dependency = 0) :
         IPinnedTask(0), m_function(func), m_user_data(user_data), m_id(id) {
-        int64_t len = MIN(lbl.len, LABEL_SIZE-1);
+        size_t len = MIN(lbl.len, LABEL_SIZE-1);
         m_label = {strncpy(m_buf, lbl.ptr, len), len};
         if (dependency) {
             SetDependency(m_dependency, dependency);
@@ -144,8 +144,8 @@ static inline enki::ICompletable* get_task(ID id) {
 
 static enki::TaskScheduler ts{};
 
-void initialize(uint32_t num_threads = 0) {
-    ts.Initialize(num_threads);
+void initialize(size_t num_threads = 0) {
+    ts.Initialize((uint32_t)num_threads);
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
         pool::free_slots.push(i);
         main::free_slots.push(i);
