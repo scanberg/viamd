@@ -1,7 +1,7 @@
 # VIAMD
 Visual Interactive Analysis of Molecular Dynamics
 
-VIAMD is an interactive analysis tool for molecular dynamics (MD) written in C/C++. VIAMD is developed in collaboration with the Department for Media and Information Technology (LIU, Norrköping) and phe PDC Center for High Performance Computing (KTH, Stockholm). It exposes a rudementary script language that is used to declare operations which are performed over the frames of the trajectory.
+VIAMD is an interactive analysis tool for molecular dynamics (MD) written in C/C++. VIAMD is developed in collaboration with the Department for Media and Information Technology (LIU, Norrköping) and the PDC Center for High Performance Computing (KTH, Stockholm). It exposes a rudementary script language that is used to declare operations which are performed over the frames of the trajectory.
 The results can then be viewed in the different windows exposed in the application. 
 <p align="center">
 <img src="https://github.com/scanberg/viamd/assets/38646069/5651ef62-28bc-4f41-8234-75cf9ba85612" alt="This is an overview of the viamd software" width="800"/>
