@@ -2163,13 +2163,14 @@ static void init_dataset_items(ApplicationData* data) {
         str_t str = LBL_TO_STR(data->mold.mol.chain.id[i]);
         snprintf(item.label, sizeof(item.label), "%.*s", (int)str.len, str.ptr);
         snprintf(item.query, sizeof(item.query), "chain(%d)", (int)(i+1));
+        size_t atom_count = md_chain_atom_count(data->mold.mol.chain, i);
         item.count = 1;
-        item.fraction = (data->mold.mol.chain.atom_range[i].end - data->mold.mol.chain.atom_range[i].beg) / (float)data->mold.mol.atom.count;
+        item.fraction = atom_count / (float)data->mold.mol.atom.count;
         md_array_push(data->dataset.chains, item, persistent_allocator);
     }
 
     for (size_t i = 0; i < data->mold.mol.residue.count; ++i) {
-        const float fraction_size = (data->mold.mol.residue.atom_range[i].end - data->mold.mol.residue.atom_range[i].beg) / (float)data->mold.mol.atom.count;
+        const float fraction_size = md_residue_atom_count(data->mold.mol.residue, i) / (float)data->mold.mol.atom.count;
         {
             // Do resname
             str_t resname = LBL_TO_STR(data->mold.mol.residue.name[i]);
@@ -2634,7 +2635,7 @@ static void update_density_volume(ApplicationData* data) {
                 color_atoms_chain_idx(colors, mol.atom.count, mol);
                 break;
             case ColorMapping::SecondaryStructure:
-                color_atoms_secondary_structure(colors, mol.atom.count, mol);
+                color_atoms_sec_str(colors, mol.atom.count, mol);
                 break;
             default:
                 ASSERT(false);
@@ -3024,24 +3025,26 @@ static PickingData read_picking_data(GBuffer* gbuf, int32_t x, int32_t y) {
     return data;
 }
 
-static void expand_mask(md_bitfield_t* mask, const md_range_t ranges[], int64_t num_ranges) {
-    for (int64_t i = 0; i < num_ranges; i++) {
-        if (md_bitfield_popcount_range( mask, ranges[i].beg, ranges[i].end) != 0) {
-            md_bitfield_set_range(mask, ranges[i].beg, ranges[i].end);
-        }
-    }
-}
-
 static void grow_mask_by_current_selection_granularity(md_bitfield_t* mask, const ApplicationData& data) {
     ASSERT(mask);
     switch(data.selection.granularity) {
     case SelectionLevel::Atom:
         break;
     case SelectionLevel::Residue:
-        expand_mask(mask, data.mold.mol.residue.atom_range, data.mold.mol.residue.count);
+        for (size_t i = 0; i < data.mold.mol.residue.count; ++i) {
+            md_range_t range = md_residue_atom_range(data.mold.mol.residue, i);
+            if (md_bitfield_popcount_range(mask, range.beg, range.end)) {
+				md_bitfield_set_range(mask, range.beg, range.end);
+			}
+        }
         break;
     case SelectionLevel::Chain:
-        expand_mask(mask, data.mold.mol.chain.atom_range, data.mold.mol.chain.count);
+        for (size_t i = 0; i < data.mold.mol.chain.count; ++i) {
+            md_range_t range = md_chain_atom_range(data.mold.mol.chain, i);
+            if (md_bitfield_popcount_range(mask, range.beg, range.end)) {
+                md_bitfield_set_range(mask, range.beg, range.end);
+            }
+        }
         break;
     default:
         ASSERT(false);
@@ -3799,7 +3802,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     };
 
     if (res_idx != -1 && within_same_residue) {
-        const md_range_t range = mol->residue.atom_range[res_idx];
+        const md_range_t range = md_residue_atom_range(mol->residue, res_idx);
         if (popcount != range.end - range.beg) {
             md_strb_reset(&sb);
             sb += ident;
@@ -3816,7 +3819,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     }
 
     else if (chain_idx != -1 && within_same_chain) {
-        const md_range_t range = mol->chain.atom_range[chain_idx];
+        const md_range_t range = md_chain_atom_range(mol->chain, chain_idx);
         if (popcount != range.end - range.beg) {
             md_strb_reset(&sb);
             sb += ident;
@@ -3838,21 +3841,21 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     md_array(int) complete_chains = 0;
     md_array(int) complete_residues = 0;
     
-    if (mol->chain.count && mol->chain.atom_range) {
-        for (int i = 0; i < (int)mol->chain.count; ++i) {    
-            md_range_t range = mol->chain.atom_range[i];
+    if (mol->chain.count) {
+        for (size_t i = 0; i < mol->chain.count; ++i) {    
+            const md_range_t range = md_chain_atom_range(mol->chain, i);
             if (md_bitfield_test_all_range(&tmp_bf, range.beg, range.end)) {
-                md_array_push(complete_chains, i, frame_allocator);
+                md_array_push(complete_chains, (int)i, frame_allocator);
                 md_bitfield_clear_range(&tmp_bf, range.beg, range.end);
             }
         }
     }
 
-    if (mol->residue.count && mol->residue.atom_range) {
-        for (int i = 0; i < (int)mol->residue.count; ++i) {    
-            md_range_t range = mol->residue.atom_range[i];
+    if (mol->residue.count) {
+        for (size_t i = 0; i < mol->residue.count; ++i) {    
+            const md_range_t range = md_residue_atom_range(mol->residue, i);
             if (md_bitfield_test_all_range(&tmp_bf, range.beg, range.end)) {
-                md_array_push(complete_residues, i, frame_allocator);
+                md_array_push(complete_residues, (int)i, frame_allocator);
                 md_bitfield_clear_range(&tmp_bf, range.beg, range.end);
             }
         }
@@ -3887,7 +3890,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
         sb += ident;
         sb += " = residue(";
         for (size_t i = 0; i < md_array_size(complete_chains); ++i) {
-            md_range_t range = mol->chain.residue_range[complete_chains[i]];
+            md_range_t range = md_chain_residue_range(mol->chain, complete_chains[i]);
             md_strb_fmt(&sb, "%i:%i,", range.beg + 1, range.end);
         }
         if (complete_residues) {
@@ -4006,9 +4009,10 @@ void draw_context_popup(ApplicationData* data) {
 
                     if (data->mold.mol.residue.count) {
                         if (data->mold.mol.atom.res_idx[idx[0]] == data->mold.mol.atom.res_idx[idx[1]]) {
-                            int32_t res_idx = data->mold.mol.atom.res_idx[idx[0]];
-                            idx[0] -= data->mold.mol.residue.atom_range[res_idx].beg;
-                            idx[1] -= data->mold.mol.residue.atom_range[res_idx].beg;
+                            const int32_t res_idx = data->mold.mol.atom.res_idx[idx[0]];
+                            const md_range_t range = md_residue_atom_range(data->mold.mol.residue, res_idx);
+                            idx[0] -= range.beg;
+                            idx[1] -= range.beg;
 
                             snprintf(buf, sizeof(buf), "%.*s = distance(%i, %i) in residue(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, res_idx+1);
                             if (ImGui::MenuItem(buf)) {
@@ -4052,10 +4056,11 @@ void draw_context_popup(ApplicationData* data) {
                         if (data->mold.mol.atom.res_idx[idx[0]] == data->mold.mol.atom.res_idx[idx[1]] &&
                             data->mold.mol.atom.res_idx[idx[0]] == data->mold.mol.atom.res_idx[idx[2]]) {
 
-                            int32_t res_idx = data->mold.mol.atom.res_idx[idx[0]];
-                            idx[0] -= data->mold.mol.residue.atom_range[res_idx].beg;
-                            idx[1] -= data->mold.mol.residue.atom_range[res_idx].beg;
-                            idx[2] -= data->mold.mol.residue.atom_range[res_idx].beg;
+                            const int32_t res_idx = data->mold.mol.atom.res_idx[idx[0]];
+                            const md_range_t range = md_residue_atom_range(data->mold.mol.residue, res_idx);
+                            idx[0] -= range.beg;
+                            idx[1] -= range.beg;
+                            idx[2] -= range.beg;
 
                             snprintf(buf, sizeof(buf), "%.*s = angle(%i, %i, %i) in residue(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, res_idx+1);
                             if (ImGui::MenuItem(buf)) {
@@ -4100,11 +4105,12 @@ void draw_context_popup(ApplicationData* data) {
                             data->mold.mol.atom.res_idx[idx[0]] == data->mold.mol.atom.res_idx[idx[2]] &&
                             data->mold.mol.atom.res_idx[idx[0]] == data->mold.mol.atom.res_idx[idx[3]]) {
 
-                            int32_t res_idx = data->mold.mol.atom.res_idx[idx[0]];
-                            idx[0] -= data->mold.mol.residue.atom_range[res_idx].beg;
-                            idx[1] -= data->mold.mol.residue.atom_range[res_idx].beg;
-                            idx[2] -= data->mold.mol.residue.atom_range[res_idx].beg;
-                            idx[3] -= data->mold.mol.residue.atom_range[res_idx].beg;
+                            const int32_t res_idx = data->mold.mol.atom.res_idx[idx[0]];
+                            const md_range_t range = md_residue_atom_range(data->mold.mol.residue, res_idx);
+                            idx[0] -= range.beg;
+                            idx[1] -= range.beg;
+                            idx[2] -= range.beg;
+                            idx[3] -= range.beg;
 
                             snprintf(buf, sizeof(buf), "%.*s = dihedral(%i, %i, %i, %i) in residue(%i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, res_idx+1);
                             if (ImGui::MenuItem(buf)) {
@@ -4206,8 +4212,8 @@ void draw_context_popup(ApplicationData* data) {
                 if (data->mold.mol.residue.count > 0 && data->mold.mol.atom.res_idx && data->mold.mol.atom.res_idx[idx] != -1) {
                     apply |= ImGui::MenuItem("on Residue");
                     if (ImGui::IsItemHovered()) {
-                        const auto res_idx = data->mold.mol.atom.res_idx[idx];
-                        const auto range = data->mold.mol.residue.atom_range[res_idx];
+                        const int64_t res_idx = data->mold.mol.atom.res_idx[idx];
+                        const md_range_t range = md_residue_atom_range(data->mold.mol.residue, res_idx);
                         md_bitfield_set_range(&mask, range.beg, range.end);
                     }
                 }
@@ -4216,7 +4222,7 @@ void draw_context_popup(ApplicationData* data) {
                     apply |= ImGui::MenuItem("on Chain");
                     if (ImGui::IsItemHovered()) {
                         const auto chain_idx = data->mold.mol.atom.chain_idx[idx];
-                        const auto range = data->mold.mol.chain.atom_range[chain_idx];
+                        const auto range = md_chain_atom_range(data->mold.mol.chain, chain_idx);
                         md_bitfield_set_range(&mask, range.beg, range.end);
                     }
                 }
@@ -4311,19 +4317,7 @@ static void draw_selection_grow_window(ApplicationData* data) {
                 ASSERT(false);
             }
 
-            switch (data->selection.granularity) {
-            case SelectionLevel::Atom:
-                // No need to expand the mask
-                break;
-            case SelectionLevel::Residue:
-                expand_mask(&data->selection.grow.mask, data->mold.mol.residue.atom_range, data->mold.mol.residue.count);
-                break;
-            case SelectionLevel::Chain:
-                expand_mask(&data->selection.grow.mask, data->mold.mol.chain.atom_range, data->mold.mol.chain.count);
-                break;
-            default:
-                ASSERT(false);
-            }
+            grow_mask_by_current_selection_granularity(&data->selection.grow.mask, *data);
         }
 
         const bool show_preview =   (ImGui::GetHoveredID() == ImGui::GetID("##Extent")) ||
@@ -4378,19 +4372,7 @@ static void draw_selection_query_window(ApplicationData* data) {
             query_frame = data->animation.frame;
 
             if (data->selection.query.query_ok) {
-                switch (data->selection.granularity) {
-                case SelectionLevel::Atom:
-                    // No need to expand the mask
-                    break;
-                case SelectionLevel::Residue:
-                    expand_mask(&data->selection.query.mask, data->mold.mol.residue.atom_range, data->mold.mol.residue.count);
-                    break;
-                case SelectionLevel::Chain:
-                    expand_mask(&data->selection.query.mask, data->mold.mol.chain.atom_range, data->mold.mol.chain.count);
-                    break;
-                default:
-                    ASSERT(false);
-                }
+                grow_mask_by_current_selection_granularity(&data->selection.query.mask, *data);
             } else {
                 md_bitfield_clear(&data->selection.query.mask);
             }
@@ -4687,7 +4669,8 @@ static void draw_info_window(const ApplicationData& data, uint32_t picking_idx) 
             res_idx = mol.atom.res_idx[atom_idx];
             res_name = mol.residue.name[res_idx];
             res_id = mol.residue.id[res_idx];
-            local_idx = atom_idx - mol.residue.atom_range[res_idx].beg;
+            md_range_t range = md_residue_atom_range(mol.residue, res_idx);
+            local_idx = atom_idx - range.beg;
         }
 
         int chain_idx = -1;
@@ -6867,7 +6850,8 @@ static void draw_ramachandran_window(ApplicationData* data) {
                                 if (min_x <= coord.x && coord.x <= max_x && min_y <= coord.y && coord.y <= max_y) {
                                     md_residue_idx_t res_idx = mol.backbone.residue_idx[idx];
                                     if (res_idx < mol.residue.count) {
-                                        modify_field(highlight_mask, mol.residue.atom_range[res_idx], op);
+                                        md_range_t range = md_residue_atom_range(mol.residue, res_idx);
+                                        modify_field(highlight_mask, range, op);
                                     }
                                 }
                             }
@@ -6889,7 +6873,8 @@ static void draw_ramachandran_window(ApplicationData* data) {
                             if (mouse_hover_idx < (int64_t)mol.backbone.count) {
                                 md_residue_idx_t res_idx = mol.backbone.residue_idx[mouse_hover_idx];
                                 if (res_idx < mol.residue.count) {
-                                    modify_field(highlight_mask, mol.residue.atom_range[res_idx], SelectionOperator::Or);
+                                    md_range_t range = md_residue_atom_range(mol.residue, res_idx);
+                                    modify_field(highlight_mask, range, SelectionOperator::Or);
                                     grow_mask_by_current_selection_granularity(highlight_mask, *data);
                                     data->mold.dirty_buffers |= MolBit_DirtyFlags;
                                 }
@@ -7198,7 +7183,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                 // Currently we only support viewing one volume at a time.
                 // This will probably change over time but not now.
                 if (selected_index != -1) {
-                    for (size_t i = 0; i < md_array_size(data->display_properties); ++i) {
+                    for (int64_t i = 0; i < (int64_t)md_array_size(data->display_properties); ++i) {
                         if (selected_index == i) {
                             // Toggle bool
                             data->display_properties[i].show_in_volume = !data->display_properties[i].show_in_volume;
@@ -8432,7 +8417,7 @@ static void update_md_buffers(ApplicationData* data) {
 
     if (data->mold.dirty_buffers & MolBit_DirtyFlags) {
         uint8_t* flags = (uint8_t*)md_alloc(frame_allocator, mol.atom.count);
-        for (int64_t i = 0; i < mol.atom.count; i++) {
+        for (size_t i = 0; i < mol.atom.count; i++) {
             uint8_t f = 0;
             f |= md_bitfield_test_bit(&data->selection.current_highlight_mask, i)     ? AtomBit_Highlighted : 0;
             f |= md_bitfield_test_bit(&data->selection.current_selection_mask, i)     ? AtomBit_Selected : 0;
@@ -8495,10 +8480,10 @@ static void free_trajectory_data(ApplicationData* data) {
 }
 
 static void init_trajectory_data(ApplicationData* data) {
-    int64_t num_frames = md_trajectory_num_frames(data->mold.traj);
+    size_t num_frames = md_trajectory_num_frames(data->mold.traj);
     if (num_frames > 0) {
-        int64_t min_frame = 0;
-        int64_t max_frame = num_frames - 1;
+        size_t min_frame = 0;
+        size_t max_frame = num_frames - 1;
         md_trajectory_header_t header;
         md_trajectory_get_header(data->mold.traj, &header);
         
@@ -8512,12 +8497,12 @@ static void init_trajectory_data(ApplicationData* data) {
         data->shape_space.evaluate = true;
 
         md_array_resize(data->timeline.x_values, num_frames, persistent_allocator);
-        for (int64_t i = 0; i < num_frames; ++i) {
+        for (size_t i = 0; i < num_frames; ++i) {
             data->timeline.x_values[i] = header.frame_times[i];
         }
 
         data->animation.frame = CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
-        int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, max_frame);
+        int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, (int64_t)max_frame);
 
         md_trajectory_frame_header_t frame_header;
         md_trajectory_load_frame(data->mold.traj, frame_idx, &frame_header, data->mold.mol.atom.x, data->mold.mol.atom.y, data->mold.mol.atom.z);
@@ -8527,7 +8512,7 @@ static void init_trajectory_data(ApplicationData* data) {
             data->trajectory_data.secondary_structure.stride = data->mold.mol.backbone.count;
             data->trajectory_data.secondary_structure.count = data->mold.mol.backbone.count * num_frames;
             md_array_resize(data->trajectory_data.secondary_structure.data, data->mold.mol.backbone.count * num_frames, persistent_allocator);
-            for (int64_t i = 0; i < md_array_size(data->trajectory_data.secondary_structure.data); ++i) {
+            for (size_t i = 0; i < md_array_size(data->trajectory_data.secondary_structure.data); ++i) {
                 data->trajectory_data.secondary_structure.data[i] = MD_SECONDARY_STRUCTURE_COIL;
             }
 //            MEMSET(data->trajectory_data.secondary_structure.data, 0, md_array_size(data->trajectory_data.secondary_structure.data) * sizeof (md_secondary_structure_t));
@@ -8546,8 +8531,8 @@ static void init_trajectory_data(ApplicationData* data) {
                 // Create copy here of molecule since we use the full structure as input
                 md_molecule_t mol = data->mold.mol;
 
-                const int64_t stride = ALIGN_TO(mol.atom.count, 8);
-                const int64_t bytes = stride * sizeof(float) * 3;
+                const size_t stride = ALIGN_TO(mol.atom.count, 8);
+                const size_t bytes = stride * sizeof(float) * 3;
                 float* coords = (float*)md_alloc(md_heap_allocator, bytes);
                 defer { md_free(md_heap_allocator, coords, bytes); };
                 // Overwrite the coordinate section, since we will load trajectory frame data into these
@@ -9105,12 +9090,12 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
                 buf->ptr = beg;
                 size_t loc;
                 if (str_find_str(&loc, *buf, token)) {
-                    int len = (int)loc;
-                    const int raw_cap = md_base64_decode_size_in_bytes(len);
+                    size_t len = loc;
+                    const size_t raw_cap = md_base64_decode_size_in_bytes(len);
                     void* raw_ptr = md_alloc(frame_allocator, raw_cap);
                     defer { md_free(frame_allocator, raw_ptr, raw_cap); };
                     
-                    const int64_t raw_len = md_base64_decode(raw_ptr, beg, len);
+                    const size_t raw_len = md_base64_decode(raw_ptr, beg, len);
                     md_bitfield_t* bf = (md_bitfield_t*)(ptr + target->struct_byte_offset);
                     if (!raw_len || !md_bitfield_deserialize(bf, raw_ptr, raw_len)) {
                         LOG_ERROR("Failed to deserialize bitfield");
@@ -9476,7 +9461,7 @@ static void recompute_atom_visibility_mask(ApplicationData* data) {
     auto& mask = data->representation.atom_visibility_mask;
 
     md_bitfield_clear(&mask);
-    for (int64_t i = 0; i < md_array_size(data->representation.reps); ++i) {
+    for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
         auto& rep = data->representation.reps[i];
         if (!rep.enabled) continue;
         md_bitfield_or_inplace(&mask, &rep.atom_mask);
@@ -9486,7 +9471,7 @@ static void recompute_atom_visibility_mask(ApplicationData* data) {
 }
 
 static void update_all_representations(ApplicationData* data) {
-    for (int64_t i = 0; i < md_array_size(data->representation.reps); ++i) {
+    for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
         auto& rep = data->representation.reps[i];
         rep.filt_is_dirty = true;
         update_representation(data, &rep);
@@ -9497,7 +9482,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
     ASSERT(data);
     ASSERT(rep);
 
-    const int64_t bytes = data->mold.mol.atom.count * sizeof(uint32_t);
+    const size_t bytes = data->mold.mol.atom.count * sizeof(uint32_t);
     uint32_t* colors = (uint32_t*)md_alloc(frame_allocator, bytes);
     defer { md_free(frame_allocator, colors, bytes); };
 
@@ -9534,7 +9519,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
             color_atoms_chain_idx(colors, mol.atom.count, mol);
             break;
         case ColorMapping::SecondaryStructure:
-            color_atoms_secondary_structure(colors, mol.atom.count, mol);
+            color_atoms_sec_str(colors, mol.atom.count, mol);
             break;
         case ColorMapping::Property:
             // @TODO: Map colors accordingly
@@ -9643,7 +9628,7 @@ static void init_representation(ApplicationData* data, Representation* rep) {
 }
 
 static void init_all_representations(ApplicationData* data) {
-    for (int64_t i = 0; i < md_array_size(data->representation.reps); ++i) {
+    for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
         auto& rep = data->representation.reps[i];
         init_representation(data, &rep);
     }
@@ -9670,7 +9655,7 @@ static void create_default_representations(ApplicationData* data) {
         return;
     }
 
-    for (int64_t i = 0; i < data->mold.mol.atom.count; ++i) {
+    for (size_t i = 0; i < data->mold.mol.atom.count; ++i) {
         uint32_t flags = data->mold.mol.atom.flags[i];
         if (flags & MD_FLAG_AMINO_ACID) amino_acid_present = true;
         if (flags & MD_FLAG_NUCLEOTIDE) nucleic_present = true;
@@ -9689,7 +9674,8 @@ static void create_default_representations(ApplicationData* data) {
         if (data->mold.mol.chain.count > 1) {
             color = ColorMapping::ChainId;
         } else {
-            if (data->mold.mol.chain.count == 0 || (data->mold.mol.chain.residue_range && data->mold.mol.chain.residue_range[0].end < 20)) {
+            size_t res_count = md_chain_residue_count(data->mold.mol.chain, 0);
+            if (res_count < 20) {
                 type = RepresentationType::BallAndStick;
                 color = ColorMapping::Cpk;
             }
@@ -10303,20 +10289,20 @@ static void fill_gbuffer(ApplicationData* data) {
     md_array(mat4_t) model_matrices = 0;
     if (md_array_size(vis.sdf.matrices) > 0) {
         model_matrices = md_array_create(mat4_t, md_array_size(vis.sdf.matrices), frame_allocator);
-        for (int64_t i = 0; i < md_array_size(vis.sdf.matrices); ++i) {
+        for (size_t i = 0; i < md_array_size(vis.sdf.matrices); ++i) {
             model_matrices[i] = mat4_inverse(vis.sdf.matrices[i]);
         }
     }
 
-    for (int64_t i = 0; i < md_array_size(vis.triangles); i += 3) {
+    for (size_t i = 0; i < md_array_size(vis.triangles); i += 3) {
         immediate::draw_triangle(vis.triangles[i+0].pos, vis.triangles[i+1].pos, vis.triangles[i+2].pos, triangle_color);
     }
 
-    for (int64_t i = 0; i < md_array_size(vis.lines); i += 2) {
+    for (size_t i = 0; i < md_array_size(vis.lines); i += 2) {
         immediate::draw_line(vis.lines[i+0].pos, vis.lines[i+1].pos, line_color);
     }
 
-    for (int64_t i = 0; i < md_array_size(vis.points); ++i) {
+    for (size_t i = 0; i < md_array_size(vis.points); ++i) {
         immediate::draw_point(vis.points[i].pos, point_color);
     }
 
@@ -10324,7 +10310,7 @@ static void fill_gbuffer(ApplicationData* data) {
     const uint32_t col_y = convert_color(vec4_set(0, 1, 0, 0.7f));
     const uint32_t col_z = convert_color(vec4_set(0, 0, 1, 0.7f));
     const float ext = vis.sdf.extent * 0.25f;
-    for (int64_t i = 0; i < md_array_size(model_matrices); ++i) {
+    for (size_t i = 0; i < md_array_size(model_matrices); ++i) {
         immediate::draw_basis(model_matrices[i], ext, col_x, col_y, col_z);
     }
     
@@ -10338,7 +10324,7 @@ static void fill_gbuffer(ApplicationData* data) {
     const vec3_t box_ext = vec3_set1(vis.sdf.extent);
     const uint32_t box_color = convert_color(data->density_volume.bounding_box_color * vec4_set(1.f, 1.f, 1.f, 0.25f));
     
-    for (int64_t i = 0; i < md_array_size(model_matrices); ++i) {
+    for (size_t i = 0; i < md_array_size(model_matrices); ++i) {
         immediate::draw_box_wireframe(-box_ext, box_ext, model_matrices[i], box_color);
     }
 
@@ -10493,7 +10479,7 @@ static void draw_representations(ApplicationData* data) {
     } else {
 #endif
         md_gl_draw_op_t* draw_ops = 0;
-        for (int64_t i = 0; i < md_array_size(data->representation.reps); ++i) {
+        for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
             const Representation& rep = data->representation.reps[i];
             if (rep.enabled && rep.type_is_valid) {
                 md_gl_draw_op_t op = {
@@ -10530,7 +10516,7 @@ static void draw_representations(ApplicationData* data) {
 
 static void draw_representations_lean_and_mean(ApplicationData* data, uint32_t mask) {
     md_gl_draw_op_t* draw_ops = 0;
-    for (int64_t i = 0; i < md_array_size(data->representation.reps); ++i) {
+    for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
         const Representation& rep = data->representation.reps[i];
         if (rep.enabled && rep.type_is_valid) {
             md_gl_draw_op_t op = {

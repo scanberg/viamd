@@ -49,11 +49,11 @@ static uint32_t constexpr crc32_tab[] = {
 constexpr uint32_t crc32impl(uint32_t prevCrc, const char* str, size_t size) { return !size ? prevCrc : crc32impl((prevCrc >> 8) ^ crc32_tab[(prevCrc ^ *str) & 0xff], str + 1, size - 1); }
 constexpr uint32_t crc32(const char* ptr, size_t size) { return crc32impl(0xffffffff, ptr, size) ^ 0xffffffff; }
 
-static void set_colors(uint32_t* colors, int64_t count, uint32_t color) {
+static void set_colors(uint32_t* colors, size_t count, uint32_t color) {
     if (color == 0xFFFFFFFFU) {
         MEMSET(colors, 0xFF, sizeof(uint32_t) * count);
     } else {
-        for (int64_t i = 0; i < count; ++i) {
+        for (size_t i = 0; i < count; ++i) {
             colors[i] = color;
         }
     }
@@ -73,7 +73,7 @@ static uint32_t u32_to_color(uint32_t u32) {
 	return convert_color({rgb.x, rgb.y, rgb.z, 1.0f});
 }
 
-void color_atoms_uniform(uint32_t* colors, int64_t count, vec4_t color, const md_bitfield_t* mask) {
+void color_atoms_uniform(uint32_t* colors, size_t count, vec4_t color, const md_bitfield_t* mask) {
     if (mask) {
         const uint32_t u32_color = convert_color(color);
         md_bitfield_iter_t it = md_bitfield_iter_create(mask);
@@ -88,71 +88,76 @@ void color_atoms_uniform(uint32_t* colors, int64_t count, vec4_t color, const md
 const float chroma = 0.9f;
 const float luminance = 1.0f;
 
-void color_atoms_cpk(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
-    for (int64_t i = 0; i < count; i++) {
+void color_atoms_cpk(uint32_t* colors, size_t count, const md_molecule_t& mol) {
+    for (size_t i = 0; i < count; i++) {
         colors[i] = mol.atom.element ? md_util_element_cpk_color(mol.atom.element[i]) : 0xFFFFFFFFU;
     }
 }
 
-void color_atoms_type(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
-    for (int64_t i = 0; i < count; ++i) {
+void color_atoms_type(uint32_t* colors, size_t count, const md_molecule_t& mol) {
+    for (size_t i = 0; i < count; ++i) {
         const uint32_t u32 = crc32(mol.atom.type[i].buf, mol.atom.type[i].len);
         colors[i] = u32_to_color(u32);
     }
 }
 
-void color_atoms_idx(uint32_t* colors, int64_t count, const md_molecule_t&) {
-    for (int i = 0; i < (int)count; ++i) {
-        colors[i] = u32_to_color(i);
+void color_atoms_idx(uint32_t* colors, size_t count, const md_molecule_t&) {
+    for (size_t i = 0; i < count; ++i) {
+        colors[i] = u32_to_color((uint32_t)i);
     }
 }
 
-void color_atoms_res_name(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
+void color_atoms_res_name(uint32_t* colors, size_t count, const md_molecule_t& mol) {
     set_colors(colors, count, 0xFFFFFFFFU);
-    for (int i = 0; i < (int)mol.residue.count; i++) {
+    for (size_t i = 0; i < mol.residue.count; i++) {
         str_t str = mol.residue.name[i];
         const uint32_t u32 = crc32(str.ptr, str.len);
         const uint32_t color = u32_to_color(u32);
-        set_colors(colors + mol.residue.atom_range[i].beg, mol.residue.atom_range[i].end - mol.residue.atom_range[i].beg, color);
+        md_range_t range = md_residue_atom_range(mol.residue, i);
+        set_colors(colors + range.beg, range.end - range.beg, color);
     }
 }
 
-void color_atoms_res_id(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
+void color_atoms_res_id(uint32_t* colors, size_t count, const md_molecule_t& mol) {
     set_colors(colors, count, 0xFFFFFFFFU);
-    for (int i = 0; i < (int)mol.residue.count; i++) {
+    for (size_t i = 0; i < mol.residue.count; i++) {
         const uint32_t color = u32_to_color(mol.residue.id[i]);
-        set_colors(colors + mol.residue.atom_range[i].beg, mol.residue.atom_range[i].end - mol.residue.atom_range[i].beg, color);
+        md_range_t range = md_residue_atom_range(mol.residue, i);
+        set_colors(colors + range.beg, range.end - range.beg, color);
     }
 }
-void color_atoms_res_idx(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
+void color_atoms_res_idx(uint32_t* colors, size_t count, const md_molecule_t& mol) {
     set_colors(colors, count, 0xFFFFFFFFU);
-    for (int i = 0; i < (int)mol.residue.count; i++) {
-        const uint32_t color = u32_to_color(i);
-        set_colors(colors + mol.residue.atom_range[i].beg, mol.residue.atom_range[i].end - mol.residue.atom_range[i].beg, color);
+    for (size_t i = 0; i < mol.residue.count; i++) {
+        const uint32_t color = u32_to_color((uint32_t)i);
+        md_range_t range = md_residue_atom_range(mol.residue, i);
+        set_colors(colors + range.beg, range.end - range.beg, color);
     }
 }
 
-void color_atoms_chain_id(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
+void color_atoms_chain_id(uint32_t* colors, size_t count, const md_molecule_t& mol) {
     set_colors(colors, count, 0xFFFFFFFFU);
-    for (int64_t i = 0; i < mol.chain.count; i++) {
+    for (size_t i = 0; i < mol.chain.count; i++) {
         str_t str = mol.chain.id[i];
         uint32_t u32 = 0;
-        for (int64_t j = 0; j < str.len; ++j) {
+        for (size_t j = 0; j < str.len; ++j) {
             u32 += str.ptr[j];
         }
         const uint32_t color = u32_to_color(u32);
-        set_colors(colors + mol.chain.atom_range[i].beg, mol.chain.atom_range[i].end - mol.chain.atom_range[i].beg, color);
+        md_range_t range = md_chain_atom_range(mol.chain, i);
+        set_colors(colors + range.beg, range.end - range.beg, color);
     }
 }
-void color_atoms_chain_idx(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
+void color_atoms_chain_idx(uint32_t* colors, size_t count, const md_molecule_t& mol) {
     set_colors(colors, count, 0xFFFFFFFFU);
-    for (int i = 0; i < (int)mol.chain.count; i++) {
-        const uint32_t color = u32_to_color(i);
-        set_colors(colors + mol.chain.atom_range[i].beg, mol.chain.atom_range[i].end - mol.chain.atom_range[i].beg, color);
+    for (size_t i = 0; i < mol.chain.count; i++) {
+        const uint32_t color = u32_to_color((uint32_t)i);
+        md_range_t range = md_chain_atom_range(mol.chain, i);
+        set_colors(colors + range.beg, range.end - range.beg, color);
     }
 }
 
-void color_atoms_secondary_structure(uint32_t* colors, int64_t count, const md_molecule_t& mol) {
+void color_atoms_sec_str(uint32_t* colors, size_t count, const md_molecule_t& mol) {
     const uint32_t color_unknown = 0x22222222;
     const uint32_t color_coil    = 0xDDDDDDDD;
     const uint32_t color_helix   = 0xFF22DD22;
@@ -160,27 +165,29 @@ void color_atoms_secondary_structure(uint32_t* colors, int64_t count, const md_m
 
     set_colors(colors, count, color_unknown);
     if (mol.backbone.secondary_structure) {
-        for (int64_t i = 0; i < mol.backbone.count; i++) {
-            const auto w = convert_color((uint32_t)mol.backbone.secondary_structure[i]);
-            const auto color = w.x * convert_color(color_coil) + w.y * convert_color(color_helix) + w.z * convert_color(color_sheet);
+        for (size_t i = 0; i < mol.backbone.count; i++) {
+            const vec4_t w = convert_color((uint32_t)mol.backbone.secondary_structure[i]);
+            const vec4_t rgba = w.x * convert_color(color_coil) + w.y * convert_color(color_helix) + w.z * convert_color(color_sheet);
+            const uint32_t color = convert_color(rgba);
             md_residue_idx_t res_idx = mol.backbone.residue_idx[i];
-            set_colors(colors + mol.residue.atom_range[res_idx].beg, mol.residue.atom_range[res_idx].end - mol.residue.atom_range[res_idx].beg, convert_color(color));
+            md_range_t range = md_residue_atom_range(mol.residue, res_idx);
+            set_colors(colors + range.beg, range.end - range.beg, color);
         }
     }
 }
 
-void filter_colors(uint32_t* colors, int64_t num_colors, const md_bitfield_t* mask) {
-    int64_t beg_bit = mask->beg_bit;
-    int64_t end_bit = mask->end_bit;
+void filter_colors(uint32_t* colors, size_t num_colors, const md_bitfield_t* mask) {
+    size_t beg_bit = mask->beg_bit;
+    size_t end_bit = mask->end_bit;
 
-    for (int64_t i = 0; i < beg_bit; ++i) {
+    for (size_t i = 0; i < beg_bit; ++i) {
         colors[i] &= 0x00FFFFFFU;
     }
-    for (int64_t i = beg_bit; i < end_bit; ++i) {
+    for (size_t i = beg_bit; i < end_bit; ++i) {
         const uint32_t m = md_bitfield_test_bit(mask, i) ? 0xFF000000U : 0x00000000U;
         colors[i] = m | (colors[i] & 0x00FFFFFFU);
     }
-    for (int64_t i = end_bit; i < num_colors; ++i) {
+    for (size_t i = end_bit; i < num_colors; ++i) {
         colors[i] &= 0x00FFFFFFU;
     }
 }
