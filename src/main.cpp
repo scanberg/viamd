@@ -7791,9 +7791,9 @@ static void draw_debug_window(ApplicationData* data) {
 
     ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Debug", &data->show_debug_window)) {
-        int32_t sema_count = 0;
+        size_t sema_count = 0;
         if (md_semaphore_query_count(&data->mold.script.ir_semaphore, &sema_count)) {
-            ImGui::Text("Script IR semaphore count: %i", sema_count);
+            ImGui::Text("Script IR semaphore count: %zu", sema_count);
         }
 
         
