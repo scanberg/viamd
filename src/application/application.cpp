@@ -299,9 +299,9 @@ bool file_dialog(char* str_buf, int str_cap, FileDialogFlag flags, const char* f
     if (result == NFD_OKAY) {
         char ext[16] = {0};
         if (flags & FileDialogFlag_Save) {
+            str_t pext;
             str_t path = str_from_cstr(out_path);
-            str_t pext  = extract_ext(path);
-            if (str_empty(pext) && filter) {
+            if (extract_ext(&pext, path) && filter) {
                 // get ext from supplied filter (first match)
                 pext.ptr = filter;
                 const char* delim = strchr(filter, ',');

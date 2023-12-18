@@ -243,7 +243,7 @@ void render() {
 
     const GLenum index_type = sizeof(Index) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
 
-    for (int64_t i = 0; i < md_array_size(commands); ++i) {
+    for (size_t i = 0; i < md_array_size(commands); ++i) {
         const auto& cmd = commands[i];
         bool update_view = false;
         bool update_mvp = false;
