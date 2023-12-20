@@ -428,7 +428,7 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
 					else {
 						com = have_cell ?
 							vec3_deperiodize(md_util_compute_com_ortho(x, y, z, mol->atom.mass, indices, count, box_ext), box_ext * 0.5f, box_ext) :
-							md_util_compute_com(x, y, z, mol->atom.mass, indices, count);
+							md_util_com_compute(x, y, z, mol->atom.mass, indices, count);
                     }
 
                     // Translate all
@@ -438,7 +438,7 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
             }
 
             if (loaded_traj->deperiodize && have_cell) {
-                md_util_deperiodize_system(x, y, z, mol->atom.mass, mol->atom.count, cell, &mol->structures);
+                md_util_deperiodize_system(x, y, z, mol->atom.mass, mol->atom.count, cell, mol->structures.offsets, mol->structures.indices, md_index_data_count(mol->structures));
             }
         }
 

@@ -207,8 +207,6 @@ enum AtomBit_ {
     AtomBit_Highlighted = 1,
     AtomBit_Selected    = 2,
     AtomBit_Visible     = 4,
-    AtomBit_ChainBeg    = 8,
-    AtomBit_ChainEnd    = 16,
 };
 
 enum MolBit_ {
@@ -892,7 +890,7 @@ struct ApplicationData {
 
     struct {
         vec4_t point_color      = {1,0,0,0.8f};
-        vec4_t line_color       = {0,0,0,0.0f};
+        vec4_t line_color       = {0,0,0,0.6f};
         vec4_t triangle_color   = {1,1,0,0.5f};
     } script;
 
@@ -1791,7 +1789,7 @@ int main(int argc, char** argv) {
                 interpolate_atomic_properties(&data);
 
                 if (data.animation.apply_pbc) {
-                    md_util_deperiodize_system(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.mass, mol.atom.count, &mol.unit_cell, &mol.structures);
+                    md_util_deperiodize_system(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.mass, mol.atom.count, &mol.unit_cell, mol.structures.offsets, mol.structures.indices, md_index_data_count(mol.structures));
                 }
             }
             POP_CPU_SECTION()
@@ -2778,7 +2776,7 @@ static void interpolate_atomic_properties(ApplicationData* data) {
             ASSERT(false);
     }
 
-    md_util_compute_aabb(&data->mold.mol_aabb_min, &data->mold.mol_aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, 0, mol.atom.count);
+    md_util_aabb_compute(&data->mold.mol_aabb_min, &data->mold.mol_aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, 0, mol.atom.count);
 
     if (mol.backbone.angle) {
         const md_backbone_angles_t* src_angles[4] = {
@@ -2947,10 +2945,10 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
             MD_LOG_DEBUG("Error: Invalid number of indices");
             len = MIN(popcount, mol.atom.count);
         }
-		md_util_compute_aabb(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, len);
+		md_util_aabb_compute(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, len);
         md_linear_allocator_pop(linear_allocator, popcount * sizeof(int32_t));
     } else {
-        md_util_compute_aabb(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, nullptr, mol.atom.count);
+        md_util_aabb_compute(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, nullptr, mol.atom.count);
     }
 
     const vec3_t ext = aabb_max - aabb_min;
@@ -3737,7 +3735,7 @@ void apply_atom_elem_mappings(ApplicationData* data) {
     md_index_data_free(&mol->structures, data->mold.mol_alloc);
     md_index_data_free(&mol->rings, data->mold.mol_alloc);
     
-    md_util_postprocess_molecule(mol, data->mold.mol_alloc, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT | MD_UTIL_POSTPROCESS_STRUCTURE_BIT);
+    md_util_molecule_postprocess(mol, data->mold.mol_alloc, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT | MD_UTIL_POSTPROCESS_STRUCTURE_BIT);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
     update_all_representations(data);
@@ -4403,10 +4401,10 @@ static void draw_selection_grow_window(ApplicationData* data) {
 
             switch (data->selection.grow.mode) {
             case SelectionGrowth::CovalentBond:
-                md_util_grow_mask_by_bonds(&data->selection.grow.mask, &data->mold.mol, (int)data->selection.grow.extent, &data->representation.atom_visibility_mask);
+                md_util_mask_grow_by_bonds(&data->selection.grow.mask, &data->mold.mol, (int)data->selection.grow.extent, &data->representation.atom_visibility_mask);
                 break;
             case SelectionGrowth::Radial: {
-                md_util_grow_mask_by_radius(&data->selection.grow.mask, &data->mold.mol, data->selection.grow.extent, &data->representation.atom_visibility_mask);
+                md_util_mask_grow_by_radius(&data->selection.grow.mask, &data->mold.mol, data->selection.grow.extent, &data->representation.atom_visibility_mask);
                 break;
             }
             default:
@@ -6684,7 +6682,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                                     md_array_resize(indices, md_bitfield_popcount(&data->shape_space.bitfields[i]), md_heap_allocator);
                                     md_bitfield_extract_indices(indices, md_array_size(indices), &data->shape_space.bitfields[i]);
 
-                                    const vec3_t com = md_util_compute_com(x, y, z, w, indices, md_array_size(indices));
+                                    const vec3_t com = md_util_com_compute(x, y, z, w, indices, md_array_size(indices));
                                     const mat3_t M = mat3_covariance_matrix(x, y, z, w, indices, com, md_array_size(indices));
                                     const vec3_t weights = md_util_shape_weights(&M);
 
@@ -8515,8 +8513,6 @@ static void update_md_buffers(ApplicationData* data) {
             f |= md_bitfield_test_bit(&data->selection.current_highlight_mask, i)     ? AtomBit_Highlighted : 0;
             f |= md_bitfield_test_bit(&data->selection.current_selection_mask, i)     ? AtomBit_Selected : 0;
             f |= md_bitfield_test_bit(&data->representation.atom_visibility_mask, i)  ? AtomBit_Visible : 0;
-            f |= (data->mold.mol.atom.flags[i] & MD_FLAG_CHAIN_BEG) ? AtomBit_ChainBeg : 0;
-            f |= (data->mold.mol.atom.flags[i] & MD_FLAG_CHAIN_END) ? AtomBit_ChainEnd : 0;
             flags[i] = f;
         }
         md_gl_molecule_set_atom_flags(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, flags, 0);
@@ -8785,7 +8781,7 @@ static bool load_dataset_from_file(ApplicationData* data, const LoadParam& param
             data->files.coarse_grained = param.coarse_grained;
             // @NOTE: If the dataset is coarse-grained, then postprocessing must be aware
             md_util_postprocess_flags_t flags = param.coarse_grained ? MD_UTIL_POSTPROCESS_COARSE_GRAINED : MD_UTIL_POSTPROCESS_ALL;
-            md_util_postprocess_molecule(&data->mold.mol, data->mold.mol_alloc, flags);
+            md_util_molecule_postprocess(&data->mold.mol, data->mold.mol_alloc, flags);
             init_molecule_data(data);
 
             // @NOTE: Some files contain both atomic coordinates and trajectory
@@ -9299,12 +9295,18 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     extract_ext(&mol_ext, new_molecule_file);
     extract_ext(&traj_ext, new_trajectory_file);
 
+    load::LoaderState state = {};
+
+    load::init_loader_state(&state, new_molecule_file, frame_allocator);
+
     LoadParam param = {};
-    param.mol_loader = load::mol::loader_from_ext(mol_ext);
-    param.traj_loader = load::traj::loader_from_ext(traj_ext);
     param.file_path = new_molecule_file;
+    param.mol_loader = state.mol_loader;
+    param.traj_loader = state.traj_loader;
     param.coarse_grained = new_coarse_grained;
-    param.deperiodize = new_deperiodize;
+    param.deperiodize = new_coarse_grained;
+    param.keep_representations = false;
+    param.mol_loader_arg = state.mol_loader_arg;
 
     if (new_molecule_file && load_dataset_from_file(data, param)) {
         init_all_representations(data);
@@ -9312,7 +9314,9 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     }
 
     if (new_trajectory_file) {
+        load::init_loader_state(&state, new_trajectory_file, frame_allocator);
         param.mol_loader = 0;
+        param.traj_loader = state.traj_loader;
         param.file_path = new_trajectory_file;
         load_dataset_from_file(data, param);
     }
@@ -10584,7 +10588,7 @@ static void draw_representations(ApplicationData* data) {
     } else {
 #endif
         const size_t num_representations = md_array_size(data->representation.reps);
-        if (!num_representations) return;
+        if (num_representations == 0) return;
 
         md_gl_draw_op_t* draw_ops = 0;
         for (size_t i = 0; i < num_representations; ++i) {
