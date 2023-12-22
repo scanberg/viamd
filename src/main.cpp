@@ -2963,7 +2963,7 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
     int l[3] = { 0, 1, 2 };
     
     if (aniso_ext > 1.1f) {
-        // The aabb is not very uniform, so we sort the axes by length
+        // The aabb is not uniform, so we sort the axes by length
         if (ext[l[0]] < ext[l[1]]) std::swap(l[0], l[1]);
         if (ext[l[1]] < ext[l[2]]) std::swap(l[1], l[2]);
         if (ext[l[0]] < ext[l[1]]) std::swap(l[0], l[1]);
@@ -2975,7 +2975,7 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
     const vec3_t up    = I[l[1]];
     const vec3_t out   = I[l[2]];
     
-    const vec3_t dir = vec3_normalize(right * -0.6f + up * 0.5f + out * 1.0f);
+    const vec3_t dir = vec3_normalize(right * 0.6f + up * 0.5f + out * 1.0f);
 
     const vec3_t cen = (aabb_min + aabb_max) * 0.5f;
     const vec3_t pos = cen + dir * len * 3.0f;
@@ -7793,7 +7793,6 @@ static void draw_debug_window(ApplicationData* data) {
         if (md_semaphore_query_count(&data->mold.script.ir_semaphore, &sema_count)) {
             ImGui::Text("Script IR semaphore count: %zu", sema_count);
         }
-
         
         task_system::ID* tasks = task_system::pool_running_tasks(md_heap_allocator);
         int64_t num_tasks = md_array_size(tasks);
@@ -7808,6 +7807,12 @@ static void draw_debug_window(ApplicationData* data) {
         ImGuiID active = ImGui::GetActiveID();
         ImGuiID hover  = ImGui::GetHoveredID();
         ImGui::Text("Active ID: %u, Hover ID: %u", active, hover);
+
+        ImGui::Text("Mouse Pos: (%.3f, %.3f)", ImGui::GetMousePos().x, ImGui::GetMousePos().y);
+        ImGui::Text("Camera Position: (%.3f, %.3f, %.3f)", data->view.camera.position.x, data->view.camera.position.y, data->view.camera.position.z);
+        ImGui::Text("Camera Orientation: (%.3f, %.3f, %.3f, %.3f)", data->view.camera.orientation.x, data->view.camera.orientation.y, data->view.camera.orientation.z, data->view.camera.orientation.w);
+
+		ImGui::Text("proj_matrix:");
     }
     ImGui::End();
 }
@@ -9858,102 +9863,215 @@ static void handle_camera_interaction(ApplicationData* data) {
 
     enum class RegionMode { Append, Remove };
 
-#if 0
+#if 1
     // Coordinate system widget
-    static int size = 150;
-    ImGui::SetNextWindowSize(ImVec2(size, size));
-    const int flags = ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize;
-    if (ImGui::Begin("Coordinate Widget", NULL, flags)) {
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        const ImVec2 wp = ImGui::GetWindowPos();
-        const ImVec2 ws = ImGui::GetWindowSize();
-
-        const float ext = ImMin(ws.x, ws.y) * 0.5f;
-        const ImVec2 o = {wp.x + ws.x * 0.5f, wp.y + ws.y * 0.5f};
-        const float dist = 5;
-        const float fovy = data->view.camera.fov_y;
-        const float ar = 1.0f;
-        const float near = 0.1f;
-        const float far = 100.f;
-
-        mat4_t P = mat4_ident();
-        if (data->view.mode == CameraMode::Perspective) {
-            P = mat4_persp(fovy, ar, near, far);
-        } else {
-            const float h = dist * tanf(fovy * 0.5f);
-            const float w = ar * h;
-            P = mat4_ortho(-w, w, -h, h, near, far);
-        }
-        mat4_t V = data->view.param.matrix.current.view;
-        V.col[3] = vec4_set(0, 0, -dist, 1);
-
-        mat4_t M = mat4_mul(P, V);
-
-        vec4_t x = mat4_mul_vec4(M, {1, 0, 0, 1});
-        vec4_t y = mat4_mul_vec4(M, {0, 1, 0, 1});
-        vec4_t z = mat4_mul_vec4(M, {0, 0, 1, 1});
-
-        x = vec4_div_f(x, x.w);
-        y = vec4_div_f(y, y.w);
-        z = vec4_div_f(z, z.w);
-
-        // Vector
-        const ImVec2 v[3] = { ImVec2(x.x, -x.y) * ext, ImVec2(y.x, -y.y) * ext, ImVec2(z.x, -z.y) * ext };
-        // Normalized vector
-        const ImVec2 n[3] = { v[0] * ImInvLength(v[0], 0.0f), v[1] * ImInvLength(v[1], 0.0f), v[2] * ImInvLength(v[2], 0.0f) };
-        // Text
-        const char* t[3] = { "X", "Y", "Z" };
-        // Size
-        const ImVec2 s[3] = { ImGui::CalcTextSize(t[0]), ImGui::CalcTextSize(t[1]), ImGui::CalcTextSize(t[2]) };
-        // Color
-        const uint32_t c[3] = { 0xFF0000FF, 0xFF00FF00, 0xFFFF0000 };
-        // Depth
-        const float d[3] = { x.z, y.z, z.z };
-
-        // Draw order
-        int idx[3] = {0, 1, 2};
-
-        // Sort by depth
-        if (d[idx[0]] < d[idx[1]]) { ImSwap(idx[0], idx[1]); }
-        if (d[idx[1]] < d[idx[2]]) { ImSwap(idx[1], idx[2]); }
-        if (d[idx[0]] < d[idx[1]]) { ImSwap(idx[0], idx[1]); }
-
-        for (int i : idx) {
-            dl->AddLine(o, o + v[i], c[i], 3.0f);
-            dl->AddText(o + v[i] + n[i] * s[i].y * 1.1f + ImVec2(-0.5f, -0.5f) * s[i], c[i], t[i]);
+    {
+        static int size = 150;
+        static bool lock_pos = true;
+        ImGui::SetNextWindowSize(ImVec2(size, size));
+        int flags = ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize;
+        if (lock_pos) {
+            flags |= ImGuiWindowFlags_NoMove;
         }
 
-        // Interaction rectangles for resetting view
-        {
-            const float s_min = 0.25f;
-            const float s_max = 0.75f;
-            const ImVec2 p[][4] = {
-                {
-                    o + v[1] * s_min + v[2] * s_min,
-                    o + v[1] * s_max + v[2] * s_min,
-                    o + v[1] * s_max + v[2] * s_max,
-                    o + v[1] * s_min + v[2] * s_max,
-                },
-                {
-                    o + v[2] * s_min + v[0] * s_min,
-                    o + v[2] * s_max + v[0] * s_min,
-                    o + v[2] * s_max + v[0] * s_max,
-                    o + v[2] * s_min + v[0] * s_max,
-                },
-                {
-                    o + v[0] * s_min + v[1] * s_min,
-                    o + v[0] * s_max + v[1] * s_min,
-                    o + v[0] * s_max + v[1] * s_max,
-                    o + v[0] * s_min + v[1] * s_max,
-                },
-            };
-            for (int i = 0; i < 3; ++i) {
-                ImU32 col = (c[i] & 0x00FFFFFF) | 0x22000000;
-                dl->AddConvexPolyFilled(p[i], ARRAY_SIZE(p[i]), col);
+        if (ImGui::Begin("Coordinate Widget", NULL, flags)) {
+
+            if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                ImGui::OpenPopup("Coordinate Widget Context");
+            }
+            if (ImGui::BeginPopup("Coordinate Widget Context")) {
+                ImGui::Text("Coordinate Widget");
+                ImGui::SliderInt("Size", &size, 50, 300);
+                ImGui::Checkbox("Lock position", &lock_pos);
+                ImGui::EndPopup();
+            }
+
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const ImVec2 wp = ImGui::GetWindowPos();
+            const ImVec2 ws = ImGui::GetWindowSize();
+
+            const float ext = ImMin(ws.x, ws.y) * 0.5f;
+            const ImVec2 o = {wp.x + ws.x * 0.5f, wp.y + ws.y * 0.5f};
+            const float dist = 5;
+            const float fovy = data->view.camera.fov_y;
+            const float ar = 1.0f;
+            const float near = 0.1f;
+            const float far = 100.f;
+
+            mat4_t P = mat4_ident();
+            if (data->view.mode == CameraMode::Perspective) {
+                P = mat4_persp(fovy, ar, near, far);
+            } else {
+                const float h = dist * tanf(fovy * 0.5f);
+                const float w = ar * h;
+                P = mat4_ortho(-w, w, -h, h, near, far);
+            }
+            mat4_t V = data->view.param.matrix.current.view;
+            V.col[3] = vec4_set(0, 0, -dist, 1);
+
+            vec4_t vx = mat4_mul_vec4(V, {1, 0, 0, 1});
+            vec4_t vy = mat4_mul_vec4(V, {0, 1, 0, 1});
+            vec4_t vz = mat4_mul_vec4(V, {0, 0, 1, 1});
+
+            // Project
+            vec4_t x = mat4_mul_vec4(P, vx);
+            vec4_t y = mat4_mul_vec4(P, vy);
+            vec4_t z = mat4_mul_vec4(P, vz);
+
+            // Perspective divide
+            x = vec4_div_f(x, x.w);
+            y = vec4_div_f(y, y.w);
+            z = vec4_div_f(z, z.w);
+
+            // Vector
+            const ImVec2 v[3] = { ImVec2(x.x, -x.y) * ext, ImVec2(y.x, -y.y) * ext, ImVec2(z.x, -z.y) * ext };
+            // Normalized vector
+            const ImVec2 n[3] = { v[0] * ImInvLength(v[0], 0.0f), v[1] * ImInvLength(v[1], 0.0f), v[2] * ImInvLength(v[2], 0.0f) };
+            // Text
+            const char* t[3] = { "X", "Y", "Z" };
+            // Size
+            const ImVec2 s[3] = { ImGui::CalcTextSize(t[0]), ImGui::CalcTextSize(t[1]), ImGui::CalcTextSize(t[2]) };
+            // Color
+            const uint32_t c[3] = { 0xFF0000FF, 0xFF00FF00, 0xFFFF0000 };
+            // Axis z relative to origin (-1, 1)
+            const float az[3] = { vx.z + dist, vy.z + dist, vz.z + dist };
+
+            // Draw order
+            int idx[3] = {0, 1, 2};
+
+            // Sort by z order
+            if (az[idx[0]] > az[idx[1]]) { ImSwap(idx[0], idx[1]); }
+            if (az[idx[1]] > az[idx[2]]) { ImSwap(idx[1], idx[2]); }
+            if (az[idx[0]] > az[idx[1]]) { ImSwap(idx[0], idx[1]); }
+
+            // Draw in z order
+            for (int i : idx) {
+                dl->AddLine(o, o + v[i], c[i], 2.0f);
+                dl->AddText(o + v[i] * 1.2f + ImVec2(-0.5f, -0.5f) * s[i], c[i], t[i]);
+            }
+
+            // Interaction rectangles for resetting view
+            {
+                const float s_min = 0.25f;
+                const float s_max = 0.75f;
+                const ImVec2 p[3][4] = {
+                    {
+                        o + v[1] * s_min + v[2] * s_min,
+                        o + v[1] * s_max + v[2] * s_min,
+                        o + v[1] * s_max + v[2] * s_max,
+                        o + v[1] * s_min + v[2] * s_max,
+                    },
+                    {
+                        o + v[2] * s_min + v[0] * s_min,
+                        o + v[2] * s_max + v[0] * s_min,
+                        o + v[2] * s_max + v[0] * s_max,
+                        o + v[2] * s_min + v[0] * s_max,
+                    },
+                    {
+                        o + v[0] * s_min + v[1] * s_min,
+                        o + v[0] * s_max + v[1] * s_min,
+                        o + v[0] * s_max + v[1] * s_max,
+                        o + v[0] * s_min + v[1] * s_max,
+                    },
+                };
+
+                // Test planes for intersection front to back
+                int hovered_plane_idx = -1;
+                if (ImGui::IsWindowHovered()) {
+                    for (int i : idx) {
+                        // Split the polygon (which is a quad) into two triangles
+                        // and check if the mouse is inside any of the triangles
+                        const ImVec2 mouse_pos = ImGui::GetMousePos();
+                        if (ImTriangleContainsPoint(p[i][0], p[i][1], p[i][2], mouse_pos) ||
+                            ImTriangleContainsPoint(p[i][0], p[i][2], p[i][3], mouse_pos))
+                        {
+                            hovered_plane_idx = i;
+                            break;
+                        }
+                    }
+                }
+
+                // Render planes back to front
+                const int ridx[] = {idx[2], idx[1], idx[0]};
+                for (int i : ridx) {
+                    // The visible area of the plane is proportial to the dot product of the normal and the view direction
+                    // We want to fade out the plane when we are looking at it from the side
+                    // In this case we don't have the plane normal, but we have the z component of the 'axis' vector
+
+                    const float alpha_scl = powf(fabsf(az[i]), 0.5f);
+                    ImVec4 col = ImColor(c[i]) * ImVec4(1.0f, 1.0f, 1.0f, 0.2f * alpha_scl);
+                    if (i == hovered_plane_idx) {
+                        const float val = 0.5f + 0.5f * sinf(ImGui::GetTime() * 10.0f);
+                        col.x += val;
+                        col.y += val;
+                        col.z += val;
+                        col.w = 0.5f;
+
+                        const float max_rgb = ImMax(ImMax(col.x, col.y), col.z);
+                        col.x /= max_rgb;
+                        col.y /= max_rgb;
+                        col.z /= max_rgb;
+				    }
+
+                    dl->AddConvexPolyFilled(p[i], ARRAY_SIZE(p[i]), ImColor(col));
+                }
+
+                if (hovered_plane_idx != -1) {
+                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        quat_t& trg_ori = data->view.animation.target_orientation;
+                        vec3_t& trg_pos = data->view.animation.target_position;
+                        const float trg_dst = data->view.animation.target_distance;
+                        const quat_t& cam_ori = data->view.camera.orientation;
+                        const vec3_t dirs[3] = {
+						    { 1, 0, 0},
+						    { 0, 1, 0},
+						    { 0, 0, 1},
+					    };
+                        const int i = hovered_plane_idx;
+                        const vec3_t look_at = trg_pos - trg_ori * vec3_set(0, 0, trg_dst);
+
+                        {
+                            // Orientate to align with the plane
+                            const mat3_t M = mat3_from_quat(cam_ori);
+                            const vec3_t f = vec3_dot(dirs[i], M[2]) > 0 ? dirs[i] : -dirs[i];
+                            const vec3_t axis = vec3_normalize(vec3_cross(M[2], f));
+                            const float angle = acosf(vec3_dot(M[2], f));
+                            const quat_t q = quat_angle_axis(angle, axis);
+
+                            trg_ori = quat_normalize(q * cam_ori);
+                        }
+
+                        {
+                            const mat3_t M = mat3_from_quat(trg_ori);
+                            // M should now be aligned with the plane such that M[2] is equal to +/- dirs[i]
+                            // Now we want to align M[1] with the x, y or z axis, whichever it coincides with the most
+                            const float dx = vec3_dot(vec3_set(1,0,0), M[1]);
+                            const float dy = vec3_dot(vec3_set(0,1,0), M[1]);
+                            const float dz = vec3_dot(vec3_set(0,0,1), M[1]);
+                            vec3_t u;
+                            if (fabsf(dx) > fabsf(dy) && fabsf(dx) > fabsf(dz)) {
+							    u = signf(dx) * vec3_set(1,0,0);
+						    } else if (fabsf(dy) > fabsf(dx) && fabsf(dy) > fabsf(dz)) {
+							    u = sign(dy) * vec3_set(0,1,0);
+						    } else {
+							    u = sign(dz) * vec3_set(0,0,1);
+						    }
+                            const vec3_t axis = vec3_normalize(vec3_cross(M[1], u));
+                            const float angle = acosf(vec3_dot(M[1], u));
+                            const quat_t q = quat_angle_axis(angle, axis);
+
+                            // Orientate to align with 'up'
+                            trg_ori = quat_normalize(q * trg_ori);
+                        }
+
+					    // Look at the same point as before
+                        trg_pos = look_at + trg_ori * vec3_set(0, 0, trg_dst);
+                    }
+                }
             }
         }
+        ImGui::End();
     }
-    ImGui::End();
 #endif
 
     ImGui::BeginCanvas("Main interaction window", true);
