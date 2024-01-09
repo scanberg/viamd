@@ -99,7 +99,7 @@
 #define LOG_ERROR MD_LOG_ERROR
 #define LOG_SUCCESS(...) ImGui::InsertNotification(ImGuiToast(ImGuiToastType_Success, 6000, __VA_ARGS__))
 
-constexpr str_t shader_output_snippet = STR(R"(
+constexpr str_t shader_output_snippet = STR_LIT(R"(
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec4 out_normal;
 layout(location = 2) out vec4 out_velocity;
@@ -137,7 +137,7 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
 }
 )");
 
-constexpr str_t shader_output_snippet_lean_and_mean = STR(R"(
+constexpr str_t shader_output_snippet_lean_and_mean = STR_LIT(R"(
 void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint atom_index) {
 }
 )");
@@ -151,12 +151,12 @@ constexpr ImGuiKey KEY_SHOW_DEBUG_WINDOW = ImGuiKey_F11;
 constexpr ImGuiKey KEY_SCRIPT_EVALUATE     = ImGuiKey_Enter;
 constexpr ImGuiKey KEY_SCRIPT_EVALUATE_MOD = ImGuiMod_Shift;
 
-constexpr str_t WORKSPACE_FILE_EXTENSION = STR("via"); 
+constexpr str_t WORKSPACE_FILE_EXTENSION = STR_LIT("via"); 
 constexpr uint32_t INVALID_PICKING_IDX = ~0U;
 
 constexpr uint32_t PROPERTY_COLORS[] = {4293119554, 4290017311, 4287291314, 4281114675, 4288256763, 4280031971, 4285513725, 4278222847, 4292260554, 4288298346, 4288282623, 4280834481};
 
-constexpr str_t SCRIPT_IMPORT_FILE_EXTENSIONS[] = { STR("edr"), STR("xvg"), STR("csv") };
+constexpr str_t SCRIPT_IMPORT_FILE_EXTENSIONS[] = { STR_LIT("edr"), STR_LIT("xvg"), STR_LIT("csv") };
 
 inline const ImVec4& vec_cast(const vec4_t& v) { return *(const ImVec4*)(&v); }
 inline const vec4_t& vec_cast(const ImVec4& v) { return *(const vec4_t*)(&v); }
@@ -422,7 +422,7 @@ struct DatasetItem {
 struct LoadParam {
     md_molecule_loader_i*   mol_loader  = NULL;
     md_trajectory_loader_i* traj_loader = NULL;
-    str_t file_path = STR("");
+    str_t file_path = STR_LIT("");
     bool coarse_grained = false;
     bool deperiodize = false;
     bool keep_representations = false;
@@ -558,7 +558,7 @@ struct ApplicationData {
     } mold;
 
     DisplayProperty* display_properties = nullptr;
-    str_t hovered_display_property_label = STR("");
+    str_t hovered_display_property_label = STR_LIT("");
     int   hovered_display_property_pop_idx = -1;
 
     // --- ASYNC TASKS HANDLES ---
@@ -1276,7 +1276,7 @@ static void create_screenshot(ApplicationData* data);
 
 // Representations
 static Representation* create_representation(ApplicationData* data, RepresentationType type = RepresentationType::SpaceFill,
-                                             ColorMapping color_mapping = ColorMapping::Cpk, str_t filter = STR("all"));
+                                             ColorMapping color_mapping = ColorMapping::Cpk, str_t filter = STR_LIT("all"));
 static Representation* clone_representation(ApplicationData* data, const Representation& rep);
 static void remove_representation(ApplicationData* data, int idx);
 static void update_representation(ApplicationData* data, Representation* rep);
@@ -1502,8 +1502,8 @@ int main(int argc, char** argv) {
             extract_folder_path(&folder, {exe, len});
             sb += folder;
             sb += VIAMD_DATASET_DIR "/1ALA-500.pdb";
-            convert_backslashes(sb.buf, md_array_size(sb.buf));
-            str_t path = md_strb_to_str(&sb);
+            replace_char(md_strb_ptr(sb), md_strb_len(sb), '\\', '/');
+            str_t path = md_strb_to_str(sb);
             if (md_path_is_valid(path)) {
                 file_queue_push(&data.file_queue, path);
                 editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(2,1,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);");
@@ -1642,7 +1642,7 @@ int main(int argc, char** argv) {
 
         ImGuiWindow* win = ImGui::GetCurrentContext()->HoveredWindow;
         if (win && strcmp(win->Name, "Main interaction window") == 0) {
-            set_hovered_property(&data,  STR(""));
+            set_hovered_property(&data,  STR_LIT(""));
         }
 
         draw_context_popup(&data);
@@ -1738,7 +1738,7 @@ int main(int argc, char** argv) {
                         frame_end = CLAMP((uint32_t)data.animation.frame, 0, traj_frames);
                     }
                     if (frame_beg != frame_end) {
-                        data.tasks.prefetch_frames = task_system::pool_enqueue(STR("##Prefetch Frames"), frame_beg, frame_end, [](uint32_t frame_beg, uint32_t frame_end, void* user_data) {
+                        data.tasks.prefetch_frames = task_system::pool_enqueue(STR_LIT("##Prefetch Frames"), frame_beg, frame_end, [](uint32_t frame_beg, uint32_t frame_end, void* user_data) {
                             ApplicationData* data = (ApplicationData*)user_data;
                             for (uint32_t i = frame_beg; i < frame_end; ++i) {
                                 md_trajectory_load_frame(data->mold.traj, i, 0, 0, 0, 0);
@@ -1961,8 +1961,8 @@ int main(int argc, char** argv) {
                             md_script_ir_free(data.mold.script.eval_ir);
                             data.mold.script.eval_ir = data.mold.script.ir;
                         }
-                        data.mold.script.full_eval = md_script_eval_create(num_frames, data.mold.script.ir, STR(""), persistent_allocator);
-                        data.mold.script.filt_eval = md_script_eval_create(num_frames, data.mold.script.ir, STR("filt"), persistent_allocator);
+                        data.mold.script.full_eval = md_script_eval_create(num_frames, data.mold.script.ir, STR_LIT(""), persistent_allocator);
+                        data.mold.script.filt_eval = md_script_eval_create(num_frames, data.mold.script.ir, STR_LIT("filt"), persistent_allocator);
                     }
 
                     init_display_properties(&data);
@@ -1983,14 +1983,14 @@ int main(int argc, char** argv) {
                             data.mold.script.evaluate_full = false;
                             md_script_eval_clear(data.mold.script.full_eval);
 
-                            data.tasks.evaluate_full = task_system::pool_enqueue(STR("Eval Full"), 0, (uint32_t)num_frames, [](uint32_t frame_beg, uint32_t frame_end, void* user_data) {
+                            data.tasks.evaluate_full = task_system::pool_enqueue(STR_LIT("Eval Full"), 0, (uint32_t)num_frames, [](uint32_t frame_beg, uint32_t frame_end, void* user_data) {
                                 ApplicationData* data = (ApplicationData*)user_data;
                                 md_script_eval_frame_range(data->mold.script.full_eval, data->mold.script.eval_ir, &data->mold.mol, data->mold.traj, frame_beg, frame_end);
                             }, &data);
                             
 #if MEASURE_EVALUATION_TIME
                             uint64_t time = (uint64_t)md_time_current();
-                            task_system::pool_enqueue(STR("##Time Eval Full"), [](void* user_data) {
+                            task_system::pool_enqueue(STR_LIT("##Time Eval Full"), [](void* user_data) {
                                 uint64_t t1 = md_time_current();
                                 uint64_t t0 = (uint64_t)user_data;
                                 double s = md_time_as_seconds(t1 - t0);
@@ -2015,14 +2015,14 @@ int main(int argc, char** argv) {
                             const uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(data.mold.traj);
                             const uint32_t beg_frame = CLAMP((uint32_t)data.timeline.filter.beg_frame, 0, traj_frames-1);
                             const uint32_t end_frame = CLAMP((uint32_t)data.timeline.filter.end_frame + 1, beg_frame + 1, traj_frames);
-                            data.tasks.evaluate_filt = task_system::pool_enqueue(STR("Eval Filt"), beg_frame, end_frame, [](uint32_t beg, uint32_t end, void* user_data)
+                            data.tasks.evaluate_filt = task_system::pool_enqueue(STR_LIT("Eval Filt"), beg_frame, end_frame, [](uint32_t beg, uint32_t end, void* user_data)
                                 {
                                     ApplicationData* data = (ApplicationData*)user_data;
                                     md_script_eval_frame_range(data->mold.script.filt_eval, data->mold.script.eval_ir, &data->mold.mol, data->mold.traj, beg, end);
                                 }, &data);
                             
                             /*
-                            task_system::pool_enqueue(STR("##Release IR Semaphore"), [](void* user_data)
+                            task_system::pool_enqueue(STR_LIT("##Release IR Semaphore"), [](void* user_data)
                                 {
                                     ApplicationData* data = (ApplicationData*)user_data;
                                     md_semaphore_release(&data->mold.script.ir_semaphore);
@@ -3367,7 +3367,7 @@ ImGui::EndGroup();
                     str_t ext;
                     if (extract_ext(&ext, {path_buf, path_len})) {
                         path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".jpg");
-                        ext = STR("jpg");
+                        ext = STR_LIT("jpg");
                     }
                     if (str_eq_cstr_ignore_case(ext, "jpg") || str_eq_cstr_ignore_case(ext, "png") || str_eq_cstr_ignore_case(ext, "bmp")) {
                         data->screenshot.path_to_file = str_copy({path_buf, path_len}, persistent_allocator);
@@ -3439,6 +3439,15 @@ ImGui::EndGroup();
 
             ImGui::EndMenu();
         }
+        if (ImGui::BeginMenu("Operations")) {
+			if (ImGui::MenuItem("Apply PBC")) {
+                md_molecule_t& mol = data->mold.mol;
+                size_t num_structures = md_index_data_count(mol.structures);
+				md_util_deperiodize_system(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.mass, mol.atom.count, &mol.unit_cell, mol.structures.offsets, mol.structures.indices, num_structures);
+			}
+            ImGui::SetItemTooltip("Apply Periodic Boundary Conditions and unwrap structures");
+			ImGui::EndMenu();
+		}
         {
             // Fps counter
             static int num_frames = 0;
@@ -3904,10 +3913,10 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
 
             // Subset of residue is selected
             write_atom_remainder(sb, bf, range.beg);
-            if (md_strb_len(&sb) < 512) {
+            if (md_strb_len(sb) < 512) {
                 str_t resname = LBL_TO_STR(mol->residue.name[res_idx]);
                 md_strb_fmt(&sb, " in resname(\"%.*s\");", (int)resname.len, resname.ptr);
-                md_array_push(suggestions, str_copy(md_strb_to_str(&sb), frame_allocator), frame_allocator);
+                md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_allocator), frame_allocator);
             }
         }
     }
@@ -3921,10 +3930,10 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
 
             // Subset of chain is selected
             write_atom_remainder(sb, bf, range.beg);
-            if (md_strb_len(&sb) < 512) {
+            if (md_strb_len(sb) < 512) {
                 str_t chain_id = LBL_TO_STR(mol->chain.id[chain_idx]);
                 md_strb_fmt(&sb, " in chain(\"%.*s\");", (int)chain_id.len, chain_id.ptr);
-                md_array_push(suggestions, str_copy(md_strb_to_str(&sb), frame_allocator), frame_allocator);
+                md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_allocator), frame_allocator);
             }
         }
     }
@@ -3975,9 +3984,9 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
             write_atom_remainder(sb, &tmp_bf);
         }
         
-        if (md_strb_len(&sb) < 512) {
+        if (md_strb_len(sb) < 512) {
             md_strb_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_strb_to_str(&sb), frame_allocator), frame_allocator);
+            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_allocator), frame_allocator);
         }
         
         md_strb_reset(&sb);
@@ -3999,9 +4008,9 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
             write_atom_remainder(sb, &tmp_bf);
         }
         
-        if (md_strb_len(&sb) < 512) {
+        if (md_strb_len(sb) < 512) {
             md_strb_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_strb_to_str(&sb), frame_allocator), frame_allocator);
+            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_allocator), frame_allocator);
         }
     }
 
@@ -4017,9 +4026,9 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
             write_atom_remainder(sb, &tmp_bf);
         }
 
-        if (md_strb_len(&sb) < 512) {
+        if (md_strb_len(sb) < 512) {
             md_strb_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_strb_to_str(&sb), frame_allocator), frame_allocator);
+            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_allocator), frame_allocator);
         }
     }
 
@@ -4028,9 +4037,9 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
         sb += ident;
         sb += " = ";
         write_atom_remainder(sb, bf);
-        if (md_strb_len(&sb) < 512) {
+        if (md_strb_len(sb) < 512) {
             md_strb_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_strb_to_str(&sb), frame_allocator), frame_allocator);
+            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_allocator), frame_allocator);
         }
     }
     
@@ -4092,7 +4101,7 @@ void draw_context_popup(ApplicationData* data) {
                 char buf[256] = "";
                 if (sss_count == 2) {
                     int32_t idx[2] = {data->selection.single_selection_sequence.idx[0], data->selection.single_selection_sequence.idx[1]};
-                    str_t ident = create_unique_identifier(data->mold.script.ir, STR("dist"), frame_allocator);
+                    str_t ident = create_unique_identifier(data->mold.script.ir, STR_LIT("dist"), frame_allocator);
 
                     snprintf(buf, sizeof(buf), "%.*s = distance(%i, %i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1);
                     if (ImGui::MenuItem(buf)) {
@@ -4137,7 +4146,7 @@ void draw_context_popup(ApplicationData* data) {
                 }
                 else if(sss_count == 3) {
                     int32_t idx[3] = {data->selection.single_selection_sequence.idx[0], data->selection.single_selection_sequence.idx[1], data->selection.single_selection_sequence.idx[2]};
-                    str_t ident = create_unique_identifier(data->mold.script.ir, STR("ang"), frame_allocator);
+                    str_t ident = create_unique_identifier(data->mold.script.ir, STR_LIT("ang"), frame_allocator);
 
                     snprintf(buf, sizeof(buf), "%.*s = angle(%i, %i, %i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1);
                     if (ImGui::MenuItem(buf)) {
@@ -4185,7 +4194,7 @@ void draw_context_popup(ApplicationData* data) {
                 }
                 else if(sss_count == 4) {
                     int32_t idx[4] = {data->selection.single_selection_sequence.idx[0], data->selection.single_selection_sequence.idx[1], data->selection.single_selection_sequence.idx[2], data->selection.single_selection_sequence.idx[3]};
-                    str_t ident = create_unique_identifier(data->mold.script.ir, STR("dih"), frame_allocator);
+                    str_t ident = create_unique_identifier(data->mold.script.ir, STR_LIT("dih"), frame_allocator);
 
                     snprintf(buf, sizeof(buf), "%.*s = dihedral(%i, %i, %i, %i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1);
                     if (ImGui::MenuItem(buf)) {
@@ -4236,7 +4245,7 @@ void draw_context_popup(ApplicationData* data) {
             }
             if (num_atoms_selected >= 1) {
                 const md_bitfield_t* bf = &data->selection.current_selection_mask;
-                str_t ident = create_unique_identifier(data->mold.script.ir, STR("sel"), frame_allocator);
+                str_t ident = create_unique_identifier(data->mold.script.ir, STR_LIT("sel"), frame_allocator);
                 
                 md_array(str_t) suggestions = generate_script_selection_suggestions(ident, bf, &data->mold.mol);
 
@@ -4827,7 +4836,7 @@ static void draw_info_window(const ApplicationData& data, uint32_t picking_idx) 
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
     ImGui::Begin("##Atom Info", 0,
                     ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDocking);
-    ImGui::Text("%s", md_strb_to_cstr(&sb));
+    ImGui::Text("%s", md_strb_to_cstr(sb));
     ImGui::End();
     ImGui::PopStyleColor();
 }
@@ -5394,7 +5403,7 @@ static void draw_timeline_window(ApplicationData* data) {
                     bool print_timeline_tooltip = false;
                    
                     if (ImPlot::IsPlotHovered()) {
-                        set_hovered_property(data,  STR(""));
+                        set_hovered_property(data,  STR_LIT(""));
 
                         print_timeline_tooltip = true;
                         const ImPlotPoint mouse_pos = ImPlot::GetPlotMousePos();
@@ -5859,7 +5868,7 @@ static void draw_distribution_window(ApplicationData* data) {
                         DisplayProperty& prop = props[i];
                         if (prop.type == DisplayProperty::Type_Distribution) {
                             // @TODO(Robin): This is a hack to hide the filter property when not enabled. This should not be hardcoded in the future...
-                            if (!data->timeline.filter.enabled && str_eq(md_script_eval_label(prop.eval), STR("filt"))) {
+                            if (!data->timeline.filter.enabled && str_eq(md_script_eval_label(prop.eval), STR_LIT("filt"))) {
                                 continue;
                             }
                             ImPlot::ItemIcon(prop.color);
@@ -5933,7 +5942,7 @@ static void draw_distribution_window(ApplicationData* data) {
                     char hovered_label[64] = "";
 
                     if (ImPlot::IsPlotHovered()) {
-                        set_hovered_property(data, STR(""));
+                        set_hovered_property(data, STR_LIT(""));
                         
                         const ImPlotPoint mouse_pos = ImPlot::GetPlotMousePos();
                         const ImVec2 mouse_coord = ImPlot::PlotToPixels(mouse_pos);
@@ -6402,11 +6411,11 @@ static void export_shape_space(ApplicationData* data, const char* ext) {
         size_t num_rows = data->shape_space.num_frames;
 
         for (size_t i = 0; i < num_structs; ++i) {
-            md_array_push(column_labels, alloc_printf(alloc, "%zu (lin)",  i + 1).ptr, alloc);
+            md_array_push(column_labels, str_printf(alloc, "%zu (lin)",  i + 1).ptr, alloc);
             md_array_push(column_data, NULL, alloc);
-            md_array_push(column_labels, alloc_printf(alloc, "%zu (plan)", i + 1).ptr, alloc);
+            md_array_push(column_labels, str_printf(alloc, "%zu (plan)", i + 1).ptr, alloc);
             md_array_push(column_data, NULL, alloc);
-            md_array_push(column_labels, alloc_printf(alloc, "%zu (iso)",  i + 1).ptr, alloc);
+            md_array_push(column_labels, str_printf(alloc, "%zu (iso)",  i + 1).ptr, alloc);
             md_array_push(column_data, NULL, alloc);
         }
 
@@ -6428,9 +6437,9 @@ static void export_shape_space(ApplicationData* data, const char* ext) {
         size_t num_cols = num_structs * 3 + 1;
         ASSERT(num_cols == md_array_size(column_data));
         ASSERT(num_cols == md_array_size(column_labels));
-        if (str_eq_cstr(STR("csv"), ext)) {
+        if (str_eq_cstr(STR_LIT("csv"), ext)) {
             export_csv((const float**)column_data, column_labels, num_cols, num_rows, str_from_cstr(path));
-        } else if (str_eq_cstr(STR("xvg"), ext)) {
+        } else if (str_eq_cstr(STR_LIT("xvg"), ext)) {
             export_xvg((const float**)column_data, column_labels, num_cols, num_rows, str_from_cstr(path));
         } else {
             MD_LOG_DEBUG("Unrecognized export format");
@@ -6662,7 +6671,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                         md_array_resize(data->shape_space.weights, num_frames * data->shape_space.num_structures, persistent_allocator);
                         MEMSET(data->shape_space.weights, 0, md_array_bytes(data->shape_space.weights));
 
-                        data->tasks.shape_space_evaluate = task_system::pool_enqueue(STR("Eval Shape Space"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+                        data->tasks.shape_space_evaluate = task_system::pool_enqueue(STR_LIT("Eval Shape Space"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
                             ApplicationData* data = (ApplicationData*)user_data;
                             int64_t stride = ALIGN_TO(data->mold.mol.atom.count, 8);
                             const int64_t bytes = stride * 3 * sizeof(float);
@@ -7253,7 +7262,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                     DisplayProperty& dp = data->display_properties[i];
                     if (dp.type != DisplayProperty::Type_Volume) continue;
                     // @TODO(Robin): This is a hack to hide the filter property when not enabled. This should not be hardcoded in the future...
-                    if (!data->timeline.filter.enabled && str_eq(md_script_eval_label(dp.eval), STR("filt"))) {
+                    if (!data->timeline.filter.enabled && str_eq(md_script_eval_label(dp.eval), STR_LIT("filt"))) {
                         continue;
                     }
                     ImPlot::ItemIcon(dp.color); ImGui::SameLine();
@@ -8297,18 +8306,18 @@ static void draw_property_export_window(ApplicationData* data) {
                                 time[i] = (float)traj_times[i];
                             }
 
-                            str_t x_label = STR("Frame");
+                            str_t x_label = STR_LIT("Frame");
                             str_t y_label = str_from_cstr(dp.label);
 
                             if (!md_unit_empty(dp.unit)) {
-                                y_label = alloc_printf(frame_allocator, "%s (%s)", dp.label, dp.unit_str);
+                                y_label = str_printf(frame_allocator, "%s (%s)", dp.label, dp.unit_str);
                             }
 
                             md_unit_t time_unit = md_trajectory_time_unit(data->mold.traj);
                             if (!md_unit_empty(time_unit)) {
                                 char time_buf[64];
                                 size_t len = md_unit_print(time_buf, sizeof(time_buf), time_unit);
-                                x_label = alloc_printf(frame_allocator, "Time (" STR_FMT ")", len, time_buf);
+                                x_label = str_printf(frame_allocator, "Time (" STR_FMT ")", len, time_buf);
                             }
 
                             md_array_push(column_data, time, frame_allocator);
@@ -8316,7 +8325,7 @@ static void draw_property_export_window(ApplicationData* data) {
 
                             if (dp.dim > 1) {
                                 for (int i = 0; i < dp.dim; ++i) {
-                                    str_t legend = alloc_printf(frame_allocator, "%s[%i]", dp.label, i + 1);
+                                    str_t legend = str_printf(frame_allocator, "%s[%i]", dp.label, i + 1);
                                     md_array_push(column_data, dp.prop->data.values + i * num_frames, frame_allocator);
                                     md_array_push(legends, legend, frame_allocator);
                                     md_array_push(column_labels, legend, frame_allocator);
@@ -8346,7 +8355,7 @@ static void draw_property_export_window(ApplicationData* data) {
                             if (dp.hist.dim > 1) {
                                 for (int i = 0; i < dp.hist.dim; ++i) {
                                     md_array_push(column_data, dp.hist.bins + i * dp.hist.num_bins, frame_allocator);
-                                    str_t legend = alloc_printf(frame_allocator, "%s[%i]", dp.label, i + 1);
+                                    str_t legend = str_printf(frame_allocator, "%s[%i]", dp.label, i + 1);
                                     md_array_push(legends, legend, frame_allocator);
                                     md_array_push(column_labels, legend, frame_allocator);
                                 }
@@ -8619,7 +8628,7 @@ static void init_trajectory_data(ApplicationData* data) {
             // Launch work to compute the values
             task_system::task_interrupt_and_wait_for(data->tasks.backbone_computations);
 
-            data->tasks.backbone_computations = task_system::pool_enqueue(STR("Backbone Operations"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+            data->tasks.backbone_computations = task_system::pool_enqueue(STR_LIT("Backbone Operations"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
                 ApplicationData* data = (ApplicationData*)user_data;
                 
                 // Create copy here of molecule since we use the full structure as input
@@ -8641,7 +8650,7 @@ static void init_trajectory_data(ApplicationData* data) {
                 }
             }, data);
 
-            task_system::main_enqueue(STR("Update Trajectory Data"), [](void* user_data) {
+            task_system::main_enqueue(STR_LIT("Update Trajectory Data"), [](void* user_data) {
                 ApplicationData* data = (ApplicationData*)user_data;
                 data->trajectory_data.backbone_angles.fingerprint = generate_fingerprint();
                 data->trajectory_data.secondary_structure.fingerprint = generate_fingerprint();
@@ -8750,7 +8759,7 @@ static void launch_prefetch_job(ApplicationData* data) {
     if (!num_frames) return;
 
     task_system::task_interrupt_and_wait_for(data->tasks.prefetch_frames);
-    data->tasks.prefetch_frames = task_system::pool_enqueue(STR("Prefetch Frames"), 0, num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+    data->tasks.prefetch_frames = task_system::pool_enqueue(STR_LIT("Prefetch Frames"), 0, num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
         ApplicationData* data = (ApplicationData*)user_data;
         for (uint32_t i = range_beg; i < range_end; ++i) {
             md_trajectory_frame_header_t header;
@@ -8758,7 +8767,7 @@ static void launch_prefetch_job(ApplicationData* data) {
         }
     }, data);
 
-    task_system::main_enqueue(STR("Prefetch Complete"), [](void* user_data) {
+    task_system::main_enqueue(STR_LIT("Prefetch Complete"), [](void* user_data) {
         ApplicationData* data = (ApplicationData*)user_data;
         interpolate_atomic_properties(data);
         update_md_buffers(data);
@@ -8840,17 +8849,17 @@ static RepresentationType get_rep_type(str_t str) {
 static str_t get_rep_type_name(RepresentationType type) {
     switch (type) {
         case RepresentationType::SpaceFill:
-            return STR("SPACE_FILL");
+            return STR_LIT("SPACE_FILL");
         case RepresentationType::Licorice:
-            return STR("LICORICE");
+            return STR_LIT("LICORICE");
         case RepresentationType::BallAndStick:
-            return STR("BALL_AND_STICK");
+            return STR_LIT("BALL_AND_STICK");
         case RepresentationType::Ribbons:
-            return STR("RIBBONS");
+            return STR_LIT("RIBBONS");
         case RepresentationType::Cartoon:
-            return STR("CARTOON");
+            return STR_LIT("CARTOON");
         default:
-            return STR("UNKNOWN");
+            return STR_LIT("UNKNOWN");
     }
 }
 
@@ -8882,25 +8891,25 @@ static ColorMapping get_color_mapping(str_t str) {
 static str_t get_color_mapping_name(ColorMapping mapping) {
     switch (mapping) {
         case ColorMapping::Uniform:
-            return STR("UNIFORM");
+            return STR_LIT("UNIFORM");
         case ColorMapping::Cpk:
-            return STR("CPK");
+            return STR_LIT("CPK");
         case ColorMapping::AtomLabel:
-            return STR("ATOM_LABEL");
+            return STR_LIT("ATOM_LABEL");
         case ColorMapping::AtomIndex:
-            return STR("ATOM_INDEX");
+            return STR_LIT("ATOM_INDEX");
         case ColorMapping::ResName:
-            return STR("RES_NAME");
+            return STR_LIT("RES_NAME");
         case ColorMapping::ResId:
-            return STR("RES_ID");
+            return STR_LIT("RES_ID");
         case ColorMapping::ChainId:
-            return STR("CHAIN_ID");
+            return STR_LIT("CHAIN_ID");
         case ColorMapping::ChainIndex:
-            return STR("CHAIN_INDEX");
+            return STR_LIT("CHAIN_INDEX");
         case ColorMapping::SecondaryStructure:
-            return STR("SECONDARY_STRUCTURE");
+            return STR_LIT("SECONDARY_STRUCTURE");
         default:
-            return STR("UNDEFINED");
+            return STR_LIT("UNDEFINED");
     }
 }
 
@@ -9149,7 +9158,7 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
         {
             // Script starts with """
             // and ends with """
-            str_t token = STR("\"\"\"");
+            str_t token = STR_LIT("\"\"\"");
             if (str_eq_n(arg, token, token.len)) {
                 // Roll back buf to arg + 3
                 const char* beg = arg.ptr + token.len;
@@ -9178,7 +9187,7 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
         {
             // Bitfield starts with ###
             // and ends with ###
-            str_t token = STR("###");
+            str_t token = STR_LIT("###");
             if (str_eq_n(arg, token, token.len)) {
                 // Roll back buf to arg + 3
                 const char* beg = arg.ptr + token.len;
@@ -9699,7 +9708,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
         break;
     case RepresentationType::Ribbons:
     case RepresentationType::Cartoon:
-        rep->type_is_valid = mol.backbone.range_count > 0;
+        rep->type_is_valid = mol.backbone.range.count > 0;
         break;
     default:
         ASSERT(false);
@@ -9752,6 +9761,13 @@ static void clear_representations(ApplicationData* data) {
 }
 
 static void create_default_representations(ApplicationData* data) {
+    if (data->mold.mol.atom.count > 4'000'000) {
+        LOG_INFO("Large molecule detected, creating default representation for all atoms");
+		Representation* rep = create_representation(data, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("all"));
+		snprintf(rep->name, sizeof(rep->name), "default");
+		return;
+    }
+
     bool amino_acid_present = false;
     bool nucleic_present = false;
     bool ion_present = false;
@@ -9760,7 +9776,7 @@ static void create_default_representations(ApplicationData* data) {
 
     if (data->mold.mol.residue.count == 0) {
         // No residues present
-        Representation* rep = create_representation(data, RepresentationType::BallAndStick, ColorMapping::Cpk, STR("all"));
+        Representation* rep = create_representation(data, RepresentationType::BallAndStick, ColorMapping::Cpk, STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
         return;
     }
@@ -9791,23 +9807,23 @@ static void create_default_representations(ApplicationData* data) {
             }
         }
 
-        Representation* prot = create_representation(data, type, color, STR("protein"));
+        Representation* prot = create_representation(data, type, color, STR_LIT("protein"));
         snprintf(prot->name, sizeof(prot->name), "protein");
     }
     if (nucleic_present) {
-        Representation* nucl = create_representation(data, RepresentationType::BallAndStick, ColorMapping::Cpk, STR("nucleic"));
+        Representation* nucl = create_representation(data, RepresentationType::BallAndStick, ColorMapping::Cpk, STR_LIT("nucleic"));
         snprintf(nucl->name, sizeof(nucl->name), "nucleic");
     }
     if (ion_present) {
-        Representation* ion = create_representation(data, RepresentationType::SpaceFill, ColorMapping::Cpk, STR("ion"));
+        Representation* ion = create_representation(data, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("ion"));
         snprintf(ion->name, sizeof(ion->name), "ion");
     }
     if (ligand_present) {
-        Representation* ligand = create_representation(data, RepresentationType::BallAndStick, ColorMapping::Cpk, STR("not (protein or nucleic or water or ion)"));
+        Representation* ligand = create_representation(data, RepresentationType::BallAndStick, ColorMapping::Cpk, STR_LIT("not (protein or nucleic or water or ion)"));
         snprintf(ligand->name, sizeof(ligand->name), "ligand");
     }
     if (water_present) {
-        Representation* water = create_representation(data, RepresentationType::SpaceFill, ColorMapping::Cpk, STR("water"));
+        Representation* water = create_representation(data, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("water"));
         water->scale.x = 0.5f;
         snprintf(water->name, sizeof(water->name), "water");
         water->enabled = false;
@@ -9865,6 +9881,7 @@ static void handle_camera_interaction(ApplicationData* data) {
 
 #if 1
     // Coordinate system widget
+    // @TODO: Make the settings part 
     {
         static int size = 150;
         static bool lock_pos = true;

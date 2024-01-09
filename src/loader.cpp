@@ -33,21 +33,21 @@ enum mol_loader_t {
 };
 
 static const str_t mol_loader_name[] {
-    STR("Unknown"),
-    STR("Standard Protein Data Bank (pdb)"),
-    STR("Gromacs Structure (gro)"),
-    STR("XYZ"),
-    STR("PDBx/mmCIF (cif)"),
-    STR("LAMMPS (data)"),
+    STR_LIT("Unknown"),
+    STR_LIT("Standard Protein Data Bank (pdb)"),
+    STR_LIT("Gromacs Structure (gro)"),
+    STR_LIT("XYZ"),
+    STR_LIT("PDBx/mmCIF (cif)"),
+    STR_LIT("LAMMPS (data)"),
 };
 
 static const str_t mol_loader_ext[] {
     {},
-    STR("pdb"),
-    STR("gro"),
-    STR("xyz;xmol;arc"),
-    STR("cif"),
-    STR("data"),
+    STR_LIT("pdb"),
+    STR_LIT("gro"),
+    STR_LIT("xyz;xmol;arc"),
+    STR_LIT("cif"),
+    STR_LIT("data"),
 };
 
 static md_molecule_loader_i* mol_loader_api[] = {
@@ -69,19 +69,19 @@ enum traj_loader_t {
 };
 
 static str_t traj_loader_name[] {
-	STR("Unknown"),
-	STR("Standard Protein Data Bank (pdb)"),
-	STR("Gromacs Compressed Trajectory (xtc)"),
-	STR("Gromacs Lossless Trajectory (trr)"),
-	STR("XYZ"),
+	STR_LIT("Unknown"),
+	STR_LIT("Standard Protein Data Bank (pdb)"),
+	STR_LIT("Gromacs Compressed Trajectory (xtc)"),
+	STR_LIT("Gromacs Lossless Trajectory (trr)"),
+	STR_LIT("XYZ"),
 };
 
 static str_t traj_loader_ext[] {
 	{},
-	STR("pdb"),
-	STR("xtc"),
-	STR("trr"),
-	STR("xyz;xmol;arc"),
+	STR_LIT("pdb"),
+	STR_LIT("xtc"),
+	STR_LIT("trr"),
+	STR_LIT("xyz;xmol;arc"),
 };
 
 static md_trajectory_loader_i* traj_loader_api[] = {
@@ -211,26 +211,26 @@ enum {
 
 static const table_entry_t table = {
     {
-        STR("Standard Protein Data Bank (pdb)"),
-        STR("Gromacs Structure (gro)"),
-        STR("Gromacs Compressed Trajectory (xtc)"),
-        STR("Gromacs Lossless Trajectory (trr)"),
-        STR("xyz (xyz)"),
-        STR("xyz (xmol)"),
-        STR("xyz (arc)"),
-        STR("PDBx/mmCIF (cif)"),
-        STR("LAMMPS (data)"),
+        STR_LIT("Standard Protein Data Bank (pdb)"),
+        STR_LIT("Gromacs Structure (gro)"),
+        STR_LIT("Gromacs Compressed Trajectory (xtc)"),
+        STR_LIT("Gromacs Lossless Trajectory (trr)"),
+        STR_LIT("xyz (xyz)"),
+        STR_LIT("xyz (xmol)"),
+        STR_LIT("xyz (arc)"),
+        STR_LIT("PDBx/mmCIF (cif)"),
+        STR_LIT("LAMMPS (data)"),
     },
     {
-        STR("pdb"),
-        STR("gro"),
-        STR("xtc"),
-        STR("trr"),
-        STR("xyz"),
-        STR("xmol"),
-        STR("arc"),
-        STR("cif"),
-        STR("data"),
+        STR_LIT("pdb"),
+        STR_LIT("gro"),
+        STR_LIT("xtc"),
+        STR_LIT("trr"),
+        STR_LIT("xyz"),
+        STR_LIT("xmol"),
+        STR_LIT("arc"),
+        STR_LIT("cif"),
+        STR_LIT("data"),
     },
     { 
         md_pdb_molecule_api(),

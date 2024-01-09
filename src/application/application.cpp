@@ -158,8 +158,12 @@ bool initialize(Context* ctx, int width, int height, const char* title) {
     io.Fonts->Build();
     io.FontDefault = io.Fonts->Fonts[1]; // Set default to 18px
 
-    ImGui_ImplGlfw_InitForOpenGL(window, false);
-    ImGui_ImplOpenGL3_Init("#version 150");
+    if (!ImGui_ImplGlfw_InitForOpenGL(window, false) ||
+        !ImGui_ImplOpenGL3_Init("#version 150"))
+    {
+        MD_LOG_ERROR("Failed to initialize ImGui OpenGL");
+        return false;
+    }
 
     data.internal_ctx.window.ptr = window;
     data.internal_ctx.window.title = title;
@@ -313,9 +317,14 @@ bool file_dialog(char* str_buf, int str_cap, FileDialogFlag flags, const char* f
                 snprintf(ext, sizeof(ext), ".%.*s", (int)pext.len, pext.ptr);
             }
         }
-        snprintf(str_buf, str_cap, "%s%s", out_path, ext);
-        convert_backslashes(str_buf, str_cap);
-        return true;
+        int len = snprintf(str_buf, str_cap, "%s%s", out_path, ext);
+        if (0 < len && len < str_cap) {
+            replace_char(str_buf, len, '\\', '/');
+            return true;
+        }
+
+        MD_LOG_ERROR("snprintf failed");
+        return false;
     } else if (result == NFD_ERROR) {
         MD_LOG_ERROR("%s\n", NFD_GetError());
     }

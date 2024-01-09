@@ -61,7 +61,7 @@ namespace iso {
     static GLint uniform_loc_iso_contour_line_scale = -1;
 }
 
-constexpr str_t v_fs_quad_src = STR(R"(
+constexpr str_t v_fs_quad_src = STR_LIT(R"(
 #version 150 core
 
 void main() {
@@ -73,7 +73,7 @@ void main() {
 }
 )");
 
-constexpr str_t f_shader_map_src = STR(R"(
+constexpr str_t f_shader_map_src = STR_LIT(R"(
 #version 330 core
 
 layout(location = 0) out vec4 out_frag0;
@@ -115,7 +115,7 @@ void main() {
 }
 )");
 
-constexpr str_t f_shader_iso_src = STR(R"(
+constexpr str_t f_shader_iso_src = STR_LIT(R"(
 #version 330 core
 
 layout(location = 0) out vec4 out_frag0;
@@ -628,7 +628,7 @@ task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angl
     user_data->frame_stride = frame_stride;
     user_data->sigma = sigma;
 
-    task_system::ID id = task_system::pool_enqueue(STR("Rama density"), [](void* user_data) {
+    task_system::ID id = task_system::pool_enqueue(STR_LIT("Rama density"), [](void* user_data) {
         UserData* data = (UserData*)user_data;
         const float angle_to_coord_scale = 1.0f / (2.0f * PI);
         const float angle_to_coord_offset = 0.5f;
@@ -671,7 +671,7 @@ task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angl
         data->rep->den_sum[3] = (float)sum[3];
     }, user_data);
 
-    task_system::main_enqueue(STR("##Update rama texture"), [](void* user_data) {
+    task_system::main_enqueue(STR_LIT("##Update rama texture"), [](void* user_data) {
         UserData* data = (UserData*)user_data;
         glBindTexture(GL_TEXTURE_2D, data->rep->den_tex);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, density_tex_dim, density_tex_dim, GL_RGBA, GL_FLOAT, data->density_tex);
