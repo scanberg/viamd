@@ -28,19 +28,28 @@ MacOs is not actively tested.
 
 ```git clone --recurse-submodules https://github.com/scanberg/viamd.git```
 
-### (Step 1.5: Install dependencies of external libs:) (Only for linux users)
-#### glfw
+### (Step 1.5: Install dependencies of external libs:glfw & nativefiledialog) (Only for linux users)
+#### For Ubuntu or kbuntu: 
 - libx11-dev
 - libxrandr-dev
 - libxinerama-dev
 - libxcursor-dev
-
-#### nativefiledialog
 - libgtk-3-dev (recommended for ubuntu, use Zenity for kubuntu)
 - pkgconf
 
+#### For CentOS
+sudo yum groupinstall "Development Tools"
+sudo yum install mesa*
+sudo yum install libXrandr*
+sudo yum install libXext*
+sudo yum install libX11*
+sudo yum install libXi*
+
 Example for Ubuntu:
 ```sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libgtk-3-dev pkgconf```
+
+Example for CentOS:
+```sudo yum groupinstall "Development Tools" mesa* libXrandr* libXext* libX11*  libXi*```
 
 ### Step 2: Configure using CMAKE
 
