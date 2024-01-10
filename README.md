@@ -37,13 +37,13 @@ MacOs is not actively tested.
 - libgtk-3-dev (recommended for ubuntu, use Zenity for kubuntu)
 - pkgconf
 
-#### For CentOS
-sudo yum groupinstall "Development Tools"
-sudo yum install mesa*
-sudo yum install libXrandr*
-sudo yum install libXext*
-sudo yum install libX11*
-sudo yum install libXi*
+#### For CentOS:
+- groupinstall "Development Tools"
+- mesa*
+- libXrandr*
+- libXext*
+- libX11*
+- libXi*
 
 Example for Ubuntu:
 ```sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libgtk-3-dev pkgconf```
