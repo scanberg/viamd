@@ -38,18 +38,18 @@ MacOs is not actively tested.
 - pkgconf
 
 #### For CentOS:
-- groupinstall "Development Tools"
 - mesa*
 - libXrandr*
 - libXext*
 - libX11*
 - libXi*
+- libstdc++-static
 
 Example for Ubuntu:
 ```sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libgtk-3-dev pkgconf```
 
 Example for CentOS:
-```sudo yum groupinstall "Development Tools" mesa* libXrandr* libXext* libX11*  libXi*```
+```sudo yum libXrandr* libXext* libX11* libXi* mesa* libstdc++-static```
 
 ### Step 2: Configure using CMAKE
 
