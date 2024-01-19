@@ -65,6 +65,7 @@ enum traj_loader_t {
     TRAJ_LOADER_XTC,
     TRAJ_LOADER_TRR,
     TRAJ_LOADER_XYZ,
+    TRAJ_LOADER_LAMMPSTRJ,
     TRAJ_LOADER_COUNT,
 };
 
@@ -74,6 +75,7 @@ static str_t traj_loader_name[] {
 	STR_LIT("Gromacs Compressed Trajectory (xtc)"),
 	STR_LIT("Gromacs Lossless Trajectory (trr)"),
 	STR_LIT("XYZ"),
+    STR_LIT("Lammps Trajectory [ASCII] (lammpstrj)"),
 };
 
 static str_t traj_loader_ext[] {
@@ -82,6 +84,7 @@ static str_t traj_loader_ext[] {
 	STR_LIT("xtc"),
 	STR_LIT("trr"),
 	STR_LIT("xyz;xmol;arc"),
+	STR_LIT("lammpstrj"),
 };
 
 static md_trajectory_loader_i* traj_loader_api[] = {
@@ -90,6 +93,7 @@ static md_trajectory_loader_i* traj_loader_api[] = {
 	md_xtc_trajectory_loader(),
 	md_trr_trajectory_loader(),
 	md_xyz_trajectory_loader(),
+    md_lammps_trajectory_loader(),
 };
 
 struct LoadedMolecule {
@@ -195,7 +199,7 @@ static void traj_loader_preload_check(load::LoaderState*, traj_loader_t, str_t, 
 
 namespace load {
 
-#define NUM_ENTRIES 9
+#define NUM_ENTRIES 10
 struct table_entry_t {
     str_t name[NUM_ENTRIES];
     str_t ext[NUM_ENTRIES];
@@ -220,6 +224,7 @@ static const table_entry_t table = {
         STR_LIT("xyz (arc)"),
         STR_LIT("PDBx/mmCIF (cif)"),
         STR_LIT("LAMMPS (data)"),
+        STR_LIT("LAMMPS Trajectory (lammpstrj)"),
     },
     {
         STR_LIT("pdb"),
@@ -231,6 +236,7 @@ static const table_entry_t table = {
         STR_LIT("arc"),
         STR_LIT("cif"),
         STR_LIT("data"),
+        STR_LIT("lammpstrj"),
     },
     { 
         md_pdb_molecule_api(),
@@ -242,6 +248,7 @@ static const table_entry_t table = {
         md_xyz_molecule_api(),
         md_mmcif_molecule_api(),
         md_lammps_molecule_api(),
+        NULL,
     },
 	{ 
         md_pdb_trajectory_loader(),
@@ -253,6 +260,7 @@ static const table_entry_t table = {
     	md_xyz_trajectory_loader(),
     	NULL,
         NULL,
+        md_lammps_trajectory_loader(),
     }
 };
 
@@ -390,8 +398,8 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
     bool in_cache = md_frame_cache_find_or_reserve(&loaded_traj->cache, idx, &frame_data, &lock);
     if (!in_cache) {
         md_allocator_i* alloc = md_heap_allocator;
-        const int64_t frame_data_size = md_trajectory_fetch_frame_data(loaded_traj->traj, idx, 0);
-        void* frame_data_ptr = md_alloc(alloc, frame_data_size);
+        size_t frame_data_size = md_trajectory_fetch_frame_data(loaded_traj->traj, idx, 0);
+        void*  frame_data_ptr  = md_alloc(alloc, frame_data_size);
         md_trajectory_fetch_frame_data(loaded_traj->traj, idx, frame_data_ptr);
         result = md_trajectory_decode_frame_data(loaded_traj->traj, frame_data_ptr, frame_data_size, &frame_data->header, frame_data->x, frame_data->y, frame_data->z);
 
@@ -414,11 +422,9 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
                     int32_t* indices = (int32_t*)md_alloc(alloc, sizeof(int32_t) * count);
                     defer { md_free(alloc, indices, sizeof(int32_t) * count); };
                         
-                    size_t num_indices = md_bitfield_extract_indices(indices, count, bf);
+                    size_t num_indices = md_bitfield_iter_extract_indices(indices, count, md_bitfield_iter_create(bf));
                     ASSERT(num_indices == count);
                     (void)num_indices;
-
-                    const vec3_t box_ext = mat3_mul_vec3(cell->basis, vec3_set1(1.0f));
 
                     vec3_t com = {0};
                     if (count == 1) {
@@ -426,13 +432,13 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
 						com = vec3_set(x[i], y[i], z[i]);
 					}
 					else {
-						com = have_cell ?
-							vec3_deperiodize(md_util_compute_com_ortho(x, y, z, mol->atom.mass, indices, count, box_ext), box_ext * 0.5f, box_ext) :
-							md_util_com_compute(x, y, z, mol->atom.mass, indices, count);
+						com = md_util_com_compute(x, y, z, mol->atom.mass, indices, count, &mol->unit_cell);
+                        md_util_pbc(&com.x, &com.y, &com.z, 0, 1, cell);
                     }
 
                     // Translate all
-                    const vec3_t trans = have_cell ? box_ext * 0.5f - com : -com;
+                    const vec3_t box_center = have_cell ? cell->basis * vec3_set1(0.5f) : vec3_zero();
+                    const vec3_t trans = box_center - com;
                     vec3_batch_translate_inplace(x, y, z, num_atoms, trans);
                 }
             }

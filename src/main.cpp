@@ -2701,7 +2701,7 @@ static void clear_density_volume(ApplicationData* data) {
 
 static void interpolate_atomic_properties(ApplicationData* data) {
     ASSERT(data);
-    const auto& mol = data->mold.mol;
+    auto& mol = data->mold.mol;
     const auto& traj = data->mold.traj;
 
     if (!mol.atom.count || !md_trajectory_num_frames(traj)) return;
@@ -2723,21 +2723,18 @@ static void interpolate_atomic_properties(ApplicationData* data) {
         MIN(frame + 2, last_frame)
     };
 
-    int64_t stride = ALIGN_TO(mol.atom.count, 8);    // The interploation uses SIMD vectorization without bounds, so we make sure there is no overlap between the data segments
-    int64_t bytes = stride * sizeof(float) * 3 * 4;
+    size_t stride = ALIGN_TO(mol.atom.count, 16);    // The interploation uses SIMD vectorization without bounds, so we make sure there is no overlap between the data segments
+    size_t bytes = stride * sizeof(float) * 3 * 4;
     void* mem = md_alloc(frame_allocator, bytes);
     defer { md_free(frame_allocator, mem, bytes); };
 
-    md_vec3_soa_t src[4] = {
-        {(float*)mem + stride * 0, (float*)mem + stride *  1, (float*)mem + stride *  2},
-        {(float*)mem + stride * 3, (float*)mem + stride *  4, (float*)mem + stride *  5},
-        {(float*)mem + stride * 6, (float*)mem + stride *  7, (float*)mem + stride *  8},
-        {(float*)mem + stride * 9, (float*)mem + stride * 10, (float*)mem + stride * 11},
-    };
+    float* src_x[4] = { (float*)mem + stride * 0, (float*)mem + stride * 1, (float*)mem + stride * 2, (float*)mem + stride * 3 };
+    float* src_y[4] = { (float*)mem + stride * 4, (float*)mem + stride * 5, (float*)mem + stride * 6, (float*)mem + stride * 7 };
+    float* src_z[4] = { (float*)mem + stride * 8, (float*)mem + stride * 9, (float*)mem + stride * 10, (float*)mem + stride * 11};
 
-    md_vec3_soa_t dst = {
-        data->mold.mol.atom.x, data->mold.mol.atom.y, data->mold.mol.atom.z,
-    };
+    float* dst_x = mol.atom.x;
+    float* dst_y = mol.atom.y;
+    float* dst_z = mol.atom.z;
 
     const InterpolationMode mode = (frames[1] != frames[2]) ? data->animation.interpolation : InterpolationMode::Nearest;
     switch (mode) {
@@ -2751,32 +2748,32 @@ static void interpolate_atomic_properties(ApplicationData* data) {
         case InterpolationMode::Linear:
         {
             md_trajectory_frame_header_t header[2] = {0};
-            md_trajectory_load_frame(data->mold.traj, frames[1], &header[0], src[0].x, src[0].y, src[0].z);
-            md_trajectory_load_frame(data->mold.traj, frames[2], &header[1], src[1].x, src[1].y, src[1].z);
+            md_trajectory_load_frame(data->mold.traj, frames[1], &header[0], src_x[0], src_y[0], src_z[0]);
+            md_trajectory_load_frame(data->mold.traj, frames[2], &header[1], src_x[1], src_y[1], src_z[1]);
+            // @NOTE: The question here is what the correct way would be to interpolate the unit cell.
+            // All of this is very shady from a mathematical point of view, but it seems to work.
             data->mold.mol.unit_cell.basis = lerp(header[0].unit_cell.basis, header[1].unit_cell.basis, t);
-            const vec3_t pbc_ext = data->mold.mol.unit_cell.basis * vec3_set1(1);
-
-            md_util_linear_interpolation(dst, src, mol.atom.count, pbc_ext, t);
-        }
+            data->mold.mol.unit_cell.inv_basis = mat3_inverse(data->mold.mol.unit_cell.basis);
+            md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, mol.atom.count, &mol.unit_cell, t);
             break;
+        }
         case InterpolationMode::CubicSpline:
         {
             md_trajectory_frame_header_t header[4] = {0};
-            md_trajectory_load_frame(data->mold.traj, frames[0], &header[0], src[0].x, src[0].y, src[0].z);
-            md_trajectory_load_frame(data->mold.traj, frames[1], &header[1], src[1].x, src[1].y, src[1].z);
-            md_trajectory_load_frame(data->mold.traj, frames[2], &header[2], src[2].x, src[2].y, src[2].z);
-            md_trajectory_load_frame(data->mold.traj, frames[3], &header[3], src[3].x, src[3].y, src[3].z);
+            md_trajectory_load_frame(data->mold.traj, frames[0], &header[0], src_x[0], src_y[0], src_z[0]);
+            md_trajectory_load_frame(data->mold.traj, frames[1], &header[1], src_x[1], src_y[1], src_z[1]);
+            md_trajectory_load_frame(data->mold.traj, frames[2], &header[2], src_x[2], src_y[2], src_z[2]);
+            md_trajectory_load_frame(data->mold.traj, frames[3], &header[3], src_x[3], src_y[3], src_z[3]);
             data->mold.mol.unit_cell.basis = cubic_spline(header[0].unit_cell.basis, header[1].unit_cell.basis, header[2].unit_cell.basis, header[3].unit_cell.basis, t, s);
-            const vec3_t pbc_ext = data->mold.mol.unit_cell.basis * vec3_set1(1);
-
-            md_util_cubic_spline_interpolation(dst, src, mol.atom.count, pbc_ext, t, s);
-        }
+            data->mold.mol.unit_cell.inv_basis = mat3_inverse(data->mold.mol.unit_cell.basis);
+            md_util_interpolate_cubic_spline(dst_x, dst_y, dst_z, src_x, src_y, src_z, mol.atom.count, &mol.unit_cell, t, s);
             break;
+        }
         default:
             ASSERT(false);
     }
 
-    md_util_aabb_compute(&data->mold.mol_aabb_min, &data->mold.mol_aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, 0, mol.atom.count);
+    md_util_aabb_compute(data->mold.mol_aabb_min.elem, data->mold.mol_aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, 0, mol.atom.count);
 
     if (mol.backbone.angle) {
         const md_backbone_angles_t* src_angles[4] = {
@@ -2789,7 +2786,7 @@ static void interpolate_atomic_properties(ApplicationData* data) {
         switch (mode) {
         case InterpolationMode::Nearest: {
             const md_backbone_angles_t* src_angle = t < 0.5f ? src_angles[1] : src_angles[2];
-            memcpy(mol.backbone.angle, src_angle, mol.backbone.count * sizeof(md_backbone_angles_t));
+            MEMCPY(mol.backbone.angle, src_angle, mol.backbone.count * sizeof(md_backbone_angles_t));
             break;
         }
         case InterpolationMode::Linear: {
@@ -2940,15 +2937,15 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
     
     if (0 < popcount && popcount < mol.atom.count) {
         int32_t* indices = (int32_t*)md_linear_allocator_push(linear_allocator, popcount * sizeof(int32_t));
-        size_t len = md_bitfield_extract_indices(indices, popcount, &data->representation.atom_visibility_mask);
+        size_t len = md_bitfield_iter_extract_indices(indices, popcount, md_bitfield_iter_create(&data->representation.atom_visibility_mask));
         if (len > popcount || len > mol.atom.count) {
             MD_LOG_DEBUG("Error: Invalid number of indices");
             len = MIN(popcount, mol.atom.count);
         }
-		md_util_aabb_compute(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, len);
+		md_util_aabb_compute(aabb_min.elem, aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, len);
         md_linear_allocator_pop(linear_allocator, popcount * sizeof(int32_t));
     } else {
-        md_util_aabb_compute(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, nullptr, mol.atom.count);
+        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, nullptr, mol.atom.count);
     }
 
     const vec3_t ext = aabb_max - aabb_min;
@@ -3897,7 +3894,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
             int* indices = (int*)md_alloc(frame_allocator, remainder * sizeof(int));
             defer { md_free(frame_allocator, indices, remainder * sizeof(int)); };
 
-            md_bitfield_extract_indices(indices, remainder, bf);
+            md_bitfield_iter_extract_indices(indices, remainder, md_bitfield_iter_create(bf));
             sb += "atom(";
             write_script_range(sb, indices, remainder, ref_idx);
             sb += ")";
@@ -6686,12 +6683,13 @@ static void draw_shape_space_window(ApplicationData* data) {
 
                             md_array(int32_t) indices = 0;
                             for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
-                                md_trajectory_load_frame(data->mold.traj, frame_idx, NULL, x, y, z);
+                                md_trajectory_frame_header_t header;
+                                md_trajectory_load_frame(data->mold.traj, frame_idx, &header, x, y, z);
                                 for (size_t i = 0; i < md_array_size(data->shape_space.bitfields); ++i) {
                                     md_array_resize(indices, md_bitfield_popcount(&data->shape_space.bitfields[i]), md_heap_allocator);
-                                    md_bitfield_extract_indices(indices, md_array_size(indices), &data->shape_space.bitfields[i]);
+                                    md_bitfield_iter_extract_indices(indices, md_array_size(indices), md_bitfield_iter_create(&data->shape_space.bitfields[i]));
 
-                                    const vec3_t com = md_util_com_compute(x, y, z, w, indices, md_array_size(indices));
+                                    const vec3_t com = md_util_com_compute(x, y, z, w, indices, md_array_size(indices), &header.unit_cell);
                                     const mat3_t M = mat3_covariance_matrix(x, y, z, w, indices, com, md_array_size(indices));
                                     const vec3_t weights = md_util_shape_weights(&M);
 
@@ -9882,13 +9880,26 @@ static void handle_camera_interaction(ApplicationData* data) {
 #if 1
     // Coordinate system widget
     // @TODO: Make the settings part 
+
     {
-        static int size = 150;
-        static bool lock_pos = true;
-        ImGui::SetNextWindowSize(ImVec2(size, size));
-        int flags = ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize;
-        if (lock_pos) {
-            flags |= ImGuiWindowFlags_NoMove;
+        static bool locked = true;
+        const int def_size = 150;
+        const int min_size = 20;
+        const int max_size = 500;
+
+        ImGui::SetNextWindowSize(ImVec2(def_size, def_size), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(min_size, min_size), ImVec2(max_size, max_size), [](ImGuiSizeCallbackData* data) {
+            // Enforce a square aspect ratio
+            data->DesiredSize = ImVec2(ImMax(data->DesiredSize.x, data->DesiredSize.y), ImMax(data->DesiredSize.x, data->DesiredSize.y));
+        });
+
+        // Scale down backround color to only show a faint outline
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::GetStyleColorVec4(ImGuiCol_WindowBg) * ImVec4(1,1,1,0.1f));
+        defer { ImGui::PopStyleColor(); };
+
+        int flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar;
+        if (locked) {
+            flags |= ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
         }
 
         if (ImGui::Begin("Coordinate Widget", NULL, flags)) {
@@ -9898,8 +9909,7 @@ static void handle_camera_interaction(ApplicationData* data) {
             }
             if (ImGui::BeginPopup("Coordinate Widget Context")) {
                 ImGui::Text("Coordinate Widget");
-                ImGui::SliderInt("Size", &size, 50, 300);
-                ImGui::Checkbox("Lock position", &lock_pos);
+                ImGui::Checkbox("Locked", &locked);
                 ImGui::EndPopup();
             }
 
@@ -9907,7 +9917,7 @@ static void handle_camera_interaction(ApplicationData* data) {
             const ImVec2 wp = ImGui::GetWindowPos();
             const ImVec2 ws = ImGui::GetWindowSize();
 
-            const float ext = ImMin(ws.x, ws.y) * 0.5f;
+            const float ext = ImMin(ws.x, ws.y) * 0.75f;
             const ImVec2 o = {wp.x + ws.x * 0.5f, wp.y + ws.y * 0.5f};
             const float dist = 5;
             const float fovy = data->view.camera.fov_y;
@@ -10202,10 +10212,10 @@ static void handle_camera_interaction(ApplicationData* data) {
         else if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) {
             if (data->picking.idx != INVALID_PICKING_IDX) {
                 md_bitfield_clear(&data->selection.current_highlight_mask);
-                if (data->selection.atom_idx.hovered != -1) {
+                if (data->selection.atom_idx.hovered != -1 && data->mold.mol.atom.count) {
                     md_bitfield_set_bit(&data->selection.current_highlight_mask, data->picking.idx);
                 }
-                else if (data->selection.bond_idx.hovered != -1) {
+                else if (data->selection.bond_idx.hovered != -1 && data->selection.bond_idx.hovered < data->mold.mol.bond.count) {
                     md_bond_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
                     md_bitfield_set_bit(&data->selection.current_highlight_mask, pair.idx[0]);
                     md_bitfield_set_bit(&data->selection.current_highlight_mask, pair.idx[1]);

@@ -4,15 +4,15 @@ project(viamd VERSION 0.1.15 LANGUAGES CXX)
 
 INCLUDE(ext/mdlib/cmake/common.cmake)
 
+# If configured using single configuration generator, set default build type to Release
 if (NOT EXISTS ${CMAKE_BINARY_DIR}/CMakeCache.txt)
   if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release" CACHE STRING "" FORCE)
   endif()
 endif()
 
-set_property(GLOBAL PROPERTY USE_FOLDERS OFF)
-
 # GLOBAL OPTIONS
+set_property(GLOBAL PROPERTY USE_FOLDERS OFF)
 option(BUILD_SHARED_LIBS OFF)
 option(USE_MSVC_RUNTIME_LIBRARY_DLL OFF)
 
@@ -34,6 +34,7 @@ option(ENKITS_BUILD_C_INTERFACE OFF)
 option(ENKITS_BUILD_EXAMPLES OFF)
 option(ENKITS_BUILD_SHARED OFF)
 option(ENKITS_INSTALL OFF)
+
 find_package(OpenGL REQUIRED)
 
 add_subdirectory(ext/mdlib)
@@ -109,6 +110,7 @@ set(SHADER_FILES
     src/shaders/ssao/blur.frag
 )
 
+# Bake shaders into a single header file
 create_resources("${SHADER_FILES}" "gen/shaders.inl")
 
 source_group("app" FILES ${APP_FILES})
@@ -116,6 +118,24 @@ source_group("gfx" FILES ${GFX_FILES})
 source_group("shaders" FILES ${SHADER_FILES})
 
 add_executable(viamd ${OSX_BUNDLE} ${SRC_FILES} ${APP_FILES} ${GFX_FILES} ${SHADER_FILES})
+
+install(TARGETS viamd DESTINATION bin)
+
+# The question is how this should be treated on Linux...
+# For now we simply don't copy the datasets
+# Install datasets
+#install(FILES datasets/1ALA-500.pdb DESTINATION datasets)
+
+if (UNIX AND NOT APPLE)
+    # Linux metadata
+    install(FILES viamd.desktop DESTINATION share/applications)
+    install(FILES viamd.metainfo.xml DESTINATION share/metainfo)
+	install(FILES icon/viamd.png DESTINATION share/icons)
+endif()
+
+if (WIN32)
+    target_sources(viamd PRIVATE icon.rc)
+endif()
 
 # Default to linking statically
 if (VIAMD_LINK_STDLIB_STATIC)
@@ -142,10 +162,6 @@ target_compile_definitions(viamd PRIVATE
     VIAMD_IMGUI_ENABLE_DOCKSPACE=$<BOOL:${VIAMD_IMGUI_ENABLE_DOCKSPACE}>
     ${MD_DEFINES}
 )
-
-if (WIN32)
-    target_sources(viamd PRIVATE icon.rc)
-endif()
 
 # We just hijack the warning and compile flags from mdlib
 target_compile_options(viamd PRIVATE ${VIAMD_FLAGS} $<$<CONFIG:Debug>:${VIAMD_FLAGS_DEB}> $<$<CONFIG:Release>:${VIAMD_FLAGS_REL}>)
