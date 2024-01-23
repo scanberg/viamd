@@ -6734,9 +6734,10 @@ static void draw_shape_space_window(ApplicationData* data) {
                                 md_trajectory_frame_header_t header;
                                 md_trajectory_load_frame(data->mold.traj, frame_idx, &header, x, y, z);
                                 for (size_t i = 0; i < md_array_size(data->shape_space.bitfields); ++i) {
-                                    size_t count = md_bitfield_popcount(&data->shape_space.bitfields[i]);
+                                    const md_bitfield_t* bf = &data->shape_space.bitfields[i];
+                                    size_t count = md_bitfield_popcount(bf);
                                     md_array_resize(indices, count, md_heap_allocator);
-                                    md_bitfield_iter_extract_indices(indices, count, md_bitfield_iter_create(&data->shape_space.bitfields[i]));
+                                    md_bitfield_iter_extract_indices(indices, count, md_bitfield_iter_create(bf));
 
                                     const vec3_t com = md_util_com_compute(x, y, z, w, indices, count, &header.unit_cell);
                                     const mat3_t M = mat3_covariance_matrix(x, y, z, w, indices, count, com);
