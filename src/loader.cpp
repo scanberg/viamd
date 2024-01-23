@@ -107,9 +107,9 @@ struct LoadedTrajectory {
     md_trajectory_loader_i* loader;
     md_trajectory_i* traj;
     md_frame_cache_t cache;
-    md_allocator_i* alloc;
-    md_bitfield_t recenter_target;
-    bool deperiodize;
+    md_allocator_i*  alloc;
+
+    md_array(int32_t) recenter_indices;
 };
 
 static LoadedMolecule loaded_molecules[8] = {};
@@ -405,8 +405,6 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
 
         if (result) {
             const md_unit_cell_t* cell = &frame_data->header.unit_cell;
-            const bool have_cell = cell->flags != 0;
-
             const md_molecule_t* mol = loaded_traj->mol;
             float* x = frame_data->x;
             float* y = frame_data->y;
@@ -414,37 +412,23 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
             const size_t num_atoms = frame_data->header.num_atoms;
 
             // If we have a recenter target, then compute the com and apply that transformation
-            if (!md_bitfield_empty(&loaded_traj->recenter_target)) {
-                const md_bitfield_t* bf = &loaded_traj->recenter_target;
-                const size_t count = md_bitfield_popcount(bf);
-                
-                if (count > 0) {
-                    int32_t* indices = (int32_t*)md_alloc(alloc, sizeof(int32_t) * count);
-                    defer { md_free(alloc, indices, sizeof(int32_t) * count); };
-                        
-                    size_t num_indices = md_bitfield_iter_extract_indices(indices, count, md_bitfield_iter_create(bf));
-                    ASSERT(num_indices == count);
-                    (void)num_indices;
+            if (md_array_size(loaded_traj->recenter_indices) > 0) {
+                size_t count = md_array_size(loaded_traj->recenter_indices);
+                const int32_t* indices = loaded_traj->recenter_indices;
 
-                    vec3_t com = {0};
-                    if (count == 1) {
-                    	const int32_t i = indices[0];
-						com = vec3_set(x[i], y[i], z[i]);
-					}
-					else {
-						com = md_util_com_compute(x, y, z, mol->atom.mass, indices, count, &mol->unit_cell);
-                        md_util_pbc(&com.x, &com.y, &com.z, 0, 1, cell);
-                    }
-
-                    // Translate all
-                    const vec3_t box_center = have_cell ? cell->basis * vec3_set1(0.5f) : vec3_zero();
-                    const vec3_t trans = box_center - com;
-                    vec3_batch_translate_inplace(x, y, z, num_atoms, trans);
+                vec3_t com = {0};
+                if (count == 1) {
+                    const int32_t i = indices[0];
+					com = vec3_set(x[i], y[i], z[i]);
+				} else {
+					com = md_util_com_compute(x, y, z, mol->atom.mass, indices, count, &mol->unit_cell);
+                    md_util_pbc(&com.x, &com.y, &com.z, 0, 1, cell);
                 }
-            }
 
-            if (loaded_traj->deperiodize && have_cell) {
-                md_util_deperiodize_system(x, y, z, mol->atom.mass, mol->atom.count, cell, mol->structures.offsets, mol->structures.indices, md_index_data_count(mol->structures));
+                // Translate all
+                const vec3_t center = cell->flags ? cell->basis * vec3_set1(0.5f) : vec3_zero();
+                const vec3_t trans  = center - com;
+                vec3_batch_translate_inplace(x, y, z, num_atoms, trans);
             }
         }
 
@@ -505,20 +489,18 @@ md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const
     inst->loader = loader;
     inst->traj = internal_traj;
     inst->cache = {0};
-    inst->recenter_target = {0};
+    inst->recenter_indices = 0;
     inst->alloc = alloc;
-    inst->deperiodize = false;
     
-    const uint64_t num_traj_frames      = md_trajectory_num_frames(internal_traj);
-    const uint64_t frame_cache_size     = CLAMP(MEGABYTES(VIAMD_FRAME_CACHE_SIZE), MEGABYTES(4), md_os_physical_ram() / 4);
-    const uint64_t approx_frame_size    = (uint64_t)mol->atom.count * 3 * sizeof(float);
-    const uint64_t max_num_cache_frames = frame_cache_size / approx_frame_size;
+    const size_t num_traj_frames      = md_trajectory_num_frames(internal_traj);
+    const size_t frame_cache_size     = CLAMP(MEGABYTES(VIAMD_FRAME_CACHE_SIZE), MEGABYTES(4), md_os_physical_ram() / 4);
+    const size_t approx_frame_size    = mol->atom.count * 3 * sizeof(float);
+    const size_t max_num_cache_frames = frame_cache_size / approx_frame_size;
 
-    const int64_t num_cache_frames   = MIN(num_traj_frames, max_num_cache_frames);
+    const size_t  num_cache_frames    = MIN(num_traj_frames, max_num_cache_frames);
     
     MD_LOG_DEBUG("Initializing frame cache with %i frames.", (int)num_cache_frames);
     md_frame_cache_init(&inst->cache, inst->traj, alloc, num_cache_frames);
-    md_bitfield_init(&inst->recenter_target, alloc);
 
     // We only overload load frame and decode frame data to apply PBC upon loading data
     traj->inst = (md_trajectory_o*)inst;
@@ -550,27 +532,17 @@ bool set_recenter_target(md_trajectory_i* traj, const md_bitfield_t* atom_mask) 
     LoadedTrajectory* loaded_traj = find_loaded_trajectory((uint64_t)traj);
     if (loaded_traj) {
         if (atom_mask) {
-            md_bitfield_copy(&loaded_traj->recenter_target, atom_mask);
+            size_t count = md_bitfield_popcount(atom_mask);
+            md_array_resize(loaded_traj->recenter_indices, count, loaded_traj->alloc);
+            md_bitfield_iter_extract_indices(loaded_traj->recenter_indices, count, md_bitfield_iter_create(atom_mask));
         }
         else {
-            md_bitfield_clear(&loaded_traj->recenter_target);
+            md_array_shrink(loaded_traj->recenter_indices, 0);
         }
         return true;
     }
     MD_LOG_ERROR("Supplied trajectory was not loaded with loader");
     return false;
-}
-
-bool set_deperiodize(md_trajectory_i* traj, bool deperiodize) {
-	ASSERT(traj);
-
-	LoadedTrajectory* loaded_traj = find_loaded_trajectory((uint64_t)traj);
-	if (loaded_traj) {
-    	loaded_traj->deperiodize = deperiodize;
-    	return true;
-    }
-	MD_LOG_ERROR("Supplied trajectory was not loaded with loader");
-	return false;
 }
 
 bool clear_cache(md_trajectory_i* traj) {

@@ -16,13 +16,15 @@ enum LoaderStateFlag_ {
     LoaderStateFlag_RequiresDialogue = 1 << 0,
 };
 
+typedef uint32_t LoaderStateFlags;
+
 namespace load {
     // This represents a loader state with arguments to load a molecule or trajectory from a file
     struct LoaderState {		
 		md_molecule_loader_i*   mol_loader = 0;
 		md_trajectory_loader_i* traj_loader = 0;
         const void*             mol_loader_arg = 0;
-        uint32_t 			    flags = 0;
+        LoaderStateFlags 		flags = LoaderStateFlag_None;
 
         size_t data_size = 0;
         void* data_ptr = 0;
@@ -46,7 +48,6 @@ namespace traj {
     bool close(md_trajectory_i* traj);
 
     bool set_recenter_target(md_trajectory_i* traj, const md_bitfield_t* atom_mask);
-    bool set_deperiodize(md_trajectory_i* traj, bool deperiodize);
 
     bool clear_cache(md_trajectory_i* traj);
     size_t num_cache_frames(md_trajectory_i* traj);

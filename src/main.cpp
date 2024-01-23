@@ -143,11 +143,11 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
 )");
 
 //constexpr ImGuiKey KEY_CONSOLE = ImGuiKey_GraveAccent;
-constexpr ImGuiKey KEY_PLAY_PAUSE = ImGuiKey_Space;
-constexpr ImGuiKey KEY_SKIP_TO_PREV_FRAME = ImGuiKey_LeftArrow;
-constexpr ImGuiKey KEY_SKIP_TO_NEXT_FRAME = ImGuiKey_RightArrow;
-constexpr ImGuiKey KEY_RECOMPILE_SHADERS = ImGuiKey_F5;
-constexpr ImGuiKey KEY_SHOW_DEBUG_WINDOW = ImGuiKey_F11;
+constexpr ImGuiKey KEY_PLAY_PAUSE          = ImGuiKey_Space;
+constexpr ImGuiKey KEY_SKIP_TO_PREV_FRAME  = ImGuiKey_LeftArrow;
+constexpr ImGuiKey KEY_SKIP_TO_NEXT_FRAME  = ImGuiKey_RightArrow;
+constexpr ImGuiKey KEY_RECOMPILE_SHADERS   = ImGuiKey_F5;
+constexpr ImGuiKey KEY_SHOW_DEBUG_WINDOW   = ImGuiKey_F11;
 constexpr ImGuiKey KEY_SCRIPT_EVALUATE     = ImGuiKey_Enter;
 constexpr ImGuiKey KEY_SCRIPT_EVALUATE_MOD = ImGuiMod_Shift;
 
@@ -424,7 +424,6 @@ struct LoadParam {
     md_trajectory_loader_i* traj_loader = NULL;
     str_t file_path = STR_LIT("");
     bool coarse_grained = false;
-    bool deperiodize = false;
     bool keep_representations = false;
 
     const void* mol_loader_arg = NULL;
@@ -440,7 +439,6 @@ struct LoadDatasetWindowState {
     bool load_trajectory = false;
     bool coarse_grained = false;
     bool keep_representations = false;
-    bool deperiodize_on_load = true;
     bool show_window = false;
     bool show_file_dialog = false;
     bool atom_format_valid = false;
@@ -452,8 +450,7 @@ enum {
     FileFlags_None = 0,
     FileFlags_ShowDialogue = 1,
     FileFlags_CoarseGrained = 2,
-    FileFlags_Deperiodize = 4,
-    FileFlags_KeepRepresentations = 8,
+    FileFlags_KeepRepresentations = 4,
 };
 
 typedef uint32_t FileFlags;
@@ -484,7 +481,6 @@ struct ApplicationData {
         char workspace[1024]  = {0};
 
         bool coarse_grained = false;
-        bool deperiodize    = false;
     } files;
 
     // The idea for the file load queue is to fill it with files that are dropped onto the application
@@ -638,7 +634,6 @@ struct ApplicationData {
         float tension = 0.0f;
         InterpolationMode interpolation = InterpolationMode::CubicSpline;
         PlaybackMode mode = PlaybackMode::Stopped;
-        bool apply_pbc = false;
 
         bool show_window = true;
     } animation;
@@ -872,6 +867,11 @@ struct ApplicationData {
         md_array(DatasetItem) residue_names = 0;
         md_array(DatasetItem) atom_types = 0;
     } dataset;
+
+    struct {
+        bool apply_pbc = false;
+        bool unwrap_structures = false;
+    } operations;
 
     struct {
         struct {
@@ -1590,14 +1590,12 @@ int main(int argc, char** argv) {
                     data.load_dataset.path_changed = true;
                     data.load_dataset.show_window = true;
                     data.load_dataset.coarse_grained = e.flags & FileFlags_CoarseGrained;
-                    data.load_dataset.deperiodize_on_load = e.flags & FileFlags_Deperiodize;
                 } else if (success) {
                     LoadParam param = {};
                     param.mol_loader  = state.mol_loader;
                     param.traj_loader = state.traj_loader;
                     param.file_path      = e.path;
                     param.coarse_grained = e.flags & FileFlags_CoarseGrained;
-                    param.deperiodize    = e.flags & FileFlags_Deperiodize;
                     param.mol_loader_arg = state.mol_loader_arg;
                     if (load_dataset_from_file(&data, param)) {
                         data.animation = {};
@@ -1787,10 +1785,6 @@ int main(int argc, char** argv) {
             PUSH_CPU_SECTION("Interpolate Position")
             if (traj) {
                 interpolate_atomic_properties(&data);
-
-                if (data.animation.apply_pbc) {
-                    md_util_deperiodize_system(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.mass, mol.atom.count, &mol.unit_cell, mol.structures.offsets, mol.structures.indices, md_index_data_count(mol.structures));
-                }
             }
             POP_CPU_SECTION()
 
@@ -2773,6 +2767,18 @@ static void interpolate_atomic_properties(ApplicationData* data) {
             ASSERT(false);
     }
 
+    if (data->operations.apply_pbc) {
+        md_util_pbc(mol.atom.x, mol.atom.y, mol.atom.z, 0, mol.atom.count, &mol.unit_cell);
+    } 
+    if (data->operations.unwrap_structures) {
+        size_t num_structures = md_index_data_count(mol.structures);
+        for (size_t i = 0; i < num_structures; ++i) {
+            int32_t* s_idx = md_index_range_beg(mol.structures, i);
+            size_t   s_len = md_index_range_size(mol.structures, i);
+            md_util_unwrap(mol.atom.x, mol.atom.y, mol.atom.z, s_idx, s_len, &mol.unit_cell);
+        }
+    }
+
     md_util_aabb_compute(data->mold.mol_aabb_min.elem, data->mold.mol_aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, 0, mol.atom.count);
 
     if (mol.backbone.angle) {
@@ -3437,12 +3443,63 @@ ImGui::EndGroup();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Operations")) {
-			if (ImGui::MenuItem("Apply PBC")) {
-                md_molecule_t& mol = data->mold.mol;
-                size_t num_structures = md_index_data_count(mol.structures);
-				md_util_deperiodize_system(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.mass, mol.atom.count, &mol.unit_cell, mol.structures.offsets, mol.structures.indices, num_structures);
-			}
-            ImGui::SetItemTooltip("Apply Periodic Boundary Conditions and unwrap structures");
+            ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg;
+            if (ImGui::BeginTable("##table", 2, flags)) {
+                /*
+                ImGui::TableSetupColumn("Once", 0);
+                ImGui::TableSetupColumn("Always", 0);
+                ImGui::TableHeadersRow();
+                */
+                const float button_width = (ImGui::GetFontSize() / 20.f) * 150.f;
+
+                bool do_pbc = false;
+                bool do_unwrap = false;
+
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                if (ImGui::Button("PBC", ImVec2(button_width,0))) {
+                    do_pbc = true;
+                }
+                ImGui::SetItemTooltip("Enforce Periodic Boundary Conditions (Once)");
+
+                ImGui::TableSetColumnIndex(1);
+                if (ImGui::Checkbox("##pbc", &data->operations.apply_pbc) && data->operations.apply_pbc) {
+                    do_pbc = true;
+                }
+                ImGui::SetItemTooltip("Enforce Periodic Boundary Conditions (Always)");
+
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                if (ImGui::Button("Unwrap", ImVec2(button_width, 0))) {
+                    do_unwrap = true;
+                }
+                ImGui::SetItemTooltip("Unwrap structures present in the system (Once)");
+
+                ImGui::TableSetColumnIndex(1);
+                if (ImGui::Checkbox("##unwrap", &data->operations.unwrap_structures) && data->operations.unwrap_structures) {
+                    do_unwrap = true;
+                }
+                ImGui::SetItemTooltip("Unwrap structures present in the system (Always)");
+
+                if (do_pbc) {
+                    md_molecule_t& mol = data->mold.mol;
+                    md_util_pbc(mol.atom.x, mol.atom.y, mol.atom.z, 0, mol.atom.count, &mol.unit_cell);
+                    data->mold.dirty_buffers |= MolBit_DirtyPosition;
+                }
+
+                if (do_unwrap) {
+                    md_molecule_t& mol = data->mold.mol;
+                    size_t num_structures = md_index_data_count(mol.structures);
+                    for (size_t i = 0; i < num_structures; ++i) {
+                        const int32_t* s_idx = md_index_range_beg(mol.structures, i);
+                        const size_t   s_len = md_index_range_size(mol.structures, i);
+                        md_util_unwrap(mol.atom.x, mol.atom.y, mol.atom.z, s_idx, s_len, &mol.unit_cell);
+                    }
+                    data->mold.dirty_buffers |= MolBit_DirtyPosition;
+                }
+
+                ImGui::EndTable();
+            }
 			ImGui::EndMenu();
 		}
         {
@@ -3620,13 +3677,6 @@ void draw_load_dataset_window(ApplicationData* data) {
         }
 
         md_trajectory_loader_i* traj_loader = load::traj::loader_from_ext(cur_ext);
-        bool show_dp = state.path_is_valid && traj_loader;
-        if (show_dp) {
-            ImGui::Checkbox("Deperiodize on Load", &state.deperiodize_on_load);
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Enable if the loaded frames should be deperiodized");
-            }
-        }
 
         enum Action {
             Action_None,
@@ -3654,7 +3704,6 @@ void draw_load_dataset_window(ApplicationData* data) {
             param.mol_loader = mol_loader;
             param.traj_loader = traj_loader;
             param.coarse_grained = state.coarse_grained;
-            param.deperiodize = state.deperiodize_on_load;
             param.keep_representations = state.keep_representations;
 
             md_lammps_molecule_loader_arg_t lammps_arg = {};
@@ -4538,7 +4587,6 @@ static void draw_animation_window(ApplicationData* data) {
                 ImGui::SetTooltip("Tension of the Cubic Spline");
             }
         }
-        ImGui::Checkbox("Apply PBC", &data->animation.apply_pbc);
         switch (data->animation.mode) {
             case PlaybackMode::Playing:
                 if (ImGui::Button((const char*)ICON_FA_PAUSE)) data->animation.mode = PlaybackMode::Stopped;
@@ -6686,11 +6734,12 @@ static void draw_shape_space_window(ApplicationData* data) {
                                 md_trajectory_frame_header_t header;
                                 md_trajectory_load_frame(data->mold.traj, frame_idx, &header, x, y, z);
                                 for (size_t i = 0; i < md_array_size(data->shape_space.bitfields); ++i) {
-                                    md_array_resize(indices, md_bitfield_popcount(&data->shape_space.bitfields[i]), md_heap_allocator);
-                                    md_bitfield_iter_extract_indices(indices, md_array_size(indices), md_bitfield_iter_create(&data->shape_space.bitfields[i]));
+                                    size_t count = md_bitfield_popcount(&data->shape_space.bitfields[i]);
+                                    md_array_resize(indices, count, md_heap_allocator);
+                                    md_bitfield_iter_extract_indices(indices, count, md_bitfield_iter_create(&data->shape_space.bitfields[i]));
 
-                                    const vec3_t com = md_util_com_compute(x, y, z, w, indices, md_array_size(indices), &header.unit_cell);
-                                    const mat3_t M = mat3_covariance_matrix(x, y, z, w, indices, com, md_array_size(indices));
+                                    const vec3_t com = md_util_com_compute(x, y, z, w, indices, count, &header.unit_cell);
+                                    const mat3_t M = mat3_covariance_matrix(x, y, z, w, indices, count, com);
                                     const vec3_t weights = md_util_shape_weights(&M);
 
                                     const int64_t dst_idx = data->shape_space.num_frames * i + frame_idx;
@@ -7798,7 +7847,7 @@ static void draw_debug_window(ApplicationData* data) {
     if (ImGui::Begin("Debug", &data->show_debug_window)) {
         size_t sema_count = 0;
         if (md_semaphore_query_count(&data->mold.script.ir_semaphore, &sema_count)) {
-            ImGui::Text("Script IR semaphore count: %zu", sema_count);
+            ImGui::Text("Script IR semaphore count: %i", (int)sema_count);
         }
         
         task_system::ID* tasks = task_system::pool_running_tasks(md_heap_allocator);
@@ -8669,14 +8718,12 @@ static void init_trajectory_data(ApplicationData* data) {
     }
 }
 
-static bool load_trajectory_data(ApplicationData* data, str_t filename, md_trajectory_loader_i* loader, bool deperiodize_on_load) {
+static bool load_trajectory_data(ApplicationData* data, str_t filename, md_trajectory_loader_i* loader) {
     md_trajectory_i* traj = load::traj::open_file(filename, loader, &data->mold.mol, persistent_allocator);
     if (traj) {
-        load::traj::set_deperiodize(traj, deperiodize_on_load);
         free_trajectory_data(data);
         data->mold.traj = traj;
         str_copy_to_char_buf(data->files.trajectory, sizeof(data->files.trajectory), filename);
-        data->files.deperiodize = deperiodize_on_load;
         init_trajectory_data(data);
         data->animation.frame = 0;
         return true;
@@ -8811,7 +8858,7 @@ static bool load_dataset_from_file(ApplicationData* data, const LoadParam& param
             }
             interrupt_async_tasks(data);
 
-            bool success = load_trajectory_data(data, path_to_file, param.traj_loader, param.deperiodize);
+            bool success = load_trajectory_data(data, path_to_file, param.traj_loader);
             if (success) {
                 LOG_SUCCESS("Successfully opened trajectory from file '%.*s'", path_to_file.len, path_to_file.ptr);
                 return true;
@@ -8962,7 +9009,6 @@ SerializationObject deprecated_serialization_targets[] = {
     {"[Files]", "MoleculeFile",             SerializationType_Path,     offsetof(ApplicationData, files.molecule),     sizeof(ApplicationData::files.molecule)},
     {"[Files]", "TrajectoryFile",           SerializationType_Path,     offsetof(ApplicationData, files.trajectory),   sizeof(ApplicationData::files.trajectory)},
     {"[Files]", "CoarseGrained",            SerializationType_Bool,     offsetof(ApplicationData, files.coarse_grained)},
-    {"[Files]", "Deperiodize",              SerializationType_Bool,     offsetof(ApplicationData, files.deperiodize)},
 
     {"[Representation]", "Radius",          SerializationType_Float,    offsetof(Representation,  scale.x)},
     {"[Representation]", "Width",           SerializationType_Float,    offsetof(Representation,  scale.x)},
@@ -8975,7 +9021,6 @@ SerializationObject serialization_targets[] = {
     {"[File]", "MoleculeFile",             SerializationType_Path,      offsetof(ApplicationData, files.molecule),     sizeof(ApplicationData::files.molecule)},
     {"[File]", "TrajectoryFile",           SerializationType_Path,      offsetof(ApplicationData, files.trajectory),   sizeof(ApplicationData::files.trajectory)},
     {"[File]", "CoarseGrained",            SerializationType_Bool,      offsetof(ApplicationData, files.coarse_grained)},
-    {"[File]", "Deperiodize",              SerializationType_Bool,      offsetof(ApplicationData, files.deperiodize)},
     
     {"[Animation]", "Frame",                SerializationType_Double,   offsetof(ApplicationData, animation.frame)},
     {"[Animation]", "Fps",                  SerializationType_Float,    offsetof(ApplicationData, animation.fps)},
@@ -9251,7 +9296,6 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     str_t cur_molecule_file     = str_copy_cstr(data->files.molecule, frame_allocator);
     str_t cur_trajectory_file   = str_copy_cstr(data->files.trajectory, frame_allocator);
     bool  cur_coarse_grained    = data->files.coarse_grained;
-    bool  cur_deperiodize       = data->files.deperiodize;
 
     const SerializationArray* arr_group = NULL;
     void* ptr = 0;
@@ -9290,7 +9334,6 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     str_t new_molecule_file   = str_copy_cstr(data->files.molecule, frame_allocator);
     str_t new_trajectory_file = str_copy_cstr(data->files.trajectory, frame_allocator);
     bool  new_coarse_grained  = data->files.coarse_grained;
-    bool  new_deperiodize     = data->files.deperiodize;
 
     str_copy_to_char_buf(data->files.workspace, sizeof(data->files.workspace), filename);
     
@@ -9299,7 +9342,6 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     str_copy_to_char_buf(data->files.molecule, sizeof(data->files.molecule), cur_molecule_file);
     str_copy_to_char_buf(data->files.trajectory, sizeof(data->files.trajectory), cur_trajectory_file);
     data->files.coarse_grained  = cur_coarse_grained;
-    data->files.deperiodize     = cur_deperiodize;
     
     str_t mol_ext = {};
     str_t traj_ext = {};
@@ -9316,7 +9358,6 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     param.mol_loader = state.mol_loader;
     param.traj_loader = state.traj_loader;
     param.coarse_grained = new_coarse_grained;
-    param.deperiodize = new_coarse_grained;
     param.keep_representations = false;
     param.mol_loader_arg = state.mol_loader_arg;
 
@@ -9899,7 +9940,7 @@ static void handle_camera_interaction(ApplicationData* data) {
 
         int flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar;
         if (locked) {
-            flags |= ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
+            flags |= ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoNavFocus;
         }
 
         if (ImGui::Begin("Coordinate Widget", NULL, flags)) {
