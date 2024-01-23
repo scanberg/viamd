@@ -3383,6 +3383,66 @@ ImGui::EndGroup();
             }
             ImGui::EndMenu();
         }
+        if (ImGui::BeginMenu("Operations")) {
+            ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg;
+            if (ImGui::BeginTable("##table", 2, flags)) {
+                /*
+                ImGui::TableSetupColumn("Once", 0);
+                ImGui::TableSetupColumn("Always", 0);
+                ImGui::TableHeadersRow();
+                */
+                const float button_width = (ImGui::GetFontSize() / 20.f) * 150.f;
+
+                bool do_pbc = false;
+                bool do_unwrap = false;
+
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                if (ImGui::Button("PBC", ImVec2(button_width,0))) {
+                    do_pbc = true;
+                }
+                ImGui::SetItemTooltip("Enforce Periodic Boundary Conditions (Once)");
+
+                ImGui::TableSetColumnIndex(1);
+                if (ImGui::Checkbox("##pbc", &data->operations.apply_pbc) && data->operations.apply_pbc) {
+                    do_pbc = true;
+                }
+                ImGui::SetItemTooltip("Enforce Periodic Boundary Conditions (Always)");
+
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                if (ImGui::Button("Unwrap", ImVec2(button_width, 0))) {
+                    do_unwrap = true;
+                }
+                ImGui::SetItemTooltip("Unwrap structures present in the system (Once)");
+
+                ImGui::TableSetColumnIndex(1);
+                if (ImGui::Checkbox("##unwrap", &data->operations.unwrap_structures) && data->operations.unwrap_structures) {
+                    do_unwrap = true;
+                }
+                ImGui::SetItemTooltip("Unwrap structures present in the system (Always)");
+
+                if (do_pbc) {
+                    md_molecule_t& mol = data->mold.mol;
+                    md_util_pbc(mol.atom.x, mol.atom.y, mol.atom.z, 0, mol.atom.count, &mol.unit_cell);
+                    data->mold.dirty_buffers |= MolBit_DirtyPosition;
+                }
+
+                if (do_unwrap) {
+                    md_molecule_t& mol = data->mold.mol;
+                    size_t num_structures = md_index_data_count(mol.structures);
+                    for (size_t i = 0; i < num_structures; ++i) {
+                        const int32_t* s_idx = md_index_range_beg(mol.structures, i);
+                        const size_t   s_len = md_index_range_size(mol.structures, i);
+                        md_util_unwrap(mol.atom.x, mol.atom.y, mol.atom.z, s_idx, s_len, &mol.unit_cell);
+                    }
+                    data->mold.dirty_buffers |= MolBit_DirtyPosition;
+                }
+
+                ImGui::EndTable();
+            }
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu("Settings")) {
             // Font
             ImFont* font_current = ImGui::GetFont();
@@ -3442,66 +3502,6 @@ ImGui::EndGroup();
 
             ImGui::EndMenu();
         }
-        if (ImGui::BeginMenu("Operations")) {
-            ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg;
-            if (ImGui::BeginTable("##table", 2, flags)) {
-                /*
-                ImGui::TableSetupColumn("Once", 0);
-                ImGui::TableSetupColumn("Always", 0);
-                ImGui::TableHeadersRow();
-                */
-                const float button_width = (ImGui::GetFontSize() / 20.f) * 150.f;
-
-                bool do_pbc = false;
-                bool do_unwrap = false;
-
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                if (ImGui::Button("PBC", ImVec2(button_width,0))) {
-                    do_pbc = true;
-                }
-                ImGui::SetItemTooltip("Enforce Periodic Boundary Conditions (Once)");
-
-                ImGui::TableSetColumnIndex(1);
-                if (ImGui::Checkbox("##pbc", &data->operations.apply_pbc) && data->operations.apply_pbc) {
-                    do_pbc = true;
-                }
-                ImGui::SetItemTooltip("Enforce Periodic Boundary Conditions (Always)");
-
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                if (ImGui::Button("Unwrap", ImVec2(button_width, 0))) {
-                    do_unwrap = true;
-                }
-                ImGui::SetItemTooltip("Unwrap structures present in the system (Once)");
-
-                ImGui::TableSetColumnIndex(1);
-                if (ImGui::Checkbox("##unwrap", &data->operations.unwrap_structures) && data->operations.unwrap_structures) {
-                    do_unwrap = true;
-                }
-                ImGui::SetItemTooltip("Unwrap structures present in the system (Always)");
-
-                if (do_pbc) {
-                    md_molecule_t& mol = data->mold.mol;
-                    md_util_pbc(mol.atom.x, mol.atom.y, mol.atom.z, 0, mol.atom.count, &mol.unit_cell);
-                    data->mold.dirty_buffers |= MolBit_DirtyPosition;
-                }
-
-                if (do_unwrap) {
-                    md_molecule_t& mol = data->mold.mol;
-                    size_t num_structures = md_index_data_count(mol.structures);
-                    for (size_t i = 0; i < num_structures; ++i) {
-                        const int32_t* s_idx = md_index_range_beg(mol.structures, i);
-                        const size_t   s_len = md_index_range_size(mol.structures, i);
-                        md_util_unwrap(mol.atom.x, mol.atom.y, mol.atom.z, s_idx, s_len, &mol.unit_cell);
-                    }
-                    data->mold.dirty_buffers |= MolBit_DirtyPosition;
-                }
-
-                ImGui::EndTable();
-            }
-			ImGui::EndMenu();
-		}
         {
             // Fps counter
             static int num_frames = 0;
