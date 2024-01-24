@@ -848,7 +848,9 @@ struct ApplicationData {
 
         md_array(md_bitfield_t) bitfields = 0;
 
+        // Settings
         float marker_size = 1.4f;
+        bool use_weights  = true;
     } shape_space;
 
     // --- REPRESENTATIONS ---
@@ -3111,8 +3113,7 @@ static void draw_main_menu(ApplicationData* data) {
                 if (strnlen(data->files.workspace, sizeof(data->files.workspace)) == 0) {
                     if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, str_ptr(WORKSPACE_FILE_EXTENSION))) {
                         size_t path_len = strnlen(path_buf, sizeof(path_buf));
-                        str_t ext;
-                        if (extract_ext(&ext, {path_buf, path_len})) {
+                        if (!extract_ext(NULL, {path_buf, path_len})) {
                             path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".%s", str_ptr(WORKSPACE_FILE_EXTENSION));
                         }
                         save_workspace(data, {path_buf, path_len});
@@ -3124,8 +3125,7 @@ static void draw_main_menu(ApplicationData* data) {
             if (ImGui::MenuItem("Save As")) {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, str_ptr(WORKSPACE_FILE_EXTENSION))) {
                     size_t path_len = strnlen(path_buf, sizeof(path_buf));
-                    str_t ext;
-                    if (extract_ext(&ext, {path_buf, path_len})) {
+                    if (!extract_ext(NULL, {path_buf, path_len})) {
                         path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".%s", str_ptr(WORKSPACE_FILE_EXTENSION));
                     }
                     save_workspace(data, {path_buf, path_len});
@@ -3364,7 +3364,7 @@ ImGui::EndGroup();
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, "jpg,png,bmp")) {
                     size_t path_len = strnlen(path_buf, sizeof(path_buf));
                     str_t ext;
-                    if (extract_ext(&ext, {path_buf, path_len})) {
+                    if (!extract_ext(&ext, {path_buf, path_len})) {
                         path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".jpg");
                         ext = STR_LIT("jpg");
                     }
@@ -6511,6 +6511,7 @@ static void draw_shape_space_window(ApplicationData* data) {
                 static constexpr float marker_min_size = 0.01f;
                 static constexpr float marker_max_size = 10.0f;
                 ImGui::SliderFloat("Marker Size", &data->shape_space.marker_size, marker_min_size, marker_max_size);
+                data->shape_space.evaluate |= ImGui::Checkbox("Use Weights", &data->shape_space.use_weights);
                 ImGui::EndMenu();
             }
             ImGui::EndMenuBar();
@@ -6539,11 +6540,14 @@ static void draw_shape_space_window(ApplicationData* data) {
 
         const float x_reset[2] = {-0.10f, 1.10f};
         const float y_reset[2] = {-0.10f, 0.98f};
+        const double zoom_constraints[2] = {0.1, 1.5};
 
         if (ImPlot::BeginPlot("##Shape Space Plot", ImVec2(-1,-1), flags)) {
             ImPlot::SetupAxesLimits(x_reset[0], x_reset[1], y_reset[0], y_reset[1], ImGuiCond_Appearing);
-            ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_reset[0], x_reset[1]);
-            ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_reset[0], y_reset[1]);
+            ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, -1.0f, 2.0f);
+            ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, -1.0f, 2.0f);
+            ImPlot::SetupAxisZoomConstraints(ImAxis_X1, zoom_constraints[0], zoom_constraints[1]);
+            ImPlot::SetupAxisZoomConstraints(ImAxis_Y1, zoom_constraints[0], zoom_constraints[1]);
             ImPlot::SetupAxes(0, 0, axis_flags, axis_flags);
             ImPlot::SetupFinish();
 
@@ -6721,30 +6725,37 @@ static void draw_shape_space_window(ApplicationData* data) {
                             float* x = coords + stride * 0;
                             float* y = coords + stride * 1;
                             float* z = coords + stride * 2;
-                            const float* w = data->mold.mol.atom.mass;
+                            const float* w = data->shape_space.use_weights ? data->mold.mol.atom.mass : 0;
 
                             const vec2_t p[3] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 0.86602540378f}};
 
-                            md_array(int32_t) indices = 0;
+                            md_array(vec4_t) xyzw = 0;
                             for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
                                 md_trajectory_frame_header_t header;
                                 md_trajectory_load_frame(data->mold.traj, frame_idx, &header, x, y, z);
                                 for (size_t i = 0; i < md_array_size(data->shape_space.bitfields); ++i) {
                                     const md_bitfield_t* bf = &data->shape_space.bitfields[i];
                                     size_t count = md_bitfield_popcount(bf);
-                                    md_array_resize(indices, count, md_heap_allocator);
-                                    md_bitfield_iter_extract_indices(indices, count, md_bitfield_iter_create(bf));
+                                    md_array_resize(xyzw, count, md_heap_allocator);
+                                    
+                                    md_bitfield_iter_t iter = md_bitfield_iter_create(bf);
+                                    size_t dst_idx = 0;
+                                    while (md_bitfield_iter_next(&iter)) {
+                                        const size_t src_idx = md_bitfield_iter_idx(&iter);
+										xyzw[dst_idx++] = {x[src_idx], y[src_idx], z[src_idx], w ? w[src_idx] : 1.0f};
+									}
 
-                                    const vec3_t com = md_util_com_compute(x, y, z, w, indices, count, &header.unit_cell);
-                                    const mat3_t M = mat3_covariance_matrix(x, y, z, w, indices, count, com);
+                                    md_util_unwrap_vec4(xyzw, count, &header.unit_cell);
+                                    const vec3_t com = md_util_com_compute_vec4(xyzw, count, 0);
+                                    const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
                                     const vec3_t weights = md_util_shape_weights(&M);
 
-                                    const int64_t dst_idx = data->shape_space.num_frames * i + frame_idx;
+                                    dst_idx = data->shape_space.num_frames * i + frame_idx;
                                     data->shape_space.weights[dst_idx] = weights;
                                     data->shape_space.coords[dst_idx] = p[0] * weights[0] + p[1] * weights[1] + p[2] * weights[2];
                                 }
                             }
-                            md_array_free(indices, md_heap_allocator);
+                            md_array_free(xyzw, md_heap_allocator);
                         }, data);
                     } else {
                         snprintf(data->shape_space.error, sizeof(data->shape_space.error), "Expression did not evaluate into any bitfields");
