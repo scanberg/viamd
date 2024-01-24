@@ -1525,10 +1525,6 @@ int main(int argc, char** argv) {
 #if EXPERIMENTAL_SDF == 1
     draw::scan::test_scan();
 #endif
-
-    auto& mol  = data.mold.mol;
-    auto& traj = data.mold.traj;
-
     bool time_changed = true;
     bool time_stopped = true;
 
@@ -1783,7 +1779,7 @@ int main(int argc, char** argv) {
             time_stopped = false;
 
             PUSH_CPU_SECTION("Interpolate Position")
-            if (traj) {
+            if (data.mold.traj) {
                 interpolate_atomic_properties(&data);
             }
             POP_CPU_SECTION()
@@ -9994,8 +9990,6 @@ static void handle_camera_interaction(ApplicationData* data) {
 
             // Vector
             const ImVec2 v[3] = { ImVec2(x.x, -x.y) * ext, ImVec2(y.x, -y.y) * ext, ImVec2(z.x, -z.y) * ext };
-            // Normalized vector
-            const ImVec2 n[3] = { v[0] * ImInvLength(v[0], 0.0f), v[1] * ImInvLength(v[1], 0.0f), v[2] * ImInvLength(v[2], 0.0f) };
             // Text
             const char* t[3] = { "X", "Y", "Z" };
             // Size
@@ -10257,7 +10251,7 @@ static void handle_camera_interaction(ApplicationData* data) {
                 if (data->selection.atom_idx.hovered != -1 && data->mold.mol.atom.count) {
                     md_bitfield_set_bit(&data->selection.current_highlight_mask, data->picking.idx);
                 }
-                else if (data->selection.bond_idx.hovered != -1 && data->selection.bond_idx.hovered < data->mold.mol.bond.count) {
+                else if (data->selection.bond_idx.hovered != -1 && data->selection.bond_idx.hovered < (int32_t)data->mold.mol.bond.count) {
                     md_bond_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
                     md_bitfield_set_bit(&data->selection.current_highlight_mask, pair.idx[0]);
                     md_bitfield_set_bit(&data->selection.current_highlight_mask, pair.idx[1]);
