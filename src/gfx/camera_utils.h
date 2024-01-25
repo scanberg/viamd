@@ -88,6 +88,8 @@ typedef uint32_t TrackballFlags;
 void camera_trackball(Camera* camera, vec2_t prev_ndc, vec2_t curr_ndc);
 void camera_move(Camera* camera, vec3_t vec);
 
+void camera_interpolate_look_at(vec3_t* out_pos, quat_t* out_ori, float* out_dist, vec3_t in_pos[2], quat_t in_ori[2], float in_dist[2], float t);
+
 mat4_t camera_world_to_view_matrix(const Camera& camera);
 mat4_t camera_view_to_world_matrix(const Camera& camera);
 

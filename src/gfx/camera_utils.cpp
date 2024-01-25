@@ -130,6 +130,20 @@ void camera_move(Camera* camera, vec3_t t) {
     camera->position = camera->position + camera->orientation * t;
 }
 
+// We want to interpolate along an arc which is formed by maintaining a distance to the look_at position and smoothly interpolating the orientation,
+// We linearly interpolate a look_at position which is implicitly defined by position, orientation and distance
+// There is some precision errors creeping into the posision because we transform back and forth to look at using the orientation
+void camera_interpolate_look_at(vec3_t* out_pos, quat_t* out_ori, float* out_dist, vec3_t in_pos[2], quat_t in_ori[2], float in_dist[2], float t) {
+    const vec3_t look_at = vec3_lerp(in_pos[0] - in_ori[0] * vec3_set(0, 0, in_dist[0]), in_pos[1] - in_ori[1] * vec3_set(0, 0, in_dist[1]), t);
+    const float dist = lerpf(in_dist[0], in_dist[1], t);
+    const quat_t ori = quat_normalize(quat_slerp(in_ori[0], in_ori[1], t));
+    const vec3_t pos = look_at + ori * vec3_t{0, 0, dist};
+
+    *out_pos = pos;
+    *out_ori = ori;
+    *out_dist = dist;
+}
+
 bool camera_controller_trackball(vec3_t* position, quat_t* orientation, float* distance, TrackballControllerInput input, TrackballControllerParam param, TrackballFlags flags) {
     ASSERT(position);
     ASSERT(orientation);

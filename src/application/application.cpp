@@ -301,20 +301,20 @@ bool file_dialog(char* str_buf, int str_cap, FileDialogFlag flags, const char* f
     }
 
     if (result == NFD_OKAY) {
-        char ext[16] = {0};
+        char ext[32] = {0};
         if (flags & FileDialogFlag_Save) {
-            str_t pext;
             str_t path = str_from_cstr(out_path);
-            if (extract_ext(&pext, path) && filter) {
+            str_t sext = {0};
+            if (!extract_ext(&sext, path) && filter) {
                 // get ext from supplied filter (first match)
-                pext.ptr = filter;
+                int64_t len = 0;
                 const char* delim = strchr(filter, ',');
                 if (delim) {
-                    pext.len = delim - filter;
+                    len = delim - filter;
                 } else {
-                    pext.len = strlen(filter);
+                    len = (int64_t)strlen(filter);
                 }
-                snprintf(ext, sizeof(ext), ".%.*s", (int)pext.len, pext.ptr);
+                snprintf(ext, sizeof(ext), ".%.*s", (int)len, filter);
             }
         }
         int len = snprintf(str_buf, str_cap, "%s%s", out_path, ext);

@@ -224,6 +224,18 @@ enum RepBit_ {
 
 // #struct Structure Declarations
 
+// This is very messy, but it works for now
+struct CoordSystemWidgetParam {
+    ImVec2 pos = ImVec2(0,0);
+    ImVec2 size;
+
+    mat4_t view_matrix;
+
+    quat_t& camera_ori;
+    vec3_t& camera_pos;
+    float&  camera_dist;
+};
+
 struct SingleSelectionSequence {
     int32_t idx[4] = {-1, -1, -1, -1};
 };
@@ -727,6 +739,7 @@ struct ApplicationData {
         bool show_reference_structures = true;
         bool show_reference_ensemble = false;
         bool show_density_volume = false;
+        bool show_coordinate_system_widget = true;
 
         bool dirty_rep = false;
         bool dirty_vol = false;
@@ -742,7 +755,12 @@ struct ApplicationData {
         mat4_t* rep_model_mats = nullptr;
         mat4_t model_mat = {0};
 
+        int coordinate_system_placement = 0;
+
         Camera camera = {};
+        quat_t target_ori;
+        vec3_t target_pos;
+        float  target_dist;
     } density_volume;
 
     // --- VISUALS ---
@@ -1222,7 +1240,8 @@ static void update_view_param(ApplicationData* data);
 static void reset_view(ApplicationData* data, bool move_camera = false, bool smooth_transition = false);
 
 static void handle_camera_interaction(ApplicationData* data);
-static void handle_camera_animation(ApplicationData* data);
+//static void handle_camera_animation(ApplicationData* data);
+static void animate_camera(Camera* camera, quat_t target_ori, vec3_t target_pos, float target_dist, float dt, float target_factor = 0.1f);
 
 //static void init_display_properties(ApplicationData* data);
 //static void update_density_volume_texture(ApplicationData* data);
@@ -1253,6 +1272,8 @@ static void draw_dataset_window(ApplicationData* data);
 static void draw_debug_window(ApplicationData* data);
 static void draw_property_export_window(ApplicationData* data);
 static void draw_notifications_window();
+
+static bool draw_coordinate_system_widget(const CoordSystemWidgetParam&);
 
 static void clear_gbuffer(GBuffer* gbuf);
 static void init_gbuffer(GBuffer* gbuf, int width, int height);
@@ -1633,7 +1654,10 @@ int main(int argc, char** argv) {
         //ImGui::ShowDemoWindow();
 
         handle_camera_interaction(&data);
-        handle_camera_animation(&data);
+        //handle_camera_animation(&data);
+        animate_camera(&data.view.camera, data.view.animation.target_orientation, data.view.animation.target_position, data.view.animation.target_distance, data.ctx.timing.delta_s);
+        data.visuals.dof.focus_depth = data.view.camera.focus_distance;
+
         update_view_param(&data);
 
         ImGuiWindow* win = ImGui::GetCurrentContext()->HoveredWindow;
@@ -2931,6 +2955,41 @@ static void update_view_param(ApplicationData* data) {
     param.matrix.current.norm = mat4_transpose(param.matrix.inverse.view);
 }
 
+static void compute_optimal_view(quat_t* out_ori, vec3_t* out_pos, float* out_dist, vec3_t in_aabb_min, vec3_t in_aabb_max) {
+    const vec3_t ext = in_aabb_max - in_aabb_min;
+    const float len = MAX(vec3_length(ext * 0.5f), 10.0f);
+
+    const float max_ext = MAX(MAX(ext.x, ext.y), ext.z);
+    const float min_ext = MIN(MIN(ext.x, ext.y), ext.z);
+    const float aniso_ext = max_ext / min_ext;
+
+    // We want to align the view such that we the longest axis of the aabb align with the X-axis, the mid axis with the Y-axis
+
+    int l[3] = { 0, 1, 2 };
+
+    if (aniso_ext > 1.1f) {
+        // The aabb is not uniform, so we sort the axes by length
+        if (ext[l[0]] < ext[l[1]]) std::swap(l[0], l[1]);
+        if (ext[l[1]] < ext[l[2]]) std::swap(l[1], l[2]);
+        if (ext[l[0]] < ext[l[1]]) std::swap(l[0], l[1]);
+        // Now the axes are sorted with respect to the length l[0] > l[1] > l[2]
+    }
+
+    const mat3_t I = mat3_ident();
+    const vec3_t right = I[l[0]];
+    const vec3_t up    = I[l[1]];
+    const vec3_t out   = I[l[2]];
+
+    const vec3_t dir = vec3_normalize(right * 0.6f + up * 0.5f + out * 1.0f);
+
+    const vec3_t cen = (in_aabb_min + in_aabb_max) * 0.5f;
+    const vec3_t pos = cen + dir * len * 3.0f;
+
+    *out_ori = quat_from_mat4(mat4_look_at(pos, cen, up));
+    *out_pos = pos;
+    *out_dist = vec3_length(pos - cen);
+}
+
 static void reset_view(ApplicationData* data, bool move_camera, bool smooth_transition) {
     ASSERT(data);
     if (!data->mold.mol.atom.count) return;
@@ -2952,53 +3011,26 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
         md_util_aabb_compute(aabb_min.elem, aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, nullptr, mol.atom.count);
     }
 
-    const vec3_t ext = aabb_max - aabb_min;
-    const float len = MAX(vec3_length(ext * 0.5f), 10.0f);
-    
-    const float max_ext = MAX(MAX(ext.x, ext.y), ext.z);
-    const float min_ext = MIN(MIN(ext.x, ext.y), ext.z);
-    const float aniso_ext = max_ext / min_ext;
-
-    // We want to align the view such that we the longest axis of the aabb align with the X-axis, the mid axis with the Y-axis
-
-    int l[3] = { 0, 1, 2 };
-    
-    if (aniso_ext > 1.1f) {
-        // The aabb is not uniform, so we sort the axes by length
-        if (ext[l[0]] < ext[l[1]]) std::swap(l[0], l[1]);
-        if (ext[l[1]] < ext[l[2]]) std::swap(l[1], l[2]);
-        if (ext[l[0]] < ext[l[1]]) std::swap(l[0], l[1]);
-        // Now the axes are sorted with respect to the length l[0] > l[1] > l[2]
-    }
-
-    const mat3_t I = mat3_ident();
-    const vec3_t right = I[l[0]];
-    const vec3_t up    = I[l[1]];
-    const vec3_t out   = I[l[2]];
-    
-    const vec3_t dir = vec3_normalize(right * 0.6f + up * 0.5f + out * 1.0f);
-
-    const vec3_t cen = (aabb_min + aabb_max) * 0.5f;
-    const vec3_t pos = cen + dir * len * 3.0f;
+	vec3_t optimal_pos;
+    quat_t optimal_ori;
+    float  optimal_dist;
+    compute_optimal_view(&optimal_ori, &optimal_pos, &optimal_dist, aabb_min, aabb_max);
 
     if (move_camera) {
-        const quat_t ori = quat_from_mat4(mat4_look_at(pos, cen, up));
-        const float dist = vec3_length(pos - cen);
-
-        data->view.animation.target_position = pos;
-        data->view.animation.target_orientation = ori;
-        data->view.animation.target_distance = dist;
+        data->view.animation.target_position    = optimal_pos;
+        data->view.animation.target_orientation = optimal_ori;
+        data->view.animation.target_distance    = optimal_dist;
 
         if (!smooth_transition) {
-            data->view.camera.position = pos;
-            data->view.camera.orientation = ori;
-            data->view.camera.focus_distance = dist;
+            data->view.camera.position       = optimal_pos;
+            data->view.camera.orientation    = optimal_ori;
+            data->view.camera.focus_distance = optimal_dist;
         }
     }
 
     data->view.camera.near_plane = 1.0f;
     data->view.camera.far_plane = 10000.0f;
-    data->view.trackball_param.max_distance = len * 10.0f;
+    data->view.trackball_param.max_distance = optimal_dist * 10.0f;
 }
 
 // #picking
@@ -3112,11 +3144,7 @@ static void draw_main_menu(ApplicationData* data) {
             if (ImGui::MenuItem("Save Workspace", "CTRL+S")) {
                 if (strnlen(data->files.workspace, sizeof(data->files.workspace)) == 0) {
                     if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, str_ptr(WORKSPACE_FILE_EXTENSION))) {
-                        size_t path_len = strnlen(path_buf, sizeof(path_buf));
-                        if (!extract_ext(NULL, {path_buf, path_len})) {
-                            path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".%s", str_ptr(WORKSPACE_FILE_EXTENSION));
-                        }
-                        save_workspace(data, {path_buf, path_len});
+                        save_workspace(data, {path_buf, strnlen(path_buf, sizeof(path_buf))});
                     }
                 } else {
                     save_workspace(data, str_from_cstr(data->files.workspace));
@@ -3124,11 +3152,7 @@ static void draw_main_menu(ApplicationData* data) {
             }
             if (ImGui::MenuItem("Save As")) {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, str_ptr(WORKSPACE_FILE_EXTENSION))) {
-                    size_t path_len = strnlen(path_buf, sizeof(path_buf));
-                    if (!extract_ext(NULL, {path_buf, path_len})) {
-                        path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".%s", str_ptr(WORKSPACE_FILE_EXTENSION));
-                    }
-                    save_workspace(data, {path_buf, path_len});
+                    save_workspace(data, {path_buf, strnlen(path_buf, sizeof(path_buf))});
                 }
             }
             ImGui::Separator();
@@ -7304,6 +7328,7 @@ static void draw_density_volume_window(ApplicationData* data) {
     ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Density Volume", &data->density_volume.show_window, ImGuiWindowFlags_MenuBar)) {
         const ImVec2 button_size = {160, 0};
+        bool volume_changed = false;
 
         if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
             data->animation.mode = data->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
@@ -7323,6 +7348,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                     ImPlot::ItemIcon(dp.color); ImGui::SameLine();
                     if (ImGui::Selectable(dp.label, dp.show_in_volume)) {
                         selected_index = i;
+                        volume_changed = true;
                     }
                     if (ImGui::IsItemHovered()) {
                         visualize_payload(data, dp.prop->vis_payload, 0, MD_SCRIPT_VISUALIZE_DEFAULT);
@@ -7467,6 +7493,7 @@ static void draw_density_volume_window(ApplicationData* data) {
                     }
                     ImGui::Unindent();
                 }
+                ImGui::Checkbox("Coordinate System Widget", &data->density_volume.show_coordinate_system_widget);
                 ImGui::EndMenu();
             }
 
@@ -7474,6 +7501,9 @@ static void draw_density_volume_window(ApplicationData* data) {
         }
 
         update_density_volume(data);
+
+        // Animate camera towards targets
+        animate_camera(&data->density_volume.camera, data->density_volume.target_ori, data->density_volume.target_pos, data->density_volume.target_dist, data->ctx.timing.delta_s);
 
         /*
         // Canvas
@@ -7486,7 +7516,7 @@ static void draw_density_volume_window(ApplicationData* data) {
         canvas_sz.y = MAX(canvas_sz.y, 50.0f);
 
         // This will catch our interactions
-        ImGui::InvisibleButton("canvas", canvas_sz, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+        ImGui::InvisibleButton("canvas", canvas_sz, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_AllowOverlap);
 
         // Draw border and background color
         ImGuiIO& io = ImGui::GetIO();
@@ -7551,17 +7581,23 @@ static void draw_density_volume_window(ApplicationData* data) {
             init_gbuffer(&gbuf, canvas_sz.x, canvas_sz.y);
         }
 
-        static bool init = true;
-        if (init) {
-            const vec3_t ext = {10,10,10};
-            const vec3_t cen = {0.5f,0.5f,0.5f};
-            const vec3_t pos = cen + ext * vec3_t{1.0f,0.5f,0.7f} * 2.f;
-            const vec3_t up = {0,1,0};
+        bool reset_view = volume_changed;
+        if (is_hovered) {
+            if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                reset_view = true;
+            }
+        }
 
-            data->density_volume.camera.position = pos;
-            data->density_volume.camera.focus_distance = vec3_length(pos - cen);
-            data->density_volume.camera.orientation = quat_from_mat4(mat4_look_at(data->density_volume.camera.position, cen, up));
-            init = false;
+        if (reset_view) {
+            vec3_t aabb_min = vec3_from_vec4(data->density_volume.model_mat * vec4_set(0,0,0,1));
+            vec3_t aabb_max = vec3_from_vec4(data->density_volume.model_mat * vec4_set(1,1,1,1));
+            compute_optimal_view(&data->density_volume.target_ori, &data->density_volume.target_pos, &data->density_volume.target_dist, aabb_min, aabb_max);
+
+            if (volume_changed) {
+                data->density_volume.camera.position = data->density_volume.target_pos;
+                data->density_volume.camera.orientation = data->density_volume.target_ori;
+                data->density_volume.camera.focus_distance = data->density_volume.target_dist;
+            }
         }
 
         if (is_active || is_hovered) {
@@ -7585,7 +7621,26 @@ static void draw_density_volume_window(ApplicationData* data) {
                 .screen_size = {canvas_sz.x, canvas_sz.y},
                 .fov_y = data->density_volume.camera.fov_y,
             };
-            camera_controller_trackball(&data->density_volume.camera.position, &data->density_volume.camera.orientation, &data->density_volume.camera.focus_distance, input, param);
+            camera_controller_trackball(&data->density_volume.target_pos, &data->density_volume.target_ori, &data->density_volume.target_dist, input, param);
+        }
+
+        if (data->density_volume.show_coordinate_system_widget) {
+            ImVec2 win_pos  = ImGui::GetWindowPos();
+            ImVec2 win_size = ImGui::GetWindowSize();
+
+            float  ext = MIN(win_size.x, win_size.y) * 0.2f;
+            float  pad = 0.1f * ext;
+
+            CoordSystemWidgetParam params = {
+                .pos = ImVec2(pad, win_size.y - ext - pad),
+                .size = {ext, ext},
+                .view_matrix = camera_world_to_view_matrix(data->density_volume.camera),
+                .camera_ori  = data->density_volume.target_ori,
+                .camera_pos  = data->density_volume.target_pos,
+                .camera_dist = data->density_volume.target_dist,
+            };
+
+            draw_coordinate_system_widget(params);
         }
 
         mat4_t view_mat = camera_world_to_view_matrix(data->density_volume.camera);
@@ -7901,11 +7956,7 @@ static void draw_script_editor_window(ApplicationData* data) {
                 if (ImGui::MenuItem("Save")) {
                     auto textToSave = editor.GetText();
                     if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, "txt")) {
-                        size_t path_len = strnlen(path_buf, sizeof(path_buf));
-                        str_t path = str_t{path_buf, path_len};
-                        if (!extract_ext(NULL, path)) {
-                            path.len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".txt");
-                        }
+                        str_t path = str_t{path_buf, strnlen(path_buf, sizeof(path_buf))};
                         md_file_o* file = md_file_open(path, MD_FILE_WRITE);
                         if (file) {
                             md_file_write(file, textToSave.c_str(), textToSave.length());
@@ -8338,11 +8389,7 @@ static void draw_property_export_window(ApplicationData* data) {
             md_array(str_t)         legends = 0;
 
             if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, file_extension)) {
-                size_t path_len = strnlen(path_buf, sizeof(path_buf));
-                if (!extract_ext(NULL, {path_buf, path_len})) {
-                    path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".%s", file_extension);
-                }
-                str_t path = {path_buf, path_len};
+                str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
                 if (dp.type == DisplayProperty::Type_Volume) {
                     if (strcmp(file_extension, "cube") == 0) {
                         if (export_cube(*data, dp.prop, path)) {
@@ -9920,6 +9967,213 @@ static void remove_selection(ApplicationData* data, int idx) {
     md_array_pop(data->selection.stored_selections);
 }
 
+static bool draw_coordinate_system_widget(const CoordSystemWidgetParam& param) {
+    ImGuiContext& g = *GImGui;
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (!window || window->SkipItems)
+        return false;
+
+    ImDrawList& dl = *ImGui::GetWindowDrawList();
+    const ImVec2 wp = window->Pos + param.pos;
+    const ImVec2 ws = param.size;
+
+    const ImGuiID id = window->GetID("coord_system_widget");
+    const ImRect bb(wp, wp + ws);
+    if (!ImGui::ItemAdd(bb, id, 0, ImGuiItemFlags_NoNav)) 
+        return false;
+
+    bool is_hovered = ImGui::ItemHoverable(bb, id, g.LastItemData.InFlags);
+
+    const float ext = ImMin(ws.x, ws.y) * 0.75f;
+    const ImVec2 o = {wp.x + ws.x * 0.5f, wp.y + ws.y * 0.5f};
+    const float dist = 5.0f;
+    const float fovy = (3.1415926534f / 4.0f);
+    const float ar   = 1.0f;
+    const float near = 0.1f;
+    const float far  = 10.f;
+
+    const float h = dist * tanf(fovy * 0.5f);
+    const float w = ar * h;
+    mat4_t P = mat4_ortho(-w, w, -h, h, near, far);
+    mat4_t V = param.view_matrix;
+    
+    V.col[3] = vec4_set(0, 0, -dist, 1);
+
+    vec4_t vx = mat4_mul_vec4(V, {1, 0, 0, 1});
+    vec4_t vy = mat4_mul_vec4(V, {0, 1, 0, 1});
+    vec4_t vz = mat4_mul_vec4(V, {0, 0, 1, 1});
+
+    // Project
+    vec4_t x = mat4_mul_vec4(P, vx);
+    vec4_t y = mat4_mul_vec4(P, vy);
+    vec4_t z = mat4_mul_vec4(P, vz);
+
+    // Perspective divide
+    x = vec4_div_f(x, x.w);
+    y = vec4_div_f(y, y.w);
+    z = vec4_div_f(z, z.w);
+
+    // Vector
+    const ImVec2 v[3] = { ImVec2(x.x, -x.y) * ext, ImVec2(y.x, -y.y) * ext, ImVec2(z.x, -z.y) * ext };
+    // Text
+    const char*  t[3] = { "X", "Y", "Z" };
+    // Size
+    const ImVec2 s[3] = { ImGui::CalcTextSize(t[0]), ImGui::CalcTextSize(t[1]), ImGui::CalcTextSize(t[2]) };
+    // Color
+    const uint32_t c[3] = { 0xFF0000FF, 0xFF00FF00, 0xFFFF0000 };
+    // Axis z relative to origin (-1, 1)
+    const float az[3] = { vx.z + dist, vy.z + dist, vz.z + dist };
+
+    // Draw order
+    int idx[3] = {0, 1, 2};
+
+    // Sort by z order
+    if (az[idx[0]] > az[idx[1]]) { ImSwap(idx[0], idx[1]); }
+    if (az[idx[1]] > az[idx[2]]) { ImSwap(idx[1], idx[2]); }
+    if (az[idx[0]] > az[idx[1]]) { ImSwap(idx[0], idx[1]); }
+
+    // Draw in z order
+    for (int i : idx) {
+        dl.AddLine(o, o + v[i], c[i], 2.0f);
+        dl.AddText(o + v[i] * 1.2f + ImVec2(-0.5f, -0.5f) * s[i], c[i], t[i]);
+    }
+
+    // Interaction rectangles for resetting view
+    const float s_min = 0.25f;
+    const float s_max = 0.75f;
+    const ImVec2 p[3][4] = {
+        {
+            o + v[1] * s_min + v[2] * s_min,
+            o + v[1] * s_max + v[2] * s_min,
+            o + v[1] * s_max + v[2] * s_max,
+            o + v[1] * s_min + v[2] * s_max,
+        },
+        {
+            o + v[2] * s_min + v[0] * s_min,
+            o + v[2] * s_max + v[0] * s_min,
+            o + v[2] * s_max + v[0] * s_max,
+            o + v[2] * s_min + v[0] * s_max,
+        },
+        {
+            o + v[0] * s_min + v[1] * s_min,
+            o + v[0] * s_max + v[1] * s_min,
+            o + v[0] * s_max + v[1] * s_max,
+            o + v[0] * s_min + v[1] * s_max,
+        },
+    };
+
+    // Test planes for intersection front to back
+    int hovered_plane_idx = -1;
+    if (is_hovered) {
+        for (int i : idx) {
+            // Split the polygon (which is a quad) into two triangles
+            // and check if the mouse is inside any of the triangles
+            const ImVec2 mouse_pos = ImGui::GetMousePos();
+            if (ImTriangleContainsPoint(p[i][0], p[i][1], p[i][2], mouse_pos) ||
+                ImTriangleContainsPoint(p[i][0], p[i][2], p[i][3], mouse_pos))
+            {
+                hovered_plane_idx = i;
+                break;
+            }
+        }
+    }
+
+    // Render planes back to front
+    const int ridx[] = {idx[2], idx[1], idx[0]};
+    for (int i : ridx) {
+        // The visible area of the plane is proportial to the dot product of the normal and the view direction
+        // We want to fade out the plane when we are looking at it from the side
+        // In this case we don't have the plane normal, but we have the z component of the 'axis' vector
+
+        const float alpha_scl = powf(fabsf(az[i]), 0.5f);
+        ImVec4 col = ImColor(c[i]) * ImVec4(1.0f, 1.0f, 1.0f, 0.2f * alpha_scl);
+        if (i == hovered_plane_idx) {
+            const float val = 0.5f + 0.5f * sinf(ImGui::GetTime() * 10.0f);
+            col.x += val;
+            col.y += val;
+            col.z += val;
+            col.w = 0.5f;
+
+            const float max_rgb = ImMax(ImMax(col.x, col.y), col.z);
+            col.x /= max_rgb;
+            col.y /= max_rgb;
+            col.z /= max_rgb;
+        }
+
+        dl.AddConvexPolyFilled(p[i], ARRAY_SIZE(p[i]), ImColor(col));
+    }
+
+    if (hovered_plane_idx != -1) {
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            quat_t ori = quat_normalize(param.camera_ori);
+            vec3_t pos = param.camera_pos;
+            float  dst = param.camera_dist;
+
+            const vec3_t dirs[3] = {
+                { 1, 0, 0},
+                { 0, 1, 0},
+                { 0, 0, 1},
+            };
+            const int i = hovered_plane_idx;
+            const vec3_t look_at = pos - ori * vec3_set(0, 0, dst);
+
+            {
+                // Orientate to align with the plane
+                const vec3_t view_z = ori * vec3_set(0,0,1);
+                const float dp = vec3_dot(dirs[i], view_z);
+                const vec3_t f = dp > 0 ? dirs[i] : -dirs[i];
+                if (fabsf(dp) < 0.99999f) {
+                    const vec3_t axis = vec3_normalize(vec3_cross(view_z, f));
+                    const float angle = acosf(vec3_dot(view_z, f));
+                    const quat_t q = quat_angle_axis(angle, axis);
+
+                    // Orientate to align with 'z'
+                    ori = quat_normalize(q * ori);
+                }
+            }
+
+            {
+                const vec3_t view_y = ori * vec3_set(0,1,0);
+                // The orientation should now be aligned with the plane such that view_z is equal to +/- dirs[i]
+                // Now we want to align view_up with the x, y or z axis, whichever it coincides with the most
+                const float dx = vec3_dot(vec3_set(1,0,0), view_y);
+                const float dy = vec3_dot(vec3_set(0,1,0), view_y);
+                const float dz = vec3_dot(vec3_set(0,0,1), view_y);
+                vec3_t u;
+                float dp;
+                if (fabsf(dx) > fabsf(dy) && fabsf(dx) > fabsf(dz)) {
+                    u = signf(dx) * vec3_set(1,0,0);
+                    dp = dx;
+                } else if (fabsf(dy) > fabsf(dx) && fabsf(dy) > fabsf(dz)) {
+                    u = sign(dy) * vec3_set(0,1,0);
+                    dp = dy;
+                } else {
+                    u = sign(dz) * vec3_set(0,0,1);
+                    dp = dz;
+                }
+                if (fabsf(dp) < 0.99999f) {
+                    const vec3_t axis = vec3_normalize(vec3_cross(view_y, u));
+                    const float angle = acosf(vec3_dot(view_y, u));
+                    const quat_t q = quat_angle_axis(angle, axis);
+
+                    // Orientate to align with 'y'
+                    ori = quat_normalize(q * ori);
+                }
+            }
+
+            // Look at the same point as before
+            pos = look_at + ori * vec3_set(0, 0, dst);
+
+            param.camera_ori  = ori;
+            param.camera_pos  = pos;
+            param.camera_dist = dst;
+
+            return true;
+        }
+    }
+    return false;
+}
+
 // #camera-control
 static void handle_camera_interaction(ApplicationData* data) {
     ASSERT(data);
@@ -9928,7 +10182,6 @@ static void handle_camera_interaction(ApplicationData* data) {
 
 #if 1
     // Coordinate system widget
-    // @TODO: Make the settings part 
 
     {
         static bool locked = true;
@@ -9957,11 +10210,21 @@ static void handle_camera_interaction(ApplicationData* data) {
                 ImGui::OpenPopup("Coordinate Widget Context");
             }
             if (ImGui::BeginPopup("Coordinate Widget Context")) {
-                ImGui::Text("Coordinate Widget");
                 ImGui::Checkbox("Locked", &locked);
                 ImGui::EndPopup();
             }
 
+            CoordSystemWidgetParam param = {
+                .size = ImGui::GetWindowSize(),
+                .view_matrix = data->view.param.matrix.current.view,
+                .camera_ori = data->view.animation.target_orientation,
+                .camera_pos = data->view.animation.target_position,
+                .camera_dist = data->view.animation.target_distance,
+            };
+
+            draw_coordinate_system_widget(param);
+
+#if 0
             ImDrawList* dl = ImGui::GetWindowDrawList();
             const ImVec2 wp = ImGui::GetWindowPos();
             const ImVec2 ws = ImGui::GetWindowSize();
@@ -10094,8 +10357,8 @@ static void handle_camera_interaction(ApplicationData* data) {
                     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                         quat_t& trg_ori = data->view.animation.target_orientation;
                         vec3_t& trg_pos = data->view.animation.target_position;
-                        const float trg_dst = data->view.animation.target_distance;
-                        const quat_t& cam_ori = data->view.camera.orientation;
+                        float trg_dst   = data->view.animation.target_distance;
+
                         const vec3_t dirs[3] = {
 						    { 1, 0, 0},
 						    { 0, 1, 0},
@@ -10106,13 +10369,16 @@ static void handle_camera_interaction(ApplicationData* data) {
 
                         {
                             // Orientate to align with the plane
-                            const mat3_t M = mat3_from_quat(cam_ori);
-                            const vec3_t f = vec3_dot(dirs[i], M[2]) > 0 ? dirs[i] : -dirs[i];
-                            const vec3_t axis = vec3_normalize(vec3_cross(M[2], f));
-                            const float angle = acosf(vec3_dot(M[2], f));
-                            const quat_t q = quat_angle_axis(angle, axis);
+                            const mat3_t M = mat3_from_quat(trg_ori);
+                            const float dp = vec3_dot(dirs[i], M[2]);
+                            const vec3_t f = dp > 0 ? dirs[i] : -dirs[i];
+                            if (fabsf(dp) < 0.99f) {
+								const vec3_t axis = vec3_normalize(vec3_cross(M[2], f));
+								const float angle = acosf(vec3_dot(M[2], f));
+								const quat_t q = quat_angle_axis(angle, axis);
 
-                            trg_ori = quat_normalize(q * cam_ori);
+								trg_ori = quat_normalize(q * trg_ori);
+							}
                         }
 
                         {
@@ -10130,12 +10396,15 @@ static void handle_camera_interaction(ApplicationData* data) {
 						    } else {
 							    u = sign(dz) * vec3_set(0,0,1);
 						    }
-                            const vec3_t axis = vec3_normalize(vec3_cross(M[1], u));
-                            const float angle = acosf(vec3_dot(M[1], u));
-                            const quat_t q = quat_angle_axis(angle, axis);
+                            const float dp = vec3_dot(M[1], u);
+                            if (fabsf(dp) < 0.99f) {
+                                const vec3_t axis = vec3_normalize(vec3_cross(M[1], u));
+                                const float angle = acosf(vec3_dot(M[1], u));
+                                const quat_t q = quat_angle_axis(angle, axis);
 
-                            // Orientate to align with 'up'
-                            trg_ori = quat_normalize(q * trg_ori);
+                                // Orientate to align with 'up'
+                                trg_ori = quat_normalize(q * trg_ori);
+                            }
                         }
 
 					    // Look at the same point as before
@@ -10143,6 +10412,7 @@ static void handle_camera_interaction(ApplicationData* data) {
                     }
                 }
             }
+#endif
         }
         ImGui::End();
     }
@@ -10337,47 +10607,19 @@ static void handle_camera_interaction(ApplicationData* data) {
     }
 }
 
-static void handle_camera_animation(ApplicationData* data) {
+static void animate_camera(Camera* camera, quat_t target_ori, vec3_t target_pos, float target_dist, float dt, float target_factor) {
+    ASSERT(camera);
+
+    dt = CLAMP(dt, 1.0f / 1000.f, 1.0f / 20.f);
+
     // We use an exponential interpolation of the deltas with a common factor
-    const float TARGET_DT = 1.0f / 100.0f;
-    const float TARGET_FACTOR = 0.1f;
-    const float dt = CLAMP(data->ctx.timing.delta_s, 1.0f / 1000.f, 1.0f / 20.f);
-    const float interpolation_factor = TARGET_FACTOR * (dt / TARGET_DT);
+    const float INV_TARGET_DT = 100.0f;
+    float interpolation_factor = target_factor * dt * INV_TARGET_DT;
 
-    vec3_t& current_pos  = data->view.camera.position;
-    vec3_t& target_pos   = data->view.animation.target_position;
-
-    quat_t& current_ori  = data->view.camera.orientation;
-    quat_t& target_ori   = data->view.animation.target_orientation;
-
-    float&  current_dist = data->view.camera.focus_distance;
-    float&  target_dist  = data->view.animation.target_distance;
-
-    // We want to interpolate along an arc which is formed by maintaining a distance to the look_at position and smoothly interpolating the orientation,
-    // This means that 
-    // We linearly interpolate a look_at position which is implicitly defined by position, orientation and distance
-    // There is some precision errors creeping into the posision because we transform back and forth to look at using the orientation
-
-    current_dist = lerp(current_dist, target_dist, interpolation_factor);
-
-    const vec3_t current_look_at = current_pos - current_ori * vec3_t{0, 0, current_dist};
-    const vec3_t target_look_at  = target_pos  -  target_ori * vec3_t{0, 0,  target_dist};
-    const vec3_t look_at = lerp(current_look_at, target_look_at, interpolation_factor);
-
-    current_ori = quat_normalize(quat_slerp(current_ori, target_ori, interpolation_factor));
-    current_pos = look_at + current_ori * vec3_t{0, 0, current_dist};
-        
-    data->visuals.dof.focus_depth = current_dist;
-#if 0
-    ImGui::Begin("Camera Debug Info");
-    ImGui::Text("pos cur [%.4f %.4f %.4f]", current_pos.x, current_pos.y, current_pos.z);
-    ImGui::Text("pos tar [%.4f %.4f %.4f]", target_pos.x, target_pos.y, target_pos.z);
-    ImGui::Text("ori cur [%.4f %.4f %.4f %.4f]", current_ori.x, current_ori.y, current_ori.z, target_ori.w);
-    ImGui::Text("ori tar [%.4f %.4f %.4f %.4f]", target_ori.x, target_ori.y, target_ori.z, target_ori.w);
-    ImGui::Text("dis cur [%.4f]", current_dist);
-    ImGui::Text("dis tar [%.4f]", target_dist);
-    ImGui::End();
-#endif
+    vec3_t pos[2] = {camera->position, target_pos};
+    quat_t ori[2] = {camera->orientation, target_ori};
+    float dist[2] = {camera->focus_distance, target_dist};
+    camera_interpolate_look_at(&camera->position, &camera->orientation, &camera->focus_distance, pos, ori, dist, interpolation_factor);
 }
 
 static void clear_gbuffer(GBuffer* gbuffer) {
