@@ -1591,6 +1591,8 @@ int main(int argc, char** argv) {
                 }
 
                 str_t rel_path = md_path_make_relative(base_path, e.path, frame_allocator);
+                MD_LOG_DEBUG("Attempting to make relative path from '" STR_FMT "' to '" STR_FMT "'", STR_ARG(base_path), STR_ARG(e.path));
+                MD_LOG_DEBUG("Relative path: '" STR_FMT "'", STR_ARG(rel_path));
                 if (!str_empty(rel_path)) {
                     snprintf(buf, sizeof(buf), "table = import(\"%.*s\");\n", STR_ARG(rel_path));
                     TextEditor::Coordinates pos = editor.GetCursorPosition();
