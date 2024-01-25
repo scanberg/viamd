@@ -7625,9 +7625,7 @@ static void draw_density_volume_window(ApplicationData* data) {
         }
 
         if (data->density_volume.show_coordinate_system_widget) {
-            ImVec2 win_pos  = ImGui::GetWindowPos();
             ImVec2 win_size = ImGui::GetWindowSize();
-
             float  ext = MIN(win_size.x, win_size.y) * 0.2f;
             float  pad = 0.1f * ext;
 
