@@ -99,6 +99,26 @@
 #define LOG_ERROR MD_LOG_ERROR
 #define LOG_SUCCESS(...) ImGui::InsertNotification(ImGuiToast(ImGuiToastType_Success, 6000, __VA_ARGS__))
 
+constexpr str_t header_snippet = STR_LIT(
+R"(#01010110#01001001#01000001#01001101#01000100#01001101#01000001#01001001#01010110#
+#                                                                                #
+#            VIAMD — Visual Interactive Analysis of Molecular Dynamics           #
+#                                                                                #
+#                    github: https://github.com/scanberg/viamd                   #
+#                 manual: https://github.com/scanberg/viamd/wiki                 #
+#                    youtube playlist: https://bit.ly/4aRsPrh                    #
+#                                twitter: @VIAMD_                                #
+#                                                                                #
+#                If you use VIAMD in your research, please cite:                 #
+#   "VIAMD: a Software for Visual Interactive Analysis of Molecular Dynamics"    #
+#       Robin Skånberg, Ingrid Hotz, Anders Ynnerman, and Mathieu Linares        #
+#                 J. Chem. Inf. Model. 2023, 63, 23, 7382–7391                   #
+#                   https://doi.org/10.1021/acs.jcim.3c01033                     #
+#                                                                                #
+#01010110#01001001#01000001#01001101#01000100#01001101#01000001#01001001#01010110#
+
+)");
+
 constexpr str_t shader_output_snippet = STR_LIT(R"(
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec4 out_normal;
@@ -7693,7 +7713,9 @@ static void draw_density_volume_window(ApplicationData* data) {
 
         size_t num_reps = md_array_size(data->density_volume.gl_reps);
         if (selected_property > -1 && data->density_volume.show_reference_structures && num_reps > 0) {
-            num_reps = data->density_volume.show_reference_ensemble ? num_reps : 1;
+            if (!data->density_volume.show_reference_ensemble) {
+            	num_reps = 1;
+			}
 
             md_gl_draw_op_t* draw_ops = 0;
 
@@ -7768,13 +7790,13 @@ static void draw_density_volume_window(ApplicationData* data) {
             ViewParam view_param = {
                 .matrix = {
                     .current = {
-                    .view = view_mat,
-                    .proj = proj_mat,
-                    .norm = view_mat,
-                },
-                .inverse = {
-                    .proj = inv_proj_mat,
-                }
+                        .view = view_mat,
+                        .proj = proj_mat,
+                        .norm = view_mat,
+                    },
+                    .inverse = {
+                        .proj = inv_proj_mat,
+                    }
                 },
                 .clip_planes = {
                     .near = data->density_volume.camera.near_plane,
@@ -9384,7 +9406,8 @@ static void load_workspace(ApplicationData* data, str_t filename) {
 
     while (str_extract_line(&line, &c_txt)) {
         line = str_trim(line);
-        if (line[0] == '[') {
+        if (line[0] == '#') continue; // Skip comments
+        else if (line[0] == '[') {
             group = line;
             arr_group = find_serialization_array_group(group);
             if (arr_group) {
@@ -9573,31 +9596,33 @@ static void save_workspace(ApplicationData* data, str_t filename) {
     }
     defer { md_file_close(file); };
 
-    const char* curr_group = "";
+    // Write big ass header
+    fprintf((FILE*)file, STR_FMT, STR_ARG(header_snippet));
 
-    for (int64_t i = 0; i < (int64_t)ARRAY_SIZE(serialization_targets); ++i) {
+    const char* curr_group = "";
+    for (size_t i = 0; i < ARRAY_SIZE(serialization_targets); ++i) {
         const char* group = serialization_targets[i].group;
 
         const SerializationArray* arr_group = find_serialization_array_group(str_from_cstr(group));
         if (arr_group) {
             // Special case for this since it is an array quantity, iterate over all array items then all serialization subfields marked with group
             const void* arr = *((const void**)((char*)data + arr_group->array_byte_offset));
-            const int64_t arr_size = md_array_size(arr);
+            const size_t arr_size = md_array_size(arr);
 
             if (arr_size) {
-                int64_t beg_field_i = i;
-                int64_t end_field_i = i + 1;
-                while (end_field_i < (int64_t)ARRAY_SIZE(serialization_targets) && strcmp(serialization_targets[end_field_i].group, group) == 0) {
+                size_t beg_field_i = i;
+                size_t end_field_i = i + 1;
+                while (end_field_i < ARRAY_SIZE(serialization_targets) && strcmp(serialization_targets[end_field_i].group, group) == 0) {
                     end_field_i += 1;
                 }
                 // Iterate over all array elements
-                for (int64_t arr_idx = 0; arr_idx < arr_size; ++arr_idx) {
+                for (size_t arr_idx = 0; arr_idx < arr_size; ++arr_idx) {
                     // Write group
                     fprintf((FILE*)file, "\n%s\n", group);
 
                     // Write all fields for item
                     const void* item_ptr = (const char*)arr + arr_idx * arr_group->element_byte_size;
-                    for (int64_t j = beg_field_i; j < end_field_i; ++j) {
+                    for (size_t j = beg_field_i; j < end_field_i; ++j) {
                         write_entry((FILE*)file, serialization_targets[j], item_ptr, filename);
                     }
                 }
