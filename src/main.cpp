@@ -745,7 +745,7 @@ struct ApplicationData {
         bool dirty_vol = false;
 
         struct {
-            RepresentationType type = RepresentationType::SpaceFill;
+            RepresentationType type = RepresentationType::BallAndStick;
             ColorMapping colormap = ColorMapping::Cpk;
             float param[4] = {1,1,1,1};
             vec4_t color = {1,1,1,1};
@@ -6115,17 +6115,22 @@ static void draw_distribution_window(ApplicationData* data) {
                                     }
                                     case DisplayProperty::PlotType_Bars:
                                     {
-                                        for (int l = 0; l < 2; ++l) {
-                                            const ImVec2 p_min = ImPlot::PlotToPixels(prop.getter[0](xi[l], &payload));
-                                            const ImVec2 p_max = ImPlot::PlotToPixels(prop.getter[1](xi[l], &payload));
+                                        // @NOTE: There is a bug here in the computation of the width of the bars
+                                        // And does not work properly atm at different zoom levels.
+                                        const float bar_half_width = scl * prop.bar_width_scale * 0.5f;
+                                        for (int l = 0; l < 3; ++l) {
+                                            const ImVec2 p[2] = {
+                                                ImPlot::PlotToPixels(ImPlotPoint(bar_half_width, 0)),
+                                                ImPlot::PlotToPixels(prop.getter[1](xi[l], &payload))
+                                            };
+                                            const ImVec2 p_min = {p[1].x - p[0].x, ImMin(p[0].y, p[1].y)};
+                                            const ImVec2 p_max = {p[1].x + p[0].x, ImMax(p[0].y, p[1].y)};
 
-                                            const float bar_half_width = scl * prop.bar_width_scale * 0.5f;
+                                            const ImVec2 ll = {p_min.x, p_min.y};
+                                            const ImVec2 ur = {p_max.x, p_max.y};
+                                            const ImVec2 pos = ImClamp(mouse_coord, ll, ur);
 
-                                            const ImVec2 ll = {p_min.x - bar_half_width, p_min.y};
-                                            const ImVec2 ur = {p_max.x + bar_half_width, p_max.y};
-                                            const ImVec2 p = ImClamp(mouse_coord, ll, ur);
-
-                                            d = MIN(d, sqrt(ImLengthSqr(mouse_coord - p)));
+                                            d = MIN(d, sqrt(ImLengthSqr(mouse_coord - pos)));
                                         }
                                         d += area_dist + layer_dist;
                                         break;
@@ -7583,7 +7588,15 @@ static void draw_density_volume_window(ApplicationData* data) {
             init_gbuffer(&gbuf, canvas_sz.x, canvas_sz.y);
         }
 
-        bool reset_view = volume_changed;
+        bool reset_hard = false;
+        if (volume_changed) {
+            static bool first_time = true;
+			if (first_time) {
+				reset_hard = true;
+				first_time = false;
+            }
+		}
+        bool reset_view = reset_hard;
         if (is_hovered) {
             if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                 reset_view = true;
@@ -7595,7 +7608,7 @@ static void draw_density_volume_window(ApplicationData* data) {
             vec3_t aabb_max = vec3_from_vec4(data->density_volume.model_mat * vec4_set(1,1,1,1));
             compute_optimal_view(&data->density_volume.target_ori, &data->density_volume.target_pos, &data->density_volume.target_dist, aabb_min, aabb_max);
 
-            if (volume_changed) {
+            if (reset_hard) {
                 data->density_volume.camera.position = data->density_volume.target_pos;
                 data->density_volume.camera.orientation = data->density_volume.target_ori;
                 data->density_volume.camera.focus_distance = data->density_volume.target_dist;
@@ -7669,8 +7682,17 @@ static void draw_density_volume_window(ApplicationData* data) {
         glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
         glViewport(0, 0, gbuf.width, gbuf.height);
 
-        int64_t num_reps = md_array_size(data->density_volume.gl_reps);
-        if (data->density_volume.show_reference_structures && num_reps > 0) {
+        int64_t selected_property = -1;
+        for (size_t i = 0; i < md_array_size(data->display_properties); ++i) {
+            const DisplayProperty& dp = data->display_properties[i];
+            if (dp.type == DisplayProperty::Type_Volume && dp.show_in_volume) {
+                selected_property = i;
+                break;
+            }
+        }
+
+        size_t num_reps = md_array_size(data->density_volume.gl_reps);
+        if (selected_property > -1 && data->density_volume.show_reference_structures && num_reps > 0) {
             num_reps = data->density_volume.show_reference_ensemble ? num_reps : 1;
 
             md_gl_draw_op_t* draw_ops = 0;
@@ -7679,7 +7701,7 @@ static void draw_density_volume_window(ApplicationData* data) {
             op.type = (md_gl_representation_type_t)data->density_volume.rep.type;
             MEMCPY(&op.args, data->density_volume.rep.param, sizeof(op.args));
 
-            for (int64_t i = 0; i < num_reps; ++i) {
+            for (size_t i = 0; i < num_reps; ++i) {
                 op.rep = &data->density_volume.gl_reps[i];
                 op.model_matrix = &data->density_volume.rep_model_mats[i].elem[0][0];
                 md_array_push(draw_ops, op, frame_allocator);
@@ -7712,36 +7734,34 @@ static void draw_density_volume_window(ApplicationData* data) {
             PUSH_GPU_SECTION("Postprocessing")
                 postprocessing::Descriptor postprocess_desc = {
                 .background = {
-                        .intensity = data->visuals.background.color * data->visuals.background.intensity,
+                    .intensity = data->visuals.background.color * data->visuals.background.intensity,
                 },
                 .bloom = {
-                            .enabled = false,
+                    .enabled = false,
                 },
                 .tonemapping = {
-                            .enabled = data->visuals.tonemapping.enabled,
-                            .mode = data->visuals.tonemapping.tonemapper,
-                            .exposure = data->visuals.tonemapping.exposure,
-                            .gamma = data->visuals.tonemapping.gamma,
+                    .enabled = data->visuals.tonemapping.enabled,
+                    .mode = data->visuals.tonemapping.tonemapper,
+                    .exposure = data->visuals.tonemapping.exposure,
+                    .gamma = data->visuals.tonemapping.gamma,
                 },
                 .ambient_occlusion = {
-                            .enabled = data->visuals.ssao.enabled,
-                            .radius = data->visuals.ssao.radius,
-                            .intensity = data->visuals.ssao.intensity,
-                            .bias = data->visuals.ssao.bias,
+                    .enabled = data->visuals.ssao.enabled,
+                    .radius = data->visuals.ssao.radius,
+                    .intensity = data->visuals.ssao.intensity,
+                    .bias = data->visuals.ssao.bias,
                 },
                 .depth_of_field = {
-                            .enabled = data->visuals.dof.enabled,
-                            .focus_depth = data->visuals.dof.focus_depth,
-                            .focus_scale = data->visuals.dof.focus_scale,
+                    .enabled = false,
                 },
                 .temporal_reprojection = {
-                            .enabled = false,
+                    .enabled = false,
                 },
                 .input_textures = {
-                            .depth = gbuf.deferred.depth,
-                            .color = gbuf.deferred.color,
-                            .normal = gbuf.deferred.normal,
-                            .velocity = gbuf.deferred.velocity,
+                    .depth = gbuf.deferred.depth,
+                    .color = gbuf.deferred.color,
+                    .normal = gbuf.deferred.normal,
+                    .velocity = gbuf.deferred.velocity,
                 }
             };
 
@@ -8381,6 +8401,9 @@ static void draw_property_export_window(ApplicationData* data) {
         if (property_idx == -1) ImGui::PopDisabled();
 
         if (export_clicked) {
+            md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+            defer { md_arena_allocator_destroy(alloc); };
+
             ASSERT(property_idx != -1);
             char path_buf[1024];
             DisplayProperty& dp = data->display_properties[property_idx];
@@ -8402,75 +8425,79 @@ static void draw_property_export_window(ApplicationData* data) {
                         str_t out_str = {};
                         if (dp.type == DisplayProperty::Type_Temporal) {
                             const double* traj_times = md_trajectory_frame_times(data->mold.traj);
-                            const int64_t num_frames = md_trajectory_num_frames(data->mold.traj);
-                            md_array(float) time = md_array_create(float, num_frames, frame_allocator);
-                            for (int64_t i = 0; i < num_frames; ++i) {
+                            const size_t  num_frames = md_trajectory_num_frames(data->mold.traj);
+                            md_array(float) time = md_array_create(float, num_frames, alloc);
+                            for (size_t i = 0; i < num_frames; ++i) {
                                 time[i] = (float)traj_times[i];
                             }
 
                             str_t x_label = STR_LIT("Frame");
                             str_t y_label = str_from_cstr(dp.label);
 
-                            if (!md_unit_empty(dp.unit)) {
-                                y_label = str_printf(frame_allocator, "%s (%s)", dp.label, dp.unit_str);
+                            if (!md_unit_unitless(dp.unit)) {
+                                y_label = str_printf(alloc, "%s (%s)", dp.label, dp.unit_str);
                             }
 
                             md_unit_t time_unit = md_trajectory_time_unit(data->mold.traj);
                             if (!md_unit_empty(time_unit)) {
                                 char time_buf[64];
                                 size_t len = md_unit_print(time_buf, sizeof(time_buf), time_unit);
-                                x_label = str_printf(frame_allocator, "Time (" STR_FMT ")", len, time_buf);
+                                x_label = str_printf(alloc, "Time (" STR_FMT ")", len, time_buf);
                             }
 
-                            md_array_push(column_data, time, frame_allocator);
-                            md_array_push(column_labels, x_label, frame_allocator);
+                            md_array_push(column_data, time, alloc);
+                            md_array_push(column_labels, x_label, alloc);
 
                             if (dp.dim > 1) {
                                 for (int i = 0; i < dp.dim; ++i) {
-                                    str_t legend = str_printf(frame_allocator, "%s[%i]", dp.label, i + 1);
-                                    md_array_push(column_data, dp.prop->data.values + i * num_frames, frame_allocator);
-                                    md_array_push(legends, legend, frame_allocator);
-                                    md_array_push(column_labels, legend, frame_allocator);
+                                    str_t  legend = str_printf(alloc, "%s[%i]", dp.label, i + 1);
+                                    float* values = (float*)md_alloc(alloc, sizeof(float) * num_frames);
+                                    for (size_t j = 0; j < num_frames; ++j) {
+                                        values[j] = dp.prop->data.values[j * dp.dim + i];
+                                    }
+                                    md_array_push(column_data, values, alloc);
+                                    md_array_push(legends, legend, alloc);
+                                    md_array_push(column_labels, legend, alloc);
                                 }
                             } else {
-                                md_array_push(column_data, dp.prop->data.values, frame_allocator);
-                                md_array_push(column_labels, y_label, frame_allocator);
+                                md_array_push(column_data, dp.prop->data.values, alloc);
+                                md_array_push(column_labels, y_label, alloc);
                             }
 
                             if (strcmp(file_extension, "xvg") == 0) {
-                                str_t header = md_xvg_format_header(str_from_cstr(dp.label), x_label, y_label, md_array_size(legends), legends, frame_allocator);
-                                out_str = md_xvg_format(header, md_array_size(column_data), num_frames, column_data, frame_allocator);
+                                str_t header = md_xvg_format_header(str_from_cstr(dp.label), x_label, y_label, md_array_size(legends), legends, alloc);
+                                out_str = md_xvg_format(header, md_array_size(column_data), num_frames, column_data, alloc);
                             } else if (strcmp(file_extension, "csv") == 0) {
-                                out_str = md_csv_write_to_str(column_data, column_labels, md_array_size(column_data), num_frames, frame_allocator);
+                                out_str = md_csv_write_to_str(column_data, column_labels, md_array_size(column_data), num_frames, alloc);
                             }
 
 
                         } else if (dp.type == DisplayProperty::Type_Distribution) {
-                            md_array(float) x_values = sample_range(dp.hist.x_min, dp.hist.x_max, dp.hist.num_bins, frame_allocator);
+                            md_array(float) x_values = sample_range(dp.hist.x_min, dp.hist.x_max, dp.hist.num_bins, alloc);
 
                             str_t x_label = str_from_cstr(dp.unit_str);
                             str_t y_label = str_from_cstr(dp.label);
 
-                            md_array_push(column_data, x_values, frame_allocator);
-                            md_array_push(column_labels, x_label, frame_allocator);
+                            md_array_push(column_data, x_values, alloc);
+                            md_array_push(column_labels, x_label, alloc);
 
                             if (dp.hist.dim > 1) {
                                 for (int i = 0; i < dp.hist.dim; ++i) {
-                                    md_array_push(column_data, dp.hist.bins + i * dp.hist.num_bins, frame_allocator);
-                                    str_t legend = str_printf(frame_allocator, "%s[%i]", dp.label, i + 1);
-                                    md_array_push(legends, legend, frame_allocator);
-                                    md_array_push(column_labels, legend, frame_allocator);
+                                    md_array_push(column_data, dp.hist.bins + i * dp.hist.num_bins, alloc);
+                                    str_t legend = str_printf(alloc, "%s[%i]", dp.label, i + 1);
+                                    md_array_push(legends, legend, alloc);
+                                    md_array_push(column_labels, legend, alloc);
                                 }
                             } else {
-                                md_array_push(column_data, dp.hist.bins, frame_allocator);
-                                md_array_push(column_labels, y_label, frame_allocator);
+                                md_array_push(column_data, dp.hist.bins, alloc);
+                                md_array_push(column_labels, y_label, alloc);
                             }
 
                             if (strcmp(file_extension, "xvg") == 0) {
-                                str_t header = md_xvg_format_header(str_from_cstr(dp.label), x_label, y_label, md_array_size(legends), legends, frame_allocator);
-                                out_str = md_xvg_format(header, md_array_size(column_data), dp.hist.num_bins, column_data, frame_allocator);
+                                str_t header = md_xvg_format_header(str_from_cstr(dp.label), x_label, y_label, md_array_size(legends), legends, alloc);
+                                out_str = md_xvg_format(header, md_array_size(column_data), dp.hist.num_bins, column_data, alloc);
                             } else if (strcmp(file_extension, "csv") == 0) {
-                                out_str = md_csv_write_to_str(column_data, column_labels, md_array_size(column_data), dp.hist.num_bins, frame_allocator);
+                                out_str = md_csv_write_to_str(column_data, column_labels, md_array_size(column_data), dp.hist.num_bins, alloc);
                             }
                         }
                         if (!str_empty(out_str)) {
@@ -9506,7 +9533,9 @@ static void write_entry(FILE* file, SerializationObject target, const void* ptr,
         char rel_buf[1024];
         if (md_path_write_relative(rel_buf, sizeof(rel_buf), filename, {str, len})) {
             fprintf(file, "%s\n", rel_buf);
-        }     
+        } else {
+            fprintf(file, "\n");
+        }
         break;
     }
     case SerializationType_Script:
