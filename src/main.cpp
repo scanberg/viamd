@@ -73,6 +73,7 @@
 #define IR_SEMAPHORE_MAX_COUNT 3
 #define JITTER_SEQUENCE_SIZE 32
 #define MEASURE_EVALUATION_TIME 1
+#define FRAME_ALLOCATOR_BYTES MEGABYTES(256)
 
 #define GL_COLOR_ATTACHMENT_COLOR        GL_COLOR_ATTACHMENT0
 #define GL_COLOR_ATTACHMENT_NORMAL       GL_COLOR_ATTACHMENT1
@@ -1422,10 +1423,9 @@ uint32_t djb2_hash(const char *str) {
 }
 
 int main(int argc, char** argv) {
-    const int64_t linear_size = MEGABYTES(256);
-    void* linear_mem = md_alloc(md_heap_allocator, linear_size);
+    void* linear_mem = md_alloc(persistent_allocator, FRAME_ALLOCATOR_BYTES);
     md_linear_allocator_t linear_alloc {};
-    md_linear_allocator_init(&linear_alloc, linear_mem, linear_size);
+    md_linear_allocator_init(&linear_alloc, linear_mem, FRAME_ALLOCATOR_BYTES);
     md_allocator_i linear_interface = md_linear_allocator_create_interface(&linear_alloc);
     
 	linear_allocator = &linear_alloc;
@@ -2763,8 +2763,16 @@ static void interpolate_atomic_properties(ApplicationData* data) {
 
     size_t stride = ALIGN_TO(mol.atom.count, 16);    // The interploation uses SIMD vectorization without bounds, so we make sure there is no overlap between the data segments
     size_t bytes = stride * sizeof(float) * 3 * 4;
-    void* mem = md_alloc(frame_allocator, bytes);
-    defer { md_free(frame_allocator, mem, bytes); };
+
+    md_allocator_i* alloc = 0;
+    if (bytes < md_linear_allocator_avail_bytes(linear_allocator)) {
+        alloc = frame_allocator;
+    } else {
+        alloc = md_heap_allocator;
+    }
+
+    void* mem = md_alloc(alloc, bytes);
+    defer { md_free(alloc, mem, bytes); };
 
     float* src_x[4] = { (float*)mem + stride * 0, (float*)mem + stride * 1, (float*)mem + stride * 2, (float*)mem + stride * 3 };
     float* src_y[4] = { (float*)mem + stride * 4, (float*)mem + stride * 5, (float*)mem + stride * 6, (float*)mem + stride * 7 };
