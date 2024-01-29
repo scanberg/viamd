@@ -10284,9 +10284,9 @@ static void handle_camera_interaction(ApplicationData* data) {
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::GetStyleColorVec4(ImGuiCol_WindowBg) * ImVec4(1,1,1,0.1f));
         defer { ImGui::PopStyleColor(); };
 
-        int flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar;
+        int flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoDocking;
         if (locked) {
-            flags |= ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoNavFocus;
+            flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoNavFocus;
         }
 
         if (ImGui::Begin("Coordinate Widget", NULL, flags)) {
