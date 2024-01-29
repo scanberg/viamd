@@ -2798,8 +2798,15 @@ static void interpolate_atomic_properties(ApplicationData* data) {
             md_trajectory_load_frame(data->mold.traj, frames[2], &header[1], src_x[1], src_y[1], src_z[1]);
             // @NOTE: The question here is what the correct way would be to interpolate the unit cell.
             // All of this is very shady from a mathematical point of view, but it seems to work.
-            data->mold.mol.unit_cell.basis = lerp(header[0].unit_cell.basis, header[1].unit_cell.basis, t);
-            data->mold.mol.unit_cell.inv_basis = mat3_inverse(data->mold.mol.unit_cell.basis);
+            if ((header[0].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) && (header[1].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO)) {
+                double ext_x = lerp(header[0].unit_cell.basis[0][0], header[1].unit_cell.basis[0][0], t);
+                double ext_y = lerp(header[0].unit_cell.basis[1][1], header[1].unit_cell.basis[1][1], t);
+                double ext_z = lerp(header[0].unit_cell.basis[2][2], header[1].unit_cell.basis[2][2], t);
+                data->mold.mol.unit_cell = md_util_unit_cell_from_extent(ext_x, ext_y, ext_z);
+            } else if ((header[0].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) || (header[1].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC)) {
+                data->mold.mol.unit_cell.basis     = lerp(header[0].unit_cell.basis, header[1].unit_cell.basis, t);
+                data->mold.mol.unit_cell.inv_basis = mat3_inverse(data->mold.mol.unit_cell.basis);
+            }
             md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, mol.atom.count, &mol.unit_cell, t);
             break;
         }
@@ -2810,8 +2817,24 @@ static void interpolate_atomic_properties(ApplicationData* data) {
             md_trajectory_load_frame(data->mold.traj, frames[1], &header[1], src_x[1], src_y[1], src_z[1]);
             md_trajectory_load_frame(data->mold.traj, frames[2], &header[2], src_x[2], src_y[2], src_z[2]);
             md_trajectory_load_frame(data->mold.traj, frames[3], &header[3], src_x[3], src_y[3], src_z[3]);
-            data->mold.mol.unit_cell.basis = cubic_spline(header[0].unit_cell.basis, header[1].unit_cell.basis, header[2].unit_cell.basis, header[3].unit_cell.basis, t, s);
-            data->mold.mol.unit_cell.inv_basis = mat3_inverse(data->mold.mol.unit_cell.basis);
+            if ((header[0].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) &&
+                (header[1].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) &&
+                (header[2].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) &&
+                (header[3].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO))
+            {
+                double ext_x = cubic_spline(header[0].unit_cell.basis[0][0], header[1].unit_cell.basis[0][0], header[2].unit_cell.basis[0][0], header[3].unit_cell.basis[0][0], t);
+                double ext_y = cubic_spline(header[0].unit_cell.basis[1][1], header[1].unit_cell.basis[1][1], header[2].unit_cell.basis[1][1], header[3].unit_cell.basis[1][1], t);
+                double ext_z = cubic_spline(header[0].unit_cell.basis[2][2], header[1].unit_cell.basis[2][2], header[2].unit_cell.basis[2][2], header[3].unit_cell.basis[2][2], t);
+                data->mold.mol.unit_cell = md_util_unit_cell_from_extent(ext_x, ext_y, ext_z);
+            } else if ((header[0].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) ||
+                       (header[1].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) ||
+                       (header[2].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) ||
+                       (header[3].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC))
+            {
+                data->mold.mol.unit_cell.basis = cubic_spline(header[0].unit_cell.basis, header[1].unit_cell.basis, header[2].unit_cell.basis, header[3].unit_cell.basis, t, s);
+                data->mold.mol.unit_cell.inv_basis = mat3_inverse(data->mold.mol.unit_cell.basis);
+            }
+
             md_util_interpolate_cubic_spline(dst_x, dst_y, dst_z, src_x, src_y, src_z, mol.atom.count, &mol.unit_cell, t, s);
             break;
         }
