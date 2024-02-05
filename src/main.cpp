@@ -8428,6 +8428,9 @@ static void draw_property_export_window(ApplicationData* data) {
         if (ImGui::BeginCombo("Property", property_idx != -1 ? data->display_properties[property_idx].label : "")) {
             for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
                 const DisplayProperty& dp = data->display_properties[i];
+                if (dp.type == DisplayProperty::Type_Distribution && dp.hist.num_bins == 0) {
+                    continue; 
+                }
                 if (type == dp.type) {
                     if (ImGui::Selectable(dp.label, property_idx == i)) {
                         property_idx = i;
