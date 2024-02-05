@@ -14,6 +14,7 @@
 #include <md_xyz.h>
 #include <md_mmcif.h>
 #include <md_lammps.h>
+//#include <md_dcd.h>
 #include <md_trajectory.h>
 #include <md_frame_cache.h>
 #include <md_util.h>
@@ -199,7 +200,7 @@ static void traj_loader_preload_check(load::LoaderState*, traj_loader_t, str_t, 
 
 namespace load {
 
-#define NUM_ENTRIES 10
+#define NUM_ENTRIES 11
 struct table_entry_t {
     str_t name[NUM_ENTRIES];
     str_t ext[NUM_ENTRIES];
@@ -225,6 +226,7 @@ static const table_entry_t table = {
         STR_LIT("PDBx/mmCIF (cif)"),
         STR_LIT("LAMMPS (data)"),
         STR_LIT("LAMMPS Trajectory (lammpstrj)"),
+        //STR_LIT("DCD Trajectory (dcd)"),
     },
     {
         STR_LIT("pdb"),
@@ -237,6 +239,7 @@ static const table_entry_t table = {
         STR_LIT("cif"),
         STR_LIT("data"),
         STR_LIT("lammpstrj"),
+        //STR_LIT("dcd"),
     },
     { 
         md_pdb_molecule_api(),
@@ -249,6 +252,7 @@ static const table_entry_t table = {
         md_mmcif_molecule_api(),
         md_lammps_molecule_api(),
         NULL,
+        //NULL,
     },
 	{ 
         md_pdb_trajectory_loader(),
@@ -261,6 +265,7 @@ static const table_entry_t table = {
     	NULL,
         NULL,
         md_lammps_trajectory_loader(),
+        //md_dcd_trajectory_loader(),
     }
 };
 
@@ -377,6 +382,7 @@ bool get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header) {
     return md_trajectory_get_header(loaded_traj->traj, header);
 }
 
+#if 0
 size_t fetch_frame_data(struct md_trajectory_o*, int64_t idx, void* data_ptr) {
     if (data_ptr) {
         *((int64_t*)data_ptr) = idx;
@@ -449,10 +455,70 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
 
     return result;
 }
+#endif
 
-bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
-    void* frame_data = &idx;
-    return decode_frame_data(inst, frame_data, sizeof(int64_t), header, x, y, z);
+bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_header_t* out_header, float* out_x, float* out_y, float* out_z) {
+    ASSERT(inst);
+    LoadedTrajectory* loaded_traj = (LoadedTrajectory*)inst;
+    ASSERT(0 <= idx && idx < (int64_t)md_trajectory_num_frames(loaded_traj->traj));
+
+    md_frame_data_t* frame_data;
+    md_frame_cache_lock_t* lock = 0;
+    bool result = true;
+    bool in_cache = md_frame_cache_find_or_reserve(&loaded_traj->cache, idx, &frame_data, &lock);
+    if (!in_cache) {
+        //md_allocator_i* alloc = md_heap_allocator;
+        //size_t frame_data_size = md_trajectory_fetch_frame_data(loaded_traj->traj, idx, 0);
+        //void*  frame_data_ptr  = md_alloc(alloc, frame_data_size);
+        //md_trajectory_fetch_frame_data(loaded_traj->traj, idx, frame_data_ptr);
+        //result = md_trajectory_decode_frame_data(loaded_traj->traj, frame_data_ptr, frame_data_size, &frame_data->header, frame_data->x, frame_data->y, frame_data->z);
+        result = md_trajectory_load_frame(loaded_traj->traj, idx, &frame_data->header, frame_data->x, frame_data->y, frame_data->z);
+
+        if (result) {
+            const md_unit_cell_t* cell = &frame_data->header.unit_cell;
+            const md_molecule_t* mol = loaded_traj->mol;
+            float* x = frame_data->x;
+            float* y = frame_data->y;
+            float* z = frame_data->z;
+            const size_t num_atoms = frame_data->header.num_atoms;
+
+            // If we have a recenter target, then compute the com and apply that transformation
+            if (md_array_size(loaded_traj->recenter_indices) > 0) {
+                size_t count = md_array_size(loaded_traj->recenter_indices);
+                const int32_t* indices = loaded_traj->recenter_indices;
+
+                vec3_t com = {0};
+                if (count == 1) {
+                    const int32_t i = indices[0];
+                    com = vec3_set(x[i], y[i], z[i]);
+                } else {
+                    com = md_util_com_compute(x, y, z, mol->atom.mass, indices, count, &mol->unit_cell);
+                    md_util_pbc(&com.x, &com.y, &com.z, 0, 1, cell);
+                }
+
+                // Translate all
+                const vec3_t center = cell->flags ? cell->basis * vec3_set1(0.5f) : vec3_zero();
+                const vec3_t trans  = center - com;
+                vec3_batch_translate_inplace(x, y, z, num_atoms, trans);
+            }
+        }
+
+        //md_free(alloc, frame_data_ptr, frame_data_size);
+    }
+
+    if (result) {
+        const int64_t num_atoms = frame_data->header.num_atoms;
+        if (out_header) *out_header = frame_data->header;
+        if (out_x) MEMCPY(out_x, frame_data->x, sizeof(float) * num_atoms);
+        if (out_y) MEMCPY(out_y, frame_data->y, sizeof(float) * num_atoms);
+        if (out_z) MEMCPY(out_z, frame_data->z, sizeof(float) * num_atoms);
+    }
+
+    if (lock) {
+        md_frame_cache_frame_lock_release(lock);
+    }
+
+    return result;
 }
 
 md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const md_molecule_t* mol, md_allocator_i* alloc) {
@@ -506,8 +572,8 @@ md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const
     traj->inst = (md_trajectory_o*)inst;
     traj->get_header = get_header;
     traj->load_frame = load_frame;
-    traj->fetch_frame_data = fetch_frame_data;
-    traj->decode_frame_data = decode_frame_data;
+    //traj->fetch_frame_data = 0;
+    //traj->decode_frame_data = 0;
     
     return traj;
 }

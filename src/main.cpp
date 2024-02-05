@@ -9513,69 +9513,70 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     apply_atom_elem_mappings(data);
 }
 
-static void write_entry(FILE* file, SerializationObject target, const void* ptr, str_t filename) {
-    fprintf(file, "%s=", target.label);
+static void write_entry(md_file_o* file, SerializationObject target, const void* ptr, str_t filename) {
+    ASSERT(file);
+    md_file_printf(file, "%s=", target.label);
 
     switch (target.type) {
     case SerializationType_Bool:
     {
         bool value = *(bool*)((const char*)ptr + target.struct_byte_offset) != 0;
-        fprintf(file, "%i\n", value ? 1 : 0);
+        md_file_printf(file, "%i\n", value ? 1 : 0);
         break;
     }
     case SerializationType_String:
     {
         const char* str = (const char*)((const char*)ptr + target.struct_byte_offset);
         int len = (int)strnlen(str, target.capacity);
-        fprintf(file, "%.*s\n", len, str);
+        md_file_printf(file, "%.*s\n", len, str);
         break;
     }
     case SerializationType_Float:
     {
         float value = *(float*)((const char*)ptr + target.struct_byte_offset);
-        fprintf(file, "%g\n", value);
+        md_file_printf(file, "%g\n", value);
         break;
     }
     case SerializationType_Double:
     {
         double value = *(double*)((const char*)ptr + target.struct_byte_offset);
-        fprintf(file, "%g\n", value);
+        md_file_printf(file, "%g\n", value);
         break;
     }
     case SerializationType_Int8:
     {
         int32_t value = *(int8_t*)((const char*)ptr + target.struct_byte_offset);
-        fprintf(file, "%i\n", value);
+        md_file_printf(file, "%i\n", value);
         break;
     }
     case SerializationType_Int16:
     {
         int32_t value = *(int16_t*)((const char*)ptr + target.struct_byte_offset);
-        fprintf(file, "%i\n", value);
+        md_file_printf(file, "%i\n", value);
         break;
     }
     case SerializationType_Int32:
     {
         int32_t value = *(int32_t*)((const char*)ptr + target.struct_byte_offset);
-        fprintf(file, "%i\n", value);
+        md_file_printf(file, "%i\n", value);
         break;
     }
     case SerializationType_Int64:
     {
         int32_t value = *(int64_t*)((const char*)ptr + target.struct_byte_offset);
-        fprintf(file, "%i\n", value);
+        md_file_printf(file, "%i\n", value);
         break;
     }
     case SerializationType_Vec3:
     {
         vec3_t value = *(vec3_t*)((const char*)ptr + target.struct_byte_offset);
-        fprintf(file, "%g,%g,%g\n", value.x, value.y, value.z);
+        md_file_printf(file, "%g,%g,%g\n", value.x, value.y, value.z);
         break;
     }
     case SerializationType_Vec4:
     {
         vec4_t value = *(vec4_t*)((const char*)ptr + target.struct_byte_offset);
-        fprintf(file, "%g,%g,%g,%g\n", value.x, value.y, value.z, value.w);
+        md_file_printf(file, "%g,%g,%g,%g\n", value.x, value.y, value.z, value.w);
         break;
     }
     case SerializationType_Path:
@@ -9586,16 +9587,16 @@ static void write_entry(FILE* file, SerializationObject target, const void* ptr,
         // Make this sucker relative
         char rel_buf[1024];
         if (md_path_write_relative(rel_buf, sizeof(rel_buf), filename, {str, len})) {
-            fprintf(file, "%s\n", rel_buf);
+            md_file_printf(file, "%s\n", rel_buf);
         } else {
-            fprintf(file, "\n");
+            md_file_printf(file, "\n");
         }
         break;
     }
     case SerializationType_Script:
     {
         std::string str = editor.GetText();
-        fprintf(file, "\"\"\"%s\"\"\"\n", str.c_str());
+        md_file_printf(file, "\"\"\"%s\"\"\"\n", str.c_str());
         break;
     }
     case SerializationType_Bitfield:
@@ -9607,7 +9608,7 @@ static void write_entry(FILE* file, SerializationObject target, const void* ptr,
             char*  base64_data = (char*)md_alloc(frame_allocator, md_base64_encode_size_in_bytes(serialized_size));
             size_t base64_size = md_base64_encode(base64_data, serialized_data, serialized_size);
             if (base64_size) {
-                fprintf(file, "###%.*s###\n", (int)base64_size, base64_data);
+                md_file_printf(file, "###%.*s###\n", (int)base64_size, base64_data);
             }
         }
         break;
@@ -9628,7 +9629,7 @@ static void save_workspace(ApplicationData* data, str_t filename) {
     defer { md_file_close(file); };
 
     // Write big ass header
-    fprintf((FILE*)file, STR_FMT, STR_ARG(header_snippet));
+    md_file_printf(file, STR_FMT, STR_ARG(header_snippet));
 
     const char* curr_group = "";
     for (size_t i = 0; i < ARRAY_SIZE(serialization_targets); ++i) {
@@ -9649,12 +9650,12 @@ static void save_workspace(ApplicationData* data, str_t filename) {
                 // Iterate over all array elements
                 for (size_t arr_idx = 0; arr_idx < arr_size; ++arr_idx) {
                     // Write group
-                    fprintf((FILE*)file, "\n%s\n", group);
+                    md_file_printf(file, "\n%s\n", group);
 
                     // Write all fields for item
                     const void* item_ptr = (const char*)arr + arr_idx * arr_group->element_byte_size;
                     for (size_t j = beg_field_i; j < end_field_i; ++j) {
-                        write_entry((FILE*)file, serialization_targets[j], item_ptr, filename);
+                        write_entry(file, serialization_targets[j], item_ptr, filename);
                     }
                 }
                 i = end_field_i - 1;
@@ -9663,11 +9664,11 @@ static void save_workspace(ApplicationData* data, str_t filename) {
         }
         else {
             if (strcmp(group, curr_group) != 0) {
-                fprintf((FILE*)file, "\n%s\n", group);
+                md_file_printf(file, "\n%s\n", group);
                 curr_group = group;
             }
 
-            write_entry((FILE*)file, serialization_targets[i], data, filename);
+            write_entry(file, serialization_targets[i], data, filename);
         }
     }
 }
@@ -9676,23 +9677,25 @@ void create_screenshot(ApplicationData* data) {
     ASSERT(data);
     str_t path = data->screenshot.path_to_file;
 
-    image_t img = {0};
-    image_init(&img, data->gbuffer.width, data->gbuffer.height, frame_allocator);
-    defer { image_free(&img, frame_allocator); };
+    int width  = data->gbuffer.width;
+    int height = data->gbuffer.height;
+    size_t bytes = width * height * sizeof(uint32_t);
+    uint32_t* rgba = (uint32_t*)md_linear_allocator_push(linear_allocator, bytes);
+    defer { md_linear_allocator_pop(linear_allocator, bytes); };
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glReadBuffer(GL_BACK);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-    glReadPixels(0, 0, img.width, img.height, GL_RGBA, GL_UNSIGNED_BYTE, img.data);
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
 
     {
         // @NOTE: Swap Rows to flip image with respect to y-axis
-        const uint32_t row_byte_size = img.width * sizeof(uint32_t);
+        const uint32_t row_byte_size = width * sizeof(uint32_t);
         uint32_t* row_t = (uint32_t*)md_alloc(frame_allocator, row_byte_size);
         defer { md_free(frame_allocator, row_t, row_byte_size); };
-        for (uint32_t i = 0; i < (uint32_t)img.height / 2; ++i) {
-            uint32_t* row_a = img.data + i * img.width;
-            uint32_t* row_b = img.data + (img.height - 1 - i) * img.width;
+        for (uint32_t i = 0; i < (uint32_t)height / 2; ++i) {
+            uint32_t* row_a = rgba + i * width;
+            uint32_t* row_b = rgba + (height - 1 - i) * width;
             if (row_a != row_b) {
                 MEMCPY(row_t, row_a, row_byte_size);  // tmp = a;
                 MEMCPY(row_a, row_b, row_byte_size);  // a = b;
@@ -9706,11 +9709,11 @@ void create_screenshot(ApplicationData* data) {
 
     if (str_eq_cstr_ignore_case(ext, "jpg")) {
         const int quality = 95;
-        image_write_jpg(&img, path, quality);
+        image_write_jpg(path, rgba, width, height, quality);
     } else if (str_eq_cstr_ignore_case(ext, "png")) {
-        image_write_png(&img, path);
+        image_write_png(path, rgba, width, height);
     } else if (str_eq_cstr_ignore_case(ext, "bmp")) {
-        image_write_bmp(&img, path);
+        image_write_bmp(path, rgba, width, height);
     } else {
         LOG_ERROR("Non supported file-extension '%.*s' when saving screenshot", (int)ext.len, ext.ptr);
         return;
@@ -10290,10 +10293,10 @@ static void handle_camera_interaction(ApplicationData* data) {
         }
 
         if (ImGui::Begin("Coordinate Widget", NULL, flags)) {
-
             if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
                 ImGui::OpenPopup("Coordinate Widget Context");
             }
+
             if (ImGui::BeginPopup("Coordinate Widget Context")) {
                 ImGui::Checkbox("Locked", &locked);
                 ImGui::EndPopup();
