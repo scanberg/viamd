@@ -126,6 +126,7 @@ public:
 	};
 
 	struct Marker {
+		int type;
 		int line;
 		int begCol;
 		int endCol;

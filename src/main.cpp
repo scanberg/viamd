@@ -243,6 +243,13 @@ enum RepBit_ {
     RepBit_DirtyFilter  = 0x2
 };
 
+enum MarkerType_{
+    MarkerType_None,
+    MarkerType_Error,
+    MarkerType_Warning,
+    MarkerType_Visualization,
+};
+
 // #struct Structure Declarations
 
 // This is very messy, but it works for now
@@ -1917,13 +1924,14 @@ int main(int argc, char** argv) {
                             TextEditor::Marker marker = {0};
                             auto first = editor.GetCharacterCoordinates(errors[i].range.beg);
                             auto last  = editor.GetCharacterCoordinates(errors[i].range.end);
+                            marker.type = MarkerType_Error;
                             marker.begCol = first.mColumn;
                             marker.endCol = last.mColumn;
                             marker.prio = INT32_MAX;   // Ensures marker is rendered on top
                             marker.bgColor = IM_COL32(255, 0, 0, 128);
                             marker.hoverBgColor = 0;
                             marker.text = std::string(errors[i].text.ptr, errors[i].text.len);
-                            marker.payload = NULL;
+                            marker.payload = errors[i].context;
                             marker.line = first.mLine + 1;
                             editor.AddMarker(marker);
                         }
@@ -1934,13 +1942,14 @@ int main(int argc, char** argv) {
                             TextEditor::Marker marker = {0};
                             auto first = editor.GetCharacterCoordinates(warnings[i].range.beg);
                             auto last  = editor.GetCharacterCoordinates(warnings[i].range.end);
+                            marker.type = MarkerType_Warning;
                             marker.begCol = first.mColumn;
                             marker.endCol = last.mColumn;
                             marker.prio = INT32_MAX - 1;   // Ensures marker is rendered on top (but bellow an error)
                             marker.bgColor = IM_COL32(255, 255, 0, 128);
                             marker.hoverBgColor = 0;
                             marker.text = std::string(warnings[i].text.ptr, warnings[i].text.len);
-                            marker.payload = NULL;
+                            marker.payload = errors[i].context;
                             marker.line = first.mLine + 1;
                             editor.AddMarker(marker);
                         }
@@ -1953,6 +1962,7 @@ int main(int argc, char** argv) {
                             TextEditor::Marker marker = {0};
                             auto first = editor.GetCharacterCoordinates(vis_tok.range.beg);
                             auto last  = editor.GetCharacterCoordinates(vis_tok.range.end);
+                            marker.type = MarkerType_Visualization;
                             marker.begCol = first.mColumn;
                             marker.endCol = last.mColumn;
                             marker.prio = vis_tok.depth;
@@ -8129,22 +8139,29 @@ static void draw_script_editor_window(ApplicationData* data) {
         if (hovered_marker && hovered_marker->payload) {
             if (md_semaphore_try_aquire(&data->mold.script.ir_semaphore)) {
                 defer { md_semaphore_release(&data->mold.script.ir_semaphore); };
-                
-                if (md_script_ir_valid(data->mold.script.ir)) {
-                    data->mold.script.vis = {0};
-                    md_script_vis_init(&data->mold.script.vis, frame_allocator);
-                    md_script_vis_ctx_t ctx = {
-                        .ir = data->mold.script.ir,
-                        .mol = &data->mold.mol,
-                        .traj = data->mold.traj,
-                    };
-                    const md_script_vis_payload_o* payload = (const md_script_vis_payload_o*)hovered_marker->payload;
 
-                    md_script_vis_eval_payload(&data->mold.script.vis, payload, 0, &ctx, 0);
+                if (hovered_marker->type == MarkerType_Error || hovered_marker->type == MarkerType_Warning) {
+                    const md_bitfield_t* bf = (const md_bitfield_t*)hovered_marker->payload;
+                    md_bitfield_copy(&data->selection.current_highlight_mask, bf);
+                    data->mold.dirty_buffers |= MolBit_DirtyFlags;
+                }
+                else if (hovered_marker->type == MarkerType_Visualization) {
+                    if (md_script_ir_valid(data->mold.script.ir)) {
+                        data->mold.script.vis = {0};
+                        md_script_vis_init(&data->mold.script.vis, frame_allocator);
+                        md_script_vis_ctx_t ctx = {
+                            .ir = data->mold.script.ir,
+                            .mol = &data->mold.mol,
+                            .traj = data->mold.traj,
+                        };
+                        const md_script_vis_payload_o* payload = (const md_script_vis_payload_o*)hovered_marker->payload;
+
+                        md_script_vis_eval_payload(&data->mold.script.vis, payload, 0, &ctx, 0);
                     
-                    if (!md_bitfield_empty(&data->mold.script.vis.atom_mask)) {
-                        md_bitfield_copy(&data->selection.current_highlight_mask, &data->mold.script.vis.atom_mask);
-                        data->mold.dirty_buffers |= MolBit_DirtyFlags;
+                        if (!md_bitfield_empty(&data->mold.script.vis.atom_mask)) {
+                            md_bitfield_copy(&data->selection.current_highlight_mask, &data->mold.script.vis.atom_mask);
+                            data->mold.dirty_buffers |= MolBit_DirtyFlags;
+                        }
                     }
                 }
             }

@@ -78,7 +78,7 @@ void color_atoms_uniform(uint32_t* colors, size_t count, vec4_t color, const md_
         const uint32_t u32_color = convert_color(color);
         md_bitfield_iter_t it = md_bitfield_iter_create(mask);
         while (md_bitfield_iter_next(&it)) {
-            colors[it.idx] = u32_color;
+            colors[md_bitfield_iter_idx(&it)] = u32_color;
         }
     } else {
         set_colors(colors, count, convert_color(color));
