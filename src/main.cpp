@@ -2316,6 +2316,9 @@ static void display_property_copy_param_from_old(DisplayProperty& item, const Di
             item.distribution_subplot_mask  = old_items[i].distribution_subplot_mask;
             item.show_in_volume             = old_items[i].show_in_volume;
             item.plot_type                  = old_items[i].plot_type;
+            item.colormap_alpha			    = old_items[i].colormap_alpha;
+            item.colormap                   = old_items[i].colormap;
+            item.color_type                 = old_items[i].color_type;
             break;
         }
     }
