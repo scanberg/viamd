@@ -137,7 +137,7 @@ void camera_interpolate_look_at(vec3_t* out_pos, quat_t* out_ori, float* out_dis
 
     // This is to combat floating point inaccuracies when interpolating in this arc like fashion
     // If we are close enough, we just set it to that
-    const float quat_epsilon = 1.0e-7;
+    const float quat_epsilon = 1.0e-6;
     const float pos_epsilon = 1.0e-4;
     const float dist_epsilon = 1.0e-5;
 
