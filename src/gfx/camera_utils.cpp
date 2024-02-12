@@ -134,10 +134,37 @@ void camera_move(Camera* camera, vec3_t t) {
 // We linearly interpolate a look_at position which is implicitly defined by position, orientation and distance
 // There is some precision errors creeping into the posision because we transform back and forth to look at using the orientation
 void camera_interpolate_look_at(vec3_t* out_pos, quat_t* out_ori, float* out_dist, vec3_t in_pos[2], quat_t in_ori[2], float in_dist[2], float t) {
-    const vec3_t look_at = vec3_lerp(in_pos[0] - in_ori[0] * vec3_set(0, 0, in_dist[0]), in_pos[1] - in_ori[1] * vec3_set(0, 0, in_dist[1]), t);
-    const float dist = lerpf(in_dist[0], in_dist[1], t);
-    const quat_t ori = quat_normalize(quat_slerp(in_ori[0], in_ori[1], t));
-    const vec3_t pos = look_at + ori * vec3_t{0, 0, dist};
+
+    // This is to combat floating point inaccuracies when interpolating in this arc like fashion
+    // If we are close enough, we just set it to that
+    const float quat_epsilon = 1.0e-7;
+    const float pos_epsilon = 1.0e-4;
+    const float dist_epsilon = 1.0e-5;
+
+    quat_t ori;
+    vec3_t pos;
+    float dist;
+
+    if (quat_dot(in_ori[0], in_ori[1]) > (1.0 - quat_epsilon)) {
+        ori = in_ori[1];
+    } else {
+        ori = quat_normalize(quat_slerp(in_ori[0], in_ori[1], t));
+    }
+
+    const float d = fabsf(in_dist[0] - in_dist[1]);
+    if (d < dist_epsilon) {
+        dist = in_dist[1];
+    } else {
+        dist = lerpf(in_dist[0], in_dist[1], t);
+    }
+
+    const float d2 = vec3_distance_squared(in_pos[0], in_pos[1]);
+    if (d2 < pos_epsilon) {
+        pos = in_pos[1];
+    } else {
+        vec3_t look_at = vec3_lerp(in_pos[0] - in_ori[0] * vec3_set(0, 0, in_dist[0]), in_pos[1] - in_ori[1] * vec3_set(0, 0, in_dist[1]), t);
+        pos = look_at + ori * vec3_t{0, 0, dist};
+    }
 
     *out_pos = pos;
     *out_ori = ori;

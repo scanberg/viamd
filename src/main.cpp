@@ -8011,10 +8011,15 @@ static void draw_debug_window(ApplicationData* data) {
         ImGui::Text("Active ID: %u, Hover ID: %u", active, hover);
 
         ImGui::Text("Mouse Pos: (%.3f, %.3f)", ImGui::GetMousePos().x, ImGui::GetMousePos().y);
-        ImGui::Text("Camera Position: (%.3f, %.3f, %.3f)", data->view.camera.position.x, data->view.camera.position.y, data->view.camera.position.z);
-        ImGui::Text("Camera Orientation: (%.3f, %.3f, %.3f, %.3f)", data->view.camera.orientation.x, data->view.camera.orientation.y, data->view.camera.orientation.z, data->view.camera.orientation.w);
+        ImGui::Text("Camera Position: (%g, %g, %g)", data->view.camera.position.x, data->view.camera.position.y, data->view.camera.position.z);
+        ImGui::Text("Camera Orientation: (%g, %g, %g, %g)", data->view.camera.orientation.x, data->view.camera.orientation.y, data->view.camera.orientation.z, data->view.camera.orientation.w);
 
+        mat4_t P = data->view.param.matrix.current.proj_jittered;
 		ImGui::Text("proj_matrix:");
+        ImGui::Text("[%g %g %g %g]", P.col[0].x, P.col[0].y, P.col[0].z, P.col[0].w);
+        ImGui::Text("[%g %g %g %g]", P.col[1].x, P.col[1].y, P.col[1].z, P.col[1].w);
+        ImGui::Text("[%g %g %g %g]", P.col[2].x, P.col[2].y, P.col[2].z, P.col[2].w);
+        ImGui::Text("[%g %g %g %g]", P.col[3].x, P.col[3].y, P.col[3].z, P.col[3].w);
     }
     ImGui::End();
 }
