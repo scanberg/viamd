@@ -737,9 +737,7 @@ struct ApplicationData {
         struct {
             GLuint id = 0;
             bool dirty = false;
-            int dim_x = 0;
-            int dim_y = 0;
-            int dim_z = 0;
+            int  dim[3] = {0};
             float max_value = 1.f;
         } volume_texture;
 
@@ -2411,7 +2409,7 @@ static void init_display_properties(ApplicationData* data) {
                     item.x_values = data->timeline.x_values;
 
                     DisplayProperty item_raw = item;
-                    item_raw.dim        = props[i].data.dim[0];
+                    item_raw.dim        = props[i].data.dim[1];
                     item_raw.plot_type  = DisplayProperty::PlotType_Line;
                     item_raw.getter[0]  = [](int sample_idx, void* payload) -> ImPlotPoint {
                         DisplayProperty::Payload* data = (DisplayProperty::Payload*)payload;
@@ -2420,7 +2418,7 @@ static void init_display_properties(ApplicationData* data) {
                         const float* y_values = data->display_prop->prop->data.values;
                         const float* x_values = data->display_prop->x_values;
                         return ImPlotPoint(x_values[sample_idx], y_values[sample_idx * dim + dim_idx]);
-                        };
+                    };
                     display_property_copy_param_from_old(item_raw, old_items, md_array_size(old_items));
                     md_array_push(new_items, item_raw, frame_allocator);
 
@@ -2552,7 +2550,7 @@ static void update_display_properties(ApplicationData* data) {
                 const md_script_property_t* p = dp.prop;
                 if (p->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                     DisplayProperty::Histogram& hist = dp.hist;
-                    compute_histogram_masked(&hist, dp.num_bins, p->data.min_range[0], p->data.max_range[0], p->data.values, p->data.dim[0], md_script_eval_completed_frames(dp.eval), dp.aggregate_histogram);
+                    compute_histogram_masked(&hist, dp.num_bins, p->data.min_range[0], p->data.max_range[0], p->data.values, p->data.dim[1], md_script_eval_completed_frames(dp.eval), dp.aggregate_histogram);
                 }
                 else if (p->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
                     DisplayProperty::Histogram& hist = dp.hist;
@@ -2563,7 +2561,7 @@ static void update_display_properties(ApplicationData* data) {
                     hist.y_min = p->data.min_range[1];
                     hist.y_max = p->data.max_range[1];
                     hist.dim = 1;
-                    downsample_histogram(hist.bins, hist.num_bins, p->data.values, p->data.weights, p->data.dim[0]);
+                    downsample_histogram(hist.bins, hist.num_bins, p->data.values, p->data.weights, p->data.dim[2]);
                 }
             }
         }
@@ -2574,8 +2572,8 @@ static void update_density_volume(ApplicationData* data) {
     if (data->density_volume.dvr.tf.dirty) {
         data->density_volume.dvr.tf.dirty = false;
 
+        // Update colormap texture
         uint32_t pixel_data[128];
-
         for (size_t i = 0; i < ARRAY_SIZE(pixel_data); ++i) {
             float t = (float)i / (float)(ARRAY_SIZE(pixel_data) - 1);
             ImVec4 col = ImPlot::SampleColormap(t, data->density_volume.dvr.tf.colormap);
@@ -2660,7 +2658,7 @@ static void update_density_volume(ApplicationData* data) {
                     vec3_t min_aabb = { -s, -s, -s };
                     vec3_t max_aabb = { s, s, s };
                     data->density_volume.model_mat = volume::compute_model_to_world_matrix(min_aabb, max_aabb);
-                    data->density_volume.voxel_spacing = vec3_t{2*s / prop->data.dim[0], 2*s / prop->data.dim[1], 2*s / prop->data.dim[2]};
+                    data->density_volume.voxel_spacing = vec3_t{2*s / prop->data.dim[1], 2*s / prop->data.dim[2], 2*s / prop->data.dim[3]};
                 }
                 num_reps = md_array_size(vis.sdf.structures);
             }
@@ -2733,10 +2731,9 @@ static void update_density_volume(ApplicationData* data) {
         if (prop) {
             data->density_volume.dirty_vol = false;
             if (!data->density_volume.volume_texture.id) {
-                gl::init_texture_3D(&data->density_volume.volume_texture.id, prop->data.dim[0], prop->data.dim[1], prop->data.dim[2], GL_R32F);
-                data->density_volume.volume_texture.dim_x = prop->data.dim[0];
-                data->density_volume.volume_texture.dim_y = prop->data.dim[1];
-                data->density_volume.volume_texture.dim_z = prop->data.dim[2];
+                int dim[3] = { prop->data.dim[1], prop->data.dim[2], prop->data.dim[3] };
+                gl::init_texture_3D(&data->density_volume.volume_texture.id, dim[0], dim[1], dim[2], GL_R32F);
+                MEMCPY(data->density_volume.volume_texture.dim, dim, sizeof(dim));
                 data->density_volume.volume_texture.max_value = prop->data.max_value;
             }
             gl::set_texture_3D_data(data->density_volume.volume_texture.id, prop->data.values, GL_R32F);
@@ -8309,7 +8306,7 @@ static bool export_cube(ApplicationData& data, const md_script_property_t* prop,
             mat4_t M = vis.sdf.matrices[0];
             const md_bitfield_t* bf = &vis.sdf.structures[0];
             const int num_atoms = (int)md_bitfield_popcount(bf);
-            const int vol_dim[3] = {prop->data.dim[0], prop->data.dim[1], prop->data.dim[2]};
+            const int vol_dim[3] = {prop->data.dim[1], prop->data.dim[2], prop->data.dim[3]};
             const double extent = vis.sdf.extent * 2.0 * angstrom_to_bohr;
             const double voxel_ext[3] = {
                 (double)extent / (double)vol_dim[0],
@@ -8407,7 +8404,7 @@ static void draw_property_export_window(ApplicationData* data) {
         }
 
         if (task_system::task_is_running(data->tasks.evaluate_full)) {
-            ImGui::Text("The properties is currently being evaluated, please wait...");
+            ImGui::Text("The properties are currently being evaluated, please wait...");
             ImGui::End();
             property_idx = 0;
             return;
