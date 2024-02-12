@@ -2332,13 +2332,13 @@ static void init_display_properties(ApplicationData* data) {
     };
 
     for (const md_script_eval_t* eval : evals) {
-        const int64_t num_props = md_script_eval_num_properties(eval);
+        const size_t num_props = md_script_eval_num_properties(eval);
         const md_script_property_t* props = md_script_eval_properties(eval);
         str_t eval_label = md_script_eval_label(eval);
 
         const bool is_full_eval = (eval == evals[0]);
 
-        for (int64_t i = 0; i < num_props; ++i) {
+        for (size_t i = 0; i < num_props; ++i) {
             const md_script_property_t& prop = props[i];
             str_t ident = prop.ident;
 
@@ -2393,7 +2393,7 @@ static void init_display_properties(ApplicationData* data) {
                     display_property_copy_param_from_old(item_dist_raw, old_items, md_array_size(old_items));
                     md_array_push(new_items, item_dist_raw, frame_allocator);
 
-                    if (prop.data.dim[0] > 1) {
+                    if (prop.data.dim[1] > 1) {
                         DisplayProperty item_dist_agg = item_dist_raw;
                         item_dist_agg.type = DisplayProperty::Type_Distribution;
                         snprintf(item_dist_agg.label, sizeof(item_dist_agg.label), "%s (agg)", item.label);
