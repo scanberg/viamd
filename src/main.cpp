@@ -2317,6 +2317,8 @@ static void display_property_copy_param_from_old(DisplayProperty& item, const Di
             item.colormap_alpha			    = old_items[i].colormap_alpha;
             item.colormap                   = old_items[i].colormap;
             item.color_type                 = old_items[i].color_type;
+            item.marker_size                = old_items[i].marker_size;
+            item.marker_type                = old_items[i].marker_type;
             break;
         }
     }
@@ -3851,11 +3853,13 @@ void apply_atom_elem_mappings(ApplicationData* data) {
         str_t lbl = str_from_cstr(data->dataset.atom_element_remappings[j].lbl);
         md_element_t elem = data->dataset.atom_element_remappings[j].elem;
         float radius = md_util_element_vdw_radius(elem);
+        float mass = md_util_element_atomic_mass(elem);
 
         for (size_t i = 0; i < data->mold.mol.atom.count; ++i) {
             if (str_eq(lbl, data->mold.mol.atom.type[i])) {
                 data->mold.mol.atom.element[i] = elem;
                 data->mold.mol.atom.radius[i] = radius;
+                data->mold.mol.atom.mass[i] = mass;
                 data->mold.dirty_buffers |= MolBit_DirtyRadius;
             }
         }
