@@ -6816,16 +6816,16 @@ static void draw_shape_space_window(ApplicationData* data) {
 
                         //MEMSET(data->shape_space.coords, 0, md_array_bytes(data->shape_space.coords));
                         for (size_t i = 0; i < md_array_size(data->shape_space.coords); ++i) {
-                            data->shape_space.coords[i].x = NAN;
-                            data->shape_space.coords[i].y = NAN;
+                            data->shape_space.coords[i].x = 0;
+                            data->shape_space.coords[i].y = 0;
                         }
                         md_array_resize(data->shape_space.weights, num_frames * data->shape_space.num_structures, persistent_allocator);
                         MEMSET(data->shape_space.weights, 0, md_array_bytes(data->shape_space.weights));
 
                         data->tasks.shape_space_evaluate = task_system::pool_enqueue(STR_LIT("Eval Shape Space"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
                             ApplicationData* data = (ApplicationData*)user_data;
-                            int64_t stride = ALIGN_TO(data->mold.mol.atom.count, 8);
-                            const int64_t bytes = stride * 3 * sizeof(float);
+                            const size_t stride = ALIGN_TO(data->mold.mol.atom.count, 8);
+                            const size_t bytes = stride * 3 * sizeof(float);
                             float* coords = (float*)md_alloc(md_heap_allocator, bytes);
                             defer { md_free(md_heap_allocator, coords, bytes); };
                             float* x = coords + stride * 0;
@@ -6840,30 +6840,21 @@ static void draw_shape_space_window(ApplicationData* data) {
                                 md_trajectory_frame_header_t header;
                                 md_trajectory_load_frame(data->mold.traj, frame_idx, &header, x, y, z);
 
-                                const md_molecule_t& mol = data->mold.mol;
-                                md_util_pbc(x, y, z, 0, mol.atom.count, &header.unit_cell);
-                                size_t num_structures = md_index_data_count(mol.structures);
-                                for (size_t i = 0; i < num_structures; ++i) {
-                                    const int32_t* s_idx = md_index_range_beg(mol.structures, i);
-                                    const size_t   s_len = md_index_range_size(mol.structures, i);
-                                    if (s_len == 1) continue;
-                                    md_util_unwrap(mol.atom.x, mol.atom.y, mol.atom.z, s_idx, s_len, &header.unit_cell);
-                                }
-
-
                                 for (size_t i = 0; i < md_array_size(data->shape_space.bitfields); ++i) {
                                     const md_bitfield_t* bf = &data->shape_space.bitfields[i];
                                     size_t count = md_bitfield_popcount(bf);
                                     md_array_resize(xyzw, count, md_heap_allocator);
-                                    
+
                                     md_bitfield_iter_t iter = md_bitfield_iter_create(bf);
                                     size_t dst_idx = 0;
                                     while (md_bitfield_iter_next(&iter)) {
                                         const size_t src_idx = md_bitfield_iter_idx(&iter);
-										xyzw[dst_idx++] = {x[src_idx], y[src_idx], z[src_idx], w ? w[src_idx] : 1.0f};
-									}
+                                        xyzw[dst_idx++] = vec4_set(x[src_idx], y[src_idx], z[src_idx], w ? w[src_idx] : 1.0f);
+                                    }
 
-                                    const vec3_t com = md_util_com_compute_vec4(xyzw, count, 0);
+                                    vec3_t com = md_util_com_compute_vec4(xyzw, count, &data->mold.mol.unit_cell);
+                                    md_util_deperiodize_vec4(xyzw, count, com, &data->mold.mol.unit_cell);
+
                                     const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
                                     const vec3_t weights = md_util_shape_weights(&M);
 
