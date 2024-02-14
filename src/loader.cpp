@@ -521,7 +521,7 @@ bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_h
     return result;
 }
 
-md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const md_molecule_t* mol, md_allocator_i* alloc) {
+md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const md_molecule_t* mol, md_allocator_i* alloc, LoadTrajectoryFlags flags) {
     ASSERT(mol);
     ASSERT(alloc);
 
@@ -536,7 +536,7 @@ md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const
         return NULL;
     }
 
-    md_trajectory_i* internal_traj = loader->create(filename, alloc);
+    md_trajectory_i* internal_traj = loader->create(filename, alloc, flags);
     if (!internal_traj) {
         return NULL;
     }

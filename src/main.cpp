@@ -465,8 +465,8 @@ struct LoadParam {
     str_t file_path = STR_LIT("");
     bool coarse_grained = false;
     bool keep_representations = false;
-
     const void* mol_loader_arg = NULL;
+    LoadTrajectoryFlags traj_loader_flags = 0;
 };
 
 struct LoadDatasetWindowState {
@@ -486,11 +486,13 @@ struct LoadDatasetWindowState {
     int  atom_format_idx = -1;
 };
 
+// Hint flags for operations to be performed for the files
 enum {
     FileFlags_None = 0,
     FileFlags_ShowDialogue = 1,
     FileFlags_CoarseGrained = 2,
     FileFlags_KeepRepresentations = 4,
+    FileFlags_DisableCacheWrite = 8,
 };
 
 typedef uint32_t FileFlags;
@@ -1553,7 +1555,9 @@ int main(int argc, char** argv) {
             replace_char(md_strb_ptr(sb), md_strb_len(sb), '\\', '/');
             str_t path = md_strb_to_str(sb);
             if (md_path_is_valid(path)) {
-                file_queue_push(&data.file_queue, path);
+                // @NOTE: We want explicitly to disable writing of cache files for the default dataset
+                // The motivation is that the dataset may reside in a shared folder on the system that has no write access.
+                file_queue_push(&data.file_queue, path, FileFlags_DisableCacheWrite);
                 editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(2,1,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);");
             }
         }
@@ -1643,6 +1647,7 @@ int main(int argc, char** argv) {
                     param.file_path      = e.path;
                     param.coarse_grained = e.flags & FileFlags_CoarseGrained;
                     param.mol_loader_arg = state.mol_loader_arg;
+                    param.traj_loader_flags = (e.flags & FileFlags_DisableCacheWrite) ? LoadTrajectoryFlag_DisableCacheWrite : 0;
                     if (load_dataset_from_file(&data, param)) {
                         data.animation = {};
                         if (param.mol_loader) {
@@ -8882,8 +8887,8 @@ static void init_trajectory_data(ApplicationData* data) {
     }
 }
 
-static bool load_trajectory_data(ApplicationData* data, str_t filename, md_trajectory_loader_i* loader) {
-    md_trajectory_i* traj = load::traj::open_file(filename, loader, &data->mold.mol, persistent_allocator);
+static bool load_trajectory_data(ApplicationData* data, str_t filename, md_trajectory_loader_i* loader, LoadTrajectoryFlags flags) {
+    md_trajectory_i* traj = load::traj::open_file(filename, loader, &data->mold.mol, persistent_allocator, flags);
     if (traj) {
         free_trajectory_data(data);
         data->mold.traj = traj;
@@ -9022,7 +9027,7 @@ static bool load_dataset_from_file(ApplicationData* data, const LoadParam& param
             }
             interrupt_async_tasks(data);
 
-            bool success = load_trajectory_data(data, path_to_file, param.traj_loader);
+            bool success = load_trajectory_data(data, path_to_file, param.traj_loader, param.traj_loader_flags);
             if (success) {
                 LOG_SUCCESS("Successfully opened trajectory from file '%.*s'", path_to_file.len, path_to_file.ptr);
                 return true;
