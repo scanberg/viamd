@@ -191,12 +191,6 @@ inline vec4_t& vec_cast(ImVec4& v) { return *(vec4_t*)(&v); }
 inline ImVec2& vec_cast(vec2_t& v) { return *(ImVec2*)(&v); }
 inline vec2_t& vec_cast(ImVec2& v) { return *(vec2_t*)(&v); }
 
-static inline bool operator == (const ImVec2& lhs, const ImVec2& rhs) { return lhs.x == rhs.x && lhs.y == rhs.y; }
-static inline bool operator != (const ImVec2& lhs, const ImVec2& rhs) { return !(lhs == rhs); }
-
-static inline bool operator == (const ImVec4& lhs, const ImVec4& rhs) { return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z && lhs.w == rhs.w; }
-static inline bool operator != (const ImVec4& lhs, const ImVec4& rhs) { return !(lhs == rhs); }
-
 enum class PlaybackMode { Stopped, Playing };
 enum class InterpolationMode { Nearest, Linear, CubicSpline };
 enum class SelectionLevel { Atom, Residue, Chain };
