@@ -213,6 +213,7 @@ bool initialize(Context* ctx, int width, int height, const char* title) {
 
 void shutdown(Context* ctx) {
     glfwDestroyWindow((GLFWwindow*)data.internal_ctx.window.ptr);
+    ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImPlot::DestroyContext();
     ImGui::DestroyContext();
