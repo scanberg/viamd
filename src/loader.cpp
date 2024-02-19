@@ -462,6 +462,11 @@ bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_h
     LoadedTrajectory* loaded_traj = (LoadedTrajectory*)inst;
     ASSERT(0 <= idx && idx < (int64_t)md_trajectory_num_frames(loaded_traj->traj));
 
+    if ((out_x || out_y || out_z) && !(out_x && out_y && out_z))  {
+        MD_LOG_ERROR("One coordinate stream (x,y,z) was null, when attempting to read out coordinates");
+        return false;
+    }
+
     md_frame_data_t* frame_data;
     md_frame_cache_lock_t* lock = 0;
     bool result = true;
@@ -507,11 +512,13 @@ bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_h
     }
 
     if (result) {
-        const int64_t num_atoms = frame_data->header.num_atoms;
+        const size_t num_bytes = frame_data->header.num_atoms * sizeof(float);
         if (out_header) *out_header = frame_data->header;
-        if (out_x) MEMCPY(out_x, frame_data->x, sizeof(float) * num_atoms);
-        if (out_y) MEMCPY(out_y, frame_data->y, sizeof(float) * num_atoms);
-        if (out_z) MEMCPY(out_z, frame_data->z, sizeof(float) * num_atoms);
+        if (out_x && out_y && out_z) {
+            MEMCPY(out_x, frame_data->x, num_bytes);
+            MEMCPY(out_y, frame_data->y, num_bytes);
+            MEMCPY(out_z, frame_data->z, num_bytes);
+        }
     }
 
     if (lock) {

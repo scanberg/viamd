@@ -177,18 +177,14 @@ void color_atoms_sec_str(uint32_t* colors, size_t count, const md_molecule_t& mo
 }
 
 void filter_colors(uint32_t* colors, size_t num_colors, const md_bitfield_t* mask) {
-    size_t beg_bit = mask->beg_bit;
-    size_t end_bit = mask->end_bit;
+    for (size_t i = 0; i < num_colors; ++i) {
+        colors[i] &= 0x00FFFFFFU;
+    }
 
-    for (size_t i = 0; i < beg_bit; ++i) {
-        colors[i] &= 0x00FFFFFFU;
-    }
-    for (size_t i = beg_bit; i < end_bit; ++i) {
-        const uint32_t m = md_bitfield_test_bit(mask, i) ? 0xFF000000U : 0x00000000U;
-        colors[i] = m | (colors[i] & 0x00FFFFFFU);
-    }
-    for (size_t i = end_bit; i < num_colors; ++i) {
-        colors[i] &= 0x00FFFFFFU;
+    md_bitfield_iter_t it = md_bitfield_iter_create(mask);
+    while (md_bitfield_iter_next(&it)) {
+        uint64_t idx = md_bitfield_iter_idx(&it);
+        colors[idx] = 0xFF000000U | (colors[idx] & 0x00FFFFFFU);
     }
 }
 

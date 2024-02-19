@@ -1410,8 +1410,8 @@ static void set_hovered_property(ApplicationData* data, str_t label, int populat
 }
 
 // Global data for application
-static md_linear_allocator_t* linear_allocator = 0;
-static md_allocator_i* frame_allocator = 0;
+static md_linear_allocator_t* linear_alloc = 0;
+static md_allocator_i* frame_alloc = 0;
 static TextEditor editor {};    // We do not want this within the application data since it messes up the POD layout and therefore the usage of offset_of
 static bool use_gfx = false;
 #if DEBUG
@@ -1424,12 +1424,12 @@ static md_allocator_i* persistent_allocator = md_heap_allocator;
 
 int main(int argc, char** argv) {
     void* linear_mem = md_alloc(persistent_allocator, FRAME_ALLOCATOR_BYTES);
-    md_linear_allocator_t linear_alloc {};
-    md_linear_allocator_init(&linear_alloc, linear_mem, FRAME_ALLOCATOR_BYTES);
-    md_allocator_i linear_interface = md_linear_allocator_create_interface(&linear_alloc);
+    md_linear_allocator_t linear_allocator {};
+    md_linear_allocator_init(&linear_allocator, linear_mem, FRAME_ALLOCATOR_BYTES);
+    md_allocator_i linear_interface = md_linear_allocator_create_interface(&linear_allocator);
     
-	linear_allocator = &linear_alloc;
-    frame_allocator = &linear_interface;
+	linear_alloc = &linear_allocator;
+    frame_alloc  = &linear_interface;
 
     struct NotificationState {
         md_mutex_t lock;
@@ -1553,7 +1553,7 @@ int main(int argc, char** argv) {
         char exe[1024];
         size_t len = md_path_write_exe(exe, sizeof(exe));
         if (len) {
-            md_strb_t sb = md_strb_create(frame_allocator);
+            md_strb_t sb = md_strb_create(frame_alloc);
             str_t folder;
             extract_folder_path(&folder, {exe, len});
             sb += folder;
@@ -1625,7 +1625,7 @@ int main(int argc, char** argv) {
                     base_path = str_from_cstr(buf);
                 }
 
-                str_t rel_path = md_path_make_relative(base_path, e.path, frame_allocator);
+                str_t rel_path = md_path_make_relative(base_path, e.path, frame_alloc);
                 MD_LOG_DEBUG("Attempting to make relative path from '" STR_FMT "' to '" STR_FMT "'", STR_ARG(base_path), STR_ARG(e.path));
                 MD_LOG_DEBUG("Relative path: '" STR_FMT "'", STR_ARG(rel_path));
                 if (!str_empty(rel_path)) {
@@ -1638,7 +1638,7 @@ int main(int argc, char** argv) {
                 }
             } else {
                 load::LoaderState state = {};
-                bool success = load::init_loader_state(&state, e.path, frame_allocator);
+                bool success = load::init_loader_state(&state, e.path, frame_alloc);
 
                 if (success == false || (e.flags & FileFlags_ShowDialogue) || (state.flags & LoaderStateFlag_RequiresDialogue)) {
                     data.load_dataset = LoadDatasetWindowState();
@@ -2211,7 +2211,7 @@ int main(int argc, char** argv) {
         task_system::execute_queued_tasks();
 
         // Reset frame allocator
-        md_linear_allocator_reset(&linear_alloc);
+        md_linear_allocator_reset(linear_alloc);
     }
 
     interrupt_async_tasks(&data);
@@ -2416,7 +2416,7 @@ static void init_display_properties(ApplicationData* data) {
                         return ImPlotPoint(x, y);
                     };
                     display_property_copy_param_from_old(item_dist_raw, old_items, md_array_size(old_items));
-                    md_array_push(new_items, item_dist_raw, frame_allocator);
+                    md_array_push(new_items, item_dist_raw, frame_alloc);
 
                     if (prop_data->dim[1] > 1) {
                         DisplayProperty item_dist_agg = item_dist_raw;
@@ -2424,7 +2424,7 @@ static void init_display_properties(ApplicationData* data) {
                         snprintf(item_dist_agg.label, sizeof(item_dist_agg.label), "%s (agg)", item.label);
                         item_dist_agg.aggregate_histogram = true;
                         display_property_copy_param_from_old(item_dist_agg, old_items, md_array_size(old_items));
-                        md_array_push(new_items, item_dist_agg, frame_allocator);
+                        md_array_push(new_items, item_dist_agg, frame_alloc);
                     }
                 }
 
@@ -2445,7 +2445,7 @@ static void init_display_properties(ApplicationData* data) {
                         return ImPlotPoint(x_values[sample_idx], y_values[sample_idx * dim + dim_idx]);
                     };
                     display_property_copy_param_from_old(item_raw, old_items, md_array_size(old_items));
-                    md_array_push(new_items, item_raw, frame_allocator);
+                    md_array_push(new_items, item_raw, frame_alloc);
 
                     if (prop_data->aggregate) {
                         // Create 'pseudo' display properties which maps to the aggregate data
@@ -2464,7 +2464,7 @@ static void init_display_properties(ApplicationData* data) {
                             return snprintf(buf, cap, "%.2f", y_mean[sample_idx]);
                             };
                         display_property_copy_param_from_old(item_mean, old_items, md_array_size(old_items));
-                        md_array_push(new_items, item_mean, frame_allocator);
+                        md_array_push(new_items, item_mean, frame_alloc);
 
                         DisplayProperty item_var = item;
                         snprintf(item_var.label, sizeof(item_var.label), "%s (var)", item.label);
@@ -2490,7 +2490,7 @@ static void init_display_properties(ApplicationData* data) {
                             return snprintf(buf, cap, "%.2f", y_var[sample_idx]);
                             };
                         display_property_copy_param_from_old(item_var, old_items, md_array_size(old_items));
-                        md_array_push(new_items, item_var, frame_allocator);
+                        md_array_push(new_items, item_var, frame_alloc);
 
                         DisplayProperty item_ext = item;
                         snprintf(item_ext.label, sizeof(item_ext.label), "%s (min/max)", item.label);
@@ -2514,7 +2514,7 @@ static void init_display_properties(ApplicationData* data) {
                             return snprintf(buf, cap, "%.2f, %.2f", y_ext[sample_idx].x, y_ext[sample_idx].y);
                             };
                         display_property_copy_param_from_old(item_ext, old_items, md_array_size(old_items));
-                        md_array_push(new_items, item_ext, frame_allocator);
+                        md_array_push(new_items, item_ext, frame_alloc);
                     }
                 }
             } else if (prop_flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
@@ -2545,12 +2545,12 @@ static void init_display_properties(ApplicationData* data) {
                     return ImPlotPoint(x, y);
                     };
                 display_property_copy_param_from_old(item_dist, old_items, md_array_size(old_items));
-                md_array_push(new_items, item_dist, frame_allocator);
+                md_array_push(new_items, item_dist, frame_alloc);
             } else if (prop_flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
                 item.type = DisplayProperty::Type_Volume;
                 item.show_in_volume = false;
                 display_property_copy_param_from_old(item, old_items, md_array_size(old_items));
-                md_array_push(new_items, item, frame_allocator);
+                md_array_push(new_items, item, frame_alloc);
             }
         }
     }
@@ -2666,7 +2666,7 @@ static void update_density_volume(ApplicationData* data) {
             md_script_vis_t vis = {};
 
             if (md_script_ir_valid(data->mold.script.eval_ir)) {
-                md_script_vis_init(&vis, frame_allocator);
+                md_script_vis_init(&vis, frame_alloc);
                 md_script_vis_ctx_t ctx = {
                     .ir = data->mold.script.eval_ir,
                     .mol = &data->mold.mol,
@@ -2707,7 +2707,9 @@ static void update_density_volume(ApplicationData* data) {
             const auto& mol = data->mold.mol;
             auto& rep = data->density_volume.rep;
             const size_t num_colors = data->mold.mol.atom.count;
-            uint32_t* colors = (uint32_t*)md_alloc(frame_allocator, sizeof(uint32_t) * num_colors);
+            const size_t num_bytes = sizeof(uint32_t) * num_colors;
+            uint32_t* colors = (uint32_t*)md_linear_allocator_push(linear_alloc, num_bytes);
+            defer { md_linear_allocator_pop(linear_alloc, num_bytes); };
 
             switch (rep.colormap) {
             case ColorMapping::Uniform:
@@ -2798,8 +2800,8 @@ static void interpolate_atomic_properties(ApplicationData* data) {
     size_t bytes = stride * sizeof(float) * 3 * 4;
 
     md_allocator_i* alloc = 0;
-    if (bytes < md_linear_allocator_avail_bytes(linear_allocator)) {
-        alloc = frame_allocator;
+    if (bytes < md_linear_allocator_avail_bytes(linear_alloc)) {
+        alloc = frame_alloc;
     } else {
         alloc = md_heap_allocator;
     }
@@ -3085,14 +3087,14 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
     vec3_t aabb_min, aabb_max;
     
     if (0 < popcount && popcount < mol.atom.count) {
-        int32_t* indices = (int32_t*)md_linear_allocator_push(linear_allocator, popcount * sizeof(int32_t));
+        int32_t* indices = (int32_t*)md_linear_allocator_push(linear_alloc, popcount * sizeof(int32_t));
         size_t len = md_bitfield_iter_extract_indices(indices, popcount, md_bitfield_iter_create(&data->representation.atom_visibility_mask));
         if (len > popcount || len > mol.atom.count) {
             MD_LOG_DEBUG("Error: Invalid number of indices");
             len = MIN(popcount, mol.atom.count);
         }
 		md_util_aabb_compute(aabb_min.elem, aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, len);
-        md_linear_allocator_pop(linear_allocator, popcount * sizeof(int32_t));
+        md_linear_allocator_pop(linear_alloc, popcount * sizeof(int32_t));
     } else {
         md_util_aabb_compute(aabb_min.elem, aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, nullptr, mol.atom.count);
     }
@@ -4041,15 +4043,15 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     
     const int64_t popcount = md_bitfield_popcount(bf);
     
-    md_strb_t sb = md_strb_create(frame_allocator);
+    md_strb_t sb = md_strb_create(frame_alloc);
     defer { md_strb_free(&sb); };
 
     auto write_atom_remainder = [](md_strb_t& sb, const md_bitfield_t* bf, int ref_idx = 0) {
         // Add any remainder
         const uint64_t remainder = md_bitfield_popcount(bf);
         if (remainder) {
-            int* indices = (int*)md_alloc(frame_allocator, remainder * sizeof(int));
-            defer { md_free(frame_allocator, indices, remainder * sizeof(int)); };
+            int* indices = (int*)md_alloc(frame_alloc, remainder * sizeof(int));
+            defer { md_free(frame_alloc, indices, remainder * sizeof(int)); };
 
             md_bitfield_iter_extract_indices(indices, remainder, md_bitfield_iter_create(bf));
             sb += "atom(";
@@ -4070,7 +4072,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
             if (md_strb_len(sb) < 512) {
                 str_t resname = LBL_TO_STR(mol->residue.name[res_idx]);
                 md_strb_fmt(&sb, " in resname(\"%.*s\");", (int)resname.len, resname.ptr);
-                md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_allocator), frame_allocator);
+                md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
             }
         }
     }
@@ -4087,12 +4089,12 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
             if (md_strb_len(sb) < 512) {
                 str_t chain_id = LBL_TO_STR(mol->chain.id[chain_idx]);
                 md_strb_fmt(&sb, " in chain(\"%.*s\");", (int)chain_id.len, chain_id.ptr);
-                md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_allocator), frame_allocator);
+                md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
             }
         }
     }
 
-    md_bitfield_t tmp_bf = md_bitfield_create(frame_allocator);
+    md_bitfield_t tmp_bf = md_bitfield_create(frame_alloc);
     md_bitfield_copy(&tmp_bf, bf);
     
     md_array(int) complete_chains = 0;
@@ -4102,7 +4104,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
         for (size_t i = 0; i < mol->chain.count; ++i) {    
             const md_range_t range = md_chain_atom_range(mol->chain, i);
             if (md_bitfield_test_all_range(&tmp_bf, range.beg, range.end)) {
-                md_array_push(complete_chains, (int)i, frame_allocator);
+                md_array_push(complete_chains, (int)i, frame_alloc);
                 md_bitfield_clear_range(&tmp_bf, range.beg, range.end);
             }
         }
@@ -4112,7 +4114,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
         for (size_t i = 0; i < mol->residue.count; ++i) {    
             const md_range_t range = md_residue_atom_range(mol->residue, i);
             if (md_bitfield_test_all_range(&tmp_bf, range.beg, range.end)) {
-                md_array_push(complete_residues, (int)i, frame_allocator);
+                md_array_push(complete_residues, (int)i, frame_alloc);
                 md_bitfield_clear_range(&tmp_bf, range.beg, range.end);
             }
         }
@@ -4140,7 +4142,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
         
         if (md_strb_len(sb) < 512) {
             md_strb_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_allocator), frame_allocator);
+            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
         }
         
         md_strb_reset(&sb);
@@ -4164,7 +4166,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
         
         if (md_strb_len(sb) < 512) {
             md_strb_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_allocator), frame_allocator);
+            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
         }
     }
 
@@ -4182,7 +4184,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
 
         if (md_strb_len(sb) < 512) {
             md_strb_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_allocator), frame_allocator);
+            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
         }
     }
 
@@ -4193,7 +4195,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
         write_atom_remainder(sb, bf);
         if (md_strb_len(sb) < 512) {
             md_strb_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_allocator), frame_allocator);
+            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
         }
     }
     
@@ -4255,7 +4257,7 @@ void draw_context_popup(ApplicationData* data) {
                 char buf[256] = "";
                 if (sss_count == 2) {
                     int32_t idx[2] = {data->selection.single_selection_sequence.idx[0], data->selection.single_selection_sequence.idx[1]};
-                    str_t ident = create_unique_identifier(data->mold.script.ir, STR_LIT("dist"), frame_allocator);
+                    str_t ident = create_unique_identifier(data->mold.script.ir, STR_LIT("dist"), frame_alloc);
 
                     snprintf(buf, sizeof(buf), "%.*s = distance(%i, %i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1);
                     if (ImGui::MenuItem(buf)) {
@@ -4300,7 +4302,7 @@ void draw_context_popup(ApplicationData* data) {
                 }
                 else if(sss_count == 3) {
                     int32_t idx[3] = {data->selection.single_selection_sequence.idx[0], data->selection.single_selection_sequence.idx[1], data->selection.single_selection_sequence.idx[2]};
-                    str_t ident = create_unique_identifier(data->mold.script.ir, STR_LIT("ang"), frame_allocator);
+                    str_t ident = create_unique_identifier(data->mold.script.ir, STR_LIT("ang"), frame_alloc);
 
                     snprintf(buf, sizeof(buf), "%.*s = angle(%i, %i, %i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1);
                     if (ImGui::MenuItem(buf)) {
@@ -4348,7 +4350,7 @@ void draw_context_popup(ApplicationData* data) {
                 }
                 else if(sss_count == 4) {
                     int32_t idx[4] = {data->selection.single_selection_sequence.idx[0], data->selection.single_selection_sequence.idx[1], data->selection.single_selection_sequence.idx[2], data->selection.single_selection_sequence.idx[3]};
-                    str_t ident = create_unique_identifier(data->mold.script.ir, STR_LIT("dih"), frame_allocator);
+                    str_t ident = create_unique_identifier(data->mold.script.ir, STR_LIT("dih"), frame_alloc);
 
                     snprintf(buf, sizeof(buf), "%.*s = dihedral(%i, %i, %i, %i);", (int)ident.len, ident.ptr, idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1);
                     if (ImGui::MenuItem(buf)) {
@@ -4399,7 +4401,7 @@ void draw_context_popup(ApplicationData* data) {
             }
             if (num_atoms_selected >= 1) {
                 const md_bitfield_t* bf = &data->selection.current_selection_mask;
-                str_t ident = create_unique_identifier(data->mold.script.ir, STR_LIT("sel"), frame_allocator);
+                str_t ident = create_unique_identifier(data->mold.script.ir, STR_LIT("sel"), frame_alloc);
                 
                 md_array(str_t) suggestions = generate_script_selection_suggestions(ident, bf, &data->mold.mol);
 
@@ -4458,7 +4460,7 @@ void draw_context_popup(ApplicationData* data) {
                 const int idx = data->selection.atom_idx.right_click;
 
                 md_bitfield_t mask = {0};
-                md_bitfield_init(&mask, frame_allocator);
+                md_bitfield_init(&mask, frame_alloc);
                 bool apply = false;
 
                 apply |= ImGui::MenuItem("on Atom");
@@ -4910,7 +4912,7 @@ static void draw_info_window(const ApplicationData& data, uint32_t picking_idx) 
 
     if (picking_idx == INVALID_PICKING_IDX) return;
 
-    md_strb_t sb = md_strb_create(frame_allocator);
+    md_strb_t sb = md_strb_create(frame_alloc);
     
     if (picking_idx < mol.atom.count) {
         int atom_idx = picking_idx;
@@ -5001,7 +5003,7 @@ static void draw_async_task_window(ApplicationData* data) {
     constexpr float WIDTH = 300.f;
     constexpr float MARGIN = 10.f;
 
-    task_system::ID* tasks = task_system::pool_running_tasks(frame_allocator);
+    task_system::ID* tasks = task_system::pool_running_tasks(frame_alloc);
     uint32_t num_tasks = (uint32_t)md_array_size(tasks);
     bool any_task_label_visible = false;
     for (uint32_t i = 0; i < num_tasks; i++) {
@@ -5151,7 +5153,7 @@ bool draw_property_timeline(const ApplicationData& data, const TimelineArgs& arg
         bool print_timeline_tooltip = false;
 
         if (args.value_filter.enabled) {
-            float* y_vals = (float*)md_alloc(frame_allocator, args.values.count * sizeof(float));
+            float* y_vals = (float*)md_alloc(frame_alloc, args.values.count * sizeof(float));
             for (int i = 0; i < args.values.count; ++i) {
                 float val = args.values.y[i];
                 y_vals[i] = (args.value_filter.min < val && val < args.value_filter.max) ? args.values.max_y : -INFINITY;
@@ -5378,7 +5380,7 @@ static void visualize_payload(ApplicationData* data, const md_script_vis_payload
         .traj = data->mold.traj,
     };
     data->mold.script.vis = {0};
-    md_script_vis_init(&data->mold.script.vis, frame_allocator);
+    md_script_vis_init(&data->mold.script.vis, frame_alloc);
 
     if (md_script_vis_eval_payload(&data->mold.script.vis, payload, subidx, &ctx, flags)) {
         if (!md_bitfield_empty(&data->mold.script.vis.atom_mask)) {
@@ -7176,11 +7178,11 @@ static void draw_ramachandran_window(ApplicationData* data) {
 
                             int64_t atom_idx = mol.backbone.atoms[idx].ca;
                             if (md_bitfield_test_bit(highlight_mask, atom_idx)) {
-                                md_array_push(highlight_indices, idx, frame_allocator);
+                                md_array_push(highlight_indices, idx, frame_alloc);
                             }
 
                             if (md_bitfield_test_bit(selection_mask, atom_idx)) {
-                                md_array_push(selection_indices, idx, frame_allocator);
+                                md_array_push(selection_indices, idx, frame_alloc);
                             }
                         }
 
@@ -7803,7 +7805,7 @@ static void draw_density_volume_window(ApplicationData* data) {
             for (size_t i = 0; i < num_reps; ++i) {
                 op.rep = &data->density_volume.gl_reps[i];
                 op.model_matrix = &data->density_volume.rep_model_mats[i].elem[0][0];
-                md_array_push(draw_ops, op, frame_allocator);
+                md_array_push(draw_ops, op, frame_alloc);
             }
 
             md_gl_draw_args_t draw_args = {
@@ -8072,7 +8074,7 @@ static void draw_script_editor_window(ApplicationData* data) {
                 char path_buf[1024] = "";
                 if (ImGui::MenuItem("Load")) {
                     if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Open, "txt")) {
-                        str_t txt = load_textfile(str_from_cstr(path_buf), frame_allocator);
+                        str_t txt = load_textfile(str_from_cstr(path_buf), frame_alloc);
                         std::string str(txt.ptr, txt.len);
                         editor.SetText(str);
                     }
@@ -8189,7 +8191,7 @@ static void draw_script_editor_window(ApplicationData* data) {
                 else if (hovered_marker->type == MarkerType_Visualization) {
                     if (md_script_ir_valid(data->mold.script.ir)) {
                         data->mold.script.vis = {0};
-                        md_script_vis_init(&data->mold.script.vis, frame_allocator);
+                        md_script_vis_init(&data->mold.script.vis, frame_alloc);
                         md_script_vis_ctx_t ctx = {
                             .ir = data->mold.script.ir,
                             .mol = &data->mold.mol,
@@ -8307,7 +8309,7 @@ static bool export_cube(const ApplicationData& data, const md_script_property_da
     md_molecule_t mol = data.mold.mol;
 
     size_t stride = ALIGN_TO(data.mold.mol.atom.count, 8);
-    float* coords = (float*)md_alloc(frame_allocator, stride * sizeof(float) * 3);
+    float* coords = (float*)md_alloc(frame_alloc, stride * sizeof(float) * 3);
     mol.atom.x = coords + stride * 0;
     mol.atom.y = coords + stride * 1;
     mol.atom.z = coords + stride * 2;
@@ -8318,7 +8320,7 @@ static bool export_cube(const ApplicationData& data, const md_script_property_da
 
     bool result = false;
     md_script_vis_t vis = { 0 };
-    md_script_vis_init(&vis, frame_allocator);
+    md_script_vis_init(&vis, frame_alloc);
     defer { md_script_vis_free(&vis); };
     
     //if (md_semaphore_aquire(&data.mold.script.ir_semaphore)) {
@@ -8769,7 +8771,49 @@ static void update_md_buffers(ApplicationData* data) {
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyFlags) {
+        static uint64_t highlight_hash = 0;
+        static uint64_t selection_hash = 0;
+        static uint64_t visibility_hash = 0;
+        static uint64_t flag_hash = 0;
+
+        uint64_t h_hash = md_bitfield_hash64(&data->selection.current_highlight_mask, 0);
+        uint64_t s_hash = md_bitfield_hash64(&data->selection.current_selection_mask, 0);
+        uint64_t v_hash = md_bitfield_hash64(&data->representation.atom_visibility_mask, 0);
+        uint64_t f_hash = h_hash ^ s_hash ^ v_hash;
+
+        if (f_hash != flag_hash) {
+            flag_hash = f_hash;
+            uint8_t* flags = (uint8_t*)md_linear_allocator_push(linear_alloc, mol.atom.count * sizeof(uint8_t));
+            MEMSET(flags, 0, mol.atom.count * sizeof(uint8_t));
+
+            {
+                md_bitfield_iter_t it = md_bitfield_iter_create(&data->selection.current_highlight_mask);
+                while (md_bitfield_iter_next(&it)) {
+                    uint64_t idx = md_bitfield_iter_idx(&it);
+                    flags[idx] |= AtomBit_Highlighted;
+                }
+            }
+            {
+                md_bitfield_iter_t it = md_bitfield_iter_create(&data->selection.current_selection_mask);
+                while (md_bitfield_iter_next(&it)) {
+                    uint64_t idx = md_bitfield_iter_idx(&it);
+                    flags[idx] |= AtomBit_Selected;
+                }
+            }
+            {
+                md_bitfield_iter_t it = md_bitfield_iter_create(&data->representation.atom_visibility_mask);
+                while (md_bitfield_iter_next(&it)) {
+                    uint64_t idx = md_bitfield_iter_idx(&it);
+                    flags[idx] |= AtomBit_Visible;
+                }
+            }
+            flag_hash = f_hash;
+            md_gl_molecule_set_atom_flags(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, flags, 0);
+        }
+
+        /*
         uint8_t* flags = (uint8_t*)md_alloc(frame_allocator, mol.atom.count);
+        MEMSET(flags, 0, sizeof(uint8_t) * mol.atom.count);
         for (size_t i = 0; i < mol.atom.count; i++) {
             uint8_t f = 0;
             f |= md_bitfield_test_bit(&data->selection.current_highlight_mask, i)     ? AtomBit_Highlighted : 0;
@@ -8778,6 +8822,7 @@ static void update_md_buffers(ApplicationData* data) {
             flags[i] = f;
         }
         md_gl_molecule_set_atom_flags(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, flags, 0);
+        */
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyBonds) {
@@ -9026,7 +9071,7 @@ static void launch_prefetch_job(ApplicationData* data) {
 static bool load_dataset_from_file(ApplicationData* data, const LoadParam& param) {
     ASSERT(data);
 
-    str_t path_to_file = md_path_make_canonical(param.file_path, frame_allocator);
+    str_t path_to_file = md_path_make_canonical(param.file_path, frame_alloc);
     if (path_to_file) {
         if (param.mol_loader) {
             interrupt_async_tasks(data);
@@ -9388,10 +9433,10 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
             if (!str_empty(arg)) {
                 str_t folder = {};
                 extract_folder_path(&folder, filename);
-                md_strb_t path = md_strb_create(frame_allocator);
+                md_strb_t path = md_strb_create(frame_alloc);
                 path += folder;
                 path += arg;
-                str_t can_path = md_path_make_canonical(path, frame_allocator);
+                str_t can_path = md_path_make_canonical(path, frame_alloc);
                 if (can_path.ptr && can_path.len > 0) {
                     size_t copy_len = MIN(target->capacity - 1, (size_t)can_path.len);
                     memcpy(ptr + target->struct_byte_offset, can_path.ptr, copy_len);
@@ -9443,8 +9488,8 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
                 if (str_find_str(&loc, *buf, token)) {
                     size_t len = loc;
                     const size_t raw_cap = md_base64_decode_size_in_bytes(len);
-                    void* raw_ptr = md_alloc(frame_allocator, raw_cap);
-                    defer { md_free(frame_allocator, raw_ptr, raw_cap); };
+                    void* raw_ptr = md_alloc(frame_alloc, raw_cap);
+                    defer { md_free(frame_alloc, raw_ptr, raw_cap); };
                     
                     const size_t raw_len = md_base64_decode(raw_ptr, beg, len);
                     md_bitfield_t* bf = (md_bitfield_t*)(ptr + target->struct_byte_offset);
@@ -9476,8 +9521,8 @@ static void deserialize_object(const SerializationObject* target, char* ptr, str
 }
 
 static void load_workspace(ApplicationData* data, str_t filename) {
-    str_t txt = load_textfile(filename, frame_allocator);
-    defer { str_free(txt, frame_allocator); };
+    str_t txt = load_textfile(filename, frame_alloc);
+    defer { str_free(txt, frame_alloc); };
 
     if (!txt.len) {
         LOG_ERROR("Could not open workspace file: '%.*s", (int)filename.len, filename.ptr);
@@ -9496,8 +9541,8 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     str_t c_txt = txt;
     str_t line = {};
 
-    str_t cur_molecule_file     = str_copy_cstr(data->files.molecule, frame_allocator);
-    str_t cur_trajectory_file   = str_copy_cstr(data->files.trajectory, frame_allocator);
+    str_t cur_molecule_file     = str_copy_cstr(data->files.molecule, frame_alloc);
+    str_t cur_trajectory_file   = str_copy_cstr(data->files.trajectory, frame_alloc);
     bool  cur_coarse_grained    = data->files.coarse_grained;
 
     const SerializationArray* arr_group = NULL;
@@ -9535,8 +9580,8 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     data->view.animation.target_orientation = data->view.camera.orientation;
     data->view.animation.target_distance    = data->view.camera.focus_distance;
     
-    str_t new_molecule_file   = str_copy_cstr(data->files.molecule, frame_allocator);
-    str_t new_trajectory_file = str_copy_cstr(data->files.trajectory, frame_allocator);
+    str_t new_molecule_file   = str_copy_cstr(data->files.molecule, frame_alloc);
+    str_t new_trajectory_file = str_copy_cstr(data->files.trajectory, frame_alloc);
     bool  new_coarse_grained  = data->files.coarse_grained;
 
     str_copy_to_char_buf(data->files.workspace, sizeof(data->files.workspace), filename);
@@ -9555,7 +9600,7 @@ static void load_workspace(ApplicationData* data, str_t filename) {
 
     load::LoaderState state = {};
 
-    load::init_loader_state(&state, new_molecule_file, frame_allocator);
+    load::init_loader_state(&state, new_molecule_file, frame_alloc);
 
     LoadParam param = {};
     param.file_path = new_molecule_file;
@@ -9571,7 +9616,7 @@ static void load_workspace(ApplicationData* data, str_t filename) {
     }
 
     if (new_trajectory_file) {
-        load::init_loader_state(&state, new_trajectory_file, frame_allocator);
+        load::init_loader_state(&state, new_trajectory_file, frame_alloc);
         param.mol_loader = 0;
         param.traj_loader = state.traj_loader;
         param.file_path = new_trajectory_file;
@@ -9670,10 +9715,10 @@ static void write_entry(md_file_o* file, SerializationObject target, const void*
     case SerializationType_Bitfield:
     {
         const md_bitfield_t* bf = (const md_bitfield_t*)((const char*)ptr + target.struct_byte_offset);
-        void*  serialized_data = md_alloc(frame_allocator, md_bitfield_serialize_size_in_bytes(bf));
+        void*  serialized_data = md_alloc(frame_alloc, md_bitfield_serialize_size_in_bytes(bf));
         size_t serialized_size = md_bitfield_serialize(serialized_data, bf);
         if (serialized_size) {
-            char*  base64_data = (char*)md_alloc(frame_allocator, md_base64_encode_size_in_bytes(serialized_size));
+            char*  base64_data = (char*)md_alloc(frame_alloc, md_base64_encode_size_in_bytes(serialized_size));
             size_t base64_size = md_base64_encode(base64_data, serialized_data, serialized_size);
             if (base64_size) {
                 md_file_printf(file, "###%.*s###\n", (int)base64_size, base64_data);
@@ -9748,8 +9793,8 @@ void create_screenshot(ApplicationData* data) {
     int width  = data->gbuffer.width;
     int height = data->gbuffer.height;
     size_t bytes = width * height * sizeof(uint32_t);
-    uint32_t* rgba = (uint32_t*)md_linear_allocator_push(linear_allocator, bytes);
-    defer { md_linear_allocator_pop(linear_allocator, bytes); };
+    uint32_t* rgba = (uint32_t*)md_linear_allocator_push(linear_alloc, bytes);
+    defer { md_linear_allocator_pop(linear_alloc, bytes); };
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glReadBuffer(GL_BACK);
@@ -9759,8 +9804,8 @@ void create_screenshot(ApplicationData* data) {
     {
         // @NOTE: Swap Rows to flip image with respect to y-axis
         const uint32_t row_byte_size = width * sizeof(uint32_t);
-        uint32_t* row_t = (uint32_t*)md_alloc(frame_allocator, row_byte_size);
-        defer { md_free(frame_allocator, row_t, row_byte_size); };
+        uint32_t* row_t = (uint32_t*)md_alloc(frame_alloc, row_byte_size);
+        defer { md_free(frame_alloc, row_t, row_byte_size); };
         for (uint32_t i = 0; i < (uint32_t)height / 2; ++i) {
             uint32_t* row_a = rgba + i * width;
             uint32_t* row_b = rgba + (height - 1 - i) * width;
@@ -9851,9 +9896,11 @@ static void update_representation(ApplicationData* data, Representation* rep) {
     ASSERT(data);
     ASSERT(rep);
 
+    uint64_t pos = md_linear_allocator_get_pos(linear_alloc);
+    defer { md_linear_allocator_set_pos(linear_alloc, pos); };
+
     const size_t bytes = data->mold.mol.atom.count * sizeof(uint32_t);
-    uint32_t* colors = (uint32_t*)md_alloc(frame_allocator, bytes);
-    defer { md_free(frame_allocator, colors, bytes); };
+    uint32_t* colors = (uint32_t*)md_linear_allocator_push(linear_alloc, bytes);
 
     const auto& mol = data->mold.mol;
 
@@ -9905,7 +9952,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
                     //    defer { md_semaphore_release(&data->mold.script.ir_semaphore); };
                         
                         if (md_script_ir_valid(data->mold.script.eval_ir)) {
-                            md_script_vis_init(&vis, frame_allocator);
+                            md_script_vis_init(&vis, frame_alloc);
                             md_script_vis_ctx_t ctx = {
                                 .ir = data->mold.script.eval_ir,
                                 .mol = &data->mold.mol,
@@ -9921,7 +9968,7 @@ static void update_representation(ApplicationData* data, Representation* rep) {
                             float frame_fract = fractf((float)data->animation.frame);
 
                             md_bitfield_t mask = {0};
-                            md_bitfield_init(&mask, frame_allocator);
+                            md_bitfield_init(&mask, frame_alloc);
                             for (int i = 0; i < dim; ++i) {
                                 md_bitfield_and(&mask, &rep->atom_mask, &vis.structures[i]);
                                 float value = lerpf(values[i0 * dim + i], values[i1 * dim + i], frame_fract);
@@ -10610,7 +10657,7 @@ static void handle_camera_interaction(ApplicationData* data) {
                 const ImVec2 max_p = ImMax(pos, pos + ext) - window->Pos;
 
                 md_bitfield_t mask = { 0 };
-                md_bitfield_init(&mask, frame_allocator);
+                md_bitfield_init(&mask, frame_alloc);
 
                 if (min_p != max_p) {
                     md_bitfield_clear(&data->selection.current_highlight_mask);
@@ -10983,7 +11030,7 @@ static void fill_gbuffer(ApplicationData* data) {
 
     md_array(mat4_t) model_matrices = 0;
     if (md_array_size(vis.sdf.matrices) > 0) {
-        model_matrices = md_array_create(mat4_t, md_array_size(vis.sdf.matrices), frame_allocator);
+        model_matrices = md_array_create(mat4_t, md_array_size(vis.sdf.matrices), frame_alloc);
         for (size_t i = 0; i < md_array_size(vis.sdf.matrices); ++i) {
             model_matrices[i] = mat4_inverse(vis.sdf.matrices[i]);
         }
@@ -11025,7 +11072,7 @@ static void fill_gbuffer(ApplicationData* data) {
 
     immediate::render();
 
-    md_array_free(model_matrices, frame_allocator);
+    md_array_free(model_matrices, frame_alloc);
 
     md_script_vis_free(&data->mold.script.vis);
 
@@ -11161,14 +11208,14 @@ static void draw_representations(ApplicationData* data) {
                 op.structure = data->mold.gfx_structure;
                 op.representation = data->representation.reps[i].gfx_rep;
                 op.model_mat = NULL;
-                md_array_push(draw_ops, op, frame_allocator);
+                md_array_push(draw_ops, op, frame_alloc);
                 
                 for (uint32_t j = 0; j < instance_count; ++j) {
                     md_gfx_draw_op_t op;
                     op.structure = data->mold.gfx_structure;
                     op.representation = data->representation.reps[i].gfx_rep;
                     op.model_mat = &transforms[j];
-                    md_array_push(draw_ops, op, frame_allocator);
+                    md_array_push(draw_ops, op, frame_alloc);
                 }
                 
             }
@@ -11191,7 +11238,7 @@ static void draw_representations(ApplicationData* data) {
                     .model_matrix = NULL,
                 };
                 MEMCPY(&op.args, &rep.scale, sizeof(op.args));
-                md_array_push(draw_ops, op, frame_allocator);
+                md_array_push(draw_ops, op, frame_alloc);
             }
         }
 
@@ -11228,7 +11275,7 @@ static void draw_representations_lean_and_mean(ApplicationData* data, uint32_t m
                 .model_matrix = NULL,
             };
             MEMCPY(&op.args, &rep.scale, sizeof(op.args));
-            md_array_push(draw_ops, op, frame_allocator);
+            md_array_push(draw_ops, op, frame_alloc);
         }
     }
 
