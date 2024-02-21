@@ -26,6 +26,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_linear_allocator.h>
+#include <core/md_ring_allocator.h>
 #include <core/md_tracking_allocator.h>
 #include <core/md_simd.h>
 #include <core/md_os.h>
@@ -504,14 +505,17 @@ struct FileQueue {
         int prio;
     };
     Entry arr[8] = {};
-    uint64_t head = 0;
-    uint64_t tail = 0;
-    md_allocator_i* alloc = NULL;
+    int head = 0;
+    int tail = 0;
+
+    // We use a ring alloc here to do a deep copy of the paths within the added entries
+    // Because its a ring alloc, there is no need to free entries
+    md_allocator_i* ring = NULL;
 };
 
 struct ApplicationData {
     // --- APPLICATION ---
-    application::Context ctx {};
+    application::Context app {};
 
     LoadDatasetWindowState load_dataset;
 
@@ -528,7 +532,6 @@ struct ApplicationData {
     // The idea for the file load queue is to fill it with files that are dropped onto the application
     // Or passed via the commandline. The files need to be processed in a certain order (topology before trajectory)
     // It also provides a way to chain the file load dialogue.
-    // It owns the strings and their contents and should be freed upon popping from the queue
     FileQueue file_queue = {};
 
     // --- CAMERA ---
@@ -554,7 +557,7 @@ struct ApplicationData {
         str_t path_to_file = {};
     } screenshot;
 
-    // --- MOLD DATA ---
+    // --- MDLIB DATA ---
     struct {
         md_allocator_i*     mol_alloc = nullptr;
         md_gl_shaders_t     gl_shaders = {};
@@ -781,9 +784,7 @@ struct ApplicationData {
 
         md_gl_representation_t* gl_reps = nullptr;
         mat4_t* rep_model_mats = nullptr;
-        mat4_t model_mat = {0};
-
-        int coordinate_system_placement = 0;
+        mat4_t model_mat = {0};        
 
         Camera camera = {};
         quat_t target_ori;
@@ -988,8 +989,10 @@ static inline void file_queue_push(FileQueue* queue, str_t path, FileFlags flags
     }
 
     uint64_t i = queue->head;
-    queue->arr[queue->head] = {str_copy(path, queue->alloc), flags, prio};
+    queue->arr[queue->head] = {str_copy(path, queue->ring), flags, prio};
     queue->head = (queue->head + 1) % ARRAY_SIZE(queue->arr);
+
+
 
     // Sort queue based on prio
      while (i != queue->tail && queue->arr[i].prio < queue->arr[(i - 1) % ARRAY_SIZE(queue->arr)].prio) {
@@ -1410,8 +1413,7 @@ static void set_hovered_property(ApplicationData* data, str_t label, int populat
 }
 
 // Global data for application
-static md_linear_allocator_t* linear_alloc = 0;
-static md_allocator_i* frame_alloc = 0;
+static md_allocator_i* frame_alloc = 0; // Linear allocator for scratch data which only is valid for the frame and then is reset
 static TextEditor editor {};    // We do not want this within the application data since it messes up the POD layout and therefore the usage of offset_of
 static bool use_gfx = false;
 #if DEBUG
@@ -1423,13 +1425,8 @@ static md_allocator_i* persistent_allocator = md_heap_allocator;
 #endif
 
 int main(int argc, char** argv) {
-    void* linear_mem = md_alloc(persistent_allocator, FRAME_ALLOCATOR_BYTES);
-    md_linear_allocator_t linear_allocator {};
-    md_linear_allocator_init(&linear_allocator, linear_mem, FRAME_ALLOCATOR_BYTES);
-    md_allocator_i linear_interface = md_linear_allocator_create_interface(&linear_allocator);
-    
-	linear_alloc = &linear_allocator;
-    frame_alloc  = &linear_interface;
+    void* frame_mem = md_alloc(persistent_allocator, FRAME_ALLOCATOR_BYTES);
+    frame_alloc = md_linear_allocator_create(frame_mem, FRAME_ALLOCATOR_BYTES);
 
     struct NotificationState {
         md_mutex_t lock;
@@ -1482,9 +1479,8 @@ int main(int argc, char** argv) {
     md_logger_add(&notification_logger);
 
     ApplicationData data;
-    data.file_queue.alloc = persistent_allocator;
-
-    data.mold.mol_alloc = md_arena_allocator_create(persistent_allocator, MEGABYTES(1));
+    data.file_queue.ring = md_ring_allocator_create(md_alloc(persistent_allocator, MEGABYTES(1)), MEGABYTES(1));
+    data.mold.mol_alloc  = md_arena_allocator_create(persistent_allocator, MEGABYTES(1));
 
     md_bitfield_init(&data.selection.current_selection_mask, persistent_allocator);
     md_bitfield_init(&data.selection.current_highlight_mask, persistent_allocator);
@@ -1497,14 +1493,14 @@ int main(int argc, char** argv) {
 
     // Init platform
     LOG_DEBUG("Initializing GL...");
-    if (!application::initialize(&data.ctx, 0, 0, "VIAMD")) {
+    if (!application::initialize(&data.app, 0, 0, "VIAMD")) {
         LOG_ERROR("Could not initialize application...\n");
         return -1;
     }
 
-    data.ctx.window.vsync = true;
-    data.ctx.file_drop.user_data = &data;
-    data.ctx.file_drop.callback = [](int num_files, const char** paths, void* user_data) {
+    data.app.window.vsync = true;
+    data.app.file_drop.user_data = &data;
+    data.app.file_drop.callback = [](int num_files, const char** paths, void* user_data) {
         ApplicationData* data = (ApplicationData*)user_data;
         ASSERT(data);
 
@@ -1514,7 +1510,7 @@ int main(int argc, char** argv) {
     };
 
     LOG_DEBUG("Initializing framebuffer...");
-    init_gbuffer(&data.gbuffer, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
+    init_gbuffer(&data.gbuffer, data.app.framebuffer.width, data.app.framebuffer.height);
 
     for (int i = 0; i < (int)ARRAY_SIZE(data.view.jitter.sequence); ++i) {
         data.view.jitter.sequence[i].x = halton(i + 1, 2);
@@ -1589,8 +1585,8 @@ int main(int argc, char** argv) {
     //bool demo_window = true;
 
     // Main loop
-    while (!data.ctx.window.should_close) {
-        application::update(&data.ctx);
+    while (!data.app.window.should_close) {
+        application::update(&data.app);
         
         // This needs to happen first (in imgui events) to enable docking of imgui windows
 #if VIAMD_IMGUI_ENABLE_DOCKSPACE
@@ -1693,7 +1689,7 @@ int main(int argc, char** argv) {
 
         handle_camera_interaction(&data);
         //handle_camera_animation(&data);
-        animate_camera(&data.view.camera, data.view.animation.target_orientation, data.view.animation.target_position, data.view.animation.target_distance, data.ctx.timing.delta_s);
+        animate_camera(&data.view.camera, data.view.animation.target_orientation, data.view.animation.target_position, data.view.animation.target_distance, data.app.timing.delta_s);
         data.visuals.dof.focus_depth = data.view.camera.focus_distance;
 
         update_view_param(&data);
@@ -1769,7 +1765,7 @@ int main(int argc, char** argv) {
         }
 
         if (data.animation.mode == PlaybackMode::Playing) {
-            data.animation.frame += data.ctx.timing.delta_s * data.animation.fps;
+            data.animation.frame += data.app.timing.delta_s * data.animation.fps;
             data.animation.frame = CLAMP(data.animation.frame, 0.0, max_frame);
             if (data.animation.frame >= max_frame) {
                 data.animation.mode = PlaybackMode::Stopped;
@@ -1865,7 +1861,7 @@ int main(int argc, char** argv) {
         }
 
         if (data.mold.script.compile_ir) {
-            data.mold.script.time_since_last_change += data.ctx.timing.delta_s;
+            data.mold.script.time_since_last_change += data.app.timing.delta_s;
 
             editor.ClearMarkers();
             editor.ClearErrorMarkers();
@@ -2102,9 +2098,9 @@ int main(int argc, char** argv) {
 #endif
 
         // Resize Framebuffer
-        if ((data.gbuffer.width != data.ctx.framebuffer.width || data.gbuffer.height != data.ctx.framebuffer.height) &&
-            (data.ctx.framebuffer.width != 0 && data.ctx.framebuffer.height != 0)) {
-            init_gbuffer(&data.gbuffer, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
+        if ((data.gbuffer.width != data.app.framebuffer.width || data.gbuffer.height != data.app.framebuffer.height) &&
+            (data.app.framebuffer.width != 0 && data.app.framebuffer.height != 0)) {
+            init_gbuffer(&data.gbuffer, data.app.framebuffer.width, data.app.framebuffer.height);
             postprocessing::initialize(data.gbuffer.width, data.gbuffer.height);
         }
 
@@ -2182,7 +2178,7 @@ int main(int argc, char** argv) {
         // Activate backbuffer
         glDisable(GL_DEPTH_TEST);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        glViewport(0, 0, data.ctx.framebuffer.width, data.ctx.framebuffer.height);
+        glViewport(0, 0, data.app.framebuffer.width, data.app.framebuffer.height);
         glDrawBuffer(GL_BACK);
         glClear(GL_COLOR_BUFFER_BIT);
 
@@ -2196,7 +2192,7 @@ int main(int argc, char** argv) {
         }
 
         PUSH_GPU_SECTION("Imgui render")
-        application::render_imgui(&data.ctx);
+        application::render_imgui(&data.app);
         POP_GPU_SECTION()
 
         if (!data.screenshot.hide_gui && !str_empty(data.screenshot.path_to_file)) {
@@ -2206,12 +2202,12 @@ int main(int argc, char** argv) {
         }
 
         // Swap buffers
-        application::swap_buffers(&data.ctx);
+        application::swap_buffers(&data.app);
 
         task_system::execute_queued_tasks();
 
         // Reset frame allocator
-        md_linear_allocator_reset(linear_alloc);
+        md_linear_allocator_reset(frame_alloc);
     }
 
     interrupt_async_tasks(&data);
@@ -2229,7 +2225,7 @@ int main(int argc, char** argv) {
     task_system::shutdown();
 
     destroy_gbuffer(&data.gbuffer);
-    application::shutdown(&data.ctx);
+    application::shutdown(&data.app);
 
     return 0;
 }
@@ -2708,8 +2704,8 @@ static void update_density_volume(ApplicationData* data) {
             auto& rep = data->density_volume.rep;
             const size_t num_colors = data->mold.mol.atom.count;
             const size_t num_bytes = sizeof(uint32_t) * num_colors;
-            uint32_t* colors = (uint32_t*)md_linear_allocator_push(linear_alloc, num_bytes);
-            defer { md_linear_allocator_pop(linear_alloc, num_bytes); };
+            uint32_t* colors = (uint32_t*)md_linear_allocator_push(frame_alloc, num_bytes);
+            defer { md_linear_allocator_pop(frame_alloc, num_bytes); };
 
             switch (rep.colormap) {
             case ColorMapping::Uniform:
@@ -2800,7 +2796,7 @@ static void interpolate_atomic_properties(ApplicationData* data) {
     size_t bytes = stride * sizeof(float) * 3 * 4;
 
     md_allocator_i* alloc = 0;
-    if (bytes < md_linear_allocator_avail_bytes(linear_alloc)) {
+    if (bytes < md_linear_allocator_avail_bytes(frame_alloc)) {
         alloc = frame_alloc;
     } else {
         alloc = md_heap_allocator;
@@ -3087,14 +3083,14 @@ static void reset_view(ApplicationData* data, bool move_camera, bool smooth_tran
     vec3_t aabb_min, aabb_max;
     
     if (0 < popcount && popcount < mol.atom.count) {
-        int32_t* indices = (int32_t*)md_linear_allocator_push(linear_alloc, popcount * sizeof(int32_t));
+        int32_t* indices = (int32_t*)md_linear_allocator_push(frame_alloc, popcount * sizeof(int32_t));
         size_t len = md_bitfield_iter_extract_indices(indices, popcount, md_bitfield_iter_create(&data->representation.atom_visibility_mask));
         if (len > popcount || len > mol.atom.count) {
             MD_LOG_DEBUG("Error: Invalid number of indices");
             len = MIN(popcount, mol.atom.count);
         }
 		md_util_aabb_compute(aabb_min.elem, aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, len);
-        md_linear_allocator_pop(linear_alloc, popcount * sizeof(int32_t));
+        md_linear_allocator_pop(frame_alloc, popcount * sizeof(int32_t));
     } else {
         md_util_aabb_compute(aabb_min.elem, aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, nullptr, mol.atom.count);
     }
@@ -3245,7 +3241,7 @@ static void draw_main_menu(ApplicationData* data) {
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Quit", "ALT+F4")) {
-                data->ctx.window.should_close = true;
+                data->app.window.should_close = true;
             }
             ImGui::EndMenu();
         }
@@ -3270,7 +3266,7 @@ static void draw_main_menu(ApplicationData* data) {
                 reset_view(data, true, true);
             }
             ImGui::Separator();
-            ImGui::Checkbox("Vsync", &data->ctx.window.vsync);
+            ImGui::Checkbox("Vsync", &data->app.window.vsync);
             ImGui::Separator();
 
             ImGui::BeginGroup();
@@ -3616,7 +3612,7 @@ ImGui::EndGroup();
             static double acc_ms  = 0;
             static double avg_ms  = 0;
 
-            double ms = (data->ctx.timing.delta_s * 1000);
+            double ms = (data->app.timing.delta_s * 1000);
             acc_ms += ms;
             num_frames += 1;
 
@@ -4921,7 +4917,6 @@ static void draw_info_window(const ApplicationData& data, uint32_t picking_idx) 
         str_t type = mol.atom.type ? mol.atom.type[atom_idx] : str_t{};
         str_t elem = mol.atom.element ? md_util_element_name(mol.atom.element[atom_idx]) : str_t{};
         str_t symbol = mol.atom.element ? md_util_element_symbol(mol.atom.element[atom_idx]) : str_t{};
-        int valence = mol.atom.valence ? mol.atom.valence[atom_idx] : 0;
 
         int res_idx = -1;
         str_t res_name = {};
@@ -4950,9 +4945,6 @@ static void draw_info_window(const ApplicationData& data, uint32_t picking_idx) 
         local_idx += 1;
 
         md_strb_fmt(&sb, "atom[%i][%i]: %.*s %.*s %.*s (%.2f, %.2f, %.2f)\n", atom_idx, local_idx, STR_ARG(type), STR_ARG(elem), STR_ARG(symbol), pos.x, pos.y, pos.z);
-        if (mol.atom.valence) {
-            md_strb_fmt(&sb, "covalent-valence: %i\n", valence);
-        }
         if (res_idx) {
             md_strb_fmt(&sb, "res[%i]: %.*s %i\n", res_idx, STR_ARG(res_name), res_id);
         }
@@ -5014,7 +5006,7 @@ static void draw_async_task_window(ApplicationData* data) {
     
     if (any_task_label_visible) {
         ImGuiViewport* viewport = ImGui::GetMainViewport();
-        ImGui::SetNextWindowPos(viewport->Pos + ImVec2(data->ctx.window.width - WIDTH - MARGIN,
+        ImGui::SetNextWindowPos(viewport->Pos + ImVec2(data->app.window.width - WIDTH - MARGIN,
                                                        ImGui::GetCurrentContext()->FontBaseSize + ImGui::GetStyle().FramePadding.y * 2.f + MARGIN));
         ImGui::SetNextWindowSize(ImVec2(WIDTH, 0));
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
@@ -7609,7 +7601,7 @@ static void draw_density_volume_window(ApplicationData* data) {
         update_density_volume(data);
 
         // Animate camera towards targets
-        animate_camera(&data->density_volume.camera, data->density_volume.target_ori, data->density_volume.target_pos, data->density_volume.target_dist, data->ctx.timing.delta_s);
+        animate_camera(&data->density_volume.camera, data->density_volume.target_ori, data->density_volume.target_pos, data->density_volume.target_dist, data->app.timing.delta_s);
 
         /*
         // Canvas
@@ -8783,7 +8775,7 @@ static void update_md_buffers(ApplicationData* data) {
 
         if (f_hash != flag_hash) {
             flag_hash = f_hash;
-            uint8_t* flags = (uint8_t*)md_linear_allocator_push(linear_alloc, mol.atom.count * sizeof(uint8_t));
+            uint8_t* flags = (uint8_t*)md_linear_allocator_push(frame_alloc, mol.atom.count * sizeof(uint8_t));
             MEMSET(flags, 0, mol.atom.count * sizeof(uint8_t));
 
             {
@@ -9793,8 +9785,8 @@ void create_screenshot(ApplicationData* data) {
     int width  = data->gbuffer.width;
     int height = data->gbuffer.height;
     size_t bytes = width * height * sizeof(uint32_t);
-    uint32_t* rgba = (uint32_t*)md_linear_allocator_push(linear_alloc, bytes);
-    defer { md_linear_allocator_pop(linear_alloc, bytes); };
+    uint32_t* rgba = (uint32_t*)md_linear_allocator_push(frame_alloc, bytes);
+    defer { md_linear_allocator_pop(frame_alloc, bytes); };
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glReadBuffer(GL_BACK);
@@ -9896,11 +9888,11 @@ static void update_representation(ApplicationData* data, Representation* rep) {
     ASSERT(data);
     ASSERT(rep);
 
-    uint64_t pos = md_linear_allocator_get_pos(linear_alloc);
-    defer { md_linear_allocator_set_pos(linear_alloc, pos); };
+    size_t pos = md_linear_allocator_get_pos(frame_alloc);
+    defer { md_linear_allocator_set_pos_back(frame_alloc, pos); };
 
     const size_t bytes = data->mold.mol.atom.count * sizeof(uint32_t);
-    uint32_t* colors = (uint32_t*)md_linear_allocator_push(linear_alloc, bytes);
+    uint32_t* colors = (uint32_t*)md_linear_allocator_push(frame_alloc, bytes);
 
     const auto& mol = data->mold.mol;
 
@@ -10664,7 +10656,7 @@ static void handle_camera_interaction(ApplicationData* data) {
                     data->mold.dirty_buffers |= MolBit_DirtyFlags;
                     data->selection.selecting = true;
 
-                    const vec2_t res = { (float)data->ctx.window.width, (float)data->ctx.window.height };
+                    const vec2_t res = { (float)data->app.window.width, (float)data->app.window.height };
                     const mat4_t mvp = data->view.param.matrix.current.proj * data->view.param.matrix.current.view;
 
                     md_bitfield_iter_t it = md_bitfield_iter_create(&data->representation.atom_visibility_mask);
@@ -10760,7 +10752,7 @@ static void handle_camera_interaction(ApplicationData* data) {
                 input.dolly_button  = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
                 input.mouse_coord_curr = mouse_coord;
                 input.mouse_coord_prev = mouse_coord - mouse_delta;
-                input.screen_size = {(float)data->ctx.window.width, (float)data->ctx.window.height};
+                input.screen_size = {(float)data->app.window.width, (float)data->app.window.height};
                 input.dolly_delta = scroll_delta;
                 input.fov_y = data->view.camera.fov_y;
 
@@ -11098,7 +11090,7 @@ static void handle_picking(ApplicationData* data) {
             // Solution, pick one reference frame out of the jittering sequence and use that one...
             // Ugly hack but works...
 
-            if (data->ctx.input.mouse.moving) {
+            if (data->app.input.mouse.moving) {
                 ref_frame = frame_idx;
             }
 
@@ -11156,7 +11148,7 @@ static void apply_postprocessing(const ApplicationData& data) {
     desc.depth_of_field.focus_scale = data.visuals.dof.focus_scale;
 
     constexpr float MOTION_BLUR_REFERENCE_DT = 1.0f / 60.0f;
-    const float dt_compensation = MOTION_BLUR_REFERENCE_DT / (float)data.ctx.timing.delta_s;
+    const float dt_compensation = MOTION_BLUR_REFERENCE_DT / (float)data.app.timing.delta_s;
     const float motion_scale = data.visuals.temporal_reprojection.motion_blur.motion_scale * dt_compensation;
     desc.temporal_reprojection.enabled = data.visuals.temporal_reprojection.enabled;
     desc.temporal_reprojection.feedback_min = data.visuals.temporal_reprojection.feedback_min;

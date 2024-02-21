@@ -18,6 +18,9 @@
 #include <md_trajectory.h>
 #include <md_frame_cache.h>
 #include <md_util.h>
+#if MD_VLX
+#include <md_vlx.h>
+#endif
 
 #include <string.h>
 
@@ -40,6 +43,9 @@ static const str_t mol_loader_name[] {
     STR_LIT("XYZ"),
     STR_LIT("PDBx/mmCIF (cif)"),
     STR_LIT("LAMMPS (data)"),
+#if MD_VLX
+    STR_LIT("Veloxchem (out)"),
+#endif
 };
 
 static const str_t mol_loader_ext[] {
@@ -49,6 +55,9 @@ static const str_t mol_loader_ext[] {
     STR_LIT("xyz;xmol;arc"),
     STR_LIT("cif"),
     STR_LIT("data"),
+#if MD_VLX
+    STR_LIT("out"),
+#endif
 };
 
 static md_molecule_loader_i* mol_loader_api[] = {
@@ -58,6 +67,7 @@ static md_molecule_loader_i* mol_loader_api[] = {
     md_xyz_molecule_api(),
     md_mmcif_molecule_api(),
     md_lammps_molecule_api(),
+    md_vlx_molecule_api(),
 };
 
 enum traj_loader_t {
@@ -227,6 +237,9 @@ static const table_entry_t table = {
         STR_LIT("LAMMPS (data)"),
         STR_LIT("LAMMPS Trajectory (lammpstrj)"),
         //STR_LIT("DCD Trajectory (dcd)"),
+#if MD_VLX
+        STR_LIT("Veloxchem (out)")
+#endif
     },
     {
         STR_LIT("pdb"),
@@ -240,6 +253,9 @@ static const table_entry_t table = {
         STR_LIT("data"),
         STR_LIT("lammpstrj"),
         //STR_LIT("dcd"),
+#if MD_VLX
+        STR_LIT("out")
+#endif
     },
     { 
         md_pdb_molecule_api(),
@@ -253,6 +269,9 @@ static const table_entry_t table = {
         md_lammps_molecule_api(),
         NULL,
         //NULL,
+#if MD_VLX
+        md_vlx_molecule_api(),
+#endif
     },
 	{ 
         md_pdb_trajectory_loader(),
@@ -266,6 +285,9 @@ static const table_entry_t table = {
         NULL,
         md_lammps_trajectory_loader(),
         //md_dcd_trajectory_loader(),
+#if MD_VLX
+        NULL,
+#endif
     }
 };
 
