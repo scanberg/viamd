@@ -67,7 +67,9 @@ static md_molecule_loader_i* mol_loader_api[] = {
     md_xyz_molecule_api(),
     md_mmcif_molecule_api(),
     md_lammps_molecule_api(),
+#if MD_VLX
     md_vlx_molecule_api(),
+#endif
 };
 
 enum traj_loader_t {
