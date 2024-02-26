@@ -29,10 +29,10 @@
 
 #include <core/md_str.h>
 #include <core/md_log.h>
+#include <core/md_hash.h>
 
 #include <gfx/gl_utils.h>
 
-#include <halton.h>
 #include <stdio.h>
 #include <string.h>
 #include <float.h>
@@ -357,8 +357,8 @@ void initialize_rnd_tex(GLuint rnd_tex) {
 
     for (int i = 0; i < buffer_size; i++) {
 #define SCALE ((1 << 15))
-        float rand1 = halton(i + 1, 2);
-        float rand2 = halton(i + 1, 3);
+        float rand1 = md_halton(i + 1, 2);
+        float rand2 = md_halton(i + 1, 3);
         float angle = 2.f * 3.1415926535f * rand1;
 
         buffer[i * 4 + 0] = (signed short)(SCALE * cosf(angle));

@@ -43,10 +43,15 @@ ID main_enqueue(str_t label, Task task, void* user_data = 0, ID dependency = 0);
 ID pool_enqueue(str_t label, Task task, void* user_data = 0, ID dependency = 0);
 ID pool_enqueue(str_t label, uint32_t range_beg, uint32_t range_end, RangeTask task, void* user_data = 0, ID dependency = 0);
 
-uint32_t pool_num_threads();
+size_t pool_num_threads();
+
+// This signals interruption for all running tasks
+void pool_interrupt_running_tasks();
+
+// This halts the calling thread until all running tasks have completed
+void pool_wait_for_completion();
 
 // These do not really reflect the 'current' state since that is illdefined. But rather what the state was at the time of the function call.
-void pool_interrupt_running_tasks();
 ID*  pool_running_tasks(md_allocator_i* alloc);
 
 // These are safe to call with an invalid id, in such case, they will just return some 'zero' default value

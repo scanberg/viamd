@@ -229,15 +229,16 @@ void render_volume(const RenderDesc& desc) {
 
     glUseProgram(program);
 
-    int    iso_count = CLAMP(desc.iso_surface.count, 0, 8);
+    size_t iso_count = CLAMP(desc.iso_surface.count, 0, 8);
     float  iso_values[8];
     vec4_t iso_colors[8];
 
     MEMCPY(iso_values, desc.iso_surface.values, iso_count * sizeof(float));
     MEMCPY(iso_colors, desc.iso_surface.colors, iso_count * sizeof(vec4_t));
 
-    for (int i = 0; i < iso_count - 1; ++i) {
-        for (int j = i + 1; j < iso_count; ++j) {
+    // Sort on iso value
+    for (size_t i = 0; i < iso_count - 1; ++i) {
+        for (size_t j = i + 1; j < iso_count; ++j) {
             if (iso_values[j] < iso_values[i]) {
                 float  val_tmp = iso_values[i];
                 vec4_t col_tmp = iso_colors[i];
@@ -252,9 +253,9 @@ void render_volume(const RenderDesc& desc) {
     glUniform1i(uniform_loc_tex_depth, 0);
     glUniform1i(uniform_loc_tex_volume, 1);
     glUniform1i(uniform_loc_tex_tf, 2);
-    glUniform1fv(uniform_loc_iso_values, iso_count, (const float*)iso_values);
-    glUniform4fv(uniform_loc_iso_colors, iso_count, (const float*)iso_colors);
-    glUniform1i(uniform_loc_iso_count, iso_count);
+    glUniform1fv(uniform_loc_iso_values, (GLsizei)iso_count, (const float*)iso_values);
+    glUniform4fv(uniform_loc_iso_colors, (GLsizei)iso_count, (const float*)iso_colors);
+    glUniform1i(uniform_loc_iso_count, (int)iso_count);
     glUniformBlockBinding(program, uniform_block_index, 0);
 
     glBindVertexArray(gl.vao);

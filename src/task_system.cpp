@@ -182,7 +182,7 @@ ID main_enqueue(str_t label, Task func, void* user_data, ID dependency) {
     return id;
 }
 
-uint32_t pool_num_threads() { return ts.GetNumTaskThreads(); }
+size_t pool_num_threads() { return ts.GetNumTaskThreads(); }
 
 ID* pool_running_tasks(md_allocator_i* alloc) {
     ASSERT(alloc);
@@ -201,6 +201,10 @@ void pool_interrupt_running_tasks() {
             pool::task_data[i].m_interrupt = true;
         }
     }
+}
+
+void pool_wait_for_completion() {
+    ts.WaitforAll();
 }
 
 ID pool_enqueue(str_t label, Task func, void* user_data, ID dependency) {

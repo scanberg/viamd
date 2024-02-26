@@ -1,21 +1,26 @@
 #pragma once
 
+#include <stdint.h>
+#include <stddef.h>
+
+#include <core/md_str.h>
+
 namespace application {
 
-typedef void (*FileDropCallback)(int file_count, const char** paths, void* user_data);
+typedef void (*FileDropCallback)(size_t file_count, const str_t file_paths[], void* user_data);
 
 struct Context {
     struct {
-        const char* title;
-        int width, height;
+        str_t title;
+        unsigned int width, height;
         bool vsync;
         bool should_close;
         void* ptr;
     } window;
 
     struct {
-        int width;
-        int height;
+        uint32_t width;
+        uint32_t height;
     } framebuffer;
 
     struct {
@@ -38,7 +43,7 @@ struct Context {
 };
 
 // Context
-bool initialize(Context* ctx, int width, int height, const char* title);
+bool initialize(Context* ctx, size_t width, size_t height, str_t title);
 void shutdown(Context* ctx);
 void update(Context* ctx);
 void render_imgui(Context* ctx);
@@ -59,6 +64,6 @@ enum {
 // path_cap is the capacity of the string buffer
 // flags represents the type of dialogue to be opened, e.g. FileDialog_Save to save a file, FileDialog_Open | FileDialog_Dir to open a directory.
 // filter is a null-terminated string containing comma separated extensions to be applied as a filter for the files: e.g. "jpg,png,bmp" to limit the scope of files to files with endings .jpg, .png or .bmp
-bool file_dialog(char* path_buf, int path_cap, FileDialogFlag flags, const char* filter = 0);
+bool file_dialog(char* path_buf, size_t path_cap, FileDialogFlag flags, str_t filter = {});
 
 }  // namespace application

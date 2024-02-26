@@ -579,7 +579,7 @@ md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const
     }
 
     md_trajectory_i* traj = (md_trajectory_i*)md_alloc(alloc, sizeof(md_trajectory_i));
-    memset(traj, 0, sizeof(md_trajectory_i));
+    MEMSET(traj, 0, sizeof(md_trajectory_i));
 
     LoadedTrajectory* inst = alloc_loaded_trajectory((uint64_t)traj);
     inst->mol = mol;
@@ -603,8 +603,6 @@ md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const
     traj->inst = (md_trajectory_o*)inst;
     traj->get_header = get_header;
     traj->load_frame = load_frame;
-    //traj->fetch_frame_data = 0;
-    //traj->decode_frame_data = 0;
     
     return traj;
 }
@@ -615,7 +613,7 @@ bool close(md_trajectory_i* traj) {
     LoadedTrajectory* loaded_traj = find_loaded_trajectory((uint64_t)traj);
     if (loaded_traj) {
         remove_loaded_trajectory(loaded_traj->key);
-        memset(traj, 0, sizeof(md_trajectory_i));
+        MEMSET(traj, 0, sizeof(md_trajectory_i));
         return true;
     }
     MD_LOG_ERROR("Attempting to free trajectory which was not loaded with loader");

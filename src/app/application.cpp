@@ -2,12 +2,13 @@
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 
-#include <application/application.h>
+#include <app/application.h>
 
 #include <core/md_log.h>
 #include <core/md_common.h>
 #include <core/md_platform.h>
 #include <core/md_str.h>
+#include <core/md_allocator.h>
 
 #include <gfx/gl.h>
 #include <GLFW/glfw3.h>
@@ -21,13 +22,13 @@
 #include <imgui.h>
 #include <implot.h>
 
-#include <application/imgui_impl_glfw.h>
-#include <application/imgui_impl_opengl3.h>
+#include <app/imgui_impl_glfw.h>
+#include <app/imgui_impl_opengl3.h>
 
 // Compressed fonts
-#include <application/dejavu_sans_mono.inl>
-#include <application/fa_solid.inl>
-#include <application/IconsFontAwesome6.h>
+#include <app/dejavu_sans_mono.inl>
+#include <app/fa_solid.inl>
+#include <app/IconsFontAwesome6.h>
 
 #include <stdio.h> // snprintf
 #include <stdlib.h> // free
@@ -58,7 +59,7 @@ static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum s
     }
 }
 
-bool initialize(Context* ctx, int width, int height, const char* title) {
+bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
     if (!glfwInit()) {
         // TODO Throw critical error
         MD_LOG_ERROR("Error while initializing glfw.");
@@ -72,8 +73,8 @@ bool initialize(Context* ctx, int width, int height, const char* title) {
         if (count > 0) {
             int pos_x, pos_y, dim_x, dim_y;
             glfwGetMonitorWorkarea(monitors[0], &pos_x, &pos_y, &dim_x, &dim_y);
-            width  = (int)(dim_x * 0.9);
-            height = (int)(dim_y * 0.9);
+            width  = (size_t)(dim_x * 0.9);
+            height = (size_t)(dim_y * 0.8);
         }
     }
 
@@ -83,7 +84,9 @@ bool initialize(Context* ctx, int width, int height, const char* title) {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
-    GLFWwindow* window = glfwCreateWindow((int)width, (int)height, title, NULL, NULL);
+    // Zero terminated
+    str_t ztitle = str_copy(title, md_temp_allocator);
+    GLFWwindow* window = glfwCreateWindow((int)width, (int)height, ztitle.ptr, NULL, NULL);
     if (!window) {
         MD_LOG_ERROR("Could not create glfw window.");
         return false;
@@ -190,9 +193,14 @@ bool initialize(Context* ctx, int width, int height, const char* title) {
         for (int i = 0; i < num_files; ++i) {
             MD_LOG_DEBUG("User dropped file: '%s'", paths[i]);
         }
+
+        str_t* str_paths = (str_t*)md_temp_push(num_files * sizeof(str_t));
+        for (int i = 0; i < num_files; ++i) {
+            str_paths[i] = {paths[i], strlen(paths[i])};
+        }
         
         if (ctx->file_drop.callback) {
-            ctx->file_drop.callback(num_files, paths, ctx->file_drop.user_data);
+            ctx->file_drop.callback((size_t)num_files, str_paths, ctx->file_drop.user_data);
         }
     };
     glfwSetDropCallback(window, drop_cb);
@@ -219,10 +227,7 @@ void shutdown(Context* ctx) {
     ImGui::DestroyContext();
     glfwTerminate();
 
-    ctx->window.ptr = nullptr;
-    ctx->window.title = "";
-    ctx->window.width = 0;
-    ctx->window.height = 0;
+    MEMSET(ctx, 0, sizeof(Context));
 }
 
 void update(Context* ctx) {
@@ -287,7 +292,7 @@ void render_imgui(Context* ctx) {
 
 void swap_buffers(Context* ctx) { glfwSwapBuffers((GLFWwindow*)ctx->window.ptr); }
 
-bool file_dialog(char* str_buf, int str_cap, FileDialogFlag flags, const char* filter) {    
+bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filter) {    
     nfdchar_t* out_path = NULL;
     defer { if (out_path) free(out_path); };
 
@@ -295,30 +300,30 @@ bool file_dialog(char* str_buf, int str_cap, FileDialogFlag flags, const char* f
 
     const char* default_path = 0;
 
+    // Zero terminated variant
+    str_t zfilt = str_copy(filter, md_temp_allocator);
+
     if (flags & FileDialogFlag_Open) {
-        result = NFD_OpenDialog(filter, default_path, &out_path);
+        result = NFD_OpenDialog(zfilt.ptr, default_path, &out_path);
     } else if (flags & FileDialogFlag_Save) {
-        result = NFD_SaveDialog(filter, default_path, &out_path);
+        result = NFD_SaveDialog(zfilt.ptr, default_path, &out_path);
     }
 
     if (result == NFD_OKAY) {
-        char ext[32] = {0};
+        int len = snprintf(str_buf, str_cap, "%s", out_path);
         if (flags & FileDialogFlag_Save) {
+            // If the user is saving through the dialogue and there is no extension
+            // In such case we append the first extension found in the filter (if supplied)
+            str_t ext;
             str_t path = str_from_cstr(out_path);
-            str_t sext = {0};
-            if (!extract_ext(&sext, path) && filter) {
+            if (!extract_ext(&ext, path) && filter) {
                 // get ext from supplied filter (first match)
-                int64_t len = 0;
-                const char* delim = strchr(filter, ',');
-                if (delim) {
-                    len = delim - filter;
-                } else {
-                    len = (int64_t)strlen(filter);
-                }
-                snprintf(ext, sizeof(ext), ".%.*s", (int)len, filter);
+                ext = filter;
+                str_find_char(&ext.len, ext, ',');
+                len += snprintf(str_buf + len, str_cap - len, "." STR_FMT, STR_ARG(ext));
             }
         }
-        int len = snprintf(str_buf, str_cap, "%s%s", out_path, ext);
+        
         if (0 < len && len < str_cap) {
             replace_char(str_buf, len, '\\', '/');
             return true;

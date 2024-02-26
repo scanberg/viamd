@@ -85,9 +85,10 @@ if (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
     set(VIAMD_FLAGS ${VIAMD_FLAGS} "-fms-extensions") #Silence pesky warnings of anonymous structs in vector types
 endif()
 
-file(GLOB APP_FILES src/application/*)
-file(GLOB SRC_FILES src/*)
-file(GLOB GFX_FILES src/gfx/*)
+file(GLOB SRC_FILES src/*.h src/*.cpp src/*.inl)
+file(GLOB APP_FILES src/app/*.cpp src/app/*.h)
+file(GLOB GFX_FILES src/gfx/*.cpp src/gfx/*.h)
+file(GLOB_RECURSE COMP_FILES "src/component/*.cpp" "src/component/*.h")
 
 set(SHADER_FILES 
     src/shaders/highlight.frag
@@ -113,11 +114,13 @@ set(SHADER_FILES
 # Bake shaders into a single header file
 create_resources("${SHADER_FILES}" "gen/shaders.inl")
 
-source_group("app" FILES ${APP_FILES})
-source_group("gfx" FILES ${GFX_FILES})
+source_group("src" FILES ${SRC_FILES})
+source_group("src/app" FILES ${APP_FILES})
+source_group("src/gfx" FILES ${GFX_FILES})
 source_group("shaders" FILES ${SHADER_FILES})
+source_group("src/component" FILES ${COMP_FILES})
 
-add_executable(viamd ${OSX_BUNDLE} ${SRC_FILES} ${APP_FILES} ${GFX_FILES} ${SHADER_FILES})
+add_executable(viamd ${OSX_BUNDLE} ${SRC_FILES} ${APP_FILES} ${GFX_FILES} ${SHADER_FILES} ${COMP_FILES})
 
 install(TARGETS viamd DESTINATION bin)
 

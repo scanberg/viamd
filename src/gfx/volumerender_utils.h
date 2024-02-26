@@ -33,8 +33,8 @@ bool write_volume_to_file(const float* data, int64_t dim_x, int64_t dim_y, int64
 struct RenderDesc {
     struct {
         uint32_t texture;
-        int width;
-        int height;
+        uint32_t width;
+        uint32_t height;
     } render_target;
 
     struct {
@@ -64,7 +64,7 @@ struct RenderDesc {
     } global_scaling;
 
     struct {
-        int count;
+        size_t count;
         const float* values;
         const vec4_t* colors;
     } iso_surface;
