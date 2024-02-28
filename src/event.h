@@ -21,25 +21,25 @@ enum : EventType {
 	EventType_ViamdSerialize			= HASH_STR_LIT("VIAMD Serialize Workspace"),
 	EventType_ViamdDeserialize			= HASH_STR_LIT("VIAMD Deserialize Workspace"),
 
-	EventType_ViamdTolopogyInit			= HASH_STR_LIT("VIAMD Topology Initialize"),	// Called when topology is initialized
+	EventType_ViamdTopologyInit			= HASH_STR_LIT("VIAMD Topology Initialize"),	// Called when topology is initialized
 	EventType_ViamdTopologyFree			= HASH_STR_LIT("VIAMD Topology Free"),			// Called when topology is freed
 
 	EventType_ViamdTrajectoryInit		= HASH_STR_LIT("VIAMD Trajectory Initialize"),	// Called when a trajectory is initialized
 	EventType_ViamdTrajectoryFree		= HASH_STR_LIT("VIAMD Trajectory Free"),		// Called when a trajectory is freed
 
-	EventType_ViamdFileOpen 	   		= HASH_STR_LIT("VIAMD Open File"),
+	//EventType_ViamdFileOpen 	   		= HASH_STR_LIT("VIAMD Open File"),
 
-	EventType_AnimationFrameChange		= HASH_STR_LIT("Animation Frame Changed"),
+	//EventType_AnimationFrameChange		= HASH_STR_LIT("Animation Frame Changed"),
 
 	EventType_HoverMaskChanged			= HASH_STR_LIT("Hover Mask Changed"),
 	EventType_SelectionMaskChanged		= HASH_STR_LIT("Selection Mask Changed"),
 
-	EventType_RepresentationChange		= HASH_STR_LIT("Representation Changed"),
+	//EventType_RepresentationChange		= HASH_STR_LIT("Representation Changed"),
 
-	EventType_PropertyHovered 			= HASH_STR_LIT("Property Hovered"),
-	EventType_ScriptChange				= HASH_STR_LIT("Script Changed"),
-	EventType_ScriptEvalStart			= HASH_STR_LIT("Script Evaluation Started"),
-	EventType_ScriptEvalComplete		= HASH_STR_LIT("Script Evaluation Completed"),
+	//EventType_PropertyHovered 			= HASH_STR_LIT("Property Hovered"),
+	//EventType_ScriptChange				= HASH_STR_LIT("Script Changed"),
+	//EventType_ScriptEvalStart			= HASH_STR_LIT("Script Evaluation Started"),
+	//EventType_ScriptEvalComplete		= HASH_STR_LIT("Script Evaluation Completed"),
 };
 
 struct Event {

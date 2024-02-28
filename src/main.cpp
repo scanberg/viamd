@@ -7351,9 +7351,7 @@ static void free_molecule_data(ApplicationState* data) {
     }
     clear_density_volume(data);
 
-#if DEBUG
-    md_tracking_allocator_print(persistent_alloc);
-#endif
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdTopologyFree, data);
 }
 
 static void init_molecule_data(ApplicationState* data) {
@@ -7388,6 +7386,7 @@ static void init_molecule_data(ApplicationState* data) {
 
         init_dataset_items(data);
     }
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdTopologyInit, data);
 }
 
 static void launch_prefetch_job(ApplicationState* data) {
