@@ -33,6 +33,9 @@ enum mol_loader_t {
     MOL_LOADER_XYZ,
     MOL_LOADER_CIF,
     MOL_LOADER_LAMMPS,
+#if MD_VLX
+    MOL_LOADER_VELOXCHEM,
+#endif
     MOL_LOADER_COUNT
 };
 

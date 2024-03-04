@@ -167,13 +167,15 @@ struct VeloxChem : viamd::EventHandler {
     void update_volume() {
         task_system::task_wait_for(compute_volume);
 
-        uint32_t num_blocks = (vol_dim / 8) * (vol_dim / 8) * (vol_dim / 8);
-        // We evaluate the in parallel over smaller 8x8x8 blocks
+#define BLK_DIM 8
+
+        uint32_t num_blocks = (vol_dim / BLK_DIM) * (vol_dim / BLK_DIM) * (vol_dim / BLK_DIM);
+        // We evaluate the in parallel over smaller NxNxN blocks
 
         compute_volume = task_system::pool_enqueue(STR_LIT("Compute Volume"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
             VeloxChem* data = (VeloxChem*)user_data;
 
-            int block_dim = data->vol_dim / 8;
+            int num_blk = data->vol_dim / BLK_DIM;
 
             md_vlx_grid_t grid = {
                 .data = data->vol_data,
@@ -184,12 +186,12 @@ struct VeloxChem : viamd::EventHandler {
 
             for (uint32_t i = range_beg; i < range_end; ++i) {
                 // Determine block index
-                int blk_z = i & (block_dim - 1);
-                int blk_y = (i / block_dim) & (block_dim - 1);
-                int blk_x = i / (block_dim * block_dim);
+                int blk_z = i & (num_blk - 1);
+                int blk_y = (i / num_blk) & (num_blk - 1);
+                int blk_x = i / (num_blk * num_blk);
 
-                const int beg_idx[3] = {blk_x * 8, blk_y * 8, blk_z * 8};
-                const int end_idx[3] = {blk_x * 8 + 8, blk_y * 8 + 8, blk_z * 8 + 8};
+                const int beg_idx[3] = {blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM};
+                const int end_idx[3] = {blk_x * BLK_DIM + BLK_DIM, blk_y * BLK_DIM + BLK_DIM, blk_z * BLK_DIM + BLK_DIM};
 
                 const size_t num_mo_coeffs = data->vlx.scf.alpha.orbitals.dim[1];
                 const double* mo_coeff = data->mo_coeffs + data->vlx.scf.alpha.orbitals.dim[0] * data->mo_idx;
