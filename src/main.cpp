@@ -444,7 +444,7 @@ static void compute_histogram_masked(DisplayProperty::Histogram* hist, int num_b
     const float range_ext = value_range_max - value_range_min;
     const float inv_range = 1.0f / range_ext;
 
-    md_array(int) count = md_array_create(int, hist->dim, md_heap_allocator);
+    md_array(int) count = md_array_create(int, hist->dim, md_get_heap_allocator());
     MEMSET(count, 0, md_array_bytes(count));
 
     // We evaluate each frame, one at a time
@@ -485,7 +485,7 @@ static void compute_histogram_masked(DisplayProperty::Histogram* hist, int num_b
     hist->y_min = min_bin;
     hist->y_max = max_bin;
     
-    md_array_free(count, md_heap_allocator);
+    md_array_free(count, md_get_heap_allocator());
 }
 
 static void downsample_histogram(float* dst_bins, int num_dst_bins, const float* src_bins, const float* src_weights, int num_src_bins) {
@@ -746,9 +746,9 @@ static bool use_gfx = false;
 
 int main(int argc, char** argv) {
 #if DEBUG
-    persistent_alloc = md_tracking_allocator_create(md_heap_allocator);
+    persistent_alloc = md_tracking_allocator_create(md_get_heap_allocator());
 #elif RELEASE
-    persistent_alloc = md_heap_allocator;
+    persistent_alloc = md_get_heap_allocator();
 #else
 #error "Must define DEBUG or RELEASE"
 #endif
@@ -2071,7 +2071,7 @@ static void interpolate_atomic_properties(ApplicationState* data) {
     if (bytes < md_linear_allocator_avail_bytes(frame_alloc)) {
         alloc = frame_alloc;
     } else {
-        alloc = md_heap_allocator;
+        alloc = md_get_heap_allocator();
     }
 
     void* mem = md_alloc(alloc, bytes);
@@ -3165,10 +3165,10 @@ static void write_script_range(md_strb_t& sb, const int* indices, size_t num_ind
         if (idx - prev_idx > 1) {
             if (prev_idx > range_beg) {
                 md_range_t item = {range_beg - ref_idx + 1, prev_idx - ref_idx + 1};
-                md_array_push(items, item, md_temp_allocator);
+                md_array_push(items, item, md_get_temp_allocator());
             } else if (prev_idx != -1) {
                 md_range_t item = {prev_idx - ref_idx + 1, prev_idx - ref_idx + 1};
-                md_array_push(items, item, md_temp_allocator);
+                md_array_push(items, item, md_get_temp_allocator());
             }
             range_beg = idx;
         }
@@ -3178,10 +3178,10 @@ static void write_script_range(md_strb_t& sb, const int* indices, size_t num_ind
 
     if (prev_idx - range_beg > 0) {
         md_range_t item = {range_beg - ref_idx + 1, prev_idx - ref_idx + 1};
-        md_array_push(items, item, md_temp_allocator);
+        md_array_push(items, item, md_get_temp_allocator());
     } else if (prev_idx != -1) {
         md_range_t item = {prev_idx - ref_idx + 1, prev_idx - ref_idx + 1};
-        md_array_push(items, item, md_temp_allocator);
+        md_array_push(items, item, md_get_temp_allocator());
     }
 
     const int64_t num_items = md_array_size(items);
@@ -6383,7 +6383,7 @@ static void draw_debug_window(ApplicationState* data) {
             ImGui::Text("Script IR semaphore count: %i", (int)sema_count);
         }
         
-        task_system::ID* tasks = task_system::pool_running_tasks(md_heap_allocator);
+        task_system::ID* tasks = task_system::pool_running_tasks(md_get_heap_allocator());
         int64_t num_tasks = md_array_size(tasks);
         if (num_tasks > 0) {
             ImGui::Text("Running Pool Tasks:");
@@ -6871,7 +6871,7 @@ static void draw_property_export_window(ApplicationState* data) {
         if (property_idx == -1) ImGui::PopDisabled();
 
         if (export_clicked) {
-            md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+            md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
             defer { md_arena_allocator_destroy(alloc); };
 
             ASSERT(property_idx != -1);
@@ -7267,8 +7267,8 @@ static void init_trajectory_data(ApplicationState* data) {
 
                 const size_t stride = ALIGN_TO(mol.atom.count, 8);
                 const size_t bytes = stride * sizeof(float) * 3;
-                float* coords = (float*)md_alloc(md_heap_allocator, bytes);
-                defer { md_free(md_heap_allocator, coords, bytes); };
+                float* coords = (float*)md_alloc(md_get_heap_allocator(), bytes);
+                defer { md_free(md_get_heap_allocator(), coords, bytes); };
                 // Overwrite the coordinate section, since we will load trajectory frame data into these
                 mol.atom.x = coords + stride * 0;
                 mol.atom.y = coords + stride * 1;

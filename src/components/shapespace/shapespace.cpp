@@ -342,8 +342,8 @@ struct ShapeSpace : viamd::EventHandler {
                         ApplicationState* app_state = shape_space->app_state;
                         const size_t stride = ALIGN_TO(app_state->mold.mol.atom.count, 8);
                         const size_t bytes = stride * 3 * sizeof(float);
-                        float* coords = (float*)md_alloc(md_heap_allocator, bytes);
-                        defer { md_free(md_heap_allocator, coords, bytes); };
+                        float* coords = (float*)md_alloc(md_get_heap_allocator(), bytes);
+                        defer { md_free(md_get_heap_allocator(), coords, bytes); };
                         float* x = coords + stride * 0;
                         float* y = coords + stride * 1;
                         float* z = coords + stride * 2;
@@ -359,7 +359,7 @@ struct ShapeSpace : viamd::EventHandler {
                             for (size_t i = 0; i < md_array_size(shape_space->bitfields); ++i) {
                                 const md_bitfield_t* bf = &shape_space->bitfields[i];
                                 size_t count = md_bitfield_popcount(bf);
-                                md_array_resize(xyzw, count, md_heap_allocator);
+                                md_array_resize(xyzw, count, md_get_heap_allocator());
 
                                 md_bitfield_iter_t iter = md_bitfield_iter_create(bf);
                                 size_t dst_idx = 0;
@@ -379,7 +379,7 @@ struct ShapeSpace : viamd::EventHandler {
                                 shape_space->coords[dst_idx] = p[0] * weights[0] + p[1] * weights[1] + p[2] * weights[2];
                             }
                         }
-                        md_array_free(xyzw, md_heap_allocator);
+                        md_array_free(xyzw, md_get_heap_allocator());
                     }, this);
                 }
             }
@@ -393,7 +393,7 @@ struct ShapeSpace : viamd::EventHandler {
             md_array(str_t)  column_labels = 0;
             md_array(float*) column_values = 0;
 
-            md_allocator_i* temp_arena = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+            md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
             defer { md_arena_allocator_destroy(temp_arena); };
 
             // @TODO: add unit to time (if available)

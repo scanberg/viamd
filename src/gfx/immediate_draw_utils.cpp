@@ -127,7 +127,7 @@ static inline void append_draw_command(uint32_t count, GLenum primitive_type) {
     const uint32_t offset = (uint32_t)md_array_size(indices) - count;
     DrawCommand cmd {offset, count, curr_view_matrix_idx, curr_proj_matrix_idx, primitive_type};
     
-    md_array_push(commands, cmd, md_heap_allocator);
+    md_array_push(commands, cmd, md_get_heap_allocator());
 }
 
 void initialize() {
@@ -197,8 +197,8 @@ void initialize() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    md_array_ensure(vertices, 100000, md_heap_allocator);
-    md_array_ensure(indices,  100000, md_heap_allocator);
+    md_array_ensure(vertices, 100000, md_get_heap_allocator());
+    md_array_ensure(indices,  100000, md_get_heap_allocator());
 }
 
 void shutdown() {
@@ -210,12 +210,12 @@ void shutdown() {
 
 void set_model_view_matrix(mat4_t model_view_matrix) {
     curr_view_matrix_idx = (int)md_array_size(matrix_stack);
-    md_array_push(matrix_stack, model_view_matrix, md_heap_allocator);
+    md_array_push(matrix_stack, model_view_matrix, md_get_heap_allocator());
 }
 
 void set_proj_matrix(mat4_t proj_matrix) {
     curr_proj_matrix_idx = (int)md_array_size(matrix_stack);
-    md_array_push(matrix_stack, proj_matrix, md_heap_allocator);
+    md_array_push(matrix_stack, proj_matrix, md_get_heap_allocator());
 }
 
 void render() {
@@ -293,8 +293,8 @@ void draw_point(vec3_t pos, uint32_t color) {
     const Index idx = (Index)md_array_size(vertices);
 
     Vertex v = {pos, {0, 0, 1}, {0, 0}, color};
-    md_array_push(vertices, v, md_heap_allocator);
-    md_array_push(indices, idx, md_heap_allocator);
+    md_array_push(vertices, v, md_get_heap_allocator());
+    md_array_push(indices, idx, md_get_heap_allocator());
 
     append_draw_command(1, GL_POINTS);
 }
@@ -306,10 +306,10 @@ void draw_line(vec3_t from, vec3_t to, uint32_t color) {
         {from, {0, 0, 1}, {0, 0}, color},
         {to,   {0, 0, 1}, {0, 0}, color}
     };
-    md_array_push_array(vertices, v, 2, md_heap_allocator);
+    md_array_push_array(vertices, v, 2, md_get_heap_allocator());
 
-    md_array_push(indices, idx + 0, md_heap_allocator);
-    md_array_push(indices, idx + 1, md_heap_allocator);
+    md_array_push(indices, idx + 0, md_get_heap_allocator());
+    md_array_push(indices, idx + 1, md_get_heap_allocator());
 
     append_draw_command(2, GL_LINES);
 }
@@ -323,11 +323,11 @@ void draw_triangle(vec3_t p0, vec3_t p1, vec3_t p2, uint32_t color) {
         {p1, normal, {0, 0}, color},
         {p2, normal, {0, 0}, color},
     };
-    md_array_push_array(vertices, v, 3, md_heap_allocator);
+    md_array_push_array(vertices, v, 3, md_get_heap_allocator());
 
-    md_array_push(indices, idx + 0, md_heap_allocator);
-    md_array_push(indices, idx + 1, md_heap_allocator);
-    md_array_push(indices, idx + 2, md_heap_allocator);
+    md_array_push(indices, idx + 0, md_get_heap_allocator());
+    md_array_push(indices, idx + 1, md_get_heap_allocator());
+    md_array_push(indices, idx + 2, md_get_heap_allocator());
 
     append_draw_command(3, GL_TRIANGLES);
 }
@@ -342,14 +342,14 @@ void draw_plane(vec3_t center, vec3_t u, vec3_t v, uint32_t color) {
         {vec3_add(center, vec3_add(u, v)), normal, {1, 1}, color},
         {vec3_add(center, vec3_sub(u, v)), normal, {1, 0}, color},
     };
-    md_array_push_array(vertices, vert, 4, md_heap_allocator);
+    md_array_push_array(vertices, vert, 4, md_get_heap_allocator());
 
-    md_array_push(indices, idx + 0, md_heap_allocator);
-    md_array_push(indices, idx + 1, md_heap_allocator);
-    md_array_push(indices, idx + 2, md_heap_allocator);
-    md_array_push(indices, idx + 2, md_heap_allocator);
-    md_array_push(indices, idx + 1, md_heap_allocator);
-    md_array_push(indices, idx + 3, md_heap_allocator);
+    md_array_push(indices, idx + 0, md_get_heap_allocator());
+    md_array_push(indices, idx + 1, md_get_heap_allocator());
+    md_array_push(indices, idx + 2, md_get_heap_allocator());
+    md_array_push(indices, idx + 2, md_get_heap_allocator());
+    md_array_push(indices, idx + 1, md_get_heap_allocator());
+    md_array_push(indices, idx + 3, md_get_heap_allocator());
 
     append_draw_command(6, GL_TRIANGLES);
 }

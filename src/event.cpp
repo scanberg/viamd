@@ -15,7 +15,7 @@ struct event_system_t {
 static event_system_t event_system = {};
 
 void event_system_register_handler(EventHandler& handler) {
-	md_array_push(event_system.event_handlers, &handler, md_heap_allocator);
+	md_array_push(event_system.event_handlers, &handler, md_get_heap_allocator());
 }
 
 void event_system_enqueue_event(EventType type, const void* payload, uint64_t delay_in_ms) {
@@ -25,7 +25,7 @@ void event_system_enqueue_event(EventType type, const void* payload, uint64_t de
 		.timestamp = time_now + delay_in_ms,
 		.payload = payload,
 	};
-	md_array_push(event_system.event_queue, e, md_heap_allocator);
+	md_array_push(event_system.event_queue, e, md_get_heap_allocator());
 }
 
 void event_system_broadcast_event(EventType type, const void* payload) {
