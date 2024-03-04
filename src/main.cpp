@@ -7292,6 +7292,7 @@ static void init_trajectory_data(ApplicationState* data) {
                 interpolate_atomic_properties(data);
                 update_md_buffers(data);
                 md_gl_molecule_zero_velocity(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
+                update_all_representations(data);
 
             }, data, data->tasks.backbone_computations);
         }
@@ -7558,11 +7559,14 @@ static void load_workspace(ApplicationState* data, str_t filename) {
             str_t ident, arg;
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("Position"))) {
-                    viamd::extract_flt_vec(data->view.camera.position.elem, 3, arg);
-                } else if (str_eq(ident, STR_LIT("Rotation"))) {
-                    viamd::extract_flt_vec(data->view.camera.orientation.elem, 4, arg);
+                    viamd::extract_vec3(data->view.camera.position, arg);
+                } else if (str_eq(ident, STR_LIT("Orientation"))) {
+                    viamd::extract_quat(data->view.camera.orientation, arg);
                 } else if (str_eq(ident, STR_LIT("Distance"))) {
                     viamd::extract_flt(data->view.camera.focus_distance, arg);
+                } else if (str_eq(ident, STR_LIT("Rotation"))) {
+                    // DEPRECATED
+                    viamd::extract_quat(data->view.camera.orientation, arg);
                 }
             }
         } else if (str_eq(section, STR_LIT("Representation"))) {
@@ -7570,11 +7574,9 @@ static void load_workspace(ApplicationState* data, str_t filename) {
             str_t ident, arg;
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("Name"))) {
-                    viamd::extract_flt_vec(data->view.camera.position.elem, 3, arg);
+                    viamd::extract_to_char_buf(rep->name, sizeof(rep->name), arg);
                 } else if (str_eq(ident, STR_LIT("Filter"))) {
-                    str_t str;
-                    viamd::extract_str(str, arg);
-                    str_copy_to_char_buf(rep->filt, sizeof(rep->filt), str);
+                    viamd::extract_to_char_buf(rep->filt, sizeof(rep->filt), arg);
                 } else if (str_eq(ident, STR_LIT("Enabled"))) {
                     viamd::extract_bool(rep->enabled, arg);
                 } else if (str_eq(ident, STR_LIT("Type"))) {
