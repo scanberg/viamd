@@ -3157,6 +3157,9 @@ static void write_script_range(md_strb_t& sb, const int* indices, size_t num_ind
     int range_beg = indices[0];
     int prev_idx  = -1;
 
+    size_t temp_pos = md_temp_get_pos();
+    defer { md_temp_set_pos_back(temp_pos); };
+
     md_array(md_range_t) items = 0;
     
     for (size_t i = 0; i < num_indices; ++i) {
