@@ -12,6 +12,24 @@
 
 #include <shaders.inl>
 
+static constexpr str_t v_shader_src_fs_quad = STR_LIT(
+    R"(
+#version 150 core
+
+out vec2 tc;
+
+uniform vec2 u_tc_scl = vec2(1,1);
+
+void main() {
+	uint idx = uint(gl_VertexID) % 3U;
+	gl_Position = vec4(
+		(float( idx     &1U)) * 4.0 - 1.0,
+		(float((idx>>1U)&1U)) * 4.0 - 1.0,
+		0, 1.0);
+	tc = (gl_Position.xy * 0.5 + 0.5) * u_tc_scl;
+}
+)");
+
 namespace volume {
 
 static struct {
@@ -20,7 +38,15 @@ static struct {
     GLuint ubo = 0;
     GLuint fbo = 0;
 
+    GLuint tex_entry = 0;
+    GLuint tex_exit  = 0;
+
+    uint32_t width = 0;
+    uint32_t height = 0;
+
     struct {
+        GLuint entry_exit = 0;
+        GLuint entry_exit_depth = 0;
         GLuint dvr_only = 0;
         GLuint iso_only = 0;
         GLuint dvr_and_iso = 0;
@@ -48,36 +74,52 @@ struct UniformData {
 };
 
 void initialize() {
-    GLuint v_shader             = gl::compile_shader_from_source({(const char*)raycaster_vert, raycaster_vert_size}, GL_VERTEX_SHADER);
-    GLuint f_shader_dvr_only    = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR"));
-    GLuint f_shader_iso_only    = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_ISO"));
-    GLuint f_shader_dvr_and_iso = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR\n#define INCLUDE_ISO"));
+    GLuint v_shader_entry_exit          = gl::compile_shader_from_source({(const char*)entryexit_vert, entryexit_vert_size}, GL_VERTEX_SHADER);
+    GLuint f_shader_entry_exit          = gl::compile_shader_from_source({(const char*)entryexit_frag, entryexit_frag_size}, GL_FRAGMENT_SHADER);
+    GLuint f_shader_entry_exit_depth    = gl::compile_shader_from_source({(const char*)entryexit_frag, entryexit_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define SAMPLE_DEPTH"));
+
+    GLuint v_shader_vol                 = gl::compile_shader_from_source(v_shader_src_fs_quad, GL_VERTEX_SHADER);
+    GLuint f_shader_dvr_only            = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR"));
+    GLuint f_shader_iso_only            = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_ISO"));
+    GLuint f_shader_dvr_and_iso         = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR\n#define INCLUDE_ISO"));
+
     defer {
-        glDeleteShader(v_shader);
+        glDeleteShader(v_shader_vol);
+        glDeleteShader(f_shader_entry_exit);
         glDeleteShader(f_shader_dvr_only);
         glDeleteShader(f_shader_iso_only);
         glDeleteShader(f_shader_dvr_and_iso);
     };
 
-    if (v_shader == 0u || f_shader_dvr_only == 0u || f_shader_iso_only == 0u || f_shader_dvr_and_iso == 0u) {
+    if (v_shader_entry_exit == 0 || v_shader_vol == 0 || f_shader_entry_exit == 0|| f_shader_dvr_only == 0 || f_shader_iso_only == 0 || f_shader_dvr_and_iso == 0) {
         MD_LOG_ERROR("shader compilation failed, shader program for raycasting will not be updated");
         return;
     }
 
+    if (!gl.program.entry_exit) gl.program.entry_exit = glCreateProgram();
+    if (!gl.program.entry_exit_depth) gl.program.entry_exit_depth = glCreateProgram();
     if (!gl.program.dvr_only) gl.program.dvr_only = glCreateProgram();
     if (!gl.program.iso_only) gl.program.iso_only = glCreateProgram();
     if (!gl.program.dvr_and_iso) gl.program.dvr_and_iso = glCreateProgram();
 
     {
-        const GLuint shaders[] = {v_shader, f_shader_dvr_only};
+        const GLuint shaders[] = {v_shader_entry_exit, f_shader_entry_exit};
+        gl::attach_link_detach(gl.program.entry_exit, shaders, (int)ARRAY_SIZE(shaders));
+    }
+    {
+        const GLuint shaders[] = {v_shader_entry_exit, f_shader_entry_exit_depth};
+        gl::attach_link_detach(gl.program.entry_exit_depth, shaders, (int)ARRAY_SIZE(shaders));
+    }
+    {
+        const GLuint shaders[] = {v_shader_vol, f_shader_dvr_only};
         gl::attach_link_detach(gl.program.dvr_only, shaders, (int)ARRAY_SIZE(shaders));
     }
     {
-        const GLuint shaders[] = {v_shader, f_shader_iso_only};
+        const GLuint shaders[] = {v_shader_vol, f_shader_iso_only};
         gl::attach_link_detach(gl.program.iso_only, shaders, (int)ARRAY_SIZE(shaders));
     }
     {
-        const GLuint shaders[] = {v_shader, f_shader_dvr_and_iso};
+        const GLuint shaders[] = {v_shader_vol, f_shader_dvr_and_iso};
         gl::attach_link_detach(gl.program.dvr_and_iso, shaders, (int)ARRAY_SIZE(shaders));
     }
 
@@ -105,6 +147,14 @@ void initialize() {
         glBindBuffer(GL_UNIFORM_BUFFER, gl.ubo);
         glBufferData(GL_UNIFORM_BUFFER, sizeof(UniformData), 0, GL_DYNAMIC_DRAW);
         glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    }
+
+    if (!gl.tex_entry) {
+        glGenTextures(1, &gl.tex_entry);
+    }
+
+    if (!gl.tex_exit) {
+        glGenTextures(1, &gl.tex_exit);
     }
 
     if (!gl.fbo) {
@@ -151,7 +201,28 @@ mat4_t compute_texture_to_model_matrix(int dim_x, int dim_y, int dim_z) {
 }
 
 void render_volume(const RenderDesc& desc) {
-    if (!desc.direct_volume_rendering_enabled && !desc.isosurface_enabled && !desc.bounding_box.enabled) return;
+    if (!desc.direct_volume_rendering_enabled && !desc.isosurface_enabled) return;
+
+    int    iso_count = CLAMP((int)desc.iso_surface.count, 0, 8);
+    float  iso_values[8];
+    vec4_t iso_colors[8];
+
+    MEMCPY(iso_values, desc.iso_surface.values, iso_count * sizeof(float));
+    MEMCPY(iso_colors, desc.iso_surface.colors, iso_count * sizeof(vec4_t));
+
+    // Sort on iso value
+    for (int i = 0; i < iso_count - 1; ++i) {
+        for (int j = i + 1; j < iso_count; ++j) {
+            if (iso_values[j] < iso_values[i]) {
+                float  val_tmp = iso_values[i];
+                vec4_t col_tmp = iso_colors[i];
+                iso_values[i] = iso_values[j];
+                iso_colors[i] = iso_colors[j];
+                iso_values[j] = val_tmp;
+                iso_colors[j] = col_tmp;
+            }
+        }
+    }
 
     GLint bound_fbo;
     GLint bound_viewport[4];
@@ -168,20 +239,20 @@ void render_volume(const RenderDesc& desc) {
         }
     }
 
+    if (gl.width < desc.render_target.width ||
+        gl.height < desc.render_target.height)
+    {
+        gl.width = desc.render_target.width;
+        gl.height = desc.render_target.height;
+        gl::init_texture_2D(&gl.tex_entry, gl.width, gl.height, GL_RGB16);
+        gl::init_texture_2D(&gl.tex_exit,  gl.width, gl.height, GL_RGB16);
+    }
+
     const mat4_t model_to_view_matrix = mat4_mul(desc.matrix.view, desc.matrix.model);
 
     static float time = 0.0f;
     time += 1.0f / 60.0f;
     if (time > 100.0) time -= 100.0f;
-
-    if (desc.render_target.texture) {
-        ASSERT(glIsTexture(desc.render_target.texture));
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.fbo);
-        // We don't need a depth buffer to render the volume
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, desc.render_target.texture, 0);
-        glDrawBuffer(GL_COLOR_ATTACHMENT0);
-        glViewport(0, 0, desc.render_target.width, desc.render_target.height);
-    }
 
     UniformData data;
     data.view_to_model_mat = mat4_inverse(model_to_view_matrix);
@@ -203,69 +274,96 @@ void render_volume(const RenderDesc& desc) {
     glEnable(GL_CULL_FACE);
     glCullFace(GL_FRONT);
 
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, desc.texture.depth);
-
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_3D, desc.texture.volume);
-
-    glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, desc.texture.transfer_function);
+    glBindTexture(GL_TEXTURE_2D, desc.render_target.depth);
 
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, gl.ubo);
 
-    const GLuint program = desc.direct_volume_rendering_enabled ? (desc.isosurface_enabled ? gl.program.dvr_and_iso : gl.program.dvr_only) : gl.program.iso_only;
+    glBindVertexArray(gl.vao);
 
-    const GLint uniform_block_index     = glGetUniformBlockIndex(program, "UniformData");
-    const GLint uniform_loc_tex_tf      = glGetUniformLocation(program, "u_tex_tf");
-    const GLint uniform_loc_tex_depth   = glGetUniformLocation(program, "u_tex_depth");
-    const GLint uniform_loc_tex_volume  = glGetUniformLocation(program, "u_tex_volume");
-    const GLint uniform_loc_iso_values  = glGetUniformLocation(program, "u_iso.values");
-    const GLint uniform_loc_iso_colors  = glGetUniformLocation(program, "u_iso.colors");
-    const GLint uniform_loc_iso_count   = glGetUniformLocation(program, "u_iso.count");
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
 
-    glUseProgram(program);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.fbo);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.tex_entry, 0);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.tex_exit,  0);
+    const GLuint draw_bufs[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+    glDrawBuffers(2, draw_bufs);
 
-    size_t iso_count = CLAMP(desc.iso_surface.count, 0, 8);
-    float  iso_values[8];
-    vec4_t iso_colors[8];
+    glClearColor(0,0,0,0);
+    glClear(GL_COLOR_BUFFER_BIT);
 
-    MEMCPY(iso_values, desc.iso_surface.values, iso_count * sizeof(float));
-    MEMCPY(iso_colors, desc.iso_surface.colors, iso_count * sizeof(vec4_t));
+    glViewport(0, 0, desc.render_target.width, desc.render_target.height);
 
-    // Sort on iso value
-    for (size_t i = 0; i < iso_count - 1; ++i) {
-        for (size_t j = i + 1; j < iso_count; ++j) {
-            if (iso_values[j] < iso_values[i]) {
-                float  val_tmp = iso_values[i];
-                vec4_t col_tmp = iso_colors[i];
-                iso_values[i] = iso_values[j];
-                iso_colors[i] = iso_colors[j];
-                iso_values[j] = val_tmp;
-                iso_colors[j] = col_tmp;
-            }
-        }
+    {
+        const GLuint prog = desc.render_target.depth ? gl.program.entry_exit_depth : gl.program.entry_exit;
+        const GLint uniform_block_index     = glGetUniformBlockIndex(prog, "UniformData");
+        const GLint uniform_loc_tex_depth   =   glGetUniformLocation(prog, "u_tex_depth");
+
+        glUseProgram(prog);
+        glUniform1i(uniform_loc_tex_depth, 0);
+        glUniformBlockBinding(prog, uniform_block_index, 0);
+
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 42);
     }
 
-    glUniform1i(uniform_loc_tex_depth, 0);
-    glUniform1i(uniform_loc_tex_volume, 1);
-    glUniform1i(uniform_loc_tex_tf, 2);
-    glUniform1fv(uniform_loc_iso_values, (GLsizei)iso_count, (const float*)iso_values);
-    glUniform4fv(uniform_loc_iso_colors, (GLsizei)iso_count, (const float*)iso_colors);
-    glUniform1i(uniform_loc_iso_count, (int)iso_count);
-    glUniformBlockBinding(program, uniform_block_index, 0);
+    glDisable(GL_BLEND);
 
-    glBindVertexArray(gl.vao);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 42);
-    glBindVertexArray(0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, gl.tex_entry);
 
-    glUseProgram(0);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, gl.tex_exit);
+
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_3D, desc.texture.volume);
+
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, desc.texture.transfer_function);
+
+    if (desc.render_target.color) {
+        ASSERT(glIsTexture(desc.render_target.color));
+        //glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,  GL_TEXTURE_2D, desc.render_target.depth, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, desc.render_target.color, 0);
+        //glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, desc.render_target.normal, 0);
+        glDrawBuffers(1, draw_bufs);
+    }
 
     glDisable(GL_CULL_FACE);
+    glEnable(GL_DEPTH_TEST);
+    //glDepthMask(GL_TRUE);
+
+    {
+        const GLuint vol_prog = desc.direct_volume_rendering_enabled ? (desc.isosurface_enabled ? gl.program.dvr_and_iso : gl.program.dvr_only) : gl.program.iso_only;
+
+        const GLint uniform_block_index     = glGetUniformBlockIndex(vol_prog, "UniformData");
+        const GLint uniform_loc_tex_entry   = glGetUniformLocation(vol_prog, "u_tex_entry");
+        const GLint uniform_loc_tex_exit    = glGetUniformLocation(vol_prog, "u_tex_exit");
+        const GLint uniform_loc_tex_tf      = glGetUniformLocation(vol_prog, "u_tex_tf");
+        const GLint uniform_loc_tex_volume  = glGetUniformLocation(vol_prog, "u_tex_volume");
+        const GLint uniform_loc_iso_values  = glGetUniformLocation(vol_prog, "u_iso.values");
+        const GLint uniform_loc_iso_colors  = glGetUniformLocation(vol_prog, "u_iso.colors");
+        const GLint uniform_loc_iso_count   = glGetUniformLocation(vol_prog, "u_iso.count");
+
+        glUseProgram(vol_prog);
+
+        glUniform1i(uniform_loc_tex_entry, 0);
+        glUniform1i(uniform_loc_tex_exit,  1);
+        glUniform1i(uniform_loc_tex_volume, 2);
+        glUniform1i(uniform_loc_tex_tf, 3);
+        glUniform1fv(uniform_loc_iso_values, (GLsizei)iso_count, (const float*)iso_values);
+        glUniform4fv(uniform_loc_iso_colors, (GLsizei)iso_count, (const float*)iso_colors);
+        glUniform1i(uniform_loc_iso_count, (int)iso_count);
+        glUniformBlockBinding(vol_prog, uniform_block_index, 0);
+
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+
+    glBindVertexArray(0);
+    glUseProgram(0);
+
     glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bound_fbo);
     glViewport(bound_viewport[0], bound_viewport[1], bound_viewport[2], bound_viewport[3]);

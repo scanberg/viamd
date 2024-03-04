@@ -32,7 +32,9 @@ bool write_volume_to_file(const float* data, int64_t dim_x, int64_t dim_y, int64
 
 struct RenderDesc {
     struct {
-        uint32_t texture;
+        uint32_t depth;
+        uint32_t color;
+        uint32_t normal;
         uint32_t width;
         uint32_t height;
     } render_target;
@@ -40,7 +42,6 @@ struct RenderDesc {
     struct {
         uint32_t volume = 0;
         uint32_t transfer_function = 0;
-        uint32_t depth = 0;
     } texture;
 
     struct {
@@ -53,11 +54,6 @@ struct RenderDesc {
         vec3_t min = {0, 0, 0};
         vec3_t max = {1, 1, 1};
     } clip_volume;
-
-    struct {
-        vec4_t color = {0, 0, 0, 1};
-        bool enabled = true;
-    } bounding_box;
 
     struct {
         float density = 1.0f;

@@ -290,7 +290,7 @@ bool gl::init_texture_3D(GLuint* texture, int width, int height, int depth, GLen
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glBindTexture      (GL_TEXTURE_3D, 0);
+    glBindTexture  (GL_TEXTURE_3D, 0);
 
     return true;
 }

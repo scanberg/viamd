@@ -16,6 +16,8 @@ enum : EventType {
 	EventType_ViamdInitialize 	   		= HASH_STR_LIT("VIAMD Initialize"),
 	EventType_ViamdShutdown 	   		= HASH_STR_LIT("VIAMD Shutdown"),
 	EventType_ViamdFrameTick 	   		= HASH_STR_LIT("VIAMD Frame Tick"),				// This is called once per frame
+	EventType_ViamdPostRender			= HASH_STR_LIT("VIAMD Post Render"),			// Called after the geometry has been rendered
+
 	EventType_ViamdDrawMenu				= HASH_STR_LIT("VIAMD Draw Menu"),				// Draw the menu
 
 	EventType_ViamdSerialize			= HASH_STR_LIT("VIAMD Serialize Workspace"),

@@ -21,7 +21,7 @@ constexpr uint32_t COLOR_YELLOW = 0xff00ffff;
 constexpr uint32_t COLOR_MAGENTA = 0xffff00ff;
 constexpr uint32_t COLOR_CYAN = 0xffffff00;
 
-constexpr uint32_t DEFAULT_COLOR = COLOR_WHITE;
+constexpr uint32_t DEFAULT_COLOR = COLOR_BLACK;
 
 // 3D Primitives
 void draw_point(vec3_t pos, uint32_t color = DEFAULT_COLOR);
@@ -43,7 +43,10 @@ void draw_plane_wireframe(vec3_t center, vec3_t plane_u, vec3_t plane_v, uint32_
 
 // Composits
 void draw_box_wireframe(vec3_t min_box, vec3_t max_box, uint32_t color = DEFAULT_COLOR);
+void draw_box_wireframe(vec3_t min_box, vec3_t max_box, vec4_t color = {0,0,0,1});
 void draw_box_wireframe(vec3_t min_box, vec3_t max_box, mat4_t model_matrix, uint32_t color = DEFAULT_COLOR);
+void draw_box_wireframe(vec3_t min_box, vec3_t max_box, mat4_t model_matrix, vec4_t color = {0,0,0,1});
+
 void draw_basis(mat4_t basis, float scale = 1.f, uint32_t x_color = COLOR_RED, uint32_t y_color = COLOR_GREEN, uint32_t z_color = COLOR_BLUE);
 
 // Advanced

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "gl.h"
-
 #include <core/md_str.h>
 
 namespace gl {

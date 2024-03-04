@@ -5,6 +5,7 @@ uniform sampler2D u_texture_color;
 uniform sampler2D u_texture_normal;
 
 uniform mat4 u_inv_proj_mat;
+uniform vec4 u_bg_color;
 uniform float u_time;
 
 in vec2 tc;
@@ -69,21 +70,25 @@ vec3 shade(vec3 color, vec3 V, vec3 N) {
 }
 
 void main() {
-    float depth = texelFetch(u_texture_depth, ivec2(gl_FragCoord.xy), 0).x;
-    if (depth == 1.0) {
-        discard;
-    }
     vec4 color = texelFetch(u_texture_color, ivec2(gl_FragCoord.xy), 0);
+    if (color.a == 0.0) {
+        out_frag = u_bg_color;
+        return;
+    }
+
+    float depth = texelFetch(u_texture_depth, ivec2(gl_FragCoord.xy), 0).x;
     vec3 normal = decode_normal(texelFetch(u_texture_normal, ivec2(gl_FragCoord.xy), 0).xy);
     vec4 view_coord = depth_to_view_coord(tc, depth);
 
     // Add noise to reduce banding
-    vec4 noise4 = srand4(tc + u_time + 0.6959174) / 10.0;
-    color += color*noise4;
+    vec4 noise4 = srand4(tc + u_time + 0.6959174) / 20.0;
+    color.rgb += color.rgb * noise4.rgb;
 
     vec3 N = normal;
     vec3 V = -normalize(view_coord.xyz);
     vec3 result = shade(color.rgb, V, N);
 
-    out_frag = vec4(result, color.a);
+    result = result * color.a + u_bg_color.rgb * (1.0 - color.a);
+
+    out_frag = vec4(result, 1);
 }

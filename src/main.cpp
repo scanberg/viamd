@@ -1445,6 +1445,8 @@ int main(int argc, char** argv) {
         fill_gbuffer(&data);
         immediate::render();
 
+        viamd::event_system_broadcast_event(viamd::EventType_ViamdPostRender, &data);
+
         // Activate backbuffer
         glDisable(GL_DEPTH_TEST);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
@@ -6181,97 +6183,20 @@ static void draw_density_volume_window(ApplicationState* data) {
             }
 
             glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
-
-            PUSH_GPU_SECTION("Postprocessing")
-                postprocessing::Descriptor postprocess_desc = {
-                .background = {
-                    .intensity = data->visuals.background.color * data->visuals.background.intensity,
-                },
-                .bloom = {
-                    .enabled = false,
-                },
-                .tonemapping = {
-                    .enabled = data->visuals.tonemapping.enabled,
-                    .mode = data->visuals.tonemapping.tonemapper,
-                    .exposure = data->visuals.tonemapping.exposure,
-                    .gamma = data->visuals.tonemapping.gamma,
-                },
-                .ambient_occlusion = {
-                    .enabled = data->visuals.ssao.enabled,
-                    .radius = data->visuals.ssao.radius,
-                    .intensity = data->visuals.ssao.intensity,
-                    .bias = data->visuals.ssao.bias,
-                },
-                .depth_of_field = {
-                    .enabled = false,
-                },
-                .temporal_reprojection = {
-                    .enabled = false,
-                },
-                .input_textures = {
-                    .depth = gbuf.deferred.depth,
-                    .color = gbuf.deferred.color,
-                    .normal = gbuf.deferred.normal,
-                    .velocity = gbuf.deferred.velocity,
-                }
-            };
-
-            ViewParam view_param = {
-                .matrix = {
-                    .current = {
-                        .view = view_mat,
-                        .proj = proj_mat,
-                        .norm = view_mat,
-                    },
-                    .inverse = {
-                        .proj = inv_proj_mat,
-                    }
-                },
-                .clip_planes = {
-                    .near = data->density_volume.camera.near_plane,
-                    .far = data->density_volume.camera.far_plane,
-                },
-                .fov_y = data->density_volume.camera.fov_y,
-                .resolution = {canvas_sz.x, canvas_sz.y}
-            };
-
-            postprocessing::shade_and_postprocess(postprocess_desc, view_param);
-            POP_GPU_SECTION()
-        }
-
-        glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
-        glEnable(GL_DEPTH_TEST);
-        glDepthMask(GL_TRUE);
-
-        if (data->density_volume.show_bounding_box) {
-            if (data->density_volume.model_mat != mat4_t{0}) {
-                const vec3_t min_box = {0,0,0};
-                const vec3_t max_box = {1,1,1};
-
-                immediate::set_model_view_matrix(mat4_mul(view_mat, data->density_volume.model_mat));
-                immediate::set_proj_matrix(proj_mat);
-
-                uint32_t box_color = convert_color(data->density_volume.bounding_box_color);
-                uint32_t clip_color = convert_color(data->density_volume.clip_volume_color);
-                immediate::draw_box_wireframe(min_box, max_box, box_color);
-                immediate::draw_box_wireframe(data->density_volume.clip_volume.min, data->density_volume.clip_volume.max, clip_color);
-
-                immediate::render();
-            }
         }
 
         if (data->density_volume.show_density_volume) {
             if (data->density_volume.model_mat != mat4_t{ 0 }) {
                 volume::RenderDesc vol_desc = {
                     .render_target = {
-                        .texture = gbuf.deferred.post_tonemap,
-                        .width   = gbuf.width,
-                        .height  = gbuf.height,
+                        .depth  = gbuf.deferred.depth,
+                        .color  = gbuf.deferred.post_tonemap,
+                        .width  = gbuf.width,
+                        .height = gbuf.height,
                     },
                     .texture = {
                         .volume = data->density_volume.volume_texture.id,
                         .transfer_function = data->density_volume.dvr.tf.id,
-                        .depth = gbuf.deferred.depth,
                     },
                     .matrix = {
                         .model = data->density_volume.model_mat,
@@ -6281,10 +6206,6 @@ static void draw_density_volume_window(ApplicationState* data) {
                     .clip_volume = {
                         .min = data->density_volume.clip_volume.min,
                         .max = data->density_volume.clip_volume.max,
-                    },
-                    .bounding_box = {
-                        .color = data->density_volume.bounding_box_color,
-                        .enabled = data->density_volume.show_bounding_box,
                     },
                     .global_scaling = {
                         .density = data->density_volume.density_scale,
@@ -6302,6 +6223,84 @@ static void draw_density_volume_window(ApplicationState* data) {
                 volume::render_volume(vol_desc);
             }
         }
+
+        if (data->density_volume.show_bounding_box) {
+            glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
+            glEnable(GL_DEPTH_TEST);
+            glDepthMask(GL_TRUE);
+
+            if (data->density_volume.model_mat != mat4_t{0}) {
+                const vec3_t min_box = {0,0,0};
+                const vec3_t max_box = {1,1,1};
+
+                immediate::set_model_view_matrix(mat4_mul(view_mat, data->density_volume.model_mat));
+                immediate::set_proj_matrix(proj_mat);
+
+                uint32_t box_color = convert_color(data->density_volume.bounding_box_color);
+                uint32_t clip_color = convert_color(data->density_volume.clip_volume_color);
+                immediate::draw_box_wireframe(min_box, max_box, box_color);
+                immediate::draw_box_wireframe(data->density_volume.clip_volume.min, data->density_volume.clip_volume.max, clip_color);
+
+                immediate::render();
+            }
+        }
+
+        PUSH_GPU_SECTION("Postprocessing")
+        postprocessing::Descriptor postprocess_desc = {
+            .background = {
+                .color = vec4_from_vec3(data->visuals.background.color * data->visuals.background.intensity, 1.0f),
+            },
+            .bloom = {
+                .enabled = false,
+            },
+            .tonemapping = {
+                .enabled = data->visuals.tonemapping.enabled,
+                .mode = data->visuals.tonemapping.tonemapper,
+                .exposure = data->visuals.tonemapping.exposure,
+                .gamma = data->visuals.tonemapping.gamma,
+            },
+            .ambient_occlusion = {
+                .enabled = data->visuals.ssao.enabled,
+                .radius = data->visuals.ssao.radius,
+                .intensity = data->visuals.ssao.intensity,
+                .bias = data->visuals.ssao.bias,
+            },
+            .depth_of_field = {
+                .enabled = false,
+            },
+            .temporal_reprojection = {
+                .enabled = false,
+            },
+            .input_textures = {
+                .depth = gbuf.deferred.depth,
+                .color = gbuf.deferred.color,
+                .normal = gbuf.deferred.normal,
+                .velocity = gbuf.deferred.velocity,
+                .post_tonemap = gbuf.deferred.post_tonemap,
+            }
+        };
+
+        ViewParam view_param = {
+            .matrix = {
+                .current = {
+                    .view = view_mat,
+                    .proj = proj_mat,
+                    .norm = view_mat,
+                },
+                .inverse = {
+                    .proj = inv_proj_mat,
+                }
+            },
+            .clip_planes = {
+                .near = data->density_volume.camera.near_plane,
+                .far = data->density_volume.camera.far_plane,
+            },
+            .fov_y = data->density_volume.camera.fov_y,
+            .resolution = {canvas_sz.x, canvas_sz.y}
+        };
+
+        postprocessing::shade_and_postprocess(postprocess_desc, view_param);
+        POP_GPU_SECTION()
 
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         glDrawBuffer(GL_BACK);
@@ -8814,9 +8813,7 @@ static void animate_camera(Camera* camera, quat_t target_ori, vec3_t target_pos,
 }
 
 static void clear_gbuffer(GBuffer* gbuffer) {
-    const vec4_t CLEAR_INDEX = vec4_t{1, 1, 1, 1};
-    const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
-        GL_COLOR_ATTACHMENT_POST_TONEMAP, GL_COLOR_ATTACHMENT_PICKING};
+    const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY, GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_POST_TONEMAP};
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuffer->deferred.fbo);
     glViewport(0, 0, gbuffer->width, gbuffer->height);
@@ -8824,20 +8821,19 @@ static void clear_gbuffer(GBuffer* gbuffer) {
     glDepthMask(1);
     glColorMask(1, 1, 1, 1);
     glStencilMask(0xFF);
+    const vec4_t zero = {0,0,0,0};
+    const vec4_t picking = {1, 1, 1, 1};
 
     // Setup gbuffer and clear textures
     PUSH_GPU_SECTION("Clear G-buffer") {
         // Clear color+alpha, normal, velocity, emissive, post_tonemap and depth
         glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
-        glClearColor(0, 0, 0, 0);
-        glClearDepthf(1.f);
-        glClearStencil(0x01);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
-
-        // Clear picking buffer
-        glDrawBuffer(GL_COLOR_ATTACHMENT_PICKING);
-        glClearColor(CLEAR_INDEX.x, CLEAR_INDEX.y, CLEAR_INDEX.z, CLEAR_INDEX.w);
-        glClear(GL_COLOR_BUFFER_BIT);
+        glClearBufferfv(GL_COLOR, 0, zero.elem);
+        glClearBufferfv(GL_COLOR, 1, zero.elem);
+        glClearBufferfv(GL_COLOR, 2, zero.elem);
+        glClearBufferfv(GL_COLOR, 3, picking.elem);
+        glClearBufferfv(GL_COLOR, 4, zero.elem);
+        glClearBufferfi(GL_DEPTH_STENCIL, 0, 1.0f, 0x01);
     }
     POP_GPU_SECTION()
 }
@@ -9127,7 +9123,7 @@ static void apply_postprocessing(const ApplicationState& data) {
     PUSH_GPU_SECTION("Postprocessing")
     postprocessing::Descriptor desc;
 
-    desc.background.intensity = data.visuals.background.color * data.visuals.background.intensity;
+    desc.background.color = vec4_from_vec3(data.visuals.background.color * data.visuals.background.intensity, 1.0f);
 
     desc.ambient_occlusion.enabled = data.visuals.ssao.enabled;
     desc.ambient_occlusion.intensity = data.visuals.ssao.intensity;

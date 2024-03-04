@@ -37,6 +37,12 @@ option(ENKITS_INSTALL OFF)
 
 find_package(OpenGL REQUIRED)
 
+option(VIAMD_ENABLE_VELOXCHEM "Enable Veloxchem Module" OFF)
+
+if (VIAMD_ENABLE_VELOXCHEM)
+    option(MD_ENABLE_VLX ON)
+endif ()
+
 add_subdirectory(ext/mdlib)
 add_subdirectory(ext/glfw)
 add_subdirectory(ext/imgui)
@@ -88,7 +94,15 @@ endif()
 file(GLOB SRC_FILES src/*.h src/*.cpp src/*.inl)
 file(GLOB APP_FILES src/app/*.cpp src/app/*.h)
 file(GLOB GFX_FILES src/gfx/*.cpp src/gfx/*.h)
-file(GLOB_RECURSE COMP_FILES "src/component/*.cpp" "src/component/*.h")
+
+set(COMP_FILES
+    src/components/ramachandran/ramachandran.cpp
+    src/components/shapespace/shapespace.cpp
+)
+
+if (VIAMD_ENABLE_VELOXCHEM)
+    set(COMP_FILES ${COMP_FILES} src/components/veloxchem/veloxchem.cpp)
+endif()
 
 set(SHADER_FILES 
     src/shaders/highlight.frag
@@ -105,7 +119,8 @@ set(SHADER_FILES
     src/shaders/velocity/blit_velocity.frag
     src/shaders/velocity/blit_tilemax.frag
     src/shaders/velocity/blit_neighbormax.frag
-    src/shaders/volume/raycaster.vert
+    src/shaders/volume/entryexit.vert
+    src/shaders/volume/entryexit.frag
     src/shaders/volume/raycaster.frag
     src/shaders/ssao/ssao.frag
     src/shaders/ssao/blur.frag

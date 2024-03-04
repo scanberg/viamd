@@ -36,18 +36,19 @@ layout (std140) uniform UniformData
 
 uniform IsovalueParameters u_iso;
 
-uniform sampler2D u_tex_depth;
+uniform sampler2D u_tex_entry;
+uniform sampler2D u_tex_exit;
+
 uniform sampler3D u_tex_volume;
 uniform sampler2D u_tex_tf;
 
-in  vec3 model_pos;
-in  vec3 model_eye;
-
-out vec4 out_frag;
+layout(location = 0) out vec4  out_color;
+//layout(location = 1) out vec2  out_view_normal;
+//out float gl_FragDepth;
 
 const float REF_SAMPLING_RATE = 150.0;
 const float ERT_THRESHOLD = 0.99;
-const float samplingRate = 8.0;
+const float samplingRate = 2.0;
 
 float getVoxel(in vec3 samplePos) {
     //return samplePos.x;
@@ -109,35 +110,21 @@ vec3 shade(vec3 color, vec3 V, vec3 N) {
     return color.rgb * lambert(vec3(N_dot_L + 0.5) * 3.0) + specular;
 }
 
-// Modified version from source found here:
-// https://gamedev.stackexchange.com/questions/18436/most-efficient-aabb-vs-ray-collision-algorithms#18459
-
-bool ray_vs_aabb(out float t_entry, out float t_exit, in vec3 ori, in vec3 dir, in vec3 min_box, in vec3 max_box) {
-    vec3 dir_frac = 1.0 / dir;
-
-    vec3 tv_1 = (min_box - ori) * dir_frac;
-    vec3 tv_2 = (max_box - ori) * dir_frac;
-
-    vec3 tv_min = min(tv_1, tv_2);
-    vec3 tv_max = max(tv_1, tv_2); 
-
-    float t_min = max(max(tv_min.x, tv_min.y), tv_min.z);
-    float t_max = min(min(tv_max.x, tv_max.y), tv_max.z);
-
-    if (t_max < 0 || t_min > t_max) {
-        return false;
-    }
-
-    t_entry = t_min;
-    t_exit  = t_max;
-
-    return true;
-} 
-
 vec4 depth_to_view_coord(vec2 tc, float depth) {
     vec4 clip_coord = vec4(vec3(tc, depth) * 2.0 - 1.0, 1.0);
     vec4 view_coord = u_inv_proj_mat * clip_coord;
     return view_coord / view_coord.w;
+}
+
+// Tonemapping operations (in case one writes to post tonemap)
+float max3(float x, float y, float z) { return max(x, max(y, z)); }
+float rcp(float x) { return 1.0 / x; }
+
+vec3 Tonemap(vec3 c) {
+    float exposure = 0.5;
+    c = c * exposure * rcp(max3(c.r, c.g, c.b) + 1.0);
+    c = pow(c, vec3(1.0 / vec3(2.2)));
+    return c;
 }
 
 /**
@@ -157,7 +144,7 @@ vec4 depth_to_view_coord(vec2 tc, float depth) {
 vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColor, 
                     in float currentSample, in float prevSample,
                     in vec3 rayPosition, in vec3 rayDirection, 
-                    in float t, in float raySegmentLen, inout float tIncr, out bool hit) {
+                    in float t, in float raySegmentLen, inout float tIncr, out bool hit, inout vec3 normal) {
     vec4 result = curResult;
     float sampleDelta = (currentSample - prevSample);
     hit = false;
@@ -181,16 +168,16 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
 
         vec4 isocolor = isosurfaceColor;
 #if defined(SHADING_ENABLED)
-        vec3 gradient = getGradient(isopos);
-        gradient = normalize(gradient);
+        normal = getGradient(isopos);
+        normal = normalize(normal);
 
-        vec3 isoposView = normalize((u_model_to_view_mat * vec4(isopos, 1.0)).xyz);
+        vec3 isoposView = -normalize((u_model_to_view_mat * vec4(isopos, 1.0)).xyz);
 
         // two-sided lighting
-        if (dot(gradient, isoposView) < 0.0) {
-            //gradient = -gradient;
+        if (dot(normal, isoposView) < 0.0) {
+            normal = -normal;
         }
-        isocolor.rgb = shade(isocolor.rgb, -isoposView, -gradient);
+        isocolor.rgb = shade(isocolor.rgb, isoposView, normal);
 
 #endif // SHADING_ENABLED
 
@@ -219,11 +206,12 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
 vec4 drawIsosurfaces(in vec4 curResult,
                      in float voxel, in float previousVoxel,
                      in vec3 rayPosition, in vec3 rayDirection,
-                     inout float t, inout float tIncr, inout uint iso_surface_hit) {
+                     inout float t, inout float tIncr, inout uint iso_surface_hit, inout vec3 iso_normal) {
     // in case of zero isovalues return current color
     vec4 result = curResult;
     float raySegmentLen = tIncr;
     bool hit;
+    vec3 normal;
 
 #if MAX_ISOVALUE_COUNT == 1
 #if SHOW_ONLY_FIRST_ISO_HITS
@@ -233,18 +221,19 @@ vec4 drawIsosurfaces(in vec4 curResult,
     }
 #endif
     result = drawIsosurface(result, u_iso.values[0], u_iso.colors[0],
-                            voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit);
+                            voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit, normal);
 #else // MAX_ISOVALUE_COUNT
     // multiple isosurfaces, need to determine order of traversal
     if (voxel - previousVoxel > 0) {
         for (int i = 0; i < u_iso.count; ++i) {
             vec4 res = drawIsosurface(result, u_iso.values[i], u_iso.colors[i],
-                                      voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit);
+                                      voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit, normal);
 #if SHOW_ONLY_FIRST_ISO_HITS
             if (hit) {
                 uint bit = 1U << uint(i);
                 result = ((iso_surface_hit & bit) == 0U) ? res : result;
                 iso_surface_hit = iso_surface_hit | bit;
+                iso_normal = normal;
             }
 #else
             result = res;
@@ -253,12 +242,13 @@ vec4 drawIsosurfaces(in vec4 curResult,
     } else {
         for (int i = u_iso.count; i > 0; --i) {
             vec4 res = drawIsosurface(result, u_iso.values[i - 1], u_iso.colors[i - 1],
-                                  voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit);
+                                  voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit, normal);
 #if SHOW_ONLY_FIRST_ISO_HITS
             if (hit) {
                 uint bit = 1U << uint(i);
                 result = ((iso_surface_hit & bit) == 0U) ? res : result;
                 iso_surface_hit = iso_surface_hit | bit;
+                iso_normal = normal;
             }
 #else
             result = res;
@@ -277,38 +267,24 @@ vec2 PDnrand2( vec2 n ) {
     return fract( sin(dot(n.xy, vec2(12.9898, 78.233)))* vec2(43758.5453, 28001.8384) );
 }
 
+vec2 encode_normal (vec3 n) {
+   float p = sqrt(n.z * 8 + 8);
+   return n.xy / p + 0.5;
+}
+
 void main() {
-    //float val = mod(gl_FragCoord.x + gl_FragCoord.y, 2.0);
-    //if (val > 0.0) discard;
+    vec3 entryPos = texelFetch(u_tex_entry, ivec2(gl_FragCoord.xy), 0).xyz;
+    vec3 exitPos  = texelFetch(u_tex_exit,  ivec2(gl_FragCoord.xy), 0).xyz;
 
-    //out_frag = vec4(model_pos, 1.0);
-    //out_frag = classify(model_pos.x);
-    //return;
+    if (entryPos == exitPos) discard;
 
-    //out_frag = vec4(vec3(u_iso.count), 1.0);
-    //return;
+    float dist = distance(entryPos, exitPos);
 
     // Do everything in model space
-    vec3 ori = model_eye;
-    vec3 dir = normalize(model_pos - model_eye);
+    vec3 ori = entryPos;
+    vec3 dir = (exitPos - entryPos) / dist;
 
-    //out_frag = vec4(dir * 0.5 + 0.5, 1.0);
-    //return;
-
-    float t_entry, t_exit;
-    if (!ray_vs_aabb(t_entry, t_exit, ori, dir, u_clip_plane_min.xyz, u_clip_plane_max.xyz)) discard;
-    t_entry = max(0, t_entry);
-
-    float depth = texelFetch(u_tex_depth, ivec2(gl_FragCoord.xy), 0).x;
-    if (depth < 1.0) {
-        vec3 stop_pos = (u_view_to_model_mat * depth_to_view_coord(gl_FragCoord.xy * u_inv_res, depth)).xyz;
-        t_exit = min(t_exit, dot(stop_pos - ori, dir));
-    }
-
-    if (t_entry == t_exit) discard;
-
-    vec3 entryPos = ori + dir * t_entry;
-    float tEnd = t_exit - t_entry;
+    float tEnd = dist;
 
     vec2 jitter = PDnrand2(gl_FragCoord.xy + vec2(u_time, u_time));
     jitter = vec2(0,0);
@@ -322,14 +298,16 @@ void main() {
     vec4 result = vec4(0);
     float density = 0.0;
     uint iso_surface_hit = 0U;
+    vec3 normal = vec3(0,0,1);
+    vec3 samplePos = entryPos;
 
     while (t < tEnd) {
-        vec3 samplePos = entryPos + t * dir;
+        samplePos = entryPos + t * dir;
         float prevDensity = density;
         density = getVoxel(samplePos);
 
 #if defined(INCLUDE_ISO)
-        result = drawIsosurfaces(result, density, prevDensity, samplePos, dir, t, tIncr, iso_surface_hit);
+        result = drawIsosurfaces(result, density, prevDensity, samplePos, dir, t, tIncr, iso_surface_hit, normal);
 #endif 
 
 #if defined(INCLUDE_DVR)
@@ -348,6 +326,15 @@ void main() {
         }
     }
 
-    //result.a = 1.0;
-    out_frag = result;
+    //vec4 model_coord = vec4(entryPos, 1.0);
+    //if (result.a > ERT_THRESHOLD) {
+    //    model_coord = vec4(samplePos, 1.0);
+    //}
+
+    result.rgb = Tonemap(result.rgb);
+
+    //vec4 clip_coord = u_model_view_proj_mat * model_coord;
+    //gl_FragDepth = (clip_coord.z / clip_coord.w) * 0.5 + 0.5;
+    //out_view_normal = encode_normal(normal);
+    out_color = result;
 }

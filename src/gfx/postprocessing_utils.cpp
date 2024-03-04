@@ -497,6 +497,7 @@ static struct {
         GLint texture_color = -1;
         GLint texture_normal = -1;
         GLint inv_proj_mat = -1;
+        GLint bg_color = -1;
         GLint time = -1;
     } uniform_loc;
 } deferred;
@@ -507,6 +508,7 @@ void initialize() {
     deferred.uniform_loc.texture_color  = glGetUniformLocation(deferred.program, "u_texture_color");
     deferred.uniform_loc.texture_normal = glGetUniformLocation(deferred.program, "u_texture_normal");
     deferred.uniform_loc.inv_proj_mat   = glGetUniformLocation(deferred.program, "u_inv_proj_mat");
+    deferred.uniform_loc.bg_color       = glGetUniformLocation(deferred.program, "u_bg_color");
     deferred.uniform_loc.time           = glGetUniformLocation(deferred.program, "u_time");
 }
 
@@ -1201,7 +1203,7 @@ void apply_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj_m
     POP_GPU_SECTION()
 }
 
-void shade_deferred(GLuint depth_tex, GLuint color_tex, GLuint normal_tex, const mat4_t& inv_proj_matrix, float time) {
+void shade_deferred(GLuint depth_tex, GLuint color_tex, GLuint normal_tex, const mat4_t& inv_proj_matrix, const vec4_t bg_color, float time) {
     ASSERT(glIsTexture(depth_tex));
     ASSERT(glIsTexture(color_tex));
     ASSERT(glIsTexture(normal_tex));
@@ -1213,16 +1215,22 @@ void shade_deferred(GLuint depth_tex, GLuint color_tex, GLuint normal_tex, const
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, normal_tex);
 
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
     glUseProgram(deferred::deferred.program);
     glUniform1i(deferred::deferred.uniform_loc.texture_depth, 0);
     glUniform1i(deferred::deferred.uniform_loc.texture_color, 1);
     glUniform1i(deferred::deferred.uniform_loc.texture_normal, 2);
     glUniformMatrix4fv(deferred::deferred.uniform_loc.inv_proj_mat, 1, GL_FALSE, &inv_proj_matrix.elem[0][0]);
+    glUniform4fv(deferred::deferred.uniform_loc.bg_color, 1, bg_color.elem);
     glUniform1f(deferred::deferred.uniform_loc.time, time);
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
     glUseProgram(0);
+
+    glDisable(GL_BLEND);
 }
 
 void highlight_selection(GLuint atom_idx_tex, GLuint selection_buffer, const vec3_t& highlight, const vec3_t& selection, const vec3_t& outline) {
@@ -1741,19 +1749,14 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
         dst_buffer = dst_buffer == GL_COLOR_ATTACHMENT0 ? GL_COLOR_ATTACHMENT1 : GL_COLOR_ATTACHMENT0;
         src_texture = src_texture == gl.targets.tex_color[0] ? gl.targets.tex_color[1] : gl.targets.tex_color[0];
     };
-
+     
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.targets.fbo);
     glDrawBuffer(dst_buffer);
     //glViewport(0, 0, gl.tex_width, gl.tex_height);
     glViewport(0, 0, width, height);
 
-    PUSH_GPU_SECTION("Clear HDR")
-    glClearColor(desc.background.intensity.x, desc.background.intensity.y, desc.background.intensity.z, 1.f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    POP_GPU_SECTION()
-
     PUSH_GPU_SECTION("Shade")
-    shade_deferred(desc.input_textures.depth, desc.input_textures.color, desc.input_textures.normal, view_param.matrix.inverse.proj_jittered, time);
+    shade_deferred(desc.input_textures.depth, desc.input_textures.color, desc.input_textures.normal, view_param.matrix.inverse.proj_jittered, desc.background.color, time);
     POP_GPU_SECTION()
 
     if (desc.ambient_occlusion.enabled) {

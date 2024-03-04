@@ -20,7 +20,7 @@ enum Tonemapping_ {
 
 struct Descriptor {
     struct {
-        vec3_t intensity = {20.f, 20.f, 20.f};
+        vec4_t color = {20.f, 20.f, 20.f, 1.0f};
     } background;
 
     struct {
@@ -30,9 +30,9 @@ struct Descriptor {
 
     struct {
         bool enabled = true;
-        Tonemapping mode = Tonemapping_Filmic;
+        Tonemapping mode = Tonemapping_ACES;
         float exposure = 1.0f;
-        float gamma = 2.2f;
+        float gamma = 2.4f;
     } tonemapping;
 
     struct {
