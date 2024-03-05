@@ -71,6 +71,13 @@ cd bin
 ./viamd
 ```
 
+
+## Updating VIAMD
+```git pull --recurse-submodules```
+
+Repeat step 3 to compile!
+
+
 ## Binaries for windows
 https://github.com/scanberg/viamd/releases/
 
