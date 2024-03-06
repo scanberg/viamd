@@ -36,6 +36,7 @@ MacOs is not actively tested.
 - libxcursor-dev
 - libgtk-3-dev (recommended for ubuntu, use Zenity for kubuntu)
 - pkgconf
+- libhdf5-serial-dev (handling of hdf5 file for VeloxChem)
 
 #### For CentOS:
 - mesa*
@@ -44,12 +45,13 @@ MacOs is not actively tested.
 - libX11*
 - libXi*
 - libstdc++-static
+- hdf5-devel (handling of hdf5 file for VeloxChem)
 
 Example for Ubuntu:
-```sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libgtk-3-dev pkgconf```
+```sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libgtk-3-dev pkgconf libhdf5-serial-dev```
 
 Example for CentOS:
-```sudo yum libXrandr* libXext* libX11* libXi* mesa* libstdc++-static```
+```sudo yum libXrandr* libXext* libX11* libXi* mesa* libstdc++-static hdf5-devel```
 
 ### Step 2: Configure using CMAKE
 
