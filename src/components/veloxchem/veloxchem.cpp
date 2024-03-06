@@ -7,6 +7,7 @@
 
 #include <core/md_log.h>
 #include <md_vlx.h>
+#include <md_gto.h>
 
 #include <gfx/volumerender_utils.h>
 #include <gfx/gl_utils.h>
@@ -18,6 +19,7 @@
 struct VeloxChem : viamd::EventHandler {
     VeloxChem() { viamd::event_system_register_handler(*this); }
 
+    bool show_volume = false;
     bool show_window = false;
     md_vlx_data_t vlx {};
     int vol_dim = 128;
@@ -43,9 +45,7 @@ struct VeloxChem : viamd::EventHandler {
 
     task_system::ID compute_volume_task = 0;
 
-    // This holds the entire mo coefficient matrix in a linear format
-    // It is also transposed compared to the input such that reading a linear segment within it, you get the mo coefficients, not the ao coefficients
-    md_array(double) mo_coeffs = 0;
+    md_gto_data_t pgto = {0};
 
     //double r_values[100] = {0};
     //double orb_values[5][100] = {0};
@@ -61,6 +61,14 @@ struct VeloxChem : viamd::EventHandler {
     } iso_surface;
 
     md_allocator_i* arena = 0;
+
+    size_t num_orbitals() const {
+        return vlx.scf.alpha.orbitals.dim[1];
+    }
+
+    size_t num_cgtos() const {
+        return vlx.scf.alpha.orbitals.dim[0];
+    }
 
     void process_events(const viamd::Event* events, size_t num_events) final {
         for (size_t event_idx = 0; event_idx < num_events; ++event_idx) {
@@ -109,13 +117,23 @@ struct VeloxChem : viamd::EventHandler {
                             }
                         }
 
-                        md_array_resize(mo_coeffs, num_rows * num_cols, arena);
-
-                        for (size_t i = 0; i < num_rows; ++i) {
-                            for (size_t j = 0; j < num_cols; ++j) {
-                                mo_coeffs[i * num_rows + j] = vlx.scf.alpha.orbitals.data[j * num_cols + i];
-                            }
-                        }
+                        size_t num_pgtos = md_vlx_pgto_count(&vlx);
+                        size_t stride = ROUND_UP(num_pgtos, 16);
+                        size_t pgto_elem_bytes = sizeof(float) * 6 + sizeof(int) * 4;
+                        size_t tot_bytes = num_pgtos * pgto_elem_bytes;
+                        void* mem = md_arena_allocator_push_aligned(arena, tot_bytes, 64);
+                        MEMSET(mem, 0, tot_bytes);
+                        pgto.count = num_pgtos;
+                        pgto.x          = (float*)mem;
+                        pgto.y          = (float*)mem + stride * 1;
+                        pgto.z          = (float*)mem + stride * 2;
+                        pgto.neg_alpha  = (float*)mem + stride * 3;
+                        pgto.coeff      = (float*)mem + stride * 4;
+                        pgto.cutoff     = (float*)mem + stride * 5;
+                        pgto.i          = (int*)  mem + stride * 6;
+                        pgto.j          = (int*)  mem + stride * 7;
+                        pgto.k          = (int*)  mem + stride * 8;
+                        pgto.l          = (int*)  mem + stride * 9;
 
                         vol_data = (float*)md_arena_allocator_push(arena, sizeof(float) * vol_dim * vol_dim * vol_dim);
 
@@ -136,6 +154,7 @@ struct VeloxChem : viamd::EventHandler {
                         model_mat = volume::compute_model_to_world_matrix(min_box, max_box);
 
                         update_volume();
+                        show_volume = true;
 
                         /*
                         vec3_t coords[100];
@@ -163,12 +182,22 @@ struct VeloxChem : viamd::EventHandler {
                         */
                     } else {
                         MD_LOG_INFO("Failed to load VeloxChem data");
-                        md_vlx_data_free(&vlx);
+                        md_arena_allocator_reset(arena);
                         vlx = {};
+                        pgto = {};
+                        mo_idx = 0;
+                        show_volume = false;
                     }
                 }
                 break;
             }
+            case viamd::EventType_ViamdTopologyFree:
+                md_arena_allocator_reset(arena);
+                vlx = {};
+                pgto = {};
+                mo_idx = 0;
+                show_volume = false;
+                break;
             default:
                 break;
             }
@@ -182,6 +211,11 @@ struct VeloxChem : viamd::EventHandler {
         else {
 #define BLK_DIM 8
 
+            if (!md_vlx_extract_alpha_mo_pgtos(&pgto, &vlx, mo_idx)) {
+                MD_LOG_ERROR("Failed to extract alpha orbital for orbital index: %i", mo_idx);
+                return;
+            }
+
             uint32_t num_blocks = (vol_dim / BLK_DIM) * (vol_dim / BLK_DIM) * (vol_dim / BLK_DIM);
             // We evaluate the in parallel over smaller NxNxN blocks
 
@@ -190,12 +224,23 @@ struct VeloxChem : viamd::EventHandler {
 
                 int num_blk = data->vol_dim / BLK_DIM;
 
-                md_vlx_grid_t grid = {
+                md_grid_t grid = {
                     .data = data->vol_data,
                     .dim  = {data->vol_dim, data->vol_dim, data->vol_dim},
                     .origin = {data->min_box.x + 0.5f * data->step_size.x, data->min_box.y + 0.5f * data->step_size.y, data->min_box.z + 0.5f * data->step_size.z},
                     .stepsize = {data->step_size.x, data->step_size.y, data->step_size.z},
                 };
+
+                // Conversion from Ångström to Bohr
+                const float factor = 1.0 / 0.529177210903;
+
+                grid.origin[0] *= factor;
+                grid.origin[1] *= factor;
+                grid.origin[2] *= factor;
+
+                grid.stepsize[0] *= factor;
+                grid.stepsize[1] *= factor;
+                grid.stepsize[2] *= factor;
 
                 for (uint32_t i = range_beg; i < range_end; ++i) {
                     // Determine block index
@@ -206,9 +251,7 @@ struct VeloxChem : viamd::EventHandler {
                     const int beg_idx[3] = {blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM};
                     const int end_idx[3] = {blk_x * BLK_DIM + BLK_DIM, blk_y * BLK_DIM + BLK_DIM, blk_z * BLK_DIM + BLK_DIM};
 
-                    const size_t num_mo_coeffs = data->vlx.scf.alpha.orbitals.dim[1];
-                    const double* mo_coeff = data->mo_coeffs + data->vlx.scf.alpha.orbitals.dim[0] * data->mo_idx;
-                    md_vlx_grid_evaluate_sub(&grid, beg_idx, end_idx, &data->vlx.geom, &data->vlx.basis, mo_coeff, num_mo_coeffs);
+                    md_gto_grid_evaluate_sub(&grid, beg_idx, end_idx, &data->pgto);
                 }
             }, this);
 
@@ -223,6 +266,8 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     void draw_volume(ApplicationState& state) {
+        if (!show_volume) return;
+
         volume::RenderDesc desc = {
             .render_target = {
                 .depth = state.gbuffer.deferred.depth,
@@ -334,8 +379,6 @@ struct VeloxChem : viamd::EventHandler {
                 Col_Lbl,
             };
 
-            int num_orbitals = (int)vlx.scf.alpha.orbitals.dim[0];
-
             const ImGuiTableFlags flags =
                 ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable | ImGuiTableFlags_RowBg |
                 ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_ScrollY;
@@ -359,7 +402,7 @@ struct VeloxChem : viamd::EventHandler {
                 //ImGuiListClipper clipper;
                 //clipper.Begin(num_orbitals);
                 //while (clipper.Step()) {
-                    for (int n = 0; n < num_orbitals; n++) {
+                    for (int n = 0; n < num_orbitals(); n++) {
                         // Display a data item
                         ImGui::PushID(n + 1);
                         ImGui::TableNextRow();
