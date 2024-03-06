@@ -1014,7 +1014,7 @@ int main(int argc, char** argv) {
 
         data.selection.selecting = false;
 
-        ImGui::ShowDemoWindow();
+        //ImGui::ShowDemoWindow();
 
         handle_camera_interaction(&data);
         animate_camera(&data.view.camera, data.view.animation.target_orientation, data.view.animation.target_position, data.view.animation.target_distance, data.app.timing.delta_s);
