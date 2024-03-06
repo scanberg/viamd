@@ -1480,7 +1480,8 @@ struct Ramachandran : viamd::EventHandler {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     }
 
-} instance;
+};
 
+static Ramachandran instance = {};
 
 }  // namespace ramachandran

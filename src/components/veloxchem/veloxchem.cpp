@@ -38,8 +38,10 @@ struct VeloxChem : viamd::EventHandler {
     vec4_t bounding_box_color = {0,0,0,1};
 
     int mo_idx = 0;
+    int homo_idx = 0;
+    int lumo_idx = 0;
 
-    task_system::ID compute_volume = 0;
+    task_system::ID compute_volume_task = 0;
 
     // This holds the entire mo coefficient matrix in a linear format
     // It is also transposed compared to the input such that reading a linear segment within it, you get the mo coefficients, not the ao coefficients
@@ -55,7 +57,7 @@ struct VeloxChem : viamd::EventHandler {
         bool enabled = true;
         size_t count = 2;
         float  values[8] = {0.05f, -0.05};
-        vec4_t colors[8] = {{1,0,0,1}, {0,0,1,1}};
+        vec4_t colors[8] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
     } iso_surface;
 
     md_allocator_i* arena = 0;
@@ -97,6 +99,15 @@ struct VeloxChem : viamd::EventHandler {
 
                         size_t num_rows = vlx.scf.alpha.orbitals.dim[0];
                         size_t num_cols = vlx.scf.alpha.orbitals.dim[1];
+
+                        for (int i = 0; i < (int)vlx.scf.alpha.occupations.count; ++i) {
+                            if (vlx.scf.alpha.occupations.data[i] > 0) {
+                                homo_idx = i;
+                            } else {
+                                lumo_idx = i;
+                                break;
+                            }
+                        }
 
                         md_array_resize(mo_coeffs, num_rows * num_cols, arena);
 
@@ -165,45 +176,50 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     void update_volume() {
-        task_system::task_wait_for(compute_volume);
-
+        if (task_system::task_is_running(compute_volume_task)) {
+            task_system::task_interrupt(compute_volume_task);
+        }
+        else {
 #define BLK_DIM 8
 
-        uint32_t num_blocks = (vol_dim / BLK_DIM) * (vol_dim / BLK_DIM) * (vol_dim / BLK_DIM);
-        // We evaluate the in parallel over smaller NxNxN blocks
+            uint32_t num_blocks = (vol_dim / BLK_DIM) * (vol_dim / BLK_DIM) * (vol_dim / BLK_DIM);
+            // We evaluate the in parallel over smaller NxNxN blocks
 
-        compute_volume = task_system::pool_enqueue(STR_LIT("Compute Volume"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
-            VeloxChem* data = (VeloxChem*)user_data;
+            compute_volume_task = task_system::pool_enqueue(STR_LIT("Compute Volume"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+                VeloxChem* data = (VeloxChem*)user_data;
 
-            int num_blk = data->vol_dim / BLK_DIM;
+                int num_blk = data->vol_dim / BLK_DIM;
 
-            md_vlx_grid_t grid = {
-                .data = data->vol_data,
-                .dim  = {data->vol_dim, data->vol_dim, data->vol_dim},
-                .origin = {data->min_box.x + 0.5f * data->step_size.x, data->min_box.y + 0.5f * data->step_size.y, data->min_box.z + 0.5f * data->step_size.z},
-                .stepsize = {data->step_size.x, data->step_size.y, data->step_size.z},
-            };
+                md_vlx_grid_t grid = {
+                    .data = data->vol_data,
+                    .dim  = {data->vol_dim, data->vol_dim, data->vol_dim},
+                    .origin = {data->min_box.x + 0.5f * data->step_size.x, data->min_box.y + 0.5f * data->step_size.y, data->min_box.z + 0.5f * data->step_size.z},
+                    .stepsize = {data->step_size.x, data->step_size.y, data->step_size.z},
+                };
 
-            for (uint32_t i = range_beg; i < range_end; ++i) {
-                // Determine block index
-                int blk_z = i & (num_blk - 1);
-                int blk_y = (i / num_blk) & (num_blk - 1);
-                int blk_x = i / (num_blk * num_blk);
+                for (uint32_t i = range_beg; i < range_end; ++i) {
+                    // Determine block index
+                    int blk_z = i & (num_blk - 1);
+                    int blk_y = (i / num_blk) & (num_blk - 1);
+                    int blk_x = i / (num_blk * num_blk);
 
-                const int beg_idx[3] = {blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM};
-                const int end_idx[3] = {blk_x * BLK_DIM + BLK_DIM, blk_y * BLK_DIM + BLK_DIM, blk_z * BLK_DIM + BLK_DIM};
+                    const int beg_idx[3] = {blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM};
+                    const int end_idx[3] = {blk_x * BLK_DIM + BLK_DIM, blk_y * BLK_DIM + BLK_DIM, blk_z * BLK_DIM + BLK_DIM};
 
-                const size_t num_mo_coeffs = data->vlx.scf.alpha.orbitals.dim[1];
-                const double* mo_coeff = data->mo_coeffs + data->vlx.scf.alpha.orbitals.dim[0] * data->mo_idx;
-                md_vlx_grid_evaluate_sub(&grid, beg_idx, end_idx, &data->vlx.geom, &data->vlx.basis, mo_coeff, num_mo_coeffs);
-            }
-        }, this);
+                    const size_t num_mo_coeffs = data->vlx.scf.alpha.orbitals.dim[1];
+                    const double* mo_coeff = data->mo_coeffs + data->vlx.scf.alpha.orbitals.dim[0] * data->mo_idx;
+                    md_vlx_grid_evaluate_sub(&grid, beg_idx, end_idx, &data->vlx.geom, &data->vlx.basis, mo_coeff, num_mo_coeffs);
+                }
+            }, this);
 
-        task_system::main_enqueue(STR_LIT("Update Volume"), [](void* user_data) {
-            VeloxChem* data = (VeloxChem*)user_data;
-            gl::init_texture_3D(&data->vol_texture, data->vol_dim, data->vol_dim, data->vol_dim, GL_R32F);
-            gl::set_texture_3D_data(data->vol_texture, data->vol_data, GL_R32F);
-        }, this, compute_volume);
+#undef BLK_DIM
+
+            task_system::main_enqueue(STR_LIT("Update Volume"), [](void* user_data) {
+                VeloxChem* data = (VeloxChem*)user_data;
+                gl::init_texture_3D(&data->vol_texture, data->vol_dim, data->vol_dim, data->vol_dim, GL_R32F);
+                gl::set_texture_3D_data(data->vol_texture, data->vol_data, GL_R32F);
+            }, this, compute_volume_task);
+        }
     }
 
     void draw_volume(ApplicationState& state) {
@@ -272,23 +288,101 @@ struct VeloxChem : viamd::EventHandler {
                     ImGui::TreePop();
                 }
             }
-            ImGui::SliderFloat("Iso Value 0", &iso_surface.values[0], -1.0f, 1.0f);
-            ImGui::ColorEdit4("Color 0", iso_surface.colors[0].elem);
+            ImGui::ColorEdit4("Color Positive", iso_surface.colors[0].elem);
+            ImGui::ColorEdit4("Color Negative", iso_surface.colors[1].elem);
 
-            ImGui::SliderFloat("Iso Value 1", &iso_surface.values[1], -1.0f, 1.0f);
-            ImGui::ColorEdit4("Color 1", iso_surface.colors[1].elem);
+            static double iso_val = 0.05f;
+            const  double iso_min = 1.0e-6;
+            const  double iso_max = 5.0;
+            ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
+            iso_surface.values[0] = iso_val;
+            iso_surface.values[1] = -iso_val;
 
+            /*
             char buf[32];
             snprintf(buf, sizeof(buf), "%i", mo_idx);
-            if (ImGui::BeginCombo("MO index", buf)) {
-                for (int n = 0; n < (int)vlx.scf.alpha.orbitals.dim[0]; n++) {
-                    snprintf(buf, sizeof(buf), "%i", n);
+            const ImVec2 draw_list_size = ImVec2(-1, 200);
+            ImGui::Text("Molecular Orbitals");
+            if (ImGui::BeginListBox("##Molecular Orbitals", draw_list_size)) {
+                for (int n = 0; n < (int)vlx.scf.alpha.orbitals.dim[0]; ++n) {
+                    const char* lbl = "";
+                    if (homo_idx == n) {
+                        lbl = "HOMO";
+                    } else if (lumo_idx == n) {
+                        lbl = "LUMO";
+                    }
+                    const double energy = vlx.scf.alpha.energies.data[n];
+                    snprintf(buf, sizeof(buf), "%i %s", n + 1, lbl);
                     if (ImGui::Selectable(buf, mo_idx == n)) {
                         mo_idx = n;
                         update_volume();
                     }
+
+                    // Set the initial focus when opening the combo (scrolling + keyboard navigation focus)
+                    if (mo_idx == n) { ImGui::SetItemDefaultFocus(); }
                 }
-                ImGui::EndCombo();
+                ImGui::EndListBox();
+            }
+            */
+
+            const float TEXT_BASE_HEIGHT = ImGui::GetTextLineHeightWithSpacing();
+
+            enum {
+                Col_Idx,
+                Col_Occ,
+                Col_Ene,
+                Col_Lbl,
+            };
+
+            int num_orbitals = (int)vlx.scf.alpha.orbitals.dim[0];
+
+            const ImGuiTableFlags flags =
+                ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable | ImGuiTableFlags_RowBg |
+                ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_ScrollY;
+            if (ImGui::BeginTable("Molecular Orbitals", 4, flags, ImVec2(0.0f, TEXT_BASE_HEIGHT * 15), 0.0f))
+            {
+                // Declare columns
+                // We use the "user_id" parameter of TableSetupColumn() to specify a user id that will be stored in the sort specifications.
+                // This is so our sort function can identify a column given our own identifier. We could also identify them based on their index!
+                // Demonstrate using a mixture of flags among available sort-related flags:
+                // - ImGuiTableColumnFlags_DefaultSort
+                // - ImGuiTableColumnFlags_NoSort / ImGuiTableColumnFlags_NoSortAscending / ImGuiTableColumnFlags_NoSortDescending
+                // - ImGuiTableColumnFlags_PreferSortAscending / ImGuiTableColumnFlags_PreferSortDescending
+                ImGui::TableSetupColumn("Index",        ImGuiTableColumnFlags_DefaultSort          | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Idx);
+                ImGui::TableSetupColumn("Occupation",   ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Occ);
+                ImGui::TableSetupColumn("Energy",       ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Ene);
+                ImGui::TableSetupColumn("Label",        ImGuiTableColumnFlags_NoSort               | ImGuiTableColumnFlags_WidthStretch, 0.0f, Col_Lbl);
+                ImGui::TableSetupScrollFreeze(0, 1); // Make row always visible
+                ImGui::TableHeadersRow();
+
+                // Demonstrate using clipper for large vertical lists
+                //ImGuiListClipper clipper;
+                //clipper.Begin(num_orbitals);
+                //while (clipper.Step()) {
+                    for (int n = 0; n < num_orbitals; n++) {
+                        // Display a data item
+                        ImGui::PushID(n + 1);
+                        ImGui::TableNextRow();
+                        bool is_selected = mo_idx == n;
+                        ImGui::TableNextColumn();
+                        char buf[32];
+                        snprintf(buf, sizeof(buf), "%i", n + 1);
+                        ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
+                        if (ImGui::Selectable(buf, is_selected, selectable_flags)) {
+                            mo_idx = n;
+                            update_volume();
+                        }
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%.1f", vlx.scf.alpha.occupations.data[n]);
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%.4f", vlx.scf.alpha.energies.data[n]);
+                        ImGui::TableNextColumn();
+                        const char* lbl = (n == homo_idx) ? "HOMO" : (n == lumo_idx) ? "LUMO" : "";
+                        ImGui::TextUnformatted(lbl);
+                        ImGui::PopID();
+                    }
+                //}
+                ImGui::EndTable();
             }
 
             /*
@@ -312,4 +406,6 @@ struct VeloxChem : viamd::EventHandler {
         }
         ImGui::End();
     }
-} instance;
+};
+
+static VeloxChem instance = {};

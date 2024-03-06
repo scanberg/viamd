@@ -453,4 +453,6 @@ struct ShapeSpace : viamd::EventHandler {
             }
         }
     }
-} instance;
+};
+
+static ShapeSpace instance = {};

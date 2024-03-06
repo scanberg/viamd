@@ -282,8 +282,8 @@ struct DisplayProperty {
 
     int num_bins = 128;         // Requested number of bins for histogram
 
-    md_unit_t unit = {};
-    char unit_str[32] = "";
+    md_unit_t unit[2] = {md_unit_none(), md_unit_none()};
+    char unit_str[2][32] = {"",""};
 
     const md_script_eval_t* eval = NULL;
 
@@ -1014,7 +1014,7 @@ int main(int argc, char** argv) {
 
         data.selection.selecting = false;
 
-        //ImGui::ShowDemoWindow();
+        ImGui::ShowDemoWindow();
 
         handle_camera_interaction(&data);
         animate_camera(&data.view.camera, data.view.animation.target_orientation, data.view.animation.target_position, data.view.animation.target_distance, data.app.timing.delta_s);
@@ -1639,7 +1639,8 @@ static void init_display_properties(ApplicationState* data) {
                 snprintf(item.label, sizeof(item.label), STR_FMT, STR_ARG(prop_name));
             }
             item.color = ImGui::ColorConvertU32ToFloat4(PROPERTY_COLORS[i % ARRAY_SIZE(PROPERTY_COLORS)]);
-            item.unit = prop_data->unit;
+            item.unit[0] = prop_data->unit[0];
+            item.unit[1] = prop_data->unit[1];
             item.prop_flags = prop_flags;
             item.prop_data = prop_data;
             item.vis_payload = md_script_ir_property_vis_payload(ir, prop_name);
@@ -1652,7 +1653,8 @@ static void init_display_properties(ApplicationState* data) {
             item.hist.alloc = persistent_alloc;
             item.partial_evaluation = partial_evaluation;
 
-            md_unit_print(item.unit_str, sizeof(item.unit_str), item.unit);
+            md_unit_print(item.unit_str[0], sizeof(item.unit_str), item.unit[0]);
+            md_unit_print(item.unit_str[1], sizeof(item.unit_str), item.unit[1]);
 
             if (prop_flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                 // Create a special distribution from the temporal (since we can)
@@ -1660,6 +1662,10 @@ static void init_display_properties(ApplicationState* data) {
                     DisplayProperty item_dist_raw = item;
                     item_dist_raw.type = DisplayProperty::Type_Distribution;
                     item_dist_raw.plot_type = DisplayProperty::PlotType_Line;
+                    item_dist_raw.unit[0] = item.unit[1];
+                    item_dist_raw.unit[1] = md_unit_none();
+                    MEMCPY(item.unit_str[0], item.unit_str[1], sizeof(item.unit_str[0]));
+
                     item_dist_raw.getter[0] = [](int sample_idx, void* payload) -> ImPlotPoint {
                         DisplayProperty::Payload* data = (DisplayProperty::Payload*)payload;
 
@@ -4761,8 +4767,8 @@ static void draw_timeline_window(ApplicationState* data) {
                         DisplayProperty& prop = data->display_properties[j];
                         if (prop.temporal_subplot_mask & (1 << i)) {
                             if (md_unit_equal(y_unit, md_unit_none())) {
-                                y_unit = prop.unit;
-                            } else if (!md_unit_equal(y_unit, prop.unit)) {
+                                y_unit = prop.unit[1];
+                            } else if (!md_unit_equal(y_unit, prop.unit[1])) {
                                 // unit conflict, drop it
                                 y_unit = md_unit_none();
                                 break;
@@ -5312,17 +5318,24 @@ static void draw_distribution_window(ApplicationState* data) {
             for (int i = 0; i < num_subplots; ++i) {
                 if (ImPlot::BeginPlot("", ImVec2(-1,0), plot_flags)) {
 
-                    md_unit_t x_unit = {};           
+                    md_unit_t x_unit = {0};
+                    md_unit_t y_unit = {0};
                     for (int j = 0; j < num_props; ++j) {
                         DisplayProperty& prop = data->display_properties[j];
                         if (prop.type != DisplayProperty::Type_Distribution) continue;
                         if (!(prop.distribution_subplot_mask & (1 << i))) continue;
 
                         if (md_unit_empty(x_unit)) {
-                            x_unit = prop.unit;
-                        } else if (!md_unit_equal(x_unit, prop.unit)) {
+                            x_unit = prop.unit[0];
+                        } else if (!md_unit_equal(x_unit, prop.unit[0])) {
                             // Set to unitless
                             x_unit = md_unit_none();
+                        }
+                        if (md_unit_empty(y_unit)) {
+                            y_unit = prop.unit[1];
+                        } else if (!md_unit_equal(y_unit, prop.unit[1])) {
+                            // Set to unitless
+                            y_unit = md_unit_none();
                         }
                     }
 
@@ -5330,7 +5343,12 @@ static void draw_distribution_window(ApplicationState* data) {
                     if (!md_unit_unitless(x_unit)) {
                         md_unit_print(x_label, sizeof(x_label), x_unit);
                     }
-                    ImPlot::SetupAxes(x_label, "", axis_flags_x, axis_flags_y);
+                    char y_label[64] = "";
+                    if (!md_unit_unitless(y_unit)) {
+                        md_unit_print(y_label, sizeof(y_label), y_unit);
+                    }
+
+                    ImPlot::SetupAxes(x_label, y_label, axis_flags_x, axis_flags_y);
                     ImPlot::SetupFinish();
 
                     int  hovered_prop_idx  = -1;
@@ -6907,7 +6925,7 @@ static void draw_property_export_window(ApplicationState* data) {
                             str_t x_label = STR_LIT("Frame");
                             str_t y_label = str_from_cstr(dp.label);
 
-                            if (!md_unit_unitless(dp.unit)) {
+                            if (!md_unit_unitless(dp.unit[1])) {
                                 y_label = str_printf(alloc, "%s (%s)", dp.label, dp.unit_str);
                             }
 
@@ -6948,8 +6966,11 @@ static void draw_property_export_window(ApplicationState* data) {
                         } else if (dp.type == DisplayProperty::Type_Distribution) {
                             md_array(float) x_values = sample_range(dp.hist.x_min, dp.hist.x_max, dp.hist.num_bins, alloc);
 
-                            str_t x_label = str_from_cstr(dp.unit_str);
+                            str_t x_label = str_from_cstr(dp.unit_str[0]);
                             str_t y_label = str_from_cstr(dp.label);
+                            if (strlen(dp.unit_str[1]) > 0) {
+                                y_label = str_printf(frame_alloc, "%s (%s)", dp.label, dp.unit_str);
+                            }
 
                             md_array_push(column_data, x_values, alloc);
                             md_array_push(column_labels, x_label, alloc);
