@@ -340,8 +340,8 @@ struct VeloxChem : viamd::EventHandler {
             const  double iso_min = 1.0e-6;
             const  double iso_max = 5.0;
             ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
-            iso_surface.values[0] = iso_val;
-            iso_surface.values[1] = -iso_val;
+            iso_surface.values[0] =  (float)iso_val;
+            iso_surface.values[1] = -(float)iso_val;
 
             /*
             char buf[32];
