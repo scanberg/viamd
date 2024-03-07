@@ -100,6 +100,20 @@ If you want to stay informed about the latest update of VIAMD, please register y
   * Selection tool: Robin Skånberg, Mathieu Linares, Martin Falk, Ingrid Hotz, Anders Ynnerman, MolFind-Integrated Multi-Selection Schemes for Complex Molecular Structures, 2019, The Eurographics Association, p. 17-21​
   * Shape Space and Spatial Distribution Function: Robin Skånberg, Martin Falk, Mathieu Linares, Anders Ynnerman, Ingrid Hotz, Tracking Internal Frames of Reference for Consistent Molecular Distribution Functions, 2021, IEEE Transactions on Visualization and Computer Graphics, 28 (9), 3126-3137​
 
+## Financial Suport
+VIAMD has recieved constant financial support from 2018 from the Swedish e-Research center ([SeRC](https://e-science.se/)) and the [Wallenberg Foundation](https://www.wallenberg.org/en)
+
+VIAMD is supported by [InfraVis](https://infravis.se/) for specific projets:
+- Parser for LAMMPS file
+- Interactice analysis of VeloxChem file (interactive analysis of orbitals and spectra plotting)
+
+<p align="center">
+<img src="https://github.com/scanberg/viamd/assets/38646069/e7245119-3ec4-4b84-9056-7197b3d1448b"  height="75" >
+<img src="https://github.com/scanberg/viamd/assets/38646069/f1c8493f-9519-4458-87c6-2d57a4071ad7"  height="75" >
+<img src="https://github.com/scanberg/viamd/assets/38646069/cfc3feed-728f-45c2-a7db-c3c0707acbb1"  height="75" >
+</p>
+
+
 ## Acknowledgements
 
 https://github.com/glfw/glfw
