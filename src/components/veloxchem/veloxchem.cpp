@@ -364,9 +364,36 @@ struct VeloxChem : viamd::EventHandler {
         ImGui::End();
     }
 
+    void draw_rsp() {
+
+        // TODO: Implement broadening
+        // Gaussian https://mdommett.github.io/blog/interpolation-with-gaussian-broadening/
+
+        int count = md_array_size(vlx.rsp.absorption_ev);
+
+        // The actual plot
+        ImGui::SetNextWindowSize({300, 350}, ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("RSP", &show_window)) {
+            // We draw 2 plots as "Energy total" has values in a different range then the rest of the data
+
+            if (ImPlot::BeginPlot("SCF")) {
+
+                //ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, vlx.scf.iter.count);
+                ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
+                ImPlot::SetupAxes("eV", "epsilon");
+
+                ImPlot::PlotLine("Absorption", vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, count);
+                ImPlot::PlotBars("Exited States", vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, vlx.rsp.num_excited_states, 0.01);
+            }
+            ImPlot::EndPlot();
+        }
+        ImGui::End();
+    }
+
     void draw_window() {
         if (!show_window) return;
         draw_veloxchem();
         draw_scf();
+        draw_rsp();
     }
 } instance;
