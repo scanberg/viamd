@@ -21,12 +21,12 @@ vec3 hsv2rgb(vec3 c) {
 }
 
 in vec2 tc;
-out vec4 out_frag;
+out vec4 out_color;
 
 void main() {
-    vec3 col_rgb = texelFetch(u_texture_color, ivec2(gl_FragCoord.xy), 0).rgb;
-    vec3 col_hsv = rgb2hsv(col_rgb);
-    col_hsv *= u_hsv_scale;
-    col_rgb = hsv2rgb(col_hsv);
-    out_frag = vec4(col_rgb, 1);
+    vec4 color = texelFetch(u_texture_color, ivec2(gl_FragCoord.xy), 0);
+    color.xyz = rgb2hsv(color.rgb);
+    color.xyz = color.xyz * u_hsv_scale;
+    color.rgb = hsv2rgb(color.xyz);
+    out_color = color;
 }
