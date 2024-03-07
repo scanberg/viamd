@@ -36,7 +36,7 @@ struct VeloxChem : viamd::EventHandler {
     vec3_t clip_min = {0,0,0};
     vec3_t clip_max = {1,1,1};
 
-    bool   bounding_box_enabled = true;
+    bool   bounding_box_enabled = false;
     vec4_t bounding_box_color = {0,0,0,1};
 
     int mo_idx = 0;
@@ -123,7 +123,7 @@ struct VeloxChem : viamd::EventHandler {
                         size_t tot_bytes = num_pgtos * pgto_elem_bytes;
                         void* mem = md_arena_allocator_push_aligned(arena, tot_bytes, 64);
                         MEMSET(mem, 0, tot_bytes);
-                        pgto.count = num_pgtos;
+                        pgto.count      = num_pgtos;
                         pgto.x          = (float*)mem;
                         pgto.y          = (float*)mem + stride * 1;
                         pgto.z          = (float*)mem + stride * 2;
