@@ -347,7 +347,7 @@ static void boxes_for_gauss(int* box_w, int n, float sigma) {  // Number of boxe
 static void blur_density_box(vec4_t* data, int dim, int num_passes) {
     ASSERT(dim > 0 && (dim & (dim - 1)) == 0); // Ensure dimension is power of two
 
-    const md_allocator_i* alloc = md_temp_allocator;    // Thread safe allocator!
+    const md_allocator_i* alloc = md_get_temp_allocator();    // Thread safe allocator!
     vec4_t* tmp_data = (vec4_t*)md_alloc(alloc, dim * dim * sizeof(vec4_t));
     defer { md_free(alloc, tmp_data, dim * dim * sizeof(vec4_t)); };
 
@@ -369,7 +369,7 @@ static void blur_density_box(vec4_t* data, int dim, int num_passes) {
 static void blur_density_gaussian(vec4_t* data, int dim, float sigma) {
     ASSERT(dim > 0 && (dim & (dim - 1)) == 0); // Ensure dimension is power of two
 
-    const md_allocator_i* alloc = md_temp_allocator;    // Thread safe allocator!
+    const md_allocator_i* alloc = md_get_temp_allocator();    // Thread safe allocator!
     vec4_t* tmp_data = (vec4_t*)md_alloc(alloc, dim * dim * sizeof(vec4_t));
     defer { md_free(alloc, tmp_data, dim * dim * sizeof(vec4_t)); };
 
@@ -1207,8 +1207,8 @@ struct Ramachandran : viamd::EventHandler {
         };
 
         const size_t mem_size = sizeof(float) * density_tex_dim * density_tex_dim * 4;
-        float* density_map = (float*)md_alloc(md_heap_allocator, mem_size);
-        defer { md_free(md_heap_allocator, density_map, mem_size); };
+        float* density_map = (float*)md_alloc(md_get_heap_allocator(), mem_size);
+        defer { md_free(md_get_heap_allocator(), density_map, mem_size); };
         MEMSET(density_map, 0, mem_size);
 
         // Create reference densities since these never change
@@ -1274,7 +1274,7 @@ struct Ramachandran : viamd::EventHandler {
 
         uint64_t tex_size = sizeof(vec4_t) * density_tex_dim * density_tex_dim;
         uint64_t alloc_size = sizeof(UserData) + tex_size + alignof(vec4_t);
-        UserData* user_data = (UserData*)md_alloc(md_heap_allocator, sizeof(UserData) + tex_size);
+        UserData* user_data = (UserData*)md_alloc(md_get_heap_allocator(), sizeof(UserData) + tex_size);
         vec4_t* density_tex = (vec4_t*)NEXT_ALIGNED_ADDRESS(user_data + 1, alignof(vec4_t));
         memset(density_tex, 0, tex_size);
 
@@ -1340,7 +1340,7 @@ struct Ramachandran : viamd::EventHandler {
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, density_tex_dim, density_tex_dim, GL_RGBA, GL_FLOAT, data->density_tex);
             glBindTexture(GL_TEXTURE_2D, 0);
 
-            md_free(md_heap_allocator, data, data->alloc_size);
+            md_free(md_get_heap_allocator(), data, data->alloc_size);
             }, user_data, id);
 
         return id;
@@ -1480,7 +1480,8 @@ struct Ramachandran : viamd::EventHandler {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     }
 
-} instance;
+};
 
+static Ramachandran instance = {};
 
 }  // namespace ramachandran

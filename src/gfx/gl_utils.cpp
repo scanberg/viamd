@@ -42,9 +42,9 @@ bool build_shader_src(md_strb_t* builder, str_t src, str_t base_include_dir) {
                 return false;
             }
             file = str_substr(file, 1, file.len - 2);
-            str_t path = str_printf(md_temp_allocator, "%.*s%.*s", (int)base_include_dir.len, base_include_dir.ptr, (int)file.len, file.ptr);
+            str_t path = str_printf(md_get_temp_allocator(), "%.*s%.*s", (int)base_include_dir.len, base_include_dir.ptr, (int)file.len, file.ptr);
 
-            str_t inc_src = load_textfile(path, md_temp_allocator);
+            str_t inc_src = load_textfile(path, md_get_temp_allocator());
             if (inc_src) {
                 str_t base = {};
                 extract_folder_path(&base, path);
@@ -67,7 +67,7 @@ GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str
            type == GL_TESS_CONTROL_SHADER || type == GL_TESS_EVALUATION_SHADER);
 
     GLuint shader = glCreateShader(type);
-    md_strb_t sb = md_strb_create(md_temp_allocator);
+    md_strb_t sb = md_strb_create(md_get_temp_allocator());
     
     if (defines) {
         str_t version_str = {};
@@ -110,14 +110,14 @@ GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) 
     ASSERT(type == GL_VERTEX_SHADER || type == GL_GEOMETRY_SHADER || type == GL_FRAGMENT_SHADER || type == GL_COMPUTE_SHADER ||
         type == GL_TESS_CONTROL_SHADER || type == GL_TESS_EVALUATION_SHADER);
 
-    str_t src = load_textfile(filename, md_temp_allocator);
+    str_t src = load_textfile(filename, md_get_temp_allocator());
     if (!src) {
         MD_LOG_ERROR("Failed to open source file for shader '%.*s'", (int)src.len, src.ptr);
         return 0;
     }
 
     GLuint shader = glCreateShader(type);
-    md_strb_t sb = md_strb_create(md_temp_allocator);
+    md_strb_t sb = md_strb_create(md_get_temp_allocator());
 
     if (defines) {
         str_t version_str = {};

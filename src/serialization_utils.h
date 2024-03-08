@@ -45,5 +45,12 @@ bool extract_dbl (double& val, str_t arg);
 bool extract_flt (float& val, str_t arg);
 bool extract_flt_vec (float* elem, size_t len, str_t arg);
 bool extract_str (str_t& str, str_t arg);
+bool extract_to_char_buf(char* buf, size_t cap, str_t arg);
 bool extract_bitfield(md_bitfield_t* bf, str_t arg);
+
+static inline void extract_vec3(vec3_t& v, str_t arg) { extract_flt_vec(v.elem, 3, arg); }
+static inline void extract_vec4(vec4_t& v, str_t arg) { extract_flt_vec(v.elem, 4, arg); }
+static inline void extract_quat(quat_t& q, str_t arg) { extract_flt_vec(q.elem, 4, arg); }
+
+
 }

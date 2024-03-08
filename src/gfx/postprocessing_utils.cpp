@@ -1535,9 +1535,20 @@ void scale_hsv(GLuint color_tex, vec3_t hsv_scale) {
     glGetIntegerv(GL_VIEWPORT, last_viewport);
     glGetIntegerv(GL_DRAW_BUFFER, &last_draw_buffer);
 
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.targets.fbo);
+    GLint w, h;
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, color_tex);
+
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
+
+    glBindVertexArray(gl.vao);
+
+    glViewport(0, 0, w, h);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.tmp.fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.tmp.tex_rgba8, 0);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
-    glViewport(0, 0, gl.tex_width, gl.tex_height);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, color_tex);
@@ -1550,11 +1561,13 @@ void scale_hsv(GLuint color_tex, vec3_t hsv_scale) {
     glBindVertexArray(0);
     glUseProgram(0);
 
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color_tex, 0);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    blit_texture(gl.tmp.tex_rgba8);
+
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, last_fbo);
     glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
     glDrawBuffer(last_draw_buffer);
-
-    blit_texture(gl.targets.tex_color[0]);
 }
 
 void blit_texture(GLuint tex) {

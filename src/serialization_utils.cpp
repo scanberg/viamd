@@ -142,13 +142,8 @@ bool extract_flt_vec (float* elem, size_t len, str_t arg) {
 	str_t tok;
 	size_t count = 0;
 	while (count < len && extract_token_delim(&tok, &arg, ',')) {
-		if (is_float(arg) || is_int(arg)) {
-			elem[count++] = (float)parse_float(arg);
-		}
-	}
-	if (count < len && extract_token(&tok, &arg)) {
-		if (is_float(arg) || is_int(arg)) {
-			elem[count++] = (float)parse_float(arg);
+		if (is_float(tok) || is_int(tok)) {
+			elem[count++] = (float)parse_float(tok);
 		}
 	}
 	return count == len;
@@ -160,6 +155,15 @@ bool extract_str(str_t& str, str_t arg) {
 	}
 	str = arg;
 	return true;
+}
+
+bool extract_to_char_buf(char* buf, size_t cap, str_t arg) {
+	str_t str;
+	if (extract_str(str, arg)) {
+		str_copy_to_char_buf(buf, cap, str);
+		return true;
+	}
+	return false;
 }
 
 bool extract_bitfield(md_bitfield_t* bf, str_t arg) {

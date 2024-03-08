@@ -86,7 +86,6 @@ struct LoadDatasetWindowState {
     bool load_topology = false;
     bool load_trajectory = false;
     bool coarse_grained = false;
-    bool keep_representations = false;
     bool show_window = false;
     bool show_file_dialog = false;
     bool atom_format_valid = false;
@@ -99,8 +98,7 @@ enum {
     FileFlags_None = 0,
     FileFlags_ShowDialogue = 1,
     FileFlags_CoarseGrained = 2,
-    FileFlags_KeepRepresentations = 4,
-    FileFlags_DisableCacheWrite = 8,
+    FileFlags_DisableCacheWrite = 4,
 };
 
 typedef uint32_t FileFlags;
@@ -541,6 +539,7 @@ struct ApplicationState {
         md_bitfield_t visibility_mask = {0};
         bool atom_visibility_mask_dirty = false;
         bool show_window = false;
+        bool keep_representations = false;
     } representation;
 
     struct {

@@ -40,7 +40,7 @@ find_package(OpenGL REQUIRED)
 option(VIAMD_ENABLE_VELOXCHEM "Enable Veloxchem Module" OFF)
 
 if (VIAMD_ENABLE_VELOXCHEM)
-    option(MD_ENABLE_VLX ON)
+    set(MD_ENABLE_VLX ON CACHE BOOL "" FORCE)
 endif ()
 
 add_subdirectory(ext/mdlib)

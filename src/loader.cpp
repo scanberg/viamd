@@ -33,6 +33,9 @@ enum mol_loader_t {
     MOL_LOADER_XYZ,
     MOL_LOADER_CIF,
     MOL_LOADER_LAMMPS,
+#if MD_VLX
+    MOL_LOADER_VELOXCHEM,
+#endif
     MOL_LOADER_COUNT
 };
 
@@ -427,7 +430,7 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
     bool result = true;
     bool in_cache = md_frame_cache_find_or_reserve(&loaded_traj->cache, idx, &frame_data, &lock);
     if (!in_cache) {
-        md_allocator_i* alloc = md_heap_allocator;
+        md_allocator_i* alloc = md_get_heap_allocator();
         size_t frame_data_size = md_trajectory_fetch_frame_data(loaded_traj->traj, idx, 0);
         void*  frame_data_ptr  = md_alloc(alloc, frame_data_size);
         md_trajectory_fetch_frame_data(loaded_traj->traj, idx, frame_data_ptr);
@@ -496,7 +499,7 @@ bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_h
     bool result = true;
     bool in_cache = md_frame_cache_find_or_reserve(&loaded_traj->cache, idx, &frame_data, &lock);
     if (!in_cache) {
-        //md_allocator_i* alloc = md_heap_allocator;
+        //md_allocator_i* alloc = md_get_heap_allocator();
         //size_t frame_data_size = md_trajectory_fetch_frame_data(loaded_traj->traj, idx, 0);
         //void*  frame_data_ptr  = md_alloc(alloc, frame_data_size);
         //md_trajectory_fetch_frame_data(loaded_traj->traj, idx, frame_data_ptr);

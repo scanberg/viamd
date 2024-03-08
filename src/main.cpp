@@ -282,8 +282,8 @@ struct DisplayProperty {
 
     int num_bins = 128;         // Requested number of bins for histogram
 
-    md_unit_t unit = {};
-    char unit_str[32] = "";
+    md_unit_t unit[2] = {md_unit_none(), md_unit_none()};
+    char unit_str[2][32] = {"",""};
 
     const md_script_eval_t* eval = NULL;
 
@@ -316,7 +316,6 @@ struct LoadParam {
     md_trajectory_loader_i* traj_loader = NULL;
     str_t file_path = STR_LIT("");
     bool coarse_grained = false;
-    bool keep_representations = false;
     const void* mol_loader_arg = NULL;
     LoadTrajectoryFlags traj_loader_flags = 0;
 };
@@ -444,7 +443,7 @@ static void compute_histogram_masked(DisplayProperty::Histogram* hist, int num_b
     const float range_ext = value_range_max - value_range_min;
     const float inv_range = 1.0f / range_ext;
 
-    md_array(int) count = md_array_create(int, hist->dim, md_heap_allocator);
+    md_array(int) count = md_array_create(int, hist->dim, md_get_heap_allocator());
     MEMSET(count, 0, md_array_bytes(count));
 
     // We evaluate each frame, one at a time
@@ -485,7 +484,7 @@ static void compute_histogram_masked(DisplayProperty::Histogram* hist, int num_b
     hist->y_min = min_bin;
     hist->y_max = max_bin;
     
-    md_array_free(count, md_heap_allocator);
+    md_array_free(count, md_get_heap_allocator());
 }
 
 static void downsample_histogram(float* dst_bins, int num_dst_bins, const float* src_bins, const float* src_weights, int num_src_bins) {
@@ -746,9 +745,9 @@ static bool use_gfx = false;
 
 int main(int argc, char** argv) {
 #if DEBUG
-    persistent_alloc = md_tracking_allocator_create(md_heap_allocator);
+    persistent_alloc = md_tracking_allocator_create(md_get_heap_allocator());
 #elif RELEASE
-    persistent_alloc = md_heap_allocator;
+    persistent_alloc = md_get_heap_allocator();
 #else
 #error "Must define DEBUG or RELEASE"
 #endif
@@ -982,7 +981,7 @@ int main(int argc, char** argv) {
                     if (load_dataset_from_file(&data, param)) {
                         data.animation = {};
                         if (param.mol_loader) {
-                            if (!(e.flags & FileFlags_KeepRepresentations)) {
+                            if (!data.representation.keep_representations) {
                                 clear_representations(&data);
                                 create_default_representations(&data);
                             }
@@ -1639,7 +1638,8 @@ static void init_display_properties(ApplicationState* data) {
                 snprintf(item.label, sizeof(item.label), STR_FMT, STR_ARG(prop_name));
             }
             item.color = ImGui::ColorConvertU32ToFloat4(PROPERTY_COLORS[i % ARRAY_SIZE(PROPERTY_COLORS)]);
-            item.unit = prop_data->unit;
+            item.unit[0] = prop_data->unit[0];
+            item.unit[1] = prop_data->unit[1];
             item.prop_flags = prop_flags;
             item.prop_data = prop_data;
             item.vis_payload = md_script_ir_property_vis_payload(ir, prop_name);
@@ -1652,7 +1652,8 @@ static void init_display_properties(ApplicationState* data) {
             item.hist.alloc = persistent_alloc;
             item.partial_evaluation = partial_evaluation;
 
-            md_unit_print(item.unit_str, sizeof(item.unit_str), item.unit);
+            md_unit_print(item.unit_str[0], sizeof(item.unit_str), item.unit[0]);
+            md_unit_print(item.unit_str[1], sizeof(item.unit_str), item.unit[1]);
 
             if (prop_flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                 // Create a special distribution from the temporal (since we can)
@@ -1660,6 +1661,10 @@ static void init_display_properties(ApplicationState* data) {
                     DisplayProperty item_dist_raw = item;
                     item_dist_raw.type = DisplayProperty::Type_Distribution;
                     item_dist_raw.plot_type = DisplayProperty::PlotType_Line;
+                    item_dist_raw.unit[0] = item.unit[1];
+                    item_dist_raw.unit[1] = md_unit_none();
+                    MEMCPY(item.unit_str[0], item.unit_str[1], sizeof(item.unit_str[0]));
+
                     item_dist_raw.getter[0] = [](int sample_idx, void* payload) -> ImPlotPoint {
                         DisplayProperty::Payload* data = (DisplayProperty::Payload*)payload;
 
@@ -2071,7 +2076,7 @@ static void interpolate_atomic_properties(ApplicationState* data) {
     if (bytes < md_linear_allocator_avail_bytes(frame_alloc)) {
         alloc = frame_alloc;
     } else {
-        alloc = md_heap_allocator;
+        alloc = md_get_heap_allocator();
     }
 
     void* mem = md_alloc(alloc, bytes);
@@ -2788,6 +2793,9 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Settings")) {
+            ImGui::Checkbox("Keep Representations", &data->representation.keep_representations);
+            ImGui::SetItemTooltip("Keep representations when loading new topology (Does not apply for workspaces)\n");
+
             // Font
             ImFont* font_current = ImGui::GetFont();
             if (ImGui::BeginCombo("Font", font_current->GetDebugName()))
@@ -2968,14 +2976,6 @@ void draw_load_dataset_window(ApplicationState* data) {
             }
         }
 
-        bool show_keep_rep = state.path_is_valid && mol_loader;
-        if (show_keep_rep) {
-            ImGui::Checkbox("Keep Representations", &state.keep_representations);
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Keep current representations, do not create new default ones");
-            }
-        }
-
         bool show_lammps_atom_format = state.path_is_valid && mol_loader && (mol_loader == md_lammps_molecule_api());
         if (show_lammps_atom_format) {
             const char** atom_format_names = md_lammps_atom_format_names();
@@ -3050,7 +3050,6 @@ void draw_load_dataset_window(ApplicationState* data) {
             param.mol_loader = mol_loader;
             param.traj_loader = traj_loader;
             param.coarse_grained = state.coarse_grained;
-            param.keep_representations = state.keep_representations;
 
             md_lammps_molecule_loader_arg_t lammps_arg = {};
             if (mol_loader == md_lammps_molecule_api()) {
@@ -3059,7 +3058,7 @@ void draw_load_dataset_window(ApplicationState* data) {
             }
 
             if (load_dataset_from_file(data, param)) {
-                if (mol_loader && !state.keep_representations) {
+                if (mol_loader && !data->representation.keep_representations) {
                     clear_representations(data);
                     create_default_representations(data);
                 }
@@ -3157,6 +3156,9 @@ static void write_script_range(md_strb_t& sb, const int* indices, size_t num_ind
     int range_beg = indices[0];
     int prev_idx  = -1;
 
+    size_t temp_pos = md_temp_get_pos();
+    defer { md_temp_set_pos_back(temp_pos); };
+
     md_array(md_range_t) items = 0;
     
     for (size_t i = 0; i < num_indices; ++i) {
@@ -3165,10 +3167,10 @@ static void write_script_range(md_strb_t& sb, const int* indices, size_t num_ind
         if (idx - prev_idx > 1) {
             if (prev_idx > range_beg) {
                 md_range_t item = {range_beg - ref_idx + 1, prev_idx - ref_idx + 1};
-                md_array_push(items, item, md_temp_allocator);
+                md_array_push(items, item, md_get_temp_allocator());
             } else if (prev_idx != -1) {
                 md_range_t item = {prev_idx - ref_idx + 1, prev_idx - ref_idx + 1};
-                md_array_push(items, item, md_temp_allocator);
+                md_array_push(items, item, md_get_temp_allocator());
             }
             range_beg = idx;
         }
@@ -3178,10 +3180,10 @@ static void write_script_range(md_strb_t& sb, const int* indices, size_t num_ind
 
     if (prev_idx - range_beg > 0) {
         md_range_t item = {range_beg - ref_idx + 1, prev_idx - ref_idx + 1};
-        md_array_push(items, item, md_temp_allocator);
+        md_array_push(items, item, md_get_temp_allocator());
     } else if (prev_idx != -1) {
         md_range_t item = {prev_idx - ref_idx + 1, prev_idx - ref_idx + 1};
-        md_array_push(items, item, md_temp_allocator);
+        md_array_push(items, item, md_get_temp_allocator());
     }
 
     const int64_t num_items = md_array_size(items);
@@ -4758,8 +4760,8 @@ static void draw_timeline_window(ApplicationState* data) {
                         DisplayProperty& prop = data->display_properties[j];
                         if (prop.temporal_subplot_mask & (1 << i)) {
                             if (md_unit_equal(y_unit, md_unit_none())) {
-                                y_unit = prop.unit;
-                            } else if (!md_unit_equal(y_unit, prop.unit)) {
+                                y_unit = prop.unit[1];
+                            } else if (!md_unit_equal(y_unit, prop.unit[1])) {
                                 // unit conflict, drop it
                                 y_unit = md_unit_none();
                                 break;
@@ -5309,17 +5311,24 @@ static void draw_distribution_window(ApplicationState* data) {
             for (int i = 0; i < num_subplots; ++i) {
                 if (ImPlot::BeginPlot("", ImVec2(-1,0), plot_flags)) {
 
-                    md_unit_t x_unit = {};           
+                    md_unit_t x_unit = {0};
+                    md_unit_t y_unit = {0};
                     for (int j = 0; j < num_props; ++j) {
                         DisplayProperty& prop = data->display_properties[j];
                         if (prop.type != DisplayProperty::Type_Distribution) continue;
                         if (!(prop.distribution_subplot_mask & (1 << i))) continue;
 
                         if (md_unit_empty(x_unit)) {
-                            x_unit = prop.unit;
-                        } else if (!md_unit_equal(x_unit, prop.unit)) {
+                            x_unit = prop.unit[0];
+                        } else if (!md_unit_equal(x_unit, prop.unit[0])) {
                             // Set to unitless
                             x_unit = md_unit_none();
+                        }
+                        if (md_unit_empty(y_unit)) {
+                            y_unit = prop.unit[1];
+                        } else if (!md_unit_equal(y_unit, prop.unit[1])) {
+                            // Set to unitless
+                            y_unit = md_unit_none();
                         }
                     }
 
@@ -5327,7 +5336,12 @@ static void draw_distribution_window(ApplicationState* data) {
                     if (!md_unit_unitless(x_unit)) {
                         md_unit_print(x_label, sizeof(x_label), x_unit);
                     }
-                    ImPlot::SetupAxes(x_label, "", axis_flags_x, axis_flags_y);
+                    char y_label[64] = "";
+                    if (!md_unit_unitless(y_unit)) {
+                        md_unit_print(y_label, sizeof(y_label), y_unit);
+                    }
+
+                    ImPlot::SetupAxes(x_label, y_label, axis_flags_x, axis_flags_y);
                     ImPlot::SetupFinish();
 
                     int  hovered_prop_idx  = -1;
@@ -6383,7 +6397,7 @@ static void draw_debug_window(ApplicationState* data) {
             ImGui::Text("Script IR semaphore count: %i", (int)sema_count);
         }
         
-        task_system::ID* tasks = task_system::pool_running_tasks(md_heap_allocator);
+        task_system::ID* tasks = task_system::pool_running_tasks(md_get_heap_allocator());
         int64_t num_tasks = md_array_size(tasks);
         if (num_tasks > 0) {
             ImGui::Text("Running Pool Tasks:");
@@ -6871,7 +6885,7 @@ static void draw_property_export_window(ApplicationState* data) {
         if (property_idx == -1) ImGui::PopDisabled();
 
         if (export_clicked) {
-            md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+            md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
             defer { md_arena_allocator_destroy(alloc); };
 
             ASSERT(property_idx != -1);
@@ -6904,7 +6918,7 @@ static void draw_property_export_window(ApplicationState* data) {
                             str_t x_label = STR_LIT("Frame");
                             str_t y_label = str_from_cstr(dp.label);
 
-                            if (!md_unit_unitless(dp.unit)) {
+                            if (!md_unit_unitless(dp.unit[1])) {
                                 y_label = str_printf(alloc, "%s (%s)", dp.label, dp.unit_str);
                             }
 
@@ -6945,8 +6959,11 @@ static void draw_property_export_window(ApplicationState* data) {
                         } else if (dp.type == DisplayProperty::Type_Distribution) {
                             md_array(float) x_values = sample_range(dp.hist.x_min, dp.hist.x_max, dp.hist.num_bins, alloc);
 
-                            str_t x_label = str_from_cstr(dp.unit_str);
+                            str_t x_label = str_from_cstr(dp.unit_str[0]);
                             str_t y_label = str_from_cstr(dp.label);
+                            if (strlen(dp.unit_str[1]) > 0) {
+                                y_label = str_printf(frame_alloc, "%s (%s)", dp.label, dp.unit_str);
+                            }
 
                             md_array_push(column_data, x_values, alloc);
                             md_array_push(column_labels, x_label, alloc);
@@ -7267,8 +7284,8 @@ static void init_trajectory_data(ApplicationState* data) {
 
                 const size_t stride = ALIGN_TO(mol.atom.count, 8);
                 const size_t bytes = stride * sizeof(float) * 3;
-                float* coords = (float*)md_alloc(md_heap_allocator, bytes);
-                defer { md_free(md_heap_allocator, coords, bytes); };
+                float* coords = (float*)md_alloc(md_get_heap_allocator(), bytes);
+                defer { md_free(md_get_heap_allocator(), coords, bytes); };
                 // Overwrite the coordinate section, since we will load trajectory frame data into these
                 mol.atom.x = coords + stride * 0;
                 mol.atom.y = coords + stride * 1;
@@ -7289,6 +7306,7 @@ static void init_trajectory_data(ApplicationState* data) {
                 interpolate_atomic_properties(data);
                 update_md_buffers(data);
                 md_gl_molecule_zero_velocity(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
+                update_all_representations(data);
 
             }, data, data->tasks.backbone_computations);
         }
@@ -7420,10 +7438,10 @@ static bool load_dataset_from_file(ApplicationState* data, const LoadParam& para
             free_molecule_data(data);
 
             if (!param.mol_loader->init_from_file(&data->mold.mol, path_to_file, param.mol_loader_arg, data->mold.mol_alloc)) {
-                LOG_ERROR("Failed to load molecular data from file '%.*s'", path_to_file.len, path_to_file.ptr);
+                LOG_ERROR("Failed to load molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
                 return false;
             }
-            LOG_SUCCESS("Successfully loaded molecular data from file '%.*s'", path_to_file.len, path_to_file.ptr);
+            LOG_SUCCESS("Successfully loaded molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
 
             str_copy_to_char_buf(data->files.molecule, sizeof(data->files.molecule), path_to_file);
             data->files.coarse_grained = param.coarse_grained;
@@ -7449,14 +7467,14 @@ static bool load_dataset_from_file(ApplicationState* data, const LoadParam& para
 
             bool success = load_trajectory_data(data, path_to_file, param.traj_loader, param.traj_loader_flags);
             if (success) {
-                LOG_SUCCESS("Successfully opened trajectory from file '%.*s'", path_to_file.len, path_to_file.ptr);
+                LOG_SUCCESS("Successfully opened trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
                 return true;
             } else {
                 if (param.mol_loader && param.traj_loader) {
 					// Don't record this as an error, as the trajectory may be optional (In case of PDB for example)
                     return true;
                 }
-                LOG_ERROR("Failed to opened trajectory from file '%.*s'", path_to_file.len, path_to_file.ptr);
+                LOG_ERROR("Failed to opened trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
             }
         }
     }
@@ -7469,7 +7487,7 @@ static void load_workspace(ApplicationState* data, str_t filename) {
     defer { str_free(txt, frame_alloc); };
 
     if (str_empty(txt)) {
-        LOG_ERROR("Could not open workspace file: '%.*s", (int)filename.len, filename.ptr);
+        LOG_ERROR("Could not open workspace file: '" STR_FMT "'", STR_ARG(filename));
         return;
     }
 
@@ -7555,11 +7573,14 @@ static void load_workspace(ApplicationState* data, str_t filename) {
             str_t ident, arg;
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("Position"))) {
-                    viamd::extract_flt_vec(data->view.camera.position.elem, 3, arg);
-                } else if (str_eq(ident, STR_LIT("Rotation"))) {
-                    viamd::extract_flt_vec(data->view.camera.orientation.elem, 4, arg);
+                    viamd::extract_vec3(data->view.camera.position, arg);
+                } else if (str_eq(ident, STR_LIT("Orientation"))) {
+                    viamd::extract_quat(data->view.camera.orientation, arg);
                 } else if (str_eq(ident, STR_LIT("Distance"))) {
                     viamd::extract_flt(data->view.camera.focus_distance, arg);
+                } else if (str_eq(ident, STR_LIT("Rotation"))) {
+                    // DEPRECATED
+                    viamd::extract_quat(data->view.camera.orientation, arg);
                 }
             }
         } else if (str_eq(section, STR_LIT("Representation"))) {
@@ -7567,11 +7588,9 @@ static void load_workspace(ApplicationState* data, str_t filename) {
             str_t ident, arg;
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("Name"))) {
-                    viamd::extract_flt_vec(data->view.camera.position.elem, 3, arg);
+                    viamd::extract_to_char_buf(rep->name, sizeof(rep->name), arg);
                 } else if (str_eq(ident, STR_LIT("Filter"))) {
-                    str_t str;
-                    viamd::extract_str(str, arg);
-                    str_copy_to_char_buf(rep->filt, sizeof(rep->filt), str);
+                    viamd::extract_to_char_buf(rep->filt, sizeof(rep->filt), arg);
                 } else if (str_eq(ident, STR_LIT("Enabled"))) {
                     viamd::extract_bool(rep->enabled, arg);
                 } else if (str_eq(ident, STR_LIT("Type"))) {
@@ -7649,7 +7668,7 @@ static void load_workspace(ApplicationState* data, str_t filename) {
     data->view.animation.target_orientation = data->view.camera.orientation;
     data->view.animation.target_distance    = data->view.camera.focus_distance;
     
-    str_copy_to_char_buf(data->files.workspace,  sizeof(data->files.workspace), filename);
+    str_copy_to_char_buf(data->files.workspace, sizeof(data->files.workspace), filename);
     
     data->files.coarse_grained  = new_coarse_grained;
 
@@ -7661,7 +7680,6 @@ static void load_workspace(ApplicationState* data, str_t filename) {
     param.mol_loader = loader_state.mol_loader;
     param.traj_loader = loader_state.traj_loader;
     param.coarse_grained = new_coarse_grained;
-    param.keep_representations = false;
     param.mol_loader_arg = loader_state.mol_loader_arg;
 
     if (new_molecule_file && load_dataset_from_file(data, param)) {

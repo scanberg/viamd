@@ -36,6 +36,7 @@ MacOs is not actively tested.
 - libxcursor-dev
 - libgtk-3-dev (recommended for ubuntu, use Zenity for kubuntu)
 - pkgconf
+- libhdf5-serial-dev (handling of hdf5 file for VeloxChem)
 
 #### For CentOS:
 - mesa*
@@ -44,12 +45,13 @@ MacOs is not actively tested.
 - libX11*
 - libXi*
 - libstdc++-static
+- hdf5-devel (handling of hdf5 file for VeloxChem)
 
 Example for Ubuntu:
-```sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libgtk-3-dev pkgconf```
+```sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libgtk-3-dev pkgconf libhdf5-serial-dev```
 
 Example for CentOS:
-```sudo yum libXrandr* libXext* libX11* libXi* mesa* libstdc++-static```
+```sudo yum libXrandr* libXext* libX11* libXi* mesa* libstdc++-static hdf5-devel```
 
 ### Step 2: Configure using CMAKE
 
@@ -71,6 +73,13 @@ cd bin
 ./viamd
 ```
 
+
+## Updating VIAMD
+```git pull --recurse-submodules```
+
+Repeat step 3 to compile!
+
+
 ## Binaries for windows
 https://github.com/scanberg/viamd/releases/
 
@@ -90,6 +99,19 @@ If you want to stay informed about the latest update of VIAMD, please register y
 * Specific tool:
   * Selection tool: Robin Skånberg, Mathieu Linares, Martin Falk, Ingrid Hotz, Anders Ynnerman, MolFind-Integrated Multi-Selection Schemes for Complex Molecular Structures, 2019, The Eurographics Association, p. 17-21​
   * Shape Space and Spatial Distribution Function: Robin Skånberg, Martin Falk, Mathieu Linares, Anders Ynnerman, Ingrid Hotz, Tracking Internal Frames of Reference for Consistent Molecular Distribution Functions, 2021, IEEE Transactions on Visualization and Computer Graphics, 28 (9), 3126-3137​
+
+## Financial Support
+VIAMD has received constant financial support since 2018 from the Swedish e-Research center ([SeRC](https://e-science.se/)) and the [Wallenberg Foundation](https://www.wallenberg.org/en)
+
+VIAMD is supported by [InfraVis](https://infravis.se/) for specific projets:
+- Parser for LAMMPS file
+- Interactice analysis of VeloxChem file (interactive analysis of orbitals and spectra plotting)
+
+<p align="center">
+<img src="https://github.com/scanberg/viamd/assets/38646069/e7245119-3ec4-4b84-9056-7197b3d1448b"  height="75" >
+<img src="https://github.com/scanberg/viamd/assets/38646069/f1c8493f-9519-4458-87c6-2d57a4071ad7"  height="75" >
+<img src="https://github.com/scanberg/viamd/assets/38646069/cfc3feed-728f-45c2-a7db-c3c0707acbb1"  height="75" >
+</p>
 
 ## Acknowledgements
 
