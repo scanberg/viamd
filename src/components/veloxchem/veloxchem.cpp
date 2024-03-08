@@ -396,4 +396,5 @@ struct VeloxChem : viamd::EventHandler {
         draw_scf();
         draw_rsp();
     }
-} instance;
+};
+static VeloxChem instance = {};
