@@ -316,7 +316,6 @@ struct LoadParam {
     md_trajectory_loader_i* traj_loader = NULL;
     str_t file_path = STR_LIT("");
     bool coarse_grained = false;
-    bool keep_representations = false;
     const void* mol_loader_arg = NULL;
     LoadTrajectoryFlags traj_loader_flags = 0;
 };
@@ -982,7 +981,7 @@ int main(int argc, char** argv) {
                     if (load_dataset_from_file(&data, param)) {
                         data.animation = {};
                         if (param.mol_loader) {
-                            if (!(e.flags & FileFlags_KeepRepresentations)) {
+                            if (!data.representation.keep_representations) {
                                 clear_representations(&data);
                                 create_default_representations(&data);
                             }
@@ -2794,6 +2793,9 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Settings")) {
+            ImGui::Checkbox("Keep Representations", &data->representation.keep_representations);
+            ImGui::SetItemTooltip("Keep representations when loading new topology (Does not apply for workspaces)\n");
+
             // Font
             ImFont* font_current = ImGui::GetFont();
             if (ImGui::BeginCombo("Font", font_current->GetDebugName()))
@@ -2974,14 +2976,6 @@ void draw_load_dataset_window(ApplicationState* data) {
             }
         }
 
-        bool show_keep_rep = state.path_is_valid && mol_loader;
-        if (show_keep_rep) {
-            ImGui::Checkbox("Keep Representations", &state.keep_representations);
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Keep current representations, do not create new default ones");
-            }
-        }
-
         bool show_lammps_atom_format = state.path_is_valid && mol_loader && (mol_loader == md_lammps_molecule_api());
         if (show_lammps_atom_format) {
             const char** atom_format_names = md_lammps_atom_format_names();
@@ -3056,7 +3050,6 @@ void draw_load_dataset_window(ApplicationState* data) {
             param.mol_loader = mol_loader;
             param.traj_loader = traj_loader;
             param.coarse_grained = state.coarse_grained;
-            param.keep_representations = state.keep_representations;
 
             md_lammps_molecule_loader_arg_t lammps_arg = {};
             if (mol_loader == md_lammps_molecule_api()) {
@@ -3065,7 +3058,7 @@ void draw_load_dataset_window(ApplicationState* data) {
             }
 
             if (load_dataset_from_file(data, param)) {
-                if (mol_loader && !state.keep_representations) {
+                if (mol_loader && !data->representation.keep_representations) {
                     clear_representations(data);
                     create_default_representations(data);
                 }
@@ -7445,10 +7438,10 @@ static bool load_dataset_from_file(ApplicationState* data, const LoadParam& para
             free_molecule_data(data);
 
             if (!param.mol_loader->init_from_file(&data->mold.mol, path_to_file, param.mol_loader_arg, data->mold.mol_alloc)) {
-                LOG_ERROR("Failed to load molecular data from file '%.*s'", path_to_file.len, path_to_file.ptr);
+                LOG_ERROR("Failed to load molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
                 return false;
             }
-            LOG_SUCCESS("Successfully loaded molecular data from file '%.*s'", path_to_file.len, path_to_file.ptr);
+            LOG_SUCCESS("Successfully loaded molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
 
             str_copy_to_char_buf(data->files.molecule, sizeof(data->files.molecule), path_to_file);
             data->files.coarse_grained = param.coarse_grained;
@@ -7474,14 +7467,14 @@ static bool load_dataset_from_file(ApplicationState* data, const LoadParam& para
 
             bool success = load_trajectory_data(data, path_to_file, param.traj_loader, param.traj_loader_flags);
             if (success) {
-                LOG_SUCCESS("Successfully opened trajectory from file '%.*s'", path_to_file.len, path_to_file.ptr);
+                LOG_SUCCESS("Successfully opened trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
                 return true;
             } else {
                 if (param.mol_loader && param.traj_loader) {
 					// Don't record this as an error, as the trajectory may be optional (In case of PDB for example)
                     return true;
                 }
-                LOG_ERROR("Failed to opened trajectory from file '%.*s'", path_to_file.len, path_to_file.ptr);
+                LOG_ERROR("Failed to opened trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
             }
         }
     }
@@ -7494,7 +7487,7 @@ static void load_workspace(ApplicationState* data, str_t filename) {
     defer { str_free(txt, frame_alloc); };
 
     if (str_empty(txt)) {
-        LOG_ERROR("Could not open workspace file: '%.*s", (int)filename.len, filename.ptr);
+        LOG_ERROR("Could not open workspace file: '" STR_FMT "'", STR_ARG(filename));
         return;
     }
 
@@ -7675,7 +7668,7 @@ static void load_workspace(ApplicationState* data, str_t filename) {
     data->view.animation.target_orientation = data->view.camera.orientation;
     data->view.animation.target_distance    = data->view.camera.focus_distance;
     
-    str_copy_to_char_buf(data->files.workspace,  sizeof(data->files.workspace), filename);
+    str_copy_to_char_buf(data->files.workspace, sizeof(data->files.workspace), filename);
     
     data->files.coarse_grained  = new_coarse_grained;
 
@@ -7687,7 +7680,6 @@ static void load_workspace(ApplicationState* data, str_t filename) {
     param.mol_loader = loader_state.mol_loader;
     param.traj_loader = loader_state.traj_loader;
     param.coarse_grained = new_coarse_grained;
-    param.keep_representations = false;
     param.mol_loader_arg = loader_state.mol_loader_arg;
 
     if (new_molecule_file && load_dataset_from_file(data, param)) {
