@@ -16,6 +16,20 @@
 #include <imgui_widgets.h>
 #include <implot_widgets.h>
 
+static const char* vol_res_lbl[3] = {
+    "Low",
+    "Mid",
+    "High",
+};
+
+static const float vol_res_scl[3] = {
+    4.0f,
+    8.0f,
+    16.0f,
+};
+
+static const int vol_res_default = 1;
+
 struct VeloxChem : viamd::EventHandler {
     VeloxChem() { viamd::event_system_register_handler(*this); }
 
@@ -118,51 +132,9 @@ struct VeloxChem : viamd::EventHandler {
                         }
 
                         size_t num_pgtos = md_vlx_pgto_count(&vlx);
-                        size_t stride = ROUND_UP(num_pgtos, 16);
-                        size_t pgto_elem_bytes = sizeof(float) * 6 + sizeof(int) * 4;
-                        size_t tot_bytes = num_pgtos * pgto_elem_bytes;
-                        void* mem = md_arena_allocator_push_aligned(arena, tot_bytes, 64);
-                        MEMSET(mem, 0, tot_bytes);
-                        pgto.count      = num_pgtos;
-                        pgto.x          = (float*)mem;
-                        pgto.y          = (float*)mem + stride * 1;
-                        pgto.z          = (float*)mem + stride * 2;
-                        pgto.neg_alpha  = (float*)mem + stride * 3;
-                        pgto.coeff      = (float*)mem + stride * 4;
-                        pgto.cutoff     = (float*)mem + stride * 5;
-                        pgto.i          = (int*)  mem + stride * 6;
-                        pgto.j          = (int*)  mem + stride * 7;
-                        pgto.k          = (int*)  mem + stride * 8;
-                        pgto.l          = (int*)  mem + stride * 9;
+                        md_gto_data_init(&pgto, num_pgtos, arena);
 
-                        min_box = vec3_set1(FLT_MAX);
-                        max_box = vec3_set1(-FLT_MAX);
-
-                        for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
-                            vec3_t coord = vec3_set((float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i]);
-                            min_box = vec3_min(min_box, coord);
-                            max_box = vec3_max(max_box, coord);
-                        }
-
-                        const float pad = 3.0f;
-                        min_box = vec3_sub_f(min_box, pad);
-                        max_box = vec3_add_f(max_box, pad);
-                        vec3_t ext_box = vec3_sub(max_box, min_box);
-
-                        // Target resolution per spatial unit (We want this number of samples per Ångström in each dimension)
-                        const float target_res = 16.0f;
-
-                        vol_dim[0] = CLAMP(ALIGN_TO((int)(ext_box.x * target_res), 8), 8, 512);
-                        vol_dim[1] = CLAMP(ALIGN_TO((int)(ext_box.y * target_res), 8), 8, 512);
-                        vol_dim[2] = CLAMP(ALIGN_TO((int)(ext_box.z * target_res), 8), 8, 512);
-
-                        MD_LOG_DEBUG("Created Orbital volume of dimensions [%i][%i][%i]", vol_dim[0], vol_dim[1], vol_dim[2]);
-
-                        step_size = vec3_div(ext_box, vec3_set((float)vol_dim[0], (float)vol_dim[1], (float)vol_dim[2]));
-                        vol_data = (float*)md_arena_allocator_push(arena, sizeof(float) * vol_dim[0] * vol_dim[1] * vol_dim[2]);
-
-                        model_mat = volume::compute_model_to_world_matrix(min_box, max_box);
-
+                        resize_volume(vol_res_scl[vol_res_default]);
                         update_volume();
                         show_volume = true;
 
@@ -214,6 +186,38 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
+    void resize_volume(float res_scale) {
+        min_box = vec3_set1(FLT_MAX);
+        max_box = vec3_set1(-FLT_MAX);
+
+        for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
+            vec3_t coord = vec3_set((float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i]);
+            min_box = vec3_min(min_box, coord);
+            max_box = vec3_max(max_box, coord);
+        }
+
+        const float pad = 3.0f;
+        min_box = vec3_sub_f(min_box, pad);
+        max_box = vec3_add_f(max_box, pad);
+        vec3_t ext_box = vec3_sub(max_box, min_box);
+
+        // Target resolution per spatial unit (We want this number of samples per Ångström in each dimension)
+
+        int new_dim[3] = {
+            CLAMP(ALIGN_TO((int)(ext_box.x * res_scale), 8), 8, 512),
+            CLAMP(ALIGN_TO((int)(ext_box.y * res_scale), 8), 8, 512),
+            CLAMP(ALIGN_TO((int)(ext_box.z * res_scale), 8), 8, 512),
+        };
+
+        vol_data = (float*)md_realloc(arena, vol_data, sizeof(float) * vol_dim[0] * vol_dim[1] * vol_dim[2], sizeof(float) * new_dim[0] * new_dim[1] * new_dim[2]);
+        MEMCPY(vol_dim, new_dim, sizeof(vol_dim));
+
+        step_size = vec3_div(ext_box, vec3_set((float)vol_dim[0], (float)vol_dim[1], (float)vol_dim[2]));
+
+        model_mat = volume::compute_model_to_world_matrix(min_box, max_box);
+        MD_LOG_DEBUG("Created Orbital volume of dimensions [%i][%i][%i]", vol_dim[0], vol_dim[1], vol_dim[2]);
+    }
+
     void update_volume() {
         if (task_system::task_is_running(compute_volume_task)) {
             task_system::task_interrupt(compute_volume_task);
@@ -225,6 +229,7 @@ struct VeloxChem : viamd::EventHandler {
                 MD_LOG_ERROR("Failed to extract alpha orbital for orbital index: %i", mo_idx);
                 return;
             }
+
 
             MEMSET(vol_data, 0, sizeof(float) * vol_dim[0] * vol_dim[1] * vol_dim[2]);
 
@@ -299,7 +304,7 @@ struct VeloxChem : viamd::EventHandler {
             .matrix = {
                 .model = model_mat,
                 .view = state.view.param.matrix.current.view,
-                .proj = state.view.param.matrix.current.proj_jittered,
+                .proj = state.view.param.matrix.current.proj,
             },
             .clip_volume = {
                 .min = clip_min,
@@ -358,6 +363,20 @@ struct VeloxChem : viamd::EventHandler {
             ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
             iso_surface.values[0] =  (float)iso_val;
             iso_surface.values[1] = -(float)iso_val;
+
+            static int vol_res_idx = vol_res_default;
+            if (ImGui::BeginCombo("Volume Resolution", vol_res_lbl[vol_res_idx])) {
+                for (int i = 0; i < ARRAY_SIZE(vol_res_lbl); ++i) {
+                    if (ImGui::Selectable(vol_res_lbl[i], vol_res_idx == i)) {
+                        if (vol_res_idx != i) {
+                            resize_volume(vol_res_scl[i]);
+                            update_volume();
+                        }
+                        vol_res_idx = i;
+                    }
+                }
+                ImGui::EndCombo();
+            }
 
             /*
             char buf[32];
