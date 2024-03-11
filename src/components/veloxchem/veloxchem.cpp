@@ -414,11 +414,40 @@ struct VeloxChem : viamd::EventHandler {
                 Col_Lbl,
             };
 
+            static float table_height = 0.0f;
+            if (ImGui::Button("Goto HOMO/LUMO")) {
+                // 1.5f offset = 1 for skipping the column header row and 0.5 for placing the view between homo/lumo
+                ImGui::SetNextWindowScroll(ImVec2(-1, (TEXT_BASE_HEIGHT * (homo_idx + 1.5f)) - table_height * 0.5f));
+            }
+
             const ImGuiTableFlags flags =
                 ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable | ImGuiTableFlags_RowBg |
                 ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_ScrollY;
-            if (ImGui::BeginTable("Molecular Orbitals", 4, flags, ImVec2(0.0f, TEXT_BASE_HEIGHT * 15), 0.0f))
+            if (ImGui::BeginTable("Molecular Orbitals", 4, flags))//, ImVec2(0.0f, TEXT_BASE_HEIGHT * 15), 0.0f))
             {
+                auto draw_row = [this](int n) {
+                    // Display a data item
+                    ImGui::PushID(n + 1);
+                    ImGui::TableNextRow();
+                    bool is_selected = mo_idx == n;
+                    ImGui::TableNextColumn();
+                    char buf[32];
+                    snprintf(buf, sizeof(buf), "%i", n + 1);
+                    ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
+                    if (ImGui::Selectable(buf, is_selected, selectable_flags)) {
+                        mo_idx = n;
+                        update_volume();
+                    }
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.1f", vlx.scf.alpha.occupations.data[n]);
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.4f", vlx.scf.alpha.energies.data[n]);
+                    ImGui::TableNextColumn();
+                    const char* lbl = (n == homo_idx) ? "HOMO" : (n == lumo_idx) ? "LUMO" : "";
+                    ImGui::TextUnformatted(lbl);
+                    ImGui::PopID();
+                    };
+
                 // Declare columns
                 // We use the "user_id" parameter of TableSetupColumn() to specify a user id that will be stored in the sort specifications.
                 // This is so our sort function can identify a column given our own identifier. We could also identify them based on their index!
@@ -433,35 +462,15 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::TableSetupScrollFreeze(0, 1); // Make row always visible
                 ImGui::TableHeadersRow();
 
-                // Demonstrate using clipper for large vertical lists
-                //ImGuiListClipper clipper;
-                //clipper.Begin(num_orbitals);
-                //while (clipper.Step()) {
-                    for (int n = 0; n < num_orbitals(); n++) {
-                        // Display a data item
-                        ImGui::PushID(n + 1);
-                        ImGui::TableNextRow();
-                        bool is_selected = mo_idx == n;
-                        ImGui::TableNextColumn();
-                        char buf[32];
-                        snprintf(buf, sizeof(buf), "%i", n + 1);
-                        ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
-                        if (ImGui::Selectable(buf, is_selected, selectable_flags)) {
-                            mo_idx = n;
-                            update_volume();
-                        }
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%.1f", vlx.scf.alpha.occupations.data[n]);
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%.4f", vlx.scf.alpha.energies.data[n]);
-                        ImGui::TableNextColumn();
-                        const char* lbl = (n == homo_idx) ? "HOMO" : (n == lumo_idx) ? "LUMO" : "";
-                        ImGui::TextUnformatted(lbl);
-                        ImGui::PopID();
-                    }
-                //}
+                for (int n = 0; n < num_orbitals(); n++) {
+                    draw_row(n);
+                }
+
                 ImGui::EndTable();
+                table_height = ImGui::GetItemRectSize().y;
             }
+
+
 
             /*
             if (ImPlot::BeginPlot("MO")) {
