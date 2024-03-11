@@ -22,9 +22,9 @@ struct VeloxChem : viamd::EventHandler {
     bool show_volume = false;
     bool show_window = false;
     md_vlx_data_t vlx {};
-    int vol_dim = 128;
     mat4_t model_mat = {};
 
+    int vol_dim[3] = {128, 128, 128};
     float* vol_data = 0;
     vec3_t min_box = {};
     vec3_t max_box = {};
@@ -135,8 +135,6 @@ struct VeloxChem : viamd::EventHandler {
                         pgto.k          = (int*)  mem + stride * 8;
                         pgto.l          = (int*)  mem + stride * 9;
 
-                        vol_data = (float*)md_arena_allocator_push(arena, sizeof(float) * vol_dim * vol_dim * vol_dim);
-
                         min_box = vec3_set1(FLT_MAX);
                         max_box = vec3_set1(-FLT_MAX);
 
@@ -146,10 +144,22 @@ struct VeloxChem : viamd::EventHandler {
                             max_box = vec3_max(max_box, coord);
                         }
 
-                        const float pad = 2.0f;
+                        const float pad = 3.0f;
                         min_box = vec3_sub_f(min_box, pad);
                         max_box = vec3_add_f(max_box, pad);
-                        step_size = vec3_div_f(vec3_sub(max_box, min_box), (float)vol_dim);
+                        vec3_t ext_box = vec3_sub(max_box, min_box);
+
+                        // Target resolution per spatial unit (We want this number of samples per Ångström in each dimension)
+                        const float target_res = 16.0f;
+
+                        vol_dim[0] = CLAMP(ALIGN_TO((int)(ext_box.x * target_res), 8), 8, 512);
+                        vol_dim[1] = CLAMP(ALIGN_TO((int)(ext_box.y * target_res), 8), 8, 512);
+                        vol_dim[2] = CLAMP(ALIGN_TO((int)(ext_box.z * target_res), 8), 8, 512);
+
+                        MD_LOG_DEBUG("Created Orbital volume of dimensions [%i][%i][%i]", vol_dim[0], vol_dim[1], vol_dim[2]);
+
+                        step_size = vec3_div(ext_box, vec3_set((float)vol_dim[0], (float)vol_dim[1], (float)vol_dim[2]));
+                        vol_data = (float*)md_arena_allocator_push(arena, sizeof(float) * vol_dim[0] * vol_dim[1] * vol_dim[2]);
 
                         model_mat = volume::compute_model_to_world_matrix(min_box, max_box);
 
@@ -216,17 +226,23 @@ struct VeloxChem : viamd::EventHandler {
                 return;
             }
 
-            uint32_t num_blocks = (vol_dim / BLK_DIM) * (vol_dim / BLK_DIM) * (vol_dim / BLK_DIM);
+            MEMSET(vol_data, 0, sizeof(float) * vol_dim[0] * vol_dim[1] * vol_dim[2]);
+
+            uint32_t num_blocks = (vol_dim[0] / BLK_DIM) * (vol_dim[1] / BLK_DIM) * (vol_dim[2] / BLK_DIM);
             // We evaluate the in parallel over smaller NxNxN blocks
 
             compute_volume_task = task_system::pool_enqueue(STR_LIT("Compute Volume"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
                 VeloxChem* data = (VeloxChem*)user_data;
 
-                int num_blk = data->vol_dim / BLK_DIM;
+                int num_blk[3] = {
+                    data->vol_dim[0] / BLK_DIM,
+                    data->vol_dim[1] / BLK_DIM,
+                    data->vol_dim[2] / BLK_DIM,
+                };
 
                 md_grid_t grid = {
                     .data = data->vol_data,
-                    .dim  = {data->vol_dim, data->vol_dim, data->vol_dim},
+                    .dim  = {data->vol_dim[0], data->vol_dim[1], data->vol_dim[2]},
                     .origin = {data->min_box.x + 0.5f * data->step_size.x, data->min_box.y + 0.5f * data->step_size.y, data->min_box.z + 0.5f * data->step_size.z},
                     .stepsize = {data->step_size.x, data->step_size.y, data->step_size.z},
                 };
@@ -244,14 +260,14 @@ struct VeloxChem : viamd::EventHandler {
 
                 for (uint32_t i = range_beg; i < range_end; ++i) {
                     // Determine block index
-                    int blk_z = i & (num_blk - 1);
-                    int blk_y = (i / num_blk) & (num_blk - 1);
-                    int blk_x = i / (num_blk * num_blk);
+                    int blk_x =  i % num_blk[0];
+                    int blk_y = (i / num_blk[0]) % num_blk[1];
+                    int blk_z =  i / (num_blk[0] * num_blk[1]);
 
-                    const int beg_idx[3] = {blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM};
-                    const int end_idx[3] = {blk_x * BLK_DIM + BLK_DIM, blk_y * BLK_DIM + BLK_DIM, blk_z * BLK_DIM + BLK_DIM};
+                    const int off_idx[3] = {blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM};
+                    const int len_idx[3] = {BLK_DIM, BLK_DIM, BLK_DIM};
 
-                    md_gto_grid_evaluate_sub(&grid, beg_idx, end_idx, &data->pgto);
+                    md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, &data->pgto);
                 }
             }, this);
 
@@ -259,7 +275,7 @@ struct VeloxChem : viamd::EventHandler {
 
             task_system::main_enqueue(STR_LIT("Update Volume"), [](void* user_data) {
                 VeloxChem* data = (VeloxChem*)user_data;
-                gl::init_texture_3D(&data->vol_texture, data->vol_dim, data->vol_dim, data->vol_dim, GL_R32F);
+                gl::init_texture_3D(&data->vol_texture, data->vol_dim[0], data->vol_dim[1], data->vol_dim[2], GL_R32F);
                 gl::set_texture_3D_data(data->vol_texture, data->vol_data, GL_R32F);
             }, this, compute_volume_task);
         }
@@ -337,7 +353,7 @@ struct VeloxChem : viamd::EventHandler {
             ImGui::ColorEdit4("Color Negative", iso_surface.colors[1].elem);
 
             static double iso_val = 0.05f;
-            const  double iso_min = 1.0e-6;
+            const  double iso_min = 1.0e-4;
             const  double iso_max = 5.0;
             ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
             iso_surface.values[0] =  (float)iso_val;
