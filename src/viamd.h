@@ -19,7 +19,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define INVALID_PICKING_IDX (~0U)
 #define JITTER_SEQUENCE_SIZE 32
 
 // For cpu profiling
@@ -29,12 +28,6 @@
 // For gpu profiling
 #define PUSH_GPU_SECTION(lbl) { if (glPushDebugGroup) glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, GL_KHR_debug, -1, lbl); }
 #define POP_GPU_SECTION()     { if (glPopDebugGroup) glPopDebugGroup(); }
-
-#define GL_COLOR_ATTACHMENT_COLOR        GL_COLOR_ATTACHMENT0
-#define GL_COLOR_ATTACHMENT_NORMAL       GL_COLOR_ATTACHMENT1
-#define GL_COLOR_ATTACHMENT_VELOCITY     GL_COLOR_ATTACHMENT2
-#define GL_COLOR_ATTACHMENT_PICKING      GL_COLOR_ATTACHMENT3
-#define GL_COLOR_ATTACHMENT_POST_TONEMAP GL_COLOR_ATTACHMENT4
 
 enum class PlaybackMode { Stopped, Playing };
 enum class InterpolationMode { Nearest, Linear, CubicSpline };
@@ -120,36 +113,6 @@ struct FileQueue {
 
 struct SingleSelectionSequence {
     int32_t idx[4] = {-1, -1, -1, -1};
-};
-
-struct PickingData {
-    uint32_t idx = INVALID_PICKING_IDX;
-    float depth = 1.0f;
-    vec3_t world_coord = {0, 0, 0};
-    vec2_t screen_coord = {0, 0};
-};
-
-struct GBuffer {
-    struct {
-        uint32_t depth = 0;
-        uint32_t color = 0;
-        uint32_t normal = 0;
-        uint32_t velocity = 0;
-        uint32_t post_tonemap = 0;
-        uint32_t picking = 0;
-        uint32_t fbo = 0;
-    } deferred;
-
-    struct {
-        // @NOTE: Many of each, we submit the read and use it some frame(s) later
-        // This means that we read with N-1 frames latency
-        uint32_t color[2] = {};
-        uint32_t depth[2] = {};
-        uint32_t frame = 0;
-    } pbo_picking;
-
-    uint32_t width = 0;
-    uint32_t height = 0;
 };
 
 struct Selection {

@@ -1707,8 +1707,10 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     GLint last_fbo;
     GLint last_viewport[4];
     GLint last_draw_buffer;
+    GLint last_scissor_box[4];
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fbo);
     glGetIntegerv(GL_VIEWPORT, last_viewport);
+    glGetIntegerv(GL_SCISSOR_BOX, last_scissor_box);
     glGetIntegerv(GL_DRAW_BUFFER, &last_draw_buffer);
 
     int width = last_viewport[2];
@@ -1719,6 +1721,8 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     }
 
     //glViewport(0, 0, gl.tex_width, gl.tex_height);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, width, height);
     glViewport(0, 0, width, height);
     glBindVertexArray(gl.vao);
 
@@ -1852,14 +1856,207 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     // Activate backbuffer or whatever was bound before
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, last_fbo);
     glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
+    glScissor(last_scissor_box[0], last_scissor_box[1], last_scissor_box[2], last_scissor_box[3]);
     glDrawBuffer(last_draw_buffer);
 
     swap_target();
     glDepthMask(0);
     blit_texture(src_texture);
+    glDisable(GL_SCISSOR_TEST);
 
     glDepthMask(1);
     glColorMask(1, 1, 1, 1);
 }
 
 }  // namespace postprocessing
+
+// #gbuffer
+void init_gbuffer(GBuffer* gbuf, int width, int height) {
+    ASSERT(gbuf);
+
+    bool attach_textures_deferred = false;
+    if (!gbuf->deferred.fbo) {
+        glGenFramebuffers(1, &gbuf->deferred.fbo);
+        attach_textures_deferred = true;
+    }
+
+    if (!gbuf->deferred.depth) glGenTextures(1, &gbuf->deferred.depth);
+    if (!gbuf->deferred.color) glGenTextures(1, &gbuf->deferred.color);
+    if (!gbuf->deferred.normal) glGenTextures(1, &gbuf->deferred.normal);
+    if (!gbuf->deferred.velocity) glGenTextures(1, &gbuf->deferred.velocity);
+    if (!gbuf->deferred.post_tonemap) glGenTextures(1, &gbuf->deferred.post_tonemap);
+    if (!gbuf->deferred.picking) glGenTextures(1, &gbuf->deferred.picking);
+    if (!gbuf->pbo_picking.color[0]) glGenBuffers((int)ARRAY_SIZE(gbuf->pbo_picking.color), gbuf->pbo_picking.color);
+    if (!gbuf->pbo_picking.depth[0]) glGenBuffers((int)ARRAY_SIZE(gbuf->pbo_picking.depth), gbuf->pbo_picking.depth);
+
+    glBindTexture(GL_TEXTURE_2D, gbuf->deferred.depth);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glBindTexture(GL_TEXTURE_2D, gbuf->deferred.color);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glBindTexture(GL_TEXTURE_2D, gbuf->deferred.normal);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, width, height, 0, GL_RG, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glBindTexture(GL_TEXTURE_2D, gbuf->deferred.velocity);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, width, height, 0, GL_RG, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glBindTexture(GL_TEXTURE_2D, gbuf->deferred.post_tonemap);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glBindTexture(GL_TEXTURE_2D, gbuf->deferred.picking);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    for (uint32_t i = 0; i < ARRAY_SIZE(gbuf->pbo_picking.color); ++i) {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.color[i]);
+        glBufferData(GL_PIXEL_PACK_BUFFER, 4, NULL, GL_DYNAMIC_READ);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    }
+
+    for (uint32_t i = 0; i < ARRAY_SIZE(gbuf->pbo_picking.depth); ++i) {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.depth[i]);
+        glBufferData(GL_PIXEL_PACK_BUFFER, 4, NULL, GL_DYNAMIC_READ);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    }
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    gbuf->width = width;
+    gbuf->height = height;
+
+    const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
+        GL_COLOR_ATTACHMENT_POST_TONEMAP, GL_COLOR_ATTACHMENT_PICKING};
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf->deferred.fbo);
+    if (attach_textures_deferred) {
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gbuf->deferred.depth, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_TEXTURE_2D, gbuf->deferred.depth, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_COLOR, GL_TEXTURE_2D, gbuf->deferred.color, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_NORMAL, GL_TEXTURE_2D, gbuf->deferred.normal, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_VELOCITY, GL_TEXTURE_2D, gbuf->deferred.velocity, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_POST_TONEMAP, GL_TEXTURE_2D, gbuf->deferred.post_tonemap, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_PICKING, GL_TEXTURE_2D, gbuf->deferred.picking, 0);
+    }
+    ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+    glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+}
+
+void clear_gbuffer(GBuffer* gbuffer) {
+    const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY, GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_POST_TONEMAP};
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuffer->deferred.fbo);
+    glViewport(0, 0, gbuffer->width, gbuffer->height);
+
+    glDepthMask(1);
+    glColorMask(1, 1, 1, 1);
+    glStencilMask(0xFF);
+    const vec4_t zero = {0,0,0,0};
+    const vec4_t picking = {1, 1, 1, 1};
+
+    // Setup gbuffer and clear textures
+    PUSH_GPU_SECTION("Clear G-buffer") {
+        // Clear color+alpha, normal, velocity, emissive, post_tonemap and depth
+        glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
+        glClearBufferfv(GL_COLOR, 0, zero.elem);
+        glClearBufferfv(GL_COLOR, 1, zero.elem);
+        glClearBufferfv(GL_COLOR, 2, zero.elem);
+        glClearBufferfv(GL_COLOR, 3, picking.elem);
+        glClearBufferfv(GL_COLOR, 4, zero.elem);
+        glClearBufferfi(GL_DEPTH_STENCIL, 0, 1.0f, 0x01);
+    }
+    POP_GPU_SECTION()
+}
+
+void destroy_gbuffer(GBuffer* gbuf) {
+    ASSERT(gbuf);
+    if (gbuf->deferred.fbo) glDeleteFramebuffers(1, &gbuf->deferred.fbo);
+    if (gbuf->deferred.depth) glDeleteTextures(1, &gbuf->deferred.depth);
+    if (gbuf->deferred.color) glDeleteTextures(1, &gbuf->deferred.color);
+    if (gbuf->deferred.normal) glDeleteTextures(1, &gbuf->deferred.normal);
+    if (gbuf->deferred.post_tonemap) glDeleteTextures(1, &gbuf->deferred.post_tonemap);
+    if (gbuf->deferred.picking) glDeleteTextures(1, &gbuf->deferred.picking);
+
+    if (gbuf->pbo_picking.color[0]) glDeleteBuffers(2, gbuf->pbo_picking.color);
+    if (gbuf->pbo_picking.depth[0]) glDeleteBuffers(2, gbuf->pbo_picking.depth);
+}
+
+// #picking
+PickingData read_picking_data(GBuffer* gbuf, int x, int y) {
+    PickingData data{};
+#if EXPERIMENTAL_GFX_API
+    if (use_gfx) {
+        data.idx = md_gfx_get_picking_idx();
+        data.depth = md_gfx_get_picking_depth();
+        md_gfx_query_picking((uint32_t)x, (uint32_t)y);
+    }
+    else {
+#endif
+        ASSERT(gbuf);
+        uint32_t N = (uint32_t)ARRAY_SIZE(gbuf->pbo_picking.color);
+        uint32_t frame = gbuf->pbo_picking.frame++;
+        uint32_t queue = (frame) % N;
+        uint32_t read  = (frame + N-1) % N;
+
+
+        PUSH_GPU_SECTION("READ PICKING DATA")
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, gbuf->deferred.fbo);
+        glReadBuffer(GL_COLOR_ATTACHMENT_PICKING);
+
+        // Queue async reads from current frame to pixel pack buffer
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.color[queue]);
+        glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.depth[queue]);
+        glReadPixels(x, y, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, 0);
+
+        // Read values from previous frames pixel pack buffer
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.color[read]);
+        const GLubyte* color = (const GLubyte*)glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
+        if (color) {
+            data.idx = color[0] + (color[1] << 8) + (color[2] << 16) + (color[3] << 24);
+            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+        }
+
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.depth[read]);
+        const GLfloat* depth = (const GLfloat*)glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
+        if (depth) {
+            data.depth = depth[0];
+            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+        }
+
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+        POP_GPU_SECTION()
+#if EXPERIMENTAL_GFX_API
+    }
+#endif
+    return data;
+}

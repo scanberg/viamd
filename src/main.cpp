@@ -199,18 +199,6 @@ enum MarkerType_{
 
 // #struct Structure Declarations
 
-// This is very messy, but it works for now
-struct CoordSystemWidgetParam {
-    ImVec2 pos = ImVec2(0,0);
-    ImVec2 size;
-
-    mat4_t view_matrix;
-
-    quat_t& camera_ori;
-    vec3_t& camera_pos;
-    float&  camera_dist;
-};
-
 // This is viamd's representation of a property
 struct DisplayProperty {
     enum Type {
@@ -643,8 +631,6 @@ static void update_view_param(ApplicationState* data);
 static void reset_view(ApplicationState* data, bool move_camera = false, bool smooth_transition = false);
 
 static void handle_camera_interaction(ApplicationState* data);
-//static void handle_camera_animation(ApplicationState* data);
-static void animate_camera(Camera* camera, quat_t target_ori, vec3_t target_pos, float target_dist, float dt, float target_factor = 0.1f);
 
 //static void init_display_properties(ApplicationState* data);
 //static void update_density_volume_texture(ApplicationState* data);
@@ -673,13 +659,6 @@ static void draw_dataset_window(ApplicationState* data);
 static void draw_debug_window(ApplicationState* data);
 static void draw_property_export_window(ApplicationState* data);
 static void draw_notifications_window();
-
-static bool draw_coordinate_system_widget(const CoordSystemWidgetParam&);
-
-static void clear_gbuffer(GBuffer* gbuf);
-static void init_gbuffer(GBuffer* gbuf, int width, int height);
-static void destroy_gbuffer(GBuffer* gbuf);
-static PickingData read_picking_data(GBuffer* fbo, int32_t x, int32_t y);
 
 static void update_md_buffers(ApplicationState* data);
 
@@ -1016,7 +995,7 @@ int main(int argc, char** argv) {
         //ImGui::ShowDemoWindow();
 
         handle_camera_interaction(&data);
-        animate_camera(&data.view.camera, data.view.animation.target_orientation, data.view.animation.target_position, data.view.animation.target_distance, data.app.timing.delta_s);
+        camera_animate(&data.view.camera, data.view.animation.target_orientation, data.view.animation.target_position, data.view.animation.target_distance, data.app.timing.delta_s);
         data.visuals.dof.focus_depth = data.view.camera.focus_distance;
 
         update_view_param(&data);
@@ -2316,41 +2295,6 @@ static void update_view_param(ApplicationState* data) {
     param.matrix.current.norm = mat4_transpose(param.matrix.inverse.view);
 }
 
-static void compute_optimal_view(quat_t* out_ori, vec3_t* out_pos, float* out_dist, vec3_t in_aabb_min, vec3_t in_aabb_max) {
-    const vec3_t ext = in_aabb_max - in_aabb_min;
-    const float len = MAX(vec3_length(ext * 0.5f), 10.0f);
-
-    const float max_ext = MAX(MAX(ext.x, ext.y), ext.z);
-    const float min_ext = MIN(MIN(ext.x, ext.y), ext.z);
-    const float aniso_ext = max_ext / min_ext;
-
-    // We want to align the view such that we the longest axis of the aabb align with the X-axis, the mid axis with the Y-axis
-
-    int l[3] = { 0, 1, 2 };
-
-    if (aniso_ext > 1.1f) {
-        // The aabb is not uniform, so we sort the axes by length
-        if (ext[l[0]] < ext[l[1]]) std::swap(l[0], l[1]);
-        if (ext[l[1]] < ext[l[2]]) std::swap(l[1], l[2]);
-        if (ext[l[0]] < ext[l[1]]) std::swap(l[0], l[1]);
-        // Now the axes are sorted with respect to the length l[0] > l[1] > l[2]
-    }
-
-    const mat3_t I = mat3_ident();
-    const vec3_t right = I[l[0]];
-    const vec3_t up    = I[l[1]];
-    const vec3_t out   = I[l[2]];
-
-    const vec3_t dir = vec3_normalize(right * 0.6f + up * 0.5f + out * 1.0f);
-
-    const vec3_t cen = (in_aabb_min + in_aabb_max) * 0.5f;
-    const vec3_t pos = cen + dir * len * 3.0f;
-
-    *out_ori = quat_from_mat4(mat4_look_at(pos, cen, up));
-    *out_pos = pos;
-    *out_dist = vec3_length(pos - cen);
-}
-
 static void reset_view(ApplicationState* data, bool move_camera, bool smooth_transition) {
     ASSERT(data);
     if (!data->mold.mol.atom.count) return;
@@ -2375,7 +2319,7 @@ static void reset_view(ApplicationState* data, bool move_camera, bool smooth_tra
 	vec3_t optimal_pos;
     quat_t optimal_ori;
     float  optimal_dist;
-    compute_optimal_view(&optimal_ori, &optimal_pos, &optimal_dist, aabb_min, aabb_max);
+    camera_compute_optimal_view(&optimal_pos, &optimal_ori, &optimal_dist, aabb_min, aabb_max);
 
     if (move_camera) {
         data->view.animation.target_position    = optimal_pos;
@@ -2392,59 +2336,6 @@ static void reset_view(ApplicationState* data, bool move_camera, bool smooth_tra
     data->view.camera.near_plane = 1.0f;
     data->view.camera.far_plane = 10000.0f;
     data->view.trackball_param.max_distance = optimal_dist * 10.0f;
-}
-
-// #picking
-static PickingData read_picking_data(GBuffer* gbuf, int32_t x, int32_t y) {
-    PickingData data{};
-#if EXPERIMENTAL_GFX_API
-    if (use_gfx) {
-        data.idx = md_gfx_get_picking_idx();
-        data.depth = md_gfx_get_picking_depth();
-        md_gfx_query_picking((uint32_t)x, (uint32_t)y);
-    }
-    else {
-#endif
-    ASSERT(gbuf);
-    uint32_t N = (uint32_t)ARRAY_SIZE(gbuf->pbo_picking.color);
-    uint32_t frame = gbuf->pbo_picking.frame++;
-    uint32_t queue = (frame) % N;
-    uint32_t read  = (frame + N-1) % N;
-
-
-    PUSH_GPU_SECTION("READ PICKING DATA")
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, gbuf->deferred.fbo);
-    glReadBuffer(GL_COLOR_ATTACHMENT_PICKING);
-
-    // Queue async reads from current frame to pixel pack buffer
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.color[queue]);
-    glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, 0);
-
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.depth[queue]);
-    glReadPixels(x, y, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, 0);
-
-    // Read values from previous frames pixel pack buffer
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.color[read]);
-    const GLubyte* color = (const GLubyte*)glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
-    if (color) {
-        data.idx = color[0] + (color[1] << 8) + (color[2] << 16) + (color[3] << 24);
-        glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
-    }
-
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.depth[read]);
-    const GLfloat* depth = (const GLfloat*)glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
-    if (depth) {
-        data.depth = depth[0];
-        glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
-    }
-
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-    POP_GPU_SECTION()
-#if EXPERIMENTAL_GFX_API
-    }
-#endif
-    return data;
 }
 
 static bool filter_expression(ApplicationState* data, str_t expr, md_bitfield_t* mask, bool* is_dynamic = NULL, char* error_buf = NULL, int error_cap = 0) {
@@ -5975,7 +5866,7 @@ static void draw_density_volume_window(ApplicationState* data) {
         update_density_volume(data);
 
         // Animate camera towards targets
-        animate_camera(&data->density_volume.camera, data->density_volume.target_ori, data->density_volume.target_pos, data->density_volume.target_dist, data->app.timing.delta_s);
+        camera_animate(&data->density_volume.camera, data->density_volume.target_ori, data->density_volume.target_pos, data->density_volume.target_dist, data->app.timing.delta_s);
 
         /*
         // Canvas
@@ -6071,7 +5962,7 @@ static void draw_density_volume_window(ApplicationState* data) {
         if (reset_view) {
             vec3_t aabb_min = vec3_from_vec4(data->density_volume.model_mat * vec4_set(0,0,0,1));
             vec3_t aabb_max = vec3_from_vec4(data->density_volume.model_mat * vec4_set(1,1,1,1));
-            compute_optimal_view(&data->density_volume.target_ori, &data->density_volume.target_pos, &data->density_volume.target_dist, aabb_min, aabb_max);
+            camera_compute_optimal_view(&data->density_volume.target_pos, &data->density_volume.target_ori, &data->density_volume.target_dist, aabb_min, aabb_max);
 
             if (reset_hard) {
                 data->density_volume.camera.position = data->density_volume.target_pos;
@@ -6118,7 +6009,7 @@ static void draw_density_volume_window(ApplicationState* data) {
                 .camera_dist = data->density_volume.target_dist,
             };
 
-            draw_coordinate_system_widget(params);
+            ImGui::DrawCoordinateSystemWidget(params);
         }
 
         mat4_t view_mat = camera_world_to_view_matrix(data->density_volume.camera);
@@ -6999,118 +6890,6 @@ static void draw_property_export_window(ApplicationState* data) {
         ImGui::PopItemWidth();
     }
     ImGui::End();
-}
-
-// #gbuffer
-static void init_gbuffer(GBuffer* gbuf, int width, int height) {
-    ASSERT(gbuf);
-
-    bool attach_textures_deferred = false;
-    if (!gbuf->deferred.fbo) {
-        glGenFramebuffers(1, &gbuf->deferred.fbo);
-        attach_textures_deferred = true;
-    }
-
-    if (!gbuf->deferred.depth) glGenTextures(1, &gbuf->deferred.depth);
-    if (!gbuf->deferred.color) glGenTextures(1, &gbuf->deferred.color);
-    if (!gbuf->deferred.normal) glGenTextures(1, &gbuf->deferred.normal);
-    if (!gbuf->deferred.velocity) glGenTextures(1, &gbuf->deferred.velocity);
-    if (!gbuf->deferred.post_tonemap) glGenTextures(1, &gbuf->deferred.post_tonemap);
-    if (!gbuf->deferred.picking) glGenTextures(1, &gbuf->deferred.picking);
-    if (!gbuf->pbo_picking.color[0]) glGenBuffers((int)ARRAY_SIZE(gbuf->pbo_picking.color), gbuf->pbo_picking.color);
-    if (!gbuf->pbo_picking.depth[0]) glGenBuffers((int)ARRAY_SIZE(gbuf->pbo_picking.depth), gbuf->pbo_picking.depth);
-
-    glBindTexture(GL_TEXTURE_2D, gbuf->deferred.depth);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    glBindTexture(GL_TEXTURE_2D, gbuf->deferred.color);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    glBindTexture(GL_TEXTURE_2D, gbuf->deferred.normal);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, width, height, 0, GL_RG, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    glBindTexture(GL_TEXTURE_2D, gbuf->deferred.velocity);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, width, height, 0, GL_RG, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    glBindTexture(GL_TEXTURE_2D, gbuf->deferred.post_tonemap);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    glBindTexture(GL_TEXTURE_2D, gbuf->deferred.picking);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    for (uint32_t i = 0; i < ARRAY_SIZE(gbuf->pbo_picking.color); ++i) {
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.color[i]);
-        glBufferData(GL_PIXEL_PACK_BUFFER, 4, NULL, GL_DYNAMIC_READ);
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-    }
-
-    for (uint32_t i = 0; i < ARRAY_SIZE(gbuf->pbo_picking.depth); ++i) {
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.depth[i]);
-        glBufferData(GL_PIXEL_PACK_BUFFER, 4, NULL, GL_DYNAMIC_READ);
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-    }
-
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    gbuf->width = width;
-    gbuf->height = height;
-
-    const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
-                                   GL_COLOR_ATTACHMENT_POST_TONEMAP, GL_COLOR_ATTACHMENT_PICKING};
-
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf->deferred.fbo);
-    if (attach_textures_deferred) {
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gbuf->deferred.depth, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_TEXTURE_2D, gbuf->deferred.depth, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_COLOR, GL_TEXTURE_2D, gbuf->deferred.color, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_NORMAL, GL_TEXTURE_2D, gbuf->deferred.normal, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_VELOCITY, GL_TEXTURE_2D, gbuf->deferred.velocity, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_POST_TONEMAP, GL_TEXTURE_2D, gbuf->deferred.post_tonemap, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_PICKING, GL_TEXTURE_2D, gbuf->deferred.picking, 0);
-    }
-    ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
-    glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
-    glClearColor(0, 0, 0, 0);
-    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
-
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-}
-
-static void destroy_gbuffer(GBuffer* gbuf) {
-    ASSERT(gbuf);
-    if (gbuf->deferred.fbo) glDeleteFramebuffers(1, &gbuf->deferred.fbo);
-    if (gbuf->deferred.depth) glDeleteTextures(1, &gbuf->deferred.depth);
-    if (gbuf->deferred.color) glDeleteTextures(1, &gbuf->deferred.color);
-    if (gbuf->deferred.normal) glDeleteTextures(1, &gbuf->deferred.normal);
-    if (gbuf->deferred.post_tonemap) glDeleteTextures(1, &gbuf->deferred.post_tonemap);
-    if (gbuf->deferred.picking) glDeleteTextures(1, &gbuf->deferred.picking);
-
-    if (gbuf->pbo_picking.color[0]) glDeleteBuffers(2, gbuf->pbo_picking.color);
-    if (gbuf->pbo_picking.depth[0]) glDeleteBuffers(2, gbuf->pbo_picking.depth);
 }
 
 static void update_md_buffers(ApplicationState* data) {
@@ -8174,213 +7953,6 @@ static void remove_selection(ApplicationState* data, int idx) {
     md_array_pop(data->selection.stored_selections);
 }
 
-static bool draw_coordinate_system_widget(const CoordSystemWidgetParam& param) {
-    ImGuiContext& g = *GImGui;
-    ImGuiWindow* window = ImGui::GetCurrentWindow();
-    if (!window || window->SkipItems)
-        return false;
-
-    ImDrawList& dl = *ImGui::GetWindowDrawList();
-    const ImVec2 wp = window->Pos + param.pos;
-    const ImVec2 ws = param.size;
-
-    const ImGuiID id = window->GetID("coord_system_widget");
-    const ImRect bb(wp, wp + ws);
-    if (!ImGui::ItemAdd(bb, id, 0, ImGuiItemFlags_NoNav)) 
-        return false;
-
-    bool is_hovered = ImGui::ItemHoverable(bb, id, g.LastItemData.InFlags);
-
-    const float ext = ImMin(ws.x, ws.y) * 0.75f;
-    const ImVec2 o = {wp.x + ws.x * 0.5f, wp.y + ws.y * 0.5f};
-    const float dist = 5.0f;
-    const float fovy = (3.1415926534f / 4.0f);
-    const float ar   = 1.0f;
-    const float near = 0.1f;
-    const float far  = 10.f;
-
-    const float h = dist * tanf(fovy * 0.5f);
-    const float w = ar * h;
-    mat4_t P = mat4_ortho(-w, w, -h, h, near, far);
-    mat4_t V = param.view_matrix;
-    
-    V.col[3] = vec4_set(0, 0, -dist, 1);
-
-    vec4_t vx = mat4_mul_vec4(V, {1, 0, 0, 1});
-    vec4_t vy = mat4_mul_vec4(V, {0, 1, 0, 1});
-    vec4_t vz = mat4_mul_vec4(V, {0, 0, 1, 1});
-
-    // Project
-    vec4_t x = mat4_mul_vec4(P, vx);
-    vec4_t y = mat4_mul_vec4(P, vy);
-    vec4_t z = mat4_mul_vec4(P, vz);
-
-    // Perspective divide
-    x = vec4_div_f(x, x.w);
-    y = vec4_div_f(y, y.w);
-    z = vec4_div_f(z, z.w);
-
-    // Vector
-    const ImVec2 v[3] = { ImVec2(x.x, -x.y) * ext, ImVec2(y.x, -y.y) * ext, ImVec2(z.x, -z.y) * ext };
-    // Text
-    const char*  t[3] = { "X", "Y", "Z" };
-    // Size
-    const ImVec2 s[3] = { ImGui::CalcTextSize(t[0]), ImGui::CalcTextSize(t[1]), ImGui::CalcTextSize(t[2]) };
-    // Color
-    const uint32_t c[3] = { 0xFF0000FF, 0xFF00FF00, 0xFFFF0000 };
-    // Axis z relative to origin (-1, 1)
-    const float az[3] = { vx.z + dist, vy.z + dist, vz.z + dist };
-
-    // Draw order
-    int idx[3] = {0, 1, 2};
-
-    // Sort by z order
-    if (az[idx[0]] > az[idx[1]]) { ImSwap(idx[0], idx[1]); }
-    if (az[idx[1]] > az[idx[2]]) { ImSwap(idx[1], idx[2]); }
-    if (az[idx[0]] > az[idx[1]]) { ImSwap(idx[0], idx[1]); }
-
-    // Draw in z order
-    for (int i : idx) {
-        dl.AddLine(o, o + v[i], c[i], 2.0f);
-        dl.AddText(o + v[i] * 1.2f + ImVec2(-0.5f, -0.5f) * s[i], c[i], t[i]);
-    }
-
-    // Interaction rectangles for resetting view
-    const float s_min = 0.25f;
-    const float s_max = 0.75f;
-    const ImVec2 p[3][4] = {
-        {
-            o + v[1] * s_min + v[2] * s_min,
-            o + v[1] * s_max + v[2] * s_min,
-            o + v[1] * s_max + v[2] * s_max,
-            o + v[1] * s_min + v[2] * s_max,
-        },
-        {
-            o + v[2] * s_min + v[0] * s_min,
-            o + v[2] * s_max + v[0] * s_min,
-            o + v[2] * s_max + v[0] * s_max,
-            o + v[2] * s_min + v[0] * s_max,
-        },
-        {
-            o + v[0] * s_min + v[1] * s_min,
-            o + v[0] * s_max + v[1] * s_min,
-            o + v[0] * s_max + v[1] * s_max,
-            o + v[0] * s_min + v[1] * s_max,
-        },
-    };
-
-    // Test planes for intersection front to back
-    int hovered_plane_idx = -1;
-    if (is_hovered) {
-        for (int i : idx) {
-            // Split the polygon (which is a quad) into two triangles
-            // and check if the mouse is inside any of the triangles
-            const ImVec2 mouse_pos = ImGui::GetMousePos();
-            if (ImTriangleContainsPoint(p[i][0], p[i][1], p[i][2], mouse_pos) ||
-                ImTriangleContainsPoint(p[i][0], p[i][2], p[i][3], mouse_pos))
-            {
-                hovered_plane_idx = i;
-                break;
-            }
-        }
-    }
-
-    // Render planes back to front
-    const int ridx[] = {idx[2], idx[1], idx[0]};
-    for (int i : ridx) {
-        // The visible area of the plane is proportial to the dot product of the normal and the view direction
-        // We want to fade out the plane when we are looking at it from the side
-        // In this case we don't have the plane normal, but we have the z component of the 'axis' vector
-
-        const float alpha_scl = powf(fabsf(az[i]), 0.5f);
-        ImVec4 col = ImColor(c[i]) * ImVec4(1.0f, 1.0f, 1.0f, 0.2f * alpha_scl);
-        if (i == hovered_plane_idx) {
-            const float val = 0.5f + 0.5f * sinf(ImGui::GetTime() * 10.0f);
-            col.x += val;
-            col.y += val;
-            col.z += val;
-            col.w = 0.5f;
-
-            const float max_rgb = ImMax(ImMax(col.x, col.y), col.z);
-            col.x /= max_rgb;
-            col.y /= max_rgb;
-            col.z /= max_rgb;
-        }
-
-        dl.AddConvexPolyFilled(p[i], ARRAY_SIZE(p[i]), ImColor(col));
-    }
-
-    if (hovered_plane_idx != -1) {
-        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            quat_t ori = quat_normalize(param.camera_ori);
-            vec3_t pos = param.camera_pos;
-            float  dst = param.camera_dist;
-
-            const vec3_t dirs[3] = {
-                { 1, 0, 0},
-                { 0, 1, 0},
-                { 0, 0, 1},
-            };
-            const int i = hovered_plane_idx;
-            const vec3_t look_at = pos - ori * vec3_set(0, 0, dst);
-
-            {
-                // Orientate to align with the plane
-                const vec3_t view_z = ori * vec3_set(0,0,1);
-                const float dp = vec3_dot(dirs[i], view_z);
-                const vec3_t f = dp > 0 ? dirs[i] : -dirs[i];
-                if (fabsf(dp) < 0.99999f) {
-                    const vec3_t axis = vec3_normalize(vec3_cross(view_z, f));
-                    const float angle = acosf(vec3_dot(view_z, f));
-                    const quat_t q = quat_angle_axis(angle, axis);
-
-                    // Orientate to align with 'z'
-                    ori = quat_normalize(q * ori);
-                }
-            }
-
-            {
-                const vec3_t view_y = ori * vec3_set(0,1,0);
-                // The orientation should now be aligned with the plane such that view_z is equal to +/- dirs[i]
-                // Now we want to align view_up with the x, y or z axis, whichever it coincides with the most
-                const float dx = vec3_dot(vec3_set(1,0,0), view_y);
-                const float dy = vec3_dot(vec3_set(0,1,0), view_y);
-                const float dz = vec3_dot(vec3_set(0,0,1), view_y);
-                vec3_t u;
-                float dp;
-                if (fabsf(dx) > fabsf(dy) && fabsf(dx) > fabsf(dz)) {
-                    u = signf(dx) * vec3_set(1,0,0);
-                    dp = dx;
-                } else if (fabsf(dy) > fabsf(dx) && fabsf(dy) > fabsf(dz)) {
-                    u = sign(dy) * vec3_set(0,1,0);
-                    dp = dy;
-                } else {
-                    u = sign(dz) * vec3_set(0,0,1);
-                    dp = dz;
-                }
-                if (fabsf(dp) < 0.99999f) {
-                    const vec3_t axis = vec3_normalize(vec3_cross(view_y, u));
-                    const float angle = acosf(vec3_dot(view_y, u));
-                    const quat_t q = quat_angle_axis(angle, axis);
-
-                    // Orientate to align with 'y'
-                    ori = quat_normalize(q * ori);
-                }
-            }
-
-            // Look at the same point as before
-            pos = look_at + ori * vec3_set(0, 0, dst);
-
-            param.camera_ori  = ori;
-            param.camera_pos  = pos;
-            param.camera_dist = dst;
-
-            return true;
-        }
-    }
-    return false;
-}
-
 // #camera-control
 static void handle_camera_interaction(ApplicationState* data) {
     ASSERT(data);
@@ -8429,7 +8001,7 @@ static void handle_camera_interaction(ApplicationState* data) {
                 .camera_dist = data->view.animation.target_distance,
             };
 
-            draw_coordinate_system_widget(param);
+            ImGui::DrawCoordinateSystemWidget(param);
 
 #if 0
             ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -8813,47 +8385,6 @@ static void handle_camera_interaction(ApplicationState* data) {
     if (open_atom_context) {
         ImGui::OpenPopup("AtomContextPopup");
     }
-}
-
-static void animate_camera(Camera* camera, quat_t target_ori, vec3_t target_pos, float target_dist, float dt, float target_factor) {
-    ASSERT(camera);
-
-    dt = CLAMP(dt, 1.0f / 1000.f, 1.0f / 20.f);
-
-    // We use an exponential interpolation of the deltas with a common factor
-    const float INV_TARGET_DT = 100.0f;
-    float interpolation_factor = target_factor * dt * INV_TARGET_DT;
-
-    vec3_t pos[2] = {camera->position, target_pos};
-    quat_t ori[2] = {camera->orientation, target_ori};
-    float dist[2] = {camera->focus_distance, target_dist};
-    camera_interpolate_look_at(&camera->position, &camera->orientation, &camera->focus_distance, pos, ori, dist, interpolation_factor);
-}
-
-static void clear_gbuffer(GBuffer* gbuffer) {
-    const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY, GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_POST_TONEMAP};
-
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuffer->deferred.fbo);
-    glViewport(0, 0, gbuffer->width, gbuffer->height);
-
-    glDepthMask(1);
-    glColorMask(1, 1, 1, 1);
-    glStencilMask(0xFF);
-    const vec4_t zero = {0,0,0,0};
-    const vec4_t picking = {1, 1, 1, 1};
-
-    // Setup gbuffer and clear textures
-    PUSH_GPU_SECTION("Clear G-buffer") {
-        // Clear color+alpha, normal, velocity, emissive, post_tonemap and depth
-        glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
-        glClearBufferfv(GL_COLOR, 0, zero.elem);
-        glClearBufferfv(GL_COLOR, 1, zero.elem);
-        glClearBufferfv(GL_COLOR, 2, zero.elem);
-        glClearBufferfv(GL_COLOR, 3, picking.elem);
-        glClearBufferfv(GL_COLOR, 4, zero.elem);
-        glClearBufferfi(GL_DEPTH_STENCIL, 0, 1.0f, 0x01);
-    }
-    POP_GPU_SECTION()
 }
 
 static void fill_gbuffer(ApplicationState* data) {
