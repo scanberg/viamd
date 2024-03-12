@@ -59,7 +59,7 @@ struct VeloxChem : viamd::EventHandler {
 
         struct {
             bool enabled = true;
-            static const size_t count = 2;
+            size_t count = 2;
             float  values[2] = {0.05f, -0.05};
             vec4_t colors[2] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
         } iso;
