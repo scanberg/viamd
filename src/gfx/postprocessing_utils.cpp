@@ -1729,9 +1729,11 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     PUSH_GPU_SECTION("Linearize Depth") {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo);
         glViewport(0, 0, gl.tex_width, gl.tex_height);
+        glScissor(0, 0, gl.tex_width, gl.tex_height);
         glClearColor(far_dist,0,0,0);
         glClear(GL_COLOR_BUFFER_BIT);
         glViewport(0, 0, width, height);
+        glScissor(0, 0, width, height);
         compute_linear_depth(desc.input_textures.depth, near_dist, far_dist, ortho);
     }
     POP_GPU_SECTION()
@@ -1745,6 +1747,7 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     if (desc.temporal_reprojection.enabled) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.velocity.fbo);
         glViewport(0, 0, gl.velocity.tex_width, gl.velocity.tex_height);
+        glScissor(0, 0, gl.velocity.tex_width, gl.velocity.tex_height);
 
         PUSH_GPU_SECTION("Velocity: Tilemax") {
             glDrawBuffer(GL_COLOR_ATTACHMENT0);
@@ -1771,6 +1774,7 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     glDrawBuffer(dst_buffer);
     //glViewport(0, 0, gl.tex_width, gl.tex_height);
     glViewport(0, 0, width, height);
+    glScissor(0, 0, width, height);
 
     PUSH_GPU_SECTION("Shade")
     shade_deferred(desc.input_textures.depth, desc.input_textures.color, desc.input_textures.normal, view_param.matrix.inverse.proj_jittered, desc.background.color, time);
@@ -1855,14 +1859,14 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
 
     // Activate backbuffer or whatever was bound before
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, last_fbo);
+    glDrawBuffer(last_draw_buffer);
     glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
     glScissor(last_scissor_box[0], last_scissor_box[1], last_scissor_box[2], last_scissor_box[3]);
-    glDrawBuffer(last_draw_buffer);
+    glDisable(GL_SCISSOR_TEST);
 
     swap_target();
     glDepthMask(0);
     blit_texture(src_texture);
-    glDisable(GL_SCISSOR_TEST);
 
     glDepthMask(1);
     glColorMask(1, 1, 1, 1);
