@@ -476,14 +476,14 @@ struct VeloxChem : viamd::EventHandler {
 			if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
 				if (ImPlot::BeginPlot("SCF")) {
 
-					ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, vlx.scf.iter.count);
+					ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)vlx.scf.iter.count);
 					ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
 					ImPlot::SetupAxes("Iterations", "eV");
 
-					ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, vlx.scf.iter.count);
-					ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, vlx.scf.iter.count);
-					ImPlot::PlotLine("Gradient Norm", iter, vlx.scf.iter.gradient_norm, vlx.scf.iter.count);
-					ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, vlx.scf.iter.count);
+					ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
+					ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
+					ImPlot::PlotLine("Gradient Norm", iter, vlx.scf.iter.gradient_norm, (int)vlx.scf.iter.count);
+					ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
 				}
 				ImPlot::EndPlot();
 
@@ -491,7 +491,7 @@ struct VeloxChem : viamd::EventHandler {
 
 					ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
 
-					ImPlot::PlotLine("Energy Total", iter, vlx.scf.iter.energy_total, vlx.scf.iter.count);
+					ImPlot::PlotLine("Energy Total", iter, vlx.scf.iter.energy_total, (int)vlx.scf.iter.count);
 				}
 				ImPlot::EndPlot();
 			}
@@ -511,16 +511,16 @@ struct VeloxChem : viamd::EventHandler {
 		return a;
 	}
 
-	md_array(double) gaussian_broadening(double* x_peaks, double* y_peaks, double sigma, double* x_array, double ln2 = 0.69314718056) {
-		int num_x = md_array_size(x_array);
-		int num_e = md_array_size(x_peaks);
+	md_array(double) gaussian_broadening(double* x_peaks, double* y_peaks, double sigma, double* x_array) {
+		int num_x = (int)md_array_size(x_array);
+		int num_e = (int)md_array_size(x_peaks);
 		double tot = 0.0;
 		md_array(double) y_return_array = md_array_create(double, num_x, arena);
 
 		for (int xi = 0; xi < num_x; xi++) {
 			tot = 0.0;
 			for (int ei = 0; ei < num_e; ei++) {
-				tot += y_peaks[ei] * exp(-ln2 * (pow((x_peaks[ei] - x_array[xi]) / sigma, 2)));
+				tot += y_peaks[ei] * exp(-(pow((x_peaks[ei] - x_array[xi]) / sigma, 2)));
 			}
 			y_return_array[xi] = tot;
 		}
@@ -528,8 +528,8 @@ struct VeloxChem : viamd::EventHandler {
 	}
 
 	md_array(double) lorentzian_broadening(double* x_peaks, double* y_peaks, double sigma, double* x_array) {
-		int num_x = md_array_size(x_array);
-		int num_e = md_array_size(x_peaks);
+		int num_x = (int)md_array_size(x_array);
+		int num_e = (int)md_array_size(x_peaks);
 		md_array(double) y_return_array = md_array_create(double, num_x, arena);
 		double tot = 0.0;
 
@@ -550,34 +550,50 @@ struct VeloxChem : viamd::EventHandler {
 		// TODO: Implement broadening
 		// Gaussian https://mdommett.github.io/blog/interpolation-with-gaussian-broadening/
 
-		int count = vlx.rsp.num_excited_states;
+		int count = (int)vlx.rsp.num_excited_states;
 		static float sigma = 0.1;
 		static int plot_points = 500;
-
+		const char* broadening_options[] = { "Gaussian","Lorentzian" };
+		static int broadening_current = 0;
 		// The actual plot
 		ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
 		if (ImGui::Begin("RSP", &show_window)) {
 			// We draw 2 plots as "Energy total" has values in a different range then the rest of the data
-			ImGui::DragFloat("sigma", &sigma, 0.01, 0, 1);
-			ImGui::DragInt("Absorption plot points", &plot_points, 1, 100, 1000);
+			ImGui::DragFloat("Broadening", &sigma, 0.01, 0, 1);
+			ImGui::DragInt("Num plot points", &plot_points, 1, 100, 1000);
 
+			/*
+			if (ImGui::BeginCombo("Broadening type", "Gaussian")) {
+				ImGui::Selectable("Lor", true);
+			}
+			ImGui::EndCombo();
+			*/
+
+			ImGui::Combo("combo", &broadening_current, broadening_options, IM_ARRAYSIZE(broadening_options));
+			//ImGui::ShowDemoWindow();
+			
 			if (ImPlot::BeginPlot("Spectra")) {
 				// ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, vlx.scf.iter.count);
 				ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
 				ImPlot::SetupAxes("eV", "epsilon");
 
-				ImPlot::PlotBars("Exited States", vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, vlx.rsp.num_excited_states, 0.01);
+				ImPlot::PlotBars("Exited States", vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, count, 0.01);
 
 				md_array(double) x_array = create_distributed_array(vlx.rsp.absorption_ev[0] - 1, vlx.rsp.absorption_ev[count - 1] + 1, plot_points);
-				md_array(double) gaussian_array = gaussian_broadening(vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, sigma, x_array, 1);
+				if (broadening_current == 0) {
+					md_array(double) gaussian_array = gaussian_broadening(vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, sigma, x_array);
+					ImPlot::PlotLine("Gaussian", x_array, gaussian_array, plot_points);
+				}
+				else if (broadening_current == 1) {
+					md_array(double) lorentzian_array = lorentzian_broadening(vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, sigma, x_array);
+					ImPlot::PlotLine("Lorentzian", x_array, lorentzian_array, plot_points);
+				}
 				//md_array(double) gaussian_arrayln2 = gaussian_broadening(vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, sigma, x_array);
-				md_array(double) lorentzian_array = lorentzian_broadening(vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, sigma, x_array);
-				ImPlot::PlotLine("Gaussian", x_array, gaussian_array, plot_points);
 				//ImPlot::PlotLine("Gaussian ln2", x_array, gaussian_arrayln2, plot_points, 0, 10);
-				ImPlot::PlotLine("Lorentzian", x_array, lorentzian_array, plot_points);
 
 			}
 			ImPlot::EndPlot();
+			
 		}
 		ImGui::End();
 	}
