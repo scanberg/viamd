@@ -571,9 +571,6 @@ struct VeloxChem : viamd::EventHandler {
 
 	void draw_rsp() {
 
-		// TODO: Implement broadening
-		// Gaussian https://mdommett.github.io/blog/interpolation-with-gaussian-broadening/
-
 		int count = (int)vlx.rsp.num_excited_states;
 		static float sigma = 0.1;
 		static int plot_points = 500;
@@ -587,24 +584,29 @@ struct VeloxChem : viamd::EventHandler {
 		const char* convert_options[] = { "eV", "nm" };
 		static int current_conversion = 1;
 
-		// The actual plot
+		// We keep track of if the combobox values change. If they do, we refit the plot to the graph by setting autofit for the next frame;
+		static int old_broadening = broadening_current;
+		static int old_conversion = current_conversion;
+		static ImPlotAxisFlags fit_flag = ImPlotAxisFlags_AutoFit;
+
 		ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
 		if (ImGui::Begin("RSP", &show_window)) {
 			// We draw 2 plots as "Energy total" has values in a different range then the rest of the data
 			ImGui::DragFloat("Broadening", &sigma, 0.01, 0, 1);
 			ImGui::DragInt("Num plot points", &plot_points, 1, 100, 1000);
 
-			/*
-			if (ImGui::BeginCombo("Broadening type", "Gaussian")) {
-				ImGui::Selectable("Lor", true);
-			}
-			ImGui::EndCombo();
-			*/
+			old_broadening = broadening_current;
+			old_conversion = current_conversion;
 
 			ImGui::Combo("combo", &broadening_current, broadening_options, IM_ARRAYSIZE(broadening_options));
 			//ImGui::ShowDemoWindow();
 
 			ImGui::Combo("X lable", &current_conversion, convert_options, IM_ARRAYSIZE(convert_options));
+
+			if (old_broadening != broadening_current || old_conversion != current_conversion) {
+				fit_flag = ImPlotAxisFlags_AutoFit;
+			}
+
 			switch (current_conversion) {
 			case 0:
 				con_fac = 1;
@@ -619,14 +621,13 @@ struct VeloxChem : viamd::EventHandler {
 			if (ImPlot::BeginPlot("Spectra")) {
 				// ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, vlx.scf.iter.count);
 				ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
-				ImPlot::SetupAxes(x_lable, "epsilon", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+				ImPlot::SetupAxes(x_lable, "epsilon", fit_flag, fit_flag);
+				fit_flag = 0; //Reset after SetupAxes is done
 
 				ImPlot::PlotBars("Exited States", scale_array(vlx.rsp.absorption_ev, con_fac), vlx.rsp.absorption_osc_str, count, 0.01 * con_fac);
 
 				md_array(double) x_array = create_distributed_array(vlx.rsp.absorption_ev[0] - 1, vlx.rsp.absorption_ev[count - 1] + 1, plot_points);
 				md_array(double) scaled_array = scale_array(x_array, con_fac);
-				double test0 = scaled_array[0];
-				double test1 = scaled_array[1];
 				if (broadening_current == 0) {
 					md_array(double) gaussian_array = gaussian_broadening(vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, sigma, x_array);
 					ImPlot::PlotLine("Gaussian", scaled_array, gaussian_array, plot_points);
