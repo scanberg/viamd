@@ -552,12 +552,12 @@ struct VeloxChem : viamd::EventHandler {
 	}
 	*/
 
-	md_array(double) scale_array(double* array, double factor) {
-		md_array(double) return_array = md_array_create(double, md_array_size(array), arena);
-		for (int i = 0; i < md_array_size(return_array); i++) {
-			return_array[i] = array[i] * factor;
+	md_array(double) ev_to_nm(double* ev_array) {
+		md_array(double) nm_array = md_array_create(double, md_array_size(ev_array), arena);
+		for (int i = 0; i < md_array_size(nm_array); i++) {
+			nm_array[i] = 1239.84193 / ev_array[i];
 		}
-		return return_array;
+		return nm_array;
 	}
 
 	/*
@@ -578,11 +578,12 @@ struct VeloxChem : viamd::EventHandler {
 		const char* broadening_options[] = { "Gaussian","Lorentzian" };
 		static int broadening_current = 0;
 
-		double con_fac = 1;
 		const char* x_lable = "debug";
-		const double eV2nm = 1239.84193;
+		const char* y_lable = "debug";
 		const char* convert_options[] = { "eV", "nm" };
-		static int current_conversion = 1;
+		static int current_conversion = 0;
+
+		double bar_fac = 1;
 
 		// We keep track of if the combobox values change. If they do, we refit the plot to the graph by setting autofit for the next frame;
 		static int old_broadening = broadening_current;
@@ -607,14 +608,33 @@ struct VeloxChem : viamd::EventHandler {
 				fit_flag = ImPlotAxisFlags_AutoFit;
 			}
 
-			switch (current_conversion) {
+			md_array(double) broadening_x_array = create_distributed_array(vlx.rsp.absorption_ev[0] - 1, vlx.rsp.absorption_ev[count - 1] + 1, plot_points);
+			md_array(double) broadening_y_array = 0;
+
+			switch (broadening_current) {
 			case 0:
-				con_fac = 1;
-				x_lable = "eV";
+				y_lable = "Gaussian";
+				broadening_y_array = gaussian_broadening(vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, sigma, broadening_x_array);
 				break;
 			case 1:
-				con_fac = eV2nm;
+				y_lable = "Lorentzian";
+				broadening_y_array = lorentzian_broadening(vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, sigma, broadening_x_array);
+				break;
+			}
+
+			md_array(double) x_peaks = 0;
+
+			switch (current_conversion) {
+			case 0:
+				x_lable = "eV";
+				x_peaks = vlx.rsp.absorption_ev;
+				bar_fac = 1;
+				break;
+			case 1:
 				x_lable = "nm";
+				x_peaks = ev_to_nm(vlx.rsp.absorption_ev);
+				broadening_x_array = ev_to_nm(broadening_x_array);
+				bar_fac = x_peaks[0] / vlx.rsp.absorption_ev[0];
 				break;
 			}
 			
@@ -624,18 +644,10 @@ struct VeloxChem : viamd::EventHandler {
 				ImPlot::SetupAxes(x_lable, "epsilon", fit_flag, fit_flag);
 				fit_flag = 0; //Reset after SetupAxes is done
 
-				ImPlot::PlotBars("Exited States", scale_array(vlx.rsp.absorption_ev, con_fac), vlx.rsp.absorption_osc_str, count, 0.01 * con_fac);
-
-				md_array(double) x_array = create_distributed_array(vlx.rsp.absorption_ev[0] - 1, vlx.rsp.absorption_ev[count - 1] + 1, plot_points);
-				md_array(double) scaled_array = scale_array(x_array, con_fac);
-				if (broadening_current == 0) {
-					md_array(double) gaussian_array = gaussian_broadening(vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, sigma, x_array);
-					ImPlot::PlotLine("Gaussian", scaled_array, gaussian_array, plot_points);
-				}
-				else if (broadening_current == 1) {
-					md_array(double) lorentzian_array = lorentzian_broadening(vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, sigma, x_array);
-					ImPlot::PlotLine("Lorentzian", scaled_array, lorentzian_array, plot_points);
-				}
+				ImPlot::PlotBars("Exited States", x_peaks, vlx.rsp.absorption_osc_str, count, 0.01 * bar_fac);
+					
+				ImPlot::PlotLine(y_lable, broadening_x_array, broadening_y_array, plot_points);
+				
 				//md_array(double) gaussian_arrayln2 = gaussian_broadening(vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, sigma, x_array);
 				//ImPlot::PlotLine("Gaussian ln2", x_array, gaussian_arrayln2, plot_points, 0, 10);
 
