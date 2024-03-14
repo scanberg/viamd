@@ -511,7 +511,7 @@ struct VeloxChem : viamd::EventHandler {
 		return a;
 	}
 
-	md_array(double) gaussian_broadening(double* x_peaks, double* y_peaks, double sigma, double* x_array, double ln2 = 0.69314718056) {
+	md_array(double) gaussian_broadening(double* x_peaks, double* y_peaks, double sigma, double* x_array) {
 		int num_x = md_array_size(x_array);
 		int num_e = md_array_size(x_peaks);
 		double tot = 0.0;
@@ -520,7 +520,7 @@ struct VeloxChem : viamd::EventHandler {
 		for (int xi = 0; xi < num_x; xi++) {
 			tot = 0.0;
 			for (int ei = 0; ei < num_e; ei++) {
-				tot += y_peaks[ei] * exp(-ln2 * (pow((x_peaks[ei] - x_array[xi]) / sigma, 2)));
+				tot += y_peaks[ei] * exp(-(pow(x_peaks[ei] - x_array[xi], 2) / (2 * pow(sigma, 2))));
 			}
 			y_return_array[xi] = tot;
 		}
@@ -539,11 +539,18 @@ struct VeloxChem : viamd::EventHandler {
 			for (int ei = 0; ei < num_e; ei++) {
 				//y_return_array[xi] = y_return_array[xi] + y_peaks[ei] * (sigma / 2.0) / (pow(x_array[xi] - x_peaks[ei], 2) + pow(sigma / 2.0, 2));
 				tot += y_peaks[ei] / (1 + pow((x_array[xi] - x_peaks[ei]) / sigma, 2));
+				//tot += (y_peaks[ei] * sigma) / ((pow((x_array[xi] - x_peaks[ei]), 2) + pow(2 * sigma, 2)) / PI); // I don't 
+
 			}
 			y_return_array[xi] = tot;
 		}
 		return y_return_array;
 	}
+	/*
+	double max(double* array) {
+		for (int i = 0; i < )
+	}
+	*/
 
 	void draw_rsp() {
 
@@ -569,7 +576,7 @@ struct VeloxChem : viamd::EventHandler {
 				ImPlot::PlotBars("Exited States", vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, vlx.rsp.num_excited_states, 0.01);
 
 				md_array(double) x_array = create_distributed_array(vlx.rsp.absorption_ev[0] - 1, vlx.rsp.absorption_ev[count - 1] + 1, plot_points);
-				md_array(double) gaussian_array = gaussian_broadening(vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, sigma, x_array, 1);
+				md_array(double) gaussian_array = gaussian_broadening(vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, sigma, x_array);
 				//md_array(double) gaussian_arrayln2 = gaussian_broadening(vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, sigma, x_array);
 				md_array(double) lorentzian_array = lorentzian_broadening(vlx.rsp.absorption_ev, vlx.rsp.absorption_osc_str, sigma, x_array);
 				ImPlot::PlotLine("Gaussian", x_array, gaussian_array, plot_points);
