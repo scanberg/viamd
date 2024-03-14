@@ -1,5 +1,18 @@
 #include <imgui.h>
 
+#include <core/md_vec_math.h>
+
+// This is very messy, but it works for now
+struct CoordSystemWidgetParam {
+	ImVec2 pos = ImVec2(0,0);
+	ImVec2 size;
+
+	const mat4_t& view_matrix;
+	quat_t& camera_ori;
+	vec3_t& camera_pos;
+	float&  camera_dist;
+};
+
 namespace ImGui {
 
 IMGUI_API bool RangeSliderFloat(const char* label, float* v1, float* v2, float v_min, float v_max, const char* display_format = "(%.3f, %.3f)", ImGuiSliderFlags flags = 0);
@@ -40,5 +53,7 @@ bool ColorEdit3Minimal(const char* label, float color[3]);
 bool ColorEdit4Minimal(const char* label, float color[4]);
 
 void DrawCheckerboard(ImDrawList* draw_list, ImVec2 p_min, ImVec2 p_max, ImU32 col1, ImU32 col2, float grid_step, ImVec2 grid_off);
+
+bool DrawCoordinateSystemWidget(const CoordSystemWidgetParam& param);
 
 }  // namespace ImGui

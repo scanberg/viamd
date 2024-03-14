@@ -129,9 +129,10 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
     //glfwGetWindowContentScale(window, &xscale, &yscale);
     //const float dpi_scale = (xscale + yscale) * 0.5f;
 
-    // default range is 0x0020 - 0x00FF.
-    // Added some greek letters
-    const ImWchar ranges_characters[] = {0x0020, 0x00FF, 0x03C6, 0x03C8, 0x2074, 0x207b, 0};
+    // Default range:               0x0020 - 0x00FF.
+    // Greek and Coptik:            0x0370 - 0x03FF
+    // Superscripts and Subscripts: 0x2070 - 0x209F
+    const ImWchar ranges_characters[] = {0x0020, 0x00FF, 0x0370, 0x03FF, 0x2070, 0x209F, 0};
     const ImWchar ranges_icons[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
     const float font_size[] = {16, 18, 20, 24, 30};
     const char* font_names[] = {"DejaVu Sans Mono 16", "DejaVu Sans Mono 18", "DejaVu Sans Mono 20", "DejaVu Sans Mono 24", "DejaVu Sans Mono 30"};

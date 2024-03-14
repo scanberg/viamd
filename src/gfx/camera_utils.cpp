@@ -148,6 +148,7 @@ void camera_interpolate_look_at(vec3_t* out_pos, quat_t* out_ori, float* out_dis
     if (quat_dot(in_ori[0], in_ori[1]) > (1.0 - quat_epsilon)) {
         ori = in_ori[1];
     } else {
+
         ori = quat_normalize(quat_slerp(in_ori[0], in_ori[1], t));
     }
 
@@ -204,4 +205,56 @@ bool camera_controller_trackball(vec3_t* position, quat_t* orientation, float* d
         if (flags & TrackballFlags_DollyReturnsTrue) return true;
     }
     return false;
+}
+
+void camera_compute_optimal_view(vec3_t* out_pos, quat_t* out_ori, float* out_dist, vec3_t in_aabb_min, vec3_t in_aabb_max) {
+    const vec3_t ext = in_aabb_max - in_aabb_min;
+    const float len = MAX(vec3_length(ext * 0.5f), 10.0f);
+
+    const float max_ext = MAX(MAX(ext.x, ext.y), ext.z);
+    const float min_ext = MIN(MIN(ext.x, ext.y), ext.z);
+    const float aniso_ext = max_ext / min_ext;
+
+    // We want to align the view such that we the longest axis of the aabb align with the X-axis, the mid axis with the Y-axis
+
+    int l[3] = { 0, 1, 2 };
+
+    auto swap = [](int& a, int& b) { int t = a; a = b; b = t; };
+
+    if (aniso_ext > 1.1f) {
+        // The aabb is not uniform, so we sort the axes by length
+        if (ext[l[0]] < ext[l[1]]) swap(l[0], l[1]);
+        if (ext[l[1]] < ext[l[2]]) swap(l[1], l[2]);
+        if (ext[l[0]] < ext[l[1]]) swap(l[0], l[1]);
+        // Now the axes are sorted with respect to the length l[0] > l[1] > l[2]
+    }
+
+    const mat3_t I = mat3_ident();
+    const vec3_t right = I[l[0]];
+    const vec3_t up    = I[l[1]];
+    const vec3_t out   = I[l[2]];
+
+    const vec3_t dir = vec3_normalize(right * 0.6f + up * 0.5f + out * 1.0f);
+
+    const vec3_t cen = (in_aabb_min + in_aabb_max) * 0.5f;
+    const vec3_t pos = cen + dir * len * 3.0f;
+
+    *out_ori = quat_from_mat4(mat4_look_at(pos, cen, up));
+    *out_pos = pos;
+    *out_dist = vec3_length(pos - cen);
+}
+
+void camera_animate(Camera* camera, quat_t target_ori, vec3_t target_pos, float target_dist, float dt, float target_factor) {
+    ASSERT(camera);
+
+    dt = CLAMP(dt, 1.0f / 1000.f, 1.0f / 20.f);
+
+    // We use an exponential interpolation of the deltas with a common factor
+    const float INV_TARGET_DT = 100.0f;
+    float interpolation_factor = target_factor * dt * INV_TARGET_DT;
+
+    vec3_t pos[2] = {camera->position, target_pos};
+    quat_t ori[2] = {camera->orientation, target_ori};
+    float dist[2] = {camera->focus_distance, target_dist};
+    camera_interpolate_look_at(&camera->position, &camera->orientation, &camera->focus_distance, pos, ori, dist, interpolation_factor);
 }

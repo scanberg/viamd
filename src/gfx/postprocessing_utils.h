@@ -5,6 +5,45 @@
 
 #include <core/md_vec_math.h>
 
+#define INVALID_PICKING_IDX (~0U)
+
+#define GL_COLOR_ATTACHMENT_COLOR        GL_COLOR_ATTACHMENT0
+#define GL_COLOR_ATTACHMENT_NORMAL       GL_COLOR_ATTACHMENT1
+#define GL_COLOR_ATTACHMENT_VELOCITY     GL_COLOR_ATTACHMENT2
+#define GL_COLOR_ATTACHMENT_PICKING      GL_COLOR_ATTACHMENT3
+#define GL_COLOR_ATTACHMENT_POST_TONEMAP GL_COLOR_ATTACHMENT4
+
+// Poor fit perhaps
+struct GBuffer {
+    struct {
+        uint32_t depth = 0;
+        uint32_t color = 0;
+        uint32_t normal = 0;
+        uint32_t velocity = 0;
+        uint32_t post_tonemap = 0;
+        uint32_t picking = 0;
+        uint32_t fbo = 0;
+    } deferred;
+
+    struct {
+        // @NOTE: Many of each, we submit the read and use it some frame(s) later
+        // This means that we read with N-1 frames latency
+        uint32_t color[2] = {};
+        uint32_t depth[2] = {};
+        uint32_t frame = 0;
+    } pbo_picking;
+
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+
+struct PickingData {
+    uint32_t idx = INVALID_PICKING_IDX;
+    float depth = 1.0f;
+    vec3_t world_coord = {0, 0, 0};
+    vec2_t screen_coord = {0, 0};
+};
+
 namespace postprocessing {
 
 void initialize(int width, int height);
@@ -83,5 +122,9 @@ void blit_color(vec4_t color);
 void blur_texture_gaussian(GLuint tex, int num_passes = 1);
 void blur_texture_box(GLuint tex, int num_passes = 1);
 
-
 }  // namespace postprocessing
+
+void clear_gbuffer(GBuffer* gbuf);
+void init_gbuffer(GBuffer* gbuf, int width, int height);
+void destroy_gbuffer(GBuffer* gbuf);
+PickingData read_picking_data(GBuffer* fbo, int x, int y);

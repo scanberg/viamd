@@ -109,3 +109,8 @@ mat4_t camera_inverse_orthographic_projection_matrix(float left, float right, fl
 bool camera_controller_trackball(vec3_t* position, quat_t* orientation, float* distance, TrackballControllerInput input, TrackballControllerParam param, TrackballFlags flags = -1);
 
 //void camera_controller_fps(Camera* camera, const FpsControllerState& state);
+
+void camera_compute_optimal_view(vec3_t* position, quat_t* orientation, float* distance, vec3_t aabb_min, vec3_t aabb_max);
+
+// Lazy stupid procedure on top of interpolate_look_at
+void camera_animate(Camera* camera, quat_t target_ori, vec3_t target_pos, float target_dist, float dt, float target_factor = 0.1f);
