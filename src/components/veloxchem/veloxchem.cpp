@@ -7,6 +7,7 @@
 
 #include <md_gto.h>
 #include <md_vlx.h>
+#include <md_util.h>
 #include <core/md_log.h>
 #include <core/md_arena_allocator.h>
 
@@ -36,23 +37,62 @@ static int vol_mode = 0;
 struct VeloxChem : viamd::EventHandler {
     VeloxChem() { viamd::event_system_register_handler(*this); }
 
-    bool show_volume = false;
-    bool show_window = false;
     md_vlx_data_t vlx {};
 
     struct Volume {
         int dim[3] = {128, 128, 128};
         float* data = 0;
         size_t num_bytes = 0;
-        vec3_t min_box = {};
-        vec3_t max_box = {};
         vec3_t step_size = {};
-        mat4_t model_mat = {};
+        vec3_t extent = {};
+        mat4_t model_to_world = {};
+        mat4_t tex_to_world   = {};
     };
 
-    Volume vol = {};
+    struct Orb {
+        bool show_window = false;
+        bool show_volume = false;
+        Volume vol = {};
 
-    struct {
+        uint32_t vol_texture = 0;
+        uint32_t tf_texture = 0;
+
+        bool tf_dirty = true;
+
+        vec3_t clip_min = {0,0,0};
+        vec3_t clip_max = {1,1,1};
+
+        struct {
+            bool enabled = true;
+            vec4_t color = {0,0,0,1};
+        } bounding_box;
+
+        ImPlotColormap colormap = ImPlotColormap_Plasma;
+        float colormap_alpha_scale = 1.0f;
+
+        int mo_idx = 0;
+        int homo_idx = 0;
+        int lumo_idx = 0;
+
+        task_system::ID compute_volume_task = 0;
+
+        md_array(md_gto_t) pgtos = 0;
+
+        float density_scale = 1.0f;
+
+        struct {
+            bool enabled = true;
+            size_t count = 2;
+            float  values[2] = {0.05f, -0.05};
+            vec4_t colors[2] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
+        } iso;
+
+        struct {
+            bool enabled = false;
+        } dvr;
+    } orb;
+
+    struct Nto {
         bool show_window = false;
         Volume vol = {};
         uint32_t vol_tex = {};
@@ -76,41 +116,6 @@ struct VeloxChem : viamd::EventHandler {
         bool show_coordinate_system_widget = true;
         md_gl_representation_t gl_rep = {};
     } nto;
-
-    uint32_t vol_texture = 0;
-    uint32_t tf_texture = 0;
-
-    bool tf_dirty = true;
-
-    vec3_t clip_min = {0,0,0};
-    vec3_t clip_max = {1,1,1};
-
-    bool   bounding_box_enabled = false;
-    vec4_t bounding_box_color = {0,0,0,1};
-
-    ImPlotColormap colormap = ImPlotColormap_Plasma;
-    float colormap_alpha_scale = 1.0f;
-
-    int mo_idx = 0;
-    int homo_idx = 0;
-    int lumo_idx = 0;
-
-    task_system::ID compute_volume_task = 0;
-
-    md_gto_data_t pgto = {0};
-
-    float density_scale = 1.0f;
-
-    struct {
-        bool enabled = true;
-        size_t count = 2;
-        float  values[8] = {0.05f, -0.05};
-        vec4_t colors[8] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
-    } iso;
-
-    struct {
-        bool enabled = false;
-    } dvr;
 
     md_allocator_i* arena = 0;
 
@@ -137,16 +142,16 @@ struct VeloxChem : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdFrameTick: {
                 ApplicationState& state = *(ApplicationState*)e.payload;
-                draw_window();
+                draw_orb_window();
                 draw_nto_window(state);
                 break;
             }
             case viamd::EventType_ViamdDrawMenu:
-                ImGui::Checkbox("VeloxChem", &show_window);
+                ImGui::Checkbox("VeloxChem Orbital", &orb.show_window);
                 break;
             case viamd::EventType_ViamdPostRender: {
                 ApplicationState& state = *(ApplicationState*)e.payload;
-                draw_volume(state);
+                draw_orb_volume(state);
                 break;
             }
             case viamd::EventType_ViamdTopologyInit: {
@@ -158,39 +163,63 @@ struct VeloxChem : viamd::EventHandler {
                     md_vlx_data_free(&vlx);
                     if (md_vlx_data_parse_file(&vlx, top_file, arena)) {
                         MD_LOG_INFO("Successfully loaded VeloxChem data");
-                        show_window = true;
+                        orb.show_window = true;
 
                         for (int i = 0; i < (int)vlx.scf.alpha.occupations.count; ++i) {
                             if (vlx.scf.alpha.occupations.data[i] > 0) {
-                                homo_idx = i;
+                                orb.homo_idx = i;
                             } else {
-                                lumo_idx = i;
+                                orb.lumo_idx = i;
                                 break;
                             }
                         }
 
                         size_t num_pgtos = md_vlx_pgto_count(&vlx);
-                        md_gto_data_init(&pgto, num_pgtos, arena);
+                        md_array_resize(orb.pgtos, num_pgtos, arena);
+                        MEMSET(orb.pgtos, 0, md_array_bytes(orb.pgtos));
 
-                        vec3_t min_box = vec3_set1(FLT_MAX);
-                        vec3_t max_box = vec3_set1(-FLT_MAX);
-
+                        // Compute Object Oriented Bounding Box
+                        // @NOTE: This is a crude approximation, by using the PCA
+                        vec4_t* xyzw = (vec4_t*)md_temp_push(sizeof(vec4_t) * vlx.geom.num_atoms);
                         for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
-                            vec3_t coord = vec3_set((float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i]);
-                            min_box = vec3_min(min_box, coord);
-                            max_box = vec3_max(max_box, coord);
+                            xyzw[i] = {(float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i], 1.0f};
                         }
 
-                        const float pad = 3.0f;
-                        min_box = vec3_sub_f(min_box, pad);
-                        max_box = vec3_add_f(max_box, pad);
+                        vec3_t com = md_util_com_compute_vec4(xyzw, vlx.geom.num_atoms, 0);
+                        mat3_t C = mat3_covariance_matrix_vec4(xyzw, 0, vlx.geom.num_atoms, com);
+                        mat3_eigen_t eigen = mat3_eigen(C);
 
-                        vol.min_box = min_box;
-                        vol.max_box = max_box;
-                        vol.model_mat = volume::compute_model_to_world_matrix(vol.min_box, vol.max_box);
+                        mat3_t A = mat3_extract_rotation(eigen.vectors);
 
-                        update_volume();
-                        show_volume = true;
+                        // Compute min and maximum extent along the axes
+                        vec3_t min_ext = { FLT_MAX, FLT_MAX, FLT_MAX};
+                        vec3_t max_ext = {-FLT_MAX,-FLT_MAX,-FLT_MAX};
+
+                        mat4_t R = mat4_from_mat3(mat3_transpose(A));
+                        mat4_t Ri = mat4_from_mat3(A);
+
+                        for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
+                            vec4_t p = mat4_mul_vec4(Ri, xyzw[i]);
+                            min_ext = vec3_min(min_ext, vec3_from_vec4(p));
+                            max_ext = vec3_max(max_ext, vec3_from_vec4(p));
+                        }
+
+                        const float pad = 2.5f;
+                        min_ext = vec3_sub_f(min_ext, pad);
+                        max_ext = vec3_add_f(max_ext, pad);
+
+                        vec3_t origin = mat4_mul_vec3(R, min_ext, 0.0f);
+                        vec3_t extent = {max_ext.x - min_ext.x, max_ext.y - min_ext.y, max_ext.z - min_ext.z};
+
+                        mat4_t T = mat4_translate(origin.x, origin.y, origin.z);
+                        mat4_t S = mat4_scale(extent.x, extent.y, extent.z);
+
+                        orb.vol.extent = extent;
+                        orb.vol.model_to_world = T * R;
+                        orb.vol.tex_to_world = T * R * S;
+
+                        update_orb_volume();
+                        orb.show_volume = true;
 
                         // NTO
                         md_gl_representation_init(&nto.gl_rep, &state.mold.gl_mol);
@@ -200,24 +229,18 @@ struct VeloxChem : viamd::EventHandler {
                         color_atoms_cpk(colors, state.mold.mol.atom.count, state.mold.mol);
                         md_gl_representation_set_color(&nto.gl_rep, 0, (uint32_t)state.mold.mol.atom.count, colors, 0);
                         md_temp_set_pos_back(temp_pos);
-                        nto.show_window = true;
+                        nto.vol.model_to_world = orb.vol.model_to_world;
+                        nto.vol.tex_to_world   = orb.vol.tex_to_world;
 
-                        nto.vol.min_box = vol.min_box;
-                        nto.vol.max_box = vol.max_box;
-                        nto.vol.model_mat = vol.model_mat;
-
+                        vec3_t min_box = vec3_from_vec4(orb.vol.model_to_world * vec4_set(0,0,0,1));
+                        vec3_t max_box = vec3_from_vec4(orb.vol.model_to_world * vec4_set(1,1,1,1));
                         camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_box, max_box);
                     } else {
                         MD_LOG_INFO("Failed to load VeloxChem data");
                         md_arena_allocator_reset(arena);
-                        vol = {};
                         vlx = {};
-                        pgto = {};
+                        orb = {};
                         nto = {};
-                        mo_idx = 0;
-                        homo_idx = 0;
-                        lumo_idx = 0;
-                        show_volume = false;
                     }
                 }
                 break;
@@ -226,14 +249,9 @@ struct VeloxChem : viamd::EventHandler {
                 md_gl_representation_free(&nto.gl_rep);
 
                 md_arena_allocator_reset(arena);
-                vol = {};
                 vlx = {};
-                pgto = {};
+                orb = {};
                 nto = {};
-                mo_idx = 0;
-                homo_idx = 0;
-                lumo_idx = 0;
-                show_volume = false;
                 break;
             default:
                 break;
@@ -241,74 +259,89 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
-    void update_volume() {
-        if (task_system::task_is_running(compute_volume_task)) {
-            task_system::task_interrupt(compute_volume_task);
+    void update_orb_volume() {
+        if (task_system::task_is_running(orb.compute_volume_task)) {
+            task_system::task_interrupt(orb.compute_volume_task);
         }
         else {
 #define BLK_DIM 8
-            vec3_t ext_box = vec3_sub(vol.max_box, vol.min_box);
-
             // Target resolution per spatial unit (We want this number of samples per Ångström in each dimension)
             // Round up to some multiple of 8 -> 8x8x8 is the chunksize we process in parallel
 
             const float res_scale = vol_res_scl[vol_res_idx];
 
             int dim[3] = {
-                CLAMP(ALIGN_TO((int)(ext_box.x * res_scale), 8), 8, 512),
-                CLAMP(ALIGN_TO((int)(ext_box.y * res_scale), 8), 8, 512),
-                CLAMP(ALIGN_TO((int)(ext_box.z * res_scale), 8), 8, 512),
+                CLAMP(ALIGN_TO((int)(orb.vol.extent.x * res_scale), 8), 8, 512),
+                CLAMP(ALIGN_TO((int)(orb.vol.extent.y * res_scale), 8), 8, 512),
+                CLAMP(ALIGN_TO((int)(orb.vol.extent.z * res_scale), 8), 8, 512),
             };
 
             size_t num_bytes = sizeof(float) * dim[0] * dim[1] * dim[2];
-            if (num_bytes != vol.num_bytes) {
-                vol.data = (float*)md_realloc(arena, vol.data, vol.num_bytes, num_bytes);
-                ASSERT(vol.data);
-                vol.num_bytes = num_bytes;
+            if (num_bytes != orb.vol.num_bytes) {
+                orb.vol.data = (float*)md_realloc(arena, orb.vol.data, orb.vol.num_bytes, num_bytes);
+                ASSERT(orb.vol.data);
+                orb.vol.num_bytes = num_bytes;
             }
 
-            MEMSET(vol.data, 0, vol.num_bytes);
+            MEMSET(orb.vol.data, 0, orb.vol.num_bytes);
             
-            MEMCPY(vol.dim, dim, sizeof(vol.dim));
-            vol.step_size = vec3_div(ext_box, vec3_set((float)vol.dim[0], (float)vol.dim[1], (float)vol.dim[2]));
+            MEMCPY(orb.vol.dim, dim, sizeof(orb.vol.dim));
+            orb.vol.step_size = vec3_div(orb.vol.extent, vec3_set((float)orb.vol.dim[0], (float)orb.vol.dim[1], (float)orb.vol.dim[2]));
 
-            MD_LOG_DEBUG("Created Orbital volume of dimensions [%i][%i][%i]", vol.dim[0], vol.dim[1], vol.dim[2]);
+            MD_LOG_DEBUG("Created Orbital volume of dimensions [%i][%i][%i]", orb.vol.dim[0], orb.vol.dim[1], orb.vol.dim[2]);
 
-            if (!md_vlx_extract_alpha_mo_pgtos(&pgto, &vlx, mo_idx)) {
-                MD_LOG_ERROR("Failed to extract alpha orbital for orbital index: %i", mo_idx);
+            if (!md_vlx_extract_alpha_mo_pgtos(orb.pgtos, &vlx, orb.mo_idx)) {
+                MD_LOG_ERROR("Failed to extract alpha orbital for orbital index: %i", orb.mo_idx);
                 return;
             }
+            md_gto_cutoff_compute(orb.pgtos, md_array_size(orb.pgtos), 1.0e-6);
 
-            uint32_t num_blocks = (vol.dim[0] / BLK_DIM) * (vol.dim[1] / BLK_DIM) * (vol.dim[2] / BLK_DIM);
+            // Transform pgtos into the 'model space' of the volume
+            // There is a scaling factor here as well as the PGTOs are given and must be
+            // Processed in a.u. (Bohr) and not Ångström, in which the volume is defined
+            mat4_t R = orb.vol.model_to_world;
+            R.col[3] = vec4_set(0,0,0,1);
+            R = mat4_transpose(R);
+
+            // Ångström to Bohr
+            vec4_t t = vec4_mul_f(orb.vol.model_to_world.col[3], 1.0 / 0.529177210903);
+            mat4_t T = mat4_translate(-t.x, -t.y, -t.z);
+
+            mat4_t M = R * T;
+            for (size_t i = 0; i < md_array_size(orb.pgtos); ++i) {
+                vec4_t c = {orb.pgtos[i].x, orb.pgtos[i].y, orb.pgtos[i].z, 1.0f};
+                c = M * c;
+                orb.pgtos[i].x = c.x;
+                orb.pgtos[i].y = c.y;
+                orb.pgtos[i].z = c.z;
+            }
+
             // We evaluate the in parallel over smaller NxNxN blocks
+            uint32_t num_blocks = (orb.vol.dim[0] / BLK_DIM) * (orb.vol.dim[1] / BLK_DIM) * (orb.vol.dim[2] / BLK_DIM);
 
-            compute_volume_task = task_system::pool_enqueue(STR_LIT("Compute Volume"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
-                VeloxChem* data = (VeloxChem*)user_data;
+            orb.compute_volume_task = task_system::pool_enqueue(STR_LIT("Compute Volume"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+                Orb* orb = (Orb*)user_data;
 
+                // Number of NxNxN blocks in each dimension
                 int num_blk[3] = {
-                    data->vol.dim[0] / BLK_DIM,
-                    data->vol.dim[1] / BLK_DIM,
-                    data->vol.dim[2] / BLK_DIM,
-                };
-
-                md_grid_t grid = {
-                    .data = data->vol.data,
-                    .dim  = {data->vol.dim[0], data->vol.dim[1], data->vol.dim[2]},
-                    // Shift origin by half a voxel to evaluate at the voxel center
-                    .origin = {data->vol.min_box.x + 0.5f * data->vol.step_size.x, data->vol.min_box.y + 0.5f * data->vol.step_size.y, data->vol.min_box.z + 0.5f * data->vol.step_size.z},
-                    .stepsize = {data->vol.step_size.x, data->vol.step_size.y, data->vol.step_size.z},
+                    orb->vol.dim[0] / BLK_DIM,
+                    orb->vol.dim[1] / BLK_DIM,
+                    orb->vol.dim[2] / BLK_DIM,
                 };
 
                 // Conversion from Ångström to Bohr
                 const float factor = 1.0 / 0.529177210903;
 
-                grid.origin[0] *= factor;
-                grid.origin[1] *= factor;
-                grid.origin[2] *= factor;
+                // The PGTOs have been pre-transformed into the 'model space' of the volume
+                vec3_t step = vec3_mul_f(orb->vol.step_size, factor);
 
-                grid.stepsize[0] *= factor;
-                grid.stepsize[1] *= factor;
-                grid.stepsize[2] *= factor;
+                md_grid_t grid = {
+                    .data = orb->vol.data,
+                    .dim  = {orb->vol.dim[0], orb->vol.dim[1], orb->vol.dim[2]},
+                    // Shift origin by half a voxel to evaluate at the voxel center
+                    .origin = {0.5f * step.x, 0.5f * step.y, 0.5f * step.z},
+                    .stepsize = {step.x, step.y, step.z},
+                };
 
                 for (uint32_t i = range_beg; i < range_end; ++i) {
                     // Determine block index
@@ -320,23 +353,25 @@ struct VeloxChem : viamd::EventHandler {
                     const int len_idx[3] = {BLK_DIM, BLK_DIM, BLK_DIM};
 
                     md_gto_eval_mode_t eval_mode = vol_mode == 0 ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
-                    md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, &data->pgto, eval_mode);
+                    md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, orb->pgtos, md_array_size(orb->pgtos), eval_mode);
                 }
-            }, this);
+            }, &this->orb);
 
 #undef BLK_DIM
 
             // Launch task for main (render) thread to update the volume texture
             task_system::main_enqueue(STR_LIT("Update Volume"), [](void* user_data) {
-                VeloxChem* data = (VeloxChem*)user_data;
-                gl::init_texture_3D(&data->vol_texture, data->vol.dim[0], data->vol.dim[1], data->vol.dim[2], GL_R32F);
-                gl::set_texture_3D_data(data->vol_texture, data->vol.data, GL_R32F);
-            }, this, compute_volume_task);
+                Orb* orb = (Orb*)user_data;
+                gl::init_texture_3D(&orb->vol_texture, orb->vol.dim[0], orb->vol.dim[1], orb->vol.dim[2], GL_R32F);
+                gl::set_texture_3D_data(orb->vol_texture, orb->vol.data, GL_R32F);
+            }, &this->orb, orb.compute_volume_task);
         }
     }
 
-    void draw_volume(ApplicationState& state) {
-        if (!show_volume) return;
+    void draw_orb_volume(ApplicationState& state) {
+        if (!orb.show_volume) return;
+
+        // Volume model matrix expects the 
 
         volume::RenderDesc desc = {
             .render_target = {
@@ -347,47 +382,47 @@ struct VeloxChem : viamd::EventHandler {
                 .height  = state.gbuffer.height,
             },
             .texture = {
-                .volume = vol_texture,
-                .transfer_function = tf_texture,
+                .volume = orb.vol_texture,
+                .transfer_function = orb.tf_texture,
             },
             .matrix = {
-                .model = vol.model_mat,
+                .model = orb.vol.tex_to_world,
                 .view = state.view.param.matrix.current.view,
                 .proj = state.view.param.matrix.current.proj,
             },
             .clip_volume = {
-                .min = clip_min,
-                .max = clip_max,
+                .min = orb.clip_min,
+                .max = orb.clip_max,
             },
             .global_scaling = {
-                .density = density_scale,
+                .density = orb.density_scale,
             },
             .iso_surface = {
-                .count  = iso.count,
-                .values = iso.values,
-                .colors = iso.colors,
+                .count  = orb.iso.count,
+                .values = orb.iso.values,
+                .colors = orb.iso.colors,
             },
-            .isosurface_enabled = iso.enabled,
-            .direct_volume_rendering_enabled = dvr.enabled,
-            .voxel_spacing = vol.step_size,
+            .isosurface_enabled = orb.iso.enabled,
+            .direct_volume_rendering_enabled = orb.dvr.enabled,
+            .voxel_spacing = orb.vol.step_size,
         };
 
         volume::render_volume(desc);
 
-        if (bounding_box_enabled) {
-            if (vol.model_mat != mat4_t{0}) {
-                immediate::set_model_view_matrix(mat4_mul(state.view.param.matrix.current.view, vol.model_mat));
+        if (orb.bounding_box.enabled) {
+            if (orb.vol.model_to_world != mat4_t{0}) {
+                immediate::set_model_view_matrix(mat4_mul(state.view.param.matrix.current.view, orb.vol.tex_to_world));
                 immediate::set_proj_matrix(state.view.param.matrix.current.proj);
-                immediate::draw_box_wireframe(vec3_set1(0), vec3_set1(1), bounding_box_color);
+                immediate::draw_box_wireframe(vec3_set1(0), vec3_set1(1), orb.bounding_box.color);
                 immediate::render();
             }
         }
     }
 
-    void draw_window() {
-        if (!show_window) return;
+    void draw_orb_window() {
+        if (!orb.show_window) return;
         ImGui::SetNextWindowSize({300,350}, ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("VeloxChem", &show_window)) {
+        if (ImGui::Begin("VeloxChem", &orb.show_window)) {
             if (vlx.geom.num_atoms) {
                 if (ImGui::TreeNode("Geometry")) {
                     ImGui::Text("Num Atoms:           %6zu", vlx.geom.num_atoms);
@@ -413,7 +448,7 @@ struct VeloxChem : viamd::EventHandler {
                         if (ImGui::Selectable(vol_mode_str[i], vol_mode == i)) {
                             if (vol_mode != i) {
                                 vol_mode = i;
-                                update_volume();
+                                update_orb_volume();
                             }
                         }
                     }
@@ -425,7 +460,7 @@ struct VeloxChem : viamd::EventHandler {
                         if (ImGui::Selectable(vol_res_lbl[i], vol_res_idx == i)) {
                             if (vol_res_idx != i) {
                                 vol_res_idx = i;
-                                update_volume();
+                                update_orb_volume();
                             }
                         }
                     }
@@ -437,56 +472,56 @@ struct VeloxChem : viamd::EventHandler {
                     const  double iso_min = 1.0e-4;
                     const  double iso_max = 5.0;
                     ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
-                    iso.values[0] =  (float)iso_val;
-                    iso.values[1] = -(float)iso_val;
-                    iso.count = 2;
-                    iso.enabled = true;
-                    dvr.enabled = false;
+                    orb.iso.values[0] =  (float)iso_val;
+                    orb.iso.values[1] = -(float)iso_val;
+                    orb.iso.count = 2;
+                    orb.iso.enabled = true;
+                    orb.dvr.enabled = false;
 
-                    density_scale = 1.0f;
+                    orb.density_scale = 1.0f;
 
-                    ImGui::ColorEdit4("Color Positive", iso.colors[0].elem);
-                    ImGui::ColorEdit4("Color Negative", iso.colors[1].elem);
+                    ImGui::ColorEdit4("Color Positive", orb.iso.colors[0].elem);
+                    ImGui::ColorEdit4("Color Negative", orb.iso.colors[1].elem);
                 } else {
-                    iso.enabled = false;
-                    dvr.enabled = true;
+                    orb.iso.enabled = false;
+                    orb.dvr.enabled = true;
 
                     const ImVec2 button_size = {160, 0};
-                    if (ImPlot::ColormapButton(ImPlot::GetColormapName(colormap), button_size, colormap)) {
+                    if (ImPlot::ColormapButton(ImPlot::GetColormapName(orb.colormap), button_size, orb.colormap)) {
                         ImGui::OpenPopup("Colormap Selector");
                     }
                     if (ImGui::BeginPopup("Colormap Selector")) {
                         for (int map = 4; map < ImPlot::GetColormapCount(); ++map) {
                             if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), button_size, map)) {
-                                colormap = map;
-                                tf_dirty = true;
+                                orb.colormap = map;
+                                orb.tf_dirty = true;
                                 ImGui::CloseCurrentPopup();
                             }
                         }
                         ImGui::EndPopup();
                     }
-                    if (ImGui::SliderFloat("Alpha Scale", &colormap_alpha_scale, 0.001f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic)) {
-                        tf_dirty = true;
+                    if (ImGui::SliderFloat("Alpha Scale", &orb.colormap_alpha_scale, 0.001f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic)) {
+                        orb.tf_dirty = true;
                     }
 
-                    ImGui::SliderFloat("Density Scale", &density_scale, 0.001f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                    ImGui::SliderFloat("Density Scale", &orb.density_scale, 0.001f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic);
 
                     // Update colormap texture
-                    if (tf_dirty) {
-                        tf_dirty = false;
+                    if (orb.tf_dirty) {
+                        orb.tf_dirty = false;
                         uint32_t pixel_data[128];
                         for (size_t i = 0; i < ARRAY_SIZE(pixel_data); ++i) {
                             float t = (float)i / (float)(ARRAY_SIZE(pixel_data) - 1);
-                            ImVec4 col = ImPlot::SampleColormap(t, colormap);
+                            ImVec4 col = ImPlot::SampleColormap(t, orb.colormap);
 
                             // This is a small alpha ramp in the start of the TF to avoid rendering low density values.
                             col.w = MIN(160 * t*t, 0.341176f);
-                            col.w = CLAMP(col.w * colormap_alpha_scale, 0.0f, 1.0f);
+                            col.w = CLAMP(col.w * orb.colormap_alpha_scale, 0.0f, 1.0f);
                             pixel_data[i] = ImGui::ColorConvertFloat4ToU32(col);
                         }
 
-                        gl::init_texture_2D(&tf_texture, (int)ARRAY_SIZE(pixel_data), 1, GL_RGBA8);
-                        gl::set_texture_2D_data(tf_texture, pixel_data, GL_RGBA8);
+                        gl::init_texture_2D(&orb.tf_texture, (int)ARRAY_SIZE(pixel_data), 1, GL_RGBA8);
+                        gl::set_texture_2D_data(orb.tf_texture, pixel_data, GL_RGBA8);
                     }
                 }
 
@@ -502,7 +537,7 @@ struct VeloxChem : viamd::EventHandler {
                 static float table_height = 0.0f;
                 if (ImGui::Button("Goto HOMO/LUMO")) {
                     // 1.5f offset = 1 for skipping the column header row and 0.5 for placing the view between homo/lumo
-                    ImGui::SetNextWindowScroll(ImVec2(-1, (TEXT_BASE_HEIGHT * (homo_idx + 1.5f)) - table_height * 0.5f));
+                    ImGui::SetNextWindowScroll(ImVec2(-1, (TEXT_BASE_HEIGHT * (orb.homo_idx + 1.5f)) - table_height * 0.5f));
                 }
 
                 const ImGuiTableFlags flags =
@@ -514,21 +549,21 @@ struct VeloxChem : viamd::EventHandler {
                         // Display a data item
                         ImGui::PushID(n + 1);
                         ImGui::TableNextRow();
-                        bool is_selected = mo_idx == n;
+                        bool is_selected = (orb.mo_idx == n);
                         ImGui::TableNextColumn();
                         char buf[32];
                         snprintf(buf, sizeof(buf), "%i", n + 1);
                         ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                         if (ImGui::Selectable(buf, is_selected, selectable_flags)) {
-                            mo_idx = n;
-                            update_volume();
+                            orb.mo_idx = n;
+                            update_orb_volume();
                         }
                         ImGui::TableNextColumn();
                         ImGui::Text("%.1f", vlx.scf.alpha.occupations.data[n]);
                         ImGui::TableNextColumn();
                         ImGui::Text("%.4f", vlx.scf.alpha.energies.data[n]);
                         ImGui::TableNextColumn();
-                        const char* lbl = (n == homo_idx) ? "HOMO" : (n == lumo_idx) ? "LUMO" : "";
+                        const char* lbl = (n == orb.homo_idx) ? "HOMO" : (n == orb.lumo_idx) ? "LUMO" : "";
                         ImGui::TextUnformatted(lbl);
                         ImGui::PopID();
                         };
@@ -632,7 +667,9 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (reset_view) {
-                camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, nto.vol.min_box, nto.vol.max_box);
+                vec3_t min_box = mat4_mul_vec3(nto.vol.tex_to_world, vec3_set1(0.f), 1.f);
+                vec3_t max_box = mat4_mul_vec3(nto.vol.tex_to_world, vec3_set1(1.f), 1.f);
+                camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_box, max_box);
 
                 if (reset_hard) {
                     nto.camera.position         = nto.target.pos;
@@ -741,7 +778,7 @@ struct VeloxChem : viamd::EventHandler {
                         .volume = nto.vol_tex,
                     },
                     .matrix = {
-                        .model = nto.vol.model_mat,
+                        .model = nto.vol.tex_to_world,
                         .view  = view_mat,
                         .proj  = proj_mat,
                     },
