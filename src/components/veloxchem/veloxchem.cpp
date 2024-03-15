@@ -616,6 +616,7 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     void draw_scf_window() {
+        if (!scf.show_window) { return; }
         size_t temp_pos = md_temp_get_pos();
         defer {  md_temp_set_pos_back(temp_pos); };
 
@@ -659,6 +660,8 @@ struct VeloxChem : viamd::EventHandler {
     enum x_unit_t {
         X_UNIT_EV,
         X_UNIT_NM,
+        X_UNIT_CM_INVERSE,
+        X_UNIT_HARTREE,
     };
 
     enum broadening_mode_t {
@@ -672,6 +675,16 @@ struct VeloxChem : viamd::EventHandler {
         case X_UNIT_NM:
             for (size_t i = 0; i < num_values; ++i) {
                 values[i] = 1239.84193 / values[i];
+            }
+            break;
+        case X_UNIT_CM_INVERSE:
+            for (size_t i = 0; i < num_values; ++i) {
+                values[i] = values[i] * 8065.73;
+            }
+            break;
+        case X_UNIT_HARTREE:
+            for (size_t i = 0; i < num_values; ++i) {
+                values[i] = values[i] * 0.0367502;
             }
             break;
         default:
@@ -710,10 +723,14 @@ struct VeloxChem : viamd::EventHandler {
 
         static float sigma = 0.1;
 
+        //Frames we spend on refitting the plot, ImPlot needs time when going from large to small scale values and vice versa.
+        int refit_frames = 5;
+        static int refit_counter = 5;
+
         const char* broadening_str[] = { "Gaussian","Lorentzian" };
         static broadening_mode_t broadening_mode = BROADENING_GAUSSIAN;
 
-        const char* x_unit_str[] = { "eV", "nm" };
+        const char* x_unit_str[] = { "eV", "nm", "cm-1", "hartree"};
         static x_unit_t x_unit = X_UNIT_EV;
 
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
@@ -721,11 +738,16 @@ struct VeloxChem : viamd::EventHandler {
             bool refit = false;
             
             ImGui::SliderFloat((const char*)u8"Broadening (σ)", &sigma, 0.0f, 1.0f);
-            refit |= ImGui::Combo("combo", (int*)(&broadening_mode), broadening_str, IM_ARRAYSIZE(broadening_str));
+            refit |= ImGui::Combo("Broadening mode", (int*)(&broadening_mode), broadening_str, IM_ARRAYSIZE(broadening_str));
             refit |= ImGui::Combo("X unit", (int*)(&x_unit), x_unit_str, IM_ARRAYSIZE(x_unit_str));
-
-            ImPlotAxisFlags axis_flags = refit ? ImPlotAxisFlags_AutoFit : 0;
-
+            
+            // We need to repeat SetNextAxesToFit(); a few times if the old and new data scale is very different, as to let the refit catch up. Otherwise, you end up on the wrong zoom level.
+            if (refit) { refit_counter = 0; }
+            if (refit_counter < refit_frames) {
+                refit_counter++;
+                ImPlot::SetNextAxesToFit();
+            }
+            
             const int   num_peaks = (int)vlx.rsp.num_excited_states;
             double*       x_peaks = (double*)md_temp_push(sizeof(double) * num_peaks);
             const double* y_peaks = vlx.rsp.absorption_osc_str;
@@ -765,7 +787,7 @@ struct VeloxChem : viamd::EventHandler {
             if (ImPlot::BeginPlot("Spectra")) {
                 // ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, vlx.scf.iter.count);
                 ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
-                ImPlot::SetupAxes(x_unit_str[x_unit], "epsilon", axis_flags, axis_flags);
+                ImPlot::SetupAxes(x_unit_str[x_unit], "Oscillator Strength");
 
                 // @HACK: Compute pixel width of 2 'plot' units
                 const double bar_width = ImPlot::PixelsToPlot(ImVec2(2,0)).x - ImPlot::PixelsToPlot(ImVec2(0,0)).x;
