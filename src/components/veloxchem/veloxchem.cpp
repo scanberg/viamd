@@ -723,10 +723,6 @@ struct VeloxChem : viamd::EventHandler {
 
         static float sigma = 0.1;
 
-        //Frames we spend on refitting the plot, ImPlot needs time when going from large to small scale values and vice versa.
-        int refit_frames = 5;
-        static int refit_counter = 5;
-
         const char* broadening_str[] = { "Gaussian","Lorentzian" };
         static broadening_mode_t broadening_mode = BROADENING_GAUSSIAN;
 
@@ -741,12 +737,7 @@ struct VeloxChem : viamd::EventHandler {
             refit |= ImGui::Combo("Broadening mode", (int*)(&broadening_mode), broadening_str, IM_ARRAYSIZE(broadening_str));
             refit |= ImGui::Combo("X unit", (int*)(&x_unit), x_unit_str, IM_ARRAYSIZE(x_unit_str));
             
-            // We need to repeat SetNextAxesToFit(); a few times if the old and new data scale is very different, as to let the refit catch up. Otherwise, you end up on the wrong zoom level.
-            if (refit) { refit_counter = 0; }
-            if (refit_counter < refit_frames) {
-                refit_counter++;
-                ImPlot::SetNextAxesToFit();
-            }
+            if (refit) { ImPlot::SetNextAxesToFit(); }
             
             const int   num_peaks = (int)vlx.rsp.num_excited_states;
             double*       x_peaks = (double*)md_temp_push(sizeof(double) * num_peaks);
@@ -784,10 +775,35 @@ struct VeloxChem : viamd::EventHandler {
             convert_values(x_peaks,  num_peaks,   x_unit);
             convert_values(x_values, num_samples, x_unit);
 
+            // Calulate constraint limits for the plot
+            
+
             if (ImPlot::BeginPlot("Spectra")) {
                 // ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, vlx.scf.iter.count);
                 ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
                 ImPlot::SetupAxes(x_unit_str[x_unit], "Oscillator Strength");
+                
+                if (refit) {
+                    double y_max_con = 0;
+                    double y_min_con = 0;
+                    double x_max_con = x_values[num_samples - 1];
+                    double x_min_con = x_values[0];
+                    for (int i = 0; i < num_samples; i++) {
+                        y_max_con = MAX(y_max_con, y_osc_str[i]);
+                        y_min_con = MIN(y_min_con, y_osc_str[i]);
+                        x_max_con = MAX(x_max_con, x_values[i]);
+                        x_min_con = MIN(x_min_con, x_values[i]);
+                    }
+                    double con_lim_fac = 0.1;
+                    double y_graph_width = y_max_con - y_min_con;
+                    double x_graph_width = x_max_con - x_min_con;
+                    y_max_con += con_lim_fac * y_graph_width;
+                    y_min_con -= con_lim_fac * y_graph_width;
+                    x_max_con += con_lim_fac * x_graph_width;
+                    x_min_con -= con_lim_fac * x_graph_width;
+                    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
+                    ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_min_con, y_max_con);
+                }
 
                 // @HACK: Compute pixel width of 2 'plot' units
                 const double bar_width = ImPlot::PixelsToPlot(ImVec2(2,0)).x - ImPlot::PixelsToPlot(ImVec2(0,0)).x;
