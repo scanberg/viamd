@@ -733,23 +733,26 @@ struct VeloxChem : viamd::EventHandler {
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("RSP", &rsp.show_window)) {
             bool refit = false;
+            static bool first_plot = true;
             
             ImGui::SliderFloat((const char*)u8"Broadening (σ)", &sigma, 0.0f, 1.0f);
             refit |= ImGui::Combo("Broadening mode", (int*)(&broadening_mode), broadening_str, IM_ARRAYSIZE(broadening_str));
             refit |= ImGui::Combo("X unit", (int*)(&x_unit), x_unit_str, IM_ARRAYSIZE(x_unit_str));
             
-            if (refit) { ImPlot::SetNextAxesToFit(); }
+            //if (refit) { ImPlot::SetNextAxesToFit(); }
             
             const int   num_peaks = (int)vlx.rsp.num_excited_states;
             double*       x_peaks = (double*)md_temp_push(sizeof(double) * num_peaks);
-            const double* y_peaks = vlx.rsp.absorption_osc_str;
+            const double* y_osc_peaks = vlx.rsp.absorption_osc_str;
+            const double* y_cgs_peaks = vlx.rsp.electronic_circular_dichroism_cgs;
             for (int i = 0; i < num_peaks; ++i) {
                 x_peaks[i] = vlx.rsp.absorption_ev[i];
             }
 
             const int num_samples = 1024;
             double* x_values    = (double*)md_temp_push(sizeof(double) * num_samples);
-            double* y_osc_str   = (double*)md_temp_push(sizeof(double) * num_samples);
+            double* y_osc_str = (double*)md_temp_push(sizeof(double) * num_samples);
+            double* y_cgs_str   = (double*)md_temp_push(sizeof(double) * num_samples);
 
             const double x_min = vlx.rsp.absorption_ev[0] - 1.0;
             const double x_max = vlx.rsp.absorption_ev[num_peaks - 1] + 1.0;
@@ -762,10 +765,12 @@ struct VeloxChem : viamd::EventHandler {
             // @NOTE: Do broadening in eV
             switch (broadening_mode) {
             case BROADENING_GAUSSIAN:
-                broaden_gaussian(y_osc_str, x_values, num_samples, x_peaks, y_peaks, num_peaks, sigma);
+                broaden_gaussian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, sigma);
+                broaden_gaussian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, sigma);
                 break;
             case BROADENING_LORENTZIAN:
-                broaden_lorentzian(y_osc_str, x_values, num_samples, x_peaks, y_peaks, num_peaks, sigma);
+                broaden_lorentzian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, sigma);
+                broaden_lorentzian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, sigma);
                 break;
             default:
                 ASSERT(false); // Should not happen
@@ -777,39 +782,68 @@ struct VeloxChem : viamd::EventHandler {
             convert_values(x_values, num_samples, x_unit);
 
             // Calulate constraint limits for the plot
-            double y_max_con = 0;
-            double y_min_con = 0;
+            double y_osc_max_con = 0;
+            double y_osc_min_con = 0;
+            double y_cgs_max_con = 0;
+            double y_cgs_min_con = 0;
             double x_max_con = x_values[num_samples - 1];
             double x_min_con = x_values[0];
             for (int i = 0; i < num_samples; i++) {
-                y_max_con = MAX(y_max_con, y_osc_str[i]);
-                y_min_con = MIN(y_min_con, y_osc_str[i]);
+                y_osc_max_con = MAX(y_osc_max_con, y_osc_str[i]);
+                y_osc_min_con = MIN(y_osc_min_con, y_osc_str[i]);
+                y_cgs_max_con = MAX(y_cgs_max_con, y_cgs_str[i]);
+                y_cgs_min_con = MIN(y_cgs_min_con, y_cgs_str[i]);
                 x_max_con = MAX(x_max_con, x_values[i]);
                 x_min_con = MIN(x_min_con, x_values[i]);
             }
             double con_lim_fac = 0.1;
-            double y_graph_width = y_max_con - y_min_con;
+            double y_osc_graph_width = y_osc_max_con - y_osc_min_con;
+            double y_cgs_graph_width = y_cgs_max_con - y_cgs_min_con;
             double x_graph_width = x_max_con - x_min_con;
-            y_max_con += con_lim_fac * y_graph_width;
-            y_min_con -= con_lim_fac * y_graph_width;
+            y_osc_max_con += con_lim_fac * y_osc_graph_width;
+            y_osc_min_con -= con_lim_fac * y_osc_graph_width;
+            y_cgs_max_con += con_lim_fac * y_cgs_graph_width;
+            y_cgs_min_con -= con_lim_fac * y_cgs_graph_width;
             x_max_con += con_lim_fac * x_graph_width;
             x_min_con -= con_lim_fac * x_graph_width;
 
-            if (ImPlot::BeginPlot("Spectra")) {
-                // ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, vlx.scf.iter.count);
-                ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
-                ImPlot::SetupAxes(x_unit_str[x_unit], "Oscillator Strength");
-                ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
-                ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_min_con, y_max_con);
+            if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
+                if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
+                if (ImPlot::BeginPlot("OSC")) {
+                    // ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, vlx.scf.iter.count);
+                    ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
+                    ImPlot::SetupAxes(x_unit_str[x_unit], "Oscillator Strength");
+                    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
+                    ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_osc_min_con, y_osc_max_con);
 
-                // @HACK: Compute pixel width of 2 'plot' units
-                const double bar_width = ImPlot::PixelsToPlot(ImVec2(2,0)).x - ImPlot::PixelsToPlot(ImVec2(0,0)).x;
+                    // @HACK: Compute pixel width of 2 'plot' units
+                    const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
 
-                ImPlot::PlotBars("Exited States", x_peaks, y_peaks, num_peaks, bar_width);
-                ImPlot::PlotLine("Oscillator Strength", x_values, y_osc_str, num_samples);
+                    ImPlot::PlotBars("Exited States", x_peaks, y_osc_peaks, num_peaks, bar_width);
+                    ImPlot::PlotLine("Oscillator Strength", x_values, y_osc_str, num_samples);
 
+                }
+                ImPlot::EndPlot();
+
+                if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
+                if (ImPlot::BeginPlot("CGS")) {
+                    // ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, vlx.scf.iter.count);
+                    ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
+                    ImPlot::SetupAxes(x_unit_str[x_unit], "CGS");
+                    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
+                    ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_cgs_min_con, y_cgs_max_con);
+
+                    // @HACK: Compute pixel width of 2 'plot' units
+                    const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
+
+                    ImPlot::PlotBars("Exited States", x_peaks, y_cgs_peaks, num_peaks, bar_width);
+                    ImPlot::PlotLine("CGS", x_values, y_cgs_str, num_samples);
+
+                }
                 ImPlot::EndPlot();
             }
+            ImPlot::EndSubplots();
+            first_plot = false;
         }
         ImGui::End();
     }
