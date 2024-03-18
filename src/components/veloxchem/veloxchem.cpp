@@ -158,6 +158,8 @@ struct VeloxChem : viamd::EventHandler {
             }
             case viamd::EventType_ViamdDrawMenu:
                 ImGui::Checkbox("VeloxChem Orbital", &orb.show_window);
+                ImGui::Checkbox("VeloxChem RSP", &rsp.show_window);
+                ImGui::Checkbox("VeloxChem SCF", &scf.show_window);
                 break;
             case viamd::EventType_ViamdPostRender: {
                 ApplicationState& state = *(ApplicationState*)e.payload;
