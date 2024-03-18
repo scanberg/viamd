@@ -827,11 +827,11 @@ struct VeloxChem : viamd::EventHandler {
                 ImPlot::EndPlot();
 
                 if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
-                // Rotary ECD
+                // Rotatory ECD
                 if (ImPlot::BeginPlot("ECD")) {
                     // ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, vlx.scf.iter.count);
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
-                    ImPlot::SetupAxes(x_unit_str[x_unit], "Rotary strength");
+                    ImPlot::SetupAxes(x_unit_str[x_unit], "Rotatory Strength");
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_cgs_min_con, y_cgs_max_con);
 
@@ -846,6 +846,8 @@ struct VeloxChem : viamd::EventHandler {
             }
             ImPlot::EndSubplots();
             first_plot = false;
+
+            ImGui::Button("Print absorption");
         }
         ImGui::End();
     }
