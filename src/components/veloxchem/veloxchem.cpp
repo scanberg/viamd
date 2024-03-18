@@ -735,11 +735,9 @@ struct VeloxChem : viamd::EventHandler {
             bool refit = false;
             static bool first_plot = true;
             
-            ImGui::SliderFloat((const char*)u8"Broadening (σ)", &sigma, 0.0f, 1.0f);
+            ImGui::SliderFloat((const char*)u8"Broadening (σ)", &sigma, 0.01f, 1.0f);
             refit |= ImGui::Combo("Broadening mode", (int*)(&broadening_mode), broadening_str, IM_ARRAYSIZE(broadening_str));
             refit |= ImGui::Combo("X unit", (int*)(&x_unit), x_unit_str, IM_ARRAYSIZE(x_unit_str));
-            
-            //if (refit) { ImPlot::SetNextAxesToFit(); }
             
             const int   num_peaks = (int)vlx.rsp.num_excited_states;
             double*       x_peaks = (double*)md_temp_push(sizeof(double) * num_peaks);
@@ -809,7 +807,8 @@ struct VeloxChem : viamd::EventHandler {
 
             if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
                 if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
-                if (ImPlot::BeginPlot("OSC")) {
+                // Absorption
+                if (ImPlot::BeginPlot("Absorption")) {
                     // ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, vlx.scf.iter.count);
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
                     ImPlot::SetupAxes(x_unit_str[x_unit], "Oscillator Strength");
@@ -826,10 +825,11 @@ struct VeloxChem : viamd::EventHandler {
                 ImPlot::EndPlot();
 
                 if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
-                if (ImPlot::BeginPlot("CGS")) {
+                // Rotary ECD
+                if (ImPlot::BeginPlot("ECD")) {
                     // ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, vlx.scf.iter.count);
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
-                    ImPlot::SetupAxes(x_unit_str[x_unit], "CGS");
+                    ImPlot::SetupAxes(x_unit_str[x_unit], "Rotary strength");
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_cgs_min_con, y_cgs_max_con);
 
@@ -837,7 +837,7 @@ struct VeloxChem : viamd::EventHandler {
                     const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
 
                     ImPlot::PlotBars("Exited States", x_peaks, y_cgs_peaks, num_peaks, bar_width);
-                    ImPlot::PlotLine("CGS", x_values, y_cgs_str, num_samples);
+                    ImPlot::PlotLine("ECD", x_values, y_cgs_str, num_samples);
 
                 }
                 ImPlot::EndPlot();
