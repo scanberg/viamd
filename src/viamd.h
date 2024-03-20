@@ -19,7 +19,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define JITTER_SEQUENCE_SIZE 32
+#define JITTER_SEQUENCE_SIZE 8
 
 // For cpu profiling
 #define PUSH_CPU_SECTION(lbl) {};
@@ -576,6 +576,10 @@ struct ApplicationState {
             float exposure = 1.f;
             float gamma = 2.2f;
         } tonemapping;
+
+        struct {
+            bool enabled = true;
+        } fxaa;
 
         struct {
             bool draw_control_points = false;

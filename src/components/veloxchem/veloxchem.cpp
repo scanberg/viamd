@@ -577,8 +577,8 @@ struct VeloxChem : viamd::EventHandler {
 
         volume::RenderDesc desc = {
             .render_target = {
-                .depth = state.gbuffer.deferred.depth,
-                .color = state.gbuffer.deferred.transparency,
+                .depth = state.gbuffer.tex.depth,
+                .color = state.gbuffer.tex.transparency,
                 .width   = state.gbuffer.width,
                 .height  = state.gbuffer.height,
             },
@@ -1079,7 +1079,7 @@ struct VeloxChem : viamd::EventHandler {
             ImVec2 canvas_p1 = ImGui::GetItemRectMax();
 
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
-            draw_list->AddImage((ImTextureID)(intptr_t)nto.gbuf.deferred.transparency, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
+            draw_list->AddImage((ImTextureID)(intptr_t)nto.gbuf.tex.transparency, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
             draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(50, 50, 50, 255));
 
             const bool is_hovered = ImGui::IsItemHovered();
@@ -1172,7 +1172,7 @@ struct VeloxChem : viamd::EventHandler {
             glEnable(GL_DEPTH_TEST);
             glDepthFunc(GL_LESS);
 
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.deferred.fbo);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
             glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
             glViewport(0, 0, gbuf.width, gbuf.height);
 
@@ -1203,8 +1203,8 @@ struct VeloxChem : viamd::EventHandler {
             if (nto.iso.enabled) {
                 volume::RenderDesc vol_desc = {
                     .render_target = {
-                        .depth  = nto.gbuf.deferred.depth,
-                        .color  = nto.gbuf.deferred.transparency,
+                        .depth  = nto.gbuf.tex.depth,
+                        .color  = nto.gbuf.tex.transparency,
                         .width  = nto.gbuf.width,
                         .height = nto.gbuf.height,
                     },
@@ -1250,11 +1250,11 @@ struct VeloxChem : viamd::EventHandler {
                     .enabled = false,
                 },
                 .input_textures = {
-                    .depth          = nto.gbuf.deferred.depth,
-                    .color          = nto.gbuf.deferred.color,
-                    .normal         = nto.gbuf.deferred.normal,
-                    .velocity       = nto.gbuf.deferred.velocity,
-                    .transparency   = nto.gbuf.deferred.transparency,
+                    .depth          = nto.gbuf.tex.depth,
+                    .color          = nto.gbuf.tex.color,
+                    .normal         = nto.gbuf.tex.normal,
+                    .velocity       = nto.gbuf.tex.velocity,
+                    .transparency   = nto.gbuf.tex.transparency,
                 }
             };
 

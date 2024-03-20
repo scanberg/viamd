@@ -12,6 +12,7 @@
 #define GL_COLOR_ATTACHMENT_VELOCITY     GL_COLOR_ATTACHMENT2
 #define GL_COLOR_ATTACHMENT_PICKING      GL_COLOR_ATTACHMENT3
 #define GL_COLOR_ATTACHMENT_TRANSPARENCY GL_COLOR_ATTACHMENT4
+#define GL_COLOR_ATTACHMENT_TEMPORAL     GL_COLOR_ATTACHMENT5
 
 // Poor fit perhaps
 struct GBuffer {
@@ -22,8 +23,8 @@ struct GBuffer {
         uint32_t velocity = 0;
         uint32_t transparency = 0;
         uint32_t picking = 0;
-        uint32_t fbo = 0;
-    } deferred;
+        uint32_t temporal_accumulation[2] = {};
+    } tex;
 
     struct {
         // @NOTE: Many of each, we submit the read and use it some frame(s) later
@@ -33,6 +34,7 @@ struct GBuffer {
         uint32_t frame = 0;
     } pbo_picking;
 
+    uint32_t fbo = 0;
     uint32_t width = 0;
     uint32_t height = 0;
 };
@@ -86,6 +88,10 @@ struct Descriptor {
         float focus_depth = 0.5f;
         float focus_scale = 10.f;
     } depth_of_field;
+
+    struct {
+        bool enabled = true;
+    } fxaa;
 
     struct {
         bool enabled = true;
