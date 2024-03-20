@@ -197,13 +197,37 @@ struct RepresentationInfo {
 // Event Payload when an orbital is to be evaluated
 struct ComputeOrbital {
     // Input information
-    OrbitalType type;
-    int orbital_idx;
+    OrbitalType type = OrbitalType::Psi;
+    int orbital_idx = 0;
 
-    mat4_t* mdl_mat;
-    mat4_t* tex_mat;
-    vec3_t* voxel_spacing;
-    uint32_t* tex_id;
+    // Output information
+    bool output_written = false;
+    mat4_t mdl_mat = {};
+    mat4_t tex_mat = {};
+    vec3_t voxel_spacing = {};
+    uint32_t *dst_texture = 0;
+};
+
+struct RepresentationVolume {
+    uint32_t vol_tex = 0;
+    mat4_t mdl_mat = mat4_ident();
+    mat4_t tex_mat = mat4_ident();
+    vec3_t voxel_spacing = {};
+
+    float density_scale = 1.0f;
+
+    struct {
+        bool enabled = true;
+        int count = 2;
+        float  values[8] = {0.05f, -0.05};
+        vec4_t colors[8] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
+    } iso;
+
+    struct {
+        bool enabled = false;
+        uint32_t tf_tex = 0;
+        ImPlotColormap colormap = ImPlotColormap_Plasma;
+    } dvr;
 };
 
 struct Representation {
@@ -233,32 +257,12 @@ struct Representation {
     vec4_t scale = {1.0f, 1.0f, 1.0f, 1.0f};
 
     struct {
+        RepresentationVolume vol = {};
         OrbitalType type = OrbitalType::Psi;
         int orbital_idx = 0;
-		uint64_t hash = 0;
+		uint64_t vol_hash = 0;
+        uint64_t tf_hash = 0;
     } orbital;
-
-    struct {
-        uint32_t vol_tex = 0;
-        mat4_t mdl_mat = mat4_ident();
-        mat4_t tex_mat = mat4_ident();
-        vec3_t voxel_spacing = {};
-
-        float density_scale = 1.0f;
-
-        struct {
-            bool enabled = true;
-            int count = 2;
-            float  values[8] = {0.05f, -0.05};
-            vec4_t colors[8] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
-        } iso;
-
-        struct {
-            bool enabled = false;
-            uint32_t tf_tex = 0;
-            ImPlotColormap colormap = ImPlotColormap_Plasma;
-        } dvr;
-    } vol;
 
     struct {
         ImPlotColormap color_map = ImPlotColormap_Plasma;
@@ -588,6 +592,7 @@ struct ApplicationState {
 
     // --- REPRESENTATIONS ---
     struct {
+        RepresentationInfo info = {};
         md_array(Representation) reps = 0;
         md_bitfield_t visibility_mask = {0};
         bool atom_visibility_mask_dirty = false;

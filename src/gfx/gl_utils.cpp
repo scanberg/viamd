@@ -264,7 +264,7 @@ bool gl::init_texture_2D(GLuint* texture, int width, int height, GLenum format) 
 
 bool gl::init_texture_3D(GLuint* texture, int width, int height, int depth, GLenum format) {
     ASSERT(texture);
-    ASSERT(format == GL_R32F || format == GL_R8);
+    ASSERT(format == GL_R32F || format == GL_R16F || format == GL_R8);
 
     if (glIsTexture(*texture)) {
         int x, y, z;

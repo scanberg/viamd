@@ -10,6 +10,8 @@
 #include <core/md_os.h>
 #include <core/md_vec_math.h>
 
+#include <implot.h>
+
 #include <shaders.inl>
 
 #define PUSH_GPU_SECTION(lbl)                                                                       \
@@ -267,6 +269,38 @@ mat4_t compute_texture_to_model_matrix(int dim_x, int dim_y, int dim_z) {
     return mat4_ident();
 }
 
+void compute_transfer_function_texture(uint32_t* tex, int colormap, int res, float alpha_origin, float alpha_scale) {
+    ASSERT(tex);
+    if (res <= 0) {
+        MD_LOG_ERROR("Bad input resolution");
+        return;
+    }
+
+    size_t temp_pos = md_temp_get_pos();
+    size_t bytes = sizeof(uint32_t) * res;
+    uint32_t* pixel_data = (uint32_t*)md_temp_push(bytes);
+
+    // Update colormap texture
+    for (int i = 0; i < res; ++i) {
+        float t = (float)i / (float)(res - 1);
+        ImVec4 col = ImPlot::SampleColormap(t, colormap);
+
+        // Remap linear t which has a profile of '/' to '\/' to put the alpha ramp in the center (0.5)
+        // y(x) = abs((1.0 - c) * (c - x)) Paste this into a grapher and you will see!
+        float o = alpha_origin;
+        t = fabsf((1.0 - o)*(o - t));
+
+        col.w = MIN(160 * t*t, 0.341176f);
+        col.w = CLAMP(col.w * alpha_scale, 0.0f, 1.0f);
+        pixel_data[i] = ImGui::ColorConvertFloat4ToU32(col);
+    }
+
+    gl::init_texture_2D(tex, res, 1, GL_RGBA8);
+    gl::set_texture_2D_data(*tex, pixel_data, GL_RGBA8);
+
+    md_temp_set_pos_back(temp_pos);
+}
+
 void render_volume(const RenderDesc& desc) {
     if (!desc.direct_volume_rendering_enabled && !desc.isosurface_enabled) return;
 
@@ -447,6 +481,7 @@ void render_volume(const RenderDesc& desc) {
 
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
+    glCullFace(GL_BACK);
 
     if (!desc.render_target.color) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bound_fbo);
