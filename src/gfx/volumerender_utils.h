@@ -13,6 +13,9 @@ mat4_t compute_world_to_model_matrix(vec3_t min_world_aabb, vec3_t max_world_aab
 mat4_t compute_texture_to_model_matrix(int dim_x, int dim_y, int dim_z);
 mat4_t compute_model_to_texture_matrix(int dim_x, int dim_y, int dim_z);
 
+// Create a transfer function texture with an alpha ramp placed at an origin (0,1) with a specific steepness (scale)
+void   compute_transfer_function_texture(uint32_t* texture, int implot_colormap, int resolution = 128, float alpha_origin = 0.0f, float alpha_scale = 1.0f);
+
 /*
     Renders a volumetric texture using OpenGL.
     - volume_texture: An OpenGL 3D texture containing the data

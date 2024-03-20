@@ -241,7 +241,7 @@ struct VeloxChem : viamd::EventHandler {
                         orb.vol.model_to_world = T * R;
                         orb.vol.tex_to_world = T * R * S;
 
-                        update_orb_volume();
+                        //update_orb_volume();
                         orb.show_volume = true;
 
                         // NTO
@@ -329,6 +329,8 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     void compute_orbital(ComputeOrbital& data) {
+        if (data.output_written == true) return;
+
         if (task_system::task_is_running(orb.compute_volume_task)) {
             task_system::task_interrupt(orb.compute_volume_task);
         }
@@ -355,8 +357,14 @@ struct VeloxChem : viamd::EventHandler {
 
             MEMCPY(orb.vol.dim, dim, sizeof(orb.vol.dim));
             vec3_t step_size = vec3_div(orb.vol.extent, vec3_set((float)orb.vol.dim[0], (float)orb.vol.dim[1], (float)orb.vol.dim[2]));
-            *data.voxel_spacing = step_size;
-            *data.tex_mat = orb.vol.tex_to_world;
+            orb.vol.step_size = step_size;
+
+            gl::init_texture_3D(data.dst_texture, dim[0], dim[1], dim[2], GL_R16F);
+
+            data.mdl_mat = orb.vol.model_to_world;
+            data.tex_mat = orb.vol.tex_to_world;
+            data.voxel_spacing = step_size;
+            data.output_written = true;
 
             MD_LOG_DEBUG("Created Orbital volume of dimensions [%i][%i][%i]", orb.vol.dim[0], orb.vol.dim[1], orb.vol.dim[2]);
 
@@ -393,16 +401,17 @@ struct VeloxChem : viamd::EventHandler {
                 OrbitalType type;
                 int mo_idx;
                 Volume* vol;
-                uint32_t* tex_id;
                 md_array(const md_gto_t) pgtos;
+                uint32_t tex_id;
             };
+
 
             Payload* payload = (Payload*)md_alloc(md_get_heap_allocator(), sizeof(Payload));
             payload->type    = data.type;
             payload->mo_idx  = data.orbital_idx;
             payload->vol     = &orb.vol;
-            payload->tex_id  = data.tex_id;
             payload->pgtos   = orb.pgtos;
+            payload->tex_id  = *data.dst_texture;
 
             orb.compute_volume_task = task_system::pool_enqueue(STR_LIT("Evaluate Orbital"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
                 Payload* data = (Payload*)user_data;
@@ -445,8 +454,7 @@ struct VeloxChem : viamd::EventHandler {
             // Launch task for main (render) thread to update the volume texture
             task_system::main_enqueue(STR_LIT("Update Volume"), [](void* user_data) {
                 Payload* data = (Payload*)user_data;
-                gl::init_texture_3D(data->tex_id, data->vol->dim[0], data->vol->dim[1], data->vol->dim[2], GL_R16F);
-                gl::set_texture_3D_data(*data->tex_id, data->vol->data, GL_R32F);
+                gl::set_texture_3D_data(data->tex_id, data->vol->data, GL_R32F);
                 md_free(md_get_heap_allocator(), data, sizeof(Payload));
             }, payload, orb.compute_volume_task);
         }
