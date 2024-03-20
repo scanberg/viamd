@@ -5,7 +5,7 @@
 
 uniform sampler2D u_tex_half_res; // Half res color (rgb) and coc (a)
 uniform sampler2D u_tex_color;    // Image to be processed 
-uniform sampler2D u_tex_depth;   	  // Linear depth
+uniform sampler2D u_tex_depth;    // Linear depth
 
 uniform vec2  u_texel_size;    // The size of a pixel: vec2(1.0/width, 1.0/height) 
 uniform float u_focus_depth; 
@@ -14,7 +14,7 @@ uniform float u_time;
 
 const float GOLDEN_ANGLE = 2.39996323; 
 const float MAX_BLUR_SIZE = 15.0; 
-const float RAD_SCALE = 1.0; // Smaller = nicer blur, larger = faster
+const float RAD_SCALE = 1.5; // Smaller = nicer blur, larger = faster
 const float PI = 3.1415926535;
 
 #define APPROX
@@ -77,7 +77,8 @@ vec3 depth_of_field(vec2 tex_coord, float focus_point, float focus_scale) {
 const float HALF_RES_RAD_SCALE = 2.0;
 	for (; radius < MAX_BLUR_SIZE; ang += GOLDEN_ANGLE) {
 		vec2 tc = tex_coord + vec2(cos(ang), sin(ang)) * u_texel_size * radius;
-		vec4 sample_color_coc = texture(u_tex_half_res, tc) * vec4(1, 1, 1, MAX_BLUR_SIZE);
+		vec4 sample_color_coc = texture(u_tex_half_res, tc);
+		sample_color_coc.a *= MAX_BLUR_SIZE;
 		
 		float sample_depth = texture(u_tex_depth, tc).r;
 		if (sample_depth > center_depth) sample_color_coc.a = min(sample_color_coc.a, center_coc*2.0);
@@ -97,7 +98,7 @@ void main() {
 	vec3 dof = depth_of_field(tc, u_focus_depth, u_focus_scale);
 
 	// To hide banding artifacts
-	vec4 noise = srand4(tc + u_time + 0.6959174) / 15.0;
+	vec4 noise = srand4(tc + u_time) / 25.0;
 	dof += noise.xyz;
 	out_frag = vec4(dof, 1);
 }

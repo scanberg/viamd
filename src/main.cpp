@@ -76,7 +76,6 @@
 #define COMPILATION_TIME_DELAY_IN_SECONDS 1.0
 #define NOTIFICATION_DISPLAY_TIME_IN_SECONDS 5.0
 #define IR_SEMAPHORE_MAX_COUNT 3
-#define JITTER_SEQUENCE_SIZE 32
 #define MEASURE_EVALUATION_TIME 1
 #define FRAME_ALLOCATOR_BYTES MEGABYTES(256)
 
@@ -2418,6 +2417,7 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::SliderFloat("##Intensity", &data->visuals.background.intensity, 0.f, 100.f);
             ImGui::EndGroup();
             ImGui::Separator();
+            ImGui::Checkbox("FXAA", &data->visuals.fxaa.enabled);
             // Temporal
             ImGui::BeginGroup();
             {
@@ -5983,7 +5983,7 @@ static void draw_density_volume_window(ApplicationState* data) {
         ImVec2 canvas_p1 = ImGui::GetItemRectMax();
 
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
-        draw_list->AddImage((ImTextureID)(intptr_t)data->density_volume.fbo.deferred.transparency, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
+        draw_list->AddImage((ImTextureID)(intptr_t)data->density_volume.fbo.tex.transparency, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
         draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(50, 50, 50, 255));
 
         if (data->density_volume.dvr.enabled && data->density_volume.legend.enabled) {
@@ -6124,7 +6124,7 @@ static void draw_density_volume_window(ApplicationState* data) {
         glDepthMask(GL_TRUE);
         glDepthFunc(GL_LESS);
 
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.deferred.fbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
         glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
         glViewport(0, 0, gbuf.width, gbuf.height);
 
@@ -6183,8 +6183,8 @@ static void draw_density_volume_window(ApplicationState* data) {
             if (data->density_volume.model_mat != mat4_t{ 0 }) {
                 volume::RenderDesc vol_desc = {
                     .render_target = {
-                        .depth  = gbuf.deferred.depth,
-                        .color  = gbuf.deferred.transparency,
+                        .depth  = gbuf.tex.depth,
+                        .color  = gbuf.tex.transparency,
                         .width  = gbuf.width,
                         .height = gbuf.height,
                     },
@@ -6270,11 +6270,11 @@ static void draw_density_volume_window(ApplicationState* data) {
                 .enabled = false,
             },
             .input_textures = {
-                .depth = gbuf.deferred.depth,
-                .color = gbuf.deferred.color,
-                .normal = gbuf.deferred.normal,
-                .velocity = gbuf.deferred.velocity,
-                .transparency = gbuf.deferred.transparency,
+                .depth = gbuf.tex.depth,
+                .color = gbuf.tex.color,
+                .normal = gbuf.tex.normal,
+                .velocity = gbuf.tex.velocity,
+                .transparency = gbuf.tex.transparency,
             }
         };
 
@@ -8357,7 +8357,7 @@ static void fill_gbuffer(ApplicationState* data) {
     glDepthFunc(GL_LESS);
 
     // Enable all draw buffers
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data->gbuffer.deferred.fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data->gbuffer.fbo);
     glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
 
     PUSH_GPU_SECTION("G-Buffer fill")
@@ -8405,7 +8405,7 @@ static void fill_gbuffer(ApplicationState* data) {
         PUSH_GPU_SECTION("Blit Static Velocity")
         glDrawBuffer(GL_COLOR_ATTACHMENT_VELOCITY);
         glDepthMask(0);
-        postprocessing::blit_static_velocity(data->gbuffer.deferred.depth, data->view.param);
+        postprocessing::blit_static_velocity(data->gbuffer.tex.depth, data->view.param);
         glDepthMask(1);
         POP_GPU_SECTION()
     }
@@ -8497,7 +8497,7 @@ static void fill_gbuffer(ApplicationState* data) {
             PUSH_GPU_SECTION("Desaturate") {
                 const float saturation = data->selection.color.saturation;
                 glDrawBuffer(GL_COLOR_ATTACHMENT_COLOR);
-                postprocessing::scale_hsv(data->gbuffer.deferred.color, vec3_t{1, saturation, 1});
+                postprocessing::scale_hsv(data->gbuffer.tex.color, vec3_t{1, saturation, 1});
             } POP_GPU_SECTION()
         }
 
@@ -8656,6 +8656,8 @@ static void apply_postprocessing(const ApplicationState& data) {
     desc.depth_of_field.focus_depth = data.visuals.dof.focus_depth;
     desc.depth_of_field.focus_scale = data.visuals.dof.focus_scale;
 
+    desc.fxaa.enabled = data.visuals.fxaa.enabled;
+
     constexpr float MOTION_BLUR_REFERENCE_DT = 1.0f / 60.0f;
     const float dt_compensation = MOTION_BLUR_REFERENCE_DT / (float)data.app.timing.delta_s;
     const float motion_scale = data.visuals.temporal_reprojection.motion_blur.motion_scale * dt_compensation;
@@ -8665,11 +8667,11 @@ static void apply_postprocessing(const ApplicationState& data) {
     desc.temporal_reprojection.motion_blur.enabled = data.visuals.temporal_reprojection.motion_blur.enabled;
     desc.temporal_reprojection.motion_blur.motion_scale = motion_scale;
 
-    desc.input_textures.depth = data.gbuffer.deferred.depth;
-    desc.input_textures.color = data.gbuffer.deferred.color;
-    desc.input_textures.normal = data.gbuffer.deferred.normal;
-    desc.input_textures.velocity = data.gbuffer.deferred.velocity;
-    desc.input_textures.transparency = data.gbuffer.deferred.transparency;
+    desc.input_textures.depth = data.gbuffer.tex.depth;
+    desc.input_textures.color = data.gbuffer.tex.color;
+    desc.input_textures.normal = data.gbuffer.tex.normal;
+    desc.input_textures.velocity = data.gbuffer.tex.velocity;
+    desc.input_textures.transparency = data.gbuffer.tex.transparency;
 
     postprocessing::shade_and_postprocess(desc, data.view.param);
     POP_GPU_SECTION()
@@ -8780,8 +8782,8 @@ static void draw_representations_transparent(ApplicationState* state) {
 
         volume::RenderDesc desc = {
             .render_target = {
-                .depth = state->gbuffer.deferred.depth,
-                .color  = state->gbuffer.deferred.transparency,
+                .depth = state->gbuffer.tex.depth,
+                .color  = state->gbuffer.tex.transparency,
                 .width  = state->gbuffer.width,
                 .height = state->gbuffer.height,
             },

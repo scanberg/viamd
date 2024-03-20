@@ -1,46 +1,15 @@
 #version 150 core
 
-#ifndef USE_TRANSPARENCY
-#define USE_TRANSPARENCY 0
-#endif
-
-#ifndef USE_SSAO
-#define USE_SSAO 0
-#endif
-
 uniform sampler2D u_texture_depth;
 uniform sampler2D u_texture_color;
 uniform sampler2D u_texture_normal;
-uniform sampler2D u_texture_transparent;
-uniform sampler2D u_texture_ssao;
 
 uniform mat4 u_inv_proj_mat;
 uniform vec4 u_bg_color;
 uniform float u_time;
-uniform float u_gamma;
 
 in vec2 tc;
 out vec4 out_frag;
-
-// Tonemapping operations (in case one writes to post tonemap)
-float max3(float x, float y, float z) { return max(x, max(y, z)); }
-float rcp(float x) { return 1.0 / x; }
-
-const float exposure_bias = 0.5;
-
-vec3 Tonemap(vec3 c) {
-    c = c * exposure_bias;
-    c = c * rcp(max3(c.r, c.g, c.b) + 1.0);
-    c = pow(c, vec3(1.0 / u_gamma));
-    return c;
-}
-
-vec3 TonemapInvert(vec3 c) {
-    c = pow(c, vec3(u_gamma));
-    c = c * rcp(1.0 - max3(c.r, c.g, c.b));
-    c = c / exposure_bias;
-    return c;
-}
 
 // TODO: Use linear depth instead and use uniform vec4 for unpacking to view coords.
 vec4 depth_to_view_coord(vec2 tex_coord, float depth) {
@@ -102,37 +71,20 @@ void main() {
     vec3 result = u_bg_color.rgb;
     
     vec4 color = texelFetch(u_texture_color, ivec2(gl_FragCoord.xy), 0);
-    if (color.a != 0) {
+    if (color.a > 0) {
         float depth = texelFetch(u_texture_depth, ivec2(gl_FragCoord.xy), 0).x;
         vec3 normal = decode_normal(texelFetch(u_texture_normal, ivec2(gl_FragCoord.xy), 0).xy);
         vec4 view_coord = depth_to_view_coord(tc, depth);
 
         // Add noise to reduce banding
         // Signed random to not affect overall luminance
-        color.rgb = clamp(color.rgb + srand4(tc + u_time).rgb * 0.05, 0.0, 1.0);
+        color.rgb = clamp(color.rgb + color.rgb * srand4(tc + u_time).rgb * 0.15, 0.0, 1.0);
 
         vec3 N = normal;
         vec3 V = -normalize(view_coord.xyz);
         color.rgb = shade(color.rgb, V, N);
         result = color.rgb;
     }
-
-#if USE_SSAO
-    float ssao = texelFetch(u_texture_ssao, ivec2(gl_FragCoord.xy), 0).x;
-    result = result * ssao;
-#endif
-
-#if USE_TRANSPARENCY
-    // Transparency layer is encoded as RGBA8 and thus not HDR
-    // Therefore we tonemap, compose in LDR and invert tonemap back to HDR
-    result = Tonemap(result);
-    vec4 trans = texelFetch(u_texture_transparent, ivec2(gl_FragCoord.xy), 0);
-    // The inverse Tonemap operation can result in NaNs if we have evil inputs which will mess up the temporal accumulation buffer and spread like wildfire
-    // So we need to take some precautions here
-    trans = clamp(trans, vec4(0.0), vec4(0.99, 0.99, 0.99, 1.0));
-    result = trans.a * trans.rgb + result.rgb * (1.0 - trans.a);
-    result = TonemapInvert(result);
-#endif
 
     out_frag = vec4(result, 1);
 }
