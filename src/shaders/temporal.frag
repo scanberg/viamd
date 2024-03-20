@@ -7,7 +7,7 @@
 // https://github.com/playdeadgames/temporal/blob/master/Assets/Shaders/TemporalReprojection.shader
 
 #ifndef USE_TONEMAP
-#define USE_TONEMAP 0
+#define USE_TONEMAP 1
 #endif
 
 #ifndef UNJITTER_COLORSAMPLES
