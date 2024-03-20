@@ -140,7 +140,7 @@ struct ShapeSpace : viamd::EventHandler {
                     for (size_t i = 0; i < md_array_size(bitfields); ++i) {
                         md_bitfield_or_inplace(&app_state->selection.highlight_mask, &bitfields[i]);
                     }
-                    viamd::event_system_enqueue_event(viamd::EventType_HoverMaskChanged);
+                    viamd::event_system_enqueue_event(viamd::EventType_ViamdHoverMaskChanged);
                 } else if (error[0] != '\0') {
                     ImGui::SetTooltip("%s", error);
                 }

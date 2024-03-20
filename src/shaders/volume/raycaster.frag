@@ -47,7 +47,7 @@ layout(location = 0) out vec4  out_color;
 //out float gl_FragDepth;
 
 const float REF_SAMPLING_RATE = 150.0;
-const float ERT_THRESHOLD = 0.99;
+const float ERT_THRESHOLD = 0.999;
 const float samplingRate = 2.0;
 
 float getVoxel(in vec3 samplePos) {
@@ -77,7 +77,7 @@ vec3 getGradient(in vec3 samplePos) {
     return g / (2.0 * u_gradient_spacing_world_space);
 }
 
-const vec3 env_radiance = vec3(1.0);
+const vec3 env_radiance = vec3(5.0);
 const vec3 dir_radiance = vec3(10.0);
 const vec3 L = normalize(vec3(1,1,1));
 const float spec_exp = 100.0;
@@ -91,7 +91,6 @@ float fresnel(float H_dot_V) {
     const float n1 = 1.0;
     const float n2 = 1.5;
     const float R0 = pow((n1-n2)/(n1+n2), 2);
-
     return R0 + (1.0 - R0)*pow(1.0 - H_dot_V, 5);
 }
 
@@ -105,9 +104,9 @@ vec3 shade(vec3 color, vec3 V, vec3 N) {
     vec3 diffuse = color.rgb * lambert(env_radiance + N_dot_L * dir_radiance);
     vec3 specular = fr * (env_radiance + dir_radiance) * pow(N_dot_H, spec_exp);
 
-    //if (N_dot_L == 0.0) return vec3(1,0,0);
+    //return color.rgb * lambert(vec3(N_dot_L + 0.5) * 3.0) + specular;
 
-    return color.rgb * lambert(vec3(N_dot_L + 0.5) * 3.0) + specular;
+    return diffuse + specular;
 }
 
 vec4 depth_to_view_coord(vec2 tc, float depth) {
@@ -120,10 +119,20 @@ vec4 depth_to_view_coord(vec2 tc, float depth) {
 float max3(float x, float y, float z) { return max(x, max(y, z)); }
 float rcp(float x) { return 1.0 / x; }
 
+const float exposure_bias = 0.5;
+const float gamma = 2.2;
+
 vec3 Tonemap(vec3 c) {
-    float exposure = 0.5;
-    c = c * exposure * rcp(max3(c.r, c.g, c.b) + 1.0);
-    c = pow(c, vec3(1.0 / vec3(2.2)));
+    c = c * exposure_bias;
+    c = c * rcp(max3(c.r, c.g, c.b) + 1.0);
+    c = pow(c, vec3(1.0 / gamma));
+    return c;
+}
+
+vec3 TonemapInvert(vec3 c) {
+    c = pow(c, vec3(gamma));
+    c = c * rcp(1.0 - max3(c.r, c.g, c.b));
+    c = c / exposure_bias;
     return c;
 }
 
@@ -273,6 +282,7 @@ vec2 encode_normal (vec3 n) {
 }
 
 void main() {
+    // Entry and exit positions are given in the volumes texture space
     vec3 entryPos = texelFetch(u_tex_entry, ivec2(gl_FragCoord.xy), 0).xyz;
     vec3 exitPos  = texelFetch(u_tex_exit,  ivec2(gl_FragCoord.xy), 0).xyz;
 
@@ -280,20 +290,20 @@ void main() {
 
     float dist = distance(entryPos, exitPos);
 
-    // Do everything in model space
     vec3 ori = entryPos;
     vec3 dir = (exitPos - entryPos) / dist;
 
     float tEnd = dist;
 
-    vec2 jitter = PDnrand2(gl_FragCoord.xy + vec2(u_time, u_time));
-    jitter = vec2(0,0);
+    float jitter = PDnrand(gl_FragCoord.xy + vec2(u_time, u_time));
 
     float tIncr = min(tEnd, tEnd / (samplingRate * length(dir * tEnd * textureSize(u_tex_volume, 0))));
     float samples = ceil(tEnd / tIncr);
-    tIncr = tEnd / samples;
+    float baseIncr = tEnd / samples;
 
-    float t = 0.0 * tIncr;
+	tIncr = baseIncr;
+
+    float t = jitter * tIncr;
 
     vec4 result = vec4(0);
     float density = 0.0;
@@ -321,20 +331,11 @@ void main() {
             t = tEnd;
         } else {
             // make sure that tIncr has the correct length since drawIsoSurface will modify it
-            tIncr = tEnd / samples;
+            tIncr = baseIncr;
             t += tIncr;
         }
     }
 
-    //vec4 model_coord = vec4(entryPos, 1.0);
-    //if (result.a > ERT_THRESHOLD) {
-    //    model_coord = vec4(samplePos, 1.0);
-    //}
-
     result.rgb = Tonemap(result.rgb);
-
-    //vec4 clip_coord = u_model_view_proj_mat * model_coord;
-    //gl_FragDepth = (clip_coord.z / clip_coord.w) * 0.5 + 0.5;
-    //out_view_normal = encode_normal(normal);
     out_color = result;
 }

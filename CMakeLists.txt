@@ -107,7 +107,7 @@ endif()
 set(SHADER_FILES 
     src/shaders/highlight.frag
     src/shaders/scale_hsv.frag
-    src/shaders/deferred_shading.frag
+    src/shaders/compose_deferred.frag
     src/shaders/temporal.frag
     src/shaders/tonemap/passthrough.frag
     src/shaders/tonemap/exposure_gamma.frag

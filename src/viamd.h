@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <core/md_str.h>
 #include <core/md_os.h>
@@ -43,7 +43,19 @@ enum class RepresentationType {
     BallAndStick = MD_GL_REP_BALL_AND_STICK,
     Ribbons = MD_GL_REP_RIBBONS,
     Cartoon = MD_GL_REP_CARTOON,
+    Orbital,
+    DipoleMoment,
     Count
+};
+
+static const char* representation_type_str[(int)RepresentationType::Count] = {
+    "Spacefill",
+    "Licorice",
+    "Ball And Stick",
+    "Ribbons",
+    "Cartoon",
+    "Orbital",
+    "Dipole Moment"
 };
 
 enum class ColorMapping {
@@ -58,6 +70,32 @@ enum class ColorMapping {
     SecondaryStructure,
     Property,
     Count
+};
+
+static const char* color_mapping_str[(int)ColorMapping::Count] = {
+    "Uniform Color",
+    "CPK",
+    "Atom Label",
+    "Atom Idx"
+    "Res Id",
+    "Res Idx",
+    "Chain Id",
+    "Chain Idx",
+    "Secondary Structure",
+    "Property"
+};
+
+enum class OrbitalType {
+    Psi,
+    PsiSquared,
+    Nto,
+    Count
+};
+
+static const char* orbital_type_str[(int)OrbitalType::Count] = {
+    (const char*)u8"Orbital (Ψ)",
+    (const char*)u8"Density (Ψ²)",
+    "Natural Transition Orbital",
 };
 
 enum MolBit_ {
@@ -133,22 +171,50 @@ struct DatasetItem {
     float fraction = 0;
 };
 
-struct Representation {
-    struct PropertyColorMapping {
-        char ident[32] = ""; // property identifier
-        ImPlotColormap colormap = 0;
-        float range_min = 0;
-        float range_max = 0;
-    };
+struct DipoleMoment {
+    str_t  label;
+    vec3_t vector;
+};
 
-    char name[32] = "rep";
+struct MolecularOrbital {
+    int idx;
+    float occupation;
+    float energy;
+};
+
+// Struct to fill in for the different components
+// Which provides information of what representations are available for the currently loaded datasets
+struct RepresentationInfo {
+    int mo_homo_idx = 0;
+    int mo_lumo_idx = 0;
+
+    md_array(MolecularOrbital) molecular_orbitals = 0;
+    md_array(DipoleMoment) dipole_moments = 0;
+
+    md_allocator_i* alloc;
+};
+
+// Event Payload when an orbital is to be evaluated
+struct ComputeOrbital {
+    // Input information
+    OrbitalType type;
+    int orbital_idx;
+
+    mat4_t* mdl_mat;
+    mat4_t* tex_mat;
+    vec3_t* voxel_spacing;
+    uint32_t* tex_id;
+};
+
+struct Representation {
+    char name[64] = "rep";
     char filt[256] = "all";
     char filt_error[256] = "";
 
     RepresentationType type = RepresentationType::SpaceFill;
     ColorMapping color_mapping = ColorMapping::Cpk;
-    md_bitfield_t atom_mask{};
-    md_gl_representation_t md_rep{};
+    md_bitfield_t atom_mask = {};
+    md_gl_representation_t md_rep = {};
 #if EXPERIMENTAL_GFX_API
     md_gfx_handle_t gfx_rep = {};
 #endif
@@ -159,25 +225,49 @@ struct Representation {
     bool filt_is_valid = false;
     bool filt_is_dynamic = false;
     bool dynamic_evaluation = false;
-    //bool prop_is_valid = false;
 
     // User defined color used in uniform mode
-    vec4_t uniform_color = vec4_t{1,1,1,1};
-
-    // For colormapping the property
-    ImPlotColormap color_map = ImPlotColormap_Plasma;
-    float map_beg = 0;
-    float map_end = 1;
-    float map_min = 0;
-    float map_max = 1;
+    vec4_t uniform_color = {1.0f, 1.0f, 1.0f, 1.0f};
 
     // scaling parameter (radius, width, height, etc depending on type)
     vec4_t scale = {1.0f, 1.0f, 1.0f, 1.0f};
 
-    // Property color mapping
-    PropertyColorMapping prop_mapping[8] = {};
+    struct {
+        OrbitalType type = OrbitalType::Psi;
+        int orbital_idx = 0;
+		uint64_t hash = 0;
+    } orbital;
 
-    const md_script_property_t* prop = NULL;
+    struct {
+        uint32_t vol_tex = 0;
+        mat4_t mdl_mat = mat4_ident();
+        mat4_t tex_mat = mat4_ident();
+        vec3_t voxel_spacing = {};
+
+        float density_scale = 1.0f;
+
+        struct {
+            bool enabled = true;
+            int count = 2;
+            float  values[8] = {0.05f, -0.05};
+            vec4_t colors[8] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
+        } iso;
+
+        struct {
+            bool enabled = false;
+            uint32_t tf_tex = 0;
+            ImPlotColormap colormap = ImPlotColormap_Plasma;
+        } dvr;
+    } vol;
+
+    struct {
+        ImPlotColormap color_map = ImPlotColormap_Plasma;
+        float map_beg = 0.0f;
+        float map_end = 1.0f;
+        float map_min = 0.0f;
+        float map_max = 1.0f;
+        char ident[64] = "";
+    } prop;
 };
 
 struct ApplicationState {
@@ -502,7 +592,6 @@ struct ApplicationState {
         md_bitfield_t visibility_mask = {0};
         bool atom_visibility_mask_dirty = false;
         bool show_window = false;
-        bool keep_representations = false;
     } representation;
 
     struct {
@@ -518,6 +607,10 @@ struct ApplicationState {
         bool apply_pbc = false;
         bool unwrap_structures = false;
     } operations;
+
+    struct {
+        bool keep_representations = false;
+    } settings;
 
     struct {
         struct {

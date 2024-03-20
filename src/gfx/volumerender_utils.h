@@ -13,8 +13,6 @@ mat4_t compute_world_to_model_matrix(vec3_t min_world_aabb, vec3_t max_world_aab
 mat4_t compute_texture_to_model_matrix(int dim_x, int dim_y, int dim_z);
 mat4_t compute_model_to_texture_matrix(int dim_x, int dim_y, int dim_z);
 
-bool write_volume_to_file(const float* data, int64_t dim_x, int64_t dim_y, int64_t dim_z, str_t path_to_file);
-
 /*
     Renders a volumetric texture using OpenGL.
     - volume_texture: An OpenGL 3D texture containing the data
@@ -32,11 +30,10 @@ bool write_volume_to_file(const float* data, int64_t dim_x, int64_t dim_y, int64
 
 struct RenderDesc {
     struct {
-        uint32_t depth;
-        uint32_t color;
-        uint32_t normal;
-        uint32_t width;
-        uint32_t height;
+        uint32_t depth = 0;
+        uint32_t color = 0;
+        uint32_t width = 0;
+        uint32_t height = 0;
     } render_target;
 
     struct {
@@ -48,6 +45,7 @@ struct RenderDesc {
         mat4_t model = {};
         mat4_t view = {};
         mat4_t proj = {};
+        mat4_t inv_proj = {};
     } matrix;
 
     struct {
@@ -60,9 +58,14 @@ struct RenderDesc {
     } global_scaling;
 
     struct {
-        size_t count;
-        const float* values;
-        const vec4_t* colors;
+        // Enables temporal jittering of the ray-casting offset
+        bool enabled = false;
+    } temporal;
+
+    struct {
+        size_t count = 0;
+        const float* values = NULL;
+        const vec4_t* colors = NULL;
     } iso_surface;
     
     bool isosurface_enabled = false;

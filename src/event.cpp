@@ -18,19 +18,21 @@ void event_system_register_handler(EventHandler& handler) {
 	md_array_push(event_system.event_handlers, &handler, md_get_heap_allocator());
 }
 
-void event_system_enqueue_event(EventType type, const void* payload, uint64_t delay_in_ms) {
+void event_system_enqueue_event(EventType type, EventPayloadType payload_type, const void* payload, uint64_t delay_in_ms) {
 	md_timestamp_t time_now = md_time_current();
 	Event e = {
 		.type = type,
+		.payload_type = payload_type,
 		.timestamp = time_now + delay_in_ms,
 		.payload = payload,
 	};
 	md_array_push(event_system.event_queue, e, md_get_heap_allocator());
 }
 
-void event_system_broadcast_event(EventType type, const void* payload) {
+void event_system_broadcast_event(EventType type, EventPayloadType payload_type, const void* payload) {
 	Event e = {
 		.type = type,
+		.payload_type = payload_type,
 		.timestamp = (uint64_t)md_time_current(),
 		.payload = payload
 	};
