@@ -153,7 +153,7 @@ vec3 TonemapInvert(vec3 c) {
 vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColor, 
                     in float currentSample, in float prevSample,
                     in vec3 rayPosition, in vec3 rayDirection, 
-                    in float t, in float raySegmentLen, inout float tIncr, out bool hit, inout vec3 normal) {
+                    in float t, in float raySegmentLen, inout float tIncr, out bool hit) {
     vec4 result = curResult;
     float sampleDelta = (currentSample - prevSample);
     hit = false;
@@ -177,7 +177,7 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
 
         vec4 isocolor = isosurfaceColor;
 #if defined(SHADING_ENABLED)
-        normal = getGradient(isopos);
+        vec3 normal = getGradient(isopos);
         normal = normalize(normal);
 
         vec3 isoposView = -normalize((u_model_to_view_mat * vec4(isopos, 1.0)).xyz);
@@ -215,12 +215,11 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
 vec4 drawIsosurfaces(in vec4 curResult,
                      in float voxel, in float previousVoxel,
                      in vec3 rayPosition, in vec3 rayDirection,
-                     inout float t, inout float tIncr, inout uint iso_surface_hit, inout vec3 iso_normal) {
+                     inout float t, inout float tIncr, inout uint iso_surface_hit) {
     // in case of zero isovalues return current color
     vec4 result = curResult;
     float raySegmentLen = tIncr;
     bool hit;
-    vec3 normal;
 
 #if MAX_ISOVALUE_COUNT == 1
 #if SHOW_ONLY_FIRST_ISO_HITS
@@ -230,19 +229,18 @@ vec4 drawIsosurfaces(in vec4 curResult,
     }
 #endif
     result = drawIsosurface(result, u_iso.values[0], u_iso.colors[0],
-                            voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit, normal);
+                            voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit);
 #else // MAX_ISOVALUE_COUNT
     // multiple isosurfaces, need to determine order of traversal
     if (voxel - previousVoxel > 0) {
         for (int i = 0; i < u_iso.count; ++i) {
             vec4 res = drawIsosurface(result, u_iso.values[i], u_iso.colors[i],
-                                      voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit, normal);
+                                      voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit);
 #if SHOW_ONLY_FIRST_ISO_HITS
             if (hit) {
                 uint bit = 1U << uint(i);
                 result = ((iso_surface_hit & bit) == 0U) ? res : result;
                 iso_surface_hit = iso_surface_hit | bit;
-                iso_normal = normal;
             }
 #else
             result = res;
@@ -251,13 +249,12 @@ vec4 drawIsosurfaces(in vec4 curResult,
     } else {
         for (int i = u_iso.count; i > 0; --i) {
             vec4 res = drawIsosurface(result, u_iso.values[i - 1], u_iso.colors[i - 1],
-                                  voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit, normal);
+                                  voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit);
 #if SHOW_ONLY_FIRST_ISO_HITS
             if (hit) {
                 uint bit = 1U << uint(i);
                 result = ((iso_surface_hit & bit) == 0U) ? res : result;
                 iso_surface_hit = iso_surface_hit | bit;
-                iso_normal = normal;
             }
 #else
             result = res;
@@ -308,7 +305,6 @@ void main() {
     vec4 result = vec4(0);
     float density = 0.0;
     uint iso_surface_hit = 0U;
-    vec3 normal = vec3(0,0,1);
     vec3 samplePos = entryPos;
 
     while (t < tEnd) {
@@ -317,7 +313,7 @@ void main() {
         density = getVoxel(samplePos);
 
 #if defined(INCLUDE_ISO)
-        result = drawIsosurfaces(result, density, prevDensity, samplePos, dir, t, tIncr, iso_surface_hit, normal);
+        result = drawIsosurfaces(result, density, prevDensity, samplePos, dir, t, tIncr, iso_surface_hit);
 #endif 
 
 #if defined(INCLUDE_DVR)
