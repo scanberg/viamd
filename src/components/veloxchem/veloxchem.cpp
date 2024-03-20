@@ -444,7 +444,11 @@ struct VeloxChem : viamd::EventHandler {
                     const int off_idx[3] = {blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM};
                     const int len_idx[3] = {BLK_DIM, BLK_DIM, BLK_DIM};
 
-                    md_gto_eval_mode_t eval_mode = vol_mode == 0 ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
+                    md_gto_eval_mode_t eval_mode = MD_GTO_EVAL_MODE_PSI;
+                    if (data->type == OrbitalType::PsiSquared) {
+                        eval_mode = MD_GTO_EVAL_MODE_PSI_SQUARED;
+                    }
+
                     md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, data->pgtos, md_array_size(data->pgtos), eval_mode);
                 }
             }, payload);
@@ -589,16 +593,15 @@ struct VeloxChem : viamd::EventHandler {
                 .min = orb.clip_min,
                 .max = orb.clip_max,
             },
-            .global_scaling = {
-                .density = orb.density_scale,
-            },
-            .iso_surface = {
+            .iso = {
+                .enabled = orb.iso.enabled,
                 .count  = orb.iso.count,
                 .values = orb.iso.values,
                 .colors = orb.iso.colors,
             },
-            .isosurface_enabled = orb.iso.enabled,
-            .direct_volume_rendering_enabled = orb.dvr.enabled,
+            .dvr = {
+                .enabled = orb.dvr.enabled,
+            },
             .voxel_spacing = orb.vol.step_size,
         };
 
@@ -1143,12 +1146,11 @@ struct VeloxChem : viamd::EventHandler {
                         .view  = view_mat,
                         .proj  = proj_mat,
                     },
-                    .iso_surface = {
+                    .iso = {
                         .count  = (size_t)nto.iso.count,
                         .values = nto.iso.values,
                         .colors = nto.iso.colors,
                     },
-                    .isosurface_enabled = nto.iso.enabled,
                     .voxel_spacing = nto.vol.step_size,
                 };
                 volume::render_volume(vol_desc);

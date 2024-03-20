@@ -1846,7 +1846,7 @@ static void update_density_volume(ApplicationState* data) {
     if (data->density_volume.dvr.tf.dirty) {
         data->density_volume.dvr.tf.dirty = false;
         // Update colormap texture
-        volume::compute_transfer_function_texture(&data->density_volume.dvr.tf.id, data->density_volume.dvr.tf.colormap, 128, 0.0f, data->density_volume.dvr.tf.alpha_scale);
+        volume::compute_transfer_function_texture(&data->density_volume.dvr.tf.id, data->density_volume.dvr.tf.colormap, volume::RAMP_TYPE_SAWTOOTH, data->density_volume.dvr.tf.alpha_scale);
     }
 
     int64_t selected_property = -1;
@@ -4040,6 +4040,7 @@ static void draw_representations_window(ApplicationState* state) {
                         const bool is_selected = ((int)rep.orbital.type == n);
                         if (ImGui::Selectable(orbital_type_str[n], is_selected)) {
                             rep.orbital.type = (OrbitalType)n;
+                            update_rep = true;
                         }
 
                         if (is_selected) {
@@ -4081,6 +4082,8 @@ static void draw_representations_window(ApplicationState* state) {
                     ImGui::EndCombo();
                 }
 
+#if 1
+                // Currently we do not expose DVR, since we do not have a good way of exposing the alpha ramp for the transfer function...
                 ImGui::Checkbox("Enable DVR", &rep.orbital.vol.dvr.enabled);
                 if (rep.orbital.vol.dvr.enabled) {
                     const ImVec2 button_size = {160, 0};
@@ -4091,14 +4094,16 @@ static void draw_representations_window(ApplicationState* state) {
                         for (int map = 4; map < ImPlot::GetColormapCount(); ++map) {
                             if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), button_size, map)) {
                                 rep.orbital.vol.dvr.colormap = map;
+                                update_rep = true;
                                 ImGui::CloseCurrentPopup();
                             }
                         }
                         ImGui::EndPopup();
                     }
                 }
+#endif
 
-                ImGui::Checkbox("Enable Iso-Surface", &rep.orbital.vol.iso.enabled);
+                //ImGui::Checkbox("Enable Iso-Surface", &rep.orbital.vol.iso.enabled);
                 if (rep.orbital.vol.iso.enabled) {
                     const double iso_min = 1.0e-4;
                     const double iso_max = 5.0;
@@ -5827,7 +5832,6 @@ static void draw_density_volume_window(ApplicationState* data) {
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Render")) {
-                ImGui::SliderFloat("Density Scaling", &data->density_volume.density_scale, 0.001f, 10000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
                 ImGui::Checkbox("Direct Volume Rendering", &data->density_volume.dvr.enabled);
                 if (data->density_volume.dvr.enabled) {
                     ImGui::Indent();
@@ -5844,9 +5848,12 @@ static void draw_density_volume_window(ApplicationState* data) {
                         }
                         ImGui::EndPopup();
                     }
-                    if (ImGui::SliderFloat("Alpha Scaling", &data->density_volume.dvr.tf.alpha_scale, 0.001f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic)) {
+                    if (ImGui::SliderFloat("TF Alpha Scaling", &data->density_volume.dvr.tf.alpha_scale, 0.001f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic)) {
                         data->density_volume.dvr.tf.dirty = true;
                     }
+                    ImGui::SliderFloat("TF Min Value", &data->density_volume.dvr.tf.min_val, 0.0f, 1000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                    ImGui::SliderFloat("TF Max Value", &data->density_volume.dvr.tf.max_val, 0.0f, 1000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
+
                     ImGui::Unindent();
                 }
                 ImGui::Checkbox("Iso Surfaces", &data->density_volume.iso.enabled);
@@ -6106,12 +6113,6 @@ static void draw_density_volume_window(ApplicationState* data) {
 
         clear_gbuffer(&gbuf);
 
-        //glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-        //glClearColor(1, 1, 1, 1);
-        //glClear(GL_COLOR_BUFFER_BIT);
-
-        glEnable(GL_DEPTH_TEST);
-        glDepthMask(GL_TRUE);
 
         const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
             GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
@@ -6120,6 +6121,7 @@ static void draw_density_volume_window(ApplicationState* data) {
         glCullFace(GL_BACK);
 
         glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE);
         glDepthFunc(GL_LESS);
 
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.deferred.fbo);
@@ -6174,7 +6176,6 @@ static void draw_density_volume_window(ApplicationState* data) {
                     draw_info_window(*data, pd.idx);
                 }
             }
-
             glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
         }
 
@@ -6195,22 +6196,23 @@ static void draw_density_volume_window(ApplicationState* data) {
                         .model = data->density_volume.model_mat,
                         .view = view_mat,
                         .proj = proj_mat,
+                        .inv_proj = inv_proj_mat,
                     },
                     .clip_volume = {
                         .min = data->density_volume.clip_volume.min,
                         .max = data->density_volume.clip_volume.max,
                     },
-                    .global_scaling = {
-                        .density = data->density_volume.density_scale,
-                    },
-                    .iso_surface = {
+                    .iso = {
+                        .enabled = data->density_volume.iso.enabled,
                         .count = data->density_volume.iso.count,
                         .values = data->density_volume.iso.values,
                         .colors = data->density_volume.iso.colors,
                     },
-                    .isosurface_enabled = data->density_volume.iso.enabled,
-                    .direct_volume_rendering_enabled = data->density_volume.dvr.enabled,
-
+                    .dvr = {
+                        .enabled = data->density_volume.dvr.enabled,
+                        .min_tf_value = data->density_volume.dvr.tf.min_val,
+                        .max_tf_value = data->density_volume.dvr.tf.max_val,
+                    },
                     .voxel_spacing = data->density_volume.voxel_spacing
                 };
                 volume::render_volume(vol_desc);
@@ -6221,6 +6223,8 @@ static void draw_density_volume_window(ApplicationState* data) {
             glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
             glEnable(GL_DEPTH_TEST);
             glDepthMask(GL_TRUE);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
             if (data->density_volume.model_mat != mat4_t{0}) {
                 const vec3_t min_box = {0,0,0};
@@ -6236,6 +6240,7 @@ static void draw_density_volume_window(ApplicationState* data) {
 
                 immediate::render();
             }
+            glDisable(GL_BLEND);
         }
 
         PUSH_GPU_SECTION("Postprocessing")
@@ -7889,6 +7894,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         rep->type_is_valid = mol.backbone.range.count > 0;
         break;
 	case RepresentationType::Orbital: {
+        rep->type_is_valid = md_array_size(state->representation.info.molecular_orbitals) > 0;
 		uint64_t vol_hash = md_hash64(&rep->orbital.orbital_idx, sizeof(rep->orbital.orbital_idx), (uint64_t)rep->orbital.type);
 		if (vol_hash != rep->orbital.vol_hash) {
 			rep->orbital.vol_hash = vol_hash;
@@ -7908,11 +7914,12 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         uint64_t tf_hash = md_hash64(&rep->orbital.vol.dvr.colormap, sizeof(rep->orbital.vol.dvr.colormap), 0);
         if (tf_hash != rep->orbital.tf_hash) {
             rep->orbital.tf_hash = tf_hash;
-            volume::compute_transfer_function_texture(&rep->orbital.vol.dvr.tf_tex, rep->orbital.vol.dvr.colormap, 128, 0.5f);
+            volume::compute_transfer_function_texture(&rep->orbital.vol.dvr.tf_tex, rep->orbital.vol.dvr.colormap, volume::RAMP_TYPE_SAWTOOTH);
         }
 		break;
 	}
     case RepresentationType::DipoleMoment:
+        rep->type_is_valid = md_array_size(state->representation.info.dipole_moments) > 0;
         break;
     default:
         ASSERT(false);
@@ -8193,7 +8200,7 @@ static void handle_camera_interaction(ApplicationState* data) {
                     data->selection.selecting = true;
 
                     const vec2_t res = { (float)data->app.window.width, (float)data->app.window.height };
-                    const mat4_t mvp = data->view.param.matrix.current.proj * data->view.param.matrix.current.view;
+                    const mat4_t mvp = data->view.param.matrix.current.proj_jittered * data->view.param.matrix.current.view;
 
                     md_bitfield_iter_t it = md_bitfield_iter_create(&data->representation.visibility_mask);
                     while (md_bitfield_iter_next(&it)) {
@@ -8516,7 +8523,7 @@ static void fill_gbuffer(ApplicationState* data) {
     glDisable(GL_CULL_FACE);
 
     immediate::set_model_view_matrix(data->view.param.matrix.current.view);
-    immediate::set_proj_matrix(data->view.param.matrix.current.proj);
+    immediate::set_proj_matrix(data->view.param.matrix.current.proj_jittered);
 
     const md_script_vis_t& vis = data->script.vis;
 
@@ -8555,7 +8562,7 @@ static void fill_gbuffer(ApplicationState* data) {
     immediate::render();
 
     immediate::set_model_view_matrix(data->view.param.matrix.current.view);
-    immediate::set_proj_matrix(data->view.param.matrix.current.proj);
+    immediate::set_proj_matrix(data->view.param.matrix.current.proj_jittered);
     
     glEnable(GL_DEPTH_TEST);
     
@@ -8792,19 +8799,20 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .min = {0,0,0},
                 .max = {1,1,1},
             },
-            .global_scaling = {
-                .density = 1.0f,
-            },
             .temporal = {
                 .enabled = state->visuals.temporal_reprojection.enabled,
             },
-            .iso_surface = {
+            .iso = {
+                .enabled = rep.orbital.vol.iso.enabled,
                 .count  = (size_t)rep.orbital.vol.iso.count,
                 .values = rep.orbital.vol.iso.values,
                 .colors = rep.orbital.vol.iso.colors,
             },
-            .isosurface_enabled = rep.orbital.vol.iso.enabled,
-            .direct_volume_rendering_enabled = rep.orbital.vol.dvr.enabled,
+            .dvr = {
+                .enabled = rep.orbital.vol.dvr.enabled,
+                .min_tf_value = -1.0f,
+                .max_tf_value =  1.0f,
+            },
             .voxel_spacing = rep.orbital.vol.voxel_spacing,
         };
 

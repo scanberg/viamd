@@ -88,14 +88,12 @@ static const char* color_mapping_str[(int)ColorMapping::Count] = {
 enum class OrbitalType {
     Psi,
     PsiSquared,
-    Nto,
     Count
 };
 
 static const char* orbital_type_str[(int)OrbitalType::Count] = {
     (const char*)u8"Orbital (Ψ)",
     (const char*)u8"Density (Ψ²)",
-    "Natural Transition Orbital",
 };
 
 enum MolBit_ {
@@ -375,16 +373,16 @@ struct ApplicationState {
 
         struct {
             struct {
-                vec4_t visible = {0.0f, 0.0f, 1.0f, 0.25f};
+                vec4_t visible = {0.0f, 0.0f, 1.0f,  0.3f};
                 vec4_t hidden  = {0.0f, 0.0f, 0.25f, 0.4f};
             } selection;
 
             struct {
-                vec4_t visible = {1.0f, 1.0f, 0.0f, 0.25f};
-                vec4_t hidden  = {0.5f, 0.5f, 0.0f, 0.40f};
+                vec4_t visible = {1.0f, 1.0f, 0.0f, 0.3f};
+                vec4_t hidden  = {0.5f, 0.5f, 0.0f, 0.4f};
             } highlight;
 
-            float saturation = 0.5f;
+            float saturation = 0.3f;
         } color;
 
         bool selecting = false;
@@ -468,6 +466,8 @@ struct ApplicationState {
                 float alpha_scale = 1.f;
                 ImPlotColormap colormap = ImPlotColormap_Plasma;
                 bool dirty = true;
+                float min_val = 0.0f;
+                float max_val = 1.0f;
             } tf;
         } dvr;
 
@@ -476,7 +476,6 @@ struct ApplicationState {
             float values[8] = {};
             vec4_t colors[8] = {};
             size_t count = 0;
-            //IsoSurfaces isosurfaces;
         } iso;
 
         struct {
@@ -499,7 +498,6 @@ struct ApplicationState {
             int  colormap_mode = 2;
         } legend;
 
-        float density_scale = 1.f;
         vec3_t voxel_spacing = {1.0f, 1.0f, 1.0f};
         float resolution_scale = 2.0f;
 
@@ -522,8 +520,8 @@ struct ApplicationState {
             vec4_t color = {1,1,1,1};
         } rep;
 
-        md_gl_representation_t* gl_reps = nullptr;
-        mat4_t* rep_model_mats = nullptr;
+        md_array(md_gl_representation_t) gl_reps = nullptr;
+        md_array(mat4_t) rep_model_mats = nullptr;
         mat4_t model_mat = {0};        
 
         Camera camera = {};

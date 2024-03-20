@@ -125,16 +125,16 @@ struct UniformData {
     mat4_t model_view_proj_mat;
 
     vec2_t inv_res;
-    float density_scale;
+    float time;
     float _pad0;
 
     vec3_t clip_volume_min;
-    float _pad1;
+    float tf_min;
     vec3_t clip_volume_max;
-    float time;
+    float tf_inv_ext;
 
     vec3_t gradient_spacing_world_space;
-    float _pad2;
+    float _pad1;
     mat4_t gradient_spacing_tex_space;
 };
 
@@ -269,7 +269,7 @@ mat4_t compute_texture_to_model_matrix(int dim_x, int dim_y, int dim_z) {
     return mat4_ident();
 }
 
-void compute_transfer_function_texture(uint32_t* tex, int colormap, int res, float alpha_origin, float alpha_scale) {
+void compute_transfer_function_texture(uint32_t* tex, int colormap, ramp_type_t type, float ramp_scale, float ramp_period, int res) {
     ASSERT(tex);
     if (res <= 0) {
         MD_LOG_ERROR("Bad input resolution");
@@ -280,18 +280,31 @@ void compute_transfer_function_texture(uint32_t* tex, int colormap, int res, flo
     size_t bytes = sizeof(uint32_t) * res;
     uint32_t* pixel_data = (uint32_t*)md_temp_push(bytes);
 
+    const float s = ramp_scale;
+    const float p = ramp_period;
+
     // Update colormap texture
     for (int i = 0; i < res; ++i) {
         float t = (float)i / (float)(res - 1);
         ImVec4 col = ImPlot::SampleColormap(t, colormap);
 
         // Remap linear t which has a profile of '/' to '\/' to put the alpha ramp in the center (0.5)
-        // y(x) = abs((1.0 - c) * (c - x)) Paste this into a grapher and you will see!
-        float o = alpha_origin;
-        t = fabsf((1.0 - o)*(o - t));
+        // y(x) = abs((1.0 - c) * (c - x)) Paste this into a grapher and you will see!alpha_origin;
+        switch (type) {
+        case RAMP_TYPE_SAWTOOTH:
+            t = s * fmodf(t, p);
+            break;
+        case RAMP_TYPE_TRIANGLE:
+            t = s * (2.0f/p) * fabsf(fmodf(t-p*0.5f,p)-p*0.5f);
+            break;
+        default:
+            break;
+        }
+
+        t = CLAMP(t, 0.0f, 1.0f);
 
         col.w = MIN(160 * t*t, 0.341176f);
-        col.w = CLAMP(col.w * alpha_scale, 0.0f, 1.0f);
+        col.w = CLAMP(col.w, 0.0f, 1.0f);
         pixel_data[i] = ImGui::ColorConvertFloat4ToU32(col);
     }
 
@@ -302,14 +315,14 @@ void compute_transfer_function_texture(uint32_t* tex, int colormap, int res, flo
 }
 
 void render_volume(const RenderDesc& desc) {
-    if (!desc.direct_volume_rendering_enabled && !desc.isosurface_enabled) return;
+    if (!desc.dvr.enabled && !desc.iso.enabled) return;
 
-    int    iso_count = CLAMP((int)desc.iso_surface.count, 0, 8);
+    int    iso_count = CLAMP((int)desc.iso.count, 0, 8);
     float  iso_values[8];
     vec4_t iso_colors[8];
 
-    MEMCPY(iso_values, desc.iso_surface.values, iso_count * sizeof(float));
-    MEMCPY(iso_colors, desc.iso_surface.colors, iso_count * sizeof(vec4_t));
+    MEMCPY(iso_values, desc.iso.values, iso_count * sizeof(float));
+    MEMCPY(iso_colors, desc.iso.colors, iso_count * sizeof(vec4_t));
 
     // Sort on iso value
     for (int i = 0; i < iso_count - 1; ++i) {
@@ -359,16 +372,22 @@ void render_volume(const RenderDesc& desc) {
         time = 0.0f;
     }
 
+    float tf_min = desc.dvr.min_tf_value;
+    float tf_max = desc.dvr.max_tf_value;
+    float tf_ext = tf_max - tf_min;
+    float inv_tf_ext = tf_ext == 0 ? 1.0f : 1.0f / tf_ext;
+
     UniformData data;
     data.view_to_model_mat = mat4_inverse(model_to_view_matrix);
     data.model_to_view_mat = model_to_view_matrix;
     data.inv_proj_mat      = desc.matrix.inv_proj;
     data.model_view_proj_mat = desc.matrix.proj * model_to_view_matrix;
     data.inv_res = {1.f / (float)(desc.render_target.width), 1.f / (float)(desc.render_target.height)};
-    data.density_scale = desc.global_scaling.density;
-    data.clip_volume_min = desc.clip_volume.min;
-    data.clip_volume_max = desc.clip_volume.max;
     data.time = time;
+    data.clip_volume_min = desc.clip_volume.min;
+    data.tf_min = tf_min;
+    data.clip_volume_max = desc.clip_volume.max;
+    data.tf_inv_ext = inv_tf_ext;
     data.gradient_spacing_world_space = desc.voxel_spacing;
     data.gradient_spacing_tex_space = data.view_to_model_mat * mat4_scale(desc.voxel_spacing.x, desc.voxel_spacing.y, desc.voxel_spacing.z);
 
@@ -450,7 +469,7 @@ void render_volume(const RenderDesc& desc) {
 
     PUSH_GPU_SECTION("VOLUME RAYCASTING")
     {
-        const GLuint vol_prog = desc.direct_volume_rendering_enabled ? (desc.isosurface_enabled ? gl.program.dvr_and_iso : gl.program.dvr_only) : gl.program.iso_only;
+        const GLuint vol_prog = desc.dvr.enabled ? (desc.iso.enabled ? gl.program.dvr_and_iso : gl.program.dvr_only) : gl.program.iso_only;
 
         const GLint uniform_block_index     = glGetUniformBlockIndex(vol_prog, "UniformData");
         const GLint uniform_loc_tex_entry   = glGetUniformLocation(vol_prog, "u_tex_entry");
@@ -483,7 +502,7 @@ void render_volume(const RenderDesc& desc) {
     glEnable(GL_DEPTH_TEST);
     glCullFace(GL_BACK);
 
-    if (!desc.render_target.color) {
+    if (desc.render_target.color) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bound_fbo);
         glViewport(bound_viewport[0], bound_viewport[1], bound_viewport[2], bound_viewport[3]);
         glDrawBuffers(bound_draw_buffer_count, (GLenum*)bound_draw_buffer);

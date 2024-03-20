@@ -12,7 +12,7 @@
 
 struct IsovalueParameters {
     float values[MAX_ISOVALUE_COUNT];
-    vec4 colors[MAX_ISOVALUE_COUNT];
+    vec4  colors[MAX_ISOVALUE_COUNT];
     int count;
 };
 
@@ -24,11 +24,12 @@ layout (std140) uniform UniformData
     mat4 u_model_view_proj_mat;
 
     vec2  u_inv_res;
-    float u_density_scale;
+    float u_time;
 
     vec3  u_clip_plane_min;
+    float u_tf_min;
     vec3  u_clip_plane_max;
-    float u_time;
+    float u_tf_inv_ext;
 
     vec3 u_gradient_spacing_world_space;
     mat4 u_gradient_spacing_tex_space;
@@ -51,13 +52,12 @@ const float ERT_THRESHOLD = 0.999;
 const float samplingRate = 2.0;
 
 float getVoxel(in vec3 samplePos) {
-    //return samplePos.x;
-    //samplePos -= (u_gradient_spacing_tex_space * vec4(-0.5, 0.5, 0.5, 0.0)).xyz;
-    return texture(u_tex_volume, samplePos).r * u_density_scale;
+    return texture(u_tex_volume, samplePos).r;
 }
 
 vec4 classify(in float density) {
-    return texture(u_tex_tf, vec2(density, 0.5));
+    float t = clamp((density - u_tf_min) * u_tf_inv_ext, 0.0, 1.0);
+    return texture(u_tex_tf, vec2(t, 0.5));
 }
 
 vec4 compositing(in vec4 dstColor, in vec4 srcColor, in float tIncr) {
