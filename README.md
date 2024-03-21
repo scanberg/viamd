@@ -19,7 +19,7 @@ For windows, we recommend to use the latest binary available on the ![release pa
 
 ### Ubuntu and MacOs
 For Linux and MacOs, we recommend you to build VIAMD on your machine following the procedure below.
-MacOs is not actively tested.
+MacOs is not actively tested.<br>
 For intel based MacOS it works perfectly provided you have installed all libraries and update your xcode.
 
 ```
