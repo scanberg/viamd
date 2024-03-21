@@ -40,6 +40,10 @@ cd build
 cmake ..
 cmake --build .
 ```
+<img width="645" alt="img2" src="https://github.com/pritampanda15/viamd/assets/33391925/3fd59c14-e150-4f4b-9ee3-44505912bed2">
+<img width="1288" alt="img1" src="https://github.com/pritampanda15/viamd/assets/33391925/93e3ee13-e63a-4ca6-b42b-364769e92ba8">
+
+
 
 ## Building
 ### Step 1: Clone the repository:
