@@ -48,7 +48,7 @@ layout(location = 0) out vec4  out_color;
 //out float gl_FragDepth;
 
 const float REF_SAMPLING_RATE = 150.0;
-const float ERT_THRESHOLD = 0.999;
+const float ERT_THRESHOLD = 0.995;
 const float samplingRate = 2.0;
 
 float getVoxel(in vec3 samplePos) {

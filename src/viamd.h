@@ -76,13 +76,13 @@ static const char* color_mapping_str[(int)ColorMapping::Count] = {
     "Uniform Color",
     "CPK",
     "Atom Label",
-    "Atom Idx"
-    "Res Id",
+    "Atom Idx",
+    "Res Name",
     "Res Idx",
     "Chain Id",
     "Chain Idx",
     "Secondary Structure",
-    "Property"
+    "Property",
 };
 
 enum class OrbitalType {
@@ -131,6 +131,19 @@ enum {
 };
 
 typedef uint32_t FileFlags;
+
+enum class VolumeResolution {
+    Low,
+    Mid,
+    High,
+    Count,
+};
+
+static const char* volume_resolution_str[(int)VolumeResolution::Count] = {
+    "Low",
+    "Mid",
+    "High",
+};
 
 struct FileQueue {
     struct Entry {
@@ -197,6 +210,7 @@ struct ComputeOrbital {
     // Input information
     OrbitalType type = OrbitalType::Psi;
     int orbital_idx = 0;
+    float samples_per_angstrom = 4.0f;
 
     // Output information
     bool output_written = false;
@@ -212,7 +226,7 @@ struct RepresentationVolume {
     mat4_t tex_mat = mat4_ident();
     vec3_t voxel_spacing = {};
 
-    float density_scale = 1.0f;
+    VolumeResolution resolution = VolumeResolution::Mid;
 
     struct {
         bool enabled = true;

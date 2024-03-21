@@ -25,7 +25,6 @@
 #include <core/md_array.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_linear_allocator.h>
 #include <core/md_ring_allocator.h>
 #include <core/md_tracking_allocator.h>
 #include <core/md_simd.h>
@@ -730,8 +729,7 @@ int main(int argc, char** argv) {
 #else
 #error "Must define DEBUG or RELEASE"
 #endif
-    void* frame_mem = md_alloc(persistent_alloc, FRAME_ALLOCATOR_BYTES);
-    frame_alloc = md_linear_allocator_create(frame_mem, FRAME_ALLOCATOR_BYTES);
+    frame_alloc = md_vm_arena_create(GIGABYTES(4));
 
     struct NotificationState {
         md_mutex_t lock;
@@ -1454,7 +1452,7 @@ int main(int argc, char** argv) {
         task_system::execute_queued_tasks();
 
         // Reset frame allocator
-        md_linear_allocator_reset(frame_alloc);
+        md_vm_arena_reset(frame_alloc);
     }
 
     interrupt_async_tasks(&data);
@@ -1944,8 +1942,8 @@ static void update_density_volume(ApplicationState* data) {
             auto& rep = data->density_volume.rep;
             const size_t num_colors = data->mold.mol.atom.count;
             const size_t num_bytes = sizeof(uint32_t) * num_colors;
-            uint32_t* colors = (uint32_t*)md_linear_allocator_push(frame_alloc, num_bytes);
-            defer { md_linear_allocator_pop(frame_alloc, num_bytes); };
+            uint32_t* colors = (uint32_t*)md_vm_arena_push(frame_alloc, num_bytes);
+            defer { md_vm_arena_pop(frame_alloc, num_bytes); };
 
             switch (rep.colormap) {
             case ColorMapping::Uniform:
@@ -2035,15 +2033,10 @@ static void interpolate_atomic_properties(ApplicationState* data) {
     size_t stride = ALIGN_TO(mol.atom.count, 16);    // The interploation uses SIMD vectorization without bounds, so we make sure there is no overlap between the data segments
     size_t bytes = stride * sizeof(float) * 3 * 4;
 
-    md_allocator_i* alloc = 0;
-    if (bytes < md_linear_allocator_avail_bytes(frame_alloc)) {
-        alloc = frame_alloc;
-    } else {
-        alloc = md_get_heap_allocator();
-    }
+    md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
+    defer { md_vm_arena_temp_end(tmp); };
 
-    void* mem = md_alloc(alloc, bytes);
-    defer { md_free(alloc, mem, bytes); };
+    void* mem = md_vm_arena_push(frame_alloc, bytes);
 
     float* src_x[4] = { (float*)mem + stride * 0, (float*)mem + stride * 1, (float*)mem + stride * 2, (float*)mem + stride * 3 };
     float* src_y[4] = { (float*)mem + stride * 4, (float*)mem + stride * 5, (float*)mem + stride * 6, (float*)mem + stride * 7 };
@@ -2288,14 +2281,15 @@ static void reset_view(ApplicationState* data, bool move_camera, bool smooth_tra
     vec3_t aabb_min, aabb_max;
     
     if (0 < popcount && popcount < mol.atom.count) {
-        int32_t* indices = (int32_t*)md_linear_allocator_push(frame_alloc, popcount * sizeof(int32_t));
+        md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
+        int32_t* indices = (int32_t*)md_vm_arena_push(frame_alloc, popcount * sizeof(int32_t));
         size_t len = md_bitfield_iter_extract_indices(indices, popcount, md_bitfield_iter_create(&data->representation.visibility_mask));
         if (len > popcount || len > mol.atom.count) {
             MD_LOG_DEBUG("Error: Invalid number of indices");
             len = MIN(popcount, mol.atom.count);
         }
 		md_util_aabb_compute(aabb_min.elem, aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, len);
-        md_linear_allocator_pop(frame_alloc, popcount * sizeof(int32_t));
+        md_vm_arena_temp_end(tmp);
     } else {
         md_util_aabb_compute(aabb_min.elem, aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, nullptr, mol.atom.count);
     }
@@ -3922,12 +3916,11 @@ static void draw_representations_window(ApplicationState* state) {
             }
             if (!rep.type_is_valid) ImGui::PopInvalid();
 
-            if (ImGui::InputQuery("filter", rep.filt, sizeof(rep.filt), rep.filt_is_valid, rep.filt_error)) {
-                rep.filt_is_dirty = true;
-                update_rep = true;
-            }
-
             if (rep.type <= RepresentationType::Cartoon) {
+                if (ImGui::InputQuery("filter", rep.filt, sizeof(rep.filt), rep.filt_is_valid, rep.filt_error)) {
+                    rep.filt_is_dirty = true;
+                    update_rep = true;
+                }
                 if (ImGui::Combo("color", (int*)(&rep.color_mapping), color_mapping_str, IM_ARRAYSIZE(color_mapping_str))) {
                     update_rep = true;
                 }
@@ -4082,7 +4075,10 @@ static void draw_representations_window(ApplicationState* state) {
                     ImGui::EndCombo();
                 }
 
-#if 1
+                if (ImGui::Combo("Volume Resolution", (int*)&rep.orbital.vol.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str))) {
+                    update_rep = true;
+                }
+#if 0
                 // Currently we do not expose DVR, since we do not have a good way of exposing the alpha ramp for the transfer function...
                 ImGui::Checkbox("Enable DVR", &rep.orbital.vol.dvr.enabled);
                 if (rep.orbital.vol.dvr.enabled) {
@@ -7021,7 +7017,10 @@ static void update_md_buffers(ApplicationState* data) {
 
         if (f_hash != flag_hash) {
             flag_hash = f_hash;
-            uint8_t* flags = (uint8_t*)md_linear_allocator_push(frame_alloc, mol.atom.count * sizeof(uint8_t));
+            md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
+            defer { md_vm_arena_temp_end(tmp); };
+
+            uint8_t* flags = (uint8_t*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(uint8_t));
             MEMSET(flags, 0, mol.atom.count * sizeof(uint8_t));
 
             {
@@ -7048,19 +7047,6 @@ static void update_md_buffers(ApplicationState* data) {
             flag_hash = f_hash;
             md_gl_molecule_set_atom_flags(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, flags, 0);
         }
-
-        /*
-        uint8_t* flags = (uint8_t*)md_alloc(frame_allocator, mol.atom.count);
-        MEMSET(flags, 0, sizeof(uint8_t) * mol.atom.count);
-        for (size_t i = 0; i < mol.atom.count; i++) {
-            uint8_t f = 0;
-            f |= md_bitfield_test_bit(&data->selection.highlight_mask, i)     ? AtomBit_Highlighted : 0;
-            f |= md_bitfield_test_bit(&data->selection.selection_mask, i)     ? AtomBit_Selected : 0;
-            f |= md_bitfield_test_bit(&data->representation.visibility_mask, i)  ? AtomBit_Visible : 0;
-            flags[i] = f;
-        }
-        md_gl_molecule_set_atom_flags(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, flags, 0);
-        */
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyBonds) {
@@ -7651,7 +7637,7 @@ static void save_workspace(ApplicationState* data, str_t filename) {
     for (size_t i = 0; i < md_array_size(data->selection.stored_selections); ++i) {
         const Selection& sel = data->selection.stored_selections[i];
         size_t cap = md_bitfield_serialize_size_in_bytes(&sel.atom_mask);
-        char* buf = (char*)md_linear_allocator_push(frame_alloc, cap);
+        char* buf = (char*)md_vm_arena_push(frame_alloc, cap);
         size_t len = md_bitfield_serialize(buf, &sel.atom_mask);
         str_t encoded_mask = {buf, len};
         viamd::write_section_header(state, STR_LIT("Selection"));
@@ -7667,13 +7653,17 @@ static void save_workspace(ApplicationState* data, str_t filename) {
 
 void create_screenshot(ApplicationState* data) {
     ASSERT(data);
+
+    md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
+    defer { md_vm_arena_temp_end(tmp); };
+
     str_t path = data->screenshot.path_to_file;
 
     int width  = data->gbuffer.width;
     int height = data->gbuffer.height;
     size_t bytes = width * height * sizeof(uint32_t);
-    uint32_t* rgba = (uint32_t*)md_linear_allocator_push(frame_alloc, bytes);
-    defer { md_linear_allocator_pop(frame_alloc, bytes); };
+    uint32_t* rgba = (uint32_t*)md_vm_arena_push(frame_alloc, bytes);
+    defer { md_vm_arena_pop(frame_alloc, bytes); };
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glReadBuffer(GL_BACK);
@@ -7779,11 +7769,11 @@ static void update_representation(ApplicationState* state, Representation* rep) 
 
     if (!rep->enabled) return;
 
-    size_t pos = md_linear_allocator_get_pos(frame_alloc);
-    defer { md_linear_allocator_set_pos_back(frame_alloc, pos); };
+    md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
+    defer { md_vm_arena_temp_end(tmp); };
 
     const size_t bytes = state->mold.mol.atom.count * sizeof(uint32_t);
-    uint32_t* colors = (uint32_t*)md_linear_allocator_push(frame_alloc, bytes);
+    uint32_t* colors = (uint32_t*)md_vm_arena_push(frame_alloc, bytes);
 
     const auto& mol = state->mold.mol;
 
@@ -7895,12 +7885,18 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         break;
 	case RepresentationType::Orbital: {
         rep->type_is_valid = md_array_size(state->representation.info.molecular_orbitals) > 0;
-		uint64_t vol_hash = md_hash64(&rep->orbital.orbital_idx, sizeof(rep->orbital.orbital_idx), (uint64_t)rep->orbital.type);
+        uint64_t vol_hash = (uint64_t)rep->orbital.type | ((uint64_t)rep->orbital.vol.resolution << 8) | ((uint64_t)rep->orbital.orbital_idx << 32);
 		if (vol_hash != rep->orbital.vol_hash) {
+            const float samples_per_angstrom[(int)VolumeResolution::Count] = {
+                4.0f,
+                8.0f,
+                16.0f,
+            };
 			rep->orbital.vol_hash = vol_hash;
 			ComputeOrbital data = {
 				.type = rep->orbital.type,
 				.orbital_idx = rep->orbital.orbital_idx,
+                .samples_per_angstrom = samples_per_angstrom[(int)rep->orbital.vol.resolution],
                 .dst_texture = &rep->orbital.vol.vol_tex,
 			};
 			viamd::event_system_broadcast_event(viamd::EventType_RepresentationComputeOrbital, viamd::EventPayloadType_ComputeOrbital, &data);
