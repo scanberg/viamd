@@ -19,6 +19,8 @@
 #include <imgui_widgets.h>
 #include <implot_widgets.h>
 
+#define BLK_DIM 8
+
 static const char* vol_res_lbl[3] = {
     "Low",
     "Mid",
@@ -141,6 +143,7 @@ struct VeloxChem : viamd::EventHandler {
 
             switch (e.type) {
             case viamd::EventType_ViamdInitialize: {
+                ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState& state = *(ApplicationState*)e.payload;
                 arena = md_arena_allocator_create(state.allocator.persistent, MEGABYTES(1));
                 break;
@@ -149,6 +152,7 @@ struct VeloxChem : viamd::EventHandler {
                 md_arena_allocator_destroy(arena);
                 break;
             case viamd::EventType_ViamdFrameTick: {
+                ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState& state = *(ApplicationState*)e.payload;
                 draw_orb_window();
                 draw_nto_window(state);
@@ -161,12 +165,14 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::Checkbox("VeloxChem RSP", &rsp.show_window);
                 ImGui::Checkbox("VeloxChem SCF", &scf.show_window);
                 break;
-            case viamd::EventType_ViamdPostRender: {
-                ApplicationState& state = *(ApplicationState*)e.payload;
-                draw_orb_volume(state);
+            case viamd::EventType_ViamdRenderTransparent: {
+                ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
+                //ApplicationState& state = *(ApplicationState*)e.payload;
+                //draw_orb_volume(state);
                 break;
             }
             case viamd::EventType_ViamdTopologyInit: {
+                ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState& state = *(ApplicationState*)e.payload;
                 str_t ext;
                 str_t top_file = str_from_cstr(state.files.molecule);
@@ -275,9 +281,174 @@ struct VeloxChem : viamd::EventHandler {
                 nto = {};
                 rsp = {};
                 break;
+
+            case viamd::EventType_RepresentationInfoFill: {
+                ASSERT(e.payload_type == viamd::EventPayloadType_RepresentationInfo);
+                RepresentationInfo& info = *(RepresentationInfo*)e.payload;
+
+                info.mo_homo_idx = orb.homo_idx;
+                info.mo_lumo_idx = orb.lumo_idx;
+
+                for (size_t i = 0; i < num_orbitals(); ++i) {
+                    MolecularOrbital mo = {
+                        .idx = (int)i,
+                        .occupation = (float)vlx.scf.alpha.energies.data[i],
+                        .energy = (float)vlx.scf.alpha.energies.data[i],
+                    };
+                    md_array_push(info.molecular_orbitals, mo, info.alloc);
+                }
+                
+                auto push_dipole = [&info](md_vlx_dipole_moment_t vlx_dp) {
+                    DipoleMoment dp = {
+                        .label = str_copy(vlx_dp.ident, info.alloc),
+                        .vector = vec3_set((float)vlx_dp.x, (float)vlx_dp.y, (float)vlx_dp.z),
+                    };
+                    md_array_push(info.dipole_moments, dp, info.alloc);
+                };
+
+                push_dipole(vlx.scf.ground_state_dipole_moment);
+                for (size_t i = 0; i < vlx.rsp.num_excited_states; ++i)
+                    push_dipole(vlx.rsp.electronic_transition_length[i]);
+                for (size_t i = 0; i < vlx.rsp.num_excited_states; ++i)
+                    push_dipole(vlx.rsp.electronic_transition_velocity[i]);
+                for (size_t i = 0; i < vlx.rsp.num_excited_states; ++i)
+                    push_dipole(vlx.rsp.magnetic_transition[i]);
+                break;
+            }
+            case viamd::EventType_RepresentationComputeOrbital: {
+                ASSERT(e.payload_type == viamd::EventPayloadType_ComputeOrbital);
+                ComputeOrbital& data = *(ComputeOrbital*)e.payload;
+                compute_orbital(data);
+
+                break;
+            }
             default:
                 break;
             }
+        }
+    }
+
+    void compute_orbital(ComputeOrbital& data) {
+        if (task_system::task_is_running(orb.compute_volume_task)) {
+            task_system::task_interrupt(orb.compute_volume_task);
+        }
+        else {
+            // Target resolution per spatial unit (We want this number of samples per Ångström in each dimension)
+            // Round up to some multiple of 8 -> 8x8x8 is the chunksize we process in parallel
+
+            const float res_scale = vol_res_scl[vol_res_idx];
+
+            int dim[3] = {
+                CLAMP(ALIGN_TO((int)(orb.vol.extent.x * res_scale), 8), 8, 512),
+                CLAMP(ALIGN_TO((int)(orb.vol.extent.y * res_scale), 8), 8, 512),
+                CLAMP(ALIGN_TO((int)(orb.vol.extent.z * res_scale), 8), 8, 512),
+            };
+
+            size_t num_bytes = sizeof(float) * dim[0] * dim[1] * dim[2];
+            if (num_bytes != orb.vol.num_bytes) {
+                orb.vol.data = (float*)md_realloc(arena, orb.vol.data, orb.vol.num_bytes, num_bytes);
+                ASSERT(orb.vol.data);
+                orb.vol.num_bytes = num_bytes;
+            }
+
+            MEMSET(orb.vol.data, 0, orb.vol.num_bytes);
+
+            MEMCPY(orb.vol.dim, dim, sizeof(orb.vol.dim));
+            vec3_t step_size = vec3_div(orb.vol.extent, vec3_set((float)orb.vol.dim[0], (float)orb.vol.dim[1], (float)orb.vol.dim[2]));
+            *data.voxel_spacing = step_size;
+            *data.tex_mat = orb.vol.tex_to_world;
+
+            MD_LOG_DEBUG("Created Orbital volume of dimensions [%i][%i][%i]", orb.vol.dim[0], orb.vol.dim[1], orb.vol.dim[2]);
+
+            if (!md_vlx_extract_alpha_mo_pgtos(orb.pgtos, &vlx, data.orbital_idx)) {
+                MD_LOG_ERROR("Failed to extract alpha orbital for orbital index: %i", data.orbital_idx);
+                return;
+            }
+            md_gto_cutoff_compute(orb.pgtos, md_array_size(orb.pgtos), 1.0e-6);
+
+            // Transform pgtos into the 'model space' of the volume
+            // There is a scaling factor here as well as the PGTOs are given and must be
+            // Processed in a.u. (Bohr) and not Ångström, in which the volume is defined
+            mat4_t R = orb.vol.model_to_world;
+            R.col[3] = vec4_set(0,0,0,1);
+            R = mat4_transpose(R);
+
+            // Ångström to Bohr
+            vec4_t t = vec4_mul_f(orb.vol.model_to_world.col[3], 1.0 / 0.529177210903);
+            mat4_t T = mat4_translate(-t.x, -t.y, -t.z);
+
+            mat4_t M = R * T;
+            for (size_t i = 0; i < md_array_size(orb.pgtos); ++i) {
+                vec4_t c = {orb.pgtos[i].x, orb.pgtos[i].y, orb.pgtos[i].z, 1.0f};
+                c = M * c;
+                orb.pgtos[i].x = c.x;
+                orb.pgtos[i].y = c.y;
+                orb.pgtos[i].z = c.z;
+            }
+
+            // We evaluate the in parallel over smaller NxNxN blocks
+            uint32_t num_blocks = (orb.vol.dim[0] / BLK_DIM) * (orb.vol.dim[1] / BLK_DIM) * (orb.vol.dim[2] / BLK_DIM);
+
+            struct Payload {
+                OrbitalType type;
+                int mo_idx;
+                Volume* vol;
+                uint32_t* tex_id;
+                md_array(const md_gto_t) pgtos;
+            };
+
+            Payload* payload = (Payload*)md_alloc(md_get_heap_allocator(), sizeof(Payload));
+            payload->type    = data.type;
+            payload->mo_idx  = data.orbital_idx;
+            payload->vol     = &orb.vol;
+            payload->tex_id  = data.tex_id;
+            payload->pgtos   = orb.pgtos;
+
+            orb.compute_volume_task = task_system::pool_enqueue(STR_LIT("Evaluate Orbital"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+                Payload* data = (Payload*)user_data;
+
+                // Number of NxNxN blocks in each dimension
+                int num_blk[3] = {
+                    data->vol->dim[0] / BLK_DIM,
+                    data->vol->dim[1] / BLK_DIM,
+                    data->vol->dim[2] / BLK_DIM,
+                };
+
+                // Conversion from Ångström to Bohr
+                const float factor = 1.0 / 0.529177210903;
+
+                // The PGTOs have been pre-transformed into the 'model space' of the volume
+                vec3_t step = vec3_mul_f(data->vol->step_size, factor);
+
+                md_grid_t grid = {
+                    .data = data->vol->data,
+                    .dim  = {data->vol->dim[0], data->vol->dim[1], data->vol->dim[2]},
+                    // Shift origin by half a voxel to evaluate at the voxel center
+                    .origin = {0.5f * step.x, 0.5f * step.y, 0.5f * step.z},
+                    .stepsize = {step.x, step.y, step.z},
+                };
+
+                for (uint32_t i = range_beg; i < range_end; ++i) {
+                    // Determine block index
+                    int blk_x =  i % num_blk[0];
+                    int blk_y = (i / num_blk[0]) % num_blk[1];
+                    int blk_z =  i / (num_blk[0] * num_blk[1]);
+
+                    const int off_idx[3] = {blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM};
+                    const int len_idx[3] = {BLK_DIM, BLK_DIM, BLK_DIM};
+
+                    md_gto_eval_mode_t eval_mode = vol_mode == 0 ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
+                    md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, data->pgtos, md_array_size(data->pgtos), eval_mode);
+                }
+            }, payload);
+
+            // Launch task for main (render) thread to update the volume texture
+            task_system::main_enqueue(STR_LIT("Update Volume"), [](void* user_data) {
+                Payload* data = (Payload*)user_data;
+                gl::init_texture_3D(data->tex_id, data->vol->dim[0], data->vol->dim[1], data->vol->dim[2], GL_R16F);
+                gl::set_texture_3D_data(*data->tex_id, data->vol->data, GL_R32F);
+                md_free(md_get_heap_allocator(), data, sizeof(Payload));
+            }, payload, orb.compute_volume_task);
         }
     }
 
@@ -286,7 +457,6 @@ struct VeloxChem : viamd::EventHandler {
             task_system::task_interrupt(orb.compute_volume_task);
         }
         else {
-#define BLK_DIM 8
             // Target resolution per spatial unit (We want this number of samples per Ångström in each dimension)
             // Round up to some multiple of 8 -> 8x8x8 is the chunksize we process in parallel
 
@@ -379,12 +549,10 @@ struct VeloxChem : viamd::EventHandler {
                 }
             }, &this->orb);
 
-#undef BLK_DIM
-
             // Launch task for main (render) thread to update the volume texture
             task_system::main_enqueue(STR_LIT("Update Volume"), [](void* user_data) {
                 Orb* orb = (Orb*)user_data;
-                gl::init_texture_3D(&orb->vol_texture, orb->vol.dim[0], orb->vol.dim[1], orb->vol.dim[2], GL_R32F);
+                gl::init_texture_3D(&orb->vol_texture, orb->vol.dim[0], orb->vol.dim[1], orb->vol.dim[2], GL_R16F);
                 gl::set_texture_3D_data(orb->vol_texture, orb->vol.data, GL_R32F);
             }, &this->orb, orb.compute_volume_task);
         }
@@ -398,8 +566,7 @@ struct VeloxChem : viamd::EventHandler {
         volume::RenderDesc desc = {
             .render_target = {
                 .depth = state.gbuffer.deferred.depth,
-                .color = state.gbuffer.deferred.post_tonemap,
-                .normal = state.gbuffer.deferred.normal,
+                .color = state.gbuffer.deferred.transparency,
                 .width   = state.gbuffer.width,
                 .height  = state.gbuffer.height,
             },
@@ -620,6 +787,7 @@ struct VeloxChem : viamd::EventHandler {
     void draw_scf_window() {
         if (!scf.show_window) { return; }
         if (vlx.scf.iter.count == 0) { return; }
+
         size_t temp_pos = md_temp_get_pos();
         defer {  md_temp_set_pos_back(temp_pos); };
 
@@ -883,7 +1051,7 @@ struct VeloxChem : viamd::EventHandler {
             //update_density_volume(data);
 
             // Animate camera towards targets
-            const float dt = 1.0f / 60.0f;
+            const double dt = state.app.timing.delta_s;
             camera_animate(&nto.camera, nto.target.ori, nto.target.pos, nto.target.dist, dt);
 
             ImVec2 canvas_sz = ImGui::GetContentRegionAvail();   // Resize canvas to what's available
@@ -900,7 +1068,7 @@ struct VeloxChem : viamd::EventHandler {
             ImVec2 canvas_p1 = ImGui::GetItemRectMax();
 
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
-            draw_list->AddImage((ImTextureID)(intptr_t)nto.gbuf.deferred.post_tonemap, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
+            draw_list->AddImage((ImTextureID)(intptr_t)nto.gbuf.deferred.transparency, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
             draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(50, 50, 50, 255));
 
             const bool is_hovered = ImGui::IsItemHovered();
@@ -985,7 +1153,7 @@ struct VeloxChem : viamd::EventHandler {
             glDepthMask(GL_TRUE);
 
             const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
-                GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_POST_TONEMAP };
+                GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
 
             glEnable(GL_CULL_FACE);
             glCullFace(GL_BACK);
@@ -1017,7 +1185,7 @@ struct VeloxChem : viamd::EventHandler {
 
             md_gl_draw(&draw_args);
 
-            glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
+            glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
             glClearColor(1, 1, 1, 0);
             glClear(GL_COLOR_BUFFER_BIT);
 
@@ -1025,7 +1193,7 @@ struct VeloxChem : viamd::EventHandler {
                 volume::RenderDesc vol_desc = {
                     .render_target = {
                         .depth  = nto.gbuf.deferred.depth,
-                        .color  = nto.gbuf.deferred.post_tonemap,
+                        .color  = nto.gbuf.deferred.transparency,
                         .width  = nto.gbuf.width,
                         .height = nto.gbuf.height,
                     },
@@ -1076,7 +1244,7 @@ struct VeloxChem : viamd::EventHandler {
                     .color          = nto.gbuf.deferred.color,
                     .normal         = nto.gbuf.deferred.normal,
                     .velocity       = nto.gbuf.deferred.velocity,
-                    .post_tonemap   = nto.gbuf.deferred.post_tonemap,
+                    .transparency   = nto.gbuf.deferred.transparency,
                 }
             };
 

@@ -66,7 +66,7 @@ void main() {
     vec3 dir = normalize(model_pos - model_eye);
 
     float t_entry, t_exit;
-    if (!ray_vs_aabb(t_entry, t_exit, ori, dir, u_clip_plane_min.xyz, u_clip_plane_max.xyz)) discard;
+    ray_vs_aabb(t_entry, t_exit, ori, dir, u_clip_plane_min.xyz, u_clip_plane_max.xyz);
     t_entry = max(0, t_entry);
 
 #ifdef SAMPLE_DEPTH

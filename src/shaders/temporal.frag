@@ -24,7 +24,7 @@
 #endif
 
 #ifndef USE_YCOCG
-#define USE_YCOCG 1
+#define USE_YCOCG 0
 #endif
 #ifndef USE_CLIPPING
 #define USE_CLIPPING 1
@@ -126,25 +126,25 @@ vec4 PDsrand4( vec2 n ) {
 	return PDnrand4( n ) * 2.0 - 1.0;
 }
 
-float rcp(float value) {
-    return 1. / value;
-}
-
 // Tonemapper from http://gpuopen.com/optimized-reversible-tonemapper-for-resolve/
-float getMaximumElement(in vec3 value) {
+float max3(in vec3 value) {
     return max(max(value.x, value.y), value.z);
 }
 
-vec4 map(in vec4 color) {
-    return vec4(color.rgb * rcp(getMaximumElement(color.rgb) + 1.), color.a);
+float rcp(float value) {
+    return 1.0 / value;
 }
 
-vec4 map(in vec4 color, in float weight) {
-    return vec4(color.rgb * rcp(weight * getMaximumElement(color.rgb) + 1.), color.a);
+vec3 tonemap(in vec3 color) {
+    return color * rcp(max3(color) + 1.0);
 }
 
-vec4 unmap(in vec4 color) {
-    return vec4(color.rgb * rcp(1. - getMaximumElement(color.rgb)), color.a);
+vec3 tonemap(in vec3 color, in float weight) {
+    return color * rcp(weight * max3(color) + 1.0);
+}
+
+vec3 tonemap_invert(in vec3 color) {
+    return color * rcp(1.0 - max3(color));
 }
 
 float depth_sample_linear(vec2 uv) {
@@ -155,23 +155,22 @@ vec2 sample_velocity(vec2 uv) {
 	return texture(u_tex_vel, uv).xy;
 }
 
-vec3 find_closest_fragment_3x3(vec2 uv)
-{
+vec3 find_closest_fragment_3x3(vec2 uv) {
 	vec2 dd = abs(u_texel_size.xy);
 	vec2 du = vec2(dd.x, 0.0);
 	vec2 dv = vec2(0.0, dd.y);
 
-	vec3 dtl = vec3(-1, -1, texture(u_tex_linear_depth, uv - dv - du).x);
-	vec3 dtc = vec3( 0, -1, texture(u_tex_linear_depth, uv - dv).x);
-	vec3 dtr = vec3( 1, -1, texture(u_tex_linear_depth, uv - dv + du).x);
+	vec3 dtl = vec3(-1, -1, depth_sample_linear(uv - dv - du));
+	vec3 dtc = vec3( 0, -1, depth_sample_linear(uv - dv     ));
+	vec3 dtr = vec3( 1, -1, depth_sample_linear(uv - dv + du));
 
-	vec3 dml = vec3(-1, 0, texture(u_tex_linear_depth, uv - du).x);
-	vec3 dmc = vec3( 0, 0, texture(u_tex_linear_depth, uv).x);
-	vec3 dmr = vec3( 1, 0, texture(u_tex_linear_depth, uv + du).x);
+	vec3 dml = vec3(-1, 0,  depth_sample_linear(uv - du));
+	vec3 dmc = vec3( 0, 0,  depth_sample_linear(uv     ));
+	vec3 dmr = vec3( 1, 0,  depth_sample_linear(uv + du));
 
-	vec3 dbl = vec3(-1, 1, texture(u_tex_linear_depth, uv + dv - du).x);
-	vec3 dbc = vec3( 0, 1, texture(u_tex_linear_depth, uv + dv).x);
-	vec3 dbr = vec3( 1, 1, texture(u_tex_linear_depth, uv + dv + du).x);
+	vec3 dbl = vec3(-1, 1,  depth_sample_linear(uv + dv - du));
+	vec3 dbc = vec3( 0, 1,  depth_sample_linear(uv + dv     ));
+	vec3 dbr = vec3( 1, 1,  depth_sample_linear(uv + dv + du));
 
 	vec3 dmin = dtl;
 	if (dmin.z > dtc.z) dmin = dtc;
@@ -188,31 +187,39 @@ vec3 find_closest_fragment_3x3(vec2 uv)
 	return vec3(uv + dd.xy * dmin.xy, dmin.z);
 }
 
-vec4 sample_color(sampler2D tex, vec2 uv)
-{
+vec4 sample_color(sampler2D tex, vec2 uv) {
 	vec4 c = texture(tex, uv);
-#if USE_TONEMAP
-	c = map(c);
-#endif
 #if USE_YCOCG
-	return vec4(rgb_to_ycocg(c.rgb), c.a);
-#else
-	return c;
+	c.rgb = rgb_to_ycocg(c.rgb);
 #endif
+#if USE_TONEMAP
+	c.rgb = tonemap(c.rgb);
+#endif
+	return c;
+}
+
+vec4 sample_color(sampler2D tex, vec2 uv, in float weight) {
+	vec4 c = texture(tex, uv);
+#if USE_YCOCG
+	c.rgb = rgb_to_ycocg(c.rgb);
+#endif
+#if USE_TONEMAP
+	c.rgb = tonemap(c.rgb, weight);
+#endif
+	return c;
 }
 
 vec4 resolve_color(vec4 c) {
-#if USE_YCOCG
-	c = vec4(ycocg_to_rgb(c.rgb).rgb, c.a);
-#endif
 #if USE_TONEMAP
-	c = unmap(c);
+	c.rgb = tonemap_invert(c.rgb);
+#endif
+#if USE_YCOCG
+	c.rgb = ycocg_to_rgb(c.rgb);
 #endif
 	return c;
 }
 
-vec4 clip_aabb(vec3 aabb_min, vec3 aabb_max, vec4 p, vec4 q)
-{
+vec4 clip_aabb(vec3 aabb_min, vec3 aabb_max, vec4 p, vec4 q) {
 #if USE_OPTIMIZATIONS
 	// note: only clips towards aabb center (but fast!)
 	vec3 p_clip = 0.5 * (aabb_max + aabb_min);
@@ -252,8 +259,7 @@ vec4 clip_aabb(vec3 aabb_min, vec3 aabb_max, vec4 p, vec4 q)
 #endif
 }
 
-vec2 sample_velocity_dilated(sampler2D tex, vec2 uv, int support)
-{
+vec2 sample_velocity_dilated(sampler2D tex, vec2 uv, int support) {
 	vec2 du = vec2(u_texel_size.x, 0.0);
 	vec2 dv = vec2(0.0, u_texel_size.y);
 	vec2 mv = vec2(0.0);
@@ -277,20 +283,19 @@ vec2 sample_velocity_dilated(sampler2D tex, vec2 uv, int support)
 	return mv;
 }
 
-vec4 sample_color_motion(sampler2D tex, vec2 uv, vec2 ss_vel)
-{
+vec4 sample_color_motion(sampler2D tex, vec2 uv, vec2 ss_vel) {
 	const int taps = 3;// on either side!
 	vec2 v = 0.5 * ss_vel;
 
+	// Apply some noise offset
+	// This breaks up some of the 'trailing shell' artifacts and makes it more noise like
 	float srand = PDsrand(uv + vec2(u_time, u_time));
 	vec2 vtap = v / taps;
-	vec2 pos0 = uv + vtap * (0.5 * srand);
-	vec4 accu = sample_color(tex, uv);
-	float wsum = 1.0;
+	vec2 pos0 = uv + srand * v * 0.1;
+	vec4 accu = vec4(0);
+	float wsum = 0.0;
 
-	for (int i = -taps; i <= taps; i++)
-	{
-        vec2 uv = pos0 + i * vtap;
+	for (int i = -taps; i <= taps; i++) {
         //float w = 1.0;// box
         float w = taps - abs(i) + 1;// triangle
         //float w = 1.0 / (1 + abs(i));// pointy triangle
@@ -319,8 +324,7 @@ vec2 round_to_nearest(vec2 uv) {
 	return ivec2(uv * u_texel_size.zw) * u_texel_size.xy;
 }
 
-vec4 reconstruct_color(sampler2D color_tex, vec2 uv0, vec2 ss_vel_max)
-{
+vec4 reconstruct_color(sampler2D color_tex, vec2 uv0, vec2 ss_vel_max) {
     const int taps = 3;// on either side!
 
     if (length(ss_vel_max) < FLT_EPS) {
@@ -395,13 +399,13 @@ vec4 temporal_reprojection(vec2 ss_txc, vec2 ss_vel, float vs_dist)
 	vec2 dv = vec2(0.0, u_texel_size.y);
 
 	vec4 ctl = sample_color(u_tex_main, uv - dv - du);
-	vec4 ctc = sample_color(u_tex_main, uv - dv);
+	vec4 ctc = sample_color(u_tex_main, uv - dv		);
 	vec4 ctr = sample_color(u_tex_main, uv - dv + du);
-	vec4 cml = sample_color(u_tex_main, uv - du);
-	vec4 cmc = sample_color(u_tex_main, uv);
-	vec4 cmr = sample_color(u_tex_main, uv + du);
+	vec4 cml = sample_color(u_tex_main, uv - du		);
+	vec4 cmc = sample_color(u_tex_main, uv			);
+	vec4 cmr = sample_color(u_tex_main, uv + du		);
 	vec4 cbl = sample_color(u_tex_main, uv + dv - du);
-	vec4 cbc = sample_color(u_tex_main, uv + dv);
+	vec4 cbc = sample_color(u_tex_main, uv + dv		);
 	vec4 cbr = sample_color(u_tex_main, uv + dv + du);
 
 	vec4 cmin = min(ctl, min(ctc, min(ctr, min(cml, min(cmc, min(cmr, min(cbl, min(cbc, cbr))))))));
@@ -531,11 +535,11 @@ void main() {
 	float trust = 1.0 - clamp(vel_mag - vel_trust_full, 0.0, vel_trust_span) / vel_trust_span;
 
 	#if UNJITTER_COLORSAMPLES
-	//vec4 color_motion = reconstruct_color(u_tex_main, uv, ss_vel);
-	vec4 color_motion = sample_color_motion(u_tex_main, uv, ss_vel);
-	#else
-	//vec4 color_motion = reconstruct_color(u_tex_main, uv - u_jitter_uv.xy, ss_vel);
 	vec4 color_motion = sample_color_motion(u_tex_main, uv - u_jitter_uv.xy, ss_vel);
+	//vec4 color_motion = reconstruct_color(u_tex_main, uv - u_jitter_uv.xy, ss_vel);
+	#else
+	vec4 color_motion = sample_color_motion(u_tex_main, uv, ss_vel);
+	//vec4 color_motion = reconstruct_color(u_tex_main, uv, ss_vel);
 	#endif
 
 	vec4 to_screen = resolve_color(mix(color_motion, color_temporal, trust));

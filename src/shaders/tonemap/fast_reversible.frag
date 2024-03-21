@@ -27,24 +27,32 @@ vec3 Fetch(ivec2 offset) {
 out vec4 out_frag;
 
 void main() {
+	const float exposure_bias = 0.5;
+	const float gamma = 2.4;
 	vec3 color;
 #if USE_INVERSE
-    color = TonemapInvert(Fetch(ivec2(0, 0)));
+	color = Fetch(ivec2(0, 0));
+	color = pow(color, vec3(gamma));
+	color = TonemapInvert(color);
+    color = color / exposure_bias;
 #else
 	#if USE_LOWPASS
 	color = 
-	    TonemapWithWeight(Fetch(ivec2(-1, -1)), 1.0 / 16.0) +
-	    TonemapWithWeight(Fetch(ivec2( 0, -1)), 2.0 / 16.0) +
-	    TonemapWithWeight(Fetch(ivec2( 1, -1)), 1.0 / 16.0) +
-	    TonemapWithWeight(Fetch(ivec2(-1,  0)), 2.0 / 16.0) +
-	    TonemapWithWeight(Fetch(ivec2( 0,  0)), 4.0 / 16.0) +
-	    TonemapWithWeight(Fetch(ivec2( 1,  0)), 2.0 / 16.0) +
-	    TonemapWithWeight(Fetch(ivec2(-1,  1)), 1.0 / 16.0) +
-	    TonemapWithWeight(Fetch(ivec2( 0,  1)), 2.0 / 16.0) +
-	    TonemapWithWeight(Fetch(ivec2( 1,  1)), 1.0 / 16.0);
+	    TonemapWithWeight(exposure_bias * Fetch(ivec2(-1, -1)), 1.0 / 16.0) +
+	    TonemapWithWeight(exposure_bias * Fetch(ivec2( 0, -1)), 2.0 / 16.0) +
+	    TonemapWithWeight(exposure_bias * Fetch(ivec2( 1, -1)), 1.0 / 16.0) +
+	    TonemapWithWeight(exposure_bias * Fetch(ivec2(-1,  0)), 2.0 / 16.0) +
+	    TonemapWithWeight(exposure_bias * Fetch(ivec2( 0,  0)), 4.0 / 16.0) +
+	    TonemapWithWeight(exposure_bias * Fetch(ivec2( 1,  0)), 2.0 / 16.0) +
+	    TonemapWithWeight(exposure_bias * Fetch(ivec2(-1,  1)), 1.0 / 16.0) +
+	    TonemapWithWeight(exposure_bias * Fetch(ivec2( 0,  1)), 2.0 / 16.0) +
+	    TonemapWithWeight(exposure_bias * Fetch(ivec2( 1,  1)), 1.0 / 16.0);
 	#else
-	color = Tonemap(Fetch(ivec2(0, 0)));
+	color = Fetch(ivec2(0, 0));
+	color = color * exposure_bias;
+	color = Tonemap(color);
 	#endif
+	color = pow(color, 1.0 / vec3(gamma));
 #endif
 	out_frag = vec4(color, 1);
 }
