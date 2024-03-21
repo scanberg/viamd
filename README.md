@@ -20,6 +20,26 @@ For windows, we recommend to use the latest binary available on the ![release pa
 ### Ubuntu and MacOs
 For Linux and MacOs, we recommend you to build VIAMD on your machine following the procedure below.
 MacOs is not actively tested.
+For intel based MacOS it works perfectly provided you have installed all libraries and update your xcode.
+
+```
+xcode-select --install
+brew install libx11
+brew install libxrandr
+brew install libxinerama
+brew install libxcursor
+brew install gtk+3
+brew install pkg-config
+brew install pkgconf
+brew install hdf5
+```
+```
+brew install cmake
+mkdir build
+cd build
+cmake ..
+cmake --build .
+```
 
 ## Building
 ### Step 1: Clone the repository:
