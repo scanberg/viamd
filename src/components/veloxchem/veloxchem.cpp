@@ -715,6 +715,43 @@ struct VeloxChem : viamd::EventHandler {
             out_y[xi] = tot;
         }
     }
+    /*
+    * We return to this at a later stage
+    void save_absorption(str_t filename, md_array(double)* x_values, const char* x_lable, md_array(double)* y_values_osc, md_array(double)* y_values_cgs, int step) {
+        md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
+        if (!file) {
+            MD_LOG_ERROR("Could not open workspace file for writing: '%.*s", (int)filename.len, filename.ptr);
+            return;
+        }
+        defer{ md_file_close(file); };
+
+        // md_array(char*) rows = md_array_create(char*, md_array_size(*x_values), )
+        //double* x_values = (double*)md_temp_push(sizeof(double) * num_samples);
+        // I want to create an array with the rows to print to the file. What type should this be, and how do I create it?
+
+        
+        for (int i = 0; i < md_array_size(*x_values); i += 5) {
+
+        }
+    }
+    */
+    // Returns peak index closest to x, assumes that x-values are sorted. Currently only compares x-values
+    int get_hovered_peak(double x, const double* x_peaks, int num_peaks, double proxy_distance) {
+        int closest_idx = 0;
+        double closest_distance = fabs(x_peaks[0] - x);
+        for (int i = 1; i < num_peaks; i++) {
+            if (fabs(x_peaks[i] - x) < closest_distance) {
+                closest_distance = fabs(x_peaks[i] - x);
+                closest_idx = i;
+            }
+            else {
+                break;
+            }
+            //closest_idx = fabs(x_peaks[closest_idx] - x) < fabs(x_peaks[i] - x) ? closest_idx : i;
+            //closest_idx = x_peaks[closest_idx]; //< x_peaks[i] ? closest_idx : i;
+        }
+        return closest_distance < proxy_distance ? closest_idx : -1;
+    }
 
     void draw_rsp_window() {
         if (!rsp.show_window) return;
@@ -725,6 +762,7 @@ struct VeloxChem : viamd::EventHandler {
         defer { md_temp_set_pos_back(temp_pos); };
 
         static float sigma = 0.1;
+        static ImPlotPoint mouse_pos = { 0,0 };
 
         const char* broadening_str[] = { "Gaussian","Lorentzian" };
         static broadening_mode_t broadening_mode = BROADENING_GAUSSIAN;
@@ -807,6 +845,10 @@ struct VeloxChem : viamd::EventHandler {
             x_max_con += con_lim_fac * x_graph_width;
             x_min_con -= con_lim_fac * x_graph_width;
 
+            ImGui::BulletText("Mouse X = %f", (float)mouse_pos.x);
+            //double mouse_x = mouse_pos.x;
+            int closest = get_hovered_peak(mouse_pos.x, x_peaks, num_peaks,0.05);
+            ImGui::BulletText("Closest Index = %i", closest);
             if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
                 if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
                 // Absorption
@@ -822,6 +864,7 @@ struct VeloxChem : viamd::EventHandler {
 
                     ImPlot::PlotBars("Exited States", x_peaks, y_osc_peaks, num_peaks, bar_width);
                     ImPlot::PlotLine("Oscillator Strength", x_values, y_osc_str, num_samples);
+                    mouse_pos = ImPlot::GetPlotMousePos(IMPLOT_AUTO);
 
                 }
                 ImPlot::EndPlot();
@@ -846,8 +889,18 @@ struct VeloxChem : viamd::EventHandler {
             }
             ImPlot::EndSubplots();
             first_plot = false;
+            /*
+            constexpr str_t ABS_FILE_EXTENSION = STR_LIT("abs");
+            char path_buf[2048] = "";
 
-            ImGui::Button("Print absorption");
+
+            if (ImGui::Button("Print absorption")) {
+                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, ABS_FILE_EXTENSION)) {
+                    // This is where we save the absorbtion into a file
+                    save_absorption({ path_buf, strnlen(path_buf, sizeof(path_buf)) }, &x_values, x_unit_str[x_unit], &y_osc_str, &y_cgs_str, 10);
+                }
+            }
+            */
         }
         ImGui::End();
     }
