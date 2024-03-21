@@ -174,7 +174,7 @@ void camera_interpolate_look_at(vec3_t* out_pos, quat_t* out_ori, float* out_dis
     if (fabs((double)in_dist[0] - (double)in_dist[1]) < dist_epsilon) {
         dist = in_dist[1];
     } else {
-        dist = (double)lerp(in_dist[0], in_dist[1], t);
+        dist = (float)lerp(in_dist[0], in_dist[1], t);
     }
 
     double dx = in_pos[0].x - in_pos[1].x;
