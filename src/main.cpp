@@ -2415,7 +2415,7 @@ static void draw_main_menu(ApplicationState* data) {
             // Temporal
             ImGui::BeginGroup();
             {
-                ImGui::Checkbox("Temporal Effects", &data->visuals.temporal_reprojection.enabled);
+                ImGui::Checkbox("Temporal AA", &data->visuals.temporal_reprojection.enabled);
                 if (data->visuals.temporal_reprojection.enabled) {
                     // ImGui::Checkbox("Jitter Samples", &data->visuals.temporal_reprojection.jitter);
                     // ImGui::SliderFloat("Feedback Min", &data->visuals.temporal_reprojection.feedback_min, 0.5f, 1.0f);
