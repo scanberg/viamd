@@ -331,137 +331,129 @@ struct VeloxChem : viamd::EventHandler {
     void compute_orbital(ComputeOrbital& data) {
         if (data.output_written == true) return;
 
-        if (task_system::task_is_running(orb.compute_volume_task)) {
-            task_system::task_interrupt(orb.compute_volume_task);
+        const double ANGSTROM_TO_BOHR = 1.0 / 0.529177210903;
+
+        // Target resolution per spatial unit (We want this number of samples per Ångström in each dimension)
+        // Round up to some multiple of 8 -> 8x8x8 is the chunksize we process in parallel
+
+        // Compute required volume dimensions
+        int dim[3] = {
+            CLAMP(ALIGN_TO((int)(orb.vol.extent.x * data.samples_per_angstrom), 8), 8, 512),
+            CLAMP(ALIGN_TO((int)(orb.vol.extent.y * data.samples_per_angstrom), 8), 8, 512),
+            CLAMP(ALIGN_TO((int)(orb.vol.extent.z * data.samples_per_angstrom), 8), 8, 512),
+        };
+
+        vec3_t step_size = vec3_div(orb.vol.extent, vec3_set((float)dim[0], (float)dim[1], (float)dim[2]));
+        step_size = vec3_mul_f(step_size, (float)ANGSTROM_TO_BOHR);
+        size_t num_voxels = dim[0] * dim[1] * dim[2];
+        size_t num_pgtos  = md_vlx_pgto_count(&vlx);
+
+        // Write output data
+        data.mdl_mat = orb.vol.model_to_world;
+        data.tex_mat = orb.vol.tex_to_world;
+        data.voxel_spacing = step_size;
+        gl::init_texture_3D(data.dst_texture, dim[0], dim[1], dim[2], GL_R16F);
+        data.output_written = true;
+
+        // Prepare payload for async task
+        struct Payload {
+            void*  ptr;
+            size_t bytes;
+            int    mo_idx;
+            int    vol_dim[3];
+            float* vol_data;
+            vec3_t step_size;
+            uint32_t tex_id;
+            size_t num_pgtos;
+            md_gto_t* pgtos;
+            md_gto_eval_mode_t mode;
+        };
+
+        size_t num_bytes = sizeof(Payload) + num_voxels * sizeof(float) + num_pgtos * sizeof(md_gto_t);
+        void* mem = md_alloc(md_get_heap_allocator(), num_bytes);
+        Payload* payload    = (Payload*)mem;
+        payload->ptr        = mem;
+        payload->bytes      = num_bytes;
+        payload->mo_idx     = data.orbital_idx;
+        MEMCPY(payload->vol_dim, dim, sizeof(payload->vol_dim));
+        payload->vol_data   = (float*)((char*)mem + sizeof(Payload));
+        MEMSET(payload->vol_data, 0, num_voxels * sizeof(float));
+        payload->step_size  = step_size;
+        payload->tex_id     = *data.dst_texture;
+        payload->num_pgtos  = num_pgtos;
+        payload->pgtos      = (md_gto_t*)((char*)mem + sizeof(Payload) + num_voxels * sizeof(float));
+
+        MD_LOG_DEBUG("Preparing evaluation of orbital volume of dimensions [%i][%i][%i]", dim[0], dim[1], dim[2]);
+
+        if (!md_vlx_extract_alpha_mo_pgtos(payload->pgtos, &vlx, payload->mo_idx)) {
+            MD_LOG_ERROR("Failed to extract alpha orbital for orbital index: %i", payload->mo_idx);
+            md_free(md_get_heap_allocator(), mem, num_bytes);
+            return;
         }
-        else {
-            // Target resolution per spatial unit (We want this number of samples per Ångström in each dimension)
-            // Round up to some multiple of 8 -> 8x8x8 is the chunksize we process in parallel
+        md_gto_cutoff_compute(payload->pgtos, payload->num_pgtos, 1.0e-6);
 
-            const float res_scale = vol_res_scl[vol_res_idx];
+        // Transform pgtos into the 'model space' of the volume
+        // There is a scaling factor here as well as the PGTOs are given and must be
+        // Processed in a.u. (Bohr) and not Ångström, in which the volume is defined
+        mat4_t R = orb.vol.model_to_world;
+        R.col[3] = vec4_set(0,0,0,1);
+        R = mat4_transpose(R);
 
-            int dim[3] = {
-                CLAMP(ALIGN_TO((int)(orb.vol.extent.x * res_scale), 8), 8, 512),
-                CLAMP(ALIGN_TO((int)(orb.vol.extent.y * res_scale), 8), 8, 512),
-                CLAMP(ALIGN_TO((int)(orb.vol.extent.z * res_scale), 8), 8, 512),
+        // Ångström to Bohr
+        vec4_t t = vec4_mul_f(orb.vol.model_to_world.col[3], (float)ANGSTROM_TO_BOHR);
+        mat4_t T = mat4_translate(-t.x, -t.y, -t.z);
+
+        mat4_t M = R * T;
+        for (size_t i = 0; i < payload->num_pgtos; ++i) {
+            vec4_t c = {payload->pgtos[i].x, payload->pgtos[i].y, payload->pgtos[i].z, 1.0f};
+            c = M * c;
+            payload->pgtos[i].x = c.x;
+            payload->pgtos[i].y = c.y;
+            payload->pgtos[i].z = c.z;
+        }
+
+        // We evaluate the in parallel over smaller NxNxN blocks
+        uint32_t num_blocks = (dim[0] / BLK_DIM) * (dim[1] / BLK_DIM) * (dim[2] / BLK_DIM);
+
+        task_system::ID async_task = task_system::pool_enqueue(STR_LIT("Evaluate Orbital"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+            Payload* data = (Payload*)user_data;
+
+            // Number of NxNxN blocks in each dimension
+            int num_blk[3] = {
+                data->vol_dim[0] / BLK_DIM,
+                data->vol_dim[1] / BLK_DIM,
+                data->vol_dim[2] / BLK_DIM,
             };
 
-            size_t num_bytes = sizeof(float) * dim[0] * dim[1] * dim[2];
-            if (num_bytes != orb.vol.num_bytes) {
-                orb.vol.data = (float*)md_realloc(arena, orb.vol.data, orb.vol.num_bytes, num_bytes);
-                ASSERT(orb.vol.data);
-                orb.vol.num_bytes = num_bytes;
-            }
+            vec3_t step = data->step_size;
 
-            MEMSET(orb.vol.data, 0, orb.vol.num_bytes);
-
-            MEMCPY(orb.vol.dim, dim, sizeof(orb.vol.dim));
-            vec3_t step_size = vec3_div(orb.vol.extent, vec3_set((float)orb.vol.dim[0], (float)orb.vol.dim[1], (float)orb.vol.dim[2]));
-            orb.vol.step_size = step_size;
-
-            gl::init_texture_3D(data.dst_texture, dim[0], dim[1], dim[2], GL_R16F);
-
-            data.mdl_mat = orb.vol.model_to_world;
-            data.tex_mat = orb.vol.tex_to_world;
-            data.voxel_spacing = step_size;
-            data.output_written = true;
-
-            MD_LOG_DEBUG("Created Orbital volume of dimensions [%i][%i][%i]", orb.vol.dim[0], orb.vol.dim[1], orb.vol.dim[2]);
-
-            if (!md_vlx_extract_alpha_mo_pgtos(orb.pgtos, &vlx, data.orbital_idx)) {
-                MD_LOG_ERROR("Failed to extract alpha orbital for orbital index: %i", data.orbital_idx);
-                return;
-            }
-            md_gto_cutoff_compute(orb.pgtos, md_array_size(orb.pgtos), 1.0e-6);
-
-            // Transform pgtos into the 'model space' of the volume
-            // There is a scaling factor here as well as the PGTOs are given and must be
-            // Processed in a.u. (Bohr) and not Ångström, in which the volume is defined
-            mat4_t R = orb.vol.model_to_world;
-            R.col[3] = vec4_set(0,0,0,1);
-            R = mat4_transpose(R);
-
-            // Ångström to Bohr
-            vec4_t t = vec4_mul_f(orb.vol.model_to_world.col[3], 1.0 / 0.529177210903);
-            mat4_t T = mat4_translate(-t.x, -t.y, -t.z);
-
-            mat4_t M = R * T;
-            for (size_t i = 0; i < md_array_size(orb.pgtos); ++i) {
-                vec4_t c = {orb.pgtos[i].x, orb.pgtos[i].y, orb.pgtos[i].z, 1.0f};
-                c = M * c;
-                orb.pgtos[i].x = c.x;
-                orb.pgtos[i].y = c.y;
-                orb.pgtos[i].z = c.z;
-            }
-
-            // We evaluate the in parallel over smaller NxNxN blocks
-            uint32_t num_blocks = (orb.vol.dim[0] / BLK_DIM) * (orb.vol.dim[1] / BLK_DIM) * (orb.vol.dim[2] / BLK_DIM);
-
-            struct Payload {
-                OrbitalType type;
-                int mo_idx;
-                Volume* vol;
-                md_array(const md_gto_t) pgtos;
-                uint32_t tex_id;
+            md_grid_t grid = {
+                .data = data->vol_data,
+                .dim  = {data->vol_dim[0], data->vol_dim[1], data->vol_dim[2]},
+                // Shift origin by half a voxel to evaluate at the voxel center
+                .origin = {0.5f * step.x, 0.5f * step.y, 0.5f * step.z},
+                .stepsize = {step.x, step.y, step.z},
             };
 
+            for (uint32_t i = range_beg; i < range_end; ++i) {
+                // Determine block index
+                int blk_x =  i % num_blk[0];
+                int blk_y = (i / num_blk[0]) % num_blk[1];
+                int blk_z =  i / (num_blk[0] * num_blk[1]);
 
-            Payload* payload = (Payload*)md_alloc(md_get_heap_allocator(), sizeof(Payload));
-            payload->type    = data.type;
-            payload->mo_idx  = data.orbital_idx;
-            payload->vol     = &orb.vol;
-            payload->pgtos   = orb.pgtos;
-            payload->tex_id  = *data.dst_texture;
+                const int off_idx[3] = {blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM};
+                const int len_idx[3] = {BLK_DIM, BLK_DIM, BLK_DIM};
 
-            orb.compute_volume_task = task_system::pool_enqueue(STR_LIT("Evaluate Orbital"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
-                Payload* data = (Payload*)user_data;
+                md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, data->pgtos, data->num_pgtos, data->mode);
+            }
+        }, payload);
 
-                // Number of NxNxN blocks in each dimension
-                int num_blk[3] = {
-                    data->vol->dim[0] / BLK_DIM,
-                    data->vol->dim[1] / BLK_DIM,
-                    data->vol->dim[2] / BLK_DIM,
-                };
-
-                // Conversion from Ångström to Bohr
-                const float factor = 1.0 / 0.529177210903;
-
-                // The PGTOs have been pre-transformed into the 'model space' of the volume
-                vec3_t step = vec3_mul_f(data->vol->step_size, factor);
-
-                md_grid_t grid = {
-                    .data = data->vol->data,
-                    .dim  = {data->vol->dim[0], data->vol->dim[1], data->vol->dim[2]},
-                    // Shift origin by half a voxel to evaluate at the voxel center
-                    .origin = {0.5f * step.x, 0.5f * step.y, 0.5f * step.z},
-                    .stepsize = {step.x, step.y, step.z},
-                };
-
-                for (uint32_t i = range_beg; i < range_end; ++i) {
-                    // Determine block index
-                    int blk_x =  i % num_blk[0];
-                    int blk_y = (i / num_blk[0]) % num_blk[1];
-                    int blk_z =  i / (num_blk[0] * num_blk[1]);
-
-                    const int off_idx[3] = {blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM};
-                    const int len_idx[3] = {BLK_DIM, BLK_DIM, BLK_DIM};
-
-                    md_gto_eval_mode_t eval_mode = MD_GTO_EVAL_MODE_PSI;
-                    if (data->type == OrbitalType::PsiSquared) {
-                        eval_mode = MD_GTO_EVAL_MODE_PSI_SQUARED;
-                    }
-
-                    md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, data->pgtos, md_array_size(data->pgtos), eval_mode);
-                }
-            }, payload);
-
-            // Launch task for main (render) thread to update the volume texture
-            task_system::main_enqueue(STR_LIT("Update Volume"), [](void* user_data) {
-                Payload* data = (Payload*)user_data;
-                gl::set_texture_3D_data(data->tex_id, data->vol->data, GL_R32F);
-                md_free(md_get_heap_allocator(), data, sizeof(Payload));
-            }, payload, orb.compute_volume_task);
-        }
+        // Launch task for main (render) thread to update the volume texture
+        task_system::main_enqueue(STR_LIT("Update Volume"), [](void* user_data) {
+            Payload* data = (Payload*)user_data;
+            gl::set_texture_3D_data(data->tex_id, data->vol_data, GL_R32F);
+            md_free(md_get_heap_allocator(), data->ptr, data->bytes);
+        }, payload, async_task);
     }
 
     void update_orb_volume() {
