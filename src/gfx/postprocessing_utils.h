@@ -11,7 +11,8 @@
 #define GL_COLOR_ATTACHMENT_NORMAL       GL_COLOR_ATTACHMENT1
 #define GL_COLOR_ATTACHMENT_VELOCITY     GL_COLOR_ATTACHMENT2
 #define GL_COLOR_ATTACHMENT_PICKING      GL_COLOR_ATTACHMENT3
-#define GL_COLOR_ATTACHMENT_POST_TONEMAP GL_COLOR_ATTACHMENT4
+#define GL_COLOR_ATTACHMENT_TRANSPARENCY GL_COLOR_ATTACHMENT4
+#define GL_COLOR_ATTACHMENT_TEMPORAL     GL_COLOR_ATTACHMENT5
 
 // Poor fit perhaps
 struct GBuffer {
@@ -20,10 +21,10 @@ struct GBuffer {
         uint32_t color = 0;
         uint32_t normal = 0;
         uint32_t velocity = 0;
-        uint32_t post_tonemap = 0;
+        uint32_t transparency = 0;
         uint32_t picking = 0;
-        uint32_t fbo = 0;
-    } deferred;
+        uint32_t temporal_accumulation[2] = {};
+    } tex;
 
     struct {
         // @NOTE: Many of each, we submit the read and use it some frame(s) later
@@ -33,6 +34,7 @@ struct GBuffer {
         uint32_t frame = 0;
     } pbo_picking;
 
+    uint32_t fbo = 0;
     uint32_t width = 0;
     uint32_t height = 0;
 };
@@ -89,11 +91,15 @@ struct Descriptor {
 
     struct {
         bool enabled = true;
+    } fxaa;
+
+    struct {
+        bool enabled = true;
         float feedback_min = 0.88f;
         float feedback_max = 0.97f;
         struct {
             bool enabled = true;
-            float motion_scale = 1.f;
+            float motion_scale = 0.5f;
         } motion_blur;
     } temporal_reprojection;
 
@@ -102,13 +108,11 @@ struct Descriptor {
         GLuint color = 0;
         GLuint normal = 0;
         GLuint velocity = 0;
-        GLuint emissive = 0;
-        GLuint post_tonemap = 0;
+        GLuint transparency = 0;
     } input_textures;
 };
 
 void apply_tonemapping(GLuint color_tex, Tonemapping tonemapping, float exposure = 1.0f, float gamma = 2.4f);
-void shade_deferred(GLuint depth_tex, GLuint color_tex, GLuint normal_tex, const mat4_t& inv_proj_matrix, float time = 0.0f);
 
 void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param);
 

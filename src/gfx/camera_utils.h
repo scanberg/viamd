@@ -88,7 +88,7 @@ typedef uint32_t TrackballFlags;
 void camera_trackball(Camera* camera, vec2_t prev_ndc, vec2_t curr_ndc);
 void camera_move(Camera* camera, vec3_t vec);
 
-void camera_interpolate_look_at(vec3_t* out_pos, quat_t* out_ori, float* out_dist, vec3_t in_pos[2], quat_t in_ori[2], float in_dist[2], float t);
+void camera_interpolate_look_at(vec3_t* out_pos, quat_t* out_ori, float* out_dist, vec3_t in_pos[2], quat_t in_ori[2], float in_dist[2], double t);
 
 mat4_t camera_world_to_view_matrix(const Camera& camera);
 mat4_t camera_view_to_world_matrix(const Camera& camera);
@@ -113,4 +113,4 @@ bool camera_controller_trackball(vec3_t* position, quat_t* orientation, float* d
 void camera_compute_optimal_view(vec3_t* position, quat_t* orientation, float* distance, vec3_t aabb_min, vec3_t aabb_max);
 
 // Lazy stupid procedure on top of interpolate_look_at
-void camera_animate(Camera* camera, quat_t target_ori, vec3_t target_pos, float target_dist, float dt, float target_factor = 0.1f);
+void camera_animate(Camera* camera, quat_t target_ori, vec3_t target_pos, float target_dist, double dt, double target_factor = 0.12f);

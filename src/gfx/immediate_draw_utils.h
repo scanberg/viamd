@@ -48,6 +48,7 @@ void draw_box_wireframe(vec3_t min_box, vec3_t max_box, mat4_t model_matrix, uin
 void draw_box_wireframe(vec3_t min_box, vec3_t max_box, mat4_t model_matrix, vec4_t color = {0,0,0,1});
 
 void draw_basis(mat4_t basis, float scale = 1.f, uint32_t x_color = COLOR_RED, uint32_t y_color = COLOR_GREEN, uint32_t z_color = COLOR_BLUE);
+void draw_basis(mat4_t basis, float scale = 1.f, vec4_t x_color = {1,0,0,1}, vec4_t y_color = {0,1,0,1}, vec4_t z_color = {0,0,1,1});
 
 // Advanced
 // void draw_sphere_glyph(const float pos[3], const float radius, const uint32 color);

@@ -25,7 +25,6 @@
 #include <core/md_array.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_linear_allocator.h>
 #include <core/md_ring_allocator.h>
 #include <core/md_tracking_allocator.h>
 #include <core/md_simd.h>
@@ -76,7 +75,6 @@
 #define COMPILATION_TIME_DELAY_IN_SECONDS 1.0
 #define NOTIFICATION_DISPLAY_TIME_IN_SECONDS 5.0
 #define IR_SEMAPHORE_MAX_COUNT 3
-#define JITTER_SEQUENCE_SIZE 32
 #define MEASURE_EVALUATION_TIME 1
 #define FRAME_ALLOCATOR_BYTES MEGABYTES(256)
 
@@ -639,8 +637,9 @@ static void handle_picking(ApplicationState* data);
 static void fill_gbuffer(ApplicationState* data);
 static void apply_postprocessing(const ApplicationState& data);
 
-static void draw_representations(ApplicationState* data);
-static void draw_representations_lean_and_mean(ApplicationState* data, uint32_t mask = 0xFFFFFFFFU);
+static void draw_representations_opaque(ApplicationState*);
+static void draw_representations_opaque_lean_and_mean(ApplicationState*, uint32_t mask = 0xFFFFFFFFU);
+static void draw_representations_transparent(ApplicationState*);
 
 static void draw_load_dataset_window(ApplicationState* data);
 static void draw_main_menu(ApplicationState* data);
@@ -681,15 +680,15 @@ static void create_screenshot(ApplicationState* data);
 static Representation* create_representation(ApplicationState* data, RepresentationType type = RepresentationType::SpaceFill,
                                              ColorMapping color_mapping = ColorMapping::Cpk, str_t filter = STR_LIT("all"));
 static Representation* clone_representation(ApplicationState* data, const Representation& rep);
-static void remove_representation(ApplicationState* data, int idx);
-static void update_representation(ApplicationState* data, Representation* rep);
-static void update_all_representations(ApplicationState* data);
-static void init_representation(ApplicationState* data, Representation* rep);
-static void init_all_representations(ApplicationState* data);
-static void clear_representations(ApplicationState* data);
-static void create_default_representations(ApplicationState* data);
-
-static void recompute_atom_visibility_mask(ApplicationState* data);
+static void remove_representation(ApplicationState*, int idx);
+static void update_representation(ApplicationState*, Representation* rep);
+static void update_representation_info(ApplicationState*);
+static void update_all_representations(ApplicationState*);
+static void init_representation(ApplicationState*, Representation* rep);
+static void init_all_representations(ApplicationState*);
+static void clear_representations(ApplicationState*);
+static void create_default_representations(ApplicationState*);
+static void recompute_atom_visibility_mask(ApplicationState*);
 
 // Selections
 static Selection* create_selection(ApplicationState* data, str_t name, md_bitfield_t* bf = 0);
@@ -730,8 +729,7 @@ int main(int argc, char** argv) {
 #else
 #error "Must define DEBUG or RELEASE"
 #endif
-    void* frame_mem = md_alloc(persistent_alloc, FRAME_ALLOCATOR_BYTES);
-    frame_alloc = md_linear_allocator_create(frame_mem, FRAME_ALLOCATOR_BYTES);
+    frame_alloc = md_vm_arena_create(GIGABYTES(4));
 
     struct NotificationState {
         md_mutex_t lock;
@@ -786,7 +784,7 @@ int main(int argc, char** argv) {
     ApplicationState data;
     data.allocator.persistent = persistent_alloc;
     data.allocator.frame = frame_alloc;
-
+    data.representation.info.alloc = md_arena_allocator_create(persistent_alloc, MEGABYTES(1));
     data.file_queue.ring = md_ring_allocator_create(md_alloc(persistent_alloc, MEGABYTES(1)), MEGABYTES(1));
     data.mold.mol_alloc  = md_arena_allocator_create(persistent_alloc, MEGABYTES(1));
 
@@ -840,7 +838,7 @@ int main(int argc, char** argv) {
     md_gl_shaders_init(&data.mold.gl_shaders, shader_output_snippet.ptr, shader_output_snippet.len);
     md_gl_shaders_init(&data.mold.gl_shaders_lean_and_mean, shader_output_snippet_lean_and_mean.ptr, shader_output_snippet_lean_and_mean.len);
 
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdInitialize, &data);
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdInitialize, viamd::EventPayloadType_ApplicationState, &data);
 
 #if EXPERIMENTAL_GFX_API
     md_gfx_initialize(data.gbuffer.width, data.gbuffer.height, 0);
@@ -960,7 +958,7 @@ int main(int argc, char** argv) {
                     if (load_dataset_from_file(&data, param)) {
                         data.animation = {};
                         if (param.mol_loader) {
-                            if (!data.representation.keep_representations) {
+                            if (!data.settings.keep_representations) {
                                 clear_representations(&data);
                                 create_default_representations(&data);
                             }
@@ -973,7 +971,7 @@ int main(int argc, char** argv) {
             }
         }
 
-        viamd::event_system_enqueue_event(viamd::EventType_ViamdFrameTick, &data);
+        viamd::event_system_enqueue_event(viamd::EventType_ViamdFrameTick, viamd::EventPayloadType_ApplicationState, &data);
         viamd::event_system_process_event_queue();
 
         // GUI
@@ -1421,9 +1419,6 @@ int main(int argc, char** argv) {
         handle_picking(&data);
         clear_gbuffer(&data.gbuffer);
         fill_gbuffer(&data);
-        immediate::render();
-
-        viamd::event_system_broadcast_event(viamd::EventType_ViamdPostRender, &data);
 
         // Activate backbuffer
         glDisable(GL_DEPTH_TEST);
@@ -1457,7 +1452,7 @@ int main(int argc, char** argv) {
         task_system::execute_queued_tasks();
 
         // Reset frame allocator
-        md_linear_allocator_reset(frame_alloc);
+        md_vm_arena_reset(frame_alloc);
     }
 
     interrupt_async_tasks(&data);
@@ -1847,21 +1842,8 @@ static void update_display_properties(ApplicationState* data) {
 static void update_density_volume(ApplicationState* data) {
     if (data->density_volume.dvr.tf.dirty) {
         data->density_volume.dvr.tf.dirty = false;
-
         // Update colormap texture
-        uint32_t pixel_data[128];
-        for (size_t i = 0; i < ARRAY_SIZE(pixel_data); ++i) {
-            float t = (float)i / (float)(ARRAY_SIZE(pixel_data) - 1);
-            ImVec4 col = ImPlot::SampleColormap(t, data->density_volume.dvr.tf.colormap);
-
-            // This is a small alpha ramp in the start of the TF to avoid rendering low density values.
-            col.w = ImMin(160 * t*t, 0.341176f);
-            col.w = ImClamp(col.w * data->density_volume.dvr.tf.alpha_scale, 0.0f, 1.0f);
-            pixel_data[i] = ImGui::ColorConvertFloat4ToU32(col);
-        }
-
-        gl::init_texture_2D(&data->density_volume.dvr.tf.id, (int)ARRAY_SIZE(pixel_data), 1, GL_RGBA8);
-        gl::set_texture_2D_data(data->density_volume.dvr.tf.id, pixel_data, GL_RGBA8);
+        volume::compute_transfer_function_texture(&data->density_volume.dvr.tf.id, data->density_volume.dvr.tf.colormap, volume::RAMP_TYPE_SAWTOOTH, data->density_volume.dvr.tf.alpha_scale);
     }
 
     int64_t selected_property = -1;
@@ -1960,8 +1942,8 @@ static void update_density_volume(ApplicationState* data) {
             auto& rep = data->density_volume.rep;
             const size_t num_colors = data->mold.mol.atom.count;
             const size_t num_bytes = sizeof(uint32_t) * num_colors;
-            uint32_t* colors = (uint32_t*)md_linear_allocator_push(frame_alloc, num_bytes);
-            defer { md_linear_allocator_pop(frame_alloc, num_bytes); };
+            uint32_t* colors = (uint32_t*)md_vm_arena_push(frame_alloc, num_bytes);
+            defer { md_vm_arena_pop(frame_alloc, num_bytes); };
 
             switch (rep.colormap) {
             case ColorMapping::Uniform:
@@ -2051,15 +2033,10 @@ static void interpolate_atomic_properties(ApplicationState* data) {
     size_t stride = ALIGN_TO(mol.atom.count, 16);    // The interploation uses SIMD vectorization without bounds, so we make sure there is no overlap between the data segments
     size_t bytes = stride * sizeof(float) * 3 * 4;
 
-    md_allocator_i* alloc = 0;
-    if (bytes < md_linear_allocator_avail_bytes(frame_alloc)) {
-        alloc = frame_alloc;
-    } else {
-        alloc = md_get_heap_allocator();
-    }
+    md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
+    defer { md_vm_arena_temp_end(tmp); };
 
-    void* mem = md_alloc(alloc, bytes);
-    defer { md_free(alloc, mem, bytes); };
+    void* mem = md_vm_arena_push(frame_alloc, bytes);
 
     float* src_x[4] = { (float*)mem + stride * 0, (float*)mem + stride * 1, (float*)mem + stride * 2, (float*)mem + stride * 3 };
     float* src_y[4] = { (float*)mem + stride * 4, (float*)mem + stride * 5, (float*)mem + stride * 6, (float*)mem + stride * 7 };
@@ -2304,14 +2281,15 @@ static void reset_view(ApplicationState* data, bool move_camera, bool smooth_tra
     vec3_t aabb_min, aabb_max;
     
     if (0 < popcount && popcount < mol.atom.count) {
-        int32_t* indices = (int32_t*)md_linear_allocator_push(frame_alloc, popcount * sizeof(int32_t));
+        md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
+        int32_t* indices = (int32_t*)md_vm_arena_push(frame_alloc, popcount * sizeof(int32_t));
         size_t len = md_bitfield_iter_extract_indices(indices, popcount, md_bitfield_iter_create(&data->representation.visibility_mask));
         if (len > popcount || len > mol.atom.count) {
             MD_LOG_DEBUG("Error: Invalid number of indices");
             len = MIN(popcount, mol.atom.count);
         }
 		md_util_aabb_compute(aabb_min.elem, aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, len);
-        md_linear_allocator_pop(frame_alloc, popcount * sizeof(int32_t));
+        md_vm_arena_temp_end(tmp);
     } else {
         md_util_aabb_compute(aabb_min.elem, aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, nullptr, mol.atom.count);
     }
@@ -2433,6 +2411,7 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::SliderFloat("##Intensity", &data->visuals.background.intensity, 0.f, 100.f);
             ImGui::EndGroup();
             ImGui::Separator();
+            ImGui::Checkbox("FXAA", &data->visuals.fxaa.enabled);
             // Temporal
             ImGui::BeginGroup();
             {
@@ -2684,7 +2663,7 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Settings")) {
-            ImGui::Checkbox("Keep Representations", &data->representation.keep_representations);
+            ImGui::Checkbox("Keep Representations", &data->settings.keep_representations);
             ImGui::SetItemTooltip("Keep representations when loading new topology (Does not apply for workspaces)\n");
 
             // Font
@@ -2949,7 +2928,7 @@ void draw_load_dataset_window(ApplicationState* data) {
             }
 
             if (load_dataset_from_file(data, param)) {
-                if (mol_loader && !data->representation.keep_representations) {
+                if (mol_loader && !data->settings.keep_representations) {
                     clear_representations(data);
                     create_default_representations(data);
                 }
@@ -3849,26 +3828,28 @@ static void draw_animation_window(ApplicationState* data) {
     ImGui::End();
 }
 
-static void draw_representations_window(ApplicationState* data) {
+static void draw_representations_window(ApplicationState* state) {
+    if (!state->representation.show_window) return;
+
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
-    ImGui::Begin("Representations", &data->representation.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::Begin("Representations", &state->representation.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
     if (ImGui::Button("create new")) {
-        create_representation(data);
+        create_representation(state);
     }
     ImGui::SameLine();
     if (ImGui::DeleteButton("remove all")) {
-        clear_representations(data);
+        clear_representations(state);
     }
     ImGui::Spacing();
     ImGui::Separator();
-    for (int i = 0; i < (int)md_array_size(data->representation.reps); i++) {
+    for (int rep_idx = 0; rep_idx < (int)md_array_size(state->representation.reps); rep_idx++) {
         bool update_rep = false;
-        auto& rep = data->representation.reps[i];
+        Representation& rep = state->representation.reps[rep_idx];
         const float item_width = MAX(ImGui::GetContentRegionAvail().x - 125.f, 100.f);
         char label[128];
         snprintf(label, sizeof(label), "%s###ID", rep.name);
 
-        ImGui::PushID(i);
+        ImGui::PushID(rep_idx);
         
         const float pad = 3.0f;
         const float size = ImGui::GetFontSize() + pad * 2;
@@ -3884,26 +3865,26 @@ static void draw_representations_window(ApplicationState* data) {
         ImGui::InputText("##name", rep.name, sizeof(rep.name));
 
         ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - total_button_size, spacing);
-        const char* eye_icon = rep.enabled ? (const char*)ICON_FA_EYE : (const char*)ICON_FA_EYE_SLASH;
+        const char* eye_icon = rep.enabled ? ICON_FA_EYE : ICON_FA_EYE_SLASH;
         
         const ImVec2 btn_size = {size, size};
         if (ImGui::Button(eye_icon, btn_size)) {
             rep.enabled = !rep.enabled;
-            data->representation.atom_visibility_mask_dirty = true;
+            state->representation.atom_visibility_mask_dirty = true;
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Show/Hide");
         }
         ImGui::SameLine(0, spacing);
-        if (ImGui::Button((const char*)ICON_FA_COPY, btn_size)) {
-            clone_representation(data, rep);
+        if (ImGui::Button(ICON_FA_COPY, btn_size)) {
+            clone_representation(state, rep);
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Duplicate");
         }
         ImGui::SameLine(0, spacing);
-        if (ImGui::DeleteButton((const char*)ICON_FA_XMARK, btn_size)) {
-            remove_representation(data, i);
+        if (ImGui::DeleteButton(ICON_FA_XMARK, btn_size)) {
+            remove_representation(state, rep_idx);
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Remove");
@@ -3911,128 +3892,236 @@ static void draw_representations_window(ApplicationState* data) {
 
         if (draw_content) {
             ImGui::PushItemWidth(item_width);
-            if (ImGui::InputQuery("filter", rep.filt, sizeof(rep.filt), rep.filt_is_valid, rep.filt_error)) {
-                rep.filt_is_dirty = true;
-                update_rep = true;
-            }
+
+            // @TODO: Only display the representations which can be used for the current dataset
             if (!rep.type_is_valid) ImGui::PushInvalid();
-            if (ImGui::Combo("type", (int*)(&rep.type), "Space Fill\0Licorice\0Ball & Stick\0Ribbons\0Cartoon\0")) {
-                update_rep = true;
+            if (ImGui::BeginCombo("type", representation_type_str[(int)rep.type])) {
+                for (int i = 0; i < (int)RepresentationType::Count; ++i) {
+                    switch (i) {
+                    case (int)RepresentationType::Orbital:
+                        if (md_array_size(state->representation.info.molecular_orbitals) == 0) continue;
+                        break;
+                    case (int)RepresentationType::DipoleMoment:
+                        if (md_array_size(state->representation.info.dipole_moments) == 0) continue;
+                        break;
+                    default:
+                        break;
+                    }
+                    if (ImGui::Selectable(representation_type_str[(int)i], i == (int)rep.type)) {
+                        rep.type = (RepresentationType)i;
+                        update_rep = true;
+                    }
+                }
+                ImGui::EndCombo();
             }
             if (!rep.type_is_valid) ImGui::PopInvalid();
 
-            if (ImGui::Combo("color", (int*)(&rep.color_mapping),
-                             "Uniform Color\0CPK\0Atom Label\0Atom Idx\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0Property\0")) {
-                update_rep = true;
-            }
+            if (rep.type <= RepresentationType::Cartoon) {
+                if (ImGui::InputQuery("filter", rep.filt, sizeof(rep.filt), rep.filt_is_valid, rep.filt_error)) {
+                    rep.filt_is_dirty = true;
+                    update_rep = true;
+                }
+                if (ImGui::Combo("color", (int*)(&rep.color_mapping), color_mapping_str, IM_ARRAYSIZE(color_mapping_str))) {
+                    update_rep = true;
+                }
 #if 0
-            if (rep.color_mapping == ColorMapping::Property) {
-                // @TODO: Update this with something more proper, and use a filter window to allow the user to specify a property
-                /*
-                if (!rep.prop_is_valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-                if (ImGui::InputText("property", rep.prop.cstr(), rep.prop.capacity())) {
-                    update_color = true;
-                }
-                if (ImGui::IsItemHovered() && !rep.prop_is_valid) {
-                    ImGui::SetTooltip("%s", rep.prop_error.cstr());
-                }
-                if (!rep.prop_is_valid) ImGui::PopStyleColor();
-                */
-
-                static int prop_idx = 0;
-                const md_script_property_t* props[32] = {0};
-                size_t num_props = 0;
-                for (size_t j = 0; j < md_array_size(data->display_properties); ++j) {
-                    if (data->display_properties[j].type == DisplayProperty::Type_Temporal) {
-                        props[num_props++] = data->display_properties[j].prop;
+                if (rep.color_mapping == ColorMapping::Property) {
+                    // @TODO: Update this with something more proper, and use a filter window to allow the user to specify a property
+                    /*
+                    if (!rep.prop_is_valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
+                    if (ImGui::InputText("property", rep.prop.cstr(), rep.prop.capacity())) {
+                        update_color = true;
                     }
-                    if (num_props == ARRAY_SIZE(props)) break;
+                    if (ImGui::IsItemHovered() && !rep.prop_is_valid) {
+                        ImGui::SetTooltip("%s", rep.prop_error.cstr());
+                    }
+                    if (!rep.prop_is_valid) ImGui::PopStyleColor();
+                    */
+
+                    static int prop_idx = 0;
+                    const md_script_property_t* props[32] = {0};
+                    size_t num_props = 0;
+                    for (size_t j = 0; j < md_array_size(data->display_properties); ++j) {
+                        if (data->display_properties[j].type == DisplayProperty::Type_Temporal) {
+                            props[num_props++] = data->display_properties[j].prop;
+                        }
+                        if (num_props == ARRAY_SIZE(props)) break;
+                    }
+
+                    rep.prop = NULL;
+                    if (num_props > 0) {
+                        prop_idx = CLAMP(prop_idx, 0, (int)num_props-1);
+                        if (ImGui::BeginCombo("Prop", props[prop_idx]->ident.ptr)) {
+                            for (size_t j = 0; j < num_props; ++j) {
+                                if (ImGui::Selectable(props[j]->ident.ptr, prop_idx == i)) {
+                                    prop_idx = (int)j;
+                                    rep.map_beg = props[j]->data.min_value;
+                                    rep.map_end = props[j]->data.max_value;
+                                    update_rep = true;
+                                }
+                            }
+                            ImGui::EndCombo();
+                        }
+                        rep.prop = props[prop_idx];
+
+                        if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.color_map), ImVec2(item_width,0), rep.color_map)) {
+                            ImGui::OpenPopup("Color Map Selector");
+                        }
+                        ImGui::DragFloatRange2("Min / Max",&rep.map_beg, &rep.map_end, 0.01f, rep.prop->data.min_value, rep.prop->data.max_value);
+                        if (ImGui::BeginPopup("Color Map Selector")) {
+                            for (int map = 0; map < ImPlot::GetColormapCount(); ++map) {
+                                if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), ImVec2(item_width,0), map)) {
+                                    rep.color_map = map;
+                                    ImGui::CloseCurrentPopup();
+                                }
+                            }
+                            ImGui::EndPopup();
+                        }
+                    }
+                }
+#endif
+                if (rep.filt_is_dynamic || rep.color_mapping == ColorMapping::Property) {
+                    ImGui::Checkbox("auto-update", &rep.dynamic_evaluation);
+                    if (!rep.dynamic_evaluation) {
+                        ImGui::SameLine();
+                        if (ImGui::Button("update")) {
+                            rep.filt_is_dirty = true;
+                            update_rep = true;
+                        }
+                    }
+                } else {
+                    rep.dynamic_evaluation = false;
+                }
+                ImGui::PopItemWidth();
+                if (rep.color_mapping == ColorMapping::Uniform) {
+                    update_rep |= ImGui::ColorEdit4("color", (float*)&rep.uniform_color, ImGuiColorEditFlags_NoInputs);
+                }
+                ImGui::PushItemWidth(item_width);
+                switch (rep.type) {
+                case RepresentationType::SpaceFill:
+                    update_rep |= ImGui::SliderFloat("scale", &rep.scale[0], 0.1f, 4.f);
+                    break;
+                case RepresentationType::Licorice:
+                    update_rep |= ImGui::SliderFloat("radius", &rep.scale[0], 0.1f, 4.0f);
+                    break;
+                case RepresentationType::BallAndStick:
+                    update_rep |= ImGui::SliderFloat("ball scale", &rep.scale[0], 0.1f, 4.f);
+                    update_rep |= ImGui::SliderFloat("bond scale", &rep.scale[1], 0.1f, 4.f);
+                    break;
+                case RepresentationType::Ribbons:
+                    update_rep |= ImGui::SliderFloat("width",       &rep.scale[0], 0.1f, 3.f);
+                    update_rep |= ImGui::SliderFloat("thickness",   &rep.scale[1], 0.1f, 3.f);
+                    break;
+                case RepresentationType::Cartoon:
+                    update_rep |= ImGui::SliderFloat("coil scale",  &rep.scale[0], 0.1f, 3.f);
+                    update_rep |= ImGui::SliderFloat("sheet scale", &rep.scale[1], 0.1f, 3.f);
+                    update_rep |= ImGui::SliderFloat("helix scale", &rep.scale[2], 0.1f, 3.f);
+                    break;
+                default:
+                    ASSERT(false);
                 }
 
-                rep.prop = NULL;
-                if (num_props > 0) {
-                    prop_idx = CLAMP(prop_idx, 0, (int)num_props-1);
-                    if (ImGui::BeginCombo("Prop", props[prop_idx]->ident.ptr)) {
-                        for (size_t j = 0; j < num_props; ++j) {
-                            if (ImGui::Selectable(props[j]->ident.ptr, prop_idx == i)) {
-                                prop_idx = (int)j;
-                                rep.map_beg = props[j]->data.min_value;
-                                rep.map_end = props[j]->data.max_value;
+                ImGui::PopItemWidth();
+                ImGui::Spacing();
+                ImGui::Separator();
+            }
+
+            if (rep.type == RepresentationType::Orbital) {
+                ImGuiComboFlags flags = 0;
+                if (ImGui::BeginCombo("Orbital Type", orbital_type_str[(int)rep.orbital.type], flags)) {
+                    for (int n = 0; n < (int)OrbitalType::Count; n++) {
+                        const bool is_selected = ((int)rep.orbital.type == n);
+                        if (ImGui::Selectable(orbital_type_str[n], is_selected)) {
+                            rep.orbital.type = (OrbitalType)n;
+                            update_rep = true;
+                        }
+
+                        if (is_selected) {
+                            ImGui::SetItemDefaultFocus();
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+
+                char lbl[32];
+                auto write_lbl = [&rep_info = state->representation.info, &lbl](int idx) -> const char* {
+                    const char* suffix = "";
+                    if (idx == rep_info.mo_homo_idx) {
+                        suffix = "(HOMO)";
+                    } else if (idx == rep_info.mo_lumo_idx) {
+                        suffix = "(LUMO)";
+                    }
+                    snprintf(lbl, sizeof(lbl), "%i %s", idx + 1, suffix);
+                    return lbl;
+                };
+
+                write_lbl(rep.orbital.orbital_idx);
+                if (ImGui::BeginCombo("Orbital Idx", lbl)) {
+                    for (int n = 0; n < (int)md_array_size(state->representation.info.molecular_orbitals); n++) {
+                        const bool is_selected = (rep.orbital.orbital_idx == n);
+                        
+                        write_lbl(n);
+                        if (ImGui::Selectable(lbl, is_selected)) {
+                            if (rep.orbital.orbital_idx != n) {
                                 update_rep = true;
                             }
+                            rep.orbital.orbital_idx = n;
                         }
-                        ImGui::EndCombo();
-                    }
-                    rep.prop = props[prop_idx];
 
-                    if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.color_map), ImVec2(item_width,0), rep.color_map)) {
-                        ImGui::OpenPopup("Color Map Selector");
+                        if (is_selected) {
+                            ImGui::SetItemDefaultFocus();
+                        }
                     }
-                    ImGui::DragFloatRange2("Min / Max",&rep.map_beg, &rep.map_end, 0.01f, rep.prop->data.min_value, rep.prop->data.max_value);
-                    if (ImGui::BeginPopup("Color Map Selector")) {
-                        for (int map = 0; map < ImPlot::GetColormapCount(); ++map) {
-                            if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), ImVec2(item_width,0), map)) {
-                                rep.color_map = map;
+                    ImGui::EndCombo();
+                }
+
+                if (ImGui::Combo("Volume Resolution", (int*)&rep.orbital.vol.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str))) {
+                    update_rep = true;
+                }
+#if 0
+                // Currently we do not expose DVR, since we do not have a good way of exposing the alpha ramp for the transfer function...
+                ImGui::Checkbox("Enable DVR", &rep.orbital.vol.dvr.enabled);
+                if (rep.orbital.vol.dvr.enabled) {
+                    const ImVec2 button_size = {160, 0};
+                    if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.orbital.vol.dvr.colormap), button_size, rep.orbital.vol.dvr.colormap)) {
+                        ImGui::OpenPopup("Colormap Selector");
+                    }
+                    if (ImGui::BeginPopup("Colormap Selector")) {
+                        for (int map = 4; map < ImPlot::GetColormapCount(); ++map) {
+                            if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), button_size, map)) {
+                                rep.orbital.vol.dvr.colormap = map;
+                                update_rep = true;
                                 ImGui::CloseCurrentPopup();
                             }
                         }
                         ImGui::EndPopup();
                     }
                 }
-            }
 #endif
-            if (rep.filt_is_dynamic || rep.color_mapping == ColorMapping::Property) {
-                ImGui::Checkbox("auto-update", &rep.dynamic_evaluation);
-                if (!rep.dynamic_evaluation) {
-                    ImGui::SameLine();
-                    if (ImGui::Button("update")) {
-                        rep.filt_is_dirty = true;
-                        update_rep = true;
-                    }
+
+                //ImGui::Checkbox("Enable Iso-Surface", &rep.orbital.vol.iso.enabled);
+                if (rep.orbital.vol.iso.enabled) {
+                    const double iso_min = 1.0e-4;
+                    const double iso_max = 5.0;
+                          double iso_val = rep.orbital.vol.iso.values[0];
+                    ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
+
+                    rep.orbital.vol.iso.values[0] =  (float)iso_val;
+                    rep.orbital.vol.iso.values[1] = -(float)iso_val;
+                    rep.orbital.vol.iso.count = 2;
+                    rep.orbital.vol.iso.enabled = true;
+
+                    ImGui::ColorEdit4("Color Positive", rep.orbital.vol.iso.colors[0].elem);
+                    ImGui::ColorEdit4("Color Negative", rep.orbital.vol.iso.colors[1].elem);
                 }
-            } else {
-                rep.dynamic_evaluation = false;
             }
-            ImGui::PopItemWidth();
-            if (rep.color_mapping == ColorMapping::Uniform) {
-                update_rep |= ImGui::ColorEdit4("color", (float*)&rep.uniform_color, ImGuiColorEditFlags_NoInputs);
-            }
-            ImGui::PushItemWidth(item_width);
-            switch (rep.type) {
-            case RepresentationType::SpaceFill:
-                update_rep |= ImGui::SliderFloat("scale", &rep.scale[0], 0.1f, 4.f);
-                break;
-            case RepresentationType::Licorice:
-                update_rep |= ImGui::SliderFloat("radius", &rep.scale[0], 0.1f, 4.0f);
-                break;
-            case RepresentationType::BallAndStick:
-                update_rep |= ImGui::SliderFloat("ball scale", &rep.scale[0], 0.1f, 4.f);
-                update_rep |= ImGui::SliderFloat("bond scale", &rep.scale[1], 0.1f, 4.f);
-                break;
-            case RepresentationType::Ribbons:
-                update_rep |= ImGui::SliderFloat("width",       &rep.scale[0], 0.1f, 3.f);
-                update_rep |= ImGui::SliderFloat("thickness",   &rep.scale[1], 0.1f, 3.f);
-                break;
-            case RepresentationType::Cartoon:
-                update_rep |= ImGui::SliderFloat("coil scale",  &rep.scale[0], 0.1f, 3.f);
-                update_rep |= ImGui::SliderFloat("sheet scale", &rep.scale[1], 0.1f, 3.f);
-                update_rep |= ImGui::SliderFloat("helix scale", &rep.scale[2], 0.1f, 3.f);
-                break;
-            default:
-                ASSERT(false);
-            }
-
-            ImGui::PopItemWidth();
-            ImGui::Spacing();
-            ImGui::Separator();
-
             ImGui::TreePop();
         }
 
         ImGui::PopID();
 
         if (update_rep) {
-            update_representation(data, &rep);
+            update_representation(state, &rep);
         }
     }
 
@@ -5739,7 +5828,6 @@ static void draw_density_volume_window(ApplicationState* data) {
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Render")) {
-                ImGui::SliderFloat("Density Scaling", &data->density_volume.density_scale, 0.001f, 10000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
                 ImGui::Checkbox("Direct Volume Rendering", &data->density_volume.dvr.enabled);
                 if (data->density_volume.dvr.enabled) {
                     ImGui::Indent();
@@ -5756,9 +5844,12 @@ static void draw_density_volume_window(ApplicationState* data) {
                         }
                         ImGui::EndPopup();
                     }
-                    if (ImGui::SliderFloat("Alpha Scaling", &data->density_volume.dvr.tf.alpha_scale, 0.001f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic)) {
+                    if (ImGui::SliderFloat("TF Alpha Scaling", &data->density_volume.dvr.tf.alpha_scale, 0.001f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic)) {
                         data->density_volume.dvr.tf.dirty = true;
                     }
+                    ImGui::SliderFloat("TF Min Value", &data->density_volume.dvr.tf.min_val, 0.0f, 1000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                    ImGui::SliderFloat("TF Max Value", &data->density_volume.dvr.tf.max_val, 0.0f, 1000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
+
                     ImGui::Unindent();
                 }
                 ImGui::Checkbox("Iso Surfaces", &data->density_volume.iso.enabled);
@@ -5888,7 +5979,7 @@ static void draw_density_volume_window(ApplicationState* data) {
         ImVec2 canvas_p1 = ImGui::GetItemRectMax();
 
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
-        draw_list->AddImage((ImTextureID)(intptr_t)data->density_volume.fbo.deferred.post_tonemap, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
+        draw_list->AddImage((ImTextureID)(intptr_t)data->density_volume.fbo.tex.transparency, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
         draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(50, 50, 50, 255));
 
         if (data->density_volume.dvr.enabled && data->density_volume.legend.enabled) {
@@ -6018,23 +6109,18 @@ static void draw_density_volume_window(ApplicationState* data) {
 
         clear_gbuffer(&gbuf);
 
-        glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
-        glClearColor(1, 1, 1, 1);
-        glClear(GL_COLOR_BUFFER_BIT);
-
-        glEnable(GL_DEPTH_TEST);
-        glDepthMask(GL_TRUE);
 
         const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
-            GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_POST_TONEMAP };
+            GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
 
         glEnable(GL_CULL_FACE);
         glCullFace(GL_BACK);
 
         glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE);
         glDepthFunc(GL_LESS);
 
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.deferred.fbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
         glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
         glViewport(0, 0, gbuf.width, gbuf.height);
 
@@ -6086,16 +6172,15 @@ static void draw_density_volume_window(ApplicationState* data) {
                     draw_info_window(*data, pd.idx);
                 }
             }
-
-            glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
+            glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
         }
 
         if (data->density_volume.show_density_volume) {
             if (data->density_volume.model_mat != mat4_t{ 0 }) {
                 volume::RenderDesc vol_desc = {
                     .render_target = {
-                        .depth  = gbuf.deferred.depth,
-                        .color  = gbuf.deferred.post_tonemap,
+                        .depth  = gbuf.tex.depth,
+                        .color  = gbuf.tex.transparency,
                         .width  = gbuf.width,
                         .height = gbuf.height,
                     },
@@ -6107,22 +6192,23 @@ static void draw_density_volume_window(ApplicationState* data) {
                         .model = data->density_volume.model_mat,
                         .view = view_mat,
                         .proj = proj_mat,
+                        .inv_proj = inv_proj_mat,
                     },
                     .clip_volume = {
                         .min = data->density_volume.clip_volume.min,
                         .max = data->density_volume.clip_volume.max,
                     },
-                    .global_scaling = {
-                        .density = data->density_volume.density_scale,
-                    },
-                    .iso_surface = {
+                    .iso = {
+                        .enabled = data->density_volume.iso.enabled,
                         .count = data->density_volume.iso.count,
                         .values = data->density_volume.iso.values,
                         .colors = data->density_volume.iso.colors,
                     },
-                    .isosurface_enabled = data->density_volume.iso.enabled,
-                    .direct_volume_rendering_enabled = data->density_volume.dvr.enabled,
-
+                    .dvr = {
+                        .enabled = data->density_volume.dvr.enabled,
+                        .min_tf_value = data->density_volume.dvr.tf.min_val,
+                        .max_tf_value = data->density_volume.dvr.tf.max_val,
+                    },
                     .voxel_spacing = data->density_volume.voxel_spacing
                 };
                 volume::render_volume(vol_desc);
@@ -6130,9 +6216,11 @@ static void draw_density_volume_window(ApplicationState* data) {
         }
 
         if (data->density_volume.show_bounding_box) {
-            glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
+            glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
             glEnable(GL_DEPTH_TEST);
             glDepthMask(GL_TRUE);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
             if (data->density_volume.model_mat != mat4_t{0}) {
                 const vec3_t min_box = {0,0,0};
@@ -6148,6 +6236,7 @@ static void draw_density_volume_window(ApplicationState* data) {
 
                 immediate::render();
             }
+            glDisable(GL_BLEND);
         }
 
         PUSH_GPU_SECTION("Postprocessing")
@@ -6177,11 +6266,11 @@ static void draw_density_volume_window(ApplicationState* data) {
                 .enabled = false,
             },
             .input_textures = {
-                .depth = gbuf.deferred.depth,
-                .color = gbuf.deferred.color,
-                .normal = gbuf.deferred.normal,
-                .velocity = gbuf.deferred.velocity,
-                .post_tonemap = gbuf.deferred.post_tonemap,
+                .depth = gbuf.tex.depth,
+                .color = gbuf.tex.color,
+                .normal = gbuf.tex.normal,
+                .velocity = gbuf.tex.velocity,
+                .transparency = gbuf.tex.transparency,
             }
         };
 
@@ -6928,7 +7017,10 @@ static void update_md_buffers(ApplicationState* data) {
 
         if (f_hash != flag_hash) {
             flag_hash = f_hash;
-            uint8_t* flags = (uint8_t*)md_linear_allocator_push(frame_alloc, mol.atom.count * sizeof(uint8_t));
+            md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
+            defer { md_vm_arena_temp_end(tmp); };
+
+            uint8_t* flags = (uint8_t*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(uint8_t));
             MEMSET(flags, 0, mol.atom.count * sizeof(uint8_t));
 
             {
@@ -6955,19 +7047,6 @@ static void update_md_buffers(ApplicationState* data) {
             flag_hash = f_hash;
             md_gl_molecule_set_atom_flags(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, flags, 0);
         }
-
-        /*
-        uint8_t* flags = (uint8_t*)md_alloc(frame_allocator, mol.atom.count);
-        MEMSET(flags, 0, sizeof(uint8_t) * mol.atom.count);
-        for (size_t i = 0; i < mol.atom.count; i++) {
-            uint8_t f = 0;
-            f |= md_bitfield_test_bit(&data->selection.highlight_mask, i)     ? AtomBit_Highlighted : 0;
-            f |= md_bitfield_test_bit(&data->selection.selection_mask, i)     ? AtomBit_Selected : 0;
-            f |= md_bitfield_test_bit(&data->representation.visibility_mask, i)  ? AtomBit_Visible : 0;
-            flags[i] = f;
-        }
-        md_gl_molecule_set_atom_flags(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, flags, 0);
-        */
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyBonds) {
@@ -7147,7 +7226,7 @@ static void free_molecule_data(ApplicationState* data) {
     }
     clear_density_volume(data);
 
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdTopologyFree, data);
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdTopologyFree, viamd::EventPayloadType_ApplicationState, data);
 }
 
 static void init_molecule_data(ApplicationState* data) {
@@ -7176,13 +7255,15 @@ static void init_molecule_data(ApplicationState* data) {
             md_gfx_structure_set_instance_transforms(data->mold.gfx_structure, 0, mol.instance.count, mol.instance.transform, 0);
         }
 #endif
-        init_all_representations(data);
-        update_all_representations(data);
-        data->script.compile_ir = true;
-
-        init_dataset_items(data);
     }
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdTopologyInit, data);
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdTopologyInit, viamd::EventPayloadType_ApplicationState, data);
+
+    update_representation_info(data);
+    init_all_representations(data);
+    update_all_representations(data);
+    data->script.compile_ir = true;
+
+    init_dataset_items(data);
 }
 
 static void launch_prefetch_job(ApplicationState* data) {
@@ -7439,7 +7520,7 @@ static void load_workspace(ApplicationState* data, str_t filename) {
                 md_bitfield_deserialize(&sel->atom_mask, mask_base64.ptr, mask_base64.len);
             }
         } else {
-            viamd::event_system_broadcast_event(viamd::EventType_ViamdDeserialize, &state);
+            viamd::event_system_broadcast_event(viamd::EventType_ViamdDeserialize, viamd::EventPayloadType_DeserializationState, &state);
         }
     }
 
@@ -7556,7 +7637,7 @@ static void save_workspace(ApplicationState* data, str_t filename) {
     for (size_t i = 0; i < md_array_size(data->selection.stored_selections); ++i) {
         const Selection& sel = data->selection.stored_selections[i];
         size_t cap = md_bitfield_serialize_size_in_bytes(&sel.atom_mask);
-        char* buf = (char*)md_linear_allocator_push(frame_alloc, cap);
+        char* buf = (char*)md_vm_arena_push(frame_alloc, cap);
         size_t len = md_bitfield_serialize(buf, &sel.atom_mask);
         str_t encoded_mask = {buf, len};
         viamd::write_section_header(state, STR_LIT("Selection"));
@@ -7564,19 +7645,25 @@ static void save_workspace(ApplicationState* data, str_t filename) {
         viamd::write_str(state, STR_LIT("Mask"),  encoded_mask);
     }
 
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdSerialize, viamd::EventPayloadType_SerializationState, &state);
+
     str_t text = md_strb_to_str(state.sb);
     md_file_write(file, str_ptr(text), str_len(text));
 }
 
 void create_screenshot(ApplicationState* data) {
     ASSERT(data);
+
+    md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
+    defer { md_vm_arena_temp_end(tmp); };
+
     str_t path = data->screenshot.path_to_file;
 
     int width  = data->gbuffer.width;
     int height = data->gbuffer.height;
     size_t bytes = width * height * sizeof(uint32_t);
-    uint32_t* rgba = (uint32_t*)md_linear_allocator_push(frame_alloc, bytes);
-    defer { md_linear_allocator_pop(frame_alloc, bytes); };
+    uint32_t* rgba = (uint32_t*)md_vm_arena_push(frame_alloc, bytes);
+    defer { md_vm_arena_pop(frame_alloc, bytes); };
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glReadBuffer(GL_BACK);
@@ -7626,65 +7713,69 @@ static Representation* create_representation(ApplicationState* data, Representat
     if (!str_empty(filter)) {
         str_copy_to_char_buf(rep.filt, sizeof(rep.filt), filter);
     }
+    rep.orbital.orbital_idx = data->representation.info.mo_homo_idx;
     init_representation(data, &rep);
     update_representation(data, &rep);
     return md_array_push(data->representation.reps, rep, persistent_alloc);
 }
 
-static Representation* clone_representation(ApplicationState* data, const Representation& rep) {
-    ASSERT(data);
-    Representation* clone = md_array_push(data->representation.reps, rep, persistent_alloc);
+static Representation* clone_representation(ApplicationState* state, const Representation& rep) {
+    ASSERT(state);
+    Representation* clone = md_array_push(state->representation.reps, rep, persistent_alloc);
     clone->md_rep = {0};
     clone->atom_mask = {0};
-    init_representation(data, clone);
-    update_representation(data, clone);
+    init_representation(state, clone);
+    update_representation(state, clone);
     return clone;
 }
 
-static void remove_representation(ApplicationState* data, int idx) {
-    ASSERT(data);
-    ASSERT(idx < md_array_size(data->representation.reps));
-    auto& rep = data->representation.reps[idx];
+static void remove_representation(ApplicationState* state, int idx) {
+    ASSERT(state);
+    ASSERT(idx < md_array_size(state->representation.reps));
+    auto& rep = state->representation.reps[idx];
     md_bitfield_free(&rep.atom_mask);
     md_gl_representation_free(&rep.md_rep);
-    data->representation.reps[idx] = *md_array_last(data->representation.reps);
-    md_array_pop(data->representation.reps);
+    if (rep.orbital.vol.vol_tex != 0) gl::free_texture(&rep.orbital.vol.vol_tex);
+    if (rep.orbital.vol.dvr.tf_tex != 0) gl::free_texture(&rep.orbital.vol.dvr.tf_tex);
+    md_array_swap_back_and_pop(state->representation.reps, idx);
 }
 
-static void recompute_atom_visibility_mask(ApplicationState* data) {
-    ASSERT(data);
+static void recompute_atom_visibility_mask(ApplicationState* state) {
+    ASSERT(state);
 
-    auto& mask = data->representation.visibility_mask;
+    auto& mask = state->representation.visibility_mask;
 
     md_bitfield_clear(&mask);
-    for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
-        auto& rep = data->representation.reps[i];
+    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
+        auto& rep = state->representation.reps[i];
         if (!rep.enabled) continue;
         md_bitfield_or_inplace(&mask, &rep.atom_mask);
     }
 
-    data->mold.dirty_buffers |= MolBit_DirtyFlags;
+    state->mold.dirty_buffers |= MolBit_DirtyFlags;
 }
 
-static void update_all_representations(ApplicationState* data) {
-    for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
-        auto& rep = data->representation.reps[i];
+static void update_all_representations(ApplicationState* state) {
+    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
+        auto& rep = state->representation.reps[i];
         rep.filt_is_dirty = true;
-        update_representation(data, &rep);
+        update_representation(state, &rep);
     }
 }
 
-static void update_representation(ApplicationState* data, Representation* rep) {
-    ASSERT(data);
+static void update_representation(ApplicationState* state, Representation* rep) {
+    ASSERT(state);
     ASSERT(rep);
 
-    size_t pos = md_linear_allocator_get_pos(frame_alloc);
-    defer { md_linear_allocator_set_pos_back(frame_alloc, pos); };
+    if (!rep->enabled) return;
 
-    const size_t bytes = data->mold.mol.atom.count * sizeof(uint32_t);
-    uint32_t* colors = (uint32_t*)md_linear_allocator_push(frame_alloc, bytes);
+    md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
+    defer { md_vm_arena_temp_end(tmp); };
 
-    const auto& mol = data->mold.mol;
+    const size_t bytes = state->mold.mol.atom.count * sizeof(uint32_t);
+    uint32_t* colors = (uint32_t*)md_vm_arena_push(frame_alloc, bytes);
+
+    const auto& mol = state->mold.mol;
 
     //md_script_property_t prop = {0};
     //if (rep->color_mapping == ColorMapping::Property) {
@@ -7722,8 +7813,10 @@ static void update_representation(ApplicationState* data, Representation* rep) {
         case ColorMapping::Property:
             // @TODO: Map colors accordingly
             //color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
+#if 0
             if (rep->prop) {
                 MEMSET(colors, 0xFFFFFFFF, bytes);
+                md_script_pro
                 const float* values = rep->prop->data.values;
                 if (rep->prop->data.aggregate) {
                     const int dim = rep->prop->data.dim[0];
@@ -7733,21 +7826,21 @@ static void update_representation(ApplicationState* data, Representation* rep) {
                     //if (md_semaphore_aquire(&data->script.ir_semaphore)) {
                     //    defer { md_semaphore_release(&data->script.ir_semaphore); };
                         
-                        if (md_script_ir_valid(data->script.eval_ir)) {
+                        if (md_script_ir_valid(state->script.eval_ir)) {
                             md_script_vis_init(&vis, frame_alloc);
                             md_script_vis_ctx_t ctx = {
-                                .ir = data->script.eval_ir,
-                                .mol = &data->mold.mol,
-                                .traj = data->mold.traj,
+                                .ir = state->script.eval_ir,
+                                .mol = &state->mold.mol,
+                                .traj = state->mold.traj,
                             };
                             result = md_script_vis_eval_payload(&vis, rep->prop->vis_payload, 0, &ctx, MD_SCRIPT_VISUALIZE_ATOMS);
                         }
                     //}
                     if (result) {
                         if (dim == (int)md_array_size(vis.structures)) {
-                            int i0 = CLAMP((int)data->animation.frame + 0, 0, (int)rep->prop->data.num_values / dim - 1);
-                            int i1 = CLAMP((int)data->animation.frame + 1, 0, (int)rep->prop->data.num_values / dim - 1);
-                            float frame_fract = fractf((float)data->animation.frame);
+                            int i0 = CLAMP((int)state->animation.frame + 0, 0, (int)rep->prop->data.num_values / dim - 1);
+                            int i1 = CLAMP((int)state->animation.frame + 1, 0, (int)rep->prop->data.num_values / dim - 1);
+                            float frame_fract = fractf((float)state->animation.frame);
 
                             md_bitfield_t mask = {0};
                             md_bitfield_init(&mask, frame_alloc);
@@ -7761,9 +7854,9 @@ static void update_representation(ApplicationState* data, Representation* rep) {
                         }
                     }
                 } else {
-                    int i0 = CLAMP((int)data->animation.frame + 0, 0, (int)rep->prop->data.num_values - 1);
-                    int i1 = CLAMP((int)data->animation.frame + 1, 0, (int)rep->prop->data.num_values - 1);
-                    float value = lerpf(values[i0], values[i1], fractf((float)data->animation.frame));
+                    int i0 = CLAMP((int)state->animation.frame + 0, 0, (int)rep->prop->data.num_values - 1);
+                    int i1 = CLAMP((int)state->animation.frame + 1, 0, (int)rep->prop->data.num_values - 1);
+                    float value = lerpf(values[i0], values[i1], fractf((float)state->animation.frame));
                     float t = CLAMP((value - rep->map_beg) / (rep->map_end - rep->map_beg), 0, 1);
                     ImVec4 color = ImPlot::SampleColormap(t, rep->color_map);
                     color_atoms_uniform(colors, mol.atom.count, vec_cast(color));
@@ -7771,6 +7864,7 @@ static void update_representation(ApplicationState* data, Representation* rep) {
             } else {
                 color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
             }
+#endif
             break;
         default:
             ASSERT(false);
@@ -7789,8 +7883,43 @@ static void update_representation(ApplicationState* data, Representation* rep) {
     case RepresentationType::Cartoon:
         rep->type_is_valid = mol.backbone.range.count > 0;
         break;
+	case RepresentationType::Orbital: {
+        rep->type_is_valid = md_array_size(state->representation.info.molecular_orbitals) > 0;
+        uint64_t vol_hash = (uint64_t)rep->orbital.type | ((uint64_t)rep->orbital.vol.resolution << 8) | ((uint64_t)rep->orbital.orbital_idx << 32);
+		if (vol_hash != rep->orbital.vol_hash) {
+            const float samples_per_angstrom[(int)VolumeResolution::Count] = {
+                4.0f,
+                8.0f,
+                16.0f,
+            };
+			rep->orbital.vol_hash = vol_hash;
+			ComputeOrbital data = {
+				.type = rep->orbital.type,
+				.orbital_idx = rep->orbital.orbital_idx,
+                .samples_per_angstrom = samples_per_angstrom[(int)rep->orbital.vol.resolution],
+                .dst_texture = &rep->orbital.vol.vol_tex,
+			};
+			viamd::event_system_broadcast_event(viamd::EventType_RepresentationComputeOrbital, viamd::EventPayloadType_ComputeOrbital, &data);
+
+            if (data.output_written) {
+                rep->orbital.vol.mdl_mat = data.mdl_mat;
+                rep->orbital.vol.tex_mat = data.tex_mat;
+                rep->orbital.vol.voxel_spacing = data.voxel_spacing;
+            }
+		}
+        uint64_t tf_hash = md_hash64(&rep->orbital.vol.dvr.colormap, sizeof(rep->orbital.vol.dvr.colormap), 0);
+        if (tf_hash != rep->orbital.tf_hash) {
+            rep->orbital.tf_hash = tf_hash;
+            volume::compute_transfer_function_texture(&rep->orbital.vol.dvr.tf_tex, rep->orbital.vol.dvr.colormap, volume::RAMP_TYPE_SAWTOOTH);
+        }
+		break;
+	}
+    case RepresentationType::DipoleMoment:
+        rep->type_is_valid = md_array_size(state->representation.info.dipole_moments) > 0;
+        break;
     default:
         ASSERT(false);
+        break;
     }
 
     if (rep->dynamic_evaluation) {
@@ -7798,13 +7927,13 @@ static void update_representation(ApplicationState* data, Representation* rep) {
     }
 
     if (rep->filt_is_dirty) {
-        rep->filt_is_valid = filter_expression(data, str_from_cstr(rep->filt), &rep->atom_mask, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
+        rep->filt_is_valid = filter_expression(state, str_from_cstr(rep->filt), &rep->atom_mask, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
         rep->filt_is_dirty = false;
     }
 
     if (rep->filt_is_valid) {
         filter_colors(colors, mol.atom.count, &rep->atom_mask);
-        data->representation.atom_visibility_mask_dirty = true;
+        state->representation.atom_visibility_mask_dirty = true;
         md_gl_representation_set_color(&rep->md_rep, 0, (uint32_t)mol.atom.count, colors, 0);
 
 #if EXPERIMENTAL_GFX_API
@@ -7816,34 +7945,42 @@ static void update_representation(ApplicationState* data, Representation* rep) {
     }
 }
 
-static void init_representation(ApplicationState* data, Representation* rep) {
+static void init_representation(ApplicationState* state, Representation* rep) {
 #if EXPERIMENTAL_GFX_API
-    rep->gfx_rep = md_gfx_rep_create(data->mold.mol.atom.count);
+    rep->gfx_rep = md_gfx_rep_create(state->mold.mol.atom.count);
 #endif
-    md_gl_representation_init(&rep->md_rep, &data->mold.gl_mol);
+    md_gl_representation_init(&rep->md_rep, &state->mold.gl_mol);
     md_bitfield_init(&rep->atom_mask, persistent_alloc);
     rep->filt_is_dirty = true;
 }
 
-static void init_all_representations(ApplicationState* data) {
-    for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
-        auto& rep = data->representation.reps[i];
-        init_representation(data, &rep);
+static void update_representation_info(ApplicationState* state) {
+    md_arena_allocator_reset(state->representation.info.alloc);
+    state->representation.info.dipole_moments = 0;
+    state->representation.info.molecular_orbitals = 0;
+    state->representation.info.mo_homo_idx = 0;
+    state->representation.info.mo_lumo_idx = 0;
+    viamd::event_system_broadcast_event(viamd::EventType_RepresentationInfoFill, viamd::EventPayloadType_RepresentationInfo, &state->representation.info);
+}
+
+static void init_all_representations(ApplicationState* state) {
+    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
+        auto& rep = state->representation.reps[i];
+        init_representation(state, &rep);
     }
 }
 
-static void clear_representations(ApplicationState* data) {
-    ASSERT(data);
-    while (md_array_size(data->representation.reps) > 0) {
-        remove_representation(data, (int32_t)md_array_size(data->representation.reps) - 1);
+static void clear_representations(ApplicationState* state) {
+    while (md_array_size(state->representation.reps) > 0) {
+        remove_representation(state, (int32_t)md_array_size(state->representation.reps) - 1);
     }
-    md_array_free(data->representation.reps, persistent_alloc);
+    md_array_free(state->representation.reps, persistent_alloc);
 }
 
-static void create_default_representations(ApplicationState* data) {
-    if (data->mold.mol.atom.count > 4'000'000) {
+static void create_default_representations(ApplicationState* state) {
+    if (state->mold.mol.atom.count > 4'000'000) {
         LOG_INFO("Large molecule detected, creating default representation for all atoms");
-		Representation* rep = create_representation(data, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("all"));
+		Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("all"));
 		snprintf(rep->name, sizeof(rep->name), "default");
 		return;
     }
@@ -7853,16 +7990,17 @@ static void create_default_representations(ApplicationState* data) {
     bool ion_present = false;
     bool water_present = false;
     bool ligand_present = false;
+    bool orbitals_present = md_array_size(state->representation.info.molecular_orbitals) > 0;
 
-    if (data->mold.mol.residue.count == 0) {
+    if (state->mold.mol.residue.count == 0) {
         // No residues present
-        Representation* rep = create_representation(data, RepresentationType::BallAndStick, ColorMapping::Cpk, STR_LIT("all"));
+        Representation* rep = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Cpk, STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
-        return;
+        goto no_residue;
     }
 
-    for (size_t i = 0; i < data->mold.mol.atom.count; ++i) {
-        uint32_t flags = data->mold.mol.atom.flags[i];
+    for (size_t i = 0; i < state->mold.mol.atom.count; ++i) {
+        uint32_t flags = state->mold.mol.atom.flags[i];
         if (flags & MD_FLAG_AMINO_ACID) amino_acid_present = true;
         if (flags & MD_FLAG_NUCLEOTIDE) nucleic_present = true;
         if (flags & MD_FLAG_ION) ion_present = true;
@@ -7877,33 +8015,33 @@ static void create_default_representations(ApplicationState* data) {
         RepresentationType type = RepresentationType::Cartoon;
         ColorMapping color = ColorMapping::SecondaryStructure;
 
-        if (data->mold.mol.chain.count > 1) {
+        if (state->mold.mol.chain.count > 1) {
             color = ColorMapping::ChainId;
         } else {
-            size_t res_count = md_chain_residue_count(data->mold.mol.chain, 0);
+            size_t res_count = md_chain_residue_count(state->mold.mol.chain, 0);
             if (res_count < 20) {
                 type = RepresentationType::BallAndStick;
                 color = ColorMapping::Cpk;
             }
         }
 
-        Representation* prot = create_representation(data, type, color, STR_LIT("protein"));
+        Representation* prot = create_representation(state, type, color, STR_LIT("protein"));
         snprintf(prot->name, sizeof(prot->name), "protein");
     }
     if (nucleic_present) {
-        Representation* nucl = create_representation(data, RepresentationType::BallAndStick, ColorMapping::Cpk, STR_LIT("nucleic"));
+        Representation* nucl = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Cpk, STR_LIT("nucleic"));
         snprintf(nucl->name, sizeof(nucl->name), "nucleic");
     }
     if (ion_present) {
-        Representation* ion = create_representation(data, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("ion"));
+        Representation* ion = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("ion"));
         snprintf(ion->name, sizeof(ion->name), "ion");
     }
     if (ligand_present) {
-        Representation* ligand = create_representation(data, RepresentationType::BallAndStick, ColorMapping::Cpk, STR_LIT("not (protein or nucleic or water or ion)"));
+        Representation* ligand = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Cpk, STR_LIT("not (protein or nucleic or water or ion)"));
         snprintf(ligand->name, sizeof(ligand->name), "ligand");
     }
     if (water_present) {
-        Representation* water = create_representation(data, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("water"));
+        Representation* water = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("water"));
         water->scale.x = 0.5f;
         snprintf(water->name, sizeof(water->name), "water");
         water->enabled = false;
@@ -7912,23 +8050,30 @@ static void create_default_representations(ApplicationState* data) {
         }
     }
 
-    recompute_atom_visibility_mask(data);
+no_residue:
+    if (orbitals_present) {
+        Representation* rep = create_representation(state, RepresentationType::Orbital);
+        snprintf(rep->name, sizeof(rep->name), "homo");
+        rep->enabled = true;
+    }
+
+    recompute_atom_visibility_mask(state);
 }
 
 // #selection
-static Selection* create_selection(ApplicationState* data, str_t name, md_bitfield_t* atom_mask) {
-    ASSERT(data);
+static Selection* create_selection(ApplicationState* state, str_t name, md_bitfield_t* atom_mask) {
+    ASSERT(state);
     Selection sel;
     str_copy_to_char_buf(sel.name, sizeof(sel.name), name);
     md_bitfield_init(&sel.atom_mask, persistent_alloc);
     if (atom_mask) {
         md_bitfield_copy(&sel.atom_mask, atom_mask);
     }
-    return md_array_push(data->selection.stored_selections, sel, persistent_alloc);
+    return md_array_push(state->selection.stored_selections, sel, persistent_alloc);
 }
 
-static void clear_selections(ApplicationState* data) {
-    md_array_shrink(data->selection.stored_selections, 0);
+static void clear_selections(ApplicationState* state) {
+    md_array_shrink(state->selection.stored_selections, 0);
 }
 
 #if 0
@@ -7941,16 +8086,16 @@ static void clear_selections(ApplicationState* data) {
     }
 #endif
 
-static void remove_selection(ApplicationState* data, int idx) {
-    ASSERT(data);
-    if (idx < 0 || (int)md_array_size(data->selection.stored_selections) <= idx) {
+static void remove_selection(ApplicationState* state, int idx) {
+    ASSERT(state);
+    if (idx < 0 || (int)md_array_size(state->selection.stored_selections) <= idx) {
         LOG_ERROR("Index [%i] out of range when trying to remove selection", idx);
     }
-    auto item = &data->selection.stored_selections[idx];
+    auto item = &state->selection.stored_selections[idx];
     md_bitfield_free(&item->atom_mask);
     
-    data->selection.stored_selections[idx] = *md_array_last(data->selection.stored_selections);
-    md_array_pop(data->selection.stored_selections);
+    state->selection.stored_selections[idx] = *md_array_last(state->selection.stored_selections);
+    md_array_pop(state->selection.stored_selections);
 }
 
 // #camera-control
@@ -8051,7 +8196,7 @@ static void handle_camera_interaction(ApplicationState* data) {
                     data->selection.selecting = true;
 
                     const vec2_t res = { (float)data->app.window.width, (float)data->app.window.height };
-                    const mat4_t mvp = data->view.param.matrix.current.proj * data->view.param.matrix.current.view;
+                    const mat4_t mvp = data->view.param.matrix.current.proj_jittered * data->view.param.matrix.current.view;
 
                     md_bitfield_iter_t it = md_bitfield_iter_create(&data->representation.visibility_mask);
                     while (md_bitfield_iter_next(&it)) {
@@ -8199,7 +8344,7 @@ static void handle_camera_interaction(ApplicationState* data) {
 
 static void fill_gbuffer(ApplicationState* data) {
     const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
-        GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_POST_TONEMAP };
+        GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
 
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
@@ -8208,7 +8353,7 @@ static void fill_gbuffer(ApplicationState* data) {
     glDepthFunc(GL_LESS);
 
     // Enable all draw buffers
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data->gbuffer.deferred.fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data->gbuffer.fbo);
     glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
 
     PUSH_GPU_SECTION("G-Buffer fill")
@@ -8229,7 +8374,7 @@ static void fill_gbuffer(ApplicationState* data) {
 #if 0
     // RENDER DEBUG INFORMATION (WITH DEPTH)
     PUSH_GPU_SECTION("Debug Draw") {
-        glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
+        glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
         immediate::set_model_view_matrix(data->view.param.matrix.current.view);
         immediate::set_proj_matrix(data->view.param.matrix.current.proj);
         immediate::flush();
@@ -8237,7 +8382,7 @@ static void fill_gbuffer(ApplicationState* data) {
     POP_GPU_SECTION()
 
     PUSH_GPU_SECTION("Debug Draw Overlay") {
-        glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);  // Post_Tonemap buffer
+        glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);  // Post_Tonemap buffer
         glDisable(GL_DEPTH_TEST);
         glDepthMask(0);
 
@@ -8256,7 +8401,7 @@ static void fill_gbuffer(ApplicationState* data) {
         PUSH_GPU_SECTION("Blit Static Velocity")
         glDrawBuffer(GL_COLOR_ATTACHMENT_VELOCITY);
         glDepthMask(0);
-        postprocessing::blit_static_velocity(data->gbuffer.deferred.depth, data->view.param);
+        postprocessing::blit_static_velocity(data->gbuffer.tex.depth, data->view.param);
         glDepthMask(1);
         POP_GPU_SECTION()
     }
@@ -8264,12 +8409,13 @@ static void fill_gbuffer(ApplicationState* data) {
     glColorMask(1, 1, 1, 1);
 
     // DRAW REPRESENTATIONS
-    PUSH_GPU_SECTION("Representation")
+    PUSH_GPU_SECTION("Draw Opaque")
     glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
-    draw_representations(data);
+    draw_representations_opaque(data);
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderOpaque, viamd::EventPayloadType_ApplicationState, data);
     POP_GPU_SECTION()
 
-    glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);  // Post_Tonemap buffer
+    glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
 
     if (!use_gfx) {
         PUSH_GPU_SECTION("Selection")
@@ -8297,7 +8443,7 @@ static void fill_gbuffer(ApplicationState* data) {
 
             glStencilFunc(GL_GREATER, 0x02, 0xFF);
             glStencilOp(GL_KEEP, GL_ZERO, GL_REPLACE);
-            draw_representations_lean_and_mean(data, AtomBit_Selected | AtomBit_Visible);
+            draw_representations_opaque_lean_and_mean(data, AtomBit_Selected | AtomBit_Visible);
 
             glDisable(GL_DEPTH_TEST);
 
@@ -8326,7 +8472,7 @@ static void fill_gbuffer(ApplicationState* data) {
 
             glStencilFunc(GL_GREATER, 0x02, 0xFF);
             glStencilOp(GL_KEEP, GL_ZERO, GL_REPLACE);
-            draw_representations_lean_and_mean(data, AtomBit_Highlighted | AtomBit_Visible);
+            draw_representations_opaque_lean_and_mean(data, AtomBit_Highlighted | AtomBit_Visible);
 
             glDisable(GL_DEPTH_TEST);
 
@@ -8347,8 +8493,7 @@ static void fill_gbuffer(ApplicationState* data) {
             PUSH_GPU_SECTION("Desaturate") {
                 const float saturation = data->selection.color.saturation;
                 glDrawBuffer(GL_COLOR_ATTACHMENT_COLOR);
-                postprocessing::scale_hsv(data->gbuffer.deferred.color, vec3_t{1, saturation, 1});
-                glDrawBuffer(GL_COLOR_ATTACHMENT_POST_TONEMAP);
+                postprocessing::scale_hsv(data->gbuffer.tex.color, vec3_t{1, saturation, 1});
             } POP_GPU_SECTION()
         }
 
@@ -8358,12 +8503,23 @@ static void fill_gbuffer(ApplicationState* data) {
         POP_GPU_SECTION()
     }
 
+    glDisable(GL_STENCIL_TEST);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glColorMask(1, 1, 1, 1);
+    glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
+
+    PUSH_GPU_SECTION("Draw Transparent")
+    draw_representations_transparent(data);
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderTransparent, viamd::EventPayloadType_ApplicationState, data);
+    POP_GPU_SECTION()
+
     PUSH_GPU_SECTION("Draw Visualization Geometry")
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
 
     immediate::set_model_view_matrix(data->view.param.matrix.current.view);
-    immediate::set_proj_matrix(data->view.param.matrix.current.proj);
+    immediate::set_proj_matrix(data->view.param.matrix.current.proj_jittered);
 
     const md_script_vis_t& vis = data->script.vis;
 
@@ -8391,9 +8547,9 @@ static void fill_gbuffer(ApplicationState* data) {
         immediate::draw_point(vis.points[i].pos, point_color);
     }
 
-    const uint32_t col_x = convert_color(vec4_set(1, 0, 0, 0.7f));
-    const uint32_t col_y = convert_color(vec4_set(0, 1, 0, 0.7f));
-    const uint32_t col_z = convert_color(vec4_set(0, 0, 1, 0.7f));
+    const vec4_t col_x = {1, 0, 0, 0.7f};
+    const vec4_t col_y = {0, 1, 0, 0.7f};
+    const vec4_t col_z = {0, 0, 1, 0.7f};
     const float ext = vis.sdf.extent * 0.25f;
     for (size_t i = 0; i < md_array_size(model_matrices); ++i) {
         immediate::draw_basis(model_matrices[i], ext, col_x, col_y, col_z);
@@ -8402,15 +8558,13 @@ static void fill_gbuffer(ApplicationState* data) {
     immediate::render();
 
     immediate::set_model_view_matrix(data->view.param.matrix.current.view);
-    immediate::set_proj_matrix(data->view.param.matrix.current.proj);
+    immediate::set_proj_matrix(data->view.param.matrix.current.proj_jittered);
     
     glEnable(GL_DEPTH_TEST);
     
     const vec3_t box_ext = vec3_set1(vis.sdf.extent);
-    const uint32_t box_color = convert_color(data->density_volume.bounding_box_color * vec4_set(1.f, 1.f, 1.f, 0.25f));
-    
     for (size_t i = 0; i < md_array_size(model_matrices); ++i) {
-        immediate::draw_box_wireframe(-box_ext, box_ext, model_matrices[i], box_color);
+        immediate::draw_box_wireframe(-box_ext, box_ext, model_matrices[i], data->density_volume.bounding_box_color);
     }
 
     immediate::render();
@@ -8498,6 +8652,8 @@ static void apply_postprocessing(const ApplicationState& data) {
     desc.depth_of_field.focus_depth = data.visuals.dof.focus_depth;
     desc.depth_of_field.focus_scale = data.visuals.dof.focus_scale;
 
+    desc.fxaa.enabled = data.visuals.fxaa.enabled;
+
     constexpr float MOTION_BLUR_REFERENCE_DT = 1.0f / 60.0f;
     const float dt_compensation = MOTION_BLUR_REFERENCE_DT / (float)data.app.timing.delta_s;
     const float motion_scale = data.visuals.temporal_reprojection.motion_blur.motion_scale * dt_compensation;
@@ -8507,17 +8663,17 @@ static void apply_postprocessing(const ApplicationState& data) {
     desc.temporal_reprojection.motion_blur.enabled = data.visuals.temporal_reprojection.motion_blur.enabled;
     desc.temporal_reprojection.motion_blur.motion_scale = motion_scale;
 
-    desc.input_textures.depth = data.gbuffer.deferred.depth;
-    desc.input_textures.color = data.gbuffer.deferred.color;
-    desc.input_textures.normal = data.gbuffer.deferred.normal;
-    desc.input_textures.velocity = data.gbuffer.deferred.velocity;
-    desc.input_textures.post_tonemap = data.gbuffer.deferred.post_tonemap;
+    desc.input_textures.depth = data.gbuffer.tex.depth;
+    desc.input_textures.color = data.gbuffer.tex.color;
+    desc.input_textures.normal = data.gbuffer.tex.normal;
+    desc.input_textures.velocity = data.gbuffer.tex.velocity;
+    desc.input_textures.transparency = data.gbuffer.tex.transparency;
 
     postprocessing::shade_and_postprocess(desc, data.view.param);
     POP_GPU_SECTION()
 }
 
-static void draw_representations(ApplicationState* data) {
+static void draw_representations_opaque(ApplicationState* data) {
     ASSERT(data);
 
     if (data->mold.mol.atom.count == 0) {
@@ -8570,9 +8726,12 @@ static void draw_representations(ApplicationState* data) {
         const size_t num_representations = md_array_size(data->representation.reps);
         if (num_representations == 0) return;
 
-        md_gl_draw_op_t* draw_ops = 0;
+        md_array(md_gl_draw_op_t) draw_ops = 0;
         for (size_t i = 0; i < num_representations; ++i) {
             const Representation& rep = data->representation.reps[i];
+
+            if (rep.type > RepresentationType::Cartoon) continue;
+
             if (rep.enabled && rep.type_is_valid) {
                 md_gl_draw_op_t op = {
                     .type = (md_gl_representation_type_t)rep.type,
@@ -8606,10 +8765,66 @@ static void draw_representations(ApplicationState* data) {
 #endif
 }
 
-static void draw_representations_lean_and_mean(ApplicationState* data, uint32_t mask) {
+static void draw_representations_transparent(ApplicationState* state) {
+    ASSERT(state);
+    if (state->mold.mol.atom.count == 0) return;
+
+    const size_t num_representations = md_array_size(state->representation.reps);
+    if (num_representations == 0) return;
+
+    for (size_t i = 0; i < num_representations; ++i) {
+        const Representation& rep = state->representation.reps[i];
+        if (rep.type != RepresentationType::Orbital) continue;
+
+        volume::RenderDesc desc = {
+            .render_target = {
+                .depth = state->gbuffer.tex.depth,
+                .color  = state->gbuffer.tex.transparency,
+                .width  = state->gbuffer.width,
+                .height = state->gbuffer.height,
+            },
+            .texture = {
+                .volume = rep.orbital.vol.vol_tex,
+                .transfer_function = rep.orbital.vol.dvr.tf_tex,
+            },
+            .matrix = {
+                .model = rep.orbital.vol.tex_mat,
+                .view  = state->view.param.matrix.current.view,
+                .proj  = state->view.param.matrix.current.proj_jittered,
+                .inv_proj = state->view.param.matrix.inverse.proj_jittered,
+            },
+            .clip_volume = {
+                .min = {0,0,0},
+                .max = {1,1,1},
+            },
+            .temporal = {
+                .enabled = state->visuals.temporal_reprojection.enabled,
+            },
+            .iso = {
+                .enabled = rep.orbital.vol.iso.enabled,
+                .count  = (size_t)rep.orbital.vol.iso.count,
+                .values = rep.orbital.vol.iso.values,
+                .colors = rep.orbital.vol.iso.colors,
+            },
+            .dvr = {
+                .enabled = rep.orbital.vol.dvr.enabled,
+                .min_tf_value = -1.0f,
+                .max_tf_value =  1.0f,
+            },
+            .voxel_spacing = rep.orbital.vol.voxel_spacing,
+        };
+
+        volume::render_volume(desc);
+    }
+}
+
+static void draw_representations_opaque_lean_and_mean(ApplicationState* data, uint32_t mask) {
     md_gl_draw_op_t* draw_ops = 0;
     for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
         const Representation& rep = data->representation.reps[i];
+
+        if (rep.type > RepresentationType::Cartoon) continue;
+
         if (rep.enabled && rep.type_is_valid) {
             md_gl_draw_op_t op = {
                 .type = (md_gl_representation_type_t)rep.type,

@@ -228,16 +228,16 @@ void render() {
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, md_array_bytes(indices), indices, GL_STREAM_DRAW);
 
     glEnable(GL_PROGRAM_POINT_SIZE);
-    // glEnable(GL_BLEND);
-    // glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    //glEnable(GL_BLEND);
+    //glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     glUseProgram(program);
     glLineWidth(1.f);
 
     glUniform1f(uniform_loc_point_size, 1.f);
 
-    int current_view_matrix_idx = -999;
-    int current_proj_matrix_idx = -999;
+    int current_view_matrix_idx = -1;
+    int current_proj_matrix_idx = -1;
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, default_tex);
@@ -275,7 +275,7 @@ void render() {
     glUseProgram(0);
 
     glDisable(GL_PROGRAM_POINT_SIZE);
-    // glDisable(GL_BLEND);
+    //glDisable(GL_BLEND);
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
@@ -472,6 +472,10 @@ void draw_basis(mat4_t basis, const float scale, uint32_t x_color, uint32_t y_co
     draw_line(o, x, x_color);
     draw_line(o, y, y_color);
     draw_line(o, z, z_color);
+}
+
+void draw_basis(mat4_t basis, const float scale, vec4_t x_color, vec4_t y_color, vec4_t z_color) {
+    draw_basis(basis, scale, convert_color(x_color), convert_color(y_color), convert_color(z_color));
 }
 
 }  // namespace immediate

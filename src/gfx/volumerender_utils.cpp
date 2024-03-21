@@ -2,7 +2,7 @@
 
 #include <gfx/gl.h>
 #include <gfx/gl_utils.h>
-#include <gfx/immediate_draw_utils.h>
+#include <gfx/postprocessing_utils.h>
 #include <color_utils.h>
 
 #include <core/md_common.h>
@@ -10,7 +10,18 @@
 #include <core/md_os.h>
 #include <core/md_vec_math.h>
 
+#include <implot.h>
+
 #include <shaders.inl>
+
+#define PUSH_GPU_SECTION(lbl)                                                                       \
+    {                                                                                               \
+        if (glPushDebugGroup) glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, GL_KHR_debug, -1, lbl); \
+    }
+#define POP_GPU_SECTION()                       \
+    {                                           \
+        if (glPopDebugGroup) glPopDebugGroup(); \
+    }
 
 static constexpr str_t v_shader_src_fs_quad = STR_LIT(
     R"(
@@ -30,6 +41,58 @@ void main() {
 }
 )");
 
+static constexpr str_t f_shader_src_median = STR_LIT(
+R"(
+#version 150 core
+
+uniform sampler2D T;
+
+out vec4 out_frag;
+
+// Change these 2 defines to change precision
+#define vec vec3
+
+#define s2(a, b)				temp = a; a = min(a, b); b = max(temp, b);
+#define mn3(a, b, c)			s2(a, b); s2(a, c);
+#define mx3(a, b, c)			s2(b, c); s2(a, c);
+
+#define mnmx3(a, b, c)			mx3(a, b, c); s2(a, b);                                   // 3 exchanges
+#define mnmx4(a, b, c, d)		s2(a, b); s2(c, d); s2(a, c); s2(b, d);                   // 4 exchanges
+#define mnmx5(a, b, c, d, e)	s2(a, b); s2(c, d); mn3(a, c, e); mx3(b, d, e);           // 6 exchanges
+#define mnmx6(a, b, c, d, e, f) s2(a, d); s2(b, e); s2(c, f); mn3(a, b, c); mx3(d, e, f); // 7 exchanges
+
+void main() {
+
+  vec4 col = texelFetch(T, ivec2(gl_FragCoord.xy) + ivec2( 0,  0), 0);
+
+  vec v[6];
+
+  v[0] = texelFetch(T, ivec2(gl_FragCoord.xy) + ivec2(-1, -1), 0).rgb;
+  v[1] = texelFetch(T, ivec2(gl_FragCoord.xy) + ivec2( 0, -1), 0).rgb;
+  v[2] = texelFetch(T, ivec2(gl_FragCoord.xy) + ivec2( 1, -1), 0).rgb;
+  v[3] = texelFetch(T, ivec2(gl_FragCoord.xy) + ivec2(-1,  0), 0).rgb;
+  v[4] = col.rgb;
+  v[5] = texelFetch(T, ivec2(gl_FragCoord.xy) + ivec2( 1,  0), 0).rgb;
+
+  // Starting with a subset of size 6, remove the min and max each time
+  vec temp;
+  mnmx6(v[0], v[1], v[2], v[3], v[4], v[5]);
+
+  v[5] = texelFetch(T, ivec2(gl_FragCoord.xy) + ivec2(-1,  1), 0).rgb;
+
+  mnmx5(v[1], v[2], v[3], v[4], v[5]);
+
+  v[5] = texelFetch(T, ivec2(gl_FragCoord.xy) + ivec2( 0,  1), 0).rgb;
+
+  mnmx4(v[2], v[3], v[4], v[5]);
+
+  v[5] = texelFetch(T, ivec2(gl_FragCoord.xy) + ivec2( 1,  1), 0).rgb;
+
+  mnmx3(v[3], v[4], v[5]);
+  out_frag = vec4(v[4], col.a);
+}
+)");
+
 namespace volume {
 
 static struct {
@@ -38,10 +101,11 @@ static struct {
     GLuint ubo = 0;
     GLuint fbo = 0;
 
-    GLuint tex_entry = 0;
-    GLuint tex_exit  = 0;
+    GLuint tex_entry  = 0;
+    GLuint tex_exit   = 0;
+    GLuint tex_result = 0;
 
-    uint32_t width = 0;
+    uint32_t width  = 0;
     uint32_t height = 0;
 
     struct {
@@ -50,6 +114,7 @@ static struct {
         GLuint dvr_only = 0;
         GLuint iso_only = 0;
         GLuint dvr_and_iso = 0;
+        GLuint median = 0;
     } program;
 } gl;
 
@@ -60,16 +125,16 @@ struct UniformData {
     mat4_t model_view_proj_mat;
 
     vec2_t inv_res;
-    float density_scale;
+    float time;
     float _pad0;
 
     vec3_t clip_volume_min;
-    float _pad1;
+    float tf_min;
     vec3_t clip_volume_max;
-    float time;
+    float tf_inv_ext;
 
     vec3_t gradient_spacing_world_space;
-    float _pad2;
+    float _pad1;
     mat4_t gradient_spacing_tex_space;
 };
 
@@ -157,6 +222,10 @@ void initialize() {
         glGenTextures(1, &gl.tex_exit);
     }
 
+    if (!gl.tex_result) {
+        glGenTextures(1, &gl.tex_result);
+    }
+
     if (!gl.fbo) {
         glGenFramebuffers(1, &gl.fbo);
     }
@@ -200,15 +269,60 @@ mat4_t compute_texture_to_model_matrix(int dim_x, int dim_y, int dim_z) {
     return mat4_ident();
 }
 
-void render_volume(const RenderDesc& desc) {
-    if (!desc.direct_volume_rendering_enabled && !desc.isosurface_enabled) return;
+void compute_transfer_function_texture(uint32_t* tex, int colormap, ramp_type_t type, float ramp_scale, float ramp_period, int res) {
+    ASSERT(tex);
+    if (res <= 0) {
+        MD_LOG_ERROR("Bad input resolution");
+        return;
+    }
 
-    int    iso_count = CLAMP((int)desc.iso_surface.count, 0, 8);
+    size_t temp_pos = md_temp_get_pos();
+    size_t bytes = sizeof(uint32_t) * res;
+    uint32_t* pixel_data = (uint32_t*)md_temp_push(bytes);
+
+    const float s = ramp_scale;
+    const float p = ramp_period;
+
+    // Update colormap texture
+    for (int i = 0; i < res; ++i) {
+        float t = (float)i / (float)(res - 1);
+        ImVec4 col = ImPlot::SampleColormap(t, colormap);
+
+        // Remap linear t which has a profile of '/' to '\/' to put the alpha ramp in the center (0.5)
+        // y(x) = abs((1.0 - c) * (c - x)) Paste this into a grapher and you will see!alpha_origin;
+        switch (type) {
+        case RAMP_TYPE_SAWTOOTH:
+            t = s * fmodf(t, p);
+            break;
+        case RAMP_TYPE_TRIANGLE:
+            t = s * (2.0f/p) * fabsf(fmodf(t-p*0.5f,p)-p*0.5f);
+            break;
+        default:
+            break;
+        }
+
+        t = CLAMP(t, 0.0f, 1.0f);
+
+        col.w = MIN(160 * t*t, 0.341176f);
+        col.w = CLAMP(col.w, 0.0f, 1.0f);
+        pixel_data[i] = ImGui::ColorConvertFloat4ToU32(col);
+    }
+
+    gl::init_texture_2D(tex, res, 1, GL_RGBA8);
+    gl::set_texture_2D_data(*tex, pixel_data, GL_RGBA8);
+
+    md_temp_set_pos_back(temp_pos);
+}
+
+void render_volume(const RenderDesc& desc) {
+    if (!desc.dvr.enabled && !desc.iso.enabled) return;
+
+    int    iso_count = CLAMP((int)desc.iso.count, 0, 8);
     float  iso_values[8];
     vec4_t iso_colors[8];
 
-    MEMCPY(iso_values, desc.iso_surface.values, iso_count * sizeof(float));
-    MEMCPY(iso_colors, desc.iso_surface.colors, iso_count * sizeof(vec4_t));
+    MEMCPY(iso_values, desc.iso.values, iso_count * sizeof(float));
+    MEMCPY(iso_colors, desc.iso.colors, iso_count * sizeof(vec4_t));
 
     // Sort on iso value
     for (int i = 0; i < iso_count - 1; ++i) {
@@ -244,26 +358,36 @@ void render_volume(const RenderDesc& desc) {
     {
         gl.width = desc.render_target.width;
         gl.height = desc.render_target.height;
-        gl::init_texture_2D(&gl.tex_entry, gl.width, gl.height, GL_RGB16);
-        gl::init_texture_2D(&gl.tex_exit,  gl.width, gl.height, GL_RGB16);
+        gl::init_texture_2D(&gl.tex_entry,  gl.width, gl.height, GL_RGB16);
+        gl::init_texture_2D(&gl.tex_exit,   gl.width, gl.height, GL_RGB16);
+        gl::init_texture_2D(&gl.tex_result, gl.width, gl.height, GL_RGBA8);
     }
 
     const mat4_t model_to_view_matrix = mat4_mul(desc.matrix.view, desc.matrix.model);
 
     static float time = 0.0f;
-    time += 1.0f / 60.0f;
+    time += 1.0f / 100.0f;
     if (time > 100.0) time -= 100.0f;
+    if (!desc.temporal.enabled) {
+        time = 0.0f;
+    }
+
+    float tf_min = desc.dvr.min_tf_value;
+    float tf_max = desc.dvr.max_tf_value;
+    float tf_ext = tf_max - tf_min;
+    float inv_tf_ext = tf_ext == 0 ? 1.0f : 1.0f / tf_ext;
 
     UniformData data;
     data.view_to_model_mat = mat4_inverse(model_to_view_matrix);
     data.model_to_view_mat = model_to_view_matrix;
-    data.inv_proj_mat = mat4_inverse(desc.matrix.proj);
+    data.inv_proj_mat      = desc.matrix.inv_proj;
     data.model_view_proj_mat = desc.matrix.proj * model_to_view_matrix;
     data.inv_res = {1.f / (float)(desc.render_target.width), 1.f / (float)(desc.render_target.height)};
-    data.density_scale = desc.global_scaling.density;
-    data.clip_volume_min = desc.clip_volume.min;
-    data.clip_volume_max = desc.clip_volume.max;
     data.time = time;
+    data.clip_volume_min = desc.clip_volume.min;
+    data.tf_min = tf_min;
+    data.clip_volume_max = desc.clip_volume.max;
+    data.tf_inv_ext = inv_tf_ext;
     data.gradient_spacing_world_space = desc.voxel_spacing;
     data.gradient_spacing_tex_space = data.view_to_model_mat * mat4_scale(desc.voxel_spacing.x, desc.voxel_spacing.y, desc.voxel_spacing.z);
 
@@ -271,14 +395,14 @@ void render_volume(const RenderDesc& desc) {
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(UniformData), &data);
     glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_FRONT);
+    bool use_depth = desc.render_target.depth;
 
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, desc.render_target.depth);
+    if (use_depth) {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, desc.render_target.depth);
+    }
 
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, gl.ubo);
-
     glBindVertexArray(gl.vao);
 
     glDisable(GL_DEPTH_TEST);
@@ -295,19 +419,22 @@ void render_volume(const RenderDesc& desc) {
 
     glViewport(0, 0, desc.render_target.width, desc.render_target.height);
 
+    glEnable(GL_CULL_FACE);
     {
-        const GLuint prog = desc.render_target.depth ? gl.program.entry_exit_depth : gl.program.entry_exit;
-        const GLint uniform_block_index     = glGetUniformBlockIndex(prog, "UniformData");
-        const GLint uniform_loc_tex_depth   =   glGetUniformLocation(prog, "u_tex_depth");
+        PUSH_GPU_SECTION("VOLUME ENTRY / EXIT");
+        
+        const GLuint prog = use_depth ? gl.program.entry_exit_depth : gl.program.entry_exit;
+        const GLint uniform_block_index = glGetUniformBlockIndex(prog, "UniformData");
+        const GLint uniform_loc_tex_depth = glGetUniformLocation(prog, "u_tex_depth");
 
         glUseProgram(prog);
         glUniform1i(uniform_loc_tex_depth, 0);
         glUniformBlockBinding(prog, uniform_block_index, 0);
 
+        glCullFace(GL_FRONT);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 42);
+        POP_GPU_SECTION()
     }
-
-    glDisable(GL_BLEND);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, gl.tex_entry);
@@ -321,20 +448,28 @@ void render_volume(const RenderDesc& desc) {
     glActiveTexture(GL_TEXTURE3);
     glBindTexture(GL_TEXTURE_2D, desc.texture.transfer_function);
 
-    if (desc.render_target.color) {
-        ASSERT(glIsTexture(desc.render_target.color));
-        //glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,  GL_TEXTURE_2D, desc.render_target.depth, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, desc.render_target.color, 0);
-        //glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, desc.render_target.normal, 0);
-        glDrawBuffers(1, draw_bufs);
-    }
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.tex_result, 0);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
 
     glDisable(GL_CULL_FACE);
-    glEnable(GL_DEPTH_TEST);
-    //glDepthMask(GL_TRUE);
+    glDisable(GL_DEPTH_TEST);
 
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    if (desc.render_target.color) {
+        ASSERT(glIsTexture(desc.render_target.color));
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, desc.render_target.color, 0);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    } else {
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bound_fbo);
+        glViewport(bound_viewport[0], bound_viewport[1], bound_viewport[2], bound_viewport[3]);
+        glDrawBuffers(bound_draw_buffer_count, (GLenum*)bound_draw_buffer);
+    }
+
+    PUSH_GPU_SECTION("VOLUME RAYCASTING")
     {
-        const GLuint vol_prog = desc.direct_volume_rendering_enabled ? (desc.isosurface_enabled ? gl.program.dvr_and_iso : gl.program.dvr_only) : gl.program.iso_only;
+        const GLuint vol_prog = desc.dvr.enabled ? (desc.iso.enabled ? gl.program.dvr_and_iso : gl.program.dvr_only) : gl.program.iso_only;
 
         const GLint uniform_block_index     = glGetUniformBlockIndex(vol_prog, "UniformData");
         const GLint uniform_loc_tex_entry   = glGetUniformLocation(vol_prog, "u_tex_entry");
@@ -357,17 +492,21 @@ void render_volume(const RenderDesc& desc) {
         glUniformBlockBinding(vol_prog, uniform_block_index, 0);
 
         glDrawArrays(GL_TRIANGLES, 0, 3);
-    }
 
-    glBindVertexArray(0);
-    glUseProgram(0);
+        glBindVertexArray(0);
+        glUseProgram(0);
+    }
+    POP_GPU_SECTION()
 
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
+    glCullFace(GL_BACK);
 
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bound_fbo);
-    glViewport(bound_viewport[0], bound_viewport[1], bound_viewport[2], bound_viewport[3]);
-    glDrawBuffers(bound_draw_buffer_count, (GLenum*)bound_draw_buffer);
+    if (desc.render_target.color) {
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bound_fbo);
+        glViewport(bound_viewport[0], bound_viewport[1], bound_viewport[2], bound_viewport[3]);
+        glDrawBuffers(bound_draw_buffer_count, (GLenum*)bound_draw_buffer);
+    }
 
 }
 

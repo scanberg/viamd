@@ -130,40 +130,67 @@ void camera_move(Camera* camera, vec3_t t) {
     camera->position = camera->position + camera->orientation * t;
 }
 
+// high precision version
+static inline vec3_t highp_quat_vec3_mul(const quat_t& q, const vec3_t& v) {
+    double u[4] = {q.x, q.y, q.z, q.w};
+    double t[3] = {
+        2.0 * (u[1] * (double)v.z - (double)v.y * u[2]),
+        2.0 * (u[2] * (double)v.x - (double)v.z * u[0]),
+        2.0 * (u[0] * (double)v.y - (double)v.x * u[1]),
+    };
+    double res[3] = {
+        v.x + t[0] * u[3] + (u[1] * t[2] - t[1] * u[2]),
+        v.y + t[1] * u[3] + (u[2] * t[0] - t[2] * u[0]),
+        v.z + t[2] * u[3] + (u[0] * t[1] - t[0] * u[1]),
+    };
+    return vec3_set((float)res[0], (float)res[1], (float)res[2]);
+}
+
 // We want to interpolate along an arc which is formed by maintaining a distance to the look_at position and smoothly interpolating the orientation,
 // We linearly interpolate a look_at position which is implicitly defined by position, orientation and distance
 // There is some precision errors creeping into the posision because we transform back and forth to look at using the orientation
-void camera_interpolate_look_at(vec3_t* out_pos, quat_t* out_ori, float* out_dist, vec3_t in_pos[2], quat_t in_ori[2], float in_dist[2], float t) {
+void camera_interpolate_look_at(vec3_t* out_pos, quat_t* out_ori, float* out_dist, vec3_t in_pos[2], quat_t in_ori[2], float in_dist[2], double t) {
 
     // This is to combat floating point inaccuracies when interpolating in this arc like fashion
     // If we are close enough, we just set it to that
-    const float quat_epsilon = 1.0e-6;
-    const float pos_epsilon = 1.0e-4;
-    const float dist_epsilon = 1.0e-5;
+    const double quat_epsilon = 1.0e-7;
+    const double pos_epsilon = 1.0e-7;
+    const double dist_epsilon = 1.0e-7;
 
     quat_t ori;
     vec3_t pos;
     float dist;
 
-    if (quat_dot(in_ori[0], in_ori[1]) > (1.0 - quat_epsilon)) {
+    const float qd = quat_dot(in_ori[0], in_ori[1]);
+    if (fabsf(qd) > 1.0 - quat_epsilon) {
         ori = in_ori[1];
     } else {
-
-        ori = quat_normalize(quat_slerp(in_ori[0], in_ori[1], t));
+        // Due to the inherent rotational duality of quaternions we want to make sure we rotate along the shortest 'path'
+        quat_t qa = qd < 0.0f ? quat_conj(in_ori[0]) : in_ori[0];
+        quat_t qb = in_ori[1];
+        ori = quat_normalize(quat_slerp(qa, qb, (float)t));
     }
 
-    const float d = fabsf(in_dist[0] - in_dist[1]);
-    if (d < dist_epsilon) {
+    if (fabs((double)in_dist[0] - (double)in_dist[1]) < dist_epsilon) {
         dist = in_dist[1];
     } else {
-        dist = lerpf(in_dist[0], in_dist[1], t);
+        dist = (float)lerp(in_dist[0], in_dist[1], t);
     }
 
-    const float d2 = vec3_distance_squared(in_pos[0], in_pos[1]);
+    double dx = in_pos[0].x - in_pos[1].x;
+    double dy = in_pos[0].y - in_pos[1].y;
+    double dz = in_pos[0].z - in_pos[1].z;
+    double d2 = sqrt(dx*dx + dy*dy + dz*dz);
     if (d2 < pos_epsilon) {
         pos = in_pos[1];
     } else {
-        vec3_t look_at = vec3_lerp(in_pos[0] - in_ori[0] * vec3_set(0, 0, in_dist[0]), in_pos[1] - in_ori[1] * vec3_set(0, 0, in_dist[1]), t);
+        vec3_t l0 = in_pos[0] - highp_quat_vec3_mul(in_ori[0], vec3_set(0, 0, in_dist[0]));
+        vec3_t l1 = in_pos[1] - highp_quat_vec3_mul(in_ori[1], vec3_set(0, 0, in_dist[1]));
+        vec3_t look_at = {
+            lerp(l0.x, l1.x, t),
+            lerp(l0.y, l1.y, t),
+            lerp(l0.z, l1.z, t),
+        };
         pos = look_at + ori * vec3_t{0, 0, dist};
     }
 
@@ -244,14 +271,14 @@ void camera_compute_optimal_view(vec3_t* out_pos, quat_t* out_ori, float* out_di
     *out_dist = vec3_length(pos - cen);
 }
 
-void camera_animate(Camera* camera, quat_t target_ori, vec3_t target_pos, float target_dist, float dt, float target_factor) {
+void camera_animate(Camera* camera, quat_t target_ori, vec3_t target_pos, float target_dist, double dt, double target_factor) {
     ASSERT(camera);
 
-    dt = CLAMP(dt, 1.0f / 1000.f, 1.0f / 20.f);
+    dt = CLAMP(dt, 1.0 / 1000.0, 1.0 / 20.0);
 
     // We use an exponential interpolation of the deltas with a common factor
-    const float INV_TARGET_DT = 100.0f;
-    float interpolation_factor = target_factor * dt * INV_TARGET_DT;
+    const double INV_TARGET_DT = 100.0;
+    double interpolation_factor = target_factor * dt * INV_TARGET_DT;
 
     vec3_t pos[2] = {camera->position, target_pos};
     quat_t ori[2] = {camera->orientation, target_ori};
