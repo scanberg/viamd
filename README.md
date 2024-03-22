@@ -14,74 +14,12 @@ The results can then be viewed in the different windows exposed in the applicati
 [![MacOS (Clang)](https://github.com/scanberg/viamd/actions/workflows/macos.yml/badge.svg)](https://github.com/scanberg/viamd/actions/workflows/macos.yml)
 
 ## Running VIAMD 
+
 ### Windows
-For windows, we recommend to use the latest binary available on the ![release page](https://github.com/scanberg/viamd/releases/).
+For windows, we recommend to use the latest binary available on the [release page](https://github.com/scanberg/viamd/releases/).
 
 ### Ubuntu and MacOs
-For Linux and MacOs, we recommend you to build VIAMD on your machine following the procedure below.
-MacOs is not actively tested.
-
-## Building
-### Step 1: Clone the repository:
-
-(Make sure the fetch the submodules as well)
-
-```git clone --recurse-submodules https://github.com/scanberg/viamd.git```
-
-### (Step 1.5: Install dependencies of external libs:glfw & nativefiledialog) (Only for linux users)
-#### For Ubuntu or kbuntu: 
-- libx11-dev
-- libxrandr-dev
-- libxinerama-dev
-- libxcursor-dev
-- libgtk-3-dev (recommended for ubuntu, use Zenity for kubuntu)
-- pkgconf
-- libhdf5-serial-dev (handling of hdf5 file for VeloxChem)
-
-#### For CentOS:
-- mesa*
-- libXrandr*
-- libXext*
-- libX11*
-- libXi*
-- libstdc++-static
-- hdf5-devel (handling of hdf5 file for VeloxChem)
-
-Example for Ubuntu:
-```sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libgtk-3-dev pkgconf libhdf5-serial-dev```
-
-Example for CentOS:
-```sudo yum libXrandr* libXext* libX11* libXi* mesa* libstdc++-static hdf5-devel```
-
-### Step 2: Configure using CMAKE
-
-https://cmake.org/
-(Example using terminal and default build configuration for system)
-```
-cd viamd
-mkdir build
-cd build
-cmake ..
-```
-
-### Step 3: Build!
-```cmake --build .```
-
-### Step 4: Run
-```
-cd bin
-./viamd
-```
-
-
-## Updating VIAMD
-```git pull --recurse-submodules```
-
-Repeat step 3 to compile!
-
-
-## Binaries for windows
-https://github.com/scanberg/viamd/releases/
+To [build](https://github.com/scanberg/viamd/wiki/0.-Building) VIAMD on your machine, you can follow the procedure describe in details in the wiki for [Linux](https://github.com/scanberg/viamd/wiki/0.-Building#linux) and [MacOS](https://github.com/scanberg/viamd/wiki/0.-Building#mac)
 
 ## Documentation
 Documentation about VIAMD is available on the github [wiki](https://github.com/scanberg/viamd/wiki). The two first chapters relate to the [visual](https://github.com/scanberg/viamd/wiki/1.-Visual) and [analysis](https://github.com/scanberg/viamd/wiki/2.-Analysis) features respectively, where we highlight the interactive part of software. The third chapter focus on the VIAMD [language](https://github.com/scanberg/viamd/wiki/3.-Language) used for scripting and the fourth chapter propose a serie of [tutorial](https://github.com/scanberg/viamd/wiki/4.-Tutorials) (under construction). 
