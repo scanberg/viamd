@@ -55,6 +55,7 @@ add_subdirectory(ext/atomic_queue)
 add_subdirectory(ext/imgui_notify)
 
 # VIAMD OPTIONS
+option(VIAMD_ENABLE_DEFAULT_DATASET "Enable Default Dataset" ON)
 option(VIAMD_IMGUI_ENABLE_VIEWPORTS "Enable ImGui Viewports" OFF)
 option(VIAMD_IMGUI_ENABLE_DOCKSPACE "Enable ImGui Dockspace in main window" OFF)
 option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
@@ -70,6 +71,7 @@ set(VIAMD_FLAGS_REL ${MD_FLAGS_REL})
 set(VIAMD_LINK_FLAGS ${MD_LINK_FLAGS})
 set(VIAMD_LINK_FLAGS_DEB ${MD_LINK_FLAGS_DEB})
 set(VIAMD_LINK_FLAGS_REL ${MD_LINK_FLAGS_REL})
+set(VIAMD_DEFINES)
 
 if (MD_LINK_STDLIB_STATIC)
     if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
@@ -169,13 +171,14 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>")
 endif()
 
-create_copy_resource_dir_target(viamd_copy_datasets "${CMAKE_CURRENT_SOURCE_DIR}/datasets"      "${VIAMD_BIN_DIR}/datasets")
-
-add_dependencies(viamd viamd_copy_datasets)
+if (VIAMD_ENABLE_DEFAULT_DATASET)
+    create_copy_resource_dir_target(viamd_copy_datasets "${CMAKE_CURRENT_SOURCE_DIR}/datasets"      "${VIAMD_BIN_DIR}/datasets")
+    add_dependencies(viamd viamd_copy_datasets)
+    set(VIAMD_DEFINES ${VIAMD_DEFINES} VIAMD_DATASET_DIR=\"datasets\")
+endif()
 
 target_compile_definitions(viamd PRIVATE
-	VIAMD_DATASET_DIR=\"datasets\"
-	VIAMD_SCREENSHOT_DIR=\"screenshots\"
+    ${VIAMD_DEFINES}
     VIAMD_NUM_WORKER_THREADS=${VIAMD_NUM_WORKER_THREADS}
     VIAMD_FRAME_CACHE_SIZE=${VIAMD_FRAME_CACHE_SIZE_MB}
     VIAMD_IMGUI_ENABLE_VIEWPORTS=$<BOOL:${VIAMD_IMGUI_ENABLE_VIEWPORTS}>

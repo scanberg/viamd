@@ -850,6 +850,7 @@ int main(int argc, char** argv) {
     editor.SetPalette(TextEditor::GetDarkPalette());
 
     {
+#ifdef VIAMD_DATASET_DIR
         char exe[1024];
         size_t len = md_path_write_exe(exe, sizeof(exe));
         if (len) {
@@ -867,6 +868,7 @@ int main(int argc, char** argv) {
                 editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(2,1,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);\n{lin,plan,iso} = shape_weights(all);");
             }
         }
+#endif
         if (argc > 1) {
             // Assume argv[1..] are files to load
             // Currently we do not support any command line flags

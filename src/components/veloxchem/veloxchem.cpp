@@ -319,8 +319,8 @@ struct VeloxChem : viamd::EventHandler {
             p = Ri * (p * BOHR_TO_ANGSTROM);
             // The 0.9 scaling factor here is a bit arbitrary, but the cutoff-radius is computed on a value which is lower than the rendered iso-value
             // So the effective radius is a bit overestimated and thus we scale it back a bit
-            min_ext = vec4_min(min_ext, vec4_sub_f(p, pgtos[i].cutoff * BOHR_TO_ANGSTROM * 0.9));
-            max_ext = vec4_max(max_ext, vec4_add_f(p, pgtos[i].cutoff * BOHR_TO_ANGSTROM * 0.9));
+            min_ext = vec4_min(min_ext, vec4_sub_f(p, (float)(pgtos[i].cutoff * BOHR_TO_ANGSTROM * 0.9)));
+            max_ext = vec4_max(max_ext, vec4_add_f(p, (float)(pgtos[i].cutoff * BOHR_TO_ANGSTROM * 0.9)));
         }
 
         min_ext.w = 0.0f;
@@ -643,7 +643,7 @@ struct VeloxChem : viamd::EventHandler {
             ImVec2 canvas_p0 = ImGui::GetItemRectMin();
             ImVec2 canvas_p1 = ImGui::GetItemRectMax();
 
-            ImVec2 orb_win_sz = (canvas_p1 - canvas_p0) / ImVec2(orb.num_x, orb.num_y);
+            ImVec2 orb_win_sz = (canvas_p1 - canvas_p0) / ImVec2((float)orb.num_x, (float)orb.num_y);
             orb_win_sz.x = floorf(orb_win_sz.x);
             orb_win_sz.y = floorf(orb_win_sz.y);
             canvas_p1.x = canvas_p0.x + orb.num_x * orb_win_sz.x;
@@ -655,8 +655,8 @@ struct VeloxChem : viamd::EventHandler {
                 for (int x = 0; x < orb.num_x; ++x) {
                     int i = y * orb.num_x + x;
                     int mo_idx = beg_mo_idx + i;
-                    ImVec2 p0 = canvas_p0 + orb_win_sz * ImVec2(x+0, y+0);
-                    ImVec2 p1 = canvas_p0 + orb_win_sz * ImVec2(x+1, y+1);
+                    ImVec2 p0 = canvas_p0 + orb_win_sz * ImVec2((float)(x+0), (float)(y+0));
+                    ImVec2 p1 = canvas_p0 + orb_win_sz * ImVec2((float)(x+1), (float)(y+1));
                     if (-1 < mo_idx && mo_idx < num_orbitals()) {
                         ImVec2 text_pos = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
                         char buf[32];
@@ -688,7 +688,7 @@ struct VeloxChem : viamd::EventHandler {
             int height = (int)orb_win_sz.y;
 
             auto& gbuf = orb.gbuf;
-            if (gbuf.width != width || gbuf.height != height) {
+            if ((int)gbuf.width != width || (int)gbuf.height != height) {
                 init_gbuffer(&gbuf, width, height);
                 for (int i = 0; i < num_mos; ++i) {
                     gl::init_texture_2D(orb.iso_tex + i, width, height, GL_RGBA8);
