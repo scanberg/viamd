@@ -1187,6 +1187,16 @@ struct VeloxChem : viamd::EventHandler {
                     mouse_pos = ImPlot::GetPlotMousePos(IMPLOT_AUTO);
                     if (rsp.hovered != -1 && ImPlot::IsPlotHovered()) {
                         ImPlot::TagX(x_peaks[rsp.hovered], ImVec4{ 0,1,1,1 }, "H");
+                        //double* hovered_bar_x = (double*)md_temp_push(sizeof(double));
+                        //double* hovered_bar_y = (double*)md_temp_push(sizeof(double));
+                        //hovered_bar_x[0] = x_peaks[rsp.hovered];
+                        //hovered_bar_y[0] = y_osc_peaks[rsp.hovered];
+                        //ImPlot::PlotBars("H", hovered_bar_x, hovered_bar_y, 1, bar_width);
+                        double x1 = x_peaks[rsp.hovered] - bar_width / 2;
+                        double x2 = x_peaks[rsp.hovered] + bar_width / 2;
+                        double y1 = MIN(y_osc_peaks[rsp.hovered], (double)0.0);
+                        double y2 = MAX(y_osc_peaks[rsp.hovered], (double)0.0);
+                        ImPlot::DragRect(0, &x1, &y1, &x2, &y2, ImVec4{ 0,1,0,1 }, ImPlotDragToolFlags_NoInputs);
                     }
 
                     // Update selected peak on click
@@ -1195,6 +1205,11 @@ struct VeloxChem : viamd::EventHandler {
                     }
                     if (rsp.selected != -1) {
                         ImPlot::TagX(x_peaks[rsp.selected], ImVec4{ 1,0,0,1 }, "S");
+                        double* selected_bar_x = (double*)md_temp_push(sizeof(double));
+                        double* selected_bar_y = (double*)md_temp_push(sizeof(double));
+                        selected_bar_x[0] = x_peaks[rsp.hovered];
+                        selected_bar_y[0] = y_osc_peaks[rsp.hovered];
+                        ImPlot::PlotBars("S", selected_bar_x, selected_bar_y, 1, bar_width);
                     }
                     
                 }
@@ -1218,6 +1233,11 @@ struct VeloxChem : viamd::EventHandler {
 
                     if (rsp.hovered != -1 && ImPlot::IsPlotHovered()) {
                         ImPlot::TagX(x_peaks[rsp.hovered], ImVec4{ 0,1,1,1 }, "H");
+                        double* hovered_bar_x = (double*)md_temp_push(sizeof(double));
+                        double* hovered_bar_y = (double*)md_temp_push(sizeof(double));
+                        hovered_bar_x[0] = x_peaks[rsp.hovered];
+                        hovered_bar_y[0] = y_cgs_peaks[rsp.hovered];
+                        ImPlot::PlotBars("H", hovered_bar_x, hovered_bar_y, 1, bar_width);
                     }
 
                     // Update selected peak on click
@@ -1227,6 +1247,11 @@ struct VeloxChem : viamd::EventHandler {
                     }
                     if (rsp.selected != -1) {
                         ImPlot::TagX(x_peaks[rsp.selected], ImVec4{ 1,0,0,1 }, "S");
+                        double* selected_bar_x = (double*)md_temp_push(sizeof(double));
+                        double* selected_bar_y = (double*)md_temp_push(sizeof(double));
+                        selected_bar_x[0] = x_peaks[rsp.hovered];
+                        selected_bar_y[0] = y_cgs_peaks[rsp.hovered];
+                        ImPlot::PlotBars("S", selected_bar_x, selected_bar_y, 1, bar_width);
                     }
                 }
                 ImPlot::EndPlot();
