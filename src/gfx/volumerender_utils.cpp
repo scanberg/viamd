@@ -461,6 +461,10 @@ void render_volume(const RenderDesc& desc) {
         ASSERT(glIsTexture(desc.render_target.color));
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, desc.render_target.color, 0);
         glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        if (desc.render_target.clear_color) {
+            glClearColor(0,0,0,0);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
     } else {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bound_fbo);
         glViewport(bound_viewport[0], bound_viewport[1], bound_viewport[2], bound_viewport[3]);
@@ -505,7 +509,10 @@ void render_volume(const RenderDesc& desc) {
     if (desc.render_target.color) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bound_fbo);
         glViewport(bound_viewport[0], bound_viewport[1], bound_viewport[2], bound_viewport[3]);
-        glDrawBuffers(bound_draw_buffer_count, (GLenum*)bound_draw_buffer);
+        if (bound_draw_buffer_count == 1)
+            glDrawBuffer(bound_draw_buffer[0]);
+        else
+            glDrawBuffers(bound_draw_buffer_count, (GLenum*)bound_draw_buffer);
     }
 
 }

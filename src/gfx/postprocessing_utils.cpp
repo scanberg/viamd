@@ -165,6 +165,7 @@ static struct {
         struct {
             GLint tex_rgbl = -1;
             GLint rcp_res  = -1;
+            GLint tc_scl   = -1;
         } uniform_loc;
     } fxaa;
 
@@ -458,6 +459,8 @@ void initialize() {
     gl.fxaa.program = setup_program_from_source(STR_LIT("fxaa"), {(const char*)fxaa_frag, fxaa_frag_size}, defines);
     gl.fxaa.uniform_loc.tex_rgbl = glGetUniformLocation(gl.fxaa.program, "u_tex_rgbl");
     gl.fxaa.uniform_loc.rcp_res  = glGetUniformLocation(gl.fxaa.program, "u_rcp_res");
+    gl.fxaa.uniform_loc.tc_scl   = glGetUniformLocation(gl.fxaa.program, "u_tc_scl");
+
 }
 
 void shutdown() {
@@ -950,6 +953,7 @@ void initialize() {
  R"(#version 150 core
 
     uniform sampler2D u_tex;
+    uniform float u_weight;
     out vec4 out_frag;
 
     void main() {
@@ -959,18 +963,20 @@ void initialize() {
         vec3 cr = texelFetch(u_tex, ivec2(gl_FragCoord.xy) + ivec2( 1, 0), 0).rgb;
         vec3 cb = texelFetch(u_tex, ivec2(gl_FragCoord.xy) + ivec2( 0,-1), 0).rgb;
 
-        const float weight[2] = float[2](2.0, -0.25);
-        out_frag = vec4(vec3(weight[0] * cc + weight[1] * (cl + ct + cr + cb)), 1.0);
+        float pos_weight = 1.0 + u_weight;
+        float neg_weight = -u_weight * 0.25;
+        out_frag = vec4(vec3(pos_weight * cc + neg_weight * (cl + ct + cr + cb)), 1.0);
     })");
     program = setup_program_from_source(STR_LIT("sharpen"), f_shader_src_sharpen);
 }
 
-void sharpen(GLuint in_texture) {
+void sharpen(GLuint in_texture, float weight = 1.0f) {
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, in_texture);
 
     glUseProgram(program);
     glUniform1i(glGetUniformLocation(sharpen::program, "u_tex"), 0);
+    glUniform1f(glGetUniformLocation(sharpen::program, "u_weight"), weight);
 
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -1407,15 +1413,15 @@ void apply_inverse_aa_tonemapping(GLuint color_tex) {
 
 void blit_static_velocity(GLuint depth_tex, const ViewParam& view_param) {
 
-    //mat4_t curr_clip_to_prev_clip_mat = view_param.matrix.previous.view_proj_jittered * view_param.matrix.inverse.view_proj_jittered;
-    mat4_t curr_clip_to_prev_clip_mat = view_param.matrix.previous.proj_jittered * view_param.matrix.previous.view * view_param.matrix.inverse.view * view_param.matrix.inverse.proj;
+    //mat4_t curr_clip_to_prev_clip_mat = view_param.matrix.previous.view_proj * view_param.matrix.inverse.view_proj;
+    mat4_t curr_clip_to_prev_clip_mat = view_param.matrix.prev.proj * view_param.matrix.prev.view * view_param.matrix.inv.view * view_param.matrix.inv.proj;
 
 	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, depth_tex);
 
     const vec2_t res = view_param.resolution;
-    const vec2_t jitter_uv_cur = view_param.jitter.current / res;
-    const vec2_t jitter_uv_prev = view_param.jitter.previous / res;
+    const vec2_t jitter_uv_cur = view_param.jitter.curr / res;
+    const vec2_t jitter_uv_prev = view_param.jitter.prev / res;
     const vec4_t jitter_uv = {jitter_uv_cur.x, jitter_uv_cur.y, jitter_uv_prev.x, jitter_uv_prev.y};
 
     glUseProgram(velocity::blit_velocity.program);
@@ -1713,14 +1719,22 @@ static void compute_luma(GLuint tex) {
     glBindVertexArray(0);
 }
 
-static void compute_fxaa(GLuint tex_rgbl) {
+static void compute_fxaa(GLuint tex_rgbl, int width, int height) {
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, tex_rgbl);
 
+    int w, h;
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
+
+    float scl_x = (float)width  / (float)w;
+    float scl_y = (float)height / (float)h;
+
     glBindVertexArray(gl.vao);
     glUseProgram(gl.fxaa.program);
+    glUniform2f(gl.fxaa.uniform_loc.tc_scl, scl_x, scl_y);
     glUniform1i(gl.fxaa.uniform_loc.tex_rgbl, 0);
-    glUniform2f(gl.fxaa.uniform_loc.rcp_res, 1.0f / (float)gl.tex_width, 1.0f / (float)gl.tex_height);
+    glUniform2f(gl.fxaa.uniform_loc.rcp_res, 1.0f / (float)w, 1.0f / (float)h);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glUseProgram(0);
     glBindVertexArray(0);
@@ -1743,7 +1757,7 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
 
     const auto near_dist = view_param.clip_planes.near;
     const auto far_dist = view_param.clip_planes.far;
-    const auto ortho = is_orthographic_proj_matrix(view_param.matrix.current.proj);
+    const auto ortho = is_orthographic_proj_matrix(view_param.matrix.curr.proj);
 
     GLint last_fbo;
     GLint last_viewport[4];
@@ -1775,11 +1789,13 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     }
     POP_GPU_SECTION()
 
-    PUSH_GPU_SECTION("Generate Linear Depth Mipmaps") {
-        glBindTexture(GL_TEXTURE_2D, gl.linear_depth.texture);
-        glGenerateMipmap(GL_TEXTURE_2D);
+    if (desc.ambient_occlusion.enabled) {
+        PUSH_GPU_SECTION("Generate Linear Depth Mipmaps") {
+            glBindTexture(GL_TEXTURE_2D, gl.linear_depth.texture);
+            glGenerateMipmap(GL_TEXTURE_2D);
+        }
+        POP_GPU_SECTION()
     }
-    POP_GPU_SECTION()
 
     if (desc.temporal_reprojection.enabled) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.velocity.fbo);
@@ -1822,12 +1838,12 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     glDrawBuffer(dst_buffer);
 
     PUSH_GPU_SECTION("Compose")
-    compose_deferred(desc.input_textures.depth, desc.input_textures.color, desc.input_textures.normal, view_param.matrix.inverse.proj_jittered, desc.background.color, time);
+    compose_deferred(desc.input_textures.depth, desc.input_textures.color, desc.input_textures.normal, view_param.matrix.inv.proj, desc.background.color, time);
     POP_GPU_SECTION()
 
     if (desc.ambient_occlusion.enabled) {
         PUSH_GPU_SECTION("SSAO")
-        compute_ssao(gl.linear_depth.texture, desc.input_textures.normal, view_param.matrix.current.proj_jittered, desc.ambient_occlusion.intensity, desc.ambient_occlusion.radius, desc.ambient_occlusion.bias, frame);
+        compute_ssao(gl.linear_depth.texture, desc.input_textures.normal, view_param.matrix.curr.proj, desc.ambient_occlusion.intensity, desc.ambient_occlusion.radius, desc.ambient_occlusion.bias, frame);
         POP_GPU_SECTION()
     }
 
@@ -1865,7 +1881,7 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.targets.fbo);
         glDrawBuffer(dst_buffer);
         PUSH_GPU_SECTION("FXAA")
-        compute_fxaa(gl.tmp.tex_rgba8);
+        compute_fxaa(gl.tmp.tex_rgba8, width, height);
         POP_GPU_SECTION()
     }
 
@@ -1880,15 +1896,16 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
         else
             PUSH_GPU_SECTION("Temporal AA")
 
-        apply_temporal_aa(gl.linear_depth.texture, src_texture, desc.input_textures.velocity, gl.velocity.tex_neighbormax, view_param.jitter.current, view_param.jitter.previous, feedback_min, feedback_max, motion_scale, time);
+        apply_temporal_aa(gl.linear_depth.texture, src_texture, desc.input_textures.velocity, gl.velocity.tex_neighbormax, view_param.jitter.curr, view_param.jitter.prev, feedback_min, feedback_max, motion_scale, time);
         POP_GPU_SECTION()
-#if 1
+    }
+     
+    if (desc.sharpen.enabled) {
         PUSH_GPU_SECTION("Sharpen")
         swap_target();
         glDrawBuffer(dst_buffer);
-        sharpen::sharpen(src_texture);
+        sharpen::sharpen(src_texture, desc.sharpen.weight);
         POP_GPU_SECTION()
-#endif
     }
 
     // Activate backbuffer or whatever was bound before
@@ -1969,6 +1986,7 @@ void init_gbuffer(GBuffer* gbuf, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+    /*
     glBindTexture(GL_TEXTURE_2D, gbuf->tex.temporal_accumulation[0]);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -1982,6 +2000,7 @@ void init_gbuffer(GBuffer* gbuf, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    */
 
     for (uint32_t i = 0; i < ARRAY_SIZE(gbuf->pbo_picking.color); ++i) {
         glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.color[i]);

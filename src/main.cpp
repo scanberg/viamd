@@ -1991,7 +1991,7 @@ static void update_density_volume(ApplicationState* data) {
             data->density_volume.dirty_vol = false;
             if (!data->density_volume.volume_texture.id) {
                 int dim[3] = { prop_data->dim[1], prop_data->dim[2], prop_data->dim[3] };
-                gl::init_texture_3D(&data->density_volume.volume_texture.id, dim[0], dim[1], dim[2], GL_R32F);
+                gl::init_texture_3D(&data->density_volume.volume_texture.id, dim[0], dim[1], dim[2], GL_R16F);
                 MEMCPY(data->density_volume.volume_texture.dim, dim, sizeof(dim));
                 data->density_volume.volume_texture.max_value = prop_data->max_value;
             }
@@ -2048,15 +2048,13 @@ static void interpolate_atomic_properties(ApplicationState* data) {
 
     const InterpolationMode mode = (frames[1] != frames[2]) ? data->animation.interpolation : InterpolationMode::Nearest;
     switch (mode) {
-        case InterpolationMode::Nearest:
-        {
+        case InterpolationMode::Nearest: {
             md_trajectory_frame_header_t header = {0};
             md_trajectory_load_frame(data->mold.traj, nearest_frame, &header, mol.atom.x, mol.atom.y, mol.atom.z);
             data->mold.mol.unit_cell = header.unit_cell;
             break;
         }
-        case InterpolationMode::Linear:
-        {
+        case InterpolationMode::Linear: {
             md_trajectory_frame_header_t header[2] = {0};
             md_trajectory_load_frame(data->mold.traj, frames[1], &header[0], src_x[0], src_y[0], src_z[0]);
             md_trajectory_load_frame(data->mold.traj, frames[2], &header[1], src_x[1], src_y[1], src_z[1]);
@@ -2074,8 +2072,7 @@ static void interpolate_atomic_properties(ApplicationState* data) {
             md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, mol.atom.count, &mol.unit_cell, t);
             break;
         }
-        case InterpolationMode::CubicSpline:
-        {
+        case InterpolationMode::CubicSpline: {
             md_trajectory_frame_header_t header[4] = {0};
             md_trajectory_load_frame(data->mold.traj, frames[0], &header[0], src_x[0], src_y[0], src_z[0]);
             md_trajectory_load_frame(data->mold.traj, frames[1], &header[1], src_x[1], src_y[1], src_z[1]);
@@ -2104,6 +2101,7 @@ static void interpolate_atomic_properties(ApplicationState* data) {
         }
         default:
             ASSERT(false);
+            break;
     }
 
     if (data->operations.apply_pbc) {
@@ -2222,54 +2220,52 @@ static void interpolate_atomic_properties(ApplicationState* data) {
 // #misc
 static void update_view_param(ApplicationState* data) {
     ViewParam& param = data->view.param;
-    param.matrix.previous = param.matrix.current;
-    param.jitter.previous = param.jitter.current;
+    param.matrix.prev = param.matrix.curr;
+    param.jitter.prev = param.jitter.curr;
 
     param.clip_planes.near = data->view.camera.near_plane;
     param.clip_planes.far = data->view.camera.far_plane;
     param.fov_y = data->view.camera.fov_y;
     param.resolution = {(float)data->gbuffer.width, (float)data->gbuffer.height};
 
-    param.matrix.current.view = camera_world_to_view_matrix(data->view.camera);
-    param.matrix.inverse.view = camera_view_to_world_matrix(data->view.camera);
-
-    if (data->view.mode == CameraMode::Perspective) {
-        param.matrix.current.proj = camera_perspective_projection_matrix(data->view.camera, (float)data->gbuffer.width / (float)data->gbuffer.height);
-        param.matrix.inverse.proj = camera_inverse_perspective_projection_matrix(data->view.camera, (float)data->gbuffer.width / (float)data->gbuffer.height);
-    } else {
-        const float aspect_ratio = (float)data->gbuffer.width / (float)data->gbuffer.height;
-        const float h = data->view.camera.focus_distance * tanf(data->view.camera.fov_y * 0.5f);
-        const float w = aspect_ratio * h;
-        const float n = data->view.camera.near_plane;
-        const float f = data->view.camera.far_plane;
-        param.matrix.current.proj = camera_orthographic_projection_matrix(-w, w, -h, h, n, f);
-        param.matrix.inverse.proj = camera_inverse_orthographic_projection_matrix(-w, w, -h, h, n, f);
-    }
-    param.matrix.current.proj_jittered = param.matrix.current.proj;
+    param.matrix.curr.view = camera_world_to_view_matrix(data->view.camera);
+    param.matrix.inv.view  = camera_view_to_world_matrix(data->view.camera);
 
     if (data->visuals.temporal_reprojection.enabled && data->visuals.temporal_reprojection.jitter) {
         static uint32_t i = 0;
-        i = (i+1) % ARRAY_SIZE(data->view.jitter.sequence);
-        param.jitter.next    = data->view.jitter.sequence[(i + 1) % ARRAY_SIZE(data->view.jitter.sequence)] - 0.5f;
-        param.jitter.current = data->view.jitter.sequence[i] - 0.5f;
+        i = (i+1) % (uint32_t)ARRAY_SIZE(data->view.jitter.sequence);
+        param.jitter.curr = data->view.jitter.sequence[i] - 0.5f;
         if (data->view.mode == CameraMode::Perspective) {
-            const vec2_t j = param.jitter.current;
+            const vec2_t j = param.jitter.curr;
             const int w = data->gbuffer.width;
             const int h = data->gbuffer.height;
-            param.matrix.current.proj_jittered = camera_perspective_projection_matrix(data->view.camera, w, h, j.x, j.y);
-            param.matrix.inverse.proj_jittered = camera_inverse_perspective_projection_matrix(data->view.camera, w, h, j.x, j.y);
+            param.matrix.curr.proj = camera_perspective_projection_matrix(data->view.camera, w, h, j.x, j.y);
+            param.matrix.inv.proj  = camera_inverse_perspective_projection_matrix(data->view.camera, w, h, j.x, j.y);
         } else {
             const float aspect_ratio = (float)data->gbuffer.width / (float)data->gbuffer.height;
             const float h = data->view.camera.focus_distance * tanf(data->view.camera.fov_y * 0.5f);
             const float w = aspect_ratio * h;
             const vec2_t scl = {w / data->gbuffer.width * 2.0f, h / data->gbuffer.height * 2.0f};
-            const vec2_t j = param.jitter.current * scl;
-            param.matrix.current.proj_jittered = camera_orthographic_projection_matrix(-w + j.x, w + j.x, -h + j.y, h + j.y, data->view.camera.near_plane, data->view.camera.far_plane);
-            param.matrix.inverse.proj_jittered = camera_inverse_orthographic_projection_matrix(-w + j.x, w + j.x, -h + j.y, h + j.y, data->view.camera.near_plane, data->view.camera.far_plane);
+            const vec2_t j = param.jitter.curr * scl;
+            param.matrix.curr.proj = camera_orthographic_projection_matrix(-w + j.x, w + j.x, -h + j.y, h + j.y, data->view.camera.near_plane, data->view.camera.far_plane);
+            param.matrix.inv.proj  = camera_inverse_orthographic_projection_matrix(-w + j.x, w + j.x, -h + j.y, h + j.y, data->view.camera.near_plane, data->view.camera.far_plane);
+        }
+    } else {
+        if (data->view.mode == CameraMode::Perspective) {
+            param.matrix.curr.proj = camera_perspective_projection_matrix(data->view.camera, (float)data->gbuffer.width / (float)data->gbuffer.height);
+            param.matrix.inv.proj = camera_inverse_perspective_projection_matrix(data->view.camera, (float)data->gbuffer.width / (float)data->gbuffer.height);
+        } else {
+            const float aspect_ratio = (float)data->gbuffer.width / (float)data->gbuffer.height;
+            const float h = data->view.camera.focus_distance * tanf(data->view.camera.fov_y * 0.5f);
+            const float w = aspect_ratio * h;
+            const float n = data->view.camera.near_plane;
+            const float f = data->view.camera.far_plane;
+            param.matrix.curr.proj = camera_orthographic_projection_matrix(-w, w, -h, h, n, f);
+            param.matrix.inv.proj = camera_inverse_orthographic_projection_matrix(-w, w, -h, h, n, f);
         }
     }
 
-    param.matrix.current.norm = mat4_transpose(param.matrix.inverse.view);
+    param.matrix.curr.norm = mat4_transpose(param.matrix.inv.view);
 }
 
 static void reset_view(ApplicationState* data, bool move_camera, bool smooth_transition) {
@@ -2415,7 +2411,7 @@ static void draw_main_menu(ApplicationState* data) {
             // Temporal
             ImGui::BeginGroup();
             {
-                ImGui::Checkbox("Temporal Effects", &data->visuals.temporal_reprojection.enabled);
+                ImGui::Checkbox("Temporal AA", &data->visuals.temporal_reprojection.enabled);
                 if (data->visuals.temporal_reprojection.enabled) {
                     // ImGui::Checkbox("Jitter Samples", &data->visuals.temporal_reprojection.jitter);
                     // ImGui::SliderFloat("Feedback Min", &data->visuals.temporal_reprojection.feedback_min, 0.5f, 1.0f);
@@ -2425,6 +2421,10 @@ static void draw_main_menu(ApplicationState* data) {
                         ImGui::SliderFloat("Motion Scale", &data->visuals.temporal_reprojection.motion_blur.motion_scale, 0.f, 2.0f);
                     }
                 }
+            }
+            ImGui::Checkbox("Sharpen", &data->visuals.sharpen.enabled);
+            if (data->visuals.sharpen.enabled) {
+                ImGui::SliderFloat("Weight", &data->visuals.sharpen.weight, 0.0f, 4.0f);
             }
             ImGui::EndGroup();
             ImGui::Separator();
@@ -4078,7 +4078,7 @@ static void draw_representations_window(ApplicationState* state) {
                 if (ImGui::Combo("Volume Resolution", (int*)&rep.orbital.vol.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str))) {
                     update_rep = true;
                 }
-#if 0
+#if 1
                 // Currently we do not expose DVR, since we do not have a good way of exposing the alpha ramp for the transfer function...
                 ImGui::Checkbox("Enable DVR", &rep.orbital.vol.dvr.enabled);
                 if (rep.orbital.vol.dvr.enabled) {
@@ -6159,7 +6159,7 @@ static void draw_density_volume_window(ApplicationState* data) {
                 },
                 .view_transform = {
                     .view_matrix = &view_mat.elem[0][0],
-                    .projection_matrix = &proj_mat.elem[0][0],
+                    .proj_matrix = &proj_mat.elem[0][0],
                 },
             };
 
@@ -6262,8 +6262,14 @@ static void draw_density_volume_window(ApplicationState* data) {
             .depth_of_field = {
                 .enabled = false,
             },
+            .fxaa = {
+                .enabled = true,
+            },
             .temporal_reprojection = {
                 .enabled = false,
+            },
+            .sharpen = {
+                .enabled = true,
             },
             .input_textures = {
                 .depth = gbuf.tex.depth,
@@ -6276,12 +6282,12 @@ static void draw_density_volume_window(ApplicationState* data) {
 
         ViewParam view_param = {
             .matrix = {
-                .current = {
+                .curr = {
                     .view = view_mat,
                     .proj = proj_mat,
                     .norm = view_mat,
                 },
-                .inverse = {
+                .inv = {
                     .proj = inv_proj_mat,
                 }
             },
@@ -6289,8 +6295,8 @@ static void draw_density_volume_window(ApplicationState* data) {
                 .near = data->density_volume.camera.near_plane,
                 .far = data->density_volume.camera.far_plane,
             },
+            .resolution = {canvas_sz.x, canvas_sz.y},
             .fov_y = data->density_volume.camera.fov_y,
-            .resolution = {canvas_sz.x, canvas_sz.y}
         };
 
         postprocessing::shade_and_postprocess(postprocess_desc, view_param);
@@ -6395,7 +6401,7 @@ static void draw_debug_window(ApplicationState* data) {
         ImGui::Text("Camera Position: (%g, %g, %g)", data->view.camera.position.x, data->view.camera.position.y, data->view.camera.position.z);
         ImGui::Text("Camera Orientation: (%g, %g, %g, %g)", data->view.camera.orientation.x, data->view.camera.orientation.y, data->view.camera.orientation.z, data->view.camera.orientation.w);
 
-        mat4_t P = data->view.param.matrix.current.proj_jittered;
+        mat4_t P = data->view.param.matrix.curr.proj;
 		ImGui::Text("proj_matrix:");
         ImGui::Text("[%g %g %g %g]", P.col[0].x, P.col[0].y, P.col[0].z, P.col[0].w);
         ImGui::Text("[%g %g %g %g]", P.col[1].x, P.col[1].y, P.col[1].z, P.col[1].w);
@@ -7902,7 +7908,6 @@ static void update_representation(ApplicationState* state, Representation* rep) 
 			viamd::event_system_broadcast_event(viamd::EventType_RepresentationComputeOrbital, viamd::EventPayloadType_ComputeOrbital, &data);
 
             if (data.output_written) {
-                rep->orbital.vol.mdl_mat = data.mdl_mat;
                 rep->orbital.vol.tex_mat = data.tex_mat;
                 rep->orbital.vol.voxel_spacing = data.voxel_spacing;
             }
@@ -8140,7 +8145,7 @@ static void handle_camera_interaction(ApplicationState* data) {
 
             CoordSystemWidgetParam param = {
                 .size = ImGui::GetWindowSize(),
-                .view_matrix = data->view.param.matrix.current.view,
+                .view_matrix = data->view.param.matrix.curr.view,
                 .camera_ori = data->view.animation.target_orientation,
                 .camera_pos = data->view.animation.target_position,
                 .camera_dist = data->view.animation.target_distance,
@@ -8196,7 +8201,7 @@ static void handle_camera_interaction(ApplicationState* data) {
                     data->selection.selecting = true;
 
                     const vec2_t res = { (float)data->app.window.width, (float)data->app.window.height };
-                    const mat4_t mvp = data->view.param.matrix.current.proj_jittered * data->view.param.matrix.current.view;
+                    const mat4_t mvp = data->view.param.matrix.curr.proj * data->view.param.matrix.curr.view;
 
                     md_bitfield_iter_t it = md_bitfield_iter_create(&data->representation.visibility_mask);
                     while (md_bitfield_iter_next(&it)) {
@@ -8363,9 +8368,9 @@ static void fill_gbuffer(ApplicationState* data) {
     if (data->simulation_box.enabled && data->mold.mol.unit_cell.basis != mat3_t{0}) {
         PUSH_GPU_SECTION("Draw Simulation Box")
         const mat4_t model_mat = mat4_from_mat3(data->mold.mol.unit_cell.basis);
-        const mat4_t model_view_mat = data->view.param.matrix.current.view * model_mat;
+        const mat4_t model_view_mat = data->view.param.matrix.curr.view * model_mat;
         immediate::set_model_view_matrix(model_view_mat);
-        immediate::set_proj_matrix(data->view.param.matrix.current.proj_jittered);
+        immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
         immediate::draw_box_wireframe({0,0,0}, {1,1,1}, convert_color(data->simulation_box.color));
         immediate::render();
         POP_GPU_SECTION()
@@ -8375,8 +8380,8 @@ static void fill_gbuffer(ApplicationState* data) {
     // RENDER DEBUG INFORMATION (WITH DEPTH)
     PUSH_GPU_SECTION("Debug Draw") {
         glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-        immediate::set_model_view_matrix(data->view.param.matrix.current.view);
-        immediate::set_proj_matrix(data->view.param.matrix.current.proj);
+        immediate::set_model_view_matrix(data->view.param.matrix.curr.view);
+        immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
         immediate::flush();
     }
     POP_GPU_SECTION()
@@ -8518,8 +8523,8 @@ static void fill_gbuffer(ApplicationState* data) {
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
 
-    immediate::set_model_view_matrix(data->view.param.matrix.current.view);
-    immediate::set_proj_matrix(data->view.param.matrix.current.proj_jittered);
+    immediate::set_model_view_matrix(data->view.param.matrix.curr.view);
+    immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
 
     const md_script_vis_t& vis = data->script.vis;
 
@@ -8557,8 +8562,8 @@ static void fill_gbuffer(ApplicationState* data) {
     
     immediate::render();
 
-    immediate::set_model_view_matrix(data->view.param.matrix.current.view);
-    immediate::set_proj_matrix(data->view.param.matrix.current.proj_jittered);
+    immediate::set_model_view_matrix(data->view.param.matrix.curr.view);
+    immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
     
     glEnable(GL_DEPTH_TEST);
     
@@ -8599,17 +8604,17 @@ static void handle_picking(ApplicationState* data) {
                 ref_frame = frame_idx;
             }
 
-            if (ref_frame == frame_idx || data->view.param.jitter.current == vec2_t{0, 0}) {
+            if (ref_frame == frame_idx || data->view.param.jitter.curr == vec2_t{0, 0}) {
                 data->picking = read_picking_data(data->gbuffer, (int32_t)round(coord.x), (int32_t)round(coord.y));
                 if (data->picking.idx != INVALID_PICKING_IDX)
                     data->picking.idx = CLAMP(data->picking.idx, 0U, (uint32_t)data->mold.mol.atom.count - 1U);
                 const vec4_t viewport = {0, 0, (float)data->gbuffer.width, (float)data->gbuffer.height};
-                data->picking.world_coord = mat4_unproject({coord.x, coord.y, data->picking.depth}, data->view.param.matrix.inverse.view_proj_jittered, viewport);
+                data->picking.world_coord = mat4_unproject({coord.x, coord.y, data->picking.depth}, data->view.param.matrix.inv.view_proj, viewport);
             }
 #else
             data->picking = read_picking_data(&data->gbuffer, (int)coord.x, (int)coord.y);
             const vec4_t viewport = {0, 0, (float)data->gbuffer.width, (float)data->gbuffer.height};
-            const mat4_t inv_VP = data->view.param.matrix.inverse.view * data->view.param.matrix.inverse.proj_jittered;
+            const mat4_t inv_VP = data->view.param.matrix.inv.view * data->view.param.matrix.inv.proj;
             data->picking.world_coord = mat4_unproject({coord.x, coord.y, data->picking.depth}, inv_VP, viewport);
 #endif
         }
@@ -8662,6 +8667,9 @@ static void apply_postprocessing(const ApplicationState& data) {
     desc.temporal_reprojection.feedback_max = data.visuals.temporal_reprojection.feedback_max;
     desc.temporal_reprojection.motion_blur.enabled = data.visuals.temporal_reprojection.motion_blur.enabled;
     desc.temporal_reprojection.motion_blur.motion_scale = motion_scale;
+
+    desc.sharpen.enabled = data.visuals.sharpen.enabled;
+    desc.sharpen.weight  = data.visuals.sharpen.weight;
 
     desc.input_textures.depth = data.gbuffer.tex.depth;
     desc.input_textures.color = data.gbuffer.tex.color;
@@ -8720,7 +8728,7 @@ static void draw_representations_opaque(ApplicationState* data) {
             }
         }
 
-        md_gfx_draw((uint32_t)md_array_size(draw_ops), draw_ops, &data->view.param.matrix.current.proj, &data->view.param.matrix.current.view, &data->view.param.matrix.inverse.proj, &data->view.param.matrix.inverse.view);
+        md_gfx_draw((uint32_t)md_array_size(draw_ops), draw_ops, &data->view.param.matrix.curr.proj, &data->view.param.matrix.curr.view, &data->view.param.matrix.inv.proj, &data->view.param.matrix.inv.view);
     } else {
 #endif
         const size_t num_representations = md_array_size(data->representation.reps);
@@ -8751,11 +8759,11 @@ static void draw_representations_opaque(ApplicationState* data) {
                 .ops = draw_ops,
             },
             .view_transform = {
-                .view_matrix = &data->view.param.matrix.current.view.elem[0][0],
-                .projection_matrix = &data->view.param.matrix.current.proj_jittered.elem[0][0],
+                .view_matrix = &data->view.param.matrix.curr.view.elem[0][0],
+                .proj_matrix = &data->view.param.matrix.curr.proj.elem[0][0],
                 // These two are for temporal anti-aliasing reprojection (optional)
-                .prev_view_matrix = &data->view.param.matrix.previous.view.elem[0][0],
-                .prev_projection_matrix = &data->view.param.matrix.previous.proj_jittered.elem[0][0],
+                .prev_view_matrix = &data->view.param.matrix.prev.view.elem[0][0],
+                .prev_proj_matrix = &data->view.param.matrix.prev.proj.elem[0][0],
             },
         };
 
@@ -8789,9 +8797,9 @@ static void draw_representations_transparent(ApplicationState* state) {
             },
             .matrix = {
                 .model = rep.orbital.vol.tex_mat,
-                .view  = state->view.param.matrix.current.view,
-                .proj  = state->view.param.matrix.current.proj_jittered,
-                .inv_proj = state->view.param.matrix.inverse.proj_jittered,
+                .view  = state->view.param.matrix.curr.view,
+                .proj  = state->view.param.matrix.curr.proj,
+                .inv_proj = state->view.param.matrix.inv.proj,
             },
             .clip_volume = {
                 .min = {0,0,0},
@@ -8844,11 +8852,11 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
             .ops = draw_ops,
         },
         .view_transform = {
-            .view_matrix = &data->view.param.matrix.current.view.elem[0][0],
-            .projection_matrix = &data->view.param.matrix.current.proj_jittered.elem[0][0],
+            .view_matrix = &data->view.param.matrix.curr.view.elem[0][0],
+            .proj_matrix = &data->view.param.matrix.curr.proj.elem[0][0],
             // These two are for temporal anti-aliasing reprojection
             //.prev_model_view_matrix = &data->view.param.matrix.previous.view[0][0],
-            //.prev_projection_matrix = &data->view.param.matrix.previous.proj_jittered[0][0],
+            //.prev_projection_matrix = &data->view.param.matrix.previous.proj[0][0],
         },
         .atom_mask = mask,
     };

@@ -20,11 +20,14 @@
 #include <implot_widgets.h>
 
 #define BLK_DIM 8
+#define ANGSTROM_TO_BOHR 1.8897261246257702
+#define BOHR_TO_ANGSTROM 0.529177210903
 
-static const char* vol_res_lbl[3] = {
-    "Low",
-    "Mid",
-    "High",
+enum class VolumeRes {
+    Low,
+    Mid,
+    High,
+    Count,
 };
 
 static const float vol_res_scl[3] = {
@@ -33,22 +36,25 @@ static const float vol_res_scl[3] = {
     16.0f,
 };
 
-static int vol_res_idx = 1;
-static int vol_mode = 0;
-
 struct VeloxChem : viamd::EventHandler {
     VeloxChem() { viamd::event_system_register_handler(*this); }
 
     md_vlx_data_t vlx {};
 
+    int homo_idx = 0;
+    int lumo_idx = 0;
+
+    // Principal Component Axes of the geometry
+    mat3_t PCA = mat3_ident();
+    vec3_t min_aabb = {};
+    vec3_t max_aabb = {};
+
     struct Volume {
+        mat4_t tex_to_world = {};
         int dim[3] = {128, 128, 128};
-        float* data = 0;
-        size_t num_bytes = 0;
         vec3_t step_size = {};
         vec3_t extent = {};
-        mat4_t model_to_world = {};
-        mat4_t tex_to_world   = {};
+        uint32_t tex_id = 0;
     };
 
     struct Scf {
@@ -57,34 +63,13 @@ struct VeloxChem : viamd::EventHandler {
 
     struct Orb {
         bool show_window = false;
-        bool show_volume = false;
-        Volume vol = {};
-
-        uint32_t vol_texture = 0;
-        uint32_t tf_texture = 0;
-
-        bool tf_dirty = true;
-
-        vec3_t clip_min = {0,0,0};
-        vec3_t clip_max = {1,1,1};
-
-        struct {
-            bool enabled = true;
-            vec4_t color = {0,0,0,1};
-        } bounding_box;
-
-        ImPlotColormap colormap = ImPlotColormap_Plasma;
-        float colormap_alpha_scale = 1.0f;
-
-        int mo_idx = 0;
-        int homo_idx = 0;
-        int lumo_idx = 0;
-
-        task_system::ID compute_volume_task = 0;
-
-        md_array(md_gto_t) pgtos = 0;
-
-        float density_scale = 1.0f;
+        uint32_t vol_fbo = 0;
+        Volume   vol[16] = {};
+        int      vol_mo_idx[16] = {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
+        uint32_t iso_tex[16] = {};
+        int num_x  = 3;
+        int num_y  = 3;
+        int mo_idx = -1;
 
         struct {
             bool enabled = true;
@@ -93,15 +78,27 @@ struct VeloxChem : viamd::EventHandler {
             vec4_t colors[2] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
         } iso;
 
+        GBuffer gbuf = {};
+        Camera camera = {};
+
         struct {
-            bool enabled = false;
-        } dvr;
+            quat_t ori = {};
+            vec3_t pos = {};
+            float dist = {};
+        } target;
+
+        float distance_scale = 1.5f;
+
+        bool show_coordinate_system_widget = true;
+        md_gl_representation_t gl_rep = {};
     } orb;
 
     struct Nto {
         bool show_window = false;
         Volume vol = {};
         uint32_t vol_tex = {};
+
+        int nto_idx;
 
         struct {
             bool enabled = true;
@@ -127,6 +124,7 @@ struct VeloxChem : viamd::EventHandler {
         bool show_window = false;
     } rsp;
 
+    // Arena for persistent allocations for the veloxchem module (tied to the lifetime of the VLX object)
     md_allocator_i* arena = 0;
 
     size_t num_orbitals() const {
@@ -154,7 +152,7 @@ struct VeloxChem : viamd::EventHandler {
             case viamd::EventType_ViamdFrameTick: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState& state = *(ApplicationState*)e.payload;
-                draw_orb_window();
+                draw_orb_window(state);
                 draw_nto_window(state);
                 draw_scf_window();
                 draw_rsp_window();
@@ -185,82 +183,54 @@ struct VeloxChem : viamd::EventHandler {
                         // Scf
                         scf.show_window = true;
 
-                        // Orb
-                        orb.show_window = true;
-
+                        // Determine HOMO/LUMO idx
                         for (int i = 0; i < (int)vlx.scf.alpha.occupations.count; ++i) {
                             if (vlx.scf.alpha.occupations.data[i] > 0) {
-                                orb.homo_idx = i;
+                                homo_idx = i;
                             } else {
-                                orb.lumo_idx = i;
+                                lumo_idx = i;
                                 break;
                             }
                         }
 
-                        size_t num_pgtos = md_vlx_pgto_count(&vlx);
-                        md_array_resize(orb.pgtos, num_pgtos, arena);
-                        MEMSET(orb.pgtos, 0, md_array_bytes(orb.pgtos));
+                        vec4_t min_box = vec4_set1( FLT_MAX);
+                        vec4_t max_box = vec4_set1(-FLT_MAX);
 
-                        // Compute Object Oriented Bounding Box
-                        // @NOTE: This is a crude approximation, by using the PCA
-                        vec4_t* xyzw = (vec4_t*)md_temp_push(sizeof(vec4_t) * vlx.geom.num_atoms);
+                        // Compute the PCA of the provided geometry
+                        // This is used in determining a better fitting volume for the orbitals
+                        vec4_t* xyzw = (vec4_t*)md_vm_arena_push(state.allocator.frame, sizeof(vec4_t) * vlx.geom.num_atoms);
                         for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
                             xyzw[i] = {(float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i], 1.0f};
+                            min_box = vec4_min(min_box, xyzw[i]);
+                            max_box = vec4_max(max_box, xyzw[i]);
                         }
+                        min_aabb = vec3_from_vec4(min_box);
+                        max_aabb = vec3_from_vec4(max_box);
 
                         vec3_t com = md_util_com_compute_vec4(xyzw, vlx.geom.num_atoms, 0);
                         mat3_t C = mat3_covariance_matrix_vec4(xyzw, 0, vlx.geom.num_atoms, com);
                         mat3_eigen_t eigen = mat3_eigen(C);
+                        PCA = mat3_extract_rotation(eigen.vectors);
 
-                        mat3_t A = mat3_extract_rotation(eigen.vectors);
-
-                        // Compute min and maximum extent along the axes
-                        vec3_t min_ext = { FLT_MAX, FLT_MAX, FLT_MAX};
-                        vec3_t max_ext = {-FLT_MAX,-FLT_MAX,-FLT_MAX};
-
-                        mat4_t R = mat4_from_mat3(mat3_transpose(A));
-                        mat4_t Ri = mat4_from_mat3(A);
-
-                        for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
-                            vec4_t p = mat4_mul_vec4(Ri, xyzw[i]);
-                            min_ext = vec3_min(min_ext, vec3_from_vec4(p));
-                            max_ext = vec3_max(max_ext, vec3_from_vec4(p));
-                        }
-
-                        const float pad = 2.5f;
-                        min_ext = vec3_sub_f(min_ext, pad);
-                        max_ext = vec3_add_f(max_ext, pad);
-
-                        vec3_t origin = mat4_mul_vec3(R, min_ext, 0.0f);
-                        vec3_t extent = {max_ext.x - min_ext.x, max_ext.y - min_ext.y, max_ext.z - min_ext.z};
-
-                        mat4_t T = mat4_translate(origin.x, origin.y, origin.z);
-                        mat4_t S = mat4_scale(extent.x, extent.y, extent.z);
-
-                        orb.vol.extent = extent;
-                        orb.vol.model_to_world = T * R;
-                        orb.vol.tex_to_world = T * R * S;
-
-                        //update_orb_volume();
-                        orb.show_volume = true;
+                        uint32_t* colors = (uint32_t*)md_vm_arena_push(state.allocator.frame, state.mold.mol.atom.count * sizeof(uint32_t));
+                        color_atoms_cpk(colors, state.mold.mol.atom.count, state.mold.mol);
 
                         // NTO
                         md_gl_representation_init(&nto.gl_rep, &state.mold.gl_mol);
-
-                        size_t temp_pos = md_temp_get_pos();
-                        uint32_t* colors = (uint32_t*)md_temp_push(state.mold.mol.atom.count * sizeof(uint32_t));
-                        color_atoms_cpk(colors, state.mold.mol.atom.count, state.mold.mol);
                         md_gl_representation_set_color(&nto.gl_rep, 0, (uint32_t)state.mold.mol.atom.count, colors, 0);
-                        md_temp_set_pos_back(temp_pos);
-                        nto.vol.model_to_world = orb.vol.model_to_world;
-                        nto.vol.tex_to_world   = orb.vol.tex_to_world;
-
-                        vec3_t min_box = vec3_from_vec4(orb.vol.model_to_world * vec4_set(0,0,0,1));
-                        vec3_t max_box = vec3_from_vec4(orb.vol.model_to_world * vec4_set(1,1,1,1));
-                        camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_box, max_box);
+                        camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb);
 
                         // RSP
                         rsp.show_window = true;
+
+                        // ORB
+                        orb.show_window = true;
+                        md_gl_representation_init(&orb.gl_rep, &state.mold.gl_mol);
+                        md_gl_representation_set_color(&orb.gl_rep, 0, (uint32_t)state.mold.mol.atom.count, colors, 0);
+                        camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, min_aabb, max_aabb, orb.distance_scale);
+                        orb.mo_idx = homo_idx;
+                        if (!orb.vol_fbo) glGenFramebuffers(1, &orb.vol_fbo);
+
                     } else {
                         MD_LOG_INFO("Failed to load VeloxChem data");
                         md_arena_allocator_reset(arena);
@@ -286,8 +256,8 @@ struct VeloxChem : viamd::EventHandler {
                 ASSERT(e.payload_type == viamd::EventPayloadType_RepresentationInfo);
                 RepresentationInfo& info = *(RepresentationInfo*)e.payload;
 
-                info.mo_homo_idx = orb.homo_idx;
-                info.mo_lumo_idx = orb.lumo_idx;
+                info.mo_homo_idx = homo_idx;
+                info.mo_lumo_idx = lumo_idx;
 
                 for (size_t i = 0; i < num_orbitals(); ++i) {
                     MolecularOrbital mo = {
@@ -318,7 +288,14 @@ struct VeloxChem : viamd::EventHandler {
             case viamd::EventType_RepresentationComputeOrbital: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ComputeOrbital);
                 ComputeOrbital& data = *(ComputeOrbital*)e.payload;
-                compute_orbital(data);
+
+                if (!data.output_written) {
+                    md_gto_eval_mode_t mode = MD_GTO_EVAL_MODE_PSI;
+                    if (data.type == OrbitalType::PsiSquared) {
+                       mode = MD_GTO_EVAL_MODE_PSI_SQUARED;
+                    }
+                    data.output_written = compute_orbital(&data.tex_mat, &data.voxel_spacing, data.dst_texture, data.orbital_idx, mode, data.samples_per_angstrom);
+                }
 
                 break;
             }
@@ -328,92 +305,116 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
-    void compute_orbital(ComputeOrbital& data) {
-        if (data.output_written == true) return;
+    // Compute an 'optimal' OOBB for the supplied PGTOS
+    void compute_volume_basis_and_transform_pgtos(mat4_t* out_tex_mat, vec3_t* out_ext_in_angstrom, md_gto_t* pgtos, size_t num_pgtos) {
+        // Compute min and maximum extent along the PCA axes
+        vec4_t min_ext = { FLT_MAX, FLT_MAX, FLT_MAX, 0};
+        vec4_t max_ext = {-FLT_MAX,-FLT_MAX,-FLT_MAX, 0};
 
-        const double ANGSTROM_TO_BOHR = 1.0 / 0.529177210903;
+        mat4_t R = mat4_from_mat3(mat3_transpose(PCA));
+        mat4_t Ri = mat4_from_mat3(PCA);
+
+        for (size_t i = 0; i < num_pgtos; ++i) {
+            vec4_t p = vec4_set(pgtos[i].x, pgtos[i].y, pgtos[i].z, 1.0f);
+            p = Ri * (p * BOHR_TO_ANGSTROM);
+            // The 0.9 scaling factor here is a bit arbitrary, but the cutoff-radius is computed on a value which is lower than the rendered iso-value
+            // So the effective radius is a bit overestimated and thus we scale it back a bit
+            min_ext = vec4_min(min_ext, vec4_sub_f(p, pgtos[i].cutoff * BOHR_TO_ANGSTROM * 0.9));
+            max_ext = vec4_max(max_ext, vec4_add_f(p, pgtos[i].cutoff * BOHR_TO_ANGSTROM * 0.9));
+        }
+
+        min_ext.w = 0.0f;
+        max_ext.w = 0.0f;
+
+        vec4_t origin = R * min_ext;
+        vec4_t extent = max_ext - min_ext;
+
+        mat4_t T = mat4_translate(origin.x, origin.y, origin.z);
+        mat4_t S = mat4_scale(extent.x, extent.y, extent.z);
+
+        // Transform pgtos into the 'model space' of the volume
+        // There is a scaling factor here as well as the PGTOs are given and must be
+        // Processed in a.u. (Bohr) and not Ångström, in which the volume is defined
+        
+        vec4_t t = vec4_mul_f(origin, ANGSTROM_TO_BOHR);
+        mat4_t M = Ri * mat4_translate(-t.x, -t.y, -t.z);
+        for (size_t i = 0; i < num_pgtos; ++i) {
+            vec4_t c = {pgtos[i].x, pgtos[i].y, pgtos[i].z, 1.0f};
+            c = M * c;
+            pgtos[i].x = c.x;
+            pgtos[i].y = c.y;
+            pgtos[i].z = c.z;
+        }
+
+        *out_tex_mat = T * R * S;
+        *out_ext_in_angstrom = vec3_from_vec4(extent);
+    }
+
+    bool compute_orbital(mat4_t* out_tex_mat, vec3_t* out_voxel_spacing, uint32_t* in_out_vol_tex, uint32_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = 8.0f) {
+        struct Payload {
+            size_t bytes;
+            size_t num_pgtos;
+            md_gto_t* pgtos;
+            float* vol_data;
+            int    vol_dim[3];
+            uint32_t tex_id;
+            vec3_t step_size;
+            md_gto_eval_mode_t mode;
+        };
+
+        size_t num_pgtos = md_vlx_pgto_count(&vlx);
+        md_gto_t* pgtos  = (md_gto_t*)md_alloc(md_get_heap_allocator(), sizeof(md_gto_t) * num_pgtos);
+
+        if (!md_vlx_extract_alpha_mo_pgtos(pgtos, &vlx, mo_idx)) {
+            MD_LOG_ERROR("Failed to extract alpha orbital for orbital index: %i", mo_idx);
+            md_free(md_get_heap_allocator(), pgtos, sizeof(md_gto_t) * num_pgtos);
+            return false;
+        }
+        md_gto_cutoff_compute(pgtos, num_pgtos, 1.0e-6);
+
+        mat4_t tex_mat;
+        vec3_t extent;
+
+        compute_volume_basis_and_transform_pgtos(&tex_mat, &extent, pgtos, num_pgtos);
 
         // Target resolution per spatial unit (We want this number of samples per Ångström in each dimension)
         // Round up to some multiple of 8 -> 8x8x8 is the chunksize we process in parallel
 
         // Compute required volume dimensions
         int dim[3] = {
-            CLAMP(ALIGN_TO((int)(orb.vol.extent.x * data.samples_per_angstrom), 8), 8, 512),
-            CLAMP(ALIGN_TO((int)(orb.vol.extent.y * data.samples_per_angstrom), 8), 8, 512),
-            CLAMP(ALIGN_TO((int)(orb.vol.extent.z * data.samples_per_angstrom), 8), 8, 512),
+            CLAMP(ALIGN_TO((int)(extent.x * samples_per_angstrom), 8), 8, 512),
+            CLAMP(ALIGN_TO((int)(extent.y * samples_per_angstrom), 8), 8, 512),
+            CLAMP(ALIGN_TO((int)(extent.z * samples_per_angstrom), 8), 8, 512),
         };
 
-        vec3_t step_size = vec3_div(orb.vol.extent, vec3_set((float)dim[0], (float)dim[1], (float)dim[2]));
+        vec3_t step_size = vec3_div(extent, vec3_set((float)dim[0], (float)dim[1], (float)dim[2]));
         step_size = vec3_mul_f(step_size, (float)ANGSTROM_TO_BOHR);
-        size_t num_voxels = dim[0] * dim[1] * dim[2];
-        size_t num_pgtos  = md_vlx_pgto_count(&vlx);
 
-        // Write output data
-        data.mdl_mat = orb.vol.model_to_world;
-        data.tex_mat = orb.vol.tex_to_world;
-        data.voxel_spacing = step_size;
-        gl::init_texture_3D(data.dst_texture, dim[0], dim[1], dim[2], GL_R16F);
-        data.output_written = true;
+        // Create texture of dim
+        gl::init_texture_3D(in_out_vol_tex, dim[0], dim[1], dim[2], GL_R16F);
 
-        // Prepare payload for async task
-        struct Payload {
-            void*  ptr;
-            size_t bytes;
-            int    mo_idx;
-            int    vol_dim[3];
-            float* vol_data;
-            vec3_t step_size;
-            uint32_t tex_id;
-            size_t num_pgtos;
-            md_gto_t* pgtos;
-            md_gto_eval_mode_t mode;
-        };
+        // WRITE OUTPUT
+        *out_tex_mat = tex_mat;
+        *out_voxel_spacing = step_size;
 
-        size_t num_bytes = sizeof(Payload) + num_voxels * sizeof(float) + num_pgtos * sizeof(md_gto_t);
+        size_t num_vol_bytes = dim[0] * dim[1] * dim[2] * sizeof(float);
+        size_t num_bytes = sizeof(Payload) + num_vol_bytes;
         void* mem = md_alloc(md_get_heap_allocator(), num_bytes);
         Payload* payload    = (Payload*)mem;
-        payload->ptr        = mem;
         payload->bytes      = num_bytes;
-        payload->mo_idx     = data.orbital_idx;
         MEMCPY(payload->vol_dim, dim, sizeof(payload->vol_dim));
         payload->vol_data   = (float*)((char*)mem + sizeof(Payload));
-        MEMSET(payload->vol_data, 0, num_voxels * sizeof(float));
+        MEMSET(payload->vol_data, 0, num_vol_bytes);
         payload->step_size  = step_size;
-        payload->tex_id     = *data.dst_texture;
+        payload->tex_id     = *in_out_vol_tex;
         payload->num_pgtos  = num_pgtos;
-        payload->pgtos      = (md_gto_t*)((char*)mem + sizeof(Payload) + num_voxels * sizeof(float));
-
-        MD_LOG_DEBUG("Preparing evaluation of orbital volume of dimensions [%i][%i][%i]", dim[0], dim[1], dim[2]);
-
-        if (!md_vlx_extract_alpha_mo_pgtos(payload->pgtos, &vlx, payload->mo_idx)) {
-            MD_LOG_ERROR("Failed to extract alpha orbital for orbital index: %i", payload->mo_idx);
-            md_free(md_get_heap_allocator(), mem, num_bytes);
-            return;
-        }
-        md_gto_cutoff_compute(payload->pgtos, payload->num_pgtos, 1.0e-6);
-
-        // Transform pgtos into the 'model space' of the volume
-        // There is a scaling factor here as well as the PGTOs are given and must be
-        // Processed in a.u. (Bohr) and not Ångström, in which the volume is defined
-        mat4_t R = orb.vol.model_to_world;
-        R.col[3] = vec4_set(0,0,0,1);
-        R = mat4_transpose(R);
-
-        // Ångström to Bohr
-        vec4_t t = vec4_mul_f(orb.vol.model_to_world.col[3], (float)ANGSTROM_TO_BOHR);
-        mat4_t T = mat4_translate(-t.x, -t.y, -t.z);
-
-        mat4_t M = R * T;
-        for (size_t i = 0; i < payload->num_pgtos; ++i) {
-            vec4_t c = {payload->pgtos[i].x, payload->pgtos[i].y, payload->pgtos[i].z, 1.0f};
-            c = M * c;
-            payload->pgtos[i].x = c.x;
-            payload->pgtos[i].y = c.y;
-            payload->pgtos[i].z = c.z;
-        }
+        payload->pgtos      = pgtos;
+        payload->mode       = mode;
 
         // We evaluate the in parallel over smaller NxNxN blocks
         uint32_t num_blocks = (dim[0] / BLK_DIM) * (dim[1] / BLK_DIM) * (dim[2] / BLK_DIM);
+
+        MD_LOG_DEBUG("Starting Async evaluation of orbital volume of dimensions [%i][%i][%i]", dim[0], dim[1], dim[2]);
 
         task_system::ID async_task = task_system::pool_enqueue(STR_LIT("Evaluate Orbital"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
             Payload* data = (Payload*)user_data;
@@ -436,7 +437,7 @@ struct VeloxChem : viamd::EventHandler {
             };
 
             for (uint32_t i = range_beg; i < range_end; ++i) {
-                // Determine block index
+                // Determine block index from linear input index i
                 int blk_x =  i % num_blk[0];
                 int blk_y = (i / num_blk[0]) % num_blk[1];
                 int blk_z =  i / (num_blk[0] * num_blk[1]);
@@ -449,172 +450,21 @@ struct VeloxChem : viamd::EventHandler {
         }, payload);
 
         // Launch task for main (render) thread to update the volume texture
-        task_system::main_enqueue(STR_LIT("Update Volume"), [](void* user_data) {
+        task_system::main_enqueue(STR_LIT("##Update Volume"), [](void* user_data) {
             Payload* data = (Payload*)user_data;
             gl::set_texture_3D_data(data->tex_id, data->vol_data, GL_R32F);
-            md_free(md_get_heap_allocator(), data->ptr, data->bytes);
+            md_free(md_get_heap_allocator(), data->pgtos, data->num_pgtos * sizeof(md_gto_t));
+            md_free(md_get_heap_allocator(), data, data->bytes);
         }, payload, async_task);
+
+        return true;
     }
 
-    void update_orb_volume() {
-        if (task_system::task_is_running(orb.compute_volume_task)) {
-            task_system::task_interrupt(orb.compute_volume_task);
-        }
-        else {
-            // Target resolution per spatial unit (We want this number of samples per Ångström in each dimension)
-            // Round up to some multiple of 8 -> 8x8x8 is the chunksize we process in parallel
-
-            const float res_scale = vol_res_scl[vol_res_idx];
-
-            int dim[3] = {
-                CLAMP(ALIGN_TO((int)(orb.vol.extent.x * res_scale), 8), 8, 512),
-                CLAMP(ALIGN_TO((int)(orb.vol.extent.y * res_scale), 8), 8, 512),
-                CLAMP(ALIGN_TO((int)(orb.vol.extent.z * res_scale), 8), 8, 512),
-            };
-
-            size_t num_bytes = sizeof(float) * dim[0] * dim[1] * dim[2];
-            if (num_bytes != orb.vol.num_bytes) {
-                orb.vol.data = (float*)md_realloc(arena, orb.vol.data, orb.vol.num_bytes, num_bytes);
-                ASSERT(orb.vol.data);
-                orb.vol.num_bytes = num_bytes;
-            }
-
-            MEMSET(orb.vol.data, 0, orb.vol.num_bytes);
-            
-            MEMCPY(orb.vol.dim, dim, sizeof(orb.vol.dim));
-            orb.vol.step_size = vec3_div(orb.vol.extent, vec3_set((float)orb.vol.dim[0], (float)orb.vol.dim[1], (float)orb.vol.dim[2]));
-
-            MD_LOG_DEBUG("Created Orbital volume of dimensions [%i][%i][%i]", orb.vol.dim[0], orb.vol.dim[1], orb.vol.dim[2]);
-
-            if (!md_vlx_extract_alpha_mo_pgtos(orb.pgtos, &vlx, orb.mo_idx)) {
-                MD_LOG_ERROR("Failed to extract alpha orbital for orbital index: %i", orb.mo_idx);
-                return;
-            }
-            md_gto_cutoff_compute(orb.pgtos, md_array_size(orb.pgtos), 1.0e-6);
-
-            // Transform pgtos into the 'model space' of the volume
-            // There is a scaling factor here as well as the PGTOs are given and must be
-            // Processed in a.u. (Bohr) and not Ångström, in which the volume is defined
-            mat4_t R = orb.vol.model_to_world;
-            R.col[3] = vec4_set(0,0,0,1);
-            R = mat4_transpose(R);
-
-            // Ångström to Bohr
-            vec4_t t = vec4_mul_f(orb.vol.model_to_world.col[3], 1.0 / 0.529177210903);
-            mat4_t T = mat4_translate(-t.x, -t.y, -t.z);
-
-            mat4_t M = R * T;
-            for (size_t i = 0; i < md_array_size(orb.pgtos); ++i) {
-                vec4_t c = {orb.pgtos[i].x, orb.pgtos[i].y, orb.pgtos[i].z, 1.0f};
-                c = M * c;
-                orb.pgtos[i].x = c.x;
-                orb.pgtos[i].y = c.y;
-                orb.pgtos[i].z = c.z;
-            }
-
-            // We evaluate the in parallel over smaller NxNxN blocks
-            uint32_t num_blocks = (orb.vol.dim[0] / BLK_DIM) * (orb.vol.dim[1] / BLK_DIM) * (orb.vol.dim[2] / BLK_DIM);
-
-            orb.compute_volume_task = task_system::pool_enqueue(STR_LIT("Compute Volume"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
-                Orb* orb = (Orb*)user_data;
-
-                // Number of NxNxN blocks in each dimension
-                int num_blk[3] = {
-                    orb->vol.dim[0] / BLK_DIM,
-                    orb->vol.dim[1] / BLK_DIM,
-                    orb->vol.dim[2] / BLK_DIM,
-                };
-
-                // Conversion from Ångström to Bohr
-                const float factor = 1.0 / 0.529177210903;
-
-                // The PGTOs have been pre-transformed into the 'model space' of the volume
-                vec3_t step = vec3_mul_f(orb->vol.step_size, factor);
-
-                md_grid_t grid = {
-                    .data = orb->vol.data,
-                    .dim  = {orb->vol.dim[0], orb->vol.dim[1], orb->vol.dim[2]},
-                    // Shift origin by half a voxel to evaluate at the voxel center
-                    .origin = {0.5f * step.x, 0.5f * step.y, 0.5f * step.z},
-                    .stepsize = {step.x, step.y, step.z},
-                };
-
-                for (uint32_t i = range_beg; i < range_end; ++i) {
-                    // Determine block index
-                    int blk_x =  i % num_blk[0];
-                    int blk_y = (i / num_blk[0]) % num_blk[1];
-                    int blk_z =  i / (num_blk[0] * num_blk[1]);
-
-                    const int off_idx[3] = {blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM};
-                    const int len_idx[3] = {BLK_DIM, BLK_DIM, BLK_DIM};
-
-                    md_gto_eval_mode_t eval_mode = vol_mode == 0 ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
-                    md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, orb->pgtos, md_array_size(orb->pgtos), eval_mode);
-                }
-            }, &this->orb);
-
-            // Launch task for main (render) thread to update the volume texture
-            task_system::main_enqueue(STR_LIT("Update Volume"), [](void* user_data) {
-                Orb* orb = (Orb*)user_data;
-                gl::init_texture_3D(&orb->vol_texture, orb->vol.dim[0], orb->vol.dim[1], orb->vol.dim[2], GL_R16F);
-                gl::set_texture_3D_data(orb->vol_texture, orb->vol.data, GL_R32F);
-            }, &this->orb, orb.compute_volume_task);
-        }
-    }
-
-    void draw_orb_volume(ApplicationState& state) {
-        if (!orb.show_volume) return;
-
-        // Volume model matrix expects the 
-
-        volume::RenderDesc desc = {
-            .render_target = {
-                .depth = state.gbuffer.tex.depth,
-                .color = state.gbuffer.tex.transparency,
-                .width   = state.gbuffer.width,
-                .height  = state.gbuffer.height,
-            },
-            .texture = {
-                .volume = orb.vol_texture,
-                .transfer_function = orb.tf_texture,
-            },
-            .matrix = {
-                .model = orb.vol.tex_to_world,
-                .view = state.view.param.matrix.current.view,
-                .proj = state.view.param.matrix.current.proj,
-            },
-            .clip_volume = {
-                .min = orb.clip_min,
-                .max = orb.clip_max,
-            },
-            .iso = {
-                .enabled = orb.iso.enabled,
-                .count  = orb.iso.count,
-                .values = orb.iso.values,
-                .colors = orb.iso.colors,
-            },
-            .dvr = {
-                .enabled = orb.dvr.enabled,
-            },
-            .voxel_spacing = orb.vol.step_size,
-        };
-
-        volume::render_volume(desc);
-
-        if (orb.bounding_box.enabled) {
-            if (orb.vol.model_to_world != mat4_t{0}) {
-                immediate::set_model_view_matrix(mat4_mul(state.view.param.matrix.current.view, orb.vol.tex_to_world));
-                immediate::set_proj_matrix(state.view.param.matrix.current.proj);
-                immediate::draw_box_wireframe(vec3_set1(0), vec3_set1(1), orb.bounding_box.color);
-                immediate::render();
-            }
-        }
-    }
-
-    void draw_orb_window() {
+    void draw_orb_window(const ApplicationState& state) {
         if (!orb.show_window) return;
-        ImGui::SetNextWindowSize({300,350}, ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("VeloxChem", &orb.show_window)) {
+        ImGui::SetNextWindowSize({600,300}, ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("VeloxChem Orbital Viewer", &orb.show_window)) {
+#if 0
             if (vlx.geom.num_atoms) {
                 if (ImGui::TreeNode("Geometry")) {
                     ImGui::Text("Num Atoms:           %6zu", vlx.geom.num_atoms);
@@ -630,158 +480,423 @@ struct VeloxChem : viamd::EventHandler {
                     ImGui::TreePop();
                 }
             }
-            if (ImGui::TreeNode("Molecular Orbitals")) {
-                static const char* vol_mode_str[2] = {
-                    (const char*)u8"Orbital (Ψ)",
-                    (const char*)u8"Density (Ψ²)"
-                };
-                if (ImGui::BeginCombo("Mode", vol_mode_str[vol_mode])) {
-                    for (int i = 0; i < ARRAY_SIZE(vol_mode_str); ++i) {
-                        if (ImGui::Selectable(vol_mode_str[i], vol_mode == i)) {
-                            if (vol_mode != i) {
-                                vol_mode = i;
-                                update_orb_volume();
-                            }
-                        }
+#endif
+            const ImVec2 outer_size = {300.f, 0.f};
+            ImGui::PushItemWidth(outer_size.x);
+            ImGui::BeginGroup();
+
+            ImGui::SliderInt("##Rows", &orb.num_y, 1, 4);
+            ImGui::SliderInt("##Cols", &orb.num_x, 1, 4);
+
+            const int num_mos = orb.num_x * orb.num_y;
+            const int beg_mo_idx = orb.mo_idx - num_mos / 2 + (num_mos % 2 == 0 ? 1 : 0);
+
+            const double iso_min = 1.0e-4;
+            const double iso_max = 5.0;
+            double iso_val = orb.iso.values[0];
+            ImGui::SliderScalar("##Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SetItemTooltip("Iso Value");
+
+            orb.iso.values[0] =  (float)iso_val;
+            orb.iso.values[1] = -(float)iso_val;
+            orb.iso.count = 2;
+            orb.iso.enabled = true;
+
+            ImGui::ColorEdit4("##Color Positive", orb.iso.colors[0].elem);
+            ImGui::SetItemTooltip("Color Positive");
+            ImGui::ColorEdit4("##Color Negative", orb.iso.colors[1].elem);
+            ImGui::SetItemTooltip("Color Negative");
+
+            const float TEXT_BASE_HEIGHT = ImGui::GetTextLineHeightWithSpacing();
+            enum {
+                Col_Idx,
+                Col_Occ,
+                Col_Ene,
+            };
+
+            int scroll_to_idx = -1;
+            if (ImGui::IsWindowAppearing()) {
+                scroll_to_idx = orb.mo_idx;
+            }
+            if (ImGui::Button("Goto HOMO", ImVec2(outer_size.x,0))) {
+                scroll_to_idx = homo_idx;
+            }
+
+            const ImGuiTableFlags flags =
+                ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable | ImGuiTableFlags_RowBg |
+                ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_ScrollY;
+            if (ImGui::BeginTable("Molecular Orbitals", 3, flags, outer_size))//, ImVec2(0.0f, TEXT_BASE_HEIGHT * 15), 0.0f))
+            {
+                // Declare columns
+                // We use the "user_id" parameter of TableSetupColumn() to specify a user id that will be stored in the sort specifications.
+                // This is so our sort function can identify a column given our own identifier. We could also identify them based on their index!
+                // Demonstrate using a mixture of flags among available sort-related flags:
+                // - ImGuiTableColumnFlags_DefaultSort
+                // - ImGuiTableColumnFlags_NoSort / ImGuiTableColumnFlags_NoSortAscending / ImGuiTableColumnFlags_NoSortDescending
+                // - ImGuiTableColumnFlags_PreferSortAscending / ImGuiTableColumnFlags_PreferSortDescending
+                ImGui::TableSetupColumn("Index",        ImGuiTableColumnFlags_DefaultSort          | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Idx);
+                ImGui::TableSetupColumn("Occupation",   ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Occ);
+                ImGui::TableSetupColumn("Energy",       ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Ene);
+                ImGui::TableSetupScrollFreeze(0, 1); // Make row always visible
+                ImGui::TableHeadersRow();
+
+                for (int n = 0; n < num_orbitals(); n++) {
+                    ImGui::PushID(n + 1);
+                    ImGui::TableNextRow();
+                    bool is_selected = (beg_mo_idx <= n && n < beg_mo_idx + num_mos);
+                    ImGui::TableNextColumn();
+                    if (scroll_to_idx != -1 && n == scroll_to_idx) {
+                        ImGui::SetScrollHereY();
                     }
-                    ImGui::EndCombo();
-                }
-
-                if (ImGui::BeginCombo("Volume Resolution", vol_res_lbl[vol_res_idx])) {
-                    for (int i = 0; i < ARRAY_SIZE(vol_res_lbl); ++i) {
-                        if (ImGui::Selectable(vol_res_lbl[i], vol_res_idx == i)) {
-                            if (vol_res_idx != i) {
-                                vol_res_idx = i;
-                                update_orb_volume();
-                            }
-                        }
-                    }
-                    ImGui::EndCombo();
-                }
-
-                if (vol_mode == 0) {
-                    static double iso_val = 0.05f;
-                    const  double iso_min = 1.0e-4;
-                    const  double iso_max = 5.0;
-                    ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
-                    orb.iso.values[0] =  (float)iso_val;
-                    orb.iso.values[1] = -(float)iso_val;
-                    orb.iso.count = 2;
-                    orb.iso.enabled = true;
-                    orb.dvr.enabled = false;
-
-                    orb.density_scale = 1.0f;
-
-                    ImGui::ColorEdit4("Color Positive", orb.iso.colors[0].elem);
-                    ImGui::ColorEdit4("Color Negative", orb.iso.colors[1].elem);
-                } else {
-                    orb.iso.enabled = false;
-                    orb.dvr.enabled = true;
-
-                    const ImVec2 button_size = {160, 0};
-                    if (ImPlot::ColormapButton(ImPlot::GetColormapName(orb.colormap), button_size, orb.colormap)) {
-                        ImGui::OpenPopup("Colormap Selector");
-                    }
-                    if (ImGui::BeginPopup("Colormap Selector")) {
-                        for (int map = 4; map < ImPlot::GetColormapCount(); ++map) {
-                            if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), button_size, map)) {
-                                orb.colormap = map;
-                                orb.tf_dirty = true;
-                                ImGui::CloseCurrentPopup();
-                            }
-                        }
-                        ImGui::EndPopup();
-                    }
-                    if (ImGui::SliderFloat("Alpha Scale", &orb.colormap_alpha_scale, 0.001f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic)) {
-                        orb.tf_dirty = true;
-                    }
-
-                    ImGui::SliderFloat("Density Scale", &orb.density_scale, 0.001f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic);
-
-                    // Update colormap texture
-                    if (orb.tf_dirty) {
-                        orb.tf_dirty = false;
-                        uint32_t pixel_data[128];
-                        for (size_t i = 0; i < ARRAY_SIZE(pixel_data); ++i) {
-                            float t = (float)i / (float)(ARRAY_SIZE(pixel_data) - 1);
-                            ImVec4 col = ImPlot::SampleColormap(t, orb.colormap);
-
-                            // This is a small alpha ramp in the start of the TF to avoid rendering low density values.
-                            col.w = MIN(160 * t*t, 0.341176f);
-                            col.w = CLAMP(col.w * orb.colormap_alpha_scale, 0.0f, 1.0f);
-                            pixel_data[i] = ImGui::ColorConvertFloat4ToU32(col);
-                        }
-
-                        gl::init_texture_2D(&orb.tf_texture, (int)ARRAY_SIZE(pixel_data), 1, GL_RGBA8);
-                        gl::set_texture_2D_data(orb.tf_texture, pixel_data, GL_RGBA8);
-                    }
-                }
-
-                const float TEXT_BASE_HEIGHT = ImGui::GetTextLineHeightWithSpacing();
-
-                enum {
-                    Col_Idx,
-                    Col_Occ,
-                    Col_Ene,
-                    Col_Lbl,
-                };
-
-                static float table_height = 0.0f;
-                if (ImGui::Button("Goto HOMO/LUMO")) {
-                    // 1.5f offset = 1 for skipping the column header row and 0.5 for placing the view between homo/lumo
-                    ImGui::SetNextWindowScroll(ImVec2(-1, (TEXT_BASE_HEIGHT * (orb.homo_idx + 1.5f)) - table_height * 0.5f));
-                }
-
-                const ImGuiTableFlags flags =
-                    ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable | ImGuiTableFlags_RowBg |
-                    ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_ScrollY;
-                if (ImGui::BeginTable("Molecular Orbitals", 4, flags))//, ImVec2(0.0f, TEXT_BASE_HEIGHT * 15), 0.0f))
-                {
-                    auto draw_row = [this](int n) {
-                        // Display a data item
-                        ImGui::PushID(n + 1);
-                        ImGui::TableNextRow();
-                        bool is_selected = (orb.mo_idx == n);
-                        ImGui::TableNextColumn();
-                        char buf[32];
-                        snprintf(buf, sizeof(buf), "%i", n + 1);
-                        ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
-                        if (ImGui::Selectable(buf, is_selected, selectable_flags)) {
+                    char buf[32];
+                    const char* lbl = (n == homo_idx) ? " (HOMO)" : (n == lumo_idx) ? " (LUMO)" : "";
+                    snprintf(buf, sizeof(buf), "%i%s", n + 1, lbl);
+                    ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
+                    if (ImGui::Selectable(buf, is_selected, selectable_flags)) {
+                        if (orb.mo_idx != n) {
                             orb.mo_idx = n;
-                            update_orb_volume();
                         }
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%.1f", vlx.scf.alpha.occupations.data[n]);
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%.4f", vlx.scf.alpha.energies.data[n]);
-                        ImGui::TableNextColumn();
-                        const char* lbl = (n == orb.homo_idx) ? "HOMO" : (n == orb.lumo_idx) ? "LUMO" : "";
-                        ImGui::TextUnformatted(lbl);
-                        ImGui::PopID();
-                        };
-
-                    // Declare columns
-                    // We use the "user_id" parameter of TableSetupColumn() to specify a user id that will be stored in the sort specifications.
-                    // This is so our sort function can identify a column given our own identifier. We could also identify them based on their index!
-                    // Demonstrate using a mixture of flags among available sort-related flags:
-                    // - ImGuiTableColumnFlags_DefaultSort
-                    // - ImGuiTableColumnFlags_NoSort / ImGuiTableColumnFlags_NoSortAscending / ImGuiTableColumnFlags_NoSortDescending
-                    // - ImGuiTableColumnFlags_PreferSortAscending / ImGuiTableColumnFlags_PreferSortDescending
-                    ImGui::TableSetupColumn("Index",        ImGuiTableColumnFlags_DefaultSort          | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Idx);
-                    ImGui::TableSetupColumn("Occupation",   ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Occ);
-                    ImGui::TableSetupColumn("Energy",       ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Ene);
-                    ImGui::TableSetupColumn("Label",        ImGuiTableColumnFlags_NoSort               | ImGuiTableColumnFlags_WidthStretch, 0.0f, Col_Lbl);
-                    ImGui::TableSetupScrollFreeze(0, 1); // Make row always visible
-                    ImGui::TableHeadersRow();
-
-                    for (int n = 0; n < num_orbitals(); n++) {
-                        draw_row(n);
                     }
-
-                    ImGui::EndTable();
-                    table_height = ImGui::GetItemRectSize().y;
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.1f", vlx.scf.alpha.occupations.data[n]);
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.4f", vlx.scf.alpha.energies.data[n]);
+                    ImGui::PopID();
                 }
-                ImGui::TreePop();
+
+                ImGui::EndTable();
+            }
+
+            ImGui::EndGroup();
+            ImGui::PopItemWidth();
+
+            ImGui::SameLine();
+
+            // These represent the new mo_idx we want to have in each slot
+            int vol_mo_idx[16] = {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
+            for (int i = 0; i < num_mos; ++i) {
+                int mo_idx = beg_mo_idx + i;
+                if (-1 < mo_idx && mo_idx < num_orbitals()) {
+                    vol_mo_idx[i] = mo_idx;
+                }
+            }
+
+            int job_queue[16];
+            int num_jobs = 0;
+            // Find and reuse volume data from existing slots (if applicable)
+            // If there is no existing volume, we queue up a new job
+            for (int i = 0; i < num_mos; ++i) {
+                // Check if we already have that entry in the correct slot
+                if (orb.vol_mo_idx[i] == vol_mo_idx[i]) continue;
+
+                // Try to find the entry in the existing list
+                bool found = false;
+                for (int j = 0; j < num_mos; ++j) {
+                    if (i == j) continue;
+                    if (vol_mo_idx[i] == orb.vol_mo_idx[j]) {
+                        // Swap to correct location
+                        ImSwap(orb.vol[i], orb.vol[j]);
+                        ImSwap(orb.vol_mo_idx[i], orb.vol_mo_idx[j]);
+                        found = true;
+                        break;
+                    }
+                }
+
+                // If not found, put in job queue to compute the volume
+                if (!found) {
+                    job_queue[num_jobs++] = i;
+                }
+            }
+
+            if (num_jobs > 0) {
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, orb.vol_fbo);
+                const float zero[4] = {};
+                for (int i = 0; i < num_jobs; ++i) {
+                    int slot_idx = job_queue[i];
+                    int mo_idx = vol_mo_idx[slot_idx];
+                    orb.vol_mo_idx[slot_idx] = mo_idx;
+
+                    if (-1 < mo_idx && mo_idx < num_orbitals()) {
+                        compute_orbital(&orb.vol[slot_idx].tex_to_world, &orb.vol[slot_idx].step_size, &orb.vol[slot_idx].tex_id, mo_idx, MD_GTO_EVAL_MODE_PSI, 4.0f);
+                        // Clear volume texture
+                        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, orb.vol[slot_idx].tex_id, 0);
+                        glClearBufferfv(GL_COLOR, 0, zero);
+                    }
+                }
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            }
+
+            // Animate camera towards targets
+            const double dt = state.app.timing.delta_s;
+            camera_animate(&orb.camera, orb.target.ori, orb.target.pos, orb.target.dist, dt);
+
+            ImVec2 canvas_sz = ImGui::GetContentRegionAvail();   // Resize canvas to what's available
+            canvas_sz.x = MAX(canvas_sz.x, 50.0f);
+            canvas_sz.y = MAX(canvas_sz.y, 50.0f);
+
+            // This will catch our interactions
+            ImGui::InvisibleButton("canvas", canvas_sz, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_AllowOverlap);
+
+            // Draw border and background color
+            ImGuiIO& io = ImGui::GetIO();
+
+            ImVec2 canvas_p0 = ImGui::GetItemRectMin();
+            ImVec2 canvas_p1 = ImGui::GetItemRectMax();
+
+            ImVec2 orb_win_sz = (canvas_p1 - canvas_p0) / ImVec2(orb.num_x, orb.num_y);
+            orb_win_sz.x = floorf(orb_win_sz.x);
+            orb_win_sz.y = floorf(orb_win_sz.y);
+            canvas_p1.x = canvas_p0.x + orb.num_x * orb_win_sz.x;
+            canvas_p1.y = canvas_p0.y + orb.num_y * orb_win_sz.y;
+
+            ImDrawList* draw_list = ImGui::GetWindowDrawList();
+            draw_list->AddRectFilled(canvas_p0, canvas_p1, IM_COL32(255, 255, 255, 255));
+            for (int y = 0; y < orb.num_y; ++y) {
+                for (int x = 0; x < orb.num_x; ++x) {
+                    int i = y * orb.num_x + x;
+                    int mo_idx = beg_mo_idx + i;
+                    ImVec2 p0 = canvas_p0 + orb_win_sz * ImVec2(x+0, y+0);
+                    ImVec2 p1 = canvas_p0 + orb_win_sz * ImVec2(x+1, y+1);
+                    if (-1 < mo_idx && mo_idx < num_orbitals()) {
+                        ImVec2 text_pos = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
+                        char buf[32];
+                        const char* lbl = (mo_idx == homo_idx) ? " (HOMO)" : (mo_idx == lumo_idx) ? " (LUMO)" : "";
+                        snprintf(buf, sizeof(buf), "%i%s", mo_idx + 1, lbl);
+                        draw_list->AddImage((ImTextureID)(intptr_t)orb.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
+                        draw_list->AddImage((ImTextureID)(intptr_t)orb.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
+                        draw_list->AddText(text_pos, ImColor(0,0,0), buf);
+                    }
+                }
+            }
+            for (int x = 1; x < orb.num_x; ++x) {
+                ImVec2 p0 = {canvas_p0.x + orb_win_sz.x * x, canvas_p0.y};
+                ImVec2 p1 = {canvas_p0.x + orb_win_sz.x * x, canvas_p1.y};
+                draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
+            }
+            for (int y = 1; y < orb.num_y; ++y) {
+                ImVec2 p0 = {canvas_p0.x, canvas_p0.y + orb_win_sz.y * y};
+                ImVec2 p1 = {canvas_p1.x, canvas_p0.y + orb_win_sz.y * y};
+                draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
+            }
+
+            const bool is_hovered = ImGui::IsItemHovered();
+            const bool is_active = ImGui::IsItemActive();
+            const ImVec2 origin(canvas_p0.x, canvas_p0.y);  // Lock scrolled origin
+            const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
+
+            int width  = (int)orb_win_sz.x;
+            int height = (int)orb_win_sz.y;
+
+            auto& gbuf = orb.gbuf;
+            if (gbuf.width != width || gbuf.height != height) {
+                init_gbuffer(&gbuf, width, height);
+                for (int i = 0; i < num_mos; ++i) {
+                    gl::init_texture_2D(orb.iso_tex + i, width, height, GL_RGBA8);
+                }
+            }
+
+            bool reset_hard = false;
+            bool reset_view = false;
+            if (is_hovered) {
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                    reset_view = true;
+                }
+            }
+
+            if (reset_view) {
+                camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, min_aabb, max_aabb, orb.distance_scale);
+
+                if (reset_hard) {
+                    orb.camera.position         = orb.target.pos;
+                    orb.camera.orientation      = orb.target.ori;
+                    orb.camera.focus_distance   = orb.target.dist;
+                }
+            }
+
+            if (is_active || is_hovered) {
+                static const TrackballControllerParam param = {
+                    .min_distance = 1.0,
+                    .max_distance = 1000.0,
+                };
+
+                vec2_t delta = { io.MouseDelta.x, io.MouseDelta.y };
+                vec2_t curr = {mouse_pos_in_canvas.x, mouse_pos_in_canvas.y};
+                vec2_t prev = curr - delta;
+                float  wheel_delta = io.MouseWheel;
+
+                TrackballControllerInput input = {
+                    .rotate_button = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Left),
+                    .pan_button    = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Right),
+                    .dolly_button  = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Middle),
+                    .dolly_delta   = is_hovered ? wheel_delta : 0.0f,
+                    .mouse_coord_prev = prev,
+                    .mouse_coord_curr = curr,
+                    .screen_size = {canvas_sz.x, canvas_sz.y},
+                    .fov_y = orb.camera.fov_y,
+                };
+                camera_controller_trackball(&orb.target.pos, &orb.target.ori, &orb.target.dist, input, param);
+            }
+
+            if (orb.show_coordinate_system_widget) {
+                float  ext = MIN(orb_win_sz.x, orb_win_sz.y) * 0.4f;
+                float  pad = 20.0f;
+
+                ImVec2 min = ImGui::GetItemRectMin() - ImGui::GetWindowPos();
+                ImVec2 max = ImGui::GetItemRectMax() - ImGui::GetWindowPos();
+
+                CoordSystemWidgetParam param = {
+                    .pos = ImVec2(min.x + pad, max.y - ext - pad),
+                    .size = {ext, ext},
+                    .view_matrix = camera_world_to_view_matrix(orb.camera),
+                    .camera_ori  = orb.target.ori,
+                    .camera_pos  = orb.target.pos,
+                    .camera_dist = orb.target.dist,
+                };
+
+                ImGui::DrawCoordinateSystemWidget(param);
+            }
+
+            const float aspect_ratio = orb_win_sz.x / orb_win_sz.y;
+            mat4_t view_mat = camera_world_to_view_matrix(orb.camera);
+            mat4_t proj_mat = camera_perspective_projection_matrix(orb.camera, aspect_ratio);
+            mat4_t inv_proj_mat = camera_inverse_perspective_projection_matrix(orb.camera, aspect_ratio);
+
+            clear_gbuffer(&gbuf);
+
+            const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
+                GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
+
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
+
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LESS);
+            glDepthMask(GL_TRUE);
+            glEnable(GL_SCISSOR_TEST);
+
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
+            glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
+            glViewport(0, 0, gbuf.width, gbuf.height);
+            glScissor(0, 0, gbuf.width, gbuf.height);
+
+            md_gl_draw_op_t draw_op = {};
+            draw_op.type = MD_GL_REP_BALL_AND_STICK;
+            draw_op.args.ball_and_stick.ball_scale   = 1.0f;
+            draw_op.args.ball_and_stick.stick_radius = 1.0f;
+            draw_op.rep = &orb.gl_rep;
+
+            md_gl_draw_args_t draw_args = {
+                .shaders = &state.mold.gl_shaders,
+                .draw_operations = {
+                    .count = 1,
+                    .ops = &draw_op
+                },
+                .view_transform = {
+                    .view_matrix = (const float*)view_mat.elem,
+                    .proj_matrix = (const float*)proj_mat.elem,
+                },
+            };
+
+            md_gl_draw(&draw_args);
+
+            glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
+            glClearColor(1, 1, 1, 0);
+            glClear(GL_COLOR_BUFFER_BIT);
+
+            PUSH_GPU_SECTION("Postprocessing")
+            postprocessing::Descriptor postprocess_desc = {
+                .background = {
+                    .color = {24.f, 24.f, 24.f, 1.0f},
+                },
+                .bloom = {
+                    .enabled = false,
+                },
+                .tonemapping = {
+                    .enabled    = state.visuals.tonemapping.enabled,
+                    .mode       = state.visuals.tonemapping.tonemapper,
+                    .exposure   = state.visuals.tonemapping.exposure,
+                    .gamma      = state.visuals.tonemapping.gamma,
+                },
+                .ambient_occlusion = {
+                    .enabled = false
+                },
+                .depth_of_field = {
+                    .enabled = false,
+                },
+                .fxaa = {
+                    .enabled = true,
+                },
+                .temporal_reprojection = {
+                    .enabled = false,
+                },
+                .sharpen = {
+                    .enabled = true,
+                },
+                .input_textures = {
+                    .depth          = orb.gbuf.tex.depth,
+                    .color          = orb.gbuf.tex.color,
+                    .normal         = orb.gbuf.tex.normal,
+                    .velocity       = orb.gbuf.tex.velocity,
+                }
+            };
+
+            ViewParam view_param = {
+                .matrix = {
+                    .curr = {
+                        .view = view_mat,
+                        .proj = proj_mat,
+                        .norm = view_mat,
+                    },
+                    .inv = {
+                        .proj = inv_proj_mat,
+                    }
+                },
+                .clip_planes = {
+                    .near = orb.camera.near_plane,
+                    .far  = orb.camera.far_plane,
+                },
+                .resolution = {orb_win_sz.x, orb_win_sz.y},
+                .fov_y = orb.camera.fov_y,
+            };
+
+            postprocessing::shade_and_postprocess(postprocess_desc, view_param);
+            POP_GPU_SECTION()
+
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glDrawBuffer(GL_BACK);
+            glDisable(GL_SCISSOR_TEST);
+
+            if (orb.iso.enabled) {
+                PUSH_GPU_SECTION("ORB GRID RAYCAST")
+                    for (int i = 0; i < num_mos; ++i) {
+                        volume::RenderDesc vol_desc = {
+                            .render_target = {
+                                .depth  = orb.gbuf.tex.depth,
+                                .color  = orb.iso_tex[i],
+                                .width  = orb.gbuf.width,
+                                .height = orb.gbuf.height,
+                                .clear_color = true,
+                        },
+                        .texture = {
+                                .volume = orb.vol[i].tex_id,
+                        },
+                        .matrix = {
+                                .model = orb.vol[i].tex_to_world,
+                                .view  = view_mat,
+                                .proj  = proj_mat,
+                                .inv_proj = inv_proj_mat,
+                        },
+                        .iso = {
+                                .enabled = true,
+                                .count  = (size_t)orb.iso.count,
+                                .values = orb.iso.values,
+                                .colors = orb.iso.colors,
+                        },
+                        .voxel_spacing = orb.vol[i].step_size,
+                        };
+                        volume::render_volume(vol_desc);
+                    }
+                POP_GPU_SECTION();
             }
         }
         ImGui::End();
@@ -1206,9 +1321,7 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (reset_view) {
-                vec3_t min_box = mat4_mul_vec3(nto.vol.tex_to_world, vec3_set1(0.f), 1.f);
-                vec3_t max_box = mat4_mul_vec3(nto.vol.tex_to_world, vec3_set1(1.f), 1.f);
-                camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_box, max_box);
+                camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb);
 
                 if (reset_hard) {
                     nto.camera.position         = nto.target.pos;
@@ -1265,9 +1378,6 @@ struct VeloxChem : viamd::EventHandler {
 
             clear_gbuffer(&gbuf);
 
-            glEnable(GL_DEPTH_TEST);
-            glDepthMask(GL_TRUE);
-
             const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
                 GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
 
@@ -1276,6 +1386,7 @@ struct VeloxChem : viamd::EventHandler {
 
             glEnable(GL_DEPTH_TEST);
             glDepthFunc(GL_LESS);
+            glDepthMask(GL_TRUE);
 
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
             glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
@@ -1283,7 +1394,7 @@ struct VeloxChem : viamd::EventHandler {
 
             md_gl_draw_op_t draw_op = {};
             draw_op.type = MD_GL_REP_BALL_AND_STICK;
-            draw_op.args.ball_and_stick.ball_scale = 1.0f;
+            draw_op.args.ball_and_stick.ball_scale   = 1.0f;
             draw_op.args.ball_and_stick.stick_radius = 1.0f;
             draw_op.rep = &nto.gl_rep;
 
@@ -1295,7 +1406,7 @@ struct VeloxChem : viamd::EventHandler {
                 },
                 .view_transform = {
                     .view_matrix = (const float*)view_mat.elem,
-                    .projection_matrix = (const float*)proj_mat.elem,
+                    .proj_matrix = (const float*)proj_mat.elem,
                 },
             };
 
@@ -1365,12 +1476,12 @@ struct VeloxChem : viamd::EventHandler {
 
             ViewParam view_param = {
                 .matrix = {
-                    .current = {
+                    .curr = {
                     .view = view_mat,
                     .proj = proj_mat,
                     .norm = view_mat,
                 },
-                .inverse = {
+                .inv = {
                     .proj = inv_proj_mat,
                 }
                 },
@@ -1378,8 +1489,8 @@ struct VeloxChem : viamd::EventHandler {
                     .near = nto.camera.near_plane,
                     .far  = nto.camera.far_plane,
                 },
+                .resolution = {canvas_sz.x, canvas_sz.y},
                 .fov_y = nto.camera.fov_y,
-                .resolution = {canvas_sz.x, canvas_sz.y}
             };
 
             postprocessing::shade_and_postprocess(postprocess_desc, view_param);

@@ -110,7 +110,7 @@ bool camera_controller_trackball(vec3_t* position, quat_t* orientation, float* d
 
 //void camera_controller_fps(Camera* camera, const FpsControllerState& state);
 
-void camera_compute_optimal_view(vec3_t* position, quat_t* orientation, float* distance, vec3_t aabb_min, vec3_t aabb_max);
+void camera_compute_optimal_view(vec3_t* position, quat_t* orientation, float* distance, vec3_t aabb_min, vec3_t aabb_max, float distance_scale = 3.0f);
 
 // Lazy stupid procedure on top of interpolate_look_at
 void camera_animate(Camera* camera, quat_t target_ori, vec3_t target_pos, float target_dist, double dt, double target_factor = 0.12f);

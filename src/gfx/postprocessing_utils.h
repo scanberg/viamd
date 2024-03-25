@@ -104,6 +104,11 @@ struct Descriptor {
     } temporal_reprojection;
 
     struct {
+        bool enabled = true;
+        float weight = 1.0f;
+    } sharpen;
+
+    struct {
         GLuint depth = 0;
         GLuint color = 0;
         GLuint normal = 0;

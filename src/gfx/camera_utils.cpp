@@ -234,7 +234,7 @@ bool camera_controller_trackball(vec3_t* position, quat_t* orientation, float* d
     return false;
 }
 
-void camera_compute_optimal_view(vec3_t* out_pos, quat_t* out_ori, float* out_dist, vec3_t in_aabb_min, vec3_t in_aabb_max) {
+void camera_compute_optimal_view(vec3_t* out_pos, quat_t* out_ori, float* out_dist, vec3_t in_aabb_min, vec3_t in_aabb_max, float distance_scale) {
     const vec3_t ext = in_aabb_max - in_aabb_min;
     const float len = MAX(vec3_length(ext * 0.5f), 10.0f);
 
@@ -264,7 +264,7 @@ void camera_compute_optimal_view(vec3_t* out_pos, quat_t* out_ori, float* out_di
     const vec3_t dir = vec3_normalize(right * 0.6f + up * 0.5f + out * 1.0f);
 
     const vec3_t cen = (in_aabb_min + in_aabb_max) * 0.5f;
-    const vec3_t pos = cen + dir * len * 3.0f;
+    const vec3_t pos = cen + dir * len * distance_scale;
 
     *out_ori = quat_from_mat4(mat4_look_at(pos, cen, up));
     *out_pos = pos;

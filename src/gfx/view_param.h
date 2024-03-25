@@ -6,20 +6,18 @@ struct ViewParam {
     struct Block {
         mat4_t view;
         mat4_t proj;
-        mat4_t proj_jittered;
         mat4_t norm;
     };
 
     struct {
-        Block current;
-        Block inverse;
-        Block previous;
+        Block curr;
+        Block inv;
+        Block prev;
     } matrix;
 
     struct {
-        vec2_t next;
-        vec2_t current;
-        vec2_t previous;
+        vec2_t curr;
+        vec2_t prev;
     } jitter;
 
     struct {
@@ -27,6 +25,6 @@ struct ViewParam {
         float far;
     } clip_planes;
 
-    float fov_y;
     vec2_t resolution;
+    float fov_y;
 };
