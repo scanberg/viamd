@@ -907,12 +907,44 @@ struct VeloxChem : viamd::EventHandler {
     }
     */
     // Returns peak index closest to x, assumes that x-values are sorted. Currently only compares x-values
-    int get_hovered_peak(double x, const double* x_peaks, int num_peaks, double proxy_distance) {
+    int get_hovered_peak(double x, double y, const double* x_peaks, const double* y_peaks, int num_peaks, double proxy_distance) {
         int closest_idx = 0;
-        double closest_distance = fabs(x_peaks[0] - x);
-        for (int i = 1; i < num_peaks; i++) {
-            if (fabs(x_peaks[i] - x) < closest_distance) {
+        double y_max = 0;
+        double y_min = 0;
+        double distance_x = fabs(x_peaks[0] - x);
+        double distance_y = 0;
+        double closest_distance = 0;
+        for (int i = 0; i < num_peaks; i++) {
+            y_max = MAX(y_peaks[i], 0);
+            y_min = MIN(y_peaks[i], 0);
+
+            if (y > y_max) {
+                distance_y = fabs(y - y_max);
+            }
+            else if (y < y_min) {
+                distance_y = fabs(y - y_min);
+            }
+            else {
+                distance_y = 0;
+            }
+
+            distance_x = fabs(x_peaks[i] - x);
+
+            if (i == 0 && distance_y == 0 ){
+                closest_distance = distance_x;
+                closest_idx = 0;
+
+            }
+            else if (i == 0) {
+                closest_distance = sqrt(pow(distance_x, 2) + pow(distance_y, 2)); // Is there a better function for doing this? Is this expensive?
+                closest_idx = 0;
+            }
+            else if (distance_y == 0 && distance_x < closest_distance) {
                 closest_distance = fabs(x_peaks[i] - x);
+                closest_idx = i;
+            }
+            else if (sqrt(pow(distance_x, 2) + pow(distance_y, 2)) < closest_distance) {
+                closest_distance = sqrt(pow(distance_x, 2) + pow(distance_y, 2));
                 closest_idx = i;
             }
             else {
@@ -1019,7 +1051,7 @@ struct VeloxChem : viamd::EventHandler {
 
             ImGui::BulletText("Mouse X = %f", (float)mouse_pos.x);
             //double mouse_x = mouse_pos.x;
-            int hovered_peak = get_hovered_peak(mouse_pos.x, x_peaks, num_peaks,0.05);
+            static int hovered_peak = -1;
             ImGui::BulletText("Closest Index = %i", hovered_peak);
             if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
                 if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
@@ -1030,6 +1062,7 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::SetupAxes(x_unit_str[x_unit], "Oscillator Strength");
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_osc_min_con, y_osc_max_con);
+                    if (ImPlot::IsPlotHovered()) { hovered_peak = get_hovered_peak(mouse_pos.x, mouse_pos.y, x_peaks, y_osc_peaks, num_peaks, 0.05); }
 
                     // @HACK: Compute pixel width of 2 'plot' units
                     const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
@@ -1061,6 +1094,7 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_cgs_min_con, y_cgs_max_con);
 
+                    if (ImPlot::IsPlotHovered()) { hovered_peak = get_hovered_peak(mouse_pos.x, mouse_pos.y, x_peaks, y_osc_peaks, num_peaks, 0.05); }
                     // @HACK: Compute pixel width of 2 'plot' units
                     const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
 
