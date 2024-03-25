@@ -93,8 +93,8 @@ public:
     uint32_t   m_range_offset = 0;
     std::atomic_uint32_t m_set_completed = 0;
     std::atomic_bool m_interrupt = false;
-    enki::Dependency m_dependency;
-    char m_buf[LABEL_SIZE];
+    enki::Dependency m_dependency = {};
+    char m_buf[LABEL_SIZE] = "";
     str_t m_label = {};
     ID m_id = INVALID_ID;
 };
@@ -117,8 +117,8 @@ public:
 
     Task m_function = nullptr;
     void* m_user_data = nullptr;
-    enki::Dependency m_dependency;
-    char m_buf[LABEL_SIZE];
+    enki::Dependency m_dependency = {};
+    char m_buf[LABEL_SIZE] = "";
     str_t m_label = {};
     ID m_id = INVALID_ID;
 };

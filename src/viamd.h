@@ -214,17 +214,15 @@ struct ComputeOrbital {
 
     // Output information
     bool output_written = false;
-    mat4_t mdl_mat = {};
     mat4_t tex_mat = {};
     vec3_t voxel_spacing = {};
     uint32_t *dst_texture = 0;
 };
 
 struct RepresentationVolume {
-    uint32_t vol_tex = 0;
-    mat4_t mdl_mat = mat4_ident();
-    mat4_t tex_mat = mat4_ident();
-    vec3_t voxel_spacing = {};
+    uint32_t vol_tex = 0;    
+    mat4_t   tex_mat = mat4_ident();
+    vec3_t   voxel_spacing = {};
 
     VolumeResolution resolution = VolumeResolution::Mid;
 
@@ -567,10 +565,21 @@ struct ApplicationState {
 #endif
 
         struct {
+            bool enabled = true;
+            postprocessing::Tonemapping tonemapper = postprocessing::Tonemapping_Filmic;
+            float exposure = 1.f;
+            float gamma = 2.2f;
+        } tonemapping;
+
+        struct {
             bool enabled = false;
             float focus_depth = 10.0f;
             float focus_scale = 10.0f;
         } dof;
+
+        struct {
+            bool enabled = true;
+        } fxaa;
 
         struct {
             bool enabled = true;
@@ -586,14 +595,8 @@ struct ApplicationState {
 
         struct {
             bool enabled = true;
-            postprocessing::Tonemapping tonemapper = postprocessing::Tonemapping_Filmic;
-            float exposure = 1.f;
-            float gamma = 2.2f;
-        } tonemapping;
-
-        struct {
-            bool enabled = true;
-        } fxaa;
+            float weight = 1.0f;
+        } sharpen;
 
         struct {
             bool draw_control_points = false;

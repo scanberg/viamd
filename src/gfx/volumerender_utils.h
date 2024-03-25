@@ -43,6 +43,7 @@ struct RenderDesc {
         uint32_t color = 0;
         uint32_t width = 0;
         uint32_t height = 0;
+        bool clear_color = false;
     } render_target;
 
     struct {
