@@ -122,6 +122,8 @@ struct VeloxChem : viamd::EventHandler {
 
     struct Rsp {
         bool show_window = false;
+        int hovered = -1;
+        int selected = -1;
     } rsp;
 
     // Arena for persistent allocations for the veloxchem module (tied to the lifetime of the VLX object)
@@ -1081,7 +1083,6 @@ struct VeloxChem : viamd::EventHandler {
 
         static float sigma = 0.1;
         static ImPlotPoint mouse_pos = { 0,0 };
-        static int selected_peak = -1;
 
         const char* broadening_str[] = { "Gaussian","Lorentzian" };
         static broadening_mode_t broadening_mode = BROADENING_GAUSSIAN;
@@ -1166,8 +1167,7 @@ struct VeloxChem : viamd::EventHandler {
 
             ImGui::BulletText("Mouse X = %f", (float)mouse_pos.x);
             //double mouse_x = mouse_pos.x;
-            static int hovered_peak = -1;
-            ImGui::BulletText("Closest Index = %i", hovered_peak);
+            ImGui::BulletText("Closest Index = %i", rsp.hovered);
             if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
                 if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
                 // Absorption
@@ -1177,7 +1177,7 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::SetupAxes(x_unit_str[x_unit], "Oscillator Strength");
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_osc_min_con, y_osc_max_con);
-                    if (ImPlot::IsPlotHovered()) { hovered_peak = get_hovered_peak(mouse_pos.x, mouse_pos.y, x_peaks, y_osc_peaks, num_peaks, 0.05); }
+                    if (ImPlot::IsPlotHovered()) { rsp.hovered = get_hovered_peak(mouse_pos.x, mouse_pos.y, x_peaks, y_osc_peaks, num_peaks, 0.05); }
 
                     // @HACK: Compute pixel width of 2 'plot' units
                     const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
@@ -1185,16 +1185,16 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::PlotBars("Exited States", x_peaks, y_osc_peaks, num_peaks, bar_width);
                     ImPlot::PlotLine("Oscillator Strength", x_values, y_osc_str, num_samples);
                     mouse_pos = ImPlot::GetPlotMousePos(IMPLOT_AUTO);
-                    if (hovered_peak != -1 && ImPlot::IsPlotHovered()) {
-                        ImPlot::TagX(x_peaks[hovered_peak], ImVec4{ 0,1,1,1 }, "H");
+                    if (rsp.hovered != -1 && ImPlot::IsPlotHovered()) {
+                        ImPlot::TagX(x_peaks[rsp.hovered], ImVec4{ 0,1,1,1 }, "H");
                     }
 
                     // Update selected peak on click
                     if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) && ImPlot::IsPlotHovered()) {
-                        selected_peak = hovered_peak;
+                        rsp.selected = rsp.hovered;
                     }
-                    if (selected_peak != -1) {
-                        ImPlot::TagX(x_peaks[selected_peak], ImVec4{ 1,0,0,1 }, "S");
+                    if (rsp.selected != -1) {
+                        ImPlot::TagX(x_peaks[rsp.selected], ImVec4{ 1,0,0,1 }, "S");
                     }
                     
                 }
@@ -1209,24 +1209,24 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_cgs_min_con, y_cgs_max_con);
 
-                    if (ImPlot::IsPlotHovered()) { hovered_peak = get_hovered_peak(mouse_pos.x, mouse_pos.y, x_peaks, y_osc_peaks, num_peaks, 0.05); }
+                    if (ImPlot::IsPlotHovered()) { rsp.hovered = get_hovered_peak(mouse_pos.x, mouse_pos.y, x_peaks, y_osc_peaks, num_peaks, 0.05); }
                     // @HACK: Compute pixel width of 2 'plot' units
                     const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
 
                     ImPlot::PlotBars("Exited States", x_peaks, y_cgs_peaks, num_peaks, bar_width);
                     ImPlot::PlotLine("ECD", x_values, y_cgs_str, num_samples);
 
-                    if (hovered_peak != -1 && ImPlot::IsPlotHovered()) {
-                        ImPlot::TagX(x_peaks[hovered_peak], ImVec4{ 0,1,1,1 }, "H");
+                    if (rsp.hovered != -1 && ImPlot::IsPlotHovered()) {
+                        ImPlot::TagX(x_peaks[rsp.hovered], ImVec4{ 0,1,1,1 }, "H");
                     }
 
                     // Update selected peak on click
                     if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) && ImPlot::IsPlotHovered()) {
-                        selected_peak = hovered_peak;
+                        rsp.selected = rsp.hovered;
                         
                     }
-                    if (selected_peak != -1) {
-                        ImPlot::TagX(x_peaks[selected_peak], ImVec4{ 1,0,0,1 }, "S");
+                    if (rsp.selected != -1) {
+                        ImPlot::TagX(x_peaks[rsp.selected], ImVec4{ 1,0,0,1 }, "S");
                     }
                 }
                 ImPlot::EndPlot();
