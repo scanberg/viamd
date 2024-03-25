@@ -934,6 +934,7 @@ struct VeloxChem : viamd::EventHandler {
 
         static float sigma = 0.1;
         static ImPlotPoint mouse_pos = { 0,0 };
+        static int selected_peak = -1;
 
         const char* broadening_str[] = { "Gaussian","Lorentzian" };
         static broadening_mode_t broadening_mode = BROADENING_GAUSSIAN;
@@ -1018,8 +1019,8 @@ struct VeloxChem : viamd::EventHandler {
 
             ImGui::BulletText("Mouse X = %f", (float)mouse_pos.x);
             //double mouse_x = mouse_pos.x;
-            int closest = get_hovered_peak(mouse_pos.x, x_peaks, num_peaks,0.05);
-            ImGui::BulletText("Closest Index = %i", closest);
+            int hovered_peak = get_hovered_peak(mouse_pos.x, x_peaks, num_peaks,0.05);
+            ImGui::BulletText("Closest Index = %i", hovered_peak);
             if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
                 if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
                 // Absorption
@@ -1036,7 +1037,18 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::PlotBars("Exited States", x_peaks, y_osc_peaks, num_peaks, bar_width);
                     ImPlot::PlotLine("Oscillator Strength", x_values, y_osc_str, num_samples);
                     mouse_pos = ImPlot::GetPlotMousePos(IMPLOT_AUTO);
+                    if (hovered_peak != -1 && ImPlot::IsPlotHovered()) {
+                        ImPlot::TagX(x_peaks[hovered_peak], ImVec4{ 0,1,1,1 }, "H");
+                    }
 
+                    // Update selected peak on click
+                    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) && ImPlot::IsPlotHovered()) {
+                        selected_peak = hovered_peak;
+                    }
+                    if (selected_peak != -1) {
+                        ImPlot::TagX(x_peaks[selected_peak], ImVec4{ 1,0,0,1 }, "S");
+                    }
+                    
                 }
                 ImPlot::EndPlot();
 
@@ -1055,6 +1067,18 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::PlotBars("Exited States", x_peaks, y_cgs_peaks, num_peaks, bar_width);
                     ImPlot::PlotLine("ECD", x_values, y_cgs_str, num_samples);
 
+                    if (hovered_peak != -1 && ImPlot::IsPlotHovered()) {
+                        ImPlot::TagX(x_peaks[hovered_peak], ImVec4{ 0,1,1,1 }, "H");
+                    }
+
+                    // Update selected peak on click
+                    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) && ImPlot::IsPlotHovered()) {
+                        selected_peak = hovered_peak;
+                        
+                    }
+                    if (selected_peak != -1) {
+                        ImPlot::TagX(x_peaks[selected_peak], ImVec4{ 1,0,0,1 }, "S");
+                    }
                 }
                 ImPlot::EndPlot();
             }
