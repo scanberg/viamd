@@ -6033,8 +6033,10 @@ static void draw_density_volume_window(ApplicationState* data) {
         const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
 
         auto& gbuf = data->density_volume.fbo;
-        if (gbuf.width != canvas_sz.x || gbuf.height != canvas_sz.y) {
-            init_gbuffer(&gbuf, canvas_sz.x, canvas_sz.y);
+        int width  = MAX(1, (int)canvas_sz.x);
+        int height = MAX(1, (int)canvas_sz.y);
+        if ((int)gbuf.width != width || (int)gbuf.height != height) {
+            init_gbuffer(&gbuf, width, height);
         }
 
         bool reset_hard = false;
@@ -6109,8 +6111,8 @@ static void draw_density_volume_window(ApplicationState* data) {
         mat4_t proj_mat = camera_perspective_projection_matrix(data->density_volume.camera, (float)canvas_sz.x / (float)canvas_sz.y);
         mat4_t inv_proj_mat = camera_inverse_perspective_projection_matrix(data->density_volume.camera, (float)canvas_sz.x / (float)canvas_sz.y);
 
+        PUSH_GPU_SECTION("RENDER DENSITY VOLUME");
         clear_gbuffer(&gbuf);
-
 
         const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
             GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
@@ -6125,6 +6127,7 @@ static void draw_density_volume_window(ApplicationState* data) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
         glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
         glViewport(0, 0, gbuf.width, gbuf.height);
+        glScissor(0, 0,  gbuf.width, gbuf.height);
 
         int64_t selected_property = -1;
         for (size_t i = 0; i < md_array_size(data->display_properties); ++i) {
@@ -6217,8 +6220,12 @@ static void draw_density_volume_window(ApplicationState* data) {
             }
         }
 
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
+        glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
+        glViewport(0, 0, gbuf.width, gbuf.height);
+        glScissor(0, 0, gbuf.width, gbuf.height);
+
         if (data->density_volume.show_bounding_box) {
-            glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
             glEnable(GL_DEPTH_TEST);
             glDepthMask(GL_TRUE);
             glEnable(GL_BLEND);
@@ -6256,10 +6263,7 @@ static void draw_density_volume_window(ApplicationState* data) {
                 .gamma = data->visuals.tonemapping.gamma,
             },
             .ambient_occlusion = {
-                .enabled = data->visuals.ssao.enabled,
-                .radius = data->visuals.ssao.radius,
-                .intensity = data->visuals.ssao.intensity,
-                .bias = data->visuals.ssao.bias,
+                .enabled = false,
             },
             .depth_of_field = {
                 .enabled = false,
@@ -6271,7 +6275,7 @@ static void draw_density_volume_window(ApplicationState* data) {
                 .enabled = false,
             },
             .sharpen = {
-                .enabled = true,
+                .enabled = false,
             },
             .input_textures = {
                 .depth = gbuf.tex.depth,
@@ -6306,6 +6310,8 @@ static void draw_density_volume_window(ApplicationState* data) {
 
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         glDrawBuffer(GL_BACK);
+
+        POP_GPU_SECTION();
     }
 
     ImGui::End();

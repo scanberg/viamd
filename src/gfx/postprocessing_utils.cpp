@@ -315,7 +315,7 @@ struct HBAOData {
     vec4_t sample_pattern[32];
 };
 
-void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4_t& proj_mat, float intensity, float radius, float bias, unsigned frame) {
+void setup_ubo_hbao_data(GLuint ubo, int width, int height, const vec2_t& inv_res, const mat4_t& proj_mat, float intensity, float radius, float bias, unsigned frame) {
     ASSERT(ubo);
 
     // From intel ASSAO
@@ -362,14 +362,15 @@ void setup_ubo_hbao_data(GLuint ubo, int width, int height, const mat4_t& proj_m
     data.neg_inv_r2 = -1.f / (r * r);
     data.n_dot_v_bias = CLAMP(bias, 0.f, 1.f - FLT_EPSILON);
     data.frame = frame;
-    data.inv_full_res = {1.f / float(width), 1.f / float(height)};
+    data.inv_full_res = inv_res;
     data.ao_multiplier = 1.f / (1.f - data.n_dot_v_bias);
     data.pow_exponent = MAX(intensity, 0.f);
     data.proj_info = proj_info;
     memcpy(&data.sample_pattern, SAMPLE_PATTERN, sizeof(SAMPLE_PATTERN));
 
     glBindBuffer(GL_UNIFORM_BUFFER, ubo);
-    glBufferData(GL_UNIFORM_BUFFER, sizeof(HBAOData), &data, GL_DYNAMIC_DRAW);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(HBAOData), &data);
+    //glBufferData(GL_UNIFORM_BUFFER, sizeof(HBAOData), &data, GL_DYNAMIC_DRAW);
     glBindBuffer(GL_UNIFORM_BUFFER, 0);
 }
 
@@ -1148,23 +1149,29 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj
     ASSERT(glIsTexture(normal_tex));
 
     GLint last_fbo;
+    GLint last_viewport[4];
     GLint last_draw_buffer;
+    GLint last_scissor_box[4];
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fbo);
+    glGetIntegerv(GL_VIEWPORT, last_viewport);
+    glGetIntegerv(GL_SCISSOR_BOX, last_scissor_box);
     glGetIntegerv(GL_DRAW_BUFFER, &last_draw_buffer);
+
+    int width  = last_viewport[2];
+    int height = last_viewport[3];
 
     const bool ortho = is_orthographic_proj_matrix(proj_matrix);
     const float sharpness = ssao::compute_sharpness(radius);
-    const vec2_t inv_res = vec2_t{1.f / gl.tex_width, 1.f / gl.tex_height};
-    const int w = gl.tex_width;
-    const int h = gl.tex_height;
+    const vec2_t inv_res = vec2_t{ 1.f / (float)width, 1.f / (float)height };
 
     glBindVertexArray(gl.vao);
 
-    ssao::setup_ubo_hbao_data(gl.ssao.ubo_hbao_data, w, h, proj_matrix, intensity, radius, bias, frame);
+    ssao::setup_ubo_hbao_data(gl.ssao.ubo_hbao_data, width, height, inv_res, proj_matrix, intensity, radius, bias, frame);
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.ssao.fbo);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
-    glViewport(0, 0, w, h);
+    glViewport(0, 0, width, height);
+    glScissor(0, 0, width, height);
     glClearColor(1,1,1,1);
     glClear(GL_COLOR_BUFFER_BIT);
 
@@ -1215,6 +1222,8 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj
     PUSH_GPU_SECTION("2nd")
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, last_fbo);
     glDrawBuffer(last_draw_buffer);
+    glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
+    glScissor(last_scissor_box[0], last_scissor_box[1], last_scissor_box[2], last_scissor_box[3]);
     glBindTexture(GL_TEXTURE_2D, gl.ssao.tex[1]);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     POP_GPU_SECTION()
@@ -1820,10 +1829,9 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
         GL_COLOR_ATTACHMENT1,
     };
      
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.targets.fbo);
     glViewport(0, 0, width, height);
     glScissor(0, 0, width, height);
-
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.targets.fbo);
     glDrawBuffers(2, draw_buffers);
     glClearColor(0,0,0,0);
     glClear(GL_COLOR_BUFFER_BIT);
