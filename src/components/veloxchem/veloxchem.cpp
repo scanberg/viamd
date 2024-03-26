@@ -1025,12 +1025,13 @@ struct VeloxChem : viamd::EventHandler {
     }
     */
 
+    //converts x and y peaks into pixel points in context of the current plot. Use between BeginPlot() and EndPlot()
     static inline void peaks_to_pixels(ImVec2* pixel_peaks, const double* x_peaks, const double* y_peaks, size_t num_peaks) {
         for (size_t i = 0; i < num_peaks; i++) {
             pixel_peaks[i] = ImPlot::PlotToPixels(ImPlotPoint{ x_peaks[i], y_peaks[i] });
         }
     }
-    // Returns peak index closest to x, assumes that x-values are sorted.
+    // Returns peak index closest to mouse pixel position, assumes that x-values are sorted.
     static inline size_t get_hovered_peak(const ImVec2 mouse_pos, const ImVec2* pixel_peaks, size_t num_peaks, double proxy_distance) {
         int closest_idx = 0;
         double x = 0;
@@ -1041,6 +1042,9 @@ struct VeloxChem : viamd::EventHandler {
         double distance_y = 0;
         double closest_distance = 0;
         double pixel_y0 = ImPlot::PlotToPixels(0, 0).y;
+
+        //Keep in mind that pixel y is 0 at the top, so you flip the comparison compared to plot y. The code below still seems to work as intended though.
+
         for (int i = 0; i < num_peaks; i++) {
             x = mouse_pos.x;
             y = mouse_pos.y;
@@ -1081,8 +1085,6 @@ struct VeloxChem : viamd::EventHandler {
             else {
                 break;
             }
-            //closest_idx = fabs(x_peaks[closest_idx] - x) < fabs(x_peaks[i] - x) ? closest_idx : i;
-            //closest_idx = x_peaks[closest_idx]; //< x_peaks[i] ? closest_idx : i;
         }
         return closest_distance < proxy_distance ? closest_idx : -1;
     }
@@ -1217,7 +1219,6 @@ struct VeloxChem : viamd::EventHandler {
                 if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
                 // Absorption
                 if (ImPlot::BeginPlot("Absorption")) {
-                    // ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, vlx.scf.iter.count);
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
                     ImPlot::SetupAxes(x_unit_str[x_unit], "Oscillator Strength");
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
