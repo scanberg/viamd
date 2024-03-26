@@ -1336,6 +1336,13 @@ struct VeloxChem : viamd::EventHandler {
                 ImVec2 p1 = {grid_p1.x, grid_p0.y + win_sz.y * y};
                 draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
             }
+            // @TODO: Draw Sankey Diagram of Transition Matrix
+            {
+                ImVec2 p0 = canvas_p0 + canvas_sz * ImVec2(0.5f, 0.0f);
+                ImVec2 p1 = canvas_p1;
+                ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
+                draw_list->AddText(text_pos_bl, ImColor(0, 0, 0, 255), "Transition Diagram");
+            }
 
             const bool is_hovered = ImGui::IsItemHovered();
             const bool is_active = ImGui::IsItemActive();
