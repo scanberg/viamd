@@ -1024,17 +1024,28 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
     */
-    // Returns peak index closest to x, assumes that x-values are sorted. Currently only compares x-values
-    static inline size_t get_hovered_peak(double x, double y, const double* x_peaks, const double* y_peaks, size_t num_peaks, double proxy_distance) {
+
+    static inline void peaks_to_pixels(ImVec2* pixel_peaks, const double* x_peaks, const double* y_peaks, size_t num_peaks) {
+        for (size_t i = 0; i < num_peaks; i++) {
+            pixel_peaks[i] = ImPlot::PlotToPixels(ImPlotPoint{ x_peaks[i], y_peaks[i] });
+        }
+    }
+    // Returns peak index closest to x, assumes that x-values are sorted.
+    static inline size_t get_hovered_peak(const ImVec2 mouse_pos, const ImVec2* pixel_peaks, size_t num_peaks, double proxy_distance) {
         int closest_idx = 0;
+        double x = 0;
+        double y = 0;
         double y_max = 0;
         double y_min = 0;
-        double distance_x = fabs(x_peaks[0] - x);
+        double distance_x = 0;
         double distance_y = 0;
         double closest_distance = 0;
+        double pixel_y0 = ImPlot::PlotToPixels(0, 0).y;
         for (int i = 0; i < num_peaks; i++) {
-            y_max = MAX(y_peaks[i], 0);
-            y_min = MIN(y_peaks[i], 0);
+            x = mouse_pos.x;
+            y = mouse_pos.y;
+            y_max = MAX(pixel_peaks[i].y, pixel_y0);
+            y_min = MIN(pixel_peaks[i].y, pixel_y0);
 
             //Check if the y location is within the range of y_min,ymax
             if (y > y_max) {
@@ -1047,7 +1058,7 @@ struct VeloxChem : viamd::EventHandler {
                 distance_y = 0;
             }
 
-            distance_x = fabs(x_peaks[i] - x);
+            distance_x = fabs(pixel_peaks[i].x - x);
 
             // We need a special case for i == 0 to set a reference for comparison, so that closest_distance does not start on 0;
             if (i == 0 && distance_y == 0 ){
@@ -1060,7 +1071,7 @@ struct VeloxChem : viamd::EventHandler {
                 closest_idx = 0;
             }
             else if (distance_y == 0 && distance_x < closest_distance) {
-                closest_distance = fabs(x_peaks[i] - x);
+                closest_distance = fabs(pixel_peaks[i].x - x);
                 closest_idx = i;
             }
             else if (sqrt(pow(distance_x, 2) + pow(distance_y, 2)) < closest_distance) {
@@ -1092,7 +1103,7 @@ struct VeloxChem : viamd::EventHandler {
         defer { md_temp_set_pos_back(temp_pos); };
 
         static float sigma = 0.1;
-        static ImPlotPoint mouse_pos = { 0,0 };
+        static ImVec2 mouse_pos = { 0,0 };
 
         const char* broadening_str[] = { "Gaussian","Lorentzian" };
         static broadening_mode_t broadening_mode = BROADENING_GAUSSIAN;
@@ -1121,6 +1132,9 @@ struct VeloxChem : viamd::EventHandler {
             double* x_values    = (double*)md_temp_push(sizeof(double) * num_samples);
             double* y_osc_str = (double*)md_temp_push(sizeof(double) * num_samples);
             double* y_cgs_str   = (double*)md_temp_push(sizeof(double) * num_samples);
+
+            ImVec2*   pixel_osc_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
+            ImVec2*   pixel_cgs_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
 
             const double x_min = vlx.rsp.absorption_ev[0] - 1.0;
             const double x_max = vlx.rsp.absorption_ev[num_peaks - 1] + 1.0;
@@ -1175,6 +1189,7 @@ struct VeloxChem : viamd::EventHandler {
             x_max_con += con_lim_fac * x_graph_width;
             x_min_con -= con_lim_fac * x_graph_width;
 
+
             //Hovered display text
             if (rsp.hovered != -1 && rsp.focused_plot == 0) {
                 ImGui::BulletText("Hovered: %s = %f, Y = %f", x_unit_str[x_unit], (float)x_peaks[rsp.hovered], (float)y_osc_peaks[rsp.hovered]);
@@ -1194,7 +1209,8 @@ struct VeloxChem : viamd::EventHandler {
             else {
                 ImGui::BulletText("Selected:");
             }
-
+            ImGui::BulletText("Mouse: X = %f, Y = %f", mouse_pos.x, mouse_pos.y);
+            ImGui::BulletText("Peak 0: X = %f, Y = %f", (float)pixel_osc_peaks[0].x, (float)pixel_osc_peaks[0].y);
             rsp.focused_plot = -1;
             ImGui::BulletText("Closest Index = %i", rsp.hovered);
             if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
@@ -1206,8 +1222,10 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::SetupAxes(x_unit_str[x_unit], "Oscillator Strength");
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_osc_min_con, y_osc_max_con);
+                    peaks_to_pixels(pixel_osc_peaks, x_peaks, y_osc_peaks, num_peaks);
+                    mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
                     if (ImPlot::IsPlotHovered()) {
-                        rsp.hovered = get_hovered_peak(mouse_pos.x, mouse_pos.y, x_peaks, y_osc_peaks, num_peaks, 0.05);
+                        rsp.hovered = get_hovered_peak(mouse_pos, pixel_osc_peaks, num_peaks, 10);
                         rsp.focused_plot = 0;
                     }
 
@@ -1216,7 +1234,6 @@ struct VeloxChem : viamd::EventHandler {
 
                     ImPlot::PlotBars("Exited States", x_peaks, y_osc_peaks, num_peaks, bar_width);
                     ImPlot::PlotLine("Oscillator Strength", x_values, y_osc_str, num_samples);
-                    mouse_pos = ImPlot::GetPlotMousePos(IMPLOT_AUTO);
                     if (rsp.hovered != -1 && ImPlot::IsPlotHovered()) {
                         draw_bar(0, x_peaks[rsp.hovered], y_osc_peaks[rsp.hovered], bar_width, ImVec4{ 0,1,0,1 });
                     }
@@ -1226,7 +1243,7 @@ struct VeloxChem : viamd::EventHandler {
                         rsp.selected = rsp.hovered;
                     }
                     if (rsp.selected != -1) {
-                        draw_bar(0, x_peaks[rsp.selected], y_osc_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
+                        draw_bar(1, x_peaks[rsp.selected], y_osc_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
                     }
                     
                 }
@@ -1235,14 +1252,15 @@ struct VeloxChem : viamd::EventHandler {
                 if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
                 // Rotatory ECD
                 if (ImPlot::BeginPlot("ECD")) {
-                    // ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, vlx.scf.iter.count);
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
                     ImPlot::SetupAxes(x_unit_str[x_unit], "Rotatory Strength");
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_cgs_min_con, y_cgs_max_con);
+                    peaks_to_pixels(pixel_cgs_peaks, x_peaks, y_cgs_peaks, num_peaks);
+                    mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
 
                     if (ImPlot::IsPlotHovered()) { 
-                        rsp.hovered = get_hovered_peak(mouse_pos.x, mouse_pos.y, x_peaks, y_osc_peaks, num_peaks, 0.05); 
+                        rsp.hovered = get_hovered_peak(mouse_pos, pixel_cgs_peaks, num_peaks, 10);
                         rsp.focused_plot = 1;
                     }
                     // @HACK: Compute pixel width of 2 'plot' units
@@ -1253,7 +1271,7 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::PlotLine("ECD", x_values, y_cgs_str, num_samples);
 
                     if (rsp.hovered != -1 && ImPlot::IsPlotHovered()) {
-                        draw_bar(0, x_peaks[rsp.hovered], y_cgs_peaks[rsp.hovered], bar_width, ImVec4{ 0,1,0,1 });
+                        draw_bar(2, x_peaks[rsp.hovered], y_cgs_peaks[rsp.hovered], bar_width, ImVec4{ 0,1,0,1 });
                     }
 
                     // Update selected peak on click
@@ -1261,7 +1279,7 @@ struct VeloxChem : viamd::EventHandler {
                         rsp.selected = rsp.hovered;
                     }
                     if (rsp.selected != -1) {
-                        draw_bar(0, x_peaks[rsp.selected], y_cgs_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
+                        draw_bar(3, x_peaks[rsp.selected], y_cgs_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
                     }
                 }
                 ImPlot::EndPlot();
