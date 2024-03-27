@@ -70,6 +70,7 @@ struct VeloxChem : viamd::EventHandler {
         int num_x  = 3;
         int num_y  = 3;
         int mo_idx = -1;
+        int scroll_to_idx = -1;
 
         struct {
             bool enabled = true;
@@ -188,15 +189,8 @@ struct VeloxChem : viamd::EventHandler {
                         // Scf
                         scf.show_window = true;
 
-                        // Determine HOMO/LUMO idx
-                        for (int i = 0; i < (int)vlx.scf.alpha.occupations.count; ++i) {
-                            if (vlx.scf.alpha.occupations.data[i] > 0) {
-                                homo_idx = i;
-                            } else {
-                                lumo_idx = i;
-                                break;
-                            }
-                        }
+                        homo_idx = (int)vlx.scf.homo_idx;
+                        lumo_idx = (int)vlx.scf.lumo_idx;
 
                         vec4_t min_box = vec4_set1( FLT_MAX);
                         vec4_t max_box = vec4_set1(-FLT_MAX);
@@ -239,6 +233,7 @@ struct VeloxChem : viamd::EventHandler {
                         md_gl_representation_set_color(&orb.gl_rep, 0, (uint32_t)state.mold.mol.atom.count, colors, 0);
                         camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, min_aabb, max_aabb, orb.distance_scale);
                         orb.mo_idx = homo_idx;
+                        orb.scroll_to_idx = homo_idx;
                         if (!orb.vol_fbo) glGenFramebuffers(1, &orb.vol_fbo);
 
                     } else {
@@ -802,12 +797,11 @@ struct VeloxChem : viamd::EventHandler {
                 Col_Ene,
             };
 
-            int scroll_to_idx = -1;
             if (ImGui::IsWindowAppearing()) {
-                scroll_to_idx = orb.mo_idx;
+                orb.scroll_to_idx = orb.mo_idx;
             }
             if (ImGui::Button("Goto HOMO", ImVec2(outer_size.x,0))) {
-                scroll_to_idx = homo_idx;
+                orb.scroll_to_idx = homo_idx;
             }
 
             const ImGuiTableFlags flags =
@@ -828,12 +822,13 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::TableSetupScrollFreeze(0, 1); // Make row always visible
                 ImGui::TableHeadersRow();
 
-                for (int n = 0; n < num_orbitals(); n++) {
+                for (int n = (int)num_orbitals() - 1; n >= 0; n--) {
                     ImGui::PushID(n + 1);
                     ImGui::TableNextRow();
                     bool is_selected = (beg_mo_idx <= n && n < beg_mo_idx + num_mos);
                     ImGui::TableNextColumn();
-                    if (scroll_to_idx != -1 && n == scroll_to_idx) {
+                    if (orb.scroll_to_idx != -1 && n == orb.scroll_to_idx) {
+                        orb.scroll_to_idx = -1;
                         ImGui::SetScrollHereY();
                     }
                     char buf[32];
@@ -1296,6 +1291,7 @@ struct VeloxChem : viamd::EventHandler {
                     glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, nto.vol[pi].tex_id, 0);
                     glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, nto.vol[hi].tex_id, 0);
                     glClearBufferfv(GL_COLOR, 0, zero);
+                    glClearBufferfv(GL_COLOR, 1, zero);
                 }
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
             }
