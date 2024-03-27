@@ -936,21 +936,20 @@ struct VeloxChem : viamd::EventHandler {
 
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             draw_list->AddRectFilled(canvas_p0, canvas_p1, IM_COL32(255, 255, 255, 255));
-            for (int y = 0; y < orb.num_y; ++y) {
-                for (int x = 0; x < orb.num_x; ++x) {
-                    int i = y * orb.num_x + x;
-                    int mo_idx = beg_mo_idx + (num_mos - 1 - i);
-                    ImVec2 p0 = canvas_p0 + orb_win_sz * ImVec2((float)(x+0), (float)(y+0));
-                    ImVec2 p1 = canvas_p0 + orb_win_sz * ImVec2((float)(x+1), (float)(y+1));
-                    if (-1 < mo_idx && mo_idx < num_orbitals()) {
-                        ImVec2 text_pos = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
-                        char buf[32];
-                        const char* lbl = (mo_idx == homo_idx) ? " (HOMO)" : (mo_idx == lumo_idx) ? " (LUMO)" : "";
-                        snprintf(buf, sizeof(buf), "%i%s", mo_idx + 1, lbl);
-                        draw_list->AddImage((ImTextureID)(intptr_t)orb.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
-                        draw_list->AddImage((ImTextureID)(intptr_t)orb.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
-                        draw_list->AddText(text_pos, ImColor(0,0,0), buf);
-                    }
+            for (int i = 0; i < num_mos; ++i) {
+                int mo_idx = beg_mo_idx + i;
+                int x = orb.num_x - i % orb.num_x - 1;
+                int y = orb.num_y - i / orb.num_x - 1;
+                ImVec2 p0 = canvas_p0 + orb_win_sz * ImVec2((float)(x+0), (float)(y+0));
+                ImVec2 p1 = canvas_p0 + orb_win_sz * ImVec2((float)(x+1), (float)(y+1));
+                if (-1 < mo_idx && mo_idx < num_orbitals()) {
+                    ImVec2 text_pos = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
+                    char buf[32];
+                    const char* lbl = (mo_idx == homo_idx) ? " (HOMO)" : (mo_idx == lumo_idx) ? " (LUMO)" : "";
+                    snprintf(buf, sizeof(buf), "%i%s", mo_idx + 1, lbl);
+                    draw_list->AddImage((ImTextureID)(intptr_t)orb.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
+                    draw_list->AddImage((ImTextureID)(intptr_t)orb.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
+                    draw_list->AddText(text_pos, ImColor(0,0,0), buf);
                 }
             }
             for (int x = 1; x < orb.num_x; ++x) {
@@ -1280,9 +1279,10 @@ struct VeloxChem : viamd::EventHandler {
                 const float zero[4] = {};
                 const float samples_per_angstrom = 6.0f;
                 size_t nto_idx = (size_t)nto.nto_idx;
-                for (int pi = 0; pi < num_lambdas; ++pi) {
-                    int hi = pi + num_lambdas;
-                    size_t lambda_idx = (size_t)pi;
+                for (int i = 0; i < num_lambdas; ++i) {
+                    int pi = i * num_lambdas + 0;
+                    int hi = i * num_lambdas + 1;
+                    size_t lambda_idx = (size_t)i;
 
                     compute_nto(&nto.vol[pi].tex_to_world, &nto.vol[pi].step_size, &nto.vol[pi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
                     compute_nto(&nto.vol[hi].tex_to_world, &nto.vol[hi].step_size, &nto.vol[hi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
@@ -1315,7 +1315,7 @@ struct VeloxChem : viamd::EventHandler {
                 ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y + TEXT_BASE_HEIGHT * 0.5f);
                 const char* lbl = ((i & 1) == 0) ? "Particle" : "Hole";
                 char buf[32];
-                snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i / num_lambdas]);
+                snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i % num_lambdas]);
                 draw_list->AddImage((ImTextureID)(intptr_t)nto.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
                 draw_list->AddImage((ImTextureID)(intptr_t)nto.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
                 draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
