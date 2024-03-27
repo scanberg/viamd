@@ -98,9 +98,10 @@ struct VeloxChem : viamd::EventHandler {
         bool show_window = false;
         uint32_t vol_fbo = 0;
         // We have a maximum of 4 orbital slots for each particle and hole
-        // In practice I don't think more than 2 will be used in practice
+        // In practice I don't think more than 2, maybe 3 will be used in practice
         Volume   vol[8] = {};
         uint32_t iso_tex[8] = {};
+        int vol_nto_idx = -1;
         int nto_idx = 0;
 
         struct {
@@ -938,7 +939,7 @@ struct VeloxChem : viamd::EventHandler {
             for (int y = 0; y < orb.num_y; ++y) {
                 for (int x = 0; x < orb.num_x; ++x) {
                     int i = y * orb.num_x + x;
-                    int mo_idx = beg_mo_idx + i;
+                    int mo_idx = beg_mo_idx + (num_mos - 1 - i);
                     ImVec2 p0 = canvas_p0 + orb_win_sz * ImVec2((float)(x+0), (float)(y+0));
                     ImVec2 p1 = canvas_p0 + orb_win_sz * ImVec2((float)(x+1), (float)(y+1));
                     if (-1 < mo_idx && mo_idx < num_orbitals()) {
@@ -1255,39 +1256,38 @@ struct VeloxChem : viamd::EventHandler {
             ImVec2 canvas_p0 = ImGui::GetItemRectMin();
             ImVec2 canvas_p1 = ImGui::GetItemRectMax();
 
-            static int curr_nto_idx = -1;
-
             double nto_lambda[4] = {};
-            int num_x = 2;
 
+            int num_lambdas = 1;
             // This represents the cutoff for contributing orbitals to be part of the orbital 'grid'
             // If the occupation parameter is less than this it will not be displayed
             const double lambda_cutoff = 0.10f;
             for (int i = 0; i < MIN(4, (int)vlx.rsp.nto[nto.nto_idx].occupations.count); ++i) {
                 nto_lambda[i] = vlx.rsp.nto[nto.nto_idx].occupations.data[lumo_idx + i];
                 if (nto_lambda[i] < lambda_cutoff) {
-                    num_x = i;
+                    num_lambdas = i;
                     break;
                 }
             }
 
-            // Always two, Particle and Hole
+            // Always two, Orbitals + Transition Diagram
+            const int num_x = 2;
             const int num_y = 2;
 
-            if (curr_nto_idx != nto.nto_idx) {
-                curr_nto_idx = nto.nto_idx;
+            if (nto.vol_nto_idx != nto.nto_idx) {
+                nto.vol_nto_idx = nto.nto_idx;
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, nto.vol_fbo);
                 const float zero[4] = {};
                 const float samples_per_angstrom = 6.0f;
                 size_t nto_idx = (size_t)nto.nto_idx;
-                for (int pi = 0; pi < num_x; ++pi) {
-                    int hi = pi + num_x;
+                for (int pi = 0; pi < num_lambdas; ++pi) {
+                    int hi = pi + num_lambdas;
                     size_t lambda_idx = (size_t)pi;
 
                     compute_nto(&nto.vol[pi].tex_to_world, &nto.vol[pi].step_size, &nto.vol[pi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
                     compute_nto(&nto.vol[hi].tex_to_world, &nto.vol[hi].step_size, &nto.vol[hi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
 
-                    // Clear volume texture
+                    // Clear volume textures
                     glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, nto.vol[pi].tex_id, 0);
                     glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, nto.vol[hi].tex_id, 0);
                     glClearBufferfv(GL_COLOR, 0, zero);
@@ -1296,41 +1296,30 @@ struct VeloxChem : viamd::EventHandler {
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
             }
 
+            const float TEXT_BASE_HEIGHT = ImGui::GetTextLineHeightWithSpacing();
+
             ImVec2 grid_p0 = canvas_p0;
             ImVec2 grid_p1 = canvas_p0 + canvas_sz * ImVec2(0.5f, 1.0f);
-            ImVec2 win_sz = (grid_p1 - grid_p0) / ImVec2((float)num_x, (float)num_y);
+            ImVec2 win_sz = (grid_p1 - grid_p0) / ImVec2(1.0f, (float)(num_lambdas * 2));
             win_sz.x = floorf(win_sz.x);
             win_sz.y = floorf(win_sz.y);
 
-            const float TEXT_BASE_HEIGHT = ImGui::GetTextLineHeightWithSpacing();
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             draw_list->AddRectFilled(canvas_p0, canvas_p1, IM_COL32(255, 255, 255, 255));
-            for (int y = 0; y < num_y; ++y) {
-                for (int x = 0; x < num_x; ++x) {
-                    int i = y * num_x + x;
-                    ImVec2 p0 = grid_p0 + win_sz * ImVec2((float)(x+0), (float)(y+0));
-                    ImVec2 p1 = grid_p0 + win_sz * ImVec2((float)(x+1), (float)(y+1));
-                    ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
-                    ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y + TEXT_BASE_HEIGHT * 0.5f);
-                    const char* lbl = y == 0 ? "Particle" : "Hole";
-                    char buf[32];
-                    snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[x]);
-                    draw_list->AddImage((ImTextureID)(intptr_t)nto.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
-                    draw_list->AddImage((ImTextureID)(intptr_t)nto.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
-                    draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
-                    draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbl);
-                }
-            }
-            // Draw grid
-            for (int x = 1; x <= num_x; ++x) {
-                ImVec2 p0 = {grid_p0.x + win_sz.x * x, grid_p0.y};
-                ImVec2 p1 = {grid_p0.x + win_sz.x * x, grid_p1.y};
-                draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
-            }
-            for (int y = 1; y < num_y; ++y) {
-                ImVec2 p0 = {grid_p0.x, grid_p0.y + win_sz.y * y};
-                ImVec2 p1 = {grid_p1.x, grid_p0.y + win_sz.y * y};
-                draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
+
+            // Draw P / H orbitals
+            for (int i = 0; i < num_lambdas * 2; ++i) {
+                ImVec2 p0 = grid_p0 + win_sz * ImVec2(0.0f, (float)(i+0));
+                ImVec2 p1 = grid_p0 + win_sz * ImVec2(1.0f, (float)(i+1));
+                ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
+                ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y + TEXT_BASE_HEIGHT * 0.5f);
+                const char* lbl = ((i & 1) == 0) ? "Particle" : "Hole";
+                char buf[32];
+                snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i / num_lambdas]);
+                draw_list->AddImage((ImTextureID)(intptr_t)nto.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
+                draw_list->AddImage((ImTextureID)(intptr_t)nto.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
+                draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
+                draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbl);
             }
             // @TODO: Draw Sankey Diagram of Transition Matrix
             {
@@ -1338,6 +1327,23 @@ struct VeloxChem : viamd::EventHandler {
                 ImVec2 p1 = canvas_p1;
                 ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
                 draw_list->AddText(text_pos_bl, ImColor(0, 0, 0, 255), "Transition Diagram");
+            }
+            // Draw grid
+            {
+                ImVec2 p0 = {floorf(canvas_p0.x + canvas_sz.x * 0.5f), canvas_p0.y};
+                ImVec2 p1 = {floorf(canvas_p0.x + canvas_sz.x * 0.5f), canvas_p1.y};
+                draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
+            }
+            for (int i = 1; i < num_lambdas; ++i) {
+                ImVec2 p0 = {canvas_p0.x, floorf(canvas_p0.y + canvas_sz.y * 0.5f)};
+                ImVec2 p1 = {floorf(canvas_p1.x + canvas_sz.x * 0.5f), floorf(canvas_p0.y + canvas_sz.y * 0.5f)};
+                draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
+            }
+            for (int i = 1; i < num_lambdas * 2; ++i) {
+                float y = floorf(canvas_p0.y + canvas_sz.y / ((float)num_lambdas * 2.0f) * i);
+                ImVec2 p0 = {canvas_p0.x, y};
+                ImVec2 p1 = {floorf(canvas_p0.x + canvas_sz.x * 0.5f), y};
+                draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
             }
 
             const bool is_hovered = ImGui::IsItemHovered();
