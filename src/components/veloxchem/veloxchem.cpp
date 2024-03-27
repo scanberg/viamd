@@ -1499,7 +1499,7 @@ struct VeloxChem : viamd::EventHandler {
                     ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y + TEXT_BASE_HEIGHT * 0.5f);
                     const char* lbl = ((i & 1) == 0) ? "Particle" : "Hole";
                     char buf[32];
-                    snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i / num_lambdas]);
+                    snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i / 2]);
                     draw_list->AddImage((ImTextureID)(intptr_t)nto.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
                     draw_list->AddImage((ImTextureID)(intptr_t)nto.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
                     draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
@@ -1518,16 +1518,11 @@ struct VeloxChem : viamd::EventHandler {
                     ImVec2 p1 = {floorf(canvas_p0.x + canvas_sz.x * 0.5f), canvas_p1.y};
                     draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
                 }
-                for (int i = 1; i < num_lambdas; ++i) {
-                    ImVec2 p0 = {canvas_p0.x, floorf(canvas_p0.y + canvas_sz.y * 0.5f)};
-                    ImVec2 p1 = {floorf(canvas_p1.x + canvas_sz.x * 0.5f), floorf(canvas_p0.y + canvas_sz.y * 0.5f)};
-                    draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
-                }
                 for (int i = 1; i < num_lambdas * 2; ++i) {
                     float y = floorf(canvas_p0.y + canvas_sz.y / ((float)num_lambdas * 2.0f) * i);
-                    ImVec2 p0 = {canvas_p0.x, y};
-                    ImVec2 p1 = {floorf(canvas_p0.x + canvas_sz.x * 0.5f), y};
-                    draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
+                    float x0 = canvas_p0.x;
+                    float x1 = floorf(canvas_p0.x + canvas_sz.x * (i & 1 ? 0.5f : 1.0f));
+                    draw_list->AddLine({x0, y}, {x1, y}, IM_COL32(0, 0, 0, 255));
                 }
             }
 
