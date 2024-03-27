@@ -87,26 +87,26 @@ vec3 lambert(in vec3 radiance) {
     return radiance * ONE_OVER_PI;
 }
 
-float fresnel(float H_dot_V) {
+float fresnel(float cos_theta) {
     const float n1 = 1.0;
     const float n2 = 1.5;
     const float R0 = pow((n1-n2)/(n1+n2), 2);
-    return R0 + (1.0 - R0)*pow(1.0 - H_dot_V, 5);
+    return R0 + (1.0 - R0)*pow(1.0 - cos_theta, 5);
 }
 
-vec3 shade(vec3 color, vec3 V, vec3 N) {
+vec4 shade(vec4 color, vec3 V, vec3 N) {
     vec3 H = normalize(L + V);
     float H_dot_V = max(0.0, dot(H, V));
     float N_dot_H = max(0.0, dot(N, H));
     float N_dot_L = max(0.0, dot(N, L));
-    float fr = fresnel(H_dot_V);
+    float N_dot_V = max(0.0, dot(N, V));
+    float fr_H = fresnel(H_dot_V);
+    float fr_N = fresnel(N_dot_V);
 
-    vec3 diffuse = color.rgb * lambert(env_radiance + N_dot_L * dir_radiance);
-    vec3 specular = fr * (env_radiance + dir_radiance) * pow(N_dot_H, spec_exp);
+    vec3 diffuse  = (1.0 - fr_N) * color.rgb * lambert(env_radiance + N_dot_L * dir_radiance);
+    vec3 specular = fr_N * env_radiance + fr_H * dir_radiance * pow(N_dot_H, spec_exp);
 
-    //return color.rgb * lambert(vec3(N_dot_L + 0.5) * 3.0) + specular;
-
-    return diffuse + specular;
+    return vec4(diffuse * color.a + specular, color.a + fr_N);
 }
 
 vec4 depth_to_view_coord(vec2 tc, float depth) {
@@ -186,7 +186,6 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
         if (dot(normal, isoposView) < 0.0) {
             normal = -normal;
         }
-        isocolor.rgb = shade(isocolor.rgb, isoposView, normal);
 
 #endif // SHADING_ENABLED
 
@@ -203,7 +202,8 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
         }
 #endif // INCLUDE_DVR
 
-        isocolor.rgb *= isocolor.a; // use pre-multiplied alpha
+        isocolor = shade(isocolor, isoposView, normal);
+
         // blend isosurface color with result accumulated so far
         result += (1.0 - result.a) * isocolor;
         hit = true;

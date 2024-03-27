@@ -47,11 +47,11 @@ vec3 lambert(in vec3 radiance) {
     return radiance * ONE_OVER_PI;
 }
 
-float fresnel(float H_dot_V) {
+float fresnel(float cos_theta) {
     const float n1 = 1.0;
     const float n2 = 1.5;
     const float R0 = pow((n1-n2)/(n1+n2), 2);
-    return R0 + (1.0 - R0)*pow(1.0 - H_dot_V, 5);
+    return R0 + (1.0 - R0)*pow(1.0 - cos_theta, 5);
 }
 
 vec3 shade(vec3 color, vec3 V, vec3 N) {
@@ -59,10 +59,17 @@ vec3 shade(vec3 color, vec3 V, vec3 N) {
     float H_dot_V = clamp(dot(H, V), 0.0, 1.0);
     float N_dot_H = clamp(dot(N, H), 0.0, 1.0);
     float N_dot_L = clamp(dot(N, L), 0.0, 1.0);
-    float fr = fresnel(H_dot_V);
+    float N_dot_V = max(0.0, dot(N, V));
+    float fr_H = fresnel(H_dot_V);
+    float fr_N = fresnel(N_dot_V);
 
-    vec3 diffuse = color.rgb * lambert(env_radiance + N_dot_L * dir_radiance);
-    vec3 specular = fr * (env_radiance + dir_radiance) * pow(N_dot_H, spec_exp);
+    vec3 diffuse  = (1.0 - fr_N) * color.rgb * lambert(env_radiance + N_dot_L * dir_radiance);
+    vec3 specular = fr_N * env_radiance + fr_H * dir_radiance * pow(N_dot_H, spec_exp);
+
+    // Old model
+    //float fr = fresnel(H_dot_V);
+    //vec3 diffuse = color.rgb * lambert(env_radiance + N_dot_L * dir_radiance);
+    //vec3 specular = fr * (env_radiance + dir_radiance) * pow(N_dot_H, spec_exp);
 
     return diffuse + specular;
 }

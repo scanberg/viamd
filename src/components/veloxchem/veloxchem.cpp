@@ -70,6 +70,7 @@ struct VeloxChem : viamd::EventHandler {
         int num_x  = 3;
         int num_y  = 3;
         int mo_idx = -1;
+        int scroll_to_idx = -1;
 
         struct {
             bool enabled = true;
@@ -87,7 +88,7 @@ struct VeloxChem : viamd::EventHandler {
             float dist = {};
         } target;
 
-        float distance_scale = 1.5f;
+        float distance_scale = 2.0f;
 
         bool show_coordinate_system_widget = true;
         md_gl_representation_t gl_rep = {};
@@ -95,10 +96,12 @@ struct VeloxChem : viamd::EventHandler {
 
     struct Nto {
         bool show_window = false;
-        Volume vol = {};
-        uint32_t vol_tex = {};
-
-        int nto_idx;
+        uint32_t vol_fbo = 0;
+        // We have a maximum of 4 orbital slots for each particle and hole
+        // In practice I don't think more than 2 will be used in practice
+        Volume   vol[8] = {};
+        uint32_t iso_tex[8] = {};
+        int nto_idx = 0;
 
         struct {
             bool enabled = true;
@@ -115,6 +118,8 @@ struct VeloxChem : viamd::EventHandler {
             vec3_t pos = {};
             float dist = {};
         } target;
+
+        float distance_scale = 2.0f;
 
         bool show_coordinate_system_widget = true;
         md_gl_representation_t gl_rep = {};
@@ -163,6 +168,7 @@ struct VeloxChem : viamd::EventHandler {
             }
             case viamd::EventType_ViamdDrawMenu:
                 ImGui::Checkbox("VeloxChem Orbital", &orb.show_window);
+                ImGui::Checkbox("VeloxChem NTO", &nto.show_window);
                 ImGui::Checkbox("VeloxChem RSP", &rsp.show_window);
                 ImGui::Checkbox("VeloxChem SCF", &scf.show_window);
                 break;
@@ -186,15 +192,8 @@ struct VeloxChem : viamd::EventHandler {
                         // Scf
                         scf.show_window = true;
 
-                        // Determine HOMO/LUMO idx
-                        for (int i = 0; i < (int)vlx.scf.alpha.occupations.count; ++i) {
-                            if (vlx.scf.alpha.occupations.data[i] > 0) {
-                                homo_idx = i;
-                            } else {
-                                lumo_idx = i;
-                                break;
-                            }
-                        }
+                        homo_idx = (int)vlx.scf.homo_idx;
+                        lumo_idx = (int)vlx.scf.lumo_idx;
 
                         vec4_t min_box = vec4_set1( FLT_MAX);
                         vec4_t max_box = vec4_set1(-FLT_MAX);
@@ -219,9 +218,14 @@ struct VeloxChem : viamd::EventHandler {
                         color_atoms_cpk(colors, state.mold.mol.atom.count, state.mold.mol);
 
                         // NTO
-                        md_gl_representation_init(&nto.gl_rep, &state.mold.gl_mol);
-                        md_gl_representation_set_color(&nto.gl_rep, 0, (uint32_t)state.mold.mol.atom.count, colors, 0);
-                        camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb);
+                        if (vlx.rsp.num_excited_states > 0 && vlx.rsp.nto) {
+                            nto.show_window = true;
+                            md_gl_representation_init(&nto.gl_rep, &state.mold.gl_mol);
+                            md_gl_representation_set_color(&nto.gl_rep, 0, (uint32_t)state.mold.mol.atom.count, colors, 0);
+                            camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
+                            nto.nto_idx = 0;
+                            if (!nto.vol_fbo) glGenFramebuffers(1, &nto.vol_fbo);
+                        }
 
                         // RSP
                         rsp.show_window = true;
@@ -232,6 +236,7 @@ struct VeloxChem : viamd::EventHandler {
                         md_gl_representation_set_color(&orb.gl_rep, 0, (uint32_t)state.mold.mol.atom.count, colors, 0);
                         camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, min_aabb, max_aabb, orb.distance_scale);
                         orb.mo_idx = homo_idx;
+                        orb.scroll_to_idx = homo_idx;
                         if (!orb.vol_fbo) glGenFramebuffers(1, &orb.vol_fbo);
 
                     } else {
@@ -297,7 +302,7 @@ struct VeloxChem : viamd::EventHandler {
                     if (data.type == OrbitalType::PsiSquared) {
                        mode = MD_GTO_EVAL_MODE_PSI_SQUARED;
                     }
-                    data.output_written = compute_orbital(&data.tex_mat, &data.voxel_spacing, data.dst_texture, data.orbital_idx, mode, data.samples_per_angstrom);
+                    data.output_written = compute_mo(&data.tex_mat, &data.voxel_spacing, data.dst_texture, data.orbital_idx, mode, data.samples_per_angstrom);
                 }
 
                 break;
@@ -322,8 +327,8 @@ struct VeloxChem : viamd::EventHandler {
             p = Ri * (p * BOHR_TO_ANGSTROM);
             // The 0.9 scaling factor here is a bit arbitrary, but the cutoff-radius is computed on a value which is lower than the rendered iso-value
             // So the effective radius is a bit overestimated and thus we scale it back a bit
-            min_ext = vec4_min(min_ext, vec4_sub_f(p, pgtos[i].cutoff * BOHR_TO_ANGSTROM * 0.9));
-            max_ext = vec4_max(max_ext, vec4_add_f(p, pgtos[i].cutoff * BOHR_TO_ANGSTROM * 0.9));
+            min_ext = vec4_min(min_ext, vec4_sub_f(p, (float)(pgtos[i].cutoff * BOHR_TO_ANGSTROM * 0.9)));
+            max_ext = vec4_max(max_ext, vec4_add_f(p, (float)(pgtos[i].cutoff * BOHR_TO_ANGSTROM * 0.9)));
         }
 
         min_ext.w = 0.0f;
@@ -353,23 +358,12 @@ struct VeloxChem : viamd::EventHandler {
         *out_ext_in_angstrom = vec3_from_vec4(extent);
     }
 
-    bool compute_orbital(mat4_t* out_tex_mat, vec3_t* out_voxel_spacing, uint32_t* in_out_vol_tex, uint32_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = 8.0f) {
-        struct Payload {
-            size_t bytes;
-            size_t num_pgtos;
-            md_gto_t* pgtos;
-            float* vol_data;
-            int    vol_dim[3];
-            uint32_t tex_id;
-            vec3_t step_size;
-            md_gto_eval_mode_t mode;
-        };
-
-        size_t num_pgtos = md_vlx_pgto_count(&vlx);
+    bool compute_nto(mat4_t* out_tex_mat, vec3_t* out_voxel_spacing, uint32_t* in_out_vol_tex, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = 8.0f) {
+        size_t num_pgtos = md_vlx_nto_pgto_count(&vlx);
         md_gto_t* pgtos  = (md_gto_t*)md_alloc(md_get_heap_allocator(), sizeof(md_gto_t) * num_pgtos);
 
-        if (!md_vlx_extract_alpha_mo_pgtos(pgtos, &vlx, mo_idx)) {
-            MD_LOG_ERROR("Failed to extract alpha orbital for orbital index: %i", mo_idx);
+        if (!md_vlx_nto_pgto_extract(pgtos, &vlx, nto_idx, lambda_idx, type)) {
+            MD_LOG_ERROR("Failed to extract NTO pgtos for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
             md_free(md_get_heap_allocator(), pgtos, sizeof(md_gto_t) * num_pgtos);
             return false;
         }
@@ -400,18 +394,75 @@ struct VeloxChem : viamd::EventHandler {
         *out_tex_mat = tex_mat;
         *out_voxel_spacing = step_size;
 
+        async_evaluate_orbital_on_grid(*in_out_vol_tex, step_size.elem, dim, pgtos, num_pgtos, mode);
+        return true;
+    }
+
+    bool compute_mo(mat4_t* out_tex_mat, vec3_t* out_voxel_spacing, uint32_t* in_out_vol_tex, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = 8.0f) {
+        size_t num_pgtos = md_vlx_mol_pgto_count(&vlx);
+        md_gto_t* pgtos  = (md_gto_t*)md_alloc(md_get_heap_allocator(), sizeof(md_gto_t) * num_pgtos);
+
+        if (!md_vlx_mol_pgto_extract(pgtos, &vlx, mo_idx)) {
+            MD_LOG_ERROR("Failed to extract molecular pgtos for orbital index: %zu", mo_idx);
+            md_free(md_get_heap_allocator(), pgtos, sizeof(md_gto_t) * num_pgtos);
+            return false;
+        }
+        md_gto_cutoff_compute(pgtos, num_pgtos, 1.0e-6);
+
+        mat4_t tex_mat;
+        vec3_t extent;
+
+        compute_volume_basis_and_transform_pgtos(&tex_mat, &extent, pgtos, num_pgtos);
+
+        // Target resolution per spatial unit (We want this number of samples per Ångström in each dimension)
+        // Round up to some multiple of 8 -> 8x8x8 is the chunksize we process in parallel
+
+        // Compute required volume dimensions
+        int dim[3] = {
+            CLAMP(ALIGN_TO((int)(extent.x * samples_per_angstrom), 8), 8, 512),
+            CLAMP(ALIGN_TO((int)(extent.y * samples_per_angstrom), 8), 8, 512),
+            CLAMP(ALIGN_TO((int)(extent.z * samples_per_angstrom), 8), 8, 512),
+        };
+
+        vec3_t step_size = vec3_div(extent, vec3_set((float)dim[0], (float)dim[1], (float)dim[2]));
+        step_size = vec3_mul_f(step_size, (float)ANGSTROM_TO_BOHR);
+
+        // Create texture of dim
+        gl::init_texture_3D(in_out_vol_tex, dim[0], dim[1], dim[2], GL_R16F);
+
+        // WRITE OUTPUT
+        *out_tex_mat = tex_mat;
+        *out_voxel_spacing = step_size;
+
+        async_evaluate_orbital_on_grid(*in_out_vol_tex, step_size.elem, dim, pgtos, num_pgtos, mode);
+        return true;
+    }
+
+    // This is a bit quirky, but pgtos will be freed after the evaluation is complete
+    void async_evaluate_orbital_on_grid(uint32_t texture, const float step_size[3], const int dim[3], md_gto_t* pgtos, size_t num_pgtos, md_gto_eval_mode_t mode) {
+        struct Payload {
+            size_t bytes;
+            size_t num_pgtos;
+            md_gto_t* pgtos;
+            float* vol_data;
+            int    vol_dim[3];
+            float  step_size[3];
+            uint32_t tex_id;
+            md_gto_eval_mode_t mode;
+        };
+
         size_t num_vol_bytes = dim[0] * dim[1] * dim[2] * sizeof(float);
         size_t num_bytes = sizeof(Payload) + num_vol_bytes;
         void* mem = md_alloc(md_get_heap_allocator(), num_bytes);
         Payload* payload    = (Payload*)mem;
         payload->bytes      = num_bytes;
-        MEMCPY(payload->vol_dim, dim, sizeof(payload->vol_dim));
-        payload->vol_data   = (float*)((char*)mem + sizeof(Payload));
-        MEMSET(payload->vol_data, 0, num_vol_bytes);
-        payload->step_size  = step_size;
-        payload->tex_id     = *in_out_vol_tex;
         payload->num_pgtos  = num_pgtos;
         payload->pgtos      = pgtos;
+        payload->vol_data   = (float*)((char*)mem + sizeof(Payload));
+        MEMSET(payload->vol_data, 0, num_vol_bytes);
+        MEMCPY(payload->vol_dim, dim, sizeof(payload->vol_dim));
+        MEMCPY(payload->step_size, step_size, sizeof(payload->step_size));
+        payload->tex_id     = texture;
         payload->mode       = mode;
 
         // We evaluate the in parallel over smaller NxNxN blocks
@@ -429,14 +480,14 @@ struct VeloxChem : viamd::EventHandler {
                 data->vol_dim[2] / BLK_DIM,
             };
 
-            vec3_t step = data->step_size;
+            const float* step = data->step_size;
 
             md_grid_t grid = {
                 .data = data->vol_data,
                 .dim  = {data->vol_dim[0], data->vol_dim[1], data->vol_dim[2]},
                 // Shift origin by half a voxel to evaluate at the voxel center
-                .origin = {0.5f * step.x, 0.5f * step.y, 0.5f * step.z},
-                .stepsize = {step.x, step.y, step.z},
+                .origin = {0.5f * step[0], 0.5f * step[1], 0.5f * step[2]},
+                .stepsize = {step[0], step[1], step[2]},
             };
 
             for (uint32_t i = range_beg; i < range_end; ++i) {
@@ -459,450 +510,6 @@ struct VeloxChem : viamd::EventHandler {
             md_free(md_get_heap_allocator(), data->pgtos, data->num_pgtos * sizeof(md_gto_t));
             md_free(md_get_heap_allocator(), data, data->bytes);
         }, payload, async_task);
-
-        return true;
-    }
-
-    void draw_orb_window(const ApplicationState& state) {
-        if (!orb.show_window) return;
-        ImGui::SetNextWindowSize({600,300}, ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("VeloxChem Orbital Viewer", &orb.show_window)) {
-#if 0
-            if (vlx.geom.num_atoms) {
-                if (ImGui::TreeNode("Geometry")) {
-                    ImGui::Text("Num Atoms:           %6zu", vlx.geom.num_atoms);
-                    ImGui::Text("Num Alpha Electrons: %6zu", vlx.geom.num_alpha_electrons);
-                    ImGui::Text("Num Beta Electrons:  %6zu", vlx.geom.num_beta_electrons);
-                    ImGui::Text("Molecular Charge:    %6i",  vlx.geom.molecular_charge);
-                    ImGui::Text("Spin Multiplicity:   %6i",  vlx.geom.spin_multiplicity);
-                    ImGui::Spacing();
-                    ImGui::Text("Atom      Coord X      Coord Y      Coord Z");
-                    for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
-                        ImGui::Text("%4s %12.6f %12.6f %12.6f", vlx.geom.atom_symbol[i].buf, vlx.geom.coord_x[i], vlx.geom.coord_y[i], vlx.geom.coord_z[i]);
-                    }
-                    ImGui::TreePop();
-                }
-            }
-#endif
-            const ImVec2 outer_size = {300.f, 0.f};
-            ImGui::PushItemWidth(outer_size.x);
-            ImGui::BeginGroup();
-
-            ImGui::SliderInt("##Rows", &orb.num_y, 1, 4);
-            ImGui::SliderInt("##Cols", &orb.num_x, 1, 4);
-
-            const int num_mos = orb.num_x * orb.num_y;
-            const int beg_mo_idx = orb.mo_idx - num_mos / 2 + (num_mos % 2 == 0 ? 1 : 0);
-
-            const double iso_min = 1.0e-4;
-            const double iso_max = 5.0;
-            double iso_val = orb.iso.values[0];
-            ImGui::SliderScalar("##Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
-            ImGui::SetItemTooltip("Iso Value");
-
-            orb.iso.values[0] =  (float)iso_val;
-            orb.iso.values[1] = -(float)iso_val;
-            orb.iso.count = 2;
-            orb.iso.enabled = true;
-
-            ImGui::ColorEdit4("##Color Positive", orb.iso.colors[0].elem);
-            ImGui::SetItemTooltip("Color Positive");
-            ImGui::ColorEdit4("##Color Negative", orb.iso.colors[1].elem);
-            ImGui::SetItemTooltip("Color Negative");
-
-            const float TEXT_BASE_HEIGHT = ImGui::GetTextLineHeightWithSpacing();
-            enum {
-                Col_Idx,
-                Col_Occ,
-                Col_Ene,
-            };
-
-            int scroll_to_idx = -1;
-            if (ImGui::IsWindowAppearing()) {
-                scroll_to_idx = orb.mo_idx;
-            }
-            if (ImGui::Button("Goto HOMO", ImVec2(outer_size.x,0))) {
-                scroll_to_idx = homo_idx;
-            }
-
-            const ImGuiTableFlags flags =
-                ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable | ImGuiTableFlags_RowBg |
-                ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_ScrollY;
-            if (ImGui::BeginTable("Molecular Orbitals", 3, flags, outer_size))//, ImVec2(0.0f, TEXT_BASE_HEIGHT * 15), 0.0f))
-            {
-                // Declare columns
-                // We use the "user_id" parameter of TableSetupColumn() to specify a user id that will be stored in the sort specifications.
-                // This is so our sort function can identify a column given our own identifier. We could also identify them based on their index!
-                // Demonstrate using a mixture of flags among available sort-related flags:
-                // - ImGuiTableColumnFlags_DefaultSort
-                // - ImGuiTableColumnFlags_NoSort / ImGuiTableColumnFlags_NoSortAscending / ImGuiTableColumnFlags_NoSortDescending
-                // - ImGuiTableColumnFlags_PreferSortAscending / ImGuiTableColumnFlags_PreferSortDescending
-                ImGui::TableSetupColumn("Index",        ImGuiTableColumnFlags_DefaultSort          | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Idx);
-                ImGui::TableSetupColumn("Occupation",   ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Occ);
-                ImGui::TableSetupColumn("Energy",       ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Ene);
-                ImGui::TableSetupScrollFreeze(0, 1); // Make row always visible
-                ImGui::TableHeadersRow();
-
-                for (int n = 0; n < num_orbitals(); n++) {
-                    ImGui::PushID(n + 1);
-                    ImGui::TableNextRow();
-                    bool is_selected = (beg_mo_idx <= n && n < beg_mo_idx + num_mos);
-                    ImGui::TableNextColumn();
-                    if (scroll_to_idx != -1 && n == scroll_to_idx) {
-                        ImGui::SetScrollHereY();
-                    }
-                    char buf[32];
-                    const char* lbl = (n == homo_idx) ? " (HOMO)" : (n == lumo_idx) ? " (LUMO)" : "";
-                    snprintf(buf, sizeof(buf), "%i%s", n + 1, lbl);
-                    ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
-                    if (ImGui::Selectable(buf, is_selected, selectable_flags)) {
-                        if (orb.mo_idx != n) {
-                            orb.mo_idx = n;
-                        }
-                    }
-                    ImGui::TableNextColumn();
-                    ImGui::Text("%.1f", vlx.scf.alpha.occupations.data[n]);
-                    ImGui::TableNextColumn();
-                    ImGui::Text("%.4f", vlx.scf.alpha.energies.data[n]);
-                    ImGui::PopID();
-                }
-
-                ImGui::EndTable();
-            }
-
-            ImGui::EndGroup();
-            ImGui::PopItemWidth();
-
-            ImGui::SameLine();
-
-            // These represent the new mo_idx we want to have in each slot
-            int vol_mo_idx[16] = {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
-            for (int i = 0; i < num_mos; ++i) {
-                int mo_idx = beg_mo_idx + i;
-                if (-1 < mo_idx && mo_idx < num_orbitals()) {
-                    vol_mo_idx[i] = mo_idx;
-                }
-            }
-
-            int job_queue[16];
-            int num_jobs = 0;
-            // Find and reuse volume data from existing slots (if applicable)
-            // If there is no existing volume, we queue up a new job
-            for (int i = 0; i < num_mos; ++i) {
-                // Check if we already have that entry in the correct slot
-                if (orb.vol_mo_idx[i] == vol_mo_idx[i]) continue;
-
-                // Try to find the entry in the existing list
-                bool found = false;
-                for (int j = 0; j < num_mos; ++j) {
-                    if (i == j) continue;
-                    if (vol_mo_idx[i] == orb.vol_mo_idx[j]) {
-                        // Swap to correct location
-                        ImSwap(orb.vol[i], orb.vol[j]);
-                        ImSwap(orb.vol_mo_idx[i], orb.vol_mo_idx[j]);
-                        found = true;
-                        break;
-                    }
-                }
-
-                // If not found, put in job queue to compute the volume
-                if (!found) {
-                    job_queue[num_jobs++] = i;
-                }
-            }
-
-            if (num_jobs > 0) {
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, orb.vol_fbo);
-                const float zero[4] = {};
-                for (int i = 0; i < num_jobs; ++i) {
-                    int slot_idx = job_queue[i];
-                    int mo_idx = vol_mo_idx[slot_idx];
-                    orb.vol_mo_idx[slot_idx] = mo_idx;
-
-                    if (-1 < mo_idx && mo_idx < num_orbitals()) {
-                        compute_orbital(&orb.vol[slot_idx].tex_to_world, &orb.vol[slot_idx].step_size, &orb.vol[slot_idx].tex_id, mo_idx, MD_GTO_EVAL_MODE_PSI, 4.0f);
-                        // Clear volume texture
-                        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, orb.vol[slot_idx].tex_id, 0);
-                        glClearBufferfv(GL_COLOR, 0, zero);
-                    }
-                }
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-            }
-
-            // Animate camera towards targets
-            const double dt = state.app.timing.delta_s;
-            camera_animate(&orb.camera, orb.target.ori, orb.target.pos, orb.target.dist, dt);
-
-            ImVec2 canvas_sz = ImGui::GetContentRegionAvail();   // Resize canvas to what's available
-            canvas_sz.x = MAX(canvas_sz.x, 50.0f);
-            canvas_sz.y = MAX(canvas_sz.y, 50.0f);
-
-            // This will catch our interactions
-            ImGui::InvisibleButton("canvas", canvas_sz, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_AllowOverlap);
-
-            // Draw border and background color
-            ImGuiIO& io = ImGui::GetIO();
-
-            ImVec2 canvas_p0 = ImGui::GetItemRectMin();
-            ImVec2 canvas_p1 = ImGui::GetItemRectMax();
-
-            ImVec2 orb_win_sz = (canvas_p1 - canvas_p0) / ImVec2(orb.num_x, orb.num_y);
-            orb_win_sz.x = floorf(orb_win_sz.x);
-            orb_win_sz.y = floorf(orb_win_sz.y);
-            canvas_p1.x = canvas_p0.x + orb.num_x * orb_win_sz.x;
-            canvas_p1.y = canvas_p0.y + orb.num_y * orb_win_sz.y;
-
-            ImDrawList* draw_list = ImGui::GetWindowDrawList();
-            draw_list->AddRectFilled(canvas_p0, canvas_p1, IM_COL32(255, 255, 255, 255));
-            for (int y = 0; y < orb.num_y; ++y) {
-                for (int x = 0; x < orb.num_x; ++x) {
-                    int i = y * orb.num_x + x;
-                    int mo_idx = beg_mo_idx + i;
-                    ImVec2 p0 = canvas_p0 + orb_win_sz * ImVec2(x+0, y+0);
-                    ImVec2 p1 = canvas_p0 + orb_win_sz * ImVec2(x+1, y+1);
-                    if (-1 < mo_idx && mo_idx < num_orbitals()) {
-                        ImVec2 text_pos = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
-                        char buf[32];
-                        const char* lbl = (mo_idx == homo_idx) ? " (HOMO)" : (mo_idx == lumo_idx) ? " (LUMO)" : "";
-                        snprintf(buf, sizeof(buf), "%i%s", mo_idx + 1, lbl);
-                        draw_list->AddImage((ImTextureID)(intptr_t)orb.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
-                        draw_list->AddImage((ImTextureID)(intptr_t)orb.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
-                        draw_list->AddText(text_pos, ImColor(0,0,0), buf);
-                    }
-                }
-            }
-            for (int x = 1; x < orb.num_x; ++x) {
-                ImVec2 p0 = {canvas_p0.x + orb_win_sz.x * x, canvas_p0.y};
-                ImVec2 p1 = {canvas_p0.x + orb_win_sz.x * x, canvas_p1.y};
-                draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
-            }
-            for (int y = 1; y < orb.num_y; ++y) {
-                ImVec2 p0 = {canvas_p0.x, canvas_p0.y + orb_win_sz.y * y};
-                ImVec2 p1 = {canvas_p1.x, canvas_p0.y + orb_win_sz.y * y};
-                draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
-            }
-
-            const bool is_hovered = ImGui::IsItemHovered();
-            const bool is_active = ImGui::IsItemActive();
-            const ImVec2 origin(canvas_p0.x, canvas_p0.y);  // Lock scrolled origin
-            const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
-
-            int width  = (int)orb_win_sz.x;
-            int height = (int)orb_win_sz.y;
-
-            auto& gbuf = orb.gbuf;
-            if (gbuf.width != width || gbuf.height != height) {
-                init_gbuffer(&gbuf, width, height);
-                for (int i = 0; i < num_mos; ++i) {
-                    gl::init_texture_2D(orb.iso_tex + i, width, height, GL_RGBA8);
-                }
-            }
-
-            bool reset_hard = false;
-            bool reset_view = false;
-            if (is_hovered) {
-                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                    reset_view = true;
-                }
-            }
-
-            if (reset_view) {
-                camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, min_aabb, max_aabb, orb.distance_scale);
-
-                if (reset_hard) {
-                    orb.camera.position         = orb.target.pos;
-                    orb.camera.orientation      = orb.target.ori;
-                    orb.camera.focus_distance   = orb.target.dist;
-                }
-            }
-
-            if (is_active || is_hovered) {
-                static const TrackballControllerParam param = {
-                    .min_distance = 1.0,
-                    .max_distance = 1000.0,
-                };
-
-                vec2_t delta = { io.MouseDelta.x, io.MouseDelta.y };
-                vec2_t curr = {mouse_pos_in_canvas.x, mouse_pos_in_canvas.y};
-                vec2_t prev = curr - delta;
-                float  wheel_delta = io.MouseWheel;
-
-                TrackballControllerInput input = {
-                    .rotate_button = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Left),
-                    .pan_button    = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Right),
-                    .dolly_button  = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Middle),
-                    .dolly_delta   = is_hovered ? wheel_delta : 0.0f,
-                    .mouse_coord_prev = prev,
-                    .mouse_coord_curr = curr,
-                    .screen_size = {canvas_sz.x, canvas_sz.y},
-                    .fov_y = orb.camera.fov_y,
-                };
-                camera_controller_trackball(&orb.target.pos, &orb.target.ori, &orb.target.dist, input, param);
-            }
-
-            if (orb.show_coordinate_system_widget) {
-                float  ext = MIN(orb_win_sz.x, orb_win_sz.y) * 0.4f;
-                float  pad = 20.0f;
-
-                ImVec2 min = ImGui::GetItemRectMin() - ImGui::GetWindowPos();
-                ImVec2 max = ImGui::GetItemRectMax() - ImGui::GetWindowPos();
-
-                CoordSystemWidgetParam param = {
-                    .pos = ImVec2(min.x + pad, max.y - ext - pad),
-                    .size = {ext, ext},
-                    .view_matrix = camera_world_to_view_matrix(orb.camera),
-                    .camera_ori  = orb.target.ori,
-                    .camera_pos  = orb.target.pos,
-                    .camera_dist = orb.target.dist,
-                };
-
-                ImGui::DrawCoordinateSystemWidget(param);
-            }
-
-            const float aspect_ratio = orb_win_sz.x / orb_win_sz.y;
-            mat4_t view_mat = camera_world_to_view_matrix(orb.camera);
-            mat4_t proj_mat = camera_perspective_projection_matrix(orb.camera, aspect_ratio);
-            mat4_t inv_proj_mat = camera_inverse_perspective_projection_matrix(orb.camera, aspect_ratio);
-
-            clear_gbuffer(&gbuf);
-
-            const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
-                GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
-
-            glEnable(GL_CULL_FACE);
-            glCullFace(GL_BACK);
-
-            glEnable(GL_DEPTH_TEST);
-            glDepthFunc(GL_LESS);
-            glDepthMask(GL_TRUE);
-            glEnable(GL_SCISSOR_TEST);
-
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
-            glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
-            glViewport(0, 0, gbuf.width, gbuf.height);
-            glScissor(0, 0, gbuf.width, gbuf.height);
-
-            md_gl_draw_op_t draw_op = {};
-            draw_op.type = MD_GL_REP_BALL_AND_STICK;
-            draw_op.args.ball_and_stick.ball_scale   = 1.0f;
-            draw_op.args.ball_and_stick.stick_radius = 1.0f;
-            draw_op.rep = &orb.gl_rep;
-
-            md_gl_draw_args_t draw_args = {
-                .shaders = &state.mold.gl_shaders,
-                .draw_operations = {
-                    .count = 1,
-                    .ops = &draw_op
-                },
-                .view_transform = {
-                    .view_matrix = (const float*)view_mat.elem,
-                    .proj_matrix = (const float*)proj_mat.elem,
-                },
-            };
-
-            md_gl_draw(&draw_args);
-
-            glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-            glClearColor(1, 1, 1, 0);
-            glClear(GL_COLOR_BUFFER_BIT);
-
-            PUSH_GPU_SECTION("Postprocessing")
-            postprocessing::Descriptor postprocess_desc = {
-                .background = {
-                    .color = {24.f, 24.f, 24.f, 1.0f},
-                },
-                .bloom = {
-                    .enabled = false,
-                },
-                .tonemapping = {
-                    .enabled    = state.visuals.tonemapping.enabled,
-                    .mode       = state.visuals.tonemapping.tonemapper,
-                    .exposure   = state.visuals.tonemapping.exposure,
-                    .gamma      = state.visuals.tonemapping.gamma,
-                },
-                .ambient_occlusion = {
-                    .enabled = false
-                },
-                .depth_of_field = {
-                    .enabled = false,
-                },
-                .fxaa = {
-                    .enabled = true,
-                },
-                .temporal_reprojection = {
-                    .enabled = false,
-                },
-                .sharpen = {
-                    .enabled = true,
-                },
-                .input_textures = {
-                    .depth          = orb.gbuf.tex.depth,
-                    .color          = orb.gbuf.tex.color,
-                    .normal         = orb.gbuf.tex.normal,
-                    .velocity       = orb.gbuf.tex.velocity,
-                }
-            };
-
-            ViewParam view_param = {
-                .matrix = {
-                    .curr = {
-                        .view = view_mat,
-                        .proj = proj_mat,
-                        .norm = view_mat,
-                    },
-                    .inv = {
-                        .proj = inv_proj_mat,
-                    }
-                },
-                .clip_planes = {
-                    .near = orb.camera.near_plane,
-                    .far  = orb.camera.far_plane,
-                },
-                .resolution = {orb_win_sz.x, orb_win_sz.y},
-                .fov_y = orb.camera.fov_y,
-            };
-
-            postprocessing::shade_and_postprocess(postprocess_desc, view_param);
-            POP_GPU_SECTION()
-
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-            glDrawBuffer(GL_BACK);
-            glDisable(GL_SCISSOR_TEST);
-
-            if (orb.iso.enabled) {
-                PUSH_GPU_SECTION("ORB GRID RAYCAST")
-                    for (int i = 0; i < num_mos; ++i) {
-                        volume::RenderDesc vol_desc = {
-                            .render_target = {
-                                .depth  = orb.gbuf.tex.depth,
-                                .color  = orb.iso_tex[i],
-                                .width  = orb.gbuf.width,
-                                .height = orb.gbuf.height,
-                                .clear_color = true,
-                        },
-                        .texture = {
-                                .volume = orb.vol[i].tex_id,
-                        },
-                        .matrix = {
-                                .model = orb.vol[i].tex_to_world,
-                                .view  = view_mat,
-                                .proj  = proj_mat,
-                                .inv_proj = inv_proj_mat,
-                        },
-                        .iso = {
-                                .enabled = true,
-                                .count  = (size_t)orb.iso.count,
-                                .values = orb.iso.values,
-                                .colors = orb.iso.colors,
-                        },
-                        .voxel_spacing = orb.vol[i].step_size,
-                        };
-                        volume::render_volume(vol_desc);
-                    }
-                POP_GPU_SECTION();
-            }
-        }
-        ImGui::End();
     }
 
     void draw_scf_window() {
@@ -1306,37 +913,500 @@ struct VeloxChem : viamd::EventHandler {
         ImGui::End();
     }
 
-    void draw_nto_window(const ApplicationState& state) {
-        if (!nto.show_window) return;
-
-        ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("NTO viewer", &nto.show_window, ImGuiWindowFlags_MenuBar)) {
-            const ImVec2 button_size = {160, 0};
-
-            if (ImGui::BeginMenuBar()) {
-                if (ImGui::BeginMenu("Render")) {
-                    ImGui::Checkbox("Enable Iso Surfaces", &nto.iso.enabled);
-                    if (nto.iso.enabled) {
-                        for (int i = 0; i < nto.iso.count; ++i) {
-                            ImGui::PushID(i);
-                            ImGui::SliderFloat("##Isovalue", &nto.iso.values[i], 0.0f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic);
-                            ImGui::SameLine();
-                            ImGui::ColorEdit4Minimal("##Color", nto.iso.colors[i].elem);
-                            ImGui::PopID();
-                        }
+    void draw_orb_window(const ApplicationState& state) {
+        if (!orb.show_window) return;
+        ImGui::SetNextWindowSize({600,300}, ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("VeloxChem Orbital Viewer", &orb.show_window)) {
+#if 0
+            if (vlx.geom.num_atoms) {
+                if (ImGui::TreeNode("Geometry")) {
+                    ImGui::Text("Num Atoms:           %6zu", vlx.geom.num_atoms);
+                    ImGui::Text("Num Alpha Electrons: %6zu", vlx.geom.num_alpha_electrons);
+                    ImGui::Text("Num Beta Electrons:  %6zu", vlx.geom.num_beta_electrons);
+                    ImGui::Text("Molecular Charge:    %6i",  vlx.geom.molecular_charge);
+                    ImGui::Text("Spin Multiplicity:   %6i",  vlx.geom.spin_multiplicity);
+                    ImGui::Spacing();
+                    ImGui::Text("Atom      Coord X      Coord Y      Coord Z");
+                    for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
+                        ImGui::Text("%4s %12.6f %12.6f %12.6f", vlx.geom.atom_symbol[i].buf, vlx.geom.coord_x[i], vlx.geom.coord_y[i], vlx.geom.coord_z[i]);
                     }
-                    ImGui::EndMenu();
+                    ImGui::TreePop();
                 }
+            }
+#endif
+            const ImVec2 outer_size = {300.f, 0.f};
+            ImGui::PushItemWidth(outer_size.x);
+            ImGui::BeginGroup();
 
-                if (ImGui::BeginMenu("Show")) {
-                    ImGui::Checkbox("Coordinate System Widget", &nto.show_coordinate_system_widget);
-                    ImGui::EndMenu();
-                }
+            ImGui::SliderInt("##Rows", &orb.num_y, 1, 4);
+            ImGui::SliderInt("##Cols", &orb.num_x, 1, 4);
 
-                ImGui::EndMenuBar();
+            const int num_mos = orb.num_x * orb.num_y;
+            const int beg_mo_idx = orb.mo_idx - num_mos / 2 + (num_mos % 2 == 0 ? 1 : 0);
+
+            const double iso_min = 1.0e-4;
+            const double iso_max = 5.0;
+            double iso_val = orb.iso.values[0];
+            ImGui::SliderScalar("##Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SetItemTooltip("Iso Value");
+
+            orb.iso.values[0] =  (float)iso_val;
+            orb.iso.values[1] = -(float)iso_val;
+            orb.iso.count = 2;
+            orb.iso.enabled = true;
+
+            ImGui::ColorEdit4("##Color Positive", orb.iso.colors[0].elem);
+            ImGui::SetItemTooltip("Color Positive");
+            ImGui::ColorEdit4("##Color Negative", orb.iso.colors[1].elem);
+            ImGui::SetItemTooltip("Color Negative");
+
+            const float TEXT_BASE_HEIGHT = ImGui::GetTextLineHeightWithSpacing();
+            enum {
+                Col_Idx,
+                Col_Occ,
+                Col_Ene,
+            };
+
+            if (ImGui::IsWindowAppearing()) {
+                orb.scroll_to_idx = orb.mo_idx;
+            }
+            if (ImGui::Button("Goto HOMO", ImVec2(outer_size.x,0))) {
+                orb.scroll_to_idx = homo_idx;
             }
 
-            //update_density_volume(data);
+            const ImGuiTableFlags flags =
+                ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable | ImGuiTableFlags_RowBg |
+                ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_ScrollY;
+            if (ImGui::BeginTable("Molecular Orbitals", 3, flags, outer_size))//, ImVec2(0.0f, TEXT_BASE_HEIGHT * 15), 0.0f))
+            {
+                // Declare columns
+                // We use the "user_id" parameter of TableSetupColumn() to specify a user id that will be stored in the sort specifications.
+                // This is so our sort function can identify a column given our own identifier. We could also identify them based on their index!
+                // Demonstrate using a mixture of flags among available sort-related flags:
+                // - ImGuiTableColumnFlags_DefaultSort
+                // - ImGuiTableColumnFlags_NoSort / ImGuiTableColumnFlags_NoSortAscending / ImGuiTableColumnFlags_NoSortDescending
+                // - ImGuiTableColumnFlags_PreferSortAscending / ImGuiTableColumnFlags_PreferSortDescending
+                ImGui::TableSetupColumn("Index",        ImGuiTableColumnFlags_DefaultSort          | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Idx);
+                ImGui::TableSetupColumn("Occupation",   ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Occ);
+                ImGui::TableSetupColumn("Energy",       ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Ene);
+                ImGui::TableSetupScrollFreeze(0, 1); // Make row always visible
+                ImGui::TableHeadersRow();
+
+                for (int n = (int)num_orbitals() - 1; n >= 0; n--) {
+                    ImGui::PushID(n + 1);
+                    ImGui::TableNextRow();
+                    bool is_selected = (beg_mo_idx <= n && n < beg_mo_idx + num_mos);
+                    ImGui::TableNextColumn();
+                    if (orb.scroll_to_idx != -1 && n == orb.scroll_to_idx) {
+                        orb.scroll_to_idx = -1;
+                        ImGui::SetScrollHereY();
+                    }
+                    char buf[32];
+                    const char* lbl = (n == homo_idx) ? " (HOMO)" : (n == lumo_idx) ? " (LUMO)" : "";
+                    snprintf(buf, sizeof(buf), "%i%s", n + 1, lbl);
+                    ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
+                    if (ImGui::Selectable(buf, is_selected, selectable_flags)) {
+                        if (orb.mo_idx != n) {
+                            orb.mo_idx = n;
+                        }
+                    }
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.1f", vlx.scf.alpha.occupations.data[n]);
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.4f", vlx.scf.alpha.energies.data[n]);
+                    ImGui::PopID();
+                }
+
+                ImGui::EndTable();
+            }
+
+            ImGui::EndGroup();
+            ImGui::PopItemWidth();
+
+            ImGui::SameLine();
+
+            // These represent the new mo_idx we want to have in each slot
+            int vol_mo_idx[16] = {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
+            for (int i = 0; i < num_mos; ++i) {
+                int mo_idx = beg_mo_idx + i;
+                if (-1 < mo_idx && mo_idx < num_orbitals()) {
+                    vol_mo_idx[i] = mo_idx;
+                }
+            }
+
+            int job_queue[16];
+            int num_jobs = 0;
+            // Find and reuse volume data from existing slots (if applicable)
+            // If there is no existing volume, we queue up a new job
+            for (int i = 0; i < num_mos; ++i) {
+                // Check if we already have that entry in the correct slot
+                if (orb.vol_mo_idx[i] == vol_mo_idx[i]) continue;
+
+                // Try to find the entry in the existing list
+                bool found = false;
+                for (int j = 0; j < num_mos; ++j) {
+                    if (i == j) continue;
+                    if (vol_mo_idx[i] == orb.vol_mo_idx[j]) {
+                        // Swap to correct location
+                        ImSwap(orb.vol[i], orb.vol[j]);
+                        ImSwap(orb.vol_mo_idx[i], orb.vol_mo_idx[j]);
+                        found = true;
+                        break;
+                    }
+                }
+
+                // If not found, put in job queue to compute the volume
+                if (!found) {
+                    job_queue[num_jobs++] = i;
+                }
+            }
+
+            if (num_jobs > 0) {
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, orb.vol_fbo);
+                const float samples_per_angstrom = 6.0f;
+                const float zero[4] = {};
+                for (int i = 0; i < num_jobs; ++i) {
+                    int slot_idx = job_queue[i];
+                    int mo_idx = vol_mo_idx[slot_idx];
+                    orb.vol_mo_idx[slot_idx] = mo_idx;
+
+                    if (-1 < mo_idx && mo_idx < num_orbitals()) {
+                        compute_mo(&orb.vol[slot_idx].tex_to_world, &orb.vol[slot_idx].step_size, &orb.vol[slot_idx].tex_id, mo_idx, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                        // Clear volume texture
+                        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, orb.vol[slot_idx].tex_id, 0);
+                        glClearBufferfv(GL_COLOR, 0, zero);
+                    }
+                }
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            }
+
+            // Animate camera towards targets
+            const double dt = state.app.timing.delta_s;
+            camera_animate(&orb.camera, orb.target.ori, orb.target.pos, orb.target.dist, dt);
+
+            ImVec2 canvas_sz = ImGui::GetContentRegionAvail();   // Resize canvas to what's available
+            canvas_sz.x = MAX(canvas_sz.x, 50.0f);
+            canvas_sz.y = MAX(canvas_sz.y, 50.0f);
+
+            // This will catch our interactions
+            ImGui::InvisibleButton("canvas", canvas_sz, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_AllowOverlap);
+
+            // Draw border and background color
+            ImGuiIO& io = ImGui::GetIO();
+
+            ImVec2 canvas_p0 = ImGui::GetItemRectMin();
+            ImVec2 canvas_p1 = ImGui::GetItemRectMax();
+
+            ImVec2 orb_win_sz = (canvas_p1 - canvas_p0) / ImVec2((float)orb.num_x, (float)orb.num_y);
+            orb_win_sz.x = floorf(orb_win_sz.x);
+            orb_win_sz.y = floorf(orb_win_sz.y);
+            canvas_p1.x = canvas_p0.x + orb.num_x * orb_win_sz.x;
+            canvas_p1.y = canvas_p0.y + orb.num_y * orb_win_sz.y;
+
+            ImDrawList* draw_list = ImGui::GetWindowDrawList();
+            draw_list->AddRectFilled(canvas_p0, canvas_p1, IM_COL32(255, 255, 255, 255));
+            for (int y = 0; y < orb.num_y; ++y) {
+                for (int x = 0; x < orb.num_x; ++x) {
+                    int i = y * orb.num_x + x;
+                    int mo_idx = beg_mo_idx + i;
+                    ImVec2 p0 = canvas_p0 + orb_win_sz * ImVec2((float)(x+0), (float)(y+0));
+                    ImVec2 p1 = canvas_p0 + orb_win_sz * ImVec2((float)(x+1), (float)(y+1));
+                    if (-1 < mo_idx && mo_idx < num_orbitals()) {
+                        ImVec2 text_pos = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
+                        char buf[32];
+                        const char* lbl = (mo_idx == homo_idx) ? " (HOMO)" : (mo_idx == lumo_idx) ? " (LUMO)" : "";
+                        snprintf(buf, sizeof(buf), "%i%s", mo_idx + 1, lbl);
+                        draw_list->AddImage((ImTextureID)(intptr_t)orb.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
+                        draw_list->AddImage((ImTextureID)(intptr_t)orb.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
+                        draw_list->AddText(text_pos, ImColor(0,0,0), buf);
+                    }
+                }
+            }
+            for (int x = 1; x < orb.num_x; ++x) {
+                ImVec2 p0 = {canvas_p0.x + orb_win_sz.x * x, canvas_p0.y};
+                ImVec2 p1 = {canvas_p0.x + orb_win_sz.x * x, canvas_p1.y};
+                draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
+            }
+            for (int y = 1; y < orb.num_y; ++y) {
+                ImVec2 p0 = {canvas_p0.x, canvas_p0.y + orb_win_sz.y * y};
+                ImVec2 p1 = {canvas_p1.x, canvas_p0.y + orb_win_sz.y * y};
+                draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
+            }
+
+            const bool is_hovered = ImGui::IsItemHovered();
+            const bool is_active = ImGui::IsItemActive();
+            const ImVec2 origin(canvas_p0.x, canvas_p0.y);  // Lock scrolled origin
+            const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
+
+            int width  = MAX(1, (int)orb_win_sz.x);
+            int height = MAX(1, (int)orb_win_sz.y);
+
+            auto& gbuf = orb.gbuf;
+            if ((int)gbuf.width != width || (int)gbuf.height != height) {
+                init_gbuffer(&gbuf, width, height);
+                for (int i = 0; i < num_mos; ++i) {
+                    gl::init_texture_2D(orb.iso_tex + i, width, height, GL_RGBA8);
+                }
+            }
+
+            bool reset_hard = false;
+            bool reset_view = false;
+            if (is_hovered) {
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                    reset_view = true;
+                }
+            }
+
+            if (reset_view) {
+                camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, min_aabb, max_aabb, orb.distance_scale);
+
+                if (reset_hard) {
+                    orb.camera.position         = orb.target.pos;
+                    orb.camera.orientation      = orb.target.ori;
+                    orb.camera.focus_distance   = orb.target.dist;
+                }
+            }
+
+            if (is_active || is_hovered) {
+                static const TrackballControllerParam param = {
+                    .min_distance = 1.0,
+                    .max_distance = 1000.0,
+                };
+
+                vec2_t delta = { io.MouseDelta.x, io.MouseDelta.y };
+                vec2_t curr = {mouse_pos_in_canvas.x, mouse_pos_in_canvas.y};
+                vec2_t prev = curr - delta;
+                float  wheel_delta = io.MouseWheel;
+
+                TrackballControllerInput input = {
+                    .rotate_button = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Left),
+                    .pan_button    = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Right),
+                    .dolly_button  = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Middle),
+                    .dolly_delta   = is_hovered ? wheel_delta : 0.0f,
+                    .mouse_coord_prev = prev,
+                    .mouse_coord_curr = curr,
+                    .screen_size = {canvas_sz.x, canvas_sz.y},
+                    .fov_y = orb.camera.fov_y,
+                };
+                camera_controller_trackball(&orb.target.pos, &orb.target.ori, &orb.target.dist, input, param);
+            }
+
+            if (orb.show_coordinate_system_widget) {
+                float  ext = MIN(orb_win_sz.x, orb_win_sz.y) * 0.4f;
+                float  pad = 20.0f;
+
+                ImVec2 min = ImGui::GetItemRectMin() - ImGui::GetWindowPos();
+                ImVec2 max = ImGui::GetItemRectMax() - ImGui::GetWindowPos();
+
+                CoordSystemWidgetParam param = {
+                    .pos = ImVec2(min.x + pad, max.y - ext - pad),
+                    .size = {ext, ext},
+                    .view_matrix = camera_world_to_view_matrix(orb.camera),
+                    .camera_ori  = orb.target.ori,
+                    .camera_pos  = orb.target.pos,
+                    .camera_dist = orb.target.dist,
+                };
+
+                ImGui::DrawCoordinateSystemWidget(param);
+            }
+
+            const float aspect_ratio = orb_win_sz.x / orb_win_sz.y;
+            mat4_t view_mat = camera_world_to_view_matrix(orb.camera);
+            mat4_t proj_mat = camera_perspective_projection_matrix(orb.camera, aspect_ratio);
+            mat4_t inv_proj_mat = camera_inverse_perspective_projection_matrix(orb.camera, aspect_ratio);
+
+            clear_gbuffer(&gbuf);
+
+            const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
+                GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
+
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
+
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LESS);
+            glDepthMask(GL_TRUE);
+            glEnable(GL_SCISSOR_TEST);
+
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
+            glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
+            glViewport(0, 0, gbuf.width, gbuf.height);
+            glScissor(0, 0, gbuf.width, gbuf.height);
+
+            md_gl_draw_op_t draw_op = {};
+            draw_op.type = MD_GL_REP_BALL_AND_STICK;
+            draw_op.args.ball_and_stick.ball_scale   = 1.0f;
+            draw_op.args.ball_and_stick.stick_radius = 1.0f;
+            draw_op.rep = &orb.gl_rep;
+
+            md_gl_draw_args_t draw_args = {
+                .shaders = &state.mold.gl_shaders,
+                .draw_operations = {
+                    .count = 1,
+                    .ops = &draw_op
+            },
+                .view_transform = {
+                    .view_matrix = (const float*)view_mat.elem,
+                    .proj_matrix = (const float*)proj_mat.elem,
+            },
+            };
+
+            md_gl_draw(&draw_args);
+
+            glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
+            glClearColor(1, 1, 1, 0);
+            glClear(GL_COLOR_BUFFER_BIT);
+
+            PUSH_GPU_SECTION("Postprocessing")
+            postprocessing::Descriptor postprocess_desc = {
+                .background = {
+                    .color = {24.f, 24.f, 24.f, 1.0f},
+                },
+                .bloom = {
+                    .enabled = false,
+                },
+                .tonemapping = {
+                    .enabled    = state.visuals.tonemapping.enabled,
+                    .mode       = state.visuals.tonemapping.tonemapper,
+                    .exposure   = state.visuals.tonemapping.exposure,
+                    .gamma      = state.visuals.tonemapping.gamma,
+                },
+                .ambient_occlusion = {
+                    .enabled = false
+                },
+                .depth_of_field = {
+                    .enabled = false,
+                },
+                .fxaa = {
+                    .enabled = true,
+                },
+                .temporal_reprojection = {
+                    .enabled = false,
+                },
+                .sharpen = {
+                    .enabled = true,
+                },
+                .input_textures = {
+                    .depth          = orb.gbuf.tex.depth,
+                    .color          = orb.gbuf.tex.color,
+                    .normal         = orb.gbuf.tex.normal,
+                    .velocity       = orb.gbuf.tex.velocity,
+                }
+            };
+
+            ViewParam view_param = {
+                .matrix = {
+                    .curr = {
+                        .view = view_mat,
+                        .proj = proj_mat,
+                        .norm = view_mat,
+                    },
+                    .inv = {
+                        .proj = inv_proj_mat,
+                    }
+                },
+                .clip_planes = {
+                    .near = orb.camera.near_plane,
+                    .far  = orb.camera.far_plane,
+                },
+                .resolution = {orb_win_sz.x, orb_win_sz.y},
+                .fov_y = orb.camera.fov_y,
+            };
+
+            postprocessing::shade_and_postprocess(postprocess_desc, view_param);
+            POP_GPU_SECTION()
+
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glDrawBuffer(GL_BACK);
+            glDisable(GL_SCISSOR_TEST);
+
+            if (orb.iso.enabled) {
+                PUSH_GPU_SECTION("ORB GRID RAYCAST")
+                    for (int i = 0; i < num_mos; ++i) {
+                        volume::RenderDesc vol_desc = {
+                            .render_target = {
+                                .depth  = orb.gbuf.tex.depth,
+                                .color  = orb.iso_tex[i],
+                                .width  = orb.gbuf.width,
+                                .height = orb.gbuf.height,
+                                .clear_color = true,
+                        },
+                        .texture = {
+                                .volume = orb.vol[i].tex_id,
+                        },
+                        .matrix = {
+                                .model = orb.vol[i].tex_to_world,
+                                .view  = view_mat,
+                                .proj  = proj_mat,
+                                .inv_proj = inv_proj_mat,
+                        },
+                        .iso = {
+                                .enabled = true,
+                                .count  = (size_t)orb.iso.count,
+                                .values = orb.iso.values,
+                                .colors = orb.iso.colors,
+                        },
+                        .voxel_spacing = orb.vol[i].step_size,
+                        };
+                        volume::render_volume(vol_desc);
+                    }
+                POP_GPU_SECTION();
+            }
+        }
+        ImGui::End();
+    }
+
+    void draw_nto_window(const ApplicationState& state) {
+        if (!nto.show_window) return;
+        if (vlx.rsp.num_excited_states == 0) return;
+        if (vlx.rsp.nto == NULL) return;
+
+        ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("NTO viewer", &nto.show_window, ImGuiWindowFlags_MenuBar)) {
+
+            const ImVec2 outer_size = {300.f, 0.f};
+            ImGui::PushItemWidth(outer_size.x);
+            ImGui::BeginGroup();
+
+            const double iso_min = 1.0e-4;
+            const double iso_max = 5.0;
+            double iso_val = nto.iso.values[0];
+            ImGui::SliderScalar("##Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SetItemTooltip("Iso Value");
+
+            nto.iso.values[0] =  (float)iso_val;
+            nto.iso.values[1] = -(float)iso_val;
+            nto.iso.count = 2;
+            nto.iso.enabled = true;
+
+            ImGui::ColorEdit4("##Color Positive", nto.iso.colors[0].elem);
+            ImGui::SetItemTooltip("Color Positive");
+            ImGui::ColorEdit4("##Color Negative", nto.iso.colors[1].elem);
+            ImGui::SetItemTooltip("Color Negative");
+
+            if (ImGui::BeginListBox("##NTO Index", outer_size)) {
+                for (int i = 0; i < (int)vlx.rsp.num_excited_states; ++i) {
+                    bool is_selected = nto.nto_idx == i;
+                    char buf[32];
+                    snprintf(buf, sizeof(buf), "%i", i + 1);
+                    if (ImGui::Selectable(buf, is_selected)) {
+                        if (nto.nto_idx != i) {
+                            nto.nto_idx = i;
+                        }
+                    }
+                }
+                ImGui::EndListBox();
+            }
+
+            // @TODO: Enlist all defined groups here
+            if (ImGui::BeginListBox("##Groups", outer_size)) {
+                ImGui::EndListBox();
+            }
+
+            ImGui::EndGroup();
+            ImGui::PopItemWidth();
+
+            ImGui::SameLine();
 
             // Animate camera towards targets
             const double dt = state.app.timing.delta_s;
@@ -1355,21 +1425,109 @@ struct VeloxChem : viamd::EventHandler {
             ImVec2 canvas_p0 = ImGui::GetItemRectMin();
             ImVec2 canvas_p1 = ImGui::GetItemRectMax();
 
+            static int curr_nto_idx = -1;
+
+            double nto_lambda[4] = {};
+            int num_x = 2;
+
+            // This represents the cutoff for contributing orbitals to be part of the orbital 'grid'
+            // If the occupation parameter is less than this it will not be displayed
+            const double lambda_cutoff = 0.10f;
+            for (int i = 0; i < MIN(4, (int)vlx.rsp.nto[nto.nto_idx].occupations.count); ++i) {
+                nto_lambda[i] = vlx.rsp.nto[nto.nto_idx].occupations.data[lumo_idx + i];
+                if (nto_lambda[i] < lambda_cutoff) {
+                    num_x = i;
+                    break;
+                }
+            }
+
+            // Always two, Particle and Hole
+            const int num_y = 2;
+
+            if (curr_nto_idx != nto.nto_idx) {
+                curr_nto_idx = nto.nto_idx;
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, nto.vol_fbo);
+                const float zero[4] = {};
+                const float samples_per_angstrom = 6.0f;
+                size_t nto_idx = (size_t)nto.nto_idx;
+                for (int pi = 0; pi < num_x; ++pi) {
+                    int hi = pi + num_x;
+                    size_t lambda_idx = (size_t)pi;
+
+                    compute_nto(&nto.vol[pi].tex_to_world, &nto.vol[pi].step_size, &nto.vol[pi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                    compute_nto(&nto.vol[hi].tex_to_world, &nto.vol[hi].step_size, &nto.vol[hi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+
+                    // Clear volume texture
+                    glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, nto.vol[pi].tex_id, 0);
+                    glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, nto.vol[hi].tex_id, 0);
+                    glClearBufferfv(GL_COLOR, 0, zero);
+                    glClearBufferfv(GL_COLOR, 1, zero);
+                }
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            }
+
+            ImVec2 grid_p0 = canvas_p0;
+            ImVec2 grid_p1 = canvas_p0 + canvas_sz * ImVec2(0.5f, 1.0f);
+            ImVec2 win_sz = (grid_p1 - grid_p0) / ImVec2((float)num_x, (float)num_y);
+            win_sz.x = floorf(win_sz.x);
+            win_sz.y = floorf(win_sz.y);
+
+            const float TEXT_BASE_HEIGHT = ImGui::GetTextLineHeightWithSpacing();
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
-            draw_list->AddImage((ImTextureID)(intptr_t)nto.gbuf.tex.transparency, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
-            draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(50, 50, 50, 255));
+            draw_list->AddRectFilled(canvas_p0, canvas_p1, IM_COL32(255, 255, 255, 255));
+            for (int y = 0; y < num_y; ++y) {
+                for (int x = 0; x < num_x; ++x) {
+                    int i = y * num_x + x;
+                    ImVec2 p0 = grid_p0 + win_sz * ImVec2((float)(x+0), (float)(y+0));
+                    ImVec2 p1 = grid_p0 + win_sz * ImVec2((float)(x+1), (float)(y+1));
+                    ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
+                    ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y + TEXT_BASE_HEIGHT * 0.5f);
+                    const char* lbl = y == 0 ? "Particle" : "Hole";
+                    char buf[32];
+                    snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[x]);
+                    draw_list->AddImage((ImTextureID)(intptr_t)nto.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
+                    draw_list->AddImage((ImTextureID)(intptr_t)nto.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
+                    draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
+                    draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbl);
+                }
+            }
+            // Draw grid
+            for (int x = 1; x <= num_x; ++x) {
+                ImVec2 p0 = {grid_p0.x + win_sz.x * x, grid_p0.y};
+                ImVec2 p1 = {grid_p0.x + win_sz.x * x, grid_p1.y};
+                draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
+            }
+            for (int y = 1; y < num_y; ++y) {
+                ImVec2 p0 = {grid_p0.x, grid_p0.y + win_sz.y * y};
+                ImVec2 p1 = {grid_p1.x, grid_p0.y + win_sz.y * y};
+                draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
+            }
+            // @TODO: Draw Sankey Diagram of Transition Matrix
+            {
+                ImVec2 p0 = canvas_p0 + canvas_sz * ImVec2(0.5f, 0.0f);
+                ImVec2 p1 = canvas_p1;
+                ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
+                draw_list->AddText(text_pos_bl, ImColor(0, 0, 0, 255), "Transition Diagram");
+            }
 
             const bool is_hovered = ImGui::IsItemHovered();
             const bool is_active = ImGui::IsItemActive();
             const ImVec2 origin(canvas_p0.x, canvas_p0.y);  // Lock scrolled origin
             const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
 
+            int width  = MAX(1, (int)win_sz.x);
+            int height = MAX(1, (int)win_sz.y);
+
+            int num_win = num_x * num_y;
+
             auto& gbuf = nto.gbuf;
-            if (gbuf.width != (uint32_t)canvas_sz.x || gbuf.height != (uint32_t)canvas_sz.y) {
-                init_gbuffer(&gbuf, (int)canvas_sz.x, (int)canvas_sz.y);
+            if ((int)gbuf.width != width || (int)gbuf.height != height) {
+                init_gbuffer(&gbuf, width, height);
+                for (int i = 0; i < num_win; ++i) {
+                    gl::init_texture_2D(nto.iso_tex + i, width, height, GL_RGBA8);
+                }
             }
 
-            bool reset_hard = false;
             bool reset_view = false;
             if (is_hovered) {
                 if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
@@ -1378,13 +1536,7 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (reset_view) {
-                camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb);
-
-                if (reset_hard) {
-                    nto.camera.position         = nto.target.pos;
-                    nto.camera.orientation      = nto.target.ori;
-                    nto.camera.focus_distance   = nto.target.dist;
-                }
+                camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
             }
 
             if (is_active || is_hovered) {
@@ -1412,12 +1564,14 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (nto.show_coordinate_system_widget) {
-                ImVec2 win_size = ImGui::GetWindowSize();
-                float  ext = MIN(win_size.x, win_size.y) * 0.2f;
-                float  pad = 0.1f * ext;
+                float  ext = MIN(win_sz.x, win_sz.y) * 0.4f;
+                float  pad = 20.0f;
 
-                CoordSystemWidgetParam params = {
-                    .pos = ImVec2(pad, win_size.y - ext - pad),
+                ImVec2 min = ImGui::GetItemRectMin() - ImGui::GetWindowPos();
+                ImVec2 max = ImGui::GetItemRectMax() - ImGui::GetWindowPos();
+
+                CoordSystemWidgetParam param = {
+                    .pos = ImVec2(min.x + pad, max.y - ext - pad),
                     .size = {ext, ext},
                     .view_matrix = camera_world_to_view_matrix(nto.camera),
                     .camera_ori  = nto.target.ori,
@@ -1425,10 +1579,10 @@ struct VeloxChem : viamd::EventHandler {
                     .camera_dist = nto.target.dist,
                 };
 
-                ImGui::DrawCoordinateSystemWidget(params);
+                ImGui::DrawCoordinateSystemWidget(param);
             }
 
-            const float aspect_ratio = canvas_sz.x / canvas_sz.y;
+            const float aspect_ratio = win_sz.x / win_sz.y;
             mat4_t view_mat = camera_world_to_view_matrix(nto.camera);
             mat4_t proj_mat = camera_perspective_projection_matrix(nto.camera, aspect_ratio);
             mat4_t inv_proj_mat = camera_inverse_perspective_projection_matrix(nto.camera, aspect_ratio);
@@ -1444,10 +1598,12 @@ struct VeloxChem : viamd::EventHandler {
             glEnable(GL_DEPTH_TEST);
             glDepthFunc(GL_LESS);
             glDepthMask(GL_TRUE);
+            glEnable(GL_SCISSOR_TEST);
 
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
             glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
             glViewport(0, 0, gbuf.width, gbuf.height);
+            glScissor(0, 0, gbuf.width, gbuf.height);
 
             md_gl_draw_op_t draw_op = {};
             draw_op.type = MD_GL_REP_BALL_AND_STICK;
@@ -1473,32 +1629,6 @@ struct VeloxChem : viamd::EventHandler {
             glClearColor(1, 1, 1, 0);
             glClear(GL_COLOR_BUFFER_BIT);
 
-            if (nto.iso.enabled) {
-                volume::RenderDesc vol_desc = {
-                    .render_target = {
-                        .depth  = nto.gbuf.tex.depth,
-                        .color  = nto.gbuf.tex.transparency,
-                        .width  = nto.gbuf.width,
-                        .height = nto.gbuf.height,
-                    },
-                    .texture = {
-                        .volume = nto.vol_tex,
-                    },
-                    .matrix = {
-                        .model = nto.vol.tex_to_world,
-                        .view  = view_mat,
-                        .proj  = proj_mat,
-                    },
-                    .iso = {
-                        .count  = (size_t)nto.iso.count,
-                        .values = nto.iso.values,
-                        .colors = nto.iso.colors,
-                    },
-                    .voxel_spacing = nto.vol.step_size,
-                };
-                volume::render_volume(vol_desc);
-            }
-
             PUSH_GPU_SECTION("Postprocessing")
             postprocessing::Descriptor postprocess_desc = {
                 .background = {
@@ -1519,34 +1649,39 @@ struct VeloxChem : viamd::EventHandler {
                 .depth_of_field = {
                     .enabled = false,
                 },
+                .fxaa = {
+                    .enabled = true,
+                },
                 .temporal_reprojection = {
                     .enabled = false,
                 },
+                .sharpen = {
+                    .enabled = true,
+                },
                 .input_textures = {
-                    .depth          = nto.gbuf.tex.depth,
-                    .color          = nto.gbuf.tex.color,
-                    .normal         = nto.gbuf.tex.normal,
-                    .velocity       = nto.gbuf.tex.velocity,
-                    .transparency   = nto.gbuf.tex.transparency,
+                    .depth      = nto.gbuf.tex.depth,
+                    .color      = nto.gbuf.tex.color,
+                    .normal     = nto.gbuf.tex.normal,
+                    .velocity   = nto.gbuf.tex.velocity,
                 }
             };
 
             ViewParam view_param = {
                 .matrix = {
                     .curr = {
-                    .view = view_mat,
-                    .proj = proj_mat,
-                    .norm = view_mat,
-                },
-                .inv = {
-                    .proj = inv_proj_mat,
-                }
+                        .view = view_mat,
+                        .proj = proj_mat,
+                        .norm = view_mat,
+                    },
+                    .inv = {
+                        .proj = inv_proj_mat,
+                    }
                 },
                 .clip_planes = {
                     .near = nto.camera.near_plane,
                     .far  = nto.camera.far_plane,
                 },
-                .resolution = {canvas_sz.x, canvas_sz.y},
+                .resolution = {win_sz.x, win_sz.y},
                 .fov_y = nto.camera.fov_y,
             };
 
@@ -1555,8 +1690,41 @@ struct VeloxChem : viamd::EventHandler {
 
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
             glDrawBuffer(GL_BACK);
-        }
+            glDisable(GL_SCISSOR_TEST);
 
+            if (nto.iso.enabled) {
+                PUSH_GPU_SECTION("ORB GRID RAYCAST")
+                    for (int i = 0; i < num_win; ++i) {
+                        volume::RenderDesc vol_desc = {
+                            .render_target = {
+                                .depth  = nto.gbuf.tex.depth,
+                                .color  = nto.iso_tex[i],
+                                .width  = nto.gbuf.width,
+                                .height = nto.gbuf.height,
+                                .clear_color = true,
+                            },
+                            .texture = {
+                                .volume = nto.vol[i].tex_id,
+                            },
+                            .matrix = {
+                                .model = nto.vol[i].tex_to_world,
+                                .view  = view_mat,
+                                .proj  = proj_mat,
+                                .inv_proj = inv_proj_mat,
+                            },
+                            .iso = {
+                                .enabled = true,
+                                .count  = (size_t)nto.iso.count,
+                                .values = nto.iso.values,
+                                .colors = nto.iso.colors,
+                            },
+                            .voxel_spacing = nto.vol[i].step_size,
+                        };
+                        volume::render_volume(vol_desc);
+                    }
+                POP_GPU_SECTION();
+            }
+        }
         ImGui::End();
     }
 };
