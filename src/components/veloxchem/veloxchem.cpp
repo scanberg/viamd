@@ -466,7 +466,7 @@ struct VeloxChem : viamd::EventHandler {
         // We evaluate the in parallel over smaller NxNxN blocks
         uint32_t num_blocks = (dim[0] / BLK_DIM) * (dim[1] / BLK_DIM) * (dim[2] / BLK_DIM);
 
-        MD_LOG_DEBUG("Starting Async evaluation of orbital volume of dimensions [%i][%i][%i]", dim[0], dim[1], dim[2]);
+        MD_LOG_DEBUG("Starting async eval of orbital volume [%i][%i][%i]", dim[0], dim[1], dim[2]);
 
         task_system::ID async_task = task_system::pool_enqueue(STR_LIT("Evaluate Orbital"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
             Payload* data = (Payload*)user_data;
@@ -1261,17 +1261,13 @@ struct VeloxChem : viamd::EventHandler {
             // This represents the cutoff for contributing orbitals to be part of the orbital 'grid'
             // If the occupation parameter is less than this it will not be displayed
             const double lambda_cutoff = 0.10f;
-            for (int i = 0; i < MIN(4, (int)vlx.rsp.nto[nto.nto_idx].occupations.count); ++i) {
+            for (size_t i = 0; i < MIN(ARRAY_SIZE(nto_lambda), vlx.rsp.nto[nto.nto_idx].occupations.count); ++i) {
                 nto_lambda[i] = vlx.rsp.nto[nto.nto_idx].occupations.data[lumo_idx + i];
                 if (nto_lambda[i] < lambda_cutoff) {
-                    num_lambdas = i;
+                    num_lambdas = (int)i;
                     break;
                 }
             }
-
-            // Always two, Orbitals + Transition Diagram
-            const int num_x = 2;
-            const int num_y = 2;
 
             if (nto.vol_nto_idx != nto.nto_idx) {
                 nto.vol_nto_idx = nto.nto_idx;
@@ -1289,9 +1285,9 @@ struct VeloxChem : viamd::EventHandler {
 
                     // Clear volume textures
                     glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, nto.vol[pi].tex_id, 0);
-                    glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, nto.vol[hi].tex_id, 0);
                     glClearBufferfv(GL_COLOR, 0, zero);
-                    glClearBufferfv(GL_COLOR, 1, zero);
+                    glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, nto.vol[hi].tex_id, 0);
+                    glClearBufferfv(GL_COLOR, 0, zero);
                 }
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
             }
@@ -1315,7 +1311,7 @@ struct VeloxChem : viamd::EventHandler {
                 ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y + TEXT_BASE_HEIGHT * 0.5f);
                 const char* lbl = ((i & 1) == 0) ? "Particle" : "Hole";
                 char buf[32];
-                snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i % num_lambdas]);
+                snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i / num_lambdas]);
                 draw_list->AddImage((ImTextureID)(intptr_t)nto.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
                 draw_list->AddImage((ImTextureID)(intptr_t)nto.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
                 draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
@@ -1354,7 +1350,7 @@ struct VeloxChem : viamd::EventHandler {
             int width  = MAX(1, (int)win_sz.x);
             int height = MAX(1, (int)win_sz.y);
 
-            int num_win = num_x * num_y;
+            int num_win = num_lambdas * 2;
 
             auto& gbuf = nto.gbuf;
             if ((int)gbuf.width != width || (int)gbuf.height != height) {
