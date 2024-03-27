@@ -128,6 +128,9 @@ struct VeloxChem : viamd::EventHandler {
 
     struct Rsp {
         bool show_window = false;
+        int hovered = -1;
+        int selected = -1;
+        int focused_plot = -1;
     } rsp;
 
     // Arena for persistent allocations for the veloxchem module (tied to the lifetime of the VLX object)
@@ -609,6 +612,97 @@ struct VeloxChem : viamd::EventHandler {
             out_y[xi] = tot;
         }
     }
+    /*
+    * We return to this at a later stage
+    void save_absorption(str_t filename, md_array(double)* x_values, const char* x_lable, md_array(double)* y_values_osc, md_array(double)* y_values_cgs, int step) {
+        md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
+        if (!file) {
+            MD_LOG_ERROR("Could not open workspace file for writing: '%.*s", (int)filename.len, filename.ptr);
+            return;
+        }
+        defer{ md_file_close(file); };
+
+        // md_array(char*) rows = md_array_create(char*, md_array_size(*x_values), )
+        //double* x_values = (double*)md_temp_push(sizeof(double) * num_samples);
+        // I want to create an array with the rows to print to the file. What type should this be, and how do I create it?
+
+        
+        for (int i = 0; i < md_array_size(*x_values); i += 5) {
+
+        }
+    }
+    */
+
+    //converts x and y peaks into pixel points in context of the current plot. Use between BeginPlot() and EndPlot()
+    static inline void peaks_to_pixels(ImVec2* pixel_peaks, const double* x_peaks, const double* y_peaks, size_t num_peaks) {
+        for (size_t i = 0; i < num_peaks; i++) {
+            pixel_peaks[i] = ImPlot::PlotToPixels(ImPlotPoint{ x_peaks[i], y_peaks[i] });
+        }
+    }
+    // Returns peak index closest to mouse pixel position, assumes that x-values are sorted.
+    static inline size_t get_hovered_peak(const ImVec2 mouse_pos, const ImVec2* pixel_peaks, size_t num_peaks, double proxy_distance = 10.0) {
+        int closest_idx = 0;
+        double x = mouse_pos.x;
+        double y = mouse_pos.y;
+        double y_max = 0;
+        double y_min = 0;
+        double distance_x = 0;
+        double distance_y = 0;
+        double closest_distance = 0;
+        double pixel_y0 = ImPlot::PlotToPixels(0, 0).y;
+
+        //Keep in mind that pixel y is 0 at the top, so you flip the comparison compared to plot y. The code below still seems to work as intended though.
+
+        for (int i = 0; i < num_peaks; i++) {
+            y_max = MAX(pixel_peaks[i].y, pixel_y0);
+            y_min = MIN(pixel_peaks[i].y, pixel_y0);
+
+            //Check if the y location is within the range of y_min,ymax
+            if (y > y_max) {
+                distance_y = fabs(y - y_max);
+            }
+            else if (y < y_min) {
+                distance_y = fabs(y - y_min);
+            }
+            else {
+                distance_y = 0;
+            }
+
+            distance_x = fabs(pixel_peaks[i].x - x);
+
+            // We need a special case for i == 0 to set a reference for comparison, so that closest_distance does not start on 0;
+            if (i == 0 && distance_y == 0 ){
+                closest_distance = distance_x;
+                closest_idx = 0;
+
+            }
+            else if (i == 0) {
+                closest_distance = sqrt(pow(distance_x, 2) + pow(distance_y, 2)); // Is there a better function for doing this? Is this expensive?
+                closest_idx = 0;
+            }
+            else if (distance_y == 0 && distance_x < closest_distance) {
+                closest_distance = fabs(pixel_peaks[i].x - x);
+                closest_idx = i;
+            }
+            else if (sqrt(pow(distance_x, 2) + pow(distance_y, 2)) < closest_distance) {
+                closest_distance = sqrt(pow(distance_x, 2) + pow(distance_y, 2));
+                closest_idx = i;
+                //ImPlot::Annotation()
+            }
+            else if (distance_x > closest_distance){
+                // We are now so far away that a closer bar will not occur, no matter the y value.
+                break;
+            }
+        }
+        return closest_distance < proxy_distance ? closest_idx : -1;
+    }
+
+    static inline void draw_bar(size_t id, double x, double y, double width, ImVec4 color) {
+        double x1 = x - width / 2;
+        double x2 = x + width / 2;
+        double y1 = 0;
+        ImPlot::DragRect(id, &x1, &y1, &x2, &y, color, ImPlotDragToolFlags_NoInputs);
+    }
 
     void draw_rsp_window() {
         if (!rsp.show_window) return;
@@ -619,6 +713,7 @@ struct VeloxChem : viamd::EventHandler {
         defer { md_temp_set_pos_back(temp_pos); };
 
         static float sigma = 0.1;
+        static ImVec2 mouse_pos = { 0,0 };
 
         const char* broadening_str[] = { "Gaussian","Lorentzian" };
         static broadening_mode_t broadening_mode = BROADENING_GAUSSIAN;
@@ -647,6 +742,9 @@ struct VeloxChem : viamd::EventHandler {
             double* x_values    = (double*)md_temp_push(sizeof(double) * num_samples);
             double* y_osc_str = (double*)md_temp_push(sizeof(double) * num_samples);
             double* y_cgs_str   = (double*)md_temp_push(sizeof(double) * num_samples);
+
+            ImVec2*   pixel_osc_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
+            ImVec2*   pixel_cgs_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
 
             const double x_min = vlx.rsp.absorption_ev[0] - 1.0;
             const double x_max = vlx.rsp.absorption_ev[num_peaks - 1] + 1.0;
@@ -701,45 +799,117 @@ struct VeloxChem : viamd::EventHandler {
             x_max_con += con_lim_fac * x_graph_width;
             x_min_con -= con_lim_fac * x_graph_width;
 
+
+            //Hovered display text
+            if (rsp.hovered != -1 && rsp.focused_plot == 0) {
+                ImGui::BulletText("Hovered: %s = %f, Y = %f", x_unit_str[x_unit], (float)x_peaks[rsp.hovered], (float)y_osc_peaks[rsp.hovered]);
+
+            }
+            else if (rsp.hovered != -1 && rsp.focused_plot == 1){
+                ImGui::BulletText("Hovered: %s = %f, Y = %f", x_unit_str[x_unit], (float)x_peaks[rsp.hovered], (float)y_cgs_peaks[rsp.hovered]);
+            }
+            else {
+                ImGui::BulletText("Hovered:");
+            }
+
+            //Selected display text
+            if (rsp.selected != -1) {
+                ImGui::BulletText("Selected: %s = %f, Y_OSC = %f, Y_CGS = %f", x_unit_str[x_unit], (float)x_peaks[rsp.selected], (float)y_osc_peaks[rsp.selected], (float)y_osc_peaks[rsp.selected]);
+            }
+            else {
+                ImGui::BulletText("Selected:");
+            }
+            ImGui::BulletText("Mouse: X = %f, Y = %f", mouse_pos.x, mouse_pos.y);
+            ImGui::BulletText("Peak 0: X = %f, Y = %f", (float)pixel_osc_peaks[0].x, (float)pixel_osc_peaks[0].y);
+            rsp.focused_plot = -1;
+            ImGui::BulletText("Closest Index = %i", rsp.hovered);
             if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
                 if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
                 // Absorption
                 if (ImPlot::BeginPlot("Absorption")) {
-                    // ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, vlx.scf.iter.count);
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
                     ImPlot::SetupAxes(x_unit_str[x_unit], "Oscillator Strength");
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_osc_min_con, y_osc_max_con);
+
+                    peaks_to_pixels(pixel_osc_peaks, x_peaks, y_osc_peaks, num_peaks);
+                    mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
+                    if (ImPlot::IsPlotHovered()) {
+                        rsp.hovered = get_hovered_peak(mouse_pos, pixel_osc_peaks, num_peaks);
+                        rsp.focused_plot = 0;
+                    }
 
                     // @HACK: Compute pixel width of 2 'plot' units
                     const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
 
                     ImPlot::PlotBars("Exited States", x_peaks, y_osc_peaks, num_peaks, bar_width);
                     ImPlot::PlotLine("Oscillator Strength", x_values, y_osc_str, num_samples);
+                    //Check hovered state
+                    if (rsp.hovered != -1 && ImPlot::IsPlotHovered()) {
+                        draw_bar(0, x_peaks[rsp.hovered], y_osc_peaks[rsp.hovered], bar_width, ImVec4{ 0,1,0,1 });
+                    }
 
+                    // Update selected peak on click
+                    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) && ImPlot::IsPlotHovered()) {
+                        rsp.selected = rsp.hovered;
+                    }
+                    //Check selected state
+                    if (rsp.selected != -1) {
+                        draw_bar(1, x_peaks[rsp.selected], y_osc_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
+                    }
+                    
                 }
                 ImPlot::EndPlot();
 
                 if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
-                // Rotary ECD
+                // Rotatory ECD
                 if (ImPlot::BeginPlot("ECD")) {
-                    // ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, vlx.scf.iter.count);
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
-                    ImPlot::SetupAxes(x_unit_str[x_unit], "Rotary strength");
+                    ImPlot::SetupAxes(x_unit_str[x_unit], "Rotatory Strength");
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_cgs_min_con, y_cgs_max_con);
+                    peaks_to_pixels(pixel_cgs_peaks, x_peaks, y_cgs_peaks, num_peaks);
+                    mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
 
+                    if (ImPlot::IsPlotHovered()) { 
+                        rsp.hovered = get_hovered_peak(mouse_pos, pixel_cgs_peaks, num_peaks);
+                        rsp.focused_plot = 1;
+                    }
                     // @HACK: Compute pixel width of 2 'plot' units
+
                     const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
 
                     ImPlot::PlotBars("Exited States", x_peaks, y_cgs_peaks, num_peaks, bar_width);
                     ImPlot::PlotLine("ECD", x_values, y_cgs_str, num_samples);
 
+                    if (rsp.hovered != -1 && ImPlot::IsPlotHovered()) {
+                        draw_bar(2, x_peaks[rsp.hovered], y_cgs_peaks[rsp.hovered], bar_width, ImVec4{ 0,1,0,1 });
+                    }
+
+                    // Update selected peak on click
+                    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) && ImPlot::IsPlotHovered()) {
+                        rsp.selected = rsp.hovered;
+                    }
+                    if (rsp.selected != -1) {
+                        draw_bar(3, x_peaks[rsp.selected], y_cgs_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
+                    }
                 }
                 ImPlot::EndPlot();
             }
             ImPlot::EndSubplots();
             first_plot = false;
+            /*
+            constexpr str_t ABS_FILE_EXTENSION = STR_LIT("abs");
+            char path_buf[2048] = "";
+
+
+            if (ImGui::Button("Print absorption")) {
+                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, ABS_FILE_EXTENSION)) {
+                    // This is where we save the absorbtion into a file
+                    save_absorption({ path_buf, strnlen(path_buf, sizeof(path_buf)) }, &x_values, x_unit_str[x_unit], &y_osc_str, &y_cgs_str, 10);
+                }
+            }
+            */
         }
         ImGui::End();
     }
