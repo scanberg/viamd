@@ -512,6 +512,7 @@ struct VeloxChem : viamd::EventHandler {
         }, payload, async_task);
     }
 
+
     void draw_scf_window() {
         if (!scf.show_window) { return; }
         if (vlx.scf.iter.count == 0) { return; }
@@ -528,30 +529,23 @@ struct VeloxChem : viamd::EventHandler {
         // The actual plot
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("SCF", &scf.show_window)) {
-            // We draw 2 plots as "Energy total" has values in a different range then the rest of the data
-            if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
-                if (ImPlot::BeginPlot("SCF")) {
+            if (ImPlot::BeginPlot("SCF")) {
 
-                    ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)vlx.scf.iter.count);
-                    ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
-                    ImPlot::SetupAxes("Iterations", "eV");
+                ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)vlx.scf.iter.count);
+                ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
+                ImPlot::SetupAxes("Iterations", "eV");
+                // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
+                ImPlot::SetupAxis(ImAxis_Y2, "Testname", ImPlotAxisFlags_AuxDefault);
+                ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
 
-                    ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
-                    ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
-                    ImPlot::PlotLine("Gradient Norm", iter, vlx.scf.iter.gradient_norm, (int)vlx.scf.iter.count);
-                    ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
-                }
-                ImPlot::EndPlot();
-
-                if (ImPlot::BeginPlot("SCF")) {
-
-                    ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
-
-                    ImPlot::PlotLine("Energy Total", iter, vlx.scf.iter.energy_total, (int)vlx.scf.iter.count);
-                }
-                ImPlot::EndPlot();
+                //ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
+                //ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
+                ImPlot::PlotLine("Gradient Norm", iter, vlx.scf.iter.gradient_norm, (int)vlx.scf.iter.count);
+                ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+                ImPlot::PlotLine("Energy Total", iter, vlx.scf.iter.energy_total, (int)vlx.scf.iter.count);
+                //ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
             }
-            ImPlot::EndSubplots();
+            ImPlot::EndPlot();
         }
         ImGui::End();
     }
@@ -702,6 +696,8 @@ struct VeloxChem : viamd::EventHandler {
         double y1 = 0;
         ImPlot::DragRect(id, &x1, &y1, &x2, &y, color, ImPlotDragToolFlags_NoInputs);
     }
+
+    
 
     void draw_rsp_window() {
         if (!rsp.show_window) return;
