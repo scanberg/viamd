@@ -102,7 +102,6 @@ struct VeloxChem : viamd::EventHandler {
         Volume   vol[8] = {};
         uint32_t iso_tex[8] = {};
         int vol_nto_idx = -1;
-        int nto_idx = 0;
 
         struct {
             bool enabled = true;
@@ -161,6 +160,7 @@ struct VeloxChem : viamd::EventHandler {
             case viamd::EventType_ViamdFrameTick: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState& state = *(ApplicationState*)e.payload;
+
                 draw_orb_window(state);
                 draw_nto_window(state);
                 draw_scf_window();
@@ -224,12 +224,13 @@ struct VeloxChem : viamd::EventHandler {
                             md_gl_representation_init(&nto.gl_rep, &state.mold.gl_mol);
                             md_gl_representation_set_color(&nto.gl_rep, 0, (uint32_t)state.mold.mol.atom.count, colors, 0);
                             camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
-                            nto.nto_idx = 0;
                             if (!nto.vol_fbo) glGenFramebuffers(1, &nto.vol_fbo);
                         }
 
                         // RSP
                         rsp.show_window = true;
+                        rsp.hovered  = -1;
+                        rsp.selected = -1;
 
                         // ORB
                         orb.show_window = true;
@@ -800,6 +801,7 @@ struct VeloxChem : viamd::EventHandler {
             x_min_con -= con_lim_fac * x_graph_width;
 
 
+#if 0
             //Hovered display text
             if (rsp.hovered != -1 && rsp.focused_plot == 0) {
                 ImGui::BulletText("Hovered: %s = %f, Y = %f", x_unit_str[x_unit], (float)x_peaks[rsp.hovered], (float)y_osc_peaks[rsp.hovered]);
@@ -821,8 +823,9 @@ struct VeloxChem : viamd::EventHandler {
             }
             ImGui::BulletText("Mouse: X = %f, Y = %f", mouse_pos.x, mouse_pos.y);
             ImGui::BulletText("Peak 0: X = %f, Y = %f", (float)pixel_osc_peaks[0].x, (float)pixel_osc_peaks[0].y);
-            rsp.focused_plot = -1;
             ImGui::BulletText("Closest Index = %i", rsp.hovered);
+#endif
+            rsp.focused_plot = -1;
             if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
                 if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
                 // Absorption
@@ -845,7 +848,7 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::PlotBars("Exited States", x_peaks, y_osc_peaks, num_peaks, bar_width);
                     ImPlot::PlotLine("Oscillator Strength", x_values, y_osc_str, num_samples);
                     //Check hovered state
-                    if (rsp.hovered != -1 && ImPlot::IsPlotHovered()) {
+                    if (rsp.hovered != -1) {
                         draw_bar(0, x_peaks[rsp.hovered], y_osc_peaks[rsp.hovered], bar_width, ImVec4{ 0,1,0,1 });
                     }
 
@@ -1385,14 +1388,25 @@ struct VeloxChem : viamd::EventHandler {
             ImGui::SetItemTooltip("Color Negative");
 
             if (ImGui::BeginListBox("##NTO Index", outer_size)) {
+                if (ImGui::IsWindowHovered()) {
+                    rsp.hovered = -1;
+                }
                 for (int i = 0; i < (int)vlx.rsp.num_excited_states; ++i) {
-                    bool is_selected = nto.nto_idx == i;
+                    bool is_selected = rsp.selected == i;
+                    bool is_hovered  = rsp.hovered  == i;
                     char buf[32];
                     snprintf(buf, sizeof(buf), "%i", i + 1);
-                    if (ImGui::Selectable(buf, is_selected)) {
-                        if (nto.nto_idx != i) {
-                            nto.nto_idx = i;
-                        }
+                    if (is_hovered) {
+                        ImGui::PushStyleColor(ImGuiCol_Header, ImGui::GetColorU32(ImGuiCol_HeaderHovered));
+                    }
+                    if (ImGui::Selectable(buf, is_selected || is_hovered)) {
+                        rsp.selected = i;
+                    }
+                    if (is_hovered) {
+                        ImGui::PopStyleColor();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        rsp.hovered = i;
                     }
                 }
                 ImGui::EndListBox();
@@ -1428,38 +1442,41 @@ struct VeloxChem : viamd::EventHandler {
             double nto_lambda[4] = {};
 
             int num_lambdas = 1;
-            // This represents the cutoff for contributing orbitals to be part of the orbital 'grid'
-            // If the occupation parameter is less than this it will not be displayed
-            const double lambda_cutoff = 0.10f;
-            for (size_t i = 0; i < MIN(ARRAY_SIZE(nto_lambda), vlx.rsp.nto[nto.nto_idx].occupations.count); ++i) {
-                nto_lambda[i] = vlx.rsp.nto[nto.nto_idx].occupations.data[lumo_idx + i];
-                if (nto_lambda[i] < lambda_cutoff) {
-                    num_lambdas = (int)i;
-                    break;
+
+            if (rsp.selected != -1) {
+                // This represents the cutoff for contributing orbitals to be part of the orbital 'grid'
+                // If the occupation parameter is less than this it will not be displayed
+                const double lambda_cutoff = 0.10f;
+                for (size_t i = 0; i < MIN(ARRAY_SIZE(nto_lambda), vlx.rsp.nto[rsp.selected].occupations.count); ++i) {
+                    nto_lambda[i] = vlx.rsp.nto[rsp.selected].occupations.data[lumo_idx + i];
+                    if (nto_lambda[i] < lambda_cutoff) {
+                        num_lambdas = (int)i;
+                        break;
+                    }
                 }
-            }
 
-            if (nto.vol_nto_idx != nto.nto_idx) {
-                nto.vol_nto_idx = nto.nto_idx;
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, nto.vol_fbo);
-                const float zero[4] = {};
-                const float samples_per_angstrom = 6.0f;
-                size_t nto_idx = (size_t)nto.nto_idx;
-                for (int i = 0; i < num_lambdas; ++i) {
-                    int pi = i * num_lambdas + 0;
-                    int hi = i * num_lambdas + 1;
-                    size_t lambda_idx = (size_t)i;
+                if (nto.vol_nto_idx != rsp.selected) {
+                    nto.vol_nto_idx  = rsp.selected;
+                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, nto.vol_fbo);
+                    const float zero[4] = {};
+                    const float samples_per_angstrom = 6.0f;
+                    size_t nto_idx = (size_t)rsp.selected;
+                    for (int i = 0; i < num_lambdas; ++i) {
+                        int pi = i * num_lambdas + 0;
+                        int hi = i * num_lambdas + 1;
+                        size_t lambda_idx = (size_t)i;
 
-                    compute_nto(&nto.vol[pi].tex_to_world, &nto.vol[pi].step_size, &nto.vol[pi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
-                    compute_nto(&nto.vol[hi].tex_to_world, &nto.vol[hi].step_size, &nto.vol[hi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                        compute_nto(&nto.vol[pi].tex_to_world, &nto.vol[pi].step_size, &nto.vol[pi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                        compute_nto(&nto.vol[hi].tex_to_world, &nto.vol[hi].step_size, &nto.vol[hi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
 
-                    // Clear volume textures
-                    glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, nto.vol[pi].tex_id, 0);
-                    glClearBufferfv(GL_COLOR, 0, zero);
-                    glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, nto.vol[hi].tex_id, 0);
-                    glClearBufferfv(GL_COLOR, 0, zero);
+                        // Clear volume textures
+                        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, nto.vol[pi].tex_id, 0);
+                        glClearBufferfv(GL_COLOR, 0, zero);
+                        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, nto.vol[hi].tex_id, 0);
+                        glClearBufferfv(GL_COLOR, 0, zero);
+                    }
+                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
                 }
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
             }
 
             const float TEXT_BASE_HEIGHT = ImGui::GetTextLineHeightWithSpacing();
@@ -1473,43 +1490,45 @@ struct VeloxChem : viamd::EventHandler {
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             draw_list->AddRectFilled(canvas_p0, canvas_p1, IM_COL32(255, 255, 255, 255));
 
-            // Draw P / H orbitals
-            for (int i = 0; i < num_lambdas * 2; ++i) {
-                ImVec2 p0 = grid_p0 + win_sz * ImVec2(0.0f, (float)(i+0));
-                ImVec2 p1 = grid_p0 + win_sz * ImVec2(1.0f, (float)(i+1));
-                ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
-                ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y + TEXT_BASE_HEIGHT * 0.5f);
-                const char* lbl = ((i & 1) == 0) ? "Particle" : "Hole";
-                char buf[32];
-                snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i / num_lambdas]);
-                draw_list->AddImage((ImTextureID)(intptr_t)nto.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
-                draw_list->AddImage((ImTextureID)(intptr_t)nto.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
-                draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
-                draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbl);
-            }
-            // @TODO: Draw Sankey Diagram of Transition Matrix
-            {
-                ImVec2 p0 = canvas_p0 + canvas_sz * ImVec2(0.5f, 0.0f);
-                ImVec2 p1 = canvas_p1;
-                ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
-                draw_list->AddText(text_pos_bl, ImColor(0, 0, 0, 255), "Transition Diagram");
-            }
-            // Draw grid
-            {
-                ImVec2 p0 = {floorf(canvas_p0.x + canvas_sz.x * 0.5f), canvas_p0.y};
-                ImVec2 p1 = {floorf(canvas_p0.x + canvas_sz.x * 0.5f), canvas_p1.y};
-                draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
-            }
-            for (int i = 1; i < num_lambdas; ++i) {
-                ImVec2 p0 = {canvas_p0.x, floorf(canvas_p0.y + canvas_sz.y * 0.5f)};
-                ImVec2 p1 = {floorf(canvas_p1.x + canvas_sz.x * 0.5f), floorf(canvas_p0.y + canvas_sz.y * 0.5f)};
-                draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
-            }
-            for (int i = 1; i < num_lambdas * 2; ++i) {
-                float y = floorf(canvas_p0.y + canvas_sz.y / ((float)num_lambdas * 2.0f) * i);
-                ImVec2 p0 = {canvas_p0.x, y};
-                ImVec2 p1 = {floorf(canvas_p0.x + canvas_sz.x * 0.5f), y};
-                draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
+            if (rsp.selected != -1) {
+                // Draw P / H orbitals
+                for (int i = 0; i < num_lambdas * 2; ++i) {
+                    ImVec2 p0 = grid_p0 + win_sz * ImVec2(0.0f, (float)(i+0));
+                    ImVec2 p1 = grid_p0 + win_sz * ImVec2(1.0f, (float)(i+1));
+                    ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
+                    ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y + TEXT_BASE_HEIGHT * 0.5f);
+                    const char* lbl = ((i & 1) == 0) ? "Particle" : "Hole";
+                    char buf[32];
+                    snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i / num_lambdas]);
+                    draw_list->AddImage((ImTextureID)(intptr_t)nto.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
+                    draw_list->AddImage((ImTextureID)(intptr_t)nto.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
+                    draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
+                    draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbl);
+                }
+                // @TODO: Draw Sankey Diagram of Transition Matrix
+                {
+                    ImVec2 p0 = canvas_p0 + canvas_sz * ImVec2(0.5f, 0.0f);
+                    ImVec2 p1 = canvas_p1;
+                    ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
+                    draw_list->AddText(text_pos_bl, ImColor(0, 0, 0, 255), "Transition Diagram");
+                }
+                // Draw grid
+                {
+                    ImVec2 p0 = {floorf(canvas_p0.x + canvas_sz.x * 0.5f), canvas_p0.y};
+                    ImVec2 p1 = {floorf(canvas_p0.x + canvas_sz.x * 0.5f), canvas_p1.y};
+                    draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
+                }
+                for (int i = 1; i < num_lambdas; ++i) {
+                    ImVec2 p0 = {canvas_p0.x, floorf(canvas_p0.y + canvas_sz.y * 0.5f)};
+                    ImVec2 p1 = {floorf(canvas_p1.x + canvas_sz.x * 0.5f), floorf(canvas_p0.y + canvas_sz.y * 0.5f)};
+                    draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
+                }
+                for (int i = 1; i < num_lambdas * 2; ++i) {
+                    float y = floorf(canvas_p0.y + canvas_sz.y / ((float)num_lambdas * 2.0f) * i);
+                    ImVec2 p0 = {canvas_p0.x, y};
+                    ImVec2 p1 = {floorf(canvas_p0.x + canvas_sz.x * 0.5f), y};
+                    draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
+                }
             }
 
             const bool is_hovered = ImGui::IsItemHovered();
