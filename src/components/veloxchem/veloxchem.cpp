@@ -1032,10 +1032,10 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
     // Returns peak index closest to mouse pixel position, assumes that x-values are sorted.
-    static inline size_t get_hovered_peak(const ImVec2 mouse_pos, const ImVec2* pixel_peaks, size_t num_peaks, double proxy_distance) {
+    static inline size_t get_hovered_peak(const ImVec2 mouse_pos, const ImVec2* pixel_peaks, size_t num_peaks, double proxy_distance = 10.0) {
         int closest_idx = 0;
-        double x = 0;
-        double y = 0;
+        double x = mouse_pos.x;
+        double y = mouse_pos.y;
         double y_max = 0;
         double y_min = 0;
         double distance_x = 0;
@@ -1046,8 +1046,6 @@ struct VeloxChem : viamd::EventHandler {
         //Keep in mind that pixel y is 0 at the top, so you flip the comparison compared to plot y. The code below still seems to work as intended though.
 
         for (int i = 0; i < num_peaks; i++) {
-            x = mouse_pos.x;
-            y = mouse_pos.y;
             y_max = MAX(pixel_peaks[i].y, pixel_y0);
             y_min = MIN(pixel_peaks[i].y, pixel_y0);
 
@@ -1081,8 +1079,10 @@ struct VeloxChem : viamd::EventHandler {
             else if (sqrt(pow(distance_x, 2) + pow(distance_y, 2)) < closest_distance) {
                 closest_distance = sqrt(pow(distance_x, 2) + pow(distance_y, 2));
                 closest_idx = i;
+                //ImPlot::Annotation()
             }
-            else {
+            else if (distance_x > closest_distance){
+                // We are now so far away that a closer bar will not occur, no matter the y value.
                 break;
             }
         }
@@ -1223,10 +1223,11 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::SetupAxes(x_unit_str[x_unit], "Oscillator Strength");
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_osc_min_con, y_osc_max_con);
+
                     peaks_to_pixels(pixel_osc_peaks, x_peaks, y_osc_peaks, num_peaks);
                     mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
                     if (ImPlot::IsPlotHovered()) {
-                        rsp.hovered = get_hovered_peak(mouse_pos, pixel_osc_peaks, num_peaks, 10);
+                        rsp.hovered = get_hovered_peak(mouse_pos, pixel_osc_peaks, num_peaks);
                         rsp.focused_plot = 0;
                     }
 
@@ -1235,6 +1236,7 @@ struct VeloxChem : viamd::EventHandler {
 
                     ImPlot::PlotBars("Exited States", x_peaks, y_osc_peaks, num_peaks, bar_width);
                     ImPlot::PlotLine("Oscillator Strength", x_values, y_osc_str, num_samples);
+                    //Check hovered state
                     if (rsp.hovered != -1 && ImPlot::IsPlotHovered()) {
                         draw_bar(0, x_peaks[rsp.hovered], y_osc_peaks[rsp.hovered], bar_width, ImVec4{ 0,1,0,1 });
                     }
@@ -1243,6 +1245,7 @@ struct VeloxChem : viamd::EventHandler {
                     if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) && ImPlot::IsPlotHovered()) {
                         rsp.selected = rsp.hovered;
                     }
+                    //Check selected state
                     if (rsp.selected != -1) {
                         draw_bar(1, x_peaks[rsp.selected], y_osc_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
                     }
@@ -1261,7 +1264,7 @@ struct VeloxChem : viamd::EventHandler {
                     mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
 
                     if (ImPlot::IsPlotHovered()) { 
-                        rsp.hovered = get_hovered_peak(mouse_pos, pixel_cgs_peaks, num_peaks, 10);
+                        rsp.hovered = get_hovered_peak(mouse_pos, pixel_cgs_peaks, num_peaks);
                         rsp.focused_plot = 1;
                     }
                     // @HACK: Compute pixel width of 2 'plot' units
