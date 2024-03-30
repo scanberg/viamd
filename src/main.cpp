@@ -216,9 +216,9 @@ struct DisplayProperty {
 
     enum ColorType {
         ColorType_Solid,
-		ColorType_Colormap,
-		ColorType_Count
-	};
+        ColorType_Colormap,
+        ColorType_Count
+    };
 
     // This is the payload passed to getters for display properties
     struct Payload {
@@ -307,12 +307,12 @@ struct LoadParam {
 };
 
 const str_t* find_in_arr(str_t str, const str_t arr[], size_t len) {
-	for (size_t i = 0; i < len; ++i) {
-    	if (str_eq(arr[i], str)) {
+    for (size_t i = 0; i < len; ++i) {
+        if (str_eq(arr[i], str)) {
             return &arr[i];
         }
     }
-	return NULL;
+    return NULL;
 }
 
 static inline bool file_queue_empty(const FileQueue* queue) {
@@ -333,10 +333,10 @@ static inline void file_queue_push(FileQueue* queue, str_t path, FileFlags flags
         prio = 1;
     } else if (load::mol::loader_from_ext(ext)) {
         prio = 2;
-	} else if (load::traj::loader_from_ext(ext)) {
-		prio = 3;
+    } else if (load::traj::loader_from_ext(ext)) {
+        prio = 3;
     } else if (find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS))) {
-    	prio = 4;
+        prio = 4;
     } else {
         // Unknown extension
         prio = 5;
@@ -349,10 +349,10 @@ static inline void file_queue_push(FileQueue* queue, str_t path, FileFlags flags
 
     // Sort queue based on prio
      while (i != queue->tail && queue->arr[i].prio < queue->arr[(i - 1) % ARRAY_SIZE(queue->arr)].prio) {
-		FileQueue::Entry tmp = queue->arr[i];
-		queue->arr[i] = queue->arr[(i - 1) % ARRAY_SIZE(queue->arr)];
-		queue->arr[(i - 1) % ARRAY_SIZE(queue->arr)] = tmp;
-		i = (i - 1) % ARRAY_SIZE(queue->arr);
+        FileQueue::Entry tmp = queue->arr[i];
+        queue->arr[i] = queue->arr[(i - 1) % ARRAY_SIZE(queue->arr)];
+        queue->arr[(i - 1) % ARRAY_SIZE(queue->arr)] = tmp;
+        i = (i - 1) % ARRAY_SIZE(queue->arr);
      }
 }
 
@@ -876,8 +876,8 @@ int main(int argc, char** argv) {
             for (int i = 1; i < argc; ++i) {
                 str_t path = str_from_cstr(argv[i]);
                 if (md_path_is_valid(path)) {
-					file_queue_push(&data.file_queue, path);
-				}
+                    file_queue_push(&data.file_queue, path);
+                }
             }
         }
     }
@@ -906,15 +906,15 @@ int main(int argc, char** argv) {
         md_bitfield_clear(&data.selection.highlight_mask);
 
         if (!file_queue_empty(&data.file_queue) && !data.load_dataset.show_window) {
-        	FileQueue::Entry e = file_queue_pop(&data.file_queue);
+            FileQueue::Entry e = file_queue_pop(&data.file_queue);
 
             str_t ext;
             extract_ext(&ext, e.path);
             const str_t* res = 0;
 
             if (str_eq_ignore_case(ext, WORKSPACE_FILE_EXTENSION)) {
-				load_workspace(&data, e.path);
-			} else if ((res = find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS)))) {
+                load_workspace(&data, e.path);
+            } else if ((res = find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS)))) {
                 char buf[1024];
                 str_t base_path = {};
                 if (data.files.workspace[0] != '\0') {
@@ -964,7 +964,6 @@ int main(int argc, char** argv) {
                                 clear_representations(&data);
                                 create_default_representations(&data);
                             }
-                            recompute_atom_visibility_mask(&data);
                             interpolate_atomic_properties(&data);
                             reset_view(&data, true, false);
                         }
@@ -1097,7 +1096,8 @@ int main(int argc, char** argv) {
                         frame_end = CLAMP((uint32_t)data.animation.frame, 0, traj_frames);
                     }
                     if (frame_beg != frame_end) {
-                        data.tasks.prefetch_frames = task_system::pool_enqueue(STR_LIT("##Prefetch Frames"), frame_beg, frame_end, [](uint32_t frame_beg, uint32_t frame_end, void* user_data) {
+                        data.tasks.prefetch_frames = task_system::pool_enqueue(STR_LIT("##Prefetch Frames"), frame_beg, frame_end, [](uint32_t frame_beg, uint32_t frame_end, void* user_data, uint32_t thread_num) {
+                            (void)thread_num;
                             ApplicationState* data = (ApplicationState*)user_data;
                             for (uint32_t i = frame_beg; i < frame_end; ++i) {
                                 md_trajectory_load_frame(data->mold.traj, i, 0, 0, 0, 0);
@@ -1340,20 +1340,22 @@ int main(int argc, char** argv) {
                         md_script_eval_clear_data(data.script.full_eval);
 
                         if (md_script_ir_property_count(data.script.eval_ir) > 0) {
-                            data.tasks.evaluate_full = task_system::pool_enqueue(STR_LIT("Eval Full"), 0, (uint32_t)num_frames, [](uint32_t frame_beg, uint32_t frame_end, void* user_data) {
+                            data.tasks.evaluate_full = task_system::pool_enqueue(STR_LIT("Eval Full"), 0, (uint32_t)num_frames, [](uint32_t frame_beg, uint32_t frame_end, void* user_data, uint32_t thread_num) {
+                                (void)thread_num;
                                 ApplicationState* data = (ApplicationState*)user_data;
                                 md_script_eval_frame_range(data->script.full_eval, data->script.eval_ir, &data->mold.mol, data->mold.traj, frame_beg, frame_end);
                             }, &data);
                             
 #if MEASURE_EVALUATION_TIME
                             uint64_t time = (uint64_t)md_time_current();
-                            task_system::pool_enqueue(STR_LIT("##Time Eval Full"), [](void* user_data) {
+                            task_system::ID time_task = task_system::pool_enqueue(STR_LIT("##Time Eval Full"), [](void* user_data) {
                                 uint64_t t1 = md_time_current();
                                 uint64_t t0 = (uint64_t)user_data;
                                 double s = md_time_as_seconds(t1 - t0);
                                 LOG_INFO("Evaluation completed in: %.3fs", s);
-                            }, (void*)time, data.tasks.evaluate_full);
+                            }, (void*)time);
 #endif
+                            task_system::set_task_dependency(time_task, data.tasks.evaluate_full);
                         }
                     }
                 }
@@ -1374,7 +1376,8 @@ int main(int argc, char** argv) {
                                 const uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(data.mold.traj);
                                 const uint32_t beg_frame = CLAMP((uint32_t)data.timeline.filter.beg_frame, 0, traj_frames-1);
                                 const uint32_t end_frame = CLAMP((uint32_t)data.timeline.filter.end_frame + 1, beg_frame + 1, traj_frames);
-                                data.tasks.evaluate_filt = task_system::pool_enqueue(STR_LIT("Eval Filt"), beg_frame, end_frame, [](uint32_t beg, uint32_t end, void* user_data) {
+                                data.tasks.evaluate_filt = task_system::pool_enqueue(STR_LIT("Eval Filt"), beg_frame, end_frame, [](uint32_t beg, uint32_t end, void* user_data, uint32_t thread_num) {
+                                    (void)thread_num;
                                     ApplicationState* data = (ApplicationState*)user_data;
                                     md_script_eval_frame_range(data->script.filt_eval, data->script.eval_ir, &data->mold.mol, data->mold.traj, beg, end);
                                 }, &data);
@@ -1498,12 +1501,12 @@ static void init_dataset_items(ApplicationState* data) {
             // Do resname
             str_t resname = LBL_TO_STR(data->mold.mol.residue.name[i]);
             DatasetItem* item = 0;
-			for (size_t j = 0; j < md_array_size(data->dataset.residue_names); ++j) {
-				if (strcmp(data->dataset.residue_names[j].label, resname.ptr) == 0) {
+            for (size_t j = 0; j < md_array_size(data->dataset.residue_names); ++j) {
+                if (strcmp(data->dataset.residue_names[j].label, resname.ptr) == 0) {
                     item = &data->dataset.residue_names[j];
-					break;
-				}
-			}
+                    break;
+                }
+            }
             if (!item) {
                 DatasetItem it = {};
                 snprintf(it.label, sizeof(it.label), "%.*s", (int)resname.len, resname.ptr);
@@ -1512,9 +1515,9 @@ static void init_dataset_items(ApplicationState* data) {
                 it.fraction = 0;
                 item = md_array_push(data->dataset.residue_names, it, persistent_alloc);
             }
-			item->count += 1;
+            item->count += 1;
             item->fraction += fraction_size;
-		}
+        }
     }
 
     for (size_t i = 0; i < data->mold.mol.atom.count; ++i) {
@@ -1541,8 +1544,8 @@ static void init_dataset_items(ApplicationState* data) {
     }
 
     for (size_t i = 0; i < md_array_size(data->dataset.atom_types); ++i) {
-		data->dataset.atom_types[i].fraction = data->dataset.atom_types[i].count / (float)data->mold.mol.atom.count;
-	}
+        data->dataset.atom_types[i].fraction = data->dataset.atom_types[i].count / (float)data->mold.mol.atom.count;
+    }
 }
 
 static void clear_dataset_items(ApplicationState* data) {
@@ -2275,7 +2278,7 @@ static void reset_view(ApplicationState* data, bool move_camera, bool smooth_tra
     if (!data->mold.mol.atom.count) return;
     const auto& mol = data->mold.mol;
 
-	const size_t popcount = md_bitfield_popcount(&data->representation.visibility_mask);
+    const size_t popcount = md_bitfield_popcount(&data->representation.visibility_mask);
     vec3_t aabb_min, aabb_max;
     
     if (0 < popcount && popcount < mol.atom.count) {
@@ -2286,13 +2289,13 @@ static void reset_view(ApplicationState* data, bool move_camera, bool smooth_tra
             MD_LOG_DEBUG("Error: Invalid number of indices");
             len = MIN(popcount, mol.atom.count);
         }
-		md_util_aabb_compute(aabb_min.elem, aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, len);
+        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, len);
         md_vm_arena_temp_end(tmp);
     } else {
         md_util_aabb_compute(aabb_min.elem, aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, nullptr, mol.atom.count);
     }
 
-	vec3_t optimal_pos;
+    vec3_t optimal_pos;
     quat_t optimal_ori;
     float  optimal_dist;
     camera_compute_optimal_view(&optimal_pos, &optimal_ori, &optimal_dist, aabb_min, aabb_max);
@@ -2885,9 +2888,9 @@ void draw_load_dataset_window(ApplicationState* data) {
             }
             else {
                 ImGui::PushDisabled();
-				ImGui::InputText("##atom_format", state.atom_format_buf, sizeof(state.atom_format_buf), ImGuiInputTextFlags_ReadOnly);
+                ImGui::InputText("##atom_format", state.atom_format_buf, sizeof(state.atom_format_buf), ImGuiInputTextFlags_ReadOnly);
                 ImGui::PopDisabled();
-			}
+            }
 
             if (state.atom_format_idx < 0 || (state.atom_format_idx == MD_LAMMPS_ATOM_FORMAT_UNKNOWN && !state.atom_format_valid)) {
                 load_enabled = false;
@@ -2898,9 +2901,9 @@ void draw_load_dataset_window(ApplicationState* data) {
 
         enum Action {
             Action_None,
-			Action_Cancel,
-			Action_Load,
-		};
+            Action_Cancel,
+            Action_Load,
+        };
         Action action = Action_None;
 
         if (!load_enabled) ImGui::PushDisabled();
@@ -2935,7 +2938,6 @@ void draw_load_dataset_window(ApplicationState* data) {
                     create_default_representations(data);
                 }
                 data->animation = {};
-                recompute_atom_visibility_mask(data);
                 reset_view(data, true, true);
             }
         }
@@ -3527,7 +3529,7 @@ void draw_context_popup(ApplicationState* data) {
                     }
                 }
 
-				any_suggestions = any_suggestions || md_array_size(suggestions) > 0;
+                any_suggestions = any_suggestions || md_array_size(suggestions) > 0;
             }
             if (!any_suggestions) {
                 ImGui::Text("No suggestions for current selection");
@@ -4191,13 +4193,13 @@ static void draw_info_window(const ApplicationState& data, uint32_t picking_idx)
         if (0 <= bond_idx && bond_idx < (int)mol.bond.count) {
             md_bond_pair_t b = mol.bond.pairs[bond_idx];
             char bond_type;
-			switch (mol.bond.order[bond_idx]) {
-			case 1: bond_type = '-'; break;
-			case 2: bond_type = '='; break;
-			case 3: bond_type = '#'; break;
-			case 4: bond_type = '$'; break;
-			default: bond_type = '?'; break;
-			}
+            switch (mol.bond.order[bond_idx]) {
+            case 1: bond_type = '-'; break;
+            case 2: bond_type = '='; break;
+            case 3: bond_type = '#'; break;
+            case 4: bond_type = '$'; break;
+            default: bond_type = '?'; break;
+            }
             const float dx = mol.atom.x[b.idx[0]] - mol.atom.x[b.idx[1]];
             const float dy = mol.atom.y[b.idx[0]] - mol.atom.y[b.idx[1]];
             const float dz = mol.atom.z[b.idx[0]] - mol.atom.z[b.idx[1]];
@@ -4222,8 +4224,8 @@ static void draw_async_task_window(ApplicationState* data) {
     constexpr float WIDTH = 300.f;
     constexpr float MARGIN = 10.f;
 
-    task_system::ID* tasks = task_system::pool_running_tasks(frame_alloc);
-    uint32_t num_tasks = (uint32_t)md_array_size(tasks);
+    task_system::ID tasks[256];
+    size_t num_tasks = task_system::pool_running_tasks(tasks, ARRAY_SIZE(tasks));
     bool any_task_label_visible = false;
     for (uint32_t i = 0; i < num_tasks; i++) {
         str_t label = task_system::task_label(tasks[i]);
@@ -4245,7 +4247,7 @@ static void draw_async_task_window(ApplicationState* data) {
         const float size = ImGui::GetFontSize() + pad * 2;
 
         char buf[64];
-        for (uint32_t i = 0; i < MIN(num_tasks, 8); i++) {
+        for (size_t i = 0; i < MIN(num_tasks, 8); i++) {
             const auto id = tasks[i];
             str_t label = task_system::task_label(id);
             float fract = task_system::task_fraction_complete(id);
@@ -4874,7 +4876,7 @@ static void draw_timeline_window(ApplicationState* data) {
                                             };
 
                                             d = MIN(d, sqrt(ImLengthSqr(mouse_coord - p)));
-										}
+                                        }
                                         d += area_dist;
                                         break;
                                     }
@@ -4991,7 +4993,7 @@ static void draw_timeline_window(ApplicationState* data) {
                                     for (int k = 0; k < ImPlotMarker_COUNT; ++k) {
                                         if (ImGui::Selectable(ImPlot::GetMarkerName(k), dp.marker_type == k)) {
                                             dp.marker_type = (ImPlotMarker)k;
-										}
+                                        }
                                     }
                                     ImGui::EndCombo();
                                 }
@@ -5006,7 +5008,7 @@ static void draw_timeline_window(ApplicationState* data) {
                                     for (int k = 0; k < DisplayProperty::ColorType_Count; ++k) {
                                         if (ImGui::Selectable(color_type_labels[k], k == dp.color_type)) {
                                             dp.color_type = (DisplayProperty::ColorType)k;
-										}
+                                        }
                                     }
                                     ImGui::EndCombo();
                                 }
@@ -5021,7 +5023,7 @@ static void draw_timeline_window(ApplicationState* data) {
                                 break;
                             default:
                                 ASSERT(false);
-								break;
+                                break;
                             } 
                             if (dp.dim > 1) {
                                 ImGui::Separator();
@@ -5130,8 +5132,8 @@ static void draw_timeline_window(ApplicationState* data) {
                                 continue;
                             }
                             if (hovered_prop_idx == j && hovered_pop_idx == k) {
-								continue;
-							}
+                                continue;
+                            }
 
                             plot(k);
                         }
@@ -5693,8 +5695,8 @@ static void draw_distribution_window(ApplicationState* data) {
                                 }
                                 // Render this last, to make sure it is on top of the others
                                 if (hovered_prop_idx == j && hovered_pop_idx == k) {
-									continue;
-								}
+                                    continue;
+                                }
 
                                 plot(k);
                             }
@@ -6042,11 +6044,11 @@ static void draw_density_volume_window(ApplicationState* data) {
         bool reset_hard = false;
         if (volume_changed) {
             static bool first_time = true;
-			if (first_time) {
-				reset_hard = true;
-				first_time = false;
+            if (first_time) {
+                reset_hard = true;
+                first_time = false;
             }
-		}
+        }
         bool reset_view = reset_hard;
         if (is_hovered) {
             if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
@@ -6141,8 +6143,8 @@ static void draw_density_volume_window(ApplicationState* data) {
         size_t num_reps = md_array_size(data->density_volume.gl_reps);
         if (selected_property > -1 && data->density_volume.show_reference_structures && num_reps > 0) {
             if (!data->density_volume.show_reference_ensemble) {
-            	num_reps = 1;
-			}
+                num_reps = 1;
+            }
 
             md_gl_draw_op_t* draw_ops = 0;
 
@@ -6391,8 +6393,8 @@ static void draw_debug_window(ApplicationState* data) {
             ImGui::Text("Script IR semaphore count: %i", (int)sema_count);
         }
         
-        task_system::ID* tasks = task_system::pool_running_tasks(md_get_heap_allocator());
-        int64_t num_tasks = md_array_size(tasks);
+        task_system::ID tasks[256]; 
+        size_t num_tasks = task_system::pool_running_tasks(tasks, ARRAY_SIZE(tasks));
         if (num_tasks > 0) {
             ImGui::Text("Running Pool Tasks:");
             for (size_t i = 0; i < md_array_size(tasks); ++i) {
@@ -6410,7 +6412,7 @@ static void draw_debug_window(ApplicationState* data) {
         ImGui::Text("Camera Orientation: (%g, %g, %g, %g)", data->view.camera.orientation.x, data->view.camera.orientation.y, data->view.camera.orientation.z, data->view.camera.orientation.w);
 
         mat4_t P = data->view.param.matrix.curr.proj;
-		ImGui::Text("proj_matrix:");
+        ImGui::Text("proj_matrix:");
         ImGui::Text("[%g %g %g %g]", P.col[0].x, P.col[0].y, P.col[0].z, P.col[0].w);
         ImGui::Text("[%g %g %g %g]", P.col[1].x, P.col[1].y, P.col[1].z, P.col[1].w);
         ImGui::Text("[%g %g %g %g]", P.col[2].x, P.col[2].y, P.col[2].z, P.col[2].w);
@@ -6803,9 +6805,9 @@ static void draw_property_export_window(ApplicationState* data) {
         int num_properties = (int)md_array_size(data->display_properties);
         if (num_properties == 0) {
             ImGui::Text("No properties available for export, try evaluating the script.");
-			ImGui::End();
+            ImGui::End();
             property_idx = 0;
-			return;
+            return;
         }
 
         if (task_system::task_is_running(data->tasks.evaluate_full)) {
@@ -6866,12 +6868,12 @@ static void draw_property_export_window(ApplicationState* data) {
                 ImGui::EndCombo();
             }
             file_extension = volume_formats[volume_format].ext;
-		}
+        }
 
         if (property_idx != -1) {
             if (type != data->display_properties[property_idx].type) {
-				property_idx = -1;
-			}
+                property_idx = -1;
+            }
         }
 
         if (property_idx == -1) ImGui::PushDisabled();
@@ -7148,7 +7150,8 @@ static void init_trajectory_data(ApplicationState* data) {
             // Launch work to compute the values
             task_system::task_interrupt_and_wait_for(data->tasks.backbone_computations);
 
-            data->tasks.backbone_computations = task_system::pool_enqueue(STR_LIT("Backbone Operations"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+            data->tasks.backbone_computations = task_system::pool_enqueue(STR_LIT("Backbone Operations"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                (void)thread_num;
                 ApplicationState* data = (ApplicationState*)user_data;
                 
                 // Create copy here of molecule since we use the full structure as input
@@ -7170,7 +7173,7 @@ static void init_trajectory_data(ApplicationState* data) {
                 }
             }, data);
 
-            task_system::main_enqueue(STR_LIT("Update Trajectory Data"), [](void* user_data) {
+            task_system::ID main_task = task_system::main_enqueue(STR_LIT("Update Trajectory Data"), [](void* user_data) {
                 ApplicationState* data = (ApplicationState*)user_data;
                 data->trajectory_data.backbone_angles.fingerprint = generate_fingerprint();
                 data->trajectory_data.secondary_structure.fingerprint = generate_fingerprint();
@@ -7180,7 +7183,9 @@ static void init_trajectory_data(ApplicationState* data) {
                 md_gl_molecule_zero_velocity(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
                 update_all_representations(data);
 
-            }, data, data->tasks.backbone_computations);
+            }, data);
+
+            task_system::set_task_dependency(main_task, data->tasks.backbone_computations);
         }
 
         data->mold.dirty_buffers |= MolBit_DirtyPosition;
@@ -7285,7 +7290,8 @@ static void launch_prefetch_job(ApplicationState* data) {
     if (!num_frames) return;
 
     task_system::task_interrupt_and_wait_for(data->tasks.prefetch_frames);
-    data->tasks.prefetch_frames = task_system::pool_enqueue(STR_LIT("Prefetch Frames"), 0, num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+    data->tasks.prefetch_frames = task_system::pool_enqueue(STR_LIT("Prefetch Frames"), 0, num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+        (void)thread_num;
         ApplicationState* data = (ApplicationState*)user_data;
         for (uint32_t i = range_beg; i < range_end; ++i) {
             md_trajectory_frame_header_t header;
@@ -7293,12 +7299,14 @@ static void launch_prefetch_job(ApplicationState* data) {
         }
     }, data);
 
-    task_system::main_enqueue(STR_LIT("Prefetch Complete"), [](void* user_data) {
+    task_system::ID main_task = task_system::main_enqueue(STR_LIT("Prefetch Complete"), [](void* user_data) {
         ApplicationState* data = (ApplicationState*)user_data;
         interpolate_atomic_properties(data);
         update_md_buffers(data);
         md_gl_molecule_zero_velocity(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
-    }, data, data->tasks.prefetch_frames);
+    }, data);
+
+    task_system::set_task_dependency(main_task, data->tasks.prefetch_frames);
 }
 
 static bool load_dataset_from_file(ApplicationState* data, const LoadParam& param) {
@@ -7345,7 +7353,7 @@ static bool load_dataset_from_file(ApplicationState* data, const LoadParam& para
                 return true;
             } else {
                 if (param.mol_loader && param.traj_loader) {
-					// Don't record this as an error, as the trajectory may be optional (In case of PDB for example)
+                    // Don't record this as an error, as the trajectory may be optional (In case of PDB for example)
                     return true;
                 }
                 LOG_ERROR("Failed to opened trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
@@ -7721,16 +7729,16 @@ void create_screenshot(ApplicationState* data) {
 // #representation
 static Representation* create_representation(ApplicationState* data, RepresentationType type, ColorMapping color_mapping, str_t filter) {
     ASSERT(data);
-    Representation rep = {};
-    rep.type = type;
-    rep.color_mapping = color_mapping;
+    Representation* rep = md_array_push(data->representation.reps, {}, persistent_alloc);
+    rep->type = type;
+    rep->color_mapping = color_mapping;
     if (!str_empty(filter)) {
-        str_copy_to_char_buf(rep.filt, sizeof(rep.filt), filter);
+        str_copy_to_char_buf(rep->filt, sizeof(rep->filt), filter);
     }
-    rep.orbital.orbital_idx = data->representation.info.mo_homo_idx;
-    init_representation(data, &rep);
-    update_representation(data, &rep);
-    return md_array_push(data->representation.reps, rep, persistent_alloc);
+    rep->orbital.orbital_idx = data->representation.info.mo_homo_idx;
+    init_representation(data, rep);
+    update_representation(data, rep);
+    return rep;
 }
 
 static Representation* clone_representation(ApplicationState* state, const Representation& rep) {
@@ -7887,8 +7895,8 @@ static void update_representation(ApplicationState* state, Representation* rep) 
 
     switch (rep->type) {
     case RepresentationType::SpaceFill:
-		rep->type_is_valid = true;
-		break;
+        rep->type_is_valid = true;
+        break;
     case RepresentationType::Licorice:
     case RepresentationType::BallAndStick:
         rep->type_is_valid = mol.bond.count > 0;
@@ -7897,36 +7905,36 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     case RepresentationType::Cartoon:
         rep->type_is_valid = mol.backbone.range.count > 0;
         break;
-	case RepresentationType::Orbital: {
+    case RepresentationType::Orbital: {
         rep->type_is_valid = md_array_size(state->representation.info.molecular_orbitals) > 0;
         uint64_t vol_hash = (uint64_t)rep->orbital.type | ((uint64_t)rep->orbital.vol.resolution << 8) | ((uint64_t)rep->orbital.orbital_idx << 32);
-		if (vol_hash != rep->orbital.vol_hash) {
+        if (vol_hash != rep->orbital.vol_hash) {
             const float samples_per_angstrom[(int)VolumeResolution::Count] = {
                 4.0f,
                 8.0f,
                 16.0f,
             };
-			rep->orbital.vol_hash = vol_hash;
-			ComputeOrbital data = {
-				.type = rep->orbital.type,
-				.orbital_idx = rep->orbital.orbital_idx,
+            rep->orbital.vol_hash = vol_hash;
+            ComputeOrbital data = {
+                .type = rep->orbital.type,
+                .orbital_idx = rep->orbital.orbital_idx,
                 .samples_per_angstrom = samples_per_angstrom[(int)rep->orbital.vol.resolution],
                 .dst_texture = &rep->orbital.vol.vol_tex,
-			};
-			viamd::event_system_broadcast_event(viamd::EventType_RepresentationComputeOrbital, viamd::EventPayloadType_ComputeOrbital, &data);
+            };
+            viamd::event_system_broadcast_event(viamd::EventType_RepresentationComputeOrbital, viamd::EventPayloadType_ComputeOrbital, &data);
 
             if (data.output_written) {
                 rep->orbital.vol.tex_mat = data.tex_mat;
                 rep->orbital.vol.voxel_spacing = data.voxel_spacing;
             }
-		}
+        }
         uint64_t tf_hash = md_hash64(&rep->orbital.vol.dvr.colormap, sizeof(rep->orbital.vol.dvr.colormap), 0);
         if (tf_hash != rep->orbital.tf_hash) {
             rep->orbital.tf_hash = tf_hash;
             volume::compute_transfer_function_texture(&rep->orbital.vol.dvr.tf_tex, rep->orbital.vol.dvr.colormap, volume::RAMP_TYPE_SAWTOOTH);
         }
-		break;
-	}
+        break;
+    }
     case RepresentationType::DipoleMoment:
         rep->type_is_valid = md_array_size(state->representation.info.dipole_moments) > 0;
         break;
@@ -7993,9 +8001,9 @@ static void clear_representations(ApplicationState* state) {
 static void create_default_representations(ApplicationState* state) {
     if (state->mold.mol.atom.count > 4'000'000) {
         LOG_INFO("Large molecule detected, creating default representation for all atoms");
-		Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("all"));
-		snprintf(rep->name, sizeof(rep->name), "default");
-		return;
+        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("all"));
+        snprintf(rep->name, sizeof(rep->name), "default");
+        return;
     }
 
     bool amino_acid_present = false;
@@ -8020,8 +8028,8 @@ static void create_default_representations(ApplicationState* state) {
         if (flags & MD_FLAG_WATER) water_present = true;
 
         if (!(flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE | MD_FLAG_ION | MD_FLAG_WATER))) {
-			ligand_present = true;
-		}
+            ligand_present = true;
+        }
     }
 
     if (amino_acid_present) {
@@ -8693,8 +8701,8 @@ static void draw_representations_opaque(ApplicationState* data) {
     ASSERT(data);
 
     if (data->mold.mol.atom.count == 0) {
-		return;
-	}
+        return;
+    }
 
 #if EXPERIMENTAL_GFX_API
     if (use_gfx) {

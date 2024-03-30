@@ -41,6 +41,9 @@ struct VeloxChem : viamd::EventHandler {
 
     md_vlx_data_t vlx {};
 
+    // Used for clearing volumes
+    uint32_t vol_fbo = 0;
+
     int homo_idx = 0;
     int lumo_idx = 0;
 
@@ -63,10 +66,10 @@ struct VeloxChem : viamd::EventHandler {
 
     struct Orb {
         bool show_window = false;
-        uint32_t vol_fbo = 0;
         Volume   vol[16] = {};
         int      vol_mo_idx[16] = {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
         uint32_t iso_tex[16] = {};
+        task_system::ID vol_task[16] = {};
         int num_x  = 3;
         int num_y  = 3;
         int mo_idx = -1;
@@ -96,11 +99,11 @@ struct VeloxChem : viamd::EventHandler {
 
     struct Nto {
         bool show_window = false;
-        uint32_t vol_fbo = 0;
         // We have a maximum of 4 orbital slots for each particle and hole
         // In practice I don't think more than 2, maybe 3 will be used in practice
         Volume   vol[8] = {};
         uint32_t iso_tex[8] = {};
+        task_system::ID vol_task[8] = {};
         int vol_nto_idx = -1;
 
         struct {
@@ -190,6 +193,8 @@ struct VeloxChem : viamd::EventHandler {
                     if (md_vlx_data_parse_file(&vlx, top_file, arena)) {
                         MD_LOG_INFO("Successfully loaded VeloxChem data");
 
+                        if (!vol_fbo) glGenFramebuffers(1, &vol_fbo);
+
                         // Scf
                         scf.show_window = true;
 
@@ -224,7 +229,6 @@ struct VeloxChem : viamd::EventHandler {
                             md_gl_representation_init(&nto.gl_rep, &state.mold.gl_mol);
                             md_gl_representation_set_color(&nto.gl_rep, 0, (uint32_t)state.mold.mol.atom.count, colors, 0);
                             camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
-                            if (!nto.vol_fbo) glGenFramebuffers(1, &nto.vol_fbo);
                         }
 
                         // RSP
@@ -239,7 +243,6 @@ struct VeloxChem : viamd::EventHandler {
                         camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, min_aabb, max_aabb, orb.distance_scale);
                         orb.mo_idx = homo_idx;
                         orb.scroll_to_idx = homo_idx;
-                        if (!orb.vol_fbo) glGenFramebuffers(1, &orb.vol_fbo);
 
                     } else {
                         MD_LOG_INFO("Failed to load VeloxChem data");
@@ -304,7 +307,8 @@ struct VeloxChem : viamd::EventHandler {
                     if (data.type == OrbitalType::PsiSquared) {
                        mode = MD_GTO_EVAL_MODE_PSI_SQUARED;
                     }
-                    data.output_written = compute_mo(&data.tex_mat, &data.voxel_spacing, data.dst_texture, data.orbital_idx, mode, data.samples_per_angstrom);
+                    task_system::ID id = compute_mo(&data.tex_mat, &data.voxel_spacing, data.dst_texture, data.orbital_idx, mode, data.samples_per_angstrom);
+                    data.output_written = (id != task_system::INVALID_ID);
                 }
 
                 break;
@@ -360,14 +364,14 @@ struct VeloxChem : viamd::EventHandler {
         *out_ext_in_angstrom = vec3_from_vec4(extent);
     }
 
-    bool compute_nto(mat4_t* out_tex_mat, vec3_t* out_voxel_spacing, uint32_t* in_out_vol_tex, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = 8.0f) {
+    task_system::ID compute_nto(mat4_t* out_tex_mat, vec3_t* out_voxel_spacing, uint32_t* in_out_vol_tex, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = 8.0f) {
         size_t num_pgtos = md_vlx_nto_pgto_count(&vlx);
         md_gto_t* pgtos  = (md_gto_t*)md_alloc(md_get_heap_allocator(), sizeof(md_gto_t) * num_pgtos);
 
         if (!md_vlx_nto_pgto_extract(pgtos, &vlx, nto_idx, lambda_idx, type)) {
             MD_LOG_ERROR("Failed to extract NTO pgtos for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
             md_free(md_get_heap_allocator(), pgtos, sizeof(md_gto_t) * num_pgtos);
-            return false;
+            return task_system::INVALID_ID;
         }
         md_gto_cutoff_compute(pgtos, num_pgtos, 1.0e-6);
 
@@ -396,18 +400,17 @@ struct VeloxChem : viamd::EventHandler {
         *out_tex_mat = tex_mat;
         *out_voxel_spacing = step_size;
 
-        async_evaluate_orbital_on_grid(*in_out_vol_tex, step_size.elem, dim, pgtos, num_pgtos, mode);
-        return true;
+        return async_evaluate_orbital_on_grid(in_out_vol_tex, step_size.elem, dim, pgtos, num_pgtos, mode);
     }
 
-    bool compute_mo(mat4_t* out_tex_mat, vec3_t* out_voxel_spacing, uint32_t* in_out_vol_tex, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = 8.0f) {
+    task_system::ID compute_mo(mat4_t* out_tex_mat, vec3_t* out_voxel_spacing, uint32_t* in_out_vol_tex, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = 8.0f) {
         size_t num_pgtos = md_vlx_mol_pgto_count(&vlx);
         md_gto_t* pgtos  = (md_gto_t*)md_alloc(md_get_heap_allocator(), sizeof(md_gto_t) * num_pgtos);
 
         if (!md_vlx_mol_pgto_extract(pgtos, &vlx, mo_idx)) {
             MD_LOG_ERROR("Failed to extract molecular pgtos for orbital index: %zu", mo_idx);
             md_free(md_get_heap_allocator(), pgtos, sizeof(md_gto_t) * num_pgtos);
-            return false;
+            return task_system::INVALID_ID;
         }
         md_gto_cutoff_compute(pgtos, num_pgtos, 1.0e-6);
 
@@ -429,19 +432,23 @@ struct VeloxChem : viamd::EventHandler {
         vec3_t step_size = vec3_div(extent, vec3_set((float)dim[0], (float)dim[1], (float)dim[2]));
         step_size = vec3_mul_f(step_size, (float)ANGSTROM_TO_BOHR);
 
-        // Create texture of dim
+        // Init and clear volume texture
+        const float zero[4] = {};
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, vol_fbo);
         gl::init_texture_3D(in_out_vol_tex, dim[0], dim[1], dim[2], GL_R16F);
+        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, *in_out_vol_tex, 0);
+        glClearBufferfv(GL_COLOR, 0, zero);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 
         // WRITE OUTPUT
         *out_tex_mat = tex_mat;
         *out_voxel_spacing = step_size;
 
-        async_evaluate_orbital_on_grid(*in_out_vol_tex, step_size.elem, dim, pgtos, num_pgtos, mode);
-        return true;
+        return async_evaluate_orbital_on_grid(in_out_vol_tex, step_size.elem, dim, pgtos, num_pgtos, mode);
     }
 
-    // This is a bit quirky, but pgtos will be freed after the evaluation is complete
-    void async_evaluate_orbital_on_grid(uint32_t texture, const float step_size[3], const int dim[3], md_gto_t* pgtos, size_t num_pgtos, md_gto_eval_mode_t mode) {
+    // This is a bit quirky, this will take ownership of pgtos and will free them after the evaluation is complete
+    task_system::ID async_evaluate_orbital_on_grid(uint32_t* tex_ptr, const float step_size[3], const int dim[3], md_gto_t* pgtos, size_t num_pgtos, md_gto_eval_mode_t mode) {
         struct Payload {
             size_t bytes;
             size_t num_pgtos;
@@ -449,7 +456,7 @@ struct VeloxChem : viamd::EventHandler {
             float* vol_data;
             int    vol_dim[3];
             float  step_size[3];
-            uint32_t tex_id;
+            uint32_t* tex_ptr;
             md_gto_eval_mode_t mode;
         };
 
@@ -464,15 +471,16 @@ struct VeloxChem : viamd::EventHandler {
         MEMSET(payload->vol_data, 0, num_vol_bytes);
         MEMCPY(payload->vol_dim, dim, sizeof(payload->vol_dim));
         MEMCPY(payload->step_size, step_size, sizeof(payload->step_size));
-        payload->tex_id     = texture;
+        payload->tex_ptr    = tex_ptr;
         payload->mode       = mode;
 
         // We evaluate the in parallel over smaller NxNxN blocks
         uint32_t num_blocks = (dim[0] / BLK_DIM) * (dim[1] / BLK_DIM) * (dim[2] / BLK_DIM);
 
-        MD_LOG_DEBUG("Starting async eval of orbital volume [%i][%i][%i]", dim[0], dim[1], dim[2]);
+        MD_LOG_DEBUG("Starting async eval of orbital grid [%i][%i][%i]", dim[0], dim[1], dim[2]);
 
-        task_system::ID async_task = task_system::pool_enqueue(STR_LIT("Evaluate Orbital"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+        task_system::ID async_task = task_system::pool_enqueue(STR_LIT("Evaluate Orbital"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+            (void)thread_num;
             Payload* data = (Payload*)user_data;
 
             // Number of NxNxN blocks in each dimension
@@ -492,26 +500,51 @@ struct VeloxChem : viamd::EventHandler {
                 .stepsize = {step[0], step[1], step[2]},
             };
 
+            size_t temp_pos = md_temp_get_pos();
+            md_gto_t* sub_pgtos = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * data->num_pgtos);
+
             for (uint32_t i = range_beg; i < range_end; ++i) {
                 // Determine block index from linear input index i
                 int blk_x =  i % num_blk[0];
                 int blk_y = (i / num_blk[0]) % num_blk[1];
                 int blk_z =  i / (num_blk[0] * num_blk[1]);
 
-                const int off_idx[3] = {blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM};
-                const int len_idx[3] = {BLK_DIM, BLK_DIM, BLK_DIM};
+                int off_idx[3] = {blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM};
+                int len_idx[3] = {BLK_DIM, BLK_DIM, BLK_DIM};
 
-                md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, data->pgtos, data->num_pgtos, data->mode);
+                float aabb_min[3] = {
+                    grid.origin[0] + off_idx[0] * grid.stepsize[0],
+                    grid.origin[1] + off_idx[1] * grid.stepsize[1],
+                    grid.origin[2] + off_idx[2] * grid.stepsize[2],
+                };
+                float aabb_max[3] = {
+                    grid.origin[0] + (off_idx[0] + len_idx[0]) * grid.stepsize[0],
+                    grid.origin[1] + (off_idx[1] + len_idx[1]) * grid.stepsize[1],
+                    grid.origin[2] + (off_idx[2] + len_idx[2]) * grid.stepsize[2],
+                };
+
+                size_t num_sub_pgtos = md_gto_aabb_test(sub_pgtos, aabb_min, aabb_max, data->pgtos, data->num_pgtos);
+                md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, sub_pgtos, num_sub_pgtos, data->mode);
             }
+
+            md_temp_set_pos_back(temp_pos);
         }, payload);
 
         // Launch task for main (render) thread to update the volume texture
-        task_system::main_enqueue(STR_LIT("##Update Volume"), [](void* user_data) {
+        task_system::ID main_task = task_system::main_enqueue(STR_LIT("##Update Volume"), [](void* user_data) {
             Payload* data = (Payload*)user_data;
-            gl::set_texture_3D_data(data->tex_id, data->vol_data, GL_R32F);
+            
+            // The init here is just to ensure that the volume has not changed its dimensions during the async evaluation
+            gl::init_texture_3D(data->tex_ptr, data->vol_dim[0], data->vol_dim[1], data->vol_dim[2], GL_R16F);
+            gl::set_texture_3D_data(*data->tex_ptr, data->vol_data, GL_R32F);
+
             md_free(md_get_heap_allocator(), data->pgtos, data->num_pgtos * sizeof(md_gto_t));
             md_free(md_get_heap_allocator(), data, data->bytes);
-        }, payload, async_task);
+        }, payload);
+
+        task_system::set_task_dependency(main_task, async_task);
+
+        return async_task;
     }
 
     void draw_scf_window() {
@@ -1066,22 +1099,19 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (num_jobs > 0) {
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, orb.vol_fbo);
                 const float samples_per_angstrom = 6.0f;
-                const float zero[4] = {};
                 for (int i = 0; i < num_jobs; ++i) {
                     int slot_idx = job_queue[i];
                     int mo_idx = vol_mo_idx[slot_idx];
                     orb.vol_mo_idx[slot_idx] = mo_idx;
 
                     if (-1 < mo_idx && mo_idx < num_orbitals()) {
-                        compute_mo(&orb.vol[slot_idx].tex_to_world, &orb.vol[slot_idx].step_size, &orb.vol[slot_idx].tex_id, mo_idx, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
-                        // Clear volume texture
-                        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, orb.vol[slot_idx].tex_id, 0);
-                        glClearBufferfv(GL_COLOR, 0, zero);
+                        if (task_system::task_is_running(orb.vol_task[slot_idx])) {
+                            task_system::task_interrupt(orb.vol_task[slot_idx]);
+                        }
+                        orb.vol_task[slot_idx] = compute_mo(&orb.vol[slot_idx].tex_to_world, &orb.vol[slot_idx].step_size, &orb.vol[slot_idx].tex_id, mo_idx, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
                     }
                 }
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
             }
 
             // Animate camera towards targets
@@ -1457,8 +1487,6 @@ struct VeloxChem : viamd::EventHandler {
 
                 if (nto.vol_nto_idx != rsp.selected) {
                     nto.vol_nto_idx  = rsp.selected;
-                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, nto.vol_fbo);
-                    const float zero[4] = {};
                     const float samples_per_angstrom = 6.0f;
                     size_t nto_idx = (size_t)rsp.selected;
                     for (int i = 0; i < num_lambdas; ++i) {
@@ -1466,16 +1494,16 @@ struct VeloxChem : viamd::EventHandler {
                         int hi = i * num_lambdas + 1;
                         size_t lambda_idx = (size_t)i;
 
-                        compute_nto(&nto.vol[pi].tex_to_world, &nto.vol[pi].step_size, &nto.vol[pi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
-                        compute_nto(&nto.vol[hi].tex_to_world, &nto.vol[hi].step_size, &nto.vol[hi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                        if (task_system::task_is_running(nto.vol_task[pi])) {
+                            task_system::task_interrupt(nto.vol_task[pi]);
+                        }
+                        if (task_system::task_is_running(nto.vol_task[hi])) {
+                            task_system::task_interrupt(nto.vol_task[hi]);
+                        }
 
-                        // Clear volume textures
-                        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, nto.vol[pi].tex_id, 0);
-                        glClearBufferfv(GL_COLOR, 0, zero);
-                        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, nto.vol[hi].tex_id, 0);
-                        glClearBufferfv(GL_COLOR, 0, zero);
+                        nto.vol_task[pi] = compute_nto(&nto.vol[pi].tex_to_world, &nto.vol[pi].step_size, &nto.vol[pi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                        nto.vol_task[hi] = compute_nto(&nto.vol[hi].tex_to_world, &nto.vol[hi].step_size, &nto.vol[hi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
                     }
-                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
                 }
             }
 

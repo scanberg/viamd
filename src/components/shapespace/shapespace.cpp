@@ -337,7 +337,8 @@ struct ShapeSpace : viamd::EventHandler {
                     md_array_resize(coords,  num_frames * num_structures, arena);
                     MEMSET(weights, 0, md_array_bytes(weights));
                     MEMSET(coords,  0, md_array_bytes(coords));
-                    evaluate_task = task_system::pool_enqueue(STR_LIT("Eval Shape Space"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data) {
+                    evaluate_task = task_system::pool_enqueue(STR_LIT("Eval Shape Space"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                        (void)thread_num;
                         ShapeSpace* shape_space = (ShapeSpace*)user_data;
                         ApplicationState* app_state = shape_space->app_state;
                         const size_t stride = ALIGN_TO(app_state->mold.mol.atom.count, 8);

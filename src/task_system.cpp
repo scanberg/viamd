@@ -21,8 +21,8 @@ inline void  operator delete(void*, NewDummy, void*)   {} // This is only requir
 
 namespace task_system {
 
-constexpr uint32_t MAX_TASKS = 256;
-constexpr uint32_t LABEL_SIZE = 64;
+#define MAX_TASKS 256
+#define LABEL_SIZE 64
 
 static inline ID generate_id(uint32_t slot_idx) {
     return (md_time_current() << 8) | (slot_idx & (MAX_TASKS - 1));
@@ -69,7 +69,7 @@ public:
         (void)threadnum;
         if (!m_interrupt) {
             if (m_set_func)
-                m_set_func(m_range_offset + range.start, m_range_offset + range.end, m_user_data);
+                m_set_func(m_range_offset + range.start, m_range_offset + range.end, m_user_data, threadnum);
             else if (m_func)
                 m_func(m_user_data);
         }
@@ -82,6 +82,8 @@ public:
             pool::free_slots.push(get_slot_idx(m_id));
         }
     }
+
+
 
     bool Running() {
         return !GetIsComplete();
@@ -157,42 +159,43 @@ void shutdown() { ts.WaitforAllAndShutdown(); }
 void execute_queued_tasks() {
     while (!pool::queued_slots.was_empty()) {
         uint32_t idx = pool::queued_slots.pop();
-        ts.AddTaskSetToPipe(&pool::task_data[idx]);
+        if (pool::task_data[idx].m_dependency.GetDependencyTask() == NULL) {
+            ts.AddTaskSetToPipe(&pool::task_data[idx]);
+        }
     }
     while (!main::queued_slots.was_empty()) {
         uint32_t idx = main::queued_slots.pop();
-        ts.AddPinnedTask(&main::task_data[idx]);
+        if (main::task_data[idx].m_dependency.GetDependencyTask() == NULL) {
+            ts.AddPinnedTask(&main::task_data[idx]);
+        }
     }
     ts.RunPinnedTasks();
 }
 
-ID main_enqueue(str_t label, Task func, void* user_data, ID dependency) {
+ID main_enqueue(str_t label, Task func, void* user_data) {
     using namespace main;
     uint32_t idx = free_slots.pop();
 
     ID id = generate_id(idx);
     MainTask* Task = &task_data[idx];
-    enki::ICompletable* dep_task = get_task(dependency);
-    PLACEMENT_NEW(Task) MainTask(func, user_data, label, id, dep_task);
+    PLACEMENT_NEW(Task) MainTask(func, user_data, label, id);
 
-    if (!dep_task) {
-        queued_slots.push(idx);
-    }
+    queued_slots.push(idx);
     
     return id;
 }
 
 size_t pool_num_threads() { return ts.GetNumTaskThreads(); }
 
-ID* pool_running_tasks(md_allocator_i* alloc) {
-    ASSERT(alloc);
-    ID* arr = 0;
-    for (uint32_t i = 0; i < MAX_TASKS; ++i) {
+size_t pool_running_tasks(ID* out_id_arr, size_t id_arr_cap) {
+    size_t num_tasks = 0;
+    for (size_t i = 0; i < MAX_TASKS; ++i) {
         if (pool::task_data[i].Running()) {
-            md_array_push(arr, pool::task_data[i].m_id, alloc);
+            out_id_arr[num_tasks++] = pool::task_data[i].m_id;
+            if (num_tasks == id_arr_cap) break;
         }
     }
-    return arr;
+    return num_tasks;
 }
 
 void pool_interrupt_running_tasks() {
@@ -207,38 +210,47 @@ void pool_wait_for_completion() {
     ts.WaitforAll();
 }
 
-ID pool_enqueue(str_t label, Task func, void* user_data, ID dependency) {
+ID pool_enqueue(str_t label, Task func, void* user_data) {
     using namespace pool;
 
     uint32_t slot_idx = free_slots.pop();
 
     ID id = generate_id(slot_idx);
     PoolTask* Task = &pool::task_data[slot_idx];
-    enki::ICompletable* dep_task = get_task(dependency);
-    PLACEMENT_NEW(Task) PoolTask(func, user_data, label, id, dep_task);
+    PLACEMENT_NEW(Task) PoolTask(func, user_data, label, id);
 
-    if (!dep_task) {
-        queued_slots.push(slot_idx);
-    }
+    queued_slots.push(slot_idx);
 
     return id;
 }
 
-ID pool_enqueue(str_t label, uint32_t range_beg, uint32_t range_end, RangeTask range_func, void* user_data, ID dependency) {
+ID pool_enqueue(str_t label, uint32_t range_beg, uint32_t range_end, RangeTask range_func, void* user_data) {
     using namespace pool;
 
     uint32_t slot_idx = free_slots.pop();
 
     ID id = generate_id(slot_idx);
     PoolTask* Task = &pool::task_data[slot_idx];
-    enki::ICompletable* dep_task = get_task(dependency);
-    PLACEMENT_NEW(Task) PoolTask(range_beg, range_end, range_func, user_data, label, id, dep_task);
+    PLACEMENT_NEW(Task) PoolTask(range_beg, range_end, range_func, user_data, label, id);
 
-    if (!dep_task) {
-        queued_slots.push(slot_idx);
-    }
+    queued_slots.push(slot_idx);
 
     return id;
+}
+
+void set_task_dependency(ID task_id, ID dep_id) {
+    enki::ICompletable* dep = get_task(dep_id);
+    if (dep == NULL) return;
+
+    uint32_t task_idx = get_slot_idx(task_id);
+    if (pool::task_data[task_idx].m_id == task_id) {
+        pool::task_data[task_idx].SetDependency(pool::task_data[task_idx].m_dependency, dep);
+        return;
+    }
+    if (main::task_data[task_idx].m_id == task_id) {
+        main::task_data[task_idx].SetDependency(main::task_data[task_idx].m_dependency, dep);
+        return;
+    }
 }
 
 bool task_is_running(ID id) {
