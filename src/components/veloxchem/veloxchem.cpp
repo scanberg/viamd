@@ -674,7 +674,7 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
     // Returns peak index closest to mouse pixel position, assumes that x-values are sorted.
-    static inline size_t get_hovered_peak(const ImVec2 mouse_pos, const ImVec2* pixel_peaks, size_t num_peaks, double proxy_distance = 10.0) {
+    static inline int get_hovered_peak(const ImVec2 mouse_pos, const ImVec2* pixel_peaks, size_t num_peaks, double proxy_distance = 10.0) {
         int closest_idx = 0;
         double x = mouse_pos.x;
         double y = mouse_pos.y;
@@ -731,7 +731,7 @@ struct VeloxChem : viamd::EventHandler {
         return closest_distance < proxy_distance ? closest_idx : -1;
     }
 
-    static inline void draw_bar(size_t id, double x, double y, double width, ImVec4 color) {
+    static inline void draw_bar(int id, double x, double y, double width, ImVec4 color) {
         double x1 = x - width / 2;
         double x2 = x + width / 2;
         double y1 = 0;

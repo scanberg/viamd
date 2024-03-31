@@ -4351,7 +4351,7 @@ static ImPlotPoint get_time_point(int index, void* user_data) {
     const TimePayload* payload = (const TimePayload*)user_data;
     const TimelineArgs* args = payload->args;
     return ImPlotPoint(args->values.x[index], args->values.y[index * args->values.dim_y + payload->y_idx]);
-};
+}
 
 bool draw_property_timeline(const ApplicationState& data, const TimelineArgs& args) {
     const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_NoSideSwitch | ImPlotAxisFlags_NoHighlight;
@@ -7729,7 +7729,7 @@ void create_screenshot(ApplicationState* data) {
 // #representation
 static Representation* create_representation(ApplicationState* data, RepresentationType type, ColorMapping color_mapping, str_t filter) {
     ASSERT(data);
-    Representation* rep = md_array_push(data->representation.reps, {}, persistent_alloc);
+    Representation* rep = md_array_push(data->representation.reps, Representation(), persistent_alloc);
     rep->type = type;
     rep->color_mapping = color_mapping;
     if (!str_empty(filter)) {
