@@ -106,7 +106,7 @@ mat4_t camera_orthographic_projection_matrix(float left, float right, float bott
 mat4_t camera_inverse_orthographic_projection_matrix(float left, float right, float bottom, float top, float near, float far);
 
 // @TODO: Fix the name to something more descriptive. This modifies the position, orientation and distance using a trackball modality
-bool camera_controller_trackball(vec3_t* position, quat_t* orientation, float* distance, TrackballControllerInput input, TrackballControllerParam param, TrackballFlags flags = -1);
+bool camera_controller_trackball(vec3_t* position, quat_t* orientation, float* distance, TrackballControllerInput input, TrackballControllerParam param = {}, TrackballFlags flags = -1);
 
 //void camera_controller_fps(Camera* camera, const FpsControllerState& state);
 

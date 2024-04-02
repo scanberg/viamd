@@ -566,7 +566,6 @@ struct VeloxChem : viamd::EventHandler {
             // We draw 2 plots as "Energy total" has values in a different range then the rest of the data
             if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
                 if (ImPlot::BeginPlot("SCF")) {
-
                     ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)vlx.scf.iter.count);
                     ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
                     ImPlot::SetupAxes("Iterations", "eV");
@@ -575,18 +574,16 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
                     ImPlot::PlotLine("Gradient Norm", iter, vlx.scf.iter.gradient_norm, (int)vlx.scf.iter.count);
                     ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
+                    ImPlot::EndPlot();
                 }
-                ImPlot::EndPlot();
 
                 if (ImPlot::BeginPlot("SCF")) {
-
                     ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
-
                     ImPlot::PlotLine("Energy Total", iter, vlx.scf.iter.energy_total, (int)vlx.scf.iter.count);
+                    ImPlot::EndPlot();
                 }
-                ImPlot::EndPlot();
+                ImPlot::EndSubplots();
             }
-            ImPlot::EndSubplots();
         }
         ImGui::End();
     }
@@ -1201,27 +1198,21 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (is_active || is_hovered) {
-                static const TrackballControllerParam param = {
-                    .min_distance = 1.0,
-                    .max_distance = 1000.0,
-                };
-
-                vec2_t delta = { io.MouseDelta.x, io.MouseDelta.y };
-                vec2_t curr = {mouse_pos_in_canvas.x, mouse_pos_in_canvas.y};
-                vec2_t prev = curr - delta;
-                float  wheel_delta = io.MouseWheel;
+                const vec2_t delta = { io.MouseDelta.x, io.MouseDelta.y };
+                const vec2_t curr = {mouse_pos_in_canvas.x, mouse_pos_in_canvas.y};
+                const vec2_t prev = curr - delta;
 
                 TrackballControllerInput input = {
                     .rotate_button = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Left),
                     .pan_button    = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Right),
                     .dolly_button  = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Middle),
-                    .dolly_delta   = is_hovered ? wheel_delta : 0.0f,
+                    .dolly_delta   = is_hovered ? io.MouseWheel : 0.0f,
                     .mouse_coord_prev = prev,
                     .mouse_coord_curr = curr,
                     .screen_size = {canvas_sz.x, canvas_sz.y},
                     .fov_y = orb.camera.fov_y,
                 };
-                camera_controller_trackball(&orb.target.pos, &orb.target.ori, &orb.target.dist, input, param);
+                camera_controller_trackball(&orb.target.pos, &orb.target.ori, &orb.target.dist, input);
             }
 
             if (orb.show_coordinate_system_widget) {
