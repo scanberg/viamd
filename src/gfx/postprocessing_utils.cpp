@@ -1251,7 +1251,7 @@ static void compose_deferred(GLuint depth_tex, GLuint color_tex, GLuint normal_t
     const vec3_t dir_radiance = {10, 10, 10};
     const float roughness = 0.4f;
     const float F0 = 0.04f;
-    const vec3_t L = {0.57735026918962576451f, 0.57735026918962576451f, 0.57735026918962576451f};
+    const vec3_t L = {0.57735026918962576451f, 0.57735026918962576451f, 0.57735026918962576451f}; // 1.0 / sqrt(3)
 
     compose::ubo_data_t data = {
         .inv_proj_mat = inv_proj_matrix,

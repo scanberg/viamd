@@ -1735,7 +1735,7 @@ struct VeloxChem : viamd::EventHandler {
             glDisable(GL_SCISSOR_TEST);
 
             if (nto.iso.enabled) {
-                PUSH_GPU_SECTION("ORB GRID RAYCAST")
+                PUSH_GPU_SECTION("NTO RAYCAST")
                     for (int i = 0; i < num_win; ++i) {
                         volume::RenderDesc vol_desc = {
                             .render_target = {
@@ -1759,6 +1759,12 @@ struct VeloxChem : viamd::EventHandler {
                                 .count  = (size_t)nto.iso.count,
                                 .values = nto.iso.values,
                                 .colors = nto.iso.colors,
+                            },
+                            .shading = {
+                                .env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f,
+                                .roughness = 0.3f,
+                                .dir_radiance = {10,10,10},
+                                .ior = 1.5f,
                             },
                             .voxel_spacing = nto.vol[i].step_size,
                         };
