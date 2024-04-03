@@ -569,8 +569,8 @@ struct VeloxChem : viamd::EventHandler {
                 //ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
                 //ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
                 //ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
+                ImPlot::EndPlot();
             }
-            ImPlot::EndPlot();
         }
         ImGui::End();
     }
@@ -878,8 +878,8 @@ struct VeloxChem : viamd::EventHandler {
                         draw_bar(1, x_peaks[rsp.selected], y_osc_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
                     }
                     
+                    ImPlot::EndPlot();
                 }
-                ImPlot::EndPlot();
 
                 if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
                 // Rotatory ECD
@@ -913,10 +913,10 @@ struct VeloxChem : viamd::EventHandler {
                     if (rsp.selected != -1) {
                         draw_bar(3, x_peaks[rsp.selected], y_cgs_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
                     }
+                    ImPlot::EndPlot();
                 }
-                ImPlot::EndPlot();
+                ImPlot::EndSubplots();
             }
-            ImPlot::EndSubplots();
             first_plot = false;
             /*
             constexpr str_t ABS_FILE_EXTENSION = STR_LIT("abs");
