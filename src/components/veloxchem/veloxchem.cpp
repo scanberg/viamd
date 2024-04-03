@@ -525,24 +525,49 @@ struct VeloxChem : viamd::EventHandler {
         for (int i = 0; i < vlx.scf.iter.count; ++i) {
             iter[i] = (double)vlx.scf.iter.iteration[i];
         }
-
+        static ImPlotRect lims{ 0,1,0,1 };
         // The actual plot
+
+
+        double* energy_offsets = (double*)md_temp_push(sizeof(double) * (int)vlx.scf.iter.count);
+        double ref_energy = vlx.scf.iter.energy_total[vlx.scf.iter.count - 1];
+        for (size_t i = 0; i < vlx.scf.iter.count; i++) {
+            energy_offsets[i] = 1 - (vlx.scf.iter.energy_total[i] / ref_energy);
+        }
+
+        double y1_min = vlx.scf.iter.gradient_norm[0];
+        double y1_max = vlx.scf.iter.gradient_norm[0];
+        double y2_min = energy_offsets[0];
+        double y2_max = energy_offsets[0];
+        for (size_t i = 1; i < vlx.scf.iter.count; i++) {
+            y1_min = MIN(y1_min, vlx.scf.iter.gradient_norm[i]);
+            y1_max = MAX(y1_max, vlx.scf.iter.gradient_norm[i]);
+            y2_min = MIN(y2_min, energy_offsets[i]);
+            y2_max = MAX(y2_max, energy_offsets[i]);
+        }
+
+        double y1_dist = fabs(y1_max - y1_min);
+        double y2_dist = fabs(y2_max - y2_min);
+
+        double y1_to_y2_mult = y2_dist / y1_dist;
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("SCF", &scf.show_window)) {
             if (ImPlot::BeginPlot("SCF")) {
-
                 ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)vlx.scf.iter.count);
                 ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
                 ImPlot::SetupAxes("Iterations", "eV");
                 // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
-                ImPlot::SetupAxis(ImAxis_Y2, "Testname", ImPlotAxisFlags_AuxDefault);
+                ImPlot::SetupAxis(ImAxis_Y2, "Offset from norm", ImPlotAxisFlags_AuxDefault);
                 ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
+                ImPlot::SetupAxisLimits(ImAxis_Y2, lims.Y.Min * y1_to_y2_mult, lims.Y.Max * y1_to_y2_mult, ImPlotCond_Always);
 
-                //ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
-                //ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
+
                 ImPlot::PlotLine("Gradient Norm", iter, vlx.scf.iter.gradient_norm, (int)vlx.scf.iter.count);
                 ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-                ImPlot::PlotLine("Energy Total", iter, vlx.scf.iter.energy_total, (int)vlx.scf.iter.count);
+                ImPlot::PlotLine("Energy Total", iter, energy_offsets, (int)vlx.scf.iter.count);
+                lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
+                //ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
+                //ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
                 //ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
             }
             ImPlot::EndPlot();
