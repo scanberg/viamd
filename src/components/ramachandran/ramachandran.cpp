@@ -1291,7 +1291,7 @@ struct Ramachandran : viamd::EventHandler {
         user_data->frame_stride = frame_stride;
         user_data->sigma = blur_sigma;
 
-        task_system::ID id = task_system::pool_enqueue(STR_LIT("Rama density"), [](void* user_data) {
+        task_system::ID async_task = task_system::pool_enqueue(STR_LIT("Rama density"), [](void* user_data) {
             UserData* data = (UserData*)user_data;
             const float angle_to_coord_scale = 1.0f / (2.0f * PI);
             const float angle_to_coord_offset = 0.5f;
@@ -1332,18 +1332,17 @@ struct Ramachandran : viamd::EventHandler {
             data->rep->den_sum[1] = (float)sum[1];
             data->rep->den_sum[2] = (float)sum[2];
             data->rep->den_sum[3] = (float)sum[3];
-            }, user_data);
+        }, user_data);
 
-        task_system::main_enqueue(STR_LIT("##Update rama texture"), [](void* user_data) {
+        task_system::ID main_task = task_system::main_enqueue(STR_LIT("##Update rama texture"), [](void* user_data) {
             UserData* data = (UserData*)user_data;
-            glBindTexture(GL_TEXTURE_2D, data->rep->den_tex);
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, density_tex_dim, density_tex_dim, GL_RGBA, GL_FLOAT, data->density_tex);
-            glBindTexture(GL_TEXTURE_2D, 0);
-
+            gl::set_texture_2D_data(data->rep->den_tex, data->density_tex, GL_RGBA32F);
             md_free(md_get_heap_allocator(), data, data->alloc_size);
-            }, user_data, id);
+        }, user_data);
 
-        return id;
+        task_system::set_task_dependency(main_task, async_task);
+
+        return async_task;
     }
 
     void rama_rep_render_map(rama_rep_t* rep, const float viewport[4], const rama_colormap_t colmap[4], uint32_t display_res) {
